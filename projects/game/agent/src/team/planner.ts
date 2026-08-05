@@ -36,6 +36,7 @@ import { createAgent } from "langchain";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
@@ -94,6 +95,16 @@ export interface PlannerNodeDeps {
 	 * `specs/031-team-template-mode/spec.md` FR-034).
 	 */
 	plannerBasePrompt: string;
+	/**
+	 * The player's tools — the saolei MCP tools (FR-010, player only). US3
+	 * (specs/037-saolei-team-optimize/spec.md FR-016/FR-017): only their
+	 * NAME + DESCRIPTION are injected into the planner's system prompt as
+	 * static text (computed once at team build — the tool set is template-
+	 * fixed, specs/031-team-template-mode/spec.md FR-028); the tools
+	 * themselves are NOT added to the planner's tool set (FR-018 — the
+	 * planner holds `update_strategy` only, FR-012).
+	 */
+	playerTools: StructuredToolInterface[];
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
 }
@@ -133,6 +144,29 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 		"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
 	);
 	return new HumanMessage(lines.join("\n"));
+}
+
+/**
+ * Build the "Player 可用工具" markdown section appended to the planner's
+ * system prompt (US3 — specs/037-saolei-team-optimize/contracts/
+ * compression-contract.md §4; FR-016/FR-017): each player tool's NAME and
+ * DESCRIPTION as static text, computed once at team build (the tool set is
+ * template-fixed, specs/031-team-template-mode/spec.md FR-028). The tools
+ * themselves are NOT added to the planner's tool set (FR-018) — the section
+ * is reference-only, letting the planner judge whether the player is using
+ * the tools fully. Empty tool set ⇒ no section (no trailing markdown).
+ */
+function buildToolDescriptionSection(tools: StructuredToolInterface[]): string {
+	if (tools.length === 0) return "";
+	const lines = [
+		"",
+		"## Player 可用工具",
+		"以下是 player 持有的工具（你不能调用这些工具，仅可参考其描述判断 player 是否充分利用）：",
+	];
+	for (const tool of tools) {
+		lines.push(`- ${tool.name}: ${tool.description}`);
+	}
+	return lines.join("\n");
 }
 
 /**
@@ -194,9 +228,14 @@ export function createPlannerNode(
 	// FR-034 semantics A: the base prompt is the profile's planner_prompt
 	// when non-empty, else the template default; NO skill body is appended
 	// (the planner holds no saolei tools, FR-012) —
-	// `specs/031-team-template-mode/spec.md` FR-034.
+	// `specs/031-team-template-mode/spec.md` FR-034. US3: the player tool
+	// NAME + DESCRIPTION section is appended AFTER the base prompt (FR-016/
+	// FR-017 — specs/037-saolei-team-optimize/contracts/
+	// compression-contract.md §4); the tools themselves stay OUT of the
+	// planner's tool set (FR-018).
 	const systemPrompt =
-		deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE;
+		(deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE) +
+		buildToolDescriptionSection(deps.playerTools);
 	const plannerAgent = createAgentFn({
 		model: deps.model,
 		tools: [buildUpdateStrategyTool(strategyStore, sessionId)],

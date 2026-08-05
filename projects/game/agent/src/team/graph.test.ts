@@ -1104,9 +1104,15 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
 		buildTestGraph({ plannerBasePrompt: profilePrompt, createAgentFn });
 
-		expect(plannerSystemPrompt()).toBe(profilePrompt);
+		// Semantics A: the profile prompt leads, unchanged (FR-034); US3
+		// appends the player tool description section AFTER it (FR-016 —
+		// specs/037-saolei-team-optimize/contracts/compression-contract.md
+		// §4). The default test player tool (fake_saolei_move) is listed.
+		expect(plannerSystemPrompt().startsWith(profilePrompt)).toBe(true);
 		// The planner appends NO skill body (FR-012/FR-034).
 		expect(plannerSystemPrompt()).not.toContain(SKILL_PROMPT_SEPARATOR);
+		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
+		expect(plannerSystemPrompt()).toContain("fake_saolei_move");
 		expect(createAgentFn).toHaveBeenCalled();
 	});
 
@@ -1114,8 +1120,84 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
 		buildTestGraph({ createAgentFn }); // plannerBasePrompt defaults to ""
 
-		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+		// The default base leads (FR-034); the US3 tool description section
+		// follows it (FR-016 — compression-contract.md §4).
+		expect(plannerSystemPrompt().startsWith(DEFAULT_PLANNER_BASE)).toBe(true);
+		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
 		expect(createAgentFn).toHaveBeenCalled();
+	});
+
+	it("planner: empty player tool set appends NO tool section (US3 — no trailing markdown)", () => {
+		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
+		buildTestGraph({ playerTools: [], createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// Empty player tools ⇒ buildToolDescriptionSection returns "" — the
+		// planner prompt is the bare DEFAULT_PLANNER_BASE, no trailing
+		// markdown section (compression-contract.md §4).
+		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+	});
+});
+
+describe("team graph — US3 (037): planner systemPrompt player tool descriptions (FR-016..FR-018)", () => {
+	it("injects every player tool's name+description into the planner systemPrompt while keeping its tool set at update_strategy only (FR-016/FR-018)", () => {
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const flagTool = tool(
+			async () => "flagged",
+			{
+				name: "saolei_flag",
+				description: "标记一个格子为地雷。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		// DI spy (style/javascript.md §测试 — no vi.mock): capture BOTH the
+		// systemPrompt AND the tools array of each createAgent call, then
+		// pick the planner's by its prompt lacking the saolei skill body
+		// (the player's always carries it, FR-034 — same heuristic as
+		// captureSystemPrompts).
+		const calls: Array<{
+			systemPrompt: string;
+			tools: StructuredToolInterface[];
+		}> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		buildTestGraph({ playerTools: [clickTool, flagTool], createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		const plannerCall = calls.find(
+			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
+		);
+		expect(plannerCall).toBeDefined();
+		// FR-016: the section lists EVERY player tool's name and description
+		// (specs/037-saolei-team-optimize/contracts/compression-contract.md
+		// §4 — `- name: description` per tool).
+		expect(plannerCall?.systemPrompt).toContain("## Player 可用工具");
+		expect(plannerCall?.systemPrompt).toContain(
+			"saolei_click: 揭示一个格子。",
+		);
+		expect(plannerCall?.systemPrompt).toContain(
+			"saolei_flag: 标记一个格子为地雷。",
+		);
+		// FR-018: the planner's ACTUAL tool set stays `update_strategy` only —
+		// the player tools were NOT added as callable tools.
+		expect(plannerCall?.tools).toHaveLength(1);
+		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
 	});
 });
 

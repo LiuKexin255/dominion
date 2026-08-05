@@ -226,6 +226,11 @@ export function buildTeamGraph(deps: TeamGraphDeps): TeamGraphHandle {
 		buffer: deps.buffer,
 		sessionId: deps.sessionId,
 		plannerBasePrompt: deps.plannerBasePrompt,
+		// US3 (specs/037-saolei-team-optimize/spec.md FR-016/FR-017): the
+		// player tools are forwarded so the planner node can inject their
+		// NAME + DESCRIPTION into its system prompt (static text — the tools
+		// themselves stay out of the planner's tool set, FR-018).
+		playerTools: deps.playerTools,
 		createAgentFn: deps.createAgentFn,
 	});
 	const compressNode = createCompressNode({
