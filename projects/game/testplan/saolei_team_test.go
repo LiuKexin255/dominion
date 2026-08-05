@@ -341,10 +341,16 @@ func TestTeamDisconnectReconnectHistory(t *testing.T) {
 
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-disc-"+uniqueSuffix(), "gpt-4", "gpt-4")
 
-	// Connect, send 2 text exchanges.
+	// Connect, send 2 text exchanges. Each text must carry a fake-LLM
+	// keyword ("hello" → greeting config): the 037 compression testdata
+	// configs (sample_compression_{player,planner}.yaml) are reasoning-less
+	// text Messages in the matcher's random fallback pool, so a no-keyword
+	// text can return a summary WITHOUT a thinking frame and this test's
+	// frameHasThinking drain would hang (projects/game/fake-llm/service/
+	// matcher.go Match).
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
-	messages := []string{"First exchange", "Second exchange"}
+	messages := []string{"Hello, first message", "Hello, second message"}
 	for _, msg := range messages {
 		sendText(t, conn, sessionID, msg)
 		_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
