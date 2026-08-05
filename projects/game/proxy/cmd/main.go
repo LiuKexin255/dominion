@@ -63,10 +63,15 @@ func main() {
 	grpcHandler := handler.NewTeamHandler(mongoOwnerStore, hashPicker, manager, binder)
 
 	// gRPC server with default service options (OTel tracing, TLS).
+	// The gateway's TeamService.Connect client pings every 30s
+	// (WithLongLivedClientKeepalive); without a relaxed enforcement policy
+	// the grpc-go server default MinTime (5min) would GOAWAY the long-lived
+	// bidi stream with "too_many_pings" during idle gaps.
 	serverOpts := append(
 		pgrpc.ServiceDefault(),
 		grpcgo.MaxRecvMsgSize(8*1024*1024),
 		grpcgo.MaxSendMsgSize(8*1024*1024),
+		pgrpc.WithLongLivedServerKeepalive(),
 	)
 	grpcServer := grpcgo.NewServer(serverOpts...)
 	game.RegisterTeamServiceServer(grpcServer, grpcHandler)

@@ -603,9 +603,14 @@ func TestToMessageViewModels_Nil(t *testing.T) {
 	// when: convert to view models
 	views := ToMessageViewModels(nil)
 
-	// then: returns nil
-	if views != nil {
-		t.Fatal("expected nil, got non-nil")
+	// then: returns an EMPTY NON-NIL slice — nil would serialize as JSON
+	// null across the Wails boundary and crash the frontend's iteration
+	// (see ToMessageViewModels doc).
+	if views == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(views) != 0 {
+		t.Fatalf("expected 0 view models, got %d", len(views))
 	}
 }
 

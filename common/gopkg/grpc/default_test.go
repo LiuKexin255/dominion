@@ -22,6 +22,8 @@ func TestServiceDefault(t *testing.T) {
 	}
 }
 
+// TestClientDefault verifies ClientDefault builds the default options without
+// keepalive pings (keepalive is opt-in via WithLongLivedClientKeepalive).
 func TestClientDefault(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -33,8 +35,8 @@ func TestClientDefault(t *testing.T) {
 	opts := ClientDefault()
 
 	// then
-	if len(opts) < 4 {
-		t.Fatalf("ClientDefault() returned %d options, want >= 4", len(opts))
+	if len(opts) < 3 {
+		t.Fatalf("ClientDefault() returned %d options, want >= 3", len(opts))
 	}
 }
 
@@ -115,7 +117,7 @@ func TestClientDefault_TLSNotConfigured_DoesNotPanic(t *testing.T) {
 	opts := ClientDefault()
 
 	// then
-	if len(opts) < 4 {
-		t.Fatalf("ClientDefault() returned %d options, want >= 4", len(opts))
+	if len(opts) < 3 {
+		t.Fatalf("ClientDefault() returned %d options, want >= 3", len(opts))
 	}
 }

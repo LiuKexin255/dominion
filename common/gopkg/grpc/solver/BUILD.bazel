@@ -14,8 +14,6 @@ go_library(
         "//common/gopkg/logs/event",
         "//common/gopkg/solver",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//credentials/insecure",
-        "@org_golang_google_grpc//keepalive",
         "@org_golang_google_grpc//resolver",
     ],
 )
