@@ -33,7 +33,7 @@ import {
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
 import { createPlayerNode, DEFAULT_PLAYER_BASE } from "./player";
 import type { CreateAgentFn } from "./player";
-import { DEFAULT_PLANNER_BASE } from "./planner";
+import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
 import type { TeamStateValue } from "./state";
 
 /** A minimal recognizable GameState (3x3, all empty cells). */
@@ -537,6 +537,136 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 		);
 		expect(reviewRequests).toHaveLength(1);
 		expect(result.gameEnded).toBeNull();
+	});
+});
+
+describe("team graph — US1 (037): planner review input real-time frame (FR-001/FR-004)", () => {
+	it("emits the review input as a real-time frame with agent=planner when a game ends (FR-001/FR-002)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		// Two moves (still playing), then a losing game end — the sink
+		// accumulates one gameLog entry per step, so the emitted frame
+		// carries the full process (specs/037-saolei-team-optimize/spec.md
+		// FR-002: live content == reloaded ListMessages content).
+		const moveTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				if (x === 3 && y === 4) {
+					sink.onMove("saolei_click", 3, 4, makeState());
+				} else {
+					sink.onMove("saolei_click", 5, 2, makeState());
+					sink.onGameEnd(makeState(), "lost");
+				}
+				return `moved to (${x},${y})`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Fake saolei move that accumulates a gameLog.",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 3, y: 4 } }])
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 5, y: 2 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const store = new FakeStrategyStore();
+		// DI recording callback (style/javascript.md §测试 — vi.fn() seam,
+		// no vi.mock): injected via LangGraph `configurable` (tasks.md 决策
+		// #1 — specs/037-saolei-team-optimize/plan.md).
+		const emitChannelFrame = vi.fn<(agent: string, content: string) => void>();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [moveTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-us1-frame", emitChannelFrame },
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// The emitter was actually exercised (style/javascript.md §测试 —
+		// positive assertion on the DI seam). One game end ⇒ one planner
+		// run ⇒ exactly one review-input frame.
+		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
+		const [emittedAgent, emittedContent] = emitChannelFrame.mock.calls[0];
+		// The frame belongs to the planner tab (FR-001 / US1 AS5).
+		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
+		// The frame carries the FULL game process — every step's tool,
+		// coordinates, status and text-rendered board (US1 AS2).
+		expect(emittedContent).toContain("本局游戏过程");
+		expect(emittedContent).toContain("1. saolei_click(3, 4) → playing");
+		expect(emittedContent).toContain("2. saolei_click(5, 2) → playing");
+		expect(emittedContent).toContain("3. (game-end) → lost");
+		expect(emittedContent).toContain("board size 3*3");
+		// The emitted content equals the review request written to the
+		// planner channel (same buildReviewInput output — the live frame
+		// and the reloaded history are identical, FR-002/FR-003).
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		expect(contentType(reviewRequests[0] as BaseMessage)).toBe(emittedContent);
+		// The game really ended ⇒ the planner ran and wrote its strategy.
+		expect(await store.get("graph-test")).toBe("safer-play");
+	});
+
+	it("emits the no-record notice frame when the gameLog is empty (FR-004)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// An unconsumed game-end event WITHOUT any gameLog entry: the planner
+		// still runs, and its "无可用游戏记录" notice MUST be emitted too
+		// (FR-004 — the empty-log notice is a non-empty review content).
+		buffer.gameEvent = {
+			state: makeState(),
+			status: "lost",
+			endedAt: Date.now(),
+			consumed: false,
+		};
+		const playerModel = fakeModel().respond(new AIMessage("idle"));
+		const plannerModel = fakeModel().respond(new AIMessage("no update"));
+		const store = new FakeStrategyStore();
+		const emitChannelFrame = vi.fn<(agent: string, content: string) => void>();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-us1-empty", emitChannelFrame },
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
+		const [emittedAgent, emittedContent] = emitChannelFrame.mock.calls[0];
+		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
+		expect(emittedContent).toContain("请复盘本局游戏（无可用游戏记录）。");
+		// Live frame content == the notice in the planner channel (FR-002).
+		const notices = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("请复盘本局游戏（无可用游戏记录）。"),
+		);
+		expect(notices).toHaveLength(1);
+		expect(contentType(notices[0] as BaseMessage)).toBe(emittedContent);
 	});
 });
 

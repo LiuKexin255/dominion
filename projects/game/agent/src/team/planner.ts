@@ -36,6 +36,7 @@ import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
 import type { ChatModel } from "../model-provider";
+import type { ChannelFrameEmitter } from "../session-team";
 import type { StrategyStore } from "../strategy-store";
 import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
@@ -206,6 +207,28 @@ export function createPlannerNode(
 		const strategy = await strategyStore.get(sessionId);
 		// Issue 2: review input = the ephemeral buffer's full gameLog.
 		const reviewInput = buildReviewInput(buffer);
+
+		// US1 (specs/037-saolei-team-optimize/spec.md FR-001/FR-004): the
+		// review input is a non-model-produced channel message — createAgent
+		// injects it as INPUT, so streamEvents never emits it (bug root
+		// cause, specs/031-team-template-mode/bug-analysis.md Issue 2). Emit
+		// its content as a real-time frame so the desktop planner tab shows
+		// it without a reload. The emitter rides LangGraph `configurable`
+		// (tasks.md 决策 #1 — specs/037-saolei-team-optimize/plan.md), read
+		// as `ChannelFrameEmitter | undefined` (session-team.ts exports it).
+		const emitChannelFrame = config?.configurable?.emitChannelFrame as
+			| ChannelFrameEmitter
+			| undefined;
+		if (emitChannelFrame) {
+			const content =
+				typeof reviewInput.content === "string" ? reviewInput.content : "";
+			if (content) {
+				// FR-004: the empty-gameLog notice ("无可用游戏记录") is a
+				// non-empty content too — emitted along with full gameLogs.
+				emitChannelFrame(PLANNER_AGENT_NAME, content);
+			}
+		}
+
 		const input: BaseMessage[] = [
 			buildStrategyMessage(strategy),
 			...state.plannerMessages,
@@ -220,6 +243,12 @@ export function createPlannerNode(
 			warn("planner failed after retries; degrading", { error: message });
 			// D6 step 6: clear gameEnded unconditionally (success or failure)
 			// so the planner does not re-trigger on the same game end.
+			// Degrade trade-off: the reviewInput frame was already emitted
+			// above (specs/037-saolei-team-optimize/spec.md FR-001/FR-004 —
+			// real-time visible on the desktop planner tab), but this return
+			// writes NO plannerMessages, so the live frame and the reloaded
+			// channel history diverge while degraded — accepted: real-time
+			// visibility takes priority when the planner LLM is unavailable.
 			return { gameEnded: null };
 		}
 
