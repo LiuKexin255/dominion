@@ -163,7 +163,7 @@
 - [X] T024 Run `bazel run //:gazelle` in `projects/game/agent/src/team/` to update BUILD.bazel for the new `compress.ts` file
 - [X] T025 Run full build and test suite: `bazel build //... && bazel test //...` — fix any regressions
 - [X] T026 Add large test cases to the existing saolei-team suite in `projects/game/testplan/` — add new test cases to the existing `system_test.yaml` suite `saolei-team` (or a new suite in the same file if topology differs); test cases (Go, `go_largetest` rule) covering: (1) planner game history real-time visibility; (2) 5-game compression trigger (channel shrink, player stops, strategy preserved); (3) planner tool description in systemPrompt (verify via log/trace); (4) game stats computation correctness (operationCount/correctFlags/avgOpsPerMine). Follow `style/large_test.md`: cases organized by tested module (not by spec number), use existing helpers, add to existing test plan YAML (not a new one)
-- [ ] T027 Execute large test plan via testplan skill: `guitar run <plan.yaml>` — MUST complete full deploy→test→cleanup loop; all test cases MUST pass (宪法原则 VI); if any case fails, fix and re-run until fully green
+- [X] T027 Execute large test plan via testplan skill: `guitar run <plan.yaml>` — MUST complete full deploy→test→cleanup loop; all test cases MUST pass (宪法原则 VI); if any case fails, fix and re-run until fully green
 
 ---
 
