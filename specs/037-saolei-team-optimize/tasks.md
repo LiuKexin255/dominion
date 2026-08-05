@@ -41,8 +41,8 @@
 
 **文档清单**:
 - 代码规范文档: `style/javascript.md`（TS 规范、DI 测试约定、[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)）
-- 官方文档: 无
-- 技术文章: 无
+- 官方文档: [Vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（javascript.md §测试 引用的 DI-over-mock 依据）
+- 技术文章: `specs/019-js-test-reliability/contracts/run-vitest-shim.md`（javascript.md §Bazel 引用的 shim 退出码契约：fail-closed / 空套件 vacuous pass）
 
 - [ ] T002 [P] Extend `TeamStateValue` interface in `projects/game/agent/src/team/state.ts` — add `gameCounter: number` field (integer, per-session game counter)
 - [ ] T003 Extend `TeamState` schema in `projects/game/agent/src/team/graph.ts` — add `gameCounter: Annotation<number>({ reducer: (_p: number, n: number) => n, default: () => 0 })` to the `Annotation.Root` (last-write-wins reducer, same pattern as `gameEnded`); do NOT change routing yet (routing changes are in Phase 4/US2)
@@ -60,9 +60,9 @@
 **Independent Test**: 构建 team graph，注入 `emitChannelFrame` 录制回调；驱动一局游戏结束触发 planner 复盘；断言 emitChannelFrame 被调用且携带 `agent="planner"` + 完整游戏历史内容。
 
 **文档清单**:
-- 代码规范文档: `style/javascript.md`（TS 规范、DI 测试约定）
-- 官方文档: 无
-- 技术文章: `specs/031-team-template-mode/bug-analysis.md` Issue 2 "复盘输入可见性"（bug 根因：streamEvents 不产出 createAgent 输入 HumanMessage）、`specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2（reviewInput 内容=完整 gameLog）
+- 代码规范文档: `style/javascript.md`（TS 规范、DI 测试约定、[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)）
+- 官方文档: [Vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（javascript.md §测试 引用的 DI-over-mock 依据）
+- 技术文章: `specs/019-js-test-reliability/contracts/run-vitest-shim.md`（javascript.md §Bazel 引用的 shim 退出码契约：fail-closed / 空套件 vacuous pass）、`specs/031-team-template-mode/bug-analysis.md` Issue 2 "复盘输入可见性"（bug 根因：streamEvents 不产出 createAgent 输入 HumanMessage）、`specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2（reviewInput 内容=完整 gameLog）
 
 - [ ] T006 [US1] Implement reviewInput real-time frame emission in `projects/game/agent/src/team/planner.ts` — in `createPlannerNode`'s returned node function, after constructing `reviewInput` via `buildReviewInput(buffer)` and before calling `invokeWithRetry`, read `config?.configurable?.emitChannelFrame` as `ChannelFrameEmitter | undefined`; if present and reviewInput has non-empty string content, call `emitChannelFrame(PLANNER_AGENT_NAME, reviewContent)` (FR-001); the frameId/messageId dedup is handled by desktop's `renderedMessageIds` (FR-003); ensure the "no game record" message (gameLog empty) is also emitted (FR-004)
 - [ ] T007 [US1] Add integration test in `projects/game/agent/src/team/graph.test.ts` — build team graph with a `emitChannelFrame` recording callback in configurable; drive one game to completion (fake tool triggers onGameEnd); assert: emitChannelFrame was called with `agent="planner"` and content containing the full game process (tool names, coordinates, board states); assert the emitted content matches what buildReviewInput produces
@@ -78,9 +78,9 @@
 **Independent Test**: 连续驱动 5 局游戏结束；断言第 5 局后 gameCounter===5，graph 路由到 compress 节点，player/planner 通道各收缩为 1 条摘要，策略保留，turn 结束（路由 END）。
 
 **文档清单**:
-- 代码规范文档: `style/javascript.md`（TS 规范、DI 测试约定）
-- 官方文档: [LangGraph JS — How to add summary of conversation history](https://github.com/langchain-ai/langgraphjs/blob/main/examples/how-tos/add-summary-conversation-history.ipynb)（RemoveMessage + 摘要替换模式）、[LangChain — Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory)（消息删除/摘要策略）
-- 技术文章: `specs/037-saolei-team-optimize/research.md` D1（压缩方案对比与决策）、D7（graph 路由交互）、D8（摘要提示词设计）、D9（实时帧发射与去重）、`specs/031-team-template-mode/contracts/team-graph-contract.md` §1/§5（state schema + channel clearing 机制）、`specs/037-saolei-team-optimize/contracts/compression-contract.md`（完整压缩节点契约）
+- 代码规范文档: `style/javascript.md`（TS 规范、DI 测试约定、[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)）
+- 官方文档: [Vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（javascript.md §测试 引用的 DI-over-mock 依据）、[LangGraph JS — How to add summary of conversation history](https://github.com/langchain-ai/langgraphjs/blob/main/examples/how-tos/add-summary-conversation-history.ipynb)（RemoveMessage + 摘要替换模式）、[LangChain — Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory)（消息删除/摘要策略）
+- 技术文章: `specs/019-js-test-reliability/contracts/run-vitest-shim.md`（javascript.md §Bazel 引用的 shim 退出码契约：fail-closed / 空套件 vacuous pass）、`specs/037-saolei-team-optimize/research.md` D1（压缩方案对比与决策）、D7（graph 路由交互）、D8（摘要提示词设计）、D9（实时帧发射与去重）、`specs/031-team-template-mode/contracts/team-graph-contract.md` §1/§5（state schema + channel clearing 机制）、`specs/037-saolei-team-optimize/contracts/compression-contract.md`（完整压缩节点契约）
 
 - [ ] T008 [US2] Create compress node in `projects/game/agent/src/team/compress.ts` — export `createCompressNode(deps: CompressNodeDeps)` where `CompressNodeDeps = { playerModel: ChatModel; plannerModel: ChatModel }`; the node function `(state: TeamStateValue, config?: RunnableConfig) => Promise<Partial<TeamStateValue>>`: (1) for each non-empty channel, serialize messages to text, call `model.invoke([{ role: "human", content: summaryPrompt + serialized }])` to get an AIMessage summary (use playerModel for playerMessages, plannerModel for plannerMessages); validate summary content is non-blank (trim length > 0) — empty/whitespace summary → re-throw (FR-012/FR-013); (2) construct channel update `[new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), summaryAIMessage]` per channel; (3) if LLM call throws → re-throw (FR-013: abort); (4) read `config?.configurable?.emitChannelFrame` and emit summary frames (FR-011); (5) empty channel = skip (FR-015); import `RemoveMessage` from `@langchain/core/messages`, `REMOVE_ALL_MESSAGES` from `@langchain/langgraph`; use the summary prompts from `specs/037-saolei-team-optimize/contracts/compression-contract.md` §3
 - [ ] T009 [US2] Add gameCounter increment to planner node in `projects/game/agent/src/team/planner.ts` — in the node return (both success and degrade paths), add `gameCounter: state.gameCounter + 1` alongside the existing `gameEnded: null` return
@@ -98,9 +98,9 @@
 **Independent Test**: 捕获 planner createAgent 的 systemPrompt，断言包含每个 player 工具的 name + description；断言 planner 工具集仍仅 `update_strategy`。
 
 **文档清单**:
-- 代码规范文档: `style/javascript.md`（TS 规范）
-- 官方文档: 无
-- 技术文章: `specs/037-saolei-team-optimize/contracts/compression-contract.md` §4（工具描述注入设计：buildToolDescriptionSection 格式）、`specs/031-team-template-mode/spec.md` FR-028（模板固定装配工具集）
+- 代码规范文档: `style/javascript.md`（TS 规范、[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)）
+- 官方文档: [Vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（javascript.md §测试 引用的 DI-over-mock 依据）
+- 技术文章: `specs/019-js-test-reliability/contracts/run-vitest-shim.md`（javascript.md §Bazel 引用的 shim 退出码契约：fail-closed / 空套件 vacuous pass）、`specs/037-saolei-team-optimize/contracts/compression-contract.md` §4（工具描述注入设计：buildToolDescriptionSection 格式）、`specs/031-team-template-mode/spec.md` FR-028（模板固定装配工具集）
 
 - [ ] T012 [US3] Pass `playerTools` to planner node in `projects/game/agent/src/team/graph.ts` — add `playerTools: deps.playerTools` to the `createPlannerNode({...})` call in `buildTeamGraph` (the tools are already in `TeamGraphDeps`, just need to forward them)
 - [ ] T013 [US3] Implement tool description injection in `projects/game/agent/src/team/planner.ts` — (1) add `playerTools: StructuredToolInterface[]` to `PlannerNodeDeps`; (2) add a `buildToolDescriptionSection(tools)` helper that formats each tool's `name` and `description` into a markdown section (see `specs/037-saolei-team-optimize/contracts/compression-contract.md` §4 for the exact format); (3) append the section to `systemPrompt` (after the base prompt, before createAgent); (4) planner's actual `tools` array stays `[buildUpdateStrategyTool(strategyStore, sessionId)]` only (FR-018)
@@ -117,9 +117,9 @@
 **Independent Test**: 构造已知操作序列与地雷布局的 fake 游戏，验证 onGameEnd 携带的 GameStats 数值正确；验证 buildReviewInput 包含统计文本；验证 y=0 与 counter 不可解码的降级处理。
 
 **文档清单**:
-- 代码规范文档: `style/javascript.md`（TS 规范、纯函数测试约定）
-- 官方文档: 无
-- 技术文章: `specs/037-saolei-team-optimize/contracts/game-stats-contract.md`（完整统计计算契约）、`specs/037-saolei-team-optimize/data-model.md` §5（GameStats 数据结构与流转）、`specs/031-team-template-mode/contracts/saolei-sink-contract.md`（现有 sink 接口契约）
+- 代码规范文档: `style/javascript.md`（TS 规范、纯函数测试约定、[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)）
+- 官方文档: [Vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（javascript.md §测试 引用的 DI-over-mock 依据）
+- 技术文章: `specs/019-js-test-reliability/contracts/run-vitest-shim.md`（javascript.md §Bazel 引用的 shim 退出码契约：fail-closed / 空套件 vacuous pass）、`specs/037-saolei-team-optimize/contracts/game-stats-contract.md`（完整统计计算契约）、`specs/037-saolei-team-optimize/data-model.md` §5（GameStats 数据结构与流转）、`specs/031-team-template-mode/contracts/saolei-sink-contract.md`（现有 sink 接口契约）
 
 - [ ] T015 [P] [US5] Define `GameStats` type and extend `SaoleiEventSink.onGameEnd` with optional `stats?` parameter in `projects/game/agent/src/mcp/saolei/saolei-mcp.ts` — add `interface GameStats { operationCount: number; correctFlags: number | null; avgOpsPerMine: number | "N/A" }`; change `onGameEnd` signature to `(state: GameState, status: "won" | "lost", stats?: GameStats)` (backward compatible — optional param, FR-019 unchanged)
 - [ ] T016 [US5] Implement `computeGameStats` pure function and MCP closure tracking in `projects/game/agent/src/mcp/saolei/saolei-mcp.ts` — (1) add closure variables `let initState: GameState | null = null` and `let operationCount = 0`; (2) in `saolei_init` handler: set `initState = state` and `operationCount = 0` after successful recognize; (3) in `registerCellTool` handler: `operationCount++` after successful recognize, before `runSink("onMove")`; (4) implement `computeGameStats(initState, finalState, operationCount): GameStats` — correctFlags = totalMines(initState.mineCounter.value) − MINE格数 − HIT_MINE格数; counter undecodable → correctFlags = null; avgOpsPerMine = correctFlags > 0 ? round(operationCount/correctFlags * 100)/100 : "N/A"; (5) in `onGameEnd` call: pass `computeGameStats(initState, state, operationCount)` as third arg
@@ -139,9 +139,9 @@
 **Independent Test**: 向某 agent tab 注入超过上限的消息，验证最旧被移除、仅保留上限条数；验证不同 tab 独立计数。
 
 **文档清单**:
-- 代码规范文档: `style/javascript.md`（TS 规范）
-- 官方文档: 无
-- 技术文章: `specs/031-team-template-mode/contracts/desktop-contract.md`（desktop 多标签页契约）、`specs/037-saolei-team-optimize/data-model.md` §7（FIFO 实现方案 + 写入位置清单）
+- 代码规范文档: `style/javascript.md`（TS 规范、[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)）
+- 官方文档: [Vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（javascript.md §测试 引用的 DI-over-mock 依据）
+- 技术文章: `specs/019-js-test-reliability/contracts/run-vitest-shim.md`（javascript.md §Bazel 引用的 shim 退出码契约：fail-closed / 空套件 vacuous pass）、`specs/031-team-template-mode/contracts/desktop-contract.md`（desktop 多标签页契约）、`specs/037-saolei-team-optimize/data-model.md` §7（FIFO 实现方案 + 写入位置清单）
 
 - [ ] T021 [P] [US4] Implement `trimFifo` and `MAX_CHAT_ENTRIES_PER_AGENT` in a new pure module `projects/game/desktop/frontend/src/chat-fifo.ts` — `export const MAX_CHAT_ENTRIES_PER_AGENT = 200` and `export function trimFifo<T>(entries: T[], max: number = MAX_CHAT_ENTRIES_PER_AGENT): T[] { return entries.length > max ? entries.slice(-max) : entries }`; App.svelte imports from this module (pure module enables unit testing without a Svelte harness)
 - [ ] T022 [P] [US4] Add `projects/game/desktop/frontend/src/chat-fifo.test.ts` — (a) over-cap injection removes oldest (FIFO), keeps newest N; (b) at-cap/under-cap unchanged; (c) per-tab independence via separate arrays (FR-022); (d) history-load truncation (FR-024); (e) live+history mixed ordering (FR-025); bootstrap a vitest target for the frontend package (BUILD.bazel `vitest_test`/`js_test` macro per `style/javascript.md`) if none exists (FR-020..025, SC-006, US4 Independent Test)
@@ -156,7 +156,7 @@
 **Purpose**: BUILD 更新、全量验证、大型测试验收。
 
 **文档清单**:
-- 代码规范文档: `style/large_test.md`（大型测试规范）、`style/golang.md`（大型测试代码用 Go，遵守单元测试规范：命名风格、表驱动、given/when/then 结构）
+- 代码规范文档: `style/large_test.md`（大型测试规范）、`style/golang.md`（大型测试代码用 Go，遵守单元测试规范：命名风格、表驱动、given/when/then 结构）、[Google Go Style — Style Guide](https://google.github.io/styleguide/go/guide)（golang.md 引用的 Go 风格规范基石，必读）
 - 官方文档: 无
 - 技术文章: `specs/037-saolei-team-optimize/quickstart.md`（验证场景清单）
 
