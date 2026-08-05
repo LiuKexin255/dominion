@@ -216,8 +216,14 @@ export class SessionTeam {
 	 *
 	 * - **`messages`** (chat-model protocol events,
 	 *   `node_modules/@langchain/langgraph/dist/pregel/messages-v2.js`
-	 *   `StreamProtocolMessagesHandler`): `content-block-finish` carries the
-	 *   COMPLETE text/reasoning block of the model's answer. Tool calls are
+	 *   `StreamProtocolMessagesHandler`): each text/reasoning block is
+	 *   emitted as `content-block-start` → N × `content-block-delta`
+	 *   (incremental) → `content-block-finish` (complete). The runner
+	 *   consumes ONLY the `content-block-delta`s — they provide the
+	 *   token-granular updates the desktop expects (the pre-team
+	 *   single-agent path streamed the same deltas via `stream.messages`).
+	 *   Models that do not stream still emit one full-text delta through
+	 *   `emitFinalMessage`/`deltaFor`, so nothing is lost. Tool calls are
 	 *   NOT part of this stream (the handler only replays `message.content`,
 	 *   and `AIMessage.tool_calls` live outside it) — so tool calls are
 	 *   sourced from the `tools` stream instead.
@@ -269,23 +275,61 @@ export class SessionTeam {
 			if (!agent) continue;
 
 			if (event.method === "messages") {
-				// Only the FINISH carries the complete block; the deltas are
-				// incremental and would double-emit if consumed too.
+				// Consume ONLY the deltas: `content-block-delta` yields the
+				// incremental text/reasoning chunks of the model's answer,
+				// keeping the desktop's conversation live (regression fix —
+				// the pre-team path streamed these same deltas via
+				// `stream.messages`, spec 031). Consuming
+				// `content-block-finish` as well would double-emit the text,
+				// and `content-block-start` carries no content yet.
 				const data = event.params?.data as
-					| { event?: string; content?: unknown }
+					| { event?: string; delta?: unknown; content?: unknown }
 					| undefined;
-				if (data?.event !== "content-block-finish") continue;
-				const block = data.content as
+				if (data?.event !== "content-block-delta") continue;
+				// Protocol-compliant models carry the typed delta on
+				// `event.delta` (`{ type: "text-delta", text }` /
+				// `{ type: "reasoning-delta", reasoning }`); a few older
+				// adapters still emit the content-shaped form
+				// (`{ type: "text", text }`) on `event.content` instead —
+				// normalize both (Core `getEventDelta` tolerance,
+				// `@langchain/core/dist/language_models/stream.js`).
+				const delta = data.delta as
 					| { type?: string; text?: string; reasoning?: string }
 					| undefined;
-				if (!block) continue;
+				const content = data.content as
+					| { type?: string; text?: string; reasoning?: string }
+					| undefined;
+				const typedDelta =
+					delta != null &&
+					typeof delta === "object" &&
+					(delta.type === "text-delta" ||
+						delta.type === "reasoning-delta")
+						? delta
+						: undefined;
+				const block = typedDelta ?? content;
+				if (!block || typeof block !== "object") continue;
 				// Same empty-content filtering as messageToContentBlocks
-				// (a model answer with only tool calls yields an empty text
-				// block that must not be displayed).
-				if (block.type === "text" && !block.text) continue;
-				if (block.type === "reasoning" && !block.reasoning) continue;
-				if (block.type !== "text" && block.type !== "reasoning") continue;
-				yield { agent, block: block as ContentBlock };
+				// (a model answer with only tool calls yields no text delta,
+				// and empty chunks must not be displayed).
+				if (
+					(block.type === "text" || block.type === "text-delta") &&
+					typeof block.text === "string"
+				) {
+					if (!block.text) continue;
+					yield { agent, block: { type: "text", text: block.text } };
+				} else if (
+					(block.type === "reasoning" ||
+						block.type === "reasoning-delta") &&
+					typeof block.reasoning === "string"
+				) {
+					if (!block.reasoning) continue;
+					yield {
+						agent,
+						block: { type: "reasoning", reasoning: block.reasoning },
+					};
+				}
+				// Skip `block-delta` (tool_call_chunk): tool calls are
+				// sourced from the `tools` stream below.
 			} else if (event.method === "tools") {
 				const data = event.params?.data as
 					| {
