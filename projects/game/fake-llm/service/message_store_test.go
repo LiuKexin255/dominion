@@ -295,10 +295,11 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 
 	// planner-update-strategy carries an update_strategy tool_call (spec
 	// 031-team-template-mode FR-012): the team graph's planner agent — whose
-	// review HumanMessage always carries the fixed prefix "本局已结束，以下是
-	// 终局棋盘" — matches this Message deterministically, so the saolei_team
-	// large tests drive the planner→update_strategy→StrategyStore flow
-	// end-to-end.
+	// review HumanMessage always starts with the fixed prefix "本局游戏过程"
+	// (planner.ts buildReviewInput renders the gameLog — specs/036-team-
+	// mode-bugfix/contracts/team-graph-fix-contract.md §2.2) — matches this
+	// Message deterministically, so the saolei_team large tests drive the
+	// planner→update_strategy→StrategyStore flow end-to-end.
 	plannerStrategy := got[4]
 	if plannerStrategy.ToolCall == nil {
 		t.Fatalf("planner-update-strategy tool_call is nil")
@@ -306,7 +307,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	if plannerStrategy.ToolCall.Name != "update_strategy" {
 		t.Errorf("planner-update-strategy tool_call.name = %q, want update_strategy", plannerStrategy.ToolCall.Name)
 	}
-	if !slices.Contains(plannerStrategy.Keywords, "本局已结束，以下是终局棋盘") {
+	if !slices.Contains(plannerStrategy.Keywords, "本局游戏过程") {
 		t.Errorf("planner-update-strategy keywords missing the review prefix: %v", plannerStrategy.Keywords)
 	}
 

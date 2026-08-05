@@ -3,12 +3,15 @@
 #
 # The planner node (projects/game/agent/src/team/planner.ts) is triggered by
 # the conditional edge exactly once per game end (won/lost). Its model input
-# ends with the review HumanMessage whose text is the FIXED prefix
-# "本局已结束，以下是终局棋盘，请复盘并判断是否需要更新策略：\n<board>"
-# (planner.ts buildReviewInput), so keyword-matching this prefix makes
-# fake-LLM return an update_strategy tool_call deterministically — the
-# planner writes the strategy content to the session's StrategyStore
-# (mongo), completing the FR-013/FR-014/FR-015 strategy flow end-to-end.
+# ends with the review HumanMessage rendered from the buffer's gameLog whose
+# text always starts with the FIXED prefix "本局游戏过程：" followed by the
+# numbered move lines "1. <tool>(coord) → status" and their board renders,
+# then the review instruction (planner.ts buildReviewInput — specs/
+# 036-team-mode-bugfix/contracts/team-graph-fix-contract.md §2.2), so
+# keyword-matching that prefix makes fake-LLM return an update_strategy
+# tool_call deterministically — the planner writes the strategy content to
+# the session's StrategyStore (mongo), completing the FR-013/FR-014/FR-015
+# strategy flow end-to-end.
 #
 # The keyword is the planner review prefix verbatim and does not appear in
 # any user-turn text the large tests send, so no other suite can match it
@@ -17,7 +20,7 @@
 # in sample_update_strategy_tools.yaml.
 name: planner-update-strategy
 keywords:
-  - 本局已结束，以下是终局棋盘
+  - 本局游戏过程
 reasoning: "复盘完成，本局策略需要调整。"
 tool_call:
   name: update_strategy

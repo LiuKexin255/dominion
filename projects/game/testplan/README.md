@@ -75,7 +75,7 @@ The shipped samples are:
 | `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
 | `sample_greeting.yaml`    | greeting  | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
 | `sample_mouse_trigger.yaml` | mouse-trigger | move the mouse, position cursor | — | — (carries a `tool_call: mouse_move`) |
-| `sample_planner_strategy.yaml` | planner-update-strategy | 本局已结束，以下是终局棋盘 | — | — (carries a `tool_call: update_strategy`) |
+| `sample_planner_strategy.yaml` | planner-update-strategy | 本局游戏过程 | — | — (carries a `tool_call: update_strategy`) |
 | `sample_saolei_start.yaml` | saolei-start | start saolei, play minesweeper | — | — (carries a `tool_call: saolei_init`) |
 
 `mouse-trigger`, `planner-update-strategy` and `saolei-start` carry a
@@ -87,10 +87,13 @@ operation).
 
 `planner-update-strategy` is the team-model fixture (spec
 031-team-template-mode): the team graph's planner agent (planner.ts) ends
-its model input with a HumanMessage whose text always starts with the fixed
-prefix "本局已结束，以下是终局棋盘" — matching that prefix makes fake-LLM
-return an `update_strategy` tool_call deterministically, so the saolei_team
-suite drives the planner→update_strategy→StrategyStore flow end-to-end
+its model input with a HumanMessage rendered from the buffer's gameLog
+whose text always starts with the fixed prefix "本局游戏过程" (planner.ts
+buildReviewInput renders the numbered move lines "1. <tool>(coord) →
+status" plus each board — specs/036-team-mode-bugfix/contracts/team-graph-
+fix-contract.md §2.2) — matching that prefix makes fake-LLM return an
+`update_strategy` tool_call deterministically, so the saolei_team suite
+drives the planner→update_strategy→StrategyStore flow end-to-end
 (FR-011/FR-012/D6). The follow-up response after the tool executes lives in
 `sample_update_strategy_tools.yaml` (`update-strategy-success-text`).
 
