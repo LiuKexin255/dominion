@@ -30,6 +30,7 @@
   import type { ChunkState, Deduper } from './chat-stream'
   import { log, logDebug, setDebugEnabled, setLogSink } from './logger'
   import type { LogEntry } from './logger'
+  import { trimFifo } from './chat-fifo'
   import SessionList from './components/SessionList.svelte'
   import ChatView from './components/ChatView.svelte'
   import OperationConfirmDrawer from './components/OperationConfirmDrawer.svelte'
@@ -508,9 +509,11 @@
           })
         }
         if (entries.length > 0) {
+          // US4 FIFO cap (FR-024): a history load that overflows the per-agent
+          // cap keeps only the newest MAX_CHAT_ENTRIES_PER_AGENT entries.
           chatMessages = {
             ...chatMessages,
-            [agent.name]: [...(chatMessages[agent.name] ?? []), ...entries],
+            [agent.name]: trimFifo([...(chatMessages[agent.name] ?? []), ...entries]),
           }
         }
         log('info', 'chat', `Loaded ${entries.length} history messages for agent ${agent.name}`)
@@ -736,21 +739,22 @@
         } else if (kind === 'thinking' && trailing.thinking) {
           trailing.thinking.content += joined
         }
-        chatMessages = { ...chatMessages, [agent]: [...list] }
+        // US4 FIFO cap (FR-021): keep the per-agent array within the cap.
+        chatMessages = { ...chatMessages, [agent]: trimFifo([...list]) }
         return
       }
     }
 
     chatMessages = {
       ...chatMessages,
-      [agent]: [...list, {
+      [agent]: trimFifo([...list, {
         messageId: frame.frameId ?? crypto.randomUUID(),
         role,
         timestamp,
         agent,
         parts: incomingParts,
         mergeKind: kind,
-      }],
+      }]),
     }
   }
 
@@ -786,7 +790,7 @@
           const agent = frameBucketAgent(frame)
           chatMessages = {
             ...chatMessages,
-            [agent]: [...(chatMessages[agent] ?? []), {
+            [agent]: trimFifo([...(chatMessages[agent] ?? []), {
               messageId: frame.frameId ?? crypto.randomUUID(),
               // Control-signal warn entry: role is unused by ChatView (warn
               // bubbles render from warnMessage only); AGENT is the server-side
@@ -794,7 +798,7 @@
               role: MessageRole.AGENT,
               timestamp,
               warnMessage: fp.warn.message ?? '',
-            }],
+            }]),
           }
         } else if (fp.queue) {
           // Phase 5 (T011): the pending-queue count is now BACKEND-DRIVEN by
@@ -881,13 +885,13 @@
         optimisticIds.push(msgId)
         chatMessages = {
           ...chatMessages,
-          [targetAgent]: [...(chatMessages[targetAgent] ?? []), {
+          [targetAgent]: trimFifo([...(chatMessages[targetAgent] ?? []), {
             messageId: msgId,
             role: MessageRole.USER,
             timestamp: new Date().toISOString(),
             agent: targetAgent,
             parts: optimisticParts,
-          }],
+          }]),
         }
         // Track the pending message id (FIFO) so ChatView can visually mark it
         // pending (specs/030-queued-chat-input/spec.md FR-008) and so a later
