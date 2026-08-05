@@ -15,6 +15,8 @@ go_library(
         "testdata/sample_greeting.yaml",
         "testdata/sample_tools.yaml",
         "testdata/sample_chat.yaml",
+        "testdata/sample_compression_planner.yaml",
+        "testdata/sample_compression_player.yaml",
         "testdata/sample_mouse_trigger.yaml",
         "testdata/sample_saolei_start.yaml",
         "testdata/sample_saolei_tools.yaml",

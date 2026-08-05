@@ -10,11 +10,13 @@
  * - Per channel (contract §3): serialize the messages to text, call the
  *   channel's own model (`playerModel` for the player channel, `plannerModel`
  *   for the planner channel — research.md D1 "复用各自 agent 模型") with the
- *   role-specific summary prompt, and validate the summary: a non-string
- *   model response (e.g. content-blocks) is rejected with its own error, and
- *   a blank summary is rejected (FR-012: blank summary = compression
- *   failure) — the two shapes are reported distinctly so a non-string result
- *   is never misread as "blank".
+ *   role-specific summary prompt, and validate the summary: the response is
+ *   normalized to a plain string via `extractTextContent` (the OpenAI
+ *   adapters may return the string OR the standard content-blocks array
+ *   `[{type:"text",text}, ...]` — @langchain/core stamps
+ *   `response_metadata.output_version: "v1"` on the block form), and a blank
+ *   summary is rejected (FR-012: blank summary = compression failure, abort;
+ *   a tool-call-only response has no text and is therefore blank too).
  * - The channel update is `[RemoveMessage({ id: REMOVE_ALL_MESSAGES }),
  *   summaryAIMessage]` — the same clear-then-write path `RefreshTeam` uses
  *   (team-graph-contract.md §5; messagesStateReducer REMOVE_ALL_MESSAGES
@@ -98,10 +100,10 @@ function serializeMessages(messages: BaseMessage[]): string {
  * wrap it in an AIMessage whose `id` is a fresh UUID (the frameId dedup
  * anchor, data-model.md §3/§4).
  *
- * Throws on LLM error (propagates — FR-013), on a non-string model response
- * (FR-012: content-blocks are NOT a summary — reported distinctly so it is
- * not misread as a blank summary), and on a blank summary (FR-012:
- * empty/whitespace summary counts as a compression failure).
+ * Throws on LLM error (propagates — FR-013) and on a blank summary (FR-012:
+ * empty/whitespace summary counts as a compression failure). Content-block
+ * responses are normalized to a string by extractTextContent, so only a
+ * genuinely blank summary (trimmed text empty) triggers the abort.
  */
 async function summarizeChannel(
 	model: ChatModel,
@@ -114,18 +116,48 @@ async function summarizeChannel(
 			content: prompt + serializeMessages(messages) + "\n\n请输出摘要：",
 		},
 	]);
-	if (typeof response.content !== "string") {
-		throw new Error(
-			"compression failed: summary model returned non-string content (FR-012 — abort, no degrade)",
-		);
-	}
-	const content = response.content;
+	// Normalize the model response to a plain string. The OpenAI-compatible
+	// adapters may return either a plain string OR the LangChain "standard
+	// content blocks" shape (`[{type:"text",text}, ...]`, stamped with
+	// `response_metadata.output_version: "v1"` by @langchain/core — the
+	// content field then carries the blocks array). Extract the text blocks'
+	// content so the summary is always a string (the emitted frame and the
+	// channel AIMessage both need string content).
+	const content = extractTextContent(response);
 	if (content.trim().length === 0) {
 		throw new Error(
 			"compression failed: summary is blank (FR-012 — abort, no degrade)",
 		);
 	}
 	return { content, message: new AIMessage({ id: randomUUID(), content }) };
+}
+
+/**
+ * Extract the text content of a model response message, handling both the
+ * plain-string form and the standard content-blocks array form
+ * (`{type:"text", text}` blocks; reasoning/tool-call blocks contribute
+ * nothing). A tool-call-only response yields "" — the caller rejects it as a
+ * blank summary (FR-012).
+ */
+function extractTextContent(
+	response: BaseMessage,
+): string {
+	if (typeof response.content === "string") {
+		return response.content;
+	}
+	if (Array.isArray(response.content)) {
+		return response.content
+			.filter(
+				(b): b is { type: "text"; text?: string } =>
+					typeof b === "object" &&
+					b !== null &&
+					(b as { type?: string }).type === "text" &&
+					typeof (b as { text?: unknown }).text === "string",
+			)
+			.map((b) => (b as { text: string }).text)
+			.join("");
+	}
+	return "";
 }
 
 /**

@@ -1482,6 +1482,53 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		).rejects.toThrow("compression llm down");
 	});
 
+	it("normalizes a content-blocks summary response to a plain string (FR-008/FR-012 — the @langchain/core output_version v1 shape)", async () => {
+		// The deployed OpenAI-compatible adapters may return the model text in
+		// the STANDARD CONTENT-BLOCKS shape (`[{type:"text",text}]` — produced
+		// when @langchain/core stamps `response_metadata.output_version: "v1"`
+		// and the message carries the blocks array as `content`). The pre-fix
+		// `typeof content !== "string"` check aborted compression on that shape
+		// (observed in the 037 large test: "compression failed: summary model
+		// returned non-string content"); extractTextContent must normalize it
+		// to the plain string summary.
+		const playerModel = fakeModel();
+		for (let i = 0; i < 5; i += 1) {
+			playerModel.respondWithTools([
+				{ name: "fake_saolei_move", args: { x: i + 1, y: i + 1 } },
+			]);
+		}
+		playerModel.respond(
+			new AIMessage([{ type: "text", text: "player 摘要内容" }]),
+		);
+		const plannerModel = fakeModel();
+		for (let i = 0; i < 5; i += 1) {
+			plannerModel.respondWithTools([
+				{ name: "update_strategy", args: { content: `v${i + 1}` } },
+			]);
+			plannerModel.respond(new AIMessage(`v${i + 1} written`));
+		}
+		plannerModel.respond(
+			new AIMessage([{ type: "text", text: "planner 摘要内容" }]),
+		);
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-blocks-summary" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// Both channels shrank to one summary whose content is the plain text
+		// extracted from the blocks (FR-008/FR-012 — non-blank string).
+		expect(result.playerMessages).toHaveLength(1);
+		expect(contentType(result.playerMessages[0] as BaseMessage)).toBe(
+			"player 摘要内容",
+		);
+		expect(result.plannerMessages).toHaveLength(1);
+		expect(contentType(result.plannerMessages[0] as BaseMessage)).toBe(
+			"planner 摘要内容",
+		);
+	});
+
 	it("skips an empty channel at compression time (FR-015)", async () => {
 		const playerModel = fiveGamesPlayerModel("player 摘要内容");
 		const plannerModel = fakeModel();

@@ -148,6 +148,34 @@ func countUpdateStrategyCalls(frames []*game.TeamFrame) int {
 	return count
 }
 
+// findPlannerReviewFrame returns the content of the FIRST real-time frame
+// carrying the planner's review input (the "本局游戏过程" HumanMessage emitted
+// as a live frame by US1 — specs/037-saolei-team-optimize FR-001), or ""
+// when no such frame was seen.
+func findPlannerReviewFrame(frames []*game.TeamFrame) string {
+	for _, f := range frames {
+		if f.GetAgent() != "planner" || !frameHasText(f) {
+			continue
+		}
+		if text := frameText(f); strings.Contains(text, reviewInputPrefix) {
+			return text
+		}
+	}
+	return ""
+}
+
+// findPlannerReviewMessage returns the content of the FIRST planner-partition
+// Message carrying the review input (the reloaded ListMessages view of the
+// same message — FR-002/FR-003), or "" when none was found.
+func findPlannerReviewMessage(messages []*game.Message) string {
+	for _, m := range messages {
+		if text := messageText(m); strings.Contains(text, reviewInputPrefix) {
+			return text
+		}
+	}
+	return ""
+}
+
 // ─── Team connect + lifecycle (FR-003/FR-004/FR-033) ──────────────────────
 
 // TestTeamConnectLifecycle verifies the team lifecycle contract
@@ -1004,5 +1032,315 @@ func TestTeamRefreshClearsShortTermKeepsStrategy(t *testing.T) {
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 	if got := countUpdateStrategyCalls(frames); got != 1 {
 		t.Errorf("post-refresh game: update_strategy calls = %d, want exactly 1 (strategy survived RefreshTeam — FR-018)", got)
+	}
+}
+
+// ─── 037 saolei-team optimize (US1/US2/US3/US5 — FR-034) ───────────────────
+
+// TestTeamPlannerReviewRealtimeVisible verifies US1 (specs/037-saolei-team-
+// optimize/spec.md FR-001/FR-002/FR-003): the planner's review input — a
+// non-model-produced channel message carrying the full game history — is
+// emitted as a REAL-TIME frame (agent="planner") while the game ends, so the
+// desktop planner tab shows it without a reload (bug fix — the input never
+// produced a streamEvents protocol event, specs/031-team-template-mode/
+// bug-analysis.md Issue 2). The reloaded planner partition carries the
+// identical content, proving the live and history paths are consistent
+// (FR-002/FR-003 — the desktop dedups by frameId/messageId).
+func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-review-live-"+uniqueSuffix(), "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	// when: one full game — init recognizes an in-progress board, the first
+	// click's reply is a terminal lost board (planner triggered).
+	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
+
+	// then: the review input arrived as a REAL-TIME frame stamped
+	// agent="planner" (FR-001/FR-005 — the frame carries the planner-tab
+	// attribution).
+	liveReview := findPlannerReviewFrame(frames)
+	if liveReview == "" {
+		t.Fatal("no real-time planner frame carrying the review input (本局游戏过程) — FR-001")
+	}
+
+	// then: the live content carries the full game process — each step's
+	// tool, coordinates and status, plus the board renders (FR-002 — the
+	// review input renders every gameLog entry, specs/036-team-mode-bugfix/
+	// contracts/team-graph-fix-contract.md §2.2).
+	for _, want := range []string{
+		"1. saolei_init → playing",
+		"2. saolei_click(3, 4) → lost",
+		"3. (game-end) → lost",
+		"board size 16*16",
+	} {
+		if !strings.Contains(liveReview, want) {
+			t.Errorf("live review input missing %q (FR-002)", want)
+		}
+	}
+
+	// then: the reloaded planner partition carries the SAME review content —
+	// real-time emission and history loading are consistent (FR-002/FR-003).
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	reloadedReview := findPlannerReviewMessage(plannerLmr.GetMessages())
+	if reloadedReview == "" {
+		t.Fatal("reloaded planner partition does not carry the review input — FR-003")
+	}
+	if reloadedReview != liveReview {
+		t.Errorf("reloaded review input differs from the live frame (FR-002/FR-003):\nlive:     %q\nreloaded: %q", liveReview, reloadedReview)
+	}
+}
+
+// TestTeamCompressionAtFiveGames verifies US2 (specs/037-saolei-team-optimize/
+// spec.md FR-006..FR-012/FR-015): after the 5th game's planner returns, the
+// conditional edge routes to the compress node — each short-term channel is
+// replaced by exactly ONE summary agent message (FR-008), live summary frames
+// are emitted for both tabs (FR-011/SC-004), the player STOPS (FR-010 — the
+// turn ends without opening another game), the strategy (long-term memory)
+// survives (FR-009 — game 6 still triggers the planner from the summary
+// context), and the live summary frame's frame_id equals the reloaded summary
+// message's message_id (the desktop dedup anchor, data-model.md §4).
+func TestTeamCompressionAtFiveGames(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-compress-"+uniqueSuffix(), "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	initScreenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
+	terminalScreenshot := buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG)
+
+	// given: 4 completed games — the counter stays below 5, so NO compression
+	// fires (FR-006) and the player keeps looping back after each planner.
+	for i := 0; i < 4; i++ {
+		frames := playTeamGameUntilWait(t, conn, sessionID, initScreenshot, terminalScreenshot)
+		if got := countUpdateStrategyCalls(frames); got != 1 {
+			t.Fatalf("game %d: update_strategy calls = %d, want 1 (planner trigger precondition)", i+1, got)
+		}
+	}
+
+	// then: no premature compression after game 4 (the player partition holds
+	// 4 turns of messages, not the single compression summary — FR-006).
+	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player").GetMessages()); got <= 1 {
+		t.Fatalf("player partition after game 4 = %d messages, want > 1 (compression must NOT fire before counter 5 — FR-006)", got)
+	}
+
+	// when: the 5th game ends and the planner returns (counter == 5 — the
+	// conditional edge routes to compress instead of back to player, FR-007).
+	frames5 := playTeamGameUntilWait(t, conn, sessionID, initScreenshot, terminalScreenshot)
+	if got := countUpdateStrategyCalls(frames5); got != 1 {
+		t.Errorf("game 5: update_strategy calls = %d, want exactly 1 (the planner still reviewed the 5th game before compression)", got)
+	}
+
+	// then: live summary frames were emitted for BOTH channels (FR-011/SC-004)
+	// — agent="player" and agent="planner" with the pinned summary content.
+	var playerSummaryFrame, plannerSummaryFrame *game.TeamFrame
+	for _, f := range frames5 {
+		if !frameHasText(f) {
+			continue
+		}
+		switch {
+		case f.GetAgent() == "player" && strings.Contains(frameText(f), expectedPlayerCompressionSummary):
+			playerSummaryFrame = f
+		case f.GetAgent() == "planner" && strings.Contains(frameText(f), expectedPlannerCompressionSummary):
+			plannerSummaryFrame = f
+		}
+	}
+	if playerSummaryFrame == nil {
+		t.Error("no live player summary frame after game 5 (FR-011)")
+	}
+	if plannerSummaryFrame == nil {
+		t.Error("no live planner summary frame after game 5 (FR-011)")
+	}
+
+	// then: each channel was shrunk to exactly ONE summary message (FR-008)
+	// and the player STOPPED — no new game was opened after the compression,
+	// so the player partition holds only the summary (FR-010).
+	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	if got := len(playerLmr.GetMessages()); got != 1 {
+		t.Fatalf("player partition after compression = %d messages, want exactly 1 (FR-008/FR-010)", got)
+	}
+	if got := messageText(playerLmr.GetMessages()[0]); !strings.Contains(got, expectedPlayerCompressionSummary) {
+		t.Errorf("player summary message = %q, want to contain %q (FR-008/FR-012)", got, expectedPlayerCompressionSummary)
+	}
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	if got := len(plannerLmr.GetMessages()); got != 1 {
+		t.Fatalf("planner partition after compression = %d messages, want exactly 1 (FR-008)", got)
+	}
+	if got := messageText(plannerLmr.GetMessages()[0]); !strings.Contains(got, expectedPlannerCompressionSummary) {
+		t.Errorf("planner summary message = %q, want to contain %q (FR-008/FR-012)", got, expectedPlannerCompressionSummary)
+	}
+
+	// then: the live summary frame's frame_id equals the reloaded summary
+	// message's message_id — the desktop dedup anchor (data-model.md §4 /
+	// research.md D9; the FR-003 dedup rule applied to compression summaries).
+	if playerSummaryFrame != nil && playerSummaryFrame.GetFrameId() != "" {
+		if got := playerLmr.GetMessages()[0].GetMessageId(); got != playerSummaryFrame.GetFrameId() {
+			t.Errorf("player summary message_id = %q, want frame_id %q (dedup anchor)", got, playerSummaryFrame.GetFrameId())
+		}
+	}
+	if plannerSummaryFrame != nil && plannerSummaryFrame.GetFrameId() != "" {
+		if got := plannerLmr.GetMessages()[0].GetMessageId(); got != plannerSummaryFrame.GetFrameId() {
+			t.Errorf("planner summary message_id = %q, want frame_id %q (dedup anchor)", got, plannerSummaryFrame.GetFrameId())
+		}
+	}
+
+	// when: a 6th game (user input after compression).
+	frames6 := playTeamGameUntilWait(t, conn, sessionID, initScreenshot, terminalScreenshot)
+
+	// then: the strategy (long-term memory, StrategyStore) survived the
+	// compression (FR-009) — the planner still triggers and writes the
+	// strategy content (FR-012)...
+	if got := countUpdateStrategyCalls(frames6); got != 1 {
+		t.Errorf("game 6: update_strategy calls = %d, want exactly 1 (strategy survived compression — FR-009)", got)
+	}
+	foundStrategy := false
+	for _, f := range frames6 {
+		for _, p := range frameMessageParts(f).GetParts() {
+			if tc := p.GetToolCall(); tc != nil && tc.GetName() == "update_strategy" && strings.Contains(tc.GetArgsJson(), expectedPlannerStrategyText) {
+				foundStrategy = true
+			}
+		}
+	}
+	if !foundStrategy {
+		t.Error("game 6: no update_strategy tool_call carrying the strategy content — the strategy layer did not survive compression (FR-009/FR-012)")
+	}
+
+	// ...and the player resumed from the summary context — the player
+	// partition grew beyond the single summary message (FR-010/SC-003).
+	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player").GetMessages()); got <= 1 {
+		t.Errorf("player partition after game 6 = %d messages, want > 1 (player resumed with the summary context — FR-010)", got)
+	}
+}
+
+// TestTeamPlannerPromptToolDescriptions verifies US3 (specs/037-saolei-team-
+// optimize/spec.md FR-016/FR-017/FR-018): the planner's system prompt
+// carries the player tools' NAME + DESCRIPTION section, while the planner's
+// actual tool set stays update_strategy-only.
+//
+// The FR-016 half (prompt content) is verified via LOG/TRACE: the deployed
+// fake-llm logs every request's system messages at INFO ("system prompt
+// received" — projects/game/fake-llm/service/handler.go logSystemPrompts),
+// so after this test drives a game an operator can query the fake-llm logs
+// (signoz) for the injected section: "## Player 可用工具" followed by the
+// five player tools (saolei_init/saolei_click/saolei_flag/saolei_chord_click/
+// saolei_remain) with their descriptions. The keyword matcher only reads user
+// text (README.md §4), so the system content is unobservable in the response
+// stream — the log is the verification channel the task requires.
+//
+// This test asserts the observable half — FR-018: the planner never calls a
+// saolei_* tool (only update_strategy), proving the injection added
+// descriptions, NOT tools.
+func TestTeamPlannerPromptToolDescriptions(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-tools-"+uniqueSuffix(), "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	// when: one full game — the planner's createAgent request (carrying the
+	// system prompt with the tool-description section) is sent to fake-llm.
+	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
+
+	// then: every planner tool_call in the live stream is update_strategy —
+	// no player tool was injected into the planner's tool set (FR-018).
+	for _, f := range frames {
+		if f.GetAgent() != "planner" {
+			continue
+		}
+		for _, p := range frameMessageParts(f).GetParts() {
+			if tc := p.GetToolCall(); tc != nil && tc.GetName() != "update_strategy" {
+				t.Errorf("planner live tool_call %q — the planner MUST hold only update_strategy (FR-018)", tc.GetName())
+			}
+		}
+	}
+
+	// then: the reloaded planner partition carries no saolei tool_call either
+	// (FR-018 — the description injection did not add tools).
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	for _, m := range plannerLmr.GetMessages() {
+		for _, name := range messageToolCallNames(m) {
+			if strings.HasPrefix(name, "saolei_") {
+				t.Errorf("planner partition carries saolei tool_call %q — the planner MUST hold only update_strategy (FR-018)", name)
+			}
+		}
+	}
+}
+
+// TestTeamReviewInputGameStats verifies US5 (specs/037-saolei-team-optimize/
+// spec.md FR-026..FR-033): the saolei MCP computes per-game stats first-hand
+// and they flow onGameEnd → ephemeral buffer → the planner's review input
+// (FR-031/FR-032), visible both as the real-time frame (US1) and in the
+// reloaded planner partition.
+//
+// Expected values for the fixture pair (saolei_1 init → saolei_5 terminal):
+//   - operationCount = 1 — exactly one successful cell op (the first click
+//     whose post-dispatch recognition is terminal; init/re-init and the
+//     post-terminal rejected clicks never fire onMove — FR-027).
+//   - correctFlags = 40 − 42 − 1 = −3 — the init board saolei_1.png's mine
+//     counter decodes to 40 (verified with `saolei-recognize --json`); the
+//     terminal loss board saolei_5.png has 42 MINE + 1 HIT_MINE cells
+//     (golden board, projects/game/pkg/saolei-board/testdata/saolei_5.golden.
+//     txt — `M`=MINE, `X`=HIT_MINE per src/core/render.ts). The two
+//     screenshots are DIFFERENT games (43 vs 40 mines), so the formula
+//     yields a NEGATIVE value — the cross-board fixture is artificial, but
+//     it pins the exact FR-028 computation end-to-end.
+//   - avgOpsPerMine = "N/A" — the computeGameStats guard is `correctFlags >
+//     0` (FR-029's division guard), so a non-positive correctFlags (0 or
+//     negative, as here) degrades to "N/A" rather than NaN/Infinity. The
+//     positive-value path (e.g. 2.33) is pinned by the saolei-mcp unit tests
+//     (saolei-mcp.test.ts computeGameStats) with known boards.
+func TestTeamReviewInputGameStats(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-stats-"+uniqueSuffix(), "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	// when: one full game (init in-progress → first click terminal loss).
+	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
+
+	// then: the real-time review frame carries the stats section with the
+	// exact computed values (FR-032/FR-001 — the stats are part of the
+	// review input, hence of the live frame).
+	liveReview := findPlannerReviewFrame(frames)
+	if liveReview == "" {
+		t.Fatal("no real-time planner frame carrying the review input")
+	}
+	for _, want := range []string{
+		"本局统计数据：",
+		"- 操作次数：1",
+		"- 正确标记地雷数：-3",
+		"- 每雷平均操作数：N/A",
+	} {
+		if !strings.Contains(liveReview, want) {
+			t.Errorf("live review input missing %q (FR-032)", want)
+		}
+	}
+
+	// then: the reloaded planner partition carries the same stats section
+	// (FR-032 — the history path is identical to the live path).
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	reloadedReview := findPlannerReviewMessage(plannerLmr.GetMessages())
+	if reloadedReview == "" {
+		t.Fatal("reloaded planner partition does not carry the review input")
+	}
+	for _, want := range []string{
+		"本局统计数据：",
+		"- 操作次数：1",
+		"- 正确标记地雷数：-3",
+		"- 每雷平均操作数：N/A",
+	} {
+		if !strings.Contains(reloadedReview, want) {
+			t.Errorf("reloaded review input missing %q (FR-032)", want)
+		}
 	}
 }
