@@ -27,6 +27,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 import { FakeStrategyStore } from "../strategy-store";
 import { appendSkillBodyToPrompt, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
 import { refreshTeamChannels } from "../context-middleware";
+import type { GameStats } from "../mcp/saolei/saolei-mcp";
 import {
 	createEphemeralGameBuffer,
 	createTeamSink,
@@ -81,6 +82,31 @@ function buildMixedOutcomePlayerTool(buffer: EphemeralGameBuffer) {
 		{
 			name: "fake_saolei_move",
 			description: "Fake saolei move that ends the game (won/lost mix).",
+			schema: z.object({ x: z.number(), y: z.number() }),
+		},
+	);
+}
+
+/**
+ * The fake player tool that ends the game carrying per-game stats (037 US5 —
+ * the MCP's onGameEnd third argument, FR-030/FR-031): the team sink stores
+ * them into `buffer.gameEvent.stats`, which the planner's review input
+ * renders (FR-032). A real move (sink.onMove) precedes the game end so the
+ * gameLog holds an actual game-process entry — the stats-section ordering
+ * assertion in the US5 test compares against a present entry instead of a
+ * vacuous -1 (Phase 6 review fix).
+ */
+function buildStatsPlayerTool(buffer: EphemeralGameBuffer, stats: GameStats) {
+	const sink = createTeamSink(buffer);
+	return tool(
+		async ({ x, y }: { x: number; y: number }) => {
+			await sink.onMove("saolei_click", x, y, makeState());
+			await sink.onGameEnd(makeState(), "lost", stats);
+			return `moved to (${x},${y}); game lost`;
+		},
+		{
+			name: "fake_saolei_move",
+			description: "Fake saolei move that ends the game with stats.",
 			schema: z.object({ x: z.number(), y: z.number() }),
 		},
 	);
@@ -596,6 +622,155 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 		);
 		expect(reviewRequests).toHaveLength(1);
 		expect(result.gameEnded).toBeNull();
+	});
+});
+
+describe("team graph — US5 (037): planner review input renders game stats (FR-032)", () => {
+	it("renders the stats section when gameEvent.stats is present (FR-032)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const stats: GameStats = {
+			operationCount: 7,
+			correctFlags: 3,
+			avgOpsPerMine: 2.33,
+		};
+		const statsTool = buildStatsPlayerTool(buffer, stats);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [statsTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-stats" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// The review request carries the full gameLog AND the stats section
+		// (contracts/game-stats-contract.md §5): the stats appear after the
+		// game-process lines and before the review instruction.
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		const text = contentType(reviewRequests[0] as BaseMessage);
+		expect(text).toContain("本局统计数据：");
+		expect(text).toContain("- 操作次数：7");
+		expect(text).toContain("- 正确标记地雷数：3");
+		expect(text).toContain("- 每雷平均操作数：2.33");
+		expect(text).toContain(
+			"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
+		);
+		// The game-process lines come from the sink-written gameLog (the move
+		// from onMove, then the onGameEnd entry) — asserted present so the
+		// ordering comparison below is not vacuous (Phase 6 review fix: the
+		// stats section must be verified AFTER a real gameLog line).
+		expect(text).toContain("1. saolei_click");
+		expect(text).toContain("2. (game-end)");
+		// The stats section sits AFTER the game-process lines.
+		expect(text.indexOf("本局统计数据：")).toBeGreaterThan(
+			text.indexOf("2. (game-end)"),
+		);
+	});
+
+	it("omits the stats section when gameEvent.stats is absent (backward compatible)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// The existing game-ending tool fires onGameEnd WITHOUT stats.
+		const sink = createTeamSink(buffer);
+		const plainTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				await sink.onGameEnd(makeState(), "lost");
+				return `moved to (${x},${y}); game lost`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Fake saolei move that ends the game (no stats).",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [plainTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-no-stats" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		const text = contentType(reviewRequests[0] as BaseMessage);
+		expect(text).not.toContain("本局统计数据：");
+		expect(text).not.toContain("操作次数");
+	});
+
+	it("renders '不可用' for a null correctFlags and 'N/A' for avgOpsPerMine (FR-032/FR-033)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// Undecodable init counter ⇒ correctFlags = null (FR-033): the
+		// review input must degrade gracefully, not crash.
+		const stats: GameStats = {
+			operationCount: 5,
+			correctFlags: null,
+			avgOpsPerMine: "N/A",
+		};
+		const statsTool = buildStatsPlayerTool(buffer, stats);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [statsTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-null-stats" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		const text = contentType(reviewRequests[0] as BaseMessage);
+		expect(text).toContain("本局统计数据：");
+		expect(text).toContain("- 操作次数：5");
+		expect(text).toContain("- 正确标记地雷数：不可用");
+		expect(text).toContain("- 每雷平均操作数：N/A");
 	});
 });
 

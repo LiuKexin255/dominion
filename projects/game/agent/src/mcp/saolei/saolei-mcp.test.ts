@@ -40,8 +40,9 @@ import {
 	createSaoleiMcpServer,
 	validateMove,
 	isTerminalState,
+	computeGameStats,
 } from "./saolei-mcp";
-import type { SaoleiBoardApi, CellTool, SaoleiEventSink } from "./saolei-mcp";
+import type { SaoleiBoardApi, CellTool, SaoleiEventSink, GameStats } from "./saolei-mcp";
 import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
 import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
 import type { FlowPart } from "../../../../game_types/projects/game/FlowPart";
@@ -1195,7 +1196,12 @@ describe("createSaoleiMcpServer: saolei_remain (read-only)", () => {
 type SinkCall =
 	| { kind: "onGameStart"; state: GameState }
 	| { kind: "onMove"; tool: CellTool; x: number; y: number; state: GameState }
-	| { kind: "onGameEnd"; state: GameState; status: "won" | "lost" };
+	| {
+			kind: "onGameEnd";
+			state: GameState;
+			status: "won" | "lost";
+			stats?: GameStats;
+	  };
 
 /** Build a recording `SaoleiEventSink` (DI seam — no `vi.mock`). */
 function makeRecordingSink(): {
@@ -1211,8 +1217,8 @@ function makeRecordingSink(): {
 			onMove: (tool, x, y, state) => {
 				calls.push({ kind: "onMove", tool, x, y, state });
 			},
-			onGameEnd: (state, status) => {
-				calls.push({ kind: "onGameEnd", state, status });
+			onGameEnd: (state, status, stats) => {
+				calls.push({ kind: "onGameEnd", state, status, stats });
 			},
 		},
 		calls,
@@ -1425,5 +1431,201 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		);
 		// The terminal path ran: the result carries the won status line.
 		expect(moveResult.content[0].text).toContain("game status: won");
+	});
+});
+
+// ── game stats (037 US5 / FR-026..FR-033) ──────────────────────────────────
+//
+// `computeGameStats` is the MCP's first-hand per-game statistics computation
+// (contracts/game-stats-contract.md §3): operationCount = successful cell
+// operations, correctFlags = totalMines − MINE − HIT_MINE (totalMines from
+// the init mineCounter, which reads the mine total when flags = 0), and
+// avgOpsPerMine = operationCount / correctFlags rounded to 2 decimals.
+// Pure-function tests (a)–(e) cover the arithmetic and the FR-029/FR-033
+// degradations; the flow tests (f)–(g) cover the MCP closure's counting
+// discipline (rejected moves / init / remain are NOT counted — FR-027).
+
+describe("computeGameStats: pure per-game statistics (037 US5 / FR-026..FR-033)", () => {
+	it("(a) known game: operationCount, correctFlags and avgOpsPerMine match the expected values", () => {
+		// 5 mines at start; the final board exposes 1 MINE + 1 HIT_MINE
+		// (unflagged mines), so correctFlags = 5 − 1 − 1 = 3. With 7
+		// operations, avg = round(7/3 × 100)/100 = 2.33 (rounded to 2
+		// decimals — FR-029).
+		const init = board(["* *", "* *"], { decoded: true, value: 5 });
+		const finalState = board(["M X *", "* * *", "* * *"]);
+		expect(computeGameStats(init, finalState, 7)).toEqual({
+			operationCount: 7,
+			correctFlags: 3,
+			avgOpsPerMine: 2.33,
+		});
+	});
+
+	it("(b) won game: MINE=0 and HIT_MINE=0 ⇒ correctFlags = totalMines", () => {
+		// Won board: every mine correctly flagged, no MINE/HIT_MINE cell
+		// (specs/037-saolei-team-optimize/spec.md FR-028 / contract §7).
+		const init = board(["* * *", "* * *", "* * *"], { decoded: true, value: 2 });
+		const won = board(["F 1 1", "1 F 1", "1 1 1"], COUNTER_ZERO);
+		expect(computeGameStats(init, won, 10)).toEqual({
+			operationCount: 10,
+			correctFlags: 2,
+			avgOpsPerMine: 5,
+		});
+	});
+
+	it("(c) lost game: correctFlags = totalMines − MINE − HIT_MINE", () => {
+		// 10 mines at start; the final board shows 4 MINE + 2 HIT_MINE ⇒
+		// correctFlags = 10 − 4 − 2 = 4.
+		const init = board(["* * * *", "* * * *", "* * * *", "* * * *"], {
+			decoded: true,
+			value: 10,
+		});
+		const lost = board(["M M M M", "X X * *", "* * * *", "* * * *"]);
+		expect(computeGameStats(init, lost, 8)).toEqual({
+			operationCount: 8,
+			correctFlags: 4,
+			avgOpsPerMine: 2,
+		});
+	});
+
+	it("(d) y=0 (instant loss): avgOpsPerMine = 'N/A' — no NaN/Infinity (FR-029)", () => {
+		// First click hits a mine: all 3 mines end revealed, none flagged ⇒
+		// correctFlags = 0 ⇒ the division is guarded to "N/A".
+		const init = board(["* * *"], { decoded: true, value: 3 });
+		const lost = board(["X M M"]);
+		expect(computeGameStats(init, lost, 1)).toEqual({
+			operationCount: 1,
+			correctFlags: 0,
+			avgOpsPerMine: "N/A",
+		});
+	});
+
+	it("(e) undecodable init counter ⇒ correctFlags = null, avgOpsPerMine = 'N/A' (FR-033)", () => {
+		const lost = board(["X M", "* *"]);
+		// { decoded: false } — a digit pattern matched no glyph entry.
+		const undecoded = board(["* *", "* *"], { decoded: false });
+		expect(computeGameStats(undecoded, lost, 5)).toEqual({
+			operationCount: 5,
+			correctFlags: null,
+			avgOpsPerMine: "N/A",
+		});
+		// Absent counter (`undefined`) degrades identically (FR-033).
+		const noCounter = board(["* *", "* *"]);
+		expect(computeGameStats(noCounter, lost, 5)).toEqual({
+			operationCount: 5,
+			correctFlags: null,
+			avgOpsPerMine: "N/A",
+		});
+	});
+
+	it("is lenient when initState is null (no init captured) — correctFlags = null", () => {
+		// An onGameEnd without a prior successful init: totalMines unknown ⇒
+		// correctFlags = null (FR-033), no crash.
+		const lost = board(["X *", "* *"]);
+		expect(computeGameStats(null, lost, 3)).toEqual({
+			operationCount: 3,
+			correctFlags: null,
+			avgOpsPerMine: "N/A",
+		});
+	});
+});
+
+describe("createSaoleiMcpServer: game stats on onGameEnd (037 US5 / FR-026..FR-032)", () => {
+	it("(f) rejected moves are NOT counted in operationCount (FR-027)", async () => {
+		const { bridge } = makeFakeBridge();
+		// 2×2 board, 2 mines at start (counter = mines when flags = 0).
+		const initial = board(["* *", "* *"], { decoded: true, value: 2 });
+		const fake = makeFakeBoardApi(initial);
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+
+		// A rejected move (out of bounds) is NOT a successful cell op — it
+		// returns before dispatch, so no onMove fires and the counter is
+		// untouched.
+		const rejected = await callTool(server, "saolei_click", { x: 5, y: 5 });
+		expect(rejected.content[0].text).toContain("rejected: out_of_bounds");
+		expect(recording.calls).toHaveLength(0);
+
+		// The single legal move ends the game (hits a mine ⇒ lost).
+		fake.setUpdate(board(["X *", "* *"]));
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		const end = recording.calls[
+			recording.calls.length - 1
+		] as Extract<SinkCall, { kind: "onGameEnd" }>;
+		expect(end.stats).toEqual({
+			// Only the legal move counted — the rejection was NOT (FR-027).
+			operationCount: 1,
+			// 2 mines − 0 MINE − 1 HIT_MINE.
+			correctFlags: 1,
+			avgOpsPerMine: 1,
+		});
+	});
+
+	it("(g) init and remain are NOT counted in operationCount (FR-027)", async () => {
+		const { bridge } = makeFakeBridge();
+		const initial = board(["* *", "* *"], { decoded: true, value: 2 });
+		const fake = makeFakeBoardApi(initial);
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+
+		// saolei_remain is read-only — no sink event, no operation count.
+		await callTool(server, "saolei_remain", {});
+		expect(recording.calls).toHaveLength(0);
+
+		// One legal move wins the game (both mines correctly flagged ⇒ the
+		// won board carries 2 FLAGs and no MINE/HIT_MINE).
+		fake.setUpdate(board(["F 0", "F 1"], COUNTER_ZERO));
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		const end = recording.calls[
+			recording.calls.length - 1
+		] as Extract<SinkCall, { kind: "onGameEnd" }>;
+		expect(end.stats).toEqual({
+			// Only the legal move counted — init + remain were NOT (FR-027).
+			operationCount: 1,
+			// Won: MINE=0, HIT_MINE=0 ⇒ correctFlags = totalMines = 2.
+			correctFlags: 2,
+			avgOpsPerMine: 0.5,
+		});
+	});
+
+	it("resets operationCount across games (FR-027 — per-game counter)", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"], { decoded: true, value: 2 }));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		// Game 1: one legal move wins.
+		await callTool(server, "saolei_init", {});
+		fake.setUpdate(board(["F 0", "F 1"], COUNTER_ZERO));
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const game1End = recording.calls[
+			recording.calls.length - 1
+		] as Extract<SinkCall, { kind: "onGameEnd" }>;
+		expect(game1End.stats?.operationCount).toBe(1);
+
+		// Game 2 (re-init): the counter must reset — two legal moves then a
+		// loss ⇒ operationCount = 2 (not 3 — the game-1 move is excluded).
+		recording.calls.length = 0;
+		await callTool(server, "saolei_init", {});
+		fake.setUpdate(board(["0 *", "* *"])); // first move: playing
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		fake.setUpdate(board(["X *", "* *"])); // second move: lost
+		await callTool(server, "saolei_click", { x: 1, y: 0 });
+
+		const game2End = recording.calls[
+			recording.calls.length - 1
+		] as Extract<SinkCall, { kind: "onGameEnd" }>;
+		expect(game2End.stats).toEqual({
+			operationCount: 2,
+			correctFlags: 1,
+			avgOpsPerMine: 2,
+		});
 	});
 });

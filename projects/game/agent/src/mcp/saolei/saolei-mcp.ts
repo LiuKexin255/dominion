@@ -134,6 +134,25 @@ const WINDOW_MESSAGE = "MOUSE_INPUT_METHOD_WINDOW_MESSAGE";
 export type CellTool = "saolei_click" | "saolei_flag" | "saolei_chord_click";
 
 /**
+ * Per-game quantitative statistics, computed first-hand by the MCP at game
+ * end and carried by `onGameEnd` → ephemeral buffer → planner review input
+ * (`specs/037-saolei-team-optimize/contracts/game-stats-contract.md` §1;
+ * `specs/037-saolei-team-optimize/spec.md` FR-026..FR-033). A game concept —
+ * no team/strategy/store coupling (FR-019 unchanged).
+ */
+export interface GameStats {
+	/** Count of successful cell operations this game (onMove trigger count).
+	 *  Excludes init, remain, rejected moves, and LLM call count. */
+	operationCount: number;
+	/** Number of correctly flagged mines this game.
+	 *  null = init mineCounter undecodable (totalMines unknown). */
+	correctFlags: number | null;
+	/** operationCount / correctFlags, rounded to 2 decimals.
+	 *  "N/A" = correctFlags is 0 or null (division by zero / unknown). */
+	avgOpsPerMine: number | "N/A";
+}
+
+/**
  * Optional out-of-band event sink for the session-bound saolei MCP
  * (`specs/031-team-template-mode/contracts/saolei-sink-contract.md` §1).
  *
@@ -157,10 +176,14 @@ export interface SaoleiEventSink {
 		y: number,
 		state: GameState,
 	): void | Promise<void>;
-	/** The game ended: `gameStatus(state)` ∈ {won, lost} after a move. */
+	/** The game ended: `gameStatus(state)` ∈ {won, lost} after a move.
+	 *  `stats` is optional (backward compatible — unupgraded sink
+	 *  implementations ignore it; `specs/037-saolei-team-optimize/contracts/
+	 *  game-stats-contract.md` §2). */
 	onGameEnd(
 		state: GameState,
 		status: "won" | "lost",
+		stats?: GameStats,
 	): void | Promise<void>;
 }
 
@@ -286,6 +309,54 @@ function gameStatus(state: GameState): GameStatus {
 	if (isTerminalState(state)) return "lost";
 	if (isWin(state)) return "won";
 	return "playing";
+}
+
+/**
+ * Compute the per-game statistics at game end
+ * (`specs/037-saolei-team-optimize/contracts/game-stats-contract.md` §3;
+ * `specs/037-saolei-team-optimize/spec.md` FR-026..FR-033). Pure function of
+ * the init state, the final state, and the MCP's first-hand operation
+ * counter — no I/O, no side effects, directly unit-testable
+ * (`style/javascript.md` §测试).
+ *
+ * correctFlags = totalMines − terminal MINE cells − HIT_MINE cells; totalMines
+ * is taken from `initState.mineCounter` (at game start flags = 0, so the
+ * counter reads the mine total — `projects/game/pkg/saolei-board/src/core/
+ * counter.ts`). An undecodable/absent counter ⇒ totalMines unknown ⇒
+ * correctFlags = null (FR-033 degradation). avgOpsPerMine = operationCount /
+ * correctFlags rounded to 2 decimals; correctFlags = 0 or null ⇒ "N/A"
+ * (FR-029 — no NaN/Infinity on an instant loss).
+ */
+export function computeGameStats(
+	initState: GameState | null,
+	finalState: GameState,
+	operationCount: number,
+): GameStats {
+	const counter = initState?.mineCounter;
+	let correctFlags: number | null;
+	if (counter?.decoded === true) {
+		const totalMines = counter.value;
+		let mineCells = 0;
+		let hitMineCells = 0;
+		for (const row of finalState.grid) {
+			for (const cell of row) {
+				if (cell === "MINE") mineCells++;
+				if (cell === "HIT_MINE") hitMineCells++;
+			}
+		}
+		correctFlags = totalMines - mineCells - hitMineCells;
+	} else {
+		correctFlags = null;
+	}
+
+	let avgOpsPerMine: number | "N/A";
+	if (correctFlags !== null && correctFlags > 0) {
+		avgOpsPerMine = Math.round((operationCount / correctFlags) * 100) / 100;
+	} else {
+		avgOpsPerMine = "N/A";
+	}
+
+	return { operationCount, correctFlags, avgOpsPerMine };
 }
 
 /**
@@ -634,6 +705,16 @@ export function createSaoleiMcpServer(
 	let recognized: GameState | null = null;
 
 	/**
+	 * Per-game statistics tracking (`specs/037-saolei-team-optimize/contracts/
+	 * game-stats-contract.md` §3). `initState` = the recognized state captured
+	 * at `saolei_init` (its mineCounter supplies the total-mine count at game
+	 * end — at game start flags = 0, so counter = mines); `operationCount` =
+	 * successful cell-op count, reset on every new game.
+	 */
+	let initState: GameState | null = null;
+	let operationCount = 0;
+
+	/**
 	 * Recognize a freshly-dispatched screenshot, updating the session state.
 	 * On any recognition failure (the recognizer throws, or no screenshot was
 	 * attached) the state is invalidated (`recognized = null`) and the caller
@@ -701,6 +782,11 @@ export function createSaoleiMcpServer(
 			if (!state) {
 				return textResult(unrecognizableText());
 			}
+			// Stats tracking (contract §3): capture the initial state (its
+			// mineCounter = total mines when flags = 0) and reset the
+			// per-game operation counter.
+			initState = state;
+			operationCount = 0;
 			// Sink: a new game started (contract §3 — `onGameStart` fires
 			// after a successful init recognition; FR-019/FR-021).
 			await runSink("onGameStart", (s) => s.onGameStart(state));
@@ -781,16 +867,22 @@ export function createSaoleiMcpServer(
 				if (!state) {
 					return textResult(unrecognizableText());
 				}
+				// Stats tracking (contract §3): count ONLY successful cell
+				// operations — init / remain / rejected moves never reach
+				// here (rejections return before dispatch).
+				operationCount++;
 				// Sink (contract §3): `onMove` fires after a successful
 				// post-dispatch recognition; when the move ended the game
 				// (`gameStatus` ∈ {won, lost} — the MCP's first-hand
 				// computation, FR-017), `onGameEnd` fires AFTER `onMove`
-				// with the structured status (FR-022). `saolei_remain` never
+				// with the structured status (FR-022) and the per-game
+				// statistics (FR-026/FR-030). `saolei_remain` never
 				// reaches this path (read-only, no dispatch).
 				await runSink("onMove", (s) => s.onMove(name, x, y, state));
 				const status = gameStatus(state);
 				if (status === "won" || status === "lost") {
-					await runSink("onGameEnd", (s) => s.onGameEnd(state, status));
+					const stats = computeGameStats(initState, state, operationCount);
+					await runSink("onGameEnd", (s) => s.onGameEnd(state, status, stats));
 				}
 				return textResult(dispatchedText(name, x, y, state));
 			},

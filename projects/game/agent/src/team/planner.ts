@@ -140,6 +140,21 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 		lines.push(renderBoardText(entry.state));
 		lines.push("");
 	}
+
+	// US5 game stats (`specs/037-saolei-team-optimize/spec.md` FR-032;
+	// contracts/game-stats-contract.md §5): the stats flow MCP → sink →
+	// ephemeral buffer (`gameEvent.stats`) → this review input, so the
+	// planner judges the player's operation efficiency and flag accuracy
+	// from objective numbers, not just the board sequence.
+	const stats = buffer.gameEvent?.stats;
+	if (stats) {
+		lines.push("本局统计数据：");
+		lines.push(`- 操作次数：${stats.operationCount}`);
+		lines.push(`- 正确标记地雷数：${stats.correctFlags ?? "不可用"}`);
+		lines.push(`- 每雷平均操作数：${stats.avgOpsPerMine}`);
+		lines.push("");
+	}
+
 	lines.push(
 		"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
 	);

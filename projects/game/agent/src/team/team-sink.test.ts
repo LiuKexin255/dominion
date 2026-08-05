@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { GameState } from "@dominion/game-saolei-board";
 
+import type { GameStats } from "../mcp/saolei/saolei-mcp";
 import {
 	consumeGameEvent,
 	createEphemeralGameBuffer,
@@ -69,6 +70,33 @@ describe("createTeamSink", () => {
 		await sink.onGameEnd(makeState("lost"), "lost");
 		await sink.onGameEnd(makeState("won"), "won");
 		expect(buffer.gameEvent?.status).toBe("won");
+	});
+
+	it("onGameEnd stores the per-game stats into gameEvent.stats (037 US5 FR-031)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		const state = makeState("lost");
+		const stats: GameStats = {
+			operationCount: 7,
+			correctFlags: 3,
+			avgOpsPerMine: 2.33,
+		};
+		await sink.onGameEnd(state, "lost", stats);
+		expect(buffer.gameEvent?.stats).toEqual(stats);
+		// The event itself is still the structured record (stats ride along,
+		// contracts/game-stats-contract.md §4).
+		expect(buffer.gameEvent).toMatchObject({
+			state,
+			status: "lost",
+			consumed: false,
+		});
+	});
+
+	it("onGameEnd without stats leaves gameEvent.stats undefined (backward compatible)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		await sink.onGameEnd(makeState("won"), "won");
+		expect(buffer.gameEvent?.stats).toBeUndefined();
 	});
 
 	it("onGameStart resets gameLog and writes the initial saolei_init entry", async () => {
