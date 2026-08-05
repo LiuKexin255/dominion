@@ -164,7 +164,7 @@
 
 ---
 
-- [ ] T013 [P] [US3] 在 `projects/game/desktop/frontend/src/components/ChatView.svelte` 中，将 `kind === 'text' || kind === 'thinking'` 分支（当前约 line 274）的外层 wrapper 从 `<div class="msg-row" class:msg-pending={item.pending}>` 改为 `<div class="msg-pending-wrapper" class:msg-pending={item.pending}>`。在 `<style>` 中新增 `.msg-pending-wrapper { padding: 2px 12px; }`（与原 `.msg-row` 的 padding 一致，不设 `display: flex`）。保留 `class:msg-pending` 引用（`.msg-pending` 的 `opacity: 0.65` 样式已存在）。参考 [`contracts/desktop-alignment-fix.md`](./contracts/desktop-alignment-fix.md) §2
+- [X] T013 [P] [US3] 在 `projects/game/desktop/frontend/src/components/ChatView.svelte` 中，将 `kind === 'text' || kind === 'thinking'` 分支（当前约 line 274）的外层 wrapper 从 `<div class="msg-row" class:msg-pending={item.pending}>` 改为 `<div class="msg-pending-wrapper" class:msg-pending={item.pending}>`。在 `<style>` 中新增 `.msg-pending-wrapper { padding: 2px 12px; }`（与原 `.msg-row` 的 padding 一致，不设 `display: flex`）。保留 `class:msg-pending` 引用（`.msg-pending` 的 `opacity: 0.65` 样式已存在）。参考 [`contracts/desktop-alignment-fix.md`](./contracts/desktop-alignment-fix.md) §2
 
 **验证门禁**: desktop 前端编译通过（`bazel build //projects/game/desktop/frontend/...`）；用户消息气泡靠右对齐（ChatMessage 内部 `.msg-row.msg-user` 的 `flex-end` 生效）；`.msg-pending` 的 opacity 效果保留
 

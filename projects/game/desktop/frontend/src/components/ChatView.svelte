@@ -271,7 +271,7 @@
                  ChatMessage bubble component. A pending (queued) user message
                  is visually marked via .msg-pending
                  (specs/030-queued-chat-input/spec.md FR-008). -->
-            <div class="msg-row" class:msg-pending={item.pending}>
+            <div class="msg-pending-wrapper" class:msg-pending={item.pending}>
               <ChatMessage part={item.part} role={item.role} timestamp={item.timestamp} />
             </div>
           {/if}
@@ -634,6 +634,14 @@
   /* ── Message Row + Bubble (agent text with markdown) ── */
   .msg-row {
     display: flex;
+    padding: 2px 12px;
+  }
+
+  /* Non-flex wrapper for ChatMessage bubbles: no display: flex, so the
+     component's own .msg-row.msg-user (justify-content: flex-end) controls
+     user-bubble alignment
+     (specs/036-team-mode-bugfix/contracts/desktop-alignment-fix.md §2). */
+  .msg-pending-wrapper {
     padding: 2px 12px;
   }
 
