@@ -184,11 +184,11 @@
 
 ---
 
-- [ ] T014 执行代码格式化与依赖检查：`bazel run //:go -- fmt`（如有 Go 变更——本特性无 Go 变更，可跳过）；对变更的 TS 文件确认格式正确。执行 `bazel run //:gazelle projects/game/agent/src/team` 和 `bazel run //:gazelle projects/game/desktop/frontend/src/components` 确认 BUILD.bazel 无需更新（无新增文件，但需确认 import 变更不引入新依赖——本特性 `RunnableConfig` 来自 `@langchain/core/runnables`，已在依赖中）
+- [X] T014 执行代码格式化与依赖检查：`bazel run //:go -- fmt`（如有 Go 变更——本特性无 Go 变更，可跳过）；对变更的 TS 文件确认格式正确。执行 `bazel run //:gazelle projects/game/agent/src/team` 和 `bazel run //:gazelle projects/game/desktop/frontend/src/components` 确认 BUILD.bazel 无需更新（无新增文件，但需确认 import 变更不引入新依赖——本特性 `RunnableConfig` 来自 `@langchain/core/runnables`，已在依赖中）
 
-- [ ] T015 执行全量编译+单测验证（最终回归门禁，配合各变更 task 内已执行的编译+单测）：`bazel build //...` 和 `bazel test //projects/game/agent/src/team:lib_test`，确认所有编译和测试通过（含现有 031-spec 测试无回归）
+- [X] T015 执行全量编译+单测验证（最终回归门禁，配合各变更 task 内已执行的编译+单测）：`bazel build //...` 和 `bazel test //projects/game/agent/src/team:lib_test`，确认所有编译和测试通过（含现有 031-spec 测试无回归）
 
-- [ ] T016 大型测试验收（宪法原则 VI）：使用 testplan skill 执行端到端大型测试。测试计划位于 `projects/game/testplan/`（031-spec 已建立）。需确认覆盖以下场景，全部用例通过：
+- [X] T016 大型测试验收（宪法原则 VI）：使用 testplan skill 执行端到端大型测试。测试计划位于 `projects/game/testplan/`（031-spec 已建立）。需确认覆盖以下场景，全部用例通过：
   - 游戏失败（lost）→ planner 被触发 → 策略被更新（Issue 1）
   - planner 复盘输入包含完整游戏过程（Issue 2）
   - 多局连续游戏不触发 GraphRecursionError（Issue 1 + Issue 4）
