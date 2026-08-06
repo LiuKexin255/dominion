@@ -31,6 +31,7 @@
   import { log, logDebug, setDebugEnabled, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import { trimFifo } from './chat-fifo'
+  import { appendToEntry, findMergeTarget } from './stream-merge'
   import SessionList from './components/SessionList.svelte'
   import ChatView from './components/ChatView.svelte'
   import OperationConfirmDrawer from './components/OperationConfirmDrawer.svelte'
@@ -725,22 +726,18 @@
     const list = chatMessages[agent] ?? []
 
     if (role === MessageRole.AGENT && (kind === 'text' || kind === 'thinking')) {
-      const last = list[list.length - 1]
-      if (last && last.role === MessageRole.AGENT
-          && last.agent === agent
-          && last.mergeKind === kind
-          && last.parts && last.parts.length > 0) {
-        const trailing = last.parts[last.parts.length - 1]
-        const joined = incomingParts
-          .map(p => (kind === 'text' ? p.text?.content : p.thinking?.content) ?? '')
-          .join('')
-        if (kind === 'text' && trailing.text) {
-          trailing.text.content += joined
-        } else if (kind === 'thinking' && trailing.thinking) {
-          trailing.thinking.content += joined
+      // US2 bubble continuity (FR-005/FR-006): the merge target is the last
+      // same-agent same-kind AGENT entry reachable past interleaved USER
+      // entries — a queued user message no longer splits the agent's bubble
+      // (specs/038-queue-input-mid-turn/data-model.md §5; research.md D3).
+      // ChatEntry is a structural superset of StreamEntry, so the list is
+      // assignable as-is.
+      const mergeIndex = findMergeTarget(list, agent, kind)
+      if (mergeIndex !== null) {
+        chatMessages = {
+          ...chatMessages,
+          [agent]: appendToEntry(list, mergeIndex, incomingParts, kind),
         }
-        // US4 FIFO cap (FR-021): keep the per-agent array within the cap.
-        chatMessages = { ...chatMessages, [agent]: trimFifo([...list]) }
         return
       }
     }
