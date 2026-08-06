@@ -293,6 +293,31 @@ export class TurnLoop {
   }
 
   /**
+   * Mid-turn drain: merge ALL buffered `TurnContent`s into ONE aggregated
+   * `TurnContent` (FIFO), clear the buffer, emit `QueueSignal(0)`, and return
+   * the combined content — or return `null` (no-op, no emission) when the
+   * buffer is empty.
+   *
+   * Callable from outside `runLoop`: the player's `queueDrain` `beforeModel`
+   * middleware invokes it via the `configurable.drainQueuedInput` callback to
+   * inject queued messages at the next reasoning-step boundary
+   * (specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md;
+   * specs/038-queue-input-mid-turn/data-model.md §1/§2). Does NOT change
+   * `running` or transition the loop — it only touches the buffer + emits the
+   * depth signal. The turn-end drain (`runLoop` buffer check below) still runs
+   * after the graph invoke; if this method already emptied the buffer, the
+   * loop sees 0 and goes idle (no double-drain).
+   */
+  drainQueue(): TurnContent | null {
+    if (this.buffer.length === 0) {
+      return null;
+    }
+    const combined = combineAll(this.buffer);
+    this.emit(this.queueSignalFrame(0));
+    return combined;
+  }
+
+  /**
    * The RUNNING-state loop body. Drives the injected {@link TurnRunner}
    * (one team graph invoke per turn), emits display frames, and on turn
    * completion either drains the next queued message (next turn, same

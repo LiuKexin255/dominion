@@ -608,4 +608,89 @@ describe("TurnLoop", () => {
     expect(queueZeroIdx).toBeGreaterThanOrEqual(0);
     expect(waitIdx).toBeGreaterThan(queueZeroIdx);
   });
+
+  // -------------------------------------------------------------------------
+  // Feature 038 (T001): mid-turn `drainQueue()` — called by the player's
+  // `queueDrain` `beforeModel` middleware via `configurable.drainQueuedInput`
+  // (specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md;
+  // specs/038-queue-input-mid-turn/data-model.md §2).
+  // -------------------------------------------------------------------------
+
+  it("drainQueue on an empty buffer returns null and emits nothing", () => {
+    const adapter = makeEchoRunner("player");
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
+
+    // Contract: "If the buffer is empty: return null (no-op, no emission)."
+    // An IDLE loop has an empty buffer, so drainQueue must be a strict no-op —
+    // no combined content, no QueueSignal, no state change.
+    expect(loop.drainQueue()).toBeNull();
+    expect(loop.queueDepth()).toBe(0);
+    expect(loop.isRunning()).toBe(false);
+    expect(frames).toHaveLength(0);
+  });
+
+  it("drainQueue returns combined content, emits QueueSignal(0), and clears the buffer", async () => {
+    const gate = makeGate();
+    const adapter = makeEchoRunner("player", { gate });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
+
+    // Turn 1 in flight (blocked on gate); buffer two messages mid-turn.
+    loop.submit({ text: "msg-1" });
+    await flush();
+    loop.submit({ text: "msg-2" });
+    loop.submit({ text: "msg-3" });
+    expect(loop.queueDepth()).toBe(2);
+
+    // Contract: merge ALL buffered TurnContents via combineAll (FIFO), clear
+    // the buffer, emit QueueSignal(0), and return the combined content — in
+    // one synchronous step. The in-flight turn is NOT disturbed: `running`
+    // stays true (drainQueue only touches the buffer + emits the signal).
+    const drained = loop.drainQueue();
+    expect(drained).toEqual({ parts: [{ text: "msg-2" }, { text: "msg-3" }] });
+    expect(loop.queueDepth()).toBe(0);
+    expect(loop.isRunning()).toBe(true);
+    // Signal sequence so far: submit⇒1, submit⇒2, mid-turn drain⇒0
+    // (turn-loop-drain-contract emission table: "Mid-turn drainQueue clears
+    // the buffer → QueueSignal(0)").
+    expect(queueSignalDepths(frames)).toEqual([1, 2, 0]);
+
+    // Tear down: release turn 1 so the loop can terminate.
+    gate.resolve();
+    await flush(20);
+    expect(loop.isRunning()).toBe(false);
+  });
+
+  it("after a drainQueue call the turn-end drain sees an empty buffer (no double-drain)", async () => {
+    const gate = makeGate();
+    const calls: TurnContent[] = [];
+    const adapter = makeEchoRunner("player", { gate, recordCalls: calls });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
+
+    loop.submit({ text: "msg-1" });
+    await flush();
+    loop.submit({ text: "msg-2" });
+    expect(loop.queueDepth()).toBe(1);
+
+    // Mid-turn drain consumes the buffer.
+    expect(loop.drainQueue()).toEqual({ parts: [{ text: "msg-2" }] });
+
+    // Turn 1 completes: the runLoop turn-end buffer check
+    // (if (this.buffer.length > 0)) sees 0,
+    // so the loop goes idle — the drained msg-2 must NOT run again as a
+    // second turn (exactly ONE runner call), and no second depth-0 signal is
+    // emitted (idle emits no signal; depth is already 0).
+    gate.resolve();
+    await flush(20);
+
+    expect(calls).toHaveLength(1);
+    expect(extractText(calls[0])).toBe("msg-1");
+    expect(textContents(frames)).toEqual(["reply:msg-1"]);
+    expect(waitFrames(frames)).toHaveLength(1);
+    expect(loop.queueDepth()).toBe(0);
+    expect(loop.isRunning()).toBe(false);
+    expect(queueSignalDepths(frames)).toEqual([1, 0]);
+  });
 });
