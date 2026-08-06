@@ -1233,8 +1233,11 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 // received" — projects/game/fake-llm/service/handler.go logSystemPrompts),
 // so after this test drives a game an operator can query the fake-llm logs
 // (signoz) for the injected section: "## Player 可用工具" followed by the
-// five player tools (saolei_init/saolei_click/saolei_flag/saolei_chord_click/
-// saolei_remain) with their descriptions. The keyword matcher only reads user
+// four GAME-VISIBLE player tools (saolei_init/saolei_click/saolei_flag/
+// saolei_chord_click) with their descriptions — the read-only saolei_remain
+// is intentionally excluded (it leaves no gameLog trace, so the planner
+// cannot observe its use — specs/037-saolei-team-optimize/spec.md FR-016
+// refine). The keyword matcher only reads user
 // text (README.md §4), so the system content is unobservable in the response
 // stream — the log is the verification channel the task requires.
 //

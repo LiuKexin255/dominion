@@ -1276,24 +1276,49 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 
 	it("planner: non-empty planner_prompt is used as the systemPrompt verbatim (FR-034)", () => {
 		const profilePrompt = "你是自定义的 planner 复盘者。";
+		// The default test player tool (fake_saolei_move) is NOT game-visible
+		// (GAME_VISIBLE_PLAYER_TOOLS), so it would not be listed — pass a real
+		// visible tool to exercise the US3 section alongside FR-034.
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
-		buildTestGraph({ plannerBasePrompt: profilePrompt, createAgentFn });
+		buildTestGraph({
+			plannerBasePrompt: profilePrompt,
+			playerTools: [clickTool],
+			createAgentFn,
+		});
 
 		// Semantics A: the profile prompt leads, unchanged (FR-034); US3
 		// appends the player tool description section AFTER it (FR-016 —
 		// specs/037-saolei-team-optimize/contracts/compression-contract.md
-		// §4). The default test player tool (fake_saolei_move) is listed.
+		// §4). The game-visible player tool is listed.
 		expect(plannerSystemPrompt().startsWith(profilePrompt)).toBe(true);
 		// The planner appends NO skill body (FR-012/FR-034).
 		expect(plannerSystemPrompt()).not.toContain(SKILL_PROMPT_SEPARATOR);
 		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
-		expect(plannerSystemPrompt()).toContain("fake_saolei_move");
+		expect(plannerSystemPrompt()).toContain("saolei_click: 揭示一个格子。");
 		expect(createAgentFn).toHaveBeenCalled();
 	});
 
 	it("planner: empty planner_prompt falls back to DEFAULT_PLANNER_BASE (FR-034)", () => {
+		// A game-visible player tool so the US3 section is present (the
+		// default fake_saolei_move test tool is not game-visible).
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
-		buildTestGraph({ createAgentFn }); // plannerBasePrompt defaults to ""
+		buildTestGraph({ playerTools: [clickTool], createAgentFn }); // plannerBasePrompt defaults to ""
 
 		// The default base leads (FR-034); the US3 tool description section
 		// follows it (FR-016 — compression-contract.md §4).
@@ -1316,7 +1341,7 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 });
 
 describe("team graph — US3 (037): planner systemPrompt player tool descriptions (FR-016..FR-018)", () => {
-	it("injects every player tool's name+description into the planner systemPrompt while keeping its tool set at update_strategy only (FR-016/FR-018)", () => {
+	it("injects every game-visible player tool's name+description into the planner systemPrompt while keeping its tool set at update_strategy only (FR-016/FR-018)", () => {
 		const clickTool = tool(
 			async () => "clicked",
 			{
@@ -1359,9 +1384,9 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
 		);
 		expect(plannerCall).toBeDefined();
-		// FR-016: the section lists EVERY player tool's name and description
-		// (specs/037-saolei-team-optimize/contracts/compression-contract.md
-		// §4 — `- name: description` per tool).
+		// FR-016: the section lists EVERY game-visible player tool's name and
+		// description (specs/037-saolei-team-optimize/contracts/
+		// compression-contract.md §4 — `- name: description` per tool).
 		expect(plannerCall?.systemPrompt).toContain("## Player 可用工具");
 		expect(plannerCall?.systemPrompt).toContain(
 			"saolei_click: 揭示一个格子。",
@@ -1371,6 +1396,51 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 		);
 		// FR-018: the planner's ACTUAL tool set stays `update_strategy` only —
 		// the player tools were NOT added as callable tools.
+		expect(plannerCall?.tools).toHaveLength(1);
+		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
+	});
+
+	it("excludes read-only player tools the planner cannot observe in the game process (saolei_remain — FR-016 refine)", () => {
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const remainTool = tool(
+			async () => "3 mines remaining",
+			{
+				name: "saolei_remain",
+				description: "查询剩余地雷数。",
+				schema: z.object({}),
+			},
+		);
+		const calls: Array<{ systemPrompt: string; tools: StructuredToolInterface[] }> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		buildTestGraph({ playerTools: [clickTool, remainTool], createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		const plannerCall = calls.find(
+			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
+		);
+		expect(plannerCall).toBeDefined();
+		// The game-visible tool IS listed...
+		expect(plannerCall?.systemPrompt).toContain("saolei_click: 揭示一个格子。");
+		// ...while the read-only saolei_remain (no gameLog trace — the
+		// planner cannot observe its use) is NOT injected (FR-016 refine).
+		expect(plannerCall?.systemPrompt).not.toContain("saolei_remain");
+		// FR-018 unchanged: the planner's tool set stays update_strategy only.
 		expect(plannerCall?.tools).toHaveLength(1);
 		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
 	});

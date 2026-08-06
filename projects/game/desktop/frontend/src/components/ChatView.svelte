@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import ChatMessage from './ChatMessage.svelte'
   import { MessageRole, messagePartKind, classifyToolResultStatus } from '../api'
   import type { MessagePart, ImagePart, ToolResultPart } from '../api'
@@ -76,6 +77,30 @@
 
   let inputText = $state('')
   let scrollContainer: HTMLDivElement | undefined = $state()
+
+  // TOLERANCE for the at-bottom test (px); absorbs sub-pixel float jitter so
+  // "at the bottom" is stable across browsers. Mirrors ChatMessage.svelte's
+  // thinking-bubble follow (specs/027-chat-bubble-game-state/data-model.md §6;
+  // contracts/desktop-bubble-render-contract.md §2).
+  const TOLERANCE = 8
+
+  // stickToBottom is the sticky-scroll gate: TRUE = follow new content down to
+  // the bottom; FALSE (the operator scrolled up to read history) = pause — the
+  // thread must not be yanked back down by streaming output. Set by
+  // handleThreadScroll on every scroll; consulted by the auto-scroll
+  // $effect.pre below. Starts TRUE so a session entry with history lands on
+  // the latest messages.
+  let stickToBottom = $state(true)
+
+  // handleThreadScroll keeps stickToBottom in sync with the operator's
+  // position: scrolling to/near the bottom re-arms following; scrolling up
+  // (to read history) disarms it until the operator returns to the bottom.
+  function handleThreadScroll() {
+    const el = scrollContainer
+    if (!el) return
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - TOLERANCE
+    stickToBottom = atBottom
+  }
 
   // pendingIdSet is the O(1) lookup over the frontend-tracked pending message
   // ids (App.svelte owns the FIFO list; the backend QueueSignal drives the
@@ -211,15 +236,22 @@
     }
   }
 
-  $effect(() => {
-    // reactively scroll when renderItems change
+  // Follow-or-pause auto-scroll for the thread. Runs as $effect.pre (BEFORE
+  // the DOM update — the scrollHeight read below reflects the height the
+  // operator currently sees, so the follow decision is stable across content
+  // growth; tick() then lands the scroll after the update). Follows the
+  // stream down only while the operator is at the bottom (stickToBottom): if
+  // they've scrolled up to read history, no scroll happens, so streaming
+  // output never locks the whole dialog. This is the same pattern as
+  // ChatMessage.svelte's thinking-bubble follow (research.md D2).
+  $effect.pre(() => {
     renderItems
     const el = scrollContainer
-    if (el) {
-      requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight
-      })
-    }
+    if (!el) return
+    if (!stickToBottom) return
+    tick().then(() => {
+      el.scrollTop = el.scrollHeight
+    })
   })
 </script>
 
@@ -229,7 +261,7 @@
   {/if}
 
   <!-- Message Thread -->
-  <div class="chat-thread" bind:this={scrollContainer}>
+  <div class="chat-thread" bind:this={scrollContainer} onscroll={handleThreadScroll}>
     {#if loadingMessages}
       <div class="chat-loading" data-testid="messages-loading">Loading messages...</div>
     {:else if renderItems.length === 0}

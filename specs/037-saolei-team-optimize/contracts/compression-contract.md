@@ -248,16 +248,27 @@ interface PlannerNodeDeps {
 
 ### systemPrompt 工具描述注入（US3）
 
+注入范围**仅限 planner 能在游戏过程中观察到的工具**（其使用会记录在复盘输入 gameLog 中：`saolei_init` 经 onGameStart、`saolei_click`/`saolei_flag`/`saolei_chord_click` 经 onMove——`GAME_VISIBLE_PLAYER_TOOLS`）；只读查询工具（`saolei_remain`）不产生游戏过程记录，planner 无法判断其是否被使用，**不注入**。
+
 ```ts
-// 构造 systemPrompt 时追加工具描述段
+// 构造 systemPrompt 时追加工具描述段（仅游戏过程可见的工具）
+const GAME_VISIBLE_PLAYER_TOOLS = new Set([
+  "saolei_init",
+  "saolei_click",
+  "saolei_flag",
+  "saolei_chord_click",
+]);
+
 function buildToolDescriptionSection(tools: StructuredToolInterface[]): string {
-  if (tools.length === 0) return "";
+  const visible = tools.filter((t) => GAME_VISIBLE_PLAYER_TOOLS.has(t.name));
+  if (visible.length === 0) return "";
   const lines = [
     "",
     "## Player 可用工具",
-    "以下是 player 持有的工具（你不能调用这些工具，仅可参考其描述判断 player 是否充分利用）：",
+    "以下是 player 在本局游戏中使用的工具，其使用会在复盘输入的本局游戏过程中留下记录" +
+      "（你不能调用这些工具，仅可参考其描述判断 player 是否充分利用）：",
   ];
-  for (const tool of tools) {
+  for (const tool of visible) {
     lines.push(`- ${tool.name}: ${tool.description}`);
   }
   return lines.join("\n");

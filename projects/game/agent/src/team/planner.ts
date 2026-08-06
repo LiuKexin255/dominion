@@ -97,11 +97,13 @@ export interface PlannerNodeDeps {
 	plannerBasePrompt: string;
 	/**
 	 * The player's tools — the saolei MCP tools (FR-010, player only). US3
-	 * (specs/037-saolei-team-optimize/spec.md FR-016/FR-017): only their
-	 * NAME + DESCRIPTION are injected into the planner's system prompt as
-	 * static text (computed once at team build — the tool set is template-
-	 * fixed, specs/031-team-template-mode/spec.md FR-028); the tools
-	 * themselves are NOT added to the planner's tool set (FR-018 — the
+	 * (specs/037-saolei-team-optimize/spec.md FR-016/FR-017): only the
+	 * GAME-VISIBLE subset's NAME + DESCRIPTION are injected into the planner's
+	 * system prompt as static text (computed once at team build — the tool
+	 * set is template-fixed, specs/031-team-template-mode/spec.md FR-028;
+	 * only tools the planner can observe in the game process it reviews are
+	 * listed — `saolei_remain` is excluded, it leaves no gameLog trace). The
+	 * tools themselves are NOT added to the planner's tool set (FR-018 — the
 	 * planner holds `update_strategy` only, FR-012).
 	 */
 	playerTools: StructuredToolInterface[];
@@ -162,23 +164,51 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 }
 
 /**
+ * Player tool names whose use is OBSERVABLE in the game process the planner
+ * reviews (the review input renders the ephemeral gameLog): `saolei_init`
+ * writes an entry via `onGameStart` and the cell tools write entries via
+ * `onMove` (team-sink.ts onGameStart/onMove). Tools absent here — the
+ * read-only `saolei_remain`, which fires NO sink event and leaves no gameLog
+ * trace (saolei-mcp.ts) — are NOT injected into the planner's tool-description
+ * section: the planner cannot judge their use from the game process it sees
+ * (specs/037-saolei-team-optimize/spec.md FR-016 refine).
+ */
+const GAME_VISIBLE_PLAYER_TOOLS = new Set([
+	"saolei_init",
+	"saolei_click",
+	"saolei_flag",
+	"saolei_chord_click",
+]);
+
+/**
  * Build the "Player 可用工具" markdown section appended to the planner's
  * system prompt (US3 — specs/037-saolei-team-optimize/contracts/
- * compression-contract.md §4; FR-016/FR-017): each player tool's NAME and
- * DESCRIPTION as static text, computed once at team build (the tool set is
- * template-fixed, specs/031-team-template-mode/spec.md FR-028). The tools
- * themselves are NOT added to the planner's tool set (FR-018) — the section
- * is reference-only, letting the planner judge whether the player is using
- * the tools fully. Empty tool set ⇒ no section (no trailing markdown).
+ * compression-contract.md §4; FR-016/FR-017): each game-visible player tool's
+ * NAME and DESCRIPTION as static text, computed once at team build (the tool
+ * set is template-fixed, specs/031-team-template-mode/spec.md FR-028). The
+ * tools themselves are NOT added to the planner's tool set (FR-018) — the
+ * section is reference-only, letting the planner judge whether the player is
+ * using the tools fully. Empty (or no game-visible) tool set ⇒ no section (no
+ * trailing markdown).
+ *
+ * Only tools whose use the planner can OBSERVE in the game process it reviews
+ * are listed — i.e. tools that leave a gameLog trace (GAME_VISIBLE_PLAYER_
+ * TOOLS). The read-only `saolei_remain` fires no sink event and produces no
+ * gameLog entry, so the planner cannot tell whether it was used; its
+ * description is therefore excluded (FR-016 refine).
  */
 function buildToolDescriptionSection(tools: StructuredToolInterface[]): string {
-	if (tools.length === 0) return "";
+	// Game-visible subset: tools recorded in the review input's game log
+	// (saolei_init via onGameStart, cell tools via onMove — team-sink.ts).
+	const visible = tools.filter((t) => GAME_VISIBLE_PLAYER_TOOLS.has(t.name));
+	if (visible.length === 0) return "";
 	const lines = [
 		"",
 		"## Player 可用工具",
-		"以下是 player 持有的工具（你不能调用这些工具，仅可参考其描述判断 player 是否充分利用）：",
+		"以下是 player 在本局游戏中使用的工具，其使用会在复盘输入的本局游戏过程中留下记录" +
+			"（你不能调用这些工具，仅可参考其描述判断 player 是否充分利用）：",
 	];
-	for (const tool of tools) {
+	for (const tool of visible) {
 		lines.push(`- ${tool.name}: ${tool.description}`);
 	}
 	return lines.join("\n");
@@ -283,7 +313,19 @@ export function createPlannerNode(
 			if (content) {
 				// FR-004: the empty-gameLog notice ("无可用游戏记录") is a
 				// non-empty content too — emitted along with full gameLogs.
-				emitChannelFrame(PLANNER_AGENT_NAME, content);
+				// The 4th arg is the MessageRole override: the review input is
+				// a HumanMessage, so ListMessages returns it as
+				// MESSAGE_ROLE_USER (handler.ts FR-020). Emitting the same role
+				// makes the live frame render through the desktop's pre-wrap
+				// text path — identical to the reloaded history entry, keeping
+				// the multi-line board layout (single newlines would otherwise
+				// be collapsed by the agent-text markdown renderer).
+				emitChannelFrame(
+					PLANNER_AGENT_NAME,
+					content,
+					undefined,
+					"MESSAGE_ROLE_USER",
+				);
 			}
 		}
 

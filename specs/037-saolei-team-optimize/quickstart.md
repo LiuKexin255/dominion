@@ -79,7 +79,7 @@
 **单元测试验证**:
 
 1. 构建 team graph，捕获 planner 的 `createAgent` 调用参数（通过 `createAgentFn` DI spy）。
-2. 断言：`systemPrompt` 包含每个 player 工具的 name 和 description（`saolei_init`/`saolei_click`/`saolei_flag`/`saolei_chord_click`/`saolei_remain`）。
+2. 断言：`systemPrompt` 包含每个（planner 游戏过程中可见的）player 工具的 name 和 description（`saolei_init`/`saolei_click`/`saolei_flag`/`saolei_chord_click`），且**不包含**无游戏过程记录的工具（如只读的 `saolei_remain`）。
 3. 断言：`tools` 参数仅包含 `update_strategy`（长度为 1，不含 player 工具）。
 
 **通过标准**: 描述在提示词 + 工具集不变。

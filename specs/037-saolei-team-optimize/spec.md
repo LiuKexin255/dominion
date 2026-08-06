@@ -20,7 +20,7 @@
 - **压缩失败处理 → 直接 abort 连接、终止 loop（需求方澄清）**：压缩 LLM 调用失败时，系统**直接 abort 连接并终止 loop**（不降级、不重试、不静默吞错）——压缩失败视为致命错误。中断后的恢复/重连/状态一致性等统一中断场景处理**不在本特性范围内**，后续统一处理中断等特殊场景。
 - **压缩摘要的实时可见性 → 复用 US1 的帧发射机制，desktop 无需额外改动**：经分析（见 US1 根因与 Assumptions），压缩摘要是一条写入通道的 agent message。其**重载时**（ListMessages）天然可见；其**实时可见性**取决于是否经帧发射推送，与 US1（planner 游戏历史实时可见性）共享同一根因与同一修复机制。因此 US1 建立的"非模型产出的通道消息实时发射为帧"的机制一经实现，压缩摘要即可实时可见——**desktop 侧无需为压缩可见性额外改动**（用户要求的确认项，结论为"无需额外改动，前提是 US1 机制已落地"）。
 - **desktop 消息上限作用域 → 每个 agent tab 独立计数**：上限按 agent tab（player / planner 各自的对话桶）独立计算，超出时按先进先出移除该 tab 内最旧的消息。每个 tab 是独立的对话视图，独立计数符合其语义。
-- **planner 工具信息注入 → 仅静态描述，不注入工具、不在 planner 工具集中出现**：planner 的系统提示词中追加一段 player 可用工具的**名称与描述**清单（静态，在 team 构建时一次性计算——工具集由模板固定装配，`specs/031-team-template-mode/spec.md` FR-028）。planner 的**实际工具集**仍仅 `update_strategy`（`specs/031-team-template-mode/spec.md` FR-012 不变）；planner 不能调用 player 工具，仅可"阅读"其描述以判断 player 是否充分利用。
+- **planner 工具信息注入 → 仅静态描述、仅游戏过程中可见的工具、不注入工具、不在 planner 工具集中出现**：planner 的系统提示词中追加一段 player 可用工具的**名称与描述**清单（静态，在 team 构建时一次性计算——工具集由模板固定装配，`specs/031-team-template-mode/spec.md` FR-028）。注入范围**仅限 planner 能在游戏过程中观察到的工具**——其使用会记录在复盘输入（gameLog）中的工具（`saolei_init`/`saolei_click`/`saolei_flag`/`saolei_chord_click`）；只读查询工具（如 `saolei_remain`）不产生游戏过程记录，planner 无法判断其是否被使用，故**不注入**其描述。planner 的**实际工具集**仍仅 `update_strategy`（`specs/031-team-template-mode/spec.md` FR-012 不变）；planner 不能调用 player 工具，仅可"阅读"其描述以判断 player 是否充分利用。
 - **Bug 根因（planner 游戏历史实时不可见）→ streamEvents 仅产出模型/工具事件，不产出 createAgent 的输入 HumanMessage**：planner 的复盘输入（携带完整 `gameLog` 的 HumanMessage）作为 createAgent 的**输入**注入，不产生 `messages`/`tools` 协议事件（`projects/game/agent/src/session-team.ts` `runTeamTurn` 仅订阅 `messages` 的 `content-block-finish` 与 `tools` 的 `tool-started`/`tool-finished`）。因此该复盘输入在**实时流**中不可见；但它在通道写入后经 ListMessages（重载）可见——这与用户报告的"实时看不到、重新进入看得到"一致。修复方向：在 planner 节点开始时将该复盘输入内容作为一帧实时发射到 planner tab（`specs/031-team-template-mode/bug-analysis.md` Issue 2 "复盘输入可见性"已指出此方向）。
 - **游戏统计数据的计算口径与数据源 → MCP 第一手计算，基于识别状态 + 操作计数**：saolei MCP 在 game end 事件（`SaoleiEventSink.onGameEnd`）中增加三项游戏统计数据，均由 MCP 内部第一手计算（符合 `specs/031-team-template-mode/spec.md` FR-017"信号来自 MCP 内部第一手计算"的原则，不解析 tool result 文本）：
   - **操作次数 x** = 本局**成功的格子操作**次数（`saolei_click`/`saolei_flag`/`saolei_chord_click` 经校验通过并成功识别的执行次数）；**不计** `saolei_init`（开新局）、`saolei_remain`（只读查询）、被校验拒绝的落子、以及 LLM 调用工具次数（一次 LLM 调用可能未产生有效操作）。即 x = 本局触发了 `onMove` 回调的次数（`onMove` 仅在成功识别格子操作后触发，`projects/game/agent/src/mcp/saolei/saolei-mcp.ts` registerCellTool 内 `runSink("onMove", …)`）。
@@ -72,16 +72,16 @@
 
 ### User Story 3 - planner 系统提示词注入 player 工具描述 (Priority: P2)
 
-planner 的系统提示词中应包含 player 可用工具的**描述信息**（工具名称与描述），以便 planner 在复盘时判断 player 是否充分利用了所提供的工具。**注意**：注入的仅为工具的描述（静态文本），而非为 planner 注入 player 的工具本身——planner 的实际工具集仍仅 `update_strategy`，planner 不能调用 player 工具。
+planner 的系统提示词中应包含 player 可用工具的**描述信息**（工具名称与描述），以便 planner 在复盘时判断 player 是否充分利用了所提供的工具。注入范围**仅限 planner 能在游戏过程中观察到的工具**——即其使用会记录在复盘输入（gameLog）中的工具（`saolei_init` 经 onGameStart、`saolei_click`/`saolei_flag`/`saolei_chord_click` 经 onMove）；**只读查询工具**（如 `saolei_remain`）不产生任何游戏过程记录，planner 无法判断其是否被使用，因此**不注入**其描述。**注意**：注入的仅为工具的描述（静态文本），而非为 planner 注入 player 的工具本身——planner 的实际工具集仍仅 `update_strategy`，planner 不能调用 player 工具。
 
 **Why this priority**: 这是一项增强 planner 复盘判断质量的优化，不阻塞核心流程（planner 已能正常复盘）。它使 planner 能评估 player 的工具使用充分性（例如是否合理使用标记、是否查询剩余雷数），从而产出更高质量的策略更新。优先级 P2，可在 US1/US2 落地后独立交付。
 
-**Independent Test**: 可通过单元测试独立验证：构建 team graph 时捕获 planner 的 createAgent `systemPrompt`，验证其中包含每个 player 工具的名称与描述文本；验证 planner 的**工具集**仍仅 `update_strategy`（未被注入 player 工具）。
+**Independent Test**: 可通过单元测试独立验证：构建 team graph 时捕获 planner 的 createAgent `systemPrompt`，验证其中包含每个（planner 游戏过程中可见的）player 工具的名称与描述文本、且**不包含**无游戏过程记录的工具（如只读的 `saolei_remain`）；验证 planner 的**工具集**仍仅 `update_strategy`（未被注入 player 工具）。
 
 **Acceptance Scenarios**:
 
-1. **Given** saolei 模板的 team 构建完成，**When** 审查 planner 的系统提示词，**Then** 其中包含一段 player 可用工具的描述清单，列出每个工具的名称与描述。
-2. **Given** planner 的系统提示词中的工具描述清单，**When** 审查其内容，**Then** 包含 player 持有的全部 saolei MCP 工具（如 `saolei_init`/`saolei_click`/`saolei_flag`/`saolei_remain` 等）的描述。
+1. **Given** saolei 模板的 team 构建完成，**When** 审查 planner 的系统提示词，**Then** 其中包含一段 player 可用工具的描述清单，列出每个（planner 游戏过程中可见的）工具的名称与描述。
+2. **Given** planner 的系统提示词中的工具描述清单，**When** 审查其内容，**Then** 包含 player 持有的、会记录在游戏过程（gameLog）中的全部 saolei MCP 工具（`saolei_init`/`saolei_click`/`saolei_flag`/`saolei_chord_click`）的描述；**不包含**无游戏过程记录的工具（如只读的 `saolei_remain`）。
 3. **Given** planner 的实际工具集，**When** 审查其工具，**Then** 仍仅包含 `update_strategy`（FR-012 不变）——player 工具**未被注入**为 planner 可调用工具，仅其描述出现在系统提示词中。
 4. **Given** player 工具集由模板固定装配（`specs/031-team-template-mode/spec.md` FR-028，不读 profile），**When** team 构建，**Then** 注入 planner 提示词的工具描述基于模板固定装配的工具集计算（与 profile 无关）。
 5. **Given** planner 复盘 player 的游戏表现，**When** planner 评估策略，**Then** planner 可参考工具描述判断 player 是否充分利用了可用工具（如是否在适当时机标记可疑格子）。
@@ -170,7 +170,7 @@ saolei MCP 在游戏结束（game end）事件中应增加本局的游戏统计�
 
 #### planner 系统提示词注入 player 工具描述
 
-- **FR-016**: planner 的系统提示词 MUST 包含一段 player 可用工具的描述清单，列出 player 持有的每个工具的名称与描述。
+- **FR-016**: planner 的系统提示词 MUST 包含一段 player 可用工具的描述清单，列出 player 持有的、**planner 能在游戏过程（gameLog）中观察到的**每个工具的名称与描述（`saolei_init`/`saolei_click`/`saolei_flag`/`saolei_chord_click`）；无游戏过程记录的工具（如只读的 `saolei_remain`）MUST NOT 被注入（planner 无法判断其是否被使用）。
 - **FR-017**: 注入的工具描述 MUST 基于 player 工具集（saolei MCP 工具，由模板固定装配，`specs/031-team-template-mode/spec.md` FR-028）在 team 构建时一次性计算（静态），MUST NOT 读取 profile 中的工具配置。
 - **FR-018**: planner 的实际工具集 MUST 仍仅 `update_strategy`（`specs/031-team-template-mode/spec.md` FR-012 不变）——player 工具 MUST NOT 被注入为 planner 可调用工具，仅其描述出现在 planner 系统提示词中。
 - **FR-019**: 注入的工具描述 MUST NOT 改变 player 的工具集或行为（仅影响 planner 的系统提示词内容）。
@@ -227,7 +227,7 @@ saolei MCP 在游戏结束（game end）事件中应增加本局的游戏统计�
 - **压缩 LLM 失败 → 直接 abort（需求方澄清）**：压缩失败不降级、不重试，直接 abort 连接并终止 loop（FR-013）。中断后的恢复/重连/状态一致性等统一中断场景处理不在本特性范围内——后续统一处理中断等特殊场景。
 - **desktop 消息上限默认值为合理常量**：上限的具体数值未由需求方指定，本特性取一个合理默认值（如每 agent tab 200 条，由 `plan.md`/实现确定具体数值并作为命名常量）。该数值是 UX 细节，有合理默认，不构成阻塞。
 - **游戏计数器计 won 与 lost**：游戏结束无论输赢均计一局（won/lost 都触发 planner，都是完整一局）。未结束的 player 步骤不计。
-- **player 工具描述注入为静态文本**：工具描述在 team 构建时一次性计算（工具集由模板固定装配，FR-028），作为静态文本段追加到 planner 系统提示词。不引入运行时动态查询。
+- **player 工具描述注入为静态文本，且仅注入游戏过程中可见的工具**：工具描述在 team 构建时一次性计算（工具集由模板固定装配，FR-028），作为静态文本段追加到 planner 系统提示词。注入范围仅限会记录在游戏过程（gameLog）中的工具（`saolei_init`/`saolei_click`/`saolei_flag`/`saolei_chord_click`）；只读查询工具（如 `saolei_remain`）不产生游戏过程记录，planner 无法判断其是否被使用，故不注入。不引入运行时动态查询。
 - **US1（实时帧发射）是 US2（压缩摘要实时可见）的前提**：压缩摘要与 planner 复盘输入同属"非模型产出的通道消息"，复用同一帧发射机制。US1 落地后，US2 的压缩摘要实时可见无需额外 desktop 改动（用户确认项的结论）。
 - **现有测试基础设施可复用**：031/036-spec 的测试基础设施（fake-model + fake-tool DI 模式，见 `projects/game/agent/src/team/graph.test.ts`）可直接复用于压缩、工具描述注入与实时帧发射的测试。
 - **desktop FIFO 上限为纯前端改动**：消息上限在 `projects/game/desktop/frontend/src/App.svelte` 的 `chatMessages` 状态管理中实现（`handleMessageParts`、`loadAgentHistories`、warn 处理等追加点），不依赖后端改动。

@@ -202,9 +202,10 @@ type App struct {
 	cfg          api.Config
 	ctx          context.Context
 	selectedMu   sync.Mutex
-	selectedWin  uintptr // handle of the selected window; 0 = none (spec 025 FR-006)
-	template     string  // active template path segment, set on WebSocket connect
-	sessionID    string  // active session set on WebSocket connect
+	selectedWin  uintptr    // handle of the selected window; 0 = none (spec 025 FR-006)
+	template     string     // active template path segment, set on WebSocket connect
+	sessionID    string     // active session set on WebSocket connect
+	recvMu       sync.Mutex // guards recvDone's check-and-reassign in SendUserTurn
 	recvDone     chan struct{}
 	chatStreams  *chatstream.Registry
 	chatServer   *chatstream.Server
@@ -590,8 +591,34 @@ func (a *App) SendUserTurn(template, sessionID string, text string, screenshotDa
 	// recvLoop closes recvDone when it exits (wait signal received or error);
 	// CloseAgent waits on recvDone after tearing the socket down so the
 	// blocked RecvFrame unblocks instead of deadlocking.
-	a.recvDone = make(chan struct{})
-	go a.recvLoop(sessionID, frameID)
+	//
+	// Exactly ONE recvLoop may read the WebSocket at a time — the WS protocol
+	// allows a single concurrent reader; two RecvFrame goroutines interleave
+	// and corrupt the stream ("received fragmented control frame" / "proto:
+	// cannot parse invalid wire-format data"). A queued turn (sent while the
+	// previous turn is still draining) MUST NOT spawn a second reader: the
+	// running recvLoop keeps reading through the queued turns and terminates
+	// only on the terminal wait (the TurnLoop emits wait solely when the
+	// buffer is fully drained — specs/030-queued-chat-input/contracts/
+	// turn-loop-contract.md). So start a new recvLoop only when none is
+	// running (recvDone not yet created or already closed).
+	a.recvMu.Lock()
+	recvActive := false
+	if a.recvDone != nil {
+		select {
+		case <-a.recvDone:
+			// Previous recvLoop has exited — safe to start a fresh reader.
+		default:
+			// Previous recvLoop still draining — it continues reading this
+			// queued turn's response.
+			recvActive = true
+		}
+	}
+	if !recvActive {
+		a.recvDone = make(chan struct{})
+		go a.recvLoop(sessionID, frameID)
+	}
+	a.recvMu.Unlock()
 	return nil
 }
 
@@ -1741,9 +1768,13 @@ func (a *App) CloseAgent() error {
 	// ws.Close() tears the socket down, which unblocks any in-flight
 	// RecvFrame in recvLoop; the goroutine then emits a synthesized wait
 	// frame and closes recvDone. Waiting here avoids clearing a.ws while
-	// recvLoop may still be reading it.
-	if a.recvDone != nil {
-		<-a.recvDone
+	// recvLoop may still be reading it. Capture the channel under recvMu so a
+	// concurrent SendUserTurn cannot reassign recvDone mid-read.
+	a.recvMu.Lock()
+	recvDone := a.recvDone
+	a.recvMu.Unlock()
+	if recvDone != nil {
+		<-recvDone
 	}
 	a.ws = nil
 	return nil

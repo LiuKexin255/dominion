@@ -43,6 +43,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
+import type { MessageRole } from "../game_types/projects/game/MessageRole";
 
 import type { OperationBridge } from "./operation-bridge";
 import { TurnLoop, buildTeamFrame } from "./turn-loop";
@@ -96,11 +97,21 @@ export type SessionTeamFactory = (
  * `renderedMessageIds` dedups on `frameId == msg.id`). The planner's
  * review-input emission omits it (the frame gets a fresh randomUUID, the
  * historical behavior — the review-input dedup gap is a US1 follow-up).
+ *
+ * `role` is an optional explicit `MessageRole` proto name (e.g.
+ * `"MESSAGE_ROLE_USER"`). `buildTeamFrame` defaults messageParts frames to
+ * `MESSAGE_ROLE_AGENT`; passing a role overrides it. The planner passes
+ * `"MESSAGE_ROLE_USER"` for the review input — it is a HumanMessage, so
+ * ListMessages returns it as USER and the desktop renders it through the
+ * pre-wrap text path (game-board newlines preserved). Without the override the
+ * frame would render as AGENT markdown, which collapses the single newlines
+ * that lay out the board grid (the US1 format-loss bug).
  */
 export type ChannelFrameEmitter = (
 	agent: string,
 	content: string,
 	frameId?: string,
+	role?: MessageRole,
 ) => void;
 
 // ---------------------------------------------------------------------------
@@ -293,6 +304,7 @@ export class SessionTeam {
 						agent: string,
 						content: string,
 						frameId?: string,
+						role?: MessageRole,
 					) => {
 						const frame: TeamFrame = buildTeamFrame(
 							this.sessionId,
@@ -307,6 +319,11 @@ export class SessionTeam {
 							// message id (frameId == msg.id, data-model.md §4).
 							frameId,
 						);
+						// Role override (see {@link ChannelFrameEmitter}): the
+						// planner's review input is a HumanMessage and must
+						// carry MESSAGE_ROLE_USER so the live frame renders
+						// identically to the reloaded history entry.
+						if (role) frame.role = role;
 						this.turnLoopEmit?.(frame);
 					},
 				},

@@ -465,10 +465,19 @@ describe("Handler.Connect user input routing", () => {
     const display = framesOfKind(stream, "messageParts");
     expect(display.length).toBeGreaterThan(0);
     for (const f of display) {
-      expect((f as Record<string, unknown>).role).toBe("MESSAGE_ROLE_AGENT");
       expect(["player", "planner"]).toContain(
         (f as Record<string, unknown>).agent,
       );
+      // All agent-produced frames are AGENT; the planner's review input is a
+      // HumanMessage and carries USER so the live frame renders identically
+      // to the reloaded ListMessages entry (multi-line game board preserved —
+      // specs/037-saolei-team-optimize US1 format fix).
+      const role = (f as Record<string, unknown>).role;
+      if (role === "MESSAGE_ROLE_USER") {
+        expect((f as Record<string, unknown>).agent).toBe("planner");
+      } else {
+        expect(role).toBe("MESSAGE_ROLE_AGENT");
+      }
     }
     expect(waitFrames(stream)).toHaveLength(1);
   });
