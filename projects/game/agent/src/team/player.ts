@@ -21,6 +21,13 @@
  *   gets to restart a new game mid-run). The post-process is wrapped in
  *   try/finally, so the event is consumed and `gameEnded` set even when the
  *   invoke throws (FR-002 — US1 acceptance #5).
+ * - **Mid-turn queue drain (Feature 038 — US1)**: a second `beforeModel`
+ *   middleware (`queueDrain`) fires before EVERY model call inside the
+ *   createAgent loop — the turn's first model call AND each call after a
+ *   tool result — draining the TurnLoop buffer via
+ *   `configurable.drainQueuedInput` and injecting the queued messages as a
+ *   `HumanMessage` (FR-001, `specs/038-queue-input-mid-turn/contracts/
+ *   injection-seam-contract.md` §3).
  * - **Post-process (once, after `createAgent` returns — D6 step 4)**: consume
  *   the ephemeral buffer's `gameEvent`; if an unconsumed end event exists,
  *   write `TeamState.gameEnded = status` (the conditional edge then routes to
@@ -36,12 +43,15 @@
  */
 
 import { createAgent } from "langchain";
-import { SystemMessage } from "@langchain/core/messages";
+import type { Runtime } from "langchain";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import { appendSkillBodyToPrompt } from "../skill-loader";
+import { buildContentBlocks } from "../llm";
+import type { TurnContent } from "../llm";
 import type { ChatModel } from "../model-provider";
 import type { StrategyStore } from "../strategy-store";
 import type { TeamStateValue } from "./state";
@@ -163,6 +173,36 @@ export function createPlayerNode(
 						if (buffer.gameEvent && !buffer.gameEvent.consumed) {
 							return { jumpTo: "end" };
 						}
+					},
+				},
+			},
+			// Feature 038 (US1): drains the TurnLoop buffer before every model
+			// call and injects the queued content as a HumanMessage —
+			// mid-turn delivery (FR-001, spec v2)
+			// (`specs/038-queue-input-mid-turn/contracts/injection-seam-contract.md`
+			// §3).
+			{
+				name: "queueDrain",
+				beforeModel: {
+					hook: (_state: unknown, runtime: Runtime) => {
+						// The configurable bag is an index signature
+						// (`{ [key: string]: unknown }`); the drain callback's
+						// contract type is `(() => TurnContent | null) |
+						// undefined` (injection-seam-contract.md §1) — the
+						// `typeof` guard keeps the runtime check regardless.
+						const drain = runtime.configurable?.drainQueuedInput as
+							| (() => TurnContent | null)
+							| undefined;
+						if (typeof drain !== "function") return;
+						const drained = drain();
+						if (!drained) return;
+						return {
+							messages: [
+								new HumanMessage({
+									content: buildContentBlocks(drained),
+								}),
+							],
+						};
 					},
 				},
 			},

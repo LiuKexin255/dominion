@@ -326,6 +326,12 @@ export class SessionTeam {
 						if (role) frame.role = role;
 						this.turnLoopEmit?.(frame);
 					},
+					// Feature 038 (US1): mid-turn drain seam — the player's
+					// `queueDrain` beforeModel middleware calls this before
+					// every model call to inject queued user messages
+					// (`specs/038-queue-input-mid-turn/contracts/
+					// injection-seam-contract.md` §2; FR-001).
+					drainQueuedInput: () => this.turnLoop?.drainQueue() ?? null,
 				},
 				metadata: { session_id: this.sessionId },
 				version: "v3",
