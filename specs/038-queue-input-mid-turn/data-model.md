@@ -72,14 +72,18 @@ The returned `{ messages: [...] }` is applied by the createAgent's state update 
 
 ### Change: backward-scan merge target
 
-When an agent text/thinking frame arrives and the immediate last entry is a USER message (optimistic insertion), the merge logic now scans **backwards** past USER entries to find the last AGENT entry with matching `agent` and `mergeKind`:
+When an agent text/thinking frame arrives and the immediate last entry is a USER message (optimistic insertion), the merge logic now scans **backwards** past USER entries to find the last AGENT entry with matching `agent` and `mergeKind`. A matching AGENT entry whose `parts` array is **empty** is skipped — the scan continues backward — so it is neither chosen as the merge target (appending to an entry with no trailing part would be a no-op) nor does it break the chain (bubble continuity is preserved). Implemented as `findMergeTarget` in `projects/game/desktop/frontend/src/stream-merge.ts:48-62`:
 
 ```text
 for i from list.length-1 downto 0:
   entry = list[i]
   if entry.role == AGENT and entry.agent == agent and entry.mergeKind == kind:
-    → merge target found at i; append content to trailing part
-    → break
+    if entry.parts.length > 0:
+      → merge target found at i; append content to trailing part
+      → break
+    else:
+      → continue   // matches but parts empty — skip, keep scanning backward
+                   // for an earlier populated entry (does not break the chain)
   if entry.role != USER:
     → break (non-USER entry that doesn't match breaks the chain)
   // else: skip USER entry, continue backward scan

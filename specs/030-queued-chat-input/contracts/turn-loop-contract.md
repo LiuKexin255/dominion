@@ -21,6 +21,7 @@ Owned by `SessionAgent` (one instance per `sessionId`). Constructed with:
 | `isRunning` | `() => boolean` | True iff a turn is in flight or the loop is draining queued work. Feeds `deriveStatusSignal(isInFlight = isRunning(), …)` — the **only** status source (replaces `isMutexHeld`). |
 | `queueDepth` | `() => number` | Current `buffer.length`. (Used by tests; not strictly required by callers.) |
 | `abort` | `() => void` | Abort the in-flight turn (`controller.abort()`) **and clear the buffer** (FR-011). Transitions RUNNING→IDLE and emits `wait` so the desktop returns to ready. No-op if IDLE. |
+| `drainQueue` | `() => TurnContent \| null` | **Synchronous.** If the buffer is non-empty: merge ALL buffered `TurnContent`s into one aggregated `TurnContent` via `combineAll` (FIFO order), clear the buffer, emit `QueueSignal(0)`, and return the combined content. If the buffer is empty: return `null` (no-op, no emission). Does NOT change `running` state or transition the loop — it only touches the buffer + emits the depth signal. (Added by feature 038; authoritative definition: `specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md`.) |
 
 ### Loop body (RUNNING)
 
@@ -41,6 +42,8 @@ while true:
      break
 running = false
 ```
+
+**Mid-turn drain (feature 038)**: `drainQueue` MAY be called in the middle of a turn by the player's `queueDrain` `beforeModel` middleware (`projects/game/agent/src/team/player.ts:184-208`), which fires before every model call within the agent loop. When it runs, it clears the buffer **before** the turn-end check in the loop body above: the `buffer non-empty` test then sees 0 (unless new messages arrived after the last `drainQueue` call, e.g. during the final tool execution — the turn-end drain catches those, unchanged). There is no double-drain: `drainQueue` clears the buffer atomically, so the turn-end check sees whatever is left (0 or new arrivals). Authoritative definition: `specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md`.
 
 ### Errors
 
