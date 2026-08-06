@@ -227,7 +227,9 @@ func TestAgentDialogMessageContentDisplayOnly(t *testing.T) {
 // This is the sequential-submit form of FIFO ordering: each message starts
 // only after the previous turn's wait returned the loop to idle. The
 // rapid-submit form — messages arriving mid-run, merged by the TurnLoop into
-// one aggregated turn — is covered by TestAgentDialogQueueMultipleCombine
+// one aggregated turn — is covered by the gate-controlled unit tests in
+// projects/game/agent/src/turn-loop.test.ts ("combines ALL pending queued
+// messages into one aggregated turn (FIFO)", turn-loop.test.ts:398)
 // (specs/030-queued-chat-input/spec.md FR-005).
 func TestAgentDialogFIFOQueue(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
@@ -325,233 +327,186 @@ func TestAgentDialogDeleteTeamProfileStillResponds(t *testing.T) {
 
 // ─── Queue-while-running tests (specs/030-queued-chat-input) ────────────────
 //
-// These tests cover quickstart.md Scenarios 1-4: input during a run does not
-// disturb the in-flight turn (specs/030-queued-chat-input/spec.md FR-001/FR-002),
-// the queued message auto-becomes the next turn (specs/030-queued-chat-input/spec.md
-// FR-005/FR-006), multiple queued messages combine into one aggregated turn
-// (specs/030-queued-chat-input/spec.md FR-004/FR-005), and QueueSignal drives
-// pending visibility (specs/030-queued-chat-input/spec.md FR-008/FR-009).
+// The ONLY queue-while-running large test below is
+// TestAgentDialogQueueMidTurnInjection: it covers the feature 038 mid-turn
+// injection of a queued message at the tool-result boundary — a TOOL turn,
+// where the saolei tool dispatch provides a reliably controllable in-flight
+// window (the tool stays blocked until the desktop replies)
+// (specs/038-queue-input-mid-turn/spec.md FR-001).
 //
-// The per-session TurnLoop (projects/game/agent/src/turn-loop.ts) is the
-// single-flight + queue owner. When the test sends two frames in rapid
-// succession, the first submit starts a turn (running=true) and the second
-// submit arrives while the first turn is still in the fake-llm HTTP round-trip,
-// so it is buffered (not processed concurrently). The fake-llm round-trip
-// (localhost HTTP + JSON + SSE) provides the in-flight window.
+// The no-tool fallback (specs/038-queue-input-mid-turn/spec.md FR-004) and the
+// spec 030 next-turn handoff / multi-message combine / does-not-disturb /
+// QueueSignal-visibility behaviors are NOT covered at the large-test layer:
+// fake-llm has no delay mechanism and a no-tool turn responds in milliseconds,
+// so the fallback window between the first reasoning step and the turn-end
+// drain cannot be synchronized end-to-end — the earlier large tests relying on
+// it were unreliable and have been removed (designer evaluation; no code
+// change, per style/large_test.md no dead code). These behaviors are
+// deterministically covered by unit tests in projects/game/agent/src/
+// turn-loop.test.ts, whose gate-controlled fake runner holds the turn
+// in-flight and drains the buffer through the SAME turn-end `runLoop` code
+// path the FR-004 fallback uses: does-not-disturb + next-turn handoff
+// ("submit while running buffers and does not disturb the in-flight turn",
+// turn-loop.test.ts:242), multi-message combine ("combines ALL pending queued
+// messages into one aggregated turn (FIFO)", turn-loop.test.ts:398),
+// QueueSignal depth visibility ("emits QueueSignal(new depth) on each submit
+// while running", turn-loop.test.ts:526), and the turn-end drain ("after a
+// drainQueue call the turn-end drain sees an empty buffer (no double-drain)",
+// turn-loop.test.ts:665).
 
-// TestAgentDialogQueueAutoHandoff verifies quickstart.md Scenario 2
-// (specs/030-queued-chat-input/spec.md FR-005/FR-006): a message queued during
-// a run becomes the next turn automatically, with exactly one terminal wait at
-// the end. Also covers Scenario 4 (specs/030-queued-chat-input/spec.md
-// FR-008/FR-009): QueueSignal depth changes drive pending visibility
-// (submit⇒1, drain⇒0).
+// TestAgentDialogQueueMidTurnInjection verifies specs/038-queue-input-mid-turn
+// US1 (FR-001): a message submitted while a saolei TOOL is executing is
+// drained MID-TURN — at the next beforeModel boundary, NOT at turn end — and
+// reaches the agent (it is injected into the conversation state and persisted
+// in history).
 //
-// Two messages are sent in rapid succession. The first starts a turn; the
-// second is buffered (QueueSignal depth 1). On the first turn's completion,
-// the buffer drains into the next turn (QueueSignal depth 0) WITHOUT an
-// intervening wait — only a single terminal wait fires when the loop reaches
-// idle.
-func TestAgentDialogQueueAutoHandoff(t *testing.T) {
+// The flow drives a real saolei_init dispatch (same trigger as
+// TestAgentOperationDispatchLoopSuccess): the user turn makes fake-LLM return
+// a saolei_init tool_call, the agent dispatches the F2 KeyboardPressPart
+// through OperationBridge, and the tool stays in-flight until the desktop
+// replies. Inside that window the test submits "watch out for mines" — the
+// TurnLoop buffers it and emits QueueSignal(1)
+// (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2). The
+// desktop reply resolves the dispatch; the player's `queueDrain` beforeModel
+// middleware (projects/game/agent/src/team/player.ts) then drains the buffer
+// before the next model call, emitting QueueSignal(0) mid-turn
+// (specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md
+// emission table).
+//
+// The depth-0 QueueSignal appears BEFORE the terminal wait frame — the shape
+// of the turn-loop-drain-contract sequence (submit⇒1, drain⇒0, wait): the
+// drain happened while the turn was still running, not at turn idle. NOTE:
+// this ordering alone does NOT distinguish spec 038 mid-turn injection from a
+// spec 030 turn-end drain — under the 030 regression the depth-0 signal also
+// precedes a wait (turn 2's wait). The distinguishing assertion is the
+// saolei_click check: NO saolei_click dispatch after the init — the injected
+// HumanMessage became the last message of the next model call, so the fake-LLM
+// tools branch never saw the init tool result alone, and the init→click→click
+// chain was interrupted (under 030 turn-end semantics the queued message would
+// be deferred to the turn-end hand-off, so the chain would complete first).
+// Exactly ONE terminal wait is also asserted, but the count only guards turn
+// completion — drainUntilWait stops at the first wait, so countWaitFrames
+// cannot detect a second turn; the no-second-turn guarantee follows from the
+// saolei_click check above (the interrupted chain means the injection happened
+// mid-turn).
+func TestAgentDialogQueueMidTurnInjection(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	profileName := fmt.Sprintf("ad-qah-%s", uniqueSuffix())
+	profileName := fmt.Sprintf("ad-mid-%s", uniqueSuffix())
 
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// Send two messages in rapid succession. Both carry distinct keywords so
-	// the fake-llm responses are deterministic and distinguishable.
-	// msg-1: greeting keyword "hello" → greeting template.
-	// msg-2: farewell keyword "goodbye" → farewell template.
-	sendText(t, conn, sessionID, "hello world")
-	sendText(t, conn, sessionID, "goodbye world")
+	// when: a user turn matching the fake-LLM "saolei-start" keyword makes
+	// fake-LLM return a saolei_init tool_call (FR-002).
+	sendText(t, conn, sessionID, "please start saolei game")
 
-	// Collect ALL frames until the terminal wait (loop idle).
+	// The player emits the tool_call MessagePart frame AND dispatches the F2
+	// KeyboardPressPart FlowPart through OperationBridge (they race on the WS —
+	// readToolCallAndOperation collects both in a single pass). The tool is
+	// now in-flight: it blocks on the desktop's FlowResultPart reply.
+	_, initOpFrame := readToolCallAndOperation(t, conn)
+
+	// While the tool is executing (BEFORE the reply), submit a message. The
+	// TurnLoop buffers it and emits QueueSignal(1). The submit is ordered on
+	// the same WS before the reply below, so the depth-1 signal is written to
+	// the sink before any post-reply frame — drainUntilWait below sees it.
+	sendText(t, conn, sessionID, "watch out for mines")
+
+	// The desktop replies with a recognizable in-progress board; the bridge
+	// resolves the pending dispatch. The next beforeModel fires queueDrain,
+	// which injects the buffered message mid-turn (QueueSignal(0)).
+	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
+	respondToOperationWithScreenshot(t, conn, sessionID, initOpFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed", screenshot)
+
+	// Collect ALL remaining frames until the terminal wait. readToolCallAndOperation
+	// already consumed the tool_call + operation frames; neither carries a
+	// QueueSignal (the queued message is submitted AFTER it returns), so the
+	// frames below carry the COMPLETE QueueSignal sequence [1, 0].
 	frames := drainUntilWait(t, conn)
 
-	// specs/030-queued-chat-input/spec.md FR-008/FR-009: QueueSignal depth
-	// sequence is [1, 0] — submit-while-running grew the buffer to 1, then
-	// drain-into-next-turn cleared it
-	// (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2).
+	// QueueSignal depth sequence: [1, 0] — submit-while-running grew the
+	// buffer to 1, then the MID-TURN drainQueue cleared it to 0
+	// (specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md
+	// emission table).
 	depths := queueSignalDepths(frames)
 	if len(depths) < 2 {
 		t.Fatalf("expected at least 2 QueueSignal frames (submit+drain), got %d: %v", len(depths), depths)
 	}
-	// The first signal MUST be depth 1 (the second message was buffered).
 	if depths[0] != 1 {
-		t.Errorf("first QueueSignal depth = %d, want 1 (second message buffered)", depths[0])
+		t.Errorf("first QueueSignal depth = %d, want 1 (message buffered while the saolei tool was in-flight)", depths[0])
 	}
-	// A depth-0 signal MUST appear (buffer drained into the next turn).
-	foundZero := false
-	for _, d := range depths {
-		if d == 0 {
-			foundZero = true
+
+	// Shape guard: the depth-0 signal exists and appears BEFORE the terminal
+	// wait, matching the turn-loop-drain-contract sequence (submit⇒1, drain
+	// ⇒0, wait)
+	// (specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md
+	// "Mid-turn drainQueue clears the buffer" row). NOTE: this ordering alone
+	// does NOT distinguish spec 038 mid-turn injection from a spec 030
+	// turn-end drain — under the 030 regression the depth-0 signal also
+	// precedes a wait (turn 2's wait). The distinguishing assertion is the
+	// saolei_click check below.
+	zeroIdx, waitIdx := -1, -1
+	for i, f := range frames {
+		if zeroIdx == -1 {
+			if q := frameQueueSignal(f); q != nil && q.GetQueuedCount() == 0 {
+				zeroIdx = i
+			}
+		}
+		if waitIdx == -1 && frameWait(f) != nil {
+			waitIdx = i
 		}
 	}
-	if !foundZero {
-		t.Errorf("no QueueSignal depth 0 found in sequence %v (buffer drain signal missing)", depths)
+	if zeroIdx == -1 {
+		t.Errorf("no QueueSignal depth 0 found in sequence %v (mid-turn drain signal missing)", depths)
+	}
+	if waitIdx == -1 {
+		t.Fatalf("no wait frame found in %d drained frames", len(frames))
+	}
+	if zeroIdx != -1 && zeroIdx > waitIdx {
+		t.Errorf("QueueSignal depth 0 (mid-turn drain) at frame %d appears AFTER the wait at frame %d — "+
+			"the buffer was drained at turn end, not mid-turn (specs/038-queue-input-mid-turn/spec.md FR-001)",
+			zeroIdx, waitIdx)
 	}
 
-	// specs/030-queued-chat-input/spec.md FR-006: exactly one terminal wait —
-	// the loop continued from turn 1 to turn 2 WITHOUT an intervening wait
-	// (only QueueSignal(0) between them).
+	// Confirm the turn reached completion (a terminal wait frame was
+	// observed). drainUntilWait returns at the first wait, so this guards
+	// against a missing/timeout turn rather than a second turn — the
+	// no-second-turn guarantee is asserted by the saolei_click check below.
 	waitCount := countWaitFrames(frames)
 	if waitCount != 1 {
-		t.Errorf("wait frame count = %d, want 1 (single terminal wait after full drain); "+
-			"if >1 the messages were processed sequentially rather than queued — "+
-			"see specs/030-queued-chat-input/spec.md FR-006", waitCount)
+		t.Errorf("wait frame count = %d, want 1 (the turn must reach completion; count 0 means the turn missed or timed out before a wait — drainUntilWait stops at the first wait, so a second turn cannot be detected here)", waitCount)
 	}
 
-	// Both messages produced responses: greeting for msg-1, farewell for msg-2.
-	texts := collectTextContents(frames)
-	if len(texts) < 2 {
-		t.Fatalf("expected at least 2 agent text responses, got %d: %v", len(texts), texts)
-	}
-	if !strings.Contains(texts[0], expectedGreetingText) {
-		t.Errorf("turn 1 response = %q, want to contain %q (greeting)", texts[0], expectedGreetingText)
-	}
-	if !strings.Contains(texts[1], expectedFarewellText) {
-		t.Errorf("turn 2 response = %q, want to contain %q (farewell — the queued message)", texts[1], expectedFarewellText)
-	}
-}
-
-// TestAgentDialogQueueMultipleCombine verifies quickstart.md Scenario 3
-// (specs/030-queued-chat-input/spec.md FR-004/FR-005): multiple messages
-// queued during a single run are combined into ONE next turn in FIFO order,
-// not processed as separate turns.
-//
-// Three messages are sent in rapid succession. msg-1 starts the first turn.
-// msg-2 and msg-3 are buffered while turn 1 runs. On turn 1's completion, the
-// buffer [msg-2, msg-3] is merged into one aggregated HumanMessage (FIFO) and
-// run as exactly ONE next turn — NOT two separate turns.
-func TestAgentDialogQueueMultipleCombine(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("ad-qmc-%s", uniqueSuffix())
-
-	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
-	defer conn.Close()
-
-	// msg-1 starts turn 1 (greeting). msg-2 and msg-3 are queued while turn 1
-	// runs and combined into one aggregated turn on drain.
-	sendText(t, conn, sessionID, "hello world")
-	sendText(t, conn, sessionID, "goodbye world")
-	sendText(t, conn, sessionID, "hi friend")
-
-	frames := drainUntilWait(t, conn)
-
-	// QueueSignal depth sequence: [1, 2, 0] — msg-2 grew buffer to 1, msg-3
-	// grew it to 2, then the combined drain cleared it to 0
-	// (specs/030-queued-chat-input/quickstart.md Scenario 3).
-	depths := queueSignalDepths(frames)
-	if len(depths) < 3 {
-		t.Fatalf("expected at least 3 QueueSignal frames (two submits + drain), got %d: %v", len(depths), depths)
-	}
-	if depths[0] != 1 {
-		t.Errorf("first QueueSignal depth = %d, want 1 (msg-2 buffered)", depths[0])
-	}
-	if depths[1] != 2 {
-		t.Errorf("second QueueSignal depth = %d, want 2 (msg-3 buffered)", depths[1])
-	}
-	// A depth-0 signal MUST appear (combined turn drained the buffer).
-	foundZero := false
-	for _, d := range depths {
-		if d == 0 {
-			foundZero = true
-		}
-	}
-	if !foundZero {
-		t.Errorf("no QueueSignal depth 0 found in sequence %v (combined drain signal missing)", depths)
-	}
-
-	// specs/030-queued-chat-input/spec.md FR-005: exactly one terminal wait —
-	// the loop ran turn 1, then the combined turn (from the drained buffer),
-	// with no intervening wait.
-	waitCount := countWaitFrames(frames)
-	if waitCount != 1 {
-		t.Errorf("wait frame count = %d, want 1 (single terminal wait after combined drain); "+
-			"see specs/030-queued-chat-input/spec.md FR-005", waitCount)
-	}
-
-	// Turn 1 response is the greeting (msg-1). The combined turn response
-	// addresses the merged [msg-2, msg-3] text — the fake-llm joins text
-	// parts with a space and keyword-matches; "goodbye world hi friend"
-	// contains both "bye" (farewell) and "hi" (greeting), and alphabetical
-	// tie-breaking picks farewell (f < g). The combined response is therefore
-	// deterministic.
-	texts := collectTextContents(frames)
-	if len(texts) < 2 {
-		t.Fatalf("expected at least 2 agent text responses (turn 1 + combined turn), got %d: %v", len(texts), texts)
-	}
-	if !strings.Contains(texts[0], expectedGreetingText) {
-		t.Errorf("turn 1 response = %q, want to contain %q (greeting for msg-1)", texts[0], expectedGreetingText)
-	}
-	// The combined turn produced a response (its exact content depends on
-	// fake-llm keyword matching of the merged text — see comment above).
-	t.Logf("combined turn response: %q", texts[1])
-}
-
-// TestAgentDialogQueueInputDoesNotDisturb verifies quickstart.md Scenario 1
-// (specs/030-queued-chat-input/spec.md FR-001/FR-002): submitting a message
-// while a turn is in progress does not disturb the in-flight turn — its
-// streamed response completes as if nothing was queued.
-//
-// The TurnLoop guarantees (specs/030-queued-chat-input/spec.md FR-002) that a
-// submit-while-running only touches the buffer; the in-flight generateTurn is
-// isolated. The observable proof is that turn 1's response content is complete
-// and correct (greeting template), identical to a turn run with nothing queued.
-func TestAgentDialogQueueInputDoesNotDisturb(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("ad-qnd-%s", uniqueSuffix())
-
-	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
-	defer conn.Close()
-
-	// Send msg-1 (greeting), then immediately msg-2 (farewell) while turn 1
-	// is still in the fake-llm round-trip. The queued msg-2 MUST NOT alter
-	// turn 1's output.
-	sendText(t, conn, sessionID, "hello world")
-	sendText(t, conn, sessionID, "goodbye world")
-
-	frames := drainUntilWait(t, conn)
-
-	// specs/030-queued-chat-input/spec.md FR-002: turn 1's response is
-	// complete and correct — the greeting template with both reasoning and
-	// text, identical to an undisturbed turn.
-	thinkingFrames := 0
-	textFrames := 0
+	// KEY (distinguishing) assertion: the injected message interrupted the
+	// saolei tool chain — no saolei_click dispatch may follow the init reply.
+	// The injected HumanMessage became the last message of the next model
+	// call, so the fake-LLM matched the user text instead of chaining the init
+	// tool result into saolei_click{3,4}. This is the check that separates
+	// spec 038 mid-turn injection from the spec 030 turn-end drain: under
+	// 030 semantics the queued message would be deferred to the turn-end
+	// hand-off, so the init→click chain would complete first.
 	for _, f := range frames {
-		if f.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
-			continue
+		if mmc := frameMouseMoveAndClick(f); mmc != nil {
+			t.Errorf("saolei_click dispatch found after the mid-turn drain — the queued message was NOT injected before the next model call: %v", mmc)
 		}
-		if frameHasThinking(f) {
-			thinkingFrames++
-		}
-		if frameHasText(f) {
-			textFrames++
-		}
-	}
-	if thinkingFrames < 1 {
-		t.Errorf("no agent thinking frame received (turn 1 reasoning missing)")
-	}
-	if textFrames < 2 {
-		t.Errorf("agent text frame count = %d, want >= 2 (turn 1 greeting + queued turn response)", textFrames)
 	}
 
-	// Turn 1's text is the greeting (undisturbed by the queued msg-2).
-	texts := collectTextContents(frames)
-	if len(texts) == 0 {
-		t.Fatal("no agent text responses received")
-	}
-	if !strings.Contains(texts[0], expectedGreetingText) {
-		t.Errorf("turn 1 response = %q, want to contain %q (in-flight turn undisturbed by queued message; specs/030-queued-chat-input/spec.md FR-002)",
-			texts[0], expectedGreetingText)
+	// then: the queued message reached the agent — it was injected into the
+	// conversation state and persisted, so ListMessages surfaces it as a USER
+	// message (injection-seam-contract.md §3 — the HumanMessage is appended to
+	// the player channel via messagesStateReducer). NOTE: "watch out for
+	// mines" matches no fake-LLM keyword (verified against the MessageStore
+	// fixtures in projects/game/fake-llm/service/testdata), so the post-drain
+	// model response is the matcher's random fallback — its CONTENT is
+	// intentionally not asserted; the deterministic proof of delivery is the
+	// persisted history.
+	lmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	if !messagesContainText(lmr.GetMessages(), "watch out for mines") {
+		t.Errorf("ListMessages did not surface the queued message 'watch out for mines' — " +
+			"the mid-turn injection did not reach the agent (specs/038-queue-input-mid-turn/spec.md FR-001)")
 	}
 }

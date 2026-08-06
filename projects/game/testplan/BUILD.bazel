@@ -67,7 +67,9 @@ go_largetest(
     srcs = [
         "agent_dialog_test.go",
         "helpers_test.go",
+        "saolei_fixtures_test.go",
     ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",

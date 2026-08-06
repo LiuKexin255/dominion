@@ -1061,25 +1061,6 @@ func countWaitFrames(frames []*game.TeamFrame) int {
 	return count
 }
 
-// collectTextContents returns the text content of every agent-sent text
-// MessagePart frame in the slice, in order. The role filter keeps only
-// agent-role frames (TeamFrame.role; specs/035-proto-contract-refine/
-// contracts/frame-split.md §3.2). Used to verify which queued messages
-// produced turns and in what order.
-func collectTextContents(frames []*game.TeamFrame) []string {
-	var texts []string
-	for _, f := range frames {
-		if f.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
-			continue
-		}
-		if !frameHasText(f) {
-			continue
-		}
-		texts = append(texts, frameText(f))
-	}
-	return texts
-}
-
 // messageKind returns the MessagePart-kind string of the first part in a
 // Message's content MessageParts ("text", "thinking", "image", "toolCall",
 // "toolResult"), or "" if the message has no content. Only MessagePart kinds
