@@ -1,5 +1,5 @@
-load("//tools/dev/js:vite.bzl", "vite_build")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vite.bzl", "vite_build")
 load("//tools/dev/js:vitest_test.bzl", "vitest_test")
 
 npm_link_all_packages(name = "node_modules")
