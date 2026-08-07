@@ -104,7 +104,7 @@
 - [X] T015 [P] 同步 `specs/035-proto-contract-refine/data-model.md:178`：请求消息清单 `CreateTeamRequest`→`UpdateTeamRequest`。
 - [X] T016 [P] 同步 `specs/039-planner-memory-calibration/`（**未实现，仅改文档**）：将 initInstruction 触发点由"CreateTeam 构建 graph 后异步"改为"`UpdateTeam(allow_missing=true)` 物化路径（graph 首建）后异步"；profile 变更重建不重跑 init（仅首建触发）。涉及 `spec.md`（`:30,82,91,142`）、`research.md`（`:124,241,249,280`）、`tasks.md`（`:141,158`）、`contracts/team-graph-contract.md`（`:58,150,152,153`）中所有 `CreateTeam`/`SessionTeamStore.create` 引用。
 - [X] T017 修改大型测试代码 `projects/game/testplan/`：(1) `helpers_test.go`（`:451,481`）：`game.CreateTeamRequest`→`game.UpdateTeamRequest`，构造 PATCH 请求（body 为 `game.Team{Name,Profile}` + `allow_missing` query）；(2) `saolei_team_test.go`（`:243-250` 及 CreateTeam 相关用例）：原"同 profile→200 / 异 profile→409"改为"同 profile→200 幂等 / 异 profile→200 重建成功"，新增 in-flight 重建→400 FAILED_PRECONDITION 用例。运行 `bazel build //projects/game/testplan:...` 验证测试代码编译通过（测试执行与验收属 T018 guitar 实跑）。
-- [ ] T018 大型测试验收（宪法原则 VI）：经 testplan skill 执行 `guitar run <plan.yaml>`（部署→测试→清理闭环），覆盖 [quickstart.md](quickstart.md) 场景 1-4（物化/幂等多标签/profile 重建/错误语义）。**验收标准：所有用例全部通过**（任何 failed/flaky 视为未通过，须修复重跑直至全绿）。仅 `bazel build` 测试 target **不构成**验收。
+- [X] T018 大型测试验收（宪法原则 VI）：经 testplan skill 执行 `guitar run <plan.yaml>`（部署→测试→清理闭环），覆盖 [quickstart.md](quickstart.md) 场景 1-4（物化/幂等多标签/profile 重建/错误语义）。**验收标准：所有用例全部通过**（任何 failed/flaky 视为未通过，须修复重跑直至全绿）。仅 `bazel build` 测试 target **不构成**验收。
 
 **Checkpoint**: 文档与契约一致（引用溯源）；大型测试实跑全绿（服务型应用验收）。
 
