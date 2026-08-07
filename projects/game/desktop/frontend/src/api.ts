@@ -44,7 +44,7 @@ export interface Session {
 
 // Team is the execution subject of a session: a per-template set of agents
 // (replaces the old single-agent `Agent`; spec 031-team-template-mode
-// data-model.md §1.3). Returned by getTeam/createTeam.
+// data-model.md §1.3). Returned by getTeam/updateTeam.
 export interface Team {
   name: string
   sessionId: string
@@ -447,7 +447,7 @@ interface WailsApp {
   GetSession(template: string, sessionID: string): Promise<Session>
   DeleteSession(template: string, sessionID: string): Promise<void>
   GetTeam(template: string, sessionID: string): Promise<Team>
-  CreateTeam(template: string, sessionID: string, profile: string): Promise<Team>
+  UpdateTeam(template: string, sessionID: string, profile: string, updateMaskPaths: string[], allowMissing: boolean): Promise<Team>
   ListWindows(): Promise<WindowRef[]>
   SetSelectedWindow(hwnd: number): Promise<void>
   CaptureScreenshot(): Promise<CapturedImage>
@@ -522,14 +522,21 @@ export async function getTeam(template: string, sessionID: string): Promise<Team
   return a.GetTeam(template, sessionID)
 }
 
-// createTeam explicitly creates the per-session singleton Team (AIP-133 —
-// the ONLY Team creation point, FR-033). profile is the TeamProfile full
-// resource name (templates/{template}/profiles/{profile}); repeated create
-// with the same profile is idempotent (api-contract §2.2 idempotency note).
-export async function createTeam(template: string, sessionID: string, profile: string): Promise<Team> {
+// updateTeam materializes or updates the per-session singleton Team (AIP-134
+// create-or-update + AIP-156 — the ONLY Team creation point, FR-001). profile
+// is the TeamProfile full resource name (templates/{template}/profiles/{profile});
+// allowMissing=true materializes the Team when it does not exist yet and
+// repeated calls are idempotent (FR-002).
+export async function updateTeam(
+  template: string,
+  sessionID: string,
+  profile: string,
+  updateMaskPaths: string[],
+  allowMissing: boolean,
+): Promise<Team> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.CreateTeam(template, sessionID, profile)
+  return a.UpdateTeam(template, sessionID, profile, updateMaskPaths, allowMissing)
 }
 
 /** @deprecated Use chat-based interfaces instead. */

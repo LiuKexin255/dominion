@@ -74,7 +74,7 @@ message UpdateTeamRequest {
 
 ### 2.5 并发与 owner
 
-- proxy 侧 `assignOwner`（`projects/game/proxy/handler/handler.go:274-348`）从 CreateTeam 搬入 UpdateTeam，**唯一 owner 分配点**不变：get-or-create + `ErrOwnerAlreadyExists` 竞态重读胜者（[research.md](../research.md) §R10）。
+- proxy 侧 `assignOwner`（`projects/game/proxy/handler/handler.go:274-348`）从 CreateTeam 搬入 UpdateTeam，**唯一 owner 分配点**不变：get-or-create + `ErrOwnerAlreadyExists` 竞态重读胜者（[research.md](../research.md) §R10）。`UpdateTeam` **始终调用 `assignOwner`**（路由解析），**不 inspect `allow_missing`**——proxy 是路由层，allow_missing 是 Team 资源语义，由 agent `SessionTeamStore.update`（`projects/game/agent/src/session-team.ts`）处理（缺失+true→物化、缺失+false→NOT_FOUND、既有+同 profile→幂等、既有+异 profile→重建）。§2.3 行为矩阵描述 proxy+agent 合并行为：`allow_missing=false`+未物化的 NOT_FOUND 由 agent 层返回，proxy 透传（[AIP-134 create-or-update](https://google.aip.dev/134#create-or-update)）。
 - 多个并发 `UpdateTeam(allow_missing=true)` 针对同一未物化会话：owner 分配收敛于胜者；agent 侧 `SessionTeamStore` 单飞（`pending` map）保证 graph 仅构建一次。
 - **Team 配置路径不外泄 ALREADY_EXISTS**（FR-007，[research.md](../research.md) §R6 偏离消除）。
 

@@ -1979,7 +1979,7 @@ func TestCaptureScreenshot_SelectionButCaptureFails(t *testing.T) {
 //
 // These tests cover the Wails bindings added in T025
 // (specs/031-team-template-mode/contracts/desktop-contract.md §4): the
-// template-scoped session bindings, the Team bindings (GetTeam/CreateTeam/
+// template-scoped session bindings, the Team bindings (GetTeam/UpdateTeam/
 // RefreshTeam), and the TeamProfile CRUD bindings. They follow the same
 // httptest-server pattern as the pre-existing binding tests.
 
@@ -2118,31 +2118,35 @@ func TestGetTeam_NotFound(t *testing.T) {
 	}
 }
 
-// TestCreateTeam_Success verifies CreateTeam delegates to client with the
-// TeamProfile resource name and returns the created Team view.
-func TestCreateTeam_Success(t *testing.T) {
-	// given: mock server responding to POST /api/v1/templates/saolei/sessions/s1/team
+// TestUpdateTeam_Success verifies UpdateTeam delegates to client with the
+// TeamProfile resource name, PATCH method, Team body, and allow_missing query,
+// and returns the updated Team view.
+func TestUpdateTeam_Success(t *testing.T) {
+	// given: mock server responding to PATCH /api/v1/templates/saolei/sessions/s1/team
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
+		if r.Method != http.MethodPatch {
+			t.Errorf("expected PATCH, got %s", r.Method)
 		}
 		wantPath := "/api/v1/templates/saolei/sessions/s1/team"
 		if r.URL.Path != wantPath {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
+		if got := r.URL.Query().Get("allow_missing"); got != "true" {
+			t.Errorf("expected allow_missing true, got %q", got)
+		}
 		body, _ := io.ReadAll(r.Body)
-		req := new(game.CreateTeamRequest)
+		req := new(game.Team)
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
 			t.Fatalf("failed to parse request body: %v", err)
 		}
-		if req.GetParent() != "templates/saolei/sessions/s1" {
-			t.Errorf("expected parent %q, got %q", "templates/saolei/sessions/s1", req.GetParent())
+		if req.GetName() != "templates/saolei/sessions/s1/team" {
+			t.Errorf("expected name %q, got %q", "templates/saolei/sessions/s1/team", req.GetName())
 		}
 		if req.GetProfile() != "templates/saolei/profiles/p1" {
 			t.Errorf("expected profile %q, got %q", "templates/saolei/profiles/p1", req.GetProfile())
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1/team","agents":[{"name":"player","acceptsUserInput":true},{"name":"planner","acceptsUserInput":false}],"createTime":"2024-01-01T00:00:00Z"}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1/team","profile":"templates/saolei/profiles/p1","agents":[{"name":"player","acceptsUserInput":true},{"name":"planner","acceptsUserInput":false}],"createTime":"2024-01-01T00:00:00Z"}`)
 	}))
 	defer srv.Close()
 
@@ -2152,14 +2156,14 @@ func TestCreateTeam_Success(t *testing.T) {
 	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
 
 	// when
-	view, err := app.CreateTeam("saolei", "s1", "templates/saolei/profiles/p1")
+	view, err := app.UpdateTeam("saolei", "s1", "templates/saolei/profiles/p1", []string{"profile"}, true)
 
 	// then
 	if err != nil {
-		t.Fatalf("CreateTeam() unexpected error: %v", err)
+		t.Fatalf("UpdateTeam() unexpected error: %v", err)
 	}
 	if view == nil {
-		t.Fatal("CreateTeam() returned nil view")
+		t.Fatal("UpdateTeam() returned nil view")
 	}
 	if len(view.Agents) != 2 {
 		t.Fatalf("expected 2 agents, got %d", len(view.Agents))
@@ -2169,22 +2173,22 @@ func TestCreateTeam_Success(t *testing.T) {
 	}
 }
 
-// TestCreateTeam_EmptyProfile verifies CreateTeam rejects an empty profile.
-func TestCreateTeam_EmptyProfile(t *testing.T) {
+// TestUpdateTeam_EmptyProfile verifies UpdateTeam rejects an empty profile.
+func TestUpdateTeam_EmptyProfile(t *testing.T) {
 	// given: App with no client
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 
 	// when
-	view, err := app.CreateTeam("saolei", "s1", "")
+	view, err := app.UpdateTeam("saolei", "s1", "", nil, true)
 
 	// then
 	if err == nil {
-		t.Fatal("CreateTeam() expected error for empty profile, got nil")
+		t.Fatal("UpdateTeam() expected error for empty profile, got nil")
 	}
 	if view != nil {
-		t.Fatal("CreateTeam() expected nil view on error")
+		t.Fatal("UpdateTeam() expected nil view on error")
 	}
 	if !strings.Contains(err.Error(), "profile") {
 		t.Errorf("error should mention profile, got %q", err.Error())

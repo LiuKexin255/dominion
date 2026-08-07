@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import * as grpc from "@grpc/grpc-js";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 import { tool } from "langchain";
@@ -20,14 +21,14 @@ import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
 import { FakeStrategyStore } from "./strategy-store";
-import { SessionTeam, SessionTeamStore, TeamAlreadyExistsError } from "./session-team";
+import { SessionTeam, SessionTeamStore } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
 import type { TeamStateValue } from "./team/state";
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 
-/** Template id of the test sessions (saolei — CreateTeam default in tests). */
+/** Template id of the test sessions (saolei — UpdateTeam default in tests). */
 const TID = "saolei";
 
 function makeState(): GameState {
@@ -360,7 +361,7 @@ describe("SessionTeam", () => {
 });
 
 describe("SessionTeamStore", () => {
-	it("create builds once per session and forwards template+profile; get returns the cached team", async () => {
+	it("update materializes once per session and forwards template+profile; get returns the cached team", async () => {
 		const created: string[] = [];
 		const seenArgs: Array<[string, string]> = [];
 		const store = new SessionTeamStore(async (sessionId, template, profileName) => {
@@ -369,47 +370,67 @@ describe("SessionTeamStore", () => {
 			return buildTestTeam(sessionId).team;
 		});
 
-		const t1 = await store.create("s-1", "saolei", "default");
-		const t2 = await store.create("s-1", "saolei", "default");
+		const t1 = await store.update("s-1", "saolei", "default", true);
+		const t2 = await store.update("s-1", "saolei", "default", true);
 		expect(t1).toBe(t2);
 		expect(created).toEqual(["s-1"]);
 		expect(seenArgs).toEqual([["saolei", "default"]]);
 		expect(store.get("s-1")).toBe(t1);
+		expect(store.getProfileName("s-1")).toBe("default");
 		expect(store.get("s-2")).toBeUndefined();
 	});
 
-	it("create is idempotent for the same profile on an existing session", async () => {
+	it("update is idempotent for the same profile on an existing session (allow_missing irrelevant once materialized)", async () => {
 		const created: string[] = [];
 		const store = new SessionTeamStore(async (sessionId) => {
 			created.push(sessionId);
 			return buildTestTeam(sessionId).team;
 		});
 
-		const t1 = await store.create("s-2", "saolei", "default");
-		const t2 = await store.create("s-2", "saolei", "default");
+		const t1 = await store.update("s-2", "saolei", "default", true);
+		const t2 = await store.update("s-2", "saolei", "default", false);
 		expect(t1).toBe(t2);
 		expect(created).toEqual(["s-2"]);
 	});
 
-	it("create rejects TeamAlreadyExistsError for a DIFFERENT profile on an existing session", async () => {
+	it("update rejects with the temporary rebuild-pending error for a DIFFERENT profile on an existing session", async () => {
 		const created: string[] = [];
 		const store = new SessionTeamStore(async (sessionId) => {
 			created.push(sessionId);
 			return buildTestTeam(sessionId).team;
 		});
 
-		const t1 = await store.create("s-2", "saolei", "default");
+		const t1 = await store.update("s-2", "saolei", "default", true);
+		// MVP temporary (US3 T011 replaces with a graph rebuild): a different
+		// profile is not an idempotent retry — it is rejected regardless of
+		// allow_missing (the team already exists, FR-002/FR-005).
 		await expect(
-			store.create("s-2", "saolei", "other"),
-		).rejects.toBeInstanceOf(TeamAlreadyExistsError);
+			store.update("s-2", "saolei", "other", true),
+		).rejects.toThrow("profile change rebuild pending");
 		await expect(
-			store.create("s-2", "saolei", "other"),
-		).rejects.toThrow(/profile 'default'/);
+			store.update("s-2", "saolei", "other", false),
+		).rejects.toThrow("profile change rebuild pending");
 		expect(t1).toBe(store.get("s-2"));
+		expect(store.getProfileName("s-2")).toBe("default");
 		expect(created).toEqual(["s-2"]);
 	});
 
-	it("single-flights concurrent creates for the same session", async () => {
+	it("update returns NOT_FOUND for a missing session when allow_missing=false (AIP-134)", async () => {
+		const created: string[] = [];
+		const store = new SessionTeamStore(async (sessionId) => {
+			created.push(sessionId);
+			return buildTestTeam(sessionId).team;
+		});
+
+		await expect(
+			store.update("s-missing", "saolei", "default", false),
+		).rejects.toMatchObject({ code: grpc.status.NOT_FOUND });
+		// No factory call, no team row — the failure is a pure NOT_FOUND.
+		expect(created).toEqual([]);
+		expect(store.get("s-missing")).toBeUndefined();
+	});
+
+	it("single-flights concurrent updates for the same session", async () => {
 		const created: string[] = [];
 		const store = new SessionTeamStore(async (sessionId) => {
 			created.push(sessionId);
@@ -417,8 +438,8 @@ describe("SessionTeamStore", () => {
 		});
 
 		const [t1, t2] = await Promise.all([
-			store.create("s-3", "saolei", "default"),
-			store.create("s-3", "saolei", "default"),
+			store.update("s-3", "saolei", "default", true),
+			store.update("s-3", "saolei", "default", true),
 		]);
 		expect(t1).toBe(t2);
 		expect(created).toEqual(["s-3"]);
@@ -432,13 +453,15 @@ describe("SessionTeamStore", () => {
 		});
 
 		const [t1, t2] = await Promise.allSettled([
-			store.create("s-3", "saolei", "default"),
-			store.create("s-3", "saolei", "other"),
+			store.update("s-3", "saolei", "default", true),
+			store.update("s-3", "saolei", "other", true),
 		]);
 		expect(t1.status).toBe("fulfilled");
 		expect(t2.status).toBe("rejected");
 		if (t2.status === "rejected") {
-			expect(t2.reason).toBeInstanceOf(TeamAlreadyExistsError);
+			expect((t2.reason as Error).message).toBe(
+				"profile change rebuild pending",
+			);
 		}
 		// Only ONE team was ever built (single-flight), and the loser's
 		// profile comparison re-entry did not build a second graph.

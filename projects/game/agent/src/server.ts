@@ -232,7 +232,7 @@ export async function startServer(
   >();
 
   // Per-session team: resolve the requested TeamProfile's models (the
-  // template + profile name come from the CreateTeam request — no fixed
+  // template + profile name come from the UpdateTeam request — no fixed
   // default profile), wire the saolei MCP tools as the player's tools
   // (FR-010/FR-028), compile the team graph.
   //

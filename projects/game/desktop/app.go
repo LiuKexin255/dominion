@@ -1044,8 +1044,8 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 }
 
 // GetTeam retrieves the Team of a session (Wails-bound; desktop-contract §4).
-// The Team must already exist — it is created explicitly via CreateTeam
-// (spec 031 design decision: no lazy creation).
+// The Team must already exist — it is materialized only via UpdateTeam (spec
+// 031 design decision: no lazy creation).
 func (a *App) GetTeam(template, sessionID string) (*TeamView, error) {
 	if template == "" {
 		return nil, fmt.Errorf("get team: template is required")
@@ -1087,38 +1087,43 @@ func (a *App) GetTeam(template, sessionID string) (*TeamView, error) {
 	return teamViewFromProto(team), nil
 }
 
-// CreateTeam creates the per-session singleton Team explicitly (Wails-bound;
-// desktop-contract §4 — AIP-133, the ONLY Team creation point). profile is
-// the TeamProfile full resource name (templates/{template}/profiles/{profile},
-// AIP-122); the server validates its template segment against the session.
-func (a *App) CreateTeam(template, sessionID, profile string) (*TeamView, error) {
+// UpdateTeam materializes or updates the per-session singleton Team
+// (Wails-bound; desktop-contract §4 — AIP-134 create-or-update + AIP-156, the
+// ONLY Team creation point). profile is the TeamProfile full resource name
+// (templates/{template}/profiles/{profile}, AIP-122); the server validates
+// its template segment against the session. allowMissing=true materializes
+// the Team when it does not exist yet (idempotent for repeated calls, FR-002
+// of specs/040-team-singleton-conformance/spec.md).
+func (a *App) UpdateTeam(template, sessionID, profile string, updateMaskPaths []string, allowMissing bool) (*TeamView, error) {
 	if template == "" {
-		return nil, fmt.Errorf("create team: template is required")
+		return nil, fmt.Errorf("update team: template is required")
 	}
 	if sessionID == "" {
-		return nil, fmt.Errorf("create team: session_id is required")
+		return nil, fmt.Errorf("update team: session_id is required")
 	}
 	if profile == "" {
-		return nil, fmt.Errorf("create team: profile is required")
+		return nil, fmt.Errorf("update team: profile is required")
 	}
 	a.ensureClient()
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
 	corrSuffix, err := randomHex(8)
 	if err != nil {
-		return nil, fmt.Errorf("create team: %w", err)
+		return nil, fmt.Errorf("update team: %w", err)
 	}
 	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Creating team", map[string]any{
+	a.logger.Info("backend", "Updating team", map[string]any{
 		"trace_id":       traceID,
 		"template":       template,
 		"session_id":     sessionID,
 		"profile":        profile,
+		"update_mask":    updateMaskPaths,
+		"allow_missing":  allowMissing,
 		"correlation_id": corrID,
 	})
-	team, err := a.client.CreateTeam(ctx, template, sessionID, profile)
+	team, err := a.client.UpdateTeam(ctx, template, sessionID, profile, updateMaskPaths, allowMissing)
 	if err != nil {
-		a.logger.Error("backend", "Create team failed", map[string]any{
+		a.logger.Error("backend", "Update team failed", map[string]any{
 			"trace_id":       traceID,
 			"template":       template,
 			"session_id":     sessionID,
@@ -1128,7 +1133,7 @@ func (a *App) CreateTeam(template, sessionID, profile string) (*TeamView, error)
 		})
 		return nil, err
 	}
-	a.logger.Info("backend", "Team created", map[string]any{
+	a.logger.Info("backend", "Team updated", map[string]any{
 		"trace_id":       traceID,
 		"template":       template,
 		"session_id":     sessionID,
@@ -1596,8 +1601,8 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 
 // Connect establishes a WebSocket connection for the session under a template
 // (Wails-bound; desktop-contract §4 — FR-004). template is the Template path
-// segment. The Team must already exist (created via CreateTeam); the connect
-// path is /api/v1/templates/{template}/sessions/{sessionID}/connect
+// segment. The Team must already exist (materialized via UpdateTeam); the
+// connect path is /api/v1/templates/{template}/sessions/{sessionID}/connect
 // (contracts/api-contract.md §2.2).
 // After the WebSocket handshake, it performs an application-level probe
 // (round-trip ping) to verify the full path: desktop → gateway → proxy.

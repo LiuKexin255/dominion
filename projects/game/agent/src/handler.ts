@@ -1,20 +1,25 @@
 /**
  * handler.ts — TeamServiceServer gRPC handler implementations.
  *
- * Implements CreateTeam, GetTeam, Connect, ListMessages and RefreshTeam for
- * the TeamService defined in game.proto (specs/031-team-template-mode/
- * contracts/api-contract.md §2.2 — replaces the former AgentService
- * handlers).
+ * Implements UpdateTeam, GetTeam, Connect, ListMessages and RefreshTeam for
+ * the TeamService defined in game.proto
+ * (specs/040-team-singleton-conformance/contracts/api-contract.md §2 —
+ * replaces the former CreateTeam handler).
  *
- * - **CreateTeam** (AIP-133): the ONLY Team creation point — explicitly
- *   creates the session's team from a caller-supplied TeamProfile
- *   (full resource name, AIP-122). There is no lazy creation anymore: every
- *   other RPC requires the team to already exist (Agent 移除懒加载模式,
- *   design decision — the former implicit creation with a fixed default
- *   profile is removed).
+ * - **UpdateTeam** (AIP-134 create-or-update
+ *   https://google.aip.dev/134#create-or-update + AIP-156 singleton
+ *   https://google.aip.dev/156): the session Team's ONLY materialization
+ *   point — `allow_missing=true` materializes it on the first call from a
+ *   caller-supplied TeamProfile (full resource name, AIP-122); repeated
+ *   calls with the same profile are idempotent; a different profile
+ *   rebuilds the team graph (US3 — MVP rejects with FAILED_PRECONDITION).
+ *   There is no lazy creation anymore: every other RPC requires the team to
+ *   already exist (Agent 移除懒加载模式, design decision — the former
+ *   implicit creation with a fixed default profile is removed).
  * - **GetTeam**: returns the Team resource (agents = the template schema's
- *   `SAOLEI_TEAM_AGENTS` description, D3 — typed, not hard-coded). Requires
- *   the team to have been created; otherwise NOT_FOUND.
+ *   `SAOLEI_TEAM_AGENTS` description, D3 — typed, not hard-coded; profile =
+ *   the profile the team was materialized with, FR-004). Requires
+ *   the team to have been provisioned; otherwise NOT_FOUND.
  * - **Connect**: bidirectional stream. The client sends UserFrame (user
  *   input, operation results, connectivity probes); the server sends
  *   TeamFrame (agent display content, control signals, operation requests).
@@ -23,7 +28,7 @@
  *   carry the producing agent's name (`TeamFrame.agent`, D12). Operation
  *   results from the desktop (flowParts/flow_result) route to the session's
  *   `OperationBridge`.
- *   Frames for a session whose team was not created are rejected with
+ *   Frames for a session whose team was not provisioned are rejected with
  *   NOT_FOUND (delivered over the stream's error channel — see Connect).
  * - **ListMessages**: reconstructs one agent's message partition from the
  *   checkpoint state's per-agent channel (`playerMessages`/`plannerMessages`,
@@ -49,6 +54,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { TeamServiceHandlers } from "../game_types/projects/game/TeamService";
 import type { Team } from "../game_types/projects/game/Team";
 import type { TeamAgent } from "../game_types/projects/game/TeamAgent";
+import type { UpdateTeamRequest } from "../game_types/projects/game/UpdateTeamRequest";
 import type { UserFrame } from "../game_types/projects/game/UserFrame";
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { MessagePart } from "../game_types/projects/game/MessagePart";
@@ -59,7 +65,7 @@ import type { Message as MessageProto } from "../game_types/projects/game/Messag
 import type { TeamStateValue } from "./team/state";
 
 import { buildTeamFrame } from "./turn-loop";
-import { PRIMARY_AGENT_NAME, TeamAlreadyExistsError } from "./session-team";
+import { PRIMARY_AGENT_NAME } from "./session-team";
 import type { SessionTeamStore } from "./session-team";
 import type { TurnContent } from "./llm";
 import { extractToolCalls, readToolResultStatus } from "./llm";
@@ -87,75 +93,93 @@ export class Handler implements TeamServiceHandlers {
   }
 
   // -----------------------------------------------------------------------
-  // CreateTeam (AIP-133 — the only Team creation point)
+  // UpdateTeam (AIP-134 create-or-update — the singleton's ONLY
+  // materialization point)
   // -----------------------------------------------------------------------
 
-  CreateTeam: grpc.handleUnaryCall<{ parent?: string; profile?: string }, Team> =
-    async (call, callback) => {
-      const parent = call.request.parent ?? "";
-      const profile = call.request.profile ?? "";
+  UpdateTeam: grpc.handleUnaryCall<UpdateTeamRequest, Team> = async (
+    call,
+    callback,
+  ) => {
+    const teamReq = call.request.team ?? null;
+    const allowMissing = call.request.allowMissing ?? false;
+    const teamName = teamReq?.name ?? "";
+    const profile = teamReq?.profile ?? "";
 
-      // AIP-133: parent = "templates/{template}/sessions/{session}". The
-      // profile is the TeamProfile full resource name
-      // "templates/{template}/profiles/{profile}" (AIP-122): its template
-      // segment MUST match the parent's — validated explicitly, no implicit
-      // rules (spec 031-team-template-mode directive 2).
-      const sessionParent = parseSessionParent(parent);
-      const profileName = parseProfileName(profile);
-      if (!sessionParent || !profileName) {
+    // AIP-134: `team.name` identifies the Team singleton
+    // "templates/{template}/sessions/{session}/team"; `team.profile` is the
+    // TeamProfile full resource name "templates/{template}/profiles/{profile}"
+    // (AIP-122, https://google.aip.dev/122). The profile's template segment
+    // MUST match the name's —
+    // validated explicitly, no implicit rules (FR-008,
+    // specs/040-team-singleton-conformance/spec.md).
+    const parsedTeamName = parseTeamName(teamName);
+    const profileName = parseProfileName(profile);
+    if (!parsedTeamName.template || !parsedTeamName.sessionId || !profileName) {
+      callback({
+        code: grpc.status.INVALID_ARGUMENT,
+        details:
+          "team.name must be templates/{template}/sessions/{session}/team and profile must be templates/{template}/profiles/{profile}",
+      } as grpc.ServiceError);
+      return;
+    }
+    if (profileName.template !== parsedTeamName.template) {
+      callback({
+        code: grpc.status.INVALID_ARGUMENT,
+        details: `profile template ${profileName.template} does not match team name template ${parsedTeamName.template}`,
+      } as grpc.ServiceError);
+      return;
+    }
+
+    try {
+      // Dispatch on allow_missing + missing/existing (AIP-134
+      // create-or-update, specs/040-team-singleton-conformance/contracts/
+      // api-contract.md §2.3): missing + allow_missing →
+      // materialize; missing + !allow_missing → NOT_FOUND (standard Update
+      // semantics); existing + same profile → idempotent; existing +
+      // different profile → FAILED_PRECONDITION (MVP temporary — replaced by
+      // a graph rebuild in US3). The ALREADY_EXISTS deviation is removed
+      // (FR-007, specs/040-team-singleton-conformance/research.md §R6).
+      await this.sessionTeamStore.update(
+        parsedTeamName.sessionId,
+        parsedTeamName.template,
+        profileName.profileId,
+        allowMissing,
+      );
+      info("team provisioned", { sessionId: parsedTeamName.sessionId });
+      callback(null, buildTeamResource(teamName, profile));
+    } catch (err: unknown) {
+      // MVP temporary — a profile change requires a team graph rebuild (US3
+      // T013 replaces this with the real rebuild): reject with
+      // FAILED_PRECONDITION "profile change rebuild pending (US3)".
+      if (
+        err instanceof Error &&
+        err.message === "profile change rebuild pending"
+      ) {
         callback({
-          code: grpc.status.INVALID_ARGUMENT,
-          details: `parent must be templates/{template}/sessions/{session} and profile must be templates/{template}/profiles/{profile}`,
+          code: grpc.status.FAILED_PRECONDITION,
+          details: "profile change rebuild pending (US3)",
         } as grpc.ServiceError);
         return;
       }
-      if (profileName.template !== sessionParent.template) {
-        callback({
-          code: grpc.status.INVALID_ARGUMENT,
-          details: `profile template ${profileName.template} does not match parent template ${sessionParent.template}`,
-        } as grpc.ServiceError);
-        return;
-      }
-
-      try {
-        // Re-entry is profile-conditional (user refinement — api-contract.md
-        // §2.2): same profile → idempotent, returns the existing team; a
-        // different profile rejects with TeamAlreadyExistsError below.
-        await this.sessionTeamStore.create(
-          sessionParent.sessionId,
-          sessionParent.template,
-          profileName.profileId,
-        );
-        info("team created", { sessionId: sessionParent.sessionId });
-        callback(null, buildTeamResource(`${parent}/team`));
-      } catch (err: unknown) {
-        // A re-entry with a different profile is a configuration mismatch,
-        // not an idempotent retry: ALREADY_EXISTS with the existing profile
-        // in the details (user refinement — api-contract.md §2.2).
-        if (err instanceof TeamAlreadyExistsError) {
-          callback({
-            code: grpc.status.ALREADY_EXISTS,
-            details: err.message,
-          } as grpc.ServiceError);
-          return;
-        }
-        const message =
-          err instanceof Error ? err.message : "Failed to create team";
-        error("create team failed", {
-          sessionId: sessionParent.sessionId,
-          error: message,
-        });
-        // Propagate a downstream gRPC status (e.g. the TeamProfile's
-        // NOT_FOUND from the prompt service) unchanged; fall back to
-        // INTERNAL for non-status errors.
-        const code =
-          err instanceof Error &&
-          typeof (err as grpc.ServiceError).code === "number"
-            ? (err as grpc.ServiceError).code
-            : grpc.status.INTERNAL;
-        callback({ code, details: message } as grpc.ServiceError);
-      }
-    };
+      const message =
+        err instanceof Error ? err.message : "Failed to update team";
+      error("update team failed", {
+        sessionId: parsedTeamName.sessionId,
+        error: message,
+      });
+      // Propagate a gRPC status unchanged (the store's NOT_FOUND for a
+      // missing team with allow_missing=false, or a downstream error such as
+      // the TeamProfile's NOT_FOUND from the prompt service); fall back to
+      // INTERNAL for non-status errors.
+      const code =
+        err instanceof Error &&
+        typeof (err as grpc.ServiceError).code === "number"
+          ? (err as grpc.ServiceError).code
+          : grpc.status.INTERNAL;
+      callback({ code, details: message } as grpc.ServiceError);
+    }
+  };
 
   // -----------------------------------------------------------------------
   // GetTeam
@@ -169,8 +193,8 @@ export class Handler implements TeamServiceHandlers {
     // AIP-131: the name identifies the Team resource
     // "templates/{template}/sessions/{session}/team". The agents come from
     // the template's graph schema (D3) — a pure resource-description read.
-    // The team must have been created via CreateTeam first: a missing team
-    // is NOT_FOUND (the desktop uses this as its create-if-missing probe).
+    // The team must have been provisioned via UpdateTeam first: a missing
+    // team is NOT_FOUND (the desktop uses this as its provisioning probe).
     const { template, sessionId } = parseTeamName(name);
     if (!template || !sessionId) {
       callback({
@@ -183,12 +207,20 @@ export class Handler implements TeamServiceHandlers {
     if (!this.sessionTeamStore.get(sessionId)) {
       callback({
         code: grpc.status.NOT_FOUND,
-        details: `team not created for session ${sessionId}; call CreateTeam first`,
+        details: `team not provisioned for session ${sessionId}; provision via UpdateTeam`,
       } as grpc.ServiceError);
       return;
     }
 
-    const team: Team = buildTeamResource(name);
+    // FR-004: the Team body carries its current profile — the TeamProfile
+    // FULL resource name the team is based on, read back from the store
+    // (which records the bare profile id) and re-expanded under the team's
+    // template.
+    const profileId = this.sessionTeamStore.getProfileName(sessionId) ?? "";
+    const profile = profileId
+      ? `templates/${template}/profiles/${profileId}`
+      : "";
+    const team: Team = buildTeamResource(name, profile);
 
     callback(null, team);
   };
@@ -212,14 +244,14 @@ export class Handler implements TeamServiceHandlers {
     }
     info("refresh team requested", { sessionId });
 
-    // The team must have been created via CreateTeam first (no lazy
+    // The team must have been provisioned via UpdateTeam first (no lazy
     // creation). A session without a team has no short-term memory to clear
-    // — NOT_FOUND, consistent with GetTeam/ListMessages (api-contract §2.2).
+    // — NOT_FOUND, consistent with GetTeam/ListMessages (api-contract §2).
     const team = this.sessionTeamStore.get(sessionId);
     if (!team) {
       callback({
         code: grpc.status.NOT_FOUND,
-        details: `team not created for session ${sessionId}; call CreateTeam first`,
+        details: `team not provisioned for session ${sessionId}; provision via UpdateTeam`,
       } as grpc.ServiceError);
       return;
     }
@@ -321,12 +353,13 @@ export class Handler implements TeamServiceHandlers {
         const flowResults = parts.filter((p: FlowPart) => p.flowResult);
         if (flowResults.length > 0) {
           // A flow_result can only be routed once the session's team exists
-          // (CreateTeam is the only creation point). A stray result for an
-          // uncreated session is dropped — the desktop cannot have dispatched
-          // an operation without a live team, so this is a protocol anomaly.
+          // (UpdateTeam is the only materialization point). A stray result
+          // for an unprovisioned session is dropped — the desktop cannot
+          // have dispatched an operation without a live team, so this is a
+          // protocol anomaly.
           const team = this.sessionTeamStore.get(sessionId);
           if (!team) {
-            warn("flow_result ignored: team not created", { sessionId });
+            warn("flow_result ignored: team not provisioned", { sessionId });
             return;
           }
           for (const p of flowResults) {
@@ -425,18 +458,18 @@ export class Handler implements TeamServiceHandlers {
           .join("");
         const imagePart = parts.map((p: MessagePart) => p.image).find(Boolean);
 
-        // The team must exist before a turn can run — CreateTeam is the only
-        // creation point (no lazy creation). grpc-js delivers a bidi stream's
-        // final status from an 'error' event on the stream
+        // The team must exist before a turn can run — UpdateTeam is the only
+        // materialization point (no lazy creation). grpc-js delivers a bidi
+        // stream's final status from an 'error' event on the stream
         // (ServerDuplexStreamImpl: this.on('error', ...) sets the pending
         // status and ends — @grpc/grpc-js server-call.js), so emit the
         // NOT_FOUND service error directly.
         const team = this.sessionTeamStore.get(sessionId);
         if (!team) {
-          warn("connect frame rejected: team not created", { sessionId });
+          warn("connect frame rejected: team not provisioned", { sessionId });
           stream.emit("error", {
             code: grpc.status.NOT_FOUND,
-            details: `team not created for session ${sessionId}; call CreateTeam first`,
+            details: `team not provisioned for session ${sessionId}; provision via UpdateTeam`,
           } as grpc.ServiceError);
           return;
         }
@@ -521,13 +554,13 @@ export class Handler implements TeamServiceHandlers {
     }
 
     try {
-      // The team must have been created via CreateTeam first (no lazy
+      // The team must have been provisioned via UpdateTeam first (no lazy
       // creation): a session without a team has no checkpoint — NOT_FOUND.
       const team = this.sessionTeamStore.get(sessionId);
       if (!team) {
         callback({
           code: grpc.status.NOT_FOUND,
-          details: `team not created for session ${sessionId}; call CreateTeam first`,
+          details: `team not provisioned for session ${sessionId}; provision via UpdateTeam`,
         } as grpc.ServiceError);
         return;
       }
@@ -713,13 +746,15 @@ function timestampNow(): { seconds: number; nanos: number } {
 }
 
 /**
- * Build the Team resource response (CreateTeam/GetTeam, AIP-131/133): the
+ * Build the Team resource response (UpdateTeam/GetTeam, AIP-131/134): the
  * agents come from the template's graph schema (D3, typed — not hard-coded
- * by clients).
+ * by clients); `profile` is the TeamProfile full name the team is based on
+ * (FR-004).
  */
-function buildTeamResource(name: string): Team {
+function buildTeamResource(name: string, profile: string): Team {
   return {
     name,
+    profile,
     agents: SAOLEI_TEAM_AGENTS.map((a: TeamAgentSchema): TeamAgent => {
       return { name: a.name, acceptsUserInput: a.accepts_user_input };
     }),
@@ -741,20 +776,6 @@ function parseTeamName(name: string): {
   return match
     ? { template: match[1], sessionId: match[2] }
     : { template: "", sessionId: "" };
-}
-
-/**
- * Parse a CreateTeam parent "templates/{template}/sessions/{session}"
- * (AIP-133). Returns null when malformed.
- */
-function parseSessionParent(parent: string): {
-  template: string;
-  sessionId: string;
-} | null {
-  const match = parent.match(/^templates\/([^/]+)\/sessions\/([^/]+)$/);
-  return match
-    ? { template: match[1], sessionId: match[2] }
-    : null;
 }
 
 /**

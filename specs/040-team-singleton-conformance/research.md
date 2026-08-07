@@ -144,3 +144,5 @@
 **Rationale**: owner 分配与 profile/物化语义正交；仅入口 RPC 名与请求解析（parent→team.name）改变。`assignOwner` 的竞态幂等已被既有测试覆盖（`handler_test.go:360-390`）。
 
 **Alternatives considered**: 无——保持不变最稳。
+
+**Implementation note (design review, final)**: proxy 的 `UpdateTeam` **始终调用 `assignOwner`**（get-or-create 路由解析）后转发完整请求，**不 inspect `allow_missing`**——allow_missing 是 Team 资源语义，由 agent `SessionTeamStore.update`（`projects/game/agent/src/session-team.ts`）处理（缺失+true→物化、缺失+false→NOT_FOUND、既有+同 profile→幂等、既有+异 profile→重建；[AIP-134 create-or-update](https://google.aip.dev/134#create-or-update)）。理由：proxy 是路由层（owner = 路由状态，与 Team 物化解耦），不应解读请求业务参数；与原 CreateTeam 设计模式一致（owner 在 agent 构 graph 前建立）。对外行为不变（§2.3 行为矩阵描述 proxy+agent 合并行为）：`allow_missing=false`+未物化的 NOT_FOUND 由 agent 层返回，proxy 透传。

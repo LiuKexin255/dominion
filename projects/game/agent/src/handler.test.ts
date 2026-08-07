@@ -121,14 +121,15 @@ function createTeamStore(gate?: Gate): {
 }
 
 /**
- * Explicitly create the session's team (CreateTeam is now the ONLY creation
- * point — the handler never creates teams implicitly).
+ * Explicitly materialize the session's team (UpdateTeam(allow_missing=true)
+ * is now the ONLY materialization point — the handler never materializes
+ * teams implicitly).
  */
 function createTestTeam(
   store: SessionTeamStore,
   sessionId: string,
 ): Promise<SessionTeam> {
-  return store.create(sessionId, "saolei", "default");
+  return store.update(sessionId, "saolei", "default", true);
 }
 
 function createUnaryCall<T>(request: T) {
@@ -251,7 +252,7 @@ function warnFrames(stream: FakeStream): unknown[] {
 // ===========================================================================
 
 describe("Handler.GetTeam", () => {
-  it("returns the Team with the template schema's agents (player input=true, planner=false)", async () => {
+  it("returns the Team with the template schema's agents and the current profile (FR-004)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
@@ -265,13 +266,16 @@ describe("Handler.GetTeam", () => {
     const { error, response } = await promise;
     expect(error).toBeNull();
     expect(response.name).toBe("templates/saolei/sessions/sess-1/team");
+    // FR-004: the response carries the profile the team was materialized
+    // with ("default" — createTestTeam).
+    expect(response.profile).toBe("templates/saolei/profiles/default");
     expect(response.agents).toEqual([
       { name: "player", acceptsUserInput: true },
       { name: "planner", acceptsUserInput: false },
     ]);
   });
 
-  it("returns NOT_FOUND when the team was not created (CreateTeam is the only creation point)", async () => {
+  it("returns NOT_FOUND when the team was not provisioned (UpdateTeam is the only materialization point)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
@@ -298,88 +302,136 @@ describe("Handler.GetTeam", () => {
 });
 
 // ===========================================================================
-// CreateTeam (AIP-133 — the only Team creation point)
+// UpdateTeam (AIP-134 create-or-update — the only Team materialization point)
 // ===========================================================================
 
-describe("Handler.CreateTeam", () => {
-  it("creates the team and returns the Team resource", async () => {
+describe("Handler.UpdateTeam", () => {
+  function updateRequest(
+    name: string,
+    profile: string,
+    allowMissing: boolean,
+  ) {
+    return { team: { name, profile }, allowMissing };
+  }
+
+  it("materializes the team with allow_missing=true and returns the Team resource (FR-001/FR-004)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
 
-    handler.CreateTeam(
-      createUnaryCall({
-        parent: "templates/saolei/sessions/sess-ct",
-        profile: "templates/saolei/profiles/default",
-      }),
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut/team",
+          "templates/saolei/profiles/default",
+          true,
+        ),
+      ),
       callback,
     );
 
     const { error, response } = await promise;
     expect(error).toBeNull();
     expect(response.name).toBe(
-      "templates/saolei/sessions/sess-ct/team",
+      "templates/saolei/sessions/sess-ut/team",
     );
+    // FR-004: the response carries the profile.
+    expect(response.profile).toBe("templates/saolei/profiles/default");
     expect(response.agents).toEqual([
       { name: "player", acceptsUserInput: true },
       { name: "planner", acceptsUserInput: false },
     ]);
-    expect(store.get("sess-ct")).toBeDefined();
+    expect(store.get("sess-ut")).toBeDefined();
+    expect(store.getProfileName("sess-ut")).toBe("default");
   });
 
-  it("is idempotent for an already-created session with the SAME profile (per-session singleton)", async () => {
+  it("is idempotent for an already-provisioned session with the SAME profile (FR-002)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
-    // createTestTeam creates the session's team with profile "default" —
-    // the CreateTeam below repeats that same profile.
-    await createTestTeam(store, "sess-ct2");
+    // createTestTeam materializes the session's team with profile "default"
+    // — the UpdateTeam below repeats that same profile.
+    await createTestTeam(store, "sess-ut2");
 
-    handler.CreateTeam(
-      createUnaryCall({
-        parent: "templates/saolei/sessions/sess-ct2",
-        profile: "templates/saolei/profiles/default",
-      }),
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut2/team",
+          "templates/saolei/profiles/default",
+          true,
+        ),
+      ),
       callback,
     );
 
     const { error, response } = await promise;
     expect(error).toBeNull();
-    expect(response.name).toBe("templates/saolei/sessions/sess-ct2/team");
-    expect(store.get("sess-ct2")).toBeDefined();
+    expect(response.name).toBe("templates/saolei/sessions/sess-ut2/team");
+    expect(response.profile).toBe("templates/saolei/profiles/default");
+    expect(store.get("sess-ut2")).toBeDefined();
   });
 
-  it("returns ALREADY_EXISTS with the existing profile when re-created with a DIFFERENT profile", async () => {
+  it("rejects a DIFFERENT profile on an existing team with FAILED_PRECONDITION (MVP temporary, US3)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
-    // createTestTeam creates the session's team with profile "default".
-    await createTestTeam(store, "sess-ct-diff");
+    // createTestTeam materializes the session's team with profile "default".
+    await createTestTeam(store, "sess-ut-diff");
 
-    handler.CreateTeam(
-      createUnaryCall({
-        parent: "templates/saolei/sessions/sess-ct-diff",
-        profile: "templates/saolei/profiles/other",
-      }),
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut-diff/team",
+          "templates/saolei/profiles/other",
+          true,
+        ),
+      ),
       callback,
     );
 
     const { error } = await promise;
-    expect(error?.code).toBe(grpc.status.ALREADY_EXISTS);
-    // The details carry the existing profile for diagnostics.
-    expect(error?.details).toContain("default");
+    // MVP temporary: a profile change requires a team graph rebuild, which
+    // US3 (T013) replaces — until then FAILED_PRECONDITION with the
+    // (US3)-marked placeholder message. No ALREADY_EXISTS anymore (FR-007).
+    expect(error?.code).toBe(grpc.status.FAILED_PRECONDITION);
+    expect(error?.details).toContain("profile change rebuild pending (US3)");
   });
 
-  it("rejects a malformed parent with INVALID_ARGUMENT", async () => {
+  it("returns NOT_FOUND for a missing team when allow_missing=false (AIP-134 standard Update)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
 
-    handler.CreateTeam(
-      createUnaryCall({
-        parent: "sessions/sess-ct3",
-        profile: "templates/saolei/profiles/default",
-      }),
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut-missing/team",
+          "templates/saolei/profiles/default",
+          false,
+        ),
+      ),
+      callback,
+    );
+
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.NOT_FOUND);
+    // No implicit materialization on the standard-Update path.
+    expect(store.get("sess-ut-missing")).toBeUndefined();
+  });
+
+  it("rejects a malformed team name with INVALID_ARGUMENT", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "sessions/sess-ut3/team",
+          "templates/saolei/profiles/default",
+          true,
+        ),
+      ),
       callback,
     );
 
@@ -392,11 +444,14 @@ describe("Handler.CreateTeam", () => {
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
 
-    handler.CreateTeam(
-      createUnaryCall({
-        parent: "templates/saolei/sessions/sess-ct4",
-        profile: "default",
-      }),
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut4/team",
+          "default",
+          true,
+        ),
+      ),
       callback,
     );
 
@@ -404,16 +459,19 @@ describe("Handler.CreateTeam", () => {
     expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
   });
 
-  it("rejects a profile whose template does not match the parent's template", async () => {
+  it("rejects a profile whose template does not match the team name's template (FR-008)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
 
-    handler.CreateTeam(
-      createUnaryCall({
-        parent: "templates/saolei/sessions/sess-ct5",
-        profile: "templates/other/profiles/default",
-      }),
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut5/team",
+          "templates/other/profiles/default",
+          true,
+        ),
+      ),
       callback,
     );
 
@@ -430,11 +488,14 @@ describe("Handler.CreateTeam", () => {
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
 
-    handler.CreateTeam(
-      createUnaryCall({
-        parent: "templates/saolei/sessions/sess-ct6",
-        profile: "templates/saolei/profiles/missing",
-      }),
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut6/team",
+          "templates/saolei/profiles/missing",
+          true,
+        ),
+      ),
       callback,
     );
 
@@ -567,7 +628,7 @@ describe("Handler.Connect flow result + status", () => {
     stream.emit("data", userContentFrame("sess-bridge", "开始游戏", "player"));
     await flush();
 
-    const team = (await store.create("sess-bridge", "saolei", "default")) as SessionTeam;
+    const team = (await store.update("sess-bridge", "saolei", "default", true)) as SessionTeam;
     // The handler registered the bridge sink onto the stream on the user
     // frame above, so dispatch writes its flowParts frame to the stream.
     const pendingResult = new Promise<unknown>((resolve) => {
@@ -660,7 +721,7 @@ describe("Handler.Connect abort lifecycle", () => {
     await flush(0);
 
     // The player turn is held in-flight on the gate.
-    const team = (await store.create("sess-abort", "saolei", "default")) as SessionTeam;
+    const team = (await store.update("sess-abort", "saolei", "default", true)) as SessionTeam;
     expect(team.isRunning()).toBe(true);
 
     stream.emit("end");
@@ -782,7 +843,7 @@ describe("Handler.RefreshTeam", () => {
     );
     await flush();
 
-    const team = (await store.create("sess-ref", "saolei", "default")) as SessionTeam;
+    const team = (await store.update("sess-ref", "saolei", "default", true)) as SessionTeam;
     const before = await team.getTeamState();
     expect(before?.playerMessages.length ?? 0).toBeGreaterThan(0);
     // The planner wrote the strategy during the turn.
@@ -816,7 +877,7 @@ describe("Handler.RefreshTeam", () => {
     await flush(0);
 
     // The player turn is held in-flight on the gate.
-    const team = (await store.create("sess-busy", "saolei", "default")) as SessionTeam;
+    const team = (await store.update("sess-busy", "saolei", "default", true)) as SessionTeam;
     expect(team.isRunning()).toBe(true);
 
     const { callback, promise } = createCallback<any>();

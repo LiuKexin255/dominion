@@ -2,9 +2,10 @@
   import type { TeamProfile } from '../api'
 
   // Profile selection modal shown when entering a session whose Team does not
-  // exist yet: the user picks the TeamProfile to create it with (replacing the
-  // former hardcoded `default` profile auto-creation). onSelect receives the
-  // TeamProfile full resource name (TeamProfile.name) for CreateTeam.
+  // exist yet: the user picks the TeamProfile to materialize it with via
+  // updateTeam(allowMissing=true) (replacing the former hardcoded `default`
+  // profile auto-creation). onSelect receives the TeamProfile full resource
+  // name (TeamProfile.name) for UpdateTeam.
   let {
     profiles,
     loading,

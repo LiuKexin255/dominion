@@ -93,7 +93,7 @@ message UpdateTeamRequest {
 ## 5. owner 分配模型（不变）
 
 - TeamService（proxy）侧 owner 分配（`projects/game/proxy/runtime/mongo/owner_store.go`）**不变**：复合键 `(template_id, session_id)`；get-or-create + duplicate-key → `ErrOwnerAlreadyExists` → 重读胜者。
-- `assignOwner`（`proxy/handler/handler.go:274-348`）从 CreateTeam 搬入 UpdateTeam，仍是唯一 owner 分配点。
+- `assignOwner`（`proxy/handler/handler.go:274-348`）从 CreateTeam 搬入 UpdateTeam，**始终被 UpdateTeam 调用**（get-or-create 路由解析，唯一 owner 分配点）；proxy **不解读 `allow_missing`**（allow_missing 是 Team 资源语义，由 agent 处理物化/NOT_FOUND——proxy 为路由层，仅负责 owner 路由）。`assignOwner`/`lookupOwner` 逻辑本身**不变**。
 - `lookupOwner`（Connect/GetTeam/ListMessages/RefreshTeam）不变。
 
 ---

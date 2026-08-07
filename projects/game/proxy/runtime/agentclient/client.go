@@ -1,5 +1,5 @@
 // Package agentclient provides the gRPC client wrapper for the TeamService
-// hosted by the agent service (spec 031-team-template-mode: ProxyService and
+// hosted by the agent service (specs/031-team-template-mode/: ProxyService and
 // AgentService merged into TeamService).
 package agentclient
 
@@ -17,7 +17,7 @@ var _ Client = (*AgentClient)(nil)
 
 // Client is the interface for downstream agent (TeamService) operations.
 type Client interface {
-	CreateTeam(ctx context.Context, req *game.CreateTeamRequest) (*game.Team, error)
+	UpdateTeam(ctx context.Context, req *game.UpdateTeamRequest) (*game.Team, error)
 	GetTeam(ctx context.Context, req *game.GetTeamRequest) (*game.Team, error)
 	ListMessages(ctx context.Context, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error)
 	Connect(ctx context.Context, opts ...grpc.CallOption) (game.TeamService_ConnectClient, error)
@@ -41,10 +41,12 @@ var NewAgentClient = func(conn *grpc.ClientConn) Client {
 	return &AgentClient{client: game.NewTeamServiceClient(conn)}
 }
 
-// CreateTeam forwards a CreateTeam call to the agent service (the agent
-// builds the session's team graph from the requested TeamProfile).
-func (c *AgentClient) CreateTeam(ctx context.Context, req *game.CreateTeamRequest) (*game.Team, error) {
-	return c.client.CreateTeam(ctx, req)
+// UpdateTeam forwards an UpdateTeam call to the agent service (the agent
+// materializes or mutates the session's team graph from the requested
+// TeamProfile; specs/040-team-singleton-conformance/contracts/api-contract.md
+// §2 — replacing the former CreateTeam).
+func (c *AgentClient) UpdateTeam(ctx context.Context, req *game.UpdateTeamRequest) (*game.Team, error) {
+	return c.client.UpdateTeam(ctx, req)
 }
 
 // GetTeam returns the Team of a session.

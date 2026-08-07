@@ -13,7 +13,7 @@
  * The `OperationBridge` and team `SaoleiEventSink` are NOT constructed here:
  * the store factory (server.ts) pre-builds them against the session's
  * ephemeral buffer and injects them via the constructor (see the constructor
- * doc — this breaks the CreateTeam→MCP-host circular dependency).
+ * doc — this breaks the UpdateTeam→MCP-host circular dependency).
  *
  * - **Turn runner**: {@link SessionTeam.runTeamTurn} drives the compiled
  *   graph's `streamEvents` on the session's thread (thread_id = session id,
@@ -31,16 +31,18 @@
  *   `server.ts` for the circular-dependency rationale).
  *
  * `SessionTeamStore` (replaces `SessionAgentStore`) maps session id →
- * `SessionTeam`, creating entries ONLY through the explicit
- * {@link SessionTeamStore.create} (AIP-133 CreateTeam; no lazy creation —
- * the profile is supplied per request, server.ts wiring; tests inject a fake
- * factory). Re-entry is profile-conditional: same profile → idempotent;
- * different profile → {@link TeamAlreadyExistsError} (user refinement,
- * api-contract.md §2.2).
+ * `SessionTeam`, materializing entries ONLY through the explicit
+ * {@link SessionTeamStore.update} (AIP-134 create-or-update `allow_missing`:
+ * https://google.aip.dev/134#create-or-update — the singleton's only
+ * materialization point, replacing the former AIP-133 CreateTeam; no lazy
+ * creation). Re-entry is profile-conditional: same profile → idempotent;
+ * different profile → graph rebuild (US3 of
+ * specs/040-team-singleton-conformance/spec.md — pending, MVP rejects).
  */
 
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import * as grpc from "@grpc/grpc-js";
 
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { MessageRole } from "../game_types/projects/game/MessageRole";
@@ -71,7 +73,7 @@ export const PRIMARY_AGENT_NAME = "player";
  * Factory that builds a fully-wired `SessionTeam` for a session id
  * (DI seam — `style/javascript.md` §测试: the store never constructs team
  * internals itself, so tests inject fakes without `vi.mock`). The template
- * and TeamProfile name come from the CreateTeam request (AIP-133): the
+ * and TeamProfile name come from the UpdateTeam request (AIP-134): the
  * production factory resolves that profile's player/planner models
  * (prompt-client.getTeamProfile) — there is no fixed default profile anymore
  * (Agent 移除懒加载模式, spec 031-team-template-mode design decision).
@@ -138,7 +140,7 @@ export class SessionTeam {
 	 *   this session; the sink writes it, the graph nodes read it.
 	 * @param sessionId   The dominion session id (thread id + strategy key).
 	 * @param template    The session's template path segment (from the
-	 *   CreateTeam parent, AIP-133).
+	 *   UpdateTeam team.name, AIP-134).
 	 * @param bridge      The session's `OperationBridge` (player-exclusive,
 	 *   FR-010), pre-built by the store factory (server.ts). NOT constructed
 	 *   here: the factory registers it with the MCP-host bridge registry
@@ -476,28 +478,6 @@ export class SessionTeam {
 // SessionTeamStore
 // ---------------------------------------------------------------------------
 
-/**
- * Re-entry conflict thrown by {@link SessionTeamStore.create} when the
- * session already has a team created with a DIFFERENT profile (user
- * refinement, api-contract.md §2.2): the create is not an idempotent retry
- * but a configuration mismatch, so it maps to gRPC ALREADY_EXISTS in the
- * handler (handler.ts CreateTeam), carrying the existing profile for
- * diagnostics.
- */
-export class TeamAlreadyExistsError extends Error {
-	constructor(
-		readonly sessionId: string,
-		readonly existingProfile: string,
-		readonly requestedProfile: string,
-	) {
-		super(
-			`team already exists for session '${sessionId}' with profile '${existingProfile}'; ` +
-				`cannot re-create with profile '${requestedProfile}'`,
-		);
-		this.name = "TeamAlreadyExistsError";
-	}
-}
-
 export class SessionTeamStore {
 	private teams = new Map<
 		string,
@@ -511,48 +491,68 @@ export class SessionTeamStore {
 	constructor(private readonly factory: SessionTeamFactory) {}
 
 	/**
-	 * Explicitly create the session's team (AIP-133 CreateTeam — replaces the
-	 * former lazy `getOrCreate`: the team is NOT created implicitly by
-	 * Connect/ListMessages anymore, and the profile is supplied by the
-	 * caller instead of a fixed default).
+	 * Materialize-or-update the session's Team (AIP-134 create-or-update
+	 * `allow_missing`: https://google.aip.dev/134#create-or-update — the
+	 * singleton's ONLY materialization point, replacing the former AIP-133
+	 * `create`; the team is NOT created implicitly by Connect/ListMessages
+	 * anymore, and the profile is supplied by the caller instead of a fixed
+	 * default).
 	 *
-	 * Re-entry is profile-conditional (user refinement — api-contract.md
-	 * §2.2): the Team is a per-session singleton, so a repeated create with
-	 * the SAME profile returns the existing team (idempotent — the desktop's
-	 * create-if-missing flow retries safely); a repeated create with a
-	 * DIFFERENT profile rejects with {@link TeamAlreadyExistsError} (carrying
-	 * the existing profile), since that is a configuration mismatch rather
-	 * than an idempotent retry. Strict AIP-133 ALREADY_EXISTS for same-profile
-	 * retries is deliberately NOT returned — rationale in api-contract.md §2.2.
+	 * Dispatch (specs/040-team-singleton-conformance/contracts/
+	 * api-contract.md §2.3):
 	 *
-	 * Concurrent creates for the same session are single-flighted: the second
-	 * caller awaits the first's team, then re-enters the profile comparison
-	 * above (a loser carrying a different profile rejects after the winner
-	 * completes).
+	 * - missing + `allowMissing=true` → build via the factory (the caller
+	 *   materializes the Team — FR-001/FR-002);
+	 * - missing + `allowMissing=false` → NOT_FOUND (standard AIP-134 Update
+	 *   semantics — specs/040-team-singleton-conformance/data-model.md §4);
+	 * - existing + SAME profile → return the existing team (idempotent,
+	 *   FR-002 — repeated calls are safe);
+	 * - existing + DIFFERENT profile → rejected. **MVP temporary**: throws
+	 *   `Error("profile change rebuild pending")` (the handler maps it to
+	 *   FAILED_PRECONDITION, handler.ts UpdateTeam); US3 (T011) replaces this
+	 *   with a team-graph rebuild that preserves session state (FR-005).
+	 *
+	 * Concurrent updates for the same session are single-flighted: the second
+	 * caller awaits the first's team, then re-enters the dispatch above (a
+	 * loser carrying a different profile rejects after the winner completes).
 	 */
-	create(
+	update(
 		sessionId: string,
 		template: string,
 		profileName: string,
+		allowMissing: boolean,
 	): Promise<SessionTeam> {
 		const existing = this.teams.get(sessionId);
 		if (existing) {
 			if (existing.profileName !== profileName) {
-				return Promise.reject(
-					new TeamAlreadyExistsError(
-						sessionId,
-						existing.profileName,
-						profileName,
-					),
-				);
+				// MVP temporary — replaced by a graph rebuild in US3 (T011);
+				// the handler maps this to FAILED_PRECONDITION
+				// "profile change rebuild pending (US3)".
+				return Promise.reject(new Error("profile change rebuild pending"));
 			}
 			return Promise.resolve(existing.team);
 		}
+		if (!allowMissing) {
+			// Standard AIP-134 Update on a missing singleton → NOT_FOUND. The
+			// handler propagates the gRPC status code unchanged (the same
+			// pass-through it applies to downstream errors).
+			return Promise.reject(
+				Object.assign(
+					new Error(
+						`team not materialized for session '${sessionId}'; ` +
+							"update with allow_missing=true to materialize (AIP-134)",
+					),
+					{ code: grpc.status.NOT_FOUND },
+				),
+			);
+		}
 		const inFlight = this.pending.get(sessionId);
 		if (inFlight) {
-			// Single-flight: await the winner, then apply the same re-entry rule
+			// Single-flight: await the winner, then re-enter the dispatch
 			// (the winner's profile may differ from this caller's).
-			return inFlight.then(() => this.create(sessionId, template, profileName));
+			return inFlight.then(() =>
+				this.update(sessionId, template, profileName, allowMissing),
+			);
 		}
 
 		const building = this.factory(sessionId, template, profileName)
@@ -570,6 +570,15 @@ export class SessionTeamStore {
 	/** Synchronous lookup (mcp-host `SessionBridgeLookup`; misses = 404). */
 	get(sessionId: string): SessionTeam | undefined {
 		return this.teams.get(sessionId)?.team;
+	}
+
+	/**
+	 * The profile the session's team was materialized with (FR-004 — GetTeam
+	 * reads it back into the Team resource body). Undefined when the team is
+	 * missing (GetTeam reports NOT_FOUND first).
+	 */
+	getProfileName(sessionId: string): string | undefined {
+		return this.teams.get(sessionId)?.profileName;
 	}
 }
 
