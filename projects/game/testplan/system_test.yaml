@@ -10,14 +10,19 @@ description: |
       thinking + text response, FIFO queue behavior,
       deterministic content, TeamProfile loose coupling
   Suite 3 (agent queue): session + proxy + agent(test) + prompt + gateway.
-    - Queue-while-running (specs/030-queued-chat-input): input during a run,
-      auto hand-off, multi-message combine, QueueSignal depth visibility.
+    - Mid-turn injection of a queued message during a saolei TOOL turn
+      (specs/038-queue-input-mid-turn FR-001); the no-tool fallback (FR-004)
+      and spec 030 hand-off/combine are unit-tested in turn-loop.test.ts, not
+      large-tested.
   Suite 4 (checkpoint-resume): session + proxy + agent(test) + prompt + gateway.
     - Send messages, leave, re-enter, verify ListMessages
     - Verify agent remains functional after re-enter
     - Tool-result status neutrality across re-entry (saolei MCP)
   Suite 5 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
-    - Send two messages rapidly, verify FIFO processing order
+    - Checkpoint resume + tool-result status suites (case binary is
+      agent_checkpoint_test); rapid-send serialization/FIFO is NOT
+      large-tested — it is covered deterministically by turn-loop.test.ts
+      unit tests (see suite description below)
   Suite 6 (agent-multimodal): session + proxy + agent(test) + prompt + gateway.
     - Text-plus-image turn (message_parts of [TextPart, ImagePart] processed end-to-end)
     - Image-only turn accepted (empty text, random fallback acceptable)
@@ -72,7 +77,7 @@ suites:
       - //projects/game/testplan:agent_dialog_test
 
   - name: agent-queue
-    description: "Agent queue-while-running with fake-llm service (specs/030-queued-chat-input): input during a run does not disturb the in-flight turn (specs/030-queued-chat-input/spec.md FR-001/FR-002), queued message auto-becomes the next turn (specs/030-queued-chat-input/spec.md FR-005/FR-006), multiple queued messages combine into one aggregated turn FIFO (specs/030-queued-chat-input/spec.md FR-004/FR-005), QueueSignal depth changes drive pending visibility (specs/030-queued-chat-input/spec.md FR-008/FR-009)"
+    description: "Agent queue-while-running with fake-llm service: the large test covers mid-turn injection of a queued message during a saolei TOOL turn — the message is drained at the next beforeModel boundary, QueueSignal 1→0 precedes the terminal wait, and the message is persisted in history (specs/038-queue-input-mid-turn/spec.md FR-001; specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md). The no-tool fallback (specs/038-queue-input-mid-turn/spec.md FR-004) and the spec 030 handoff/combine/does-not-disturb behaviors (specs/030-queued-chat-input/spec.md FR-002/FR-005/FR-006, QueueSignal visibility FR-008/FR-009) are deterministically covered by unit tests in projects/game/agent/src/turn-loop.test.ts (turn-loop.test.ts:242/398/526/665), not at the large-test layer — fake-llm has no delay mechanism and a no-tool turn responds in milliseconds, so the no-tool fallback window cannot be synchronized end-to-end"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -90,7 +95,7 @@ suites:
       - //projects/game/testplan:agent_checkpoint_test
 
   - name: concurrent-serialization
-    description: "Concurrent message serialization with fake-llm service: rapid sends processed in strict FIFO order"
+    description: "Agent checkpoint suite (case binary //projects/game/testplan:agent_checkpoint_test) with fake-llm service: runs the checkpoint resume and tool-result status persistence tests. Per-session serialization (spec 015) and queue FIFO/handoff (spec 030) for rapid-succession messages are NOT large-tested here — they are covered deterministically by the gate-controlled unit tests in projects/game/agent/src/turn-loop.test.ts (handoff [1,0] / combine / QueueSignal depth / turn-end drain); fake-llm has no delay and no-tool turns respond in milliseconds, so the rapid-succession FIFO path cannot be synchronized end-to-end (specs/038-queue-input-mid-turn/spec.md FR-004/FR-001)"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -126,7 +131,7 @@ suites:
       - //projects/game/testplan:agent_saolei_test
 
   - name: saolei-team
-    description: "saolei template TEAM behaviour with fake-llm service (spec 031-team-template-mode quickstart.md §2.1): team lifecycle incl CreateTeam/GetTeam/connection exclusivity (FR-003/FR-004/FR-033); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); strategy persistence + per-session isolation (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps the strategy (FR-018/D8); per-agent message partitioning (FR-005)"
+    description: "saolei template TEAM behaviour with fake-llm service (spec 031-team-template-mode quickstart.md §2.1): team lifecycle incl CreateTeam/GetTeam/connection exclusivity (FR-003/FR-004/FR-033); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); strategy persistence + per-session isolation (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps the strategy (FR-018/D8); per-agent message partitioning (FR-005). 037 saolei-team optimize (specs/037-saolei-team-optimize FR-034): planner review input real-time visibility (US1/FR-001..FR-003), 5-game compression trigger with channel shrink + player stop + strategy preserved (US2/FR-006..FR-012/FR-015), planner systemPrompt tool-description injection (US3/FR-016..FR-018 — prompt content verified via fake-llm 'system prompt received' INFO logs), game-end stats in the review input (US5/FR-026..FR-033)"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:

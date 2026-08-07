@@ -67,6 +67,29 @@ const expectedPlannerStrategyText = "优先翻开角落与边缘格子，命中�
 // deterministically after writing the strategy.
 const expectedPlannerUpdateText = "策略已更新，下一局将按新策略执行。"
 
+// expectedPlayerCompressionSummary / expectedPlannerCompressionSummary are
+// the plain-text responses the fake-LLM returns to the team graph COMPRESS
+// node's two summary calls (sample_compression_player.yaml /
+// sample_compression_planner.yaml). After the 5th game the compress node
+// (team/compress.ts summarizeChannel) invokes the player/planner models
+// directly with the summary prompts; the response text becomes the single
+// post-compression channel message AND the live summary frame
+// (specs/037-saolei-team-optimize FR-008/FR-011). The compression large
+// tests assert both. MUST be kept in sync with the testdata — the T1 unit
+// test TestNewMessageStore_LoadsEmbeddedSamples pins the embedded testdata.
+const (
+	expectedPlayerCompressionSummary  = "已玩 5 局，其中 4 局失败。策略：优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。"
+	expectedPlannerCompressionSummary = "已复盘 5 局，策略更新正常，每局均按新策略执行。"
+)
+
+// reviewInputPrefix is the fixed prefix of the planner's review input
+// (team/planner.ts buildReviewInput renders the gameLog under "本局游戏过程：",
+// specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md §2.2). It
+// also keys the fake-LLM's planner-update-strategy config (sample_planner_
+// strategy.yaml). The 037 large tests locate the real-time review frame and
+// the reloaded review message by this prefix (FR-001/FR-002).
+const reviewInputPrefix = "本局游戏过程"
+
 // smallScreenshotData is a minimal 1×1 PNG used as screenshot payload in
 // multimodal-turn tests. The fake-LLM ignores image bytes (only text blocks
 // drive keyword matching), so the actual pixel content is irrelevant — tests
@@ -1036,25 +1059,6 @@ func countWaitFrames(frames []*game.TeamFrame) int {
 		}
 	}
 	return count
-}
-
-// collectTextContents returns the text content of every agent-sent text
-// MessagePart frame in the slice, in order. The role filter keeps only
-// agent-role frames (TeamFrame.role; specs/035-proto-contract-refine/
-// contracts/frame-split.md §3.2). Used to verify which queued messages
-// produced turns and in what order.
-func collectTextContents(frames []*game.TeamFrame) []string {
-	var texts []string
-	for _, f := range frames {
-		if f.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
-			continue
-		}
-		if !frameHasText(f) {
-			continue
-		}
-		texts = append(texts, frameText(f))
-	}
-	return texts
 }
 
 // messageKind returns the MessagePart-kind string of the first part in a

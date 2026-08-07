@@ -10,7 +10,9 @@
  *
  * - `onMove` / `onGameStart` update `gameState`;
  * - `onGameEnd` writes `gameEvent = {state, status, endedAt, consumed:false}`
- *   (+ updates `gameState`);
+ *   (+ updates `gameState`); the per-game statistics carried by `onGameEnd`
+ *   (US5 — `specs/037-saolei-team-optimize/spec.md` FR-031) are stored into
+ *   `gameEvent.stats` alongside the event;
  * - the player node post-process consumes the event once (player.ts) and
  *   writes `TeamState.gameEnded = status`;
  * - the planner reads `gameState` for the review (planner.ts);
@@ -28,7 +30,11 @@ import { isWin } from "@dominion/game-saolei-board";
 import type { GameState } from "@dominion/game-saolei-board";
 
 import { isTerminalState } from "../mcp/saolei/saolei-mcp";
-import type { CellTool, SaoleiEventSink } from "../mcp/saolei/saolei-mcp";
+import type {
+	CellTool,
+	GameStats,
+	SaoleiEventSink,
+} from "../mcp/saolei/saolei-mcp";
 
 /** A structured game-end event written by the sink (D6 step 3). */
 export interface GameEventRecord {
@@ -37,6 +43,14 @@ export interface GameEventRecord {
 	endedAt: number;
 	/** Consumed by the player node post-process (read once, D6 step 4). */
 	consumed: boolean;
+	/**
+	 * Per-game statistics carried by `onGameEnd`
+	 * (`specs/037-saolei-team-optimize/spec.md` FR-031; contracts/
+	 * game-stats-contract.md §4), read by the planner's review input
+	 * (FR-032). Optional — an unupgraded sender omits it (backward
+	 * compatible).
+	 */
+	stats?: GameStats;
 }
 
 /**
@@ -94,7 +108,9 @@ export function createEphemeralGameBuffer(): EphemeralGameBuffer {
  *   (`specs/036-team-mode-bugfix/data-model.md` §2, `specs/036-team-mode-bugfix/spec.md` FR-007).
  * - `onMove`: the recognized state after a legal cell operation.
  * - `onGameEnd`: write the structured end event (status is the MCP's
- *   first-hand `won|lost` computation, FR-017) + update `gameState`.
+ *   first-hand `won|lost` computation, FR-017) + update `gameState`; the
+ *   optional `stats` (US5, FR-031) is stored into `gameEvent.stats` for the
+ *   planner's review input (FR-032).
  */
 export function createTeamSink(buffer: EphemeralGameBuffer): SaoleiEventSink {
 	return {
@@ -119,12 +135,19 @@ export function createTeamSink(buffer: EphemeralGameBuffer): SaoleiEventSink {
 						: "playing",
 			});
 		},
-		onGameEnd: (state: GameState, status: "won" | "lost") => {
+		onGameEnd: (
+			state: GameState,
+			status: "won" | "lost",
+			stats?: GameStats,
+		) => {
 			buffer.gameEvent = {
 				state,
 				status,
 				endedAt: Date.now(),
 				consumed: false,
+				// US5 (specs/037-saolei-team-optimize/spec.md FR-031): the
+				// MCP-computed statistics ride along with the end event.
+				stats,
 			};
 			buffer.gameState = state;
 			buffer.gameLog.push({ tool: "(game-end)", state, status });

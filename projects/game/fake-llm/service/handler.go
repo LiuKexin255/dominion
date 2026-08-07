@@ -247,10 +247,32 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveNonStreaming(w, spec, respID)
 }
 
+// logSystemPrompts logs every role:"system" message of a request at INFO.
+// The keyword matcher only reads user text (README.md §4), so the system
+// content is otherwise unobservable — logging it lets large-test operators
+// verify prompt injection (e.g. the saolei team planner's "## Player 可用工具"
+// tool-description section, specs/037-saolei-team-optimize FR-016) via the
+// fake-llm logs (signoz) after a test drives the planner.
+func logSystemPrompts(messages []*messageParam) {
+	for _, m := range messages {
+		if !strings.EqualFold(m.Role, "system") {
+			continue
+		}
+		slog.Info("system prompt received",
+			slog.String("snippet", snippet(decodeContent(m.Content), maxSystemPromptSnippetRunes)))
+	}
+}
+
+// maxSystemPromptSnippetRunes caps the system-prompt log line so a verbose
+// prompt cannot blow up the log (a full planner prompt is well under this).
+const maxSystemPromptSnippetRunes = 4000
+
 // dispatch inspects the last message role and returns the responseSpec
 // for the appropriate branch. It is split out of ServeHTTP so tests can
 // exercise the dispatch logic without going through the HTTP layer.
 func (h *ChatHandler) dispatch(messages []*messageParam) responseSpec {
+	logSystemPrompts(messages)
+
 	if lastMessageRole(messages) == "tool" {
 		toolName := extractToolName(messages)
 		resultText := decodeContent(lastMessageContent(messages))

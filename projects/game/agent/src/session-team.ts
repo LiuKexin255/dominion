@@ -42,8 +42,11 @@
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
+import type { MessageRole } from "../game_types/projects/game/MessageRole";
+
 import type { OperationBridge } from "./operation-bridge";
-import { TurnLoop } from "./turn-loop";
+import { TurnLoop, buildTeamFrame } from "./turn-loop";
 import type { TurnLoopEmit } from "./turn-loop";
 import type { TurnBlock } from "./turn-loop";
 import type { ContentBlock, TurnContent } from "./llm";
@@ -78,6 +81,38 @@ export type SessionTeamFactory = (
 	template: string,
 	profileName: string,
 ) => Promise<SessionTeam>;
+
+/**
+ * Emit a non-model-produced channel message as a real-time agent frame
+ * (specs/037-saolei-team-optimize/data-model.md §4 — planner review input,
+ * compression summaries). Passed to the graph nodes via the LangGraph
+ * `configurable` object (tasks.md 决策 #1) rather than TeamGraphDeps, so the
+ * node signature stays DI-free; {@link SessionTeam.runTeamTurn} installs it in
+ * the `streamEvents` config, and planner/compress nodes read
+ * `config?.configurable?.emitChannelFrame` (type `ChannelFrameEmitter | undefined`).
+ *
+ * `frameId` is an optional dedup anchor: the compress node passes its summary
+ * AIMessage's id so the live frame and the reloaded ListMessages entry share
+ * one id (data-model.md §4 去重规则, research.md D9 — desktop
+ * `renderedMessageIds` dedups on `frameId == msg.id`). The planner's
+ * review-input emission omits it (the frame gets a fresh randomUUID, the
+ * historical behavior — the review-input dedup gap is a US1 follow-up).
+ *
+ * `role` is an optional explicit `MessageRole` proto name (e.g.
+ * `"MESSAGE_ROLE_USER"`). `buildTeamFrame` defaults messageParts frames to
+ * `MESSAGE_ROLE_AGENT`; passing a role overrides it. The planner passes
+ * `"MESSAGE_ROLE_USER"` for the review input — it is a HumanMessage, so
+ * ListMessages returns it as USER and the desktop renders it through the
+ * pre-wrap text path (game-board newlines preserved). Without the override the
+ * frame would render as AGENT markdown, which collapses the single newlines
+ * that lay out the board grid (the US1 format-loss bug).
+ */
+export type ChannelFrameEmitter = (
+	agent: string,
+	content: string,
+	frameId?: string,
+	role?: MessageRole,
+) => void;
 
 // ---------------------------------------------------------------------------
 // SessionTeam
@@ -259,7 +294,45 @@ export class SessionTeam {
 				],
 			},
 			{
-				configurable: { thread_id: this.sessionId },
+				// `configurable.emitChannelFrame` carries the channel-frame
+				// emitter to the nodes (tasks.md 决策 #1 — configurable instead
+				// of TeamGraphDeps, see {@link ChannelFrameEmitter}): planner /
+				// compress read it as `config?.configurable?.emitChannelFrame`.
+				configurable: {
+					thread_id: this.sessionId,
+					emitChannelFrame: (
+						agent: string,
+						content: string,
+						frameId?: string,
+						role?: MessageRole,
+					) => {
+						const frame: TeamFrame = buildTeamFrame(
+							this.sessionId,
+							this.template,
+							{
+								agent,
+								messageParts: {
+									parts: [{ text: { content } }],
+								},
+							},
+							// Dedup anchor: the compress node's summary
+							// message id (frameId == msg.id, data-model.md §4).
+							frameId,
+						);
+						// Role override (see {@link ChannelFrameEmitter}): the
+						// planner's review input is a HumanMessage and must
+						// carry MESSAGE_ROLE_USER so the live frame renders
+						// identically to the reloaded history entry.
+						if (role) frame.role = role;
+						this.turnLoopEmit?.(frame);
+					},
+					// Feature 038 (US1): mid-turn drain seam — the player's
+					// `queueDrain` beforeModel middleware calls this before
+					// every model call to inject queued user messages
+					// (`specs/038-queue-input-mid-turn/contracts/
+					// injection-seam-contract.md` §2; FR-001).
+					drainQueuedInput: () => this.turnLoop?.drainQueue() ?? null,
+				},
 				metadata: { session_id: this.sessionId },
 				version: "v3",
 				recursionLimit: RECURSION_LIMIT,

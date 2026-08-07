@@ -1,7 +1,7 @@
 // Package testplan contains agent checkpoint integration tests covering
-// checkpoint resume, concurrent message serialization, and tool-result
-// status preservation across session re-entry (spec 023 FR-012..FR-015),
-// adapted to the saolei team model (spec 031-team-template-mode): each test
+// checkpoint resume and tool-result status preservation across session
+// re-entry (spec 023 FR-012..FR-015), adapted to the saolei team model
+// (spec 031-team-template-mode): each test
 // sets up the team stack via setupTeamSession (session → saolei TeamProfile
 // → CreateTeam) before connecting — CreateTeam MUST precede Connect (no lazy
 // creation, FR-033). The former per-profile-model case moved to the
@@ -214,43 +214,15 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	t.Logf("total messages after 3 turns: %d", len(lmr2.GetMessages()))
 }
 
-// TestAgentConcurrentSerialization verifies that sending two messages
-// rapidly to the same agent yields responses in FIFO send order without
-// interleaving. Each turn carries a DISTINCT keyword backed by a DISTINCT
-// template (greeting then farewell) so the response identity proves order.
-func TestAgentConcurrentSerialization(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("conc-fifo-%s", uniqueSuffix())
-
-	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
-	defer conn.Close()
-
-	// Distinct keywords → distinct templates, so response text proves FIFO order.
-	messages := []string{"hello first", "goodbye second"}
-	for _, msg := range messages {
-		sendText(t, conn, sessionID, msg)
-	}
-
-	wantTexts := []string{expectedGreetingText, expectedFarewellText}
-
-	for i, want := range wantTexts {
-		_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
-			return frameHasThinking(f)
-		})
-		textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
-			return frameHasText(f)
-		})
-		if textFrame == nil {
-			t.Fatalf("message %d: did not receive text response", i)
-		}
-		if !strings.Contains(frameText(textFrame), want) {
-			t.Errorf("response %d = %q, want to contain %q (FIFO order violated)", i, frameText(textFrame), want)
-		}
-	}
-}
+// Per-session serialization (spec 015) + queue FIFO/handoff (spec 030) for
+// rapid-succession messages is covered deterministically by the gate-controlled
+// unit tests in projects/game/agent/src/turn-loop.test.ts (handoff [1,0] / combine
+// / QueueSignal depth / turn-end drain). No large test asserts the "rapid
+// succession → independent FIFO responses" path here: fake-llm has no delay and
+// no-tool turns respond in milliseconds, so the FR-004 fallback window cannot be
+// synchronized end-to-end; feature 038 FR-001 (first-model-call injection,
+// specs/038-queue-input-mid-turn/spec.md) also changes rapid-succession delivery.
+// The per-session mutex serialization itself is not broken by feature 038.
 
 // TestAgentCheckpointToolResultStatusPersists verifies spec 023 FR-012/FR-013
 // (the history-status fix, quickstart.md Scenario 6) for the saolei TEAM
@@ -363,7 +335,7 @@ func assertNeutralToolResultStatuses(t *testing.T, messages []*game.Message) {
 //
 // Coverage gap closed by this case (T008a finding): the other cases in this
 // binary (TestAgentCheckpointResume, TestAgentCheckpointResumeVerifyContext,
-// TestAgentCheckpointToolResultStatusPersists, TestAgentConcurrentSerialization)
+// TestAgentCheckpointToolResultStatusPersists)
 // all disconnect AFTER draining the closing wait frame — the turn is already
 // complete when the bidi stream closes. TestTeamReconnectDispatchReliability
 // (saolei_team_test.go) also disconnects after the in-flight turn completes

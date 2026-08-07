@@ -39,9 +39,12 @@ message FlowPart {
 | Trigger | Emitted frame | `queued_count` |
 |----------|---------------|----------------|
 | `submit` while a turn is RUNNING (buffer grows) | `FlowParts{ [QueueSignal] }` | new `buffer.length` |
+| Mid-turn `drainQueue` clears the buffer — **NEW (feature 038)** | `FlowParts{ [QueueSignal] }` | `0` |
 | Turn completes and buffer drained into the next turn (buffer → 0) | `FlowParts{ [QueueSignal] }` | `0` |
 | Loop reaches idle (emits `wait`) | — | (depth is already 0; no extra signal required) |
 | Abort clears the buffer | `FlowParts{ [QueueSignal] }` then `wait` | `0` |
+
+The mid-turn `drainQueue` row is added by feature 038: `drainQueue` clears the buffer mid-turn (before the turn-end check), so `queued_count` drops to `0` and pending messages transition to normal display before the turn completes. Authoritative definition: `specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md` (QueueSignal emission rules).
 
 - `QueueSignal` is **pushed on change** (event-driven), not polled. The spec-021 pull-based `StatusSignal` is unchanged.
 

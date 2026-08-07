@@ -72,11 +72,31 @@ The shipped samples are:
 | file                      | name      | keywords                 | reasoning                                  | text                                |
 |---------------------------|-----------|--------------------------|--------------------------------------------|-------------------------------------|
 | `sample_chat.yaml`        | chat-only | chat, conversation       | "Responding with text only, no tools needed." | "Sure, let's chat!"              |
+| `sample_compression_player.yaml` | compress-player-summary | 已玩局数、胜负记录 | — | "已玩 5 局，其中 4 局失败。策略：优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。" |
+| `sample_compression_planner.yaml` | compress-planner-summary | 已复盘局数 | — | "已复盘 5 局，策略更新正常，每局均按新策略执行。" |
 | `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
 | `sample_greeting.yaml`    | greeting  | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
 | `sample_mouse_trigger.yaml` | mouse-trigger | move the mouse, position cursor | — | — (carries a `tool_call: mouse_move`) |
 | `sample_planner_strategy.yaml` | planner-update-strategy | 本局游戏过程 | — | — (carries a `tool_call: update_strategy`) |
 | `sample_saolei_start.yaml` | saolei-start | start saolei, play minesweeper | — | — (carries a `tool_call: saolei_init`) |
+
+`compress-player-summary` / `compress-planner-summary` are the plain-text
+responses for the team graph's COMPRESS node (specs/037-saolei-team-optimize
+US2 / FR-008/FR-012): the compress node (agent/src/team/compress.ts
+summarizeChannel) invokes the player/planner models DIRECTLY with its summary
+prompts + the serialized channel messages. The keywords are substrings of
+those prompts' instruction lines ("已玩局数、胜负记录" / "已复盘局数"), and
+the names sort alphabetically BEFORE the configs the serialized channel text
+would otherwise match (`saolei-start` for the player channel's user text,
+`planner-update-strategy` for the planner channel's review prefix) — so the
+summary calls resolve deterministically to a text summary, never to a
+tool_call response (a tool_call carries empty content → compress.ts rejects
+it as a blank summary → FR-013 abort). They carry NO `reasoning:` field on
+purpose: a reasoning_content-bearing response is parsed by the LangChain
+OpenAI adapter into content BLOCKS, which the compress node rejects as
+"non-string content" — text-only responses yield the plain string the
+`model.invoke` call requires (the same reason the compress node now
+normalizes content-blocks via `extractTextContent`, compress.ts).
 
 `mouse-trigger`, `planner-update-strategy` and `saolei-start` carry a
 `tool_call` instead of text: a user turn matching their keyword makes
@@ -152,8 +172,9 @@ and use **distinct** keywords per turn to prove FIFO ordering.
    adjust any `strings.Contains` assertions that depend on them.
 4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
    in `projects/game/fake-llm/service/message_store_test.go` pins the real
-   embedded testdata (`chat-only` before `farewell` before `greeting`, with
-   exact `Reasoning` / `Text` / `Keywords` values). It is the single source
+   embedded testdata (chat-only before compress-planner-summary before
+   compress-player-summary before farewell before greeting, with exact
+   `Reasoning` / `Text` / `Keywords` values). It is the single source
    of truth — if the testdata changes, that test breaks first and reminds
    you to update the helpers constants and assertions in lockstep.
 

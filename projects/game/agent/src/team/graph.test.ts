@@ -18,6 +18,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { fakeModel } from "@langchain/core/testing";
 import { createAgent, tool } from "langchain";
 import { z } from "zod";
@@ -25,15 +26,17 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { FakeStrategyStore } from "../strategy-store";
 import { appendSkillBodyToPrompt, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
+import { refreshTeamChannels } from "../context-middleware";
+import type { GameStats } from "../mcp/saolei/saolei-mcp";
 import {
 	createEphemeralGameBuffer,
 	createTeamSink,
 	type EphemeralGameBuffer,
 } from "./team-sink";
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
-import { createPlayerNode, DEFAULT_PLAYER_BASE } from "./player";
+import { createPlayerNode, DEFAULT_PLAYER_BASE, PLAYER_AGENT_NAME } from "./player";
 import type { CreateAgentFn } from "./player";
-import { DEFAULT_PLANNER_BASE } from "./planner";
+import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
 import type { TeamStateValue } from "./state";
 
 /** A minimal recognizable GameState (3x3, all empty cells). */
@@ -59,6 +62,51 @@ function buildGameEndingPlayerTool(buffer: EphemeralGameBuffer) {
 		{
 			name: "fake_saolei_move",
 			description: "Fake saolei move that ends the game.",
+			schema: z.object({ x: z.number(), y: z.number() }),
+		},
+	);
+}
+
+/**
+ * The fake player tool with a MIXED won/lost outcome (FR-006 — both end a
+ * game and both count toward the compression trigger): even x ⇒ won, odd x ⇒
+ * lost.
+ */
+function buildMixedOutcomePlayerTool(buffer: EphemeralGameBuffer) {
+	const sink = createTeamSink(buffer);
+	return tool(
+		async ({ x, y }: { x: number; y: number }) => {
+			await sink.onGameEnd(makeState(), x % 2 === 0 ? "won" : "lost");
+			return `moved to (${x},${y}); ${x % 2 === 0 ? "won" : "lost"}`;
+		},
+		{
+			name: "fake_saolei_move",
+			description: "Fake saolei move that ends the game (won/lost mix).",
+			schema: z.object({ x: z.number(), y: z.number() }),
+		},
+	);
+}
+
+/**
+ * The fake player tool that ends the game carrying per-game stats (037 US5 —
+ * the MCP's onGameEnd third argument, FR-030/FR-031): the team sink stores
+ * them into `buffer.gameEvent.stats`, which the planner's review input
+ * renders (FR-032). A real move (sink.onMove) precedes the game end so the
+ * gameLog holds an actual game-process entry — the stats-section ordering
+ * assertion in the US5 test compares against a present entry instead of a
+ * vacuous -1 (Phase 6 review fix).
+ */
+function buildStatsPlayerTool(buffer: EphemeralGameBuffer, stats: GameStats) {
+	const sink = createTeamSink(buffer);
+	return tool(
+		async ({ x, y }: { x: number; y: number }) => {
+			await sink.onMove("saolei_click", x, y, makeState());
+			await sink.onGameEnd(makeState(), "lost", stats);
+			return `moved to (${x},${y}); game lost`;
+		},
+		{
+			name: "fake_saolei_move",
+			description: "Fake saolei move that ends the game with stats.",
 			schema: z.object({ x: z.number(), y: z.number() }),
 		},
 	);
@@ -91,6 +139,7 @@ function buildTestGraph(
 		playerBasePrompt?: string;
 		plannerBasePrompt?: string;
 		createAgentFn?: CreateAgentFn;
+		playerTools?: StructuredToolInterface[];
 	} = {},
 ) {
 	const store = overrides.store ?? new FakeStrategyStore();
@@ -103,12 +152,48 @@ function buildTestGraph(
 		strategyStore: store,
 		buffer,
 		sessionId,
-		playerTools: [buildGameEndingPlayerTool(buffer)],
+		playerTools:
+			overrides.playerTools ?? [buildGameEndingPlayerTool(buffer)],
 		playerBasePrompt: overrides.playerBasePrompt ?? "",
 		plannerBasePrompt: overrides.plannerBasePrompt ?? "",
 		createAgentFn: overrides.createAgentFn,
 	});
 	return { graph, checkpointer, store, buffer, sessionId };
+}
+
+/**
+ * The player's fake model for "5 consecutive game endings then compress": one
+ * move tool call per game (each move fires the fake tool → sink.onGameEnd,
+ * FR-006 — every ended game counts), then the compress node's player-channel
+ * summary call returns `summaryContent`.
+ */
+function fiveGamesPlayerModel(summaryContent: string) {
+	const model = fakeModel();
+	for (let i = 0; i < 5; i += 1) {
+		model.respondWithTools([
+			{ name: "fake_saolei_move", args: { x: i + 1, y: i + 1 } },
+		]);
+	}
+	model.respond(new AIMessage(summaryContent));
+	return model;
+}
+
+/**
+ * The planner's fake model for "5 review runs then compress": per game one
+ * `update_strategy` tool call + a plain response (2 model calls per planner
+ * run — strategy v1..v5 accumulate, last write wins), then the compress
+ * node's planner-channel summary call returns `summaryContent`.
+ */
+function fiveGamesPlannerModel(summaryContent: string) {
+	const model = fakeModel();
+	for (let i = 0; i < 5; i += 1) {
+		model.respondWithTools([
+			{ name: "update_strategy", args: { content: `v${i + 1}` } },
+		]);
+		model.respond(new AIMessage(`v${i + 1} written`));
+	}
+	model.respond(new AIMessage(summaryContent));
+	return model;
 }
 
 function contentType(m: BaseMessage): string {
@@ -540,6 +625,285 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 	});
 });
 
+describe("team graph — US5 (037): planner review input renders game stats (FR-032)", () => {
+	it("renders the stats section when gameEvent.stats is present (FR-032)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const stats: GameStats = {
+			operationCount: 7,
+			correctFlags: 3,
+			avgOpsPerMine: 2.33,
+		};
+		const statsTool = buildStatsPlayerTool(buffer, stats);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [statsTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-stats" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// The review request carries the full gameLog AND the stats section
+		// (contracts/game-stats-contract.md §5): the stats appear after the
+		// game-process lines and before the review instruction.
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		const text = contentType(reviewRequests[0] as BaseMessage);
+		expect(text).toContain("本局统计数据：");
+		expect(text).toContain("- 操作次数：7");
+		expect(text).toContain("- 正确标记地雷数：3");
+		expect(text).toContain("- 每雷平均操作数：2.33");
+		expect(text).toContain(
+			"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
+		);
+		// The game-process lines come from the sink-written gameLog (the move
+		// from onMove, then the onGameEnd entry) — asserted present so the
+		// ordering comparison below is not vacuous (Phase 6 review fix: the
+		// stats section must be verified AFTER a real gameLog line).
+		expect(text).toContain("1. saolei_click");
+		expect(text).toContain("2. (game-end)");
+		// The stats section sits AFTER the game-process lines.
+		expect(text.indexOf("本局统计数据：")).toBeGreaterThan(
+			text.indexOf("2. (game-end)"),
+		);
+	});
+
+	it("omits the stats section when gameEvent.stats is absent (backward compatible)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// The existing game-ending tool fires onGameEnd WITHOUT stats.
+		const sink = createTeamSink(buffer);
+		const plainTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				await sink.onGameEnd(makeState(), "lost");
+				return `moved to (${x},${y}); game lost`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Fake saolei move that ends the game (no stats).",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [plainTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-no-stats" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		const text = contentType(reviewRequests[0] as BaseMessage);
+		expect(text).not.toContain("本局统计数据：");
+		expect(text).not.toContain("操作次数");
+	});
+
+	it("renders '不可用' for a null correctFlags and 'N/A' for avgOpsPerMine (FR-032/FR-033)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// Undecodable init counter ⇒ correctFlags = null (FR-033): the
+		// review input must degrade gracefully, not crash.
+		const stats: GameStats = {
+			operationCount: 5,
+			correctFlags: null,
+			avgOpsPerMine: "N/A",
+		};
+		const statsTool = buildStatsPlayerTool(buffer, stats);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [statsTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-null-stats" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		const text = contentType(reviewRequests[0] as BaseMessage);
+		expect(text).toContain("本局统计数据：");
+		expect(text).toContain("- 操作次数：5");
+		expect(text).toContain("- 正确标记地雷数：不可用");
+		expect(text).toContain("- 每雷平均操作数：N/A");
+	});
+});
+
+describe("team graph — US1 (037): planner review input real-time frame (FR-001/FR-004)", () => {
+	it("emits the review input as a real-time frame with agent=planner when a game ends (FR-001/FR-002)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		// Two moves (still playing), then a losing game end — the sink
+		// accumulates one gameLog entry per step, so the emitted frame
+		// carries the full process (specs/037-saolei-team-optimize/spec.md
+		// FR-002: live content == reloaded ListMessages content).
+		const moveTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				if (x === 3 && y === 4) {
+					sink.onMove("saolei_click", 3, 4, makeState());
+				} else {
+					sink.onMove("saolei_click", 5, 2, makeState());
+					sink.onGameEnd(makeState(), "lost");
+				}
+				return `moved to (${x},${y})`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Fake saolei move that accumulates a gameLog.",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 3, y: 4 } }])
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 5, y: 2 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const store = new FakeStrategyStore();
+		// DI recording callback (style/javascript.md §测试 — vi.fn() seam,
+		// no vi.mock): injected via LangGraph `configurable` (tasks.md 决策
+		// #1 — specs/037-saolei-team-optimize/plan.md).
+		const emitChannelFrame = vi.fn<(agent: string, content: string) => void>();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [moveTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-us1-frame", emitChannelFrame },
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// The emitter was actually exercised (style/javascript.md §测试 —
+		// positive assertion on the DI seam). One game end ⇒ one planner
+		// run ⇒ exactly one review-input frame.
+		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
+		const [emittedAgent, emittedContent] = emitChannelFrame.mock.calls[0];
+		// The frame belongs to the planner tab (FR-001 / US1 AS5).
+		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
+		// The frame carries the FULL game process — every step's tool,
+		// coordinates, status and text-rendered board (US1 AS2).
+		expect(emittedContent).toContain("本局游戏过程");
+		expect(emittedContent).toContain("1. saolei_click(3, 4) → playing");
+		expect(emittedContent).toContain("2. saolei_click(5, 2) → playing");
+		expect(emittedContent).toContain("3. (game-end) → lost");
+		expect(emittedContent).toContain("board size 3*3");
+		// The emitted content equals the review request written to the
+		// planner channel (same buildReviewInput output — the live frame
+		// and the reloaded history are identical, FR-002/FR-003).
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		expect(contentType(reviewRequests[0] as BaseMessage)).toBe(emittedContent);
+		// The game really ended ⇒ the planner ran and wrote its strategy.
+		expect(await store.get("graph-test")).toBe("safer-play");
+	});
+
+	it("emits the no-record notice frame when the gameLog is empty (FR-004)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// An unconsumed game-end event WITHOUT any gameLog entry: the planner
+		// still runs, and its "无可用游戏记录" notice MUST be emitted too
+		// (FR-004 — the empty-log notice is a non-empty review content).
+		buffer.gameEvent = {
+			state: makeState(),
+			status: "lost",
+			endedAt: Date.now(),
+			consumed: false,
+		};
+		const playerModel = fakeModel().respond(new AIMessage("idle"));
+		const plannerModel = fakeModel().respond(new AIMessage("no update"));
+		const store = new FakeStrategyStore();
+		const emitChannelFrame = vi.fn<(agent: string, content: string) => void>();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-us1-empty", emitChannelFrame },
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
+		const [emittedAgent, emittedContent] = emitChannelFrame.mock.calls[0];
+		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
+		expect(emittedContent).toContain("请复盘本局游戏（无可用游戏记录）。");
+		// Live frame content == the notice in the planner channel (FR-002).
+		const notices = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("请复盘本局游戏（无可用游戏记录）。"),
+		);
+		expect(notices).toHaveLength(1);
+		expect(contentType(notices[0] as BaseMessage)).toBe(emittedContent);
+	});
+});
+
 describe("team graph — Issue 4 (036): inner createAgents inherit the outer graph config", () => {
 	it("player's createAgent loop runs >25 model calls without GraphRecursionError (US4 acceptance #1 / SC-006)", async () => {
 		const buffer = createEphemeralGameBuffer();
@@ -912,20 +1276,450 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 
 	it("planner: non-empty planner_prompt is used as the systemPrompt verbatim (FR-034)", () => {
 		const profilePrompt = "你是自定义的 planner 复盘者。";
+		// The default test player tool (fake_saolei_move) is NOT game-visible
+		// (GAME_VISIBLE_PLAYER_TOOLS), so it would not be listed — pass a real
+		// visible tool to exercise the US3 section alongside FR-034.
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
-		buildTestGraph({ plannerBasePrompt: profilePrompt, createAgentFn });
+		buildTestGraph({
+			plannerBasePrompt: profilePrompt,
+			playerTools: [clickTool],
+			createAgentFn,
+		});
 
-		expect(plannerSystemPrompt()).toBe(profilePrompt);
+		// Semantics A: the profile prompt leads, unchanged (FR-034); US3
+		// appends the player tool description section AFTER it (FR-016 —
+		// specs/037-saolei-team-optimize/contracts/compression-contract.md
+		// §4). The game-visible player tool is listed.
+		expect(plannerSystemPrompt().startsWith(profilePrompt)).toBe(true);
 		// The planner appends NO skill body (FR-012/FR-034).
 		expect(plannerSystemPrompt()).not.toContain(SKILL_PROMPT_SEPARATOR);
+		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
+		expect(plannerSystemPrompt()).toContain("saolei_click: 揭示一个格子。");
 		expect(createAgentFn).toHaveBeenCalled();
 	});
 
 	it("planner: empty planner_prompt falls back to DEFAULT_PLANNER_BASE (FR-034)", () => {
+		// A game-visible player tool so the US3 section is present (the
+		// default fake_saolei_move test tool is not game-visible).
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
-		buildTestGraph({ createAgentFn }); // plannerBasePrompt defaults to ""
+		buildTestGraph({ playerTools: [clickTool], createAgentFn }); // plannerBasePrompt defaults to ""
 
-		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+		// The default base leads (FR-034); the US3 tool description section
+		// follows it (FR-016 — compression-contract.md §4).
+		expect(plannerSystemPrompt().startsWith(DEFAULT_PLANNER_BASE)).toBe(true);
+		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
 		expect(createAgentFn).toHaveBeenCalled();
+	});
+
+	it("planner: empty player tool set appends NO tool section (US3 — no trailing markdown)", () => {
+		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
+		buildTestGraph({ playerTools: [], createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// Empty player tools ⇒ buildToolDescriptionSection returns "" — the
+		// planner prompt is the bare DEFAULT_PLANNER_BASE, no trailing
+		// markdown section (compression-contract.md §4).
+		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+	});
+});
+
+describe("team graph — US3 (037): planner systemPrompt player tool descriptions (FR-016..FR-018)", () => {
+	it("injects every game-visible player tool's name+description into the planner systemPrompt while keeping its tool set at update_strategy only (FR-016/FR-018)", () => {
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const flagTool = tool(
+			async () => "flagged",
+			{
+				name: "saolei_flag",
+				description: "标记一个格子为地雷。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		// DI spy (style/javascript.md §测试 — no vi.mock): capture BOTH the
+		// systemPrompt AND the tools array of each createAgent call, then
+		// pick the planner's by its prompt lacking the saolei skill body
+		// (the player's always carries it, FR-034 — same heuristic as
+		// captureSystemPrompts).
+		const calls: Array<{
+			systemPrompt: string;
+			tools: StructuredToolInterface[];
+		}> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		buildTestGraph({ playerTools: [clickTool, flagTool], createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		const plannerCall = calls.find(
+			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
+		);
+		expect(plannerCall).toBeDefined();
+		// FR-016: the section lists EVERY game-visible player tool's name and
+		// description (specs/037-saolei-team-optimize/contracts/
+		// compression-contract.md §4 — `- name: description` per tool).
+		expect(plannerCall?.systemPrompt).toContain("## Player 可用工具");
+		expect(plannerCall?.systemPrompt).toContain(
+			"saolei_click: 揭示一个格子。",
+		);
+		expect(plannerCall?.systemPrompt).toContain(
+			"saolei_flag: 标记一个格子为地雷。",
+		);
+		// FR-018: the planner's ACTUAL tool set stays `update_strategy` only —
+		// the player tools were NOT added as callable tools.
+		expect(plannerCall?.tools).toHaveLength(1);
+		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
+	});
+
+	it("excludes read-only player tools the planner cannot observe in the game process (saolei_remain — FR-016 refine)", () => {
+		const clickTool = tool(
+			async () => "clicked",
+			{
+				name: "saolei_click",
+				description: "揭示一个格子。",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const remainTool = tool(
+			async () => "3 mines remaining",
+			{
+				name: "saolei_remain",
+				description: "查询剩余地雷数。",
+				schema: z.object({}),
+			},
+		);
+		const calls: Array<{ systemPrompt: string; tools: StructuredToolInterface[] }> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		buildTestGraph({ playerTools: [clickTool, remainTool], createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		const plannerCall = calls.find(
+			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
+		);
+		expect(plannerCall).toBeDefined();
+		// The game-visible tool IS listed...
+		expect(plannerCall?.systemPrompt).toContain("saolei_click: 揭示一个格子。");
+		// ...while the read-only saolei_remain (no gameLog trace — the
+		// planner cannot observe its use) is NOT injected (FR-016 refine).
+		expect(plannerCall?.systemPrompt).not.toContain("saolei_remain");
+		// FR-018 unchanged: the planner's tool set stays update_strategy only.
+		expect(plannerCall?.tools).toHaveLength(1);
+		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
+	});
+});
+
+describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => {
+	it("compresses both channels into one summary after 5 ended games, player stops (FR-006/FR-008/FR-009/FR-010/FR-012)", async () => {
+		// Mixed won AND lost outcomes — both count a game (FR-006). The tool
+		// closes over the SAME buffer the graph uses (sink → buffer → node).
+		const buffer = createEphemeralGameBuffer();
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildMixedOutcomePlayerTool(buffer)],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-compress5" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// FR-006: 5 ended games (won/lost) → counter 5.
+		expect(result.gameCounter).toBe(5);
+		// FR-008/FR-012: each channel shrank to ONE meaningful summary
+		// AIMessage (non-blank content).
+		expect(result.playerMessages).toHaveLength(1);
+		expect(result.playerMessages[0]._getType()).toBe("ai");
+		expect(contentType(result.playerMessages[0] as BaseMessage)).toBe(
+			"player 摘要内容",
+		);
+		expect(result.plannerMessages).toHaveLength(1);
+		expect(contentType(result.plannerMessages[0] as BaseMessage)).toBe(
+			"planner 摘要内容",
+		);
+		// FR-009: the strategy (long-term memory) is untouched by compression
+		// (the planner's last update wins).
+		expect(await store.get("graph-test")).toBe("v5");
+		// FR-010: the graph routed compress → END, NOT back to the player —
+		// the player model was called 5× (one move per game) + 1× (the
+		// compress summary); a 6th player run would consume a 7th response.
+		expect(playerModel.callCount).toBe(6);
+		// D6 step 6: gameEnded stays cleared after the turn.
+		expect(result.gameEnded).toBeNull();
+	});
+
+	it("resumes game 6 with the summary context after compression (FR-010, US2 AS4)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		playerModel.respondWithTools([
+			{ name: "fake_saolei_move", args: { x: 6, y: 6 } },
+		]);
+		playerModel.respond(new AIMessage("idle, no new game"));
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		plannerModel.respondWithTools([
+			{ name: "update_strategy", args: { content: "v6" } },
+		]);
+		plannerModel.respond(new AIMessage("v6 written"));
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+		const thread = "t-resume";
+
+		// Games 1-5 + compression (gameCounter 0 → 5, channels shrink).
+		const compressed = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: thread }, recursionLimit: 200 },
+		)) as TeamStateValue;
+		expect(compressed.gameCounter).toBe(5);
+		expect(compressed.playerMessages).toHaveLength(1);
+
+		// Game 6: a new user input starts a new turn; the player resumes with
+		// the summary as its (only) channel history.
+		const result6 = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("继续")] },
+			{ configurable: { thread_id: thread }, recursionLimit: 200 },
+		)) as TeamStateValue;
+		expect(result6.gameCounter).toBe(6);
+		// The player's game-6 first model input carries the summary context
+		// (calls[0..4] = moves 1-5, calls[5] = the compress summary call).
+		const game6Input = playerModel.calls[6].messages as BaseMessage[];
+		expect(
+			game6Input.some((m) => contentType(m).includes("player 摘要内容")),
+		).toBe(true);
+	});
+
+	it("aborts when a compression LLM call throws (FR-013)", async () => {
+		const playerModel = fakeModel();
+		for (let i = 0; i < 5; i += 1) {
+			playerModel.respondWithTools([
+				{ name: "fake_saolei_move", args: { x: i + 1, y: i + 1 } },
+			]);
+		}
+		// The compress node's player-channel summary call (6th) throws.
+		playerModel.respond(new Error("compression llm down"));
+		const plannerModel = fiveGamesPlannerModel("unused");
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		// FR-013: the node re-throws → the graph invoke rejects (abort).
+		await expect(
+			graph.invoke(
+				{ playerMessages: [new HumanMessage("开始游戏")] },
+				{ configurable: { thread_id: "t-compress-fail" }, recursionLimit: 200 },
+			),
+		).rejects.toThrow("compression llm down");
+	});
+
+	it("normalizes a content-blocks summary response to a plain string (FR-008/FR-012 — the @langchain/core output_version v1 shape)", async () => {
+		// The deployed OpenAI-compatible adapters may return the model text in
+		// the STANDARD CONTENT-BLOCKS shape (`[{type:"text",text}]` — produced
+		// when @langchain/core stamps `response_metadata.output_version: "v1"`
+		// and the message carries the blocks array as `content`). The pre-fix
+		// `typeof content !== "string"` check aborted compression on that shape
+		// (observed in the 037 large test: "compression failed: summary model
+		// returned non-string content"); extractTextContent must normalize it
+		// to the plain string summary.
+		const playerModel = fakeModel();
+		for (let i = 0; i < 5; i += 1) {
+			playerModel.respondWithTools([
+				{ name: "fake_saolei_move", args: { x: i + 1, y: i + 1 } },
+			]);
+		}
+		playerModel.respond(
+			new AIMessage([{ type: "text", text: "player 摘要内容" }]),
+		);
+		const plannerModel = fakeModel();
+		for (let i = 0; i < 5; i += 1) {
+			plannerModel.respondWithTools([
+				{ name: "update_strategy", args: { content: `v${i + 1}` } },
+			]);
+			plannerModel.respond(new AIMessage(`v${i + 1} written`));
+		}
+		plannerModel.respond(
+			new AIMessage([{ type: "text", text: "planner 摘要内容" }]),
+		);
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-blocks-summary" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// Both channels shrank to one summary whose content is the plain text
+		// extracted from the blocks (FR-008/FR-012 — non-blank string).
+		expect(result.playerMessages).toHaveLength(1);
+		expect(contentType(result.playerMessages[0] as BaseMessage)).toBe(
+			"player 摘要内容",
+		);
+		expect(result.plannerMessages).toHaveLength(1);
+		expect(contentType(result.plannerMessages[0] as BaseMessage)).toBe(
+			"planner 摘要内容",
+		);
+	});
+
+	it("skips an empty channel at compression time (FR-015)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fakeModel();
+		// Every planner invoke fails → the node degrades and writes NO
+		// plannerMessages, so the planner channel is empty when compression
+		// triggers (5 games × MAX_PLANNER_ATTEMPTS=3 = 15 error responses).
+		for (let i = 0; i < 15; i += 1) {
+			plannerModel.respond(new Error("planner llm down"));
+		}
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-empty-channel" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// 5 games still counted (the degrade path increments too, FR-006).
+		expect(result.gameCounter).toBe(5);
+		// Non-empty player channel: compressed to one summary.
+		expect(result.playerMessages).toHaveLength(1);
+		expect(contentType(result.playerMessages[0] as BaseMessage)).toBe(
+			"player 摘要内容",
+		);
+		// Empty planner channel: skipped — no summary message written.
+		expect(result.plannerMessages).toEqual([]);
+		// The planner model was never invoked for a summary (15 = the 5
+		// degraded planner runs' retries only).
+		expect(plannerModel.callCount).toBe(15);
+	});
+
+	it("does not compress at a non-5 gameCounter (FR-006: MUST NOT trigger)", async () => {
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 2, y: 2 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = fakeModel()
+			.respondWithTools([{ name: "update_strategy", args: { content: "v1" } }])
+			.respond(new AIMessage("v1 written"))
+			.respondWithTools([{ name: "update_strategy", args: { content: "v2" } }])
+			.respond(new AIMessage("v2 written"));
+		const { graph, store } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-no-compress" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// 2 ended games → counter 2 (not a 5-multiple) → no compression.
+		expect(result.gameCounter).toBe(2);
+		// The player channel still holds the raw history (length > 1).
+		expect(result.playerMessages.length).toBeGreaterThan(1);
+		// The compress node never ran: no summary calls (player: 2 moves + 1
+		// idle; planner: 2 runs × 2 calls).
+		expect(playerModel.callCount).toBe(3);
+		expect(plannerModel.callCount).toBe(4);
+		expect(await store.get("graph-test")).toBe("v2");
+	});
+
+	it("emits player+planner summary frames carrying the summary message id (FR-011/SC-004, data-model.md §4)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const emitChannelFrame = vi.fn<
+			(agent: string, content: string, frameId?: string) => void
+		>();
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-compress-frame", emitChannelFrame },
+				recursionLimit: 200,
+			},
+		)) as TeamStateValue;
+
+		// 5 planner review-input frames (US1, agent="planner") + 2 summary
+		// frames (player channel, planner channel) = 7.
+		expect(emitChannelFrame).toHaveBeenCalledTimes(7);
+		const calls = emitChannelFrame.mock.calls;
+		for (let i = 0; i < 5; i += 1) {
+			expect(calls[i][0]).toBe(PLANNER_AGENT_NAME);
+		}
+		// Player summary frame: agent + content match the summary model output
+		// (FR-011), and the frameId equals the summary message's id — the
+		// desktop dedup anchor (frameId == msg.id, data-model.md §4 / D9).
+		const [playerAgent, playerContent, playerFrameId] = calls[5];
+		expect(playerAgent).toBe(PLAYER_AGENT_NAME);
+		expect(playerContent).toBe("player 摘要内容");
+		expect(playerFrameId).toBeDefined();
+		expect(playerFrameId).toBe(result.playerMessages[0].id);
+		// Planner summary frame: same for the planner channel.
+		const [plannerAgent, plannerContent, plannerFrameId] = calls[6];
+		expect(plannerAgent).toBe(PLANNER_AGENT_NAME);
+		expect(plannerContent).toBe("planner 摘要内容");
+		expect(plannerFrameId).toBeDefined();
+		expect(plannerFrameId).toBe(result.plannerMessages[0].id);
+	});
+
+	it("clears the compressed channels and resets gameCounter on RefreshTeam (FR-014 / US2 AS8)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const { graph, store, sessionId } = buildTestGraph({
+			playerModel,
+			plannerModel,
+		});
+		// The invoke runs on the session thread (thread_id == sessionId) so
+		// refreshTeamChannels(graph, sessionId) targets the same thread.
+		await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: sessionId }, recursionLimit: 200 },
+		);
+
+		await refreshTeamChannels(graph, sessionId);
+
+		const snapshot = (await graph.getState({
+			configurable: { thread_id: sessionId },
+		})) as unknown as { values: TeamStateValue };
+		// The summaries (short-term messages) are cleared alongside the rest.
+		expect(snapshot.values.playerMessages).toEqual([]);
+		expect(snapshot.values.plannerMessages).toEqual([]);
+		expect(snapshot.values.gameCounter).toBe(0);
+		// The strategy (long-term memory) is untouched (FR-014).
+		expect(await store.get(sessionId)).toBe("v5");
 	});
 });

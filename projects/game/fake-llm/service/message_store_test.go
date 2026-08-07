@@ -216,34 +216,43 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 7 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 7 (chat-only + farewell + greeting + mouse-trigger + planner-update-strategy + saolei-remain + saolei-start)", len(got))
+	if len(got) != 9 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 9 (chat-only + compress-planner-summary + compress-player-summary + farewell + greeting + mouse-trigger + planner-update-strategy + saolei-remain + saolei-start)", len(got))
 	}
 
-	// Sorted alphabetically: chat-only before farewell before greeting
-	// before mouse-trigger before planner-update-strategy before saolei-remain
-	// before saolei-start ("planner-update-strategy" < "saolei-remain" because
-	// 'p' < 's'; "saolei-remain" < "saolei-start" because 'r' < 's').
+	// Sorted alphabetically: chat-only before compress-planner-summary before
+	// compress-player-summary before farewell before greeting before
+	// mouse-trigger before planner-update-strategy before saolei-remain
+	// before saolei-start ("compress-planner-summary" < "compress-player-summary"
+	// because 'n' < 'y' at the first differing rune; "planner-update-strategy"
+	// < "saolei-remain" because 'p' < 's'; "saolei-remain" < "saolei-start"
+	// because 'r' < 's').
 	if got[0].Name != "chat-only" {
 		t.Fatalf("first message = %q, want chat-only", got[0].Name)
 	}
-	if got[1].Name != "farewell" {
-		t.Fatalf("second message = %q, want farewell", got[1].Name)
+	if got[1].Name != "compress-planner-summary" {
+		t.Fatalf("second message = %q, want compress-planner-summary", got[1].Name)
 	}
-	if got[2].Name != "greeting" {
-		t.Fatalf("third message = %q, want greeting", got[2].Name)
+	if got[2].Name != "compress-player-summary" {
+		t.Fatalf("third message = %q, want compress-player-summary", got[2].Name)
 	}
-	if got[3].Name != "mouse-trigger" {
-		t.Fatalf("fourth message = %q, want mouse-trigger", got[3].Name)
+	if got[3].Name != "farewell" {
+		t.Fatalf("fourth message = %q, want farewell", got[3].Name)
 	}
-	if got[4].Name != "planner-update-strategy" {
-		t.Fatalf("fifth message = %q, want planner-update-strategy", got[4].Name)
+	if got[4].Name != "greeting" {
+		t.Fatalf("fifth message = %q, want greeting", got[4].Name)
 	}
-	if got[5].Name != "saolei-remain" {
-		t.Fatalf("sixth message = %q, want saolei-remain", got[5].Name)
+	if got[5].Name != "mouse-trigger" {
+		t.Fatalf("sixth message = %q, want mouse-trigger", got[5].Name)
 	}
-	if got[6].Name != "saolei-start" {
-		t.Fatalf("seventh message = %q, want saolei-start", got[6].Name)
+	if got[6].Name != "planner-update-strategy" {
+		t.Fatalf("seventh message = %q, want planner-update-strategy", got[6].Name)
+	}
+	if got[7].Name != "saolei-remain" {
+		t.Fatalf("eighth message = %q, want saolei-remain", got[7].Name)
+	}
+	if got[8].Name != "saolei-start" {
+		t.Fatalf("ninth message = %q, want saolei-start", got[8].Name)
 	}
 
 	chatOnly := got[0]
@@ -257,7 +266,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("chat-only keywords missing chat: %v", chatOnly.Keywords)
 	}
 
-	farewell := got[1]
+	farewell := got[3]
 	if farewell.Reasoning != "The user is saying goodbye." {
 		t.Errorf("farewell reasoning = %q, want the goodbye reasoning", farewell.Reasoning)
 	}
@@ -268,7 +277,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("farewell keywords missing bye: %v", farewell.Keywords)
 	}
 
-	greeting := got[2]
+	greeting := got[4]
 	if greeting.Reasoning != "The user is greeting me, I should respond warmly." {
 		t.Errorf("greeting reasoning = %q, want the warm greeting reasoning", greeting.Reasoning)
 	}
@@ -279,10 +288,42 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("greeting keywords missing hello: %v", greeting.Keywords)
 	}
 
+	// compress-planner-summary and compress-player-summary are the two
+	// plain-text responses for the team graph's COMPRESS node summary calls
+	// (specs/037-saolei-team-optimize US2 / FR-008/FR-012). The compress node
+	// invokes the player/planner models directly (team/compress.ts
+	// summarizeChannel) with the summary prompts + serialized channels; the
+	// keywords below are substrings of those prompts' instruction lines, so
+	// the calls match deterministically and the response TEXT becomes the
+	// post-compression channel message and live summary frame
+	// (helpers_test.go expectedPlayerCompressionSummary /
+	// expectedPlannerCompressionSummary — keep in sync).
+	compressPlanner := got[1]
+	if compressPlanner.ToolCall != nil {
+		t.Errorf("compress-planner-summary must carry a plain text response (a tool_call would abort compression — FR-012)")
+	}
+	if compressPlanner.Text != "已复盘 5 局，策略更新正常，每局均按新策略执行。" {
+		t.Errorf("compress-planner-summary text = %q, want the pinned compression summary", compressPlanner.Text)
+	}
+	if !slices.Contains(compressPlanner.Keywords, "已复盘局数") {
+		t.Errorf("compress-planner-summary keywords missing '已复盘局数': %v", compressPlanner.Keywords)
+	}
+
+	compressPlayer := got[2]
+	if compressPlayer.ToolCall != nil {
+		t.Errorf("compress-player-summary must carry a plain text response (a tool_call would abort compression — FR-012)")
+	}
+	if compressPlayer.Text != "已玩 5 局，其中 4 局失败。策略：优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。" {
+		t.Errorf("compress-player-summary text = %q, want the pinned compression summary", compressPlayer.Text)
+	}
+	if !slices.Contains(compressPlayer.Keywords, "已玩局数、胜负记录") {
+		t.Errorf("compress-player-summary keywords missing '已玩局数、胜负记录': %v", compressPlayer.Keywords)
+	}
+
 	// mouse-trigger carries a tool_call (the dispatch fix): a user turn
 	// matching its keyword makes fake-LLM return a mouse_move tool_call
 	// so the agent_operation large tests drive the real dispatch chain.
-	mouseTrigger := got[3]
+	mouseTrigger := got[5]
 	if mouseTrigger.ToolCall == nil {
 		t.Fatalf("mouse-trigger tool_call is nil")
 	}
@@ -300,7 +341,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// mode-bugfix/contracts/team-graph-fix-contract.md §2.2) — matches this
 	// Message deterministically, so the saolei_team large tests drive the
 	// planner→update_strategy→StrategyStore flow end-to-end.
-	plannerStrategy := got[4]
+	plannerStrategy := got[6]
 	if plannerStrategy.ToolCall == nil {
 		t.Fatalf("planner-update-strategy tool_call is nil")
 	}
@@ -316,7 +357,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// tool_call so the agent_saolei large test drives the read-only remain
 	// query end-to-end (specs/029-saolei-coord-remain/contracts/saolei-
 	// remain-tool-contract.md §8).
-	saoleiRemain := got[5]
+	saoleiRemain := got[7]
 	if saoleiRemain.ToolCall == nil {
 		t.Fatalf("saolei-remain tool_call is nil")
 	}
@@ -329,7 +370,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 
 	// saolei-start carries the first saolei_init tool_call (the entry
 	// point of the agent_saolei large-test flow).
-	saoleiStart := got[6]
+	saoleiStart := got[8]
 	if saoleiStart.ToolCall == nil {
 		t.Fatalf("saolei-start tool_call is nil")
 	}

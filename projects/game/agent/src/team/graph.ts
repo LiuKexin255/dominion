@@ -5,8 +5,8 @@
  * §2.3 / §6; research.md D5/D6). Graph structure:
  *
  * ```text
- * START → [player] ──条件边(读 state.gameEnded)──→ [planner] ──→ [player] ...
- *                   │  gameEnded=null → END
+ * START → [player] ──条件边(读 state.gameEnded)──→ [planner] ──条件边(读 state.gameCounter)──→ [compress] ──→ END
+ *                   │  gameEnded=null → END            │  gameCounter%5!==0 → [player] ...
  *                   │  gameEnded≠null → planner
  * ```
  *
@@ -17,9 +17,15 @@
  *   (FR-031).
  * - `planner` (contract §2.2): triggered exactly once per game end via the
  *   conditional edge; tools = `update_strategy` only; on return the graph
- *   unconditionally clears `gameEnded` (D6 step 6) and routes BACK to
- *   `player` (NOT END — FR-009: continuing is driven by the player LLM /
- *   user, not a forced loop). `accepts_user_input=false` (FR-031).
+ *   unconditionally clears `gameEnded` (D6 step 6) and increments
+ *   `gameCounter` (FR-006); the conditional edge then routes BACK to `player`
+ *   (NOT END — FR-009: continuing is driven by the player LLM / user, not a
+ *   forced loop) or to `compress` when the counter is a positive multiple of 5
+ *   (specs/037-saolei-team-optimize/spec.md FR-006/FR-007).
+ *   `accepts_user_input=false` (FR-031).
+ * - `compress` (specs/037-saolei-team-optimize/contracts/compression-contract.md
+ *   §2/§3): summarizes each non-empty channel into one AIMessage, then routes
+ *   to END — the player stops and waits for user input (FR-010).
  * - One single outer `MemorySaver` (A3): per-agent history is reconstructed
  *   from the per-agent channels; the createAgents carry NO checkpointer
  *   (D14 注意事项 4 / A2).
@@ -44,6 +50,7 @@ import type { ChatModel } from "../model-provider";
 import type { StrategyStore } from "../strategy-store";
 import type { GameEnded, TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
+import { createCompressNode } from "./compress";
 import { createPlayerNode } from "./player";
 import type { CreateAgentFn } from "./player";
 import { createPlannerNode } from "./planner";
@@ -53,8 +60,9 @@ import { createPlannerNode } from "./planner";
  * TS2883 note in `state.ts`; the value type is exported there as the
  * structural {@link TeamStateValue} instead. Uses `Annotation.Root` (NOT
  * `new StateSchema` + zod — D14 注意事项 1) with `messagesStateReducer`
- * channels (REMOVE_ALL_MESSAGES support, D8/A1) and a last-write-wins
- * `gameEnded` control field (A6).
+ * channels (REMOVE_ALL_MESSAGES support, D8/A1), a last-write-wins
+ * `gameEnded` control field (A6) and a last-write-wins `gameCounter`
+ * (specs/037-saolei-team-optimize/data-model.md §2).
  */
 const TeamState = Annotation.Root({
 	playerMessages: Annotation<BaseMessage[]>({
@@ -70,6 +78,13 @@ const TeamState = Annotation.Root({
 		// reads it (A6). `null` after the planner clears it (D6 step 6).
 		reducer: (_prev: GameEnded, next: GameEnded) => next,
 		default: () => null,
+	}),
+	gameCounter: Annotation<number>({
+		// Overwrite (last-write-wins) counter; the planner increments it on
+		// return and RefreshTeam resets it (specs/037-saolei-team-optimize/
+		// data-model.md §2, FR-006/FR-014). Same pattern as `gameEnded`.
+		reducer: (_prev: number, next: number) => next,
+		default: () => 0,
 	}),
 });
 
@@ -176,6 +191,20 @@ function routeAfterPlayer(
 }
 
 /**
+ * Conditional edge after the planner node (specs/037-saolei-team-optimize/
+ * contracts/compression-contract.md §2, D7) — reads the `gameCounter` the
+ * planner just incremented: a positive multiple of 5 ⇒ compress (the player
+ * stops, FR-010); otherwise ⇒ player (continuing, FR-009).
+ */
+function routeAfterPlanner(
+	state: TeamStateValue,
+): "compress" | "player" {
+	return state.gameCounter > 0 && state.gameCounter % 5 === 0
+		? "compress"
+		: "player";
+}
+
+/**
  * Build and compile the saolei team graph (single TeamState + one outer
  * `MemorySaver`, architecture (i) — A3).
  *
@@ -197,19 +226,33 @@ export function buildTeamGraph(deps: TeamGraphDeps): TeamGraphHandle {
 		buffer: deps.buffer,
 		sessionId: deps.sessionId,
 		plannerBasePrompt: deps.plannerBasePrompt,
+		// US3 (specs/037-saolei-team-optimize/spec.md FR-016/FR-017): the
+		// player tools are forwarded so the planner node can inject their
+		// NAME + DESCRIPTION into its system prompt (static text — the tools
+		// themselves stay out of the planner's tool set, FR-018).
+		playerTools: deps.playerTools,
 		createAgentFn: deps.createAgentFn,
+	});
+	const compressNode = createCompressNode({
+		playerModel: deps.playerModel,
+		plannerModel: deps.plannerModel,
 	});
 
 	const checkpointer = new MemorySaver();
 	const graph = new StateGraph(TeamState)
 		.addNode("player", playerNode)
 		.addNode("planner", plannerNode)
+		.addNode("compress", compressNode)
 		.addEdge(START, "player")
 		.addConditionalEdges("player", routeAfterPlayer)
-		// planner → player (NOT END): the planner clears gameEnded on return
-		// (D6 step 6) and hands back to the player, which decides whether to
-		// start another game or stop (FR-009 — no forced multi-game loop).
-		.addEdge("planner", "player")
+		// planner → compress | player: the planner clears gameEnded on return
+		// (D6 step 6) and increments gameCounter (FR-006); a positive multiple
+		// of 5 routes to compress, otherwise back to the player (FR-009 — no
+		// forced multi-game loop; compression-contract.md §2).
+		.addConditionalEdges("planner", routeAfterPlanner)
+		// compress → END: the player stops and waits for user input (FR-010 —
+		// the next turn resumes with the summary context).
+		.addEdge("compress", END)
 		.compile({ checkpointer });
 
 	return { graph, checkpointer };

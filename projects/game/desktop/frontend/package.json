@@ -18,6 +18,7 @@
         "typescript": "catalog:",
         "vite": "catalog:",
         "@types/node": "catalog:",
-        "svelte-check": "catalog:"
+        "svelte-check": "catalog:",
+        "vitest": "catalog:"
     }
 }

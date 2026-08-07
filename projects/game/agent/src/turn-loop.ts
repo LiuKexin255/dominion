@@ -115,6 +115,12 @@ export type TurnRunner = (
  * is the session's template path segment (bare, REQUIRED by the proto contract
  * — specs/031-team-template-mode/contracts/api-contract.md §3.6).
  *
+ * `frameId` is an explicit override: the channel-frame emitter passes the
+ * source message's id so the live frame and the reloaded ListMessages entry
+ * share one dedup anchor (specs/037-saolei-team-optimize/data-model.md §4,
+ * research.md D9 — desktop `renderedMessageIds` dedups on `frameId == msg.id`).
+ * Defaults to a fresh randomUUID when omitted (the pre-existing behavior).
+ *
  * Exported as the canonical TeamFrame builder: `handler.ts` and
  * `operation-bridge.ts` reuse it so every outbound frame carries the full
  * envelope (the former operation-bridge dispatch set only the payload — the
@@ -124,12 +130,13 @@ export function buildTeamFrame(
   sessionId: string,
   templateId: string,
   payload: Partial<TeamFrame>,
+  frameId?: string,
 ): TeamFrame {
   const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
   return {
     sessionId,
     templateId,
-    frameId: randomUUID(),
+    frameId: frameId ?? randomUUID(),
     createTime: timestampNow(),
     role:
       payloadKind === "messageParts"
@@ -283,6 +290,31 @@ export class TurnLoop {
     }
     this.aborting = true;
     this.controller?.abort();
+  }
+
+  /**
+   * Mid-turn drain: merge ALL buffered `TurnContent`s into ONE aggregated
+   * `TurnContent` (FIFO), clear the buffer, emit `QueueSignal(0)`, and return
+   * the combined content — or return `null` (no-op, no emission) when the
+   * buffer is empty.
+   *
+   * Callable from outside `runLoop`: the player's `queueDrain` `beforeModel`
+   * middleware invokes it via the `configurable.drainQueuedInput` callback to
+   * inject queued messages at the next reasoning-step boundary
+   * (specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md;
+   * specs/038-queue-input-mid-turn/data-model.md §1/§2). Does NOT change
+   * `running` or transition the loop — it only touches the buffer + emits the
+   * depth signal. The turn-end drain (`runLoop` buffer check below) still runs
+   * after the graph invoke; if this method already emptied the buffer, the
+   * loop sees 0 and goes idle (no double-drain).
+   */
+  drainQueue(): TurnContent | null {
+    if (this.buffer.length === 0) {
+      return null;
+    }
+    const combined = combineAll(this.buffer);
+    this.emit(this.queueSignalFrame(0));
+    return combined;
   }
 
   /**

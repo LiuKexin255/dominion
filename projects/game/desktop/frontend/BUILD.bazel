@@ -1,4 +1,8 @@
 load("//tools/dev/js:vite.bzl", "vite_build")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+
+npm_link_all_packages(name = "node_modules")
 
 vite_build(
     name = "dist",
@@ -9,4 +13,18 @@ vite_build(
     svelte_config = "svelte.config.js",
     tsconfig = "tsconfig.json",
     visibility = ["//visibility:public"],
+)
+
+# US4 (037-saolei-team-optimize FR-020..FR-025, SC-006): vitest target for the
+# pure chat-fifo module. Tests run against the raw .ts source through the shared
+# shim (tools/dev/js/vitest_test.bzl + specs/019-js-test-reliability/
+# contracts/run-vitest-shim.md); vitest itself is auto-injected by the macro.
+# No :lib exists here (vite_build only), so the glob is the entire test surface.
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ),
 )

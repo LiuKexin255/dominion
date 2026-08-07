@@ -67,7 +67,9 @@ go_largetest(
     srcs = [
         "agent_dialog_test.go",
         "helpers_test.go",
+        "saolei_fixtures_test.go",
     ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
@@ -141,9 +143,15 @@ go_largetest(
 # session-agent-lifecycle / per-profile-model suites. The target uses the
 # gazelle default name ({package_name}_test) so gazelle does not regenerate a
 # go_unittest (style/large_test.md).
+#
+# size = medium: the 037 optimize suite (specs/037-saolei-team-optimize
+# FR-034) added TestTeamCompressionAtFiveGames, which drives 6 full games on
+# one session (4 pre-compression + the compression game + a post-compression
+# resume game) — beyond the 60s "small" budget alongside the 14 existing
+# game-driving tests (style/large_test.md §测试用例: size per actual need).
 go_largetest(
     name = "testplan_test",
-    size = "small",
+    size = "medium",
     srcs = [
         "helpers_test.go",
         "saolei_fixtures_test.go",
