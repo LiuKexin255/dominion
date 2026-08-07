@@ -12,7 +12,8 @@
  *   point — `allow_missing=true` materializes it on the first call from a
  *   caller-supplied TeamProfile (full resource name, AIP-122); repeated
  *   calls with the same profile are idempotent; a different profile
- *   rebuilds the team graph (US3 — MVP rejects with FAILED_PRECONDITION).
+ *   rebuilds the team graph against the existing checkpointer (US3 FR-005,
+ *   rejected FAILED_PRECONDITION while a turn is in-flight, FR-006).
  *   There is no lazy creation anymore: every other RPC requires the team to
  *   already exist (Agent 移除懒加载模式, design decision — the former
  *   implicit creation with a fixed default profile is removed).
@@ -137,8 +138,9 @@ export class Handler implements TeamServiceHandlers {
       // api-contract.md §2.3): missing + allow_missing →
       // materialize; missing + !allow_missing → NOT_FOUND (standard Update
       // semantics); existing + same profile → idempotent; existing +
-      // different profile → FAILED_PRECONDITION (MVP temporary — replaced by
-      // a graph rebuild in US3). The ALREADY_EXISTS deviation is removed
+      // different profile → team-graph rebuild (FR-005, rejected
+      // FAILED_PRECONDITION by the store while a turn is in-flight, FR-006).
+      // The ALREADY_EXISTS deviation is removed
       // (FR-007, specs/040-team-singleton-conformance/research.md §R6).
       await this.sessionTeamStore.update(
         parsedTeamName.sessionId,
@@ -149,19 +151,6 @@ export class Handler implements TeamServiceHandlers {
       info("team provisioned", { sessionId: parsedTeamName.sessionId });
       callback(null, buildTeamResource(teamName, profile));
     } catch (err: unknown) {
-      // MVP temporary — a profile change requires a team graph rebuild (US3
-      // T013 replaces this with the real rebuild): reject with
-      // FAILED_PRECONDITION "profile change rebuild pending (US3)".
-      if (
-        err instanceof Error &&
-        err.message === "profile change rebuild pending"
-      ) {
-        callback({
-          code: grpc.status.FAILED_PRECONDITION,
-          details: "profile change rebuild pending (US3)",
-        } as grpc.ServiceError);
-        return;
-      }
       const message =
         err instanceof Error ? err.message : "Failed to update team";
       error("update team failed", {
@@ -169,9 +158,10 @@ export class Handler implements TeamServiceHandlers {
         error: message,
       });
       // Propagate a gRPC status unchanged (the store's NOT_FOUND for a
-      // missing team with allow_missing=false, or a downstream error such as
-      // the TeamProfile's NOT_FOUND from the prompt service); fall back to
-      // INTERNAL for non-status errors.
+      // missing team with allow_missing=false, its FAILED_PRECONDITION for a
+      // profile change while a turn is in-flight (FR-006), or a downstream
+      // error such as the TeamProfile's NOT_FOUND from the prompt service);
+      // fall back to INTERNAL for non-status errors.
       const code =
         err instanceof Error &&
         typeof (err as grpc.ServiceError).code === "number"

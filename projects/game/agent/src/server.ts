@@ -46,8 +46,11 @@ import { startMcpHost, DEFAULT_MCP_PORT } from "./mcp-host";
 import { buildSaoleiMcpTools, defaultMcpClientFactory } from "./llm";
 import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
+import type { EphemeralGameBuffer } from "./team/team-sink";
 import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
 import { buildTeamGraph } from "./team/graph";
+import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { MemorySaver } from "@langchain/langgraph";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -225,11 +228,19 @@ export async function startServer(
   // the host can build the session's McpServer during team creation without
   // the SessionTeam existing yet (circular-dependency break — see the
   // factory below). Shape matches `SessionBridgeLookup`'s result
-  // (mcp-host.ts) with the sink always present.
+  // (mcp-host.ts) with the sink always present. The `buffer` is kept here
+  // too — the profile-change rebuild (US3) reuses the session's ephemeral
+  // buffer (profile-independent, team-rebuild-contract.md §3).
   const sessionBridges = new Map<
     string,
-    { bridge: OperationBridge; sink: SaoleiEventSink }
+    { bridge: OperationBridge; sink: SaoleiEventSink; buffer: EphemeralGameBuffer }
   >();
+
+  // Per-session player tools (the saolei MCP-client tools, FR-010/FR-028).
+  // Profile-independent and bound to the session's MCP-host server (cached
+  // per sessionId — mcp-host.ts), so a profile-change rebuild reuses the SAME
+  // tools instead of reconnecting (team-rebuild-contract.md §3/§4).
+  const sessionPlayerTools = new Map<string, StructuredToolInterface[]>();
 
   // Per-session team: resolve the requested TeamProfile's models (the
   // template + profile name come from the UpdateTeam request — no fixed
@@ -266,13 +277,14 @@ export async function startServer(
       // (FR-013 envelope completeness — operation-bridge.ts dispatch).
       const bridge = new OperationBridge(sessionId, template);
       const sink = createTeamSink(buffer);
-      sessionBridges.set(sessionId, { bridge, sink });
+      sessionBridges.set(sessionId, { bridge, sink, buffer });
       try {
         const playerTools = await buildSaoleiMcpTools(
           sessionId,
           DEFAULT_MCP_PORT,
           defaultMcpClientFactory,
         );
+        sessionPlayerTools.set(sessionId, playerTools);
         const handle = buildTeamGraph({
           playerModel,
           plannerModel,
@@ -300,8 +312,56 @@ export async function startServer(
         // pre-registered bridge/sink of a LATER retry then does not match it;
         // this edge (a failed team graph compile) is accepted and noted here.
         sessionBridges.delete(sessionId);
+        sessionPlayerTools.delete(sessionId);
         throw err;
       }
+    },
+    // Profile-change rebuild (US3, team-rebuild-contract.md §5): rebuilds
+    // ONLY the team graph against the EXISTING checkpointer — the session's
+    // conversation/game state is preserved (FR-005); buffer/bridge/sink/
+    // MCP-host/tools are profile-independent and reused untouched (§3/§4).
+    // The store calls this with the existing `handle.checkpointer` (never a
+    // new MemorySaver — that would drop the history) and replaces the
+    // SessionTeam's graphHandle on success; on failure the existing team is
+    // left unchanged.
+    async (
+      sessionId: string,
+      template: string,
+      profileName: string,
+      existingCheckpointer: MemorySaver,
+    ) => {
+      const profile = await promptClient.getTeamProfile(template, profileName);
+      const playerModel = await getProvider(profile.playerModel);
+      const plannerModel = await getProvider(profile.plannerModel);
+      // FR-034: base prompts from the profile (empty string = unset = the
+      // template default base, resolved inside the player/planner nodes).
+      const playerBasePrompt = profile.playerPrompt ?? "";
+      const plannerBasePrompt = profile.plannerPrompt ?? "";
+      // Reuse the session's profile-independent instances (§3): the ephemeral
+      // buffer (deps.buffer) and the already-connected saolei MCP tools
+      // (bound to the host's cached per-session server).
+      const buffer = sessionBridges.get(sessionId)?.buffer;
+      const playerTools = sessionPlayerTools.get(sessionId);
+      if (!buffer || !playerTools) {
+        // Unreachable for a materialized team (first build always registers
+        // both) — defensive, so a rebuild can never silently drop state.
+        throw new Error(
+          `session ${sessionId}: rebuild preregistration missing (buffer/tools)`,
+        );
+      }
+      return buildTeamGraph(
+        {
+          playerModel,
+          plannerModel,
+          strategyStore,
+          buffer,
+          sessionId,
+          playerTools,
+          playerBasePrompt,
+          plannerBasePrompt,
+        },
+        existingCheckpointer,
+      );
     },
   );
 

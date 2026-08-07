@@ -36,8 +36,10 @@
  * https://google.aip.dev/134#create-or-update — the singleton's only
  * materialization point, replacing the former AIP-133 CreateTeam; no lazy
  * creation). Re-entry is profile-conditional: same profile → idempotent;
- * different profile → graph rebuild (US3 of
- * specs/040-team-singleton-conformance/spec.md — pending, MVP rejects).
+ * different profile → team-graph rebuild against the existing checkpointer
+ * (US3 of specs/040-team-singleton-conformance/spec.md FR-005 — state
+ * preserved; rejected FAILED_PRECONDITION while a turn is in-flight,
+ * FR-006).
  */
 
 import { HumanMessage } from "@langchain/core/messages";
@@ -62,6 +64,7 @@ import {
 import { parseToolResultFields } from "./tools/shared/result-blocks";
 import { refreshTeamChannels } from "./context-middleware";
 import type { TeamGraphHandle } from "./team/graph";
+import type { MemorySaver } from "@langchain/langgraph";
 import type { TeamStateValue } from "./team/state";
 import type { EphemeralGameBuffer } from "./team/team-sink";
 import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
@@ -83,6 +86,32 @@ export type SessionTeamFactory = (
 	template: string,
 	profileName: string,
 ) => Promise<SessionTeam>;
+
+/**
+ * Rebuild-only factory (US3 profile-change rebuild — DI seam, same rationale
+ * as {@link SessionTeamFactory}). Builds a NEW compiled team graph handle
+ * against the EXISTING checkpointer, reusing the session's
+ * profile-independent instances (buffer/bridge/sink/MCP tools — the
+ * production implementation lives in server.ts, team-rebuild-contract.md
+ * §3/§5); it NEVER creates a MemorySaver — that would drop the session's
+ * history (FR-005).
+ *
+ * @param sessionId The dominion session id (thread id of the checkpoint).
+ * @param template  The session's template path segment (unchanged by the
+ *   rebuild — the profile's template segment matches the team's, FR-008).
+ * @param profileName The NEW TeamProfile id to rebuild with.
+ * @param existingCheckpointer The existing team's outer MemorySaver — the
+ *   recompiled graph restores the session state from it by `thread_id`.
+ * @returns The new `TeamGraphHandle` (its `checkpointer` is the injected
+ *   `existingCheckpointer` — same reference). The caller replaces the
+ *   SessionTeam's handle on success.
+ */
+export type SessionTeamRebuilder = (
+	sessionId: string,
+	template: string,
+	profileName: string,
+	existingCheckpointer: MemorySaver,
+) => Promise<TeamGraphHandle>;
 
 /**
  * Emit a non-model-produced channel message as a real-time agent frame
@@ -121,7 +150,7 @@ export type ChannelFrameEmitter = (
 // ---------------------------------------------------------------------------
 
 export class SessionTeam {
-	private readonly graphHandle: TeamGraphHandle;
+	private graphHandle: TeamGraphHandle;
 	private readonly buffer: EphemeralGameBuffer;
 	private readonly bridge: OperationBridge;
 	private readonly sink: SaoleiEventSink;
@@ -231,6 +260,30 @@ export class SessionTeam {
 	/** True iff the per-session TurnLoop has a turn in flight or is draining. */
 	isRunning(): boolean {
 		return this.turnLoop?.isRunning() ?? false;
+	}
+
+	/**
+	 * The outer `MemorySaver` bound to the current graph handle (US3
+	 * profile-change rebuild — team-rebuild-contract.md §2: the rebuilt graph
+	 * MUST receive this SAME checkpointer, never a fresh one, or the
+	 * session's per-thread state is lost, violating FR-005).
+	 */
+	getCheckpointer(): MemorySaver {
+		return this.graphHandle.checkpointer;
+	}
+
+	/**
+	 * Replace the compiled graph handle with a rebuilt one (US3 — profile
+	 * change on a materialized team, team-rebuild-contract.md §5). The new
+	 * handle was compiled against the SAME outer checkpointer
+	 * ({@link getCheckpointer}), so the session's conversation/game state
+	 * carries over (FR-005); buffer/bridge/sink/MCP-host/tools are untouched
+	 * (profile-independent, §3). Takes effect on the NEXT turn — the
+	 * TurnLoop resolves `this` per submit, so in-flight state is unaffected
+	 * (the caller MUST have verified {@link isRunning} === false, FR-006).
+	 */
+	rebuildProfile(newHandle: TeamGraphHandle): void {
+		this.graphHandle = newHandle;
 	}
 
 	/** Abort the in-flight turn and clear the queue (FR-011). */
@@ -487,8 +540,16 @@ export class SessionTeamStore {
 
 	/**
 	 * @param factory Builds a wired `SessionTeam` for a session id (DI seam).
+	 * @param rebuilder Builds a REBUILT graph handle for a profile change
+	 *   (US3 — DI seam; optional so tests that never rebuild can construct
+	 *   the store with the factory alone). When omitted, a profile change
+	 *   rejects with a configuration error (a production store always passes
+	 *   it — server.ts).
 	 */
-	constructor(private readonly factory: SessionTeamFactory) {}
+	constructor(
+		private readonly factory: SessionTeamFactory,
+		private readonly rebuilder?: SessionTeamRebuilder,
+	) {}
 
 	/**
 	 * Materialize-or-update the session's Team (AIP-134 create-or-update
@@ -507,14 +568,13 @@ export class SessionTeamStore {
 	 *   semantics — specs/040-team-singleton-conformance/data-model.md §4);
 	 * - existing + SAME profile → return the existing team (idempotent,
 	 *   FR-002 — repeated calls are safe);
-	 * - existing + DIFFERENT profile → rejected. **MVP temporary**: throws
-	 *   `Error("profile change rebuild pending")` (the handler maps it to
-	 *   FAILED_PRECONDITION, handler.ts UpdateTeam); US3 (T011) replaces this
-	 *   with a team-graph rebuild that preserves session state (FR-005).
+	 * - existing + DIFFERENT profile → rebuild the team graph against the
+	 *   existing checkpointer (FR-005 — see {@link rebuild}), rejecting
+	 *   FAILED_PRECONDITION while a turn is in-flight (FR-006).
 	 *
 	 * Concurrent updates for the same session are single-flighted: the second
 	 * caller awaits the first's team, then re-enters the dispatch above (a
-	 * loser carrying a different profile rejects after the winner completes).
+	 * loser carrying a different profile rebuilds after the winner completes).
 	 */
 	update(
 		sessionId: string,
@@ -525,10 +585,10 @@ export class SessionTeamStore {
 		const existing = this.teams.get(sessionId);
 		if (existing) {
 			if (existing.profileName !== profileName) {
-				// MVP temporary — replaced by a graph rebuild in US3 (T011);
-				// the handler maps this to FAILED_PRECONDITION
-				// "profile change rebuild pending (US3)".
-				return Promise.reject(new Error("profile change rebuild pending"));
+				// FR-005: a profile change rebuilds the team graph reusing the
+				// existing checkpointer (state preserved); FR-006: rejected
+				// while a turn is in-flight.
+				return this.rebuild(sessionId, template, profileName, existing);
 			}
 			return Promise.resolve(existing.team);
 		}
@@ -565,6 +625,71 @@ export class SessionTeamStore {
 			});
 		this.pending.set(sessionId, building);
 		return building;
+	}
+
+	/**
+	 * Rebuild the team graph for a profile change (US3, FR-005/FR-006;
+	 * team-rebuild-contract.md §5):
+	 *
+	 * 1. in-flight guard: a running turn rejects FAILED_PRECONDITION (same
+	 *    guard semantics as RefreshTeam — handler.ts), the existing team and
+	 *    the in-flight turn stay untouched;
+	 * 2. single-flight via the shared `pending` map (a concurrent rebuild
+	 *    awaits the winner, then re-enters `update` — the winner may have
+	 *    already applied this profile);
+	 * 3. rebuild via the rebuilder (server.ts) with the existing
+	 *    `handle.checkpointer` (NEVER a new MemorySaver — state preservation);
+	 * 4. on success, swap the SessionTeam's graphHandle and record the new
+	 *    profileName; on failure the existing team/profile are left
+	 *    unchanged (no half-rebuilt state — the pending entry is cleared).
+	 */
+	private rebuild(
+		sessionId: string,
+		template: string,
+		profileName: string,
+		existing: { team: SessionTeam; profileName: string },
+	): Promise<SessionTeam> {
+		if (existing.team.isRunning()) {
+			return Promise.reject(
+				Object.assign(
+					new Error(
+						`cannot change team profile for session '${sessionId}' while a turn is in-flight`,
+					),
+					{ code: grpc.status.FAILED_PRECONDITION },
+				),
+			);
+		}
+		const inFlight = this.pending.get(sessionId);
+		if (inFlight) {
+			// Single-flight: await the winner, then re-enter the dispatch (the
+			// winner may have already applied the requested profile; if not,
+			// this caller rebuilds in turn).
+			return inFlight.then(() =>
+				this.update(sessionId, template, profileName, true),
+			);
+		}
+		if (!this.rebuilder) {
+			return Promise.reject(
+				new Error("team graph rebuild is not configured"),
+			);
+		}
+
+		const rebuilding = this.rebuilder(
+			sessionId,
+			template,
+			profileName,
+			existing.team.getCheckpointer(),
+		)
+			.then((handle) => {
+				existing.team.rebuildProfile(handle);
+				this.teams.set(sessionId, { team: existing.team, profileName });
+				return existing.team;
+			})
+			.finally(() => {
+				this.pending.delete(sessionId);
+			});
+		this.pending.set(sessionId, rebuilding);
+		return rebuilding;
 	}
 
 	/** Synchronous lookup (mcp-host `SessionBridgeLookup`; misses = 404). */

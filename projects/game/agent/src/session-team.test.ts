@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 import * as grpc from "@grpc/grpc-js";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import type { MemorySaver } from "@langchain/langgraph";
 import { fakeModel } from "@langchain/core/testing";
 import { tool } from "langchain";
 import { z } from "zod";
@@ -88,6 +89,29 @@ function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
 	const sink = createTeamSink(buffer);
 	const team = new SessionTeam(handle, buffer, sessionId, TID, bridge, sink);
 	return { team, store, buffer, sessionId, bridge, sink };
+}
+
+/**
+ * Build ONLY a graph handle (US3 rebuild seam — the same wiring as
+ * {@link buildTestTeam}, minus the SessionTeam shell). A rebuild passes the
+ * EXISTING checkpointer so the session state carries over (FR-005); the
+ * optional `checkpointer` is forwarded verbatim.
+ */
+function buildTestHandle(sessionId: string, checkpointer?: MemorySaver) {
+	const buffer = createEphemeralGameBuffer();
+	return buildTeamGraph(
+		{
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: updateStrategyPlannerModel("corner-first"),
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId,
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		},
+		checkpointer,
+	);
 }
 
 /** Recording emit sink collecting every frame the loop pushes. */
@@ -393,26 +417,57 @@ describe("SessionTeamStore", () => {
 		expect(created).toEqual(["s-2"]);
 	});
 
-	it("update rejects with the temporary rebuild-pending error for a DIFFERENT profile on an existing session", async () => {
+	it("rebuilds the graph for a DIFFERENT profile, preserving state via the SAME checkpointer (FR-005)", async () => {
 		const created: string[] = [];
-		const store = new SessionTeamStore(async (sessionId) => {
-			created.push(sessionId);
-			return buildTestTeam(sessionId).team;
-		});
+		const rebuilt: string[] = [];
+		const store = new SessionTeamStore(
+			async (sessionId) => {
+				created.push(sessionId);
+				return buildTestTeam(sessionId).team;
+			},
+			// US3 rebuild seam: pass the existing checkpointer through (the
+			// production rebuilder lives in server.ts — here we emulate it
+			// with the same real graph wiring).
+			async (sessionId, _template, profileName, existingCheckpointer) => {
+				rebuilt.push(`${sessionId}:${profileName}`);
+				return buildTestHandle(sessionId, existingCheckpointer);
+			},
+		);
 
 		const t1 = await store.update("s-2", "saolei", "default", true);
-		// MVP temporary (US3 T011 replaces with a graph rebuild): a different
-		// profile is not an idempotent retry — it is rejected regardless of
+		// Produce conversation/game history on the session thread.
+		const { emit } = recordingEmit();
+		t1.submit({ text: "开始游戏" }, emit);
+		await flush();
+		const before = (await t1.getTeamState()) as TeamStateValue;
+		expect(before.playerMessages.length).toBeGreaterThan(0);
+		expect(before.plannerMessages.length).toBeGreaterThan(0);
+		const checkpointerBefore = t1.getCheckpointer();
+
+		// A different profile triggers the rebuild — regardless of
 		// allow_missing (the team already exists, FR-002/FR-005).
-		await expect(
-			store.update("s-2", "saolei", "other", true),
-		).rejects.toThrow("profile change rebuild pending");
-		await expect(
-			store.update("s-2", "saolei", "other", false),
-		).rejects.toThrow("profile change rebuild pending");
-		expect(t1).toBe(store.get("s-2"));
-		expect(store.getProfileName("s-2")).toBe("default");
+		const t2 = await store.update("s-2", "saolei", "other", true);
+		const t3 = await store.update("s-2", "saolei", "other", false);
+		expect(t2).toBe(t1);
+		expect(t3).toBe(t1);
+		// The team's profile (GetTeam source) is the NEW one.
+		expect(store.getProfileName("s-2")).toBe("other");
+		// team-rebuild-contract.md §7: the checkpointer reference is UNCHANGED
+		// (the rebuild must never create a new MemorySaver — that would drop
+		// the history, violating FR-005).
+		expect(t1.getCheckpointer()).toBe(checkpointerBefore);
+		// History is preserved: same message count AND same content (零丢失/
+		// 零重复 — the thread's channel state survives the recompile).
+		const after = (await t1.getTeamState()) as TeamStateValue;
+		expect(after.playerMessages).toEqual(before.playerMessages);
+		expect(after.plannerMessages).toEqual(before.plannerMessages);
+		// Exactly ONE first build and ONE rebuild (the repeated "other" call
+		// was idempotent — profile already applied).
 		expect(created).toEqual(["s-2"]);
+		expect(rebuilt).toEqual(["s-2:other"]);
+		// The same-profile idempotent path still works after the rebuild.
+		expect(await store.update("s-2", "saolei", "other", true)).toBe(t1);
+		expect(rebuilt).toEqual(["s-2:other"]);
 	});
 
 	it("update returns NOT_FOUND for a missing session when allow_missing=false (AIP-134)", async () => {
@@ -445,30 +500,176 @@ describe("SessionTeamStore", () => {
 		expect(created).toEqual(["s-3"]);
 	});
 
-	it("single-flight loser with a DIFFERENT profile rejects after the winner completes", async () => {
+	it("single-flights concurrent REBUILDS for the same session (exactly one rebuild, team-rebuild-contract.md §7)", async () => {
 		const created: string[] = [];
-		const store = new SessionTeamStore(async (sessionId) => {
-			created.push(sessionId);
-			return buildTestTeam(sessionId).team;
+		const rebuilt: string[] = [];
+		const store = new SessionTeamStore(
+			async (sessionId) => {
+				created.push(sessionId);
+				return buildTestTeam(sessionId).team;
+			},
+			async (sessionId, _template, profileName, existingCheckpointer) => {
+				rebuilt.push(`${sessionId}:${profileName}`);
+				// Give the second caller time to join the in-flight promise.
+				await flush(0);
+				return buildTestHandle(sessionId, existingCheckpointer);
+			},
+		);
+		await store.update("s-sf", "saolei", "default", true);
+
+		const [r1, r2] = await Promise.allSettled([
+			store.update("s-sf", "saolei", "p-a", true),
+			store.update("s-sf", "saolei", "p-a", true),
+		]);
+		// The second caller single-flighted onto the first's rebuild and then
+		// re-entered the dispatch idempotently — exactly ONE rebuild ran.
+		expect(r1.status).toBe("fulfilled");
+		expect(r2.status).toBe("fulfilled");
+		expect(created).toEqual(["s-sf"]);
+		expect(rebuilt).toEqual(["s-sf:p-a"]);
+		expect(store.getProfileName("s-sf")).toBe("p-a");
+	});
+
+	it("rejects a profile-change rebuild while a turn is in-flight with FAILED_PRECONDITION (FR-006)", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
 		});
+		// A team whose player tool blocks on the gate keeps the turn in-flight.
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		const gatedTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				await gate;
+				await sink.onGameEnd(makeState(), "won");
+				return `moved to (${x},${y}); game won`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Gated fake saolei move (holds the turn).",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const handle = buildTeamGraph({
+			playerModel: fakeModel()
+				.respondWithTools([
+					{ name: "fake_saolei_move", args: { x: 1, y: 1 } },
+				])
+				.respond(new AIMessage("won, stopping")),
+			plannerModel: updateStrategyPlannerModel("corner-first"),
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId: "s-inflight",
+			playerTools: [gatedTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+		const team = new SessionTeam(
+			handle,
+			buffer,
+			"s-inflight",
+			TID,
+			new OperationBridge(),
+			sink,
+		);
+		const store = new SessionTeamStore(
+			async () => team,
+			async (sessionId, _template, profileName, existingCheckpointer) => {
+				return buildTestHandle(sessionId, existingCheckpointer);
+			},
+		);
+		await store.update("s-inflight", "saolei", "default", true);
+		expect(store.getProfileName("s-inflight")).toBe("default");
+
+		// Start a turn that blocks on the gate.
+		const { emit } = recordingEmit();
+		team.submit({ text: "开始游戏" }, emit);
+		await flush(0);
+		expect(team.isRunning()).toBe(true);
+
+		// FR-006: rejected with FAILED_PRECONDITION; the existing team and the
+		// in-flight turn are untouched.
+		await expect(
+			store.update("s-inflight", "saolei", "other", true),
+		).rejects.toMatchObject({ code: grpc.status.FAILED_PRECONDITION });
+		expect(store.getProfileName("s-inflight")).toBe("default");
+		expect(store.get("s-inflight")).toBe(team);
+		expect(team.isRunning()).toBe(true);
+
+		// Release the gate: the turn completes, and the rebuild then succeeds.
+		release();
+		await flush();
+		expect(team.isRunning()).toBe(false);
+		const t2 = await store.update("s-inflight", "saolei", "other", true);
+		expect(t2).toBe(team);
+		expect(store.getProfileName("s-inflight")).toBe("other");
+	});
+
+	it("leaves the existing team unchanged when the rebuild fails (no half-rebuilt state)", async () => {
+		const store = new SessionTeamStore(
+			async (sessionId) => {
+				return buildTestTeam(sessionId).team;
+			},
+			async () => {
+				throw new Error("new model unavailable");
+			},
+		);
+		const t1 = await store.update("s-fail", "saolei", "default", true);
+		const { emit } = recordingEmit();
+		t1.submit({ text: "开始游戏" }, emit);
+		await flush();
+		const before = (await t1.getTeamState()) as TeamStateValue;
+		expect(before.playerMessages.length).toBeGreaterThan(0);
+		const checkpointerBefore = t1.getCheckpointer();
+
+		// The rebuild fails (e.g. the new profile's model cannot be resolved):
+		// the existing team, profile, checkpointer and history are unchanged
+		// (team-rebuild-contract.md §5 异常路径 — no half-rebuilt state).
+		await expect(
+			store.update("s-fail", "saolei", "other", true),
+		).rejects.toThrow("new model unavailable");
+		expect(store.getProfileName("s-fail")).toBe("default");
+		expect(store.get("s-fail")).toBe(t1);
+		expect(t1.getCheckpointer()).toBe(checkpointerBefore);
+		const after = (await t1.getTeamState()) as TeamStateValue;
+		expect(after.playerMessages).toEqual(before.playerMessages);
+		expect(after.plannerMessages).toEqual(before.plannerMessages);
+		// The existing team still serves normally (idempotent same-profile
+		// update).
+		expect(await store.update("s-fail", "saolei", "default", true)).toBe(t1);
+	});
+
+	it("single-flight loser with a DIFFERENT profile rebuilds after the winner completes (US3)", async () => {
+		const created: string[] = [];
+		const rebuilt: string[] = [];
+		const store = new SessionTeamStore(
+			async (sessionId) => {
+				created.push(sessionId);
+				return buildTestTeam(sessionId).team;
+			},
+			async (sessionId, _template, profileName, existingCheckpointer) => {
+				rebuilt.push(`${sessionId}:${profileName}`);
+				return buildTestHandle(sessionId, existingCheckpointer);
+			},
+		);
 
 		const [t1, t2] = await Promise.allSettled([
 			store.update("s-3", "saolei", "default", true),
 			store.update("s-3", "saolei", "other", true),
 		]);
+		// US3: the loser (different profile) re-enters the dispatch after the
+		// winner materialized "default" and REBUILDS to "other" — both
+		// succeed (the MVP rejection is gone, FR-005/FR-007).
 		expect(t1.status).toBe("fulfilled");
-		expect(t2.status).toBe("rejected");
-		if (t2.status === "rejected") {
-			expect((t2.reason as Error).message).toBe(
-				"profile change rebuild pending",
-			);
-		}
-		// Only ONE team was ever built (single-flight), and the loser's
-		// profile comparison re-entry did not build a second graph.
-		expect(created).toEqual(["s-3"]);
+		expect(t2.status).toBe("fulfilled");
 		expect(store.get("s-3")).toBe(
 			t1.status === "fulfilled" ? t1.value : undefined,
 		);
+		expect(store.getProfileName("s-3")).toBe("other");
+		// Only ONE team was ever built (single-flight) and exactly ONE rebuild
+		// ran for the loser's profile.
+		expect(created).toEqual(["s-3"]);
+		expect(rebuilt).toEqual(["s-3:other"]);
 	});
 
 	it("does not create implicitly: get on an unknown session returns undefined", async () => {

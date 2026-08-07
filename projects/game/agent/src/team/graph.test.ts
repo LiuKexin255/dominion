@@ -1723,3 +1723,59 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		expect(await store.get(sessionId)).toBe("v5");
 	});
 });
+
+describe("team graph — checkpointer injection (US3 rebuild seam, specs/040-team-singleton-conformance)", () => {
+	it("recompiling with an injected checkpointer restores the SAME thread state (FR-005, team-rebuild-contract.md §2/§7)", async () => {
+		// First build: the default (fresh MemorySaver) path.
+		const buffer = createEphemeralGameBuffer();
+		const handle1 = buildTeamGraph({
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: updateStrategyPlannerModel("corner-first"),
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+		await handle1.graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-rebuild" }, recursionLimit: 50 },
+		);
+		const before = (await handle1.graph.getState({
+			configurable: { thread_id: "t-rebuild" },
+		})) as unknown as { values: TeamStateValue };
+		expect(before.values.playerMessages.length).toBeGreaterThan(0);
+		expect(before.values.plannerMessages.length).toBeGreaterThan(0);
+
+		// Rebuild: recompile against the EXISTING checkpointer (never a new
+		// MemorySaver — that would drop the history). MemorySaver is a
+		// per-thread_id KV store decoupled from the graph instance, so the
+		// recompiled graph restores the same thread's channels.
+		const buffer2 = createEphemeralGameBuffer();
+		const handle2 = buildTeamGraph(
+			{
+				playerModel: playOneGamePlayerModel(),
+				plannerModel: updateStrategyPlannerModel("new-strategy"),
+				strategyStore: new FakeStrategyStore(),
+				buffer: buffer2,
+				sessionId: "graph-test",
+				playerTools: [buildGameEndingPlayerTool(buffer2)],
+				playerBasePrompt: "",
+				plannerBasePrompt: "",
+			},
+			handle1.checkpointer,
+		);
+		// team-rebuild-contract.md §7: the checkpointer reference is the SAME.
+		expect(handle2.checkpointer).toBe(handle1.checkpointer);
+		const after = (await handle2.graph.getState({
+			configurable: { thread_id: "t-rebuild" },
+		})) as unknown as { values: TeamStateValue };
+		// History is preserved with zero loss / zero duplication.
+		expect(after.values.playerMessages).toEqual(before.values.playerMessages);
+		expect(after.values.plannerMessages).toEqual(
+			before.values.plannerMessages,
+		);
+		expect(after.values.gameCounter).toBe(before.values.gameCounter);
+	});
+});

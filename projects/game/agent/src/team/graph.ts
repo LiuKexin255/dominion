@@ -208,9 +208,29 @@ function routeAfterPlanner(
  * Build and compile the saolei team graph (single TeamState + one outer
  * `MemorySaver`, architecture (i) — A3).
  *
- * @returns A fresh `TeamGraphHandle` — one per session (Batch 2 wiring).
+ * The `checkpointer` parameter is the US3 profile-change rebuild seam
+ * (specs/040-team-singleton-conformance/contracts/team-rebuild-contract.md
+ * §2): an omitted checkpointer (first build) creates a fresh `MemorySaver`;
+ * a provided one (rebuild) reuses the EXISTING checkpointer — MemorySaver is
+ * a per-thread_id KV store decoupled from the graph instance, so the
+ * recompiled graph restores `playerMessages`/`plannerMessages`/`gameEnded`/
+ * `gameCounter` from the same thread (`thread_id = sessionId`) with no state
+ * loss (FR-005).
+ *
+ * @param deps The graph's injected dependencies (models/prompts/tools — the
+ *   items that change with the TeamProfile; see
+ *   team-rebuild-contract.md §4).
+ * @param checkpointer The outer MemorySaver to bind. Defaults to a fresh
+ *   `new MemorySaver()` (first build); a rebuild MUST pass the existing
+ *   `TeamGraphHandle.checkpointer` (never a new one — that would drop the
+ *   session's history).
+ * @returns A `TeamGraphHandle` — one per session (Batch 2 wiring); the
+ *   returned handle carries the SAME checkpointer instance that was bound.
  */
-export function buildTeamGraph(deps: TeamGraphDeps): TeamGraphHandle {
+export function buildTeamGraph(
+	deps: TeamGraphDeps,
+	checkpointer?: MemorySaver,
+): TeamGraphHandle {
 	const playerNode = createPlayerNode({
 		model: deps.playerModel,
 		strategyStore: deps.strategyStore,
@@ -238,7 +258,7 @@ export function buildTeamGraph(deps: TeamGraphDeps): TeamGraphHandle {
 		plannerModel: deps.plannerModel,
 	});
 
-	const checkpointer = new MemorySaver();
+	const outer = checkpointer ?? new MemorySaver();
 	const graph = new StateGraph(TeamState)
 		.addNode("player", playerNode)
 		.addNode("planner", plannerNode)
@@ -253,7 +273,7 @@ export function buildTeamGraph(deps: TeamGraphDeps): TeamGraphHandle {
 		// compress → END: the player stops and waits for user input (FR-010 —
 		// the next turn resumes with the summary context).
 		.addEdge("compress", END)
-		.compile({ checkpointer });
+		.compile({ checkpointer: outer });
 
-	return { graph, checkpointer };
+	return { graph, checkpointer: outer };
 }

@@ -25,9 +25,11 @@ import type { GameState } from "@dominion/game-saolei-board";
 import { FakeStrategyStore } from "./strategy-store";
 import { Handler } from "./handler";
 import { SessionTeam, SessionTeamStore } from "./session-team";
+import type { SessionTeamRebuilder } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
+import type { MemorySaver } from "@langchain/langgraph";
 import type { UserFrame } from "../game_types/projects/game/UserFrame";
 
 // ---------------------------------------------------------------------------
@@ -90,8 +92,17 @@ function updateStrategyPlannerModel(content: string) {
     .respond(new AIMessage("strategy updated"));
 }
 
-/** A store whose factory builds REAL SessionTeams (compiled graph). */
-function createTeamStore(gate?: Gate): {
+/**
+ * A store whose factory builds REAL SessionTeams (compiled graph).
+ *
+ * @param gate Optional gate held by the fake player tool (turn in-flight).
+ * @param rebuilder Optional US3 rebuild seam; defaults to a rebuilder with
+ *   the factory's own model wiring (profile-agnostic in tests).
+ */
+function createTeamStore(
+  gate?: Gate,
+  rebuilder?: SessionTeamRebuilder,
+): {
   store: SessionTeamStore;
   strategies: FakeStrategyStore;
 } {
@@ -116,6 +127,30 @@ function createTeamStore(gate?: Gate): {
       const sink = createTeamSink(buffer);
       return new SessionTeam(handle, buffer, sessionId, template, bridge, sink);
     },
+    rebuilder ??
+      (async (
+        sessionId,
+        _template,
+        _profileName,
+        existingCheckpointer,
+      ) => {
+        const buffer = createEphemeralGameBuffer();
+        // Rebuild seam matching the factory's wiring: recompiles the graph
+        // against the EXISTING checkpointer (never a new one — FR-005).
+        return buildTeamGraph(
+          {
+            playerModel: playOneGamePlayerModel(),
+            plannerModel: updateStrategyPlannerModel("corner-first"),
+            strategyStore: strategies,
+            buffer,
+            sessionId,
+            playerTools: [buildGameEndingPlayerTool(buffer)],
+            playerBasePrompt: "",
+            plannerBasePrompt: "",
+          },
+          existingCheckpointer,
+        );
+      }),
   );
   return { store, strategies };
 }
@@ -371,7 +406,7 @@ describe("Handler.UpdateTeam", () => {
     expect(store.get("sess-ut2")).toBeDefined();
   });
 
-  it("rejects a DIFFERENT profile on an existing team with FAILED_PRECONDITION (MVP temporary, US3)", async () => {
+  it("rebuilds the team graph for a DIFFERENT profile and returns the Team with the new profile (US3 FR-005)", async () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
@@ -389,12 +424,164 @@ describe("Handler.UpdateTeam", () => {
       callback,
     );
 
+    const { error, response } = await promise;
+    // US3: the profile change REBUILDS the graph (no FAILED_PRECONDITION
+    // anymore — FR-005/FR-007) and the response carries the NEW profile.
+    expect(error).toBeNull();
+    expect(response.name).toBe("templates/saolei/sessions/sess-ut-diff/team");
+    expect(response.profile).toBe("templates/saolei/profiles/other");
+    expect(response.agents).toEqual([
+      { name: "player", acceptsUserInput: true },
+      { name: "planner", acceptsUserInput: false },
+    ]);
+    // The store recorded the new profile (GetTeam reads it back, FR-004).
+    expect(store.getProfileName("sess-ut-diff")).toBe("other");
+    expect(store.get("sess-ut-diff")).toBeDefined();
+  });
+
+  it("rejects a profile change while a turn is in-flight with FAILED_PRECONDITION (FR-006)", async () => {
+    const gate = makeGate();
+    const { store } = createTeamStore(gate);
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    await createTestTeam(store, "sess-ut-busy");
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit(
+      "data",
+      userContentFrame(
+        "templates/saolei/sessions/sess-ut-busy",
+        "开始游戏",
+        "player",
+      ),
+    );
+    await flush(0);
+
+    // The player turn is held in-flight on the gate.
+    const team = (await store.update(
+      "sess-ut-busy",
+      "saolei",
+      "default",
+      true,
+    )) as SessionTeam;
+    expect(team.isRunning()).toBe(true);
+
+    const { callback, promise } = createCallback<any>();
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut-busy/team",
+          "templates/saolei/profiles/other",
+          true,
+        ),
+      ),
+      callback,
+    );
     const { error } = await promise;
-    // MVP temporary: a profile change requires a team graph rebuild, which
-    // US3 (T013) replaces — until then FAILED_PRECONDITION with the
-    // (US3)-marked placeholder message. No ALREADY_EXISTS anymore (FR-007).
+    // FR-006: FAILED_PRECONDITION; the existing team and the in-flight turn
+    // are untouched.
     expect(error?.code).toBe(grpc.status.FAILED_PRECONDITION);
-    expect(error?.details).toContain("profile change rebuild pending (US3)");
+    expect(store.getProfileName("sess-ut-busy")).toBe("default");
+    expect(team.isRunning()).toBe(true);
+
+    // Release the gate: the turn completes and a subsequent profile change
+    // rebuild succeeds.
+    gate.resolve();
+    await flush();
+    expect(team.isRunning()).toBe(false);
+    const { callback: cb2, promise: p2 } = createCallback<any>();
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut-busy/team",
+          "templates/saolei/profiles/other",
+          true,
+        ),
+      ),
+      cb2,
+    );
+    const { error: error2, response: response2 } = await p2;
+    expect(error2).toBeNull();
+    expect(response2.profile).toBe("templates/saolei/profiles/other");
+  });
+
+  it("runs the NEXT turn on the NEW profile's model after a rebuild (US3)", async () => {
+    const strategies = new FakeStrategyStore();
+    // Rebuild seam whose player model answers with a distinctive text — the
+    // next turn's streamed output must come from THIS model.
+    const rebuilder: SessionTeamRebuilder = async (
+      sessionId,
+      _template,
+      _profileName,
+      existingCheckpointer,
+    ) => {
+      const buffer = createEphemeralGameBuffer();
+      return buildTeamGraph(
+        {
+          playerModel: fakeModel().respond(
+            new AIMessage("rebuild-model-answer"),
+          ),
+          plannerModel: updateStrategyPlannerModel("corner-first"),
+          strategyStore: strategies,
+          buffer,
+          sessionId,
+          playerTools: [buildGameEndingPlayerTool(buffer)],
+          playerBasePrompt: "",
+          plannerBasePrompt: "",
+        },
+        existingCheckpointer,
+      );
+    };
+    const { store } = createTeamStore(undefined, rebuilder);
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    await createTestTeam(store, "sess-ut-model");
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    // First turn with the ORIGINAL profile's model (playOneGamePlayerModel).
+    stream.emit(
+      "data",
+      userContentFrame(
+        "templates/saolei/sessions/sess-ut-model",
+        "开始游戏",
+        "player",
+      ),
+    );
+    await flush();
+
+    // Profile change → rebuild.
+    const { callback, promise } = createCallback<any>();
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut-model/team",
+          "templates/saolei/profiles/other",
+          true,
+        ),
+      ),
+      callback,
+    );
+    const { error } = await promise;
+    expect(error).toBeNull();
+
+    // The next turn runs on the NEW model — its answer is streamed out.
+    stream.emit(
+      "data",
+      userContentFrame(
+        "templates/saolei/sessions/sess-ut-model",
+        "再来一局",
+        "player",
+      ),
+    );
+    await flush();
+    const display = framesOfKind(stream, "messageParts");
+    const texts = display.map((f) => {
+      const fr = f as Record<string, unknown>;
+      const parts = (
+        fr.messageParts as { parts: { text?: { content?: string } }[] }
+      ).parts;
+      return parts.map((p) => p.text?.content ?? "").join("");
+    });
+    expect(texts.some((t) => t.includes("rebuild-model-answer"))).toBe(true);
   });
 
   it("returns NOT_FOUND for a missing team when allow_missing=false (AIP-134 standard Update)", async () => {
