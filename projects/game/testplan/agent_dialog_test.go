@@ -2,9 +2,9 @@
 // These tests validate the team's player-agent text dialog capability
 // through the gateway HTTP + WebSocket surface, using the fake LLM test
 // artifact that returns deterministic responses. Each test sets up the team
-// stack via setupTeamSession (session → saolei TeamProfile → CreateTeam)
-// before connecting — CreateTeam MUST precede Connect (no lazy creation,
-// spec 031-team-template-mode FR-033).
+// stack via setupTeamSession (session → saolei TeamProfile → UpdateTeam
+// materialization) before connecting — UpdateTeam MUST precede Connect (no
+// lazy creation, spec 040-team-singleton-conformance FR-003).
 package testplan
 
 import (
@@ -20,15 +20,17 @@ import (
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 // TestAgentDialogCreateAndConnect verifies the setup flow:
-// create saolei TeamProfile → create session → CreateTeam → connect WebSocket.
+// create saolei TeamProfile → create session → UpdateTeam materialization →
+// connect WebSocket.
 func TestAgentDialogCreateAndConnect(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	profileName := fmt.Sprintf("ad-cc-%s", uniqueSuffix())
 
-	// Create the TeamProfile, session, and Team (FR-033 — CreateTeam is the
-	// only Team creation point and MUST precede Connect).
+	// Create the TeamProfile, session, and materialize the Team via
+	// UpdateTeam(allow_missing=true) (FR-003 — UpdateTeam is the only Team
+	// creation point and MUST precede Connect).
 	profile := createTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
 	if profile.GetName() != "templates/"+saoleiTemplateID+"/profiles/"+profileName {
 		t.Errorf("profile name = %q, want %q", profile.GetName(), "templates/"+saoleiTemplateID+"/profiles/"+profileName)
@@ -38,7 +40,7 @@ func TestAgentDialogCreateAndConnect(t *testing.T) {
 	if sessionID == "" {
 		t.Fatal("sessionID is empty")
 	}
-	createTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileName)
+	updateTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileName)
 
 	// Connect WebSocket
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
@@ -279,10 +281,10 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 }
 
 // TestAgentDialogDeleteTeamProfileStillResponds verifies the loose coupling
-// design: after the team is created, deleting the saolei TeamProfile does
+// design: after the team is materialized, deleting the saolei TeamProfile does
 // not prevent subsequent messages from being processed, because the team's
-// player/planner models were resolved at CreateTeam time (server.ts
-// SessionTeamStore factory reads the profile once).
+// player/planner models were resolved at UpdateTeam materialization time
+// (server.ts SessionTeamStore factory reads the profile once).
 func TestAgentDialogDeleteTeamProfileStillResponds(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()

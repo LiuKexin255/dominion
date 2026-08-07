@@ -121,7 +121,7 @@ START → [initInstruction]（仅 team 初始化时）→ player
 ```
 
 - **review 节点**（正常游戏结束，`projects/game/agent/src/team/planner.ts` 改）：planner 复盘（携带 gameLog），按 prompt"必要时才调用"**可选**调用指令发送工具（D6）；不调用则不产生指令；graph 路由回 player（同 turn 继续，FR-017 消息顺序）。记忆冻结快照不变（不在 review 刷新）。
-- **initInstruction / postCompactInstruction 节点**（新建，`team/instruction-node.ts`）：**无游戏历史**，prompt **要求** planner 给 player 指令（LLM 最终决定是否调用工具，R4 修正——无强制检验）；不触发 player invoke——init 时指令入 pending 槽随首次 player 激活注入（**异步**执行，CreateTeam 不等 LLM，R2 修正）；postCompact 时 turn 已结束（compress→END 前），指令入 pending 槽随下次激活注入（FR-015/FR-016）。
+- **initInstruction / postCompactInstruction 节点**（新建，`team/instruction-node.ts`）：**无游戏历史**，prompt **要求** planner 给 player 指令（LLM 最终决定是否调用工具，R4 修正——无强制检验）；不触发 player invoke——init 时指令入 pending 槽随首次 player 激活注入（**异步**执行，`UpdateTeam(allow_missing=true)` 物化路径（graph 首建）后不等 LLM，R2 修正——原 CreateTeam 触发点被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersede）；postCompact 时 turn 已结束（compress→END 前），指令入 pending 槽随下次激活注入（FR-015/FR-016）。
 - 节点拆分使两场景的 prompt（带/不带 gameLog、prompt 强度"必要时 vs 要求"）、player invoke 语义（同 turn/不激活）清晰隔离。
 
 ### Rationale
@@ -238,7 +238,7 @@ add/update/remove 三工具与 Create/Update/Delete 一一对应；memory_id 为
 
 ### 决策
 
-`SessionTeam` 创建（`SessionTeamStore.create`，AIP-133 CreateTeam）时，在 team graph 构建后**异步**触发一次 **initInstruction 节点**（D5，R2 修正——CreateTeam 构建 graph 后即返回、不等 LLM）：planner 仅依冻结记忆快照（首次为空或既有），经 prompt 要求产出初始指令（LLM 决定是否调用 instruct_player，R4），写入 pending 指令槽（`TeamState.pendingInstruction`）。该指令随 player 首次激活（首次 user message → 首次 player invoke）一同注入 playerMessages（FR-015）。init 不触发 player invoke（CreateTeam 响应不含 player 输出）。
+`SessionTeam` 物化（`SessionTeamStore.update`，040：`UpdateTeam(allow_missing=true)` 物化路径——原 `SessionTeamStore.create`（AIP-133 CreateTeam）触发点被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersede）时，在 team graph **首建**后**异步**触发一次 **initInstruction 节点**（D5，R2 修正——`UpdateTeam(allow_missing=true)` 物化后即返回、不等 LLM）：planner 仅依冻结记忆快照（首次为空或既有），经 prompt 要求产出初始指令（LLM 决定是否调用 instruct_player，R4），写入 pending 指令槽（`TeamState.pendingInstruction`）。该指令随 player 首次激活（首次 user message → 首次 player invoke）一同注入 playerMessages（FR-015）。init 不触发 player invoke（UpdateTeam 响应不含 player 输出）。**profile 变更重建（040 FR-005）复用既有 checkpointer 重建 graph，不重跑 initInstruction（仅首建触发）。**
 
 **与 desktop 状态同步（R2 关键问题，须 tasks 解决）**：
 1. **agent typing 状态**：initInstruction 异步运行时，desktop 须正确进入 "agent typing"（planner 工作中）状态——经既有 channel-frame（`emitChannelFrame`，agent=planner）或 flow 状态下发；须协调 init 异步产出与 desktop Connect 时序（Connect 可能在 init 完成前/后建立）。
@@ -246,7 +246,7 @@ add/update/remove 三工具与 Create/Update/Delete 一一对应；memory_id 为
 
 ### Rationale
 
-需求方 supplement 3：team 初始化时 player 指令历史为空，需一次无游戏历史的初始校准。R2 修正：CreateTeam 不阻塞等 LLM（异步），避免 gRPC RPC 顶 deadline；pending 槽 + TurnLoop 队列保证指令不丢失、且排在期间到达的 user message 之前。
+需求方 supplement 3：team 初始化时 player 指令历史为空，需一次无游戏历史的初始校准。R2 修正：`UpdateTeam(allow_missing=true)` 物化不阻塞等 LLM（异步，原 CreateTeam 触发点被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersede），避免 gRPC RPC 顶 deadline；pending 槽 + TurnLoop 队列保证指令不丢失、且排在期间到达的 user message 之前。
 
 ### 待 plan 细化
 
@@ -277,7 +277,7 @@ add/update/remove 三工具与 Create/Update/Delete 一一对应；memory_id 为
 | # | 风险 | 处置 |
 |---|---|---|
 | **R1** | `instruct_player` 跨通道写外层 `playerMessages`（createAgent 子图 tool 能否直写外层通道） | **已闭环**：planner 接收 gameLog 本就是 HumanMessage 注入，指令发送对称——采用**外部 buffer 中转**（configurable 暂存 + 节点返回值写外层通道，同 037 `emitChannelFrame`）。无需 spike（D6/contract §4）。 |
-| **R2** | CreateTeam 同步触发 initInstruction 顶 gRPC deadline | **已决**：改为**异步**（CreateTeam 即返回）。须 tasks 解决与 desktop 的状态同步——desktop 正确进入 agent typing；异步期间到达的 user message 须排在 planner 指令之后（TurnLoop 队列 + pendingInstruction 优先注入，D10）。 |
+| **R2** | `UpdateTeam(allow_missing=true)` 物化同步触发 initInstruction 顶 gRPC deadline（原 CreateTeam 触发点，040 supersede） | **已决**：改为**异步**（`UpdateTeam` 物化即返回，仅 graph 首建触发；profile 变更重建不重跑 init）。须 tasks 解决与 desktop 的状态同步——desktop 正确进入 agent typing；异步期间到达的 user message 须排在 planner 指令之后（TurnLoop 队列 + pendingInstruction 优先注入，D10）。 |
 | **R3** | memory mcp 与 saolei mcp 共用单 path 不可行 | **已决**：每 mcp 独立 path，path 含 `template`（template-scoped，`/internal/mcp/{template}/{session}/{saolei\|memory}`）。既有 saolei path 同步迁移（clean break，D3/contract）。 |
 | **R4** | init/compact "强制"指令依赖 LLM 合规（软保证） | **已决**：取消强制检验。两场景产出指令与否均由 LLM 决定；差异在 prompt 措辞（init/compact 要求给指令；review 必要时才调用）。spec/contract/data-model 已同步改"强制"→"prompt 引导"。 |
 | **R5** | 压缩→快照刷新→postCompactInstruction 时序 | 节点编排显式保证 `review → compress（清通道+刷新快照）→ postCompactInstruction → END`；contract §2.4/§2.3 已约束顺序。tasks 实现时按此序连边。 |

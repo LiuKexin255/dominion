@@ -436,32 +436,38 @@ func deleteTeamProfile(t *testing.T, sutHostURL, sutEnvName, template, profileNa
 
 // ─── Team Helpers (proto-based) ─────────────────────────────────────────────
 
-// createTeam creates the per-session singleton Team via HTTP POST to
-// /api/v1/templates/{template}/sessions/{sessionID}/team (AIP-133; game.proto
-// TeamService.CreateTeam, spec 031-team-template-mode contracts/api-contract.md
-// §2.2). The body carries the parent Session resource name and the TeamProfile
-// full resource name ("templates/{template}/profiles/{profile}"); the server
-// validates the profile's template segment against the parent. CreateTeam is
-// the ONLY Team creation point — GetTeam/Connect/ListMessages/RefreshTeam
-// require it first (no lazy creation, FR-033). Calls t.Fatal on non-200
+// updateTeam materializes or updates the per-session singleton Team via HTTP
+// PATCH to /api/v1/templates/{template}/sessions/{sessionID}/team with
+// allow_missing=true (AIP-134 create-or-update + AIP-156; game.proto
+// TeamService.UpdateTeam, specs/040-team-singleton-conformance/contracts/
+// api-contract.md §2). Per the grpc-gateway body binding ("body: team" with
+// path variable {team.name}), the body carries the Team JSON: name (the
+// singleton resource name) + profile (the TeamProfile full resource name,
+// "templates/{template}/profiles/{profile}"); allow_missing is a query
+// parameter. The server validates the profile's template segment against the
+// name (FR-008). UpdateTeam is the ONLY Team creation point — GetTeam/Connect/
+// ListMessages/RefreshTeam require materialization first (no lazy creation,
+// FR-003); repeated calls with the same profile are idempotent (FR-002) and a
+// different profile rebuilds the team graph (FR-005). Calls t.Fatal on non-200
 // responses.
-func createTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) *game.Team {
+func updateTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) *game.Team {
 	t.Helper()
 
-	reqBody := &game.CreateTeamRequest{
-		Parent:  game.SessionName{TemplateID: template, SessionID: sessionID}.String(),
+	reqBody := &game.Team{
+		Name:    game.TeamName{TemplateID: template, SessionID: sessionID}.String(),
 		Profile: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
 	}
 	body, err := protojson.Marshal(reqBody)
 	if err != nil {
-		t.Fatalf("protojson.Marshal CreateTeamRequest: %v", err)
+		t.Fatalf("protojson.Marshal Team: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team?allow_missing=true",
+		sutHostURL, pathPrefix, template, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createTeam status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("PATCH updateTeam status=%d, body=%s", resp.StatusCode, respBody)
 	}
 
 	team := new(game.Team)
@@ -472,23 +478,25 @@ func createTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profi
 	return team
 }
 
-// createTeamWithStatus sends a CreateTeam request and returns the HTTP status
+// updateTeamWithStatus sends an UpdateTeam request and returns the HTTP status
 // code and response body. Does NOT fatal on non-200 responses — used to
-// assert the FR-033 idempotency/ALREADY_EXISTS re-entry contract.
-func createTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) (int, []byte) {
+// assert the idempotent (FR-002) / rebuild (FR-005) / in-flight rejection
+// (FR-006) contracts.
+func updateTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) (int, []byte) {
 	t.Helper()
 
-	reqBody := &game.CreateTeamRequest{
-		Parent:  game.SessionName{TemplateID: template, SessionID: sessionID}.String(),
+	reqBody := &game.Team{
+		Name:    game.TeamName{TemplateID: template, SessionID: sessionID}.String(),
 		Profile: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
 	}
 	body, err := protojson.Marshal(reqBody)
 	if err != nil {
-		t.Fatalf("protojson.Marshal CreateTeamRequest: %v", err)
+		t.Fatalf("protojson.Marshal Team: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team?allow_missing=true",
+		sutHostURL, pathPrefix, template, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
 	return resp.StatusCode, respBody
 }
 
@@ -542,15 +550,16 @@ func refreshTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID strin
 }
 
 // setupTeamSession creates the full team stack for one test: Session →
-// saolei TeamProfile → CreateTeam. Returns the session ID. The caller then
-// connects the WebSocket via connectAgentWS (CreateTeam MUST precede
-// Connect — no lazy creation, FR-033).
+// saolei TeamProfile → UpdateTeam(allow_missing=true) materialization.
+// Returns the session ID. The caller then connects the WebSocket via
+// connectAgentWS (UpdateTeam MUST precede Connect — no lazy creation,
+// FR-003).
 func setupTeamSession(t *testing.T, sutHostURL, sutEnvName, template, profileID, playerModel, plannerModel string) string {
 	t.Helper()
 
 	createTeamProfile(t, sutHostURL, sutEnvName, template, profileID, playerModel, plannerModel)
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, template)
-	createTeam(t, sutHostURL, sutEnvName, template, sessionID, profileID)
+	updateTeam(t, sutHostURL, sutEnvName, template, sessionID, profileID)
 	return sessionID
 }
 
@@ -599,9 +608,9 @@ func listMessagesWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sess
 // connectAgentWS connects to the session WebSocket endpoint
 // /api/v1/templates/{template}/sessions/{session}/connect (spec
 // 031-team-template-mode FR-004 — the WS endpoint mirrors the Team resource
-// hierarchy) and returns the connection. The caller MUST have created the
-// team via CreateTeam first: Connect requires an existing team (no lazy
-// creation, FR-033); a frame sent on a not-created session closes the
+// hierarchy) and returns the connection. The caller MUST have materialized
+// the team via UpdateTeam first: Connect requires an existing team (no lazy
+// creation, FR-003); a frame sent on a not-materialized session closes the
 // connection. Calls t.Fatal on any error.
 func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) *websocket.Conn {
 	t.Helper()

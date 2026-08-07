@@ -55,7 +55,7 @@ START → [initInstruction]（仅 team 初始化触发一次，D10）→ player
 
 ### 2.3 initInstruction / postCompactInstruction 节点（新建 `instruction-node.ts`）
 
-- **initInstruction**：team 初始化时**异步**触发一次（D10，R2——`SessionTeamStore.create` 构建 graph 后即返回、不等 LLM）。planner 仅依冻结记忆快照（首次烘焙，§3），经 prompt **要求**给 player 指令产出**无 gameLog**指令（LLM 决定是否调用 `instruct_player`，R4——无强制检验）；指令写入 `TeamState.pendingInstruction`（不触发 player invoke）。CreateTeam 响应不含 player 输出。异步产出期间到达的 user message 须排在指令之后（player 首次激活时先注入 pending 指令）。
+- **initInstruction**：team 初始化时**异步**触发一次（D10，R2——`UpdateTeam(allow_missing=true)` 物化路径（graph 首建）后即返回、不等 LLM；原 `SessionTeamStore.create`（AIP-133 CreateTeam）触发点被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersede）。planner 仅依冻结记忆快照（首次烘焙，§3），经 prompt **要求**给 player 指令产出**无 gameLog**指令（LLM 决定是否调用 `instruct_player`，R4——无强制检验）；指令写入 `TeamState.pendingInstruction`（不触发 player invoke）。`UpdateTeam` 响应不含 player 输出。异步产出期间到达的 user message 须排在指令之后（player 首次激活时先注入 pending 指令）。**仅 graph 首建（物化）触发；profile 变更重建（040 FR-005）不重跑 initInstruction。**
 - **postCompactInstruction**：compress 节点之后、END 之前。planner 依压缩刷新后的冻结快照，经 prompt 要求产出**无 gameLog**指令（因 player 指令历史已被压缩清理，FR-016；LLM 决定是否调用）；指令写入 `pendingInstruction`；turn 结束（END），随下次 player 激活注入。
 - 两节点复用同一节点函数（参数区分 scenario）；prompt 措辞区分两场景与 review（init/compact 要求给指令；review 必要时才调用）。节点不做"是否调用工具"的强制检验（R4）。
 - 不触发 player invoke（指令进 pending 槽，由 player 入口消费）。
@@ -147,10 +147,10 @@ Ephemeral buffer (per session)
 
 ## 6. SessionTeam 初始化触发 initInstruction（D10，FR-015）
 
-- `SessionTeamStore.create`（AIP-133 CreateTeam）在 team graph 构建后**异步**执行一次 `initInstruction` 节点（R2，不等 LLM、CreateTeam 即返回）：planner 经 prompt 要求产出初始指令（LLM 决定，R4）→ 写 `pendingInstruction`。须协调与 desktop Connect 的 typing-state 时序，及期间 user message 排在指令之后。
+- `SessionTeamStore.update`（`UpdateTeam(allow_missing=true)` 物化路径——原 `SessionTeamStore.create`（AIP-133 CreateTeam）被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersede）在 team graph **首建**后**异步**执行一次 `initInstruction` 节点（R2，不等 LLM、`UpdateTeam` 物化即返回）：planner 经 prompt 要求产出初始指令（LLM 决定，R4）→ 写 `pendingInstruction`。须协调与 desktop Connect 的 typing-state 时序，及期间 user message 排在指令之后。**profile 变更重建（040 FR-005）不重跑 initInstruction（仅首建触发）。**
 - player 首次激活（首次 user message → player invoke）时入口消费 `pendingInstruction` → 注入 playerMessages。
-- CreateTeam 响应不含 player 输出（init 不触发 player invoke）。
-- 超时/错误降级（planner model 不可用）：plan 落实（如跳过 init 指令、记日志，不阻断 CreateTeam）。
+- `UpdateTeam` 响应不含 player 输出（init 不触发 player invoke）。
+- 超时/错误降级（planner model 不可用）：plan 落实（如跳过 init 指令、记日志，不阻断 `UpdateTeam` 物化）。
 
 ---
 

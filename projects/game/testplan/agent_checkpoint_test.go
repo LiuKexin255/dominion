@@ -3,11 +3,12 @@
 // re-entry (spec 023 FR-012..FR-015), adapted to the saolei team model
 // (spec 031-team-template-mode): each test
 // sets up the team stack via setupTeamSession (session → saolei TeamProfile
-// → CreateTeam) before connecting — CreateTeam MUST precede Connect (no lazy
-// creation, FR-033). The former per-profile-model case moved to the
-// saolei_team suite; the former cross-profile-history case was removed (a
-// session's team is bound to one TeamProfile at CreateTeam — profile
-// switching no longer exists).
+// → UpdateTeam materialization) before connecting — UpdateTeam MUST precede
+// Connect (no lazy creation, FR-003). The former per-profile-model case moved
+// to the saolei_team suite; the former cross-profile-history case was removed
+// (a session's team is bound to one TeamProfile at materialization — profile
+// switching rebuilds the graph now, specs/040-team-singleton-conformance
+// FR-005).
 package testplan
 
 import (

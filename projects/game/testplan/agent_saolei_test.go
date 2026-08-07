@@ -15,8 +15,8 @@
 // The team turn (one user input = one graph invoke, D10) routes through the
 // per-session TurnLoop exactly like the pre-team single agent; each test
 // sets up the team stack via setupTeamSession (session → saolei TeamProfile
-// → CreateTeam) before connecting — CreateTeam MUST precede Connect (no
-// lazy creation, FR-033).
+// → UpdateTeam materialization) before connecting — UpdateTeam MUST precede
+// Connect (no lazy creation, FR-003).
 //
 // Coverage (spec 025 FR-012..FR-018, FR-022; spec 027 FR-012..FR-015,
 // FR-021..023; spec 028 FR-006/FR-012, SC-004):

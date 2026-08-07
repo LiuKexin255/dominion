@@ -48,7 +48,7 @@
 2. 记录历史消息计数与内容（`GET .../team/agents/player/messages`、`.../planner/messages`）。
 3. `PATCH .../team` body `{"name":".../team","profile":"templates/saolei/profiles/P2"}`（无 allow_missing 也行，已存在）→ 200，响应 profile=P2。
 4. 再次拉取两 agent 历史 → 计数与内容与步骤 2 一致（零丢失，SC-003）。
-5. 发起一个 turn，在其 in-flight 期间 `PATCH .../team`（profile=P3）→ 409 FAILED_PRECONDITION；既有 Team/turn 不受影响。
+5. 发起一个 turn，在其 in-flight 期间 `PATCH .../team`（profile=P3）→ 400 FAILED_PRECONDITION；既有 Team/turn 不受影响。
 6. turn 结束后再 `PATCH .../team`（profile=P3）→ 200；下一 turn 使用 P3 model/prompt（fake provider 可断言 model 切换）。
 
 **预期**：重建复用 checkpointer（`projects/game/agent/src/team/graph.ts:146`），buffer/bridge/sink/MCP 复用。参考 `contracts/team-rebuild-contract.md`。

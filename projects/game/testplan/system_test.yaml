@@ -43,17 +43,18 @@ description: |
       with a stable reason code (spec 025 FR-014/FR-015); saolei tool_result
       status is neutral (UNSPECIFIED, never FAILED) per spec 023 D12.
   Suite 9 (saolei-team): session + proxy + agent(test) + prompt + gateway.
-    - saolei template TEAM behaviour (spec 031-team-template-mode quickstart.md
-      §2.1): team lifecycle (CreateTeam/Connect/GetTeam, NOT_FOUND without
-      create, CreateTeam idempotency/ALREADY_EXISTS, connection exclusivity,
-      disconnect/reconnect history, status ping-pong, reconnect dispatch
-      reliability); TeamProfile CRUD (create/get/list/update via
-      update_mask/delete + template↔oneof consistency, FR-006/FR-027);
-      per-TeamProfile player/planner model resolution; player-exclusive
-      desktop control (FR-010); planner triggered exactly once per game end
-      (FR-011/D6); strategy persistence + per-session isolation
-      (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps
-      the strategy (FR-018/D8); per-agent message partitioning (FR-005).
+    - saolei template TEAM behaviour (specs/040-team-singleton-conformance
+      quickstart.md): team lifecycle (UpdateTeam/Connect/GetTeam, NOT_FOUND
+      without materialization, UpdateTeam idempotency + profile-change rebuild,
+      in-flight rebuild rejection, connection exclusivity, disconnect/reconnect
+      history, status ping-pong, reconnect dispatch reliability); TeamProfile
+      CRUD (create/get/list/update via update_mask/delete + template↔oneof
+      consistency, FR-006/FR-027); per-TeamProfile player/planner model
+      resolution; player-exclusive desktop control (FR-010); planner triggered
+      exactly once per game end (FR-011/D6); strategy persistence + per-session
+      isolation (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory
+      and keeps the strategy (FR-018/D8); per-agent message partitioning
+      (FR-005).
     - Merged from the removed prompt (AgentProfile/Skill CRUD),
       session-agent lifecycle (profile switching/GetAgent), and
       per-profile-model suites (tasks.md Phase 8 T029).
@@ -131,7 +132,7 @@ suites:
       - //projects/game/testplan:agent_saolei_test
 
   - name: saolei-team
-    description: "saolei template TEAM behaviour with fake-llm service (spec 031-team-template-mode quickstart.md §2.1): team lifecycle incl CreateTeam/GetTeam/connection exclusivity (FR-003/FR-004/FR-033); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); strategy persistence + per-session isolation (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps the strategy (FR-018/D8); per-agent message partitioning (FR-005). 037 saolei-team optimize (specs/037-saolei-team-optimize FR-034): planner review input real-time visibility (US1/FR-001..FR-003), 5-game compression trigger with channel shrink + player stop + strategy preserved (US2/FR-006..FR-012/FR-015), planner systemPrompt tool-description injection (US3/FR-016..FR-018 — prompt content verified via fake-llm 'system prompt received' INFO logs), game-end stats in the review input (US5/FR-026..FR-033)"
+    description: "saolei template TEAM behaviour with fake-llm service (specs/040-team-singleton-conformance/quickstart.md): team lifecycle incl UpdateTeam(allow_missing=true) materialization/idempotency/profile-rebuild/in-flight rejection (FR-002/FR-005/FR-006) + GetTeam/connection exclusivity (FR-003/FR-004); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); strategy persistence + per-session isolation (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps the strategy (FR-018/D8); per-agent message partitioning (FR-005). 037 saolei-team optimize (specs/037-saolei-team-optimize FR-034): planner review input real-time visibility (US1/FR-001..FR-003), 5-game compression trigger with channel shrink + player stop + strategy preserved (US2/FR-006..FR-012/FR-015), planner systemPrompt tool-description injection (US3/FR-016..FR-018 — prompt content verified via fake-llm 'system prompt received' INFO logs), game-end stats in the review input (US5/FR-026..FR-033)"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:

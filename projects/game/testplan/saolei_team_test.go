@@ -12,13 +12,13 @@
 // It replaces the three pre-031 suites that covered removed behaviour
 // (specs/031-team-template-mode/tasks.md Phase 8 T029): the prompt suite
 // (AgentProfile/Skill CRUD → TeamProfile CRUD), the session-agent lifecycle
-// suite (profile switching/GetAgent → team lifecycle: CreateTeam/Connect/
+// suite (profile switching/GetAgent → team lifecycle: UpdateTeam/Connect/
 // GetTeam/connection exclusivity), and the per-profile-model suite
 // (→ per-TeamProfile model). The team turn (one user input = one graph
 // invoke) is driven through the per-session TurnLoop exactly like the
 // pre-team agent; each test sets up the team stack via setupTeamSession
-// (session → saolei TeamProfile → CreateTeam) before connecting — CreateTeam
-// MUST precede Connect (no lazy creation, FR-033).
+// (session → saolei TeamProfile → UpdateTeam materialization) before
+// connecting — UpdateTeam MUST precede Connect (no lazy creation, FR-003).
 //
 // A "game" in these tests is one full team turn driven by the fake-LLM
 // "saolei-start" keyword: the player agent's saolei_init recognizes an
@@ -179,13 +179,14 @@ func findPlannerReviewMessage(messages []*game.Message) string {
 // ─── Team connect + lifecycle (FR-003/FR-004/FR-033) ──────────────────────
 
 // TestTeamConnectLifecycle verifies the team lifecycle contract
-// (contracts/api-contract.md §2.2 / FR-033): GetTeam/ListMessages on a
-// session whose team was NOT created return NOT_FOUND (no lazy creation);
-// CreateTeam returns the Team resource whose agents come from the template
-// schema ([player, accepts_user_input=true], [planner, accepts_user_input=
-// false] — D3/FR-031); repeated CreateTeam is idempotent for the SAME
-// profile and ALREADY_EXISTS for a DIFFERENT profile; after CreateTeam the
-// WebSocket Connect works and a text turn completes.
+// (specs/040-team-singleton-conformance/contracts/api-contract.md §2.3):
+// GetTeam/ListMessages on a session whose team was NOT materialized return
+// NOT_FOUND (no lazy creation, FR-003); UpdateTeam(allow_missing=true)
+// returns the Team resource whose agents come from the template schema
+// ([player, accepts_user_input=true], [planner, accepts_user_input=false] —
+// D3/FR-031); repeated UpdateTeam is idempotent for the SAME profile (FR-002)
+// and rebuilds the team graph for a DIFFERENT profile (FR-005); after
+// materialization the WebSocket Connect works and a text turn completes.
 func TestTeamConnectLifecycle(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -193,29 +194,35 @@ func TestTeamConnectLifecycle(t *testing.T) {
 	profileID := fmt.Sprintf("team-conn-%s", uniqueSuffix())
 	otherProfileID := fmt.Sprintf("team-conn-other-%s", uniqueSuffix())
 
-	// given: a session with NO team created.
+	// given: a session with NO team materialized.
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 
-	// then: GetTeam and ListMessages require an existing team (FR-033 — no
+	// then: GetTeam and ListMessages require an existing team (FR-003 — no
 	// implicit/lazy creation on read paths).
 	if status, _ := getTeamWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID); status != http.StatusNotFound {
-		t.Errorf("GetTeam before CreateTeam: status=%d, want 404 NOT_FOUND (FR-033)", status)
+		t.Errorf("GetTeam before UpdateTeam: status=%d, want 404 NOT_FOUND (FR-003)", status)
 	}
 	if status, _ := listMessagesWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player"); status != http.StatusNotFound {
-		t.Errorf("ListMessages before CreateTeam: status=%d, want 404 NOT_FOUND (FR-033)", status)
+		t.Errorf("ListMessages before UpdateTeam: status=%d, want 404 NOT_FOUND (FR-003)", status)
 	}
 
-	// given: a saolei TeamProfile.
+	// given: two saolei TeamProfiles (the second backs the rebuild case).
 	createTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, profileID, "gpt-4", "gpt-4")
+	createTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, otherProfileID, "gpt-4", "gpt-4")
 
-	// when: CreateTeam (the ONLY Team creation point, AIP-133).
-	team := createTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileID)
+	// when: UpdateTeam(allow_missing=true) (the ONLY Team creation point,
+	// AIP-134 create-or-update).
+	team := updateTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileID)
 
-	// then: the Team resource carries the session-scoped name and the
-	// template-schema agents (D3 — typed, not hard-coded).
+	// then: the Team resource carries the session-scoped name, the materialized
+	// profile and the template-schema agents (D3 — typed, not hard-coded).
 	wantName := fmt.Sprintf("templates/%s/sessions/%s/team", saoleiTemplateID, sessionID)
 	if team.GetName() != wantName {
 		t.Errorf("Team.name = %q, want %q", team.GetName(), wantName)
+	}
+	wantProfile := fmt.Sprintf("templates/%s/profiles/%s", saoleiTemplateID, profileID)
+	if team.GetProfile() != wantProfile {
+		t.Errorf("Team.profile = %q, want %q (FR-004)", team.GetProfile(), wantProfile)
 	}
 	if len(team.GetAgents()) != 2 {
 		t.Fatalf("Team.agents = %d entries, want 2 (player+planner)", len(team.GetAgents()))
@@ -240,16 +247,21 @@ func TestTeamConnectLifecycle(t *testing.T) {
 		t.Errorf("GetTeam agents = %d entries, want 2", len(fetched.GetAgents()))
 	}
 
-	// then (FR-033): repeated CreateTeam with the SAME profile is idempotent
-	// (returns the existing team); a DIFFERENT profile is ALREADY_EXISTS.
-	if status, _ := createTeamWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileID); status != http.StatusOK {
-		t.Errorf("repeated CreateTeam (same profile): status=%d, want 200 idempotent (FR-033)", status)
+	// then: repeated UpdateTeam with the SAME profile is idempotent (returns
+	// the existing team — FR-002); a DIFFERENT profile rebuilds the team
+	// graph and succeeds (FR-005, no ALREADY_EXISTS — FR-007).
+	if status, _ := updateTeamWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileID); status != http.StatusOK {
+		t.Errorf("repeated UpdateTeam (same profile): status=%d, want 200 idempotent (FR-002)", status)
 	}
-	if status, body := createTeamWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, otherProfileID); status != http.StatusConflict {
-		t.Errorf("repeated CreateTeam (different profile): status=%d, want 409 ALREADY_EXISTS, body=%s (FR-033)", status, body)
+	if status, body := updateTeamWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, otherProfileID); status != http.StatusOK {
+		t.Errorf("repeated UpdateTeam (different profile): status=%d, want 200 rebuild success, body=%s (FR-005)", status, body)
+	}
+	rebuilt := getTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	if rebuilt.GetProfile() != fmt.Sprintf("templates/%s/profiles/%s", saoleiTemplateID, otherProfileID) {
+		t.Errorf("GetTeam after rebuild profile = %q, want %q (FR-005)", rebuilt.GetProfile(), fmt.Sprintf("templates/%s/profiles/%s", saoleiTemplateID, otherProfileID))
 	}
 
-	// then: Connect works after CreateTeam and a text turn completes
+	// then: Connect works after materialization and a text turn completes
 	// (the team graph answers through the real pipeline).
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
@@ -257,23 +269,94 @@ func TestTeamConnectLifecycle(t *testing.T) {
 	sendText(t, conn, sessionID, "hello team lifecycle")
 	thinkingFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
 	if thinkingFrame == nil {
-		t.Fatal("did not receive a thinking frame after CreateTeam+Connect")
+		t.Fatal("did not receive a thinking frame after UpdateTeam+Connect")
 	}
 	if !strings.Contains(frameThinking(thinkingFrame), expectedGreetingReasoning) {
 		t.Errorf("thinking = %q, want to contain %q", frameThinking(thinkingFrame), expectedGreetingReasoning)
 	}
 }
 
-// TestTeamConnectWithoutCreateRejected verifies the FR-033 inverse: a
-// WebSocket Connect for a session whose team was NOT created does not hang —
-// the first frame is rejected and the connection is closed (the proxy
+// TestTeamUpdateRebuildInFlightRejected verifies FR-006: a profile-change
+// UpdateTeam is rejected with 400 FAILED_PRECONDITION while a turn is
+// in-flight (the per-session turn mutex is held — same guard as RefreshTeam),
+// and the existing team plus the in-flight turn are unaffected
+// (specs/040-team-singleton-conformance/quickstart.md 场景 3). The gateway
+// uses grpc-gateway's default error mapping (no custom error handler in
+// projects/game/gateway/cmd/main.go), which maps codes.FailedPrecondition →
+// HTTP 400 (https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.27.6/runtime/errors.go#L58-L60);
+// 409 is reserved for AlreadyExists/Aborted.
+func TestTeamUpdateRebuildInFlightRejected(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileID := fmt.Sprintf("team-rebuild-%s", uniqueSuffix())
+	otherProfileID := fmt.Sprintf("team-rebuild-other-%s", uniqueSuffix())
+
+	// given: a materialized team (profile=P1) and a second profile to switch
+	// to.
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileID, "gpt-4", "gpt-4")
+	createTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, otherProfileID, "gpt-4", "gpt-4")
+
+	// given: a turn in-flight — the saolei_init dispatch blocks the turn
+	// until the test (playing desktop) replies with a FlowResultPart (same
+	// in-flight window as TestTeamStatusPingPong).
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+	sendText(t, conn, sessionID, "please start saolei game")
+	opFrame := readOperationFrame(t, conn)
+	if frameKeyboardPress(opFrame) == nil {
+		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart")
+	}
+
+	// when: a profile-change UpdateTeam while the turn is in-flight.
+	status, body := updateTeamWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, otherProfileID)
+
+	// then: 400 FAILED_PRECONDITION (FR-006) and the existing team is
+	// untouched (no half-rebuilt state).
+	if status != http.StatusBadRequest {
+		t.Errorf("in-flight UpdateTeam (different profile): status=%d, want 400 FAILED_PRECONDITION, body=%s (FR-006)", status, body)
+	}
+	team := getTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	if team.GetProfile() != fmt.Sprintf("templates/%s/profiles/%s", saoleiTemplateID, profileID) {
+		t.Errorf("team profile after rejected rebuild = %q, want %q (existing team unchanged, FR-006)",
+			team.GetProfile(), fmt.Sprintf("templates/%s/profiles/%s", saoleiTemplateID, profileID))
+	}
+
+	// then: the in-flight turn completes unaffected — reply to every
+	// dispatched operation (init + clicks) and drain to the final text.
+	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
+	respondToOperationWithScreenshot(t, conn, sessionID, opFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
+	for i := 0; i < 2; i++ {
+		clickFrame := readOperationFrame(t, conn)
+		if frameMouseMoveAndClick(clickFrame) == nil {
+			t.Fatalf("expected a saolei_click dispatch, got: %v", clickFrame.GetFlowParts().GetParts())
+		}
+		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
+			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
+			fmt.Sprintf("cell at (%d,%d) revealed", saoleiClick1X, saoleiClick1Y), screenshot)
+	}
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
+		return frameHasText(f)
+	})
+	if textFrame == nil {
+		t.Fatal("did not receive a final text frame after the rejected in-flight rebuild")
+	}
+	if !strings.Contains(frameText(textFrame), expectedSaoleiFinalText) {
+		t.Errorf("final text = %q, want to contain %q", frameText(textFrame), expectedSaoleiFinalText)
+	}
+}
+
+// TestTeamConnectWithoutCreateRejected verifies the FR-003 inverse: a
+// WebSocket Connect for a session whose team was NOT materialized does not
+// hang — the first frame is rejected and the connection is closed (the proxy
 // reports the missing owner over the stream error channel, which the gateway
 // surfaces as a close). The old on-demand creation behaviour is gone.
 func TestTeamConnectWithoutCreateRejected(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	// given: a session with no team (no CreateTeam).
+	// given: a session with no team (no UpdateTeam materialization).
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 
 	// when: connecting and sending the first frame.
@@ -661,9 +744,9 @@ func TestTeamProfileTemplateConsistency(t *testing.T) {
 
 // ─── Per-TeamProfile model (merged from the per-profile-model suite) ──────
 
-// TestTeamPerProfileModel verifies that teams created from different
+// TestTeamPerProfileModel verifies that teams materialized from different
 // TeamProfiles each resolve the models configured in their profile: the
-// CreateTeam request carries the TeamProfile resource name, the agent reads
+// UpdateTeam request carries the TeamProfile resource name, the agent reads
 // player_model/planner_model from it (prompt-client.getTeamProfile), and a
 // turn on each session completes — proving the model specs were parsed and
 // routed through the provider (fake-llm ignores the model field, so both
@@ -678,13 +761,13 @@ func TestTeamPerProfileModel(t *testing.T) {
 
 	// given: two sessions, each with a team built from a different profile.
 	// setupTeamSession creates the TeamProfiles internally (session →
-	// TeamProfile → CreateTeam), so GetTeamProfile below must run AFTER it —
-	// the profiles do not exist before that point.
+	// TeamProfile → UpdateTeam materialization), so GetTeamProfile below must
+	// run AFTER it — the profiles do not exist before that point.
 	sessionID1 := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profile1ID, "gpt-4", "gpt-4-turbo")
 	sessionID2 := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profile2ID, "gpt-4-turbo", "gpt-4")
 
 	// Verify the created profiles carry the configured models via
-	// GetTeamProfile (the source of truth the agent reads at CreateTeam).
+	// GetTeamProfile (the source of truth the agent reads at materialization).
 	fetched1 := getTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, profile1ID)
 	if fetched1.GetSaolei().GetPlayerModel() != "gpt-4" || fetched1.GetSaolei().GetPlannerModel() != "gpt-4-turbo" {
 		t.Errorf("fetched profile1 models = (%q, %q), want (gpt-4, gpt-4-turbo)",

@@ -3,8 +3,8 @@
 // payloads carrying text and/or an ImagePart through the WebSocket surface,
 // using the fake-llm test artifact for deterministic responses. Each test
 // sets up the team stack via setupTeamSession (session → saolei TeamProfile
-// → CreateTeam) before connecting — CreateTeam MUST precede Connect (no lazy
-// creation, spec 031-team-template-mode FR-033).
+// → UpdateTeam materialization) before connecting — UpdateTeam MUST precede
+// Connect (no lazy creation, spec 040-team-singleton-conformance FR-003).
 //
 // spec 025 coverage: TestAgentMultimodalLargeImageRoundTrip proves a frame
 // whose encoded size exceeds the pre-025 `coder/websocket` default ReadLimit

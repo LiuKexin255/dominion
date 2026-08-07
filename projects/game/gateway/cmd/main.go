@@ -4,7 +4,7 @@
 //
 // Routes:
 //   - /api/v1/* → grpc-gateway (SessionService + TeamService unary RPCs:
-//     CreateTeam/GetTeam/ListMessages/RefreshTeam per
+//     UpdateTeam/GetTeam/ListMessages/RefreshTeam per
 //     projects/game/game.proto HTTP annotations, AIP-127)
 //   - /api/v1/templates/{template}/sessions/{session}/connect → WebSocket
 //     (TeamService.Connect stream; the WebSocket endpoint mirrors the Team
