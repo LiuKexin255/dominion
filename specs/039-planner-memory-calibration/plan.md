@@ -27,7 +27,7 @@
 
 **Storage**:
 - **MongoDB**（当前 `game/mongo` 实例，`deploy.yaml` infra mongodb）：
-  - **Memory**（planner 长期记忆）——由新建 memory 服务管理，**独立数据库 `game_memory`**（`style/mongo.md`：每服务独立数据库，MUST NOT 与 agent 的 `game_prompt` 或 prompt 的库混用，FR-006）。集合 `memories`，唯一索引 `(template, session, memory_id)`。
+  - **Memory**（planner 长期记忆）——由新建 memory 服务管理，**独立数据库 `game_memory`**（`style/mongo.md`：每服务独立数据库，MUST NOT 与 agent 的 `game_prompt` 或 prompt 的库混用，FR-006）。集合 `memories`，唯一索引 `(template, session, memory_id)`。**条目上限决策**：v1 不设硬上限（冻结快照单页烘焙假设，达上限 consolidate 策略缓行——落实 spec 边案例"由 plan 决定"，详见 `contracts/memory-service-contract.md` §ListMemories 注）。
   - 移除：`strategies` 集合（agent 的 `game_prompt` 库）——StrategyStore 废弃（FR-013）。
 - **内存 checkpointer**（`MemorySaver`）：短期消息（playerMessages/plannerMessages），不变。
 - **进程内 ephemeral buffer**：游戏状态/结束事件 + 指令 pending 槽（压缩/初始化场景的待注入指令）。
@@ -106,8 +106,8 @@ projects/game/
 │   │   ├── memory-snapshot.ts         # 【新增】冻结快照缓存（压缩/init 边界刷新，调研 D5）
 │   │   └── state.ts                   # 【改】移除 strategy 相关；新增 pending instruction 槽（init/compact）
 │   ├── strategy-store.ts              # 【删除】StrategyStore 接口 + MongoStrategyStore（FR-013）
-│   ├── server.ts                      # 【改】移除 StrategyStore/mongo strategy wiring；接 memory-client + memory mcp
-│   ├── session-team.ts                # 【改】team 初始化触发 init 节点（强制指令）
+│   ├── server.ts                      # 【改】移除 StrategyStore/mongo strategy wiring（含 040 重建闭包 rebuilder 两处 buildTeamGraph 调用点）；接 memory-client + memory mcp（首建 factory 与重建闭包均注入 memory 装配）
+│   ├── session-team.ts               # 【改】team 初始化异步触发 init 节点（R2，仅 graph 首建；prompt 引导、LLM 决定是否调用 instruct_player，无强制检验——R4）
 │   └── mcp/saolei/saolei-mcp.ts       # 【改】saolei_click/flag/chord_click → saolei_operate；gameLog 以 operate 为单位
 └── testplan/                          # 【新增/改】planner-memory 端到端大型测试计划
 ```

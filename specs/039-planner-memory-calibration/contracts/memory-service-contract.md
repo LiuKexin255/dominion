@@ -79,6 +79,8 @@ service MemoryService {
 | `ListMemories` | GET `/api/v1/{parent=templates/*/sessions/*}/memories` | AIP-132 + AIP-158 分页（`page_size`/`page_token`/`next_page_token`）；返回该 session 一页 memory（agent 烘焙冻结快照用，非 LLM 工具） |
 
 > `ListMemories` **MUST 支持分页**（AIP-158，`style/api.md` 引用 https://google.aip.dev/158）：请求 `page_size`（默认/上限见下）+ `page_token`，响应 `next_page_token`。冻结快照烘焙时按页遍历至 `next_page_token` 为空（planner 长期记忆为有界集合，实际多为一页，但契约须符合 AIP-132/158）。分页字段名、默认 page_size、上限对齐 prompt 服务 `ListTeamProfiles`（`projects/game/prompt/domain/model.go` `DefaultListTeamProfilesPageSize=100`/`MaxListTeamProfilesPageSize=1000`）。
+>
+> **记忆条目上限（决策，落实 spec 边案例"由 plan 决定"）**：v1 **不设硬上限值**——"有界集合"约束由冻结快照单页烘焙的实际规模保证（上限即分页常量 100/1000 隐含边界）；达上限报错让 LLM 自行 consolidate 的策略**缓行**（后续优化，不阻塞本特性）。服务端对记忆数量不做额外限制。
 
 ### 请求消息（语义）
 

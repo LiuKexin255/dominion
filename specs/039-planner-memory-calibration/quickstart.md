@@ -19,7 +19,7 @@
 
 **验证**：player 工具面仅 `saolei_operate`；批量按序执行、单次返回；失败细分（无害空操作跳过、结构性/游戏结束停止）。
 
-1. 部署完整拓扑（含 memory 服务），CreateTeam + Connect。
+1. 部署完整拓扑（含 memory 服务），`UpdateTeam(allow_missing=true)` 物化 team（AIP-134/156，040 supersede 后无 CreateTeam）+ Connect。
 2. player 调 `saolei_init` 开局，再调 `saolei_operate([{type:"click",x:0,y:0},{type:"flag",x:1,y:1},...])`。
 3. **期望**：一次调用一次返回（结果行 + 游戏状态行 + 最终棋盘）；操作按序生效。
 4. 构造无害空操作（如在已揭示数字格 click）：**期望**该 op 被跳过、批量继续、单次结果标注跳过。
@@ -50,7 +50,7 @@
 **验证**：player 不再读策略；两场景指令（review prompt"必要时才调用"同 turn / init-compact prompt 引导无历史、不激活 player）。
 
 1. **代码审查**：`StrategyStore`/`update_strategy`/player"当前态势"注入全部移除（SC-005，无残留引用）。
-2. **team 初始化**：CreateTeam 返回（initInstruction 异步触发）→ 确认 planner 经 prompt 引导产出初始指令（无游戏历史，LLM 决定是否调用）→ 进 `pendingInstruction` 槽；首次 user message → player 激活时指令随同注入 playerMessages（不产生仅因指令的独立 player 激活；异步期间 user message 排在指令之后）。
+2. **team 初始化**：`UpdateTeam(allow_missing=true)` 物化返回（initInstruction 异步触发，仅 graph 首建；profile 变更重建不重跑 init，040 FR-005）→ 确认 planner 经 prompt 引导产出初始指令（无游戏历史，LLM 决定是否调用）→ 进 `pendingInstruction` 槽；首次 user message → player 激活时指令随同注入 playerMessages（不产生仅因指令的独立 player 激活；异步期间 user message 排在指令之后）。
 3. **正常游戏结束**：player tool_calling → tool_result（游戏结束）→ planner 复盘（对 player 不可见，在 plannerMessages）→ planner 按"必要时才调用"**可选** `instruct_player` → 指令 HumanMessage 进 playerMessages（顺序 `tool_result → 指令 → player output`）→ graph 路由回 player 继续；planner 不发指令时 player 亦继续。
 4. **触发压缩（第 5 局）**：review → compress（冻结快照刷新）→ postCompactInstruction（prompt 引导无历史指令，LLM 决定）→ `pendingInstruction` → turn 结束（player 停下）→ 下次激活注入（与 037"压缩后自动停下"一致）。
 5. 消息顺序断言（FR-017）：playerMessages 可见序列为 `tool_calling → tool_result → planner 指令 → player message output`。
@@ -61,7 +61,7 @@
 
 ## 大型测试执行（FR-018，宪法原则 VI）
 
-- 测试计划：`projects/game/testplan/`（新增 planner-memory 端到端计划，覆盖上述场景 1/2/3）。
+- 测试计划：`projects/game/testplan/system_test.yaml`（新增 `planner-memory` suite，复用既有部署拓扑 `deploy_agent.yaml`——已含 memory 服务条目；**不新建 YAML**，覆盖上述场景 1/2/3，tasks T036）。
 - 执行（须经 testplan skill 完整部署→测试→清理闭环，禁止仅 `bazel build` 替代验收）：
 
   ```bash

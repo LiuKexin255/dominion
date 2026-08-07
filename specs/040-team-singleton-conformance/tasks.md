@@ -156,3 +156,4 @@
 - proto 字段号为 clean break（无线上存量 Team 资源须兼容）；`agents`/`create_time` field 号顺移。
 - 间接引用已显式列出：`style/api.md` 为索引，须配合具体 AIP URL（AIP-156/134/127/193/203/122）；`style/javascript.md` 引用外部 [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)。
 - US3 重建为最高风险项，须严格按 [contracts/team-rebuild-contract.md](contracts/team-rebuild-contract.md) §7 单测要点验证（checkpointer 引用不变 + 历史零丢失 + in-flight 守卫 + 单飞 + 失败回滚）。
+- **已知同步遗漏（039 评审补充修正，C1/C5）**：T016 原始同步范围未含 `specs/039-planner-memory-calibration/quickstart.md`（:22,53 的 CreateTeam 表述）、T014 未含 `specs/031-team-template-mode/contracts/desktop-contract.md`（§2.3/§4/§5/§6 的 CreateTeam 表述）；两处已由后续修正补齐 supersede 标注，本任务描述保持当时执行范围。
