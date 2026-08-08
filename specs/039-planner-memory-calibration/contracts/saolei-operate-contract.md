@@ -88,7 +88,7 @@ export interface SaoleiEventSink {
 }
 ```
 
-- `onMove(tool,x,y,state)` → 替换为 `onOperate(operations, finalState, stats?)`：一次 `saolei_operate` 触发一次 `onOperate`（携带全部 operations 列表 + 最终 state）。
+- `onMove(tool,x,y,state)` → 替换为 `onOperate(operations, finalState, stats?)`：一次 `saolei_operate` 触发一次 `onOperate`（携带全部 operations 列表 + 最终 state）。**触发条件限定为"存在活动局（有 recognized 棋盘）"**（FR-004 澄清，2026-08-08 review）：只要调用发生在活动局上——无论执行、全 SKIP、结构性停止——都触发一次（gameLog 一次调用记一条，FR-004）；`no_active_game`（无棋盘）与 recognize 失败路径不触发（无 finalState 可报告）。
 - team sink 将 `onOperate` 写入 ephemeral buffer 的 **gameLog 为一条含全部 operations 的项**（FR-004，不再每 op 一条）。
 - `onGameEnd` 不变（终局落子后触发）。
 
