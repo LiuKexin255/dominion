@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "handler",
+    srcs = ["handler.go"],
+    importpath = "dominion/projects/game/memory/handler",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game",
+        "//projects/game/memory/domain",
+        "//projects/game/pkg/gameconst",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
+        "@org_golang_google_protobuf//types/known/fieldmaskpb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_unittest(
+    name = "handler_test",
+    srcs = ["handler_test.go"],
+    embed = [":handler"],
+    deps = [
+        "//projects/game",
+        "//projects/game/memory/domain",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/fieldmaskpb",
+    ],
+)

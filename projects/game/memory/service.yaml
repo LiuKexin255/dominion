@@ -1,0 +1,12 @@
+version: "3.0"
+name: memory
+app: game
+kind: stateless
+desc: game memory service
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: memory
+    target: :cmd_image
+    tls: true
