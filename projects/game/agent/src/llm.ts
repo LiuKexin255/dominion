@@ -245,18 +245,27 @@ export const defaultMcpClientFactory: McpClientFactory = async (config) => {
  * Build the per-session saolei MCP-client tools (FR-002b / FR-010).
  *
  * Constructs a `MultiServerMCPClient` over the loopback streamable-HTTP
- * transport pointing at this session's MCP endpoint and returns its
+ * transport pointing at this session's saolei MCP endpoint and returns its
  * `getTools()` output (LangChain `DynamicStructuredTool[]`). The MCP server
- * bound at `/internal/mcp/{sessionId}` (`mcp-host.ts`) supplies the saolei
- * tools; the player node is the ONLY holder (FR-010).
+ * bound at `/internal/mcp/{template}/{session}/saolei` (`mcp-host.ts`)
+ * supplies the saolei tools; the player node is the ONLY holder (FR-010).
  *
- * @param sessionId   The dominion session id (path segment of the MCP URL).
- * @param mcpPort     The MCP host port (default `DEFAULT_MCP_PORT`).
+ * The URL is the template-scoped multi-path scheme (R3 —
+ * `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md`
+ * §4): each mcp kind owns its own path and the path carries the template;
+ * the saolei path is `/internal/mcp/{template}/{session}/saolei` (the
+ * former flat `/internal/mcp/{sessionId}` path was migrated — clean break,
+ * spec 039 Assumptions).
+ *
+ * @param template   The template path segment (e.g. `"saolei"`).
+ * @param sessionId  The dominion session id (path segment of the MCP URL).
+ * @param mcpPort    The MCP host port (default `DEFAULT_MCP_PORT`).
  * @param clientFactory DI seam — defaults to the real
  *   `MultiServerMCPClient`. Tests inject a `vi.fn()` to assert the URL and
  *   to short-circuit the HTTP round-trip.
  */
 export async function buildSaoleiMcpTools(
+	template: string,
 	sessionId: string,
 	mcpPort: number,
 	clientFactory: McpClientFactory,
@@ -264,7 +273,7 @@ export async function buildSaoleiMcpTools(
 	const client = await clientFactory({
 		saolei: {
 			transport: "http",
-			url: `http://localhost:${mcpPort}/internal/mcp/${sessionId}`,
+			url: `http://localhost:${mcpPort}/internal/mcp/${template}/${sessionId}/saolei`,
 		},
 	});
 	return client.getTools();

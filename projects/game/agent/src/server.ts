@@ -280,6 +280,7 @@ export async function startServer(
       sessionBridges.set(sessionId, { bridge, sink, buffer });
       try {
         const playerTools = await buildSaoleiMcpTools(
+          template,
           sessionId,
           DEFAULT_MCP_PORT,
           defaultMcpClientFactory,
@@ -368,12 +369,32 @@ export async function startServer(
   const handler = new Handler(sessionTeamStore);
 
   // FR-001 + saolei-sink-contract.md §6: the localhost MCP HTTP host
-  // resolves each session to its bridge AND the team sink (T009 extension
-  // point) so the saolei MCP events land in the session's ephemeral buffer.
+  // resolves each (template, session, kind) triple to its per-kind
+  // dependencies (R3 template-scoped multi-path scheme —
+  // `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md`
+  // §4). Only the saolei kind is registered here (Phase 4); the memory kind
+  // (planner's memory mcp) is wired in Phase 5 (T022) with the MemoryClient.
   // The lookup reads the early-registration registry (NOT the team store —
   // the store only caches the team AFTER the factory resolves, so it misses
   // during `buildSaoleiMcpTools`'s in-factory connect; the registry hits).
-  startMcpHost((sessionId: string) => sessionBridges.get(sessionId));
+  // The template path segment is not re-validated here: a session is bound
+  // to one template, and the registry is keyed by session id.
+  startMcpHost(
+    (template: string, sessionId: string, kind: "saolei" | "memory") => {
+      if (kind !== "saolei") {
+        return undefined;
+      }
+      const entry = sessionBridges.get(sessionId);
+      if (!entry) {
+        return undefined;
+      }
+      return {
+        kind: "saolei" as const,
+        bridge: entry.bridge,
+        sink: entry.sink,
+      };
+    },
+  );
 
   const proto = loadProto();
   const credentials = buildCredentials();

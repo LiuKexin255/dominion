@@ -17,15 +17,25 @@ import {
   createDeployClient,
 } from "@dominion/common-js-grpc-resolver";
 
-/** Path to game.proto, relative to the compiled src/ directory. */
-const PROTO_PATH = path.join(
+/**
+ * Path to game.proto, relative to the compiled src/ directory.
+ *
+ * Exported so sibling gRPC clients (e.g. `memory-client.ts`, spec 039 T014 —
+ * `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §3)
+ * load the SAME proto definition with the SAME options instead of
+ * duplicating the path/loader config.
+ */
+export const PROTO_PATH = path.join(
   __dirname,
   "..",
   "projects", "game", "game.proto",
 );
 
-/** Proto loader options MUST match ts_proto_library generation options. */
-const PROTO_OPTIONS: protoLoader.Options = {
+/**
+ * Proto loader options MUST match ts_proto_library generation options.
+ * Exported for the same single-source-of-truth reason as `PROTO_PATH`.
+ */
+export const PROTO_OPTIONS: protoLoader.Options = {
   longs: String,
   enums: String,
   defaults: true,
@@ -59,7 +69,14 @@ export interface TeamProfileResult {
   plannerPrompt: string;
 }
 
-function buildClientCredentials(): grpc.ChannelCredentials {
+/**
+ * Build the TLS channel credentials for dominion gRPC services: TLS with the
+ * deployment CA when present, insecure otherwise (local dev).
+ *
+ * Exported so sibling gRPC clients (`memory-client.ts`, spec 039 T014) reuse
+ * the same TLS policy — see `PROTO_PATH` above.
+ */
+export function buildClientCredentials(): grpc.ChannelCredentials {
   if (!fs.existsSync(TLS_CA_CERT)) {
     return grpc.credentials.createInsecure();
   }
@@ -74,7 +91,10 @@ function buildClientCredentials(): grpc.ChannelCredentials {
 // 5 minutes as "excess pings" and GOAWAYs the connection. Use 5m so the
 // PING interval is safely above that threshold, and only send PINGs when
 // there is an active RPC to avoid waking idle connections.
-const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
+//
+// Exported so sibling gRPC clients (`memory-client.ts`, spec 039 T014) share
+// the same channel policy (memory service is also grpc-go).
+export const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
   "grpc.keepalive_time_ms": 300_000,
   "grpc.keepalive_timeout_ms": 10_000,
   "grpc.keepalive_permit_without_calls": 0,
@@ -86,11 +106,11 @@ const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
 // backend pod restarts the call hangs in "Waiting for LB pick" until reconnect.
 // round_robin (matching grpc-go's ClientDefault) connects to every resolved
 // endpoint, so a rolling-upgrade pod swap routes around the terminating pod.
-const ROUND_ROBIN_SERVICE_CONFIG = JSON.stringify({
+export const ROUND_ROBIN_SERVICE_CONFIG = JSON.stringify({
   loadBalancingConfig: [{ round_robin: {} }],
 });
 
-function buildChannelOptions(): grpc.ChannelOptions {
+export function buildChannelOptions(): grpc.ChannelOptions {
   const options: grpc.ChannelOptions = {
     ...KEEPALIVE_OPTIONS,
     "grpc.service_config": ROUND_ROBIN_SERVICE_CONFIG,

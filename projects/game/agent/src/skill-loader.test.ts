@@ -51,6 +51,25 @@ describe("SKILL.md format contract (FR-023)", () => {
 		expect(m).not.toBeNull();
 		expect(m![1].trim().length).toBeGreaterThan(0);
 	});
+
+	// spec 039 FR-020 (T015b): the memory skill follows the same format
+	// contract as saolei — folder name === frontmatter name, non-empty
+	// description.
+	it("memory SKILL.md frontmatter name matches the folder name (format contract)", () => {
+		const mdPath = path.join(__dirname, "skill", "memory", "SKILL.md");
+		const md = fs.readFileSync(mdPath, "utf8");
+		const m = md.match(/^---\n[\s\S]*?name:\s*(\S+)\n/);
+		expect(m).not.toBeNull();
+		expect(m![1]).toBe("memory");
+	});
+
+	it("memory SKILL.md has a non-empty description in frontmatter", () => {
+		const mdPath = path.join(__dirname, "skill", "memory", "SKILL.md");
+		const md = fs.readFileSync(mdPath, "utf8");
+		const m = md.match(/^---\n[\s\S]*?description:\s*(.+?)\n/);
+		expect(m).not.toBeNull();
+		expect(m![1].trim().length).toBeGreaterThan(0);
+	});
 });
 
 // ===========================================================================
@@ -73,6 +92,16 @@ describe("loadSkillBody (FR-024 registry)", () => {
 
 	it("returns '' for an empty name", () => {
 		expect(loadSkillBody("")).toBe("");
+	});
+
+	it("returns a non-empty memory body for 'memory' (spec 039 FR-020)", () => {
+		const body = loadSkillBody("memory");
+		expect(body.length).toBeGreaterThan(0);
+		// Stable markers: the body documents the single hermes-style tool and
+		// its action/old_text surface (memory-skill-contract §3).
+		expect(body).toContain("# memory");
+		expect(body).toContain("old_text");
+		expect(body).toContain("frozen snapshot");
 	});
 });
 
@@ -126,6 +155,18 @@ describe("appendSkillBodyToPrompt (FR-023/024/025, research.md D9)", () => {
 		expect(result).toBe(
 			"p" + SKILL_PROMPT_SEPARATOR + loadSkillBody("saolei"),
 		);
+	});
+
+	it("appends saolei + memory bodies in registry order (039 FR-020)", () => {
+		const result = appendSkillBodyToPrompt("p", ["saolei", "memory"]);
+		expect(result).toBe(
+			"p" +
+				SKILL_PROMPT_SEPARATOR +
+				loadSkillBody("saolei") +
+				SKILL_PROMPT_SEPARATOR +
+				loadSkillBody("memory"),
+		);
+		expect(result).toContain(SKILL_PROMPT_SEPARATOR + "# memory");
 	});
 
 	it("preserves the original prompt prefix exactly (no truncation)", () => {

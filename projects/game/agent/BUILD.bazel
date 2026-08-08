@@ -59,6 +59,7 @@ artifact_pkg_js(
     name = "server_pkg",
     app = "game",
     data_files = [
+        "src/skill/memory/SKILL.md",
         "src/skill/saolei/SKILL.md",
     ],
     entrypoint = "src/bootstrap.js",
@@ -106,6 +107,7 @@ artifact_pkg_js(
     name = "server_pkg_test",
     app = "game",
     data_files = [
+        "src/skill/memory/SKILL.md",
         "src/skill/saolei/SKILL.md",
     ],
     entrypoint = "src/bootstrap-test.js",
@@ -165,6 +167,7 @@ vitest_test(
         # fs.readFileSync (research.md D9 — skill body bundled into the
         # image). The .md must be in the test runfiles so the skill-loader
         # tests exercise the real read path.
+        "src/skill/memory/SKILL.md",
         "src/skill/saolei/SKILL.md",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
