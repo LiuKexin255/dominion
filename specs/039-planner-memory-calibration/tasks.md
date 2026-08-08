@@ -32,10 +32,10 @@
 
 **Tasks**:
 
-- [ ] T001 Add `Memory` resource message + `MemoryService` service + 请求/响应消息（Create/Update/Delete/List + 对应 Request/Response）到 `projects/game/game.proto`（`Memory` 置于 `TeamProfile` 之后；`MemoryService` 置于 `PromptService` 之后；请求消息置于文件末尾请求区）。注解照搬既有 `TeamProfile`/`PromptService` 模式：`google.api.resource` pattern `templates/{template}/sessions/{session}/memories/{memory}`、singular/plural、`name` IDENTIFIER、`memory_id`/`content`、OUTPUT_ONLY timestamps；RPC 的 `google.api.http` + `method_signature`；ListMemories 含 `page_size`/`page_token`/`next_page_token`（AIP-158）。详见 `contracts/memory-service-contract.md` §1-2。
-- [ ] T002 [P] Add `MemoryTarget = "game/memory:grpc"` 常量到 `projects/game/pkg/gameconst/const.go` 的 target 常量块（紧随 `PromptTarget`，同 `"game/{service}:grpc"` 格式）。
-- [ ] T003 [P] Add memory 服务 artifact 条目到 `projects/game/deploy.yaml`（prod，`{path: //projects/game/memory/service.yaml, name: memory}`，置于 prompt 与 agent 之间）与 `projects/game/testplan/deploy_agent.yaml`（test，同 artifact；该 deploy 的 mongo 为 `persistence: {enabled: false}`）。
-- [ ] T004 Run `bazel run //:gazelle projects/game` 重新生成 proto codegen 的 `BUILD.bazel` target；`bazel mod tidy`；`bazel build //projects/game` 验证 codegen 产出 `RegisterMemoryServiceServer`、`UnimplementedMemoryServiceServer`、`ParseMemoryName`/`MemoryName` 等。
+- [X] T001 Add `Memory` resource message + `MemoryService` service + 请求/响应消息（Create/Update/Delete/List + 对应 Request/Response）到 `projects/game/game.proto`（`Memory` 置于 `TeamProfile` 之后；`MemoryService` 置于 `PromptService` 之后；请求消息置于文件末尾请求区）。注解照搬既有 `TeamProfile`/`PromptService` 模式：`google.api.resource` pattern `templates/{template}/sessions/{session}/memories/{memory}`、singular/plural、`name` IDENTIFIER、`memory_id`/`content`、OUTPUT_ONLY timestamps；RPC 的 `google.api.http` + `method_signature`；ListMemories 含 `page_size`/`page_token`/`next_page_token`（AIP-158）。详见 `contracts/memory-service-contract.md` §1-2。
+- [X] T002 [P] Add `MemoryTarget = "game/memory:grpc"` 常量到 `projects/game/pkg/gameconst/const.go` 的 target 常量块（紧随 `PromptTarget`，同 `"game/{service}:grpc"` 格式）。
+- [X] T003 [P] Add memory 服务 artifact 条目到 `projects/game/deploy.yaml`（prod，`{path: //projects/game/memory/service.yaml, name: memory}`，置于 prompt 与 agent 之间）与 `projects/game/testplan/deploy_agent.yaml`（test，同 artifact；该 deploy 的 mongo 为 `persistence: {enabled: false}`）。
+- [X] T004 Run `bazel run //:gazelle projects/game` 重新生成 proto codegen 的 `BUILD.bazel` target；`bazel mod tidy`；`bazel build //projects/game` 验证 codegen 产出 `RegisterMemoryServiceServer`、`UnimplementedMemoryServiceServer`、`ParseMemoryName`/`MemoryName` 等。
 
 **Checkpoint**: `bazel build //projects/game` 通过，MemoryService codegen 可用。
 

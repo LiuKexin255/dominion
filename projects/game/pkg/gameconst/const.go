@@ -15,6 +15,9 @@ const (
 	TeamTarget   = "game/proxy:grpc"
 	AgentTarget  = "game/agent:grpc"
 	PromptTarget = "game/prompt:grpc"
+	// MemoryTarget is the gRPC target of the MemoryService (spec 039
+	// planner-memory-calibration, contracts/memory-service-contract.md §5).
+	MemoryTarget = "game/memory:grpc"
 
 	// Log field constants
 	LogFieldName       = "name"
