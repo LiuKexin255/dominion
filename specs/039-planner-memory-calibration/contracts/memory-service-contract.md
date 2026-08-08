@@ -35,7 +35,7 @@ message Memory {
 |---|---|---|
 | `name` | IDENTIFIER | 完整资源名；OUTPUT 派生 |
 | `memory_id` | OUTPUT_ONLY | `{memory}` 段；CreateMemory 请求的 `memory_id` 派生 |
-| `content` | REQUIRED（Create/Update） | 记忆内容文本 |
+| `content` | REQUIRED（Create/Update） | 记忆内容文本（Memory 资源体字段；Create/Update 请求中经内嵌 `memory.content` 传递，AIP-133/134，非请求顶层平铺字段） |
 | `create_time`/`update_time` | OUTPUT_ONLY | 服务端管理 |
 
 ---
@@ -45,36 +45,44 @@ message Memory {
 ```proto
 // MemoryService 承载 planner 长期记忆（spec 039 FR-006）。
 // Prefix Path: /api/v1/templates/{template}/sessions/{session}/memories
+//
+// 注：下方 proto 用短 option（(Identify)/(Required)/(OutputOnly)）为示意简写；
+// 实际注解用完整形式 (google.api.field_behavior)=IDENTIFIER/REQUIRED/OUTPUT_ONLY，
+// 见 game.proto 既有 TeamProfile / CreateTeamProfileRequest 注解模式。
 service MemoryService {
   rpc CreateMemory(CreateMemoryRequest) returns (Memory) {
     option (google.api.http) = {
       post: "/api/v1/{parent=templates/*/sessions/*}/memories"
-      body: "*"
+      body: "memory"
     };
+    option (google.api.method_signature) = "parent,memory,memory_id";
   }
   rpc UpdateMemory(UpdateMemoryRequest) returns (Memory) {
     option (google.api.http) = {
       patch: "/api/v1/{memory.name=templates/*/sessions/*/memories/*}"
       body: "memory"
     };
+    option (google.api.method_signature) = "memory,update_mask";
   }
   rpc DeleteMemory(DeleteMemoryRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
       delete: "/api/v1/{name=templates/*/sessions/*/memories/*}"
     };
+    option (google.api.method_signature) = "name";
   }
   rpc ListMemories(ListMemoriesRequest) returns (ListMemoriesResponse) {
     option (google.api.http) = {
       get: "/api/v1/{parent=templates/*/sessions/*}/memories"
     };
+    option (google.api.method_signature) = "parent";
   }
 }
 ```
 
 | RPC | 方法/路径 | 说明 |
 |---|---|---|
-| `CreateMemory` | POST `/api/v1/{parent=templates/*/sessions/*}/memories`（body `"*"`） | AIP-133；请求 `{ parent, memory_id, content }`；`memory_id` 已存在 → `ALREADY_EXISTS`（FR-008 冲突拒绝） |
-| `UpdateMemory` | PATCH `/api/v1/{memory.name=...}`（body `memory`） | AIP-134；请求 `{ memory: {name, content} }`；不存在 → `NOT_FOUND` |
+| `CreateMemory` | POST `/api/v1/{parent=templates/*/sessions/*}/memories`（body `"memory"`） | AIP-133；请求 `{ parent, memory_id, memory }`，资源内嵌（`content` 在 `memory.content`，非顶层平铺字段）；`memory_id` 已存在 → `ALREADY_EXISTS`（FR-008 冲突拒绝） |
+| `UpdateMemory` | PATCH `/api/v1/{memory.name=...}`（body `memory`） | AIP-134；请求 `{ memory: {name, content}, update_mask }`；不存在 → `NOT_FOUND`（`allow_missing` 不设——Update 不做 create-or-update） |
 | `DeleteMemory` | DELETE `/api/v1/{name=...}` | AIP-135；不存在 → `NOT_FOUND` |
 | `ListMemories` | GET `/api/v1/{parent=templates/*/sessions/*}/memories` | AIP-132 + AIP-158 分页（`page_size`/`page_token`/`next_page_token`）；返回该 session 一页 memory（agent 烘焙冻结快照用，非 LLM 工具） |
 
@@ -87,11 +95,12 @@ service MemoryService {
 ```proto
 message CreateMemoryRequest {
   string parent = 1 [(Required)];          // session 资源名 templates/{t}/sessions/{s}
-  string memory_id = 2 [(Required)];       // LLM 提供（FR-008）；字符集 [a-z0-9_-]+（plan 落实）
-  string content = 3 [(Required)];
+  string memory_id = 2 [(Required)];       // 资源 id（agent 在 add 时内部生成，FR-008）；字符集 [a-z0-9_-]+（plan 落实）
+  Memory memory = 3 [(Required)];          // AIP-133：资源内嵌（content 在 memory.content，非顶层平铺字段）
 }
 message UpdateMemoryRequest {
   Memory memory = 1 [(Required)];          // name + content
+  google.protobuf.FieldMask update_mask = 2; // AIP-134：部分更新（Memory 唯一可变字段为 content）
 }
 message DeleteMemoryRequest {
   string name = 1 [(Required)];
@@ -116,7 +125,7 @@ message ListMemoriesResponse {
   _id: ObjectId,                       // 自动生成，不覆盖（style/mongo.md）
   template: string,                    // {template} 段
   session_id: string,                  // {session} 段
-  memory_id: string,                   // {memory} 段（LLM 提供）
+  memory_id: string,                   // {memory} 段（agent 在 add 时内部生成，非 LLM 提供，Session 2026-08-08）
   content: string,
   create_time: ISODate,
   update_time: ISODate
@@ -164,7 +173,8 @@ projects/game/memory/
 | 场景 | gRPC code | 说明 |
 |---|---|---|
 | `CreateMemory` memory_id 已存在 | `ALREADY_EXISTS`（AIP-133） | FR-008 冲突拒绝 |
-| `UpdateMemory`/`DeleteMemory` 不存在 | `NOT_FOUND`（AIP-131） | |
+| `UpdateMemory` 不存在 | `NOT_FOUND`（AIP-134） | |
+| `DeleteMemory` 不存在 | `NOT_FOUND`（AIP-135） | |
 | `memory_id` 字符集非法 | `INVALID_ARGUMENT`（AIP-193） | plan 落实字符集校验 |
 
 ---

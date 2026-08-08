@@ -26,9 +26,9 @@
 
 ### 文档清单（编码前必读）
 
-- **代码规范文档**: `style/api.md`（AIP 索引）；[AIP-122 Resource names](https://google.aip.dev/122)；[AIP-127 HTTP and gRPC Transcoding](https://google.aip.dev/127)
-- **官方文档**: 无（以仓库内 `projects/game/game.proto` 既有 `TeamProfile` 资源 + `PromptService` 为实现模板，照搬其 `google.api.resource` / `google.api.http` / `method_signature` 注解模式）
-- **技术文章**: `specs/039-planner-memory-calibration/contracts/memory-service-contract.md` §1（Memory 资源消息）、§2（MemoryService + RPC + 请求消息）
+- **代码规范文档**: `style/api.md`（AIP 索引，标准方法/字段行为规范的入口）；[AIP-122 Resource names](https://google.aip.dev/122)；[AIP-127 HTTP and gRPC Transcoding](https://google.aip.dev/127)；[AIP-133 Standard methods: Create](https://google.aip.dev/133)（CreateMemory：请求**内嵌资源** `Memory memory`、`body: "memory"`、`method_signature: "parent,memory,memory_id"`）；[AIP-134 Standard methods: Update](https://google.aip.dev/134)（UpdateMemory：`body: "memory"`、`update_mask` 字段、不存在→`NOT_FOUND`）；[AIP-135 Standard methods: Delete](https://google.aip.dev/135)（DeleteMemory：`delete` 无 body、不存在→`NOT_FOUND`）；[AIP-132 Standard methods: List](https://google.aip.dev/132)（ListMemories：`get`、`parent`、分页字段）；[AIP-158 Pagination](https://google.aip.dev/158)（`page_size`/`page_token`/`next_page_token`）；[AIP-193 Errors](https://google.aip.dev/193)（`ALREADY_EXISTS`/`NOT_FOUND`/`INVALID_ARGUMENT` 语义）；[AIP-203 Field behavior documentation](https://google.aip.dev/203)（`IDENTIFIER`/`REQUIRED`/`OUTPUT_ONLY` 注解语义）
+- **官方文档**: 无（以仓库内 `projects/game/game.proto` 既有 `TeamProfile` 资源 + `PromptService`/`CreateTeamProfileRequest` 为实现模板，照搬其 `google.api.resource` / `google.api.http` / `method_signature` / `field_behavior` 注解模式）
+- **技术文章**: `specs/039-planner-memory-calibration/contracts/memory-service-contract.md` §1（Memory 资源消息）、§2（MemoryService + RPC + 请求消息）、§6（错误码）
 
 **Tasks**:
 
@@ -98,7 +98,7 @@
 
 - **代码规范文档**: `style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)；[vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)；`specs/019-js-test-reliability/`（DI seam、`vitest_test` 宏、`data` 规则）
 - **官方文档**: [@modelcontextprotocol/typescript SDK](https://github.com/modelcontextprotocol/typescript-sdk)（`McpServer` 工厂 + `registerTool`）；`@grpc/grpc-js` + `@grpc/proto-loader`（仓库内 `prompt-client.ts` 为模板：`registerDominionResolver`、keepalive/round_robin/TLS channel options）；[@langchain/langgraph — configurable / node return / messagesStateReducer](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api)
-- **技术文章**: `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §1-6；`specs/039-planner-memory-calibration/contracts/memory-skill-contract.md` §1-3（T015b）；`specs/039-planner-memory-calibration/contracts/team-graph-contract.md` §3（冻结快照）；`survey/planner-memory-and-agent-communication.md` §3/§4/§5（D2 冻结快照、D4 压缩刷新、D5 方案 b）；既有 `projects/game/agent/src/prompt-client.ts`（memory-client 模板）、`projects/game/agent/src/mcp-host.ts`（path/session 既有做法）、`projects/game/agent/src/mcp/saolei/saolei-mcp.ts`（`createSaoleiMcpServer` 闭包工厂模式）、`projects/game/agent/src/skill-loader.ts`（skill 注入机制，T015b 注册 "memory"）、`projects/game/agent/src/skill/saolei/SKILL.md`（skill body 模板）、`specs/020-agent-resources-layout/contracts/skill-md-format.md`（SKILL.md 格式契约，T015b）
+- **技术文章**: `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §1-6；`specs/039-planner-memory-calibration/contracts/memory-skill-contract.md` §1-3（T015b）；`specs/039-planner-memory-calibration/contracts/team-graph-contract.md` §3（冻结快照）；[hermes `tools/memory_tool.py`](https://github.com/NousResearch/hermes-agent/blob/main/tools/memory_tool.py)（`memory` 工具 schema 与 `old_text` 子串匹配语义的参考来源，memory-mcp-contract §1.1 与 memory-skill-contract §3 均引用其 HOW/WHEN/SKIP 引导，T015 实现 old_text 匹配、T015b 编写 skill body 措辞须参考）；`survey/planner-memory-and-agent-communication.md` §3/§4/§5（D2 冻结快照、D4 压缩刷新、D5 方案 b）；既有 `projects/game/agent/src/prompt-client.ts`（memory-client 模板）、`projects/game/agent/src/mcp-host.ts`（path/session 既有做法）、`projects/game/agent/src/mcp/saolei/saolei-mcp.ts`（`createSaoleiMcpServer` 闭包工厂模式）、`projects/game/agent/src/skill-loader.ts`（skill 注入机制，T015b 注册 "memory"）、`projects/game/agent/src/skill/saolei/SKILL.md`（skill body 模板）、`specs/020-agent-resources-layout/contracts/skill-md-format.md`（SKILL.md 格式契约，T015b）
 
 **Tasks**:
 
@@ -280,4 +280,4 @@ Task: "T015b skill/memory/SKILL.md + skill-loader.ts 注册（独立于 memory-c
 - 大型测试**仅在 Phase 7** 经 testplan SKILL 执行（`guitar run`，完整部署→测试→清理），禁止仅 `bazel build` 替代验收（宪法原则 VI）。
 - 外部 AIP/LangGraph/SDK 文档已在各 phase 文档清单显式列出（含 `style/api.md` 这类索引文件所引用的具体 AIP）；AGENTS.md 与 spec 文件为代码开发必读，不再重复。
 - clean break：不考虑 `strategies` 集合数据迁移（FR-013，Assumptions）；开发/测试环境重建。
-- 间接引用已显式展开：`style/api.md`（索引）→ 具体各 AIP；`style/golang.md`/`style/javascript.md` → Google 风格指南；`style/large_test.md` → testplan SKILL/guitar；survey → hermes/openclaw 结论（survey 已为权威综合，不需再溯外部 hermes/openclaw 仓库）。
+- 间接引用已显式展开：`style/api.md`（索引）→ 具体各 AIP（Phase 1 标准方法 AIP-133/134/135/132/158/193、字段行为 AIP-203 均已展开）；`style/golang.md`/`style/javascript.md` → Google 风格指南；`style/large_test.md` → testplan SKILL/guitar；survey → hermes/openclaw 结论（survey 已为权威综合，不需再溯外部 hermes/openclaw 仓库）；**契约直接引用的** hermes `memory_tool.py`（memory-mcp-contract §1.1、memory-skill-contract §3）已在 Phase 4 显式列出。
