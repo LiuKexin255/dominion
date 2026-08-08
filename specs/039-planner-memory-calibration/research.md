@@ -62,7 +62,7 @@
 
 ### 决策
 
-在 agent 新建 memory mcp server（`projects/game/agent/src/mcp/memory/memory-mcp.ts`），向 planner 暴露三个工具：`memory_add`/`memory_update`/`memory_remove`（均含 `memory_id` + `content`）。**template 与 session 经独立 mcp server 的 path 闭包注入**（同 saolei mcp 既有做法，FR-012）——即 `createMemoryMcpServer(memoryClient, template, session)` 闭包绑定，工具参数不含 template/session。工具实现经 `memory-client.ts`（仿 `prompt-client.ts`，`dominion:///game/memory:50051`）转发到 memory 服务。**mcp server 不直连 memory 服务**（FR-007）：mcp server → memory-client（agent 进程内 gRPC client）→ memory 服务。
+在 agent 新建 memory mcp server（`projects/game/agent/src/mcp/memory/memory-mcp.ts`）。> ⚠️ **Session 2026-08-08 修订**：原"暴露三个工具 `memory_add`/`memory_update`/`memory_remove`（均含 `memory_id`）"已改为**单一 hermes 风格 `memory` 工具**（`action`/`content`/`old_text`/`operations`，无 `memory_id`/无 `target`），详见 D9/D11。下文 path 闭包 / mcp 不直连的拓扑结论不变。**template 与 session 经独立 mcp server 的 path 闭包注入**（同 saolei mcp 既有做法，FR-012）——即 `createMemoryMcpServer(memoryClient, template, session)` 闭包绑定，工具参数不含 template/session。工具实现经 `memory-client.ts`（仿 `prompt-client.ts`，`dominion:///game/memory:50051`）转发到 memory 服务。**mcp server 不直连 memory 服务**（FR-007）：mcp server → memory-client（agent 进程内 gRPC client）→ memory 服务。
 
 memory mcp 与 saolei mcp 由 mcp-host（`projects/game/agent/src/mcp-host.ts`）按**每 mcp 独立 path** 提供（R3 修正——不共用单 path）；path **须含 `template` 字段**（template-scoped），形如 `/internal/mcp/{template}/{session}/saolei`（player）与 `/internal/mcp/{template}/{session}/memory`（planner），各为独立 McpServer 实例。装配：planner 的 tools = memory mcp 工具 + 指令发送工具（D6）；player 的 tools = saolei mcp 工具（saolei_operate 等）。
 
@@ -89,7 +89,7 @@ planner 长期记忆以**冻结快照**注入 planner 系统提示词（调研 D
 
 - **不烘焙进 `createAgent` 的 `systemPrompt` 参数**（避免重建 createAgent 实例）——改为作为 **input SystemMessage 注入**，内容由一个**冻结缓存**持有（`projects/game/agent/src/team/memory-snapshot.ts`，调研 D5 方案 b）。
 - **冻结期间不重读** memory 服务；刷新边界 = 压缩节点（调研 D4，同 037 每 5 局压缩）+ team 初始化（首次烘焙）。
-- 刷新时调 `memory-client.ListMemories(session)` → 重新烘焙快照（每条 `memory_id: 内容`，FR-011）→ 更新冻结缓存。
+- 刷新时调 `memory-client.ListMemories(session)` → 重新烘焙快照（**纯内容**，每条仅 `content`，FR-011/Session 2026-08-08）→ 更新冻结缓存。
 - 可借鉴 hermes retain-vs-rebuild（调研 §4.2）：若 ListMemories 结果与缓存一致则跳过重建——是否落地留 plan（优化项，非阻塞）。
 - memory 工具（add/update/remove）只改 memory 服务存储，**不刷新快照**（冻结语义）；变更在下一个刷新边界（压缩）才进入快照。
 
@@ -215,22 +215,43 @@ START → [initInstruction]（仅 team 初始化时）→ player
 
 ---
 
-## D9. memory 工具 → MemoryService RPC 映射 + memory_id 冲突（FR-008）
+## D9. memory 工具 → MemoryService 转换映射（Session 2026-08-08 修订：hermes 式单工具 + agent 转换）
+
+> **修订**：原 D9（3 独立工具 `memory_add/update/remove` + LLM 提供 `memory_id` + 冲突拒绝）已被 Session 2026-08-08 推翻。memory 工具改为 hermes 式单一 `memory` 工具（`action`/`content`/`old_text`/`operations`，无 `memory_id`/无 `target`）；memory 服务存储 API 不变；agent 负责转换。调研依据 `research.md` D11（hermes `MEMORY_SCHEMA`）。
 
 ### 决策
 
-| mcp 工具 | MemoryService RPC | memory_id 语义 | 冲突/缺失 |
-|---|---|---|---|
-| `memory_add(memory_id, content)` | `CreateMemory(parent=session, memory_id, content)` | 新条目的资源 id（LLM 提供） | `memory_id` 已存在 → ALREADY_EXISTS（FR-008） |
-| `memory_update(memory_id, content)` | `UpdateMemory(name=session/.../memories/{memory_id}, content)` | 定位既有条目 | 不存在 → NOT_FOUND |
-| `memory_remove(memory_id)` | `DeleteMemory(name=...)` | 定位既有条目 | 不存在 → NOT_FOUND |
+planner 持有**单一** hermes 风格 `memory` 工具（参数 `action`∈{add/replace/remove}、`content`、`old_text`、`operations`）。**memory 服务存储 API 不变**（`MemoryService` Create/Update/Delete/List，资源 `templates/{template}/sessions/{session}/memories/{memory}`，`{memory}`=内部 memory_id）。agent 侧 `memory` 工具实现负责将 hermes 式调用转换为服务的 memory_id 式 RPC：
 
-- 工具返回：memory 服务的 RPC 响应（成功/错误文本），LLM 据此决策。
-- `memory_id` 由 LLM 提供（FR-008 Assumptions）；格式约束（如 `[a-z0-9_-]+`）由 plan 落实（AIP-122 资源 id 字符集）。
+| `memory` 工具调用 | agent 转换 | MemoryService RPC | 匹配/冲突语义 |
+|---|---|---|---|
+| `action=add, content` | agent 内部生成 memory_id（非 LLM 提供） | `CreateMemory(parent=session, memory_id=<gen>, content)` | 等价 content 已存在 → 成功（去重，同 hermes "no duplicate added"） |
+| `action=replace, old_text, content` | agent `ListMemories` → 按 `old_text` 子串匹配定位唯一条目 → 得其 memory_id | `UpdateMemory(name=.../memories/{memory_id}, content)` | 0 命中 → 错误文本（含当前条目助重选）；多不同条目命中 → 错误（要求更具体子串）；全相同 → 作用首条 |
+| `action=remove, old_text` | 同上定位 memory_id | `DeleteMemory(name=...)` | 同上 0/多命中语义 |
+| `operations=[...]`（批量） | 数组每项按上述单 op 转换，**原子**应用（全成功才提交，同 hermes apply_batch） | 多 RPC（事务/补偿由 plan 落实） | 任一 op 失败 → 整批不提交，返回错误 + 当前条目 |
+
+- **无 `memory_id` 参数**：`memory_id` 退化为 memory 服务内部存储键，agent 在 `add` 时生成（如 slug/UUID，plan 落实生成策略），对 LLM 不可见。`replace`/`remove` 经 `old_text` 子串定位（ListMemories + substring match）。
+- **无 `target` 参数**：dominion planner 仅单一记忆存储（无 hermes 的 memory/user 双存储），`target` 无意义。
+- **注入耦合**：planner 系统提示词冻结快照为**纯内容**（无 `memory_id`，FR-011/D11），使 LLM 据内容用 `old_text` 子串定位——工具参数与注入格式自洽（D11 第三节）。
+- 工具返回单一 MCP 文本（成功/错误文本，LLM 据此决策；错误非异常，031 C15 neutral status）。
+- 改存储**不刷新冻结快照**（FR-010 冻结语义）。
 
 ### Rationale
 
-add/update/remove 三工具与 Create/Update/Delete 一一对应；memory_id 为资源 id 使定位明确（无需 hermes 的 substring 匹配，调研 §3.2.2）。冲突拒绝保证 add/update 语义区分。
+1. **定位机制 ↔ 注入格式耦合**（D11 第三节）：hermes 注入纯内容→子串定位；dominion 既已选纯内容注入（Session 2026-08-08），工具定位必须用 `old_text` 子串，二者自洽。若保留 `memory_id` 参数而注入纯内容，LLM 无法获得 memory_id 来调用工具——自相矛盾。
+2. **memory 服务 API 稳定**：变更仅限 MCP 工具面与 agent 转换层，memory 服务（proto/仓储/handler）零改动——降低本次修订的实现面（仅 agent 侧 memory-mcp.ts + memory-snapshot.ts 注入格式）。
+3. **hermes 实践验证**：substring 匹配 + 错误回传 current_entries 的自纠错闭环在 hermes 已验证有效（调研 §3.2.2，[`memory_tool.py`](https://github.com/NousResearch/hermes-agent/blob/main/tools/memory_tool.py) `replace`/`remove`）。
+
+### Alternatives considered
+
+- ❌（原 D9）3 独立工具 + LLM 提供 memory_id + 冲突拒绝：已被 Session 2026-08-08 推翻（与纯内容注入不自洽——LLM 看不到 memory_id 却要用它定位）。
+- ❌ 单工具但仍用 memory_id 定位（无 old_text）：需注入 `memory_id: 内容`，但 Session 2026-08-08 已定纯内容注入，矛盾。
+
+### 待 plan 细化
+
+- agent 生成 memory_id 的策略（UUID vs content-derived slug；slug 需处理冲突/长度，AIP-122 字符集）。
+- `operations` 批量的原子性实现（memory 服务无跨 RPC 事务 → agent 侧补偿/先全验证后提交；dominion v1 无硬上限，批量动机弱，是否实现 operations 路径留 plan——单 op 路径已满足核心需求）。
+- substring 匹配的精确语义（大小写敏感、`old_text` 最小长度、与 hermes 一致即 `old_text in entry` 子串包含）。
 
 ---
 
@@ -257,13 +278,139 @@ add/update/remove 三工具与 Create/Update/Delete 一一对应；memory_id 为
 
 ---
 
+## D11. memory 工具的使用引导（hermes 调研 → dominion memory skill）
+
+### 调研问题
+
+hermes 的长期记忆工具（`memory` tool，actions = add/replace/remove）是否有配套的 skill 或提示词，向 LLM 说明**如何使用**以及**何时使用**？若有，参考其为 dominion 的 memory mcp 编写配套 skill。
+
+### 调研结论：hermes **没有**独立的 memory skill；引导内嵌于工具描述 + 错误反馈
+
+来源：[`tools/memory_tool.py`](https://github.com/NousResearch/hermes-agent/blob/main/tools/memory_tool.py)（`MEMORY_SCHEMA`）、[Persistent Memory 文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)。模块 docstring 明示设计哲学（第 22 行）：*"Behavioral guidance lives in the tool schema description."*。
+
+hermes 把记忆工具的全部 LLM 引导放在**两个面**，均非独立 SKILL.md：
+
+1. **工具 schema description**（`MEMORY_SCHEMA["description"]`，OpenAI function-calling schema 内）——主引导面。是一段多段式富文本，含结构化 HOW / WHEN / IF FULL / TARGETS / SKIP 段落（见下"引导内容摘录"）。
+2. **运行时错误字符串**——当记忆满或操作失败时，错误响应本身携带整合指令（如 `"Consolidate now: use 'replace' to merge overlapping entries into shorter ones or 'remove' stale or less important entries (see current_entries below), then retry this add — all in this turn."`）。
+3. **系统提示词冻结记忆块头部**——显示容量占用（如 `MEMORY (your personal notes) [67% — 1,474/2,200 chars]`），让 LLM 感知容量。
+
+> 注：hermes 的 [memory 文档页](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) 的 "What to Save vs Skip" / "Capacity Management" 段是对 schema description 的人类向阐释，**不注入 LLM**——LLM 只看到 schema description + 错误串 + 冻结块头部。
+
+### hermes 工具 schema description 引导内容摘录（verbatim，`MEMORY_SCHEMA["description"]`）
+
+> Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.
+>
+> **HOW**: make ALL your changes in ONE call via an 'operations' array ... batch applies atomically and the char limit is checked only on the FINAL result ...（dominion 注：hermes 单 tool + action param + batch；dominion 为 3 独立 tool，batch 段不适用）
+>
+> **WHEN**: save proactively when the user states a preference, correction, or personal detail, or you learn a stable fact about their environment, conventions, or workflow. Priority: user preferences & corrections > environment facts > procedures. The best memory stops the user repeating themselves.
+>
+> **IF FULL**: an add is rejected with the current entries shown. Reissue as ONE batch that removes or shortens enough stale entries and adds the new one together.
+>
+> **TARGETS**: 'user' = who the user is (name, role, preferences, style). 'memory' = your notes (environment, conventions, tool quirks, lessons).
+>
+> **SKIP**: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, completed-work logs, temporary TODO state (use session_search for those). Reusable procedures belong in a skill, not memory.
+
+### dominion 的差异与缺口
+
+> ⚠️ **Session 2026-08-08 修订**：本节原描述的工具形态（3 独立工具 + memory_id）已被推翻——dominion 现采用 hermes 式**单一 `memory` 工具**（`action`/`content`/`old_text`/`operations`，无 `memory_id`，详见 D9）。以下"缺口"项已由 Session 2026-08-08 + 本 D11 决策（memory skill）+ FR-020 闭合。
+
+- ~~**工具形态**：dominion 为 3 个独立 MCP 工具（`memory_add`/`memory_update`/`memory_remove`，均含 `memory_id`）~~ → **已改**：单一 hermes 式 `memory` 工具（D9），引导适配 `old_text` 子串定位（0/多命中报错），与 hermes 一致。
+- **现有缺口**：本特性契约的工具 `description` 已落实（`contracts/memory-mcp-contract.md` §1-2）；planner 系统提示词的记忆使用引导由 **memory skill**（FR-020，本 D11 决策）承载。
+- **dominion 特有的非直觉语义**（hermes 无对应，需引导）：**冻结快照**——planner 经 `memory` 工具改存储后，变更**不立即**进入其系统提示词，要到压缩边界才刷新（FR-010/D4）。若 LLM 不理解这一点，会误以为"刚 add 的记忆已生效"或反复 add 同一洞察。此语义是 hermes frozen snapshot 的 dominion 化（刷新边界 = 压缩，非 hermes 的下一会话），**必须**在引导中显式说明（memory skill §3.4）。
+- **域适配**：hermes 的 WHEN/SKIP 是面向通用助手（用户偏好/环境事实）。dominion 的 planner 是扫雷复盘规划者，其记忆语义是**跨局累积的对 player 校准经验与自身复盘认知演化**（spec US2）。WHEN/SKIP 需改写为复盘域（如：保存"player 重复犯的错误模式"、"被验证有效的开局策略"；跳过"单局偶发失误"、"棋盘具体坐标"）。
+
+### 决策：新建 `memory` SKILL.md（planner 专属），与 saolei skill 对称
+
+参考 hermes 的引导**内容**（HOW/WHEN/SKIP/IF FULL），但按 dominion 既有 SKILL.md 机制承载（非 hermes 式内嵌工具描述）。理由：
+
+1. **复用既有机制**：dominion 已有 `src/skill/{name}/SKILL.md` + `skill-loader.ts` 按 `mcp_names` 注入 systemPrompt 的成熟模式（saolei 先例，`specs/020-agent-resources-layout/contracts/skill-md-format.md`）。memory skill 与 saolei skill 对称——saolei skill 注入 player（player 持 saolei 工具），memory skill 注入 planner（planner 持 memory 工具，FR-009）。
+2. **工具描述 vs skill 的分工**（与 saolei 一致）：MCP 工具 `description`（per-tool，简短，聚焦参数/行为）+ SKILL.md（系统提示词级，富文本，聚焦**整体使用哲学、何时/何类记忆、冻结快照模型**）。两者互补，非重复。
+3. **冻结快照语义必须显式引导**：这是 dominion 特有、且 LLM 不可能从工具描述推断的非直觉行为，最适合放在 SKILL.md。
+4. **hermes 内容可适配复用**：HOW（改 memory_id 语义）、WHEN（改复盘域）、SKIP（改复盘域）、IF FULL（dominion v1 不设硬上限，D2 已决，故此段改为"无硬上限、保持精炼"）。
+
+**落地形态**：`projects/game/agent/src/skill/memory/SKILL.md`（遵循 `specs/020-agent-resources-layout/contracts/skill-md-format.md` frontmatter/body 契约）；`skill-loader.ts` 的 `BUILTIN_SKILL_NAMES` 注册 `"memory"`；`planner.ts` 组装 systemPrompt 时调 `appendSkillBodyToPrompt(base, ["memory"])`（当前 planner **不**调 appendSkillBodyToPrompt，T020 需补）。
+
+详见新增契约 [`contracts/memory-skill-contract.md`](./contracts/memory-skill-contract.md)。
+
+### Alternatives considered
+
+- ❌ 照搬 hermes：把全部引导塞进 MCP 工具 description（不建 SKILL.md）。否决：dominion 既有 SKILL.md 机制就是为这类富引导设计的（saolei 先例），且冻结快照语义需要系统提示词级的连贯说明，分散在 3 个工具 description 里割裂、且无法解释"为何刚改的记忆没立刻生效"。
+- ❌ 不加任何引导（仅工具 description 占位符）。否决：planner 无法理解冻结快照语义、不知该记什么，记忆质量退化；hermes 证实这类引导对记忆工具有效性关键。
+- ❌ 把引导烘焙进冻结快照 SystemMessage。否决：冻结快照是**数据**（记忆条目），每局可能变；引导是**静态指令**，应随 systemPrompt 稳定（且保 prefix cache，D2）。
+
+---
+
+## D12. saolei_operate 双形态参数 + memory skill 注入装配（Session 2026-08-08）
+
+### D12.1 saolei_operate 双形态参数（FR-001，augment）
+
+#### 决策
+
+`saolei_operate` 参数采用与 hermes `memory` 工具一致的双形态——调用方可传**普通参数**（单次操作 `type`∈{click/flag/chord} + `x`/`y`）**或** **`operations` 数组**（批量 `[{type,x,y},...]`）。两种形态二选一，语义等价（单次 = 长度 1 的 operations）。
+
+```ts
+saolei_operate(
+  type?: OperationType,         // 单次形态
+  x?: number, y?: number,       // 单次形态
+  operations?: CellOperation[], // 批量形态
+): MCPTextResult
+```
+
+#### Rationale
+
+1. **与 hermes `memory` 工具形态对称**（Session 2026-08-08 directive）：hermes `memory` 工具为单 op（action/content/old_text）+ 批量（operations）双形态；saolei_operate 同构。统一两个工具的参数风格，降低 LLM 学习成本。
+2. **单次操作更省**：player 大量场景是单次落子（揭示一格、标记一格），普通参数（3 字段）比包一层 `operations:[{...}]` 更轻；批量场景仍可用 operations。
+3. **执行/返回语义不变**：无论单次或批量，均归一化为内部 operations 列表后按序执行、单次返回（FR-002 失败细分不变）。归一化在工具入口完成（单次 → `[{type,x,y}]`）。
+
+#### Alternatives considered
+
+- ❌ 仅保留 `operations` 数组（原 039 设计）：单次落子需包数组，冗余；且与 memory 工具形态不一致（Session 2026-08-08 要求对称）。
+- ❌ 仅保留普通参数（单次）：失去批量化（本特性核心目标 SC-001）。
+
+#### 待 plan 细化
+
+- 同时提供 `type/x/y` 与 `operations`、或均不提供时的拒绝/优先规则（约束：二者语义等价；建议 `operations` 优先，或直接拒绝歧义调用——plan 决定）。
+- 空 `operations` 列表行为（无操作返回当前状态 / 非法，spec Edge Case 约束不产生副作用）。
+
+### D12.2 memory skill 注入装配（FR-020）
+
+#### 决策
+
+memory skill 经 dominion 既有 skill 机制注入 planner 系统提示词（与 saolei skill 注入 player 完全对称）：
+
+1. 新建 `projects/game/agent/src/skill/memory/SKILL.md`（遵循 `specs/020-agent-resources-layout/contracts/skill-md-format.md` frontmatter/body 契约）。
+2. `projects/game/agent/src/skill-loader.ts` 的 `BUILTIN_SKILL_NAMES` 注册 `"memory"`（当前仅 `"saolei"`）。
+3. `projects/game/agent/src/team/planner.ts` 组装 systemPrompt 时调 `appendSkillBodyToPrompt(base, ["memory"])`（当前 planner **不**调 `appendSkillBodyToPrompt`——T020 需补；player 已调 `appendSkillBodyToPrompt(base, ["saolei"])` 作对称先例）。
+
+#### Rationale
+
+1. **复用既有机制**：`skill-loader.ts` 按 `mcp_names`/内置名注入 systemPrompt 的模式已由 saolei 验证（`specs/018-saolei-mcp` FR-023/024/025，`specs/020-agent-resources-layout`）。memory skill 仅扩展注册表 + planner 装配点，零新机制。
+2. **对称性**：saolei skill → player（player 持 saolei 工具）；memory skill → planner（planner 持 memory 工具，FR-009）。player 不注入 memory skill（player 不持记忆工具）。
+3. **静态注入保 prefix cache**：skill body 烘焙进 createAgent 的静态 systemPrompt（template-fixed，031 FR-028），与冻结快照（input SystemMessage，数据）分离——skill 是稳定指令，快照是可变数据（D11 Alternatives 已证）。
+
+#### Alternatives considered
+
+- ❌ 动态按 profile `mcp_names` 注入（如 player 的 saolei）：planner 的 memory 工具是本特性硬装配（非可选 profile 配置），且当前 planner prompt 装配不读 `mcp_names`；直接在 planner.ts 显式 `appendSkillBodyToPrompt(base, ["memory"])` 最简、与 player 的显式 `["saolei"]` 对称。
+- ❌ 把 skill 内容写进 `DEFAULT_PLANNER_BASE`：base prompt 是复盘职责描述，skill 是工具使用引导，语义分层不同；且 skill-loader 的 SKILL_PROMPT_SEPARATOR 分隔 + 单独文件管理便于演进。
+
+#### 待 plan 细化
+
+- skill body 的精确措辞（中文/英文、篇幅 <5000 tokens，`specs/020-agent-resources-layout/contracts/skill-md-format.md`）；由 tasks 落实，参考 hermes HOW/WHEN/SKIP + dominion 冻结快照语义（D11）。
+- `data_files` 声明：`artifact_pkg_js` target 须含 `src/skill/memory/SKILL.md`（同 saolei skill 的既有 data_files 模式，tasks 落实）。
+
+---
+
 ## 未解决的问题
 
-所有设计未知项已在 D1–D10 决策。以下留 plan/tasks 细化（非阻塞）：
+所有设计未知项已在 D1–D12 决策。以下留 plan/tasks 细化（非阻塞）：
 
 - `MoveRejection` 原因码 → 三类的精确映射（D7，FR-002）。
-- memory_id 字符集与长度约束（D9，AIP-122）。
-- 记忆条目上限值与达上限策略（参考 hermes 报错让 LLM consolidate，调研 §3.2.2）。
+- agent 生成 memory_id 的策略（UUID vs content-derived slug；AIP-122 字符集/长度，D9）。
+- `memory` 工具 `operations` 批量路径是否实现 + 原子性机制（D9，v1 无硬上限，单 op 已满足核心需求）。
+- `old_text` 子串匹配精确语义（大小写、最小长度，与 hermes 一致即子串包含，D9）。
+- `saolei_operate` 双形态同时提供/均不提供的拒绝/优先规则 + 空 operations 行为（D12.1）。
+- memory skill body 精确措辞（D12.2，tasks 落实）。
+- 记忆条目上限值与达上限策略（v1 不设硬上限，D2；未来参考 hermes consolidate）。
 - pending 指令槽 state 字段与消费时序（D10）。
 - hermes retain-vs-rebuild 优化是否落地（D4，非阻塞优化）。
 - session 删除时 memory 级联清理（暂不清理，与 031 strategy 决策对齐）。
@@ -283,4 +430,4 @@ add/update/remove 三工具与 Create/Update/Delete 一一对应；memory_id 为
 | **R5** | 压缩→快照刷新→postCompactInstruction 时序 | 节点编排显式保证 `review → compress（清通道+刷新快照）→ postCompactInstruction → END`；contract §2.4/§2.3 已约束顺序。tasks 实现时按此序连边。 |
 | **R6** | ListMemories 缺分页（违反 AIP-158/`style/api.md`） | **已闭环**：ListMemories 加分页（`page_size`/`page_token`/`next_page_token`，AIP-158），对齐 prompt 服务 ListTeamProfiles 默认/上限。contract/research 已改。 |
 
-**遗留（低/已接受）**：memory_add 的 LLM 提供 memory_id（R7，需求方接受）；session 删除不清理 memory（R8，对齐 031）；新增第 6 服务的运维面（R9，directive 驱动，agent 侧移除 mongo 直连净简化）；进程内冻结快照缓存 + in-memory checkpointer/SessionTeamStore 不抗重启（R10，继承 031）。
+**遗留（低/已接受）**：~~memory_add 的 LLM 提供 memory_id（R7）~~ → **Session 2026-08-08 已推翻**（memory_id 改由 agent 内部生成，LLM 用 old_text 子串定位，D9）；session 删除不清理 memory（R8，对齐 031）；新增第 6 服务的运维面（R9，directive 驱动，agent 侧移除 mongo 直连净简化）；进程内冻结快照缓存 + in-memory checkpointer/SessionTeamStore 不抗重启（R10，继承 031）。

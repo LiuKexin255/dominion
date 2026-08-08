@@ -29,8 +29,9 @@
 ### 文档清单（编码前必读）
 
 - **代码规范文档**: `style/api.md`（AIP 索引 + API 基础规则——REST 风格 / RPC 用 grpc 协议 / HTTP 用 google apis 注解 / Service 注释含 Prefix Path，须配合下列具体 AIP）；[AIP-156 Singleton resources](https://google.aip.dev/156)；[AIP-134 Standard methods: Update（create-or-update / allow_missing）](https://google.aip.dev/134#create-or-update)；[AIP-127 HTTP and gRPC Transcoding](https://google.aip.dev/127)；[AIP-203 Field behavior documentation](https://google.aip.dev/203)；[AIP-122 Resource names](https://google.aip.dev/122)
-- **官方文档**: 无第三方依赖的官方文档；仓库内参考模板 `projects/game/game.proto`（非第三方文档——既有 `TeamProfile` 资源 + `UpdateTeamProfileRequest`/`UpdateTeamProfile` RPC 为 Update 模式模板，照搬其 `google.api.http` PATCH + `body` + `method_signature` + `google.api.resource_reference` 注解模式）
+- **官方文档**: 无（本 phase 无第三方依赖的官方文档）
 - **技术文章**: [Access Approval Settings proto（googleapis）](https://github.com/googleapis/googleapis/blob/master/google/cloud/accessapproval/v1/accessapproval.proto)（跨服务单例 Get+Update 无 Create 的实践范例）
+- **仓库内参考文档**（补充显式列出，非上述三分类）：`projects/game/game.proto`（既有 `TeamProfile` 资源 + `UpdateTeamProfileRequest`/`UpdateTeamProfile` RPC 为 Update 模式模板，照搬其 `google.api.http` PATCH + `body` + `method_signature` + `google.api.resource_reference` 注解模式）
 
 **Tasks**:
 
@@ -47,9 +48,10 @@
 
 ### 文档清单（编码前必读）
 
-- **代码规范文档**: `style/api.md` + [AIP-134 create-or-update](https://google.aip.dev/134#create-or-update) + [AIP-193 Errors](https://google.aip.dev/193)（错误码语义）；`style/golang.md`（proxy/desktop Go）；`style/javascript.md` + [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)（agent TS）
+- **代码规范文档**: `style/api.md` + [AIP-156 Singleton resources](https://google.aip.dev/156)（US1 单例语义）+ [AIP-134 create-or-update](https://google.aip.dev/134#create-or-update) + [AIP-193 Errors](https://google.aip.dev/193)（错误码语义）；`style/golang.md`（proxy/desktop Go）+ 其引用的 [Google Go Style](https://google.github.io/styleguide/go/)（入口索引；[Style Guide](https://google.github.io/styleguide/go/guide) 规范必读、[Style Decisions](https://google.github.io/styleguide/go/decisions)、[Best Practices](https://google.github.io/styleguide/go/best-practices)）；`style/javascript.md` + [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html) + 其内嵌引用的 [vitest module mocking pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（agent TS；涉及模块级 mock 时必读）
 - **官方文档**: [grpc-gateway（HTTP transcoding，body 字段绑定 vs query 参数）](https://github.com/grpc-ecosystem/grpc-gateway)；[@grpc/node（grpc-js 服务定义/proto-loader）](https://grpc.io/docs/languages/grpc/node/)
-- **技术文章**: 无（行为契约见本特性 [contracts/api-contract.md](contracts/api-contract.md) §2）
+- **技术文章**: 无
+- **仓库内参考文档**（补充显式列出，非上述三分类）：[contracts/api-contract.md](contracts/api-contract.md) §2（UpdateTeam 行为矩阵/校验/并发与 owner）
 
 **Tasks**:
 
@@ -61,7 +63,7 @@
 - [X] T008 [P] [US1] 修改 `projects/game/desktop/app.go`：`App.CreateTeam`（`:1094-1138`）→`App.UpdateTeam(template, sessionID, profile string, updateMaskPaths []string, allowMissing bool)`，构建 `game.Team{Name: SessionName{...}.String()+"/team", Profile: profile}` 调 `client.UpdateTeam`，模板照 `App.UpdateTeamProfile`（`:1423-1478`）。同步适配 `projects/game/desktop/app_test.go`（`:2123-2192`）：`TestCreateTeam_*`→`TestUpdateTeam_*`（断言 PATCH + Team body + allow_missing）。运行 `bazel test //projects/game/desktop:...`。
 - [X] T009 [US1] 修改桌面前端：(1) `projects/game/desktop/frontend/src/api.ts:529` `createTeam`→`updateTeam(template, sessionID, profile, updateMaskPaths, allowMissing)`（调 `a.UpdateTeam`）；(2) `projects/game/desktop/frontend/src/App.svelte`：`handleProfileSelected`（`:437-459`）将 `createTeam(...)` 改为 `updateTeam(tpl, sessionId, profileFullName, [], true)`；进入会话的 GetTeam→NOT_FOUND→弹窗两步（`:385-397`）保留（弹窗仍选 profile），但创建调用改为单次 `updateTeam(allowMissing=true)`——移除原 CreateTeam 失败后的 GetTeam 兜底重读（allow_missing 天然收敛，[research.md](research.md) §R6/§R9）。前端类型/调用点全量替换 `createTeam`→`updateTeam`。
 
-**Checkpoint**: Team 单例物化端到端可用（US1）；重复/并发物化幂等收敛、无 ALREADY_EXISTS（US2）；`bazel build //projects/game` + proxy/agent/desktop 单测全通过。**MVP 可独立验证**（[quickstart.md](quickstart.md) 场景 1/2/4，除异 profile 重建外）。
+**Checkpoint**: Team 单例物化端到端可用（US1）；重复/并发物化幂等收敛、无 ALREADY_EXISTS（US2）；`bazel build //projects/game` + proxy/agent/desktop 单测全通过。**MVP 可独立验证**（[quickstart.md](quickstart.md) 场景 1/2/4，除异 profile 重建外）。**MVP 过渡态（受控）**：既有+异 profile → 临时 FAILED_PRECONDITION（T005/T006 占位；T011/T013 合入后替换为重建；MVP 态不得对外宣称 FR-005 已达成）。
 
 ---
 
@@ -73,13 +75,14 @@
 
 ### 文档清单（编码前必读）
 
-- **代码规范文档**: `style/javascript.md` + [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)
+- **代码规范文档**: `style/javascript.md` + [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html) + 其内嵌引用的 [vitest module mocking pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（涉及模块级 mock 时必读）
 - **官方文档**: [@langchain/langgraph（MemorySaver checkpointer / StateGraph / thread_id 语义）](https://langchain-ai.github.io/langgraphjs/)
-- **技术文章**: 无（重建契约见本特性 [contracts/team-rebuild-contract.md](contracts/team-rebuild-contract.md)）
+- **技术文章**: 无
+- **仓库内参考文档**（补充显式列出，非上述三分类）：[contracts/team-rebuild-contract.md](contracts/team-rebuild-contract.md)（重建契约，§7 单测要点）
 
 **Tasks**:
 
-- [X] T010 [P] [US3] 修改 `projects/game/agent/src/team/graph.ts`：`buildTeamGraph(deps)`（`:213-259`）增**可选**入参 `checkpointer?: MemorySaver`（加到 `TeamGraphDeps`，`:150-180`，或独立参数）；缺省→`new MemorySaver()`（首建，`:241` 不变）；提供时→`.compile({ checkpointer })`（`:256`）用注入的既有 checkpointer。`TeamGraphHandle.checkpointer`（`:146`）仍暴露。`TeamState`（`:67-89`）不变。同步更新 `experimental/golang/aip_codegen` 无关；如 `team/graph` 有既有单测则适配（首建缺省行为不变）。
+- [X] T010 [P] [US3] 修改 `projects/game/agent/src/team/graph.ts`：`buildTeamGraph(deps)`（`:213-259`）增**可选**入参 `checkpointer?: MemorySaver`（加到 `TeamGraphDeps`，`:150-180`，或独立参数）；缺省→`new MemorySaver()`（首建，`:241` 不变）；提供时→`.compile({ checkpointer })`（`:256`）用注入的既有 checkpointer。`TeamGraphHandle.checkpointer`（`:146`）仍暴露。`TeamState`（`:67-89`）不变。`experimental/golang/aip_codegen` 无需同步更新；如 `team/graph` 有既有单测则适配（首建缺省行为不变）。
 - [X] T011 [US3] 修改 `projects/game/agent/src/session-team.ts`：(1) `SessionTeamStore.update`（T006）的"既有+异 profileName"分支由临时抛错改为**重建**（**删除 MVP 临时 `Error("profile change rebuild pending")` 文案——合入前不得残留**）：复用 `pending` 单飞（`:506`）防并发重建；调 factory 重建子路径（T012）传入既有 `team.graphHandle.checkpointer`；成功后替换 `SessionTeam` 的 `graphHandle`（由 `readonly` 改可替换，或加 `rebuildProfile(newHandle)` 方法，`:122`）并更新 `teams` map 的 `profileName`；异常时既有 Team 不变（不留半重建状态）。(2) **in-flight 守卫**：重建前检 `team.isRunning()`（`:230-232`）→FAILED_PRECONDITION（FR-006，复用 RefreshTeam 守卫语义，`handler.ts:231-238`）。同步适配 `session-team.test.ts`：异 profile→重建（断言 `handle.checkpointer` 引用不变、`getTeamState()` 历史计数/内容零丢失、单飞仅一次 build、in-flight→抛错、重建失败→既有不变）。
 - [X] T012 [US3] 修改 `projects/game/agent/src/server.ts`：生产 factory（`:252-306`）抽出"仅重建 graph（复用 checkpointer）"子路径——解析新 profile（`promptClient.getTeamProfile`）→新 deps（models/prompts）→`buildTeamGraph(newDeps, existingCheckpointer)`；**复用既有 buffer/bridge/sink/MCP-host**（profile 无关，不重建，[team-rebuild-contract.md](contracts/team-rebuild-contract.md) §3）；返回新 `TeamGraphHandle` 供 T011 替换。重建失败抛错（既有 Team 不变）。
 - [X] T013 [US3] 修改 `projects/game/agent/src/handler.ts`：`UpdateTeam` handler（T005）的"既有+异 profile"分支由临时 FAILED_PRECONDITION 改为调 store 重建（T011），in-flight 时由 store 抛错映射 FAILED_PRECONDITION；**删除临时占位文案 "profile change rebuild pending (US3)"**；下游 gRPC 状态透传不变。同步适配 `handler.test.ts`：异 profile→成功重建（响应 profile=P2）+ in-flight→FAILED_PRECONDITION + 重建后下一 turn 用新 model（fake provider 断言）用例。运行 `bazel test //projects/game/agent/...`。
@@ -94,7 +97,7 @@
 
 ### 文档清单（编码前必读）
 
-- **代码规范文档**: `style/large_test.md`（+ 其引用的 `style/golang.md`——大型测试 Go 用例须守 golang 单测规范）；`style/api.md` + [AIP-156](https://google.aip.dev/156) + [AIP-133](https://google.aip.dev/133)（文档对齐合规描述——T014 改写 031 契约须准确描述被移除的 AIP-133 偏离）
+- **代码规范文档**: `style/large_test.md`（+ 其引用的 `style/golang.md`——大型测试 Go 用例须守 golang 单测规范，+ 后者引用的 [Google Go Style](https://google.github.io/styleguide/go/)（入口索引；[Style Guide](https://google.github.io/styleguide/go/guide) 规范必读、[Style Decisions](https://google.github.io/styleguide/go/decisions)、[Best Practices](https://google.github.io/styleguide/go/best-practices)））；`style/api.md` + [AIP-156](https://google.aip.dev/156) + [AIP-133](https://google.aip.dev/133) + [AIP-134 create-or-update](https://google.aip.dev/134#create-or-update)（T014/T016 改写 031/039 文档须准确描述 allow_missing 物化/幂等语义）——文档对齐合规描述（T014 改写 031 契约须准确描述被移除的 AIP-133 偏离）
 - **官方文档**: 无
 - **技术文章**: 无
 
@@ -154,6 +157,6 @@
 - [P] task = 不同文件、无未完成依赖。
 - 编译 + 单测是每个代码 task 的一部分（宪法 IV），不单列；大型测试单列 T017/T018（宪法 IV/VI）。
 - proto 字段号为 clean break（无线上存量 Team 资源须兼容）；`agents`/`create_time` field 号顺移。
-- 间接引用已显式列出：`style/api.md` 为索引，须配合具体 AIP URL（AIP-156/134/127/193/203/122）；`style/javascript.md` 引用外部 [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)。
+- 间接引用已显式列出：`style/api.md` 为索引，须配合具体 AIP URL（AIP-156/134/127/193/203/122）；`style/javascript.md` 引用外部 [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html) 与内嵌 [vitest module mocking pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)；`style/golang.md` 引用外部 [Google Go Style](https://google.github.io/styleguide/go/)（guide/decisions/best-practices）。各 phase 文档清单按需显式列出（宪法原则 V，不做引用传递）。
 - US3 重建为最高风险项，须严格按 [contracts/team-rebuild-contract.md](contracts/team-rebuild-contract.md) §7 单测要点验证（checkpointer 引用不变 + 历史零丢失 + in-flight 守卫 + 单飞 + 失败回滚）。
 - **已知同步遗漏（039 评审补充修正，C1/C5）**：T016 原始同步范围未含 `specs/039-planner-memory-calibration/quickstart.md`（:22,53 的 CreateTeam 表述）、T014 未含 `specs/031-team-template-mode/contracts/desktop-contract.md`（§2.3/§4/§5/§6 的 CreateTeam 表述）；两处已由后续修正补齐 supersede 标注，本任务描述保持当时执行范围。

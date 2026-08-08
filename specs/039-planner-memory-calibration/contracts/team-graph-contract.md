@@ -46,8 +46,8 @@ START → [initInstruction]（仅 team 初始化触发一次，D10）→ player
 ### 2.2 review 节点（正常游戏结束；更新 `planner.ts`）
 
 - 触发：条件边 `gameEnded ≠ null`（031 既有，每局一次）。
-- **输入**：`plannerMessages` + gameLog（`saolei_operate` 为单位，FR-004）+ 冻结记忆快照（input SystemMessage，每条 `memory_id: 内容`，§3）。
-- **工具**：`memory_add`/`memory_update`/`memory_remove`（memory mcp）+ `instruct_player`（指令发送，§4）。**移除 `update_strategy`**。
+- **输入**：`plannerMessages` + gameLog（`saolei_operate` 为单位，FR-004）+ 冻结记忆快照（input SystemMessage，**纯内容**，§3）。
+- **工具**：`memory`（hermes 式单一记忆工具，FR-007/008）+ `instruct_player`（指令发送，§4）。**移除 `update_strategy`**。
 - planner 复盘（plannerMessages，对 player 不可见）→ **可选**调用 `instruct_player`（FR-014 可选）：调用则指令 HumanMessage 经 graph state update 追加 playerMessages（FR-017 消息顺序）；不调用则不产生指令。
 - 返回：`{ plannerMessages, gameEnded: null, gameCounter: +1 }`。
 - **冻结快照不在 review 刷新**（FR-010）。
@@ -84,19 +84,21 @@ function routeAfterReview(state): "compress" | "player" {
 
 ```ts
 class FrozenMemorySnapshot {
-  private entries: { memory_id: string; content: string }[] = [];
+  private entries: { memory_id: string; content: string }[] = [];  // memory_id 仅供内部定位，不注入 LLM
   async refresh(memoryClient, template, session): Promise<void> {
     this.entries = await memoryClient.listMemories(template, session);  // 重读
   }
   toSystemMessage(): BaseMessage {
-    const text = this.entries.map(e => `${e.memory_id}: ${e.content}`).join("\n");
+    // 纯内容呈现（hermes 风格，无 memory_id 前缀，FR-011/Session 2026-08-08）：
+    // LLM 据内容用 memory 工具的 old_text 子串定位 replace/remove（D9/D11）。
+    const text = this.entries.map(e => e.content).join("\n");
     return new SystemMessage({ id: "planner-memory-snapshot", content: `长期记忆：\n${text}` });
   }
 }
 ```
 
-- **注入**：作为 planner 每次 invoke 的 input SystemMessage（`review`/`initInstruction`/`postCompactInstruction` 节点入口）；每条 `memory_id: 内容`（FR-011）。
-- **不烘焙进 createAgent systemPrompt**（调研 D5）：planner 的 `systemPrompt` = base + 工具描述（不含记忆）。
+- **注入**：作为 planner 每次 invoke 的 input SystemMessage（`review`/`initInstruction`/`postCompactInstruction` 节点入口）；**纯内容**呈现（每条仅 `content`，无 `memory_id` 前缀，FR-011/Session 2026-08-08）。`memory_id` 仅存于 `entries` 供内部（如 memory 工具 replace/remove 经 listMemories 定位时复用），不进 LLM 可见文本。
+- **不烘焙进 createAgent systemPrompt**（调研 D5）：planner 的 `systemPrompt` = base + memory skill body（FR-020）+ 工具描述（不含记忆）。
 - **冻结**：memory 工具改存储不刷新快照。
 - **刷新边界**：team 初始化（首次 `refresh`）+ compress 节点（每 5 局 `refresh`，D4）。
 - 过滤：invoke 写回时过滤掉 `planner-memory-snapshot` id（不进 plannerMessages 短期通道，同 031 strategy 过滤模式）。
@@ -128,8 +130,8 @@ const instructPlayer = tool(async ({ content }) => {
 
 ```text
 MemoryService (mongo, db game_memory, key=template+session+memory_id)
-    ↑ Create/Update/Delete (memory mcp tools)        ↓ ListMemories (冻结快照刷新：init + compress)
-    planner (memory_add/update/remove)               planner (FrozenMemorySnapshot → input SystemMessage)
+    ↑ Create/Update/Delete (memory 工具经 agent 转换)   ↓ ListMemories (冻结快照刷新：init + compress；memory 工具 replace/remove 子串定位)
+    planner (memory 工具: action/content/old_text/operations)   planner (FrozenMemorySnapshot → input SystemMessage, 纯内容)
 
 MemorySaver checkpointer (per session thread)
     playerMessages  ← instruct_player（review 同 turn 追加 / init-compact 经 pendingInstruction 槽由 player 入口注入）
@@ -165,8 +167,9 @@ Ephemeral buffer (per session)
 
 ## 8. 验证要点
 
-- review 节点 planner 持 memory_add/update/remove + instruct_player（无 update_strategy）；player 不持记忆/策略工具。
-- 冻结记忆快照作为 input SystemMessage 注入（每条 `memory_id: 内容`），不烘焙进 createAgent systemPrompt；压缩/初始化边界刷新、review 不刷新。
+- review 节点 planner 持 `memory`（hermes 式单一工具）+ instruct_player（无 update_strategy）；player 不持记忆/策略工具。
+- 冻结记忆快照作为 input SystemMessage 注入（**纯内容**，无 `memory_id` 前缀，FR-011），不烘焙进 createAgent systemPrompt；压缩/初始化边界刷新、review 不刷新。
+- planner 系统提示词含 memory skill body（FR-020，引导 `memory` 工具用法/冻结快照模型/复盘域记忆取舍）；player 不含 memory skill。
 - 正常 review 指令可选；消息顺序 `tool_calling → tool_result → planner 指令 → player output`；planner 复盘对 player 不可见。
 - init/compact 经 prompt 引导产出无历史指令（LLM 决定是否调用，R4），进 pendingInstruction 槽，player 入口消费，不触发 player invoke。
 - compress 后 turn 结束（与 037 一致）；review 非压缩路由回 player（FR-009）。

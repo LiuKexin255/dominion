@@ -26,7 +26,7 @@ message Memory {
 }
 ```
 
-- pattern `templates/{template}/sessions/{session}/memories/{memory}`（FR-012，集合段复数 `memories`）。`{memory}` = LLM 提供的 `memory_id`（FR-008）。
+- pattern `templates/{template}/sessions/{session}/memories/{memory}`（FR-012，集合段复数 `memories`）。`{memory}` = memory 服务内部 `memory_id`——**Session 2026-08-08 修订**：`memory_id` 由 **agent 在 `memory` 工具 `add` 时内部生成**（非 LLM 提供；LLM 不接触 memory_id，工具用 `old_text` 子串定位，D9），但对 memory 服务而言仍是 CreateMemory 请求的资源 id。服务 API（Create/Update/Delete/List，memory_id 式资源）**不变**。
 - `google.api.resource` 注解驱动 `protoc-gen-go-aip` codegen（`ParseMemoryName`/`MemoryName`/parent 解析，同 031 §5，无需手写）。
 
 ### 1.2 字段语义

@@ -15,33 +15,35 @@
 
 ---
 
-## 场景 1：saolei_operate 批量落子（FR-001/FR-002，US1）
+## 场景 1：saolei_operate 双形态落子（FR-001/FR-002，US1）
 
-**验证**：player 工具面仅 `saolei_operate`；批量按序执行、单次返回；失败细分（无害空操作跳过、结构性/游戏结束停止）。
+**验证**：player 工具面仅 `saolei_operate`；双形态（普通参数单次 / `operations` 数组批量）均可用且等价；批量按序执行、单次返回；失败细分（无害空操作跳过、结构性/游戏结束停止）。
 
 1. 部署完整拓扑（含 memory 服务），`UpdateTeam(allow_missing=true)` 物化 team（AIP-134/156，040 supersede 后无 CreateTeam）+ Connect。
-2. player 调 `saolei_init` 开局，再调 `saolei_operate([{type:"click",x:0,y:0},{type:"flag",x:1,y:1},...])`。
-3. **期望**：一次调用一次返回（结果行 + 游戏状态行 + 最终棋盘）；操作按序生效。
-4. 构造无害空操作（如在已揭示数字格 click）：**期望**该 op 被跳过、批量继续、单次结果标注跳过。
-5. 构造结构性拒绝（越界）：**期望**在该 op 停止、剩余不执行、结果反映停止原因。
-6. 同步检查 planner 复盘输入（gameLog）：以 `saolei_operate`（含全部 operations）为单位记录；planner 工具描述含 `saolei_operate` + click/flag/chord。
+2. player 调 `saolei_init` 开局。
+3. **普通参数单次**：调 `saolei_operate(type:"click", x:0, y:0)` → **期望**等价于 `saolei_operate(operations:[{type:"click",x:0,y:0}])`，同样校验/落子/返回。
+4. **批量**：调 `saolei_operate(operations:[{type:"click",x:0,y:0},{type:"flag",x:1,y:1},...])` → **期望**一次调用一次返回（结果行 + 游戏状态行 + 最终棋盘）；操作按序生效。
+5. 构造无害空操作（如在已揭示数字格 click）：**期望**该 op 被跳过、批量继续、单次结果标注跳过。
+6. 构造结构性拒绝（越界）：**期望**在该 op 停止、剩余不执行、结果反映停止原因。
+7. 同步检查 planner 复盘输入（gameLog）：以 `saolei_operate`（含全部 operations）为单位记录（无论单次或批量调用均一条）；planner 工具描述含 `saolei_operate` + click/flag/chord。
 
 > 契约：[`contracts/saolei-operate-contract.md`](./contracts/saolei-operate-contract.md)。
 
 ---
 
-## 场景 2：planner 长期记忆 + memory 服务（FR-006..012，US2）
+## 场景 2：planner 长期记忆 + memory 服务 + memory skill（FR-006..012/FR-020，US2）
 
-**验证**：memory 服务独立数据库持久化；planner 持 memory_add/update/remove（含 memory_id）；冻结快照注入（每条 `memory_id: 内容`）；mcp 经 agent 转发不直连。
+**验证**：memory 服务独立数据库持久化；planner 持**单一** hermes 式 `memory` 工具（`action`/`content`/`old_text`/`operations`，无 `memory_id`）；agent 转换（`old_text` 子串定位、0/多命中报错）；冻结快照**纯内容**注入（无 `memory_id`）；memory skill 注入 planner（player 不含）；mcp 经 agent 转发不直连。
 
-1. memory 服务部署后，确认其连 `game_memory` 库（独立于 agent/prompt 库，`style/mongo.md`）。
-2. team 初始化 → planner 经 `memory_add(memory_id="m1", content="...")` 写入；查 memory 服务 `memories` 集合确认持久化。
-3. 重启 memory 服务进程 → `memory_update`/`memory_remove` 仍可定位 `m1`（持久）。
-4. `memory_add(memory_id="m1", ...)` 重复 → 返回 ALREADY_EXISTS 错误文本（add 与 update 区分）。
-5. 触发压缩（第 5 局结束）→ 确认 planner 系统提示词的冻结记忆快照刷新（含最新 memory）；快照每条以 `memory_id: 内容` 呈现。
-6. 审查连接拓扑：memory mcp server → memory-client（agent）→ memory 服务；mcp 不直连 memory 服务（SC-006）。
+1. memory 服务部署后，确认其连 `game_memory` 库（独立于 agent/prompt 库，`style/mongo.md`）；**存储 API 不变**（Create/Update/Delete/List，memory_id 式资源）。
+2. team 初始化 → planner 经 `memory(action:"add", content:"player 倾向过度标记地雷")` 写入；agent 内部生成 memory_id；查 memory 服务 `memories` 集合确认持久化。
+3. `memory(action:"replace", old_text:"过度标记", content:"...")` → agent 经 ListMemories + `old_text` 子串定位 → UpdateMemory；**0 命中**（`old_text` 不匹配）→ 工具回传错误文本 + 当前条目列表（助重选）；**多不同条目命中** → 错误文本（要求更具体子串）。
+4. 重启 memory 服务进程 → `memory(action:"remove", old_text:"...")` 仍可定位删除（持久）。
+5. 触发压缩（第 5 局结束）→ 确认 planner 系统提示词的冻结记忆快照刷新（含最新 memory）；快照每条以**纯内容**呈现（无 `memory_id` 前缀）；改存储不立即进快照（冻结语义）。
+6. 审查 planner 系统提示词含 **memory skill** 引导（工具用法/何时记/跳过什么/冻结快照模型）；player 系统提示词**不含** memory skill（FR-020/FR-009）。
+7. 审查连接拓扑：memory mcp server → memory-client（agent）→ memory 服务；mcp 不直连 memory 服务（SC-006）。
 
-> 契约：[`contracts/memory-service-contract.md`](./contracts/memory-service-contract.md)、[`contracts/memory-mcp-contract.md`](./contracts/memory-mcp-contract.md)。
+> 契约：[`contracts/memory-service-contract.md`](./contracts/memory-service-contract.md)、[`contracts/memory-mcp-contract.md`](./contracts/memory-mcp-contract.md)、[`contracts/memory-skill-contract.md`](./contracts/memory-skill-contract.md)。
 
 ---
 
@@ -79,4 +81,4 @@ bazel build //...        # Go memory 服务 + TS agent + proto codegen
 bazel test //...         # Go 单测（memory 仓储/handler）+ TS js_test（mcp/graph/snapshot）
 ```
 
-- 重点关注：memory 服务仓储（独立 db、唯一索引、ALREADY_EXISTS/NOT_FOUND）、saolei_operate（失败细分）、冻结快照（refresh/toSystemMessage）、instruct_player（playerMessages 追加）、StrategyStore 移除后无残留引用。
+- 重点关注：memory 服务仓储（独立 db、唯一索引）、`memory` 工具 agent 转换（add 生成 id、replace/remove 的 `old_text` 子串定位与 0/多命中报错）、saolei_operate（双形态、失败细分）、冻结快照（纯内容 refresh/toSystemMessage）、memory skill 注入（planner 含/player 不含）、instruct_player（playerMessages 追加）、StrategyStore 移除后无残留引用。

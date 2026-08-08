@@ -93,7 +93,7 @@ Team 物化后，其 profile（player/planner 模型与 base prompt）可经 `Up
 ### Measurable Outcomes
 
 - **SC-001**: Team 资源的公开方法集符合 [AIP-156](https://google.aip.dev/156)——不存在 Create/Delete，存在 Get 与 Update（含 allow_missing）——经契约审查可验证。
-- **SC-002**: 所有既有的 Team 配置 / 进入会话端到端流程（单标签进入、多标签并发进入、发送消息）在变更后行为等价或更优，全部大型测试用例通过。
+- **SC-002**: 所有既有的 Team 配置 / 进入会话端到端流程（单标签进入、多标签并发进入、发送消息）在变更后行为等价（"更优"仅指多标签并发场景由 `allow_missing` 幂等收敛取代原"失败后 GetTeam 兜底重读"，验收底线为行为等价），全部大型测试用例通过。
 - **SC-003**: profile 变更后，下一 turn 使用新 profile 且会话历史消息零丢失（经大型测试用例验证：变更前后的消息计数与内容一致）。
 - **SC-004**: API 表面不再存在对 [AIP-133](https://google.aip.dev/133) 的自定义偏离（无可触发 ALREADY_EXISTS 的 Team 配置路径）——经契约审查可验证。
 

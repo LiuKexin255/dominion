@@ -59,6 +59,7 @@ message UpdateTeamRequest {
 | 既有 Team？ | allow_missing | team.profile vs 既有 | 结果 |
 |---|---|---|---|
 | 否 | true | P | 物化（创建，profile=P）；响应 Team(profile=P) |
+| 否 | true | 未设置/空 | INVALID_ARGUMENT（profile 必填，无默认 profile 可物化） |
 | 否 | false | * | NOT_FOUND（AIP-134 标准 Update） |
 | 是 | * | = 既有 P | 幂等返回既有 Team（无变更，FR-002） |
 | 是 | * | ≠ 既有 P | 重建 graph（FR-005，详见 rebuild 契约）；响应 Team(profile=P') |

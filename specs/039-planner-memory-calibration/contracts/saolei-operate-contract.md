@@ -1,29 +1,37 @@
-# Contract: saolei_operate（批量落子工具）
+# Contract: saolei_operate（双形态落子工具）
 
-**Feature**: `039-planner-memory-calibration` | **Spec**: [`spec.md`](../spec.md) | **Research**: D7
+**Feature**: `039-planner-memory-calibration` | **Spec**: [`spec.md`](../spec.md) | **Research**: D7/D12.1
 
-> 合并 `saolei_click`/`saolei_flag`/`saolei_chord_click` 为单个 `saolei_operate`（有序操作列表、保序执行、单次返回）。失败按拒绝原因细分（FR-002）。`saolei_init`/`saolei_remain` 不变（FR-003）。实现于 `projects/game/agent/src/mcp/saolei/saolei-mcp.ts`。sink 的 `onMove` → `onOperate`，gameLog 以 operate 为单位（FR-004/FR-005）。
+> 合并 `saolei_click`/`saolei_flag`/`saolei_chord_click` 为单个 `saolei_operate`，参数采用与 hermes `memory` 工具一致的双形态（Session 2026-08-08）：**普通参数**（单次操作 `type`/`x`/`y`）**或** **`operations` 数组**（批量有序操作列表）。保序执行、单次返回。失败按拒绝原因细分（FR-002）。`saolei_init`/`saolei_remain` 不变（FR-003）。实现于 `projects/game/agent/src/mcp/saolei/saolei-mcp.ts`。sink 的 `onMove` → `onOperate`，gameLog 以 operate 为单位（FR-004/FR-005）。
 
 ---
 
-## 1. 工具签名（MCP）
+## 1. 工具签名（MCP，双形态）
 
 ```ts
 type OperationType = "click" | "flag" | "chord";
 interface CellOperation { type: OperationType; x: number; y: number; }
 
-saolei_operate(operations: CellOperation[]): MCPTextResult
+saolei_operate(
+  type?: OperationType,         // 单次形态
+  x?: number, y?: number,       // 单次形态
+  operations?: CellOperation[], // 批量形态（有序列表）
+): MCPTextResult
 ```
 
-- `operations`：有序列表，每个声明 `type`（枚举，非裸 string）+ 坐标 `(x, y)`。
-- 顶层原点 `(0,0)`，x=列、y=行（既有约定）。
+- **双形态二选一**（与 hermes `memory` 工具对称，FR-001/Session 2026-08-08）：
+  - **普通参数**：`type` + `x` + `y`（单次操作）。
+  - **`operations` 数组**：`[{type, x, y}, ...]`（批量有序）。
+- 两种形态**语义等价**：单次等价于长度 1 的 `operations`（归一化为 `[{type,x,y}]` 后统一处理）。
+- `type` 为枚举（非裸 string）；顶层原点 `(0,0)`，x=列、y=行（既有约定）。
 - 单一 MCP 文本内容块返回（FR-002）。
+- 同时提供两种形态 / 均不提供的拒绝/优先规则由 plan 决定（约束：二者语义等价；建议 `operations` 优先或拒绝歧义调用，D12.1）。
 
 ---
 
 ## 2. 执行语义（保序 + 失败细分，FR-001/FR-002）
 
-按列表顺序依次处理每个 op（复用既有 `validateMove` + dispatch 逻辑，提取为按单 op 处理的内部函数）：
+入口先将双形态归一化为 operations 列表（单次 `type/x/y` → `[{type,x,y}]`），再按列表顺序依次处理每个 op（复用既有 `validateMove` + dispatch 逻辑，提取为按单 op 处理的内部函数）：
 
 ```text
 for op in operations (顺序):
@@ -60,9 +68,10 @@ for op in operations (顺序):
 
 ---
 
-## 3. 单元素等价（FR-002 验收 #3）
+## 3. 双形态等价（FR-001/FR-002 验收 #3）
 
-`saolei_operate([{type:"click",x,y}])` 等价于原 `saolei_click(x,y)`：同样校验、同样 dispatch、同样返回棋盘+状态行。
+- `saolei_operate(type:"click", x, y)`（普通参数）等价于 `saolei_operate(operations:[{type:"click",x,y}])`（批量长度 1），亦等价于原 `saolei_click(x,y)`：同样校验、同样 dispatch、同样返回棋盘+状态行。
+- 归一化在工具入口完成，后续执行路径单一（统一走 §2 的 operations 循环）。
 
 ---
 
@@ -94,16 +103,18 @@ export interface SaoleiEventSink {
 
 ---
 
-## 5. 空操作列表（Edge Case）
+## 5. 双形态非法组合 / 空列表（Edge Case，Session 2026-08-08）
 
-`saolei_operate([])`（空列表）：不产生任何落子副作用；具体返回（视为无操作返回当前状态 / 视为非法）由 plan 决定（spec Edge Case 约束不产生副作用）。
+- **同时提供普通参数与 `operations`** / **两者均不提供**：行为（拒绝 / 优先取其一）由 plan 决定（约束：二者语义等价；D12.1）。
+- **空 `operations` 列表**：不产生任何落子副作用；具体返回（视为无操作返回当前状态 / 视为非法）由 plan 决定。
 
 ---
 
 ## 6. 验证要点
 
 - 落子工具面仅 `saolei_operate`（无 `saolei_click`/`saolei_flag`/`saolei_chord_click`）；`saolei_init`/`saolei_remain` 仍在。
-- 批量按序执行、单次返回；单元素等价单次落子。
+- 双形态：普通参数（`type`/`x`/`y`）与 `operations` 数组均可用，语义等价（单次 = 长度 1 的 operations）。
+- 批量按序执行、单次返回；单次/单元素等价单次落子。
 - 无害空操作拒绝（如在数字格 click）→ 跳过继续；结构性/上下文（越界、无活动局）→ 停止；游戏结束 → 停止。
-- gameLog 以 `saolei_operate`（含全部 operations）为单位；planner 工具描述含 `saolei_operate` + click/flag/chord。
-- sink `onOperate` 每批量调用触发一次，携带全部 operations。
+- gameLog 以 `saolei_operate`（含全部 operations）为单位（无论单次或批量调用均记一条）；planner 工具描述含 `saolei_operate` + click/flag/chord。
+- sink `onOperate` 每次调用（单次或批量）触发一次，携带全部 operations。

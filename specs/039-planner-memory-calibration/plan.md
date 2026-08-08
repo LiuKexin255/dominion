@@ -1,6 +1,6 @@
 # Implementation Plan: Planner 长期记忆与校准指令
 
-**Branch**: `039-planner-memory-calibration` | **Date**: 2026-08-07 | **Spec**: [`spec.md`](./spec.md)
+**Branch**: `039-planner-memory-calibration` | **Date**: 2026-08-07（**Amended 2026-08-08**：memory 工具→hermes 式单工具；planner 注入→纯内容；saolei_operate→双形态；新增 memory skill） | **Spec**: [`spec.md`](./spec.md)
 
 **Input**: Feature specification from `/specs/039-planner-memory-calibration/spec.md`
 
@@ -8,8 +8,8 @@
 
 对 `specs/031-team-template-mode/` 已落地的 team 架构做四方面改进（破坏性重构，clean break）：
 
-1. **saolei 批量落子**：合并 `saolei_click`/`saolei_flag`/`saolei_chord_click` 为单个 `saolei_operate`（有序操作列表、保序执行、单次返回；失败按原因细分：无害空操作跳过继续，游戏结束/结构性错误停止）。`saolei_init`/`saolei_remain` 不变。planner 游戏历史以 `saolei_operate` 为单位记录。
-2. **planner 长期记忆 + memory 服务**：新建 grpc-go `MemoryService`（独立数据库 `game_memory`，同 mongo 实例，遵循 `style/mongo.md`），承载 planner 长期记忆条目（资源 `templates/{template}/sessions/{session}/memories/{memory}`）。agent 上新建 memory mcp server，向 planner 暴露 `memory_add`/`memory_update`/`memory_remove`（均含 `memory_id`），由 agent 经 memory-client 转发到 memory 服务（mcp 不直连）。planner 长期记忆以**冻结快照**注入 planner 系统提示词（每条 `memory_id: 内容`），压缩边界刷新（调研 D2/D4/D5）。
+1. **saolei 批量落子**：合并 `saolei_click`/`saolei_flag`/`saolei_chord_click` 为单个 `saolei_operate`（hermes 式双形态参数：普通参数 `type`/`x`/`y` 单次 **或** `operations` 数组批量；保序执行、单次返回；失败按原因细分：无害空操作跳过继续，游戏结束/结构性错误停止）。`saolei_init`/`saolei_remain` 不变。planner 游戏历史以 `saolei_operate` 为单位记录。
+2. **planner 长期记忆 + memory 服务**：新建 grpc-go `MemoryService`（独立数据库 `game_memory`，同 mongo 实例，遵循 `style/mongo.md`），承载 planner 长期记忆条目（资源 `templates/{template}/sessions/{session}/memories/{memory}`，存储 API memory_id 式不变）。agent 上新建 memory mcp server，向 planner 暴露**单一 hermes 风格 `memory` 工具**（`action`/`content`/`old_text`/`operations`，无 `memory_id`/无 `target`，Session 2026-08-08），由 agent 将 hermes 式调用转换为 memory 服务的 memory_id 式 RPC（`add`→agent 生成 id+Create；`replace`/`remove`→listMemories+`old_text` 子串定位；0/多命中报错）后经 memory-client 转发（mcp 不直连）。planner 长期记忆以**冻结快照**注入 planner 系统提示词（**纯内容**，无 `memory_id`），压缩边界刷新（调研 D2/D4/D5）。配套 **memory skill**（planner 专属，参考 hermes 引导）注入 planner 系统提示词（FR-020）。
 3. **校准指令 + 废弃共享 StrategyStore**：移除 `StrategyStore`/`update_strategy`/player"当前态势"注入。planner 经**指令发送工具**向 player 投递策略指令（HumanMessage 进 `playerMessages`，调研 D6；跨通道写入经外部 buffer 中转 R1）。两场景（均 LLM 决定是否调用工具，无强制检验 R4）：**正常复盘**（携带游戏历史、prompt"必要时才调用"、可选、同 turn 立即注入、player 继续）；**team 初始化/压缩后**（无游戏历史、prompt 要求给指令、不触发 player invoke；初始化**异步**产出 R2、压缩后 turn 结束与下次激活一同注入，与 037"压缩后自动停下"一致）。
 4. **大型测试**：覆盖批量操作、memory 持久化与冻结快照、两场景指令投递。
 
@@ -70,14 +70,15 @@
 ```text
 specs/039-planner-memory-calibration/
 ├── plan.md                          # 本文件
-├── research.md                      # Phase 0：设计决策与调研
+├── research.md                      # Phase 0：设计决策与调研（D1–D12）
 ├── data-model.md                    # Phase 1：实体与状态模型
 ├── quickstart.md                    # Phase 1：端到端验证指南
 ├── contracts/                       # Phase 1：接口契约
-│   ├── memory-service-contract.md   # MemoryService（grpc-go）proto + RPC + mongo
-│   ├── memory-mcp-contract.md       # agent memory mcp server（工具/path 闭包/转发）
-│   ├── team-graph-contract.md       # team graph 更新（两场景节点/指令工具/冻结快照/移除 strategy）
-│   └── saolei-operate-contract.md   # saolei_operate 批量落子工具
+│   ├── memory-service-contract.md   # MemoryService（grpc-go）proto + RPC + mongo（存储 API 不变）
+│   ├── memory-mcp-contract.md       # agent memory mcp server（单一 hermes 式 memory 工具/agent 转换/0-multi 命中/path 闭包/转发）
+│   ├── memory-skill-contract.md     # memory skill（planner 专属，FR-020，参考 hermes 引导）
+│   ├── team-graph-contract.md       # team graph 更新（两场景节点/指令工具/冻结快照纯内容/移除 strategy）
+│   └── saolei-operate-contract.md   # saolei_operate（双形态落子工具）
 └── tasks.md                         # Phase 2（/speckit.tasks 生成，非本命令）
 ```
 
@@ -85,7 +86,7 @@ specs/039-planner-memory-calibration/
 
 ```text
 projects/game/
-├── game.proto                         # 【新增】Memory 资源消息 + MemoryService（Create/Update/Delete/ListMemory）
+├── game.proto                         # 【新增】Memory 资源消息 + MemoryService（Create/Update/Delete/ListMemory）—— 存储 API 不变（Session 2026-08-08）
 ├── pkg/gameconst/const.go             # 【改】新增 MemoryService target 常量
 ├── memory/                            # 【新增】grpc-go memory 服务（仿 prompt 结构）
 │   ├── cmd/main.go                    #   启动（mongo.NewClient("game/mongo") + db "game_memory"）
@@ -95,24 +96,26 @@ projects/game/
 │   └── service.yaml                   #   部署描述
 ├── deploy.yaml                        # 【改】新增 memory 服务条目
 ├── agent/src/
-│   ├── memory-client.ts               # 【新增】gRPC client（dominion:///game/memory:50051，仿 prompt-client.ts）
-│   ├── mcp/memory/memory-mcp.ts       # 【新增】memory mcp server（memory_add/update/remove 工具，path 闭包注入 template/session，转发到 memory-client）
+│   ├── memory-client.ts               # 【新增】gRPC client（dominion:///game/memory:50051，仿 prompt-client.ts；listMemories 供快照烘焙 + memory 工具 old_text 定位）
+│   ├── mcp/memory/memory-mcp.ts       # 【新增】memory mcp server——单一 hermes 式 `memory` 工具（action/content/old_text/operations），agent 转换为 memory_id 式 RPC（add→生成 id；replace/remove→old_text 子串定位，0/多命中报错），path 闭包注入 template/session
 │   ├── mcp-host.ts                    # 【改】每 mcp 独立 path（template-scoped：/internal/mcp/{template}/{session}/{saolei|memory}），按 (template,session,kind) 懒创建 McpServer；saolei path 同步迁移
+│   ├── skill-loader.ts                # 【改】BUILTIN_SKILL_NAMES 注册 "memory"（FR-020）
+│   ├── skill/memory/SKILL.md          # 【新增】memory skill（planner 专属，参考 hermes 引导，FR-020）
 │   ├── team/
 │   │   ├── graph.ts                   # 【改】两场景节点拆分（review 节点 + init/compact 节点）+ 路由
-│   │   ├── planner.ts                 # 【改】移除 strategy 注入；持有 memory 工具 + 指令发送工具；冻结记忆快照注入
+│   │   ├── planner.ts                 # 【改】移除 strategy 注入；持 memory 工具 + 指令发送工具；冻结记忆快照（纯内容）注入；appendSkillBodyToPrompt(base, ["memory"]) 装配 memory skill
 │   │   ├── player.ts                  # 【改】移除 strategy"当前态势"注入；消费 pending 指令（init/compact）
 │   │   ├── instruction-tool.ts        # 【新增】指令发送工具（写 HumanMessage 到 playerMessages）
-│   │   ├── memory-snapshot.ts         # 【新增】冻结快照缓存（压缩/init 边界刷新，调研 D5）
+│   │   ├── memory-snapshot.ts         # 【新增】冻结快照缓存（纯内容 toSystemMessage；压缩/init 边界刷新，调研 D5）
 │   │   └── state.ts                   # 【改】移除 strategy 相关；新增 pending instruction 槽（init/compact）
 │   ├── strategy-store.ts              # 【删除】StrategyStore 接口 + MongoStrategyStore（FR-013）
 │   ├── server.ts                      # 【改】移除 StrategyStore/mongo strategy wiring（含 040 重建闭包 rebuilder 两处 buildTeamGraph 调用点）；接 memory-client + memory mcp（首建 factory 与重建闭包均注入 memory 装配）
 │   ├── session-team.ts               # 【改】team 初始化异步触发 init 节点（R2，仅 graph 首建；prompt 引导、LLM 决定是否调用 instruct_player，无强制检验——R4）
-│   └── mcp/saolei/saolei-mcp.ts       # 【改】saolei_click/flag/chord_click → saolei_operate；gameLog 以 operate 为单位
+│   └── mcp/saolei/saolei-mcp.ts       # 【改】saolei_click/flag/chord_click → saolei_operate（双形态参数）；gameLog 以 operate 为单位
 └── testplan/                          # 【新增/改】planner-memory 端到端大型测试计划
 ```
 
-**Structure Decision**: 复用现有多服务拓扑，**新增一个 memory 服务**（grpc-go，仿 `projects/game/prompt/` 结构）。memory 服务独立数据库 `game_memory`（`style/mongo.md`）。memory mcp server 位于 agent，与 saolei mcp 各自独立 path（template-scoped：`/internal/mcp/{template}/{session}/{saolei|memory}`，R3），经新增 `memory-client.ts`（仿 `prompt-client.ts`）转发到 memory 服务——mcp 不直连 memory 服务（FR-007）。team graph 拆分两场景节点（FR-019）。
+**Structure Decision**: 复用现有多服务拓扑，**新增一个 memory 服务**（grpc-go，仿 `projects/game/prompt/` 结构）。memory 服务独立数据库 `game_memory`（`style/mongo.md`），存储 API（memory_id 式资源）不变。memory mcp server 位于 agent，向 planner 暴露**单一 hermes 风格 `memory` 工具**（agent 转换为 memory_id 式 RPC），与 saolei mcp 各自独立 path（template-scoped：`/internal/mcp/{template}/{session}/{saolei|memory}`，R3），经新增 `memory-client.ts`（仿 `prompt-client.ts`）转发到 memory 服务——mcp 不直连 memory 服务（FR-007）。planner 系统提示词注入 **memory skill**（FR-020，`skill-loader.ts` 注册 + `appendSkillBodyToPrompt`）。team graph 拆分两场景节点（FR-019）。
 
 ## Complexity Tracking
 

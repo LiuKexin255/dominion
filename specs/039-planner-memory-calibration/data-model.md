@@ -13,7 +13,7 @@
 | 属性 | 类型 | 说明 |
 |---|---|---|
 | `name` | string (IDENTIFIER) | `templates/{template}/sessions/{session}/memories/{memory}` |
-| `memory_id` | string (OUTPUT_ONLY) | `{memory}` 段，LLM 提供（FR-008） |
+| `memory_id` | string (OUTPUT_ONLY) | `{memory}` 段——**Session 2026-08-08**：由 **agent 在 `memory` 工具 `add` 时内部生成**（非 LLM 提供；D9）；memory 服务 API 不变 |
 | `content` | string | 记忆内容文本 |
 | `create_time` | Timestamp (OUTPUT_ONLY) | |
 | `update_time` | Timestamp (OUTPUT_ONLY) | |
@@ -21,7 +21,7 @@
 - **身份/唯一性**：资源名（`memories/{memory_id}` 在 session 作用域内唯一）。唯一键 `(template, session, memory_id)`。
 - **关系**：属于一个 Session（`templates/{template}/sessions/{session}`）；为该 session 的 planner 长期记忆。
 - **存储**：MongoDB `game_memory` 数据库（`style/mongo.md`，独立于 agent/prompt 的库），`memories` 集合，由新建 memory 服务（grpc-go）管理。
-- **生命周期**：经 `CreateMemory`（memory_add）/`UpdateMemory`（memory_update）/`DeleteMemory`（memory_remove）增删改；跨进程重启持久。`ListMemories` 供 agent 烘焙冻结快照。session 删除暂不级联清理（与 031 strategy 决策对齐）。
+- **生命周期**：经 `memory` 工具（hermes 式单一工具，agent 转换为 Create/Update/Delete RPC）增删改；跨进程重启持久。`ListMemories` 供 agent 烘焙冻结快照 + `memory` 工具 `replace`/`remove` 的 `old_text` 子串定位。session 删除暂不级联清理。
 
 ---
 
@@ -36,7 +36,7 @@
 
 - **存储**：进程内（`projects/game/agent/src/team/memory-snapshot.ts` 冻结缓存），非持久。
 - **生命周期**：team 初始化时首次烘焙；冻结期间 memory 工具改存储不刷新快照；压缩边界（037 每 5 局）刷新（重读 `ListMemories` → 重新烘焙）。
-- **注入形式**：作为 planner 每次 invoke 的 input SystemMessage（内容来自冻结缓存，每条 `memory_id: 内容`，FR-011），**不烘焙进 createAgent systemPrompt**（调研 D5 方案 b）。
+- **注入形式**：作为 planner 每次 invoke 的 input SystemMessage（内容来自冻结缓存，**纯内容**——每条仅 `content`，无 `memory_id` 前缀，FR-011/Session 2026-08-08），**不烘焙进 createAgent systemPrompt**（调研 D5 方案 b）。`memory_id` 仅存于 `entries` 供内部定位，不进 LLM 可见文本（D9/D11）。
 
 ### 2.2 Calibration Instruction（planner→player 校准指令）
 
@@ -72,14 +72,13 @@
 
 ## 3. 工具实体
 
-### 3.1 memory mcp 工具（planner 专属，FR-008/FR-009）
+### 3.1 memory mcp 工具（planner 专属，FR-007/008/009，单一 `memory` 工具）
 
-| 工具 | 参数 | 对应 MemoryService RPC | 说明 |
+| 工具 | 参数 | agent 转换 → MemoryService RPC | 匹配/冲突语义 |
 |---|---|---|---|
-| `memory_add` | `memory_id`, `content` | `CreateMemory` | 新建；memory_id 已存在 → 错误反馈 LLM |
-| `memory_update` | `memory_id`, `content` | `UpdateMemory` | 改既有；不存在 → 错误 |
-| `memory_remove` | `memory_id` | `DeleteMemory` | 删既有；不存在 → 错误 |
+| `memory` | `action`∈{add/replace/remove}, `content`, `old_text`, `operations` | `add`→agent 生成 memory_id+`CreateMemory`；`replace`/`remove`→listMemories+`old_text` 子串定位 memory_id+`UpdateMemory`/`DeleteMemory`；`operations`→批量原子 | 0 命中→错误文本（含当前条目）；多不同命中→错误（要求更具体子串）；全相同→作用首条；add 等价内容→成功（去重） |
 
+- **无 `memory_id` 参数**（agent 内部生成）；**无 `target` 参数**（单一存储）。详见 [`contracts/memory-mcp-contract.md`](./contracts/memory-mcp-contract.md)。
 - template/session 经 memory mcp server path 闭包注入（工具参数不含，FR-012）。
 - 仅 planner 持有；player 不持有（FR-009）。
 - 工具改存储**不刷新冻结快照**（§2.1）。
@@ -93,13 +92,13 @@
 - review 场景 planner 按 prompt"必要时才调用"（可选）；init/compact 场景经 prompt 引导产出（LLM 决定，R4）。
 - 仅 planner 持有。
 
-### 3.3 saolei_operate 工具（player 专属，FR-001/FR-002）
+### 3.3 saolei_operate 工具（player 专属，FR-001/FR-002，双形态）
 
 | 工具 | 参数 | 行为 |
 |---|---|---|
-| `saolei_operate` | `operations: [{type: click\|flag\|chord, x, y}]` | 按序校验执行，单次返回最终棋盘+状态；失败按原因细分（§saolei-operate-contract） |
+| `saolei_operate` | 普通参数 `type`∈{click\|flag\|chord}, `x`, `y` **或** `operations: [{type, x, y}]` | 入口归一化为 operations 列表，按序校验执行，单次返回最终棋盘+状态；失败按原因细分（§saolei-operate-contract） |
 
-- 合并原 `saolei_click`/`saolei_flag`/`saolei_chord_click`。`saolei_init`/`saolei_remain` 不变。仅 player 持有。
+- 双形态（hermes `memory` 工具同构，Session 2026-08-08）：普通参数（单次）等价于长度 1 的 `operations`。合并原 `saolei_click`/`saolei_flag`/`saolei_chord_click`。`saolei_init`/`saolei_remain` 不变。仅 player 持有。
 
 ---
 
@@ -115,10 +114,16 @@
 
 ### 4.2 memory mcp server（agent 上，新建）
 
-- **职责**：向 planner 暴露 memory_add/update/remove 工具，转发到 memory 服务。
+- **职责**：向 planner 暴露**单一** hermes 风格 `memory` 工具（`action`/`content`/`old_text`/`operations`），将 hermes 式调用转换为 memory 服务的 memory_id 式 RPC 后转发。
 - **装配**：与 saolei mcp 同一 per-session mcp host，独立 McpServer 实例 + 独立 path/namespace。
 - **path 闭包**：`createMemoryMcpServer(memoryClient, template, session)` 绑定 template/session（FR-012）。
 - 详见 [`contracts/memory-mcp-contract.md`](./contracts/memory-mcp-contract.md)。
+
+### 4.3 memory skill（planner 专属，新建）
+
+- **职责**：注入 planner 系统提示词的 memory 工具使用引导（何时记/跳过什么/冻结快照模型/`old_text` 用法），参考 hermes 引导。
+- **装配**：`skill-loader.ts` 注册 `"memory"`；`planner.ts` `appendSkillBodyToPrompt(base, ["memory"])`（与 saolei skill 注入 player 对称）。
+- 详见 [`contracts/memory-skill-contract.md`](./contracts/memory-skill-contract.md)。
 
 ---
 
@@ -128,9 +133,9 @@
 Template (resource message, path segment) — 031 既有
   ├── Session: templates/{template}/sessions/{session} — 031 既有
   │     └── Team: .../team { agents: [player, planner] } — 031 既有
-  │           ├── player (saolei_operate/init/remain; 不持有记忆/策略工具)
-  │           └── planner (memory_add/update/remove + instruct_player; 持冻结记忆快照)
-  └── Memory: .../sessions/{session}/memories/{memory} — 【新增，memory 服务 grpc-go, db game_memory】
+  │           ├── player (saolei_operate 双形态/init/remain; 不持有记忆/策略工具)
+  │           └── planner (memory 单工具 + instruct_player; 持冻结记忆快照; 系统提示词含 memory skill)
+  └── Memory: .../sessions/{session}/memories/{memory} — 【新增，memory 服务 grpc-go, db game_memory, memory_id 由 agent 内部生成】
 
 运行时（非资源）:
   planner 冻结记忆快照 ── 进程内冻结缓存（memory-snapshot.ts）── 压缩/初始化边界刷新（ListMemories）

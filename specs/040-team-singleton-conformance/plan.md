@@ -53,15 +53,15 @@
 specs/040-team-singleton-conformance/
 ├── plan.md                       # 本文件
 ├── spec.md                       # /speckit.specify 产出
-├── research.md                   # Phase 0 产出（调研决策）
-├── data-model.md                 # Phase 1 产出（资源/消息/状态）
-├── quickstart.md                 # Phase 1 产出（验收脚本）
+├── research.md                   # 规划期产出（调研决策）
+├── data-model.md                 # 规划期产出（资源/消息/状态）
+├── quickstart.md                 # 规划期产出（验收脚本）
 ├── contracts/
-│   ├── api-contract.md           # Phase 1 产出（TeamService RPC 契约）
-│   └── team-rebuild-contract.md  # Phase 1 产出（graph 重建契约）
+│   ├── api-contract.md           # 规划期产出（TeamService RPC 契约）
+│   └── team-rebuild-contract.md  # 规划期产出（graph 重建契约）
 ├── checklists/
 │   └── requirements.md           # /speckit.specify 产出
-└── tasks.md                      # /speckit.tasks 产出（Phase 2，本命令不创建）
+└── tasks.md                      # /speckit.tasks 产出（规划流程产物，本命令不创建）
 ```
 
 ### Source Code (repository root)

@@ -41,11 +41,11 @@
 
 ---
 
-## Phase 2: User Story 1 — saolei_operate 批量落子（Priority: P1）🎯 MVP
+## Phase 2: User Story 1 — saolei_operate 双形态落子（Priority: P1）🎯 MVP
 
-**Goal**: 合并 `saolei_click`/`saolei_flag`/`saolei_chord_click` 为 `saolei_operate`（有序列表、保序执行、单次返回、失败按原因细分）；sink `onMove`→`onOperate`；gameLog 以 `saolei_operate` 为单位；planner 工具描述同步。
+**Goal**: 合并 `saolei_click`/`saolei_flag`/`saolei_chord_click` 为 `saolei_operate`（hermes 式双形态参数：普通参数单次 / `operations` 数组批量；保序执行、单次返回、失败按原因细分）；sink `onMove`→`onOperate`；gameLog 以 `saolei_operate` 为单位；planner 工具描述同步。
 
-**Independent Test**: `saolei_operate` 接收有序操作列表按序执行只返回一次；单元素等价单次落子；`saolei_init`/`saolei_remain` 不变；无害空操作跳过继续、结构性/游戏结束停止；gameLog 以 `saolei_operate`（含全部操作）为单位；planner 工具描述含 `saolei_operate` + click/flag/chord。
+**Independent Test**: `saolei_operate` 双形态（普通参数单次 / `operations` 数组）均可用且等价（单次 = 长度 1 的 operations），按序执行只返回一次；`saolei_init`/`saolei_remain` 不变；无害空操作跳过继续、结构性/游戏结束停止；gameLog 以 `saolei_operate`（含全部操作）为单位；planner 工具描述含 `saolei_operate` + click/flag/chord。
 
 ### 文档清单（编码前必读）
 
@@ -55,7 +55,7 @@
 
 **Tasks**:
 
-- [ ] T005 [US1] 在 `projects/game/agent/src/mcp/saolei/saolei-mcp.ts` 重构落子工具：抽出按单 op 处理的内部函数（复用 `validateMove`+dispatch）；删除 `saolei_click`/`saolei_flag`/`saolei_chord_click` 三个 `registerCellTool` 注册，新增 `saolei_operate(operations: CellOperation[])`（`CellOperation = {type: "click"|"flag"|"chord", x, y}`，枚举非裸 string）；定义常量集合 `HARMLESS_NOOP_REASONS`（`cell_already_revealed`/`cell_is_flagged`/`cannot_flag_revealed`/`chord_requires_number`/`chord_no_unrevealed_neighbor`）与 `STRUCTURAL_REASONS`（`out_of_bounds`/`no_active_game`）；按序执行、失败细分（无害空操作 SKIP 继续 / 结构性 STOP / 游戏结束 STOP）、单一 MCP 文本结果（结果行 + 游戏状态行 + 棋盘）；`saolei_init`/`saolei_remain` 不变。详见 `contracts/saolei-operate-contract.md` §1-3。含单测（批量顺序、单元素等价、三类失败、空列表）。
+- [ ] T005 [US1] 在 `projects/game/agent/src/mcp/saolei/saolei-mcp.ts` 重构落子工具：抽出按单 op 处理的内部函数（复用 `validateMove`+dispatch）；删除 `saolei_click`/`saolei_flag`/`saolei_chord_click` 三个 `registerCellTool` 注册，新增 `saolei_operate`（**双形态参数**，Session 2026-08-08：普通参数 `type`/`x`/`y` 单次 **或** `operations: CellOperation[]` 批量；`CellOperation = {type: "click"|"flag"|"chord", x, y}`，枚举非裸 string；入口归一化为 operations 列表后统一处理）；定义常量集合 `HARMLESS_NOOP_REASONS`（`cell_already_revealed`/`cell_is_flagged`/`cannot_flag_revealed`/`chord_requires_number`/`chord_no_unrevealed_neighbor`）与 `STRUCTURAL_REASONS`（`out_of_bounds`/`no_active_game`）；按序执行、失败细分（无害空操作 SKIP 继续 / 结构性 STOP / 游戏结束 STOP）、单一 MCP 文本结果（结果行 + 游戏状态行 + 棋盘）；`saolei_init`/`saolei_remain` 不变。详见 `contracts/saolei-operate-contract.md` §1-3。含单测（双形态等价、批量顺序、三类失败、空/非法组合）。
 - [ ] T006 [US1] 扩展 sink 接口：在 `projects/game/agent/src/mcp/saolei/saolei-mcp.ts` 将 `SaoleiEventSink.onMove(tool,x,y,state)` 替换为 `onOperate(operations: CellOperation[], finalState: GameState, stats?: GameStats)`（一次 `saolei_operate` 触发一次，携带全部 operations）；更新 `projects/game/agent/src/team/team-sink.ts` 的 `createTeamSink` 使 gameLog 每条记录为 `{tool:"saolei_operate", operations, status, state}`（一条 = 一次批量调用，FR-004，不再每 op 一条）。详见 `contracts/saolei-operate-contract.md` §4。含单测。
 - [ ] T007 [US1] 更新 `projects/game/agent/src/team/planner.ts`：`GAME_VISIBLE_PLAYER_TOOLS` 改为 `["saolei_init","saolei_operate"]`；`buildToolDescriptionSection` 描述 `saolei_operate` 及其 click/flag/chord 操作类型（FR-005）；`buildReviewInput` 渲染 gameLog 每条为 `saolei_operate(operations) → status` + 棋盘。详见 `contracts/saolei-operate-contract.md` §4。含单测。
 - [ ] T008 [US1] Run `bazel run //:gazelle`（更新 agent BUILD）、`bazel test //projects/game/agent/...`（saolei-mcp / team-sink / planner 相关 `*_test` target 全绿）；按 SC-001/SC-007 在单测层验证。
@@ -92,20 +92,21 @@
 
 **Goal**: agent 侧记忆数据面构件——`memory-client.ts`（gRPC）、`memory-mcp.ts`（planner 记忆工具）、mcp-host 按 (template,session,kind) 每路独立 template-scoped path（R3，含 saolei path 迁移）、`memory-snapshot.ts`（冻结快照）。均为可独立单测的构建块。
 
-**Independent Test**: memory-client 转发到 memory 服务；memory mcp 三工具含 memory_id、path 闭包注入 template/session、错误文本反馈（非异常）；mcp-host 按 template-scoped 多 path 路由两路 mcp；冻结快照 refresh/toSystemMessage（每条 `memory_id: 内容`）。
+**Independent Test**: memory-client 转发到 memory 服务；memory mcp **单一 hermes 式 `memory` 工具**（`action`/`content`/`old_text`/`operations`，无 `memory_id`）、agent 转换（add 生成 id、replace/remove 经 listMemories + `old_text` 子串定位、0/多命中报错）、path 闭包注入 template/session、错误文本反馈（非异常）；mcp-host 按 template-scoped 多 path 路由两路 mcp；冻结快照 refresh/toSystemMessage（**纯内容**，无 `memory_id`）；skill-loader 注册 "memory" + memory SKILL.md 可加载。
 
 ### 文档清单（编码前必读）
 
 - **代码规范文档**: `style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)；[vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)；`specs/019-js-test-reliability/`（DI seam、`vitest_test` 宏、`data` 规则）
 - **官方文档**: [@modelcontextprotocol/typescript SDK](https://github.com/modelcontextprotocol/typescript-sdk)（`McpServer` 工厂 + `registerTool`）；`@grpc/grpc-js` + `@grpc/proto-loader`（仓库内 `prompt-client.ts` 为模板：`registerDominionResolver`、keepalive/round_robin/TLS channel options）；[@langchain/langgraph — configurable / node return / messagesStateReducer](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api)
-- **技术文章**: `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §1-6；`specs/039-planner-memory-calibration/contracts/team-graph-contract.md` §3（冻结快照）；`survey/planner-memory-and-agent-communication.md` §3/§4/§5（D2 冻结快照、D4 压缩刷新、D5 方案 b）；既有 `projects/game/agent/src/prompt-client.ts`（memory-client 模板）、`projects/game/agent/src/mcp-host.ts`（path/session 既有做法）、`projects/game/agent/src/mcp/saolei/saolei-mcp.ts`（`createSaoleiMcpServer` 闭包工厂模式）
+- **技术文章**: `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §1-6；`specs/039-planner-memory-calibration/contracts/memory-skill-contract.md` §1-3（T015b）；`specs/039-planner-memory-calibration/contracts/team-graph-contract.md` §3（冻结快照）；`survey/planner-memory-and-agent-communication.md` §3/§4/§5（D2 冻结快照、D4 压缩刷新、D5 方案 b）；既有 `projects/game/agent/src/prompt-client.ts`（memory-client 模板）、`projects/game/agent/src/mcp-host.ts`（path/session 既有做法）、`projects/game/agent/src/mcp/saolei/saolei-mcp.ts`（`createSaoleiMcpServer` 闭包工厂模式）、`projects/game/agent/src/skill-loader.ts`（skill 注入机制，T015b 注册 "memory"）、`projects/game/agent/src/skill/saolei/SKILL.md`（skill body 模板）、`specs/020-agent-resources-layout/contracts/skill-md-format.md`（SKILL.md 格式契约，T015b）
 
 **Tasks**:
 
 - [ ] T014 [P] [US2] Create `projects/game/agent/src/memory-client.ts`：`MEMORY_SERVICE_TARGET = "dominion:///game/memory:50051"`；`MemoryClient` 类（`createMemory(template, session, memoryId, content)`/`updateMemory`/`deleteMemory`/`listMemories(template, session): Promise<{memory_id, content}[]>`）；`registerDominionResolver` + proto-loader（`PROTO_PATH`/`PROTO_OPTIONS` 复用 prompt-client 常量）+ `KEEPALIVE_OPTIONS`/`ROUND_ROBIN_SERVICE_CONFIG`/`buildClientCredentials`/`buildChannelOptions`；构造器 DI seam（可选注入 `grpc.Client`，无 `vi.mock`）；`warmup`/`close`。照搬 `prompt-client.ts` 结构。详见 `contracts/memory-mcp-contract.md` §3。含单测（注入 fake client）。
-- [ ] T015 [P] [US2] Create `projects/game/agent/src/mcp/memory/memory-mcp.ts`：`createMemoryMcpServer(memoryClient: MemoryClient, template: string, session: string): McpServer` 工厂（闭包绑定 template/session，FR-012）；注册 `memory_add(memory_id, content)`/`memory_update(memory_id, content)`/`memory_remove(memory_id)`（均含 `memory_id`，工具参数不含 template/session）；经 `memoryClient` 转发到 memory 服务（mcp 不直连，FR-007）；错误→文本 result（非异常，031 C15 neutral status）；改存储**不刷新冻结快照**。详见 `contracts/memory-mcp-contract.md` §1-2。含单测（注入 fake memoryClient，断言转发调用 + 错误文本）。
+- [ ] T015 [P] [US2] Create `projects/game/agent/src/mcp/memory/memory-mcp.ts`：`createMemoryMcpServer(memoryClient: MemoryClient, template: string, session: string): McpServer` 工厂（闭包绑定 template/session，FR-012）；注册**单一** `memory` 工具（hermes 式参数 `action`∈{add/replace/remove}/`content`/`old_text`/`operations`，**无 `memory_id`/无 `target`**，Session 2026-08-08）；agent 侧转换：`add`→`generateMemoryId(content)` + `createMemory`；`replace`/`remove`→`listMemories` + `matchBySubstring(entries, old_text)`（0 命中/多不同命中→错误文本含当前条目，全相同→作用首条）+ `updateMemory`/`deleteMemory`；`operations`→批量原子（v1 可选，单 op 已满足核心）；工具参数不含 template/session；错误→文本 result（非异常，031 C15 neutral status）；改存储**不刷新冻结快照**。详见 `contracts/memory-mcp-contract.md` §1-2。含单测（注入 fake memoryClient，断言转换调用 + 0/多命中错误文本）。
+- [ ] T015b [P] [US2] Create `projects/game/agent/src/skill/memory/SKILL.md`（memory skill，FR-020；遵循 `specs/020-agent-resources-layout/contracts/skill-md-format.md` frontmatter `name: memory`+body）；内容覆盖 `contracts/memory-skill-contract.md` §3（工具用法/何时记/跳过什么/冻结快照模型/写作风格）。更新 `projects/game/agent/src/skill-loader.ts`：`BUILTIN_SKILL_NAMES` 加 `"memory"`（当前仅 `"saolei"`）。更新 agent 的 `artifact_pkg_js` `data_files` 含 `src/skill/memory/SKILL.md`（同 saolei skill 既有 data_files 模式）。详见 `contracts/memory-skill-contract.md` §1-2。含单测（`loadSkillBody("memory")` 返回非空 body；frontmatter 合法）。
 - [ ] T016 [US2] 重构 `projects/game/agent/src/mcp-host.ts`：每 mcp 独立 template-scoped path（`/internal/mcp/:template/:session/saolei` 与 `/internal/mcp/:template/:session/memory`，R3）；`getOrCreateSession` 按 `(template, session, kind)` 懒创建对应 `McpServer`（saolei→`createSaoleiMcpServer`，memory→`createMemoryMcpServer`）；扩展 `SessionBridgeLookup` 同时提供 saolei `{bridge, sink}` 与 memory `{memoryClient, template, session}`；路由 handler 按 path 段分发；既有 saolei 接线（`buildSaoleiMcpTools` 连接 URL）同步迁移到新 template-scoped path（clean break）。详见 `contracts/memory-mcp-contract.md` §4。含单测（两路 path 路由 + 懒创建）。
-- [ ] T017 [P] [US2] Create `projects/game/agent/src/team/memory-snapshot.ts`：`FrozenMemorySnapshot` 类（`entries: {memory_id, content}[]`、`bakedAt`；`async refresh(memoryClient, template, session)` 经 `listMemories` 重读并按页遍历至 `next_page_token` 空；`toSystemMessage(): BaseMessage` → `new SystemMessage({id: "planner-memory-snapshot", content: "长期记忆：\n<memory_id>: <内容> ..."})`）。详见 `contracts/team-graph-contract.md` §3、survey D2/D5。含单测（refresh 分页遍历 + toSystemMessage 格式）。
+- [ ] T017 [P] [US2] Create `projects/game/agent/src/team/memory-snapshot.ts`：`FrozenMemorySnapshot` 类（`entries: {memory_id, content}[]`、`bakedAt`；`async refresh(memoryClient, template, session)` 经 `listMemories` 重读并按页遍历至 `next_page_token` 空；`toSystemMessage(): BaseMessage` → `new SystemMessage({id: "planner-memory-snapshot", content: "长期记忆：\n<内容> ..."})`，**纯内容**呈现（无 `memory_id` 前缀，FR-011/Session 2026-08-08）；`memory_id` 仅存于 entries 供内部定位，不进 LLM 文本）。详见 `contracts/team-graph-contract.md` §3、survey D2/D5。含单测（refresh 分页遍历 + toSystemMessage 纯内容格式）。
 - [ ] T018 [US2] Run `bazel run //:gazelle`、`bazel test //projects/game/agent/...`（memory-client / memory-mcp / mcp-host / memory-snapshot 相关 `*_test` 全绿）。
 
 **Checkpoint**: 记忆数据面构建块单测全绿；mcp-host 双路 template-scoped path 可路由；memory mcp 经 client 转发不直连。
@@ -116,23 +117,23 @@
 
 **Goal**: 将记忆数据面接入 team graph——planner 持 memory 工具 + 冻结快照（input SystemMessage，替换原 strategy 读取）、`TeamState` 加 `pendingInstruction` 通道、compress 边界刷新快照、server.ts 装配 MemoryClient + 每 session memory mcp。
 
-**Independent Test**: planner 持且仅持 memory_add/update/remove（无 update_strategy，update_strategy 在 Phase 6 删）；冻结快照作为 input SystemMessage 注入（每条 `memory_id: 内容`）、不烘焙进 systemPrompt；review 不刷新、compress 刷新；memory 工具改存储不刷新快照。
+**Independent Test**: planner 持且仅持**单一 `memory` 工具**（hermes 式，无 `memory_id`；无 update_strategy，update_strategy 在 Phase 6 删）；冻结快照作为 input SystemMessage 注入（**纯内容**，无 `memory_id`）、不烘焙进 systemPrompt；planner 系统提示词含 memory skill body（player 不含）；review 不刷新、compress 刷新；memory 工具改存储不刷新快照。
 
 ### 文档清单（编码前必读）
 
 - **代码规范文档**: `style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)；[vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)；`specs/019-js-test-reliability/`
 - **官方文档**: [@langchain/langgraph — use-graph-api](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api)（node 返回值→reducer、configurable、`MessagesValue`/`messagesStateReducer`）；[@langchain/langgraph — checkpointers](https://docs.langchain.com/oss/javascript/langgraph/checkpointers)（`graph.updateState`，RefreshTeam 用）；[@langchain/langgraph — add-memory](https://docs.langchain.com/oss/javascript/langgraph/add-memory)（`messagesStateReducer`、id 过滤模式）
-- **技术文章**: `specs/039-planner-memory-calibration/contracts/team-graph-contract.md` §1（TeamState + pendingInstruction）、§2.2（review 节点）、§2.4（compress 刷新）、§3（冻结快照注入）、§5（策略/记忆流）、§7（RefreshTeam）；`survey/planner-memory-and-agent-communication.md` §4.2（retain-vs-rebuild 可选优化）；既有 `projects/game/agent/src/team/{graph,planner,compress,state,team-sink}.ts`、`projects/game/agent/src/server.ts`（`buildSaoleiMcpTools` 模式用于 `buildMemoryMcpTools`）
+- **技术文章**: `specs/039-planner-memory-calibration/contracts/team-graph-contract.md` §1（TeamState + pendingInstruction）、§2.2（review 节点）、§2.4（compress 刷新）、§3（冻结快照纯内容注入）、§5（策略/记忆流）、§7（RefreshTeam）；`specs/039-planner-memory-calibration/contracts/memory-skill-contract.md` §2（T020 planner skill 装配）；`survey/planner-memory-and-agent-communication.md` §4.2（retain-vs-rebuild 可选优化）；既有 `projects/game/agent/src/team/{graph,planner,compress,state,team-sink}.ts`、`projects/game/agent/src/server.ts`（`buildSaoleiMcpTools` 模式用于 `buildMemoryMcpTools`）、`projects/game/agent/src/skill-loader.ts`（`appendSkillBodyToPrompt` 既有用法，T020 复用）
 
 **Tasks**:
 
 - [ ] T019 [US2] 更新 `projects/game/agent/src/team/state.ts` 与 `projects/game/agent/src/team/graph.ts`：`TeamStateValue`/`TeamState` 新增 `pendingInstruction: Annotation<string|null>({reducer: overwrite, default: () => null})`（D10）；`TeamGraphDeps` 以 `memoryClient: MemoryClient` + `frozenSnapshot: FrozenMemorySnapshot` 替换 `strategyStore`（本 phase 暂保留 strategyStore 仅供 update_strategy 写路径，Phase 6 删——确保中间态可编译）。详见 `contracts/team-graph-contract.md` §1。
-- [ ] T020 [US2] 更新 `projects/game/agent/src/team/planner.ts`（review 节点）：`PlannerNodeDeps` 以 `memoryClient`+`frozenSnapshot`+memory mcp tools 替换 strategy 读取；input = `[frozenSnapshot.toSystemMessage(), ...plannerMessages, reviewInput]`（**不再** `buildStrategyMessage`）；memory 工具经 mcp client 取得（planner createAgent tools = memory_* + 既有 review 用工具；instruct_player 在 Phase 6 加）；写回时过滤 `planner-memory-snapshot` id（不进 plannerMessages 短期通道）。**冻结快照不在 review 刷新**（FR-010）。详见 `contracts/team-graph-contract.md` §2.2/§3。含单测。
+- [ ] T020 [US2] 更新 `projects/game/agent/src/team/planner.ts`（review 节点）：`PlannerNodeDeps` 以 `memoryClient`+`frozenSnapshot`+memory mcp tools 替换 strategy 读取；input = `[frozenSnapshot.toSystemMessage(), ...plannerMessages, reviewInput]`（**不再** `buildStrategyMessage`）；memory 工具经 mcp client 取得（planner createAgent tools = **单一 `memory` 工具** + 既有 review 用工具；instruct_player 在 Phase 6 加）；**systemPrompt 装配 memory skill**：`appendSkillBodyToPrompt(base, ["memory"]) + buildToolDescriptionSection(...)`（FR-020，与 player 的 `appendSkillBodyToPrompt(base, ["saolei"])` 对称；当前 planner 不调 appendSkillBodyToPrompt，此处补）；写回时过滤 `planner-memory-snapshot` id（不进 plannerMessages 短期通道）。**冻结快照不在 review 刷新**（FR-010）。详见 `contracts/team-graph-contract.md` §2.2/§3、`contracts/memory-skill-contract.md` §2。含单测（断言 planner systemPrompt 含 memory skill body + SKILL_PROMPT_SEPARATOR）。
 - [ ] T021 [P] [US2] 更新 `projects/game/agent/src/team/compress.ts`：压缩后（review 之后、END 之前）触发 `frozenSnapshot.refresh(memoryClient, template, session)`（重读 ListMemories → 重新烘焙，调研 D4）。详见 `contracts/team-graph-contract.md` §2.4。含单测。
 - [ ] T022 [US2] 更新 `projects/game/agent/src/server.ts`：构造 `new MemoryClient()` + `warmup()`；在 `SessionTeamStore` factory 内为每 session 建 `FrozenMemorySnapshot`（首次 `refresh`）+ memory mcp（经 `buildMemoryMcpTools(...)` 仿 `buildSaoleiMcpTools`，client 连 mcp-host memory path）+ 将 planner memory 工具/snapshot 传入 `buildTeamGraph`；扩展 `sessionBridges`/`SessionBridgeLookup` 提供 memory 装配（供 mcp-host）。**040 重建闭包（`SessionTeamStore` 第二构造参数 rebuilder，`server.ts:327-365` 的 `buildTeamGraph` 第二调用点 `:352`）MUST 同步装配**：memoryClient/frozenSnapshot/memory 工具对首建（`:288`）与重建两处调用点一致注入——profile 变更重建后的 graph 其 planner 须同样持有记忆工具与冻结快照（buffer/bridge/sink/playerTools/mcp 复用既有 session 装配，仿 `server.ts:343-351` 复用模式）；重建闭包的 strategyStore 接线在 T030 移除。详见 `contracts/team-graph-contract.md` §5、`contracts/memory-mcp-contract.md` §4。含单测（重建后 planner 仍持 memory 工具/冻结快照）。
-- [ ] T023 [US2] Run `bazel run //:gazelle`、`bazel test //projects/game/agent/...`（graph/planner/compress/server 相关 `*_test` 全绿）；按 SC-002/SC-003/SC-006 在单测层验证（独立 db 由 Go 服务保证；冻结快照冻结语义、注入格式、mcp 经 agent 转发不直连）。
+- [ ] T023 [US2] Run `bazel run //:gazelle`、`bazel test //projects/game/agent/...`（graph/planner/compress/server 相关 `*_test` 全绿）；按 SC-002/SC-003/SC-006/SC-009 在单测层验证（独立 db 由 Go 服务保证；冻结快照冻结语义与纯内容注入格式；mcp 经 agent 转发不直连；memory skill 注入 planner 且 player 不含）。
 
-**Checkpoint**: planner 记忆工具 + 冻结快照注入可用；`pendingInstruction` 通道就位；compress 边界刷新；server 装配 memory 全链路。SC-002/SC-003/SC-006 单测层达成。
+**Checkpoint**: planner 记忆工具 + memory skill + 冻结快照注入可用；`pendingInstruction` 通道就位；compress 边界刷新；server 装配 memory 全链路。SC-002/SC-003/SC-006/SC-009 单测层达成。
 
 ---
 
@@ -176,8 +177,8 @@
 
 **Tasks**:
 
-- [ ] T033 [P] 编写大型测试用例（Go，`*_test.go` 按**被测模块**拆分，复用 `helpers_test.go`）于 `projects/game/testplan/`：① saolei_operate 批量与失败细分（归入既有 `agent_saolei_test.go` 或 saolei 模块文件）；② memory 持久化 + 冻结快照 + 独立 db + 分页（新建 `memory_test.go` 模块文件）；③ 校准指令两场景 + 消息顺序 + StrategyStore 移除（归入既有 `saolei_team_test.go` team 模块）。用例通过 HTTP/WS 公共入口（`testtool.MustEndpoint("http","public")`）+ 设置/打印 `trace_id`（`tracecontext`）。详见 `quickstart.md` 场景 1/2/3、`style/large_test.md`。
-- [ ] T034 [P] Add/update fake-llm fixtures 于 `projects/game/fake-llm/service/testdata/`（脚本化 `memory_add`/`memory_update`/`memory_remove` + `instruct_player` 的 tool_call 响应、两场景 prompt 引导产出），并同步 `helpers_test.go` 期望常量（lockstep，`testplan/README.md` §5）；确认 `projects/game/fake-llm/service/message_store_test.go` pin 通过。
+- [ ] T033 [P] 编写大型测试用例（Go，`*_test.go` 按**被测模块**拆分，复用 `helpers_test.go`）于 `projects/game/testplan/`：① saolei_operate **双形态**（普通参数单次 / `operations` 数组）与失败细分（归入既有 `agent_saolei_test.go` 或 saolei 模块文件）；② memory 持久化 + 冻结快照（纯内容）+ `memory` 工具 agent 转换（`old_text` 0/多命中报错）+ memory skill 注入 planner（player 不含）+ 独立 db + 分页（新建 `memory_test.go` 模块文件）；③ 校准指令两场景 + 消息顺序 + StrategyStore 移除（归入既有 `saolei_team_test.go` team 模块）。用例通过 HTTP/WS 公共入口（`testtool.MustEndpoint("http","public")`）+ 设置/打印 `trace_id`（`tracecontext`）。详见 `quickstart.md` 场景 1/2/3、`style/large_test.md`。
+- [ ] T034 [P] Add/update fake-llm fixtures 于 `projects/game/fake-llm/service/testdata/`（脚本化**单一 `memory` 工具**（`action`/`content`/`old_text`/`operations`）+ `instruct_player` 的 tool_call 响应、两场景 prompt 引导产出），并同步 `helpers_test.go` 期望常量（lockstep，`testplan/README.md` §5）；确认 `projects/game/fake-llm/service/message_store_test.go` pin 通过。
 - [ ] T035 更新 `projects/game/testplan/BUILD.bazel`：声明新 `go_largetest` target（按 `style/large_test.md` gazelle 默认名规则——同目录至少一个用 `{package_name}_test`，避免重复生成 `go_unittest`）；`srcs` 含 `helpers_test.go` + 对应模块 `*_test.go` + `saolei_fixtures_test.go`（按需）+ `embedsrcs` testdata。
 - [ ] T036 更新 `projects/game/testplan/system_test.yaml`：新增 `suite`（如 `planner-memory`）引用新 `go_largetest` case（**不新建 YAML**；如沿用既有 deploy 拓扑则复用 `deploy_agent.yaml`，该 deploy 已含 memory 服务条目——Phase 1 T003 已加）。
 - [ ] T037 Run `bazel build //...` + `bazel test //...`（全量 Go + TS 编译与单测全绿）；经 **testplan SKILL** 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环，**禁止仅 `bazel build` 替代验收**，宪法原则 VI）；**所有用例全部通过**（failed/flaky 即未通过，修复重跑至全绿）。
@@ -215,7 +216,7 @@
 - Phase 1: T002/T003 与 T001 不同文件可并行（T001 改 proto，T002/T003 改 const/deploy）；T004 在 T001-T003 后。
 - Phase 2: 内部顺序（saolei-mcp → team-sink → planner），与 Phase 3 整体并行。
 - Phase 3: T010（runtime/mongo）与 T011（handler）不同目录、均仅依赖 T009（domain），可并行。
-- Phase 4: T014（memory-client）先行；T015（memory-mcp）、T017（snapshot）均仅依赖 T014，可并行；T016（mcp-host）依赖 T015。
+- Phase 4: T014（memory-client）先行；T015（memory-mcp）、T017（snapshot）均仅依赖 T014，可并行；T015b（skill + loader）独立于 memory-client，可与 T015/T017 并行；T016（mcp-host）依赖 T015。
 - Phase 6: T024（instruction-tool）先行；T028（player）与 T025/T027 可并行（不同文件）。
 - Phase 7: T033（用例）与 T034（fixture）可并行（不同目录）。
 
@@ -236,9 +237,10 @@ Task: "T011 handler + handler_test in projects/game/memory/handler/"
 ```bash
 # memory-client 先行
 Task: "T014 memory-client.ts"
-# 以下两者均仅依赖 memory-client，可并行：
+# 以下均仅依赖 memory-client（或独立），可并行：
 Task: "T015 mcp/memory/memory-mcp.ts"
 Task: "T017 team/memory-snapshot.ts"
+Task: "T015b skill/memory/SKILL.md + skill-loader.ts 注册（独立于 memory-client，可与 T015/T017 并行）"
 ```
 
 ---
@@ -257,7 +259,7 @@ Task: "T017 team/memory-snapshot.ts"
 2. Phase 2 US1 → 批量落子 MVP。
 3. Phase 3 US2 服务 → memory Go 服务可独立 build/test（SC-002 服务段）。
 4. Phase 4 US2 agent 数据面 → 构建块单测绿。
-5. Phase 5 US2 agent 装配 → planner 记忆 + 冻结快照可用（SC-002/SC-003/SC-006）。
+5. Phase 5 US2 agent 装配 → planner 记忆工具 + memory skill + 冻结快照可用（SC-002/SC-003/SC-006/SC-009）。
 6. Phase 6 US3 → 指令循环 + StrategyStore 移除（SC-004/SC-005）。
 7. Phase 7 大型测试 → 全部用例通过（SC-008，FR-018）。
 
