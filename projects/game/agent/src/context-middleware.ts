@@ -3,12 +3,19 @@
  *
  * `RefreshTeam` clears BOTH per-agent short-term message channels
  * (`playerMessages` and `plannerMessages`) while leaving the long-term
- * strategy (StrategyStore/mongo) and the `gameEnded` control field intact
- * (specs/031-team-template-mode/contracts/team-graph-contract.md §5;
- * research.md D8). It also resets the `gameCounter` state field to 0 — the
- * counter shares the short-term lifetime (per-session, reset with the team)
- * and RefreshTeam must clear it alongside the channels
+ * memory (memory service / frozen snapshot) and the `gameEnded` control
+ * field intact (specs/031-team-template-mode/contracts/team-graph-contract.md
+ * §5; research.md D8). It also resets the `gameCounter` state field to 0 —
+ * the counter shares the short-term lifetime (per-session, reset with the
+ * team) and RefreshTeam must clear it alongside the channels
  * (specs/037-saolei-team-optimize/spec.md FR-014; data-model.md §2).
+ *
+ * 039 US3 (T029 — contract §7): the `pendingInstruction` slot is cleared
+ * alongside — a deferred init/compact instruction must not survive a
+ * RefreshTeam (an expired instruction would otherwise be injected into the
+ * player's next activation with stale guidance). The frozen memory snapshot
+ * is untouched (its data lives in the memory service; the next compression
+ * boundary naturally re-bakes it).
  *
  * **Mechanism note (deviation from the contract's "beforeModel hook"
  * wording)**: the contract text says the clear lands in a `beforeModel`
@@ -59,27 +66,32 @@ export function clearChannel(
  * `updateState` flow through the reducers), so each `RemoveMessage` with the
  * `REMOVE_ALL_MESSAGES` sentinel drops all prior messages of its channel.
  *
- * Out of scope by design: the strategy (StrategyStore/mongo) and the
- * `gameEnded` control field — neither is touched (FR-018; D8). `gameEnded`
- * is cleared by the planner node's normal lifecycle (D6 step 6), and
- * short-term memory is cleared ONLY by `RefreshTeam` (需求方确认 — no
- * automatic clear at game boundaries).
+ * Out of scope by design: the long-term memory (memory service / frozen
+ * snapshot) and the `gameEnded` control field — neither is touched (FR-018;
+ * D8). `gameEnded` is cleared by the planner node's normal lifecycle (D6
+ * step 6), and short-term memory is cleared ONLY by `RefreshTeam` (需求方
+ * confirmed — no automatic clear at game boundaries).
+ *
+ * 039 US3 (T029 — contract §7): the `pendingInstruction` slot IS cleared
+ * (a stale deferred instruction must not leak into the next activation).
  *
  * @param graph The compiled team graph handle (outer graph + checkpointer).
  * @param sessionId The session id — the checkpoint thread id (FR-013).
  */
 export async function refreshTeamChannels(
-  graph: TeamGraphHandle["graph"],
-  sessionId: string,
+	graph: TeamGraphHandle["graph"],
+	sessionId: string,
 ): Promise<void> {
-  const config = { configurable: { thread_id: sessionId } };
-  // One update carrying both channel clears: per-channel independence (A1)
-  // means the two `RemoveMessage`s never interfere. `gameCounter` is reset
-  // alongside (last-write-wins reducer, FR-014).
-  await graph.updateState(config, {
-    ...clearChannel("playerMessages"),
-    ...clearChannel("plannerMessages"),
-    gameCounter: 0,
-  });
-  info("refresh team: cleared short-term message channels", { sessionId });
+	const config = { configurable: { thread_id: sessionId } };
+	// One update carrying both channel clears: per-channel independence (A1)
+	// means the two `RemoveMessage`s never interfere. `gameCounter` is reset
+	// alongside (last-write-wins reducer, FR-014) and the deferred
+	// `pendingInstruction` slot is cleared (contract §7 — 039 US3).
+	await graph.updateState(config, {
+		...clearChannel("playerMessages"),
+		...clearChannel("plannerMessages"),
+		gameCounter: 0,
+		pendingInstruction: null,
+	});
+	info("refresh team: cleared short-term message channels", { sessionId });
 }

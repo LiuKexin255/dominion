@@ -22,9 +22,7 @@ import { tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { FakeStrategyStore } from "./strategy-store";
-import { Handler } from "./handler";
-import { SessionTeam, SessionTeamStore } from "./session-team";
+import { Handler } from "./handler";import { SessionTeam, SessionTeamStore } from "./session-team";
 import type { SessionTeamRebuilder } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
 import type { MemoryClient } from "./memory-client";
@@ -106,10 +104,23 @@ function playOneGamePlayerModel() {
     .respond(new AIMessage("idle, no new game"));
 }
 
-function updateStrategyPlannerModel(content: string) {
+function instructPlayerPlannerModel(content: string) {
   return fakeModel()
-    .respondWithTools([{ name: "update_strategy", args: { content } }])
-    .respond(new AIMessage("strategy updated"));
+    .respondWithTools([{ name: "instruct_player", args: { content } }])
+    .respond(new AIMessage("instruction sent"));
+}
+
+/**
+ * The store factory's planner model: the one-shot async initInstruction turn
+ * (triggered at FIRST materialization — T029) consumes the first
+ * tool+text pair, the review turn the second.
+ */
+function initThenReviewPlannerModel(initContent: string, reviewContent: string) {
+  return fakeModel()
+    .respondWithTools([{ name: "instruct_player", args: { content: initContent } }])
+    .respond(new AIMessage("init done"))
+    .respondWithTools([{ name: "instruct_player", args: { content: reviewContent } }])
+    .respond(new AIMessage("review done"));
 }
 
 /**
@@ -124,16 +135,13 @@ function createTeamStore(
   rebuilder?: SessionTeamRebuilder,
 ): {
   store: SessionTeamStore;
-  strategies: FakeStrategyStore;
 } {
-  const strategies = new FakeStrategyStore();
   const store = new SessionTeamStore(
     async (sessionId, template, _profileName) => {
       const buffer = createEphemeralGameBuffer();
       const handle = buildTeamGraph({
         playerModel: playOneGamePlayerModel(),
-        plannerModel: updateStrategyPlannerModel("corner-first"),
-        strategyStore: strategies,
+        plannerModel: initThenReviewPlannerModel("初始指令", "保持节奏"),
         buffer,
         sessionId,
         playerTools: [buildGameEndingPlayerTool(buffer, gate)],
@@ -161,8 +169,7 @@ function createTeamStore(
         return buildTeamGraph(
           {
             playerModel: playOneGamePlayerModel(),
-            plannerModel: updateStrategyPlannerModel("corner-first"),
-            strategyStore: strategies,
+            plannerModel: initThenReviewPlannerModel("初始指令", "保持节奏"),
             buffer,
             sessionId,
             playerTools: [buildGameEndingPlayerTool(buffer)],
@@ -174,7 +181,7 @@ function createTeamStore(
         );
       }),
   );
-  return { store, strategies };
+  return { store };
 }
 
 /**
@@ -432,8 +439,13 @@ describe("Handler.UpdateTeam", () => {
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const { callback, promise } = createCallback<any>();
-    // createTestTeam materializes the session's team with profile "default".
+    // createTestTeam materializes the session's team with profile "default"
+    // — which also triggers the one-shot async initInstruction turn (T029,
+    // R2). The profile-change rebuild below must wait for the init turn to
+    // finish: isRunning() includes initInFlight (Phase 6 review Issue #5),
+    // so a rebuild during the init is correctly rejected FAILED_PRECONDITION.
     await createTestTeam(store, "sess-ut-diff");
+    await flush(0);
 
     handler.UpdateTeam(
       createUnaryCall(
@@ -527,7 +539,6 @@ describe("Handler.UpdateTeam", () => {
   });
 
   it("runs the NEXT turn on the NEW profile's model after a rebuild (US3)", async () => {
-    const strategies = new FakeStrategyStore();
     // Rebuild seam whose player model answers with a distinctive text — the
     // next turn's streamed output must come from THIS model.
     const rebuilder: SessionTeamRebuilder = async (
@@ -542,8 +553,7 @@ describe("Handler.UpdateTeam", () => {
           playerModel: fakeModel().respond(
             new AIMessage("rebuild-model-answer"),
           ),
-          plannerModel: updateStrategyPlannerModel("corner-first"),
-          strategyStore: strategies,
+          plannerModel: fakeModel().respond(new AIMessage("ok")),
           buffer,
           sessionId,
           playerTools: [buildGameEndingPlayerTool(buffer)],
@@ -1041,8 +1051,8 @@ describe("Handler.ListMessages", () => {
 // ===========================================================================
 
 describe("Handler.RefreshTeam", () => {
-  it("clears short-term messages; strategy survives (FR-018)", async () => {
-    const { store, strategies } = createTeamStore();
+  it("clears short-term messages (FR-018)", async () => {
+    const { store } = createTeamStore();
     const handler = createHandler(store);
     const stream = createFakeStream();
     await createTestTeam(store, "sess-ref");
@@ -1056,8 +1066,6 @@ describe("Handler.RefreshTeam", () => {
     const team = (await store.update("sess-ref", "saolei", "default", true)) as SessionTeam;
     const before = await team.getTeamState();
     expect(before?.playerMessages.length ?? 0).toBeGreaterThan(0);
-    // The planner wrote the strategy during the turn.
-    expect(await strategies.get("sess-ref")).toBe("corner-first");
 
     const { callback, promise } = createCallback<any>();
     handler.RefreshTeam(
@@ -1070,7 +1078,7 @@ describe("Handler.RefreshTeam", () => {
     const after = await team.getTeamState();
     expect(after?.playerMessages).toEqual([]);
     expect(after?.plannerMessages).toEqual([]);
-    expect(await strategies.get("sess-ref")).toBe("corner-first");
+    expect(after?.pendingInstruction).toBeNull();
   });
 
   it("rejects RefreshTeam while a turn is in-flight (FAILED_PRECONDITION)", async () => {

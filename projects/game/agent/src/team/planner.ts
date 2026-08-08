@@ -10,15 +10,28 @@
  *   request built from the ephemeral buffer's `gameLog` (the full move
  *   sequence of the current game — Issue 2, `specs/036-team-mode-bugfix/
  *   contracts/team-graph-fix-contract.md` §2.2). The strategy READ path
- *   (`buildStrategyMessage`) is gone (Phase 5, T020 — replaced by the frozen
+ *   (the old strategy-message read path) is gone (Phase 5, T020 — replaced
+ *   by the frozen
  *   snapshot, contract §2.2/§3); the snapshot's SystemMessage is filtered out
  *   of the channel write-back (contract §3 — it must not enter the short-term
  *   plannerMessages channel).
  * - **Tools**: the memory MCP tools (a single hermes-style `memory` tool,
  *   FR-007/FR-008 — injected via {@link PlannerNodeDeps.plannerTools}, built
- *   by server wiring through the mcp client) + `update_strategy` (Phase 5
- *   INTERMEDIATE write path, T019 — removed in Phase 6, T030/T031;
- *   `instruct_player` arrives in Phase 6, T027).
+ *   by server wiring through the mcp client) + the `instruct_player` tool
+ *   (T027 — FR-014/FR-017, built internally via
+ *   {@link buildInstructPlayerTool}). The former shared-strategy write path
+ *   is GONE (Phase 6 T030/T031, FR-013 — no shared strategy storage anywhere).
+ * - **Calibration instruction (039 US3, T027 — contract §2.2/§4, FR-017)**:
+ *   after the review, the planner MAY call `instruct_player` (prompt
+ *   "必要时才调用" — the LLM decides, FR-014). The tool stages the content
+ *   into the configurable-provided external buffer (R1 — same
+ *   `configurable` pattern as 037 `emitChannelFrame`); the node reads the
+ *   staged content AFTER `createAgent.invoke` returns and writes
+ *   `{playerMessages: [new HumanMessage(content)]}` from its return value —
+ *   the instruction lands immediately after the game-ending tool_result in
+ *   the player channel (FR-017 order), and the graph routes back to the
+ *   player (continuing is the player LLM's decision, FR-009). No tool call →
+ *   no instruction, the graph still routes back to the player.
  * - **System prompt**: base + memory skill body
  *   (`appendSkillBodyToPrompt(base, ["memory"])`, FR-020) + the player's
  *   game-visible tool NAME/DESCRIPTION section (US3, FR-016/FR-017) — static,
@@ -51,25 +64,21 @@ import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
 import type { ChatModel } from "../model-provider";
-import type { MemoryClient } from "../memory-client";
 import type { ChannelFrameEmitter } from "../session-team";
-import type { StrategyStore } from "../strategy-store";
 import { appendSkillBodyToPrompt } from "../skill-loader";
 import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
-import { buildUpdateStrategyTool } from "./update-strategy";
 import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
 import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { CreateAgentFn } from "./player";
+import { invokeAgentWithRetry } from "./agent-invoke";
+import {
+	buildInstructPlayerTool,
+	type InstructionBuffer,
+} from "./instruction-tool";
 
 /** The planner agent's name — the `TeamFrame.agent` value (FR-023/D12). */
 export const PLANNER_AGENT_NAME = "planner";
-
-/**
- * Bounded retry count for a failing planner agent invoke (D6: retry is
- * handled inside the planner node; after that the node degrades).
- */
-const MAX_PLANNER_ATTEMPTS = 3;
 
 /**
  * The planner's DEFAULT base prompt (the template-fixed fallback base, FR-034
@@ -80,12 +89,18 @@ const MAX_PLANNER_ATTEMPTS = 3;
  * player's game-visible tool description section follows (US3, FR-016). The
  * frozen memory snapshot is NOT part of this static prompt — it is injected
  * per invoke as an input SystemMessage (contract §3, survey D5 plan b).
+ *
+ * 039 US3 (T027): the shared-strategy guidance is gone (FR-013 — the tool
+ * and its store were removed in Phase 6); the calibration-instruction
+ * guidance is "必要时才调用" (FR-014 — the review prompt, see
+ * {@link buildReviewInput}, decides whether an instruction is needed).
  */
 export const DEFAULT_PLANNER_BASE =
 	"你是扫雷团队的复盘规划者（planner）。每局游戏结束后你会收到本局的终局棋盘" +
 	"与你维护的长期记忆（冻结快照，见记忆使用引导）。你的职责：复盘本局表现" +
 	"（判断策略是否有效），把值得跨局保留的观察写入长期记忆（调用 memory 工具）；" +
-	"若你认为策略需要更新，调用 update_strategy 写入新策略。你不操作桌面，" +
+	"若你认为需要给 player 校准指令，可在必要时调用 instruct_player 发送指令" +
+	"（指令会进入 player 的对话流，随其后续游戏生效）。你不操作桌面，" +
 	"不持有任何读取工具。";
 
 /** Dependencies of the planner node (all injected — DI seam). */
@@ -93,31 +108,13 @@ export interface PlannerNodeDeps {
 	/** The planner's LLM (from the TeamProfile, Batch 2 wiring). */
 	model: ChatModel;
 	/**
-	 * MemoryService gRPC client — the planner's memory data plane (DI seam,
-	 * `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md`
-	 * §3). The memory TOOL is obtained via the mcp client by server wiring
-	 * ({@link PlannerNodeDeps.plannerTools}); the client is carried in deps
-	 * alongside the frozen snapshot for the memory data-plane contract.
-	 */
-	memoryClient: MemoryClient;
-	/**
 	 * The frozen long-term-memory snapshot (contract §3, survey D5 plan b):
 	 * injected as an input SystemMessage per invoke (纯内容, FR-011). NOT
 	 * refreshed here (FR-010 — the refresh boundary is the compress node).
 	 */
 	frozenSnapshot: FrozenMemorySnapshot;
-	/**
-	 * Long-term strategy store — Phase 5 INTERMEDIATE STATE
-	 * (`specs/039-planner-memory-calibration/tasks.md` T019/T020): retained
-	 * ONLY for the `update_strategy` WRITE path (the tool below); the
-	 * strategy READ path (old `buildStrategyMessage`) is replaced by the
-	 * frozen snapshot. Removed in Phase 6 (T030/T031, FR-013).
-	 */
-	strategyStore: StrategyStore;
 	/** Per-session ephemeral game-state buffer (review input, D6 step 6). */
 	buffer: EphemeralGameBuffer;
-	/** Session id — the checkpoint thread id. */
-	sessionId: string;
 	/**
 	 * The planner's base prompt from `SaoleiProfile.planner_prompt` (FR-034
 	 * semantics A — empty string = unset = fall back to the template default
@@ -142,8 +139,7 @@ export interface PlannerNodeDeps {
 	 * `memory` tool with `action`/`content`/`old_text`/`operations` — FR-007/
 	 * FR-008), obtained via the mcp client (`buildMemoryMcpTools`, server
 	 * wiring — T022) and DI-injected (tests inject a fake). The
-	 * `update_strategy` tool is built internally (Phase 5 intermediate write
-	 * path; removed in Phase 6).
+	 * `instruct_player` tool is built internally (T027 — Phase 6).
 	 */
 	plannerTools: StructuredToolInterface[];
 	/** Optional createAgent override (DI seam, defaults to the real one). */
@@ -197,7 +193,8 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 	}
 
 	lines.push(
-		"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
+		"请复盘本局游戏表现，判断策略是否有效；若你认为需要给 player 校准指令，" +
+			"仅在必要时调用 instruct_player 发送指令。",
 	);
 	return new HumanMessage(lines.join("\n"));
 }
@@ -259,47 +256,12 @@ function buildToolDescriptionSection(tools: StructuredToolInterface[]): string {
 }
 
 /**
- * Run a stateless `createAgent` invoke with a bounded retry (D6 — retry
- * lives inside the planner node; the graph scheduler never re-routes the
- * planner). Re-throws when all attempts fail so the node can degrade.
- * The outer graph's `config` (recursionLimit / signal) is forwarded to the
- * agent invoke (Issue 4 — `specs/036-team-mode-bugfix/contracts/
- * team-graph-fix-contract.md` §3.2).
- */
-async function invokeWithRetry(
-	agent: {
-		invoke(
-			input: { messages: BaseMessage[] },
-			config?: RunnableConfig,
-		): Promise<{ messages: BaseMessage[] }>;
-	},
-	input: BaseMessage[],
-	config?: RunnableConfig,
-): Promise<{ messages: BaseMessage[] }> {
-	let lastError: unknown;
-	for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt += 1) {
-		try {
-			return (await agent.invoke({ messages: input }, config)) as {
-				messages: BaseMessage[];
-			};
-		} catch (err) {
-			lastError = err;
-			if (attempt < MAX_PLANNER_ATTEMPTS) {
-				const message = err instanceof Error ? err.message : String(err);
-				warn("planner invoke failed; retrying", {
-					attempt,
-					error: message,
-				});
-			}
-		}
-	}
-	throw lastError;
-}
-
-/**
  * Create the planner node function (contract §2.2). Runs the planner agent
- * (tools = `update_strategy` only), then unconditionally clears
- * `gameEnded` (D6 step 6).
+ * (tools = the injected memory MCP tools + the internal `instruct_player`
+ * tool), then unconditionally clears `gameEnded` (D6 step 6) and — when the
+ * review decided to send a calibration instruction (R1 external buffer
+ * staging) — appends the instruction HumanMessage to `playerMessages`
+ * (FR-017).
  *
  * @returns An async node `(state, config?) => Partial<TeamStateValue>`
  *   suitable for `StateGraph.addNode("planner", ...)` (Issue 4 — the node
@@ -311,7 +273,7 @@ export function createPlannerNode(
 	state: TeamStateValue,
 	config?: RunnableConfig,
 ) => Promise<Partial<TeamStateValue>> {
-	const { strategyStore, buffer, sessionId, frozenSnapshot } = deps;
+	const { buffer, frozenSnapshot } = deps;
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
 	// FR-034 semantics A: the base prompt is the profile's planner_prompt
@@ -332,10 +294,12 @@ export function createPlannerNode(
 		) + buildToolDescriptionSection(deps.playerTools);
 	const plannerAgent = createAgentFn({
 		model: deps.model,
-		// Phase 5 (T020): the memory MCP tools (single hermes-style `memory`
-		// tool) + the Phase-5-intermediate `update_strategy` write path
-		// (removed in Phase 6; `instruct_player` arrives in Phase 6, T027).
-		tools: [...deps.plannerTools, buildUpdateStrategyTool(strategyStore, sessionId)],
+		// Phase 5 (T020) + Phase 6 (T027): the injected memory MCP tools
+		// (single hermes-style `memory` tool, FR-007/FR-008) + the internal
+		// `instruct_player` calibration tool (FR-014/FR-017, contract §4).
+		// The Phase-5-intermediate shared-strategy write path is GONE
+		// (T030/T031, FR-013).
+		tools: [...deps.plannerTools, buildInstructPlayerTool()],
 		systemPrompt,
 	});
 
@@ -391,10 +355,21 @@ export function createPlannerNode(
 
 		let result: { messages: BaseMessage[] };
 		try {
-			result = await invokeWithRetry(plannerAgent, input, config);
+			result = await invokeAgentWithRetry(plannerAgent, input, config);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			warn("planner failed after retries; degrading", { error: message });
+			// Defensive buffer clear (Phase 6 review, Issue #4): a retried
+			// tool call may have staged content into the per-turn R1 buffer
+			// before the invoke failed. Without the clear, the residue could
+			// be read by the SAME turn's postCompactInstruction node (it
+			// shares the per-turn buffer instance) — a phantom instruction.
+			const instructionBuffer = config?.configurable?.instructionBuffer as
+				| InstructionBuffer
+				| undefined;
+			if (instructionBuffer) {
+				instructionBuffer.content = null;
+			}
 			// D6 step 6: clear gameEnded unconditionally (success or failure)
 			// so the planner does not re-trigger on the same game end.
 			// Degrade trade-off: the reviewInput frame was already emitted
@@ -411,6 +386,23 @@ export function createPlannerNode(
 			};
 		}
 
+		// 039 US3 (T027, contract §2.2/§4 — FR-017): after the invoke, read
+		// the external buffer the `instruct_player` tool staged (R1 — same
+		// configurable pattern as 037 emitChannelFrame). A staged instruction
+		// is written to `playerMessages` as a HumanMessage from the node
+		// return value — it lands immediately after the game-ending
+		// tool_result in the player channel (messagesStateReducer append,
+		// FR-017 order: tool_calling → tool_result → planner 指令 → player
+		// output). No staged content → no instruction, the graph still routes
+		// back to the player (FR-014 — the instruction is OPTIONAL).
+		const instructionBuffer = config?.configurable?.instructionBuffer as
+			| InstructionBuffer
+			| undefined;
+		const instruction = instructionBuffer?.content ?? null;
+		if (instructionBuffer) {
+			instructionBuffer.content = null;
+		}
+
 		return {
 			// Filter the frozen-snapshot SystemMessage out of the channel
 			// write-back — the long-term memory stays in the memory service /
@@ -419,6 +411,12 @@ export function createPlannerNode(
 			plannerMessages: result.messages.filter(
 				(m: BaseMessage) => m.id !== PLANNER_MEMORY_SNAPSHOT_ID,
 			),
+			// FR-017: the planner's instruction (when sent) is appended to the
+			// player channel right here — the player's next activation reads
+			// it after the game-ending tool_result.
+			...(instruction !== null
+				? { playerMessages: [new HumanMessage(instruction)] }
+				: {}),
 			// D6 step 6: unconditional clear — the planner fires at most once
 			// per game end; the edge routes back to the player (FR-009).
 			gameEnded: null,

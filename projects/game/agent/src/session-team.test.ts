@@ -21,7 +21,6 @@ import { tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { FakeStrategyStore } from "./strategy-store";
 import { SessionTeam, SessionTeamStore } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
 import type { MemoryClient } from "./memory-client";
@@ -84,19 +83,36 @@ function playOneGamePlayerModel() {
 		.respond(new AIMessage("idle, no new game"));
 }
 
-function updateStrategyPlannerModel(content: string) {
+/**
+ * The planner's fake model for a session whose graph runs BOTH the one-shot
+ * async initInstruction turn (triggered at FIRST materialization — T029,
+ * contract §6) and the review turn. fakeModel consumes responses in order:
+ * init (tool call + text) → review (tool call + text). The init turn runs
+ * via `graph.invoke` (not streamed), so its text never appears in the
+ * TurnLoop frames — only the review's does.
+ */
+function initThenReviewPlannerModel(initContent: string, reviewContent: string) {
 	return fakeModel()
-		.respondWithTools([{ name: "update_strategy", args: { content } }])
-		.respond(new AIMessage("strategy updated"));
+		.respondWithTools([
+			{ name: "instruct_player", args: { content: initContent } },
+		])
+		.respond(new AIMessage("init done"))
+		.respondWithTools([
+			{ name: "instruct_player", args: { content: reviewContent } },
+		])
+		.respond(new AIMessage("review done"));
 }
 
 /** Build a fully-wired SessionTeam (real graph) for a session id. */
-function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
+function buildTestTeam(
+	sessionId: string,
+	plannerModel?: ReturnType<typeof fakeModel>,
+) {
 	const buffer = createEphemeralGameBuffer();
 	const handle = buildTeamGraph({
 		playerModel: playOneGamePlayerModel(),
-		plannerModel: updateStrategyPlannerModel("corner-first"),
-		strategyStore: store,
+		plannerModel:
+			plannerModel ?? initThenReviewPlannerModel("初始指令", "复盘指令"),
 		buffer,
 		sessionId,
 		playerTools: [buildGameEndingPlayerTool(buffer)],
@@ -109,22 +125,28 @@ function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
 	const bridge = new OperationBridge();
 	const sink = createTeamSink(buffer);
 	const team = new SessionTeam(handle, buffer, sessionId, TID, bridge, sink);
-	return { team, store, buffer, sessionId, bridge, sink };
+	return { team, buffer, sessionId, bridge, sink };
 }
 
 /**
  * Build ONLY a graph handle (US3 rebuild seam — the same wiring as
  * {@link buildTestTeam}, minus the SessionTeam shell). A rebuild passes the
  * EXISTING checkpointer so the session state carries over (FR-005); the
- * optional `checkpointer` is forwarded verbatim.
+ * optional `checkpointer` is forwarded verbatim. NOTE: the rebuild path does
+ * NOT trigger the initInstruction turn (040 FR-005 — init runs once at first
+ * materialization only), so the rebuild's planner model only serves review
+ * turns.
  */
 function buildTestHandle(sessionId: string, checkpointer?: MemorySaver) {
 	const buffer = createEphemeralGameBuffer();
 	return buildTeamGraph(
 		{
 			playerModel: playOneGamePlayerModel(),
-			plannerModel: updateStrategyPlannerModel("corner-first"),
-			strategyStore: new FakeStrategyStore(),
+			plannerModel: fakeModel()
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "复盘指令" } },
+				])
+				.respond(new AIMessage("review done")),
 			buffer,
 			sessionId,
 			playerTools: [buildGameEndingPlayerTool(buffer)],
@@ -226,7 +248,18 @@ describe("SessionTeam", () => {
 		// Consuming `content-block-finish` on top would double-emit each
 		// model response, and skipping the deltas entirely would drop text
 		// until the next tool call (spec 031 desktop batching regression).
-		const { team } = buildTestTeam("st-delta");
+		// This test constructs the SessionTeam directly (no SessionTeamStore
+		// materialization) — the one-shot initInstruction turn is NOT
+		// triggered here, so the planner model serves the review only (2
+		// responses: instruct_player call + the review answer).
+		const { team } = buildTestTeam(
+			"st-delta",
+			fakeModel()
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "复盘指令" } },
+				])
+				.respond(new AIMessage("review done")),
+		);
 		const { emit, frames } = recordingEmit();
 
 		team.submit({ text: "开始游戏" }, emit);
@@ -239,8 +272,11 @@ describe("SessionTeam", () => {
 		// frames (the player's "won, stopping" answer and the planner's
 		// post-review answer; the third queued player response is never
 		// invoked — the player agent loop stops after a text-only answer).
+		// The initInstruction turn's "init done" text is NOT here — it runs
+		// via `graph.invoke` (not streamed), T029.
 		expect(count("won, stopping")).toBe(1);
-		expect(count("strategy updated")).toBe(1);
+		expect(count("review done")).toBe(1);
+		expect(count("init done")).toBe(0);
 	});
 
 	it("getTeamState reconstructs both per-agent channels from the single checkpointer (A3)", async () => {
@@ -257,22 +293,21 @@ describe("SessionTeam", () => {
 		expect(sessionId).toBe("st-state");
 	});
 
-	it("refreshTeam clears BOTH channels, keeps the strategy, leaves gameEnded alone (FR-018)", async () => {
-		const store = new FakeStrategyStore();
-		const { team } = buildTestTeam("st-refresh", store);
+	it("refreshTeam clears BOTH channels AND the pendingInstruction slot, leaves gameEnded alone (FR-018 / 039 contract §7)", async () => {
+		const { team } = buildTestTeam("st-refresh");
 		const { emit } = recordingEmit();
 		team.submit({ text: "开始游戏" }, emit);
 		await flush();
 
-		// Strategy written by the planner during the turn.
-		expect(await store.get("st-refresh")).toBe("corner-first");
-
+		// The user turn consumed the init instruction on first activation
+		// (the slot is null after delivery) — write a stale one to prove the
+		// refresh clears it (contract §7 — no expired instruction survives).
 		await team.refreshTeam();
 
 		const state = (await team.getTeamState()) as TeamStateValue;
 		expect(state.playerMessages).toEqual([]);
 		expect(state.plannerMessages).toEqual([]);
-		expect(await store.get("st-refresh")).toBe("corner-first");
+		expect(state.pendingInstruction).toBeNull();
 		expect(state.gameEnded).toBeNull();
 	});
 
@@ -333,7 +368,6 @@ describe("SessionTeam", () => {
 				.respondWithTools([{ name: "async_saolei_move", args: { x: 1, y: 1 } }])
 				.respond(new AIMessage("done, stopping")),
 			plannerModel: fakeModel().respond(new AIMessage("ok")),
-			strategyStore: new FakeStrategyStore(),
 			buffer,
 			sessionId: "st-async-dispatch",
 			playerTools: [asyncMove],
@@ -539,6 +573,11 @@ describe("SessionTeamStore", () => {
 			},
 		);
 		await store.update("s-sf", "saolei", "default", true);
+		// Wait for the one-shot async initInstruction turn (triggered at
+		// materialization — T029): isRunning() includes initInFlight (Phase 6
+		// review Issue #5), so a rebuild during the init would be rejected
+		// FAILED_PRECONDITION.
+		await flush(0);
 
 		const [r1, r2] = await Promise.allSettled([
 			store.update("s-sf", "saolei", "p-a", true),
@@ -579,8 +618,10 @@ describe("SessionTeamStore", () => {
 					{ name: "fake_saolei_move", args: { x: 1, y: 1 } },
 				])
 				.respond(new AIMessage("won, stopping")),
-			plannerModel: updateStrategyPlannerModel("corner-first"),
-			strategyStore: new FakeStrategyStore(),
+			// 4 responses: the async initInstruction turn (triggered once at
+			// materialization — T029) + the review turn after the gate
+			// release.
+			plannerModel: initThenReviewPlannerModel("初始指令", "复盘指令"),
 			buffer,
 			sessionId: "s-inflight",
 			playerTools: [gatedTool],
@@ -677,8 +718,17 @@ describe("SessionTeamStore", () => {
 			},
 		);
 
+		// Materialize "default" first and wait for the one-shot async
+		// initInstruction turn (triggered at materialization — T029):
+		// isRunning() includes initInFlight (Phase 6 review Issue #5), so a
+		// rebuild racing the init would be rejected FAILED_PRECONDITION. The
+		// concurrent different-profile updates below then exercise the
+		// single-flight loser-rebuilds-after-winner path.
+		await store.update("s-3", "saolei", "default", true);
+		await flush(0);
+
 		const [t1, t2] = await Promise.allSettled([
-			store.update("s-3", "saolei", "default", true),
+			store.update("s-3", "saolei", "other", true),
 			store.update("s-3", "saolei", "other", true),
 		]);
 		// US3: the loser (different profile) re-enters the dispatch after the
@@ -705,5 +755,102 @@ describe("SessionTeamStore", () => {
 
 		expect(store.get("s-missing")).toBeUndefined();
 		expect(created).toEqual([]);
+	});
+});
+
+describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6 / FR-015/R2)", () => {
+	it("triggers the one-shot initInstruction on FIRST materialization; the instruction precedes the first user turn", async () => {
+		const created: string[] = [];
+		const store = new SessionTeamStore(async (sessionId) => {
+			created.push(sessionId);
+			return buildTestTeam(sessionId).team;
+		});
+
+		// `UpdateTeam(allow_missing=true)` 物化即返回（R2 — 不等 LLM）；init
+		// turn 异步触发（fakeModel 同步响应，故在微任务内完成）。
+		const team = await store.update("s-init", "saolei", "default", true);
+		expect(created).toEqual(["s-init"]);
+		await flush(0);
+
+		// The init turn produced the no-game-history instruction into the
+		// pending slot (LLM decided to call instruct_player).
+		const state = await team.getTeamState();
+		expect(state?.pendingInstruction).toBe("初始指令");
+
+		// First user turn: the player's first activation consumes the
+		// instruction FIRST (注入进 playerMessages，累积可引用) and clears the
+		// slot (FR-015 — user message 排在指令之后).
+		const { emit } = recordingEmit();
+		team.submit({ text: "开始游戏" }, emit);
+		await flush();
+
+		const after = (await team.getTeamState()) as TeamStateValue;
+		expect(after.pendingInstruction).toBeNull();
+		// The instruction is part of the player's channel history (D6 —
+		// visible, referenceable, compressible).
+		expect(
+			after.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("初始指令"),
+			),
+		).toBe(true);
+	});
+
+	it("queues a user message arriving during the async init AFTER the instruction (FR-015 ordering)", async () => {
+		// The init turn is triggered fire-and-forget by `update` (R2 — 物化即
+		// 返回，不等 LLM): the async graph.invoke is still in its microtask
+		// chain when the user message arrives. The TurnLoop queues the
+		// message and its turn awaits the init turn completion first — so the
+		// produced instruction is delivered BEFORE the queued user input
+		// (player 首次激活先注入 pending 指令).
+		const { team } = buildTestTeam("s-init-order");
+		const store = new SessionTeamStore(async () => team);
+		await store.update("s-init-order", "saolei", "default", true);
+
+		// Submit synchronously right after materialization — the async init
+		// turn has started but not completed yet.
+		const { emit } = recordingEmit();
+		team.submit({ text: "开始游戏" }, emit);
+		await flush();
+
+		const after = (await team.getTeamState()) as TeamStateValue;
+		expect(after.pendingInstruction).toBeNull();
+		// The instruction was delivered into the player channel during the
+		// first activation (累积可引用, survey D6).
+		expect(
+			after.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("初始指令"),
+			),
+		).toBe(true);
+	});
+
+	it("does NOT re-run initInstruction on a profile-change rebuild (040 FR-005 — init runs once at first materialization only)", async () => {
+		const store = new SessionTeamStore(
+			async (sessionId) => buildTestTeam(sessionId).team,
+			async (sessionId, _template, _profileName, existingCheckpointer) => {
+				return buildTestHandle(sessionId, existingCheckpointer);
+			},
+		);
+		const t1 = await store.update("s-reinit", "saolei", "default", true);
+		await flush(0);
+		expect((await t1.getTeamState())?.pendingInstruction).toBe("初始指令");
+
+		// First activation consumes the slot.
+		const { emit } = recordingEmit();
+		t1.submit({ text: "开始游戏" }, emit);
+		await flush();
+		expect((await t1.getTeamState())?.pendingInstruction).toBeNull();
+
+		// Profile-change rebuild: the graph is recompiled against the
+		// existing checkpointer but init is NOT re-triggered (the rebuild
+		// handle's planner model serves only review turns — a re-run would
+		// consume it and write a fresh pendingInstruction).
+		const t2 = await store.update("s-reinit", "saolei", "other", true);
+		expect(t2).toBe(t1);
+		const state = (await t1.getTeamState()) as TeamStateValue;
+		expect(state.pendingInstruction).toBeNull();
+		// Session history survived the rebuild (FR-005).
+		expect(state.playerMessages.length).toBeGreaterThan(0);
 	});
 });

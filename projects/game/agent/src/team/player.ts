@@ -9,12 +9,15 @@
  * - **Tools**: injected via {@link PlayerNodeDeps.tools} (DI seam). The
  *   production saolei MCP tools are wired in server.ts (Batch 2); tests
  *   inject fake tools that drive the sink.
- * - **Strategy**: on entry the node reads `StrategyStore.get(sessionId)` and
- *   injects it into the model prompt as a "当前态势" `SystemMessage` (FR-015 —
- *   code-level injection; the player has NO read tool). The injected message
- *   carries a FIXED id and is filtered out of the channel write-back, so the
- *   strategy never becomes part of the short-term message state (D4: strategy
- *   and short-term messages are decoupled).
+ * - **Pending instruction consumption (039 US3, T028 — contract §2.1,
+ *   FR-015/FR-016)**: on entry the node reads `state.pendingInstruction`
+ *   (the init/compact scenarios' deferred calibration-instruction slot) and,
+ *   when non-null, injects it as a `HumanMessage` into the player's input —
+ *   the "与下次激活一同注入" delivery. The injected message is ALSO written
+ *   back to the channel (as a HumanMessage), so the instruction accumulates
+ *   in the player's conversation history — visible, referenceable, and
+ *   compressible (survey D6; the strategy's "current-态势" SystemMessage
+ *   injection is gone — FR-013, player holds no long-term storage).
  * - **Game-end guard (Issue 1 — `specs/036-team-mode-bugfix/spec.md` FR-001)**:
  *   a `beforeModel` middleware stops the createAgent loop as soon as an
  *   unconsumed game-end event exists in the ephemeral buffer (the LLM never
@@ -44,7 +47,7 @@
 
 import { createAgent } from "langchain";
 import type { Runtime } from "langchain";
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -53,7 +56,6 @@ import { appendSkillBodyToPrompt } from "../skill-loader";
 import { buildContentBlocks } from "../llm";
 import type { TurnContent } from "../llm";
 import type { ChatModel } from "../model-provider";
-import type { StrategyStore } from "../strategy-store";
 import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
 import { consumeGameEvent } from "./team-sink";
@@ -62,28 +64,23 @@ import { consumeGameEvent } from "./team-sink";
 export const PLAYER_AGENT_NAME = "player";
 
 /**
- * Fixed id of the strategy "当前态势" SystemMessage the node prepends to the
- * model input. Filtering by this id on write-back keeps the strategy out of
- * the short-term message channel (D4 / contract §1: 策略不在 state).
- */
-const STRATEGY_MESSAGE_ID = "player-strategy-current";
-
-/**
  * The player's DEFAULT base prompt (the template-fixed fallback base, FR-034
  * semantics A — used when `SaoleiProfile.player_prompt` is empty, see
  * `specs/031-team-template-mode/spec.md` FR-034). The saolei skill body is
  * ALWAYS appended by the template on top of the base
  * (`appendSkillBodyToPrompt(base, ["saolei"])`), whether the base is the
  * profile override or this default — the skill guidance the previous
- * single-agent path injected for saolei profiles (spec 018 FR-023/024). The
- * CURRENT strategy is NOT part of this static prompt — it is injected per
- * entry (FR-015).
+ * single-agent path injected for saolei profiles (spec 018 FR-023/024).
+ * Calibration instructions are NOT part of this static prompt — they arrive
+ * as HumanMessages in the conversation flow (FR-014, survey D6).
  */
 export const DEFAULT_PLAYER_BASE =
 	"你是扫雷游戏的操作者（player）。你的职责是操作桌面上的扫雷窗口完成一局游戏：" +
 	"使用 saolei 工具落子（开新局、点击/标记/双击揭示格子、查询剩余雷数），" +
 	"根据返回的文本棋盘持续推理并落子，直到一局以 won/lost 结束或你判断应当停止。" +
-	"你独占桌面控制，不要等待其他 agent 的指令；每局结束后你可以自行决定是否开新局。";
+	"你独占桌面控制，不要等待其他 agent 的指令；每局结束后你可以自行决定是否开新局。" +
+	"复盘规划者（planner）可能不时向你发送策略指令（作为对话中的消息），" +
+	"你应将其视为对你后续对局的校准指导。";
 
 /**
  * DI seam overriding `langchain`'s `createAgent` (same pattern as the
@@ -98,11 +95,9 @@ export type CreateAgentFn = (config: any) => any;
 export interface PlayerNodeDeps {
 	/** The player's LLM (from the TeamProfile, Batch 2 wiring). */
 	model: ChatModel;
-	/** Long-term strategy store (reads the "当前态势", FR-015). */
-	strategyStore: StrategyStore;
 	/** Per-session ephemeral game-state buffer (sink writes, D6/D7). */
 	buffer: EphemeralGameBuffer;
-	/** Session id — the StrategyStore key and the checkpoint thread id. */
+	/** Session id — the checkpoint thread id. */
 	sessionId: string;
 	/** The player's tools (saolei MCP in production; fakes in tests). */
 	tools: StructuredToolInterface[];
@@ -116,15 +111,6 @@ export interface PlayerNodeDeps {
 	playerBasePrompt: string;
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
-}
-
-/** Build the current-态势 SystemMessage carrying the strategy text. */
-function buildStrategyMessage(strategy: string): BaseMessage {
-	const display = strategy === "" ? "（无 — 等待 planner 首局复盘后写入）" : strategy;
-	return new SystemMessage({
-		id: STRATEGY_MESSAGE_ID,
-		content: `当前态势（当前策略）：${display}`,
-	});
 }
 
 /**
@@ -141,7 +127,7 @@ export function createPlayerNode(
 	state: TeamStateValue,
 	config?: RunnableConfig,
 ) => Promise<Partial<TeamStateValue>> {
-	const { strategyStore, buffer, sessionId } = deps;
+	const { buffer, sessionId } = deps;
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
 	// No checkpointer: stateless per-invoke agent loop (A2/A3); the outer
@@ -213,10 +199,16 @@ export function createPlayerNode(
 		state: TeamStateValue,
 		config?: RunnableConfig,
 	): Promise<Partial<TeamStateValue>> => {
-		// FR-015: code-level "当前态势" injection, read fresh each entry.
-		const strategy = await strategyStore.get(sessionId);
+		// 039 US3 (T028, contract §2.1 — FR-015/FR-016): the init/compact
+		// scenarios' deferred calibration instruction, delivered "与下次激活
+		// 一同注入". When non-null, the instruction enters the player's input
+		// as a HumanMessage AND is written back to the channel — it
+		// accumulates in the conversation history (survey D6: visible,
+		// referenceable, compressible). The slot is then cleared.
+		const pending = state.pendingInstruction ?? null;
+		const pendingMessage = pending !== null ? new HumanMessage(pending) : null;
 		const input: BaseMessage[] = [
-			buildStrategyMessage(strategy),
+			...(pendingMessage ? [pendingMessage] : []),
 			...state.playerMessages,
 		];
 
@@ -237,13 +229,17 @@ export function createPlayerNode(
 			// D6 step 4: consume the buffer's end event ONCE (marks consumed).
 			const gameEvent = consumeGameEvent(buffer);
 			return {
-				// Filter the strategy message out of the channel write-back —
-				// the strategy stays in StrategyStore, not in short-term state
-				// (D4). `result` is undefined when the invoke threw — no
-				// messages to write back.
-				playerMessages: (result?.messages ?? []).filter(
-					(m: BaseMessage) => m.id !== STRATEGY_MESSAGE_ID,
-				),
+				// The pending instruction HumanMessage is written back
+				// alongside the agent's output (it is part of the player's
+				// conversation flow — survey D6). `result` is undefined when
+				// the invoke threw — only the instruction is persisted then.
+				playerMessages: [
+					...(pendingMessage ? [pendingMessage] : []),
+					...(result?.messages ?? []),
+				],
+				// Clear the deferred-instruction slot (contract §2.1 — the
+				// instruction is delivered exactly once, with this activation).
+				...(pending !== null ? { pendingInstruction: null } : {}),
 				...(gameEvent ? { gameEnded: gameEvent.status } : {}),
 			};
 		}

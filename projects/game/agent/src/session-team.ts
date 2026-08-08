@@ -19,10 +19,23 @@
  *   graph's `streamEvents` on the session's thread (thread_id = session id,
  *   FR-013) and converts each node's channel update into a stream of
  *   `TurnBlock`s tagged with the producing agent (`player`/`planner`, D12).
+ * - **Async initInstruction (039 US3, T029 — contract §6, FR-015/R2)**:
+ *   {@link SessionTeam.triggerInitInstruction} runs ONE background graph
+ *   turn right after the graph FIRST materialization (called by
+ *   `SessionTeamStore.update` — profile-change rebuilds never re-trigger it,
+ *   040 FR-005). The turn carries the `runInitInstruction` configurable flag
+ *   (the START conditional edge routes it to the `initInstruction` node →
+ *   END — the player is NOT invoked) and produces the no-game-history
+ *   calibration instruction into `TeamState.pendingInstruction`. The RPC
+ *   does NOT wait for it (fire-and-forget, `UpdateTeam` 物化即返回); a user
+ *   message arriving meanwhile is queued by the TurnLoop and its turn awaits
+ *   the init turn completion, so the instruction is delivered FIRST (player
+ *   entry consumes the pending slot before the user input, FR-015).
  * - **RefreshTeam** (FR-018): {@link SessionTeam.refreshTeam} clears BOTH
  *   short-term message channels via `graph.updateState` (the
- *   `context-middleware` helpers); the strategy (StrategyStore/mongo) is
- *   untouched.
+ *   `context-middleware` helpers); the long-term memory (memory service /
+ *   frozen snapshot) is untouched. 039 US3 (contract §7): the
+ *   `pendingInstruction` slot is cleared alongside (no stale instructions).
  * - **MCP host surface**: {@link SessionTeam.getBridge} / {@link SessionTeam.getSink}
  *   feed the `SessionBridgeLookup` (mcp-host.ts) so the saolei MCP server is
  *   built per session with the team sink bound to this session's buffer. The
@@ -45,6 +58,7 @@
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import * as grpc from "@grpc/grpc-js";
+import { warn } from "@dominion/common-js-logs";
 
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { MessageRole } from "../game_types/projects/game/MessageRole";
@@ -163,11 +177,38 @@ export class SessionTeam {
 	private turnLoopEmit: TurnLoopEmit | null = null;
 
 	/**
+	 * The one-shot async initInstruction turn (039 US3, T029 — contract §6,
+	 * FR-015/R2): set by {@link triggerInitInstruction} after graph FIRST
+	 * materialization and awaited by {@link runTeamTurn} so a user message
+	 * arriving during the async init runs AFTER the instruction was produced
+	 * (the pending slot is consumed before the user input — FR-015).
+	 * `null` until triggered; never re-triggered by profile rebuilds (040
+	 * FR-005).
+	 */
+	private initTurn: Promise<void> | null = null;
+
+	/**
+	 * True while the one-shot async initInstruction turn is actually
+	 * executing (039 US3 — Phase 6 review Issue #3/#5). Distinct from
+	 * {@link initTurn} (which stays non-null forever once triggered):
+	 *
+	 * - feeds {@link isRunning}, so the Connect status probe reports ACTIVE
+	 *   while the planner is producing the initial instruction (desktop
+	 *   typing-state coordination, contract §6 / research.md D5) and
+	 *   RefreshTeam / profile-change rebuild are rejected with
+	 *   FAILED_PRECONDITION during the init (the refresh would otherwise
+	 *   clear a freshly written `pendingInstruction` — contract §7);
+	 * - cleared in `finally` (also on the degrade path), so it never
+	 *   blocks the team after the init turn completes.
+	 */
+	private initInFlight = false;
+
+	/**
 	 * @param graphHandle The compiled team graph + outer MemorySaver (built
-	 *   by the store factory — server.ts T021 wires models/strategy/MCP tools).
+	 *   by the store factory — server.ts wires models/memory/MCP tools).
 	 * @param buffer      The per-session ephemeral game buffer (D7). Owned by
 	 *   this session; the sink writes it, the graph nodes read it.
-	 * @param sessionId   The dominion session id (thread id + strategy key).
+	 * @param sessionId   The dominion session id (the checkpoint thread id).
 	 * @param template    The session's template path segment (from the
 	 *   UpdateTeam team.name, AIP-134).
 	 * @param bridge      The session's `OperationBridge` (player-exclusive,
@@ -227,12 +268,94 @@ export class SessionTeam {
 	/**
 	 * RefreshTeam (FR-018): clear BOTH short-term message channels
 	 * (`playerMessages`/`plannerMessages`) via the outer graph's
-	 * `updateState` (context-middleware). The strategy and `gameEnded` are
+	 * `updateState` (context-middleware), reset `gameCounter`, and clear the
+	 * deferred `pendingInstruction` slot (039 US3 — contract §7: a stale
+	 * init/compact instruction must not survive the refresh). The long-term
+	 * memory (memory service / frozen snapshot) and `gameEnded` are
 	 * untouched. Caller MUST reject while a turn is in flight
 	 * ({@link isRunning}).
 	 */
 	async refreshTeam(): Promise<void> {
 		await refreshTeamChannels(this.graphHandle.graph, this.sessionId);
+	}
+
+	/**
+	 * Trigger the ONE-SHOT async initInstruction turn (039 US3, T029 —
+	 * contract §6, FR-015/R2). Called by `SessionTeamStore.update` right
+	 * after the graph FIRST materialization; profile-change rebuilds
+	 * (040 FR-005) never call it.
+	 *
+	 * Fire-and-forget: `UpdateTeam` 物化即返回（不等 LLM）。The turn runs the
+	 * graph with the `runInitInstruction` configurable flag — the START
+	 * conditional edge routes it to the `initInstruction` node → END (the
+	 * player is NOT invoked); the produced instruction lands in
+	 * `TeamState.pendingInstruction` and is delivered with the player's next
+	 * activation. A user message arriving during the async produce is queued
+	 * by the TurnLoop, and its turn awaits {@link initTurn} first — so the
+	 * instruction always precedes the user input (FR-015).
+	 *
+	 * Failure degrades (contract §6): a planner-model outage skips the
+	 * instruction (logged), never blocks the team or the materialization.
+	 */
+	triggerInitInstruction(): void {
+		if (this.initTurn) return;
+		this.initInFlight = true;
+		this.initTurn = this.runInitTurn().finally(() => {
+			// Cleared on BOTH the success and the degrade path (runInitTurn
+			// swallows errors internally, so this finally never observes a
+			// rejection).
+			this.initInFlight = false;
+		});
+	}
+
+	/**
+	 * The init turn runner: ONE graph `invoke` on the session thread with
+	 * the `runInitInstruction` flag + a fresh R1 instruction buffer.
+	 *
+	 * NOTE (Phase 6 review Issue #3 — honest scope): NO `emitChannelFrame`
+	 * is installed here. The init turn runs right after `UpdateTeam`
+	 * materialization, which the desktop strictly awaits BEFORE connecting
+	 * (desktop App.svelte: `await updateTeam(...)` → `continueSessionEntry`
+	 * → `await handleConnect()` — serial), and `turnLoopEmit` is only
+	 * assigned by the first `submit` (first user message) anyway — so an
+	 * emitted frame could never reach the desktop. The desktop's "planner
+	 * working" typing-state is instead provided by the Connect status probe:
+	 * {@link isRunning} includes {@link initInFlight}, so the probe reports
+	 * ACTIVE while the init turn produces the instruction. The init
+	 * activity's persistent visibility comes from the checkpointer (the
+	 * instruction node's plannerMessages output shows up in ListMessages
+	 * after Connect) and from the instruction delivered into
+	 * `playerMessages` on the first user turn.
+	 *
+	 * Errors are swallowed (degrade, contract §6) so the awaited
+	 * {@link initTurn} never rejects a subsequent user turn.
+	 */
+	private async runInitTurn(): Promise<void> {
+		try {
+			await this.graphHandle.graph.invoke(
+				{},
+				{
+					configurable: {
+						thread_id: this.sessionId,
+						// The START conditional edge routes this turn to the
+						// `initInstruction` node (graph.ts routeAfterStart).
+						runInitInstruction: true,
+						// R1 external buffer (contract §4 — instruction-tool.ts).
+						instructionBuffer: { content: null },
+					},
+					metadata: { session_id: this.sessionId },
+					recursionLimit: RECURSION_LIMIT,
+				},
+			);
+		} catch (err) {
+			// contract §6 降级：init 产出失败（如 planner model 不可用）→ 记
+			// 日志、跳过初始指令；不阻断 team 运行与 UpdateTeam 物化。
+			const message = err instanceof Error ? err.message : String(err);
+			warn("init instruction turn failed; skipping initial instruction", {
+				sessionId: this.sessionId,
+				error: message,
+			});
+		}
 	}
 
 	/**
@@ -257,9 +380,19 @@ export class SessionTeam {
 		this.turnLoop.submit(content);
 	}
 
-	/** True iff the per-session TurnLoop has a turn in flight or is draining. */
+	/**
+	 * True iff the per-session team has work in flight: the TurnLoop (turn
+	 * in flight or draining) OR the one-shot async initInstruction turn
+	 * (039 US3, Phase 6 review Issue #3/#5). The init turn runs OUTSIDE the
+	 * TurnLoop (it is a fire-and-forget graph invoke), so without this flag
+	 * `isRunning()` would report idle while the planner is producing the
+	 * initial instruction — the Connect status probe would show IDLE
+	 * instead of ACTIVE (desktop typing-state, contract §6), and
+	 * RefreshTeam / profile-change rebuild would not be gated (a refresh
+	 * could clear the freshly written `pendingInstruction`, contract §7).
+	 */
 	isRunning(): boolean {
-		return this.turnLoop?.isRunning() ?? false;
+		return this.initInFlight || (this.turnLoop?.isRunning() ?? false);
 	}
 
 	/**
@@ -335,13 +468,21 @@ export class SessionTeam {
 	 * double-output); the emitted set is exactly what the channel replay
 	 * would have produced (AIMessage text/reasoning + tool_calls + one
 	 * ToolMessage per finished tool, minus human/system input and the
-	 * strategy injection which never produce model/tool events). The former
+	 * strategy injection (removed in 039 Phase 6) which never produce
+	 * model/tool events). The former
 	 * {@link emittedCounts} watermark is gone with the `updates` path.
 	 */
 	private async *runTeamTurn(
 		content: TurnContent,
 		signal?: AbortSignal,
 	): AsyncIterable<TurnBlock> {
+		// 039 US3 (T029 — FR-015): a user turn must run AFTER the one-shot
+		// async initInstruction turn — the pending instruction is produced
+		// first, so the player's first activation consumes it BEFORE the
+		// user input (异步产出期间到达的 user message 排在指令之后).
+		if (this.initTurn) {
+			await this.initTurn;
+		}
 		const stream = (await this.graphHandle.graph.streamEvents(
 			{
 				playerMessages: [
@@ -387,6 +528,12 @@ export class SessionTeam {
 					// (`specs/038-queue-input-mid-turn/contracts/
 					// injection-seam-contract.md` §2; FR-001).
 					drainQueuedInput: () => this.turnLoop?.drainQueue() ?? null,
+					// 039 US3 (T029 — contract §4, R1): the fresh per-turn
+					// external instruction buffer. The `instruct_player` tool
+					// stages its content here; the review node reads it after
+					// the agent invoke returns and appends the instruction to
+					// `playerMessages` from its return value (FR-017).
+					instructionBuffer: { content: null },
 				},
 				metadata: { session_id: this.sessionId },
 				version: "v3",
@@ -618,6 +765,12 @@ export class SessionTeamStore {
 		const building = this.factory(sessionId, template, profileName)
 			.then((team) => {
 				this.teams.set(sessionId, { team, profileName });
+				// 039 US3 (T029 — contract §6, FR-015/R2): the team graph
+				// FIRST materialization asynchronously triggers the one-shot
+				// initInstruction turn (fire-and-forget — `UpdateTeam` 物化即
+				// 返回，不等 LLM). Profile-change rebuilds go through
+				// {@link rebuild}, which NEVER re-triggers init (040 FR-005).
+				team.triggerInitInstruction();
 				return team;
 			})
 			.finally(() => {

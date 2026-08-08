@@ -43,8 +43,9 @@ async function main() {
 	// resolver-aware provider (spec 012 FR-016/SC-001): every model lookup —
 	// the saolei TeamProfile's player AND planner models — resolves to the
 	// fake-llm ChatModel, so the full team graph pipeline (player + planner
-	// createAgents, update_strategy, strategy store) runs deterministically
-	// against the deployed fake-llm with no real LLM involved.
+	// createAgents, memory tools, instruct_player calibration instructions)
+	// runs deterministically against the deployed fake-llm with no real LLM
+	// involved.
 	const server = await startServer({
 		getProvider: async (_modelSpec: string): Promise<ChatModel> => {
 			return buildResolverAwareChatModel(resolver);

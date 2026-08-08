@@ -43,7 +43,9 @@
  *   snapshot on failure — contract §5: memory unavailability must not abort
  *   the compression turn / the team run).
  *
- * The strategy (StrategyStore, long-term memory) is never touched (FR-009).
+ * The long-term memory (memory service / frozen snapshot) is never touched
+ * by the channel summaries (FR-009 — the snapshot is separately re-baked at
+ * this boundary, 039 T021).
  */
 
 import { randomUUID } from "node:crypto";

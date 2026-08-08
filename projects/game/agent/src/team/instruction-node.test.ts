@@ -1,0 +1,243 @@
+/**
+ * team/instruction-node.test.ts — Unit tests for the init/compact instruction
+ * node factory (T025; `specs/039-planner-memory-calibration/contracts/
+ * team-graph-contract.md` §2.3 — FR-015/FR-016/FR-019).
+ *
+ * The node runs a REAL createAgent loop driven by `fakeModel` (same pattern
+ * as team/graph.test.ts): the fake model decides whether to call the real
+ * `instruct_player` tool, which stages the instruction into the
+ * configurable-provided external buffer (R1); the node reads the staged
+ * content AFTER the invoke returns and writes `pendingInstruction` — it
+ * never writes `playerMessages` (不触发 player invoke).
+ *
+ * Mock strategy (`style/javascript.md` §测试): the model/tools/buffer are
+ * injected via DI (no `vi.mock` — see
+ * [vitest — Mocking Modules Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)).
+ */
+
+import { describe, expect, it, vi } from "vitest";
+import { AIMessage, SystemMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
+import { fakeModel } from "@langchain/core/testing";
+
+import type { ChatModel } from "../model-provider";
+import {
+	FrozenMemorySnapshot,
+	PLANNER_MEMORY_SNAPSHOT_ID,
+} from "./memory-snapshot";
+import {
+	createInstructionNode,
+	type InstructionScenario,
+} from "./instruction-node";
+import type { InstructionBuffer } from "./instruction-tool";
+import type { TeamStateValue } from "./state";
+
+/** A minimal empty TeamState for a fresh-session instruction node run. */
+function freshState(): TeamStateValue {
+	return {
+		playerMessages: [],
+		plannerMessages: [],
+		gameEnded: null,
+		gameCounter: 0,
+		pendingInstruction: null,
+	};
+}
+
+/** The fake model that decides to send one instruction via instruct_player. */
+function instructingModel(content: string) {
+	return fakeModel()
+		.respondWithTools([{ name: "instruct_player", args: { content } }])
+		.respond(new AIMessage("instruction sent"));
+}
+
+/** The fake model that produces NO tool call (LLM decides not to instruct). */
+function silentModel() {
+	return fakeModel().respond(new AIMessage("no instruction needed"));
+}
+
+/** A fake model that always throws (planner model unavailable). */
+function failingModel() {
+	return fakeModel()
+		.respond(new Error("llm down"))
+		.respond(new Error("llm down"))
+		.respond(new Error("llm down"));
+}
+
+function buildNode(
+	model: ChatModel,
+	scenario: InstructionScenario,
+	overrides: { frozenSnapshot?: FrozenMemorySnapshot } = {},
+) {
+	const node = createInstructionNode(
+		{
+			model,
+			frozenSnapshot:
+				overrides.frozenSnapshot ?? new FrozenMemorySnapshot(),
+			plannerBasePrompt: "",
+		},
+		scenario,
+	);
+	return { node, buffer: { content: null } as InstructionBuffer };
+}
+
+/** The instruction request text the node injected for the given scenario. */
+function requestContent(
+	firstCallMessages: BaseMessage[],
+	scenario: InstructionScenario,
+): string {
+	const needle = scenario === "init" ? "团队初始化" : "上下文刚被压缩";
+	const request = firstCallMessages.find(
+		(m) => m._getType() === "human" && contentType(m).includes(needle),
+	);
+	if (!request) throw new Error("instruction request not found in input");
+	return contentType(request);
+}
+
+function contentType(m: BaseMessage): string {
+	const c = m.content;
+	return typeof c === "string" ? c : JSON.stringify(c);
+}
+
+describe("instruction node — init scenario (T025, contract §2.3)", () => {
+	it("writes the staged instruction into pendingInstruction when the LLM calls instruct_player (R4 — no enforcement of the call itself)", async () => {
+		const model = instructingModel("开局先点中心，再清理边角");
+		const { node, buffer } = buildNode(model, "init");
+		const config = {
+			configurable: { thread_id: "t-init", instructionBuffer: buffer },
+		};
+
+		const result = await node(freshState(), config);
+
+		// The LLM DID call the tool → the instruction is staged in the
+		// external buffer and the node writes it to pendingInstruction (the
+		// deferred slot — player consumes on next activation; NOT
+		// playerMessages — no player invoke, FR-015).
+		expect(result.pendingInstruction).toBe("开局先点中心，再清理边角");
+		expect(result.playerMessages).toBeUndefined();
+		// The buffer slot was reset after the read (R1).
+		expect(buffer.content).toBeNull();
+		// The planner's channel write-back excludes the frozen snapshot
+		// SystemMessage (contract §3 — filtered like the review node).
+		expect(result.plannerMessages).toBeDefined();
+		for (const m of result.plannerMessages as BaseMessage[]) {
+			expect(m.id).not.toBe(PLANNER_MEMORY_SNAPSHOT_ID);
+		}
+		// The model input = snapshot + (empty) planner history + the REQUIRING
+		// init request (无 gameLog — prompt 要求给指令, R4).
+		const firstCall = model.calls[0]?.messages as BaseMessage[];
+		expect(
+			firstCall.some((m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID),
+		).toBe(true);
+		const request = requestContent(firstCall, "init");
+		expect(request).toContain("请调用 instruct_player 发送这条指令");
+		expect(request).not.toContain("本局游戏过程");
+		// The fake model was actually exercised (style/javascript.md §测试).
+		expect(model.calls.length).toBeGreaterThan(0);
+	});
+
+	it("writes NO pendingInstruction when the LLM decides not to call the tool (R4 — no enforcement)", async () => {
+		const model = silentModel();
+		const { node, buffer } = buildNode(model, "init");
+		const config = {
+			configurable: { thread_id: "t-init-silent", instructionBuffer: buffer },
+		};
+
+		const result = await node(freshState(), config);
+
+		expect(result.pendingInstruction).toBeUndefined();
+		expect(result).not.toHaveProperty("pendingInstruction");
+		expect(buffer.content).toBeNull();
+	});
+
+	it("degrades on persistent invoke failure: skips the instruction and does not throw (contract §6)", async () => {
+		const model = failingModel();
+		const { node } = buildNode(model, "init");
+		const config = {
+			configurable: {
+				thread_id: "t-init-fail",
+				instructionBuffer: { content: null } as InstructionBuffer,
+			},
+		};
+
+		const result = await node(freshState(), config);
+
+		// contract §6: planner model unavailable → skip the init instruction,
+		// log, do NOT block the team / UpdateTeam materialization.
+		expect(result).toEqual({});
+		// The retry wrapper really retried (3 attempts) before degrading.
+		expect(model.calls.length).toBe(3);
+	});
+
+	it("emits the request as a real-time planner frame (typing-state coordination, contract §6 / research.md D5)", async () => {
+		const model = instructingModel("test");
+		const { node, buffer } = buildNode(model, "init");
+		const emitChannelFrame = vi.fn<
+			(agent: string, content: string, frameId?: string, role?: string) => void
+		>();
+
+		await node(freshState(), {
+			configurable: {
+				thread_id: "t-init-frame",
+				instructionBuffer: buffer,
+				emitChannelFrame,
+			},
+		});
+
+		// The frame carries agent=planner and the request text (the desktop
+		// shows planner "typing"/working during the async init).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
+		const [agent, content, , role] = emitChannelFrame.mock.calls[0];
+		expect(agent).toBe("planner");
+		expect(content).toContain("团队初始化");
+		expect(role).toBe("MESSAGE_ROLE_USER");
+	});
+});
+
+describe("instruction node — compact scenario (T025, contract §2.3)", () => {
+	it("writes the staged instruction into pendingInstruction with the COMPACT prompt (压缩后重建引导, FR-016)", async () => {
+		const model = instructingModel("重新建立引导：保持节奏");
+		const { node, buffer } = buildNode(model, "compact");
+		// A compressed planner channel (one summary AIMessage) — the node
+		// must carry it into the model input (post-compact context).
+		const state = freshState();
+		state.plannerMessages = [new AIMessage("planner 摘要内容")];
+		const config = {
+			configurable: { thread_id: "t-compact", instructionBuffer: buffer },
+		};
+
+		const result = await node(state, config);
+
+		expect(result.pendingInstruction).toBe("重新建立引导：保持节奏");
+		const firstCall = model.calls[0]?.messages as BaseMessage[];
+		// The compressed planner summary is part of the input.
+		expect(
+			firstCall.some((m) => contentType(m).includes("planner 摘要内容")),
+		).toBe(true);
+		const request = requestContent(firstCall, "compact");
+		expect(request).toContain("上下文刚被压缩");
+		expect(request).toContain("请调用 instruct_player 发送这条指令");
+		expect(request).not.toContain("本局游戏过程");
+	});
+
+	it("keeps the frozen snapshot SystemMessage out of the channel write-back (contract §3)", async () => {
+		const snapshot = new FrozenMemorySnapshot();
+		const model = instructingModel("指令");
+		const { node, buffer } = buildNode(model, "compact", { frozenSnapshot: snapshot });
+		const config = {
+			configurable: { thread_id: "t-compact-filter", instructionBuffer: buffer },
+		};
+
+		const result = await node(freshState(), config);
+
+		for (const m of result.plannerMessages as BaseMessage[]) {
+			expect(m.id).not.toBe(PLANNER_MEMORY_SNAPSHOT_ID);
+		}
+		// The snapshot SystemMessage IS in the model input (纯内容呈现 —
+		// SystemMessage with the fixed id, FR-011).
+		const firstCall = model.calls[0]?.messages as BaseMessage[];
+		const snapshotMsg = firstCall.find(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
+		);
+		expect(snapshotMsg).toBeInstanceOf(SystemMessage);
+	});
+});

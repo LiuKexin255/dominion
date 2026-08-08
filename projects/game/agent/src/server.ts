@@ -9,12 +9,6 @@
  *   player/planner model specs, §2.3).
  * - **ModelProviderCache** → per-model `ChatModel` singletons for the
  *   player/planner agents.
- * - **Mongo client** → `MongoStrategyStore` (`strategies` collection; the
- *   strategy is persisted by the agent service itself, NOT via the prompt
- *   service — strategy-store-contract.md §2). The client resolves the
- *   current `game/mongo` instance via the dominion resolver and derives the
- *   mongo credentials deterministically (same scheme as the Go
- *   `common/gopkg/mongo` client — `dominion/common/gopkg/mongo/client.go`).
  * - **MemoryClient** → the planner's long-term memory data plane (039 US2,
  *   T022): a service-scoped gRPC client to the MemoryService
  *   (memory-mcp-contract.md §3). Per session the factory additionally builds
@@ -24,6 +18,9 @@
  *   compress boundary — team-graph-contract.md §3). Both are injected into
  *   `buildTeamGraph` — for the FIRST build AND the profile-change rebuild
  *   closure (the rebuilt planner holds the same memory tools + snapshot).
+ *   The shared strategy/mongo wiring (Phase 5) is GONE (039 US3, T030/T031 —
+ *   FR-013: no shared strategy store anywhere; the planner's calibration
+ *   instructions are delivered via the `instruct_player` tool, T027).
  * - **SessionTeamStore** → per-session compiled saolei team graph (buildTeamGraph)
  *   with the saolei MCP tools wired as the player's tools (FR-010).
  * - **MCP host** → per-session saolei McpServer with the team sink injected
@@ -35,14 +32,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createHmac } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { info, warn } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
-import { createResolver } from "@dominion/common-js-resolver";
-import { MongoClient } from "mongodb";
-import type { EndpointResolver } from "@dominion/common-js-resolver";
 import type { ProtoGrpcType } from "../game_types/game";
 
 import { readSecret } from "./secrets";
@@ -50,7 +43,6 @@ import { PromptClient } from "./prompt-client";
 import { MemoryClient } from "./memory-client";
 import { ModelProviderCache } from "./model-provider";
 import type { ChatModel } from "./model-provider";
-import { MongoStrategyStore, STRATEGIES_COLLECTION } from "./strategy-store";
 import { SessionTeamStore } from "./session-team";
 import { SessionTeam } from "./session-team";
 import { Handler } from "./handler";
@@ -66,78 +58,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { MemorySaver } from "@langchain/langgraph";
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** The mongo database shared with the prompt service (same instance). */
-const MONGO_DB_NAME = "game_prompt";
-
-/** The dominion mongo target (app/service — deploy.yaml `infra mongodb`). */
-const MONGO_TARGET = { app: "game", service: "mongo", port: { kind: "number", port: 27017 } as const };
-
-// ---------------------------------------------------------------------------
-// Mongo client (deterministic credentials — mirrors common/gopkg/mongo)
-// ---------------------------------------------------------------------------
-
-const MONGO_PASSWORD_HMAC_KEY = "dominion-mongo-stable-password";
-const MONGO_PASSWORD_ALPHABET =
-  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const MONGO_PASSWORD_MIN_LEN = 24;
-const MONGO_USERNAME = "admin";
-const MONGO_AUTH_DB = "admin";
-
-/**
- * Deterministically derive the mongo admin password — the TS port of
- * `generateStablePassword` (`common/gopkg/mongo/credentials.go`): HMAC-SHA256
- * over the NUL-joined inputs with the fixed domain key, mapped onto the
- * alphabet. Kept byte-identical so the agent connects to the same mongo
- * instance the Go services use.
- */
-function generateStablePassword(...inputs: string[]): string {
-  const mac = createHmac("sha256", MONGO_PASSWORD_HMAC_KEY);
-  mac.update(inputs.map((i) => i.trim()).join("\u0000"));
-  const sum = mac.digest();
-
-  let encoded = "";
-  for (const b of sum) {
-    encoded += MONGO_PASSWORD_ALPHABET[b % MONGO_PASSWORD_ALPHABET.length];
-  }
-  if (encoded.length >= MONGO_PASSWORD_MIN_LEN) {
-    return encoded;
-  }
-  while (encoded.length < MONGO_PASSWORD_MIN_LEN) {
-    for (const b of sum) {
-      encoded += MONGO_PASSWORD_ALPHABET[b % MONGO_PASSWORD_ALPHABET.length];
-      if (encoded.length >= MONGO_PASSWORD_MIN_LEN) break;
-    }
-  }
-  return encoded;
-}
-
-/**
- * Create and connect the mongo client for the current `game/mongo` instance
- * (strategy-store-contract.md §2 — connection config mirrors the prompt
- * service's approach: resolve the endpoint, derive the credentials).
- */
-async function createMongoClient(
-  resolver: EndpointResolver,
-): Promise<MongoClient> {
-  const endpoints = await resolver.resolve(MONGO_TARGET);
-  if (endpoints.length === 0) {
-    throw new Error("resolve mongo endpoint for game/mongo: no ready endpoints found");
-  }
-  const address = endpoints[0];
-  const envName = (process.env.DOMINION_ENVIRONMENT ?? "").trim() || "default";
-  const password = generateStablePassword("game", envName, "mongo");
-  const uri = `mongodb://${MONGO_USERNAME}:${password}@${address}/${MONGO_AUTH_DB}?authSource=${MONGO_AUTH_DB}`;
-  info("mongo client initializing", { address, db: MONGO_DB_NAME });
-  const client = new MongoClient(uri);
-  await client.connect();
-  return client;
-}
-
-// ---------------------------------------------------------------------------
-// Proto loading
+// Exported startServer
 // ---------------------------------------------------------------------------
 
 const protoRoot = path.join(__dirname, "..");
@@ -237,15 +158,13 @@ export async function startServer(
   );
   const getProvider = overrides.getProvider ?? ((spec: string) => providerCache.getProvider(spec));
 
-  // Strategy long-term memory: the agent persists it itself (D4 revision #5);
-  // the graph is injected with the mongo-backed store.
-  const resolver = createResolver();
-  const mongoClient = await createMongoClient(resolver);
-  const strategyStore = new MongoStrategyStore(
-    mongoClient.db(MONGO_DB_NAME).collection(STRATEGIES_COLLECTION) as never,
-  );
-  await strategyStore.ensureIndexes();
-  info("strategy store ready", { collection: STRATEGIES_COLLECTION });
+  // 039 US3 (T030/T031 — FR-013): the shared strategy/mongo wiring (Phase
+  // 5) is REMOVED — the agent no longer persists any shared strategy. The
+  // planner's long-term memory lives in the memory service (memoryClient
+  // above), and its calibration instructions are delivered via the
+  // `instruct_player` tool (built internally by the planner-family nodes,
+  // T027 — staged through the configurable instructionBuffer installed per
+  // turn by session-team.ts, contract §4 R1).
 
   // Per-session bridge/sink early-registration registry — the MCP host's
   // `SessionBridgeLookup` source. Entries are set by the team factory BEFORE
@@ -353,7 +272,6 @@ export async function startServer(
         const handle = buildTeamGraph({
           playerModel,
           plannerModel,
-          strategyStore,
           memoryClient,
           frozenSnapshot,
           template,
@@ -430,7 +348,6 @@ export async function startServer(
         {
           playerModel,
           plannerModel,
-          strategyStore,
           memoryClient,
           frozenSnapshot,
           template,
