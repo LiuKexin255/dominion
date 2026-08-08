@@ -2,28 +2,39 @@
  * saolei-mcp.test.ts — Tests for the session-bound saolei MCP server with
  * recognized text-board state and strict pre-dispatch validation.
  *
- * Coverage (Phase 4 / US3, spec 025 FR-012..FR-022;
- * `specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`):
- *   - Exactly five tools are exposed (`saolei_init`, `saolei_click`,
- *     `saolei_flag`, `saolei_chord_click`, `saolei_remain`); `saolei_update`
- *     is absent. `saolei_remain` is the read-only fifth tool (spec 029 US2 /
- *     FR-006..013; `specs/029-saolei-coord-remain/contracts/saolei-remain-
- *     tool-contract.md`).
+ * Coverage (spec 025 FR-012..FR-022;
+ * `specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`;
+ * the cell tools are merged into `saolei_operate` — Phase 2 US1, FR-001..005,
+ * `specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`):
+ *   - Exactly three tools are exposed (`saolei_init`, `saolei_operate`,
+ *     `saolei_remain`); the former `saolei_click`/`saolei_flag`/
+ *     `saolei_chord_click` are gone. `saolei_remain` is the read-only third
+ *     tool (spec 029 US2 / FR-006..013; `specs/029-saolei-coord-remain/
+ *     contracts/saolei-remain-tool-contract.md`).
+ *   - `saolei_operate` DUAL-FORM parameters: single `type`/`x`/`y` == a
+ *     length-1 `operations` array (equivalent semantics, contract §3); both /
+ *     neither / partial forms are rejected; empty operations is a no-op.
  *   - `saolei_init` takes no `width`/`height` arguments (FR-019).
  *   - Every tool returns a single TEXT board block — NEVER an image block
  *     (FR-012 / SC-003).
- *   - `saolei_init` returns the initial text board; a legal `saolei_click`
+ *   - `saolei_init` returns the initial text board; a legal `saolei_operate`
  *     dispatches and returns the updated text board.
  *   - Each illegal rule is rejected BEFORE dispatch with the right reason
  *     code (contract §4): `cell_already_revealed`, `cell_is_flagged`,
  *     `cannot_flag_revealed`, `chord_requires_number`, `out_of_bounds`,
  *     `no_active_game`, `game_over`.
+ *   - Batch triage (FR-002, contract §2): harmless no-ops (HARMLESS_NOOP_
+ *     REASONS) are SKIPPED and the batch continues; structural rejections
+ *     (STRUCTURAL_REASONS) and game end STOP the batch; earlier successful
+ *     ops take effect; ONE result per call.
  *   - A chord on a revealed number with a mismatched adjacent-flag count is
  *     NOT rejected (FR-015e).
  *   - Recognition failure (`init`/`update` throwing, or no screenshot) →
  *     "unable to recognize board", state invalidated, subsequent ops rejected
  *     as `no_active_game` (FR-017).
  *   - The MCP `extra.signal` is forwarded to `bridge.dispatch` (T028).
+ *   - The sink fires ONE `onOperate` per `saolei_operate` call (single or
+ *     batch) with the full operations list (FR-004, contract §4).
  *
  * Pattern (`style/javascript.md` §测试 / [vitest Mocking Modules — Pitfalls]
  * (https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)): pure
@@ -42,7 +53,12 @@ import {
 	isTerminalState,
 	computeGameStats,
 } from "./saolei-mcp";
-import type { SaoleiBoardApi, CellTool, SaoleiEventSink, GameStats } from "./saolei-mcp";
+import type {
+	SaoleiBoardApi,
+	SaoleiEventSink,
+	GameStats,
+	CellOperation,
+} from "./saolei-mcp";
 import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
 import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
 import type { FlowPart } from "../../../../game_types/projects/game/FlowPart";
@@ -256,7 +272,7 @@ function expectTextOnly(
 describe("validateMove: strict rule table (contract §4)", () => {
 	it("rejects an out-of-bounds coordinate", () => {
 		const s = board(["* *", "* *"]);
-		expect(validateMove(s, "saolei_click", 5, 5)).toEqual({
+		expect(validateMove(s, "click", 5, 5)).toEqual({
 			ok: false,
 			reason: "out_of_bounds",
 		});
@@ -264,7 +280,7 @@ describe("validateMove: strict rule table (contract §4)", () => {
 
 	it("rejects any cell op when the state is terminal (HIT_MINE present)", () => {
 		const s = board(["X *", "* *"]);
-		expect(validateMove(s, "saolei_click", 1, 0)).toEqual({
+		expect(validateMove(s, "click", 1, 0)).toEqual({
 			ok: false,
 			reason: "game_over",
 		});
@@ -272,74 +288,74 @@ describe("validateMove: strict rule table (contract §4)", () => {
 
 	it("rejects any cell op when the state is terminal (MINE present)", () => {
 		const s = board(["M *", "* *"]);
-		expect(validateMove(s, "saolei_flag", 1, 0)).toEqual({
+		expect(validateMove(s, "flag", 1, 0)).toEqual({
 			ok: false,
 			reason: "game_over",
 		});
 	});
 
-	it("saolei_click: rejects a revealed number (cell_already_revealed)", () => {
+	it("validateMove click: rejects a revealed number (cell_already_revealed)", () => {
 		const s = board(["0 *", "* *"]);
-		expect(validateMove(s, "saolei_click", 0, 0)).toEqual({
+		expect(validateMove(s, "click", 0, 0)).toEqual({
 			ok: false,
 			reason: "cell_already_revealed",
 		});
 	});
 
-	it("saolei_click: rejects a flag (cell_is_flagged)", () => {
+	it("validateMove click: rejects a flag (cell_is_flagged)", () => {
 		const s = board(["F *", "* *"]);
-		expect(validateMove(s, "saolei_click", 0, 0)).toEqual({
+		expect(validateMove(s, "click", 0, 0)).toEqual({
 			ok: false,
 			reason: "cell_is_flagged",
 		});
 	});
 
-	it("saolei_click: allows an unrevealed cell", () => {
+	it("validateMove click: allows an unrevealed cell", () => {
 		const s = board(["* *", "* *"]);
-		expect(validateMove(s, "saolei_click", 1, 1)).toEqual({ ok: true });
+		expect(validateMove(s, "click", 1, 1)).toEqual({ ok: true });
 	});
 
-	it("saolei_flag: rejects a revealed number (cannot_flag_revealed)", () => {
+	it("validateMove flag: rejects a revealed number (cannot_flag_revealed)", () => {
 		const s = board(["3 *", "* *"]);
-		expect(validateMove(s, "saolei_flag", 0, 0)).toEqual({
+		expect(validateMove(s, "flag", 0, 0)).toEqual({
 			ok: false,
 			reason: "cannot_flag_revealed",
 		});
 	});
 
-	it("saolei_flag: allows flagging an unrevealed cell and toggling a flag", () => {
+	it("validateMove flag: allows flagging an unrevealed cell and toggling a flag", () => {
 		const initial = board(["* *", "* *"]);
-		expect(validateMove(initial, "saolei_flag", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(initial, "flag", 0, 0)).toEqual({ ok: true });
 		const flagged = board(["F *", "* *"]);
-		expect(validateMove(flagged, "saolei_flag", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(flagged, "flag", 0, 0)).toEqual({ ok: true });
 	});
 
-	it("saolei_chord_click: rejects 0 / INITIAL / FLAG (chord_requires_number)", () => {
+	it("validateMove chord: rejects 0 / INITIAL / FLAG (chord_requires_number)", () => {
 		const zero = board(["0 *", "* *"]);
-		expect(validateMove(zero, "saolei_chord_click", 0, 0)).toEqual({
+		expect(validateMove(zero, "chord", 0, 0)).toEqual({
 			ok: false,
 			reason: "chord_requires_number",
 		});
 		const initial = board(["* *", "* *"]);
-		expect(validateMove(initial, "saolei_chord_click", 0, 0)).toEqual({
+		expect(validateMove(initial, "chord", 0, 0)).toEqual({
 			ok: false,
 			reason: "chord_requires_number",
 		});
 		const flag = board(["F *", "* *"]);
-		expect(validateMove(flag, "saolei_chord_click", 0, 0)).toEqual({
+		expect(validateMove(flag, "chord", 0, 0)).toEqual({
 			ok: false,
 			reason: "chord_requires_number",
 		});
 	});
 
-	it("saolei_chord_click: allows a chord on a revealed number even when the adjacent-flag count does NOT match (FR-015e)", () => {
+	it("validateMove chord: allows a chord on a revealed number even when the adjacent-flag count does NOT match (FR-015e)", () => {
 		// Cell (0,0) is "1" but no neighbor is flagged → flag-count (0) ≠ 1.
 		// Validation judges target-cell compatibility, not predicted outcome.
 		const s = board(["1 *", "* *"]);
-		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(s, "chord", 0, 0)).toEqual({ ok: true });
 	});
 
-	it("saolei_chord_click: rejects when the target's 8 neighbors are all revealed numbers (chord_no_unrevealed_neighbor, FR-016..020)", () => {
+	it("validateMove chord: rejects when the target's 8 neighbors are all revealed numbers (chord_no_unrevealed_neighbor, FR-016..020)", () => {
 		// 4×4 board: the 3×3 region around (1,1) is all numbers, the rest is
 		// INITIAL so the board is NOT terminal-won. Target (1,1) = "1"; every
 		// in-bounds neighbor of (1,1) is a revealed number → no INITIAL/UNKNOWN
@@ -350,13 +366,13 @@ describe("validateMove: strict rule table (contract §4)", () => {
 			"1 1 1 *",
 			"* * * *",
 		]);
-		expect(validateMove(s, "saolei_chord_click", 1, 1)).toEqual({
+		expect(validateMove(s, "chord", 1, 1)).toEqual({
 			ok: false,
 			reason: "chord_no_unrevealed_neighbor",
 		});
 	});
 
-	it("saolei_chord_click: rejects when all neighbors are FLAG (chord_no_unrevealed_neighbor, FR-016..020)", () => {
+	it("validateMove chord: rejects when all neighbors are FLAG (chord_no_unrevealed_neighbor, FR-016..020)", () => {
 		// (1,1) = "8" with 8 FLAG neighbors — every neighbor is a flag, so
 		// hasInitialOrUnknownNeighbor is false. The "*" cells keep the board
 		// non-terminal.
@@ -366,13 +382,13 @@ describe("validateMove: strict rule table (contract §4)", () => {
 			"F F F *",
 			"* * * *",
 		]);
-		expect(validateMove(s, "saolei_chord_click", 1, 1)).toEqual({
+		expect(validateMove(s, "chord", 1, 1)).toEqual({
 			ok: false,
 			reason: "chord_no_unrevealed_neighbor",
 		});
 	});
 
-	it("saolei_chord_click: rejects at a corner/edge target with no in-bounds INITIAL neighbor (chord_no_unrevealed_neighbor, FR-016..020)", () => {
+	it("validateMove chord: rejects at a corner/edge target with no in-bounds INITIAL neighbor (chord_no_unrevealed_neighbor, FR-016..020)", () => {
 		// Corner target (0,0) = "1": its only in-bounds neighbors are (1,0),
 		// (0,1), (1,1) — all numbers. The "*" cells keep the board non-terminal.
 		const corner = board([
@@ -380,7 +396,7 @@ describe("validateMove: strict rule table (contract §4)", () => {
 			"1 1 *",
 			"* * *",
 		]);
-		expect(validateMove(corner, "saolei_chord_click", 0, 0)).toEqual({
+		expect(validateMove(corner, "chord", 0, 0)).toEqual({
 			ok: false,
 			reason: "chord_no_unrevealed_neighbor",
 		});
@@ -391,22 +407,22 @@ describe("validateMove: strict rule table (contract §4)", () => {
 			"1 1 1",
 			"* * *",
 		]);
-		expect(validateMove(edge, "saolei_chord_click", 1, 0)).toEqual({
+		expect(validateMove(edge, "chord", 1, 0)).toEqual({
 			ok: false,
 			reason: "chord_no_unrevealed_neighbor",
 		});
 	});
 
-	it("saolei_chord_click: allows when at least one neighbor is INITIAL", () => {
+	it("validateMove chord: allows when at least one neighbor is INITIAL", () => {
 		// (0,0) = "1"; neighbor (1,0) is INITIAL — a chord would reveal it.
 		const s = board([
 			"1 *",
 			"1 1",
 		]);
-		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(s, "chord", 0, 0)).toEqual({ ok: true });
 	});
 
-	it("saolei_chord_click: lenient on UNKNOWN neighbor (FR-017) — allowed even when no INITIAL neighbor exists", () => {
+	it("validateMove chord: lenient on UNKNOWN neighbor (FR-017) — allowed even when no INITIAL neighbor exists", () => {
 		// (0,0) = "1"; the only non-revealed neighbor is UNKNOWN. Per FR-017
 		// the chord is NOT rejected on this ground (UNKNOWN is treated as
 		// possibly unrevealed).
@@ -414,10 +430,10 @@ describe("validateMove: strict rule table (contract §4)", () => {
 			"1 ?",
 			"1 1",
 		]);
-		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(s, "chord", 0, 0)).toEqual({ ok: true });
 	});
 
-	it("saolei_chord_click: chord_requires_number still fires FIRST on a non-number target (FR-018 rule order)", () => {
+	it("validateMove chord: chord_requires_number still fires FIRST on a non-number target (FR-018 rule order)", () => {
 		// (0,0) = INITIAL (a non-number) and NONE of its neighbors is INITIAL
 		// or UNKNOWN — so the chord-neighbor rule would also fire if reached.
 		// Assert the existing chord_requires_number rule wins (FR-018: the
@@ -426,7 +442,7 @@ describe("validateMove: strict rule table (contract §4)", () => {
 			"* 1",
 			"1 1",
 		]);
-		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({
+		expect(validateMove(s, "chord", 0, 0)).toEqual({
 			ok: false,
 			reason: "chord_requires_number",
 		});
@@ -434,24 +450,24 @@ describe("validateMove: strict rule table (contract §4)", () => {
 
 	it("UNKNOWN target is always lenient (FR-018)", () => {
 		const s = board(["? *", "* *"]);
-		expect(validateMove(s, "saolei_click", 0, 0)).toEqual({ ok: true });
-		expect(validateMove(s, "saolei_flag", 0, 0)).toEqual({ ok: true });
-		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(s, "click", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(s, "flag", 0, 0)).toEqual({ ok: true });
+		expect(validateMove(s, "chord", 0, 0)).toEqual({ ok: true });
 	});
 
 	it("rejects any cell op when the state is a recognized win (game_won, FR-021..023)", () => {
 		// All cells are revealed numbers or FLAG with a decoded 000 counter ⇒
 		// isWin(state) === true (spec 028: grid-revealed AND counter 000).
 		const win = board(["0 F", "1 1"], COUNTER_ZERO);
-		expect(validateMove(win, "saolei_click", 0, 0)).toEqual({
+		expect(validateMove(win, "click", 0, 0)).toEqual({
 			ok: false,
 			reason: "game_won",
 		});
-		expect(validateMove(win, "saolei_flag", 1, 1)).toEqual({
+		expect(validateMove(win, "flag", 1, 1)).toEqual({
 			ok: false,
 			reason: "game_won",
 		});
-		expect(validateMove(win, "saolei_chord_click", 1, 1)).toEqual({
+		expect(validateMove(win, "chord", 1, 1)).toEqual({
 			ok: false,
 			reason: "game_won",
 		});
@@ -467,17 +483,17 @@ describe("validateMove: strict rule table (contract §4)", () => {
 		//   (0,0)="0" (revealed)  (1,0)="F" (FLAG)
 		//   (0,1)="1" (revealed)  (1,1)="1" (revealed)
 		const overFlag = board(["0 F", "1 1"], COUNTER_NEG_ONE);
-		// saolei_flag on the FLAG at (1,0) ⇒ legal (place/toggle) ⇒ ok: true.
-		expect(validateMove(overFlag, "saolei_flag", 1, 0)).toEqual({ ok: true });
-		// saolei_click on the FLAG at (1,0) ⇒ cell-specific `cell_is_flagged`
+		// A flag op on the FLAG at (1,0) ⇒ legal (place/toggle) ⇒ ok: true.
+		expect(validateMove(overFlag, "flag", 1, 0)).toEqual({ ok: true });
+		// A click op on the FLAG at (1,0) ⇒ cell-specific `cell_is_flagged`
 		// (NOT `game_won` — the terminal-win gate did not fire).
-		expect(validateMove(overFlag, "saolei_click", 1, 0)).toEqual({
+		expect(validateMove(overFlag, "click", 1, 0)).toEqual({
 			ok: false,
 			reason: "cell_is_flagged",
 		});
-		// saolei_flag on the revealed "0" at (0,0) ⇒ cell-specific
+		// A flag op on the revealed "0" at (0,0) ⇒ cell-specific
 		// `cannot_flag_revealed` (NOT `game_won`).
-		expect(validateMove(overFlag, "saolei_flag", 0, 0)).toEqual({
+		expect(validateMove(overFlag, "flag", 0, 0)).toEqual({
 			ok: false,
 			reason: "cannot_flag_revealed",
 		});
@@ -488,7 +504,7 @@ describe("validateMove: strict rule table (contract §4)", () => {
 		// terminal reason is the existing game_over (FR-022 — the two terminal
 		// reasons are mutually exclusive).
 		const lost = board(["X 0", "0 0"]);
-		expect(validateMove(lost, "saolei_click", 1, 0)).toEqual({
+		expect(validateMove(lost, "click", 1, 0)).toEqual({
 			ok: false,
 			reason: "game_over",
 		});
@@ -509,8 +525,8 @@ describe("isTerminalState", () => {
 
 // ── Tool registration ──────────────────────────────────────────────────────
 
-describe("createSaoleiMcpServer: tool registration (FR-020)", () => {
-	it("registers exactly the five saolei tools (no saolei_update)", async () => {
+describe("createSaoleiMcpServer: tool registration (FR-020 / 039 US1)", () => {
+	it("registers exactly the three saolei tools (no saolei_click/flag/chord_click, no saolei_update)", async () => {
 		const { bridge } = makeFakeBridge();
 		const { api } = makeFakeBoardApi(board(["*"]));
 		const server = createSaoleiMcpServer(bridge, api);
@@ -521,16 +537,38 @@ describe("createSaoleiMcpServer: tool registration (FR-020)", () => {
 		const result = await handler({ method: "tools/list", params: {} });
 
 		const names = (result.tools as { name: string }[]).map((t) => t.name);
+		// 039 US1 (FR-001): the three cell tools are merged into
+		// `saolei_operate`; `saolei_init`/`saolei_remain` stay (FR-003).
 		expect(names.sort()).toEqual(
-			[
-				"saolei_chord_click",
-				"saolei_click",
-				"saolei_flag",
-				"saolei_init",
-				"saolei_remain",
-			].sort(),
+			["saolei_init", "saolei_operate", "saolei_remain"].sort(),
 		);
+		expect(names).not.toContain("saolei_click");
+		expect(names).not.toContain("saolei_flag");
+		expect(names).not.toContain("saolei_chord_click");
 		expect(names).not.toContain("saolei_update");
+	});
+
+	it("saolei_operate inputSchema exposes the dual form (type/x/y + operations with the type enum)", async () => {
+		const { bridge } = makeFakeBridge();
+		const { api } = makeFakeBoardApi(board(["*"]));
+		const server = createSaoleiMcpServer(bridge, api);
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const inner = (server as any).server;
+		const handler = inner._requestHandlers.get("tools/list");
+		const result = await handler({ method: "tools/list", params: {} });
+
+		const operate = (result.tools as {
+			name: string;
+			inputSchema?: { properties?: Record<string, unknown> };
+		}[]).find((t) => t.name === "saolei_operate");
+		expect(operate).toBeDefined();
+		const props = operate?.inputSchema?.properties ?? {};
+		// Single form: type/x/y; batch form: operations array.
+		expect(props).toHaveProperty("type");
+		expect(props).toHaveProperty("x");
+		expect(props).toHaveProperty("y");
+		expect(props).toHaveProperty("operations");
 	});
 
 	it("saolei_init inputSchema has no width/height properties (FR-019)", async () => {
@@ -618,7 +656,7 @@ describe("createSaoleiMcpServer: saolei_init (FR-012 / FR-019)", () => {
 // ── legal cell op dispatches + updated text board ───────────────────────────
 
 describe("createSaoleiMcpServer: legal cell op dispatches and returns updated text (FR-012/FR-019)", () => {
-	it("saolei_click on an unrevealed cell dispatches and returns the updated text board", async () => {
+	it("saolei_operate single-form click on an unrevealed cell dispatches and returns the updated text board", async () => {
 		const { bridge, dispatched } = makeFakeBridge();
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const server = createSaoleiMcpServer(bridge, fake.api);
@@ -627,7 +665,7 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		// After the legal click, recognition reports cell (0,0) revealed as 0.
 		fake.setUpdate(board(["0 *", "* *"]));
 
-		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		// FR-019: MouseMoveAndClickPart{LEFT_CLICK, WINDOW_MESSAGE} at the
 		// cell centre in WM_* client space (originY 104).
@@ -640,7 +678,7 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		expect(part.toolId).toBeTruthy();
 
 		const text = expectTextOnly(result);
-		expect(text).toContain("saolei_click at (0,0) → dispatched");
+		expect(text).toContain("saolei_operate → executed 1 ops");
 		// Ruled grid (contract specs/029-saolei-coord-remain/contracts/saolei-board-render-contract.md §1):
 		// cells right-aligned to columnWidth 4 ⇒ 4-space separator.
 		expect(text).toContain("0    *");
@@ -648,7 +686,7 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		expect(text).toContain("game status: playing");
 	});
 
-	it("saolei_flag dispatches a RIGHT_CLICK at the cell centre", async () => {
+	it("saolei_operate single-form flag dispatches a RIGHT_CLICK at the cell centre", async () => {
 		const { bridge, dispatched } = makeFakeBridge();
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const server = createSaoleiMcpServer(bridge, fake.api);
@@ -656,7 +694,7 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		await callTool(server, "saolei_init", {});
 		fake.setUpdate(board(["F *", "* *"]));
 
-		await callTool(server, "saolei_flag", { x: 0, y: 0 });
+		await callTool(server, "saolei_operate", { type: "flag", x: 0, y: 0 });
 
 		const part = dispatched[1].mouseMoveAndClick as MouseMoveAndClickPart;
 		expect(part.click).toBe("MOUSE_CLICK_ACTION_RIGHT_CLICK");
@@ -665,7 +703,7 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		expect(part.yPx).toBe(centerY(0));
 	});
 
-	it("saolei_chord_click on a revealed number dispatches a LEFT_RIGHT_PRESS (flag-count mismatch still legal)", async () => {
+	it("saolei_operate single-form chord on a revealed number dispatches a LEFT_RIGHT_PRESS (flag-count mismatch still legal)", async () => {
 		const { bridge, dispatched } = makeFakeBridge();
 		// (0,0) is "1" with NO neighbor flagged — mismatched, but legal (FR-015e).
 		const fake = makeFakeBoardApi(board(["1 *", "* *"]));
@@ -674,11 +712,11 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		await callTool(server, "saolei_init", {});
 		fake.setUpdate(board(["1 *", "* *"]));
 
-		const result = await callTool(
-			server,
-			"saolei_chord_click",
-			{ x: 0, y: 0 },
-		);
+		const result = await callTool(server, "saolei_operate", {
+			type: "chord",
+			x: 0,
+			y: 0,
+		});
 
 		// Chord dispatched (NOT rejected) despite the flag-count mismatch.
 		expect(dispatched).toHaveLength(2);
@@ -686,17 +724,20 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		expect(part.click).toBe("MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS");
 		expect(part.method).toBe("MOUSE_INPUT_METHOD_WINDOW_MESSAGE");
 		expect(result.content[0].type).toBe("text");
-		expect(result.content[0].text).toContain(
-			"saolei_chord_click at (0,0) → dispatched",
-		);
+		expect(result.content[0].text).toContain("saolei_operate → executed 1 ops");
 		// FR-012/FR-014: in-progress board ⇒ `game status: playing`.
 		expect(result.content[0].text).toContain("game status: playing");
 	});
 });
 
-// ── illegal moves rejected BEFORE dispatch (contract §4) ────────────────────
+// ── illegal ops triaged BEFORE dispatch (contract §4 / 039 FR-002) ──────────
+//
+// `saolei_operate` triages rejections by reason (contract §2): harmless
+// no-ops (HARMLESS_NOOP_REASONS) are SKIPPED (execution continues, no
+// dispatch); structural rejections (STRUCTURAL_REASONS) STOP the batch.
+// Both leave the board untouched — no FlowPart is dispatched.
 
-describe("createSaoleiMcpServer: illegal moves rejected before dispatch", () => {
+describe("createSaoleiMcpServer: illegal ops triaged before dispatch", () => {
 	function setup(initial: GameState): {
 		server: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer;
 		dispatched: CapturedPart[];
@@ -707,71 +748,80 @@ describe("createSaoleiMcpServer: illegal moves rejected before dispatch", () => 
 		return { server, dispatched };
 	}
 
-	it("rejects a click on a revealed cell (cell_already_revealed) without dispatching", async () => {
+	it("SKIPS a click on a revealed cell (cell_already_revealed) without dispatching", async () => {
 		const { server, dispatched } = setup(board(["0 *", "* *"]));
 		await callTool(server, "saolei_init", {});
 
-		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
-		// Only the init F2 dispatched; the illegal click did NOT.
+		// Only the init F2 dispatched; the no-op click did NOT.
 		expect(dispatched).toHaveLength(1);
 		const text = expectTextOnly(result);
-		expect(text).toContain("rejected: cell_already_revealed");
+		expect(text).toContain("saolei_operate → executed 0 ops, skipped 1 no-op ops");
 		expect(text).toContain("board size 2*2");
-		expect(text).toContain("valid range: x 0..1, y 0..1");
 	});
 
-	it("rejects a click on a flag (cell_is_flagged)", async () => {
+	it("SKIPS a click on a flag (cell_is_flagged)", async () => {
 		const { server, dispatched } = setup(board(["F *", "* *"]));
 		await callTool(server, "saolei_init", {});
 
-		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		expect(dispatched).toHaveLength(1);
-		expect(result.content[0].text).toContain("rejected: cell_is_flagged");
+		expect(result.content[0].text).toContain(
+			"saolei_operate → executed 0 ops, skipped 1 no-op ops",
+		);
 	});
 
-	it("rejects flagging a revealed cell (cannot_flag_revealed)", async () => {
+	it("SKIPS flagging a revealed cell (cannot_flag_revealed)", async () => {
 		const { server, dispatched } = setup(board(["0 *", "* *"]));
 		await callTool(server, "saolei_init", {});
 
-		const result = await callTool(server, "saolei_flag", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "flag", x: 0, y: 0 });
 
 		expect(dispatched).toHaveLength(1);
-		expect(result.content[0].text).toContain("rejected: cannot_flag_revealed");
+		expect(result.content[0].text).toContain(
+			"saolei_operate → executed 0 ops, skipped 1 no-op ops",
+		);
 	});
 
-	it("rejects a chord on 0 / INITIAL / FLAG (chord_requires_number)", async () => {
+	it("SKIPS a chord on 0 / INITIAL / FLAG (chord_requires_number)", async () => {
 		// chord on "0"
 		const onZero = setup(board(["0 *", "* *"]));
 		await callTool(onZero.server, "saolei_init", {});
-		const r0 = await callTool(onZero.server, "saolei_chord_click", { x: 0, y: 0 });
-		expect(r0.content[0].text).toContain("rejected: chord_requires_number");
+		const r0 = await callTool(onZero.server, "saolei_operate", { type: "chord", x: 0, y: 0 });
+		expect(r0.content[0].text).toContain(
+			"saolei_operate → executed 0 ops, skipped 1 no-op ops",
+		);
 		expect(onZero.dispatched).toHaveLength(1);
 
 		// chord on INITIAL
 		const onInitial = setup(board(["* *", "* *"]));
 		await callTool(onInitial.server, "saolei_init", {});
-		const rInit = await callTool(onInitial.server, "saolei_chord_click", { x: 0, y: 0 });
-		expect(rInit.content[0].text).toContain("rejected: chord_requires_number");
+		const rInit = await callTool(onInitial.server, "saolei_operate", { type: "chord", x: 0, y: 0 });
+		expect(rInit.content[0].text).toContain(
+			"saolei_operate → executed 0 ops, skipped 1 no-op ops",
+		);
 
 		// chord on FLAG
 		const onFlag = setup(board(["F *", "* *"]));
 		await callTool(onFlag.server, "saolei_init", {});
-		const rFlag = await callTool(onFlag.server, "saolei_chord_click", { x: 0, y: 0 });
-		expect(rFlag.content[0].text).toContain("rejected: chord_requires_number");
+		const rFlag = await callTool(onFlag.server, "saolei_operate", { type: "chord", x: 0, y: 0 });
+		expect(rFlag.content[0].text).toContain(
+			"saolei_operate → executed 0 ops, skipped 1 no-op ops",
+		);
 	});
 
-	it("rejects an out-of-bounds coordinate with the valid range (out_of_bounds)", async () => {
+	it("STOPS at an out-of-bounds coordinate (out_of_bounds — structural)", async () => {
 		const { server, dispatched } = setup(board(["* *", "* *"]));
 		await callTool(server, "saolei_init", {});
 
-		const result = await callTool(server, "saolei_click", { x: 5, y: 5 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 5, y: 5 });
 
 		expect(dispatched).toHaveLength(1);
 		const text = expectTextOnly(result);
-		expect(text).toContain("rejected: out_of_bounds");
-		expect(text).toContain("valid range: x 0..1, y 0..1");
+		expect(text).toContain("saolei_operate → stopped at op 1 (out_of_bounds)");
+		expect(text).toContain("board size 2*2");
 	});
 
 	it("rejects any cell op before init (no_active_game, FR-015a)", async () => {
@@ -779,7 +829,7 @@ describe("createSaoleiMcpServer: illegal moves rejected before dispatch", () => 
 		const { api } = makeFakeBoardApi(board(["*"]));
 		const server = createSaoleiMcpServer(bridge, api);
 
-		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		// No dispatch at all — no game has been started.
 		expect(dispatched).toHaveLength(0);
@@ -790,18 +840,20 @@ describe("createSaoleiMcpServer: illegal moves rejected before dispatch", () => 
 		expect(text).not.toContain("game status:");
 	});
 
-	it("rejects any cell op when the state is terminal (game_over, FR-015f)", async () => {
+	it("STOPS any cell op when the state is terminal (game_over, FR-015f)", async () => {
 		const { server, dispatched } = setup(board(["X *", "* *"]));
 		const initState = await callTool(server, "saolei_init", {});
 		// FR-013: a losing board (HIT_MINE present) ⇒ `game status: lost`.
 		expect(initState.content[0].text).toContain("game status: lost");
 
 		// (1,0) is INITIAL, but the board is terminal (HIT_MINE at (0,0)).
-		const result = await callTool(server, "saolei_click", { x: 1, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 1, y: 0 });
 
 		expect(dispatched).toHaveLength(1);
-		expect(result.content[0].text).toContain("rejected: game_over");
-		// FR-015: the rejection carries the status line for the losing state.
+		expect(result.content[0].text).toContain(
+			"saolei_operate → stopped at op 1 (game_over)",
+		);
+		// The stop result carries the status line for the losing state.
 		expect(result.content[0].text).toContain("game status: lost");
 	});
 });
@@ -821,7 +873,7 @@ describe("createSaoleiMcpServer: recognition failure (FR-017)", () => {
 		expect(initResult.content[0].text).not.toContain("game status:");
 
 		// State is invalid → cell op rejected as no_active_game (not dispatched).
-		const clickResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const clickResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 		expect(dispatched).toHaveLength(1); // only the F2
 		expect(clickResult.content[0].text).toContain("rejected: no_active_game");
 		// FR-015: no_active_game carries NO status line either.
@@ -838,7 +890,7 @@ describe("createSaoleiMcpServer: recognition failure (FR-017)", () => {
 		// recognized → state invalidated.
 		fake.setUpdate("throw");
 
-		const clickResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const clickResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 		expect(clickResult.content[0].text).toContain("unable to recognize board");
 		// FR-015: state invalidated ⇒ NO game-status line on this result.
 		expect(clickResult.content[0].text).not.toContain("game status:");
@@ -846,7 +898,7 @@ describe("createSaoleiMcpServer: recognition failure (FR-017)", () => {
 		expect(dispatched).toHaveLength(2);
 
 		// Subsequent op → no_active_game (state invalid).
-		const next = await callTool(server, "saolei_click", { x: 1, y: 0 });
+		const next = await callTool(server, "saolei_operate", { type: "click", x: 1, y: 0 });
 		expect(next.content[0].text).toContain("rejected: no_active_game");
 	});
 
@@ -885,24 +937,27 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 		expect(initText).toContain("game status: won");
 		expect(initText).toContain("board size 2*2");
 
-		// A subsequent cell op is rejected as game_won BEFORE dispatch
-		// (FR-021): the desktop receives NO operation for it — only the
-		// init F2 was dispatched.
-		const clickResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		// A subsequent cell op STOPS as game_won BEFORE dispatch (FR-021):
+		// the desktop receives NO operation for it — only the init F2 was
+		// dispatched.
+		const clickResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 		expect(dispatched).toHaveLength(1); // the init F2 only
 		const clickText = expectTextOnly(clickResult);
-		expect(clickText).toContain("rejected: game_won");
-		// FR-023: the rejection body carries the status line for the won state.
+		expect(clickText).toContain("saolei_operate → stopped at op 1 (game_won)");
+		// The stop result carries the status line for the won state (FR-023).
 		expect(clickText).toContain("game status: won");
 		expect(clickText).toContain("board size 2*2");
-		expect(clickText).toContain("valid range: x 0..1, y 0..1");
 
-		// saolei_flag and saolei_chord_click are equally terminal-blocked
-		// after the win (FR-021 — "any cell operation").
-		const flagResult = await callTool(server, "saolei_flag", { x: 1, y: 0 });
-		expect(flagResult.content[0].text).toContain("rejected: game_won");
-		const chordResult = await callTool(server, "saolei_chord_click", { x: 1, y: 1 });
-		expect(chordResult.content[0].text).toContain("rejected: game_won");
+		// flag and chord ops are equally terminal-blocked after the win
+		// (FR-021 — "any cell operation").
+		const flagResult = await callTool(server, "saolei_operate", { type: "flag", x: 1, y: 0 });
+		expect(flagResult.content[0].text).toContain(
+			"saolei_operate → stopped at op 1 (game_won)",
+		);
+		const chordResult = await callTool(server, "saolei_operate", { type: "chord", x: 1, y: 1 });
+		expect(chordResult.content[0].text).toContain(
+			"saolei_operate → stopped at op 1 (game_won)",
+		);
 		// Still no further dispatches — only the init F2.
 		expect(dispatched).toHaveLength(1);
 	});
@@ -918,7 +973,7 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 		expect(dispatched).toHaveLength(1);
 		const initDispatched = dispatched.length;
 
-		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		// FR-020/FR-021: the post-win op is rejected pre-dispatch; the
 		// dispatched count is unchanged (the cell op added NO FlowPart).
@@ -933,8 +988,10 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 
 		await callTool(server, "saolei_init", {});
 		// After the win, a cell op is terminal-blocked (game_won)…
-		const blocked = await callTool(server, "saolei_click", { x: 0, y: 0 });
-		expect(blocked.content[0].text).toContain("rejected: game_won");
+		const blocked = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
+		expect(blocked.content[0].text).toContain(
+			"saolei_operate → stopped at op 1 (game_won)",
+		);
 
 		// …but saolei_init re-dispatches F2 unconditionally (contract §6).
 		const restart = await callTool(server, "saolei_init", {});
@@ -973,13 +1030,15 @@ describe("createSaoleiMcpServer: counter-informed win (028 FR-012 / SC-004)", ()
 
 		// A following cell op is NOT rejected as `game_won` — the
 		// terminal-win gate did not fire, so the cell-specific rules apply.
-		// `saolei_flag` on the revealed "0" at (0,0) ⇒ `cannot_flag_revealed`
-		// (a cell-specific reject, NOT `game_won`). The cell-specific reject
-		// is pre-dispatch, so no new FlowPart was dispatched for it.
+		// A `flag` op on the revealed "0" at (0,0) ⇒ `cannot_flag_revealed`
+		// (a cell-specific no-op, NOT `game_won`): SKIPPED, no dispatch, no
+		// new FlowPart.
 		const preDispatchCount = dispatched.length;
-		const flagResult = await callTool(server, "saolei_flag", { x: 0, y: 0 });
+		const flagResult = await callTool(server, "saolei_operate", { type: "flag", x: 0, y: 0 });
 		const flagText = expectTextOnly(flagResult);
-		expect(flagText).toContain("rejected: cannot_flag_revealed");
+		expect(flagText).toContain(
+			"saolei_operate → executed 0 ops, skipped 1 no-op ops",
+		);
 		expect(flagText).not.toContain("game_won");
 		expect(flagText).toContain("game status: playing");
 		expect(dispatched).toHaveLength(preDispatchCount);
@@ -1000,7 +1059,7 @@ describe("createSaoleiMcpServer: counter-informed win (028 FR-012 / SC-004)", ()
 		const preDispatchCount = dispatched.length;
 
 		// Toggle the flag at (1,0) — legal on a FLAG cell (place/toggle).
-		const result = await callTool(server, "saolei_flag", { x: 1, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "flag", x: 1, y: 0 });
 		const text = expectTextOnly(result);
 
 		// The op DISPATCHED (a new FlowPart beyond the init F2).
@@ -1011,7 +1070,7 @@ describe("createSaoleiMcpServer: counter-informed win (028 FR-012 / SC-004)", ()
 
 		// The result body carries the dispatched outcome and `game status:
 		// playing` (NOT `won`, NOT `game_won`).
-		expect(text).toContain("saolei_flag at (1,0) → dispatched");
+		expect(text).toContain("saolei_operate → executed 1 ops");
 		expect(text).toContain("game status: playing");
 		expect(text).not.toContain("game status: won");
 	});
@@ -1090,16 +1149,16 @@ describe("createSaoleiMcpServer: saolei_remain (read-only)", () => {
 		expect(dispatched).toHaveLength(initDispatched);
 		expect(expectTextOnly(r2)).toBe(t1);
 
-		// A subsequent saolei_click sees the UNCHANGED recognized board: the
-		// click at the INITIAL cell (1,1) is legal (proves recognized still
-		// holds `initial`), dispatches exactly one new FlowPart, and the
-		// post-click board is the canned update — no corruption by the prior
-		// saolei_remain calls.
+		// A subsequent saolei_operate click sees the UNCHANGED recognized
+		// board: the click at the INITIAL cell (1,1) is legal (proves
+		// recognized still holds `initial`), dispatches exactly one new
+		// FlowPart, and the post-click board is the canned update — no
+		// corruption by the prior saolei_remain calls.
 		fake.setUpdate(initial);
-		const clickResult = await callTool(server, "saolei_click", { x: 1, y: 1 });
+		const clickResult = await callTool(server, "saolei_operate", { type: "click", x: 1, y: 1 });
 		expect(dispatched).toHaveLength(initDispatched + 1);
 		const clickText = expectTextOnly(clickResult);
-		expect(clickText).toContain("saolei_click at (1,1) → dispatched");
+		expect(clickText).toContain("saolei_operate → executed 1 ops");
 		// Cell (0,0) is still "3" in the post-click board — saolei_remain
 		// did not mutate recognized.
 		expect(clickText).toContain("3");
@@ -1180,22 +1239,29 @@ describe("createSaoleiMcpServer: saolei_remain (read-only)", () => {
 	});
 });
 
-// ── event sink (US3 / FR-019..FR-022) ───────────────────────────────────────
+// ── event sink (US3 / FR-019..FR-022 + 039 US1 FR-004) ──────────────────────
 //
 // `SaoleiEventSink` is the optional out-of-band event sink
 // (`specs/031-team-template-mode/contracts/saolei-sink-contract.md`):
-// `onGameStart` after a successful `saolei_init` recognition; `onMove` after
-// a legal cell op's post-dispatch recognition; `onGameEnd` (structured
-// `"won"|"lost"` enum, FR-022) when `gameStatus` turns terminal on a move.
-// `saolei_remain` (read-only) never fires. A throwing/rejecting sink must
-// not affect the tool result (contract §5). No sink registered ⇒ behaviour
-// unchanged (FR-020) — covered by every other describe in this file, which
-// builds servers without a sink.
+// `onGameStart` after a successful `saolei_init` recognition; `onOperate`
+// after a `saolei_operate` call completes (ONE callback per call, single or
+// batch, carrying the full operations list — FR-004,
+// `specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+// §4); `onGameEnd` (structured `"won"|"lost"` enum, FR-022) when `gameStatus`
+// turns terminal. `saolei_remain` (read-only) never fires. A
+// throwing/rejecting sink must not affect the tool result (contract §5). No
+// sink registered ⇒ behaviour unchanged (FR-020) — covered by every other
+// describe in this file, which builds servers without a sink.
 
 /** A recorded sink call, discriminated by `kind`. */
 type SinkCall =
 	| { kind: "onGameStart"; state: GameState }
-	| { kind: "onMove"; tool: CellTool; x: number; y: number; state: GameState }
+	| {
+			kind: "onOperate";
+			operations: CellOperation[];
+			state: GameState;
+			stats?: GameStats;
+	  }
 	| {
 			kind: "onGameEnd";
 			state: GameState;
@@ -1214,8 +1280,8 @@ function makeRecordingSink(): {
 			onGameStart: (state) => {
 				calls.push({ kind: "onGameStart", state });
 			},
-			onMove: (tool, x, y, state) => {
-				calls.push({ kind: "onMove", tool, x, y, state });
+			onOperate: (operations, state, stats) => {
+				calls.push({ kind: "onOperate", operations, state, stats });
 			},
 			onGameEnd: (state, status, stats) => {
 				calls.push({ kind: "onGameEnd", state, status, stats });
@@ -1254,7 +1320,7 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		expect(recording.calls).toHaveLength(0);
 	});
 
-	it("fires onMove after a legal cell op, with tool/x/y and the updated state", async () => {
+	it("fires onOperate once per saolei_operate call with the FULL operations list and the updated state (FR-004)", async () => {
 		const { bridge } = makeFakeBridge();
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const recording = makeRecordingSink();
@@ -1265,19 +1331,26 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		const updated = board(["0 *", "* *"]);
 		fake.setUpdate(updated);
 
-		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", {
+			operations: [
+				{ type: "click", x: 0, y: 0 },
+				{ type: "flag", x: 1, y: 0 },
+			],
+		});
 
 		expectTextOnly(result);
+		// ONE callback per call (single or batch — never one per op, FR-004).
 		expect(recording.calls).toHaveLength(1);
-		const move = recording.calls[0] as Extract<SinkCall, { kind: "onMove" }>;
-		expect(move.kind).toBe("onMove");
-		expect(move.tool).toBe("saolei_click");
-		expect(move.x).toBe(0);
-		expect(move.y).toBe(0);
-		expect(move.state).toEqual(updated);
+		const op = recording.calls[0] as Extract<SinkCall, { kind: "onOperate" }>;
+		expect(op.kind).toBe("onOperate");
+		expect(op.operations).toEqual([
+			{ type: "click", x: 0, y: 0 },
+			{ type: "flag", x: 1, y: 0 },
+		]);
+		expect(op.state).toEqual(updated);
 	});
 
-	it("fires onMove then onGameEnd('won') when a move completes a win", async () => {
+	it("fires onOperate then onGameEnd('won') when a move completes a win", async () => {
 		const { bridge } = makeFakeBridge();
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const recording = makeRecordingSink();
@@ -1290,18 +1363,18 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		// 028), so `gameStatus` reads `won` (FR-017 first-hand computation).
 		fake.setUpdate(board(["0 F", "1 1"], COUNTER_ZERO));
 
-		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		expectTextOnly(result);
 		expect(recording.calls.map((c) => c.kind)).toEqual([
-			"onMove",
+			"onOperate",
 			"onGameEnd",
 		]);
 		const end = recording.calls[1] as Extract<SinkCall, { kind: "onGameEnd" }>;
 		expect(end.status).toBe("won");
 	});
 
-	it("fires onMove then onGameEnd('lost') when a move loses the game", async () => {
+	it("fires onOperate then onGameEnd('lost') when a move loses the game", async () => {
 		const { bridge } = makeFakeBridge();
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const recording = makeRecordingSink();
@@ -1312,18 +1385,18 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		// HIT_MINE present ⇒ terminal loss (`isTerminalState`).
 		fake.setUpdate(board(["X *", "* *"]));
 
-		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const result = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		expectTextOnly(result);
 		expect(recording.calls.map((c) => c.kind)).toEqual([
-			"onMove",
+			"onOperate",
 			"onGameEnd",
 		]);
 		const end = recording.calls[1] as Extract<SinkCall, { kind: "onGameEnd" }>;
 		expect(end.status).toBe("lost");
 	});
 
-	it("fires ONLY onMove for an in-progress move (no onGameEnd)", async () => {
+	it("fires ONLY onOperate for an in-progress call (no onGameEnd)", async () => {
 		const { bridge } = makeFakeBridge();
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const recording = makeRecordingSink();
@@ -1333,9 +1406,9 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		recording.calls.length = 0;
 		fake.setUpdate(board(["0 *", "* *"])); // still playing
 
-		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
-		expect(recording.calls.map((c) => c.kind)).toEqual(["onMove"]);
+		expect(recording.calls.map((c) => c.kind)).toEqual(["onOperate"]);
 	});
 
 	it("does NOT fire any sink event for saolei_remain (read-only, contract §3)", async () => {
@@ -1359,7 +1432,7 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 			onGameStart: () => {
 				throw new Error("sink boom");
 			},
-			onMove: () => {
+			onOperate: () => {
 				throw new Error("sink boom");
 			},
 			onGameEnd: () => {
@@ -1372,10 +1445,8 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		expect(initResult.content[0].text).toContain("new game started");
 
 		fake.setUpdate(board(["0 *", "* *"]));
-		const moveResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
-		expect(moveResult.content[0].text).toContain(
-			"saolei_click at (0,0) → dispatched",
-		);
+		const moveResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
+		expect(moveResult.content[0].text).toContain("saolei_operate → executed 1 ops");
 	});
 
 	it("isolates a REJECTING (async) sink — the tool result is unchanged (contract §5)", async () => {
@@ -1383,7 +1454,7 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const rejecting: SaoleiEventSink = {
 			onGameStart: () => Promise.reject(new Error("sink boom")),
-			onMove: () => Promise.reject(new Error("sink boom")),
+			onOperate: () => Promise.reject(new Error("sink boom")),
 			onGameEnd: () => Promise.reject(new Error("sink boom")),
 		};
 		const server = createSaoleiMcpServer(bridge, fake.api, rejecting);
@@ -1393,26 +1464,24 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		expect(text).toContain("new game started");
 
 		fake.setUpdate(board(["0 *", "* *"]));
-		const moveResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
-		expect(moveResult.content[0].text).toContain(
-			"saolei_click at (0,0) → dispatched",
-		);
+		const moveResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
+		expect(moveResult.content[0].text).toContain("saolei_operate → executed 1 ops");
 	});
 
-	it("isolates a THROWING sink on a game-ending move — onMove+onGameEnd throws leave the tool result unchanged", async () => {
+	it("isolates a THROWING sink on a game-ending call — onOperate+onGameEnd throws leave the tool result unchanged", async () => {
 		// Terminal-move variant of the throwing-sink case: the post-move
 		// screenshot recognizes the counter-informed winning board (grid
 		// fully revealed/flagged AND decoded 000 counter, spec 028), so the
-		// click triggers BOTH `onMove` and `onGameEnd("won")` — both throws
+		// click triggers BOTH `onOperate` and `onGameEnd("won")` — both throws
 		// must be isolated by `runSink` (contract §5) and the tool result
-		// must still be the normal `dispatchedText`.
+		// must still be the normal operate result text.
 		const { bridge } = makeFakeBridge();
 		const fake = makeFakeBoardApi(board(["* *", "* *"]));
 		const throwing: SaoleiEventSink = {
 			onGameStart: () => {
 				throw new Error("sink boom");
 			},
-			onMove: () => {
+			onOperate: () => {
 				throw new Error("sink boom");
 			},
 			onGameEnd: () => {
@@ -1424,10 +1493,10 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		await callTool(server, "saolei_init", {});
 		fake.setUpdate(board(["0 F", "1 1"], COUNTER_ZERO));
 
-		const moveResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		const moveResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		expect(moveResult.content[0].text).toContain(
-			"saolei_click at (0,0) → dispatched",
+			"saolei_operate → stopped at op 1 (won)",
 		);
 		// The terminal path ran: the result carries the won status line.
 		expect(moveResult.content[0].text).toContain("game status: won");
@@ -1541,17 +1610,32 @@ describe("createSaoleiMcpServer: game stats on onGameEnd (037 US5 / FR-026..FR-0
 		await callTool(server, "saolei_init", {});
 		recording.calls.length = 0;
 
-		// A rejected move (out of bounds) is NOT a successful cell op — it
-		// returns before dispatch, so no onMove fires and the counter is
-		// untouched.
-		const rejected = await callTool(server, "saolei_click", { x: 5, y: 5 });
-		expect(rejected.content[0].text).toContain("rejected: out_of_bounds");
-		expect(recording.calls).toHaveLength(0);
+		// A rejected move (out of bounds, structural) is NOT a successful
+		// cell op — the batch stops before dispatch and the op is NOT
+		// counted in operationCount (FR-027, asserted below). The call
+		// itself still happened on an ACTIVE game, so it records ONE
+		// gameLog entry via onOperate (039 FR-004 — one entry per call,
+		// however the batch went).
+		const rejected = await callTool(server, "saolei_operate", { type: "click", x: 5, y: 5 });
+		expect(rejected.content[0].text).toContain(
+			"saolei_operate → stopped at op 1 (out_of_bounds)",
+		);
+		// 039 FR-004: the structurally-rejected call on an active game
+		// still fires exactly ONE onOperate, carrying the rejected op + the
+		// unchanged board — but the op is NOT counted in operationCount.
+		expect(recording.calls).toHaveLength(1);
+		const rejectedOp = recording.calls[0] as Extract<SinkCall, { kind: "onOperate" }>;
+		expect(rejectedOp.kind).toBe("onOperate");
+		expect(rejectedOp.operations).toEqual([{ type: "click", x: 5, y: 5 }]);
+		expect(rejectedOp.state).toEqual(initial);
 
 		// The single legal move ends the game (hits a mine ⇒ lost).
 		fake.setUpdate(board(["X *", "* *"]));
-		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
+		// The last call (a legal op) is the only one that ended the game:
+		// its onOperate + onGameEnd sit AFTER the rejected call's onOperate,
+		// so the final element is still the onGameEnd.
 		const end = recording.calls[
 			recording.calls.length - 1
 		] as Extract<SinkCall, { kind: "onGameEnd" }>;
@@ -1581,7 +1665,7 @@ describe("createSaoleiMcpServer: game stats on onGameEnd (037 US5 / FR-026..FR-0
 		// One legal move wins the game (both mines correctly flagged ⇒ the
 		// won board carries 2 FLAGs and no MINE/HIT_MINE).
 		fake.setUpdate(board(["F 0", "F 1"], COUNTER_ZERO));
-		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		const end = recording.calls[
 			recording.calls.length - 1
@@ -1604,7 +1688,7 @@ describe("createSaoleiMcpServer: game stats on onGameEnd (037 US5 / FR-026..FR-0
 		// Game 1: one legal move wins.
 		await callTool(server, "saolei_init", {});
 		fake.setUpdate(board(["F 0", "F 1"], COUNTER_ZERO));
-		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 		const game1End = recording.calls[
 			recording.calls.length - 1
 		] as Extract<SinkCall, { kind: "onGameEnd" }>;
@@ -1615,9 +1699,9 @@ describe("createSaoleiMcpServer: game stats on onGameEnd (037 US5 / FR-026..FR-0
 		recording.calls.length = 0;
 		await callTool(server, "saolei_init", {});
 		fake.setUpdate(board(["0 *", "* *"])); // first move: playing
-		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 		fake.setUpdate(board(["X *", "* *"])); // second move: lost
-		await callTool(server, "saolei_click", { x: 1, y: 0 });
+		await callTool(server, "saolei_operate", { type: "click", x: 1, y: 0 });
 
 		const game2End = recording.calls[
 			recording.calls.length - 1
@@ -1627,5 +1711,305 @@ describe("createSaoleiMcpServer: game stats on onGameEnd (037 US5 / FR-026..FR-0
 			correctFlags: 1,
 			avgOpsPerMine: 2,
 		});
+	});
+});
+
+// ── 039 US1: saolei_operate dual-form / batch triage (FR-001..FR-005) ───────
+//
+// `specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`:
+//   §1  — dual-form parameters (single type/x/y OR operations array);
+//   §2  — in-order execution with failure triage (SKIP no-ops / STOP
+//         structural & game end, one result);
+//   §3  — dual-form equivalence (single == length-1 operations);
+//   §5  — ambiguous (both/neither/partial) and empty-combination handling.
+
+describe("saolei_operate: dual-form equivalence (contract §3 / FR-001)", () => {
+	it("single type/x/y is equivalent to a length-1 operations array (same validation, same dispatch, same result)", async () => {
+		// Two IDENTICAL fresh servers (one per form — a second call on the
+		// same server would see the first call's revealed cell as a no-op).
+		// Each post-action screenshot recognizes the same "playing" board,
+		// so the two calls' result bodies must be byte-identical (contract
+		// §3 — single == length-1 batch, also equivalent to the former
+		// single-click tool).
+		const { bridge: bridgeA, dispatched: dispatchedA } = makeFakeBridge();
+		const fakeA = makeFakeBoardApi(board(["* *", "* *"]));
+		const serverA = createSaoleiMcpServer(bridgeA, fakeA.api);
+		await callTool(serverA, "saolei_init", {});
+		fakeA.setUpdate(board(["0 *", "* *"]));
+
+		const { bridge: bridgeB, dispatched: dispatchedB } = makeFakeBridge();
+		const fakeB = makeFakeBoardApi(board(["* *", "* *"]));
+		const serverB = createSaoleiMcpServer(bridgeB, fakeB.api);
+		await callTool(serverB, "saolei_init", {});
+		fakeB.setUpdate(board(["0 *", "* *"]));
+
+		const single = await callTool(serverA, "saolei_operate", {
+			type: "click",
+			x: 0,
+			y: 0,
+		});
+		const batch = await callTool(serverB, "saolei_operate", {
+			operations: [{ type: "click", x: 0, y: 0 }],
+		});
+
+		// Both dispatched exactly one LEFT_CLICK at the same cell centre
+		// (init F2 + the single op in each server).
+		expect(dispatchedA).toHaveLength(2);
+		expect(dispatchedB).toHaveLength(2);
+		const singlePart = dispatchedA[1].mouseMoveAndClick as MouseMoveAndClickPart;
+		const batchPart = dispatchedB[1].mouseMoveAndClick as MouseMoveAndClickPart;
+		expect(singlePart.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
+		expect(batchPart.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
+		expect(singlePart.xPx).toBe(batchPart.xPx);
+		expect(singlePart.yPx).toBe(batchPart.yPx);
+
+		// Byte-identical text results (contract §3 — the single form is the
+		// length-1 batch; both are "executed 1 ops" with the same board).
+		expect(expectTextOnly(single)).toBe(expectTextOnly(batch));
+		expect(expectTextOnly(single)).toContain("saolei_operate → executed 1 ops");
+	});
+});
+
+describe("saolei_operate: in-order batch execution (FR-001/FR-002)", () => {
+	it("executes a mixed click/flag/chord batch IN ORDER and returns ONE result", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		// (0,0)="1" (chordable, has INITIAL neighbors); (1,0) and (0,1) are
+		// INITIAL (clickable/flagable); (1,1) is INITIAL too.
+		const fake = makeFakeBoardApi(board(["1 *", "1 *"]));
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const initDispatched = dispatched.length;
+
+		const result = await callTool(server, "saolei_operate", {
+			operations: [
+				{ type: "click", x: 1, y: 0 },
+				{ type: "flag", x: 1, y: 1 },
+				{ type: "chord", x: 0, y: 0 },
+			],
+		});
+
+		// THREE dispatches in the batch's declared order (init + 3 ops).
+		expect(dispatched).toHaveLength(initDispatched + 3);
+		const clicks = dispatched
+			.slice(initDispatched)
+			.map((p) => p.mouseMoveAndClick?.click);
+		expect(clicks).toEqual([
+			"MOUSE_CLICK_ACTION_LEFT_CLICK",
+			"MOUSE_CLICK_ACTION_RIGHT_CLICK",
+			"MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS",
+		]);
+		// ONE result body (FR-002 — a single MCP text block per call).
+		const text = expectTextOnly(result);
+		expect(text).toContain("saolei_operate → executed 3 ops");
+		expect(text).toContain("game status: playing");
+	});
+});
+
+describe("saolei_operate: failure triage (FR-002 / contract §2)", () => {
+	it("SKIPS a harmless no-op and CONTINUES the batch (earlier/later ops still execute)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		// (0,0) is already revealed ("0") — a click there is a harmless no-op.
+		const fake = makeFakeBoardApi(board(["0 *", "* *"]));
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const initDispatched = dispatched.length;
+
+		const result = await callTool(server, "saolei_operate", {
+			operations: [
+				{ type: "click", x: 0, y: 0 }, // no-op → SKIP
+				{ type: "click", x: 1, y: 1 }, // legal → executes
+			],
+		});
+
+		// Only the legal op dispatched (init + 1); the no-op did NOT.
+		expect(dispatched).toHaveLength(initDispatched + 1);
+		const text = expectTextOnly(result);
+		expect(text).toContain(
+			"saolei_operate → executed 1 ops, skipped 1 no-op ops",
+		);
+		expect(text).toContain("game status: playing");
+	});
+
+	it("STOPS at a structural rejection (out_of_bounds); remaining ops do NOT execute (earlier ops take effect)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const initDispatched = dispatched.length;
+
+		const result = await callTool(server, "saolei_operate", {
+			operations: [
+				{ type: "click", x: 0, y: 0 }, // legal → executes
+				{ type: "click", x: 5, y: 5 }, // out of bounds → STOP
+				{ type: "flag", x: 1, y: 1 }, // MUST NOT execute
+			],
+		});
+
+		// The first op took effect; the third never ran (init + 1).
+		expect(dispatched).toHaveLength(initDispatched + 1);
+		const text = expectTextOnly(result);
+		expect(text).toContain("saolei_operate → stopped at op 2 (out_of_bounds)");
+		expect(text).toContain("game status: playing");
+	});
+
+	it("STOPS when an op ends the game; remaining ops do NOT execute (the winning/losing op takes effect)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+		const initDispatched = dispatched.length;
+		// The first op's post-action screenshot recognizes a terminal LOSS.
+		fake.setUpdate(board(["X *", "* *"]));
+
+		const result = await callTool(server, "saolei_operate", {
+			operations: [
+				{ type: "click", x: 0, y: 0 }, // hits the mine → game lost
+				{ type: "flag", x: 1, y: 1 }, // MUST NOT execute
+			],
+		});
+
+		// The losing op took effect; the batch stopped at op 1 (init + 1).
+		expect(dispatched).toHaveLength(initDispatched + 1);
+		const text = expectTextOnly(result);
+		expect(text).toContain("saolei_operate → stopped at op 1 (lost)");
+		expect(text).toContain("game status: lost");
+		// The sink fired ONCE per call: onOperate (with the FULL op list,
+		// including the unexecuted one) + onGameEnd (FR-004/FR-022).
+		expect(recording.calls.map((c) => c.kind)).toEqual([
+			"onOperate",
+			"onGameEnd",
+		]);
+		const op = recording.calls[0] as Extract<SinkCall, { kind: "onOperate" }>;
+		expect(op.operations).toEqual([
+			{ type: "click", x: 0, y: 0 },
+			{ type: "flag", x: 1, y: 1 },
+		]);
+	});
+
+	it("fires onOperate ONCE for an all-skip batch — every call on an active game is recorded, even when no op executed (FR-004)", async () => {
+		// Both ops target already-revealed cells → the whole batch is
+		// harmless no-ops (executed = 0, skipped = 2). FR-004 still records
+		// the call as ONE gameLog entry: onOperate MUST fire with the full
+		// op list + the final (unchanged) state.
+		const { bridge, dispatched } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["0 0", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+		const initDispatched = dispatched.length;
+
+		const result = await callTool(server, "saolei_operate", {
+			operations: [
+				{ type: "click", x: 0, y: 0 }, // revealed → SKIP
+				{ type: "flag", x: 1, y: 0 }, // revealed → SKIP
+			],
+		});
+
+		// Zero dispatches (nothing executed)…
+		expect(dispatched).toHaveLength(initDispatched);
+		const text = expectTextOnly(result);
+		expect(text).toContain(
+			"saolei_operate → executed 0 ops, skipped 2 no-op ops",
+		);
+		// …but the call IS recorded: exactly ONE onOperate (no onGameEnd —
+		// the board is unchanged and still playing).
+		expect(recording.calls).toHaveLength(1);
+		const op = recording.calls[0] as Extract<SinkCall, { kind: "onOperate" }>;
+		expect(op.kind).toBe("onOperate");
+		expect(op.operations).toEqual([
+			{ type: "click", x: 0, y: 0 },
+			{ type: "flag", x: 1, y: 0 },
+		]);
+		expect(op.state).toEqual(board(["0 0", "* *"]));
+	});
+});
+
+describe("saolei_operate: empty / ambiguous argument combinations (contract §5)", () => {
+	it("empty operations list is a no-op returning the current state (no dispatch, no sink)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		const initDispatched = dispatched.length;
+		recording.calls.length = 0;
+
+		const result = await callTool(server, "saolei_operate", {
+			operations: [],
+		});
+
+		// Zero side effects (spec Edge Case — no board mutation, no sink).
+		expect(dispatched).toHaveLength(initDispatched);
+		expect(recording.calls).toHaveLength(0);
+		const text = expectTextOnly(result);
+		expect(text).toContain("saolei_operate → executed 0 ops");
+		expect(text).toContain("game status: playing");
+	});
+
+	it("empty operations list before init returns the no_active_game guidance (no side effect)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { api } = makeFakeBoardApi(board(["*"]));
+		const server = createSaoleiMcpServer(bridge, api);
+
+		const result = await callTool(server, "saolei_operate", {
+			operations: [],
+		});
+
+		expect(dispatched).toHaveLength(0);
+		const text = expectTextOnly(result);
+		expect(text).toContain("rejected: no_active_game");
+		expect(text).toContain("call saolei_init first");
+	});
+
+	it("rejects supplying BOTH the single form and operations (ambiguous)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { api } = makeFakeBoardApi(board(["*"]));
+		const server = createSaoleiMcpServer(bridge, api);
+
+		const result = await callTool(server, "saolei_operate", {
+			type: "click",
+			x: 0,
+			y: 0,
+			operations: [{ type: "click", x: 0, y: 0 }],
+		});
+
+		expect(dispatched).toHaveLength(0);
+		const text = expectTextOnly(result);
+		expect(text).toContain("provide EITHER type/x/y (single operation) OR operations (batch), not both");
+	});
+
+	it("rejects supplying NEITHER the single form nor operations", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { api } = makeFakeBoardApi(board(["*"]));
+		const server = createSaoleiMcpServer(bridge, api);
+
+		const result = await callTool(server, "saolei_operate", {});
+
+		expect(dispatched).toHaveLength(0);
+		const text = expectTextOnly(result);
+		expect(text).toContain("provide EITHER type/x/y (single operation) OR an operations array (batch)");
+	});
+
+	it("rejects a PARTIAL single form (type without x/y)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { api } = makeFakeBoardApi(board(["*"]));
+		const server = createSaoleiMcpServer(bridge, api);
+
+		const result = await callTool(server, "saolei_operate", {
+			type: "click",
+		});
+
+		expect(dispatched).toHaveLength(0);
+		const text = expectTextOnly(result);
+		expect(text).toContain("requires ALL of type, x and y together");
 	});
 });

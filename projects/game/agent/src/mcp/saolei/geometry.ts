@@ -33,9 +33,10 @@
  * source, do not layer an opposing offset in the desktop).
  *
  * WINDOW_MESSAGE-only invariant (coordinate-space-contract.md §2/§3/
- * Compensation scope): `center()` is consumed ONLY by the three saolei cell
- * tools (`saolei_click` / `saolei_flag` / `saolei_chord_click`), all of which
- * dispatch `MOUSE_INPUT_METHOD_WINDOW_MESSAGE`. The generic mouse tools
+ * Compensation scope): `center()` is consumed ONLY by `saolei_operate`'s
+ * cell ops (click/flag/chord — the former `saolei_click` / `saolei_flag` /
+ * `saolei_chord_click` tools merged into it, specs/039 US1 FR-001), all of
+ * which dispatch `MOUSE_INPUT_METHOD_WINDOW_MESSAGE`. The generic mouse tools
  * (`projects/game/agent/src/tools/mouse_click/`, `tools/mouse_move/`) default
  * to `SIMULATED` and consume SCREENSHOT-space coordinates — the desktop's
  * `SIMULATED` branch adds the window origin via `ScreenshotToScreenCoords`
@@ -43,7 +44,7 @@
  * them would shift the click UP by the chrome height and miss. Therefore:
  * (a) do NOT route the generic mouse tools through `center()`; (b) do NOT
  * generalize the compensation into the desktop's shared `runMouseMoveAndClick`
- * (both branches would break `SIMULATED`); (c) keep the saolei cell tools on
+ * (both branches would break `SIMULATED`); (c) keep the saolei cell ops on
  * `WINDOW_MESSAGE` (client coords are wrong for the `SIMULATED` path —
  * specs/018-saolei-mcp/research.md D5).
  *
@@ -92,7 +93,8 @@ export const CELL_SIZE_PX = 32;
  *   centerY(y) = BOARD_ORIGIN_Y_PX + y * CELL_SIZE_PX + CELL_SIZE_PX / 2
  *              = 104 + y*32 + 16
  *
- * Used ONLY by `saolei_click`/`saolei_flag`/`saolei_chord_click` to build
+ * Used ONLY by `saolei_operate` (its click/flag/chord ops — the merged
+ * former `saolei_click`/`saolei_flag`/`saolei_chord_click` tools) to build
  * `MouseMoveAndClickPart{ xPx: centerX, yPx: centerY,
  * method: MOUSE_INPUT_METHOD_WINDOW_MESSAGE }`.
  * Worked: center(4,4) = (168, 248) — row 4's centre in client space

@@ -122,12 +122,18 @@ function buildStrategyMessage(strategy: string): BaseMessage {
 
 /**
  * Build the review request from the ephemeral buffer's `gameLog` — the full
- * move sequence of the current game (Issue 2: the planner sees every step's
- * tool, coordinates and post-step board, not just the terminal snapshot —
- * `specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2,
+ * operation sequence of the current game (Issue 2: the planner sees every
+ * step's tool, operations and post-step board, not just the terminal snapshot
+ * — `specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2,
  * `specs/036-team-mode-bugfix/data-model.md` §2). Each entry's board is
  * rendered via `renderBoardText` so the model receives the same compact board
  * the saolei tools produce (no image, no tool-result parsing).
+ *
+ * A `saolei_operate` entry (single or batch) is rendered as
+ * `saolei_operate(operations) → status` with its full op list
+ * (`specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+ * §4 / FR-004): one gameLog entry per operate call, so the review input shows
+ * the tool's op types exactly as recorded.
  */
 function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 	const log = buffer.gameLog;
@@ -137,8 +143,12 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 	const lines: string[] = ["本局游戏过程："];
 	for (let i = 0; i < log.length; i += 1) {
 		const entry = log[i];
-		const coord = entry.x != null ? `(${entry.x}, ${entry.y})` : "";
-		lines.push(`${i + 1}. ${entry.tool}${coord} → ${entry.status}`);
+		const head = entry.operations
+			? `saolei_operate(${entry.operations
+					.map((op) => `${op.type}(${op.x},${op.y})`)
+					.join(", ")})`
+			: entry.tool;
+		lines.push(`${i + 1}. ${head} → ${entry.status}`);
 		lines.push(renderBoardText(entry.state));
 		lines.push("");
 	}
@@ -166,18 +176,18 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 /**
  * Player tool names whose use is OBSERVABLE in the game process the planner
  * reviews (the review input renders the ephemeral gameLog): `saolei_init`
- * writes an entry via `onGameStart` and the cell tools write entries via
- * `onMove` (team-sink.ts onGameStart/onMove). Tools absent here — the
- * read-only `saolei_remain`, which fires NO sink event and leaves no gameLog
- * trace (saolei-mcp.ts) — are NOT injected into the planner's tool-description
- * section: the planner cannot judge their use from the game process it sees
- * (specs/037-saolei-team-optimize/spec.md FR-016 refine).
+ * writes an entry via `onGameStart` and `saolei_operate` writes ONE entry per
+ * call via `onOperate` (team-sink.ts onGameStart/onOperate —
+ * `specs/039-planner-memory-calibration/spec.md` FR-005; the three former
+ * cell tools are merged into `saolei_operate`, FR-001). Tools absent here —
+ * the read-only `saolei_remain`, which fires NO sink event and leaves no
+ * gameLog trace (saolei-mcp.ts) — are NOT injected into the planner's
+ * tool-description section: the planner cannot judge their use from the game
+ * process it sees (specs/037-saolei-team-optimize/spec.md FR-016 refine).
  */
 const GAME_VISIBLE_PLAYER_TOOLS = new Set([
 	"saolei_init",
-	"saolei_click",
-	"saolei_flag",
-	"saolei_chord_click",
+	"saolei_operate",
 ]);
 
 /**
@@ -195,11 +205,16 @@ const GAME_VISIBLE_PLAYER_TOOLS = new Set([
  * are listed — i.e. tools that leave a gameLog trace (GAME_VISIBLE_PLAYER_
  * TOOLS). The read-only `saolei_remain` fires no sink event and produces no
  * gameLog entry, so the planner cannot tell whether it was used; its
- * description is therefore excluded (FR-016 refine).
+ * description is therefore excluded (FR-016 refine). `saolei_operate`'s
+ * description (the MCP tool's own text) covers its click/flag/chord operation
+ * types, matching the review input's recorded op types one-to-one (FR-005 —
+ * `specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+ * §4).
  */
 function buildToolDescriptionSection(tools: StructuredToolInterface[]): string {
 	// Game-visible subset: tools recorded in the review input's game log
-	// (saolei_init via onGameStart, cell tools via onMove — team-sink.ts).
+	// (saolei_init via onGameStart, saolei_operate via onOperate —
+	// team-sink.ts).
 	const visible = tools.filter((t) => GAME_VISIBLE_PLAYER_TOOLS.has(t.name));
 	if (visible.length === 0) return "";
 	const lines = [

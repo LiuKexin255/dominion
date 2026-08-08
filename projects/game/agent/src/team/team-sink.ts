@@ -8,7 +8,7 @@
  * checkpointer (D7). The buffer drives the planner trigger and supplies the
  * planner's review input (D6 steps 3-6):
  *
- * - `onMove` / `onGameStart` update `gameState`;
+ * - `onOperate` / `onGameStart` update `gameState`;
  * - `onGameEnd` writes `gameEvent = {state, status, endedAt, consumed:false}`
  *   (+ updates `gameState`); the per-game statistics carried by `onGameEnd`
  *   (US5 — `specs/037-saolei-team-optimize/spec.md` FR-031) are stored into
@@ -16,9 +16,13 @@
  * - the player node post-process consumes the event once (player.ts) and
  *   writes `TeamState.gameEnded = status`;
  * - the planner reads `gameState` for the review (planner.ts);
- * - the three callbacks also accumulate `gameLog` — the full move sequence of
+ * - the callbacks also accumulate `gameLog` — the full operation sequence of
  *   the CURRENT game (reset on `onGameStart`), which the planner renders as
- *   its review input (`specs/036-team-mode-bugfix/data-model.md` §2).
+ *   its review input (`specs/036-team-mode-bugfix/data-model.md` §2). One
+ *   `saolei_operate` call — single or batch — is recorded as ONE entry
+ *   carrying its full operations list (FR-004;
+ *   `specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+ *   §4), never one entry per operation.
  *
  * Contract: `specs/031-team-template-mode/contracts/saolei-sink-contract.md`
  * §4 (consumer) + `contracts/team-graph-contract.md` §3/§4. The buffer is NOT
@@ -31,7 +35,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { isTerminalState } from "../mcp/saolei/saolei-mcp";
 import type {
-	CellTool,
+	CellOperation,
 	GameStats,
 	SaoleiEventSink,
 } from "../mcp/saolei/saolei-mcp";
@@ -54,21 +58,25 @@ export interface GameEventRecord {
 }
 
 /**
- * A single game-log entry: one step of the game — the tool that triggered it,
- * the operation coordinates (where applicable), the board state after the
- * operation, and the resulting game status. The sink accumulates one entry per
- * step into `EphemeralGameBuffer.gameLog` (reset on `onGameStart`), and the
- * planner renders the full sequence as its review input
+ * A single game-log entry: one step of the game — the tool that triggered it
+ * (`"saolei_init"` | `"saolei_operate"` | `"(game-end)"`), the operation list
+ * for a `saolei_operate` step (a batch is ONE entry carrying its full
+ * operations, FR-004 — `specs/039-planner-memory-calibration/contracts/
+ * saolei-operate-contract.md` §4), the board state after the step, and the
+ * resulting game status. The sink accumulates one entry per step into
+ * `EphemeralGameBuffer.gameLog` (reset on `onGameStart`), and the planner
+ * renders the full sequence as its review input
  * (`specs/036-team-mode-bugfix/data-model.md` §2).
  */
 export interface GameLogEntry {
-	/** Tool that triggered this step ("saolei_init", "saolei_click", ...).
+	/** Tool that triggered this step ("saolei_init", "saolei_operate", ...).
 	 *  Game-end events use the literal "(game-end)". */
 	tool: string;
-	/** Operation x coordinate (click/flag apply; init has none). */
-	x?: number;
-	/** Operation y coordinate (click/flag apply; init has none). */
-	y?: number;
+	/**
+	 * The full operation list of one `saolei_operate` call (single or batch).
+	 * Absent for `saolei_init` / `(game-end)` steps.
+	 */
+	operations?: CellOperation[];
 	/** Board state after the operation (text-rendered for the planner). */
 	state: GameState;
 	/** Game status after the operation. */
@@ -106,7 +114,11 @@ export function createEphemeralGameBuffer(): EphemeralGameBuffer {
  *   with the newest event. It DOES reset `gameLog` — the planner reviews only
  *   the CURRENT game, never an accumulation across games
  *   (`specs/036-team-mode-bugfix/data-model.md` §2, `specs/036-team-mode-bugfix/spec.md` FR-007).
- * - `onMove`: the recognized state after a legal cell operation.
+ * - `onOperate`: one callback per `saolei_operate` call (single or batch) —
+ *   the recognized state after processing + the call's FULL operations list
+ *   (FR-004; `specs/039-planner-memory-calibration/contracts/
+ *   saolei-operate-contract.md` §4). `stats` is ignored here — the end-event
+ *   path (`onGameEnd`) stores the per-game statistics.
  * - `onGameEnd`: write the structured end event (status is the MCP's
  *   first-hand `won|lost` computation, FR-017) + update `gameState`; the
  *   optional `stats` (US5, FR-031) is stored into `gameEvent.stats` for the
@@ -119,18 +131,19 @@ export function createTeamSink(buffer: EphemeralGameBuffer): SaoleiEventSink {
 			buffer.gameLog = [];
 			buffer.gameLog.push({ tool: "saolei_init", state, status: "playing" });
 		},
-		onMove: (tool: CellTool, x: number, y: number, state: GameState) => {
-			buffer.gameState = state;
-			// Same loss-first decision order as the MCP's private `gameStatus`
+		onOperate: (operations: CellOperation[], finalState: GameState) => {
+			buffer.gameState = finalState;
+			// FR-004: one gameLog entry per saolei_operate call, carrying the
+			// full operations list (never one entry per operation). Same
+			// loss-first decision order as the MCP's private `gameStatus`
 			// (`specs/036-team-mode-bugfix/data-model.md` §3).
 			buffer.gameLog.push({
-				tool,
-				x,
-				y,
-				state,
-				status: isTerminalState(state)
+				tool: "saolei_operate",
+				operations,
+				state: finalState,
+				status: isTerminalState(finalState)
 					? "lost"
-					: isWin(state)
+					: isWin(finalState)
 						? "won"
 						: "playing",
 			});

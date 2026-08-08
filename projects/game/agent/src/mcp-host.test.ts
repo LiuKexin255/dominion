@@ -210,7 +210,7 @@ describe("createMcpHostApp: team sink pass-through (031 saolei-sink-contract §6
 		vi.mocked(createSaoleiMcpServer).mockClear();
 		const teamSink: SaoleiEventSink = {
 			onGameStart: () => undefined,
-			onMove: () => undefined,
+			onOperate: () => undefined,
 			onGameEnd: () => undefined,
 		};
 		const { lookup } = makeFakeStore(["sess-sink"], {

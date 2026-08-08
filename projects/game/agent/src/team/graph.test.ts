@@ -91,8 +91,8 @@ function buildMixedOutcomePlayerTool(buffer: EphemeralGameBuffer) {
  * The fake player tool that ends the game carrying per-game stats (037 US5 —
  * the MCP's onGameEnd third argument, FR-030/FR-031): the team sink stores
  * them into `buffer.gameEvent.stats`, which the planner's review input
- * renders (FR-032). A real move (sink.onMove) precedes the game end so the
- * gameLog holds an actual game-process entry — the stats-section ordering
+ * renders (FR-032). A real operate (sink.onOperate) precedes the game end so
+ * the gameLog holds an actual game-process entry — the stats-section ordering
  * assertion in the US5 test compares against a present entry instead of a
  * vacuous -1 (Phase 6 review fix).
  */
@@ -100,7 +100,7 @@ function buildStatsPlayerTool(buffer: EphemeralGameBuffer, stats: GameStats) {
 	const sink = createTeamSink(buffer);
 	return tool(
 		async ({ x, y }: { x: number; y: number }) => {
-			await sink.onMove("saolei_click", x, y, makeState());
+			await sink.onOperate([{ type: "click", x, y }], makeState());
 			await sink.onGameEnd(makeState(), "lost", stats);
 			return `moved to (${x},${y}); game lost`;
 		},
@@ -522,14 +522,15 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 	it("renders every gameLog entry — tool, coordinates, status and board — in the review input (US2 acceptance #1-4)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
-		// Two moves (still playing), then a losing game end — the sink
-		// accumulates one gameLog entry per step (Phase 2, T002-T004).
+		// Two operates (still playing), then a losing game end — the sink
+		// accumulates one gameLog entry per operate call (each carrying its
+		// full operations list, FR-004 — Phase 2, T005/T006).
 		const moveTool = tool(
 			async ({ x, y }: { x: number; y: number }) => {
 				if (x === 3 && y === 4) {
-					sink.onMove("saolei_click", 3, 4, makeState());
+					sink.onOperate([{ type: "click", x: 3, y: 4 }], makeState());
 				} else {
-					sink.onMove("saolei_click", 5, 2, makeState());
+					sink.onOperate([{ type: "flag", x: 5, y: 2 }], makeState());
 					sink.onGameEnd(makeState(), "lost");
 				}
 				return `moved to (${x},${y})`;
@@ -563,7 +564,9 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 		)) as TeamStateValue;
 
 		// The review request (human message) renders every gameLog entry in
-		// order — tool + coordinates + status + text board.
+		// order — tool + operations + status + text board (FR-004: one
+		// entry per saolei_operate call, rendering `saolei_operate(ops) →
+		// status`).
 		const reviewRequests = result.plannerMessages.filter(
 			(m) =>
 				m._getType() === "human" &&
@@ -571,8 +574,8 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 		);
 		expect(reviewRequests).toHaveLength(1);
 		const text = contentType(reviewRequests[0] as BaseMessage);
-		expect(text).toContain("1. saolei_click(3, 4) → playing");
-		expect(text).toContain("2. saolei_click(5, 2) → playing");
+		expect(text).toContain("1. saolei_operate(click(3,4)) → playing");
+		expect(text).toContain("2. saolei_operate(flag(5,2)) → playing");
 		expect(text).toContain("3. (game-end) → lost");
 		// Each step's board is text-rendered into the review input.
 		expect(text).toContain("board size 3*3");
@@ -672,11 +675,12 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 		expect(text).toContain(
 			"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
 		);
-		// The game-process lines come from the sink-written gameLog (the move
-		// from onMove, then the onGameEnd entry) — asserted present so the
-		// ordering comparison below is not vacuous (Phase 6 review fix: the
-		// stats section must be verified AFTER a real gameLog line).
-		expect(text).toContain("1. saolei_click");
+		// The game-process lines come from the sink-written gameLog (the
+		// operate from onOperate, then the onGameEnd entry) — asserted
+		// present so the ordering comparison below is not vacuous (Phase 6
+		// review fix: the stats section must be verified AFTER a real
+		// gameLog line).
+		expect(text).toContain("1. saolei_operate");
 		expect(text).toContain("2. (game-end)");
 		// The stats section sits AFTER the game-process lines.
 		expect(text.indexOf("本局统计数据：")).toBeGreaterThan(
@@ -778,16 +782,16 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 	it("emits the review input as a real-time frame with agent=planner when a game ends (FR-001/FR-002)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
-		// Two moves (still playing), then a losing game end — the sink
-		// accumulates one gameLog entry per step, so the emitted frame
+		// Two operates (still playing), then a losing game end — the sink
+		// accumulates one gameLog entry per operate call, so the emitted frame
 		// carries the full process (specs/037-saolei-team-optimize/spec.md
 		// FR-002: live content == reloaded ListMessages content).
 		const moveTool = tool(
 			async ({ x, y }: { x: number; y: number }) => {
 				if (x === 3 && y === 4) {
-					sink.onMove("saolei_click", 3, 4, makeState());
+					sink.onOperate([{ type: "click", x: 3, y: 4 }], makeState());
 				} else {
-					sink.onMove("saolei_click", 5, 2, makeState());
+					sink.onOperate([{ type: "flag", x: 5, y: 2 }], makeState());
 					sink.onGameEnd(makeState(), "lost");
 				}
 				return `moved to (${x},${y})`;
@@ -835,10 +839,10 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 		// The frame belongs to the planner tab (FR-001 / US1 AS5).
 		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
 		// The frame carries the FULL game process — every step's tool,
-		// coordinates, status and text-rendered board (US1 AS2).
+		// operations, status and text-rendered board (US1 AS2).
 		expect(emittedContent).toContain("本局游戏过程");
-		expect(emittedContent).toContain("1. saolei_click(3, 4) → playing");
-		expect(emittedContent).toContain("2. saolei_click(5, 2) → playing");
+		expect(emittedContent).toContain("1. saolei_operate(click(3,4)) → playing");
+		expect(emittedContent).toContain("2. saolei_operate(flag(5,2)) → playing");
 		expect(emittedContent).toContain("3. (game-end) → lost");
 		expect(emittedContent).toContain("board size 3*3");
 		// The emitted content equals the review request written to the
@@ -1279,18 +1283,33 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		// The default test player tool (fake_saolei_move) is NOT game-visible
 		// (GAME_VISIBLE_PLAYER_TOOLS), so it would not be listed — pass a real
 		// visible tool to exercise the US3 section alongside FR-034.
-		const clickTool = tool(
-			async () => "clicked",
+		// `saolei_operate`'s description covers its click/flag/chord operation
+		// types (FR-005 — Phase 2 US1).
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
 		buildTestGraph({
 			plannerBasePrompt: profilePrompt,
-			playerTools: [clickTool],
+			playerTools: [operateTool],
 			createAgentFn,
 		});
 
@@ -1302,23 +1321,38 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		// The planner appends NO skill body (FR-012/FR-034).
 		expect(plannerSystemPrompt()).not.toContain(SKILL_PROMPT_SEPARATOR);
 		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
-		expect(plannerSystemPrompt()).toContain("saolei_click: 揭示一个格子。");
+		expect(plannerSystemPrompt()).toContain(
+			"saolei_operate: 执行落子操作，支持 click/flag/chord。",
+		);
 		expect(createAgentFn).toHaveBeenCalled();
 	});
 
 	it("planner: empty planner_prompt falls back to DEFAULT_PLANNER_BASE (FR-034)", () => {
 		// A game-visible player tool so the US3 section is present (the
 		// default fake_saolei_move test tool is not game-visible).
-		const clickTool = tool(
-			async () => "clicked",
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
-		buildTestGraph({ playerTools: [clickTool], createAgentFn }); // plannerBasePrompt defaults to ""
+		buildTestGraph({ playerTools: [operateTool], createAgentFn }); // plannerBasePrompt defaults to ""
 
 		// The default base leads (FR-034); the US3 tool description section
 		// follows it (FR-016 — compression-contract.md §4).
@@ -1342,20 +1376,37 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 
 describe("team graph — US3 (037): planner systemPrompt player tool descriptions (FR-016..FR-018)", () => {
 	it("injects every game-visible player tool's name+description into the planner systemPrompt while keeping its tool set at update_strategy only (FR-016/FR-018)", () => {
-		const clickTool = tool(
-			async () => "clicked",
+		// Both game-visible player tools (Phase 2 US1: the cell tools are
+		// merged into saolei_operate — FR-001). `saolei_operate`'s
+		// description carries the click/flag/chord operation types (FR-005),
+		// so the injected section documents them for the planner.
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
-		const flagTool = tool(
-			async () => "flagged",
+		const initTool = tool(
+			async () => "started",
 			{
-				name: "saolei_flag",
-				description: "标记一个格子为地雷。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_init",
+				description: "开始一局新游戏。",
+				schema: z.object({}),
 			},
 		);
 		// DI spy (style/javascript.md §测试 — no vi.mock): capture BOTH the
@@ -1376,7 +1427,7 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
 			},
 		);
-		buildTestGraph({ playerTools: [clickTool, flagTool], createAgentFn });
+		buildTestGraph({ playerTools: [operateTool, initTool], createAgentFn });
 
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
@@ -1389,10 +1440,10 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 		// compression-contract.md §4 — `- name: description` per tool).
 		expect(plannerCall?.systemPrompt).toContain("## Player 可用工具");
 		expect(plannerCall?.systemPrompt).toContain(
-			"saolei_click: 揭示一个格子。",
+			"saolei_operate: 执行落子操作，支持 click/flag/chord。",
 		);
 		expect(plannerCall?.systemPrompt).toContain(
-			"saolei_flag: 标记一个格子为地雷。",
+			"saolei_init: 开始一局新游戏。",
 		);
 		// FR-018: the planner's ACTUAL tool set stays `update_strategy` only —
 		// the player tools were NOT added as callable tools.
@@ -1401,12 +1452,25 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 	});
 
 	it("excludes read-only player tools the planner cannot observe in the game process (saolei_remain — FR-016 refine)", () => {
-		const clickTool = tool(
-			async () => "clicked",
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
 		const remainTool = tool(
@@ -1427,7 +1491,7 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
 			},
 		);
-		buildTestGraph({ playerTools: [clickTool, remainTool], createAgentFn });
+		buildTestGraph({ playerTools: [operateTool, remainTool], createAgentFn });
 
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
@@ -1436,7 +1500,9 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 		);
 		expect(plannerCall).toBeDefined();
 		// The game-visible tool IS listed...
-		expect(plannerCall?.systemPrompt).toContain("saolei_click: 揭示一个格子。");
+		expect(plannerCall?.systemPrompt).toContain(
+			"saolei_operate: 执行落子操作，支持 click/flag/chord。",
+		);
 		// ...while the read-only saolei_remain (no gameLog trace — the
 		// planner cannot observe its use) is NOT injected (FR-016 refine).
 		expect(plannerCall?.systemPrompt).not.toContain("saolei_remain");
