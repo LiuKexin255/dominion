@@ -279,6 +279,45 @@ export async function buildSaoleiMcpTools(
 	return client.getTools();
 }
 
+/**
+ * Build the per-session planner memory MCP tools (039 T022 — FR-007/FR-008).
+ *
+ * Same `MultiServerMCPClient` pattern as {@link buildSaoleiMcpTools}, over
+ * the session's memory mcp path `/internal/mcp/{template}/{session}/memory`
+ * (`mcp-host.ts` — template-scoped multi-path scheme, R3 — memory-mcp-
+ * contract.md §4). The host-side `createMemoryMcpServer` exposes EXACTLY ONE
+ * hermes-style `memory` tool (action/content/old_text/operations — no
+ * `memory_id`, no `target`); `getTools()` returns it as a LangChain
+ * `DynamicStructuredTool`, and the planner node is the ONLY holder (FR-009).
+ *
+ * The mcp server forwards to the MemoryService via the agent — it NEVER
+ * connects to the memory service directly (FR-007, memory-mcp-contract.md
+ * §4). The tools are profile-independent and bound to the session's cached
+ * host server, so a profile-change rebuild reuses them without reconnecting
+ * (team-rebuild-contract.md §3/§4 — same as the saolei tools).
+ *
+ * @param template   The template path segment (e.g. `"saolei"`).
+ * @param sessionId  The dominion session id (path segment of the MCP URL).
+ * @param mcpPort    The MCP host port (default `DEFAULT_MCP_PORT`).
+ * @param clientFactory DI seam — defaults to the real
+ *   `MultiServerMCPClient`. Tests inject a `vi.fn()` to assert the URL and
+ *   to short-circuit the HTTP round-trip.
+ */
+export async function buildMemoryMcpTools(
+	template: string,
+	sessionId: string,
+	mcpPort: number,
+	clientFactory: McpClientFactory,
+): Promise<StructuredToolInterface[]> {
+	const client = await clientFactory({
+		memory: {
+			transport: "http",
+			url: `http://localhost:${mcpPort}/internal/mcp/${template}/${sessionId}/memory`,
+		},
+	});
+	return client.getTools();
+}
+
 // ---------------------------------------------------------------------------
 // History helpers (handler.ts ListMessages / turn-runner message conversion)
 // ---------------------------------------------------------------------------

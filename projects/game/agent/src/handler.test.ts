@@ -27,14 +27,34 @@ import { Handler } from "./handler";
 import { SessionTeam, SessionTeamStore } from "./session-team";
 import type { SessionTeamRebuilder } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
+import type { MemoryClient } from "./memory-client";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot";
 import type { MemorySaver } from "@langchain/langgraph";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { UserFrame } from "../game_types/projects/game/UserFrame";
 
 // ---------------------------------------------------------------------------
 // Mock helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * 039 Phase 5 (T019): the memory data-plane deps the graph now requires —
+ * DI fakes (a no-op MemoryClient + a fresh empty snapshot), mirroring the
+ * production server.ts wiring (memory-client / per-session snapshot).
+ */
+function memoryDeps() {
+  const memoryClient = {
+    listMemories: async () => [],
+  } as unknown as MemoryClient;
+  return {
+    memoryClient,
+    frozenSnapshot: new FrozenMemorySnapshot(),
+    template: "saolei",
+    plannerTools: [] as StructuredToolInterface[],
+  };
+}
 
 function makeState(): GameState {
   return {
@@ -119,6 +139,7 @@ function createTeamStore(
         playerTools: [buildGameEndingPlayerTool(buffer, gate)],
         playerBasePrompt: "",
         plannerBasePrompt: "",
+        ...memoryDeps(),
       });
       // Pre-built bridge/sink like the production factory (server.ts) — the
       // SessionTeam constructor no longer creates them internally. sessionId/
@@ -147,6 +168,7 @@ function createTeamStore(
             playerTools: [buildGameEndingPlayerTool(buffer)],
             playerBasePrompt: "",
             plannerBasePrompt: "",
+            ...memoryDeps(),
           },
           existingCheckpointer,
         );
@@ -527,6 +549,7 @@ describe("Handler.UpdateTeam", () => {
           playerTools: [buildGameEndingPlayerTool(buffer)],
           playerBasePrompt: "",
           plannerBasePrompt: "",
+          ...memoryDeps(),
         },
         existingCheckpointer,
       );

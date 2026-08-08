@@ -18,10 +18,19 @@
  *   a last-write-wins reducer — incremented by the planner on return and
  *   reset by RefreshTeam (specs/037-saolei-team-optimize/data-model.md §2;
  *   FR-014).
+ * - a `pendingInstruction` field (string | null) with a last-write-wins
+ *   reducer — the init/compact scenarios' deferred instruction slot (D10;
+ *   `specs/039-planner-memory-calibration/contracts/team-graph-contract.md`
+ *   §1). Written by the initInstruction/postCompactInstruction nodes (Phase 6
+ *   T024-T026), consumed and cleared by the player node's entry (Phase 6
+ *   T028). Present in the schema from Phase 5 (T019) so RefreshTeam/rebuild
+ *   state carries it (contract §7 — Phase 6 clears it).
  *
  * The strategy is NOT in state (it lives in `StrategyStore`, injected into
  * prompts at code level — contract §3); gameState/gameEvent are NOT in state
- * (they live in the per-session ephemeral buffer, `team-sink.ts` — D7).
+ * (they live in the per-session ephemeral buffer, `team-sink.ts` — D7); the
+ * planner's long-term memory is NOT in state (it lives in the frozen
+ * snapshot, `memory-snapshot.ts` — team-graph-contract.md §3).
  *
  * **Must be defined via `Annotation.Root`** (NOT `new StateSchema` + zod):
  * under the pinned `@langchain/langgraph` ^1.4.8 + `zod` ^3.25.76 a plain zod
@@ -61,4 +70,10 @@ export interface TeamStateValue {
 	gameEnded: GameEnded;
 	/** Completed-game counter (won/lost, planner-returned); reset by RefreshTeam. */
 	gameCounter: number;
+	/**
+	 * Deferred calibration-instruction slot (D10 — contract §1): written by
+	 * the init/compact scenario nodes, consumed (and cleared) by the player
+	 * node's entry. `null` = no pending instruction.
+	 */
+	pendingInstruction: string | null;
 }

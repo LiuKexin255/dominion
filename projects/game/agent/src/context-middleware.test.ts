@@ -30,7 +30,27 @@ import {
   createTeamSink,
 } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot";
+import type { MemoryClient } from "./memory-client";
 import type { TeamStateValue } from "./team/state";
+import type { StructuredToolInterface } from "@langchain/core/tools";
+
+/**
+ * 039 Phase 5 (T019): the memory data-plane deps the graph now requires —
+ * DI fakes (a no-op MemoryClient + a fresh empty snapshot), mirroring the
+ * production server.ts wiring (memory-client / per-session snapshot).
+ */
+function memoryDeps() {
+  const memoryClient = {
+    listMemories: async () => [],
+  } as unknown as MemoryClient;
+  return {
+    memoryClient,
+    frozenSnapshot: new FrozenMemorySnapshot(),
+    template: "saolei",
+    plannerTools: [] as StructuredToolInterface[],
+  };
+}
 
 function makeState(): GameState {
   return {
@@ -77,6 +97,7 @@ async function runOneGameTurn(sessionId: string) {
     playerTools: [buildGameEndingPlayerTool(buffer)],
     playerBasePrompt: "",
     plannerBasePrompt: "",
+    ...memoryDeps(),
   });
 
   await graph.invoke(
@@ -144,6 +165,7 @@ describe("refreshTeamChannels (FR-018)", () => {
       playerTools: [],
       playerBasePrompt: "",
       plannerBasePrompt: "",
+      ...memoryDeps(),
     });
 
     await expect(refreshTeamChannels(graph, "ctx-refresh-empty")).resolves.toBeUndefined();

@@ -5,35 +5,45 @@
  * (the conditional edge routes to it only when `TeamState.gameEnded ≠ null`,
  * FR-011), never fires per move, and NEVER touches the desktop (FR-010).
  *
- * - **Input**: `plannerMessages` history + a fresh review request built from
- *   the ephemeral buffer's `gameLog` (the full move sequence of the current
- *   game — Issue 2, `specs/036-team-mode-bugfix/contracts/
- *   team-graph-fix-contract.md` §2.2); its system context = [复盘指令] +
- *   [当前策略, 初始 `""`] (FR-014 — the strategy is read fresh each entry and
- *   injected as a fixed-id `SystemMessage`, then filtered out of the channel
- *   write-back: strategy stays in StrategyStore).
- * - **Tools**: ONLY `update_strategy` (FR-012, no read tools).
- * - **Retry/degrade**: `update_strategy` retries live INSIDE this node (D6 /
- *   需求方 #6): tool-call failures surface to the model within the agent
- *   loop (the model may retry the call), and a failing agent invoke is
+ * - **Input**: `plannerMessages` history + the frozen long-term-memory
+ *   snapshot (input SystemMessage, **纯内容** — FR-011) + a fresh review
+ *   request built from the ephemeral buffer's `gameLog` (the full move
+ *   sequence of the current game — Issue 2, `specs/036-team-mode-bugfix/
+ *   contracts/team-graph-fix-contract.md` §2.2). The strategy READ path
+ *   (`buildStrategyMessage`) is gone (Phase 5, T020 — replaced by the frozen
+ *   snapshot, contract §2.2/§3); the snapshot's SystemMessage is filtered out
+ *   of the channel write-back (contract §3 — it must not enter the short-term
+ *   plannerMessages channel).
+ * - **Tools**: the memory MCP tools (a single hermes-style `memory` tool,
+ *   FR-007/FR-008 — injected via {@link PlannerNodeDeps.plannerTools}, built
+ *   by server wiring through the mcp client) + `update_strategy` (Phase 5
+ *   INTERMEDIATE write path, T019 — removed in Phase 6, T030/T031;
+ *   `instruct_player` arrives in Phase 6, T027).
+ * - **System prompt**: base + memory skill body
+ *   (`appendSkillBodyToPrompt(base, ["memory"])`, FR-020) + the player's
+ *   game-visible tool NAME/DESCRIPTION section (US3, FR-016/FR-017) — static,
+ *   template-fixed assembly (FR-028); the frozen snapshot is NOT baked into
+ *   the system prompt (survey D5 plan b — it is input data, contract §3).
+ * - **Retry/degrade**: tool-call failures surface to the model within the
+ *   agent loop (the model may retry the call), and a failing agent invoke is
  *   retried a bounded number of times before degrading. The graph scheduler
  *   never re-routes the planner.
  * - **Return**: `{ plannerMessages, gameEnded: null, gameCounter }` — the graph
  *   clears `gameEnded` UNCONDITIONALLY after the planner node returns (D6 step
- *   6, whether or not `update_strategy` succeeded), so the planner fires at
- *   most once per game end; the edge back to `player` follows (FR-009 —
- *   continuing is driven by the player LLM / user, not a forced loop). The
- *   node also increments the per-session `gameCounter` on BOTH paths (success
- *   and degrade): every ended game — won or lost — counts toward the 5-game
- *   compression trigger (specs/037-saolei-team-optimize/spec.md FR-006;
- *   contracts/compression-contract.md §4).
+ *   6), so the planner fires at most once per game end; the edge back to
+ *   `player` follows (FR-009 — continuing is driven by the player LLM / user,
+ *   not a forced loop). The node also increments the per-session `gameCounter`
+ *   on BOTH paths (success and degrade): every ended game — won or lost —
+ *   counts toward the 5-game compression trigger
+ *   (specs/037-saolei-team-optimize/spec.md FR-006; contracts/
+ *   compression-contract.md §4).
  *
  * **createAgent carries NO checkpointer** (D14 注意事项 4 / A2), same as the
  * player node: history lives in the outer graph's single `MemorySaver`.
  */
 
 import { createAgent } from "langchain";
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -41,22 +51,19 @@ import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
 import type { ChatModel } from "../model-provider";
+import type { MemoryClient } from "../memory-client";
 import type { ChannelFrameEmitter } from "../session-team";
 import type { StrategyStore } from "../strategy-store";
+import { appendSkillBodyToPrompt } from "../skill-loader";
 import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
 import { buildUpdateStrategyTool } from "./update-strategy";
+import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
+import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { CreateAgentFn } from "./player";
 
 /** The planner agent's name — the `TeamFrame.agent` value (FR-023/D12). */
 export const PLANNER_AGENT_NAME = "planner";
-
-/**
- * Fixed id of the strategy SystemMessage the node prepends to the model
- * input. Filtered out of the channel write-back (same rationale as the
- * player node — strategy not in short-term state, D4).
- */
-const STRATEGY_MESSAGE_ID = "planner-strategy-current";
 
 /**
  * Bounded retry count for a failing planner agent invoke (D6: retry is
@@ -67,32 +74,56 @@ const MAX_PLANNER_ATTEMPTS = 3;
 /**
  * The planner's DEFAULT base prompt (the template-fixed fallback base, FR-034
  * semantics A — used when `SaoleiProfile.planner_prompt` is empty, see
- * `specs/031-team-template-mode/spec.md` FR-034). The planner appends NO
- * skill body (it holds no saolei tools, FR-012). The current strategy is
- * injected per entry (FR-014), NOT baked into this prompt.
+ * `specs/031-team-template-mode/spec.md` FR-034). The memory skill body is
+ * ALWAYS appended by the template on top of the base
+ * (`appendSkillBodyToPrompt(base, ["memory"])`, FR-020 — 039 US2), and the
+ * player's game-visible tool description section follows (US3, FR-016). The
+ * frozen memory snapshot is NOT part of this static prompt — it is injected
+ * per invoke as an input SystemMessage (contract §3, survey D5 plan b).
  */
 export const DEFAULT_PLANNER_BASE =
 	"你是扫雷团队的复盘规划者（planner）。每局游戏结束后你会收到本局的终局棋盘" +
-	"与当前策略。你的职责：复盘本局表现（判断策略是否有效），" +
-	"若你认为策略需要更新，调用 update_strategy 写入新策略（新策略将整体替换旧策略）；" +
-	"若无需更新，则不调用任何工具直接结束。你不操作桌面，不持有任何读取工具。" +
-	"策略将由 player 在下一局作为当前态势读取。";
+	"与你维护的长期记忆（冻结快照，见记忆使用引导）。你的职责：复盘本局表现" +
+	"（判断策略是否有效），把值得跨局保留的观察写入长期记忆（调用 memory 工具）；" +
+	"若你认为策略需要更新，调用 update_strategy 写入新策略。你不操作桌面，" +
+	"不持有任何读取工具。";
 
 /** Dependencies of the planner node (all injected — DI seam). */
 export interface PlannerNodeDeps {
 	/** The planner's LLM (from the TeamProfile, Batch 2 wiring). */
 	model: ChatModel;
-	/** Long-term strategy store (system context + `update_strategy` writes). */
+	/**
+	 * MemoryService gRPC client — the planner's memory data plane (DI seam,
+	 * `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md`
+	 * §3). The memory TOOL is obtained via the mcp client by server wiring
+	 * ({@link PlannerNodeDeps.plannerTools}); the client is carried in deps
+	 * alongside the frozen snapshot for the memory data-plane contract.
+	 */
+	memoryClient: MemoryClient;
+	/**
+	 * The frozen long-term-memory snapshot (contract §3, survey D5 plan b):
+	 * injected as an input SystemMessage per invoke (纯内容, FR-011). NOT
+	 * refreshed here (FR-010 — the refresh boundary is the compress node).
+	 */
+	frozenSnapshot: FrozenMemorySnapshot;
+	/**
+	 * Long-term strategy store — Phase 5 INTERMEDIATE STATE
+	 * (`specs/039-planner-memory-calibration/tasks.md` T019/T020): retained
+	 * ONLY for the `update_strategy` WRITE path (the tool below); the
+	 * strategy READ path (old `buildStrategyMessage`) is replaced by the
+	 * frozen snapshot. Removed in Phase 6 (T030/T031, FR-013).
+	 */
 	strategyStore: StrategyStore;
 	/** Per-session ephemeral game-state buffer (review input, D6 step 6). */
 	buffer: EphemeralGameBuffer;
-	/** Session id — the StrategyStore key and the checkpoint thread id. */
+	/** Session id — the checkpoint thread id. */
 	sessionId: string;
 	/**
 	 * The planner's base prompt from `SaoleiProfile.planner_prompt` (FR-034
 	 * semantics A — empty string = unset = fall back to the template default
-	 * `DEFAULT_PLANNER_BASE`; the planner appends NO skill body, see
-	 * `specs/031-team-template-mode/spec.md` FR-034).
+	 * `DEFAULT_PLANNER_BASE`; the memory skill body is ALWAYS appended by the
+	 * template on top of the base, FR-020 — `specs/039-planner-memory-
+	 * calibration/contracts/memory-skill-contract.md` §2).
 	 */
 	plannerBasePrompt: string;
 	/**
@@ -103,25 +134,23 @@ export interface PlannerNodeDeps {
 	 * set is template-fixed, specs/031-team-template-mode/spec.md FR-028;
 	 * only tools the planner can observe in the game process it reviews are
 	 * listed — `saolei_remain` is excluded, it leaves no gameLog trace). The
-	 * tools themselves are NOT added to the planner's tool set (FR-018 — the
-	 * planner holds `update_strategy` only, FR-012).
+	 * tools themselves are NOT added to the planner's tool set (FR-018).
 	 */
 	playerTools: StructuredToolInterface[];
+	/**
+	 * The planner's OWN tools — the memory MCP tools (a single hermes-style
+	 * `memory` tool with `action`/`content`/`old_text`/`operations` — FR-007/
+	 * FR-008), obtained via the mcp client (`buildMemoryMcpTools`, server
+	 * wiring — T022) and DI-injected (tests inject a fake). The
+	 * `update_strategy` tool is built internally (Phase 5 intermediate write
+	 * path; removed in Phase 6).
+	 */
+	plannerTools: StructuredToolInterface[];
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
 }
 
-/** Build the strategy SystemMessage for the planner's system context. */
-function buildStrategyMessage(strategy: string): BaseMessage {
-	const display = strategy === "" ? "（无 — 初始为空）" : strategy;
-	return new SystemMessage({
-		id: STRATEGY_MESSAGE_ID,
-		content: `当前策略：${display}`,
-	});
-}
-
-/**
- * Build the review request from the ephemeral buffer's `gameLog` — the full
+/** Build the review request from the ephemeral buffer's `gameLog` — the full
  * operation sequence of the current game (Issue 2: the planner sees every
  * step's tool, operations and post-step board, not just the terminal snapshot
  * — `specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2,
@@ -282,23 +311,31 @@ export function createPlannerNode(
 	state: TeamStateValue,
 	config?: RunnableConfig,
 ) => Promise<Partial<TeamStateValue>> {
-	const { strategyStore, buffer, sessionId } = deps;
+	const { strategyStore, buffer, sessionId, frozenSnapshot } = deps;
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
 	// FR-034 semantics A: the base prompt is the profile's planner_prompt
-	// when non-empty, else the template default; NO skill body is appended
-	// (the planner holds no saolei tools, FR-012) —
-	// `specs/031-team-template-mode/spec.md` FR-034. US3: the player tool
-	// NAME + DESCRIPTION section is appended AFTER the base prompt (FR-016/
-	// FR-017 — specs/037-saolei-team-optimize/contracts/
+	// when non-empty, else the template default. The memory skill body is
+	// ALWAYS appended on top of the base (FR-020 — `specs/039-planner-memory-
+	// calibration/contracts/memory-skill-contract.md` §2: systemPrompt =
+	// appendSkillBodyToPrompt(base, ["memory"]) + buildToolDescriptionSection),
+	// mirroring the player's `appendSkillBodyToPrompt(base, ["saolei"])`. The
+	// frozen snapshot is NOT baked here (survey D5 plan b — it is input data).
+	// US3: the player tool NAME + DESCRIPTION section is appended AFTER the
+	// skill body (FR-016/FR-017 — specs/037-saolei-team-optimize/contracts/
 	// compression-contract.md §4); the tools themselves stay OUT of the
 	// planner's tool set (FR-018).
 	const systemPrompt =
-		(deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE) +
-		buildToolDescriptionSection(deps.playerTools);
+		appendSkillBodyToPrompt(
+			deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE,
+			["memory"],
+		) + buildToolDescriptionSection(deps.playerTools);
 	const plannerAgent = createAgentFn({
 		model: deps.model,
-		tools: [buildUpdateStrategyTool(strategyStore, sessionId)],
+		// Phase 5 (T020): the memory MCP tools (single hermes-style `memory`
+		// tool) + the Phase-5-intermediate `update_strategy` write path
+		// (removed in Phase 6; `instruct_player` arrives in Phase 6, T027).
+		tools: [...deps.plannerTools, buildUpdateStrategyTool(strategyStore, sessionId)],
 		systemPrompt,
 	});
 
@@ -306,8 +343,6 @@ export function createPlannerNode(
 		state: TeamStateValue,
 		config?: RunnableConfig,
 	): Promise<Partial<TeamStateValue>> => {
-		// FR-014: current strategy (initial "") as system context, fresh read.
-		const strategy = await strategyStore.get(sessionId);
 		// Issue 2: review input = the ephemeral buffer's full gameLog.
 		const reviewInput = buildReviewInput(buffer);
 
@@ -345,7 +380,11 @@ export function createPlannerNode(
 		}
 
 		const input: BaseMessage[] = [
-			buildStrategyMessage(strategy),
+			// 039 US2 (T020, contract §3 / survey D5 plan b): the frozen
+			// long-term-memory snapshot as the first input SystemMessage
+			// (纯内容, FR-011). Not refreshed here (FR-010 — the refresh
+			// boundary is the compress node, T021).
+			frozenSnapshot.toSystemMessage(),
 			...state.plannerMessages,
 			reviewInput,
 		];
@@ -373,8 +412,12 @@ export function createPlannerNode(
 		}
 
 		return {
+			// Filter the frozen-snapshot SystemMessage out of the channel
+			// write-back — the long-term memory stays in the memory service /
+			// snapshot, NOT in the short-term plannerMessages channel (contract
+			// §3 — same id-filtering pattern as the former strategy message).
 			plannerMessages: result.messages.filter(
-				(m: BaseMessage) => m.id !== STRATEGY_MESSAGE_ID,
+				(m: BaseMessage) => m.id !== PLANNER_MEMORY_SNAPSHOT_ID,
 			),
 			// D6 step 6: unconditional clear — the planner fires at most once
 			// per game end; the edge routes back to the player (FR-009).

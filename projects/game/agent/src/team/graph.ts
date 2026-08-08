@@ -47,7 +47,9 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import type { ChatModel } from "../model-provider";
+import type { MemoryClient } from "../memory-client";
 import type { StrategyStore } from "../strategy-store";
+import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { GameEnded, TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
 import { createCompressNode } from "./compress";
@@ -85,6 +87,16 @@ const TeamState = Annotation.Root({
 		// data-model.md §2, FR-006/FR-014). Same pattern as `gameEnded`.
 		reducer: (_prev: number, next: number) => next,
 		default: () => 0,
+	}),
+	pendingInstruction: Annotation<string | null>({
+		// Overwrite (last-write-wins) control field (D10 —
+		// `specs/039-planner-memory-calibration/contracts/team-graph-contract.md`
+		// §1): the init/compact scenarios' deferred instruction slot. Written
+		// by the instruction nodes (Phase 6 T025/T026), consumed and cleared
+		// by the player node's entry (Phase 6 T028); RefreshTeam clears it too
+		// (contract §7 — Phase 6). Same pattern as `gameEnded`.
+		reducer: (_prev: string | null, next: string | null) => next,
+		default: () => null,
 	}),
 });
 
@@ -152,19 +164,53 @@ export interface TeamGraphDeps {
 	playerModel: ChatModel;
 	/** The planner's LLM (from the TeamProfile, Batch 2 wiring). */
 	plannerModel: ChatModel;
-	/** Long-term strategy store (mongo in production; fake in tests). */
+	/**
+	 * MemoryService gRPC client — the planner's memory data plane
+	 * (`specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md`
+	 * §3). Used by the compress node to refresh the frozen snapshot at the
+	 * compression boundary (contract §2.4, survey D4).
+	 */
+	memoryClient: MemoryClient;
+	/**
+	 * The per-session frozen long-term-memory snapshot
+	 * (`specs/039-planner-memory-calibration/contracts/team-graph-contract.md`
+	 * §3, survey D5 plan b): injected into the planner's input as a
+	 * pure-content SystemMessage (FR-011); refreshed at the compression
+	 * boundary ONLY (FR-010). One instance per session — shared by the
+	 * planner node and the compress node.
+	 */
+	frozenSnapshot: FrozenMemorySnapshot;
+	/** The session's template path segment (e.g. `"saolei"`) — the memory
+	 *  resource scope (FR-012) used by the compress-boundary snapshot refresh. */
+	template: string;
+	/**
+	 * Long-term strategy store — Phase 5 INTERMEDIATE STATE
+	 * (`specs/039-planner-memory-calibration/tasks.md` T019): retained ONLY
+	 * for the `update_strategy` write path (the planner's tool still writes
+	 * to it) and the player's "当前态势" read; the planner's strategy READ
+	 * path is replaced by the frozen snapshot. Removed in Phase 6 (T030/T031,
+	 * FR-013).
+	 */
 	strategyStore: StrategyStore;
 	/** Per-session ephemeral game-state buffer (sink writes / node reads). */
 	buffer: EphemeralGameBuffer;
-	/** Session id — the StrategyStore key and the checkpoint thread id. */
+	/** Session id — the checkpoint thread id. */
 	sessionId: string;
 	/**
 	 * The player's tools — the saolei MCP tools (FR-010, player only). The
-	 * actual MCP tools are loaded in Batch 2 (server wiring); tests inject
-	 * fake tools that drive the sink. The planner's `update_strategy` tool is
-	 * built internally (planner holds no other tools, FR-012).
+	 * actual MCP tools are loaded in server wiring; tests inject fake tools
+	 * that drive the sink. Only the GAME-VISIBLE subset's NAME + DESCRIPTION
+	 * are injected into the planner's system prompt as static text.
 	 */
 	playerTools: StructuredToolInterface[];
+	/**
+	 * The planner's OWN tools — the memory MCP tools (a single hermes-style
+	 * `memory` tool, FR-007/FR-008), obtained via the mcp client
+	 * (`buildMemoryMcpTools` — server wiring, T022) and DI-injected here.
+	 * The `update_strategy` tool is built internally by the planner node
+	 * (Phase 5 intermediate write path; removed in Phase 6).
+	 */
+	plannerTools: StructuredToolInterface[];
 	/**
 	 * The player's base prompt from `SaoleiProfile.player_prompt` (FR-034 —
 	 * empty = template default; skill body always appended by the template).
@@ -172,7 +218,8 @@ export interface TeamGraphDeps {
 	playerBasePrompt: string;
 	/**
 	 * The planner's base prompt from `SaoleiProfile.planner_prompt` (FR-034 —
-	 * empty = template default; no skill body appended).
+	 * empty = template default; the memory skill body is ALWAYS appended by
+	 * the template, FR-020).
 	 */
 	plannerBasePrompt: string;
 	/** Optional createAgent override (DI seam, defaults to the real one). */
@@ -242,6 +289,11 @@ export function buildTeamGraph(
 	});
 	const plannerNode = createPlannerNode({
 		model: deps.plannerModel,
+		memoryClient: deps.memoryClient,
+		frozenSnapshot: deps.frozenSnapshot,
+		// Phase 5 intermediate state (T019/T020): the strategyStore stays for
+		// the `update_strategy` WRITE path only; the strategy READ path is
+		// replaced by the frozen snapshot input. Removed in Phase 6 (T030).
 		strategyStore: deps.strategyStore,
 		buffer: deps.buffer,
 		sessionId: deps.sessionId,
@@ -251,11 +303,20 @@ export function buildTeamGraph(
 		// NAME + DESCRIPTION into its system prompt (static text — the tools
 		// themselves stay out of the planner's tool set, FR-018).
 		playerTools: deps.playerTools,
+		// 039 US2 (T020): the planner's OWN tools — the memory MCP tools
+		// (single hermes-style `memory` tool, FR-007/FR-008).
+		plannerTools: deps.plannerTools,
 		createAgentFn: deps.createAgentFn,
 	});
 	const compressNode = createCompressNode({
 		playerModel: deps.playerModel,
 		plannerModel: deps.plannerModel,
+		// 039 US2 (T021): the compression boundary re-bakes the planner's
+		// frozen memory snapshot (contract §2.4, survey D4).
+		memoryClient: deps.memoryClient,
+		frozenSnapshot: deps.frozenSnapshot,
+		template: deps.template,
+		sessionId: deps.sessionId,
 	});
 
 	const outer = checkpointer ?? new MemorySaver();

@@ -35,6 +35,13 @@
  *   summary propagates out of the node untouched (no catch, no degrade) —
  *   the graph aborts the turn.
  * - Empty channel = no-op (FR-015): skipped, no summary message, no frame.
+ * - **Frozen memory snapshot refresh (039 US2, T021 — contract §2.4, survey
+ *   D4)**: after the summaries, the compression boundary re-bakes the
+ *   planner's frozen long-term memory snapshot (re-read `listMemories` →
+ *   re-bake) — the ONLY mid-session refresh boundary (team init + compress;
+ *   FR-010). The refresh never throws (memory-snapshot.ts keeps the previous
+ *   snapshot on failure — contract §5: memory unavailability must not abort
+ *   the compression turn / the team run).
  *
  * The strategy (StrategyStore, long-term memory) is never touched (FR-009).
  */
@@ -47,9 +54,11 @@ import { REMOVE_ALL_MESSAGES } from "@langchain/langgraph";
 import type { RunnableConfig } from "@langchain/core/runnables";
 
 import type { ChatModel } from "../model-provider";
+import type { MemoryClient } from "../memory-client";
 import type { ChannelFrameEmitter } from "../session-team";
 import { PLAYER_AGENT_NAME } from "./player";
 import { PLANNER_AGENT_NAME } from "./planner";
+import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { TeamStateValue } from "./state";
 
 /** Dependencies of the compress node (all injected — DI seam). */
@@ -58,6 +67,21 @@ export interface CompressNodeDeps {
 	playerModel: ChatModel;
 	/** The planner's LLM — summarizes the planner channel (research.md D1). */
 	plannerModel: ChatModel;
+	/**
+	 * MemoryService gRPC client — re-reads the planner's long-term memory at
+	 * the compression boundary (contract §2.4, survey D4).
+	 */
+	memoryClient: MemoryClient;
+	/**
+	 * The per-session frozen memory snapshot — refreshed here (contract §2.4:
+	 * after the review, before END). One instance per session, shared with the
+	 * planner node.
+	 */
+	frozenSnapshot: FrozenMemorySnapshot;
+	/** The template path segment (memory resource scope, FR-012). */
+	template: string;
+	/** Session id (memory resource scope). */
+	sessionId: string;
 }
 
 /**
@@ -174,7 +198,8 @@ export function createCompressNode(
 	state: TeamStateValue,
 	config?: RunnableConfig,
 ) => Promise<Partial<TeamStateValue>> {
-	const { playerModel, plannerModel } = deps;
+	const { playerModel, plannerModel, memoryClient, frozenSnapshot, template, sessionId } =
+		deps;
 
 	return async (
 		state: TeamStateValue,
@@ -239,6 +264,15 @@ export function createCompressNode(
 				plannerSummary.message,
 			];
 		}
+
+		// 039 US2 (T021, contract §2.4 / survey D4): the compression boundary
+		// re-bakes the planner's frozen memory snapshot — re-read
+		// `listMemories` → re-bake. This is the ONLY mid-session refresh
+		// boundary (team init + compress; FR-010 — the review never refreshes).
+		// The refresh itself never throws (memory-snapshot.ts keeps the
+		// previous snapshot on failure — contract §5: memory unavailability
+		// must not block the team run / abort the compression turn).
+		await frozenSnapshot.refresh(memoryClient, template, sessionId);
 
 		return update;
 	};

@@ -25,8 +25,9 @@ import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
 import { FakeStrategyStore } from "../strategy-store";
-import { appendSkillBodyToPrompt, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
+import { appendSkillBodyToPrompt, loadSkillBody, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
 import { refreshTeamChannels } from "../context-middleware";
+import type { MemoryClient } from "../memory-client";
 import type { GameStats } from "../mcp/saolei/saolei-mcp";
 import {
 	createEphemeralGameBuffer,
@@ -34,10 +35,89 @@ import {
 	type EphemeralGameBuffer,
 } from "./team-sink";
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
+import {
+	FrozenMemorySnapshot,
+	PLANNER_MEMORY_SNAPSHOT_ID,
+} from "./memory-snapshot";
 import { createPlayerNode, DEFAULT_PLAYER_BASE, PLAYER_AGENT_NAME } from "./player";
 import type { CreateAgentFn } from "./player";
 import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
 import type { TeamStateValue } from "./state";
+
+/** The built-in skill bodies (loaded from the test runfiles — skill-loader). */
+const SAOLEI_SKILL_BODY = loadSkillBody("saolei");
+const MEMORY_SKILL_BODY = loadSkillBody("memory");
+
+/**
+ * Prompt heuristic: the player's static systemPrompt carries the saolei
+ * skill body (appendSkillBodyToPrompt(base, ["saolei"]), FR-034); the
+ * planner's carries the memory skill body (FR-020 — 039 US2). Both contain
+ * SKILL_PROMPT_SEPARATOR since 039 Phase 5, so the pre-039 "planner prompt
+ * lacks the separator" heuristic no longer distinguishes them.
+ */
+function isPlayerPrompt(p: string): boolean {
+	return p.includes(SAOLEI_SKILL_BODY);
+}
+function isPlannerPrompt(p: string): boolean {
+	return p.includes(MEMORY_SKILL_BODY);
+}
+
+/**
+ * Minimal fake MemoryClient (DI seam — `style/javascript.md` §测试: injected,
+ * no `vi.mock`). `listMemories` returns the given entries; the fake is a
+ * structural stand-in for the real gRPC client.
+ */
+function fakeMemoryClient(
+	entries: Array<{ memory_id: string; content: string }> = [],
+): MemoryClient {
+	return {
+		listMemories: vi.fn(async () => entries.map((e) => ({ ...e }))),
+	} as unknown as MemoryClient;
+}
+
+/**
+ * The fake planner memory tool (hermes-style single `memory` tool — FR-008):
+ * production gets it via the mcp client (buildMemoryMcpTools); tests inject
+ * this structural stand-in so the wiring (tool set + system prompt) is
+ * exercised without an MCP server.
+ */
+function buildFakeMemoryTool(): StructuredToolInterface {
+	return tool(
+		async () => "memory ok",
+		{
+			name: "memory",
+			description: "Manage the planner's long-term review memory (hermes-style single tool).",
+			schema: z.object({
+				action: z.enum(["add", "replace", "remove"]).optional(),
+				content: z.string().optional(),
+				old_text: z.string().optional(),
+			}),
+		},
+	);
+}
+
+/**
+ * Default 039 memory data-plane deps (T019) for inline `buildTeamGraph` call
+ * sites that do not exercise the memory wiring themselves: a fake
+ * MemoryClient, a fresh (empty) frozen snapshot, the template path segment,
+ * and NO planner tools (the `update_strategy` tool is always built
+ * internally — Phase 5 intermediate write path).
+ */
+function memoryDeps(
+	overrides: {
+		memoryClient?: MemoryClient;
+		frozenSnapshot?: FrozenMemorySnapshot;
+		template?: string;
+		plannerTools?: StructuredToolInterface[];
+	} = {},
+) {
+	return {
+		memoryClient: overrides.memoryClient ?? fakeMemoryClient(),
+		frozenSnapshot: overrides.frozenSnapshot ?? new FrozenMemorySnapshot(),
+		template: overrides.template ?? "saolei",
+		plannerTools: overrides.plannerTools ?? [],
+	};
+}
 
 /** A minimal recognizable GameState (3x3, all empty cells). */
 function makeState(): GameState {
@@ -140,25 +220,40 @@ function buildTestGraph(
 		plannerBasePrompt?: string;
 		createAgentFn?: CreateAgentFn;
 		playerTools?: StructuredToolInterface[];
+		// 039 Phase 5 (T019/T020): memory data-plane deps — injected fakes by
+		// default; tests override to assert snapshot/skill wiring.
+		memoryClient?: MemoryClient;
+		frozenSnapshot?: FrozenMemorySnapshot;
+		template?: string;
+		plannerTools?: StructuredToolInterface[];
 	} = {},
 ) {
 	const store = overrides.store ?? new FakeStrategyStore();
 	const buffer = createEphemeralGameBuffer();
 	const sessionId = overrides.sessionId ?? "graph-test";
+	const memoryClient =
+		overrides.memoryClient ?? fakeMemoryClient();
+	const frozenSnapshot =
+		overrides.frozenSnapshot ?? new FrozenMemorySnapshot();
 	const { graph, checkpointer } = buildTeamGraph({
 		playerModel: overrides.playerModel ?? playOneGamePlayerModel(),
 		plannerModel:
 			overrides.plannerModel ?? updateStrategyPlannerModel("corner-first"),
 		strategyStore: store,
+		memoryClient,
+		frozenSnapshot,
+		template: overrides.template ?? "saolei",
 		buffer,
 		sessionId,
 		playerTools:
 			overrides.playerTools ?? [buildGameEndingPlayerTool(buffer)],
+		plannerTools:
+			overrides.plannerTools ?? [buildFakeMemoryTool()],
 		playerBasePrompt: overrides.playerBasePrompt ?? "",
 		plannerBasePrompt: overrides.plannerBasePrompt ?? "",
 		createAgentFn: overrides.createAgentFn,
 	});
-	return { graph, checkpointer, store, buffer, sessionId };
+	return { graph, checkpointer, store, buffer, sessionId, memoryClient, frozenSnapshot };
 }
 
 /**
@@ -318,7 +413,7 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		expect(buffer.gameEvent?.consumed).toBe(true);
 	});
 
-	it("injects the current strategy into the planner's system context (FR-014; initial \"\")", async () => {
+	it("no longer injects the strategy into the planner's system context — replaced by the frozen snapshot (Phase 5, T020)", async () => {
 		const store = new FakeStrategyStore();
 		await store.put("graph-test", "corner-first");
 		const plannerModel = updateStrategyPlannerModel("corner-first");
@@ -331,11 +426,21 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 
 		const firstCall = plannerModel.calls[0]?.messages as BaseMessage[];
 		expect(firstCall).toBeDefined();
-		// Strategy injected as a system message (FR-014).
+		// T020: the strategy READ path (old `buildStrategyMessage`, FR-014)
+		// is gone — no "当前策略"/strategy-text SystemMessage reaches the
+		// model (the update_strategy WRITE path stays, Phase 5 intermediate).
 		const strategyMsg = firstCall.find(
 			(m) => m._getType() === "system" && contentType(m).includes("corner-first"),
 		);
-		expect(strategyMsg).toBeDefined();
+		expect(strategyMsg).toBeUndefined();
+		expect(
+			firstCall.some(
+				(m) => m._getType() === "system" && contentType(m).includes("当前策略"),
+			),
+		).toBe(false);
+		// The frozen snapshot SystemMessage is injected instead (FR-011,
+		// contract §3).
+		expect(firstCall.some((m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID)).toBe(true);
 		// The review input (full gameLog rendering) is present as the
 		// planner's prompt (Issue 2 — `specs/036-team-mode-bugfix/
 		// contracts/team-graph-fix-contract.md` §2.2).
@@ -344,7 +449,7 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		).toBe(true);
 	});
 
-	it("planner system context starts with the EMPTY strategy on a fresh session (FR-014 初始 \"\")", async () => {
+	it("planner system context starts with the EMPTY frozen snapshot on a fresh session (T020 — the snapshot replaces the strategy)", async () => {
 		const plannerModel = updateStrategyPlannerModel("first-strategy");
 		const { graph } = buildTestGraph({ plannerModel });
 
@@ -354,11 +459,13 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		);
 
 		const firstCall = plannerModel.calls[0]?.messages as BaseMessage[];
-		const strategyMsg = firstCall.find(
-			(m) => m._getType() === "system" && contentType(m).includes("当前策略"),
+		// The default (unbaked) snapshot renders the header-only
+		// `长期记忆：` SystemMessage with the fixed snapshot id (FR-011).
+		const snapshotMsg = firstCall.find(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
 		);
-		expect(strategyMsg).toBeDefined();
-		expect(contentType(strategyMsg as BaseMessage)).toContain("无");
+		expect(snapshotMsg).toBeDefined();
+		expect(contentType(snapshotMsg as BaseMessage)).toContain("长期记忆");
 	});
 });
 
@@ -392,6 +499,7 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 			playerTools: [losingMoveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -475,10 +583,10 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 		// (e.g. GraphRecursionError / model / tool error); the planner agent
 		// is the real one, so the routed-to planner completes normally. The
 		// player prompt always carries the appended saolei skill body
-		// (FR-034), the planner's never does — same dispatch heuristic as
-		// captureSystemPrompts.
+		// (FR-034); the planner's carries the memory skill body (FR-020) —
+		// same dispatch heuristic as captureSystemPrompts.
 		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
-			if (config.systemPrompt?.includes(SKILL_PROMPT_SEPARATOR)) {
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
 				return {
 					invoke: async () => {
 						throw new Error("player agent loop crashed");
@@ -498,6 +606,7 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 			playerTools: [],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 			createAgentFn,
 		});
 
@@ -556,6 +665,7 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 			playerTools: [moveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -611,6 +721,7 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 			playerTools: [],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -651,6 +762,7 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 			playerTools: [statsTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -716,6 +828,7 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 			playerTools: [plainTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -757,6 +870,7 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 			playerTools: [statsTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -821,6 +935,7 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 			playerTools: [moveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -883,6 +998,7 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 			playerTools: [],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -958,6 +1074,7 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 			playerTools: [moveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -984,7 +1101,10 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 		let plannerInvokeCount = 0;
 		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
 			const agent = createAgent(config as Parameters<typeof createAgent>[0]);
-			if (config.systemPrompt?.includes(SKILL_PROMPT_SEPARATOR)) {
+			// The PLAYER's prompt carries the saolei skill body; the planner's
+			// carries the memory skill body — both contain the separator since
+			// 039 Phase 5, so the player is identified by its own skill body.
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
 				return agent;
 			}
 			return {
@@ -1207,6 +1327,7 @@ describe("team graph — strategy injection edge cases", () => {
 			playerTools: [failingTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -1223,31 +1344,31 @@ describe("team graph — strategy injection edge cases", () => {
 	});
 });
 
+/**
+ * Spy createAgentFn (DI seam) capturing the `systemPrompt` of each node's
+ * agent. The player's prompt always carries the appended saolei skill body;
+ * the planner's carries the memory skill body (FR-020 — 039 US2) — the two
+ * skill bodies distinguish the calls without depending on build order (both
+ * prompts contain SKILL_PROMPT_SEPARATOR since 039 Phase 5).
+ */
+function captureSystemPrompts(): {
+	createAgentFn: CreateAgentFn;
+	playerSystemPrompt(): string;
+	plannerSystemPrompt(): string;
+} {
+	const calls: string[] = [];
+	const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+		calls.push(config.systemPrompt ?? "");
+		return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+	});
+	return {
+		createAgentFn,
+		playerSystemPrompt: () => calls.find(isPlayerPrompt) ?? "",
+		plannerSystemPrompt: () => calls.find(isPlannerPrompt) ?? "",
+	};
+}
+
 describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)", () => {
-	/**
-	 * Spy createAgentFn (DI seam) capturing the `systemPrompt` of each node's
-	 * agent. The player's prompt always carries the appended saolei skill
-	 * body (SKILL_PROMPT_SEPARATOR); the planner's is a bare base — that
-	 * distinguishes the two calls without depending on build order.
-	 */
-	function captureSystemPrompts(): {
-		createAgentFn: CreateAgentFn;
-		playerSystemPrompt(): string;
-		plannerSystemPrompt(): string;
-	} {
-		const calls: string[] = [];
-		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
-			calls.push(config.systemPrompt ?? "");
-			return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
-		});
-		return {
-			createAgentFn,
-			playerSystemPrompt: () =>
-				calls.find((p) => p.includes(SKILL_PROMPT_SEPARATOR)) ?? "",
-			plannerSystemPrompt: () =>
-				calls.find((p) => !p.includes(SKILL_PROMPT_SEPARATOR)) ?? "",
-		};
-	}
 
 	it("player: non-empty player_prompt overrides the base AND the saolei skill body is still appended (FR-034)", () => {
 		const profilePrompt = "你是自定义的 player 操作者。";
@@ -1313,13 +1434,15 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 			createAgentFn,
 		});
 
-		// Semantics A: the profile prompt leads, unchanged (FR-034); US3
-		// appends the player tool description section AFTER it (FR-016 —
+		// Semantics A: the profile prompt leads, unchanged (FR-034); the
+		// memory skill body is appended on top (FR-020); US3 appends the
+		// player tool description section AFTER the skill body (FR-016 —
 		// specs/037-saolei-team-optimize/contracts/compression-contract.md
 		// §4). The game-visible player tool is listed.
 		expect(plannerSystemPrompt().startsWith(profilePrompt)).toBe(true);
-		// The planner appends NO skill body (FR-012/FR-034).
-		expect(plannerSystemPrompt()).not.toContain(SKILL_PROMPT_SEPARATOR);
+		// The planner DOES append the memory skill body (FR-020 — 039 US2).
+		expect(plannerSystemPrompt()).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(plannerSystemPrompt()).toContain(MEMORY_SKILL_BODY);
 		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
 		expect(plannerSystemPrompt()).toContain(
 			"saolei_operate: 执行落子操作，支持 click/flag/chord。",
@@ -1354,9 +1477,12 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
 		buildTestGraph({ playerTools: [operateTool], createAgentFn }); // plannerBasePrompt defaults to ""
 
-		// The default base leads (FR-034); the US3 tool description section
-		// follows it (FR-016 — compression-contract.md §4).
+		// The default base leads (FR-034); the memory skill body follows
+		// (FR-020); the US3 tool description section comes after the skill
+		// body (FR-016 — compression-contract.md §4).
 		expect(plannerSystemPrompt().startsWith(DEFAULT_PLANNER_BASE)).toBe(true);
+		expect(plannerSystemPrompt()).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(plannerSystemPrompt()).toContain(MEMORY_SKILL_BODY);
 		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
 		expect(createAgentFn).toHaveBeenCalled();
 	});
@@ -1368,9 +1494,12 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
 		// Empty player tools ⇒ buildToolDescriptionSection returns "" — the
-		// planner prompt is the bare DEFAULT_PLANNER_BASE, no trailing
-		// markdown section (compression-contract.md §4).
-		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+		// planner prompt is DEFAULT_PLANNER_BASE + the always-appended memory
+		// skill body (FR-020), with no trailing markdown section
+		// (compression-contract.md §4).
+		expect(plannerSystemPrompt()).toBe(
+			appendSkillBodyToPrompt(DEFAULT_PLANNER_BASE, ["memory"]),
+		);
 	});
 });
 
@@ -1411,8 +1540,8 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 		);
 		// DI spy (style/javascript.md §测试 — no vi.mock): capture BOTH the
 		// systemPrompt AND the tools array of each createAgent call, then
-		// pick the planner's by its prompt lacking the saolei skill body
-		// (the player's always carries it, FR-034 — same heuristic as
+		// pick the planner's by its prompt carrying the memory skill body
+		// (the player's carries the saolei skill body — same heuristic as
 		// captureSystemPrompts).
 		const calls: Array<{
 			systemPrompt: string;
@@ -1431,9 +1560,7 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
-		const plannerCall = calls.find(
-			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
-		);
+		const plannerCall = calls.find((c) => isPlannerPrompt(c.systemPrompt));
 		expect(plannerCall).toBeDefined();
 		// FR-016: the section lists EVERY game-visible player tool's name and
 		// description (specs/037-saolei-team-optimize/contracts/
@@ -1445,10 +1572,14 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 		expect(plannerCall?.systemPrompt).toContain(
 			"saolei_init: 开始一局新游戏。",
 		);
-		// FR-018: the planner's ACTUAL tool set stays `update_strategy` only —
-		// the player tools were NOT added as callable tools.
-		expect(plannerCall?.tools).toHaveLength(1);
-		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
+		// FR-018: the player tools were NOT added as callable tools — the
+		// planner's ACTUAL tool set is the memory tool (039 US2, FR-007/008 —
+		// the injected fake from buildTestGraph's default plannerTools) plus
+		// the Phase-5-intermediate `update_strategy` write path (T020).
+		expect(plannerCall?.tools.map((t) => t.name)).toEqual([
+			"memory",
+			"update_strategy",
+		]);
 	});
 
 	it("excludes read-only player tools the planner cannot observe in the game process (saolei_remain — FR-016 refine)", () => {
@@ -1495,9 +1626,7 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
-		const plannerCall = calls.find(
-			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
-		);
+		const plannerCall = calls.find((c) => isPlannerPrompt(c.systemPrompt));
 		expect(plannerCall).toBeDefined();
 		// The game-visible tool IS listed...
 		expect(plannerCall?.systemPrompt).toContain(
@@ -1506,9 +1635,257 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 		// ...while the read-only saolei_remain (no gameLog trace — the
 		// planner cannot observe its use) is NOT injected (FR-016 refine).
 		expect(plannerCall?.systemPrompt).not.toContain("saolei_remain");
-		// FR-018 unchanged: the planner's tool set stays update_strategy only.
-		expect(plannerCall?.tools).toHaveLength(1);
-		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
+		// FR-018 unchanged (the player tools stay out of the tool set): the
+		// planner's tools are the memory tool + the Phase-5-intermediate
+		// update_strategy write path.
+		expect(plannerCall?.tools.map((t) => t.name)).toEqual([
+			"memory",
+			"update_strategy",
+		]);
+	});
+});
+
+describe("team graph — 039 US2: planner memory data plane (T020/T021/T022)", () => {
+	it("planner systemPrompt carries the memory skill body + SKILL_PROMPT_SEPARATOR; the player's does not (FR-020/SC-009)", () => {
+		const { createAgentFn, plannerSystemPrompt, playerSystemPrompt } =
+			captureSystemPrompts();
+		buildTestGraph({ createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// FR-020 / memory-skill-contract.md §2: the planner's static
+		// systemPrompt = appendSkillBodyToPrompt(base, ["memory"]) — the
+		// memory skill body is appended after SKILL_PROMPT_SEPARATOR.
+		const prompt = plannerSystemPrompt();
+		expect(prompt).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(prompt).toContain(MEMORY_SKILL_BODY);
+		// The memory skill body starts after the separator (not baked into
+		// the base) — static assembly, prefix-cache friendly (§2).
+		expect(
+			prompt.indexOf(MEMORY_SKILL_BODY),
+		).toBeGreaterThan(prompt.indexOf(SKILL_PROMPT_SEPARATOR));
+		// SC-009: the player's systemPrompt carries ONLY the saolei skill —
+		// no memory skill (player holds no memory tools, FR-009).
+		expect(playerSystemPrompt()).not.toContain(MEMORY_SKILL_BODY);
+		expect(playerSystemPrompt()).toContain(SAOLEI_SKILL_BODY);
+	});
+
+	it("planner tool set = the memory tool + the Phase-5-intermediate update_strategy write path (T020)", () => {
+		const calls: Array<{ systemPrompt: string; tools: StructuredToolInterface[] }> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		buildTestGraph({ createAgentFn });
+
+		expect(createAgentFn).toHaveBeenCalled();
+		const plannerCall = calls.find((c) => isPlannerPrompt(c.systemPrompt));
+		expect(plannerCall).toBeDefined();
+		// The injected memory MCP tool (single hermes-style `memory` tool,
+		// FR-007/FR-008) plus the retained update_strategy write path
+		// (Phase 5 intermediate state, T019 — removed in Phase 6 T030/T031).
+		expect(plannerCall?.tools.map((t) => t.name)).toEqual([
+			"memory",
+			"update_strategy",
+		]);
+	});
+
+	it("injects the frozen snapshot as a pure-content SystemMessage into the planner input and filters it from the channel write-back (FR-011, contract §3)", async () => {
+		// Pre-baked snapshot (team-init boundary bake) with two entries; the
+		// memory_id stays internal and never appears in LLM-visible text.
+		const memoryClient = fakeMemoryClient([
+			{ memory_id: "m1", content: "player 常误标边角" },
+			{ memory_id: "m2", content: "开局先点中心更高效" },
+		]);
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		const plannerModel = updateStrategyPlannerModel("corner-first");
+		const { graph } = buildTestGraph({
+			plannerModel,
+			memoryClient,
+			frozenSnapshot,
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-memory-input" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// The planner's FIRST model call receives the snapshot as an input
+		// SystemMessage with the fixed snapshot id (contract §3).
+		const firstCall = plannerModel.calls[0]?.messages as BaseMessage[];
+		expect(firstCall).toBeDefined();
+		const snapshotMsg = firstCall.find(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
+		);
+		expect(snapshotMsg).toBeInstanceOf(SystemMessage);
+		const snapshotText = String((snapshotMsg as BaseMessage).content);
+		// 纯内容 (hermes style): each entry rendered as its content only —
+		// NO memory_id prefixes (FR-011/Session 2026-08-08).
+		expect(snapshotText).toContain("长期记忆：");
+		expect(snapshotText).toContain("player 常误标边角");
+		expect(snapshotText).toContain("开局先点中心更高效");
+		expect(snapshotText).not.toContain("m1");
+		expect(snapshotText).not.toContain("m2");
+		// The snapshot SystemMessage sits BEFORE the review input in the
+		// model call (input order: snapshot, plannerMessages, reviewInput —
+		// contract §3; the createAgent may prepend its own system message, so
+		// the assertion is relative ordering, not absolute position).
+		const snapshotIdx = firstCall.findIndex(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
+		);
+		const reviewIdx = firstCall.findIndex((m) =>
+			contentType(m).includes("本局游戏过程"),
+		);
+		expect(snapshotIdx).toBeGreaterThanOrEqual(0);
+		expect(reviewIdx).toBeGreaterThan(snapshotIdx);
+		// The snapshot is filtered from the channel write-back — it must not
+		// enter the short-term plannerMessages channel (contract §3).
+		for (const m of result.plannerMessages) {
+			expect(m.id).not.toBe(PLANNER_MEMORY_SNAPSHOT_ID);
+		}
+	});
+
+	it("review does NOT refresh the frozen snapshot (FR-010 — refresh boundary is compress only)", async () => {
+		const memoryClient = fakeMemoryClient([
+			{ memory_id: "m1", content: "entry" },
+		]);
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		// Team-init bake (the ONLY pre-review refresh).
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		const listMemories = memoryClient.listMemories as ReturnType<typeof vi.fn>;
+		const { graph } = buildTestGraph({ memoryClient, frozenSnapshot });
+
+		await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-no-refresh" }, recursionLimit: 50 },
+		);
+
+		// The review node ran (planner channel non-empty) but the snapshot
+		// was NOT re-read — exactly the one team-init bake (FR-010).
+		expect(listMemories).toHaveBeenCalledTimes(1);
+	});
+
+	it("compress refreshes the frozen snapshot at the compression boundary (T021, contract §2.4 — after review, before END)", async () => {
+		// The fake client's entries CHANGE between the team-init bake and the
+		// compression-boundary re-read (simulating mid-session memory writes
+		// landing in the memory service).
+		const listMemories = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{ memory_id: "m1", content: "开局先点中心更高效" },
+			])
+			.mockResolvedValue([
+				{ memory_id: "m1", content: "开局先点中心更高效" },
+				{ memory_id: "m2", content: "player 在边角频繁误标地雷" },
+			]);
+		const memoryClient = { listMemories } as unknown as MemoryClient;
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		expect(String(frozenSnapshot.toSystemMessage().content)).toBe(
+			"长期记忆：\n开局先点中心更高效",
+		);
+
+		const buffer = createEphemeralGameBuffer();
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			memoryClient,
+			frozenSnapshot,
+			template: "saolei",
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildMixedOutcomePlayerTool(buffer)],
+			plannerTools: [buildFakeMemoryTool()],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-compress-refresh" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// The compression boundary ran (gameCounter 5 + compressed channels).
+		expect(result.gameCounter).toBe(5);
+		// Exactly TWO re-reads: the team-init bake + the compress-boundary
+		// refresh (the 5 reviews did NOT refresh — FR-010).
+		expect(listMemories).toHaveBeenCalledTimes(2);
+		expect(listMemories).toHaveBeenLastCalledWith("saolei", "graph-test");
+		// The snapshot was re-baked with the LATEST entries (D4: re-read →
+		// re-bake at the compress boundary).
+		expect(String(frozenSnapshot.toSystemMessage().content)).toBe(
+			"长期记忆：\n开局先点中心更高效\nplayer 在边角频繁误标地雷",
+		);
+	});
+
+	it("rebuild against the injected checkpointer recompiles the planner with the SAME memory tools and frozen snapshot (T022 — 040 rebuild seam)", async () => {
+		const memoryClient = fakeMemoryClient([
+			{ memory_id: "m1", content: "开局先点中心更高效" },
+		]);
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		const memoryTool = buildFakeMemoryTool();
+		const calls: Array<{ systemPrompt: string; tools: StructuredToolInterface[] }> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		const buffer = createEphemeralGameBuffer();
+		const deps = {
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: updateStrategyPlannerModel("corner-first"),
+			strategyStore: new FakeStrategyStore(),
+			memoryClient,
+			frozenSnapshot,
+			template: "saolei",
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			plannerTools: [memoryTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			createAgentFn,
+		};
+
+		// First build (first-build factory call site) then rebuild against the
+		// EXISTING checkpointer (040 rebuild closure call site — server.ts
+		// injects the same memory assembly at BOTH call sites, T022).
+		const handle1 = buildTeamGraph(deps);
+		const handle2 = buildTeamGraph(deps, handle1.checkpointer);
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// team-rebuild-contract.md §7: the checkpointer reference is the SAME.
+		expect(handle2.checkpointer).toBe(handle1.checkpointer);
+		// BOTH builds' planner createAgent calls hold the memory tool — the
+		// rebuilt graph's planner carries the IDENTICAL memory-tool instance
+		// (reference equality) and the same frozen snapshot deps (per-session
+		// state must survive the rebuild — T022 requirement).
+		const plannerCalls = calls.filter((c) => isPlannerPrompt(c.systemPrompt));
+		expect(plannerCalls).toHaveLength(2);
+		for (const c of plannerCalls) {
+			expect(c.tools.map((t) => t.name)).toEqual(["memory", "update_strategy"]);
+			expect(c.tools[0]).toBe(memoryTool);
+		}
+		// The rebuilt graph's planner input still renders the SAME snapshot
+		// content (the shared instance's baked entries).
+		const rebuiltInput = frozenSnapshot.toSystemMessage();
+		expect(String(rebuiltInput.content)).toContain("开局先点中心更高效");
 	});
 });
 
@@ -1529,6 +1906,7 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 			playerTools: [buildMixedOutcomePlayerTool(buffer)],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -1803,6 +2181,7 @@ describe("team graph — checkpointer injection (US3 rebuild seam, specs/040-tea
 			playerTools: [buildGameEndingPlayerTool(buffer)],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 		await handle1.graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
@@ -1829,6 +2208,7 @@ describe("team graph — checkpointer injection (US3 rebuild seam, specs/040-tea
 				playerTools: [buildGameEndingPlayerTool(buffer2)],
 				playerBasePrompt: "",
 				plannerBasePrompt: "",
+				...memoryDeps(),
 			},
 			handle1.checkpointer,
 		);

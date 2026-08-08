@@ -24,13 +24,33 @@ import type { GameState } from "@dominion/game-saolei-board";
 import { FakeStrategyStore } from "./strategy-store";
 import { SessionTeam, SessionTeamStore } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
+import type { MemoryClient } from "./memory-client";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot";
 import type { TeamStateValue } from "./team/state";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 
 /** Template id of the test sessions (saolei — UpdateTeam default in tests). */
 const TID = "saolei";
+
+/**
+ * 039 Phase 5 (T019): the memory data-plane deps the graph now requires —
+ * DI fakes (a no-op MemoryClient + a fresh empty snapshot), mirroring the
+ * production server.ts wiring (memory-client / per-session snapshot).
+ */
+function memoryDeps() {
+	const memoryClient = {
+		listMemories: async () => [],
+	} as unknown as MemoryClient;
+	return {
+		memoryClient,
+		frozenSnapshot: new FrozenMemorySnapshot(),
+		template: TID,
+		plannerTools: [] as StructuredToolInterface[],
+	};
+}
 
 function makeState(): GameState {
 	return {
@@ -82,6 +102,7 @@ function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
 		playerTools: [buildGameEndingPlayerTool(buffer)],
 		playerBasePrompt: "",
 		plannerBasePrompt: "",
+		...memoryDeps(),
 	});
 	// Pre-built bridge/sink like the production factory (server.ts): the
 	// SessionTeam constructor no longer creates them internally.
@@ -109,6 +130,7 @@ function buildTestHandle(sessionId: string, checkpointer?: MemorySaver) {
 			playerTools: [buildGameEndingPlayerTool(buffer)],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		},
 		checkpointer,
 	);
@@ -317,6 +339,7 @@ describe("SessionTeam", () => {
 			playerTools: [asyncMove],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 		const team = new SessionTeam(
 			handle,
@@ -563,6 +586,7 @@ describe("SessionTeamStore", () => {
 			playerTools: [gatedTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 		const team = new SessionTeam(
 			handle,

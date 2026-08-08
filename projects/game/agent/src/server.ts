@@ -15,11 +15,22 @@
  *   current `game/mongo` instance via the dominion resolver and derives the
  *   mongo credentials deterministically (same scheme as the Go
  *   `common/gopkg/mongo` client — `dominion/common/gopkg/mongo/client.go`).
+ * - **MemoryClient** → the planner's long-term memory data plane (039 US2,
+ *   T022): a service-scoped gRPC client to the MemoryService
+ *   (memory-mcp-contract.md §3). Per session the factory additionally builds
+ *   the planner's memory MCP tools (via the mcp-host memory path —
+ *   `buildMemoryMcpTools`, single hermes-style `memory` tool) and a
+ *   `FrozenMemorySnapshot` (first bake at team init; refreshed at the
+ *   compress boundary — team-graph-contract.md §3). Both are injected into
+ *   `buildTeamGraph` — for the FIRST build AND the profile-change rebuild
+ *   closure (the rebuilt planner holds the same memory tools + snapshot).
  * - **SessionTeamStore** → per-session compiled saolei team graph (buildTeamGraph)
  *   with the saolei MCP tools wired as the player's tools (FR-010).
  * - **MCP host** → per-session saolei McpServer with the team sink injected
  *   (specs/031-team-template-mode/contracts/saolei-sink-contract.md §6;
- *   T009 extension point).
+ *   T009 extension point) + per-session memory McpServer (planner's `memory`
+ *   tool; the host resolves the memory kind via the early-registration
+ *   registry's MemoryClient — FR-007, memory-mcp-contract.md §4).
  */
 
 import * as fs from "node:fs";
@@ -36,6 +47,7 @@ import type { ProtoGrpcType } from "../game_types/game";
 
 import { readSecret } from "./secrets";
 import { PromptClient } from "./prompt-client";
+import { MemoryClient } from "./memory-client";
 import { ModelProviderCache } from "./model-provider";
 import type { ChatModel } from "./model-provider";
 import { MongoStrategyStore, STRATEGIES_COLLECTION } from "./strategy-store";
@@ -43,12 +55,13 @@ import { SessionTeamStore } from "./session-team";
 import { SessionTeam } from "./session-team";
 import { Handler } from "./handler";
 import { startMcpHost, DEFAULT_MCP_PORT } from "./mcp-host";
-import { buildSaoleiMcpTools, defaultMcpClientFactory } from "./llm";
+import { buildMemoryMcpTools, buildSaoleiMcpTools, defaultMcpClientFactory } from "./llm";
 import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import type { EphemeralGameBuffer } from "./team/team-sink";
 import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
 import { buildTeamGraph } from "./team/graph";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { MemorySaver } from "@langchain/langgraph";
 
@@ -198,6 +211,18 @@ export async function startServer(
     warn("prompt service not ready after warmup; deferring to first RPC");
   }
 
+  // 039 US2 (T022): the planner's long-term memory data plane — a single
+  // service-scoped MemoryClient (memory-mcp-contract.md §3). The mcp-host's
+  // memory mcp server forwards to the memory service via this client (the
+  // mcp server never connects directly — FR-007).
+  const memoryClient = new MemoryClient();
+  const memoryReady = await memoryClient.warmup();
+  if (memoryReady) {
+    info("memory service connection pre-warmed");
+  } else {
+    warn("memory service not ready after warmup; deferring to first RPC");
+  }
+
   const openaiBaseUrl =
     process.env.OPENCODE_OPENAI_BASE_URL ||
     process.env.OPENCODE_BASE_URL ||
@@ -224,16 +249,23 @@ export async function startServer(
 
   // Per-session bridge/sink early-registration registry — the MCP host's
   // `SessionBridgeLookup` source. Entries are set by the team factory BEFORE
-  // `buildSaoleiMcpTools` connects (and deleted when the factory fails), so
-  // the host can build the session's McpServer during team creation without
-  // the SessionTeam existing yet (circular-dependency break — see the
-  // factory below). Shape matches `SessionBridgeLookup`'s result
-  // (mcp-host.ts) with the sink always present. The `buffer` is kept here
-  // too — the profile-change rebuild (US3) reuses the session's ephemeral
-  // buffer (profile-independent, team-rebuild-contract.md §3).
+  // `buildSaoleiMcpTools`/`buildMemoryMcpTools` connect (and deleted when the
+  // factory fails), so the host can build the session's McpServers during
+  // team creation without the SessionTeam existing yet (circular-dependency
+  // break — see the factory below). Shape matches `SessionBridgeLookup`'s
+  // result (mcp-host.ts) with the sink always present. The `buffer` is kept
+  // here too — the profile-change rebuild (US3) reuses the session's
+  // ephemeral buffer (profile-independent, team-rebuild-contract.md §3). The
+  // `memoryClient` (039 T022 — the memory-kind lookup source, FR-007) is
+  // service-scoped and shared by all sessions.
   const sessionBridges = new Map<
     string,
-    { bridge: OperationBridge; sink: SaoleiEventSink; buffer: EphemeralGameBuffer }
+    {
+      bridge: OperationBridge;
+      sink: SaoleiEventSink;
+      buffer: EphemeralGameBuffer;
+      memoryClient: MemoryClient;
+    }
   >();
 
   // Per-session player tools (the saolei MCP-client tools, FR-010/FR-028).
@@ -241,6 +273,18 @@ export async function startServer(
   // per sessionId — mcp-host.ts), so a profile-change rebuild reuses the SAME
   // tools instead of reconnecting (team-rebuild-contract.md §3/§4).
   const sessionPlayerTools = new Map<string, StructuredToolInterface[]>();
+
+  // Per-session planner memory tools (the memory MCP-client tools, 039 T022 —
+  // a single hermes-style `memory` tool, FR-007/FR-008). Same reuse rationale
+  // as `sessionPlayerTools`: a profile-change rebuild reuses the SAME tools.
+  const sessionMemoryTools = new Map<string, StructuredToolInterface[]>();
+
+  // Per-session frozen memory snapshots (039 T022 — team-graph-contract.md
+  // §3): the snapshot is per-session STATE (baked entries, frozen across
+  // reviews, refreshed at the compress boundary), so a profile-change rebuild
+  // MUST reuse the SAME instance — the rebuilt planner holds the identical
+  // snapshot (T022 requirement).
+  const sessionFrozenSnapshots = new Map<string, FrozenMemorySnapshot>();
 
   // Per-session team: resolve the requested TeamProfile's models (the
   // template + profile name come from the UpdateTeam request — no fixed
@@ -277,7 +321,7 @@ export async function startServer(
       // (FR-013 envelope completeness — operation-bridge.ts dispatch).
       const bridge = new OperationBridge(sessionId, template);
       const sink = createTeamSink(buffer);
-      sessionBridges.set(sessionId, { bridge, sink, buffer });
+      sessionBridges.set(sessionId, { bridge, sink, buffer, memoryClient });
       try {
         const playerTools = await buildSaoleiMcpTools(
           template,
@@ -286,13 +330,37 @@ export async function startServer(
           defaultMcpClientFactory,
         );
         sessionPlayerTools.set(sessionId, playerTools);
+        // 039 US2 (T022): the planner's memory tools come from the memory
+        // mcp path — same MultiServerMCPClient pattern as the saolei tools
+        // (memory-mcp-contract.md §4). The host builds the memory McpServer
+        // lazily on this connect; the early-registered `memoryClient` (above)
+        // makes the memory-kind lookup hit (FR-007 — the mcp server forwards
+        // via the agent, never connects to the memory service directly).
+        const memoryTools = await buildMemoryMcpTools(
+          template,
+          sessionId,
+          DEFAULT_MCP_PORT,
+          defaultMcpClientFactory,
+        );
+        sessionMemoryTools.set(sessionId, memoryTools);
+        // First bake of the per-session frozen snapshot (team-init boundary,
+        // team-graph-contract.md §3). The refresh degrades gracefully on
+        // memory-service unavailability (keeps an empty snapshot — contract
+        // §5: memory must not block team creation).
+        const frozenSnapshot = new FrozenMemorySnapshot();
+        await frozenSnapshot.refresh(memoryClient, template, sessionId);
+        sessionFrozenSnapshots.set(sessionId, frozenSnapshot);
         const handle = buildTeamGraph({
           playerModel,
           plannerModel,
           strategyStore,
+          memoryClient,
+          frozenSnapshot,
+          template,
           buffer,
           sessionId,
           playerTools,
+          plannerTools: memoryTools,
           playerBasePrompt,
           plannerBasePrompt,
         });
@@ -307,13 +375,15 @@ export async function startServer(
       } catch (err) {
         // Team creation failed → drop the early registration so the session
         // is NOT visible to the MCP host (an orphaned entry would answer
-        // /internal/mcp/{sessionId} with a server bound to a team that never
+        // /internal/mcp/... with a server bound to a team that never
         // materialized). The MCP host caches a created server per session, so
         // a retry after a post-connect failure reuses that server — the
         // pre-registered bridge/sink of a LATER retry then does not match it;
         // this edge (a failed team graph compile) is accepted and noted here.
         sessionBridges.delete(sessionId);
         sessionPlayerTools.delete(sessionId);
+        sessionMemoryTools.delete(sessionId);
+        sessionFrozenSnapshots.delete(sessionId);
         throw err;
       }
     },
@@ -343,11 +413,17 @@ export async function startServer(
       // (bound to the host's cached per-session server).
       const buffer = sessionBridges.get(sessionId)?.buffer;
       const playerTools = sessionPlayerTools.get(sessionId);
-      if (!buffer || !playerTools) {
+      // 039 US2 (T022): the rebuilt graph's planner MUST hold the SAME memory
+      // tools (bound to the host's cached per-session memory server) and the
+      // SAME frozen snapshot (per-session state — a fresh snapshot would lose
+      // the baked entries). memoryClient is service-scoped and shared.
+      const memoryTools = sessionMemoryTools.get(sessionId);
+      const frozenSnapshot = sessionFrozenSnapshots.get(sessionId);
+      if (!buffer || !playerTools || !memoryTools || !frozenSnapshot) {
         // Unreachable for a materialized team (first build always registers
-        // both) — defensive, so a rebuild can never silently drop state.
+        // all of them) — defensive, so a rebuild can never silently drop state.
         throw new Error(
-          `session ${sessionId}: rebuild preregistration missing (buffer/tools)`,
+          `session ${sessionId}: rebuild preregistration missing (buffer/tools/snapshot)`,
         );
       }
       return buildTeamGraph(
@@ -355,9 +431,13 @@ export async function startServer(
           playerModel,
           plannerModel,
           strategyStore,
+          memoryClient,
+          frozenSnapshot,
+          template,
           buffer,
           sessionId,
           playerTools,
+          plannerTools: memoryTools,
           playerBasePrompt,
           plannerBasePrompt,
         },
@@ -372,27 +452,41 @@ export async function startServer(
   // resolves each (template, session, kind) triple to its per-kind
   // dependencies (R3 template-scoped multi-path scheme —
   // `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md`
-  // §4). Only the saolei kind is registered here (Phase 4); the memory kind
-  // (planner's memory mcp) is wired in Phase 5 (T022) with the MemoryClient.
-  // The lookup reads the early-registration registry (NOT the team store —
-  // the store only caches the team AFTER the factory resolves, so it misses
-  // during `buildSaoleiMcpTools`'s in-factory connect; the registry hits).
-  // The template path segment is not re-validated here: a session is bound
-  // to one template, and the registry is keyed by session id.
+  // §4). Both kinds are registered here: the saolei kind (the player's mcp —
+  // bridge/sink) and the memory kind (the planner's mcp — 039 T022 wires the
+  // memory-kind lookup that Phase 4 left undefined: the MemoryClient plus the
+  // template/session path closure, FR-007/FR-012). The lookup reads the
+  // early-registration registry (NOT the team store — the store only caches
+  // the team AFTER the factory resolves, so it misses during
+  // `buildSaoleiMcpTools`/`buildMemoryMcpTools`'s in-factory connect; the
+  // registry hits). The template path segment is not re-validated here: a
+  // session is bound to one template, and the registry is keyed by session id.
   startMcpHost(
     (template: string, sessionId: string, kind: "saolei" | "memory") => {
-      if (kind !== "saolei") {
-        return undefined;
-      }
       const entry = sessionBridges.get(sessionId);
       if (!entry) {
         return undefined;
       }
-      return {
-        kind: "saolei" as const,
-        bridge: entry.bridge,
-        sink: entry.sink,
-      };
+      if (kind === "saolei") {
+        return {
+          kind: "saolei" as const,
+          bridge: entry.bridge,
+          sink: entry.sink,
+        };
+      }
+      if (kind === "memory") {
+        // The memory mcp server is built lazily by the host (on the planner's
+        // first connect) with the injected MemoryClient — the mcp server
+        // forwards to the memory service via the agent and NEVER connects to
+        // it directly (FR-007).
+        return {
+          kind: "memory" as const,
+          memoryClient: entry.memoryClient,
+          template,
+          session: sessionId,
+        };
+      }
+      return undefined;
     },
   );
 
