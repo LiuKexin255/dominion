@@ -25,6 +25,11 @@ SAOLEI_EMBEDSRCS = [
     "testdata/saolei_9.png",
 ]
 
+# TRACECONTEXT_DEP is required by helpers_test.go (traceContext /
+# doHTTPTrace / connectAgentWSTrace — style/large_test.md §测试用例: set and
+# print trace_id via common/gopkg/otel/tracecontext).
+TRACECONTEXT_DEP = "//common/gopkg/otel/tracecontext"
+
 go_largetest(
     name = "session_test",
     size = "small",
@@ -36,6 +41,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -55,6 +61,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -74,6 +81,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -91,6 +99,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -110,6 +119,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -129,6 +139,39 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# memory_test is the MEMORY module large-test suite (spec
+# 039-planner-memory-calibration US2 — FR-006..FR-012/FR-018/FR-020):
+# TestMemoryServiceHttpCrudAndPagination (MemoryService CRUD + AIP-158
+# pagination through the gateway public entry) and TestPlannerMemoryToolFlow
+# (the game-driven planner `memory` tool chain — hermes-style args, agent
+# conversion persistence, old_text 0-hit/multi-hit error feedback). It reuses
+# the shared helpers (helpers_test.go — setupTeamSession / playTeamGameUntilWait
+# / the memory HTTP helpers) and the saolei board fixtures, and drives games
+# through the saolei TEAM graph exactly like the saolei-team suite.
+# size = small: two game-driving tests + HTTP CRUD, well within the small
+# budget (the 6-game compression test alone is what pushed testplan_test to
+# medium).
+go_largetest(
+    name = "memory_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "memory_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -138,16 +181,17 @@ go_largetest(
 # testplan_test is the saolei template TEAM suite (spec
 # 031-team-template-mode quickstart.md §2.1 / tasks.md Phase 8 T029): team
 # lifecycle, TeamProfile CRUD, per-TeamProfile model, player-exclusive
-# control, planner-trigger-per-game, strategy persistence, RefreshTeam, and
-# per-agent message partitioning. It replaces the removed prompt /
-# session-agent-lifecycle / per-profile-model suites. The target uses the
-# gazelle default name ({package_name}_test) so gazelle does not regenerate a
-# go_unittest (style/large_test.md).
+# control, planner-trigger-per-game, planner long-term memory persistence +
+# the calibration instruction scenarios (spec 039-planner-memory-calibration
+# FR-014..FR-019), RefreshTeam, and per-agent message partitioning. It
+# replaces the removed prompt / session-agent-lifecycle / per-profile-model
+# suites. The target uses the gazelle default name ({package_name}_test) so
+# gazelle does not regenerate a go_unittest (style/large_test.md).
 #
 # size = medium: the 037 optimize suite (specs/037-saolei-team-optimize
 # FR-034) added TestTeamCompressionAtFiveGames, which drives 6 full games on
 # one session (4 pre-compression + the compression game + a post-compression
-# resume game) — beyond the 60s "small" budget alongside the 14 existing
+# resume game) — beyond the 60s "small" budget alongside the other
 # game-driving tests (style/large_test.md §测试用例: size per actual need).
 go_largetest(
     name = "testplan_test",
@@ -162,6 +206,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",

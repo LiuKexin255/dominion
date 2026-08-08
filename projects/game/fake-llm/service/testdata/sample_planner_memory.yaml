@@ -1,0 +1,36 @@
+# sample_planner_memory.yaml — drives the team graph PLANNER agent's `memory`
+# tool_call (spec 039-planner-memory-calibration US2 — FR-008/FR-012;
+# contracts/memory-mcp-contract.md §1).
+#
+# The planner node (projects/game/agent/src/team/planner.ts) is triggered by
+# the conditional edge exactly once per game end (won/lost). Its model input
+# ends with the review HumanMessage rendered from the buffer's gameLog whose
+# text always starts with the FIXED prefix "本局游戏过程：" (planner.ts
+# buildReviewInput — specs/036-team-mode-bugfix/contracts/team-graph-fix-
+# contract.md §2.2; the gameLog now renders saolei_operate entries with their
+# full operations per FR-004), so keyword-matching that prefix makes fake-LLM
+# return a `memory` tool_call deterministically.
+#
+# The tool_call uses the hermes-style BATCH form (`operations: [add, add]`,
+# FR-008 — no memory_id/target parameters): it exercises the `operations`
+# parameter AND seeds the two entries whose shared substring "player 常犯"
+# drives the follow-up 0-hit / multi-hit replace chain in
+# sample_planner_tools.yaml (0-hit old_text "无此内容", multi-hit old_text
+# "player 常犯"). The former shared-strategy write path (update_strategy) is
+# GONE (FR-013 — Phase 6 removed StrategyStore).
+#
+# The keyword is the planner review prefix verbatim and does not appear in any
+# user-turn text the large tests send, so no other suite can match it
+# (matcher.go Match keys on the LAST user message of a request).
+name: planner-memory-add
+keywords:
+  - 本局游戏过程
+reasoning: "复盘完成，本局经验值得写入长期记忆。"
+tool_call:
+  name: memory
+  arguments:
+    operations:
+      - action: add
+        content: "player 常犯边角误标，应强调先 deduce 再 flag。"
+      - action: add
+        content: "player 常犯节奏过快，应提醒先看操作次数与正确标记比。"

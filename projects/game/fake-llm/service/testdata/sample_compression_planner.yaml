@@ -11,8 +11,8 @@
 # text.
 #
 # The serialized planner channel ALSO contains other configs' keywords (the
-# review input "本局游戏过程" matches planner-update-strategy). This config's
-# name sorts alphabetically BEFORE planner-update-strategy ("compress-..." <
+# review input "本局游戏过程" matches planner-memory-add). This config's
+# name sorts alphabetically BEFORE planner-memory-add ("compress-..." <
 # "planner-..."), so the summary call resolves deterministically to a
 # plain-text summary instead of a tool_call response (a tool_call response
 # carries empty content → compress.ts rejects it as a blank summary → FR-013
@@ -21,7 +21,10 @@
 # The response text is pinned as the expected post-compression
 # planner-channel content and live summary frame in helpers_test.go
 # (expectedPlannerCompressionSummary) and in
-# TestNewMessageStore_LoadsEmbeddedSamples — keep all three in sync.
+# TestNewMessageStore_LoadsEmbeddedSamples — keep all three in sync. The
+# wording reflects the 039 memory architecture (spec 039 FR-013 — the shared
+# StrategyStore/update_strategy flow is gone; the planner's long-term memory
+# lives in the memory service and its frozen snapshot).
 name: compress-planner-summary
 keywords:
   - 已复盘局数
@@ -29,4 +32,4 @@ keywords:
 # node's direct model.invoke requires a plain-string content, and a
 # reasoning_content response becomes content BLOCKS (rejected as
 # "non-string content", FR-012 abort).
-text: "已复盘 5 局，策略更新正常，每局均按新策略执行。"
+text: "已复盘 5 局，长期记忆更新正常。"

@@ -381,7 +381,7 @@ func TestAgentDialogDeleteTeamProfileStillResponds(t *testing.T) {
 // this ordering alone does NOT distinguish spec 038 mid-turn injection from a
 // spec 030 turn-end drain — under the 030 regression the depth-0 signal also
 // precedes a wait (turn 2's wait). The distinguishing assertion is the
-// saolei_click check: NO saolei_click dispatch after the init — the injected
+// saolei_operate check: NO saolei_operate dispatch after the init — the injected
 // HumanMessage became the last message of the next model call, so the fake-LLM
 // tools branch never saw the init tool result alone, and the init→click→click
 // chain was interrupted (under 030 turn-end semantics the queued message would
@@ -389,7 +389,7 @@ func TestAgentDialogDeleteTeamProfileStillResponds(t *testing.T) {
 // Exactly ONE terminal wait is also asserted, but the count only guards turn
 // completion — drainUntilWait stops at the first wait, so countWaitFrames
 // cannot detect a second turn; the no-second-turn guarantee follows from the
-// saolei_click check above (the interrupted chain means the injection happened
+// saolei_operate check above (the interrupted chain means the injection happened
 // mid-turn).
 func TestAgentDialogQueueMidTurnInjection(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
@@ -450,7 +450,7 @@ func TestAgentDialogQueueMidTurnInjection(t *testing.T) {
 	// does NOT distinguish spec 038 mid-turn injection from a spec 030
 	// turn-end drain — under the 030 regression the depth-0 signal also
 	// precedes a wait (turn 2's wait). The distinguishing assertion is the
-	// saolei_click check below.
+	// saolei_operate check below.
 	zeroIdx, waitIdx := -1, -1
 	for i, f := range frames {
 		if zeroIdx == -1 {
@@ -477,23 +477,23 @@ func TestAgentDialogQueueMidTurnInjection(t *testing.T) {
 	// Confirm the turn reached completion (a terminal wait frame was
 	// observed). drainUntilWait returns at the first wait, so this guards
 	// against a missing/timeout turn rather than a second turn — the
-	// no-second-turn guarantee is asserted by the saolei_click check below.
+	// no-second-turn guarantee is asserted by the saolei_operate check below.
 	waitCount := countWaitFrames(frames)
 	if waitCount != 1 {
 		t.Errorf("wait frame count = %d, want 1 (the turn must reach completion; count 0 means the turn missed or timed out before a wait — drainUntilWait stops at the first wait, so a second turn cannot be detected here)", waitCount)
 	}
 
 	// KEY (distinguishing) assertion: the injected message interrupted the
-	// saolei tool chain — no saolei_click dispatch may follow the init reply.
+	// saolei tool chain — no saolei_operate dispatch may follow the init reply.
 	// The injected HumanMessage became the last message of the next model
 	// call, so the fake-LLM matched the user text instead of chaining the init
-	// tool result into saolei_click{3,4}. This is the check that separates
+	// tool result into the saolei_operate batch. This is the check that separates
 	// spec 038 mid-turn injection from the spec 030 turn-end drain: under
 	// 030 semantics the queued message would be deferred to the turn-end
 	// hand-off, so the init→click chain would complete first.
 	for _, f := range frames {
 		if mmc := frameMouseMoveAndClick(f); mmc != nil {
-			t.Errorf("saolei_click dispatch found after the mid-turn drain — the queued message was NOT injected before the next model call: %v", mmc)
+			t.Errorf("saolei_operate dispatch found after the mid-turn drain — the queued message was NOT injected before the next model call: %v", mmc)
 		}
 	}
 

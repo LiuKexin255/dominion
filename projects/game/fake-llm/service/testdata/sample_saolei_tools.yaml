@@ -1,47 +1,45 @@
 # sample_saolei_tools.yaml — chains the saolei MCP tool results so the
-# model drives a stateless init→click→click sequence (back-to-back, no
-# update) in large tests (specs/023-saolei-mcp-refine/quickstart.md
-# Scenario 5 / SC-004; spec 023 FR-021 — the four saolei tools are callable
-# back-to-back with no intervening step). Each entry is keyed by the
-# tool_name LangChain reports on the tool-result message (role: "tool",
-# name: <tool>), matched against the tools branch of the fake-LLM dispatch.
+# model drives a deterministic init→operate→text sequence in large tests
+# (spec 039-planner-memory-calibration US1 — the three former cell tools are
+# merged into the single dual-form `saolei_operate`, FR-001/FR-002). Each
+# entry is keyed by the tool_name LangChain reports on the tool-result
+# message (role: "tool", name: <tool>), matched against the tools branch of
+# the fake-LLM dispatch (matcher.go MatchToolResult).
 #
-# Flow driven by these configs (the test supplies each click result with a
-# coordinate-tagged message so the matcher can distinguish the two
-# saolei_click results — match_result_contains is ALL-substrings required):
-#   saolei_init  result                                  → saolei_click{3,4}
-#   saolei_click result (msg contains "(3,4)")           → saolei_click{5,6}   (back-to-back; no update)
-#   saolei_click result (msg contains "(5,6)")           → final text          (terminates the tool loop)
+# Flow driven by these configs (the test "plays the desktop" — replying to
+# every dispatched operation FlowPart with a recognizable board screenshot):
+#   saolei_init  result                      → saolei_operate(operations: [click{3,4}, click{5,6}])
+#   saolei_operate result (any outcome line) → final text (terminates the tool loop)
 #
-# Per spec 023 FR-016 / research.md D7, `saolei_update` is removed and the
-# MCP exposes exactly four stateless tools; this fixture no longer references
-# it.
+# The follow-up operate call uses the BATCH form (operations array) so a
+# single tool invocation dispatches both cell ops IN ORDER and returns once
+# (FR-002) — the agent_saolei suite asserts the two dispatches arrive at the
+# fixture's cell centres (saolei_fixtures_test.go) and the single result
+# body. The result-body triage lines differ per test (executed/skipped/
+# stopped — contract saolei-operate-contract.md §2), so the terminate config
+# uses an EMPTY match_result_contains constraint and matches any
+# saolei_operate result deterministically (there is no other saolei_operate
+# config to collide with).
+#
+# Per spec 023 FR-016 / research.md D7, `saolei_update` remains removed; the
+# MCP exposes exactly three tools (saolei_init/saolei_operate/saolei_remain,
+# FR-001/FR-003) and this fixture never references the removed click/flag/
+# chord tools.
 tools:
-  - name: saolei-click-3-4-followup-click
-    tool_name: saolei_click
-    match_result_contains:
-      - "(3,4)"
-    respond_with:
-      tool_call:
-        name: saolei_click
-        arguments:
-          x: 5
-          y: 6
-  - name: saolei-click-5-6-final-text
-    tool_name: saolei_click
-    match_result_contains:
-      - "(5,6)"
-    respond_with:
-      text: "Minesweeper sequence complete."
-  - name: saolei-init-followup-click
+  - name: saolei-init-followup-operate
     tool_name: saolei_init
     match_result_contains: []
     respond_with:
       tool_call:
-        name: saolei_click
+        name: saolei_operate
         arguments:
-          x: 3
-          y: 4
+          operations:
+            - type: click
+              x: 3
+              y: 4
+            - type: click
+              x: 5
+              y: 6
   # saolei-remain-final-text terminates the saolei_remain tool loop with a
   # plain text response (specs/029-saolei-coord-remain/contracts/saolei-
   # remain-tool-contract.md §8 / quickstart.md Scenario 5). saolei_remain
@@ -57,17 +55,16 @@ tools:
     match_result_contains: []
     respond_with:
       text: "Remaining mines computed."
-  # saolei-click-terminal-text terminates ANY saolei_click result that does
-  # not match the coordinate-tagged configs above (saolei-mcp.ts
-  # rejectionText bodies — e.g. the pre-dispatch `game_won`/`game_over`
-  # rejections on a terminal board — carry NO "(x,y)" substring). It makes
-  # the post-rejection tool loop DETERMINISTIC under the team model: the
-  # saolei_team suite drives a game to won/lost (planner trigger) and MUST
-  # NOT depend on the no-match random fallback, whose pool includes mouse
-  # tool_calls that the team's player agent does not hold (FR-028 — the
-  # player's tools are template-fixed to the saolei MCP tools).
-  - name: saolei-click-terminal-text
-    tool_name: saolei_click
+  # saolei-operate-final-text terminates ANY saolei_operate result — the
+  # executed/skipped/stopped outcome lines (operateResultText,
+  # saolei-mcp.ts) and the rejection bodies (ambiguous/missing args,
+  # no_active_game) all carry no distinguishing coordinates, so a single
+  # empty-constraint config makes the post-operate tool loop DETERMINISTIC
+  # instead of falling into the no-match random fallback (whose pool
+  # includes mouse tool_calls the team's player agent does not hold;
+  # FR-028 — the player's tools are template-fixed to the saolei MCP tools).
+  - name: saolei-operate-final-text
+    tool_name: saolei_operate
     match_result_contains: []
     respond_with:
       text: "Minesweeper sequence complete."

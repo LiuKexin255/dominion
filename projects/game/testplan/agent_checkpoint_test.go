@@ -266,15 +266,16 @@ func TestAgentCheckpointToolResultStatusPersists(t *testing.T) {
 		t.Fatal("turn 1: did not receive a tool_result MessagePart frame after the init reply")
 	}
 
-	// Play the desktop through the chained saolei_click{3,4} → {5,6}
-	// dispatches (sample_saolei_tools.yaml) so the turn completes.
+	// Play the desktop through the chained saolei_operate batch ops
+	// {3,4} → {5,6} (sample_saolei_tools.yaml — one operate call whose two
+	// ops dispatch in order) so the turn completes.
 	for _, step := range []struct{ cellX, cellY int32 }{
 		{saoleiClick1X, saoleiClick1Y},
 		{saoleiClick2X, saoleiClick2Y},
 	} {
 		clickFrame := readOperationFrame(t, conn)
 		if frameMouseMoveAndClick(clickFrame) == nil {
-			t.Fatalf("saolei_click(%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart", step.cellX, step.cellY)
+			t.Fatalf("saolei_operate op (%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart", step.cellX, step.cellY)
 		}
 		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
 			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,

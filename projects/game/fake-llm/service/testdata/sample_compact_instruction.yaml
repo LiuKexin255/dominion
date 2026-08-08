@@ -1,0 +1,24 @@
+# sample_compact_instruction.yaml — drives the post-COMPRESSION scenario's
+# instruct_player tool_call (spec 039-planner-memory-calibration US3 —
+# FR-016/FR-019; contracts/team-graph-contract.md §2.3).
+#
+# The postCompactInstruction node (runs after the compress node cleared the
+# channels and refreshed the frozen memory snapshot, before END) uses the
+# shared instruction node function with scenario="compact". Its model input
+# ends with the request HumanMessage whose text always starts with "上下文刚被
+# 压缩：" (instruction-node.ts buildInstructionRequest), so keyword-matching
+# that prefix makes fake-LLM return an instruct_player tool_call
+# deterministically. The instruction content lands in
+# TeamState.pendingInstruction and is delivered with the player's NEXT
+# activation (the turn ends — player stops, FR-016/037 压缩后自动停下).
+#
+# The keyword appears in NO user-turn text the large tests send, so no other
+# suite can match it. The follow-up response after the tool executes lives in
+# sample_planner_tools.yaml (instruct-player-final-text).
+name: compact-instruction
+keywords:
+  - 上下文刚被压缩
+tool_call:
+  name: instruct_player
+  arguments:
+    content: "压缩后指令：保持节奏，先 deduce 再 flag。请继续游戏。"

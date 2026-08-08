@@ -178,11 +178,11 @@
 
 **Tasks**:
 
-- [ ] T033 [P] 编写大型测试用例（Go，`*_test.go` 按**被测模块**拆分，复用 `helpers_test.go`）于 `projects/game/testplan/`：① saolei_operate **双形态**（普通参数单次 / `operations` 数组）与失败细分（归入既有 `agent_saolei_test.go` 或 saolei 模块文件）；② memory 持久化 + 冻结快照（纯内容）+ `memory` 工具 agent 转换（`old_text` 0/多命中报错）+ memory skill 注入 planner（player 不含）+ 独立 db + 分页（新建 `memory_test.go` 模块文件）；③ 校准指令两场景 + 消息顺序 + StrategyStore 移除（归入既有 `saolei_team_test.go` team 模块）。用例通过 HTTP/WS 公共入口（`testtool.MustEndpoint("http","public")`）+ 设置/打印 `trace_id`（`tracecontext`）。详见 `quickstart.md` 场景 1/2/3、`style/large_test.md`。
-- [ ] T034 [P] Add/update fake-llm fixtures 于 `projects/game/fake-llm/service/testdata/`（脚本化**单一 `memory` 工具**（`action`/`content`/`old_text`/`operations`）+ `instruct_player` 的 tool_call 响应、两场景 prompt 引导产出），并同步 `helpers_test.go` 期望常量（lockstep，`testplan/README.md` §5）；确认 `projects/game/fake-llm/service/message_store_test.go` pin 通过。
-- [ ] T035 更新 `projects/game/testplan/BUILD.bazel`：声明新 `go_largetest` target（按 `style/large_test.md` gazelle 默认名规则——同目录至少一个用 `{package_name}_test`，避免重复生成 `go_unittest`）；`srcs` 含 `helpers_test.go` + 对应模块 `*_test.go` + `saolei_fixtures_test.go`（按需）+ `embedsrcs` testdata。
-- [ ] T036 更新 `projects/game/testplan/system_test.yaml`：新增 `suite`（如 `planner-memory`）引用新 `go_largetest` case（**不新建 YAML**；如沿用既有 deploy 拓扑则复用 `deploy_agent.yaml`，该 deploy 已含 memory 服务条目——Phase 1 T003 已加）。
-- [ ] T037 Run `bazel build //...` + `bazel test //...`（全量 Go + TS 编译与单测全绿）；经 **testplan SKILL** 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环，**禁止仅 `bazel build` 替代验收**，宪法原则 VI）；**所有用例全部通过**（failed/flaky 即未通过，修复重跑至全绿）。
+- [X] T033 [P] 编写大型测试用例（Go，`*_test.go` 按**被测模块**拆分，复用 `helpers_test.go`）于 `projects/game/testplan/`：① saolei_operate **双形态**（普通参数单次 / `operations` 数组）与失败细分（归入既有 `agent_saolei_test.go` 或 saolei 模块文件）；② memory 持久化 + 冻结快照（纯内容）+ `memory` 工具 agent 转换（`old_text` 0/多命中报错）+ memory skill 注入 planner（player 不含）+ 独立 db + 分页（新建 `memory_test.go` 模块文件）；③ 校准指令两场景 + 消息顺序 + StrategyStore 移除（归入既有 `saolei_team_test.go` team 模块）。用例通过 HTTP/WS 公共入口（`testtool.MustEndpoint("http","public")`）+ 设置/打印 `trace_id`（`tracecontext`）。详见 `quickstart.md` 场景 1/2/3、`style/large_test.md`。
+- [X] T034 [P] Add/update fake-llm fixtures 于 `projects/game/fake-llm/service/testdata/`（脚本化**单一 `memory` 工具**（`action`/`content`/`old_text`/`operations`）+ `instruct_player` 的 tool_call 响应、两场景 prompt 引导产出），并同步 `helpers_test.go` 期望常量（lockstep，`testplan/README.md` §5）；确认 `projects/game/fake-llm/service/message_store_test.go` pin 通过。
+- [X] T035 更新 `projects/game/testplan/BUILD.bazel`：声明新 `go_largetest` target（按 `style/large_test.md` gazelle 默认名规则——同目录至少一个用 `{package_name}_test`，避免重复生成 `go_unittest`）；`srcs` 含 `helpers_test.go` + 对应模块 `*_test.go` + `saolei_fixtures_test.go`（按需）+ `embedsrcs` testdata。
+- [X] T036 更新 `projects/game/testplan/system_test.yaml`：新增 `suite`（如 `planner-memory`）引用新 `go_largetest` case（**不新建 YAML**；如沿用既有 deploy 拓扑则复用 `deploy_agent.yaml`，该 deploy 已含 memory 服务条目——Phase 1 T003 已加）。
+- [X] T037 Run `bazel build //...` + `bazel test //...`（全量 Go + TS 编译与单测全绿）；经 **testplan SKILL** 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环，**禁止仅 `bazel build` 替代验收**，宪法原则 VI）；**所有用例全部通过**（failed/flaky 即未通过，修复重跑至全绿）。
 
 **Checkpoint**: 全量 `bazel build/test` 通过；`guitar run` 全部用例通过（FR-018、SC-008）；特性验收完成。
 

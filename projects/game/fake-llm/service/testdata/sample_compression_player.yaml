@@ -32,4 +32,4 @@ keywords:
 # ...}), which compress.ts rejects as "non-string content" (FR-012 abort) —
 # see the deployment failure this comment documents. Text-only responses
 # yield a plain string.
-text: "已玩 5 局，其中 4 局失败。策略：优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。"
+text: "已玩 5 局，其中 4 局失败。下一局按复盘指令调整打法。"

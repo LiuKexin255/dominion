@@ -5,148 +5,45 @@
 // quickstart.md §2.1 case table; spec FR-030): team connect + lifecycle
 // (FR-003/FR-004/FR-033), TeamProfile CRUD (FR-006/FR-027), per-TeamProfile
 // model resolution, player-exclusive desktop control (FR-010), planner
-// trigger exactly once per game end (FR-011/D6), strategy persistence and
-// sharing (FR-013/FR-014/FR-015), RefreshTeam short-term clearing (FR-018),
-// and per-agent message partitioning (FR-005).
-//
-// It replaces the three pre-031 suites that covered removed behaviour
-// (specs/031-team-template-mode/tasks.md Phase 8 T029): the prompt suite
-// (AgentProfile/Skill CRUD → TeamProfile CRUD), the session-agent lifecycle
-// suite (profile switching/GetAgent → team lifecycle: UpdateTeam/Connect/
-// GetTeam/connection exclusivity), and the per-profile-model suite
-// (→ per-TeamProfile model). The team turn (one user input = one graph
-// invoke) is driven through the per-session TurnLoop exactly like the
-// pre-team agent; each test sets up the team stack via setupTeamSession
-// (session → saolei TeamProfile → UpdateTeam materialization) before
-// connecting — UpdateTeam MUST precede Connect (no lazy creation, FR-003).
+// trigger exactly once per game end (FR-011/D6), planner long-term memory
+// persistence via the memory service + the `memory` tool agent conversion
+// (specs/039-planner-memory-calibration FR-006..FR-012), the calibration
+// instruction scenarios + message order (FR-014..FR-017/FR-019),
+// RefreshTeam short-term clearing (FR-018), and per-agent message
+// partitioning (FR-005). The shared-strategy flow (update_strategy /
+// StrategyStore, 031 FR-012..FR-015) is GONE — Phase 6 of spec 039 removed
+// it (FR-013) and this suite asserts its absence (SC-005).
 //
 // A "game" in these tests is one full team turn driven by the fake-LLM
 // "saolei-start" keyword: the player agent's saolei_init recognizes an
 // IN-PROGRESS board (contract saolei-sink-contract.md §3 — onGameStart only,
-// no game-end detection on init), then its first saolei_click reply carries
-// a TERMINAL won/lost board — the move's post-dispatch recognition fires
-// onMove + onGameEnd (the sink records the end event), the conditional edge
-// routes to the planner exactly once, the planner calls update_strategy
-// (fake-LLM matches the fixed review prefix), and the graph loops back
-// through the player, whose stateless fake-LLM re-matches saolei-start and
-// opens one more in-progress game (no end event) so the turn converges to
-// wait. The helper playTeamGameUntilWait drives the desktop role (replying
-// to every dispatched operation) until the terminal wait frame.
+// no game-end detection on init), then its first saolei_operate batch reply
+// carries a TERMINAL won/lost board — the batch's post-dispatch recognition
+// fires onOperate + onGameEnd (the sink records the end event), the
+// conditional edge routes to the planner exactly once, the planner runs the
+// deterministic memory→memory→instruct_player review chain
+// (sample_planner_memory.yaml / sample_planner_tools.yaml — one batch add,
+// a 0-hit replace error, a multi-hit replace error, then the review
+// instruction), and the graph loops back through the player, whose stateless
+// fake-LLM re-matches saolei-start and opens one more in-progress game (no
+// end event) so the turn converges to wait. The helper playTeamGameUntilWait
+// drives the desktop role (replying to every dispatched operation) until the
+// terminal wait frame; it lives in helpers_test.go (shared with the memory
+// module suite, style/large_test.md §反模式3).
 package testplan
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
-
-	"github.com/gorilla/websocket"
 )
-
-// playTeamGameUntilWait drives one full team turn ("please start saolei
-// game") while playing the desktop: every dispatched operation FlowPart is
-// answered with a FlowResultPart carrying a recognizable board screenshot
-// (the reply message is derived from the operation kind so the fake-LLM
-// coordinate-tagged tool configs keep matching — sample_saolei_tools.yaml),
-// and the loop drains frames until the terminal wait FlowPart (turn
-// complete). Returns every frame read, in order, so callers can assert on
-// the planner's update_strategy tool_calls and the per-agent frame stream.
-//
-// Screenshot semantics follow specs/031-team-template-mode/contracts/
-// saolei-sink-contract.md §3 (onGameEnd fires only after a move whose
-// post-dispatch recognition is terminal — NOT after saolei_init):
-//
-//   - `initScreenshot` answers every saolei_init (keyboard F2) dispatch —
-//     an IN-PROGRESS board (saoleiBoardInitPNG), so the init recognize is
-//     non-terminal (onGameStart only) and the following cell ops pass
-//     pre-dispatch validation.
-//   - `clickTerminalScreenshot` answers the FIRST cell-op (saolei_click)
-//     dispatch — a TERMINAL board (saoleiBoardLossPNG), so the move's
-//     post-dispatch recognition fires onMove + onGameEnd once (the sink
-//     records the end event → planner). MUST share the init board's
-//     dimensions: SaoleiBoard.updateFromScreenshot rejects a dimension
-//     change (BoardDimensionMismatchError → "unable to recognize" → no sink
-//     events), which is why saoleiBoardWinPNG (9×9) cannot back a 16×16 init
-//     (saoleiBoardInitPNG) — both here are 16×16.
-//   - LATER cell-op dispatches are answered with `initScreenshot` again:
-//     after the planner the stateless fake-LLM re-matches the saolei-start
-//     keyword and the player opens another game; replying in-progress keeps
-//     that run end-event-free, so the turn converges to wait with the
-//     planner triggered exactly once (FR-011).
-func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string, initScreenshot, clickTerminalScreenshot *game.ImagePart) []*game.TeamFrame {
-	t.Helper()
-
-	sendText(t, conn, sessionID, "please start saolei game")
-
-	var frames []*game.TeamFrame
-	clickReplies := 0
-	for i := 0; i < 60; i++ {
-		frame := readWSFrame(t, conn)
-		frames = append(frames, frame)
-
-		if opID := frameOperationToolID(frame); opID != "" {
-			// Play the desktop: reply with the recognizable board. The reply
-			// message must carry the coordinates for cell ops so the fake-LLM
-			// coordinate-tagged configs match deterministically.
-			if kp := frameKeyboardPress(frame); kp != nil {
-				respondToOperationWithScreenshot(t, conn, sessionID, frame,
-					game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
-					"F2 pressed, new game started", initScreenshot)
-				continue
-			}
-			if mmc := frameMouseMoveAndClick(frame); mmc != nil {
-				// Invert the WM client-space centre formula
-				// (geometry.ts centerX(x) = 24 + x*32 + 16, centerY(y) =
-				// 104 + y*32 + 16) to recover the cell for the reply message.
-				// First click reply = terminal board (triggers onGameEnd);
-				// later clicks (the post-planner player run's clicks — the
-				// stateless fake-LLM re-matches saolei-start) reply
-				// in-progress so the turn converges to wait.
-				x := (mmc.GetXPx() - 40) / 32
-				y := (mmc.GetYPx() - 120) / 32
-				screenshot := initScreenshot
-				if clickReplies == 0 {
-					screenshot = clickTerminalScreenshot
-				}
-				clickReplies++
-				respondToOperationWithScreenshot(t, conn, sessionID, frame,
-					game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
-					fmt.Sprintf("cell at (%d,%d) revealed", x, y), screenshot)
-				continue
-			}
-			t.Fatalf("operation frame with unknown operation kind: %v", frame.GetFlowParts().GetParts())
-		}
-
-		if frameWait(frame) != nil {
-			return frames
-		}
-	}
-	t.Fatal("playTeamGameUntilWait: no wait frame within 60 reads — the team turn did not complete")
-	return nil
-}
-
-// countUpdateStrategyCalls returns the number of update_strategy tool_call
-// MessageParts across the given frames (the planner fires exactly once per
-// game end — FR-011 — so this counts games reviewed by the planner).
-func countUpdateStrategyCalls(frames []*game.TeamFrame) int {
-	count := 0
-	for _, f := range frames {
-		if f.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
-			continue
-		}
-		for _, p := range frameMessageParts(f).GetParts() {
-			if tc := p.GetToolCall(); tc != nil && tc.GetName() == "update_strategy" {
-				count++
-			}
-		}
-	}
-	return count
-}
 
 // findPlannerReviewFrame returns the content of the FIRST real-time frame
 // carrying the planner's review input (the "本局游戏过程" HumanMessage emitted
@@ -176,6 +73,47 @@ func findPlannerReviewMessage(messages []*game.Message) string {
 	return ""
 }
 
+// findInstructPlayerCallContent returns the content argument of the FIRST
+// instruct_player tool_call whose content equals want, or "" when none
+// exists. The planner partition legitimately holds instruct_player calls
+// from MULTIPLE scenarios (the async init turn's write-back precedes later
+// review/compact calls — 039 FR-015), so tests match by content rather than
+// position. Used to assert the calibration instructions (review / init /
+// compact scenarios — spec 039 FR-014/FR-015/FR-016) reached the expected
+// channel with the fixture's content. Panics on a malformed args_json — a
+// bug in the test itself.
+func findInstructPlayerCallContent(messages []*game.Message, want string) string {
+	for _, m := range messages {
+		if args := messageToolCallArgsJSON(m, "instruct_player"); args != "" {
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+				panic(fmt.Sprintf("instruct_player args_json is not a JSON object: %q", args))
+			}
+			content, _ := parsed["content"].(string)
+			if content == want {
+				return content
+			}
+		}
+	}
+	return ""
+}
+
+// messageIndex returns the index of the first Message whose content carries
+// the given substring, or -1 when none does.
+func messageIndex(messages []*game.Message, substring string) int {
+	for i, m := range messages {
+		if strings.Contains(messageText(m), substring) {
+			return i
+		}
+		for _, p := range m.GetContent().GetParts() {
+			if tr := p.GetToolResult(); tr != nil && strings.Contains(tr.GetMessage(), substring) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // ─── Team connect + lifecycle (FR-003/FR-004/FR-033) ──────────────────────
 
 // TestTeamConnectLifecycle verifies the team lifecycle contract
@@ -187,6 +125,10 @@ func findPlannerReviewMessage(messages []*game.Message) string {
 // D3/FR-031); repeated UpdateTeam is idempotent for the SAME profile (FR-002)
 // and rebuilds the team graph for a DIFFERENT profile (FR-005); after
 // materialization the WebSocket Connect works and a text turn completes.
+// The one-shot async initInstruction turn (039 FR-015 — triggered once after
+// first materialization) delivers its instruction with the player's first
+// activation; the greeting keyword still matches deterministically (the
+// instruction is an extra USER message, not the last user message).
 func TestTeamConnectLifecycle(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -249,7 +191,9 @@ func TestTeamConnectLifecycle(t *testing.T) {
 
 	// then: repeated UpdateTeam with the SAME profile is idempotent (returns
 	// the existing team — FR-002); a DIFFERENT profile rebuilds the team
-	// graph and succeeds (FR-005, no ALREADY_EXISTS — FR-007).
+	// graph and succeeds (FR-005, no ALREADY_EXISTS — FR-007). The rebuild
+	// must NOT re-run the initInstruction turn (040 FR-005 — init runs once
+	// at first materialization only), which the session-team unit tests pin.
 	if status, _ := updateTeamWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileID); status != http.StatusOK {
 		t.Errorf("repeated UpdateTeam (same profile): status=%d, want 200 idempotent (FR-002)", status)
 	}
@@ -323,14 +267,15 @@ func TestTeamUpdateRebuildInFlightRejected(t *testing.T) {
 	}
 
 	// then: the in-flight turn completes unaffected — reply to every
-	// dispatched operation (init + clicks) and drain to the final text.
+	// dispatched operation (init + the operate batch's two clicks) and drain
+	// to the final text.
 	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
 	respondToOperationWithScreenshot(t, conn, sessionID, opFrame,
 		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
 	for i := 0; i < 2; i++ {
 		clickFrame := readOperationFrame(t, conn)
 		if frameMouseMoveAndClick(clickFrame) == nil {
-			t.Fatalf("expected a saolei_click dispatch, got: %v", clickFrame.GetFlowParts().GetParts())
+			t.Fatalf("expected a saolei_operate dispatch, got: %v", clickFrame.GetFlowParts().GetParts())
 		}
 		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
 			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
@@ -452,7 +397,9 @@ func TestTeamDisconnectReconnectHistory(t *testing.T) {
 	defer conn2.Close()
 
 	// Verify all 4 messages (2 user + 2 agent) present in the player
-	// partition history (FR-005).
+	// partition history (FR-005). The first activation also injected the
+	// 039 init instruction, so the partition is >= 5 — the >= 4 assertion
+	// below holds either way.
 	lmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
 	gotCount := len(lmr.GetMessages())
 	if gotCount < 4 {
@@ -539,7 +486,7 @@ func TestTeamStatusPingPong(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		clickFrame := readOperationFrame(t, conn)
 		if frameMouseMoveAndClick(clickFrame) == nil {
-			t.Fatalf("expected a saolei_click dispatch, got: %v", clickFrame.GetFlowParts().GetParts())
+			t.Fatalf("expected a saolei_operate dispatch, got: %v", clickFrame.GetFlowParts().GetParts())
 		}
 		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
 			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
@@ -582,7 +529,7 @@ func TestTeamReconnectDispatchReliability(t *testing.T) {
 	respondToOperationWithScreenshot(t, conn1, sessionID, opFrame1,
 		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", initScreenshot)
 	// The init dispatch cycle is complete once its tool_result arrives. Do
-	// NOT drain text: the stateless fake-LLM chains saolei_click{3,4} after
+	// NOT drain text: the stateless fake-LLM chains the operate batch after
 	// the init result, the player blocks on that dispatch (the test stops
 	// playing the desktop), and the turn only unwinds via the disconnect
 	// abort below.
@@ -813,14 +760,18 @@ func TestTeamPerProfileModel(t *testing.T) {
 		fetched2.GetSaolei().GetPlayerModel(), fetched2.GetSaolei().GetPlannerModel())
 }
 
-// ─── Team graph behaviour (FR-005/FR-010/FR-011/FR-013..015/FR-018) ───────
+// ─── Team graph behaviour (FR-005/FR-010/FR-011/FR-013..018/FR-020) ───────
 
 // TestTeamMessagePartitionByAgent verifies FR-005: ListMessages partitions
 // the session history per team agent. After a game whose terminal move
 // triggered the planner, the player partition carries the user input and the
 // saolei tool calls/results (agent="player"), the planner partition carries
-// the update_strategy review (agent="planner"), and neither partition leaks
-// into the other.
+// the memory review chain (agent="planner"), and neither partition leaks
+// into the other. The 039 rewrite (FR-013/FR-009): the planner's channel
+// carries `memory`/`instruct_player` calls (never update_strategy — the
+// StrategyStore is gone — and never saolei tools), and the player's channel
+// carries NO memory tool (the planner's review is invisible to the player,
+// FR-017).
 func TestTeamMessagePartitionByAgent(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -830,12 +781,15 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 	defer conn.Close()
 
 	// when: one full game — init recognizes an in-progress board, the first
-	// click's reply is a terminal lost board (planner triggers).
+	// operate batch's first click reply is a terminal lost board (planner
+	// triggers).
 	playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: the player partition carries the user input + saolei tool calls,
-	// all stamped agent="player".
+	// all stamped agent="player", and NO memory tool (FR-009 — the memory
+	// tool is planner-only; the planner's review must stay in the planner
+	// partition, FR-017).
 	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
 	if len(playerLmr.GetMessages()) == 0 {
 		t.Fatal("player partition is empty after a full game")
@@ -849,11 +803,14 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 		if m.GetRole() == game.MessageRole_MESSAGE_ROLE_USER {
 			playerUserFound = true
 		}
-		if messageHasToolCall(m, "saolei_init") || messageHasToolCall(m, "saolei_click") {
+		if messageHasToolCall(m, "saolei_init") || messageHasToolCall(m, "saolei_operate") {
 			playerSaoleiFound = true
 		}
+		if messageHasToolCall(m, "memory") {
+			t.Error("player partition carries a memory tool_call — the planner's memory review must stay in the planner partition (FR-005/FR-009)")
+		}
 		if messageHasToolCall(m, "update_strategy") {
-			t.Error("player partition carries an update_strategy tool_call — the planner's messages must stay in the planner partition (FR-005)")
+			t.Error("player partition carries an update_strategy tool_call — the shared strategy tool is gone (spec 039 FR-013)")
 		}
 	}
 	if !playerUserFound {
@@ -863,20 +820,23 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 		t.Error("player partition did not surface a saolei tool_call — the player drives the game (FR-010)")
 	}
 
-	// then: the planner partition carries the update_strategy review, all
+	// then: the planner partition carries the memory review chain, all
 	// stamped agent="planner", with no saolei/desktop operations (FR-010 —
-	// the planner holds no desktop tools).
+	// the planner holds no desktop tools) and no update_strategy (FR-013).
 	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
 	if len(plannerLmr.GetMessages()) == 0 {
 		t.Fatal("planner partition is empty — the planner did not trigger for the terminal-move game (FR-011)")
 	}
-	plannerUpdateFound := false
+	plannerMemoryFound := false
 	for _, m := range plannerLmr.GetMessages() {
 		if m.GetAgent() != "planner" {
 			t.Errorf("planner-partition message has agent=%q, want planner (FR-005)", m.GetAgent())
 		}
+		if messageHasToolCall(m, "memory") {
+			plannerMemoryFound = true
+		}
 		if messageHasToolCall(m, "update_strategy") {
-			plannerUpdateFound = true
+			t.Error("planner partition carries an update_strategy tool_call — the shared strategy tool is gone (spec 039 FR-013)")
 		}
 		for _, name := range messageToolCallNames(m) {
 			if strings.HasPrefix(name, "saolei_") {
@@ -884,19 +844,20 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 			}
 		}
 	}
-	if !plannerUpdateFound {
-		t.Error("planner partition did not surface an update_strategy tool_call (FR-012)")
+	if !plannerMemoryFound {
+		t.Error("planner partition did not surface a memory tool_call (FR-008)")
 	}
 }
 
 // TestTeamPlayerExclusiveControl verifies FR-010 end-to-end: during a team
 // turn only the player agent drives the desktop — every dispatched operation
 // FlowPart on the WS corresponds to the player's saolei tool calls, and the
-// planner contributes no operations at all (its only tool, update_strategy,
-// writes the strategy store without dispatching). The frame stream of a full
-// game (init in-progress → terminal-move click) is checked: every operation
-// frame belongs to a player tool (F2 init / cell clicks), while the
-// planner's tool_call frames carry only update_strategy.
+// planner contributes no operations at all (its only tools, memory +
+// instruct_player, never dispatch). The frame stream of a full game (init
+// in-progress → terminal-move operate batch) is checked: every operation
+// frame belongs to a player tool (F2 init / cell ops), the planner's tool_call
+// frames carry only memory/instruct_player, and the review chain runs
+// exactly once per game end (FR-011).
 func TestTeamPlayerExclusiveControl(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -906,8 +867,8 @@ func TestTeamPlayerExclusiveControl(t *testing.T) {
 	defer conn.Close()
 
 	// when: one full game — init recognizes an in-progress board, the first
-	// click's reply is a terminal lost board (planner triggers inside the
-	// turn — D6).
+	// operate batch's first click reply is a terminal lost board (planner
+	// triggers inside the turn — D6).
 	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
@@ -927,17 +888,29 @@ func TestTeamPlayerExclusiveControl(t *testing.T) {
 		}
 	}
 
-	// then: the planner contributed exactly its update_strategy review — no
-	// saolei tool_calls from the planner channel (partition assertion) and no
-	// desktop operations originated outside the player's channel.
-	if got := countUpdateStrategyCalls(frames); got != 1 {
-		t.Errorf("update_strategy calls = %d, want exactly 1 per game end (FR-011/D6)", got)
+	// then: the planner triggered exactly once per game end (FR-011/D6) —
+	// signalled by the review input frame — and its deterministic review
+	// chain ran (one memory batch-add + two old_text-location replaces +
+	// one instruct_player; sample_planner_memory.yaml / sample_planner_tools.
+	// yaml — FR-008/FR-014).
+	if got := countPlannerReviewFrames(frames); got != 1 {
+		t.Errorf("planner review frames = %d, want exactly 1 per game end (FR-011/D6)", got)
 	}
+	if got := countMemoryCalls(frames); got != 3 {
+		t.Errorf("memory calls = %d, want exactly 3 per review (batch add + 0-hit replace + multi-hit replace — FR-008)", got)
+	}
+
+	// then: the planner's live tool_calls never include saolei tools, and
+	// the reloaded planner channel carries no saolei tool_calls either
+	// (FR-018 — the description injection added text, not tools).
 	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
 	for _, m := range plannerLmr.GetMessages() {
 		for _, name := range messageToolCallNames(m) {
 			if strings.HasPrefix(name, "saolei_") {
 				t.Errorf("planner channel carries saolei tool_call %q — only the player holds desktop tools (FR-010)", name)
+			}
+			if name == "update_strategy" {
+				t.Errorf("planner channel carries update_strategy tool_call %q — the shared strategy tool is gone (spec 039 FR-013)", name)
 			}
 		}
 	}
@@ -945,10 +918,9 @@ func TestTeamPlayerExclusiveControl(t *testing.T) {
 
 // TestTeamPlannerTriggersOncePerGame verifies FR-011/D6: the planner is
 // triggered EXACTLY ONCE per game end (won/lost) and never per move — two
-// consecutive games on the same session produce exactly two update_strategy
-// reviews (one per game), and a single game never repeats the trigger
-// (the graph clears gameEnded after the planner node — team-graph-contract.md
-// §2.2/§4).
+// consecutive games on the same session produce exactly two review inputs
+// (one per game), and a single game never repeats the trigger (the graph
+// clears gameEnded after the planner node — team-graph-contract.md §2.2/§4).
 func TestTeamPlannerTriggersOncePerGame(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -957,15 +929,15 @@ func TestTeamPlannerTriggersOncePerGame(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: game 1 — init recognizes an in-progress board, the first click's
-	// reply is a terminal lost board (the move fires onGameEnd → planner).
+	// when: game 1 — init recognizes an in-progress board, the first operate
+	// click's reply is a terminal lost board (the move fires onGameEnd →
+	// planner).
 	frames1 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
-	// then: the planner triggered exactly once (FR-011 — not per move; the
-	// in-game cell rejections on the terminal board never re-trigger it).
-	if got := countUpdateStrategyCalls(frames1); got != 1 {
-		t.Errorf("game 1: update_strategy calls = %d, want exactly 1 (FR-011/D6)", got)
+	// then: the planner triggered exactly once (FR-011 — not per move).
+	if got := countPlannerReviewFrames(frames1); got != 1 {
+		t.Errorf("game 1: planner review frames = %d, want exactly 1 (FR-011/D6)", got)
 	}
 
 	// when: game 2 on the same session (a second turn, same fixture boards).
@@ -973,127 +945,152 @@ func TestTeamPlannerTriggersOncePerGame(t *testing.T) {
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: exactly one more planner trigger — one per game, accumulated.
-	if got := countUpdateStrategyCalls(frames2); got != 1 {
-		t.Errorf("game 2: update_strategy calls = %d, want exactly 1 (one per game — FR-011)", got)
+	if got := countPlannerReviewFrames(frames2); got != 1 {
+		t.Errorf("game 2: planner review frames = %d, want exactly 1 (one per game — FR-011)", got)
 	}
 	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
 	total := 0
 	for _, m := range plannerLmr.GetMessages() {
-		for _, name := range messageToolCallNames(m) {
-			if name == "update_strategy" {
-				total++
-			}
+		if strings.Contains(messageText(m), reviewInputPrefix) {
+			total++
 		}
 	}
 	if total != 2 {
-		t.Errorf("planner partition total update_strategy calls = %d, want 2 (one per game across two games)", total)
+		t.Errorf("planner partition total review inputs = %d, want 2 (one per game across two games)", total)
 	}
 }
 
-// TestTeamStrategyPersistsAcrossGames verifies FR-013/FR-014/FR-015: the
-// strategy written by the planner's update_strategy call persists across
-// games of the SAME session (the StrategyStore key is the session id) and is
-// isolated between sessions.
-//
-// Black-box note: the strategy is injected into the player/planner prompts
-// as a SystemMessage by the graph nodes (player.ts/planner.ts, FR-014/FR-015)
-// and fake-LLM only keyword-matches the LAST user message, so the injected
-// content itself is not directly observable from this layer. In particular,
-// quickstart §2.1's `strategy-shared-persistent` expectation — "下一局
-// player 作为当前态势读取" — is NOT directly verified here: the player's
-// read of the persisted strategy is only exercised indirectly (the player
-// run completes normally and the game flow proceeds). The observable
-// contract asserted instead: (1) the update_strategy tool_call carries the
-// fixture's strategy content verbatim (args_json — the write happened),
-// (2) the planner keeps triggering across games (the strategy layer stays
-// healthy), and (3) a second session's games are independent (per-session
-// namespace — FR-013).
-func TestTeamStrategyPersistsAcrossGames(t *testing.T) {
+// TestTeamMemoryPersistsAcrossGames verifies the planner's long-term memory
+// flow (specs/039-planner-memory-calibration FR-006/FR-008): the `memory`
+// tool calls made during the review persist in the memory SERVICE (not the
+// checkpoint) across games of the SAME session — verified through the
+// gateway's public HTTP entry (ListMemories) — and are isolated per session
+// (FR-012 resource scope templates/{template}/sessions/{session}/memories/...).
+// The second game's batch add dedupes (hermes "no duplicate added" — FR-008),
+// so the entries are never duplicated.
+func TestTeamMemoryPersistsAcrossGames(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
 
-	profileID := fmt.Sprintf("team-strat-%s", uniqueSuffix())
+	profileID := fmt.Sprintf("team-mem-%s", uniqueSuffix())
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileID, "gpt-4", "gpt-4")
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: game 1 — init recognizes an in-progress board, the first click's
-	// reply is a terminal lost board (planner writes the strategy).
+	// when: game 1 — init recognizes an in-progress board, the first operate
+	// click's reply is a terminal lost board (the planner writes memory via
+	// the memory tool's batch add).
 	frames1 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
-	// then: the update_strategy tool_call carried the fixture content
-	// verbatim (the write argument — FR-012).
-	foundStrategy := false
+	// then: the memory tool_call chain ran the fixture's deterministic forms —
+	// the BATCH add carrying both fixture entries (FR-008 operations form —
+	// the write argument) plus the two SINGLE-OP replace calls (FR-008 allows
+	// single-op OR batch; the 0-hit / multi-hit old_text locators). Only the
+	// batch call must carry the fixture entries; the replaces carry their own
+	// locator contents.
+	foundBatch := false
 	for _, f := range frames1 {
 		for _, p := range frameMessageParts(f).GetParts() {
-			if tc := p.GetToolCall(); tc != nil && tc.GetName() == "update_strategy" {
-				if !strings.Contains(tc.GetArgsJson(), expectedPlannerStrategyText) {
-					t.Errorf("update_strategy args_json = %q, want to contain %q", tc.GetArgsJson(), expectedPlannerStrategyText)
+			tc := p.GetToolCall()
+			if tc == nil || tc.GetName() != "memory" {
+				continue
+			}
+			args := tc.GetArgsJson()
+			if strings.Contains(args, "operations") {
+				// The batch add form (FR-008 — operations array): the
+				// fixture's two entries are the add contents.
+				if !strings.Contains(args, expectedPlannerMemoryE1) || !strings.Contains(args, expectedPlannerMemoryE2) {
+					t.Errorf("memory batch args_json = %q, want to contain both fixture entries %q / %q",
+						args, expectedPlannerMemoryE1, expectedPlannerMemoryE2)
 				}
-				foundStrategy = true
+				foundBatch = true
+				continue
+			}
+			// The single-op replace form (FR-008 — action + old_text +
+			// content): the 0-hit / multi-hit old_text locator calls.
+			if !strings.Contains(args, `"action":"replace"`) || !strings.Contains(args, "old_text") {
+				t.Errorf("memory tool_call args_json = %q, want the single-op replace form (action/old_text/content — FR-008)", args)
 			}
 		}
 	}
-	if !foundStrategy {
-		t.Fatal("no update_strategy tool_call frame seen in game 1 — the planner did not write a strategy")
+	if !foundBatch {
+		t.Fatal("no memory batch add tool_call frame seen in game 1 — the planner did not write memory")
 	}
 
-	// then: the planner's update_strategy tool loop closed with the
-	// fake-LLM terminal text (sample_update_strategy_tools.yaml
-	// update-strategy-success-text) — the planner turn ended deterministically
-	// after the write.
-	foundPlannerText := false
-	for _, f := range frames1 {
-		if f.GetAgent() != "planner" || !frameHasText(f) {
-			continue
-		}
-		if strings.Contains(frameText(f), expectedPlannerUpdateText) {
-			foundPlannerText = true
-		}
+	// then: the entries are PERSISTED in the memory service (agent-side
+	// conversion → CreateMemory through the gateway; FR-006 — durable
+	// storage, not the checkpoint). The memory_ids are content digests
+	// (generateMemoryId), so the ListMemories order is compared as a set.
+	contents := listMemoryContents(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	if len(contents) != 2 {
+		t.Fatalf("ListMemories after game 1 = %d entries, want 2 (the batch add wrote both fixture entries)", len(contents))
 	}
-	if !foundPlannerText {
-		t.Errorf("no planner text frame containing %q — the update_strategy tool loop did not close deterministically",
-			expectedPlannerUpdateText)
+	if !slices.Contains(contents, expectedPlannerMemoryE1) || !slices.Contains(contents, expectedPlannerMemoryE2) {
+		t.Errorf("ListMemories contents = %q, want both fixture entries %q and %q", contents, expectedPlannerMemoryE1, expectedPlannerMemoryE2)
 	}
 
-	// when: game 2 on the same session — the strategy written in game 1
-	// stays readable (the planner's system context re-reads it per entry,
-	// FR-014) and the flow completes normally.
+	// when: game 2 on the same session — the batch add dedupes (equivalent
+	// content already present = success, hermes "no duplicate added" —
+	// FR-008), so "applied 0 operation(s)" and the entries stay unique.
 	frames2 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
-	if got := countUpdateStrategyCalls(frames2); got != 1 {
-		t.Errorf("game 2: update_strategy calls = %d, want exactly 1 (strategy layer healthy after game 1)", got)
+	foundDedupe := false
+	for _, f := range frames2 {
+		for _, p := range frameMessageParts(f).GetParts() {
+			if tr := p.GetToolResult(); tr != nil && strings.Contains(tr.GetMessage(), "memory: applied 0 operation(s)") {
+				foundDedupe = true
+			}
+		}
+	}
+	if !foundDedupe {
+		t.Error("game 2: no 'memory: applied 0 operation(s)' tool_result — the duplicate add was not deduped (FR-008)")
+	}
+	contents = listMemoryContents(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	if len(contents) != 2 {
+		t.Errorf("ListMemories after game 2 = %d entries, want 2 (no duplicates — FR-008)", len(contents))
 	}
 
-	// when: a SECOND session runs its own game.
+	// when: a SECOND session runs its own game (fresh memory scope).
 	otherSessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileID+"-b", "gpt-4", "gpt-4")
-	connB := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, otherSessionID)
+
+	// then: the fresh session's memory scope is EMPTY before its first game
+	// (per-session resource scope — FR-012).
+	if got := len(listMemoryContents(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, otherSessionID)); got != 0 {
+		t.Errorf("fresh session ListMemories = %d entries, want 0 (per-session memory scope — FR-012)", got)
+	}
+	connB := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, otherSessionID)
 	defer connB.Close()
 	framesB := playTeamGameUntilWait(t, connB, otherSessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
-	// then: the second session's game is independent (its planner triggers
-	// normally — the per-session strategy namespace is isolated, FR-013).
-	if got := countUpdateStrategyCalls(framesB); got != 1 {
-		t.Errorf("second session: update_strategy calls = %d, want exactly 1 (per-session strategy isolation — FR-013)", got)
+	// then: the second session's game wrote ITS OWN entries (the planner
+	// triggered normally and the memory flow is healthy).
+	if got := countPlannerReviewFrames(framesB); got != 1 {
+		t.Errorf("second session: planner review frames = %d, want exactly 1 (per-session memory isolation — FR-012)", got)
+	}
+	if got := len(listMemoryContents(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, otherSessionID)); got != 2 {
+		t.Errorf("second session ListMemories = %d entries, want 2 (its own memory scope — FR-012)", got)
 	}
 }
 
-// TestTeamRefreshClearsShortTermKeepsStrategy verifies FR-018/D8: RefreshTeam
-// clears the session's SHORT-TERM memory (both per-agent message channels —
-// ListMessages partitions read empty afterwards) while the long-term
-// strategy is unaffected — the next game's planner still triggers and the
-// strategy flow continues.
-func TestTeamRefreshClearsShortTermKeepsStrategy(t *testing.T) {
+// TestTeamRefreshClearsShortTermKeepsMemory verifies FR-018/D8 (039 contract
+// §7): RefreshTeam clears the session's SHORT-TERM memory (both per-agent
+// message channels — ListMessages partitions read empty afterwards) while
+// the long-term memory — the entries in the memory service — is unaffected:
+// the next game's planner still triggers and the memory flow continues.
+func TestTeamRefreshClearsShortTermKeepsMemory(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
 
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-refresh-"+uniqueSuffix(), "gpt-4", "gpt-4")
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// given: one full game so both channels hold messages (player + planner).
+	// given: one full game so both channels hold messages (player + planner)
+	// and the memory service holds the fixture entries.
 	playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player").GetMessages()); got == 0 {
@@ -1102,8 +1099,12 @@ func TestTeamRefreshClearsShortTermKeepsStrategy(t *testing.T) {
 	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner").GetMessages()); got == 0 {
 		t.Fatal("precondition: planner partition is empty before RefreshTeam — the planner did not trigger")
 	}
+	if got := len(listMemoryContents(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)); got != 2 {
+		t.Fatalf("precondition: memory entries = %d, want 2 (the review wrote them)", got)
+	}
 
-	// when: RefreshTeam (FR-018 — clears short-term memory).
+	// when: RefreshTeam (FR-018 — clears short-term memory; 039 contract §7
+	// also clears the pendingInstruction slot).
 	refreshTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
 	// then: both partitions are empty (the channels were cleared).
@@ -1114,13 +1115,16 @@ func TestTeamRefreshClearsShortTermKeepsStrategy(t *testing.T) {
 		t.Errorf("planner partition after RefreshTeam = %d messages, want 0 (FR-018)", got)
 	}
 
-	// then: the strategy is unaffected — the next game still triggers the
-	// planner (which reads the persisted strategy as its system context,
-	// FR-014) and the whole flow completes.
+	// then: the long-term memory is unaffected — the entries stay in the
+	// memory service (FR-006 — durable storage, not the checkpoint) and the
+	// next game still triggers the planner and the memory flow completes.
+	if got := len(listMemoryContents(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)); got != 2 {
+		t.Errorf("memory entries after RefreshTeam = %d, want 2 (long-term memory survived — FR-006/039 contract §7)", got)
+	}
 	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
-	if got := countUpdateStrategyCalls(frames); got != 1 {
-		t.Errorf("post-refresh game: update_strategy calls = %d, want exactly 1 (strategy survived RefreshTeam — FR-018)", got)
+	if got := countPlannerReviewFrames(frames); got != 1 {
+		t.Errorf("post-refresh game: planner review frames = %d, want exactly 1 (memory survived RefreshTeam — FR-018)", got)
 	}
 }
 
@@ -1134,7 +1138,10 @@ func TestTeamRefreshClearsShortTermKeepsStrategy(t *testing.T) {
 // produced a streamEvents protocol event, specs/031-team-template-mode/
 // bug-analysis.md Issue 2). The reloaded planner partition carries the
 // identical content, proving the live and history paths are consistent
-// (FR-002/FR-003 — the desktop dedups by frameId/messageId).
+// (FR-002/FR-003 — the desktop dedups by frameId/messageId). The 039 update
+// (spec 039-planner-memory-calibration FR-004): the gameLog renders
+// saolei_operate entries with their full operation lists — the fixture batch
+// [click{3,4}, click{5,6}] stopped at op 1 by the terminal reply.
 func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -1144,7 +1151,7 @@ func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
 	defer conn.Close()
 
 	// when: one full game — init recognizes an in-progress board, the first
-	// click's reply is a terminal lost board (planner triggered).
+	// operate click's reply is a terminal lost board (planner triggered).
 	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
@@ -1157,12 +1164,15 @@ func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
 	}
 
 	// then: the live content carries the full game process — each step's
-	// tool, coordinates and status, plus the board renders (FR-002 — the
+	// tool, operations and status, plus the board renders (FR-002 — the
 	// review input renders every gameLog entry, specs/036-team-mode-bugfix/
-	// contracts/team-graph-fix-contract.md §2.2).
+	// contracts/team-graph-fix-contract.md §2.2). The 039 batch render is
+	// ONE entry carrying BOTH operations of the operate call (FR-004 — the
+	// batch stopped at op 1 on the terminal reply, but the recorded entry
+	// carries the full operation list).
 	for _, want := range []string{
 		"1. saolei_init → playing",
-		"2. saolei_click(3, 4) → lost",
+		"2. saolei_operate(click(3,4), click(5,6)) → lost",
 		"3. (game-end) → lost",
 		"board size 16*16",
 	} {
@@ -1183,21 +1193,218 @@ func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
 	}
 }
 
+// TestTeamInitInstructionScenario verifies the team-INIT calibration
+// scenario (specs/039-planner-memory-calibration US3 — FR-015/R2, contract
+// §2.3/§6): UpdateTeam(allow_missing=true) materialization asynchronously
+// triggers the one-shot initInstruction turn, whose prompt-guided planner
+// call (sample_init_instruction.yaml keyword "团队初始化") writes a
+// no-game-history instruction into the pendingInstruction slot — WITHOUT
+// invoking the player. The first user message's player activation then
+// consumes the slot: the instruction is injected into the player channel
+// (delivered with the first activation — FR-015 "随首次激活注入"), the
+// slot is cleared, and the greeting still matches deterministically. The
+// player partition order pins the delivery: user text → instruction → player
+// response.
+func TestTeamInitInstructionScenario(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-init-instr-"+uniqueSuffix(), "gpt-4", "gpt-4")
+
+	// given: connect after materialization — the one-shot async
+	// initInstruction turn has been triggered by the UpdateTeam (R2 — 物化
+	// 即返回, 不等 LLM) and the TurnLoop awaits it before the first user
+	// turn (session-team.ts runTeamTurn — FR-015: 异步产出期间到达的 user
+	// message 排在指令之后).
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	// when: the first user message (the player's first activation).
+	sendText(t, conn, sessionID, "hello from first activation")
+	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasText(f) })
+	if textFrame == nil {
+		t.Fatal("did not receive a text response for the first user turn")
+	}
+	if !strings.Contains(frameText(textFrame), expectedGreetingText) {
+		t.Errorf("first-activation text = %q, want to contain %q (the greeting keyword still matches)", frameText(textFrame), expectedGreetingText)
+	}
+	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameWait(f) != nil })
+
+	// then: the player partition carries the init instruction — injected
+	// with the first activation, between the user text and the player's
+	// response (FR-015 — 与首次激活一同注入, 累积可引用). The playerMessages
+	// channel order is user message first, instruction second: the user
+	// message lands in the channel as the turn input, and the player node —
+	// on its first activation — consumes pendingInstruction and appends it
+	// as a HumanMessage to the channel that already carries the user message
+	// (team/player.ts entry + write-back, contract §2.1/§6). The TurnLoop
+	// queue keeps the instruction ahead of any mid-init user input in the
+	// player's INPUT order (session-team.ts runTeamTurn awaits the init
+	// turn; session-team.test.ts "queues a user message arriving during the
+	// async init AFTER the instruction"), but the persisted channel order —
+	// which the assertion below pins — is user message before instruction.
+	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	userIdx := messageIndex(playerLmr.GetMessages(), "hello from first activation")
+	instructionIdx := messageIndex(playerLmr.GetMessages(), expectedInitInstructionText)
+	responseIdx := messageIndex(playerLmr.GetMessages(), expectedGreetingText)
+	if userIdx == -1 {
+		t.Error("player partition did not surface the first user message")
+	}
+	if instructionIdx == -1 {
+		t.Errorf("player partition did not surface the init instruction %q — the pendingInstruction was not delivered with the first activation (FR-015)", expectedInitInstructionText)
+	}
+	if responseIdx == -1 {
+		t.Error("player partition did not surface the greeting response")
+	}
+	if instructionIdx != -1 && userIdx != -1 && instructionIdx < userIdx {
+		t.Errorf("init instruction index %d precedes the user message index %d — the instruction must be injected WITH the activation, after the turn input lands in the channel (FR-015)", instructionIdx, userIdx)
+	}
+	if instructionIdx != -1 && responseIdx != -1 && instructionIdx > responseIdx {
+		t.Errorf("init instruction index %d follows the response index %d — the instruction must precede the player's output of the same activation (FR-015)", instructionIdx, responseIdx)
+	}
+
+	// then: the player partition holds NO instruct_player tool_call (the
+	// player does not hold the tool — FR-013/FR-009) and no memory call.
+	for _, m := range playerLmr.GetMessages() {
+		for _, name := range messageToolCallNames(m) {
+			if name == "instruct_player" || name == "memory" {
+				t.Errorf("player partition carries tool_call %q — calibration/memory tools are planner-only (FR-009/FR-013)", name)
+			}
+		}
+	}
+
+	// then: the planner partition carries the init turn's write-back — the
+	// instruct_player tool_call with the fixture's init instruction content
+	// (the initInstruction node ran, produced the instruction, and the
+	// planner channel persisted it — FR-015). No other scenario has run yet,
+	// so the init call is the only instruct_player call in the partition.
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	initCall := findInstructPlayerCallContent(plannerLmr.GetMessages(), expectedInitInstructionText)
+	if initCall != expectedInitInstructionText {
+		t.Errorf("planner partition instruct_player content = %q, want %q (the init scenario produced the pinned initial instruction)", initCall, expectedInitInstructionText)
+	}
+}
+
+// TestTeamReviewInstructionOrder verifies the normal-game-end calibration
+// scenario (specs/039-planner-memory-calibration US3 — FR-014/FR-017): after
+// the game-ending move, the planner reviews (plannerMessages — invisible to
+// the player) and MAY send an instruction via instruct_player; the fixture
+// chain always sends one, and it MUST land in the player channel IMMEDIATELY
+// AFTER the game-ending tool_result and BEFORE the player's next output — the
+// visible order tool_calling → tool_result → planner 指令 → player message
+// output (FR-017). The planner's review content (memory calls, review input)
+// stays in the planner partition.
+func TestTeamReviewInstructionOrder(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-instr-order-"+uniqueSuffix(), "gpt-4", "gpt-4")
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	// when: one full game — the first operate click's terminal reply ends
+	// the game (the batch stops at op 1), the planner reviews and sends the
+	// review instruction (FR-014 — the fixture chain decides to send).
+	playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
+
+	// then: the player partition order pins FR-017 — the game-ending
+	// tool_result ("stopped at op 1 (lost)") is IMMEDIATELY followed by the
+	// review instruction, which precedes the player's post-planner output
+	// (the next game's init tool_call).
+	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	endResultIdx := messageIndex(playerLmr.GetMessages(), "stopped at op 1 (lost)")
+	instructionIdx := messageIndex(playerLmr.GetMessages(), expectedReviewInstructionText)
+	nextInitIdx := -1
+	for i := instructionIdx + 1; i < len(playerLmr.GetMessages()); i++ {
+		if messageHasToolCall(playerLmr.GetMessages()[i], "saolei_init") {
+			nextInitIdx = i
+			break
+		}
+	}
+	if endResultIdx == -1 {
+		t.Fatalf("player partition did not surface the game-ending operate tool_result 'stopped at op 1 (lost)'")
+	}
+	if instructionIdx == -1 {
+		t.Fatalf("player partition did not surface the review instruction %q (FR-014/FR-017)", expectedReviewInstructionText)
+	}
+	if instructionIdx != endResultIdx+1 {
+		t.Errorf("review instruction index = %d, want %d (immediately after the game-ending tool_result — FR-017 order)", instructionIdx, endResultIdx+1)
+	}
+	if nextInitIdx == -1 {
+		t.Error("player partition did not surface the post-instruction saolei_init output (the player's next activation)")
+	} else if instructionIdx > nextInitIdx {
+		t.Errorf("review instruction index %d follows the player's next saolei_init output index %d — the instruction must precede the player's next output (FR-017)", instructionIdx, nextInitIdx)
+	}
+
+	// then: the planner's review stayed INVISIBLE to the player — the player
+	// partition carries no memory tool_call (FR-017: 复盘在 plannerMessages,
+	// 对 player 不可见).
+	for _, m := range playerLmr.GetMessages() {
+		for _, name := range messageToolCallNames(m) {
+			if name == "memory" {
+				t.Errorf("player partition carries memory tool_call %q — the planner's review must stay invisible to the player (FR-017)", name)
+			}
+		}
+	}
+
+	// then: the planner partition carries the review chain — the memory
+	// tool_calls (batch add + old_text replaces) and the instruct_player
+	// call whose content is the pinned review instruction (FR-008/FR-014).
+	// The partition ALSO carries the async init turn's instruct_player
+	// write-back (FR-015), so the review call is matched by content, not by
+	// position.
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	if got := countMemoryCallsInMessages(plannerLmr.GetMessages()); got != 3 {
+		t.Errorf("planner partition memory tool_calls = %d, want 3 (batch add + 0-hit + multi-hit — FR-008)", got)
+	}
+	reviewCall := findInstructPlayerCallContent(plannerLmr.GetMessages(), expectedReviewInstructionText)
+	if reviewCall != expectedReviewInstructionText {
+		t.Errorf("planner partition instruct_player content = %q, want %q (the review scenario produced the pinned instruction)", reviewCall, expectedReviewInstructionText)
+	}
+}
+
+// countMemoryCallsInMessages returns the number of `memory` tool_call
+// MessageParts across the given Messages (the partition view of
+// countMemoryCalls).
+func countMemoryCallsInMessages(messages []*game.Message) int {
+	count := 0
+	for _, m := range messages {
+		for _, p := range m.GetContent().GetParts() {
+			if tc := p.GetToolCall(); tc != nil && tc.GetName() == "memory" {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // TestTeamCompressionAtFiveGames verifies US2 (specs/037-saolei-team-optimize/
-// spec.md FR-006..FR-012/FR-015): after the 5th game's planner returns, the
-// conditional edge routes to the compress node — each short-term channel is
-// replaced by exactly ONE summary agent message (FR-008), live summary frames
-// are emitted for both tabs (FR-011/SC-004), the player STOPS (FR-010 — the
-// turn ends without opening another game), the strategy (long-term memory)
-// survives (FR-009 — game 6 still triggers the planner from the summary
-// context), and the live summary frame's frame_id equals the reloaded summary
-// message's message_id (the desktop dedup anchor, data-model.md §4).
+// spec.md FR-006..FR-012/FR-015) + the 039 compact-instruction scenario
+// (specs/039-planner-memory-calibration FR-016): after the 5th game's
+// planner returns, the conditional edge routes to the compress node — each
+// short-term channel is replaced by exactly ONE summary agent message
+// (FR-008), live summary frames are emitted for both tabs (FR-011/SC-004),
+// the player STOPS (FR-010 — the turn ends without opening another game),
+// the long-term memory (memory service entries + frozen snapshot) survives
+// (FR-009 — game 6 still triggers the planner from the summary context), and
+// the live summary frame's frame_id equals the reloaded summary message's
+// message_id (the desktop dedup anchor, data-model.md §4). The
+// postCompactInstruction node then writes the no-game-history compact
+// instruction (sample_compact_instruction.yaml keyword "上下文刚被压缩")
+// into the pendingInstruction slot — the turn ends WITHOUT the player being
+// invoked (FR-016, 037"压缩后自动停下"一致), and the instruction is delivered
+// with the player's NEXT activation (game 6).
 func TestTeamCompressionAtFiveGames(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
 
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-compress-"+uniqueSuffix(), "gpt-4", "gpt-4")
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	initScreenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
@@ -1207,8 +1414,8 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 	// fires (FR-006) and the player keeps looping back after each planner.
 	for i := 0; i < 4; i++ {
 		frames := playTeamGameUntilWait(t, conn, sessionID, initScreenshot, terminalScreenshot)
-		if got := countUpdateStrategyCalls(frames); got != 1 {
-			t.Fatalf("game %d: update_strategy calls = %d, want 1 (planner trigger precondition)", i+1, got)
+		if got := countPlannerReviewFrames(frames); got != 1 {
+			t.Fatalf("game %d: planner review frames = %d, want 1 (planner trigger precondition)", i+1, got)
 		}
 	}
 
@@ -1221,8 +1428,8 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 	// when: the 5th game ends and the planner returns (counter == 5 — the
 	// conditional edge routes to compress instead of back to player, FR-007).
 	frames5 := playTeamGameUntilWait(t, conn, sessionID, initScreenshot, terminalScreenshot)
-	if got := countUpdateStrategyCalls(frames5); got != 1 {
-		t.Errorf("game 5: update_strategy calls = %d, want exactly 1 (the planner still reviewed the 5th game before compression)", got)
+	if got := countPlannerReviewFrames(frames5); got != 1 {
+		t.Errorf("game 5: planner review frames = %d, want exactly 1 (the planner still reviewed the 5th game before compression)", got)
 	}
 
 	// then: live summary frames were emitted for BOTH channels (FR-011/SC-004)
@@ -1246,9 +1453,12 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 		t.Error("no live planner summary frame after game 5 (FR-011)")
 	}
 
-	// then: each channel was shrunk to exactly ONE summary message (FR-008)
-	// and the player STOPPED — no new game was opened after the compression,
-	// so the player partition holds only the summary (FR-010).
+	// then: the PLAYER channel was shrunk to exactly ONE summary message
+	// (FR-008) and the player STOPPED — no new game was opened after the
+	// compression, so the player partition holds only the summary (FR-010).
+	// The compact instruction is NOT in the player partition yet — it sits in
+	// the pendingInstruction slot, delivered with the NEXT activation (FR-016 —
+	// 压缩后 turn 结束, player 停下).
 	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
 	if got := len(playerLmr.GetMessages()); got != 1 {
 		t.Fatalf("player partition after compression = %d messages, want exactly 1 (FR-008/FR-010)", got)
@@ -1256,12 +1466,46 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 	if got := messageText(playerLmr.GetMessages()[0]); !strings.Contains(got, expectedPlayerCompressionSummary) {
 		t.Errorf("player summary message = %q, want to contain %q (FR-008/FR-012)", got, expectedPlayerCompressionSummary)
 	}
+	if strings.Contains(messageText(playerLmr.GetMessages()[0]), expectedCompactInstructionText) {
+		t.Errorf("player summary message = %q — the compact instruction must stay deferred in pendingInstruction, NOT enter the channel at compression (FR-016)", messageText(playerLmr.GetMessages()[0]))
+	}
+	// The PLANNER channel is NOT "exactly 1" after compression: the
+	// postCompactInstruction node (039 Phase 6 — FR-016, contract §2.3) runs
+	// AFTER the compress node and invokes the planner agent again, appending
+	// its full message list to plannerMessages — the same input-included
+	// write-back as the review node (the compact request HumanMessage joins
+	// the channel like the review input, 037 FR-001/FR-003 pattern). The
+	// post-compression planner partition is therefore, in order:
+	//   [0] the compressed summary (FR-008)
+	//   [1] the compact request HumanMessage ("上下文刚被压缩：…")
+	//   [2] the instruct_player tool_call (compact instruction content)
+	//   [3] its tool_result
+	//   [4] the terminal "指令已发送。" text
+	// = 5 messages, with NO memory/saolei calls (the instruction agent holds
+	// only instruct_player, contract §2.3).
 	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
-	if got := len(plannerLmr.GetMessages()); got != 1 {
-		t.Fatalf("planner partition after compression = %d messages, want exactly 1 (FR-008)", got)
+	if got := len(plannerLmr.GetMessages()); got != 5 {
+		t.Fatalf("planner partition after compression = %d messages, want 5 (summary + compact request + instruct_player call/result + final text — FR-008 + 039 FR-016)", got)
 	}
 	if got := messageText(plannerLmr.GetMessages()[0]); !strings.Contains(got, expectedPlannerCompressionSummary) {
 		t.Errorf("planner summary message = %q, want to contain %q (FR-008/FR-012)", got, expectedPlannerCompressionSummary)
+	}
+	if got := messageIndex(plannerLmr.GetMessages(), "上下文刚被压缩"); got == -1 {
+		t.Error("planner partition does not carry the compact request HumanMessage — the postCompactInstruction input should join the channel (039 FR-016)")
+	}
+	compactCall := findInstructPlayerCallContent(plannerLmr.GetMessages(), expectedCompactInstructionText)
+	if compactCall != expectedCompactInstructionText {
+		t.Errorf("planner partition instruct_player content = %q, want %q (the compact scenario produced the pinned instruction — FR-016)", compactCall, expectedCompactInstructionText)
+	}
+	if !messagesContainText(plannerLmr.GetMessages(), "指令已发送。") {
+		t.Error("planner partition does not carry the instruct_player final text \"指令已发送。\" — the compact instruction loop did not terminate deterministically")
+	}
+	for _, m := range plannerLmr.GetMessages() {
+		for _, name := range messageToolCallNames(m) {
+			if name == "memory" || strings.HasPrefix(name, "saolei_") {
+				t.Errorf("planner partition carries tool_call %q after compression — the instruction agent holds only instruct_player (contract §2.3)", name)
+			}
+		}
 	}
 
 	// then: the live summary frame's frame_id equals the reloaded summary
@@ -1281,85 +1525,115 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 	// when: a 6th game (user input after compression).
 	frames6 := playTeamGameUntilWait(t, conn, sessionID, initScreenshot, terminalScreenshot)
 
-	// then: the strategy (long-term memory, StrategyStore) survived the
-	// compression (FR-009) — the planner still triggers and writes the
-	// strategy content (FR-012)...
-	if got := countUpdateStrategyCalls(frames6); got != 1 {
-		t.Errorf("game 6: update_strategy calls = %d, want exactly 1 (strategy survived compression — FR-009)", got)
+	// then: the long-term memory survived the compression (FR-009) — the
+	// planner still triggers and the memory flow completes (the batch add
+	// dedupes: "applied 0 operation(s)" — FR-008)...
+	if got := countPlannerReviewFrames(frames6); got != 1 {
+		t.Errorf("game 6: planner review frames = %d, want exactly 1 (memory layer survived compression — FR-009)", got)
 	}
-	foundStrategy := false
+	if got := countMemoryCalls(frames6); got != 3 {
+		t.Errorf("game 6: memory calls = %d, want exactly 3 (the review chain ran after compression — FR-008)", got)
+	}
+	foundDedupe := false
 	for _, f := range frames6 {
 		for _, p := range frameMessageParts(f).GetParts() {
-			if tc := p.GetToolCall(); tc != nil && tc.GetName() == "update_strategy" && strings.Contains(tc.GetArgsJson(), expectedPlannerStrategyText) {
-				foundStrategy = true
+			if tr := p.GetToolResult(); tr != nil && strings.Contains(tr.GetMessage(), "memory: applied 0 operation(s)") {
+				foundDedupe = true
 			}
 		}
 	}
-	if !foundStrategy {
-		t.Error("game 6: no update_strategy tool_call carrying the strategy content — the strategy layer did not survive compression (FR-009/FR-012)")
+	if !foundDedupe {
+		t.Error("game 6: no 'memory: applied 0 operation(s)' tool_result — the entries did not survive compression (FR-009/FR-008)")
+	}
+	if got := len(listMemoryContents(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)); got != 2 {
+		t.Errorf("memory entries after game 6 = %d, want 2 (long-term memory survived compression — FR-009)", got)
 	}
 
-	// ...and the player resumed from the summary context — the player
-	// partition grew beyond the single summary message (FR-010/SC-003).
-	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player").GetMessages()); got <= 1 {
+	// ...the compact instruction was delivered with the player's NEXT
+	// activation (FR-016): the player partition grew beyond the single
+	// summary message and now carries the compact instruction AFTER the
+	// summary.
+	playerLmr = listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	if got := len(playerLmr.GetMessages()); got <= 1 {
 		t.Errorf("player partition after game 6 = %d messages, want > 1 (player resumed with the summary context — FR-010)", got)
+	}
+	compactIdx := messageIndex(playerLmr.GetMessages(), expectedCompactInstructionText)
+	if compactIdx == -1 {
+		t.Errorf("player partition after game 6 did not surface the compact instruction %q — the pendingInstruction was not delivered with the next activation (FR-016)", expectedCompactInstructionText)
+	} else if compactIdx < 1 {
+		t.Errorf("compact instruction index = %d — it must be delivered with the next activation, AFTER the compressed summary (FR-016)", compactIdx)
 	}
 }
 
-// TestTeamPlannerPromptToolDescriptions verifies US3 (specs/037-saolei-team-
-// optimize/spec.md FR-016/FR-017/FR-018): the planner's system prompt
-// carries the player tools' NAME + DESCRIPTION section, while the planner's
-// actual tool set stays update_strategy-only.
+// TestTeamPlannerToolSurfaceAfterStrategyRemoval verifies the planner's tool
+// surface after the shared-strategy removal (specs/039-planner-memory-
+// calibration US2/US3 — FR-008/FR-009/FR-013/FR-018): the planner's actual
+// tool set is exactly `memory` + `instruct_player` — it never calls a
+// saolei_* tool (the description injection added text, NOT tools, FR-018)
+// and never calls update_strategy (the StrategyStore is gone, FR-013); the
+// player never calls memory/instruct_player (FR-009).
 //
-// The FR-016 half (prompt content) is verified via LOG/TRACE: the deployed
-// fake-llm logs every request's system messages at INFO ("system prompt
-// received" — projects/game/fake-llm/service/handler.go logSystemPrompts),
-// so after this test drives a game an operator can query the fake-llm logs
-// (signoz) for the injected section: "## Player 可用工具" followed by the
-// four GAME-VISIBLE player tools (saolei_init/saolei_click/saolei_flag/
-// saolei_chord_click) with their descriptions — the read-only saolei_remain
-// is intentionally excluded (it leaves no gameLog trace, so the planner
-// cannot observe its use — specs/037-saolei-team-optimize/spec.md FR-016
-// refine). The keyword matcher only reads user
-// text (README.md §4), so the system content is unobservable in the response
-// stream — the log is the verification channel the task requires.
-//
-// This test asserts the observable half — FR-018: the planner never calls a
-// saolei_* tool (only update_strategy), proving the injection added
-// descriptions, NOT tools.
-func TestTeamPlannerPromptToolDescriptions(t *testing.T) {
+// The prompt-content half (US3 FR-016 — the "## Player 可用工具" description
+// section listing saolei_operate + click/flag/chord; 039 FR-020 — the memory
+// skill body injected via appendSkillBodyToPrompt) is NOT directly
+// observable from the WS/HTTP surface: the keyword matcher only reads user
+// text (testplan/README.md §4). It is verified via LOG/TRACE instead — the
+// deployed fake-llm logs every request's system messages at INFO ("system
+// prompt received" — projects/game/fake-llm/service/handler.go
+// logSystemPrompts), so after this test drives a game an operator can query
+// the fake-llm logs (signoz, trace_id printed by traceContext) for the
+// injected memory skill body and the player-tool description section — the
+// same verification channel the 037 test documented
+// (specs/037-saolei-team-optimize FR-016).
+func TestTeamPlannerToolSurfaceAfterStrategyRemoval(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
 
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-tools-"+uniqueSuffix(), "gpt-4", "gpt-4")
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// when: one full game — the planner's createAgent request (carrying the
-	// system prompt with the tool-description section) is sent to fake-llm.
+	// system prompt with the memory skill body + the tool-description
+	// section) is sent to fake-llm.
 	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
-	// then: every planner tool_call in the live stream is update_strategy —
-	// no player tool was injected into the planner's tool set (FR-018).
+	// then: every planner tool_call in the live stream is memory or
+	// instruct_player — no player tool was injected into the planner's tool
+	// set (FR-018) and no update_strategy remains (FR-013).
 	for _, f := range frames {
 		if f.GetAgent() != "planner" {
 			continue
 		}
 		for _, p := range frameMessageParts(f).GetParts() {
-			if tc := p.GetToolCall(); tc != nil && tc.GetName() != "update_strategy" {
-				t.Errorf("planner live tool_call %q — the planner MUST hold only update_strategy (FR-018)", tc.GetName())
+			if tc := p.GetToolCall(); tc != nil {
+				switch tc.GetName() {
+				case "memory", "instruct_player":
+				default:
+					t.Errorf("planner live tool_call %q — the planner MUST hold only memory + instruct_player (spec 039 FR-008/FR-013/FR-018)", tc.GetName())
+				}
 			}
 		}
 	}
 
-	// then: the reloaded planner partition carries no saolei tool_call either
-	// (FR-018 — the description injection did not add tools).
+	// then: the reloaded planner partition carries no saolei / update_strategy
+	// tool_call either (FR-018/FR-013), and the player partition carries no
+	// memory / instruct_player tool_call (FR-009).
 	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
 	for _, m := range plannerLmr.GetMessages() {
 		for _, name := range messageToolCallNames(m) {
-			if strings.HasPrefix(name, "saolei_") {
-				t.Errorf("planner partition carries saolei tool_call %q — the planner MUST hold only update_strategy (FR-018)", name)
+			if strings.HasPrefix(name, "saolei_") || name == "update_strategy" {
+				t.Errorf("planner partition carries tool_call %q — the planner MUST hold only memory + instruct_player (spec 039 FR-013/FR-018)", name)
+			}
+		}
+	}
+	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	for _, m := range playerLmr.GetMessages() {
+		for _, name := range messageToolCallNames(m) {
+			if name == "memory" || name == "instruct_player" {
+				t.Errorf("player partition carries tool_call %q — memory/calibration tools are planner-only (FR-009)", name)
 			}
 		}
 	}
@@ -1372,9 +1646,10 @@ func TestTeamPlannerPromptToolDescriptions(t *testing.T) {
 // reloaded planner partition.
 //
 // Expected values for the fixture pair (saolei_1 init → saolei_5 terminal):
-//   - operationCount = 1 — exactly one successful cell op (the first click
-//     whose post-dispatch recognition is terminal; init/re-init and the
-//     post-terminal rejected clicks never fire onMove — FR-027).
+//   - operationCount = 1 — exactly one successful cell op (the first op of
+//     the operate batch whose post-dispatch recognition is terminal; the
+//     batch stops at op 1 — init/re-init and skipped ops never fire onMove —
+//     FR-027/FR-002).
 //   - correctFlags = 40 − 42 − 1 = −3 — the init board saolei_1.png's mine
 //     counter decodes to 40 (verified with `saolei-recognize --json`); the
 //     terminal loss board saolei_5.png has 42 MINE + 1 HIT_MINE cells
@@ -1396,7 +1671,8 @@ func TestTeamReviewInputGameStats(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: one full game (init in-progress → first click terminal loss).
+	// when: one full game (init in-progress → first operate click terminal
+	// loss).
 	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 

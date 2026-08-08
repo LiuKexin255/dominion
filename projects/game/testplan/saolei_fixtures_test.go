@@ -32,8 +32,10 @@ var saoleiBoardInitPNG []byte
 // saoleiBoardRevealedPNG is a real Minesweeper screenshot (9×9, partially
 // revealed — cell (3,4) is the number "1") recognized as an in-progress
 // game. Used by TestAgentSaoleiIllegalMovePreDispatchReject:
-// `saolei_init` recognizes this board, then `saolei_click(3,4)` is rejected
-// pre-dispatch as `cell_already_revealed` (FR-015c) — the dispatch never
+// `saolei_init` recognizes this board, then the fixture's `saolei_operate`
+// batch ops (3,4)/(5,6) are skipped as no-ops (`cell_already_revealed` —
+// FR-002 harmless no-op skip, the 039 successor of the 025
+// `cell_already_revealed` pre-dispatch rejection) — the dispatch never
 // reaches the desktop.
 //
 //go:embed testdata/saolei_2.png
@@ -71,9 +73,12 @@ var saoleiBoardLossPNG []byte
 //go:embed testdata/saolei_9.png
 var saoleiBoardOverFlagPNG []byte
 
-// saolei cell geometry constants. The fake-LLM fixture drives
-// saolei_click{3,4} then saolei_click{5,6}; their WM_* client-space cell
-// centres per the formula in projects/game/agent/src/mcp/saolei/geometry.ts
+// saolei cell geometry constants. The fake-LLM fixture drives ONE
+// saolei_operate BATCH whose ops are click{3,4} and click{5,6}
+// (spec 039-planner-memory-calibration FR-001 — the merged dual-form tool;
+// sample_saolei_tools.yaml saolei-init-followup-operate); their WM_*
+// client-space cell centres per the formula in
+// projects/game/agent/src/mcp/saolei/geometry.ts
 // (centerX(x) = 24 + x*32 + 16, centerY(y) = 104 + y*32 + 16) are asserted on
 // the dispatched MouseMoveAndClickPart. centerY uses the client-space board
 // top BOARD_ORIGIN_Y_PX = BOARD_ORIGIN_Y_PX_SCREENSHOT(200) − CHROME_OFFSET_Y_PX(96)
@@ -95,10 +100,10 @@ const (
 	saoleiClick2CenterY = 312 // 104 + 6*32 + 16
 )
 
-// expectedSaoleiFinalText is the terminal text fake-LLM returns once the
-// second saolei_click result reaches the model
-// (sample_saolei_tools.yaml saolei-click-5-6-final-text). The test asserts
-// it to prove the whole init→click→click chain completed.
+// expectedSaoleiFinalText is the terminal text fake-LLM returns once
+// the saolei_operate batch result reaches the model
+// (sample_saolei_tools.yaml saolei-operate-final-text). The test asserts
+// it to prove the whole init→operate chain completed.
 const expectedSaoleiFinalText = "Minesweeper sequence complete."
 
 // expectedSaoleiRemainFinalText is the terminal text fake-LLM returns once
