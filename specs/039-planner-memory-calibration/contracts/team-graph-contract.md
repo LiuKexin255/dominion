@@ -29,11 +29,22 @@ const TeamState = Annotation.Root({
 ## 2. 节点与边（更新）
 
 ```text
-START → [initInstruction]（仅 team 初始化触发一次，D10）→ player
+START ──条件边(runInitInstruction?)──→ [initInstruction] ──→ END        （仅 init turn，player 不被 invoke；指令进 pendingInstruction）
+     └──(普通 turn)──→ [player]
  player ──条件(gameEnded≠null)──→ [review] ──条件(gameCounter%5===0)──→ [compress] → [postCompactInstruction] → END
                 │                                       └─ review 非压缩 ──→ player（同 turn 继续）
                 └──(gameEnded=null)──→ END/player
 ```
+
+> **initInstruction 入口为条件边**（Phase 6 实现确认）：START 的条件路由
+> `routeAfterStart` 读 configurable 的 `runInitInstruction` 标记（仅
+> `SessionTeamStore.update` 物化后异步触发的 init turn 携带，§6/R2）——
+> init turn 停在 `initInstruction → END`，**player 不被 invoke**；普通
+> turn（user input）直接 START → player，initInstruction 节点完全不执行
+> （零开销）。此拓扑以 FR-015"**不立即激活 player**"与 §6"player 首次激活
+> = 首次 user message → player invoke"为准——指令进 pending 槽、随首次
+> 激活注入；若按早期图示 `START → initInstruction → player` 直连，init
+> turn 会在指令产出后立即激活 player，与上述强制 FR 矛盾。
 
 ### 2.1 player 节点（更新）
 
