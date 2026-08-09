@@ -10,7 +10,7 @@ For the channel contract governing these behaviors, see [`contracts/realtime-cha
 
 - A running game deployment reachable by the desktop (agent + gateway). Deploy via the testplan skill for large tests (see "Large-test acceptance" below); for local checks, the unit-test suites suffice.
 - A `TeamProfile` configured for the `saolei` template (planner model reachable — the gRPC keepalive fix must be deployed, spec Assumption line 105).
-- The desktop build (`bazel build //projects/game/desktop:desktop_app` or equivalent).
+- The desktop build (`bazel build //projects/game/desktop:desktop` or equivalent).
 
 ## Unit-level checks (fast feedback — run during development)
 
@@ -22,7 +22,7 @@ These belong to the dev tasks (Constitution Principle IV — compile + unit test
 
 **Commands**:
 ```bash
-bazel test //projects/game/agent:agent_test          # session-team/handler/instruction-node unit tests
+bazel test //projects/game/agent:lib_test          # session-team/handler/instruction-node unit tests
 ```
 
 **Expected**: new/updated cases assert —
@@ -40,7 +40,7 @@ bazel test //projects/game/agent:agent_test          # session-team/handler/inst
 bazel test //projects/game/desktop:desktop_test      # app_test.go + view_model_test.go
 ```
 
-**Expected**: new/updated cases (imitate the existing `recvLoop` test pattern, `app_test.go:556-601`) assert —
+**Expected**: new/updated cases (imitate the existing `recvLoop` test pattern, `app_test.go:517-602`) assert —
 - The reader started at `Connect` (after the probe) receives background `messageParts` frames with **no** user turn submitted (US3 / SC-003).
 - A `wait` FlowPart is forwarded to the chatstream but the reader does **not** exit (FR-008); the next frame is still received.
 - `SendUserTurn` does **not** start a second reader (FR-012); a turn's response frames are read by the already-running reader.

@@ -136,7 +136,7 @@ The current `wait` branch returns (`app.go:707-713`). The continuous reader **fo
 | Behavior | Source | Note |
 |---|---|---|
 | Status probe (one-shot, sync, 10s timeout) | `app.go:1677-1720`, `handler.ts:366-395` | Retained verbatim; continuous reader starts **after** it (§3.1). Probe returns IDLE during init (`isRunning` excludes `initInFlight`). |
-| `isRunning` / `isBusy` split | `session-team.ts:392-427` | Already implemented (uncommitted). `isRunning` → probe/typing; `isBusy` → destructive-op gate. This feature MUST NOT regress it (FR-003/FR-007). |
+| `isRunning` / `isBusy` split | `session-team.ts:392-427` | Already implemented, committed on the 040 branch HEAD `868c49b`. `isRunning` → probe/typing; `isBusy` → destructive-op gate. This feature MUST NOT regress it (FR-003/FR-007). |
 | `UpdateTeam` fire-and-forget | `session-team.ts:307-316`, `handler.ts:101-172` | RPC returns immediately after materialization; init delivery is a separate concern via the connection (FR-005). |
 | Destructive-op gating | `handler.ts:258-265` (RefreshTeam), `session-team.ts:839-848` (rebuild) | FAILED_PRECONDITION while `isBusy()` — covers the init turn (FR-007). |
 | Operation execution | `app.go:743-1044`, `app_operation.go` | Reused unchanged by the continuous reader (FR-009). |

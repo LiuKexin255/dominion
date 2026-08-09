@@ -103,7 +103,7 @@ The agent-to-desktop connection should continuously deliver messages in real-tim
 ## Assumptions
 
 - The gRPC keepalive fix (restored keepalive options in the prompt service client) is already deployed, ensuring the init turn's planner model call completes in a timely manner (seconds, not minutes).
-- The `isRunning`/`isBusy` split is already implemented in the working tree (uncommitted at the time of this spec) — this spec formalizes the requirement (FR-003/FR-007).
+- The `isRunning`/`isBusy` split is already implemented and committed on the 040 branch (`040-team-singleton-conformance`, HEAD `868c49b`) — this spec formalizes the requirement (FR-003/FR-007).
 - The existing channel-frame emission mechanism (used by the compress/review planner nodes to push real-time frames during user turns) is the established pattern for real-time frame delivery.
 - The desktop backend's one-shot seed model (history loaded once on stream open, no polling) is retained — the real-time push supplements, not replaces, the seed for history delivery.
 - The desktop frontend's message-identifier dedup mechanism (`renderedMessageIds`) correctly prevents duplicate rendering of pushed frames that were already loaded from history.
