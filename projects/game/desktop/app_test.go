@@ -1008,7 +1008,8 @@ func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 
 // TestConnect_StartsContinuousReaderReceivesBackgroundFrame verifies SC-003
 // and specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-// §3.1 Start (research.md D5): Connect starts the continuous reader after the
+// §3.1 Start (specs/041-realtime-init-push/research.md D5): Connect starts
+// the continuous reader after the
 // status probe, so a background messageParts frame — produced with NO user
 // turn, e.g. the init instruction — is appended to the chat stream
 // automatically (FR-002).
@@ -1095,7 +1096,8 @@ func TestConnect_StartsContinuousReaderReceivesBackgroundFrame(t *testing.T) {
 // desktop half (specs/041-realtime-init-push/spec.md FR-003, SC-002;
 // contracts/realtime-channel-contract.md §3.2/§2.4): when the continuous
 // reader receives a background messageParts frame — e.g. the init instruction
-// (messageParts only, no wait/status, contract §2.4) — it appends the frame
+// (messageParts only, no wait/status, specs/041-realtime-init-push/contracts/
+// realtime-channel-contract.md §2.4) — it appends the frame
 // to the chat stream and synthesizes NO status ACTIVE signal on top. Any
 // injected ACTIVE/typing signal would appear as a further flowParts status
 // event; the stream must hold exactly the one messageParts event.
@@ -1408,7 +1410,9 @@ func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
 	}
 
 	// then: the display frames land in the chatstream in order — text, tool
-	// call, terminal wait — with monotonic 1-based IDs (contract §3.2)
+	// call, terminal wait — with monotonic 1-based IDs
+	// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.2)
 	snap, ok := waitForStreamEvents(stream, 3)
 	if !ok {
 		t.Fatalf("full turn frames not appended within 2s; snapshot has %d events, want 3 (text, tool call, wait)", len(snap))
@@ -1432,7 +1436,9 @@ func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
 	}
 
 	// and: the operation was executed and its FlowResultPart sent back to the
-	// agent over the WS (FR-009, contract §3.2) with the same tool_id; status
+	// agent over the WS (FR-009,
+	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.2) with the same tool_id; status
 	// FAILED (no window selected)
 	var resultPart *game.FlowResultPart
 	deadline := time.After(2 * time.Second)
@@ -1456,7 +1462,9 @@ func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
 
 	// and: the operation request and its result are NOT mirrored into the
 	// chatstream — the stream still holds exactly the 3 display/control
-	// events (text, tool call, wait; FR-005/FR-009, contract §3.2)
+	// events (text, tool call, wait; FR-005/FR-009,
+	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.2)
 	sub, after := stream.Subscribe(0)
 	defer sub.Close()
 	if len(after) != 3 {
@@ -1464,7 +1472,8 @@ func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
 	}
 
 	// and: the reader is still running after the terminal wait (FR-008,
-	// contract §3.3) — recvDone stays open, ready for the next turn or
+	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.3) — recvDone stays open, ready for the next turn or
 	// background frames (FR-002)
 	select {
 	case <-app.recvDone:
@@ -1475,7 +1484,8 @@ func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
 
 // TestConnect_ReconnectHandoverWaitsForPriorReader verifies the reconnect
 // handover (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-// §3.1; research.md D4): a second Connect closes the prior WS and waits on
+// §3.1; specs/041-realtime-init-push/research.md D4): a second Connect closes
+// the prior WS and waits on
 // the prior recvDone before starting a new reader, so the old reader has
 // exited and cannot close the new recvDone.
 func TestConnect_ReconnectHandoverWaitsForPriorReader(t *testing.T) {
@@ -1633,7 +1643,9 @@ func TestCloseAgent_CleanClose(t *testing.T) {
 	}
 
 	// and: a synthesized terminal wait was appended after the content frame
-	// (FR-010, contract §3.1 Exit) — CloseAgent returns only after the
+	// (FR-010, specs/041-realtime-init-push/contracts/
+	// realtime-channel-contract.md §3.1 Exit) — CloseAgent returns only after
+	// the
 	// reader appended it (it waits on recvDone, and the append precedes
 	// close(recvDone)), so no polling is needed.
 	sub, snap := stream.Subscribe(0)

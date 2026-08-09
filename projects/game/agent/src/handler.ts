@@ -291,7 +291,8 @@ export class Handler implements TeamServiceHandlers {
     const sessionSinkHandles = new Map<string, SinkHandle>();
 
     // Sessions whose stream display sink is bound to THIS stream (041 —
-    // contract §1.1): session id → the handle passed to bindStreamSink. The
+    // specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+    // §1.1): session id → the handle passed to bindStreamSink. The
     // handle IS the write closure (OperationBridge convention,
     // operation-bridge.ts:77), so a superseded stream's cleanup passes its
     // own closure and cannot clear a newer binding (compare-and-delete).
@@ -312,7 +313,9 @@ export class Handler implements TeamServiceHandlers {
         }
       }
       sessionSinkHandles.clear();
-      // 041 (contract §1.3, FR-010): clear the bound display sinks too —
+      // 041 (specs/041-realtime-init-push/contracts/
+      // realtime-channel-contract.md §1.3, FR-010): clear the bound display
+      // sinks too —
       // after this, a still-running background producer (e.g. the init
       // turn) emits to null instead of writing to the dead stream.
       for (const [sid, handle] of boundDisplaySinks) {
@@ -362,7 +365,9 @@ export class Handler implements TeamServiceHandlers {
         return;
       }
 
-      // 041 (contract §1.1): bind the stream display sink on the FIRST
+      // 041 (specs/041-realtime-init-push/contracts/
+      // realtime-channel-contract.md §1.1): bind the stream display sink on
+      // the FIRST
       // inbound frame carrying this session on this stream — in practice the
       // status probe (the desktop sends it first at connect,
       // desktop/app.go:1677-1685) — provided the team exists. The sink is
@@ -541,7 +546,8 @@ export class Handler implements TeamServiceHandlers {
         // same thread_id.
         activeLoopSessions.add(sessionId);
         // The display sink was bound above on the first inbound frame for
-        // this session (041 — contract §1.1); the TurnLoop emits its frames
+        // this session (041 — specs/041-realtime-init-push/contracts/
+        // realtime-channel-contract.md §1.1); the TurnLoop emits its frames
         // through it (contract §1.2 — session-team.ts `submit`).
         team.submit(turnContent);
         return;

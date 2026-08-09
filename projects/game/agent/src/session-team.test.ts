@@ -9,7 +9,8 @@
  *
  * Mock strategy (style/javascript.md §测试): SessionTeam receives the graph
  * handle, buffer and session id via constructor; SessionTeamStore receives a
- * factory — no `vi.mock`. The stream display sink (041 — contract §1.1) is
+ * factory — no `vi.mock`. The stream display sink (041 —
+ * specs/041-realtime-init-push/contracts/realtime-channel-contract.md §1.1) is
  * the DI seam for frame capture: tests inject a recording closure / `vi.fn()`
  * via `bindStreamSink(emit, emit)` (the closure doubles as its own
  * compare-and-delete handle, operation-bridge.ts:77), and `submit` no longer
@@ -472,8 +473,10 @@ describe("SessionTeam stream display sink (041 — contract §1.1-§1.3, FR-010)
 
 		// No bindStreamSink: the full user turn (TurnLoop + compress/review
 		// channel frames) emits into the void — nothing crashes, nothing is
-		// delivered (contract §1.2 "null → no-op"; the seed/history path
-		// covers delivery instead — research.md D7 case A).
+		// delivered (specs/041-realtime-init-push/contracts/
+		// realtime-channel-contract.md §1.2 "null → no-op"; the
+		// seed/history path covers delivery instead — specs/041-realtime-init-push/
+		// research.md D7 case A).
 		team.submit({ text: "开始游戏" });
 		await flush();
 
@@ -491,7 +494,9 @@ describe("SessionTeam stream display sink (041 — contract §1.1-§1.3, FR-010)
 
 		expect(team.isRunning()).toBe(false);
 		expect(sink).toHaveBeenCalled();
-		// Both emission paths resolve the SAME sink (contract §1.2): the
+		// Both emission paths resolve the SAME sink
+		// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §1.2): the
 		// TurnLoop's display frames (player agent) and the planner node's
 		// emitChannelFrame review-input frame (planner.ts:321-344 —
 		// agent=planner, role=USER, only reachable via emitChannelFrame).
@@ -578,7 +583,9 @@ describe("SessionTeam stream display sink (041 — contract §1.1-§1.3, FR-010)
 		team.bindStreamSink(oldSink, oldSink);
 		team.bindStreamSink(newSink, newSink);
 		// A superseded stream's end/error clears with ITS OWN handle — the
-		// newer binding must survive (contract §1.1 compare-and-delete).
+		// newer binding must survive
+		// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §1.1 compare-and-delete).
 		team.clearStreamSink(oldSink);
 
 		team.submit({ text: "开始游戏" });
@@ -598,9 +605,11 @@ describe("SessionTeam — init instruction frames (041 US1, T005/T006 — contra
 		// Bind BEFORE materialization: `update` triggers the one-shot init
 		// turn fire-and-forget (R2 — 物化即返回，不等 LLM); with the fake
 		// planner resolving synchronously the whole invoke completes inside
-		// the microtask chain, so the sink must already be bound (research.md
+		// the microtask chain, so the sink must already be bound
+		// (specs/041-realtime-init-push/research.md
 		// D1 — in practice the Connect handler binds it on the first inbound
-		// frame, contract §1.1).
+		// frame, specs/041-realtime-init-push/contracts/
+		// realtime-channel-contract.md §1.1).
 		team.bindStreamSink(sink, sink);
 		await store.update(sessionId, "saolei", "default", true);
 		await flush(0);
@@ -612,7 +621,8 @@ describe("SessionTeam — init instruction frames (041 US1, T005/T006 — contra
 		});
 
 		// Exactly the three init frames in production order (request →
-		// response → write-back, data-model §3.3): planner request USER,
+		// response → write-back, specs/041-realtime-init-push/data-model.md
+		// §3.3): planner request USER,
 		// planner response toolCall AGENT, player write-back USER.
 		expect(msgFrames.length).toBe(3);
 		const requestFrame = msgFrames[0];
@@ -626,7 +636,9 @@ describe("SessionTeam — init instruction frames (041 US1, T005/T006 — contra
 		expect(writeBackFrame.agent).toBe("player");
 		expect(writeBackFrame.role).toBe("MESSAGE_ROLE_USER");
 
-		// frameId == message id (dedup anchor, contract §4 / FR-004): every
+		// frameId == message id (dedup anchor,
+		// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §4 / FR-004): every
 		// frame's frameId equals the persisted message's id, so the seed /
 		// history / real-time paths share one id namespace and the desktop
 		// renders each message exactly once.
@@ -655,9 +667,12 @@ describe("SessionTeam — init instruction frames (041 US1, T005/T006 — contra
 		const store = new SessionTeamStore(async () => team);
 		const sink = vi.fn<(frame: TeamFrame) => void>();
 
-		// Simulate "init completes before the desktop connects" (research.md
+		// Simulate "init completes before the desktop connects"
+		// (specs/041-realtime-init-push/research.md
 		// D7 case A): bind then immediately clear — the init turn's emits
-		// resolve to null and are dropped (contract §1.2 no-op). The
+		// resolve to null and are dropped
+		// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §1.2 no-op). The
 		// persisted instruction is delivered by the one-shot seed /
 		// loadAgentHistories on connect instead.
 		team.bindStreamSink(sink, sink);
@@ -686,8 +701,11 @@ describe("SessionTeam — continuous-channel producers (041 US3 T009 — spec ed
 		// Producer A — the one-shot init turn (fire-and-forget via
 		// store.update, session-team.ts triggerInitInstruction): the
 		// instruction node emits its three frames (planner request / planner
-		// toolCall response / player write-back, contract §2.2) through the
-		// bound sink (contract §2).
+		// toolCall response / player write-back,
+		// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §2.2) through the
+		// bound sink (specs/041-realtime-init-push/contracts/
+		// realtime-channel-contract.md §2).
 		await store.update(sessionId, "saolei", "default", true);
 		await flush(0);
 
@@ -707,7 +725,9 @@ describe("SessionTeam — continuous-channel producers (041 US3 T009 — spec ed
 			);
 
 		// No frame lost: every init frame arrived on the one sink, keyed by
-		// frameId == message id (dedup anchor, contract §4 / FR-004).
+		// frameId == message id (dedup anchor,
+		// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §4 / FR-004).
 		const state = (await team.getTeamState()) as TeamStateValue;
 		const requestMsg = state.plannerMessages.find(
 			(m) =>
@@ -992,10 +1012,13 @@ describe("SessionTeamStore", () => {
 		// FR-007 (specs/041-realtime-init-push/spec.md): the init turn gates
 		// destructive operations through `isBusy()` while `isRunning()` (the
 		// status probe) excludes it — session-team.ts:546-563,
-		// contracts/realtime-channel-contract.md §5. The user-turn case is
+		// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §5. The user-turn case is
 		// covered above; this is the init-only scenario (no user turn at
 		// all). A rebuild during the init would race the freshly written
-		// instruction in `playerMessages` (contract §7).
+		// instruction in `playerMessages`
+		// (specs/039-planner-memory-calibration/contracts/team-graph-contract.md
+		// §7).
 		const store = new SessionTeamStore(
 			async (sessionId) => buildTestTeam(sessionId).team,
 			async (sessionId, _template, _profileName, existingCheckpointer) =>

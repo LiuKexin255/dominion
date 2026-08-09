@@ -154,8 +154,9 @@ export type SessionTeamRebuilder = (
  * frame would render as AGENT markdown, which collapses the single newlines
  * that lay out the board grid (the US1 format-loss bug).
  *
- * 041 Phase 3 (T006, research.md D3 — faithful message→frame mirroring): the
- * emitter ALSO accepts pre-built `MessagePart[]` (second overload) so the
+ * 041 Phase 3 (T006, specs/041-realtime-init-push/research.md D3 — faithful
+ * message→frame mirroring): the emitter ALSO accepts pre-built
+ * `MessagePart[]` (second overload) so the
  * init instruction node can emit the planner's tool-call response as a
  * `toolCall` part, rendering identically to the reloaded ListMessages entry.
  * The two overloads keep the existing text-only call sites (compress.ts:244-262,
@@ -188,7 +189,8 @@ export class SessionTeam {
 	private turnLoop: TurnLoop | null = null;
 
 	/**
-	 * The stream-bound display sink (041 — contract §1.1, FR-010): the
+	 * The stream-bound display sink (041 — specs/041-realtime-init-push/
+	 * contracts/realtime-channel-contract.md §1.1, FR-010): the
 	 * single write target for ALL display-channel frames from this session —
 	 * the TurnLoop's display frames, the compress/review channel frames, and
 	 * (once installed, 041 Phase 3 T005) the init turn's `emitChannelFrame`
@@ -196,12 +198,13 @@ export class SessionTeam {
 	 * the Connect handler sees the first per-session inbound frame; cleared
 	 * on stream end/error via {@link clearStreamSink} (compare-and-delete on
 	 * {@link streamSinkHandle}). `null` while unbound — emitting through it
-	 * is a no-op (best-effort, research.md D9).
+	 * is a no-op (best-effort, specs/041-realtime-init-push/research.md D9).
 	 */
 	private streamSink: ((frame: TeamFrame) => void) | null = null;
 	/**
 	 * The handle of the currently-bound {@link streamSink} (opaque per-stream
-	 * identity, data-model.md §1.1): `clearStreamSink` only clears when the
+	 * identity, specs/041-realtime-init-push/data-model.md §1.1):
+	 * `clearStreamSink` only clears when the
 	 * passed handle matches this one, so a stale stream's cleanup cannot
 	 * clobber a newer binding (mirrors `OperationBridge.unregisterSink`,
 	 * operation-bridge.ts:163-170).
@@ -349,10 +352,11 @@ export class SessionTeam {
 	 * The init turn runner: ONE graph `invoke` on the session thread with
 	 * the `runInitInstruction` flag + a fresh R1 instruction buffer.
 	 *
-	 * 041 Phase 3 (T005 — research.md D1/D2, contract §2.1): the
-	 * configurable NOW installs `emitChannelFrame` (the same key/shape the
-	 * user-turn path uses, {@link SessionTeam.runTeamTurn}), so the
-	 * instruction node pushes the produced instruction frames through the
+	 * 041 Phase 3 (T005 — specs/041-realtime-init-push/research.md D1/D2,
+	 * specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	 * §2.1): the configurable NOW installs `emitChannelFrame` (the same
+	 * key/shape the user-turn path uses, {@link SessionTeam.runTeamTurn}), so
+	 * the instruction node pushes the produced instruction frames through the
 	 * stream-bound display sink (research.md D1 — bound at Connect,
 	 * contract §1.1) as soon as the connection is up. The init turn runs
 	 * right after `UpdateTeam` materialization, which the desktop may await
@@ -374,7 +378,9 @@ export class SessionTeam {
 	 * `playerMessages` before the first user turn (which awaits
 	 * {@link initTurn} first, FR-015).
 	 *
-	 * Errors are swallowed (degrade, contract §6) so the awaited
+	 * Errors are swallowed (degrade,
+	 * specs/039-planner-memory-calibration/contracts/team-graph-contract.md
+	 * §6) so the awaited
 	 * {@link initTurn} never rejects a subsequent user turn.
 	 */
 	private async runInitTurn(): Promise<void> {
@@ -419,7 +425,8 @@ export class SessionTeam {
 	}
 
 	/**
-	 * Bind the Connect stream's display sink (041 — contract §1.1): the
+	 * Bind the Connect stream's display sink (041 — specs/041-realtime-init-push/
+	 * contracts/realtime-channel-contract.md §1.1): the
 	 * handler calls this on the FIRST inbound frame carrying this session on
 	 * a stream (in practice the status probe), passing a write closure over
 	 * that stream plus an opaque handle for compare-and-delete. The sink is
@@ -442,7 +449,8 @@ export class SessionTeam {
 	}
 
 	/**
-	 * Clear the bound display sink (041 — contract §1.3, FR-010), but only
+	 * Clear the bound display sink (041 — specs/041-realtime-init-push/
+	 * contracts/realtime-channel-contract.md §1.3, FR-010), but only
 	 * when `handle` identifies the CURRENT binding (compare-and-delete): a
 	 * stale stream's end/error must not clobber a sink bound by a newer
 	 * connection. After clear, in-flight background emissions (e.g. a
@@ -458,7 +466,9 @@ export class SessionTeam {
 
 	/**
 	 * Build + emit one display `TeamFrame` through the stream-bound display
-	 * sink (041 — contract §1.2, unified read path; research.md D2). The
+	 * sink (041 — specs/041-realtime-init-push/contracts/
+	 * realtime-channel-contract.md §1.2, unified read path;
+	 * specs/041-realtime-init-push/research.md D2). The
 	 * shared implementation behind the `configurable.emitChannelFrame`
 	 * closures installed by BOTH the user-turn runner ({@link runTeamTurn})
 	 * and the init-turn runner ({@link runInitTurn}), so every
@@ -507,7 +517,8 @@ export class SessionTeam {
 	 * constructs the loop on first use with the team-graph turn runner; the
 	 * loop's display frames are emitted through the stream-bound display
 	 * sink ({@link streamSink}, bound at Connect via {@link bindStreamSink}
-	 * — 041 contract §1.2), resolved LIVE over `this` so a rebind/clear is
+	 * — specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	 * §1.2), resolved LIVE over `this` so a rebind/clear is
 	 * reflected on the next emit without reconstructing the loop.
 	 * Non-blocking: returns once the content is started (IDLE) or buffered
 	 * (RUNNING) — see
@@ -665,8 +676,10 @@ export class SessionTeam {
 				configurable: {
 					thread_id: this.sessionId,
 					// 041 Phase 3 (T005): the closure now delegates to the
-					// shared {@link SessionTeam.emitChannelFrame} (contract
-					// §1.2 unified read path) so the user-turn and init-turn
+					// shared {@link SessionTeam.emitChannelFrame}
+					// (specs/041-realtime-init-push/contracts/
+					// realtime-channel-contract.md §1.2 unified read path) so
+					// the user-turn and init-turn
 					// runners build frames identically (research.md D2).
 					emitChannelFrame: (
 						agent: string,

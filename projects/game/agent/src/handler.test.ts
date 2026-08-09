@@ -198,7 +198,8 @@ function createTestTeam(
 }
 
 /** The desktop's connect status probe — the first inbound frame on a stream
- * (041 contract §1.1: it is what triggers the display-sink bind). */
+ * (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §1.1:
+ * it is what triggers the display-sink bind). */
 function statusProbeFrame(sessionId: string): UserFrame {
   return {
     sessionId,
@@ -231,7 +232,8 @@ async function waitForHeld(
  * wraps every agent invoke instead; the T009 tests never submit a user turn,
  * so only the init instruction node's invoke is ever held — the init turn is
  * in-flight exactly like the "user disconnects during the init turn" spec
- * edge case / quickstart B7. `Object.create` preserves the agent's prototype
+ * edge case / specs/041-realtime-init-push/quickstart.md §B B7. `Object.create`
+ * preserves the agent's prototype
  * surface (invoke/stream/…); only `invoke` is overridden — the player/planner/
  * instruction nodes all drive the agent via `invoke` (player.ts:219,
  * planner.ts:358, instruction-node.ts:208).
@@ -917,7 +919,8 @@ describe("Handler.Connect user input routing", () => {
       // USER-role frames are HumanMessage-sourced: the planner's review
       // input (planner.ts) AND — since 041 T006 — the init instruction
       // node's request + player write-back frames
-      // (instruction-node.ts, contract §2.2: agent = producing agent so the
+      // (instruction-node.ts, specs/041-realtime-init-push/contracts/
+      // realtime-channel-contract.md §2.2: agent = producing agent so the
       // desktop routes each frame to the right tab, FR-006). AGENT frames
       // are model-produced.
       const role = (f as Record<string, unknown>).role;
@@ -1139,7 +1142,8 @@ describe("Handler.Connect flow result + status", () => {
 });
 
 // ===========================================================================
-// Connect — stream display sink lifecycle (041 — contract §1.1/§1.3, FR-010)
+// Connect — stream display sink lifecycle (041 — specs/041-realtime-init-push/
+// contracts/realtime-channel-contract.md §1.1/§1.3, FR-010)
 // ===========================================================================
 
 describe("Handler.Connect display sink lifecycle", () => {
@@ -1171,7 +1175,8 @@ describe("Handler.Connect display sink lifecycle", () => {
     expect(handle).toBe(sink);
 
     // A second frame for the same session does NOT re-bind (bound once per
-    // stream, contract §1.1).
+    // stream, specs/041-realtime-init-push/contracts/
+    // realtime-channel-contract.md §1.1).
     stream.emit("data", {
       sessionId: "sess-sink",
       templateId: "saolei",
@@ -1181,7 +1186,9 @@ describe("Handler.Connect display sink lifecycle", () => {
     expect(bindSpy).toHaveBeenCalledOnce();
 
     // Stream end → the display sink is cleared with THIS stream's handle
-    // (contract §1.3, FR-010 — pending background pushes emit to null).
+    // (specs/041-realtime-init-push/contracts/
+    // realtime-channel-contract.md §1.3, FR-010 — pending background pushes
+    // emit to null).
     stream.emit("end");
     expect(clearSpy).toHaveBeenCalledOnce();
     expect(clearSpy.mock.calls[0][0]).toBe(handle);
@@ -1196,7 +1203,9 @@ describe("Handler.Connect display sink lifecycle", () => {
 
     // The real desktop sequence: status probe first (binds the sink), user
     // turn afterwards — the turn's frames must reach the stream through the
-    // bound sink (contract §1.2; submit no longer carries an emit callback).
+    // bound sink (specs/041-realtime-init-push/contracts/
+    // realtime-channel-contract.md §1.2; submit no longer carries an emit
+    // callback).
     stream.emit("data", {
       sessionId: "sess-sink-turn",
       templateId: "saolei",
@@ -1223,25 +1232,30 @@ describe("Handler.Connect display sink lifecycle", () => {
     // Materialize the team: the one-shot async initInstruction turn starts
     // fire-and-forget (session-team.ts triggerInitInstruction) and is held
     // in-flight on the gate — the "user disconnects during the init turn"
-    // spec edge case, quickstart B7.
+    // spec edge case, specs/041-realtime-init-push/quickstart.md §B B7.
     await createTestTeam(store, "sess-end-no-write");
     await waitForHeld(held);
 
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-    // The status probe binds the display sink (contract §1.1) and writes the
+    // The status probe binds the display sink
+    // (specs/041-realtime-init-push/contracts/
+    // realtime-channel-contract.md §1.1) and writes the
     // probe response.
     stream.emit("data", statusProbeFrame("sess-end-no-write"));
     const writtenAtProbe = stream.written.length;
     expect(writtenAtProbe).toBeGreaterThan(0);
 
     // The desktop disconnects mid-init: stream end → cleanupSinks →
-    // clearStreamSink (handler.ts:562-566, contract §1.3, FR-010 — the
+    // clearStreamSink (handler.ts:562-566, specs/041-realtime-init-push/
+    // contracts/realtime-channel-contract.md §1.3, FR-010 — the
     // pending background push callback is cleared).
     stream.emit("end");
 
-    // Release the init turn: its three frames (contract §2.2) now emit to a
+    // Release the init turn: its three frames (specs/041-realtime-init-push/
+    // contracts/realtime-channel-contract.md §2.2) now emit to a
     // null sink (session-team.ts streamSink) and are dropped — nothing is
-    // written to the dead connection (research.md D9 best-effort).
+    // written to the dead connection (specs/041-realtime-init-push/research.md
+    // D9 best-effort).
     gate.resolve();
     await flush();
 
@@ -1281,14 +1295,18 @@ describe("Handler.Connect display sink lifecycle", () => {
     await waitForHeld(held);
 
     // Stream 1: probe binds sink1; the desktop then disconnects mid-init —
-    // stream end clears sink1 with stream1's OWN handle (contract §1.3).
+    // stream end clears sink1 with stream1's OWN handle
+    // (specs/041-realtime-init-push/contracts/
+    // realtime-channel-contract.md §1.3).
     const stream1 = createFakeStream();
     handler.Connect(stream1 as unknown as Parameters<typeof handler.Connect>[0]);
     stream1.emit("data", statusProbeFrame("sess-reconnect"));
     stream1.emit("end");
 
     // Stream 2: the reconnected desktop's first frame binds a FRESH sink
-    // (contract §1.1 — the per-stream boundDisplaySinks map is per Connect,
+    // (specs/041-realtime-init-push/contracts/
+    // realtime-channel-contract.md §1.1 — the per-stream boundDisplaySinks
+    // map is per Connect,
     // handler.ts:293-301).
     const stream2 = createFakeStream();
     handler.Connect(stream2 as unknown as Parameters<typeof handler.Connect>[0]);

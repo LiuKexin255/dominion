@@ -205,14 +205,17 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 		});
 
 		// Exactly three frames in production order (request → response →
-		// write-back, data-model §3.3), each carrying the producing agent,
+		// write-back, specs/041-realtime-init-push/data-model.md §3.3), each
+		// carrying the producing agent,
 		// the message-typed role and frameId == the persisted message id
-		// (dedup anchor, contract §4).
+		// (dedup anchor, specs/041-realtime-init-push/contracts/
+		// realtime-channel-contract.md §4).
 		expect(emitChannelFrame).toHaveBeenCalledTimes(3);
 
 		// (a) Planner request frame: agent=planner, role=USER, the scenario
 		// prompt text, frameId = the request HumanMessage's id (which is
-		// persisted into plannerMessages — research.md D3 note).
+		// persisted into plannerMessages — specs/041-realtime-init-push/
+		// research.md D3 note).
 		const [agent1, content1, frameId1, role1] = emitChannelFrame.mock.calls[0];
 		expect(agent1).toBe("planner");
 		expect(content1).toContain("团队初始化");
@@ -224,7 +227,8 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 
 		// (b) Planner response frame: agent=planner, role=AGENT, the
 		// instruct_player tool call as a toolCall MessagePart (faithful
-		// mirroring — research.md D3, same conversion as ListMessages,
+		// mirroring — specs/041-realtime-init-push/research.md D3, same
+		// conversion as ListMessages,
 		// handler.ts:700-711), frameId = the response AIMessage's id.
 		const [agent2, content2, frameId2, role2] = emitChannelFrame.mock.calls[1];
 		expect(agent2).toBe("planner");
@@ -265,10 +269,13 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 			},
 		});
 
-		// contract §6: planner model unavailable → skip the instruction,
+		// specs/039-planner-memory-calibration/contracts/team-graph-contract.md
+		// §6: planner model unavailable → skip the instruction,
 		// degrade. The frame emission happens ONLY after the invoke resolves
 		// (041 T006), so a failed planner leaves the channel silent — no
-		// orphan frame whose frameId matches no persisted message (§2.3).
+		// orphan frame whose frameId matches no persisted message
+		// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+		// §2.3).
 		expect(result).toEqual({});
 		expect(emitChannelFrame).not.toHaveBeenCalled();
 		// The retry wrapper really retried (3 attempts) before degrading.

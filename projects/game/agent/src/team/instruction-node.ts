@@ -120,7 +120,9 @@ function buildInstructionRequest(scenario: InstructionScenario): BaseMessage {
 
 /**
  * Ensure the message carries a stable id and return it (041 T006 — the
- * frameId == messageId dedup anchor, contract §4 / FR-004). Messages built
+ * frameId == messageId dedup anchor,
+ * specs/041-realtime-init-push/contracts/realtime-channel-contract.md §4 /
+ * FR-004). Messages built
  * here (the write-back HumanMessage) or returned by the agent invoke MAY
  * arrive with `id` undefined (`@langchain/core` BaseMessage defaults to
  * undefined); LangGraph's `messagesStateReducer` would then mint a DIFFERENT
@@ -178,7 +180,9 @@ export function createInstructionNode(
 	): Promise<Partial<TeamStateValue>> => {
 		const request = buildInstructionRequest(scenario);
 
-		// 041 Phase 3 (T005/T006 — research.md D2, contract §2.2): the
+		// 041 Phase 3 (T005/T006 — specs/041-realtime-init-push/research.md
+		// D2, specs/041-realtime-init-push/contracts/
+		// realtime-channel-contract.md §2.2): the
 		// channel-frame emitter is installed in BOTH runners — the
 		// user-turn runner (runTeamTurn, compact scenario) and the init-turn
 		// runner (runInitTurn, init scenario — research.md D1/D2) — so the
@@ -207,7 +211,9 @@ export function createInstructionNode(
 		try {
 			result = await invokeAgentWithRetry(instructionAgent, input, config);
 		} catch (err) {
-			// contract §6 降级：planner model 不可用 → 记日志、跳过指令，不
+			// specs/039-planner-memory-calibration/contracts/
+			// team-graph-contract.md §6 降级：planner model 不可用 → 记日志、
+			// 跳过指令，不
 			// 阻断 team（init 不阻塞 UpdateTeam 物化；压缩后 turn 仍正常
 			// END）。不写 plannerMessages（失败无产出）。041 (contract §2.3):
 			// 不发任何帧（包括 request 帧）— 帧的发射统一在 invoke 成功后。
@@ -232,9 +238,13 @@ export function createInstructionNode(
 			buffer.content = null;
 		}
 
-		// 041 Phase 3 (T006 — research.md D2/D3, contract §2.2 / data-model
-		// §3): 发射本次 invoke 新产出消息的 display 帧，每帧 frameId ==
-		// 产生消息的 id（dedup anchor，contract §4 / FR-004）：
+		// 041 Phase 3 (T006 — specs/041-realtime-init-push/research.md
+		// D2/D3, specs/041-realtime-init-push/contracts/
+		// realtime-channel-contract.md §2.2 / specs/041-realtime-init-push/
+		// data-model.md §3): 发射本次 invoke 新产出消息的 display 帧，每帧
+		// frameId == 产生消息的 id（dedup anchor，
+		// specs/041-realtime-init-push/contracts/
+		// realtime-channel-contract.md §4 / FR-004）：
 		//
 		// (a) planner request 帧 — 场景 prompt（HumanMessage，也持久化在
 		// plannerMessages，research.md D3 note），agent=planner role=USER；
@@ -289,9 +299,13 @@ export function createInstructionNode(
 		if (instruction !== null) {
 			// 指令直接进入 player 通道（HumanMessage），随后续输入正常拼接
 			// history（无需 pendingInstruction 中间槽；对 ListMessages 可见）。
-			// 041 (contract §2.2 / data-model §3.3): 同一消息作为 (c) 帧发射，
+			// 041 (specs/041-realtime-init-push/contracts/
+			// realtime-channel-contract.md §2.2 / specs/041-realtime-init-push/
+			// data-model.md §3.3): 同一消息作为 (c) 帧发射，
 			// frameId = 写回消息的 id（ensureMessageId 保证与 checkpoint 中
-			// 持久化后的 id 一致 — contract §4）。
+			// 持久化后的 id 一致 —
+			// specs/041-realtime-init-push/contracts/
+			// realtime-channel-contract.md §4）。
 			const writeBack = new HumanMessage(instruction);
 			update.playerMessages = [writeBack];
 			if (emitChannelFrame) {
