@@ -34,13 +34,19 @@
  */
 
 import { createAgent } from "langchain";
+import { randomUUID } from "node:crypto";
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { warn } from "@dominion/common-js-logs";
 
+import type { MessagePart } from "../../game_types/projects/game/MessagePart";
+import { extractToolCalls } from "../llm";
 import type { ChatModel } from "../model-provider";
-import type { ChannelFrameEmitter } from "../session-team";
+import {
+	PRIMARY_AGENT_NAME,
+	type ChannelFrameEmitter,
+} from "../session-team";
 import type { TeamStateValue } from "./state";
 import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
 import type { FrozenMemorySnapshot } from "./memory-snapshot";
@@ -113,6 +119,26 @@ function buildInstructionRequest(scenario: InstructionScenario): BaseMessage {
 }
 
 /**
+ * Ensure the message carries a stable id and return it (041 T006 — the
+ * frameId == messageId dedup anchor, contract §4 / FR-004). Messages built
+ * here (the write-back HumanMessage) or returned by the agent invoke MAY
+ * arrive with `id` undefined (`@langchain/core` BaseMessage defaults to
+ * undefined); LangGraph's `messagesStateReducer` would then mint a DIFFERENT
+ * id at checkpoint write time
+ * (`@langchain/langgraph` dist/graph/messages_reducer.js — "Ensures all
+ * messages have unique, stable IDs"), leaving the real-time frame's frameId
+ * unmatched against the persisted message. Idempotent: an existing id (the
+ * agent invoke already stamps input/output messages in place — verified
+ * empirically against `langchain` createAgent) is kept. Same pattern as the
+ * compress node's summary messages (`compress.ts:158` —
+ * `new AIMessage({ id: randomUUID(), ... })`).
+ */
+function ensureMessageId(msg: BaseMessage): string {
+	if (!msg.id) msg._updateId(randomUUID());
+	return msg.id as string;
+}
+
+/**
  * Create the init/compact instruction node function (contract §2.3) — one
  * factory for BOTH scenarios (FR-019 共享节点函数), differentiated by the
  * `scenario` prompt.
@@ -152,30 +178,22 @@ export function createInstructionNode(
 	): Promise<Partial<TeamStateValue>> => {
 		const request = buildInstructionRequest(scenario);
 
-		// typing-state 协调（contract §6 / research.md D5）：将场景 prompt
-		// 作为实时 channel 帧发出（agent=planner），与 review 节点的
-		// reviewInput 帧同一模式（037 — configurable 注入的
-		// emitChannelFrame）。仅 compact 场景实际生效：postCompactInstruction
-		// 运行在 user turn 内（runTeamTurn 注入 emitChannelFrame）；
-		// init 场景的 runInitTurn 不注入 emitChannelFrame（init 发生在
-		// desktop Connect 之前且 turnLoopEmit 仅在首次 submit 时赋值，帧
-		// 不可达——desktop 的 typing 由 Connect status probe 驱动，见
-		// session-team.ts runInitTurn），故此处对 init 自然跳过。
+		// 041 Phase 3 (T005/T006 — research.md D2, contract §2.2): the
+		// channel-frame emitter is installed in BOTH runners — the
+		// user-turn runner (runTeamTurn, compact scenario) and the init-turn
+		// runner (runInitTurn, init scenario — research.md D1/D2) — so the
+		// produced instruction frames push through the stream-bound display
+		// sink whenever the desktop is connected. The three frames (planner
+		// request / planner tool-call response / player write-back) are
+		// emitted AFTER the invoke resolves, in production order — a planner
+		// failure degrades BEFORE any frame is emitted (contract §2.3: no
+		// orphan frame whose frameId matches no persisted message;
+		// research.md D9). The desktop's typing indicator is NOT driven by
+		// these frames (init emits no wait/status — contract §2.4; the
+		// probe reports IDLE during the init, session-team.ts isRunning).
 		const emitChannelFrame = config?.configurable?.emitChannelFrame as
 			| ChannelFrameEmitter
 			| undefined;
-		if (emitChannelFrame) {
-			const content =
-				typeof request.content === "string" ? request.content : "";
-			if (content) {
-				emitChannelFrame(
-					PLANNER_AGENT_NAME,
-					content,
-					undefined,
-					"MESSAGE_ROLE_USER",
-				);
-			}
-		}
 
 		const input: BaseMessage[] = [
 			// 冻结记忆快照作为首条 input SystemMessage（纯内容, FR-011）—
@@ -191,7 +209,8 @@ export function createInstructionNode(
 		} catch (err) {
 			// contract §6 降级：planner model 不可用 → 记日志、跳过指令，不
 			// 阻断 team（init 不阻塞 UpdateTeam 物化；压缩后 turn 仍正常
-			// END）。不写 plannerMessages（失败无产出）。
+			// END）。不写 plannerMessages（失败无产出）。041 (contract §2.3):
+			// 不发任何帧（包括 request 帧）— 帧的发射统一在 invoke 成功后。
 			const message = err instanceof Error ? err.message : String(err);
 			warn("instruction node failed; skipping instruction", {
 				scenario,
@@ -213,6 +232,53 @@ export function createInstructionNode(
 			buffer.content = null;
 		}
 
+		// 041 Phase 3 (T006 — research.md D2/D3, contract §2.2 / data-model
+		// §3): 发射本次 invoke 新产出消息的 display 帧，每帧 frameId ==
+		// 产生消息的 id（dedup anchor，contract §4 / FR-004）：
+		//
+		// (a) planner request 帧 — 场景 prompt（HumanMessage，也持久化在
+		// plannerMessages，research.md D3 note），agent=planner role=USER；
+		// (b) planner response 帧 — 含 instruct_player tool_call 的
+		// AIMessage，以 toolCall MessagePart 发射（faithful mirroring —
+		// 与 ListMessages 的转换一致，handler.ts:700-711），agent=planner
+		// role=AGENT；
+		// (c) player write-back 帧 — 指令文本（HumanMessage 写回
+		// playerMessages），agent=player role=USER。
+		if (emitChannelFrame) {
+			const content =
+				typeof request.content === "string" ? request.content : "";
+			if (content) {
+				emitChannelFrame(
+					PLANNER_AGENT_NAME,
+					content,
+					ensureMessageId(request),
+					"MESSAGE_ROLE_USER",
+				);
+			}
+			const response = result.messages.find(
+				(m: BaseMessage) =>
+					m._getType() === "ai" && extractToolCalls(m).length > 0,
+			);
+			if (response) {
+				const parts: MessagePart[] = [];
+				for (const call of extractToolCalls(response)) {
+					parts.push({
+						toolCall: {
+							toolId: call.id ?? "",
+							name: call.name ?? "",
+							argsJson: JSON.stringify(call.args ?? {}),
+						},
+					});
+				}
+				emitChannelFrame(
+					PLANNER_AGENT_NAME,
+					parts,
+					ensureMessageId(response),
+					"MESSAGE_ROLE_AGENT",
+				);
+			}
+		}
+
 		const update: Partial<TeamStateValue> = {
 			// 过滤快照 SystemMessage（不进 plannerMessages 短期通道，contract
 			// §3 — 同 review 节点模式）。
@@ -223,7 +289,19 @@ export function createInstructionNode(
 		if (instruction !== null) {
 			// 指令直接进入 player 通道（HumanMessage），随后续输入正常拼接
 			// history（无需 pendingInstruction 中间槽；对 ListMessages 可见）。
-			update.playerMessages = [new HumanMessage(instruction)];
+			// 041 (contract §2.2 / data-model §3.3): 同一消息作为 (c) 帧发射，
+			// frameId = 写回消息的 id（ensureMessageId 保证与 checkpoint 中
+			// 持久化后的 id 一致 — contract §4）。
+			const writeBack = new HumanMessage(instruction);
+			update.playerMessages = [writeBack];
+			if (emitChannelFrame) {
+				emitChannelFrame(
+					PRIMARY_AGENT_NAME,
+					instruction,
+					ensureMessageId(writeBack),
+					"MESSAGE_ROLE_USER",
+				);
+			}
 		}
 		return update;
 	};

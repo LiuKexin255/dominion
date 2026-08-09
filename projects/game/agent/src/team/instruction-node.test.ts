@@ -25,6 +25,8 @@ import {
 import type { BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 
+import type { MessagePart } from "../../game_types/projects/game/MessagePart";
+import { extractToolCalls } from "../llm";
 import type { ChatModel } from "../model-provider";
 import {
 	FrozenMemorySnapshot,
@@ -37,6 +39,14 @@ import {
 } from "./instruction-node";
 import type { InstructionBuffer } from "./instruction-tool";
 import type { TeamStateValue } from "./state";
+
+/** The emitter test-double's call signature (string text or MessagePart[]). */
+type EmitCall = (
+	agent: string,
+	content: string | MessagePart[],
+	frameId?: string,
+	role?: string,
+) => void;
 
 /** A minimal empty TeamState for a fresh-session instruction node run. */
 function freshState(): TeamStateValue {
@@ -181,14 +191,12 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 		expect(model.calls.length).toBe(3);
 	});
 
-	it("emits the request as a real-time planner frame (typing-state coordination, contract §6 / research.md D5)", async () => {
-		const model = instructingModel("test");
+	it("emits the three init frames — request / tool-call response / write-back — each with frameId == message id (041 T006, contract §2.2 / data-model §3, FR-004)", async () => {
+		const model = instructingModel("开局先点中心，再清理边角");
 		const { node, buffer } = buildNode(model, "init");
-		const emitChannelFrame = vi.fn<
-			(agent: string, content: string, frameId?: string, role?: string) => void
-		>();
+		const emitChannelFrame = vi.fn<EmitCall>();
 
-		await node(freshState(), {
+		const result = await node(freshState(), {
 			configurable: {
 				thread_id: "t-init-frame",
 				instructionBuffer: buffer,
@@ -196,13 +204,75 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 			},
 		});
 
-		// The frame carries agent=planner and the request text (the desktop
-		// shows planner "typing"/working during the async init).
-		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
-		const [agent, content, , role] = emitChannelFrame.mock.calls[0];
-		expect(agent).toBe("planner");
-		expect(content).toContain("团队初始化");
-		expect(role).toBe("MESSAGE_ROLE_USER");
+		// Exactly three frames in production order (request → response →
+		// write-back, data-model §3.3), each carrying the producing agent,
+		// the message-typed role and frameId == the persisted message id
+		// (dedup anchor, contract §4).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(3);
+
+		// (a) Planner request frame: agent=planner, role=USER, the scenario
+		// prompt text, frameId = the request HumanMessage's id (which is
+		// persisted into plannerMessages — research.md D3 note).
+		const [agent1, content1, frameId1, role1] = emitChannelFrame.mock.calls[0];
+		expect(agent1).toBe("planner");
+		expect(content1).toContain("团队初始化");
+		const persistedRequest = (result.plannerMessages as BaseMessage[]).find(
+			(m) => m._getType() === "human" && contentType(m).includes("团队初始化"),
+		);
+		expect(frameId1).toBe(persistedRequest?.id);
+		expect(role1).toBe("MESSAGE_ROLE_USER");
+
+		// (b) Planner response frame: agent=planner, role=AGENT, the
+		// instruct_player tool call as a toolCall MessagePart (faithful
+		// mirroring — research.md D3, same conversion as ListMessages,
+		// handler.ts:700-711), frameId = the response AIMessage's id.
+		const [agent2, content2, frameId2, role2] = emitChannelFrame.mock.calls[1];
+		expect(agent2).toBe("planner");
+		expect(Array.isArray(content2)).toBe(true);
+		const parts2 = content2 as MessagePart[];
+		expect(parts2.length).toBe(1);
+		expect(parts2[0].toolCall?.name).toBe("instruct_player");
+		expect(JSON.parse(parts2[0].toolCall?.argsJson ?? "{}")).toEqual({
+			content: "开局先点中心，再清理边角",
+		});
+		const persistedResponse = (result.plannerMessages as BaseMessage[]).find(
+			(m) => m._getType() === "ai" && extractToolCalls(m).length > 0,
+		);
+		expect(frameId2).toBe(persistedResponse?.id);
+		expect(role2).toBe("MESSAGE_ROLE_AGENT");
+
+		// (c) Player write-back frame: agent=player, role=USER, the
+		// instruction text, frameId = the write-back HumanMessage's id.
+		const [agent3, content3, frameId3, role3] = emitChannelFrame.mock.calls[2];
+		expect(agent3).toBe("player");
+		expect(content3).toBe("开局先点中心，再清理边角");
+		const writeBack = (result.playerMessages as BaseMessage[])[0];
+		expect(writeBack).toBeInstanceOf(HumanMessage);
+		expect(frameId3).toBe(writeBack.id);
+		expect(role3).toBe("MESSAGE_ROLE_USER");
+	});
+
+	it("emits NO frame when the planner invoke fails (041 T006 — degrade, contract §2.3 / research.md D9)", async () => {
+		const model = failingModel();
+		const { node } = buildNode(model, "init");
+		const emitChannelFrame = vi.fn<EmitCall>();
+
+		const result = await node(freshState(), {
+			configurable: {
+				thread_id: "t-init-fail-frame",
+				instructionBuffer: { content: null } as InstructionBuffer,
+				emitChannelFrame,
+			},
+		});
+
+		// contract §6: planner model unavailable → skip the instruction,
+		// degrade. The frame emission happens ONLY after the invoke resolves
+		// (041 T006), so a failed planner leaves the channel silent — no
+		// orphan frame whose frameId matches no persisted message (§2.3).
+		expect(result).toEqual({});
+		expect(emitChannelFrame).not.toHaveBeenCalled();
+		// The retry wrapper really retried (3 attempts) before degrading.
+		expect(model.calls.length).toBe(3);
 	});
 });
 

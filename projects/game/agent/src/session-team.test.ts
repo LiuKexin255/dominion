@@ -27,6 +27,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { SessionTeam, SessionTeamStore } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
+import { extractToolCalls } from "./llm";
 import type { MemoryClient } from "./memory-client";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
@@ -585,6 +586,93 @@ describe("SessionTeam stream display sink (041 — contract §1.1-§1.3, FR-010)
 
 		expect(newSink).toHaveBeenCalled();
 		expect(oldSink).not.toHaveBeenCalled();
+	});
+});
+
+describe("SessionTeam — init instruction frames (041 US1, T005/T006 — contract §2, FR-004/FR-006)", () => {
+	it("emits the three init frames through a bound sink, each frameId == message id (contract §2.2 / data-model §3, §4)", async () => {
+		const { team, sessionId } = buildTestTeam("s-041-init-frames");
+		const store = new SessionTeamStore(async () => team);
+		const sink = vi.fn<(frame: TeamFrame) => void>();
+
+		// Bind BEFORE materialization: `update` triggers the one-shot init
+		// turn fire-and-forget (R2 — 物化即返回，不等 LLM); with the fake
+		// planner resolving synchronously the whole invoke completes inside
+		// the microtask chain, so the sink must already be bound (research.md
+		// D1 — in practice the Connect handler binds it on the first inbound
+		// frame, contract §1.1).
+		team.bindStreamSink(sink, sink);
+		await store.update(sessionId, "saolei", "default", true);
+		await flush(0);
+
+		const frames = sink.mock.calls.map(([f]) => f);
+		const msgFrames = frames.filter((f) => {
+			const fr = f as Record<string, unknown>;
+			return fr.payload === "messageParts";
+		});
+
+		// Exactly the three init frames in production order (request →
+		// response → write-back, data-model §3.3): planner request USER,
+		// planner response toolCall AGENT, player write-back USER.
+		expect(msgFrames.length).toBe(3);
+		const requestFrame = msgFrames[0];
+		expect(requestFrame.agent).toBe("planner");
+		expect(requestFrame.role).toBe("MESSAGE_ROLE_USER");
+		const responseFrames = partFrames(msgFrames, "toolCall");
+		expect(responseFrames.length).toBe(1);
+		expect(responseFrames[0].agent).toBe("planner");
+		expect(responseFrames[0].role).toBe("MESSAGE_ROLE_AGENT");
+		const writeBackFrame = msgFrames[2];
+		expect(writeBackFrame.agent).toBe("player");
+		expect(writeBackFrame.role).toBe("MESSAGE_ROLE_USER");
+
+		// frameId == message id (dedup anchor, contract §4 / FR-004): every
+		// frame's frameId equals the persisted message's id, so the seed /
+		// history / real-time paths share one id namespace and the desktop
+		// renders each message exactly once.
+		const state = (await team.getTeamState()) as TeamStateValue;
+		const requestMsg = state.plannerMessages.find(
+			(m) =>
+				typeof m.content === "string" && m.content.includes("团队初始化"),
+		);
+		const responseMsg = state.plannerMessages.find(
+			(m) => m._getType() === "ai" && extractToolCalls(m).length > 0,
+		);
+		const writeBackMsg = state.playerMessages.find(
+			(m) =>
+				typeof m.content === "string" && m.content.includes("初始指令"),
+		);
+		expect(requestMsg).toBeDefined();
+		expect(responseMsg).toBeDefined();
+		expect(writeBackMsg).toBeDefined();
+		expect(requestFrame.frameId).toBe(requestMsg?.id);
+		expect(responseFrames[0].frameId).toBe(responseMsg?.id);
+		expect(writeBackFrame.frameId).toBe(writeBackMsg?.id);
+	});
+
+	it("init emission with an unbound sink is a no-op; the instruction still persists (best-effort, research.md D9 — D7 case A)", async () => {
+		const { team, sessionId } = buildTestTeam("s-041-init-unbound");
+		const store = new SessionTeamStore(async () => team);
+		const sink = vi.fn<(frame: TeamFrame) => void>();
+
+		// Simulate "init completes before the desktop connects" (research.md
+		// D7 case A): bind then immediately clear — the init turn's emits
+		// resolve to null and are dropped (contract §1.2 no-op). The
+		// persisted instruction is delivered by the one-shot seed /
+		// loadAgentHistories on connect instead.
+		team.bindStreamSink(sink, sink);
+		team.clearStreamSink(sink);
+		await store.update(sessionId, "saolei", "default", true);
+		await flush(0);
+
+		expect(sink).not.toHaveBeenCalled();
+		const state = (await team.getTeamState()) as TeamStateValue;
+		expect(
+			state.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("初始指令"),
+			),
+		).toBe(true);
 	});
 });
 

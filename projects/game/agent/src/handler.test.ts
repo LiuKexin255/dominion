@@ -750,13 +750,17 @@ describe("Handler.Connect user input routing", () => {
       expect(["player", "planner"]).toContain(
         (f as Record<string, unknown>).agent,
       );
-      // All agent-produced frames are AGENT; the planner's review input is a
-      // HumanMessage and carries USER so the live frame renders identically
-      // to the reloaded ListMessages entry (multi-line game board preserved —
-      // specs/037-saolei-team-optimize US1 format fix).
+      // USER-role frames are HumanMessage-sourced: the planner's review
+      // input (planner.ts) AND — since 041 T006 — the init instruction
+      // node's request + player write-back frames
+      // (instruction-node.ts, contract §2.2: agent = producing agent so the
+      // desktop routes each frame to the right tab, FR-006). AGENT frames
+      // are model-produced.
       const role = (f as Record<string, unknown>).role;
       if (role === "MESSAGE_ROLE_USER") {
-        expect((f as Record<string, unknown>).agent).toBe("planner");
+        expect(["player", "planner"]).toContain(
+          (f as Record<string, unknown>).agent,
+        );
       } else {
         expect(role).toBe("MESSAGE_ROLE_AGENT");
       }

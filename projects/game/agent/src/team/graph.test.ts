@@ -2130,10 +2130,14 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		)) as TeamStateValue;
 
 		// 5 planner review-input frames (US1, agent="planner") + 2 summary
-		// frames (player channel, planner channel) + 1 postCompactInstruction
-		// request frame (039 US3 — the compact scenario emits its request as
-		// a planner frame, typing-state coordination, contract §6) = 8.
-		expect(emitChannelFrame).toHaveBeenCalledTimes(8);
+		// frames (player channel, planner channel) = 7. The
+		// postCompactInstruction node degrades here: `fiveGamesPlannerModel`
+		// has no responses left for its invoke (the 5 review runs + the
+		// planner-channel summary consumed them all), and since 041 T006 the
+		// instruction node emits its frames ONLY after the invoke resolves
+		// (contract §2.3 — a failed planner emits NO frame; the old
+		// pre-invoke request frame would have leaked one).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(7);
 		const calls = emitChannelFrame.mock.calls;
 		for (let i = 0; i < 5; i += 1) {
 			expect(calls[i][0]).toBe(PLANNER_AGENT_NAME);
@@ -2152,10 +2156,6 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		expect(plannerContent).toBe("planner 摘要内容");
 		expect(plannerFrameId).toBeDefined();
 		expect(plannerFrameId).toBe(result.plannerMessages[0].id);
-		// The postCompactInstruction request frame (agent=planner, carries the
-		// compact scenario prompt — FR-016).
-		expect(calls[7][0]).toBe(PLANNER_AGENT_NAME);
-		expect(String(calls[7][1])).toContain("上下文刚被压缩");
 	});
 
 	it("clears the compressed channels and resets gameCounter on RefreshTeam — including any instruction in playerMessages (FR-014 / US2 AS8; 039 contract §7)", async () => {

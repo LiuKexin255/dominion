@@ -63,6 +63,7 @@ import * as grpc from "@grpc/grpc-js";
 import { warn } from "@dominion/common-js-logs";
 
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
+import type { MessagePart } from "../game_types/projects/game/MessagePart";
 import type { MessageRole } from "../game_types/projects/game/MessageRole";
 
 import type { OperationBridge, SinkHandle } from "./operation-bridge";
@@ -152,13 +153,23 @@ export type SessionTeamRebuilder = (
  * pre-wrap text path (game-board newlines preserved). Without the override the
  * frame would render as AGENT markdown, which collapses the single newlines
  * that lay out the board grid (the US1 format-loss bug).
+ *
+ * 041 Phase 3 (T006, research.md D3 — faithful message→frame mirroring): the
+ * emitter ALSO accepts pre-built `MessagePart[]` (second overload) so the
+ * init instruction node can emit the planner's tool-call response as a
+ * `toolCall` part, rendering identically to the reloaded ListMessages entry.
+ * The two overloads keep the existing text-only call sites (compress.ts:244-262,
+ * planner.ts:337-342) type-checked unchanged (backward compatible).
  */
-export type ChannelFrameEmitter = (
-	agent: string,
-	content: string,
-	frameId?: string,
-	role?: MessageRole,
-) => void;
+export type ChannelFrameEmitter = {
+	(agent: string, content: string, frameId?: string, role?: MessageRole): void;
+	(
+		agent: string,
+		parts: MessagePart[],
+		frameId?: string,
+		role?: MessageRole,
+	): void;
+};
 
 // ---------------------------------------------------------------------------
 // SessionTeam
@@ -338,24 +349,30 @@ export class SessionTeam {
 	 * The init turn runner: ONE graph `invoke` on the session thread with
 	 * the `runInitInstruction` flag + a fresh R1 instruction buffer.
 	 *
-	 * NOTE (Phase 6 review Issue #3 — honest scope): NO `emitChannelFrame`
-	 * is installed here. The init turn runs right after `UpdateTeam`
-	 * materialization, which the desktop strictly awaits BEFORE connecting
-	 * (desktop App.svelte: `await updateTeam(...)` → `continueSessionEntry`
-	 * → `await handleConnect()` — serial); the stream display sink
-	 * (`streamSink`, bound at Connect — 041 contract §1.1) does not exist
-	 * when the init starts, so an emission would be a no-op (best-effort,
-	 * research.md D9). 041 Phase 3 (T005) installs the emitter in this
-	 * configurable and rewrites this note. The init turn is a
-	 * fire-and-forget background task: {@link isRunning} (the Connect status
-	 * probe) deliberately EXCLUDES {@link initInFlight}, so the desktop
-	 * connects to IDLE and is immediately ready for input — reporting ACTIVE
-	 * here would stick its typing indicator on (the init emits no `wait`
-	 * and the probe is one-shot). The init activity's persistent visibility
-	 * comes from the checkpointer (the instruction node's plannerMessages
-	 * output shows up in ListMessages after Connect) and from the
-	 * instruction already in `playerMessages` before the first user turn
-	 * (which awaits {@link initTurn} first, FR-015).
+	 * 041 Phase 3 (T005 — research.md D1/D2, contract §2.1): the
+	 * configurable NOW installs `emitChannelFrame` (the same key/shape the
+	 * user-turn path uses, {@link SessionTeam.runTeamTurn}), so the
+	 * instruction node pushes the produced instruction frames through the
+	 * stream-bound display sink (research.md D1 — bound at Connect,
+	 * contract §1.1) as soon as the connection is up. The init turn runs
+	 * right after `UpdateTeam` materialization, which the desktop may await
+	 * BEFORE connecting (desktop App.svelte: `await updateTeam(...)` →
+	 * `continueSessionEntry` → `await handleConnect()` — serial); the
+	 * emission is best-effort (research.md D9): with the sink still unbound
+	 * it is a no-op, and the instruction is already in the checkpoint, so
+	 * the one-shot seed + `loadAgentHistories` deliver it on connect
+	 * instead. A planner-model failure degrades inside the instruction node
+	 * (warn + `return {}` — no frame emitted, contract §2.3) and the init
+	 * promise still resolves. The init turn is a fire-and-forget background
+	 * task: {@link isRunning} (the Connect status probe) deliberately
+	 * EXCLUDES {@link initInFlight}, so the desktop connects to IDLE and is
+	 * immediately ready for input — reporting ACTIVE here would stick its
+	 * typing indicator on (the init emits no `wait` and the probe is
+	 * one-shot). The init activity's persistent visibility comes from the
+	 * checkpointer (the instruction node's plannerMessages output shows up
+	 * in ListMessages after Connect) and from the instruction already in
+	 * `playerMessages` before the first user turn (which awaits
+	 * {@link initTurn} first, FR-015).
 	 *
 	 * Errors are swallowed (degrade, contract §6) so the awaited
 	 * {@link initTurn} never rejects a subsequent user turn.
@@ -372,6 +389,19 @@ export class SessionTeam {
 						runInitInstruction: true,
 						// R1 external buffer (contract §4 — instruction-tool.ts).
 						instructionBuffer: { content: null },
+						// 041 Phase 3 (T005 — research.md D2): install the
+						// channel-frame emitter so the init instruction node
+						// pushes the produced frames (request / tool-call
+						// response / player write-back, contract §2.2) through
+						// the stream-bound display sink ({@link streamSink},
+						// research.md D1). Best-effort: null sink → no-op
+						// (research.md D9).
+						emitChannelFrame: (
+							agent: string,
+							content: string | MessagePart[],
+							frameId?: string,
+							role?: MessageRole,
+						) => this.emitChannelFrame(agent, content, frameId, role),
 					},
 					metadata: { session_id: this.sessionId },
 					recursionLimit: RECURSION_LIMIT,
@@ -424,6 +454,51 @@ export class SessionTeam {
 			this.streamSink = null;
 			this.streamSinkHandle = null;
 		}
+	}
+
+	/**
+	 * Build + emit one display `TeamFrame` through the stream-bound display
+	 * sink (041 — contract §1.2, unified read path; research.md D2). The
+	 * shared implementation behind the `configurable.emitChannelFrame`
+	 * closures installed by BOTH the user-turn runner ({@link runTeamTurn})
+	 * and the init-turn runner ({@link runInitTurn}), so every
+	 * display-channel producer — the TurnLoop, the compress/review nodes and
+	 * the init instruction node — resolves `this.streamSink` LIVE over
+	 * `this`: a rebind/clear during the connection reflects on the next
+	 * emit, and a `null` sink is a no-op (best-effort, research.md D9).
+	 *
+	 * `content` is either plain text (built into a `text` part — the
+	 * pre-existing call shape, compress.ts:244-262 / planner.ts:337-342) or
+	 * pre-built `MessagePart[]` (041 T006 — the init instruction node passes
+	 * the planner response's `toolCall` part for faithful mirroring,
+	 * research.md D3). `frameId` is the producing message's id when the
+	 * caller has one (dedup anchor `frameId == msg.id`, data-model.md §4 —
+	 * compress node and init instruction node); `role` overrides the
+	 * messageParts default AGENT (e.g. `MESSAGE_ROLE_USER` for
+	 * HumanMessage-sourced frames, {@link ChannelFrameEmitter}).
+	 */
+	private emitChannelFrame(
+		agent: string,
+		content: string | MessagePart[],
+		frameId?: string,
+		role?: MessageRole,
+	): void {
+		const frame: TeamFrame = buildTeamFrame(
+			this.sessionId,
+			this.template,
+			{
+				agent,
+				messageParts: {
+					parts:
+						typeof content === "string"
+							? [{ text: { content } }]
+							: content,
+				},
+			},
+			frameId,
+		);
+		if (role) frame.role = role;
+		this.streamSink?.(frame);
 	}
 
 	/**
@@ -589,36 +664,16 @@ export class SessionTeam {
 				// compress read it as `config?.configurable?.emitChannelFrame`.
 				configurable: {
 					thread_id: this.sessionId,
+					// 041 Phase 3 (T005): the closure now delegates to the
+					// shared {@link SessionTeam.emitChannelFrame} (contract
+					// §1.2 unified read path) so the user-turn and init-turn
+					// runners build frames identically (research.md D2).
 					emitChannelFrame: (
 						agent: string,
-						content: string,
+						content: string | MessagePart[],
 						frameId?: string,
 						role?: MessageRole,
-					) => {
-						const frame: TeamFrame = buildTeamFrame(
-							this.sessionId,
-							this.template,
-							{
-								agent,
-								messageParts: {
-									parts: [{ text: { content } }],
-								},
-							},
-							// Dedup anchor: the compress node's summary
-							// message id (frameId == msg.id, data-model.md §4).
-							frameId,
-						);
-						// Role override (see {@link ChannelFrameEmitter}): the
-						// planner's review input is a HumanMessage and must
-						// carry MESSAGE_ROLE_USER so the live frame renders
-						// identically to the reloaded history entry.
-						if (role) frame.role = role;
-						// 041 (contract §1.2): ALL display-channel frames
-						// resolve the stream-bound sink LIVE over `this` — a
-						// rebind/clear during the connection reflects on the
-						// next emit; null → no-op (best-effort, D9).
-						this.streamSink?.(frame);
-					},
+					) => this.emitChannelFrame(agent, content, frameId, role),
 					// Feature 038 (US1): mid-turn drain seam — the player's
 					// `queueDrain` beforeModel middleware calls this before
 					// every model call to inject queued user messages
