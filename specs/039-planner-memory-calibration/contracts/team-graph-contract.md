@@ -68,6 +68,7 @@ START ──条件边(runInitInstruction?)──→ [initInstruction] ──→ 
 
 - **initInstruction**：team 初始化时**异步**触发一次（D10，R2——`UpdateTeam(allow_missing=true)` 物化路径（graph 首建）后即返回、不等 LLM；原 `SessionTeamStore.create`（AIP-133 CreateTeam）触发点被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersede）。planner 仅依冻结记忆快照（首次烘焙，§3），经 prompt **要求**给 player 指令产出**无 gameLog**指令（LLM 决定是否调用 `instruct_player`，R4——无强制检验）；指令写入 `TeamState.pendingInstruction`（不触发 player invoke）。`UpdateTeam` 响应不含 player 输出。异步产出期间到达的 user message 须排在指令之后（player 首次激活时先注入 pending 指令）。**仅 graph 首建（物化）触发；profile 变更重建（040 FR-005）不重跑 initInstruction。**
 - **postCompactInstruction**：compress 节点之后、END 之前。planner 依压缩刷新后的冻结快照，经 prompt 要求产出**无 gameLog**指令（因 player 指令历史已被压缩清理，FR-016；LLM 决定是否调用）；指令写入 `pendingInstruction`；turn 结束（END），随下次 player 激活注入。
+- **共享核心 base**：instruction agent 的 systemPrompt 与 review planner **相同**——`planner_prompt`（FR-034）非空用配置值，空则 fallback 到同一 `DEFAULT_PLANNER_BASE`（**不**为 init/compact 修改 base，也不追加配套段）。init/compact 场景的特殊性（无游戏历史、请勿复盘游戏、请勿更新长期记忆）在 input request（`buildInstructionRequest`）中表达；工具集仅 `instruct_player`（不持 memory 工具，配合"请勿更新记忆"）。
 - 两节点复用同一节点函数（参数区分 scenario）；prompt 措辞区分两场景与 review（init/compact 要求给指令；review 必要时才调用）。节点不做"是否调用工具"的强制检验（R4）。
 - 不触发 player invoke（指令进 pending 槽，由 player 入口消费）。
 

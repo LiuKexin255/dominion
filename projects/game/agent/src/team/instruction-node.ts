@@ -25,7 +25,10 @@
  * 输入 = `[frozenSnapshot.toSystemMessage(), ...state.plannerMessages,
  * instructionRequest]`；写回时过滤 `planner-memory-snapshot` id（同 review
  * 节点，contract §3）。tools = 仅 `instruct_player`（不持 memory 工具 —
- * "仅依冻结快照"）。
+ * "仅依冻结快照"）。systemPrompt = 与 review planner 相同的**共享核心 base**
+ * （`DEFAULT_PLANNER_BASE`，不追加配套段）；init/compact 场景的特殊性
+ * （无游戏历史、请勿复盘游戏、请勿更新长期记忆）在 input request
+ * （`buildInstructionRequest`）中表达。
  */
 
 import { createAgent } from "langchain";
@@ -40,7 +43,7 @@ import type { TeamStateValue } from "./state";
 import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
 import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { CreateAgentFn } from "./player";
-import { PLANNER_AGENT_NAME } from "./planner";
+import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
 import { invokeAgentWithRetry } from "./agent-invoke";
 import {
 	buildInstructPlayerTool,
@@ -63,13 +66,14 @@ export interface InstructionNodeDeps {
 	frozenSnapshot: FrozenMemorySnapshot;
 	/**
 	 * The planner's base prompt from `SaoleiProfile.planner_prompt` (FR-034
-	 * semantics A — empty string = unset = fall back to the template default
-	 * `INSTRUCTION_NODE_BASE`, NOT the review-oriented
-	 * `DEFAULT_PLANNER_BASE`: this scenario has no gameLog and no memory
-	 * tool, so the review base's "终局棋盘"/"调用 memory 工具" guidance would
-	 * be misleading). No skill body is appended here: the instruction
-	 * scenario holds NO memory tool (memory skill guidance would be dead
-	 * text).
+	 * semantics A — empty string = unset = fall back to the SHARED template
+	 * default `DEFAULT_PLANNER_BASE`, the same core base the review planner
+	 * uses: the core prompt is consistent across the review and instruction
+	 * agents — differentiation happens in the tool set (no memory tool here)
+	 * and in the scenario request message (`buildInstructionRequest`, which
+	 * carries the "无游戏历史/请勿复盘/请勿更新记忆" caveats). No skill body is
+	 * appended here: the instruction scenario holds NO memory tool (memory
+	 * skill guidance would be dead text).
 	 */
 	plannerBasePrompt: string;
 	/** Optional createAgent override (DI seam, defaults to the real one). */
@@ -77,38 +81,31 @@ export interface InstructionNodeDeps {
 }
 
 /**
- * The instruction nodes' DEFAULT base prompt (FR-034 semantics A fallback —
- * the template default used when `SaoleiProfile.planner_prompt` is empty).
- *
- * Deliberately NOT the review-oriented `DEFAULT_PLANNER_BASE` (planner.ts):
- * that base describes the game-end review ("每局游戏结束后收到终局棋盘") and
- * the memory tool ("调用 memory 工具") — neither applies to the init/compact
- * scenario (no gameLog, no memory tool in the tool set, FR-019). This base
- * only states the planner role; the scenario-specific REQUIRING guidance
- * lives in the input request message (buildInstructionRequest).
- */
-const INSTRUCTION_NODE_BASE =
-	"你是扫雷团队的复盘规划者（planner）。你的职责是依据你的长期记忆" +
-	"（冻结快照，见输入中的长期记忆内容）在关键时刻给 player 发送策略指令。" +
-	"你不操作桌面，不持有任何读取工具；你的产出是给 player 的校准指令。";
-
-/**
  * The instruction request message — the scenario-specific prompt that
  * REQUIRES (区别于 review 的"必要时才调用") the planner to produce a
  * no-game-history instruction (R4: the final tool call is still the LLM's
  * decision — no enforcement; contract §2.3).
+ *
+ * The shared base (`DEFAULT_PLANNER_BASE`) describes the planner's NORMAL
+ * review mode ("复盘本局表现"/"调用 memory 工具" — the review agent's mode);
+ * this request is where the init/compact scenario's special cases are
+ * stated: no game history (so no review) and no memory update (the frozen
+ * snapshot stays unchanged). The agent's tool set (only `instruct_player`,
+ * no `memory`) enforces the same boundary.
  */
 function buildInstructionRequest(scenario: InstructionScenario): BaseMessage {
 	if (scenario === "init") {
 		return new HumanMessage(
-			"团队初始化：player 尚无任何游戏记录，也没有收到过任何策略指令。" +
-				"请基于你的长期记忆，给 player 一条开局策略指令，帮助它开始第一局游戏。" +
+			"团队初始化：player 尚无游戏记录，也没有收到过任何策略指令。" +
+				"当前无游戏历史，请勿复盘游戏，也请勿更新长期记忆。" +
+				"请依据你的冻结快照长期记忆，给 player 一条开局策略指令，帮助它开始第一局游戏。" +
 				"请调用 instruct_player 发送这条指令。",
 		);
 	}
 	return new HumanMessage(
 		"上下文刚被压缩：player 的指令历史已被清理，需要重新建立引导。" +
-			"请基于刷新后的长期记忆，给 player 一条新的策略指令。" +
+			"当前无游戏历史，请勿复盘游戏，也请勿更新长期记忆。" +
+			"请依据刷新后的冻结快照长期记忆，给 player 一条新的策略指令。" +
 			"请调用 instruct_player 发送这条指令。",
 	);
 }
@@ -132,14 +129,15 @@ export function createInstructionNode(
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
 	// FR-034 semantics A: the base prompt is the profile's planner_prompt
-	// when non-empty, else the instruction-specific template default
-	// (INSTRUCTION_NODE_BASE — the review-oriented DEFAULT_PLANNER_BASE's
-	// "终局棋盘"/"调用 memory 工具" descriptions do not apply here). No skill
-	// body / tool description section: the instruction agent's tool set is
-	// exactly `instruct_player` (contract §2.3 — "仅依冻结快照"，不持 memory
-	// 工具).
+	// when non-empty, else the SHARED template default `DEFAULT_PLANNER_BASE`
+	// — the same core base the review planner uses (the base is NOT modified
+	// for the init/compact scenarios; their special cases — 无游戏历史、请勿
+	// 复盘、请勿更新记忆 — live in the input request message,
+	// `buildInstructionRequest`). No skill body / tool description section:
+	// the instruction agent's tool set is exactly `instruct_player`
+	// (contract §2.3 — "仅依冻结快照"，不持 memory 工具).
 	const systemPrompt =
-		deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : INSTRUCTION_NODE_BASE;
+		deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE;
 	const instructionAgent = createAgentFn({
 		model: deps.model,
 		tools: [buildInstructPlayerTool()],

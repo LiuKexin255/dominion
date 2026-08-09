@@ -25,6 +25,7 @@ import {
 	FrozenMemorySnapshot,
 	PLANNER_MEMORY_SNAPSHOT_ID,
 } from "./memory-snapshot";
+import { DEFAULT_PLANNER_BASE } from "./planner";
 import {
 	createInstructionNode,
 	type InstructionScenario,
@@ -131,6 +132,12 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 		const request = requestContent(firstCall, "init");
 		expect(request).toContain("请调用 instruct_player 发送这条指令");
 		expect(request).not.toContain("本局游戏过程");
+		// The scenario special cases are stated in the request (the shared
+		// base is NOT modified for init/compact — 无游戏历史/请勿复盘/请勿
+		// 更新记忆): no game history → no review, and the frozen snapshot
+		// stays unchanged (no memory update).
+		expect(request).toContain("请勿复盘游戏");
+		expect(request).toContain("请勿更新长期记忆");
 		// The fake model was actually exercised (style/javascript.md §测试).
 		expect(model.calls.length).toBeGreaterThan(0);
 	});
@@ -217,6 +224,10 @@ describe("instruction node — compact scenario (T025, contract §2.3)", () => {
 		expect(request).toContain("上下文刚被压缩");
 		expect(request).toContain("请调用 instruct_player 发送这条指令");
 		expect(request).not.toContain("本局游戏过程");
+		// The compact scenario states the same special cases as init (no
+		// review, no memory update — the shared base is untouched).
+		expect(request).toContain("请勿复盘游戏");
+		expect(request).toContain("请勿更新长期记忆");
 	});
 
 	it("keeps the frozen snapshot SystemMessage out of the channel write-back (contract §3)", async () => {
@@ -239,5 +250,53 @@ describe("instruction node — compact scenario (T025, contract §2.3)", () => {
 			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
 		);
 		expect(snapshotMsg).toBeInstanceOf(SystemMessage);
+	});
+});
+
+// ===========================================================================
+// Shared core base — FR-034 semantics A (the base is NOT modified for the
+// init/compact scenarios; their special cases live in the input request,
+// buildInstructionRequest).
+// ===========================================================================
+
+describe("instruction node — shared core base (FR-034 semantics A)", () => {
+	function capturingCreateAgent() {
+		let captured: string | undefined;
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			captured = config.systemPrompt ?? "";
+			return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+		});
+		return { createAgentFn, systemPrompt: () => captured };
+	}
+
+	it("uses DEFAULT_PLANNER_BASE (the SAME base as the review planner) when planner_prompt is empty", () => {
+		const { createAgentFn, systemPrompt } = capturingCreateAgent();
+		createInstructionNode(
+			{
+				model: silentModel(),
+				frozenSnapshot: new FrozenMemorySnapshot(),
+				plannerBasePrompt: "",
+				createAgentFn,
+			},
+			"init",
+		);
+		// The core prompt is shared verbatim — no scenario caveat is baked
+		// into the systemPrompt (they are in the input request).
+		expect(systemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+	});
+
+	it("uses the profile planner_prompt verbatim when set (FR-034 semantics A)", () => {
+		const { createAgentFn, systemPrompt } = capturingCreateAgent();
+		const profilePrompt = "你是自定义的 planner。";
+		createInstructionNode(
+			{
+				model: silentModel(),
+				frozenSnapshot: new FrozenMemorySnapshot(),
+				plannerBasePrompt: profilePrompt,
+				createAgentFn,
+			},
+			"compact",
+		);
+		expect(systemPrompt()).toBe(profilePrompt);
 	});
 });

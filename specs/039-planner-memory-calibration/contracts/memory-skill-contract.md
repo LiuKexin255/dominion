@@ -18,7 +18,7 @@
 ```yaml
 ---
 name: memory
-description: Guides the planner on how and when to use the memory tool (action/content/old_text/operations) to maintain its own long-term review memory, and on the frozen-snapshot model. Use this skill when the session profile has the memory MCP enabled and the planner must record, update, or remove a long-term memory entry.
+description: Guides an agent on how and when to use the memory tool (action/content/old_text/operations) to maintain its own long-term memory, and on the frozen-snapshot model. Use this skill when the memory MCP is enabled and the agent must record, update, or remove a long-term memory entry.
 compatibility: opencode
 metadata:
   audience: dominion
@@ -61,29 +61,29 @@ skill body（Markdown，frontmatter 之后）MUST 覆盖以下主题。措辞由
 
 ### 3.2 何时记录（WHEN，适配复盘域）
 
-参考 hermes "save proactively" 但改写为 dominion planner 复盘语义——**复盘后**主动记录跨局累积的认知：
-- player **重复犯的错误模式**（如"player 在边角频繁误标地雷"）。
-- **被验证有效的策略/技巧**（如"开局先点中心区域效率更高"）。
-- planner 自身**复盘方法论演化**（如"评估 player 应优先看操作次数与正确标记比")。
+参考 hermes "save proactively" 但改写为复盘域语义——**复盘后**主动记录跨 session 累积的认知。**措辞 MUST 领域中立**：不得含具体模板的角色名（planner/player）、通道名（playerMessages）、调参常量（压缩间隔）或游戏术语，与 hermes 原描述一致：
+- 被监管 agent 的**重复错误模式**（同一类错误跨 session 再现）。
+- **被验证有效的策略/技巧**。
+- 自身**复盘方法论演化**（如何评估被监管 agent、关注什么）。
 - 优先级：重复模式 > 验证有效策略 > 方法论。
 
 ### 3.3 跳过什么（SKIP，适配复盘域）
 
-- **单局偶发失误**（不构成模式的孤立错误）。
-- **具体坐标/棋盘瞬态**（如"(3,5) 是地雷"——局特定，无跨局价值）。
-- **易重新推导的事实**（扫雷通用规则）。
-- **指令内容**（发给 player 的指令在 playerMessages 里，不进 planner 长期记忆——两者分工，调研 §6.5）。
+- **单次偶发失误**（不构成模式的孤立错误）。
+- **session 特定瞬态**（特定位置/瞬时状态/一次性事件——无跨 session 价值）。
+- **易重新推导的事实**（通用规则）。
+- **指令内容**（发给被监管 agent 的指令在其对话通道里，不进长期记忆——两者分工，调研 §6.5）。
 
 ### 3.4 冻结快照模型（dominion 特有，必须说明）
 
-- planner 系统提示词中的长期记忆是**冻结快照**：一次烘焙、跨多次复盘保持不变。
-- **关键**：通过 `memory` 工具 add/replace/remove 改记忆后，变更**立即持久化**，但**不会立即出现在你的系统提示词里**——要到**压缩边界（每 5 局）**才刷新进快照。
+- 持有 memory 工具的 agent 的系统提示词中的长期记忆是**冻结快照**：一次烘焙、跨多次 session 保持不变。
+- **关键**：通过 `memory` 工具 add/replace/remove 改记忆后，变更**立即持久化**，但**不会立即出现在你的系统提示词里**——要到**压缩边界**才刷新进快照。
 - 因此：不要因"刚 add 的记忆没在当前快照里"而重复 add 同一洞察。
 - 工具结果（tool result）始终反映 live 状态（成功/失败/当前条目），可作为操作反馈。
 
 ### 3.5 条目写作风格
 
-参考 hermes "compact, information-dense"：每条精炼、信息密集、可跨局复用（如"player 倾向在数字格附近过度标记，应在复盘指令中强调先 deduce 再 flag"），非流水账。
+参考 hermes "compact, information-dense"：每条精炼、信息密集、可跨 session 复用（措辞领域中立，描述行为模式而非具体局面），非流水账。
 
 ---
 
