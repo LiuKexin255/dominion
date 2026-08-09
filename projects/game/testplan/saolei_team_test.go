@@ -14,6 +14,14 @@
 // StrategyStore, 031 FR-012..FR-015) is GONE — Phase 6 of spec 039 removed
 // it (FR-013) and this suite asserts its absence (SC-005).
 //
+// The 041 real-time init delivery (specs/041-realtime-init-push — quickstart
+// §B): the init instruction frames pushed through the live Connect stream
+// with no user message (B1/B3 — FR-001/FR-006, frameId == messageId),
+// the status probe reporting IDLE during the init turn (B2 — FR-003),
+// RefreshTeam / profile-change rebuild rejected FAILED_PRECONDITION while
+// the init is in flight (B4 — FR-007), and the no-duplicate re-entry after
+// the init completed (B5 — FR-004).
+//
 // A "game" in these tests is one full team turn driven by the fake-LLM
 // "saolei-start" keyword: the player agent's saolei_init recognizes an
 // IN-PROGRESS board (contract saolei-sink-contract.md §3 — onGameStart only,
@@ -43,6 +51,8 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+
+	"github.com/gorilla/websocket"
 )
 
 // findPlannerReviewFrame returns the content of the FIRST real-time frame
@@ -1716,4 +1726,530 @@ func TestTeamReviewInputGameStats(t *testing.T) {
 			t.Errorf("reloaded review input missing %q (FR-032)", want)
 		}
 	}
+}
+
+// ─── 041 real-time init delivery (FR-001..FR-007) ──────────────────────────
+
+// initRequestPrefix keys the init scenario's planner request frame and its
+// persisted plannerMessages entry: buildInstructionRequest("init") always
+// starts with this text (projects/game/agent/src/team/instruction-node.ts:
+// 104-112), and the fake-LLM matches it deterministically to the
+// instruct_player tool_call (projects/game/fake-llm/service/testdata/
+// sample_init_instruction.yaml — spec 039-planner-memory-calibration
+// FR-015). No user-turn text the large tests send contains it, so no other
+// suite can match it.
+const initRequestPrefix = "团队初始化"
+
+// The three init instruction frame kinds (specs/041-realtime-init-push/
+// contracts/realtime-channel-contract.md §2.2 / data-model.md §3.3): the
+// planner request (agent=planner, role=USER, text), the planner response
+// (agent=planner, role=AGENT, toolCall instruct_player) and the player
+// write-back (agent=player, role=USER, text). initFrameKind classifies a
+// frame into one of these, or "".
+const (
+	initFrameRequest   = "planner-request"
+	initFrameResponse  = "planner-response"
+	initFrameWriteback = "player-writeback"
+)
+
+// TestTeamInitRealtimeDelivery verifies the real-time init instruction
+// delivery over the live Connect stream (specs/041-realtime-init-push/
+// quickstart.md §B B1/B2/B3; spec FR-001/FR-003/FR-006; SC-001/SC-002/
+// SC-003): after UpdateTeam(allow_missing=true) materializes the team (the
+// one-shot initInstruction turn is triggered fire-and-forget, FR-005), a
+// Connect with NO user message must surface the instruction on first entry.
+// Two timings are possible and both are verified (research.md D1):
+//
+//   - init still in flight at Connect → the three frames are pushed through
+//     the stream-bound sink in real time (contract §2.2 — planner request
+//     USER / planner response AGENT toolCall / player write-back USER),
+//     each with frameId == the persisted message id (contract §4 — the
+//     FR-004 dedup anchor, verified via ListMessages);
+//   - init completed before the sink bound → the emit was a no-op (contract
+//     §1.2 / research.md D9 — spec edge case 3) and the instruction is
+//     delivered from history: both partitions hold it exactly once.
+//
+// Either way the status probe answers IDLE (B2 — FR-003/SC-002: isRunning
+// deliberately excludes the init turn, projects/game/agent/src/session-team.ts:546
+// (isRunning)) and no user interaction occurred (B3 — FR-002/SC-003:
+// background delivery).
+func TestTeamInitRealtimeDelivery(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a fresh session whose team was just materialized — the one-shot
+	// async initInstruction turn was triggered by the UpdateTeam and is
+	// likely still in flight (fire-and-forget, FR-005 — materialization
+	// returns before the planner model call completes, research.md D1).
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-init-live-"+uniqueSuffix(), "gpt-4", "gpt-4")
+
+	// when: connect immediately (the first inbound frame — the status probe —
+	// binds the stream display sink, contract §1.1) and probe, then read
+	// frames WITHOUT any user message until the init delivery resolves
+	// (real-time push or history, ≤ 10 s per SC-001).
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	// then: the status probe answers IDLE (B2 — FR-003/SC-002): the init
+	// turn runs outside the TurnLoop and isRunning() excludes initInFlight,
+	// so the typing indicator must not be driven by it
+	// (projects/game/agent/src/session-team.ts:546 isRunning; contract §5).
+	// IDLE holds whether the probe lands during the init or after it
+	// completed — the init must never report ACTIVE.
+	sendStatusFrame(t, conn, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
+	probeResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameStatus(f) != nil })
+	if probeResp == nil {
+		t.Fatal("no status probe response on connect")
+	}
+	if got := frameStatus(probeResp).GetStatus(); got != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("status probe on entry = %v, want IDLE (FR-003/SC-002)", got)
+	}
+
+	frames := collectInitDeliveryFrames(t, conn, sessionID, sutHostURL, sutEnvName, saoleiTemplateID)
+
+	if initFramesComplete(frames) {
+		// then: the three frames arrived through the stream IN ORDER, tagged
+		// per contract §2.2 (B1/B3 — FR-001/FR-006/SC-001/SC-003 — the
+		// real-time push path).
+		if kinds := initFrameKindsInOrder(frames); !slices.Equal(kinds, []string{initFrameRequest, initFrameResponse, initFrameWriteback}) {
+			t.Errorf("init frame order = %v, want [%s %s %s] (contract §2.2)", kinds, initFrameRequest, initFrameResponse, initFrameWriteback)
+		}
+		requestFrame := initFrameByKind(frames, initFrameRequest)
+		responseFrame := initFrameByKind(frames, initFrameResponse)
+		writebackFrame := initFrameByKind(frames, initFrameWriteback)
+
+		// then: the init turn emitted no wait/status FlowPart (contract §2.4
+		// — the init runs outside the TurnLoop and must not drive the typing
+		// indicator; the probe response above was consumed before the
+		// collection started).
+		for _, f := range frames {
+			if frameWait(f) != nil || frameStatus(f) != nil {
+				t.Errorf("init turn emitted a wait/status control frame — contract §2.4 forbids it: %v", f.GetFlowParts().GetParts())
+			}
+		}
+
+		// then: each frameId equals the persisted message id (FR-004 dedup
+		// anchor, contract §4) and the persisted message carries the frame's
+		// content — the real-time push and the ListMessages view are the
+		// SAME messages (research.md D3 faithful mirroring).
+		persisted := waitForMessageID(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner", requestFrame.GetFrameId(), 5*time.Second)
+		if persisted == nil {
+			t.Errorf("planner request frameId %q not found in the planner partition — frameId must equal the persisted message id (FR-004)", requestFrame.GetFrameId())
+		} else {
+			if !strings.Contains(messageText(persisted), initRequestPrefix) {
+				t.Errorf("planner request message text = %q, want to contain %q (contract §2.2)", messageText(persisted), initRequestPrefix)
+			}
+			if persisted.GetRole() != game.MessageRole_MESSAGE_ROLE_USER {
+				t.Errorf("planner request message role = %v, want USER (contract §2.2)", persisted.GetRole())
+			}
+		}
+		persisted = waitForMessageID(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner", responseFrame.GetFrameId(), 5*time.Second)
+		if persisted == nil {
+			t.Errorf("planner response frameId %q not found in the planner partition — frameId must equal the persisted message id (FR-004)", responseFrame.GetFrameId())
+		} else {
+			if !messageHasToolCall(persisted, "instruct_player") {
+				t.Errorf("planner response message does not carry the instruct_player tool_call (contract §2.2)")
+			}
+			if args := messageToolCallArgsJSON(persisted, "instruct_player"); !strings.Contains(args, expectedInitInstructionText) {
+				t.Errorf("planner response instruct_player args_json = %q, want to contain %q (contract §2.2)", args, expectedInitInstructionText)
+			}
+			if persisted.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
+				t.Errorf("planner response message role = %v, want AGENT (contract §2.2)", persisted.GetRole())
+			}
+		}
+		persisted = waitForMessageID(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player", writebackFrame.GetFrameId(), 5*time.Second)
+		if persisted == nil {
+			t.Errorf("player write-back frameId %q not found in the player partition — frameId must equal the persisted message id (FR-004)", writebackFrame.GetFrameId())
+		} else {
+			if messageText(persisted) != expectedInitInstructionText {
+				t.Errorf("player write-back message text = %q, want %q (contract §2.2)", messageText(persisted), expectedInitInstructionText)
+			}
+			if persisted.GetRole() != game.MessageRole_MESSAGE_ROLE_USER {
+				t.Errorf("player write-back message role = %v, want USER (contract §2.2)", persisted.GetRole())
+			}
+		}
+	} else {
+		// History path (spec edge case 3 — research.md D1/D7): the init
+		// completed before the sink bound, so no real-time frame was ever
+		// emitted (contract §1.2 — emitting through an unbound sink is a
+		// no-op). The collector returned only once the instruction was
+		// persisted, so a partial frame set here is a real bug: the init
+		// emission is BATCH (post-invoke, contract §2.1), all-or-nothing.
+		if len(frames) != 0 {
+			t.Fatalf("init delivery unresolved: %d frame(s) arrived but the three init frames are incomplete (batch emission, contract §2.1): %v", len(frames), frames)
+		}
+		playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+		if !messagesContainText(playerLmr.GetMessages(), expectedInitInstructionText) {
+			t.Fatalf("the init turn did not deliver within 10 s — no real-time frame and no persisted instruction (SC-001: the planner model must answer within 10 s)")
+		}
+		t.Logf("init completed before the sink bound — the instruction is delivered from history instead of a real-time push (spec edge case 3)")
+	}
+
+	// then: regardless of the delivery path, the instruction is persisted
+	// EXACTLY once in each partition (FR-004 / US1 acceptance scenario 2 —
+	// no duplicate rendering; the frameId == messageId anchor collapses
+	// seed/history/push onto one id namespace, contract §4).
+	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	playerInstructionCount := 0
+	for _, m := range playerLmr.GetMessages() {
+		if strings.Contains(messageText(m), expectedInitInstructionText) {
+			playerInstructionCount++
+		}
+	}
+	if playerInstructionCount != 1 {
+		t.Errorf("player partition instruction count = %d, want exactly 1 (FR-004)", playerInstructionCount)
+	}
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	plannerRequestCount := 0
+	plannerCallCount := 0
+	for _, m := range plannerLmr.GetMessages() {
+		if strings.Contains(messageText(m), initRequestPrefix) {
+			plannerRequestCount++
+		}
+		if args := messageToolCallArgsJSON(m, "instruct_player"); strings.Contains(args, expectedInitInstructionText) {
+			plannerCallCount++
+		}
+	}
+	if plannerRequestCount != 1 {
+		t.Errorf("planner partition request count = %d, want exactly 1 (FR-004)", plannerRequestCount)
+	}
+	if plannerCallCount != 1 {
+		t.Errorf("planner partition instruct_player call count = %d, want exactly 1 (FR-004)", plannerCallCount)
+	}
+}
+
+// TestTeamInitDestructiveOpsRejected verifies FR-007/SC-005 (quickstart §B
+// B4; contract §5): while the one-shot init turn is in flight, the
+// destructive operations — RefreshTeam and a profile-change rebuild
+// (UpdateTeam with a different profile) — are rejected with
+// FAILED_PRECONDITION (isBusy includes initInFlight while isRunning does
+// not — projects/game/agent/src/session-team.ts:563 (isBusy); the gateway
+// maps FailedPrecondition to HTTP 400, see TestTeamUpdateRebuildInFlightRejected).
+// Once the init completes, the same operations succeed.
+//
+// The init window (the planner model call — seconds per spec Assumption line
+// 105) is caught deterministically: each op is fired as the FIRST HTTP call
+// after its own UpdateTeam materialization returned. The one-shot init
+// starts BEFORE UpdateTeam responds (session-team.ts:925 —
+// triggerInitInstruction inside factory.then) and its planner model call
+// outlives the few ms the op's request needs to reach the agent, so the
+// request lands while the init is certainly in flight. Each op runs on its
+// OWN session (table case): a shared session would race the two requests
+// against each other — the first op's round trip can consume the window the
+// second op needs (the T011 flake: RefreshTeam caught the window, the
+// profile-change rebuild missed it).
+func TestTeamInitDestructiveOpsRejected(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given: per-case teams — one session per destructive op (each op fires
+	// as its session's first post-materialization call, so the two ops never
+	// race each other for the init window); the rebuild case also needs a
+	// second profile to switch to.
+	tests := []struct {
+		name           string
+		profileID      string
+		otherProfileID string // profile-change rebuild target (empty for RefreshTeam)
+		fire           func(t *testing.T, sutHostURL, sutEnvName, sessionID, otherProfileID string) (int, []byte)
+	}{
+		{
+			name:      "RefreshTeam",
+			profileID: fmt.Sprintf("team-init-busy-refresh-%s", uniqueSuffix()),
+			fire: func(t *testing.T, host, env, sessionID, otherProfileID string) (int, []byte) {
+				return refreshTeamWithStatus(t, host, env, saoleiTemplateID, sessionID)
+			},
+		},
+		{
+			name:           "profile-change rebuild",
+			profileID:      fmt.Sprintf("team-init-busy-rebuild-%s", uniqueSuffix()),
+			otherProfileID: fmt.Sprintf("team-init-busy-rebuild-other-%s", uniqueSuffix()),
+			fire: func(t *testing.T, host, env, sessionID, otherProfileID string) (int, []byte) {
+				return updateTeamWithStatus(t, host, env, saoleiTemplateID, sessionID, otherProfileID)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given: a materialized team — the one-shot init turn was
+			// triggered fire-and-forget inside the UpdateTeam
+			// (session-team.ts:925 — FR-005) and is in flight for the
+			// duration of its planner model call. The rebuild case's second
+			// profile is created BEFORE materialization: the op must fire as
+			// the FIRST HTTP call after the UpdateTeam return, and any
+			// intervening request would consume the init window.
+			if tt.otherProfileID != "" {
+				createTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, tt.otherProfileID, "gpt-4", "gpt-4")
+			}
+			sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, tt.profileID, "gpt-4", "gpt-4")
+
+			// when: fire the destructive op as the FIRST HTTP call after
+			// materialization (no connect — the init window is what is being
+			// caught; nothing between the UpdateTeam return and this request
+			// can consume the window).
+			status, body := tt.fire(t, sutHostURL, sutEnvName, sessionID, tt.otherProfileID)
+
+			// then: FAILED_PRECONDITION — grpc-gateway maps it to HTTP 400
+			// (FR-007/SC-005; the mapping is pinned by
+			// TestTeamUpdateRebuildInFlightRejected).
+			if status != http.StatusBadRequest {
+				t.Fatalf("%s during init: status=%d, want 400 FAILED_PRECONDITION (FR-007/SC-005), body=%s", tt.name, status, body)
+			}
+			t.Logf("%s rejected during init: %d %s", tt.name, status, body)
+
+			// when: the init completes (the instruction write-back persists —
+			// the init turn's completion marker, contract §2.2).
+			waitForInitInstructionPersisted(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+
+			// then: the same operation succeeds once the init is done
+			// (FR-007 — the gate lifts).
+			status, body = tt.fire(t, sutHostURL, sutEnvName, sessionID, tt.otherProfileID)
+			if status != http.StatusOK {
+				t.Fatalf("%s after init: status=%d, want 200 (FR-007 — the same operation must succeed once the init is done), body=%s", tt.name, status, body)
+			}
+			t.Logf("%s succeeded after init: %d %s", tt.name, status, body)
+		})
+	}
+}
+
+// TestTeamInitNoDuplicateReentry verifies FR-004 / US1 acceptance scenario 2
+// (quickstart §B B5; contract §4): after the one-shot init turn completed, a
+// (re-)entry delivers the instruction EXACTLY once — from history, with no
+// real-time re-push. The init runs once per session lifecycle
+// (projects/game/agent/src/session-team.ts:337 (triggerInitInstruction) —
+// never re-triggered by re-entry or rebuild), and its emission was a no-op
+// while the sink was unbound (research.md D1/D7), so a second Connect must
+// receive no init frames; the frontend's renderedMessageIds dedup by
+// frameId == messageId (contract §4) is the rendering guarantee, and this
+// test pins its service-side half: the history holds the instruction exactly
+// once and the connection pushes nothing.
+func TestTeamInitNoDuplicateReentry(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a session whose init turn ALREADY completed — the instruction is
+	// persisted in the player partition (spec edge case 3: init completes
+	// before the user connects; the history seed delivers it on entry).
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-init-reentry-"+uniqueSuffix(), "gpt-4", "gpt-4")
+	waitForInitInstructionPersisted(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+
+	// when: enter the session (connect #1 — the sink binds AFTER the init
+	// completed, so the real-time push is a no-op, contract §1.2)…
+	conn1 := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	sendStatusFrame(t, conn1, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
+	probeResp := drainWSFrame(t, conn1, func(f *game.TeamFrame) bool { return frameStatus(f) != nil })
+	if probeResp == nil {
+		t.Fatal("connect #1: no status probe response")
+	}
+	if got := frameStatus(probeResp).GetStatus(); got != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("connect #1 probe = %v, want IDLE (no turn running)", got)
+	}
+	if frame, err := readWSFrameNoFatal(conn1, 2*time.Second); err == nil {
+		t.Errorf("connect #1 received an unexpected frame after the probe — the init completed before connect, no real-time push expected: agent=%s role=%s (FR-004)", frame.GetAgent(), roleString(frame.GetRole()))
+	}
+	conn1.Close()
+
+	// …then re-enter the session (connect #2): the instruction must NOT be
+	// pushed again (B5 — the one-shot init never re-emits; FR-004).
+	conn2 := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn2.Close()
+	sendStatusFrame(t, conn2, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
+	probeResp = drainWSFrame(t, conn2, func(f *game.TeamFrame) bool { return frameStatus(f) != nil })
+	if probeResp == nil {
+		t.Fatal("connect #2: no status probe response")
+	}
+	if got := frameStatus(probeResp).GetStatus(); got != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("connect #2 probe = %v, want IDLE (no turn running)", got)
+	}
+	if frame, err := readWSFrameNoFatal(conn2, 2*time.Second); err == nil {
+		t.Errorf("re-entry received an unexpected frame — no duplicate delivery on re-connect: agent=%s role=%s (FR-004/B5)", frame.GetAgent(), roleString(frame.GetRole()))
+	}
+
+	// then: the instruction is visible from history immediately (no delay,
+	// US1 acceptance scenario 2) and exactly once per partition (no
+	// duplicate rendering, FR-004).
+	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	playerInstructionCount := 0
+	for _, m := range playerLmr.GetMessages() {
+		if strings.Contains(messageText(m), expectedInitInstructionText) {
+			playerInstructionCount++
+		}
+	}
+	if playerInstructionCount != 1 {
+		t.Errorf("player partition instruction count = %d, want exactly 1 (FR-004)", playerInstructionCount)
+	}
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	plannerRequestCount := 0
+	plannerCallCount := 0
+	for _, m := range plannerLmr.GetMessages() {
+		if strings.Contains(messageText(m), initRequestPrefix) {
+			plannerRequestCount++
+		}
+		if args := messageToolCallArgsJSON(m, "instruct_player"); strings.Contains(args, expectedInitInstructionText) {
+			plannerCallCount++
+		}
+	}
+	if plannerRequestCount != 1 {
+		t.Errorf("planner partition request count = %d, want exactly 1 (FR-004)", plannerRequestCount)
+	}
+	if plannerCallCount != 1 {
+		t.Errorf("planner partition instruct_player call count = %d, want exactly 1 (FR-004)", plannerCallCount)
+	}
+}
+
+// ─── 041 helpers (init delivery collection / classification) ───────────────
+
+// collectInitDeliveryFrames reads WS frames until the init delivery is
+// resolved, returning every frame read in order (the caller consumes the
+// status probe response first — the init frames always follow it, because
+// the sink binds only when the probe is processed, contract §1.1):
+//
+//   - all three real-time init frames arrived (contract §2.2 — the
+//     real-time push path), or
+//   - no init frame arrived AND the instruction is persisted in the player
+//     partition (the init completed before the sink bound — the history
+//     path, contract §1.2 / research.md D9; a buffered real-time frame
+//     would have been returned by the read BEFORE the history check, so a
+//     persisted instruction proves no push is coming), or
+//   - the 10 s cap elapses (SC-001 — the planner model's response time).
+//
+// The read deadline is short so the persisted-state check can interleave
+// with the frame reads.
+func collectInitDeliveryFrames(t *testing.T, conn *websocket.Conn, sessionID, sutHostURL, sutEnvName, template string) []*game.TeamFrame {
+	t.Helper()
+	const (
+		initDeliveryCap = 10 * time.Second
+		perReadDeadline = 1 * time.Second
+	)
+	stopAt := time.Now().Add(initDeliveryCap)
+	var frames []*game.TeamFrame
+	for time.Now().Before(stopAt) {
+		remaining := time.Until(stopAt)
+		if remaining > perReadDeadline {
+			remaining = perReadDeadline
+		}
+		frame, err := readWSFrameNoFatal(conn, remaining)
+		if err == nil {
+			frames = append(frames, frame)
+			if initFramesComplete(frames) {
+				return frames
+			}
+			continue
+		}
+		if !framesContainInitFrame(frames) {
+			playerLmr := listMessages(t, sutHostURL, sutEnvName, template, sessionID, "player")
+			if messagesContainText(playerLmr.GetMessages(), expectedInitInstructionText) {
+				return frames
+			}
+		}
+	}
+	return frames
+}
+
+// initFrameKind classifies a frame into one of the three init instruction
+// frame kinds (contract §2.2), or "" when the frame carries none. The
+// toolCall check comes first so a frame carrying both a toolCall and text
+// still classifies as the planner response.
+func initFrameKind(f *game.TeamFrame) string {
+	if tc := frameToolCall(f); tc != nil && tc.GetName() == "instruct_player" &&
+		f.GetAgent() == "planner" && f.GetRole() == game.MessageRole_MESSAGE_ROLE_AGENT {
+		return initFrameResponse
+	}
+	if !frameHasText(f) {
+		return ""
+	}
+	switch {
+	case f.GetAgent() == "planner" && f.GetRole() == game.MessageRole_MESSAGE_ROLE_USER && strings.Contains(frameText(f), initRequestPrefix):
+		return initFrameRequest
+	case f.GetAgent() == "player" && f.GetRole() == game.MessageRole_MESSAGE_ROLE_USER && strings.Contains(frameText(f), expectedInitInstructionText):
+		return initFrameWriteback
+	}
+	return ""
+}
+
+// initFramesComplete reports whether all three init instruction frames
+// (contract §2.2) are present in the given frames.
+func initFramesComplete(frames []*game.TeamFrame) bool {
+	seen := map[string]bool{}
+	for _, f := range frames {
+		if kind := initFrameKind(f); kind != "" {
+			seen[kind] = true
+		}
+	}
+	return seen[initFrameRequest] && seen[initFrameResponse] && seen[initFrameWriteback]
+}
+
+// framesContainInitFrame reports whether any of the given frames is one of
+// the three init instruction frames (contract §2.2).
+func framesContainInitFrame(frames []*game.TeamFrame) bool {
+	for _, f := range frames {
+		if initFrameKind(f) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// initFrameByKind returns the first frame of the given init frame kind, or
+// nil when none is present.
+func initFrameByKind(frames []*game.TeamFrame, kind string) *game.TeamFrame {
+	for _, f := range frames {
+		if initFrameKind(f) == kind {
+			return f
+		}
+	}
+	return nil
+}
+
+// initFrameKindsInOrder returns the ordered sequence of init frame kinds
+// carried by the given frames (non-init frames are skipped).
+func initFrameKindsInOrder(frames []*game.TeamFrame) []string {
+	var kinds []string
+	for _, f := range frames {
+		if kind := initFrameKind(f); kind != "" {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
+
+// waitForMessageID polls the given agent partition until a Message with the
+// given message id is persisted, returning it (nil on timeout). The init
+// frames are emitted BEFORE the outer checkpoint save resolves (contract
+// §2.1 — the node emits, then the graph saves the state), so the
+// ListMessages view can lag the real-time frame by one superstep.
+func waitForMessageID(t *testing.T, sutHostURL, sutEnvName, template, sessionID, agent, id string, timeout time.Duration) *game.Message {
+	t.Helper()
+	stopAt := time.Now().Add(timeout)
+	for time.Now().Before(stopAt) {
+		lmr := listMessages(t, sutHostURL, sutEnvName, template, sessionID, agent)
+		for _, m := range lmr.GetMessages() {
+			if m.GetMessageId() == id {
+				return m
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
+}
+
+// waitForInitInstructionPersisted polls the player partition until the init
+// instruction write-back is persisted — the completion marker of the one-shot
+// async init turn (the write-back lands in playerMessages at the checkpoint
+// save; contract §2.2/§5, research.md D1). Fails the test when the
+// instruction does not persist within 10 s (SC-001 — the planner model call
+// completes in seconds, spec Assumption line 105).
+func waitForInitInstructionPersisted(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) {
+	t.Helper()
+	stopAt := time.Now().Add(10 * time.Second)
+	for time.Now().Before(stopAt) {
+		lmr := listMessages(t, sutHostURL, sutEnvName, template, sessionID, "player")
+		if messagesContainText(lmr.GetMessages(), expectedInitInstructionText) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("init instruction %q did not persist within 10 s — the init turn did not complete (SC-001)", expectedInitInstructionText)
 }

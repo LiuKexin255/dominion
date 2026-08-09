@@ -77,7 +77,14 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 	// The two frames race on the WS (dispatch sink-writes synchronously
 	// inside the tool fn while stream.toolCalls yields asynchronously), so a
 	// single read pass collects both without dropping either.
-	toolCallFrame, initOpFrame := readToolCallAndOperation(t, conn)
+	//
+	// The player-scoped read skips the 041 real-time init frames: when the
+	// one-shot init turn is still in flight at Connect, it pushes a planner
+	// instruct_player toolCall frame (agent=planner — contract §2.2) that
+	// would otherwise shadow the user turn's saolei_init (agent=player) in
+	// the first toolCall slot (specs/041-realtime-init-push/
+	// contracts/realtime-channel-contract.md §2.2).
+	toolCallFrame, initOpFrame := readPlayerToolCallAndOperation(t, conn)
 	toolCall := frameToolCall(toolCallFrame)
 	if toolCall.GetName() != "saolei_init" {
 		t.Errorf("tool_call.name = %q, want saolei_init (FR-002)", toolCall.GetName())

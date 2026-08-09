@@ -661,6 +661,21 @@ func refreshTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID strin
 	}
 }
 
+// refreshTeamWithStatus sends a RefreshTeam request and returns the HTTP
+// status code and response body. Does NOT fatal on non-2xx responses — used
+// to assert the in-flight rejection contract: FAILED_PRECONDITION while the
+// per-session turn mutex is held OR the one-shot async initInstruction turn
+// is in flight (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+// §5 — FR-007, quickstart B4).
+func refreshTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team:refresh", sutHostURL, pathPrefix, template, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
+
+	return resp.StatusCode, respBody
+}
+
 // setupTeamSession creates the full team stack for one test: Session →
 // saolei TeamProfile → UpdateTeam(allow_missing=true) materialization.
 // Returns the session ID. The caller then connects the WebSocket via
@@ -1499,6 +1514,41 @@ func readToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame
 	}
 	if toolCallFrame == nil {
 		t.Fatal("did not receive a tool_call MessagePart frame from the agent (FR-006)")
+	}
+	if opFrame == nil {
+		t.Fatal("did not receive an operation FlowPart frame from the agent (model→tool_call→dispatch chain did not fire)")
+	}
+	return toolCallFrame, opFrame
+}
+
+// readPlayerToolCallAndOperation is readToolCallAndOperation scoped to the
+// PLAYER agent's tool_call frames: the 041 real-time init delivery
+// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §2.2)
+// pushes a planner-side instruct_player toolCall frame through the same
+// stream BEFORE the user turn's frames when the one-shot init is still in
+// flight at Connect (planner response — agent=planner, role=AGENT,
+// toolCall). Suites asserting a user-turn tool_call — always produced by the
+// player agent, the ONLY tool-holding agent (spec 031 FR-028) — MUST use
+// this variant so the init's planner toolCall does not shadow the turn's
+// (agent_operation_test.go TestAgentOperationDispatchLoopSuccess). The init
+// turn never dispatches an operation FlowPart (contract §2.4), so the
+// operation frame slot is unchanged.
+func readPlayerToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame, opFrame *game.TeamFrame) {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		if toolCallFrame != nil && opFrame != nil {
+			return toolCallFrame, opFrame
+		}
+		frame := readWSFrame(t, conn)
+		if toolCallFrame == nil && frameHasToolCall(frame) && frame.GetAgent() == "player" {
+			toolCallFrame = frame
+		}
+		if opFrame == nil && frameOperationToolID(frame) != "" {
+			opFrame = frame
+		}
+	}
+	if toolCallFrame == nil {
+		t.Fatal("did not receive a player tool_call MessagePart frame from the agent (FR-006)")
 	}
 	if opFrame == nil {
 		t.Fatal("did not receive an operation FlowPart frame from the agent (model→tool_call→dispatch chain did not fire)")
