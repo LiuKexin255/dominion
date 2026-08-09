@@ -78,8 +78,10 @@ const (
 // yaml planner-memory-multi-hit / sample_init_instruction.yaml /
 // sample_compact_instruction.yaml). The review instruction is delivered into
 // the player channel by the planner node (FR-017 order); the init/compact
-// instructions land in the pendingInstruction slot and are delivered with
-// the player's next activation (FR-015/FR-016). The review/compact contents
+// instructions are written DIRECTLY into the player channel by the
+// instruction nodes (same channel write-back, no pending slot) and consumed
+// with the player's next activation (FR-015/FR-016). The review/compact
+// contents
 // end with "请继续游戏。" so the player's next model call matches the
 // saolei-start keyword "继续" (sample_saolei_start.yaml) and opens the next
 // game instead of falling into the no-match random fallback — the appended

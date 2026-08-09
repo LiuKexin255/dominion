@@ -16,6 +16,7 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/solver"
 
+	"google.golang.org/grpc/balancer"
 	grpcresolver "google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/serviceconfig"
 )
@@ -90,7 +91,12 @@ func TestStatefulBuilder_Build_Success(t *testing.T) {
 	}
 }
 
-func TestStatefulBuilder_InstanceNotFound(t *testing.T) {
+func TestStatefulBuilder_InstanceMissingPublishesEmptyState(t *testing.T) {
+	// The requested instance disappearing is a LEGAL state (e.g. mid-rollout):
+	// the resolver publishes an EMPTY address list instead of reporting an
+	// error — the LB policy fails RPCs fast (TRANSIENT_FAILURE) and the
+	// polling loop recovers on the next refresh (grpc-go DNS resolver
+	// semantics; deploy incident 2026-08-09).
 	cc := newFakeClientConn()
 	ticker := newFakeTicker()
 	client := &fakeStatefulResolver{
@@ -110,20 +116,27 @@ func TestStatefulBuilder_InstanceNotFound(t *testing.T) {
 	t.Cleanup(got.Close)
 	cc.drainUpdateSignals()
 
+	// Instance 5 disappears on the next resolve: an empty state is
+	// published, NOT an error.
 	got.ResolveNow(grpcresolver.ResolveNowOptions{})
-	reportedErr := cc.waitForError(time.Second)
-	if reportedErr == nil {
-		t.Fatal("ReportError() = nil, want stateful instance not found")
+	if !cc.waitForUpdate(time.Second) {
+		t.Fatal("expected an empty-state update after the instance disappeared")
 	}
-	if !errors.Is(reportedErr, solver.ErrInstanceNotFound) {
-		t.Fatalf("ReportError() = %v, want error wrapping %v", reportedErr, solver.ErrInstanceNotFound)
+	states := cc.states()
+	if len(states) != 2 {
+		t.Fatalf("update count = %d, want 2 (initial addresses + empty state)", len(states))
 	}
-	if len(cc.states()) != 1 {
-		t.Fatalf("after error update count = %d, want 1", len(cc.states()))
+	if len(addressStrings(states[1].Addresses)) != 0 {
+		t.Fatalf("published addresses = %#v, want empty (missing instance is legal)", addressStrings(states[1].Addresses))
+	}
+	if len(cc.reported) != 0 {
+		t.Fatalf("ReportError() = %v, want none (empty result is not a resolver error)", cc.reported)
 	}
 }
 
-func TestStatefulBuilder_InstanceNoReadyEndpoints(t *testing.T) {
+func TestStatefulBuilder_InstanceWithoutReadyEndpointsPublishesEmptyState(t *testing.T) {
+	// An instance present but without ready endpoints (terminating /
+	// not-ready pod) is a transient state: publish empty, not an error.
 	cc := newFakeClientConn()
 	ticker := newFakeTicker()
 	client := &fakeStatefulResolver{
@@ -144,15 +157,142 @@ func TestStatefulBuilder_InstanceNoReadyEndpoints(t *testing.T) {
 	cc.drainUpdateSignals()
 
 	got.ResolveNow(grpcresolver.ResolveNowOptions{})
-	reportedErr := cc.waitForError(time.Second)
-	if reportedErr == nil {
-		t.Fatal("ReportError() = nil, want stateful instance has no ready endpoints")
+	if !cc.waitForUpdate(time.Second) {
+		t.Fatal("expected an empty-state update after the instance lost its endpoints")
 	}
-	if !errors.Is(reportedErr, solver.ErrInstanceNoReadyEndpoints) {
-		t.Fatalf("ReportError() = %v, want error wrapping %v", reportedErr, solver.ErrInstanceNoReadyEndpoints)
+	states := cc.states()
+	if len(states) != 2 {
+		t.Fatalf("update count = %d, want 2 (initial addresses + empty state)", len(states))
 	}
-	if len(cc.states()) != 1 {
-		t.Fatalf("after error update count = %d, want 1", len(cc.states()))
+	if len(addressStrings(states[1].Addresses)) != 0 {
+		t.Fatalf("published addresses = %#v, want empty (no ready endpoints is legal)", addressStrings(states[1].Addresses))
+	}
+	if len(cc.reported) != 0 {
+		t.Fatalf("ReportError() = %v, want none", cc.reported)
+	}
+}
+
+func TestStatefulBuilder_InitialResolveEmptyStateSelfHeals(t *testing.T) {
+	// Regression (deploy incident 2026-08-09): an initial resolve that
+	// yields no addresses for the requested instance (e.g. a rollout window
+	// where the EndpointSlice is momentarily empty) is a LEGAL state — the
+	// adapter publishes an EMPTY address list (not an error), so Build's
+	// initial resolve succeeds and the polling loop survives to self-heal on
+	// the next refresh once the instance is resolvable again. (In the real
+	// grpc-go environment the LB rejects the empty state with
+	// `balancer.ErrBadResolverState`; `Resolver.Resolve` tolerates that —
+	// see TestResolver_EmptyStateRejectedByLBIsNotAnError.)
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeStatefulResolver{
+		results: []statefulResolveResult{
+			// First resolve: instance 0 absent (rollout window) → empty state.
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1, Hostname: "svc-1", Endpoints: []string{"10.0.0.1:50051"}}}},
+			// Next refresh: instance 0 is back.
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Hostname: "svc-0", Endpoints: []string{"10.0.0.2:50051"}}}},
+		},
+	}
+	builder := NewStatefulBuilder(WithStatefulResolver(client))
+	builder.NewTicker = func(time.Duration) refreshTicker { return ticker }
+	builder.RefreshInterval = time.Hour
+
+	got, err := builder.Build(newStatefulResolverTarget("catalog/grpc:50051", 0), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error on an empty initial resolve: %v", err)
+	}
+	t.Cleanup(got.Close)
+
+	// The initial empty result is published as an empty state (RPCs fail
+	// fast via the LB policy), not reported as a resolver error.
+	states := cc.states()
+	if len(states) != 1 {
+		t.Fatalf("initial Build() update count = %d, want 1 (empty state)", len(states))
+	}
+	if len(addressStrings(states[0].Addresses)) != 0 {
+		t.Fatalf("initial addresses = %#v, want empty", addressStrings(states[0].Addresses))
+	}
+	if len(cc.reported) != 0 {
+		t.Fatalf("ReportError() = %v, want none (empty result is legal)", cc.reported)
+	}
+	cc.drainUpdateSignals()
+
+	// The polling loop survived: the next refresh publishes the recovered
+	// instance's addresses.
+	ticker.Tick()
+	if !cc.waitForUpdate(time.Second) {
+		t.Fatal("expected resolver to recover on the next refresh")
+	}
+	states = cc.states()
+	gotState := states[len(states)-1]
+	if !reflect.DeepEqual(addressStrings(gotState.Addresses), []string{"10.0.0.2:50051"}) {
+		t.Fatalf("recovered addresses = %#v, want %#v", addressStrings(gotState.Addresses), []string{"10.0.0.2:50051"})
+	}
+}
+
+func TestResolver_EmptyStateRejectedByLBIsNotAnError(t *testing.T) {
+	// Regression (deploy incident 2026-08-09): in the real grpc-go stack,
+	// `cc.UpdateState` with an empty address list returns
+	// `balancer.ErrBadResolverState` (pick_first rejects zero addresses so
+	// RPCs fail fast with TRANSIENT_FAILURE). Without this tolerance, the
+	// stateful adapter's empty result would surface as a resolver failure —
+	// the Build path's initial resolve would fail during a rollout window
+	// and permanently kill the channel (the resolver never gets to retry).
+	// The rejection must be treated as expected: Resolve() succeeds, the
+	// polling loop keeps running, and the next refresh self-heals. An
+	// UNCHANGED empty state skips the pointless repeated UpdateState
+	// round-trip (grpc-go issue #5048: "If it polls and finds no change, it
+	// would be fine to not call UpdateState with the data").
+	cc := newFakeClientConn()
+	cc.emptyStateErr = balancer.ErrBadResolverState
+	ticker := newFakeTicker()
+	client := &fakeStatefulResolver{
+		results: []statefulResolveResult{
+			// Resolve 1 (Build): instance 0 absent (rollout window) → empty state → LB rejects.
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1, Hostname: "svc-1", Endpoints: []string{"10.0.0.1:50051"}}}},
+			// Resolve 2: still absent → unchanged empty state → UpdateState skipped.
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1, Hostname: "svc-1", Endpoints: []string{"10.0.0.1:50051"}}}},
+			// Resolve 3: instance 0 is back.
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Hostname: "svc-0", Endpoints: []string{"10.0.0.2:50051"}}}},
+		},
+	}
+	builder := NewStatefulBuilder(WithStatefulResolver(client))
+	builder.NewTicker = func(time.Duration) refreshTicker { return ticker }
+	builder.RefreshInterval = time.Hour
+
+	got, err := builder.Build(newStatefulResolverTarget("catalog/grpc:50051", 0), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error when the LB rejects the empty state: %v", err)
+	}
+	t.Cleanup(got.Close)
+
+	if len(cc.reported) != 0 {
+		t.Fatalf("ReportError() = %v, want none (LB empty-state rejection is expected)", cc.reported)
+	}
+
+	// Resolve 2 (unchanged empty state): sameState hits, UpdateState skipped —
+	// the fake records no state and no ReportError is produced.
+	ticker.Tick()
+	deadline := time.Now().Add(time.Second)
+	for client.callCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(cc.states()) != 0 {
+		t.Fatalf("unchanged empty state should skip UpdateState, got %d updates", len(cc.states()))
+	}
+	if len(cc.reported) != 0 {
+		t.Fatalf("ReportError() = %v, want none after the unchanged empty state", cc.reported)
+	}
+
+	// Resolve 3: the polling loop survived and publishes the recovered
+	// instance's addresses.
+	ticker.Tick()
+	if !cc.waitForUpdate(time.Second) {
+		t.Fatal("expected resolver to recover on the next refresh")
+	}
+	states := cc.states()
+	gotState := states[len(states)-1]
+	if !reflect.DeepEqual(addressStrings(gotState.Addresses), []string{"10.0.0.2:50051"}) {
+		t.Fatalf("recovered addresses = %#v, want %#v", addressStrings(gotState.Addresses), []string{"10.0.0.2:50051"})
 	}
 }
 
@@ -431,6 +571,12 @@ func (r *fakeStatefulResolver) Resolve(context.Context, *solver.Target) ([]*solv
 	return instances, nil
 }
 
+func (r *fakeStatefulResolver) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
 type fakeTicker struct {
 	ch      chan time.Time
 	mu      sync.Mutex
@@ -488,6 +634,11 @@ type fakeClientConn struct {
 	updateCh  chan struct{}
 	errorCh   chan error
 	updateErr error
+	// emptyStateErr is returned by UpdateState ONLY for an empty address
+	// list — models the real grpc-go LB behavior (pick_first rejects zero
+	// addresses with balancer.ErrBadResolverState while non-empty states
+	// succeed).
+	emptyStateErr error
 }
 
 func newFakeClientConn() *fakeClientConn {
@@ -500,6 +651,9 @@ func newFakeClientConn() *fakeClientConn {
 func (c *fakeClientConn) UpdateState(state grpcresolver.State) error {
 	if c.updateErr != nil {
 		return c.updateErr
+	}
+	if c.emptyStateErr != nil && len(state.Addresses) == 0 {
+		return c.emptyStateErr
 	}
 
 	c.mu.Lock()

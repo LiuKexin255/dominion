@@ -2,7 +2,7 @@
  * Tests for PromptClient.
  *
  * Reliable pattern (FR-009): the PromptClient ctor accepts an injected gRPC
- * client (DI seam), so getTeamProfile/close/warmup tests pass a `vi.fn()`-backed
+ * client (DI seam), so getTeamProfile/close tests pass a `vi.fn()`-backed
  * client and need NO module-level `vi.mock`. The channel-option tests use the
  * exported `buildChannelOptionsForTest()` factory seam.
  */
@@ -209,15 +209,6 @@ describe("PromptClient", () => {
     // Factory seam (FR-009): assert channel options directly via the exported
     // builder instead of intercepting the grpc.Client constructor with a
     // module-level vi.mock.
-    it("configures keepalive and reconnect-backoff channel options", () => {
-      const options = buildChannelOptionsForTest();
-      expect(options?.["grpc.keepalive_time_ms"]).toBe(300_000);
-      expect(options?.["grpc.keepalive_timeout_ms"]).toBe(10_000);
-      expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(0);
-      expect(options?.["grpc.initial_reconnect_backoff_ms"]).toBe(1_000);
-      expect(options?.["grpc.max_reconnect_backoff_ms"]).toBe(15_000);
-    });
-
     it("configures round_robin load balancing via grpc.service_config", () => {
       const options = buildChannelOptionsForTest();
       const serviceConfig = JSON.parse(
@@ -227,49 +218,23 @@ describe("PromptClient", () => {
         { round_robin: {} },
       ]);
     });
-  });
 
-  describe("warmup", () => {
-    it("resolves true when the channel is already READY", async () => {
-      const channel = {
-        getConnectivityState: vi.fn(() => 2), // READY
-        watchConnectivityState: vi.fn(),
-      };
-      const client = new PromptClient({ getChannel: () => channel } as any);
-
-      await expect(client.warmup()).resolves.toBe(true);
-      expect(channel.getConnectivityState).toHaveBeenCalledWith(true);
-      expect(channel.watchConnectivityState).not.toHaveBeenCalled();
+    it("enables HTTP/2 keepalive pings (incl. idle) for dead-connection detection", () => {
+      // Node.js does not enable TCP-level SO_KEEPALIVE by default (unlike Go's
+      // stdlib — grpc-go issue #6250), so grpc-js relies on HTTP/2 PINGs to
+      // detect half-open connections. permit_without_calls=1 sends pings even
+      // when no RPC is in flight; per gRPC A8 the interval auto-scales to the
+      // server's MinTime after GOAWAY, so no server-side change is needed.
+      const options = buildChannelOptionsForTest();
+      expect(options?.["grpc.keepalive_time_ms"]).toBe(30_000);
+      expect(options?.["grpc.keepalive_timeout_ms"]).toBe(10_000);
+      expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(1);
     });
 
-    it("waits for READY via watchConnectivityState then resolves true", async () => {
-      const states = [1, 2]; // CONNECTING on first read, READY after watch fires
-      const channel = {
-        getConnectivityState: vi.fn(() => states.shift()),
-        watchConnectivityState: vi.fn(
-          (_state: number, _deadline: Date, cb: (err?: Error) => void) => {
-            cb();
-          },
-        ),
-      };
-      const client = new PromptClient({ getChannel: () => channel } as any);
-
-      await expect(client.warmup()).resolves.toBe(true);
-      expect(channel.watchConnectivityState).toHaveBeenCalledTimes(1);
-    });
-
-    it("resolves false when watchConnectivityState times out", async () => {
-      const channel = {
-        getConnectivityState: vi.fn(() => 1), // CONNECTING forever
-        watchConnectivityState: vi.fn(
-          (_state: number, _deadline: Date, cb: (err?: Error) => void) => {
-            cb(new Error("Deadline exceeded"));
-          },
-        ),
-      };
-      const client = new PromptClient({ getChannel: () => channel } as any);
-
-      await expect(client.warmup()).resolves.toBe(false);
+    it("caps the reconnect backoff so recovery is not delayed to the 120s default", () => {
+      const options = buildChannelOptionsForTest();
+      expect(options?.["grpc.initial_reconnect_backoff_ms"]).toBe(1_000);
+      expect(options?.["grpc.max_reconnect_backoff_ms"]).toBe(15_000);
     });
   });
 });

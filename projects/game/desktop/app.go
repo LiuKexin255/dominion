@@ -1514,6 +1514,19 @@ func (a *App) SetSelectedWindow(hwnd uintptr) error {
 	return nil
 }
 
+// GetSelectedWindow returns the handle of the window currently selected in the
+// desktop session chat dropdown (Wails-bound; exposed to the frontend). The
+// frontend restores its dropdown selection from this value on session entry,
+// so re-entering a session keeps the previously selected window instead of
+// forcing the user to re-select it (spec 025 FR-001/FR-006,
+// contracts/window-select-contract.md §2.1). A zero return means no window is
+// selected.
+func (a *App) GetSelectedWindow() (uintptr, error) {
+	a.selectedMu.Lock()
+	defer a.selectedMu.Unlock()
+	return a.selectedWin, nil
+}
+
 // resolveSelectedWindow resolves the currently selected window to a
 // capture.WindowRef by looking it up via listWindows (the same lookup the
 // former BindWindow performed, spec 025 D3). It returns a graceful error when

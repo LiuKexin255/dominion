@@ -48,8 +48,8 @@
 - **投递形态**：`HumanMessage` 进 `playerMessages` 通道（调研 D6）。
 - **生命周期（两场景）**：
   - **review 场景**：planner 经 `instruct_player` 工具**可选**产出（携带游戏历史）；同 turn 内立即追加到 playerMessages（紧跟游戏结束 tool_result），player 继续。
-  - **init/compact 场景**：planner 经 prompt 引导产出（无游戏历史，仅依冻结快照；LLM 决定是否调用 instruct_player，R4）；写入 `TeamState.pendingInstruction` 槽（§2.4），随 player 下次激活注入；不触发 player invoke。
-- **压缩作用域**：review 指令在 playerMessages 内，会被 037 compress 节点压缩；init/compact 指令经 pending 槽注入，注入后同样进入 playerMessages 压缩作用域。planner 真正长期演化在冻结记忆快照（§2.1），不依赖 playerMessages 留存。
+  - **init/compact 场景**：planner 经 prompt 引导产出（无游戏历史，仅依冻结快照；LLM 决定是否调用 instruct_player，R4）；指令**直写 `playerMessages`**（与 review 同一通道写回，§2.4），随 player 下次激活作为 history 注入；不触发 player invoke。
+- **压缩作用域**：两场景指令均在 playerMessages 内，会被 037 compress 节点压缩。planner 真正长期演化在冻结记忆快照（§2.1），不依赖 playerMessages 留存。
 
 ### 2.3 GameState / GameEvent buffer（ephemeral，不变+扩展）
 
@@ -59,14 +59,13 @@
 
 | 通道 | 类型 | reducer | 说明 |
 |---|---|---|---|
-| `playerMessages` | `MessagesValue` | `messagesStateReducer` | 031 既有；指令 HumanMessage 经此追加 |
+| `playerMessages` | `MessagesValue` | `messagesStateReducer` | 031 既有；指令 HumanMessage 经此追加（review 同 turn / init-compact 直写） |
 | `plannerMessages` | `MessagesValue` | `messagesStateReducer` | 031 既有；复盘输出在此（对 player 不可见） |
 | `gameEnded` | `"won"\|"lost"\|null` | 覆盖 | 031 既有 |
 | `gameCounter` | `number` | 覆盖 | 037 既有（每 5 局触发 compress） |
-| `pendingInstruction` | `string \| null` | 覆盖 | **新增**：init/compact 场景的待注入指令（D10） |
 
 - **移除**：策略相关字段——策略不在 graph state（031 既有，本特性彻底移除 StrategyStore）。
-- player 节点入口读 `pendingInstruction`：非空则注入 playerMessages（作为 HumanMessage）后清空（FR-015/FR-016 的"与下次激活一同注入"实现）。
+- **无独立指令槽**：init/compact 指令直写 `playerMessages`（HumanMessage，由 instruction 节点经节点返回值写入——与 review 节点同一通道写回机制）；player 节点输入即 `state.playerMessages`，指令作为正常 history 进入模型（FR-015/FR-016 的"与下次激活一同注入"实现，无需额外消费步骤）。
 
 ---
 
@@ -139,7 +138,7 @@ Template (resource message, path segment) — 031 既有
 
 运行时（非资源）:
   planner 冻结记忆快照 ── 进程内冻结缓存（memory-snapshot.ts）── 压缩/初始化边界刷新（ListMemories）
-  Calibration Instruction ── HumanMessage 进 playerMessages（review 同 turn / init-compact 经 pendingInstruction 槽）
+  Calibration Instruction ── HumanMessage 进 playerMessages（review 同 turn / init-compact 直写通道）
   Short-term messages ── MemorySaver checkpointer（playerMessages/plannerMessages）── RefreshTeam/压缩清空
   GameState/GameEvent buffer ── 进程内 ephemeral ── sink（onOperate）写 / player+planner 读
 

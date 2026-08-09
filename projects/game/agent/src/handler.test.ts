@@ -442,8 +442,9 @@ describe("Handler.UpdateTeam", () => {
     // createTestTeam materializes the session's team with profile "default"
     // — which also triggers the one-shot async initInstruction turn (T029,
     // R2). The profile-change rebuild below must wait for the init turn to
-    // finish: isRunning() includes initInFlight (Phase 6 review Issue #5),
-    // so a rebuild during the init is correctly rejected FAILED_PRECONDITION.
+    // finish: the rebuild gate (`isBusy()`) includes initInFlight (Phase 6
+    // review Issue #5), so a rebuild during the init is correctly rejected
+    // FAILED_PRECONDITION.
     await createTestTeam(store, "sess-ut-diff");
     await flush(0);
 
@@ -1078,7 +1079,6 @@ describe("Handler.RefreshTeam", () => {
     const after = await team.getTeamState();
     expect(after?.playerMessages).toEqual([]);
     expect(after?.plannerMessages).toEqual([]);
-    expect(after?.pendingInstruction).toBeNull();
   });
 
   it("rejects RefreshTeam while a turn is in-flight (FAILED_PRECONDITION)", async () => {

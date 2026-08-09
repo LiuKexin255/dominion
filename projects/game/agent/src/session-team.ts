@@ -26,16 +26,18 @@
  *   040 FR-005). The turn carries the `runInitInstruction` configurable flag
  *   (the START conditional edge routes it to the `initInstruction` node →
  *   END — the player is NOT invoked) and produces the no-game-history
- *   calibration instruction into `TeamState.pendingInstruction`. The RPC
+ *   calibration instruction into `playerMessages` (as a HumanMessage — same
+ *   channel write-back as the review node's `instruct_player`). The RPC
  *   does NOT wait for it (fire-and-forget, `UpdateTeam` 物化即返回); a user
  *   message arriving meanwhile is queued by the TurnLoop and its turn awaits
- *   the init turn completion, so the instruction is delivered FIRST (player
- *   entry consumes the pending slot before the user input, FR-015).
+ *   the init turn completion, so the instruction is already in the channel
+ *   BEFORE the user input is appended (FR-015 — no pending slot needed).
  * - **RefreshTeam** (FR-018): {@link SessionTeam.refreshTeam} clears BOTH
  *   short-term message channels via `graph.updateState` (the
  *   `context-middleware` helpers); the long-term memory (memory service /
- *   frozen snapshot) is untouched. 039 US3 (contract §7): the
- *   `pendingInstruction` slot is cleared alongside (no stale instructions).
+ *   frozen snapshot) is untouched. 039 US3 (contract §7): init/compact
+ *   instructions live IN `playerMessages`, so the channel clear covers them
+ *   (no stale instructions).
  * - **MCP host surface**: {@link SessionTeam.getBridge} / {@link SessionTeam.getSink}
  *   feed the `SessionBridgeLookup` (mcp-host.ts) so the saolei MCP server is
  *   built per session with the team sink bound to this session's buffer. The
@@ -192,12 +194,16 @@ export class SessionTeam {
 	 * executing (039 US3 — Phase 6 review Issue #3/#5). Distinct from
 	 * {@link initTurn} (which stays non-null forever once triggered):
 	 *
-	 * - feeds {@link isRunning}, so the Connect status probe reports ACTIVE
-	 *   while the planner is producing the initial instruction (desktop
-	 *   typing-state coordination, contract §6 / research.md D5) and
-	 *   RefreshTeam / profile-change rebuild are rejected with
-	 *   FAILED_PRECONDITION during the init (the refresh would otherwise
-	 *   clear a freshly written `pendingInstruction` — contract §7);
+	 * - feeds {@link isBusy}, so RefreshTeam / profile-change rebuild are
+	 *   rejected with FAILED_PRECONDITION during the init (the refresh
+	 *   would otherwise clear a freshly written instruction in
+	 *   `playerMessages` — contract §7). It does NOT feed {@link isRunning}:
+	 *   the Connect status probe must not report ACTIVE for the init turn —
+	 *   the init runs outside the TurnLoop and emits no `wait`, so the
+	 *   desktop's typing indicator would stay stuck ON after the init
+	 *   completes (one-shot probe, no re-poll; the typing state is driven by
+	 *   real user turns instead, which await {@link initTurn} in
+	 *   {@link runTeamTurn});
 	 * - cleared in `finally` (also on the degrade path), so it never
 	 *   blocks the team after the init turn completes.
 	 */
@@ -268,12 +274,11 @@ export class SessionTeam {
 	/**
 	 * RefreshTeam (FR-018): clear BOTH short-term message channels
 	 * (`playerMessages`/`plannerMessages`) via the outer graph's
-	 * `updateState` (context-middleware), reset `gameCounter`, and clear the
-	 * deferred `pendingInstruction` slot (039 US3 — contract §7: a stale
-	 * init/compact instruction must not survive the refresh). The long-term
-	 * memory (memory service / frozen snapshot) and `gameEnded` are
-	 * untouched. Caller MUST reject while a turn is in flight
-	 * ({@link isRunning}).
+	 * `updateState` (context-middleware), reset `gameCounter`. 039 US3
+	 * (contract §7): init/compact instructions live IN `playerMessages`, so
+	 * the channel clear removes any stale instruction. The long-term memory
+	 * (memory service / frozen snapshot) and `gameEnded` are untouched.
+	 * Caller MUST reject while a turn is in flight ({@link isRunning}).
 	 */
 	async refreshTeam(): Promise<void> {
 		await refreshTeamChannels(this.graphHandle.graph, this.sessionId);
@@ -289,10 +294,12 @@ export class SessionTeam {
 	 * graph with the `runInitInstruction` configurable flag — the START
 	 * conditional edge routes it to the `initInstruction` node → END (the
 	 * player is NOT invoked); the produced instruction lands in
-	 * `TeamState.pendingInstruction` and is delivered with the player's next
-	 * activation. A user message arriving during the async produce is queued
-	 * by the TurnLoop, and its turn awaits {@link initTurn} first — so the
-	 * instruction always precedes the user input (FR-015).
+	 * `playerMessages` (as a HumanMessage — same channel write-back as the
+	 * review node) and is delivered with the player's next activation. A
+	 * user message arriving during the async produce is queued by the
+	 * TurnLoop, and its turn awaits {@link initTurn} first — so the
+	 * instruction is already in the channel before the user input is
+	 * appended (FR-015).
 	 *
 	 * Failure degrades (contract §6): a planner-model outage skips the
 	 * instruction (logged), never blocks the team or the materialization.
@@ -318,14 +325,16 @@ export class SessionTeam {
 	 * (desktop App.svelte: `await updateTeam(...)` → `continueSessionEntry`
 	 * → `await handleConnect()` — serial), and `turnLoopEmit` is only
 	 * assigned by the first `submit` (first user message) anyway — so an
-	 * emitted frame could never reach the desktop. The desktop's "planner
-	 * working" typing-state is instead provided by the Connect status probe:
-	 * {@link isRunning} includes {@link initInFlight}, so the probe reports
-	 * ACTIVE while the init turn produces the instruction. The init
-	 * activity's persistent visibility comes from the checkpointer (the
-	 * instruction node's plannerMessages output shows up in ListMessages
-	 * after Connect) and from the instruction delivered into
-	 * `playerMessages` on the first user turn.
+	 * emitted frame could never reach the desktop. The init turn is a
+	 * fire-and-forget background task: {@link isRunning} (the Connect status
+	 * probe) deliberately EXCLUDES {@link initInFlight}, so the desktop
+	 * connects to IDLE and is immediately ready for input — reporting ACTIVE
+	 * here would stick its typing indicator on (the init emits no `wait`
+	 * and the probe is one-shot). The init activity's persistent visibility
+	 * comes from the checkpointer (the instruction node's plannerMessages
+	 * output shows up in ListMessages after Connect) and from the
+	 * instruction already in `playerMessages` before the first user turn
+	 * (which awaits {@link initTurn} first, FR-015).
 	 *
 	 * Errors are swallowed (degrade, contract §6) so the awaited
 	 * {@link initTurn} never rejects a subsequent user turn.
@@ -381,18 +390,40 @@ export class SessionTeam {
 	}
 
 	/**
-	 * True iff the per-session team has work in flight: the TurnLoop (turn
-	 * in flight or draining) OR the one-shot async initInstruction turn
-	 * (039 US3, Phase 6 review Issue #3/#5). The init turn runs OUTSIDE the
-	 * TurnLoop (it is a fire-and-forget graph invoke), so without this flag
-	 * `isRunning()` would report idle while the planner is producing the
-	 * initial instruction — the Connect status probe would show IDLE
-	 * instead of ACTIVE (desktop typing-state, contract §6), and
-	 * RefreshTeam / profile-change rebuild would not be gated (a refresh
-	 * could clear the freshly written `pendingInstruction`, contract §7).
+	 * True iff a REAL team turn is in flight (TurnLoop running or draining
+	 * queued work).
+	 *
+	 * NOTE: the one-shot async initInstruction turn is deliberately EXCLUDED
+	 * (039 US3 — deploy bugfix): this method feeds the Connect status probe
+	 * (handler.ts), and the init turn runs OUTSIDE the TurnLoop via
+	 * `graph.invoke` (fire-and-forget) — it emits no `wait` frame, and the
+	 * probe is one-shot, so reporting ACTIVE for it would leave the desktop
+	 * stuck on "Agent is typing" forever after the init completes. The
+	 * desktop instead sees IDLE on connect and the typing indicator is
+	 * driven by actual user turns (which await {@link initTurn} first, so
+	 * the instruction already in `playerMessages` still precedes the first
+	 * activation, FR-015).
+	 * The init turn IS still gated for the destructive operations
+	 * (RefreshTeam / profile-change rebuild) via {@link isBusy}.
 	 */
 	isRunning(): boolean {
-		return this.initInFlight || (this.turnLoop?.isRunning() ?? false);
+		return this.turnLoop?.isRunning() ?? false;
+	}
+
+	/**
+	 * True iff the per-session team has work that must gate destructive
+	 * operations: a real turn (TurnLoop) OR the one-shot async
+	 * initInstruction turn (039 US3, Phase 6 review Issue #3/#5). Used by
+	 * RefreshTeam and the profile-change rebuild to reject with
+	 * FAILED_PRECONDITION while the planner is producing the initial
+	 * instruction (a refresh could clear a freshly written instruction in
+	 * `playerMessages`, contract §7; an in-flight turn must not be
+	 * disturbed, FR-006). Deliberately SEPARATE from {@link isRunning} (the
+	 * status probe — init excluded): the init must gate the refresh/rebuild
+	 * but must NOT drive the desktop's typing indicator.
+	 */
+	isBusy(): boolean {
+		return this.initInFlight || this.isRunning();
 	}
 
 	/**
@@ -477,9 +508,9 @@ export class SessionTeam {
 		signal?: AbortSignal,
 	): AsyncIterable<TurnBlock> {
 		// 039 US3 (T029 — FR-015): a user turn must run AFTER the one-shot
-		// async initInstruction turn — the pending instruction is produced
-		// first, so the player's first activation consumes it BEFORE the
-		// user input (异步产出期间到达的 user message 排在指令之后).
+		// async initInstruction turn — the instruction is written into
+		// `playerMessages` first, so it precedes the user input appended
+		// below (异步产出期间到达的 user message 排在指令之后).
 		if (this.initTurn) {
 			await this.initTurn;
 		}
@@ -786,7 +817,10 @@ export class SessionTeamStore {
 	 *
 	 * 1. in-flight guard: a running turn rejects FAILED_PRECONDITION (same
 	 *    guard semantics as RefreshTeam — handler.ts), the existing team and
-	 *    the in-flight turn stay untouched;
+	 *    the in-flight turn stay untouched. `isBusy()` (not `isRunning()`)
+	 *    also gates the one-shot async initInstruction turn (a rebuild
+	 *    during the init would race the freshly written instruction in
+	 *    `playerMessages`, contract §7);
 	 * 2. single-flight via the shared `pending` map (a concurrent rebuild
 	 *    awaits the winner, then re-enters `update` — the winner may have
 	 *    already applied this profile);
@@ -802,7 +836,7 @@ export class SessionTeamStore {
 		profileName: string,
 		existing: { team: SessionTeam; profileName: string },
 	): Promise<SessionTeam> {
-		if (existing.team.isRunning()) {
+		if (existing.team.isBusy()) {
 			return Promise.reject(
 				Object.assign(
 					new Error(

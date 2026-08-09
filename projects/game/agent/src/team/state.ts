@@ -18,13 +18,14 @@
  *   a last-write-wins reducer — incremented by the planner on return and
  *   reset by RefreshTeam (specs/037-saolei-team-optimize/data-model.md §2;
  *   FR-014).
- * - a `pendingInstruction` field (string | null) with a last-write-wins
- *   reducer — the init/compact scenarios' deferred instruction slot (D10;
- *   `specs/039-planner-memory-calibration/contracts/team-graph-contract.md`
- *   §1). Written by the initInstruction/postCompactInstruction nodes (Phase 6
- *   T024-T026), consumed and cleared by the player node's entry (Phase 6
- *   T028). Present in the schema from Phase 5 (T019) so RefreshTeam/rebuild
- *   state carries it (contract §7 — Phase 6 clears it).
+ *
+ * 039 US3 (init/compact calibration instructions) has NO dedicated state
+ * slot: the instruction nodes write directly into `playerMessages` as
+ * HumanMessages (same channel write-back as the review node's
+ * `instruct_player` — instruction-node.ts / planner.ts), so the instruction
+ * is delivered "与下次激活一同注入" simply by being part of the channel
+ * history the player node reads (FR-015/FR-016). The former
+ * `pendingInstruction` slot was removed with that design.
  *
  * The shared strategy is NOT in state (it was removed in 039 Phase 6 —
  * FR-013: player/planner hold no shared long-term storage; the
@@ -71,10 +72,4 @@ export interface TeamStateValue {
 	gameEnded: GameEnded;
 	/** Completed-game counter (won/lost, planner-returned); reset by RefreshTeam. */
 	gameCounter: number;
-	/**
-	 * Deferred calibration-instruction slot (D10 — contract §1): written by
-	 * the init/compact scenario nodes, consumed (and cleared) by the player
-	 * node's entry. `null` = no pending instruction.
-	 */
-	pendingInstruction: string | null;
 }

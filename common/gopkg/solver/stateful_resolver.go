@@ -28,8 +28,4 @@ type StatefulResolver interface {
 var (
 	// ErrServiceNotStateful indicates that the target service is not a stateful service.
 	ErrServiceNotStateful = errors.New("service is not stateful")
-	// ErrInstanceNotFound indicates that the requested instance index does not exist.
-	ErrInstanceNotFound = errors.New("stateful instance not found")
-	// ErrInstanceNoReadyEndpoints indicates that the requested instance has no ready endpoints.
-	ErrInstanceNoReadyEndpoints = errors.New("stateful instance has no ready endpoints")
 )

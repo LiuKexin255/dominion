@@ -10,11 +10,11 @@
  * team) and RefreshTeam must clear it alongside the channels
  * (specs/037-saolei-team-optimize/spec.md FR-014; data-model.md §2).
  *
- * 039 US3 (T029 — contract §7): the `pendingInstruction` slot is cleared
- * alongside — a deferred init/compact instruction must not survive a
- * RefreshTeam (an expired instruction would otherwise be injected into the
- * player's next activation with stale guidance). The frozen memory snapshot
- * is untouched (its data lives in the memory service; the next compression
+ * 039 US3 (T029 — contract §7): init/compact instructions live IN the
+ * `playerMessages` channel (written directly by the instruction nodes — no
+ * separate slot), so clearing the channel clears them too — a stale
+ * instruction cannot survive a RefreshTeam. The frozen memory snapshot is
+ * untouched (its data lives in the memory service; the next compression
  * boundary naturally re-bakes it).
  *
  * **Mechanism note (deviation from the contract's "beforeModel hook"
@@ -72,8 +72,9 @@ export function clearChannel(
  * step 6), and short-term memory is cleared ONLY by `RefreshTeam` (需求方
  * confirmed — no automatic clear at game boundaries).
  *
- * 039 US3 (T029 — contract §7): the `pendingInstruction` slot IS cleared
- * (a stale deferred instruction must not leak into the next activation).
+ * 039 US3 (T029 — contract §7): init/compact instructions live IN the
+ * `playerMessages` channel, so clearing the channel clears stale
+ * instructions alongside (no separate slot — see the header note).
  *
  * @param graph The compiled team graph handle (outer graph + checkpointer).
  * @param sessionId The session id — the checkpoint thread id (FR-013).
@@ -85,13 +86,13 @@ export async function refreshTeamChannels(
 	const config = { configurable: { thread_id: sessionId } };
 	// One update carrying both channel clears: per-channel independence (A1)
 	// means the two `RemoveMessage`s never interfere. `gameCounter` is reset
-	// alongside (last-write-wins reducer, FR-014) and the deferred
-	// `pendingInstruction` slot is cleared (contract §7 — 039 US3).
+	// alongside (last-write-wins reducer, FR-014); the init/compact
+	// instructions live in `playerMessages`, so the channel clear covers them
+	// (contract §7 — 039 US3).
 	await graph.updateState(config, {
 		...clearChannel("playerMessages"),
 		...clearChannel("plannerMessages"),
 		gameCounter: 0,
-		pendingInstruction: null,
 	});
 	info("refresh team: cleared short-term message channels", { sessionId });
 }

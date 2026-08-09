@@ -34,7 +34,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import { info, warn } from "@dominion/common-js-logs";
+import { info } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
 import type { ProtoGrpcType } from "../game_types/game";
 
@@ -125,24 +125,12 @@ export async function startServer(
   );
 
   const promptClient = new PromptClient();
-  const promptReady = await promptClient.warmup();
-  if (promptReady) {
-    info("prompt service connection pre-warmed");
-  } else {
-    warn("prompt service not ready after warmup; deferring to first RPC");
-  }
 
   // 039 US2 (T022): the planner's long-term memory data plane — a single
   // service-scoped MemoryClient (memory-mcp-contract.md §3). The mcp-host's
   // memory mcp server forwards to the memory service via this client (the
   // mcp server never connects directly — FR-007).
   const memoryClient = new MemoryClient();
-  const memoryReady = await memoryClient.warmup();
-  if (memoryReady) {
-    info("memory service connection pre-warmed");
-  } else {
-    warn("memory service not ready after warmup; deferring to first RPC");
-  }
 
   const openaiBaseUrl =
     process.env.OPENCODE_OPENAI_BASE_URL ||

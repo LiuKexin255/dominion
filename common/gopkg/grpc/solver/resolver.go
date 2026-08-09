@@ -2,6 +2,7 @@ package solver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/solver"
 
+	"google.golang.org/grpc/balancer"
 	grpcresolver "google.golang.org/grpc/resolver"
 )
 
@@ -283,6 +285,18 @@ type statefulResolverAdapter struct {
 }
 
 // Resolve resolves the target to the requested stateful instance endpoints.
+//
+// A missing instance / an instance without ready endpoints is a LEGAL state —
+// the service is not yet provisioned or its endpoints are momentarily
+// unavailable (e.g. a stateful rollout window while the EndpointSlice is
+// empty, deploy incident 2026-08-09). It is published as an EMPTY address
+// list (`UpdateState` with no addresses → the LB policy reports
+// TRANSIENT_FAILURE so RPCs fail fast), NOT reported as a resolver error.
+// This matches the grpc-go reference resolvers: the DNS resolver publishes
+// empty lookup results via `UpdateState` and only calls `ReportError` when
+// the lookup itself fails (grpc-go `internal/resolver/dns/dns_resolver.go`),
+// and xDS/EDS publish empty endpoint states the same way. The polling loop
+// keeps re-resolving, so the channel self-heals on the next refresh.
 func (a *statefulResolverAdapter) Resolve(ctx context.Context, target *solver.Target) ([]string, error) {
 	instances, err := a.stateful.Resolve(ctx, target)
 	if err != nil {
@@ -293,13 +307,17 @@ func (a *statefulResolverAdapter) Resolve(ctx context.Context, target *solver.Ta
 		if instance.Index != a.index {
 			continue
 		}
+		// The instance exists but has no ready endpoints yet (terminating /
+		// not-ready pod): publish empty — a transient state, not an error.
 		if len(instance.Endpoints) == 0 {
-			return nil, fmt.Errorf("%w: instance %d", solver.ErrInstanceNoReadyEndpoints, a.index)
+			return nil, nil
 		}
 		return instance.Endpoints, nil
 	}
 
-	return nil, fmt.Errorf("%w: instance %d", solver.ErrInstanceNotFound, a.index)
+	// The requested instance does not exist (yet) — possibly mid-rollout:
+	// publish empty; the polling loop re-resolves on the next refresh.
+	return nil, nil
 }
 
 func (r *Resolver) run() {
@@ -361,11 +379,35 @@ func (r *Resolver) Resolve() error {
 	}
 
 	if err := r.cc.UpdateState(grpcresolver.State{Addresses: stateAddresses}); err != nil {
-		logs.Error(context.Background(), "resolver update state failed",
+		// An empty address list is a LEGAL resolution result (the service is
+		// not yet provisioned, or its endpoints are momentarily unavailable —
+		// e.g. a stateful rollout window, deploy incident 2026-08-09). The
+		// grpc-go LB layer (pick_first etc.) rejects it with
+		// `balancer.ErrBadResolverState`: the channel then reports
+		// TRANSIENT_FAILURE ("produced zero addresses") so RPCs fail fast,
+		// which is the desired behavior — NOT a resolver failure. Report
+		// other UpdateState errors, but treat the empty-result rejection as
+		// expected: the polling loop keeps re-resolving and self-heals once
+		// the instance becomes resolvable again (without this, the Build
+		// path's initial resolve would fail on the empty window and
+		// permanently kill the channel — the resolver never gets a chance to
+		// recover).
+		if !errors.Is(err, balancer.ErrBadResolverState) {
+			logs.Error(context.Background(), "resolver update state failed",
+				event.String("target", targetStr),
+				event.Err(err),
+			)
+			return fmt.Errorf("update resolver state for %q/%q: %w", r.target.App, r.target.Service, err)
+		}
+		logs.Debug(context.Background(), "resolver published empty state (LB rejected zero addresses, expected)",
 			event.String("target", targetStr),
-			event.Err(err),
 		)
-		return fmt.Errorf("update resolver state for %q/%q: %w", r.target.App, r.target.Service, err)
+		// Record the (rejected) empty state anyway, so subsequent polls with
+		// no change skip the pointless UpdateState round-trip (grpc-go
+		// issue #5048: "If it polls and finds no change, it would be fine to
+		// not call UpdateState with the data").
+		r.storeState(stateAddresses)
+		return nil
 	}
 
 	logs.Info(context.Background(), "resolver addresses updated",

@@ -14,6 +14,7 @@
     refreshTeam,
     listWindows,
     setSelectedWindow,
+    getSelectedWindow,
     captureScreenshot,
     sendUserTurn,
     listMessages,
@@ -379,7 +380,11 @@
     connectionState = 'disconnected'
 
     page = 'chat'
-    handleLoadWindows()
+    // Load the window list and restore the dropdown to the backend's selected
+    // window (if it still exists), so re-entering a session keeps the prior
+    // selection instead of forcing a re-select
+    // (contracts/window-select-contract.md §2.1).
+    void handleLoadWindows().then(syncSelectedWindow)
     playState = 'connecting'
 
     // Team must exist before connect (FR-003). When the session has no Team
@@ -1115,6 +1120,21 @@
     }
   }
 
+  // syncSelectedWindow restores the dropdown to the backend's selected window
+  // handle after the window list is (re)loaded on session entry. The handle is
+  // only restored when it still exists in the live list — a closed window
+  // leaves the dropdown at "Select window..." (spec 025 FR-005).
+  async function syncSelectedWindow() {
+    try {
+      const hwnd = await getSelectedWindow()
+      if (hwnd && windows.some(w => w.handle === hwnd)) {
+        selectedWindowHandle = hwnd
+      }
+    } catch (e: unknown) {
+      log('warn', 'windows', `GetSelectedWindow failed: ${String(e)}`)
+    }
+  }
+
   // handleCaptureScreenshot captures the selected window and attaches the
   // screenshot to the next user message. The selected window is used directly
   // — there is no separate "bind" step (spec 025 FR-001/FR-006). The Capture
@@ -1233,7 +1253,9 @@
               </button>
             {/each}
           </div>
-          <select class="window-select" data-testid="window-select" bind:value={selectedWindowHandle}>
+          <!-- The window list reloads every time the dropdown opens so it
+               reflects the current windows, not the ones at page entry. -->
+          <select class="window-select" data-testid="window-select" bind:value={selectedWindowHandle} onfocus={handleLoadWindows}>
             <option value={undefined} disabled selected={selectedWindowHandle == null}>Select window...</option>
             {#each windows as w}
               <option value={w.handle}>{w.title}</option>

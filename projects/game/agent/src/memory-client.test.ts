@@ -252,34 +252,6 @@ describe("MemoryClient", () => {
 		});
 	});
 
-	describe("warmup", () => {
-		it("resolves true when the channel is already READY", async () => {
-			const channel = {
-				getConnectivityState: vi.fn(() => 2), // READY
-				watchConnectivityState: vi.fn(),
-			};
-			const client = new MemoryClient({ getChannel: () => channel } as never);
-
-			await expect(client.warmup()).resolves.toBe(true);
-			expect(channel.getConnectivityState).toHaveBeenCalledWith(true);
-			expect(channel.watchConnectivityState).not.toHaveBeenCalled();
-		});
-
-		it("resolves false when watchConnectivityState times out", async () => {
-			const channel = {
-				getConnectivityState: vi.fn(() => 1), // CONNECTING forever
-				watchConnectivityState: vi.fn(
-					(_state: number, _deadline: Date, cb: (err?: Error) => void) => {
-						cb(new Error("Deadline exceeded"));
-					},
-				),
-			};
-			const client = new MemoryClient({ getChannel: () => channel } as never);
-
-			await expect(client.warmup()).resolves.toBe(false);
-		});
-	});
-
 	describe("service target", () => {
 		it("resolves the memory service via the dominion resolver", () => {
 			expect(MEMORY_SERVICE_TARGET).toBe("dominion:///game/memory:50051");
@@ -289,7 +261,8 @@ describe("MemoryClient", () => {
 			// The channel constants are imported from prompt-client (single
 			// source of truth) — assert they still reach the channel options.
 			const options = buildChannelOptionsForTest();
-			expect(options?.["grpc.keepalive_time_ms"]).toBe(300_000);
+			expect(options?.["grpc.keepalive_time_ms"]).toBe(30_000);
+			expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(1);
 			const serviceConfig = JSON.parse(
 				options?.["grpc.service_config"] as string,
 			);

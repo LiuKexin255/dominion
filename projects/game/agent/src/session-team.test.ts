@@ -293,21 +293,20 @@ describe("SessionTeam", () => {
 		expect(sessionId).toBe("st-state");
 	});
 
-	it("refreshTeam clears BOTH channels AND the pendingInstruction slot, leaves gameEnded alone (FR-018 / 039 contract §7)", async () => {
+	it("refreshTeam clears BOTH channels (including any instruction in playerMessages), leaves gameEnded alone (FR-018 / 039 contract §7)", async () => {
 		const { team } = buildTestTeam("st-refresh");
 		const { emit } = recordingEmit();
 		team.submit({ text: "开始游戏" }, emit);
 		await flush();
 
-		// The user turn consumed the init instruction on first activation
-		// (the slot is null after delivery) — write a stale one to prove the
-		// refresh clears it (contract §7 — no expired instruction survives).
+		// The init instruction was written INTO playerMessages (no slot) —
+		// the refresh must clear the channel including it (contract §7 — no
+		// expired instruction survives).
 		await team.refreshTeam();
 
 		const state = (await team.getTeamState()) as TeamStateValue;
 		expect(state.playerMessages).toEqual([]);
 		expect(state.plannerMessages).toEqual([]);
-		expect(state.pendingInstruction).toBeNull();
 		expect(state.gameEnded).toBeNull();
 	});
 
@@ -574,9 +573,9 @@ describe("SessionTeamStore", () => {
 		);
 		await store.update("s-sf", "saolei", "default", true);
 		// Wait for the one-shot async initInstruction turn (triggered at
-		// materialization — T029): isRunning() includes initInFlight (Phase 6
-		// review Issue #5), so a rebuild during the init would be rejected
-		// FAILED_PRECONDITION.
+		// materialization — T029): the rebuild gate (`isBusy()`) includes
+		// initInFlight (Phase 6 review Issue #5), so a rebuild during the
+		// init would be rejected FAILED_PRECONDITION.
 		await flush(0);
 
 		const [r1, r2] = await Promise.allSettled([
@@ -720,10 +719,11 @@ describe("SessionTeamStore", () => {
 
 		// Materialize "default" first and wait for the one-shot async
 		// initInstruction turn (triggered at materialization — T029):
-		// isRunning() includes initInFlight (Phase 6 review Issue #5), so a
-		// rebuild racing the init would be rejected FAILED_PRECONDITION. The
-		// concurrent different-profile updates below then exercise the
-		// single-flight loser-rebuilds-after-winner path.
+		// the rebuild gate (`isBusy()`) includes initInFlight (Phase 6
+		// review Issue #5), so a rebuild racing the init would be rejected
+		// FAILED_PRECONDITION. The concurrent different-profile updates
+		// below then exercise the single-flight loser-rebuilds-after-winner
+		// path.
 		await store.update("s-3", "saolei", "default", true);
 		await flush(0);
 
@@ -772,21 +772,26 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 		expect(created).toEqual(["s-init"]);
 		await flush(0);
 
-		// The init turn produced the no-game-history instruction into the
-		// pending slot (LLM decided to call instruct_player).
+		// The init turn produced the no-game-history instruction into
+		// `playerMessages` (LLM decided to call instruct_player — channel
+		// write-back, no pending slot).
 		const state = await team.getTeamState();
-		expect(state?.pendingInstruction).toBe("初始指令");
+		expect(
+			state?.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("初始指令"),
+			),
+		).toBe(true);
 
-		// First user turn: the player's first activation consumes the
-		// instruction FIRST (注入进 playerMessages，累积可引用) and clears the
-		// slot (FR-015 — user message 排在指令之后).
+		// First user turn: the instruction is already in the player channel
+		// BEFORE the user input is appended (FR-015 — user message 排在指令
+		// 之后) and stays in the history (累积可引用).
 		const { emit } = recordingEmit();
 		team.submit({ text: "开始游戏" }, emit);
 		await flush();
 
 		const after = (await team.getTeamState()) as TeamStateValue;
-		expect(after.pendingInstruction).toBeNull();
-		// The instruction is part of the player's channel history (D6 —
+		// The instruction remains part of the player's channel history (D6 —
 		// visible, referenceable, compressible).
 		expect(
 			after.playerMessages.some(
@@ -801,8 +806,8 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 		// 返回，不等 LLM): the async graph.invoke is still in its microtask
 		// chain when the user message arrives. The TurnLoop queues the
 		// message and its turn awaits the init turn completion first — so the
-		// produced instruction is delivered BEFORE the queued user input
-		// (player 首次激活先注入 pending 指令).
+		// produced instruction is already in `playerMessages` BEFORE the
+		// queued user input is appended (player 首次激活先注入指令).
 		const { team } = buildTestTeam("s-init-order");
 		const store = new SessionTeamStore(async () => team);
 		await store.update("s-init-order", "saolei", "default", true);
@@ -814,15 +819,25 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 		await flush();
 
 		const after = (await team.getTeamState()) as TeamStateValue;
-		expect(after.pendingInstruction).toBeNull();
-		// The instruction was delivered into the player channel during the
-		// first activation (累积可引用, survey D6).
-		expect(
-			after.playerMessages.some(
-				(m) =>
-					typeof m.content === "string" && m.content.includes("初始指令"),
-			),
-		).toBe(true);
+		// The instruction HumanMessage was written into the player channel
+		// BEFORE the first activation ran (累积可引用, survey D6) and
+		// precedes the queued user input (FR-015 order).
+		const instructionIndex = after.playerMessages.findIndex(
+			(m) =>
+				m._getType() === "human" &&
+				typeof m.content === "string" &&
+				m.content.includes("初始指令"),
+		);
+		const userIndex = after.playerMessages.findIndex(
+			(m) =>
+				m._getType() === "human" &&
+				// The user turn message carries content-BLOCKS (built by
+				// buildContentBlocks in runTeamTurn), not a plain string.
+				typeof m.content !== "string" &&
+				JSON.stringify(m.content).includes("开始游戏"),
+		);
+		expect(instructionIndex).toBeGreaterThanOrEqual(0);
+		expect(instructionIndex).toBeLessThan(userIndex);
 	});
 
 	it("does NOT re-run initInstruction on a profile-change rebuild (040 FR-005 — init runs once at first materialization only)", async () => {
@@ -834,23 +849,61 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 		);
 		const t1 = await store.update("s-reinit", "saolei", "default", true);
 		await flush(0);
-		expect((await t1.getTeamState())?.pendingInstruction).toBe("初始指令");
+		expect(
+			(await t1.getTeamState())?.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("初始指令"),
+			),
+		).toBe(true);
 
-		// First activation consumes the slot.
+		// First activation: the instruction is in the channel history.
 		const { emit } = recordingEmit();
 		t1.submit({ text: "开始游戏" }, emit);
 		await flush();
-		expect((await t1.getTeamState())?.pendingInstruction).toBeNull();
 
 		// Profile-change rebuild: the graph is recompiled against the
 		// existing checkpointer but init is NOT re-triggered (the rebuild
 		// handle's planner model serves only review turns — a re-run would
-		// consume it and write a fresh pendingInstruction).
+		// consume it and write a fresh instruction).
 		const t2 = await store.update("s-reinit", "saolei", "other", true);
 		expect(t2).toBe(t1);
 		const state = (await t1.getTeamState()) as TeamStateValue;
-		expect(state.pendingInstruction).toBeNull();
+		// The channel still holds exactly ONE instruction HumanMessage (no
+		// re-run — a re-run would append a SECOND "初始指令").
+		const instructionCount = state.playerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				typeof m.content === "string" &&
+				m.content.includes("初始指令"),
+		).length;
+		expect(instructionCount).toBe(1);
 		// Session history survived the rebuild (FR-005).
 		expect(state.playerMessages.length).toBeGreaterThan(0);
+	});
+
+	it("excludes the init turn from isRunning() but keeps it in isBusy() (status probe vs. rebuild/refresh gate)", async () => {
+		// Deploy bugfix (039 US3): the Connect status probe derives its
+		// signal from `isRunning()` alone. The one-shot async init turn runs
+		// OUTSIDE the TurnLoop (graph.invoke, fire-and-forget) and emits no
+		// `wait` frame — reporting ACTIVE for it would stick the desktop's
+		// typing indicator on with no way to clear it (one-shot probe).
+		// Hence isRunning() must exclude initInFlight while isBusy() (the
+		// RefreshTeam / profile-change rebuild gate, contract §7) must keep
+		// it.
+		const store = new SessionTeamStore(async (sessionId) =>
+			buildTestTeam(sessionId).team,
+		);
+		const team = await store.update("s-init-busy", "saolei", "default", true);
+
+		// Right after materialization the async init turn is in-flight (R2 —
+		// fire-and-forget, 物化即返回): no TurnLoop turn has started, so the
+		// status probe must NOT report ACTIVE while the busy gate still
+		// rejects a destructive operation.
+		expect(team.isRunning()).toBe(false);
+		expect(team.isBusy()).toBe(true);
+
+		await flush(0);
+		expect(team.isRunning()).toBe(false);
+		expect(team.isBusy()).toBe(false);
 	});
 });

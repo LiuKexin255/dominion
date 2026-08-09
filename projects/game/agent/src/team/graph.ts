@@ -14,9 +14,11 @@
  *
  * - `player` (contract §2.1): createAgent full loop, saolei MCP tools
  *   (injected via deps — Batch 2 wires the real MCP tools, tests inject
- *   fakes), consumes the `pendingInstruction` slot on entry (039 US3 —
- *   FR-015/FR-016, T028), post-process consumes the buffer's gameEvent into
- *   `gameEnded`. `accepts_user_input=true` (FR-031).
+ *   fakes), post-process consumes the buffer's gameEvent into
+ *   `gameEnded`. `accepts_user_input=true` (FR-031). Calibration
+ *   instructions arrive as plain HumanMessages in `playerMessages` (039
+ *   US3 — the instruction nodes write the channel directly, no pending
+ *   slot).
  * - `planner` (contract §2.2): triggered exactly once per game end via the
  *   conditional edge; tools = the memory MCP tools + `instruct_player`
  *   (Phase 6 — the shared strategy tool/store are gone, FR-013); on return
@@ -33,14 +35,14 @@
  *   when the turn carries the `runInitInstruction` configurable flag (the
  *   async init turn triggered once after graph FIRST materialization —
  *   session-team.ts, R2); it produces a no-game-history instruction into
- *   `pendingInstruction` (LLM decides, R4) and routes to END — the player is
+ *   `playerMessages` (LLM decides, R4) and routes to END — the player is
  *   NOT invoked (FR-015 "不立即激活 player": the instruction is delivered
  *   with the player's next activation, contract §6). Ordinary turns skip it
  *   entirely.
  * - `postCompactInstruction` (039 US3, T025/T026 — contract §2.3, FR-016):
  *   runs after `compress` (which cleared the channels AND refreshed the
  *   frozen memory snapshot — contract §2.4, T021) and before END; produces
- *   a no-game-history instruction into `pendingInstruction` and stops — the
+ *   a no-game-history instruction into `playerMessages` and stops — the
  *   player stops and waits for user input (FR-010), the instruction is
  *   delivered with the next activation (037"压缩后自动停下"一致).
  * - `compress` (specs/037-saolei-team-optimize/contracts/compression-contract.md
@@ -109,16 +111,6 @@ const TeamState = Annotation.Root({
 		// data-model.md §2, FR-006/FR-014). Same pattern as `gameEnded`.
 		reducer: (_prev: number, next: number) => next,
 		default: () => 0,
-	}),
-	pendingInstruction: Annotation<string | null>({
-		// Overwrite (last-write-wins) control field (D10 —
-		// `specs/039-planner-memory-calibration/contracts/team-graph-contract.md`
-		// §1): the init/compact scenarios' deferred instruction slot. Written
-		// by the instruction nodes (Phase 6 T025/T026), consumed and cleared
-		// by the player node's entry (Phase 6 T028); RefreshTeam clears it too
-		// (contract §7 — Phase 6). Same pattern as `gameEnded`.
-		reducer: (_prev: string | null, next: string | null) => next,
-		default: () => null,
 	}),
 });
 
@@ -380,9 +372,9 @@ export function buildTeamGraph(
 		// `initInstruction` ONLY on the async team-init turn (configurable
 		// `runInitInstruction` — session-team.ts, R2); ordinary turns go
 		// straight to the player. initInstruction → END: the init turn does
-		// NOT invoke the player — the instruction lands in the
-		// `pendingInstruction` slot and is delivered with the player's next
-		// activation (FR-015 "不立即激活 player", contract §6).
+		// NOT invoke the player — the instruction lands in `playerMessages`
+		// and is delivered with the player's next activation (FR-015
+		// "不立即激活 player", contract §6).
 		.addConditionalEdges(START, routeAfterStart)
 		.addEdge("initInstruction", END)
 		.addConditionalEdges("player", routeAfterPlayer)
@@ -394,7 +386,7 @@ export function buildTeamGraph(
 		// compress → postCompactInstruction → END: after the compress node
 		// cleared the channels and refreshed the frozen snapshot (T021), the
 		// compact scenario produces a no-game-history instruction into
-		// `pendingInstruction` (LLM decides, R4), then the turn ENDs — the
+		// `playerMessages` (LLM decides, R4), then the turn ENDs — the
 		// player stops and waits for user input (FR-010; FR-016 — the
 		// instruction is delivered with the next activation, 037"压缩后自动
 		// 停下"一致).

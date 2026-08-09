@@ -1104,7 +1104,8 @@ func TestTeamRefreshClearsShortTermKeepsMemory(t *testing.T) {
 	}
 
 	// when: RefreshTeam (FR-018 — clears short-term memory; 039 contract §7
-	// also clears the pendingInstruction slot).
+	// also covers instructions — they live IN the playerMessages channel, so
+	// the channel clear removes them).
 	refreshTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
 	// then: both partitions are empty (the channels were cleared).
@@ -1198,13 +1199,14 @@ func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
 // §2.3/§6): UpdateTeam(allow_missing=true) materialization asynchronously
 // triggers the one-shot initInstruction turn, whose prompt-guided planner
 // call (sample_init_instruction.yaml keyword "团队初始化") writes a
-// no-game-history instruction into the pendingInstruction slot — WITHOUT
-// invoking the player. The first user message's player activation then
-// consumes the slot: the instruction is injected into the player channel
-// (delivered with the first activation — FR-015 "随首次激活注入"), the
-// slot is cleared, and the greeting still matches deterministically. The
-// player partition order pins the delivery: user text → instruction → player
-// response.
+// no-game-history instruction DIRECTLY into the playerMessages channel (a
+// HumanMessage — same channel write-back as the review node, no pending
+// slot) — WITHOUT invoking the player. The first user message's player
+// activation then consumes it as plain channel history: the instruction is
+// already in the channel BEFORE the user text (FR-015 — 异步产出期间到达的
+// user message 排在指令之后), and the greeting still matches
+// deterministically. The player partition order pins the delivery:
+// instruction → user text → player response.
 func TestTeamInitInstructionScenario(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -1232,34 +1234,31 @@ func TestTeamInitInstructionScenario(t *testing.T) {
 	}
 	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameWait(f) != nil })
 
-	// then: the player partition carries the init instruction — injected
-	// with the first activation, between the user text and the player's
-	// response (FR-015 — 与首次激活一同注入, 累积可引用). The playerMessages
-	// channel order is user message first, instruction second: the user
-	// message lands in the channel as the turn input, and the player node —
-	// on its first activation — consumes pendingInstruction and appends it
-	// as a HumanMessage to the channel that already carries the user message
-	// (team/player.ts entry + write-back, contract §2.1/§6). The TurnLoop
-	// queue keeps the instruction ahead of any mid-init user input in the
-	// player's INPUT order (session-team.ts runTeamTurn awaits the init
-	// turn; session-team.test.ts "queues a user message arriving during the
-	// async init AFTER the instruction"), but the persisted channel order —
-	// which the assertion below pins — is user message before instruction.
+	// then: the player partition carries the init instruction — written
+	// into the channel by the initInstruction node and consumed with the
+	// first activation as plain history (FR-015 — 随首次激活注入, 累积可引用).
+	// The playerMessages channel order is instruction FIRST, then the user
+	// message, then the player's response: the init turn wrote the
+	// instruction into the channel before the user turn input landed
+	// (instruction-node.ts writes playerMessages directly; runTeamTurn
+	// awaits the init turn before appending the user input — contract
+	// §2.3/§6, session-team.test.ts "queues a user message arriving during
+	// the async init AFTER the instruction").
 	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
-	userIdx := messageIndex(playerLmr.GetMessages(), "hello from first activation")
 	instructionIdx := messageIndex(playerLmr.GetMessages(), expectedInitInstructionText)
+	userIdx := messageIndex(playerLmr.GetMessages(), "hello from first activation")
 	responseIdx := messageIndex(playerLmr.GetMessages(), expectedGreetingText)
+	if instructionIdx == -1 {
+		t.Errorf("player partition did not surface the init instruction %q — the instruction was not written into the player channel by the init turn (FR-015)", expectedInitInstructionText)
+	}
 	if userIdx == -1 {
 		t.Error("player partition did not surface the first user message")
-	}
-	if instructionIdx == -1 {
-		t.Errorf("player partition did not surface the init instruction %q — the pendingInstruction was not delivered with the first activation (FR-015)", expectedInitInstructionText)
 	}
 	if responseIdx == -1 {
 		t.Error("player partition did not surface the greeting response")
 	}
-	if instructionIdx != -1 && userIdx != -1 && instructionIdx < userIdx {
-		t.Errorf("init instruction index %d precedes the user message index %d — the instruction must be injected WITH the activation, after the turn input lands in the channel (FR-015)", instructionIdx, userIdx)
+	if instructionIdx != -1 && userIdx != -1 && instructionIdx > userIdx {
+		t.Errorf("init instruction index %d follows the user message index %d — the instruction must precede the user input in the channel (FR-015 — user message 排在指令之后)", instructionIdx, userIdx)
 	}
 	if instructionIdx != -1 && responseIdx != -1 && instructionIdx > responseIdx {
 		t.Errorf("init instruction index %d follows the response index %d — the instruction must precede the player's output of the same activation (FR-015)", instructionIdx, responseIdx)
@@ -1395,9 +1394,9 @@ func countMemoryCallsInMessages(messages []*game.Message) int {
 // message_id (the desktop dedup anchor, data-model.md §4). The
 // postCompactInstruction node then writes the no-game-history compact
 // instruction (sample_compact_instruction.yaml keyword "上下文刚被压缩")
-// into the pendingInstruction slot — the turn ends WITHOUT the player being
-// invoked (FR-016, 037"压缩后自动停下"一致), and the instruction is delivered
-// with the player's NEXT activation (game 6).
+// DIRECTLY into the player channel — the turn ends WITHOUT the player being
+// invoked (FR-016, 037"压缩后自动停下"一致), and the instruction is consumed
+// with the player's NEXT activation (game 6) as plain channel history.
 func TestTeamCompressionAtFiveGames(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -1455,19 +1454,24 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 
 	// then: the PLAYER channel was shrunk to exactly ONE summary message
 	// (FR-008) and the player STOPPED — no new game was opened after the
-	// compression, so the player partition holds only the summary (FR-010).
-	// The compact instruction is NOT in the player partition yet — it sits in
-	// the pendingInstruction slot, delivered with the NEXT activation (FR-016 —
-	// 压缩后 turn 结束, player 停下).
+	// compression (FR-010). The compact instruction is already IN the
+	// player partition right after compression: the postCompactInstruction
+	// node wrote it directly into playerMessages (same channel write-back
+	// as the review node — no pending slot), where it awaits the player's
+	// NEXT activation as plain history (FR-016 — 压缩后 turn 结束, player
+	// 停下; the instruction is visible to ListMessages immediately).
 	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
-	if got := len(playerLmr.GetMessages()); got != 1 {
-		t.Fatalf("player partition after compression = %d messages, want exactly 1 (FR-008/FR-010)", got)
+	if got := len(playerLmr.GetMessages()); got != 2 {
+		t.Fatalf("player partition after compression = %d messages, want exactly 2 (compressed summary + compact instruction — FR-008/FR-010/FR-016)", got)
 	}
 	if got := messageText(playerLmr.GetMessages()[0]); !strings.Contains(got, expectedPlayerCompressionSummary) {
 		t.Errorf("player summary message = %q, want to contain %q (FR-008/FR-012)", got, expectedPlayerCompressionSummary)
 	}
 	if strings.Contains(messageText(playerLmr.GetMessages()[0]), expectedCompactInstructionText) {
-		t.Errorf("player summary message = %q — the compact instruction must stay deferred in pendingInstruction, NOT enter the channel at compression (FR-016)", messageText(playerLmr.GetMessages()[0]))
+		t.Errorf("player summary message = %q — the compact instruction must be its OWN channel message, not merged into the summary (FR-016)", messageText(playerLmr.GetMessages()[0]))
+	}
+	if got := messageText(playerLmr.GetMessages()[1]); !strings.Contains(got, expectedCompactInstructionText) {
+		t.Errorf("player compact instruction message = %q, want to contain %q — the postCompactInstruction node must write the instruction into playerMessages (FR-016)", messageText(playerLmr.GetMessages()[1]))
 	}
 	// The PLANNER channel is NOT "exactly 1" after compression: the
 	// postCompactInstruction node (039 Phase 6 — FR-016, contract §2.3) runs
@@ -1549,19 +1553,20 @@ func TestTeamCompressionAtFiveGames(t *testing.T) {
 		t.Errorf("memory entries after game 6 = %d, want 2 (long-term memory survived compression — FR-009)", got)
 	}
 
-	// ...the compact instruction was delivered with the player's NEXT
-	// activation (FR-016): the player partition grew beyond the single
-	// summary message and now carries the compact instruction AFTER the
-	// summary.
+	// ...the compact instruction was consumed with the player's NEXT
+	// activation (FR-016): the player partition grew beyond the summary +
+	// instruction and the instruction still sits right after the summary
+	// (already visible since the compression, now followed by game 6's
+	// messages).
 	playerLmr = listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
-	if got := len(playerLmr.GetMessages()); got <= 1 {
-		t.Errorf("player partition after game 6 = %d messages, want > 1 (player resumed with the summary context — FR-010)", got)
+	if got := len(playerLmr.GetMessages()); got <= 2 {
+		t.Errorf("player partition after game 6 = %d messages, want > 2 (player resumed with the summary context — FR-010)", got)
 	}
 	compactIdx := messageIndex(playerLmr.GetMessages(), expectedCompactInstructionText)
 	if compactIdx == -1 {
-		t.Errorf("player partition after game 6 did not surface the compact instruction %q — the pendingInstruction was not delivered with the next activation (FR-016)", expectedCompactInstructionText)
-	} else if compactIdx < 1 {
-		t.Errorf("compact instruction index = %d — it must be delivered with the next activation, AFTER the compressed summary (FR-016)", compactIdx)
+		t.Errorf("player partition after game 6 did not surface the compact instruction %q — the instruction was not delivered with the next activation (FR-016)", expectedCompactInstructionText)
+	} else if compactIdx != 1 {
+		t.Errorf("compact instruction index = %d — it must sit right after the compressed summary at index 1 (FR-016)", compactIdx)
 	}
 }
 

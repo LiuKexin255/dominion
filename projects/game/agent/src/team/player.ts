@@ -9,15 +9,16 @@
  * - **Tools**: injected via {@link PlayerNodeDeps.tools} (DI seam). The
  *   production saolei MCP tools are wired in server.ts (Batch 2); tests
  *   inject fake tools that drive the sink.
- * - **Pending instruction consumption (039 US3, T028 — contract §2.1,
- *   FR-015/FR-016)**: on entry the node reads `state.pendingInstruction`
- *   (the init/compact scenarios' deferred calibration-instruction slot) and,
- *   when non-null, injects it as a `HumanMessage` into the player's input —
- *   the "与下次激活一同注入" delivery. The injected message is ALSO written
- *   back to the channel (as a HumanMessage), so the instruction accumulates
- *   in the player's conversation history — visible, referenceable, and
- *   compressible (survey D6; the strategy's "current-态势" SystemMessage
- *   injection is gone — FR-013, player holds no long-term storage).
+ * - **Calibration instructions in the channel (039 US3 — FR-015/FR-016)**:
+ *   init/compact scenario instructions are written DIRECTLY into
+ *   `state.playerMessages` as HumanMessages by the instruction nodes
+ *   (instruction-node.ts — same channel write-back as the review node's
+ *   `instruct_player`, planner.ts). The player consumes them as part of the
+ *   normal conversation flow: the node's input is simply
+ *   `state.playerMessages`, so instructions accumulate in history — visible,
+ *   referenceable, and compressible (survey D6; the strategy's
+ *   "current-态势" SystemMessage injection is gone — FR-013, player holds
+ *   no long-term storage). No pending slot, no extra consumption step.
  * - **Game-end guard (Issue 1 — `specs/036-team-mode-bugfix/spec.md` FR-001)**:
  *   a `beforeModel` middleware stops the createAgent loop as soon as an
  *   unconsumed game-end event exists in the ephemeral buffer (the LLM never
@@ -199,18 +200,12 @@ export function createPlayerNode(
 		state: TeamStateValue,
 		config?: RunnableConfig,
 	): Promise<Partial<TeamStateValue>> => {
-		// 039 US3 (T028, contract §2.1 — FR-015/FR-016): the init/compact
-		// scenarios' deferred calibration instruction, delivered "与下次激活
-		// 一同注入". When non-null, the instruction enters the player's input
-		// as a HumanMessage AND is written back to the channel — it
-		// accumulates in the conversation history (survey D6: visible,
-		// referenceable, compressible). The slot is then cleared.
-		const pending = state.pendingInstruction ?? null;
-		const pendingMessage = pending !== null ? new HumanMessage(pending) : null;
-		const input: BaseMessage[] = [
-			...(pendingMessage ? [pendingMessage] : []),
-			...state.playerMessages,
-		];
+		// The input is simply the player's message channel: calibration
+		// instructions from the init/compact scenarios are already in
+		// `state.playerMessages` (written by the instruction nodes), so they
+		// enter the agent as part of the normal conversation flow (039 US3 —
+		// no pending slot, no extra consumption step).
+		const input: BaseMessage[] = [...state.playerMessages];
 
 		// Issue 1 (036): try/finally — `consumeGameEvent` runs even when the
 		// invoke throws (GraphRecursionError / model / tool errors), so the
@@ -229,17 +224,9 @@ export function createPlayerNode(
 			// D6 step 4: consume the buffer's end event ONCE (marks consumed).
 			const gameEvent = consumeGameEvent(buffer);
 			return {
-				// The pending instruction HumanMessage is written back
-				// alongside the agent's output (it is part of the player's
-				// conversation flow — survey D6). `result` is undefined when
-				// the invoke threw — only the instruction is persisted then.
-				playerMessages: [
-					...(pendingMessage ? [pendingMessage] : []),
-					...(result?.messages ?? []),
-				],
-				// Clear the deferred-instruction slot (contract §2.1 — the
-				// instruction is delivered exactly once, with this activation).
-				...(pending !== null ? { pendingInstruction: null } : {}),
+				// The player's output messages (instructions already in the
+				// channel stay there — messagesStateReducer appends/dedups).
+				playerMessages: result?.messages ?? [],
 				...(gameEvent ? { gameEnded: gameEvent.status } : {}),
 			};
 		}

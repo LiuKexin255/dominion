@@ -7,8 +7,9 @@
  * as team/graph.test.ts): the fake model decides whether to call the real
  * `instruct_player` tool, which stages the instruction into the
  * configurable-provided external buffer (R1); the node reads the staged
- * content AFTER the invoke returns and writes `pendingInstruction` — it
- * never writes `playerMessages` (不触发 player invoke).
+ * content AFTER the invoke returns and writes `playerMessages` (a
+ * HumanMessage — the same channel write-back as the review node; 不触发
+ * player invoke, FR-015/FR-016).
  *
  * Mock strategy (`style/javascript.md` §测试): the model/tools/buffer are
  * injected via DI (no `vi.mock` — see
@@ -16,7 +17,11 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { AIMessage, SystemMessage } from "@langchain/core/messages";
+import {
+	AIMessage,
+	HumanMessage,
+	SystemMessage,
+} from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 
@@ -40,7 +45,6 @@ function freshState(): TeamStateValue {
 		plannerMessages: [],
 		gameEnded: null,
 		gameCounter: 0,
-		pendingInstruction: null,
 	};
 }
 
@@ -100,7 +104,7 @@ function contentType(m: BaseMessage): string {
 }
 
 describe("instruction node — init scenario (T025, contract §2.3)", () => {
-	it("writes the staged instruction into pendingInstruction when the LLM calls instruct_player (R4 — no enforcement of the call itself)", async () => {
+	it("writes the staged instruction into playerMessages when the LLM calls instruct_player (R4 — no enforcement of the call itself)", async () => {
 		const model = instructingModel("开局先点中心，再清理边角");
 		const { node, buffer } = buildNode(model, "init");
 		const config = {
@@ -110,11 +114,13 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 		const result = await node(freshState(), config);
 
 		// The LLM DID call the tool → the instruction is staged in the
-		// external buffer and the node writes it to pendingInstruction (the
-		// deferred slot — player consumes on next activation; NOT
-		// playerMessages — no player invoke, FR-015).
-		expect(result.pendingInstruction).toBe("开局先点中心，再清理边角");
-		expect(result.playerMessages).toBeUndefined();
+		// external buffer and the node writes it into `playerMessages` as a
+		// HumanMessage (same channel write-back as the review node —
+		// planner.ts; NO pending slot, NO player invoke, FR-015).
+		expect(result.playerMessages).toBeDefined();
+		const instructionMsg = (result.playerMessages as BaseMessage[])[0];
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
+		expect(contentType(instructionMsg)).toBe("开局先点中心，再清理边角");
 		// The buffer slot was reset after the read (R1).
 		expect(buffer.content).toBeNull();
 		// The planner's channel write-back excludes the frozen snapshot
@@ -142,7 +148,7 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 		expect(model.calls.length).toBeGreaterThan(0);
 	});
 
-	it("writes NO pendingInstruction when the LLM decides not to call the tool (R4 — no enforcement)", async () => {
+	it("writes NO playerMessages when the LLM decides not to call the tool (R4 — no enforcement)", async () => {
 		const model = silentModel();
 		const { node, buffer } = buildNode(model, "init");
 		const config = {
@@ -151,8 +157,8 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 
 		const result = await node(freshState(), config);
 
-		expect(result.pendingInstruction).toBeUndefined();
-		expect(result).not.toHaveProperty("pendingInstruction");
+		expect(result.playerMessages).toBeUndefined();
+		expect(result).not.toHaveProperty("playerMessages");
 		expect(buffer.content).toBeNull();
 	});
 
@@ -201,7 +207,7 @@ describe("instruction node — init scenario (T025, contract §2.3)", () => {
 });
 
 describe("instruction node — compact scenario (T025, contract §2.3)", () => {
-	it("writes the staged instruction into pendingInstruction with the COMPACT prompt (压缩后重建引导, FR-016)", async () => {
+	it("writes the staged instruction into playerMessages with the COMPACT prompt (压缩后重建引导, FR-016)", async () => {
 		const model = instructingModel("重新建立引导：保持节奏");
 		const { node, buffer } = buildNode(model, "compact");
 		// A compressed planner channel (one summary AIMessage) — the node
@@ -214,7 +220,9 @@ describe("instruction node — compact scenario (T025, contract §2.3)", () => {
 
 		const result = await node(state, config);
 
-		expect(result.pendingInstruction).toBe("重新建立引导：保持节奏");
+		const instructionMsg = (result.playerMessages as BaseMessage[])[0];
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
+		expect(contentType(instructionMsg)).toBe("重新建立引导：保持节奏");
 		const firstCall = model.calls[0]?.messages as BaseMessage[];
 		// The compressed planner summary is part of the input.
 		expect(

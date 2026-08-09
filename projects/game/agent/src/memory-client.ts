@@ -19,10 +19,9 @@
  * the LLM (FR-008/FR-011).
  *
  * Structure mirrors `prompt-client.ts` (keepalive / round_robin / TLS
- * channel options, warmup, DI seam): the shared channel constants and the
- * proto path/options are imported from prompt-client to keep a single
- * source of truth for the grpc-go keepalive policy and the proto loader
- * configuration.
+ * channel options, DI seam): the shared channel constants and the proto
+ * path/options are imported from prompt-client to keep a single source of
+ * truth for the keepalive policy and the proto loader configuration.
  */
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
@@ -32,17 +31,12 @@ import {
 import {
   PROTO_PATH,
   PROTO_OPTIONS,
-  KEEPALIVE_OPTIONS,
-  ROUND_ROBIN_SERVICE_CONFIG,
   buildClientCredentials,
   buildChannelOptions,
 } from "./prompt-client";
 
 /** Dominion resolver target for the memory service. */
 export const MEMORY_SERVICE_TARGET = "dominion:///game/memory:50051";
-
-/** Ample for TCP + TLS handshake on a healthy peer during startup warmup. */
-const DEFAULT_WARMUP_TIMEOUT_MS = 5_000;
 
 /**
  * One memory entry as returned by `listMemories`: the service's internal
@@ -235,42 +229,6 @@ export class MemoryClient {
 			pageToken = response?.nextPageToken ?? "";
 		} while (pageToken.length > 0);
 		return entries;
-	}
-
-	/**
-	 * Best-effort pre-warm of the gRPC channel.
-	 *
-	 * Forces the otherwise-lazy channel to start connecting and waits until
-	 * it reaches READY or `timeoutMs` elapses (same semantics as
-	 * `prompt-client.ts` warmup). Never rejects — a timeout resolves `false`
-	 * and leaves connection establishment to the next RPC's own deadline.
-	 *
-	 * @returns `true` if the channel reached READY, `false` on timeout.
-	 */
-	async warmup(timeoutMs = DEFAULT_WARMUP_TIMEOUT_MS): Promise<boolean> {
-		return new Promise<boolean>((resolve) => {
-			const channel = this.client.getChannel();
-			const deadline = new Date(Date.now() + timeoutMs);
-
-			const step = (): void => {
-				const state = channel.getConnectivityState(true);
-				if (
-					state === grpc.connectivityState.READY ||
-					state === grpc.connectivityState.SHUTDOWN
-				) {
-					resolve(state === grpc.connectivityState.READY);
-					return;
-				}
-				channel.watchConnectivityState(state, deadline, (err) => {
-					if (err) {
-						resolve(false);
-						return;
-					}
-					step();
-				});
-			};
-			step();
-		});
 	}
 
 	/** Close the underlying gRPC client connection. */

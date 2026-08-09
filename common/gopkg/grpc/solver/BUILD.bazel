@@ -14,6 +14,7 @@ go_library(
         "//common/gopkg/logs/event",
         "//common/gopkg/solver",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//balancer",
         "@org_golang_google_grpc//resolver",
     ],
 )
@@ -28,6 +29,7 @@ go_unittest(
     deps = [
         "//common/gopkg/logs",
         "//common/gopkg/solver",
+        "@org_golang_google_grpc//balancer",
         "@org_golang_google_grpc//resolver",
         "@org_golang_google_grpc//serviceconfig",
     ],

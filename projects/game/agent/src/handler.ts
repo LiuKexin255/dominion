@@ -246,11 +246,16 @@ export class Handler implements TeamServiceHandlers {
       return;
     }
 
-    // Reject Refresh while a turn is in flight: the per-session TurnLoop is
-    // the single-flight owner; `isRunning()` covers "turn in flight OR
-    // draining queued work" (specs/030-queued-chat-input/contracts/
-    // turn-loop-contract.md).
-    if (team.isRunning()) {
+    // Reject Refresh while work is in flight: the per-session TurnLoop is
+    // the single-flight owner; `isBusy()` covers "turn in flight OR
+    // draining queued work" AND the one-shot async initInstruction turn
+    // (039 US3 — a refresh during the init could clear a freshly written
+    // instruction in `playerMessages`, contract §7; specs/030-queued-chat-input/
+    // contracts/turn-loop-contract.md). Deliberately NOT `isRunning()` —
+    // that one feeds the Connect status probe, which must exclude the init
+    // turn (it emits no `wait`, so ACTIVE would stick the desktop's typing
+    // indicator on).
+    if (team.isBusy()) {
       warn("refresh team rejected: turn in-flight", { sessionId });
       callback({
         code: grpc.status.FAILED_PRECONDITION,
@@ -361,6 +366,12 @@ export class Handler implements TeamServiceHandlers {
         const statusPart = parts.find((p: FlowPart) => p.status);
         if (statusPart) {
           const team = this.sessionTeamStore.get(sessionId);
+          // The probe reports ACTIVE only for REAL turns (`team.isRunning()`
+          // excludes the one-shot async initInstruction turn — 039 US3
+          // deploy bugfix: the init runs outside the TurnLoop and emits no
+          // `wait`, so ACTIVE would stick the desktop's typing indicator on
+          // with no way to clear it; the init is still gated for
+          // RefreshTeam/rebuild via `isBusy()`, see session-team.ts).
           const statusFrame: TeamFrame = buildTeamFrame(
             sessionId,
             templateId,

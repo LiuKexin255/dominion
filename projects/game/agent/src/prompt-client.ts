@@ -48,9 +48,6 @@ export const PROMPT_SERVICE_TARGET = "dominion:///game/prompt:50051";
 
 const TLS_CA_CERT = "/etc/tls/ca.crt";
 
-/** Ample for TCP + TLS handshake on a healthy peer during startup warmup. */
-const DEFAULT_WARMUP_TIMEOUT_MS = 5_000;
-
 /** Return type for PromptClient.getTeamProfile(). */
 export interface TeamProfileResult {
   /** The player agent's LLM model spec (SaoleiProfile.player_model). */
@@ -85,23 +82,6 @@ export function buildClientCredentials(): grpc.ChannelCredentials {
   return grpc.credentials.createSsl(rootCert);
 }
 
-// Keep the channel warm and detect silently-dropped connections, but stay
-// within the prompt service's keepalive enforcement policy. The prompt
-// server is grpc-go, which by default rejects pings more frequent than
-// 5 minutes as "excess pings" and GOAWAYs the connection. Use 5m so the
-// PING interval is safely above that threshold, and only send PINGs when
-// there is an active RPC to avoid waking idle connections.
-//
-// Exported so sibling gRPC clients (`memory-client.ts`, spec 039 T014) share
-// the same channel policy (memory service is also grpc-go).
-export const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
-  "grpc.keepalive_time_ms": 300_000,
-  "grpc.keepalive_timeout_ms": 10_000,
-  "grpc.keepalive_permit_without_calls": 0,
-  "grpc.initial_reconnect_backoff_ms": 1_000,
-  "grpc.max_reconnect_backoff_ms": 15_000,
-};
-
 // grpc-js defaults to pick_first, which pins a single connection; when that
 // backend pod restarts the call hangs in "Waiting for LB pick" until reconnect.
 // round_robin (matching grpc-go's ClientDefault) connects to every resolved
@@ -109,6 +89,29 @@ export const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
 export const ROUND_ROBIN_SERVICE_CONFIG = JSON.stringify({
   loadBalancingConfig: [{ round_robin: {} }],
 });
+
+// HTTP/2 PING-based keepalive to detect silently-dropped idle connections.
+// Node.js (unlike Go's stdlib) does NOT enable TCP-level SO_KEEPALIVE by
+// default (Go sets it with a 15s interval — grpc-go issue #6250), so without
+// these options a half-open TCP connection is only detected by the OS TCP
+// retransmission timeout (~15 min on Linux), leaving the channel stuck.
+//
+// permit_without_calls=1: send PINGs even when idle. The grpc-go server's
+// default EnforcementPolicy (MinTime=5min, PermitWithoutStream=false) will
+// GOAWAY the connection after repeated idle PINGs, but per gRPC A8 the
+// client auto-doubles keepalive_time until it exceeds MinTime — the interval
+// self-stabilizes at ~5min without any server-side changes.
+// https://github.com/grpc/proposal/blob/master/A8-client-side-keepalive.md
+//
+// max_reconnect_backoff_ms: cap subchannel retry interval (grpc-js default is
+// 120s; 15s ensures faster recovery once a dead connection is detected).
+export const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
+  "grpc.keepalive_time_ms": 30_000,
+  "grpc.keepalive_timeout_ms": 10_000,
+  "grpc.keepalive_permit_without_calls": 1,
+  "grpc.initial_reconnect_backoff_ms": 1_000,
+  "grpc.max_reconnect_backoff_ms": 15_000,
+};
 
 export function buildChannelOptions(): grpc.ChannelOptions {
   const options: grpc.ChannelOptions = {
@@ -124,9 +127,9 @@ export function buildChannelOptions(): grpc.ChannelOptions {
 
 /**
  * Exposes the channel-options construction as a factory seam (FR-009). Tests
- * assert the keepalive / load-balancing options directly without constructing a
- * real gRPC client — which previously required fragile module-level `vi.mock`
- * of `@grpc/grpc-js` / `@grpc/proto-loader` (bypassed by the pre-compiled `:lib`
+ * assert the load-balancing options directly without constructing a real gRPC
+ * client — which previously required fragile module-level `vi.mock` of
+ * `@grpc/grpc-js` / `@grpc/proto-loader` (bypassed by the pre-compiled `:lib`
  * under Bazel js_test — see research.md §2 and style/javascript.md §测试).
  */
 export function buildChannelOptionsForTest(): grpc.ChannelOptions {
@@ -234,42 +237,6 @@ export class PromptClient {
           });
         },
       );
-    });
-  }
-
-  /**
-   * Best-effort pre-warm of the gRPC channel.
-   *
-   * Forces the otherwise-lazy channel to start connecting and waits until it
-   * reaches READY or `timeoutMs` elapses. Eliminates the cold-start window on
-   * the first real RPC. Never rejects — a timeout resolves `false` and leaves
-   * connection establishment to the next RPC's own deadline.
-   *
-   * @returns `true` if the channel reached READY, `false` on timeout.
-   */
-  async warmup(timeoutMs = DEFAULT_WARMUP_TIMEOUT_MS): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      const channel = this.client.getChannel();
-      const deadline = new Date(Date.now() + timeoutMs);
-
-      const step = (): void => {
-        const state = channel.getConnectivityState(true);
-        if (
-          state === grpc.connectivityState.READY ||
-          state === grpc.connectivityState.SHUTDOWN
-        ) {
-          resolve(state === grpc.connectivityState.READY);
-          return;
-        }
-        channel.watchConnectivityState(state, deadline, (err) => {
-          if (err) {
-            resolve(false);
-            return;
-          }
-          step();
-        });
-      };
-      step();
     });
   }
 

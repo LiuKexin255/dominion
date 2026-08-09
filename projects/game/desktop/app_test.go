@@ -1836,6 +1836,35 @@ func TestSetSelectedWindow(t *testing.T) {
 	}
 }
 
+// TestGetSelectedWindow verifies the Wails-bound getter returns the stored
+// handle (and 0 when no window is selected), so the frontend can restore the
+// dropdown selection on session re-entry (spec 025 FR-001/FR-006).
+func TestGetSelectedWindow(t *testing.T) {
+	// given: a fresh App with no selected window
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// when: nothing selected
+	got, err := app.GetSelectedWindow()
+	if err != nil {
+		t.Fatalf("GetSelectedWindow() unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected selectedWin=0 (none selected), got %d", got)
+	}
+
+	// when: a window was selected
+	app.SetSelectedWindow(1234)
+	got, err = app.GetSelectedWindow()
+	if err != nil {
+		t.Fatalf("GetSelectedWindow() unexpected error: %v", err)
+	}
+	if got != 1234 {
+		t.Errorf("expected selectedWin=1234, got %d", got)
+	}
+}
+
 // Test_resolveSelectedWindow_NoSelection verifies FR-005: with no window
 // selected, resolveSelectedWindow fails gracefully with "no window selected".
 func Test_resolveSelectedWindow_NoSelection(t *testing.T) {

@@ -52,9 +52,9 @@
 **验证**：player 不再读策略；两场景指令（review prompt"必要时才调用"同 turn / init-compact prompt 引导无历史、不激活 player）。
 
 1. **代码审查**：`StrategyStore`/`update_strategy`/player"当前态势"注入全部移除（SC-005，无残留引用）。
-2. **team 初始化**：`UpdateTeam(allow_missing=true)` 物化返回（initInstruction 异步触发，仅 graph 首建；profile 变更重建不重跑 init，040 FR-005）→ 确认 planner 经 prompt 引导产出初始指令（无游戏历史，LLM 决定是否调用）→ 进 `pendingInstruction` 槽；首次 user message → player 激活时指令随同注入 playerMessages（不产生仅因指令的独立 player 激活；异步期间 user message 排在指令之后）。
+2. **team 初始化**：`UpdateTeam(allow_missing=true)` 物化返回（initInstruction 异步触发，仅 graph 首建；profile 变更重建不重跑 init，040 FR-005）→ 确认 planner 经 prompt 引导产出初始指令（无游戏历史，LLM 决定是否调用）→ 指令**直写 `playerMessages`**（对 ListMessages 可见，无需 pending 槽）；首次 user message → player 激活时指令作为正常 history 参与（不产生仅因指令的独立 player 激活；异步期间 user message 排在指令之后）。
 3. **正常游戏结束**：player tool_calling → tool_result（游戏结束）→ planner 复盘（对 player 不可见，在 plannerMessages）→ planner 按"必要时才调用"**可选** `instruct_player` → 指令 HumanMessage 进 playerMessages（顺序 `tool_result → 指令 → player output`）→ graph 路由回 player 继续；planner 不发指令时 player 亦继续。
-4. **触发压缩（第 5 局）**：review → compress（冻结快照刷新）→ postCompactInstruction（prompt 引导无历史指令，LLM 决定）→ `pendingInstruction` → turn 结束（player 停下）→ 下次激活注入（与 037"压缩后自动停下"一致）。
+4. **触发压缩（第 5 局）**：review → compress（冻结快照刷新）→ postCompactInstruction（prompt 引导无历史指令，LLM 决定）→ 指令直写 `playerMessages` → turn 结束（player 停下）→ 下次激活作为 history 注入（与 037"压缩后自动停下"一致）。
 5. 消息顺序断言（FR-017）：playerMessages 可见序列为 `tool_calling → tool_result → planner 指令 → player message output`。
 
 > 契约：[`contracts/team-graph-contract.md`](./contracts/team-graph-contract.md)。

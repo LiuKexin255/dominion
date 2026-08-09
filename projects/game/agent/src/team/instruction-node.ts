@@ -11,14 +11,16 @@
  *   FR-011）+ 场景 prompt 要求，产出**无 gameLog** 指令（LLM 决定是否调用
  *   `instruct_player`，R4 — 无强制检验）；prompt 措辞与 review 场景
  *   （"必要时才调用"）区分：init/compact 是"要求给指令"（contract §2.3）。
- * - **不触发 player invoke**：指令写入 `TeamState.pendingInstruction` 槽
- *   （由 player 节点入口消费注入 — FR-015/FR-016），节点不写
- *   `playerMessages`。init 场景 turn 停在 initInstruction（条件边，R5）；
- *   compact 场景 turn 在 postCompactInstruction 后 END（与 037"压缩后自动
- *   停下"一致）。
+ * - **不触发 player invoke**：指令写入 `TeamState.playerMessages`（作为
+ *   HumanMessage，与 review 场景同机制 — FR-017 的通道写回，见
+ *   planner.ts），节点不激活 player。init 场景 turn 停在 initInstruction
+ *   （条件边，R5）；compact 场景 turn 在 postCompactInstruction 后 END
+ *   （与 037"压缩后自动停下"一致）。指令进入 player 通道后对
+ *   ListMessages 可见（player tab 可展示），后续用户输入正常拼接 history
+ *   即可消费，无需额外步骤。
  * - **R1 外部 buffer 中转**（contract §4）：工具把指令 content 暂存到
  *   configurable 提供的 `instructionBuffer`；节点在 `createAgent.invoke`
- *   返回后读暂存、由节点返回值写 `pendingInstruction`。
+ *   返回后读暂存、由节点返回值写 `playerMessages`。
  * - **降级**（contract §6）：agent invoke 失败 → 记日志、跳过指令，不阻断
  *   team（init 不阻塞 `UpdateTeam` 物化）。
  *
@@ -199,8 +201,10 @@ export function createInstructionNode(
 		}
 
 		// R1（contract §4）：invoke 返回后读外部 buffer 暂存，重置槽；有
-		// 指令则写 `pendingInstruction`（由 player 入口消费 — 不触发 player
-		// invoke）。无指令则不写该字段（保持槽原值 null）。
+		// 指令则写 `playerMessages`（与 review 节点同一通道写回机制 —
+		// planner.ts，指令作为 HumanMessage 进入 player 对话流）。无指令
+		// 则不写该字段。写 `playerMessages` 不触发 player invoke（节点仅
+		// 返回通道更新，图路由由条件边决定）。
 		const buffer = config?.configurable?.instructionBuffer as
 			| InstructionBuffer
 			| undefined;
@@ -217,7 +221,9 @@ export function createInstructionNode(
 			),
 		};
 		if (instruction !== null) {
-			update.pendingInstruction = instruction;
+			// 指令直接进入 player 通道（HumanMessage），随后续输入正常拼接
+			// history（无需 pendingInstruction 中间槽；对 ListMessages 可见）。
+			update.playerMessages = [new HumanMessage(instruction)];
 		}
 		return update;
 	};

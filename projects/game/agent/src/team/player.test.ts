@@ -8,11 +8,11 @@
  *   model call AND each call after a tool result (FR-001, spec v2 —
  *   `specs/038-queue-input-mid-turn/contracts/injection-seam-contract.md`
  *   §3).
- * - The player entry consumes `state.pendingInstruction` (the init/compact
- *   scenarios' deferred instruction slot — T028, contract §2.1): a non-null
- *   instruction is injected as a `HumanMessage` into the player input AND
- *   written back to the channel (accumulates in the conversation flow,
- *   survey D6), and the slot is cleared (`{pendingInstruction: null}`).
+ * - The player consumes calibration instructions as PLAIN channel history
+ *   (039 US3): the init/compact instruction nodes write `playerMessages`
+ *   directly (instruction-node.ts), so the node's input is simply
+ *   `state.playerMessages` — no pending slot, no extra consumption step
+ *   (FR-015/FR-016).
  *
  * Mock strategy (`style/javascript.md` §Mock): the node's `createAgentFn`
  * DI seam is injected as a `vi.fn()` spy that captures the middleware
@@ -136,7 +136,7 @@ describe("player createAgent middleware — queueDrain (feature 038 T002)", () =
 	});
 });
 
-describe("player node — pendingInstruction consumption (039 US3 T028, contract §2.1)", () => {
+describe("player node — channel history flow (039 US3 — instructions arrive as plain playerMessages)", () => {
 	/** Build a node whose fake agent captures the invoke input. */
 	function buildCapturingPlayerNode() {
 		const captured: { messages: BaseMessage[] }[] = [];
@@ -157,59 +157,58 @@ describe("player node — pendingInstruction consumption (039 US3 T028, contract
 		return { node, captured, createAgentFn };
 	}
 
-	function stateWith(pendingInstruction: string | null): TeamStateValue {
+	function stateWith(playerMessages: BaseMessage[]): TeamStateValue {
 		return {
-			playerMessages: [new HumanMessage("历史消息")],
+			playerMessages,
 			plannerMessages: [],
 			gameEnded: null,
 			gameCounter: 0,
-			pendingInstruction,
 		};
 	}
 
-	it("injects a non-null pendingInstruction as a HumanMessage (first in input) and clears the slot", async () => {
+	it("passes the channel history (including a calibration instruction HumanMessage) straight into the model input", async () => {
 		const { node, captured, createAgentFn } = buildCapturingPlayerNode();
+		// The instruction node wrote the calibration instruction into
+		// `playerMessages`; the user's message follows it (channel order).
+		const state = stateWith([
+			new HumanMessage("优先清理边角雷区"),
+			new HumanMessage("历史消息"),
+		]);
 
-		const result = await node(stateWith("优先清理边角雷区"), {
+		const result = await node(state, {
 			configurable: { thread_id: "t" },
 		});
 
 		// The DI seam was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
-		// The instruction leads the model input (before the channel history)
-		// — "与下次激活一同注入" (FR-015/FR-016).
+		// The model input is the channel history verbatim — the instruction
+		// is consumed as a normal conversation message, no extra step
+		// (FR-015/FR-016 — "后续输入只需正常拼接 history").
 		const input = captured[0]?.messages ?? [];
-		expect(input[0]).toBeInstanceOf(HumanMessage);
+		expect(input).toHaveLength(2);
 		expect(String(input[0].content)).toBe("优先清理边角雷区");
-		expect(input[1].content).toBe("历史消息");
-		// The instruction is ALSO written back to the channel (survey D6 —
-		// it accumulates in the player's conversation flow), and the slot is
-		// cleared (delivered exactly once).
+		expect(String(input[1].content)).toBe("历史消息");
+		// Only the agent output is returned (the channel's existing messages
+		// are preserved by the messagesStateReducer append/dedup).
 		const written = result.playerMessages ?? [];
-		expect(written).toHaveLength(2);
-		expect(written[0]).toBeInstanceOf(HumanMessage);
-		expect(String(written[0].content)).toBe("优先清理边角雷区");
-		expect(result.pendingInstruction).toBeNull();
+		expect(written).toHaveLength(1);
+		expect(String(written[0].content)).toBe("收到，继续游戏");
 	});
 
-	it("does not inject nor clear when pendingInstruction is null", async () => {
+	it("passes an empty channel as an empty input", async () => {
 		const { node, captured } = buildCapturingPlayerNode();
 
-		const result = await node(stateWith(null), {
+		const result = await node(stateWith([]), {
 			configurable: { thread_id: "t" },
 		});
 
 		const input = captured[0]?.messages ?? [];
-		// No instruction prepended — the history leads unchanged.
-		expect(input).toHaveLength(1);
-		expect(String(input[0].content)).toBe("历史消息");
-		// Only the agent output is written back (no instruction message).
+		expect(input).toHaveLength(0);
 		const written = result.playerMessages ?? [];
 		expect(written).toHaveLength(1);
-		expect(result.pendingInstruction).toBeUndefined();
 	});
 
-	it("persists the instruction even when the agent invoke throws (try/finally)", async () => {
+	it("returns the agent's output messages when the invoke throws (try/finally — Issue 1 semantics)", async () => {
 		const createAgentFn = vi.fn(() => ({
 			invoke: async () => {
 				throw new Error("player agent loop crashed");
@@ -224,15 +223,15 @@ describe("player node — pendingInstruction consumption (039 US3 T028, contract
 			createAgentFn,
 		});
 
-		const result = await node(stateWith("崩溃后仍保留指令"), {
-			configurable: { thread_id: "t" },
-		});
+		const result = await node(
+			stateWith([new HumanMessage("指令在通道中")]),
+			{ configurable: { thread_id: "t" } },
+		);
 
-		// The instruction message survives the crashed invoke (Issue 1
-		// try/finally semantics — the write-back still runs).
+		// The invoke threw → no output messages; the channel write-back is
+		// empty (the channel's existing instruction stays untouched — the
+		// messagesStateReducer appends only what the node returns).
 		const written = result.playerMessages ?? [];
-		expect(written).toHaveLength(1);
-		expect(String(written[0].content)).toBe("崩溃后仍保留指令");
-		expect(result.pendingInstruction).toBeNull();
+		expect(written).toHaveLength(0);
 	});
 });

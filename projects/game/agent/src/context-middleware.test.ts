@@ -7,8 +7,9 @@
  *  - `clearChannel` produces a per-channel `RemoveMessage(REMOVE_ALL_MESSAGES)`
  *    update (per-channel independence, spike A1).
  *  - `refreshTeamChannels` on a REAL compiled team graph clears BOTH channels
- *    in the outer MemorySaver, clears the `pendingInstruction` slot (039
- *    US3, contract §7), and leaves the `gameEnded` control field untouched.
+ *    in the outer MemorySaver — including any calibration instruction in
+ *    `playerMessages` (039 US3, contract §7) — and leaves the `gameEnded`
+ *    control field untouched.
  *
  * The mechanism intentionally does NOT use a `beforeModel` middleware hook:
  * the player/planner createAgents carry no checkpointer (D14 A2), so their
@@ -163,7 +164,7 @@ describe("refreshTeamChannels (FR-018)", () => {
     expect(after.values.gameEnded).toBeNull();
   });
 
-  it("clears the deferred pendingInstruction slot (039 US3, contract §7)", async () => {
+  it("clears a stale calibration instruction from playerMessages (039 US3, contract §7)", async () => {
     const buffer = createEphemeralGameBuffer();
     const { graph } = buildTeamGraph({
       playerModel: fakeModel().respond(new AIMessage("hi")),
@@ -176,19 +177,18 @@ describe("refreshTeamChannels (FR-018)", () => {
       ...memoryDeps(),
     });
 
-    // A stale init/compact instruction in the slot (e.g. produced by the
-    // async initInstruction turn, never consumed) must NOT survive the
+    // A stale init/compact instruction in `playerMessages` (e.g. produced by
+    // the async initInstruction turn, never consumed) must NOT survive the
     // refresh — it would otherwise be injected into the next activation.
     await graph.updateState(
       { configurable: { thread_id: "ctx-refresh-pending" } },
-      { pendingInstruction: "过期的初始指令" },
+      { playerMessages: [new HumanMessage("过期的初始指令")] },
     );
     await refreshTeamChannels(graph, "ctx-refresh-pending");
 
     const state = (await graph.getState({
       configurable: { thread_id: "ctx-refresh-pending" },
     })) as { values: TeamStateValue };
-    expect(state.values.pendingInstruction).toBeNull();
     expect(state.values.playerMessages).toEqual([]);
     expect(state.values.plannerMessages).toEqual([]);
   });

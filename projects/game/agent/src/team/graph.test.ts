@@ -402,17 +402,19 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		expect(plannerTexts.some((t) => t.includes("开始游戏"))).toBe(false);
 	});
 
-	it("consumes a pending init/compact instruction on player entry — injected first, slot cleared (039 US3, T028 — contract §2.1)", async () => {
-		// The initInstruction turn wrote the pending slot; the player's first
-		// activation must deliver it BEFORE the channel history (FR-015/
-		// FR-016 "与下次激活一同注入").
+	it("delivers a calibration instruction already in playerMessages to the player's first activation (039 US3 — channel history flow, contract §2.1)", async () => {
+		// The initInstruction turn wrote the instruction DIRECTLY into
+		// `playerMessages`; the player's first activation reads it as plain
+		// channel history — no pending slot (FR-015/FR-016).
 		const playerModel = playOneGamePlayerModel();
 		const { graph } = buildTestGraph({ playerModel });
 
 		const result = (await graph.invoke(
 			{
-				playerMessages: [new HumanMessage("开始游戏")],
-				pendingInstruction: "开局先点中心",
+				playerMessages: [
+					new HumanMessage("开局先点中心"),
+					new HumanMessage("开始游戏"),
+				],
 			},
 			{ configurable: { thread_id: "t-pending" }, recursionLimit: 50 },
 		)) as TeamStateValue;
@@ -426,10 +428,8 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 			(m) => m._getType() !== "system" && contentType(m).includes("开局先点中心"),
 		);
 		expect(instructionMsg).toBeInstanceOf(HumanMessage);
-		// The slot was cleared on delivery (delivered exactly once).
-		expect(result.pendingInstruction).toBeNull();
 		// The instruction is part of the player channel history (D6 —
-		// 累积可引用).
+		// 累积可引用) and precedes the user input.
 		expect(
 			result.playerMessages.some(
 				(m) =>
@@ -2158,7 +2158,7 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		expect(String(calls[7][1])).toContain("上下文刚被压缩");
 	});
 
-	it("clears the compressed channels, resets gameCounter and clears pendingInstruction on RefreshTeam (FR-014 / US2 AS8; 039 contract §7)", async () => {
+	it("clears the compressed channels and resets gameCounter on RefreshTeam — including any instruction in playerMessages (FR-014 / US2 AS8; 039 contract §7)", async () => {
 		const playerModel = fiveGamesPlayerModel("player 摘要内容");
 		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
 		const { graph, sessionId } = buildTestGraph({
@@ -2172,11 +2172,12 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 			{ configurable: { thread_id: sessionId }, recursionLimit: 200 },
 		);
 
-		// A stale deferred instruction must not survive the refresh (contract
-		// §7 — 039 US3).
+		// A stale instruction must not survive the refresh (contract §7 —
+		// 039 US3: instructions live IN playerMessages, so the channel clear
+		// covers them).
 		await graph.updateState(
 			{ configurable: { thread_id: sessionId } },
-			{ pendingInstruction: "过期指令" },
+			{ playerMessages: [new HumanMessage("过期指令")] },
 		);
 		await refreshTeamChannels(graph, sessionId);
 
@@ -2187,7 +2188,6 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		expect(snapshot.values.playerMessages).toEqual([]);
 		expect(snapshot.values.plannerMessages).toEqual([]);
 		expect(snapshot.values.gameCounter).toBe(0);
-		expect(snapshot.values.pendingInstruction).toBeNull();
 	});
 });
 
@@ -2248,13 +2248,13 @@ describe("team graph — checkpointer injection (US3 rebuild seam, specs/040-tea
 });
 
 describe("team graph — 039 US3: init/compact instruction scenarios (T025/T026, contract §2.3/§2.5/§4)", () => {
-	it("routes the async init turn to initInstruction → END: writes pendingInstruction, does NOT invoke the player (FR-015)", async () => {
+	it("routes the async init turn to initInstruction → END: writes the instruction into playerMessages, does NOT invoke the player (FR-015)", async () => {
 		// The init turn (session-team.ts triggerInitInstruction — R2) runs
 		// with the `runInitInstruction` configurable flag; the START
 		// conditional edge routes it to initInstruction → END. The player is
-		// NOT invoked — the instruction lands in the pending slot and is
-		// delivered with the player's next activation (FR-015 "不立即激活
-		// player").
+		// NOT invoked — the instruction lands in `playerMessages` (channel
+		// write-back, same as the review node) and is delivered with the
+		// player's next activation (FR-015 "不立即激活 player").
 		const playerModel = fakeModel().respond(new AIMessage("unused"));
 		const initPlanner = fakeModel()
 			.respondWithTools([
@@ -2278,9 +2278,14 @@ describe("team graph — 039 US3: init/compact instruction scenarios (T025/T026,
 		)) as TeamStateValue;
 
 		// The LLM decided to call instruct_player → the no-game-history
-		// instruction was produced into the pending slot (R4 — prompt 要求给
-		// 指令, 无强制检验).
-		expect(result.pendingInstruction).toBe("开局先点中心");
+		// instruction was produced into `playerMessages` as a HumanMessage
+		// (R4 — prompt 要求给指令, 无强制检验; no pending slot).
+		const instructionMsg = result.playerMessages.find(
+			(m) =>
+				typeof m.content === "string" &&
+				m.content.includes("开局先点中心"),
+		);
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
 		// No player activation happened during the init turn.
 		expect(playerModel.calls).toHaveLength(0);
 		// No game / review activity either (plannerMessages holds only the
@@ -2297,14 +2302,17 @@ describe("team graph — 039 US3: init/compact instruction scenarios (T025/T026,
 			{ configurable: { thread_id: "t-normal-turn" }, recursionLimit: 50 },
 		)) as TeamStateValue;
 
-		// No game ended → no planner; the init node never ran (no pending
-		// instruction, no planner messages).
-		expect(result.pendingInstruction).toBeNull();
+		// No game ended → no planner; the init node never ran (no
+		// instruction in playerMessages, no planner messages). The channel
+		// holds exactly the single user input HumanMessage.
+		expect(
+			result.playerMessages.filter((m) => m._getType() === "human"),
+		).toHaveLength(1);
 		expect(result.plannerMessages).toEqual([]);
 		expect(playerModel.calls).toHaveLength(1);
 	});
 
-	it("postCompactInstruction runs after compress → END: writes pendingInstruction, the player does NOT continue (FR-016, 037 压缩后自动停下)", async () => {
+	it("postCompactInstruction runs after compress → END: writes the instruction into playerMessages, the player does NOT continue (FR-016, 037 压缩后自动停下)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const playerModel = fiveGamesPlayerModel("player 摘要内容");
 		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
@@ -2329,10 +2337,16 @@ describe("team graph — 039 US3: init/compact instruction scenarios (T025/T026,
 
 		// 5 games counted; the compression ran (channels shrank to summaries).
 		expect(result.gameCounter).toBe(5);
-		expect(result.playerMessages).toHaveLength(1);
-		// The compact instruction landed in the pending slot (delivered with
-		// the player's NEXT activation — FR-016), NOT in playerMessages.
-		expect(result.pendingInstruction).toBe("重建引导：保持节奏");
+		// The compressed player summary + the compact instruction (written
+		// into playerMessages — delivered with the player's NEXT activation,
+		// FR-016; NOT a pending slot).
+		expect(result.playerMessages).toHaveLength(2);
+		const instructionMsg = result.playerMessages.find(
+			(m) =>
+				typeof m.content === "string" &&
+				m.content.includes("重建引导：保持节奏"),
+		);
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
 		// The player stopped after the compression: 5 move calls + 1 summary
 		// call = 6; a 7th call would mean the graph routed back to the player
 		// after postCompactInstruction (it must END instead).

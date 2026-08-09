@@ -256,6 +256,34 @@ class _DominionResolver {
 
     try {
       const addresses = await resolver.resolve(this.targetStr);
+
+      // Don't publish an empty endpoint list to grpc-js. round_robin
+      // destroys all subchannels on zero endpoints and enters IDLE, whose
+      // exitIdle() is a no-op with zero children — the channel is
+      // permanently stuck ("Waiting for LB pick"; deploy incident
+      // 2026-08-09, prompt rollout). Instead:
+      // - With prior valid endpoints: retain them; the stale subchannels
+      //   fail naturally (TRANSIENT_FAILURE) and requestReresolution()
+      //   keeps polling until new endpoints appear.
+      // - Without prior endpoints: emit UNAVAILABLE so the channel enters
+      //   TRANSIENT_FAILURE with backoff and retries.
+      if (addresses.length === 0) {
+        if (this.state.status === "ready") {
+          return;
+        }
+        const message = `no endpoints resolved for ${this.targetStr}`;
+        this.lastRefreshFailed = true;
+        warn("service endpoints empty", {
+          target: this.targetStr,
+        });
+        const error = statusOrFromError<Endpoint[]>({
+          code: Status.UNAVAILABLE,
+          details: message,
+        });
+        setImmediate(() => this._emit(error));
+        return;
+      }
+
       const endpoints = addressesToEndpoints(addresses);
       const newKey = endpointsKey(endpoints);
 
@@ -378,6 +406,29 @@ class _DominionStatefulResolver {
         this.targetStr,
         this.instanceNum,
       );
+
+      // See _DominionResolver._doRefresh: an empty endpoint list must not
+      // be published to grpc-js (round_robin enters IDLE with zero
+      // children and no self-recovery). Retain prior endpoints, or emit
+      // UNAVAILABLE when nothing was ever resolved.
+      if (addresses.length === 0) {
+        if (this.state.status === "ready") {
+          return;
+        }
+        const message = `no endpoints resolved for ${this.targetStr}?instance=${this.instanceNum}`;
+        this.lastRefreshFailed = true;
+        warn("service endpoints empty", {
+          target: this.targetStr,
+          instance: this.instanceNum,
+        });
+        const error = statusOrFromError<Endpoint[]>({
+          code: Status.UNAVAILABLE,
+          details: message,
+        });
+        setImmediate(() => this._emit(error));
+        return;
+      }
+
       const endpoints = addressesToEndpoints(addresses);
       const newKey = endpointsKey(endpoints);
 

@@ -19,7 +19,8 @@
  * instructionBuffer`, the tool writes `buffer.content`, and the node reads
  * the staged content AFTER `createAgent.invoke` returns, writing the
  * instruction into the outer graph state from its own return value
- * (contract §4: review → `playerMessages`; init/compact → `pendingInstruction`).
+ * (contract §4: review AND init/compact → `playerMessages` — the same
+ * channel write-back).
  *
  * The tool does NOT write the outer channel itself and does NOT know the
  * scenario — it always returns `{ok: true}`.
@@ -52,9 +53,10 @@ export interface InstructionBuffer {
  * completes.
  *
  * The tool is scenario-agnostic: whether the instruction lands in
- * `playerMessages` (review, FR-017 — same-turn injection) or in
- * `pendingInstruction` (init/compact, FR-015/FR-016 — deferred injection) is
- * decided by the enclosing node.
+ * `playerMessages` on the same turn (review, FR-017) or for the next
+ * activation (init/compact, FR-015/FR-016 — the instruction node writes the
+ * channel and the turn ends) is decided by the enclosing node; the channel
+ * write itself is identical in both scenarios.
  *
  * @returns The `instruct_player` `StructuredToolInterface` (DI — no session
  *   binding; the buffer comes from the runtime config, so the same tool

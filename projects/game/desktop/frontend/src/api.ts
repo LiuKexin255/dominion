@@ -450,6 +450,7 @@ interface WailsApp {
   UpdateTeam(template: string, sessionID: string, profile: string, updateMaskPaths: string[], allowMissing: boolean): Promise<Team>
   ListWindows(): Promise<WindowRef[]>
   SetSelectedWindow(hwnd: number): Promise<void>
+  GetSelectedWindow(): Promise<number>
   CaptureScreenshot(): Promise<CapturedImage>
   Connect(template: string, sessionID: string): Promise<string>
   CloseAgent(): Promise<void>
@@ -550,6 +551,12 @@ export async function setSelectedWindow(hwnd: number): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.SetSelectedWindow(hwnd)
+}
+
+export async function getSelectedWindow(): Promise<number> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.GetSelectedWindow()
 }
 
 export async function captureScreenshot(): Promise<CapturedImage> {
