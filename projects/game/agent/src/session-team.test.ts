@@ -676,6 +676,87 @@ describe("SessionTeam — init instruction frames (041 US1, T005/T006 — contra
 	});
 });
 
+describe("SessionTeam — continuous-channel producers (041 US3 T009 — spec edge case 4)", () => {
+	it("init emitter and a review-style emitter interleave through the same bound sink, agent-tagged, no frame lost (FR-006)", async () => {
+		const { team, sessionId } = buildTestTeam("s-041-interleave");
+		const store = new SessionTeamStore(async () => team);
+		const sink = vi.fn<(frame: TeamFrame) => void>();
+		team.bindStreamSink(sink, sink);
+
+		// Producer A — the one-shot init turn (fire-and-forget via
+		// store.update, session-team.ts triggerInitInstruction): the
+		// instruction node emits its three frames (planner request / planner
+		// toolCall response / player write-back, contract §2.2) through the
+		// bound sink (contract §2).
+		await store.update(sessionId, "saolei", "default", true);
+		await flush(0);
+
+		// Producer B — a user turn whose review planner emits its review-input
+		// frame through the SAME emitChannelFrame path (planner.ts:321-344 —
+		// the compress/review-style emitter), interleaved with the TurnLoop's
+		// player frames on the same sink. JS 单线程下 "并发" = 多个发射源在统一
+		// sink 上按发射顺序交错，互不覆盖（spec edge case 4 — 每个任务经实时
+		// 通道独立交付，标记产生它的 agent）。
+		team.submit({ text: "开始游戏" });
+		await flush();
+
+		const msgFrames = sink.mock.calls
+			.map(([f]) => f as TeamFrame)
+			.filter(
+				(f) => (f as Record<string, unknown>).payload === "messageParts",
+			);
+
+		// No frame lost: every init frame arrived on the one sink, keyed by
+		// frameId == message id (dedup anchor, contract §4 / FR-004).
+		const state = (await team.getTeamState()) as TeamStateValue;
+		const requestMsg = state.plannerMessages.find(
+			(m) =>
+				typeof m.content === "string" && m.content.includes("团队初始化"),
+		);
+		const responseMsg = state.plannerMessages.find(
+			(m) => m._getType() === "ai" && extractToolCalls(m).length > 0,
+		);
+		const writeBackMsg = state.playerMessages.find(
+			(m) =>
+				typeof m.content === "string" && m.content.includes("初始指令"),
+		);
+		expect(requestMsg).toBeDefined();
+		expect(responseMsg).toBeDefined();
+		expect(writeBackMsg).toBeDefined();
+		const byFrameId = new Map(msgFrames.map((f) => [f.frameId, f]));
+		expect(byFrameId.get(requestMsg?.id)?.agent).toBe("planner");
+		expect(byFrameId.get(responseMsg?.id)?.agent).toBe("planner");
+		expect(byFrameId.get(writeBackMsg?.id)?.agent).toBe("player");
+
+		// The review-style emitter's frame (agent=planner, role=USER — the
+		// review input HumanMessage, planner.ts:321-344). Its frameId is a
+		// fresh randomUUID (buildTeamFrame default, turn-loop.ts:139) — NOT a
+		// persisted message id — so it never collides with the init frames'
+		// ids on the same sink (contract §4 dedup anchor).
+		const initIds = new Set([requestMsg?.id, responseMsg?.id, writeBackMsg?.id]);
+		expect(
+			msgFrames.some(
+				(f) =>
+					f.agent === "planner" &&
+					f.role === "MESSAGE_ROLE_USER" &&
+					!initIds.has(f.frameId),
+			),
+		).toBe(true);
+
+		// The TurnLoop's player frames also arrived, agent-tagged.
+		expect(
+			msgFrames.some(
+				(f) => f.agent === "player" && f.role === "MESSAGE_ROLE_AGENT",
+			),
+		).toBe(true);
+
+		// Every frame carries a producing agent for tab routing (FR-006).
+		for (const f of msgFrames) {
+			expect(["player", "planner"]).toContain(f.agent);
+		}
+	});
+});
+
 describe("SessionTeamStore", () => {
 	it("update materializes once per session and forwards template+profile; get returns the cached team", async () => {
 		const created: string[] = [];

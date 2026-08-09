@@ -1272,6 +1272,207 @@ func TestSendUserTurn_StartsNoSecondReader(t *testing.T) {
 	}
 }
 
+// TestReadLoop_DeliversFullUserTurn verifies tasks.md T008 (a) — the SC-004
+// regression against the previous per-turn model: a full user turn's frames —
+// text, a tool call, an operation FlowPart (executed, its FlowResultPart
+// returned over the WS, NOT mirrored to the chatstream), and the terminal wait
+// — are all delivered by the already-running continuous reader started at
+// Connect (FR-002, FR-008, FR-009, FR-012;
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.2/§3.3;
+// specs/041-realtime-init-push/quickstart.md B6). The reader keeps running
+// after the terminal wait, ready for the next turn or background frames.
+func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
+	// given: a mock WS server answering the probe, then — after the user turn —
+	// streaming the complete turn response sequence (text, tool call,
+	// operation, terminal wait), while capturing client-sent frames (the tool
+	// result) over the WS.
+	textFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-text-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "agent reply text"}}},
+			}},
+		},
+	}
+	toolCallFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-toolcall-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_ToolCall{ToolCall: &game.ToolCallPart{
+					ToolId:   "tool-1",
+					Name:     "instruct_player",
+					ArgsJson: `{"instruction":"open a cell"}`,
+				}}},
+			}},
+		},
+	}
+	opFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-op-1",
+		Payload: &game.TeamFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{
+					ToolId: "click-1",
+					Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+				}}},
+			}},
+		},
+	}
+	waitFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-wait-1",
+		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
+	}
+	sentFrames := make(chan *game.TeamFrame, 4)
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		probeResp := &game.TeamFrame{
+			SessionId:  "full-turn-session",
+			TemplateId: "saolei",
+			FrameId:    "probe-resp",
+			Payload: &game.TeamFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
+			},
+		}
+		data, _ := proto.Marshal(probeResp)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		// wait for the user turn, then stream the full turn response. The
+		// result-capture goroutine starts only after the user-turn read so it
+		// does not steal the probe/user-turn frames.
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		go func() {
+			for {
+				_, data, err := conn.Read(ctx)
+				if err != nil {
+					return
+				}
+				var f game.TeamFrame
+				if err := proto.Unmarshal(data, &f); err == nil {
+					select {
+					case sentFrames <- &f:
+					default:
+					}
+				}
+			}
+		}()
+		for _, f := range []*game.TeamFrame{textFrame, toolCallFrame, opFrame, waitFrame} {
+			data, _ := proto.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+				return
+			}
+		}
+		select {} // keep the connection open until the client tears it down
+	})
+	defer srv.Close()
+
+	// given: an App wired with a chatstream Registry and a connected WSClient
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("full-turn-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("full-turn-session")
+
+	// when: Connect starts the continuous reader (after the probe), then the
+	// user submits a turn — SendUserTurn only sends, it starts no second
+	// reader (FR-012)
+	if _, err := app.Connect("saolei", "full-turn-session"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { app.CloseAgent() })
+	if err := app.SendUserTurn("saolei", "full-turn-session", "open a cell", nil, 0, 0, "player"); err != nil {
+		t.Fatalf("SendUserTurn() unexpected error: %v", err)
+	}
+
+	// then: the display frames land in the chatstream in order — text, tool
+	// call, terminal wait — with monotonic 1-based IDs (contract §3.2)
+	snap, ok := waitForStreamEvents(stream, 3)
+	if !ok {
+		t.Fatalf("full turn frames not appended within 2s; snapshot has %d events, want 3 (text, tool call, wait)", len(snap))
+	}
+	if snap[0].ID != 1 || snap[1].ID != 2 || snap[2].ID != 3 {
+		t.Errorf("event IDs = [%d, %d, %d], want [1, 2, 3]", snap[0].ID, snap[1].ID, snap[2].ID)
+	}
+	textParts := snap[0].Frame.GetMessageParts()
+	if textParts == nil || len(textParts.GetParts()) == 0 || textParts.GetParts()[0].GetText() == nil {
+		t.Errorf("snap[0] expected text MessageParts payload, got %T", snap[0].Frame.GetPayload())
+	}
+	toolParts := snap[1].Frame.GetMessageParts()
+	if toolParts == nil || len(toolParts.GetParts()) == 0 {
+		t.Errorf("snap[1] expected toolCall MessageParts payload, got %T", snap[1].Frame.GetPayload())
+	} else if got := toolParts.GetParts()[0].GetToolCall(); got == nil || got.GetName() != "instruct_player" {
+		t.Errorf("snap[1] expected instruct_player toolCall part, got %T", toolParts.GetParts()[0].GetKind())
+	}
+	waitFlow := snap[2].Frame.GetFlowParts()
+	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
+		t.Errorf("snap[2] expected FlowParts wait payload, got %T", snap[2].Frame.GetPayload())
+	}
+
+	// and: the operation was executed and its FlowResultPart sent back to the
+	// agent over the WS (FR-009, contract §3.2) with the same tool_id; status
+	// FAILED (no window selected)
+	var resultPart *game.FlowResultPart
+	deadline := time.After(2 * time.Second)
+	for resultPart == nil {
+		select {
+		case f := <-sentFrames:
+			fp := f.GetFlowParts()
+			if fp != nil && len(fp.GetParts()) > 0 {
+				resultPart = fp.GetParts()[0].GetFlowResult()
+			}
+		case <-deadline:
+			t.Fatal("no flow-result frame sent over WS within 2s")
+		}
+	}
+	if resultPart.GetToolId() != "click-1" {
+		t.Errorf("result tool_id = %q, want %q", resultPart.GetToolId(), "click-1")
+	}
+	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Errorf("result status = %v, want FAILED (no window selected)", resultPart.GetStatus())
+	}
+
+	// and: the operation request and its result are NOT mirrored into the
+	// chatstream — the stream still holds exactly the 3 display/control
+	// events (text, tool call, wait; FR-005/FR-009, contract §3.2)
+	sub, after := stream.Subscribe(0)
+	defer sub.Close()
+	if len(after) != 3 {
+		t.Errorf("chatstream holds %d events, want exactly 3 (operation and result are not mirrored)", len(after))
+	}
+
+	// and: the reader is still running after the terminal wait (FR-008,
+	// contract §3.3) — recvDone stays open, ready for the next turn or
+	// background frames (FR-002)
+	select {
+	case <-app.recvDone:
+		t.Fatal("readLoop exited on the terminal wait; it must continue after wait (FR-008)")
+	default:
+	}
+}
+
 // TestConnect_ReconnectHandoverWaitsForPriorReader verifies the reconnect
 // handover (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
 // §3.1; research.md D4): a second Connect closes the prior WS and waits on

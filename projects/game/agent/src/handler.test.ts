@@ -18,7 +18,7 @@ import * as grpc from "@grpc/grpc-js";
 
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
-import { tool } from "langchain";
+import { createAgent, tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
@@ -32,6 +32,7 @@ import { FrozenMemorySnapshot } from "./team/memory-snapshot";
 import type { MemorySaver } from "@langchain/langgraph";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { UserFrame } from "../game_types/projects/game/UserFrame";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -194,6 +195,84 @@ function createTestTeam(
   sessionId: string,
 ): Promise<SessionTeam> {
   return store.update(sessionId, "saolei", "default", true);
+}
+
+/** The desktop's connect status probe — the first inbound frame on a stream
+ * (041 contract §1.1: it is what triggers the display-sink bind). */
+function statusProbeFrame(sessionId: string): UserFrame {
+  return {
+    sessionId,
+    templateId: "saolei",
+    payload: "flowParts",
+    flowParts: { parts: [{ status: {} }] },
+  };
+}
+
+/** Poll until the held flag is set (the gated init invoke reached the gate). */
+async function waitForHeld(
+  held: { value: boolean },
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!held.value) {
+    if (Date.now() > deadline) {
+      throw new Error("timed out waiting for the gated init invoke to hold");
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+/**
+ * A store whose createAgent invokes are held on a gate (041 T009): the
+ * one-shot async initInstruction turn (triggered fire-and-forget by
+ * `store.update`, session-team.ts `triggerInitInstruction`) is a background
+ * task OUTSIDE the TurnLoop (FR-003) — it cannot be held by the player-tool
+ * gate `createTeamStore` uses. The `createAgentFn` DI seam (graph.ts:230-231)
+ * wraps every agent invoke instead; the T009 tests never submit a user turn,
+ * so only the init instruction node's invoke is ever held — the init turn is
+ * in-flight exactly like the "user disconnects during the init turn" spec
+ * edge case / quickstart B7. `Object.create` preserves the agent's prototype
+ * surface (invoke/stream/…); only `invoke` is overridden — the player/planner/
+ * instruction nodes all drive the agent via `invoke` (player.ts:219,
+ * planner.ts:358, instruction-node.ts:208).
+ */
+function createGatedInitStore(
+  gate: Gate,
+): { store: SessionTeamStore; held: { value: boolean } } {
+  const held = { value: false };
+  const store = new SessionTeamStore(
+    async (sessionId, template, _profileName) => {
+      const buffer = createEphemeralGameBuffer();
+      const handle = buildTeamGraph({
+        playerModel: playOneGamePlayerModel(),
+        plannerModel: initThenReviewPlannerModel("初始指令", "保持节奏"),
+        buffer,
+        sessionId,
+        playerTools: [buildGameEndingPlayerTool(buffer)],
+        playerBasePrompt: "",
+        plannerBasePrompt: "",
+        ...memoryDeps(),
+        createAgentFn: (config) => {
+          const agent = createAgent(config);
+          // Object.create keeps the agent's prototype surface; only invoke
+          // is overridden (the nodes drive the agent via invoke alone).
+          const wrapped: { invoke: (input: unknown, cfg?: unknown) => Promise<unknown> } =
+            Object.create(agent);
+          wrapped.invoke = async (input, cfg) => {
+            held.value = true;
+            await gate.promise;
+            return agent.invoke(input as never, cfg as never);
+          };
+          return wrapped;
+        },
+      });
+      // Pre-built bridge/sink like the production factory (server.ts).
+      const bridge = new OperationBridge(sessionId, template);
+      const sink = createTeamSink(buffer);
+      return new SessionTeam(handle, buffer, sessionId, template, bridge, sink);
+    },
+  );
+  return { store, held };
 }
 
 function createUnaryCall<T>(request: T) {
@@ -1134,6 +1213,104 @@ describe("Handler.Connect display sink lifecycle", () => {
 
     expect(framesOfKind(stream, "messageParts").length).toBeGreaterThan(0);
     expect(waitFrames(stream)).toHaveLength(1);
+  });
+
+  it("clears the display sink on stream END so a still-running init turn emits to null (no write to the dead stream — 041 FR-010, contract §1.3)", async () => {
+    const gate = makeGate();
+    const { store, held } = createGatedInitStore(gate);
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    // Materialize the team: the one-shot async initInstruction turn starts
+    // fire-and-forget (session-team.ts triggerInitInstruction) and is held
+    // in-flight on the gate — the "user disconnects during the init turn"
+    // spec edge case, quickstart B7.
+    await createTestTeam(store, "sess-end-no-write");
+    await waitForHeld(held);
+
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    // The status probe binds the display sink (contract §1.1) and writes the
+    // probe response.
+    stream.emit("data", statusProbeFrame("sess-end-no-write"));
+    const writtenAtProbe = stream.written.length;
+    expect(writtenAtProbe).toBeGreaterThan(0);
+
+    // The desktop disconnects mid-init: stream end → cleanupSinks →
+    // clearStreamSink (handler.ts:562-566, contract §1.3, FR-010 — the
+    // pending background push callback is cleared).
+    stream.emit("end");
+
+    // Release the init turn: its three frames (contract §2.2) now emit to a
+    // null sink (session-team.ts streamSink) and are dropped — nothing is
+    // written to the dead connection (research.md D9 best-effort).
+    gate.resolve();
+    await flush();
+
+    expect(framesOfKind(stream, "messageParts")).toHaveLength(0);
+    expect(stream.written.length).toBe(writtenAtProbe);
+  });
+
+  it("clears the display sink on stream ERROR so a still-running init turn emits to null (no write to the dead stream — 041 FR-010, contract §1.3)", async () => {
+    const gate = makeGate();
+    const { store, held } = createGatedInitStore(gate);
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    await createTestTeam(store, "sess-err-no-write");
+    await waitForHeld(held);
+
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit("data", statusProbeFrame("sess-err-no-write"));
+    const writtenAtProbe = stream.written.length;
+    expect(writtenAtProbe).toBeGreaterThan(0);
+
+    // The connection dies with an error: same cleanup path as `end`
+    // (handler.ts:551-560 — error → abortLoops + cleanupSinks).
+    stream.emit("error", new Error("peer closed"));
+
+    gate.resolve();
+    await flush();
+
+    expect(framesOfKind(stream, "messageParts")).toHaveLength(0);
+    expect(stream.written.length).toBe(writtenAtProbe);
+  });
+
+  it("reconnect binds a fresh sink and a still-in-flight init pushes to the NEW stream (041 quickstart B7 — contract §1.1 compare-and-delete)", async () => {
+    const gate = makeGate();
+    const { store, held } = createGatedInitStore(gate);
+    const handler = createHandler(store);
+    await createTestTeam(store, "sess-reconnect");
+    await waitForHeld(held);
+
+    // Stream 1: probe binds sink1; the desktop then disconnects mid-init —
+    // stream end clears sink1 with stream1's OWN handle (contract §1.3).
+    const stream1 = createFakeStream();
+    handler.Connect(stream1 as unknown as Parameters<typeof handler.Connect>[0]);
+    stream1.emit("data", statusProbeFrame("sess-reconnect"));
+    stream1.emit("end");
+
+    // Stream 2: the reconnected desktop's first frame binds a FRESH sink
+    // (contract §1.1 — the per-stream boundDisplaySinks map is per Connect,
+    // handler.ts:293-301).
+    const stream2 = createFakeStream();
+    handler.Connect(stream2 as unknown as Parameters<typeof handler.Connect>[0]);
+    stream2.emit("data", statusProbeFrame("sess-reconnect"));
+
+    // The init completes after the reconnect: its frames push through the
+    // NEW sink (spec edge case — "if still running, it is pushed on
+    // completion through the new connection"), not the dead stream1.
+    gate.resolve();
+    await flush();
+
+    expect(framesOfKind(stream1, "messageParts")).toHaveLength(0);
+    const frames = framesOfKind(stream2, "messageParts") as TeamFrame[];
+    // Exactly the three init frames (contract §2.2), in production order,
+    // each tagged with the producing agent (FR-006).
+    expect(frames.length).toBe(3);
+    expect(frames[0].agent).toBe("planner");
+    expect(frames[0].role).toBe("MESSAGE_ROLE_USER");
+    expect(frames[1].agent).toBe("planner");
+    expect(frames[1].role).toBe("MESSAGE_ROLE_AGENT");
+    expect(frames[2].agent).toBe("player");
+    expect(frames[2].role).toBe("MESSAGE_ROLE_USER");
   });
 });
 
