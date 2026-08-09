@@ -65,9 +65,8 @@ import { warn } from "@dominion/common-js-logs";
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { MessageRole } from "../game_types/projects/game/MessageRole";
 
-import type { OperationBridge } from "./operation-bridge";
+import type { OperationBridge, SinkHandle } from "./operation-bridge";
 import { TurnLoop, buildTeamFrame } from "./turn-loop";
-import type { TurnLoopEmit } from "./turn-loop";
 import type { TurnBlock } from "./turn-loop";
 import type { ContentBlock, TurnContent } from "./llm";
 import {
@@ -176,7 +175,27 @@ export class SessionTeam {
 	private readonly template: string;
 
 	private turnLoop: TurnLoop | null = null;
-	private turnLoopEmit: TurnLoopEmit | null = null;
+
+	/**
+	 * The stream-bound display sink (041 — contract §1.1, FR-010): the
+	 * single write target for ALL display-channel frames from this session —
+	 * the TurnLoop's display frames, the compress/review channel frames, and
+	 * (once installed, 041 Phase 3 T005) the init turn's `emitChannelFrame`
+	 * (contract §1.2 unified read path). Bound by {@link bindStreamSink} when
+	 * the Connect handler sees the first per-session inbound frame; cleared
+	 * on stream end/error via {@link clearStreamSink} (compare-and-delete on
+	 * {@link streamSinkHandle}). `null` while unbound — emitting through it
+	 * is a no-op (best-effort, research.md D9).
+	 */
+	private streamSink: ((frame: TeamFrame) => void) | null = null;
+	/**
+	 * The handle of the currently-bound {@link streamSink} (opaque per-stream
+	 * identity, data-model.md §1.1): `clearStreamSink` only clears when the
+	 * passed handle matches this one, so a stale stream's cleanup cannot
+	 * clobber a newer binding (mirrors `OperationBridge.unregisterSink`,
+	 * operation-bridge.ts:163-170).
+	 */
+	private streamSinkHandle: SinkHandle | null = null;
 
 	/**
 	 * The one-shot async initInstruction turn (039 US3, T029 — contract §6,
@@ -323,9 +342,11 @@ export class SessionTeam {
 	 * is installed here. The init turn runs right after `UpdateTeam`
 	 * materialization, which the desktop strictly awaits BEFORE connecting
 	 * (desktop App.svelte: `await updateTeam(...)` → `continueSessionEntry`
-	 * → `await handleConnect()` — serial), and `turnLoopEmit` is only
-	 * assigned by the first `submit` (first user message) anyway — so an
-	 * emitted frame could never reach the desktop. The init turn is a
+	 * → `await handleConnect()` — serial); the stream display sink
+	 * (`streamSink`, bound at Connect — 041 contract §1.1) does not exist
+	 * when the init starts, so an emission would be a no-op (best-effort,
+	 * research.md D9). 041 Phase 3 (T005) installs the emitter in this
+	 * configurable and rewrites this note. The init turn is a
 	 * fire-and-forget background task: {@link isRunning} (the Connect status
 	 * probe) deliberately EXCLUDES {@link initInFlight}, so the desktop
 	 * connects to IDLE and is immediately ready for input — reporting ACTIVE
@@ -368,21 +389,62 @@ export class SessionTeam {
 	}
 
 	/**
+	 * Bind the Connect stream's display sink (041 — contract §1.1): the
+	 * handler calls this on the FIRST inbound frame carrying this session on
+	 * a stream (in practice the status probe), passing a write closure over
+	 * that stream plus an opaque handle for compare-and-delete. The sink is
+	 * independent of the TurnLoop lifecycle: the fire-and-forget init turn
+	 * (and any other background producer) emits through it too, so an
+	 * in-flight init can reach the desktop as soon as the connection is up
+	 * (research.md D1). A rebind (new Connect) replaces the previous
+	 * sink/handle pair — the superseded stream's {@link clearStreamSink}
+	 * then no-ops (compare-and-delete, FR-010).
+	 *
+	 * @param sink   The stream write target: `(frame) => safeWrite(stream,
+	 *   frame, sessionId)` (handler.ts).
+	 * @param handle Opaque per-stream identity for compare-and-delete
+	 *   (data-model.md §1.1). The OperationBridge convention — the sink
+	 *   closure itself — suffices (operation-bridge.ts:77).
+	 */
+	bindStreamSink(sink: (frame: TeamFrame) => void, handle: SinkHandle): void {
+		this.streamSink = sink;
+		this.streamSinkHandle = handle;
+	}
+
+	/**
+	 * Clear the bound display sink (041 — contract §1.3, FR-010), but only
+	 * when `handle` identifies the CURRENT binding (compare-and-delete): a
+	 * stale stream's end/error must not clobber a sink bound by a newer
+	 * connection. After clear, in-flight background emissions (e.g. a
+	 * still-running init turn) hit `null` and are dropped — no write to a
+	 * dead connection (best-effort, research.md D9).
+	 */
+	clearStreamSink(handle: SinkHandle): void {
+		if (this.streamSinkHandle === handle) {
+			this.streamSink = null;
+			this.streamSinkHandle = null;
+		}
+	}
+
+	/**
 	 * Route a user-content submission to the per-session {@link TurnLoop}
-	 * (single-flight owner; one user input = one team turn). Installs the
-	 * per-stream `emit` sink, lazily constructing the loop on first use with
-	 * the team-graph turn runner. Non-blocking: returns once the content is
-	 * started (IDLE) or buffered (RUNNING) — see
+	 * (single-flight owner; one user input = one team turn). Lazily
+	 * constructs the loop on first use with the team-graph turn runner; the
+	 * loop's display frames are emitted through the stream-bound display
+	 * sink ({@link streamSink}, bound at Connect via {@link bindStreamSink}
+	 * — 041 contract §1.2), resolved LIVE over `this` so a rebind/clear is
+	 * reflected on the next emit without reconstructing the loop.
+	 * Non-blocking: returns once the content is started (IDLE) or buffered
+	 * (RUNNING) — see
 	 * `specs/030-queued-chat-input/contracts/turn-loop-contract.md`.
 	 */
-	submit(content: TurnContent, emit: TurnLoopEmit): void {
-		this.turnLoopEmit = emit;
+	submit(content: TurnContent): void {
 		if (!this.turnLoop) {
 			this.turnLoop = new TurnLoop(
 				this.sessionId,
 				this.template,
 				(content_, signal) => this.runTeamTurn(content_, signal),
-				(frame) => this.turnLoopEmit?.(frame),
+				(frame) => this.streamSink?.(frame),
 				PRIMARY_AGENT_NAME,
 			);
 		}
@@ -551,7 +613,11 @@ export class SessionTeam {
 						// carry MESSAGE_ROLE_USER so the live frame renders
 						// identically to the reloaded history entry.
 						if (role) frame.role = role;
-						this.turnLoopEmit?.(frame);
+						// 041 (contract §1.2): ALL display-channel frames
+						// resolve the stream-bound sink LIVE over `this` — a
+						// rebind/clear during the connection reflects on the
+						// next emit; null → no-op (best-effort, D9).
+						this.streamSink?.(frame);
 					},
 					// Feature 038 (US1): mid-turn drain seam — the player's
 					// `queueDrain` beforeModel middleware calls this before

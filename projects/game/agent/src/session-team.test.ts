@@ -9,10 +9,14 @@
  *
  * Mock strategy (style/javascript.md §测试): SessionTeam receives the graph
  * handle, buffer and session id via constructor; SessionTeamStore receives a
- * factory — no `vi.mock`.
+ * factory — no `vi.mock`. The stream display sink (041 — contract §1.1) is
+ * the DI seam for frame capture: tests inject a recording closure / `vi.fn()`
+ * via `bindStreamSink(emit, emit)` (the closure doubles as its own
+ * compare-and-delete handle, operation-bridge.ts:77), and `submit` no longer
+ * takes an emit parameter (041 T002 — the sink is bound at Connect).
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as grpc from "@grpc/grpc-js";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import type { MemorySaver } from "@langchain/langgraph";
@@ -196,6 +200,20 @@ function flush(ms = 60): Promise<void> {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
+/** A releasable gate so a player turn can be held in-flight. */
+interface Gate {
+	promise: Promise<void>;
+	resolve: () => void;
+}
+
+function makeGate(): Gate {
+	let resolve!: () => void;
+	const promise = new Promise<void>((r) => {
+		resolve = r;
+	});
+	return { promise, resolve };
+}
+
 /** Poll `frames` until `predicate` matches (or fail after `timeoutMs`). */
 async function waitForFrame(
 	frames: TeamFrame[],
@@ -226,7 +244,8 @@ describe("SessionTeam", () => {
 		const { team } = buildTestTeam("st-turn-1");
 		const { emit, frames } = recordingEmit();
 
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 		expect(team.isRunning()).toBe(true);
 		await flush();
 
@@ -262,7 +281,8 @@ describe("SessionTeam", () => {
 		);
 		const { emit, frames } = recordingEmit();
 
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 		await flush();
 
 		const texts = textBlocks(frames);
@@ -282,7 +302,8 @@ describe("SessionTeam", () => {
 	it("getTeamState reconstructs both per-agent channels from the single checkpointer (A3)", async () => {
 		const { team, sessionId } = buildTestTeam("st-state");
 		const { emit } = recordingEmit();
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 		await flush();
 
 		const state = await team.getTeamState();
@@ -296,7 +317,8 @@ describe("SessionTeam", () => {
 	it("refreshTeam clears BOTH channels (including any instruction in playerMessages), leaves gameEnded alone (FR-018 / 039 contract §7)", async () => {
 		const { team } = buildTestTeam("st-refresh");
 		const { emit } = recordingEmit();
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 		await flush();
 
 		// The init instruction was written INTO playerMessages (no slot) —
@@ -317,7 +339,8 @@ describe("SessionTeam", () => {
 		// immediately after submit (best-effort — loop observes abort).
 		const { team } = buildTestTeam("st-abort");
 		const { emit, frames } = recordingEmit();
-		team.submit({ text: "hi" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "hi" });
 		team.abort();
 		await flush();
 		expect(team.isRunning()).toBe(false);
@@ -386,7 +409,8 @@ describe("SessionTeam", () => {
 		const dispatched: TeamFrame[] = [];
 		bridge.registerSink((frame) => dispatched.push(frame));
 
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 
 		// Do NOT wait for the turn to complete: poll until the tool_call
 		// frame is emitted while the tool is still awaiting its operation.
@@ -437,6 +461,130 @@ describe("SessionTeam", () => {
 		// neutral UNSPECIFIED — same as the checkpointed ToolMessage.
 		expect(resPart.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
 		expect(resPart.message).toContain("status=TOOL_RESULT_STATUS_SUCCEEDED");
+	});
+});
+
+describe("SessionTeam stream display sink (041 — contract §1.1-§1.3, FR-010)", () => {
+	it("emitting while unbound is a no-op (best-effort, research.md D9)", async () => {
+		const { team } = buildTestTeam("st-sink-unbound");
+		const sink = vi.fn<(frame: TeamFrame) => void>();
+
+		// No bindStreamSink: the full user turn (TurnLoop + compress/review
+		// channel frames) emits into the void — nothing crashes, nothing is
+		// delivered (contract §1.2 "null → no-op"; the seed/history path
+		// covers delivery instead — research.md D7 case A).
+		team.submit({ text: "开始游戏" });
+		await flush();
+
+		expect(team.isRunning()).toBe(false);
+		expect(sink).not.toHaveBeenCalled();
+	});
+
+	it("bound sink receives the turn's frames incl. the emitChannelFrame path (unified read path, contract §1.2)", async () => {
+		const { team } = buildTestTeam("st-sink-bound");
+		const sink = vi.fn<(frame: TeamFrame) => void>();
+
+		team.bindStreamSink(sink, sink);
+		team.submit({ text: "开始游戏" });
+		await flush();
+
+		expect(team.isRunning()).toBe(false);
+		expect(sink).toHaveBeenCalled();
+		// Both emission paths resolve the SAME sink (contract §1.2): the
+		// TurnLoop's display frames (player agent) and the planner node's
+		// emitChannelFrame review-input frame (planner.ts:321-344 —
+		// agent=planner, role=USER, only reachable via emitChannelFrame).
+		const frames = sink.mock.calls.map(([f]) => f);
+		expect(frames.some((f) => f.agent === "player")).toBe(true);
+		expect(
+			frames.some(
+				(f) => f.agent === "planner" && f.role === "MESSAGE_ROLE_USER",
+			),
+		).toBe(true);
+	});
+
+	it("clearStreamSink drops an in-flight turn's later emissions (contract §1.3 — no write to a dead connection)", async () => {
+		// Hold the player turn in-flight on the gate, bind a sink, then clear
+		// it (the stream died); releasing the turn must not reach the sink.
+		const gate = makeGate();
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		const gatedTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				await gate.promise;
+				await sink.onGameEnd(makeState(), "won");
+				return `moved to (${x},${y}); game won`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Gated fake saolei move (holds the turn).",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const handle = buildTeamGraph({
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: initThenReviewPlannerModel("初始指令", "复盘指令"),
+			buffer,
+			sessionId: "st-sink-clear",
+			playerTools: [gatedTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			...memoryDeps(),
+		});
+		const team = new SessionTeam(
+			handle,
+			buffer,
+			"st-sink-clear",
+			TID,
+			new OperationBridge(),
+			sink,
+		);
+		const displaySink = vi.fn<(frame: TeamFrame) => void>();
+		const received: TeamFrame[] = [];
+		team.bindStreamSink((f) => {
+			received.push(f);
+			displaySink(f);
+		}, displaySink);
+
+		team.submit({ text: "开始游戏" });
+		// Wait until the player's tool_call frame arrived through the sink
+		// (the tool is still awaiting the gate — the turn is mid-flight).
+		await waitForFrame(
+			received,
+			(f) => partFrames([f], "toolCall").length > 0,
+			5000,
+		);
+		expect(team.isRunning()).toBe(true);
+		const callsBeforeClear = displaySink.mock.calls.length;
+		expect(callsBeforeClear).toBeGreaterThan(0);
+
+		// The stream dies mid-turn → the handler clears the sink (contract
+		// §1.3, FR-010). Releasing the gate completes the turn; every frame
+		// emitted after the clear must be dropped (null sink).
+		team.clearStreamSink(displaySink);
+		gate.resolve();
+		await flush();
+
+		expect(team.isRunning()).toBe(false);
+		expect(displaySink.mock.calls.length).toBe(callsBeforeClear);
+	});
+
+	it("clearStreamSink(oldHandle) does not clear a sink bound by a newer handle (compare-and-delete)", async () => {
+		const { team } = buildTestTeam("st-sink-cmp");
+		const oldSink = vi.fn<(frame: TeamFrame) => void>();
+		const newSink = vi.fn<(frame: TeamFrame) => void>();
+
+		team.bindStreamSink(oldSink, oldSink);
+		team.bindStreamSink(newSink, newSink);
+		// A superseded stream's end/error clears with ITS OWN handle — the
+		// newer binding must survive (contract §1.1 compare-and-delete).
+		team.clearStreamSink(oldSink);
+
+		team.submit({ text: "开始游戏" });
+		await flush();
+
+		expect(newSink).toHaveBeenCalled();
+		expect(oldSink).not.toHaveBeenCalled();
 	});
 });
 
@@ -493,7 +641,8 @@ describe("SessionTeamStore", () => {
 		const t1 = await store.update("s-2", "saolei", "default", true);
 		// Produce conversation/game history on the session thread.
 		const { emit } = recordingEmit();
-		t1.submit({ text: "开始游戏" }, emit);
+		t1.bindStreamSink(emit, emit);
+		t1.submit({ text: "开始游戏" });
 		await flush();
 		const before = (await t1.getTeamState()) as TeamStateValue;
 		expect(before.playerMessages.length).toBeGreaterThan(0);
@@ -647,7 +796,8 @@ describe("SessionTeamStore", () => {
 
 		// Start a turn that blocks on the gate.
 		const { emit } = recordingEmit();
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 		await flush(0);
 		expect(team.isRunning()).toBe(true);
 
@@ -680,7 +830,8 @@ describe("SessionTeamStore", () => {
 		);
 		const t1 = await store.update("s-fail", "saolei", "default", true);
 		const { emit } = recordingEmit();
-		t1.submit({ text: "开始游戏" }, emit);
+		t1.bindStreamSink(emit, emit);
+		t1.submit({ text: "开始游戏" });
 		await flush();
 		const before = (await t1.getTeamState()) as TeamStateValue;
 		expect(before.playerMessages.length).toBeGreaterThan(0);
@@ -787,7 +938,8 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 		// BEFORE the user input is appended (FR-015 — user message 排在指令
 		// 之后) and stays in the history (累积可引用).
 		const { emit } = recordingEmit();
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 		await flush();
 
 		const after = (await team.getTeamState()) as TeamStateValue;
@@ -815,7 +967,8 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 		// Submit synchronously right after materialization — the async init
 		// turn has started but not completed yet.
 		const { emit } = recordingEmit();
-		team.submit({ text: "开始游戏" }, emit);
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
 		await flush();
 
 		const after = (await team.getTeamState()) as TeamStateValue;
@@ -858,7 +1011,8 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 
 		// First activation: the instruction is in the channel history.
 		const { emit } = recordingEmit();
-		t1.submit({ text: "开始游戏" }, emit);
+		t1.bindStreamSink(emit, emit);
+		t1.submit({ text: "开始游戏" });
 		await flush();
 
 		// Profile-change rebuild: the graph is recompiled against the

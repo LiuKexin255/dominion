@@ -289,6 +289,16 @@ export class Handler implements TeamServiceHandlers {
     // THIS stream's sink is cleared (compare-and-delete)
     // (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1).
     const sessionSinkHandles = new Map<string, SinkHandle>();
+
+    // Sessions whose stream display sink is bound to THIS stream (041 —
+    // contract §1.1): session id → the handle passed to bindStreamSink. The
+    // handle IS the write closure (OperationBridge convention,
+    // operation-bridge.ts:77), so a superseded stream's cleanup passes its
+    // own closure and cannot clear a newer binding (compare-and-delete).
+    // Distinct from sessionSinkHandles (the OperationBridge sink, contract
+    // §1.4) — both write the same stream via safeWrite but are managed
+    // independently.
+    const boundDisplaySinks = new Map<string, SinkHandle>();
     const cleanupSinks = () => {
       for (const [sid, handle] of sessionSinkHandles) {
         try {
@@ -302,6 +312,21 @@ export class Handler implements TeamServiceHandlers {
         }
       }
       sessionSinkHandles.clear();
+      // 041 (contract §1.3, FR-010): clear the bound display sinks too —
+      // after this, a still-running background producer (e.g. the init
+      // turn) emits to null instead of writing to the dead stream.
+      for (const [sid, handle] of boundDisplaySinks) {
+        try {
+          const team = this.sessionTeamStore.get(sid);
+          team?.clearStreamSink(handle);
+        } catch (err) {
+          warn("cleanupSinks: failed to clear display sink", {
+            sessionId: sid,
+            error: String(err),
+          });
+        }
+      }
+      boundDisplaySinks.clear();
     };
 
     // Sessions whose per-session TurnLoop emit sink is THIS stream. On stream
@@ -335,6 +360,24 @@ export class Handler implements TeamServiceHandlers {
       if (!sessionId) {
         warn("connect frame with no session id", {});
         return;
+      }
+
+      // 041 (contract §1.1): bind the stream display sink on the FIRST
+      // inbound frame carrying this session on this stream — in practice the
+      // status probe (the desktop sends it first at connect,
+      // desktop/app.go:1677-1685) — provided the team exists. The sink is
+      // the write target for ALL display-channel frames (the TurnLoop and
+      // background producers such as the init turn, contract §1.2) and is
+      // cleared on stream end/error in cleanupSinks (contract §1.3, FR-010).
+      // The handle IS the write closure, so a superseded stream's cleanup
+      // cannot clear a newer binding (compare-and-delete, operation-bridge.ts:77).
+      if (!boundDisplaySinks.has(sessionId)) {
+        const team = this.sessionTeamStore.get(sessionId);
+        if (team) {
+          const sink = (frame: TeamFrame) => safeWrite(stream, frame, sessionId);
+          team.bindStreamSink(sink, sink);
+          boundDisplaySinks.set(sessionId, sink);
+        }
       }
 
       // Control-only FlowParts (operation result / wait / warn / status). A
@@ -497,9 +540,10 @@ export class Handler implements TeamServiceHandlers {
         // in flight is buffered (FR-002) and becomes the next turn on the
         // same thread_id.
         activeLoopSessions.add(sessionId);
-        team.submit(turnContent, (frame: TeamFrame) => {
-          safeWrite(stream, frame, sessionId);
-        });
+        // The display sink was bound above on the first inbound frame for
+        // this session (041 — contract §1.1); the TurnLoop emits its frames
+        // through it (contract §1.2 — session-team.ts `submit`).
+        team.submit(turnContent);
         return;
       }
     });

@@ -145,7 +145,7 @@ func describeFlowPart(part *game.FlowPart) *heldOperation {
 		}
 	}
 	// Non-operation FlowPart (signal kind, or empty): the caller still gets a
-	// usable descriptor so a Confirm control always renders. recvLoop only
+	// usable descriptor so a Confirm control always renders. readLoop only
 	// routes operation FlowParts to handleInboundOperation, so this branch is
 	// defensive.
 	return &heldOperation{
@@ -202,11 +202,11 @@ type App struct {
 	cfg          api.Config
 	ctx          context.Context
 	selectedMu   sync.Mutex
-	selectedWin  uintptr    // handle of the selected window; 0 = none (spec 025 FR-006)
-	template     string     // active template path segment, set on WebSocket connect
-	sessionID    string     // active session set on WebSocket connect
-	recvMu       sync.Mutex // guards recvDone's check-and-reassign in SendUserTurn
-	recvDone     chan struct{}
+	selectedWin  uintptr       // handle of the selected window; 0 = none (spec 025 FR-006)
+	template     string        // active template path segment, set on WebSocket connect
+	sessionID    string        // active session set on WebSocket connect
+	recvMu       sync.Mutex    // guards recvDone's capture-and-reassign in Connect (reconnect handover) and CloseAgent
+	recvDone     chan struct{} // closed when the continuous reader (readLoop) exits; nil when no reader runs
 	chatStreams  *chatstream.Registry
 	chatServer   *chatstream.Server
 	debugEnabled atomic.Bool
@@ -495,11 +495,19 @@ const maxScreenshotBytes = 5 * 1024 * 1024
 // is taken.
 const postActionScreenshotDelay = 500 * time.Millisecond
 
+// readLoopEndFrameID is the FrameId stamped on the terminal wait the
+// continuous reader synthesizes when its RecvFrame errors (connection closed
+// or torn down by CloseAgent/CloseNow). It is a local marker only — the
+// frontend keys dedup on messageParts frame_id, never on flowParts — so the
+// fixed value keeps the synthesized wait traceable in the chatstream log
+// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
+// Exit, FR-010).
+const readLoopEndFrameID = "read-loop-end"
+
 // SendUserTurn sends a single user turn bundling text and an optional
 // screenshot to the team agent via WebSocket, then returns immediately. The
-// inbound response frames are drained asynchronously by recvLoop, which
-// emits each as a Wails "game:frame" event and terminates when a wait
-// signal is received (signalling the agent is done) or RecvFrame errors.
+// inbound response frames are drained by the continuous reader (readLoop,
+// started at Connect) and appended to the session's chat stream.
 //
 // agent selects which team agent receives the turn (the agent accepting
 // user input — FR-032; saolei: player; D12 replaces the former
@@ -512,10 +520,11 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 //
 // The user turn is carried as a messageParts frame whose MessageParts holds a
 // text MessagePart and, when a screenshot is attached, an image MessagePart.
-// Inbound FlowParts operations (mouse/keyboard) are auto-executed by recvLoop
-// and a matching FlowResultPart is sent back over the same WebSocket connection
-// on the control channel (FR-013; spec 025 FR-023/FR-024). The result part
-// carries a post-action screenshot of the selected window (FR-007).
+// Inbound FlowParts operations (mouse/keyboard) are auto-executed by the
+// continuous reader and a matching FlowResultPart is sent back over the same
+// WebSocket connection on the control channel (FR-013; spec 025
+// FR-023/FR-024). The result part carries a post-action screenshot of the
+// selected window (FR-007).
 func (a *App) SendUserTurn(template, sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agent string) error {
 	if template == "" {
 		return fmt.Errorf("send user turn: template is required")
@@ -587,46 +596,23 @@ func (a *App) SendUserTurn(template, sessionID string, text string, screenshotDa
 		return fmt.Errorf("send user turn: %w", err)
 	}
 
-	// Drain inbound frames asynchronously so this call returns immediately.
-	// recvLoop closes recvDone when it exits (wait signal received or error);
-	// CloseAgent waits on recvDone after tearing the socket down so the
-	// blocked RecvFrame unblocks instead of deadlocking.
-	//
-	// Exactly ONE recvLoop may read the WebSocket at a time — the WS protocol
-	// allows a single concurrent reader; two RecvFrame goroutines interleave
-	// and corrupt the stream ("received fragmented control frame" / "proto:
-	// cannot parse invalid wire-format data"). A queued turn (sent while the
-	// previous turn is still draining) MUST NOT spawn a second reader: the
-	// running recvLoop keeps reading through the queued turns and terminates
-	// only on the terminal wait (the TurnLoop emits wait solely when the
-	// buffer is fully drained — specs/030-queued-chat-input/contracts/
-	// turn-loop-contract.md). So start a new recvLoop only when none is
-	// running (recvDone not yet created or already closed).
-	a.recvMu.Lock()
-	recvActive := false
-	if a.recvDone != nil {
-		select {
-		case <-a.recvDone:
-			// Previous recvLoop has exited — safe to start a fresh reader.
-		default:
-			// Previous recvLoop still draining — it continues reading this
-			// queued turn's response.
-			recvActive = true
-		}
-	}
-	if !recvActive {
-		a.recvDone = make(chan struct{})
-		go a.recvLoop(sessionID, frameID)
-	}
-	a.recvMu.Unlock()
+	// FR-012: SendUserTurn MUST NOT start a reader — the continuous reader
+	// started at Connect is the sole reader on the connection, including for
+	// this turn's response frames (specs/041-realtime-init-push/contracts/
+	// realtime-channel-contract.md §3.4; FR-011 single-reader invariant).
 	return nil
 }
 
-// recvLoop drains inbound WebSocket frames for an in-flight user turn and
-// appends each display/control frame to the session's chat stream as needed.
-// It runs in its own goroutine launched by SendUserTurn. The loop terminates —
-// and closes recvDone — when a wait signal is received (the agent is done) or
-// RecvFrame errors.
+// readLoop is the continuous connection reader: it drains inbound WebSocket
+// frames for the whole connection lifetime and appends each display/control
+// frame to the session's chat stream as needed. It runs in its own goroutine
+// started at Connect, after the one-shot status probe RecvFrame returns
+// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
+// Start; specs/041-realtime-init-push/research.md D5 — the probe is a
+// synchronous exchange, so there is never a second concurrent reader during
+// it). It closes recvDone when it exits; CloseAgent waits on recvDone after
+// tearing the socket down so the blocked RecvFrame unblocks instead of
+// deadlocking (FR-010).
 //
 // A frame carries exactly one payload: a batch of display blocks (MessageParts)
 // OR a batch of control blocks (FlowParts) (content-model split, spec 023 C3).
@@ -638,16 +624,25 @@ func (a *App) SendUserTurn(template, sessionID string, text string, screenshotDa
 //     (wait/warn/status) ARE appended so the frontend can react (wait clears
 //     the typing indicator, warn shows a warning, status is a no-op for chat).
 //
+// The wait FlowPart is forwarded but does NOT terminate the reader (FR-008,
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.3):
+// the TurnLoop emits wait only at turn boundaries
+// (specs/030-queued-chat-input/contracts/turn-loop-contract.md), so the reader
+// keeps reading through queued turns and any background frames (e.g. the init
+// instruction) until the connection dies.
+//
 // On RecvFrame error a synthesized wait FlowPart is appended so the frontend
-// can settle the turn before the failure surfaces (data-model.md §9).
-func (a *App) recvLoop(sessionID, frameID string) {
+// can settle the turn before the failure surfaces (data-model.md §9;
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
+// Exit), then the reader returns and closes recvDone.
+func (a *App) readLoop(sessionID string) {
 	defer close(a.recvDone)
 
 	frameCount := 0
 	for {
 		resp, err := a.ws.RecvFrame(a.ctx)
 		if err != nil {
-			a.logger.Error("backend", "recvLoop: recv error", map[string]any{
+			a.logger.Error("backend", "readLoop: recv error", map[string]any{
 				"session_id":  sessionID,
 				"frame_count": frameCount,
 				"error":       err.Error(),
@@ -655,7 +650,7 @@ func (a *App) recvLoop(sessionID, frameID string) {
 			a.chatStreams.Append(sessionID, &game.TeamFrame{
 				SessionId:  sessionID,
 				TemplateId: a.template,
-				FrameId:    frameID,
+				FrameId:    readLoopEndFrameID,
 				Payload: &game.TeamFrame_FlowParts{
 					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 						{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}},
@@ -683,7 +678,7 @@ func (a *App) recvLoop(sessionID, frameID string) {
 				if fp.GetMouseMove() != nil || fp.GetMouseClick() != nil ||
 					fp.GetKeyboardPress() != nil || fp.GetMouseMoveAndClick() != nil {
 					if err := a.handleInboundOperation(sessionID, fp); err != nil {
-						a.logger.Error("backend", "recvLoop: handle inbound operation failed", map[string]any{
+						a.logger.Error("backend", "readLoop: handle inbound operation failed", map[string]any{
 							"session_id":  sessionID,
 							"frame_count": frameCount,
 							"error":       err.Error(),
@@ -693,7 +688,9 @@ func (a *App) recvLoop(sessionID, frameID string) {
 					continue
 				}
 				// Signal FlowPart (wait/warn/status): append so the frontend
-				// reacts; not rendered as a chat bubble by ChatView.
+				// reacts; not rendered as a chat bubble by ChatView. A wait
+				// does NOT terminate the reader (FR-008,
+				// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.3).
 				a.chatStreams.Append(sessionID, &game.TeamFrame{
 					SessionId:  resp.GetSessionId(),
 					TemplateId: a.template,
@@ -704,13 +701,6 @@ func (a *App) recvLoop(sessionID, frameID string) {
 						FlowParts: &game.FlowParts{Parts: []*game.FlowPart{fp}},
 					},
 				})
-				if fp.GetWait() != nil {
-					a.logger.Info("backend", "recvLoop: done", map[string]any{
-						"session_id":  sessionID,
-						"frame_count": frameCount,
-					})
-					return
-				}
 			}
 		}
 	}
@@ -1651,9 +1641,22 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 		"correlation_id": corrID,
 	})
 
-	// Close any existing WS connection first.
+	// Close any existing WS connection first. Reconnect handover
+	// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.1): tear the old socket down — which unblocks the old reader's
+	// RecvFrame — then wait on the prior recvDone (captured under recvMu, as
+	// CloseAgent does) so the old reader has exited before a new recvDone is
+	// created below. Without this wait, the old reader's `defer
+	// close(a.recvDone)` would close the NEW reader's channel (goroutine
+	// lifetimes, https://google.github.io/styleguide/go/decisions#goroutine-lifetimes).
 	if a.ws != nil {
 		a.ws.Close()
+		a.recvMu.Lock()
+		priorRecvDone := a.recvDone
+		a.recvMu.Unlock()
+		if priorRecvDone != nil {
+			<-priorRecvDone
+		}
 	}
 
 	ws := &api.WSClient{}
@@ -1744,6 +1747,24 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	a.ws = ws
 	a.template = template
 	a.sessionID = sessionID
+
+	// Start the continuous reader AFTER the probe RecvFrame returned, so the
+	// probe's synchronous exchange never overlaps a second reader
+	// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.1 Start; specs/041-realtime-init-push/research.md D5). Exactly ONE
+	// readLoop runs per connection (FR-011, contract §3.4): it reads all
+	// subsequent inbound frames — turn responses, operations, signals, and
+	// background frames such as the init instruction (FR-002) — until the
+	// connection dies. The recvDone reassign is guarded by recvMu (matching
+	// the field's contract: capture-and-reassign under recvMu, as the
+	// reconnect handover above and CloseAgent do); the goroutine is started
+	// outside the lock — readLoop's deferred close captures the channel at
+	// function entry, after it is already assigned.
+	a.recvMu.Lock()
+	a.recvDone = make(chan struct{})
+	a.recvMu.Unlock()
+	go a.readLoop(sessionID)
+
 	a.logger.Info("backend", "Session connected via WebSocket", map[string]any{
 		"trace_id":       traceID,
 		"template":       template,
@@ -1784,10 +1805,11 @@ func (a *App) CloseAgent() error {
 		return err
 	}
 	// ws.Close() tears the socket down, which unblocks any in-flight
-	// RecvFrame in recvLoop; the goroutine then emits a synthesized wait
+	// RecvFrame in readLoop; the goroutine then emits a synthesized wait
 	// frame and closes recvDone. Waiting here avoids clearing a.ws while
-	// recvLoop may still be reading it. Capture the channel under recvMu so a
-	// concurrent SendUserTurn cannot reassign recvDone mid-read.
+	// readLoop may still be reading it. Capture the channel under recvMu so a
+	// concurrent Connect (reconnect handover) cannot reassign recvDone
+	// mid-read.
 	a.recvMu.Lock()
 	recvDone := a.recvDone
 	a.recvMu.Unlock()
@@ -1813,7 +1835,7 @@ func (a *App) CloseAgent() error {
 //
 // The frontend MUST call CloseChatStream(sessionID) AFTER closeAgent()
 // returns on session leave (F5 ordering): closeAgent closes the WS and
-// waits on recvDone, so recvLoop has already exited by the time the log
+// waits on recvDone, so readLoop has already exited by the time the log
 // is dropped.
 func (a *App) OpenChatStream(sessionID, agent string) (*ChatStreamHandoff, error) {
 	if sessionID == "" {
@@ -1852,7 +1874,7 @@ func (a *App) OpenChatStream(sessionID, agent string) (*ChatStreamHandoff, error
 
 // CloseChatStream closes the chat push channel for sessionID. It is
 // idempotent (F5: safe to call on an already-closed or never-opened
-// stream). The caller MUST close the agent first so recvLoop has exited
+// stream). The caller MUST close the agent first so readLoop has exited
 // before the event log is dropped (F5 ordering).
 func (a *App) CloseChatStream(sessionID string) error {
 	if a.chatStreams == nil {

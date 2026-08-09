@@ -926,6 +926,84 @@ describe("Handler.Connect flow result + status", () => {
 });
 
 // ===========================================================================
+// Connect — stream display sink lifecycle (041 — contract §1.1/§1.3, FR-010)
+// ===========================================================================
+
+describe("Handler.Connect display sink lifecycle", () => {
+  it("binds the display sink on the first inbound frame for a session and clears it on stream end", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    const team = await createTestTeam(store, "sess-sink");
+    // Let the one-shot async initInstruction turn finish (T029) so it never
+    // interferes with the lifecycle assertions below.
+    await flush(0);
+    const bindSpy = vi.spyOn(team, "bindStreamSink");
+    const clearSpy = vi.spyOn(team, "clearStreamSink");
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    // First inbound frame for the session: the status probe (the desktop
+    // sends it first at connect — app.go:1677-1685). The sink is bound with
+    // the stream's safeWrite closure; the handle IS that closure
+    // (compare-and-delete, operation-bridge.ts:77).
+    stream.emit("data", {
+      sessionId: "sess-sink",
+      templateId: "saolei",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
+    });
+    expect(bindSpy).toHaveBeenCalledOnce();
+    const [sink, handle] = bindSpy.mock.calls[0];
+    expect(typeof sink).toBe("function");
+    expect(handle).toBe(sink);
+
+    // A second frame for the same session does NOT re-bind (bound once per
+    // stream, contract §1.1).
+    stream.emit("data", {
+      sessionId: "sess-sink",
+      templateId: "saolei",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
+    });
+    expect(bindSpy).toHaveBeenCalledOnce();
+
+    // Stream end → the display sink is cleared with THIS stream's handle
+    // (contract §1.3, FR-010 — pending background pushes emit to null).
+    stream.emit("end");
+    expect(clearSpy).toHaveBeenCalledOnce();
+    expect(clearSpy.mock.calls[0][0]).toBe(handle);
+  });
+
+  it("delivers a later user turn through the sink bound by the status probe (submit takes no emit)", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    await createTestTeam(store, "sess-sink-turn");
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    // The real desktop sequence: status probe first (binds the sink), user
+    // turn afterwards — the turn's frames must reach the stream through the
+    // bound sink (contract §1.2; submit no longer carries an emit callback).
+    stream.emit("data", {
+      sessionId: "sess-sink-turn",
+      templateId: "saolei",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
+    });
+    await flush(0);
+
+    stream.emit(
+      "data",
+      userContentFrame("sess-sink-turn", "开始游戏", "player"),
+    );
+    await flush();
+
+    expect(framesOfKind(stream, "messageParts").length).toBeGreaterThan(0);
+    expect(waitFrames(stream)).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
 // Connect — abort lifecycle
 // ===========================================================================
 
