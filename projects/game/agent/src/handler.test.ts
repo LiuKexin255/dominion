@@ -539,6 +539,91 @@ describe("Handler.UpdateTeam", () => {
     expect(response2.profile).toBe("templates/saolei/profiles/other");
   });
 
+  it("rejects a profile change while the INIT turn is in-flight with FAILED_PRECONDITION (041 FR-007)", async () => {
+    // The one-shot async initInstruction turn is triggered fire-and-forget at
+    // FIRST materialization (session-team.ts:925, R2 — 物化即返回). It sets
+    // "busy" but NOT "running" (session-team.ts:546-563), so a profile-change
+    // rebuild must be rejected through the same `isBusy()` gate as a user
+    // turn (handler.test.ts:477 is the user-turn case) —
+    // specs/041-realtime-init-push/spec.md FR-007,
+    // contracts/realtime-channel-contract.md §5.
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const team = await createTestTeam(store, "sess-ut-init-busy");
+    expect(team.isRunning()).toBe(false);
+    expect(team.isBusy()).toBe(true);
+
+    const { callback, promise } = createCallback<any>();
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut-init-busy/team",
+          "templates/saolei/profiles/other",
+          true,
+        ),
+      ),
+      callback,
+    );
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.FAILED_PRECONDITION);
+    expect(store.getProfileName("sess-ut-init-busy")).toBe("default");
+
+    // The init turn finishes (isBusy clears) and the same profile change now
+    // rebuilds successfully.
+    await flush(0);
+    expect(team.isBusy()).toBe(false);
+    const { callback: cb2, promise: p2 } = createCallback<any>();
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ut-init-busy/team",
+          "templates/saolei/profiles/other",
+          true,
+        ),
+      ),
+      cb2,
+    );
+    const { error: error2 } = await p2;
+    expect(error2).toBeNull();
+  });
+
+  it("returns before the init turn completes (fire-and-forget retained — 041 FR-005)", async () => {
+    // FR-005 (specs/041-realtime-init-push/spec.md): UpdateTeam materializes
+    // the team and returns immediately — the init turn's real-time delivery
+    // is a separate concern via the connection, never awaited by the RPC. The
+    // probe-visible signal is `isRunning()` (excludes initInFlight), the
+    // destructive-op gate is `isBusy()` (includes it) — contracts/
+    // realtime-channel-contract.md §5.
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+
+    handler.UpdateTeam(
+      createUnaryCall(
+        updateRequest(
+          "templates/saolei/sessions/sess-ff/team",
+          "templates/saolei/profiles/default",
+          true,
+        ),
+      ),
+      callback,
+    );
+
+    const { error, response } = await promise;
+    expect(error).toBeNull();
+    expect(response.name).toBe("templates/saolei/sessions/sess-ff/team");
+    // The RPC already returned while the async init turn is still in-flight:
+    // busy (gating destructive ops) but not running (status probe → IDLE).
+    const team = store.get("sess-ff");
+    expect(team).toBeDefined();
+    expect(team?.isRunning()).toBe(false);
+    expect(team?.isBusy()).toBe(true);
+
+    // The init turn completes asynchronously after the RPC returned.
+    await flush(0);
+    expect(team?.isBusy()).toBe(false);
+  });
+
   it("runs the NEXT turn on the NEW profile's model after a rebuild (US3)", async () => {
     // Rebuild seam whose player model answers with a distinctive text — the
     // next turn's streamed output must come from THIS model.
@@ -927,6 +1012,51 @@ describe("Handler.Connect flow result + status", () => {
     expect((statusFrames[0] as { templateId?: string }).templateId).toBe("saolei");
     expect((statusFrames[0] as { sessionId?: string }).sessionId).toBe("sess-status");
   });
+
+  it("responds IDLE to a status probe while ONLY the init turn is in flight (041 FR-003)", async () => {
+    // FR-003 (specs/041-realtime-init-push/spec.md): the probe MUST report
+    // IDLE (not ACTIVE) when only the background init turn is in flight — the
+    // init emits no `wait`, so ACTIVE would stick the desktop's typing
+    // indicator on (one-shot probe, research.md D6; handler.ts:409-437
+    // derives from `isRunning()` alone, which excludes initInFlight,
+    // session-team.ts:546-563; contracts/realtime-channel-contract.md §5).
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    // Materializing triggers the one-shot async init turn (fire-and-forget,
+    // session-team.ts:925) — right after `update` resolves it is still
+    // in-flight: running=false (probe → IDLE), busy=true (destructive-op
+    // gate).
+    const team = await createTestTeam(store, "sess-status-init");
+    expect(team.isRunning()).toBe(false);
+    expect(team.isBusy()).toBe(true);
+
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit("data", {
+      sessionId: "sess-status-init",
+      templateId: "saolei",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
+    });
+    await flush(0);
+
+    const statusFrames = framesOfKind(stream, "flowParts").filter(
+      (f) =>
+        (f as { flowParts?: { parts?: { status?: unknown }[] } })
+          .flowParts?.parts?.[0]?.status !== undefined,
+    );
+    expect(statusFrames.length).toBeGreaterThan(0);
+    // The init-only probe must be IDLE — UNSPECIFIED/ACTIVE would mis-drive
+    // the typing indicator (specs/021-agent-session-resync/contracts/
+    // agent-desktop-channel-contract.md §1 guarantees IDLE/UNSPECIFIED ⇒
+    // indicator off, but IDLE is the materialized-team contract).
+    const first = statusFrames[0] as {
+      flowParts: { parts: { status: { status: string } }[] };
+    };
+    expect(first.flowParts.parts[0].status.status).toBe(
+      "STATUS_SIGNAL_STATUS_IDLE",
+    );
+  });
 });
 
 // ===========================================================================
@@ -1192,6 +1322,40 @@ describe("Handler.RefreshTeam", () => {
     gate.resolve();
     await flush();
     expect(team.isRunning()).toBe(false);
+  });
+
+  it("rejects RefreshTeam while the INIT turn is in-flight (FAILED_PRECONDITION — 041 FR-007)", async () => {
+    // FR-007 (specs/041-realtime-init-push/spec.md): destructive operations
+    // are rejected while the init turn is in flight — the same `isBusy()`
+    // gate as the user-turn case above (handler.ts:249-265). isRunning()
+    // excludes initInFlight (session-team.ts:546-563), so the probe stays
+    // IDLE while the refresh gate still rejects — contracts/
+    // realtime-channel-contract.md §5.
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const team = await createTestTeam(store, "sess-busy-init");
+    expect(team.isRunning()).toBe(false);
+    expect(team.isBusy()).toBe(true);
+
+    const { callback, promise } = createCallback<any>();
+    handler.RefreshTeam(
+      createUnaryCall({ name: "templates/saolei/sessions/sess-busy-init/team" }),
+      callback,
+    );
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.FAILED_PRECONDITION);
+
+    // Once the init turn completes the busy gate clears and RefreshTeam
+    // succeeds.
+    await flush(0);
+    expect(team.isBusy()).toBe(false);
+    const { callback: cb2, promise: p2 } = createCallback<any>();
+    handler.RefreshTeam(
+      createUnaryCall({ name: "templates/saolei/sessions/sess-busy-init/team" }),
+      cb2,
+    );
+    const { error: error2 } = await p2;
+    expect(error2).toBeNull();
   });
 
   it("returns NOT_FOUND for a session whose team was not created", async () => {

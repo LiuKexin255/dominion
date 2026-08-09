@@ -1091,6 +1091,90 @@ func TestConnect_StartsContinuousReaderReceivesBackgroundFrame(t *testing.T) {
 	}
 }
 
+// TestReadLoop_BackgroundMessagePartsSynthesizesNoStatus verifies the US2
+// desktop half (specs/041-realtime-init-push/spec.md FR-003, SC-002;
+// contracts/realtime-channel-contract.md §3.2/§2.4): when the continuous
+// reader receives a background messageParts frame — e.g. the init instruction
+// (messageParts only, no wait/status, contract §2.4) — it appends the frame
+// to the chat stream and synthesizes NO status ACTIVE signal on top. Any
+// injected ACTIVE/typing signal would appear as a further flowParts status
+// event; the stream must hold exactly the one messageParts event.
+func TestReadLoop_BackgroundMessagePartsSynthesizesNoStatus(t *testing.T) {
+	// given: a mock WS server that pushes a single background messageParts
+	// frame (no user turn, no flowParts) and keeps the connection open
+	bgFrame := &game.TeamFrame{
+		SessionId:  "bg-no-status",
+		TemplateId: "saolei",
+		FrameId:    "srv-bg-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "background instruction"}}},
+			}},
+		},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		data, _ := proto.Marshal(bgFrame)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		select {} // keep the connection open until the client tears it down
+	})
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("bg-no-status", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("bg-no-status")
+
+	app.ws = &api.WSClient{}
+	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "bg-no-status", "test-env"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	// when: run the continuous reader over the background frame
+	app.recvDone = make(chan struct{})
+	go app.readLoop("bg-no-status")
+
+	// then: the messageParts frame lands in the chat stream...
+	snap, ok := waitForStreamEvents(stream, 1)
+	if !ok {
+		t.Fatalf("background frame not appended within 2s; snapshot has %d events", len(snap))
+	}
+	if snap[0].Frame.GetMessageParts() == nil {
+		t.Errorf("expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
+	}
+
+	// ...and after a settle window the stream STILL holds exactly the one
+	// messageParts event: no synthesized status/typing signal (FR-003,
+	// contracts/realtime-channel-contract.md §3.2 — messageParts appends only;
+	// §2.4 — the init emits no status FlowPart).
+	time.Sleep(300 * time.Millisecond)
+	sub, after := stream.Subscribe(0)
+	defer sub.Close()
+	if len(after) != 1 {
+		t.Errorf("chat stream holds %d events after settle, want exactly 1 (no synthesized status/typing signal)", len(after))
+	}
+	if after[0].Frame.GetMessageParts() == nil {
+		t.Errorf("only event expected MessageParts payload, got %T", after[0].Frame.GetPayload())
+	}
+
+	// cleanup: tear the socket down so the reader exits cleanly
+	if err := app.CloseAgent(); err != nil {
+		t.Fatalf("CloseAgent() unexpected error: %v", err)
+	}
+}
+
 // TestSendUserTurn_StartsNoSecondReader verifies FR-012 /
 // specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.4:
 // SendUserTurn only sends the UserFrame and MUST NOT start a second reader —

@@ -907,6 +907,39 @@ describe("SessionTeamStore", () => {
 		expect(store.getProfileName("s-inflight")).toBe("other");
 	});
 
+	it("rejects a profile-change rebuild while the INIT turn is in-flight (041 FR-007)", async () => {
+		// FR-007 (specs/041-realtime-init-push/spec.md): the init turn gates
+		// destructive operations through `isBusy()` while `isRunning()` (the
+		// status probe) excludes it — session-team.ts:546-563,
+		// contracts/realtime-channel-contract.md §5. The user-turn case is
+		// covered above; this is the init-only scenario (no user turn at
+		// all). A rebuild during the init would race the freshly written
+		// instruction in `playerMessages` (contract §7).
+		const store = new SessionTeamStore(
+			async (sessionId) => buildTestTeam(sessionId).team,
+			async (sessionId, _template, _profileName, existingCheckpointer) =>
+				buildTestHandle(sessionId, existingCheckpointer),
+		);
+		const t1 = await store.update("s-rebuild-init", "saolei", "default", true);
+		// Fire-and-forget init turn (session-team.ts:925 — 物化即返回) is
+		// still in-flight right after materialization.
+		expect(t1.isRunning()).toBe(false);
+		expect(t1.isBusy()).toBe(true);
+
+		await expect(
+			store.update("s-rebuild-init", "saolei", "other", true),
+		).rejects.toMatchObject({ code: grpc.status.FAILED_PRECONDITION });
+		expect(store.getProfileName("s-rebuild-init")).toBe("default");
+		expect(store.get("s-rebuild-init")).toBe(t1);
+
+		// The init finishes → busy clears → the rebuild now succeeds.
+		await flush(0);
+		expect(t1.isBusy()).toBe(false);
+		const t2 = await store.update("s-rebuild-init", "saolei", "other", true);
+		expect(t2).toBe(t1);
+		expect(store.getProfileName("s-rebuild-init")).toBe("other");
+	});
+
 	it("leaves the existing team unchanged when the rebuild fails (no half-rebuilt state)", async () => {
 		const store = new SessionTeamStore(
 			async (sessionId) => {
