@@ -135,7 +135,7 @@ function buildInstructionRequest(scenario: InstructionScenario): BaseMessage {
  * compress node's summary messages (`compress.ts:158` —
  * `new AIMessage({ id: randomUUID(), ... })`).
  */
-function ensureMessageId(msg: BaseMessage): string {
+export function ensureMessageId(msg: BaseMessage): string {
 	if (!msg.id) msg._updateId(randomUUID());
 	return msg.id as string;
 }

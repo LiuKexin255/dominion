@@ -26,6 +26,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { appendSkillBodyToPrompt, loadSkillBody, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
 import { refreshTeamChannels } from "../context-middleware";
+import { PRIMARY_AGENT_NAME } from "../session-team";
 import type { MemoryClient } from "../memory-client";
 import type { GameStats } from "../mcp/saolei/saolei-mcp";
 import {
@@ -2129,29 +2130,38 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 			},
 		)) as TeamStateValue;
 
-		// 5 planner review-input frames (US1, agent="planner") + 2 summary
-		// frames (player channel, planner channel) = 7. The
-		// postCompactInstruction node degrades here: `fiveGamesPlannerModel`
-		// has no responses left for its invoke (the 5 review runs + the
-		// planner-channel summary consumed them all), and since 041 T006 the
-		// instruction node emits its frames ONLY after the invoke resolves
-		// (contract §2.3 — a failed planner emits NO frame; the old
-		// pre-invoke request frame would have leaked one).
-		expect(emitChannelFrame).toHaveBeenCalledTimes(7);
+		// 5 planner review-input frames (US1, agent="planner") + 5 review
+		// instruction write-back frames (042 US2/T003 — agent=PRIMARY_AGENT_
+		// NAME, content = the staged v{i+1} instruction) + 2 summary frames
+		// (player channel, planner channel) = 12. The postCompactInstruction
+		// node degrades here: `fiveGamesPlannerModel` has no responses left
+		// for its invoke (the 5 review runs + the planner-channel summary
+		// consumed them all), and since 041 T006 the instruction node emits
+		// its frames ONLY after the invoke resolves (contract §2.3 — a failed
+		// planner emits NO frame; the old pre-invoke request frame would have
+		// leaked one).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(12);
 		const calls = emitChannelFrame.mock.calls;
 		for (let i = 0; i < 5; i += 1) {
-			expect(calls[i][0]).toBe(PLANNER_AGENT_NAME);
+			// Per game: the review-input frame (even index, emitted at the
+			// planner node start — agent=planner) then the instruction
+			// write-back frame (odd index, agent=player, frameId == the
+			// staged instruction's write-back message id).
+			expect(calls[i * 2][0]).toBe(PLANNER_AGENT_NAME);
+			expect(calls[i * 2 + 1][0]).toBe(PRIMARY_AGENT_NAME);
+			expect(calls[i * 2 + 1][1]).toBe(`v${i + 1}`);
+			expect(calls[i * 2 + 1][2]).toBeDefined();
 		}
 		// Player summary frame: agent + content match the summary model output
 		// (FR-011), and the frameId equals the summary message's id — the
 		// desktop dedup anchor (frameId == msg.id, data-model.md §4 / D9).
-		const [playerAgent, playerContent, playerFrameId] = calls[5];
+		const [playerAgent, playerContent, playerFrameId] = calls[10];
 		expect(playerAgent).toBe(PLAYER_AGENT_NAME);
 		expect(playerContent).toBe("player 摘要内容");
 		expect(playerFrameId).toBeDefined();
 		expect(playerFrameId).toBe(result.playerMessages[0].id);
 		// Planner summary frame: same for the planner channel.
-		const [plannerAgent, plannerContent, plannerFrameId] = calls[6];
+		const [plannerAgent, plannerContent, plannerFrameId] = calls[11];
 		expect(plannerAgent).toBe(PLANNER_AGENT_NAME);
 		expect(plannerContent).toBe("planner 摘要内容");
 		expect(plannerFrameId).toBeDefined();
@@ -2472,5 +2482,98 @@ describe("team graph — 039 US3: review calibration instruction (T027, contract
 		).toBe(false);
 		expect(playerModel.calls).toHaveLength(2);
 		expect(result.gameEnded).toBeNull();
+	});
+});
+
+describe("team graph — 042 US2: review instruction real-time frame (T003, contract §2/§5)", () => {
+	it("emits the write-back frame (agent=player, frameId == the persisted instruction id) when the review sends an instruction", async () => {
+		const playerModel = playOneGamePlayerModel();
+		const plannerModel = instructPlayerPlannerModel("corner-first");
+		// DI recording callback (style/javascript.md §测试 — vi.fn() seam,
+		// no vi.mock): injected via LangGraph `configurable` (the same seam
+		// the US1 review-input frame tests use).
+		const emitChannelFrame = vi.fn<
+			(agent: string, content: string, frameId?: string, role?: string) => void
+		>();
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: {
+					thread_id: "t-042-writeback",
+					emitChannelFrame,
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// The emitter was actually exercised (style/javascript.md §测试 —
+		// positive assertion on the DI seam). One game end ⇒ one review run
+		// ⇒ exactly 2 frames: the review-input frame (US1, agent=planner,
+		// emitted at the node start) + the NEW instruction write-back frame
+		// (042 US2, emitted at the node return — T003).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(2);
+		const [writeBackAgent, writeBackContent, writeBackFrameId, writeBackRole] =
+			emitChannelFrame.mock.calls[1];
+		// The write-back frame routes to the player tab (PRIMARY_AGENT_NAME
+		// — "player"), carries the instruction text (the staged content from
+		// the review's instruct_player call) with the USER role — the same
+		// shape as the init/compact write-back frame (instruction-node.ts
+		// `:299-319`, contract §2.1/§5).
+		expect(writeBackAgent).toBe(PRIMARY_AGENT_NAME);
+		expect(writeBackContent).toBe("corner-first");
+		expect(writeBackRole).toBe("MESSAGE_ROLE_USER");
+		// frameId == the PERSISTED instruction message's id (041 dedup
+		// anchor — frameId == msg.id, realtime-channel-contract.md §4;
+		// contract §2.3: the frame's writeBack object is the SAME object the
+		// node return writes into playerMessages).
+		const instructionMsg = result.playerMessages.find(
+			(m) =>
+				m._getType() === "human" &&
+				typeof m.content === "string" &&
+				m.content.includes("corner-first"),
+		);
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
+		expect(writeBackFrameId).toBeDefined();
+		expect(writeBackFrameId).toBe(instructionMsg?.id);
+	});
+
+	it("emits NO write-back frame when the review sends no instruction (FR-014 — the instruction is optional)", async () => {
+		const playerModel = playOneGamePlayerModel();
+		// The review does NOT call instruct_player (LLM decided nothing needs
+		// calibrating) — the staged buffer stays empty.
+		const plannerModel = fakeModel().respond(new AIMessage("复盘完成，无需指令"));
+		const emitChannelFrame = vi.fn<
+			(agent: string, content: string, frameId?: string, role?: string) => void
+		>();
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: {
+					thread_id: "t-042-no-writeback",
+					emitChannelFrame,
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// Only the review-input frame (agent=planner, US1 behavior) — no
+		// write-back frame, no instruction in the player channel (contract
+		// §5: instruction === null ⇒ no frame, no playerMessages write —
+		// 既有行为不变).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
+		const [emittedAgent] = emitChannelFrame.mock.calls[0];
+		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
+		expect(
+			result.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("保持节奏"),
+			),
+		).toBe(false);
 	});
 });

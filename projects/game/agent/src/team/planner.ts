@@ -64,7 +64,10 @@ import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
 import type { ChatModel } from "../model-provider";
-import type { ChannelFrameEmitter } from "../session-team";
+import {
+	PRIMARY_AGENT_NAME,
+	type ChannelFrameEmitter,
+} from "../session-team";
 import { appendSkillBodyToPrompt } from "../skill-loader";
 import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
@@ -72,6 +75,7 @@ import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
 import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { CreateAgentFn } from "./player";
 import { invokeAgentWithRetry } from "./agent-invoke";
+import { ensureMessageId } from "./instruction-node";
 import {
 	buildInstructPlayerTool,
 	type InstructionBuffer,
@@ -403,7 +407,7 @@ export function createPlannerNode(
 			instructionBuffer.content = null;
 		}
 
-		return {
+		const update: Partial<TeamStateValue> = {
 			// Filter the frozen-snapshot SystemMessage out of the channel
 			// write-back — the long-term memory stays in the memory service /
 			// snapshot, NOT in the short-term plannerMessages channel (contract
@@ -411,12 +415,6 @@ export function createPlannerNode(
 			plannerMessages: result.messages.filter(
 				(m: BaseMessage) => m.id !== PLANNER_MEMORY_SNAPSHOT_ID,
 			),
-			// FR-017: the planner's instruction (when sent) is appended to the
-			// player channel right here — the player's next activation reads
-			// it after the game-ending tool_result.
-			...(instruction !== null
-				? { playerMessages: [new HumanMessage(instruction)] }
-				: {}),
 			// D6 step 6: unconditional clear — the planner fires at most once
 			// per game end; the edge routes back to the player (FR-009).
 			gameEnded: null,
@@ -424,5 +422,30 @@ export function createPlannerNode(
 			// compression trigger (compression-contract.md §4).
 			gameCounter: state.gameCounter + 1,
 		};
+
+		if (instruction !== null) {
+			// 042 US2 (T003 — specs/042-planner-memory-fixup/contracts/
+			// review-instruction-display.md §2.1): FR-017 指令写回
+			// playerMessages 时发射实时显示帧 — 复用 instruction-node.ts 的
+			// init/compact 帧发射模式（`:299-319`）。同一 `writeBack` 消息
+			// 对象既作为 (c) 帧发射（frameId == msg.id，
+			// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+			// §4 dedup anchor）也经 update.playerMessages 持久化进
+			// checkpoint，desktop 实时显示与 reloaded ListMessages 去重无重复
+			// （contract §2.3）。
+			const writeBack = new HumanMessage(instruction);
+			ensureMessageId(writeBack);
+			update.playerMessages = [writeBack];
+			if (emitChannelFrame) {
+				emitChannelFrame(
+					PRIMARY_AGENT_NAME,
+					instruction,
+					writeBack.id ?? undefined,
+					"MESSAGE_ROLE_USER",
+				);
+			}
+		}
+
+		return update;
 	};
 }
