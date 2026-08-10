@@ -39,17 +39,17 @@
 //     semantics became a skip in 039).
 //   - TestAgentSaoleiOperateStructuralStop: an operate batch with an
 //     out-of-bounds second op STOPS at op 2 — op 1 dispatches, op 2 never
-//     reaches the desktop, and the result reports `stopped at op 2
+//     reaches the desktop, and the result reports `stopped at click(99,99)
 //     (out_of_bounds)` (FR-002).
 //   - TestAgentSaoleiWonGameStatusAndTerminalReject: a 9×9 win screenshot
 //     (saolei_10.png, counter `000`) seeds a terminal-won state — init
 //     surfaces `game status: won` and a following cell op stops the batch
-//     as `stopped at op 1 (game_won)` (spec 027 FR-021..023) carrying the
+//     as `stopped at click(3,4) (game_won)` (spec 027 FR-021..023) carrying the
 //     won status line.
 //   - TestAgentSaoleiLostGameStatusAndTerminalReject: a 16×16 loss screenshot
 //     (saolei_5.png) seeds a terminal-lost state — init surfaces
 //     `game status: lost` and a following cell op stops the batch as
-//     `stopped at op 1 (game_over)` (existing terminal-loss).
+//     `stopped at click(3,4) (game_over)` (existing terminal-loss).
 //   - TestAgentSaoleiOverFlagBoardStaysPlaying: a 9×9 over-flag screenshot
 //     (saolei_9.png — grid all-revealed, 11 flags, counter `-01`) seeds a
 //     NON-terminal state — init surfaces `game status: playing` (NOT `won`)
@@ -403,7 +403,7 @@ func TestAgentSaoleiOperateNoOpSkip(t *testing.T) {
 // contract saolei-operate-contract.md §2): an out-of-bounds operation is a
 // structural rejection (STRUCTURAL_REASONS) — the batch STOPS at that op,
 // earlier successful ops take effect and the remaining ops are NOT executed;
-// the single result reports `stopped at op K (reason)`.
+// the single result reports `stopped at type(x,y) (reason)`.
 //
 // The test seeds a live 16×16 board (turn 1 init + the shared operate batch),
 // then drives turn 2 with the "structural stop" keyword
@@ -489,8 +489,8 @@ func TestAgentSaoleiOperateStructuralStop(t *testing.T) {
 	if stopMessage == "" {
 		t.Fatalf("did not receive the structural-stop tool_result within %d frames", drainLimit)
 	}
-	if !strings.Contains(stopMessage, "saolei_operate → stopped at op 2 (out_of_bounds)") {
-		t.Errorf("operate result = %q, want to contain \"saolei_operate → stopped at op 2 (out_of_bounds)\" (FR-002 structural stop)", stopMessage)
+	if !strings.Contains(stopMessage, "saolei_operate → stopped at click(99,99) (out_of_bounds)") {
+		t.Errorf("operate result = %q, want to contain \"saolei_operate → stopped at click(99,99) (out_of_bounds)\" (FR-002 structural stop)", stopMessage)
 	}
 }
 
@@ -508,7 +508,7 @@ func TestAgentSaoleiOperateStructuralStop(t *testing.T) {
 //     — a recognized win is surfaced on the operation that produced the
 //     terminal board).
 //  2. A following saolei_operate op is rejected BEFORE dispatch as
-//     `game_won` — the batch stops at op 1 (`stopped at op 1 (game_won)`,
+//     `game_won` — the batch stops at op 1 (`stopped at click(3,4) (game_won)`,
 //     the 039 result shape replacing the former "rejected: game_won" body)
 //     and NO operation FlowPart reaches the desktop.
 //  3. The stop body carries `game status: won` (FR-023).
@@ -574,7 +574,7 @@ func TestAgentSaoleiWonGameStatusAndTerminalReject(t *testing.T) {
 			if strings.Contains(msg, "new game started") && initMessage == "" {
 				initMessage = msg
 			}
-			if strings.Contains(msg, "stopped at op 1 (game_won)") {
+			if strings.Contains(msg, "stopped at click(3,4) (game_won)") {
 				stopMessage = msg
 				break
 			}
@@ -595,8 +595,8 @@ func TestAgentSaoleiWonGameStatusAndTerminalReject(t *testing.T) {
 	if stopMessage == "" {
 		t.Fatalf("did not receive a game_won stop result within %d frames — the batch did not stop at op 1 on the won board", drainLimit)
 	}
-	if !strings.Contains(stopMessage, "saolei_operate → stopped at op 1 (game_won)") {
-		t.Errorf("stop result = %q, want to contain \"saolei_operate → stopped at op 1 (game_won)\" (spec 027 FR-021..023 / 039 FR-002)", stopMessage)
+	if !strings.Contains(stopMessage, "saolei_operate → stopped at click(3,4) (game_won)") {
+		t.Errorf("stop result = %q, want to contain \"saolei_operate → stopped at click(3,4) (game_won)\" (spec 027 FR-021..023 / 039 FR-002)", stopMessage)
 	}
 
 	// then (3): the stop body carries `game status: won` (FR-023).
@@ -681,7 +681,7 @@ func TestAgentSaoleiLostGameStatusAndTerminalReject(t *testing.T) {
 			if strings.Contains(msg, "new game started") && initMessage == "" {
 				initMessage = msg
 			}
-			if strings.Contains(msg, "stopped at op 1 (game_over)") {
+			if strings.Contains(msg, "stopped at click(3,4) (game_over)") {
 				stopMessage = msg
 				break
 			}
@@ -702,8 +702,8 @@ func TestAgentSaoleiLostGameStatusAndTerminalReject(t *testing.T) {
 	if stopMessage == "" {
 		t.Fatalf("did not receive a game_over stop result within %d frames — the batch did not stop at op 1 on the lost board", drainLimit)
 	}
-	if !strings.Contains(stopMessage, "saolei_operate → stopped at op 1 (game_over)") {
-		t.Errorf("stop result = %q, want to contain \"saolei_operate → stopped at op 1 (game_over)\" (spec 025 FR-015b / specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5 — existing terminal-loss)", stopMessage)
+	if !strings.Contains(stopMessage, "saolei_operate → stopped at click(3,4) (game_over)") {
+		t.Errorf("stop result = %q, want to contain \"saolei_operate → stopped at click(3,4) (game_over)\" (spec 025 FR-015b / specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5 — existing terminal-loss)", stopMessage)
 	}
 
 	// then (3): the stop body carries `game status: lost` (FR-012..015

@@ -1847,7 +1847,7 @@ func listMemoryContents(t *testing.T, ctx context.Context, sutHostURL, sutEnvNam
 //     events), which is why saoleiBoardWinPNG (9×9) cannot back a 16×16 init
 //     (saoleiBoardInitPNG) — both here are 16×16. The fixture's operate
 //     batch is [click{3,4}, click{5,6}], so a terminal reply to op 1 stops
-//     the batch at op 1 ("stopped at op 1 (lost)") and op 2 never dispatches
+//     the batch at op 1 ("stopped at click(3,4) (lost)") and op 2 never dispatches
 //     (spec 039 FR-002 — game end stops the batch).
 //   - LATER cell-op dispatches are answered with `initScreenshot` again:
 //     after the planner the stateless fake-LLM re-matches the saolei-start

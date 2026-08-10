@@ -1152,7 +1152,7 @@ func TestTeamRefreshClearsShortTermKeepsMemory(t *testing.T) {
 // (FR-002/FR-003 — the desktop dedups by frameId/messageId). The 039 update
 // (spec 039-planner-memory-calibration FR-004): the gameLog renders
 // saolei_operate entries with their full operation lists — the fixture batch
-// [click{3,4}, click{5,6}] stopped at op 1 by the terminal reply.
+// [click{3,4}, click{5,6}] stopped at click(3,4) by the terminal reply.
 func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -1179,7 +1179,7 @@ func TestTeamPlannerReviewRealtimeVisible(t *testing.T) {
 	// review input renders every gameLog entry, specs/036-team-mode-bugfix/
 	// contracts/team-graph-fix-contract.md §2.2). The 039 batch render is
 	// ONE entry carrying BOTH operations of the operate call (FR-004 — the
-	// batch stopped at op 1 on the terminal reply, but the recorded entry
+	// batch stopped at click(3,4) on the terminal reply, but the recorded entry
 	// carries the full operation list).
 	for _, want := range []string{
 		"1. saolei_init → playing",
@@ -1321,11 +1321,11 @@ func TestTeamReviewInstructionOrder(t *testing.T) {
 		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: the player partition order pins FR-017 — the game-ending
-	// tool_result ("stopped at op 1 (lost)") is IMMEDIATELY followed by the
+	// tool_result ("stopped at click(3,4) (lost)") is IMMEDIATELY followed by the
 	// review instruction, which precedes the player's post-planner output
 	// (the next game's init tool_call).
 	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
-	endResultIdx := messageIndex(playerLmr.GetMessages(), "stopped at op 1 (lost)")
+	endResultIdx := messageIndex(playerLmr.GetMessages(), "stopped at click(3,4) (lost)")
 	instructionIdx := messageIndex(playerLmr.GetMessages(), expectedReviewInstructionText)
 	nextInitIdx := -1
 	for i := instructionIdx + 1; i < len(playerLmr.GetMessages()); i++ {
@@ -1335,7 +1335,7 @@ func TestTeamReviewInstructionOrder(t *testing.T) {
 		}
 	}
 	if endResultIdx == -1 {
-		t.Fatalf("player partition did not surface the game-ending operate tool_result 'stopped at op 1 (lost)'")
+		t.Fatalf("player partition did not surface the game-ending operate tool_result 'stopped at click(3,4) (lost)'")
 	}
 	if instructionIdx == -1 {
 		t.Fatalf("player partition did not surface the review instruction %q (FR-014/FR-017)", expectedReviewInstructionText)
