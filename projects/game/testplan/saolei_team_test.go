@@ -9,7 +9,9 @@
 // persistence via the memory service + the `memory` tool agent conversion
 // (specs/039-planner-memory-calibration FR-006..FR-012), the calibration
 // instruction scenarios + message order (FR-014..FR-017/FR-019),
-// RefreshTeam short-term clearing (FR-018), and per-agent message
+// RefreshTeam short-term clearing + the post-refresh instruction turn
+// (FR-018 / 042 US3 — specs/042-planner-memory-fixup/contracts/
+// refresh-instruction-trigger.md §2.3), and per-agent message
 // partitioning (FR-005). The shared-strategy flow (update_strategy /
 // StrategyStore, 031 FR-012..FR-015) is GONE — Phase 6 of spec 039 removed
 // it (FR-013) and this suite asserts its absence (SC-005).
@@ -1086,10 +1088,21 @@ func TestTeamMemoryPersistsAcrossGames(t *testing.T) {
 }
 
 // TestTeamRefreshClearsShortTermKeepsMemory verifies FR-018/D8 (039 contract
-// §7): RefreshTeam clears the session's SHORT-TERM memory (both per-agent
-// message channels — ListMessages partitions read empty afterwards) while
-// the long-term memory — the entries in the memory service — is unaffected:
-// the next game's planner still triggers and the memory flow continues.
+// §7) + the 042 US3 post-refresh instruction turn (specs/042-planner-memory-
+// fixup/contracts/refresh-instruction-trigger.md §2.3): RefreshTeam clears
+// the session's SHORT-TERM memory — the old game's review chain and history
+// must be GONE from both per-agent message channels — while the long-term
+// memory (the entries in the memory service) is unaffected: the next game's
+// planner still triggers and the memory flow continues. 042 US3: after the
+// clear, refresh ALSO starts a fresh no-game-history instruction turn
+// (fire-and-forget, FR-009 — the RPC returns right after the channel clear,
+// NOT waiting for the LLM), so the partitions are NOT empty afterwards: the
+// player partition holds the fresh instruction write-back and the planner
+// partition the instruction turn's request/response. The old-content
+// assertions below are race-free (the clear is synchronous inside the
+// refresh RPC), and the fresh-content assertions wait for the turn's
+// deterministic write-back before counting (the fake-LLM matches the init
+// request's "团队初始化" keyword — sample_init_instruction.yaml).
 func TestTeamRefreshClearsShortTermKeepsMemory(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -1115,15 +1128,85 @@ func TestTeamRefreshClearsShortTermKeepsMemory(t *testing.T) {
 
 	// when: RefreshTeam (FR-018 — clears short-term memory; 039 contract §7
 	// also covers instructions — they live IN the playerMessages channel, so
-	// the channel clear removes them).
+	// the channel clear removes them; 042 US3 — after the clear, refresh
+	// ALSO triggers a fresh no-game-history instruction turn, fire-and-forget
+	// (FR-009 — specs/042-planner-memory-fixup/contracts/
+	// refresh-instruction-trigger.md §2.3: the RPC returns right after the
+	// channel clear, NOT waiting for the LLM).
 	refreshTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
-	// then: both partitions are empty (the channels were cleared).
-	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player").GetMessages()); got != 0 {
-		t.Errorf("player partition after RefreshTeam = %d messages, want 0 (FR-018)", got)
+	// then: the OLD game's short-term messages are gone from both partitions.
+	// The channel clear is synchronous inside the refresh RPC, so this holds
+	// IMMEDIATELY after it returns — no matter whether the fire-and-forget
+	// post-refresh instruction turn has landed yet (that turn only ADDS
+	// fresh instruction content; it never reintroduces old game content).
+	// Assert by content, not by count: the post-refresh turn may already
+	// have written fresh messages when the read happens (the team-init
+	// instruction text is NOT a marker here — the post-refresh turn
+	// re-produces the identical instruction, FR-013).
+	playerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	for _, old := range []string{
+		"please start saolei game",     // the game-driving user text (playTeamGameUntilWait)
+		"stopped at click(3,4) (lost)", // the game-ending operate tool_result
+		expectedReviewInstructionText,  // the review instruction written into the player channel (FR-017)
+	} {
+		if got := messageIndex(playerLmr.GetMessages(), old); got != -1 {
+			t.Errorf("player partition after RefreshTeam still carries old game content %q at index %d — the channel was not cleared (FR-018)", old, got)
+		}
 	}
-	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner").GetMessages()); got != 0 {
-		t.Errorf("planner partition after RefreshTeam = %d messages, want 0 (FR-018)", got)
+	for _, m := range playerLmr.GetMessages() {
+		for _, name := range messageToolCallNames(m) {
+			if strings.HasPrefix(name, "saolei_") {
+				t.Errorf("player partition after RefreshTeam still carries the old game's saolei_%s tool_call — the channel was not cleared (FR-018)", name)
+			}
+		}
+	}
+	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	if got := messageIndex(plannerLmr.GetMessages(), reviewInputPrefix); got != -1 {
+		t.Errorf("planner partition after RefreshTeam still carries the old game's review input at index %d — the channel was not cleared (FR-018)", got)
+	}
+	if got := countMemoryCallsInMessages(plannerLmr.GetMessages()); got != 0 {
+		t.Errorf("planner partition after RefreshTeam carries %d old memory tool_calls — the review chain was not cleared (FR-018)", got)
+	}
+	if got := findInstructPlayerCallContent(plannerLmr.GetMessages(), expectedReviewInstructionText); got != "" {
+		t.Error("planner partition after RefreshTeam still carries the old game's review instruct_player call — the channel was not cleared (FR-018)")
+	}
+
+	// then: the 042 US3 post-refresh instruction turn completes — the fresh
+	// no-game-history instruction lands in the CLEARED player channel
+	// (deterministic: the init request's "团队初始化" keyword matches
+	// sample_init_instruction.yaml → instruct_player with
+	// expectedInitInstructionText — specs/042-planner-memory-fixup/contracts/
+	// refresh-instruction-trigger.md §2.3/§6). Wait for the write-back so
+	// the count assertions below cannot race the fire-and-forget turn.
+	waitForInitInstructionPersisted(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+
+	// then: both partitions hold EXACTLY the fresh instruction turn's
+	// messages — the player channel = [the instruction write-back] (FR-008/
+	// FR-013 — one fresh instruction in the cleared channel), the planner
+	// channel = [init request HumanMessage, instruct_player tool_call, its
+	// tool_result, the terminal "指令已发送。" text] (the same input-included
+	// write-back as the review/compact nodes — the request joins the channel
+	// like the review input, 037 FR-001 pattern) — with no old-game residue.
+	playerLmr = listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	if got := len(playerLmr.GetMessages()); got != 1 {
+		t.Fatalf("player partition after the post-refresh instruction turn = %d messages, want exactly 1 (the fresh instruction write-back — FR-008)", got)
+	}
+	if got := messageText(playerLmr.GetMessages()[0]); !strings.Contains(got, expectedInitInstructionText) {
+		t.Errorf("player partition after RefreshTeam = %q, want to contain the fresh instruction %q (042 US3 — FR-008)", got, expectedInitInstructionText)
+	}
+	plannerLmr = listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
+	if got := len(plannerLmr.GetMessages()); got != 4 {
+		t.Errorf("planner partition after the post-refresh instruction turn = %d messages, want 4 (init request + instruct_player call/result + final text — FR-008)", got)
+	}
+	if got := messageIndex(plannerLmr.GetMessages(), initRequestPrefix); got == -1 {
+		t.Error("planner partition after RefreshTeam does not carry the post-refresh init request — the instruction turn did not run (042 US3 — FR-008)")
+	}
+	if got := findInstructPlayerCallContent(plannerLmr.GetMessages(), expectedInitInstructionText); got != expectedInitInstructionText {
+		t.Errorf("planner partition instruct_player content = %q, want %q (the post-refresh turn produced the pinned initial instruction — FR-008)", got, expectedInitInstructionText)
+	}
+	if !messagesContainText(plannerLmr.GetMessages(), "指令已发送。") {
+		t.Error("planner partition does not carry the instruct_player final text \"指令已发送。\" — the post-refresh instruction loop did not terminate deterministically")
 	}
 
 	// then: the long-term memory is unaffected — the entries stay in the
