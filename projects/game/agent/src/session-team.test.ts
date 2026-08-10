@@ -22,7 +22,7 @@ import * as grpc from "@grpc/grpc-js";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import type { MemorySaver } from "@langchain/langgraph";
 import { fakeModel } from "@langchain/core/testing";
-import { tool } from "langchain";
+import { createAgent, tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
@@ -316,22 +316,178 @@ describe("SessionTeam", () => {
 		expect(sessionId).toBe("st-state");
 	});
 
-	it("refreshTeam clears BOTH channels (including any instruction in playerMessages), leaves gameEnded alone (FR-018 / 039 contract §7)", async () => {
-		const { team } = buildTestTeam("st-refresh");
+	it("refreshTeam clears BOTH channels, then triggers a fresh instruction turn (042 US3 — FR-008/FR-009/FR-012/FR-013)", async () => {
+		const { team } = buildTestTeam(
+			"st-refresh",
+			fakeModel()
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "复盘指令" } },
+				])
+				.respond(new AIMessage("review done"))
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "刷新指令" } },
+				])
+				.respond(new AIMessage("refresh done")),
+		);
 		const { emit } = recordingEmit();
 		team.bindStreamSink(emit, emit);
 		team.submit({ text: "开始游戏" });
 		await flush();
 
-		// The init instruction was written INTO playerMessages (no slot) —
-		// the refresh must clear the channel including it (contract §7 — no
-		// expired instruction survives).
+		// Pre-refresh: the review turn wrote an instruction INTO
+		// playerMessages (no slot) — the refresh must clear the channel
+		// including it (039 contract §7 — no expired instruction survives).
+		const before = (await team.getTeamState()) as TeamStateValue;
+		expect(before.playerMessages.length).toBeGreaterThan(0);
+
 		await team.refreshTeam();
 
+		// Post-refresh instruction turn in-flight (fire-and-forget, FR-009 —
+		// the refresh returned after the channel clear): the busy gate holds
+		// (isBusy() = true — FR-012, a second refresh/rebuild would be
+		// rejected) while the status probe stays IDLE (isRunning() = false —
+		// FR-011, no typing indicator, same as the team-init turn).
+		expect(team.isBusy()).toBe(true);
+		expect(team.isRunning()).toBe(false);
+
+		await flush(0);
+		expect(team.isBusy()).toBe(false);
+
+		// The refresh triggered a NEW no-game-history instruction into the
+		// CLEARED playerMessages (FR-008 — contract §2.3): the old
+		// review/instruction messages are gone, exactly one fresh
+		// instruction remains. gameEnded stays untouched (FR-018).
 		const state = (await team.getTeamState()) as TeamStateValue;
-		expect(state.playerMessages).toEqual([]);
-		expect(state.plannerMessages).toEqual([]);
+		expect(state.playerMessages.length).toBe(1);
+		expect(
+			typeof state.playerMessages[0].content === "string" &&
+				state.playerMessages[0].content.includes("刷新指令"),
+		).toBe(true);
 		expect(state.gameEnded).toBeNull();
+		// BOTH channels were cleared: the old planner review output is gone
+		// (the instruction turn's own planner request/response replaced it).
+		expect(
+			state.plannerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("review done"),
+			),
+		).toBe(false);
+	});
+
+	it("triggers a fresh instruction on EVERY refresh (FR-013 — repeatable, unlike the one-shot team-init)", async () => {
+		const { team } = buildTestTeam(
+			"st-refresh-repeat",
+			fakeModel()
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "复盘指令" } },
+				])
+				.respond(new AIMessage("review done"))
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "刷新指令一" } },
+				])
+				.respond(new AIMessage("refresh done 1"))
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "刷新指令二" } },
+				])
+				.respond(new AIMessage("refresh done 2")),
+		);
+		const { emit } = recordingEmit();
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "开始游戏" });
+		await flush();
+
+		const instructionCount = (state: TeamStateValue, needle: string) =>
+			state.playerMessages.filter(
+				(m) =>
+					m._getType() === "human" &&
+					typeof m.content === "string" &&
+					m.content.includes(needle),
+			).length;
+
+		// Refresh #1: the cleared channel receives ONE new instruction.
+		await team.refreshTeam();
+		await flush(0);
+		let state = (await team.getTeamState()) as TeamStateValue;
+		expect(instructionCount(state, "刷新指令一")).toBe(1);
+		expect(instructionCount(state, "刷新指令二")).toBe(0);
+
+		// Refresh #2 (after the first completed): triggers ANOTHER
+		// instruction — the previous one is cleared with the channels, the
+		// fresh turn writes its own (FR-013 — non-one-shot, unlike the
+		// team-init triggerInitInstruction guard).
+		await team.refreshTeam();
+		await flush(0);
+		state = (await team.getTeamState()) as TeamStateValue;
+		expect(instructionCount(state, "刷新指令一")).toBe(0);
+		expect(instructionCount(state, "刷新指令二")).toBe(1);
+	});
+
+	it("excludes the post-refresh instruction turn from isRunning() but keeps it in isBusy() (FR-011/FR-012 — same as the team-init turn)", async () => {
+		// Hold the post-refresh instruction turn's agent invoke on a gate
+		// (the createAgentFn DI seam, graph.ts:230-231 — same pattern as
+		// handler.test.ts createGatedInitStore) so the in-flight window is
+		// deterministic: the status probe must report IDLE (isRunning() =
+		// false — no typing indicator, FR-011) while the busy gate rejects a
+		// second refresh/rebuild (isBusy() = true — FR-012).
+		const gate = makeGate();
+		const buffer = createEphemeralGameBuffer();
+		const handle = buildTeamGraph({
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: fakeModel()
+				.respondWithTools([
+					{ name: "instruct_player", args: { content: "刷新指令" } },
+				])
+				.respond(new AIMessage("refresh done")),
+			buffer,
+			sessionId: "st-refresh-busy",
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			...memoryDeps(),
+			createAgentFn: (config) => {
+				const agent = createAgent(config);
+				const wrapped: {
+					invoke: (input: unknown, cfg?: unknown) => Promise<unknown>;
+				} = Object.create(agent);
+				wrapped.invoke = async (input, cfg) => {
+					await gate.promise;
+					return agent.invoke(input as never, cfg as never);
+				};
+				return wrapped;
+			},
+		});
+		const team = new SessionTeam(
+			handle,
+			buffer,
+			"st-refresh-busy",
+			TID,
+			new OperationBridge(),
+			createTeamSink(buffer),
+		);
+		const { emit } = recordingEmit();
+		team.bindStreamSink(emit, emit);
+
+		// No user turn: only the post-refresh instruction turn runs. The
+		// refresh returns right after the channel clear (FR-009 — the
+		// instruction turn stays in-flight on the gate).
+		await team.refreshTeam();
+		expect(team.isBusy()).toBe(true);
+		expect(team.isRunning()).toBe(false);
+
+		// The gate releases → the instruction completes → the busy gate
+		// clears and the fresh instruction lands in playerMessages.
+		gate.resolve();
+		await flush(0);
+		expect(team.isBusy()).toBe(false);
+		const state = (await team.getTeamState()) as TeamStateValue;
+		expect(
+			state.playerMessages.some(
+				(m) =>
+					m._getType() === "human" &&
+					typeof m.content === "string" &&
+					m.content.includes("刷新指令"),
+			),
+		).toBe(true);
 	});
 
 	it("abort stops a running turn and emits wait", async () => {

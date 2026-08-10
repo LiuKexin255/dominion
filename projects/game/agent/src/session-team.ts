@@ -37,7 +37,14 @@
  *   `context-middleware` helpers); the long-term memory (memory service /
  *   frozen snapshot) is untouched. 039 US3 (contract §7): init/compact
  *   instructions live IN `playerMessages`, so the channel clear covers them
- *   (no stale instructions).
+ *   (no stale instructions). 042 US3 (FR-008/FR-009/FR-013,
+ *   specs/042-planner-memory-fixup/contracts/refresh-instruction-trigger.md):
+ *   after the clear, `refreshTeam` ALSO starts a fresh no-game-history
+ *   instruction turn (the same `runInitTurn` logic as team init, via
+ *   {@link SessionTeam.startInstructionTurn}) — repeatable: EVERY refresh
+ *   triggers one, unlike the one-shot team-init instruction. The busy gate
+ *   ({@link SessionTeam.isBusy}) rejects a second refresh/rebuild while the
+ *   post-refresh instruction is in-flight (FR-012).
  * - **MCP host surface**: {@link SessionTeam.getBridge} / {@link SessionTeam.getSink}
  *   feed the `SessionBridgeLookup` (mcp-host.ts) so the saolei MCP server is
  *   built per session with the team sink bound to this session's buffer. The
@@ -212,33 +219,42 @@ export class SessionTeam {
 	private streamSinkHandle: SinkHandle | null = null;
 
 	/**
-	 * The one-shot async initInstruction turn (039 US3, T029 — contract §6,
-	 * FR-015/R2): set by {@link triggerInitInstruction} after graph FIRST
-	 * materialization and awaited by {@link runTeamTurn} so a user message
-	 * arriving during the async init runs AFTER the instruction was produced
-	 * (the pending slot is consumed before the user input — FR-015).
-	 * `null` until triggered; never re-triggered by profile rebuilds (040
-	 * FR-005).
+	 * The async instruction turn (039 US3, T029 — contract §6, FR-015/R2;
+	 * 042 US3 — specs/042-planner-memory-fixup/contracts/
+	 * refresh-instruction-trigger.md §3.1): set by
+	 * {@link startInstructionTurn} — either from
+	 * {@link triggerInitInstruction} after graph FIRST materialization
+	 * (one-shot) or from {@link refreshTeam} after the channel clear
+	 * (repeatable — each refresh OVERWRITES the previously resolved promise
+	 * with a new one). Awaited by {@link runTeamTurn} so a user message
+	 * arriving during an async instruction turn runs AFTER the instruction
+	 * was produced (the pending slot is consumed before the user input —
+	 * FR-015; the post-refresh instruction precedes the first post-refresh
+	 * user turn the same way). `null` until the first trigger; never
+	 * re-triggered by profile rebuilds (040 FR-005).
 	 */
 	private initTurn: Promise<void> | null = null;
 
 	/**
-	 * True while the one-shot async initInstruction turn is actually
-	 * executing (039 US3 — Phase 6 review Issue #3/#5). Distinct from
-	 * {@link initTurn} (which stays non-null forever once triggered):
+	 * True while an async instruction turn (team-init OR post-refresh) is
+	 * actually executing (039 US3 — Phase 6 review Issue #3/#5; 042 US3 —
+	 * the same mechanism gates the post-refresh instruction turn,
+	 * specs/042-planner-memory-fixup/contracts/
+	 * refresh-instruction-trigger.md §3.2). Distinct from {@link initTurn}
+	 * (which stays non-null forever once triggered):
 	 *
 	 * - feeds {@link isBusy}, so RefreshTeam / profile-change rebuild are
-	 *   rejected with FAILED_PRECONDITION during the init (the refresh
-	 *   would otherwise clear a freshly written instruction in
+	 *   rejected with FAILED_PRECONDITION during an instruction turn (the
+	 *   refresh would otherwise clear a freshly written instruction in
 	 *   `playerMessages` — contract §7). It does NOT feed {@link isRunning}:
-	 *   the Connect status probe must not report ACTIVE for the init turn —
-	 *   the init runs outside the TurnLoop and emits no `wait`, so the
-	 *   desktop's typing indicator would stay stuck ON after the init
+	 *   the Connect status probe must not report ACTIVE for the instruction
+	 *   turn — it runs outside the TurnLoop and emits no `wait`, so the
+	 *   desktop's typing indicator would stay stuck ON after the turn
 	 *   completes (one-shot probe, no re-poll; the typing state is driven by
 	 *   real user turns instead, which await {@link initTurn} in
 	 *   {@link runTeamTurn});
 	 * - cleared in `finally` (also on the degrade path), so it never
-	 *   blocks the team after the init turn completes.
+	 *   blocks the team after the instruction turn completes.
 	 */
 	private initInFlight = false;
 
@@ -312,9 +328,28 @@ export class SessionTeam {
 	 * the channel clear removes any stale instruction. The long-term memory
 	 * (memory service / frozen snapshot) and `gameEnded` are untouched.
 	 * Caller MUST reject while a turn is in flight ({@link isRunning}).
+	 *
+	 * 042 US3 (FR-008/FR-009/FR-013,
+	 * specs/042-planner-memory-fixup/contracts/refresh-instruction-trigger.md
+	 * §2.3): after the clear, ALSO starts a fresh no-game-history
+	 * instruction turn (same `runInitTurn` logic as team init — the
+	 * instruction lands in the cleared `playerMessages` and is delivered
+	 * with the player's next activation). Fire-and-forget (FR-009): the
+	 * refresh returns right after the channel clear, NOT waiting for the
+	 * LLM. NO one-shot guard: every refresh triggers a new instruction
+	 * (FR-013). The `isBusy()` gate (`initInFlight`) blocks a second
+	 * refresh/rebuild while the instruction is in-flight (FR-012); a user
+	 * turn arriving meanwhile awaits {@link initTurn} first, so the fresh
+	 * instruction precedes the first post-refresh user input.
 	 */
 	async refreshTeam(): Promise<void> {
 		await refreshTeamChannels(this.graphHandle.graph, this.sessionId);
+		// 042 US3 (FR-008/FR-009): post-refresh instruction trigger — same
+		// runInitTurn logic as team-init (no-game-history, prompt-guided,
+		// LLM-decided). No one-shot guard: each refresh triggers a new
+		// instruction (FR-013). The isBusy() gate (initInFlight) blocks a
+		// second refresh/rebuild while the instruction is in-flight (FR-012).
+		this.startInstructionTurn();
 	}
 
 	/**
@@ -338,7 +373,25 @@ export class SessionTeam {
 	 * instruction (logged), never blocks the team or the materialization.
 	 */
 	triggerInitInstruction(): void {
+		// 一次性守卫：仅 team 初始化首建触发（040 FR-005 — profile 变更重建
+		// 不重跑 initInstruction）。042 US3 后 refreshTeam 的每次触发走
+		// startInstructionTurn（无守卫，FR-013）——本方法保持不变。
 		if (this.initTurn) return;
+		this.startInstructionTurn();
+	}
+
+	/**
+	 * Start (or re-start) an instruction turn: run the graph with the
+	 * `runInitInstruction` flag and track its in-flight state for the
+	 * `isBusy()` guard (042 US3 — specs/042-planner-memory-fixup/contracts/
+	 * refresh-instruction-trigger.md §2.1). Used by BOTH team-init
+	 * (one-shot, via {@link triggerInitInstruction}) and RefreshTeam
+	 * (repeatable — {@link refreshTeam} overwrites {@link initTurn} with a
+	 * fresh promise each time; overwrite is safe: refresh only runs when
+	 * `isBusy()` is false, so no in-flight turn awaits the old promise,
+	 * contract §3.1).
+	 */
+	private startInstructionTurn(): void {
 		this.initInFlight = true;
 		this.initTurn = this.runInitTurn().finally(() => {
 			// Cleared on BOTH the success and the degrade path (runInitTurn
@@ -560,15 +613,18 @@ export class SessionTeam {
 
 	/**
 	 * True iff the per-session team has work that must gate destructive
-	 * operations: a real turn (TurnLoop) OR the one-shot async
-	 * initInstruction turn (039 US3, Phase 6 review Issue #3/#5). Used by
-	 * RefreshTeam and the profile-change rebuild to reject with
-	 * FAILED_PRECONDITION while the planner is producing the initial
+	 * operations: a real turn (TurnLoop) OR an async instruction turn —
+	 * the one-shot team-init turn AND the post-refresh turn (039 US3,
+	 * Phase 6 review Issue #3/#5; 042 US3 — specs/042-planner-memory-fixup/
+	 * contracts/refresh-instruction-trigger.md §3.2). Used by RefreshTeam
+	 * and the profile-change rebuild to reject with
+	 * FAILED_PRECONDITION while the planner is producing an initial
 	 * instruction (a refresh could clear a freshly written instruction in
 	 * `playerMessages`, contract §7; an in-flight turn must not be
 	 * disturbed, FR-006). Deliberately SEPARATE from {@link isRunning} (the
-	 * status probe — init excluded): the init must gate the refresh/rebuild
-	 * but must NOT drive the desktop's typing indicator.
+	 * status probe — instruction turns excluded): the instruction must gate
+	 * the refresh/rebuild but must NOT drive the desktop's typing
+	 * indicator.
 	 */
 	isBusy(): boolean {
 		return this.initInFlight || this.isRunning();
@@ -655,10 +711,12 @@ export class SessionTeam {
 		content: TurnContent,
 		signal?: AbortSignal,
 	): AsyncIterable<TurnBlock> {
-		// 039 US3 (T029 — FR-015): a user turn must run AFTER the one-shot
-		// async initInstruction turn — the instruction is written into
-		// `playerMessages` first, so it precedes the user input appended
-		// below (异步产出期间到达的 user message 排在指令之后).
+		// 039 US3 (T029 — FR-015) / 042 US3 (FR-009): a user turn must run
+		// AFTER the async instruction turn (team-init one-shot OR the latest
+		// post-refresh one — refreshTeam overwrites initTurn with a fresh
+		// promise) — the instruction is written into `playerMessages` first,
+		// so it precedes the user input appended below (异步产出期间到达的
+		// user message 排在指令之后).
 		if (this.initTurn) {
 			await this.initTurn;
 		}
