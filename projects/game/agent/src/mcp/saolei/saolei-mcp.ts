@@ -654,19 +654,21 @@ const OPERATION_ACTIONS: Record<OperationType, MouseClickAction> = {
  * the final text board (FR-002; `specs/039-planner-memory-calibration/
  * contracts/saolei-operate-contract.md` §2). The outcome line reflects the
  * batch's triage: a normal completion (`executed N ops`, with `skipped S
- * no-op ops` when any were skipped), or a stop at op K with its reason
- * (structural rejection code, or `won`/`lost` for a game end).
+ * no-op ops` when any were skipped), or a stop at the triggering op with its
+ * parameters and reason (structural rejection code, or `won`/`lost` for a
+ * game end) — `specs/042-planner-memory-fixup/contracts/
+ * saolei-operate-stop-format.md` §1.2: `stopped at {type}({x},{y})`.
  */
 function operateResultText(
 	executed: number,
 	skipped: number,
 	state: GameState,
-	stoppedAt: number | null,
+	stoppedOp: CellOperation | null,
 	stoppedReason: MoveRejection | "won" | "lost" | null,
 ): string {
 	let line: string;
-	if (stoppedAt != null) {
-		line = `saolei_operate → stopped at op ${stoppedAt} (${stoppedReason})`;
+	if (stoppedOp != null) {
+		line = `saolei_operate → stopped at ${stoppedOp.type}(${stoppedOp.x},${stoppedOp.y}) (${stoppedReason})`;
 	} else if (skipped > 0) {
 		line = `saolei_operate → executed ${executed} ops, skipped ${skipped} no-op ops`;
 	} else {
@@ -1057,7 +1059,7 @@ export function createSaoleiMcpServer(
 
 			let executed = 0;
 			let skipped = 0;
-			let stoppedAt: number | null = null;
+			let stoppedOp: CellOperation | null = null;
 			let stoppedReason: MoveRejection | "won" | "lost" | null = null;
 			let endedStatus: "won" | "lost" | null = null;
 
@@ -1070,14 +1072,14 @@ export function createSaoleiMcpServer(
 					// effect, then the batch STOPS (contract §2).
 					if (result.status !== "playing") {
 						endedStatus = result.status;
-						stoppedAt = i + 1;
+						stoppedOp = operations[i];
 						stoppedReason = result.status;
 						break;
 					}
 				} else if (result.kind === "skip") {
 					skipped += 1;
 				} else if (result.kind === "stop") {
-					stoppedAt = i + 1;
+					stoppedOp = operations[i];
 					stoppedReason = result.reason;
 					break;
 				} else {
@@ -1124,7 +1126,7 @@ export function createSaoleiMcpServer(
 					executed,
 					skipped,
 					finalState,
-					stoppedAt,
+					stoppedOp,
 					stoppedReason,
 				),
 			);

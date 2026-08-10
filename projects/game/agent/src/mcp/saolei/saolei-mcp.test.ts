@@ -820,7 +820,7 @@ describe("createSaoleiMcpServer: illegal ops triaged before dispatch", () => {
 
 		expect(dispatched).toHaveLength(1);
 		const text = expectTextOnly(result);
-		expect(text).toContain("saolei_operate → stopped at op 1 (out_of_bounds)");
+		expect(text).toContain("saolei_operate → stopped at click(5,5) (out_of_bounds)");
 		expect(text).toContain("board size 2*2");
 	});
 
@@ -851,7 +851,7 @@ describe("createSaoleiMcpServer: illegal ops triaged before dispatch", () => {
 
 		expect(dispatched).toHaveLength(1);
 		expect(result.content[0].text).toContain(
-			"saolei_operate → stopped at op 1 (game_over)",
+			"saolei_operate → stopped at click(1,0) (game_over)",
 		);
 		// The stop result carries the status line for the losing state.
 		expect(result.content[0].text).toContain("game status: lost");
@@ -943,7 +943,7 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 		const clickResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 		expect(dispatched).toHaveLength(1); // the init F2 only
 		const clickText = expectTextOnly(clickResult);
-		expect(clickText).toContain("saolei_operate → stopped at op 1 (game_won)");
+		expect(clickText).toContain("saolei_operate → stopped at click(0,0) (game_won)");
 		// The stop result carries the status line for the won state (FR-023).
 		expect(clickText).toContain("game status: won");
 		expect(clickText).toContain("board size 2*2");
@@ -952,11 +952,11 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 		// (FR-021 — "any cell operation").
 		const flagResult = await callTool(server, "saolei_operate", { type: "flag", x: 1, y: 0 });
 		expect(flagResult.content[0].text).toContain(
-			"saolei_operate → stopped at op 1 (game_won)",
+			"saolei_operate → stopped at flag(1,0) (game_won)",
 		);
 		const chordResult = await callTool(server, "saolei_operate", { type: "chord", x: 1, y: 1 });
 		expect(chordResult.content[0].text).toContain(
-			"saolei_operate → stopped at op 1 (game_won)",
+			"saolei_operate → stopped at chord(1,1) (game_won)",
 		);
 		// Still no further dispatches — only the init F2.
 		expect(dispatched).toHaveLength(1);
@@ -990,7 +990,7 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 		// After the win, a cell op is terminal-blocked (game_won)…
 		const blocked = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 		expect(blocked.content[0].text).toContain(
-			"saolei_operate → stopped at op 1 (game_won)",
+			"saolei_operate → stopped at click(0,0) (game_won)",
 		);
 
 		// …but saolei_init re-dispatches F2 unconditionally (contract §6).
@@ -1496,7 +1496,7 @@ describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
 		const moveResult = await callTool(server, "saolei_operate", { type: "click", x: 0, y: 0 });
 
 		expect(moveResult.content[0].text).toContain(
-			"saolei_operate → stopped at op 1 (won)",
+			"saolei_operate → stopped at click(0,0) (won)",
 		);
 		// The terminal path ran: the result carries the won status line.
 		expect(moveResult.content[0].text).toContain("game status: won");
@@ -1618,7 +1618,7 @@ describe("createSaoleiMcpServer: game stats on onGameEnd (037 US5 / FR-026..FR-0
 		// however the batch went).
 		const rejected = await callTool(server, "saolei_operate", { type: "click", x: 5, y: 5 });
 		expect(rejected.content[0].text).toContain(
-			"saolei_operate → stopped at op 1 (out_of_bounds)",
+			"saolei_operate → stopped at click(5,5) (out_of_bounds)",
 		);
 		// 039 FR-004: the structurally-rejected call on an active game
 		// still fires exactly ONE onOperate, carrying the rejected op + the
@@ -1851,7 +1851,7 @@ describe("saolei_operate: failure triage (FR-002 / contract §2)", () => {
 		// The first op took effect; the third never ran (init + 1).
 		expect(dispatched).toHaveLength(initDispatched + 1);
 		const text = expectTextOnly(result);
-		expect(text).toContain("saolei_operate → stopped at op 2 (out_of_bounds)");
+		expect(text).toContain("saolei_operate → stopped at click(5,5) (out_of_bounds)");
 		expect(text).toContain("game status: playing");
 	});
 
@@ -1874,10 +1874,10 @@ describe("saolei_operate: failure triage (FR-002 / contract §2)", () => {
 			],
 		});
 
-		// The losing op took effect; the batch stopped at op 1 (init + 1).
+		// The losing op took effect; the batch stopped at click(0,0) (init + 1).
 		expect(dispatched).toHaveLength(initDispatched + 1);
 		const text = expectTextOnly(result);
-		expect(text).toContain("saolei_operate → stopped at op 1 (lost)");
+		expect(text).toContain("saolei_operate → stopped at click(0,0) (lost)");
 		expect(text).toContain("game status: lost");
 		// The sink fired ONCE per call: onOperate (with the FULL op list,
 		// including the unexecuted one) + onGameEnd (FR-004/FR-022).

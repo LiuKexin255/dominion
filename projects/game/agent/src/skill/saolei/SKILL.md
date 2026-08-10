@@ -57,13 +57,13 @@ Every tool result is a single TEXT content block whose body has three layers, in
    - `saolei_init` success: `new game started`
    - `saolei_operate` normal completion: `saolei_operate → executed N ops`
    - `saolei_operate` with skipped no-ops: `saolei_operate → executed M ops, skipped S no-op ops`
-   - `saolei_operate` stopped mid-batch: `saolei_operate → stopped at op K (reason)` (reason = a structural rejection code or `won`/`lost`)
+   - `saolei_operate` stopped mid-batch: `saolei_operate → stopped at type(x,y) (reason)` (type = click/flag/chord, `(x,y)` = the coordinates of the op that triggered the stop; reason = a structural rejection code or `won`/`lost`)
    - `saolei_operate` illegal argument combination: `saolei_operate → rejected: ...` (exact texts in the "saolei_operate" section below)
    - No active game: `rejected: no_active_game` followed by `call saolei_init first to start a game.` (no game-status line, no board)
    - Recognition failure: `unable to recognize board` followed by `call saolei_init to start a new game.` (no game-status line, no board)
    - `saolei_remain` success: `saolei_remain → computed`
 2. **Game-status line** — `game status: won`, `game status: lost`, or `game status: playing`, derived from the recognized board (won = every cell is a revealed number or a flag AND the game's mine counter reads `000`, meaning the placed flag count equals the mine count; lost = a mine `X`/`M` is visible; playing = otherwise). This line tells you whether the game is finished — read it before parsing the board. **It is omitted only when there is no recognized board** (`no_active_game` rejection, `unable to recognize board`) or on an illegal-argument rejection (no board is consulted).
-3. **The text board** — the `board size <w>*<h>` header and the symbol grid. The `valid range: x 0..<w-1>, y 0..<h-1>` line appears on `rejected: <reason>` bodies only; a `saolei_operate → stopped at op K (...)` body carries the status line and board but no valid-range line.
+3. **The text board** — the `board size <w>*<h>` header and the symbol grid. The `valid range: x 0..<w-1>, y 0..<h-1>` line appears on `rejected: <reason>` bodies only; a `saolei_operate → stopped at type(x,y) (...)` body carries the status line and board but no valid-range line.
 
 A winning or losing status is surfaced on the very operation whose recognized board first reflects it. A win or loss is **terminal** — see "Move validation" below: once the status is `won` or `lost`, any further cell operation stops before dispatch with reason `game_won` or `game_over`.
 
@@ -130,7 +130,7 @@ Operation types (absorbing the former `saolei_click` / `saolei_flag` / `saolei_c
 Every op is validated strictly against the recognized board before dispatch. Failures are triaged by reason (contract §2 / FR-002):
 
 - **Harmless no-op** (click a revealed/flagged cell, flag a revealed cell, chord a non-number, chord a number with no unrevealed neighbor) — the op is **SKIPPED** (board unchanged) and the batch continues with the remaining ops. A single no-op call shows `saolei_operate → executed 0 ops, skipped 1 no-op ops`.
-- **Structural rejection / game end** — an out-of-bounds or no-active-game rejection, or an op that ends the game (won/lost) — the batch **STOPS** at that op; earlier successful operations take effect and the remaining ops are NOT executed. The result shows `saolei_operate → stopped at op K (reason)`.
+- **Structural rejection / game end** — an out-of-bounds or no-active-game rejection, or an op that ends the game (won/lost) — the batch **STOPS** at that op; earlier successful operations take effect and the remaining ops are NOT executed. The result shows `saolei_operate → stopped at type(x,y) (reason)` — the type and coordinates of the op that triggered the stop.
 - An empty `operations` list is a no-op: it returns the current board with `saolei_operate → executed 0 ops` and produces no side effect.
 
 Argument-combination rejections (the call is refused, NOTHING is dispatched; the exact texts):
@@ -168,7 +168,7 @@ Use `saolei_remain` when you want a ready-made "mines still left around each num
 Before dispatching a cell operation, the agent checks the move against the recognized board. A legal move dispatches and returns the updated board. An illegal move is **handled before dispatch** — the desktop never receives it — but the handling depends on the reason (contract §2 / FR-002):
 
 - **Harmless no-op reasons** (`cell_already_revealed`, `cell_is_flagged`, `cannot_flag_revealed`, `chord_requires_number`, `chord_no_unrevealed_neighbor`) — the op does not change the board and is **SKIPPED**; the batch (if any) continues. A single no-op call shows `saolei_operate → executed 0 ops, skipped 1 no-op ops`.
-- **Structural / terminal reasons** (`out_of_bounds`, `no_active_game`, `game_over`, `game_won`) — the batch **STOPS** at that op with `saolei_operate → stopped at op K (reason)`; earlier successful ops take effect. (`no_active_game` with no board at all uses the `rejected: no_active_game` body instead — see below.)
+- **Structural / terminal reasons** (`out_of_bounds`, `no_active_game`, `game_over`, `game_won`) — the batch **STOPS** at that op with `saolei_operate → stopped at type(x,y) (reason)`; earlier successful ops take effect. (`no_active_game` with no board at all uses the `rejected: no_active_game` body instead — see below.)
 
 A rejection is a normal tool result (not an error); read the reason and the board, then pick a legal cell.
 
@@ -177,9 +177,9 @@ The rule categories:
 | Rule (reason code) | When it applies |
 |---|---|
 | `no_active_game` | You called a cell operation before `saolei_init`, or the board state was invalidated by a recognition failure. Call `saolei_init` first. When no board exists at all the result is `rejected: no_active_game` with guidance; the status line and board are omitted. |
-| `out_of_bounds` | The `(x, y)` coordinate is outside the board dimensions. The op stops the batch (`stopped at op K (out_of_bounds)`); earlier successful ops take effect. |
-| `game_over` | The current game is already lost (a mine `X`/`M` is visible). The op stops the batch (`stopped at op K (game_over)`). Call `saolei_init` to start a new game. |
-| `game_won` | The current game is already won (`game status: won`). A win is terminal exactly like a loss — any cell operation after a win stops before dispatch. The op stops the batch (`stopped at op K (game_won)`). Call `saolei_init` to start a new game. |
+| `out_of_bounds` | The `(x, y)` coordinate is outside the board dimensions. The op stops the batch (`stopped at type(x,y) (out_of_bounds)`); earlier successful ops take effect. |
+| `game_over` | The current game is already lost (a mine `X`/`M` is visible). The op stops the batch (`stopped at type(x,y) (game_over)`). Call `saolei_init` to start a new game. |
+| `game_won` | The current game is already won (`game status: won`). A win is terminal exactly like a loss — any cell operation after a win stops before dispatch. The op stops the batch (`stopped at type(x,y) (game_won)`). Call `saolei_init` to start a new game. |
 | `cell_already_revealed` | A `click` op on an already-revealed number (`0`–`8`) — a no-op, SKIPPED (the batch continues). |
 | `cell_is_flagged` | A `click` op on a flagged cell (`F`) — a flagged cell is protected, SKIPPED. |
 | `cannot_flag_revealed` | A `flag` op on a revealed number (`0`–`8`) — you cannot flag an open cell, SKIPPED. |
@@ -255,28 +255,28 @@ The batch form executes the ops in order and returns a SINGLE result reflecting 
      ... (the final board after all four ops) ...
 ```
 
-If an op in the batch is a harmless no-op, it is skipped and the batch continues (`executed 3 ops, skipped 1 no-op ops`). If an op is a structural rejection or ends the game, the batch stops there (`stopped at op 3 (out_of_bounds)` / `stopped at op 4 (lost)`) and the remaining ops are not executed.
+If an op in the batch is a harmless no-op, it is skipped and the batch continues (`executed 3 ops, skipped 1 no-op ops`). If an op is a structural rejection or ends the game, the batch stops there (`stopped at flag(3,3) (out_of_bounds)` / `stopped at chord(4,4) (lost)`) and the remaining ops are not executed.
 
 ### Game end
 
 If an operation reveals the last safe cell (or flags the last mine), the same operation's result carries `game status: won` instead. The NEXT cell operation on that board then stops before dispatch:
 
 ```
-saolei_operate → stopped at op 1 (game_won)
+saolei_operate → stopped at type(x,y) (game_won)
 game status: won
 
 board size 9*9
 ... (the winning board — all cells `0`–`8` or `F`) ...
 ```
 
-Call `saolei_init` to start a new game. (Symmetrically, a board with `X`/`M` carries `game status: lost` and further ops stop with `game_over`; an op that ITSELF ends the game shows `stopped at op K (lost)`.)
+Call `saolei_init` to start a new game. (Symmetrically, a board with `X`/`M` carries `game status: lost` and further ops stop with `game_over`; an op that ITSELF ends the game shows `stopped at type(x,y) (lost)`.)
 
 Key points demonstrated:
 
 - `saolei_init` takes no arguments and returns a TEXT board.
 - Every result body carries the `game status:` line between the outcome line and the board (omitted only when there is no recognized board, or on an illegal-argument rejection).
 - Operations are callable back-to-back; each returns the updated TEXT board.
-- Batch operations execute in order and return ONE result — read the final board, and the outcome line tells you whether any op was skipped (`executed M ops, skipped S no-op ops`) or where the batch stopped (`stopped at op K (reason)`).
+- Batch operations execute in order and return ONE result — read the final board, and the outcome line tells you whether any op was skipped (`executed M ops, skipped S no-op ops`) or where the batch stopped (`stopped at type(x,y) (reason)`).
 - Read the `game status:` line first — it tells you whether the game is finished before you parse the board. A win or loss is terminal.
 - Read the returned text board (symbols above) to track the game — never a screenshot.
 
