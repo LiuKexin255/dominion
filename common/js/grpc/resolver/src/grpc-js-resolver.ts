@@ -22,7 +22,7 @@ import {
 } from "@dominion/common-js-resolver";
 import type { ResolverConfig, Scheduler } from "@dominion/common-js-resolver";
 import type { ResolverState } from "./grpc-types";
-import { warn } from "@dominion/common-js-logs";
+import { warn, info } from "@dominion/common-js-logs";
 
 let registered = false;
 let storedConfig: ResolverConfig | undefined;
@@ -260,8 +260,8 @@ class _DominionResolver {
       // Don't publish an empty endpoint list to grpc-js. round_robin
       // destroys all subchannels on zero endpoints and enters IDLE, whose
       // exitIdle() is a no-op with zero children — the channel is
-      // permanently stuck ("Waiting for LB pick"; deploy incident
-      // 2026-08-09, prompt rollout). Instead:
+      // permanently stuck ("Waiting for LB pick", observed after a
+      // prompt-service rollout). Instead:
       // - With prior valid endpoints: retain them; the stale subchannels
       //   fail naturally (TRANSIENT_FAILURE) and requestReresolution()
       //   keeps polling until new endpoints appear.
@@ -269,6 +269,9 @@ class _DominionResolver {
       //   TRANSIENT_FAILURE with backoff and retries.
       if (addresses.length === 0) {
         if (this.state.status === "ready") {
+          info("service endpoints empty: retaining prior", {
+            target: this.targetStr,
+          });
           return;
         }
         const message = `no endpoints resolved for ${this.targetStr}`;
@@ -290,9 +293,18 @@ class _DominionResolver {
       if (this.state.status === "ready" && !this.lastRefreshFailed) {
         const prevKey = endpointsKey(this.state.endpoints);
         if (newKey === prevKey) {
+          info("service endpoints unchanged", {
+            target: this.targetStr,
+            endpoints: addresses.join(","),
+          });
           return;
         }
       }
+
+      info("service endpoints updated", {
+        target: this.targetStr,
+        endpoints: addresses.join(","),
+      });
 
       this.state = {
         status: "ready",
@@ -413,6 +425,10 @@ class _DominionStatefulResolver {
       // UNAVAILABLE when nothing was ever resolved.
       if (addresses.length === 0) {
         if (this.state.status === "ready") {
+          info("service endpoints empty: retaining prior", {
+            target: this.targetStr,
+            instance: this.instanceNum,
+          });
           return;
         }
         const message = `no endpoints resolved for ${this.targetStr}?instance=${this.instanceNum}`;
@@ -435,9 +451,20 @@ class _DominionStatefulResolver {
       if (this.state.status === "ready" && !this.lastRefreshFailed) {
         const prevKey = endpointsKey(this.state.endpoints);
         if (newKey === prevKey) {
+          info("service endpoints unchanged", {
+            target: this.targetStr,
+            instance: this.instanceNum,
+            endpoints: addresses.join(","),
+          });
           return;
         }
       }
+
+      info("service endpoints updated", {
+        target: this.targetStr,
+        instance: this.instanceNum,
+        endpoints: addresses.join(","),
+      });
 
       this.state = {
         status: "ready",

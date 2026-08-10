@@ -257,12 +257,16 @@ describe("MemoryClient", () => {
 			expect(MEMORY_SERVICE_TARGET).toBe("dominion:///game/memory:50051");
 		});
 
-		it("shares the keepalive / round_robin channel options with prompt-client", () => {
+		it("shares the no-keepalive / round_robin channel options with prompt-client", () => {
 			// The channel constants are imported from prompt-client (single
 			// source of truth) — assert they still reach the channel options.
+			// No app-level keepalive PINGs: unary clients must not ping the
+			// default-policy (MinTime=5min, PermitWithoutStream=false) Go
+			// servers — idle PINGs would be GOAWAY'd as "excess pings"
+			// (agent→prompt DEADLINE_EXCEEDED "Waiting for LB pick").
 			const options = buildChannelOptionsForTest();
-			expect(options?.["grpc.keepalive_time_ms"]).toBe(30_000);
-			expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(1);
+			expect(options?.["grpc.keepalive_time_ms"]).toBeUndefined();
+			expect(options?.["grpc.keepalive_permit_without_calls"]).toBeUndefined();
 			const serviceConfig = JSON.parse(
 				options?.["grpc.service_config"] as string,
 			);

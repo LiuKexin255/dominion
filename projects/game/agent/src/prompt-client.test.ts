@@ -219,16 +219,18 @@ describe("PromptClient", () => {
       ]);
     });
 
-    it("enables HTTP/2 keepalive pings (incl. idle) for dead-connection detection", () => {
-      // Node.js does not enable TCP-level SO_KEEPALIVE by default (unlike Go's
-      // stdlib — grpc-go issue #6250), so grpc-js relies on HTTP/2 PINGs to
-      // detect half-open connections. permit_without_calls=1 sends pings even
-      // when no RPC is in flight; per gRPC A8 the interval auto-scales to the
-      // server's MinTime after GOAWAY, so no server-side change is needed.
+    it("does NOT configure HTTP/2 keepalive pings (unary clients; idle PINGs would be GOAWAY'd)", () => {
+      // Unary clients deliberately send no app-level keepalive PINGs — this
+      // mirrors grpc-go's ClientDefault() (common/gopkg/grpc/default.go).
+      // The unary prompt/memory servers run grpc-go's DEFAULT enforcement
+      // policy (MinTime=5min, PermitWithoutStream=false), so idle PINGs
+      // would be answered with GOAWAY "excess pings" and repeatedly tear
+      // the connection down (agent→prompt DEADLINE_EXCEEDED "Waiting for
+      // LB pick").
       const options = buildChannelOptionsForTest();
-      expect(options?.["grpc.keepalive_time_ms"]).toBe(30_000);
-      expect(options?.["grpc.keepalive_timeout_ms"]).toBe(10_000);
-      expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(1);
+      expect(options?.["grpc.keepalive_time_ms"]).toBeUndefined();
+      expect(options?.["grpc.keepalive_timeout_ms"]).toBeUndefined();
+      expect(options?.["grpc.keepalive_permit_without_calls"]).toBeUndefined();
     });
 
     it("caps the reconnect backoff so recovery is not delayed to the 120s default", () => {

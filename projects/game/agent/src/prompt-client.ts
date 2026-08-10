@@ -16,6 +16,7 @@ import {
   registerDominionResolver,
   createDeployClient,
 } from "@dominion/common-js-grpc-resolver";
+import { info, error } from "@dominion/common-js-logs";
 
 /**
  * Path to game.proto, relative to the compiled src/ directory.
@@ -90,32 +91,31 @@ export const ROUND_ROBIN_SERVICE_CONFIG = JSON.stringify({
   loadBalancingConfig: [{ round_robin: {} }],
 });
 
-// HTTP/2 PING-based keepalive to detect silently-dropped idle connections.
-// Node.js (unlike Go's stdlib) does NOT enable TCP-level SO_KEEPALIVE by
-// default (Go sets it with a 15s interval — grpc-go issue #6250), so without
-// these options a half-open TCP connection is only detected by the OS TCP
-// retransmission timeout (~15 min on Linux), leaving the channel stuck.
+// Deliberately NO app-level keepalive PINGs on these unary clients — this
+// mirrors grpc-go's `ClientDefault()` (common/gopkg/grpc/default.go:26): the
+// Go side reserves HTTP/2 keepalive for long-lived streams, paired with
+// server-side enforcement relaxation (common/gopkg/grpc/keepalive.go
+// WithLongLivedClientKeepalive / WithLongLivedServerKeepalive). The unary
+// prompt/memory servers run grpc-go's DEFAULT enforcement policy (MinTime=5min,
+// PermitWithoutStream=false), so a keepalive-enabled client's idle PINGs are
+// answered with GOAWAY "excess pings" and the connection is torn down
+// repeatedly, producing DEADLINE_EXCEEDED "Waiting for LB pick" on the
+// agent→prompt call. Node lacks TCP-level SO_KEEPALIVE (grpc-go enables it;
+// https://github.com/grpc/grpc-go/issues/6250), but for unary calls a dead
+// connection is detected by the per-RPC deadline + reconnect, which is
+// exactly grpc-go's unary behavior.
 //
-// permit_without_calls=1: send PINGs even when idle. The grpc-go server's
-// default EnforcementPolicy (MinTime=5min, PermitWithoutStream=false) will
-// GOAWAY the connection after repeated idle PINGs, but per gRPC A8 the
-// client auto-doubles keepalive_time until it exceeds MinTime — the interval
-// self-stabilizes at ~5min without any server-side changes.
-// https://github.com/grpc/proposal/blob/master/A8-client-side-keepalive.md
-//
-// max_reconnect_backoff_ms: cap subchannel retry interval (grpc-js default is
-// 120s; 15s ensures faster recovery once a dead connection is detected).
-export const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
-  "grpc.keepalive_time_ms": 30_000,
-  "grpc.keepalive_timeout_ms": 10_000,
-  "grpc.keepalive_permit_without_calls": 1,
+// max_reconnect_backoff_ms: cap the subchannel retry interval (grpc-js
+// default max backoff is 120s; 15s bounds how long a dead subchannel is
+// retried before giving up the connection).
+export const RECONNECT_OPTIONS: grpc.ChannelOptions = {
   "grpc.initial_reconnect_backoff_ms": 1_000,
   "grpc.max_reconnect_backoff_ms": 15_000,
 };
 
 export function buildChannelOptions(): grpc.ChannelOptions {
   const options: grpc.ChannelOptions = {
-    ...KEEPALIVE_OPTIONS,
+    ...RECONNECT_OPTIONS,
     "grpc.service_config": ROUND_ROBIN_SERVICE_CONFIG,
   };
   const serverName = process.env.TLS_SERVER_NAME;
@@ -206,12 +206,32 @@ export class PromptClient {
       const deadline = new Date();
       deadline.setSeconds(deadline.getSeconds() + 10);
 
+      // Diagnostic: sample the channel connectivity state right before the
+      // RPC — a backend pod roll can leave the channel in an unrecoverable
+      // state (see the empty-endpoint comment in grpc-js-resolver.ts).
+      // getConnectivityState(true) additionally forces IDLE→CONNECTING (the
+      // same nudge the removed warmup() used), so a call on an idle channel
+      // actively tries to reconnect instead of silently queueing until the
+      // deadline.
+      info("prompt getTeamProfile: channel state", {
+        template,
+        profile: profileName,
+        state: this.channelStateName(),
+      });
+
       (this.client as any).getTeamProfile(
         { name: `templates/${template}/profiles/${profileName}` },
         new grpc.Metadata({ waitForReady: true }),
         { deadline },
         (err: grpc.ServiceError | null, response: any) => {
           if (err) {
+            error("prompt getTeamProfile failed", {
+              template,
+              profile: profileName,
+              error: err.message,
+              code: String(err.code),
+              channelState: this.channelStateName(),
+            });
             reject(err);
             return;
           }
@@ -238,6 +258,27 @@ export class PromptClient {
         },
       );
     });
+  }
+
+  /**
+   * Current channel connectivity state as a name ("READY"/"IDLE"/...),
+   * sampled with `tryToConnect=true` (forces IDLE→CONNECTING). Returns a
+   * descriptive string when the channel is unavailable (injected test
+   * client without a channel). Diagnostic — see getTeamProfile.
+   */
+  private channelStateName(): string {
+    try {
+      const channel = (
+        this.client as unknown as { getChannel?: () => grpc.Channel }
+      ).getChannel?.();
+      if (!channel) {
+        return "no-channel";
+      }
+      const state = channel.getConnectivityState(true);
+      return grpc.connectivityState[state] ?? String(state);
+    } catch (err) {
+      return `error:${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   /** Close the underlying gRPC client connection. */
