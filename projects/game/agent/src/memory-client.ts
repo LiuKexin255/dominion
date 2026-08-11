@@ -28,11 +28,13 @@ import * as protoLoader from "@grpc/proto-loader";
 import {
   registerDominionResolver,
 } from "@dominion/common-js-grpc-resolver";
+import { error } from "@dominion/common-js-logs";
 import {
   PROTO_PATH,
   PROTO_OPTIONS,
   buildClientCredentials,
   buildChannelOptions,
+  probeChannel,
 } from "./prompt-client";
 
 /** Dominion resolver target for the memory service. */
@@ -254,12 +256,25 @@ export class MemoryClient {
 		return new Promise<T>((resolve, reject) => {
 			const deadline = new Date();
 			deadline.setSeconds(deadline.getSeconds() + 10);
+			// Probe-and-nudge the channel (forces IDLE→CONNECTING; logs state
+			// for diagnosis — see probeChannel in prompt-client.ts): a
+			// connection drop must not leave the channel permanently stuck in
+			// "Waiting for LB pick".
+			probeChannel(this.client, "memory client call");
 			invoke(
 				this.client,
 				new grpc.Metadata({ waitForReady: true }),
 				{ deadline },
 				(err: grpc.ServiceError | null, response?: T) => {
 					if (err) {
+						error("memory client call failed", {
+							error: err.message,
+							code: String(err.code),
+							channelState: probeChannel(
+								this.client,
+								"memory client call (after failure)",
+							),
+						});
 						reject(err);
 						return;
 					}

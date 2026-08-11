@@ -206,18 +206,10 @@ export class PromptClient {
       const deadline = new Date();
       deadline.setSeconds(deadline.getSeconds() + 10);
 
-      // Diagnostic: sample the channel connectivity state right before the
-      // RPC — a backend pod roll can leave the channel in an unrecoverable
-      // state (see the empty-endpoint comment in grpc-js-resolver.ts).
-      // getConnectivityState(true) additionally forces IDLE→CONNECTING (the
-      // same nudge the removed warmup() used), so a call on an idle channel
-      // actively tries to reconnect instead of silently queueing until the
-      // deadline.
-      info("prompt getTeamProfile: channel state", {
-        template,
-        profile: profileName,
-        state: this.channelStateName(),
-      });
+      // Probe-and-nudge the channel (forces IDLE→CONNECTING; logs state for
+      // diagnosis — see probeChannel): a connection drop must not leave the
+      // channel permanently stuck in "Waiting for LB pick".
+      probeChannel(this.client, "prompt getTeamProfile");
 
       (this.client as any).getTeamProfile(
         { name: `templates/${template}/profiles/${profileName}` },
@@ -230,7 +222,10 @@ export class PromptClient {
               profile: profileName,
               error: err.message,
               code: String(err.code),
-              channelState: this.channelStateName(),
+              channelState: probeChannel(
+                this.client,
+                "prompt getTeamProfile (after failure)",
+              ),
             });
             reject(err);
             return;
@@ -260,29 +255,43 @@ export class PromptClient {
     });
   }
 
-  /**
-   * Current channel connectivity state as a name ("READY"/"IDLE"/...),
-   * sampled with `tryToConnect=true` (forces IDLE→CONNECTING). Returns a
-   * descriptive string when the channel is unavailable (injected test
-   * client without a channel). Diagnostic — see getTeamProfile.
-   */
-  private channelStateName(): string {
-    try {
-      const channel = (
-        this.client as unknown as { getChannel?: () => grpc.Channel }
-      ).getChannel?.();
-      if (!channel) {
-        return "no-channel";
-      }
-      const state = channel.getConnectivityState(true);
-      return grpc.connectivityState[state] ?? String(state);
-    } catch (err) {
-      return `error:${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-
   /** Close the underlying gRPC client connection. */
   close(): void {
     this.client.close();
   }
+}
+
+/**
+ * Probe a grpc-js channel's connectivity state and nudge it to connect.
+ *
+ * `getConnectivityState(true)` forces IDLE→CONNECTING — the same nudge the
+ * removed warmup() used — so a call on an idle channel actively tries to
+ * reconnect instead of silently queueing until the deadline. grpc-js
+ * round_robin does not reliably exit IDLE after a connection drop (see the
+ * empty-endpoint comment in common/js/grpc/resolver/src/grpc-js-resolver.ts),
+ * leaving the channel stuck in "Waiting for LB pick" until the process
+ * restarts, so every unary RPC must probe its channel first. Logs the state
+ * at info level for diagnosis and returns the state name.
+ *
+ * @param client The gRPC client whose channel to probe.
+ * @param label  Log label identifying the call site.
+ * @returns The connectivity state name ("READY"/"IDLE"/...), or a
+ *   descriptive string when the channel is unavailable (injected test
+ *   client without a channel).
+ */
+export function probeChannel(client: grpc.Client, label: string): string {
+  let state = "no-channel";
+  try {
+    const channel = (
+      client as unknown as { getChannel?: () => grpc.Channel }
+    ).getChannel?.();
+    if (channel) {
+      const value = channel.getConnectivityState(true);
+      state = grpc.connectivityState[value] ?? String(value);
+    }
+  } catch (err) {
+    state = `error:${err instanceof Error ? err.message : String(err)}`;
+  }
+  info(`${label}: channel state`, { state });
+  return state;
 }
