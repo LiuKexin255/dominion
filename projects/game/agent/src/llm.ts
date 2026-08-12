@@ -31,6 +31,39 @@ import { DEFAULT_MCP_PORT } from "./mcp-host";
  */
 export const RECURSION_LIMIT = 1000;
 
+/**
+ * Chunk-idle timeout for the team graph's player/planner nodes (ms). When
+ * the LLM SSE stream stalls (TCP alive but no events), this idle period
+ * elapses and LangGraph raises `NodeTimeoutError`, triggering stall recovery
+ * (specs/043-llm-stream-stall-recovery/spec.md FR-001). FR-001 requires the
+ * idle period to be at least 15s; the 30s default satisfies it and matches
+ * the community 15–30s consensus (specs/043-llm-stream-stall-recovery/
+ * spec.md FR-011, Assumptions).
+ */
+export const STREAM_IDLE_TIMEOUT_MS =
+	Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) || 30_000;
+
+/**
+ * Total execution timeout for the async init instruction turn (ms). A
+ * stalled planner LLM during `runInitTurn` must degrade within this window
+ * instead of hanging and blocking the first user turn
+ * (specs/043-llm-stream-stall-recovery/spec.md FR-009/FR-010).
+ */
+export const INIT_TURN_TIMEOUT_MS =
+	Number(process.env.GAME_INIT_TURN_TIMEOUT_MS) || 120_000;
+
+/**
+ * OperationBridge dispatch heartbeat interval (ms). While a saolei tool
+ * dispatch awaits the desktop result, `config.heartbeat()` runs at this
+ * cadence to refresh the LangGraph idle timer — without it, a tool wait
+ * longer than `STREAM_IDLE_TIMEOUT_MS` would raise a false
+ * `NodeTimeoutError` mid-tool (specs/043-llm-stream-stall-recovery/
+ * research.md R7). MUST be < `STREAM_IDLE_TIMEOUT_MS` so the idle timer can
+ * never elapse during a tool wait; the 10s default satisfies this
+ * (specs/043-llm-stream-stall-recovery/research.md R7).
+ */
+export const TOOL_HEARTBEAT_INTERVAL_MS = 10_000;
+
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
 // ---------------------------------------------------------------------------
