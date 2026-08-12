@@ -48,6 +48,7 @@
 
 import { createAgent } from "langchain";
 import type { Runtime } from "langchain";
+import { isNodeTimeoutError } from "@langchain/langgraph";
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -207,22 +208,34 @@ export function createPlayerNode(
 		// no pending slot, no extra consumption step).
 		const input: BaseMessage[] = [...state.playerMessages];
 
-		// Issue 1 (036): try/finally — `consumeGameEvent` runs even when the
-		// invoke throws (GraphRecursionError / model / tool errors), so the
-		// game-end event is consumed and `gameEnded` set on BOTH paths. The
-		// finally's return intentionally swallows the exception — the node
-		// returns normally and the conditional edge routes to the planner
-		// (`specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md`
-		// §1.4, FR-002 / US1 acceptance #5).
+		// Issue 1 (036) + 043 US1: try/catch — `consumeGameEvent` runs on
+		// EVERY path (success + error + timeout), so the game-end event is
+		// consumed and `gameEnded` set even when the invoke throws (FR-002 /
+		// US1 acceptance #5, `specs/036-team-mode-bugfix/contracts/
+		// team-graph-fix-contract.md` §1.4). Unlike the former finally-return
+		// (which swallowed ALL exceptions), a NodeTimeoutError — the node's
+		// idleTimeout fired on a stalled LLM stream — is RE-THROWN so it
+		// propagates to runLoop's finishError for stall recovery; all other
+		// errors are still swallowed: the node returns normally and the
+		// conditional edge routes to the planner (contract §2.2/§2.3,
+		// `specs/043-llm-stream-stall-recovery/contracts/
+		// stall-recovery-contract.md`).
 		let result: { messages: BaseMessage[] } | undefined;
 		try {
 			result = (await playerAgent.invoke(
 				{ messages: input },
 				config,
 			)) as { messages: BaseMessage[] };
-		} finally {
-			// D6 step 4: consume the buffer's end event ONCE (marks consumed).
+		} catch (err) {
+			// D6 step 4 on the error path: consume the buffer's end event
+			// ONCE (marks consumed) — never lost on any path (contract §2.3).
 			const gameEvent = consumeGameEvent(buffer);
+			// 043 US1 (contract §2.2): the stall error must reach
+			// `runTeamTurn` → `runLoop` → `finishError` (warn + wait, retain
+			// buffer) — do NOT swallow it like the errors below.
+			if (isNodeTimeoutError(err)) throw err;
+			// Other errors (GraphRecursionError, model/tool errors): swallow
+			// — return normally with the game event (`specs/036-team-mode-bugfix/spec.md` FR-002).
 			return {
 				// The player's output messages (instructions already in the
 				// channel stay there — messagesStateReducer appends/dedups).
@@ -230,5 +243,14 @@ export function createPlayerNode(
 				...(gameEvent ? { gameEnded: gameEvent.status } : {}),
 			};
 		}
+		// Success path: D6 step 4 — consume the buffer's end event ONCE
+		// (marks consumed).
+		const gameEvent = consumeGameEvent(buffer);
+		return {
+			// The player's output messages (instructions already in the
+			// channel stay there — messagesStateReducer appends/dedups).
+			playerMessages: result.messages,
+			...(gameEvent ? { gameEnded: gameEvent.status } : {}),
+		};
 	};
 }

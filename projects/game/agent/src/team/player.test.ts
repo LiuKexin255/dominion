@@ -24,6 +24,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import { NodeTimeoutError } from "@langchain/langgraph";
 
 import { buildContentBlocks } from "../llm";
 import type { TurnContent } from "../llm";
@@ -233,5 +234,102 @@ describe("player node — channel history flow (039 US3 — instructions arrive 
 		// messagesStateReducer appends only what the node returns).
 		const written = result.playerMessages ?? [];
 		expect(written).toHaveLength(0);
+	});
+});
+
+describe("player node — stall classification (043 US1: NodeTimeoutError re-throw)", () => {
+	function stateWith(playerMessages: BaseMessage[]): TeamStateValue {
+		return {
+			playerMessages,
+			plannerMessages: [],
+			gameEnded: null,
+			gameCounter: 0,
+		};
+	}
+
+	/** Buffer pre-loaded with an unconsumed game-end event (the post-process
+	 *  must consume it on EVERY path — contract §2.3). */
+	function bufferWithGameEvent() {
+		const buffer = createEphemeralGameBuffer();
+		buffer.gameEvent = {
+			state: { width: 1, height: 1, grid: [["0"]] },
+			status: "won",
+			endedAt: Date.now(),
+			consumed: false,
+		};
+		return buffer;
+	}
+
+	it("re-throws NodeTimeoutError from the agent invoke (the stall must reach the runLoop, not be swallowed)", async () => {
+		const buffer = bufferWithGameEvent();
+		// The real LangGraph error class: `isNodeTimeoutError` is a duck-typed
+		// guard (`e.name === "NodeTimeoutError"` — dist/errors.js), and the
+		// real class produces exactly that name plus the node/kind/elapsed
+		// fields (errors.d.ts).
+		const timeoutError = new NodeTimeoutError({
+			node: "player",
+			kind: "idle",
+			idleTimeout: 30000,
+			elapsed: 30001,
+		});
+		const createAgentFn = vi.fn(() => ({
+			invoke: async () => {
+				throw timeoutError;
+			},
+		}));
+		const node = createPlayerNode({
+			model: {} as ChatModel,
+			buffer,
+			sessionId: "player-test",
+			tools: [],
+			playerBasePrompt: "",
+			createAgentFn,
+		});
+
+		// The DI seam was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		await expect(
+			node(stateWith([new HumanMessage("开始游戏")]), {
+				configurable: { thread_id: "t-timeout" },
+			}),
+		).rejects.toMatchObject({
+			name: "NodeTimeoutError",
+			node: "player",
+			kind: "idle",
+		});
+		// `specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md` §2.3:
+		// the game-end event was consumed on the timeout path too (the
+		// re-throw happens AFTER consumeGameEvent).
+		expect(buffer.gameEvent?.consumed).toBe(true);
+	});
+
+	it("swallows a generic Error and returns normally (FR-036 FR-002 compatibility)", async () => {
+		const buffer = bufferWithGameEvent();
+		const createAgentFn = vi.fn(() => ({
+			invoke: async () => {
+				throw new Error("player agent loop crashed");
+			},
+		}));
+		const node = createPlayerNode({
+			model: {} as ChatModel,
+			buffer,
+			sessionId: "player-test",
+			tools: [],
+			playerBasePrompt: "",
+			createAgentFn,
+		});
+
+		const result = await node(
+			stateWith([new HumanMessage("指令在通道中")]),
+			{ configurable: { thread_id: "t-swallow" } },
+		);
+
+		// The node returned normally (did NOT re-throw) — the invoke threw →
+		// no output messages, but the game-end event was consumed and set
+		// gameEnded (the conditional edge routes to the planner, FR-036).
+		expect(createAgentFn).toHaveBeenCalled();
+		expect(result.playerMessages ?? []).toHaveLength(0);
+		expect(result.gameEnded).toBe("won");
+		expect(buffer.gameEvent?.consumed).toBe(true);
 	});
 });

@@ -56,6 +56,7 @@
  */
 
 import { createAgent } from "langchain";
+import { isNodeTimeoutError } from "@langchain/langgraph";
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -361,6 +362,12 @@ export function createPlannerNode(
 		try {
 			result = await invokeAgentWithRetry(plannerAgent, input, config);
 		} catch (err) {
+			// 043 US1 (contract §2.4, `specs/043-llm-stream-stall-recovery/
+			// contracts/stall-recovery-contract.md`): a NodeTimeoutError —
+			// the node's idleTimeout fired on a stalled planner LLM — MUST
+			// propagate to runLoop's finishError (warn + wait, retain
+			// buffer), so re-throw BEFORE the degrade logic below.
+			if (isNodeTimeoutError(err)) throw err;
 			const message = err instanceof Error ? err.message : String(err);
 			warn("planner failed after retries; degrading", { error: message });
 			// Defensive buffer clear (Phase 6 review, Issue #4): a retried

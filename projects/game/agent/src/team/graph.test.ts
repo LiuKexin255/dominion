@@ -21,6 +21,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { fakeModel } from "@langchain/core/testing";
 import { createAgent, tool } from "langchain";
+import { NodeTimeoutError } from "@langchain/langgraph";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
@@ -1294,6 +1295,85 @@ describe("team graph — planner retry/degrade (D6 需求方 #6)", () => {
 		// The graph completed; gameEnded cleared despite the failure
 		// (unconditional clear, D6 step 6 — no infinite planner re-trigger).
 		expect(result.gameEnded).toBeNull();
+	});
+
+	it("re-throws NodeTimeoutError from the planner agent — the stall propagates instead of degrading (043 US1, contract §2.4)", async () => {
+		// The real LangGraph error class: `isNodeTimeoutError` is a duck-typed
+		// guard (`e.name === "NodeTimeoutError"` — dist/errors.js), and the
+		// real class produces exactly that name plus the node/kind/elapsed
+		// fields (errors.d.ts). The same error instance survives the 3
+		// invokeAgentWithRetry attempts (agent-invoke.ts re-throws lastError).
+		const timeoutError = new NodeTimeoutError({
+			node: "planner",
+			kind: "idle",
+			idleTimeout: 30000,
+			elapsed: 30001,
+		});
+		// DI dispatch (same prompt heuristic as the Issue-1 crash test): the
+		// PLAYER's agent is the real createAgent driven by the fake model; the
+		// PLANNER's agent rejects with a NodeTimeoutError on every attempt.
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
+				return createAgent(config as Parameters<typeof createAgent>[0]);
+			}
+			return {
+				invoke: async () => {
+					throw timeoutError;
+				},
+			};
+		});
+		const { graph } = buildTestGraph({
+			plannerModel: fakeModel().respond(new AIMessage("unused")),
+			createAgentFn,
+		});
+
+		// The DI seam was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// The stall propagates out of the planner node → the graph run
+		// rejects (the runLoop catch classifies it as finishError — retain
+		// buffer, warn + wait, FR-005/FR-006/FR-008).
+		await expect(
+			graph.invoke(
+				{ playerMessages: [new HumanMessage("开始游戏")] },
+				{
+					configurable: { thread_id: "t-planner-timeout" },
+					recursionLimit: 50,
+				},
+			),
+		).rejects.toThrow(/exceeded its idle timeout/);
+	});
+
+	it("degrades on a generic planner agent error (043 US1 — non-timeout errors keep the degrade path)", async () => {
+		// Same dispatch as above, but the planner's agent rejects with a
+		// generic Error — the planner catch must NOT re-throw it.
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
+				return createAgent(config as Parameters<typeof createAgent>[0]);
+			}
+			return {
+				invoke: async () => {
+					throw new Error("planner llm down");
+				},
+			};
+		});
+		const { graph } = buildTestGraph({
+			plannerModel: fakeModel().respond(new AIMessage("unused")),
+			createAgentFn,
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-planner-error" },
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		expect(createAgentFn).toHaveBeenCalled();
+		// Degrade path unchanged: gameEnded cleared (D6 step 6 — no infinite
+		// planner re-trigger) and the ended game still counted (FR-006).
+		expect(result.gameEnded).toBeNull();
+		expect(result.gameCounter).toBe(1);
 	});
 });
 
