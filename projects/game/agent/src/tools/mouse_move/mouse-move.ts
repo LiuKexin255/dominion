@@ -13,7 +13,11 @@
  *      decoupling revision (research.md D10 / contracts/tool-dispatch-contract.md
  *      §1) the operation channel uses a bridge-minted id that is independent of
  *      the conversation `tool_call.id`.
- *   3. Dispatches it through the bridge and awaits the desktop result.
+ *   3. Dispatches it through the bridge (passing `config.heartbeat` through
+ *      — the tool invoke config carries it, LangGraph `wrapConfig` installs
+ *      it; the bridge refreshes the 043 idle timer with it during the await,
+ *      specs/043-llm-stream-stall-recovery/research.md R7) and awaits the
+ *      desktop result.
  *   4. Returns a `ToolMessage` via `buildToolResultMessage` carrying the REAL
  *      `ToolResultStatus` in `additional_kwargs.toolResultStatus`
  *      (contracts/tool-dispatch-contract.md §3 / data-model.md §6 — spec 023
@@ -58,11 +62,12 @@ export function createMouseMoveTool(
   return tool(
     async ({ x_px, y_px }, config): Promise<ToolMessage> => {
       const signal = (config as { signal?: AbortSignal } | undefined)?.signal;
+      const heartbeat = (config as { heartbeat?: () => void } | undefined)?.heartbeat;
       const toolCallId = (config as { toolCall?: { id?: string } } | undefined)?.toolCall?.id;
       const part: FlowPart = {
         mouseMove: { xPx: x_px, yPx: y_px },
       };
-      const result = await bridge.dispatch(part, signal);
+      const result = await bridge.dispatch(part, signal, heartbeat);
       return buildToolResultMessage(result, toolCallId, "mouse_move");
     },
     {

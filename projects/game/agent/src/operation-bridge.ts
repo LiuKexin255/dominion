@@ -46,6 +46,7 @@ import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMov
 import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
 
 import { buildTeamFrame } from "./turn-loop";
+import { TOOL_HEARTBEAT_INTERVAL_MS } from "./llm";
 
 // Maximum wait time (ms) for a tool result before timing out. Raised from 5 s
 // to 20 min as a safety-net backstop: the desktop's 15-min auto-continue
@@ -192,14 +193,27 @@ export class OperationBridge {
    * third race participant alongside the 20-min timeout and handleResult,
    * whichever fires first wins.
    *
-   * @param part   - FlowPart operation to dispatch.
-   * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
+   * While the dispatch is pending, the optional `heartbeat` (the saolei tools
+   * pass LangGraph's `config.heartbeat`, installed by `wrapConfig`) is called
+   * immediately and then every `TOOL_HEARTBEAT_INTERVAL_MS`. LangGraph's
+   * `idleTimeout` watchdog refreshes `lastProgress` unconditionally on
+   * heartbeat, so a long tool wait (up to DISPATCH_TIMEOUT_MS) never trips a
+   * false `NodeTimeoutError` (specs/043-llm-stream-stall-recovery/
+   * research.md R7, contracts/stall-recovery-contract.md §1.2). The interval
+   * is cleared on resolve/abort/timeout/sink-error — no leaked timers.
+   *
+   * @param part      - FlowPart operation to dispatch.
+   * @param signal    - Optional AbortSignal; when aborted, resolves FAILED.
+   * @param heartbeat - Optional idle-timer refresher (see above); when
+   *                    omitted (non-saolei tools, tests) the dispatch
+   *                    degrades to today's behavior.
    * @returns SUCCEEDED/FAILED status from the desktop, or FAILED on timeout,
    *          abort, non-operation FlowPart, no-sink, or sink write error.
    */
   async dispatch(
     part: FlowPart,
     signal?: AbortSignal,
+    heartbeat?: () => void,
   ): Promise<OperationResult> {
     const toolPart:
       | MouseMovePart
@@ -233,9 +247,29 @@ export class OperationBridge {
     toolPart.toolId = resolvedToolId;
 
     return new Promise<OperationResult>((resolve) => {
+      // 043 R7 (specs/043-llm-stream-stall-recovery/research.md R7 /
+      // specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
+      // §1.2): while the dispatch awaits the desktop, no LangChain callback
+      // events fire, so a bare idleTimeout would trip mid-tool. `heartbeat`
+      // refreshes LangGraph's idle timer unconditionally: call it immediately
+      // (the first setInterval tick is TOOL_HEARTBEAT_INTERVAL_MS away), then
+      // every interval until the dispatch exits.
+      let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+      if (heartbeat) {
+        heartbeat();
+        heartbeatTimer = setInterval(heartbeat, TOOL_HEARTBEAT_INTERVAL_MS);
+      }
+      const clearHeartbeat = () => {
+        if (heartbeatTimer !== undefined) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = undefined;
+        }
+      };
+
       const timer = setTimeout(() => {
         if (this.pending.delete(resolvedToolId)) {
           signal?.removeEventListener("abort", onAbort);
+          clearHeartbeat();
           warn("operation dispatch timed out", { toolId: resolvedToolId });
           resolve({ status: STATUS_FAILED, message: "operation timed out" });
         }
@@ -244,6 +278,7 @@ export class OperationBridge {
       const onAbort = () => {
         if (this.pending.delete(resolvedToolId)) {
           clearTimeout(timer);
+          clearHeartbeat();
           resolve({ status: STATUS_FAILED, message: "aborted" });
         }
       };
@@ -254,9 +289,10 @@ export class OperationBridge {
       this.pending.set(resolvedToolId, {
         resolve,
         timer,
-        cleanup: signal
-          ? () => signal.removeEventListener("abort", onAbort)
-          : undefined,
+        cleanup: () => {
+          clearHeartbeat();
+          signal?.removeEventListener("abort", onAbort);
+        },
       });
 
       const envelope: TeamFrame = buildTeamFrame(this.sessionId, this.templateId, {
@@ -267,6 +303,7 @@ export class OperationBridge {
       } catch (err) {
         if (this.pending.delete(resolvedToolId)) {
           clearTimeout(timer);
+          clearHeartbeat();
           signal?.removeEventListener("abort", onAbort);
           const msg = err instanceof Error ? err.message : "sink write error";
           warn("operation dispatch sink threw", { toolId: resolvedToolId, error: msg });

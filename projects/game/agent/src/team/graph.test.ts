@@ -36,6 +36,8 @@ import {
 	type EphemeralGameBuffer,
 } from "./team-sink";
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
+import type { TeamGraphHandle } from "./graph";
+import { STREAM_IDLE_TIMEOUT_MS } from "../llm";
 import {
 	FrozenMemorySnapshot,
 	PLANNER_MEMORY_SNAPSHOT_ID,
@@ -2655,5 +2657,50 @@ describe("team graph — 042 US2: review instruction real-time frame (T003, cont
 					typeof m.content === "string" && m.content.includes("保持节奏"),
 			),
 		).toBe(false);
+	});
+});
+
+// ------------------------------------------------------------------
+// 043 US3 (T008 — specs/043-llm-stream-stall-recovery/contracts/
+// stall-recovery-contract.md §1.1): per-node idle timeout configuration
+// ------------------------------------------------------------------
+describe("team graph — 043 US3: player/planner idle timeout config (contract §1.1, T008)", () => {
+	// The compiled Pregel exposes every node's resolved TimeoutPolicy via the
+	// public `nodes` map and `PregelNode.timeout` (installed
+	// @langchain/langgraph dist/pregel/read.d.ts `PregelNode.timeout?:
+	// TimeoutPolicy`; dist/graph/state.js `attachNode` passes the addNode
+	// `timeout` option through at compile). `TeamGraphHandle.graph` is a
+	// structural subset (invoke/getState/updateState/streamEvents), so the
+	// test casts to the runtime shape to read the node specs.
+	type NodeSpec = {
+		timeout?: { idleTimeout?: number; refreshOn?: "auto" | "heartbeat" };
+	};
+	function compiledNodes(
+		graph: TeamGraphHandle["graph"],
+	): Record<string, NodeSpec> {
+		return (graph as unknown as { nodes: Record<string, NodeSpec> }).nodes;
+	}
+
+	it("player and planner nodes carry timeout.idleTimeout === STREAM_IDLE_TIMEOUT_MS with refreshOn === 'auto'", () => {
+		const { graph } = buildTestGraph();
+		const nodes = compiledNodes(graph);
+
+		for (const name of ["player", "planner"]) {
+			expect(nodes[name].timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+			expect(nodes[name].timeout?.refreshOn).toBe("auto");
+		}
+	});
+
+	it("compress/initInstruction/postCompactInstruction carry NO timeout — setNodeDefaults was NOT used (contract §1.1 scope: player/planner only)", () => {
+		const { graph } = buildTestGraph();
+		const nodes = compiledNodes(graph);
+
+		for (const name of [
+			"compress",
+			"initInstruction",
+			"postCompactInstruction",
+		]) {
+			expect(nodes[name].timeout).toBeUndefined();
+		}
 	});
 });
