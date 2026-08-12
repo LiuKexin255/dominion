@@ -31,6 +31,14 @@
  * (specs/043-llm-stream-stall-recovery/spec.md FR-006) and auto-drained as
  * the next turn's input (FR-007).
  *
+ * Feature 043 (T013, SC-006): regression guard — the stall feature MUST NOT
+ * change the existing abort semantics
+ * (specs/043-llm-stream-stall-recovery/spec.md SC-006/FR-012): user abort
+ * AND connection-drop abort still clear the buffer via `finishAbort`
+ * (specs/030-queued-chat-input/spec.md FR-011), contrasted against the
+ * stall path which retains it (specs/043-llm-stream-stall-recovery/spec.md
+ * FR-008 — the two terminals stay distinct).
+ *
  * Mock strategy (`style/javascript.md` §Mock): the `runner` and the
  * `emit` sink are constructor-injected dependencies — tests pass plain
  * fakes/stubs (no `vi.mock` module interception; see
@@ -544,6 +552,112 @@ describe("TurnLoop", () => {
     expect(waitFrames(frames)).toHaveLength(2);
     // The drain into the next turn emitted the depth-0 signal (§2).
     expect(queueSignalDepths(frames)).toEqual([1, 0]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Feature 043 (T013, SC-006): the stall feature MUST NOT change the
+  // existing abort semantics — user abort and connection-drop abort still
+  // clear the buffer via `finishAbort` (specs/030-queued-chat-input/spec.md
+  // FR-011), while only the stall-induced termination retains it
+  // (specs/043-llm-stream-stall-recovery/spec.md FR-006/FR-008, SC-006;
+  // contract §5 scope boundary —
+  // specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md).
+  // -------------------------------------------------------------------------
+
+  it("SC-006: user abort clears the queued buffer while a stall retains it (043 zero regression — FR-008 terminals stay distinct)", async () => {
+    // Contrast test: two loops with the SAME stall runner and the SAME buffer
+    // state (msg-1 in flight streaming "partial", msg-2 queued at depth 1).
+    // The terminal outcome differs ONLY by trigger — gate release (stall →
+    // finishError) vs abort() (→ finishAbort) — exercising the catch's
+    // classification (contract §3.1, turn-loop.ts:352-358: aborting /
+    // controller.signal.aborted → finishAbort, else finishError).
+    const stallGate = makeGate();
+    const stallRec = makeRecordingEmit();
+    const stallLoop = new TurnLoop(
+      SID,
+      TID,
+      makeStallRunner(AGENT, { gate: stallGate }),
+      stallRec.emit,
+      AGENT,
+    );
+    const abortGate = makeGate();
+    const abortRec = makeRecordingEmit();
+    const abortLoop = new TurnLoop(
+      SID,
+      TID,
+      makeStallRunner(AGENT, { gate: abortGate }),
+      abortRec.emit,
+      AGENT,
+    );
+
+    stallLoop.submit({ text: "msg-1" });
+    abortLoop.submit({ text: "msg-1" });
+    await flush();
+    stallLoop.submit({ text: "msg-2" });
+    abortLoop.submit({ text: "msg-2" });
+    expect(stallLoop.queueDepth()).toBe(1);
+    expect(abortLoop.queueDepth()).toBe(1);
+
+    // Branch 1 — STALL: the runner throws a real NodeTimeoutError →
+    // finishError: buffer RETAINED, warn + wait, no depth signal
+    // (specs/043-llm-stream-stall-recovery/spec.md FR-006/FR-008).
+    stallGate.resolve();
+    // Branch 2 — USER ABORT: abort() → finishAbort: buffer CLEARED,
+    // QueueSignal(0) then wait, no warn (specs/030-queued-chat-input/spec.md
+    // FR-011; specs/043-llm-stream-stall-recovery/spec.md FR-012).
+    abortLoop.abort();
+    await flush(20);
+
+    // Same starting buffer depth, opposite outcomes — the stall feature did
+    // not conflate the two terminals (SC-006).
+    expect(stallLoop.queueDepth()).toBe(1);
+    expect(abortLoop.queueDepth()).toBe(0);
+    expect(warnFrames(stallRec.frames)).toHaveLength(1);
+    expect(warnFrames(abortRec.frames)).toHaveLength(0);
+    expect(queueSignalDepths(stallRec.frames)).toEqual([1]);
+    expect(queueSignalDepths(abortRec.frames)).toEqual([1, 0]);
+    expect(waitFrames(stallRec.frames)).toHaveLength(1);
+    expect(waitFrames(abortRec.frames)).toHaveLength(1);
+    expect(stallLoop.isRunning()).toBe(false);
+    expect(abortLoop.isRunning()).toBe(false);
+  });
+
+  it("SC-006: connection-drop abort (stream close → abort()) clears the buffer without warn (Feature 026 path)", async () => {
+    // Connection-drop abort and user abort share ONE entry point at the
+    // TurnLoop level: `abort()` (session-team.ts:673-674 — `turnLoop.abort()`).
+    // The bidi stream end/error chain is `abortLoops()` → `team.abort()` →
+    // `turnLoop.abort()` (handler.ts:339-342,559,570 — the Feature 026
+    // stream-close → abort chain, specs/026-agent-abort-crash-fix/spec.md
+    // FR-001). So this test asserts BOTH triggers: the queue is discarded
+    // (specs/030-queued-chat-input/spec.md FR-011; the stall feature leaves
+    // this unchanged — specs/043-llm-stream-stall-recovery/spec.md FR-012)
+    // and the abort terminal emits QueueSignal(0) + `wait` WITHOUT a `warn`
+    // (finishAbort, never finishError — specs/026-agent-abort-crash-fix/spec.md
+    // FR-003: no error/warn frames on the abort path).
+    const gate = makeGate();
+    const adapter = makeEchoRunner("player", { gate });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
+
+    // Turn 1 in flight (blocked on the gate); queue msg-2 before the "drop".
+    loop.submit({ text: "msg-1" });
+    await flush();
+    loop.submit({ text: "msg-2" });
+    expect(loop.queueDepth()).toBe(1);
+
+    // The drop: abort() unblocks the runner's abort-aware gate wait, the
+    // generator exits, and runLoop's abort check (turn-loop.ts:365) reaches
+    // finishAbort — the queue is discarded (FR-011).
+    loop.abort();
+    await flush(20);
+
+    expect(loop.queueDepth()).toBe(0);
+    expect(loop.isRunning()).toBe(false);
+    expect(warnFrames(frames)).toHaveLength(0);
+    expect(waitFrames(frames)).toHaveLength(1);
+    expect(queueSignalDepths(frames)).toEqual([1, 0]);
+    // The queued msg-2 was discarded — no turn ran for it.
+    expect(textContents(frames)).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
