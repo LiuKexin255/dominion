@@ -53,14 +53,15 @@ export const INIT_TURN_TIMEOUT_MS =
 	Number(process.env.GAME_INIT_TURN_TIMEOUT_MS) || 120_000;
 
 /**
- * OperationBridge dispatch heartbeat interval (ms). While a saolei tool
- * dispatch awaits the desktop result, `config.heartbeat()` runs at this
- * cadence to refresh the LangGraph idle timer — without it, a tool wait
- * longer than `STREAM_IDLE_TIMEOUT_MS` would raise a false
- * `NodeTimeoutError` mid-tool (specs/043-llm-stream-stall-recovery/
- * research.md R7). MUST be < `STREAM_IDLE_TIMEOUT_MS` so the idle timer can
- * never elapse during a tool wait; the 10s default satisfies this
- * (specs/043-llm-stream-stall-recovery/research.md R7).
+ * Idle-heartbeat interval for MCP tool invocations (ms). While a wrapped MCP
+ * client tool's invoke awaits the desktop result (via the MCP server's
+ * `bridge.dispatch`), `config.heartbeat()` runs at this cadence to refresh
+ * the LangGraph idle timer on the client side — without it, a tool wait
+ * longer than `STREAM_IDLE_TIMEOUT_MS` would raise a false `NodeTimeoutError`
+ * mid-tool (specs/043-llm-stream-stall-recovery/research.md R7.2). MUST be <
+ * `STREAM_IDLE_TIMEOUT_MS` so the idle timer can never elapse during a tool
+ * wait; the 10s default satisfies this (specs/043-llm-stream-stall-recovery/
+ * research.md R7).
  */
 export const TOOL_HEARTBEAT_INTERVAL_MS = 10_000;
 
@@ -275,6 +276,52 @@ export const defaultMcpClientFactory: McpClientFactory = async (config) => {
 };
 
 /**
+ * Wrap a LangChain tool so that during its invoke, LangGraph's
+ * `config.heartbeat` (installed on the node-attempt config by `wrapConfig`)
+ * is called immediately and then every `TOOL_HEARTBEAT_INTERVAL_MS`.
+ *
+ * The production saolei/memory MCP tools cross the MCP HTTP boundary: the
+ * MCP server's `bridge.dispatch` runs in a different async context and has
+ * no access to `config.heartbeat` (mcp-adapters `_callTool` forwards only
+ * `config.signal`), so the idle timer refresh MUST be driven client-side
+ * (specs/043-llm-stream-stall-recovery/research.md R7.1/R7.2). `heartbeat`
+ * is present on the tool's invoke config because the ToolNode spreads
+ * `...config` into it (langchain `dist/agents/nodes/ToolNode.js:229-241`);
+ * LangGraph's `wrapped.heartbeat` calls `scope.touch()`, refreshing
+ * `lastProgress` unconditionally (installed `dist/pregel/timeout.js:100-102`).
+ *
+ * The wrapper returns a `StructuredToolInterface` that shares the original
+ * tool's prototype chain (via `Object.create`) — `name`/`description`/
+ * `schema`/Runnable methods and `instanceof` are preserved, so it remains
+ * acceptable to `createAgent`/`ToolNode` — with only `invoke` overridden on
+ * the instance. The interval is cleared in a `finally` block on
+ * resolve/reject/abort — no leaked timers. When `config.heartbeat` is absent
+ * (non-LangGraph invocation, unit tests), the wrapper degrades to a direct
+ * passthrough (no interval).
+ */
+export function withIdleHeartbeat(
+	tool: StructuredToolInterface,
+): StructuredToolInterface {
+	const wrapped = Object.create(tool) as StructuredToolInterface;
+	wrapped.invoke = (async (input, config) => {
+		const heartbeat = (
+			config as { heartbeat?: () => void } | undefined
+		)?.heartbeat;
+		if (typeof heartbeat !== "function") {
+			return tool.invoke(input, config);
+		}
+		heartbeat();
+		const timer = setInterval(heartbeat, TOOL_HEARTBEAT_INTERVAL_MS);
+		try {
+			return await tool.invoke(input, config);
+		} finally {
+			clearInterval(timer);
+		}
+	}) as StructuredToolInterface["invoke"];
+	return wrapped;
+}
+
+/**
  * Build the per-session saolei MCP-client tools (FR-002b / FR-010).
  *
  * Constructs a `MultiServerMCPClient` over the loopback streamable-HTTP
@@ -309,7 +356,8 @@ export async function buildSaoleiMcpTools(
 			url: `http://localhost:${mcpPort}/internal/mcp/${template}/${sessionId}/saolei`,
 		},
 	});
-	return client.getTools();
+	const tools = await client.getTools();
+	return tools.map(withIdleHeartbeat);
 }
 
 /**
@@ -348,7 +396,8 @@ export async function buildMemoryMcpTools(
 			url: `http://localhost:${mcpPort}/internal/mcp/${template}/${sessionId}/memory`,
 		},
 	});
-	return client.getTools();
+	const tools = await client.getTools();
+	return tools.map(withIdleHeartbeat);
 }
 
 // ---------------------------------------------------------------------------

@@ -376,7 +376,10 @@ export function buildTeamGraph(
 		// initInstruction/postCompactInstruction are covered by the init-turn
 		// total timeout FR-009). `refreshOn: "auto"` refreshes on model
 		// tokens + tool start/end; the mid-tool gap is covered by the
-		// dispatch heartbeat (research.md R7, contract §1.2).
+		// client-side MCP heartbeat wrapper
+		// (specs/043-llm-stream-stall-recovery/research.md R7.2,
+		// specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
+		// §1.2).
 		.addNode("player", playerNode, {
 			timeout: { idleTimeout: STREAM_IDLE_TIMEOUT_MS, refreshOn: "auto" },
 		})
