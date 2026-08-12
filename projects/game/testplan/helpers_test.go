@@ -56,6 +56,16 @@ const (
 	expectedChatText          = "Sure, let's chat!"
 )
 
+// expectedStallReasoning is the reasoning chunk the fake-LLM emits BEFORE
+// its stream stalls (sample_stall.yaml stall-mid-reasoning —
+// specs/043-llm-stream-stall-recovery): the large test drains the thinking
+// frame carrying it to prove the stall triggered after partial output, and
+// that the reasoning itself was delivered to the desktop. The text field of
+// the stall template is intentionally never delivered. MUST be kept in sync
+// with the testdata — TestNewMessageStore_LoadsEmbeddedSamples pins the
+// embedded testdata (testplan/README.md §5).
+const expectedStallReasoning = "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive."
+
 // expectedPlannerMemoryE1 / expectedPlannerMemoryE2 are the two entries the
 // fake-LLM's planner-memory-add Message returns as the `memory` tool's BATCH
 // add operations (sample_planner_memory.yaml — spec

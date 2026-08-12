@@ -216,19 +216,21 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 13 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 13 (chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop)", len(got))
+	if len(got) != 14 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 14 (chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning)", len(got))
 	}
 
 	// Sorted alphabetically: chat-only before compact-instruction before
 	// compress-planner-summary before compress-player-summary before
 	// farewell before greeting before init-instruction before mouse-trigger
 	// before planner-memory-add before saolei-remain before saolei-single-op
-	// before saolei-start before saolei-structural-stop
+	// before saolei-start before saolei-structural-stop before
+	// stall-mid-reasoning
 	// ("compact-instruction" < "compress-planner-summary" because 'a' < 'r'
 	// at the first differing rune; "planner-memory-add" < "saolei-remain"
 	// because 'p' < 's'; "saolei-single-op" < "saolei-start" because 'i' <
-	// 't'; "saolei-start" < "saolei-structural-stop" because 'a' < 'r').
+	// 't'; "saolei-start" < "saolei-structural-stop" because 'a' < 'r';
+	// "saolei-structural-stop" < "stall-mid-reasoning" because 'o' < 't').
 	wantNames := []string{
 		"chat-only",
 		"compact-instruction",
@@ -243,6 +245,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		"saolei-single-op",
 		"saolei-start",
 		"saolei-structural-stop",
+		"stall-mid-reasoning",
 	}
 	for i, want := range wantNames {
 		if got[i].Name != want {
@@ -457,6 +460,28 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 	if !slices.Contains(saoleiStructural.Keywords, "structural stop") {
 		t.Errorf("saolei-structural-stop keywords missing 'structural stop': %v", saoleiStructural.Keywords)
+	}
+
+	// stall-mid-reasoning carries the stream-stall trigger (specs/043-llm-
+	// stream-stall-recovery — the T011 large test): the streaming handler
+	// emits the reasoning delta then blocks with the connection alive, so
+	// the agent's idle timeout is the only way out. It must be flagged
+	// Stall (not a plain text message) so the matcher excludes it from the
+	// random fallback pool — an unrelated turn can never stall randomly.
+	// The pinned reasoning/text/helpers constants live in helpers_test.go
+	// (expectedStallReasoning — keep in sync).
+	stallMidReasoning := got[13]
+	if !stallMidReasoning.Stall {
+		t.Errorf("stall-mid-reasoning must carry stall=true (the stream must pause after the first chunk)")
+	}
+	if stallMidReasoning.ToolCall != nil {
+		t.Errorf("stall-mid-reasoning must NOT carry a tool_call (a stalled stream cannot return a tool call)")
+	}
+	if stallMidReasoning.Reasoning != "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive." {
+		t.Errorf("stall-mid-reasoning reasoning = %q, want the pinned stall reasoning", stallMidReasoning.Reasoning)
+	}
+	if !slices.Contains(stallMidReasoning.Keywords, "stall now") {
+		t.Errorf("stall-mid-reasoning keywords missing 'stall now': %v", stallMidReasoning.Keywords)
 	}
 }
 

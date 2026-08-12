@@ -46,14 +46,17 @@ func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool
 	// Random fallback: only text-only Messages are eligible. A Message
 	// carrying a ToolCall represents an explicit test trigger that
 	// requires a keyword match; emitting one at random would
-	// nonsensically invoke a desktop operation. Spec 012's random-
+	// nonsensically invoke a desktop operation. A stall-marked Message is
+	// likewise excluded — a random stall would hang an unrelated turn
+	// (specs/043-llm-stream-stall-recovery large tests depend on stall
+	// being a deliberate, keyword-gated trigger). Spec 012's random-
 	// fallback contract (FR-008) predates tool_call Messages, so
 	// restricting the fallback pool to text-only Messages is the
-	// coherent extension. When every Message carries a ToolCall the
-	// full set is used rather than panicking on IntN(0).
+	// coherent extension. When every Message carries a ToolCall or
+	// Stall the full set is used rather than panicking on IntN(0).
 	var pool []*Message
 	for i := range messages {
-		if messages[i].ToolCall == nil {
+		if messages[i].ToolCall == nil && !messages[i].Stall {
 			pool = append(pool, messages[i])
 		}
 	}

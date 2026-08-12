@@ -212,3 +212,41 @@ go_largetest(
         "@org_golang_google_protobuf//proto",
     ],
 )
+
+# agent_stall_test is the stream-stall recovery suite (specs/043-llm-stream-
+# stall-recovery — T011 large test), run against the stall deploy
+# (deploy_agent_stall.yaml — GAME_STREAM_IDLE_TIMEOUT_MS=15000, FR-001's
+# 15s minimum):
+#   - TestAgentStallRecoveryWithQueuedMessage (US1/US2, quickstart
+#     Scenario 5): a fake-llm turn that emits its reasoning delta then
+#     stops with the connection alive (sample_stall.yaml) is detected
+#     within the idle window — warn + wait emitted, the queued message
+#     RETAINED (no QueueSignal(0), FR-006) and delivered on the next turn
+#     (FR-007).
+#   - TestAgentStallToolExecutionNotFalselyDetected (US3, Scenario 6): a
+#     saolei_operate dispatch delayed > 20s (> idleTimeout) on the
+#     production saolei MCP path does not false-stall — the client-side
+#     heartbeat wrapper keeps the idle timer alive (FR-003/SC-003).
+#
+# size = medium: both tests sleep past the 15s idle timeout (15s stall
+# window / 20s tool delay), beyond the 60s "small" budget
+# (style/large_test.md §测试用例: size per actual need).
+go_largetest(
+    name = "agent_stall_test",
+    size = "medium",
+    srcs = [
+        "agent_stall_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

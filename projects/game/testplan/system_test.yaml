@@ -73,6 +73,22 @@ description: |
       persistence, old_text 0-hit/multi-hit error feedback with pure-content
       entries, player never holding the memory tool. The memory service is
       part of deploy_agent.yaml (spec 039 Phase 1 T003).
+  Suite 11 (agent-stall): session + proxy + agent(test) + fake-llm +
+    prompt + gateway, deployed with GAME_STREAM_IDLE_TIMEOUT_MS=15000
+    (deploy_agent_stall.yaml — FR-001's 15s minimum, so the detection
+    window fits the test budget).
+    - End-to-end stall recovery (specs/043-llm-stream-stall-recovery
+      US1/US2, quickstart Scenario 5): a fake-llm turn that emits its
+      reasoning delta then stops with the connection alive (sample_stall.yaml)
+      is detected within the idle window — warn + wait emitted, the queued
+      message RETAINED (no QueueSignal(0), FR-006) and delivered on the
+      next turn (FR-007).
+    - No false stall during long tool execution (US3, Scenario 6): a
+      saolei_operate dispatch delayed > 20s (> idleTimeout) on the
+      production saolei MCP path (buildSaoleiMcpTools → MCP HTTP →
+      bridge.dispatch) does not raise NodeTimeoutError — the client-side
+      heartbeat wrapper (withIdleHeartbeat, TOOL_HEARTBEAT_INTERVAL_MS)
+      keeps the idle timer alive (FR-003/SC-003).
 
 suites:
   - name: session
@@ -163,3 +179,12 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:memory_test
+
+  - name: agent-stall
+    description: "Agent stream-stall recovery with fake-llm service (specs/043-llm-stream-stall-recovery T011), deployed with GAME_STREAM_IDLE_TIMEOUT_MS=15000 via deploy_agent_stall.yaml (FR-001 minimum 15s — the detection window must fit the test budget). US1/US2 (quickstart Scenario 5): a fake-llm turn that emits its reasoning delta then stops with the connection alive (sample_stall.yaml) is detected within the idle window — warn + wait emitted (FR-004/FR-005), the queued message RETAINED (no QueueSignal(0) before the recovery wait, FR-006) and delivered as the next turn's input (FR-007). US3 (Scenario 6): a saolei_operate dispatch delayed > 20s (> idleTimeout) on the PRODUCTION saolei MCP path (buildSaoleiMcpTools → MCP HTTP → bridge.dispatch) does NOT false-stall — the client-side heartbeat wrapper (withIdleHeartbeat calling config.heartbeat every TOOL_HEARTBEAT_INTERVAL_MS, specs/043-llm-stream-stall-recovery/research.md R7.2) keeps the idle timer alive (FR-003/SC-003)"
+    deploy: //projects/game/testplan/deploy_agent_stall.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_stall_test

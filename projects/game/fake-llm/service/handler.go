@@ -164,10 +164,17 @@ const (
 //     assistant message with tool_calls and finish_reason "tool_calls";
 //     Text is emitted as content only when non-empty (rare for tool-call
 //     responses but allowed by the schema).
+//
+// Stall pauses the stream after the first chunk for either path: the
+// handler writes the opening delta, flushes it, then blocks until the
+// request context is cancelled (the client's abort), simulating a
+// mid-stream stall with the connection kept alive (specs/043-llm-stream-
+// stall-recovery — the feature's idle timeout is the expected trigger).
 type responseSpec struct {
 	Reasoning string
 	Text      string
 	ToolCall  *ToolCall
+	Stall     bool
 }
 
 // isToolCall reports whether the spec describes a tool-call response.
@@ -178,9 +185,11 @@ func (s responseSpec) isToolCall() bool { return s.ToolCall != nil }
 // (the response carries tool_calls + finish_reason "tool_calls"); otherwise
 // it takes the TextPath (reasoning + text + finish_reason "stop"). A nil
 // ToolCall reproduces the original text-only behaviour exactly, so existing
-// Message entries are unaffected.
+// Message entries are unaffected. Stall is passed through so a stall-marked
+// Message pauses the stream after its first chunk (the large test's
+// stall-recovery trigger).
 func specFromMessage(msg *Message) responseSpec {
-	return responseSpec{Reasoning: msg.Reasoning, Text: msg.Text, ToolCall: msg.ToolCall}
+	return responseSpec{Reasoning: msg.Reasoning, Text: msg.Text, ToolCall: msg.ToolCall, Stall: msg.Stall}
 }
 
 // specFromTool adapts a matched ToolConfig's RespondWith into a
@@ -241,7 +250,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	respID := generateResponseID()
 	if req.Stream {
-		serveStreaming(w, spec, respID)
+		serveStreaming(w, r, spec, respID)
 		return
 	}
 	serveNonStreaming(w, spec, respID)
@@ -464,7 +473,15 @@ func buildToolCallResp(tc *ToolCall) *toolCallResp {
 // observes progressive output. If the ResponseWriter does not implement
 // http.Flusher we surface a 500 once, before any chunk is emitted, so
 // the client does not receive a half-finished stream.
-func serveStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
+//
+// When spec.Stall is set the stream stops after the FIRST chunk: the
+// connection stays alive (the http.Server has no WriteTimeout) but no
+// further data is written until r.Context() is cancelled by the caller —
+// the "TCP alive, no SSE data" failure mode of specs/043-llm-stream-
+// stall-recovery. The handler then returns normally; the stalled request
+// is indistinguishable from an aborted client connection, which is the
+// point (LangGraph's idle-timeout abort is what unblocks it).
+func serveStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, respID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -484,7 +501,7 @@ func serveStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
 		chunks = textStreamChunks(respID, now, spec)
 	}
 
-	for _, chunk := range chunks {
+	for i, chunk := range chunks {
 		data, err := json.Marshal(chunk)
 		if err != nil {
 			slog.Error("failed to marshal stream chunk",
@@ -493,6 +510,10 @@ func serveStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
 		}
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
+		if spec.Stall && i == 0 {
+			<-r.Context().Done()
+			return
+		}
 	}
 
 	fmt.Fprint(w, "data: [DONE]\n\n")

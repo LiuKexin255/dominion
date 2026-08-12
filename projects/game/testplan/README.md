@@ -84,6 +84,7 @@ The shipped samples are:
 | `sample_saolei_single_op.yaml` | saolei-single-op | single operate | — | — (carries a `tool_call: saolei_operate` single form) |
 | `sample_saolei_start.yaml` | saolei-start | start saolei, play minesweeper | — | — (carries a `tool_call: saolei_init`) |
 | `sample_saolei_structural_stop.yaml` | saolei-structural-stop | structural stop | — | — (carries a `tool_call: saolei_operate` with an out-of-bounds op) |
+| `sample_stall.yaml` | stall-mid-reasoning | stall now, simulate a stall | "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive." | — (carries `stall: true` — the stream pauses after the reasoning chunk; the `text` is NEVER delivered) |
 
 `compress-player-summary` / `compress-planner-summary` are the plain-text
 responses for the team graph's COMPRESS node (specs/037-saolei-team-optimize
@@ -112,6 +113,14 @@ matching their keyword makes fake-LLM return a `tool_calls` response so the
 large tests drive the real model→tool_call→dispatch chain (see §7). They are
 excluded from the random no-match fallback (a random tool_call would
 nonsensically invoke a desktop operation).
+
+`stall-mid-reasoning` carries the stream-stall trigger
+(specs/043-llm-stream-stall-recovery — the T011 large test): a user turn
+matching its keyword makes fake-LLM emit the opening reasoning delta and
+then stop with the connection alive (no more data until the caller cancels
+the request — the agent's idle-timeout abort). Its `text` field is never
+delivered, and it is excluded from the random no-match fallback like the
+tool_call messages (a random stall would hang an unrelated turn).
 
 `planner-memory-add` is the team-model fixture (spec
 039-planner-memory-calibration): the team graph's planner agent (planner.ts)
@@ -180,9 +189,11 @@ and use **distinct** keywords per turn to prove FIFO ordering.
    strings are pinned as constants in `helpers_test.go`
    (`expectedChatReasoning`, `expectedChatText`, `expectedGreetingReasoning`,
    `expectedGreetingText`, `expectedFarewellReasoning`,
-   `expectedFarewellText`) with a comment marking them as needing sync with
-   the testdata. Update those constants whenever the testdata changes, and
-   adjust any `strings.Contains` assertions that depend on them.
+   `expectedFarewellText`, `expectedStallReasoning` — the stall template's
+   reasoning, the only field it delivers) with a comment marking them as
+   needing sync with the testdata. Update those constants whenever the
+   testdata changes, and adjust any `strings.Contains` assertions that
+   depend on them.
 4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
    in `projects/game/fake-llm/service/message_store_test.go` pins the real
    embedded testdata (chat-only before compress-planner-summary before
@@ -206,6 +217,14 @@ The deployment (`deploy_agent.yaml`) stands up `mongodb`, `session`, `proxy`,
 `fake-llm`, `agent_test`, `prompt`, and `gateway`, and exposes the gateway at
 `https://game.liukexin.com`. Test binaries read the endpoint and environment
 via `testtool.MustEndpoint` / `testtool.MustEnv` (injected by `guitar`).
+
+The stall-recovery suite (`agent-stall` in `system_test.yaml`, binary
+`agent_stall_test`) deploys through `deploy_agent_stall.yaml` — the same
+topology with `GAME_STREAM_IDLE_TIMEOUT_MS: "15000"` injected on the
+`agent_test` artifact (FR-001's 15s minimum), so the stall detection window
+fits the test budget. `STREAM_IDLE_TIMEOUT_MS` is evaluated at agent module
+load, hence the env must be set at deploy time (specs/043-llm-stream-
+stall-recovery T011).
 
 ## 7. Tool-call / operation-history coverage
 

@@ -27,6 +27,7 @@ go_library(
         "testdata/sample_planner_tools.yaml",
         "testdata/sample_saolei_single_op.yaml",
         "testdata/sample_saolei_structural_stop.yaml",
+        "testdata/sample_stall.yaml",
     ],
     importpath = "dominion/projects/game/fake-llm/service",
     visibility = ["//visibility:public"],

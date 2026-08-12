@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 // TestServeHTTP_NonStreaming verifies the non-streaming JSON shape:
@@ -170,6 +172,109 @@ func TestServeHTTP_Streaming(t *testing.T) {
 		if ch.Model != FakeModel {
 			t.Errorf("frame%d model = %q, want %q", i, ch.Model, FakeModel)
 		}
+	}
+}
+
+// TestServeHTTP_StreamingStallAfterFirstChunk verifies the stall
+// simulation (specs/043-llm-stream-stall-recovery): a request whose user
+// text matches the stall-mid-reasoning keyword receives the opening
+// role+reasoning delta and then NO further data while the connection
+// stays alive. The request context's cancellation — what the agent's
+// idle-timeout abort triggers — is the only way the stream unblocks.
+func TestServeHTTP_StreamingStallAfterFirstChunk(t *testing.T) {
+	// given: real embedded samples (the stall template is keyword-gated
+	// and excluded from the random fallback pool) + a cancellable
+	// request context so the test can abort the stall like the agent
+	// does.
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"x","stream":true,"messages":[{"role":"user","content":"please stall now"}]}`))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+
+	// when: the request is served against a REAL transport (httptest
+	// server) so the "no further data" half of the stall is observable —
+	// a Recorder would buffer everything and hide the pause.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	// then (1): the FIRST frame is the role+reasoning delta of the
+	// stall template (the partial thinking the desktop sees).
+	reader := bufio.NewReader(resp.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read first SSE line: %v", err)
+	}
+	if !strings.HasPrefix(line, "data: ") {
+		t.Fatalf("first SSE line %q, want prefix \"data: \"", line)
+	}
+	first := decodeChunk(t, strings.TrimPrefix(strings.TrimSpace(line), "data: "))
+	if got := first.Choices[0].Delta.ReasoningContent; got != "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive." {
+		t.Errorf("frame1 delta.reasoning_content = %q, want the stall template's reasoning", got)
+	}
+	// The second line of the first SSE event is the blank separator; it
+	// must arrive (the first event is complete and flushed).
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatalf("read SSE separator after first frame: %v", err)
+	}
+
+	// then (2): NO further data arrives within the probe window — the
+	// connection is alive (the server has no WriteTimeout) but the
+	// stream is stalled, exactly the failure mode the agent's idle
+	// timeout detects.
+	moreData := make(chan struct{})
+	go func() {
+		_, _ = reader.ReadString('\n')
+		close(moreData)
+	}()
+	select {
+	case <-moreData:
+		t.Fatal("received data after the first chunk — the stall did not pause the stream")
+	case <-time.After(300 * time.Millisecond):
+		// Expected: no data while stalled.
+	}
+
+	// then (3): cancelling the request context (what LangGraph's
+	// NodeTimeoutError abort does) unblocks the handler; the connection
+	// closes and the read returns an error instead of hanging forever.
+	cancel()
+	unblocked := make(chan struct{})
+	go func() {
+		for {
+			if _, err := reader.ReadString('\n'); err != nil {
+				break
+			}
+		}
+		close(unblocked)
+	}()
+	select {
+	case <-unblocked:
+		// Expected: the handler returned once the context was cancelled.
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled stream did not unblock after the request context was cancelled")
 	}
 }
 

@@ -19,12 +19,21 @@ package service
 // Name, Reasoning and Text are the single source of truth asserted by
 // the T6 integration tests; the testdata files are the only place they
 // are defined.
+//
+// Stall simulates a mid-stream LLM stall (specs/043-llm-stream-stall-recovery):
+// the streaming handler emits the first chunk (the role+reasoning delta)
+// and then blocks without closing the connection — no more data arrives
+// until the caller cancels the request. The connection staying alive while
+// data stops is exactly the failure mode the feature's idle timeout detects.
+// A nil/absent Stall preserves the original streaming behaviour, so existing
+// Message entries are unchanged.
 type Message struct {
 	Name      string    `json:"name" yaml:"name"`
 	Keywords  []string  `json:"keywords" yaml:"keywords"`
 	Reasoning string    `json:"reasoning" yaml:"reasoning"`
 	Text      string    `json:"text" yaml:"text"`
 	ToolCall  *ToolCall `json:"tool_call,omitempty" yaml:"tool_call,omitempty"`
+	Stall     bool      `json:"stall,omitempty" yaml:"stall,omitempty"`
 }
 
 // ToolConfig is a single templated response to a tool result message.

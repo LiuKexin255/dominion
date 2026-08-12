@@ -1,0 +1,18 @@
+# stall-mid-reasoning simulates a mid-stream LLM stall
+# (specs/043-llm-stream-stall-recovery — the T011 large test's trigger):
+# the streaming handler emits the role+reasoning delta, flushes it, then
+# blocks with the connection still alive and no further data, exactly the
+# "TCP alive but no SSE data" failure mode the feature's idle timeout
+# detects. The `text` below is NEVER delivered — it exists so the template
+# is self-describing and so the store-level pin test can assert it.
+#
+# `stall: true` is an explicit test trigger (like tool_call Messages): the
+# message is excluded from the no-match random fallback pool so an
+# unrelated turn can never stall randomly.
+name: stall-mid-reasoning
+keywords:
+  - stall now
+  - simulate a stall
+reasoning: "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive."
+text: "This text must never arrive — the stream stalls after the reasoning chunk."
+stall: true
