@@ -80,6 +80,7 @@ import type { ContentBlock, TurnContent } from "./llm";
 import {
 	buildContentBlocks,
 	extractToolCalls,
+	INIT_TURN_TIMEOUT_MS,
 	readToolResultStatus,
 	RECURSION_LIMIT,
 	STATUS_UNSPECIFIED,
@@ -434,7 +435,12 @@ export class SessionTeam {
 	 * Errors are swallowed (degrade,
 	 * specs/039-planner-memory-calibration/contracts/team-graph-contract.md
 	 * §6) so the awaited
-	 * {@link initTurn} never rejects a subsequent user turn.
+	 * {@link initTurn} never rejects a subsequent user turn. 043 US4
+	 * (specs/043-llm-stream-stall-recovery/spec.md FR-009): the invoke is
+	 * additionally bounded by `AbortSignal.timeout(INIT_TURN_TIMEOUT_MS)` —
+	 * a stalled planner degrades through the SAME catch
+	 * (specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
+	 * §4.2 UNCHANGED) instead of hanging the first user turn.
 	 */
 	private async runInitTurn(): Promise<void> {
 		try {
@@ -464,6 +470,15 @@ export class SessionTeam {
 					},
 					metadata: { session_id: this.sessionId },
 					recursionLimit: RECURSION_LIMIT,
+					// 043 US4 (FR-009 — specs/043-llm-stream-stall-recovery/
+					// contracts/stall-recovery-contract.md §4.1,
+					// specs/043-llm-stream-stall-recovery/research.md R5):
+					// the init turn is bounded by a total timeout. When
+					// it expires, the signal aborts and the invoke rejects;
+					// the existing catch below degrades (skip instruction,
+					// resolve — specs/043-llm-stream-stall-recovery/contracts/
+					// stall-recovery-contract.md §4.2 UNCHANGED).
+					signal: AbortSignal.timeout(INIT_TURN_TIMEOUT_MS),
 				},
 			);
 		} catch (err) {

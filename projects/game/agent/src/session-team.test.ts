@@ -9,7 +9,9 @@
  *
  * Mock strategy (style/javascript.md §测试): SessionTeam receives the graph
  * handle, buffer and session id via constructor; SessionTeamStore receives a
- * factory — no `vi.mock`. The stream display sink (041 —
+ * factory — no `vi.mock` (single exception: the module-level
+ * `INIT_TURN_TIMEOUT_MS` constant override for the 043 US4 timeout test —
+ * justified inline at the `vi.mock` site). The stream display sink (041 —
  * specs/041-realtime-init-push/contracts/realtime-channel-contract.md §1.1) is
  * the DI seam for frame capture: tests inject a recording closure / `vi.fn()`
  * via `bindStreamSink(emit, emit)` (the closure doubles as its own
@@ -19,8 +21,9 @@
 
 import { describe, expect, it, vi } from "vitest";
 import * as grpc from "@grpc/grpc-js";
+import { installReporter, type Reporter } from "@dominion/common-js-logs";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import type { MemorySaver } from "@langchain/langgraph";
+import { MemorySaver } from "@langchain/langgraph";
 import { fakeModel } from "@langchain/core/testing";
 import { createAgent, tool } from "langchain";
 import { z } from "zod";
@@ -31,11 +34,27 @@ import { OperationBridge } from "./operation-bridge";
 import { extractToolCalls } from "./llm";
 import type { MemoryClient } from "./memory-client";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
-import { buildTeamGraph } from "./team/graph";
+import { buildTeamGraph, type TeamGraphHandle } from "./team/graph";
 import { FrozenMemorySnapshot } from "./team/memory-snapshot";
 import type { TeamStateValue } from "./team/state";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
+
+/**
+ * Residual constant-override mock (style/javascript.md §测试 — Mock 约定
+ * 脆弱模式; the inline justification it requires): `INIT_TURN_TIMEOUT_MS` is
+ * evaluated at llm.ts MODULE LOAD (`Number(process.env...) || 120_000`), so
+ * no DI seam can shorten it for the 043 US4 (FR-009) timeout test below —
+ * setting the env var inside a test body runs after the imports already
+ * resolved. The mock preserves EVERY other real export via `importOriginal`
+ * (same pattern as mcp-host.test.ts) and overrides only the single constant.
+ * The mock is positively asserted by the timeout test: with the real 120s
+ * value its deadline checks would fail — no silent bypass.
+ */
+vi.mock("./llm", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./llm")>();
+	return { ...actual, INIT_TURN_TIMEOUT_MS: 1000 };
+});
 
 /** Template id of the test sessions (saolei — UpdateTeam default in tests). */
 const TID = "saolei";
@@ -619,6 +638,94 @@ describe("SessionTeam", () => {
 		// neutral UNSPECIFIED — same as the checkpointed ToolMessage.
 		expect(resPart.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
 		expect(resPart.message).toContain("status=TOOL_RESULT_STATUS_SUCCEEDED");
+	});
+
+	it("degrades a stalled init instruction turn within INIT_TURN_TIMEOUT_MS and does not block the next user turn (043 US4 — FR-009/FR-010)", async () => {
+		// Fake graph whose `invoke` NEVER resolves on its own — it only
+		// rejects when the config's `signal` aborts, mirroring what real
+		// LangGraph does when the `AbortSignal.timeout` expires (runInitTurn
+		// passes the signal in the invoke config — contract §4.1,
+		// research.md R5). The degrade is exactly the existing catch: warn +
+		// resolve (contract §4.2 UNCHANGED).
+		const invoke = vi.fn(
+			(_input: unknown, config?: { signal?: AbortSignal }) =>
+				new Promise((_resolve, reject) => {
+					const signal = config?.signal;
+					signal?.addEventListener(
+						"abort",
+						() => reject(signal.reason ?? new Error("aborted")),
+						{ once: true },
+					);
+				}),
+		);
+		// Post-degrade user turn: an empty stream completes immediately
+		// (runTeamTurn awaits the already-resolved initTurn, then streams).
+		const streamEvents = vi.fn(async function* () {});
+		const handle = {
+			graph: { invoke, streamEvents },
+			checkpointer: new MemorySaver(),
+		} as unknown as TeamGraphHandle;
+		const buffer = createEphemeralGameBuffer();
+		const team = new SessionTeam(
+			handle,
+			buffer,
+			"s-043-init-timeout",
+			TID,
+			new OperationBridge(),
+			createTeamSink(buffer),
+		);
+
+		// Capture the degrade warning through the logs package's Reporter
+		// seam (style/javascript.md — DI, no module mock).
+		const warnMessages: string[] = [];
+		const reporter: Reporter = {
+			write: (level, msg) => {
+				if (level === "warn") warnMessages.push(msg);
+			},
+		};
+		const uninstall = installReporter(reporter);
+		try {
+			team.triggerInitInstruction();
+
+			// Positive assertion — the invoke was reached with the timeout
+			// signal (the constant mock took effect; a missing signal would
+			// leave the promise pending and fail the deadline below).
+			expect(invoke).toHaveBeenCalledOnce();
+			const config = invoke.mock.calls[0][1] as
+				| { signal?: AbortSignal }
+				| undefined;
+			expect(config?.signal).toBeInstanceOf(AbortSignal);
+			expect(config?.signal?.aborted).toBe(false);
+
+			// The timeout fires at ~1000ms → the fake invoke rejects with
+			// the signal reason → the existing catch degrades (warn +
+			// resolve). isBusy() flips false exactly when the init promise
+			// resolves (startInstructionTurn's finally).
+			const deadline = Date.now() + 2000;
+			while (team.isBusy() && Date.now() < deadline) {
+				await new Promise((r) => setTimeout(r, 10));
+			}
+			expect(team.isBusy()).toBe(false);
+			expect(team.isRunning()).toBe(false);
+			expect(
+				warnMessages.some((m) =>
+					m.includes("init instruction turn failed; skipping initial instruction"),
+				),
+			).toBe(true);
+
+			// FR-010: the degraded init promise no longer blocks the first
+			// user turn — submit runs a normal turn against the fake graph's
+			// empty stream and returns to idle.
+			const { emit, frames } = recordingEmit();
+			team.bindStreamSink(emit, emit);
+			team.submit({ text: "hi" });
+			expect(team.isRunning()).toBe(true);
+			await flush();
+			expect(team.isRunning()).toBe(false);
+			expect(waitCount(frames)).toBe(1);
+		} finally {
+			uninstall();
+		}
 	});
 });
 
