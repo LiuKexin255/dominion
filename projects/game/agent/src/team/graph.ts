@@ -72,6 +72,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import type { ChatModel } from "../model-provider";
 import type { MemoryClient } from "../memory-client";
+import { STREAM_IDLE_TIMEOUT_MS } from "../llm";
 import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { GameEnded, TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
@@ -365,8 +366,23 @@ export function buildTeamGraph(
 	const graph = new StateGraph(TeamState)
 		.addNode("initInstruction", initInstructionNode)
 		.addNode("postCompactInstruction", postCompactInstructionNode)
-		.addNode("player", playerNode)
-		.addNode("planner", plannerNode)
+		// The idle timeout (043 — specs/043-llm-stream-stall-recovery/
+		// contracts/stall-recovery-contract.md §1.1) applies ONLY to the
+		// model-holding nodes player/planner: a stalled LLM SSE stream must
+		// raise NodeTimeoutError within STREAM_IDLE_TIMEOUT_MS (FR-001).
+		// `setNodeDefaults` is intentionally NOT used — it would extend the
+		// timeout to initInstruction/postCompactInstruction/compress, whose
+		// event patterns are out of scope (tasks.md Phase 2 F2 scope note;
+		// initInstruction/postCompactInstruction are covered by the init-turn
+		// total timeout FR-009). `refreshOn: "auto"` refreshes on model
+		// tokens + tool start/end; the mid-tool gap is covered by the
+		// dispatch heartbeat (research.md R7, contract §1.2).
+		.addNode("player", playerNode, {
+			timeout: { idleTimeout: STREAM_IDLE_TIMEOUT_MS, refreshOn: "auto" },
+		})
+		.addNode("planner", plannerNode, {
+			timeout: { idleTimeout: STREAM_IDLE_TIMEOUT_MS, refreshOn: "auto" },
+		})
 		.addNode("compress", compressNode)
 		// 039 US3 (T026 — R5): the START conditional edge routes to
 		// `initInstruction` ONLY on the async team-init turn (configurable
