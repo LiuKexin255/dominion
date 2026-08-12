@@ -70,14 +70,14 @@ const fakeCreateAgent = () => ({
 
 ### Scenario 6: Tool execution does not trigger false stall detection
 
-**What it validates**: FR-003, SC-003 — tool execution (which can take up to 20 minutes via OperationBridge) does not trigger the idle timeout.
+**What it validates**: FR-003, SC-003 — saolei MCP tool execution (which can take up to 20 minutes via `bridge.dispatch` in the MCP server) does not trigger the idle timeout.
 
 **Steps**:
 
 1. Deploy the SUT.
-2. Start a turn where the agent invokes a saolei tool (e.g., mouse click dispatched to the desktop).
+2. Start a turn where the agent invokes a saolei MCP tool (e.g., `saolei_operate` dispatched to the desktop via the production MCP path: `buildSaoleiMcpTools` → MCP HTTP → `bridge.dispatch`).
 3. Delay the desktop's tool response by > 30s (longer than the `idleTimeout`).
-4. Verify: no `NodeTimeoutError` fires during the tool wait — the idle timer is kept alive by the dispatch heartbeat (`config.heartbeat()` every `TOOL_HEARTBEAT_INTERVAL_MS`, research.md R7), not by tool events (which only fire at tool boundaries).
+4. Verify: no `NodeTimeoutError` fires during the tool wait — the idle timer is kept alive by the **client-side heartbeat wrapper** (`withIdleHeartbeat` calling `config.heartbeat()` every `TOOL_HEARTBEAT_INTERVAL_MS`, research.md R7.2), not by dispatch-side events or MCP protocol features.
 5. When the tool result arrives, verify the agent continues normally (model resumes streaming, turn completes).
 
 ## Configuration Override
@@ -97,8 +97,8 @@ GAME_STREAM_IDLE_TIMEOUT_MS=15000 GAME_INIT_TURN_TIMEOUT_MS=10000 bazel test //p
 - [ ] `NodeTimeoutError` propagates from the player node (unit test)
 - [ ] Non-timeout errors are still swallowed by the player node (unit test, FR-036 compatibility)
 - [ ] `idleTimeout` is configured on player and planner nodes ONLY — `setNodeDefaults` NOT used (unit test, contract §1.1)
-- [ ] Dispatch heartbeat keeps the idle timer alive during long tool execution (unit test, research.md R7)
+- [ ] Client-side heartbeat wrapper keeps the idle timer alive during long MCP tool execution (unit test, research.md R7.2)
 - [ ] Init turn timeout fires within the configured window (unit test)
 - [ ] End-to-end stall detection → warn + wait → buffer retention (large test)
-- [ ] Tool execution > idleTimeout does not trigger false stall (large test)
+- [ ] Saolei MCP tool execution > idleTimeout does not trigger false stall — production MCP path (large test)
 - [ ] Existing abort semantics unchanged (user abort still clears buffer — regression test, T013)

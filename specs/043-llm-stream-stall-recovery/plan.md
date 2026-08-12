@@ -10,11 +10,11 @@ Three changes to the agent's turn-execution layer that detect and recover from L
 
 1. **Chunk-idle timeout via LangGraph's built-in `TimeoutPolicy.idleTimeout`** (FR-001–FR-003): Configure `idleTimeout` (default 30s, configurable) on the team graph's `player` and `planner` nodes **individually** (`addNode` options per contract §1.1 — NOT `setNodeDefaults`, which would apply the timeout to `initInstruction`/`postCompactInstruction`/`compress` too; those nodes are intentionally out of scope). LangGraph's `idleTimeout` with `refreshOn: "auto"` resets on LangChain callback events (model streaming tokens, tool start/end). When the model stream stalls, no callback events fire, the `idleTimeout` elapses, and LangGraph raises `NodeTimeoutError` via cooperative AbortSignal cancellation.
 
-2. **Tool-execution heartbeat** (FR-003, REQUIRED — see research.md R7): the idle timer is a wall-clock watchdog and only refreshes on callback events; during a long OperationBridge dispatch (up to 20 min) no events fire, so a bare `idleTimeout` would raise false `NodeTimeoutError`s mid-tool. Fix: `OperationBridge.dispatch()` accepts an optional `heartbeat` callback; the tools pass `config.heartbeat` through, and dispatch calls it every `TOOL_HEARTBEAT_INTERVAL_MS` (default 10s < 30s idle) while awaiting the desktop result. Heartbeat refreshes the timer unconditionally (verified in installed LangGraph `dist/pregel/timeout.js`).
+2. **Tool-execution heartbeat** (FR-003, REQUIRED — see research.md R7): the idle timer is a wall-clock watchdog and only refreshes on callback events; during a long saolei MCP tool dispatch (up to 20 min) no events fire, so a bare `idleTimeout` would raise false `NodeTimeoutError`s mid-tool. Since feature 031 the production saolei tools are MCP client tools (`buildSaoleiMcpTools`) — the MCP HTTP boundary prevents `config.heartbeat` from reaching the MCP server's `bridge.dispatch` (research.md R7.1). Fix: a **client-side heartbeat wrapper** (`withIdleHeartbeat`) applied to each MCP tool in `buildSaoleiMcpTools` / `buildMemoryMcpTools`; during the tool's invoke it calls `config.heartbeat()` every `TOOL_HEARTBEAT_INTERVAL_MS` (default 10s < 30s idle), keeping the idle timer alive for the full MCP roundtrip + `bridge.dispatch` await. The wrapper reads heartbeat from the tool's invoke config (present because the ToolNode spreads `...config` from the node-attempt config). The `OperationBridge.dispatch` heartbeat parameter added in the original T008b is REMOVED (it was unreachable in production — the MCP server cannot access `config.heartbeat`).
 
 3. **Error classification + player node propagation** (FR-004–FR-008): The player node's current `finally { return }` pattern (per [Feature 036](../036-team-mode-bugfix/spec.md) FR-002) swallows ALL exceptions. Modify it to re-throw `NodeTimeoutError` specifically (letting it propagate to `runTeamTurn` → `runLoop` → `finishError`, which retains the buffer), while continuing to swallow other errors (GraphRecursionError, model/tool errors) for Feature 036 FR-002 compatibility. The init instruction turn (FR-009/FR-010) gets a total timeout via `AbortSignal.timeout()`.
 
-**Key research finding**: LangGraph 1.4.8 (`@langchain/langgraph/dist/pregel/utils/timeout.d.ts`) provides `TimeoutPolicy` with `idleTimeout` — the exact chunk-idle-watchdog mechanism, built into the framework. This eliminates the need for a custom `StreamWatchdog` class + composite AbortSignal (Constitution §II — Refactoring Over Patching: leverage existing architecture). The tool-execution heartbeat (research.md R7) is a small addition on top of the framework mechanism. See [research.md](research.md) for the full langchain/langgraph analysis and alternatives evaluation.
+**Key research finding**: LangGraph 1.4.8 (`@langchain/langgraph/dist/pregel/utils/timeout.d.ts`) provides `TimeoutPolicy` with `idleTimeout` — the exact chunk-idle-watchdog mechanism, built into the framework. This eliminates the need for a custom `StreamWatchdog` class + composite AbortSignal (Constitution §II — Refactoring Over Patching: leverage existing architecture). The tool-execution heartbeat (research.md R7) is a client-side MCP tool wrapper (`withIdleHeartbeat`) — a small addition because the production saolei tools cross the MCP HTTP boundary, and `config.heartbeat` cannot reach `bridge.dispatch` on the server side. See [research.md](research.md) for the full langchain/langgraph analysis, MCP boundary analysis, and alternatives evaluation.
 
 ## Technical Context
 
@@ -35,7 +35,7 @@ Three changes to the agent's turn-execution layer that detect and recover from L
 
 **Performance Goals**: The `idleTimeout` adds zero per-token overhead — LangGraph's timer reset is a lightweight timestamp comparison on callback events. No measurable impact on normal turn execution.
 
-**Constraints**: The timeout MUST NOT fire during legitimate tool execution (OperationBridge dispatch up to 20 min). `refreshOn: "auto"` stays as the (unchanged) baseline — token deltas refresh during streaming, tool start/end events refresh at boundaries; the mid-tool gap is covered by the **new** periodic `config.heartbeat()` during dispatch (research.md R7) — heartbeat refreshes the timer unconditionally, so the timer cannot elapse mid-tool. The timeout MUST NOT change existing abort semantics (FR-012).
+**Constraints**: The timeout MUST NOT fire during legitimate tool execution (saolei MCP tool dispatch via `bridge.dispatch`, up to 20 min). `refreshOn: "auto"` stays as the (unchanged) baseline — token deltas refresh during streaming, tool start/end events refresh at boundaries; the mid-tool gap is covered by the **new** client-side heartbeat wrapper (`withIdleHeartbeat`, applied in `buildSaoleiMcpTools`) — heartbeat refreshes the timer unconditionally, so the timer cannot elapse mid-tool. The timeout MUST NOT change existing abort semantics (FR-012).
 
 **Scale/Scope**: Per-session, single-user. One team graph per session with `player` + `planner` nodes.
 
@@ -78,11 +78,12 @@ projects/game/agent/src/
 │   ├── player.ts                        # MODIFIED: catch NodeTimeoutError → re-throw (vs swallow)
 │   └── planner.ts                       # MODIFIED: catch NodeTimeoutError → re-throw (if applicable)
 ├── session-team.ts                      # MODIFIED: runInitTurn adds AbortSignal.timeout
-├── llm.ts                               # MODIFIED: timeout config constants
-├── operation-bridge.ts                  # MODIFIED: dispatch() gains optional heartbeat callback + interval (research.md R7)
-├── tools/mouse_click/mouse-click.ts     # MODIFIED: pass config.heartbeat to dispatch
-├── tools/mouse_move/mouse-move.ts       # MODIFIED: pass config.heartbeat to dispatch
-├── operation-bridge.test.ts             # MODIFIED: heartbeat interval unit tests
+├── llm.ts                               # MODIFIED: timeout config constants + withIdleHeartbeat wrapper + buildSaoleiMcpTools/buildMemoryMcpTools apply wrapper
+├── operation-bridge.ts                  # REVERTED: dispatch heartbeat param REMOVED (revert to dispatch(part, signal?))
+├── tools/mouse_click/mouse-click.ts     # REVERTED: heartbeat pass-through removed (dead code; dispatch no longer takes heartbeat)
+├── tools/mouse_move/mouse-move.ts       # REVERTED: heartbeat pass-through removed (dead code; dispatch no longer takes heartbeat)
+├── operation-bridge.test.ts             # MODIFIED: heartbeat interval tests replaced with wrapper unit tests
+├── llm.test.ts (or tool-heartbeat.test.ts) # NEW: withIdleHeartbeat wrapper unit tests
 └── team/graph.test.ts                   # MODIFIED: timeout configuration tests
 ```
 

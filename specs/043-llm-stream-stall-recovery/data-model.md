@@ -11,7 +11,7 @@ The chunk-idle timeout applied to team graph nodes that perform LLM model calls.
 | Field | Type | Default | Source |
 |-------|------|---------|--------|
 | `idleTimeout` | `number` (ms) | `30000` | `process.env.GAME_STREAM_IDLE_TIMEOUT_MS` |
-| `refreshOn` | `"auto"` | `"auto"` | Fixed — refreshes on model tokens + tool events (tool-execution coverage completed by the dispatch heartbeat, research.md R7) |
+| `refreshOn` | `"auto"` | `"auto"` | Fixed — refreshes on model tokens + tool events (tool-execution coverage completed by the client-side MCP heartbeat wrapper, research.md R7.2) |
 
 **Applied to nodes**: `player`, `planner` ONLY (per contract §1.1 — `initInstruction`/`postCompactInstruction` are covered by the init-turn total timeout FR-009; `compress` is out of scope; `setNodeDefaults` is NOT used because it would extend the timeout to all nodes).
 
@@ -19,7 +19,7 @@ The chunk-idle timeout applied to team graph nodes that perform LLM model calls.
 
 **Constraints**:
 - MUST be ≥ 15000 (15s) per FR-001.
-- `refreshOn: "auto"` is the only supported mode. **Tool-execution coverage requires the dispatch heartbeat** (`config.heartbeat()` every `TOOL_HEARTBEAT_INTERVAL_MS` during OperationBridge dispatch — research.md R7): tool start/end events refresh only at boundaries; a 20-min tool wait with no events would otherwise trip the 30s idle timer.
+- `refreshOn: "auto"` is the only supported mode. **Tool-execution coverage requires the client-side MCP heartbeat wrapper** (`config.heartbeat()` every `TOOL_HEARTBEAT_INTERVAL_MS` during MCP tool invocation — research.md R7.2): tool start/end events refresh only at boundaries; a 20-min saolei tool wait (`saolei_operate` batch via `bridge.dispatch`) with no events would otherwise trip the 30s idle timer. The wrapper is applied in `buildSaoleiMcpTools` (`llm.ts`) because the production saolei tools cross the MCP HTTP boundary — `config.heartbeat` is available on the MCP client tool's invoke config (ToolNode spreads `...config`) but cannot reach the MCP server's `bridge.dispatch` (R7.1).
 
 ### Entity: `InitTurnTimeoutConfig`
 
@@ -112,5 +112,28 @@ The timeout is a new trigger for the existing degrade path. The degrade behavior
 │10. finishError: RETAIN buffer, emit warn + wait                  │
 │11. Desktop receives warn (error notice) + wait (idle)            │
 │12. If buffer non-empty → next submit drains buffer (FR-007)      │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## 5. Data Flow: Tool Execution With Heartbeat (FR-003 — No False Stall)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. User sends message → player node starts                       │
+│ 2. Model streams tokens → emits a saolei_operate tool_call       │
+│ 3. ToolNode invokes the wrapped MCP client tool:                 │
+│    a. withIdleHeartbeat reads config.heartbeat                   │
+│    b. Calls heartbeat() immediately, starts setInterval          │
+│    c. Invokes the underlying MCP client tool                     │
+│ 4. MCP client tool → HTTP POST → MCP server (mcp-host)           │
+│ 5. MCP server handler → bridge.dispatch(part, extra.signal)      │
+│    → awaits desktop result (up to 20 min)                        │
+│ 6. MEANWHILE (client side): setInterval fires heartbeat() every  │
+│    TOOL_HEARTBEAT_INTERVAL_MS → scope.touch() refreshes timer    │
+│ 7. Desktop responds → bridge.dispatch resolves → HTTP response   │
+│ 8. MCP client tool resolves → wrapper clears interval (finally)  │
+│ 9. ToolNode returns ToolMessage → model resumes streaming        │
+│ NO NodeTimeoutError fires during steps 5-8 (idle timer kept     │
+│ alive by the wrapper's heartbeat, NOT by dispatch or MCP events) │
 └──────────────────────────────────────────────────────────────────┘
 ```
