@@ -30,9 +30,16 @@ import (
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const (
-	headerEnv     = "env"
-	pathPrefix    = "/api/v1/"
-	wsReadTimeout = 30 * time.Second
+	headerEnv  = "env"
+	pathPrefix = "/api/v1/"
+	// wsReadTimeout must exceed the agent-stall suite's configured idle
+	// window (deploy_agent_stall.yaml GAME_STREAM_IDLE_TIMEOUT_MS=60000 —
+	// specs/044-llm-stall-recovery-fix FR-001's 60s minimum): during a
+	// stall the stream is silent for the full window, and readWSFrame
+	// blocks until a frame arrives or this deadline elapses. A deadline
+	// shorter than the window would abort the stall wait mid-way
+	// (specs/044-llm-stall-recovery-fix/tasks.md T011 re-baseline).
+	wsReadTimeout = 75 * time.Second
 )
 
 // saoleiTemplateID is the saolei template path segment — the only known
@@ -1306,6 +1313,51 @@ func messagesContainText(messages []*game.Message, substring string) bool {
 		}
 	}
 	return false
+}
+
+// messageThinking returns the content of the first ThinkingPart in a
+// Message's content MessageParts, or "" if none.
+func messageThinking(m *game.Message) string {
+	if m.GetContent() == nil {
+		return ""
+	}
+	for _, p := range m.GetContent().GetParts() {
+		if th := p.GetThinking(); th != nil {
+			return th.GetContent()
+		}
+	}
+	return ""
+}
+
+// messagesContainThinking reports whether any Message's content
+// MessageParts carries a ThinkingPart whose content contains the
+// substring. Mirrors messagesContainText for the reasoning channel —
+// used to assert a partial reasoning reply survived history
+// reconstruction (spec 044 FR-004/SC-002).
+func messagesContainThinking(messages []*game.Message, substring string) bool {
+	for _, m := range messages {
+		if strings.Contains(messageThinking(m), substring) {
+			return true
+		}
+	}
+	return false
+}
+
+// messageThinkingCompletions returns the PartCompletion of every
+// ThinkingPart in a Message's content MessageParts, in order. Used to
+// assert the interrupted marker survives history reconstruction on the
+// tail part of a stall-persisted partial (spec 044 FR-005 — SC-003).
+func messageThinkingCompletions(m *game.Message) []game.PartCompletion {
+	if m.GetContent() == nil {
+		return nil
+	}
+	var completions []game.PartCompletion
+	for _, p := range m.GetContent().GetParts() {
+		if th := p.GetThinking(); th != nil {
+			completions = append(completions, th.GetCompletion())
+		}
+	}
+	return completions
 }
 
 // messagesContainToolResultStatus reports whether any Message's content

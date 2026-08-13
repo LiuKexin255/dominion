@@ -214,26 +214,37 @@ go_largetest(
 )
 
 # agent_stall_test is the stream-stall recovery suite (specs/043-llm-stream-
-# stall-recovery — T011 large test), run against the stall deploy
-# (deploy_agent_stall.yaml — GAME_STREAM_IDLE_TIMEOUT_MS=15000, FR-001's
-# 15s minimum):
-#   - TestAgentStallRecoveryWithQueuedMessage (US1/US2, quickstart
+# stall-recovery — T011 large test, plus specs/044-llm-stall-recovery-fix
+# T011 cases b/c), run against the stall deploy
+# (deploy_agent_stall.yaml — GAME_STREAM_IDLE_TIMEOUT_MS=60000, spec 044
+# FR-001's 60s minimum):
+#   - TestAgentStallRecoveryWithQueuedMessage (043 US1/US2, quickstart
 #     Scenario 5): a fake-llm turn that emits its reasoning delta then
 #     stops with the connection alive (sample_stall.yaml) is detected
 #     within the idle window — warn + wait emitted, the queued message
 #     RETAINED (no QueueSignal(0), FR-006) and delivered on the next turn
 #     (FR-007).
-#   - TestAgentStallToolExecutionNotFalselyDetected (US3, Scenario 6): a
-#     saolei_operate dispatch delayed > 20s (> idleTimeout) on the
+#   - TestAgentStallToolExecutionNotFalselyDetected (043 US3, Scenario 6):
+#     a saolei_operate dispatch delayed > 65s (> idleTimeout) on the
 #     production saolei MCP path does not false-stall — the client-side
 #     heartbeat wrapper keeps the idle timer alive (FR-003/SC-003).
+#   - TestAgentStallDetectedWithinConfiguredWindow (044 US1 regression,
+#     FR-001/SC-004): a real silent dropout is still detected within the
+#     configured 60s window — elapsed detection bracketed against the old
+#     15s/30s windows and the 120s default.
+#   - TestAgentStallPersistsPartialOutput (044 US3, FR-004/FR-005/
+#     SC-002/SC-003): after the stalled turn terminates, ListMessages
+#     returns the already-streamed reasoning partial with
+#     completion = PART_COMPLETION_INTERRUPTED on the tail part.
 #
-# size = medium: both tests sleep past the 15s idle timeout (15s stall
-# window / 20s tool delay), beyond the 60s "small" budget
-# (style/large_test.md §测试用例: size per actual need).
+# size = large: three tests wait the full 60s idle window (60s stall
+# window each) plus the 65s tool delay — the old 15s-window "medium"
+# budget (~150s) grows to ~270s of wall time, beyond the 300s "medium"
+# timeout with CI margin (style/large_test.md §测试用例: size per actual
+# need).
 go_largetest(
     name = "agent_stall_test",
-    size = "medium",
+    size = "large",
     srcs = [
         "agent_stall_test.go",
         "helpers_test.go",
