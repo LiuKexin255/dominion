@@ -163,7 +163,7 @@
 
 - [X] T028 Update contracts for per-block ConfigMap mapping（`contracts/runtime-contract.md` §1/§2、`data-model.md` §4/§5/图、`research.md` R5/R6；命名 `{workload}-config-{block}` + builder 63 字符 fail-fast 校验）
 - [X] T029 Implement per-block ConfigMap in `projects/infra/deploy/runtime/k8s/` per updated `specs/045-deploy-config/contracts/runtime-contract.md` §2: `BuildConfigMap` → `BuildConfigMaps`（按 block 首次出现顺序分组，data key=条目名，长度校验 fail-fast）；`BuildDeployment`/`BuildStatefulSet` 投影段改为单一 projected volume + 每块一个 ConfigMapProjection source（`KeyToPath{Key: 条目名, Path: "{block}/{key}"}`）；executor apply per-block 循环 + `buildExpectedApplyResources` per-block 名集合；更新 builder/executor 单测（依赖 T028）
-- [ ] T030 Re-run large tests T026/T027 after deploy control plane upgrade（per-block 物化变更后端到端复验，原则 VI；控制面镜像由用户升级）
+- [X] T030 Re-run large tests T026/T027 after deploy control plane upgrade（per-block 物化变更后端到端复验，原则 VI；控制面镜像由用户升级）
 
 **Checkpoint**: per-block ConfigMap 物化端到端验证通过，容器内文件布局与 SDK 行为不变。
 
@@ -194,7 +194,7 @@
 - [X] T038 Update compiler config compilation in `tools/release/deploy/v2/compiler/compiler.go` to emit `[]*deploy.ConfigBlock`（选中块整体进入，条目保留 `block.Data` 声明顺序，不展平）；update `compiler_test.go`（依赖 T031）
 - [X] T039 Simplify builder in `projects/infra/deploy/runtime/k8s/builder.go`: 删除 `blockEntries`/`configEntriesByBlock`；`BuildConfigMaps`/`buildConfigProjection` 直接迭代 `workload.configBlocks()`；触发条件 `len(workload.ConfigBlocks)>0`；`configMapName` 不变；update `builder_test.go`（per-block 断言不变，输入改 ConfigBlocks）（依赖 T036、T037）
 - [X] T040 Update executor in `projects/infra/deploy/runtime/k8s/executor.go`: applyInner 触发条件按 ConfigBlocks；`buildExpectedApplyResources` 直接迭代 `workload.ConfigBlocks`；update `executor_test.go`（helper 入参与用例构造改层级输入）（依赖 T039）
-- [ ] T041 Re-run large tests T026/T027 after deploy control plane upgrade（层级化物化等价复验，原则 VI；容器内文件布局与 SDK 行为不变）（依赖 T022/T025 及本 phase 全部 task；控制面镜像由用户升级）
+- [X] T041 Re-run large tests T026/T027 after deploy control plane upgrade（层级化物化等价复验，原则 VI；容器内文件布局与 SDK 行为不变）（依赖 T022/T025 及本 phase 全部 task；控制面镜像由用户升级）
 
 **Checkpoint**: 期望状态层级结构与 per-block 物化三处一致（service.yaml 源 / proto 期望状态 / ConfigMap 目标），全链路单测与大型测试全绿。
 
@@ -217,7 +217,7 @@
 
 - [X] T045 Apply sanitized ConfigMap naming in `projects/infra/deploy/runtime/k8s/` per `specs/045-deploy-config/contracts/runtime-contract.md` §2: `configMapName` 复用 `sanitizeNamePart(block)`；`BuildConfigMaps` 新增 fail-fast（清洗后为空、清洗后碰撞——seen map 计算名→原始块名，错误含 workload 名与原始块名）；executor 注释同步 `{workload}-config-{sanitize(block)}`（依赖契约修订，已完成）
 - [X] T046 Update unit tests: 修正固化缺陷的断言（object 名期望值改清洗后，`Path: "service_config/..."` 断言不动）；新增 `TestBuildConfigMaps_BlockNameCollision`（`service_config`+`service-config` → error）、`TestBuildConfigMaps_BlockNameSanitizesToEmpty`、`Test_configMapName_DNS1123Subdomain`（`validation.IsDNS1123Subdomain` 真实 schema 校验回归防线）（依赖 T045）
-- [ ] T047 Re-run large tests T030/T041 via testplan SKILL after deploy control plane rebuild & upgrade（真实 API server 接受清洗后名并成功创建 ConfigMap；宪法 VI 全用例通过）（依赖 T045、T046；控制面镜像由用户升级）
+- [X] T047 Re-run large tests T030/T041 via testplan SKILL after deploy control plane rebuild & upgrade（真实 API server 接受清洗后名并成功创建 ConfigMap；宪法 VI 全用例通过）（依赖 T045、T046；控制面镜像由用户升级）
 
 **Checkpoint**: 真实集群成功创建 per-block ConfigMap（RFC 1123 合法名），Go/TS 大型测试全绿。
 
