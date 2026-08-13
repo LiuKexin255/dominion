@@ -71,7 +71,7 @@ deploy.yaml 中 artifact 对配置块名的引用列表，决定哪些配置块�
 
 | Field | Type | Proto Field # | Description |
 |-------|------|---------------|-------------|
-| block | `string` | 1 | 配置块名（SDK 第一寻址参数 / ConfigMap 名后缀） |
+| block | `string` | 1 | 配置块名（SDK 第一寻址参数 / ConfigMap 名后缀来源——object 名中经 RFC 1123 清洗，SDK 寻址与文件路径用原始名，见 [runtime-contract.md §2](contracts/runtime-contract.md)） |
 | entries | `[]ConfigEntry` | 2 | 块内数据条目列表，每条目对应 ConfigMap 的一个 data key |
 
 **Parent**: `ArtifactSpec.config_blocks` (proto field **12**；见 [proto.md §1](contracts/proto.md))
@@ -91,8 +91,8 @@ deploy.yaml 中 artifact 对配置块名的引用列表，决定哪些配置块�
 **Validation Rules**（domain `ArtifactSpec.Validate()` → `ConfigBlock.Validate()` → `ConfigEntry.Validate()`）:
 - VR-CE-1: 每个 ConfigEntry 的 key/type/value 均非空
 - VR-CB-5: 每个 ConfigBlock 的 block 非空、entries 至少 1 项
-- VR-CE-2: **块内**条目名（key）不重复。块内 key 重复即同一 ConfigMap 同一 data key 冲突（map 写覆盖）；不同块的条目属于不同 ConfigMap（`{workload}-config-{block}`），天然隔离，无需跨块检测。与 service.yaml 层 VR-DE-3（块内条目名唯一）语义对称
-- VR-CB-6: **ConfigBlocks 列表内块名不重复**。两个同名块会映射到同一 ConfigMap `{workload}-config-{block}`，结构上必然冲突。domain 校验作为防御纵深保留（防非 CLI 客户端绕过 schema `uniqueItems`，见 [yaml-schema.md §2](contracts/yaml-schema.md)），与 service.yaml 层 VR-CB-3 对称
+- VR-CE-2: **块内**条目名（key）不重复。块内 key 重复即同一 ConfigMap 同一 data key 冲突（map 写覆盖）；不同块的条目属于不同 ConfigMap（`{workload}-config-{sanitize(block)}`，命名见 [runtime-contract.md §2](contracts/runtime-contract.md)），天然隔离，无需跨块检测。与 service.yaml 层 VR-DE-3（块内条目名唯一）语义对称
+- VR-CB-6: **ConfigBlocks 列表内块名不重复**。两个同名块会映射到同一 ConfigMap `{workload}-config-{sanitize(block)}`，结构上必然冲突。domain 校验作为防御纵深保留（防非 CLI 客户端绕过 schema `uniqueItems`，见 [yaml-schema.md §2](contracts/yaml-schema.md)），与 service.yaml 层 VR-CB-3 对称。注意本规则是**清洗前**（原始块名）的唯一性；不同原始块名清洗后碰撞（如 `service_config` 与 `service-config`）由 builder 层 `BuildConfigMaps` fail-fast 兜底（见 [runtime-contract.md §2](contracts/runtime-contract.md)）
 
 ### 5. Config Runtime Contract（K8s 层）
 
@@ -100,8 +100,8 @@ deploy.yaml 中 artifact 对配置块名的引用列表，决定哪些配置块�
 
 | Resource | Description |
 |----------|-------------|
-| ConfigMap `{workload}-config-{block}` | 控制面创建，**每个配置块一个 ConfigMap object**；data key 为条目名（块内唯一，原样），value 为原始数据文本 |
-| Volume `dominion-config` | ProjectedVolume（单一卷），每个块一个 `ConfigMapProjection` source；每条目 `KeyToPath{Key: 条目名, Path: "{block}/{key}"}` 还原目录层级 |
+| ConfigMap `{workload}-config-{sanitize(block)}` | 控制面创建，**每个配置块一个 ConfigMap object**；object 名中 block 成分经 RFC 1123 清洗（`sanitizeNamePart`，如 `service_config` → `service-config`，见 [runtime-contract.md §2](contracts/runtime-contract.md)）；data key 为条目名（块内唯一，原样不清洗），value 为原始数据文本 |
+| Volume `dominion-config` | ProjectedVolume（单一卷），每个块一个 `ConfigMapProjection` source；每条目 `KeyToPath{Key: 条目名, Path: "{block}/{key}"}` 还原目录层级（**真实块名**，路径允许 `_`，与 object 名清洗无关） |
 | VolumeMount `/mnt/dominion/config` | 只读挂载 |
 | EnvVar `DOMINION_CONFIG_DIR` | 值 `/mnt/dominion/config`，平台强制注入（保留变量） |
 
@@ -109,7 +109,7 @@ deploy.yaml 中 artifact 对配置块名的引用列表，决定哪些配置块�
 
 **Conditions**:
 - 仅当 artifact 有至少一个 config block 时创建 ConfigMap(s) / volume / mount / env
-- 每个 block 一个 ConfigMap（`{workload}-config-{block}`，builder 侧 63 字符长度校验 fail-fast，见 [runtime-contract.md §2](contracts/runtime-contract.md)）
+- 每个 block 一个 ConfigMap（`{workload}-config-{sanitize(block)}`，builder 侧 fail-fast：63 字符上限、清洗后为空、清洗后碰撞，见 [runtime-contract.md §2](contracts/runtime-contract.md)）
 - 无 config blocks 时不创建任何资源（与 secret 行为一致，见 002 R6）
 
 ## Entity Relationships
@@ -139,7 +139,7 @@ DeploymentWorkload / StatefulWorkload
                    │ (built into K8s resources)
                    ▼
 K8s Deployment/StatefulSet
-  ├── ConfigMap: {workload}-config-{block}      ← executor 创建，每块一个（data: 条目名 → value）
+  ├── ConfigMap: {workload}-config-{sanitize(block)} ← executor 创建，每块一个（data: 条目名 → value）
   ├── Volume: dominion-config (projected)        ← 每块一个 ConfigMap source，KeyToPath 还原 {block}/{key}
   ├── VolumeMount: /mnt/dominion/config (ro)
   └── EnvVar: DOMINION_CONFIG_DIR=/mnt/dominion/config
@@ -284,7 +284,8 @@ for _, selectedName := range deployService.Artifact.Config {
 | value 格式与 type 不符 | — | Go validation (json/yaml 解析校验, FR-003) | — | — |
 | deploy 选择未定义配置块名 | — | — | Go validation in Compile() (FR-007) | — |
 | deploy configs 列表内重复选择 | schema `uniqueItems` 拒绝 | — | — | — |
-| 期望状态层 ConfigBlock 块名重复 | — | — | — | domain `ArtifactSpec.Validate()`（VR-CB-6，防御纵深，防非 CLI 客户端绕过 schema `uniqueItems`；同名块映射同一 ConfigMap `{workload}-config-{block}` 冲突，对齐 service.yaml 层 VR-CB-3） |
+| 期望状态层 ConfigBlock 块名重复 | — | — | — | domain `ArtifactSpec.Validate()`（VR-CB-6，防御纵深，防非 CLI 客户端绕过 schema `uniqueItems`；同名块映射同一 ConfigMap `{workload}-config-{sanitize(block)}` 冲突，对齐 service.yaml 层 VR-CB-3） |
+| 不同原始块名清洗后碰撞（如 `service_config` 与 `service-config`） | — | — | — | builder `BuildConfigMaps` fail-fast（[runtime-contract.md §2](contracts/runtime-contract.md)；schema/domain 唯一性均为清洗前唯一性，不排除此情况） |
 | 期望状态层块内 ConfigEntry key 重复 | — | — | — | domain `ArtifactSpec.Validate()`（VR-CE-2，防御纵深；层级化后为块内 key 唯一检测，即同 ConfigMap 同 data key 冲突，对齐 service.yaml 层 VR-DE-3） |
 | DOMINION_CONFIG_DIR 在用户 env | — | — | — | K8s env override（保留变量） |
 | 无 config 声明/选择 | Pass-through | Pass-through | Pass-through | 跳过 ConfigMap/volume/mount |

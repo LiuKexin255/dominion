@@ -229,7 +229,7 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		resources.deployments[workload.WorkloadName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
 		// 期望状态已层级化：每个 ConfigBlock 映射一个 ConfigMap
-		// "{workload}-config-{block}"（specs/045-deploy-config/contracts/runtime-contract.md §2）。
+		// "{workload}-config-{sanitize(block)}"（specs/045-deploy-config/contracts/runtime-contract.md §2）。
 		for _, cb := range workload.ConfigBlocks {
 			resources.configMaps[configMapName(workload, cb.Block)] = struct{}{}
 		}

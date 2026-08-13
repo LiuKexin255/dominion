@@ -201,6 +201,29 @@
 ---
 
 
+---
+
+## Phase 8: 修复 — ConfigMap 名 RFC 1123 兼容性（T030/T041 大型测试缺陷）
+
+**Purpose**: T030/T041 复验暴露控制面缺陷：`configMapName` 将配置块名原样拼入 K8s 资源名，而块名 schema 允许下划线（`service_config`），K8s `metadata.name` 要求 RFC 1123（禁 `_`）→ 真实 API server 拒绝创建（`a lowercase RFC 1123 subdomain must consist of ...`），部署超时。修复方案（契约 `specs/045-deploy-config/contracts/runtime-contract.md` §2 修订版）：在 K8s 资源名边界复用既有 `sanitizeNamePart` 清洗（`{workload}-config-{sanitize(block)}`），新增清洗后为空/清洗后碰撞 fail-fast；**data key 与容器内文件路径 `{block}/{key}` 不清洗**（正则/路径均允许 `_`，SDK 寻址布局不变）；schema 不收紧（保持与 secret 逻辑名 pattern 一致）。
+
+### 文档清单
+
+- **代码规范文档**: `style/golang.md`
+- **官方文档**: [Kubernetes Object Names — DNS Subdomain Names](https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#dns-subdomain-names)；[apimachinery validation.go（configMapKeyFmt / IsDNS1123Subdomain）](https://github.com/kubernetes/apimachinery/blob/master/pkg/util/validation/validation.go)
+- **技术文章**: 无
+
+### Tasks
+
+- [X] T045 Apply sanitized ConfigMap naming in `projects/infra/deploy/runtime/k8s/` per `specs/045-deploy-config/contracts/runtime-contract.md` §2: `configMapName` 复用 `sanitizeNamePart(block)`；`BuildConfigMaps` 新增 fail-fast（清洗后为空、清洗后碰撞——seen map 计算名→原始块名，错误含 workload 名与原始块名）；executor 注释同步 `{workload}-config-{sanitize(block)}`（依赖契约修订，已完成）
+- [X] T046 Update unit tests: 修正固化缺陷的断言（object 名期望值改清洗后，`Path: "service_config/..."` 断言不动）；新增 `TestBuildConfigMaps_BlockNameCollision`（`service_config`+`service-config` → error）、`TestBuildConfigMaps_BlockNameSanitizesToEmpty`、`Test_configMapName_DNS1123Subdomain`（`validation.IsDNS1123Subdomain` 真实 schema 校验回归防线）（依赖 T045）
+- [ ] T047 Re-run large tests T030/T041 via testplan SKILL after deploy control plane rebuild & upgrade（真实 API server 接受清洗后名并成功创建 ConfigMap；宪法 VI 全用例通过）（依赖 T045、T046；控制面镜像由用户升级）
+
+**Checkpoint**: 真实集群成功创建 per-block ConfigMap（RFC 1123 合法名），Go/TS 大型测试全绿。
+
+---
+
+
 ## Dependencies & Execution Order
 
 ### Phase 依赖

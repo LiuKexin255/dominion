@@ -212,7 +212,7 @@ spec:
                       path: ca.crt
       containers:
         - name: dp-deploy-manager-847070f8
-          image: registry.liukexin.com/projects/infra/deploy@sha256:0b3c2e9649674765fbfbc83da6bad1677fdb58085e4fe65498dbd6eaa3177243
+          image: registry.liukexin.com/projects/infra/deploy@sha256:834a01c4409edec6be6c3261666de140b224fd4af203e55c1ace5b2391f47daa
           ports:
             - name: http
               containerPort: 8081

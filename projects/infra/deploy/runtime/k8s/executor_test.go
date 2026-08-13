@@ -880,7 +880,7 @@ func newExecutorTestConfigArtifactSpec(name string, app string, port int32, bloc
 }
 
 // TestK8sRuntimeApplyCreatesConfigMaps 覆盖 FR-009/FR-018：artifact 选择配置块后，
-// apply 为每个配置块创建 {workload}-config-{block} ConfigMap 且 data key 为条目名
+// apply 为每个配置块创建 {workload}-config-{sanitize(block)} ConfigMap 且 data key 为条目名
 // （specs/045-deploy-config/contracts/runtime-contract.md §2）。
 func TestK8sRuntimeApplyCreatesConfigMaps(t *testing.T) {
 	ctx := context.Background()
@@ -929,7 +929,7 @@ func TestK8sRuntimeApplyCreatesConfigMaps(t *testing.T) {
 			t.Fatalf("configmap %s not created: %v", cm.Name, err)
 		}
 	}
-	svcCMName := newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service_config"
+	svcCMName := newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service-config"
 	svcCM, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, svcCMName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("configmap %s not created: %v", svcCMName, err)
@@ -937,7 +937,7 @@ func TestK8sRuntimeApplyCreatesConfigMaps(t *testing.T) {
 	if got := svcCM.Data["greeting"]; got != "message: hello\n" {
 		t.Fatalf("Data[greeting] = %q, want %q", got, "message: hello\n")
 	}
-	flagsCMName := newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-feature_flags"
+	flagsCMName := newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-feature-flags"
 	flagsCM, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, flagsCMName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("configmap %s not created: %v", flagsCMName, err)
@@ -947,7 +947,7 @@ func TestK8sRuntimeApplyCreatesConfigMaps(t *testing.T) {
 	}
 
 	// Stateful artifact without config blocks gets no ConfigMap.
-	noCMName := objects.StatefulWorkloads[0].WorkloadName() + "-config-service_config"
+	noCMName := objects.StatefulWorkloads[0].WorkloadName() + "-config-service-config"
 	if _, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, noCMName, metav1.GetOptions{}); err == nil {
 		t.Fatalf("configmap %s should not exist without config blocks", noCMName)
 	}
@@ -1004,7 +1004,7 @@ func TestK8sRuntimeApplyConfigMapNameTooLongFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Apply() expected error for over-length configmap name")
 	}
-	wantName := newObjectName(WorkloadKindDeployment, executorTestEnvName(), serviceName) + "-config-service_config"
+	wantName := newObjectName(WorkloadKindDeployment, executorTestEnvName(), serviceName) + "-config-service-config"
 	if !strings.Contains(err.Error(), wantName) {
 		t.Fatalf("Apply() error should mention over-length configmap name %q, got: %v", wantName, err)
 	}
@@ -1032,7 +1032,7 @@ func TestK8sRuntimeApplyNoConfigBlocksCreatesNoConfigMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertToWorkloads() failed: %v", err)
 	}
-	depName := objects.Deployments[0].WorkloadName() + "-config-service_config"
+	depName := objects.Deployments[0].WorkloadName() + "-config-service-config"
 	if _, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, depName, metav1.GetOptions{}); err == nil {
 		t.Fatalf("configmap %s should not exist when no config blocks", depName)
 	}
@@ -1124,7 +1124,7 @@ func TestK8sRuntimeApplyPrunesConfigMaps(t *testing.T) {
 				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api")},
 			},
 			wantAbsent: pruneResourcePresence{
-				ConfigMaps: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service_config"},
+				ConfigMaps: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service-config"},
 			},
 		},
 		{
@@ -1145,7 +1145,7 @@ func TestK8sRuntimeApplyPrunesConfigMaps(t *testing.T) {
 			},
 			wantPresent: pruneResourcePresence{
 				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api")},
-				ConfigMaps:  []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service_config"},
+				ConfigMaps:  []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service-config"},
 			},
 			wantAbsent: pruneResourcePresence{},
 		},
@@ -1168,10 +1168,10 @@ func TestK8sRuntimeApplyPrunesConfigMaps(t *testing.T) {
 			},
 			wantPresent: pruneResourcePresence{
 				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api")},
-				ConfigMaps:  []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service_config"},
+				ConfigMaps:  []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-service-config"},
 			},
 			wantAbsent: pruneResourcePresence{
-				ConfigMaps: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-feature_flags"},
+				ConfigMaps: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config-feature-flags"},
 			},
 		},
 	}
@@ -1250,20 +1250,20 @@ func Test_buildExpectedApplyResources_includesConfigMaps(t *testing.T) {
 	resources := buildExpectedApplyResources(objects)
 
 	// 有 config blocks 的 workload 的每个 block 名都进入 expected 集合。
-	apiCMName := newObjectName(WorkloadKindDeployment, envName, "api") + "-config-service_config"
+	apiCMName := newObjectName(WorkloadKindDeployment, envName, "api") + "-config-service-config"
 	if _, ok := resources.configMaps[apiCMName]; !ok {
 		t.Fatalf("expected configmap %q in expected resources", apiCMName)
 	}
-	cacheCMName := newObjectName(WorkloadKindStatefulSet, envName, "cache") + "-config-feature_flags"
+	cacheCMName := newObjectName(WorkloadKindStatefulSet, envName, "cache") + "-config-feature-flags"
 	if _, ok := resources.configMaps[cacheCMName]; !ok {
 		t.Fatalf("expected configmap %q in expected resources", cacheCMName)
 	}
-	cacheTuningCMName := newObjectName(WorkloadKindStatefulSet, envName, "cache") + "-config-runtime_tuning"
+	cacheTuningCMName := newObjectName(WorkloadKindStatefulSet, envName, "cache") + "-config-runtime-tuning"
 	if _, ok := resources.configMaps[cacheTuningCMName]; !ok {
 		t.Fatalf("expected configmap %q in expected resources", cacheTuningCMName)
 	}
 	// 无 ConfigBlocks 的 workload 不产生 ConfigMap 期望条目。
-	plainCMName := newObjectName(WorkloadKindDeployment, envName, "plain") + "-config-service_config"
+	plainCMName := newObjectName(WorkloadKindDeployment, envName, "plain") + "-config-service-config"
 	if _, ok := resources.configMaps[plainCMName]; ok {
 		t.Fatalf("configmap %q should not be expected without config blocks", plainCMName)
 	}

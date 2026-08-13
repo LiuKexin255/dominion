@@ -263,7 +263,7 @@ func (s *ArtifactSpec) Validate() error {
 			errs = append(errs, fmt.Errorf("config_blocks[%d]: %w", i, err))
 		}
 	}
-	// 块名不重复（VR-CB-6）：同名块映射同一 ConfigMap "{workload}-config-{block}"，
+	// 块名不重复（VR-CB-6）：同名块映射同一 ConfigMap "{workload}-config-{sanitize(block)}"，
 	// 结构上必然冲突（specs/045-deploy-config/data-model.md §4）。
 	seenBlocks := make(map[string]int, len(s.ConfigBlocks))
 	for i, cb := range s.ConfigBlocks {

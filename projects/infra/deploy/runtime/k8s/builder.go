@@ -452,11 +452,15 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 }
 
 // configMapName 返回 workload 指定配置块对应的 ConfigMap 名，格式
-// "{workload}-config-{block}"（specs/045-deploy-config/contracts/runtime-contract.md §2）。
+// "{workload}-config-{sanitize(block)}"：block 成分经 sanitizeNamePart 清洗
+// （specs/045-deploy-config/contracts/runtime-contract.md §2）。K8s metadata.name
+// 要求 RFC 1123 DNS subdomain（禁 `_`），而块名 schema 允许 `_`（与 secret 逻辑名
+// pattern 一致），故仅在资源名边界清洗，data key 与容器内路径仍用原始块名；
+// sanitizeNamePart 即 newObjectName 清洗 env/service 名成分的既有函数（naming.go）。
 // builder（BuildConfigMaps/投影段）与 executor（buildExpectedApplyResources）共用，
 // 避免命名字符串漂移。
 func configMapName(workload configMapWorkload, block string) string {
-	return workload.WorkloadName() + "-config-" + block
+	return workload.WorkloadName() + "-config-" + sanitizeNamePart(block)
 }
 
 // buildConfigProjection 构造 config 投影所需的 volume、volumeMount 与
@@ -496,12 +500,19 @@ func buildConfigProjection(workload configMapWorkload) (corev1.Volume, corev1.Vo
 }
 
 // BuildConfigMaps 为 workload 的每个 ConfigBlock 生成一个 ConfigMap object：命名
-// "{workload}-config-{block}"，data key 为条目名（块内唯一，原样），value 为原始
+// "{workload}-config-{sanitize(block)}"（block 成分经 sanitizeNamePart 清洗，
+// 见 configMapName），data key 为条目名（块内唯一，原样），value 为原始
 // 数据文本；返回顺序按 workload.ConfigBlocks 列表顺序（确定性，compiler 已保留
 // service.yaml 声明顺序，无需重新分组）。Labels 与
 // Deployment/StatefulSet 一致（app/service/environment/managed-by）。
-// 每个名字做 63 字符上限的 fail-fast 校验（长度随 per-block 命名进一步加长，
-// 见 specs/045-deploy-config/contracts/runtime-contract.md §2）。
+// 每个名字做三项 fail-fast 校验（错误信息含 workload 名、原始 block 名与计算名，
+// 见 specs/045-deploy-config/contracts/runtime-contract.md §2 命名与长度校验）：
+//  1. 63 字符上限（长度随 per-block 命名进一步加长）；
+//  2. 清洗后为空（块名全为非法字符——schema 合法块名以 [a-z] 开头不会触发，
+//     仅防御绕过 schema 的非 CLI 客户端）；
+//  3. 清洗后碰撞（不同原始块名清洗为同一 ConfigMap 名，如 service_config 与
+//     service-config；schema/domain 唯一性均为清洗前唯一性，不排除此情况）。
+//
 // 仅当 len(workload.ConfigBlocks) > 0 时由 executor 调用。
 func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.ConfigMap, error) {
 	if workload == nil {
@@ -518,6 +529,9 @@ func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.Conf
 		withManagedBy(cfg.ManagedBy),
 	)
 
+	// seen 维护"计算名 → 原始块名"映射：计算名已存在即错误——原始块名不同为
+	// 清洗碰撞，相同为重复块（已由 domain VR-CB-6 拒绝，此处为防御纵深兜底）。
+	seen := make(map[string]string)
 	configMaps := make([]*corev1.ConfigMap, 0, len(workload.configBlocks()))
 	for _, cb := range workload.configBlocks() {
 		name := configMapName(workload, cb.Block)
@@ -525,6 +539,15 @@ func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.Conf
 			return nil, fmt.Errorf("configmap name %q (workload=%q block=%q) 超过 %d 字符上限",
 				name, workload.WorkloadName(), cb.Block, maxK8sResourceNameSize)
 		}
+		if sanitized := sanitizeNamePart(cb.Block); sanitized == "" {
+			return nil, fmt.Errorf("configmap name %q (workload=%q block=%q) 清洗后为空: 块名不含任何 RFC 1123 合法字符",
+				name, workload.WorkloadName(), cb.Block)
+		}
+		if prev, ok := seen[name]; ok {
+			return nil, fmt.Errorf("configmap name %q (workload=%q) 冲突: block %q 与 block %q 清洗后得到同一名字",
+				name, workload.WorkloadName(), prev, cb.Block)
+		}
+		seen[name] = cb.Block
 
 		data := make(map[string]string, len(cb.Entries))
 		for _, ce := range cb.Entries {

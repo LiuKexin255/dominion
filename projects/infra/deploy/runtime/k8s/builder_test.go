@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -1307,8 +1308,8 @@ func TestBuildDeployment_WithConfigBlocks(t *testing.T) {
 	if firstSrc.ConfigMap == nil {
 		t.Fatalf("Config projection should be a ConfigMap source")
 	}
-	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service_config" {
-		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service_config")
+	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service-config")
 	}
 	if len(firstSrc.ConfigMap.Items) != 2 {
 		t.Fatalf("ConfigMap Items count = %d, want 2", len(firstSrc.ConfigMap.Items))
@@ -1327,8 +1328,8 @@ func TestBuildDeployment_WithConfigBlocks(t *testing.T) {
 	if secondSrc.ConfigMap == nil {
 		t.Fatalf("Config projection should be a ConfigMap source")
 	}
-	if secondSrc.ConfigMap.Name != w.WorkloadName()+"-config-feature_flags" {
-		t.Fatalf("ConfigMap Name = %q, want %q", secondSrc.ConfigMap.Name, w.WorkloadName()+"-config-feature_flags")
+	if secondSrc.ConfigMap.Name != w.WorkloadName()+"-config-feature-flags" {
+		t.Fatalf("ConfigMap Name = %q, want %q", secondSrc.ConfigMap.Name, w.WorkloadName()+"-config-feature-flags")
 	}
 	if len(secondSrc.ConfigMap.Items) != 1 {
 		t.Fatalf("ConfigMap Items count = %d, want 1", len(secondSrc.ConfigMap.Items))
@@ -1408,8 +1409,8 @@ func TestBuildStatefulSet_WithConfigBlocks(t *testing.T) {
 	if firstSrc.ConfigMap == nil {
 		t.Fatalf("Config projection should be a ConfigMap source")
 	}
-	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service_config" {
-		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service_config")
+	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service-config")
 	}
 	if len(firstSrc.ConfigMap.Items) != 1 {
 		t.Fatalf("ConfigMap Items count = %d, want 1", len(firstSrc.ConfigMap.Items))
@@ -1590,8 +1591,8 @@ func TestBuildConfigMaps(t *testing.T) {
 
 	// 第一个块：service_config（两个条目，data key = 条目名原样）。
 	firstCM := cms[0]
-	if firstCM.Name != w.WorkloadName()+"-config-service_config" {
-		t.Fatalf("Name = %q, want %q", firstCM.Name, w.WorkloadName()+"-config-service_config")
+	if firstCM.Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("Name = %q, want %q", firstCM.Name, w.WorkloadName()+"-config-service-config")
 	}
 	if firstCM.Namespace != cfg.Namespace {
 		t.Fatalf("Namespace = %q, want %q", firstCM.Namespace, cfg.Namespace)
@@ -1626,8 +1627,8 @@ func TestBuildConfigMaps(t *testing.T) {
 
 	// 第二个块：feature_flags（单个条目）。
 	secondCM := cms[1]
-	if secondCM.Name != w.WorkloadName()+"-config-feature_flags" {
-		t.Fatalf("Name = %q, want %q", secondCM.Name, w.WorkloadName()+"-config-feature_flags")
+	if secondCM.Name != w.WorkloadName()+"-config-feature-flags" {
+		t.Fatalf("Name = %q, want %q", secondCM.Name, w.WorkloadName()+"-config-feature-flags")
 	}
 	if got := secondCM.Data["beta"]; got != "true" {
 		t.Fatalf("Data[beta] = %q, want %q", got, "true")
@@ -1654,8 +1655,8 @@ func TestBuildConfigMaps_StatefulWorkload(t *testing.T) {
 		t.Fatalf("ConfigMaps count = %d, want 1", len(cms))
 	}
 
-	if cms[0].Name != w.WorkloadName()+"-config-service_config" {
-		t.Fatalf("Name = %q, want %q", cms[0].Name, w.WorkloadName()+"-config-service_config")
+	if cms[0].Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("Name = %q, want %q", cms[0].Name, w.WorkloadName()+"-config-service-config")
 	}
 	if got := cms[0].Data["greeting"]; got != "message: hello\n" {
 		t.Fatalf("Data[greeting] = %q, want %q", got, "message: hello\n")
@@ -1691,6 +1692,101 @@ func TestBuildConfigMaps_NameTooLong(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "service_config") {
 		t.Fatalf("error should contain block name %q, got: %v", "service_config", err)
+	}
+}
+
+// TestBuildConfigMaps_BlockNameCollision 覆盖清洗后碰撞 fail-fast
+// （specs/045-deploy-config/contracts/runtime-contract.md §2 校验 3）：不同原始块名
+// 清洗后得到同一 ConfigMap 名（service_config 与 service-config），错误须含计算名与
+// 两个原始块名。schema/domain 层唯一性均为清洗前唯一性，不排除此情况。
+func TestBuildConfigMaps_BlockNameCollision(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+		{
+			Block: "service-config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "limits", Type: "yaml", Value: "max: 10\n"},
+			},
+		},
+	}
+
+	_, err := BuildConfigMaps(w, cfg)
+	if err == nil {
+		t.Fatalf("BuildConfigMaps() expected error for sanitized block name collision")
+	}
+	wantName := configMapName(w, "service_config")
+	if !strings.Contains(err.Error(), wantName) {
+		t.Fatalf("error should contain computed name %q, got: %v", wantName, err)
+	}
+	if !strings.Contains(err.Error(), "service_config") {
+		t.Fatalf("error should contain original block name %q, got: %v", "service_config", err)
+	}
+	if !strings.Contains(err.Error(), "service-config") {
+		t.Fatalf("error should contain original block name %q, got: %v", "service-config", err)
+	}
+}
+
+// TestBuildConfigMaps_BlockNameSanitizesToEmpty 覆盖清洗后为空 fail-fast
+// （specs/045-deploy-config/contracts/runtime-contract.md §2 校验 2）：块名全为非法
+// 字符时清洗结果为空，合成名将错误地以 "-" 结尾。schema 合法块名以 [a-z] 开头
+// 不会触发，该分支仅防御绕过 schema 的非 CLI 客户端。
+func TestBuildConfigMaps_BlockNameSanitizesToEmpty(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "___",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+	}
+
+	_, err := BuildConfigMaps(w, cfg)
+	if err == nil {
+		t.Fatalf("BuildConfigMaps() expected error for block name that sanitizes to empty")
+	}
+	if !strings.Contains(err.Error(), w.WorkloadName()) {
+		t.Fatalf("error should contain workload name %q, got: %v", w.WorkloadName(), err)
+	}
+	if !strings.Contains(err.Error(), "___") {
+		t.Fatalf("error should contain original block name %q, got: %v", "___", err)
+	}
+}
+
+// Test_configMapName_DNS1123Subdomain 用 apimachinery 的真实 schema 校验
+// IsDNS1123Subdomain 作回归防线：fake client 不校验 metadata.name，而真实 API
+// server 拒绝含 "_" 的名字；本测试断言清洗后的 ConfigMap 名全部符合 RFC 1123
+// （specs/045-deploy-config/contracts/runtime-contract.md §2 命名与长度校验）。
+func Test_configMapName_DNS1123Subdomain(t *testing.T) {
+	w := testDeploymentWorkload()
+
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{name: "underscore block sanitizes to hyphen", block: "service_config"},
+		{name: "underscore block sanitizes to hyphen (feature flags)", block: "feature_flags"},
+		{name: "consecutive underscores collapse", block: "a__b"},
+		{name: "mixed underscore and hyphen", block: "x_y-z"},
+		{name: "already valid dns1123 subdomain unchanged", block: "service-config"},
+		{name: "plain lowercase name", block: "runtime"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := configMapName(w, tt.block)
+			if errs := validation.IsDNS1123Subdomain(got); len(errs) != 0 {
+				t.Fatalf("IsDNS1123Subdomain(%q) = %v, want no errors", got, errs)
+			}
+		})
 	}
 }
 
