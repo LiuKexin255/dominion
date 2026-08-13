@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1498,6 +1499,84 @@ func TestCloneArtifacts_DeepCopySecretBindings(t *testing.T) {
 	// then - original unaffected
 	if original[0].SecretBindings[0].SecretName != "db-secret" {
 		t.Fatalf(`original[0].SecretBindings[0].SecretName = %q, want "db-secret" (deep copy failed)`, original[0].SecretBindings[0].SecretName)
+	}
+}
+
+func TestCloneArtifacts_DeepCopyConfigBlocks(t *testing.T) {
+	// given - 全部字段（Block/Key/Type/Value）非零且互不相同，任何字段丢失都会被
+	// reflect.DeepEqual 捕获（specs/045-deploy-config/contracts/proto.md §5"测试防线"）
+	original := []*ArtifactSpec{
+		{
+			Name:  "api",
+			App:   "demo",
+			Image: "repo/demo:v1",
+			ConfigBlocks: []*ConfigBlock{
+				{
+					Block: "service_config",
+					Entries: []*ConfigEntry{
+						{Key: "greeting", Type: "yaml", Value: "message: hello"},
+						{Key: "limits", Type: "json", Value: `{"cpu": "100m"}`},
+					},
+				},
+				{
+					Block: "tracing_config",
+					Entries: []*ConfigEntry{
+						{Key: "endpoint", Type: "yaml", Value: "url: http://tracing:4318"},
+					},
+				},
+			},
+		},
+		{
+			Name: "worker", App: "demo", Image: "repo/worker:v1",
+		},
+	}
+
+	// when
+	cloned := cloneArtifacts(original)
+
+	// then - clone 与原始全字段相等（捕获丢字段）
+	if len(cloned) != 2 {
+		t.Fatalf("len(cloned) = %d, want 2", len(cloned))
+	}
+	if !reflect.DeepEqual(cloned, original) {
+		t.Fatalf("cloned = %#v, want deep-equal to original %#v (field dropped?)", cloned, original)
+	}
+
+	// when - mutate cloned artifact's block and entry fields
+	cloned[0].ConfigBlocks[0].Block = "hacked-block"
+	cloned[0].ConfigBlocks[0].Entries[0].Key = "hacked-key"
+	cloned[0].ConfigBlocks[0].Entries[0].Type = "hacked-type"
+	cloned[0].ConfigBlocks[0].Entries[0].Value = "hacked-value"
+
+	// then - original unaffected（捕获别名共享）
+	if original[0].ConfigBlocks[0].Block != "service_config" {
+		t.Fatalf(`original[0].ConfigBlocks[0].Block = %q, want "service_config" (deep copy failed)`, original[0].ConfigBlocks[0].Block)
+	}
+	if original[0].ConfigBlocks[0].Entries[0].Key != "greeting" {
+		t.Fatalf(`original[0].ConfigBlocks[0].Entries[0].Key = %q, want "greeting" (deep copy failed)`, original[0].ConfigBlocks[0].Entries[0].Key)
+	}
+	if original[0].ConfigBlocks[0].Entries[0].Type != "yaml" {
+		t.Fatalf(`original[0].ConfigBlocks[0].Entries[0].Type = %q, want "yaml" (deep copy failed)`, original[0].ConfigBlocks[0].Entries[0].Type)
+	}
+	if original[0].ConfigBlocks[0].Entries[0].Value != "message: hello" {
+		t.Fatalf(`original[0].ConfigBlocks[0].Entries[0].Value = %q, want "message: hello" (deep copy failed)`, original[0].ConfigBlocks[0].Entries[0].Value)
+	}
+
+	// when - mutate original artifact's other entry fields
+	original[0].ConfigBlocks[0].Entries[1].Key = "mutated-key"
+	original[0].ConfigBlocks[0].Entries[1].Value = "mutated-value"
+
+	// then - clone unaffected
+	if cloned[0].ConfigBlocks[0].Entries[1].Key != "limits" {
+		t.Fatalf(`cloned[0].ConfigBlocks[0].Entries[1].Key = %q, want "limits" (deep copy failed)`, cloned[0].ConfigBlocks[0].Entries[1].Key)
+	}
+	if cloned[0].ConfigBlocks[0].Entries[1].Value != `{"cpu": "100m"}` {
+		t.Fatalf(`cloned[0].ConfigBlocks[0].Entries[1].Value = %q, want %q (deep copy failed)`, cloned[0].ConfigBlocks[0].Entries[1].Value, `{"cpu": "100m"}`)
+	}
+
+	// and - 无 ConfigBlocks 的 artifact 克隆后为 nil
+	if cloned[1].ConfigBlocks != nil {
+		t.Fatalf("cloned[1].ConfigBlocks = %v, want nil", cloned[1].ConfigBlocks)
 	}
 }
 

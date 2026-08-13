@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1570,6 +1571,83 @@ func Test_toProtoArtifacts_fromProtoArtifacts_secretBindingsRoundTrip(t *testing
 				if got[0].SecretBindings[i].Key != want.Key {
 					t.Fatalf("SecretBindings[%d].Key = %q, want %q", i, got[0].SecretBindings[i].Key, want.Key)
 				}
+			}
+		})
+	}
+}
+
+func Test_toProtoArtifacts_fromProtoArtifacts_configBlocksRoundTrip(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain []*domain.ArtifactSpec
+	}{
+		{
+			name: "config blocks round-trip preserves all fields",
+			// 全部字段（Block/Key/Type/Value）非零区分性取值，任一映射点遗漏字段
+			// 即被 DeepEqual 捕获（specs/045-deploy-config/contracts/proto.md §5"测试防线"）。
+			domain: []*domain.ArtifactSpec{{
+				Name:  "api",
+				App:   "gateway",
+				Image: "example.com/gateway:v1",
+				ConfigBlocks: []*domain.ConfigBlock{
+					{
+						Block: "service_config",
+						Entries: []*domain.ConfigEntry{
+							{Key: "greeting", Type: "yaml", Value: "message: hello"},
+							{Key: "limits", Type: "json", Value: `{"cpu": "100m"}`},
+						},
+					},
+					{
+						Block: "tracing_config",
+						Entries: []*domain.ConfigEntry{
+							{Key: "endpoint", Type: "yaml", Value: "url: http://tracing:4318"},
+						},
+					},
+				},
+			}},
+		},
+		{
+			name: "nil config blocks stays nil",
+			domain: []*domain.ArtifactSpec{{
+				Name:         "api",
+				App:          "gateway",
+				Image:        "example.com/gateway:v1",
+				ConfigBlocks: nil,
+			}},
+		},
+		{
+			name: "empty config blocks stays nil",
+			domain: []*domain.ArtifactSpec{{
+				Name:         "api",
+				App:          "gateway",
+				Image:        "example.com/gateway:v1",
+				ConfigBlocks: []*domain.ConfigBlock{},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			proto := toProtoArtifacts(tt.domain)
+			got, err := fromProtoArtifacts(proto)
+
+			// then
+			if err != nil {
+				t.Fatalf("fromProtoArtifacts() error = %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("fromProtoArtifacts() len = %d, want 1", len(got))
+			}
+			if len(tt.domain[0].ConfigBlocks) == 0 {
+				// nil 与空 slice 均归一化为 nil（specs/045-deploy-config/contracts/proto.md §5）
+				if got[0].ConfigBlocks != nil {
+					t.Fatalf("ConfigBlocks = %v, want nil", got[0].ConfigBlocks)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got[0].ConfigBlocks, tt.domain[0].ConfigBlocks) {
+				t.Fatalf("ConfigBlocks round-trip = %#v, want %#v", got[0].ConfigBlocks, tt.domain[0].ConfigBlocks)
 			}
 		})
 	}

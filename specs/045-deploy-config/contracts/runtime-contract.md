@@ -18,7 +18,7 @@
 | ConfigMap 粒度 | **每个配置块一个 ConfigMap object**（block 即逻辑配置单元） | `builder.go` 命名；`executor.go` 创建 |
 | ConfigMap 名 | `{workload}-config-{block}`（每块一个） | `builder.go` 命名；长度校验见 §2 |
 | ConfigMap data key | 条目名（块内唯一，原样作为 key，不拼接 block） | `builder.go` |
-| 触发条件 | 仅当 artifact 有 ≥1 个 config entry 时创建 ConfigMap(s)/卷/挂载/env | `builder.go` |
+| 触发条件 | 仅当 artifact 有 ≥1 个 config block 时创建 ConfigMap(s)/卷/挂载/env | `builder.go` |
 
 > **对称性**：与 secret 约定（`DOMINION_SECRET_DIR` / `/mnt/dominion/secret` / 卷 `dominion-secrets`）完全对称，见 `specs/002-deploy-secret-config`。
 >
@@ -51,44 +51,44 @@ if len(name) > maxK8sResourceNameSize {
 
 ### ConfigMap 内容（`BuildConfigMaps`）
 
-由 `runtime/k8s/builder.go` 新增 `BuildConfigMaps(workload, cfg)` 生成，按配置块分组（block 首次出现顺序，保证确定性），返回 N 个 ConfigMap：
+由 `runtime/k8s/builder.go` 的 `BuildConfigMaps(workload, cfg)` 生成，**直接迭代 `workload.ConfigBlocks`**（层级结构本身就是 per-block，无需 builder 层分组），返回 N 个 ConfigMap，顺序按 ConfigBlocks 列表顺序（compiler 已保留 service.yaml 声明顺序，保证确定性）：
 
 ```go
-// BuildConfigMaps 按 block 分组，为每个块生成一个 ConfigMap。
+// BuildConfigMaps 为 workload 的每个 ConfigBlock 生成一个 ConfigMap。
 // data key = 条目名（块内唯一），value = 原始数据文本。
-// 返回顺序按 block 首次出现顺序（确定性）。
+// 返回顺序按 workload.ConfigBlocks 列表顺序（确定性，无需重新分组）。
 func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.ConfigMap, error)
 
 // 单块构造（伪代码）：
 //   data := map[string]string{}
-//   for _, ce := range entriesInBlock(workload.configEntries(), block) {
-//       data[ce.Key] = ce.Value        // key = 条目名，原样；不拼接 block
+//   for _, ce := range cb.Entries {          // cb 即一个 ConfigBlock
+//       data[ce.Key] = ce.Value              // key = 条目名，原样；不拼接 block
 //   }
-//   ObjectMeta: Name = workload.WorkloadName() + "-config-" + block,
+//   ObjectMeta: Name = workload.WorkloadName() + "-config-" + cb.Block,
 //               Namespace = cfg.Namespace,
 //               Labels 与 Deployment 一致（app/service/environment/managed-by）
 ```
 
-`configMapWorkload` 接口（`model.go`）不变——仍暴露扁平的 `configEntries() []*domain.ConfigEntry`；分块发生在 builder 层（按 `ce.Block` 分组）。
+`configMapWorkload` 接口（`model.go`）暴露 `configBlocks() []*domain.ConfigBlock`——消费侧直接持有层级结构，**不存在 builder 层 `configEntriesByBlock` 分组**（期望状态已层级化建模，详见 [proto.md §6](proto.md)）。
 
 ### 投影为容器文件（单一 projected volume，每块一个 source）
 
-`BuildDeployment` / `BuildStatefulSet` 中，当 `len(workload.ConfigEntries) > 0`，创建**单一** volume `dominion-config`（ProjectedVolume），其 `sources` 含**每个块一个** `ConfigMapProjection`；每个 source 的 `Items` 将该块的每个条目映射为容器内路径 `{block}/{key}`（`KeyToPath.Path` 允许子目录，用于还原目录层级）：
+`BuildDeployment` / `BuildStatefulSet` 中，当 `len(workload.ConfigBlocks) > 0`，创建**单一** volume `dominion-config`（ProjectedVolume），其 `sources` 含**每个块一个** `ConfigMapProjection`；每个 source 的 `Items` 将该块的每个条目映射为容器内路径 `{block}/{key}`（`KeyToPath.Path` 允许子目录，用于还原目录层级）：
 
 ```go
-// 按 block 首次出现顺序分组
+// 直接迭代 ConfigBlocks（层级结构，无需重新分组）
 var configSources []corev1.VolumeProjection
-for _, block := range distinctBlocksInOrder(workload.ConfigEntries) {
+for _, cb := range workload.ConfigBlocks {
     var items []corev1.KeyToPath
-    for _, ce := range entriesOfBlock(workload.ConfigEntries, block) {
+    for _, ce := range cb.Entries {
         items = append(items, corev1.KeyToPath{
-            Key:  ce.Key,                  // ConfigMap data key = 条目名
-            Path: block + "/" + ce.Key,    // 容器内路径 {block}/{key}
+            Key:  ce.Key,                    // ConfigMap data key = 条目名
+            Path: cb.Block + "/" + ce.Key,   // 容器内路径 {block}/{key}
         })
     }
     configSources = append(configSources, corev1.VolumeProjection{
         ConfigMap: &corev1.ConfigMapProjection{
-            LocalObjectReference: corev1.LocalObjectReference{Name: workload.WorkloadName() + "-config-" + block},
+            LocalObjectReference: corev1.LocalObjectReference{Name: workload.WorkloadName() + "-config-" + cb.Block},
             Items:                items,
         },
     })
@@ -113,9 +113,9 @@ containerEnv = append(containerEnv, corev1.EnvVar{Name: envConfigDir, Value: con
 
 ### executor apply/prune 集成
 
-`executor.go` 的 `applyInner` 在引用 ConfigMap 的 Deployment/StatefulSet 之前 apply **该 workload 的全部 per-block ConfigMap**（N 个，按 `BuildConfigMaps` 返回顺序逐个 `applyTypedConfigMap`，Get→Create-if-NotFound→Update-with-ResourceVersion）；prune 列表（`pruneResources`）按 label 清理 ConfigMap（`pruneConfigMaps` 已 label-based，无需结构性改动）；`buildExpectedApplyResources` 的 `configMaps` 集合须纳入每个有 config entry 的 workload 的每个 block 名 `{workload}-config-{block}`；`Delete` 的 `deleteConfigMaps` 已 label-based。
+`executor.go` 的 `applyInner` 在引用 ConfigMap 的 Deployment/StatefulSet 之前 apply **该 workload 的全部 per-block ConfigMap**（N 个，按 `BuildConfigMaps` 返回顺序逐个 `applyTypedConfigMap`，Get→Create-if-NotFound→Update-with-ResourceVersion）；prune 列表（`pruneResources`）按 label 清理 ConfigMap（`pruneConfigMaps` 已 label-based，无需结构性改动）；`buildExpectedApplyResources` 的 `configMaps` 集合由 `workload.ConfigBlocks` 直接派生每个 block 名 `{workload}-config-{block}`（无需 `configEntriesByBlock` 分组）；`Delete` 的 `deleteConfigMaps` 已 label-based。
 
-> **顺序**：全部 per-block ConfigMap MUST 在引用它们的 Deployment/StatefulSet 之前 apply（Deployment 投影 ConfigMap，ConfigMap 不存在时 Pod 启动失败）。同一 workload 的多个 per-block ConfigMap 间无依赖，apply 顺序按 `BuildConfigMaps` 返回顺序（block 首次出现序）即可。
+> **顺序**：全部 per-block ConfigMap MUST 在引用它们的 Deployment/StatefulSet 之前 apply（Deployment 投影 ConfigMap，ConfigMap 不存在时 Pod 启动失败）。同一 workload 的多个 per-block ConfigMap 间无依赖，apply 顺序按 `BuildConfigMaps` 返回顺序（ConfigBlocks 列表序）即可。
 
 ---
 

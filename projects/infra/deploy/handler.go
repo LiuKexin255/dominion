@@ -507,7 +507,7 @@ func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
 			Http:           toProtoArtifactHTTP(artifact.HTTP),
 			Env:            artifact.Env,
 			SecretBindings: toProtoSecretBindings(artifact.SecretBindings),
-			ConfigEntries:  toProtoConfigEntries(artifact.ConfigEntries),
+			ConfigBlocks:   toProtoConfigBlocks(artifact.ConfigBlocks),
 		})
 	}
 
@@ -536,7 +536,7 @@ func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, erro
 			HTTP:           fromProtoArtifactHTTP(artifact.GetHttp()),
 			Env:            normalizeEnv(artifact.GetEnv()),
 			SecretBindings: fromProtoSecretBindings(artifact.GetSecretBindings()),
-			ConfigEntries:  fromProtoConfigEntries(artifact.GetConfigEntries()),
+			ConfigBlocks:   fromProtoConfigBlocks(artifact.GetConfigBlocks()),
 		})
 	}
 
@@ -641,40 +641,53 @@ func fromProtoSecretBindings(bindings []*SecretBinding) []*domain.SecretBinding 
 	return result
 }
 
-func toProtoConfigEntries(entries []*domain.ConfigEntry) []*ConfigEntry {
-	if len(entries) == 0 {
+func toProtoConfigBlocks(blocks []*domain.ConfigBlock) []*ConfigBlock {
+	if len(blocks) == 0 {
 		return nil
 	}
 
-	result := make([]*ConfigEntry, 0, len(entries))
-	for _, ce := range entries {
-		result = append(result, &ConfigEntry{
-			Block: ce.Block,
-			Key:   ce.Key,
-			Type:  ce.Type,
-			Value: ce.Value,
-		})
+	result := make([]*ConfigBlock, 0, len(blocks))
+	for _, cb := range blocks {
+		protoBlock := &ConfigBlock{
+			Block: cb.Block,
+		}
+		for _, ce := range cb.Entries {
+			protoBlock.Entries = append(protoBlock.Entries, &ConfigEntry{
+				Key:   ce.Key,
+				Type:  ce.Type,
+				Value: ce.Value,
+			})
+		}
+		result = append(result, protoBlock)
 	}
 
 	return result
 }
 
-func fromProtoConfigEntries(entries []*ConfigEntry) []*domain.ConfigEntry {
-	if len(entries) == 0 {
+func fromProtoConfigBlocks(blocks []*ConfigBlock) []*domain.ConfigBlock {
+	if len(blocks) == 0 {
 		return nil
 	}
 
-	result := make([]*domain.ConfigEntry, 0, len(entries))
-	for _, ce := range entries {
-		if ce == nil {
+	result := make([]*domain.ConfigBlock, 0, len(blocks))
+	for _, cb := range blocks {
+		if cb == nil {
 			continue
 		}
-		result = append(result, &domain.ConfigEntry{
-			Block: ce.GetBlock(),
-			Key:   ce.GetKey(),
-			Type:  ce.GetType(),
-			Value: ce.GetValue(),
-		})
+		block := &domain.ConfigBlock{
+			Block: cb.GetBlock(),
+		}
+		for _, ce := range cb.GetEntries() {
+			if ce == nil {
+				continue
+			}
+			block.Entries = append(block.Entries, &domain.ConfigEntry{
+				Key:   ce.GetKey(),
+				Type:  ce.GetType(),
+				Value: ce.GetValue(),
+			})
+		}
+		result = append(result, block)
 	}
 
 	return result

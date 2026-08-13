@@ -868,14 +868,14 @@ func TestK8sRuntime_ReservedEnvironmentVariableNames(t *testing.T) {
 	}
 }
 
-func newExecutorTestConfigArtifactSpec(name string, app string, port int32, entries []*domain.ConfigEntry) *domain.ArtifactSpec {
+func newExecutorTestConfigArtifactSpec(name string, app string, port int32, blocks []*domain.ConfigBlock) *domain.ArtifactSpec {
 	return &domain.ArtifactSpec{
-		Name:          name,
-		App:           app,
-		Image:         "repo/" + app + ":v1",
-		Replicas:      1,
-		Ports:         []domain.ArtifactPortSpec{{Name: "http", Port: port}},
-		ConfigEntries: entries,
+		Name:         name,
+		App:          app,
+		Image:        "repo/" + app + ":v1",
+		Replicas:     1,
+		Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: port}},
+		ConfigBlocks: blocks,
 	}
 }
 
@@ -887,9 +887,9 @@ func TestK8sRuntimeApplyCreatesConfigMaps(t *testing.T) {
 	runtime := newTestK8sRuntime(t)
 	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
 		Artifacts: []*domain.ArtifactSpec{
-			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-				{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+				{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
+				{Block: "feature_flags", Entries: []*domain.ConfigEntry{{Key: "beta", Type: "yaml", Value: "true"}}},
 			}),
 			newExecutorTestStatefulBasicArtifactSpec("cache", "demo", 6379, 1),
 		},
@@ -946,10 +946,10 @@ func TestK8sRuntimeApplyCreatesConfigMaps(t *testing.T) {
 		t.Fatalf("Data[beta] = %q, want %q", got, "true")
 	}
 
-	// Stateful artifact without config entries gets no ConfigMap.
+	// Stateful artifact without config blocks gets no ConfigMap.
 	noCMName := objects.StatefulWorkloads[0].WorkloadName() + "-config-service_config"
 	if _, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, noCMName, metav1.GetOptions{}); err == nil {
-		t.Fatalf("configmap %s should not exist without config entries", noCMName)
+		t.Fatalf("configmap %s should not exist without config blocks", noCMName)
 	}
 
 	// 全部 per-block ConfigMap 先于 Deployment create。
@@ -983,8 +983,8 @@ func TestK8sRuntimeApplyConfigMapNameTooLongFailsFast(t *testing.T) {
 	}
 	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
 		Artifacts: []*domain.ArtifactSpec{
-			newExecutorTestConfigArtifactSpec(serviceName, "demo", 8080, []*domain.ConfigEntry{
-				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			newExecutorTestConfigArtifactSpec(serviceName, "demo", 8080, []*domain.ConfigBlock{
+				{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
 			}),
 		},
 	})
@@ -1013,9 +1013,9 @@ func TestK8sRuntimeApplyConfigMapNameTooLongFailsFast(t *testing.T) {
 	}
 }
 
-// TestK8sRuntimeApplyNoConfigEntriesCreatesNoConfigMap 覆盖 002 R6 对称行为：
-// 无 ConfigEntries 的 artifact 不产生 ConfigMap（specs/045-deploy-config/data-model.md §5）。
-func TestK8sRuntimeApplyNoConfigEntriesCreatesNoConfigMap(t *testing.T) {
+// TestK8sRuntimeApplyNoConfigBlocksCreatesNoConfigMap 覆盖 002 R6 对称行为：
+// 无 ConfigBlocks 的 artifact 不产生 ConfigMap（specs/045-deploy-config/data-model.md §5）。
+func TestK8sRuntimeApplyNoConfigBlocksCreatesNoConfigMap(t *testing.T) {
 	ctx := context.Background()
 	runtime := newTestK8sRuntime(t)
 	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
@@ -1034,7 +1034,7 @@ func TestK8sRuntimeApplyNoConfigEntriesCreatesNoConfigMap(t *testing.T) {
 	}
 	depName := objects.Deployments[0].WorkloadName() + "-config-service_config"
 	if _, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, depName, metav1.GetOptions{}); err == nil {
-		t.Fatalf("configmap %s should not exist when no config entries", depName)
+		t.Fatalf("configmap %s should not exist when no config blocks", depName)
 	}
 }
 
@@ -1045,8 +1045,8 @@ func TestK8sRuntimeApplyConfigMapUsesCreateOrUpdate(t *testing.T) {
 	runtime := newTestK8sRuntime(t)
 	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
 		Artifacts: []*domain.ArtifactSpec{
-			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+				{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
 			}),
 		},
 	})
@@ -1110,8 +1110,8 @@ func TestK8sRuntimeApplyPrunesConfigMaps(t *testing.T) {
 			name: "remove config selection prunes configmap but keeps deployment",
 			seedState: &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
-					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+						{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
 					}),
 				},
 			},
@@ -1131,15 +1131,15 @@ func TestK8sRuntimeApplyPrunesConfigMaps(t *testing.T) {
 			name: "keep selected configmap across reapply",
 			seedState: &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
-					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+						{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
 					}),
 				},
 			},
 			desiredState: &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
-					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+						{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
 					}),
 				},
 			},
@@ -1153,16 +1153,16 @@ func TestK8sRuntimeApplyPrunesConfigMaps(t *testing.T) {
 			name: "remove one block prunes its configmap but keeps other blocks",
 			seedState: &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
-					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-						{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+						{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
+						{Block: "feature_flags", Entries: []*domain.ConfigEntry{{Key: "beta", Type: "yaml", Value: "true"}}},
 					}),
 				},
 			},
 			desiredState: &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
-					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+						{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
 					}),
 				},
 			},
@@ -1202,9 +1202,9 @@ func TestK8sRuntimeDeleteDeletesConfigMaps(t *testing.T) {
 	runtime := newTestK8sRuntime(t)
 	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
 		Artifacts: []*domain.ArtifactSpec{
-			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
-				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-				{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigBlock{
+				{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
+				{Block: "feature_flags", Entries: []*domain.ConfigEntry{{Key: "beta", Type: "yaml", Value: "true"}}},
 			}),
 		},
 	})
@@ -1239,17 +1239,17 @@ func Test_buildExpectedApplyResources_includesConfigMaps(t *testing.T) {
 
 	objects := &DeployObjects{
 		Deployments: []*DeploymentWorkload{
-			{ServiceName: "api", EnvironmentName: envName, App: "demo", Replicas: 1, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 8080}}, ConfigEntries: []*domain.ConfigEntry{{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
+			{ServiceName: "api", EnvironmentName: envName, App: "demo", Replicas: 1, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 8080}}, ConfigBlocks: []*domain.ConfigBlock{{Block: "service_config", Entries: []*domain.ConfigEntry{{Key: "greeting", Type: "yaml", Value: "message: hello\n"}}}}},
 			{ServiceName: "plain", EnvironmentName: envName, App: "demo", Replicas: 1, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 8081}}},
 		},
 		StatefulWorkloads: []*StatefulWorkload{
-			{ServiceName: "cache", EnvironmentName: envName, App: "demo", Replicas: 3, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 6379}}, ConfigEntries: []*domain.ConfigEntry{{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"}, {Block: "runtime_tuning", Key: "gc", Type: "yaml", Value: "off"}}},
+			{ServiceName: "cache", EnvironmentName: envName, App: "demo", Replicas: 3, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 6379}}, ConfigBlocks: []*domain.ConfigBlock{{Block: "feature_flags", Entries: []*domain.ConfigEntry{{Key: "beta", Type: "yaml", Value: "true"}}}, {Block: "runtime_tuning", Entries: []*domain.ConfigEntry{{Key: "gc", Type: "yaml", Value: "off"}}}}},
 		},
 	}
 
 	resources := buildExpectedApplyResources(objects)
 
-	// 有 config entries 的 workload 的每个 block 名都进入 expected 集合。
+	// 有 config blocks 的 workload 的每个 block 名都进入 expected 集合。
 	apiCMName := newObjectName(WorkloadKindDeployment, envName, "api") + "-config-service_config"
 	if _, ok := resources.configMaps[apiCMName]; !ok {
 		t.Fatalf("expected configmap %q in expected resources", apiCMName)
@@ -1262,9 +1262,9 @@ func Test_buildExpectedApplyResources_includesConfigMaps(t *testing.T) {
 	if _, ok := resources.configMaps[cacheTuningCMName]; !ok {
 		t.Fatalf("expected configmap %q in expected resources", cacheTuningCMName)
 	}
-	// 无 ConfigEntries 的 workload 不产生 ConfigMap 期望条目。
+	// 无 ConfigBlocks 的 workload 不产生 ConfigMap 期望条目。
 	plainCMName := newObjectName(WorkloadKindDeployment, envName, "plain") + "-config-service_config"
 	if _, ok := resources.configMaps[plainCMName]; ok {
-		t.Fatalf("configmap %q should not be expected without config entries", plainCMName)
+		t.Fatalf("configmap %q should not be expected without config blocks", plainCMName)
 	}
 }

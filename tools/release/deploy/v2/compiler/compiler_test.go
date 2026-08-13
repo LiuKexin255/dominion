@@ -1350,10 +1350,21 @@ func TestCompile_ConfigSelections(t *testing.T) {
 						Name: "grpc",
 						Port: 50051,
 					}},
-					ConfigEntries: []*deploy.ConfigEntry{
-						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-						{Block: "service_config", Key: "limits", Type: "json", Value: `{"maxConn": 100}`},
-						{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+					ConfigBlocks: []*deploy.ConfigBlock{
+						{
+							Block: "service_config",
+							// 条目保留 service.yaml data[] 声明顺序（greeting 在 limits 前）。
+							Entries: []*deploy.ConfigEntry{
+								{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+								{Key: "limits", Type: "json", Value: `{"maxConn": 100}`},
+							},
+						},
+						{
+							Block: "feature_flags",
+							Entries: []*deploy.ConfigEntry{
+								{Key: "beta", Type: "yaml", Value: "true"},
+							},
+						},
 					},
 				}},
 			},
@@ -1451,8 +1462,13 @@ func TestCompile_ConfigSelections(t *testing.T) {
 						Name: "grpc",
 						Port: 50051,
 					}},
-					ConfigEntries: []*deploy.ConfigEntry{
-						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					ConfigBlocks: []*deploy.ConfigBlock{
+						{
+							Block: "service_config",
+							Entries: []*deploy.ConfigEntry{
+								{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+							},
+						},
 					},
 				}},
 			},

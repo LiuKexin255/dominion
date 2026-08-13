@@ -106,7 +106,7 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 	// ConfigMap 先于引用它的 Deployment/StatefulSet apply（Deployment 投影 ConfigMap，
 	// 不存在时 Pod 启动失败，见 specs/045-deploy-config/contracts/runtime-contract.md §2）。
 	for _, workload := range objects.Deployments {
-		if len(workload.ConfigEntries) == 0 {
+		if len(workload.ConfigBlocks) == 0 {
 			continue
 		}
 		if err := r.applyConfigMaps(ctx, workload); err != nil {
@@ -114,7 +114,7 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 		}
 	}
 	for _, workload := range objects.StatefulWorkloads {
-		if len(workload.ConfigEntries) == 0 {
+		if len(workload.ConfigBlocks) == 0 {
 			continue
 		}
 		if err := r.applyConfigMaps(ctx, workload); err != nil {
@@ -228,8 +228,10 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.deployments[workload.WorkloadName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
-		for _, be := range configEntriesByBlock(workload.ConfigEntries) {
-			resources.configMaps[configMapName(workload, be.block)] = struct{}{}
+		// 期望状态已层级化：每个 ConfigBlock 映射一个 ConfigMap
+		// "{workload}-config-{block}"（specs/045-deploy-config/contracts/runtime-contract.md §2）。
+		for _, cb := range workload.ConfigBlocks {
+			resources.configMaps[configMapName(workload, cb.Block)] = struct{}{}
 		}
 	}
 	for _, workload := range objects.HTTPRoutes {
@@ -252,8 +254,8 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.statefulSets[workload.WorkloadName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
-		for _, be := range configEntriesByBlock(workload.ConfigEntries) {
-			resources.configMaps[configMapName(workload, be.block)] = struct{}{}
+		for _, cb := range workload.ConfigBlocks {
+			resources.configMaps[configMapName(workload, cb.Block)] = struct{}{}
 		}
 	}
 
@@ -1052,7 +1054,7 @@ func applyTypedSecret(ctx context.Context, name string, client coretypedv1.Secre
 	return nil
 }
 
-// applyConfigMaps 按 BuildConfigMaps 返回顺序（block 首次出现序）逐个 apply workload
+// applyConfigMaps 按 BuildConfigMaps 返回顺序（ConfigBlocks 列表顺序）逐个 apply workload
 // 的全部 per-block ConfigMap（Get→Create-if-NotFound→Update-with-ResourceVersion，
 // specs/045-deploy-config/contracts/runtime-contract.md §2）。
 func (r *K8sRuntime) applyConfigMaps(ctx context.Context, workload configMapWorkload) error {

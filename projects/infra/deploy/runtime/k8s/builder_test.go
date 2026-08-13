@@ -1223,10 +1223,10 @@ func TestBuildStatefulSet_WithSecretBindings(t *testing.T) {
 
 // --- Config Entries Tests ---
 
-func TestBuildDeployment_WithoutConfigEntries(t *testing.T) {
+func TestBuildDeployment_WithoutConfigBlocks(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testDeploymentWorkload()
-	w.ConfigEntries = nil
+	w.ConfigBlocks = nil
 
 	deploy, err := BuildDeployment(w, cfg)
 	if err != nil {
@@ -1236,37 +1236,47 @@ func TestBuildDeployment_WithoutConfigEntries(t *testing.T) {
 	// Verify no config volume or volume mount.
 	for _, vol := range deploy.Spec.Template.Spec.Volumes {
 		if vol.Name == configVolumeName {
-			t.Fatalf("Should not have config volume when ConfigEntries is nil")
+			t.Fatalf("Should not have config volume when ConfigBlocks is nil")
 		}
 	}
 	container := deploy.Spec.Template.Spec.Containers[0]
 	for _, mount := range container.VolumeMounts {
 		if mount.Name == configVolumeName {
-			t.Fatalf("Should not have config volume mount when ConfigEntries is nil")
+			t.Fatalf("Should not have config volume mount when ConfigBlocks is nil")
 		}
 	}
 
 	// Verify no DOMINION_CONFIG_DIR env var.
 	for _, e := range container.Env {
 		if e.Name == envConfigDir {
-			t.Fatalf("Should not have %s env var when ConfigEntries is nil", envConfigDir)
+			t.Fatalf("Should not have %s env var when ConfigBlocks is nil", envConfigDir)
 		}
 	}
 
 	// Verify backward compat: same env count as before.
 	// LOG_LEVEL + 3 reserved + 2 client TLS = 6.
 	if len(container.Env) != 6 {
-		t.Fatalf("Env count = %d, want 6 (backward compat when no config entries)", len(container.Env))
+		t.Fatalf("Env count = %d, want 6 (backward compat when no config blocks)", len(container.Env))
 	}
 }
 
-func TestBuildDeployment_WithConfigEntries(t *testing.T) {
+func TestBuildDeployment_WithConfigBlocks(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testDeploymentWorkload()
-	w.ConfigEntries = []*domain.ConfigEntry{
-		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
-		{Block: "service_config", Key: "limits", Type: "yaml", Value: "max: 10\n"},
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+				{Key: "limits", Type: "yaml", Value: "max: 10\n"},
+			},
+		},
+		{
+			Block: "feature_flags",
+			Entries: []*domain.ConfigEntry{
+				{Key: "beta", Type: "yaml", Value: "true"},
+			},
+		},
 	}
 
 	deploy, err := BuildDeployment(w, cfg)
@@ -1287,7 +1297,7 @@ func TestBuildDeployment_WithConfigEntries(t *testing.T) {
 	if configVol.Projected == nil {
 		t.Fatalf("Config volume should use projected source")
 	}
-	// 每个配置块一个 ConfigMap source（按 block 首次出现顺序）。
+	// 每个配置块一个 ConfigMap source（按 ConfigBlocks 列表顺序）。
 	if len(configVol.Projected.Sources) != 2 {
 		t.Fatalf("Config projected Sources count = %d, want 2", len(configVol.Projected.Sources))
 	}
@@ -1354,12 +1364,22 @@ func TestBuildDeployment_WithConfigEntries(t *testing.T) {
 	}
 }
 
-func TestBuildStatefulSet_WithConfigEntries(t *testing.T) {
+func TestBuildStatefulSet_WithConfigBlocks(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testStatefulWorkload()
-	w.ConfigEntries = []*domain.ConfigEntry{
-		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+		{
+			Block: "feature_flags",
+			Entries: []*domain.ConfigEntry{
+				{Key: "beta", Type: "yaml", Value: "true"},
+			},
+		},
 	}
 
 	sts, err := BuildStatefulSet(w, cfg)
@@ -1380,7 +1400,7 @@ func TestBuildStatefulSet_WithConfigEntries(t *testing.T) {
 	if configVol.Projected == nil {
 		t.Fatalf("Config volume should use projected source")
 	}
-	// 每个配置块一个 ConfigMap source（按 block 首次出现顺序）。
+	// 每个配置块一个 ConfigMap source（按 ConfigBlocks 列表顺序）。
 	if len(configVol.Projected.Sources) != 2 {
 		t.Fatalf("Config projected Sources count = %d, want 2", len(configVol.Projected.Sources))
 	}
@@ -1431,8 +1451,13 @@ func TestBuildDeployment_UserEnvAndConfigCoexist(t *testing.T) {
 		"APP_DEBUG": "true",
 		"GREETING":  "hi",
 	}
-	w.ConfigEntries = []*domain.ConfigEntry{
-		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
 	}
 
 	deploy, err := BuildDeployment(w, cfg)
@@ -1460,7 +1485,7 @@ func TestBuildDeployment_UserEnvAndConfigCoexist(t *testing.T) {
 		}
 	}
 	if !foundConfigVol {
-		t.Fatalf("Config volume %q not found when config entries present", configVolumeName)
+		t.Fatalf("Config volume %q not found when config blocks present", configVolumeName)
 	}
 	var foundConfigMount bool
 	for _, mount := range container.VolumeMounts {
@@ -1470,7 +1495,7 @@ func TestBuildDeployment_UserEnvAndConfigCoexist(t *testing.T) {
 		}
 	}
 	if !foundConfigMount {
-		t.Fatalf("Config volume mount %q not found when config entries present", configVolumeName)
+		t.Fatalf("Config volume mount %q not found when config blocks present", configVolumeName)
 	}
 	if envMap[envConfigDir] != configMountPath {
 		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
@@ -1488,8 +1513,13 @@ func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
 	w.Env = map[string]string{
 		"APP_DEBUG": "true",
 	}
-	w.ConfigEntries = []*domain.ConfigEntry{
-		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
 	}
 
 	sts, err := BuildStatefulSet(w, cfg)
@@ -1512,7 +1542,7 @@ func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
 		}
 	}
 	if !foundConfigVol {
-		t.Fatalf("Config volume %q not found when config entries present", configVolumeName)
+		t.Fatalf("Config volume %q not found when config blocks present", configVolumeName)
 	}
 	var foundConfigMount bool
 	for _, mount := range container.VolumeMounts {
@@ -1522,7 +1552,7 @@ func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
 		}
 	}
 	if !foundConfigMount {
-		t.Fatalf("Config volume mount %q not found when config entries present", configVolumeName)
+		t.Fatalf("Config volume mount %q not found when config blocks present", configVolumeName)
 	}
 	if envMap[envConfigDir] != configMountPath {
 		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
@@ -1532,10 +1562,20 @@ func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
 func TestBuildConfigMaps(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testDeploymentWorkload()
-	w.ConfigEntries = []*domain.ConfigEntry{
-		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
-		{Block: "service_config", Key: "limits", Type: "yaml", Value: "max: 10\n"},
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+				{Key: "limits", Type: "yaml", Value: "max: 10\n"},
+			},
+		},
+		{
+			Block: "feature_flags",
+			Entries: []*domain.ConfigEntry{
+				{Key: "beta", Type: "yaml", Value: "true"},
+			},
+		},
 	}
 
 	cms, err := BuildConfigMaps(w, cfg)
@@ -1543,7 +1583,7 @@ func TestBuildConfigMaps(t *testing.T) {
 		t.Fatalf("BuildConfigMaps() error: %v", err)
 	}
 
-	// 每个配置块一个 ConfigMap，返回顺序按 block 首次出现顺序（确定性）。
+	// 每个配置块一个 ConfigMap，返回顺序按 ConfigBlocks 列表顺序（确定性）。
 	if len(cms) != 2 {
 		t.Fatalf("ConfigMaps count = %d, want 2", len(cms))
 	}
@@ -1597,8 +1637,13 @@ func TestBuildConfigMaps(t *testing.T) {
 func TestBuildConfigMaps_StatefulWorkload(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testStatefulWorkload()
-	w.ConfigEntries = []*domain.ConfigEntry{
-		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
 	}
 
 	cms, err := BuildConfigMaps(w, cfg)
@@ -1628,8 +1673,13 @@ func TestBuildConfigMaps_NameTooLong(t *testing.T) {
 	if len(w.WorkloadName()) != maxK8sResourceNameSize {
 		t.Fatalf("test setup error: workload name %q must be exactly %d chars", w.WorkloadName(), maxK8sResourceNameSize)
 	}
-	w.ConfigEntries = []*domain.ConfigEntry{
-		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
 	}
 
 	_, err := BuildConfigMaps(w, cfg)

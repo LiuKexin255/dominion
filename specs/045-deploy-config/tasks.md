@@ -162,10 +162,41 @@
 ### Tasks
 
 - [X] T028 Update contracts for per-block ConfigMap mapping（`contracts/runtime-contract.md` §1/§2、`data-model.md` §4/§5/图、`research.md` R5/R6；命名 `{workload}-config-{block}` + builder 63 字符 fail-fast 校验）
-- [ ] T029 Implement per-block ConfigMap in `projects/infra/deploy/runtime/k8s/` per updated `specs/045-deploy-config/contracts/runtime-contract.md` §2: `BuildConfigMap` → `BuildConfigMaps`（按 block 首次出现顺序分组，data key=条目名，长度校验 fail-fast）；`BuildDeployment`/`BuildStatefulSet` 投影段改为单一 projected volume + 每块一个 ConfigMapProjection source（`KeyToPath{Key: 条目名, Path: "{block}/{key}"}`）；executor apply per-block 循环 + `buildExpectedApplyResources` per-block 名集合；更新 builder/executor 单测（依赖 T028）
+- [X] T029 Implement per-block ConfigMap in `projects/infra/deploy/runtime/k8s/` per updated `specs/045-deploy-config/contracts/runtime-contract.md` §2: `BuildConfigMap` → `BuildConfigMaps`（按 block 首次出现顺序分组，data key=条目名，长度校验 fail-fast）；`BuildDeployment`/`BuildStatefulSet` 投影段改为单一 projected volume + 每块一个 ConfigMapProjection source（`KeyToPath{Key: 条目名, Path: "{block}/{key}"}`）；executor apply per-block 循环 + `buildExpectedApplyResources` per-block 名集合；更新 builder/executor 单测（依赖 T028）
 - [ ] T030 Re-run large tests T026/T027 after deploy control plane upgrade（per-block 物化变更后端到端复验，原则 VI；控制面镜像由用户升级）
 
 **Checkpoint**: per-block ConfigMap 物化端到端验证通过，容器内文件布局与 SDK 行为不变。
+
+---
+
+
+---
+
+## Phase 7: 修订 — 期望状态 proto 层级化对齐（用户修改意见第二轮）
+
+**Purpose**: 按用户修改意见将期望状态数据模型从扁平 `repeated ConfigEntry{block,key,type,value}` 重构为层级 `repeated ConfigBlock{block, entries[]{key,type,value}}`，使 proto → domain → storage → converter → model 全链路与 service.yaml `configs[].data[]` 源、per-block ConfigMap 物化目标三处结构一致，消除 builder 层 `configEntriesByBlock` 分组中间步骤。字段号 12 复用（特性未发布、无生产数据）。SDK、运行时文件布局 `{block}/{key}`、CLI schema/解析均不变；compiler 产出直接为 `[]*ConfigBlock`（保留声明顺序，不展平）。
+
+### 文档清单
+
+- **代码规范文档**: `style/golang.md`（+ [Google Go Style Guide](https://google.github.io/styleguide/go/guide)）；`style/mongo.md`（T035 storage 映射）；`style/api.md`（T031 proto 注释与风格）
+- **官方文档**: [Protocol Buffers Language Guide](https://protobuf.dev/programming-guides/proto3/)；[Kubernetes ConfigMap](https://kubernetes.io/docs/concepts/configuration/configmap/)；[Kubernetes Projected Volumes](https://kubernetes.io/docs/concepts/storage/projected-volumes/)
+- **技术文章**: 无
+
+### Tasks — 控制面链（严格顺序：proto 触发生成，下游同步）
+
+- [X] T031 Rewrite proto config messages in `projects/infra/deploy/deploy.proto` per `specs/045-deploy-config/contracts/proto.md` §1: `ConfigBlock{block=1, entries=2}` + `ConfigEntry{key=1, type=2, value=3}`；`ArtifactSpec` 12 号位改为 `repeated ConfigBlock config_blocks = 12`（删除旧 `config_entries`/扁平 ConfigEntry）；regenerate proto Go code（bazel 生成）
+- [X] T032 Rewrite domain config types in `projects/infra/deploy/domain/spec.go` per `specs/045-deploy-config/contracts/proto.md` §2: `ConfigBlock{Block,Entries}` + `ConfigEntry{Key,Type,Value}` + 双 `Validate()`；`ArtifactSpec.ConfigBlocks`；`ArtifactSpec.Validate()` 校验 VR-CB-6（块名不重复）+ VR-CE-2（块内 key 不重复）+ 各字段非空；update `spec_test.go`（层级用例 + 块名重复/块内 key 重复/跨块同 key 非重复）（依赖 T031）
+- [X] T033 Update `cloneArtifacts` deep-copy in `projects/infra/deploy/domain/environment.go` to two-level copy（外层 ConfigBlocks + 内层 Entries）（依赖 T032）
+- [X] T034 Replace `to/fromProtoConfigEntries` with `to/fromProtoConfigBlocks` in `projects/infra/deploy/handler.go` and wire into `to/fromProtoArtifacts`（依赖 T031、T032）
+- [X] T035 Rewrite storage mappings in `projects/infra/deploy/storage/mongo.go`: `mongoConfigBlock{block,entries[]}` + `mongoConfigEntry{key,type,value}` + `configBlocksTo/FromMongo`；`mongoArtifactSpec.ConfigBlocks`（bson `config_blocks,omitempty`）；update `mongo_test.go`（层级 round trip/旧文档兼容 case 字段名）（依赖 T032）
+- [X] T036 Rename workload field `ConfigEntries`→`ConfigBlocks` on `DeploymentWorkload`/`StatefulWorkload` in `projects/infra/deploy/runtime/k8s/model.go`；`configMapWorkload` 接口 `configEntries()`→`configBlocks()`（依赖 T032）
+- [X] T037 Update converter pass-through to `ConfigBlocks: artifact.ConfigBlocks` in `projects/infra/deploy/runtime/k8s/converter.go`（依赖 T032、T036）
+- [X] T038 Update compiler config compilation in `tools/release/deploy/v2/compiler/compiler.go` to emit `[]*deploy.ConfigBlock`（选中块整体进入，条目保留 `block.Data` 声明顺序，不展平）；update `compiler_test.go`（依赖 T031）
+- [X] T039 Simplify builder in `projects/infra/deploy/runtime/k8s/builder.go`: 删除 `blockEntries`/`configEntriesByBlock`；`BuildConfigMaps`/`buildConfigProjection` 直接迭代 `workload.configBlocks()`；触发条件 `len(workload.ConfigBlocks)>0`；`configMapName` 不变；update `builder_test.go`（per-block 断言不变，输入改 ConfigBlocks）（依赖 T036、T037）
+- [X] T040 Update executor in `projects/infra/deploy/runtime/k8s/executor.go`: applyInner 触发条件按 ConfigBlocks；`buildExpectedApplyResources` 直接迭代 `workload.ConfigBlocks`；update `executor_test.go`（helper 入参与用例构造改层级输入）（依赖 T039）
+- [ ] T041 Re-run large tests T026/T027 after deploy control plane upgrade（层级化物化等价复验，原则 VI；容器内文件布局与 SDK 行为不变）（依赖 T022/T025 及本 phase 全部 task；控制面镜像由用户升级）
+
+**Checkpoint**: 期望状态层级结构与 per-block 物化三处一致（service.yaml 源 / proto 期望状态 / ConfigMap 目标），全链路单测与大型测试全绿。
 
 ---
 

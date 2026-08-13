@@ -520,34 +520,56 @@ func TestArtifactSpecs_SecretBindings_BSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestArtifactSpecs_ConfigEntriesPersistence(t *testing.T) {
+func TestArtifactSpecs_ConfigBlocksPersistence(t *testing.T) {
 	tests := []struct {
 		name       string
 		source     *domain.ArtifactSpec
 		mongo      mongoArtifactSpec
-		want       []*domain.ConfigEntry
+		want       []*domain.ConfigBlock
 		checkRound bool
 	}{
 		{
-			name: "config entries round trip",
+			name: "config blocks round trip",
 			source: &domain.ArtifactSpec{
 				Name:     "svc",
 				App:      "app",
 				Image:    "image:v1",
 				Replicas: 1,
-				ConfigEntries: []*domain.ConfigEntry{
-					{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-					{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+				ConfigBlocks: []*domain.ConfigBlock{
+					{
+						Block: "service_config",
+						Entries: []*domain.ConfigEntry{
+							{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+							{Key: "limits", Type: "json", Value: `{"maxConn": 100}`},
+						},
+					},
+					{
+						Block: "feature_flags",
+						Entries: []*domain.ConfigEntry{
+							{Key: "beta", Type: "yaml", Value: "true"},
+						},
+					},
 				},
 			},
-			want: []*domain.ConfigEntry{
-				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-				{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+			want: []*domain.ConfigBlock{
+				{
+					Block: "service_config",
+					Entries: []*domain.ConfigEntry{
+						{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+						{Key: "limits", Type: "json", Value: `{"maxConn": 100}`},
+					},
+				},
+				{
+					Block: "feature_flags",
+					Entries: []*domain.ConfigEntry{
+						{Key: "beta", Type: "yaml", Value: "true"},
+					},
+				},
 			},
 			checkRound: true,
 		},
 		{
-			name: "nil config entries round trip",
+			name: "nil config blocks round trip",
 			source: &domain.ArtifactSpec{
 				Name:     "svc",
 				App:      "app",
@@ -560,16 +582,16 @@ func TestArtifactSpecs_ConfigEntriesPersistence(t *testing.T) {
 		{
 			name: "empty slice from mongo normalizes to nil",
 			mongo: mongoArtifactSpec{
-				Name:          "svc",
-				App:           "app",
-				Image:         "image:v1",
-				Replicas:      1,
-				ConfigEntries: []*mongoConfigEntry{},
+				Name:         "svc",
+				App:          "app",
+				Image:        "image:v1",
+				Replicas:     1,
+				ConfigBlocks: []*mongoConfigBlock{},
 			},
 			want: nil,
 		},
 		{
-			name: "old mongo document without config_entries defaults to nil",
+			name: "old mongo document without config fields defaults to nil",
 			mongo: mongoArtifactSpec{
 				Name:     "svc",
 				App:      "app",
@@ -602,26 +624,37 @@ func TestArtifactSpecs_ConfigEntriesPersistence(t *testing.T) {
 			if len(got) != 1 {
 				t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
 			}
-			if !reflect.DeepEqual(got[0].ConfigEntries, tt.want) {
-				t.Fatalf("artifactSpecsFromMongo() config_entries = %v, want %v", got[0].ConfigEntries, tt.want)
+			if !reflect.DeepEqual(got[0].ConfigBlocks, tt.want) {
+				t.Fatalf("artifactSpecsFromMongo() config_blocks = %v, want %v", got[0].ConfigBlocks, tt.want)
 			}
-			if tt.checkRound && !reflect.DeepEqual(got[0].ConfigEntries, tt.source.ConfigEntries) {
-				t.Fatalf("round trip config_entries = %v, want %v", got[0].ConfigEntries, tt.source.ConfigEntries)
+			if tt.checkRound && !reflect.DeepEqual(got[0].ConfigBlocks, tt.source.ConfigBlocks) {
+				t.Fatalf("round trip config_blocks = %v, want %v", got[0].ConfigBlocks, tt.source.ConfigBlocks)
 			}
 		})
 	}
 }
 
-func TestArtifactSpecs_ConfigEntries_BSONRoundTrip(t *testing.T) {
+func TestArtifactSpecs_ConfigBlocks_BSONRoundTrip(t *testing.T) {
 	// given
 	source := &domain.ArtifactSpec{
 		Name:     "svc",
 		App:      "app",
 		Image:    "image:v1",
 		Replicas: 3,
-		ConfigEntries: []*domain.ConfigEntry{
-			{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
-			{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+		ConfigBlocks: []*domain.ConfigBlock{
+			{
+				Block: "service_config",
+				Entries: []*domain.ConfigEntry{
+					{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					{Key: "limits", Type: "json", Value: `{"maxConn": 100}`},
+				},
+			},
+			{
+				Block: "feature_flags",
+				Entries: []*domain.ConfigEntry{
+					{Key: "beta", Type: "yaml", Value: "true"},
+				},
+			},
 		},
 	}
 
@@ -636,6 +669,18 @@ func TestArtifactSpecs_ConfigEntries_BSONRoundTrip(t *testing.T) {
 		t.Fatalf("bson.Marshal() error = %v", err)
 	}
 
+	// BSON 文档携带层级化 config_blocks 字段（取代扁平 config_entries）。
+	var raw bson.M
+	if err := bson.Unmarshal(bsonBytes, &raw); err != nil {
+		t.Fatalf("bson.Unmarshal() into bson.M error = %v", err)
+	}
+	if _, ok := raw["config_blocks"]; !ok {
+		t.Fatalf("bson document should contain config_blocks field, got keys: %v", raw)
+	}
+	if _, ok := raw["config_entries"]; ok {
+		t.Fatalf("bson document should not contain legacy config_entries field")
+	}
+
 	// when — BSON bytes → mongo → domain
 	var decoded mongoArtifactSpec
 	if err := bson.Unmarshal(bsonBytes, &decoded); err != nil {
@@ -648,8 +693,8 @@ func TestArtifactSpecs_ConfigEntries_BSONRoundTrip(t *testing.T) {
 	}
 
 	// then
-	if !reflect.DeepEqual(got[0].ConfigEntries, source.ConfigEntries) {
-		t.Fatalf("BSON round trip config_entries = %v, want %v", got[0].ConfigEntries, source.ConfigEntries)
+	if !reflect.DeepEqual(got[0].ConfigBlocks, source.ConfigBlocks) {
+		t.Fatalf("BSON round trip config_blocks = %v, want %v", got[0].ConfigBlocks, source.ConfigBlocks)
 	}
 }
 

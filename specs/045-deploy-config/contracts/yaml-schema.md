@@ -140,7 +140,7 @@ services:
 
 > **单向选择**：与 secret 的双向校验（声明须全部绑定）不同，config 是从池中选择子集——deploy 选中的名必须存在于 service 配置块池（FR-007），但池中未被选中的块不影响部署。deploy.yaml 中 `configs` 仅有名字段，**无 value/type**（FR-008：不覆盖）。
 >
-> **列表内唯一**：`configs` 列表使用 `uniqueItems: true` 拒绝重复选择（与 service.yaml 配置块名唯一性 FR-004 对称）；重复选择会导致编译后的 `ConfigEntry` 出现重复 `{block,key}`，与控制面 domain 校验（VR-CE-2）冲突，故在 schema 层 fail-fast。
+> **列表内唯一**：`configs` 列表使用 `uniqueItems: true` 拒绝重复选择（与 service.yaml 配置块名唯一性 FR-004 对称）；重复选择会导致编译后的 `ConfigBlock` 出现重复块名（同名块映射同一 ConfigMap `{workload}-config-{block}` 冲突），与控制面 domain 校验（VR-CB-6，见 [data-model.md §4](../data-model.md)）冲突，故在 schema 层 fail-fast。
 
 ### JSON Schema 片段（追加到 `deploy.schema.json` 的 `services[].items.artifact.properties`）
 

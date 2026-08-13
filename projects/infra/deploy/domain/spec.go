@@ -39,11 +39,38 @@ type SecretBinding struct {
 	Key         string
 }
 
-// ConfigEntry carries inline configuration data for a deployed artifact.
-// 控制面据此创建 ConfigMap 并投影为容器内文件（见
-// specs/045-deploy-config/contracts/runtime-contract.md）。
+// ConfigBlock 携带一个配置块及其条目，对齐 service.yaml 顶层 configs[]
+// （见 specs/045-deploy-config/data-model.md §4）。
+type ConfigBlock struct {
+	Block   string
+	Entries []*ConfigEntry
+}
+
+// Validate 校验 ConfigBlock 自身与每个条目（VR-CB-5/VR-CE-1，
+// specs/045-deploy-config/data-model.md §4）。
+func (b *ConfigBlock) Validate() error {
+	var errs []error
+
+	if b.Block == "" {
+		errs = append(errs, errors.New("block is required"))
+	}
+	if len(b.Entries) == 0 {
+		errs = append(errs, errors.New("entries must not be empty"))
+	}
+	for i, e := range b.Entries {
+		if err := e.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("entries[%d]: %w", i, err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, errors.Join(errs...))
+	}
+	return nil
+}
+
+// ConfigEntry 是配置块内的一个数据条目，block 归属由父节点 ConfigBlock 表达。
 type ConfigEntry struct {
-	Block string
 	Key   string
 	Type  string
 	Value string
@@ -54,9 +81,6 @@ type ConfigEntry struct {
 func (e *ConfigEntry) Validate() error {
 	var errs []error
 
-	if e.Block == "" {
-		errs = append(errs, errors.New("block is required"))
-	}
 	if e.Key == "" {
 		errs = append(errs, errors.New("key is required"))
 	}
@@ -71,6 +95,38 @@ func (e *ConfigEntry) Validate() error {
 		return fmt.Errorf("%w: %w", ErrInvalidSpec, errors.Join(errs...))
 	}
 	return nil
+}
+
+// cloneConfigBlocks 深拷贝 ConfigBlock 列表（外层逐字段 + 内层逐条目元素拷贝），
+// nil/空输入返回 nil。形态与 storage.configBlocksToMongo
+// （projects/infra/deploy/storage/mongo.go）逐行对称——domain clone / storage 双向
+// / handler 双向统一为逐字段构造风格（见 specs/045-deploy-config/contracts/proto.md
+// §5"风格统一决策"）。
+// 新增 ConfigBlock/ConfigEntry 字段时 MUST 同步以下映射点（任一遗漏即静默丢字段，
+// 由"测试防线"捕获）：
+//   - cloneConfigBlocks（projects/infra/deploy/domain/spec.go，本函数）
+//   - configBlocksToMongo / configBlocksFromMongo（projects/infra/deploy/storage/mongo.go）
+//   - toProtoConfigBlocks / fromProtoConfigBlocks（projects/infra/deploy/handler.go）
+func cloneConfigBlocks(blocks []*ConfigBlock) []*ConfigBlock {
+	if len(blocks) == 0 {
+		return nil
+	}
+	result := make([]*ConfigBlock, len(blocks))
+	for i, cb := range blocks {
+		block := &ConfigBlock{Block: cb.Block}
+		if len(cb.Entries) > 0 {
+			block.Entries = make([]*ConfigEntry, len(cb.Entries))
+			for j, ce := range cb.Entries {
+				block.Entries[j] = &ConfigEntry{
+					Key:   ce.Key,
+					Type:  ce.Type,
+					Value: ce.Value,
+				}
+			}
+		}
+		result[i] = block
+	}
+	return result
 }
 
 // Validate checks that the SecretBinding fields are non-empty.
@@ -116,7 +172,7 @@ type ArtifactSpec struct {
 	HTTP           *ArtifactHTTPSpec
 	Env            map[string]string
 	SecretBindings []*SecretBinding
-	ConfigEntries  []*ConfigEntry
+	ConfigBlocks   []*ConfigBlock // 期望状态层级的配置块（块包含条目）
 }
 
 // InfraPersistenceSpec describes infrastructure persistence settings.
@@ -202,23 +258,38 @@ func (s *ArtifactSpec) Validate() error {
 			seen[b.LogicalName] = i
 		}
 	}
-	for i, ce := range s.ConfigEntries {
-		if err := ce.Validate(); err != nil {
-			errs = append(errs, fmt.Errorf("config_entries[%d]: %w", i, err))
+	for i, cb := range s.ConfigBlocks {
+		if err := cb.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("config_blocks[%d]: %w", i, err))
 		}
 	}
-	// 检测 {block, key} 组合重复（VR-CE-2），防止 ConfigMap data key 与投影路径冲突
-	// （specs/045-deploy-config/data-model.md §4）。
-	seenConfigEntries := make(map[string]int, len(s.ConfigEntries))
-	for i, ce := range s.ConfigEntries {
-		if ce.Block == "" || ce.Key == "" {
+	// 块名不重复（VR-CB-6）：同名块映射同一 ConfigMap "{workload}-config-{block}"，
+	// 结构上必然冲突（specs/045-deploy-config/data-model.md §4）。
+	seenBlocks := make(map[string]int, len(s.ConfigBlocks))
+	for i, cb := range s.ConfigBlocks {
+		if cb.Block == "" {
 			continue
 		}
-		entryKey := ce.Block + "/" + ce.Key
-		if _, ok := seenConfigEntries[entryKey]; ok {
-			errs = append(errs, fmt.Errorf("config_entries[%d]: duplicate block/key %q", i, entryKey))
+		if _, ok := seenBlocks[cb.Block]; ok {
+			errs = append(errs, fmt.Errorf("config_blocks[%d]: duplicate block %q", i, cb.Block))
 		} else {
-			seenConfigEntries[entryKey] = i
+			seenBlocks[cb.Block] = i
+		}
+	}
+	// 块内条目名不重复（VR-CE-2）：块内 key 重复即同一 ConfigMap 同一 data key
+	// 冲突（map 写覆盖）；不同块属于不同 ConfigMap，天然隔离，仅检测块内即可
+	// （specs/045-deploy-config/data-model.md §4）。
+	for i, cb := range s.ConfigBlocks {
+		seenKeys := make(map[string]int, len(cb.Entries))
+		for j, ce := range cb.Entries {
+			if ce.Key == "" {
+				continue
+			}
+			if _, ok := seenKeys[ce.Key]; ok {
+				errs = append(errs, fmt.Errorf("config_blocks[%d]: duplicate entry key %q", i, ce.Key))
+			} else {
+				seenKeys[ce.Key] = j
+			}
 		}
 	}
 

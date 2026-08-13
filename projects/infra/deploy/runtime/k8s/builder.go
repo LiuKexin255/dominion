@@ -242,11 +242,11 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		})
 	}
 
-	// Config 投影：仅当有 ≥1 个 config entry 时创建卷/挂载/发现变量
+	// Config 投影：仅当有 ≥1 个 config block 时创建卷/挂载/发现变量
 	// （specs/045-deploy-config/data-model.md §5 触发条件，与 secret 的 R6 行为对称）。
 	// 单一 projected volume，每个配置块一个 ConfigMap source，KeyToPath 还原
 	// 容器内 {block}/{key} 目录（contracts/runtime-contract.md §2）。
-	if len(workload.ConfigEntries) > 0 {
+	if len(workload.ConfigBlocks) > 0 {
 		configVol, configMount, configEnv := buildConfigProjection(workload)
 		volumes = append(volumes, configVol)
 		volumeMounts = append(volumeMounts, configMount)
@@ -413,7 +413,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 
 	// Config 投影：与 BuildDeployment 共用 buildConfigProjection
 	// （specs/045-deploy-config/contracts/runtime-contract.md §2）。
-	if len(workload.ConfigEntries) > 0 {
+	if len(workload.ConfigBlocks) > 0 {
 		configVol, configMount, configEnv := buildConfigProjection(workload)
 		volumes = append(volumes, configVol)
 		volumeMounts = append(volumeMounts, configMount)
@@ -459,48 +459,25 @@ func configMapName(workload configMapWorkload, block string) string {
 	return workload.WorkloadName() + "-config-" + block
 }
 
-// blockEntries 为按配置块分组后的 config entries（block 首次出现顺序）。
-type blockEntries struct {
-	block   string
-	entries []*domain.ConfigEntry
-}
-
-// configEntriesByBlock 将 config entries 按 block 首次出现顺序分组，
-// 保证构建确定性（specs/045-deploy-config/contracts/runtime-contract.md §2）。
-// BuildConfigMaps 与投影段共用同一分组逻辑。
-func configEntriesByBlock(entries []*domain.ConfigEntry) []blockEntries {
-	var result []blockEntries
-	blockIndex := make(map[string]int)
-	for _, ce := range entries {
-		if i, ok := blockIndex[ce.Block]; ok {
-			result[i].entries = append(result[i].entries, ce)
-			continue
-		}
-		blockIndex[ce.Block] = len(result)
-		result = append(result, blockEntries{block: ce.Block, entries: []*domain.ConfigEntry{ce}})
-	}
-
-	return result
-}
-
 // buildConfigProjection 构造 config 投影所需的 volume、volumeMount 与
 // DOMINION_CONFIG_DIR 环境变量：单一 projected volume，每个配置块一个
 // ConfigMapProjection source，每条目经 KeyToPath 还原为容器内 {block}/{key} 路径
 // （specs/045-deploy-config/contracts/runtime-contract.md §2）。
-// BuildDeployment 与 BuildStatefulSet 共用（仅当 len(ConfigEntries) > 0 时调用）。
+// BuildDeployment 与 BuildStatefulSet 共用（仅当 len(ConfigBlocks) > 0 时调用）。
+// 期望状态已层级化（ConfigBlocks 块包含条目），直接迭代即可，无需重新分组。
 func buildConfigProjection(workload configMapWorkload) (corev1.Volume, corev1.VolumeMount, corev1.EnvVar) {
 	var sources []corev1.VolumeProjection
-	for _, be := range configEntriesByBlock(workload.configEntries()) {
-		items := make([]corev1.KeyToPath, 0, len(be.entries))
-		for _, ce := range be.entries {
+	for _, cb := range workload.configBlocks() {
+		items := make([]corev1.KeyToPath, 0, len(cb.Entries))
+		for _, ce := range cb.Entries {
 			items = append(items, corev1.KeyToPath{
 				Key:  ce.Key,                  // ConfigMap data key = 条目名
-				Path: be.block + "/" + ce.Key, // 容器内路径 {block}/{key}
+				Path: cb.Block + "/" + ce.Key, // 容器内路径 {block}/{key}
 			})
 		}
 		sources = append(sources, corev1.VolumeProjection{
 			ConfigMap: &corev1.ConfigMapProjection{
-				LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(workload, be.block)},
+				LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(workload, cb.Block)},
 				Items:                items,
 			},
 		})
@@ -518,13 +495,14 @@ func buildConfigProjection(workload configMapWorkload) (corev1.Volume, corev1.Vo
 	return volume, mount, env
 }
 
-// BuildConfigMaps 按配置块分组，为每个块生成一个 ConfigMap object：命名
+// BuildConfigMaps 为 workload 的每个 ConfigBlock 生成一个 ConfigMap object：命名
 // "{workload}-config-{block}"，data key 为条目名（块内唯一，原样），value 为原始
-// 数据文本；返回顺序按 block 首次出现顺序（确定性）。Labels 与
+// 数据文本；返回顺序按 workload.ConfigBlocks 列表顺序（确定性，compiler 已保留
+// service.yaml 声明顺序，无需重新分组）。Labels 与
 // Deployment/StatefulSet 一致（app/service/environment/managed-by）。
 // 每个名字做 63 字符上限的 fail-fast 校验（长度随 per-block 命名进一步加长，
 // 见 specs/045-deploy-config/contracts/runtime-contract.md §2）。
-// 仅当 len(workload.ConfigEntries) > 0 时由 executor 调用。
+// 仅当 len(workload.ConfigBlocks) > 0 时由 executor 调用。
 func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.ConfigMap, error) {
 	if workload == nil {
 		return nil, fmt.Errorf("config workload 为空")
@@ -540,17 +518,16 @@ func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.Conf
 		withManagedBy(cfg.ManagedBy),
 	)
 
-	blocks := configEntriesByBlock(workload.configEntries())
-	configMaps := make([]*corev1.ConfigMap, 0, len(blocks))
-	for _, be := range blocks {
-		name := configMapName(workload, be.block)
+	configMaps := make([]*corev1.ConfigMap, 0, len(workload.configBlocks()))
+	for _, cb := range workload.configBlocks() {
+		name := configMapName(workload, cb.Block)
 		if len(name) > maxK8sResourceNameSize {
 			return nil, fmt.Errorf("configmap name %q (workload=%q block=%q) 超过 %d 字符上限",
-				name, workload.WorkloadName(), be.block, maxK8sResourceNameSize)
+				name, workload.WorkloadName(), cb.Block, maxK8sResourceNameSize)
 		}
 
-		data := make(map[string]string, len(be.entries))
-		for _, ce := range be.entries {
+		data := make(map[string]string, len(cb.Entries))
+		for _, ce := range cb.Entries {
 			data[ce.Key] = ce.Value
 		}
 		configMaps = append(configMaps, &corev1.ConfigMap{

@@ -72,7 +72,7 @@
 ## R5: config 数据进入期望状态 + 控制面创建 per-block ConfigMap
 
 **Decision**: 
-- proto `ArtifactSpec` 新增 `repeated ConfigEntry config_entries = 12`，携带被选中配置块的内联数据（block/key/type/value）。
+- proto `ArtifactSpec` 新增 `repeated ConfigBlock config_blocks = 12`，以**层级结构**携带被选中配置块的内联数据：`ConfigBlock{block, entries[]}` → `ConfigEntry{key, type, value}`（block 归属父节点，entry 不冗余携带 block）。期望状态直接建模 service.yaml `configs[].data[]` 的层级与控制面 per-block ConfigMap 物化目标，使 proto→domain→storage→converter→model 全链路结构一致，消除 builder 层 `configEntriesByBlock` 重新分组的中间步骤；详见 `specs/045-deploy-config/contracts/proto.md`。字段号 12 复用本特性原扁平 `config_entries` 的位置——特性未发布、无生产数据，可直接改类型与命名，无需 wire 兼容。
 - 控制面（`projects/infra/deploy`）在 reconcile 时**创建 ConfigMap**——**每个配置块一个 ConfigMap object**（命名 `{workload}-config-{block}`），data key 为条目名（块内唯一），value 为原始数据文本；将全部 per-block ConfigMap 投影入单一 pod volume。
 - 这是控制面首次**创建**数据型 K8s 资源（当前仅引用预存的 TLS CA ConfigMap，不创建）。
 
@@ -122,7 +122,7 @@
 **Rationale**:
 - `Compile()` 已有 serviceConfig + deployService 的完整信息，且已有 secret 双向校验的成熟模式。
 - 与 secret 不同，config 是**单向选择**（deploy 从池中选择子集，池中未被选中的块不影响部署），故仅需校验"所选名存在"，无需 secret 的"全部声明须绑定"反向校验。
-- 列表内重复选择若放行，将编译出重复 `{block,key}` 的 `ConfigEntry`，与控制面 domain 校验（VR-CE-2）冲突，故在 schema 层（`uniqueItems`）与 FR-004 的重复名拒绝保持对称。
+- 列表内重复选择若放行，将编译出重复块名的 `ConfigBlock`（同名块映射同一 ConfigMap `{workload}-config-{block}` 冲突），与控制面 domain 校验（VR-CB-6）冲突，故在 schema 层（`uniqueItems`）与 FR-004 的重复名拒绝保持对称。
 - 校验失败 fail-fast 返回 error，阻止期望状态生成与提交（FR-007）。
 
 **Alternatives Considered**:
