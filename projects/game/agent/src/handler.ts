@@ -816,34 +816,37 @@ function blockInterrupted(block: unknown): boolean {
 }
 
 /**
- * Build a text MessagePart, propagating the 044 "interrupted" marker onto the
- * emitted part (text → `{ text: { content, interrupted } }`) when any
- * contributing text block carries it.
- *
- * `TextPart`/`ThinkingPart` (game.proto:533-540) have NO `interrupted` field
- * — the marker rides the lenient JSON channel the desktop already reads
- * (App.svelte/api.ts tolerate extra fields), so this is NOT a proto wire
- * change (specs/044-llm-stall-recovery-fix/contracts/
- * desktop-rendering-contract.md §3, FR-010); a formal proto field can be
- * added in a follow-up if needed.
+ * Build a text MessagePart, translating the checkpoint-layer 044 "interrupted"
+ * marker (partial-output-contract.md §4.3) onto the wire-layer proto
+ * `completion` field (data-model.md §4.2): a contributing text block carrying
+ * `additional_kwargs.interrupted` emits
+ * `completion = "PART_COMPLETION_INTERRUPTED"`. A normal complete AIMessage
+ * emits no `completion` (protojson omits the zero value). The marker crosses
+ * the agent→proxy→gateway→desktop network path only because it is a declared
+ * proto field — the prior lenient-JSON `interrupted` was stripped at every
+ * hop (desktop-rendering-contract.md §3).
  */
 function textPart(text: string, blocks: unknown[]): MessagePart {
   return {
     text: {
       content: text,
-      ...(blocks.some(blockInterrupted) ? { interrupted: true } : {}),
+      ...(blocks.some(blockInterrupted)
+        ? { completion: "PART_COMPLETION_INTERRUPTED" }
+        : {}),
     },
-  } as unknown as MessagePart;
+  };
 }
 
-/** Build a thinking MessagePart (same interrupted propagation as {@link textPart}). */
+/** Build a thinking MessagePart (same completion translation as {@link textPart}). */
 function reasoningPart(reasoning: string, block: unknown): MessagePart {
   return {
     thinking: {
       content: reasoning,
-      ...(blockInterrupted(block) ? { interrupted: true } : {}),
+      ...(blockInterrupted(block)
+        ? { completion: "PART_COMPLETION_INTERRUPTED" }
+        : {}),
     },
-  } as unknown as MessagePart;
+  };
 }
 
 /**

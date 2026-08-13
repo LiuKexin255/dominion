@@ -94,6 +94,17 @@ export enum ToolResultStatus {
   FAILED = 2,
 }
 
+// PartCompletion describes whether a content part was fully produced or
+// truncated mid-stream. Mirrors proto PartCompletion (values prefixed with the
+// enum name per AIP-126). INTERRUPTED marks the tail content block of a
+// partial reply persisted after a stream stall
+// (specs/044-llm-stall-recovery-fix/spec.md FR-005); a complete part carries
+// no completion field (protojson omits the zero value).
+export enum PartCompletion {
+  UNSPECIFIED = 0,
+  INTERRUPTED = 1,
+}
+
 // ─── Content Part Model (spec 023 content-model split) ─────────────────────
 //
 // The content model is split into two disjoint categories
@@ -110,10 +121,17 @@ export enum ToolResultStatus {
 
 export interface TextPart {
   content: string
+  // completion arrives as the proto enum name string
+  // (e.g. "PART_COMPLETION_INTERRUPTED") under protojson; absent for a
+  // complete part (protojson omits the zero value) — see partInterrupted.
+  completion?: PartCompletion | string
 }
 
 export interface ThinkingPart {
   content: string
+  // Same wire semantics as TextPart.completion
+  // (specs/044-llm-stall-recovery-fix/data-model.md §4.2).
+  completion?: PartCompletion | string
 }
 
 // ImagePart arrives as protojson: encoding is the enum name string
@@ -270,6 +288,23 @@ export function classifyToolResultStatus(
     default:
       return 'neutral'
   }
+}
+
+// partInterrupted reports whether a content part carries the 044 "interrupted"
+// marker — the tail content block of a partial reply persisted after a stream
+// stall (specs/044-llm-stall-recovery-fix/spec.md FR-005/FR-013). The marker
+// rides the wire-layer proto `completion` field on TextPart/ThinkingPart
+// (data-model.md §4.2); this reads the active text/thinking variant. Accepts
+// both the protojson enum-name string "PART_COMPLETION_INTERRUPTED" and the
+// numeric enum form, mirroring classifyToolResultStatus (protojson emits the
+// enum name by default but may emit the integer under the "emit enums as
+// integers" option — https://protobuf.dev/programming-guides/json/#json-options).
+// A normal part (absent field / UNSPECIFIED) is NOT interrupted.
+export function partInterrupted(part: MessagePart): boolean {
+  const completion = part.text?.completion ?? part.thinking?.completion
+  if (completion == null) return false
+  if (typeof completion === 'number') return completion === PartCompletion.INTERRUPTED
+  return completion === 'PART_COMPLETION_INTERRUPTED'
 }
 
 // ─── Control Signals (FlowPart kinds; never persisted to history) ──────────

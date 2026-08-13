@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import ChatMessage from './ChatMessage.svelte'
-  import { MessageRole, messagePartKind, classifyToolResultStatus } from '../api'
+  import { MessageRole, messagePartKind, classifyToolResultStatus, partInterrupted } from '../api'
   import type { MessagePart, ImagePart, ToolResultPart } from '../api'
   import { renderMarkdown } from '../markdown'
 
@@ -283,10 +283,18 @@
           {@const kind = messagePartKind(item.part)}
           {#if kind === 'text' && isAgentRole(item.role)}
             {@const sanitizedHtml = renderMarkdown(item.part.text?.content ?? '')}
+            {@const interrupted = partInterrupted(item.part)}
             <div class="msg-row msg-agent">
               <div class="msg-bubble agent-bubble">
                 <div class="msg-sender">Agent</div>
                 <div class="msg-content markdown-content">{@html sanitizedHtml}</div>
+                {#if interrupted}
+                  <!-- Truncated-mid-stream marker (044 FR-013): the reply was
+                       cut off by a stall; visible after reconnection via the
+                       proto completion field. Reuses the warn-bubble amber ⚠
+                       visual language (desktop-rendering-contract.md §3). -->
+                  <div class="interrupted-badge" data-testid="interrupted-badge">&#9888; 中断</div>
+                {/if}
                 <div class="msg-time">{formatTime(item.timestamp)}</div>
               </div>
             </div>
@@ -707,6 +715,25 @@
     font-size: 10px;
     color: rgba(80, 250, 123, 0.4);
     margin-top: 4px;
+  }
+
+  /* Truncated-mid-stream indicator (044 FR-013): a small badge inside the
+     agent bubble on a part whose proto completion field is INTERRUPTED.
+     Reuses the warn-bubble amber ⚠ palette
+     (desktop-rendering-contract.md §3). */
+  .interrupted-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-style: normal;
+    background: rgba(255, 184, 108, 0.08);
+    border: 1px solid rgba(255, 184, 108, 0.3);
+    color: #ffb86c;
+    user-select: none;
   }
 
   /* Markdown content rendered via {@html} */

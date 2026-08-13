@@ -529,14 +529,25 @@ message FlowParts {
   repeated FlowPart parts = 1;
 }
 
+// Describes whether a content part was fully produced or truncated mid-stream.
+// Set on the tail content block of a partial reply persisted after a stream
+// stall (spec 044 FR-005). protojson omits the zero value, so a normal part
+// serializes without the field (forward-compatible with older clients).
+enum PartCompletion {
+  PART_COMPLETION_UNSPECIFIED = 0;
+  PART_COMPLETION_INTERRUPTED = 1;
+}
+
 // TextPart carries visible text content.
 message TextPart {
   string content = 1;
+  PartCompletion completion = 2;  // truncated-mid-stream marker (spec 044 FR-005)
 }
 
 // ThinkingPart carries reasoning / intermediate process content.
 message ThinkingPart {
   string content = 1;
+  PartCompletion completion = 2;  // same semantics as TextPart.completion
 }
 
 // ImagePart carries an image (e.g. a captured screenshot).

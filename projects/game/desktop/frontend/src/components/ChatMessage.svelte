@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte'
-  import { MessageRole, messagePartKind } from '../api'
+  import { MessageRole, messagePartKind, partInterrupted } from '../api'
   import type { MessagePart } from '../api'
 
   // ChatMessage renders a single MessagePart as a simple bubble. It owns the
@@ -35,6 +35,9 @@
   let isUserText = $derived(kind === 'text' && isUser)
   let isSystemText = $derived(kind === 'text' && !isUser)
   let isThinking = $derived(kind === 'thinking')
+  // Truncated-mid-stream marker on the thinking part (044 FR-013): read from
+  // the proto completion field — user/system text can never carry it.
+  let isInterrupted = $derived(partInterrupted(part))
 
   // TOLERANCE for the at-bottom test (px); absorbs sub-pixel float jitter so
   // "at the bottom" is stable across browsers.
@@ -110,6 +113,13 @@
       </button>
       {#if expanded}
         <pre class="thinking-content" bind:this={contentEl}>{part.thinking?.content ?? ''}</pre>
+      {/if}
+      {#if isInterrupted}
+        <!-- Truncated-mid-stream marker (044 FR-013): the thinking was cut off
+             by a stall; visible after reconnection via the proto completion
+             field. Reuses the warn-bubble amber ⚠ visual language
+             (desktop-rendering-contract.md §3). -->
+        <div class="interrupted-badge" data-testid="interrupted-badge">&#9888; 中断</div>
       {/if}
     </div>
   </div>
@@ -240,6 +250,25 @@
 
   .thinking-content::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Truncated-mid-stream indicator (044 FR-013): a small badge inside the
+     thinking bubble on a part whose proto completion field is INTERRUPTED.
+     Reuses the warn-bubble amber ⚠ palette
+     (desktop-rendering-contract.md §3). */
+  .interrupted-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-style: normal;
+    background: rgba(255, 184, 108, 0.08);
+    border: 1px solid rgba(255, 184, 108, 0.3);
+    color: #ffb86c;
+    user-select: none;
   }
 
   /* ── System fallback ── */

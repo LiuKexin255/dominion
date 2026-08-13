@@ -1456,9 +1456,10 @@ describe("Handler.ListMessages", () => {
   it("marks the interrupted tail block of a persisted partial AIMessage on the emitted part (044 FR-005/SC-003); a normal AIMessage stays unmarked", async () => {
     // The full production pipeline: persistPartialOutput writes the merged
     // partial AIMessage (tail block carrying additional_kwargs.interrupted)
-    // via updateState → MemorySaver → ListMessages reconstruction propagates
-    // the marker onto the emitted MessagePart (text → { text: { content,
-    // interrupted } }, reasoning → { thinking: { content, interrupted } }).
+    // via updateState → MemorySaver → ListMessages reconstruction translates
+    // the checkpoint-layer marker onto the wire-layer proto `completion`
+    // field of the emitted MessagePart (text → { text: { content, completion:
+    // "PART_COMPLETION_INTERRUPTED" } }, reasoning → thinking variant).
     const { store } = createTeamStore();
     const handler = createHandler(store);
     const team = await createTestTeam(store, "sess-lm-int");
@@ -1517,13 +1518,15 @@ describe("Handler.ListMessages", () => {
     );
     expect(partialMsg).toBeDefined();
     const parts = partialMsg.content.parts;
-    // The interrupted marker rides the lenient JSON channel — TextPart/
-    // ThinkingPart have no proto field (desktop-rendering-contract.md §3).
+    // The interrupted marker translates onto the wire-layer proto
+    // `completion` field (TextPart/ThinkingPart, data-model.md §4.2) — the
+    // formal declared field that survives every network hop
+    // (desktop-rendering-contract.md §3).
     expect(parts.find((p: { thinking?: unknown }) => p.thinking)).toEqual({
       thinking: { content: "deep thought" },
     });
     expect(parts.find((p: { text?: unknown }) => p.text)).toEqual({
-      text: { content: "cut off mid", interrupted: true },
+      text: { content: "cut off mid", completion: "PART_COMPLETION_INTERRUPTED" },
     });
 
     const normalMsg = response.messages.find(
@@ -1595,7 +1598,12 @@ describe("Handler.ListMessages", () => {
     );
     expect(partialMsg).toBeDefined();
     expect(partialMsg.content.parts).toEqual([
-      { thinking: { content: "thinking cut off", interrupted: true } },
+      {
+        thinking: {
+          content: "thinking cut off",
+          completion: "PART_COMPLETION_INTERRUPTED",
+        },
+      },
     ]);
   });
 });
