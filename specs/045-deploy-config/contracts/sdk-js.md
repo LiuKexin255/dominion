@@ -83,7 +83,7 @@ const cfg = readConfig<Greeting>("service_config", "greeting", defaultGreeting);
 ## 3. 依赖
 
 - `js-yaml`：YAML 解析（兼容 JSON）。加入 `pnpm-workspace.yaml` catalog 统一版本管理。
-- `@types/js-yaml`：类型（dev）。
+- ~~`@types/js-yaml`~~：不需要——js-yaml v5 已用 TypeScript 重写并自带类型声明（`dist/js-yaml.d.ts`，package.json `types` 字段）；`@types/js-yaml@4` 描述的是 v4 API（`export =` 命名空间形态），与 v5 的 flat named exports 不兼容（[v5 迁移说明](https://github.com/nodeca/js-yaml/blob/master/docs/migrate_v4_to_v5.md)）。
 - 无其他运行时依赖（保持 `common/js/*` 零业务依赖风格）。
 
 ---

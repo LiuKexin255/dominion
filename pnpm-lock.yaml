@@ -87,6 +87,9 @@ catalogs:
     express:
       specifier: ^5.2.1
       version: 5.2.1
+    js-yaml:
+      specifier: ^5.2.3
+      version: 5.2.3
     langchain:
       specifier: ^1.5.4
       version: 1.5.4
@@ -131,6 +134,22 @@ importers:
       typescript:
         specifier: 6.0.2
         version: 6.0.2
+
+  common/js/config:
+    dependencies:
+      js-yaml:
+        specifier: 'catalog:'
+        version: 5.2.3
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.1
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/node@22.20.1)(yaml@2.9.0)
 
   common/js/grpc/otel:
     dependencies:
@@ -479,7 +498,7 @@ importers:
         version: 22.19.19
       svelte-check:
         specifier: 'catalog:'
-        version: 4.7.1(picomatch@4.0.5)(svelte@5.55.10)(typescript@6.0.3)
+        version: 4.7.1(picomatch@4.0.4)(svelte@5.55.10)(typescript@6.0.3)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1833,6 +1852,9 @@ packages:
     resolution: {integrity: sha512-zbB9rCJAT1rbjiVDb2hqKFHNYLxgtk8NURxZ3IZwD3F6NtxbXZQCnnSi1Lkx+IDohdPlFp222wVALIheZJQSEg==}
     engines: {node: '>=8'}
 
+  argparse@2.0.1:
+    resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
+
   aria-query@5.3.1:
     resolution: {integrity: sha512-Z/ZeOgVl7bcSYZ/u/rh0fOpvEpq//LZmdbkXyc7syVzjPAhfOa9ebsdTSjEBDU4vs5nC98Kfduj1uFo0qyET3g==}
     engines: {node: '>= 0.4'}
@@ -2175,6 +2197,10 @@ packages:
 
   js-tokens@9.0.1:
     resolution: {integrity: sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==}
+
+  js-yaml@5.2.3:
+    resolution: {integrity: sha512-n+mUVyUX5bVv7G/G2zyIHOhdxfuU1dY2NOFzTQUWiMUbFss8b57NFlgCCaggU78wSw5KVS9cllzeLyzyR+n5nw==}
+    hasBin: true
 
   json-schema-to-ts@3.1.1:
     resolution: {integrity: sha512-+DWg8jCJG2TEnpy7kOm/7/AxaYoaRbjVB4LFZLySZlWn8exGs3A4OLJR966cVvU26N7X9TWxl+Jsw7dzAqKT6g==}
@@ -3951,6 +3977,8 @@ snapshots:
     dependencies:
       color-convert: 2.0.1
 
+  argparse@2.0.1: {}
+
   aria-query@5.3.1: {}
 
   assertion-error@2.0.1: {}
@@ -4347,6 +4375,10 @@ snapshots:
       base64-js: 1.5.1
 
   js-tokens@9.0.1: {}
+
+  js-yaml@5.2.3:
+    dependencies:
+      argparse: 2.0.1
 
   json-schema-to-ts@3.1.1:
     dependencies:
@@ -4777,12 +4809,12 @@ snapshots:
     dependencies:
       js-tokens: 9.0.1
 
-  svelte-check@4.7.1(picomatch@4.0.5)(svelte@5.55.10)(typescript@6.0.3):
+  svelte-check@4.7.1(picomatch@4.0.4)(svelte@5.55.10)(typescript@6.0.3):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@sveltejs/load-config': 0.2.0
       chokidar: 4.0.3
-      fdir: 6.5.0(picomatch@4.0.5)
+      fdir: 6.5.0(picomatch@4.0.4)
       picocolors: 1.1.1
       sade: 1.8.1
       svelte: 5.55.10

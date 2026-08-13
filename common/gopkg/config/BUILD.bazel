@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "config",
+    srcs = [
+        "config.go",
+        "doc.go",
+    ],
+    importpath = "dominion/common/gopkg/config",
+    visibility = ["//visibility:public"],
+    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+)
+
+go_unittest(
+    name = "config_test",
+    srcs = ["config_test.go"],
+    embed = [":config"],
+)
