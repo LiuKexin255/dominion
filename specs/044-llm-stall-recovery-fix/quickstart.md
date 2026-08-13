@@ -97,9 +97,9 @@ bazel test //projects/game/agent/src:session_team_test //projects/game/agent/src
 
 ### Scenario B5 (unit): `ListMessages` returns partial output with the interrupted marker
 
-**Validates**: FR-005 (spec US3.3/SC-003). A checkpointed AIMessage whose last content block carries `additional_kwargs.interrupted = true` is returned by `ListMessages` with the corresponding `MessagePart` marked interrupted; a normal AIMessage has no marker.
+**Validates**: FR-005 (spec US3.3/SC-003). A checkpointed AIMessage whose last content block carries `additional_kwargs.interrupted = true` is returned by `ListMessages` with the corresponding `TextPart`/`ThinkingPart` `completion = PART_COMPLETION_INTERRUPTED` (translated by `handler.ts`); a normal AIMessage emits no `completion` (UNSPECIFIED).
 
-**How**: extend `handler.test.ts` `Handler.ListMessages` (at `:1368`) with a fixture containing an interrupted-block AIMessage.
+**How**: extend `handler.test.ts` `Handler.ListMessages` (at `:1368`) with a fixture containing an interrupted-block AIMessage. Assert `part.text.completion === "PART_COMPLETION_INTERRUPTED"` (or enum).
 
 ```bash
 bazel test //projects/game/agent/src:handler_test
@@ -107,7 +107,7 @@ bazel test //projects/game/agent/src:handler_test
 
 ### Scenario B6 (large test): stall → reconnect → partial output survives
 
-**Validates**: SC-002/SC-003. Start a turn, stream a partial reply, simulate an LLM stall (fake-llm: send partial chunks then stop, connection alive). After the stall (warn + wait), re-enter the session and call `ListMessages` — assert the partial reply is present and its interrupted block is marked.
+**Validates**: SC-002/SC-003. Start a turn, stream a partial reply, simulate an LLM stall (fake-llm: send partial chunks then stop, connection alive). After the stall (warn + wait), re-enter the session and call `ListMessages` — assert the partial reply is present and its interrupted block carries `completion == game.PartCompletion_PART_COMPLETION_INTERRUPTED` (read via `part.GetText().GetCompletion()` / `part.GetThinking().GetCompletion()` on the Go test side).
 
 **How**: deploy via `guitar run`; use a fake-llm that simulates a mid-stream stall; verify `ListMessages` after reconnect.
 
@@ -121,13 +121,15 @@ guitar run projects/game/testplan/system_test.yaml   # agent-stall suite（B6 �
 
 ## Phase C — Desktop rendering (spec FR-012/FR-013)
 
-### Scenario C1 (unit/component): WarnSignal renders a ⚠ bubble (FR-012)
+### Scenario C1 (unit): WarnSignal renders a ⚠ bubble (FR-012)
 
-**Validates**: a `FlowPart.warn` renders the `.msg-warn`/`.warn-bubble` (existing behavior, now standardized). `projects/game/desktop/frontend/src/stream-merge.test.ts` and a ChatView render test.
+**Validates**: a `FlowPart.warn` renders the `.msg-warn`/`.warn-bubble` (existing behavior, now standardized). This is existing code formalized — verified by diff review (`App.svelte:789-802`, `ChatView.svelte:271-279`); no new unit test needed (no new logic).
 
-### Scenario C2 (unit/component): interrupted marker renders an indicator (FR-013)
+### Scenario C2 (unit): interrupted marker renders an indicator (FR-013)
 
-**Validates**: a `ListMessages` part with `interrupted: true` renders a visual "中断"/truncated indicator; a normal part does not. `ChatView.svelte` render branch + `App.svelte` history-seed path.
+**Validates**: a `ListMessages` part with `completion = PART_COMPLETION_INTERRUPTED` renders a visual "中断"/truncated indicator; a normal part does not. Tested via the pure helper `partInterrupted(part)` (in `api.ts`, alongside `classifyToolResultStatus`) — the desktop `lib_test` globs `.ts` only (no Svelte mount), so the indicator logic is a unit-tested pure function; the Svelte render branches (`ChatView.svelte` agent-text `:284-292`, `ChatMessage.svelte` thinking `:104-115`) consume the helper.
+
+**How**: unit-test `partInterrupted` in `api.test.ts` — interrupted text/thinking → true; normal → false; numeric and string enum forms.
 
 ### Scenario C3 (large test): live warn + reconnect interrupted indicator
 
@@ -162,10 +164,12 @@ GAME_STREAM_IDLE_TIMEOUT_MS=60000 bazel test //projects/game/agent/src:graph_tes
 - [ ] `mergePartialBlocks` rules: text/reasoning, tool_call+result kept, tool_call-without-result dropped (unit, B2)
 - [ ] stall persists partial output to the stalled node's channel; error re-thrown; warn+wait + retained buffer unchanged (unit, B3)
 - [ ] multi-node turn partitions by `err.node` — no duplication (unit, B4)
-- [ ] `ListMessages` returns partial output with interrupted marker (unit, B5)
-- [ ] stall → reconnect → partial output survives (large, B6)
-- [ ] WarnSignal renders ⚠ bubble (unit/component, C1)
-- [ ] interrupted marker renders an indicator (unit/component, C2)
+- [ ] `ListMessages` returns partial output with `completion = PART_COMPLETION_INTERRUPTED` on the tail part (unit, B5)
+- [ ] proto round-trip: `TextPart`/`ThinkingPart` with `INTERRUPTED` round-trips through protojson; default omits the field (proto_test.go)
+- [ ] stall → reconnect → partial output survives, `completion == PART_COMPLETION_INTERRUPTED` (large, B6)
+- [ ] WarnSignal renders ⚠ bubble (diff review, C1)
+- [ ] `partInterrupted` pure helper: interrupted text/thinking → indicator; normal → none (unit, C2)
 - [ ] live warn + reconnect interrupted indicator (large, C3)
 - [ ] `game.proto:451-453` comment documents `warn` as the rendered exception (diff review, FR-012)
+- [ ] `PartCompletion` enum + `TextPart`/`ThinkingPart` `completion` field present with AIP-192 comments (diff review, FR-005)
 - [ ] 043 behaviors unchanged — tool heartbeat, buffer retention, abort semantics (regression)

@@ -38,7 +38,7 @@ Automatic retry/fallback (survey §6.3) is explicitly out of scope (spec FR-009)
 - Partial output MUST round-trip through `ListMessages` identically to a normal AIMessage (reconstruction at `handler.ts:668-717` reads `msg.content` array → reasoning/text/image parts + `tool_calls`).
 - `graph.updateState` is called AFTER the stall's AbortSignal fired — must be confirmed feasible (research.md R4 spike).
 
-**Scale/Scope**: 5 agent files modified (`llm.ts`, `team/graph.ts`, `session-team.ts`, `handler.ts`, `server.ts`) + 1 new agent module (`reasoning-timeouts.ts`) + 2 desktop files (`App.svelte`, `components/ChatView.svelte`) + 1 proto comment reconciliation (`game.proto`) + stall large-test re-baseline（`deploy_agent_stall.yaml` env 15s→60s、`agent_stall_test.go` 时序、`system_test.yaml` suite 11 注释）. 8 implementation tasks across 4 phases (Phase 2–5).
+**Scale/Scope**: 5 agent files modified (`llm.ts`, `team/graph.ts`, `session-team.ts`, `handler.ts`, `server.ts`) + 1 new agent module (`reasoning-timeouts.ts`) + 2 proto changes in `game.proto` (new `PartCompletion` enum + `completion` field on `TextPart`/`ThinkingPart` — the interrupted marker wire carrier, FR-010 controlled exception; + comment-only `warn` reconciliation for FR-012) + proto code regeneration (Go `game_go_proto` via bazel build; agent `game_types` via `ts_proto_library`) + 3 desktop files (`api.ts`, `components/ChatView.svelte`, `components/ChatMessage.svelte`) + stall large-test re-baseline（`deploy_agent_stall.yaml` env 15s→60s、`agent_stall_test.go` 时序、`system_test.yaml` suite 11 注释）. 8 implementation tasks across 4 phases (Phase 2–5).
 
 ## Constitution Check
 
@@ -67,6 +67,16 @@ Re-evaluated against the now-complete design artifacts ([research.md](research.m
 - The one empirical unknown (R4: `updateState` after abort) is a **gating spike** (quickstart B1) with a clear expected outcome and documented contingency — not a NEEDS CLARIFICATION.
 
 No regressions; all gates hold post-design.
+
+### FR-010 controlled exception — `PartCompletion` proto field
+
+FR-010 states this feature "MUST NOT change [Feature 043]'s other agent-side behaviors" and scopes the desktop change to rendering only. The original plan interpreted this as "no proto wire change" and routed the interrupted marker through a "lenient JSON channel" (an additive `interrupted:true` field the desktop tolerates as extra JSON).
+
+**That routing was proven infeasible**: every hop on the network path strips unknown (undeclared) fields — (1) `@grpc/proto-loader` serializes against `game.proto` (no `interrupted` field → dropped); (2) proxy `grpc-go` is strict proto; (3) gateway `grpc-gateway` protojson emits only known fields; (4) the desktop Go client `protojson.UnmarshalOptions{DiscardUnknown: true}` (`client.go:312`) discards unknown fields; (5) `view_model.go` strict `protojson.Marshal` (`:222-234`) emits only known fields. A marker that is not a declared proto field cannot cross the network.
+
+**Exception (user-authorized, scoped)**: the user directed that the interrupted marker be carried by **adding an enum parameter to the parts that need marking** (text/thinking). This authorizes a single, scoped proto-wire addition — the `PartCompletion` enum and a `completion` field (number 2) on `TextPart`/`ThinkingPart` — exclusively for the interrupted marker (FR-005/FR-013). It does **not** authorize any other proto change: the FlowPart/WarnSignal/MessagePart/ToolResultPart messages are unchanged (T010 is comment-only); no new RPC, no field renumbering, no semantic change to existing fields. The addition is **forward-compatible**: the default `PART_COMPLETION_UNSPECIFIED = 0` is omitted by protojson, so clients predating this field see no field and behave exactly as before (a normal complete part). The Go desktop layers need **no logic change** — the field is a known proto field, naturally preserved by `DiscardUnknown`-off-for-known-fields and emitted by strict `protojson.Marshal`.
+
+This exception is recorded here so FR-010's "no proto wire change" reading does not conflict with the implementation. The spec.md FR-010 wording (agent-side behaviors) is not contradicted — the proto field carries only the desktop-rendering marker (FR-013); it does not alter 043's agent behaviors (heartbeat, buffer retention, warn+wait, abort, init-turn timeout).
 
 ## Project Structure
 
@@ -98,7 +108,7 @@ projects/game/agent/src/
 │   └── player.ts / planner.ts    # NO CHANGE (NodeTimeoutError re-throw unchanged from 043)
 ├── session-team.ts               # MODIFY: runTeamTurn — accumulate partial TurnBlocks, catch NodeTimeoutError, persist stalled-node partial via updateState, re-throw; mergePartialBlocks() helper; tests
 ├── session-team.test.ts          # EXTEND: mock-stall persistence assertions
-├── handler.ts                    # EXTEND: ListMessages reconstruction (:668-717) propagates the interrupted marker onto the emitted MessagePart (research.md R5 / tasks.md T008; no proto change — marker rides the lenient JSON, desktop-rendering-contract §3)
+├── handler.ts                    # MODIFY: ListMessages reconstruction (:804-847) translates the checkpoint-layer `additional_kwargs.interrupted` into the proto `completion` field (`PART_COMPLETION_INTERRUPTED`) on emitted TextPart/ThinkingPart (replaces the prior `as unknown as MessagePart` loose-JSON cast, which cannot cross the network — desktop-rendering-contract §3; partial-output-contract §4)
 ├── handler.test.ts               # EXTEND: ListMessages returns partial output with interrupted indicator
 ├── llm.test.ts                   # EXTEND: STREAM_IDLE_TIMEOUT_MS default assertion
 ├── turn-loop.ts                  # NO CHANGE (runLoop/finishError unchanged — partial persistence happens upstream in runTeamTurn before re-throw)
@@ -109,10 +119,10 @@ projects/game/desktop/frontend/src/
 └── components/ChatView.svelte    # EXTEND: render interrupted indicator on a flagged block (FR-013); warn-bubble already at :271-279 (FR-012 standardization)
 
 projects/game/
-└── game.proto                    # MODIFY (comment only): reconcile :451-453 "FlowParts never rendered" → document warn as the rendered exception (FR-012)
+└── game.proto                    # MODIFY: (1) NEW `PartCompletion` enum + `completion` field on `TextPart`/`ThinkingPart` (field 2 each) — the interrupted marker's wire carrier (FR-005/FR-013, controlled exception to FR-010); (2) comment-only reconcile of :451-453 "FlowParts never rendered" → document warn as the rendered exception (FR-012, T010)
 ```
 
-**Structure Decision**: Single repo, two change surfaces — the agent service (`projects/game/agent/src/`, the primary) and the desktop frontend (`projects/game/desktop/frontend/src/`). The proto comment reconciliation is doc-only. No new top-level directories; `reasoning-timeouts.ts` is co-located with `llm.ts` (same LLM-config domain).
+**Structure Decision**: Single repo, two change surfaces — the agent service (`projects/game/agent/src/`, the primary) and the desktop frontend (`projects/game/desktop/frontend/src/`). The proto gains a new `PartCompletion` enum + `completion` field on `TextPart`/`ThinkingPart` (the interrupted marker's wire carrier — a controlled exception to FR-010, see Constitution Check) and a comment-only reconcile of the FlowPart render comment (FR-012, T010). No new top-level directories; `reasoning-timeouts.ts` is co-located with `llm.ts` (same LLM-config domain).
 
 ## Complexity Tracking
 

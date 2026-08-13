@@ -119,22 +119,60 @@ Filtered by `NodeTimeoutError.node` (research.md R7): only blocks where `block.a
 
 A machine-readable marker on the **specific content block** that was mid-stream when the stall occurred (typically the last block of the partial). Survives reconnection (unlike the transient ⚠ warn bubble).
 
-**Carrier** (research.md R5): `additional_kwargs.interrupted = true` on the AIMessage content-block array element:
+The marker exists in **two layers** — the checkpoint layer (agent process) and the wire layer (proto, cross-network):
+
+### 4.1 Checkpoint-layer carrier — `additional_kwargs.interrupted` (agent in-process)
+
+On the AIMessage content-block array element (the shape `mergePartialBlocks` writes and the `MemorySaver` serde preserves):
 
 ```typescript
-// example interrupted tail text block
+// example interrupted tail text block (checkpoint / AIMessage content array)
 { type: "text", text: "…cut off mid-sentence", additional_kwargs: { interrupted: true } }
 ```
 
-**Propagation through `ListMessages`**: the reconstruction (`handler.ts:668-717`) is extended minimally — when emitting the `MessagePart` for a content block that carries `additional_kwargs.interrupted`, it sets an `interrupted: true` marker on the emitted part (text → `{ text: { content, interrupted } }`, reasoning → `{ thinking: { content, interrupted } }`). A normal complete AIMessage has no such marker.
+This is consistent with how `toolResultStatus` is already carried on `additional_kwargs` (`llm.ts:428-435`). It never leaves the agent process — it is the **input** the ListMessages reconstruction translates into the wire-layer field (§4.2). The R4 spike (T005) and T006 tests confirm `additional_kwargs` survives the `MemorySaver` serde.
 
-**Semantics**:
+### 4.2 Wire-layer carrier — `PartCompletion` proto enum field (cross-network)
+
+The marker crosses the network as a **formal proto enum field** on `TextPart`/`ThinkingPart`. This is a controlled exception to FR-010 (no proto wire change), authorized for this single field — a loose-JSON passthrough was proven infeasible because every network hop strips unknown fields (proto-loader serialize, grpc-go, grpc-gateway, desktop `DiscardUnknown` unmarshal at `client.go:312`, strict `protojson.Marshal` at `view_model.go:222-234`).
+
+Proto definition (design draft; developer implements verbatim in `projects/game/game.proto`):
+
+```proto
+// Describes whether a content part was fully produced or truncated mid-stream.
+// Set on the tail content block of a partial reply persisted after a stream
+// stall (spec 044 FR-005). protojson omits the zero value, so a normal part
+// serializes without the field (forward-compatible with older clients).
+enum PartCompletion {
+  PART_COMPLETION_UNSPECIFIED = 0;
+  PART_COMPLETION_INTERRUPTED = 1;
+}
+
+message TextPart {
+  string content = 1;
+  PartCompletion completion = 2;  // truncated-mid-stream marker (spec 044 FR-005)
+}
+
+message ThinkingPart {
+  string content = 1;
+  PartCompletion completion = 2;  // same semantics as TextPart.completion
+}
+```
+
+**Field placement — Option B (on TextPart + ThinkingPart, not on MessagePart)**: text and thinking are the only part kinds that can be "mid-stream" (content streamed incrementally); image/tool_call/tool_result are atomic and have no interrupted concept. Placing the field on the two part kinds that need it (rather than on the `MessagePart` union) matches the user's instruction ("为那些需要标记的 part 增加枚举参数"), keeps the semantics scoped, and localizes the frontend types/render to the existing per-variant render branches. Field number 2 is free on both (each currently has only `string content = 1`).
+
+**protojson shape**: a normal part omits the field (zero-value enum omission — same as `ToolResultStatus`, see `api.ts:242`); an interrupted part serializes as `{"text": {"content": "…", "completion": "PART_COMPLETION_INTERRUPTED"}}` (or `thinking` variant). protojson emits the enum-name string (confirmed at `proto_test.go:380`).
+
+### 4.3 Translation (checkpoint → wire)
+
+`handler.ts` `ListMessages` reconstruction (`:804-847`, helpers `blockInterrupted`/`textPart`/`reasoningPart`) **translates** the checkpoint-layer `additional_kwargs.interrupted` into the wire-layer `completion` field: when emitting a `TextPart`/`ThinkingPart` for a content block carrying `additional_kwargs.interrupted`, it sets `completion = PART_COMPLETION_INTERRUPTED`; a normal complete AIMessage emits parts with the default `UNSPECIFIED` (field absent). This replaces the prior `as unknown as MessagePart` loose-JSON cast (which could not cross the network).
+
+**Semantics** (unchanged from spec FR-005):
 - Marks ONLY the interrupted block — earlier completed blocks in the same partial are unmarked (spec FR-005, Session 2026-08-12 clarification).
 - **Tool-gap turns** (stall after a tool completed, no content block mid-stream — overall-last streamed block is `tool_call`/`tool_result`): NO content block is marked. There was no truncated text/reasoning, and marking fully-streamed pre-tool content would violate FR-005. The user was notified in real-time by the ⚠ `warn` bubble; the persisted partial is a coherent tool-round-trip state. SC-003's subject ("the content block that was mid-stream") does not apply when no such block exists. See contract §3/§4 for the full rule.
 - The desktop renders a visual "中断"/truncated indicator on the flagged part (FR-013).
 - Distinct from the transient ⚠ `warn` bubble (FR-012), which is live-only.
-
-*(Exact field name finalized in tasks.md; `additional_kwargs` is consistent with how `toolResultStatus` is already carried — `llm.ts:428-435`.)*
+- Live streaming never carries the marker — `stream-merge.ts` `appendToEntry` (`:70-90`) rebuilds the trailing part without `completion`, which is correct (interrupted only appears in the history/ListMessages path).
 
 ---
 
@@ -145,18 +183,20 @@ No new persisted entities on the desktop. Two rendering behaviors are formalized
 | Behavior | Trigger | Rendering | Source |
 |---|---|---|---|
 | ⚠ warn bubble (FR-012) | `FlowPart.warn` (WarnSignal) on the live Connect stream | `.msg-warn` / `.warn-bubble` with ⚠ icon (existing) | `App.svelte:789-802`, `ChatView.svelte:271-279` |
-| interrupted indicator (FR-013) | a `MessagePart` from `ListMessages` carrying the interrupted marker | a visual truncated/中断 indicator on that bubble (new, additive) | `ChatView.svelte` render branch + history-seed path in `App.svelte` |
+| interrupted indicator (FR-013) | a `TextPart`/`ThinkingPart` from `ListMessages` carrying `completion = PART_COMPLETION_INTERRUPTED` | a visual truncated/中断 indicator on that bubble (new, additive) | `ChatView.svelte` agent-text render branch (`:284-292`), `ChatMessage.svelte` thinking render branch (`:104-115`), `api.ts` `PartCompletion` enum + `partInterrupted` helper |
 
-The ⚠ warn bubble is **transient** (FlowParts never persist to history — `game.proto:741`); the interrupted indicator **survives reconnect** (it rides on the persisted `Message`).
+The ⚠ warn bubble is **transient** (FlowParts never persist to history — `game.proto:741`); the interrupted indicator **survives reconnect** (it rides on the persisted `Message` via the `PartCompletion` proto field).
 
 ---
 
 ## 6. Unchanged entities (from 043 / earlier features)
 
-These are referenced but NOT modified by 044 (spec FR-010):
+These are referenced but NOT modified by 044 (spec FR-010), except the controlled proto exception in §4.2:
 - `MemorySaver` checkpointer, `playerMessages`/`plannerMessages` channels, `messagesStateReducer` — unchanged.
 - `TurnLoop` buffer + `finishError`/`finishAbort` terminals — unchanged.
 - `withIdleHeartbeat` tool wrapper (`llm.ts:302-322`), `TOOL_HEARTBEAT_INTERVAL_MS` — unchanged.
 - `INIT_TURN_TIMEOUT_MS` / `runInitTurn` total timeout — unchanged.
 - `NodeTimeoutError` re-throw in `player.ts`/`planner.ts` — unchanged.
-- `FlowPart` / `WarnSignal` / `MessagePart` proto messages — unchanged (only the `game.proto:451-453` **comment** is reconciled, FR-012).
+- `FlowPart` / `WarnSignal` proto messages — unchanged (only the `game.proto:451-453` **comment** is reconciled for `warn`, FR-012 — T010, a separate comment-only change).
+- `MessagePart` proto message — unchanged (the `PartCompletion` field is placed on `TextPart`/`ThinkingPart`, not on `MessagePart`).
+- `TextPart`/`ThinkingPart` proto messages — **gains the `completion` field** (§4.2). This is the single controlled proto-wire exception to FR-010.
