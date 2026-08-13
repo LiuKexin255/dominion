@@ -683,12 +683,16 @@ export class Handler implements TeamServiceHandlers {
 
             for (const b of reasoningBlocks) {
               const reasoning = (b as any).reasoning ?? "";
-              if (reasoning) parts.push({ thinking: { content: reasoning } });
+              if (reasoning) {
+                parts.push(reasoningPart(reasoning, b));
+              }
             }
             const text = textBlocks
               .map((b: any) => b.text ?? "")
               .join("");
-            if (text) parts.push({ text: { content: text } });
+            if (text) {
+              parts.push(textPart(text, textBlocks));
+            }
 
             for (const imgBlock of imageBlocks) {
               const base64Data = extractBase64FromImageBlock(imgBlock);
@@ -794,6 +798,52 @@ function timestampNow(): { seconds: number; nanos: number } {
     seconds: Math.floor(ms / 1000),
     nanos: (ms % 1000) * 1_000_000,
   };
+}
+
+/**
+ * Read the 044 "interrupted" marker off a content block
+ * (specs/044-llm-stall-recovery-fix/contracts/partial-output-contract.md §4 —
+ * the persisted partial's tail block carries
+ * `additional_kwargs.interrupted = true`, set by `mergePartialBlocks` in
+ * session-team.ts). Only that block is flagged — earlier completed blocks in
+ * the same partial stay unmarked (spec FR-005).
+ */
+function blockInterrupted(block: unknown): boolean {
+  return Boolean(
+    (block as { additional_kwargs?: { interrupted?: unknown } })
+      .additional_kwargs?.interrupted,
+  );
+}
+
+/**
+ * Build a text MessagePart, propagating the 044 "interrupted" marker onto the
+ * emitted part (text → `{ text: { content, interrupted } }`) when any
+ * contributing text block carries it.
+ *
+ * `TextPart`/`ThinkingPart` (game.proto:533-540) have NO `interrupted` field
+ * — the marker rides the lenient JSON channel the desktop already reads
+ * (App.svelte/api.ts tolerate extra fields), so this is NOT a proto wire
+ * change (specs/044-llm-stall-recovery-fix/contracts/
+ * desktop-rendering-contract.md §3, FR-010); a formal proto field can be
+ * added in a follow-up if needed.
+ */
+function textPart(text: string, blocks: unknown[]): MessagePart {
+  return {
+    text: {
+      content: text,
+      ...(blocks.some(blockInterrupted) ? { interrupted: true } : {}),
+    },
+  } as unknown as MessagePart;
+}
+
+/** Build a thinking MessagePart (same interrupted propagation as {@link textPart}). */
+function reasoningPart(reasoning: string, block: unknown): MessagePart {
+  return {
+    thinking: {
+      content: reasoning,
+      ...(blockInterrupted(block) ? { interrupted: true } : {}),
+    },
+  } as unknown as MessagePart;
 }
 
 /**

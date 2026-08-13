@@ -154,10 +154,17 @@ export interface TeamGraphHandle {
 		 * flow through the channels' reducers (checkpointer semantics), so
 		 * `RemoveMessage({ id: REMOVE_ALL_MESSAGES })` per channel clears
 		 * that channel (spike A1; contract §5).
+		 *
+		 * 044 US3 (T007 — partial-output-contract.md §2): the optional
+		 * `asNode` explicitly attributes the update to a graph node (the
+		 * stalled node). Without it LangGraph infers the attributing node
+		 * from `versions_seen`; passing it makes the attribution exact and
+		 * robust on any thread state.
 		 */
 		updateState(
 			config: Record<string, unknown>,
 			values: Partial<TeamStateValue>,
+			asNode?: string,
 		): Promise<unknown>;
 		/**
 		 * Stream a team turn (Batch 2 — `SessionTeam.runTeamTurn`). Yields

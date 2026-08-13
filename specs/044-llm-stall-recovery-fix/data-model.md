@@ -84,16 +84,18 @@ During a turn, `runTeamTurn` (`session-team.ts:725-912`) yields these as deltas.
 
 | Input block(s) | Output | Rule |
 |---|---|---|
-| `text` blocks (one or more) | AIMessage `content[]` entry `{ type: "text", text: <concatenated> }` | Concatenate in stream order. If this is the interrupted tail (last block overall), attach `additional_kwargs: { interrupted: true }` (§4). |
-| `reasoning` blocks | AIMessage `content[]` entry `{ type: "reasoning", reasoning: <concatenated> }` | Same; mark interrupted if it is the tail. |
+| `text` blocks (one or more) | AIMessage `content[]` entry `{ type: "text", text: <concatenated> }` | Concatenate in stream order. Carry `additional_kwargs: { interrupted: true }` ONLY when the **overall-last** streamed block is a `text` block (a content block was mid-stream at the stall) — see "Marking rule" below. |
+| `reasoning` blocks | AIMessage `content[]` entry `{ type: "reasoning", reasoning: <concatenated> }` | Same; marked ONLY when the overall-last streamed block is `reasoning`. |
 | `tool_call` **with** a retained `tool_result` | AIMessage `tool_calls[]` entry `{ id, name, args }` | Complete call → retained (history shows call + result, linked by `tool_id`). |
 | `tool_call` **without** a `tool_result` | (dropped) | Mid-flight partial call — cannot dispatch, would corrupt tool history (spec FR-006). |
 | `tool_result` blocks | standalone `ToolMessage` each | Side effect already executed on the desktop → retained. Carries `tool_call_id`, content (message/screenshot), `additional_kwargs.toolResultStatus`. |
 
 **Resulting AIMessage shape** (round-trips through `ListMessages` identically to a normal AI reply — reconstruction at `handler.ts:668-717`):
-- `content`: array of `{type:"reasoning"}` and/or `{type:"text"}` blocks (the interrupted tail block carries the flag).
+- `content`: array of `{type:"reasoning"}` and/or `{type:"text"}` blocks (the block flagged `interrupted`, if any, is determined by the marking rule below).
 - `tool_calls`: only complete calls.
 - a fresh `id` (so `messagesStateReducer` appends without colliding).
+
+**Marking rule** (operationalizes spec FR-005; see [contracts/partial-output-contract.md §3 "Marking rule"](contracts/partial-output-contract.md#marking-rule-which-block-carries-interrupted) for the full table): inspect the **overall-last streamed `TurnBlock`** (after filtering to the stalled node). Content streams sequentially, so the block mid-stream at the stall is necessarily the last streamed block. If it is `text` → mark the merged text block; if `reasoning` → mark the merged reasoning block; if `tool_call`/`tool_result` (tool-gap — no content block was mid-stream) → **mark nothing** (earlier fully-streamed content MUST NOT be marked, FR-005). Known multi-step imprecision (fully-streamed pre-tool text concatenated with truncated trailing text in one marked block) is accepted for v1 — the display merges all text into one `MessagePart` regardless (`handler.ts:674-695`); see contract §3.
 
 ### 3.3 Partitioning — only the stalled node
 
@@ -128,6 +130,7 @@ A machine-readable marker on the **specific content block** that was mid-stream 
 
 **Semantics**:
 - Marks ONLY the interrupted block — earlier completed blocks in the same partial are unmarked (spec FR-005, Session 2026-08-12 clarification).
+- **Tool-gap turns** (stall after a tool completed, no content block mid-stream — overall-last streamed block is `tool_call`/`tool_result`): NO content block is marked. There was no truncated text/reasoning, and marking fully-streamed pre-tool content would violate FR-005. The user was notified in real-time by the ⚠ `warn` bubble; the persisted partial is a coherent tool-round-trip state. SC-003's subject ("the content block that was mid-stream") does not apply when no such block exists. See contract §3/§4 for the full rule.
 - The desktop renders a visual "中断"/truncated indicator on the flagged part (FR-013).
 - Distinct from the transient ⚠ `warn` bubble (FR-012), which is live-only.
 

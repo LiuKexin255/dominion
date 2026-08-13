@@ -27,7 +27,7 @@ import type { SessionTeamRebuilder } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
 import type { MemoryClient } from "./memory-client";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
-import { buildTeamGraph } from "./team/graph";
+import { buildTeamGraph, type TeamGraphHandle } from "./team/graph";
 import { FrozenMemorySnapshot } from "./team/memory-snapshot";
 import type { MemorySaver } from "@langchain/langgraph";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -1451,6 +1451,152 @@ describe("Handler.ListMessages", () => {
     );
     const { error } = await promise;
     expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+  });
+
+  it("marks the interrupted tail block of a persisted partial AIMessage on the emitted part (044 FR-005/SC-003); a normal AIMessage stays unmarked", async () => {
+    // The full production pipeline: persistPartialOutput writes the merged
+    // partial AIMessage (tail block carrying additional_kwargs.interrupted)
+    // via updateState → MemorySaver → ListMessages reconstruction propagates
+    // the marker onto the emitted MessagePart (text → { text: { content,
+    // interrupted } }, reasoning → { thinking: { content, interrupted } }).
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const team = await createTestTeam(store, "sess-lm-int");
+    // Run one real turn so the thread has checkpoints (as in production the
+    // partial is persisted on top of an existing history).
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit(
+      "data",
+      userContentFrame("templates/saolei/sessions/sess-lm-int", "开始游戏", "player"),
+    );
+    await flush();
+
+    const handle = (team as unknown as { graphHandle: TeamGraphHandle })
+      .graphHandle;
+    await handle.graph.updateState(
+      { configurable: { thread_id: "sess-lm-int" } },
+      {
+        playerMessages: [
+          new AIMessage({
+            id: "partial-1",
+            content: [
+              // Completed reasoning block — NOT marked (FR-005: only the
+              // mid-stream block is flagged).
+              { type: "reasoning", reasoning: "deep thought" },
+              // The interrupted tail text block (the shape mergePartialBlocks
+              // produces on a stall).
+              {
+                type: "text",
+                text: "cut off mid",
+                additional_kwargs: { interrupted: true },
+              },
+            ],
+          }),
+          new AIMessage({
+            id: "normal-1",
+            content: [{ type: "text", text: "complete reply" }],
+          }),
+        ],
+      },
+      "player",
+    );
+
+    const { callback, promise } = createCallback<any>();
+    handler.ListMessages(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-lm-int/team/agents/player",
+      }),
+      callback,
+    );
+    const { error, response } = await promise;
+    expect(error).toBeNull();
+
+    const partialMsg = response.messages.find(
+      (m: { messageId: string }) => m.messageId === "partial-1",
+    );
+    expect(partialMsg).toBeDefined();
+    const parts = partialMsg.content.parts;
+    // The interrupted marker rides the lenient JSON channel — TextPart/
+    // ThinkingPart have no proto field (desktop-rendering-contract.md §3).
+    expect(parts.find((p: { thinking?: unknown }) => p.thinking)).toEqual({
+      thinking: { content: "deep thought" },
+    });
+    expect(parts.find((p: { text?: unknown }) => p.text)).toEqual({
+      text: { content: "cut off mid", interrupted: true },
+    });
+
+    const normalMsg = response.messages.find(
+      (m: { messageId: string }) => m.messageId === "normal-1",
+    );
+    expect(normalMsg).toBeDefined();
+    expect(normalMsg.content.parts).toEqual([
+      { text: { content: "complete reply" } },
+    ]);
+  });
+
+  it("propagates the interrupted marker of a reasoning-tail partial onto the thinking part (044 FR-005/SC-003 — reasoningPart path)", async () => {
+    // The reasoning-tail counterpart: a partial whose ONLY content block is
+    // reasoning (no text — the reasoning-only stall, contract §3) carrying
+    // additional_kwargs.interrupted = true (the shape mergePartialBlocks
+    // produces). Exercises the `reasoningPart` reconstruction path through
+    // the real MemorySaver serde.
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const team = await createTestTeam(store, "sess-lm-reasoning");
+    // Run one real turn so the thread has checkpoints (as in production the
+    // partial is persisted on top of an existing history).
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit(
+      "data",
+      userContentFrame(
+        "templates/saolei/sessions/sess-lm-reasoning",
+        "开始游戏",
+        "player",
+      ),
+    );
+    await flush();
+
+    const handle = (team as unknown as { graphHandle: TeamGraphHandle })
+      .graphHandle;
+    await handle.graph.updateState(
+      { configurable: { thread_id: "sess-lm-reasoning" } },
+      {
+        playerMessages: [
+          new AIMessage({
+            id: "reasoning-partial-1",
+            content: [
+              {
+                type: "reasoning",
+                reasoning: "thinking cut off",
+                additional_kwargs: { interrupted: true },
+              },
+            ],
+          }),
+        ],
+      },
+      "player",
+    );
+
+    const { callback, promise } = createCallback<any>();
+    handler.ListMessages(
+      createUnaryCall({
+        parent:
+          "templates/saolei/sessions/sess-lm-reasoning/team/agents/player",
+      }),
+      callback,
+    );
+    const { error, response } = await promise;
+    expect(error).toBeNull();
+
+    const partialMsg = response.messages.find(
+      (m: { messageId: string }) => m.messageId === "reasoning-partial-1",
+    );
+    expect(partialMsg).toBeDefined();
+    expect(partialMsg.content.parts).toEqual([
+      { thinking: { content: "thinking cut off", interrupted: true } },
+    ]);
   });
 });
 

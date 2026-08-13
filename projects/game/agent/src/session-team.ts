@@ -64,16 +64,20 @@
  * FR-006).
  */
 
+import { randomUUID } from "node:crypto";
+
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import * as grpc from "@grpc/grpc-js";
 import { warn } from "@dominion/common-js-logs";
+import { isNodeTimeoutError, NodeTimeoutError } from "@langchain/langgraph";
 
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { MessagePart } from "../game_types/projects/game/MessagePart";
 import type { MessageRole } from "../game_types/projects/game/MessageRole";
 
-import type { OperationBridge, SinkHandle } from "./operation-bridge";
+import type { OperationBridge, SinkHandle, OperationResult } from "./operation-bridge";
 import { TurnLoop, buildTeamFrame } from "./turn-loop";
 import type { TurnBlock } from "./turn-loop";
 import type { ContentBlock, TurnContent } from "./llm";
@@ -85,7 +89,7 @@ import {
 	RECURSION_LIMIT,
 	STATUS_UNSPECIFIED,
 } from "./llm";
-import { parseToolResultFields } from "./tools/shared/result-blocks";
+import { buildResultBlocks, parseToolResultFields } from "./tools/shared/result-blocks";
 import { refreshTeamChannels } from "./context-middleware";
 import type { TeamGraphHandle } from "./team/graph";
 import type { MemorySaver } from "@langchain/langgraph";
@@ -783,103 +787,118 @@ export class SessionTeam {
 			[Symbol.asyncIterator](): AsyncIterator<TeamStreamEvent>;
 		};
 
-		for await (const event of stream) {
-			const agent = agentFromNamespace(event.params?.namespace);
-			if (!agent) continue;
+		// 044 US3 (T007 — specs/044-llm-stall-recovery-fix/contracts/
+		// partial-output-contract.md §1/§2, research.md R3): every streamed
+		// block is accumulated (shallow-cloned) so that when the turn dies
+		// from an idle `NodeTimeoutError` — LangGraph discards the stalled
+		// node's buffered writes (`task.writes.splice`,
+		// @langchain/langgraph dist/pregel/timeout.js:200-211) — the
+		// already-streamed partial output can be persisted to the checkpoint
+		// (compensation, not recovery: the error is re-thrown so 043's
+		// finishError warn+wait+retain-buffer runs unchanged, FR-010).
+		const partialBlocks: TurnBlock[] = [];
+		// Record a block before it is yielded (shallow clone — the yielded
+		// object is never mutated afterwards, the clone is defensive).
+		const record = (agent: string, block: ContentBlock): TurnBlock => {
+			partialBlocks.push({ agent, block: { ...block } });
+			return { agent, block };
+		};
 
-			if (event.method === "messages") {
-				// Consume ONLY the deltas: `content-block-delta` yields the
-				// incremental text/reasoning chunks of the model's answer,
-				// keeping the desktop's conversation live (regression fix —
-				// the pre-team path streamed these same deltas via
-				// `stream.messages`, spec 031). Consuming
-				// `content-block-finish` as well would double-emit the text,
-				// and `content-block-start` carries no content yet.
-				const data = event.params?.data as
-					| { event?: string; delta?: unknown; content?: unknown }
-					| undefined;
-				if (data?.event !== "content-block-delta") continue;
-				// Protocol-compliant models carry the typed delta on
-				// `event.delta` (`{ type: "text-delta", text }` /
-				// `{ type: "reasoning-delta", reasoning }`); a few older
-				// adapters still emit the content-shaped form
-				// (`{ type: "text", text }`) on `event.content` instead —
-				// normalize both (Core `getEventDelta` tolerance,
-				// `@langchain/core/dist/language_models/stream.js`).
-				const delta = data.delta as
-					| { type?: string; text?: string; reasoning?: string }
-					| undefined;
-				const content = data.content as
-					| { type?: string; text?: string; reasoning?: string }
-					| undefined;
-				const typedDelta =
-					delta != null &&
-					typeof delta === "object" &&
-					(delta.type === "text-delta" ||
-						delta.type === "reasoning-delta")
-						? delta
-						: undefined;
-				const block = typedDelta ?? content;
-				if (!block || typeof block !== "object") continue;
-				// Same empty-content filtering as messageToContentBlocks
-				// (a model answer with only tool calls yields no text delta,
-				// and empty chunks must not be displayed).
-				if (
-					(block.type === "text" || block.type === "text-delta") &&
-					typeof block.text === "string"
-				) {
-					if (!block.text) continue;
-					yield { agent, block: { type: "text", text: block.text } };
-				} else if (
-					(block.type === "reasoning" ||
-						block.type === "reasoning-delta") &&
-					typeof block.reasoning === "string"
-				) {
-					if (!block.reasoning) continue;
-					yield {
-						agent,
-						block: { type: "reasoning", reasoning: block.reasoning },
-					};
-				}
-				// Skip `block-delta` (tool_call_chunk): tool calls are
-				// sourced from the `tools` stream below.
-			} else if (event.method === "tools") {
-				const data = event.params?.data as
-					| {
-							event?: string;
-							tool_call_id?: string;
-							tool_name?: string;
-							input?: unknown;
-							output?: unknown;
-							message?: string;
-					  }
-					| undefined;
-				if (data?.event === "tool-started") {
-					// Real-time: emitted before the tool function runs, so a
-					// tool awaiting the desktop still streams its tool_call.
-					yield {
-						agent,
-						block: {
+		try {
+			for await (const event of stream) {
+				const agent = agentFromNamespace(event.params?.namespace);
+				if (!agent) continue;
+
+				if (event.method === "messages") {
+					// Consume ONLY the deltas: `content-block-delta` yields the
+					// incremental text/reasoning chunks of the model's answer,
+					// keeping the desktop's conversation live (regression fix —
+					// the pre-team path streamed these same deltas via
+					// `stream.messages`, spec 031). Consuming
+					// `content-block-finish` as well would double-emit the text,
+					// and `content-block-start` carries no content yet.
+					const data = event.params?.data as
+						| { event?: string; delta?: unknown; content?: unknown }
+						| undefined;
+					if (data?.event !== "content-block-delta") continue;
+					// Protocol-compliant models carry the typed delta on
+					// `event.delta` (`{ type: "text-delta", text }` /
+					// `{ type: "reasoning-delta", reasoning }`); a few older
+					// adapters still emit the content-shaped form
+					// (`{ type: "text", text }`) on `event.content` instead —
+					// normalize both (Core `getEventDelta` tolerance,
+					// `@langchain/core/dist/language_models/stream.js`).
+					const delta = data.delta as
+						| { type?: string; text?: string; reasoning?: string }
+						| undefined;
+					const content = data.content as
+						| { type?: string; text?: string; reasoning?: string }
+						| undefined;
+					const typedDelta =
+						delta != null &&
+						typeof delta === "object" &&
+						(delta.type === "text-delta" ||
+							delta.type === "reasoning-delta")
+							? delta
+							: undefined;
+					const block = typedDelta ?? content;
+					if (!block || typeof block !== "object") continue;
+					// Same empty-content filtering as messageToContentBlocks
+					// (a model answer with only tool calls yields no text delta,
+					// and empty chunks must not be displayed).
+					if (
+						(block.type === "text" || block.type === "text-delta") &&
+						typeof block.text === "string"
+					) {
+						if (!block.text) continue;
+						yield record(agent, { type: "text", text: block.text });
+					} else if (
+						(block.type === "reasoning" ||
+							block.type === "reasoning-delta") &&
+						typeof block.reasoning === "string"
+					) {
+						if (!block.reasoning) continue;
+						yield record(agent, {
+							type: "reasoning",
+							reasoning: block.reasoning,
+						});
+					}
+					// Skip `block-delta` (tool_call_chunk): tool calls are
+					// sourced from the `tools` stream below.
+				} else if (event.method === "tools") {
+					const data = event.params?.data as
+						| {
+								event?: string;
+								tool_call_id?: string;
+								tool_name?: string;
+								input?: unknown;
+								output?: unknown;
+								message?: string;
+						  }
+						| undefined;
+					if (data?.event === "tool-started") {
+						// Real-time: emitted before the tool function runs, so a
+						// tool awaiting the desktop still streams its tool_call.
+						yield record(agent, {
 							type: "tool_call",
 							name: data.tool_name ?? "",
 							args: parseToolArgs(data.input),
 							toolCallId: data.tool_call_id ?? "",
-						},
-					};
-				} else if (data?.event === "tool-finished") {
-					// `output` is the ToolMessage the agent loop appended
-					// (empirically verified — the `tools` stream carries the
-					// same message the channel write-back would).
-					const blocks = messageToContentBlocks(
-						data.output as unknown as BaseMessage,
-					);
-					if (blocks.length > 0) {
-						for (const block of blocks) yield { agent, block };
-					} else {
-						// Defensive fallback for a non-message-shaped output.
-						yield {
-							agent,
-							block: {
+						});
+					} else if (data?.event === "tool-finished") {
+						// `output` is the ToolMessage the agent loop appended
+						// (empirically verified — the `tools` stream carries the
+						// same message the channel write-back would).
+						const blocks = messageToContentBlocks(
+							data.output as unknown as BaseMessage,
+						);
+						if (blocks.length > 0) {
+							for (const block of blocks) {
+								yield record(agent, block);
+							}
+						} else {
+							// Defensive fallback for a non-message-shaped output.
+							yield record(agent, {
 								type: "tool_result",
 								toolCallId: data.tool_call_id ?? "",
 								status: STATUS_UNSPECIFIED,
@@ -887,28 +906,95 @@ export class SessionTeam {
 									typeof data.output === "string"
 										? data.output
 										: "",
-							},
-						};
-					}
-				} else if (data?.event === "tool-error") {
-					// A throwing tool produces no ToolMessage in the stream;
-					// surface the error text so the desktop still sees a
-					// tool_result (status stays neutral — the ToolNode's
-					// error ToolMessage carries no toolResultStatus either).
-					yield {
-						agent,
-						block: {
+							});
+						}
+					} else if (data?.event === "tool-error") {
+						// A throwing tool produces no ToolMessage in the stream;
+						// surface the error text so the desktop still sees a
+						// tool_result (status stays neutral — the ToolNode's
+						// error ToolMessage carries no toolResultStatus either).
+						yield record(agent, {
 							type: "tool_result",
 							toolCallId: data.tool_call_id ?? "",
 							status: STATUS_UNSPECIFIED,
 							message: data.message ?? "",
-						},
-					};
+						});
+					}
 				}
 			}
-		}
 
-		await stream.output;
+			await stream.output;
+		} catch (err) {
+			// 044 US3 (T007 — partial-output-contract.md §1): ONLY an idle
+			// `NodeTimeoutError` triggers persistence. Other errors and the
+			// abort path (runLoop's `controller.signal.aborted` → finishAbort,
+			// FR-011) re-throw directly with no checkpoint write. Persistence
+			// is transparent compensation — the original error is ALWAYS
+			// re-thrown so 043's finishError (warn + wait, retained buffer)
+			// runs unchanged (FR-010).
+			if (isNodeTimeoutError(err) && err.kind === "idle") {
+				try {
+					await this.persistPartialOutput(err, partialBlocks);
+				} catch (persistErr) {
+					// Persistence is best-effort compensation: a checkpoint
+					// write failure must not mask the stall error (the turn
+					// still terminates via finishError with the original
+					// NodeTimeoutError).
+					warn("partial output persistence failed", {
+						sessionId: this.sessionId,
+						error:
+							persistErr instanceof Error
+								? persistErr.message
+								: String(persistErr),
+					});
+				}
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * Persist the stalled node's already-streamed partial output to the
+	 * checkpoint (044 US3 — specs/044-llm-stall-recovery-fix/contracts/
+	 * partial-output-contract.md §2, research.md R6/R7; FR-004..FR-007).
+	 *
+	 * - `stalledAgent` is normalized from `err.node` (the `addNode` name; a
+	 *   namespaced subgraph path like `"player:<taskId>"` is reduced the same
+	 *   way stream events are, {@link agentFromNamespace}).
+	 * - ONLY the stalled node's blocks are merged: prior completed nodes
+	 *   already committed their writes to the checkpoint — persisting them
+	 *   would duplicate (R7).
+	 * - The merged AIMessage + ToolMessages are appended to the stalled
+	 *   node's per-agent channel via `graph.updateState` (independent
+	 *   checkpointer write — verified callable after the stall's abort by the
+	 *   T005 gating spike; `messagesStateReducer` appends on the fresh ids).
+	 * - `asNode: stalledAgent` is passed explicitly: the update IS
+	 *   attributable to the stalled node (exact `versions_seen` bookkeeping)
+	 *   instead of relying on last-seen-node inference.
+	 * - Nothing streamed before the stall (stall at first byte) → no-op: no
+	 *   empty/truncated artifact is fabricated (spec US3.4).
+	 */
+	private async persistPartialOutput(
+		err: NodeTimeoutError,
+		blocks: TurnBlock[],
+	): Promise<void> {
+		const stalledAgent =
+			agentFromNamespace([err.node]) ?? err.node;
+		const filtered = blocks.filter((b) => b.agent === stalledAgent);
+		const { aiMessage, toolMessages } = mergePartialBlocks(filtered);
+		if (!aiMessage && toolMessages.length === 0) {
+			return;
+		}
+		const channel =
+			stalledAgent === "player" ? "playerMessages" : "plannerMessages";
+		const messages = aiMessage
+			? [aiMessage, ...toolMessages]
+			: toolMessages;
+		await this.graphHandle.graph.updateState(
+			{ configurable: { thread_id: this.sessionId } },
+			{ [channel]: messages },
+			stalledAgent,
+		);
 	}
 }
 
@@ -1214,4 +1300,150 @@ export function messageToContentBlocks(msg: BaseMessage): ContentBlock[] {
 	}
 
 	return [];
+}
+
+/**
+ * Merge the stalled node's accumulated streamed `TurnBlock`s into checkpoint
+ * messages (specs/044-llm-stall-recovery-fix/contracts/
+ * partial-output-contract.md §3, research.md R6 — the inverse of
+ * {@link messageToContentBlocks}):
+ *
+ * - text blocks → ONE `{type:"text"}` content block (concatenated, stream
+ *   order); reasoning blocks → ONE `{type:"reasoning"}` content block. The
+ *   interrupted flag (contract §4 / research.md R5 — carried on the block's
+ *   `additional_kwargs`, the same carriage as `toolResultStatus` on
+ *   ToolMessages, llm.ts `buildToolResultMessage`) is placed per the
+ *   **Marking rule** (contract §3): the OVERALL-LAST streamed block decides
+ *   — `text` → mark the merged text block; `reasoning` → mark the merged
+ *   reasoning block; `tool_call`/`tool_result` (tool-gap — no content block
+ *   was mid-stream at the stall) → NO content block is marked (fully-streamed
+ *   blocks MUST NOT be marked, spec FR-005).
+ * - `tool_call` blocks are kept on the AIMessage's `tool_calls` ONLY when a
+ *   retained `tool_result` with the same `toolCallId` exists — a mid-flight
+ *   call cannot be dispatched and would corrupt tool history (spec FR-006).
+ * - each `tool_result` block becomes a standalone `ToolMessage` (side effects
+ *   already executed on the desktop → retained; carries `tool_call_id`,
+ *   message/screenshot content via `buildResultBlocks`, and
+ *   `additional_kwargs.toolResultStatus`).
+ *
+ * The resulting AIMessage uses a FRESH `id` so `messagesStateReducer` appends
+ * it to the channel without colliding with existing messages (contract §2).
+ * Returns `aiMessage: null` when there is no text, no reasoning and no
+ * retained tool call (stall at first byte — nothing to persist; spec US3.4
+ * no-op, see {@link SessionTeam.persistPartialOutput}).
+ */
+export function mergePartialBlocks(
+	blocks: TurnBlock[],
+): { aiMessage: AIMessage | null; toolMessages: ToolMessage[] } {
+	const textChunks: string[] = [];
+	const reasoningChunks: string[] = [];
+	const toolCalls: { name: string; toolCallId: string; args: unknown }[] = [];
+	const toolResults: Extract<ContentBlock, { type: "tool_result" }>[] = [];
+
+	for (const tb of blocks) {
+		const block = tb.block;
+		if (block.type === "text") {
+			textChunks.push(block.text);
+		} else if (block.type === "reasoning") {
+			reasoningChunks.push(block.reasoning);
+		} else if (block.type === "tool_call") {
+			toolCalls.push({
+				name: block.name,
+				toolCallId: block.toolCallId,
+				args: block.args,
+			});
+		} else if (block.type === "tool_result") {
+			toolResults.push(block);
+		}
+	}
+
+	// The interrupted tail is the OVERALL-LAST streamed block, and only
+	// when it is a content block (text/reasoning). Content streams
+	// sequentially, so the block mid-stream at the stall is necessarily the
+	// last streamed block. If the last block is tool_call/tool_result, the
+	// stall occurred with no content block mid-stream (tool-gap) → no
+	// content block is marked (FR-005: only the mid-stream block is
+	// flagged; fully-streamed blocks are never marked). See
+	// specs/044-llm-stall-recovery-fix/contracts/partial-output-contract.md
+	// §3 "Marking rule".
+	const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1].block : null;
+	const tailKind: "text" | "reasoning" | null =
+		lastBlock?.type === "text" || lastBlock?.type === "reasoning"
+			? lastBlock.type
+			: null;
+
+	const toolMessages = toolResults.map((block) => {
+		// The matching tool_call (when streamed) supplies the tool name so
+		// history can display it (same as buildToolResultMessage).
+		const call = toolCalls.find((c) => c.toolCallId === block.toolCallId);
+		return new ToolMessage({
+			content: buildResultBlocks({
+				// The ContentBlock status is a free string; OperationResult's
+				// ToolResultStatus is the same wire value set — the live path
+				// (buildToolResultMessage) feeds it verbatim.
+				status: block.status as OperationResult["status"],
+				message: block.message,
+				screenshot: block.screenshot,
+			}),
+			tool_call_id: block.toolCallId,
+			...(call ? { name: call.name } : {}),
+			// The real ToolResultStatus rides additional_kwargs so it
+			// survives the checkpoint (result-blocks.ts / spike.checkpoint).
+			additional_kwargs: { toolResultStatus: block.status },
+		});
+	});
+
+	const keptToolCalls = toolCalls.filter((c) =>
+		toolResults.some((r) => r.toolCallId === c.toolCallId),
+	);
+	if (textChunks.length === 0 && reasoningChunks.length === 0 && keptToolCalls.length === 0) {
+		return { aiMessage: null, toolMessages };
+	}
+
+	const text = textChunks.join("");
+	const reasoning = reasoningChunks.join("");
+	// `additional_kwargs` rides the block like LangChain's BaseContentBlock
+	// index signature permits ([key: string]: unknown) — it survives the
+	// MemorySaver serde and is read by handler.ts ListMessages (T008).
+	const content: Array<
+		| {
+				type: "reasoning";
+				reasoning: string;
+				additional_kwargs?: { interrupted: true };
+		  }
+		| {
+				type: "text";
+				text: string;
+				additional_kwargs?: { interrupted: true };
+		  }
+	> = [];
+	if (reasoning) {
+		content.push({
+			type: "reasoning",
+			reasoning,
+			...(tailKind === "reasoning"
+				? { additional_kwargs: { interrupted: true } }
+				: {}),
+		});
+	}
+	if (text) {
+		content.push({
+			type: "text",
+			text,
+			...(tailKind === "text"
+				? { additional_kwargs: { interrupted: true } }
+				: {}),
+		});
+	}
+	const aiMessage = new AIMessage({
+		// Fresh id: messagesStateReducer appends on id mismatch (contract §2).
+		id: randomUUID(),
+		content,
+		tool_calls: keptToolCalls.map((c) => ({
+			id: c.toolCallId,
+			name: c.name,
+			args: (c.args ?? {}) as Record<string, unknown>,
+		})),
+	});
+	return { aiMessage, toolMessages };
 }

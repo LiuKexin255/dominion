@@ -22,14 +22,30 @@
 import { describe, expect, it, vi } from "vitest";
 import * as grpc from "@grpc/grpc-js";
 import { installReporter, type Reporter } from "@dominion/common-js-logs";
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { MemorySaver } from "@langchain/langgraph";
+import {
+	AIMessage,
+	HumanMessage,
+	ToolMessage,
+} from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
+import {
+	Annotation,
+	END,
+	isNodeTimeoutError,
+	MemorySaver,
+	messagesStateReducer,
+	NodeTimeoutError,
+	START,
+	StateGraph,
+} from "@langchain/langgraph";
 import { fakeModel } from "@langchain/core/testing";
 import { createAgent, tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { SessionTeam, SessionTeamStore } from "./session-team";
+import { SessionTeam, SessionTeamStore, mergePartialBlocks } from "./session-team";
+import type { TurnBlock } from "./turn-loop";
+import type { TurnContent } from "./llm";
 import { OperationBridge } from "./operation-bridge";
 import { extractToolCalls } from "./llm";
 import type { MemoryClient } from "./memory-client";
@@ -1547,5 +1563,684 @@ describe("SessionTeamStore — async initInstruction (039 US3 T029, contract §6
 		await flush(0);
 		expect(team.isRunning()).toBe(false);
 		expect(team.isBusy()).toBe(false);
+	});
+});
+
+// ===========================================================================
+// 044 US3 — partial-output persistence (specs/044-llm-stall-recovery-fix)
+// ===========================================================================
+
+describe("mergePartialBlocks (044 T006 — partial-output-contract.md §3)", () => {
+	const block = (
+		agent: string,
+		b: Parameters<typeof mergePartialBlocks>[0][number]["block"],
+	) => ({ agent, block: b });
+
+	it("merges text+reasoning into one AIMessage; the interrupted flag marks the LAST streamed block type (the text tail)", () => {
+		const { aiMessage, toolMessages } = mergePartialBlocks([
+			block("player", { type: "reasoning", reasoning: "think " }),
+			block("player", { type: "reasoning", reasoning: "more" }),
+			block("player", { type: "text", text: "hello " }),
+			block("player", { type: "text", text: "world" }),
+		]);
+		expect(toolMessages).toEqual([]);
+		expect(aiMessage).not.toBeNull();
+		const content = aiMessage!.content as Array<{
+			type: string;
+			text?: string;
+			reasoning?: string;
+			additional_kwargs?: { interrupted?: boolean };
+		}>;
+		expect(content).toHaveLength(2);
+		expect(content[0]).toEqual({
+			type: "reasoning",
+			reasoning: "think more",
+		});
+		expect(content[1]).toEqual({
+			type: "text",
+			text: "hello world",
+			additional_kwargs: { interrupted: true },
+		});
+		// The tail is the text block — the reasoning block stays unmarked
+		// (FR-005: only the mid-stream block is flagged).
+		expect(content[0].additional_kwargs).toBeUndefined();
+	});
+
+	it("reasoning-only partial → single reasoning content block marked interrupted", () => {
+		const { aiMessage } = mergePartialBlocks([
+			block("planner", { type: "reasoning", reasoning: "deep " }),
+			block("planner", { type: "reasoning", reasoning: "thought" }),
+		]);
+		expect(aiMessage).not.toBeNull();
+		const content = aiMessage!.content as Array<{
+			type: string;
+			reasoning?: string;
+			additional_kwargs?: { interrupted?: boolean };
+		}>;
+		expect(content).toEqual([
+			{
+				type: "reasoning",
+				reasoning: "deep thought",
+				additional_kwargs: { interrupted: true },
+			},
+		]);
+	});
+
+	it("keeps a tool_call with a retained tool_result (call + result linked by toolCallId)", () => {
+		// TOOL-GAP scenario (contract §3 "Marking rule"): the input is
+		// [text, tool_call, tool_result] — the OVERALL-LAST streamed block is
+		// the tool_result, so no content block was mid-stream at the stall.
+		// The fully-streamed pre-tool text MUST NOT be marked (FR-005).
+		const { aiMessage, toolMessages } = mergePartialBlocks([
+			block("player", { type: "text", text: "clicking" }),
+			block("player", {
+				type: "tool_call",
+				name: "saolei_operate",
+				args: { x: 1 },
+				toolCallId: "call-1",
+			}),
+			block("player", {
+				type: "tool_result",
+				toolCallId: "call-1",
+				status: "TOOL_RESULT_STATUS_SUCCEEDED",
+				message: "moved",
+			}),
+		]);
+		expect(aiMessage).not.toBeNull();
+		expect(aiMessage!.tool_calls).toEqual([
+			{ id: "call-1", name: "saolei_operate", args: { x: 1 } },
+		]);
+		// Tool-gap: the last streamed block is the tool_result, not a content
+		// block → the fully-streamed text stays UNMARKED.
+		const content = aiMessage!.content as Array<{
+			additional_kwargs?: { interrupted?: boolean };
+		}>;
+		expect(content[0].additional_kwargs).toBeUndefined();
+		expect(toolMessages).toHaveLength(1);
+		expect(toolMessages[0].tool_call_id).toBe("call-1");
+		expect(toolMessages[0].name).toBe("saolei_operate");
+		expect(toolMessages[0].additional_kwargs?.toolResultStatus).toBe(
+			"TOOL_RESULT_STATUS_SUCCEEDED",
+		);
+		// The ToolMessage content round-trips through the shared parser used
+		// by ListMessages (result-blocks.ts parseToolResultFields).
+		expect(toolMessages[0].content).toContainEqual({
+			type: "text",
+			text: "moved",
+		});
+	});
+
+	it("drops a tool_call WITHOUT a retained tool_result (mid-flight — FR-006)", () => {
+		const { aiMessage, toolMessages } = mergePartialBlocks([
+			block("player", {
+				type: "tool_call",
+				name: "saolei_operate",
+				args: { x: 1 },
+				toolCallId: "call-midflight",
+			}),
+		]);
+		// No text/reasoning and no kept call → nothing to persist (US3.4).
+		expect(aiMessage).toBeNull();
+		expect(toolMessages).toEqual([]);
+	});
+
+	it("empty input → aiMessage null, toolMessages empty (no-op, US3.4)", () => {
+		const { aiMessage, toolMessages } = mergePartialBlocks([]);
+		expect(aiMessage).toBeNull();
+		expect(toolMessages).toEqual([]);
+	});
+
+	it("retains a complete tool result with screenshot content and status", () => {
+		const { aiMessage, toolMessages } = mergePartialBlocks([
+			block("player", {
+				type: "tool_call",
+				name: "mouse_click",
+				args: {},
+				toolCallId: "call-2",
+			}),
+			block("player", {
+				type: "tool_result",
+				toolCallId: "call-2",
+				status: "TOOL_RESULT_STATUS_FAILED",
+				message: "missed",
+				screenshot: { data: "AAAA", widthPx: 3, heightPx: 4 },
+			}),
+		]);
+		expect(aiMessage).not.toBeNull();
+		expect(aiMessage!.content).toEqual([]);
+		expect(aiMessage!.tool_calls).toEqual([
+			{ id: "call-2", name: "mouse_click", args: {} },
+		]);
+		expect(toolMessages).toHaveLength(1);
+		// Image + pixel annotation are part of the ToolMessage content
+		// (buildResultBlocks shape) so ListMessages parses the screenshot.
+		expect(toolMessages[0].content).toContainEqual({
+			type: "image_url",
+			image_url: { url: "data:image/png;base64,AAAA" },
+		});
+		expect(toolMessages[0].additional_kwargs?.toolResultStatus).toBe(
+			"TOOL_RESULT_STATUS_FAILED",
+		);
+	});
+
+	it("multi-step [text1, tool_call, tool_result, reasoning2, text2(truncated)] → merged text marked (last block is text2); known imprecision: text1 included", () => {
+		// Contract §3 "Marking rule": the OVERALL-LAST streamed block is
+		// text2 (a content block was mid-stream at the stall) → the merged
+		// text block (text1 + text2) carries the flag. The accepted v1
+		// imprecision: fully-streamed text1 is concatenated into the marked
+		// block (the display merges all text into one MessagePart anyway).
+		const { aiMessage, toolMessages } = mergePartialBlocks([
+			block("player", { type: "text", text: "I'll click. " }),
+			block("player", {
+				type: "tool_call",
+				name: "op",
+				args: {},
+				toolCallId: "c1",
+			}),
+			block("player", {
+				type: "tool_result",
+				toolCallId: "c1",
+				status: "TOOL_RESULT_STATUS_SUCCEEDED",
+				message: "ok",
+			}),
+			block("player", { type: "reasoning", reasoning: "now " }),
+			block("player", { type: "text", text: "let me che" }), // truncated tail
+		]);
+		const content = aiMessage!.content as Array<{
+			type: string;
+			text?: string;
+			reasoning?: string;
+			additional_kwargs?: { interrupted?: boolean };
+		}>;
+		// reasoning2 is NOT the overall-last → unmarked.
+		const reasoningBlock = content.find((b) => b.type === "reasoning")!;
+		expect(reasoningBlock.additional_kwargs).toBeUndefined();
+		// Merged text (text1 + text2) IS marked — last block overall = text2
+		// (accepted imprecision, contract §3).
+		const textBlock = content.find((b) => b.type === "text")!;
+		expect(textBlock.text).toBe("I'll click. let me che");
+		expect(textBlock.additional_kwargs).toEqual({ interrupted: true });
+		expect(toolMessages).toHaveLength(1);
+	});
+
+	it("tool-gap with no trailing content [tool_call, tool_result] → AIMessage with kept tool_call, no interrupted flag", () => {
+		// Contract §4 "Tool-gap case": the stall occurred after the tool
+		// completed with no content block mid-stream — nothing to mark.
+		const { aiMessage, toolMessages } = mergePartialBlocks([
+			block("player", {
+				type: "tool_call",
+				name: "op",
+				args: {},
+				toolCallId: "c1",
+			}),
+			block("player", {
+				type: "tool_result",
+				toolCallId: "c1",
+				status: "TOOL_RESULT_STATUS_SUCCEEDED",
+				message: "ok",
+			}),
+		]);
+		expect(aiMessage).not.toBeNull();
+		// No text/reasoning content blocks; the tool_call is retained (it has
+		// a result).
+		expect(aiMessage!.content).toEqual([]);
+		expect(aiMessage!.tool_calls).toHaveLength(1);
+		expect(toolMessages).toHaveLength(1);
+	});
+});
+
+describe("044 US3 — partial-output persistence", () => {
+	/**
+	 * A fake v3 streamEvents stream: yields the given protocol events, then
+	 * throws `err` (DI seam — style/javascript.md §测试, no vi.mock). The
+	 * `output` promise resolves; the stall error travels through the
+	 * iterator, which is how the real LangGraph v3 stream surfaces it (and
+	 * what runTeamTurn's for-await observes).
+	 */
+	function fakeV3Stream(events: unknown[], err?: unknown) {
+		return {
+			output: Promise.resolve(undefined),
+			[Symbol.asyncIterator]: async function* () {
+				for (const e of events) yield e;
+				if (err) throw err;
+			},
+		};
+	}
+
+	/** A text content-block-delta protocol event for an agent node. */
+	function textDelta(agent: string, text: string) {
+		return {
+			method: "messages",
+			params: {
+				namespace: [`${agent}:c1`],
+				data: {
+					event: "content-block-delta",
+					delta: { type: "text-delta", text },
+				},
+			},
+		};
+	}
+
+	/** A reasoning content-block-delta protocol event for an agent node. */
+	function reasoningDelta(agent: string, reasoning: string) {
+		return {
+			method: "messages",
+			params: {
+				namespace: [`${agent}:c1`],
+				data: {
+					event: "content-block-delta",
+					delta: { type: "reasoning-delta", reasoning },
+				},
+			},
+		};
+	}
+
+	function toolStarted(agent: string, id: string, name: string, args: unknown) {
+		return {
+			method: "tools",
+			params: {
+				namespace: [`${agent}:c1`],
+				data: { event: "tool-started", tool_call_id: id, tool_name: name, input: args },
+			},
+		};
+	}
+
+	function toolFinished(agent: string, id: string, output: unknown) {
+		return {
+			method: "tools",
+			params: {
+				namespace: [`${agent}:c1`],
+				data: { event: "tool-finished", tool_call_id: id, output },
+			},
+		};
+	}
+
+	function idleTimeoutError(node: string): NodeTimeoutError {
+		return new NodeTimeoutError({
+			node,
+			elapsed: 100,
+			kind: "idle",
+			idleTimeout: 1000,
+		});
+	}
+
+	/**
+	 * Build a SessionTeam over a FAKE graph handle whose streamEvents
+	 * returns the given v3 stream and whose updateState is a recording
+	 * vi.fn (T007 — the persistence assertions target the updateState call
+	 * args; the real checkpoint write is verified by the T005 spike).
+	 */
+	function buildStallTeam(
+		stream: unknown,
+	): {
+		team: SessionTeam;
+		sessionId: string;
+		updateState: ReturnType<typeof vi.fn>;
+	} {
+		const sessionId = "s-044-stall";
+		const updateState = vi.fn(async () => ({}));
+		const handle = {
+			graph: {
+				streamEvents: vi.fn(async () => stream),
+				updateState,
+				getState: vi.fn(async () => ({ values: {} })),
+			},
+			checkpointer: new MemorySaver(),
+		} as unknown as TeamGraphHandle;
+		const buffer = createEphemeralGameBuffer();
+		const team = new SessionTeam(
+			handle,
+			buffer,
+			sessionId,
+			TID,
+			new OperationBridge(),
+			createTeamSink(buffer),
+		);
+		return { team, sessionId, updateState };
+	}
+
+	/** Drive the private runTeamTurn directly to observe the re-throw. */
+	function driveTurn(
+		team: SessionTeam,
+		content: TurnContent,
+	): { blocks: TurnBlock[]; done: Promise<void> } {
+		// bind(team): extracting the private method loses `this` (the
+		// generator reads this.initTurn / this.graphHandle).
+		const runner = (
+			team as unknown as {
+				runTeamTurn: (
+					c: TurnContent,
+					signal?: AbortSignal,
+				) => AsyncIterable<TurnBlock>;
+			}
+		).runTeamTurn.bind(team);
+		const blocks: TurnBlock[] = [];
+		const done = (async () => {
+			for await (const tb of runner(content)) blocks.push(tb);
+		})();
+		return { blocks, done };
+	}
+
+	it("persists the stalled player's streamed blocks and re-throws the idle NodeTimeoutError (T007, FR-004/FR-005)", async () => {
+		const { team, sessionId, updateState } = buildStallTeam(
+			fakeV3Stream(
+				[
+					reasoningDelta("player", "think "),
+					textDelta("player", "hello "),
+					textDelta("player", "world"),
+				],
+				idleTimeoutError("player"),
+			),
+		);
+
+		const { blocks, done } = driveTurn(team, { text: "hi" });
+		await expect(done).rejects.toMatchObject({
+			node: "player",
+			kind: "idle",
+		});
+		// All blocks were streamed out before the stall.
+		expect(blocks.map((b) => b.block)).toEqual([
+			{ type: "reasoning", reasoning: "think " },
+			{ type: "text", text: "hello " },
+			{ type: "text", text: "world" },
+		]);
+
+		expect(updateState).toHaveBeenCalledOnce();
+		const [config, values, asNode] = updateState.mock.calls[0] as [
+			Record<string, unknown>,
+			{ playerMessages?: unknown[] },
+			string,
+		];
+		expect(config).toEqual({ configurable: { thread_id: sessionId } });
+		expect(asNode).toBe("player");
+		const [aiMessage] = values.playerMessages as AIMessage[];
+		expect(aiMessage).toBeInstanceOf(AIMessage);
+		expect(aiMessage.content).toEqual([
+			{ type: "reasoning", reasoning: "think " },
+			{
+				type: "text",
+				text: "hello world",
+				additional_kwargs: { interrupted: true },
+			},
+		]);
+	});
+
+	it("multi-node turn: a planner stall writes ONLY plannerMessages (player's completed output not duplicated — R7)", async () => {
+		const { team, updateState } = buildStallTeam(
+			fakeV3Stream(
+				[
+					// The player completed its turn (fully streamed).
+					textDelta("player", "player done"),
+					toolStarted("player", "t1", "fake_tool", { x: 1 }),
+					toolFinished(
+						"player",
+						"t1",
+						new ToolMessage({
+							content: [{ type: "text", text: "tool ok" }],
+							tool_call_id: "t1",
+							additional_kwargs: {
+								toolResultStatus: "TOOL_RESULT_STATUS_SUCCEEDED",
+							},
+						}),
+					),
+					// The planner streams a partial reply, then stalls.
+					textDelta("planner", "reviewing "),
+					textDelta("planner", "board"),
+				],
+				idleTimeoutError("planner"),
+			),
+		);
+
+		const { done } = driveTurn(team, { text: "开始游戏" });
+		await expect(done).rejects.toMatchObject({
+			node: "planner",
+			kind: "idle",
+		});
+
+		expect(updateState).toHaveBeenCalledOnce();
+		const [, values, asNode] = updateState.mock.calls[0] as [
+			unknown,
+			Record<string, unknown[]>,
+			string,
+		];
+		expect(asNode).toBe("planner");
+		// ONLY the stalled node's channel is written.
+		expect(Object.keys(values)).toEqual(["plannerMessages"]);
+		const [aiMessage] = values.plannerMessages as AIMessage[];
+		expect(aiMessage.content).toEqual([
+			{
+				type: "text",
+				text: "reviewing board",
+				additional_kwargs: { interrupted: true },
+			},
+		]);
+	});
+
+	it("stall at first byte → no-op: updateState is NOT called (US3.4)", async () => {
+		const { team, updateState } = buildStallTeam(
+			fakeV3Stream([], idleTimeoutError("player")),
+		);
+		const { done } = driveTurn(team, { text: "hi" });
+		await expect(done).rejects.toMatchObject({ kind: "idle" });
+		expect(updateState).not.toHaveBeenCalled();
+	});
+
+	it("non-idle errors and non-timeout errors do NOT persist (contract §1 guards, FR-011)", async () => {
+		// A run-timeout NodeTimeoutError (kind: "run") is not persisted.
+		const runTeam = buildStallTeam(
+			fakeV3Stream(
+				[textDelta("player", "partial")],
+				new NodeTimeoutError({
+					node: "player",
+					elapsed: 100,
+					kind: "run",
+					runTimeout: 1000,
+				}),
+			),
+		);
+		const { done } = driveTurn(runTeam.team, { text: "hi" });
+		await expect(done).rejects.toMatchObject({ kind: "run" });
+		expect(runTeam.updateState).not.toHaveBeenCalled();
+
+		// A plain error (model failure) is not persisted either.
+		const errTeam = buildStallTeam(
+			fakeV3Stream([textDelta("player", "partial")], new Error("llm down")),
+		);
+		const { done: done2 } = driveTurn(errTeam.team, { text: "hi" });
+		await expect(done2).rejects.toThrow("llm down");
+		expect(errTeam.updateState).not.toHaveBeenCalled();
+	});
+
+	it("turn-loop regression (FR-010): finishError still emits warn+wait and retains the buffer on a stall", async () => {
+		// The re-thrown NodeTimeoutError reaches runLoop's catch →
+		// finishError (043 behavior unchanged): warn + wait frames, buffer
+		// retained — while the partial output is ALSO persisted (044).
+		const { team, updateState } = buildStallTeam(
+			fakeV3Stream([textDelta("player", "partial")], idleTimeoutError("player")),
+		);
+		const { emit, frames } = recordingEmit();
+		team.bindStreamSink(emit, emit);
+		team.submit({ text: "hi" });
+		team.submit({ text: "queued second" });
+		await flush();
+
+		expect(team.isRunning()).toBe(false);
+		// Buffer retained (FR-015 / 043 FR-006 — the queued message is NOT
+		// cleared by the stall terminal). The TurnLoop is private; the
+		// assertion goes through the same cast used for runTeamTurn.
+		const loopDepth = (
+			team as unknown as { turnLoop: { queueDepth(): number } | null }
+		).turnLoop?.queueDepth();
+		expect(loopDepth).toBe(1);
+		// warn + wait emitted by finishError.
+		expect(
+			frames.filter((f) => {
+				const fr = f as Record<string, unknown>;
+				return (
+					fr.payload === "flowParts" &&
+					(fr.flowParts as { parts: Record<string, unknown>[] }).parts.some(
+						(p) => "warn" in p,
+					)
+				);
+			}).length,
+		).toBe(1);
+		expect(waitCount(frames)).toBe(1);
+		// The partial output was persisted (the 044 compensation).
+		expect(updateState).toHaveBeenCalledOnce();
+	});
+
+	it("gating spike (T005/R4): updateState succeeds from the catch of an idle NodeTimeoutError", async () => {
+		// research.md R4 / partial-output-contract.md §5: LangGraph's
+		// idleTimeout aborts the in-flight streamEvents invocation
+		// (`task.writes.splice` + abort, dist/pregel/timeout.js:200-211). The
+		// spike verifies `graph.updateState` is still callable from the catch
+		// block — an independent checkpointer write, not bound to the aborted
+		// invocation. Minimal real graph with a MemorySaver: `fast` completes
+		// instantly (seeds the thread like production — prior turns exist
+		// before the stalled one, so versions_seen is populated), `stall`
+		// never resolves → the 50ms idleTimeout watchdog fires.
+		const SpikeMessagesState = Annotation.Root({
+			messages: Annotation<BaseMessage[]>({
+				reducer: messagesStateReducer,
+				default: () => [],
+			}),
+		});
+		const graph = new StateGraph(SpikeMessagesState)
+			.addConditionalEdges(START, (_state, config) =>
+				(config?.configurable as { stall?: boolean } | undefined)?.stall
+					? "stall"
+					: "fast",
+			)
+			.addNode("fast", async () => ({
+				messages: [new AIMessage("fast done")],
+			}))
+			.addNode(
+				"stall",
+				async () => {
+					// Never resolves — no progress → the idle watchdog fires.
+					await new Promise<void>(() => {});
+					return {};
+				},
+				{ timeout: { idleTimeout: 50, refreshOn: "auto" } },
+			)
+			.addEdge("fast", END)
+			.addEdge("stall", END)
+			.compile({ checkpointer: new MemorySaver() });
+
+		const threadId = "spike-r4";
+		await graph.invoke(
+			{ messages: [new HumanMessage("seed")] },
+			{ configurable: { thread_id: threadId } },
+		);
+
+		let caught: unknown;
+		try {
+			const stream = await graph.streamEvents(
+				{ messages: [new HumanMessage("hi")] },
+				{
+					configurable: { thread_id: threadId, stall: true },
+					version: "v3",
+				},
+			);
+			for await (const _event of stream) {
+				// Drain — the stalled node emits nothing; the run fails at
+				// the idle timeout.
+			}
+			await (stream as unknown as { output: Promise<unknown> }).output;
+		} catch (err) {
+			caught = err;
+		}
+		expect(isNodeTimeoutError(caught)).toBe(true);
+		expect((caught as NodeTimeoutError).kind).toBe("idle");
+		expect((caught as NodeTimeoutError).node).toBe("stall");
+
+		// THE SPIKE ASSERTION — the exact call shape persistPartialOutput
+		// uses (partial-output-contract.md §2): succeeds after the stall
+		// aborted the in-flight invocation.
+		await graph.updateState(
+			{ configurable: { thread_id: threadId } },
+			{
+				messages: [
+					new AIMessage({
+						id: "spike-r4-partial",
+						content: "partial survived",
+					}),
+				],
+			},
+		);
+
+		const snapshot = await graph.getState({
+			configurable: { thread_id: threadId },
+		});
+		const messages = snapshot.values.messages as Array<{ id?: string }>;
+		expect(messages.some((m) => m.id === "spike-r4-partial")).toBe(true);
+	});
+
+	it("spike probe (R4 edge): bare updateState also works on a FRESH thread (input superstep seeds versions_seen)", async () => {
+		// Research.md R7 / pregel bulkUpdateState: without `asNode`,
+		// updateState infers the attributing node from the checkpoint's
+		// `versions_seen`. EMPIRICAL FINDING (044 T005): even on a fresh
+		// thread whose stalled run never completed any node, the input
+		// superstep's checkpoint records versions_seen for the `__input__`
+		// pseudo-node, so the bare contract call (partial-output-contract.md
+		// §2 shape) succeeds. persistPartialOutput still passes
+		// `asNode: stalledAgent` explicitly — exact attribution to the
+		// stalled node instead of the last-seen one.
+		const SpikeState2 = Annotation.Root({
+			messages: Annotation<BaseMessage[]>({
+				reducer: messagesStateReducer,
+				default: () => [],
+			}),
+		});
+		const graph = new StateGraph(SpikeState2)
+			.addNode(
+				"stall",
+				async () => {
+					await new Promise<void>(() => {});
+					return {};
+				},
+				{ timeout: { idleTimeout: 50, refreshOn: "auto" } },
+			)
+			.addEdge(START, "stall")
+			.addEdge("stall", END)
+			.compile({ checkpointer: new MemorySaver() });
+
+		const threadId = "spike-r4-fresh";
+		let caught: unknown;
+		try {
+			const stream = await graph.streamEvents(
+				{ messages: [new HumanMessage("hi")] },
+				{
+					configurable: { thread_id: threadId },
+					version: "v3",
+				},
+			);
+			for await (const _event of stream) {
+				// Drain — fails at the idle timeout.
+			}
+			await (stream as unknown as { output: Promise<unknown> }).output;
+		} catch (err) {
+			caught = err;
+		}
+		expect(isNodeTimeoutError(caught)).toBe(true);
+
+		// Bare call (contract §2 shape) on the fresh thread — succeeds.
+		await graph.updateState(
+			{ configurable: { thread_id: threadId } },
+			{ messages: [new AIMessage("no-node-yet")] },
+		);
+
+		// The explicit-asNode form (what persistPartialOutput uses) also
+		// works on the SAME fresh thread.
+		await graph.updateState(
+			{ configurable: { thread_id: threadId } },
+			{ messages: [new AIMessage({ id: "spike-r4-fresh-ok", content: "ok" })] },
+			"stall",
+		);
+		const snapshot = await graph.getState({
+			configurable: { thread_id: threadId },
+		});
+		const messages = snapshot.values.messages as Array<{ id?: string }>;
+		expect(messages.some((m) => m.id === "spike-r4-fresh-ok")).toBe(true);
 	});
 });
