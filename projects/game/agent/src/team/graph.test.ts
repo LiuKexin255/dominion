@@ -15,7 +15,7 @@
  * having RUN (`plannerMessages` non-empty / strategy written).
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -233,6 +233,11 @@ function buildTestGraph(
 		frozenSnapshot?: FrozenMemorySnapshot;
 		template?: string;
 		plannerTools?: StructuredToolInterface[];
+		// 044 US2 (T004): bare model specs for the per-reasoning-model idle
+		// floor (contracts/idle-timeout-contract.md §3 — optional deps,
+		// omitted = default timeout).
+		playerModelSpec?: string;
+		plannerModelSpec?: string;
 	} = {},
 ) {
 	const buffer = createEphemeralGameBuffer();
@@ -256,6 +261,8 @@ function buildTestGraph(
 			overrides.plannerTools ?? [buildFakeMemoryTool()],
 		playerBasePrompt: overrides.playerBasePrompt ?? "",
 		plannerBasePrompt: overrides.plannerBasePrompt ?? "",
+		playerModelSpec: overrides.playerModelSpec,
+		plannerModelSpec: overrides.plannerModelSpec,
 		createAgentFn: overrides.createAgentFn,
 	});
 	return { graph, checkpointer, buffer, sessionId, memoryClient, frozenSnapshot };
@@ -2664,23 +2671,24 @@ describe("team graph — 042 US2: review instruction real-time frame (T003, cont
 // 043 US3 (T008 — specs/043-llm-stream-stall-recovery/contracts/
 // stall-recovery-contract.md §1.1): per-node idle timeout configuration
 // ------------------------------------------------------------------
-describe("team graph — 043 US3: player/planner idle timeout config (contract §1.1, T008)", () => {
-	// The compiled Pregel exposes every node's resolved TimeoutPolicy via the
-	// public `nodes` map and `PregelNode.timeout` (installed
-	// @langchain/langgraph dist/pregel/read.d.ts `PregelNode.timeout?:
-	// TimeoutPolicy`; dist/graph/state.js `attachNode` passes the addNode
-	// `timeout` option through at compile). `TeamGraphHandle.graph` is a
-	// structural subset (invoke/getState/updateState/streamEvents), so the
-	// test casts to the runtime shape to read the node specs.
-	type NodeSpec = {
-		timeout?: { idleTimeout?: number; refreshOn?: "auto" | "heartbeat" };
-	};
-	function compiledNodes(
-		graph: TeamGraphHandle["graph"],
-	): Record<string, NodeSpec> {
-		return (graph as unknown as { nodes: Record<string, NodeSpec> }).nodes;
-	}
+// The compiled Pregel exposes every node's resolved TimeoutPolicy via the
+// public `nodes` map and `PregelNode.timeout` (installed
+// @langchain/langgraph dist/pregel/read.d.ts `PregelNode.timeout?:
+// TimeoutPolicy`; dist/graph/state.js `attachNode` passes the addNode
+// `timeout` option through at compile). `TeamGraphHandle.graph` is a
+// structural subset (invoke/getState/updateState/streamEvents), so the
+// test casts to the runtime shape to read the node specs.
+type NodeSpec = {
+	timeout?: { idleTimeout?: number; refreshOn?: "auto" | "heartbeat" };
+};
 
+function compiledNodes(
+	graph: TeamGraphHandle["graph"],
+): Record<string, NodeSpec> {
+	return (graph as unknown as { nodes: Record<string, NodeSpec> }).nodes;
+}
+
+describe("team graph — 043 US3: player/planner idle timeout config (contract §1.1, T008)", () => {
 	it("player and planner nodes carry timeout.idleTimeout === STREAM_IDLE_TIMEOUT_MS with refreshOn === 'auto'", () => {
 		const { graph } = buildTestGraph();
 		const nodes = compiledNodes(graph);
@@ -2702,5 +2710,91 @@ describe("team graph — 043 US3: player/planner idle timeout config (contract �
 		]) {
 			expect(nodes[name].timeout).toBeUndefined();
 		}
+	});
+});
+
+// ------------------------------------------------------------------
+// 044 US2 (T004 — specs/044-llm-stall-recovery-fix/tasks.md T004,
+// contracts/idle-timeout-contract.md §1/§3): the per-reasoning-model
+// floor raises the player/planner idle timeout via the optional
+// playerModelSpec/plannerModelSpec deps
+// ------------------------------------------------------------------
+describe("team graph — 044 US2: reasoning-model floor on player/planner idle timeout (T004)", () => {
+	it("applies max(default, floor) = 600_000 when the player spec is a DeepSeek model; planner without a spec keeps the default", () => {
+		const { graph } = buildTestGraph({
+			playerModelSpec: "openai/deepseek-v4-flash",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.player.timeout?.idleTimeout).toBe(600_000);
+		expect(nodes.player.timeout?.refreshOn).toBe("auto");
+		// planner has no spec → unchanged default (optional-dep backward
+		// compat — the ~30 existing buildTeamGraph call sites pass no spec).
+		expect(nodes.planner.timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+	});
+
+	it("applies the floor independently per node (planner side, o3-mini → 300_000)", () => {
+		const { graph } = buildTestGraph({
+			plannerModelSpec: "openai/o3-mini-high",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.planner.timeout?.idleTimeout).toBe(300_000);
+		expect(nodes.player.timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+	});
+
+	it("a non-matching model spec leaves the default untouched", () => {
+		const { graph } = buildTestGraph({
+			playerModelSpec: "openai/gpt-4",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.player.timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+	});
+});
+
+// ------------------------------------------------------------------
+// 044 US2 (T004 — FR-003/US2.3): an EXPLICIT env value below the floor is
+// honored as-is. `resolveStreamIdleTimeout` reads llm.ts module-level
+// constants evaluated at import time, so this case re-imports the graph
+// builder after mutating the env var (vi.resetModules + dynamic import —
+// no module mocking, per style/javascript.md §Mock 约定; same pattern as
+// the 044 US1 block at the end of llm.test.ts).
+// ------------------------------------------------------------------
+describe("team graph — 044 US2: explicit env below the reasoning floor wins as-is (FR-003/US2.3)", () => {
+	const envKey = "GAME_STREAM_IDLE_TIMEOUT_MS";
+	const original = process.env[envKey];
+
+	afterEach(() => {
+		if (original === undefined) delete process.env[envKey];
+		else process.env[envKey] = original;
+	});
+
+	async function reloadBuilder(): Promise<typeof import("./graph")> {
+		vi.resetModules();
+		return await import("./graph");
+	}
+
+	it("GAME_STREAM_IDLE_TIMEOUT_MS=90000 + DeepSeek spec → 90_000, not the 600s floor", async () => {
+		process.env[envKey] = "90000";
+		const { buildTeamGraph } = await reloadBuilder();
+		const buffer = createEphemeralGameBuffer();
+		const { graph } = buildTeamGraph({
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: instructPlayerPlannerModel("corner-first"),
+			memoryClient: fakeMemoryClient(),
+			frozenSnapshot: new FrozenMemorySnapshot(),
+			template: "saolei",
+			buffer,
+			sessionId: "graph-test-env-below-floor",
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			plannerTools: [buildFakeMemoryTool()],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			playerModelSpec: "openai/deepseek-v4-flash",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.player.timeout?.idleTimeout).toBe(90_000);
 	});
 });

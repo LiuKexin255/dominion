@@ -260,6 +260,13 @@ export async function startServer(
         const handle = buildTeamGraph({
           playerModel,
           plannerModel,
+          // 044 US2 (T004): the profile's bare model specs feed the
+          // per-reasoning-model idle-timeout floor (specs/044-llm-stall-
+          // recovery-fix/contracts/idle-timeout-contract.md §3). The
+          // playerModel/plannerModel instances above stay the sole model
+          // wiring; these strings only resolve the node timeout.
+          playerModelSpec: profile.playerModel,
+          plannerModelSpec: profile.plannerModel,
           memoryClient,
           frozenSnapshot,
           template,
@@ -336,6 +343,11 @@ export async function startServer(
         {
           playerModel,
           plannerModel,
+          // 044 US2 (T004): same floor wiring as the first build — the
+          // profile's bare model specs (specs/044-llm-stall-recovery-fix/
+          // contracts/idle-timeout-contract.md §3).
+          playerModelSpec: profile.playerModel,
+          plannerModelSpec: profile.plannerModel,
           memoryClient,
           frozenSnapshot,
           template,

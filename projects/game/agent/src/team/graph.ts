@@ -72,7 +72,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import type { ChatModel } from "../model-provider";
 import type { MemoryClient } from "../memory-client";
-import { STREAM_IDLE_TIMEOUT_MS } from "../llm";
+import { resolveStreamIdleTimeout } from "../reasoning-timeouts";
 import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { GameEnded, TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
@@ -230,6 +230,18 @@ export interface TeamGraphDeps {
 	plannerBasePrompt: string;
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
+	/**
+	 * The player's bare model spec (e.g. `"openai/deepseek-v4-flash"`) — the
+	 * string BEFORE `getProvider` resolution, used to apply the
+	 * per-reasoning-model idle-timeout floor (044 US2,
+	 * specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md
+	 * §3). Optional: when omitted the node falls back to
+	 * `STREAM_IDLE_TIMEOUT_MS`.
+	 */
+	playerModelSpec?: string;
+	/** The planner's bare model spec — same floor semantics as
+	 *  `playerModelSpec`. */
+	plannerModelSpec?: string;
 }
 
 /**
@@ -369,7 +381,13 @@ export function buildTeamGraph(
 		// The idle timeout (043 — specs/043-llm-stream-stall-recovery/
 		// contracts/stall-recovery-contract.md §1.1) applies ONLY to the
 		// model-holding nodes player/planner: a stalled LLM SSE stream must
-		// raise NodeTimeoutError within STREAM_IDLE_TIMEOUT_MS (FR-001).
+		// raise NodeTimeoutError within the resolved idle period (FR-001).
+		// 044 US2 (specs/044-llm-stall-recovery-fix/tasks.md T004): the
+		// per-reasoning-model floor (specs/044-llm-stall-recovery-fix/
+		// contracts/idle-timeout-contract.md §1) raises the effective
+		// timeout via `resolveStreamIdleTimeout(modelSpec)` when the deps
+		// carry the model spec; omitted specs fall back to
+		// `STREAM_IDLE_TIMEOUT_MS`.
 		// `setNodeDefaults` is intentionally NOT used — it would extend the
 		// timeout to initInstruction/postCompactInstruction/compress, whose
 		// event patterns are out of scope (tasks.md Phase 2 F2 scope note;
@@ -381,10 +399,16 @@ export function buildTeamGraph(
 		// specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
 		// §1.2).
 		.addNode("player", playerNode, {
-			timeout: { idleTimeout: STREAM_IDLE_TIMEOUT_MS, refreshOn: "auto" },
+			timeout: {
+				idleTimeout: resolveStreamIdleTimeout(deps.playerModelSpec),
+				refreshOn: "auto",
+			},
 		})
 		.addNode("planner", plannerNode, {
-			timeout: { idleTimeout: STREAM_IDLE_TIMEOUT_MS, refreshOn: "auto" },
+			timeout: {
+				idleTimeout: resolveStreamIdleTimeout(deps.plannerModelSpec),
+				refreshOn: "auto",
+			},
 		})
 		.addNode("compress", compressNode)
 		// 039 US3 (T026 — R5): the START conditional edge routes to
