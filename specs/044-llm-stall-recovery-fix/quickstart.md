@@ -48,18 +48,17 @@ bazel test //projects/game/agent/src:reasoning_timeouts_test   # gazelle-generat
 bazel test //projects/game/agent/src:graph_test
 ```
 
-### Scenario A4 (large test): reasoning model completes a saolei game without reasoning-induced stall
+### Scenario A4 (large-test case DROPPED — see rationale): reasoning-model floor
 
-**Validates**: SC-001/SC-005. `deepseek-v4-flash` (600s floor) plays a saolei game; its deep-thinking phase (previously > 30s → false stall) no longer aborts the turn.
+**Validates**: SC-001/SC-005 **floor-resolution layer (unit-validated)**. The reasoning-model floor's *resolution* (`getReasoningIdleTimeoutFloor` longest-first matching) and *application* (graph-node `idleTimeout === max(default, floor)` when env unset; `=== explicit env value` when env is set, even below floor — FR-003/US2.3) are validated at the **unit layer** by A2 (`reasoning-timeouts.test.ts`) and A3 (`graph.test.ts`). T004's `nodes.player.timeout.idleTimeout === 600_000` assertion proves the floor reaches the graph node correctly; LangGraph honoring the resolved `idleTimeout` is LangGraph's contract, not dominion logic.
 
-**How**: deploy the SUT via `guitar run <plan.yaml>` with a reasoning model configured; play one game; assert no `NodeTimeoutError` fires during reasoning phases and the game completes.
+**Why T011 case (a) is dropped (no large test for US2's floor)**:
 
-```bash
-# via the testplan skill — full deploy → test → cleanup loop
-guitar run projects/game/testplan/system_test.yaml   # agent-stall suite（A4 为其 case (a)）
-```
+1. **Explicit env suppresses the floor.** The stall deploy (`deploy_agent_stall.yaml`) explicitly sets `GAME_STREAM_IDLE_TIMEOUT_MS` (re-baselined `15000` → `60000`). Per [idle-timeout-contract.md §1](contracts/idle-timeout-contract.md#1-resolution-rule) + FR-003/US2.3, an explicit env always wins as-is — the floor only raises via `max(default, floor)` when env is *unset*. So in this deploy the deepseek 600s floor never engages, and the model spec (deepseek vs gpt-4) has **zero effect** on the observable outcome (both resolve to the 60s explicit timeout). Any deepseek-spec variant is an observable-behavior duplicate of the existing gpt-4 stall tests — it can detect neither a floor regression nor a wiring regression (omitting the spec also yields 60s under explicit env).
+2. **fake-llm cannot reproduce the floor's benefit.** The floor's value is tolerating *resumable* reasoning silence (silent > default, < floor, then content). The fake-llm has no "silent N seconds then resume" template — its only stall mechanism is `sample_stall.yaml` with `stall: true`, a **permanent** stall (emits reasoning delta then blocks forever). A permanent stall fires under *any* timeout (15s/60s/120s/600s), so the floor's raising benefit is unobservable even in a hypothetical env-unset deploy.
+3. **Option B (env-unset deploy variant) rejected.** It would require a new deploy topology + a >120s silence observation per case to test LangGraph's timer (not dominion logic), at high cost and low value, conflicting with `style/large_test.md` §反模式 (no deploy/plan proliferation per feature). And per (2), even with env unset the fake-llm still cannot produce resumable silence, so the floor's benefit remains unobservable.
 
-**Acceptance**: all test cases pass (a reasoning-thinking-induced stall is a failure).
+**SC-005 note (flagged to spec owner — do NOT edit spec.md yourself)**: SC-005's literal large-test component ("reasoning model's normal thinking time causes no stall-induced interruption, in the large-test validation") is **not feasibly satisfiable** with the fake-llm harness (no real / resumable reasoning latency) + the explicit-env stall deploy. The floor's silence-tolerance benefit is validated at the unit layer (resolution A2 + application A3) only. This gap is pending spec-owner decision (accept unit-layer substitution α / amend SC-005 wording β / approve costly option B γ) — see the ruling. Until that decision, do not treat A4 as satisfying SC-005's large-test requirement.
 
 ---
 
@@ -159,7 +158,7 @@ GAME_STREAM_IDLE_TIMEOUT_MS=60000 bazel test //projects/game/agent/src:graph_tes
 - [ ] `STREAM_IDLE_TIMEOUT_MS === 120_000`; min 60s enforced (unit, A1)
 - [ ] reasoning-floor matching, longest-first (unit, A2)
 - [ ] graph node `idleTimeout` reflects the floor when a spec is supplied (unit, A3)
-- [ ] reasoning model completes a saolei game without reasoning-induced stall (large, A4)
+- [ ] reasoning-model floor: longest-first matching (unit, A2) + graph-node `idleTimeout` application incl. env-below-floor as-is (unit, A3) — **large-test case dropped** (A4 rationale: untestable under explicit env per FR-003 + fake-llm has no resumable-silence template)
 - [ ] `updateState` succeeds after AbortSignal fired — gating spike (unit, B1)
 - [ ] `mergePartialBlocks` rules: text/reasoning, tool_call+result kept, tool_call-without-result dropped (unit, B2)
 - [ ] stall persists partial output to the stalled node's channel; error re-thrown; warn+wait + retained buffer unchanged (unit, B3)
