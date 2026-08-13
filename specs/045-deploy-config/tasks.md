@@ -149,6 +149,27 @@
 
 ---
 
+## Phase 6: 修订 — per-block ConfigMap 映射（用户修改意见）
+
+**Purpose**: 按用户修改意见调整 runtime/k8s 的 ConfigMap 映射：**每个配置块一个 ConfigMap object**，块内条目名直接作为 data key（value 为原始文本），不再把所有条目合并进单个 `{workload}-config`（扁平 `{block}-{key}` key）。容器内文件布局 `{block}/{key}`、SDK、CLI/proto/domain/storage 链路均不变。
+
+### 文档清单
+
+- **代码规范文档**: `style/golang.md`（+ [Google Go Style Guide](https://google.github.io/styleguide/go/guide)）
+- **官方文档**: [Kubernetes ConfigMap](https://kubernetes.io/docs/concepts/configuration/configmap/)；[Kubernetes Projected Volumes](https://kubernetes.io/docs/concepts/storage/projected-volumes/)；[Kubernetes Volume API（KeyToPath.Path 子目录）](https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/volume/)
+- **技术文章**: 无
+
+### Tasks
+
+- [X] T028 Update contracts for per-block ConfigMap mapping（`contracts/runtime-contract.md` §1/§2、`data-model.md` §4/§5/图、`research.md` R5/R6；命名 `{workload}-config-{block}` + builder 63 字符 fail-fast 校验）
+- [ ] T029 Implement per-block ConfigMap in `projects/infra/deploy/runtime/k8s/` per updated `specs/045-deploy-config/contracts/runtime-contract.md` §2: `BuildConfigMap` → `BuildConfigMaps`（按 block 首次出现顺序分组，data key=条目名，长度校验 fail-fast）；`BuildDeployment`/`BuildStatefulSet` 投影段改为单一 projected volume + 每块一个 ConfigMapProjection source（`KeyToPath{Key: 条目名, Path: "{block}/{key}"}`）；executor apply per-block 循环 + `buildExpectedApplyResources` per-block 名集合；更新 builder/executor 单测（依赖 T028）
+- [ ] T030 Re-run large tests T026/T027 after deploy control plane upgrade（per-block 物化变更后端到端复验，原则 VI；控制面镜像由用户升级）
+
+**Checkpoint**: per-block ConfigMap 物化端到端验证通过，容器内文件布局与 SDK 行为不变。
+
+---
+
+
 ## Dependencies & Execution Order
 
 ### Phase 依赖

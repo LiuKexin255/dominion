@@ -69,39 +69,50 @@
 **Sources**:
 - YAML 1.2 规范明确 JSON 为子集：https://yaml.org/spec/1.2.2/ （"YAML can be viewed as a natural superset of JSON"）
 
-## R5: config 数据进入期望状态 + 控制面创建 ConfigMap
+## R5: config 数据进入期望状态 + 控制面创建 per-block ConfigMap
 
 **Decision**: 
 - proto `ArtifactSpec` 新增 `repeated ConfigEntry config_entries = 12`，携带被选中配置块的内联数据（block/key/type/value）。
-- 控制面（`projects/infra/deploy`）在 reconcile 时**创建 ConfigMap**（按 workload 命名 `{workload}-config`），将其投影为 pod volume。
+- 控制面（`projects/infra/deploy`）在 reconcile 时**创建 ConfigMap**——**每个配置块一个 ConfigMap object**（命名 `{workload}-config-{block}`），data key 为条目名（块内唯一），value 为原始数据文本；将全部 per-block ConfigMap 投影入单一 pod volume。
 - 这是控制面首次**创建**数据型 K8s 资源（当前仅引用预存的 TLS CA ConfigMap，不创建）。
 
 **Rationale**:
 - 与 secret 的本质区别：secret 引用**外部已存在**的 K8s Secret（控制面只投影）；config 数据**内联在 service.yaml**，无外部来源，必须由控制面据期望状态创建。
 - FR-018 要求被选中的配置块数据（block/key/type/value）纳入期望状态以便重启后重建——控制面据此创建 ConfigMap，故期望状态携带完整 config 数据而非仅选择名。
 - ConfigMap 是 K8s 挂载非敏感数据的标准载体（区别于 secret 的 Secret 投影）。
-- 创建/清理 ConfigMap 复用 executor 现有 apply/prune 模式（`executor.go` 的 `applyInner`/prune 列表），新增一条 ConfigMap apply 路径。
+- **per-block 粒度**：每个逻辑配置单元（block）一个 ConfigMap 是 K8s 惯用法（key 即文件）。块内条目名唯一（FR-004），故条目名可直接作 ConfigMap data key，**无需扁平化拼接 block**——这从结构上消除了扁平 `{block}-{key}` 拼接的碰撞缺陷（`block="a",key="b-c"` 与 `block="a-b",key="c"` 同为 `a-b-c`）。ConfigMap 粒度更细也缓解单对象大小上限（单个 K8s 对象受 etcd 请求大小限制，[`--max-request-bytes` 默认 1.5 MiB](https://etcd.io/docs/v3.5/op-guide/configuration/)，扣除开销后单 ConfigMap 实际可用约 1 MB）。
+- 创建/清理 ConfigMap 复用 executor 现有 apply/prune 模式（`executor.go` 的 `applyInner`/`pruneConfigMaps`），新增 per-block ConfigMap apply 路径（`BuildConfigMaps` 返回 N 个，逐个 apply）。
 
 **Alternatives Considered**:
 - deploy CLI 在提交期望状态前直接创建 ConfigMap：破坏控制面单一所有权（reconcile 模型要求控制面拥有所有资源）。拒绝。
 - config 数据不进期望状态、控制面回读 service.yaml：控制面不持有 service.yaml 解析能力（那是 CLI 的职责），且违背期望状态自包含原则。拒绝。
+- 单 ConfigMap per workload + 扁平 `{block}-{key}` data key：拼接产生碰撞（见上）；且单对象承载全部条目，更易触 1MB 上限。拒绝（per-block 映射的附带收益即消除此缺陷）。
 
 ## R6: 运行时挂载约定（沿用 secret 先例）
 
 **Decision**:
 - 挂载路径：`/mnt/dominion/config`（只读）。
 - 发现变量：`DOMINION_CONFIG_DIR`（值 `/mnt/dominion/config`），平台强制注入，加入保留变量列表。
-- 文件布局：`{DOMINION_CONFIG_DIR}/{block}/{key}`。
-- ConfigMap data key 为扁平的 `{block}-{key}`（ConfigMap key 不允许含 `/`），通过 `KeyToPath{Key: "{block}-{key}", Path: "{block}/{key}"}` 投影出目录结构（`KeyToPath.Path` 允许含 `/`）。
+- 文件布局（容器内）：`{DOMINION_CONFIG_DIR}/{block}/{key}`（嵌套目录）。
+- ConfigMap 粒度：**每个配置块一个 ConfigMap object**，命名 `{workload}-config-{block}`；data key = 条目名（块内唯一，原样，不拼接 block）。
+- 投影：单一 projected volume `dominion-config`，每个块一个 `ConfigMapProjection` source；每条目经 `KeyToPath{Key: 条目名, Path: "{block}/{key}"}` 还原容器内嵌套目录（`KeyToPath.Path` 允许含 `/`）。
+
+> **两个独立的"扁平 vs 嵌套"决策，须区分**：
+> 1. **容器内文件布局**：选嵌套 `{block}/{key}` 目录（拒绝扁平文件名 `{block}-{key}` 放在根目录——见 Alternatives 第一条）。
+> 2. **ConfigMap data key**：选条目名原样（per-block，拒绝扁平拼接 `{block}-{key}` 作 data key——见 Alternatives 第二条）。
+> 二者都不扁平化，但理由各自独立。
 
 **Rationale**:
-- 与 `DOMINION_SECRET_DIR` / `/mnt/dominion/secret` 完全对称（见 `builder.go:58-63` 与 `specs/002-deploy-secret-config/research.md` R3/R5），降低认知成本。
-- 嵌套 `{block}/{key}` 避免扁平命名的碰撞风险（`block="a",key="b-c"` 与 `block="a-b",key="c"` 在扁平 `-` 拼接下碰撞）。
+- 与 `DOMINION_SECRET_DIR` / `/mnt/dominion/secret` 完全对称（见 `builder.go` `secretVolumeName`/`secretMountPath`/`envSecretDir` 常量与 `specs/002-deploy-secret-config/research.md` R3/R5），降低认知成本。
+- 嵌套 `{block}/{key}` 容器布局避免扁平文件名的碰撞风险（`block="a",key="b-c"` 与 `block="a-b",key="c"` 在扁平 `-` 拼接下同为 `a-b-c`）。
 - block 名在配置块列表内唯一（FR-004）、key 名在所属配置块内唯一（FR-004），故 `{block}/{key}` 全局唯一，无路径冲突。
-- ConfigMap key 限制：K8s ConfigMap data key 须匹配 `[-._a-zA-Z0-9]+`，不允许 `/`；故用 `{block}-{key}` 作 key，`KeyToPath.Path` 还原目录。
+- **per-block ConfigMap data key = 条目名**：条目名匹配 `^[a-z][a-z0-9_-]{0,63}$`，是 K8s ConfigMap data key 正则 `[-._a-zA-Z0-9]+`（[`k8s.io/apimachinery` `configMapKeyFmt`](https://github.com/kubernetes/apimachinery/blob/master/pkg/util/validation/validation.go)）的严格子集，可直接作 data key 无需拼接——per-block 粒度下块名不再是 key 的一部分，结构上消除了扁平 `{block}-{key}` 的碰撞缺陷。
+- projected volume 多 source：`ProjectedVolumeSource.sources` 支持每块一个 ConfigMap source 挂入同一目录（[K8s Projected Volumes](https://kubernetes.io/docs/concepts/storage/projected-volumes/)）；本仓库 secret 投影已用同一机制。
+- `KeyToPath.Path` 允许子目录（[K8s Volume API](https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/volume/)），故 `{block}/{key}` 可还原嵌套布局。
 
 **Alternatives Considered**:
-- 扁平布局 `{block}-{key}`：有碰撞风险。拒绝。
+- 容器内扁平文件名 `{block}-{key}`（置于根目录而非嵌套目录）：有碰撞风险（见上）。拒绝。（此条针对**容器文件布局**，与下方 data key 方案无关。）
+- 单 ConfigMap per workload + 扁平 `{block}-{key}` data key：拼接受 K8s key 正则约束须去 `/`，且产生 `a-b-c` 碰撞；per-block 后块名移出 key，条目名块内唯一即无碰撞。拒绝。
 - 单文件每块（块内所有 key 合并为一文档）：不支持块内混合 type（用户模型 type 粒度为 per-key）。拒绝。
 
 ## R7: 配置选择校验位置 — compiler.Compile

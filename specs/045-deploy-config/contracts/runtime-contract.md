@@ -13,13 +13,16 @@
 | 配置根目录 | `/mnt/dominion/config` | `builder.go` 常量 `configMountPath` |
 | 发现变量 | `DOMINION_CONFIG_DIR` = `/mnt/dominion/config` | `builder.go` 常量 `envConfigDir`；平台强制注入 |
 | 文件布局 | `{DOMINION_CONFIG_DIR}/{block}/{key}` | ConfigMap `KeyToPath.Path` |
-| 卷名 | `dominion-config`（ProjectedVolume） | `builder.go` 常量 `configVolumeName` |
+| 卷名 | `dominion-config`（ProjectedVolume，单一卷，每块一个 source） | `builder.go` 常量 `configVolumeName` |
 | 挂载模式 | 只读 | `VolumeMount.ReadOnly = true` |
-| ConfigMap 名 | `{workload}-config` | `executor.go` 创建 |
-| ConfigMap data key | `{block}-{key}`（扁平，ConfigMap key 不允许含 `/`） | `executor.go` |
-| 触发条件 | 仅当 artifact 有 ≥1 个 config entry 时创建 ConfigMap/卷/挂载/env | `builder.go` |
+| ConfigMap 粒度 | **每个配置块一个 ConfigMap object**（block 即逻辑配置单元） | `builder.go` 命名；`executor.go` 创建 |
+| ConfigMap 名 | `{workload}-config-{block}`（每块一个） | `builder.go` 命名；长度校验见 §2 |
+| ConfigMap data key | 条目名（块内唯一，原样作为 key，不拼接 block） | `builder.go` |
+| 触发条件 | 仅当 artifact 有 ≥1 个 config entry 时创建 ConfigMap(s)/卷/挂载/env | `builder.go` |
 
 > **对称性**：与 secret 约定（`DOMINION_SECRET_DIR` / `/mnt/dominion/secret` / 卷 `dominion-secrets`）完全对称，见 `specs/002-deploy-secret-config`。
+>
+> **per-block 映射**：每个配置块对应一个独立的 ConfigMap object，块内每个条目（`(block,key)` 寻址中的 key）直接作为该 ConfigMap 的一个 data key（key = 条目名，value = 原始数据文本，不做任何拼接/解析）。容器内文件布局仍为 `{DOMINION_CONFIG_DIR}/{block}/{key}`，由投影 `KeyToPath.Path` 还原目录层级（见 §2）。
 
 ---
 
@@ -27,41 +30,73 @@
 
 控制面当前**不创建**任何 ConfigMap（仅引用预存 TLS CA ConfigMap）。config 特性首次引入控制面创建数据型资源。
 
-### ConfigMap 内容
+**映射模型**：**每个配置块（config block）一个 ConfigMap object**。块内每个条目（entry）直接作为该 ConfigMap 的一个 data key——key 为条目名（块内唯一，原样），value 为原始数据文本（service.yaml `configs[].data[].value` 原样）。一个 workload 选中 N 个配置块即产生 N 个 ConfigMap。
 
-由 `runtime/k8s/builder.go` 新增 `BuildConfigMap(workload, cfg)` 生成：
+### 命名与长度校验
+
+每个 ConfigMap 命名为 `{workload}-config-{block}`，其中 `{workload}` 为 `DeploymentWorkload`/`StatefulWorkload` 的 `WorkloadName()`（格式见 `projects/infra/deploy/runtime/k8s/naming.go:41` `newObjectName`），`{block}` 为配置块名。
+
+builder MUST 对每个生成的 ConfigMap 名做显式长度校验：`len(name) > maxK8sResourceNameSize`（`naming.go:38`，值 `63`）时立即 fail-fast 返回 error，错误信息 MUST 包含 workload 名、block 名与计算后的长度。该校验收敛既有 follow-up（旧设计 `{workload}-config` 在 workload 名接近 63 字符时即可能超限，per-block 进一步加长名字故更甚）；与代码库统一的 63 字符资源名上限一致（`Validate()` 对 Deployment/StatefulSet workload 名施加同一上限）。
 
 ```go
-// ConfigMap data: 每个 ConfigEntry 一个 key
-data := map[string]string{}
-for _, ce := range workload.ConfigEntries {
-    data[ce.Block + "-" + ce.Key] = ce.Value
+// 命名 + 长度校验（伪代码）
+name := workload.WorkloadName() + "-config-" + block
+if len(name) > maxK8sResourceNameSize {
+    return nil, fmt.Errorf("configmap name %q (workload=%q block=%q) 超过 %d 字符上限",
+        name, workload.WorkloadName(), block, maxK8sResourceNameSize)
 }
-// ObjectMeta: Name = workload.WorkloadName() + "-config", Namespace = cfg.Namespace,
-//             Labels 与 Deployment 一致（app/service/environment/managed-by）
 ```
 
-### 投影为容器文件
+> **命名理由**：`{workload}-config-{block}` 延续 `{workload}-config` 风格；`-config-` infix 使其可 grep（区别于 TLS CA 等其他 ConfigMap）；labels（app/service/environment/managed-by，与 Deployment 一致）标注 ownership，供 executor 按 label 发现/prune（见 `executor.go` `pruneConfigMaps`）。无需从名字反解出 block——构建是确定性的（workload+block），发现/清理走 label 而非名字解析。
 
-`BuildDeployment` / `BuildStatefulSet` 中，当 `len(workload.ConfigEntries) > 0`：
+### ConfigMap 内容（`BuildConfigMaps`）
+
+由 `runtime/k8s/builder.go` 新增 `BuildConfigMaps(workload, cfg)` 生成，按配置块分组（block 首次出现顺序，保证确定性），返回 N 个 ConfigMap：
 
 ```go
-var configItems []corev1.KeyToPath
-for _, ce := range workload.ConfigEntries {
-    configItems = append(configItems, corev1.KeyToPath{
-        Key:  ce.Block + "-" + ce.Key,        // ConfigMap data key
-        Path: ce.Block + "/" + ce.Key,        // 容器内路径 {block}/{key}
+// BuildConfigMaps 按 block 分组，为每个块生成一个 ConfigMap。
+// data key = 条目名（块内唯一），value = 原始数据文本。
+// 返回顺序按 block 首次出现顺序（确定性）。
+func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.ConfigMap, error)
+
+// 单块构造（伪代码）：
+//   data := map[string]string{}
+//   for _, ce := range entriesInBlock(workload.configEntries(), block) {
+//       data[ce.Key] = ce.Value        // key = 条目名，原样；不拼接 block
+//   }
+//   ObjectMeta: Name = workload.WorkloadName() + "-config-" + block,
+//               Namespace = cfg.Namespace,
+//               Labels 与 Deployment 一致（app/service/environment/managed-by）
+```
+
+`configMapWorkload` 接口（`model.go`）不变——仍暴露扁平的 `configEntries() []*domain.ConfigEntry`；分块发生在 builder 层（按 `ce.Block` 分组）。
+
+### 投影为容器文件（单一 projected volume，每块一个 source）
+
+`BuildDeployment` / `BuildStatefulSet` 中，当 `len(workload.ConfigEntries) > 0`，创建**单一** volume `dominion-config`（ProjectedVolume），其 `sources` 含**每个块一个** `ConfigMapProjection`；每个 source 的 `Items` 将该块的每个条目映射为容器内路径 `{block}/{key}`（`KeyToPath.Path` 允许子目录，用于还原目录层级）：
+
+```go
+// 按 block 首次出现顺序分组
+var configSources []corev1.VolumeProjection
+for _, block := range distinctBlocksInOrder(workload.ConfigEntries) {
+    var items []corev1.KeyToPath
+    for _, ce := range entriesOfBlock(workload.ConfigEntries, block) {
+        items = append(items, corev1.KeyToPath{
+            Key:  ce.Key,                  // ConfigMap data key = 条目名
+            Path: block + "/" + ce.Key,    // 容器内路径 {block}/{key}
+        })
+    }
+    configSources = append(configSources, corev1.VolumeProjection{
+        ConfigMap: &corev1.ConfigMapProjection{
+            LocalObjectReference: corev1.LocalObjectReference{Name: workload.WorkloadName() + "-config-" + block},
+            Items:                items,
+        },
     })
 }
 volumes = append(volumes, corev1.Volume{
     Name: configVolumeName,
     VolumeSource: corev1.VolumeSource{
-        Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{
-            ConfigMap: &corev1.ConfigMapProjection{
-                LocalObjectReference: corev1.LocalObjectReference{Name: workload.WorkloadName() + "-config"},
-                Items:                configItems,
-            },
-        }}},
+        Projected: &corev1.ProjectedVolumeSource{Sources: configSources},
     },
 })
 volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -70,11 +105,17 @@ volumeMounts = append(volumeMounts, corev1.VolumeMount{
 containerEnv = append(containerEnv, corev1.EnvVar{Name: envConfigDir, Value: configMountPath})
 ```
 
+### K8s 约束依据
+
+- **ConfigMap data key**：须匹配 `[-._a-zA-Z0-9]+`，不允许 `/`（[`k8s.io/apimachinery` `configMapKeyFmt`](https://github.com/kubernetes/apimachinery/blob/master/pkg/util/validation/validation.go)，[kubernetes/kubernetes#87119](https://github.com/kubernetes/kubernetes/issues/87119) 确认 `/` 被拒）。条目名匹配 `^[a-z][a-z0-9_-]{0,63}$`（其严格子集），故条目名可直接作为 ConfigMap data key，无需扁平化拼接。
+- **projected volume 多 source**：`ProjectedVolumeSource.sources []VolumeProjection` 支持多个 ConfigMap source 合法挂入同一目录（[K8s Projected Volumes 文档](https://kubernetes.io/docs/concepts/storage/projected-volumes/) 示例即 secret+downwardAPI+configMap 同卷）。本仓库 secret 投影（`builder.go` `dominion-secrets` 卷）已用同一机制（多 Secret source 入单卷）。
+- **KeyToPath.Path 子目录**：`Path` 须相对、不含 `..`，允许 `/` 建子目录（[K8s Volume API](https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/volume/) "Paths must be relative and may not contain the '..' path"，[`configmap_test.go` "subdirs"](https://github.com/kubernetes/kubernetes/blob/master/pkg/volume/configmap/configmap_test.go) 验证 `path/to/1/2/3/foo.txt`）。故 `{block}/{key}` 可还原目录层级。
+
 ### executor apply/prune 集成
 
-`executor.go` 的 `applyInner`（lines 83-151）新增 ConfigMap apply（Get→Create-if-NotFound→Update-with-ResourceVersion，模式同 `applyTypedSecret` lines 999-1018）；prune 列表（lines 153-178）新增 ConfigMap；`expectedApplyResources`（lines 180-230）纳入 ConfigMap。
+`executor.go` 的 `applyInner` 在引用 ConfigMap 的 Deployment/StatefulSet 之前 apply **该 workload 的全部 per-block ConfigMap**（N 个，按 `BuildConfigMaps` 返回顺序逐个 `applyTypedConfigMap`，Get→Create-if-NotFound→Update-with-ResourceVersion）；prune 列表（`pruneResources`）按 label 清理 ConfigMap（`pruneConfigMaps` 已 label-based，无需结构性改动）；`buildExpectedApplyResources` 的 `configMaps` 集合须纳入每个有 config entry 的 workload 的每个 block 名 `{workload}-config-{block}`；`Delete` 的 `deleteConfigMaps` 已 label-based。
 
-> **顺序**：ConfigMap 必须在引用它的 Deployment/StatefulSet 之前 apply（Deployment 引用 ConfigMap 投影，ConfigMap 不存在时 Pod 启动失败）。
+> **顺序**：全部 per-block ConfigMap MUST 在引用它们的 Deployment/StatefulSet 之前 apply（Deployment 投影 ConfigMap，ConfigMap 不存在时 Pod 启动失败）。同一 workload 的多个 per-block ConfigMap 间无依赖，apply 顺序按 `BuildConfigMaps` 返回顺序（block 首次出现序）即可。
 
 ---
 

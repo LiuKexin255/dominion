@@ -1266,6 +1266,7 @@ func TestBuildDeployment_WithConfigEntries(t *testing.T) {
 	w.ConfigEntries = []*domain.ConfigEntry{
 		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
 		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+		{Block: "service_config", Key: "limits", Type: "yaml", Value: "max: 10\n"},
 	}
 
 	deploy, err := BuildDeployment(w, cfg)
@@ -1286,27 +1287,45 @@ func TestBuildDeployment_WithConfigEntries(t *testing.T) {
 	if configVol.Projected == nil {
 		t.Fatalf("Config volume should use projected source")
 	}
-	if len(configVol.Projected.Sources) != 1 {
-		t.Fatalf("Config projected Sources count = %d, want 1", len(configVol.Projected.Sources))
+	// 每个配置块一个 ConfigMap source（按 block 首次出现顺序）。
+	if len(configVol.Projected.Sources) != 2 {
+		t.Fatalf("Config projected Sources count = %d, want 2", len(configVol.Projected.Sources))
 	}
-	src := configVol.Projected.Sources[0]
-	if src.ConfigMap == nil {
+
+	// 第一个 source：service_config 块（两个条目，KeyToPath 还原 {block}/{key}）。
+	firstSrc := configVol.Projected.Sources[0]
+	if firstSrc.ConfigMap == nil {
 		t.Fatalf("Config projection should be a ConfigMap source")
 	}
-	if src.ConfigMap.Name != w.WorkloadName()+"-config" {
-		t.Fatalf("ConfigMap Name = %q, want %q", src.ConfigMap.Name, w.WorkloadName()+"-config")
+	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service_config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service_config")
 	}
-	if len(src.ConfigMap.Items) != 2 {
-		t.Fatalf("ConfigMap Items count = %d, want 2", len(src.ConfigMap.Items))
+	if len(firstSrc.ConfigMap.Items) != 2 {
+		t.Fatalf("ConfigMap Items count = %d, want 2", len(firstSrc.ConfigMap.Items))
 	}
-	// KeyToPath 还原 "{block}/{key}" 容器内路径（contracts/runtime-contract.md §2）。
-	if src.ConfigMap.Items[0].Key != "service_config-greeting" || src.ConfigMap.Items[0].Path != "service_config/greeting" {
-		t.Fatalf("ConfigMap Item[0] = {Key: %q, Path: %q}, want {Key: service_config-greeting, Path: service_config/greeting}",
-			src.ConfigMap.Items[0].Key, src.ConfigMap.Items[0].Path)
+	if firstSrc.ConfigMap.Items[0].Key != "greeting" || firstSrc.ConfigMap.Items[0].Path != "service_config/greeting" {
+		t.Fatalf("ConfigMap Item[0] = {Key: %q, Path: %q}, want {Key: greeting, Path: service_config/greeting}",
+			firstSrc.ConfigMap.Items[0].Key, firstSrc.ConfigMap.Items[0].Path)
 	}
-	if src.ConfigMap.Items[1].Key != "feature_flags-beta" || src.ConfigMap.Items[1].Path != "feature_flags/beta" {
-		t.Fatalf("ConfigMap Item[1] = {Key: %q, Path: %q}, want {Key: feature_flags-beta, Path: feature_flags/beta}",
-			src.ConfigMap.Items[1].Key, src.ConfigMap.Items[1].Path)
+	if firstSrc.ConfigMap.Items[1].Key != "limits" || firstSrc.ConfigMap.Items[1].Path != "service_config/limits" {
+		t.Fatalf("ConfigMap Item[1] = {Key: %q, Path: %q}, want {Key: limits, Path: service_config/limits}",
+			firstSrc.ConfigMap.Items[1].Key, firstSrc.ConfigMap.Items[1].Path)
+	}
+
+	// 第二个 source：feature_flags 块（单个条目）。
+	secondSrc := configVol.Projected.Sources[1]
+	if secondSrc.ConfigMap == nil {
+		t.Fatalf("Config projection should be a ConfigMap source")
+	}
+	if secondSrc.ConfigMap.Name != w.WorkloadName()+"-config-feature_flags" {
+		t.Fatalf("ConfigMap Name = %q, want %q", secondSrc.ConfigMap.Name, w.WorkloadName()+"-config-feature_flags")
+	}
+	if len(secondSrc.ConfigMap.Items) != 1 {
+		t.Fatalf("ConfigMap Items count = %d, want 1", len(secondSrc.ConfigMap.Items))
+	}
+	if secondSrc.ConfigMap.Items[0].Key != "beta" || secondSrc.ConfigMap.Items[0].Path != "feature_flags/beta" {
+		t.Fatalf("ConfigMap Item = {Key: %q, Path: %q}, want {Key: beta, Path: feature_flags/beta}",
+			secondSrc.ConfigMap.Items[0].Key, secondSrc.ConfigMap.Items[0].Path)
 	}
 
 	// Verify volume mount.
@@ -1340,6 +1359,7 @@ func TestBuildStatefulSet_WithConfigEntries(t *testing.T) {
 	w := testStatefulWorkload()
 	w.ConfigEntries = []*domain.ConfigEntry{
 		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
 	}
 
 	sts, err := BuildStatefulSet(w, cfg)
@@ -1360,22 +1380,24 @@ func TestBuildStatefulSet_WithConfigEntries(t *testing.T) {
 	if configVol.Projected == nil {
 		t.Fatalf("Config volume should use projected source")
 	}
-	if len(configVol.Projected.Sources) != 1 {
-		t.Fatalf("Config projected Sources count = %d, want 1", len(configVol.Projected.Sources))
+	// 每个配置块一个 ConfigMap source（按 block 首次出现顺序）。
+	if len(configVol.Projected.Sources) != 2 {
+		t.Fatalf("Config projected Sources count = %d, want 2", len(configVol.Projected.Sources))
 	}
-	src := configVol.Projected.Sources[0]
-	if src.ConfigMap == nil {
+	firstSrc := configVol.Projected.Sources[0]
+	if firstSrc.ConfigMap == nil {
 		t.Fatalf("Config projection should be a ConfigMap source")
 	}
-	if src.ConfigMap.Name != w.WorkloadName()+"-config" {
-		t.Fatalf("ConfigMap Name = %q, want %q", src.ConfigMap.Name, w.WorkloadName()+"-config")
+	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service_config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service_config")
 	}
-	if len(src.ConfigMap.Items) != 1 {
-		t.Fatalf("ConfigMap Items count = %d, want 1", len(src.ConfigMap.Items))
+	if len(firstSrc.ConfigMap.Items) != 1 {
+		t.Fatalf("ConfigMap Items count = %d, want 1", len(firstSrc.ConfigMap.Items))
 	}
-	if src.ConfigMap.Items[0].Key != "service_config-greeting" || src.ConfigMap.Items[0].Path != "service_config/greeting" {
-		t.Fatalf("ConfigMap Item = {Key: %q, Path: %q}, want {Key: service_config-greeting, Path: service_config/greeting}",
-			src.ConfigMap.Items[0].Key, src.ConfigMap.Items[0].Path)
+	// KeyToPath 还原 "{block}/{key}" 容器内路径（contracts/runtime-contract.md §2）。
+	if firstSrc.ConfigMap.Items[0].Key != "greeting" || firstSrc.ConfigMap.Items[0].Path != "service_config/greeting" {
+		t.Fatalf("ConfigMap Item = {Key: %q, Path: %q}, want {Key: greeting, Path: service_config/greeting}",
+			firstSrc.ConfigMap.Items[0].Key, firstSrc.ConfigMap.Items[0].Path)
 	}
 
 	// Verify volume mount.
@@ -1507,24 +1529,32 @@ func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
 	}
 }
 
-func TestBuildConfigMap(t *testing.T) {
+func TestBuildConfigMaps(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testDeploymentWorkload()
 	w.ConfigEntries = []*domain.ConfigEntry{
 		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
 		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+		{Block: "service_config", Key: "limits", Type: "yaml", Value: "max: 10\n"},
 	}
 
-	cm, err := BuildConfigMap(w, cfg)
+	cms, err := BuildConfigMaps(w, cfg)
 	if err != nil {
-		t.Fatalf("BuildConfigMap() error: %v", err)
+		t.Fatalf("BuildConfigMaps() error: %v", err)
 	}
 
-	if cm.Name != w.WorkloadName()+"-config" {
-		t.Fatalf("Name = %q, want %q", cm.Name, w.WorkloadName()+"-config")
+	// 每个配置块一个 ConfigMap，返回顺序按 block 首次出现顺序（确定性）。
+	if len(cms) != 2 {
+		t.Fatalf("ConfigMaps count = %d, want 2", len(cms))
 	}
-	if cm.Namespace != cfg.Namespace {
-		t.Fatalf("Namespace = %q, want %q", cm.Namespace, cfg.Namespace)
+
+	// 第一个块：service_config（两个条目，data key = 条目名原样）。
+	firstCM := cms[0]
+	if firstCM.Name != w.WorkloadName()+"-config-service_config" {
+		t.Fatalf("Name = %q, want %q", firstCM.Name, w.WorkloadName()+"-config-service_config")
+	}
+	if firstCM.Namespace != cfg.Namespace {
+		t.Fatalf("Namespace = %q, want %q", firstCM.Namespace, cfg.Namespace)
 	}
 
 	// Labels 与 Deployment 一致（app/service/environment/managed-by）。
@@ -1535,43 +1565,82 @@ func TestBuildConfigMap(t *testing.T) {
 		withManagedBy(cfg.ManagedBy),
 	)
 	for key, want := range wantObjectLabels {
-		if got := cm.Labels[key]; got != want {
+		if got := firstCM.Labels[key]; got != want {
 			t.Fatalf("Label[%q] = %q, want %q", key, got, want)
 		}
 	}
 
-	// data key 为扁平 "{block}-{key}"，value 为原始数据文本。
+	// data key 为条目名（块内唯一，原样），value 为原始数据文本。
 	wantData := map[string]string{
-		"service_config-greeting": "message: hello\n",
-		"feature_flags-beta":      "true",
+		"greeting": "message: hello\n",
+		"limits":   "max: 10\n",
 	}
-	if len(cm.Data) != len(wantData) {
-		t.Fatalf("Data count = %d, want %d", len(cm.Data), len(wantData))
+	if len(firstCM.Data) != len(wantData) {
+		t.Fatalf("Data count = %d, want %d", len(firstCM.Data), len(wantData))
 	}
 	for key, want := range wantData {
-		if got := cm.Data[key]; got != want {
+		if got := firstCM.Data[key]; got != want {
 			t.Fatalf("Data[%q] = %q, want %q", key, got, want)
 		}
 	}
+
+	// 第二个块：feature_flags（单个条目）。
+	secondCM := cms[1]
+	if secondCM.Name != w.WorkloadName()+"-config-feature_flags" {
+		t.Fatalf("Name = %q, want %q", secondCM.Name, w.WorkloadName()+"-config-feature_flags")
+	}
+	if got := secondCM.Data["beta"]; got != "true" {
+		t.Fatalf("Data[beta] = %q, want %q", got, "true")
+	}
 }
 
-func TestBuildConfigMap_StatefulWorkload(t *testing.T) {
+func TestBuildConfigMaps_StatefulWorkload(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testStatefulWorkload()
 	w.ConfigEntries = []*domain.ConfigEntry{
 		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
 	}
 
-	cm, err := BuildConfigMap(w, cfg)
+	cms, err := BuildConfigMaps(w, cfg)
 	if err != nil {
-		t.Fatalf("BuildConfigMap() error: %v", err)
+		t.Fatalf("BuildConfigMaps() error: %v", err)
+	}
+	if len(cms) != 1 {
+		t.Fatalf("ConfigMaps count = %d, want 1", len(cms))
 	}
 
-	if cm.Name != w.WorkloadName()+"-config" {
-		t.Fatalf("Name = %q, want %q", cm.Name, w.WorkloadName()+"-config")
+	if cms[0].Name != w.WorkloadName()+"-config-service_config" {
+		t.Fatalf("Name = %q, want %q", cms[0].Name, w.WorkloadName()+"-config-service_config")
 	}
-	if got := cm.Data["service_config-greeting"]; got != "message: hello\n" {
-		t.Fatalf("Data[service_config-greeting] = %q, want %q", got, "message: hello\n")
+	if got := cms[0].Data["greeting"]; got != "message: hello\n" {
+		t.Fatalf("Data[greeting] = %q, want %q", got, "message: hello\n")
+	}
+}
+
+// TestBuildConfigMaps_NameTooLong 覆盖 per-block 命名的 63 字符上限 fail-fast 校验
+// （specs/045-deploy-config/contracts/runtime-contract.md §2）：
+// workload 名恰好 63 字符时，加 "-config-{block}" 后缀即超限，错误须含 workload 名与 block 名。
+func TestBuildConfigMaps_NameTooLong(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	// newObjectName 拼接后 workload 名恰好 63 字符（dp-dev-{service}-{8 位 hash}）。
+	w.ServiceName = strings.Repeat("a", 47)
+	if len(w.WorkloadName()) != maxK8sResourceNameSize {
+		t.Fatalf("test setup error: workload name %q must be exactly %d chars", w.WorkloadName(), maxK8sResourceNameSize)
+	}
+	w.ConfigEntries = []*domain.ConfigEntry{
+		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	}
+
+	_, err := BuildConfigMaps(w, cfg)
+	if err == nil {
+		t.Fatalf("BuildConfigMaps() expected error for over-length configmap name")
+	}
+	if !strings.Contains(err.Error(), w.WorkloadName()) {
+		t.Fatalf("error should contain workload name %q, got: %v", w.WorkloadName(), err)
+	}
+	if !strings.Contains(err.Error(), "service_config") {
+		t.Fatalf("error should contain block name %q, got: %v", "service_config", err)
 	}
 }
 
