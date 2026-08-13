@@ -448,10 +448,15 @@ enum KeyboardKey {
 //   - MessagePart (display only) — rendered in the conversation and carried by
 //     Message (history) and TeamFrame.message_parts (live): text, thinking,
 //     image, tool_call (the model's semantic tool invocation), tool_result.
-//   - FlowPart (control only — NEVER rendered in the conversation) — drives
-//     desktop execution (mouse/keyboard operations) and turn control
-//     (wait/warn/status). A FlowPart is consumed, not displayed
-//     (spec 023 FR-005).
+//   - FlowPart (control only) — drives desktop execution (mouse/keyboard
+//     operations) and turn control (wait/warn/status). FlowParts are never
+//     rendered as conversation entries, with one documented exception:
+//     WarnSignal (warn) is surfaced by the desktop as a distinct warning
+//     bubble (⚠) in the conversation view — it is a control signal that
+//     carries a user-facing recoverable-error notice. All other FlowPart
+//     kinds remain consumed, not displayed (spec 023 FR-005;
+//     specs/044-llm-stall-recovery-fix/contracts/desktop-rendering-contract.md
+//     §2).
 //
 // This split is structural rather than a render-time filter, so a FlowPart can
 // never accidentally render as a chat entry. Live frames and persisted history
@@ -487,9 +492,15 @@ message MessagePart {
 
 // FlowPart is one control-only block. It drives desktop execution (mouse/
 // keyboard operations), carries the operation-execution result back to the
-// agent (flow_result), and conveys turn control (wait/warn/status); it is NEVER
-// rendered as a conversation entry (spec 023 FR-005; spec 025 FR-023/FR-024).
-// The operation kinds reuse the existing operation Part messages verbatim
+// agent (flow_result), and conveys turn control (wait/warn/status). FlowParts
+// are never rendered as conversation entries, with one documented exception:
+// WarnSignal (warn) is surfaced by the desktop as a distinct warning bubble
+// (⚠) in the conversation view — it is a control signal that carries a
+// user-facing recoverable-error notice (spec 023 FR-005; spec 025
+// FR-023/FR-024;
+// specs/044-llm-stall-recovery-fix/contracts/desktop-rendering-contract.md
+// §2). The operation kinds reuse the existing operation Part messages
+// verbatim
 // (MouseMovePart, MouseClickPart, KeyboardPressPart, MouseMoveAndClickPart —
 // fields unchanged from spec 018). The signal kinds (wait/warn/status) reuse
 // the existing signal messages. flow_result is the control-channel counterpart
@@ -640,8 +651,11 @@ message FlowResultPart {
 //
 // WaitSignal / WarnSignal / StatusSignal carry turn-control signals. Per the
 // content-model split (spec 023 C3 / FR-003) they are FlowPart kinds — carried
-// by TeamFrame.flow_parts and never rendered as conversation entries. Their
-// message shapes are unchanged from spec 018.
+// by TeamFrame.flow_parts and never rendered as conversation entries, with the
+// single documented exception of WarnSignal (warn), which the desktop surfaces
+// as a distinct warning bubble (⚠) in the conversation view (spec 044 FR-012;
+// specs/044-llm-stall-recovery-fix/contracts/desktop-rendering-contract.md
+// §2). Their message shapes are unchanged from spec 018.
 //
 // QueueSignal (spec 030 FR-008) is an additive FlowPart signal that carries
 // the per-session queue depth; see specs/030-queued-chat-input/contracts/
