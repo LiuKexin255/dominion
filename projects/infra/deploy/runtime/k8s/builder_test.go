@@ -1221,6 +1221,360 @@ func TestBuildStatefulSet_WithSecretBindings(t *testing.T) {
 	}
 }
 
+// --- Config Entries Tests ---
+
+func TestBuildDeployment_WithoutConfigEntries(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigEntries = nil
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	// Verify no config volume or volume mount.
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		if vol.Name == configVolumeName {
+			t.Fatalf("Should not have config volume when ConfigEntries is nil")
+		}
+	}
+	container := deploy.Spec.Template.Spec.Containers[0]
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == configVolumeName {
+			t.Fatalf("Should not have config volume mount when ConfigEntries is nil")
+		}
+	}
+
+	// Verify no DOMINION_CONFIG_DIR env var.
+	for _, e := range container.Env {
+		if e.Name == envConfigDir {
+			t.Fatalf("Should not have %s env var when ConfigEntries is nil", envConfigDir)
+		}
+	}
+
+	// Verify backward compat: same env count as before.
+	// LOG_LEVEL + 3 reserved + 2 client TLS = 6.
+	if len(container.Env) != 6 {
+		t.Fatalf("Env count = %d, want 6 (backward compat when no config entries)", len(container.Env))
+	}
+}
+
+func TestBuildDeployment_WithConfigEntries(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigEntries = []*domain.ConfigEntry{
+		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+
+	// Volumes: [tls, dominion-config].
+	if len(deploy.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("Volumes count = %d, want 2", len(deploy.Spec.Template.Spec.Volumes))
+	}
+	configVol := deploy.Spec.Template.Spec.Volumes[1]
+	if configVol.Name != configVolumeName {
+		t.Fatalf("Config Volume Name = %q, want %q", configVol.Name, configVolumeName)
+	}
+	if configVol.Projected == nil {
+		t.Fatalf("Config volume should use projected source")
+	}
+	if len(configVol.Projected.Sources) != 1 {
+		t.Fatalf("Config projected Sources count = %d, want 1", len(configVol.Projected.Sources))
+	}
+	src := configVol.Projected.Sources[0]
+	if src.ConfigMap == nil {
+		t.Fatalf("Config projection should be a ConfigMap source")
+	}
+	if src.ConfigMap.Name != w.WorkloadName()+"-config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", src.ConfigMap.Name, w.WorkloadName()+"-config")
+	}
+	if len(src.ConfigMap.Items) != 2 {
+		t.Fatalf("ConfigMap Items count = %d, want 2", len(src.ConfigMap.Items))
+	}
+	// KeyToPath 还原 "{block}/{key}" 容器内路径（contracts/runtime-contract.md §2）。
+	if src.ConfigMap.Items[0].Key != "service_config-greeting" || src.ConfigMap.Items[0].Path != "service_config/greeting" {
+		t.Fatalf("ConfigMap Item[0] = {Key: %q, Path: %q}, want {Key: service_config-greeting, Path: service_config/greeting}",
+			src.ConfigMap.Items[0].Key, src.ConfigMap.Items[0].Path)
+	}
+	if src.ConfigMap.Items[1].Key != "feature_flags-beta" || src.ConfigMap.Items[1].Path != "feature_flags/beta" {
+		t.Fatalf("ConfigMap Item[1] = {Key: %q, Path: %q}, want {Key: feature_flags-beta, Path: feature_flags/beta}",
+			src.ConfigMap.Items[1].Key, src.ConfigMap.Items[1].Path)
+	}
+
+	// Verify volume mount.
+	if len(container.VolumeMounts) != 2 {
+		t.Fatalf("VolumeMounts count = %d, want 2", len(container.VolumeMounts))
+	}
+	configMount := container.VolumeMounts[1]
+	if configMount.Name != configVolumeName || configMount.MountPath != configMountPath || !configMount.ReadOnly {
+		t.Fatalf("Config VolumeMount = {Name: %q, MountPath: %q, ReadOnly: %v}, want {Name: %q, MountPath: %q, ReadOnly: true}",
+			configMount.Name, configMount.MountPath, configMount.ReadOnly, configVolumeName, configMountPath)
+	}
+
+	// Verify DOMINION_CONFIG_DIR env var is appended last.
+	envs := container.Env
+	lastEnv := envs[len(envs)-1]
+	if lastEnv.Name != envConfigDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envConfigDir)
+	}
+	if lastEnv.Value != configMountPath {
+		t.Fatalf("Env[%q] Value = %q, want %q", envConfigDir, lastEnv.Value, configMountPath)
+	}
+
+	// LOG_LEVEL + 3 reserved + 2 client TLS + 1 config = 7.
+	if len(envs) != 7 {
+		t.Fatalf("Env count = %d, want 7", len(envs))
+	}
+}
+
+func TestBuildStatefulSet_WithConfigEntries(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.ConfigEntries = []*domain.ConfigEntry{
+		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	}
+
+	sts, err := BuildStatefulSet(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() error: %v", err)
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+
+	// Volumes: [tls, dominion-config].
+	if len(sts.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("Volumes count = %d, want 2", len(sts.Spec.Template.Spec.Volumes))
+	}
+	configVol := sts.Spec.Template.Spec.Volumes[1]
+	if configVol.Name != configVolumeName {
+		t.Fatalf("Config Volume Name = %q, want %q", configVol.Name, configVolumeName)
+	}
+	if configVol.Projected == nil {
+		t.Fatalf("Config volume should use projected source")
+	}
+	if len(configVol.Projected.Sources) != 1 {
+		t.Fatalf("Config projected Sources count = %d, want 1", len(configVol.Projected.Sources))
+	}
+	src := configVol.Projected.Sources[0]
+	if src.ConfigMap == nil {
+		t.Fatalf("Config projection should be a ConfigMap source")
+	}
+	if src.ConfigMap.Name != w.WorkloadName()+"-config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", src.ConfigMap.Name, w.WorkloadName()+"-config")
+	}
+	if len(src.ConfigMap.Items) != 1 {
+		t.Fatalf("ConfigMap Items count = %d, want 1", len(src.ConfigMap.Items))
+	}
+	if src.ConfigMap.Items[0].Key != "service_config-greeting" || src.ConfigMap.Items[0].Path != "service_config/greeting" {
+		t.Fatalf("ConfigMap Item = {Key: %q, Path: %q}, want {Key: service_config-greeting, Path: service_config/greeting}",
+			src.ConfigMap.Items[0].Key, src.ConfigMap.Items[0].Path)
+	}
+
+	// Verify volume mount.
+	if len(container.VolumeMounts) != 2 {
+		t.Fatalf("VolumeMounts count = %d, want 2", len(container.VolumeMounts))
+	}
+	configMount := container.VolumeMounts[1]
+	if configMount.Name != configVolumeName || configMount.MountPath != configMountPath || !configMount.ReadOnly {
+		t.Fatalf("Config VolumeMount = {Name: %q, MountPath: %q, ReadOnly: %v}, want {Name: %q, MountPath: %q, ReadOnly: true}",
+			configMount.Name, configMount.MountPath, configMount.ReadOnly, configVolumeName, configMountPath)
+	}
+
+	// Verify DOMINION_CONFIG_DIR env var appended last.
+	envs := container.Env
+	lastEnv := envs[len(envs)-1]
+	if lastEnv.Name != envConfigDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envConfigDir)
+	}
+	if lastEnv.Value != configMountPath {
+		t.Fatalf("Env[%q] Value = %q, want %q", envConfigDir, lastEnv.Value, configMountPath)
+	}
+}
+
+// TestBuildDeployment_UserEnvAndConfigCoexist 覆盖 SC-006/FR-016：同一 artifact 同时
+// 设置用户 env 与 config 时，builder 产物同时包含用户 env 与 config 卷/挂载/
+// DOMINION_CONFIG_DIR 注入，两者共存互不影响（specs/045-deploy-config/spec.md SC-006）。
+func TestBuildDeployment_UserEnvAndConfigCoexist(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.Env = map[string]string{
+		"APP_DEBUG": "true",
+		"GREETING":  "hi",
+	}
+	w.ConfigEntries = []*domain.ConfigEntry{
+		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envMap := envVarsToMap(container.Env)
+
+	// 用户 env 存在且值未被 config 机制改变。
+	if envMap["APP_DEBUG"] != "true" {
+		t.Fatalf("Env[APP_DEBUG] = %q, want %q", envMap["APP_DEBUG"], "true")
+	}
+	if envMap["GREETING"] != "hi" {
+		t.Fatalf("Env[GREETING] = %q, want %q", envMap["GREETING"], "hi")
+	}
+
+	// config 卷/挂载/发现变量同时存在。
+	var foundConfigVol bool
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		if vol.Name == configVolumeName {
+			foundConfigVol = true
+			break
+		}
+	}
+	if !foundConfigVol {
+		t.Fatalf("Config volume %q not found when config entries present", configVolumeName)
+	}
+	var foundConfigMount bool
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == configVolumeName {
+			foundConfigMount = true
+			break
+		}
+	}
+	if !foundConfigMount {
+		t.Fatalf("Config volume mount %q not found when config entries present", configVolumeName)
+	}
+	if envMap[envConfigDir] != configMountPath {
+		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
+	}
+
+	// 用户 env 与平台注入的 env 均保留：2 用户 + LOG_LEVEL + 3 reserved + 2 TLS + 1 config = 9。
+	if len(container.Env) != 9 {
+		t.Fatalf("Env count = %d, want 9", len(container.Env))
+	}
+}
+
+func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.Env = map[string]string{
+		"APP_DEBUG": "true",
+	}
+	w.ConfigEntries = []*domain.ConfigEntry{
+		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	}
+
+	sts, err := BuildStatefulSet(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() error: %v", err)
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+	envMap := envVarsToMap(container.Env)
+
+	if envMap["APP_DEBUG"] != "true" {
+		t.Fatalf("Env[APP_DEBUG] = %q, want %q", envMap["APP_DEBUG"], "true")
+	}
+
+	var foundConfigVol bool
+	for _, vol := range sts.Spec.Template.Spec.Volumes {
+		if vol.Name == configVolumeName {
+			foundConfigVol = true
+			break
+		}
+	}
+	if !foundConfigVol {
+		t.Fatalf("Config volume %q not found when config entries present", configVolumeName)
+	}
+	var foundConfigMount bool
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == configVolumeName {
+			foundConfigMount = true
+			break
+		}
+	}
+	if !foundConfigMount {
+		t.Fatalf("Config volume mount %q not found when config entries present", configVolumeName)
+	}
+	if envMap[envConfigDir] != configMountPath {
+		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
+	}
+}
+
+func TestBuildConfigMap(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigEntries = []*domain.ConfigEntry{
+		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+		{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+	}
+
+	cm, err := BuildConfigMap(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildConfigMap() error: %v", err)
+	}
+
+	if cm.Name != w.WorkloadName()+"-config" {
+		t.Fatalf("Name = %q, want %q", cm.Name, w.WorkloadName()+"-config")
+	}
+	if cm.Namespace != cfg.Namespace {
+		t.Fatalf("Namespace = %q, want %q", cm.Namespace, cfg.Namespace)
+	}
+
+	// Labels 与 Deployment 一致（app/service/environment/managed-by）。
+	wantObjectLabels := buildLabels(
+		withApp(w.App),
+		withService(w.ServiceName),
+		withDominionEnvironment(w.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	for key, want := range wantObjectLabels {
+		if got := cm.Labels[key]; got != want {
+			t.Fatalf("Label[%q] = %q, want %q", key, got, want)
+		}
+	}
+
+	// data key 为扁平 "{block}-{key}"，value 为原始数据文本。
+	wantData := map[string]string{
+		"service_config-greeting": "message: hello\n",
+		"feature_flags-beta":      "true",
+	}
+	if len(cm.Data) != len(wantData) {
+		t.Fatalf("Data count = %d, want %d", len(cm.Data), len(wantData))
+	}
+	for key, want := range wantData {
+		if got := cm.Data[key]; got != want {
+			t.Fatalf("Data[%q] = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestBuildConfigMap_StatefulWorkload(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.ConfigEntries = []*domain.ConfigEntry{
+		{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+	}
+
+	cm, err := BuildConfigMap(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildConfigMap() error: %v", err)
+	}
+
+	if cm.Name != w.WorkloadName()+"-config" {
+		t.Fatalf("Name = %q, want %q", cm.Name, w.WorkloadName()+"-config")
+	}
+	if got := cm.Data["service_config-greeting"]; got != "message: hello\n" {
+		t.Fatalf("Data[service_config-greeting] = %q, want %q", got, "message: hello\n")
+	}
+}
+
 func TestBuildDeployment_SecretBindingsEnvOverridesUser(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testDeploymentWorkload()

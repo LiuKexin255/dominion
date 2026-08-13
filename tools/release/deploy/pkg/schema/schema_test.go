@@ -294,6 +294,48 @@ services:
       name: service
 `),
 		},
+		{
+			name: "valid deploy yaml with artifact configs",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      configs:
+        - service_config
+`),
+		},
+		{
+			name: "deploy yaml rejects duplicate config selection",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      configs:
+        - service_config
+        - service_config
+`),
+			wantErr: true,
+		},
+		{
+			name: "deploy yaml rejects config selection with uppercase",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      configs:
+        - Service_Config
+`),
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

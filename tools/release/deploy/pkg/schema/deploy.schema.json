@@ -83,6 +83,16 @@
                     "key": { "type": "string", "minLength": 1, "description": "Kubernetes Secret 中的 key" }
                   }
                 }
+              },
+              "configs": {
+                "type": "array",
+                "uniqueItems": true,
+                "description": "选择的配置块名列表（列表内唯一；须存在于 service.yaml 配置块池）",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                }
               }
             }
           },

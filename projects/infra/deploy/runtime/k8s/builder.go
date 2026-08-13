@@ -62,6 +62,13 @@ const (
 	// envSecretDir 为 Secret 挂载目录环境变量名。
 	envSecretDir = "DOMINION_SECRET_DIR"
 
+	// configVolumeName 为 Config projected volume 固定名称。
+	configVolumeName = "dominion-config"
+	// configMountPath 为 Config 文件固定挂载目录。
+	configMountPath = "/mnt/dominion/config"
+	// envConfigDir 为 Config 挂载目录环境变量名（平台保留，用户 env 不可覆盖）。
+	envConfigDir = "DOMINION_CONFIG_DIR"
+
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
 	// statefulSetPodNameLabelKey 为 StatefulSet Pod 单实例选择器标签。
@@ -235,6 +242,40 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		})
 	}
 
+	// Config 投影：仅当有 ≥1 个 config entry 时创建卷/挂载/发现变量
+	// （specs/045-deploy-config/data-model.md §5 触发条件，与 secret 的 R6 行为对称）。
+	// ConfigMap data key 扁平化为 "{block}-{key}"（不允许含 "/"），投影时经 KeyToPath
+	// 还原为容器内 "{block}/{key}" 路径（contracts/runtime-contract.md §2）。
+	if len(workload.ConfigEntries) > 0 {
+		configItems := make([]corev1.KeyToPath, 0, len(workload.ConfigEntries))
+		for _, ce := range workload.ConfigEntries {
+			configItems = append(configItems, corev1.KeyToPath{
+				Key:  ce.Block + "-" + ce.Key,
+				Path: ce.Block + "/" + ce.Key,
+			})
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: configVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{
+					ConfigMap: &corev1.ConfigMapProjection{
+						LocalObjectReference: corev1.LocalObjectReference{Name: workload.WorkloadName() + "-config"},
+						Items:                configItems,
+					},
+				}}},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      configVolumeName,
+			MountPath: configMountPath,
+			ReadOnly:  true,
+		})
+		containerEnv = append(containerEnv, corev1.EnvVar{
+			Name:  envConfigDir,
+			Value: configMountPath,
+		})
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.WorkloadName(),
@@ -393,6 +434,37 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		})
 	}
 
+	// Config 投影：与 BuildDeployment 对称（见 specs/045-deploy-config/data-model.md §5）。
+	if len(workload.ConfigEntries) > 0 {
+		configItems := make([]corev1.KeyToPath, 0, len(workload.ConfigEntries))
+		for _, ce := range workload.ConfigEntries {
+			configItems = append(configItems, corev1.KeyToPath{
+				Key:  ce.Block + "-" + ce.Key,
+				Path: ce.Block + "/" + ce.Key,
+			})
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: configVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{
+					ConfigMap: &corev1.ConfigMapProjection{
+						LocalObjectReference: corev1.LocalObjectReference{Name: workload.WorkloadName() + "-config"},
+						Items:                configItems,
+					},
+				}}},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      configVolumeName,
+			MountPath: configMountPath,
+			ReadOnly:  true,
+		})
+		containerEnv = append(containerEnv, corev1.EnvVar{
+			Name:  envConfigDir,
+			Value: configMountPath,
+		})
+	}
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.WorkloadName(),
@@ -421,6 +493,41 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 				},
 			},
 		},
+	}, nil
+}
+
+// BuildConfigMap 将 workload 的 config entries 构造成可直接下发的 ConfigMap 对象。
+// data key 为 "{block}-{key}"（扁平，ConfigMap key 不允许含 "/"，
+// 见 specs/045-deploy-config/contracts/runtime-contract.md §1）；Labels 与
+// Deployment/StatefulSet 一致（app/service/environment/managed-by）。
+// 仅当 len(workload.ConfigEntries) > 0 时由 executor 调用。
+func BuildConfigMap(workload configMapWorkload, cfg *K8sConfig) (*corev1.ConfigMap, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("config workload 为空")
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("k8s config 为空")
+	}
+
+	data := make(map[string]string, len(workload.configEntries()))
+	for _, ce := range workload.configEntries() {
+		data[ce.Block+"-"+ce.Key] = ce.Value
+	}
+
+	objectLabels := buildLabels(
+		withApp(workload.app()),
+		withService(workload.serviceName()),
+		withDominionEnvironment(workload.environmentName()),
+		withManagedBy(cfg.ManagedBy),
+	)
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workload.WorkloadName() + "-config",
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Data: data,
 	}, nil
 }
 

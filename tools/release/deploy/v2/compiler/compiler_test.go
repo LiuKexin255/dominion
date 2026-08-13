@@ -1286,6 +1286,252 @@ func withWorkingDir(t *testing.T, dir string) {
 	})
 }
 
+func TestCompile_ConfigSelections(t *testing.T) {
+	tests := []struct {
+		name           string
+		deployConfig   *config.DeployConfig
+		serviceConfigs map[string]*config.ServiceConfig
+		imageResults   map[string]*imagepush.Result
+		want           *deploy.EnvironmentDesiredState
+		wantErr        string
+	}{
+		{
+			name: "selects existing config blocks and compiles entries in selection order",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path:   testServiceAPath,
+						Name:   "service-a",
+						Config: []string{"service_config", "feature_flags"},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Configs: []*config.ServiceConfigBlock{
+						{
+							Name: "service_config",
+							Data: []*config.ServiceConfigEntry{
+								{Name: "greeting", Value: "message: hello\n", Type: "yaml"},
+								{Name: "limits", Value: `{"maxConn": 100}`, Type: "json"},
+							},
+						},
+						{
+							Name: "feature_flags",
+							Data: []*config.ServiceConfigEntry{
+								{Name: "beta", Value: "true", Type: "yaml"},
+							},
+						},
+					},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+					ConfigEntries: []*deploy.ConfigEntry{
+						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+						{Block: "service_config", Key: "limits", Type: "json", Value: `{"maxConn": 100}`},
+						{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+					},
+				}},
+			},
+		},
+		{
+			name: "rejects config block not declared by service config",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path:   testServiceAPath,
+						Name:   "service-a",
+						Config: []string{"service_config", "unknown_block"},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Configs: []*config.ServiceConfigBlock{
+						{
+							Name: "service_config",
+							Data: []*config.ServiceConfigEntry{
+								{Name: "greeting", Value: "message: hello\n", Type: "yaml"},
+							},
+						},
+					},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantErr: `artifact service-a in alpha.test: config block "unknown_block" not declared by service config`,
+		},
+		{
+			name: "unselected config blocks produce no entries",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path:   testServiceAPath,
+						Name:   "service-a",
+						Config: []string{"service_config"},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Configs: []*config.ServiceConfigBlock{
+						{
+							Name: "service_config",
+							Data: []*config.ServiceConfigEntry{
+								{Name: "greeting", Value: "message: hello\n", Type: "yaml"},
+							},
+						},
+						{
+							Name: "feature_flags",
+							Data: []*config.ServiceConfigEntry{
+								{Name: "beta", Value: "true", Type: "yaml"},
+							},
+						},
+					},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+					ConfigEntries: []*deploy.ConfigEntry{
+						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					},
+				}},
+			},
+		},
+		{
+			name: "no config selection leaves entries nil even with declared pool",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Configs: []*config.ServiceConfigBlock{
+						{
+							Name: "service_config",
+							Data: []*config.ServiceConfigEntry{
+								{Name: "greeting", Value: "message: hello\n", Type: "yaml"},
+							},
+						},
+					},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Compile(tt.deployConfig, tt.serviceConfigs, tt.imageResults)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("Compile() expected error containing %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Compile() error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if !proto.Equal(tt.want, got) {
+				t.Fatalf("Compile() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCompile_ReplicasFromConfig(t *testing.T) {
 	tests := []struct {
 		name           string

@@ -69,6 +69,8 @@ type DeployArtifact struct {
 	Env map[string]string `yaml:"env,omitempty"`
 	// Secrets 指定该产物需要注入的密钥绑定引用。
 	Secrets map[string]*SecretBindingRef `yaml:"secrets,omitempty"`
+	// Config 指定选中的配置块名列表（仅选择不覆盖，须存在于 service.yaml 配置块池）。
+	Config []string `yaml:"configs,omitempty"`
 }
 
 // DeployInfra 表示基于基础设施的部署定义。

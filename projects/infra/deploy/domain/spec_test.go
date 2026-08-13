@@ -62,6 +62,69 @@ func TestSecretBinding_Validate(t *testing.T) {
 	}
 }
 
+func TestConfigEntry_Validate(t *testing.T) {
+	tests := []struct {
+		name         string
+		entry        ConfigEntry
+		wantErr      bool
+		wantContains string
+	}{
+		{
+			name:  "valid config entry",
+			entry: ConfigEntry{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+		},
+		{
+			name:         "empty block",
+			entry:        ConfigEntry{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			wantErr:      true,
+			wantContains: "block is required",
+		},
+		{
+			name:         "empty key",
+			entry:        ConfigEntry{Block: "service_config", Type: "yaml", Value: "message: hello\n"},
+			wantErr:      true,
+			wantContains: "key is required",
+		},
+		{
+			name:         "empty type",
+			entry:        ConfigEntry{Block: "service_config", Key: "greeting", Value: "message: hello\n"},
+			wantErr:      true,
+			wantContains: "type is required",
+		},
+		{
+			name:         "empty value",
+			entry:        ConfigEntry{Block: "service_config", Key: "greeting", Type: "yaml"},
+			wantErr:      true,
+			wantContains: "value is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			entry := tt.entry
+
+			// when
+			err := entry.Validate()
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() expected error")
+				}
+				if tt.wantContains != "" && !strings.Contains(err.Error(), tt.wantContains) {
+					t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestArtifactSpec_Validate(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -219,6 +282,57 @@ func TestArtifactSpec_Validate(t *testing.T) {
 			},
 			wantErr:      true,
 			wantContains: `secret_bindings[1]: duplicate logical_name "db-password"`,
+		},
+		{
+			name: "valid with config entries",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				ConfigEntries: []*ConfigEntry{
+					{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					{Block: "service_config", Key: "limits", Type: "json", Value: `{"maxConn": 100}`},
+				},
+			},
+		},
+		{
+			name: "empty config entry fields rejected",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				ConfigEntries: []*ConfigEntry{
+					{Block: "service_config", Key: "", Type: "yaml", Value: "message: hello\n"},
+				},
+			},
+			wantErr:      true,
+			wantContains: "config_entries[0]: invalid deployment spec: key is required",
+		},
+		{
+			name: "duplicate config entry block/key",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				ConfigEntries: []*ConfigEntry{
+					{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					{Block: "service_config", Key: "greeting", Type: "json", Value: `{"x": 1}`},
+				},
+			},
+			wantErr:      true,
+			wantContains: `config_entries[1]: duplicate block/key "service_config/greeting"`,
+		},
+		{
+			name: "same key in different blocks is not a duplicate",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				ConfigEntries: []*ConfigEntry{
+					{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					{Block: "feature_flags", Key: "greeting", Type: "yaml", Value: "false"},
+				},
+			},
 		},
 	}
 

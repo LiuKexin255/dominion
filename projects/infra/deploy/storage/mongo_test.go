@@ -520,6 +520,139 @@ func TestArtifactSpecs_SecretBindings_BSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestArtifactSpecs_ConfigEntriesPersistence(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     *domain.ArtifactSpec
+		mongo      mongoArtifactSpec
+		want       []*domain.ConfigEntry
+		checkRound bool
+	}{
+		{
+			name: "config entries round trip",
+			source: &domain.ArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+				ConfigEntries: []*domain.ConfigEntry{
+					{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+				},
+			},
+			want: []*domain.ConfigEntry{
+				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+				{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+			},
+			checkRound: true,
+		},
+		{
+			name: "nil config entries round trip",
+			source: &domain.ArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			want:       nil,
+			checkRound: true,
+		},
+		{
+			name: "empty slice from mongo normalizes to nil",
+			mongo: mongoArtifactSpec{
+				Name:          "svc",
+				App:           "app",
+				Image:         "image:v1",
+				Replicas:      1,
+				ConfigEntries: []*mongoConfigEntry{},
+			},
+			want: nil,
+		},
+		{
+			name: "old mongo document without config_entries defaults to nil",
+			mongo: mongoArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoSpecs []*mongoArtifactSpec
+			if tt.source != nil {
+				// when
+				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
+
+				// then
+				if len(mongoSpecs) != 1 {
+					t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+				}
+			} else {
+				mongoSpecs = []*mongoArtifactSpec{&tt.mongo}
+			}
+
+			got := artifactSpecsFromMongo(mongoSpecs)
+
+			// then
+			if len(got) != 1 {
+				t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
+			}
+			if !reflect.DeepEqual(got[0].ConfigEntries, tt.want) {
+				t.Fatalf("artifactSpecsFromMongo() config_entries = %v, want %v", got[0].ConfigEntries, tt.want)
+			}
+			if tt.checkRound && !reflect.DeepEqual(got[0].ConfigEntries, tt.source.ConfigEntries) {
+				t.Fatalf("round trip config_entries = %v, want %v", got[0].ConfigEntries, tt.source.ConfigEntries)
+			}
+		})
+	}
+}
+
+func TestArtifactSpecs_ConfigEntries_BSONRoundTrip(t *testing.T) {
+	// given
+	source := &domain.ArtifactSpec{
+		Name:     "svc",
+		App:      "app",
+		Image:    "image:v1",
+		Replicas: 3,
+		ConfigEntries: []*domain.ConfigEntry{
+			{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"},
+		},
+	}
+
+	// when — domain → mongo → BSON bytes
+	mongoSpecs := artifactSpecsToMongo([]*domain.ArtifactSpec{source})
+	if len(mongoSpecs) != 1 {
+		t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+	}
+
+	bsonBytes, err := bson.Marshal(mongoSpecs[0])
+	if err != nil {
+		t.Fatalf("bson.Marshal() error = %v", err)
+	}
+
+	// when — BSON bytes → mongo → domain
+	var decoded mongoArtifactSpec
+	if err := bson.Unmarshal(bsonBytes, &decoded); err != nil {
+		t.Fatalf("bson.Unmarshal() error = %v", err)
+	}
+
+	got := artifactSpecsFromMongo([]*mongoArtifactSpec{&decoded})
+	if len(got) != 1 {
+		t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
+	}
+
+	// then
+	if !reflect.DeepEqual(got[0].ConfigEntries, source.ConfigEntries) {
+		t.Fatalf("BSON round trip config_entries = %v, want %v", got[0].ConfigEntries, source.ConfigEntries)
+	}
+}
+
 func TestArtifactSpecs_OSSEnabledPersistence(t *testing.T) {
 	tests := []struct {
 		name       string

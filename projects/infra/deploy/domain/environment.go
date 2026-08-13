@@ -458,6 +458,13 @@ func cloneArtifacts(artifacts []*ArtifactSpec) []*ArtifactSpec {
 				spec.SecretBindings[j] = &cp
 			}
 		}
+		if len(artifact.ConfigEntries) > 0 {
+			spec.ConfigEntries = make([]*ConfigEntry, len(artifact.ConfigEntries))
+			for j, ce := range artifact.ConfigEntries {
+				cp := *ce
+				spec.ConfigEntries[j] = &cp
+			}
+		}
 		cloned[i] = &spec
 	}
 

@@ -507,6 +507,7 @@ func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
 			Http:           toProtoArtifactHTTP(artifact.HTTP),
 			Env:            artifact.Env,
 			SecretBindings: toProtoSecretBindings(artifact.SecretBindings),
+			ConfigEntries:  toProtoConfigEntries(artifact.ConfigEntries),
 		})
 	}
 
@@ -535,6 +536,7 @@ func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, erro
 			HTTP:           fromProtoArtifactHTTP(artifact.GetHttp()),
 			Env:            normalizeEnv(artifact.GetEnv()),
 			SecretBindings: fromProtoSecretBindings(artifact.GetSecretBindings()),
+			ConfigEntries:  fromProtoConfigEntries(artifact.GetConfigEntries()),
 		})
 	}
 
@@ -633,6 +635,45 @@ func fromProtoSecretBindings(bindings []*SecretBinding) []*domain.SecretBinding 
 			LogicalName: b.GetLogicalName(),
 			SecretName:  b.GetSecretName(),
 			Key:         b.GetKey(),
+		})
+	}
+
+	return result
+}
+
+func toProtoConfigEntries(entries []*domain.ConfigEntry) []*ConfigEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	result := make([]*ConfigEntry, 0, len(entries))
+	for _, ce := range entries {
+		result = append(result, &ConfigEntry{
+			Block: ce.Block,
+			Key:   ce.Key,
+			Type:  ce.Type,
+			Value: ce.Value,
+		})
+	}
+
+	return result
+}
+
+func fromProtoConfigEntries(entries []*ConfigEntry) []*domain.ConfigEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	result := make([]*domain.ConfigEntry, 0, len(entries))
+	for _, ce := range entries {
+		if ce == nil {
+			continue
+		}
+		result = append(result, &domain.ConfigEntry{
+			Block: ce.GetBlock(),
+			Key:   ce.GetKey(),
+			Type:  ce.GetType(),
+			Value: ce.GetValue(),
 		})
 	}
 

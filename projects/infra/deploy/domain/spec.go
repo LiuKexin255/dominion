@@ -39,6 +39,40 @@ type SecretBinding struct {
 	Key         string
 }
 
+// ConfigEntry carries inline configuration data for a deployed artifact.
+// 控制面据此创建 ConfigMap 并投影为容器内文件（见
+// specs/045-deploy-config/contracts/runtime-contract.md）。
+type ConfigEntry struct {
+	Block string
+	Key   string
+	Type  string
+	Value string
+}
+
+// Validate checks that the ConfigEntry fields are non-empty (VR-CE-1，
+// specs/045-deploy-config/data-model.md §4)。
+func (e *ConfigEntry) Validate() error {
+	var errs []error
+
+	if e.Block == "" {
+		errs = append(errs, errors.New("block is required"))
+	}
+	if e.Key == "" {
+		errs = append(errs, errors.New("key is required"))
+	}
+	if e.Type == "" {
+		errs = append(errs, errors.New("type is required"))
+	}
+	if e.Value == "" {
+		errs = append(errs, errors.New("value is required"))
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, errors.Join(errs...))
+	}
+	return nil
+}
+
 // Validate checks that the SecretBinding fields are non-empty.
 func (b *SecretBinding) Validate() error {
 	var errs []error
@@ -82,6 +116,7 @@ type ArtifactSpec struct {
 	HTTP           *ArtifactHTTPSpec
 	Env            map[string]string
 	SecretBindings []*SecretBinding
+	ConfigEntries  []*ConfigEntry
 }
 
 // InfraPersistenceSpec describes infrastructure persistence settings.
@@ -165,6 +200,25 @@ func (s *ArtifactSpec) Validate() error {
 			errs = append(errs, fmt.Errorf("secret_bindings[%d]: duplicate logical_name %q", i, b.LogicalName))
 		} else {
 			seen[b.LogicalName] = i
+		}
+	}
+	for i, ce := range s.ConfigEntries {
+		if err := ce.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("config_entries[%d]: %w", i, err))
+		}
+	}
+	// 检测 {block, key} 组合重复（VR-CE-2），防止 ConfigMap data key 与投影路径冲突
+	// （specs/045-deploy-config/data-model.md §4）。
+	seenConfigEntries := make(map[string]int, len(s.ConfigEntries))
+	for i, ce := range s.ConfigEntries {
+		if ce.Block == "" || ce.Key == "" {
+			continue
+		}
+		entryKey := ce.Block + "/" + ce.Key
+		if _, ok := seenConfigEntries[entryKey]; ok {
+			errs = append(errs, fmt.Errorf("config_entries[%d]: duplicate block/key %q", i, entryKey))
+		} else {
+			seenConfigEntries[entryKey] = i
 		}
 	}
 

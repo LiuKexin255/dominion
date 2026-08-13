@@ -612,6 +612,7 @@ type pruneResourcePresence struct {
 	Secrets      []string
 	PVCs         []string
 	StatefulSets []string
+	ConfigMaps   []string
 }
 
 func newExecutorTestArtifactSpec(name string, app string, port int32, http *domain.ArtifactHTTPSpec) *domain.ArtifactSpec {
@@ -685,6 +686,11 @@ func assertPruneResourcePresence(t *testing.T, runtime *K8sRuntime, want pruneRe
 			t.Fatalf("statefulset %s should exist: %v", name, err)
 		}
 	}
+	for _, name := range want.ConfigMaps {
+		if _, err := runtime.client.TypedClient.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("configmap %s should exist: %v", name, err)
+		}
+	}
 }
 
 func assertPruneResourceAbsence(t *testing.T, runtime *K8sRuntime, want pruneResourcePresence) {
@@ -710,6 +716,10 @@ func assertPruneResourceAbsence(t *testing.T, runtime *K8sRuntime, want pruneRes
 	}
 	for _, name := range want.StatefulSets {
 		_, err := runtime.client.TypedClient.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
+	for _, name := range want.ConfigMaps {
+		_, err := runtime.client.TypedClient.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 		assertNotFound(t, err)
 	}
 }
@@ -844,6 +854,7 @@ func TestK8sRuntime_ReservedEnvironmentVariableNames(t *testing.T) {
 		envS3AccessKey,
 		envS3SecretKey,
 		envSecretDir,
+		envConfigDir,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("names count = %d, want %d", len(names), len(want))
@@ -853,5 +864,273 @@ func TestK8sRuntime_ReservedEnvironmentVariableNames(t *testing.T) {
 		if names[i] != w {
 			t.Fatalf("names[%d] = %q, want %q", i, names[i], w)
 		}
+	}
+}
+
+func newExecutorTestConfigArtifactSpec(name string, app string, port int32, entries []*domain.ConfigEntry) *domain.ArtifactSpec {
+	return &domain.ArtifactSpec{
+		Name:          name,
+		App:           app,
+		Image:         "repo/" + app + ":v1",
+		Replicas:      1,
+		Ports:         []domain.ArtifactPortSpec{{Name: "http", Port: port}},
+		ConfigEntries: entries,
+	}
+}
+
+// TestK8sRuntimeApplyCreatesConfigMaps 覆盖 FR-009/FR-018：artifact 选择配置块后，
+// apply 创建 {workload}-config ConfigMap 且 data 为 {block}-{key} → 原始文本。
+func TestK8sRuntimeApplyCreatesConfigMaps(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{
+			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
+				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			}),
+			newExecutorTestStatefulBasicArtifactSpec("cache", "demo", 6379, 1),
+		},
+	})
+
+	if err := runtime.ApplyResources(ctx, env); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	objects, err := ConvertToWorkloads(env, runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+
+	// Deployment artifact with config entries gets a ConfigMap.
+	depCM, err := BuildConfigMap(objects.Deployments[0], runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("BuildConfigMap() failed: %v", err)
+	}
+	gotCM, err := runtime.client.TypedClient.CoreV1().ConfigMaps(depCM.Namespace).Get(ctx, depCM.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("configmap %s not created: %v", depCM.Name, err)
+	}
+	if got := gotCM.Data["service_config-greeting"]; got != "message: hello\n" {
+		t.Fatalf("Data[service_config-greeting] = %q, want %q", got, "message: hello\n")
+	}
+
+	// Stateful artifact without config entries gets no ConfigMap.
+	if _, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, objects.StatefulWorkloads[0].WorkloadName()+"-config", metav1.GetOptions{}); err == nil {
+		t.Fatalf("configmap %s should not exist without config entries", objects.StatefulWorkloads[0].WorkloadName()+"-config")
+	}
+}
+
+// TestK8sRuntimeApplyNoConfigEntriesCreatesNoConfigMap 覆盖 002 R6 对称行为：
+// 无 ConfigEntries 的 artifact 不产生 ConfigMap（specs/045-deploy-config/data-model.md §5）。
+func TestK8sRuntimeApplyNoConfigEntriesCreatesNoConfigMap(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{
+			newExecutorTestArtifactSpec("api", "demo", 8080, nil),
+		},
+	})
+
+	if err := runtime.ApplyResources(ctx, env); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	objects, err := ConvertToWorkloads(env, runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+	depName := objects.Deployments[0].WorkloadName() + "-config"
+	if _, err := runtime.client.TypedClient.CoreV1().ConfigMaps(runtime.client.K8sConfig.Namespace).Get(ctx, depName, metav1.GetOptions{}); err == nil {
+		t.Fatalf("configmap %s should not exist when no config entries", depName)
+	}
+}
+
+// TestK8sRuntimeApplyConfigMapUsesCreateOrUpdate 覆盖 ConfigMap 的
+// Get→Create-if-NotFound→Update 路径（模式同 applyTypedSecret）。
+func TestK8sRuntimeApplyConfigMapUsesCreateOrUpdate(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{
+			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
+				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			}),
+		},
+	})
+
+	objects, err := ConvertToWorkloads(env, runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+	cm, err := BuildConfigMap(objects.Deployments[0], runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("BuildConfigMap() failed: %v", err)
+	}
+	cm.ResourceVersion = "22"
+	cm.Data = map[string]string{"stale-key": "stale-value"}
+
+	seedTypedObject(t, runtime, cm)
+
+	gotRV := ""
+	runtime.client.TypedClient.(*kubernetesfake.Clientset).PrependReactor("update", "configmaps", func(action k8stesting.Action) (bool, apiRuntime.Object, error) {
+		updateAction := action.(k8stesting.UpdateAction)
+		obj := updateAction.GetObject().(*corev1.ConfigMap)
+		gotRV = obj.ResourceVersion
+		return false, nil, nil
+	})
+
+	if err := runtime.ApplyResources(ctx, env); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	gotCM, err := runtime.client.TypedClient.CoreV1().ConfigMaps(cm.Namespace).Get(ctx, cm.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("configmap %s not found: %v", cm.Name, err)
+	}
+	// Update 路径：期望 data 替换为期望内容，ResourceVersion 取自现有对象。
+	if got := gotCM.Data["service_config-greeting"]; got != "message: hello\n" {
+		t.Fatalf("Data[service_config-greeting] = %q, want %q", got, "message: hello\n")
+	}
+	if _, ok := gotCM.Data["stale-key"]; ok {
+		t.Fatalf("stale data key should be removed by update")
+	}
+	if gotRV != "22" {
+		t.Fatalf("update ResourceVersion = %q, want %q", gotRV, "22")
+	}
+}
+
+// TestK8sRuntimeApplyPrunesConfigMaps 覆盖 prune 列表新增 ConfigMap：
+// 选择被移除后旧 ConfigMap 被清理，仍选择的保留。
+func TestK8sRuntimeApplyPrunesConfigMaps(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		seedState    *domain.DesiredState
+		desiredState *domain.DesiredState
+		wantPresent  pruneResourcePresence
+		wantAbsent   pruneResourcePresence
+	}{
+		{
+			name: "remove config selection prunes configmap but keeps deployment",
+			seedState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
+						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					}),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, nil),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api")},
+			},
+			wantAbsent: pruneResourcePresence{
+				ConfigMaps: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config"},
+			},
+		},
+		{
+			name: "keep selected configmap across reapply",
+			seedState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
+						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					}),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
+						{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+					}),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api")},
+				ConfigMaps:  []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api") + "-config"},
+			},
+			wantAbsent: pruneResourcePresence{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := newTestK8sRuntime(t)
+			seedEnv := newExecutorTestEnvironmentWithState(t, tt.seedState)
+			if err := runtime.ApplyResources(ctx, seedEnv); err != nil {
+				t.Fatalf("seed Apply() failed: %v", err)
+			}
+
+			desiredEnv := newExecutorTestEnvironmentWithState(t, tt.desiredState)
+			if err := runtime.ApplyResources(ctx, desiredEnv); err != nil {
+				t.Fatalf("Apply() failed: %v", err)
+			}
+
+			assertPruneResourcePresence(t, runtime, tt.wantPresent)
+			assertPruneResourceAbsence(t, runtime, tt.wantAbsent)
+		})
+	}
+}
+
+// TestK8sRuntimeDeleteDeletesConfigMaps 覆盖环境删除时 ConfigMap 被清理（与 secret 对称）。
+func TestK8sRuntimeDeleteDeletesConfigMaps(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{
+			newExecutorTestConfigArtifactSpec("api", "demo", 8080, []*domain.ConfigEntry{
+				{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			}),
+		},
+	})
+
+	objects, err := ConvertToWorkloads(env, runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+	cm, err := BuildConfigMap(objects.Deployments[0], runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("BuildConfigMap() failed: %v", err)
+	}
+	seedTypedObject(t, runtime, cm)
+
+	if err := runtime.Delete(ctx, env.Name()); err != nil {
+		t.Fatalf("Delete() failed: %v", err)
+	}
+
+	_, err = runtime.client.TypedClient.CoreV1().ConfigMaps(cm.Namespace).Get(ctx, cm.Name, metav1.GetOptions{})
+	assertNotFound(t, err)
+}
+
+func Test_buildExpectedApplyResources_includesConfigMaps(t *testing.T) {
+	envName := "demo"
+
+	objects := &DeployObjects{
+		Deployments: []*DeploymentWorkload{
+			{ServiceName: "api", EnvironmentName: envName, App: "demo", Replicas: 1, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 8080}}, ConfigEntries: []*domain.ConfigEntry{{Block: "service_config", Key: "greeting", Type: "yaml", Value: "message: hello\n"}}},
+			{ServiceName: "plain", EnvironmentName: envName, App: "demo", Replicas: 1, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 8081}}},
+		},
+		StatefulWorkloads: []*StatefulWorkload{
+			{ServiceName: "cache", EnvironmentName: envName, App: "demo", Replicas: 3, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 6379}}, ConfigEntries: []*domain.ConfigEntry{{Block: "feature_flags", Key: "beta", Type: "yaml", Value: "true"}}},
+		},
+	}
+
+	resources := buildExpectedApplyResources(objects)
+
+	apiCMName := newObjectName(WorkloadKindDeployment, envName, "api") + "-config"
+	if _, ok := resources.configMaps[apiCMName]; !ok {
+		t.Fatalf("expected configmap %q in expected resources", apiCMName)
+	}
+	cacheCMName := newObjectName(WorkloadKindStatefulSet, envName, "cache") + "-config"
+	if _, ok := resources.configMaps[cacheCMName]; !ok {
+		t.Fatalf("expected configmap %q in expected resources", cacheCMName)
+	}
+	// 无 ConfigEntries 的 workload 不产生 ConfigMap 期望条目。
+	plainCMName := newObjectName(WorkloadKindDeployment, envName, "plain") + "-config"
+	if _, ok := resources.configMaps[plainCMName]; ok {
+		t.Fatalf("configmap %q should not be expected without config entries", plainCMName)
 	}
 }
