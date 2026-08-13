@@ -479,7 +479,7 @@ importers:
         version: 22.19.19
       svelte-check:
         specifier: 'catalog:'
-        version: 4.7.1(picomatch@4.0.4)(svelte@5.55.10)(typescript@6.0.3)
+        version: 4.7.1(picomatch@4.0.5)(svelte@5.55.10)(typescript@6.0.3)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -4777,12 +4777,12 @@ snapshots:
     dependencies:
       js-tokens: 9.0.1
 
-  svelte-check@4.7.1(picomatch@4.0.4)(svelte@5.55.10)(typescript@6.0.3):
+  svelte-check@4.7.1(picomatch@4.0.5)(svelte@5.55.10)(typescript@6.0.3):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@sveltejs/load-config': 0.2.0
       chokidar: 4.0.3
-      fdir: 6.5.0(picomatch@4.0.4)
+      fdir: 6.5.0(picomatch@4.0.5)
       picocolors: 1.1.1
       sade: 1.8.1
       svelte: 5.55.10
