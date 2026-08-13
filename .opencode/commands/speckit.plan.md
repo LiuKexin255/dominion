@@ -114,7 +114,12 @@ Command ends after Phase 1 design. Report branch, IMPL_PLAN path, and generated 
    - For each dependency → best practices task
    - For each integration → patterns task
 
-2. **Generate and dispatch research agents**:
+2. **Ask any questions until the plan is robust**：
+   - For any unreasonable aspects of spec
+   - For any modification can make the plan simple
+   - For key decisions need to be made
+
+3. **Generate and dispatch research agents**:
 
    ```text
    For each unknown in Technical Context:
@@ -123,7 +128,7 @@ Command ends after Phase 1 design. Report branch, IMPL_PLAN path, and generated 
      Task: "Find best practices for {tech} in {domain}"
    ```
 
-3. **Consolidate findings** in `research.md` using format:
+4. **Consolidate findings** in `research.md` using format:
    - Decision: [what was chosen]
    - Rationale: [why chosen]
    - Alternatives considered: [what else evaluated]
