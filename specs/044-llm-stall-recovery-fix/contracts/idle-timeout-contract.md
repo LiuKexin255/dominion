@@ -10,13 +10,13 @@ For each model-holding node (`player`, `planner`), the effective idle timeout is
 
 ```
 effectiveIdleTimeout(modelSpec?) =
-    env GAME_STREAM_IDLE_TIMEOUT_MS is set (> 0)  →  that value            // explicit operator config — always wins, as-is
+    env GAME_STREAM_IDLE_TIMEOUT_MS is set (!== undefined)                  →  that value            // explicit operator config — always wins, as-is (== STREAM_IDLE_TIMEOUT_EXPLICIT)
     else if getReasoningIdleTimeoutFloor(modelSpec) = F (non-null)         →  max(STREAM_IDLE_TIMEOUT_MS, F)
     else                                                                   →  STREAM_IDLE_TIMEOUT_MS
 ```
 
 Where:
-- `STREAM_IDLE_TIMEOUT_MS = Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) || 120_000` (`projects/game/agent/src/llm.ts:43-44`). **Default 120s** (was 30s).
+- `STREAM_IDLE_TIMEOUT_MS = Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) >= 60_000 ? Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) : 120_000` (`projects/game/agent/src/llm.ts:56-58`). **Default 120s** (was 30s).
 - The minimum configurable value is **60s**: the env-var read site rejects/clamps values `< 60_000` to `120_000` (spec FR-001/US1.3).
 - `getReasoningIdleTimeoutFloor` is defined in `projects/game/agent/src/reasoning-timeouts.ts` (§2).
 

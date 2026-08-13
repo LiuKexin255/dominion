@@ -35,13 +35,39 @@ export const RECURSION_LIMIT = 1000;
  * Chunk-idle timeout for the team graph's player/planner nodes (ms). When
  * the LLM SSE stream stalls (TCP alive but no events), this idle period
  * elapses and LangGraph raises `NodeTimeoutError`, triggering stall recovery
- * (specs/043-llm-stream-stall-recovery/spec.md FR-001). FR-001 requires the
- * idle period to be at least 15s; the 30s default satisfies it and matches
- * the community 15–30s consensus (specs/043-llm-stream-stall-recovery/
- * spec.md FR-011, Assumptions).
+ * (specs/043-llm-stream-stall-recovery/spec.md FR-001). The 120s default is
+ * the industry-median chunk-idle value: LangChain Python's
+ * `stream_chunk_timeout` defaults to 120s
+ * (https://github.com/langchain-ai/langchain/pull/36949) and OpenClaw's
+ * opencode-go stream wrapper keeps a 120s inter-event idle window
+ * (https://github.com/openclaw/openclaw/pull/93965); Codex CLI sits at the
+ * lenient end with 300s (https://github.com/openai/codex/issues/23807) and
+ * opencode disables chunk timeouts by default
+ * (https://github.com/anomalyco/opencode/pull/18264). The former 30s default
+ * was the most aggressive in the industry and false-stalled reasoning models
+ * (specs/044-llm-stall-recovery-fix/spec.md FR-001; survey/
+ * llm-stream-stall-recovery-revision.md §5.1). Values below the 60s minimum
+ * are clamped to the 120s default; explicit env configuration >= 60s is
+ * honored as-is (specs/044-llm-stall-recovery-fix/contracts/
+ * idle-timeout-contract.md §1). LangChain JS has no client-layer chunk-idle
+ * guard (https://github.com/langchain-ai/langchainjs/issues/9088), so
+ * LangGraph's `idleTimeout` remains the sole chunk-idle defense.
  */
+const streamIdleTimeoutMs = Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS);
 export const STREAM_IDLE_TIMEOUT_MS =
-	Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) || 30_000;
+	streamIdleTimeoutMs >= 60_000 ? streamIdleTimeoutMs : 120_000;
+
+/**
+ * Whether `GAME_STREAM_IDLE_TIMEOUT_MS` was explicitly set in the
+ * environment (checked via `!== undefined`, not Number truthiness, so an
+ * explicit "0" or clamped low value is still detected as explicit).
+ * `resolveStreamIdleTimeout` (specs/044-llm-stall-recovery-fix/tasks.md T003)
+ * uses this to honor explicit operator config as-is — even below a reasoning
+ * floor — per specs/044-llm-stall-recovery-fix/contracts/
+ * idle-timeout-contract.md §1 (spec FR-003).
+ */
+export const STREAM_IDLE_TIMEOUT_EXPLICIT =
+	process.env.GAME_STREAM_IDLE_TIMEOUT_MS !== undefined;
 
 /**
  * Total execution timeout for the async init instruction turn (ms). A

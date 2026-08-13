@@ -12,7 +12,7 @@ import {
 	type StructuredToolInterface,
 	type ToolRunnableConfig,
 } from "@langchain/core/tools";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import {
@@ -410,6 +410,82 @@ describe("buildMemoryMcpTools applies withIdleHeartbeat", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+// ===========================================================================
+// STREAM_IDLE_TIMEOUT_MS / STREAM_IDLE_TIMEOUT_EXPLICIT — 044 US1 (T002,
+// specs/044-llm-stall-recovery-fix/tasks.md T002): default raised to 120s,
+// values below the 60s minimum clamped to the default, explicit env config
+// >= 60s honored as-is, and the explicit-flag distinguishing "operator set
+// the env var" from "default+floor" (contracts/idle-timeout-contract.md §1).
+// Both constants are evaluated at module load, so each case re-imports the
+// module after mutating the env var (vi.resetModules + dynamic import — no
+// module mocking, per style/javascript.md §Mock 约定).
+// ===========================================================================
+
+describe("STREAM_IDLE_TIMEOUT_MS / STREAM_IDLE_TIMEOUT_EXPLICIT (044 US1 T002)", () => {
+	const envKey = "GAME_STREAM_IDLE_TIMEOUT_MS";
+	const original = process.env[envKey];
+
+	afterEach(() => {
+		if (original === undefined) delete process.env[envKey];
+		else process.env[envKey] = original;
+	});
+
+	async function reloadConstants(): Promise<typeof import("./llm")> {
+		vi.resetModules();
+		return await import("./llm");
+	}
+
+	it("defaults to 120_000 with EXPLICIT=false when the env var is unset", async () => {
+		delete process.env[envKey];
+		const mod = await reloadConstants();
+		expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(120_000);
+		expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(false);
+	});
+
+	it("clamps an explicit value below the 60s minimum to 120_000 (EXPLICIT=true)", async () => {
+		process.env[envKey] = "45000";
+		const mod = await reloadConstants();
+		expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(120_000);
+		expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(true);
+	});
+
+	it("honors an explicit value >= 60s as-is (EXPLICIT=true)", async () => {
+		process.env[envKey] = "90000";
+		const mod = await reloadConstants();
+		expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(90_000);
+		expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(true);
+	});
+
+	it("honors an explicit value exactly at the 60s minimum", async () => {
+		process.env[envKey] = "60000";
+		const mod = await reloadConstants();
+		expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(60_000);
+		expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(true);
+	});
+
+	it("treats an explicit '0' as EXPLICIT=true (clamped to 120_000) — uses !== undefined, not Number truthiness", async () => {
+		// tasks.md T002 names env="0" as the key boundary: "0" is explicitly
+		// SET (so EXPLICIT must be true for T003's resolution rule), while its
+		// numeric value 0 < 60s clamps to the default. A future "simplification"
+		// to `Number(env) > 0` would flip this to EXPLICIT=false and break the
+		// rule ordering in contracts/idle-timeout-contract.md §1.
+		process.env[envKey] = "0";
+		const mod = await reloadConstants();
+		expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(120_000);
+		expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(true);
+	});
+
+	it("treats a non-numeric explicit value as EXPLICIT=true (NaN clamps to 120_000)", async () => {
+		// "abc" parses to NaN: not a valid config, so the value falls back to
+		// the 120s default via the 60s clamp — but the var IS explicitly set,
+		// so EXPLICIT stays true (same `!== undefined` semantics as env="0").
+		process.env[envKey] = "abc";
+		const mod = await reloadConstants();
+		expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(120_000);
+		expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(true);
 	});
 });
 

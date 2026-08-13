@@ -13,7 +13,8 @@ The chunk-idle timeout applied to a model-holding node (`player`/`planner`), res
 **Resolution rule** (spec FR-001/FR-003, contracts/idle-timeout-contract.md §1):
 
 ```
-STREAM_IDLE_TIMEOUT_MS = Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) || 120_000   // was 30_000
+STREAM_IDLE_TIMEOUT_MS = Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) >= 60_000
+    ? Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) : 120_000   // was 30_000; values < 60_000 clamped
 effectiveIdleTimeout(modelSpec?) =
     operator set env?                  → the env value (honored as-is, even below a floor)
     : modelSpec matches a floor?       → max(STREAM_IDLE_TIMEOUT_MS, floor)
@@ -22,7 +23,7 @@ effectiveIdleTimeout(modelSpec?) =
 
 | Field | Type | Source | Notes |
 |---|---|---|---|
-| `STREAM_IDLE_TIMEOUT_MS` | `number` (ms) | `projects/game/agent/src/llm.ts:43-44` | Default **120_000**; env `GAME_STREAM_IDLE_TIMEOUT_MS` overrides. Min configurable **60_000** (enforced where read). |
+| `STREAM_IDLE_TIMEOUT_MS` | `number` (ms) | `projects/game/agent/src/llm.ts:56-58` | Default **120_000**; env `GAME_STREAM_IDLE_TIMEOUT_MS` overrides. Min configurable **60_000** (enforced where read). |
 | `effectiveIdleTimeout` | `number` (ms) | computed via `resolveStreamIdleTimeout(modelSpec)` in `reasoning-timeouts.ts` | Applied per-node at `team/graph.ts:383-389` `addNode({ timeout: { idleTimeout }})`. |
 
 **Invariants**:
