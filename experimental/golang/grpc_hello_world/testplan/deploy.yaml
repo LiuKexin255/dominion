@@ -3,17 +3,23 @@ name: liukexin.{{run}}
 type: test
 desc: "开发环境"
 services:
-  - artifact: 
+  - artifact:
       path: //experimental/golang/grpc_hello_world/service/service.yaml
       name: service
-  - artifact: 
+      # 选择 service.yaml 配置块池中的 service_config（contracts/yaml-schema.md §2）
+      configs:
+        - service_config
+      # 用户 env 与 config 同存互不干扰（SC-006/FR-016）
+      env:
+        GREETING_SUFFIX: -from-env
+  - artifact:
       path: //experimental/golang/grpc_hello_world/gateway/service.yaml
-      name: gateway 
-    http: 
+      name: gateway
+    http:
       hostnames:
         - hello.liukexin.com
       matches:
         - backend: http
-          path: 
+          path:
             type: PathPrefix
             value: /v1

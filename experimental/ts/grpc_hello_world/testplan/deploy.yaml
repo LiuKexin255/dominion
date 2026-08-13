@@ -6,6 +6,12 @@ services:
   - artifact:
       path: //experimental/ts/grpc_hello_world/service.yaml
       name: service
+      # 选择 service.yaml 配置块池中的 service_config（contracts/yaml-schema.md §2）
+      configs:
+        - service_config
+      # 用户 env 与 config 同存互不干扰（SC-006/FR-016）
+      env:
+        GREETING_SUFFIX: ts-suffix
   - artifact:
       path: //experimental/ts/grpc_hello_world/testplan/gateway/service.yaml
       name: gateway

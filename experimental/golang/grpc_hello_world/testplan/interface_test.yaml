@@ -6,8 +6,9 @@ description: |
   Interface: grpc-gateway exposed HTTP REST API
   Base path: /v1/world
   Test cases:
-    1. TestGetHello — GET /v1/world/{name} returns correct greeting
-    2. TestOTelIntegration — OTel integration verification via HTTP
+    1. TestGetHello — GET /v1/world/{name} returns greeting with config overrides
+    2. TestGetHelloConfigOverride — config overrides default greeting (message + times), user env GREETING_SUFFIX coexists with config
+    3. TestOTelIntegration — OTel integration verification via HTTP
 
 suites:
   - name: default

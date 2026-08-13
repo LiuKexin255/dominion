@@ -4,8 +4,13 @@ description: |
 
   Service: grpc-js hello world TypeScript service
   Interface: HTTP wrapper exposed endpoint
+  Config: service.yaml configs.service_config.greeting selected via
+    deploy.yaml (message/times override SDK defaults)
   Test cases:
-    1. TestSayHello — GET /say-hello?name=World returns "Hello World"
+    1. TestSayHello — GET /say-hello?name=<name> returns config-driven greeting
+       with GREETING_SUFFIX appended
+    2. TestSayHelloConfigOverrides — response reflects config message, config
+       times, and GREETING_SUFFIX env simultaneously (SC-006/FR-016)
 
 suites:
   - name: default
