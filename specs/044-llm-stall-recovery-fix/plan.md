@@ -133,13 +133,18 @@ projects/game/agent/
 projects/game/testplan/
 ├── deploy_agent_stall.yaml       # MODIFY (2026-08-14): drop GAME_STREAM_IDLE_TIMEOUT_MS env; add configs: [agent_timeouts] on agent_test artifact
 ├── agent_stall_test.go           # MODIFY (2026-08-14): rescale constants (stallWindow 60s→5s, stallDetectMin/Max →3s/10s, stallToolReplyDelay 65s→12s), env→config comment updates, NEW think-gap case (think-interrupt-gap template)
+├── agent_dialog_test.go          # MODIFY (2026-08-14 T012 first-run fix — tasks.md T021): FIFO case turn-3 trigger "hi friend" → "greetings friend" (greeting's "hi" keyword removed — it substring-hijacked every think-* trigger)
+├── README.md                     # MODIFY (2026-08-14 T021): greeting keyword listings hello,hi,greetings → hello,greetings (format example :52-55 + shipped table :79) + short-keyword hazard sentence at the keywords field bullet
 ├── helpers_test.go               # NO CHANGE (wsReadTimeout is a read-deadline ceiling, not a sleep — no rescale needed)
 └── system_test.yaml              # MODIFY (2026-08-14): suite-11 agent-stall description + §11 comment block: env 60000 → config-driven 5s/2s
 
-projects/game/fake-llm/service/
-├── message_store_test.go          # MODIFY (2026-08-14 amendment — T019): think-interrupt-gap pin assertion :819-821 ["1s","90s"] → ["1s","15s"] (lockstep with the testdata rescale)
-└── testdata/
-    └── stall_recovery.yaml        # MODIFY (2026-08-14, hygiene): think-interrupt-gap chunk_delays 90s → 15s (detection fires ~5s into the gap; shorter residual wait on regression paths)
+projects/game/fake-llm/
+├── README.md                     # MODIFY (2026-08-14 T021): keyword-matching bullet wording fix — "keywords all occur in the user/assistant turn" → ANY-of semantics on the LAST user message (matches matcher.go anyKeywordMatches + handler.go lastUserText)
+└── service/
+    ├── message_store_test.go     # MODIFY (2026-08-14 amendment — T019): think-interrupt-gap pin assertion :819-821 ["1s","90s"] → ["1s","15s"] (lockstep with the testdata rescale; T021 needs NO pin change — the greeting pin :587 only asserts "hello")
+    └── testdata/
+        ├── chat.yaml             # MODIFY (2026-08-14 T012 first-run fix — T021): greeting keywords drop "hi" (substring of "t(hi)nk"; alphabetical tie-break let greeting hijack every think-* trigger — root cause of the T012 first-run case-(d) failure)
+        └── stall_recovery.yaml   # MODIFY (2026-08-14, hygiene): think-interrupt-gap chunk_delays 90s → 15s (detection fires ~5s into the gap; shorter residual wait on regression paths)
 
 projects/game/desktop/frontend/src/
 ├── App.svelte                    # done (warn bubble verified; history-seed interrupted flag)
@@ -163,6 +168,10 @@ Implements the user-directed resume goals. Full context: [large-test-status.md](
 4. **T012 acceptance** (goal 1, Constitution VI): `guitar run projects/game/testplan/system_test.yaml` (agent-stall suite) — full deploy→test→cleanup, ALL cases green. **Contingency (R9)**: if the heartbeat case fails again, query the run's trace/logs via signoz — ticks present + false stall → LangGraph `touch()`/`checkIdle` path issue; ticks absent → wrapper timer lifecycle bug; fix at the identified layer and re-run until fully green. Build-only is NOT acceptance.
 5. **T013 housekeeping**: `bazel run //:gazelle` (agent src + testplan), `bazel run //:go -- fmt` for changed Go files, `bazel mod tidy`, final `bazel build //...` + `bazel test //projects/game/agent/...` (+ desktop dist build) whole-tree green; mark tasks `[X]`; append the outcome to [large-test-status.md](large-test-status.md).
 6. **Optional (pending spec-owner ruling on SC-005 — research.md R11)**: γ floor large-test case on the default topology (existing `deploy_agent.yaml`, deepseek profile, a ~150s-gap resumable template, riding an existing standard-suite module file — NOT the stall suite). Do not start unless the ruling selects γ.
+
+### T012 first-run addendum (2026-08-14) — fake-llm keyword collision (tasks.md T021)
+
+The first `guitar run` finished 4/5: the new case (d) `TestAgentStallThinkInterruptGapDetected` failed because the prompt `"think interrupt gap"` matched BOTH `greeting` (its 2-char keyword `hi` is a substring of `t(hi)nk`) and `think-interrupt-gap` under the matcher's substring semantics, and the alphabetical-lowest-`name` tie-break ([spec 012 FR-006/FR-007](../012-fake-llm-service/spec.md)) deterministically picks `greeting` — an agent-side regression is ruled out (the first received thinking frame was greeting's reasoning; trace `fbac92826519a78413780294766e772b`). Mechanical enumeration over all 7 fake-llm testdata files shows the collision pair is unique to these two templates, and that ALL three 046 think templates (`think-interrupt-stall`, `think-healthy-cadence` carry "think …" keywords too) were equally hijacked — only `think-interrupt-gap` had a large-test consumer, so only it surfaced. The fix lands on the collision's root (new [tasks.md](tasks.md) T021): `greeting` drops the `hi` keyword (`[hello, greetings]`), the sole `hi` consumer (`TestAgentDialogFIFOQueue`'s turn-3 trigger) switches to `greetings friend`, and the 046 author-facing contract's greeting examples are synced with a cross-feature note ([template-config.md §3.1](../046-fake-llm-think-chunking/contracts/template-config.md)). The 044 case-(d) text, the 046-fixed `think-interrupt-gap` keywords, and the matcher itself (`matcher.go`/`matcher_test.go`, 012 contract semantics) are all unchanged. T012 re-runs the full plan (agent-stall five cases + agent-dialog FIFO with the new trigger) to all-green after T021 — Constitution VI.
 
 ### Open decisions carried (not blocking execution of items 1–5)
 

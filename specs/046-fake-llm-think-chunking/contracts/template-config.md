@@ -58,14 +58,26 @@ stall_after: <int>         # OPTIONAL 0-based chunk index after which to permane
 
 ### 3.1 Legacy single-reasoning (unchanged, FR-007)
 
+> **044 cross-feature note (2026-08-14, keyword hygiene)**: the shipped
+> `greeting` template's keywords are `[hello, greetings]` — the original
+> `hi` entry was removed by [044 tasks.md
+> T021](../../044-llm-stall-recovery-fix/tasks.md): `hi` is a
+> case-insensitive substring of `t(hi)nk …`, so under the §2 keyword rules
+> (substring match + alphabetical-lowest-`name` tie-break, [spec 012
+> FR-006/FR-007](../../012-fake-llm-service/spec.md)) `greeting`
+> deterministically hijacked every `think-*` template trigger in the merged
+> store — first surfaced by 044's T012 large-test run. The template's shape
+> below is unchanged; only the keyword list differs.
+
 ```yaml
 name: greeting
-keywords: [hello, hi]
+keywords: [hello, greetings]
 reasoning: "The user is greeting me, I should respond warmly."
 text: "Hello! How can I help you today?"
 ```
 
-Behavior: byte-identical to before this feature (one reasoning delta, one content delta, finish).
+Behavior: byte-identical to before this feature apart from the keyword
+hygiene above (one reasoning delta, one content delta, finish).
 
 ### 3.2 Legacy stall (unchanged, FR-010)
 
@@ -135,7 +147,7 @@ Behavior: proves no false stall fires for a reasoning model streaming at a norma
 # chat.yaml — basic chat responses grouped together
 messages:
   - name: greeting
-    keywords: [hello, hi]
+    keywords: [hello, greetings]   # "hi" removed 2026-08-14 — see the §3.1 keyword-hygiene note
     reasoning: "The user is greeting me, I should respond warmly."
     text: "Hello! How can I help you today?"
   - name: chat-only
