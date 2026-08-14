@@ -220,11 +220,13 @@ via `testtool.MustEndpoint` / `testtool.MustEnv` (injected by `guitar`).
 
 The stall-recovery suite (`agent-stall` in `system_test.yaml`, binary
 `agent_stall_test`) deploys through `deploy_agent_stall.yaml` — the same
-topology with `GAME_STREAM_IDLE_TIMEOUT_MS: "60000"` injected on the
-`agent_test` artifact (spec 044 FR-001's 60s minimum — the pre-044 15s
-value would be clamped to 120s by the agent's 60s-minimum clamp and break
-the suite's timing). `STREAM_IDLE_TIMEOUT_MS` is evaluated at agent module
-load, hence the env must be set at deploy time (specs/043-llm-stream-
+topology with the `agent_timeouts` config block (streamIdleTimeoutMs=5000,
+toolHeartbeatIntervalMs=2000) selected on the `agent_test` artifact via
+the 045 deploy-config channel. Config values bypass the env channel's
+60s clamp by design, which is how the suite gets its sub-60s idle window
+(specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5).
+The config overrides are resolved once at agent startup (module load),
+hence the block must be selected at deploy time (specs/043-llm-stream-
 stall-recovery T011; specs/044-llm-stall-recovery-fix T011 re-baseline).
 
 ## 7. Tool-call / operation-history coverage

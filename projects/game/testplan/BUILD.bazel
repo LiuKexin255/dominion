@@ -215,9 +215,11 @@ go_largetest(
 
 # agent_stall_test is the stream-stall recovery suite (specs/043-llm-stream-
 # stall-recovery — T011 large test, plus specs/044-llm-stall-recovery-fix
-# T011 cases b/c), run against the stall deploy
-# (deploy_agent_stall.yaml — GAME_STREAM_IDLE_TIMEOUT_MS=60000, spec 044
-# FR-001's 60s minimum):
+# T011 cases b/c/d), run against the stall deploy
+# (deploy_agent_stall.yaml — selects the agent_timeouts config block
+# (streamIdleTimeoutMs=5000, toolHeartbeatIntervalMs=2000) via the 045
+# deploy-config channel; config values bypass the env channel's 60s clamp
+# by design):
 #   - TestAgentStallRecoveryWithQueuedMessage (043 US1/US2, quickstart
 #     Scenario 5): a fake-llm turn that emits its reasoning delta then
 #     stops with the connection alive (sample_stall.yaml) is detected
@@ -225,26 +227,44 @@ go_largetest(
 #     RETAINED (no QueueSignal(0), FR-006) and delivered on the next turn
 #     (FR-007).
 #   - TestAgentStallToolExecutionNotFalselyDetected (043 US3, Scenario 6):
-#     a saolei_operate dispatch delayed > 65s (> idleTimeout) on the
-#     production saolei MCP path does not false-stall — the client-side
-#     heartbeat wrapper keeps the idle timer alive (FR-003/SC-003).
+#     a saolei_operate dispatch delayed 12s (> idleTimeout — ~6 heartbeat
+#     ticks at the 2s cadence) on the production saolei MCP path does not
+#     false-stall — the client-side heartbeat wrapper keeps the idle timer
+#     alive (FR-003/SC-003).
 #   - TestAgentStallDetectedWithinConfiguredWindow (044 US1 regression,
 #     FR-001/SC-004): a real silent dropout is still detected within the
-#     configured 60s window — elapsed detection bracketed against the old
-#     15s/30s windows and the 120s default.
+#     config-driven 5s window — elapsed detection bracketed against the
+#     older windows (15s/30s/60s) and the 120s default.
 #   - TestAgentStallPersistsPartialOutput (044 US3, FR-004/FR-005/
 #     SC-002/SC-003): after the stalled turn terminates, ListMessages
 #     returns the already-streamed reasoning partial with
 #     completion = PART_COMPLETION_INTERRUPTED on the tail part.
+#   - TestAgentStallThinkInterruptGapDetected (046→044 enabler pair,
+#     quickstart D3): a think-interrupt-gap turn streams two reasoning
+#     chunks then a finite 15s gap; the gap exceeds the config-driven 5s
+#     window so the detector fires mid-thinking at ~5s; the pre-gap
+#     chunks persist as the partial output with
+#     completion = PART_COMPLETION_INTERRUPTED on the tail part
+#     (specs/046-fake-llm-think-chunking/contracts/template-config.md
+#     §3.3).
 #
-# size = large: three tests wait the full 60s idle window (60s stall
-# window each) plus the 65s tool delay — the old 15s-window "medium"
-# budget (~150s) grows to ~270s of wall time, beyond the 300s "medium"
-# timeout with CI margin (style/large_test.md §测试用例: size per actual
-# need).
+# size = medium: at the config-driven 5s/2s timings the five cases'
+# healthy paths total ~60–85s (T012's "<2min" planning upper bound), so
+# medium's 300s budget leaves ≥3.5× CI headroom — small's 60s is
+# insufficient since the suite itself exceeds 60s (style/large_test.md
+# §测试用例: size per actual need; size→timeout mapping small=60s /
+# medium=300s / large=900s per bazel test.size, and `guitar run` executes
+# via `bazel test --config=largetest`, whose .bazelrc only sets
+# --cache_test_results=no — size is the effective hard timeout). Under
+# the worst designed failure — a config-channel regression to the 120s
+# default — T2 passes (~25s), T5 fails fast (~17s, the 15s gap
+# under-runs the 120s window so the turn completes and its warn/bracket
+# assertions fire), and T1/T3/T4 are bounded by the 75s wsReadTimeout
+# read deadline (the stall wait aborts before the 120s detection could
+# fire) — every failure path stays well under the 300s budget.
 go_largetest(
     name = "agent_stall_test",
-    size = "large",
+    size = "medium",
     srcs = [
         "agent_stall_test.go",
         "helpers_test.go",

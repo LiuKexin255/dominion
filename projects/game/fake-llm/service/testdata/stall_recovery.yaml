@@ -26,13 +26,16 @@ messages:
   # (specs/046-fake-llm-think-chunking — contract
   # specs/046-fake-llm-think-chunking/contracts/template-config.md §3.3,
   # US1.3): chunk 0 (role+reasoning) immediately → 1s gap → chunk 1 →
-  # 90s gap (above the agent's idle timeout, so the consuming stall
-  # detector fires here) → chunk 2 → content → finish. Concatenating the
+  # 15s gap (above the stall deploy's config-driven 5s idle window —
+  # agent_timeouts streamIdleTimeoutMs selected via
+  # deploy_agent_stall.yaml configs; under the default 120s topology the
+  # gap would NOT exceed the idle window) so the consuming stall
+  # detector fires here → chunk 2 → content → finish. Concatenating the
   # three reasoning deltas reconstructs the full reasoning (FR-004).
   #
-  # The 90s chunk_delays entry excludes this template from the no-match
-  # random fallback pool (FR-011 — isHangCapable) so an unrelated turn can
-  # never stall by accident.
+  # The 15s chunk_delays entry (non-zero delay) excludes this template
+  # from the no-match random fallback pool (FR-011 — isHangCapable) so
+  # an unrelated turn can never stall by accident.
   - name: think-interrupt-gap
     keywords:
       - think interrupt gap
@@ -40,7 +43,7 @@ messages:
       - "Analyzing the board state."
       - "Evaluating candidate moves."
       - "Finalizing the safest move."
-    chunk_delays: ["1s", "90s"]
+    chunk_delays: ["1s", "15s"]
     text: "Placing the flag at (3,4)."
   # think-interrupt-stall simulates a think interruption via a PERMANENT
   # stall positioned mid-thinking (specs/046-fake-llm-think-chunking —

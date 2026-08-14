@@ -74,10 +74,12 @@ description: |
       entries, player never holding the memory tool. The memory service is
       part of deploy_agent.yaml (spec 039 Phase 1 T003).
   Suite 11 (agent-stall): session + proxy + agent(test) + fake-llm +
-    prompt + gateway, deployed with GAME_STREAM_IDLE_TIMEOUT_MS=60000
-    (deploy_agent_stall.yaml — spec 044 FR-001's 60s minimum; the
-    pre-044 15s value would be clamped to 120s by the agent and break
-    the suite's timing).
+    prompt + gateway, deployed with deploy_agent_stall.yaml selecting the
+    agent_timeouts config block (streamIdleTimeoutMs=5000,
+    toolHeartbeatIntervalMs=2000) via the 045 deploy-config channel — the
+    agent resolves env > config > default, and config values bypass the
+    env channel's 60s clamp (specs/044-llm-stall-recovery-fix/contracts/
+    idle-timeout-contract.md §5).
     - End-to-end stall recovery (specs/043-llm-stream-stall-recovery
       US1/US2, quickstart Scenario 5): a fake-llm turn that emits its
       reasoning delta then stops with the connection alive (sample_stall.yaml)
@@ -85,17 +87,17 @@ description: |
       message RETAINED (no QueueSignal(0), FR-006) and delivered on the
       next turn (FR-007).
     - No false stall during long tool execution (043 US3, Scenario 6): a
-      saolei_operate dispatch delayed > 65s (> idleTimeout) on the
+      saolei_operate dispatch delayed > 12s (> idleTimeout) on the
       production saolei MCP path (buildSaoleiMcpTools → MCP HTTP →
       bridge.dispatch) does not raise NodeTimeoutError — the client-side
       heartbeat wrapper (withIdleHeartbeat, TOOL_HEARTBEAT_INTERVAL_MS)
       keeps the idle timer alive (FR-003/SC-003).
-    - Real silent dropout still detected within the configured 60s window
-      (spec 044 US1 regression, FR-001/SC-004): the elapsed stall
-      detection time is bracketed to catch a regression to the old
-      15s/30s windows or the 120s default. (US2's reasoning-floor
-      large-test case is dropped — the explicit env suppresses the floor,
-      specs/044-llm-stall-recovery-fix/quickstart.md A4.)
+    - Real silent dropout still detected within the config-driven 5s
+      window (spec 044 US1 regression, FR-001/SC-004): the elapsed stall
+      detection time is bracketed to catch a regression to any older
+      window (15s/30s/60s) or the 120s default. (US2's reasoning-floor
+      large-test case is dropped — the explicit config suppresses the
+      floor, specs/044-llm-stall-recovery-fix/quickstart.md A4.)
     - Partial output survives a stall (spec 044 US3, FR-004/FR-005/
       SC-002/SC-003): after the stalled turn terminates, ListMessages
       returns the already-streamed reasoning with
@@ -192,7 +194,7 @@ suites:
       - //projects/game/testplan:memory_test
 
   - name: agent-stall
-    description: "Agent stream-stall recovery with fake-llm service (specs/043-llm-stream-stall-recovery T011 + specs/044-llm-stall-recovery-fix T011 cases b/c), deployed with GAME_STREAM_IDLE_TIMEOUT_MS=60000 via deploy_agent_stall.yaml (spec 044 FR-001's 60s minimum — the pre-044 15s value would be clamped to 120s by the agent). 043 US1/US2 (quickstart Scenario 5): a fake-llm turn that emits its reasoning delta then stops with the connection alive (sample_stall.yaml) is detected within the idle window — warn + wait emitted (FR-004/FR-005), the queued message RETAINED (no QueueSignal(0) before the recovery wait, FR-006) and delivered as the next turn's input (FR-007). 043 US3 (Scenario 6): a saolei_operate dispatch delayed > 65s (> idleTimeout) on the PRODUCTION saolei MCP path (buildSaoleiMcpTools → MCP HTTP → bridge.dispatch) does NOT false-stall — the client-side heartbeat wrapper (withIdleHeartbeat calling config.heartbeat every TOOL_HEARTBEAT_INTERVAL_MS, specs/043-llm-stream-stall-recovery/research.md R7.2) keeps the idle timer alive (FR-003/SC-003). 044 US1 regression (FR-001/SC-004): a real silent dropout is still detected within the configured 60s window — elapsed detection bracketed against the old 15s/30s windows and the 120s default (US2's floor has NO large-test case — the explicit env suppresses the floor, specs/044-llm-stall-recovery-fix/quickstart.md A4). 044 US3 (FR-004/FR-005/SC-002/SC-003): after the stalled turn terminates, ListMessages returns the already-streamed reasoning partial with completion = PART_COMPLETION_INTERRUPTED on the tail part"
+    description: "Agent stream-stall recovery with fake-llm service (specs/043-llm-stream-stall-recovery T011 + specs/044-llm-stall-recovery-fix T011 cases b/c/d), deployed via deploy_agent_stall.yaml which selects the agent_timeouts config block (streamIdleTimeoutMs=5000, toolHeartbeatIntervalMs=2000) through the 045 deploy-config channel (the agent resolves env > config > default; config values bypass the env 60s clamp — specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5). 043 US1/US2 (quickstart Scenario 5): a fake-llm turn that emits its reasoning delta then stops with the connection alive (sample_stall.yaml) is detected within the idle window — warn + wait emitted (FR-004/FR-005), the queued message RETAINED (no QueueSignal(0) before the recovery wait, FR-006) and delivered as the next turn's input (FR-007). 043 US3 (Scenario 6): a saolei_operate dispatch delayed > 12s (> idleTimeout) on the PRODUCTION saolei MCP path (buildSaoleiMcpTools → MCP HTTP → bridge.dispatch) does NOT false-stall — the client-side heartbeat wrapper (withIdleHeartbeat calling config.heartbeat every TOOL_HEARTBEAT_INTERVAL_MS=2s, specs/043-llm-stream-stall-recovery/research.md R7.2) keeps the idle timer alive (FR-003/SC-003). 044 US1 regression (FR-001/SC-004): a real silent dropout is still detected within the config-driven 5s window — elapsed detection bracketed against any older window (15s/30s/60s) and the 120s default (US2's floor has NO large-test case — the explicit config suppresses the floor, specs/044-llm-stall-recovery-fix/quickstart.md A4). 044 US3 (FR-004/FR-005/SC-002/SC-003): after the stalled turn terminates, ListMessages returns the already-streamed reasoning partial with completion = PART_COMPLETION_INTERRUPTED on the tail part"
     deploy: //projects/game/testplan/deploy_agent_stall.yaml
     endpoint:
       http:

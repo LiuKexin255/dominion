@@ -816,8 +816,8 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	if thinkGap.ReasoningChunks[0] != "Analyzing the board state." || thinkGap.ReasoningChunks[2] != "Finalizing the safest move." {
 		t.Errorf("think-interrupt-gap reasoning_chunks = %v, want the board-analysis chunks", thinkGap.ReasoningChunks)
 	}
-	if !slices.Equal(thinkGap.ChunkDelays, []string{"1s", "90s"}) {
-		t.Errorf("think-interrupt-gap chunk_delays = %v, want [1s 90s]", thinkGap.ChunkDelays)
+	if !slices.Equal(thinkGap.ChunkDelays, []string{"1s", "15s"}) {
+		t.Errorf("think-interrupt-gap chunk_delays = %v, want [1s 15s]", thinkGap.ChunkDelays)
 	}
 	if thinkGap.StallAfter != nil {
 		t.Errorf("think-interrupt-gap stall_after = %v, want nil (long finite gap, not a stall)", *thinkGap.StallAfter)

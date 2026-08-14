@@ -3,8 +3,8 @@
 //
 // agent_stall_test.go validates the end-to-end stall recovery of
 // specs/043-llm-stream-stall-recovery (T011) and the spec 044
-// recalibration (specs/044-llm-stall-recovery-fix T011 cases b/c) against
-// the deployed agent:
+// recalibration (specs/044-llm-stall-recovery-fix T011 cases b/c/d)
+// against the deployed agent:
 //
 //   - TestAgentStallRecoveryWithQueuedMessage (043 US1 + US2, quickstart
 //     Scenario 5): a user turn whose text matches the fake-LLM stall
@@ -28,19 +28,32 @@
 //     normally after the reply.
 //   - TestAgentStallDetectedWithinConfiguredWindow (044 US1 regression,
 //     FR-001/SC-004): a genuine silent-stream dropout is still detected
-//     within the stall deploy's configured 60s window (spec 044 raised
-//     FR-001's minimum from 15s to 60s) — the elapsed detection time is
-//     bracketed to catch a regression to either the old 15s/30s windows
+//     within the stall deploy's config-driven 5s window
+//     (streamIdleTimeoutMs=5000) — the elapsed detection time is
+//     bracketed to catch a regression to any older window (15s/30s/60s)
 //     or the 120s default.
 //   - TestAgentStallPersistsPartialOutput (044 US3, FR-004/FR-005/
 //     SC-002/SC-003): the already-streamed partial output of a stalled
 //     turn survives reconnection — ListMessages returns it with the
 //     interrupted marker (PartCompletion_INTERRUPTED) on the tail part.
+//   - TestAgentStallThinkInterruptGapDetected (046→044 enabler pair,
+//     quickstart D3): a user turn matching the "think interrupt gap"
+//     keyword makes fake-LLM stream two reasoning chunks (1s apart) and
+//     then go silent for a finite 15s gap (think-interrupt-gap template,
+//     specs/046-fake-llm-think-chunking/contracts/template-config.md
+//     §3.3 — rescaled from 90s to 15s by tasks.md T019). The gap exceeds
+//     the config-driven 5s idle window, so the detector fires during the
+//     thinking phase at ~5s; the two pre-gap reasoning chunks are
+//     persisted as the partial output with the interrupted tail marker —
+//     the template's chunk2/text never arrive.
 //
 // All tests run against the stall deploy (deploy_agent_stall.yaml), which
-// sets GAME_STREAM_IDLE_TIMEOUT_MS=60000 (044 FR-001's 60s minimum; the
-// pre-044 15s value would be clamped to 120s by the agent's 60s-minimum
-// clamp, breaking the suite's timing — see
+// selects the agent_timeouts config block — streamIdleTimeoutMs=5000,
+// toolHeartbeatIntervalMs=2000 — via the 045 deploy-config channel; the
+// agent resolves env > config > default, and config values are honored
+// as-is (no 60s env clamp; specs/044-llm-stall-recovery-fix/contracts/
+// idle-timeout-contract.md §5 — only the stall deploy selects the block,
+// production keeps the 120s/10s code defaults, see
 // specs/044-llm-stall-recovery-fix/tasks.md T011). US3 (043) exercises
 // the saolei tool module but shares this file/binary because it depends
 // on the SAME shortened-idle-timeout deployment topology — the suite is
@@ -60,25 +73,31 @@ import (
 	game "dominion/projects/game"
 )
 
-// stallToolReplyDelay exceeds the stall deploy's idle timeout
-// (GAME_STREAM_IDLE_TIMEOUT_MS=60000 — spec 044 FR-001's 60s minimum): a
-// desktop reply delayed by this long proves the idle timer survived the
-// whole tool wait only via the heartbeat wrapper (a bare idleTimeout
-// would fire at 60s).
-const stallToolReplyDelay = 65 * time.Second
+// stallToolReplyDelay exceeds the stall deploy's idle timeout (the
+// agent_timeouts config block's streamIdleTimeoutMs=5000, selected via
+// deploy_agent_stall.yaml configs — specs/044-llm-stall-recovery-fix/
+// contracts/idle-timeout-contract.md §5): a desktop reply delayed by this
+// long proves the idle timer survived the whole tool wait only via the
+// heartbeat wrapper (a bare idleTimeout would fire at 5s). At ~2.4× the
+// 5s window with the 2s heartbeat this is ~6 heartbeat ticks — the R9
+// failure mode needs REPEATED tick refresh, not a single tick
+// (specs/044-llm-stall-recovery-fix/research.md R9).
+const stallToolReplyDelay = 12 * time.Second
 
-// stallWindow is the stall deploy's configured idle timeout
-// (deploy_agent_stall.yaml GAME_STREAM_IDLE_TIMEOUT_MS=60000 — spec 044
-// FR-001's 60s minimum; values below are clamped to 120s by the agent).
-// stallDetectMin / stallDetectMax bracket the window with margins generous
-// enough for CI variance while still catching a regression in either
-// direction: the old 15s/30s windows detect at ~15s/~30s (below the
-// lower bound), the 120s default detects at ~120s (above the upper
-// bound).
+// stallWindow is the stall deploy's configured idle timeout (the
+// agent_timeouts config block's streamIdleTimeoutMs=5000, selected via
+// deploy_agent_stall.yaml configs — idle-timeout-contract.md §5; config
+// values bypass the env channel's 60s clamp by design). stallDetectMin /
+// stallDetectMax bracket the window with margins generous enough for CI
+// variance while still catching a regression in either direction: a
+// premature detection fires below the lower bound (the window cannot fire
+// before its own 5s), and a missed config — the agent falling back to the
+// 120s default or any older window (15s/30s/60s) — detects above the
+// upper bound, so a config-channel regression is caught.
 const (
-	stallWindow    = 60 * time.Second
-	stallDetectMin = 45 * time.Second
-	stallDetectMax = 115 * time.Second
+	stallWindow    = 5 * time.Second
+	stallDetectMin = 3 * time.Second
+	stallDetectMax = 10 * time.Second
 )
 
 // TestAgentStallRecoveryWithQueuedMessage drives the end-to-end stall
@@ -91,7 +110,7 @@ const (
 //     (sample_stall.yaml) — the desktop sees the thinking bubble start.
 //  2. While the turn is stalled, a second message is queued: the TurnLoop
 //     buffers it and emits QueueSignal(1).
-//  3. Within the configured idle window (~60s in the stall deploy) the
+//  3. Within the configured idle window (~5s in the stall deploy) the
 //     stall is detected: a `warn` frame (visible notice, FR-005) is
 //     followed by a `wait` frame (idle, FR-004).
 //  4. The buffer is RETAINED: no QueueSignal(0) precedes the recovery
@@ -143,7 +162,7 @@ func TestAgentStallRecoveryWithQueuedMessage(t *testing.T) {
 		t.Errorf("queued_count = %d, want 1 (the message must be buffered during the stall)", q.GetQueuedCount())
 	}
 
-	// then (2): within the configured idle window (~60s in the stall
+	// then (2): within the configured idle window (~5s in the stall
 	// deploy) the stall is detected: a warn frame (visible notice,
 	// FR-005) is followed by a wait frame (idle, FR-004/SC-001).
 	// drainUntilWait collects the whole stream up to the terminal wait.
@@ -223,15 +242,16 @@ func TestAgentStallRecoveryWithQueuedMessage(t *testing.T) {
 //     saolei_init tool_call; the F2 dispatch is replied with a
 //     recognizable screenshot, and the fixture chains one saolei_operate
 //     BATCH call whose first op (click 3,4) dispatches to the desktop.
-//  2. The test delays the desktop reply by 65s — LONGER than the stall
-//     deploy's idle timeout (60000ms). The client-side heartbeat wrapper
-//     (`withIdleHeartbeat` calling `config.heartbeat()` every
-//     TOOL_HEARTBEAT_INTERVAL_MS=10s) keeps the idle timer alive for the
-//     whole wait; without it the timer would elapse mid-tool and raise a
-//     false NodeTimeoutError → warn + wait.
+//  2. The test delays the desktop reply by 12s — LONGER than the stall
+//     deploy's idle timeout (streamIdleTimeoutMs=5000). The client-side
+//     heartbeat wrapper (`withIdleHeartbeat` calling `config.heartbeat()`
+//     every TOOL_HEARTBEAT_INTERVAL_MS=2s, ~6 ticks in the wait — the R9
+//     failure mode needs repeated tick refresh, research.md R9) keeps the
+//     idle timer alive for the whole wait; without it the timer would
+//     elapse mid-tool and raise a false NodeTimeoutError → warn + wait.
 //  3. After the delayed reply, the test drains the stream for the
 //     batch's second op and fails on ANY warn/wait frame: a false stall
-//     during the wait would have terminated the turn at ~60s — before
+//     during the wait would have terminated the turn at ~5s — before
 //     the reply — queueing those artifacts for the first reads.
 //  4. The batch's second op dispatches, one result returns, the fixture
 //     terminates with text, and the turn reaches its terminal wait. No
@@ -281,11 +301,13 @@ func TestAgentStallToolExecutionNotFalselyDetected(t *testing.T) {
 	}
 
 	// when (2): delay the desktop reply BEYOND the configured idle
-	// timeout. The stall deploy sets GAME_STREAM_IDLE_TIMEOUT_MS=60000;
-	// this sleeps 65s, so without the heartbeat wrapper the idle timer
-	// would elapse mid-tool and raise a false NodeTimeoutError
-	// (specs/043-llm-stream-stall-recovery/research.md R7: no LangChain
-	// callback events fire while `bridge.dispatch` awaits the desktop).
+	// timeout. The stall deploy selects the agent_timeouts config block
+	// (streamIdleTimeoutMs=5000); this sleeps 12s (~2.4× the window, ≈6
+	// heartbeat ticks at the 2s cadence), so without the heartbeat
+	// wrapper the idle timer would elapse mid-tool and raise a false
+	// NodeTimeoutError (specs/043-llm-stream-stall-recovery/research.md
+	// R7: no LangChain callback events fire while `bridge.dispatch`
+	// awaits the desktop).
 	time.Sleep(stallToolReplyDelay)
 
 	// when (3): the desktop finally replies to op (3,4) after the delay;
@@ -297,7 +319,7 @@ func TestAgentStallToolExecutionNotFalselyDetected(t *testing.T) {
 
 	// then (2)+(3): drain the stream following the delayed reply for the
 	// batch's second op (click 5,6), failing on ANY warn/wait frame. A
-	// false stall during the 65s wait would have fired at ~60s — BEFORE
+	// false stall during the 12s wait would have fired at ~5s — BEFORE
 	// the reply above — terminating the turn and queueing warn + wait,
 	// which the first reads below would surface (FR-003/SC-003; the
 	// normal state after the reply is display frames until the dispatch).
@@ -373,21 +395,23 @@ func TestAgentStallToolExecutionNotFalselyDetected(t *testing.T) {
 }
 
 // TestAgentStallDetectedWithinConfiguredWindow anchors the spec 044 US1
-// regression (FR-001/SC-004) on the stall deploy's explicit
-// GAME_STREAM_IDLE_TIMEOUT_MS=60000 — the 60s minimum that FR-001 raised
-// the old 15s floor to. A genuine silent-stream dropout (connection
-// alive, zero events) must still be detected, and the detection must
-// happen at approximately the CONFIGURED window — neither prematurely (a
-// regression to the pre-044 15s/30s windows) nor after the 120s default
-// (a regression that ignores the explicit env value, FR-003):
+// regression (FR-001/SC-004) on the stall deploy's config-driven 5s idle
+// window (the agent_timeouts block's streamIdleTimeoutMs=5000, selected
+// via deploy_agent_stall.yaml configs — idle-timeout-contract.md §5; the
+// env channel's 60s clamp is bypassed by design). A genuine silent-stream
+// dropout (connection alive, zero events) must still be detected, and the
+// detection must happen at approximately the CONFIGURED window — neither
+// prematurely nor after the 120s default (a regression that ignores the
+// selected config, FR-003):
 //
 //  1. A user turn matching the "stall now" keyword makes fake-LLM emit
 //     its reasoning delta and then stop with the connection alive
 //     (sample_stall.yaml) — the exact real-silence failure mode.
 //  2. The elapsed time from the last streamed chunk (the thinking frame)
 //     to the detection is bracketed by [stallDetectMin, stallDetectMax]:
-//     the old windows fire below the lower bound, the 120s default above
-//     the upper bound, and the 60s window fires inside it.
+//     a premature detection fires below the lower bound, any missed
+//     config (the 15s/30s/60s windows or the 120s default) above the
+//     upper bound, and the 5s window fires inside it.
 //
 // The detection behavior itself (warn + wait frames, buffer retention,
 // recovery) is covered by TestAgentStallRecoveryWithQueuedMessage; this
@@ -403,7 +427,8 @@ func TestAgentStallDetectedWithinConfiguredWindow(t *testing.T) {
 
 	// given: a saolei-enabled profile and a connected session (gpt-4 — a
 	// non-reasoning model, so the effective timeout is the deploy's
-	// explicit 60s env value, FR-003).
+	// config-driven 5s value — config is explicit, so it suppresses the
+	// reasoning floor, FR-003/idle-timeout-contract.md §5).
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
 	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
@@ -438,15 +463,15 @@ func TestAgentStallDetectedWithinConfiguredWindow(t *testing.T) {
 		t.Errorf("wait frame count = %d, want 1 (the stall must terminate the turn, FR-004)", got)
 	}
 
-	// then (2): the detection fired within the configured 60s window. The
+	// then (2): the detection fired within the configured 5s window. The
 	// idle timer starts at the last streamed chunk (the reasoning delta),
-	// so a healthy deploy detects at ~60s; a regression to the pre-044
-	// 15s/30s windows detects below stallDetectMin, and ignoring the
-	// explicit env (falling back to the 120s default) detects above
+	// so a healthy deploy detects at ~5s; a premature detection fires
+	// below stallDetectMin, and a missed config (falling back to any
+	// older window — 15s/30s/60s — or the 120s default) detects above
 	// stallDetectMax.
 	elapsed := time.Since(stallStart)
 	if elapsed < stallDetectMin || elapsed > stallDetectMax {
-		t.Errorf("stall detected after %s, want within [%s, %s] — the deploy's configured 60s window (spec 044 FR-001/SC-004)", elapsed, stallDetectMin, stallDetectMax)
+		t.Errorf("stall detected after %s, want within [%s, %s] — the deploy's config-driven 5s window (spec 044 FR-001/SC-004)", elapsed, stallDetectMin, stallDetectMax)
 	}
 }
 
@@ -464,7 +489,7 @@ func TestAgentStallDetectedWithinConfiguredWindow(t *testing.T) {
 //     text block is never delivered, so the partial is reasoning-only
 //     (tail = thinking → the interrupted marker lands on the
 //     ThinkingPart, partial-output-contract.md §3).
-//  2. Within the configured idle window (60s in the stall deploy) the
+//  2. Within the configured idle window (5s in the stall deploy) the
 //     stall is detected and the turn terminates (warn + wait — 043's
 //     finishError, FR-010 unchanged).
 //  3. ListMessages on the player partition (the stalled node, FR-007)
@@ -481,8 +506,8 @@ func TestAgentStallPersistsPartialOutput(t *testing.T) {
 	profileName := fmt.Sprintf("stall-partial-%s", uniqueSuffix())
 
 	// given: a saolei-enabled profile and a connected session (gpt-4 — a
-	// non-reasoning model, so the deploy's explicit 60s env value is the
-	// effective timeout, FR-003).
+	// non-reasoning model, so the deploy's config-driven 5s value is the
+	// effective timeout — config is explicit, FR-003).
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
 	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
@@ -544,5 +569,116 @@ func TestAgentStallPersistsPartialOutput(t *testing.T) {
 	}
 	if !interruptedSeen {
 		t.Errorf("no thinking part carries PART_COMPLETION_INTERRUPTED — the persisted partial lacks the interrupted marker (spec 044 FR-005/SC-003)")
+	}
+}
+
+// TestAgentStallThinkInterruptGapDetected validates the 046→044 enabler
+// pair (specs/046-fake-llm-think-chunking + specs/044-llm-stall-recovery-
+// fix, quickstart D3): a FINITE mid-thinking gap — not a permanent
+// stall — must trip the config-driven idle detector during the thinking
+// phase, and the pre-gap reasoning chunks must persist as the partial
+// output with the interrupted tail marker:
+//
+//  1. A user turn matching the "think interrupt gap" keyword makes
+//     fake-LLM stream two reasoning chunks 1s apart and then go silent
+//     for a finite 15s gap before chunk 2 (think-interrupt-gap template
+//     — specs/046-fake-llm-think-chunking/contracts/template-config.md
+//     §3.3; the gap was rescaled from 90s to 15s by 044 tasks.md T019 to
+//     match the config-driven 5s idle window). The gap exceeds the
+//     window, so the detector fires at ~5s after chunk 1 — the finite
+//     gap is NOT a stall, but it IS longer than the configured idle
+//     timeout, so a think interruption is detected mid-stream.
+//  2. The elapsed time from chunk 1 (the last streamed chunk before the
+//     gap) to the detection is bracketed by [stallDetectMin,
+//     stallDetectMax] (quickstart D3).
+//  3. ListMessages on the player partition returns the two pre-gap
+//     reasoning chunks (merged into one thinking part, FR-004) and the
+//     tail thinking part carries completion = PART_COMPLETION_INTERRUPTED
+//     (FR-005/SC-003): the template's chunk 2 and text never arrive, so
+//     the partial is exactly what was streamed before the interruption.
+func TestAgentStallThinkInterruptGapDetected(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	profileName := fmt.Sprintf("stall-gap-%s", uniqueSuffix())
+
+	// given: a saolei-enabled profile and a connected session (gpt-4 — a
+	// non-reasoning model, so the deploy's config-driven 5s value is the
+	// effective timeout, FR-003).
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWSTrace(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	defer conn.Close()
+
+	// when (1): a user turn matching the "think interrupt gap" keyword
+	// makes fake-LLM stream two reasoning chunks (1s apart) and then go
+	// silent for the finite 15s gap before chunk 2 (think-interrupt-gap
+	// template). The two chunks arrive as two thinking frames.
+	sendText(t, conn, sessionID, "think interrupt gap")
+	chunk0Frame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
+		return frameHasThinking(f) && f.GetAgent() == "player"
+	})
+	if chunk0Frame == nil {
+		t.Fatal("did not receive the first reasoning chunk frame (think-interrupt-gap chunk 0)")
+	}
+	if got := frameThinking(chunk0Frame); got != "Analyzing the board state." {
+		t.Errorf("first thinking frame content = %q, want %q (think-interrupt-gap chunk 0)", got, "Analyzing the board state.")
+	}
+	chunk1Frame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
+		return frameHasThinking(f) && f.GetAgent() == "player"
+	})
+	if chunk1Frame == nil {
+		t.Fatal("did not receive the second reasoning chunk frame (think-interrupt-gap chunk 1)")
+	}
+	if got := frameThinking(chunk1Frame); got != "Evaluating candidate moves." {
+		t.Errorf("second thinking frame content = %q, want %q (think-interrupt-gap chunk 1)", got, "Evaluating candidate moves.")
+	}
+	stallStart := time.Now()
+
+	// then (1): the finite gap exceeds the config-driven 5s idle window,
+	// so the detector fires during the thinking phase — a warn frame
+	// (visible notice, FR-005) followed by a wait frame (idle, FR-004)
+	// terminates the turn.
+	stallFrames := drainUntilWait(t, conn)
+	warnSeen := false
+	for _, f := range stallFrames {
+		if frameWarn(f) != nil {
+			warnSeen = true
+		}
+	}
+	if !warnSeen {
+		t.Errorf("no warn frame among the %d stall-recovery frames — the think-interrupt gap was not surfaced to the desktop (FR-005)", len(stallFrames))
+	}
+	if got := countWaitFrames(stallFrames); got != 1 {
+		t.Errorf("wait frame count = %d, want 1 (the think interruption must terminate the turn, FR-004)", got)
+	}
+
+	// then (2): the detection fired within the configured 5s window — the
+	// idle timer starts at the last streamed chunk (chunk 1), so a
+	// healthy deploy detects at ~5s into the 15s gap.
+	elapsed := time.Since(stallStart)
+	if elapsed < stallDetectMin || elapsed > stallDetectMax {
+		t.Errorf("think interruption detected after %s, want within [%s, %s] — the deploy's config-driven 5s window (quickstart D3)", elapsed, stallDetectMin, stallDetectMax)
+	}
+
+	// then (3): the two pre-gap reasoning chunks survived the
+	// interruption — ListMessages returns them (merged into one thinking
+	// part, FR-004/SC-002), and the tail thinking part carries
+	// completion = PART_COMPLETION_INTERRUPTED (FR-005/SC-003): the
+	// template's chunk 2 and text never arrive.
+	lmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	if !messagesContainThinking(lmr.GetMessages(), "Analyzing the board state.") {
+		t.Errorf("ListMessages did not return the interrupted turn's partial reasoning — the streamed chunks were lost (spec 044 FR-004/SC-002)")
+	}
+	interruptedSeen := false
+	for _, m := range lmr.GetMessages() {
+		for _, c := range messageThinkingCompletions(m) {
+			if c == game.PartCompletion_PART_COMPLETION_INTERRUPTED {
+				interruptedSeen = true
+			}
+		}
+	}
+	if !interruptedSeen {
+		t.Errorf("no thinking part carries PART_COMPLETION_INTERRUPTED — the persisted partial lacks the interrupted tail marker (spec 044 FR-005/SC-003)")
 	}
 }

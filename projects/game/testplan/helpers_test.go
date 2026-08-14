@@ -33,11 +33,13 @@ const (
 	headerEnv  = "env"
 	pathPrefix = "/api/v1/"
 	// wsReadTimeout must exceed the agent-stall suite's configured idle
-	// window (deploy_agent_stall.yaml GAME_STREAM_IDLE_TIMEOUT_MS=60000 —
-	// specs/044-llm-stall-recovery-fix FR-001's 60s minimum): during a
-	// stall the stream is silent for the full window, and readWSFrame
-	// blocks until a frame arrives or this deadline elapses. A deadline
-	// shorter than the window would abort the stall wait mid-way
+	// window (deploy_agent_stall.yaml selects the agent_timeouts config
+	// block — streamIdleTimeoutMs=5000, toolHeartbeatIntervalMs=2000 —
+	// via the 045 deploy-config channel; specs/044-llm-stall-recovery-fix/
+	// contracts/idle-timeout-contract.md §5): during a stall the stream
+	// is silent for the full window, and readWSFrame blocks until a frame
+	// arrives or this deadline elapses. A deadline shorter than the
+	// window would abort the stall wait mid-way
 	// (specs/044-llm-stall-recovery-fix/tasks.md T011 re-baseline).
 	wsReadTimeout = 75 * time.Second
 )
