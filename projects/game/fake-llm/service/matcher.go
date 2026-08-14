@@ -47,7 +47,8 @@ func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool
 	// carrying a ToolCall represents an explicit test trigger that
 	// requires a keyword match; emitting one at random would
 	// nonsensically invoke a desktop operation. A hang-capable Message
-	// (stall flag or chunked reasoning with a non-zero interval,
+	// (a permanent stall — legacy stall flag or stall_after position —
+	// or chunked reasoning with a non-zero interval,
 	// specs/046-fake-llm-think-chunking FR-011) is likewise excluded — a
 	// random stall or gap would hang an unrelated turn
 	// (specs/043-llm-stream-stall-recovery large tests depend on stall
@@ -145,14 +146,14 @@ func anyKeywordMatches(keywords []string, loweredUserText string) bool {
 
 // isHangCapable reports whether a Message can delay or hang a stream
 // (specs/046-fake-llm-think-chunking FR-011, specs/046-fake-llm-think-
-// chunking/data-model.md §6): it declares a permanent stall, or chunked
-// reasoning with at least one non-zero inter-chunk interval. Such
-// templates MUST stay out of the no-match random fallback pool so an
-// unrelated turn never stalls by accident; chunking without delays emits
-// back-to-back chunks and does not exclude. (The StallAfter field
-// generalises this in US2.)
+// chunking/data-model.md §6): it declares a permanent stall (the legacy
+// stall flag or a stall_after position), or chunked reasoning with at
+// least one non-zero inter-chunk interval. Such templates MUST stay out
+// of the no-match random fallback pool so an unrelated turn never
+// stalls by accident; chunking without delays emits back-to-back chunks
+// and does not exclude.
 func isHangCapable(m *Message) bool {
-	return m.Stall || (len(m.ReasoningChunks) > 0 && hasNonZeroDelay(m))
+	return m.Stall || m.StallAfter != nil || (len(m.ReasoningChunks) > 0 && hasNonZeroDelay(m))
 }
 
 // hasNonZeroDelay reports whether any parsed ChunkDelays entry is

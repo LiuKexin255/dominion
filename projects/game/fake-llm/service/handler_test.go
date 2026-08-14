@@ -1441,12 +1441,136 @@ func TestServeHTTP_ChunkedReasoningDelays(t *testing.T) {
 	})
 }
 
+// TestServeHTTP_ChunkedReasoningStallAfter verifies the positionable
+// permanent stall (specs/046-fake-llm-think-chunking —
+// specs/046-fake-llm-think-chunking/quickstart.md Scenario 3,
+// FR-008/FR-009): a stall_after:K template emits exactly reasoning
+// chunks 0..K and then no further data while the connection stays
+// alive; cancelling the request context (the agent's idle-timeout
+// abort) is the only unblock path.
+func TestServeHTTP_ChunkedReasoningStallAfter(t *testing.T) {
+	// given: a chunked template with stall_after:1 — chunks 0 and 1
+	// must arrive, chunk 2 / content / finish must never.
+	store := newStoreFromMap(t, fstest.MapFS{
+		"testdata/chunked_stall_after.yaml": &fstest.MapFile{
+			Data: []byte(strings.Join([]string{
+				"name: chunked-stall-after",
+				"keywords:",
+				"  - chunked stall after question",
+				"reasoning_chunks:",
+				"  - \"c0\"",
+				"  - \"c1\"",
+				"  - \"c2\"",
+				"stall_after: 1",
+				"text: Never arrives.",
+				"",
+			}, "\n")),
+		},
+	})
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"stream":true,"messages":[{"role":"user","content":"chunked stall after question"}]}`))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+
+	// when: served against a REAL transport so the "no further data"
+	// half of the stall is observable (a Recorder buffers everything).
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	// then (1): exactly chunks 0 and 1 arrive, in order — role only on
+	// chunk 0 (the streaming-sequence contract §2).
+	wantReasoning := []string{"c0", "c1"}
+	for i, want := range wantReasoning {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read SSE line for chunk %d: %v", i, err)
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			t.Fatalf("SSE line %q, want prefix \"data: \"", line)
+		}
+		ch := decodeChunk(t, strings.TrimPrefix(strings.TrimSpace(line), "data: "))
+		if got := ch.Choices[0].Delta.ReasoningContent; got != want {
+			t.Errorf("chunk %d reasoning_content = %q, want %q", i, got, want)
+		}
+		wantRole := ""
+		if i == 0 {
+			wantRole = "assistant"
+		}
+		if got := ch.Choices[0].Delta.Role; got != wantRole {
+			t.Errorf("chunk %d delta.role = %q, want %q", i, got, wantRole)
+		}
+		// the blank separator completing the SSE event.
+		if _, err := reader.ReadString('\n'); err != nil {
+			t.Fatalf("read SSE separator after chunk %d: %v", i, err)
+		}
+	}
+
+	// then (2): NO further frame arrives within the probe window — the
+	// connection is alive but the stream is stalled after chunk 1.
+	moreData := make(chan struct{})
+	go func() {
+		_, _ = reader.ReadString('\n')
+		close(moreData)
+	}()
+	select {
+	case <-moreData:
+		t.Fatal("received data after chunk 1 — the stall did not fire at stall_after:1")
+	case <-time.After(300 * time.Millisecond):
+		// Expected: no data while stalled.
+	}
+
+	// then (3): cancelling the request context unblocks the handler
+	// (FR-009); the connection closes and the read returns instead of
+	// hanging forever.
+	cancel()
+	select {
+	case <-moreData:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled stream did not unblock after the request context was cancelled")
+	}
+	unblocked := make(chan struct{})
+	go func() {
+		for {
+			if _, err := reader.ReadString('\n'); err != nil {
+				break
+			}
+		}
+		close(unblocked)
+	}()
+	select {
+	case <-unblocked:
+		// Expected: the handler returned once the context was cancelled.
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled stream did not unblock after the request context was cancelled")
+	}
+}
+
 // TestServeHTTP_ChunkedReasoningLogs verifies the FR-018/SC-007
 // observability contract (specs/046-fake-llm-think-chunking —
 // specs/046-fake-llm-think-chunking/quickstart.md Scenario 8): every
 // streamed reasoning chunk emits a
 // structured slog entry carrying chunk_index / role_kind / delay_ms,
-// and the legacy-stall frame additionally carries stall_after.
+// and the frame after which the stream stalls carries the EFFECTIVE
+// stall_after index — 0 for the legacy stall:true shorthand and the
+// configured position for a stall_after:K template.
 func TestServeHTTP_ChunkedReasoningLogs(t *testing.T) {
 	t.Run("one entry per reasoning chunk with delay_ms", func(t *testing.T) {
 		// given: a chunked+delay template (no stall) so all reasoning
@@ -1573,6 +1697,90 @@ func TestServeHTTP_ChunkedReasoningLogs(t *testing.T) {
 				t.Fatalf("slog output missing the stall frame entry %q, got:\n%s", want, buf.String())
 			}
 			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	t.Run("positioned stall frame carries the effective index", func(t *testing.T) {
+		// given: a chunked template with stall_after:1 (no delays) so
+		// chunks 0 and 1 stream back-to-back and the block fires after
+		// chunk 1. The capture buffer is mutex-guarded for the same
+		// reason as in the legacy-stall subtest: the server goroutine
+		// writes the log after the flush the client has observed.
+		buf := newLockedBuffer()
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		defer slog.SetDefault(prev)
+
+		store := newStoreFromMap(t, fstest.MapFS{
+			"testdata/chunked_stall_after_logs.yaml": &fstest.MapFile{
+				Data: []byte(strings.Join([]string{
+					"name: chunked-stall-after-logs",
+					"keywords:",
+					"  - chunked stall after log question",
+					"reasoning_chunks:",
+					"  - \"c0\"",
+					"  - \"c1\"",
+					"  - \"c2\"",
+					"stall_after: 1",
+					"",
+				}, "\n")),
+			},
+		})
+		handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+		srv := httptest.NewServer(handler)
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			srv.URL+"/v1/chat/completions",
+			strings.NewReader(`{"stream":true,"messages":[{"role":"user","content":"chunked stall after log question"}]}`))
+		if err != nil {
+			t.Fatalf("NewRequestWithContext: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// when: consume chunks 0 and 1 (the frames before the stall),
+		// then cancel to unblock the handler after the stall fires.
+		reader := bufio.NewReader(resp.Body)
+		for i := 0; i < 2; i++ {
+			if _, err := reader.ReadString('\n'); err != nil {
+				t.Fatalf("read SSE line for chunk %d: %v", i, err)
+			}
+			if _, err := reader.ReadString('\n'); err != nil {
+				t.Fatalf("read SSE separator after chunk %d: %v", i, err)
+			}
+		}
+		cancel()
+		go func() {
+			for {
+				if _, err := reader.ReadString('\n'); err != nil {
+					return
+				}
+			}
+		}()
+
+		// then: the stalled frame's entry carries the EFFECTIVE index
+		// (stall_after=1 on chunk_index=1, FR-018), and no stall_after=0
+		// entry exists anywhere — a regression to the legacy hardcoded 0
+		// would fail the positive assertion and a leak of the field onto
+		// non-stall frames would fail the negative one.
+		want := "role_kind=reasoning chunk_index=1 delay_ms=0 stall_after=1"
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if strings.Contains(buf.String(), want) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("slog output missing the stall frame entry %q, got:\n%s", want, buf.String())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if strings.Contains(buf.String(), "stall_after=0") {
+			t.Fatalf("slog output carries a hardcoded stall_after=0 entry, got:\n%s", buf.String())
 		}
 	})
 }

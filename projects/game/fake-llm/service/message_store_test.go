@@ -275,6 +275,86 @@ func TestValidate(t *testing.T) {
 			}},
 			wantErr: "tool_call",
 		},
+		{
+			name: "in-range stall_after accepted (V3)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1", "c2"},
+				StallAfter:      toPtr(2),
+			}},
+			wantErr: "",
+		},
+		{
+			name: "legacy single-reasoning stall_after zero accepted (V3)",
+			msgs: []*Message{{
+				Name:       "a",
+				Keywords:   []string{"x"},
+				Reasoning:  "legacy",
+				StallAfter: toPtr(0),
+			}},
+			wantErr: "",
+		},
+		{
+			name: "out-of-range stall_after rejected (V3)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1"},
+				StallAfter:      toPtr(2),
+			}},
+			wantErr: "stall_after",
+		},
+		{
+			name: "negative stall_after rejected (V3)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1"},
+				StallAfter:      toPtr(-1),
+			}},
+			wantErr: "stall_after",
+		},
+		{
+			name: "legacy single-reasoning stall_after beyond zero rejected (V3)",
+			msgs: []*Message{{
+				Name:       "a",
+				Keywords:   []string{"x"},
+				Reasoning:  "legacy",
+				StallAfter: toPtr(1),
+			}},
+			wantErr: "stall_after",
+		},
+		{
+			name: "stall_after without any reasoning still bounded to zero (V3)",
+			msgs: []*Message{{
+				Name:       "a",
+				Keywords:   []string{"x"},
+				StallAfter: toPtr(1),
+			}},
+			wantErr: "stall_after",
+		},
+		{
+			name: "tool_call with stall_after rejected (V5)",
+			msgs: []*Message{{
+				Name:       "a",
+				Keywords:   []string{"x"},
+				StallAfter: toPtr(0),
+				ToolCall:   &ToolCall{Name: "t"},
+			}},
+			wantErr: "tool_call",
+		},
+		{
+			name: "legacy stall:true with explicit stall_after accepted (D3 precedence)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1"},
+				Stall:           true,
+				StallAfter:      toPtr(1),
+			}},
+			wantErr: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -291,6 +371,12 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// toPtr returns a pointer to v, the standard Go idiom for taking the
+// address of a literal in table-driven tests (style/golang.md §指针).
+func toPtr(v int) *int {
+	return &v
 }
 
 // TestNewMessageStore_LoadsEmbeddedSamples loads the real testdata

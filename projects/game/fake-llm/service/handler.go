@@ -170,16 +170,17 @@ const (
 // path joins it back into one string. Delays are the parsed per-gap
 // inter-chunk intervals: Delays[i] is the delay before Reasoning[i+1],
 // missing entries default to 0 (specs/046-fake-llm-think-chunking/
-// data-model.md §2). Stall keeps the legacy permanent-stall semantics —
-// pause the stream after the first chunk until the request context is
-// cancelled (specs/043-llm-stream-stall-recovery); generalising the
-// stall position is US2.
+// data-model.md §2). StallAfter is the effective permanent-stall
+// position: nil = no stall; else the 0-based reasoning-chunk index
+// after which the stream blocks until the request context is cancelled
+// (specs/046-fake-llm-think-chunking/research.md D3). It is never set
+// on the tool-call path.
 type responseSpec struct {
-	Reasoning []string
-	Text      string
-	ToolCall  *ToolCall
-	Stall     bool
-	Delays    []time.Duration
+	Reasoning  []string
+	Text       string
+	ToolCall   *ToolCall
+	StallAfter *int
+	Delays     []time.Duration
 }
 
 // isToolCall reports whether the spec describes a tool-call response.
@@ -193,25 +194,27 @@ func (s responseSpec) isToolCall() bool { return s.ToolCall != nil }
 // Message entries are unaffected. Reasoning is the effective ordered list
 // (chunked form, or the legacy single string wrapped as a 1-element slice);
 // Delays are parsed from ChunkDelays — validation at load guarantees they
-// parse, so the error is unreachable here. Stall is passed through so a
-// stall-marked Message pauses the stream after its first chunk (the large
-// test's stall-recovery trigger).
+// parse, so the error is unreachable here. StallAfter is the effective
+// stall position (explicit stall_after, else the legacy stall:true sugar
+// pointing at chunk 0, else nil) so a stall-marked Message blocks the
+// stream after the configured reasoning chunk (the large test's
+// stall-recovery trigger).
 func specFromMessage(msg *Message) responseSpec {
 	delays, _ := parseDelays(msg.ChunkDelays)
 	return responseSpec{
-		Reasoning: effectiveReasoning(msg),
-		Text:      msg.Text,
-		ToolCall:  msg.ToolCall,
-		Stall:     msg.Stall,
-		Delays:    delays,
+		Reasoning:  effectiveReasoning(msg),
+		Text:       msg.Text,
+		ToolCall:   msg.ToolCall,
+		StallAfter: effectiveStallAfter(msg),
+		Delays:     delays,
 	}
 }
 
 // specFromTool adapts a matched ToolConfig's RespondWith into a
 // responseSpec. Text and ToolCall are passed through verbatim; the
 // handler decides which path to take based on isToolCall(). A tool-result
-// response never streams reasoning, so Reasoning/Delays stay empty (their
-// zero values) and Stall stays false.
+// response never streams reasoning, so Reasoning/Delays/StallAfter stay
+// empty (their zero values).
 func specFromTool(tc *ToolConfig) responseSpec {
 	return responseSpec{
 		Text:     tc.RespondWith.Text,
@@ -504,15 +507,17 @@ func buildToolCallResp(tc *ToolCall) *toolCallResp {
 // interruption by the consumer's idle timeout. Every streamed frame
 // emits a structured slog entry (FR-018, see logStreamFrame).
 //
-// When spec.Stall is set the stream stops after the FIRST chunk: the
-// connection stays alive (the http.Server has no WriteTimeout) but no
-// further data is written until r.Context() is cancelled by the caller —
-// the "TCP alive, no SSE data" failure mode of specs/043-llm-stream-
-// stall-recovery. The handler then returns normally; the stalled request
-// is indistinguishable from an aborted client connection, which is the
-// point (LangGraph's idle-timeout abort is what unblocks it). The stall
-// position is fixed at the first chunk in US1; generalising it to any
-// reasoning chunk is US2 (specs/046-fake-llm-think-chunking).
+// When spec.StallAfter is set the stream stops after the reasoning
+// chunk at that index: the connection stays alive (the http.Server has
+// no WriteTimeout) but no further data is written until r.Context() is
+// cancelled by the caller — the "TCP alive, no SSE data" failure mode of
+// specs/043-llm-stream-stall-recovery, positioned anywhere within the
+// thinking phase (specs/046-fake-llm-think-chunking). The handler then
+// returns normally; the stalled request is indistinguishable from an
+// aborted client connection, which is the point (LangGraph's idle-timeout
+// abort is what unblocks it). The legacy stall:true maps to position 0
+// (specs/046-fake-llm-think-chunking/research.md D3), so existing
+// templates behave exactly as before.
 func serveStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, respID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -559,11 +564,14 @@ func serveStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, r
 		flusher.Flush()
 		logStreamFrame(i, spec, frame)
 
-		// Legacy stall: block after the first chunk (text path: the
-		// first reasoning delta; tool path: the tool_calls delta) until
-		// the caller cancels. spec.Stall is never set on the tool path,
-		// so this is effectively the text path only.
-		if spec.Stall && i == 0 {
+		// Permanent stall after the reasoning chunk at the effective
+		// index: block — on r.Context().Done() only, no fake-llm-side
+		// timeout (FR-009) — until the caller cancels. The guard
+		// i < len(spec.Reasoning) restricts the check to reasoning
+		// frames: on the tool-call path Reasoning is empty and
+		// StallAfter is nil (specFromTool never sets it), so the loop
+		// there reduces to the plain 2-frame tool sequence.
+		if spec.StallAfter != nil && i < len(spec.Reasoning) && i == *spec.StallAfter {
 			<-r.Context().Done()
 			return
 		}
@@ -656,9 +664,9 @@ func buildTextChunks(respID string, now int64, spec responseSpec) []*completionR
 // specs/046-fake-llm-think-chunking/contracts/streaming-sequence.md
 // §7): role_kind identifies the frame type; each reasoning frame
 // additionally carries its 0-based chunk_index and the delay_ms applied
-// before it; the legacy-stall frame carries stall_after=0 so test
-// operators can verify the configured cadence/stall actually fired in
-// signoz.
+// before it; the frame after which the stream stalls carries the
+// EFFECTIVE stall_after index so test operators can verify the
+// configured stall actually fired in signoz.
 func logStreamFrame(i int, spec responseSpec, frame *completionResponse) {
 	c := frame.Choices[0]
 	kind := "content"
@@ -676,8 +684,8 @@ func logStreamFrame(i int, spec responseSpec, frame *completionResponse) {
 			slog.Int("chunk_index", i),
 			slog.Int64("delay_ms", delayBefore(spec, i).Milliseconds()),
 		)
-		if spec.Stall && i == 0 {
-			args = append(args, slog.Int("stall_after", 0))
+		if spec.StallAfter != nil && i == *spec.StallAfter {
+			args = append(args, slog.Int("stall_after", *spec.StallAfter))
 		}
 	}
 	slog.Info("stream chunk emitted", args...)

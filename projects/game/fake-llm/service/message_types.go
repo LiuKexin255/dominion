@@ -27,8 +27,19 @@ import "time"
 // and then blocks without closing the connection — no more data arrives
 // until the caller cancels the request. The connection staying alive while
 // data stops is exactly the failure mode the feature's idle timeout detects.
-// A nil/absent Stall preserves the original streaming behaviour, so existing
-// Message entries are unchanged.
+// It is the legacy shorthand for StallAfter 0 (specs/046-fake-llm-think-
+// chunking/research.md D3): a nil/absent Stall preserves the original
+// streaming behaviour, so existing Message entries are unchanged.
+//
+// StallAfter positions the permanent stall after a chosen reasoning chunk
+// (specs/046-fake-llm-think-chunking — contract
+// specs/046-fake-llm-think-chunking/contracts/template-config.md §2): a
+// 0-based index into the effective reasoning pieces (the chunked form or
+// the legacy single Reasoning string) after which the streaming handler
+// blocks until the caller cancels the request. It generalises the legacy
+// Stall shorthand — stall:true ≡ stall_after:0 — and wins when both are
+// set (an explicit position is more specific than the boolean). A
+// nil/absent StallAfter preserves the original streaming behaviour.
 //
 // ReasoningChunks and ChunkDelays are the chunked-reasoning form
 // (specs/046-fake-llm-think-chunking — contract
@@ -51,6 +62,7 @@ type Message struct {
 	Text            string    `json:"text" yaml:"text"`
 	ToolCall        *ToolCall `json:"tool_call,omitempty" yaml:"tool_call,omitempty"`
 	Stall           bool      `json:"stall,omitempty" yaml:"stall,omitempty"`
+	StallAfter      *int      `json:"stall_after,omitempty" yaml:"stall_after,omitempty"`
 }
 
 // ToolConfig is a single templated response to a tool result message.
@@ -124,6 +136,24 @@ func effectiveReasoning(msg *Message) []string {
 	}
 	if msg.Reasoning != "" {
 		return []string{msg.Reasoning}
+	}
+	return nil
+}
+
+// effectiveStallAfter returns the effective permanent-stall position
+// (specs/046-fake-llm-think-chunking/data-model.md §1,
+// specs/046-fake-llm-think-chunking/research.md D3): the explicit
+// StallAfter index when set, else a pointer to 0 when the legacy Stall
+// shorthand is set (stall:true ≡ stall_after:0), else nil (no stall).
+// StallAfter wins over Stall when both are set — the bool is redundant
+// but harmless, so validation does not reject the combination.
+func effectiveStallAfter(msg *Message) *int {
+	if msg.StallAfter != nil {
+		return msg.StallAfter
+	}
+	if msg.Stall {
+		zero := 0
+		return &zero
 	}
 	return nil
 }

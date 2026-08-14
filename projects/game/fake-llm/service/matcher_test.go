@@ -125,8 +125,8 @@ func TestMatch_NoMatchRandom(t *testing.T) {
 // exclusion (specs/046-fake-llm-think-chunking —
 // specs/046-fake-llm-think-chunking/quickstart.md Scenario 7):
 // a no-match request must never randomly pick a template that can delay
-// or hang the stream (chunked-with-delay or stall:true), while a chunked
-// template without delays stays eligible.
+// or hang the stream (chunked-with-delay, stall:true, or a stall_after
+// position), while a chunked template without delays stays eligible.
 func TestMatch_FallbackExcludesHangCapable(t *testing.T) {
 	// given: a catalogue whose every keyword fails to match the request,
 	// so the fallback pool is the only path. Only the chunked-without-
@@ -142,6 +142,12 @@ func TestMatch_FallbackExcludesHangCapable(t *testing.T) {
 			Name:     "stall",
 			Keywords: []string{"never-stall"},
 			Stall:    true,
+		},
+		{
+			Name:            "stall-after",
+			Keywords:        []string{"never-stall-after"},
+			ReasoningChunks: []string{"c0", "c1"},
+			StallAfter:      toPtr(1),
 		},
 		{
 			Name:            "chunked-no-delay",

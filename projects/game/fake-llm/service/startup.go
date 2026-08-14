@@ -12,13 +12,14 @@ import "fmt"
 //   - every message must carry at least one keyword;
 //   - no keyword element may be the empty string;
 //   - message Names must be unique across all merged files;
-//   - chunked-reasoning rules V1/V2/V4/V5 (specs/046-fake-llm-think-
+//   - chunked-reasoning rules V1-V5 (specs/046-fake-llm-think-
 //     chunking/research.md §validation): every reasoning_chunks entry
 //     non-empty; chunk_delays length ≤ len(reasoning_chunks)−1 with
-//     every entry parseable via time.ParseDuration; reasoning and
-//     reasoning_chunks mutually exclusive; tool_call mutually exclusive
-//     with reasoning_chunks/chunk_delays. (Rules V3 and the stall_after
-//     half of V5 land with the StallAfter field, US2.)
+//     every entry parseable via time.ParseDuration; stall_after in
+//     range 0..len(reasoning_chunks)−1 (legacy single-reasoning
+//     templates have one implicit chunk, so only 0 is valid); reasoning
+//     and reasoning_chunks mutually exclusive; tool_call mutually
+//     exclusive with reasoning_chunks/chunk_delays/stall_after.
 //
 // It is called by LoadFromFS once all embedded files have been parsed
 // and merged, so a non-nil error aborts startup (see cmd/main.go).
@@ -55,10 +56,7 @@ func Validate(messages []*Message) error {
 		// Without chunks no delay is meaningful, so the upper bound is
 		// max(0, len(reasoning_chunks)-1). Each entry must parse as a Go
 		// duration string (FR-017).
-		maxDelays := len(m.ReasoningChunks) - 1
-		if maxDelays < 0 {
-			maxDelays = 0
-		}
+		maxDelays := max(0, len(m.ReasoningChunks)-1)
 		if len(m.ChunkDelays) > maxDelays {
 			return fmt.Errorf("validate: message %q has %d chunk_delays entries, at most %d (len(reasoning_chunks)-1)",
 				m.Name, len(m.ChunkDelays), maxDelays)
@@ -66,17 +64,31 @@ func Validate(messages []*Message) error {
 		if _, err := parseDelays(m.ChunkDelays); err != nil {
 			return fmt.Errorf("validate: message %q has an unparseable chunk_delays entry: %v", m.Name, err)
 		}
+		// V3: the stall position must name an actual reasoning chunk
+		// (specs/046-fake-llm-think-chunking/research.md §validation V3,
+		// FR-017 out-of-range edge). With N chunks the valid indices are
+		// 0..N-1, so the bound is the same max(0, len(reasoning_chunks)-1)
+		// as V2's — kept as its own variable because this bound is a
+		// chunk index, not a delay count. A legacy single-reasoning
+		// template has exactly one implicit chunk, and a reasoning-less
+		// template is padded to a single (empty) frame by buildTextChunks,
+		// so both accept only index 0.
+		maxChunkIndex := max(0, len(m.ReasoningChunks)-1)
+		if m.StallAfter != nil && (*m.StallAfter < 0 || *m.StallAfter > maxChunkIndex) {
+			return fmt.Errorf("validate: message %q has stall_after %d out of range (0..%d, len(reasoning_chunks)-1)",
+				m.Name, *m.StallAfter, maxChunkIndex)
+		}
 		// V4: declaring reasoning both ways is ambiguous about which
 		// form wins — reject rather than pick silently
 		// (specs/046-fake-llm-think-chunking/research.md D6).
 		if m.Reasoning != "" && len(m.ReasoningChunks) > 0 {
 			return fmt.Errorf("validate: message %q declares both reasoning and reasoning_chunks (mutually exclusive)", m.Name)
 		}
-		// V5: a tool-call response streams no reasoning, so chunking on
-		// a tool_call template is a config mistake
+		// V5: a tool-call response streams no reasoning, so chunking or
+		// a stall position on a tool_call template is a config mistake
 		// (specs/046-fake-llm-think-chunking/research.md D5).
-		if m.ToolCall != nil && (len(m.ReasoningChunks) > 0 || len(m.ChunkDelays) > 0) {
-			return fmt.Errorf("validate: message %q carries tool_call together with reasoning_chunks/chunk_delays (mutually exclusive)", m.Name)
+		if m.ToolCall != nil && (len(m.ReasoningChunks) > 0 || len(m.ChunkDelays) > 0 || m.StallAfter != nil) {
+			return fmt.Errorf("validate: message %q carries tool_call together with reasoning_chunks/chunk_delays/stall_after (mutually exclusive)", m.Name)
 		}
 	}
 	return nil
