@@ -413,6 +413,9 @@ importers:
 
   projects/game/agent:
     dependencies:
+      '@dominion/common-js-config':
+        specifier: workspace:*
+        version: link:../../../common/js/config
       '@dominion/common-js-grpc-otel':
         specifier: workspace:*
         version: link:../../../common/js/grpc/otel

@@ -6,6 +6,23 @@ desc: game agent service
 ports:
   - name: grpc
     port: 50051
+configs:
+  # agent_timeouts — TEST-GRADE timeout overrides for the stall-recovery
+  # large-test suite (specs/044-llm-stall-recovery-fix/contracts/
+  # idle-timeout-contract.md §5). Values below FR-001's 60s env minimum are
+  # allowed ONLY through this deliberate, code-reviewed channel (the 60s
+  # clamp is env-scoped — idle-timeout-contract.md §1). Only
+  # deploy_agent_stall.yaml selects this block; production and standard
+  # deploys select nothing, so the agent runs the code defaults (120s idle /
+  # 10s heartbeat / 120s init-turn) exactly as before. Schema:
+  # specs/045-deploy-config/contracts/yaml-schema.md §1.
+  - name: agent_timeouts
+    data:
+      - name: timeouts
+        value: |
+          streamIdleTimeoutMs: 5000
+          toolHeartbeatIntervalMs: 2000
+        type: yaml
 artifacts:
   - name: agent
     target: :cmd_image

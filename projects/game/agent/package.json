@@ -14,6 +14,7 @@
         "langchain": "catalog:",
         "mongodb": "catalog:",
         "zod": "catalog:",
+        "@dominion/common-js-config": "workspace:*",
         "@dominion/common-js-logs": "workspace:*",
         "@dominion/common-js-otel": "workspace:*",
         "@dominion/common-js-grpc-otel": "workspace:*",

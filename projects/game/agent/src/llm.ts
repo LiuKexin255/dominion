@@ -18,6 +18,11 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
+import { info } from "@dominion/common-js-logs";
+import {
+	loadAgentTimeoutOverrides,
+	resolveAgentTimeouts,
+} from "./agent-timeouts";
 import { createMouseClickTool } from "./tools/mouse_click/mouse-click";
 import { createMouseMoveTool } from "./tools/mouse_move/mouse-move";
 import type { OperationBridge } from "./operation-bridge";
@@ -30,6 +35,22 @@ import { DEFAULT_MCP_PORT } from "./mcp-host";
  * bounding runaway loops.
  */
 export const RECURSION_LIMIT = 1000;
+
+/**
+ * Resolved agent timeout parameters (env > config > default per parameter —
+ * specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §1/§5).
+ * Read once at module load: the 045 SDK is synchronous by design and the
+ * config channel is a startup-time override tier. In a non-dominion
+ * environment (`DOMINION_CONFIG_DIR` unset) the overrides resolve to
+ * `undefined` and the constants below equal the code defaults.
+ */
+const resolved = resolveAgentTimeouts(
+	{
+		streamIdleTimeoutMs: process.env.GAME_STREAM_IDLE_TIMEOUT_MS,
+		initTurnTimeoutMs: process.env.GAME_INIT_TURN_TIMEOUT_MS,
+	},
+	loadAgentTimeoutOverrides(),
+);
 
 /**
  * Chunk-idle timeout for the team graph's player/planner nodes (ms). When
@@ -46,37 +67,43 @@ export const RECURSION_LIMIT = 1000;
  * (https://github.com/anomalyco/opencode/pull/18264). The former 30s default
  * was the most aggressive in the industry and false-stalled reasoning models
  * (specs/044-llm-stall-recovery-fix/spec.md FR-001; survey/
- * llm-stream-stall-recovery-revision.md §5.1). Values below the 60s minimum
- * are clamped to the 120s default; explicit env configuration >= 60s is
- * honored as-is (specs/044-llm-stall-recovery-fix/contracts/
- * idle-timeout-contract.md §1). LangChain JS has no client-layer chunk-idle
- * guard (https://github.com/langchain-ai/langchainjs/issues/9088), so
- * LangGraph's `idleTimeout` remains the sole chunk-idle defense.
+ * llm-stream-stall-recovery-revision.md §5.1).
+ *
+ * Resolution: env `GAME_STREAM_IDLE_TIMEOUT_MS` (values below the 60s
+ * minimum clamp to the 120s default — the clamp is env-scoped) > config
+ * `agent_timeouts/timeouts.streamIdleTimeoutMs` (honored as-is, no clamp) >
+ * 120_000 (specs/044-llm-stall-recovery-fix/contracts/
+ * idle-timeout-contract.md §1/§5). LangChain JS has no client-layer
+ * chunk-idle guard (https://github.com/langchain-ai/langchainjs/issues/9088),
+ * so LangGraph's `idleTimeout` remains the sole chunk-idle defense.
  */
-const streamIdleTimeoutMs = Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS);
-export const STREAM_IDLE_TIMEOUT_MS =
-	streamIdleTimeoutMs >= 60_000 ? streamIdleTimeoutMs : 120_000;
+export const STREAM_IDLE_TIMEOUT_MS = resolved.streamIdleTimeoutMs;
 
 /**
- * Whether `GAME_STREAM_IDLE_TIMEOUT_MS` was explicitly set in the
- * environment (checked via `!== undefined`, not Number truthiness, so an
- * explicit "0" or clamped low value is still detected as explicit).
+ * Whether an explicit operator configuration supplies the idle timeout —
+ * the env var `GAME_STREAM_IDLE_TIMEOUT_MS` is set (checked via
+ * `!== undefined`, not Number truthiness, so an explicit "0" or clamped low
+ * value is still detected as explicit) OR the config entry
+ * `agent_timeouts/timeouts` provides `streamIdleTimeoutMs`
+ * (specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §1/§5).
  * `resolveStreamIdleTimeout` (specs/044-llm-stall-recovery-fix/tasks.md T003)
  * uses this to honor explicit operator config as-is — even below a reasoning
  * floor — per specs/044-llm-stall-recovery-fix/contracts/
  * idle-timeout-contract.md §1 (spec FR-003).
  */
-export const STREAM_IDLE_TIMEOUT_EXPLICIT =
-	process.env.GAME_STREAM_IDLE_TIMEOUT_MS !== undefined;
+export const STREAM_IDLE_TIMEOUT_EXPLICIT = resolved.streamIdleExplicit;
 
 /**
  * Total execution timeout for the async init instruction turn (ms). A
  * stalled planner LLM during `runInitTurn` must degrade within this window
  * instead of hanging and blocking the first user turn
  * (specs/043-llm-stream-stall-recovery/spec.md FR-009/FR-010).
+ *
+ * Resolution: env `GAME_INIT_TURN_TIMEOUT_MS` (`Number(...) || 120_000`) >
+ * config `agent_timeouts/timeouts.initTurnTimeoutMs` (as-is) > 120_000
+ * (specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5).
  */
-export const INIT_TURN_TIMEOUT_MS =
-	Number(process.env.GAME_INIT_TURN_TIMEOUT_MS) || 120_000;
+export const INIT_TURN_TIMEOUT_MS = resolved.initTurnTimeoutMs;
 
 /**
  * Idle-heartbeat interval for MCP tool invocations (ms). While a wrapped MCP
@@ -86,10 +113,14 @@ export const INIT_TURN_TIMEOUT_MS =
  * longer than `STREAM_IDLE_TIMEOUT_MS` would raise a false `NodeTimeoutError`
  * mid-tool (specs/043-llm-stream-stall-recovery/research.md R7.2). MUST be <
  * `STREAM_IDLE_TIMEOUT_MS` so the idle timer can never elapse during a tool
- * wait; the 10s default satisfies this (specs/043-llm-stream-stall-recovery/
- * research.md R7).
+ * wait (043 FR-003 — enforced by `resolveAgentTimeouts`, which throws at
+ * startup on violation). Resolution: config
+ * `agent_timeouts/timeouts.toolHeartbeatIntervalMs` (as-is) > 10_000; there
+ * is intentionally NO env channel for the heartbeat
+ * (specs/044-llm-stall-recovery-fix/research.md R10 — Q1 decision;
+ * specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5).
  */
-export const TOOL_HEARTBEAT_INTERVAL_MS = 10_000;
+export const TOOL_HEARTBEAT_INTERVAL_MS = resolved.toolHeartbeatIntervalMs;
 
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
@@ -324,6 +355,12 @@ export const defaultMcpClientFactory: McpClientFactory = async (config) => {
  * resolve/reject/abort — no leaked timers. When `config.heartbeat` is absent
  * (non-LangGraph invocation, unit tests), the wrapper degrades to a direct
  * passthrough (no interval).
+ *
+ * Observability (specs/044-llm-stall-recovery-fix/research.md R9; quickstart
+ * D4): a wrapper-start `info` log plus one `info` per heartbeat tick (tool,
+ * configured interval, tick sequence) discriminate the T012 false-stall root
+ * cause in signoz — ticks present + false stall → LangGraph `touch()`/
+ * `checkIdle` path issue; ticks absent → wrapper timer lifecycle bug.
  */
 export function withIdleHeartbeat(
 	tool: StructuredToolInterface,
@@ -336,8 +373,21 @@ export function withIdleHeartbeat(
 		if (typeof heartbeat !== "function") {
 			return tool.invoke(input, config);
 		}
+		info("tool heartbeat wrapper started", {
+			tool: tool.name,
+			intervalMs: TOOL_HEARTBEAT_INTERVAL_MS,
+		});
 		heartbeat();
-		const timer = setInterval(heartbeat, TOOL_HEARTBEAT_INTERVAL_MS);
+		let tick = 0;
+		const timer = setInterval(() => {
+			tick += 1;
+			info("tool heartbeat tick", {
+				tool: tool.name,
+				intervalMs: TOOL_HEARTBEAT_INTERVAL_MS,
+				tick,
+			});
+			heartbeat();
+		}, TOOL_HEARTBEAT_INTERVAL_MS);
 		try {
 			return await tool.invoke(input, config);
 		} finally {

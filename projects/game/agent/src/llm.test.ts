@@ -487,5 +487,31 @@ describe("STREAM_IDLE_TIMEOUT_MS / STREAM_IDLE_TIMEOUT_EXPLICIT (044 US1 T002)",
 		expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(120_000);
 		expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(true);
 	});
+
+	it("defaults all four constants when neither env nor DOMINION_CONFIG_DIR is set (044 T015)", async () => {
+		// The constants are now sourced from resolveAgentTimeouts (T015):
+		// with no env and no config directory the resolver's default path
+		// must reproduce the pre-amendment values exactly.
+		// (specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5)
+		const initEnvKey = "GAME_INIT_TURN_TIMEOUT_MS";
+		const configDirKey = "DOMINION_CONFIG_DIR";
+		const initOriginal = process.env[initEnvKey];
+		const configDirOriginal = process.env[configDirKey];
+		try {
+			delete process.env[envKey];
+			delete process.env[initEnvKey];
+			delete process.env[configDirKey];
+			const mod = await reloadConstants();
+			expect(mod.STREAM_IDLE_TIMEOUT_MS).toBe(120_000);
+			expect(mod.STREAM_IDLE_TIMEOUT_EXPLICIT).toBe(false);
+			expect(mod.INIT_TURN_TIMEOUT_MS).toBe(120_000);
+			expect(mod.TOOL_HEARTBEAT_INTERVAL_MS).toBe(10_000);
+		} finally {
+			if (initOriginal === undefined) delete process.env[initEnvKey];
+			else process.env[initEnvKey] = initOriginal;
+			if (configDirOriginal === undefined) delete process.env[configDirKey];
+			else process.env[configDirKey] = configDirOriginal;
+		}
+	});
 });
 

@@ -26,6 +26,7 @@ ts_project(
     visibility = ["//visibility:public"],
     deps = [
         ":game_types_lib",
+        ":node_modules/@dominion/common-js-config",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
@@ -83,6 +84,7 @@ artifact_pkg_js(
     service = "agent",
     ts_project = ":lib",
     runtime_deps = [
+        "//common/js/config:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
@@ -131,6 +133,7 @@ artifact_pkg_js(
     service = "agent",
     ts_project = ":lib",
     runtime_deps = [
+        "//common/js/config:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
@@ -169,6 +172,7 @@ vitest_test(
         # tests exercise the real read path.
         "src/skill/memory/SKILL.md",
         "src/skill/saolei/SKILL.md",
+        ":node_modules/@dominion/common-js-config",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",

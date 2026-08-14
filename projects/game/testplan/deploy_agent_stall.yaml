@@ -1,7 +1,7 @@
 version: "3.0"
 name: game.{{run}}
 type: test
-desc: "Game agent stall-recovery test (agent test artifact, idle timeout 60s)"
+desc: "Game agent stall-recovery test (agent test artifact, config-driven idle timeout 5s / heartbeat 2s)"
 services:
   - infra:
       resource: mongodb
@@ -22,8 +22,8 @@ services:
   - artifact:
       path: //projects/game/agent/service.yaml
       name: agent_test
-      env:
-        GAME_STREAM_IDLE_TIMEOUT_MS: "60000"
+      configs:
+        - agent_timeouts
   - artifact:
       path: //projects/game/memory/service.yaml
       name: memory
