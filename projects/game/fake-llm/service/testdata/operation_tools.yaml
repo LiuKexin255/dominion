@@ -1,3 +1,7 @@
+# operation_tools.yaml — the keyboard/mouse tool-result responses grouped
+# by module (specs/046-fake-llm-think-chunking/data-model.md §7): each
+# entry matches a tool result by tool_name + match_result_contains and
+# either terminates the tool loop with text or chains the next tool_call.
 tools:
   - name: keyboard-success-text
     tool_name: keyboard

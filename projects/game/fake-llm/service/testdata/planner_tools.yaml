@@ -1,9 +1,9 @@
-# sample_planner_tools.yaml — the follow-up tool-result responses for the
+# planner_tools.yaml — the follow-up tool-result responses for the
 # planner agent's `memory` + `instruct_player` tools (spec 039
 # -planner-memory-calibration US2/US3 — FR-008/FR-014/FR-017).
 #
 # After the planner's LLM returns the memory tool_call
-# (sample_planner_memory.yaml), the tool executes and the LangChain tool loop
+# (planner.yaml planner-memory-add), the tool executes and the LangChain tool loop
 # sends the resulting role:"tool" message back to fake-LLM. Each config
 # matches by tool_name + match_result_contains substrings of the result text
 # (ALL substrings required), and either terminates the loop with text or
@@ -16,7 +16,7 @@
 #           → final text                        [loop terminates]
 #
 # The review instruction content ends with "请继续游戏。" — its "继续"
-# substring matches the saolei-start keyword (sample_saolei_start.yaml), so
+# substring matches the saolei-start keyword (saolei.yaml), so
 # the player's next model call (whose LAST user message is the appended
 # instruction, FR-017) opens the next game instead of falling into the
 # no-match random fallback (FR-009 — the fixture decides the player

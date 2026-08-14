@@ -1,0 +1,25 @@
+# chat.yaml — the plain-text chat responses grouped by scenario
+# (specs/046-fake-llm-think-chunking/data-model.md §7): greeting,
+# chat-only and farewell are the templates the agent matches on ordinary
+# conversation turns.
+messages:
+  - name: greeting
+    keywords:
+      - hello
+      - hi
+      - greetings
+    reasoning: "The user is greeting me, I should respond warmly."
+    text: "Hello! How can I help you today?"
+  - name: chat-only
+    keywords:
+      - chat
+      - conversation
+    reasoning: "Responding with text only, no tools needed."
+    text: "Sure, let's chat!"
+  - name: farewell
+    keywords:
+      - bye
+      - goodbye
+      - see you
+    reasoning: "The user is saying goodbye."
+    text: "Goodbye! Have a great day!"

@@ -628,7 +628,8 @@ func (lb *lockedBuffer) String() string {
 // the tools config by tool_name and returns a plain text response with
 // finish_reason "stop".
 func TestServeHTTP_ToolResultTextResponse(t *testing.T) {
-	// given: the real embedded store (which includes sample_tools.yaml)
+	// given: the real embedded store (which includes the tool-config
+	// files operation_tools.yaml / saolei_tools.yaml / planner_tools.yaml)
 	// and a tool-role request for the "mouse_move" tool. Feature 015
 	// split the single mouse tool into mouse_move / mouse_click.
 	store, err := NewMessageStore()

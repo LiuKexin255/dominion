@@ -53,6 +53,126 @@ func TestLoadFromFS(t *testing.T) {
 	}
 }
 
+// TestLoadFromFS_MultiMessageFile covers the multi-message file shape
+// (specs/046-fake-llm-think-chunking/quickstart.md Scenario 6,
+// FR-012/FR-013/FR-014): a `messages:` file merges into the flat slice
+// indistinguishably from single-message files (sorted by Name), a
+// duplicate name across a multi-message file and a single-message file
+// is rejected, and a file declaring both `tools:` and `messages:` is
+// rejected (validation rule V6, specs/046-fake-llm-think-chunking/
+// research.md D4).
+func TestLoadFromFS_MultiMessageFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   fstest.MapFS
+		want    []string // sorted Names when loading succeeds
+		wantErr string
+	}{
+		{
+			name: "multi-message file merges with single-message file sorted by name",
+			files: fstest.MapFS{
+				"testdata/multi.yaml": &fstest.MapFile{
+					// given: a multi-message file whose entries are NOT
+					// alphabetically ordered, so the merge sort is exercised.
+					Data: []byte(strings.Join([]string{
+						"messages:",
+						"  - name: beta",
+						"    keywords: [k1]",
+						"    reasoning: beta-reasoning",
+						"    text: beta-text",
+						"  - name: alpha",
+						"    keywords: [k2]",
+						"    reasoning: alpha-reasoning",
+						"    text: alpha-text",
+						"",
+					}, "\n")),
+				},
+				"testdata/single.json": &fstest.MapFile{
+					Data: []byte(`{"name":"gamma","keywords":["k3"],"reasoning":"gamma-reasoning","text":"gamma-text"}`),
+				},
+			},
+			want: []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name: "duplicate name across multi-message and single-message files rejected",
+			files: fstest.MapFS{
+				"testdata/multi.yaml": &fstest.MapFile{
+					Data: []byte(strings.Join([]string{
+						"messages:",
+						"  - name: dup",
+						"    keywords: [k1]",
+						"    reasoning: r",
+						"    text: t",
+						"",
+					}, "\n")),
+				},
+				"testdata/single.yaml": &fstest.MapFile{
+					Data: []byte("name: dup\nkeywords: [k2]\nreasoning: r\ntext: t\n"),
+				},
+			},
+			wantErr: "duplicate",
+		},
+		{
+			name: "file with both tools: and messages: rejected (V6)",
+			files: fstest.MapFS{
+				"testdata/both.yaml": &fstest.MapFile{
+					Data: []byte(strings.Join([]string{
+						"tools:",
+						"  - name: t1",
+						"    tool_name: mouse_move",
+						"    match_result_contains: []",
+						"    respond_with:",
+						"      text: done",
+						"messages:",
+						"  - name: m1",
+						"    keywords: [k1]",
+						"    text: t",
+						"",
+					}, "\n")),
+				},
+			},
+			wantErr: "both tools: and messages:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got, tools, err := LoadFromFS(tt.files, "testdata")
+
+			// then: a malformed shape aborts loading with a descriptive
+			// error; otherwise every file's entries merge into one flat
+			// slice sorted alphabetically by Name, with no tools loaded.
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("LoadFromFS expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("LoadFromFS error = %q, want substring %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFromFS unexpected error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("LoadFromFS got %d messages, want %d", len(got), len(tt.want))
+			}
+			for i, wantName := range tt.want {
+				if got[i].Name != wantName {
+					t.Fatalf("LoadFromFS order = [%s...], want %v", got[i].Name, tt.want)
+				}
+			}
+			if got[0].Text != "alpha-text" {
+				t.Fatalf("LoadFromFS multi-message entry values wrong: %+v", got[0])
+			}
+			if tools != nil {
+				t.Fatalf("LoadFromFS tools = %v, want nil for message-only files", tools)
+			}
+		})
+	}
+}
+
 // TestLoadFromFS_Failure asserts that every startup-invariant violation
 // aborts loading with a descriptive error. Each case isolates one
 // failure mode so a regression points at the exact rule.
@@ -391,8 +511,8 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 14 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 14 (chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning)", len(got))
+	if len(got) != 17 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 17 (chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
 	}
 
 	// Sorted alphabetically: chat-only before compact-instruction before
@@ -400,12 +520,16 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// farewell before greeting before init-instruction before mouse-trigger
 	// before planner-memory-add before saolei-remain before saolei-single-op
 	// before saolei-start before saolei-structural-stop before
-	// stall-mid-reasoning
+	// stall-mid-reasoning before think-healthy-cadence before
+	// think-interrupt-gap before think-interrupt-stall
 	// ("compact-instruction" < "compress-planner-summary" because 'a' < 'r'
 	// at the first differing rune; "planner-memory-add" < "saolei-remain"
 	// because 'p' < 's'; "saolei-single-op" < "saolei-start" because 'i' <
 	// 't'; "saolei-start" < "saolei-structural-stop" because 'a' < 'r';
-	// "saolei-structural-stop" < "stall-mid-reasoning" because 'o' < 't').
+	// "saolei-structural-stop" < "stall-mid-reasoning" because 'o' < 't';
+	// "stall-mid-reasoning" < "think-healthy-cadence" because 's' < 't';
+	// "think-healthy-cadence" < "think-interrupt-gap" because 'h' < 'i';
+	// "think-interrupt-gap" < "think-interrupt-stall" because 'g' < 's').
 	wantNames := []string{
 		"chat-only",
 		"compact-instruction",
@@ -421,6 +545,9 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		"saolei-start",
 		"saolei-structural-stop",
 		"stall-mid-reasoning",
+		"think-healthy-cadence",
+		"think-interrupt-gap",
+		"think-interrupt-stall",
 	}
 	for i, want := range wantNames {
 		if got[i].Name != want {
@@ -658,11 +785,70 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	if !slices.Contains(stallMidReasoning.Keywords, "stall now") {
 		t.Errorf("stall-mid-reasoning keywords missing 'stall now': %v", stallMidReasoning.Keywords)
 	}
+
+	// The three think-interrupt demonstration templates (specs/046-fake-llm-
+	// think-chunking — contract specs/046-fake-llm-think-chunking/contracts/
+	// template-config.md §3.3-§3.5, added in T012): they exercise the
+	// chunked-reasoning / chunk_delays / stall_after fields end-to-end in the
+	// embedded store, and each is excluded from the no-match random fallback
+	// pool by isHangCapable (FR-011).
+	thinkHealthy := got[14]
+	if len(thinkHealthy.ReasoningChunks) != 3 {
+		t.Errorf("think-healthy-cadence reasoning_chunks = %v, want 3 chunks", thinkHealthy.ReasoningChunks)
+	}
+	if thinkHealthy.ReasoningChunks[0] != "Step one." || thinkHealthy.ReasoningChunks[2] != "Step three." {
+		t.Errorf("think-healthy-cadence reasoning_chunks = %v, want the healthy-cadence chunks", thinkHealthy.ReasoningChunks)
+	}
+	if !slices.Equal(thinkHealthy.ChunkDelays, []string{"200ms", "200ms"}) {
+		t.Errorf("think-healthy-cadence chunk_delays = %v, want [200ms 200ms]", thinkHealthy.ChunkDelays)
+	}
+	if thinkHealthy.StallAfter != nil {
+		t.Errorf("think-healthy-cadence stall_after = %v, want nil (no stall)", *thinkHealthy.StallAfter)
+	}
+	if thinkHealthy.Text != "Done." {
+		t.Errorf("think-healthy-cadence text = %q, want 'Done.'", thinkHealthy.Text)
+	}
+
+	thinkGap := got[15]
+	if len(thinkGap.ReasoningChunks) != 3 {
+		t.Errorf("think-interrupt-gap reasoning_chunks = %v, want 3 chunks", thinkGap.ReasoningChunks)
+	}
+	if thinkGap.ReasoningChunks[0] != "Analyzing the board state." || thinkGap.ReasoningChunks[2] != "Finalizing the safest move." {
+		t.Errorf("think-interrupt-gap reasoning_chunks = %v, want the board-analysis chunks", thinkGap.ReasoningChunks)
+	}
+	if !slices.Equal(thinkGap.ChunkDelays, []string{"1s", "90s"}) {
+		t.Errorf("think-interrupt-gap chunk_delays = %v, want [1s 90s]", thinkGap.ChunkDelays)
+	}
+	if thinkGap.StallAfter != nil {
+		t.Errorf("think-interrupt-gap stall_after = %v, want nil (long finite gap, not a stall)", *thinkGap.StallAfter)
+	}
+	if thinkGap.Text != "Placing the flag at (3,4)." {
+		t.Errorf("think-interrupt-gap text = %q, want 'Placing the flag at (3,4).'", thinkGap.Text)
+	}
+
+	thinkStall := got[16]
+	if len(thinkStall.ReasoningChunks) != 2 {
+		t.Errorf("think-interrupt-stall reasoning_chunks = %v, want 2 chunks", thinkStall.ReasoningChunks)
+	}
+	if thinkStall.ReasoningChunks[0] != "Starting to reason about the request." || thinkStall.ReasoningChunks[1] != "Going deeper into analysis." {
+		t.Errorf("think-interrupt-stall reasoning_chunks = %v, want the analysis chunks", thinkStall.ReasoningChunks)
+	}
+	if !slices.Equal(thinkStall.ChunkDelays, []string{"1s"}) {
+		t.Errorf("think-interrupt-stall chunk_delays = %v, want [1s]", thinkStall.ChunkDelays)
+	}
+	if thinkStall.StallAfter == nil || *thinkStall.StallAfter != 1 {
+		t.Errorf("think-interrupt-stall stall_after = %v, want 1 (block after the second chunk)", thinkStall.StallAfter)
+	}
+	if thinkStall.Text != "This answer never arrives." {
+		t.Errorf("think-interrupt-stall text = %q, want 'This answer never arrives.'", thinkStall.Text)
+	}
 }
 
 // TestNewMessageStore_LoadsEmbeddedTools verifies the embedded
-// sample_tools.yaml is parsed into the store's Tools slice with the
-// configured values, and sorted alphabetically by Name.
+// tool-config files (operation_tools.yaml, saolei_tools.yaml and
+// planner_tools.yaml, grouped by module per specs/046-fake-llm-think-
+// chunking/data-model.md §7) are parsed into the store's Tools slice
+// with the configured values, and sorted alphabetically by Name.
 //
 // Feature 015 split the single "mouse" tool into "mouse_move"
 // (coordinates) and "mouse_click" (click_type only), so the tool_name
@@ -784,7 +970,7 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	// 常犯"), whose "multiple entries matched" error text chains
 	// instruct_player (the review instruction, FR-014). The three memory
 	// configs are mutually exclusive on the result bodies (verified in
-	// sample_planner_tools.yaml).
+	// planner_tools.yaml).
 	plannerMemoryApplied := tools[8]
 	if plannerMemoryApplied.ToolName != "memory" {
 		t.Errorf("planner-memory-applied tool_name = %q, want memory", plannerMemoryApplied.ToolName)

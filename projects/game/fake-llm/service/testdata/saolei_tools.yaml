@@ -1,4 +1,4 @@
-# sample_saolei_tools.yaml — chains the saolei MCP tool results so the
+# saolei_tools.yaml — chains the saolei MCP tool results so the
 # model drives a deterministic init→operate→text sequence in large tests
 # (spec 039-planner-memory-calibration US1 — the three former cell tools are
 # merged into the single dual-form `saolei_operate`, FR-001/FR-002). Each
