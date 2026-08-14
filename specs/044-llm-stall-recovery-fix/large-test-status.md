@@ -202,3 +202,21 @@ intervals) instead of being locked to the clamped 60s minimum. Once that lands:
 - US2 floor large-test cancellation (decision #2).
 - FR-005 marking rule (decision #3).
 - Phase 5 T010 (proto comment) — done.
+
+---
+
+## 6. 2026-08-14 update — enablers landed, plan amended, resume scope defined
+
+Both external enablers are complete and green on the current lineage (`046-fake-llm-think-chunking` carries all 044+045+046 commits; no separate 044 branch exists):
+
+- **045 deploy-config** (44/44 tasks): service.yaml `configs` blocks + deploy selection + Go/JS SDK. See [spec](../045-deploy-config/spec.md), [runtime contract](../045-deploy-config/contracts/runtime-contract.md).
+- **046 fake-llm think chunking** (15/15 tasks): `reasoning_chunks`/`chunk_delays`/`stall_after`; scenario-grouped testdata incl. `think-interrupt-gap` (resumable 90s mid-thinking gap at 046 ship time; 044 [tasks.md](tasks.md) T019 rescales it to 15s for the config-driven 5s window) in `projects/game/fake-llm/service/testdata/stall_recovery.yaml`. See [spec](../046-fake-llm-think-chunking/spec.md).
+
+§5's resume plan has been designed into the amended [plan.md](plan.md) ("Update 2026-08-14 — Resume Scope"), with research ([research.md](research.md) R9–R11), contract ([contracts/idle-timeout-contract.md](contracts/idle-timeout-contract.md) §1/§5), data model ([data-model.md](data-model.md) §7) and acceptance ([quickstart.md](quickstart.md) Phase D) updated, and spec.md amended (Clarifications Session 2026-08-14 + FR-008 config tier). Key deltas vs §5 as originally sketched:
+
+1. **Root-cause query (§5 step 1) executed 2026-08-14**: trace `843f5473...` spans expired; surviving logs show only the ~65s teardown timeline, and the env contains **no heartbeat/stall logs at all** — (a)/(b) is NOT discriminable from stale data (R9). Resolution is procedural: per-tick heartbeat logging + a short-scale (5s/2s) re-run whose per-tick logs discriminate any recurrence.
+2. **Config channel design settled** (R10): single test-grade block `agent_timeouts` (5s idle / 2s heartbeat), resolution env > config > default, config honored as-is (env-scoped 60s clamp unchanged), floor suppressed by any explicit tier; stall deploy drops the env and selects the block.
+3. **`wsReadTimeout` needs NO rescale** (deadline ceiling, not a sleep) — §5's "Files most likely to change" list is narrower in the final design.
+4. **SC-005 §4 remains open** with the spec owner; γ's cost dropped materially (R11: resumable-silence template exists; default topology already deployed by `deploy_agent.yaml`) and is pre-analyzed as optional item 6 in the resume scope. Working default stays α.
+
+**Next action**: re-author Phase 5 tasks via `/speckit.tasks` from plan.md "Update 2026-08-14 — Resume Scope" (items 1–5, item 6 gated on the SC-005 ruling), then execute through T012 full-green.

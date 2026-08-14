@@ -42,6 +42,37 @@ Follow-up TODOs:
   - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
     open/pending manual review.
 ==============================================================================
+Version change: 1.3.0 → 1.3.1
+Rationale: PATCH — wording clarification. Principle V's mandatory three-bucket
+  document-list format is clarified: the "技术文章" bucket is renamed
+  "技术文章/技术参考文档" and now explicitly admits in-repository
+  design/research documents (research/contracts/data-model/quickstart/survey,
+  relative paths). This closes an internal tension between "in-repo docs MUST
+  be explicitly listed" (V's own a.md/b.md example) and a bucket definition
+  that only described external URLs — no normative behavior change, only
+  wording disambiguation → PATCH 1.3.1.
+
+Modified principles:
+  - V. 编码前阅读文档 (Read Before Code) — 文档分类格式: third bucket renamed
+    and its definition extended to cover in-repo technical reference documents
+    (relative paths) alongside external technical articles (full URLs).
+
+Added sections: none.
+
+Removed sections: none.
+
+Templates requiring updates:
+  - .specify/templates/tasks-template.md — ✅ no change (clarifies how the
+        existing bucket lists are populated; template shape unchanged).
+  - .specify/templates/plan-template.md / spec-template.md / workflow.yml —
+        ✅ no change.
+
+Follow-up TODOs:
+  - Previous 1.2.0 follow-up (tasks-template per-phase "文档清单" example)
+    remains open/pending manual review.
+  - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
+    open/pending manual review.
+==============================================================================
 -->
 
 # Dominion Constitution
@@ -100,7 +131,7 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - **文档分类格式（强制）**：tasks.md 中每个 phase 的文档清单 MUST 按以下三个分类组织呈现，每个分类下显式列出该 phase 需阅读的具体文档（仓库内用相对路径、仓库外用完整 URL）；某分类本 phase 无相关文档时 MUST 显式标注"无"，禁止省略分类：
   - **代码规范文档**：仓库内 `style/` 目录下的代码规范文档（如 `style/golang.md`、`style/javascript.md`、`style/api.md`、`style/large_test.md` 等），以及这些规范引用的、本 phase 需要阅读的外部代码规范文档（如官方语言/框架风格指南、AIP/API 设计规范等，仓库外用完整 URL）；按本 phase 涉及的语言/领域选取相关项。
   - **官方文档**：第三方组件/依赖的官方文档或其 GitHub 仓库 README（仓库外，MUST 使用完整 URL）。
-  - **技术文章**：其他外部技术参考资料（博客、设计文章、RFC 等，仓库外，MUST 使用完整 URL）。
+  - **技术文章/技术参考文档**：本分类统一收纳"代码规范"与"官方文档"之外的参考材料——外部技术资料（博客、设计文章、RFC 等，仓库外，MUST 使用完整 URL）与本 phase 需要阅读的仓库内设计/研究文档（research、contracts、data-model、quickstart、survey 等，仓库内用相对路径）。仓库内设计文档不属于代码规范、亦非第三方官方文档，归入本分类以保证文档清单中的每个文档都有明确归属分类。
   - 所列文档 MUST 与该 phase 开发任务相关或作为参考。
 - AGENTS.md 与 spec 相关文件是代码开发必读内容，无需在 tasks.md 中重复列出。
 
@@ -144,4 +175,4 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - **合规审查**：所有 PR / review MUST 校验本宪章合规性；任何复杂度 MUST 可被论证（对齐原则 II 的简化要求）。
 - 运行时开发指引见 `AGENTS.md`；本宪章文件位置：`.specify/memory/constitution.md`。
 
-**Version**: 1.3.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-24
+**Version**: 1.3.1 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-08-14

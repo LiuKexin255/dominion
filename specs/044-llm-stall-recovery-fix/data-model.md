@@ -10,28 +10,30 @@ This document defines the entities, data shapes, and state transitions introduce
 
 The chunk-idle timeout applied to a model-holding node (`player`/`planner`), resolved at graph-build time.
 
-**Resolution rule** (spec FR-001/FR-003, contracts/idle-timeout-contract.md §1):
+**Resolution rule** (spec FR-001/FR-003, contracts/idle-timeout-contract.md §1 — 2026-08-14 amendment adds the config tier, §7):
 
 ```
-STREAM_IDLE_TIMEOUT_MS = Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) >= 60_000
-    ? Number(process.env.GAME_STREAM_IDLE_TIMEOUT_MS) : 120_000   // was 30_000; values < 60_000 clamped
+STREAM_IDLE_TIMEOUT_MS =
+    env GAME_STREAM_IDLE_TIMEOUT_MS set?  → env value, clamped (< 60_000 → 120_000)
+    : config agent_timeouts.streamIdleTimeoutMs present? → that value, as-is (no clamp)
+    : 120_000   // was 30_000; the 60s minimum is enforced at the env read site only
 effectiveIdleTimeout(modelSpec?) =
-    operator set env?                  → the env value (honored as-is, even below a floor)
-    : modelSpec matches a floor?       → max(STREAM_IDLE_TIMEOUT_MS, floor)
-    : otherwise                        → STREAM_IDLE_TIMEOUT_MS
+    idle source explicit (env OR config)?  → the explicit value (honored as-is, even below a floor)
+    : modelSpec matches a floor?       → max(default, floor)
+    : otherwise                        → default
 ```
 
 | Field | Type | Source | Notes |
 |---|---|---|---|
-| `STREAM_IDLE_TIMEOUT_MS` | `number` (ms) | `projects/game/agent/src/llm.ts:56-58` | Default **120_000**; env `GAME_STREAM_IDLE_TIMEOUT_MS` overrides. Min configurable **60_000** (enforced where read). |
+| `STREAM_IDLE_TIMEOUT_MS` | `number` (ms) | `agent-timeouts.ts` resolution, re-exported by `projects/game/agent/src/llm.ts` | Default **120_000**; env `GAME_STREAM_IDLE_TIMEOUT_MS` (clamped) or config `agent_timeouts/timeouts` (as-is) override. Min configurable **60_000** enforced at the env read site only. |
 | `effectiveIdleTimeout` | `number` (ms) | computed via `resolveStreamIdleTimeout(modelSpec)` in `reasoning-timeouts.ts` | Applied per-node at `team/graph.ts:383-389` `addNode({ timeout: { idleTimeout }})`. |
 
 **Invariants**:
-- The floor **only ever raises** the effective timeout above the default; it never lowers it.
-- An explicit operator env var is the source of `STREAM_IDLE_TIMEOUT_MS`, so it always wins (even below a floor) — the floor never overrides an explicit operator choice.
+- The floor **only ever raises** the code default; it never lowers it, and any explicit source (env or config) suppresses it entirely.
+- An explicit operator configuration (env — clamped; config — as-is) always wins (even below a floor) — the floor never overrides an explicit operator choice. When both env and config are set, env wins (deploy-time beats service-definition).
 - The effective timeout applies **only** to `player`/`planner` nodes (NOT `initInstruction`/`postCompactInstruction`/`compress` — unchanged from 043, `graph.ts:373-376`).
 
-**实现注记**：`resolveStreamIdleTimeout` 需感知 env 是否显式设置（`llm.ts` 导出 `STREAM_IDLE_TIMEOUT_EXPLICIT` 标志）——裸 `max(env_or_default, floor)` 会把显式设置的低值（如 env=90s + DeepSeek 600s floor）抬到 floor，违反 FR-003（见 research.md R2 与 tasks.md T003）。
+**实现注记**：`resolveStreamIdleTimeout` 需感知 idle 来源是否显式（`llm.ts` 导出 `STREAM_IDLE_TIMEOUT_EXPLICIT` 标志，2026-08-14 起为 env 显式 **或** config 提供 `streamIdleTimeoutMs`）——裸 `max(explicit_or_default, floor)` 会把显式设置的低值（如 env=90s + DeepSeek 600s floor）抬到 floor，违反 FR-003（见 research.md R2 与 tasks.md T003）。
 
 ---
 
@@ -194,9 +196,43 @@ The ⚠ warn bubble is **transient** (FlowParts never persist to history — `ga
 These are referenced but NOT modified by 044 (spec FR-010), except the controlled proto exception in §4.2:
 - `MemorySaver` checkpointer, `playerMessages`/`plannerMessages` channels, `messagesStateReducer` — unchanged.
 - `TurnLoop` buffer + `finishError`/`finishAbort` terminals — unchanged.
-- `withIdleHeartbeat` tool wrapper (`llm.ts:302-322`), `TOOL_HEARTBEAT_INTERVAL_MS` — unchanged.
-- `INIT_TURN_TIMEOUT_MS` / `runInitTurn` total timeout — unchanged.
+- `withIdleHeartbeat` tool wrapper (`llm.ts:302-322`) — mechanism unchanged (2026-08-14: gains per-tick structured logging only, §7); `TOOL_HEARTBEAT_INTERVAL_MS` — **value becomes configurable** (§7), default 10s unchanged.
+- `INIT_TURN_TIMEOUT_MS` / `runInitTurn` total timeout — mechanism unchanged; **value becomes configurable** (§7), default 120s unchanged.
 - `NodeTimeoutError` re-throw in `player.ts`/`planner.ts` — unchanged.
 - `FlowPart` / `WarnSignal` proto messages — unchanged (only the `game.proto:451-453` **comment** is reconciled for `warn`, FR-012 — T010, a separate comment-only change).
 - `MessagePart` proto message — unchanged (the `PartCompletion` field is placed on `TextPart`/`ThinkingPart`, not on `MessagePart`).
 - `TextPart`/`ThinkingPart` proto messages — **gains the `completion` field** (§4.2). This is the single controlled proto-wire exception to FR-010.
+
+---
+
+## 7. Agent Timeout Config Entry (2026-08-14 amendment — service-config channel)
+
+**Entity**: one optional config entry consumed by the agent via the 045 SDK, addressing (`agent_timeouts`, `timeouts`). Declared in `projects/game/agent/service.yaml` top-level `configs` (schema: [045 yaml-schema.md §1](../../045-deploy-config/contracts/yaml-schema.md)); selected per-artifact in deploy.yaml (`configs: [agent_timeouts]`, selection-only — [045 yaml-schema.md §2](../../045-deploy-config/contracts/yaml-schema.md)).
+
+### 7.1 Fields
+
+| Field | Type | Default (code) | Constraints | Consumed by |
+|---|---|---|---|---|
+| `streamIdleTimeoutMs` | number (ms) | `120_000` | finite, `> 0`; honored **as-is** (no 60s clamp — the clamp is env-scoped, [idle-timeout-contract.md](../contracts/idle-timeout-contract.md) §1) | `resolveStreamIdleTimeout` base when config-explicit (floor suppressed) |
+| `toolHeartbeatIntervalMs` | number (ms) | `10_000` | finite, `> 0`; MUST be `<` resolved `streamIdleTimeoutMs` (else startup throw) | `withIdleHeartbeat` cadence |
+| `initTurnTimeoutMs` | number (ms) | `120_000` | finite, `> 0` | `runInitTurn` total bound (`session-team.ts`) |
+
+Omitted fields keep their code defaults (SDK deep-merge over `DEFAULT_AGENT_TIMEOUTS` semantics — [045 sdk-js.md](../../045-deploy-config/contracts/sdk-js.md)).
+
+### 7.2 Resolution matrix (per parameter)
+
+| Priority | Source | Semantics |
+|---|---|---|
+| 1 | env (`GAME_STREAM_IDLE_TIMEOUT_MS` / `GAME_INIT_TURN_TIMEOUT_MS`) | explicit deploy-time operator knob; idle values `< 60_000` clamp to `120_000` (FR-001, env-scoped) |
+| 2 | config entry field (when the block is selected) | explicit service-definition knob; as-is; suppresses the reasoning floor for the idle parameter |
+| 3 | code default | 120s / 10s / 120s; the only tier the reasoning floor applies to (`max(default, floor)`) |
+
+`STREAM_IDLE_TIMEOUT_EXPLICIT` = tier 1 OR tier 2 supplied the idle value (env set, or config entry present with `streamIdleTimeoutMs`).
+
+### 7.3 Shipped values & selection
+
+The shipped block carries **test-grade** values for the stall-recovery suite — `streamIdleTimeoutMs: 5000`, `toolHeartbeatIntervalMs: 2000` (init-turn omitted → default) — selected ONLY by `projects/game/testplan/deploy_agent_stall.yaml` (agent_test artifact). Production (`projects/game/deploy.yaml`) and the standard suite (`deploy_agent.yaml`) select nothing → code defaults, behavior identical to pre-amendment.
+
+### 7.4 Absence semantics
+
+Block unselected, `DOMINION_CONFIG_DIR` unset, OR the entry file unparseable → `loadAgentTimeoutOverrides()` returns `undefined` → defaults. The SDK throws the same `Error` type for all three conditions ([045 sdk-js.md](../../045-deploy-config/contracts/sdk-js.md) §1), so all are uniformly treated as absence (not misconfiguration — production legitimately selects nothing; see [idle-timeout-contract.md](../contracts/idle-timeout-contract.md) §5 for the malformed-file tradeoff and its downstream loud failure in the stall suite's bracket assertions).

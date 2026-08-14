@@ -163,6 +163,65 @@ The spec's own `### Decisions resolved from the survey` and `### Session 2026-08
 
 ---
 
+## R9. T012 heartbeat false-stall — root-cause investigation (2026-08-14, post-enabler)
+
+**Context**: [large-test-status.md](large-test-status.md) §2 — `TestAgentStallToolExecutionNotFalselyDetected` (043 US3) failed in env `game.ltum8zvw`: a `NodeTimeoutError(idle)` fired at ~60s during a 65s tool wait that the client-side heartbeat (`withIdleHeartbeat`, 10s cadence) was supposed to bridge. Root cause was left unconfirmed ((a) real agent bug vs (b) test-config limitation).
+
+**Signoz evidence (queried 2026-08-14)**: trace `843f54736610e7cee177f6646a75b7cc` spans have **expired** from the trace store (empty result). The log store retains 7 records for that trace: `operation bridge sink registered` at `2026-08-13T07:06:37.185Z` → `connect stream ended` + `operation bridge sink unregistered` at `07:07:42.31Z` (+65.1s), and proxy `connect team: bind failed — rpc error: code = Canceled desc = context canceled` at `07:07:42.30Z` — consistent with a false stall firing at ~60s and tearing down the turn before the 65s desktop reply. Critically, a whole-env query (`service.name='game/agent' AND body CONTAINS timeout|stall|idle|heartbeat`) returns **zero records**: the agent logs neither heartbeat ticks nor stall/timeout events. **(a) vs (b) is NOT discriminable from the stale run.**
+
+**Mechanics audit (`@langchain/langgraph@1.4.8`, `node_modules/@langchain/langgraph/dist/pregel/timeout.js`)**:
+
+- `TimedAttemptScope.touch()` refreshes `lastProgress` **unconditionally** (the `refreshOn` gate applies only to `autoTouch`); `wrapped.heartbeat` calls `touch()` whenever `policy.idleTimeout !== undefined`.
+- The idle watchdog is a self-rescheduling check: `checkIdle` computes `remaining = lastProgress + idleMs − now`; on `remaining > 0` it re-arms `setTimeout(checkIdle, remaining)`. A 10s heartbeat cadence against a 60s window **cannot mathematically elapse** — every timer fire sees ≥50s remaining.
+- Wiring is intact: `withIdleHeartbeat` wraps BOTH production MCP paths (`projects/game/agent/src/llm.ts:386` saolei, `:426` memory); langchain's ToolNode spreads `...config` into the tool invoke (`node_modules/langchain/dist/agents/nodes/ToolNode.js:229-241`) so `config.heartbeat` reaches the wrapper, and the wrapper drives its own `setInterval` regardless of what the inner MCP call does with the config.
+
+**Conclusion**: static analysis cannot reproduce the failure. The observed signature (fire at ≈ node-start + 60s, i.e. as if `lastProgress` never advanced past the pre-tool auto-touch) matches "heartbeats stopped reaching the scope after the first refresh" — and the 15s-scale pass (where ONE tick at T=10s sufficed) vs the 60s-scale fail (where REPEATED ticks are required) is consistent with an interval that stops after its first tick. But there is no log evidence either way.
+
+**Decision**: three-part resolution, executed together in the resume scope:
+
+1. **Observability first**: add per-tick structured logging to `withIdleHeartbeat` (`@dominion/common-js-logs` `info`, mirroring fake-llm's 046 FR-018 per-chunk log pattern) so any recurrence is directly attributable in signoz: ticks present + false stall → the `touch()`→`checkIdle` path is broken (LangGraph contract issue); ticks absent → the wrapper's timer lifecycle is broken (agent bug).
+2. **Short-scale re-run**: with R10's controlled config (5s idle / 2s heartbeat / 12s tool delay — six heartbeat ticks inside the wait), a recurrence fails in ~5s instead of ~60s, making the debug loop fast.
+3. **Contingency branch** (only if the false stall recurs with ticks logged): inspect the failing trace via signoz; fix at the identified layer; re-run until green (Constitution VI).
+
+Note: the failing run (2026-08-13 07:07) used the **pre-046** fake-llm (046 landed 2026-08-14 03:40+); 046 preserves legacy template behavior byte-for-byte (046 FR-007/SC-004), so the heartbeat failure predates and is unaffected by 046.
+
+---
+
+## R10. Service-config channel for agent timeouts (045 integration, 2026-08-14)
+
+**Decision**: introduce a **single test-grade config block** consumed by the agent, with per-parameter resolution `env (explicit, clamped) > service config (explicit, as-is) > code default`:
+
+- `projects/game/agent/service.yaml` declares block **`agent_timeouts`**, entry **`timeouts`** (type `yaml`), fields `streamIdleTimeoutMs` / `toolHeartbeatIntervalMs` / `initTurnTimeoutMs` (numbers, ms). Shipped values are **test-grade** (`5000` / `2000` / default) — selected ONLY by the stall deploy; production and standard deploys select nothing and keep code defaults.
+- New `projects/game/agent/src/agent-timeouts.ts`: `DEFAULT_AGENT_TIMEOUTS` (120s / 10s / 120s), `loadAgentTimeoutOverrides()` (readConfig in try/catch → `undefined` when the block is not selected or `DOMINION_CONFIG_DIR` is unset — a **deliberate divergence** from 045 US3.3's "error on unselected block": the agent treats the block as an optional override channel, since production must run without it), and pure `resolveAgentTimeouts(env, overrides)` implementing the precedence matrix + the heartbeat<idle fail-fast validation.
+- `llm.ts` keeps its exported constant names (`STREAM_IDLE_TIMEOUT_MS`, `STREAM_IDLE_TIMEOUT_EXPLICIT` — now true when **env OR config** supplies the idle value — `INIT_TURN_TIMEOUT_MS`, `TOOL_HEARTBEAT_INTERVAL_MS`) sourced from the resolver, so `reasoning-timeouts.ts` and all downstream imports stay unchanged.
+- `deploy_agent_stall.yaml`: drop `GAME_STREAM_IDLE_TIMEOUT_MS` env; add `configs: [agent_timeouts]` to the `agent_test` artifact.
+
+**Semantics rationale**:
+
+- **Config = explicit operator configuration.** Selecting a block is a deliberate, code-reviewed deploy-time act; honoring it as-is (even below a floor, even below 60s) matches FR-003's "explicit operator choice wins" exactly as the env channel does. Consequently the reasoning floor is suppressed whenever the idle timeout comes from env or config — the floor only ever raises the **code default**.
+- **The 60s minimum clamp stays env-scoped.** FR-001's clamp is a typo-guard for the raw env channel; config values are committed, auditable declarations (045 FR-008 selection-only), a different trust tier. This is the precise relaxation that unblocks fast large tests.
+- **Heartbeat < idle validation**: resolved heartbeat ≥ resolved idle throws at startup (fail-fast with guidance), because the invariant (`llm.ts` `TOOL_HEARTBEAT_INTERVAL_MS` doc) is load-bearing for 043 FR-003.
+
+**Alternatives rejected**:
+
+- **Multi-block cascade** (production block + test block, agent reads test-first): production already has the env channel for ops tuning; the cascade adds resolution complexity for zero present value. Revisit if production adopts config-driven tuning.
+- **Testplan-local service.yaml variant**: duplicates the whole service definition per test deploy — anti-pattern; values would drift from the real service.
+- **Keeping the env channel and lowering the clamp**: violates FR-001's false-positive-regime guard for raw env input; the config channel isolates test-grade values to a reviewed file instead.
+
+**Verification**: unit — `resolveAgentTimeouts` matrix (env-only clamp, config as-is incl. <60s, env>config precedence, floor suppression via `STREAM_IDLE_TIMEOUT_EXPLICIT`, heartbeat≥idle throws, absent block → defaults); large — the stall suite runs green at the config-driven timings.
+
+---
+
+## R11. SC-005 re-evaluation after 046 (spec-owner decision still pending)
+
+The A4 rationale (dropped US2 floor large-test case) rested on two legs: (1) the explicit deploy env suppresses the floor; (2) "fake-llm has no recoverable-silence template". **Leg (2) is now false** — 046 shipped `think-interrupt-gap` (finite resumable mid-thinking gap, `projects/game/fake-llm/service/testdata/stall_recovery.yaml`; 046 初始 90s，[tasks.md](tasks.md) T019 缩至 15s 以匹配 config 驱动的 5s 窗口). Leg (1) still holds for ANY explicit idle source (env or config, per FR-003/R10), so a floor large-test requires the **default path** (env+config unset → effective `max(120s, floor)`), i.e. a >120s silent gap observed to NOT fire.
+
+Cost re-assessment of option γ: `deploy_agent.yaml` (standard suite) already runs the default topology — **no new deploy needed**; the case rides an existing standard-suite module file with a deepseek profile and a ~150s-gap template (~3min case). γ's earlier rejection ("high cost; essentially tests LangGraph's contract") is therefore substantially weaker, though the >120s wall time remains.
+
+**Status**: α (unit-level substitution + quickstart note) remains the recorded default; γ is drafted as an OPTIONAL task in [plan.md](plan.md) (resume scope), gated on the spec owner's ruling. β (reword SC-005) untouched. See [large-test-status.md](large-test-status.md) §4.
+
+---
+
 ## Summary of resolved unknowns
 
 | Unknown | Resolution | Section |
@@ -175,5 +234,8 @@ The spec's own `### Decisions resolved from the survey` and `### Session 2026-08
 | Merge rules | text/reasoning → AIMessage content; tool_result → ToolMessage; unmatched tool_call dropped | R6 |
 | Multi-node partitioning | Filter by `NodeTimeoutError.node`; write only the stalled node's channel | R7 |
 | WarnSignal rendering + proto | Formalize existing ⚠ bubble; update proto comment; interrupted flag survives reconnect | R8 |
+| T012 heartbeat false-stall root cause | Not discriminable from stale telemetry (no heartbeat logs existed); per-tick logging + short-scale re-run is the discriminator; contingency branch defined | R9 |
+| Timeout params → service config (045) | Single test-grade block `agent_timeouts`; env > config > default; config as-is (no clamp), floor-suppressing, heartbeat<idle fail-fast | R10 |
+| SC-005 post-046 | α stands by default; γ now cheap-ish (default topology + resumable-silence template exist) — spec-owner ruling pending | R11 |
 
-All plan-level unknowns are resolved (R4 is an empirical spike with a clear expected outcome and a documented contingency). No `NEEDS CLARIFICATION` remains.
+All plan-level unknowns are resolved (R4 is an empirical spike with a clear expected outcome and a documented contingency; R9's (a)/(b) split is resolved *procedurally* — observability + short-scale rerun — rather than from stale data; R11's α/β/γ is a recorded spec-owner decision, defaulting to α). No `NEEDS CLARIFICATION` remains.

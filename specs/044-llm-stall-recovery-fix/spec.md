@@ -4,7 +4,7 @@
 
 **Created**: 2026-08-12
 
-**Status**: Draft
+**Status**: In Implementation (resume — Phases 1–4 delivered; large-test acceptance pending, see [large-test-status.md](large-test-status.md))
 
 **Input**: User description: "为 `survey/llm-stream-stall-recovery-revision.md` 当中提到的两个问题修复制定 spec" — fix the two production problems observed after [Feature 043](../043-llm-stream-stall-recovery/spec.md) shipped: (1) stall detection fires far too frequently on reasoning-heavy scenarios, and (2) already-streamed agent output is permanently lost from the checkpoint when a stall terminates a turn.
 
@@ -65,6 +65,12 @@ The survey (`survey/llm-stream-stall-recovery-revision.md` §9) posed six open q
 
 - Q: When partial output is persisted after a stall, should it become part of the model's conversation context on the next turn (model-visible, enabling continuity) or be user-visible-only (excluded from the model's input)? → A: **Model-visible** — persist into the per-agent message channel so the model sees its own truncated reply on the next turn and can continue from it (continuity); `ListMessages` naturally returns it. Chosen for simplicity (no separate display-only channel or input filter) and because it lets "继续游戏" resume the interrupted thought; confusion risk is mitigated by the interrupted-block marker (FR-005) and by dropping partial tool calls (FR-006).
 - Q: How should the "incomplete" marker on persisted partial output be carried, given the `warn` (WarnSignal) bubble is a transient FlowPart that does not survive reconnection? → A: **Per-block machine-readable metadata flag (Option A).** The flag marks ONLY the specific content block (text or thinking) that was mid-stream at the moment of stall — typically the last block of the partial; earlier fully-streamed blocks in the same turn are NOT marked. The desktop renders an "interrupted" indicator on the flagged block. Real-time notice still uses the ⚠ `warn` bubble. Additionally: **standardize the desktop's WarnSignal rendering** — render every `warn` as a conversation ⚠ bubble (the current idleTimeout-style rendering), reconciling [Feature 023](../023-saolei-mcp-refine/spec.md)'s "FlowParts never rendered as conversation entries" statement (warn is the documented exception).
+
+### Session 2026-08-14
+
+- Q: 大型测试被 deploy 侧无法提供受控短超时阻塞（[large-test-status.md](large-test-status.md) §2 — env 通路的 60s 下限使 stall/heartbeat 用例被迫 ≥60s 等待，且 heartbeat 间隔无任何配置通道）。045（deploy config）与 046（fake-llm think chunking）落地后，如何让大型测试以受控短超时运行？ → A: **为 agent 增加 service-config 配置通道**（用户指示）：`service.yaml` 声明配置块 `agent_timeouts`（条目 `timeouts`，字段 `streamIdleTimeoutMs`/`toolHeartbeatIntervalMs`/`initTurnTimeoutMs`），deploy 按名选择；agent 经 045 JS SDK 读取。解析优先级 **env（显式，带 60s clamp）> config（显式，as-is）> 代码默认（120s/10s/120s）**；FR-001 的 60s 下限**仅作用于 env 通道**（防手误），config 值是代码评审过的声明、允许测试档短值；任一显式来源（env 或 config）抑制 reasoning floor（与 FR-003 "显式配置 as-is" 语义一致）；heartbeat ≥ idle 时启动期报错。生产部署不选择该块 → 行为与本次修订前完全一致。详见 [contracts/idle-timeout-contract.md](contracts/idle-timeout-contract.md) §5。
+- Q: 心跳大型测试（043 US3）在 60s 重基线后出现 false stall（trace `843f5473...`），根因（agent bug vs 测试设计限制）未能从既有遥测裁定（agent 无心跳/超时日志）。 → A: **先可观测、后短窗口重跑**：为 `withIdleHeartbeat` 增加 per-tick 结构化日志（对齐 046 FR-018 模式），在 config 驱动的短窗口（5s idle / 2s heartbeat）重跑 —— 若复发，tick 日志直接指认层面（tick 在→LangGraph touch 路径；tick 停→wrapper 定时器生命周期），修复后重跑直至全绿（宪章 VI）。
+- Note: SC-005 的 α/β/γ 裁决仍属 spec owner（[large-test-status.md](large-test-status.md) §4）；046 使 γ 成本显著下降（可恢复静默模板已存在、默认拓扑现成），但默认工作假设仍为 α。
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -153,7 +159,7 @@ When a stall terminates a turn mid-reply, the portion of the agent's output that
 
 **Configuration**
 
-- **FR-008**: The default idle period (FR-001) and the reasoning-model floor set (FR-002) MUST be configurable. The default MUST work sensibly without explicit configuration; the reasoning-floor set MUST be explicit and auditable (so operators can see which models receive extended tolerance). An operator's explicit idle-period configuration MUST always take precedence over both the default and the floor (per FR-003).
+- **FR-008**: The default idle period (FR-001) and the reasoning-model floor set (FR-002) MUST be configurable. The default MUST work sensibly without explicit configuration; the reasoning-floor set MUST be explicit and auditable (so operators can see which models receive extended tolerance). An operator's explicit idle-period configuration MUST always take precedence over both the default and the floor (per FR-003). *(Amended 2026-08-14, per Clarifications Session 2026-08-14)*: explicit idle-period configuration comprises **two tiers** — the environment variable `GAME_STREAM_IDLE_TIMEOUT_MS` (subject to FR-001's 60-second minimum, which guards this raw channel against accidental false-positive-regime values) and the **service-config entry** `agent_timeouts/timeouts` declared in `projects/game/agent/service.yaml` and selected per-artifact by a deploy ([Feature 045](../045-deploy-config/spec.md) mechanism). A service-config value is an explicit, code-reviewed operator declaration: it MUST be honored as-is (no 60s clamp; the heartbeat interval and init-turn timeout gain the same config tier), it suppresses the reasoning floor exactly as an explicit environment value does, and it MUST fail fast at startup when the resolved heartbeat interval is not shorter than the resolved idle timeout. When both tiers are set, the environment variable MUST win. A deployment that selects no config block MUST behave identically to before this amendment.
 
 **Scope Boundaries**
 

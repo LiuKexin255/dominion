@@ -81,6 +81,11 @@ Behavior: emit role+reasoning delta, then block until caller cancels (sugar for 
 
 ### 3.3 Think interruption via long finite gap (US1.3) — NEW
 
+> **044 cross-feature note (2026-08-14)**: the shipped testdata value of the second
+> gap is rescaled by [044 tasks.md T019](../../044-llm-stall-recovery-fix/tasks.md)
+> from `"90s"` to `"15s"` to match 044's config-driven 5s idle window (the gap only
+> needs to exceed the consuming detector's window; the shape below is unchanged).
+
 ```yaml
 name: think-interrupt-gap
 keywords: [think interrupt gap]
