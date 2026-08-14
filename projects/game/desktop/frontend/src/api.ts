@@ -44,7 +44,7 @@ export interface Session {
 
 // Team is the execution subject of a session: a per-template set of agents
 // (replaces the old single-agent `Agent`; spec 031-team-template-mode
-// data-model.md §1.3). Returned by getTeam/createTeam.
+// data-model.md §1.3). Returned by getTeam/updateTeam.
 export interface Team {
   name: string
   sessionId: string
@@ -94,6 +94,17 @@ export enum ToolResultStatus {
   FAILED = 2,
 }
 
+// PartCompletion describes whether a content part was fully produced or
+// truncated mid-stream. Mirrors proto PartCompletion (values prefixed with the
+// enum name per AIP-126). INTERRUPTED marks the tail content block of a
+// partial reply persisted after a stream stall
+// (specs/044-llm-stall-recovery-fix/spec.md FR-005); a complete part carries
+// no completion field (protojson omits the zero value).
+export enum PartCompletion {
+  UNSPECIFIED = 0,
+  INTERRUPTED = 1,
+}
+
 // ─── Content Part Model (spec 023 content-model split) ─────────────────────
 //
 // The content model is split into two disjoint categories
@@ -110,10 +121,17 @@ export enum ToolResultStatus {
 
 export interface TextPart {
   content: string
+  // completion arrives as the proto enum name string
+  // (e.g. "PART_COMPLETION_INTERRUPTED") under protojson; absent for a
+  // complete part (protojson omits the zero value) — see partInterrupted.
+  completion?: PartCompletion | string
 }
 
 export interface ThinkingPart {
   content: string
+  // Same wire semantics as TextPart.completion
+  // (specs/044-llm-stall-recovery-fix/data-model.md §4.2).
+  completion?: PartCompletion | string
 }
 
 // ImagePart arrives as protojson: encoding is the enum name string
@@ -270,6 +288,23 @@ export function classifyToolResultStatus(
     default:
       return 'neutral'
   }
+}
+
+// partInterrupted reports whether a content part carries the 044 "interrupted"
+// marker — the tail content block of a partial reply persisted after a stream
+// stall (specs/044-llm-stall-recovery-fix/spec.md FR-005/FR-013). The marker
+// rides the wire-layer proto `completion` field on TextPart/ThinkingPart
+// (data-model.md §4.2); this reads the active text/thinking variant. Accepts
+// both the protojson enum-name string "PART_COMPLETION_INTERRUPTED" and the
+// numeric enum form, mirroring classifyToolResultStatus (protojson emits the
+// enum name by default but may emit the integer under the "emit enums as
+// integers" option — https://protobuf.dev/programming-guides/json/#json-options).
+// A normal part (absent field / UNSPECIFIED) is NOT interrupted.
+export function partInterrupted(part: MessagePart): boolean {
+  const completion = part.text?.completion ?? part.thinking?.completion
+  if (completion == null) return false
+  if (typeof completion === 'number') return completion === PartCompletion.INTERRUPTED
+  return completion === 'PART_COMPLETION_INTERRUPTED'
 }
 
 // ─── Control Signals (FlowPart kinds; never persisted to history) ──────────
@@ -447,9 +482,10 @@ interface WailsApp {
   GetSession(template: string, sessionID: string): Promise<Session>
   DeleteSession(template: string, sessionID: string): Promise<void>
   GetTeam(template: string, sessionID: string): Promise<Team>
-  CreateTeam(template: string, sessionID: string, profile: string): Promise<Team>
+  UpdateTeam(template: string, sessionID: string, profile: string, updateMaskPaths: string[], allowMissing: boolean): Promise<Team>
   ListWindows(): Promise<WindowRef[]>
   SetSelectedWindow(hwnd: number): Promise<void>
+  GetSelectedWindow(): Promise<number>
   CaptureScreenshot(): Promise<CapturedImage>
   Connect(template: string, sessionID: string): Promise<string>
   CloseAgent(): Promise<void>
@@ -522,14 +558,21 @@ export async function getTeam(template: string, sessionID: string): Promise<Team
   return a.GetTeam(template, sessionID)
 }
 
-// createTeam explicitly creates the per-session singleton Team (AIP-133 —
-// the ONLY Team creation point, FR-033). profile is the TeamProfile full
-// resource name (templates/{template}/profiles/{profile}); repeated create
-// with the same profile is idempotent (api-contract §2.2 idempotency note).
-export async function createTeam(template: string, sessionID: string, profile: string): Promise<Team> {
+// updateTeam materializes or updates the per-session singleton Team (AIP-134
+// create-or-update + AIP-156 — the ONLY Team creation point, FR-001). profile
+// is the TeamProfile full resource name (templates/{template}/profiles/{profile});
+// allowMissing=true materializes the Team when it does not exist yet and
+// repeated calls are idempotent (FR-002).
+export async function updateTeam(
+  template: string,
+  sessionID: string,
+  profile: string,
+  updateMaskPaths: string[],
+  allowMissing: boolean,
+): Promise<Team> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.CreateTeam(template, sessionID, profile)
+  return a.UpdateTeam(template, sessionID, profile, updateMaskPaths, allowMissing)
 }
 
 /** @deprecated Use chat-based interfaces instead. */
@@ -543,6 +586,12 @@ export async function setSelectedWindow(hwnd: number): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.SetSelectedWindow(hwnd)
+}
+
+export async function getSelectedWindow(): Promise<number> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.GetSelectedWindow()
 }
 
 export async function captureScreenshot(): Promise<CapturedImage> {

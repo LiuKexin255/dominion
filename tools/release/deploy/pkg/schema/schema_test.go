@@ -294,6 +294,48 @@ services:
       name: service
 `),
 		},
+		{
+			name: "valid deploy yaml with artifact configs",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      configs:
+        - service_config
+`),
+		},
+		{
+			name: "deploy yaml rejects duplicate config selection",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      configs:
+        - service_config
+        - service_config
+`),
+			wantErr: true,
+		},
+		{
+			name: "deploy yaml rejects config selection with uppercase",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      configs:
+        - Service_Config
+`),
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -502,6 +544,162 @@ artifacts:
     ports:
       - name: grpc
         port: 50051
+`),
+			wantErr: true,
+		},
+		{
+			name: "valid service yaml with configs",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        value: |
+          message: "hello from config"
+          times: 3
+        type: yaml
+      - name: limits
+        value: '{"maxConn": 100}'
+        type: json
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+    ports:
+      - name: grpc
+        port: 50051
+`),
+		},
+		{
+			name: "service yaml rejects config entry unknown field",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        valu: "hello"
+        type: yaml
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects config block unknown field",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    extra: true
+    data:
+      - name: greeting
+        value: "hello"
+        type: yaml
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects config type not json or yaml",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        value: "hello"
+        type: toml
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects empty config data",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    data: []
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects config block name with uppercase",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: Service_Config
+    data:
+      - name: greeting
+        value: "hello"
+        type: yaml
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects config entry name with invalid character",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    data:
+      - name: greeting!
+        value: "hello"
+        type: yaml
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects config entry missing value",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        type: yaml
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects config entry missing type",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        value: "hello"
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
 `),
 			wantErr: true,
 		},

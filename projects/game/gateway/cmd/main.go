@@ -4,7 +4,7 @@
 //
 // Routes:
 //   - /api/v1/* → grpc-gateway (SessionService + TeamService unary RPCs:
-//     CreateTeam/GetTeam/ListMessages/RefreshTeam per
+//     UpdateTeam/GetTeam/ListMessages/RefreshTeam per
 //     projects/game/game.proto HTTP annotations, AIP-127)
 //   - /api/v1/templates/{template}/sessions/{session}/connect → WebSocket
 //     (TeamService.Connect stream; the WebSocket endpoint mirrors the Team
@@ -80,6 +80,16 @@ func main() {
 		log.Fatalf("prompt dial: %v", err)
 	}
 
+	// memoryConn hosts the MemoryService — the planner's long-term memory
+	// (spec 039-planner-memory-calibration FR-006). Registered on the gateway
+	// so the /api/v1/templates/{template}/sessions/{session}/memories surface
+	// is reachable through the public HTTP entry (the 039 large tests verify
+	// memory persistence/pagination through it — spec quickstart.md 场景 2).
+	memoryConn, err := grpc.NewClient(solver.URI(gameconst.MemoryTarget), clientOpts...)
+	if err != nil {
+		log.Fatalf("memory dial: %v", err)
+	}
+
 	// 2. Create grpc-gateway mux and register handlers for unary RPCs.
 	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
 
@@ -92,6 +102,9 @@ func main() {
 	}
 	if err := game.RegisterPromptServiceHandler(ctx, gwmux, promptConn); err != nil {
 		log.Fatalf("register prompt handler: %v", err)
+	}
+	if err := game.RegisterMemoryServiceHandler(ctx, gwmux, memoryConn); err != nil {
+		log.Fatalf("register memory handler: %v", err)
 	}
 
 	// 3. Create root HTTP mux with path-based routing.
@@ -123,6 +136,7 @@ func main() {
 	b.Register(bootstrap.GRPCConn("session", sessionConn))
 	b.Register(bootstrap.GRPCConn("team", teamConn))
 	b.Register(bootstrap.GRPCConn("prompt", promptConn))
+	b.Register(bootstrap.GRPCConn("memory", memoryConn))
 	b.Register(bootstrap.HTTPServer("http", srv))
 	log.Fatal(b.Run(context.Background()))
 }

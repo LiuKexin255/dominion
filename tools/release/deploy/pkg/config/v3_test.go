@@ -70,6 +70,11 @@ func TestParseV3ServiceConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "accepts version 3.0 with configs",
+			path:    filepath.Join(root, "testdata", "service.configs.yaml"),
+			wantErr: false,
+		},
+		{
 			name:    "rejects no version",
 			path:    filepath.Join(root, "testdata", "service-v2-no-version.yaml"),
 			wantErr: true,
@@ -78,6 +83,12 @@ func TestParseV3ServiceConfig(t *testing.T) {
 		{
 			name:    "rejects version 2.0",
 			path:    filepath.Join(root, "testdata", "service-v2-explicit.yaml"),
+			wantErr: true,
+			errSub:  "version",
+		},
+		{
+			name:    "rejects version 2.0 with configs",
+			path:    filepath.Join(root, "testdata", "service.configs-v2.yaml"),
 			wantErr: true,
 			errSub:  "version",
 		},
@@ -101,5 +112,20 @@ func TestParseV3ServiceConfig(t *testing.T) {
 				t.Errorf("ParseV3ServiceConfig() Version = %q, want %q", got.Version, "3.0")
 			}
 		})
+	}
+}
+
+// TestParseV3ServiceConfig_Configs 版本门禁（R8，见 specs/045-deploy-config/research.md R8）：
+// version "3.0" 且含 configs 的 service.yaml 经 ParseV3ServiceConfig 解析通过并保留配置块池
+// （ParseV3ServiceConfig 委托 ParseServiceConfig，config 校验自动生效，v3.go 无代码改动）。
+func TestParseV3ServiceConfig_Configs(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	got, err := ParseV3ServiceConfig(filepath.Join(root, "testdata", "service.configs.yaml"))
+	if err != nil {
+		t.Fatalf("ParseV3ServiceConfig() failed: %v", err)
+	}
+	if len(got.Configs) != 2 {
+		t.Errorf("ParseV3ServiceConfig() Configs len = %d, want 2", len(got.Configs))
 	}
 }

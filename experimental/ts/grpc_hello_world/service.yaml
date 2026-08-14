@@ -6,6 +6,15 @@ desc: grpc-js hello world TypeScript service
 ports:
   - name: grpc
     port: 50051
+# 配置块定义池（specs/045-deploy-config/contracts/yaml-schema.md §1）
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        value: |
+          message: "hello from ts config"
+          times: 3
+        type: yaml
 artifacts:
   - name: service
     target: :cmd_image

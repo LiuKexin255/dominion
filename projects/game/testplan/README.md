@@ -51,7 +51,6 @@ YAML and decodes into:
 name: greeting
 keywords:
   - hello
-  - hi
   - greetings
 reasoning: "The user is greeting me, I should respond warmly."
 text: "Hello! How can I help you today?"
@@ -63,7 +62,10 @@ Fields:
   messages match (see §4).
 - `keywords` — case-insensitive substring triggers. At least one non-empty
   keyword is required; duplicates across files are allowed, an empty string
-  element is rejected at startup.
+  element is rejected at startup. Keep keywords long enough that no keyword is
+  a substring of another template's trigger text: the former 2-char "hi"
+  matched "t(hi)nk", so `greeting` hijacked every `think-*` trigger via the
+  alphabetical tie-break (specs/044-llm-stall-recovery-fix/tasks.md T021).
 - `reasoning` — the thinking-frame content returned to the agent.
 - `text` — the response content returned to the agent.
 
@@ -72,13 +74,19 @@ The shipped samples are:
 | file                      | name      | keywords                 | reasoning                                  | text                                |
 |---------------------------|-----------|--------------------------|--------------------------------------------|-------------------------------------|
 | `sample_chat.yaml`        | chat-only | chat, conversation       | "Responding with text only, no tools needed." | "Sure, let's chat!"              |
-| `sample_compression_player.yaml` | compress-player-summary | 已玩局数、胜负记录 | — | "已玩 5 局，其中 4 局失败。策略：优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。" |
-| `sample_compression_planner.yaml` | compress-planner-summary | 已复盘局数 | — | "已复盘 5 局，策略更新正常，每局均按新策略执行。" |
+| `sample_compact_instruction.yaml` | compact-instruction | 上下文刚被压缩 | — | — (carries a `tool_call: instruct_player`) |
+| `sample_compression_player.yaml` | compress-player-summary | 已玩局数、胜负记录 | — | "已玩 5 局，其中 4 局失败。下一局按复盘指令调整打法。" |
+| `sample_compression_planner.yaml` | compress-planner-summary | 已复盘局数 | — | "已复盘 5 局，长期记忆更新正常。" |
 | `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
-| `sample_greeting.yaml`    | greeting  | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
+| `sample_greeting.yaml`    | greeting  | hello, greetings        | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
+| `sample_init_instruction.yaml` | init-instruction | 团队初始化 | — | — (carries a `tool_call: instruct_player`) |
 | `sample_mouse_trigger.yaml` | mouse-trigger | move the mouse, position cursor | — | — (carries a `tool_call: mouse_move`) |
-| `sample_planner_strategy.yaml` | planner-update-strategy | 本局游戏过程 | — | — (carries a `tool_call: update_strategy`) |
+| `sample_planner_memory.yaml` | planner-memory-add | 本局游戏过程 | "复盘完成，本局经验值得写入长期记忆。" | — (carries a `tool_call: memory` batch add) |
+| `sample_saolei_remain.yaml` | saolei-remain | show remaining mines, saolei remain | — | — (carries a `tool_call: saolei_remain`) |
+| `sample_saolei_single_op.yaml` | saolei-single-op | single operate | — | — (carries a `tool_call: saolei_operate` single form) |
 | `sample_saolei_start.yaml` | saolei-start | start saolei, play minesweeper | — | — (carries a `tool_call: saolei_init`) |
+| `sample_saolei_structural_stop.yaml` | saolei-structural-stop | structural stop | — | — (carries a `tool_call: saolei_operate` with an out-of-bounds op) |
+| `sample_stall.yaml` | stall-mid-reasoning | stall now, simulate a stall | "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive." | — (carries `stall: true` — the stream pauses after the reasoning chunk; the `text` is NEVER delivered) |
 
 `compress-player-summary` / `compress-planner-summary` are the plain-text
 responses for the team graph's COMPRESS node (specs/037-saolei-team-optimize
@@ -88,7 +96,7 @@ prompts + the serialized channel messages. The keywords are substrings of
 those prompts' instruction lines ("已玩局数、胜负记录" / "已复盘局数"), and
 the names sort alphabetically BEFORE the configs the serialized channel text
 would otherwise match (`saolei-start` for the player channel's user text,
-`planner-update-strategy` for the planner channel's review prefix) — so the
+`planner-memory-add` for the planner channel's review prefix) — so the
 summary calls resolve deterministically to a text summary, never to a
 tool_call response (a tool_call carries empty content → compress.ts rejects
 it as a blank summary → FR-013 abort). They carry NO `reasoning:` field on
@@ -96,38 +104,54 @@ purpose: a reasoning_content-bearing response is parsed by the LangChain
 OpenAI adapter into content BLOCKS, which the compress node rejects as
 "non-string content" — text-only responses yield the plain string the
 `model.invoke` call requires (the same reason the compress node now
-normalizes content-blocks via `extractTextContent`, compress.ts).
+normalizes content-blocks via `extractTextContent`, compress.ts). The
+wording reflects the 039 architecture (spec 039 FR-013 — the shared
+StrategyStore/update_strategy flow is gone).
 
-`mouse-trigger`, `planner-update-strategy` and `saolei-start` carry a
-`tool_call` instead of text: a user turn matching their keyword makes
-fake-LLM return a `tool_calls` response so the large tests drive the real
-model→tool_call→dispatch chain (see §7). They are excluded from the random
-no-match fallback (a random tool_call would nonsensically invoke a desktop
-operation).
+`mouse-trigger`, `planner-memory-add`, `saolei-start`, `saolei-remain`,
+`saolei-single-op`, `saolei-structural-stop`, `init-instruction` and
+`compact-instruction` carry a `tool_call` instead of text: a user turn
+matching their keyword makes fake-LLM return a `tool_calls` response so the
+large tests drive the real model→tool_call→dispatch chain (see §7). They are
+excluded from the random no-match fallback (a random tool_call would
+nonsensically invoke a desktop operation).
 
-`planner-update-strategy` is the team-model fixture (spec
-031-team-template-mode): the team graph's planner agent (planner.ts) ends
-its model input with a HumanMessage rendered from the buffer's gameLog
+`stall-mid-reasoning` carries the stream-stall trigger
+(specs/043-llm-stream-stall-recovery — the T011 large test): a user turn
+matching its keyword makes fake-LLM emit the opening reasoning delta and
+then stop with the connection alive (no more data until the caller cancels
+the request — the agent's idle-timeout abort). Its `text` field is never
+delivered, and it is excluded from the random no-match fallback like the
+tool_call messages (a random stall would hang an unrelated turn).
+
+`planner-memory-add` is the team-model fixture (spec
+039-planner-memory-calibration): the team graph's planner agent (planner.ts)
+ends its model input with a HumanMessage rendered from the buffer's gameLog
 whose text always starts with the fixed prefix "本局游戏过程" (planner.ts
-buildReviewInput renders the numbered move lines "1. <tool>(coord) →
+buildReviewInput renders the numbered move lines "1. <tool>(operations) →
 status" plus each board — specs/036-team-mode-bugfix/contracts/team-graph-
-fix-contract.md §2.2) — matching that prefix makes fake-LLM return an
-`update_strategy` tool_call deterministically, so the saolei_team suite
-drives the planner→update_strategy→StrategyStore flow end-to-end
-(FR-011/FR-012/D6). The follow-up response after the tool executes lives in
-`sample_update_strategy_tools.yaml` (`update-strategy-success-text`).
+fix-contract.md §2.2; the gameLog renders saolei_operate entries per FR-004)
+— matching that prefix makes fake-LLM return a `memory` tool_call
+deterministically (the hermes-style BATCH add form, FR-008), so the
+saolei_team / memory suites drive the planner→memory→MemoryService flow
+end-to-end (FR-011/FR-012). The former update_strategy fixture
+(sample_planner_strategy.yaml, spec 031 FR-012) is gone (FR-013 — Phase 6).
+The follow-up responses after the memory / instruct_player tools execute live
+in `sample_planner_tools.yaml` (the deterministic 0-hit → multi-hit → review
+instruction chain).
 
 The tool configs in `sample_tools.yaml` (mouse/keyboard) and
-`sample_saolei_tools.yaml` (saolei init→click→update chaining) are matched
+`sample_saolei_tools.yaml` (saolei init→operate chaining) are matched
 against the `role:"tool"` messages returned by LangChain after a tool
 invocation, keyed by `tool_name` and the `match_result_contains` substrings.
-`sample_saolei_tools.yaml` additionally carries `saolei-click-terminal-text`
-(an empty-constraint config) so any `saolei_click` result that does not
-match the coordinate-tagged configs — e.g. the pre-dispatch rejections on a
-terminal board, whose bodies carry no "(x,y)" — terminates the tool loop
-with text instead of falling into the random no-match fallback (whose pool
-includes mouse tool_calls the team's player agent does not hold; FR-028).
-See `style/large_test.md` for the test organization rules and
+`sample_saolei_tools.yaml` chains every saolei_init result into ONE
+`saolei_operate` BATCH call (operations [click{3,4}, click{5,6}] — the 039
+merged dual-form tool, FR-001/FR-002) and terminates ANY saolei_operate
+result with text (the executed/skipped/stopped outcome lines carry no
+distinguishing coordinates), so the post-operate tool loop stays
+deterministic instead of falling into the random no-match fallback (whose
+pool includes mouse tool_calls the team's player agent does not hold;
+FR-028). See `style/large_test.md` for the test organization rules and
 `fake-llm/service/message_store.go` for the loader contract.
 
 ## 4. Stateless matching model
@@ -167,9 +191,11 @@ and use **distinct** keywords per turn to prove FIFO ordering.
    strings are pinned as constants in `helpers_test.go`
    (`expectedChatReasoning`, `expectedChatText`, `expectedGreetingReasoning`,
    `expectedGreetingText`, `expectedFarewellReasoning`,
-   `expectedFarewellText`) with a comment marking them as needing sync with
-   the testdata. Update those constants whenever the testdata changes, and
-   adjust any `strings.Contains` assertions that depend on them.
+   `expectedFarewellText`, `expectedStallReasoning` — the stall template's
+   reasoning, the only field it delivers) with a comment marking them as
+   needing sync with the testdata. Update those constants whenever the
+   testdata changes, and adjust any `strings.Contains` assertions that
+   depend on them.
 4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
    in `projects/game/fake-llm/service/message_store_test.go` pins the real
    embedded testdata (chat-only before compress-planner-summary before
@@ -194,6 +220,17 @@ The deployment (`deploy_agent.yaml`) stands up `mongodb`, `session`, `proxy`,
 `https://game.liukexin.com`. Test binaries read the endpoint and environment
 via `testtool.MustEndpoint` / `testtool.MustEnv` (injected by `guitar`).
 
+The stall-recovery suite (`agent-stall` in `system_test.yaml`, binary
+`agent_stall_test`) deploys through `deploy_agent_stall.yaml` — the same
+topology with the `agent_timeouts` config block (streamIdleTimeoutMs=5000,
+toolHeartbeatIntervalMs=2000) selected on the `agent_test` artifact via
+the 045 deploy-config channel. Config values bypass the env channel's
+60s clamp by design, which is how the suite gets its sub-60s idle window
+(specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5).
+The config overrides are resolved once at agent startup (module load),
+hence the block must be selected at deploy time (specs/043-llm-stream-
+stall-recovery T011; specs/044-llm-stall-recovery-fix T011 re-baseline).
+
 ## 7. Tool-call / operation-history coverage
 
 The large tests drive the real model→tool_call→dispatch chain through the
@@ -208,13 +245,16 @@ a `tool_calls` response), producing `AIMessage`-with-`tool_calls` and
   tool_call.id (spec 023 D10), plus the failed/no-screenshot recovery path
   (FR-017). The former mouse-tool dispatch tests were replaced by this suite
   (mouse tools no longer exist on the saolei template).
-- **Saolei MCP init→click→update:** `agent_saolei_test.go` drives the
-  saolei init→click→click flow with real board screenshots (spec 025
-  FR-012/FR-013/FR-022).
-- **Team strategy flow:** `saolei_team_test.go` drives a full team turn to
-  a terminal won/lost board, the planner's `update_strategy` tool_call and
-  the strategy persistence/RefreshTeam contracts (spec 031-team-template-mode
-  FR-010..FR-018).
+- **Saolei MCP init→operate:** `agent_saolei_test.go` drives the saolei
+  init→operate batch flow with real board screenshots (spec 025
+  FR-012/FR-013/FR-022; spec 039 US1 dual form + failure triage).
+- **Team memory flow:** `saolei_team_test.go` + `memory_test.go` drive a full
+  team turn to a terminal won/lost board, the planner's `memory` tool_call
+  chain (hermes-style batch add + old_text 0-hit/multi-hit replaces), the
+  persistence assertions via ListMemories through the gateway, and the
+  calibration instruction scenarios + message order (spec 039-planner-memory-
+  calibration FR-008/FR-014..FR-019). The strategy flow (spec 031
+  FR-010..FR-018) is replaced — the shared StrategyStore is gone (FR-013).
 - **US4 (operation/operation_result history):** `handler.ts:ListMessages`
   reconstruction of `operation` / `operation_result` Messages is covered at
   the **unit** level in `projects/game/agent/src/handler.test.ts`

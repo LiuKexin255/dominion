@@ -2,3 +2,4 @@ bazel-*
 .env/*
 .omo
 node_modules
+*.tsbuildinfo

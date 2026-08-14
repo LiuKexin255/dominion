@@ -65,6 +65,58 @@
         }
       }
     },
+    "configs": {
+      "type": "array",
+      "description": "所有 artifact 共享的配置块定义池（非敏感数据）",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "data"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+            "description": "配置块名"
+          },
+          "data": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "value",
+                "type"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "原始数据文本（JSON 或 YAML），非 base64"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "json",
+                    "yaml"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "artifacts": {
       "type": "array",
       "description": "服务产物 target 列表，必须为 oci_image 对象，并且以 {artifact}_push 作为推送 target",

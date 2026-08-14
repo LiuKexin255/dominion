@@ -35,7 +35,7 @@
   // MODEL_OPTIONS is the frontend-hardcoded list of selectable model ids. It
   // has no contract binding with the backend: it MUST stay in sync with the
   // models actually supported by projects/game/agent/src/model-provider.ts
-  // (selecting an id the backend does not support fails later CreateTeam
+  // (selecting an id the backend does not support fails later UpdateTeam
   // model instantiation). The value format is `{provider}/{model}` per
   // specs/031-team-template-mode/data-model.md §1.5. A full solution (backend
   // serving the model list via Config) can be a future optimization.

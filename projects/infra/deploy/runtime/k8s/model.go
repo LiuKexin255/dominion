@@ -28,6 +28,25 @@ type DeploymentWorkload struct {
 	EnvType         domain.EnvironmentType
 	Env             map[string]string
 	SecretBindings  []*domain.SecretBinding
+	ConfigBlocks    []*domain.ConfigBlock
+}
+
+// configMapWorkload 描述可生成 ConfigMap 的 workload 所需信息。
+// DeploymentWorkload 与 StatefulWorkload 均实现该接口（字段一致，见
+// specs/045-deploy-config/data-model.md §5）。
+type configMapWorkload interface {
+	WorkloadName() string
+	app() string
+	serviceName() string
+	environmentName() string
+	configBlocks() []*domain.ConfigBlock
+}
+
+func (w *DeploymentWorkload) app() string             { return w.App }
+func (w *DeploymentWorkload) serviceName() string     { return w.ServiceName }
+func (w *DeploymentWorkload) environmentName() string { return w.EnvironmentName }
+func (w *DeploymentWorkload) configBlocks() []*domain.ConfigBlock {
+	return w.ConfigBlocks
 }
 
 // WorkloadName 返回 deployment 对应的资源名。
@@ -101,6 +120,14 @@ type StatefulWorkload struct {
 	EnvType         domain.EnvironmentType
 	Env             map[string]string
 	SecretBindings  []*domain.SecretBinding
+	ConfigBlocks    []*domain.ConfigBlock
+}
+
+func (w *StatefulWorkload) app() string             { return w.App }
+func (w *StatefulWorkload) serviceName() string     { return w.ServiceName }
+func (w *StatefulWorkload) environmentName() string { return w.EnvironmentName }
+func (w *StatefulWorkload) configBlocks() []*domain.ConfigBlock {
+	return w.ConfigBlocks
 }
 
 // WorkloadName 返回 statefulset 对应的资源名。

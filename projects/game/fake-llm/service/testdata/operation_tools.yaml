@@ -1,0 +1,49 @@
+# operation_tools.yaml — the keyboard/mouse tool-result responses grouped
+# by module (specs/046-fake-llm-think-chunking/data-model.md §7): each
+# entry matches a tool result by tool_name + match_result_contains and
+# either terminates the tool loop with text or chains the next tool_call.
+tools:
+  - name: keyboard-success-text
+    tool_name: keyboard
+    match_result_contains: []
+    respond_with:
+      text: "Typed successfully."
+  # mouse_move tool-result responses. mouse_move carries screenshot-relative
+  # coordinates (x_px, y_px); an out-of-bounds coordinate fails at the desktop.
+  - name: mouse-move-followup-click
+    tool_name: mouse_move
+    match_result_contains: ["button"]
+    respond_with:
+      tool_call:
+        name: mouse_click
+        arguments:
+          click_type: LEFT_CLICK
+  - name: mouse-move-oob
+    tool_name: mouse_move
+    match_result_contains: ["out of bounds"]
+    respond_with:
+      tool_call:
+        name: mouse_move
+        arguments:
+          x_px: 99999
+          y_px: 99999
+  - name: mouse-move-success-text
+    tool_name: mouse_move
+    match_result_contains: []
+    respond_with:
+      text: "I see the screen now."
+  # mouse_click tool-result responses. mouse_click carries only a click_type
+  # and fires at the current cursor position (no coordinates).
+  - name: mouse-click-button
+    tool_name: mouse_click
+    match_result_contains: ["click here"]
+    respond_with:
+      tool_call:
+        name: mouse_click
+        arguments:
+          click_type: LEFT_CLICK
+  - name: mouse-click-success-text
+    tool_name: mouse_click
+    match_result_contains: []
+    respond_with:
+      text: "Clicked successfully."

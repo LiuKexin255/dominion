@@ -73,7 +73,7 @@
 4. **Given** 一个 team 中的某个 agent（如 `player`），**When** 列出其消息历史时，**Then** 路径为 `templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}`（消息按 team 内 agent 分区，`{agent}` 为模板 schema 中已知的 agent 名称）。
 5. **Given** prompt 服务，**When** 管理 team 配置时，**Then** 资源为 `templates/{template}/profiles/{profile}`（TeamProfile），且 `AgentProfile`（`prompts/agentProfiles/*`）与 `Skill`（`prompts/skills/*`）的 RPC 及资源消息已废弃移除。
 6. **Given** API，**When** 查询模板列表时，**Then** 不存在 Template 的 List/Get/Create/Update/Delete RPC（模板为固定常量，仅作路径段）。
-7. **Given** API 客户端，**When** 经 `CreateTeam` 创建 team 时，**Then** 端点为 POST `templates/{template}/sessions/{session}/team`（AIP-133，请求携带 profile——TeamProfile 完整资源名），重复调用（profile 相同）幂等返回既有 Team（FR-033）；Team 未创建时 `GetTeam`/`Connect` 返回 NOT_FOUND（无隐式/懒加载创建）。
+7. **Given** API 客户端，**When** 经 `UpdateTeam(allow_missing=true)` 物化 team 时，**Then** 端点为 PATCH `templates/{template}/sessions/{session}/team`（[AIP-134 create-or-update](https://google.aip.dev/134#create-or-update) + [AIP-156](https://google.aip.dev/156)，body 为 Team 资源——携带 profile，TeamProfile 完整资源名），重复调用幂等返回既有 Team（FR-033）；Team 未物化时 `GetTeam`/`Connect` 返回 NOT_FOUND（无隐式/懒加载创建）。**[SUPERSEDED — see Feature 040]**: [`specs/040-team-singleton-conformance/`](../040-team-singleton-conformance/) supersedes 本场景的 CreateTeam 语义（040 FR-001/FR-002）。
 
 ---
 
@@ -171,7 +171,7 @@ desktop 将模板作为顶层控制面进行切换（使用本地模板常量，
 
 - **FR-001**: 系统 MUST 引入 Template 作为顶层资源路径段。Template 为资源（`message Template`，pattern `templates/{template}`，无任何 RPC）；具体模板值以 gameconst 常量（资源对象，当前仅 `saolei`）表示，非 proto enum、非裸 string。系统 MUST NOT 提供 Template 的 List/Get/Create/Update/Delete RPC（无模板列表 API）。
 - **FR-002**: Session 资源 MUST 嵌套于模板下，资源路径 MUST 为 `templates/{template}/sessions/{session}`；MUST NOT 保留顶层 `sessions/{session}` 路径（破坏性重构，clean break）。
-- **FR-003**: 原 Agent 资源 MUST 被 Team 资源取代：Team 资源路径 MUST 为 `templates/{template}/sessions/{session}/team`。Agent 资源消息与相关 RPC MUST 移除。Team 的创建语义见 FR-033（显式 `CreateTeam`，非隐式创建）。
+- **FR-003**: 原 Agent 资源 MUST 被 Team 资源取代：Team 资源路径 MUST 为 `templates/{template}/sessions/{session}/team`。Agent 资源消息与相关 RPC MUST 移除。Team 的创建语义见 FR-033。**[SUPERSEDED — see Feature 040]**: [`specs/040-team-singleton-conformance/`](../040-team-singleton-conformance/) FR-001 supersedes 本条的创建语义——Team 为 [AIP-156](https://google.aip.dev/156) 单例，MUST NOT 暴露 `CreateTeam`，MUST 经 `UpdateTeam(allow_missing=true)` 物化，MUST 提供 `GetTeam`。
 - **FR-004**: WebSocket 双向流连接端点 MUST 为 `templates/{template}/sessions/{session}/connect`（原 `sessions/{session}/connect` 调整）。
 - **FR-005**: Message 资源 MUST 按 team 内 agent 分区，路径 MUST 为 `templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}`，其中 `{agent}` 为模板 graph schema 中已知的 agent 名称（如 `player`/`planner`），非资源 id。消息 MUST 会话级隔离（以 session id 为作用域）。
 - **FR-006**: TeamProfile 资源 MUST 由现有 prompt 服务承接管理，路径 MUST 为 `templates/{template}/profiles/{profile}`。
@@ -224,14 +224,14 @@ desktop 将模板作为顶层控制面进行切换（使用本地模板常量，
 - **FR-031**: team 内每个 agent 在模板 graph schema 中 MUST 声明一个"是否接受用户输入"属性（布尔）。saolei 模板中 `player` MUST 声明为接受用户输入，`planner` MUST 声明为不接受用户输入。
 - **FR-032**: desktop MUST 仅对声明为接受用户输入的 agent 开放输入；声明为不接受用户输入的 agent（saolei 的 `planner`）其 tab MUST 屏蔽输入（仅作该 agent 消息流的观察视图）。用户输入 MUST 路由给当前选中且接受用户输入的 agent。
 
-#### Team 显式创建（CreateTeam）
+#### Team 单例物化（UpdateTeam；原 CreateTeam 方案被 040 supersede）
 
-- **FR-033**: Team MUST 经 `CreateTeam` RPC 显式创建（AIP-133）：请求 MUST 携带 parent（Session 资源名 `templates/{template}/sessions/{session}`）与 profile（TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`，其 template 段 MUST 与 parent 一致，由 handler 校验）；响应为 Team 资源。系统 MUST NOT 提供隐式/懒加载创建（如随 `Connect` 自动创建）。重复 `CreateTeam`：请求 profile 与既有 Team 创建时的 profile 相同 → MUST 幂等返回既有 Team；不同 → MUST 返回 ALREADY_EXISTS（details 携带既有 profile）。Team 未创建时，`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` MUST 返回 NOT_FOUND。
+- **FR-033**: Team MUST 作为 [AIP-156](https://google.aip.dev/156) 单例，MUST NOT 暴露 `CreateTeam` 标准方法；MUST 经 `UpdateTeam(allow_missing=true)` 物化（[AIP-134 create-or-update](https://google.aip.dev/134#create-or-update)）：请求体为 Team 资源（`name` = `templates/{template}/sessions/{session}/team` 与 profile——TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`，其 template 段 MUST 与 `team.name` 一致，由 handler 校验）；响应为 Team 资源。系统 MUST NOT 提供隐式/懒加载创建（如随 `Connect` 自动创建）。对未物化 Team：`allow_missing=true` → 物化之；`allow_missing=false` → NOT_FOUND（AIP-134 标准 Update 语义）。对已物化 Team：profile 相同 → MUST 幂等返回既有 Team；profile 不同 → MUST 重建 team graph 使新 profile 在下一 turn 生效（重建 MUST 保留会话既有对话与游戏状态；turn 进行中 → FAILED_PRECONDITION）。Team 资源体 MUST 暴露 `profile` 字段（其当前所基于的 TeamProfile 全名）。Team 未物化时，`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` MUST 返回 NOT_FOUND。**[SUPERSEDED — see Feature 040]**: [`specs/040-team-singleton-conformance/`](../040-team-singleton-conformance/) supersedes 本条——最终契约（含行为矩阵、校验、并发与 owner 语义）见 040 [`spec.md`](../040-team-singleton-conformance/spec.md) FR-001~FR-009 与 [`contracts/api-contract.md`](../040-team-singleton-conformance/contracts/api-contract.md) §2；原"不同 profile → ALREADY_EXISTS"的 AIP-133 偏离被 040 FR-007 移除。
 
 ### Key Entities *(include if feature involves data)*
 
 - **Template**：顶层资源路径段，对应一套 graph schema 及配套组件。资源消息（`message Template`，pattern `templates/{template}`），无 CRUD/List RPC；具体值以 gameconst 常量表示（当前仅 `saolei`）。是 API 资源层级的根。
-- **Team**：会话内的多 agent 执行主体，取代原 Agent 资源（`templates/{template}/sessions/{session}/team`）。一个 Team 对应模板的一个 StateGraph 实例，含若干按模板 schema 定义的 agent（saolei 为 `player`+`planner`）。**经 `CreateTeam` 显式创建（FR-033，请求携带 profile 构建 team）**，非随 Connect 隐式存在。
+- **Team**：会话内的多 agent 执行主体，取代原 Agent 资源（`templates/{template}/sessions/{session}/team`）。一个 Team 对应模板的一个 StateGraph 实例，含若干按模板 schema 定义的 agent（saolei 为 `player`+`planner`）。**[SUPERSEDED — see Feature 040]**: [`specs/040-team-singleton-conformance/`](../040-team-singleton-conformance/) supersedes 本条的创建/变更语义——Team 为 [AIP-156](https://google.aip.dev/156) 单例，经 `UpdateTeam(allow_missing=true)` 物化（FR-033，body 携带 profile 构建 team），profile 可经 Update 变更（重建 graph，保留会话状态），非随 Connect 隐式存在。
 - **Agent（team 内）**：Team 中由模板 graph schema 定义的执行角色，由其名称标识（如 `player`/`planner`）。非独立资源，是消息分区与 frame 归位的维度。每个 agent 在 schema 中声明"是否接受用户输入"属性（FR-031）：`player` 独占桌面控制且接受用户输入，`planner` 每局结束复盘且不接受用户输入（desktop 屏蔽其输入）。
 - **TeamProfile**：模板特化的 team 配置资源，由 prompt 服务承接管理（`templates/{template}/profiles/{profile}`）。每个模板自有 profile 格式；saolei 的 TeamProfile 含 player/planner 模型选择与各自的 base 提示词（`player_prompt`/`planner_prompt`，可选，空值回退模板默认 base，FR-034）。
 - **Strategy（策略，长期记忆）**：player 与 planner 共享的长期记忆，以 session id 为键存储于长期记忆层，独立于短期消息。初始由 system 注入 planner，之后由 `update_strategy` 更新；player 经代码层作为"当前态势"读取。`RefreshTeam` 不影响策略。

@@ -410,6 +410,80 @@ func TestTeamFrameMessagePartsToolResultRoundtrip(t *testing.T) {
 	}
 }
 
+func TestPartCompletionEnumRoundtrip(t *testing.T) {
+	// given: content parts carrying the 044 "interrupted" marker on the wire
+	// layer — the PartCompletion enum field (specs/044-llm-stall-recovery-fix/
+	// contracts/desktop-rendering-contract.md §3; data-model.md §4.2): an
+	// interrupted text part, an interrupted thinking part, and a normal
+	// (UNSPECIFIED) text part.
+	tests := []struct {
+		name     string
+		part     *game.MessagePart
+		wantJSON string // enum-name string the protojson output must contain; "" = must omit the field
+		wantEnum game.PartCompletion
+	}{
+		{
+			name: "interrupted text part",
+			part: &game.MessagePart{Kind: &game.MessagePart_Text{Text: &game.TextPart{
+				Content:    "cut off mid",
+				Completion: game.PartCompletion_PART_COMPLETION_INTERRUPTED,
+			}}},
+			wantJSON: "PART_COMPLETION_INTERRUPTED",
+			wantEnum: game.PartCompletion_PART_COMPLETION_INTERRUPTED,
+		},
+		{
+			name: "interrupted thinking part",
+			part: &game.MessagePart{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{
+				Content:    "cut off mid",
+				Completion: game.PartCompletion_PART_COMPLETION_INTERRUPTED,
+			}}},
+			wantJSON: "PART_COMPLETION_INTERRUPTED",
+			wantEnum: game.PartCompletion_PART_COMPLETION_INTERRUPTED,
+		},
+		{
+			name: "normal text part omits the zero-value completion field",
+			part: &game.MessagePart{Kind: &game.MessagePart_Text{Text: &game.TextPart{
+				Content: "complete reply",
+			}}},
+			wantEnum: game.PartCompletion_PART_COMPLETION_UNSPECIFIED,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when: marshal to protojson, then unmarshal back
+			jsonBytes, err := protojson.Marshal(tt.part)
+			if err != nil {
+				t.Fatalf("protojson.Marshal() error: %v", err)
+			}
+			jsonStr := string(jsonBytes)
+			if tt.wantJSON != "" && !strings.Contains(jsonStr, tt.wantJSON) {
+				t.Errorf("JSON output missing completion enum name %q, got: %s", tt.wantJSON, jsonStr)
+			}
+			if tt.wantJSON == "" && strings.Contains(jsonStr, "completion") {
+				t.Errorf("JSON output should omit the zero-value completion field, got: %s", jsonStr)
+			}
+
+			got := new(game.MessagePart)
+			if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+				t.Fatalf("protojson.Unmarshal() error: %v", err)
+			}
+
+			// then: the round-tripped part carries the enum value
+			var gotCompletion game.PartCompletion
+			switch {
+			case got.GetText() != nil:
+				gotCompletion = got.GetText().GetCompletion()
+			case got.GetThinking() != nil:
+				gotCompletion = got.GetThinking().GetCompletion()
+			}
+			if gotCompletion != tt.wantEnum {
+				t.Errorf("completion: got %v, want %v", gotCompletion, tt.wantEnum)
+			}
+		})
+	}
+}
+
 func TestUserFrameFlowPartsFlowResultRoundtrip(t *testing.T) {
 	// given: an inbound UserFrame whose flow_parts payload carries a
 	// FlowResultPart (the desktop's operation-execution outcome reported on

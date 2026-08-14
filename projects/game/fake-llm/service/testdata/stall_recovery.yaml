@@ -1,0 +1,84 @@
+# stall_recovery.yaml — the stream-stall scenario family
+# (specs/046-fake-llm-think-chunking/data-model.md §7): templates that
+# simulate a mid-stream LLM stall so the stall-recovery large tests
+# (specs/043-llm-stream-stall-recovery / specs/044-llm-stall-recovery-fix)
+# can exercise the agent's idle timeout against a controlled gap.
+messages:
+  # stall-mid-reasoning simulates a mid-stream LLM stall
+  # (specs/043-llm-stream-stall-recovery — the T011 large test's trigger):
+  # the streaming handler emits the role+reasoning delta, flushes it, then
+  # blocks with the connection still alive and no further data, exactly the
+  # "TCP alive but no SSE data" failure mode the feature's idle timeout
+  # detects. The `text` below is NEVER delivered — it exists so the template
+  # is self-describing and so the store-level pin test can assert it.
+  #
+  # `stall: true` is an explicit test trigger (like tool_call Messages): the
+  # message is excluded from the no-match random fallback pool so an
+  # unrelated turn can never stall randomly.
+  - name: stall-mid-reasoning
+    keywords:
+      - stall now
+      - simulate a stall
+    reasoning: "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive."
+    text: "This text must never arrive — the stream stalls after the reasoning chunk."
+    stall: true
+  # think-interrupt-gap simulates a think interruption via a LONG FINITE gap
+  # (specs/046-fake-llm-think-chunking — contract
+  # specs/046-fake-llm-think-chunking/contracts/template-config.md §3.3,
+  # US1.3): chunk 0 (role+reasoning) immediately → 1s gap → chunk 1 →
+  # 15s gap (above the stall deploy's config-driven 5s idle window —
+  # agent_timeouts streamIdleTimeoutMs selected via
+  # deploy_agent_stall.yaml configs; under the default 120s topology the
+  # gap would NOT exceed the idle window) so the consuming stall
+  # detector fires here → chunk 2 → content → finish. Concatenating the
+  # three reasoning deltas reconstructs the full reasoning (FR-004).
+  #
+  # The 15s chunk_delays entry (non-zero delay) excludes this template
+  # from the no-match random fallback pool (FR-011 — isHangCapable) so
+  # an unrelated turn can never stall by accident.
+  - name: think-interrupt-gap
+    keywords:
+      - think interrupt gap
+    reasoning_chunks:
+      - "Analyzing the board state."
+      - "Evaluating candidate moves."
+      - "Finalizing the safest move."
+    chunk_delays: ["1s", "15s"]
+    text: "Placing the flag at (3,4)."
+  # think-interrupt-stall simulates a think interruption via a PERMANENT
+  # stall positioned mid-thinking (specs/046-fake-llm-think-chunking —
+  # contract specs/046-fake-llm-think-chunking/contracts/template-config.md
+  # §3.4, US2): chunk 0 → 1s gap → chunk 1 → permanent block (no further
+  # data, connection alive) until the caller cancels the request. The
+  # content/finish never arrive.
+  #
+  # stall_after: 1 excludes this template from the no-match random fallback
+  # pool (FR-011 — isHangCapable) so an unrelated turn can never hang by
+  # accident.
+  - name: think-interrupt-stall
+    keywords:
+      - think interrupt stall
+    reasoning_chunks:
+      - "Starting to reason about the request."
+      - "Going deeper into analysis."
+    chunk_delays: ["1s"]
+    stall_after: 1
+    text: "This answer never arrives."
+  # think-healthy-cadence proves no false stall fires for a reasoning
+  # model streaming at a normal cadence (specs/046-fake-llm-think-chunking —
+  # contract specs/046-fake-llm-think-chunking/contracts/template-config.md
+  # §3.5, US1 edge case): short 200ms gaps, all below any idle timeout, so
+  # the turn completes normally.
+  #
+  # The 200ms chunk_delays entries (non-zero delays) exclude this template
+  # from the no-match random fallback pool (FR-011 — isHangCapable), even
+  # though they are too short to trip a stall detector.
+  - name: think-healthy-cadence
+    keywords:
+      - think healthy
+    reasoning_chunks:
+      - "Step one."
+      - "Step two."
+      - "Step three."
+    chunk_delays: ["200ms", "200ms"]
+    text: "Done."

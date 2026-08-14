@@ -25,6 +25,11 @@ SAOLEI_EMBEDSRCS = [
     "testdata/saolei_9.png",
 ]
 
+# TRACECONTEXT_DEP is required by helpers_test.go (traceContext /
+# doHTTPTrace / connectAgentWSTrace — style/large_test.md §测试用例: set and
+# print trace_id via common/gopkg/otel/tracecontext).
+TRACECONTEXT_DEP = "//common/gopkg/otel/tracecontext"
+
 go_largetest(
     name = "session_test",
     size = "small",
@@ -36,6 +41,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -55,6 +61,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -74,6 +81,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -91,6 +99,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -110,6 +119,7 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -129,6 +139,39 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# memory_test is the MEMORY module large-test suite (spec
+# 039-planner-memory-calibration US2 — FR-006..FR-012/FR-018/FR-020):
+# TestMemoryServiceHttpCrudAndPagination (MemoryService CRUD + AIP-158
+# pagination through the gateway public entry) and TestPlannerMemoryToolFlow
+# (the game-driven planner `memory` tool chain — hermes-style args, agent
+# conversion persistence, old_text 0-hit/multi-hit error feedback). It reuses
+# the shared helpers (helpers_test.go — setupTeamSession / playTeamGameUntilWait
+# / the memory HTTP helpers) and the saolei board fixtures, and drives games
+# through the saolei TEAM graph exactly like the saolei-team suite.
+# size = small: two game-driving tests + HTTP CRUD, well within the small
+# budget (the 6-game compression test alone is what pushed testplan_test to
+# medium).
+go_largetest(
+    name = "memory_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "memory_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
@@ -138,16 +181,17 @@ go_largetest(
 # testplan_test is the saolei template TEAM suite (spec
 # 031-team-template-mode quickstart.md §2.1 / tasks.md Phase 8 T029): team
 # lifecycle, TeamProfile CRUD, per-TeamProfile model, player-exclusive
-# control, planner-trigger-per-game, strategy persistence, RefreshTeam, and
-# per-agent message partitioning. It replaces the removed prompt /
-# session-agent-lifecycle / per-profile-model suites. The target uses the
-# gazelle default name ({package_name}_test) so gazelle does not regenerate a
-# go_unittest (style/large_test.md).
+# control, planner-trigger-per-game, planner long-term memory persistence +
+# the calibration instruction scenarios (spec 039-planner-memory-calibration
+# FR-014..FR-019), RefreshTeam, and per-agent message partitioning. It
+# replaces the removed prompt / session-agent-lifecycle / per-profile-model
+# suites. The target uses the gazelle default name ({package_name}_test) so
+# gazelle does not regenerate a go_unittest (style/large_test.md).
 #
 # size = medium: the 037 optimize suite (specs/037-saolei-team-optimize
 # FR-034) added TestTeamCompressionAtFiveGames, which drives 6 full games on
 # one session (4 pre-compression + the compression game + a post-compression
-# resume game) — beyond the 60s "small" budget alongside the 14 existing
+# resume game) — beyond the 60s "small" budget alongside the other
 # game-driving tests (style/large_test.md §测试用例: size per actual need).
 go_largetest(
     name = "testplan_test",
@@ -162,6 +206,76 @@ go_largetest(
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# agent_stall_test is the stream-stall recovery suite (specs/043-llm-stream-
+# stall-recovery — T011 large test, plus specs/044-llm-stall-recovery-fix
+# T011 cases b/c/d), run against the stall deploy
+# (deploy_agent_stall.yaml — selects the agent_timeouts config block
+# (streamIdleTimeoutMs=5000, toolHeartbeatIntervalMs=2000) via the 045
+# deploy-config channel; config values bypass the env channel's 60s clamp
+# by design):
+#   - TestAgentStallRecoveryWithQueuedMessage (043 US1/US2, quickstart
+#     Scenario 5): a fake-llm turn that emits its reasoning delta then
+#     stops with the connection alive (sample_stall.yaml) is detected
+#     within the idle window — warn + wait emitted, the queued message
+#     RETAINED (no QueueSignal(0), FR-006) and delivered on the next turn
+#     (FR-007).
+#   - TestAgentStallToolExecutionNotFalselyDetected (043 US3, Scenario 6):
+#     a saolei_operate dispatch delayed 12s (> idleTimeout — ~6 heartbeat
+#     ticks at the 2s cadence) on the production saolei MCP path does not
+#     false-stall — the client-side heartbeat wrapper keeps the idle timer
+#     alive (FR-003/SC-003).
+#   - TestAgentStallDetectedWithinConfiguredWindow (044 US1 regression,
+#     FR-001/SC-004): a real silent dropout is still detected within the
+#     config-driven 5s window — elapsed detection bracketed against the
+#     older windows (15s/30s/60s) and the 120s default.
+#   - TestAgentStallPersistsPartialOutput (044 US3, FR-004/FR-005/
+#     SC-002/SC-003): after the stalled turn terminates, ListMessages
+#     returns the already-streamed reasoning partial with
+#     completion = PART_COMPLETION_INTERRUPTED on the tail part.
+#   - TestAgentStallThinkInterruptGapDetected (046→044 enabler pair,
+#     quickstart D3): a think-interrupt-gap turn streams two reasoning
+#     chunks then a finite 15s gap; the gap exceeds the config-driven 5s
+#     window so the detector fires mid-thinking at ~5s; the pre-gap
+#     chunks persist as the partial output with
+#     completion = PART_COMPLETION_INTERRUPTED on the tail part
+#     (specs/046-fake-llm-think-chunking/contracts/template-config.md
+#     §3.3).
+#
+# size = medium: at the config-driven 5s/2s timings the five cases'
+# healthy paths total ~60–85s (T012's "<2min" planning upper bound), so
+# medium's 300s budget leaves ≥3.5× CI headroom — small's 60s is
+# insufficient since the suite itself exceeds 60s (style/large_test.md
+# §测试用例: size per actual need; size→timeout mapping small=60s /
+# medium=300s / large=900s per bazel test.size, and `guitar run` executes
+# via `bazel test --config=largetest`, whose .bazelrc only sets
+# --cache_test_results=no — size is the effective hard timeout). Under
+# the worst designed failure — a config-channel regression to the 120s
+# default — T2 passes (~25s), T5 fails fast (~17s, the 15s gap
+# under-runs the 120s window so the turn completes and its warn/bracket
+# assertions fire), and T1/T3/T4 are bounded by the 75s wsReadTimeout
+# read deadline (the stall wait aborts before the 120s detection could
+# fire) — every failure path stays well under the 300s budget.
+go_largetest(
+    name = "agent_stall_test",
+    size = "medium",
+    srcs = [
+        "agent_stall_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",

@@ -1,0 +1,21 @@
+version: "3.0"
+name: service
+app: grpc-hello-world
+desc: grpc hello world service with duplicate config block
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        value: "hello"
+        type: yaml
+  - name: service_config
+    data:
+      - name: limits
+        value: '{"maxConn": 100}'
+        type: json
+artifacts:
+  - name: service
+    target: :service_image
+    ports:
+      - name: grpc
+        port: 50051

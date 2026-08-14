@@ -138,6 +138,35 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			})
 		}
 
+		// Validate and compile config selections. 与 secret 的双向校验不同，config 是
+		// 单向选择：deploy 选中的配置块名必须存在于 service 配置块池（FR-007），
+		// 池中未被选中的块不影响部署（spec Edge Case）。重复选择由 schema uniqueItems
+		// 拒绝（contracts/yaml-schema.md §2），此处无需去重。
+		// 产出形态为层级 []*ConfigBlock：选中块整体进入，条目保留 service.yaml
+		// data[] 声明顺序，不展平（见 specs/045-deploy-config/data-model.md §4）。
+		if len(deployService.Artifact.Config) > 0 {
+			configBlockSet := make(map[string]*config.ServiceConfigBlock, len(serviceConfig.Configs))
+			for _, block := range serviceConfig.Configs {
+				configBlockSet[block.Name] = block
+			}
+
+			for _, selectedName := range deployService.Artifact.Config {
+				block, ok := configBlockSet[selectedName]
+				if !ok {
+					return nil, fmt.Errorf("artifact %s in %s: config block %q not declared by service config", artifact.Name, deployConfig.Name, selectedName)
+				}
+				cb := &deploy.ConfigBlock{Block: block.Name}
+				for _, entry := range block.Data {
+					cb.Entries = append(cb.Entries, &deploy.ConfigEntry{
+						Key:   entry.Name,
+						Type:  entry.Type,
+						Value: entry.Value,
+					})
+				}
+				compiledArtifact.ConfigBlocks = append(compiledArtifact.ConfigBlocks, cb)
+			}
+		}
+
 		desiredState.Artifacts = append(desiredState.Artifacts, compiledArtifact)
 	}
 

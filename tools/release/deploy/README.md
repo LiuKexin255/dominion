@@ -377,6 +377,62 @@ cat /mnt/dominion/secret/database-url
 cat /mnt/dominion/secret/stripe-api-key
 ```
 
+## Config 配置
+
+在 `service.yaml` 顶层声明命名配置块（所有 artifact 共享的配置定义池），在 `deploy.yaml` 中按环境选择配置块名（仅选择，不覆盖配置数据）。
+
+```yaml
+# service.yaml
+version: "3.0"
+name: grpc-hello-world
+app: hello
+kind: stateless
+configs:
+  - name: service_config                # 配置块名（SDK 第一寻址参数）
+    data:
+      - name: greeting                  # 条目名（SDK 第二寻址参数）
+        value: |
+          message: "hello from config"
+          times: 3
+        type: yaml                      # 格式类型 json|yaml（部署期校验用）
+      - name: limits
+        value: '{"maxConn": 100}'
+        type: json
+artifacts:
+  - name: service
+    target: :cmd_image
+```
+
+```yaml
+# deploy.yaml
+version: "3.0"
+name: hello.test
+desc: "测试环境"
+type: test
+services:
+  - artifact:
+      path: //experimental/golang/grpc_hello_world/service/service.yaml
+      name: service
+      configs:                          # 选择的配置块名列表（列表内不可重复）
+        - service_config
+```
+
+配置块名与条目名规则同 secret 逻辑名：`^[a-z][a-z0-9_-]{0,63}$`，最长 63 字符。
+
+部署时，deploy 工具会校验：deploy.yaml 中选择的每个配置块名必须存在于 service.yaml 的配置块池（否则拒绝部署）；池中未被选择的配置块不影响部署。
+
+运行时，配置数据通过 ConfigMap 投影挂载到容器：
+- 环境变量 `DOMINION_CONFIG_DIR` 指向 `/mnt/dominion/config`（平台保留，自动注入）。
+- 文件路径为 `/mnt/dominion/config/{block}/{key}`。
+
+```bash
+# 读取配置数据示例
+cat /mnt/dominion/config/service_config/greeting
+cat /mnt/dominion/config/service_config/limits
+```
+
+配置仅用于非敏感数据；敏感数据请使用 Secret 机制。配置与 `artifact.env` 注入的环境变量互不影响（两者可同时存在、独立工作）。
+
 ## 环境变量配置
 
 在 `deploy.yaml` 中通过 `artifact.env` 配置：
@@ -392,4 +448,4 @@ services:
 ```
 
 - key 须匹配 `^[a-zA-Z_][a-zA-Z0-9_]*$`。
-- 以下为平台保留变量名，不可使用：`SERVICE_APP`、`DOMINION_ENVIRONMENT`、`POD_NAMESPACE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_CA_FILE`、`TLS_SERVER_NAME`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`DOMINION_SECRET_DIR`。
+- 以下为平台保留变量名，不可使用：`SERVICE_APP`、`DOMINION_ENVIRONMENT`、`POD_NAMESPACE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_CA_FILE`、`TLS_SERVER_NAME`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`DOMINION_SECRET_DIR`、`DOMINION_CONFIG_DIR`。

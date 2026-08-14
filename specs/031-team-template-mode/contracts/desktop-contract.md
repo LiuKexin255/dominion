@@ -30,12 +30,12 @@
 
 - 若 frame 的 `agent` 不在 `Team.agents` 内：**归入默认 tab（`Team.agents` 首个 agent）并打 warn 日志**（丢弃会丢数据；归入默认 tab 保证可观测、不崩溃；约束：契约字段存在）。
 
-### 2.3 Team create-if-missing（决策 2，FR-033）
+### 2.3 Team create-if-missing（决策 2，FR-033）**[SUPERSEDED — see Feature 040]**
 
-- Team 必须经 `CreateTeam` **显式创建**（AIP-133；GetTeam/Connect/ListMessages/RefreshTeam 未创建 → NOT_FOUND，无懒加载）。
-- **desktop 流程（发送消息/进入会话时）**：`getTeam(template, sessionID)` → **失败（典型 NOT_FOUND）** → `createTeam(template, sessionID, defaultProfileResourceName)` → 继续（connect/sendUserTurn 前确保 Team 存在）。
-- **默认 profile 简化（Phase 6）**：本阶段 desktop 固定使用默认 profile `templates/{template}/profiles/default`（AIP-122 完整资源名）；**profile 选择 UX 推迟到 Phase 7**（ProfileManagement / TeamProfile CRUD）。
-- **并发安全**：重复 `CreateTeam` 且 profile 相同 → 幂等返回既有 Team（api-contract §2.2 幂等注），多 tab 竞态下 create 失败可重读 GetTeam 收敛。
+- Team 必须经 `CreateTeam` **显式创建**（AIP-133；GetTeam/Connect/ListMessages/RefreshTeam 未创建 → NOT_FOUND，无懒加载）。**[SUPERSEDED — see Feature 040]**: [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersedes 本条——Team 为 [AIP-156](https://google.aip.dev/156) 单例，MUST NOT 暴露 `CreateTeam`，MUST 经 `UpdateTeam(allow_missing=true)` 物化（040 FR-001/FR-002）；"未创建 → NOT_FOUND"不变量保留。
+- **desktop 流程（发送消息/进入会话时）**：`getTeam(template, sessionID)` → **失败（典型 NOT_FOUND）** → `createTeam(template, sessionID, defaultProfileResourceName)` → 继续（connect/sendUserTurn 前确保 Team 存在）。**[SUPERSEDED — see Feature 040]**: desktop 流程改为 GetTeam→NOT_FOUND→**单次** `updateTeam(template, sessionID, profile, [], true)`（040 T007-T009 已实现），移除 create 失败后的 GetTeam 兜底重读（`allow_missing` 天然收敛）。
+- **默认 profile 简化（Phase 6）**：本阶段 desktop 固定使用默认 profile `templates/{template}/profiles/default`（AIP-122 完整资源名）；**profile 选择 UX 推迟到 Phase 7**（ProfileManagement / TeamProfile CRUD）。**[SUPERSEDED — see Feature 040]**: 040 后 desktop 经 profile 弹窗（`handleProfileSelected`）显式选择 profile 并经单次 `updateTeam(allowMissing=true)` 物化（040 T009），无固定默认 profile。
+- **并发安全**：重复 `CreateTeam` 且 profile 相同 → 幂等返回既有 Team（api-contract §2.2 幂等注），多 tab 竞态下 create 失败可重读 GetTeam 收敛。**[SUPERSEDED — see Feature 040]**: 幂等由 `UpdateTeam(allow_missing=true)` 天然保证（040 FR-002），原"异 profile → ALREADY_EXISTS"的 AIP-133 偏离已移除（040 FR-007）。
 
 ## 3. Profile 页面特化（`ProfileManagement`）
 
@@ -54,7 +54,7 @@
 | `SendUserTurn(..., agentProfileName)` | `SendUserTurn(..., agent)` | D12；agent 名称 |
 | `ListMessages(sessionID)` | `ListMessages(template, sessionID, agent)` | 按 agent 分区（FR-005） |
 | `GetAgent(sessionID)` | `GetTeam(template, sessionID)` | 返回 Team（含 agents） |
-| （无对应旧绑定） | `CreateTeam(template, sessionID, profile)` | **显式创建 Team（AIP-133，唯一创建点）**；`profile` 为 TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`（AIP-122，template 段 MUST 与 parent 一致，handler 校验）；GetTeam→NotFound 时 frontend 调此绑定（create-if-missing，决策 2） |
+| （无对应旧绑定） | `CreateTeam(template, sessionID, profile)` | **显式创建 Team（AIP-133，唯一创建点）**；`profile` 为 TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`（AIP-122，template 段 MUST 与 parent 一致，handler 校验）；GetTeam→NotFound 时 frontend 调此绑定（create-if-missing，决策 2）**[SUPERSEDED — see Feature 040]**: 绑定已改为 `UpdateTeam(template, sessionID, profile, updateMaskPaths, allowMissing)`（PATCH + `allow_missing` query，AIP-134/156 物化；040 T007/T008 已实现） |
 | `List/Create/.../Update/DeleteAgentProfile` | `...TeamProfile(template, ...)` | TeamProfile CRUD |
 | `List/Create/Get/DeleteSkill` | （移除） | Skill 废弃 |
 
@@ -67,7 +67,7 @@
 - `Session` 增 `template` 字段（Wails `SessionView`）。
 - `AgentFrame.agentProfileName` → `agent`（D12）；`Message` 增 `agent` 字段（按 agent 分区，FR-005）。
 - `AgentProfile`/`Skill` 接口移除；新增 `TeamProfile`（Wails `TeamProfileView`——typed oneof `spec.saolei` 被 Go view model 拍平为顶层 `playerModel`/`plannerModel`/`playerPrompt`/`plannerPrompt`，未设置变体时缺失）/`SaoleiProfile`（`{playerModel, plannerModel, playerPrompt, plannerPrompt}`）/`CreateTeamProfileRequest`/`ListTeamProfilesResponse`。
-- 绑定 wrapper 随 §4 调整：`createSession(template)`/`connect(template, sessionID)`/`getTeam(template, sessionID)`/`createTeam(template, sessionID, profile)`/`refreshTeam(template, sessionID)`/`sendUserTurn(template, sessionID, text, screenshot..., agent)`/`listMessages(template, sessionID, agent)`/TeamProfile CRUD/`openChatStream(sessionID, agent)`。
+- 绑定 wrapper 随 §4 调整：`createSession(template)`/`connect(template, sessionID)`/`getTeam(template, sessionID)`/`updateTeam(template, sessionID, profile, updateMaskPaths, allowMissing)`（**[SUPERSEDED — see Feature 040]**：原 `createTeam(template, sessionID, profile)` 已移除，040 T007-T009）/`refreshTeam(template, sessionID)`/`sendUserTurn(template, sessionID, text, screenshot..., agent)`/`listMessages(template, sessionID, agent)`/TeamProfile CRUD/`openChatStream(sessionID, agent)`。
 
 ## 6. 验证要点
 
@@ -75,4 +75,4 @@
 - 对话多 tab，agent 列表来自 `Team.agents`（不硬编码）；frame 按 `agent` 归位（FR-025）。
 - planner tab 屏蔽输入（`accepts_user_input=false`，FR-032）。
 - saolei profile 页渲染 player/planner 模型选择 + base 提示词输入（FR-029/FR-034），由 typed oneof 驱动。
-- 发送消息/进入会话前 Team 存在（GetTeam→NotFound→CreateTeam(默认 profile)，决策 2）。
+- 发送消息/进入会话前 Team 存在（GetTeam→NotFound→CreateTeam(默认 profile)，决策 2）。**[SUPERSEDED — see Feature 040]**: 改为 GetTeam→NotFound→`updateTeam(allowMissing=true)`（040 T009 已实现）。

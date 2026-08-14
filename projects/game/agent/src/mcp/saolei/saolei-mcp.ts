@@ -12,14 +12,25 @@
  * reach the desktop (spec 025 FR-012..FR-018, FR-020;
  * `specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`).
  *
- * Tool surface (spec 029 FR-020 refines the earlier "exactly four" to
- * "exactly five" — four operation tools plus one read-only query):
+ * Tool surface (spec 039 US1 / FR-001..FR-005 merges the three cell-operation
+ * tools into one dual-form `saolei_operate`:
+ * `specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`):
  *   - `saolei_init`              → F2 new-game keypress; recognizes the first
  *                                 screenshot and seeds the session board.
- *   - `saolei_click(x, y)`       → LEFT_CLICK at the cell centre.
- *   - `saolei_flag(x, y)`        → RIGHT_CLICK at the cell centre.
- *   - `saolei_chord_click(x, y)` → LEFT_RIGHT_PRESS at the cell centre.
+ *   - `saolei_operate`           → dual-form cell operations: single
+ *                                 `type`/`x`/`y` OR a batch `operations`
+ *                                 array; validated in order, ONE result.
  *   - `saolei_remain`            → read-only remain-grid query (no dispatch).
+ *
+ * The three former cell tools (`saolei_click` / `saolei_flag` /
+ * `saolei_chord_click`) are merged into `saolei_operate` (FR-001): the entry
+ * normalizes the dual form to an operations list (single = length-1 array,
+ * contract §3), then each op is validated strictly (`validateMove`) and
+ * dispatched in order. Failures are triaged by reason (contract §2 / FR-002):
+ * harmless no-ops (HARMLESS_NOOP_REASONS) are SKIPPED and the batch continues;
+ * structural/contextual rejections (STRUCTURAL_REASONS) and game end STOP the
+ * batch; earlier successful ops take effect. `saolei_init`/`saolei_remain`
+ * are unchanged (FR-003).
  *
  * `saolei_remain` (spec 029 US2 / FR-006..013;
  * `specs/029-saolei-coord-remain/contracts/saolei-remain-tool-contract.md`)
@@ -99,24 +110,25 @@ const KEY_F2 = "KEYBOARD_KEY_F2";
 
 /**
  * Wire value of `MouseClickAction.MOUSE_CLICK_ACTION_LEFT_CLICK` (proto enum
- * string, `projects/game/game.proto` `enum MouseClickAction`). Dispatched by
- * `saolei_click`. Hardcoded to keep `game_types` a type-only import.
+ * string, `projects/game/game.proto` `enum MouseClickAction`). Dispatched for
+ * `saolei_operate` ops of type `click`. Hardcoded to keep `game_types` a
+ * type-only import.
  */
 const LEFT_CLICK = "MOUSE_CLICK_ACTION_LEFT_CLICK";
 
 /**
  * Wire value of `MouseClickAction.MOUSE_CLICK_ACTION_RIGHT_CLICK` (proto enum
- * string). Dispatched by `saolei_flag`. Hardcoded to keep `game_types` a
- * type-only import.
+ * string). Dispatched for `saolei_operate` ops of type `flag`. Hardcoded to
+ * keep `game_types` a type-only import.
  */
 const RIGHT_CLICK = "MOUSE_CLICK_ACTION_RIGHT_CLICK";
 
 /**
  * Wire value of `MouseClickAction.MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS` (proto
- * enum string). Dispatched by `saolei_chord_click` — a single simultaneous
- * left+right button press (research.md D7: one atomic chord, NOT two separate
- * clicks and NOT a left double-click). Hardcoded to keep `game_types` a
- * type-only import.
+ * enum string). Dispatched for `saolei_operate` ops of type `chord` — a
+ * single simultaneous left+right button press (research.md D7: one atomic
+ * chord, NOT two separate clicks and NOT a left double-click). Hardcoded to
+ * keep `game_types` a type-only import.
  */
 const LEFT_RIGHT_PRESS = "MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS";
 
@@ -130,8 +142,23 @@ const LEFT_RIGHT_PRESS = "MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS";
  */
 const WINDOW_MESSAGE = "MOUSE_INPUT_METHOD_WINDOW_MESSAGE";
 
-/** A cell-operation tool name (the three tools that take `(x, y)`). */
-export type CellTool = "saolei_click" | "saolei_flag" | "saolei_chord_click";
+/**
+ * The kind of a single cell operation exposed by `saolei_operate`
+ * (`specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+ * §1): `click` (left-click reveal), `flag` (right-click toggle), `chord`
+ * (simultaneous left+right press). A string enum union — NOT a bare string.
+ */
+export type OperationType = "click" | "flag" | "chord";
+
+/**
+ * A single cell operation of the `saolei_operate` dual-form tool (contract
+ * §1): top-left origin (0,0), x = column, y = row (existing convention).
+ */
+export interface CellOperation {
+	type: OperationType;
+	x: number;
+	y: number;
+}
 
 /**
  * Per-game quantitative statistics, computed first-hand by the MCP at game
@@ -141,8 +168,9 @@ export type CellTool = "saolei_click" | "saolei_flag" | "saolei_chord_click";
  * no team/strategy/store coupling (FR-019 unchanged).
  */
 export interface GameStats {
-	/** Count of successful cell operations this game (onMove trigger count).
-	 *  Excludes init, remain, rejected moves, and LLM call count. */
+	/** Count of successful cell operations this game (successful dispatch
+	 *  count — one per legal op executed by `saolei_operate`).
+	 *  Excludes init, remain, rejected/skipped moves, and LLM call count. */
 	operationCount: number;
 	/** Number of correctly flagged mines this game.
 	 *  null = init mineCounter undecodable (totalMines unknown). */
@@ -169,12 +197,22 @@ export interface GameStats {
 export interface SaoleiEventSink {
 	/** A new game started: after `saolei_init` recognize succeeds. */
 	onGameStart(state: GameState): void | Promise<void>;
-	/** A legal cell operation (click/flag/chord) recognized its new state. */
-	onMove(
-		tool: CellTool,
-		x: number,
-		y: number,
-		state: GameState,
+	/**
+	 * A `saolei_operate` call completed (single or batch — one callback per
+	 * call, FR-004; `specs/039-planner-memory-calibration/contracts/
+	 * saolei-operate-contract.md` §4). `operations` carries the call's FULL
+	 * op list (including skipped/stopped ones); `finalState` is the board
+	 * after processing. Fires once per `saolei_operate` call when an active
+	 * game (recognized board) exists, REGARDLESS of how many ops executed —
+	 * covers all-skip batches and early structural stops (FR-004: every call
+	 * is recorded as one gameLog entry). Does NOT fire on a `no_active_game`
+	 * rejection or an unrecognizable recognition failure (no state to
+	 * report). `stats` rides along when the call ended the game.
+	 */
+	onOperate(
+		operations: CellOperation[],
+		finalState: GameState,
+		stats?: GameStats,
 	): void | Promise<void>;
 	/** The game ended: `gameStatus(state)` ∈ {won, lost} after a move.
 	 *  `stats` is optional (backward compatible — unupgraded sink
@@ -210,6 +248,34 @@ export type MoveRejection =
 	| "cannot_flag_revealed"
 	| "chord_requires_number"
 	| "chord_no_unrevealed_neighbor";
+
+/**
+ * Rejection reasons that are HARMLESS NO-OPS — the operation would NOT change
+ * the board (e.g. click on a revealed number / flag, flag a revealed cell,
+ * chord a non-number, chord a number with no unrevealed neighbor). The
+ * `saolei_operate` batch SKIPS these and continues with the remaining ops
+ * (FR-002; `specs/039-planner-memory-calibration/contracts/
+ * saolei-operate-contract.md` §2).
+ */
+export const HARMLESS_NOOP_REASONS: ReadonlySet<MoveRejection> = new Set<
+	MoveRejection
+>([
+	"cell_already_revealed",
+	"cell_is_flagged",
+	"cannot_flag_revealed",
+	"chord_requires_number",
+	"chord_no_unrevealed_neighbor",
+]);
+
+/**
+ * Rejection reasons that are STRUCTURAL / contextual — the operation cannot
+ * be judged against a usable board (out of bounds, or no active game). The
+ * `saolei_operate` batch STOPS at these; remaining ops are NOT executed
+ * (FR-002; contract §2).
+ */
+export const STRUCTURAL_REASONS: ReadonlySet<MoveRejection> = new Set<
+	MoveRejection
+>(["out_of_bounds", "no_active_game"]);
 
 /** Revealed numeric cell statuses (permanent within a game). */
 const REVEALED_NUMBERS: ReadonlySet<CellStatus> = new Set<CellStatus>([
@@ -418,7 +484,7 @@ function hasInitialOrUnknownNeighbor(
  */
 export function validateMove(
 	state: GameState,
-	tool: CellTool,
+	tool: OperationType,
 	x: number,
 	y: number,
 ): MoveVerdict {
@@ -437,7 +503,7 @@ export function validateMove(
 		return { ok: true };
 	}
 	switch (tool) {
-		case "saolei_click":
+		case "click":
 			if (REVEALED_NUMBERS.has(cell)) {
 				return { ok: false, reason: "cell_already_revealed" };
 			}
@@ -446,13 +512,13 @@ export function validateMove(
 			}
 			// INITIAL (HIT_MINE/MINE caught by the terminal check) → legal reveal.
 			return { ok: true };
-		case "saolei_flag":
+		case "flag":
 			if (REVEALED_NUMBERS.has(cell)) {
 				return { ok: false, reason: "cannot_flag_revealed" };
 			}
 			// INITIAL (place) or FLAG (toggle/unflag) → legal.
 			return { ok: true };
-		case "saolei_chord_click":
+		case "chord":
 			if (!CHORD_NUMBERS.has(cell)) {
 				return { ok: false, reason: "chord_requires_number" };
 			}
@@ -549,6 +615,24 @@ const REJECT_PREFIX = "rejected:";
 const UNRECOGNIZABLE_OUTCOME = "unable to recognize board";
 
 /**
+ * Rejection body for supplying BOTH the single and the batch form (contract
+ * §5 / D12.1 — refuse ambiguity over silent precedence).
+ */
+const AMBIGUOUS_ARGS_TEXT =
+	"saolei_operate → rejected: provide EITHER type/x/y (single operation) " +
+	"OR operations (batch), not both.";
+
+/** Rejection body for supplying NEITHER form (contract §5 / D12.1). */
+const MISSING_ARGS_TEXT =
+	"saolei_operate → rejected: provide EITHER type/x/y (single operation) " +
+	"OR an operations array (batch).";
+
+/** Rejection body for a PARTIAL single form (e.g. type without x/y). */
+const INCOMPLETE_ARGS_TEXT =
+	"saolei_operate → rejected: the single-operation form requires ALL of " +
+	"type, x and y together.";
+
+/**
  * Build the `saolei_init` success body: outcome + game-status line + initial
  * text board (`specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-
  * contract.md` §2). The status line sits immediately after the outcome line
@@ -558,19 +642,40 @@ function initSuccessText(state: GameState): string {
 	return `${INIT_OUTCOME}\ngame status: ${gameStatus(state)}\n\n${renderBoardText(state)}`;
 }
 
+/** The `MouseClickAction` dispatched per operation type (contract §1). */
+const OPERATION_ACTIONS: Record<OperationType, MouseClickAction> = {
+	click: LEFT_CLICK,
+	flag: RIGHT_CLICK,
+	chord: LEFT_RIGHT_PRESS,
+};
+
 /**
- * Build the legal-cell-op success body: `<tool> at (x,y) → dispatched` +
- * game-status line + the updated text board (`specs/027-chat-bubble-game-
- * state/contracts/saolei-mcp-status-contract.md` §2; FR-012..014).
+ * Build the `saolei_operate` result body: outcome line + game-status line +
+ * the final text board (FR-002; `specs/039-planner-memory-calibration/
+ * contracts/saolei-operate-contract.md` §2). The outcome line reflects the
+ * batch's triage: a normal completion (`executed N ops`, with `skipped S
+ * no-op ops` when any were skipped), or a stop at the triggering op with its
+ * parameters and reason (structural rejection code, or `won`/`lost` for a
+ * game end) — `specs/042-planner-memory-fixup/contracts/
+ * saolei-operate-stop-format.md` §1.2: `stopped at {type}({x},{y})`.
  */
-function dispatchedText(
-	tool: CellTool,
-	x: number,
-	y: number,
+function operateResultText(
+	executed: number,
+	skipped: number,
 	state: GameState,
+	stoppedOp: CellOperation | null,
+	stoppedReason: MoveRejection | "won" | "lost" | null,
 ): string {
+	let line: string;
+	if (stoppedOp != null) {
+		line = `saolei_operate → stopped at ${stoppedOp.type}(${stoppedOp.x},${stoppedOp.y}) (${stoppedReason})`;
+	} else if (skipped > 0) {
+		line = `saolei_operate → executed ${executed} ops, skipped ${skipped} no-op ops`;
+	} else {
+		line = `saolei_operate → executed ${executed} ops`;
+	}
 	return (
-		`${tool} at (${x},${y}) → dispatched\n` +
+		`${line}\n` +
 		`game status: ${gameStatus(state)}\n\n` +
 		`${renderBoardText(state)}`
 	);
@@ -823,121 +928,258 @@ export function createSaoleiMcpServer(
 		},
 	);
 
-	/**
-	 * Register a cell-operation tool that validates, dispatches, and returns
-	 * the updated text board. Shared by `saolei_click` / `saolei_flag` /
-	 * `saolei_chord_click` — only the proto click action and description
-	 * differ.
-	 */
-	function registerCellTool(
-		name: CellTool,
-		action: MouseClickAction,
-		description: string,
-	): void {
-		server.registerTool(
-			name,
-			{ description, inputSchema: cellInputSchema() },
-			async (args, extra: SaoleiToolExtra) => {
-				const { x, y } = args;
+	// ── saolei_operate — dual-form cell operations (single OR batch) ─────
+	// Merges the former saolei_click / saolei_flag / saolei_chord_click into
+	// one tool (FR-001; `specs/039-planner-memory-calibration/contracts/
+	// saolei-operate-contract.md` §1): the entry normalizes the dual form to
+	// an operations list, then every op is validated strictly and dispatched
+	// in order — ONE result (FR-002). Failures are triaged by reason
+	// (contract §2): harmless no-ops SKIP and the batch continues, structural
+	// rejections and game end STOP it; earlier successful ops take effect.
 
-				// FR-015a: no active game (pre-init, or state invalidated by a
-				// prior recognition failure).
+	/**
+	 * Validate + dispatch + recognize ONE cell operation
+	 * (`specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+	 * §2). The shared per-op execution unit of the batch loop; returns a
+	 * discriminated result so the loop can triage without re-reading the
+	 * session state.
+	 */
+	type OpExecution =
+		| { kind: "ok"; state: GameState; status: GameStatus }
+		| { kind: "skip"; reason: MoveRejection }
+		| { kind: "stop"; reason: MoveRejection }
+		| { kind: "unrecognizable" };
+
+	async function executeOperation(
+		op: CellOperation,
+		extra: SaoleiToolExtra,
+	): Promise<OpExecution> {
+		// FR-015a: no active game (pre-init, or state invalidated by a prior
+		// recognition failure). Structural — stops the batch.
+		if (!recognized) {
+			return { kind: "stop", reason: "no_active_game" };
+		}
+		// Strict pre-dispatch validation (FR-014/FR-015).
+		const verdict = validateMove(recognized, op.type, op.x, op.y);
+		if (!verdict.ok) {
+			if (HARMLESS_NOOP_REASONS.has(verdict.reason)) {
+				return { kind: "skip", reason: verdict.reason };
+			}
+			// Structural / contextual — or terminal `game_over`/`game_won`
+			// (the game already ended): stop the batch (contract §2).
+			return { kind: "stop", reason: verdict.reason };
+		}
+
+		// Legal move: dispatch, then recognize the updated board.
+		const { xPx, yPx } = center(op.x, op.y);
+		const part: FlowPart = {
+			mouseMoveAndClick: {
+				xPx,
+				yPx,
+				click: OPERATION_ACTIONS[op.type],
+				method: WINDOW_MESSAGE,
+			},
+		};
+		const result = await bridge.dispatch(part, extra.signal);
+		const state = recognize(result, (png) => boardApi.update(png));
+		if (!state) {
+			return { kind: "unrecognizable" };
+		}
+		// Stats tracking (contract §3): count ONLY successful cell
+		// operations — init / remain / rejected or skipped ops never reach
+		// here (rejections return before dispatch).
+		operationCount++;
+		return { kind: "ok", state, status: gameStatus(state) };
+	}
+
+	server.registerTool(
+		"saolei_operate",
+		{
+			description:
+				"Execute one or more minesweeper cell operations IN ORDER and " +
+				"return ONE result with the final TEXT board. Supported " +
+				"operation types (click/flag/chord): click = left-click to " +
+				"reveal a cell; flag = right-click to place/toggle a flag; " +
+				"chord = simultaneous left+right press on a revealed number " +
+				"1–8 to expand it. Two mutually exclusive argument forms: a " +
+				"single operation via type/x/y, OR a batch via the operations " +
+				"array [{type, x, y}, ...] (order preserved). Top-left origin " +
+				"(0, 0); x = column, y = row. Each op is validated strictly " +
+				"against the recognized board before dispatch: a no-op " +
+				"rejection (click a revealed/flagged cell, flag a revealed " +
+				"cell, chord a non-number, chord a number with no unrevealed " +
+				"neighbor) is SKIPPED and execution continues; a structural " +
+				"rejection (out-of-bounds, no active game) or a game end " +
+				"STOPS the batch — earlier successful operations take effect.",
+			inputSchema: operateInputSchema(),
+		},
+		async (args, extra: SaoleiToolExtra) => {
+			// Dual-form normalization (contract §3): single type/x/y == a
+			// length-1 operations array. Both forms / neither form is an
+			// ambiguous call and is REJECTED (D12.1 — refuse ambiguity over
+			// silent precedence; spec Edge Case "非法组合"). The single form
+			// must be a COMPLETE type/x/y triple (the three schema fields are
+			// independently optional — a partial triple is invalid).
+			const hasSingle =
+				args.type != null || args.x != null || args.y != null;
+			const hasBatch = args.operations != null;
+			if (hasSingle && hasBatch) {
+				return textResult(AMBIGUOUS_ARGS_TEXT);
+			}
+			if (!hasSingle && !hasBatch) {
+				return textResult(MISSING_ARGS_TEXT);
+			}
+			if (
+				hasSingle &&
+				(args.type == null || args.x == null || args.y == null)
+			) {
+				return textResult(INCOMPLETE_ARGS_TEXT);
+			}
+			const operations: CellOperation[] = hasBatch
+				? (args.operations as CellOperation[])
+				: [
+						{
+							type: args.type as OperationType,
+							x: args.x as number,
+							y: args.y as number,
+						},
+					];
+
+			// Empty operations list: no-op by definition (spec Edge Case —
+			// MUST NOT produce any board side effect). Return the current
+			// state (or the no_active_game guidance when no board exists).
+			if (operations.length === 0) {
 				if (!recognized) {
 					return textResult(rejectionText("no_active_game", null));
 				}
+				return textResult(
+					operateResultText(0, 0, recognized, null, null),
+				);
+			}
 
-				// Strict pre-dispatch validation (FR-014/FR-015).
-				const verdict = validateMove(recognized, name, x, y);
-				if (!verdict.ok) {
-					return textResult(rejectionText(verdict.reason, recognized));
-				}
+			let executed = 0;
+			let skipped = 0;
+			let stoppedOp: CellOperation | null = null;
+			let stoppedReason: MoveRejection | "won" | "lost" | null = null;
+			let endedStatus: "won" | "lost" | null = null;
 
-				// Legal move: dispatch, then recognize the updated board.
-				const { xPx, yPx } = center(x, y);
-				const part: FlowPart = {
-					mouseMoveAndClick: {
-						xPx,
-						yPx,
-						click: action,
-						method: WINDOW_MESSAGE,
-					},
-				};
-				const result = await bridge.dispatch(part, extra.signal);
-				const state = recognize(result, (png) => boardApi.update(png));
-				if (!state) {
+			for (let i = 0; i < operations.length; i += 1) {
+				const result = await executeOperation(operations[i], extra);
+				if (result.kind === "ok") {
+					executed += 1;
+					// Game end (`gameStatus` ∈ {won, lost} — the MCP's
+					// first-hand computation, FR-017): the winning op takes
+					// effect, then the batch STOPS (contract §2).
+					if (result.status !== "playing") {
+						endedStatus = result.status;
+						stoppedOp = operations[i];
+						stoppedReason = result.status;
+						break;
+					}
+				} else if (result.kind === "skip") {
+					skipped += 1;
+				} else if (result.kind === "stop") {
+					stoppedOp = operations[i];
+					stoppedReason = result.reason;
+					break;
+				} else {
+					// Recognition failure (FR-017): the state is invalidated —
+					// the batch cannot continue meaningfully; surface the
+					// existing unrecognizable guidance.
 					return textResult(unrecognizableText());
 				}
-				// Stats tracking (contract §3): count ONLY successful cell
-				// operations — init / remain / rejected moves never reach
-				// here (rejections return before dispatch).
-				operationCount++;
-				// Sink (contract §3): `onMove` fires after a successful
-				// post-dispatch recognition; when the move ended the game
-				// (`gameStatus` ∈ {won, lost} — the MCP's first-hand
-				// computation, FR-017), `onGameEnd` fires AFTER `onMove`
-				// with the structured status (FR-022) and the per-game
-				// statistics (FR-026/FR-030). `saolei_remain` never
-				// reaches this path (read-only, no dispatch).
-				await runSink("onMove", (s) => s.onMove(name, x, y, state));
-				const status = gameStatus(state);
-				if (status === "won" || status === "lost") {
-					const stats = computeGameStats(initState, state, operationCount);
-					await runSink("onGameEnd", (s) => s.onGameEnd(state, status, stats));
-				}
-				return textResult(dispatchedText(name, x, y, state));
-			},
-		);
-	}
+			}
 
-	registerCellTool(
-		"saolei_click",
-		LEFT_CLICK,
-		"Left-click (reveal) the cell at grid coordinate (x, y). " +
-			"Top-left origin (0, 0); x = column, y = row. Validates the move " +
-			"against the recognized board (rejects a click on a revealed or " +
-			"flagged cell), dispatches a combined move+left-click via window " +
-			"messages at the cell's fixed pixel centre, then recognizes and " +
-			"returns the updated TEXT board.",
-	);
-	registerCellTool(
-		"saolei_flag",
-		RIGHT_CLICK,
-		"Right-click to toggle a flag on the cell at grid coordinate (x, y). " +
-			"Top-left origin (0, 0); x = column, y = row. Validates the move " +
-			"against the recognized board (rejects flagging a revealed " +
-			"cell), dispatches a combined move+right-click via window " +
-			"messages at the cell's fixed pixel centre, then recognizes and " +
-			"returns the updated TEXT board.",
-	);
-	registerCellTool(
-		"saolei_chord_click",
-		LEFT_RIGHT_PRESS,
-		"Chord — a single simultaneous left+right button press — on the cell " +
-			"at grid coordinate (x, y). Top-left origin (0, 0); x = column, " +
-			"y = row. Validates the move against the recognized board " +
-			"(rejects a chord on anything but a revealed number 1–8; a chord " +
-			"whose adjacent-flag count does not match is still legal and is " +
-			"NOT rejected), dispatches a combined move+chord via window " +
-			"messages at the cell's fixed pixel centre, then recognizes and " +
-			"returns the updated TEXT board.",
+			// Structural `no_active_game` stop (never init'd, or the state
+			// was invalidated): no board exists to report — reuse the existing
+			// rejection body guiding `saolei_init` (contract §2). A successful
+			// op can never precede it (any dispatch re-seeds `recognized`).
+			const finalState = recognized;
+			if (!finalState) {
+				return textResult(rejectionText("no_active_game", null));
+			}
+
+			// Sink (contract §4 / FR-004): ONE `onOperate` per
+			// `saolei_operate` call (single or batch) — fired whenever an
+			// active game (recognized board) exists, REGARDLESS of how many
+			// ops actually executed. An all-skip batch or an early
+			// structural stop still records the call with its full op list
+			// (FR-004: one gameLog entry per call, however the batch went);
+			// the `no_active_game` / recognition-failure paths returned
+			// above, so `finalState` is always non-null here. When the call
+			// ended the game, `onGameEnd` fires AFTER `onOperate` with the
+			// structured status (FR-022) and the per-game statistics
+			// (FR-026/FR-030); the same stats ride along on `onOperate`.
+			const stats = endedStatus
+				? computeGameStats(initState, finalState, operationCount)
+				: undefined;
+			await runSink("onOperate", (s) =>
+				s.onOperate(operations, finalState, stats),
+			);
+			if (endedStatus) {
+				await runSink("onGameEnd", (s) =>
+					s.onGameEnd(finalState, endedStatus, stats),
+				);
+			}
+			return textResult(
+				operateResultText(
+					executed,
+					skipped,
+					finalState,
+					stoppedOp,
+					stoppedReason,
+				),
+			);
+		},
 	);
 
 	return server;
 }
 
 /**
- * Shared zod input schema for the three cell-operation tools
- * (`saolei_click` / `saolei_flag` / `saolei_chord_click`). Top-left origin
- * `(x, y)` grid convention (FR-020). The upper bound is NOT fixed in the
- * schema — it depends on the recognized board dimensions and is enforced by
- * `validateMove` (`out_of_bounds`) against the live state.
+ * Shared zod input schema for `saolei_operate`'s dual form
+ * (`specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+ * §1): single `type`/`x`/`y` OR batch `operations: CellOperation[]`. `type`
+ * is a strict enum (not a bare string). The upper bound of x/y is NOT fixed
+ * in the schema — it depends on the recognized board dimensions and is
+ * enforced by `validateMove` (`out_of_bounds`) against the live state.
  */
-function cellInputSchema(): {
-	x: z.ZodNumber;
-	y: z.ZodNumber;
+function operateInputSchema(): {
+	type?: z.ZodOptional<z.ZodEnum<["click", "flag", "chord"]>>;
+	x?: z.ZodOptional<z.ZodNumber>;
+	y?: z.ZodOptional<z.ZodNumber>;
+	operations?: z.ZodOptional<
+		z.ZodArray<
+			z.ZodObject<{
+				type: z.ZodEnum<["click", "flag", "chord"]>;
+				x: z.ZodNumber;
+				y: z.ZodNumber;
+			}>
+		>
+	>;
 } {
-	return {
+	const cellSchema = {
+		type: z.enum(["click", "flag", "chord"]).describe(
+			"operation type: click (reveal), flag (toggle), chord (expand)",
+		),
 		x: z.number().int().min(0).describe("column index (0-based)"),
 		y: z.number().int().min(0).describe("row index (0-based)"),
+	};
+	return {
+		type: z.enum(["click", "flag", "chord"]).optional().describe(
+			"single-operation form: the operation type (mutually exclusive with operations)",
+		),
+		x: z.number().int().min(0).optional().describe(
+			"single-operation form: column index (0-based)",
+		),
+		y: z.number().int().min(0).optional().describe(
+			"single-operation form: row index (0-based)",
+		),
+		operations: z
+			.array(z.object(cellSchema))
+			.optional()
+			.describe(
+				"batch form: ordered cell operations (mutually exclusive with type/x/y)",
+			),
 	};
 }

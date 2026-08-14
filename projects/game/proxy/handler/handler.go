@@ -1,12 +1,15 @@
-// Package handler implements the TeamService gRPC server interface (spec
-// 031-team-template-mode: ProxyService/AgentService merged into TeamService).
+// Package handler implements the TeamService gRPC server interface (specs/
+// 031-team-template-mode/: ProxyService/AgentService merged into TeamService).
 //
 // The handler owns owner resolution, agent-client routing, and bidirectional
 // stream binding directly. There is no separate service layer: GetTeam/
-// Connect/ListMessages/RefreshTeam require an existing owner (CreateTeam is
-// the only RPC that allocates one) — the Team must be created explicitly via
-// CreateTeam before any other TeamService RPC (no lazy creation on Connect,
-// spec 031-team-template-mode design decision: Agent 移除懒加载模式).
+// Connect/ListMessages/RefreshTeam require an existing owner (UpdateTeam is
+// the only RPC that allocates one) — the Team must be materialized via
+// UpdateTeam(allow_missing=true) (AIP-134 create-or-update:
+// https://google.aip.dev/134#create-or-update) before any other TeamService
+// RPC (no lazy creation on Connect, specs/031-team-template-mode/ design
+// decision: Agent 移除懒加载模式; specs/040-team-singleton-conformance/
+// data-model.md §4).
 package handler
 
 import (
@@ -52,20 +55,35 @@ func NewTeamHandler(
 	}
 }
 
-// CreateTeam creates the Team of a Session explicitly (AIP-133:
-// https://google.aip.dev/133). This is the ONLY RPC that allocates an owner
-// for a session: an owner is picked and persisted here (assignOwner), then
-// the request — carrying the TeamProfile full resource name — is forwarded
-// to the agent owning the session, which builds the team graph. All other
-// TeamService RPCs (GetTeam/Connect/ListMessages/RefreshTeam) require the
-// owner to already exist: the former lazy owner allocation on Connect was
-// removed (Agent 移除懒加载模式 — spec 031-team-template-mode design decision).
-func (h *TeamHandler) CreateTeam(ctx context.Context, req *game.CreateTeamRequest) (*game.Team, error) {
-	name, err := game.ParseSessionName(req.GetParent())
+// UpdateTeam materializes or mutates the Team singleton of a Session
+// (AIP-134: https://google.aip.dev/134; AIP-156: https://google.aip.dev/156,
+// specs/040-team-singleton-conformance/contracts/api-contract.md §2,
+// replacing the former CreateTeam). It is the ONLY RPC that allocates an
+// owner for a session: the owner is resolved via assignOwner (get-or-create
+// routing, idempotent under races), then the request is forwarded unchanged
+// to the agent owning the session. The proxy is a routing layer: it does NOT
+// inspect allow_missing — that parameter is Team-resource semantics handled
+// by the agent's SessionTeamStore.update (projects/game/agent/src/
+// session-team.ts): missing+allow_missing=true → materialize, missing+
+// allow_missing=false → NOT_FOUND, existing+same profile → idempotent,
+// existing+different profile → rebuild. The request — carrying the
+// TeamProfile full resource name in team.profile — is forwarded to the agent
+// owning the session, which builds the team graph. All other TeamService RPCs
+// (GetTeam/Connect/ListMessages/RefreshTeam) require the owner to already
+// exist: the former lazy owner allocation on Connect was removed (Agent 移除
+// 懒加载模式 — specs/031-team-template-mode/ design decision).
+func (h *TeamHandler) UpdateTeam(ctx context.Context, req *game.UpdateTeamRequest) (*game.Team, error) {
+	name, err := game.ParseTeamName(req.GetTeam().GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// Routing-layer owner resolution: get-or-create (the only allocation
+	// point; ErrOwnerAlreadyExists re-read unchanged,
+	// specs/040-team-singleton-conformance/research.md §R10). allow_missing
+	// is intentionally not inspected here — it is Team-resource semantics of
+	// the agent (AIP-134 create-or-update:
+	// https://google.aip.dev/134#create-or-update).
 	owner, err := h.assignOwner(ctx, name.TemplateID, name.SessionID)
 	if err != nil {
 		return nil, err
@@ -76,20 +94,20 @@ func (h *TeamHandler) CreateTeam(ctx context.Context, req *game.CreateTeamReques
 		return nil, err
 	}
 
-	team, err := client.CreateTeam(ctx, req)
+	team, err := client.UpdateTeam(ctx, req)
 	if err != nil {
-		logs.Error(ctx, "create team: downstream call failed",
+		logs.Error(ctx, "update team: downstream call failed",
 			event.String("session_id", name.SessionID),
 			event.Err(err),
 		)
-		return nil, propagateAgentError(err, "create team")
+		return nil, propagateAgentError(err, "update team")
 	}
 	return team, nil
 }
 
 // GetTeam returns the Team resource identified by name
 // (templates/{template}/sessions/{session}/team). The owner must already
-// exist; it is created only by CreateTeam.
+// exist; it is created only by UpdateTeam(allow_missing=true).
 func (h *TeamHandler) GetTeam(ctx context.Context, req *game.GetTeamRequest) (*game.Team, error) {
 	name, err := req.ParseName()
 	if err != nil {
@@ -148,9 +166,9 @@ func (h *TeamHandler) ListMessages(ctx context.Context, req *game.ListMessagesRe
 }
 
 // Connect establishes a bidirectional streaming channel for team
-// communication (spec 031-team-template-mode FR-004). The owner must already
-// exist (CreateTeam is the only RPC that allocates one): Connect does NOT
-// allocate an owner anymore — a session without a created team yields
+// communication (specs/031-team-template-mode/ FR-004). The owner must already
+// exist (UpdateTeam is the only RPC that allocates one): Connect does NOT
+// allocate an owner anymore — a session without a materialized team yields
 // NotFound, consistent with GetTeam/ListMessages/RefreshTeam. The first
 // UserFrame carries the routing pair template_id/session_id (both bare
 // segments, injected by the gateway from the connect URL path —
@@ -208,7 +226,7 @@ func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 }
 
 // RefreshTeam forwards a RefreshTeam request to the agent owning the session.
-// The owner must already exist (CreateTeam must have run first).
+// The owner must already exist (UpdateTeam must have run first).
 func (h *TeamHandler) RefreshTeam(ctx context.Context, req *game.RefreshTeamRequest) (*emptypb.Empty, error) {
 	name, err := req.ParseName()
 	if err != nil {
@@ -250,8 +268,8 @@ func parseMessagesParent(parent string) (template, sessionID, agent string, err 
 }
 
 // lookupOwner returns the existing owner for a (templateID, sessionID) pair
-// or a mapped status error. It does NOT create an owner; only CreateTeam
-// allocates one.
+// or a mapped status error. It does NOT create an owner; only UpdateTeam
+// (allow_missing=true path) allocates one.
 func (h *TeamHandler) lookupOwner(ctx context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
 	owner, err := h.ownerStore.Get(ctx, templateID, sessionID)
 	if err != nil {
@@ -267,10 +285,11 @@ func (h *TeamHandler) lookupOwner(ctx context.Context, templateID, sessionID str
 
 // assignOwner returns the existing owner for a (templateID, sessionID) pair,
 // or picks and persists a new one when no owner exists yet. Used only by
-// CreateTeam (idempotent: a repeated CreateTeam for an already-created session
-// reuses its owner). Under a concurrent-create race the persisted owner wins:
-// ErrOwnerAlreadyExists from Create re-reads the existing owner instead of
-// erroring (S1).
+// UpdateTeam's materialization path (allow_missing=true; idempotent: a
+// repeated call for an already-allocated session reuses its owner). Under a
+// concurrent-allocation race the persisted owner wins: ErrOwnerAlreadyExists
+// from Create re-reads the existing owner instead of erroring
+// (specs/040-team-singleton-conformance/research.md §R10).
 func (h *TeamHandler) assignOwner(ctx context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
 	owner, err := h.ownerStore.Get(ctx, templateID, sessionID)
 	if err == nil {
@@ -309,10 +328,11 @@ func (h *TeamHandler) assignOwner(ctx context.Context, templateID, sessionID str
 		CreateTime: now,
 	}
 	if err := h.ownerStore.Create(ctx, owner); err != nil {
-		// Concurrent CreateTeam race: another request already persisted an
-		// owner for this session. The proxy-layer owner allocation is
-		// idempotent — re-read the winner's owner instead of surfacing
-		// AlreadyExists (S1; the agent-side profile check is independent).
+		// Concurrent UpdateTeam(allow_missing=true) race: another request
+		// already persisted an owner for this session. The proxy-layer owner
+		// allocation is idempotent — re-read the winner's owner instead of
+		// surfacing AlreadyExists (specs/040-team-singleton-conformance/
+		// research.md §R10; the agent-side profile check is independent).
 		if errors.Is(err, domain.ErrOwnerAlreadyExists) {
 			existing, getErr := h.ownerStore.Get(ctx, templateID, sessionID)
 			if getErr != nil {
@@ -323,7 +343,7 @@ func (h *TeamHandler) assignOwner(ctx context.Context, templateID, sessionID str
 				)
 				return nil, mapDomainError(getErr)
 			}
-			logs.Info(ctx, "owner already allocated by concurrent create team; reusing it",
+			logs.Info(ctx, "owner already allocated by concurrent update team; reusing it",
 				event.String("template_id", templateID),
 				event.String("session_id", sessionID),
 				event.Int("agent_index", existing.OwnerIndex),
@@ -338,7 +358,7 @@ func (h *TeamHandler) assignOwner(ctx context.Context, templateID, sessionID str
 		return nil, mapDomainError(err)
 	}
 
-	logs.Info(ctx, "owner created on create team",
+	logs.Info(ctx, "owner created on update team",
 		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 		event.String("owner", pickedRef.Owner),

@@ -33,6 +33,7 @@ const (
 	resourceKindPVC         = "PersistentVolumeClaim"
 	resourceKindSecret      = "Secret"
 	resourceKindStatefulSet = "StatefulSet"
+	resourceKindConfigMap   = "ConfigMap"
 	resourceKindPod         = "Pod"
 
 	spanApply  = "deploy.runtime.apply"
@@ -101,6 +102,25 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 		event.Int(logFieldServiceCount, serviceCount),
 		event.Int(logFieldStatefulSetCount, statefulsetCount),
 	)
+
+	// ConfigMap 先于引用它的 Deployment/StatefulSet apply（Deployment 投影 ConfigMap，
+	// 不存在时 Pod 启动失败，见 specs/045-deploy-config/contracts/runtime-contract.md §2）。
+	for _, workload := range objects.Deployments {
+		if len(workload.ConfigBlocks) == 0 {
+			continue
+		}
+		if err := r.applyConfigMaps(ctx, workload); err != nil {
+			return err
+		}
+	}
+	for _, workload := range objects.StatefulWorkloads {
+		if len(workload.ConfigBlocks) == 0 {
+			continue
+		}
+		if err := r.applyConfigMaps(ctx, workload); err != nil {
+			return err
+		}
+	}
 
 	for _, workload := range objects.Deployments {
 		if err := r.applyDeployment(ctx, workload); err != nil {
@@ -173,6 +193,9 @@ func (r *K8sRuntime) pruneResources(ctx context.Context, fullEnvName string, obj
 	if err := r.pruneSecrets(ctx, namespace, matchLabels, expected.secrets); err != nil {
 		return err
 	}
+	if err := r.pruneConfigMaps(ctx, namespace, matchLabels, expected.configMaps); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -183,6 +206,7 @@ type expectedApplyResources struct {
 	httpRoutes   map[string]struct{}
 	secrets      map[string]struct{}
 	statefulSets map[string]struct{}
+	configMaps   map[string]struct{}
 }
 
 func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources {
@@ -192,6 +216,7 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		httpRoutes:   make(map[string]struct{}),
 		secrets:      make(map[string]struct{}),
 		statefulSets: make(map[string]struct{}),
+		configMaps:   make(map[string]struct{}),
 	}
 	if objects == nil {
 		return resources
@@ -203,6 +228,11 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.deployments[workload.WorkloadName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
+		// 期望状态已层级化：每个 ConfigBlock 映射一个 ConfigMap
+		// "{workload}-config-{sanitize(block)}"（specs/045-deploy-config/contracts/runtime-contract.md §2）。
+		for _, cb := range workload.ConfigBlocks {
+			resources.configMaps[configMapName(workload, cb.Block)] = struct{}{}
+		}
 	}
 	for _, workload := range objects.HTTPRoutes {
 		if workload == nil {
@@ -224,6 +254,9 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.statefulSets[workload.WorkloadName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
+		for _, cb := range workload.ConfigBlocks {
+			resources.configMaps[configMapName(workload, cb.Block)] = struct{}{}
+		}
 	}
 
 	return resources
@@ -269,6 +302,9 @@ func (r *K8sRuntime) Delete(ctx context.Context, envName domain.EnvironmentName)
 		return err
 	}
 	if err := r.deleteSecrets(ctx, namespace, matchLabels); err != nil {
+		return err
+	}
+	if err := r.deleteConfigMaps(ctx, namespace, matchLabels); err != nil {
 		return err
 	}
 
@@ -433,6 +469,7 @@ func (r *K8sRuntime) ReservedEnvironmentVariableNames(_ context.Context) ([]stri
 		envS3AccessKey,
 		envS3SecretKey,
 		envSecretDir,
+		envConfigDir,
 	}, nil
 }
 
@@ -1012,6 +1049,96 @@ func applyTypedSecret(ctx context.Context, name string, client coretypedv1.Secre
 	desired.ResourceVersion = current.ResourceVersion
 	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindSecret, name, err)
+	}
+
+	return nil
+}
+
+// applyConfigMaps 按 BuildConfigMaps 返回顺序（ConfigBlocks 列表顺序）逐个 apply workload
+// 的全部 per-block ConfigMap（Get→Create-if-NotFound→Update-with-ResourceVersion，
+// specs/045-deploy-config/contracts/runtime-contract.md §2）。
+func (r *K8sRuntime) applyConfigMaps(ctx context.Context, workload configMapWorkload) error {
+	if workload == nil {
+		return fmt.Errorf("failed to build %s <nil>: config workload 为空", resourceKindConfigMap)
+	}
+
+	desired, err := BuildConfigMaps(workload, r.client.K8sConfig)
+	if err != nil {
+		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindConfigMap, workload.WorkloadName(), err)
+	}
+	for _, cm := range desired {
+		if err := applyTypedConfigMap(ctx, cm.Name,
+			r.client.TypedClient.CoreV1().ConfigMaps(cm.Namespace), cm); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func applyTypedConfigMap(ctx context.Context, name string, client coretypedv1.ConfigMapInterface, desired *corev1.ConfigMap) error {
+	current, err := client.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
+				return fmt.Errorf("创建 %s %s 失败: %w", resourceKindConfigMap, name, err)
+			}
+			return nil
+		}
+
+		return fmt.Errorf("获取 %s %s 失败: %w", resourceKindConfigMap, name, err)
+	}
+
+	desired.ResourceVersion = current.ResourceVersion
+	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindConfigMap, name, err)
+	}
+
+	return nil
+}
+
+func (r *K8sRuntime) deleteConfigMaps(ctx context.Context, namespace string, matchLabels labels.Set) error {
+	configMaps, err := r.client.TypedClient.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("列出 %s %s 失败: %w", resourceKindConfigMap, namespace, err)
+	}
+
+	for _, cm := range configMaps.Items {
+		if !hasAllLabels(cm.Labels, matchLabels) {
+			continue
+		}
+		if err := r.client.TypedClient.CoreV1().ConfigMaps(namespace).Delete(ctx, cm.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("删除 %s %s/%s 失败: %w", resourceKindConfigMap, namespace, cm.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *K8sRuntime) pruneConfigMaps(ctx context.Context, namespace string, matchLabels labels.Set, expected map[string]struct{}) error {
+	configMaps, err := r.client.TypedClient.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("列出 %s %s 失败: %w", resourceKindConfigMap, namespace, err)
+	}
+
+	for _, cm := range configMaps.Items {
+		if !hasAllLabels(cm.Labels, matchLabels) {
+			continue
+		}
+		if _, ok := expected[cm.Name]; ok {
+			continue
+		}
+		if err := r.client.TypedClient.CoreV1().ConfigMaps(namespace).Delete(ctx, cm.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("删除 %s %s/%s 失败: %w", resourceKindConfigMap, namespace, cm.Name, err)
+		}
 	}
 
 	return nil

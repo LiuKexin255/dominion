@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"dominion/tools/release/deploy/pkg/workspace"
 
 	"github.com/goccy/go-yaml"
+	yamlv3 "gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -67,6 +69,8 @@ type DeployArtifact struct {
 	Env map[string]string `yaml:"env,omitempty"`
 	// Secrets 指定该产物需要注入的密钥绑定引用。
 	Secrets map[string]*SecretBindingRef `yaml:"secrets,omitempty"`
+	// Config 指定选中的配置块名列表（仅选择不覆盖，须存在于 service.yaml 配置块池）。
+	Config []string `yaml:"configs,omitempty"`
 }
 
 // DeployInfra 表示基于基础设施的部署定义。
@@ -116,6 +120,22 @@ type ServiceConfig struct {
 	URI string `yaml:"uri,omitempty"`
 
 	Kind WorkloadKind `yaml:"kind,omitempty"`
+
+	// Configs 顶层配置块池，所有 artifact 共享（见 specs/045-deploy-config/data-model.md §1）。
+	Configs []*ServiceConfigBlock `yaml:"configs,omitempty"`
+}
+
+// ServiceConfigBlock 顶层声明的命名配置块，是所有 artifact 共享的配置定义池中的一个条目。
+type ServiceConfigBlock struct {
+	Name string                `yaml:"name"`
+	Data []*ServiceConfigEntry `yaml:"data"`
+}
+
+// ServiceConfigEntry 配置块内的一个数据条目，是 SDK 读取与深度合并的最小单位。
+type ServiceConfigEntry struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+	Type  string `yaml:"type"` // "json" | "yaml"
 }
 
 type ServiceArtifact struct {
@@ -231,6 +251,10 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 		c.Version = "2.0"
 	}
 
+	if err := validateServiceConfigs(c.Configs); err != nil {
+		return nil, err
+	}
+
 	configURI, err := workspace.ToURI(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("解析服务配置 URI 失败: %w", err)
@@ -252,6 +276,51 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 	}
 
 	return c, nil
+}
+
+// validateServiceConfigs 校验配置块声明：配置块名与块内条目名唯一（FR-004），
+// value 格式与 type 一致（FR-003）。schema 层只校验字段形状（pattern/enum/minLength 等），
+// 重复名与格式校验按职责划分在 Go 层实施（见 specs/045-deploy-config/contracts/yaml-schema.md §3）。
+func validateServiceConfigs(configs []*ServiceConfigBlock) error {
+	blockNames := make(map[string]struct{}, len(configs))
+	for _, block := range configs {
+		if _, ok := blockNames[block.Name]; ok {
+			return fmt.Errorf("配置块 %q 重复声明", block.Name)
+		}
+		blockNames[block.Name] = struct{}{}
+
+		entryNames := make(map[string]struct{}, len(block.Data))
+		for _, entry := range block.Data {
+			if _, ok := entryNames[entry.Name]; ok {
+				return fmt.Errorf("配置块 %q 内条目 %q 重复声明", block.Name, entry.Name)
+			}
+			entryNames[entry.Name] = struct{}{}
+
+			if err := validateConfigValueFormat(block.Name, entry); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateConfigValueFormat 按条目 type 校验 value 的格式（FR-003）：
+// json 须可被 encoding/json 解析，yaml 须可被 yaml.v3 解析。
+// 非 json/yaml 的 type 由 schema 的 enum 拒绝（contracts/yaml-schema.md §3），此处不重复校验。
+func validateConfigValueFormat(blockName string, entry *ServiceConfigEntry) error {
+	switch entry.Type {
+	case "json":
+		var v any
+		if err := json.Unmarshal([]byte(entry.Value), &v); err != nil {
+			return fmt.Errorf("配置块 %q 条目 %q 的 value 不是合法 json: %w", blockName, entry.Name, err)
+		}
+	case "yaml":
+		var v any
+		if err := yamlv3.Unmarshal([]byte(entry.Value), &v); err != nil {
+			return fmt.Errorf("配置块 %q 条目 %q 的 value 不是合法 yaml: %w", blockName, entry.Name, err)
+		}
+	}
+	return nil
 }
 
 // uriDir 返回 URI 的目录部分，保留 "//" 前缀。

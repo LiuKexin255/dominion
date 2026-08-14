@@ -62,6 +62,13 @@ const (
 	// envSecretDir 为 Secret 挂载目录环境变量名。
 	envSecretDir = "DOMINION_SECRET_DIR"
 
+	// configVolumeName 为 Config projected volume 固定名称。
+	configVolumeName = "dominion-config"
+	// configMountPath 为 Config 文件固定挂载目录。
+	configMountPath = "/mnt/dominion/config"
+	// envConfigDir 为 Config 挂载目录环境变量名（平台保留，用户 env 不可覆盖）。
+	envConfigDir = "DOMINION_CONFIG_DIR"
+
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
 	// statefulSetPodNameLabelKey 为 StatefulSet Pod 单实例选择器标签。
@@ -235,6 +242,17 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		})
 	}
 
+	// Config 投影：仅当有 ≥1 个 config block 时创建卷/挂载/发现变量
+	// （specs/045-deploy-config/data-model.md §5 触发条件，与 secret 的 R6 行为对称）。
+	// 单一 projected volume，每个配置块一个 ConfigMap source，KeyToPath 还原
+	// 容器内 {block}/{key} 目录（contracts/runtime-contract.md §2）。
+	if len(workload.ConfigBlocks) > 0 {
+		configVol, configMount, configEnv := buildConfigProjection(workload)
+		volumes = append(volumes, configVol)
+		volumeMounts = append(volumeMounts, configMount)
+		containerEnv = append(containerEnv, configEnv)
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.WorkloadName(),
@@ -393,6 +411,15 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		})
 	}
 
+	// Config 投影：与 BuildDeployment 共用 buildConfigProjection
+	// （specs/045-deploy-config/contracts/runtime-contract.md §2）。
+	if len(workload.ConfigBlocks) > 0 {
+		configVol, configMount, configEnv := buildConfigProjection(workload)
+		volumes = append(volumes, configVol)
+		volumeMounts = append(volumeMounts, configMount)
+		containerEnv = append(containerEnv, configEnv)
+	}
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.WorkloadName(),
@@ -422,6 +449,121 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 			},
 		},
 	}, nil
+}
+
+// configMapName 返回 workload 指定配置块对应的 ConfigMap 名，格式
+// "{workload}-config-{sanitize(block)}"：block 成分经 sanitizeNamePart 清洗
+// （specs/045-deploy-config/contracts/runtime-contract.md §2）。K8s metadata.name
+// 要求 RFC 1123 DNS subdomain（禁 `_`），而块名 schema 允许 `_`（与 secret 逻辑名
+// pattern 一致），故仅在资源名边界清洗，data key 与容器内路径仍用原始块名；
+// sanitizeNamePart 即 newObjectName 清洗 env/service 名成分的既有函数（naming.go）。
+// builder（BuildConfigMaps/投影段）与 executor（buildExpectedApplyResources）共用，
+// 避免命名字符串漂移。
+func configMapName(workload configMapWorkload, block string) string {
+	return workload.WorkloadName() + "-config-" + sanitizeNamePart(block)
+}
+
+// buildConfigProjection 构造 config 投影所需的 volume、volumeMount 与
+// DOMINION_CONFIG_DIR 环境变量：单一 projected volume，每个配置块一个
+// ConfigMapProjection source，每条目经 KeyToPath 还原为容器内 {block}/{key} 路径
+// （specs/045-deploy-config/contracts/runtime-contract.md §2）。
+// BuildDeployment 与 BuildStatefulSet 共用（仅当 len(ConfigBlocks) > 0 时调用）。
+// 期望状态已层级化（ConfigBlocks 块包含条目），直接迭代即可，无需重新分组。
+func buildConfigProjection(workload configMapWorkload) (corev1.Volume, corev1.VolumeMount, corev1.EnvVar) {
+	var sources []corev1.VolumeProjection
+	for _, cb := range workload.configBlocks() {
+		items := make([]corev1.KeyToPath, 0, len(cb.Entries))
+		for _, ce := range cb.Entries {
+			items = append(items, corev1.KeyToPath{
+				Key:  ce.Key,                  // ConfigMap data key = 条目名
+				Path: cb.Block + "/" + ce.Key, // 容器内路径 {block}/{key}
+			})
+		}
+		sources = append(sources, corev1.VolumeProjection{
+			ConfigMap: &corev1.ConfigMapProjection{
+				LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(workload, cb.Block)},
+				Items:                items,
+			},
+		})
+	}
+
+	volume := corev1.Volume{
+		Name: configVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{Sources: sources},
+		},
+	}
+	mount := corev1.VolumeMount{Name: configVolumeName, MountPath: configMountPath, ReadOnly: true}
+	env := corev1.EnvVar{Name: envConfigDir, Value: configMountPath}
+
+	return volume, mount, env
+}
+
+// BuildConfigMaps 为 workload 的每个 ConfigBlock 生成一个 ConfigMap object：命名
+// "{workload}-config-{sanitize(block)}"（block 成分经 sanitizeNamePart 清洗，
+// 见 configMapName），data key 为条目名（块内唯一，原样），value 为原始
+// 数据文本；返回顺序按 workload.ConfigBlocks 列表顺序（确定性，compiler 已保留
+// service.yaml 声明顺序，无需重新分组）。Labels 与
+// Deployment/StatefulSet 一致（app/service/environment/managed-by）。
+// 每个名字做三项 fail-fast 校验（错误信息含 workload 名、原始 block 名与计算名，
+// 见 specs/045-deploy-config/contracts/runtime-contract.md §2 命名与长度校验）：
+//  1. 63 字符上限（长度随 per-block 命名进一步加长）；
+//  2. 清洗后为空（块名全为非法字符——schema 合法块名以 [a-z] 开头不会触发，
+//     仅防御绕过 schema 的非 CLI 客户端）；
+//  3. 清洗后碰撞（不同原始块名清洗为同一 ConfigMap 名，如 service_config 与
+//     service-config；schema/domain 唯一性均为清洗前唯一性，不排除此情况）。
+//
+// 仅当 len(workload.ConfigBlocks) > 0 时由 executor 调用。
+func BuildConfigMaps(workload configMapWorkload, cfg *K8sConfig) ([]*corev1.ConfigMap, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("config workload 为空")
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("k8s config 为空")
+	}
+
+	objectLabels := buildLabels(
+		withApp(workload.app()),
+		withService(workload.serviceName()),
+		withDominionEnvironment(workload.environmentName()),
+		withManagedBy(cfg.ManagedBy),
+	)
+
+	// seen 维护"计算名 → 原始块名"映射：计算名已存在即错误——原始块名不同为
+	// 清洗碰撞，相同为重复块（已由 domain VR-CB-6 拒绝，此处为防御纵深兜底）。
+	seen := make(map[string]string)
+	configMaps := make([]*corev1.ConfigMap, 0, len(workload.configBlocks()))
+	for _, cb := range workload.configBlocks() {
+		name := configMapName(workload, cb.Block)
+		if len(name) > maxK8sResourceNameSize {
+			return nil, fmt.Errorf("configmap name %q (workload=%q block=%q) 超过 %d 字符上限",
+				name, workload.WorkloadName(), cb.Block, maxK8sResourceNameSize)
+		}
+		if sanitized := sanitizeNamePart(cb.Block); sanitized == "" {
+			return nil, fmt.Errorf("configmap name %q (workload=%q block=%q) 清洗后为空: 块名不含任何 RFC 1123 合法字符",
+				name, workload.WorkloadName(), cb.Block)
+		}
+		if prev, ok := seen[name]; ok {
+			return nil, fmt.Errorf("configmap name %q (workload=%q) 冲突: block %q 与 block %q 清洗后得到同一名字",
+				name, workload.WorkloadName(), prev, cb.Block)
+		}
+		seen[name] = cb.Block
+
+		data := make(map[string]string, len(cb.Entries))
+		for _, ce := range cb.Entries {
+			data[ce.Key] = ce.Value
+		}
+		configMaps = append(configMaps, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: cfg.Namespace,
+				Labels:    map[string]string(objectLabels),
+			},
+			Data: data,
+		})
+	}
+
+	return configMaps, nil
 }
 
 // BuildGoverningService 将 stateful workload 构造成 governing headless Service 对象。

@@ -272,6 +272,13 @@ message ArtifactSpec {
   bool oss_enabled = 10;
 
   repeated SecretBinding secret_bindings = 11;
+
+  // config_blocks carries the configuration blocks selected for this artifact,
+  // structured as block → entries (mirrors service.yaml configs[]). Each block
+  // is materialized as one ConfigMap object (see
+  // specs/045-deploy-config/contracts/runtime-contract.md §2). Empty when the
+  // deployment selects no config blocks.
+  repeated ConfigBlock config_blocks = 12;
 }
 
 message ArtifactPortSpec {
@@ -294,6 +301,31 @@ message SecretBinding {
   // key is the key within the secret resource from which to retrieve the
   // value (e.g., "password").
   string key = 3;
+}
+
+// ConfigBlock 是一个配置块，对齐 service.yaml 顶层 configs[]。控制面据此为
+// 每个块创建一个独立的 ConfigMap object（见
+// specs/045-deploy-config/contracts/runtime-contract.md §2）。
+message ConfigBlock {
+  // block 是 service.yaml 中声明的配置块名（SDK 第一寻址参数 / ConfigMap 名后缀）。
+  string block = 1;
+
+  // entries 是该块内的数据条目列表，每条目对应 ConfigMap 的一个 data key。
+  repeated ConfigEntry entries = 2;
+}
+
+// ConfigEntry 是配置块内的一个数据条目，对齐 service.yaml configs[].data[]。
+message ConfigEntry {
+  // key 是条目名（块内唯一），SDK 第二寻址参数、运行时文件名、ConfigMap data key。
+  string key = 1;
+
+  // type 是格式类型 "json"|"yaml"，保留以备审计；
+  // 运行时 SDK 一律用 YAML 解析，此字段不被 SDK 使用（见 specs/045-deploy-config/research.md R4）。
+  string type = 2;
+
+  // value 是原始数据文本（service.yaml configs[].data[].value 原样），
+  // 成为 ConfigMap data 的内容。
+  string value = 3;
 }
 
 message InfraSpec {

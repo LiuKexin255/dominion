@@ -77,6 +77,12 @@ func TestConnect_ProbeSuccess(t *testing.T) {
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
+	// chatStreams is required from Connect onward: the continuous reader
+	// (readLoop) starts at the end of Connect, and its RecvFrame errors as
+	// soon as the mock server closes the connection after the probe — the
+	// reader then appends a synthesized wait (FR-010,
+	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1).
+	app.chatStreams = chatstream.NewRegistry(logger)
 
 	status, err := app.Connect("saolei", "test-session")
 
@@ -509,14 +515,39 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 	}
 }
 
-// TestRecvLoop_AppendsToChatStream verifies the T6 delivery-hop refactor:
-// recvLoop delivers inbound WS frames to the session's chat stream via
-// chatStreams.Append (with stable monotonic IDs) instead of the former
-// runtime.EventsEmit("game:frame"). A content frame followed by a wait
-// signal must both land in the log, in order, terminating the loop.
-func TestRecvLoop_AppendsToChatStream(t *testing.T) {
-	// given: a mock WS server that sends one content frame then a wait signal
-	contentFrame := &game.TeamFrame{
+// waitForStreamEvents polls the chat stream snapshot until it holds at least
+// want events or the 2s deadline elapses, returning the latest snapshot and
+// whether the target was reached. The continuous reader (readLoop) appends
+// asynchronously and no longer terminates on wait (FR-008), so tests must
+// poll the stream instead of waiting on recvDone.
+func waitForStreamEvents(stream *chatstream.ChatStream, want int) ([]*chatstream.ChatEvent, bool) {
+	deadline := time.After(2 * time.Second)
+	for {
+		sub, snap := stream.Subscribe(0)
+		sub.Close()
+		if len(snap) >= want {
+			return snap, true
+		}
+		select {
+		case <-deadline:
+			return snap, false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// TestReadLoop_AppendsToChatStream verifies the T6 delivery-hop refactor in
+// the continuous-reader model: readLoop delivers inbound WS frames to the
+// session's chat stream via chatStreams.Append (with stable monotonic IDs)
+// instead of the former runtime.EventsEmit("game:frame"). A content frame, a
+// wait signal, and a second content frame must all land in the log, in order —
+// the wait MUST NOT terminate the reader
+// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.3,
+// FR-008).
+func TestReadLoop_AppendsToChatStream(t *testing.T) {
+	// given: a mock WS server that sends a content frame, a wait signal, and
+	// then another content frame (proving the reader survives turn boundaries)
+	contentFrame1 := &game.TeamFrame{
 		SessionId:  "recv-session",
 		TemplateId: "saolei",
 		FrameId:    "srv-content-1",
@@ -532,9 +563,19 @@ func TestRecvLoop_AppendsToChatStream(t *testing.T) {
 		FrameId:    "srv-wait-1",
 		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
+	contentFrame2 := &game.TeamFrame{
+		SessionId:  "recv-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-content-2",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "next turn's frame"}}},
+			}},
+		},
+	}
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		for _, f := range []*game.TeamFrame{contentFrame, waitFrame} {
+		for _, f := range []*game.TeamFrame{contentFrame1, waitFrame, contentFrame2} {
 			data, _ := proto.Marshal(f)
 			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 				return
@@ -565,48 +606,55 @@ func TestRecvLoop_AppendsToChatStream(t *testing.T) {
 	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "recv-session", "test-env"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer app.ws.Close()
 
-	// when: run recvLoop (terminates on the wait signal)
+	// when: run the continuous reader (it survives wait — FR-008)
 	app.recvDone = make(chan struct{})
-	go app.recvLoop("recv-session", "user-frame-1")
+	go app.readLoop("recv-session")
 
-	select {
-	case <-app.recvDone:
-		// recvLoop terminated on the wait signal
-	case <-time.After(3 * time.Second):
-		t.Fatal("recvLoop did not terminate within 3s")
+	// then: all three frames were appended with monotonic 1-based IDs
+	snap, ok := waitForStreamEvents(stream, 3)
+	if !ok {
+		t.Fatalf("readLoop appended %d events within 2s, want 3 (content, wait, content)", len(snap))
 	}
-
-	// then: both frames were appended with monotonic 1-based IDs
-	if got := stream.LastID(); got != 2 {
-		t.Fatalf("LastID = %d, want 2 (content + wait)", got)
-	}
-	_, snap := stream.Subscribe(0)
-	if len(snap) != 2 {
-		t.Fatalf("snapshot length = %d, want 2", len(snap))
-	}
-	if snap[0].ID != 1 || snap[1].ID != 2 {
-		t.Errorf("event IDs = [%d, %d], want [1, 2]", snap[0].ID, snap[1].ID)
+	if snap[0].ID != 1 || snap[1].ID != 2 || snap[2].ID != 3 {
+		t.Errorf("event IDs = [%d, %d, %d], want [1, 2, 3]", snap[0].ID, snap[1].ID, snap[2].ID)
 	}
 	// first appended frame is the received messageParts frame
 	if snap[0].Frame.GetMessageParts() == nil {
 		t.Errorf("snap[0] expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
 	}
-	// second appended frame is the received wait signal (turn terminus),
-	// carried as a FlowParts kind.
+	// second appended frame is the wait signal (turn terminus), carried as a
+	// FlowParts kind — and it does NOT stop the reader.
 	waitFlow := snap[1].Frame.GetFlowParts()
 	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
 		t.Errorf("snap[1] expected FlowParts wait payload, got %T", snap[1].Frame.GetPayload())
 	}
+	// third appended frame proves the reader continued after wait (FR-008)
+	if snap[2].Frame.GetMessageParts() == nil {
+		t.Errorf("snap[2] expected MessageParts payload, got %T", snap[2].Frame.GetPayload())
+	}
+
+	// and: the wait did NOT terminate the reader — recvDone is still open
+	select {
+	case <-app.recvDone:
+		t.Fatal("readLoop terminated on the wait signal; it must survive wait (FR-008)")
+	default:
+	}
+
+	// cleanup: tear the socket down so the reader exits cleanly
+	if err := app.CloseAgent(); err != nil {
+		t.Fatalf("CloseAgent() unexpected error: %v", err)
+	}
 }
 
-// TestRecvLoop_SynthesizesWaitOnRecvError verifies the T6 error path: when
-// RecvFrame errors, recvLoop appends a synthesized TeamFrame_Wait that
-// reuses the in-flight turn's frameID (F13b) so the frontend can settle the
-// turn before the failure surfaces. The synthesized wait lands in the log
-// after any frames already delivered, with a monotonic id.
-func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
+// TestReadLoop_SynthesizesWaitOnRecvError verifies the T6 error path in the
+// continuous-reader model: when RecvFrame errors, readLoop appends a
+// synthesized TeamFrame_Wait carrying readLoopEndFrameID so the frontend can
+// settle the turn before the failure surfaces (F13b; FR-010,
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
+// Exit). The synthesized wait lands in the log after any frames already
+// delivered, with a monotonic id.
+func TestReadLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 	// given: mock WS server that sends one content frame then closes the
 	// connection, causing the next RecvFrame to error.
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
@@ -651,10 +699,10 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 		t.Fatalf("registry Open: %v", err)
 	}
 
-	// when: run recvLoop synchronously — it appends the content frame, then
+	// when: run readLoop synchronously — it appends the content frame, then
 	// on the next RecvFrame error appends a synthesized wait and returns.
 	app.recvDone = make(chan struct{})
-	app.recvLoop("sess-recv", "turn-frame-id")
+	app.readLoop("sess-recv")
 
 	// then: the log carries exactly 2 events with monotonic ids 1 and 2.
 	if got := stream.LastID(); got != 2 {
@@ -674,28 +722,30 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 		t.Fatal("event 0: expected MessageParts payload, got nil")
 	}
 
-	// event 2: the synthesized wait (a FlowParts kind) reusing the in-flight
-	// turn's frameID (F13b).
+	// event 2: the synthesized wait (a FlowParts kind) carrying the
+	// reader-end frame marker (F13b).
 	waitFrame := snap[1].Frame
 	waitFlow := waitFrame.GetFlowParts()
 	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
 		t.Fatal("event 1: expected FlowParts wait payload, got nil")
 	}
-	if got := waitFrame.GetFrameId(); got != "turn-frame-id" {
-		t.Errorf("event 1 FrameId = %q, want %q (F13b: synthesized wait reuses turn frameID)", got, "turn-frame-id")
+	if got := waitFrame.GetFrameId(); got != readLoopEndFrameID {
+		t.Errorf("event 1 FrameId = %q, want %q (synthesized wait carries the reader-end marker)", got, readLoopEndFrameID)
 	}
 }
 
-// TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored verifies the US1
-// recvLoop behavior (spec 023 FR-005/FR-010, research.md D8; spec 025
-// FR-023/FR-024): an inbound operation FlowPart is executed and its
-// FlowResultPart is sent back over the WebSocket to the agent on the control
-// channel — but the operation request and the result are NOT appended to the
-// chatstream (operations never render as conversation entries; the screenshot
-// the conversation shows comes from the agent's later tool_result MessagePart,
+// TestReadLoop_ExecutesOperationAndSendsResultNotMirrored verifies the US1
+// readLoop behavior (spec 023 FR-005/FR-010, research.md D8; spec 025
+// FR-023/FR-024; FR-009 in
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.2):
+// an inbound operation FlowPart is executed and its FlowResultPart is sent
+// back over the WebSocket to the agent on the control channel — but the
+// operation request and the result are NOT appended to the chatstream
+// (operations never render as conversation entries; the screenshot the
+// conversation shows comes from the agent's later tool_result MessagePart,
 // not a desktop mirror). Only the terminating wait FlowPart lands in the
 // chatstream.
-func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
+func TestReadLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	// given: mock WS server sends a flowParts frame with a MouseClickPart, then
 	// a wait signal. It captures client-sent frames (the tool result) so the
 	// test can assert the result was returned to the agent over the WS.
@@ -768,17 +818,12 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "op-session", "test-env"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer app.ws.Close()
 
-	// when: run recvLoop (terminates on the wait signal)
+	// when: run the continuous reader (the wait signal does NOT terminate it —
+	// FR-008)
 	app.recvDone = make(chan struct{})
-	go app.recvLoop("op-session", "user-frame-1")
-
-	select {
-	case <-app.recvDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("recvLoop did not terminate within 3s")
-	}
+	go app.readLoop("op-session")
+	t.Cleanup(func() { app.CloseAgent() })
 
 	// then: the operation was executed and its result sent to the agent over
 	// the WS as a flowParts frame carrying a flowResult (FAILED: no window).
@@ -803,10 +848,10 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	}
 
 	// and: the chatstream does NOT mirror the operation request or the result —
-	// only the terminating wait FlowPart is appended (FR-005/FR-010).
-	_, snap := stream.Subscribe(0)
-	if len(snap) != 1 {
-		t.Fatalf("chatstream snapshot length = %d, want 1 (only the wait signal; "+
+	// only the wait FlowPart is appended (FR-005/FR-010).
+	snap, ok := waitForStreamEvents(stream, 1)
+	if !ok {
+		t.Fatalf("chatstream snapshot has %d events within 2s, want 1 (only the wait signal; "+
 			"operations and results are not mirrored)", len(snap))
 	}
 	waitFlow := snap[0].Frame.GetFlowParts()
@@ -815,14 +860,14 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	}
 }
 
-// TestRecvLoop_ExecutesNewPartKinds is the regression guard for the recvLoop
+// TestReadLoop_ExecutesNewPartKinds is the regression guard for the readLoop
 // filter: it must admit KeyboardPressPart and MouseMoveAndClickPart (the two
 // operation kinds from spec 018-saolei-mcp FR-004a/FR-004b), not just
 // MouseMovePart/MouseClickPart. Each subtest sends one operation kind through
-// recvLoop with no window bound, so executeAgentOperation fails fast — but a
+// readLoop with no window bound, so executeAgentOperation fails fast — but a
 // FlowResultPart is still produced and sent over the WS (spec 025 FR-023). If
 // the filter regresses (drops the operation), no result is sent.
-func TestRecvLoop_ExecutesNewPartKinds(t *testing.T) {
+func TestReadLoop_ExecutesNewPartKinds(t *testing.T) {
 	tests := []struct {
 		name   string
 		part   *game.FlowPart
@@ -851,21 +896,22 @@ func TestRecvLoop_ExecutesNewPartKinds(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			runRecvLoopFilterAdmissionTest(t, tt.part, tt.toolID)
+			runReadLoopFilterAdmissionTest(t, tt.part, tt.toolID)
 		})
 	}
 }
 
-// runRecvLoopFilterAdmissionTest verifies op passes the recvLoop filter and
+// runReadLoopFilterAdmissionTest verifies op passes the readLoop filter and
 // reaches executeAgentOperation by asserting a FlowResultPart with toolID is
 // sent back over the WS (and NOT mirrored into the chatstream). The setup
-// mirrors TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored but is
+// mirrors TestReadLoop_ExecutesOperationAndSendsResultNotMirrored but is
 // intentionally minimal — this is a regression guard for filter admission.
-func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID string) {
+func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID string) {
 	t.Helper()
 
-	// given: a flowParts frame carrying the op, followed by a wait signal that
-	// terminates recvLoop. The server captures client-sent frames.
+	// given: a flowParts frame carrying the op, followed by a wait signal. The
+	// wait does NOT terminate the continuous reader (FR-008); the server
+	// captures client-sent frames.
 	contentFrame := &game.TeamFrame{
 		SessionId:  "filter-session",
 		TemplateId: "saolei",
@@ -929,17 +975,12 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "filter-session", "test-env"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer app.ws.Close()
 
-	// when: run recvLoop (terminates on the wait signal)
+	// when: run the continuous reader (the wait signal does NOT terminate it —
+	// FR-008)
 	app.recvDone = make(chan struct{})
-	go app.recvLoop("filter-session", "user-frame-1")
-
-	select {
-	case <-app.recvDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("recvLoop did not terminate within 3s")
-	}
+	go app.readLoop("filter-session")
+	t.Cleanup(func() { app.CloseAgent() })
 
 	// then: a FlowResultPart with toolID was sent over the WS as a flowParts
 	// frame. If the filter dropped op, no result is sent (regression).
@@ -962,6 +1003,662 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
 		t.Errorf("status = %v, want FAILED (no window selected — expected precondition failure, not filter rejection)",
 			resultPart.GetStatus())
+	}
+}
+
+// TestConnect_StartsContinuousReaderReceivesBackgroundFrame verifies SC-003
+// and specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+// §3.1 Start (specs/041-realtime-init-push/research.md D5): Connect starts
+// the continuous reader after the
+// status probe, so a background messageParts frame — produced with NO user
+// turn, e.g. the init instruction — is appended to the chat stream
+// automatically (FR-002).
+func TestConnect_StartsContinuousReaderReceivesBackgroundFrame(t *testing.T) {
+	// given: mock WS server that answers the probe, then pushes a background
+	// messageParts frame with no user turn in between
+	backgroundFrame := &game.TeamFrame{
+		SessionId:  "bg-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-bg-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "background instruction"}}},
+			}},
+		},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		probeResp := &game.TeamFrame{
+			SessionId:  "bg-session",
+			TemplateId: "saolei",
+			FrameId:    "probe-resp",
+			Payload: &game.TeamFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
+			},
+		}
+		data, _ := proto.Marshal(probeResp)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		data, _ = proto.Marshal(backgroundFrame)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		select {} // keep the connection open until the client tears it down
+	})
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("bg-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("bg-session")
+
+	// when: Connect — which starts the continuous reader after the probe
+	if _, err := app.Connect("saolei", "bg-session"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { app.CloseAgent() })
+
+	// then: the background frame arrives with no user turn (SC-003)
+	snap, ok := waitForStreamEvents(stream, 1)
+	if !ok {
+		t.Fatalf("background frame not appended within 2s; snapshot has %d events", len(snap))
+	}
+	if snap[0].Frame.GetMessageParts() == nil {
+		t.Errorf("expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
+	}
+
+	// and: the reader keeps running after delivering it (recvDone open —
+	// FR-002 continuous delivery)
+	select {
+	case <-app.recvDone:
+		t.Fatal("readLoop exited after delivering the background frame; it must run for the connection lifetime")
+	default:
+	}
+}
+
+// TestReadLoop_BackgroundMessagePartsSynthesizesNoStatus verifies the US2
+// desktop half (specs/041-realtime-init-push/spec.md FR-003, SC-002;
+// contracts/realtime-channel-contract.md §3.2/§2.4): when the continuous
+// reader receives a background messageParts frame — e.g. the init instruction
+// (messageParts only, no wait/status, specs/041-realtime-init-push/contracts/
+// realtime-channel-contract.md §2.4) — it appends the frame
+// to the chat stream and synthesizes NO status ACTIVE signal on top. Any
+// injected ACTIVE/typing signal would appear as a further flowParts status
+// event; the stream must hold exactly the one messageParts event.
+func TestReadLoop_BackgroundMessagePartsSynthesizesNoStatus(t *testing.T) {
+	// given: a mock WS server that pushes a single background messageParts
+	// frame (no user turn, no flowParts) and keeps the connection open
+	bgFrame := &game.TeamFrame{
+		SessionId:  "bg-no-status",
+		TemplateId: "saolei",
+		FrameId:    "srv-bg-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "background instruction"}}},
+			}},
+		},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		data, _ := proto.Marshal(bgFrame)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		select {} // keep the connection open until the client tears it down
+	})
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("bg-no-status", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("bg-no-status")
+
+	app.ws = &api.WSClient{}
+	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "bg-no-status", "test-env"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	// when: run the continuous reader over the background frame
+	app.recvDone = make(chan struct{})
+	go app.readLoop("bg-no-status")
+
+	// then: the messageParts frame lands in the chat stream...
+	snap, ok := waitForStreamEvents(stream, 1)
+	if !ok {
+		t.Fatalf("background frame not appended within 2s; snapshot has %d events", len(snap))
+	}
+	if snap[0].Frame.GetMessageParts() == nil {
+		t.Errorf("expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
+	}
+
+	// ...and after a settle window the stream STILL holds exactly the one
+	// messageParts event: no synthesized status/typing signal (FR-003,
+	// contracts/realtime-channel-contract.md §3.2 — messageParts appends only;
+	// §2.4 — the init emits no status FlowPart).
+	time.Sleep(300 * time.Millisecond)
+	sub, after := stream.Subscribe(0)
+	defer sub.Close()
+	if len(after) != 1 {
+		t.Errorf("chat stream holds %d events after settle, want exactly 1 (no synthesized status/typing signal)", len(after))
+	}
+	if after[0].Frame.GetMessageParts() == nil {
+		t.Errorf("only event expected MessageParts payload, got %T", after[0].Frame.GetPayload())
+	}
+
+	// cleanup: tear the socket down so the reader exits cleanly
+	if err := app.CloseAgent(); err != nil {
+		t.Fatalf("CloseAgent() unexpected error: %v", err)
+	}
+}
+
+// TestSendUserTurn_StartsNoSecondReader verifies FR-012 /
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.4:
+// SendUserTurn only sends the UserFrame and MUST NOT start a second reader —
+// the continuous reader already running (started at Connect) reads the turn's
+// response frames.
+func TestSendUserTurn_StartsNoSecondReader(t *testing.T) {
+	// given: mock WS server that answers the probe, then reads the user turn
+	// and responds with a messageParts frame
+	turnResp := &game.TeamFrame{
+		SessionId:  "turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-turn-resp",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "turn response"}}},
+			}},
+		},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		probeResp := &game.TeamFrame{
+			SessionId:  "turn-session",
+			TemplateId: "saolei",
+			FrameId:    "probe-resp",
+			Payload: &game.TeamFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
+				}},
+			},
+		}
+		data, _ := proto.Marshal(probeResp)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		// wait for the user turn, then respond
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		data, _ = proto.Marshal(turnResp)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		select {} // keep the connection open until the client tears it down
+	})
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("turn-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("turn-session")
+
+	// when: Connect starts the continuous reader, then SendUserTurn submits
+	// a turn
+	if _, err := app.Connect("saolei", "turn-session"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { app.CloseAgent() })
+	connectDone := app.recvDone
+
+	if err := app.SendUserTurn("saolei", "turn-session", "open a cell", nil, 0, 0, "player"); err != nil {
+		t.Fatalf("SendUserTurn() unexpected error: %v", err)
+	}
+
+	// then: the turn response was read by the already-running reader
+	snap, ok := waitForStreamEvents(stream, 1)
+	if !ok {
+		t.Fatalf("turn response not appended within 2s; snapshot has %d events", len(snap))
+	}
+	if snap[0].Frame.GetMessageParts() == nil {
+		t.Errorf("expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
+	}
+
+	// and: SendUserTurn started no second reader — recvDone was not
+	// reassigned and the original reader is still alive (FR-012)
+	if app.recvDone != connectDone {
+		t.Fatal("SendUserTurn reassigned recvDone; it must not start a second reader (FR-012)")
+	}
+	select {
+	case <-app.recvDone:
+		t.Fatal("reader exited; it must keep running after SendUserTurn (FR-012)")
+	default:
+	}
+}
+
+// TestReadLoop_DeliversFullUserTurn verifies tasks.md T008 (a) — the SC-004
+// regression against the previous per-turn model: a full user turn's frames —
+// text, a tool call, an operation FlowPart (executed, its FlowResultPart
+// returned over the WS, NOT mirrored to the chatstream), and the terminal wait
+// — are all delivered by the already-running continuous reader started at
+// Connect (FR-002, FR-008, FR-009, FR-012;
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.2/§3.3;
+// specs/041-realtime-init-push/quickstart.md B6). The reader keeps running
+// after the terminal wait, ready for the next turn or background frames.
+func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
+	// given: a mock WS server answering the probe, then — after the user turn —
+	// streaming the complete turn response sequence (text, tool call,
+	// operation, terminal wait), while capturing client-sent frames (the tool
+	// result) over the WS.
+	textFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-text-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "agent reply text"}}},
+			}},
+		},
+	}
+	toolCallFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-toolcall-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_ToolCall{ToolCall: &game.ToolCallPart{
+					ToolId:   "tool-1",
+					Name:     "instruct_player",
+					ArgsJson: `{"instruction":"open a cell"}`,
+				}}},
+			}},
+		},
+	}
+	opFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-op-1",
+		Payload: &game.TeamFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{
+					ToolId: "click-1",
+					Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+				}}},
+			}},
+		},
+	}
+	waitFrame := &game.TeamFrame{
+		SessionId:  "full-turn-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-wait-1",
+		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
+	}
+	sentFrames := make(chan *game.TeamFrame, 4)
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		probeResp := &game.TeamFrame{
+			SessionId:  "full-turn-session",
+			TemplateId: "saolei",
+			FrameId:    "probe-resp",
+			Payload: &game.TeamFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
+			},
+		}
+		data, _ := proto.Marshal(probeResp)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		// wait for the user turn, then stream the full turn response. The
+		// result-capture goroutine starts only after the user-turn read so it
+		// does not steal the probe/user-turn frames.
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		go func() {
+			for {
+				_, data, err := conn.Read(ctx)
+				if err != nil {
+					return
+				}
+				var f game.TeamFrame
+				if err := proto.Unmarshal(data, &f); err == nil {
+					select {
+					case sentFrames <- &f:
+					default:
+					}
+				}
+			}
+		}()
+		for _, f := range []*game.TeamFrame{textFrame, toolCallFrame, opFrame, waitFrame} {
+			data, _ := proto.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+				return
+			}
+		}
+		select {} // keep the connection open until the client tears it down
+	})
+	defer srv.Close()
+
+	// given: an App wired with a chatstream Registry and a connected WSClient
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("full-turn-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("full-turn-session")
+
+	// when: Connect starts the continuous reader (after the probe), then the
+	// user submits a turn — SendUserTurn only sends, it starts no second
+	// reader (FR-012)
+	if _, err := app.Connect("saolei", "full-turn-session"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { app.CloseAgent() })
+	if err := app.SendUserTurn("saolei", "full-turn-session", "open a cell", nil, 0, 0, "player"); err != nil {
+		t.Fatalf("SendUserTurn() unexpected error: %v", err)
+	}
+
+	// then: the display frames land in the chatstream in order — text, tool
+	// call, terminal wait — with monotonic 1-based IDs
+	// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.2)
+	snap, ok := waitForStreamEvents(stream, 3)
+	if !ok {
+		t.Fatalf("full turn frames not appended within 2s; snapshot has %d events, want 3 (text, tool call, wait)", len(snap))
+	}
+	if snap[0].ID != 1 || snap[1].ID != 2 || snap[2].ID != 3 {
+		t.Errorf("event IDs = [%d, %d, %d], want [1, 2, 3]", snap[0].ID, snap[1].ID, snap[2].ID)
+	}
+	textParts := snap[0].Frame.GetMessageParts()
+	if textParts == nil || len(textParts.GetParts()) == 0 || textParts.GetParts()[0].GetText() == nil {
+		t.Errorf("snap[0] expected text MessageParts payload, got %T", snap[0].Frame.GetPayload())
+	}
+	toolParts := snap[1].Frame.GetMessageParts()
+	if toolParts == nil || len(toolParts.GetParts()) == 0 {
+		t.Errorf("snap[1] expected toolCall MessageParts payload, got %T", snap[1].Frame.GetPayload())
+	} else if got := toolParts.GetParts()[0].GetToolCall(); got == nil || got.GetName() != "instruct_player" {
+		t.Errorf("snap[1] expected instruct_player toolCall part, got %T", toolParts.GetParts()[0].GetKind())
+	}
+	waitFlow := snap[2].Frame.GetFlowParts()
+	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
+		t.Errorf("snap[2] expected FlowParts wait payload, got %T", snap[2].Frame.GetPayload())
+	}
+
+	// and: the operation was executed and its FlowResultPart sent back to the
+	// agent over the WS (FR-009,
+	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.2) with the same tool_id; status
+	// FAILED (no window selected)
+	var resultPart *game.FlowResultPart
+	deadline := time.After(2 * time.Second)
+	for resultPart == nil {
+		select {
+		case f := <-sentFrames:
+			fp := f.GetFlowParts()
+			if fp != nil && len(fp.GetParts()) > 0 {
+				resultPart = fp.GetParts()[0].GetFlowResult()
+			}
+		case <-deadline:
+			t.Fatal("no flow-result frame sent over WS within 2s")
+		}
+	}
+	if resultPart.GetToolId() != "click-1" {
+		t.Errorf("result tool_id = %q, want %q", resultPart.GetToolId(), "click-1")
+	}
+	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Errorf("result status = %v, want FAILED (no window selected)", resultPart.GetStatus())
+	}
+
+	// and: the operation request and its result are NOT mirrored into the
+	// chatstream — the stream still holds exactly the 3 display/control
+	// events (text, tool call, wait; FR-005/FR-009,
+	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.2)
+	sub, after := stream.Subscribe(0)
+	defer sub.Close()
+	if len(after) != 3 {
+		t.Errorf("chatstream holds %d events, want exactly 3 (operation and result are not mirrored)", len(after))
+	}
+
+	// and: the reader is still running after the terminal wait (FR-008,
+	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+	// §3.3) — recvDone stays open, ready for the next turn or
+	// background frames (FR-002)
+	select {
+	case <-app.recvDone:
+		t.Fatal("readLoop exited on the terminal wait; it must continue after wait (FR-008)")
+	default:
+	}
+}
+
+// TestConnect_ReconnectHandoverWaitsForPriorReader verifies the reconnect
+// handover (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+// §3.1; specs/041-realtime-init-push/research.md D4): a second Connect closes
+// the prior WS and waits on
+// the prior recvDone before starting a new reader, so the old reader has
+// exited and cannot close the new recvDone.
+func TestConnect_ReconnectHandoverWaitsForPriorReader(t *testing.T) {
+	// given: a mock WS server serving two connections — each answers the
+	// probe; both stay open so their readers keep running until torn down
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		probeResp := &game.TeamFrame{
+			SessionId:  "reconnect-session",
+			TemplateId: "saolei",
+			FrameId:    "probe-resp",
+			Payload: &game.TeamFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
+			},
+		}
+		data, _ := proto.Marshal(probeResp)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		// both connections stay open; the test tears them down via CloseAgent
+		select {}
+	})
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+	app.chatStreams = chatstream.NewRegistry(logger)
+
+	// when: first Connect starts reader 1
+	if _, err := app.Connect("saolei", "reconnect-session"); err != nil {
+		t.Fatalf("first Connect() unexpected error: %v", err)
+	}
+	firstDone := app.recvDone
+	t.Cleanup(func() { app.CloseAgent() })
+
+	// then: reader 1 is running
+	select {
+	case <-firstDone:
+		t.Fatal("reader 1 exited before reconnect; expected it running")
+	default:
+	}
+
+	// when: second Connect — reconnect handover waits on reader 1, then
+	// starts reader 2
+	if _, err := app.Connect("saolei", "reconnect-session"); err != nil {
+		t.Fatalf("second Connect() unexpected error: %v", err)
+	}
+	secondDone := app.recvDone
+
+	// then: reader 1 has exited (handover waited on it) and reader 2 is a
+	// fresh, running reader
+	select {
+	case <-firstDone:
+	default:
+		t.Fatal("reader 1 still running after reconnect handover; Connect must wait on the prior recvDone")
+	}
+	if secondDone == firstDone {
+		t.Fatal("second Connect reused the old recvDone; it must start a new reader")
+	}
+	select {
+	case <-secondDone:
+		t.Fatal("reader 2 exited immediately; expected it running")
+	default:
+	}
+}
+
+// TestCloseAgent_CleanClose verifies FR-010 /
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
+// Close: CloseAgent tears the socket down (unblocking the reader's
+// RecvFrame), waits on recvDone, and clears a.ws; the reader synthesizes a
+// terminal wait before exiting.
+func TestCloseAgent_CleanClose(t *testing.T) {
+	// given: mock WS server answering the probe, pushing one content frame,
+	// then staying open
+	contentFrame := &game.TeamFrame{
+		SessionId:  "close-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-content-1",
+		Payload: &game.TeamFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "last frame"}}},
+			}},
+		},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		if _, _, err := conn.Read(ctx); err != nil {
+			return
+		}
+		probeResp := &game.TeamFrame{
+			SessionId:  "close-session",
+			TemplateId: "saolei",
+			FrameId:    "probe-resp",
+			Payload: &game.TeamFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
+			},
+		}
+		data, _ := proto.Marshal(probeResp)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		data, _ = proto.Marshal(contentFrame)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+			return
+		}
+		select {} // keep the connection open until CloseAgent tears it down
+	})
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("close-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("close-session")
+
+	// given: a connected app with the continuous reader running
+	if _, err := app.Connect("saolei", "close-session"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	if _, ok := waitForStreamEvents(stream, 1); !ok {
+		t.Fatal("content frame not appended within 2s")
+	}
+
+	// when: CloseAgent tears the socket down
+	if err := app.CloseAgent(); err != nil {
+		t.Fatalf("CloseAgent() unexpected error: %v", err)
+	}
+
+	// then: the reader exited (recvDone closed) and a.ws was cleared
+	select {
+	case <-app.recvDone:
+	default:
+		t.Fatal("recvDone not closed after CloseAgent; reader still running")
+	}
+	if app.ws != nil {
+		t.Fatal("expected a.ws to be nil after CloseAgent")
+	}
+
+	// and: a synthesized terminal wait was appended after the content frame
+	// (FR-010, specs/041-realtime-init-push/contracts/
+	// realtime-channel-contract.md §3.1 Exit) — CloseAgent returns only after
+	// the
+	// reader appended it (it waits on recvDone, and the append precedes
+	// close(recvDone)), so no polling is needed.
+	sub, snap := stream.Subscribe(0)
+	defer sub.Close()
+	if len(snap) != 2 {
+		t.Fatalf("snapshot length = %d, want 2 (content + synthesized wait)", len(snap))
+	}
+	waitFlow := snap[1].Frame.GetFlowParts()
+	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
+		t.Errorf("snap[1] expected FlowParts wait payload, got %T", snap[1].Frame.GetPayload())
+	}
+	if got := snap[1].Frame.GetFrameId(); got != readLoopEndFrameID {
+		t.Errorf("snap[1] FrameId = %q, want %q", got, readLoopEndFrameID)
 	}
 }
 
@@ -1836,6 +2533,35 @@ func TestSetSelectedWindow(t *testing.T) {
 	}
 }
 
+// TestGetSelectedWindow verifies the Wails-bound getter returns the stored
+// handle (and 0 when no window is selected), so the frontend can restore the
+// dropdown selection on session re-entry (spec 025 FR-001/FR-006).
+func TestGetSelectedWindow(t *testing.T) {
+	// given: a fresh App with no selected window
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// when: nothing selected
+	got, err := app.GetSelectedWindow()
+	if err != nil {
+		t.Fatalf("GetSelectedWindow() unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("expected selectedWin=0 (none selected), got %d", got)
+	}
+
+	// when: a window was selected
+	app.SetSelectedWindow(1234)
+	got, err = app.GetSelectedWindow()
+	if err != nil {
+		t.Fatalf("GetSelectedWindow() unexpected error: %v", err)
+	}
+	if got != 1234 {
+		t.Errorf("expected selectedWin=1234, got %d", got)
+	}
+}
+
 // Test_resolveSelectedWindow_NoSelection verifies FR-005: with no window
 // selected, resolveSelectedWindow fails gracefully with "no window selected".
 func Test_resolveSelectedWindow_NoSelection(t *testing.T) {
@@ -1979,7 +2705,7 @@ func TestCaptureScreenshot_SelectionButCaptureFails(t *testing.T) {
 //
 // These tests cover the Wails bindings added in T025
 // (specs/031-team-template-mode/contracts/desktop-contract.md §4): the
-// template-scoped session bindings, the Team bindings (GetTeam/CreateTeam/
+// template-scoped session bindings, the Team bindings (GetTeam/UpdateTeam/
 // RefreshTeam), and the TeamProfile CRUD bindings. They follow the same
 // httptest-server pattern as the pre-existing binding tests.
 
@@ -2118,31 +2844,35 @@ func TestGetTeam_NotFound(t *testing.T) {
 	}
 }
 
-// TestCreateTeam_Success verifies CreateTeam delegates to client with the
-// TeamProfile resource name and returns the created Team view.
-func TestCreateTeam_Success(t *testing.T) {
-	// given: mock server responding to POST /api/v1/templates/saolei/sessions/s1/team
+// TestUpdateTeam_Success verifies UpdateTeam delegates to client with the
+// TeamProfile resource name, PATCH method, Team body, and allow_missing query,
+// and returns the updated Team view.
+func TestUpdateTeam_Success(t *testing.T) {
+	// given: mock server responding to PATCH /api/v1/templates/saolei/sessions/s1/team
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
+		if r.Method != http.MethodPatch {
+			t.Errorf("expected PATCH, got %s", r.Method)
 		}
 		wantPath := "/api/v1/templates/saolei/sessions/s1/team"
 		if r.URL.Path != wantPath {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
+		if got := r.URL.Query().Get("allow_missing"); got != "true" {
+			t.Errorf("expected allow_missing true, got %q", got)
+		}
 		body, _ := io.ReadAll(r.Body)
-		req := new(game.CreateTeamRequest)
+		req := new(game.Team)
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
 			t.Fatalf("failed to parse request body: %v", err)
 		}
-		if req.GetParent() != "templates/saolei/sessions/s1" {
-			t.Errorf("expected parent %q, got %q", "templates/saolei/sessions/s1", req.GetParent())
+		if req.GetName() != "templates/saolei/sessions/s1/team" {
+			t.Errorf("expected name %q, got %q", "templates/saolei/sessions/s1/team", req.GetName())
 		}
 		if req.GetProfile() != "templates/saolei/profiles/p1" {
 			t.Errorf("expected profile %q, got %q", "templates/saolei/profiles/p1", req.GetProfile())
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1/team","agents":[{"name":"player","acceptsUserInput":true},{"name":"planner","acceptsUserInput":false}],"createTime":"2024-01-01T00:00:00Z"}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1/team","profile":"templates/saolei/profiles/p1","agents":[{"name":"player","acceptsUserInput":true},{"name":"planner","acceptsUserInput":false}],"createTime":"2024-01-01T00:00:00Z"}`)
 	}))
 	defer srv.Close()
 
@@ -2152,14 +2882,14 @@ func TestCreateTeam_Success(t *testing.T) {
 	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
 
 	// when
-	view, err := app.CreateTeam("saolei", "s1", "templates/saolei/profiles/p1")
+	view, err := app.UpdateTeam("saolei", "s1", "templates/saolei/profiles/p1", []string{"profile"}, true)
 
 	// then
 	if err != nil {
-		t.Fatalf("CreateTeam() unexpected error: %v", err)
+		t.Fatalf("UpdateTeam() unexpected error: %v", err)
 	}
 	if view == nil {
-		t.Fatal("CreateTeam() returned nil view")
+		t.Fatal("UpdateTeam() returned nil view")
 	}
 	if len(view.Agents) != 2 {
 		t.Fatalf("expected 2 agents, got %d", len(view.Agents))
@@ -2169,22 +2899,22 @@ func TestCreateTeam_Success(t *testing.T) {
 	}
 }
 
-// TestCreateTeam_EmptyProfile verifies CreateTeam rejects an empty profile.
-func TestCreateTeam_EmptyProfile(t *testing.T) {
+// TestUpdateTeam_EmptyProfile verifies UpdateTeam rejects an empty profile.
+func TestUpdateTeam_EmptyProfile(t *testing.T) {
 	// given: App with no client
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 
 	// when
-	view, err := app.CreateTeam("saolei", "s1", "")
+	view, err := app.UpdateTeam("saolei", "s1", "", nil, true)
 
 	// then
 	if err == nil {
-		t.Fatal("CreateTeam() expected error for empty profile, got nil")
+		t.Fatal("UpdateTeam() expected error for empty profile, got nil")
 	}
 	if view != nil {
-		t.Fatal("CreateTeam() expected nil view on error")
+		t.Fatal("UpdateTeam() expected nil view on error")
 	}
 	if !strings.Contains(err.Error(), "profile") {
 		t.Errorf("error should mention profile, got %q", err.Error())

@@ -13,6 +13,7 @@ go_library(
         "//tools/release/deploy/pkg/schema",
         "//tools/release/deploy/pkg/workspace",
         "@com_github_goccy_go_yaml//:go-yaml",
+        "@in_gopkg_yaml_v3//:yaml_v3",
         "@io_k8s_apimachinery//pkg/api/resource",
     ],
 )
@@ -21,6 +22,7 @@ go_unittest(
     name = "config_test",
     srcs = [
         "config_test.go",
+        "configs_test.go",
         "v3_test.go",
     ],
     data = glob(["testdata/**"]),

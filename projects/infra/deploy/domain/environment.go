@@ -458,6 +458,7 @@ func cloneArtifacts(artifacts []*ArtifactSpec) []*ArtifactSpec {
 				spec.SecretBindings[j] = &cp
 			}
 		}
+		spec.ConfigBlocks = cloneConfigBlocks(artifact.ConfigBlocks)
 		cloned[i] = &spec
 	}
 

@@ -33,17 +33,17 @@
 
 ### 2.2 TeamService（取代 ProxyService；`templates/{template}/sessions/{session}/...`）
 
-> 原 `ProxyService`/`AgentService`（重复）合并为 TeamService。**Team 由 `CreateTeam` 显式创建（设计决策：新增 CreateTeam RPC，Agent 移除懒加载模式）**——不再随 Connect 隐式存在。`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` 均要求 Team 已创建（未创建 → NOT_FOUND）；profile 由 CreateTeamRequest 显式传入，不再使用固定默认 profile。
+> 原 `ProxyService`/`AgentService`（重复）合并为 TeamService。**Team 为 [AIP-156](https://google.aip.dev/156) 单例，经 `UpdateTeam(allow_missing=true)` 物化（[AIP-134 create-or-update](https://google.aip.dev/134#create-or-update)）**——不再随 Connect 隐式存在。`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` 均要求 Team 已物化（未物化 → NOT_FOUND）；profile 由 UpdateTeamRequest 的 team 体显式传入，不再使用固定默认 profile。**[SUPERSEDED — see Feature 040]**: 本节原 `CreateTeam`（AIP-133 显式创建）设计被 [`specs/040-team-singleton-conformance/contracts/api-contract.md`](../../040-team-singleton-conformance/contracts/api-contract.md) §2 supersede——移除 CreateTeam、新增 UpdateTeam；原"不同 profile → ALREADY_EXISTS"的 AIP-133 偏离注（下注）被 040 FR-007 移除。
 
 | RPC | 方法/路径 | 说明 |
 |---|---|---|
-| `CreateTeam` | POST `/api/v1/{parent=templates/*/sessions/*}/team`（body `"*"`） | **AIP-133 显式创建（唯一创建点）**：请求携带 parent Session + profile（TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`，AIP-122——template 段 MUST 与 parent 一致，handler 校验，禁潜规则）；响应为 Team 资源。代理侧为唯一 owner 分配点；重复 create：**profile 相同 → 幂等返回既有 Team；profile 不同 → ALREADY_EXISTS（details 携带既有 profile）**（per-session 单例，desktop create-if-missing 流程可安全重试；仅 profile 相同时才不返回 AIP-133 严格 ALREADY_EXISTS，理由：单例资源 + 桌面竞态场景，见下注） |
-| `GetTeam` | GET `/api/v1/{name=templates/*/sessions/*/team}` | 返回 Team（含 `agents` 描述，D3）；未创建 → NOT_FOUND |
-| `Connect` | bidi stream（无 REST） | 端点 `templates/{template}/sessions/{session}/connect`（FR-004）；stream `AgentFrame`。**不分配 owner/不创建 Team**——未创建 → NOT_FOUND（agent 端经 stream error 通道下发该状态）。**帧路由对**：frame 携带 `template_id`+`session_id`（均裸段；gateway 从 connect URL 路径注入两字段，覆盖客户端值）；proxy 据此对直接构造 Session 资源名（`game.SessionName{TemplateID, SessionID}`，不再解析全名） |
-| `ListMessages` | GET `/api/v1/{parent=templates/*/sessions/*/team/agents/*}/messages` | 按 agent 分区（FR-005）；未创建 → NOT_FOUND |
-| `RefreshTeam` | POST `/api/v1/{name=templates/*/sessions/*/team}:refresh` | 取代 RefreshAgent（FR-008）；清空短期记忆（FR-018）；未创建 → NOT_FOUND |
+| `UpdateTeam` | PATCH `/api/v1/{team.name=templates/*/sessions/*/team}`（body `team`） | **取代 CreateTeam（040 supersede，见 §2.2 下 Update 语义注）**。唯一物化点（[AIP-134 create-or-update](https://google.aip.dev/134#create-or-update) + [AIP-156](https://google.aip.dev/156)，最终契约见 [`specs/040-team-singleton-conformance/contracts/api-contract.md`](../../040-team-singleton-conformance/contracts/api-contract.md) §2）：请求体为 Team 资源（`name` + profile——TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`，AIP-122——template 段 MUST 与 `team.name` 一致，handler 校验，禁潜规则）；`allow_missing=true` 缺失则物化、存在则更新（profile 变更触发 graph 重建）；代理侧为唯一 owner 分配点；重复 Update（同 profile）天然幂等返回既有 Team；配置路径不外泄 ALREADY_EXISTS（原"异 profile → ALREADY_EXISTS"偏离已移除，040 FR-007） |
+| `GetTeam` | GET `/api/v1/{name=templates/*/sessions/*/team}` | 返回 Team（含 `agents` 描述，D3；响应含 `profile`，040 FR-004）；未物化 → NOT_FOUND |
+| `Connect` | bidi stream（无 REST） | 端点 `templates/{template}/sessions/{session}/connect`（FR-004）；stream `AgentFrame`。**不分配 owner/不物化 Team**——未物化 → NOT_FOUND（agent 端经 stream error 通道下发该状态）。**帧路由对**：frame 携带 `template_id`+`session_id`（均裸段；gateway 从 connect URL 路径注入两字段，覆盖客户端值）；proxy 据此对直接构造 Session 资源名（`game.SessionName{TemplateID, SessionID}`，不再解析全名） |
+| `ListMessages` | GET `/api/v1/{parent=templates/*/sessions/*/team/agents/*}/messages` | 按 agent 分区（FR-005）；未物化 → NOT_FOUND |
+| `RefreshTeam` | POST `/api/v1/{name=templates/*/sessions/*/team}:refresh` | 取代 RefreshAgent（FR-008）；清空短期记忆（FR-018）；未物化 → NOT_FOUND |
 
-> **幂等 create 注（相对 AIP-133 的偏离，用户细化决策）**：AIP-133（https://google.aip.dev/133）要求重复创建返回 `ALREADY_EXISTS`。本契约将 Team 视为 per-session 单例（资源 id 为字面量 `team`），且 desktop 的"发送消息时 NotFound 则 CreateTeam"流程天然存在并发重试（多标签页竞态）——**重复 create 且 profile 相同**时返回既有 Team（幂等）而非 ALREADY_EXISTS，避免竞态下桌面收到伪错误；**重复 create 且 profile 不同**时返回 ALREADY_EXISTS（details 携带既有 profile），因该重入并非幂等重试而是配置不一致。profile 比较在 agent 层（`SessionTeamStore.create`，map 记录每 session 创建时所用 profile）；proxy 层 owner 分配独立幂等（`assignOwner` 在 `ErrOwnerAlreadyExists` 并发竞态下重读既有 owner 而非报错）。该偏离在实现与测试中显式记录。
+> **Update 语义注（040 supersede，取代原"幂等 create 注"）**：原相对 [AIP-133](https://google.aip.dev/133) 的幂等 create 偏离（"重复 create 且 profile 相同 → 幂等返回既有 Team；profile 不同 → ALREADY_EXISTS"）已被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) **移除**（040 FR-007）：`UpdateTeam(allow_missing=true)` 天然幂等——缺失则物化、同 profile 幂等返回既有 Team、异 profile 重建 graph，配置路径不外泄 ALREADY_EXISTS（行为矩阵见 040 [`api-contract.md`](../../040-team-singleton-conformance/contracts/api-contract.md) §2.3）。profile 比较在 agent 层（`SessionTeamStore.update`，map 记录每 session 当前所用 profile）；proxy 层 owner 分配独立幂等（`assignOwner` 在 `ErrOwnerAlreadyExists` 并发竞态下重读既有 owner 而非报错），**proxy 始终 `assignOwner`、不 inspect `allow_missing`**——allow_missing 是 Team 资源语义，由 agent `SessionTeamStore.update` 处理（040 [`api-contract.md`](../../040-team-singleton-conformance/contracts/api-contract.md) §2.5）。
 
 `Connect` 用户输入帧路由给"接受用户输入"的 agent（FR-032；saolei 中 player）。frame `AgentFrame.agent` 标识来源 agent。
 
@@ -105,8 +105,9 @@ message TeamAgent {
 message Team {
   option (google.api.resource) = { pattern: "templates/{template}/sessions/{session}/team" ... };
   string name = 1;
-  repeated TeamAgent agents = 2;  // 来自模板 graph schema（D3）
-  google.protobuf.Timestamp create_time = 3;
+  string profile = 2;           // 040 新增（FR-004）：Team 当前所基于的 TeamProfile 全名；可经 UpdateTeam 变更（重建 graph）
+  repeated TeamAgent agents = 3;  // 来自模板 graph schema（D3）
+  google.protobuf.Timestamp create_time = 4;
 }
 ```
 

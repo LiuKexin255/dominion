@@ -476,36 +476,41 @@ func TestClient_GetTeam(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestClient_CreateTeam
+// TestClient_UpdateTeam
 // ---------------------------------------------------------------------------
 
-func TestClient_CreateTeam(t *testing.T) {
+func TestClient_UpdateTeam(t *testing.T) {
 	tests := []struct {
-		name       string
-		template   string
-		sessionID  string
-		profile    string
-		statusCode int
-		respBody   string
-		wantErr    bool
+		name            string
+		template        string
+		sessionID       string
+		profile         string
+		updateMaskPaths []string
+		allowMissing    bool
+		statusCode      int
+		respBody        string
+		wantErr         bool
 	}{
 		{
-			name:       "success",
-			template:   "saolei",
-			sessionID:  "sess-1",
-			profile:    "templates/saolei/profiles/p1",
-			statusCode: http.StatusOK,
-			respBody:   `{"name":"templates/saolei/sessions/sess-1/team","agents":[{"name":"player","acceptsUserInput":true}],"createTime":"2024-01-01T00:00:00Z"}`,
-			wantErr:    false,
+			name:            "success materialize with allow_missing",
+			template:        "saolei",
+			sessionID:       "sess-1",
+			profile:         "templates/saolei/profiles/p1",
+			updateMaskPaths: []string{"profile"},
+			allowMissing:    true,
+			statusCode:      http.StatusOK,
+			respBody:        `{"name":"templates/saolei/sessions/sess-1/team","profile":"templates/saolei/profiles/p1","agents":[{"name":"player","acceptsUserInput":true}],"createTime":"2024-01-01T00:00:00Z"}`,
+			wantErr:         false,
 		},
 		{
-			name:       "conflict with different profile",
-			template:   "saolei",
-			sessionID:  "sess-2",
-			profile:    "templates/saolei/profiles/p2",
-			statusCode: http.StatusConflict,
-			respBody:   `{"error":"already exists"}`,
-			wantErr:    true,
+			name:         "not found without allow_missing",
+			template:     "saolei",
+			sessionID:    "sess-2",
+			profile:      "templates/saolei/profiles/p2",
+			allowMissing: false,
+			statusCode:   http.StatusNotFound,
+			respBody:     `{"error":"not found"}`,
+			wantErr:      true,
 		},
 	}
 
@@ -513,21 +518,31 @@ func TestClient_CreateTeam(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost {
-					t.Errorf("expected POST, got %s", r.Method)
+				if r.Method != http.MethodPatch {
+					t.Errorf("expected PATCH, got %s", r.Method)
 				}
 				wantPath := "/api/v1/templates/" + tt.template + "/sessions/" + tt.sessionID + "/team"
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
+				if tt.allowMissing {
+					if got := r.URL.Query().Get("allow_missing"); got != "true" {
+						t.Errorf("expected allow_missing true, got %q", got)
+					}
+				} else if got := r.URL.Query().Get("allow_missing"); got != "" {
+					t.Errorf("expected no allow_missing query when false, got %q", got)
+				}
+				if got := r.URL.Query().Get("update_mask"); got != strings.Join(tt.updateMaskPaths, ",") {
+					t.Errorf("expected update_mask %q, got %q", strings.Join(tt.updateMaskPaths, ","), got)
+				}
 				body, _ := io.ReadAll(r.Body)
-				req := new(game.CreateTeamRequest)
+				req := new(game.Team)
 				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
 					t.Fatalf("failed to parse request body: %v", err)
 				}
-				wantParent := "templates/" + tt.template + "/sessions/" + tt.sessionID
-				if req.GetParent() != wantParent {
-					t.Errorf("expected parent %q, got %q", wantParent, req.GetParent())
+				wantName := "templates/" + tt.template + "/sessions/" + tt.sessionID + "/team"
+				if req.GetName() != wantName {
+					t.Errorf("expected name %q, got %q", wantName, req.GetName())
 				}
 				if req.GetProfile() != tt.profile {
 					t.Errorf("expected profile %q, got %q", tt.profile, req.GetProfile())
@@ -540,15 +555,15 @@ func TestClient_CreateTeam(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			team, err := client.CreateTeam(context.Background(), tt.template, tt.sessionID, tt.profile)
+			team, err := client.UpdateTeam(context.Background(), tt.template, tt.sessionID, tt.profile, tt.updateMaskPaths, tt.allowMissing)
 
 			// then
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if !strings.Contains(err.Error(), "create team") {
-					t.Errorf("error should contain 'create team', got %q", err.Error())
+				if !strings.Contains(err.Error(), "update team") {
+					t.Errorf("error should contain 'update team', got %q", err.Error())
 				}
 				return
 			}
@@ -560,6 +575,9 @@ func TestClient_CreateTeam(t *testing.T) {
 			}
 			if team.GetName() != "templates/saolei/sessions/sess-1/team" {
 				t.Errorf("expected name %q, got %q", "templates/saolei/sessions/sess-1/team", team.GetName())
+			}
+			if team.GetProfile() != tt.profile {
+				t.Errorf("expected profile %q, got %q", tt.profile, team.GetProfile())
 			}
 		})
 	}

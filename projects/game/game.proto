@@ -60,20 +60,26 @@ service SessionService {
 //
 // Prefix Path: /api/v1/templates/{template}/sessions/{session}
 service TeamService {
-  // CreateTeam creates the Team of a Session explicitly (AIP-133:
-  // https://google.aip.dev/133). The Team is a per-session singleton — its
-  // resource id is the literal "team" — so the request carries the parent
-  // Session and the TeamProfile (full resource name) the team is built from.
-  // CreateTeam is the ONLY Team creation point: GetTeam/Connect/ListMessages/
-  // RefreshTeam require the Team to already exist (no lazy creation — the
-  // former implicit creation with a fixed default profile is removed, spec
-  // 031-team-template-mode design decision).
-  rpc CreateTeam(CreateTeamRequest) returns (Team) {
+  // UpdateTeam is the Team singleton's materialization and mutation point
+  // (AIP-156: https://google.aip.dev/156; AIP-134 create-or-update:
+  // https://google.aip.dev/134#create-or-update). The Team is a per-session
+  // singleton — its resource id is the literal "team" — so there is no Create
+  // RPC (AIP-156: singleton resources must not define the Create/Delete
+  // standard methods): allow_missing=true materializes the Team on the first
+  // call, repeated calls with the same profile are idempotent, and a different
+  // profile updates it (team graph rebuild, FR-005 of
+  // specs/040-team-singleton-conformance/spec.md). It replaces the former
+  // CreateTeam (specs/040-team-singleton-conformance/contracts/api-contract.md
+  // §2). UpdateTeam is the ONLY Team creation point: GetTeam/Connect/
+  // ListMessages/RefreshTeam require the Team to already exist (no lazy
+  // creation — the former implicit creation with a fixed default profile is
+  // removed, specs/031-team-template-mode/ design decision).
+  rpc UpdateTeam(UpdateTeamRequest) returns (Team) {
     option (google.api.http) = {
-      post: "/api/v1/{parent=templates/*/sessions/*}/team"
-      body: "*"
+      patch: "/api/v1/{team.name=templates/*/sessions/*/team}"
+      body: "team"
     };
-    option (google.api.method_signature) = "parent,profile";
+    option (google.api.method_signature) = "team,update_mask";
   }
 
   // GetTeam gets the Team of a Session. AIP-131: https://google.aip.dev/131
@@ -168,6 +174,51 @@ service PromptService {
   }
 }
 
+// MemoryService manages Memory resources — the planner's long-term memory
+// entries scoped to a Session (spec 039 FR-006). Memory is a child of a
+// Session (AIP-122: https://google.aip.dev/122), resource pattern
+// templates/{template}/sessions/{session}/memories/{memory} (FR-012); the
+// {memory} segment is the memory service's internal memory_id.
+//
+// Prefix Path: /api/v1/templates/{template}/sessions/{session}/memories
+service MemoryService {
+  // CreateMemory creates a new Memory under a session. AIP-133:
+  // https://google.aip.dev/133
+  rpc CreateMemory(CreateMemoryRequest) returns (Memory) {
+    option (google.api.http) = {
+      post: "/api/v1/{parent=templates/*/sessions/*}/memories"
+      body: "memory"
+    };
+    option (google.api.method_signature) = "parent,memory,memory_id";
+  }
+
+  // UpdateMemory updates a Memory. AIP-134: https://google.aip.dev/134
+  rpc UpdateMemory(UpdateMemoryRequest) returns (Memory) {
+    option (google.api.http) = {
+      patch: "/api/v1/{memory.name=templates/*/sessions/*/memories/*}"
+      body: "memory"
+    };
+    option (google.api.method_signature) = "memory,update_mask";
+  }
+
+  // DeleteMemory deletes a Memory. AIP-135: https://google.aip.dev/135
+  rpc DeleteMemory(DeleteMemoryRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/{name=templates/*/sessions/*/memories/*}"
+    };
+    option (google.api.method_signature) = "name";
+  }
+
+  // ListMemories lists Memories under a session. AIP-132:
+  // https://google.aip.dev/132; AIP-158 (pagination): https://google.aip.dev/158
+  rpc ListMemories(ListMemoriesRequest) returns (ListMemoriesResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/{parent=templates/*/sessions/*}/memories"
+    };
+    option (google.api.method_signature) = "parent";
+  }
+}
+
 // ─── Shared Resources ──────────────────────────────────────────────────────
 
 // Template is the top-level resource-hierarchy path segment. It is a resource
@@ -222,10 +273,13 @@ message TeamAgent {
 }
 
 // Team is the execution subject of a Session, replacing the former Agent
-// resource (clean break, FR-003). It is created explicitly via CreateTeam
-// (AIP-133) — the only creation point — and cannot be created lazily or
-// independently; its agents are exported from the template's graph schema
-// definition (typed, not hard-coded by clients).
+// resource (clean break, FR-003). It is an AIP-156 singleton
+// (https://google.aip.dev/156): there is no Create/Delete RPC — it is
+// materialized via UpdateTeam(allow_missing=true) (AIP-134 create-or-update:
+// https://google.aip.dev/134#create-or-update), replacing the former explicit
+// CreateTeam (AIP-133: https://google.aip.dev/133). It cannot be created lazily or independently; its
+// agents are exported from the template's graph schema definition (typed, not
+// hard-coded by clients).
 message Team {
   option (google.api.resource) = {
     type: "game.liukexin.com/Team"
@@ -235,8 +289,19 @@ message Team {
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  repeated TeamAgent agents = 2;
-  google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The TeamProfile full resource name the team is built from (AIP-122:
+  // https://google.aip.dev/122); mutable. Set at materialization via
+  // UpdateTeam.team.profile; changing it rebuilds the team graph (FR-004/
+  // FR-005 of specs/040-team-singleton-conformance/spec.md).
+  string profile = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/TeamProfile"
+    }
+  ];
+  // Derived from the template's graph schema; not client-settable.
+  repeated TeamAgent agents = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // TeamProfile is the per-template team configuration resource, replacing the
@@ -288,6 +353,26 @@ message SaoleiProfile {
   // The planner's base prompt; empty = unset = fall back to the template
   // default base (FR-034 of specs/031-team-template-mode/spec.md).
   string planner_prompt = 4;
+}
+
+// Memory is one planner long-term memory entry of a Session, stored by the
+// memory service (spec 039 FR-006; AIP-122 resource names:
+// https://google.aip.dev/122). The {memory} pattern segment is the memory
+// service's internal memory_id, generated by the agent on add and never
+// visible to the LLM (spec 039 Session 2026-08-08 / FR-008).
+message Memory {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Memory"
+    pattern: "templates/{template}/sessions/{session}/memories/{memory}"
+    plural: "memories"
+    singular: "memory"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string memory_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string content = 3;
+  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // MessageRole identifies the sender role of a persisted conversation Message
@@ -363,10 +448,15 @@ enum KeyboardKey {
 //   - MessagePart (display only) — rendered in the conversation and carried by
 //     Message (history) and TeamFrame.message_parts (live): text, thinking,
 //     image, tool_call (the model's semantic tool invocation), tool_result.
-//   - FlowPart (control only — NEVER rendered in the conversation) — drives
-//     desktop execution (mouse/keyboard operations) and turn control
-//     (wait/warn/status). A FlowPart is consumed, not displayed
-//     (spec 023 FR-005).
+//   - FlowPart (control only) — drives desktop execution (mouse/keyboard
+//     operations) and turn control (wait/warn/status). FlowParts are never
+//     rendered as conversation entries, with one documented exception:
+//     WarnSignal (warn) is surfaced by the desktop as a distinct warning
+//     bubble (⚠) in the conversation view — it is a control signal that
+//     carries a user-facing recoverable-error notice. All other FlowPart
+//     kinds remain consumed, not displayed (spec 023 FR-005;
+//     specs/044-llm-stall-recovery-fix/contracts/desktop-rendering-contract.md
+//     §2).
 //
 // This split is structural rather than a render-time filter, so a FlowPart can
 // never accidentally render as a chat entry. Live frames and persisted history
@@ -402,9 +492,15 @@ message MessagePart {
 
 // FlowPart is one control-only block. It drives desktop execution (mouse/
 // keyboard operations), carries the operation-execution result back to the
-// agent (flow_result), and conveys turn control (wait/warn/status); it is NEVER
-// rendered as a conversation entry (spec 023 FR-005; spec 025 FR-023/FR-024).
-// The operation kinds reuse the existing operation Part messages verbatim
+// agent (flow_result), and conveys turn control (wait/warn/status). FlowParts
+// are never rendered as conversation entries, with one documented exception:
+// WarnSignal (warn) is surfaced by the desktop as a distinct warning bubble
+// (⚠) in the conversation view — it is a control signal that carries a
+// user-facing recoverable-error notice (spec 023 FR-005; spec 025
+// FR-023/FR-024;
+// specs/044-llm-stall-recovery-fix/contracts/desktop-rendering-contract.md
+// §2). The operation kinds reuse the existing operation Part messages
+// verbatim
 // (MouseMovePart, MouseClickPart, KeyboardPressPart, MouseMoveAndClickPart —
 // fields unchanged from spec 018). The signal kinds (wait/warn/status) reuse
 // the existing signal messages. flow_result is the control-channel counterpart
@@ -444,14 +540,25 @@ message FlowParts {
   repeated FlowPart parts = 1;
 }
 
+// Describes whether a content part was fully produced or truncated mid-stream.
+// Set on the tail content block of a partial reply persisted after a stream
+// stall (spec 044 FR-005). protojson omits the zero value, so a normal part
+// serializes without the field (forward-compatible with older clients).
+enum PartCompletion {
+  PART_COMPLETION_UNSPECIFIED = 0;
+  PART_COMPLETION_INTERRUPTED = 1;
+}
+
 // TextPart carries visible text content.
 message TextPart {
   string content = 1;
+  PartCompletion completion = 2;  // truncated-mid-stream marker (spec 044 FR-005)
 }
 
 // ThinkingPart carries reasoning / intermediate process content.
 message ThinkingPart {
   string content = 1;
+  PartCompletion completion = 2;  // same semantics as TextPart.completion
 }
 
 // ImagePart carries an image (e.g. a captured screenshot).
@@ -544,8 +651,11 @@ message FlowResultPart {
 //
 // WaitSignal / WarnSignal / StatusSignal carry turn-control signals. Per the
 // content-model split (spec 023 C3 / FR-003) they are FlowPart kinds — carried
-// by TeamFrame.flow_parts and never rendered as conversation entries. Their
-// message shapes are unchanged from spec 018.
+// by TeamFrame.flow_parts and never rendered as conversation entries, with the
+// single documented exception of WarnSignal (warn), which the desktop surfaces
+// as a distinct warning bubble (⚠) in the conversation view (spec 044 FR-012;
+// specs/044-llm-stall-recovery-fix/contracts/desktop-rendering-contract.md
+// §2). Their message shapes are unchanged from spec 018.
 //
 // QueueSignal (spec 030 FR-008) is an additive FlowPart signal that carries
 // the per-session queue depth; see specs/030-queued-chat-input/contracts/
@@ -760,34 +870,6 @@ message GetTeamRequest {
   ];
 }
 
-// CreateTeamRequest creates the Team of a Session (AIP-133:
-// https://google.aip.dev/133). The Team is a per-session singleton (resource
-// id = the literal "team"), so there is no resource body and no
-// team_id field: the parent Session plus the TeamProfile (full resource
-// name, AIP-122) identify the team and its configuration. The profile's
-// template segment MUST match the parent's template segment — the handler
-// validates the consistency (no implicit rules).
-message CreateTeamRequest {
-  // The session under which the Team is created.
-  // Format: templates/{template}/sessions/{session}
-  string parent = 1 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = {
-      child_type: "game.liukexin.com/Team"
-    }
-  ];
-  // The TeamProfile the team is built from (resolves the template's
-  // player/planner models). Full resource name so the template is explicit
-  // and validated against the parent.
-  // Format: templates/{template}/profiles/{profile}
-  string profile = 2 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = {
-      type: "game.liukexin.com/TeamProfile"
-    }
-  ];
-}
-
 // RefreshTeamRequest refreshes a Session's Team (clears short-term memory).
 // AIP-136 custom method: https://google.aip.dev/136
 message RefreshTeamRequest {
@@ -858,4 +940,81 @@ message DeleteTeamProfileRequest {
       type: "game.liukexin.com/TeamProfile"
     }
   ];
+}
+
+// UpdateTeamRequest updates the Team singleton of a Session. AIP-134:
+// https://google.aip.dev/134. The resource's name field (Team.name, pattern
+// templates/{template}/sessions/{session}/team) is the target identity,
+// surfaced in the HTTP path via {team.name=...}; update_mask supports partial
+// updates. allow_missing=true materializes the singleton on the first call
+// (AIP-134 create-or-update: https://google.aip.dev/134#create-or-update) —
+// the only Team creation point (AIP-156: https://google.aip.dev/156),
+// replacing the former CreateTeam.
+message UpdateTeamRequest {
+  Team team = 1 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 2;
+  // If set, and the Team is not found, a new Team is materialized. In this
+  // situation, update_mask is ignored.
+  bool allow_missing = 3;
+}
+
+// CreateMemoryRequest creates a Memory under a session. AIP-133:
+// https://google.aip.dev/133. The resource is embedded in the request — the
+// memory text is carried by memory.content, not a top-level field. memory_id
+// is the memory service's internal resource id, generated by the agent on add
+// and never provided by the LLM (spec 039 Session 2026-08-08 / FR-008).
+message CreateMemoryRequest {
+  // The session to create the memory in.
+  // Format: templates/{template}/sessions/{session}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Memory"
+    }
+  ];
+  string memory_id = 2 [(google.api.field_behavior) = REQUIRED];
+  // The memory to create (AIP-133: the resource field maps to the POST body).
+  Memory memory = 3 [(google.api.field_behavior) = REQUIRED];
+}
+
+// UpdateMemoryRequest updates a Memory. AIP-134: https://google.aip.dev/134.
+// The resource's name field (Memory.name, pattern
+// templates/{template}/sessions/{session}/memories/{memory}) is the target
+// identity, surfaced in the HTTP path via {memory.name=...}. update_mask
+// supports partial updates (the only mutable Memory field is content; no
+// create-or-update — an absent resource errors with NOT_FOUND).
+message UpdateMemoryRequest {
+  Memory memory = 1 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+// DeleteMemoryRequest deletes a Memory. AIP-135: https://google.aip.dev/135
+message DeleteMemoryRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Memory"
+    }
+  ];
+}
+
+// ListMemoriesRequest lists Memories under a session. AIP-132:
+// https://google.aip.dev/132; AIP-158 (pagination): https://google.aip.dev/158
+message ListMemoriesRequest {
+  // The session to list memories from.
+  // Format: templates/{template}/sessions/{session}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Memory"
+    }
+  ];
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+// ListMemoriesResponse is the response for listing Memories.
+message ListMemoriesResponse {
+  repeated Memory memories = 1;
+  string next_page_token = 2;
 }

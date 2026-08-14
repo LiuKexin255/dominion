@@ -3,11 +3,12 @@
 // re-entry (spec 023 FR-012..FR-015), adapted to the saolei team model
 // (spec 031-team-template-mode): each test
 // sets up the team stack via setupTeamSession (session → saolei TeamProfile
-// → CreateTeam) before connecting — CreateTeam MUST precede Connect (no lazy
-// creation, FR-033). The former per-profile-model case moved to the
-// saolei_team suite; the former cross-profile-history case was removed (a
-// session's team is bound to one TeamProfile at CreateTeam — profile
-// switching no longer exists).
+// → UpdateTeam materialization) before connecting — UpdateTeam MUST precede
+// Connect (no lazy creation, FR-003). The former per-profile-model case moved
+// to the saolei_team suite; the former cross-profile-history case was removed
+// (a session's team is bound to one TeamProfile at materialization — profile
+// switching rebuilds the graph now, specs/040-team-singleton-conformance
+// FR-005).
 package testplan
 
 import (
@@ -265,15 +266,16 @@ func TestAgentCheckpointToolResultStatusPersists(t *testing.T) {
 		t.Fatal("turn 1: did not receive a tool_result MessagePart frame after the init reply")
 	}
 
-	// Play the desktop through the chained saolei_click{3,4} → {5,6}
-	// dispatches (sample_saolei_tools.yaml) so the turn completes.
+	// Play the desktop through the chained saolei_operate batch ops
+	// {3,4} → {5,6} (sample_saolei_tools.yaml — one operate call whose two
+	// ops dispatch in order) so the turn completes.
 	for _, step := range []struct{ cellX, cellY int32 }{
 		{saoleiClick1X, saoleiClick1Y},
 		{saoleiClick2X, saoleiClick2Y},
 	} {
 		clickFrame := readOperationFrame(t, conn)
 		if frameMouseMoveAndClick(clickFrame) == nil {
-			t.Fatalf("saolei_click(%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart", step.cellX, step.cellY)
+			t.Fatalf("saolei_operate op (%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart", step.cellX, step.cellY)
 		}
 		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
 			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,

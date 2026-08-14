@@ -56,13 +56,14 @@ func (s *MessageStore) Tools() []*ToolConfig {
 }
 
 // LoadFromFS reads every supported config file (.json/.yaml/.yml) under
-// rootDir in fsys. Files carrying a top-level `tools:` key are parsed
-// as tool configs; every remaining file is parsed as a single Message.
-// Messages are merged into one flat slice sorted alphabetically by Name;
-// tools are merged into another flat slice sorted alphabetically by
-// Name. Messages are then validated (at least one message is required;
-// tools are optional). It is the shared loader used by both the embedded
-// store and the tests.
+// rootDir in fsys. Each file's shape is detected by its top-level keys
+// (specs/046-fake-llm-think-chunking/data-model.md §4): a `tools:` key
+// marks a tool-config file, a `messages:` key marks a multi-message
+// file, and a file with neither key is parsed as a single Message. All
+// three shapes are merged into one flat message slice and one flat tool
+// slice, each sorted alphabetically by Name. Messages are then validated
+// (at least one message is required; tools are optional). It is the
+// shared loader used by both the embedded store and the tests.
 func LoadFromFS(fsys fs.FS, rootDir string) ([]*Message, []*ToolConfig, error) {
 	var paths []string
 	walkErr := fs.WalkDir(fsys, rootDir, func(path string, d fs.DirEntry, err error) error {
@@ -90,19 +91,12 @@ func LoadFromFS(fsys fs.FS, rootDir string) ([]*Message, []*ToolConfig, error) {
 		if readErr != nil {
 			return nil, nil, fmt.Errorf("read %q: %w", p, readErr)
 		}
-		fileTools, isToolsFile, parseErr := tryParseToolsFile(data, p)
+		fileMessages, fileTools, parseErr := detectAndParse(data, p)
 		if parseErr != nil {
 			return nil, nil, fmt.Errorf("parse %q: %w", p, parseErr)
 		}
-		if isToolsFile {
-			tools = append(tools, fileTools...)
-			continue
-		}
-		msg, parseErr := parseMessage(data, p)
-		if parseErr != nil {
-			return nil, nil, fmt.Errorf("parse %q: %w", p, parseErr)
-		}
-		messages = append(messages, msg)
+		messages = append(messages, fileMessages...)
+		tools = append(tools, fileTools...)
 	}
 
 	sort.Slice(messages, func(i, j int) bool {
@@ -146,36 +140,52 @@ func parseMessage(data []byte, path string) (*Message, error) {
 	return msg, nil
 }
 
-// toolsFile is the probe shape used to detect whether a given config
-// file carries a top-level `tools:` key. Only the Tools field is
-// inspected; all other keys are ignored by the decoder so message files
-// parse cleanly here too (with a nil/empty Tools slice).
-type toolsFile struct {
-	Tools []*ToolConfig `json:"tools" yaml:"tools"`
+// fileShapeProbe is the combined top-level-key probe used to detect a
+// config file's shape (specs/046-fake-llm-think-chunking/research.md D4):
+// a non-empty `tools:` section marks a tool-config file and a non-empty
+// `messages:` section marks a multi-message file. A file carrying neither
+// key is a single-message file, and a file carrying both is rejected as
+// ambiguous (validation rule V6). Only these two fields are inspected;
+// all other keys are ignored by the decoder so single-message files
+// parse cleanly here too (with nil/empty slices).
+type fileShapeProbe struct {
+	Tools    []*ToolConfig `json:"tools" yaml:"tools"`
+	Messages []*Message    `json:"messages" yaml:"messages"`
 }
 
-// tryParseToolsFile attempts to decode data as a tools config file. The
-// bool return is true when data carries a non-empty top-level `tools:`
-// section, in which case the parsed ToolConfig slice is returned. When
-// the file does not declare tools, the caller falls back to the
-// single-Message parsing path. A decode error is returned as-is so the
-// loader can surface malformed configs at startup.
-func tryParseToolsFile(data []byte, path string) ([]*ToolConfig, bool, error) {
-	var tf toolsFile
+// detectAndParse decodes data into the message/tool slices its top-level
+// keys declare (specs/046-fake-llm-think-chunking/data-model.md §4), with
+// detection precedence `tools:` > `messages:` > single-message (FR-013).
+// A file declaring both `tools:` and `messages:` is rejected — the only
+// ambiguous shape (V6, specs/046-fake-llm-think-chunking/research.md D4).
+// A decode error is returned as-is so the loader can surface malformed
+// configs at startup.
+func detectAndParse(data []byte, path string) ([]*Message, []*ToolConfig, error) {
+	var probe fileShapeProbe
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json":
-		if err := json.Unmarshal(data, &tf); err != nil {
-			return nil, false, fmt.Errorf("unmarshal json: %w", err)
+		if err := json.Unmarshal(data, &probe); err != nil {
+			return nil, nil, fmt.Errorf("unmarshal json: %w", err)
 		}
 	case ".yaml", ".yml":
-		if err := yaml.Unmarshal(data, &tf); err != nil {
-			return nil, false, fmt.Errorf("unmarshal yaml: %w", err)
+		if err := yaml.Unmarshal(data, &probe); err != nil {
+			return nil, nil, fmt.Errorf("unmarshal yaml: %w", err)
 		}
 	default:
-		return nil, false, fmt.Errorf("unsupported extension: %s", path)
+		return nil, nil, fmt.Errorf("unsupported extension: %s", path)
 	}
-	if len(tf.Tools) == 0 {
-		return nil, false, nil
+	if len(probe.Tools) != 0 && len(probe.Messages) != 0 {
+		return nil, nil, fmt.Errorf("file declares both tools: and messages: (ambiguous shape)")
 	}
-	return tf.Tools, true, nil
+	if len(probe.Tools) != 0 {
+		return nil, probe.Tools, nil
+	}
+	if len(probe.Messages) != 0 {
+		return probe.Messages, nil, nil
+	}
+	msg, err := parseMessage(data, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []*Message{msg}, nil, nil
 }

@@ -389,6 +389,164 @@ describe("DominionResolver", () => {
     expect(typeof cb).toBe("function");
     expect(ms).toBe(10_000);
   });
+
+  it("empty endpoints with prior valid state retain endpoints (no listener call)", async () => {
+    // Deploy incident 2026-08-09 (prompt rollout): the deploy service
+    // returned 200 with zero ready endpoints during the rollout gap.
+    // Publishing that empty list to grpc-js makes round_robin destroy all
+    // subchannels and enter IDLE with no self-recovery path; the resolver
+    // MUST retain the prior valid endpoints instead.
+    let callCount = 0;
+    const fetch = vi.fn(async () => {
+      callCount++;
+      const endpoints = callCount === 1 ? ["10.0.0.1:50051"] : [];
+      const json = JSON.stringify({
+        endpoints,
+        ports: {},
+        isStateful: false,
+        statefulInstances: [],
+      });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => JSON.parse(json),
+        text: async () => json,
+      } as Response;
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    const resolver = new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(true);
+    listener.mockClear();
+
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("empty endpoints on initial resolution emits UNAVAILABLE", async () => {
+    const fetch = fakeFetchReturning({
+      endpoints: [],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(listener).toHaveBeenCalledOnce();
+    const call = listener.mock.calls[0];
+    expect(call[0].ok).toBe(false);
+    expect(call[0].error.code).toBe(Status.UNAVAILABLE);
+    expect(call[0].error.details).toBe(
+      "no endpoints resolved for myapp/myservice:50051",
+    );
+  });
+
+  it("empty endpoints followed by non-empty endpoints recover on the next refresh", async () => {
+    let callCount = 0;
+    const fetch = vi.fn(async () => {
+      callCount++;
+      const endpoints =
+        callCount === 1
+          ? ["10.0.0.1:50051"]
+          : callCount === 2
+            ? []
+            : ["10.0.0.2:50051"];
+      const json = JSON.stringify({
+        endpoints,
+        ports: {},
+        isStateful: false,
+        statefulInstances: [],
+      });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => JSON.parse(json),
+        text: async () => json,
+      } as Response;
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    const resolver = new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(true);
+    listener.mockClear();
+
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    expect(listener).not.toHaveBeenCalled();
+
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    const call = listener.mock.calls[0];
+    expect(call[0].ok).toBe(true);
+    const endpoints = sortedEndpoints(call[0].value as Endpoint[]);
+    expect(endpoints).toEqual([
+      { addresses: [{ host: "10.0.0.2", port: 50051 }] },
+    ]);
+  });
+
+  it("repeated empty endpoints with prior state never emit", async () => {
+    let callCount = 0;
+    const fetch = vi.fn(async () => {
+      callCount++;
+      const endpoints = callCount === 1 ? ["10.0.0.1:50051"] : [];
+      const json = JSON.stringify({
+        endpoints,
+        ports: {},
+        isStateful: false,
+        statefulInstances: [],
+      });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => JSON.parse(json),
+        text: async () => json,
+      } as Response;
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    const resolver = new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    listener.mockClear();
+
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+
+    expect(listener).not.toHaveBeenCalled();
+  });
 });
 
 describe("DominionStatefulResolver", () => {

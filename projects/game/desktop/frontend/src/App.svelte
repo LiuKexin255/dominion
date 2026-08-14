@@ -8,12 +8,13 @@
     listSessions,
     deleteSession,
     getTeam,
-    createTeam,
+    updateTeam,
     connect,
     closeAgent,
     refreshTeam,
     listWindows,
     setSelectedWindow,
+    getSelectedWindow,
     captureScreenshot,
     sendUserTurn,
     listMessages,
@@ -379,18 +380,23 @@
     connectionState = 'disconnected'
 
     page = 'chat'
-    handleLoadWindows()
+    // Load the window list and restore the dropdown to the backend's selected
+    // window (if it still exists), so re-entering a session keeps the prior
+    // selection instead of forcing a re-select
+    // (contracts/window-select-contract.md §2.1).
+    void handleLoadWindows().then(syncSelectedWindow)
     playState = 'connecting'
 
-    // Team must exist before connect (FR-033). When the session has no Team
-    // yet, the user picks the TeamProfile to create it with (replacing the
-    // former hardcoded `default` profile auto-creation).
+    // Team must exist before connect (FR-003). When the session has no Team
+    // yet, the user picks the TeamProfile to materialize it with via
+    // updateTeam(allowMissing=true) (replacing the former hardcoded `default`
+    // profile auto-creation).
     try {
       const t = await getTeam(template, session.sessionId)
       await continueSessionEntry(t)
     } catch (e) {
-      // GetTeam failed (typically NOT_FOUND — team not yet created). Open the
-      // profile selection dialog; creation happens on user confirm.
+      // GetTeam failed (typically NOT_FOUND — team not yet materialized). Open
+      // the profile selection dialog; materialization happens on user confirm.
       log('info', 'team', `GetTeam failed (${String(e)}); opening profile selection`)
       showProfileSelect = true
       await loadProfilesForSelect()
@@ -400,7 +406,7 @@
   // continueSessionEntry finishes the session-entry flow once the Team exists:
   // wires the agent tabs (FR-025), connects, and seeds the chat stream. Called
   // both when the Team already exists and after the user picks a TeamProfile
-  // to create it.
+  // to materialize it.
   async function continueSessionEntry(t: Team) {
     team = t
     // Tab set comes from Team.agents — never hardcoded (FR-025).
@@ -434,27 +440,24 @@
     }
   }
 
-  // handleProfileSelected creates the session's Team with the chosen
-  // TeamProfile (full resource name from the dialog), then continues the entry
-  // flow. A concurrent create (multi-tab) resolves via a re-read — CreateTeam
-  // with the same profile is idempotent (api-contract §2.2).
+  // handleProfileSelected materializes the session's Team with the chosen
+  // TeamProfile (full resource name from the dialog) via a single
+  // updateTeam(allowMissing=true) — the call both creates the Team when
+  // missing and updates it when present, so concurrent materialization
+  // (multi-tab) converges idempotently without a GetTeam fallback re-read
+  // (specs/040-team-singleton-conformance/research.md §R6/§R9).
   async function handleProfileSelected(profileFullName: string) {
     if (!selectedSession) return
     showProfileSelect = false
     const tpl = template
     const sessionId = selectedSession.sessionId
     try {
-      const t = await createTeam(tpl, sessionId, profileFullName)
+      const t = await updateTeam(tpl, sessionId, profileFullName, [], true)
       await continueSessionEntry(t)
     } catch (e) {
-      log('warn', 'team', `CreateTeam failed (${String(e)}); re-reading team`)
-      try {
-        const t = await getTeam(tpl, sessionId)
-        await continueSessionEntry(t)
-      } catch {
-        playState = 'connection_error'
-        messagesError = 'Failed to create team. Retry to enter the session.'
-      }
+      playState = 'connection_error'
+      messagesError = 'Failed to configure team. Retry to enter the session.'
+      log('error', 'team', `UpdateTeam failed (${String(e)})`)
     }
   }
 
@@ -1117,6 +1120,21 @@
     }
   }
 
+  // syncSelectedWindow restores the dropdown to the backend's selected window
+  // handle after the window list is (re)loaded on session entry. The handle is
+  // only restored when it still exists in the live list — a closed window
+  // leaves the dropdown at "Select window..." (spec 025 FR-005).
+  async function syncSelectedWindow() {
+    try {
+      const hwnd = await getSelectedWindow()
+      if (hwnd && windows.some(w => w.handle === hwnd)) {
+        selectedWindowHandle = hwnd
+      }
+    } catch (e: unknown) {
+      log('warn', 'windows', `GetSelectedWindow failed: ${String(e)}`)
+    }
+  }
+
   // handleCaptureScreenshot captures the selected window and attaches the
   // screenshot to the next user message. The selected window is used directly
   // — there is no separate "bind" step (spec 025 FR-001/FR-006). The Capture
@@ -1235,7 +1253,9 @@
               </button>
             {/each}
           </div>
-          <select class="window-select" data-testid="window-select" bind:value={selectedWindowHandle}>
+          <!-- The window list reloads every time the dropdown opens so it
+               reflects the current windows, not the ones at page entry. -->
+          <select class="window-select" data-testid="window-select" bind:value={selectedWindowHandle} onfocus={handleLoadWindows}>
             <option value={undefined} disabled selected={selectedWindowHandle == null}>Select window...</option>
             {#each windows as w}
               <option value={w.handle}>{w.title}</option>

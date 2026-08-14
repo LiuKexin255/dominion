@@ -1,13 +1,17 @@
 /**
  * team-sink.test.ts — team-side SaoleiEventSink consumer + ephemeral buffer
  * semantics (`specs/031-team-template-mode/contracts/saolei-sink-contract.md`
- * §4 / §7, `contracts/team-graph-contract.md` §4, research.md D7).
+ * §4 / §7, `contracts/team-graph-contract.md` §4, research.md D7). The sink
+ * consumes `onOperate` — ONE callback per `saolei_operate` call (single or
+ * batch) carrying the full operations list, and gameLog records one entry per
+ * call (FR-004; `specs/039-planner-memory-calibration/contracts/
+ * saolei-operate-contract.md` §4).
  */
 
 import { describe, expect, it } from "vitest";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import type { GameStats } from "../mcp/saolei/saolei-mcp";
+import type { CellOperation, GameStats } from "../mcp/saolei/saolei-mcp";
 import {
 	consumeGameEvent,
 	createEphemeralGameBuffer,
@@ -37,16 +41,22 @@ describe("createTeamSink", () => {
 		expect(peekGameState(buffer)).toBe(state);
 	});
 
-	it("onMove updates gameState (and does not touch gameEvent)", async () => {
+	it("onOperate updates gameState (and does not touch gameEvent)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
 		const state1 = makeState();
 		const state2 = makeState();
-		await sink.onMove("saolei_click", 1, 1, state1);
+		await sink.onOperate([{ type: "click", x: 1, y: 1 }], state1);
 		expect(peekGameState(buffer)).toBe(state1);
 		expect(buffer.gameEvent).toBeNull();
 
-		await sink.onMove("saolei_flag", 2, 2, state2);
+		await sink.onOperate(
+			[
+				{ type: "flag", x: 2, y: 2 },
+				{ type: "chord", x: 0, y: 0 },
+			],
+			state2,
+		);
 		expect(peekGameState(buffer)).toBe(state2);
 	});
 
@@ -102,9 +112,9 @@ describe("createTeamSink", () => {
 	it("onGameStart resets gameLog and writes the initial saolei_init entry", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
-		// A stale move from a prior game must be wiped by onGameStart
+		// A stale operate from a prior game must be wiped by onGameStart
 		// (specs/036-team-mode-bugfix/data-model.md §2 — the planner reviews only the current game).
-		await sink.onMove("saolei_click", 1, 1, makeState());
+		await sink.onOperate([{ type: "click", x: 1, y: 1 }], makeState());
 		expect(buffer.gameLog.length).toBeGreaterThan(0);
 
 		await sink.onGameStart(makeState());
@@ -115,32 +125,36 @@ describe("createTeamSink", () => {
 		});
 	});
 
-	it("onMove accumulates operation entries with tool/x/y/state/status", async () => {
+	it("onOperate records ONE gameLog entry per call with the full operations list (FR-004 — not one entry per op)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
 		const state1 = makeState();
 		const state2 = makeState();
-		await sink.onMove("saolei_click", 1, 1, state1);
-		await sink.onMove("saolei_flag", 2, 2, state2);
+		const batch: CellOperation[] = [
+			{ type: "click", x: 1, y: 1 },
+			{ type: "flag", x: 2, y: 2 },
+		];
+		await sink.onOperate([{ type: "click", x: 0, y: 0 }], state1);
+		await sink.onOperate(batch, state2);
 
+		// Two calls ⇒ exactly two entries — the 3-op batch is ONE entry
+		// carrying its full operations (FR-004).
 		expect(buffer.gameLog).toHaveLength(2);
 		expect(buffer.gameLog[0]).toMatchObject({
-			tool: "saolei_click",
-			x: 1,
-			y: 1,
+			tool: "saolei_operate",
+			operations: [{ type: "click", x: 0, y: 0 }],
 			status: "playing",
 		});
 		expect(buffer.gameLog[0].state).toBe(state1);
 		expect(buffer.gameLog[1]).toMatchObject({
-			tool: "saolei_flag",
-			x: 2,
-			y: 2,
+			tool: "saolei_operate",
+			operations: batch,
 			status: "playing",
 		});
 		expect(buffer.gameLog[1].state).toBe(state2);
 	});
 
-	it("onMove computes status via isTerminalState/isWin (loss-first)", async () => {
+	it("onOperate computes status via isTerminalState/isWin (loss-first)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
 		const lostState: GameState = {
@@ -163,10 +177,10 @@ describe("createTeamSink", () => {
 			mineCounter: { decoded: true, value: 0 },
 		};
 
-		await sink.onMove("saolei_click", 0, 0, lostState);
+		await sink.onOperate([{ type: "click", x: 0, y: 0 }], lostState);
 		expect(buffer.gameLog[0].status).toBe("lost");
 
-		await sink.onMove("saolei_click", 0, 0, wonState);
+		await sink.onOperate([{ type: "click", x: 0, y: 0 }], wonState);
 		expect(buffer.gameLog[1].status).toBe("won");
 	});
 
@@ -188,9 +202,9 @@ describe("createTeamSink", () => {
 	it("onGameStart clears cross-game log accumulation (FR-007)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
-		// First game: init → move → end accumulates several entries.
+		// First game: init → operate → end accumulates several entries.
 		await sink.onGameStart(makeState());
-		await sink.onMove("saolei_click", 1, 1, makeState());
+		await sink.onOperate([{ type: "click", x: 1, y: 1 }], makeState());
 		await sink.onGameEnd(makeState("lost"), "lost");
 		expect(buffer.gameLog.length).toBeGreaterThan(1);
 

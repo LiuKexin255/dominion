@@ -3,10 +3,9 @@ package service
 import (
 	"bytes"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"testing"
-
-	"math/rand/v2"
 )
 
 // TestMatch covers the keyword-match path of Match. Each case provides
@@ -119,6 +118,54 @@ func TestMatch_NoMatchRandom(t *testing.T) {
 	}
 	if got.Text != messages[wantIdx].Text {
 		t.Fatalf("Match fallback text = %q, want %q", got.Text, messages[wantIdx].Text)
+	}
+}
+
+// TestMatch_FallbackExcludesHangCapable verifies the FR-011 fallback
+// exclusion (specs/046-fake-llm-think-chunking —
+// specs/046-fake-llm-think-chunking/quickstart.md Scenario 7):
+// a no-match request must never randomly pick a template that can delay
+// or hang the stream (chunked-with-delay, stall:true, or a stall_after
+// position), while a chunked template without delays stays eligible.
+func TestMatch_FallbackExcludesHangCapable(t *testing.T) {
+	// given: a catalogue whose every keyword fails to match the request,
+	// so the fallback pool is the only path. Only the chunked-without-
+	// delay template must remain in the pool.
+	messages := []*Message{
+		{
+			Name:            "delay",
+			Keywords:        []string{"never-delay"},
+			ReasoningChunks: []string{"c0", "c1"},
+			ChunkDelays:     []string{"500ms"},
+		},
+		{
+			Name:     "stall",
+			Keywords: []string{"never-stall"},
+			Stall:    true,
+		},
+		{
+			Name:            "stall-after",
+			Keywords:        []string{"never-stall-after"},
+			ReasoningChunks: []string{"c0", "c1"},
+			StallAfter:      toPtr(1),
+		},
+		{
+			Name:            "chunked-no-delay",
+			Keywords:        []string{"never-chunked"},
+			ReasoningChunks: []string{"c0", "c1"},
+		},
+	}
+
+	// when: many seeded fallback attempts, so any pool leak would show
+	// up across seeds rather than by luck of one draw.
+	for i := range 100 {
+		got, matched := Match(messages, "nothing matches any keyword", rand.New(rand.NewPCG(uint64(i), 0)))
+		if matched {
+			t.Fatalf("iteration %d: Match matched=true on no-match input, want false", i)
+		}
+		if got.Name != "chunked-no-delay" {
+			t.Fatalf("iteration %d: fallback picked %q, want only the chunked-without-delay template", i, got.Name)
+		}
 	}
 }
 

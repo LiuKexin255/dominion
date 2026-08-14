@@ -8,6 +8,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//common/gopkg/bootstrap",
+        "//common/gopkg/config",
         "//common/gopkg/grpc",
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",

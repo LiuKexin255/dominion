@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -1218,6 +1219,574 @@ func TestBuildStatefulSet_WithSecretBindings(t *testing.T) {
 	}
 	if lastEnv.Value != secretMountPath {
 		t.Fatalf("Env[%q] Value = %q, want %q", envSecretDir, lastEnv.Value, secretMountPath)
+	}
+}
+
+// --- Config Entries Tests ---
+
+func TestBuildDeployment_WithoutConfigBlocks(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigBlocks = nil
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	// Verify no config volume or volume mount.
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		if vol.Name == configVolumeName {
+			t.Fatalf("Should not have config volume when ConfigBlocks is nil")
+		}
+	}
+	container := deploy.Spec.Template.Spec.Containers[0]
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == configVolumeName {
+			t.Fatalf("Should not have config volume mount when ConfigBlocks is nil")
+		}
+	}
+
+	// Verify no DOMINION_CONFIG_DIR env var.
+	for _, e := range container.Env {
+		if e.Name == envConfigDir {
+			t.Fatalf("Should not have %s env var when ConfigBlocks is nil", envConfigDir)
+		}
+	}
+
+	// Verify backward compat: same env count as before.
+	// LOG_LEVEL + 3 reserved + 2 client TLS = 6.
+	if len(container.Env) != 6 {
+		t.Fatalf("Env count = %d, want 6 (backward compat when no config blocks)", len(container.Env))
+	}
+}
+
+func TestBuildDeployment_WithConfigBlocks(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+				{Key: "limits", Type: "yaml", Value: "max: 10\n"},
+			},
+		},
+		{
+			Block: "feature_flags",
+			Entries: []*domain.ConfigEntry{
+				{Key: "beta", Type: "yaml", Value: "true"},
+			},
+		},
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+
+	// Volumes: [tls, dominion-config].
+	if len(deploy.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("Volumes count = %d, want 2", len(deploy.Spec.Template.Spec.Volumes))
+	}
+	configVol := deploy.Spec.Template.Spec.Volumes[1]
+	if configVol.Name != configVolumeName {
+		t.Fatalf("Config Volume Name = %q, want %q", configVol.Name, configVolumeName)
+	}
+	if configVol.Projected == nil {
+		t.Fatalf("Config volume should use projected source")
+	}
+	// 每个配置块一个 ConfigMap source（按 ConfigBlocks 列表顺序）。
+	if len(configVol.Projected.Sources) != 2 {
+		t.Fatalf("Config projected Sources count = %d, want 2", len(configVol.Projected.Sources))
+	}
+
+	// 第一个 source：service_config 块（两个条目，KeyToPath 还原 {block}/{key}）。
+	firstSrc := configVol.Projected.Sources[0]
+	if firstSrc.ConfigMap == nil {
+		t.Fatalf("Config projection should be a ConfigMap source")
+	}
+	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service-config")
+	}
+	if len(firstSrc.ConfigMap.Items) != 2 {
+		t.Fatalf("ConfigMap Items count = %d, want 2", len(firstSrc.ConfigMap.Items))
+	}
+	if firstSrc.ConfigMap.Items[0].Key != "greeting" || firstSrc.ConfigMap.Items[0].Path != "service_config/greeting" {
+		t.Fatalf("ConfigMap Item[0] = {Key: %q, Path: %q}, want {Key: greeting, Path: service_config/greeting}",
+			firstSrc.ConfigMap.Items[0].Key, firstSrc.ConfigMap.Items[0].Path)
+	}
+	if firstSrc.ConfigMap.Items[1].Key != "limits" || firstSrc.ConfigMap.Items[1].Path != "service_config/limits" {
+		t.Fatalf("ConfigMap Item[1] = {Key: %q, Path: %q}, want {Key: limits, Path: service_config/limits}",
+			firstSrc.ConfigMap.Items[1].Key, firstSrc.ConfigMap.Items[1].Path)
+	}
+
+	// 第二个 source：feature_flags 块（单个条目）。
+	secondSrc := configVol.Projected.Sources[1]
+	if secondSrc.ConfigMap == nil {
+		t.Fatalf("Config projection should be a ConfigMap source")
+	}
+	if secondSrc.ConfigMap.Name != w.WorkloadName()+"-config-feature-flags" {
+		t.Fatalf("ConfigMap Name = %q, want %q", secondSrc.ConfigMap.Name, w.WorkloadName()+"-config-feature-flags")
+	}
+	if len(secondSrc.ConfigMap.Items) != 1 {
+		t.Fatalf("ConfigMap Items count = %d, want 1", len(secondSrc.ConfigMap.Items))
+	}
+	if secondSrc.ConfigMap.Items[0].Key != "beta" || secondSrc.ConfigMap.Items[0].Path != "feature_flags/beta" {
+		t.Fatalf("ConfigMap Item = {Key: %q, Path: %q}, want {Key: beta, Path: feature_flags/beta}",
+			secondSrc.ConfigMap.Items[0].Key, secondSrc.ConfigMap.Items[0].Path)
+	}
+
+	// Verify volume mount.
+	if len(container.VolumeMounts) != 2 {
+		t.Fatalf("VolumeMounts count = %d, want 2", len(container.VolumeMounts))
+	}
+	configMount := container.VolumeMounts[1]
+	if configMount.Name != configVolumeName || configMount.MountPath != configMountPath || !configMount.ReadOnly {
+		t.Fatalf("Config VolumeMount = {Name: %q, MountPath: %q, ReadOnly: %v}, want {Name: %q, MountPath: %q, ReadOnly: true}",
+			configMount.Name, configMount.MountPath, configMount.ReadOnly, configVolumeName, configMountPath)
+	}
+
+	// Verify DOMINION_CONFIG_DIR env var is appended last.
+	envs := container.Env
+	lastEnv := envs[len(envs)-1]
+	if lastEnv.Name != envConfigDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envConfigDir)
+	}
+	if lastEnv.Value != configMountPath {
+		t.Fatalf("Env[%q] Value = %q, want %q", envConfigDir, lastEnv.Value, configMountPath)
+	}
+
+	// LOG_LEVEL + 3 reserved + 2 client TLS + 1 config = 7.
+	if len(envs) != 7 {
+		t.Fatalf("Env count = %d, want 7", len(envs))
+	}
+}
+
+func TestBuildStatefulSet_WithConfigBlocks(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+		{
+			Block: "feature_flags",
+			Entries: []*domain.ConfigEntry{
+				{Key: "beta", Type: "yaml", Value: "true"},
+			},
+		},
+	}
+
+	sts, err := BuildStatefulSet(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() error: %v", err)
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+
+	// Volumes: [tls, dominion-config].
+	if len(sts.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("Volumes count = %d, want 2", len(sts.Spec.Template.Spec.Volumes))
+	}
+	configVol := sts.Spec.Template.Spec.Volumes[1]
+	if configVol.Name != configVolumeName {
+		t.Fatalf("Config Volume Name = %q, want %q", configVol.Name, configVolumeName)
+	}
+	if configVol.Projected == nil {
+		t.Fatalf("Config volume should use projected source")
+	}
+	// 每个配置块一个 ConfigMap source（按 ConfigBlocks 列表顺序）。
+	if len(configVol.Projected.Sources) != 2 {
+		t.Fatalf("Config projected Sources count = %d, want 2", len(configVol.Projected.Sources))
+	}
+	firstSrc := configVol.Projected.Sources[0]
+	if firstSrc.ConfigMap == nil {
+		t.Fatalf("Config projection should be a ConfigMap source")
+	}
+	if firstSrc.ConfigMap.Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("ConfigMap Name = %q, want %q", firstSrc.ConfigMap.Name, w.WorkloadName()+"-config-service-config")
+	}
+	if len(firstSrc.ConfigMap.Items) != 1 {
+		t.Fatalf("ConfigMap Items count = %d, want 1", len(firstSrc.ConfigMap.Items))
+	}
+	// KeyToPath 还原 "{block}/{key}" 容器内路径（contracts/runtime-contract.md §2）。
+	if firstSrc.ConfigMap.Items[0].Key != "greeting" || firstSrc.ConfigMap.Items[0].Path != "service_config/greeting" {
+		t.Fatalf("ConfigMap Item = {Key: %q, Path: %q}, want {Key: greeting, Path: service_config/greeting}",
+			firstSrc.ConfigMap.Items[0].Key, firstSrc.ConfigMap.Items[0].Path)
+	}
+
+	// Verify volume mount.
+	if len(container.VolumeMounts) != 2 {
+		t.Fatalf("VolumeMounts count = %d, want 2", len(container.VolumeMounts))
+	}
+	configMount := container.VolumeMounts[1]
+	if configMount.Name != configVolumeName || configMount.MountPath != configMountPath || !configMount.ReadOnly {
+		t.Fatalf("Config VolumeMount = {Name: %q, MountPath: %q, ReadOnly: %v}, want {Name: %q, MountPath: %q, ReadOnly: true}",
+			configMount.Name, configMount.MountPath, configMount.ReadOnly, configVolumeName, configMountPath)
+	}
+
+	// Verify DOMINION_CONFIG_DIR env var appended last.
+	envs := container.Env
+	lastEnv := envs[len(envs)-1]
+	if lastEnv.Name != envConfigDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envConfigDir)
+	}
+	if lastEnv.Value != configMountPath {
+		t.Fatalf("Env[%q] Value = %q, want %q", envConfigDir, lastEnv.Value, configMountPath)
+	}
+}
+
+// TestBuildDeployment_UserEnvAndConfigCoexist 覆盖 SC-006/FR-016：同一 artifact 同时
+// 设置用户 env 与 config 时，builder 产物同时包含用户 env 与 config 卷/挂载/
+// DOMINION_CONFIG_DIR 注入，两者共存互不影响（specs/045-deploy-config/spec.md SC-006）。
+func TestBuildDeployment_UserEnvAndConfigCoexist(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.Env = map[string]string{
+		"APP_DEBUG": "true",
+		"GREETING":  "hi",
+	}
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envMap := envVarsToMap(container.Env)
+
+	// 用户 env 存在且值未被 config 机制改变。
+	if envMap["APP_DEBUG"] != "true" {
+		t.Fatalf("Env[APP_DEBUG] = %q, want %q", envMap["APP_DEBUG"], "true")
+	}
+	if envMap["GREETING"] != "hi" {
+		t.Fatalf("Env[GREETING] = %q, want %q", envMap["GREETING"], "hi")
+	}
+
+	// config 卷/挂载/发现变量同时存在。
+	var foundConfigVol bool
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		if vol.Name == configVolumeName {
+			foundConfigVol = true
+			break
+		}
+	}
+	if !foundConfigVol {
+		t.Fatalf("Config volume %q not found when config blocks present", configVolumeName)
+	}
+	var foundConfigMount bool
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == configVolumeName {
+			foundConfigMount = true
+			break
+		}
+	}
+	if !foundConfigMount {
+		t.Fatalf("Config volume mount %q not found when config blocks present", configVolumeName)
+	}
+	if envMap[envConfigDir] != configMountPath {
+		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
+	}
+
+	// 用户 env 与平台注入的 env 均保留：2 用户 + LOG_LEVEL + 3 reserved + 2 TLS + 1 config = 9。
+	if len(container.Env) != 9 {
+		t.Fatalf("Env count = %d, want 9", len(container.Env))
+	}
+}
+
+func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.Env = map[string]string{
+		"APP_DEBUG": "true",
+	}
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+	}
+
+	sts, err := BuildStatefulSet(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() error: %v", err)
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+	envMap := envVarsToMap(container.Env)
+
+	if envMap["APP_DEBUG"] != "true" {
+		t.Fatalf("Env[APP_DEBUG] = %q, want %q", envMap["APP_DEBUG"], "true")
+	}
+
+	var foundConfigVol bool
+	for _, vol := range sts.Spec.Template.Spec.Volumes {
+		if vol.Name == configVolumeName {
+			foundConfigVol = true
+			break
+		}
+	}
+	if !foundConfigVol {
+		t.Fatalf("Config volume %q not found when config blocks present", configVolumeName)
+	}
+	var foundConfigMount bool
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == configVolumeName {
+			foundConfigMount = true
+			break
+		}
+	}
+	if !foundConfigMount {
+		t.Fatalf("Config volume mount %q not found when config blocks present", configVolumeName)
+	}
+	if envMap[envConfigDir] != configMountPath {
+		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
+	}
+}
+
+func TestBuildConfigMaps(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+				{Key: "limits", Type: "yaml", Value: "max: 10\n"},
+			},
+		},
+		{
+			Block: "feature_flags",
+			Entries: []*domain.ConfigEntry{
+				{Key: "beta", Type: "yaml", Value: "true"},
+			},
+		},
+	}
+
+	cms, err := BuildConfigMaps(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildConfigMaps() error: %v", err)
+	}
+
+	// 每个配置块一个 ConfigMap，返回顺序按 ConfigBlocks 列表顺序（确定性）。
+	if len(cms) != 2 {
+		t.Fatalf("ConfigMaps count = %d, want 2", len(cms))
+	}
+
+	// 第一个块：service_config（两个条目，data key = 条目名原样）。
+	firstCM := cms[0]
+	if firstCM.Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("Name = %q, want %q", firstCM.Name, w.WorkloadName()+"-config-service-config")
+	}
+	if firstCM.Namespace != cfg.Namespace {
+		t.Fatalf("Namespace = %q, want %q", firstCM.Namespace, cfg.Namespace)
+	}
+
+	// Labels 与 Deployment 一致（app/service/environment/managed-by）。
+	wantObjectLabels := buildLabels(
+		withApp(w.App),
+		withService(w.ServiceName),
+		withDominionEnvironment(w.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	for key, want := range wantObjectLabels {
+		if got := firstCM.Labels[key]; got != want {
+			t.Fatalf("Label[%q] = %q, want %q", key, got, want)
+		}
+	}
+
+	// data key 为条目名（块内唯一，原样），value 为原始数据文本。
+	wantData := map[string]string{
+		"greeting": "message: hello\n",
+		"limits":   "max: 10\n",
+	}
+	if len(firstCM.Data) != len(wantData) {
+		t.Fatalf("Data count = %d, want %d", len(firstCM.Data), len(wantData))
+	}
+	for key, want := range wantData {
+		if got := firstCM.Data[key]; got != want {
+			t.Fatalf("Data[%q] = %q, want %q", key, got, want)
+		}
+	}
+
+	// 第二个块：feature_flags（单个条目）。
+	secondCM := cms[1]
+	if secondCM.Name != w.WorkloadName()+"-config-feature-flags" {
+		t.Fatalf("Name = %q, want %q", secondCM.Name, w.WorkloadName()+"-config-feature-flags")
+	}
+	if got := secondCM.Data["beta"]; got != "true" {
+		t.Fatalf("Data[beta] = %q, want %q", got, "true")
+	}
+}
+
+func TestBuildConfigMaps_StatefulWorkload(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+	}
+
+	cms, err := BuildConfigMaps(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildConfigMaps() error: %v", err)
+	}
+	if len(cms) != 1 {
+		t.Fatalf("ConfigMaps count = %d, want 1", len(cms))
+	}
+
+	if cms[0].Name != w.WorkloadName()+"-config-service-config" {
+		t.Fatalf("Name = %q, want %q", cms[0].Name, w.WorkloadName()+"-config-service-config")
+	}
+	if got := cms[0].Data["greeting"]; got != "message: hello\n" {
+		t.Fatalf("Data[greeting] = %q, want %q", got, "message: hello\n")
+	}
+}
+
+// TestBuildConfigMaps_NameTooLong 覆盖 per-block 命名的 63 字符上限 fail-fast 校验
+// （specs/045-deploy-config/contracts/runtime-contract.md §2）：
+// workload 名恰好 63 字符时，加 "-config-{block}" 后缀即超限，错误须含 workload 名与 block 名。
+func TestBuildConfigMaps_NameTooLong(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	// newObjectName 拼接后 workload 名恰好 63 字符（dp-dev-{service}-{8 位 hash}）。
+	w.ServiceName = strings.Repeat("a", 47)
+	if len(w.WorkloadName()) != maxK8sResourceNameSize {
+		t.Fatalf("test setup error: workload name %q must be exactly %d chars", w.WorkloadName(), maxK8sResourceNameSize)
+	}
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+	}
+
+	_, err := BuildConfigMaps(w, cfg)
+	if err == nil {
+		t.Fatalf("BuildConfigMaps() expected error for over-length configmap name")
+	}
+	if !strings.Contains(err.Error(), w.WorkloadName()) {
+		t.Fatalf("error should contain workload name %q, got: %v", w.WorkloadName(), err)
+	}
+	if !strings.Contains(err.Error(), "service_config") {
+		t.Fatalf("error should contain block name %q, got: %v", "service_config", err)
+	}
+}
+
+// TestBuildConfigMaps_BlockNameCollision 覆盖清洗后碰撞 fail-fast
+// （specs/045-deploy-config/contracts/runtime-contract.md §2 校验 3）：不同原始块名
+// 清洗后得到同一 ConfigMap 名（service_config 与 service-config），错误须含计算名与
+// 两个原始块名。schema/domain 层唯一性均为清洗前唯一性，不排除此情况。
+func TestBuildConfigMaps_BlockNameCollision(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "service_config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+		{
+			Block: "service-config",
+			Entries: []*domain.ConfigEntry{
+				{Key: "limits", Type: "yaml", Value: "max: 10\n"},
+			},
+		},
+	}
+
+	_, err := BuildConfigMaps(w, cfg)
+	if err == nil {
+		t.Fatalf("BuildConfigMaps() expected error for sanitized block name collision")
+	}
+	wantName := configMapName(w, "service_config")
+	if !strings.Contains(err.Error(), wantName) {
+		t.Fatalf("error should contain computed name %q, got: %v", wantName, err)
+	}
+	if !strings.Contains(err.Error(), "service_config") {
+		t.Fatalf("error should contain original block name %q, got: %v", "service_config", err)
+	}
+	if !strings.Contains(err.Error(), "service-config") {
+		t.Fatalf("error should contain original block name %q, got: %v", "service-config", err)
+	}
+}
+
+// TestBuildConfigMaps_BlockNameSanitizesToEmpty 覆盖清洗后为空 fail-fast
+// （specs/045-deploy-config/contracts/runtime-contract.md §2 校验 2）：块名全为非法
+// 字符时清洗结果为空，合成名将错误地以 "-" 结尾。schema 合法块名以 [a-z] 开头
+// 不会触发，该分支仅防御绕过 schema 的非 CLI 客户端。
+func TestBuildConfigMaps_BlockNameSanitizesToEmpty(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.ConfigBlocks = []*domain.ConfigBlock{
+		{
+			Block: "___",
+			Entries: []*domain.ConfigEntry{
+				{Key: "greeting", Type: "yaml", Value: "message: hello\n"},
+			},
+		},
+	}
+
+	_, err := BuildConfigMaps(w, cfg)
+	if err == nil {
+		t.Fatalf("BuildConfigMaps() expected error for block name that sanitizes to empty")
+	}
+	if !strings.Contains(err.Error(), w.WorkloadName()) {
+		t.Fatalf("error should contain workload name %q, got: %v", w.WorkloadName(), err)
+	}
+	if !strings.Contains(err.Error(), "___") {
+		t.Fatalf("error should contain original block name %q, got: %v", "___", err)
+	}
+}
+
+// Test_configMapName_DNS1123Subdomain 用 apimachinery 的真实 schema 校验
+// IsDNS1123Subdomain 作回归防线：fake client 不校验 metadata.name，而真实 API
+// server 拒绝含 "_" 的名字；本测试断言清洗后的 ConfigMap 名全部符合 RFC 1123
+// （specs/045-deploy-config/contracts/runtime-contract.md §2 命名与长度校验）。
+func Test_configMapName_DNS1123Subdomain(t *testing.T) {
+	w := testDeploymentWorkload()
+
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{name: "underscore block sanitizes to hyphen", block: "service_config"},
+		{name: "underscore block sanitizes to hyphen (feature flags)", block: "feature_flags"},
+		{name: "consecutive underscores collapse", block: "a__b"},
+		{name: "mixed underscore and hyphen", block: "x_y-z"},
+		{name: "already valid dns1123 subdomain unchanged", block: "service-config"},
+		{name: "plain lowercase name", block: "runtime"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := configMapName(w, tt.block)
+			if errs := validation.IsDNS1123Subdomain(got); len(errs) != 0 {
+				t.Fatalf("IsDNS1123Subdomain(%q) = %v, want no errors", got, errs)
+			}
+		})
 	}
 }
 

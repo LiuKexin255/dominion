@@ -18,6 +18,11 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
+import { info } from "@dominion/common-js-logs";
+import {
+	loadAgentTimeoutOverrides,
+	resolveAgentTimeouts,
+} from "./agent-timeouts";
 import { createMouseClickTool } from "./tools/mouse_click/mouse-click";
 import { createMouseMoveTool } from "./tools/mouse_move/mouse-move";
 import type { OperationBridge } from "./operation-bridge";
@@ -30,6 +35,92 @@ import { DEFAULT_MCP_PORT } from "./mcp-host";
  * bounding runaway loops.
  */
 export const RECURSION_LIMIT = 1000;
+
+/**
+ * Resolved agent timeout parameters (env > config > default per parameter —
+ * specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §1/§5).
+ * Read once at module load: the 045 SDK is synchronous by design and the
+ * config channel is a startup-time override tier. In a non-dominion
+ * environment (`DOMINION_CONFIG_DIR` unset) the overrides resolve to
+ * `undefined` and the constants below equal the code defaults.
+ */
+const resolved = resolveAgentTimeouts(
+	{
+		streamIdleTimeoutMs: process.env.GAME_STREAM_IDLE_TIMEOUT_MS,
+		initTurnTimeoutMs: process.env.GAME_INIT_TURN_TIMEOUT_MS,
+	},
+	loadAgentTimeoutOverrides(),
+);
+
+/**
+ * Chunk-idle timeout for the team graph's player/planner nodes (ms). When
+ * the LLM SSE stream stalls (TCP alive but no events), this idle period
+ * elapses and LangGraph raises `NodeTimeoutError`, triggering stall recovery
+ * (specs/043-llm-stream-stall-recovery/spec.md FR-001). The 120s default is
+ * the industry-median chunk-idle value: LangChain Python's
+ * `stream_chunk_timeout` defaults to 120s
+ * (https://github.com/langchain-ai/langchain/pull/36949) and OpenClaw's
+ * opencode-go stream wrapper keeps a 120s inter-event idle window
+ * (https://github.com/openclaw/openclaw/pull/93965); Codex CLI sits at the
+ * lenient end with 300s (https://github.com/openai/codex/issues/23807) and
+ * opencode disables chunk timeouts by default
+ * (https://github.com/anomalyco/opencode/pull/18264). The former 30s default
+ * was the most aggressive in the industry and false-stalled reasoning models
+ * (specs/044-llm-stall-recovery-fix/spec.md FR-001; survey/
+ * llm-stream-stall-recovery-revision.md §5.1).
+ *
+ * Resolution: env `GAME_STREAM_IDLE_TIMEOUT_MS` (values below the 60s
+ * minimum clamp to the 120s default — the clamp is env-scoped) > config
+ * `agent_timeouts/timeouts.streamIdleTimeoutMs` (honored as-is, no clamp) >
+ * 120_000 (specs/044-llm-stall-recovery-fix/contracts/
+ * idle-timeout-contract.md §1/§5). LangChain JS has no client-layer
+ * chunk-idle guard (https://github.com/langchain-ai/langchainjs/issues/9088),
+ * so LangGraph's `idleTimeout` remains the sole chunk-idle defense.
+ */
+export const STREAM_IDLE_TIMEOUT_MS = resolved.streamIdleTimeoutMs;
+
+/**
+ * Whether an explicit operator configuration supplies the idle timeout —
+ * the env var `GAME_STREAM_IDLE_TIMEOUT_MS` is set (checked via
+ * `!== undefined`, not Number truthiness, so an explicit "0" or clamped low
+ * value is still detected as explicit) OR the config entry
+ * `agent_timeouts/timeouts` provides `streamIdleTimeoutMs`
+ * (specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §1/§5).
+ * `resolveStreamIdleTimeout` (specs/044-llm-stall-recovery-fix/tasks.md T003)
+ * uses this to honor explicit operator config as-is — even below a reasoning
+ * floor — per specs/044-llm-stall-recovery-fix/contracts/
+ * idle-timeout-contract.md §1 (spec FR-003).
+ */
+export const STREAM_IDLE_TIMEOUT_EXPLICIT = resolved.streamIdleExplicit;
+
+/**
+ * Total execution timeout for the async init instruction turn (ms). A
+ * stalled planner LLM during `runInitTurn` must degrade within this window
+ * instead of hanging and blocking the first user turn
+ * (specs/043-llm-stream-stall-recovery/spec.md FR-009/FR-010).
+ *
+ * Resolution: env `GAME_INIT_TURN_TIMEOUT_MS` (`Number(...) || 120_000`) >
+ * config `agent_timeouts/timeouts.initTurnTimeoutMs` (as-is) > 120_000
+ * (specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5).
+ */
+export const INIT_TURN_TIMEOUT_MS = resolved.initTurnTimeoutMs;
+
+/**
+ * Idle-heartbeat interval for MCP tool invocations (ms). While a wrapped MCP
+ * client tool's invoke awaits the desktop result (via the MCP server's
+ * `bridge.dispatch`), `config.heartbeat()` runs at this cadence to refresh
+ * the LangGraph idle timer on the client side — without it, a tool wait
+ * longer than `STREAM_IDLE_TIMEOUT_MS` would raise a false `NodeTimeoutError`
+ * mid-tool (specs/043-llm-stream-stall-recovery/research.md R7.2). MUST be <
+ * `STREAM_IDLE_TIMEOUT_MS` so the idle timer can never elapse during a tool
+ * wait (043 FR-003 — enforced by `resolveAgentTimeouts`, which throws at
+ * startup on violation). Resolution: config
+ * `agent_timeouts/timeouts.toolHeartbeatIntervalMs` (as-is) > 10_000; there
+ * is intentionally NO env channel for the heartbeat
+ * (specs/044-llm-stall-recovery-fix/research.md R10 — Q1 decision;
+ * specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5).
+ */
+export const TOOL_HEARTBEAT_INTERVAL_MS = resolved.toolHeartbeatIntervalMs;
 
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
@@ -242,21 +333,95 @@ export const defaultMcpClientFactory: McpClientFactory = async (config) => {
 };
 
 /**
+ * Wrap a LangChain tool so that during its invoke, LangGraph's
+ * `config.heartbeat` (installed on the node-attempt config by `wrapConfig`)
+ * is called immediately and then every `TOOL_HEARTBEAT_INTERVAL_MS`.
+ *
+ * The production saolei/memory MCP tools cross the MCP HTTP boundary: the
+ * MCP server's `bridge.dispatch` runs in a different async context and has
+ * no access to `config.heartbeat` (mcp-adapters `_callTool` forwards only
+ * `config.signal`), so the idle timer refresh MUST be driven client-side
+ * (specs/043-llm-stream-stall-recovery/research.md R7.1/R7.2). `heartbeat`
+ * is present on the tool's invoke config because the ToolNode spreads
+ * `...config` into it (langchain `dist/agents/nodes/ToolNode.js:229-241`);
+ * LangGraph's `wrapped.heartbeat` calls `scope.touch()`, refreshing
+ * `lastProgress` unconditionally (installed `dist/pregel/timeout.js:100-102`).
+ *
+ * The wrapper returns a `StructuredToolInterface` that shares the original
+ * tool's prototype chain (via `Object.create`) — `name`/`description`/
+ * `schema`/Runnable methods and `instanceof` are preserved, so it remains
+ * acceptable to `createAgent`/`ToolNode` — with only `invoke` overridden on
+ * the instance. The interval is cleared in a `finally` block on
+ * resolve/reject/abort — no leaked timers. When `config.heartbeat` is absent
+ * (non-LangGraph invocation, unit tests), the wrapper degrades to a direct
+ * passthrough (no interval).
+ *
+ * Observability (specs/044-llm-stall-recovery-fix/research.md R9; quickstart
+ * D4): a wrapper-start `info` log plus one `info` per heartbeat tick (tool,
+ * configured interval, tick sequence) discriminate the T012 false-stall root
+ * cause in signoz — ticks present + false stall → LangGraph `touch()`/
+ * `checkIdle` path issue; ticks absent → wrapper timer lifecycle bug.
+ */
+export function withIdleHeartbeat(
+	tool: StructuredToolInterface,
+): StructuredToolInterface {
+	const wrapped = Object.create(tool) as StructuredToolInterface;
+	wrapped.invoke = (async (input, config) => {
+		const heartbeat = (
+			config as { heartbeat?: () => void } | undefined
+		)?.heartbeat;
+		if (typeof heartbeat !== "function") {
+			return tool.invoke(input, config);
+		}
+		info("tool heartbeat wrapper started", {
+			tool: tool.name,
+			intervalMs: TOOL_HEARTBEAT_INTERVAL_MS,
+		});
+		heartbeat();
+		let tick = 0;
+		const timer = setInterval(() => {
+			tick += 1;
+			info("tool heartbeat tick", {
+				tool: tool.name,
+				intervalMs: TOOL_HEARTBEAT_INTERVAL_MS,
+				tick,
+			});
+			heartbeat();
+		}, TOOL_HEARTBEAT_INTERVAL_MS);
+		try {
+			return await tool.invoke(input, config);
+		} finally {
+			clearInterval(timer);
+		}
+	}) as StructuredToolInterface["invoke"];
+	return wrapped;
+}
+
+/**
  * Build the per-session saolei MCP-client tools (FR-002b / FR-010).
  *
  * Constructs a `MultiServerMCPClient` over the loopback streamable-HTTP
- * transport pointing at this session's MCP endpoint and returns its
+ * transport pointing at this session's saolei MCP endpoint and returns its
  * `getTools()` output (LangChain `DynamicStructuredTool[]`). The MCP server
- * bound at `/internal/mcp/{sessionId}` (`mcp-host.ts`) supplies the saolei
- * tools; the player node is the ONLY holder (FR-010).
+ * bound at `/internal/mcp/{template}/{session}/saolei` (`mcp-host.ts`)
+ * supplies the saolei tools; the player node is the ONLY holder (FR-010).
  *
- * @param sessionId   The dominion session id (path segment of the MCP URL).
- * @param mcpPort     The MCP host port (default `DEFAULT_MCP_PORT`).
+ * The URL is the template-scoped multi-path scheme (R3 —
+ * `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md`
+ * §4): each mcp kind owns its own path and the path carries the template;
+ * the saolei path is `/internal/mcp/{template}/{session}/saolei` (the
+ * former flat `/internal/mcp/{sessionId}` path was migrated — clean break,
+ * spec 039 Assumptions).
+ *
+ * @param template   The template path segment (e.g. `"saolei"`).
+ * @param sessionId  The dominion session id (path segment of the MCP URL).
+ * @param mcpPort    The MCP host port (default `DEFAULT_MCP_PORT`).
  * @param clientFactory DI seam — defaults to the real
  *   `MultiServerMCPClient`. Tests inject a `vi.fn()` to assert the URL and
  *   to short-circuit the HTTP round-trip.
  */
 export async function buildSaoleiMcpTools(
+	template: string,
 	sessionId: string,
 	mcpPort: number,
 	clientFactory: McpClientFactory,
@@ -264,10 +429,51 @@ export async function buildSaoleiMcpTools(
 	const client = await clientFactory({
 		saolei: {
 			transport: "http",
-			url: `http://localhost:${mcpPort}/internal/mcp/${sessionId}`,
+			url: `http://localhost:${mcpPort}/internal/mcp/${template}/${sessionId}/saolei`,
 		},
 	});
-	return client.getTools();
+	const tools = await client.getTools();
+	return tools.map(withIdleHeartbeat);
+}
+
+/**
+ * Build the per-session planner memory MCP tools (039 T022 — FR-007/FR-008).
+ *
+ * Same `MultiServerMCPClient` pattern as {@link buildSaoleiMcpTools}, over
+ * the session's memory mcp path `/internal/mcp/{template}/{session}/memory`
+ * (`mcp-host.ts` — template-scoped multi-path scheme, R3 — memory-mcp-
+ * contract.md §4). The host-side `createMemoryMcpServer` exposes EXACTLY ONE
+ * hermes-style `memory` tool (action/content/old_text/operations — no
+ * `memory_id`, no `target`); `getTools()` returns it as a LangChain
+ * `DynamicStructuredTool`, and the planner node is the ONLY holder (FR-009).
+ *
+ * The mcp server forwards to the MemoryService via the agent — it NEVER
+ * connects to the memory service directly (FR-007, memory-mcp-contract.md
+ * §4). The tools are profile-independent and bound to the session's cached
+ * host server, so a profile-change rebuild reuses them without reconnecting
+ * (team-rebuild-contract.md §3/§4 — same as the saolei tools).
+ *
+ * @param template   The template path segment (e.g. `"saolei"`).
+ * @param sessionId  The dominion session id (path segment of the MCP URL).
+ * @param mcpPort    The MCP host port (default `DEFAULT_MCP_PORT`).
+ * @param clientFactory DI seam — defaults to the real
+ *   `MultiServerMCPClient`. Tests inject a `vi.fn()` to assert the URL and
+ *   to short-circuit the HTTP round-trip.
+ */
+export async function buildMemoryMcpTools(
+	template: string,
+	sessionId: string,
+	mcpPort: number,
+	clientFactory: McpClientFactory,
+): Promise<StructuredToolInterface[]> {
+	const client = await clientFactory({
+		memory: {
+			transport: "http",
+			url: `http://localhost:${mcpPort}/internal/mcp/${template}/${sessionId}/memory`,
+		},
+	});
+	const tools = await client.getTools();
+	return tools.map(withIdleHeartbeat);
 }
 
 // ---------------------------------------------------------------------------

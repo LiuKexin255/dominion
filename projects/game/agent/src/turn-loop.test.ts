@@ -23,6 +23,22 @@
  * the former `AgentAdapter` provider; frames carry the team `agent` field
  * (D12).
  *
+ * Feature 043 (T007, US2): a `NodeTimeoutError` stall takes the NON-abort
+ * error terminal (`finishError` — the existing catch classifies it via
+ * `controller.signal.aborted === false`,
+ * specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
+ * §3.2/§3.3, so turn-loop.ts is unchanged): the queued buffer is RETAINED
+ * (specs/043-llm-stream-stall-recovery/spec.md FR-006) and auto-drained as
+ * the next turn's input (FR-007).
+ *
+ * Feature 043 (T013, SC-006): regression guard — the stall feature MUST NOT
+ * change the existing abort semantics
+ * (specs/043-llm-stream-stall-recovery/spec.md SC-006/FR-012): user abort
+ * AND connection-drop abort still clear the buffer via `finishAbort`
+ * (specs/030-queued-chat-input/spec.md FR-011), contrasted against the
+ * stall path which retains it (specs/043-llm-stream-stall-recovery/spec.md
+ * FR-008 — the two terminals stay distinct).
+ *
  * Mock strategy (`style/javascript.md` §Mock): the `runner` and the
  * `emit` sink are constructor-injected dependencies — tests pass plain
  * fakes/stubs (no `vi.mock` module interception; see
@@ -30,6 +46,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+
+import { NodeTimeoutError } from "@langchain/langgraph";
 
 import type { ContentBlock, TurnContent } from "./llm";
 import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
@@ -112,6 +130,62 @@ function makeEchoRunner(
       throw new Error(throwAfterGate);
     }
     yield { agent, block: { type: "text", text: `reply:${extractText(content)}` } };
+  };
+}
+
+/**
+ * Fake team-graph runner that simulates an LLM stream stall on its FIRST
+ * invocation only: it yields one block ("partial"), then blocks on a `gate`
+ * (abort-aware, like {@link makeEchoRunner}) before throwing a REAL LangGraph
+ * `NodeTimeoutError` — the error the graph's `idleTimeout` raises when no
+ * events arrive for the configured period
+ * (specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
+ * §1.3). Later invocations
+ * (the turns after recovery) echo normally so the test can observe the
+ * retained buffer being drained into a subsequent turn.
+ */
+function makeStallRunner(
+  agent: string,
+  opts: {
+    gate: Gate;
+    recordCalls?: TurnContent[];
+  },
+): TurnRunner {
+  const { gate, recordCalls } = opts;
+  const timeoutError = new NodeTimeoutError({
+    node: agent,
+    kind: "idle",
+    idleTimeout: 30000,
+    elapsed: 30001,
+  });
+  let stallOnce = true;
+  return async function* stallRunner(
+    content: TurnContent,
+    signal?: AbortSignal,
+  ): AsyncIterable<TurnBlock> {
+    recordCalls?.push(content);
+    if (!stallOnce) {
+      yield {
+        agent,
+        block: { type: "text", text: `reply:${extractText(content)}` },
+      };
+      return;
+    }
+    stallOnce = false;
+    yield { agent, block: { type: "text", text: "partial" } };
+    // Race the release gate against an abort so abort() unblocks the await
+    // (same pattern as makeEchoRunner).
+    const abort = new Promise<never>((_, reject) => {
+      if (signal?.aborted) reject(new Error("aborted"));
+      signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+        once: true,
+      });
+    });
+    await Promise.race([gate.promise, abort]).catch(() => {
+      // Swallow: the signal.aborted check below gates the throw.
+    });
+    if (signal?.aborted) return;
+    throw timeoutError;
   };
 }
 
@@ -387,6 +461,203 @@ describe("TurnLoop", () => {
     loop.abort();
     expect(loop.isRunning()).toBe(false);
     expect(frames).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Feature 043 (T007, US2): stall recovery — a `NodeTimeoutError` trigger
+  // takes the NON-abort error terminal (`finishError`): queued messages are
+  // RETAINED (specs/043-llm-stream-stall-recovery/spec.md FR-006) and
+  // auto-drained as the next turn's input (FR-007). The existing catch
+  // classifies it correctly
+  // (specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
+  // §3.2/§3.3) — turn-loop.ts is unchanged;
+  // this test verifies the emergent property for the stall trigger.
+  // -------------------------------------------------------------------------
+
+  it("retains the queued buffer through a NodeTimeoutError stall and auto-drains it on the next turn (043 US2: FR-006/FR-007)", async () => {
+    const gate = makeGate();
+    const calls: TurnContent[] = [];
+    const runner = makeStallRunner(AGENT, { gate, recordCalls: calls });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(SID, TID, runner, emit, AGENT);
+
+    // Turn 1 starts and streams one block; the stall is then released via
+    // the gate. While the turn is RUNNING a second message is queued
+    // (buffer depth 1 → QueueSignal(1), specs/030-queued-chat-input/contracts/queue-channel-contract.md §2).
+    loop.submit({ text: "msg-1" });
+    await flush();
+    expect(loop.isRunning()).toBe(true);
+    expect(textContents(frames)).toEqual(["partial"]);
+
+    loop.submit({ text: "msg-2" });
+    expect(loop.queueDepth()).toBe(1);
+    expect(queueSignalDepths(frames)).toEqual([1]);
+
+    // Release the stall: the runner throws the real LangGraph
+    // NodeTimeoutError. It reaches runLoop's catch with
+    // controller.signal.aborted === false (the idle timeout fires on
+    // LangGraph's internal signal, NOT the TurnLoop's controller —
+    // specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md
+    // §3.2), so it is classified as a NON-abort error → finishError (§3.3 of
+    // the same contract).
+    gate.resolve();
+    await flush(20);
+
+    // FR-006 + FR-008: warn + wait emitted (the stall is surfaced and the
+    // session returns to idle), and the buffer is RETAINED — the user's
+    // queued message survives the stall, unlike a user abort which clears it
+    // (specs/030-queued-chat-input/spec.md FR-011).
+    expect(loop.isRunning()).toBe(false);
+    expect(warnFrames(frames)).toHaveLength(1);
+    // The warn frame's message is built by turn-loop.ts's `warnFrame()`,
+    // which prefixes the error message with "Processing error: ". The
+    // underlying text is the NodeTimeoutError message carrying the node, the
+    // configured idle window and the elapsed time — the message format comes
+    // from LangGraph's NodeTimeoutError class
+    // (https://github.com/langchain-ai/langgraphjs/blob/main/libs/langgraph-core/src/errors.ts).
+    expect(
+      warnFrames(frames)[0]?.flowParts?.parts[0]?.warn?.message,
+    ).toContain('Node "player" exceeded its idle timeout of 30000ms');
+    expect(waitFrames(frames)).toHaveLength(1);
+    expect(loop.queueDepth()).toBe(1);
+    // No depth signal on the error terminal — the depth is unchanged
+    // (specs/030-queued-chat-input/spec.md FR-015 retains the buffer;
+    // queue-channel-contract.md §2 emits only on
+    // depth change).
+    expect(queueSignalDepths(frames)).toEqual([1]);
+
+    // FR-007: after recovery the user submits a new message; it starts a new
+    // turn, and at that turn's completion boundary the RETAINED msg-2 is
+    // auto-drained as the next turn's combined input
+    // (specs/030-queued-chat-input/spec.md FR-006 drain semantics) — the user
+    // does not re-submit it.
+    loop.submit({ text: "recovery-msg" });
+    await flush(20);
+
+    // Runner inputs: turn 1 = msg-1 (stalled), turn 2 = recovery-msg, turn 3
+    // = the retained msg-2 drained from the buffer.
+    expect(calls.map(extractText)).toEqual(["msg-1", "recovery-msg", "msg-2"]);
+    expect(textContents(frames)).toEqual([
+      "partial",
+      "reply:recovery-msg",
+      "reply:msg-2",
+    ]);
+    expect(loop.queueDepth()).toBe(0);
+    expect(loop.isRunning()).toBe(false);
+    // Two terminal waits: one at the stall recovery (finishError → idle —
+    // specs/043-llm-stream-stall-recovery/spec.md FR-005, the session
+    // returned to ready so the user can interact again) and one at the final
+    // idle after the drained turn completed (specs/030-queued-chat-input/spec.md
+    // FR-006 — empty queue at turn completion returns to idle).
+    expect(waitFrames(frames)).toHaveLength(2);
+    // The drain into the next turn emitted the depth-0 signal (§2).
+    expect(queueSignalDepths(frames)).toEqual([1, 0]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Feature 043 (T013, SC-006): the stall feature MUST NOT change the
+  // existing abort semantics — user abort and connection-drop abort still
+  // clear the buffer via `finishAbort` (specs/030-queued-chat-input/spec.md
+  // FR-011), while only the stall-induced termination retains it
+  // (specs/043-llm-stream-stall-recovery/spec.md FR-006/FR-008, SC-006;
+  // contract §5 scope boundary —
+  // specs/043-llm-stream-stall-recovery/contracts/stall-recovery-contract.md).
+  // -------------------------------------------------------------------------
+
+  it("SC-006: user abort clears the queued buffer while a stall retains it (043 zero regression — FR-008 terminals stay distinct)", async () => {
+    // Contrast test: two loops with the SAME stall runner and the SAME buffer
+    // state (msg-1 in flight streaming "partial", msg-2 queued at depth 1).
+    // The terminal outcome differs ONLY by trigger — gate release (stall →
+    // finishError) vs abort() (→ finishAbort) — exercising the catch's
+    // classification (contract §3.1, turn-loop.ts:352-358: aborting /
+    // controller.signal.aborted → finishAbort, else finishError).
+    const stallGate = makeGate();
+    const stallRec = makeRecordingEmit();
+    const stallLoop = new TurnLoop(
+      SID,
+      TID,
+      makeStallRunner(AGENT, { gate: stallGate }),
+      stallRec.emit,
+      AGENT,
+    );
+    const abortGate = makeGate();
+    const abortRec = makeRecordingEmit();
+    const abortLoop = new TurnLoop(
+      SID,
+      TID,
+      makeStallRunner(AGENT, { gate: abortGate }),
+      abortRec.emit,
+      AGENT,
+    );
+
+    stallLoop.submit({ text: "msg-1" });
+    abortLoop.submit({ text: "msg-1" });
+    await flush();
+    stallLoop.submit({ text: "msg-2" });
+    abortLoop.submit({ text: "msg-2" });
+    expect(stallLoop.queueDepth()).toBe(1);
+    expect(abortLoop.queueDepth()).toBe(1);
+
+    // Branch 1 — STALL: the runner throws a real NodeTimeoutError →
+    // finishError: buffer RETAINED, warn + wait, no depth signal
+    // (specs/043-llm-stream-stall-recovery/spec.md FR-006/FR-008).
+    stallGate.resolve();
+    // Branch 2 — USER ABORT: abort() → finishAbort: buffer CLEARED,
+    // QueueSignal(0) then wait, no warn (specs/030-queued-chat-input/spec.md
+    // FR-011; specs/043-llm-stream-stall-recovery/spec.md FR-012).
+    abortLoop.abort();
+    await flush(20);
+
+    // Same starting buffer depth, opposite outcomes — the stall feature did
+    // not conflate the two terminals (SC-006).
+    expect(stallLoop.queueDepth()).toBe(1);
+    expect(abortLoop.queueDepth()).toBe(0);
+    expect(warnFrames(stallRec.frames)).toHaveLength(1);
+    expect(warnFrames(abortRec.frames)).toHaveLength(0);
+    expect(queueSignalDepths(stallRec.frames)).toEqual([1]);
+    expect(queueSignalDepths(abortRec.frames)).toEqual([1, 0]);
+    expect(waitFrames(stallRec.frames)).toHaveLength(1);
+    expect(waitFrames(abortRec.frames)).toHaveLength(1);
+    expect(stallLoop.isRunning()).toBe(false);
+    expect(abortLoop.isRunning()).toBe(false);
+  });
+
+  it("SC-006: connection-drop abort (stream close → abort()) clears the buffer without warn (Feature 026 path)", async () => {
+    // Connection-drop abort and user abort share ONE entry point at the
+    // TurnLoop level: `abort()` (session-team.ts:673-674 — `turnLoop.abort()`).
+    // The bidi stream end/error chain is `abortLoops()` → `team.abort()` →
+    // `turnLoop.abort()` (handler.ts:339-342,559,570 — the Feature 026
+    // stream-close → abort chain, specs/026-agent-abort-crash-fix/spec.md
+    // FR-001). So this test asserts BOTH triggers: the queue is discarded
+    // (specs/030-queued-chat-input/spec.md FR-011; the stall feature leaves
+    // this unchanged — specs/043-llm-stream-stall-recovery/spec.md FR-012)
+    // and the abort terminal emits QueueSignal(0) + `wait` WITHOUT a `warn`
+    // (finishAbort, never finishError — specs/026-agent-abort-crash-fix/spec.md
+    // FR-003: no error/warn frames on the abort path).
+    const gate = makeGate();
+    const adapter = makeEchoRunner("player", { gate });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
+
+    // Turn 1 in flight (blocked on the gate); queue msg-2 before the "drop".
+    loop.submit({ text: "msg-1" });
+    await flush();
+    loop.submit({ text: "msg-2" });
+    expect(loop.queueDepth()).toBe(1);
+
+    // The drop: abort() unblocks the runner's abort-aware gate wait, the
+    // generator exits, and runLoop's abort check (turn-loop.ts:365) reaches
+    // finishAbort — the queue is discarded (FR-011).
+    loop.abort();
+    await flush(20);
+
+    expect(loop.queueDepth()).toBe(0);
+    expect(loop.isRunning()).toBe(false);
+    expect(warnFrames(frames)).toHaveLength(0);
+    expect(waitFrames(frames)).toHaveLength(1);
+    expect(queueSignalDepths(frames)).toEqual([1, 0]);
+    // The queued msg-2 was discarded — no turn ran for it.
+    expect(textContents(frames)).toEqual([]);
   });
 
   // -------------------------------------------------------------------------

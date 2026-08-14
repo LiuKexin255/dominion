@@ -6,6 +6,14 @@ desc: grpc hello world service
 ports:
   - name: grpc
     port: 50051
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        value: |
+          message: "hello from config"
+          times: 3
+        type: yaml
 artifacts:
   - name: service
     target: :cmd_image

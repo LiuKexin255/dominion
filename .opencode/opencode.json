@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "zhipuai-coding-plan/glm-5.2",
+  "model": "zhipuai-coding-plan/glm-5.3",
   "small_model": "opencode-go/deepseek-v4-flash",
   "instructions": [
     ".specify/memory/constitution.md"
@@ -15,11 +15,11 @@
       "reasoningEffort": "max"
     },
     "plan": {
-      "model": "zhipuai-coding-plan/glm-5.2",
+      "model": "zhipuai-coding-plan/glm-5.3",
       "reasoningEffort": "max",
     },
     "general": {
-      "model": "zhipuai-coding-plan/glm-5.2",
+      "model": "zhipuai-coding-plan/glm-5.3",
       "reasoningEffort": "max",
       "tools": {
         "todowrite": true

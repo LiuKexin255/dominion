@@ -65,6 +65,7 @@ function readSkillBody(name: string): string {
  */
 const BUILTIN_SKILL_NAMES: readonly string[] = [
 	"saolei",
+	"memory",
 ];
 
 /**

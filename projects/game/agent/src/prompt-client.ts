@@ -16,16 +16,27 @@ import {
   registerDominionResolver,
   createDeployClient,
 } from "@dominion/common-js-grpc-resolver";
+import { info, error } from "@dominion/common-js-logs";
 
-/** Path to game.proto, relative to the compiled src/ directory. */
-const PROTO_PATH = path.join(
+/**
+ * Path to game.proto, relative to the compiled src/ directory.
+ *
+ * Exported so sibling gRPC clients (e.g. `memory-client.ts`, spec 039 T014 —
+ * `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §3)
+ * load the SAME proto definition with the SAME options instead of
+ * duplicating the path/loader config.
+ */
+export const PROTO_PATH = path.join(
   __dirname,
   "..",
   "projects", "game", "game.proto",
 );
 
-/** Proto loader options MUST match ts_proto_library generation options. */
-const PROTO_OPTIONS: protoLoader.Options = {
+/**
+ * Proto loader options MUST match ts_proto_library generation options.
+ * Exported for the same single-source-of-truth reason as `PROTO_PATH`.
+ */
+export const PROTO_OPTIONS: protoLoader.Options = {
   longs: String,
   enums: String,
   defaults: true,
@@ -37,9 +48,6 @@ const PROTO_OPTIONS: protoLoader.Options = {
 export const PROMPT_SERVICE_TARGET = "dominion:///game/prompt:50051";
 
 const TLS_CA_CERT = "/etc/tls/ca.crt";
-
-/** Ample for TCP + TLS handshake on a healthy peer during startup warmup. */
-const DEFAULT_WARMUP_TIMEOUT_MS = 5_000;
 
 /** Return type for PromptClient.getTeamProfile(). */
 export interface TeamProfileResult {
@@ -59,7 +67,14 @@ export interface TeamProfileResult {
   plannerPrompt: string;
 }
 
-function buildClientCredentials(): grpc.ChannelCredentials {
+/**
+ * Build the TLS channel credentials for dominion gRPC services: TLS with the
+ * deployment CA when present, insecure otherwise (local dev).
+ *
+ * Exported so sibling gRPC clients (`memory-client.ts`, spec 039 T014) reuse
+ * the same TLS policy — see `PROTO_PATH` above.
+ */
+export function buildClientCredentials(): grpc.ChannelCredentials {
   if (!fs.existsSync(TLS_CA_CERT)) {
     return grpc.credentials.createInsecure();
   }
@@ -68,31 +83,39 @@ function buildClientCredentials(): grpc.ChannelCredentials {
   return grpc.credentials.createSsl(rootCert);
 }
 
-// Keep the channel warm and detect silently-dropped connections, but stay
-// within the prompt service's keepalive enforcement policy. The prompt
-// server is grpc-go, which by default rejects pings more frequent than
-// 5 minutes as "excess pings" and GOAWAYs the connection. Use 5m so the
-// PING interval is safely above that threshold, and only send PINGs when
-// there is an active RPC to avoid waking idle connections.
-const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
-  "grpc.keepalive_time_ms": 300_000,
-  "grpc.keepalive_timeout_ms": 10_000,
-  "grpc.keepalive_permit_without_calls": 0,
-  "grpc.initial_reconnect_backoff_ms": 1_000,
-  "grpc.max_reconnect_backoff_ms": 15_000,
-};
-
 // grpc-js defaults to pick_first, which pins a single connection; when that
 // backend pod restarts the call hangs in "Waiting for LB pick" until reconnect.
 // round_robin (matching grpc-go's ClientDefault) connects to every resolved
 // endpoint, so a rolling-upgrade pod swap routes around the terminating pod.
-const ROUND_ROBIN_SERVICE_CONFIG = JSON.stringify({
+export const ROUND_ROBIN_SERVICE_CONFIG = JSON.stringify({
   loadBalancingConfig: [{ round_robin: {} }],
 });
 
-function buildChannelOptions(): grpc.ChannelOptions {
+// Deliberately NO app-level keepalive PINGs on these unary clients — this
+// mirrors grpc-go's `ClientDefault()` (common/gopkg/grpc/default.go:26): the
+// Go side reserves HTTP/2 keepalive for long-lived streams, paired with
+// server-side enforcement relaxation (common/gopkg/grpc/keepalive.go
+// WithLongLivedClientKeepalive / WithLongLivedServerKeepalive). The unary
+// prompt/memory servers run grpc-go's DEFAULT enforcement policy (MinTime=5min,
+// PermitWithoutStream=false), so a keepalive-enabled client's idle PINGs are
+// answered with GOAWAY "excess pings" and the connection is torn down
+// repeatedly, producing DEADLINE_EXCEEDED "Waiting for LB pick" on the
+// agent→prompt call. Node lacks TCP-level SO_KEEPALIVE (grpc-go enables it;
+// https://github.com/grpc/grpc-go/issues/6250), but for unary calls a dead
+// connection is detected by the per-RPC deadline + reconnect, which is
+// exactly grpc-go's unary behavior.
+//
+// max_reconnect_backoff_ms: cap the subchannel retry interval (grpc-js
+// default max backoff is 120s; 15s bounds how long a dead subchannel is
+// retried before giving up the connection).
+export const RECONNECT_OPTIONS: grpc.ChannelOptions = {
+  "grpc.initial_reconnect_backoff_ms": 1_000,
+  "grpc.max_reconnect_backoff_ms": 15_000,
+};
+
+export function buildChannelOptions(): grpc.ChannelOptions {
   const options: grpc.ChannelOptions = {
-    ...KEEPALIVE_OPTIONS,
+    ...RECONNECT_OPTIONS,
     "grpc.service_config": ROUND_ROBIN_SERVICE_CONFIG,
   };
   const serverName = process.env.TLS_SERVER_NAME;
@@ -104,9 +127,9 @@ function buildChannelOptions(): grpc.ChannelOptions {
 
 /**
  * Exposes the channel-options construction as a factory seam (FR-009). Tests
- * assert the keepalive / load-balancing options directly without constructing a
- * real gRPC client — which previously required fragile module-level `vi.mock`
- * of `@grpc/grpc-js` / `@grpc/proto-loader` (bypassed by the pre-compiled `:lib`
+ * assert the load-balancing options directly without constructing a real gRPC
+ * client — which previously required fragile module-level `vi.mock` of
+ * `@grpc/grpc-js` / `@grpc/proto-loader` (bypassed by the pre-compiled `:lib`
  * under Bazel js_test — see research.md §2 and style/javascript.md §测试).
  */
 export function buildChannelOptionsForTest(): grpc.ChannelOptions {
@@ -183,12 +206,27 @@ export class PromptClient {
       const deadline = new Date();
       deadline.setSeconds(deadline.getSeconds() + 10);
 
+      // Probe-and-nudge the channel (forces IDLE→CONNECTING; logs state for
+      // diagnosis — see probeChannel): a connection drop must not leave the
+      // channel permanently stuck in "Waiting for LB pick".
+      probeChannel(this.client, "prompt getTeamProfile");
+
       (this.client as any).getTeamProfile(
         { name: `templates/${template}/profiles/${profileName}` },
         new grpc.Metadata({ waitForReady: true }),
         { deadline },
         (err: grpc.ServiceError | null, response: any) => {
           if (err) {
+            error("prompt getTeamProfile failed", {
+              template,
+              profile: profileName,
+              error: err.message,
+              code: String(err.code),
+              channelState: probeChannel(
+                this.client,
+                "prompt getTeamProfile (after failure)",
+              ),
+            });
             reject(err);
             return;
           }
@@ -217,44 +255,43 @@ export class PromptClient {
     });
   }
 
-  /**
-   * Best-effort pre-warm of the gRPC channel.
-   *
-   * Forces the otherwise-lazy channel to start connecting and waits until it
-   * reaches READY or `timeoutMs` elapses. Eliminates the cold-start window on
-   * the first real RPC. Never rejects — a timeout resolves `false` and leaves
-   * connection establishment to the next RPC's own deadline.
-   *
-   * @returns `true` if the channel reached READY, `false` on timeout.
-   */
-  async warmup(timeoutMs = DEFAULT_WARMUP_TIMEOUT_MS): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      const channel = this.client.getChannel();
-      const deadline = new Date(Date.now() + timeoutMs);
-
-      const step = (): void => {
-        const state = channel.getConnectivityState(true);
-        if (
-          state === grpc.connectivityState.READY ||
-          state === grpc.connectivityState.SHUTDOWN
-        ) {
-          resolve(state === grpc.connectivityState.READY);
-          return;
-        }
-        channel.watchConnectivityState(state, deadline, (err) => {
-          if (err) {
-            resolve(false);
-            return;
-          }
-          step();
-        });
-      };
-      step();
-    });
-  }
-
   /** Close the underlying gRPC client connection. */
   close(): void {
     this.client.close();
   }
+}
+
+/**
+ * Probe a grpc-js channel's connectivity state and nudge it to connect.
+ *
+ * `getConnectivityState(true)` forces IDLE→CONNECTING — the same nudge the
+ * removed warmup() used — so a call on an idle channel actively tries to
+ * reconnect instead of silently queueing until the deadline. grpc-js
+ * round_robin does not reliably exit IDLE after a connection drop (see the
+ * empty-endpoint comment in common/js/grpc/resolver/src/grpc-js-resolver.ts),
+ * leaving the channel stuck in "Waiting for LB pick" until the process
+ * restarts, so every unary RPC must probe its channel first. Logs the state
+ * at info level for diagnosis and returns the state name.
+ *
+ * @param client The gRPC client whose channel to probe.
+ * @param label  Log label identifying the call site.
+ * @returns The connectivity state name ("READY"/"IDLE"/...), or a
+ *   descriptive string when the channel is unavailable (injected test
+ *   client without a channel).
+ */
+export function probeChannel(client: grpc.Client, label: string): string {
+  let state = "no-channel";
+  try {
+    const channel = (
+      client as unknown as { getChannel?: () => grpc.Channel }
+    ).getChannel?.();
+    if (channel) {
+      const value = channel.getConnectivityState(true);
+      state = grpc.connectivityState[value] ?? String(value);
+    }
+  } catch (err) {
+    state = `error:${err instanceof Error ? err.message : String(err)}`;
+  }
+  info(`${label}: channel state`, { state });
+  return state;
 }

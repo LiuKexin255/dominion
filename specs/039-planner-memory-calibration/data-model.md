@@ -1,0 +1,156 @@
+# Data Model: Planner 长期记忆与校准指令
+
+**Feature**: `039-planner-memory-calibration` | **Date**: 2026-08-07 | **Spec**: [`spec.md`](./spec.md) | **Plan**: [`plan.md`](./plan.md)
+
+> 实体与状态模型。Proto 资源/消息精确契约见 [`contracts/memory-service-contract.md`](./contracts/memory-service-contract.md)；team graph 状态/节点见 [`contracts/team-graph-contract.md`](./contracts/team-graph-contract.md)；saolei_operate 见 [`contracts/saolei-operate-contract.md`](./contracts/saolei-operate-contract.md)。本文件聚焦实体语义、字段、关系、存储与生命周期。
+
+---
+
+## 1. API 资源实体（proto 层，新增）
+
+### 1.1 Memory（planner 长期记忆条目，新增）
+
+| 属性 | 类型 | 说明 |
+|---|---|---|
+| `name` | string (IDENTIFIER) | `templates/{template}/sessions/{session}/memories/{memory}` |
+| `memory_id` | string (OUTPUT_ONLY) | `{memory}` 段——**Session 2026-08-08**：由 **agent 在 `memory` 工具 `add` 时内部生成**（非 LLM 提供；D9）；memory 服务 API 不变 |
+| `content` | string | 记忆内容文本 |
+| `create_time` | Timestamp (OUTPUT_ONLY) | |
+| `update_time` | Timestamp (OUTPUT_ONLY) | |
+
+- **身份/唯一性**：资源名（`memories/{memory_id}` 在 session 作用域内唯一）。唯一键 `(template, session, memory_id)`。
+- **关系**：属于一个 Session（`templates/{template}/sessions/{session}`）；为该 session 的 planner 长期记忆。
+- **存储**：MongoDB `game_memory` 数据库（`style/mongo.md`，独立于 agent/prompt 的库），`memories` 集合，由新建 memory 服务（grpc-go）管理。
+- **生命周期**：经 `memory` 工具（hermes 式单一工具，agent 转换为 Create/Update/Delete RPC）增删改；跨进程重启持久。`ListMemories` 供 agent 烘焙冻结快照 + `memory` 工具 `replace`/`remove` 的 `old_text` 子串定位。session 删除暂不级联清理。
+
+---
+
+## 2. 运行时记忆与状态实体（非 proto 资源）
+
+### 2.1 planner 冻结记忆快照（frozen snapshot，调研 D2/D5）
+
+| 属性 | 类型 | 说明 |
+|---|---|---|
+| `entries` | `{ memory_id: string, content: string }[]` | 冻结的记忆条目（来自 `ListMemories`） |
+| `bakedAt` | `number`（ms） | 最近一次烘焙时间戳（retain-vs-rebuild 优化用，调研 §4.2） |
+
+- **存储**：进程内（`projects/game/agent/src/team/memory-snapshot.ts` 冻结缓存），非持久。
+- **生命周期**：team 初始化时首次烘焙；冻结期间 memory 工具改存储不刷新快照；压缩边界（037 每 5 局）刷新（重读 `ListMemories` → 重新烘焙）。
+- **注入形式**：作为 planner 每次 invoke 的 input SystemMessage（内容来自冻结缓存，**纯内容**——每条仅 `content`，无 `memory_id` 前缀，FR-011/Session 2026-08-08），**不烘焙进 createAgent systemPrompt**（调研 D5 方案 b）。`memory_id` 仅存于 `entries` 供内部定位，不进 LLM 可见文本（D9/D11）。
+
+### 2.2 Calibration Instruction（planner→player 校准指令）
+
+| 属性 | 类型 | 说明 |
+|---|---|---|
+| `content` | string | 指令文本（planner LLM 产出） |
+| `scenario` | `review` \| `init` \| `compact` | 产出场景（FR-019） |
+
+- **投递形态**：`HumanMessage` 进 `playerMessages` 通道（调研 D6）。
+- **生命周期（两场景）**：
+  - **review 场景**：planner 经 `instruct_player` 工具**可选**产出（携带游戏历史）；同 turn 内立即追加到 playerMessages（紧跟游戏结束 tool_result），player 继续。
+  - **init/compact 场景**：planner 经 prompt 引导产出（无游戏历史，仅依冻结快照；LLM 决定是否调用 instruct_player，R4）；指令**直写 `playerMessages`**（与 review 同一通道写回，§2.4），随 player 下次激活作为 history 注入；不触发 player invoke。
+- **压缩作用域**：两场景指令均在 playerMessages 内，会被 037 compress 节点压缩。planner 真正长期演化在冻结记忆快照（§2.1），不依赖 playerMessages 留存。
+
+### 2.3 GameState / GameEvent buffer（ephemeral，不变+扩展）
+
+031 既有 ephemeral buffer（`gameState`/`gameEvent`）。本特性扩展 sink：`onMove` → `onOperate(operations, finalState, ...)`，gameLog 以 `saolei_operate`（含全部 operations）为单位记录一条（FR-004）。其余不变。
+
+### 2.4 TeamState（graph state schema，更新）
+
+| 通道 | 类型 | reducer | 说明 |
+|---|---|---|---|
+| `playerMessages` | `MessagesValue` | `messagesStateReducer` | 031 既有；指令 HumanMessage 经此追加（review 同 turn / init-compact 直写） |
+| `plannerMessages` | `MessagesValue` | `messagesStateReducer` | 031 既有；复盘输出在此（对 player 不可见） |
+| `gameEnded` | `"won"\|"lost"\|null` | 覆盖 | 031 既有 |
+| `gameCounter` | `number` | 覆盖 | 037 既有（每 5 局触发 compress） |
+
+- **移除**：策略相关字段——策略不在 graph state（031 既有，本特性彻底移除 StrategyStore）。
+- **无独立指令槽**：init/compact 指令直写 `playerMessages`（HumanMessage，由 instruction 节点经节点返回值写入——与 review 节点同一通道写回机制）；player 节点输入即 `state.playerMessages`，指令作为正常 history 进入模型（FR-015/FR-016 的"与下次激活一同注入"实现，无需额外消费步骤）。
+
+---
+
+## 3. 工具实体
+
+### 3.1 memory mcp 工具（planner 专属，FR-007/008/009，单一 `memory` 工具）
+
+| 工具 | 参数 | agent 转换 → MemoryService RPC | 匹配/冲突语义 |
+|---|---|---|---|
+| `memory` | `action`∈{add/replace/remove}, `content`, `old_text`, `operations` | `add`→agent 生成 memory_id+`CreateMemory`；`replace`/`remove`→listMemories+`old_text` 子串定位 memory_id+`UpdateMemory`/`DeleteMemory`；`operations`→批量原子 | 0 命中→错误文本（含当前条目）；多不同命中→错误（要求更具体子串）；全相同→作用首条；add 等价内容→成功（去重） |
+
+- **无 `memory_id` 参数**（agent 内部生成）；**无 `target` 参数**（单一存储）。详见 [`contracts/memory-mcp-contract.md`](./contracts/memory-mcp-contract.md)。
+- template/session 经 memory mcp server path 闭包注入（工具参数不含，FR-012）。
+- 仅 planner 持有；player 不持有（FR-009）。
+- 工具改存储**不刷新冻结快照**（§2.1）。
+
+### 3.2 instruct_player 工具（planner 专属，FR-014/FR-017）
+
+| 工具 | 参数 | 行为 |
+|---|---|---|
+| `instruct_player` | `content: string` | 将 content 作为 HumanMessage 追加到 playerMessages |
+
+- review 场景 planner 按 prompt"必要时才调用"（可选）；init/compact 场景经 prompt 引导产出（LLM 决定，R4）。
+- 仅 planner 持有。
+
+### 3.3 saolei_operate 工具（player 专属，FR-001/FR-002，双形态）
+
+| 工具 | 参数 | 行为 |
+|---|---|---|
+| `saolei_operate` | 普通参数 `type`∈{click\|flag\|chord}, `x`, `y` **或** `operations: [{type, x, y}]` | 入口归一化为 operations 列表，按序校验执行，单次返回最终棋盘+状态；失败按原因细分（§saolei-operate-contract） |
+
+- 双形态（hermes `memory` 工具同构，Session 2026-08-08）：普通参数（单次）等价于长度 1 的 `operations`。合并原 `saolei_click`/`saolei_flag`/`saolei_chord_click`。`saolei_init`/`saolei_remain` 不变。仅 player 持有。
+
+---
+
+## 4. 服务实体（新增）
+
+### 4.1 MemoryService（grpc-go，新建）
+
+- **职责**：承载 planner 长期记忆条目的持久化与读写（Memory 资源 CRUD）。
+- **存储**：MongoDB `game_memory` 数据库，`memories` 集合（独立，`style/mongo.md`）。
+- **访问**：agent 经 `memory-client.ts`（gRPC，`dominion:///game/memory:50051`）访问；memory mcp server 经此转发（mcp 不直连，FR-007）。
+- **结构**：仿 `projects/game/prompt/`（cmd/handler/domain/runtime/mongo）。
+- 详见 [`contracts/memory-service-contract.md`](./contracts/memory-service-contract.md)。
+
+### 4.2 memory mcp server（agent 上，新建）
+
+- **职责**：向 planner 暴露**单一** hermes 风格 `memory` 工具（`action`/`content`/`old_text`/`operations`），将 hermes 式调用转换为 memory 服务的 memory_id 式 RPC 后转发。
+- **装配**：与 saolei mcp 同一 per-session mcp host，独立 McpServer 实例 + 独立 path/namespace。
+- **path 闭包**：`createMemoryMcpServer(memoryClient, template, session)` 绑定 template/session（FR-012）。
+- 详见 [`contracts/memory-mcp-contract.md`](./contracts/memory-mcp-contract.md)。
+
+### 4.3 memory skill（planner 专属，新建）
+
+- **职责**：注入 planner 系统提示词的 memory 工具使用引导（何时记/跳过什么/冻结快照模型/`old_text` 用法），参考 hermes 引导。
+- **装配**：`skill-loader.ts` 注册 `"memory"`；`planner.ts` `appendSkillBodyToPrompt(base, ["memory"])`（与 saolei skill 注入 player 对称）。
+- 详见 [`contracts/memory-skill-contract.md`](./contracts/memory-skill-contract.md)。
+
+---
+
+## 5. 实体关系总览
+
+```text
+Template (resource message, path segment) — 031 既有
+  ├── Session: templates/{template}/sessions/{session} — 031 既有
+  │     └── Team: .../team { agents: [player, planner] } — 031 既有
+  │           ├── player (saolei_operate 双形态/init/remain; 不持有记忆/策略工具)
+  │           └── planner (memory 单工具 + instruct_player; 持冻结记忆快照; 系统提示词含 memory skill)
+  └── Memory: .../sessions/{session}/memories/{memory} — 【新增，memory 服务 grpc-go, db game_memory, memory_id 由 agent 内部生成】
+
+运行时（非资源）:
+  planner 冻结记忆快照 ── 进程内冻结缓存（memory-snapshot.ts）── 压缩/初始化边界刷新（ListMemories）
+  Calibration Instruction ── HumanMessage 进 playerMessages（review 同 turn / init-compact 直写通道）
+  Short-term messages ── MemorySaver checkpointer（playerMessages/plannerMessages）── RefreshTeam/压缩清空
+  GameState/GameEvent buffer ── 进程内 ephemeral ── sink（onOperate）写 / player+planner 读
+
+被移除（clean break）:
+  Strategy / StrategyStore / strategies 集合（game_prompt 库）/ update_strategy 工具 / player"当前态势"注入 / planner system 策略注入
+```
+
+## 6. 移除的实体（clean break，FR-013）
+
+- **Strategy**（共享策略长期记忆）→ 由 planner 冻结记忆快照（§2.1）+ Calibration Instruction（§2.2）取代。
+- **StrategyStore**（`get`/`put` 接口 + `MongoStrategyStore`，`projects/game/agent/src/strategy-store.ts`）→ 删除。
+- **`strategies` 集合**（agent `game_prompt` 库）→ 废弃（不迁移）。
+- **`update_strategy` 工具**（`projects/game/agent/src/team/update-strategy.ts`）→ 由 `instruct_player` 取代。
+- **player"当前态势"注入**（`buildStrategyMessage`/`STRATEGY_MESSAGE_ID`）→ 删除（player 不再读策略）。
+- **planner system 策略注入**（`buildStrategyMessage`）→ 由冻结记忆快照（input SystemMessage）取代。

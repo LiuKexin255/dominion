@@ -175,7 +175,7 @@ rpc Connect(stream UserFrame) returns (stream TeamFrame);
 - `Team`, `TeamAgent`, `SaoleiProfile`, `Template`
 - `CreateSessionRequest`, `ListSessionsRequest`, `GetSessionRequest`, `DeleteSessionRequest`
 - `CreateTeamProfileRequest`, `ListTeamProfilesRequest`, `GetTeamProfileRequest`, `UpdateTeamProfileRequest`, `DeleteTeamProfileRequest`
-- `CreateTeamRequest`, `GetTeamRequest`, `RefreshTeamRequest`
+- `UpdateTeamRequest`, `GetTeamRequest`, `RefreshTeamRequest`
 - `ListMessagesRequest`, `ListMessagesResponse`
 - deploy.proto 全部（经调查确认无冗余字段）
 

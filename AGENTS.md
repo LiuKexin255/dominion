@@ -63,6 +63,8 @@ Python 依赖更新步骤：
 
 * Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 
 * 如果注释要引用其他文件，需要写明引用链接，避免发生歧义。例如引用 specs 内容需要注明链接，不能只写 `FR-xx` 这类，避免不同的需求导致的歧义。
+* 注释的内容应当稳定，确保在任何时候看到这个日志都能获取到需要的上下文。**避免**将暂时的、有时效的、不稳定的内容放到日志当中。例如日志连接（会过期）、分支提交记录（分支删除后找不到）等。
+* 注释应当与当前代码所匹配，重点解释“**为什么是现在这样**”，而**不是**“为什么从 `A` 演进到现在这样”，因为状态 `A` 已经不存在了。注释包含太多过去的设计是噪音和干扰。
 
 ## 依赖
 

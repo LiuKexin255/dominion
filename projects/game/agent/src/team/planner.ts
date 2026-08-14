@@ -5,35 +5,59 @@
  * (the conditional edge routes to it only when `TeamState.gameEnded ≠ null`,
  * FR-011), never fires per move, and NEVER touches the desktop (FR-010).
  *
- * - **Input**: `plannerMessages` history + a fresh review request built from
- *   the ephemeral buffer's `gameLog` (the full move sequence of the current
- *   game — Issue 2, `specs/036-team-mode-bugfix/contracts/
- *   team-graph-fix-contract.md` §2.2); its system context = [复盘指令] +
- *   [当前策略, 初始 `""`] (FR-014 — the strategy is read fresh each entry and
- *   injected as a fixed-id `SystemMessage`, then filtered out of the channel
- *   write-back: strategy stays in StrategyStore).
- * - **Tools**: ONLY `update_strategy` (FR-012, no read tools).
- * - **Retry/degrade**: `update_strategy` retries live INSIDE this node (D6 /
- *   需求方 #6): tool-call failures surface to the model within the agent
- *   loop (the model may retry the call), and a failing agent invoke is
+ * - **Input**: `plannerMessages` history + the frozen long-term-memory
+ *   snapshot (input SystemMessage, **纯内容** — FR-011) + a fresh review
+ *   request built from the ephemeral buffer's `gameLog` (the full move
+ *   sequence of the current game — Issue 2, `specs/036-team-mode-bugfix/
+ *   contracts/team-graph-fix-contract.md` §2.2). The strategy READ path
+ *   (the old strategy-message read path) is gone (Phase 5, T020 — replaced
+ *   by the frozen
+ *   snapshot, contract §2.2/§3); the snapshot's SystemMessage is filtered out
+ *   of the channel write-back (contract §3 — it must not enter the short-term
+ *   plannerMessages channel).
+ * - **Tools**: the memory MCP tools (a single hermes-style `memory` tool,
+ *   FR-007/FR-008 — injected via {@link PlannerNodeDeps.plannerTools}, built
+ *   by server wiring through the mcp client) + the `instruct_player` tool
+ *   (T027 — FR-014/FR-017, built internally via
+ *   {@link buildInstructPlayerTool}). The former shared-strategy write path
+ *   is GONE (Phase 6 T030/T031, FR-013 — no shared strategy storage anywhere).
+ * - **Calibration instruction (039 US3, T027 — contract §2.2/§4, FR-017)**:
+ *   after the review, the planner MAY call `instruct_player` (prompt
+ *   "必要时才调用" — the LLM decides, FR-014). The tool stages the content
+ *   into the configurable-provided external buffer (R1 — same
+ *   `configurable` pattern as 037 `emitChannelFrame`); the node reads the
+ *   staged content AFTER `createAgent.invoke` returns and writes
+ *   `{playerMessages: [new HumanMessage(content)]}` from its return value —
+ *   the instruction lands immediately after the game-ending tool_result in
+ *   the player channel (FR-017 order), and the graph routes back to the
+ *   player (continuing is the player LLM's decision, FR-009). No tool call →
+ *   no instruction, the graph still routes back to the player.
+ * - **System prompt**: base + memory skill body
+ *   (`appendSkillBodyToPrompt(base, ["memory"])`, FR-020) + the player's
+ *   game-visible tool NAME/DESCRIPTION section (US3, FR-016/FR-017) — static,
+ *   template-fixed assembly (FR-028); the frozen snapshot is NOT baked into
+ *   the system prompt (survey D5 plan b — it is input data, contract §3).
+ * - **Retry/degrade**: tool-call failures surface to the model within the
+ *   agent loop (the model may retry the call), and a failing agent invoke is
  *   retried a bounded number of times before degrading. The graph scheduler
  *   never re-routes the planner.
  * - **Return**: `{ plannerMessages, gameEnded: null, gameCounter }` — the graph
  *   clears `gameEnded` UNCONDITIONALLY after the planner node returns (D6 step
- *   6, whether or not `update_strategy` succeeded), so the planner fires at
- *   most once per game end; the edge back to `player` follows (FR-009 —
- *   continuing is driven by the player LLM / user, not a forced loop). The
- *   node also increments the per-session `gameCounter` on BOTH paths (success
- *   and degrade): every ended game — won or lost — counts toward the 5-game
- *   compression trigger (specs/037-saolei-team-optimize/spec.md FR-006;
- *   contracts/compression-contract.md §4).
+ *   6), so the planner fires at most once per game end; the edge back to
+ *   `player` follows (FR-009 — continuing is driven by the player LLM / user,
+ *   not a forced loop). The node also increments the per-session `gameCounter`
+ *   on BOTH paths (success and degrade): every ended game — won or lost —
+ *   counts toward the 5-game compression trigger
+ *   (specs/037-saolei-team-optimize/spec.md FR-006; contracts/
+ *   compression-contract.md §4).
  *
  * **createAgent carries NO checkpointer** (D14 注意事项 4 / A2), same as the
  * player node: history lives in the outer graph's single `MemorySaver`.
  */
 
 import { createAgent } from "langchain";
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { isNodeTimeoutError } from "@langchain/langgraph";
+import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -41,58 +65,67 @@ import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
 import type { ChatModel } from "../model-provider";
-import type { ChannelFrameEmitter } from "../session-team";
-import type { StrategyStore } from "../strategy-store";
+import {
+	PRIMARY_AGENT_NAME,
+	type ChannelFrameEmitter,
+} from "../session-team";
+import { appendSkillBodyToPrompt } from "../skill-loader";
 import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
-import { buildUpdateStrategyTool } from "./update-strategy";
+import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
+import type { FrozenMemorySnapshot } from "./memory-snapshot";
 import type { CreateAgentFn } from "./player";
+import { invokeAgentWithRetry } from "./agent-invoke";
+import { ensureMessageId } from "./instruction-node";
+import {
+	buildInstructPlayerTool,
+	type InstructionBuffer,
+} from "./instruction-tool";
 
 /** The planner agent's name — the `TeamFrame.agent` value (FR-023/D12). */
 export const PLANNER_AGENT_NAME = "planner";
 
 /**
- * Fixed id of the strategy SystemMessage the node prepends to the model
- * input. Filtered out of the channel write-back (same rationale as the
- * player node — strategy not in short-term state, D4).
- */
-const STRATEGY_MESSAGE_ID = "planner-strategy-current";
-
-/**
- * Bounded retry count for a failing planner agent invoke (D6: retry is
- * handled inside the planner node; after that the node degrades).
- */
-const MAX_PLANNER_ATTEMPTS = 3;
-
-/**
  * The planner's DEFAULT base prompt (the template-fixed fallback base, FR-034
  * semantics A — used when `SaoleiProfile.planner_prompt` is empty, see
- * `specs/031-team-template-mode/spec.md` FR-034). The planner appends NO
- * skill body (it holds no saolei tools, FR-012). The current strategy is
- * injected per entry (FR-014), NOT baked into this prompt.
+ * `specs/031-team-template-mode/spec.md` FR-034). The memory skill body is
+ * ALWAYS appended by the template on top of the base
+ * (`appendSkillBodyToPrompt(base, ["memory"])`, FR-020 — 039 US2), and the
+ * player's game-visible tool description section follows (US3, FR-016). The
+ * frozen memory snapshot is NOT part of this static prompt — it is injected
+ * per invoke as an input SystemMessage (contract §3, survey D5 plan b).
+ *
+ * 039 US3 (T027): the shared-strategy guidance is gone (FR-013 — the tool
+ * and its store were removed in Phase 6); the calibration-instruction
+ * guidance is "必要时才调用" (FR-014 — the review prompt, see
+ * {@link buildReviewInput}, decides whether an instruction is needed).
  */
 export const DEFAULT_PLANNER_BASE =
 	"你是扫雷团队的复盘规划者（planner）。每局游戏结束后你会收到本局的终局棋盘" +
-	"与当前策略。你的职责：复盘本局表现（判断策略是否有效），" +
-	"若你认为策略需要更新，调用 update_strategy 写入新策略（新策略将整体替换旧策略）；" +
-	"若无需更新，则不调用任何工具直接结束。你不操作桌面，不持有任何读取工具。" +
-	"策略将由 player 在下一局作为当前态势读取。";
+	"与你维护的长期记忆（冻结快照，见记忆使用引导）。你的职责：复盘本局表现" +
+	"（判断策略是否有效），把值得跨局保留的观察写入长期记忆（调用 memory 工具）；" +
+	"若你认为需要给 player 校准指令，可在必要时调用 instruct_player 发送指令" +
+	"（指令会进入 player 的对话流，随其后续游戏生效）。你不操作桌面，" +
+	"不持有任何读取工具。";
 
 /** Dependencies of the planner node (all injected — DI seam). */
 export interface PlannerNodeDeps {
 	/** The planner's LLM (from the TeamProfile, Batch 2 wiring). */
 	model: ChatModel;
-	/** Long-term strategy store (system context + `update_strategy` writes). */
-	strategyStore: StrategyStore;
+	/**
+	 * The frozen long-term-memory snapshot (contract §3, survey D5 plan b):
+	 * injected as an input SystemMessage per invoke (纯内容, FR-011). NOT
+	 * refreshed here (FR-010 — the refresh boundary is the compress node).
+	 */
+	frozenSnapshot: FrozenMemorySnapshot;
 	/** Per-session ephemeral game-state buffer (review input, D6 step 6). */
 	buffer: EphemeralGameBuffer;
-	/** Session id — the StrategyStore key and the checkpoint thread id. */
-	sessionId: string;
 	/**
 	 * The planner's base prompt from `SaoleiProfile.planner_prompt` (FR-034
 	 * semantics A — empty string = unset = fall back to the template default
-	 * `DEFAULT_PLANNER_BASE`; the planner appends NO skill body, see
-	 * `specs/031-team-template-mode/spec.md` FR-034).
+	 * `DEFAULT_PLANNER_BASE`; the memory skill body is ALWAYS appended by the
+	 * template on top of the base, FR-020 — `specs/039-planner-memory-
+	 * calibration/contracts/memory-skill-contract.md` §2).
 	 */
 	plannerBasePrompt: string;
 	/**
@@ -103,31 +136,34 @@ export interface PlannerNodeDeps {
 	 * set is template-fixed, specs/031-team-template-mode/spec.md FR-028;
 	 * only tools the planner can observe in the game process it reviews are
 	 * listed — `saolei_remain` is excluded, it leaves no gameLog trace). The
-	 * tools themselves are NOT added to the planner's tool set (FR-018 — the
-	 * planner holds `update_strategy` only, FR-012).
+	 * tools themselves are NOT added to the planner's tool set (FR-018).
 	 */
 	playerTools: StructuredToolInterface[];
+	/**
+	 * The planner's OWN tools — the memory MCP tools (a single hermes-style
+	 * `memory` tool with `action`/`content`/`old_text`/`operations` — FR-007/
+	 * FR-008), obtained via the mcp client (`buildMemoryMcpTools`, server
+	 * wiring — T022) and DI-injected (tests inject a fake). The
+	 * `instruct_player` tool is built internally (T027 — Phase 6).
+	 */
+	plannerTools: StructuredToolInterface[];
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
 }
 
-/** Build the strategy SystemMessage for the planner's system context. */
-function buildStrategyMessage(strategy: string): BaseMessage {
-	const display = strategy === "" ? "（无 — 初始为空）" : strategy;
-	return new SystemMessage({
-		id: STRATEGY_MESSAGE_ID,
-		content: `当前策略：${display}`,
-	});
-}
-
-/**
- * Build the review request from the ephemeral buffer's `gameLog` — the full
- * move sequence of the current game (Issue 2: the planner sees every step's
- * tool, coordinates and post-step board, not just the terminal snapshot —
- * `specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2,
+/** Build the review request from the ephemeral buffer's `gameLog` — the full
+ * operation sequence of the current game (Issue 2: the planner sees every
+ * step's tool, operations and post-step board, not just the terminal snapshot
+ * — `specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2,
  * `specs/036-team-mode-bugfix/data-model.md` §2). Each entry's board is
  * rendered via `renderBoardText` so the model receives the same compact board
  * the saolei tools produce (no image, no tool-result parsing).
+ *
+ * A `saolei_operate` entry (single or batch) is rendered as
+ * `saolei_operate(operations) → status` with its full op list
+ * (`specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+ * §4 / FR-004): one gameLog entry per operate call, so the review input shows
+ * the tool's op types exactly as recorded.
  */
 function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 	const log = buffer.gameLog;
@@ -137,8 +173,12 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 	const lines: string[] = ["本局游戏过程："];
 	for (let i = 0; i < log.length; i += 1) {
 		const entry = log[i];
-		const coord = entry.x != null ? `(${entry.x}, ${entry.y})` : "";
-		lines.push(`${i + 1}. ${entry.tool}${coord} → ${entry.status}`);
+		const head = entry.operations
+			? `saolei_operate(${entry.operations
+					.map((op) => `${op.type}(${op.x},${op.y})`)
+					.join(", ")})`
+			: entry.tool;
+		lines.push(`${i + 1}. ${head} → ${entry.status}`);
 		lines.push(renderBoardText(entry.state));
 		lines.push("");
 	}
@@ -158,7 +198,8 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 	}
 
 	lines.push(
-		"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
+		"请复盘本局游戏表现，判断策略是否有效；若你认为需要给 player 校准指令，" +
+			"仅在必要时调用 instruct_player 发送指令。",
 	);
 	return new HumanMessage(lines.join("\n"));
 }
@@ -166,18 +207,18 @@ function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
 /**
  * Player tool names whose use is OBSERVABLE in the game process the planner
  * reviews (the review input renders the ephemeral gameLog): `saolei_init`
- * writes an entry via `onGameStart` and the cell tools write entries via
- * `onMove` (team-sink.ts onGameStart/onMove). Tools absent here — the
- * read-only `saolei_remain`, which fires NO sink event and leaves no gameLog
- * trace (saolei-mcp.ts) — are NOT injected into the planner's tool-description
- * section: the planner cannot judge their use from the game process it sees
- * (specs/037-saolei-team-optimize/spec.md FR-016 refine).
+ * writes an entry via `onGameStart` and `saolei_operate` writes ONE entry per
+ * call via `onOperate` (team-sink.ts onGameStart/onOperate —
+ * `specs/039-planner-memory-calibration/spec.md` FR-005; the three former
+ * cell tools are merged into `saolei_operate`, FR-001). Tools absent here —
+ * the read-only `saolei_remain`, which fires NO sink event and leaves no
+ * gameLog trace (saolei-mcp.ts) — are NOT injected into the planner's
+ * tool-description section: the planner cannot judge their use from the game
+ * process it sees (specs/037-saolei-team-optimize/spec.md FR-016 refine).
  */
 const GAME_VISIBLE_PLAYER_TOOLS = new Set([
 	"saolei_init",
-	"saolei_click",
-	"saolei_flag",
-	"saolei_chord_click",
+	"saolei_operate",
 ]);
 
 /**
@@ -195,11 +236,16 @@ const GAME_VISIBLE_PLAYER_TOOLS = new Set([
  * are listed — i.e. tools that leave a gameLog trace (GAME_VISIBLE_PLAYER_
  * TOOLS). The read-only `saolei_remain` fires no sink event and produces no
  * gameLog entry, so the planner cannot tell whether it was used; its
- * description is therefore excluded (FR-016 refine).
+ * description is therefore excluded (FR-016 refine). `saolei_operate`'s
+ * description (the MCP tool's own text) covers its click/flag/chord operation
+ * types, matching the review input's recorded op types one-to-one (FR-005 —
+ * `specs/039-planner-memory-calibration/contracts/saolei-operate-contract.md`
+ * §4).
  */
 function buildToolDescriptionSection(tools: StructuredToolInterface[]): string {
 	// Game-visible subset: tools recorded in the review input's game log
-	// (saolei_init via onGameStart, cell tools via onMove — team-sink.ts).
+	// (saolei_init via onGameStart, saolei_operate via onOperate —
+	// team-sink.ts).
 	const visible = tools.filter((t) => GAME_VISIBLE_PLAYER_TOOLS.has(t.name));
 	if (visible.length === 0) return "";
 	const lines = [
@@ -215,47 +261,12 @@ function buildToolDescriptionSection(tools: StructuredToolInterface[]): string {
 }
 
 /**
- * Run a stateless `createAgent` invoke with a bounded retry (D6 — retry
- * lives inside the planner node; the graph scheduler never re-routes the
- * planner). Re-throws when all attempts fail so the node can degrade.
- * The outer graph's `config` (recursionLimit / signal) is forwarded to the
- * agent invoke (Issue 4 — `specs/036-team-mode-bugfix/contracts/
- * team-graph-fix-contract.md` §3.2).
- */
-async function invokeWithRetry(
-	agent: {
-		invoke(
-			input: { messages: BaseMessage[] },
-			config?: RunnableConfig,
-		): Promise<{ messages: BaseMessage[] }>;
-	},
-	input: BaseMessage[],
-	config?: RunnableConfig,
-): Promise<{ messages: BaseMessage[] }> {
-	let lastError: unknown;
-	for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt += 1) {
-		try {
-			return (await agent.invoke({ messages: input }, config)) as {
-				messages: BaseMessage[];
-			};
-		} catch (err) {
-			lastError = err;
-			if (attempt < MAX_PLANNER_ATTEMPTS) {
-				const message = err instanceof Error ? err.message : String(err);
-				warn("planner invoke failed; retrying", {
-					attempt,
-					error: message,
-				});
-			}
-		}
-	}
-	throw lastError;
-}
-
-/**
  * Create the planner node function (contract §2.2). Runs the planner agent
- * (tools = `update_strategy` only), then unconditionally clears
- * `gameEnded` (D6 step 6).
+ * (tools = the injected memory MCP tools + the internal `instruct_player`
+ * tool), then unconditionally clears `gameEnded` (D6 step 6) and — when the
+ * review decided to send a calibration instruction (R1 external buffer
+ * staging) — appends the instruction HumanMessage to `playerMessages`
+ * (FR-017).
  *
  * @returns An async node `(state, config?) => Partial<TeamStateValue>`
  *   suitable for `StateGraph.addNode("planner", ...)` (Issue 4 — the node
@@ -267,23 +278,33 @@ export function createPlannerNode(
 	state: TeamStateValue,
 	config?: RunnableConfig,
 ) => Promise<Partial<TeamStateValue>> {
-	const { strategyStore, buffer, sessionId } = deps;
+	const { buffer, frozenSnapshot } = deps;
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
 	// FR-034 semantics A: the base prompt is the profile's planner_prompt
-	// when non-empty, else the template default; NO skill body is appended
-	// (the planner holds no saolei tools, FR-012) —
-	// `specs/031-team-template-mode/spec.md` FR-034. US3: the player tool
-	// NAME + DESCRIPTION section is appended AFTER the base prompt (FR-016/
-	// FR-017 — specs/037-saolei-team-optimize/contracts/
+	// when non-empty, else the template default. The memory skill body is
+	// ALWAYS appended on top of the base (FR-020 — `specs/039-planner-memory-
+	// calibration/contracts/memory-skill-contract.md` §2: systemPrompt =
+	// appendSkillBodyToPrompt(base, ["memory"]) + buildToolDescriptionSection),
+	// mirroring the player's `appendSkillBodyToPrompt(base, ["saolei"])`. The
+	// frozen snapshot is NOT baked here (survey D5 plan b — it is input data).
+	// US3: the player tool NAME + DESCRIPTION section is appended AFTER the
+	// skill body (FR-016/FR-017 — specs/037-saolei-team-optimize/contracts/
 	// compression-contract.md §4); the tools themselves stay OUT of the
 	// planner's tool set (FR-018).
 	const systemPrompt =
-		(deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE) +
-		buildToolDescriptionSection(deps.playerTools);
+		appendSkillBodyToPrompt(
+			deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE,
+			["memory"],
+		) + buildToolDescriptionSection(deps.playerTools);
 	const plannerAgent = createAgentFn({
 		model: deps.model,
-		tools: [buildUpdateStrategyTool(strategyStore, sessionId)],
+		// Phase 5 (T020) + Phase 6 (T027): the injected memory MCP tools
+		// (single hermes-style `memory` tool, FR-007/FR-008) + the internal
+		// `instruct_player` calibration tool (FR-014/FR-017, contract §4).
+		// The Phase-5-intermediate shared-strategy write path is GONE
+		// (T030/T031, FR-013).
+		tools: [...deps.plannerTools, buildInstructPlayerTool()],
 		systemPrompt,
 	});
 
@@ -291,8 +312,6 @@ export function createPlannerNode(
 		state: TeamStateValue,
 		config?: RunnableConfig,
 	): Promise<Partial<TeamStateValue>> => {
-		// FR-014: current strategy (initial "") as system context, fresh read.
-		const strategy = await strategyStore.get(sessionId);
 		// Issue 2: review input = the ephemeral buffer's full gameLog.
 		const reviewInput = buildReviewInput(buffer);
 
@@ -330,17 +349,38 @@ export function createPlannerNode(
 		}
 
 		const input: BaseMessage[] = [
-			buildStrategyMessage(strategy),
+			// 039 US2 (T020, contract §3 / survey D5 plan b): the frozen
+			// long-term-memory snapshot as the first input SystemMessage
+			// (纯内容, FR-011). Not refreshed here (FR-010 — the refresh
+			// boundary is the compress node, T021).
+			frozenSnapshot.toSystemMessage(),
 			...state.plannerMessages,
 			reviewInput,
 		];
 
 		let result: { messages: BaseMessage[] };
 		try {
-			result = await invokeWithRetry(plannerAgent, input, config);
+			result = await invokeAgentWithRetry(plannerAgent, input, config);
 		} catch (err) {
+			// 043 US1 (contract §2.4, `specs/043-llm-stream-stall-recovery/
+			// contracts/stall-recovery-contract.md`): a NodeTimeoutError —
+			// the node's idleTimeout fired on a stalled planner LLM — MUST
+			// propagate to runLoop's finishError (warn + wait, retain
+			// buffer), so re-throw BEFORE the degrade logic below.
+			if (isNodeTimeoutError(err)) throw err;
 			const message = err instanceof Error ? err.message : String(err);
 			warn("planner failed after retries; degrading", { error: message });
+			// Defensive buffer clear (Phase 6 review, Issue #4): a retried
+			// tool call may have staged content into the per-turn R1 buffer
+			// before the invoke failed. Without the clear, the residue could
+			// be read by the SAME turn's postCompactInstruction node (it
+			// shares the per-turn buffer instance) — a phantom instruction.
+			const instructionBuffer = config?.configurable?.instructionBuffer as
+				| InstructionBuffer
+				| undefined;
+			if (instructionBuffer) {
+				instructionBuffer.content = null;
+			}
 			// D6 step 6: clear gameEnded unconditionally (success or failure)
 			// so the planner does not re-trigger on the same game end.
 			// Degrade trade-off: the reviewInput frame was already emitted
@@ -357,9 +397,30 @@ export function createPlannerNode(
 			};
 		}
 
-		return {
+		// 039 US3 (T027, contract §2.2/§4 — FR-017): after the invoke, read
+		// the external buffer the `instruct_player` tool staged (R1 — same
+		// configurable pattern as 037 emitChannelFrame). A staged instruction
+		// is written to `playerMessages` as a HumanMessage from the node
+		// return value — it lands immediately after the game-ending
+		// tool_result in the player channel (messagesStateReducer append,
+		// FR-017 order: tool_calling → tool_result → planner 指令 → player
+		// output). No staged content → no instruction, the graph still routes
+		// back to the player (FR-014 — the instruction is OPTIONAL).
+		const instructionBuffer = config?.configurable?.instructionBuffer as
+			| InstructionBuffer
+			| undefined;
+		const instruction = instructionBuffer?.content ?? null;
+		if (instructionBuffer) {
+			instructionBuffer.content = null;
+		}
+
+		const update: Partial<TeamStateValue> = {
+			// Filter the frozen-snapshot SystemMessage out of the channel
+			// write-back — the long-term memory stays in the memory service /
+			// snapshot, NOT in the short-term plannerMessages channel (contract
+			// §3 — same id-filtering pattern as the former strategy message).
 			plannerMessages: result.messages.filter(
-				(m: BaseMessage) => m.id !== STRATEGY_MESSAGE_ID,
+				(m: BaseMessage) => m.id !== PLANNER_MEMORY_SNAPSHOT_ID,
 			),
 			// D6 step 6: unconditional clear — the planner fires at most once
 			// per game end; the edge routes back to the player (FR-009).
@@ -368,5 +429,30 @@ export function createPlannerNode(
 			// compression trigger (compression-contract.md §4).
 			gameCounter: state.gameCounter + 1,
 		};
+
+		if (instruction !== null) {
+			// 042 US2 (T003 — specs/042-planner-memory-fixup/contracts/
+			// review-instruction-display.md §2.1): FR-017 指令写回
+			// playerMessages 时发射实时显示帧 — 复用 instruction-node.ts 的
+			// init/compact 帧发射模式（`:299-319`）。同一 `writeBack` 消息
+			// 对象既作为 (c) 帧发射（frameId == msg.id，
+			// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+			// §4 dedup anchor）也经 update.playerMessages 持久化进
+			// checkpoint，desktop 实时显示与 reloaded ListMessages 去重无重复
+			// （contract §2.3）。
+			const writeBack = new HumanMessage(instruction);
+			ensureMessageId(writeBack);
+			update.playerMessages = [writeBack];
+			if (emitChannelFrame) {
+				emitChannelFrame(
+					PRIMARY_AGENT_NAME,
+					instruction,
+					writeBack.id ?? undefined,
+					"MESSAGE_ROLE_USER",
+				);
+			}
+		}
+
+		return update;
 	};
 }

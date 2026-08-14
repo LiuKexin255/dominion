@@ -7,8 +7,9 @@
  *  - `clearChannel` produces a per-channel `RemoveMessage(REMOVE_ALL_MESSAGES)`
  *    update (per-channel independence, spike A1).
  *  - `refreshTeamChannels` on a REAL compiled team graph clears BOTH channels
- *    in the outer MemorySaver, keeps the strategy readable, and leaves the
- *    `gameEnded` control field untouched.
+ *    in the outer MemorySaver — including any calibration instruction in
+ *    `playerMessages` (039 US3, contract §7) — and leaves the `gameEnded`
+ *    control field untouched.
  *
  * The mechanism intentionally does NOT use a `beforeModel` middleware hook:
  * the player/planner createAgents carry no checkpointer (D14 A2), so their
@@ -23,14 +24,33 @@ import { tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { FakeStrategyStore } from "./strategy-store";
 import { clearChannel, refreshTeamChannels } from "./context-middleware";
 import {
   createEphemeralGameBuffer,
   createTeamSink,
 } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot";
+import type { MemoryClient } from "./memory-client";
 import type { TeamStateValue } from "./team/state";
+import type { StructuredToolInterface } from "@langchain/core/tools";
+
+/**
+ * 039 Phase 5 (T019): the memory data-plane deps the graph now requires —
+ * DI fakes (a no-op MemoryClient + a fresh empty snapshot), mirroring the
+ * production server.ts wiring (memory-client / per-session snapshot).
+ */
+function memoryDeps() {
+  const memoryClient = {
+    listMemories: async () => [],
+  } as unknown as MemoryClient;
+  return {
+    memoryClient,
+    frozenSnapshot: new FrozenMemorySnapshot(),
+    template: "saolei",
+    plannerTools: [] as StructuredToolInterface[],
+  };
+}
 
 function makeState(): GameState {
   return {
@@ -59,31 +79,38 @@ function buildGameEndingPlayerTool(buffer: ReturnType<typeof createEphemeralGame
 
 /** Run one full player→planner turn on a fresh graph (both channels fill). */
 async function runOneGameTurn(sessionId: string) {
-  const store = new FakeStrategyStore();
   const buffer = createEphemeralGameBuffer();
   const playerModel = fakeModel()
     .respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
     .respond(new AIMessage("won, stopping"))
     .respond(new AIMessage("idle"));
   const plannerModel = fakeModel()
-    .respondWithTools([{ name: "update_strategy", args: { content: "corner-first" } }])
-    .respond(new AIMessage("strategy updated"));
+    .respondWithTools([{ name: "instruct_player", args: { content: "保持节奏" } }])
+    .respond(new AIMessage("instruction sent"));
   const { graph } = buildTeamGraph({
     playerModel,
     plannerModel,
-    strategyStore: store,
     buffer,
     sessionId,
     playerTools: [buildGameEndingPlayerTool(buffer)],
     playerBasePrompt: "",
     plannerBasePrompt: "",
+    ...memoryDeps(),
   });
 
   await graph.invoke(
     { playerMessages: [new HumanMessage("开始游戏")] },
-    { configurable: { thread_id: sessionId }, recursionLimit: 50 },
+    {
+      configurable: {
+        thread_id: sessionId,
+        // R1 external buffer (contract §4) — the review's instruct_player
+        // stages its content here.
+        instructionBuffer: { content: null },
+      },
+      recursionLimit: 50,
+    },
   );
-  return { graph, store, sessionId };
+  return { graph, sessionId };
 }
 
 describe("clearChannel", () => {
@@ -92,6 +119,7 @@ describe("clearChannel", () => {
     expect(update).toHaveProperty("playerMessages");
     expect(update).not.toHaveProperty("plannerMessages");
     const msgs = update.playerMessages;
+    if (!msgs) throw new Error("playerMessages update missing");
     expect(msgs).toHaveLength(1);
     expect(msgs[0]).toBeInstanceOf(RemoveMessage);
     // The sentinel string: "__remove_all__" (spike A1 — messagesStateReducer
@@ -106,16 +134,22 @@ describe("clearChannel", () => {
 });
 
 describe("refreshTeamChannels (FR-018)", () => {
-  it("clears BOTH per-agent channels, keeps the strategy, leaves gameEnded alone", async () => {
-    const { graph, store, sessionId } = await runOneGameTurn("ctx-refresh-1");
+  it("clears BOTH per-agent channels, keeps the pending-instruction slot cleared too, leaves gameEnded alone", async () => {
+    const { graph, sessionId } = await runOneGameTurn("ctx-refresh-1");
 
-    // Precondition: both channels carry history after the turn.
+    // Precondition: both channels carry history after the turn, and the
+    // review sent a calibration instruction into the player channel
+    // (instruct_player, FR-017).
     const before = (await graph.getState({
       configurable: { thread_id: sessionId },
     })) as { values: TeamStateValue };
     expect(before.values.playerMessages.length).toBeGreaterThan(0);
     expect(before.values.plannerMessages.length).toBeGreaterThan(0);
-    expect(await store.get(sessionId)).toBe("corner-first");
+    expect(
+      before.values.playerMessages.some(
+        (m) => typeof m.content === "string" && m.content.includes("保持节奏"),
+      ),
+    ).toBe(true);
 
     await refreshTeamChannels(graph, sessionId);
 
@@ -125,25 +159,51 @@ describe("refreshTeamChannels (FR-018)", () => {
     // Both short-term channels cleared (FR-018).
     expect(after.values.playerMessages).toEqual([]);
     expect(after.values.plannerMessages).toEqual([]);
-    // Strategy (long-term) survives.
-    expect(await store.get(sessionId)).toBe("corner-first");
     // gameEnded is untouched by RefreshTeam (null after the planner cleared
     // it in the turn — D6 step 6; RefreshTeam never writes it).
     expect(after.values.gameEnded).toBeNull();
   });
 
-  it("is a no-op-safe on a thread with no prior messages", async () => {
-    const store = new FakeStrategyStore();
+  it("clears a stale calibration instruction from playerMessages (039 US3, contract §7)", async () => {
     const buffer = createEphemeralGameBuffer();
     const { graph } = buildTeamGraph({
       playerModel: fakeModel().respond(new AIMessage("hi")),
       plannerModel: fakeModel().respond(new AIMessage("ok")),
-      strategyStore: store,
+      buffer,
+      sessionId: "ctx-refresh-pending",
+      playerTools: [],
+      playerBasePrompt: "",
+      plannerBasePrompt: "",
+      ...memoryDeps(),
+    });
+
+    // A stale init/compact instruction in `playerMessages` (e.g. produced by
+    // the async initInstruction turn, never consumed) must NOT survive the
+    // refresh — it would otherwise be injected into the next activation.
+    await graph.updateState(
+      { configurable: { thread_id: "ctx-refresh-pending" } },
+      { playerMessages: [new HumanMessage("过期的初始指令")] },
+    );
+    await refreshTeamChannels(graph, "ctx-refresh-pending");
+
+    const state = (await graph.getState({
+      configurable: { thread_id: "ctx-refresh-pending" },
+    })) as { values: TeamStateValue };
+    expect(state.values.playerMessages).toEqual([]);
+    expect(state.values.plannerMessages).toEqual([]);
+  });
+
+  it("is a no-op-safe on a thread with no prior messages", async () => {
+    const buffer = createEphemeralGameBuffer();
+    const { graph } = buildTeamGraph({
+      playerModel: fakeModel().respond(new AIMessage("hi")),
+      plannerModel: fakeModel().respond(new AIMessage("ok")),
       buffer,
       sessionId: "ctx-refresh-empty",
       playerTools: [],
       playerBasePrompt: "",
       plannerBasePrompt: "",
+      ...memoryDeps(),
     });
 
     await expect(refreshTeamChannels(graph, "ctx-refresh-empty")).resolves.toBeUndefined();

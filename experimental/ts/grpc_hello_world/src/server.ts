@@ -2,9 +2,27 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
+import { readConfig } from "@dominion/common-js-config";
 import { info } from "@dominion/common-js-logs";
 import type { GreeterHandlers } from "../greeter_types/experimental/ts/grpc_hello_world/Greeter";
 import type { ProtoGrpcType } from "../greeter_types/greeter";
+
+/** Greeting data shape declared in the service.yaml `service_config` config block. */
+interface Greeting {
+	message: string;
+	times: number;
+}
+
+// Fallback merged with the config entry content: keys absent from the config
+// keep their defaults (deep merge semantics, contracts/sdk-js.md §1).
+const defaultGreeting: Greeting = { message: "hello", times: 1 };
+
+// User env appended to the greeting when set. Config parameters and env
+// parameters coexist without interference (FR-016/SC-006, specs/045-deploy-config/spec.md).
+const greetingSuffix = process.env.GREETING_SUFFIX ?? "";
+// Leading space when the env is set, empty otherwise — avoids a trailing
+// space in the greeting when GREETING_SUFFIX is unset.
+const greetingSuffixSegment = greetingSuffix === "" ? "" : ` ${greetingSuffix}`;
 
 // Service root: the parent directory of the src/ directory.
 // In the deployed package, src/server.js is at service/src/server.js,
@@ -69,6 +87,12 @@ export async function startServer(): Promise<grpc.Server> {
 	const proto = loadProto();
 	const credentials = buildCredentials();
 
+	// Read the greeting config entry once at service startup (config is not on
+	// the hot path; contracts/sdk-js.md §2 "同步读取"). Throws when
+	// DOMINION_CONFIG_DIR is unset or the entry is missing — the service fails
+	// fast instead of silently serving defaults (runtime-contract.md §3).
+	const greeting = readConfig<Greeting>("service_config", "greeting", defaultGreeting);
+
 	const handlers: GreeterHandlers = {
 		SayHello: (call, callback) => {
 			info("SayHello", {
@@ -76,7 +100,12 @@ export async function startServer(): Promise<grpc.Server> {
 				"rpc.method": "SayHello",
 				name: call.request.name,
 			});
-			callback(null, { message: `Hello ${call.request.name}` });
+			// The response proves both the config override (message/times) and
+			// the GREETING_SUFFIX user env; either field alone would not prove
+			// FR-015 deep merge or SC-006 config/env coexistence.
+			callback(null, {
+				message: `${greeting.message} ${call.request.name} x${greeting.times}${greetingSuffixSegment}`,
+			});
 		},
 	};
 

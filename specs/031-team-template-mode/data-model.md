@@ -37,6 +37,7 @@
 | 属性 | 类型 | 说明 |
 |---|---|---|
 | `name` | string (IDENTIFIER) | `templates/{template}/sessions/{session}/team` |
+| `profile` | string (040 新增，FR-004) | Team 当前所基于的 TeamProfile 全名（`templates/{template}/profiles/{profile}`）；可经 `UpdateTeam` 变更（触发 graph 重建） |
 | `agents` | `repeated TeamAgent` | team 内 agent 描述（来自模板 graph schema，typed） |
 | `create_time` | Timestamp (OUTPUT_ONLY) | |
 
@@ -48,8 +49,8 @@
 | `accepts_user_input` | bool | 是否接受用户输入（FR-031）；saolei: player=true, planner=false |
 
 - **关系**：属于一个 Session；含若干 TeamAgent；TeamAgent 非独立资源（消息分区/frame 归位维度）。
-- **生命周期**：经 `CreateTeam` RPC **显式创建**（AIP-133；请求携带 parent Session 与 profile——TeamProfile 资源名，FR-033）；**非**随 Connect 隐式创建（原懒加载模式已移除）。Team 未创建时 `GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` → NOT_FOUND。重复 `CreateTeam`：profile 相同 → 幂等返回既有 Team；profile 不同 → ALREADY_EXISTS（details 携带既有 profile）。
-- **来源**：`agents` 由 agent 服务从模板定义（code）导出；team 实例由创建时传入的 profile 构建（player/planner 模型绑定）。
+- **生命周期**（**[SUPERSEDED — see Feature 040]**：[`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) supersedes 本条的创建语义，最终契约见 040 [`data-model.md`](../../040-team-singleton-conformance/data-model.md)）：Team 为 [AIP-156](https://google.aip.dev/156) 单例，经 `UpdateTeam(allow_missing=true)` **物化**（[AIP-134 create-or-update](https://google.aip.dev/134#create-or-update)；请求体为 Team 资源——`name` + profile，TeamProfile 资源名，FR-033）；**非**随 Connect 隐式创建（原懒加载模式已移除）。未物化时 `GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` → NOT_FOUND；`UpdateTeam(allow_missing=false)` 且未物化 → NOT_FOUND（040 FR-001）。重复 `UpdateTeam`：profile 相同 → 幂等返回既有 Team；profile 不同 → 重建 team graph（保留会话对话与游戏状态，040 FR-005）；配置路径无 ALREADY_EXISTS（原"异 profile → ALREADY_EXISTS"偏离已移除，040 FR-007）。
+- **来源**：`agents` 由 agent 服务从模板定义（code）导出；team 实例由物化时传入的 profile 构建（player/planner 模型绑定）；profile 经 `UpdateTeam` 变更时重建 graph（040 FR-005）。
 
 ### 1.4 Message（按 agent 分区）
 
@@ -202,7 +203,7 @@ Template (resource message, path segment)
 ## 5. 移除的实体（clean break）
 
 - `Agent` 资源（`sessions/{session}/agent`）→ 由 Team 取代。
-- Team 隐式创建（随 Connect 懒加载 + 固定默认 profile）→ 由 `CreateTeam` 显式创建取代（FR-033）。
+- Team 隐式创建（随 Connect 懒加载 + 固定默认 profile）→ 由 `CreateTeam` 显式创建取代（FR-033）；**后者又被 [`specs/040-team-singleton-conformance/`](../../040-team-singleton-conformance/) 取代为 `UpdateTeam(allow_missing=true)` 物化（AIP-156 单例，040 FR-001/FR-002）**。
 - `AgentProfile` 资源（`prompts/agentProfiles/*`）+ 其 CRUD RPC → 由 TeamProfile（oneof）取代。
 - `Skill` 资源（`prompts/skills/*`，API 管理的自定义 skill）+ 其 RPC → 移除。MCP 配套内置 skill（`projects/game/agent/src/skill/`）**保留不受影响**（FR-007）。
 - `RefreshAgent` → `RefreshTeam`。

@@ -145,6 +145,20 @@ type mongoSecretBinding struct {
 	Key         string `bson:"key"`
 }
 
+// mongoConfigBlock is the BSON representation of domain.ConfigBlock.
+type mongoConfigBlock struct {
+	Block   string              `bson:"block"`
+	Entries []*mongoConfigEntry `bson:"entries,omitempty"`
+}
+
+// mongoConfigEntry is the BSON representation of domain.ConfigEntry
+// （block 字段移除，归属父节点 mongoConfigBlock）。
+type mongoConfigEntry struct {
+	Key   string `bson:"key"`
+	Type  string `bson:"type"`
+	Value string `bson:"value"`
+}
+
 // mongoArtifactSpec is the BSON representation of domain.ArtifactSpec.
 type mongoArtifactSpec struct {
 	Name           string                   `bson:"name"`
@@ -158,6 +172,7 @@ type mongoArtifactSpec struct {
 	HTTP           *mongoArtifactHTTPSpec   `bson:"http,omitempty"`
 	Env            map[string]string        `bson:"env,omitempty"`
 	SecretBindings []*mongoSecretBinding    `bson:"secret_bindings,omitempty"`
+	ConfigBlocks   []*mongoConfigBlock      `bson:"config_blocks,omitempty"`
 }
 
 // mongoInfraSpec is the BSON representation of domain.InfraSpec.
@@ -579,6 +594,7 @@ func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []*mongoArtifactSpec {
 			HTTP:           artifactHTTPSpecToMongo(s.HTTP),
 			Env:            s.Env,
 			SecretBindings: secretBindingsToMongo(s.SecretBindings),
+			ConfigBlocks:   configBlocksToMongo(s.ConfigBlocks),
 		}
 	}
 	return result
@@ -606,6 +622,28 @@ func secretBindingsToMongo(bindings []*domain.SecretBinding) []*mongoSecretBindi
 			SecretName:  b.SecretName,
 			Key:         b.Key,
 		}
+	}
+	return result
+}
+
+func configBlocksToMongo(blocks []*domain.ConfigBlock) []*mongoConfigBlock {
+	if len(blocks) == 0 {
+		return nil
+	}
+	result := make([]*mongoConfigBlock, len(blocks))
+	for i, cb := range blocks {
+		mongoBlock := &mongoConfigBlock{Block: cb.Block}
+		if len(cb.Entries) > 0 {
+			mongoBlock.Entries = make([]*mongoConfigEntry, len(cb.Entries))
+			for j, ce := range cb.Entries {
+				mongoBlock.Entries[j] = &mongoConfigEntry{
+					Key:   ce.Key,
+					Type:  ce.Type,
+					Value: ce.Value,
+				}
+			}
+		}
+		result[i] = mongoBlock
 	}
 	return result
 }
@@ -754,6 +792,7 @@ func artifactSpecsFromMongo(specs []*mongoArtifactSpec) []*domain.ArtifactSpec {
 			HTTP:           artifactHTTPSpecFromMongo(s.HTTP),
 			Env:            normalizeEnv(s.Env),
 			SecretBindings: secretBindingsFromMongo(s.SecretBindings),
+			ConfigBlocks:   configBlocksFromMongo(s.ConfigBlocks),
 		}
 	}
 	return result
@@ -788,6 +827,28 @@ func secretBindingsFromMongo(bindings []*mongoSecretBinding) []*domain.SecretBin
 			SecretName:  b.SecretName,
 			Key:         b.Key,
 		}
+	}
+	return result
+}
+
+func configBlocksFromMongo(blocks []*mongoConfigBlock) []*domain.ConfigBlock {
+	if len(blocks) == 0 {
+		return nil
+	}
+	result := make([]*domain.ConfigBlock, len(blocks))
+	for i, cb := range blocks {
+		block := &domain.ConfigBlock{Block: cb.Block}
+		if len(cb.Entries) > 0 {
+			block.Entries = make([]*domain.ConfigEntry, len(cb.Entries))
+			for j, ce := range cb.Entries {
+				block.Entries[j] = &domain.ConfigEntry{
+					Key:   ce.Key,
+					Type:  ce.Type,
+					Value: ce.Value,
+				}
+			}
+		}
+		result[i] = block
 	}
 	return result
 }

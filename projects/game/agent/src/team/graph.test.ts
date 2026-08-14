@@ -15,18 +15,20 @@
  * having RUN (`plannerMessages` non-empty / strategy written).
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { fakeModel } from "@langchain/core/testing";
 import { createAgent, tool } from "langchain";
+import { NodeTimeoutError } from "@langchain/langgraph";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { FakeStrategyStore } from "../strategy-store";
-import { appendSkillBodyToPrompt, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
+import { appendSkillBodyToPrompt, loadSkillBody, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
 import { refreshTeamChannels } from "../context-middleware";
+import { PRIMARY_AGENT_NAME } from "../session-team";
+import type { MemoryClient } from "../memory-client";
 import type { GameStats } from "../mcp/saolei/saolei-mcp";
 import {
 	createEphemeralGameBuffer,
@@ -34,10 +36,91 @@ import {
 	type EphemeralGameBuffer,
 } from "./team-sink";
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
+import type { TeamGraphHandle } from "./graph";
+import { STREAM_IDLE_TIMEOUT_MS } from "../llm";
+import {
+	FrozenMemorySnapshot,
+	PLANNER_MEMORY_SNAPSHOT_ID,
+} from "./memory-snapshot";
 import { createPlayerNode, DEFAULT_PLAYER_BASE, PLAYER_AGENT_NAME } from "./player";
 import type { CreateAgentFn } from "./player";
 import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
 import type { TeamStateValue } from "./state";
+
+/** The built-in skill bodies (loaded from the test runfiles — skill-loader). */
+const SAOLEI_SKILL_BODY = loadSkillBody("saolei");
+const MEMORY_SKILL_BODY = loadSkillBody("memory");
+
+/**
+ * Prompt heuristic: the player's static systemPrompt carries the saolei
+ * skill body (appendSkillBodyToPrompt(base, ["saolei"]), FR-034); the
+ * planner's carries the memory skill body (FR-020 — 039 US2). Both contain
+ * SKILL_PROMPT_SEPARATOR since 039 Phase 5, so the pre-039 "planner prompt
+ * lacks the separator" heuristic no longer distinguishes them.
+ */
+function isPlayerPrompt(p: string): boolean {
+	return p.includes(SAOLEI_SKILL_BODY);
+}
+function isPlannerPrompt(p: string): boolean {
+	return p.includes(MEMORY_SKILL_BODY);
+}
+
+/**
+ * Minimal fake MemoryClient (DI seam — `style/javascript.md` §测试: injected,
+ * no `vi.mock`). `listMemories` returns the given entries; the fake is a
+ * structural stand-in for the real gRPC client.
+ */
+function fakeMemoryClient(
+	entries: Array<{ memory_id: string; content: string }> = [],
+): MemoryClient {
+	return {
+		listMemories: vi.fn(async () => entries.map((e) => ({ ...e }))),
+	} as unknown as MemoryClient;
+}
+
+/**
+ * The fake planner memory tool (hermes-style single `memory` tool — FR-008):
+ * production gets it via the mcp client (buildMemoryMcpTools); tests inject
+ * this structural stand-in so the wiring (tool set + system prompt) is
+ * exercised without an MCP server.
+ */
+function buildFakeMemoryTool(): StructuredToolInterface {
+	return tool(
+		async () => "memory ok",
+		{
+			name: "memory",
+			description: "Manage the planner's long-term review memory (hermes-style single tool).",
+			schema: z.object({
+				action: z.enum(["add", "replace", "remove"]).optional(),
+				content: z.string().optional(),
+				old_text: z.string().optional(),
+			}),
+		},
+	);
+}
+
+/**
+ * Default 039 memory data-plane deps (T019) for inline `buildTeamGraph` call
+ * sites that do not exercise the memory wiring themselves: a fake
+ * MemoryClient, a fresh (empty) frozen snapshot, the template path segment,
+ * and NO planner tools (the `instruct_player` tool is always built
+ * internally — T027, Phase 6).
+ */
+function memoryDeps(
+	overrides: {
+		memoryClient?: MemoryClient;
+		frozenSnapshot?: FrozenMemorySnapshot;
+		template?: string;
+		plannerTools?: StructuredToolInterface[];
+	} = {},
+) {
+	return {
+		memoryClient: overrides.memoryClient ?? fakeMemoryClient(),
+		frozenSnapshot: overrides.frozenSnapshot ?? new FrozenMemorySnapshot(),
+		template: overrides.template ?? "saolei",
+		plannerTools: overrides.plannerTools ?? [],
+	};
+}
 
 /** A minimal recognizable GameState (3x3, all empty cells). */
 function makeState(): GameState {
@@ -91,8 +174,8 @@ function buildMixedOutcomePlayerTool(buffer: EphemeralGameBuffer) {
  * The fake player tool that ends the game carrying per-game stats (037 US5 —
  * the MCP's onGameEnd third argument, FR-030/FR-031): the team sink stores
  * them into `buffer.gameEvent.stats`, which the planner's review input
- * renders (FR-032). A real move (sink.onMove) precedes the game end so the
- * gameLog holds an actual game-process entry — the stats-section ordering
+ * renders (FR-032). A real operate (sink.onOperate) precedes the game end so
+ * the gameLog holds an actual game-process entry — the stats-section ordering
  * assertion in the US5 test compares against a present entry instead of a
  * vacuous -1 (Phase 6 review fix).
  */
@@ -100,7 +183,7 @@ function buildStatsPlayerTool(buffer: EphemeralGameBuffer, stats: GameStats) {
 	const sink = createTeamSink(buffer);
 	return tool(
 		async ({ x, y }: { x: number; y: number }) => {
-			await sink.onMove("saolei_click", x, y, makeState());
+			await sink.onOperate([{ type: "click", x, y }], makeState());
 			await sink.onGameEnd(makeState(), "lost", stats);
 			return `moved to (${x},${y}); game lost`;
 		},
@@ -122,43 +205,67 @@ function playOneGamePlayerModel() {
 		.respond(new AIMessage("idle, no new game"));
 }
 
-/** The planner's fake model for a "review + update strategy" flow. */
-function updateStrategyPlannerModel(content: string) {
+/**
+ * The planner's fake model for a "review + send calibration instruction"
+ * flow (039 US3, T027 — the review MAY call `instruct_player`, FR-014/
+ * FR-017; the tool stages the content into the R1 external buffer and the
+ * node appends it to playerMessages from its return value).
+ */
+function instructPlayerPlannerModel(content: string) {
 	return fakeModel()
-		.respondWithTools([{ name: "update_strategy", args: { content } }])
-		.respond(new AIMessage("strategy updated"));
+		.respondWithTools([{ name: "instruct_player", args: { content } }])
+		.respond(new AIMessage("instruction sent"));
 }
 
 /** Common graph wiring shared by most tests. */
 function buildTestGraph(
 	overrides: {
-		store?: FakeStrategyStore;
 		playerModel?: ReturnType<typeof playOneGamePlayerModel>;
-		plannerModel?: ReturnType<typeof updateStrategyPlannerModel>;
+		plannerModel?: ReturnType<typeof instructPlayerPlannerModel>;
 		sessionId?: string;
 		playerBasePrompt?: string;
 		plannerBasePrompt?: string;
 		createAgentFn?: CreateAgentFn;
 		playerTools?: StructuredToolInterface[];
+		// 039 Phase 5 (T019/T020): memory data-plane deps — injected fakes by
+		// default; tests override to assert snapshot/skill wiring.
+		memoryClient?: MemoryClient;
+		frozenSnapshot?: FrozenMemorySnapshot;
+		template?: string;
+		plannerTools?: StructuredToolInterface[];
+		// 044 US2 (T004): bare model specs for the per-reasoning-model idle
+		// floor (contracts/idle-timeout-contract.md §3 — optional deps,
+		// omitted = default timeout).
+		playerModelSpec?: string;
+		plannerModelSpec?: string;
 	} = {},
 ) {
-	const store = overrides.store ?? new FakeStrategyStore();
 	const buffer = createEphemeralGameBuffer();
 	const sessionId = overrides.sessionId ?? "graph-test";
+	const memoryClient =
+		overrides.memoryClient ?? fakeMemoryClient();
+	const frozenSnapshot =
+		overrides.frozenSnapshot ?? new FrozenMemorySnapshot();
 	const { graph, checkpointer } = buildTeamGraph({
 		playerModel: overrides.playerModel ?? playOneGamePlayerModel(),
 		plannerModel:
-			overrides.plannerModel ?? updateStrategyPlannerModel("corner-first"),
-		strategyStore: store,
+			overrides.plannerModel ?? instructPlayerPlannerModel("corner-first"),
+		memoryClient,
+		frozenSnapshot,
+		template: overrides.template ?? "saolei",
 		buffer,
 		sessionId,
 		playerTools:
 			overrides.playerTools ?? [buildGameEndingPlayerTool(buffer)],
+		plannerTools:
+			overrides.plannerTools ?? [buildFakeMemoryTool()],
 		playerBasePrompt: overrides.playerBasePrompt ?? "",
 		plannerBasePrompt: overrides.plannerBasePrompt ?? "",
+		playerModelSpec: overrides.playerModelSpec,
+		plannerModelSpec: overrides.plannerModelSpec,
 		createAgentFn: overrides.createAgentFn,
 	});
-	return { graph, checkpointer, store, buffer, sessionId };
+	return { graph, checkpointer, buffer, sessionId, memoryClient, frozenSnapshot };
 }
 
 /**
@@ -180,17 +287,17 @@ function fiveGamesPlayerModel(summaryContent: string) {
 
 /**
  * The planner's fake model for "5 review runs then compress": per game one
- * `update_strategy` tool call + a plain response (2 model calls per planner
- * run — strategy v1..v5 accumulate, last write wins), then the compress
- * node's planner-channel summary call returns `summaryContent`.
+ * `instruct_player` tool call (the review MAY send a calibration instruction
+ * — FR-014/FR-017) + a plain response (2 model calls per planner run), then
+ * the compress node's planner-channel summary call returns `summaryContent`.
  */
 function fiveGamesPlannerModel(summaryContent: string) {
 	const model = fakeModel();
 	for (let i = 0; i < 5; i += 1) {
 		model.respondWithTools([
-			{ name: "update_strategy", args: { content: `v${i + 1}` } },
+			{ name: "instruct_player", args: { content: `v${i + 1}` } },
 		]);
-		model.respond(new AIMessage(`v${i + 1} written`));
+		model.respond(new AIMessage(`v${i + 1} sent`));
 	}
 	model.respond(new AIMessage(summaryContent));
 	return model;
@@ -211,14 +318,22 @@ describe("SAOLEI_TEAM_AGENTS template description (FR-031/D3)", () => {
 });
 
 describe("team graph — game-end flow (player → planner → player)", () => {
-	it("routes player→planner on game end, planner writes strategy and clears gameEnded, then returns to player (D6)", async () => {
+	it("routes player→planner on game end, planner sends a calibration instruction into playerMessages and clears gameEnded, then returns to player (D6 + FR-017)", async () => {
 		const playerModel = playOneGamePlayerModel();
-		const plannerModel = updateStrategyPlannerModel("corner-first");
-		const { graph, store } = buildTestGraph({ playerModel, plannerModel });
+		const plannerModel = instructPlayerPlannerModel("corner-first");
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
 
 		const result = (await graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
-			{ configurable: { thread_id: "t-flow" }, recursionLimit: 50 },
+			{
+				configurable: {
+					thread_id: "t-flow",
+					// R1 external buffer (contract §4) — the review's
+					// instruct_player stages its content here.
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 50,
+			},
 		)) as TeamStateValue;
 
 		// D14 注意事项 3: the FINAL gameEnded is null (cleared by the planner).
@@ -228,9 +343,14 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		// its channel carries the review request + AI + tool messages.
 		expect(result.plannerMessages.length).toBeGreaterThan(0);
 
-		// The planner wrote the strategy to the long-term store (FR-013).
-		expect(await store.get("graph-test")).toBe("corner-first");
-
+		// The review sent a calibration instruction into the player channel
+		// (FR-017 — the instruction HumanMessage lands after the game-ending
+		// tool_result; the planner's review itself stays in plannerMessages).
+		const instruction = result.playerMessages.find(
+			(m) =>
+				typeof m.content === "string" && m.content.includes("corner-first"),
+		);
+		expect(instruction).toBeInstanceOf(HumanMessage);
 		// planner→player edge: the player ran AGAIN after the planner
 		// (idle — no new game ⇒ gameEnded stays null ⇒ END). The player
 		// model was called 2 times: move / idle — the gameEndGuard
@@ -239,11 +359,11 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		expect(playerModel.calls).toHaveLength(2);
 		expect(result.playerMessages.length).toBeGreaterThan(0);
 
-		// The strategy message never entered the channel (D4 — strategy not
-		// in short-term state): the channel holds NO system message.
-		// (Note: fakeModel derives tool-call message content from the model
-		// input, so strategy text may appear inside AI content — the channel
-		// shape, not the text, is the contract.)
+		// No strategy message ever enters the channel (Phase 6 — the
+		// shared-strategy injection path is gone, FR-013): the channel holds
+		// NO system message. (Note: fakeModel derives tool-call message
+		// content from the model input, so text may appear inside AI content
+		// — the channel SHAPE, not the text, is the contract.)
 		for (const m of result.playerMessages) {
 			expect(m._getType()).not.toBe("system");
 		}
@@ -251,8 +371,8 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 
 	it("routes player→END when no game ended (planner never runs)", async () => {
 		const playerModel = fakeModel().respond(new AIMessage("just chatting"));
-		const plannerModel = updateStrategyPlannerModel("should-not-run");
-		const { graph, store } = buildTestGraph({ playerModel, plannerModel });
+		const plannerModel = instructPlayerPlannerModel("should-not-run");
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
 
 		const result = (await graph.invoke(
 			{ playerMessages: [new HumanMessage("你好")] },
@@ -262,7 +382,6 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		expect(result.gameEnded).toBeNull();
 		// Planner not triggered: no review messages, no strategy write.
 		expect(result.plannerMessages).toEqual([]);
-		expect(await store.get("graph-test")).toBe("");
 		// Only ONE player run (conditional edge → END, not a loop).
 		expect(playerModel.calls).toHaveLength(1);
 	});
@@ -294,35 +413,46 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		expect(plannerTexts.some((t) => t.includes("开始游戏"))).toBe(false);
 	});
 
-	it("injects the current strategy into the player prompt as 当前态势 (FR-015) without a read tool", async () => {
-		const store = new FakeStrategyStore();
-		await store.put("graph-test", "flags-then-numbers");
+	it("delivers a calibration instruction already in playerMessages to the player's first activation (039 US3 — channel history flow, contract §2.1)", async () => {
+		// The initInstruction turn wrote the instruction DIRECTLY into
+		// `playerMessages`; the player's first activation reads it as plain
+		// channel history — no pending slot (FR-015/FR-016).
 		const playerModel = playOneGamePlayerModel();
-		const { graph, buffer } = buildTestGraph({ store, playerModel });
+		const { graph } = buildTestGraph({ playerModel });
 
-		await graph.invoke(
-			{ playerMessages: [new HumanMessage("开始游戏")] },
-			{ configurable: { thread_id: "t-strategy" }, recursionLimit: 50 },
-		);
+		const result = (await graph.invoke(
+			{
+				playerMessages: [
+					new HumanMessage("开局先点中心"),
+					new HumanMessage("开始游戏"),
+				],
+			},
+			{ configurable: { thread_id: "t-pending" }, recursionLimit: 50 },
+		)) as TeamStateValue;
 
-		// The player model's FIRST call received the strategy SystemMessage.
+		// The instruction led the player's FIRST model input (the createAgent
+		// prepends its system prompt, so the instruction is the first
+		// non-system message).
 		const firstCall = playerModel.calls[0]?.messages as BaseMessage[];
 		expect(firstCall).toBeDefined();
-		const strategyMsg = firstCall.find(
-			(m) =>
-				m._getType() === "system" &&
-				contentType(m).includes("flags-then-numbers"),
+		const instructionMsg = firstCall.find(
+			(m) => m._getType() !== "system" && contentType(m).includes("开局先点中心"),
 		);
-		expect(strategyMsg).toBeInstanceOf(SystemMessage);
-		// The player's tool set is the injected fake — no read tool exists.
-		expect(buffer.gameEvent?.consumed).toBe(true);
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
+		// The instruction is part of the player channel history (D6 —
+		// 累积可引用) and precedes the user input.
+		expect(
+			result.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" &&
+					m.content.includes("开局先点中心"),
+			),
+		).toBe(true);
 	});
 
-	it("injects the current strategy into the planner's system context (FR-014; initial \"\")", async () => {
-		const store = new FakeStrategyStore();
-		await store.put("graph-test", "corner-first");
-		const plannerModel = updateStrategyPlannerModel("corner-first");
-		const { graph } = buildTestGraph({ store, plannerModel });
+	it("no longer injects the strategy into the planner's system context — replaced by the frozen snapshot (Phase 5, T020; Phase 6 removes the last strategy path)", async () => {
+		const plannerModel = instructPlayerPlannerModel("corner-first");
+		const { graph } = buildTestGraph({ plannerModel });
 
 		await graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
@@ -331,11 +461,22 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 
 		const firstCall = plannerModel.calls[0]?.messages as BaseMessage[];
 		expect(firstCall).toBeDefined();
-		// Strategy injected as a system message (FR-014).
+		// T020/T027: the strategy READ path (the old "当前态势" SystemMessage
+		// injection, FR-014) is gone — no "当前策略"/strategy-text SystemMessage
+		// reaches the model (the whole shared-strategy path was removed in
+		// Phase 6, FR-013).
 		const strategyMsg = firstCall.find(
 			(m) => m._getType() === "system" && contentType(m).includes("corner-first"),
 		);
-		expect(strategyMsg).toBeDefined();
+		expect(strategyMsg).toBeUndefined();
+		expect(
+			firstCall.some(
+				(m) => m._getType() === "system" && contentType(m).includes("当前策略"),
+			),
+		).toBe(false);
+		// The frozen snapshot SystemMessage is injected instead (FR-011,
+		// contract §3).
+		expect(firstCall.some((m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID)).toBe(true);
 		// The review input (full gameLog rendering) is present as the
 		// planner's prompt (Issue 2 — `specs/036-team-mode-bugfix/
 		// contracts/team-graph-fix-contract.md` §2.2).
@@ -344,8 +485,8 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		).toBe(true);
 	});
 
-	it("planner system context starts with the EMPTY strategy on a fresh session (FR-014 初始 \"\")", async () => {
-		const plannerModel = updateStrategyPlannerModel("first-strategy");
+	it("planner system context starts with the EMPTY frozen snapshot on a fresh session (T020 — the snapshot replaces the strategy)", async () => {
+		const plannerModel = instructPlayerPlannerModel("first-strategy");
 		const { graph } = buildTestGraph({ plannerModel });
 
 		await graph.invoke(
@@ -354,11 +495,13 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		);
 
 		const firstCall = plannerModel.calls[0]?.messages as BaseMessage[];
-		const strategyMsg = firstCall.find(
-			(m) => m._getType() === "system" && contentType(m).includes("当前策略"),
+		// The default (unbaked) snapshot renders the header-only
+		// `长期记忆：` SystemMessage with the fixed snapshot id (FR-011).
+		const snapshotMsg = firstCall.find(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
 		);
-		expect(strategyMsg).toBeDefined();
-		expect(contentType(strategyMsg as BaseMessage)).toContain("无");
+		expect(snapshotMsg).toBeDefined();
+		expect(contentType(snapshotMsg as BaseMessage)).toContain("长期记忆");
 	});
 });
 
@@ -381,17 +524,16 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 		const playerModel = fakeModel()
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
 			.respond(new AIMessage("idle, no new game"));
-		const plannerModel = updateStrategyPlannerModel("safer-play");
-		const store = new FakeStrategyStore();
+		const plannerModel = instructPlayerPlannerModel("safer-play");
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [losingMoveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -402,7 +544,6 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 		// The planner RAN (game ended ⇒ routed exactly once): its channel
 		// carries the review request and the strategy was written (FR-013).
 		expect(result.plannerMessages.length).toBeGreaterThan(0);
-		expect(await store.get("graph-test")).toBe("safer-play");
 		// The planner cleared gameEnded (D6 step 6) — final value null.
 		expect(result.gameEnded).toBeNull();
 		// The gameEndGuard middleware stopped the loop right after the game
@@ -437,10 +578,8 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
 			.respondWithTools([{ name: "saolei_init", args: {} }])
 			.respond(new AIMessage("idle, no new game"));
-		const store = new FakeStrategyStore();
 		const node = createPlayerNode({
 			model: playerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			tools: [losingMoveTool, restartTool],
@@ -475,10 +614,10 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 		// (e.g. GraphRecursionError / model / tool error); the planner agent
 		// is the real one, so the routed-to planner completes normally. The
 		// player prompt always carries the appended saolei skill body
-		// (FR-034), the planner's never does — same dispatch heuristic as
-		// captureSystemPrompts.
+		// (FR-034); the planner's carries the memory skill body (FR-020) —
+		// same dispatch heuristic as captureSystemPrompts.
 		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
-			if (config.systemPrompt?.includes(SKILL_PROMPT_SEPARATOR)) {
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
 				return {
 					invoke: async () => {
 						throw new Error("player agent loop crashed");
@@ -487,17 +626,16 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 			}
 			return createAgent(config as Parameters<typeof createAgent>[0]);
 		});
-		const plannerModel = updateStrategyPlannerModel("post-crash-strategy");
-		const store = new FakeStrategyStore();
+		const plannerModel = instructPlayerPlannerModel("post-crash-strategy");
 		const { graph } = buildTeamGraph({
 			playerModel: fakeModel().respond(new AIMessage("unused")),
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 			createAgentFn,
 		});
 
@@ -513,7 +651,6 @@ describe("team graph — Issue 1 (036): game-end loop stop & resilient post-proc
 		// gameEnded WAS set ("lost") ⇒ the conditional edge routed to the
 		// planner, which ran and cleared it (D6 step 6).
 		expect(result.plannerMessages.length).toBeGreaterThan(0);
-		expect(await store.get("graph-test")).toBe("post-crash-strategy");
 		expect(result.gameEnded).toBeNull();
 	});
 });
@@ -522,14 +659,15 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 	it("renders every gameLog entry — tool, coordinates, status and board — in the review input (US2 acceptance #1-4)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
-		// Two moves (still playing), then a losing game end — the sink
-		// accumulates one gameLog entry per step (Phase 2, T002-T004).
+		// Two operates (still playing), then a losing game end — the sink
+		// accumulates one gameLog entry per operate call (each carrying its
+		// full operations list, FR-004 — Phase 2, T005/T006).
 		const moveTool = tool(
 			async ({ x, y }: { x: number; y: number }) => {
 				if (x === 3 && y === 4) {
-					sink.onMove("saolei_click", 3, 4, makeState());
+					sink.onOperate([{ type: "click", x: 3, y: 4 }], makeState());
 				} else {
-					sink.onMove("saolei_click", 5, 2, makeState());
+					sink.onOperate([{ type: "flag", x: 5, y: 2 }], makeState());
 					sink.onGameEnd(makeState(), "lost");
 				}
 				return `moved to (${x},${y})`;
@@ -544,17 +682,16 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 3, y: 4 } }])
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 5, y: 2 } }])
 			.respond(new AIMessage("idle, no new game"));
-		const plannerModel = updateStrategyPlannerModel("safer-play");
-		const store = new FakeStrategyStore();
+		const plannerModel = instructPlayerPlannerModel("safer-play");
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [moveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -563,7 +700,9 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 		)) as TeamStateValue;
 
 		// The review request (human message) renders every gameLog entry in
-		// order — tool + coordinates + status + text board.
+		// order — tool + operations + status + text board (FR-004: one
+		// entry per saolei_operate call, rendering `saolei_operate(ops) →
+		// status`).
 		const reviewRequests = result.plannerMessages.filter(
 			(m) =>
 				m._getType() === "human" &&
@@ -571,17 +710,18 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 		);
 		expect(reviewRequests).toHaveLength(1);
 		const text = contentType(reviewRequests[0] as BaseMessage);
-		expect(text).toContain("1. saolei_click(3, 4) → playing");
-		expect(text).toContain("2. saolei_click(5, 2) → playing");
+		expect(text).toContain("1. saolei_operate(click(3,4)) → playing");
+		expect(text).toContain("2. saolei_operate(flag(5,2)) → playing");
 		expect(text).toContain("3. (game-end) → lost");
 		// Each step's board is text-rendered into the review input.
 		expect(text).toContain("board size 3*3");
-		// The review request ends with the update_strategy instruction.
+		// The review request ends with the "必要时才调用" instruction
+		// (FR-014 — the calibration instruction is OPTIONAL, decided by the
+		// planner LLM).
 		expect(text).toContain(
-			"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
+			"请复盘本局游戏表现，判断策略是否有效；若你认为需要给 player 校准指令，",
 		);
-		// The game really ended (lost) ⇒ the planner ran and wrote strategy.
-		expect(await store.get("graph-test")).toBe("safer-play");
+		expect(text).toContain("仅在必要时调用 instruct_player 发送指令。");
 	});
 
 	it("sends a notice review request when the gameLog is empty (US2 acceptance #6 / FR-009)", async () => {
@@ -598,16 +738,15 @@ describe("team graph — Issue 2 (036): planner review input renders the full ga
 		};
 		const playerModel = fakeModel().respond(new AIMessage("idle"));
 		const plannerModel = fakeModel().respond(new AIMessage("no update"));
-		const store = new FakeStrategyStore();
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -637,17 +776,16 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 		const playerModel = fakeModel()
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
 			.respond(new AIMessage("idle, no new game"));
-		const plannerModel = updateStrategyPlannerModel("safer-play");
-		const store = new FakeStrategyStore();
+		const plannerModel = instructPlayerPlannerModel("safer-play");
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [statsTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -670,13 +808,14 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 		expect(text).toContain("- 正确标记地雷数：3");
 		expect(text).toContain("- 每雷平均操作数：2.33");
 		expect(text).toContain(
-			"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
+			"请复盘本局游戏表现，判断策略是否有效；若你认为需要给 player 校准指令，",
 		);
-		// The game-process lines come from the sink-written gameLog (the move
-		// from onMove, then the onGameEnd entry) — asserted present so the
-		// ordering comparison below is not vacuous (Phase 6 review fix: the
-		// stats section must be verified AFTER a real gameLog line).
-		expect(text).toContain("1. saolei_click");
+		// The game-process lines come from the sink-written gameLog (the
+		// operate from onOperate, then the onGameEnd entry) — asserted
+		// present so the ordering comparison below is not vacuous (Phase 6
+		// review fix: the stats section must be verified AFTER a real
+		// gameLog line).
+		expect(text).toContain("1. saolei_operate");
 		expect(text).toContain("2. (game-end)");
 		// The stats section sits AFTER the game-process lines.
 		expect(text.indexOf("本局统计数据：")).toBeGreaterThan(
@@ -702,16 +841,16 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 		const playerModel = fakeModel()
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
 			.respond(new AIMessage("idle, no new game"));
-		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const plannerModel = instructPlayerPlannerModel("safer-play");
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: new FakeStrategyStore(),
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [plainTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -743,16 +882,16 @@ describe("team graph — US5 (037): planner review input renders game stats (FR-
 		const playerModel = fakeModel()
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
 			.respond(new AIMessage("idle, no new game"));
-		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const plannerModel = instructPlayerPlannerModel("safer-play");
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: new FakeStrategyStore(),
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [statsTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -778,16 +917,16 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 	it("emits the review input as a real-time frame with agent=planner when a game ends (FR-001/FR-002)", async () => {
 		const buffer = createEphemeralGameBuffer();
 		const sink = createTeamSink(buffer);
-		// Two moves (still playing), then a losing game end — the sink
-		// accumulates one gameLog entry per step, so the emitted frame
+		// Two operates (still playing), then a losing game end — the sink
+		// accumulates one gameLog entry per operate call, so the emitted frame
 		// carries the full process (specs/037-saolei-team-optimize/spec.md
 		// FR-002: live content == reloaded ListMessages content).
 		const moveTool = tool(
 			async ({ x, y }: { x: number; y: number }) => {
 				if (x === 3 && y === 4) {
-					sink.onMove("saolei_click", 3, 4, makeState());
+					sink.onOperate([{ type: "click", x: 3, y: 4 }], makeState());
 				} else {
-					sink.onMove("saolei_click", 5, 2, makeState());
+					sink.onOperate([{ type: "flag", x: 5, y: 2 }], makeState());
 					sink.onGameEnd(makeState(), "lost");
 				}
 				return `moved to (${x},${y})`;
@@ -802,8 +941,7 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 3, y: 4 } }])
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 5, y: 2 } }])
 			.respond(new AIMessage("idle, no new game"));
-		const plannerModel = updateStrategyPlannerModel("safer-play");
-		const store = new FakeStrategyStore();
+		const plannerModel = instructPlayerPlannerModel("safer-play");
 		// DI recording callback (style/javascript.md §测试 — vi.fn() seam,
 		// no vi.mock): injected via LangGraph `configurable` (tasks.md 决策
 		// #1 — specs/037-saolei-team-optimize/plan.md).
@@ -811,12 +949,12 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [moveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -835,10 +973,10 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 		// The frame belongs to the planner tab (FR-001 / US1 AS5).
 		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
 		// The frame carries the FULL game process — every step's tool,
-		// coordinates, status and text-rendered board (US1 AS2).
+		// operations, status and text-rendered board (US1 AS2).
 		expect(emittedContent).toContain("本局游戏过程");
-		expect(emittedContent).toContain("1. saolei_click(3, 4) → playing");
-		expect(emittedContent).toContain("2. saolei_click(5, 2) → playing");
+		expect(emittedContent).toContain("1. saolei_operate(click(3,4)) → playing");
+		expect(emittedContent).toContain("2. saolei_operate(flag(5,2)) → playing");
 		expect(emittedContent).toContain("3. (game-end) → lost");
 		expect(emittedContent).toContain("board size 3*3");
 		// The emitted content equals the review request written to the
@@ -852,7 +990,6 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 		expect(reviewRequests).toHaveLength(1);
 		expect(contentType(reviewRequests[0] as BaseMessage)).toBe(emittedContent);
 		// The game really ended ⇒ the planner ran and wrote its strategy.
-		expect(await store.get("graph-test")).toBe("safer-play");
 	});
 
 	it("emits the no-record notice frame when the gameLog is empty (FR-004)", async () => {
@@ -868,17 +1005,16 @@ describe("team graph — US1 (037): planner review input real-time frame (FR-001
 		};
 		const playerModel = fakeModel().respond(new AIMessage("idle"));
 		const plannerModel = fakeModel().respond(new AIMessage("no update"));
-		const store = new FakeStrategyStore();
 		const emitChannelFrame = vi.fn<(agent: string, content: string) => void>();
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -944,16 +1080,15 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 			);
 		}
 		playerModel.respond(new AIMessage("idle, stopping"));
-		const store = new FakeStrategyStore();
 		const { graph } = buildTeamGraph({
 			playerModel,
-			plannerModel: updateStrategyPlannerModel("never"),
-			strategyStore: store,
+			plannerModel: instructPlayerPlannerModel("never"),
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [moveTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -980,7 +1115,10 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 		let plannerInvokeCount = 0;
 		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
 			const agent = createAgent(config as Parameters<typeof createAgent>[0]);
-			if (config.systemPrompt?.includes(SKILL_PROMPT_SEPARATOR)) {
+			// The PLAYER's prompt carries the saolei skill body; the planner's
+			// carries the memory skill body — both contain the separator since
+			// 039 Phase 5, so the player is identified by its own skill body.
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
 				return agent;
 			}
 			return {
@@ -1004,7 +1142,7 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 					content: "review",
 					tool_calls: [
 						{
-							name: "update_strategy",
+							name: "instruct_player",
 							args: { content: `v${i + 1}` },
 						},
 					],
@@ -1012,7 +1150,7 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 			);
 		}
 		plannerModel.respond(new AIMessage("review done"));
-		const { graph, store } = buildTestGraph({
+		const { graph } = buildTestGraph({
 			playerModel,
 			plannerModel,
 			createAgentFn,
@@ -1031,7 +1169,6 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 		// One single successful invoke — no GraphRecursionError, no retry.
 		expect(plannerInvokeCount).toBe(1);
 		expect(plannerModel.calls.length).toBeGreaterThan(25);
-		expect(await store.get("graph-test")).toBe("v26");
 		expect(result.gameEnded).toBeNull();
 	});
 
@@ -1090,7 +1227,7 @@ describe("team graph — Issue 4 (036): inner createAgents inherit the outer gra
 });
 
 describe("team graph — multi-game loop (FR-009)", () => {
-	it("plays two games in one turn: planner fires once per game end and the strategy accumulates", async () => {
+	it("plays two games in one turn: planner fires once per game end and each review instruction lands in the player channel", async () => {
 		// One move per game end (the gameEndGuard middleware stops the loop
 		// right after each game end — the pre-fix "game N won" stop calls are
 		// gone); the planner runs between games; the final idle ends the turn.
@@ -1100,24 +1237,40 @@ describe("team graph — multi-game loop (FR-009)", () => {
 			.respond(new AIMessage("idle, stopping"));
 		const plannerModel = fakeModel()
 			.respondWithTools([
-				{ name: "update_strategy", args: { content: "v1" } },
+				{ name: "instruct_player", args: { content: "v1" } },
 			])
-			.respond(new AIMessage("v1 written"))
+			.respond(new AIMessage("v1 sent"))
 			.respondWithTools([
-				{ name: "update_strategy", args: { content: "v2" } },
+				{ name: "instruct_player", args: { content: "v2" } },
 			])
-			.respond(new AIMessage("v2 written"));
+			.respond(new AIMessage("v2 sent"));
 
-		const { graph, store } = buildTestGraph({ playerModel, plannerModel });
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
 
 		const result = (await graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
-			{ configurable: { thread_id: "t-multi" }, recursionLimit: 100 },
+			{
+				configurable: {
+					thread_id: "t-multi",
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 100,
+			},
 		)) as TeamStateValue;
 
-		// Planner ran twice (once per game end) and the LAST write wins.
-		expect(await store.get("graph-test")).toBe("v2");
+		// Planner ran twice (once per game end); both reviews sent a
+		// calibration instruction into the player channel (FR-017 — they
+		// accumulate in the player's conversation flow, D6). Count HUMAN
+		// instructions only (fakeModel echoes input text into AI content, so
+		// an AI message may contain the instruction text too).
 		expect(result.gameEnded).toBeNull();
+		const instructionCount = result.playerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				typeof m.content === "string" &&
+				(m.content.includes("v1") || m.content.includes("v2")),
+		).length;
+		expect(instructionCount).toBe(2);
 		// Two review REQUESTS (human messages) in the planner channel — one
 		// per game end. (AI content is fakeModel-derived from the input, so
 		// only the human review requests are counted.)
@@ -1141,7 +1294,7 @@ describe("team graph — planner retry/degrade (D6 需求方 #6)", () => {
 			.respond(new Error("planner llm down"))
 			.respond(new Error("planner llm down"))
 			.respond(new Error("planner llm down"));
-		const { graph, store } = buildTestGraph({ playerModel, plannerModel });
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
 
 		const result = (await graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
@@ -1151,26 +1304,102 @@ describe("team graph — planner retry/degrade (D6 需求方 #6)", () => {
 		// The graph completed; gameEnded cleared despite the failure
 		// (unconditional clear, D6 step 6 — no infinite planner re-trigger).
 		expect(result.gameEnded).toBeNull();
-		expect(await store.get("graph-test")).toBe("");
+	});
+
+	it("re-throws NodeTimeoutError from the planner agent — the stall propagates instead of degrading (043 US1, contract §2.4)", async () => {
+		// The real LangGraph error class: `isNodeTimeoutError` is a duck-typed
+		// guard (`e.name === "NodeTimeoutError"` — dist/errors.js), and the
+		// real class produces exactly that name plus the node/kind/elapsed
+		// fields (errors.d.ts). The same error instance survives the 3
+		// invokeAgentWithRetry attempts (agent-invoke.ts re-throws lastError).
+		const timeoutError = new NodeTimeoutError({
+			node: "planner",
+			kind: "idle",
+			idleTimeout: 30000,
+			elapsed: 30001,
+		});
+		// DI dispatch (same prompt heuristic as the Issue-1 crash test): the
+		// PLAYER's agent is the real createAgent driven by the fake model; the
+		// PLANNER's agent rejects with a NodeTimeoutError on every attempt.
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
+				return createAgent(config as Parameters<typeof createAgent>[0]);
+			}
+			return {
+				invoke: async () => {
+					throw timeoutError;
+				},
+			};
+		});
+		const { graph } = buildTestGraph({
+			plannerModel: fakeModel().respond(new AIMessage("unused")),
+			createAgentFn,
+		});
+
+		// The DI seam was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// The stall propagates out of the planner node → the graph run
+		// rejects (the runLoop catch classifies it as finishError — retain
+		// buffer, warn + wait, FR-005/FR-006/FR-008).
+		await expect(
+			graph.invoke(
+				{ playerMessages: [new HumanMessage("开始游戏")] },
+				{
+					configurable: { thread_id: "t-planner-timeout" },
+					recursionLimit: 50,
+				},
+			),
+		).rejects.toThrow(/exceeded its idle timeout/);
+	});
+
+	it("degrades on a generic planner agent error (043 US1 — non-timeout errors keep the degrade path)", async () => {
+		// Same dispatch as above, but the planner's agent rejects with a
+		// generic Error — the planner catch must NOT re-throw it.
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			if (isPlayerPrompt(config.systemPrompt ?? "")) {
+				return createAgent(config as Parameters<typeof createAgent>[0]);
+			}
+			return {
+				invoke: async () => {
+					throw new Error("planner llm down");
+				},
+			};
+		});
+		const { graph } = buildTestGraph({
+			plannerModel: fakeModel().respond(new AIMessage("unused")),
+			createAgentFn,
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-planner-error" },
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		expect(createAgentFn).toHaveBeenCalled();
+		// Degrade path unchanged: gameEnded cleared (D6 step 6 — no infinite
+		// planner re-trigger) and the ended game still counted (FR-006).
+		expect(result.gameEnded).toBeNull();
+		expect(result.gameCounter).toBe(1);
 	});
 });
 
 describe("team graph — strategy injection edge cases", () => {
-	it("does not write the strategy SystemMessage into the player channel (D4: 策略不在 state)", async () => {
-		const store = new FakeStrategyStore();
-		await store.put("graph-test", "secret-strategy-text");
+	it("holds NO strategy/system messages in the player channel (Phase 6: shared strategy removed — FR-013, SC-005)", async () => {
 		const playerModel = playOneGamePlayerModel();
-		const { graph } = buildTestGraph({ store, playerModel });
+		const { graph } = buildTestGraph({ playerModel });
 
 		const result = (await graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
 			{ configurable: { thread_id: "t-no-state-strategy" }, recursionLimit: 50 },
 		)) as TeamStateValue;
 
-		// The strategy SystemMessage (fixed id) is filtered from the write-
-		// back: the channel holds NO system message. (fakeModel-derived AI
-		// content may still echo the text — the channel SHAPE is the
-		// contract, D4: 策略不在 state.)
+		// The player channel holds no strategy "当前态势" SystemMessage —
+		// the strategy injection path is gone (Phase 6). The ONLY system
+		// messages anywhere are the createAgent system prompt (not in the
+		// channel); the channel shape is the contract.
 		for (const m of result.playerMessages) {
 			expect(m._getType()).not.toBe("system");
 		}
@@ -1192,17 +1421,16 @@ describe("team graph — strategy injection edge cases", () => {
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
 			.respond(new AIMessage("tool failed, stopping"))
 			.respond(new AIMessage("idle"));
-		const plannerModel = updateStrategyPlannerModel("never");
-		const store = new FakeStrategyStore();
+		const plannerModel = instructPlayerPlannerModel("never");
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [failingTool],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -1215,35 +1443,34 @@ describe("team graph — strategy injection edge cases", () => {
 		// was NOT triggered.
 		expect(result.gameEnded).toBeNull();
 		expect(result.plannerMessages).toEqual([]);
-		expect(await store.get("graph-test")).toBe("");
 	});
 });
 
+/**
+ * Spy createAgentFn (DI seam) capturing the `systemPrompt` of each node's
+ * agent. The player's prompt always carries the appended saolei skill body;
+ * the planner's carries the memory skill body (FR-020 — 039 US2) — the two
+ * skill bodies distinguish the calls without depending on build order (both
+ * prompts contain SKILL_PROMPT_SEPARATOR since 039 Phase 5).
+ */
+function captureSystemPrompts(): {
+	createAgentFn: CreateAgentFn;
+	playerSystemPrompt(): string;
+	plannerSystemPrompt(): string;
+} {
+	const calls: string[] = [];
+	const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+		calls.push(config.systemPrompt ?? "");
+		return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+	});
+	return {
+		createAgentFn,
+		playerSystemPrompt: () => calls.find(isPlayerPrompt) ?? "",
+		plannerSystemPrompt: () => calls.find(isPlannerPrompt) ?? "",
+	};
+}
+
 describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)", () => {
-	/**
-	 * Spy createAgentFn (DI seam) capturing the `systemPrompt` of each node's
-	 * agent. The player's prompt always carries the appended saolei skill
-	 * body (SKILL_PROMPT_SEPARATOR); the planner's is a bare base — that
-	 * distinguishes the two calls without depending on build order.
-	 */
-	function captureSystemPrompts(): {
-		createAgentFn: CreateAgentFn;
-		playerSystemPrompt(): string;
-		plannerSystemPrompt(): string;
-	} {
-		const calls: string[] = [];
-		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
-			calls.push(config.systemPrompt ?? "");
-			return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
-		});
-		return {
-			createAgentFn,
-			playerSystemPrompt: () =>
-				calls.find((p) => p.includes(SKILL_PROMPT_SEPARATOR)) ?? "",
-			plannerSystemPrompt: () =>
-				calls.find((p) => !p.includes(SKILL_PROMPT_SEPARATOR)) ?? "",
-		};
-	}
 
 	it("player: non-empty player_prompt overrides the base AND the saolei skill body is still appended (FR-034)", () => {
 		const profilePrompt = "你是自定义的 player 操作者。";
@@ -1279,50 +1506,85 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		// The default test player tool (fake_saolei_move) is NOT game-visible
 		// (GAME_VISIBLE_PLAYER_TOOLS), so it would not be listed — pass a real
 		// visible tool to exercise the US3 section alongside FR-034.
-		const clickTool = tool(
-			async () => "clicked",
+		// `saolei_operate`'s description covers its click/flag/chord operation
+		// types (FR-005 — Phase 2 US1).
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
 		buildTestGraph({
 			plannerBasePrompt: profilePrompt,
-			playerTools: [clickTool],
+			playerTools: [operateTool],
 			createAgentFn,
 		});
 
-		// Semantics A: the profile prompt leads, unchanged (FR-034); US3
-		// appends the player tool description section AFTER it (FR-016 —
+		// Semantics A: the profile prompt leads, unchanged (FR-034); the
+		// memory skill body is appended on top (FR-020); US3 appends the
+		// player tool description section AFTER the skill body (FR-016 —
 		// specs/037-saolei-team-optimize/contracts/compression-contract.md
 		// §4). The game-visible player tool is listed.
 		expect(plannerSystemPrompt().startsWith(profilePrompt)).toBe(true);
-		// The planner appends NO skill body (FR-012/FR-034).
-		expect(plannerSystemPrompt()).not.toContain(SKILL_PROMPT_SEPARATOR);
+		// The planner DOES append the memory skill body (FR-020 — 039 US2).
+		expect(plannerSystemPrompt()).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(plannerSystemPrompt()).toContain(MEMORY_SKILL_BODY);
 		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
-		expect(plannerSystemPrompt()).toContain("saolei_click: 揭示一个格子。");
+		expect(plannerSystemPrompt()).toContain(
+			"saolei_operate: 执行落子操作，支持 click/flag/chord。",
+		);
 		expect(createAgentFn).toHaveBeenCalled();
 	});
 
 	it("planner: empty planner_prompt falls back to DEFAULT_PLANNER_BASE (FR-034)", () => {
 		// A game-visible player tool so the US3 section is present (the
 		// default fake_saolei_move test tool is not game-visible).
-		const clickTool = tool(
-			async () => "clicked",
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
 		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
-		buildTestGraph({ playerTools: [clickTool], createAgentFn }); // plannerBasePrompt defaults to ""
+		buildTestGraph({ playerTools: [operateTool], createAgentFn }); // plannerBasePrompt defaults to ""
 
-		// The default base leads (FR-034); the US3 tool description section
-		// follows it (FR-016 — compression-contract.md §4).
+		// The default base leads (FR-034); the memory skill body follows
+		// (FR-020); the US3 tool description section comes after the skill
+		// body (FR-016 — compression-contract.md §4).
 		expect(plannerSystemPrompt().startsWith(DEFAULT_PLANNER_BASE)).toBe(true);
+		expect(plannerSystemPrompt()).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(plannerSystemPrompt()).toContain(MEMORY_SKILL_BODY);
 		expect(plannerSystemPrompt()).toContain("## Player 可用工具");
 		expect(createAgentFn).toHaveBeenCalled();
 	});
@@ -1334,34 +1596,54 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
 		// Empty player tools ⇒ buildToolDescriptionSection returns "" — the
-		// planner prompt is the bare DEFAULT_PLANNER_BASE, no trailing
-		// markdown section (compression-contract.md §4).
-		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+		// planner prompt is DEFAULT_PLANNER_BASE + the always-appended memory
+		// skill body (FR-020), with no trailing markdown section
+		// (compression-contract.md §4).
+		expect(plannerSystemPrompt()).toBe(
+			appendSkillBodyToPrompt(DEFAULT_PLANNER_BASE, ["memory"]),
+		);
 	});
 });
 
 describe("team graph — US3 (037): planner systemPrompt player tool descriptions (FR-016..FR-018)", () => {
-	it("injects every game-visible player tool's name+description into the planner systemPrompt while keeping its tool set at update_strategy only (FR-016/FR-018)", () => {
-		const clickTool = tool(
-			async () => "clicked",
+	it("injects every game-visible player tool's name+description into the planner systemPrompt while keeping its tool set at memory + instruct_player only (FR-016/FR-018)", () => {
+		// Both game-visible player tools (Phase 2 US1: the cell tools are
+		// merged into saolei_operate — FR-001). `saolei_operate`'s
+		// description carries the click/flag/chord operation types (FR-005),
+		// so the injected section documents them for the planner.
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
-		const flagTool = tool(
-			async () => "flagged",
+		const initTool = tool(
+			async () => "started",
 			{
-				name: "saolei_flag",
-				description: "标记一个格子为地雷。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_init",
+				description: "开始一局新游戏。",
+				schema: z.object({}),
 			},
 		);
 		// DI spy (style/javascript.md §测试 — no vi.mock): capture BOTH the
 		// systemPrompt AND the tools array of each createAgent call, then
-		// pick the planner's by its prompt lacking the saolei skill body
-		// (the player's always carries it, FR-034 — same heuristic as
+		// pick the planner's by its prompt carrying the memory skill body
+		// (the player's carries the saolei skill body — same heuristic as
 		// captureSystemPrompts).
 		const calls: Array<{
 			systemPrompt: string;
@@ -1376,37 +1658,53 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
 			},
 		);
-		buildTestGraph({ playerTools: [clickTool, flagTool], createAgentFn });
+		buildTestGraph({ playerTools: [operateTool, initTool], createAgentFn });
 
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
-		const plannerCall = calls.find(
-			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
-		);
+		const plannerCall = calls.find((c) => isPlannerPrompt(c.systemPrompt));
 		expect(plannerCall).toBeDefined();
 		// FR-016: the section lists EVERY game-visible player tool's name and
 		// description (specs/037-saolei-team-optimize/contracts/
 		// compression-contract.md §4 — `- name: description` per tool).
 		expect(plannerCall?.systemPrompt).toContain("## Player 可用工具");
 		expect(plannerCall?.systemPrompt).toContain(
-			"saolei_click: 揭示一个格子。",
+			"saolei_operate: 执行落子操作，支持 click/flag/chord。",
 		);
 		expect(plannerCall?.systemPrompt).toContain(
-			"saolei_flag: 标记一个格子为地雷。",
+			"saolei_init: 开始一局新游戏。",
 		);
-		// FR-018: the planner's ACTUAL tool set stays `update_strategy` only —
-		// the player tools were NOT added as callable tools.
-		expect(plannerCall?.tools).toHaveLength(1);
-		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
+		// FR-018: the player tools were NOT added as callable tools — the
+		// planner's ACTUAL tool set is the memory tool (039 US2, FR-007/008 —
+		// the injected fake from buildTestGraph's default plannerTools) plus
+		// the internal `instruct_player` calibration tool (039 US3, T027).
+		// The shared-strategy write path is GONE (Phase 6, FR-013).
+		expect(plannerCall?.tools.map((t) => t.name)).toEqual([
+			"memory",
+			"instruct_player",
+		]);
 	});
 
 	it("excludes read-only player tools the planner cannot observe in the game process (saolei_remain — FR-016 refine)", () => {
-		const clickTool = tool(
-			async () => "clicked",
+		const operateTool = tool(
+			async () => "operated",
 			{
-				name: "saolei_click",
-				description: "揭示一个格子。",
-				schema: z.object({ x: z.number(), y: z.number() }),
+				name: "saolei_operate",
+				description: "执行落子操作，支持 click/flag/chord。",
+				schema: z.object({
+					operations: z
+						.array(
+							z.object({
+								type: z.enum(["click", "flag", "chord"]),
+								x: z.number(),
+								y: z.number(),
+							}),
+						)
+						.optional(),
+					type: z.enum(["click", "flag", "chord"]).optional(),
+					x: z.number().optional(),
+					y: z.number().optional(),
+				}),
 			},
 		);
 		const remainTool = tool(
@@ -1427,22 +1725,268 @@ describe("team graph — US3 (037): planner systemPrompt player tool description
 				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
 			},
 		);
-		buildTestGraph({ playerTools: [clickTool, remainTool], createAgentFn });
+		buildTestGraph({ playerTools: [operateTool, remainTool], createAgentFn });
 
 		// The spy was actually exercised (style/javascript.md §测试).
 		expect(createAgentFn).toHaveBeenCalled();
-		const plannerCall = calls.find(
-			(c) => !c.systemPrompt.includes(SKILL_PROMPT_SEPARATOR),
-		);
+		const plannerCall = calls.find((c) => isPlannerPrompt(c.systemPrompt));
 		expect(plannerCall).toBeDefined();
 		// The game-visible tool IS listed...
-		expect(plannerCall?.systemPrompt).toContain("saolei_click: 揭示一个格子。");
+		expect(plannerCall?.systemPrompt).toContain(
+			"saolei_operate: 执行落子操作，支持 click/flag/chord。",
+		);
 		// ...while the read-only saolei_remain (no gameLog trace — the
 		// planner cannot observe its use) is NOT injected (FR-016 refine).
 		expect(plannerCall?.systemPrompt).not.toContain("saolei_remain");
-		// FR-018 unchanged: the planner's tool set stays update_strategy only.
-		expect(plannerCall?.tools).toHaveLength(1);
-		expect(plannerCall?.tools[0]?.name).toBe("update_strategy");
+		// FR-018 unchanged (the player tools stay out of the tool set): the
+		// planner's tools are the memory tool + the internal instruct_player
+		// calibration tool (Phase 6 — no shared-strategy tool).
+		expect(plannerCall?.tools.map((t) => t.name)).toEqual([
+			"memory",
+			"instruct_player",
+		]);
+	});
+});
+
+describe("team graph — 039 US2: planner memory data plane (T020/T021/T022)", () => {
+	it("planner systemPrompt carries the memory skill body + SKILL_PROMPT_SEPARATOR; the player's does not (FR-020/SC-009)", () => {
+		const { createAgentFn, plannerSystemPrompt, playerSystemPrompt } =
+			captureSystemPrompts();
+		buildTestGraph({ createAgentFn });
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// FR-020 / memory-skill-contract.md §2: the planner's static
+		// systemPrompt = appendSkillBodyToPrompt(base, ["memory"]) — the
+		// memory skill body is appended after SKILL_PROMPT_SEPARATOR.
+		const prompt = plannerSystemPrompt();
+		expect(prompt).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(prompt).toContain(MEMORY_SKILL_BODY);
+		// The memory skill body starts after the separator (not baked into
+		// the base) — static assembly, prefix-cache friendly (§2).
+		expect(
+			prompt.indexOf(MEMORY_SKILL_BODY),
+		).toBeGreaterThan(prompt.indexOf(SKILL_PROMPT_SEPARATOR));
+		// SC-009: the player's systemPrompt carries ONLY the saolei skill —
+		// no memory skill (player holds no memory tools, FR-009).
+		expect(playerSystemPrompt()).not.toContain(MEMORY_SKILL_BODY);
+		expect(playerSystemPrompt()).toContain(SAOLEI_SKILL_BODY);
+	});
+
+	it("planner tool set = the memory tool + the internal instruct_player calibration tool (T020/T027)", () => {
+		const calls: Array<{ systemPrompt: string; tools: StructuredToolInterface[] }> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		buildTestGraph({ createAgentFn });
+
+		expect(createAgentFn).toHaveBeenCalled();
+		const plannerCall = calls.find((c) => isPlannerPrompt(c.systemPrompt));
+		expect(plannerCall).toBeDefined();
+		// The injected memory MCP tool (single hermes-style `memory` tool,
+		// FR-007/FR-008) plus the internal `instruct_player` calibration tool
+		// (039 US3, T027 — the shared-strategy path was removed in Phase 6,
+		// T030/T031, FR-013).
+		expect(plannerCall?.tools.map((t) => t.name)).toEqual([
+			"memory",
+			"instruct_player",
+		]);
+	});
+
+	it("injects the frozen snapshot as a pure-content SystemMessage into the planner input and filters it from the channel write-back (FR-011, contract §3)", async () => {
+		// Pre-baked snapshot (team-init boundary bake) with two entries; the
+		// memory_id stays internal and never appears in LLM-visible text.
+		const memoryClient = fakeMemoryClient([
+			{ memory_id: "m1", content: "player 常误标边角" },
+			{ memory_id: "m2", content: "开局先点中心更高效" },
+		]);
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		const plannerModel = instructPlayerPlannerModel("corner-first");
+		const { graph } = buildTestGraph({
+			plannerModel,
+			memoryClient,
+			frozenSnapshot,
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-memory-input" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// The planner's FIRST model call receives the snapshot as an input
+		// SystemMessage with the fixed snapshot id (contract §3).
+		const firstCall = plannerModel.calls[0]?.messages as BaseMessage[];
+		expect(firstCall).toBeDefined();
+		const snapshotMsg = firstCall.find(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
+		);
+		expect(snapshotMsg).toBeInstanceOf(SystemMessage);
+		const snapshotText = String((snapshotMsg as BaseMessage).content);
+		// 纯内容 (hermes style): each entry rendered as its content only —
+		// NO memory_id prefixes (FR-011/Session 2026-08-08).
+		expect(snapshotText).toContain("长期记忆：");
+		expect(snapshotText).toContain("player 常误标边角");
+		expect(snapshotText).toContain("开局先点中心更高效");
+		expect(snapshotText).not.toContain("m1");
+		expect(snapshotText).not.toContain("m2");
+		// The snapshot SystemMessage sits BEFORE the review input in the
+		// model call (input order: snapshot, plannerMessages, reviewInput —
+		// contract §3; the createAgent may prepend its own system message, so
+		// the assertion is relative ordering, not absolute position).
+		const snapshotIdx = firstCall.findIndex(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
+		);
+		const reviewIdx = firstCall.findIndex((m) =>
+			contentType(m).includes("本局游戏过程"),
+		);
+		expect(snapshotIdx).toBeGreaterThanOrEqual(0);
+		expect(reviewIdx).toBeGreaterThan(snapshotIdx);
+		// The snapshot is filtered from the channel write-back — it must not
+		// enter the short-term plannerMessages channel (contract §3).
+		for (const m of result.plannerMessages) {
+			expect(m.id).not.toBe(PLANNER_MEMORY_SNAPSHOT_ID);
+		}
+	});
+
+	it("review does NOT refresh the frozen snapshot (FR-010 — refresh boundary is compress only)", async () => {
+		const memoryClient = fakeMemoryClient([
+			{ memory_id: "m1", content: "entry" },
+		]);
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		// Team-init bake (the ONLY pre-review refresh).
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		const listMemories = memoryClient.listMemories as ReturnType<typeof vi.fn>;
+		const { graph } = buildTestGraph({ memoryClient, frozenSnapshot });
+
+		await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-no-refresh" }, recursionLimit: 50 },
+		);
+
+		// The review node ran (planner channel non-empty) but the snapshot
+		// was NOT re-read — exactly the one team-init bake (FR-010).
+		expect(listMemories).toHaveBeenCalledTimes(1);
+	});
+
+	it("compress refreshes the frozen snapshot at the compression boundary (T021, contract §2.4 — after review, before END)", async () => {
+		// The fake client's entries CHANGE between the team-init bake and the
+		// compression-boundary re-read (simulating mid-session memory writes
+		// landing in the memory service).
+		const listMemories = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{ memory_id: "m1", content: "开局先点中心更高效" },
+			])
+			.mockResolvedValue([
+				{ memory_id: "m1", content: "开局先点中心更高效" },
+				{ memory_id: "m2", content: "player 在边角频繁误标地雷" },
+			]);
+		const memoryClient = { listMemories } as unknown as MemoryClient;
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		expect(String(frozenSnapshot.toSystemMessage().content)).toBe(
+			"长期记忆：\n开局先点中心更高效",
+		);
+
+		const buffer = createEphemeralGameBuffer();
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			memoryClient,
+			frozenSnapshot,
+			template: "saolei",
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildMixedOutcomePlayerTool(buffer)],
+			plannerTools: [buildFakeMemoryTool()],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-compress-refresh" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// The compression boundary ran (gameCounter 5 + compressed channels).
+		expect(result.gameCounter).toBe(5);
+		// Exactly TWO re-reads: the team-init bake + the compress-boundary
+		// refresh (the 5 reviews did NOT refresh — FR-010).
+		expect(listMemories).toHaveBeenCalledTimes(2);
+		expect(listMemories).toHaveBeenLastCalledWith("saolei", "graph-test");
+		// The snapshot was re-baked with the LATEST entries (D4: re-read →
+		// re-bake at the compress boundary).
+		expect(String(frozenSnapshot.toSystemMessage().content)).toBe(
+			"长期记忆：\n开局先点中心更高效\nplayer 在边角频繁误标地雷",
+		);
+	});
+
+	it("rebuild against the injected checkpointer recompiles the planner with the SAME memory tools and frozen snapshot (T022 — 040 rebuild seam)", async () => {
+		const memoryClient = fakeMemoryClient([
+			{ memory_id: "m1", content: "开局先点中心更高效" },
+		]);
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+		const memoryTool = buildFakeMemoryTool();
+		const calls: Array<{ systemPrompt: string; tools: StructuredToolInterface[] }> = [];
+		const createAgentFn = vi.fn(
+			(config: { systemPrompt?: string; tools?: StructuredToolInterface[] }) => {
+				calls.push({
+					systemPrompt: config.systemPrompt ?? "",
+					tools: config.tools ?? [],
+				});
+				return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+			},
+		);
+		const buffer = createEphemeralGameBuffer();
+		const deps = {
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: instructPlayerPlannerModel("corner-first"),
+				memoryClient,
+			frozenSnapshot,
+			template: "saolei",
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			plannerTools: [memoryTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			createAgentFn,
+		};
+
+		// First build (first-build factory call site) then rebuild against the
+		// EXISTING checkpointer (040 rebuild closure call site — server.ts
+		// injects the same memory assembly at BOTH call sites, T022).
+		const handle1 = buildTeamGraph(deps);
+		const handle2 = buildTeamGraph(deps, handle1.checkpointer);
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// team-rebuild-contract.md §7: the checkpointer reference is the SAME.
+		expect(handle2.checkpointer).toBe(handle1.checkpointer);
+		// BOTH builds' planner createAgent calls hold the memory tool — the
+		// rebuilt graph's planner carries the IDENTICAL memory-tool instance
+		// (reference equality) and the same frozen snapshot deps (per-session
+		// state must survive the rebuild — T022 requirement).
+		const plannerCalls = calls.filter((c) => isPlannerPrompt(c.systemPrompt));
+		expect(plannerCalls).toHaveLength(2);
+		for (const c of plannerCalls) {
+			expect(c.tools.map((t) => t.name)).toEqual(["memory", "instruct_player"]);
+			expect(c.tools[0]).toBe(memoryTool);
+		}
+		// The rebuilt graph's planner input still renders the SAME snapshot
+		// content (the shared instance's baked entries).
+		const rebuiltInput = frozenSnapshot.toSystemMessage();
+		expect(String(rebuiltInput.content)).toContain("开局先点中心更高效");
 	});
 });
 
@@ -1453,16 +1997,15 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		const buffer = createEphemeralGameBuffer();
 		const playerModel = fiveGamesPlayerModel("player 摘要内容");
 		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
-		const store = new FakeStrategyStore();
 		const { graph } = buildTeamGraph({
 			playerModel,
 			plannerModel,
-			strategyStore: store,
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [buildMixedOutcomePlayerTool(buffer)],
 			playerBasePrompt: "",
 			plannerBasePrompt: "",
+			...memoryDeps(),
 		});
 
 		const result = (await graph.invoke(
@@ -1485,7 +2028,6 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		);
 		// FR-009: the strategy (long-term memory) is untouched by compression
 		// (the planner's last update wins).
-		expect(await store.get("graph-test")).toBe("v5");
 		// FR-010: the graph routed compress → END, NOT back to the player —
 		// the player model was called 5× (one move per game) + 1× (the
 		// compress summary); a 6th player run would consume a 7th response.
@@ -1502,7 +2044,7 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		playerModel.respond(new AIMessage("idle, no new game"));
 		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
 		plannerModel.respondWithTools([
-			{ name: "update_strategy", args: { content: "v6" } },
+			{ name: "instruct_player", args: { content: "v6" } },
 		]);
 		plannerModel.respond(new AIMessage("v6 written"));
 		const { graph } = buildTestGraph({ playerModel, plannerModel });
@@ -1573,7 +2115,7 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		const plannerModel = fakeModel();
 		for (let i = 0; i < 5; i += 1) {
 			plannerModel.respondWithTools([
-				{ name: "update_strategy", args: { content: `v${i + 1}` } },
+				{ name: "instruct_player", args: { content: `v${i + 1}` } },
 			]);
 			plannerModel.respond(new AIMessage(`v${i + 1} written`));
 		}
@@ -1624,9 +2166,10 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		);
 		// Empty planner channel: skipped — no summary message written.
 		expect(result.plannerMessages).toEqual([]);
-		// The planner model was never invoked for a summary (15 = the 5
-		// degraded planner runs' retries only).
-		expect(plannerModel.callCount).toBe(15);
+		// The planner model was never invoked for a summary (18 = the 5
+		// degraded review runs' retries (5×3) + the postCompactInstruction
+		// node's own degraded retries (3) — 039 US3).
+		expect(plannerModel.callCount).toBe(18);
 	});
 
 	it("does not compress at a non-5 gameCounter (FR-006: MUST NOT trigger)", async () => {
@@ -1635,11 +2178,11 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 2, y: 2 } }])
 			.respond(new AIMessage("idle, no new game"));
 		const plannerModel = fakeModel()
-			.respondWithTools([{ name: "update_strategy", args: { content: "v1" } }])
-			.respond(new AIMessage("v1 written"))
-			.respondWithTools([{ name: "update_strategy", args: { content: "v2" } }])
-			.respond(new AIMessage("v2 written"));
-		const { graph, store } = buildTestGraph({ playerModel, plannerModel });
+			.respondWithTools([{ name: "instruct_player", args: { content: "v1" } }])
+			.respond(new AIMessage("v1 sent"))
+			.respondWithTools([{ name: "instruct_player", args: { content: "v2" } }])
+			.respond(new AIMessage("v2 sent"));
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
 
 		const result = (await graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
@@ -1654,7 +2197,6 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		// idle; planner: 2 runs × 2 calls).
 		expect(playerModel.callCount).toBe(3);
 		expect(plannerModel.callCount).toBe(4);
-		expect(await store.get("graph-test")).toBe("v2");
 	});
 
 	it("emits player+planner summary frames carrying the summary message id (FR-011/SC-004, data-model.md §4)", async () => {
@@ -1668,38 +2210,57 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		const result = (await graph.invoke(
 			{ playerMessages: [new HumanMessage("开始游戏")] },
 			{
-				configurable: { thread_id: "t-compress-frame", emitChannelFrame },
+				configurable: {
+					thread_id: "t-compress-frame",
+					emitChannelFrame,
+					instructionBuffer: { content: null },
+				},
 				recursionLimit: 200,
 			},
 		)) as TeamStateValue;
 
-		// 5 planner review-input frames (US1, agent="planner") + 2 summary
-		// frames (player channel, planner channel) = 7.
-		expect(emitChannelFrame).toHaveBeenCalledTimes(7);
+		// 5 planner review-input frames (US1, agent="planner") + 5 review
+		// instruction write-back frames (042 US2/T003 — agent=PRIMARY_AGENT_
+		// NAME, content = the staged v{i+1} instruction) + 2 summary frames
+		// (player channel, planner channel) = 12. The postCompactInstruction
+		// node degrades here: `fiveGamesPlannerModel` has no responses left
+		// for its invoke (the 5 review runs + the planner-channel summary
+		// consumed them all), and since 041 T006 the instruction node emits
+		// its frames ONLY after the invoke resolves (contract §2.3 — a failed
+		// planner emits NO frame; the old pre-invoke request frame would have
+		// leaked one).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(12);
 		const calls = emitChannelFrame.mock.calls;
 		for (let i = 0; i < 5; i += 1) {
-			expect(calls[i][0]).toBe(PLANNER_AGENT_NAME);
+			// Per game: the review-input frame (even index, emitted at the
+			// planner node start — agent=planner) then the instruction
+			// write-back frame (odd index, agent=player, frameId == the
+			// staged instruction's write-back message id).
+			expect(calls[i * 2][0]).toBe(PLANNER_AGENT_NAME);
+			expect(calls[i * 2 + 1][0]).toBe(PRIMARY_AGENT_NAME);
+			expect(calls[i * 2 + 1][1]).toBe(`v${i + 1}`);
+			expect(calls[i * 2 + 1][2]).toBeDefined();
 		}
 		// Player summary frame: agent + content match the summary model output
 		// (FR-011), and the frameId equals the summary message's id — the
 		// desktop dedup anchor (frameId == msg.id, data-model.md §4 / D9).
-		const [playerAgent, playerContent, playerFrameId] = calls[5];
+		const [playerAgent, playerContent, playerFrameId] = calls[10];
 		expect(playerAgent).toBe(PLAYER_AGENT_NAME);
 		expect(playerContent).toBe("player 摘要内容");
 		expect(playerFrameId).toBeDefined();
 		expect(playerFrameId).toBe(result.playerMessages[0].id);
 		// Planner summary frame: same for the planner channel.
-		const [plannerAgent, plannerContent, plannerFrameId] = calls[6];
+		const [plannerAgent, plannerContent, plannerFrameId] = calls[11];
 		expect(plannerAgent).toBe(PLANNER_AGENT_NAME);
 		expect(plannerContent).toBe("planner 摘要内容");
 		expect(plannerFrameId).toBeDefined();
 		expect(plannerFrameId).toBe(result.plannerMessages[0].id);
 	});
 
-	it("clears the compressed channels and resets gameCounter on RefreshTeam (FR-014 / US2 AS8)", async () => {
+	it("clears the compressed channels and resets gameCounter on RefreshTeam — including any instruction in playerMessages (FR-014 / US2 AS8; 039 contract §7)", async () => {
 		const playerModel = fiveGamesPlayerModel("player 摘要内容");
 		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
-		const { graph, store, sessionId } = buildTestGraph({
+		const { graph, sessionId } = buildTestGraph({
 			playerModel,
 			plannerModel,
 		});
@@ -1710,6 +2271,13 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 			{ configurable: { thread_id: sessionId }, recursionLimit: 200 },
 		);
 
+		// A stale instruction must not survive the refresh (contract §7 —
+		// 039 US3: instructions live IN playerMessages, so the channel clear
+		// covers them).
+		await graph.updateState(
+			{ configurable: { thread_id: sessionId } },
+			{ playerMessages: [new HumanMessage("过期指令")] },
+		);
 		await refreshTeamChannels(graph, sessionId);
 
 		const snapshot = (await graph.getState({
@@ -1719,7 +2287,514 @@ describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => 
 		expect(snapshot.values.playerMessages).toEqual([]);
 		expect(snapshot.values.plannerMessages).toEqual([]);
 		expect(snapshot.values.gameCounter).toBe(0);
-		// The strategy (long-term memory) is untouched (FR-014).
-		expect(await store.get(sessionId)).toBe("v5");
+	});
+});
+
+describe("team graph — checkpointer injection (US3 rebuild seam, specs/040-team-singleton-conformance)", () => {
+	it("recompiling with an injected checkpointer restores the SAME thread state (FR-005, team-rebuild-contract.md §2/§7)", async () => {
+		// First build: the default (fresh MemorySaver) path.
+		const buffer = createEphemeralGameBuffer();
+		const handle1 = buildTeamGraph({
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: instructPlayerPlannerModel("corner-first"),
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			...memoryDeps(),
+		});
+		await handle1.graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-rebuild" }, recursionLimit: 50 },
+		);
+		const before = (await handle1.graph.getState({
+			configurable: { thread_id: "t-rebuild" },
+		})) as unknown as { values: TeamStateValue };
+		expect(before.values.playerMessages.length).toBeGreaterThan(0);
+		expect(before.values.plannerMessages.length).toBeGreaterThan(0);
+
+		// Rebuild: recompile against the EXISTING checkpointer (never a new
+		// MemorySaver — that would drop the history). MemorySaver is a
+		// per-thread_id KV store decoupled from the graph instance, so the
+		// recompiled graph restores the same thread's channels.
+		const buffer2 = createEphemeralGameBuffer();
+		const handle2 = buildTeamGraph(
+			{
+				playerModel: playOneGamePlayerModel(),
+				plannerModel: instructPlayerPlannerModel("new-strategy"),
+				buffer: buffer2,
+				sessionId: "graph-test",
+				playerTools: [buildGameEndingPlayerTool(buffer2)],
+				playerBasePrompt: "",
+				plannerBasePrompt: "",
+				...memoryDeps(),
+			},
+			handle1.checkpointer,
+		);
+		// team-rebuild-contract.md §7: the checkpointer reference is the SAME.
+		expect(handle2.checkpointer).toBe(handle1.checkpointer);
+		const after = (await handle2.graph.getState({
+			configurable: { thread_id: "t-rebuild" },
+		})) as unknown as { values: TeamStateValue };
+		// History is preserved with zero loss / zero duplication.
+		expect(after.values.playerMessages).toEqual(before.values.playerMessages);
+		expect(after.values.plannerMessages).toEqual(
+			before.values.plannerMessages,
+		);
+		expect(after.values.gameCounter).toBe(before.values.gameCounter);
+	});
+});
+
+describe("team graph — 039 US3: init/compact instruction scenarios (T025/T026, contract §2.3/§2.5/§4)", () => {
+	it("routes the async init turn to initInstruction → END: writes the instruction into playerMessages, does NOT invoke the player (FR-015)", async () => {
+		// The init turn (session-team.ts triggerInitInstruction — R2) runs
+		// with the `runInitInstruction` configurable flag; the START
+		// conditional edge routes it to initInstruction → END. The player is
+		// NOT invoked — the instruction lands in `playerMessages` (channel
+		// write-back, same as the review node) and is delivered with the
+		// player's next activation (FR-015 "不立即激活 player").
+		const playerModel = fakeModel().respond(new AIMessage("unused"));
+		const initPlanner = fakeModel()
+			.respondWithTools([
+				{ name: "instruct_player", args: { content: "开局先点中心" } },
+			])
+			.respond(new AIMessage("init done"));
+		const { graph } = buildTestGraph({ playerModel, plannerModel: initPlanner });
+
+		const result = (await graph.invoke(
+			{},
+			{
+				configurable: {
+					thread_id: "t-init-turn",
+					runInitInstruction: true,
+					// R1 external buffer (contract §4) — the instruction node
+					// reads the staged content after the invoke returns.
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// The LLM decided to call instruct_player → the no-game-history
+		// instruction was produced into `playerMessages` as a HumanMessage
+		// (R4 — prompt 要求给指令, 无强制检验; no pending slot).
+		const instructionMsg = result.playerMessages.find(
+			(m) =>
+				typeof m.content === "string" &&
+				m.content.includes("开局先点中心"),
+		);
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
+		// No player activation happened during the init turn.
+		expect(playerModel.calls).toHaveLength(0);
+		// No game / review activity either (plannerMessages holds only the
+		// instruction node's own exchange).
+		expect(result.gameEnded).toBeNull();
+	});
+
+	it("ordinary turns skip initInstruction entirely (no runInitInstruction flag → START → player)", async () => {
+		const playerModel = fakeModel().respond(new AIMessage("hi"));
+		const { graph } = buildTestGraph({ playerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("你好")] },
+			{ configurable: { thread_id: "t-normal-turn" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// No game ended → no planner; the init node never ran (no
+		// instruction in playerMessages, no planner messages). The channel
+		// holds exactly the single user input HumanMessage.
+		expect(
+			result.playerMessages.filter((m) => m._getType() === "human"),
+		).toHaveLength(1);
+		expect(result.plannerMessages).toEqual([]);
+		expect(playerModel.calls).toHaveLength(1);
+	});
+
+	it("postCompactInstruction runs after compress → END: writes the instruction into playerMessages, the player does NOT continue (FR-016, 037 压缩后自动停下)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		// The compact scenario's own LLM run (post-compact instruction):
+		// prompt 要求给指令, LLM decides to call instruct_player (R4).
+		plannerModel.respondWithTools([
+			{ name: "instruct_player", args: { content: "重建引导：保持节奏" } },
+		]);
+		plannerModel.respond(new AIMessage("compact instruction sent"));
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: {
+					thread_id: "t-compact-instr",
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 200,
+			},
+		)) as TeamStateValue;
+
+		// 5 games counted; the compression ran (channels shrank to summaries).
+		expect(result.gameCounter).toBe(5);
+		// The compressed player summary + the compact instruction (written
+		// into playerMessages — delivered with the player's NEXT activation,
+		// FR-016; NOT a pending slot).
+		expect(result.playerMessages).toHaveLength(2);
+		const instructionMsg = result.playerMessages.find(
+			(m) =>
+				typeof m.content === "string" &&
+				m.content.includes("重建引导：保持节奏"),
+		);
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
+		// The player stopped after the compression: 5 move calls + 1 summary
+		// call = 6; a 7th call would mean the graph routed back to the player
+		// after postCompactInstruction (it must END instead).
+		expect(playerModel.callCount).toBe(6);
+	});
+
+	it("the compact instruction uses the compress-boundary-refreshed frozen snapshot (T021 → T025 chain)", async () => {
+		// The fake client's entries CHANGE between the team-init bake and the
+		// compression-boundary re-read.
+		const listMemories = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{ memory_id: "m1", content: "开局先点中心更高效" },
+			])
+			.mockResolvedValue([
+				{ memory_id: "m1", content: "开局先点中心更高效" },
+				{ memory_id: "m2", content: "player 在边角频繁误标地雷" },
+			]);
+		const memoryClient = { listMemories } as unknown as MemoryClient;
+		const frozenSnapshot = new FrozenMemorySnapshot();
+		await frozenSnapshot.refresh(memoryClient, "saolei", "graph-test");
+
+		const buffer = createEphemeralGameBuffer();
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		plannerModel.respondWithTools([
+			{ name: "instruct_player", args: { content: "重建引导" } },
+		]);
+		plannerModel.respond(new AIMessage("compact instruction sent"));
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			memoryClient,
+			frozenSnapshot,
+			template: "saolei",
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildMixedOutcomePlayerTool(buffer)],
+			plannerTools: [buildFakeMemoryTool()],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: {
+					thread_id: "t-compact-snapshot",
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 200,
+			},
+		);
+
+		// The postCompactInstruction model call received the REFRESHED
+		// snapshot (baked after the compress-boundary re-read — the last
+		// planner-family call, after the 5 reviews and the summary).
+		expect(listMemories).toHaveBeenCalledTimes(2);
+		const lastCall = plannerModel.calls.at(-1)?.messages as BaseMessage[];
+		const snapshotMsg = lastCall?.find(
+			(m) => m.id === PLANNER_MEMORY_SNAPSHOT_ID,
+		);
+		expect(snapshotMsg).toBeDefined();
+		expect(String(snapshotMsg?.content)).toContain("player 在边角频繁误标地雷");
+	});
+});
+
+describe("team graph — 039 US3: review calibration instruction (T027, contract §2.2/§4 — FR-017)", () => {
+	it("the review instruction lands AFTER the game-ending tool_result and BEFORE the player's next output in the player channel (FR-017 order)", async () => {
+		const playerModel = playOneGamePlayerModel();
+		const plannerModel = instructPlayerPlannerModel("保持节奏");
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: {
+					thread_id: "t-fr017",
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// Player channel order: user input → tool_calling (AI with tool
+		// calls) → tool_result (game end) → planner instruction (H) →
+		// player next output (idle AI). Assert the instruction sits strictly
+		// between the last tool message and the last AI message.
+		const msgs = result.playerMessages;
+		const types = msgs.map((m) => m._getType());
+		const lastToolIdx = types.lastIndexOf("tool");
+		const lastAiIdx = types.lastIndexOf("ai");
+		const instrIdx = msgs.findIndex(
+			(m) =>
+				typeof m.content === "string" && m.content.includes("保持节奏"),
+		);
+		expect(lastToolIdx).toBeGreaterThanOrEqual(0);
+		expect(lastAiIdx).toBeGreaterThan(lastToolIdx);
+		expect(instrIdx).toBeGreaterThan(lastToolIdx);
+		expect(instrIdx).toBeLessThan(lastAiIdx);
+		expect(msgs[instrIdx]).toBeInstanceOf(HumanMessage);
+	});
+
+	it("routes back to the player even when the review sends NO instruction (FR-014 — the instruction is optional)", async () => {
+		const playerModel = playOneGamePlayerModel();
+		// The planner's review does NOT call instruct_player (LLM decided
+		// nothing needs calibrating).
+		const plannerModel = fakeModel().respond(new AIMessage("复盘完成，无需指令"));
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-no-instr" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// No instruction in the player channel — but the graph still routed
+		// back to the player (its idle output is present; FR-009).
+		expect(
+			result.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("保持节奏"),
+			),
+		).toBe(false);
+		expect(playerModel.calls).toHaveLength(2);
+		expect(result.gameEnded).toBeNull();
+	});
+});
+
+describe("team graph — 042 US2: review instruction real-time frame (T003, contract §2/§5)", () => {
+	it("emits the write-back frame (agent=player, frameId == the persisted instruction id) when the review sends an instruction", async () => {
+		const playerModel = playOneGamePlayerModel();
+		const plannerModel = instructPlayerPlannerModel("corner-first");
+		// DI recording callback (style/javascript.md §测试 — vi.fn() seam,
+		// no vi.mock): injected via LangGraph `configurable` (the same seam
+		// the US1 review-input frame tests use).
+		const emitChannelFrame = vi.fn<
+			(agent: string, content: string, frameId?: string, role?: string) => void
+		>();
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: {
+					thread_id: "t-042-writeback",
+					emitChannelFrame,
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// The emitter was actually exercised (style/javascript.md §测试 —
+		// positive assertion on the DI seam). One game end ⇒ one review run
+		// ⇒ exactly 2 frames: the review-input frame (US1, agent=planner,
+		// emitted at the node start) + the NEW instruction write-back frame
+		// (042 US2, emitted at the node return — T003).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(2);
+		const [writeBackAgent, writeBackContent, writeBackFrameId, writeBackRole] =
+			emitChannelFrame.mock.calls[1];
+		// The write-back frame routes to the player tab (PRIMARY_AGENT_NAME
+		// — "player"), carries the instruction text (the staged content from
+		// the review's instruct_player call) with the USER role — the same
+		// shape as the init/compact write-back frame (instruction-node.ts
+		// `:299-319`, contract §2.1/§5).
+		expect(writeBackAgent).toBe(PRIMARY_AGENT_NAME);
+		expect(writeBackContent).toBe("corner-first");
+		expect(writeBackRole).toBe("MESSAGE_ROLE_USER");
+		// frameId == the PERSISTED instruction message's id (041 dedup
+		// anchor — frameId == msg.id, realtime-channel-contract.md §4;
+		// contract §2.3: the frame's writeBack object is the SAME object the
+		// node return writes into playerMessages).
+		const instructionMsg = result.playerMessages.find(
+			(m) =>
+				m._getType() === "human" &&
+				typeof m.content === "string" &&
+				m.content.includes("corner-first"),
+		);
+		expect(instructionMsg).toBeInstanceOf(HumanMessage);
+		expect(writeBackFrameId).toBeDefined();
+		expect(writeBackFrameId).toBe(instructionMsg?.id);
+	});
+
+	it("emits NO write-back frame when the review sends no instruction (FR-014 — the instruction is optional)", async () => {
+		const playerModel = playOneGamePlayerModel();
+		// The review does NOT call instruct_player (LLM decided nothing needs
+		// calibrating) — the staged buffer stays empty.
+		const plannerModel = fakeModel().respond(new AIMessage("复盘完成，无需指令"));
+		const emitChannelFrame = vi.fn<
+			(agent: string, content: string, frameId?: string, role?: string) => void
+		>();
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: {
+					thread_id: "t-042-no-writeback",
+					emitChannelFrame,
+					instructionBuffer: { content: null },
+				},
+				recursionLimit: 50,
+			},
+		)) as TeamStateValue;
+
+		// Only the review-input frame (agent=planner, US1 behavior) — no
+		// write-back frame, no instruction in the player channel (contract
+		// §5: instruction === null ⇒ no frame, no playerMessages write —
+		// 既有行为不变).
+		expect(emitChannelFrame).toHaveBeenCalledTimes(1);
+		const [emittedAgent] = emitChannelFrame.mock.calls[0];
+		expect(emittedAgent).toBe(PLANNER_AGENT_NAME);
+		expect(
+			result.playerMessages.some(
+				(m) =>
+					typeof m.content === "string" && m.content.includes("保持节奏"),
+			),
+		).toBe(false);
+	});
+});
+
+// ------------------------------------------------------------------
+// 043 US3 (T008 — specs/043-llm-stream-stall-recovery/contracts/
+// stall-recovery-contract.md §1.1): per-node idle timeout configuration
+// ------------------------------------------------------------------
+// The compiled Pregel exposes every node's resolved TimeoutPolicy via the
+// public `nodes` map and `PregelNode.timeout` (installed
+// @langchain/langgraph dist/pregel/read.d.ts `PregelNode.timeout?:
+// TimeoutPolicy`; dist/graph/state.js `attachNode` passes the addNode
+// `timeout` option through at compile). `TeamGraphHandle.graph` is a
+// structural subset (invoke/getState/updateState/streamEvents), so the
+// test casts to the runtime shape to read the node specs.
+type NodeSpec = {
+	timeout?: { idleTimeout?: number; refreshOn?: "auto" | "heartbeat" };
+};
+
+function compiledNodes(
+	graph: TeamGraphHandle["graph"],
+): Record<string, NodeSpec> {
+	return (graph as unknown as { nodes: Record<string, NodeSpec> }).nodes;
+}
+
+describe("team graph — 043 US3: player/planner idle timeout config (contract §1.1, T008)", () => {
+	it("player and planner nodes carry timeout.idleTimeout === STREAM_IDLE_TIMEOUT_MS with refreshOn === 'auto'", () => {
+		const { graph } = buildTestGraph();
+		const nodes = compiledNodes(graph);
+
+		for (const name of ["player", "planner"]) {
+			expect(nodes[name].timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+			expect(nodes[name].timeout?.refreshOn).toBe("auto");
+		}
+	});
+
+	it("compress/initInstruction/postCompactInstruction carry NO timeout — setNodeDefaults was NOT used (contract §1.1 scope: player/planner only)", () => {
+		const { graph } = buildTestGraph();
+		const nodes = compiledNodes(graph);
+
+		for (const name of [
+			"compress",
+			"initInstruction",
+			"postCompactInstruction",
+		]) {
+			expect(nodes[name].timeout).toBeUndefined();
+		}
+	});
+});
+
+// ------------------------------------------------------------------
+// 044 US2 (T004 — specs/044-llm-stall-recovery-fix/tasks.md T004,
+// contracts/idle-timeout-contract.md §1/§3): the per-reasoning-model
+// floor raises the player/planner idle timeout via the optional
+// playerModelSpec/plannerModelSpec deps
+// ------------------------------------------------------------------
+describe("team graph — 044 US2: reasoning-model floor on player/planner idle timeout (T004)", () => {
+	it("applies max(default, floor) = 600_000 when the player spec is a DeepSeek model; planner without a spec keeps the default", () => {
+		const { graph } = buildTestGraph({
+			playerModelSpec: "openai/deepseek-v4-flash",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.player.timeout?.idleTimeout).toBe(600_000);
+		expect(nodes.player.timeout?.refreshOn).toBe("auto");
+		// planner has no spec → unchanged default (optional-dep backward
+		// compat — the ~30 existing buildTeamGraph call sites pass no spec).
+		expect(nodes.planner.timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+	});
+
+	it("applies the floor independently per node (planner side, o3-mini → 300_000)", () => {
+		const { graph } = buildTestGraph({
+			plannerModelSpec: "openai/o3-mini-high",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.planner.timeout?.idleTimeout).toBe(300_000);
+		expect(nodes.player.timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+	});
+
+	it("a non-matching model spec leaves the default untouched", () => {
+		const { graph } = buildTestGraph({
+			playerModelSpec: "openai/gpt-4",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.player.timeout?.idleTimeout).toBe(STREAM_IDLE_TIMEOUT_MS);
+	});
+});
+
+// ------------------------------------------------------------------
+// 044 US2 (T004 — FR-003/US2.3): an EXPLICIT env value below the floor is
+// honored as-is. `resolveStreamIdleTimeout` reads llm.ts module-level
+// constants evaluated at import time, so this case re-imports the graph
+// builder after mutating the env var (vi.resetModules + dynamic import —
+// no module mocking, per style/javascript.md §Mock 约定; same pattern as
+// the 044 US1 block at the end of llm.test.ts).
+// ------------------------------------------------------------------
+describe("team graph — 044 US2: explicit env below the reasoning floor wins as-is (FR-003/US2.3)", () => {
+	const envKey = "GAME_STREAM_IDLE_TIMEOUT_MS";
+	const original = process.env[envKey];
+
+	afterEach(() => {
+		if (original === undefined) delete process.env[envKey];
+		else process.env[envKey] = original;
+	});
+
+	async function reloadBuilder(): Promise<typeof import("./graph")> {
+		vi.resetModules();
+		return await import("./graph");
+	}
+
+	it("GAME_STREAM_IDLE_TIMEOUT_MS=90000 + DeepSeek spec → 90_000, not the 600s floor", async () => {
+		process.env[envKey] = "90000";
+		const { buildTeamGraph } = await reloadBuilder();
+		const buffer = createEphemeralGameBuffer();
+		const { graph } = buildTeamGraph({
+			playerModel: playOneGamePlayerModel(),
+			plannerModel: instructPlayerPlannerModel("corner-first"),
+			memoryClient: fakeMemoryClient(),
+			frozenSnapshot: new FrozenMemorySnapshot(),
+			template: "saolei",
+			buffer,
+			sessionId: "graph-test-env-below-floor",
+			playerTools: [buildGameEndingPlayerTool(buffer)],
+			plannerTools: [buildFakeMemoryTool()],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			playerModelSpec: "openai/deepseek-v4-flash",
+		});
+		const nodes = compiledNodes(graph);
+
+		expect(nodes.player.timeout?.idleTimeout).toBe(90_000);
 	});
 });

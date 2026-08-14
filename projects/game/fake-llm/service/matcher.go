@@ -46,14 +46,20 @@ func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool
 	// Random fallback: only text-only Messages are eligible. A Message
 	// carrying a ToolCall represents an explicit test trigger that
 	// requires a keyword match; emitting one at random would
-	// nonsensically invoke a desktop operation. Spec 012's random-
+	// nonsensically invoke a desktop operation. A hang-capable Message
+	// (a permanent stall — legacy stall flag or stall_after position —
+	// or chunked reasoning with a non-zero interval,
+	// specs/046-fake-llm-think-chunking FR-011) is likewise excluded — a
+	// random stall or gap would hang an unrelated turn
+	// (specs/043-llm-stream-stall-recovery large tests depend on stall
+	// being a deliberate, keyword-gated trigger). Spec 012's random-
 	// fallback contract (FR-008) predates tool_call Messages, so
-	// restricting the fallback pool to text-only Messages is the
-	// coherent extension. When every Message carries a ToolCall the
-	// full set is used rather than panicking on IntN(0).
+	// restricting the fallback pool to text-only, non-hang-capable
+	// Messages is the coherent extension. When every Message is excluded
+	// the full set is used rather than panicking on IntN(0).
 	var pool []*Message
 	for i := range messages {
-		if messages[i].ToolCall == nil {
+		if messages[i].ToolCall == nil && !isHangCapable(messages[i]) {
 			pool = append(pool, messages[i])
 		}
 	}
@@ -132,6 +138,35 @@ func allSubstringsPresent(subs []string, loweredText string) bool {
 func anyKeywordMatches(keywords []string, loweredUserText string) bool {
 	for _, kw := range keywords {
 		if strings.Contains(loweredUserText, strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isHangCapable reports whether a Message can delay or hang a stream
+// (specs/046-fake-llm-think-chunking FR-011, specs/046-fake-llm-think-
+// chunking/data-model.md §6): it declares a permanent stall (the legacy
+// stall flag or a stall_after position), or chunked reasoning with at
+// least one non-zero inter-chunk interval. Such templates MUST stay out
+// of the no-match random fallback pool so an unrelated turn never
+// stalls by accident; chunking without delays emits back-to-back chunks
+// and does not exclude.
+func isHangCapable(m *Message) bool {
+	return m.Stall || m.StallAfter != nil || (len(m.ReasoningChunks) > 0 && hasNonZeroDelay(m))
+}
+
+// hasNonZeroDelay reports whether any parsed ChunkDelays entry is
+// greater than 0. A parse failure is treated as non-zero (fail-safe: an
+// unverifiable delay must not enter the random fallback pool); startup
+// validation has already rejected such configs anyway.
+func hasNonZeroDelay(m *Message) bool {
+	delays, err := parseDelays(m.ChunkDelays)
+	if err != nil {
+		return true
+	}
+	for _, d := range delays {
+		if d > 0 {
 			return true
 		}
 	}

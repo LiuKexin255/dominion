@@ -68,6 +68,8 @@ check_file() {
 
 echo ""
 echo "=== Checking workspace packages ==="
+check_file "${SVC}/node_modules/@dominion/common-js-config/package.json"
+check_file "${SVC}/node_modules/@dominion/common-js-config/src/index.js"
 check_file "${SVC}/node_modules/@dominion/common-js-logs/package.json"
 check_file "${SVC}/node_modules/@dominion/common-js-logs/src/index.js"
 check_file "${SVC}/node_modules/@dominion/common-js-otel/package.json"

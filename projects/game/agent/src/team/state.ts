@@ -19,9 +19,20 @@
  *   reset by RefreshTeam (specs/037-saolei-team-optimize/data-model.md §2;
  *   FR-014).
  *
- * The strategy is NOT in state (it lives in `StrategyStore`, injected into
- * prompts at code level — contract §3); gameState/gameEvent are NOT in state
- * (they live in the per-session ephemeral buffer, `team-sink.ts` — D7).
+ * 039 US3 (init/compact calibration instructions) has NO dedicated state
+ * slot: the instruction nodes write directly into `playerMessages` as
+ * HumanMessages (same channel write-back as the review node's
+ * `instruct_player` — instruction-node.ts / planner.ts), so the instruction
+ * is delivered "与下次激活一同注入" simply by being part of the channel
+ * history the player node reads (FR-015/FR-016). The former
+ * `pendingInstruction` slot was removed with that design.
+ *
+ * The shared strategy is NOT in state (it was removed in 039 Phase 6 —
+ * FR-013: player/planner hold no shared long-term storage; the
+ * planner's long-term memory lives in the frozen snapshot,
+ * `memory-snapshot.ts` — team-graph-contract.md §3); gameState/gameEvent are
+ * NOT in state (they live in the per-session ephemeral buffer, `team-sink.ts`
+ * — D7).
  *
  * **Must be defined via `Annotation.Root`** (NOT `new StateSchema` + zod):
  * under the pinned `@langchain/langgraph` ^1.4.8 + `zod` ^3.25.76 a plain zod

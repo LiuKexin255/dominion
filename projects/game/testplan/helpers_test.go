@@ -4,6 +4,7 @@ package testplan
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	game "dominion/projects/game"
 	"dominion/projects/game/pkg/gameconst"
 
@@ -28,9 +30,18 @@ import (
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const (
-	headerEnv     = "env"
-	pathPrefix    = "/api/v1/"
-	wsReadTimeout = 30 * time.Second
+	headerEnv  = "env"
+	pathPrefix = "/api/v1/"
+	// wsReadTimeout must exceed the agent-stall suite's configured idle
+	// window (deploy_agent_stall.yaml selects the agent_timeouts config
+	// block — streamIdleTimeoutMs=5000, toolHeartbeatIntervalMs=2000 —
+	// via the 045 deploy-config channel; specs/044-llm-stall-recovery-fix/
+	// contracts/idle-timeout-contract.md §5): during a stall the stream
+	// is silent for the full window, and readWSFrame blocks until a frame
+	// arrives or this deadline elapses. A deadline shorter than the
+	// window would abort the stall wait mid-way
+	// (specs/044-llm-stall-recovery-fix/tasks.md T011 re-baseline).
+	wsReadTimeout = 75 * time.Second
 )
 
 // saoleiTemplateID is the saolei template path segment — the only known
@@ -54,18 +65,55 @@ const (
 	expectedChatText          = "Sure, let's chat!"
 )
 
-// expectedPlannerStrategyText is the strategy content the fake-LLM's
-// planner-update-strategy Message returns as the update_strategy tool_call
-// argument (sample_planner_strategy.yaml). The saolei_team suite asserts it
-// in the planner's tool_call args_json to prove the strategy was written
-// (spec 031-team-template-mode FR-012/FR-014).
-const expectedPlannerStrategyText = "优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。"
+// expectedStallReasoning is the reasoning chunk the fake-LLM emits BEFORE
+// its stream stalls (sample_stall.yaml stall-mid-reasoning —
+// specs/043-llm-stream-stall-recovery): the large test drains the thinking
+// frame carrying it to prove the stall triggered after partial output, and
+// that the reasoning itself was delivered to the desktop. The text field of
+// the stall template is intentionally never delivered. MUST be kept in sync
+// with the testdata — TestNewMessageStore_LoadsEmbeddedSamples pins the
+// embedded testdata (testplan/README.md §5).
+const expectedStallReasoning = "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive."
 
-// expectedPlannerUpdateText is the terminal text fake-LLM returns once the
-// update_strategy tool-result loop closes (sample_update_strategy_tools.yaml
-// update-strategy-success-text). It proves the planner agent's turn ended
-// deterministically after writing the strategy.
-const expectedPlannerUpdateText = "策略已更新，下一局将按新策略执行。"
+// expectedPlannerMemoryE1 / expectedPlannerMemoryE2 are the two entries the
+// fake-LLM's planner-memory-add Message returns as the `memory` tool's BATCH
+// add operations (sample_planner_memory.yaml — spec
+// 039-planner-memory-calibration FR-008). The batch seeds the entries whose
+// shared substring "player 常犯" drives the follow-up 0-hit / multi-hit
+// replace chain (sample_planner_tools.yaml). The saolei_team / memory suites
+// assert them in the planner's tool_call args_json and via ListMemories
+// through the gateway. The former update_strategy fixture content
+// (expectedPlannerStrategyText, spec 031 FR-012) is gone (FR-013 — Phase 6
+// removed StrategyStore).
+const (
+	expectedPlannerMemoryE1 = "player 常犯边角误标，应强调先 deduce 再 flag。"
+	expectedPlannerMemoryE2 = "player 常犯节奏过快，应提醒先看操作次数与正确标记比。"
+)
+
+// expectedReviewInstructionText / expectedInitInstructionText /
+// expectedCompactInstructionText are the instruct_player tool_call
+// contents the fake-LLM returns for the three calibration scenarios (spec
+// 039-planner-memory-calibration FR-014/FR-015/FR-016; sample_planner_tools.
+// yaml planner-memory-multi-hit / sample_init_instruction.yaml /
+// sample_compact_instruction.yaml). The review instruction is delivered into
+// the player channel by the planner node (FR-017 order); the init/compact
+// instructions are written DIRECTLY into the player channel by the
+// instruction nodes (same channel write-back, no pending slot) and consumed
+// with the player's next activation (FR-015/FR-016). The review/compact
+// contents
+// end with "请继续游戏。" so the player's next model call matches the
+// saolei-start keyword "继续" (sample_saolei_start.yaml) and opens the next
+// game instead of falling into the no-match random fallback — the appended
+// review instruction becomes the last user message (FR-017), so the
+// continuation keyword is what keeps the multi-game flow deterministic.
+// MUST be kept in sync with the testdata — the T1 unit test
+// TestNewMessageStore_LoadsEmbeddedSamples pins the embedded testdata
+// (testplan/README.md §5).
+const (
+	expectedReviewInstructionText  = "复盘指令：开局先点中心区域，命中数字后再展开。请继续游戏。"
+	expectedInitInstructionText    = "初始指令：先点中心区域，再按数字展开。"
+	expectedCompactInstructionText = "压缩后指令：保持节奏，先 deduce 再 flag。请继续游戏。"
+)
 
 // expectedPlayerCompressionSummary / expectedPlannerCompressionSummary are
 // the plain-text responses the fake-LLM returns to the team graph COMPRESS
@@ -74,20 +122,24 @@ const expectedPlannerUpdateText = "策略已更新，下一局将按新策略执
 // (team/compress.ts summarizeChannel) invokes the player/planner models
 // directly with the summary prompts; the response text becomes the single
 // post-compression channel message AND the live summary frame
-// (specs/037-saolei-team-optimize FR-008/FR-011). The compression large
+// (specs/037-saolei-team-optimize FR-008/FR-011). The wording reflects the
+// 039 architecture (FR-013 — the shared strategy flow is gone; the player
+// is calibrated via the planner's review instructions, the planner's
+// long-term memory lives in the memory service). The compression large
 // tests assert both. MUST be kept in sync with the testdata — the T1 unit
 // test TestNewMessageStore_LoadsEmbeddedSamples pins the embedded testdata.
 const (
-	expectedPlayerCompressionSummary  = "已玩 5 局，其中 4 局失败。策略：优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。"
-	expectedPlannerCompressionSummary = "已复盘 5 局，策略更新正常，每局均按新策略执行。"
+	expectedPlayerCompressionSummary  = "已玩 5 局，其中 4 局失败。下一局按复盘指令调整打法。"
+	expectedPlannerCompressionSummary = "已复盘 5 局，长期记忆更新正常。"
 )
 
 // reviewInputPrefix is the fixed prefix of the planner's review input
 // (team/planner.ts buildReviewInput renders the gameLog under "本局游戏过程：",
 // specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md §2.2). It
-// also keys the fake-LLM's planner-update-strategy config (sample_planner_
-// strategy.yaml). The 037 large tests locate the real-time review frame and
-// the reloaded review message by this prefix (FR-001/FR-002).
+// also keys the fake-LLM's planner-memory-add config (sample_planner_memory.
+// yaml — spec 039 FR-008; the former planner-update-strategy fixture is
+// gone, FR-013). The 037/039 large tests locate the real-time review frame
+// and the reloaded review message by this prefix (FR-001/FR-002).
 const reviewInputPrefix = "本局游戏过程"
 
 // smallScreenshotData is a minimal 1×1 PNG used as screenshot payload in
@@ -163,6 +215,85 @@ type listSessionsResponse struct {
 }
 
 // ─── General Helpers ────────────────────────────────────────────────────────
+
+// traceContext returns a context carrying a W3C trace context for the test
+// (style/large_test.md §测试用例 — set and print trace_id for log/trace
+// correlation). It continues the TRACEPARENT injected by `guitar run` into
+// the test process env (tools/test/guitar/pkg/run/run.go) when present, else
+// starts a fresh trace; the trace_id is printed so an operator can correlate
+// the test's HTTP/WS traffic in signoz.
+func traceContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx := tracecontext.FromEnv(context.Background())
+	t.Logf("trace_id: %s", tracecontext.ID(ctx))
+	return ctx
+}
+
+// doHTTPTrace is doHTTP with W3C traceparent propagation: the request runs
+// on ctx (see traceContext) and the client transport injects the traceparent
+// header from it, so the SUT's spans join the test's trace.
+func doHTTPTrace(t *testing.T, ctx context.Context, method, rawurl, envName string, body []byte) (*http.Response, []byte) {
+	t.Helper()
+
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, rawurl, bodyReader)
+	if err != nil {
+		t.Fatalf("http.NewRequestWithContext %s %s: %v", method, rawurl, err)
+	}
+	req.Header.Set(headerEnv, envName)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	client := &http.Client{Transport: tracecontext.NewHTTPTransport(http.DefaultTransport)}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, rawurl, err)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response %s %s: %v", method, rawurl, err)
+	}
+
+	return resp, respBody
+}
+
+// connectAgentWSTrace is connectAgentWS with W3C traceparent propagation:
+// the dial runs on ctx (see traceContext) and injects the traceparent header
+// into the WS upgrade request (derived via tracecontext.Environ — the same
+// propagation format the desktop uses, projects/game/desktop/internal/trace/
+// transport.go), so the SUT's spans join the test's trace.
+func connectAgentWSTrace(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID string) *websocket.Conn {
+	t.Helper()
+
+	wsPath := fmt.Sprintf("/api/v1/templates/%s/sessions/%s/connect", template, sessionID)
+	wsURL := buildWSURL(sutHostURL, wsPath)
+
+	header := http.Header{}
+	header.Set(headerEnv, sutEnvName)
+	for _, env := range tracecontext.Environ(ctx) {
+		if strings.HasPrefix(env, tracecontext.EnvKey+"=") {
+			header.Set("traceparent", strings.TrimPrefix(env, tracecontext.EnvKey+"="))
+		}
+	}
+
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsURL, header)
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		conn.Close()
+		t.Fatalf("WS upgrade status = %d, want %d", resp.StatusCode, http.StatusSwitchingProtocols)
+	}
+	return conn
+}
 
 // uniqueSuffix returns a short timestamp-based suffix to make resource names
 // unique across test runs.
@@ -436,32 +567,38 @@ func deleteTeamProfile(t *testing.T, sutHostURL, sutEnvName, template, profileNa
 
 // ─── Team Helpers (proto-based) ─────────────────────────────────────────────
 
-// createTeam creates the per-session singleton Team via HTTP POST to
-// /api/v1/templates/{template}/sessions/{sessionID}/team (AIP-133; game.proto
-// TeamService.CreateTeam, spec 031-team-template-mode contracts/api-contract.md
-// §2.2). The body carries the parent Session resource name and the TeamProfile
-// full resource name ("templates/{template}/profiles/{profile}"); the server
-// validates the profile's template segment against the parent. CreateTeam is
-// the ONLY Team creation point — GetTeam/Connect/ListMessages/RefreshTeam
-// require it first (no lazy creation, FR-033). Calls t.Fatal on non-200
+// updateTeam materializes or updates the per-session singleton Team via HTTP
+// PATCH to /api/v1/templates/{template}/sessions/{sessionID}/team with
+// allow_missing=true (AIP-134 create-or-update + AIP-156; game.proto
+// TeamService.UpdateTeam, specs/040-team-singleton-conformance/contracts/
+// api-contract.md §2). Per the grpc-gateway body binding ("body: team" with
+// path variable {team.name}), the body carries the Team JSON: name (the
+// singleton resource name) + profile (the TeamProfile full resource name,
+// "templates/{template}/profiles/{profile}"); allow_missing is a query
+// parameter. The server validates the profile's template segment against the
+// name (FR-008). UpdateTeam is the ONLY Team creation point — GetTeam/Connect/
+// ListMessages/RefreshTeam require materialization first (no lazy creation,
+// FR-003); repeated calls with the same profile are idempotent (FR-002) and a
+// different profile rebuilds the team graph (FR-005). Calls t.Fatal on non-200
 // responses.
-func createTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) *game.Team {
+func updateTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) *game.Team {
 	t.Helper()
 
-	reqBody := &game.CreateTeamRequest{
-		Parent:  game.SessionName{TemplateID: template, SessionID: sessionID}.String(),
+	reqBody := &game.Team{
+		Name:    game.TeamName{TemplateID: template, SessionID: sessionID}.String(),
 		Profile: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
 	}
 	body, err := protojson.Marshal(reqBody)
 	if err != nil {
-		t.Fatalf("protojson.Marshal CreateTeamRequest: %v", err)
+		t.Fatalf("protojson.Marshal Team: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team?allow_missing=true",
+		sutHostURL, pathPrefix, template, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createTeam status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("PATCH updateTeam status=%d, body=%s", resp.StatusCode, respBody)
 	}
 
 	team := new(game.Team)
@@ -472,23 +609,25 @@ func createTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profi
 	return team
 }
 
-// createTeamWithStatus sends a CreateTeam request and returns the HTTP status
+// updateTeamWithStatus sends an UpdateTeam request and returns the HTTP status
 // code and response body. Does NOT fatal on non-200 responses — used to
-// assert the FR-033 idempotency/ALREADY_EXISTS re-entry contract.
-func createTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) (int, []byte) {
+// assert the idempotent (FR-002) / rebuild (FR-005) / in-flight rejection
+// (FR-006) contracts.
+func updateTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) (int, []byte) {
 	t.Helper()
 
-	reqBody := &game.CreateTeamRequest{
-		Parent:  game.SessionName{TemplateID: template, SessionID: sessionID}.String(),
+	reqBody := &game.Team{
+		Name:    game.TeamName{TemplateID: template, SessionID: sessionID}.String(),
 		Profile: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
 	}
 	body, err := protojson.Marshal(reqBody)
 	if err != nil {
-		t.Fatalf("protojson.Marshal CreateTeamRequest: %v", err)
+		t.Fatalf("protojson.Marshal Team: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team?allow_missing=true",
+		sutHostURL, pathPrefix, template, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
 	return resp.StatusCode, respBody
 }
 
@@ -541,16 +680,32 @@ func refreshTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID strin
 	}
 }
 
+// refreshTeamWithStatus sends a RefreshTeam request and returns the HTTP
+// status code and response body. Does NOT fatal on non-2xx responses — used
+// to assert the in-flight rejection contract: FAILED_PRECONDITION while the
+// per-session turn mutex is held OR the one-shot async initInstruction turn
+// is in flight (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
+// §5 — FR-007, quickstart B4).
+func refreshTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team:refresh", sutHostURL, pathPrefix, template, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
+
+	return resp.StatusCode, respBody
+}
+
 // setupTeamSession creates the full team stack for one test: Session →
-// saolei TeamProfile → CreateTeam. Returns the session ID. The caller then
-// connects the WebSocket via connectAgentWS (CreateTeam MUST precede
-// Connect — no lazy creation, FR-033).
+// saolei TeamProfile → UpdateTeam(allow_missing=true) materialization.
+// Returns the session ID. The caller then connects the WebSocket via
+// connectAgentWS (UpdateTeam MUST precede Connect — no lazy creation,
+// FR-003).
 func setupTeamSession(t *testing.T, sutHostURL, sutEnvName, template, profileID, playerModel, plannerModel string) string {
 	t.Helper()
 
 	createTeamProfile(t, sutHostURL, sutEnvName, template, profileID, playerModel, plannerModel)
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, template)
-	createTeam(t, sutHostURL, sutEnvName, template, sessionID, profileID)
+	updateTeam(t, sutHostURL, sutEnvName, template, sessionID, profileID)
 	return sessionID
 }
 
@@ -599,9 +754,9 @@ func listMessagesWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sess
 // connectAgentWS connects to the session WebSocket endpoint
 // /api/v1/templates/{template}/sessions/{session}/connect (spec
 // 031-team-template-mode FR-004 — the WS endpoint mirrors the Team resource
-// hierarchy) and returns the connection. The caller MUST have created the
-// team via CreateTeam first: Connect requires an existing team (no lazy
-// creation, FR-033); a frame sent on a not-created session closes the
+// hierarchy) and returns the connection. The caller MUST have materialized
+// the team via UpdateTeam first: Connect requires an existing team (no lazy
+// creation, FR-003); a frame sent on a not-materialized session closes the
 // connection. Calls t.Fatal on any error.
 func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) *websocket.Conn {
 	t.Helper()
@@ -1162,6 +1317,51 @@ func messagesContainText(messages []*game.Message, substring string) bool {
 	return false
 }
 
+// messageThinking returns the content of the first ThinkingPart in a
+// Message's content MessageParts, or "" if none.
+func messageThinking(m *game.Message) string {
+	if m.GetContent() == nil {
+		return ""
+	}
+	for _, p := range m.GetContent().GetParts() {
+		if th := p.GetThinking(); th != nil {
+			return th.GetContent()
+		}
+	}
+	return ""
+}
+
+// messagesContainThinking reports whether any Message's content
+// MessageParts carries a ThinkingPart whose content contains the
+// substring. Mirrors messagesContainText for the reasoning channel —
+// used to assert a partial reasoning reply survived history
+// reconstruction (spec 044 FR-004/SC-002).
+func messagesContainThinking(messages []*game.Message, substring string) bool {
+	for _, m := range messages {
+		if strings.Contains(messageThinking(m), substring) {
+			return true
+		}
+	}
+	return false
+}
+
+// messageThinkingCompletions returns the PartCompletion of every
+// ThinkingPart in a Message's content MessageParts, in order. Used to
+// assert the interrupted marker survives history reconstruction on the
+// tail part of a stall-persisted partial (spec 044 FR-005 — SC-003).
+func messageThinkingCompletions(m *game.Message) []game.PartCompletion {
+	if m.GetContent() == nil {
+		return nil
+	}
+	var completions []game.PartCompletion
+	for _, p := range m.GetContent().GetParts() {
+		if th := p.GetThinking(); th != nil {
+			completions = append(completions, th.GetCompletion())
+		}
+	}
+	return completions
+}
+
 // messagesContainToolResultStatus reports whether any Message's content
 // MessageParts carries a ToolResultPart whose status matches. Used to assert
 // the real status survives a leave/re-enter cycle for native tools
@@ -1385,6 +1585,41 @@ func readToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame
 	return toolCallFrame, opFrame
 }
 
+// readPlayerToolCallAndOperation is readToolCallAndOperation scoped to the
+// PLAYER agent's tool_call frames: the 041 real-time init delivery
+// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §2.2)
+// pushes a planner-side instruct_player toolCall frame through the same
+// stream BEFORE the user turn's frames when the one-shot init is still in
+// flight at Connect (planner response — agent=planner, role=AGENT,
+// toolCall). Suites asserting a user-turn tool_call — always produced by the
+// player agent, the ONLY tool-holding agent (spec 031 FR-028) — MUST use
+// this variant so the init's planner toolCall does not shadow the turn's
+// (agent_operation_test.go TestAgentOperationDispatchLoopSuccess). The init
+// turn never dispatches an operation FlowPart (contract §2.4), so the
+// operation frame slot is unchanged.
+func readPlayerToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame, opFrame *game.TeamFrame) {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		if toolCallFrame != nil && opFrame != nil {
+			return toolCallFrame, opFrame
+		}
+		frame := readWSFrame(t, conn)
+		if toolCallFrame == nil && frameHasToolCall(frame) && frame.GetAgent() == "player" {
+			toolCallFrame = frame
+		}
+		if opFrame == nil && frameOperationToolID(frame) != "" {
+			opFrame = frame
+		}
+	}
+	if toolCallFrame == nil {
+		t.Fatal("did not receive a player tool_call MessagePart frame from the agent (FR-006)")
+	}
+	if opFrame == nil {
+		t.Fatal("did not receive an operation FlowPart frame from the agent (model→tool_call→dispatch chain did not fire)")
+	}
+	return toolCallFrame, opFrame
+}
+
 // respondToOperation writes a FlowResultPart back over the WebSocket whose
 // tool_id matches the operation frame's stamped bridge-minted id, simulating
 // a desktop that executed the operation (spec 025 FR-023/FR-024 — control
@@ -1526,4 +1761,250 @@ func messageToolCallArgsJSON(m *game.Message, name string) string {
 		}
 	}
 	return ""
+}
+
+// ─── Memory Helpers (proto-based, via the gateway public entry) ────────────
+//
+// The MemoryService (spec 039-planner-memory-calibration FR-006) is exposed
+// through the gateway's public HTTP entry (gateway/cmd/main.go registers
+// RegisterMemoryServiceHandler), so the large tests verify memory
+// persistence/pagination through it exactly like the other services — no
+// direct mongo access. The resource pattern is
+// templates/{template}/sessions/{session}/memories/{memory} (FR-012).
+
+// createMemory sends a POST to /api/v1/templates/{template}/sessions/{session}/
+// memories?memory_id={memoryID} with the embedded Memory body {content}
+// (AIP-133 — body "memory", memory_id from the query string like
+// createTeamProfile's team_profile_id). Calls t.Fatal on non-200 responses.
+// ctx carries the test's W3C trace context (traceContext).
+func createMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID, memoryID, content string) *game.Memory {
+	t.Helper()
+
+	body, err := protojson.Marshal(&game.Memory{Content: content})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Memory: %v", err)
+	}
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?memory_id=%s",
+		sutHostURL, pathPrefix, template, sessionID, memoryID)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST createMemory status=%d, body=%s", resp.StatusCode, respBody)
+	}
+
+	created := new(game.Memory)
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal(respBody, created); err != nil {
+		t.Fatalf("Unmarshal Memory: %v (raw: %s)", err, string(respBody))
+	}
+	return created
+}
+
+// listMemories sends a GET to list the memories of a session (AIP-132 +
+// AIP-158 pagination: page_size/page_token/next_page_token) and returns the
+// parsed ListMemoriesResponse. Calls t.Fatal on non-200 responses.
+func listMemories(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID string, pageSize int, pageToken string) *game.ListMemoriesResponse {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?page_size=%d",
+		sutHostURL, pathPrefix, template, sessionID, pageSize)
+	if pageToken != "" {
+		reqURL += "&page_token=" + pageToken
+	}
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET listMemories status=%d, body=%s", resp.StatusCode, respBody)
+	}
+
+	lmr := new(game.ListMemoriesResponse)
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal(respBody, lmr); err != nil {
+		t.Fatalf("Unmarshal ListMemoriesResponse: %v (raw: %s)", err, string(respBody))
+	}
+	return lmr
+}
+
+// updateMemory sends a PATCH to /api/v1/templates/{template}/sessions/{session}/
+// memories/{memory} with the Memory body {name, content} and update_mask
+// (AIP-134 — the only mutable Memory field is content). Returns the HTTP
+// status code and response body; does NOT fail on non-200 (used to assert
+// the NOT_FOUND contract).
+func updateMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID, memoryID, content, updateMask string) (int, []byte) {
+	t.Helper()
+
+	patch := &game.Memory{
+		Name:    game.MemoryName{TemplateID: template, SessionID: sessionID, MemoryID: memoryID}.String(),
+		Content: content,
+	}
+	body, err := protojson.Marshal(patch)
+	if err != nil {
+		t.Fatalf("protojson.Marshal patch Memory: %v", err)
+	}
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories/%s?update_mask=%s",
+		sutHostURL, pathPrefix, template, sessionID, memoryID, updateMask)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPatch, reqURL, sutEnvName, body)
+	return resp.StatusCode, respBody
+}
+
+// deleteMemory sends a DELETE for a Memory resource (AIP-135). Returns the
+// HTTP status code; does NOT fail on non-200 (used to assert the NOT_FOUND
+// contract).
+func deleteMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID, memoryID string) int {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories/%s",
+		sutHostURL, pathPrefix, template, sessionID, memoryID)
+	resp, _ := doHTTPTrace(t, ctx, http.MethodDelete, reqURL, sutEnvName, nil)
+	return resp.StatusCode
+}
+
+// listMemoryContents returns the ordered contents of a session's memories
+// (walking every page via next_page_token, AIP-158) — the compact assertion
+// helper for the persistence tests.
+func listMemoryContents(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID string) []string {
+	t.Helper()
+
+	var contents []string
+	pageToken := ""
+	for {
+		page := listMemories(t, ctx, sutHostURL, sutEnvName, template, sessionID, 2, pageToken)
+		for _, m := range page.GetMemories() {
+			contents = append(contents, m.GetContent())
+		}
+		pageToken = page.GetNextPageToken()
+		if pageToken == "" {
+			return contents
+		}
+	}
+}
+
+// ─── Team game driver (shared by the saolei_team / memory suites) ──────────
+
+// playTeamGameUntilWait drives one full team turn ("please start saolei
+// game") while playing the desktop: every dispatched operation FlowPart is
+// answered with a FlowResultPart carrying a recognizable board screenshot
+// (the reply message is derived from the operation kind so the fake-LLM
+// coordinate-tagged tool configs keep matching — sample_saolei_tools.yaml),
+// and the loop drains frames until the terminal wait FlowPart (turn
+// complete). Returns every frame read, in order, so callers can assert on
+// the planner's memory/instruct_player tool_calls and the per-agent frame
+// stream. The driver is shared by the team and memory module suites
+// (style/large_test.md §反模式3 — shared helpers live in helpers_test.go).
+//
+// Screenshot semantics follow specs/031-team-template-mode/contracts/
+// saolei-sink-contract.md §3 (onGameEnd fires only after a move whose
+// post-dispatch recognition is terminal — NOT after saolei_init):
+//
+//   - `initScreenshot` answers every saolei_init (keyboard F2) dispatch —
+//     an IN-PROGRESS board (saoleiBoardInitPNG), so the init recognize is
+//     non-terminal (onGameStart only) and the following cell ops pass
+//     pre-dispatch validation.
+//   - `clickTerminalScreenshot` answers the FIRST cell-op dispatch — a
+//     TERMINAL board (saoleiBoardLossPNG), so the move's post-dispatch
+//     recognition fires onOperate + onGameEnd once (the sink records the
+//     end event → planner). MUST share the init board's dimensions:
+//     SaoleiBoard.updateFromScreenshot rejects a dimension change
+//     (BoardDimensionMismatchError → "unable to recognize" → no sink
+//     events), which is why saoleiBoardWinPNG (9×9) cannot back a 16×16 init
+//     (saoleiBoardInitPNG) — both here are 16×16. The fixture's operate
+//     batch is [click{3,4}, click{5,6}], so a terminal reply to op 1 stops
+//     the batch at op 1 ("stopped at click(3,4) (lost)") and op 2 never dispatches
+//     (spec 039 FR-002 — game end stops the batch).
+//   - LATER cell-op dispatches are answered with `initScreenshot` again:
+//     after the planner the stateless fake-LLM re-matches the saolei-start
+//     keyword and the player opens another game; replying in-progress keeps
+//     that run end-event-free, so the turn converges to wait with the
+//     planner triggered exactly once (FR-011).
+func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string, initScreenshot, clickTerminalScreenshot *game.ImagePart) []*game.TeamFrame {
+	t.Helper()
+
+	sendText(t, conn, sessionID, "please start saolei game")
+
+	var frames []*game.TeamFrame
+	clickReplies := 0
+	for i := 0; i < 60; i++ {
+		frame := readWSFrame(t, conn)
+		frames = append(frames, frame)
+
+		if opID := frameOperationToolID(frame); opID != "" {
+			// Play the desktop: reply with the recognizable board. The reply
+			// message must carry the coordinates for cell ops so the fake-LLM
+			// coordinate-tagged configs match deterministically.
+			if kp := frameKeyboardPress(frame); kp != nil {
+				respondToOperationWithScreenshot(t, conn, sessionID, frame,
+					game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
+					"F2 pressed, new game started", initScreenshot)
+				continue
+			}
+			if mmc := frameMouseMoveAndClick(frame); mmc != nil {
+				// Invert the WM client-space centre formula
+				// (geometry.ts centerX(x) = 24 + x*32 + 16, centerY(y) =
+				// 104 + y*32 + 16) to recover the cell for the reply message.
+				// First click reply = terminal board (triggers onGameEnd);
+				// later clicks (the post-planner player run's clicks — the
+				// stateless fake-LLM re-matches saolei-start) reply
+				// in-progress so the turn converges to wait.
+				x := (mmc.GetXPx() - 40) / 32
+				y := (mmc.GetYPx() - 120) / 32
+				screenshot := initScreenshot
+				if clickReplies == 0 {
+					screenshot = clickTerminalScreenshot
+				}
+				clickReplies++
+				respondToOperationWithScreenshot(t, conn, sessionID, frame,
+					game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
+					fmt.Sprintf("cell at (%d,%d) revealed", x, y), screenshot)
+				continue
+			}
+			t.Fatalf("operation frame with unknown operation kind: %v", frame.GetFlowParts().GetParts())
+		}
+
+		if frameWait(frame) != nil {
+			return frames
+		}
+	}
+	t.Fatal("playTeamGameUntilWait: no wait frame within 60 reads — the team turn did not complete")
+	return nil
+}
+
+// countMemoryCalls returns the number of `memory` tool_call MessageParts
+// across the given frames. The planner's review chain (sample_planner_memory.
+// yaml + sample_planner_tools.yaml) runs exactly one BATCH add plus the two
+// old_text-location replace calls per game end, so the count also pins the
+// deterministic chain length (3 per review) — spec 039 FR-008.
+func countMemoryCalls(frames []*game.TeamFrame) int {
+	count := 0
+	for _, f := range frames {
+		if f.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
+			continue
+		}
+		for _, p := range frameMessageParts(f).GetParts() {
+			if tc := p.GetToolCall(); tc != nil && tc.GetName() == "memory" {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// countPlannerReviewFrames returns the number of frames carrying the
+// planner's review input (the "本局游戏过程" HumanMessage emitted as a live
+// frame — specs/037-saolei-team-optimize FR-001). The planner is triggered
+// exactly once per game end (FR-011), so this counts games reviewed by the
+// planner — the post-039 replacement for the removed update_strategy-count
+// signal (FR-013).
+func countPlannerReviewFrames(frames []*game.TeamFrame) int {
+	count := 0
+	for _, f := range frames {
+		if f.GetAgent() != "planner" || !frameHasText(f) {
+			continue
+		}
+		if strings.Contains(frameText(f), reviewInputPrefix) {
+			count++
+		}
+	}
+	return count
 }

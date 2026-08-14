@@ -77,6 +77,7 @@ func convertArtifactToStatefulWorkload(artifact *domain.ArtifactSpec, envName st
 		EnvType:         envType,
 		Env:             artifact.Env,
 		SecretBindings:  artifact.SecretBindings,
+		ConfigBlocks:    artifact.ConfigBlocks,
 	}
 }
 
@@ -93,6 +94,7 @@ func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string, 
 		EnvType:         envType,
 		Env:             artifact.Env,
 		SecretBindings:  artifact.SecretBindings,
+		ConfigBlocks:    artifact.ConfigBlocks,
 	}
 }
 

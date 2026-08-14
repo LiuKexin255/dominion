@@ -164,10 +164,23 @@ const (
 //     assistant message with tool_calls and finish_reason "tool_calls";
 //     Text is emitted as content only when non-empty (rare for tool-call
 //     responses but allowed by the schema).
+//
+// Reasoning is the ordered list of reasoning pieces to stream (the
+// legacy single string arrives as a 1-element slice); the non-streaming
+// path joins it back into one string. Delays are the parsed per-gap
+// inter-chunk intervals: Delays[i] is the delay before Reasoning[i+1],
+// missing entries default to 0 (specs/046-fake-llm-think-chunking/
+// data-model.md §2). StallAfter is the effective permanent-stall
+// position: nil = no stall; else the 0-based reasoning-chunk index
+// after which the stream blocks until the request context is cancelled
+// (specs/046-fake-llm-think-chunking/research.md D3). It is never set
+// on the tool-call path.
 type responseSpec struct {
-	Reasoning string
-	Text      string
-	ToolCall  *ToolCall
+	Reasoning  []string
+	Text       string
+	ToolCall   *ToolCall
+	StallAfter *int
+	Delays     []time.Duration
 }
 
 // isToolCall reports whether the spec describes a tool-call response.
@@ -178,14 +191,30 @@ func (s responseSpec) isToolCall() bool { return s.ToolCall != nil }
 // (the response carries tool_calls + finish_reason "tool_calls"); otherwise
 // it takes the TextPath (reasoning + text + finish_reason "stop"). A nil
 // ToolCall reproduces the original text-only behaviour exactly, so existing
-// Message entries are unaffected.
+// Message entries are unaffected. Reasoning is the effective ordered list
+// (chunked form, or the legacy single string wrapped as a 1-element slice);
+// Delays are parsed from ChunkDelays — validation at load guarantees they
+// parse, so the error is unreachable here. StallAfter is the effective
+// stall position (explicit stall_after, else the legacy stall:true sugar
+// pointing at chunk 0, else nil) so a stall-marked Message blocks the
+// stream after the configured reasoning chunk (the large test's
+// stall-recovery trigger).
 func specFromMessage(msg *Message) responseSpec {
-	return responseSpec{Reasoning: msg.Reasoning, Text: msg.Text, ToolCall: msg.ToolCall}
+	delays, _ := parseDelays(msg.ChunkDelays)
+	return responseSpec{
+		Reasoning:  effectiveReasoning(msg),
+		Text:       msg.Text,
+		ToolCall:   msg.ToolCall,
+		StallAfter: effectiveStallAfter(msg),
+		Delays:     delays,
+	}
 }
 
 // specFromTool adapts a matched ToolConfig's RespondWith into a
 // responseSpec. Text and ToolCall are passed through verbatim; the
-// handler decides which path to take based on isToolCall().
+// handler decides which path to take based on isToolCall(). A tool-result
+// response never streams reasoning, so Reasoning/Delays/StallAfter stay
+// empty (their zero values).
 func specFromTool(tc *ToolConfig) responseSpec {
 	return responseSpec{
 		Text:     tc.RespondWith.Text,
@@ -241,7 +270,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	respID := generateResponseID()
 	if req.Stream {
-		serveStreaming(w, spec, respID)
+		serveStreaming(w, r, spec, respID)
 		return
 	}
 	serveNonStreaming(w, spec, respID)
@@ -396,7 +425,7 @@ func serveNonStreaming(w http.ResponseWriter, spec responseSpec, respID string) 
 	finish := finishStop
 	msg := &assistantMessage{
 		Role:             "assistant",
-		ReasoningContent: spec.Reasoning,
+		ReasoningContent: strings.Join(spec.Reasoning, ""),
 		Content:          spec.Text,
 	}
 	if spec.isToolCall() {
@@ -447,13 +476,20 @@ func buildToolCallResp(tc *ToolCall) *toolCallResp {
 // serveStreaming writes the SSE event stream. For a text response the
 // chunk sequence is, in order:
 //
-//  1. delta with role:"assistant" + reasoning_content (so the
+//  1. delta with role:"assistant" + the first reasoning piece (so the
 //     @langchain/openai parser treats the stream as an assistant turn);
-//  2. delta with content (the visible answer);
-//  3. delta {} with finish_reason:"stop";
-//  4. the literal "data: [DONE]" terminator.
+//  2. one delta per remaining reasoning chunk, each carrying only
+//     reasoning_content (specs/046-fake-llm-think-chunking FR-001 —
+//     the multi-chunk shape a real reasoning model streams, DeepSeek
+//     reasoning_content deltas);
+//  3. delta with content (the visible answer; omitted on the chunked
+//     path when the template declares no text,
+//     specs/046-fake-llm-think-chunking/contracts/streaming-sequence.md
+//     §4);
+//  4. delta {} with finish_reason:"stop";
+//  5. the literal "data: [DONE]" terminator.
 //
-// For a tool-call response the sequence is:
+// For a tool-call response the sequence is unchanged:
 //
 //  1. delta with role:"assistant" + tool_calls (the full call in one
 //     delta — LangChain's streaming parser tolerates this);
@@ -464,7 +500,25 @@ func buildToolCallResp(tc *ToolCall) *toolCallResp {
 // observes progressive output. If the ResponseWriter does not implement
 // http.Flusher we surface a 500 once, before any chunk is emitted, so
 // the client does not receive a half-finished stream.
-func serveStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
+//
+// Chunked reasoning (FR-002/FR-003): the configured Delays[i] is slept
+// — context-aware, so a caller abort mid-gap returns immediately — just
+// before reasoning chunk i+1, making a long gap observable as a think
+// interruption by the consumer's idle timeout. Every streamed frame
+// emits a structured slog entry (FR-018, see logStreamFrame).
+//
+// When spec.StallAfter is set the stream stops after the reasoning
+// chunk at that index: the connection stays alive (the http.Server has
+// no WriteTimeout) but no further data is written until r.Context() is
+// cancelled by the caller — the "TCP alive, no SSE data" failure mode of
+// specs/043-llm-stream-stall-recovery, positioned anywhere within the
+// thinking phase (specs/046-fake-llm-think-chunking). The handler then
+// returns normally; the stalled request is indistinguishable from an
+// aborted client connection, which is the point (LangGraph's idle-timeout
+// abort is what unblocks it). The legacy stall:true maps to position 0
+// (specs/046-fake-llm-think-chunking/research.md D3), so existing
+// templates behave exactly as before.
+func serveStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, respID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -477,15 +531,30 @@ func serveStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
 	}
 
 	now := time.Now().Unix()
-	var chunks []*completionResponse
+	var frames []*completionResponse
 	if spec.isToolCall() {
-		chunks = toolCallStreamChunks(respID, now, spec.ToolCall)
+		frames = toolCallStreamChunks(respID, now, spec.ToolCall)
 	} else {
-		chunks = textStreamChunks(respID, now, spec)
+		frames = buildTextChunks(respID, now, spec)
 	}
 
-	for _, chunk := range chunks {
-		data, err := json.Marshal(chunk)
+	for i, frame := range frames {
+		// Sleep the configured gap before reasoning chunk i (i >= 1):
+		// Delays[i-1] precedes Reasoning[i]. The select makes the sleep
+		// context-aware — a caller abort mid-gap (e.g. the agent's idle
+		// watchdog) unblocks promptly instead of sleeping on
+		// (specs/046-fake-llm-think-chunking/research.md D2).
+		if i >= 1 && i < len(spec.Reasoning) {
+			if d := delayBefore(spec, i); d > 0 {
+				select {
+				case <-time.After(d):
+				case <-r.Context().Done():
+					return
+				}
+			}
+		}
+
+		data, err := json.Marshal(frame)
 		if err != nil {
 			slog.Error("failed to marshal stream chunk",
 				slog.String("error", err.Error()))
@@ -493,29 +562,80 @@ func serveStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
 		}
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
+		logStreamFrame(i, spec, frame)
+
+		// Permanent stall after the reasoning chunk at the effective
+		// index: block — on r.Context().Done() only, no fake-llm-side
+		// timeout (FR-009) — until the caller cancels. The guard
+		// i < len(spec.Reasoning) restricts the check to reasoning
+		// frames: on the tool-call path Reasoning is empty and
+		// StallAfter is nil (specFromTool never sets it), so the loop
+		// there reduces to the plain 2-frame tool sequence.
+		if spec.StallAfter != nil && i < len(spec.Reasoning) && i == *spec.StallAfter {
+			<-r.Context().Done()
+			return
+		}
 	}
 
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 
-// textStreamChunks builds the 3-chunk sequence for a plain text response
-// (role+reasoning delta, content delta, empty delta with finish "stop").
-func textStreamChunks(respID string, now int64, spec responseSpec) []*completionResponse {
-	return []*completionResponse{
-		{
+// buildTextChunks builds the SSE frame sequence for a plain text
+// response: one frame per effective reasoning piece (role only on the
+// first), then the content delta, then the empty finish delta.
+//
+// Backward compatibility (specs/046-fake-llm-think-chunking FR-007,
+// specs/046-fake-llm-think-chunking/contracts/streaming-sequence.md
+// §3-§4): for a non-chunked spec — a single reasoning piece, hence an
+// empty Delays list (validation V2 caps chunk_delays at
+// len(reasoning)-1) — the sequence is byte-identical to the pre-feature
+// textStreamChunks, including the unconditional content delta even when
+// Text == "". Only on the chunked path (R > 1) may a reasoning-only
+// template omit the content delta (new behaviour, no regression). A
+// template with no reasoning at all (legacy text-only templates) is
+// padded to one empty piece so the role delta matches the pre-change
+// output byte-for-byte.
+func buildTextChunks(respID string, now int64, spec responseSpec) []*completionResponse {
+	reasoning := spec.Reasoning
+	if len(reasoning) == 0 {
+		reasoning = []string{""}
+	}
+	chunked := len(reasoning) > 1
+
+	frames := make([]*completionResponse, 0, len(reasoning)+2)
+	frames = append(frames, &completionResponse{
+		ID: respID, Object: "chat.completion.chunk",
+		Created: now, Model: FakeModel,
+		Choices: []*choice{{
+			Index: 0,
+			Delta: &assistantMessage{
+				Role:             "assistant",
+				ReasoningContent: reasoning[0],
+			},
+			FinishReason: nil,
+		}},
+	})
+	for i := 1; i < len(reasoning); i++ {
+		frames = append(frames, &completionResponse{
 			ID: respID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
 			Choices: []*choice{{
 				Index: 0,
 				Delta: &assistantMessage{
-					Role:             "assistant",
-					ReasoningContent: spec.Reasoning,
+					ReasoningContent: reasoning[i],
 				},
 				FinishReason: nil,
 			}},
-		},
-		{
+		})
+	}
+	// Content delta: unconditional on the non-chunked path (byte-
+	// identical with the pre-change builder); on the chunked path only
+	// when the template declares text
+	// (specs/046-fake-llm-think-chunking/contracts/streaming-sequence.md
+	// §4).
+	if spec.Text != "" || !chunked {
+		frames = append(frames, &completionResponse{
 			ID: respID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
 			Choices: []*choice{{
@@ -525,17 +645,60 @@ func textStreamChunks(respID string, now int64, spec responseSpec) []*completion
 				},
 				FinishReason: nil,
 			}},
-		},
-		{
-			ID: respID, Object: "chat.completion.chunk",
-			Created: now, Model: FakeModel,
-			Choices: []*choice{{
-				Index:        0,
-				Delta:        new(assistantMessage),
-				FinishReason: strPtr(finishStop),
-			}},
-		},
+		})
 	}
+	frames = append(frames, &completionResponse{
+		ID: respID, Object: "chat.completion.chunk",
+		Created: now, Model: FakeModel,
+		Choices: []*choice{{
+			Index:        0,
+			Delta:        new(assistantMessage),
+			FinishReason: strPtr(finishStop),
+		}},
+	})
+	return frames
+}
+
+// logStreamFrame emits the FR-018 structured log entry for one
+// streamed frame (specs/046-fake-llm-think-chunking FR-018/SC-007,
+// specs/046-fake-llm-think-chunking/contracts/streaming-sequence.md
+// §7): role_kind identifies the frame type; each reasoning frame
+// additionally carries its 0-based chunk_index and the delay_ms applied
+// before it; the frame after which the stream stalls carries the
+// EFFECTIVE stall_after index so test operators can verify the
+// configured stall actually fired in signoz.
+func logStreamFrame(i int, spec responseSpec, frame *completionResponse) {
+	c := frame.Choices[0]
+	kind := "content"
+	switch {
+	case c.Delta.ToolCalls != nil:
+		kind = "tool_calls"
+	case c.FinishReason != nil:
+		kind = "finish"
+	case !spec.isToolCall() && i < len(spec.Reasoning):
+		kind = "reasoning"
+	}
+	args := []any{slog.String("role_kind", kind)}
+	if kind == "reasoning" {
+		args = append(args,
+			slog.Int("chunk_index", i),
+			slog.Int64("delay_ms", delayBefore(spec, i).Milliseconds()),
+		)
+		if spec.StallAfter != nil && i == *spec.StallAfter {
+			args = append(args, slog.Int("stall_after", *spec.StallAfter))
+		}
+	}
+	slog.Info("stream chunk emitted", args...)
+}
+
+// delayBefore returns the delay configured before reasoning chunk i:
+// Delays[i-1] (0 when out of range). Chunk 0 is always emitted
+// immediately, like the pre-chunking behaviour.
+func delayBefore(spec responseSpec, i int) time.Duration {
+	if i <= 0 || i-1 >= len(spec.Delays) {
+		return 0
+	}
+	return spec.Delays[i-1]
 }
 
 // toolCallStreamChunks builds the 2-chunk sequence for a tool-call

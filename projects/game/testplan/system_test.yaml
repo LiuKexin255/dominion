@@ -39,24 +39,69 @@ description: |
   Suite 8 (agent-saolei): session + proxy + agent(test) + prompt + gateway.
     - saolei MCP returns a TEXT board (no image block; spec 025 FR-012/FR-022)
       recognized by @dominion/game-saolei-board from the FlowResultPart.screenshot;
-      illegal moves (e.g. click on a revealed cell) are rejected BEFORE dispatch
-      with a stable reason code (spec 025 FR-014/FR-015); saolei tool_result
-      status is neutral (UNSPECIFIED, never FAILED) per spec 023 D12.
+      the merged dual-form saolei_operate (specs/039-planner-memory-calibration
+      US1): batch ops dispatch in order with one return (FR-002), single
+      form == length-1 batch (FR-001), harmless no-op skips, structural and
+      terminal stops; saolei tool_result status is neutral (UNSPECIFIED,
+      never FAILED) per spec 023 D12.
   Suite 9 (saolei-team): session + proxy + agent(test) + prompt + gateway.
-    - saolei template TEAM behaviour (spec 031-team-template-mode quickstart.md
-      §2.1): team lifecycle (CreateTeam/Connect/GetTeam, NOT_FOUND without
-      create, CreateTeam idempotency/ALREADY_EXISTS, connection exclusivity,
-      disconnect/reconnect history, status ping-pong, reconnect dispatch
-      reliability); TeamProfile CRUD (create/get/list/update via
-      update_mask/delete + template↔oneof consistency, FR-006/FR-027);
-      per-TeamProfile player/planner model resolution; player-exclusive
-      desktop control (FR-010); planner triggered exactly once per game end
-      (FR-011/D6); strategy persistence + per-session isolation
-      (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps
-      the strategy (FR-018/D8); per-agent message partitioning (FR-005).
+    - saolei template TEAM behaviour (specs/040-team-singleton-conformance
+      quickstart.md): team lifecycle (UpdateTeam/Connect/GetTeam, NOT_FOUND
+      without materialization, UpdateTeam idempotency + profile-change rebuild,
+      in-flight rebuild rejection, connection exclusivity, disconnect/reconnect
+      history, status ping-pong, reconnect dispatch reliability); TeamProfile
+      CRUD (create/get/list/update via update_mask/delete + template↔oneof
+      consistency, FR-006/FR-027); per-TeamProfile player/planner model
+      resolution; player-exclusive desktop control (FR-010); planner triggered
+      exactly once per game end (FR-011/D6); planner long-term memory
+      persistence via the memory service + the `memory` tool agent conversion
+      and the calibration instruction scenarios + message order
+      (specs/039-planner-memory-calibration FR-014..FR-019 — the shared
+      StrategyStore/update_strategy flow is gone, FR-013); RefreshTeam clears
+      short-term memory and keeps the long-term memory (FR-018/D8); per-agent
+      message partitioning (FR-005).
     - Merged from the removed prompt (AgentProfile/Skill CRUD),
       session-agent lifecycle (profile switching/GetAgent), and
       per-profile-model suites (tasks.md Phase 8 T029).
+  Suite 10 (planner-memory): session + proxy + agent(test) + fake-llm +
+    prompt + memory + gateway.
+    - planner long-term memory MODULE (specs/039-planner-memory-calibration
+      US2 — FR-006..FR-012/FR-018/FR-020): the MemoryService storage API +
+      AIP-158 pagination through the gateway public entry; the game-driven
+      planner `memory` tool flow — hermes-style args (action/content/
+      old_text/operations, no memory_id/target), agent-side conversion
+      persistence, old_text 0-hit/multi-hit error feedback with pure-content
+      entries, player never holding the memory tool. The memory service is
+      part of deploy_agent.yaml (spec 039 Phase 1 T003).
+  Suite 11 (agent-stall): session + proxy + agent(test) + fake-llm +
+    prompt + gateway, deployed with deploy_agent_stall.yaml selecting the
+    agent_timeouts config block (streamIdleTimeoutMs=5000,
+    toolHeartbeatIntervalMs=2000) via the 045 deploy-config channel — the
+    agent resolves env > config > default, and config values bypass the
+    env channel's 60s clamp (specs/044-llm-stall-recovery-fix/contracts/
+    idle-timeout-contract.md §5).
+    - End-to-end stall recovery (specs/043-llm-stream-stall-recovery
+      US1/US2, quickstart Scenario 5): a fake-llm turn that emits its
+      reasoning delta then stops with the connection alive (sample_stall.yaml)
+      is detected within the idle window — warn + wait emitted, the queued
+      message RETAINED (no QueueSignal(0), FR-006) and delivered on the
+      next turn (FR-007).
+    - No false stall during long tool execution (043 US3, Scenario 6): a
+      saolei_operate dispatch delayed > 12s (> idleTimeout) on the
+      production saolei MCP path (buildSaoleiMcpTools → MCP HTTP →
+      bridge.dispatch) does not raise NodeTimeoutError — the client-side
+      heartbeat wrapper (withIdleHeartbeat, TOOL_HEARTBEAT_INTERVAL_MS)
+      keeps the idle timer alive (FR-003/SC-003).
+    - Real silent dropout still detected within the config-driven 5s
+      window (spec 044 US1 regression, FR-001/SC-004): the elapsed stall
+      detection time is bracketed to catch a regression to any older
+      window (15s/30s/60s) or the 120s default. (US2's reasoning-floor
+      large-test case is dropped — the explicit config suppresses the
+      floor, specs/044-llm-stall-recovery-fix/quickstart.md A4.)
+    - Partial output survives a stall (spec 044 US3, FR-004/FR-005/
+      SC-002/SC-003): after the stalled turn terminates, ListMessages
+      returns the already-streamed reasoning with
+      completion = PART_COMPLETION_INTERRUPTED on the tail part.
 
 suites:
   - name: session
@@ -131,10 +176,28 @@ suites:
       - //projects/game/testplan:agent_saolei_test
 
   - name: saolei-team
-    description: "saolei template TEAM behaviour with fake-llm service (spec 031-team-template-mode quickstart.md §2.1): team lifecycle incl CreateTeam/GetTeam/connection exclusivity (FR-003/FR-004/FR-033); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); strategy persistence + per-session isolation (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps the strategy (FR-018/D8); per-agent message partitioning (FR-005). 037 saolei-team optimize (specs/037-saolei-team-optimize FR-034): planner review input real-time visibility (US1/FR-001..FR-003), 5-game compression trigger with channel shrink + player stop + strategy preserved (US2/FR-006..FR-012/FR-015), planner systemPrompt tool-description injection (US3/FR-016..FR-018 — prompt content verified via fake-llm 'system prompt received' INFO logs), game-end stats in the review input (US5/FR-026..FR-033)"
+    description: "saolei template TEAM behaviour with fake-llm service (specs/040-team-singleton-conformance/quickstart.md): team lifecycle incl UpdateTeam(allow_missing=true) materialization/idempotency/profile-rebuild/in-flight rejection (FR-002/FR-005/FR-006) + GetTeam/connection exclusivity (FR-003/FR-004); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); planner long-term memory persistence + the calibration instruction scenarios + message order (specs/039-planner-memory-calibration FR-014..FR-019 — StrategyStore/update_strategy removed, FR-013); RefreshTeam clears short-term memory and keeps the long-term memory (FR-018/D8); per-agent message partitioning (FR-005). 037 saolei-team optimize (specs/037-saolei-team-optimize FR-034): planner review input real-time visibility (US1/FR-001..FR-003), 5-game compression trigger with channel shrink + player stop + memory preserved + compact instruction delivered with the next activation (US2/FR-006..FR-012/FR-015; 039 FR-016), planner systemPrompt tool-description injection (US3/FR-016..FR-018 — prompt content verified via fake-llm 'system prompt received' INFO logs), game-end stats in the review input (US5/FR-026..FR-033). 041 real-time init delivery (specs/041-realtime-init-push/quickstart.md §B): init instruction frames pushed through the live Connect stream with no user message (B1/B3 — FR-001/FR-006, frameId == messageId via ListMessages), status probe IDLE during the init (B2 — FR-003/SC-002), RefreshTeam/profile-change rebuild rejected FAILED_PRECONDITION while the init is in flight (B4 — FR-007/SC-005), re-entry after the init completed delivers the instruction exactly once with no duplicate push (B5 — FR-004)"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:testplan_test
+
+  - name: planner-memory
+    description: "Planner long-term memory MODULE with fake-llm service (specs/039-planner-memory-calibration US2 — FR-006..FR-012/FR-018/FR-020): MemoryService storage API + AIP-158 pagination through the gateway public entry (Create/Update/Delete/List, memory_id-based resources, ALREADY_EXISTS/NOT_FOUND/INVALID_ARGUMENT); the game-driven planner `memory` tool flow — hermes-style single tool (action/content/old_text/operations, no memory_id/target), agent-side conversion persisting entries into the memory service (verified via ListMemories), old_text 0-hit/multi-hit error feedback rendering the current entries as pure content, and the player never holding the memory tool (FR-009). The deployment topology reuses deploy_agent.yaml — it already contains the memory service artifact (spec 039 Phase 1 T003)"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:memory_test
+
+  - name: agent-stall
+    description: "Agent stream-stall recovery with fake-llm service (specs/043-llm-stream-stall-recovery T011 + specs/044-llm-stall-recovery-fix T011 cases b/c/d), deployed via deploy_agent_stall.yaml which selects the agent_timeouts config block (streamIdleTimeoutMs=5000, toolHeartbeatIntervalMs=2000) through the 045 deploy-config channel (the agent resolves env > config > default; config values bypass the env 60s clamp — specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5). 043 US1/US2 (quickstart Scenario 5): a fake-llm turn that emits its reasoning delta then stops with the connection alive (sample_stall.yaml) is detected within the idle window — warn + wait emitted (FR-004/FR-005), the queued message RETAINED (no QueueSignal(0) before the recovery wait, FR-006) and delivered as the next turn's input (FR-007). 043 US3 (Scenario 6): a saolei_operate dispatch delayed > 12s (> idleTimeout) on the PRODUCTION saolei MCP path (buildSaoleiMcpTools → MCP HTTP → bridge.dispatch) does NOT false-stall — the client-side heartbeat wrapper (withIdleHeartbeat calling config.heartbeat every TOOL_HEARTBEAT_INTERVAL_MS=2s, specs/043-llm-stream-stall-recovery/research.md R7.2) keeps the idle timer alive (FR-003/SC-003). 044 US1 regression (FR-001/SC-004): a real silent dropout is still detected within the config-driven 5s window — elapsed detection bracketed against any older window (15s/30s/60s) and the 120s default (US2's floor has NO large-test case — the explicit config suppresses the floor, specs/044-llm-stall-recovery-fix/quickstart.md A4). 044 US3 (FR-004/FR-005/SC-002/SC-003): after the stalled turn terminates, ListMessages returns the already-streamed reasoning partial with completion = PART_COMPLETION_INTERRUPTED on the tail part"
+    deploy: //projects/game/testplan/deploy_agent_stall.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_stall_test

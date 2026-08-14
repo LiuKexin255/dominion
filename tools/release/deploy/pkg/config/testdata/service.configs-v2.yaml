@@ -1,0 +1,18 @@
+version: "2.0"
+name: service
+app: grpc-hello-world
+desc: grpc hello world service with configs but v2 version
+configs:
+  - name: service_config
+    data:
+      - name: greeting
+        value: |
+          message: "hello from config"
+          times: 3
+        type: yaml
+artifacts:
+  - name: service
+    target: :service_image
+    ports:
+      - name: grpc
+        port: 50051

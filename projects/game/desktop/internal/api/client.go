@@ -193,7 +193,8 @@ func (c *Client) DeleteSession(ctx context.Context, template, sessionID string) 
 // GetTeam retrieves the Team of a session via GET to
 // /api/v1/templates/{template}/sessions/{sessionID}/team (AIP-131;
 // game.proto TeamService.GetTeam). The Team must already exist — it is
-// created only by CreateTeam (no lazy creation, spec 031 design decision).
+// materialized only by UpdateTeam (no lazy creation, spec 031 design
+// decision).
 func (c *Client) GetTeam(ctx context.Context, template, sessionID string) (*game.Team, error) {
 	path, err := url.JoinPath(templatePath(template, "/sessions"), sessionID, "team")
 	if err != nil {
@@ -223,49 +224,60 @@ func (c *Client) GetTeam(ctx context.Context, template, sessionID string) (*game
 	return team, nil
 }
 
-// CreateTeam creates the per-session singleton Team via POST to
-// /api/v1/templates/{template}/sessions/{sessionID}/team (AIP-133;
-// game.proto TeamService.CreateTeam). The request body carries the parent
-// session and the TeamProfile full resource name
-// (templates/{template}/profiles/{profile}); the server validates the
-// profile's template segment against the parent (no implicit rules).
-// profile is the TeamProfile resource name the team is built from.
-func (c *Client) CreateTeam(ctx context.Context, template, sessionID, profile string) (*game.Team, error) {
+// UpdateTeam materializes or updates the per-session singleton Team via PATCH
+// to /api/v1/templates/{template}/sessions/{sessionID}/team (AIP-134
+// create-or-update + AIP-156; game.proto TeamService.UpdateTeam — the ONLY
+// Team creation point). Per the grpc-gateway body binding ("body: team" with
+// path variable {team.name}), the Team JSON is sent as the PATCH body with
+// its name field set to the full resource name and its profile field set to
+// the TeamProfile full resource name; update_mask paths and allow_missing are
+// sent as query parameters. profile is the TeamProfile resource name the team
+// is built from; allowMissing=true materializes the Team when it does not
+// exist yet (idempotent for repeated calls, FR-002 of
+// specs/040-team-singleton-conformance/spec.md).
+func (c *Client) UpdateTeam(ctx context.Context, template, sessionID, profile string, updateMaskPaths []string, allowMissing bool) (*game.Team, error) {
 	// Resource name construction is codegen-owned (spec 031-team-template-mode
-	// contracts/api-contract.md §5): the parent Session resource name.
-	parent := game.SessionName{TemplateID: template, SessionID: sessionID}.String()
-	body, err := protojson.Marshal(&game.CreateTeamRequest{
-		Parent:  parent,
+	// contracts/api-contract.md §5): the Team singleton resource name.
+	body, err := (protojson.MarshalOptions{EmitUnpopulated: false}).Marshal(&game.Team{
+		Name:    game.TeamName{TemplateID: template, SessionID: sessionID}.String(),
 		Profile: profile,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create team: %w", err)
+		return nil, fmt.Errorf("update team: %w", err)
 	}
 
 	path, err := url.JoinPath(templatePath(template, "/sessions"), sessionID, "team")
 	if err != nil {
-		return nil, fmt.Errorf("create team: %w", err)
+		return nil, fmt.Errorf("update team: %w", err)
 	}
+	q := url.Values{}
+	if len(updateMaskPaths) > 0 {
+		q.Set("update_mask", strings.Join(updateMaskPaths, ","))
+	}
+	if allowMissing {
+		q.Set("allow_missing", "true")
+	}
+	u := &url.URL{Path: path, RawQuery: q.Encode()}
 
-	req, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(body))
+	req, err := c.newRequest(ctx, http.MethodPatch, u.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create team: %w", err)
+		return nil, fmt.Errorf("update team: %w", err)
 	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("create team: %w", err)
+		return nil, fmt.Errorf("update team: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("create team: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("update team: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	team := new(game.Team)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, team); err != nil {
-		return nil, fmt.Errorf("create team: %w", err)
+		return nil, fmt.Errorf("update team: %w", err)
 	}
 	return team, nil
 }

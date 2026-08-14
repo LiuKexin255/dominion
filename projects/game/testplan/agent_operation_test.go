@@ -18,10 +18,13 @@
 // channel tool_call.id — research.md D10; data-model.md §4). The mouse_move
 // tool itself no longer exists: the saolei template fixes the player's tools
 // to the saolei MCP tools (FR-028), so the dispatch chain is driven with
-// saolei_init/saolei_click instead. The mouse-specific screenshot-forwarding
-// behaviour (FlowResultPart.screenshot → display tool_result.screenshot, spec
-// 025 FR-025) is intentionally NOT covered here — saolei tool results are
-// TEXT boards and never carry screenshots (spec 025 FR-022).
+// saolei_init + the merged dual-form saolei_operate (spec
+// 039-planner-memory-calibration FR-001 — the fixture chains the init result
+// into ONE operate batch whose two ops dispatch in order). The mouse-specific
+// screenshot-forwarding behaviour (FlowResultPart.screenshot → display
+// tool_result.screenshot, spec 025 FR-025) is intentionally NOT covered here
+// — saolei tool results are TEXT boards and never carry screenshots (spec 025
+// FR-022).
 package testplan
 
 import (
@@ -33,15 +36,16 @@ import (
 	game "dominion/projects/game"
 )
 
-// TestAgentOperationDispatchLoopSuccess drives a real saolei_click dispatch
+// TestAgentOperationDispatchLoopSuccess drives a real saolei_operate dispatch
 // loop from a user turn (the fake-LLM "saolei-start" Message): the player
 // agent executes saolei_init (F2 dispatch), the test replies with a
-// recognizable in-progress board screenshot, the fake-LLM chains
-// saolei_click{3,4} → saolei_click{5,6} (each dispatching a
-// MouseMoveAndClickPart), and the chain closes with the final text. The
-// assertions focus on the DISPATCH MECHANICS (spec 023 D10 decoupling +
-// conversation-channel grouping) rather than the text-board return contract
-// (covered by agent_saolei_test.go):
+// recognizable in-progress board screenshot, the fake-LLM chains the init
+// result into ONE saolei_operate BATCH call (spec 039-planner-memory-
+// calibration FR-001/FR-002 — operations [click{3,4}, click{5,6}] dispatching
+// two MouseMoveAndClickParts IN ORDER), and the chain closes with the final
+// text. The assertions focus on the DISPATCH MECHANICS (spec 023 D10
+// decoupling + conversation-channel grouping) rather than the text-board
+// return contract (covered by agent_saolei_test.go):
 //
 //  1. The live tool_call MessagePart frame and the dispatched operation
 //     FlowPart frame both arrive (they race on the WS — collected in a
@@ -73,7 +77,14 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 	// The two frames race on the WS (dispatch sink-writes synchronously
 	// inside the tool fn while stream.toolCalls yields asynchronously), so a
 	// single read pass collects both without dropping either.
-	toolCallFrame, initOpFrame := readToolCallAndOperation(t, conn)
+	//
+	// The player-scoped read skips the 041 real-time init frames: when the
+	// one-shot init turn is still in flight at Connect, it pushes a planner
+	// instruct_player toolCall frame (agent=planner — contract §2.2) that
+	// would otherwise shadow the user turn's saolei_init (agent=player) in
+	// the first toolCall slot (specs/041-realtime-init-push/
+	// contracts/realtime-channel-contract.md §2.2).
+	toolCallFrame, initOpFrame := readPlayerToolCallAndOperation(t, conn)
 	toolCall := frameToolCall(toolCallFrame)
 	if toolCall.GetName() != "saolei_init" {
 		t.Errorf("tool_call.name = %q, want saolei_init (FR-002)", toolCall.GetName())
@@ -114,7 +125,7 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 	// tool_result is emitted in real time as soon as the desktop
 	// FlowResultPart resolves the dispatch, so it MUST be drained
 	// immediately after the init reply — draining later (after the click
-	// loop below) would only find a stale saolei_click tool_result whose
+	// loop below) would only find a stale saolei_operate tool_result whose
 	// tool_id differs from the init tool_call.id. Same pattern as
 	// agent_checkpoint_test.go TestAgentCheckpointToolResultStatusPersists.
 	toolResultFrame := drainWSFrame(t, conn, frameHasToolResult)
@@ -122,11 +133,11 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 		t.Fatal("did not receive a tool_result MessagePart frame after the desktop reply (FR-006)")
 	}
 
-	// The fake-LLM fixture chains saolei_init → saolei_click{3,4} →
-	// saolei_click{5,6} → final text (sample_saolei_tools.yaml). Play the
-	// desktop through both cell dispatches, asserting each dispatch carries
-	// the centre of the cell the model targeted (saolei_fixtures_test.go —
-	// WM client-space centres: (3,4)→(136,248), (5,6)→(200,312)). The click
+	// The fake-LLM fixture chains saolei_init → one saolei_operate batch
+	// (operations [click{3,4}, click{5,6}] — sample_saolei_tools.yaml). Play
+	// the desktop through both cell dispatches, asserting each dispatch
+	// carries the centre of the cell the model targeted (saolei_fixtures_test.go —
+	// WM client-space centres: (3,4)→(136,248), (5,6)→(200,312)). The operate
 	// tool_results stream in real time alongside the loop's
 	// readOperationFrame reads and are discarded there — this test asserts
 	// the init tool_result only.
@@ -141,12 +152,12 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 		clickFrame := readOperationFrame(t, conn)
 		mmc := frameMouseMoveAndClick(clickFrame)
 		if mmc == nil {
-			t.Fatalf("saolei_click(%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart; frame parts: %v",
+			t.Fatalf("saolei_operate op (%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart; frame parts: %v",
 				step.cellX, step.cellY, clickFrame.GetFlowParts().GetParts())
 		}
 		if err := assertMouseMoveAndClick(mmc, step.centerX, step.centerY,
 			game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK); err != nil {
-			t.Errorf("saolei_click(%d,%d) dispatch mismatch: %v", step.cellX, step.cellY, err)
+			t.Errorf("saolei_operate op (%d,%d) dispatch mismatch: %v", step.cellX, step.cellY, err)
 		}
 		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
 			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
@@ -187,8 +198,8 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 	if !messagesContainToolCall(lmr.GetMessages(), "saolei_init") {
 		t.Errorf("ListMessages did not surface a saolei_init tool_call MessagePart (FR-006/FR-009)")
 	}
-	if !messagesContainToolCall(lmr.GetMessages(), "saolei_click") {
-		t.Errorf("ListMessages did not surface a saolei_click tool_call MessagePart (FR-006/FR-009)")
+	if !messagesContainToolCall(lmr.GetMessages(), "saolei_operate") {
+		t.Errorf("ListMessages did not surface a saolei_operate tool_call MessagePart (FR-006/FR-009)")
 	}
 	assertMessageContentDisplayOnly(t, lmr.GetMessages())
 }

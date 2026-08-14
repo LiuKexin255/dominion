@@ -26,10 +26,12 @@ func ownerKey(templateID, sessionID string) string {
 	return templateID + "\x00" + sessionID
 }
 
-// mockOwnerStore implements domain.OwnerStore for testing.
+// mockOwnerStore implements domain.OwnerStore for testing. createCalls counts
+// Create invocations, so tests can assert that assignOwner did not run.
 type mockOwnerStore struct {
-	records map[string]*domain.AgentOwner
-	getErr  error
+	records     map[string]*domain.AgentOwner
+	getErr      error
+	createCalls int
 }
 
 func newMockOwnerStore() *mockOwnerStore {
@@ -37,6 +39,7 @@ func newMockOwnerStore() *mockOwnerStore {
 }
 
 func (s *mockOwnerStore) Create(_ context.Context, owner *domain.AgentOwner) error {
+	s.createCalls++
 	key := ownerKey(owner.TemplateID, owner.SessionID)
 	if _, exists := s.records[key]; exists {
 		return domain.ErrOwnerAlreadyExists
@@ -109,9 +112,10 @@ func (p *mockOwnerPicker) Pick(_ context.Context, _ string, _ []*agentclient.Con
 	}, nil
 }
 
-// raceOwnerStore simulates a concurrent CreateTeam: the first Get misses (no
-// owner yet), Create loses the race (another request already persisted its
-// owner), and the follow-up Get returns the winner's record.
+// raceOwnerStore simulates a concurrent UpdateTeam allocation: assignOwner's
+// initial Get misses (no owner yet), Create loses the race (another request
+// already persisted its owner), and the follow-up Get returns the winner's
+// record.
 type raceOwnerStore struct {
 	winner *domain.AgentOwner
 	gets   int
@@ -135,9 +139,9 @@ func (s *raceOwnerStore) Delete(_ context.Context, _, _ string) error {
 
 // mockAgentClient implements agentclient.Client for testing.
 type mockAgentClient struct {
-	createTeamResult   *game.Team
-	createTeamErr      error
-	lastCreateTeamReq  *game.CreateTeamRequest
+	updateTeamResult   *game.Team
+	updateTeamErr      error
+	lastUpdateTeamReq  *game.UpdateTeamRequest
 	getTeamResult      *game.Team
 	getTeamErr         error
 	listMessagesResult *game.ListMessagesResponse
@@ -150,15 +154,15 @@ type mockAgentClient struct {
 	lastGetTeamReq     *game.GetTeamRequest
 }
 
-func (c *mockAgentClient) CreateTeam(_ context.Context, req *game.CreateTeamRequest) (*game.Team, error) {
-	c.lastCreateTeamReq = req
-	if c.createTeamErr != nil {
-		return nil, c.createTeamErr
+func (c *mockAgentClient) UpdateTeam(_ context.Context, req *game.UpdateTeamRequest) (*game.Team, error) {
+	c.lastUpdateTeamReq = req
+	if c.updateTeamErr != nil {
+		return nil, c.updateTeamErr
 	}
-	if c.createTeamResult != nil {
-		return c.createTeamResult, nil
+	if c.updateTeamResult != nil {
+		return c.updateTeamResult, nil
 	}
-	return &game.Team{Name: req.GetParent() + "/team"}, nil
+	return &game.Team{Name: req.GetTeam().GetName()}, nil
 }
 
 func (c *mockAgentClient) GetTeam(_ context.Context, req *game.GetTeamRequest) (*game.Team, error) {
@@ -293,15 +297,18 @@ const (
 	testMessagesParent = "templates/saolei/sessions/sid/team/agents/player"
 )
 
-func TestCreateTeam(t *testing.T) {
+func TestUpdateTeam(t *testing.T) {
 	ctx := context.Background()
 	picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 1, Owner: "agent-1"}}
-	createReq := &game.CreateTeamRequest{
-		Parent:  "templates/saolei/sessions/sid",
-		Profile: "templates/saolei/profiles/default",
+	updateReq := &game.UpdateTeamRequest{
+		Team: &game.Team{
+			Name:    "templates/saolei/sessions/sid/team",
+			Profile: "templates/saolei/profiles/default",
+		},
+		AllowMissing: true,
 	}
 
-	t.Run("allocates owner and forwards to the agent", func(t *testing.T) {
+	t.Run("materializes owner and forwards to the agent", func(t *testing.T) {
 		store := newMockOwnerStore()
 		mgr := &mockManager{connRefs: []*agentclient.ConnRef{{OwnerIndex: 1, Owner: "agent-1"}}}
 		agentMock := &mockAgentClient{}
@@ -310,30 +317,31 @@ func TestCreateTeam(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		team, err := h.CreateTeam(ctx, createReq)
+		team, err := h.UpdateTeam(ctx, updateReq)
 
 		if err != nil {
-			t.Fatalf("CreateTeam() unexpected error: %v", err)
+			t.Fatalf("UpdateTeam() unexpected error: %v", err)
 		}
 		if team.GetName() != "templates/saolei/sessions/sid/team" {
-			t.Fatalf("CreateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
+			t.Fatalf("UpdateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
 		}
-		// The owner was allocated (CreateTeam is the only allocation point).
+		// The owner was allocated (UpdateTeam's assignOwner is the only
+		// allocation point).
 		if _, ok := store.records[ownerKey("saolei", "sid")]; !ok {
-			t.Fatal("CreateTeam() did not allocate an owner")
+			t.Fatal("UpdateTeam() did not allocate an owner")
 		}
-		// The owner record carries the template of the session's resource
-		// name (composite key routing).
+		// The owner record carries the template of the team's resource name
+		// (composite key routing).
 		if store.records[ownerKey("saolei", "sid")].TemplateID != "saolei" {
-			t.Fatal("CreateTeam() allocated owner without the template ID")
+			t.Fatal("UpdateTeam() allocated owner without the template ID")
 		}
 		// The downstream agent received the caller's request unchanged.
-		if agentMock.lastCreateTeamReq != createReq {
-			t.Fatal("downstream CreateTeam did not receive the caller's request")
+		if agentMock.lastUpdateTeamReq != updateReq {
+			t.Fatal("downstream UpdateTeam did not receive the caller's request")
 		}
 	})
 
-	t.Run("reuses the existing owner on repeat create (idempotent)", func(t *testing.T) {
+	t.Run("reuses the existing owner on repeat update (idempotent)", func(t *testing.T) {
 		store := newMockOwnerStore()
 		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		// No connRefs: a pick would fail — proving the existing owner is reused.
@@ -344,24 +352,25 @@ func TestCreateTeam(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		team, err := h.CreateTeam(ctx, createReq)
+		team, err := h.UpdateTeam(ctx, updateReq)
 
 		if err != nil {
-			t.Fatalf("CreateTeam() unexpected error: %v", err)
+			t.Fatalf("UpdateTeam() unexpected error: %v", err)
 		}
 		if team.GetName() != "templates/saolei/sessions/sid/team" {
-			t.Fatalf("CreateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
+			t.Fatalf("UpdateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
 		}
 		if len(store.records) != 1 {
-			t.Fatalf("CreateTeam() store records = %d, want 1 (owner not re-created)", len(store.records))
+			t.Fatalf("UpdateTeam() store records = %d, want 1 (owner not re-created)", len(store.records))
 		}
 	})
 
-	t.Run("concurrent create race re-reads the winner's owner instead of AlreadyExists", func(t *testing.T) {
-		// Simulates two CreateTeam requests racing: this request's initial
-		// Get misses, its Create loses to the other request
-		// (ErrOwnerAlreadyExists), and the follow-up Get returns the
-		// winner's record — the proxy-layer owner allocation is idempotent.
+	t.Run("concurrent allocation race re-reads the winner's owner instead of AlreadyExists", func(t *testing.T) {
+		// Simulates two UpdateTeam requests racing: assignOwner's initial Get
+		// misses (Get #1), its Create loses to the other request
+		// (ErrOwnerAlreadyExists), and the follow-up Get (#2) returns the
+		// winner's record — the proxy-layer owner allocation is idempotent
+		// (specs/040-team-singleton-conformance/research.md §R10).
 		winner := &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 2, Owner: "agent-2"}
 		store := &raceOwnerStore{winner: winner}
 		mgr := &mockManager{}
@@ -371,34 +380,99 @@ func TestCreateTeam(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		team, err := h.CreateTeam(ctx, createReq)
+		team, err := h.UpdateTeam(ctx, updateReq)
 
 		if err != nil {
-			t.Fatalf("CreateTeam() unexpected error: %v", err)
+			t.Fatalf("UpdateTeam() unexpected error: %v", err)
 		}
 		if team.GetName() != "templates/saolei/sessions/sid/team" {
-			t.Fatalf("CreateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
+			t.Fatalf("UpdateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
 		}
 		// The downstream agent was reached via the winner's owner (index 2,
 		// not the picker's index 1) — proving the re-read, not a re-pick.
 		if len(mgr.getCalls) != 1 || mgr.getCalls[0] != 2 {
-			t.Fatalf("CreateTeam() owner index used = %v, want [2] (winner re-read)", mgr.getCalls)
+			t.Fatalf("UpdateTeam() owner index used = %v, want [2] (winner re-read)", mgr.getCalls)
 		}
-		if agentMock.lastCreateTeamReq != createReq {
-			t.Fatal("downstream CreateTeam did not receive the caller's request")
+		if agentMock.lastUpdateTeamReq != updateReq {
+			t.Fatal("downstream UpdateTeam did not receive the caller's request")
 		}
 	})
 
-	t.Run("invalid parent returns InvalidArgument", func(t *testing.T) {
+	t.Run("existing owner is reused without a new owner-store Create", func(t *testing.T) {
+		// assignOwner is get-or-create: with an existing owner the Get hits
+		// and no Create runs — the routing resolution is idempotent.
+		store := newMockOwnerStore()
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
+		// No connRefs: a pick would fail — proving the existing owner is reused.
+		mgr := &mockManager{}
+		agentMock := &mockAgentClient{}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
+
+		team, err := h.UpdateTeam(ctx, updateReq)
+
+		if err != nil {
+			t.Fatalf("UpdateTeam() unexpected error: %v", err)
+		}
+		if team.GetName() != "templates/saolei/sessions/sid/team" {
+			t.Fatalf("UpdateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
+		}
+		if store.createCalls != 0 {
+			t.Fatalf("UpdateTeam() owner-store Create calls = %d, want 0 (existing owner reused)", store.createCalls)
+		}
+		if agentMock.lastUpdateTeamReq != updateReq {
+			t.Fatal("downstream UpdateTeam did not receive the caller's request")
+		}
+	})
+
+	t.Run("allow_missing is forwarded to the agent unchanged", func(t *testing.T) {
+		// The proxy is a routing layer: it does not inspect or rewrite
+		// allow_missing — Team-resource semantics (materialize/NOT_FOUND/
+		// idempotent/rebuild) belong to the agent's SessionTeamStore.update
+		// (specs/040-team-singleton-conformance/contracts/api-contract.md §2.5).
+		for _, allowMissing := range []bool{true, false} {
+			store := newMockOwnerStore()
+			mgr := &mockManager{connRefs: []*agentclient.ConnRef{{OwnerIndex: 1, Owner: "agent-1"}}}
+			agentMock := &mockAgentClient{}
+			restore := setMockNewAgentClient(agentMock)
+
+			h := NewTeamHandler(store, picker, mgr, &mockBinder{})
+
+			req := &game.UpdateTeamRequest{
+				Team: &game.Team{
+					Name:    "templates/saolei/sessions/sid/team",
+					Profile: "templates/saolei/profiles/default",
+				},
+				AllowMissing: allowMissing,
+			}
+
+			if _, err := h.UpdateTeam(ctx, req); err != nil {
+				t.Fatalf("UpdateTeam(allow_missing=%v) unexpected error: %v", allowMissing, err)
+			}
+			if agentMock.lastUpdateTeamReq.GetAllowMissing() != allowMissing {
+				t.Fatalf("downstream allow_missing = %v, want %v (unchanged)", agentMock.lastUpdateTeamReq.GetAllowMissing(), allowMissing)
+			}
+			restore()
+		}
+	})
+
+	t.Run("invalid team name returns InvalidArgument", func(t *testing.T) {
 		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		_, err := h.CreateTeam(ctx, &game.CreateTeamRequest{Parent: "sessions/sid", Profile: "templates/saolei/profiles/default"})
+		_, err := h.UpdateTeam(ctx, &game.UpdateTeamRequest{
+			Team: &game.Team{
+				Name:    "sessions/sid",
+				Profile: "templates/saolei/profiles/default",
+			},
+		})
 
 		if err == nil {
-			t.Fatalf("CreateTeam() expected error, got nil")
+			t.Fatalf("UpdateTeam() expected error, got nil")
 		}
 		if status.Code(err) != codes.InvalidArgument {
-			t.Fatalf("CreateTeam() status = %v, want InvalidArgument", status.Code(err))
+			t.Fatalf("UpdateTeam() status = %v, want InvalidArgument", status.Code(err))
 		}
 	})
 
@@ -411,26 +485,26 @@ func TestCreateTeam(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		_, err := h.CreateTeam(ctx, createReq)
+		_, err := h.UpdateTeam(ctx, updateReq)
 
 		if status.Code(err) != codes.Unavailable {
-			t.Fatalf("CreateTeam() status = %v, want Unavailable", status.Code(err))
+			t.Fatalf("UpdateTeam() status = %v, want Unavailable", status.Code(err))
 		}
 	})
 
 	t.Run("downstream error propagates", func(t *testing.T) {
 		store := newMockOwnerStore()
 		mgr := &mockManager{connRefs: []*agentclient.ConnRef{{OwnerIndex: 1, Owner: "agent-1"}}}
-		agentMock := &mockAgentClient{createTeamErr: status.Error(codes.NotFound, "profile not found")}
+		agentMock := &mockAgentClient{updateTeamErr: status.Error(codes.NotFound, "profile not found")}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
 		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		_, err := h.CreateTeam(ctx, createReq)
+		_, err := h.UpdateTeam(ctx, updateReq)
 
 		if status.Code(err) != codes.NotFound {
-			t.Fatalf("CreateTeam() status = %v, want NotFound", status.Code(err))
+			t.Fatalf("UpdateTeam() status = %v, want NotFound", status.Code(err))
 		}
 	})
 }
@@ -623,7 +697,7 @@ func TestConnect(t *testing.T) {
 
 		err := h.Connect(makeProxyStream("saolei", "new-session"))
 
-		// Connect must NOT allocate an owner anymore — CreateTeam is the only
+		// Connect must NOT allocate an owner anymore — UpdateTeam is the only
 		// allocation point (Agent 移除懒加载模式).
 		if status.Code(err) != codes.NotFound {
 			t.Fatalf("Connect() status = %v, want NotFound", status.Code(err))
