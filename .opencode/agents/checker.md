@@ -1,7 +1,7 @@
 ---
 description: Reviews doc for consistency and spec
 mode: primary
-model: opencode-go/deepseek-v4-flash
+model: zhipuai-coding-plan/glm-5.2
 reasoningEffort: max
 temperature: 0.1
 tools:
