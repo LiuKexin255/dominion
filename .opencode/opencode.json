@@ -19,7 +19,7 @@
       "reasoningEffort": "max",
     },
     "general": {
-      "model": "zhipuai-coding-plan/glm-5.2",
+      "model": "opencode-go/deepseek-v4-pro",
       "reasoningEffort": "max",
       "tools": {
         "todowrite": true
