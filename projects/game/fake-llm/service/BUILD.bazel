@@ -40,6 +40,7 @@ go_unittest(
         "handler_test.go",
         "matcher_test.go",
         "message_store_test.go",
+        "message_types_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":service"],

@@ -186,6 +186,95 @@ func TestValidate(t *testing.T) {
 			msgs:    []*Message{{Name: "a", Keywords: []string{"x"}}, {Name: "a", Keywords: []string{"y"}}},
 			wantErr: "duplicate",
 		},
+		{
+			name: "valid chunked message with delays",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1", "c2"},
+				ChunkDelays:     []string{"100ms", "200ms"},
+			}},
+			wantErr: "",
+		},
+		{
+			name: "chunk_delays shorter than chunks-1 defaults missing gaps",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1", "c2"},
+				ChunkDelays:     []string{"100ms"},
+			}},
+			wantErr: "",
+		},
+		{
+			name: "empty reasoning_chunks entry rejected (V1)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", ""},
+			}},
+			wantErr: "empty reasoning_chunks entry",
+		},
+		{
+			name: "chunk_delays longer than chunks-1 rejected (V2)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1"},
+				ChunkDelays:     []string{"100ms", "200ms", "300ms"},
+			}},
+			wantErr: "chunk_delays",
+		},
+		{
+			name: "chunk_delays without reasoning_chunks rejected (V2)",
+			msgs: []*Message{{
+				Name:        "a",
+				Keywords:    []string{"x"},
+				ChunkDelays: []string{"100ms"},
+			}},
+			wantErr: "chunk_delays",
+		},
+		{
+			name: "unparseable chunk_delays entry rejected (V2)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1"},
+				ChunkDelays:     []string{"oops"},
+			}},
+			wantErr: "unparseable chunk_delays",
+		},
+		{
+			name: "both reasoning and reasoning_chunks rejected (V4)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				Reasoning:       "legacy",
+				ReasoningChunks: []string{"c0"},
+			}},
+			wantErr: "both reasoning and reasoning_chunks",
+		},
+		{
+			name: "tool_call with reasoning_chunks rejected (V5)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0"},
+				ToolCall:        &ToolCall{Name: "t"},
+			}},
+			wantErr: "tool_call",
+		},
+		{
+			name: "tool_call with chunk_delays rejected (V5)",
+			msgs: []*Message{{
+				Name:            "a",
+				Keywords:        []string{"x"},
+				ReasoningChunks: []string{"c0", "c1"},
+				ChunkDelays:     []string{"100ms"},
+				ToolCall:        &ToolCall{Name: "t"},
+			}},
+			wantErr: "tool_call",
+		},
 	}
 
 	for _, tt := range tests {
