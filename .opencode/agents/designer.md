@@ -1,7 +1,7 @@
 ---
 description: 调研、设计与规划者
 mode: all
-model: zhipuai-coding-plan/glm-5.2
+model: opencode-go/deepseek-v4-pro
 reasoningEffort: max
 temperature: 1.0
 tools:
