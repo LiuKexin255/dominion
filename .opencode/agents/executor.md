@@ -1,7 +1,7 @@
 ---
 description: executor for sdd task 
 mode: primary
-model: zhipuai-coding-plan/glm-5.2
+model: zhipuai-coding-plan/glm-5.3
 reasoningEffort: max
 temperature: 0.1
 tools:
