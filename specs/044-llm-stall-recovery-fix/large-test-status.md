@@ -23,8 +23,15 @@ config-file support — see "Resume plan"). When resuming, read this file plus
 | Phase 5 (T010) FR-012 — proto WarnSignal comment reconciliation | ✅ done | `166683e` |
 | docs — cancel US2 floor large-test case (untestable in stall deploy) | ✅ done (designer) | `87cb986` |
 | Phase 5 (T011) large-test cases (b)/(c) + 60s re-baseline | ✅ code complete, gofmt clean, compiles | `fd81521` |
-| Phase 5 (T012) large-test acceptance (`guitar run`) | ⛔ **BLOCKED** — see §2 | — |
-| Phase 5 (T013) housekeeping + whole-tree final build/test | ⏸ pending T012 | — |
+| Phase 5 (T012) large-test acceptance (`guitar run`) | ⛔ **BLOCKED** (historical — resolved 2026-08-14, see §7) | — |
+| Phase 5 (T013) housekeeping + whole-tree final build/test | ⏸ pending T012 (historical — done 2026-08-14, see §7) | — |
+| Phase 5A (T014–T017) service-config channel (`agent_timeouts`) + heartbeat tick logs | ✅ done | `50f8d4f` |
+| Phase 5 (T011) stall-suite rescale (5s/2s/12s) + think-gap case (d) | ✅ done | `c4aae69` |
+| Phase 5 (T018) env→config comments (system_test.yaml / helpers_test.go / README.md / BUILD.bazel) + size large→medium | ✅ done | `c4aae69` (+docs `e929b60`) |
+| Phase 5 (T019) fake-llm `think-interrupt-gap` 90s→15s + 046 pin assertion sync | ✅ done | `c4aae69` (+docs `2328861`) |
+| Phase 5 (T021) greeting keyword hygiene (T012 first-run fix) | ✅ done | `a84a6a2` (+docs `bd3c47a`) |
+| Phase 5 (T012) large-test acceptance (`guitar run`) | ✅ **ALL GREEN** — 11/11 suites; agent-stall 5/5（首轮 4/5 → T021 修复 → 重跑全绿；另单独 suite 复跑全绿） | — (verification only) |
+| Phase 5 (T013) housekeeping + whole-tree final build/test + status docs close-out | ✅ done | — (docs) |
 
 All agent + proto + desktop unit tests are green
 (`bazel test //projects/game/agent:lib_test`, `//projects/game:game_test`,
@@ -162,6 +169,17 @@ Note: this decision is independent of the T012 heartbeat blocker and of the
 deploy-tool config-file enabler. Whichever option is chosen does not affect
 cases (b)/(c).
 
+**2026-08-14 close-out (working default α executed — final ruling still
+pending)**: the resume scope completed under the **working default α**
+([research.md](research.md) R11 — unit-layer substitution): SC-001/SC-005 are
+validated at the unit layer by T003 (`resolveStreamIdleTimeout` /
+`getReasoningIdleTimeoutFloor`) and T004 (graph-node `idleTimeout` application),
+as recorded in [quickstart.md](quickstart.md) A4 ("SC-005 note"). Option **γ**
+(floor large-test case, [tasks.md](tasks.md) T020) was **NOT executed** — it is
+gated on the spec owner's ruling, which remains **pending**; the executor's
+completion report requests the ruling confirmation from the spec owner. β was
+not taken (spec.md wording untouched).
+
 ---
 
 ## 5. Resume plan (after deploy-tool config-file support lands)
@@ -220,3 +238,56 @@ Both external enablers are complete and green on the current lineage (`046-fake-
 4. **SC-005 §4 remains open** with the spec owner; γ's cost dropped materially (R11: resumable-silence template exists; default topology already deployed by `deploy_agent.yaml`) and is pre-analyzed as optional item 6 in the resume scope. Working default stays α.
 
 **Next action**: re-author Phase 5 tasks via `/speckit.tasks` from plan.md "Update 2026-08-14 — Resume Scope" (items 1–5, item 6 gated on the SC-005 ruling), then execute through T012 full-green.
+
+---
+
+## 7. 2026-08-14 close-out — T012 all-green, T021 root cause, R9 ruling
+
+### T012 acceptance runs (Constitution VI — actual `guitar run`, deploy→test→cleanup)
+
+| Run | Environment | Result | Notes |
+|---|---|---|---|
+| First run (pre-T021) | `game.lt5ho95n` | 10/11 suites green; agent-stall **4/5** | case (d) `TestAgentStallThinkInterruptGapDetected` failed — fake-llm keyword collision (see below), **not an agent regression**; heartbeat case PASSED 12.31s (R9 false stall did not recur) |
+| Re-run (post-T021, full plan) | `game.ltxaldut` | **11/11 suites ALL GREEN** | agent-stall five cases PASS: T1 5.35s / T2 (heartbeat) 12.31s / T3 5.17s / T4 5.09s / T5 5.10s; suite 33.1s — well within the medium size budget (300s) |
+| Isolated re-confirmation (`guitar run --suite agent-stall`) | `game.ltkuywyo` | agent-stall **ALL GREEN** 33.0s | standalone suite re-run confirms the green is not order/topology dependent |
+
+### First-run failure root cause — fake-llm keyword collision (T021)
+
+Case (d) failed because the prompt `"think interrupt gap"` matched BOTH
+`greeting` (2-char keyword `hi` ⊂ "t(hi)nk",
+`projects/game/fake-llm/service/testdata/chat.yaml`) and `think-interrupt-gap`
+(full keyword, `testdata/stall_recovery.yaml`); under [012 spec
+FR-006/FR-007](../012-fake-llm-service/spec.md) (case-insensitive substring
+match + alphabetical-lowest-`name` tie-break) `greeting` wins **deterministically**
+— the first received thinking frame was greeting's reasoning, and the second
+frame hit the 75s read timeout (trace `fbac92826519a78413780294766e772b`).
+Mechanical enumeration over all 7 testdata files showed the collision is unique
+to these two templates, and ALL three 046 think templates ("think" keywords)
+were equally hijacked. Fix = **greeting keyword hygiene** (drop `hi`,
+[T021](tasks.md) — commit `a84a6a2`, designer ruling docs `bd3c47a`; full record
+in [tasks.md](tasks.md) header "T012 首跑修订"); `matcher.go`/`matcher_test.go`
+and the 012 FR-006/FR-007 contract semantics are unchanged.
+
+### R9 ruling — heartbeat false-stall did NOT recur (contingency not needed)
+
+- The heartbeat case `TestAgentStallToolExecutionNotFalselyDetected` passed in
+  **all three runs** (12.31s in the re-run) — the R9 contingency branch
+  ([research.md](research.md) R9) was never triggered.
+- **Tick-path observability works**: signoz query
+  `service.name='game/agent' AND body CONTAINS 'tool heartbeat'` returns
+  `tool heartbeat wrapper started` for `saolei_init`/`saolei_operate` with
+  `intervalMs=10000` (standard-suite envs, e.g. `game.lt1hf596`).
+- **Stall-env (2s heartbeat) tick logs did not persist to the log store**: all
+  three stall envs show 0 records (T2 trace
+  `e956a177c5fc966370b90e859b924c88` also not exported). Cause: the ~33s env
+  lifetime is shorter than the telemetry batch-export delay — the pod is
+  deleted while data is still queued. This is an objective limitation of
+  very-short-lived deploys, **not a functional defect**; the R9 discriminator
+  is only needed if the false stall recurs.
+
+### SC-005 status
+
+Working default **α** executed in full (unit-layer substitution — T003/T004,
+see [quickstart.md](quickstart.md) A4); **γ** (T020) not executed; the spec
+owner's final ruling remains pending — requested in the executor's completion
+report (see §4).
