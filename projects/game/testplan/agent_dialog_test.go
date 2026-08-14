@@ -247,9 +247,9 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 	// Each message triggers a different template via a distinct keyword so the
 	// response text proves which input was processed.
 	messages := []string{
-		"hello world",   // greeting
-		"goodbye world", // farewell
-		"hi friend",     // greeting again (hi is a greeting keyword)
+		"hello world",      // greeting
+		"goodbye world",    // farewell
+		"greetings friend", // greeting again (greetings is a greeting keyword)
 	}
 	wantTexts := []string{expectedGreetingText, expectedFarewellText, expectedGreetingText}
 

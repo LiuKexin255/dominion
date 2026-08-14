@@ -12,9 +12,9 @@ deterministic, scriptable model behavior without a live LLM endpoint. See
 
 ## Key capabilities
 
-- **Keyword matching**: a request matches the message template whose
-  `keywords` all occur (case-insensitive substring) in the user/assistant
-  turn; unmatched requests fall back to a random non-hang-capable template.
+- **Keyword matching**: a request matches the message template where ANY
+  of its `keywords` occurs (case-insensitive substring) in the last `user`
+  message; unmatched requests fall back to a random non-hang-capable template.
 - **Streaming / non-streaming**: `stream:true` emits OpenAI-style SSE frames
   (`reasoning_content` deltas → `content` delta → `finish_reason` → `[DONE]`);
   the non-streaming path returns a single JSON completion.

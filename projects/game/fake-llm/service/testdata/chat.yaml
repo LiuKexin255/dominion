@@ -3,10 +3,13 @@
 # chat-only and farewell are the templates the agent matches on ordinary
 # conversation turns.
 messages:
+  # greeting has no "hi" keyword: "hi" ⊂ "t(hi)nk" made greeting hijack
+  # every think-* trigger by the alphabetical-name tie-break
+  # (specs/044-llm-stall-recovery-fix/tasks.md T021; matching semantics:
+  # specs/012-fake-llm-service/spec.md FR-006/FR-007).
   - name: greeting
     keywords:
       - hello
-      - hi
       - greetings
     reasoning: "The user is greeting me, I should respond warmly."
     text: "Hello! How can I help you today?"

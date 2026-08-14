@@ -51,7 +51,6 @@ YAML and decodes into:
 name: greeting
 keywords:
   - hello
-  - hi
   - greetings
 reasoning: "The user is greeting me, I should respond warmly."
 text: "Hello! How can I help you today?"
@@ -63,7 +62,10 @@ Fields:
   messages match (see §4).
 - `keywords` — case-insensitive substring triggers. At least one non-empty
   keyword is required; duplicates across files are allowed, an empty string
-  element is rejected at startup.
+  element is rejected at startup. Keep keywords long enough that no keyword is
+  a substring of another template's trigger text: the former 2-char "hi"
+  matched "t(hi)nk", so `greeting` hijacked every `think-*` trigger via the
+  alphabetical tie-break (specs/044-llm-stall-recovery-fix/tasks.md T021).
 - `reasoning` — the thinking-frame content returned to the agent.
 - `text` — the response content returned to the agent.
 
@@ -76,7 +78,7 @@ The shipped samples are:
 | `sample_compression_player.yaml` | compress-player-summary | 已玩局数、胜负记录 | — | "已玩 5 局，其中 4 局失败。下一局按复盘指令调整打法。" |
 | `sample_compression_planner.yaml` | compress-planner-summary | 已复盘局数 | — | "已复盘 5 局，长期记忆更新正常。" |
 | `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
-| `sample_greeting.yaml`    | greeting  | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
+| `sample_greeting.yaml`    | greeting  | hello, greetings        | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
 | `sample_init_instruction.yaml` | init-instruction | 团队初始化 | — | — (carries a `tool_call: instruct_player`) |
 | `sample_mouse_trigger.yaml` | mouse-trigger | move the mouse, position cursor | — | — (carries a `tool_call: mouse_move`) |
 | `sample_planner_memory.yaml` | planner-memory-add | 本局游戏过程 | "复盘完成，本局经验值得写入长期记忆。" | — (carries a `tool_call: memory` batch add) |
