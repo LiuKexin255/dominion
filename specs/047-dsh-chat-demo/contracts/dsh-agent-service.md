@@ -9,13 +9,13 @@ agent 服务（`experimental/dsh/demo/agent`，grpc-js/TS）的内部契约：ds
 ```
 init(otel) → resolver.resolve("dominion:///dsh-demo/fake-llm:8080")
   → process.env.FAKE_LLM_BASE_URL = `http://<endpoints[0]>/v1`
-  → boot("dsh-demo-agent", <产物内 cordis.yml 绝对路径>, undefined, undefined, import.meta.url)
+  → boot("dsh-demo-agent", <产物内 cordis.yml 绝对路径>, undefined, undefined, pathToFileURL(__filename).href)
   → await ctx.get('loader')?.await() 由 boot 内完成（fail-loud 审计）
   → import("./server.js") 启动 gRPC server
   → SIGTERM/SIGINT → server 优雅停止 → 逐 agent dispose → ctx.fiber.dispose() → exit 0
 ```
 
-- `boot()` 签名勘误：第 5 参为 `bareModuleBaseUrl`（非 anchor），传 `import.meta.url` 锚定裸包名解析于服务根 node_modules（[research.md](../research.md) D10-1）。
+- `boot()` 签名勘误：第 5 参为 `bareModuleBaseUrl`（非 anchor），传 `pathToFileURL(__filename).href`（`node:url` 的 `pathToFileURL` + CJS 全局 `__filename`——CJS 入口锚点，与 ESM 的 `import.meta.url` 等价，`survey/deepseek-harness-b1-bazel-packaging.md` §2.4）锚定裸包名解析于服务根 node_modules（[research.md](../research.md) D10-1、D8 修订版）。
 - 配置路径：产物内静态 `cordis.yml`（`data_files` 携带，路径相对入口推导）；无 `$DSH_CORDIS_CONFIG` 需求（demo 无外部覆写场景）。
 - **fail-loud（FR-009）**：boot 任何步骤失败（行解析失败、peer 缺失、激活失败）→ 进程非零退出并携带诊断；**不存在半启动状态**。错误经 bootstrap 的 catch 输出后 `process.exit(1)`。
 
@@ -80,7 +80,7 @@ init(otel) → resolver.resolve("dominion:///dsh-demo/fake-llm:8080")
 
 ## 5. 打包与运行形态
 
-- `artifact_pkg_js`：`ts_project = :server_lib`、`entrypoint = src/bootstrap.js`、`runtime_protos = ["//experimental/dsh/demo:chat_proto"]`、`runtime_deps = [third_party/dsh/core:runtime_pkg, common/js/* runtime_pkgs]`、`npm_deps = [服务直接声明的 link targets]`、`data_files = [cordis.yml, package.root.json]`。
-- **ESM 判定**：`package.root.json`（`{"type":"module"}`）物化为服务根 `package.json`——tar 内默认无服务根 package.json，`.js` 会被按 CJS 解析导致 ESM 入口失败（[research.md](../research.md) D8）。
+- `artifact_pkg_js`：`ts_project = :server_lib`、`entrypoint = src/bootstrap.js`、`runtime_protos = ["//experimental/dsh/demo:chat_proto"]`、`runtime_deps = [third_party/dsh/core:runtime_pkg, common/js/* runtime_pkgs]`、`npm_deps = [服务直接声明的 link targets]`、`data_files = [cordis.yml]`。
+- **模块格式（CJS）**：服务入口以 CJS 编译（仓库 TS 包统一格式），服务根无需任何 package.json data 文件——tar 内无服务根 package.json 时 `.js` 默认按 CJS 解析即所需；dsh 上游 ESM-only 包经 require(esm) 消费，Node 22.12+ 默认启用（[research.md](../research.md) D8 修订版）。
 - 镜像：`artifact_image`（distroless_nodejs24-debian12，`/nodejs/bin/node /dominion/dsh-demo/agent/src/bootstrap.js`）——native addon（`node-addon-require-builtin` linux-x64-gnu）在该 base 内实测加载为验收一部分（survey §7 风险 2）。
 - `service.yaml`：`app: dsh-demo`、`name: agent`、`kind: stateless`、port `grpc: 50051`、artifact tls。

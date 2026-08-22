@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "service",
+    srcs = [
+        "handler.go",
+        "matcher.go",
+        "message_store.go",
+        "message_types.go",
+        "startup.go",
+    ],
+    embedsrcs = ["testdata/chat.yaml"],
+    importpath = "dominion/experimental/dsh/demo/fake-llm/service",
+    visibility = ["//visibility:public"],
+    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+)
+
+go_unittest(
+    name = "service_test",
+    srcs = [
+        "handler_test.go",
+        "matcher_test.go",
+        "message_store_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":service"],
+)

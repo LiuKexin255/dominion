@@ -1,0 +1,16 @@
+# chat.yaml — US1 acceptance templates for the dsh-demo fake-llm
+# (specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §1/§4).
+# greeting and chat-only are pure keyword templates; farewell is the
+# unique pure fallback template (empty keywords, §3.3) — the
+# deterministic anchor the US1-3 no-match assertion replies on.
+# Multi-turn templates (greeting-again) join this file with US2 (T021).
+messages:
+  - name: greeting
+    keywords: [hello]
+    text: "Hello! How can I help you today?"
+  - name: chat-only
+    keywords: [chat]
+    text: "Sure, let's chat!"
+  - name: farewell
+    keywords: []
+    text: "I'm sorry, I didn't catch that."

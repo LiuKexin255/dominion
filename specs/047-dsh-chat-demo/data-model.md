@@ -30,7 +30,7 @@
 
 | 消息 | 字段 | 校验 |
 |---|---|---|
-| SendMessageRequest | `name: string`（资源名 `conversations/{id}`，id 非空——URI 变量 `{name=conversations/*}` 拼装，[contracts/chat-api.md](contracts/chat-api.md)）、`message: string`（必填非空） | 空值/坏资源名 → gRPC INVALID_ARGUMENT / HTTP 400（Edge Cases：畸形请求） |
+| SendMessageRequest | `name: string`（资源名 `conversations/{id}`，id 非空——URI 变量 `{name=conversations/*}` 拼装，[contracts/chat-api.md](contracts/chat-api.md)）、`message: string`（必填非空） | `message` 空值 → gRPC INVALID_ARGUMENT / HTTP 400；坏资源名 → HTTP 404（gateway 路由层拒绝，未达 agent；agent 侧 INVALID_ARGUMENT 防御分支由单测覆盖，[contracts/chat-api.md](contracts/chat-api.md) §2）（Edge Cases：畸形请求） |
 | SendMessageResponse | `name: string`（回显资源名）、`reply: string` | reply 确定性由模板匹配保证 |
 
 资源名 `name` 中的 id 与 Conversation.id 同一（服务端提取 `conversations/` 后缀即得）。proto 定义位于 `experimental/dsh/demo/chat.proto`（AIP-136 自定义方法模式，契约细节：[contracts/chat-api.md](contracts/chat-api.md)）。

@@ -98,13 +98,25 @@
 
 ---
 
-## D8 — TS 服务入口 ESM 化 + 服务根 package.json data 文件
+## D8 — TS 服务入口 CJS 化（require(esm) 消费 dsh ESM 包），零 data 文件修补
 
-**Decision**: agent 服务以 ESM 编译（`.swcrc` module: es）；bootstrap 传 `bareModuleBaseUrl = import.meta.url`；**在服务根放一个 data 文件 `package.root.json`（内容 `{"type":"module"}`，输出为 `/dominion/dsh-demo/agent/package.json`）**——产物 tar 内无服务根 package.json 的现状（survey §3.2）会使 `.js` 按 CJS 解析、ESM 入口启动即失败，data 文件是最小修补。
+> 2026-08-22 修订：原 "ESM 入口 + package.root.json data 文件" 方案废弃（勘误见 Alternatives 第三条）。
 
-**Rationale**: survey §2.4（ESM 与 dsh 生态一致、锚点两路都通）；`artifact_pkg_js` data_files 机制现成（survey §6.1 表）。CJS + `pathToFileURL(__filename)` 备选成立但放弃（与 dsh 生态 ESM 一致性差）。
+**Decision**: agent 服务以 CJS 编译——`.swcrc` `module.type: "commonjs"`、tsconfig `module: "commonjs"` 且不设 `moduleResolution` 字段（与仓库既有 TS 包统一，样板 `common/js/otel/tsconfig.json`、`experimental/grpc_chain/mid/tsconfig.json`）；bootstrap 传 `bareModuleBaseUrl = pathToFileURL(__filename).href`（入口 `import { pathToFileURL } from "node:url"`）；**服务根无需任何 package.json data 文件**——产物 tar 内无服务根 package.json 时 `.js` 默认按 CJS 解析（`survey/deepseek-harness-b1-bazel-packaging.md` §3.2），恰为 CJS 入口所需。
 
-**Alternatives considered**: *`.mjs` 后缀*——swc/ts_project 输出重命名路径不在现有链路习惯内，data 文件更贴近现状。
+**Rationale**:
+
+1. **CJS 宿主可直接 require ESM dsh 包**：`require(esm)` 自 Node 22.12 起默认启用（22.7 实验引入）、v25.4 stable（[Node.js docs: Loading ECMAScript modules using require()](https://nodejs.org/api/modules.html#loading-ecmascript-modules-using-require)；演进与同步性原理见 [Joyee Cheung: require(esm) in Node.js](https://joyeecheung.github.io/blog/2024/03/18/require-esm-in-node-js/)——ESM 仅在模块图含 top-level await 时才异步，同步图可被 require）。
+2. **0.1.1-rc.2 五个静态依赖包全部同步无 TLA**（app-boot/agent/llm/agent-spine-demo/llm-deepseek，2026-08-22 本地 node 实证 require 成功）——require(esm) 的唯一硬约束不触发；dsh 包自身仍按 ESM 解析（物化 node_modules 内各包 package.json 带 `"type": "module"`）。
+3. **rules_ts typecheck 沙箱与源树/产物判定一致**：typecheck 沙箱内无 package.json，ESM 方向需 `module: esnext` + `moduleResolution: bundler` 的 workaround 且引入仓库第二种 tsconfig 配置风格；CJS 方向下沙箱、源树、产物 tar 三者的模块格式判定一致。
+
+**Alternatives considered**:
+
+- *ESM + 源 package.json 作 data_files*（可行备选）：Node ≥22.7 的 syntax detection 下甚至可不放任何文件（`.js` 按语法探测为 ESM），但 Node 官方建议显式 `type` 声明（syntax detection 有解析开销，同 Joyee Cheung 博文）；且与仓库统一 CJS 格式不一致，放弃。
+- *`.mjs` 后缀*：swc/ts_project 输出重命名路径不在现有链路习惯内，否决（不变）。
+- ~~*package.root.json data 文件*~~（**勘误废弃**）：`artifact_pkg_js` 的 data_files 物化按原名拷贝、无重命名能力（`tools/release/defs.bzl` Phase 5 data_files，L473-481），"`package.root.json` 输出为服务根 `package.json`" 的原设计不成立，废弃。
+
+**附注（供下游免查）**: swc `module.type` 的 ESM 值为 `"es6"`（当前 `experimental/dsh/demo/agent/.swcrc` 实况即此值）、CJS 值为 `"commonjs"`（[swc configuration reference](https://swc.rs/docs/configuration/swcrc)）。
 
 ---
 
@@ -137,6 +149,6 @@
 | D5 | gRPC session_id ↔ dsh SessionId 直映射 + get-or-create + 并发防抖 | ✅ 设计定 |
 | D6 | 底座 ≈11 包闭包清单 workspace 包（otel 范式） | ✅ 设计定（清单以实测 pin 为准） |
 | D7 | fake-llm Go：SSE 恒支持 + header 容忍 + 多轮最小扩展匹配 | ✅ 设计定 |
-| D8 | TS 入口 ESM + 服务根 package.json data 文件 | ✅ 设计定 |
+| D8 | TS 入口 CJS（仓库统一）+ require(esm) 消费 dsh ESM 包；无 package.json data 文件 | ✅ 修订定（2026-08-22，原 ESM 方案废弃） |
 | D9 | grpc_chain gateway 样板 + `/experimental/dsh-demo` 前缀 + app `dsh-demo` | ✅ 设计定 |
 | D10 | 上游 API 勘误与事实清单 | ✅ 记录 |

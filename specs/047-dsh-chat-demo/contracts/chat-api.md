@@ -1,6 +1,6 @@
 # Contract: Chat API（对外 HTTP + gRPC Chat 服务）
 
-**Feature**: [spec.md](spec.md) FR-001/FR-002 | **Date**: 2026-08-22 | **修订**: 2026-08-22 按 AIP-136 自定义方法模式重定义资源名路由（合规 `style/api.md`）
+**Feature**: [spec.md](spec.md) FR-001/FR-002 | **Date**: 2026-08-22 | **修订**: 2026-08-22 按 AIP-136 自定义方法模式重定义资源名路由（合规 `style/api.md`）；2026-08-22 拆分错误码两层语义（资源名不匹配 → 路由层 404，字段校验 → 400），对齐 grpc-gateway 实际路由行为与 testplan 断言
 
 demo 的唯一公共入口契约：调用方 → gateway（HTTP/JSON）→ agent 服务（gRPC）。版本策略：demo 无版本化承诺（experimental，破坏性变更不通知）。
 
@@ -21,7 +21,7 @@ demo 的唯一公共入口契约：调用方 → gateway（HTTP/JSON）→ agent
 
 | 字段 | 位置 | 类型 | 必填 | 校验失败 |
 |---|---|---|---|---|
-| name（资源名 `conversations/{id}`） | URI 变量拼装 | string | 是（id 非空，`conversations/*` 匹配） | 400 |
+| name（资源名 `conversations/{id}`） | URI 变量拼装 | string | 是（id 非空，`conversations/*` 匹配） | 404（路由层拒绝，见错误码表） |
 | message | body | string | 是（非空） | 400 |
 
 **Response 200**:
@@ -39,13 +39,16 @@ demo 的唯一公共入口契约：调用方 → gateway（HTTP/JSON）→ agent
 
 ### 错误码
 
+错误码按拒绝层拆分为两种语义：**路由层**（gateway 依据路由模式 `{name=conversations/*}` 拒绝，请求未到达 agent）与**字段校验层**（请求到达 agent 后由 handler 校验）：
+
 | HTTP | gRPC | 场景 |
 |---|---|---|
-| 400 | INVALID_ARGUMENT | 字段缺失/为空、资源名不匹配 `conversations/*`（畸形请求 Edge Case） |
+| 404 | —（路由层拒绝，未达 agent） | 资源名不匹配 `conversations/*`（含空会话 id）：grpc-gateway routing error（[v2.27.6 `runtime/mux.go`](https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.27.6/runtime/mux.go)；畸形请求 Edge Case） |
+| 400 | INVALID_ARGUMENT | `message` 缺失/为空（字段校验层；畸形请求 Edge Case） |
 | 500 | INTERNAL | agent 内部错误（模型调用失败等——fake-llm 不可达时本轮以错误返回，进程存活，Edge Case） |
 | 503 | UNAVAILABLE | agent 服务未就绪/不可达 |
 
-错误体携带可读 message（经 gateway 透传 gRPC status message，[AIP-193](https://google.aip.dev/193)）。
+错误体携带可读 message：400/500/503 经 gateway 透传 gRPC status message（[AIP-193](https://google.aip.dev/193)）；404 由 gateway 路由层自行生成（不经 agent 透传）。
 
 ## 2. gRPC 服务契约（gateway → agent）
 
@@ -79,6 +82,7 @@ message SendMessageResponse {
 
 - 传输：agent 监听 `0.0.0.0:50051`（grpc 端口，TLS opportunistic——仓库 grpc-js 服务惯例：`/etc/tls/tls.crt|key` 在场则 TLS，否则 insecure）；gateway 经 `solver.URI("dsh-demo/agent:grpc")` 拨号。
 - 字段语义与 HTTP 完全同构（gateway 纯转译，无自有逻辑）；`name` 由 URI 变量 `{name=conversations/*}` 自动填充（[AIP-127](https://google.aip.dev/127)）。
+- 路由模式 `{name=conversations/*}` 保证经 HTTP 入口到达 agent 的 `name` 总在集合内（不匹配或空会话 id 在 gateway 路由层被拒为 404，见 §1 错误码）；agent 对 `name` 的 INVALID_ARGUMENT 校验作为深度防御保留（经 HTTP 入口不可达），由 agent 单测覆盖（`experimental/dsh/demo/agent/src/server.test.ts`，[tasks.md](../tasks.md) T014）。
 - 资源名到会话标识的映射：服务端从 `name` 提取 `conversations/` 后缀作为 Conversation id（直映射 dsh SessionId，见 [dsh-agent-service.md](dsh-agent-service.md) §3）。
 
 ## 3. 时序与超时
@@ -95,4 +99,4 @@ message SendMessageResponse {
 | US2-1 | 同会话第二轮（history_keywords 满足）→ 多轮分支模板的 text |
 | US2-2 | 新会话同消息 → 首轮分支模板的 text |
 | US2-3 | 两会话交错 → 各自正确分支 |
-| Edge | 空字段/坏资源名 → 400；fake-llm 不可达 → 500 且进程存活 |
+| Edge | 空字段（`message` 缺失/为空）→ 400；坏资源名（不匹配 `conversations/*`、含空会话 id）→ 404（路由层拒绝）；fake-llm 不可达 → 500 且进程存活 |

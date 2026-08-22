@@ -1,7 +1,6 @@
 {
     "name": "@dominion/dsh-demo-agent",
     "private": true,
-    "type": "module",
     "dependencies": {
         "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
         "@deepseek-ai/dsh-agent-spine-demo": "0.1.1-rc.2",

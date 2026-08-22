@@ -1,0 +1,29 @@
+load("//tools/dev/go:defs.bzl", "go_largetest")
+
+# testplan_test is the US1 chat interface suite (specs/047-dsh-chat-demo
+# tasks.md T018/T019): single-turn template hits, reply determinism, the
+# no-match fallback, and malformed-request rejection through the public HTTP
+# entry (specs/047-dsh-chat-demo/contracts/chat-api.md §4 US1/Edge rows).
+#
+# The target uses the gazelle default name ({package_name}_test) so gazelle
+# does not regenerate a go_unittest for this directory (style/large_test.md
+# §测试用例); US2's multiturn suite will add a second go_largetest target
+# (multiturn_test) alongside this one and append it to the same suite in
+# interface_test.yaml.
+#
+# size = small: three tests / 9 HTTP round trips (3 template-hit cases +
+# 2 determinism repeats + 4 invalid-request cases), each a sub-second chat
+# turn (specs/047-dsh-chat-demo/contracts/chat-api.md §3) — well within the
+# 60s small budget.
+go_largetest(
+    name = "testplan_test",
+    size = "small",
+    srcs = [
+        "chat_test.go",
+        "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//common/gopkg/testtool",
+    ],
+)

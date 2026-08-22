@@ -6,6 +6,6 @@
     "target": "es2020"
   },
   "module": {
-    "type": "es"
+    "type": "commonjs"
   }
 }

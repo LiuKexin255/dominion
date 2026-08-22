@@ -12,7 +12,7 @@
 
 ## Technical Context
 
-**Language/Version**: TypeScript（Node toolchain 24，swc 编译，服务入口 ESM）；Go（仓库既有 toolchain，gateway 与 fake-llm）；dsh 全家桶精确 pin `0.1.1-rc.2`（dist-tag 不可信，见 `survey/deepseek-harness-b1-plugin-packaging.md` §4.2/§4.3）
+**Language/Version**: TypeScript（Node toolchain 24，swc 编译，**服务入口 CJS，与仓库 TS 包一致**；依赖的 ESM dsh 包经 require(esm) 消费，Node 22.12+ 默认启用——[research.md](research.md) D8）；Go（仓库既有 toolchain，gateway 与 fake-llm）；dsh 全家桶精确 pin `0.1.1-rc.2`（dist-tag 不可信，见 `survey/deepseek-harness-b1-plugin-packaging.md` §4.2/§4.3）
 
 **Primary Dependencies**: 
 - dsh 框架核心（`third_party/dsh/core` 闭包清单包，≈11 包：`@deepseek-ai/dsh-app-boot` + cordis 家族（cordis / cordis-plugin-loader / include / group / timer）+ `node-addon-require-builtin` + app-boot 的 4 个 dsh peers：home-paths / invariants / system-prompt / launch-environment）
@@ -30,7 +30,7 @@
 
 **Performance Goals**: N/A（PoC；正确性与确定性优先，无吞吐/延迟目标）
 
-**Constraints**: 产物不 bundle（per-file 编译，现状链路本就如此）；dsh 服务入口/插件解析要求 ESM；运行时零外部 LLM/网络依赖；fake-llm 寻址必须经 Dominion 服务发现（FR-011，禁止静态地址）
+**Constraints**: 产物不 bundle（per-file 编译，现状链路本就如此）；dsh 上游包为 ESM-only（服务入口 CJS 经 require(esm) 消费，Node 22.12+ 默认启用——[research.md](research.md) D8，服务根无需 package.json data 文件）；运行时零外部 LLM/网络依赖；fake-llm 寻址必须经 Dominion 服务发现（FR-011，禁止静态地址）
 
 **Scale/Scope**: 3 服务 + 1 底座包 + 1 testplan；~40±10 个 dsh 闭包包（`survey/deepseek-harness-b1-bazel-packaging.md` §5.4.2）
 
@@ -47,7 +47,7 @@
 | V 编码前阅读文档 | tasks.md 阶段（`/speckit.tasks`）按三分类声明文档清单 | ⏳ 待 tasks 阶段 |
 | VI 大型测试验收 | FR-008：testplan skill 实际执行 `guitar run`，全部用例通过；fake-llm 为测试基建随 testplan 部署（README 记录豁免先例参照） | ✅ 通过（设计含验收路径） |
 
-**Post-Phase-1 复核（2026-08-22）**: 设计产物（research/data-model/4×contracts/quickstart）复核通过——原则 I（全部决策带仓库路径或上游 URL）、原则 III（四份契约先于实现定约）、原则 VI（quickstart §3 定义 guitar run 验收闭环）；无新增违规，Complexity Tracking 维持空。`package.root.json`（ESM 判定修补）为最小必要变更（[research.md](research.md) D8 已记录备选与否决理由）。
+**Post-Phase-1 复核（2026-08-22）**: 设计产物（research/data-model/4×contracts/quickstart）复核通过——原则 I（全部决策带仓库路径或上游 URL）、原则 III（四份契约先于实现定约）、原则 VI（quickstart §3 定义 guitar run 验收闭环）；无新增违规，Complexity Tracking 维持空。**D8 修订（2026-08-22）**：服务模块格式定为 CJS（与仓库 TS 包统一），服务根无需 package.json data 文件修补；require(esm) 依据与备选否决见 [research.md](research.md) D8 修订版（原 ESM 方案及其 `package.root.json` 设计经勘误废弃——`artifact_pkg_js` data_files 无重命名能力）。
 
 ## Project Structure
 
@@ -79,12 +79,11 @@ third_party/dsh/
 
 experimental/dsh/demo/
 ├── chat.proto                  # 应用根 proto（Chat 服务 + google.api.http 注解，grpc_chain 惯例）
-├── agent/                      # dsh grpc-js 服务（TS，ESM 入口）
+├── agent/                      # dsh grpc-js 服务（TS，CJS 入口——仓库统一，require(esm) 消费 dsh ESM 包）
 │   ├── package.json            #   直接依赖：app-boot/spine/llm-deepseek/agent/llm + grpc + workspace 公共包
 │   ├── tsconfig.json
-│   ├── .swcrc                  #   module: es（dsh 生态 ESM 一致性，survey §2.4/§6.3）
+│   ├── .swcrc                  #   module: commonjs（仓库统一）
 │   ├── cordis.yml              #   组合清单（两行：agent-spine + llm-deepseek）
-│   ├── package.root.json       #   服务根 package.json data 文件（{"type":"module"}，ESM 判定）
 │   ├── service.yaml            #   agent 服务部署（grpc:50051, tls）
 │   └── src/
 │       ├── bootstrap.ts        #   otel init → bootDsh() → 动态 import server → startServer → SIGTERM/SIGINT 退出链
