@@ -217,7 +217,7 @@ TUI 插件**不是装在"dsh 应用本体"上，而是以 profile 为单位安�
 | `dsh --profile <name>` | 独立 CLI 进程 | 按 profile 组合启动；`headless` 变体接受一个任务参数，跑完输出最终答案退出（exit code 由最后一个 `turn/end` 是否完成决定），不开放监听端口 |
 | **Python SDK** | 子进程 runtime | `pip install deepseek-harness-sdk`；`DeepSeekHarness(provider, model, cwd, session_root, cordis=...)` 上下文管理器 + `harness.run(task, session_id=...)`；自带 bundled runtime，目标机器无需系统 Node.js；同一 harness + 同一 session id 复用会话持有的持久 Bash 进程 |
 | **ACP** | stdio JSON-RPC server | Agent Client Protocol 自动化 server，暴露全新 agent 会话，支持 session/permission/cancellation（examples/acp-agent） |
-| **`--mode` SDK（Node）** | Node 库 | dsh 侧无直接等价物，见下行 `boot()` |
+| **`--mode` SDK（Node）** | Node 库 | ~~dsh 侧无直接等价物~~ → TS SDK 已落地（2026-07-27，`@deepseek-ai/dsh-sdk-client`，与 Python SDK 同层），更新记录见 `survey/deepseek-harness-integration-modes.md` §2 |
 | **Node `boot()` 自组** | 库级组装 | `@deepseek-ai/dsh-app-boot` 导出 `boot()`/`loadProfile()`/`initProfile()`/`composeEntries()`/`watchUserPatches()` 等；官方 `dsh` CLI 与 ACP demo bin 即是"thin self-executing composition over these helpers"；外部调用者需提供 Loader 可选 native helper（`node-addon-require-builtin`）或保证插件可被普通 Node 解析 |
 | **JSON-RPC agent 组合** | 配置裁剪示例 | examples/jsonrpc-agent：无人值守组合，故意不加载任何 terminal UI/console logger/approval UI/user-questions 工具（stdout 属于 SDK 协议、turn 由 SDK 驱动）；模型面工具固定为 bash(前台)/read/write/edit/subagent/todo_write；证明"裁剪组合"是官方支持用法 |
 
