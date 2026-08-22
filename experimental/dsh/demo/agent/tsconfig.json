@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "nodenext",
+    "strict": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@dominion/common-js-grpc-otel": ["../../../../common/js/grpc/otel/src"],
+      "@dominion/common-js-grpc-resolver": ["../../../../common/js/grpc/resolver/src"],
+      "@dominion/common-js-logs": ["../../../../common/js/logs/src"],
+      "@dominion/common-js-otel": ["../../../../common/js/otel/src"],
+      "@dominion/common-js-resolver": ["../../../../common/js/resolver/src"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

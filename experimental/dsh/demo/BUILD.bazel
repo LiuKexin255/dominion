@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "chat_proto",
+    srcs = ["chat.proto"],
+    visibility = ["//visibility:public"],
+    deps = ["@googleapis//google/api:annotations_proto"],
+)
+
+go_proto_library(
+    name = "chat_go_proto",
+    compilers = [
+        "@rules_go//proto:go_grpc_v2",
+        "@rules_go//proto:go_proto",
+        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
+        "//:go_gen_aip",
+    ],
+    importpath = "dominion/experimental/dsh/demo",
+    proto = ":chat_proto",
+    visibility = ["//visibility:public"],
+    deps = ["@googleapis//google/api:annotations_go_proto"],
+)
+
+go_library(
+    name = "chat",
+    embed = [":chat_go_proto"],
+    importpath = "dominion/experimental/dsh/demo",
+    visibility = ["//visibility:public"],
+)

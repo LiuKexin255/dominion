@@ -1,11 +1,13 @@
 packages:
   - experimental/ts/*
   - experimental/grpc_chain/mid
+  - experimental/dsh/demo/agent
   - experimental/openai_llm/client
   - common/js/**
   - projects/game/desktop/frontend
   - projects/game/agent
   - projects/game/pkg/saolei-board
+  - third_party/dsh/core
 
 catalog:
   "@grpc/grpc-js": "^1.14.4"
