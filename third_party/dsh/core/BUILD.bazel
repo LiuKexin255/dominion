@@ -1,0 +1,51 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
+
+npm_link_all_packages(name = "node_modules")
+
+ts_project(
+    name = "version_lib",
+    srcs = ["version.ts"],
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    deps = [
+        ":node_modules/@types/node",
+    ],
+)
+
+# Workspace package target required by npm_link_all_packages for workspace:* deps.
+js_library(
+    name = "pkg",
+    srcs = [":version_lib"],
+    visibility = ["//visibility:public"],
+)
+
+# Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
+# runtime_deps closure walking. The framework-core baseline is plugin-free:
+# npm_deps enumerates exactly the 11 direct dependencies pinned in package.json
+# (specs/047-dsh-chat-demo/data-model.md §6, specs/047-dsh-chat-demo/research.md D6). package_json is
+# a mandatory attribute (tools/release/js_runtime_library.bzl).
+js_runtime_library(
+    name = "runtime_pkg",
+    package_name = "@dominion/dsh-core",
+    lib = ":version_lib",
+    npm_deps = [
+        ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/cordis-plugin-loader",
+        ":node_modules/@deepseek-ai/cordis-plugin-include",
+        ":node_modules/@deepseek-ai/cordis-plugin-group",
+        ":node_modules/@deepseek-ai/cordis-plugin-timer",
+        ":node_modules/node-addon-require-builtin",
+        ":node_modules/@deepseek-ai/dsh-home-paths",
+        ":node_modules/@deepseek-ai/dsh-invariants",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-launch-environment",
+    ],
+    package_json = "package.json",
+    visibility = ["//visibility:public"],
+)
