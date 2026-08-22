@@ -31,7 +31,7 @@ Golang 代码格式化与依赖更新步骤：
 
 ### TypeScript / JavaScript
 
-* 执行 `pnpm` 命令时使用：`bazel run @pnpm -- --dir {project_path}`，`--dir` 参数必须使用绝对路径。
+* 执行 `pnpm` 命令时使用：`bazel run @pnpm -- --dir {project_path[/sub_project]}`，`--dir` 参数必须使用绝对路径。使用具体的项目/子项目路径代替 `-r` 参数。
 * TypeScript/JavaScript 依赖版本必须统一在根目录 `pnpm-workspace.yaml`的 catalog 中管理；只有明确记录为特殊例外的依赖才可以在 package manifest 中声明直接版本。
 * 修改 `package.json` 后，使用 `pnpm up` 更新依赖；不要手动修改 `pnpm-lock.yaml`。
 
