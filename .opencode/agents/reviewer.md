@@ -1,7 +1,7 @@
 ---
 description: Reviews code for quality and best practices,
 mode: subagent
-model: zhipuai-coding-plan/glm-5.3
+model: opencode-go/deepseek-v4-flash
 reasoningEffort: max
 temperature: 0.1
 tools:
