@@ -73,6 +73,42 @@ Follow-up TODOs:
   - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
     open/pending manual review.
 ==============================================================================
+Version change: 1.3.1 → 1.4.0
+Rationale: MINOR — new principle VII (Final-State Representation) added:
+  documents and code (incl. comments) MUST represent only the current final
+  state and MUST NOT retain iteration history; intermediate/reverted artifacts
+  MUST be fully removed from delivered docs/code; rejected alternatives MAY be
+  recorded only when strictly necessary. Development Workflow gate 4 renamed
+  引用门禁 → 引用与终态门禁 and extended to enforce principle VII. A new
+  principle = MINOR 1.4.0.
+
+Modified principles:
+  - None renamed or renumbered (I–VI unchanged); VII appended with category
+    label 通用.
+
+Added sections:
+  - VII. 终态表述 (Final-State Representation) — 通用.
+  - Development Workflow gate 4 renamed 引用门禁 → 引用与终态门禁（原则 I / VII）
+    and extended with final-state enforcement.
+
+Removed sections: none.
+
+Templates requiring updates:
+  - .specify/templates/plan-template.md / spec-template.md /
+    tasks-template.md / .specify/workflows/speckit/workflow.yml — ✅ no change
+    (they read the constitution dynamically; none references gate 4 or
+    principle numbering by name).
+
+Follow-up TODOs:
+  - AGENTS.md "注释" section overlaps with principle VII (it already mandates
+    "current state, not evolution history" for comments); consider aligning
+    its wording to cite the constitution in a follow-up change (non-blocking;
+    the constitution supersedes on conflict).
+  - Previous 1.2.0 follow-up (tasks-template per-phase "文档清单" example)
+    remains open/pending manual review.
+  - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
+    open/pending manual review.
+==============================================================================
 -->
 
 # Dominion Constitution
@@ -149,6 +185,18 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 
 **Rationale**：单测验证内部逻辑正确性；大型测试验证服务在真实集成环境下的行为，两者互补才能构成服务型应用的完整验收。仅通过构建检查无法证明被测系统在真实集成环境下行为正确；只有实际执行测试计划并使全部用例通过，才能形成有效、可信的验收。
 
+### VII. 终态表述 (Final-State Representation) — 通用
+
+文档与代码（含注释）MUST 只表述当前最终状态，MUST NOT 保留迭代过程记录：
+
+- 文档与注释 MUST 解释"为什么是现在这样"（当前状态的原因与背景），而非记录"从状态 A 演进到现在"的过程——中间状态已不存在，演进历史由版本控制系统承载。
+- 迭代过程中产生、但未进入最终方案的中间产物（特性、代码、注释、文档章节、配置等）MUST 在交付物中完全移除，不得残留。
+  - **badcase**：特性 A →（指令：修改为特性 B）→ 产出含 B+C →（指令：只要 B、没有 C）→ 交付 B 但残留 C 的任何痕迹。
+  - **goodcase**：特性 A →（指令：修改为特性 B）→ 交付仅含 B 的终态。
+- 被否决的方案及其原因 MAY 记录，但仅在必要时添加（如防止重复踩坑），避免过时信息产生噪音。
+
+**Rationale**：代码提交/MR 只保留最终状态，中间状态在仓库中并不存在；保留未生效内容（如被撤销的特性 C）会制造虚假信息，干扰读者理解。读者（人或 agent）需要的是当前状态的设计原因与背景，而非已消失的演进过程。
+
 ## 技术约束与规范 (Additional Constraints)
 
 - 本仓库采用 **SDD 架构**，以 **speckit** 作为 SDD 框架；需求规划、方案设计、计划制定与代码开发 MUST 遵守本宪章。
@@ -164,7 +212,7 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 1. **文档阅读门禁**（原则 V）：每个 phase 开始前，MUST 完整阅读 tasks.md 声明的全部文档。
 2. **实现门禁**（原则 II / III）：变更以重构式进行；服务/模块变更 MUST 先有接口设计。
 3. **编译 + 单测门禁**（原则 IV）：每次代码变更 MUST 通过 `bazel build` + `bazel test`（相关 target），作为开发任务的一部分，不单列 task。
-4. **引用门禁**（原则 I）：产出的代码与文档 MUST 包含引用来源。
+4. **引用与终态门禁**（原则 I / VII）：产出的代码与文档 MUST 包含引用来源，且 MUST 只表述终态、不保留迭代记录（被否决方案仅在必要时记录）。
 5. **大型测试验收门禁**（原则 VI）：服务型应用在功能/需求完成后，MUST 实际执行大型测试（通过 testplan skill 完成完整部署→测试→清理闭环）作为验收，且所有测试用例 MUST 全部通过；仅构建检查不构成验收；该步骤 MAY 单独分配 task。
 
 ## Governance
@@ -175,4 +223,4 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - **合规审查**：所有 PR / review MUST 校验本宪章合规性；任何复杂度 MUST 可被论证（对齐原则 II 的简化要求）。
 - 运行时开发指引见 `AGENTS.md`；本宪章文件位置：`.specify/memory/constitution.md`。
 
-**Version**: 1.3.1 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-08-14
+**Version**: 1.4.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-08-23
