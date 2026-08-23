@@ -136,7 +136,7 @@ func TestChatReplyDeterminism(t *testing.T) {
 //     The agent-side INVALID_ARGUMENT branch for names is therefore
 //     exercised by the agent unit tests
 //     (experimental/dsh/demo/agent/src/server.test.ts) — the same
-//     unit-test/testplan split tasks.md T019 notes for the
+//     unit-test/testplan split specs/047-dsh-chat-demo/tasks.md T019 notes for the
 //     fake-llm-unreachable 500 row.
 func TestChatInvalidRequest(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")

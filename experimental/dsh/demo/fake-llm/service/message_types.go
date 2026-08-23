@@ -16,9 +16,10 @@ package service
 //     marks a pure fallback template (§3.3) — it never participates in
 //     keyword matching and only serves the deterministic no-match path.
 //   - HistoryKeywords / MinTurn are the optional multi-turn conditions
-//     (US2). Their matching semantics land with
-//     specs/047-dsh-chat-demo/tasks.md T021; until then templates that
-//     declare them are reserved and never match.
+//     (§3 priority 1): EVERY history keyword must hit some message
+//     before the last user message, and the request's user-message
+//     count must reach MinTurn (default 1). For a multi-turn template
+//     an empty Keywords leaves the keyword condition vacuous (恒通过).
 //   - Text is the deterministic reply全文 (SSE content deltas
 //     concatenate back to it exactly).
 //   - Reasoning is a reserved schema-compatibility field; the
@@ -44,11 +45,11 @@ func (m *Message) effectiveMinTurn() int {
 }
 
 // isMultiTurn reports whether the template declares multi-turn
-// conditions (history_keywords non-empty or min_turn > 1 — the contract's
-// definition of a 多轮条件模板,
+// conditions (history_keywords non-empty or min_turn > 1 — the
+// contract's definition of a 多轮条件模板,
 // specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §3). Such
-// templates are matched only by the US2 matcher (T021); the US1 matcher
-// skips them so the fallback pool always stays servable.
+// templates match at priority 1 and are excluded from the fallback
+// pool so the deterministic no-match path always stays servable (§3.3).
 func (m *Message) isMultiTurn() bool {
 	return len(m.HistoryKeywords) > 0 || m.effectiveMinTurn() > 1
 }

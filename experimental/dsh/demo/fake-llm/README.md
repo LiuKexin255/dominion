@@ -24,15 +24,22 @@ scriptable model behavior with zero external LLM/network dependency.
 
 ## Matching semantics
 
-- **Keyword matching (US1)**: a request matches the template where ANY
-  of its `keywords` occurs (case-insensitive substring) in the LAST
-  `user` message; ties break by lowest template name.
+Templates match at the three priorities of
+`specs/047-dsh-chat-demo/contracts/fake-llm-templates.md` §3:
+
+- **Multi-turn condition templates** (declare `history_keywords` and/or
+  `min_turn > 1`): win when every condition holds — the keyword
+  condition on the LAST `user` message (vacuous for a multi-turn
+  template declaring no keywords), EVERY history keyword hitting some
+  message before the last user message, and the user-message count
+  reaching `min_turn` (default 1). Conflicts resolve to the template
+  declaring more conditions, then the lowest name.
+- **Pure keyword templates**: ANY of a template's `keywords` occurs
+  (case-insensitive substring) in the LAST `user` message; ties break
+  by lowest template name.
 - **Deterministic fallback**: an unmatched request returns the unique
   pure fallback template (`farewell`, empty keywords) directly; the
   same request always yields the same reply.
-- **Multi-turn conditions (US2, `history_keywords` / `min_turn`)** are
-  part of the template schema but their matching semantics land with
-  `specs/047-dsh-chat-demo/tasks.md` T021.
 
 Template schema and authoring contract:
 `specs/047-dsh-chat-demo/contracts/fake-llm-templates.md`. Shipped
@@ -63,5 +70,5 @@ be exempted by documenting the reason in its README:
 - **Its end-to-end consumption flows through the demo's testplan** —
   fake-llm is deployed as a dependency service of
   `experimental/dsh/demo/testplan/` and every chat round-trip assertion
-  there (`specs/047-dsh-chat-demo/tasks.md` T018-T020) is transitively
+  there (`specs/047-dsh-chat-demo/tasks.md` T018-T023) is transitively
   an assertion on this service.

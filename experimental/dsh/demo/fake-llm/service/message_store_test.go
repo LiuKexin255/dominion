@@ -199,7 +199,7 @@ func TestValidate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "multi-turn fields accepted (reserved for US2)",
+			name: "multi-turn fields accepted",
 			msgs: []*Message{{
 				Name:            "a",
 				Keywords:        []string{"x"},
@@ -287,11 +287,13 @@ func TestValidate(t *testing.T) {
 }
 
 // TestNewMessageStore_LoadsEmbeddedChat loads the real testdata embedded
-// into the binary and pins the single-source-of-truth strings the US1
-// large-test assertions rely on (specs/047-dsh-chat-demo/contracts/
-// fake-llm-templates.md §4): greeting.text for the matched round trip,
-// farewell.text for the no-match fallback. If these change, the
-// testplan cases (T019) must be updated in lockstep.
+// into the binary and pins the single-source-of-truth strings the large
+// tests rely on (specs/047-dsh-chat-demo/contracts/fake-llm-templates.md
+// §4): greeting.text for the first-turn round trip, greeting-again.text
+// for the second-turn multi-turn branch (specs/047-dsh-chat-demo/tasks.md
+// T022), farewell.text for the no-match fallback. If these change, the
+// testplan cases (specs/047-dsh-chat-demo/tasks.md T019/T022) must be
+// updated in lockstep.
 func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	// when
 	store, err := NewMessageStore()
@@ -302,12 +304,12 @@ func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 3 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 3 (chat-only + farewell + greeting)", len(got))
+	if len(got) != 4 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 4 (chat-only + farewell + greeting + greeting-again)", len(got))
 	}
 
-	// Sorted alphabetically: chat-only < farewell < greeting.
-	wantNames := []string{"chat-only", "farewell", "greeting"}
+	// Sorted alphabetically: chat-only < farewell < greeting < greeting-again.
+	wantNames := []string{"chat-only", "farewell", "greeting", "greeting-again"}
 	for i, want := range wantNames {
 		if got[i].Name != want {
 			t.Fatalf("message[%d] = %q, want %q", i, got[i].Name, want)
@@ -336,5 +338,16 @@ func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	}
 	if greeting.Text != "Hello! How can I help you today?" {
 		t.Errorf("greeting text = %q, want the greeting text", greeting.Text)
+	}
+
+	greetingAgain := got[3]
+	if !slices.Contains(greetingAgain.Keywords, "hello") || !slices.Contains(greetingAgain.HistoryKeywords, "hello") {
+		t.Errorf("greeting-again keywords = %v / history_keywords = %v, want hello in both", greetingAgain.Keywords, greetingAgain.HistoryKeywords)
+	}
+	if greetingAgain.MinTurn != 2 {
+		t.Errorf("greeting-again min_turn = %d, want 2", greetingAgain.MinTurn)
+	}
+	if greetingAgain.Text != "Hello again! We have already met." {
+		t.Errorf("greeting-again text = %q, want the multi-turn branch text", greetingAgain.Text)
 	}
 }

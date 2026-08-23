@@ -1,13 +1,20 @@
-# chat.yaml — US1 acceptance templates for the dsh-demo fake-llm
+# chat.yaml — US1/US2 acceptance templates for the dsh-demo fake-llm
 # (specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §1/§4).
 # greeting and chat-only are pure keyword templates; farewell is the
 # unique pure fallback template (empty keywords, §3.3) — the
 # deterministic anchor the US1-3 no-match assertion replies on.
-# Multi-turn templates (greeting-again) join this file with US2 (T021).
+# greeting-again is the multi-turn branch: history keywords + turn ≥ 2
+# steer a conversation's SECOND "hello" turn to it while a fresh
+# conversation's first "hello" stays on greeting (§4 US2 rows).
 messages:
   - name: greeting
     keywords: [hello]
     text: "Hello! How can I help you today?"
+  - name: greeting-again
+    keywords: [hello]
+    history_keywords: [hello]
+    min_turn: 2
+    text: "Hello again! We have already met."
   - name: chat-only
     keywords: [chat]
     text: "Sure, let's chat!"

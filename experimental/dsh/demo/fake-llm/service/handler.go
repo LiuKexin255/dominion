@@ -150,7 +150,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tmpl, matched := match(h.store.Messages(), messages)
 	slog.Info("chat completion served",
 		slog.String("template", tmpl.Name),
-		slog.Bool("keyword_matched", matched),
+		slog.Bool("condition_matched", matched),
 		slog.Bool("stream", req.Stream),
 	)
 

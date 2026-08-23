@@ -18,7 +18,7 @@ const (
 	// §环境类型) that every existing testplan in the repo sends.
 	headerEnv = "env"
 	// headerXDominionEnv is the header spelling named by
-	// specs/047-dsh-chat-demo/quickstart.md §4 and tasks.md T019. It rides
+	// specs/047-dsh-chat-demo/quickstart.md §4 and specs/047-dsh-chat-demo/tasks.md T019. It rides
 	// along with headerEnv so the request stays valid under an ingress
 	// configured to match either name; unmatched headers are ignored.
 	headerXDominionEnv = "x-dominion-env"

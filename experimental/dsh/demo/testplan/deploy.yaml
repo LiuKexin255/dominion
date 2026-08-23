@@ -1,7 +1,7 @@
 version: "3.0"
 # Environment name scope must match ^[a-z][a-z0-9]{0,7}$ (deploy schema,
 # tools/release/deploy/README.md §环境名格式) — hyphens are rejected, so the
-# tasks.md T018 literal "dsh-demo.{{run}}" is normalized to "dshdemo.{{run}}".
+# specs/047-dsh-chat-demo/tasks.md T018 literal "dsh-demo.{{run}}" is normalized to "dshdemo.{{run}}".
 # The env name is a test-environment identifier only and is not coupled to
 # the app name (dsh-demo) the resolver validates against SERVICE_APP.
 name: dshdemo.{{run}}

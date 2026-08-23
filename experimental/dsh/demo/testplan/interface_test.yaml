@@ -14,6 +14,12 @@ description: |
        the identical reply (US1-2)
     3. TestChatInvalidRequest — empty/missing message → 400; resource names
        outside conversations/* → routing-level 404 (Edge)
+    4. TestMultiturnBranch — a conversation's second identical "hello"
+       turn takes the greeting-again multi-turn template (US2-1)
+    5. TestMultiturnIsolation — a fresh conversation's first "hello" stays
+       on the first-turn greeting template (US2-2)
+    6. TestMultiturnInterleaved — two interleaved conversations each follow
+       their own branch sequence (US2-3)
 
 suites:
   - name: default
@@ -23,3 +29,4 @@ suites:
         public: https://apitest.liukexin.com
     cases:
       - //experimental/dsh/demo/testplan:testplan_test
+      - //experimental/dsh/demo/testplan:multiturn_test

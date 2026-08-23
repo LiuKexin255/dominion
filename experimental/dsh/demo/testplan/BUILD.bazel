@@ -1,15 +1,16 @@
 load("//tools/dev/go:defs.bzl", "go_largetest")
 
-# testplan_test is the US1 chat interface suite (specs/047-dsh-chat-demo
-# tasks.md T018/T019): single-turn template hits, reply determinism, the
-# no-match fallback, and malformed-request rejection through the public HTTP
-# entry (specs/047-dsh-chat-demo/contracts/chat-api.md §4 US1/Edge rows).
+# testplan_test is the single-turn chat interface suite
+# (specs/047-dsh-chat-demo/tasks.md T018/T019): single-turn template hits,
+# reply determinism, the no-match fallback, and malformed-request
+# rejection through the public HTTP entry
+# (specs/047-dsh-chat-demo/contracts/chat-api.md §4 US1/Edge rows). Both
+# targets in this directory share helpers_test.go (style/large_test.md
+# §测试组织 — shared helpers live in the shared helper file).
 #
-# The target uses the gazelle default name ({package_name}_test) so gazelle
-# does not regenerate a go_unittest for this directory (style/large_test.md
-# §测试用例); US2's multiturn suite will add a second go_largetest target
-# (multiturn_test) alongside this one and append it to the same suite in
-# interface_test.yaml.
+# testplan_test uses the gazelle default name ({package_name}_test) so
+# gazelle does not regenerate a go_unittest for this directory
+# (style/large_test.md §测试用例).
 #
 # size = small: three tests / 9 HTTP round trips (3 template-hit cases +
 # 2 determinism repeats + 4 invalid-request cases), each a sub-second chat
@@ -21,6 +22,31 @@ go_largetest(
     srcs = [
         "chat_test.go",
         "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//common/gopkg/testtool",
+    ],
+)
+
+# multiturn_test is the multi-turn conversation suite
+# (specs/047-dsh-chat-demo/tasks.md T021/T022): same-conversation branch
+# switch to the greeting-again multi-turn template, cross-conversation
+# isolation, and interleaved conversations each following their own
+# branch sequence through the public HTTP entry
+# (specs/047-dsh-chat-demo/contracts/chat-api.md §4 US2 rows). Appended
+# to the same suite in interface_test.yaml (single-plan principle,
+# style/large_test.md §测试计划数量).
+#
+# size = small: three tests / 9 HTTP round trips (2 branch turns + 3
+# isolation turns + 4 interleaved turns), each a sub-second chat turn —
+# well within the 60s small budget.
+go_largetest(
+    name = "multiturn_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "multiturn_test.go",
     ],
     deps = [
         "//common/gopkg/otel/tracecontext",

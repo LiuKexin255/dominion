@@ -16,23 +16,32 @@ type chatMessage struct {
 }
 
 // match picks the response template for one chat-completions request in
-// a fully stateless way (specs/047-dsh-chat-demo/contracts/
-// fake-llm-templates.md §3, US1 subset):
+// a fully stateless way, at the three priorities of
+// specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §3:
 //
-//  1. Pure keyword templates (non-multi-turn, non-empty Keywords) whose
+//  1. Multi-turn condition templates (history_keywords non-empty or
+//     min_turn > 1) whose every condition holds — the keyword condition
+//     (vacuous when the template declares no keywords), ALL history
+//     keywords each hitting some message before the last user message,
+//     and the user-message count reaching min_turn. Conflicts resolve
+//     to the most declared conditions first, then the lowest Name.
+//  2. Pure keyword templates (non-multi-turn, non-empty Keywords) whose
 //     ANY keyword is a case-insensitive substring of the LAST user
 //     message — ties broken by lowest Name for determinism.
-//  2. Fallback: the unique pure fallback template (empty Keywords,
+//  3. Fallback: the unique pure fallback template (empty Keywords,
 //     non-multi-turn) if exactly one exists; otherwise a stable-seed
 //     pick over all non-multi-turn templates seeded by the request
 //     messages' hash, so the same request always yields the same reply
 //     (§3.3, US1-2's determinism covers the fallback path).
 //
-// Multi-turn templates are reserved for US2 (T021) and never match here.
-// The bool return reports the keyword path (true) versus the fallback
-// path (false).
+// The bool return reports a condition path (multi-turn or pure keyword,
+// true) versus the fallback path (false).
 func match(templates []*Message, messages []*chatMessage) (*Message, bool) {
 	lowered := strings.ToLower(lastUserText(messages))
+
+	if best := matchMultiTurn(templates, lowered, loweredHistoryTexts(messages), userTurnCount(messages)); best != nil {
+		return best, true
+	}
 
 	var best *Message
 	for _, t := range templates {
@@ -50,6 +59,127 @@ func match(templates []*Message, messages []*chatMessage) (*Message, bool) {
 		return best, true
 	}
 	return fallback(templates, messages), false
+}
+
+// matchMultiTurn resolves matching priority 1 (§3): among templates
+// declaring multi-turn conditions whose conditions ALL hold, the pick is
+// the most specific — more declared conditions first, then the lowest
+// Name as the stable tie-break. The keyword condition is vacuous for a
+// multi-turn template declaring no keywords (§2: 恒通过); each history
+// keyword must hit SOME message of the history set; turn counts user
+// messages only. Returns nil when no multi-turn template fully matches,
+// deferring to the next priorities.
+func matchMultiTurn(templates []*Message, loweredLast string, loweredHistory []string, turn int) *Message {
+	var best *Message
+	for _, t := range templates {
+		if !t.isMultiTurn() {
+			continue
+		}
+		if len(t.Keywords) > 0 && !anyKeywordMatches(t.Keywords, loweredLast) {
+			continue
+		}
+		if !allHistoryKeywordsHit(t.HistoryKeywords, loweredHistory) {
+			continue
+		}
+		if turn < t.effectiveMinTurn() {
+			continue
+		}
+		if best == nil || moreSpecificMultiTurn(t, best) {
+			best = t
+		}
+	}
+	return best
+}
+
+// moreSpecificMultiTurn orders two fully-matched multi-turn templates
+// for the priority-1 pick: the template declaring more conditions wins
+// (更具体优先, §3 priority 1); equal counts fall to the lowest Name.
+func moreSpecificMultiTurn(a, b *Message) bool {
+	if ca, cb := a.declaredConditions(), b.declaredConditions(); ca != cb {
+		return ca > cb
+	}
+	return a.Name < b.Name
+}
+
+// declaredConditions counts the template's non-vacuous declared matching
+// conditions — a non-empty keyword set, a non-empty history keyword set,
+// and an above-default min_turn each count once. Vacuous declarations
+// (an empty keyword list, 恒通过 per §2; a min_turn at or below the
+// default 1) never constrain matching, so they do not count toward
+// specificity.
+func (m *Message) declaredConditions() int {
+	n := 0
+	if len(m.Keywords) > 0 {
+		n++
+	}
+	if len(m.HistoryKeywords) > 0 {
+		n++
+	}
+	if m.effectiveMinTurn() > 1 {
+		n++
+	}
+	return n
+}
+
+// allHistoryKeywordsHit reports whether EVERY history keyword is a
+// case-insensitive substring of at least one lowered history text. Each
+// keyword may hit a different history message (§3 condition 2: ∀h ∃某条
+// 消息).
+func allHistoryKeywordsHit(historyKeywords, loweredHistory []string) bool {
+	for _, kw := range historyKeywords {
+		loweredKw := strings.ToLower(kw)
+		hit := false
+		for _, h := range loweredHistory {
+			if strings.Contains(h, loweredKw) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return false
+		}
+	}
+	return true
+}
+
+// loweredHistoryTexts lower-cases the content of every message EXCEPT
+// the last user message — the contract's `history` set (§3: user and
+// assistant messages alike). On a conversation's first turn the history
+// is empty, so any declared history keyword misses and the multi-turn
+// branch cannot fire (US2-2's first-turn semantics).
+func loweredHistoryTexts(messages []*chatMessage) []string {
+	lastIdx := lastUserIndex(messages)
+	var texts []string
+	for i, m := range messages {
+		if i != lastIdx {
+			texts = append(texts, strings.ToLower(m.Content))
+		}
+	}
+	return texts
+}
+
+// lastUserIndex returns the index of the LAST message whose role equals
+// "user" (compared case-insensitively), or -1 when no user message is
+// present.
+func lastUserIndex(messages []*chatMessage) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(messages[i].Role, "user") {
+			return i
+		}
+	}
+	return -1
+}
+
+// userTurnCount counts the request's user-role messages — the
+// contract's `turn` (§3), the quantity min_turn lower-bounds.
+func userTurnCount(messages []*chatMessage) int {
+	turn := 0
+	for _, m := range messages {
+		if strings.EqualFold(m.Role, "user") {
+			turn++
+		}
+	}
+	return turn
 }
 
 // fallback resolves the deterministic no-match reply
@@ -82,7 +212,7 @@ func fallback(templates []*Message, messages []*chatMessage) *Message {
 	} else {
 		pick = pool[requestSeed(messages)%uint64(len(pool))]
 	}
-	slog.Info("no keyword matched, returning fallback template",
+	slog.Info("no template condition matched, returning fallback template",
 		slog.String("user_snippet", snippet(lastUserText(messages), maxSnippetRunes)),
 		slog.String("fallback_name", pick.Name),
 	)
