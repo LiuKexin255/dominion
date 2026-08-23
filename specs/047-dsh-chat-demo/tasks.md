@@ -186,9 +186,9 @@
 
 ### Tasks
 
-- [ ] T021 [US2] 扩展 `experimental/dsh/demo/fake-llm/service/matcher.go`：多轮条件匹配（`history_keywords` 全部命中"除最后一条 user 消息外"的历史、`min_turn` 轮次下限；优先级：多轮条件模板 > 纯关键词 > 兜底，多轮并列取声明条件数多者再按 name 字典序——按 `specs/047-dsh-chat-demo/contracts/fake-llm-templates.md` §3 逐条实现）+ `experimental/dsh/demo/fake-llm/service/testdata/chat.yaml` 增加 `greeting-again` 模板（keywords:[hello] + history_keywords:[hello] + min_turn:2，text 见契约 §1 示例）+ 表驱动单测（首轮/二轮/隔离/条件不满足回退）
-- [ ] T022 [US2] 实现 `experimental/dsh/demo/testplan/multiturn_test.go`（`go_largetest(name="multiturn_test")`，并把该 target **追加**进 `interface_test.yaml` 既有 suite 的 cases——不新建计划/套件）：多轮分支（同会话两轮 "hello" → 第二轮 `greeting-again`）、会话隔离（新会话同消息 → `greeting`）、并发交错（两会话交替各轮正确断言）
-- [ ] T023 [US2] **US2 大型测试验收门禁**：`guitar run experimental/dsh/demo/testplan/interface_test.yaml` 全部用例（含 US1 回归）通过
+- [X] T021 [US2] 扩展 `experimental/dsh/demo/fake-llm/service/matcher.go`：多轮条件匹配（`history_keywords` 全部命中"除最后一条 user 消息外"的历史、`min_turn` 轮次下限；优先级：多轮条件模板 > 纯关键词 > 兜底，多轮并列取声明条件数多者再按 name 字典序——按 `specs/047-dsh-chat-demo/contracts/fake-llm-templates.md` §3 逐条实现）+ `experimental/dsh/demo/fake-llm/service/testdata/chat.yaml` 增加 `greeting-again` 模板（keywords:[hello] + history_keywords:[hello] + min_turn:2，text 见契约 §1 示例）+ 表驱动单测（首轮/二轮/隔离/条件不满足回退）
+- [X] T022 [US2] 实现 `experimental/dsh/demo/testplan/multiturn_test.go`（`go_largetest(name="multiturn_test")`，并把该 target **追加**进 `interface_test.yaml` 既有 suite 的 cases——不新建计划/套件）：多轮分支（同会话两轮 "hello" → 第二轮 `greeting-again`）、会话隔离（新会话同消息 → `greeting`）、并发交错（两会话交替各轮正确断言）
+- [X] T023 [US2] **US2 大型测试验收门禁**：`guitar run experimental/dsh/demo/testplan/interface_test.yaml` 全部用例（含 US1 回归）通过
 
 **Checkpoint**: US1 + US2 均独立可验收。
 
@@ -219,8 +219,8 @@
 
 ### Tasks
 
-- [ ] T024 [US3] 实现 `experimental/dsh/demo/testplan/closure_audit_test.go`（普通 `go_test`，`data = [//experimental/dsh/demo/agent:server_pkg tar, //third_party/dsh/core:BUILD.bazel, //third_party/dsh/core:package.json]`）：① 解析 core BUILD 的 `npm_deps` 与 package.json——断言集合内无任何插件包（插件 = 不在 D6 核心清单内的 `@deepseek-ai/dsh-*`）；② 展开 agent server_pkg tar 的 `node_modules/`——断言每个 `@deepseek-ai/*` 与 `node-addon-require-builtin` 包 ∈ {核心 11 包 ∪ 服务 BUILD `npm_deps` 声明的 peer 闭包到不动点}（服务闭包期望集从 agent package.json 直接依赖 + 其 peers 递归生成，双向断言：tar 实际集合 ⊇ cordis.yml 启用行所需 且 ⊆ 核心∪声明的传递闭包）；③ tar 内同名包（从 store 路径 `name@version` 或 package.json version 提取）版本唯一；完成后 `bazel test //experimental/dsh/demo/testplan:closure_audit_test` 通过（测试执行内联于本任务，Constitution IV）
-- [ ] T025 [US3] US3 验收复核：确认三项审计断言全绿（`closure_audit_test` 已在 T024 内联执行）——本任务仅做验收复核，不单独执行测试（Constitution IV）；若断言②失败说明闭包有第三来源，回查 T015 的 `npm_deps`/`runtime_deps` 声明后修复 T024 重跑
+- [X] T024 [US3] 实现 `experimental/dsh/demo/testplan/closure_audit_test.go`（普通 `go_test`，`data = [//experimental/dsh/demo/agent:server_pkg tar, //experimental/dsh/demo/agent:package.json, //third_party/dsh/core:BUILD.bazel, //third_party/dsh/core:package.json]`——其中 `//experimental/dsh/demo/agent:package.json` 为断言② 期望集的声明来源：期望集从 agent package.json 直接依赖 + 其 peers 递归生成，测试读声明而非硬编码清单）：① 解析 core BUILD 的 `npm_deps` 与 package.json——断言集合内无任何插件包（插件 = 不在 D6 核心清单内的 `@deepseek-ai/*`）；② 展开 agent server_pkg tar 的 `node_modules/`——断言每个 `@deepseek-ai/*` 与 `node-addon-require-builtin` 包 ∈ {核心 11 包 ∪ 服务 BUILD `npm_deps` 声明的 peer 闭包到不动点}（服务闭包期望集从 agent package.json 直接依赖 + 其 peers 递归生成，双向断言：tar 实际集合 ⊇ cordis.yml 启用行所需 且 ⊆ 核心∪声明的传递闭包）；③ tar 内同名包（从 store 路径 `name@version` 或 package.json version 提取）版本唯一；完成后 `bazel test //experimental/dsh/demo/testplan:closure_audit_test` 通过（测试执行内联于本任务，Constitution IV）
+- [X] T025 [US3] US3 验收复核：确认三项审计断言全绿（`closure_audit_test` 已在 T024 内联执行）——本任务仅做验收复核，不单独执行测试（Constitution IV）；若断言②失败说明闭包有第三来源，回查 T015 的 `npm_deps`/`runtime_deps` 声明后修复 T024 重跑
 
 **Checkpoint**: 三个 user story 全部独立可验收。
 

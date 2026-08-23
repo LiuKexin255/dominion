@@ -8,6 +8,14 @@ load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
 
 npm_link_all_packages(name = "node_modules")
 
+# package.json is exported for the closure audit test
+# (//experimental/dsh/demo/testplan:closure_audit_test), which generates its
+# expected package set from the service's declared direct dependencies.
+exports_files(
+    ["package.json"],
+    visibility = ["//experimental/dsh/demo/testplan:__pkg__"],
+)
+
 ts_proto_library(
     name = "chat_types",
     proto = "//experimental/dsh/demo:chat_proto",
@@ -78,6 +86,9 @@ artifact_pkg_js(
     ],
     service = "agent",
     ts_project = ":server_lib",
+    # The shipped tar is audit data for the closure audit test
+    # (//experimental/dsh/demo/testplan:closure_audit_test).
+    visibility = ["//experimental/dsh/demo/testplan:__pkg__"],
     runtime_deps = [
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",

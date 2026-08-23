@@ -74,7 +74,7 @@ init(otel) → resolver.resolve("dominion:///dsh-demo/fake-llm:8080")
 
 **审计断言（SC-004，`closure_audit_test` 承载）**:
 
-1. 底座 target 物化集合内无任何 `@deepseek-ai/dsh-*` 插件包（插件 = spine 依赖图中除核心外的 dsh 包；以 BUILD `npm_deps` 枚举静态审计）；
+1. 底座 target 物化集合内无任何 `@deepseek-ai/*` 插件包（插件 = spine 依赖图中除核心外的 dsh 包；以 BUILD `npm_deps` 枚举静态审计）；
 2. 产物 tar 的 node_modules 中每个 `@deepseek-ai/*` 包 ∈ {核心清单 ∪ 服务声明的 peer 闭包到不动点}——即无第三来源；
 3. 物化集合内同名包版本唯一（`name@version` 查重）。
 

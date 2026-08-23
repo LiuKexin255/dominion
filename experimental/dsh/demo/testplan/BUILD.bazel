@@ -1,4 +1,4 @@
-load("//tools/dev/go:defs.bzl", "go_largetest")
+load("//tools/dev/go:defs.bzl", "go_largetest", "go_unittest")
 
 # testplan_test is the single-turn chat interface suite
 # (specs/047-dsh-chat-demo/tasks.md T018/T019): single-turn template hits,
@@ -26,6 +26,29 @@ go_largetest(
     deps = [
         "//common/gopkg/otel/tracecontext",
         "//common/gopkg/testtool",
+    ],
+)
+
+# closure_audit_test is the US3 dependency-baseline audit
+# (specs/047-dsh-chat-demo/tasks.md T024, SC-004): a plain unit-level go_test
+# (no deployment, so no go_largetest) over the shipped agent server_pkg tar
+# plus the core baseline declarations. Beyond the three inputs named in T024
+# it also takes the agent package.json as data — assertion ② generates its
+# expected set from the agent package.json direct dependencies plus their
+# recursive peer closure, so the audit reads the declaration instead of
+# duplicating it in the test.
+#
+# The srcs deliberately exclude the largetest helpers: this target shares the
+# directory with the go_largetest suites but compiles standalone against its
+# data files only.
+go_unittest(
+    name = "closure_audit_test",
+    srcs = ["closure_audit_test.go"],
+    data = [
+        "//experimental/dsh/demo/agent:package.json",
+        "//experimental/dsh/demo/agent:server_pkg",
+        "//third_party/dsh/core:BUILD.bazel",
+        "//third_party/dsh/core:package.json",
     ],
 )
 
