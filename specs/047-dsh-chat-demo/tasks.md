@@ -245,8 +245,8 @@
 
 ### Tasks
 
-- [ ] T026 [P] 创建 `experimental/dsh/demo/README.md`：拓扑图（gateway → agent → fake-llm）、三服务与底座 target 一览表（bazel target/端口/寻址）、构建/单测/审计/大型测试命令（对齐 `specs/047-dsh-chat-demo/quickstart.md`）、已知限制（无 compaction/无会话持久化/0.x-rc 漂移成本——`specs/047-dsh-chat-demo/spec.md` Assumptions）、fake-llm 大型测试豁免说明链接
-- [ ] T027 **最终验收门禁**（FR-008 / Constitution VI）：`bazel build //experimental/dsh/... //third_party/dsh/core/...` + `bazel test //experimental/dsh/... //third_party/dsh/core/...` 全绿；`guitar run experimental/dsh/demo/testplan/interface_test.yaml` 全部用例通过（US1+US2 全回归 + 清理闭环）；`bazel test //experimental/dsh/demo/testplan:closure_audit_test` 通过——记录执行证据于 PR 描述
+- [X] T026 [P] 创建 `experimental/dsh/demo/README.md`：拓扑图（gateway → agent → fake-llm）、三服务与底座 target 一览表（bazel target/端口/寻址）、构建/单测/审计/大型测试命令（对齐 `specs/047-dsh-chat-demo/quickstart.md`）、已知限制（无 compaction/无会话持久化/0.x-rc 漂移成本——`specs/047-dsh-chat-demo/spec.md` Assumptions）、fake-llm 大型测试豁免说明链接
+- [X] T027 **最终验收门禁**（FR-008 / Constitution VI）：`bazel build //experimental/dsh/... //third_party/dsh/core/...` + `bazel test //experimental/dsh/... //third_party/dsh/core/...` 全绿；`guitar run experimental/dsh/demo/testplan/interface_test.yaml` 全部用例通过（US1+US2 全回归 + 清理闭环）；`bazel test //experimental/dsh/demo/testplan:closure_audit_test` 通过——记录执行证据于 PR 描述
 
 ---
 
