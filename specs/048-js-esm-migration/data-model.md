@@ -64,7 +64,7 @@ pnpm workspace 内拥有独立 `package.json` 的 JS/TS 单元。
 
 | 对象 | 动作 |
 |---|---|
-| `tools/dev/js/ts_proto_library.bzl` | 生成物相对导入补 `.js` 后处理（R4） |
+| `tools/dev/js/ts_proto_library.bzl` | 经 `--importFileExtension` 生成带 `.js` 相对导入（R4） |
 | `tools/release/defs.bzl` | `artifact_pkg_js` 新增 `package_json` 属性（label，默认 `"package.json"`、不可关闭）+ 存在性门禁（Phase 2）与内容门禁 `"type": "module"`（Phase 5 启用）（R6） |
 | `experimental/ts/grpc_hello_world/smoke_test.sh` | ESM 化 + 服务根 package.json 断言（R6） |
 | `style/javascript.md` | 重写模块规范（R10，FR-009） |

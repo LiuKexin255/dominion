@@ -20,6 +20,13 @@ Generated output layout (in the declared directory):
   {proto_file}.ts               # Master type (named after .proto file, e.g., greeter.ts)
                                 # Exports interface ProtoGrpcType
 
+Relative import specifiers in the generated .ts are emitted with a .js
+extension (e.g. from './google/protobuf/Duration.js') via the generator's
+native --importFileExtension option: consumers type-check the generated
+types under NodeNext, which requires explicit extensions on relative
+imports. Package specifiers such as '@grpc/grpc-js' are emitted by the
+generator verbatim and are unaffected by that option.
+
 Transitive proto dependencies (e.g., Google API annotations) are resolved
 via --includeDirs sourced from ProtoInfo.transitive_proto_path, ensuring
 that imports such as `google/api/annotations.proto` resolve correctly.
@@ -58,6 +65,7 @@ def _ts_proto_library_impl(ctx):
     args.add("--longs", ctx.attr.longs)
     args.add("--enums", ctx.attr.enums)
     args.add("--grpcLib", ctx.attr.grpc_lib)
+    args.add("--importFileExtension", ".js")
 
     if ctx.attr.defaults:
         args.add("--defaults")
@@ -75,9 +83,9 @@ def _ts_proto_library_impl(ctx):
 
     ctx.actions.run(
         executable = ctx.executable.tool,
-        arguments = [args],
         inputs = all_inputs,
         outputs = [generated_dir],
+        arguments = [args],
         mnemonic = "ProtoGenTypes",
         progress_message = "Generating TS types from proto %{label}",
         # js_binary from aspect_rules_js changes cwd to BAZEL_BINDIR. Setting it to "."
@@ -106,8 +114,13 @@ Generated layout:
       ServiceName.ts              # GreeterClient + GreeterHandlers types
       MessageName.ts              # Message input interface
       MessageName__Output.ts      # Message output interface
-    {proto_file}.ts               # Master type (named after .proto file, e.g. greeter.ts)
+    {proto_file}.ts               # Master type (named after .proto file, e.g., greeter.ts)
                                   # Exports interface ProtoGrpcType
+
+Relative import specifiers in the generated files are emitted with a .js
+extension (native --importFileExtension option) so that NodeNext consumers
+type-check without per-target fixups; package specifiers such as
+'@grpc/grpc-js' are emitted verbatim and are not modified.
 
 Example usage:
   load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
@@ -190,7 +203,12 @@ keep_case=False), the corresponding runtime options are:
                   "//tools/dev/js:proto_loader_gen_types target. Override this " +
                   "for exceptional projects that need a different version of " +
                   "@grpc/proto-loader (e.g., via proto_loader_gen_types_binary() " +
-                  "from @grpc/proto-loader package_json.bzl).",
+                  "from @grpc/proto-loader package_json.bzl). The overridden " +
+                  "generator MUST be @grpc/proto-loader >= 0.7.14: this rule " +
+                  "passes --importFileExtension, introduced in 0.7.14 " +
+                  "(https://github.com/grpc/grpc-node/pull/2912); older " +
+                  "versions silently ignore the flag and emit extensionless " +
+                  "relative imports, which break NodeNext consumer typechecks.",
             default = Label("//tools/dev/js:proto_loader_gen_types"),
         ),
     },

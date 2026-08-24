@@ -54,12 +54,12 @@ ts_project(
     ],
 )
 
-# Module format: the service entry compiles to CJS (the repo-wide TS package
-# format). No service-root package.json data file is needed — with none
-# present in the tar, `.js` files default to CJS parsing, which is exactly
-# what the entry requires; the ESM-only dsh packages in node_modules keep
-# their own package.json ("type": "module") and are consumed via require(esm)
-# (specs/047-dsh-chat-demo/research.md D8 revised).
+# Module format: Node determines the format of the deployed `.js` files
+# from the nearest package.json. artifact_pkg_js's package_json attribute
+# (default: this BUILD package's package.json) ships the service manifest
+# at dominion/dsh-demo/agent/package.json, so the tar always carries it;
+# package.json must not also be listed in data_files (destination conflict,
+# specs/048-js-esm-migration/contracts/esm-package-conventions.md §4).
 artifact_pkg_js(
     name = "server_pkg",
     app = "dsh-demo",

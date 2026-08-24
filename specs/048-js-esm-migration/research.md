@@ -85,14 +85,14 @@ const grpc: typeof import("@grpc/grpc-js") = require("@grpc/grpc-js");
 - **bootstrap 内 `createRequire` 预加载 grpc-js**（注册插桩后先 `require("@grpc/grpc-js")` 入 CJS 缓存，此后 ESM import 命中同一缓存）：无需 loader 机制，但依赖"ESM 对已缓存 CJS 模块的命名导出取值时点"这一未验证语义（Node CJS namespace 的命名导出为静态分析快照，live-binding 语义微妙：https://nodejs.org/api/esm.html#commonjs-namespaces ），且 OTel 维护者对 ESM 应用的官方指引是 loader hook 路径。列为**回退方案**：若实现期验证 IITM 在 Node 24.14 + grpc-js 1.14.4 组合上有缺陷，切换至此路径并补缓存语义验证。
 - `NODE_OPTIONS=--experimental-loader=...` / 镜像 entrypoint 追加参数：改动部署面（entrypoint/NODE_OPTIONS 侵入 `tools/release/defs.bzl` 通用机制），且 `--experimental-loader` 处于弃用路径。不采用。
 
-## R4: proto 生成代码 — 宏内后处理补 `.js` 扩展名
+## R4: proto 生成代码 — 生成器原生 `--importFileExtension` 发射 `.js` 扩展名
 
-**Decision**: `tools/dev/js/ts_proto_library.bzl` 在 proto-loader-gen-types 生成后追加一步后处理：把生成 `.ts` 中的**相对** import 说明符补上 `.js`（包说明符 `@grpc/grpc-js` 等不动）。
+**Decision**: `tools/dev/js/ts_proto_library.bzl` 向 proto-loader-gen-types 传递 `--importFileExtension=.js`（生成器原生选项，0.7.14 起提供，https://github.com/grpc/grpc-node/pull/2912 ；本仓库 catalog 钉扎 `@grpc/proto-loader` ^0.8.1，`pnpm-workspace.yaml:14`），生成器原生发射 NodeNext 兼容的相对导入；包说明符（`@grpc/grpc-js`、`@grpc/proto-loader`）由生成器原样发射、不受该选项影响。
 
 **Rationale**:
 - 生成代码全部是 `import type`（如 `bazel-out/.../greeter_types/experimental/ts/grpc_hello_world/greeter.ts` 的 `import type ... from './experimental/ts/grpc_hello_world/Greeter'`），运行时被擦除、不进 tar——模块格式本身无运行时影响。
 - 但消费方 tsconfig `include` 覆盖 `generated/**/*.ts`（`projects/game/agent/tsconfig.json`、`experimental/ts/grpc_hello_world/tsconfig.json`），NodeNext 类型检查**对 `import type` 同样要求相对路径带扩展名**（Handbook 相对导入扩展节），否则 TS 报错阻断 `*_typecheck`。
-- 后处理是机械替换（生成器无扩展名选项），在宏内一次性解决所有 4 个使用方（`game_types`/`chat_types`/`greeter_types`/`echo_types`）。
+- 版本前提：`--importFileExtension` 由 0.7.14 引入（https://github.com/grpc/grpc-node/pull/2912 ），更旧版本静默忽略该 flag、生成无扩展名导入导致 NodeNext 消费方 typecheck 失败；规则的 `tool` 属性覆盖约束为版本 MUST ≥0.7.14（`tools/dev/js/ts_proto_library.bzl` tool 属性 doc）。
 
 **Alternatives**: 切换 ESM 友好的代码生成器（ts-proto 等）——超出"仅模块系统切换、不改依赖集合"边界（spec Assumptions/FR-006），否决。
 
