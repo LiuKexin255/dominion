@@ -19,11 +19,11 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-import type { MemoryClient } from "../memory-client";
+import type { MemoryClient } from "../memory-client.js";
 import {
 	FrozenMemorySnapshot,
 	PLANNER_MEMORY_SNAPSHOT_ID,
-} from "./memory-snapshot";
+} from "./memory-snapshot.js";
 
 function makeFakeClient(entries: Array<{ memory_id: string; content: string }>): {
 	fake: MemoryClient;

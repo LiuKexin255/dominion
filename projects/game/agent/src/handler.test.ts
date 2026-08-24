@@ -22,17 +22,17 @@ import { createAgent, tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { Handler } from "./handler";import { SessionTeam, SessionTeamStore } from "./session-team";
-import type { SessionTeamRebuilder } from "./session-team";
-import { OperationBridge } from "./operation-bridge";
-import type { MemoryClient } from "./memory-client";
-import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
-import { buildTeamGraph, type TeamGraphHandle } from "./team/graph";
-import { FrozenMemorySnapshot } from "./team/memory-snapshot";
+import { Handler } from "./handler.js";import { SessionTeam, SessionTeamStore } from "./session-team.js";
+import type { SessionTeamRebuilder } from "./session-team.js";
+import { OperationBridge } from "./operation-bridge.js";
+import type { MemoryClient } from "./memory-client.js";
+import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink.js";
+import { buildTeamGraph, type TeamGraphHandle } from "./team/graph.js";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot.js";
 import type { MemorySaver } from "@langchain/langgraph";
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import type { UserFrame } from "../game_types/projects/game/UserFrame";
-import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
+import type { UserFrame } from "../game_types/projects/game/UserFrame.js";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame.js";
 
 // ---------------------------------------------------------------------------
 // Mock helpers

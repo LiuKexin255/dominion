@@ -21,8 +21,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { OperationResult } from "../../operation-bridge";
-import { buildResultBlocks, buildToolResultMessage } from "./result-blocks";
+import type { OperationResult } from "../../operation-bridge.js";
+import { buildResultBlocks, buildToolResultMessage } from "./result-blocks.js";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";

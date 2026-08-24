@@ -7,8 +7,8 @@ import {
 } from "@dominion/common-js-logs";
 import { init, shutdown } from "@dominion/common-js-otel";
 import { createResolver } from "@dominion/common-js-resolver";
-import type { ChatModel } from "./model-provider";
-import { buildResolverAwareChatModel } from "./resolver-provider";
+import type { ChatModel } from "./model-provider.js";
+import { buildResolverAwareChatModel } from "./resolver-provider.js";
 
 async function main() {
 	await init({ instrumentations: [createGrpcInstrumentation()] });

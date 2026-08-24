@@ -9,8 +9,8 @@ import {
   parseModelSpec,
   inferProvider,
   ModelProviderCache,
-} from "./model-provider";
-import type { ProviderFactory, LLMProvider } from "./model-provider";
+} from "./model-provider.js";
+import type { ProviderFactory, LLMProvider } from "./model-provider.js";
 
 // ===========================================================================
 // parseModelSpec

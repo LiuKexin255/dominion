@@ -28,8 +28,8 @@ import {
 	STREAM_IDLE_TIMEOUT_MS,
 	type ContentBlock,
 	type TurnContent,
-} from "./llm";
-import { OperationBridge } from "./operation-bridge";
+} from "./llm.js";
+import { OperationBridge } from "./operation-bridge.js";
 
 function noopBridge(): OperationBridge {
 	return new OperationBridge();
@@ -433,9 +433,9 @@ describe("STREAM_IDLE_TIMEOUT_MS / STREAM_IDLE_TIMEOUT_EXPLICIT (044 US1 T002)",
 		else process.env[envKey] = original;
 	});
 
-	async function reloadConstants(): Promise<typeof import("./llm")> {
+	async function reloadConstants(): Promise<typeof import("./llm.js")> {
 		vi.resetModules();
-		return await import("./llm");
+		return await import("./llm.js");
 	}
 
 	it("defaults to 120_000 with EXPLICIT=false when the env var is unset", async () => {

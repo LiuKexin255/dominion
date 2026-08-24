@@ -37,10 +37,10 @@ import type { ToolMessage } from "@langchain/core/messages";
 import { tool } from "langchain";
 import { z } from "zod";
 
-import type { OperationBridge } from "../../operation-bridge";
-import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
-import { buildToolResultMessage } from "../shared/result-blocks";
-import type { StandaloneExtras } from "../types";
+import type { OperationBridge } from "../../operation-bridge.js";
+import type { FlowPart } from "../../../game_types/projects/game/FlowPart.js";
+import { buildToolResultMessage } from "../shared/result-blocks.js";
+import type { StandaloneExtras } from "../types.js";
 
 const mouseMoveSchema = z.object({
   x_px: z.number().describe("X coordinate in pixels, image-relative"),

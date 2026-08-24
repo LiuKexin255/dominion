@@ -27,7 +27,7 @@ import { info, error } from "@dominion/common-js-logs";
  * duplicating the path/loader config.
  */
 export const PROTO_PATH = path.join(
-  __dirname,
+  import.meta.dirname,
   "..",
   "projects", "game", "game.proto",
 );
@@ -41,7 +41,7 @@ export const PROTO_OPTIONS: protoLoader.Options = {
   enums: String,
   defaults: true,
   oneofs: true,
-  includeDirs: [path.join(__dirname, "..")],
+  includeDirs: [path.join(import.meta.dirname, "..")],
 };
 
 /** Dominion resolver target for the prompt service. */

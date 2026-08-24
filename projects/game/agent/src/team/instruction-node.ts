@@ -40,23 +40,23 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { warn } from "@dominion/common-js-logs";
 
-import type { MessagePart } from "../../game_types/projects/game/MessagePart";
-import { extractToolCalls } from "../llm";
-import type { ChatModel } from "../model-provider";
+import type { MessagePart } from "../../game_types/projects/game/MessagePart.js";
+import { extractToolCalls } from "../llm.js";
+import type { ChatModel } from "../model-provider.js";
 import {
 	PRIMARY_AGENT_NAME,
 	type ChannelFrameEmitter,
-} from "../session-team";
-import type { TeamStateValue } from "./state";
-import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
-import type { FrozenMemorySnapshot } from "./memory-snapshot";
-import type { CreateAgentFn } from "./player";
-import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
-import { invokeAgentWithRetry } from "./agent-invoke";
+} from "../session-team.js";
+import type { TeamStateValue } from "./state.js";
+import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot.js";
+import type { FrozenMemorySnapshot } from "./memory-snapshot.js";
+import type { CreateAgentFn } from "./player.js";
+import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner.js";
+import { invokeAgentWithRetry } from "./agent-invoke.js";
 import {
 	buildInstructPlayerTool,
 	type InstructionBuffer,
-} from "./instruction-tool";
+} from "./instruction-tool.js";
 
 /** The two no-game-history scenarios (FR-019 — contract §2.3). */
 export type InstructionScenario = "init" | "compact";

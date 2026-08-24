@@ -27,7 +27,7 @@ import {
 	loadSkillBody,
 	loadSkillsForMcp,
 	SKILL_PROMPT_SEPARATOR,
-} from "./skill-loader";
+} from "./skill-loader.js";
 
 // ===========================================================================
 // SKILL.md format contract — FR-023
@@ -37,7 +37,7 @@ describe("SKILL.md format contract (FR-023)", () => {
 	it("SKILL.md frontmatter name matches the folder name (format contract)", () => {
 		// specs/020-agent-resources-layout/contracts/skill-md-format.md:
 		// the frontmatter `name` MUST equal the parent folder name.
-		const mdPath = path.join(__dirname, "skill", "saolei", "SKILL.md");
+		const mdPath = path.join(import.meta.dirname, "skill", "saolei", "SKILL.md");
 		const md = fs.readFileSync(mdPath, "utf8");
 		const m = md.match(/^---\n[\s\S]*?name:\s*(\S+)\n/);
 		expect(m).not.toBeNull();
@@ -45,7 +45,7 @@ describe("SKILL.md format contract (FR-023)", () => {
 	});
 
 	it("SKILL.md has a non-empty description in frontmatter", () => {
-		const mdPath = path.join(__dirname, "skill", "saolei", "SKILL.md");
+		const mdPath = path.join(import.meta.dirname, "skill", "saolei", "SKILL.md");
 		const md = fs.readFileSync(mdPath, "utf8");
 		const m = md.match(/^---\n[\s\S]*?description:\s*(.+?)\n/);
 		expect(m).not.toBeNull();
@@ -56,7 +56,7 @@ describe("SKILL.md format contract (FR-023)", () => {
 	// contract as saolei — folder name === frontmatter name, non-empty
 	// description.
 	it("memory SKILL.md frontmatter name matches the folder name (format contract)", () => {
-		const mdPath = path.join(__dirname, "skill", "memory", "SKILL.md");
+		const mdPath = path.join(import.meta.dirname, "skill", "memory", "SKILL.md");
 		const md = fs.readFileSync(mdPath, "utf8");
 		const m = md.match(/^---\n[\s\S]*?name:\s*(\S+)\n/);
 		expect(m).not.toBeNull();
@@ -64,7 +64,7 @@ describe("SKILL.md format contract (FR-023)", () => {
 	});
 
 	it("memory SKILL.md has a non-empty description in frontmatter", () => {
-		const mdPath = path.join(__dirname, "skill", "memory", "SKILL.md");
+		const mdPath = path.join(import.meta.dirname, "skill", "memory", "SKILL.md");
 		const md = fs.readFileSync(mdPath, "utf8");
 		const m = md.match(/^---\n[\s\S]*?description:\s*(.+?)\n/);
 		expect(m).not.toBeNull();

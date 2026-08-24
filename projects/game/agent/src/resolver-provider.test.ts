@@ -1,7 +1,7 @@
 import type { EndpointResolver } from "@dominion/common-js-resolver";
 import { ChatOpenAI } from "@langchain/openai";
 import { describe, expect, it } from "vitest";
-import { buildResolverAwareChatModel } from "./resolver-provider";
+import { buildResolverAwareChatModel } from "./resolver-provider.js";
 
 describe("buildResolverAwareChatModel", () => {
 	it("builds ChatOpenAI with resolved endpoint", async () => {

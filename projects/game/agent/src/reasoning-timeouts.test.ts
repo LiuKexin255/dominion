@@ -15,7 +15,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getReasoningIdleTimeoutFloor } from "./reasoning-timeouts";
+import { getReasoningIdleTimeoutFloor } from "./reasoning-timeouts.js";
 
 // ===========================================================================
 // getReasoningIdleTimeoutFloor — allowlist matching (env-independent)
@@ -78,15 +78,15 @@ describe("resolveStreamIdleTimeout (044 US2 T003 — resolution rule order)", ()
 	});
 
 	async function reloadModule(): Promise<{
-		mod: typeof import("./reasoning-timeouts");
-		llm: typeof import("./llm");
+		mod: typeof import("./reasoning-timeouts.js");
+		llm: typeof import("./llm.js");
 	}> {
 		vi.resetModules();
 		// Both modules are re-evaluated in the same reset cycle, so
 		// `llm.STREAM_IDLE_TIMEOUT_MS` is the instance the reloaded
 		// `reasoning-timeouts` reads.
-		const mod = await import("./reasoning-timeouts");
-		const llm = await import("./llm");
+		const mod = await import("./reasoning-timeouts.js");
+		const llm = await import("./llm.js");
 		return { mod, llm };
 	}
 

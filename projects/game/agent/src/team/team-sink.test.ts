@@ -11,13 +11,13 @@
 import { describe, expect, it } from "vitest";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import type { CellOperation, GameStats } from "../mcp/saolei/saolei-mcp";
+import type { CellOperation, GameStats } from "../mcp/saolei/saolei-mcp.js";
 import {
 	consumeGameEvent,
 	createEphemeralGameBuffer,
 	createTeamSink,
 	peekGameState,
-} from "./team-sink";
+} from "./team-sink.js";
 
 /** A minimal recognizable GameState (3x3, all empty cells). */
 function makeState(marker?: "won" | "lost"): GameState {

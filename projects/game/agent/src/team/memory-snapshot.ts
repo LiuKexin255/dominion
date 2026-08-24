@@ -27,7 +27,7 @@ import { SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { warn } from "@dominion/common-js-logs";
 
-import type { MemoryClient, MemoryEntry } from "../memory-client";
+import type { MemoryClient, MemoryEntry } from "../memory-client.js";
 
 /** The SystemMessage id used by the frozen snapshot (filtered on write-back). */
 export const PLANNER_MEMORY_SNAPSHOT_ID = "planner-memory-snapshot";

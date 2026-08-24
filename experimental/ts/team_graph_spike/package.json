@@ -1,6 +1,7 @@
 {
   "name": "@dominion/team-graph-spike",
   "private": true,
+  "type": "module",
   "dependencies": {
     "@dominion/common-js-logs": "workspace:*",
     "@dominion/common-js-otel": "workspace:*",

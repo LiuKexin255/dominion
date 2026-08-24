@@ -16,10 +16,10 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
-import { OperationBridge } from "./operation-bridge";
+import { OperationBridge } from "./operation-bridge.js";
 
-import type { FlowPart } from "../game_types/projects/game/FlowPart";
-import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
+import type { FlowPart } from "../game_types/projects/game/FlowPart.js";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart.js";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";

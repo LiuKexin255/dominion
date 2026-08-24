@@ -11,7 +11,6 @@
  */
 
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
 import { boot } from "@deepseek-ai/dsh-app-boot";
 import { error, info } from "@dominion/common-js-logs";
 import { createResolver } from "@dominion/common-js-resolver";
@@ -46,7 +45,7 @@ export interface DshBootDeps {
  * there as an `artifact_pkg_js` data file.
  */
 export function cordisConfigPath(): string {
-  return path.resolve(path.dirname(__filename), "..", "cordis.yml");
+  return path.resolve(import.meta.dirname, "..", "cordis.yml");
 }
 
 /**
@@ -77,15 +76,14 @@ export async function bootDsh(deps: DshBootDeps = {}): Promise<DshContext> {
 
     const configPath = cordisConfigPath();
     // boot's 5th parameter anchors bare plugin-name resolution at this
-    // module, i.e. the service-root node_modules. The CJS entry's anchor is
-    // the file URL of __filename — the equivalent of ESM's import.meta.url
-    // (specs/047-dsh-chat-demo/research.md D10-1, D8).
+    // module, i.e. the service-root node_modules; import.meta.url is this
+    // module's own file URL (specs/047-dsh-chat-demo/research.md D10-1).
     const ctx = await doBoot(
       BIN_NAME,
       configPath,
       undefined,
       undefined,
-      pathToFileURL(__filename).href,
+      import.meta.url,
     );
     info("dsh composition booted", { configPath });
     return ctx;

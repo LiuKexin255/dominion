@@ -40,11 +40,11 @@ import { info, warn } from "@dominion/common-js-logs";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import type { OperationBridge } from "./operation-bridge";
-import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
-import { createSaoleiMcpServer } from "./mcp/saolei/saolei-mcp";
-import type { MemoryClient } from "./memory-client";
-import { createMemoryMcpServer } from "./mcp/memory/memory-mcp";
+import type { OperationBridge } from "./operation-bridge.js";
+import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp.js";
+import { createSaoleiMcpServer } from "./mcp/saolei/saolei-mcp.js";
+import type { MemoryClient } from "./memory-client.js";
+import { createMemoryMcpServer } from "./mcp/memory/memory-mcp.js";
 
 /**
  * The mcp kinds hosted per (template, session). Each kind owns an

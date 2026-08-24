@@ -12,7 +12,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { writeFileSync, unlinkSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readSecret } from "./secrets";
+import { readSecret } from "./secrets.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

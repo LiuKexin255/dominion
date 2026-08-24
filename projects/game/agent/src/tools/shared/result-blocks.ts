@@ -13,7 +13,7 @@
 
 import { ToolMessage } from "@langchain/core/messages";
 
-import type { OperationResult } from "../../operation-bridge";
+import type { OperationResult } from "../../operation-bridge.js";
 
 /**
  * A content block returned to LangChain. Mirrors the subset of the LangChain

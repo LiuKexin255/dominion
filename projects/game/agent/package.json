@@ -1,6 +1,7 @@
 {
     "name": "@dominion/game-agent",
     "private": true,
+    "type": "module",
     "dependencies": {
         "@grpc/grpc-js": "catalog:",
         "@grpc/proto-loader": "catalog:",

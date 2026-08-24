@@ -92,11 +92,11 @@ import {
 } from "@dominion/game-saolei-board";
 import type { CellStatus, GameState } from "@dominion/game-saolei-board";
 
-import type { OperationBridge } from "../../operation-bridge";
-import type { OperationResult } from "../../operation-bridge";
-import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
-import type { MouseClickAction } from "../../../game_types/projects/game/MouseClickAction";
-import { center } from "./geometry";
+import type { OperationBridge } from "../../operation-bridge.js";
+import type { OperationResult } from "../../operation-bridge.js";
+import type { FlowPart } from "../../../game_types/projects/game/FlowPart.js";
+import type { MouseClickAction } from "../../../game_types/projects/game/MouseClickAction.js";
+import { center } from "./geometry.js";
 
 /**
  * Wire value of `KeyboardKey.KEYBOARD_KEY_F2` (proto enum string, see

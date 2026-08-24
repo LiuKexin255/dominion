@@ -25,20 +25,20 @@ import {
 import type { BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 
-import type { MessagePart } from "../../game_types/projects/game/MessagePart";
-import { extractToolCalls } from "../llm";
-import type { ChatModel } from "../model-provider";
+import type { MessagePart } from "../../game_types/projects/game/MessagePart.js";
+import { extractToolCalls } from "../llm.js";
+import type { ChatModel } from "../model-provider.js";
 import {
 	FrozenMemorySnapshot,
 	PLANNER_MEMORY_SNAPSHOT_ID,
-} from "./memory-snapshot";
-import { DEFAULT_PLANNER_BASE } from "./planner";
+} from "./memory-snapshot.js";
+import { DEFAULT_PLANNER_BASE } from "./planner.js";
 import {
 	createInstructionNode,
 	type InstructionScenario,
-} from "./instruction-node";
-import type { InstructionBuffer } from "./instruction-tool";
-import type { TeamStateValue } from "./state";
+} from "./instruction-node.js";
+import type { InstructionBuffer } from "./instruction-tool.js";
+import type { TeamStateValue } from "./state.js";
 
 /** The emitter test-double's call signature (string text or MessagePart[]). */
 type EmitCall = (

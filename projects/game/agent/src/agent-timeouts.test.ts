@@ -16,7 +16,7 @@ import {
 	DEFAULT_AGENT_TIMEOUTS,
 	loadAgentTimeoutOverrides,
 	resolveAgentTimeouts,
-} from "./agent-timeouts";
+} from "./agent-timeouts.js";
 
 // ===========================================================================
 // resolveAgentTimeouts — D1 matrix (idle-timeout-contract.md §1/§5)

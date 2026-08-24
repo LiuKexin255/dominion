@@ -24,10 +24,10 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-import { createMouseMoveTool } from "./mouse-move";
-import { OperationBridge } from "../../operation-bridge";
+import { createMouseMoveTool } from "./mouse-move.js";
+import { OperationBridge } from "../../operation-bridge.js";
 
-import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
+import type { FlowPart } from "../../../game_types/projects/game/FlowPart.js";
 import type { ToolMessage } from "@langchain/core/messages";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";

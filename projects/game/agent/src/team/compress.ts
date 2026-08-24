@@ -55,13 +55,13 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { REMOVE_ALL_MESSAGES } from "@langchain/langgraph";
 import type { RunnableConfig } from "@langchain/core/runnables";
 
-import type { ChatModel } from "../model-provider";
-import type { MemoryClient } from "../memory-client";
-import type { ChannelFrameEmitter } from "../session-team";
-import { PLAYER_AGENT_NAME } from "./player";
-import { PLANNER_AGENT_NAME } from "./planner";
-import type { FrozenMemorySnapshot } from "./memory-snapshot";
-import type { TeamStateValue } from "./state";
+import type { ChatModel } from "../model-provider.js";
+import type { MemoryClient } from "../memory-client.js";
+import type { ChannelFrameEmitter } from "../session-team.js";
+import { PLAYER_AGENT_NAME } from "./player.js";
+import { PLANNER_AGENT_NAME } from "./planner.js";
+import type { FrozenMemorySnapshot } from "./memory-snapshot.js";
+import type { TeamStateValue } from "./state.js";
 
 /** Dependencies of the compress node (all injected — DI seam). */
 export interface CompressNodeDeps {

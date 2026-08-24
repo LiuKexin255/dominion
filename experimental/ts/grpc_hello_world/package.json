@@ -1,6 +1,7 @@
 {
     "name": "@dominion/grpc_hello_world",
     "private": true,
+    "type": "module",
     "dependencies": {
         "@grpc/grpc-js": "catalog:",
         "@grpc/proto-loader": "catalog:",

@@ -21,7 +21,7 @@ import type { ChatHandlers } from "../chat_types/experimental/dsh/demo/Chat.js";
 import type { ProtoGrpcType } from "../chat_types/chat.js";
 
 // Service root: parent of the compiled src/ directory.
-const serviceRoot = path.resolve(path.dirname(__filename), "..");
+const serviceRoot = path.resolve(import.meta.dirname, "..");
 
 // Proto path at canonical import location under the service root.
 const protoPath = path.join(serviceRoot, "experimental/dsh/demo/chat.proto");

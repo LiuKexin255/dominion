@@ -28,7 +28,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import type { MemoryClient, MemoryEntry } from "../../memory-client";
+import type { MemoryClient, MemoryEntry } from "../../memory-client.js";
 import {
 	MEMORY_ACTIONS,
 	applyMemoryCall,
@@ -36,7 +36,7 @@ import {
 	generateMemoryId,
 	matchBySubstring,
 	type MemoryToolArgs,
-} from "./memory-mcp";
+} from "./memory-mcp.js";
 
 /** Fake MemoryClient surface (DI seam — matches the real class shape). */
 function makeFakeClient(entries: MemoryEntry[] = []) {

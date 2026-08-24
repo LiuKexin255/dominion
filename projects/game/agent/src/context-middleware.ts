@@ -39,8 +39,8 @@ import type { BaseMessage } from "@langchain/core/messages";
 
 import { info } from "@dominion/common-js-logs";
 
-import type { TeamChannel } from "./team/state";
-import type { TeamGraphHandle } from "./team/graph";
+import type { TeamChannel } from "./team/state.js";
+import type { TeamGraphHandle } from "./team/graph.js";
 
 /**
  * Build a state update that clears ONE `MessagesValue` channel via the

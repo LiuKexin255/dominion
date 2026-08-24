@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { buildInstructPlayerTool } from "./instruction-tool";
+import { buildInstructPlayerTool } from "./instruction-tool.js";
 
 describe("instruct_player tool (T024, contract §4)", () => {
 	it("stages the content into the configurable instructionBuffer and returns {ok:true}", async () => {

@@ -32,13 +32,13 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { OperationBridge } from "./operation-bridge";
+import { OperationBridge } from "./operation-bridge.js";
 import {
 	createSaoleiMcpServer,
 	type SaoleiEventSink,
-} from "./mcp/saolei/saolei-mcp";
-import { createMcpHostApp, DEFAULT_MCP_PORT, type McpKind } from "./mcp-host";
-import type { MemoryClient } from "./memory-client";
+} from "./mcp/saolei/saolei-mcp.js";
+import { createMcpHostApp, DEFAULT_MCP_PORT, type McpKind } from "./mcp-host.js";
+import type { MemoryClient } from "./memory-client.js";
 
 /**
  * Spy-wrap of OUR OWN module `./mcp/saolei/saolei-mcp` — NOT Express or the
@@ -54,8 +54,8 @@ import type { MemoryClient } from "./memory-client";
  * and its `connect` keep running, so existing cases are unchanged) and is
  * positively asserted by every case below (`toHaveBeenCalled`).
  */
-vi.mock("./mcp/saolei/saolei-mcp", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./mcp/saolei/saolei-mcp")>();
+vi.mock("./mcp/saolei/saolei-mcp.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./mcp/saolei/saolei-mcp.js")>();
 	return {
 		...actual,
 		createSaoleiMcpServer: vi.fn(actual.createSaoleiMcpServer),

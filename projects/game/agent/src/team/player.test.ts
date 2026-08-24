@@ -26,12 +26,12 @@ import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { NodeTimeoutError } from "@langchain/langgraph";
 
-import { buildContentBlocks } from "../llm";
-import type { TurnContent } from "../llm";
-import type { ChatModel } from "../model-provider";
-import { createEphemeralGameBuffer } from "./team-sink";
-import { createPlayerNode } from "./player";
-import type { TeamStateValue } from "./state";
+import { buildContentBlocks } from "../llm.js";
+import type { TurnContent } from "../llm.js";
+import type { ChatModel } from "../model-provider.js";
+import { createEphemeralGameBuffer } from "./team-sink.js";
+import { createPlayerNode } from "./player.js";
+import type { TeamStateValue } from "./state.js";
 
 /** The middleware config shape the node passes to `createAgent`. */
 interface CapturedMiddleware {

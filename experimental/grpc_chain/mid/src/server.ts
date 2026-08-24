@@ -13,11 +13,11 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { info } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
-import type { EchoHandlers } from "../echo_types/experimental/grpc_chain/Echo";
-import type { ProtoGrpcType } from "../echo_types/echo";
+import type { EchoHandlers } from "../echo_types/experimental/grpc_chain/Echo.js";
+import type { ProtoGrpcType } from "../echo_types/echo.js";
 
 // Service root: parent of src/ directory.
-const protoRoot = path.join(__dirname, "..");
+const protoRoot = path.join(import.meta.dirname, "..");
 
 const protoIncludeDirs = [protoRoot];
 
