@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { createResolver } from "./resolver";
-import { InvalidTargetError, MissingEnvironmentError, ServiceNotFoundError } from "./errors";
-import type { Target } from "./target";
+import { createResolver } from "./resolver.js";
+import { InvalidTargetError, MissingEnvironmentError, ServiceNotFoundError } from "./errors.js";
+import type { Target } from "./target.js";
 
 /**
  * Helper: creates a fake fetch that returns a JSON response.

@@ -11,9 +11,9 @@
 
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_COUNTER_PROFILE, decodeMineCounter } from "./counter";
-import type { DecodedImage } from "./decode";
-import type { CounterProfile, SegmentId } from "./types";
+import { DEFAULT_COUNTER_PROFILE, decodeMineCounter } from "./counter.js";
+import type { DecodedImage } from "./decode.js";
+import type { CounterProfile, SegmentId } from "./types.js";
 
 const SEGMENT_IDS: ReadonlyArray<SegmentId> = [
   "a",

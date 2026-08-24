@@ -6,6 +6,7 @@
     "target": "es2020"
   },
   "module": {
-    "type": "commonjs"
+    "type": "es6",
+    "preserveImportMeta": true
   }
 }

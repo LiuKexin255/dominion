@@ -44,7 +44,7 @@
  * already-recognized state.
  */
 
-import type { CellStatus, GameState } from "./types";
+import type { CellStatus, GameState } from "./types.js";
 
 /** Cell statuses that are NOT compatible with a win — a board containing any
  *  of these fails the grid half (FR-009/FR-010). */

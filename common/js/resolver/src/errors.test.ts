@@ -8,7 +8,7 @@ import {
   ServiceNotStatefulError,
   StatefulInstanceNotFoundError,
   StatefulInstanceNoReadyEndpointsError,
-} from "./errors";
+} from "./errors.js";
 
 describe("InvalidTargetError", () => {
   it("constructs with a message", () => {

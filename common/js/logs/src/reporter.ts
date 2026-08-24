@@ -17,7 +17,7 @@ import {
   type Logger as OTelLogger,
   SeverityNumber,
 } from "@opentelemetry/api-logs";
-import type { LogAttributeValue } from "./logger";
+import type { LogAttributeValue } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // Shared types (defined here to avoid circular imports with logger.ts)
@@ -160,7 +160,7 @@ let _reporter: Reporter | null = null;
 // Forward reference — Logger type is defined in logger.ts. Only used as a
 // type annotation here, so this is a type-only import that compiles away
 // and does NOT create a runtime circular dependency.
-import type { Logger } from "./logger";
+import type { Logger } from "./logger.js";
 
 let _defaultLogger: Logger | null = null;
 

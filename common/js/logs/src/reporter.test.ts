@@ -6,7 +6,7 @@ import {
   createOTelReporter,
   getReporter,
   resetReporterForTesting,
-} from "./reporter";
+} from "./reporter.js";
 
 // Reset reporter singleton to a known-null baseline before each test.
 // `installReporter(temp); temp()` only restores the *previous* value, so once

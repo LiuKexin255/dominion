@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { GrpcUri } from "@grpc/grpc-js/build/src/uri-parser";
-import type { ResolverListener } from "@grpc/grpc-js/build/src/resolver";
-import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address";
-import { Status } from "@grpc/grpc-js/build/src/constants";
+import type { GrpcUri } from "@grpc/grpc-js/build/src/uri-parser.js";
+import type { ResolverListener } from "@grpc/grpc-js/build/src/resolver.js";
+import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address.js";
+import { Status } from "@grpc/grpc-js/build/src/constants.js";
 import {
   registerDominionResolver,
   DominionResolver,
   DominionStatefulResolver,
-} from "./grpc-js-resolver";
+} from "./grpc-js-resolver.js";
 import type { Scheduler, ResolverConfig } from "@dominion/common-js-resolver";
 
 const TEST_ENV = {

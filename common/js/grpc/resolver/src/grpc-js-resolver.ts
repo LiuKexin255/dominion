@@ -1,17 +1,17 @@
-import { registerResolver } from "@grpc/grpc-js/build/src/resolver";
-import { Status } from "@grpc/grpc-js/build/src/constants";
+import { registerResolver } from "@grpc/grpc-js/build/src/resolver.js";
+import { Status } from "@grpc/grpc-js/build/src/constants.js";
 import {
   statusOrFromValue,
   statusOrFromError,
-} from "@grpc/grpc-js/build/src/call-interface";
-import type { ResolverListener } from "@grpc/grpc-js/build/src/resolver";
-import type { GrpcUri } from "@grpc/grpc-js/build/src/uri-parser";
+} from "@grpc/grpc-js/build/src/call-interface.js";
+import type { ResolverListener } from "@grpc/grpc-js/build/src/resolver.js";
+import type { GrpcUri } from "@grpc/grpc-js/build/src/uri-parser.js";
 import type {
   Endpoint,
   SubchannelAddress,
-} from "@grpc/grpc-js/build/src/subchannel-address";
-import type { ChannelOptions } from "@grpc/grpc-js/build/src/channel-options";
-import type { StatusOr } from "@grpc/grpc-js/build/src/call-interface";
+} from "@grpc/grpc-js/build/src/subchannel-address.js";
+import type { ChannelOptions } from "@grpc/grpc-js/build/src/channel-options.js";
+import type { StatusOr } from "@grpc/grpc-js/build/src/call-interface.js";
 
 import {
   parseTarget,
@@ -21,7 +21,7 @@ import {
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "@dominion/common-js-resolver";
 import type { ResolverConfig, Scheduler } from "@dominion/common-js-resolver";
-import type { ResolverState } from "./grpc-types";
+import type { ResolverState } from "./grpc-types.js";
 import { warn, info } from "@dominion/common-js-logs";
 
 let registered = false;

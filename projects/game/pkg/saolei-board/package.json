@@ -1,6 +1,7 @@
 {
     "name": "@dominion/game-saolei-board",
     "private": true,
+    "type": "module",
     "main": "./src/core/index.js",
     "types": "./src/core/index.d.ts",
     "exports": {

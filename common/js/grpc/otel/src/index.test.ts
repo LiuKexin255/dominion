@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { createRequire } from "node:module";
 import * as path from "node:path";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import {
@@ -6,7 +7,13 @@ import {
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
-import { createGrpcInstrumentation } from "./index";
+import { createGrpcInstrumentation } from "./index.js";
+
+// The sole require() exemption in ESM tests: createRequire goes through the
+// real CJS loader (Module._load), which is where RITM's hook lives — vitest's
+// import() bypasses it entirely. Contract:
+// specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md §3.
+const require = createRequire(import.meta.url);
 
 // ============================================================================
 // CRITICAL LOAD ORDER: registerInstrumentations() MUST run BEFORE
@@ -35,7 +42,7 @@ const protoLoader: typeof import("@grpc/proto-loader") = require("@grpc/proto-lo
 // ---- Proto & service setup --------------------------------------------------
 
 function getProtoPackage(): any {
-  const protoPath = path.join(__dirname, "test_service.proto");
+  const protoPath = path.join(import.meta.dirname, "test_service.proto");
   const pkgDef = protoLoader.loadSync(protoPath, {
     keepCase: true,
     longs: String,

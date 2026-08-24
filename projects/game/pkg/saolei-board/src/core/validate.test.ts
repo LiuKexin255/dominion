@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { checkCompatible } from "./validate";
-import type { GameState } from "./types";
+import { checkCompatible } from "./validate.js";
+import type { GameState } from "./types.js";
 
 function state(grid: GameState["grid"]): GameState {
   return { width: grid[0]?.length ?? 0, height: grid.length, grid };

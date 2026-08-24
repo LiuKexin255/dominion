@@ -18,7 +18,7 @@
  * flagged for calibration).
  */
 
-import type { CellStatus, GameState } from "./types";
+import type { CellStatus, GameState } from "./types.js";
 
 const SYMBOLS: Record<CellStatus, string> = {
   INITIAL: "*",

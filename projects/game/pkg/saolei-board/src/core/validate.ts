@@ -16,7 +16,7 @@
  * artefact, not evidence of a different game.
  */
 
-import type { CellStatus, GameState } from "./types";
+import type { CellStatus, GameState } from "./types.js";
 
 /** Revealed cell statuses that are permanent within a game. */
 const REVEALED: ReadonlySet<CellStatus> = new Set<CellStatus>([

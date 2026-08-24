@@ -8,7 +8,7 @@
 
 import { PNG } from "pngjs";
 
-import type { RGB } from "./types";
+import type { RGB } from "./types.js";
 
 export const CELL = 32;
 

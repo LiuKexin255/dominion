@@ -15,7 +15,7 @@
 
 import { PNG } from "pngjs";
 
-import type { RGB } from "./types";
+import type { RGB } from "./types.js";
 
 /** Decoded image: dimensions + raw RGBA byte buffer. */
 export interface DecodedImage {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cellOrigin, detectBoardSize, DEFAULT_GEOMETRY } from "./geometry";
+import { cellOrigin, detectBoardSize, DEFAULT_GEOMETRY } from "./geometry.js";
 
 describe("detectBoardSize", () => {
   it("derives cols/rows from screenshot size at the default geometry", () => {

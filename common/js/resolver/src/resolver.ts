@@ -1,13 +1,13 @@
-import type { Target } from "./target";
-import type { ResolverConfig, EndpointResolver } from "./types";
-import { parseTarget } from "./target";
+import type { Target } from "./target.js";
+import type { ResolverConfig, EndpointResolver } from "./types.js";
+import { parseTarget } from "./target.js";
 import {
   validateServiceApp,
   parseDominionEnvironment,
   buildResourceName,
-} from "./environment";
-import { createDeployClient } from "./deploy-client";
-import { filterEndpoints } from "./endpoint-filter";
+} from "./environment.js";
+import { createDeployClient } from "./deploy-client.js";
+import { filterEndpoints } from "./endpoint-filter.js";
 
 /**
  * Creates a stateless `EndpointResolver` that resolves dominion targets

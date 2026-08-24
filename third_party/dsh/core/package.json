@@ -1,6 +1,7 @@
 {
     "name": "@dominion/dsh-core",
     "private": true,
+    "type": "module",
     "dependencies": {
         "@deepseek-ai/cordis": "4.0.1",
         "@deepseek-ai/cordis-plugin-group": "1.0.1",

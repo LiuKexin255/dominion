@@ -4,8 +4,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { readConfig } from "../src/index";
-import { deepMerge } from "../src/merge";
+import { readConfig } from "../src/index.js";
+import { deepMerge } from "../src/merge.js";
 
 // Config files live under `{DOMINION_CONFIG_DIR}/{block}/{key}`; tests build a
 // real temp directory per test and point DOMINION_CONFIG_DIR at it via

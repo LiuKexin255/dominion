@@ -1,6 +1,7 @@
 {
     "name": "@dominion/common-js-grpc-resolver",
     "private": true,
+    "type": "module",
     "main": "./src/index.js",
     "types": "./src/index.d.ts",
     "exports": {

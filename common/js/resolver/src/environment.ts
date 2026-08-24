@@ -1,10 +1,10 @@
-import type { Target } from "./target";
-import type { DominionEnvironment } from "./types";
+import type { Target } from "./target.js";
+import type { DominionEnvironment } from "./types.js";
 import {
   MissingEnvironmentError,
   InvalidEnvironmentError,
   InvalidTargetError,
-} from "./errors";
+} from "./errors.js";
 
 const DOMINION_ENVIRONMENT_KEY = "DOMINION_ENVIRONMENT";
 const SERVICE_APP_KEY = "SERVICE_APP";

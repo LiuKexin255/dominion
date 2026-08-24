@@ -6,7 +6,7 @@ import {
 	shutdown,
 	traceId,
 	tracer,
-} from "./index";
+} from "./index.js";
 
 // ---- helpers ----------------------------------------------------------------
 

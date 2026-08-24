@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { Logger, defaultLogger, type LogAttributes } from "./logger";
-import { installReporter, ConsoleReporter } from "./reporter";
+import { Logger, defaultLogger, type LogAttributes } from "./logger.js";
+import { installReporter, ConsoleReporter } from "./reporter.js";
 
 // LogLevel is now a string union: "debug" | "info" | "warn" | "error"
 // Tests use string literals directly instead of enum members.

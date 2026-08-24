@@ -1,3 +1,5 @@
+import { register } from "node:module";
+
 import { context, metrics, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
@@ -42,6 +44,9 @@ let _meterProvider: MeterProvider | null = null;
 let _loggerProvider: LoggerProvider | null = null;
 let _loggerProviderSet = false;
 let _initialized = false;
+// module.register() hooks cannot be deregistered, so this flag survives
+// shutdown() — repeated init()/shutdown() cycles must not stack hook layers.
+let _esmHookRegistered = false;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,6 +95,15 @@ export interface OtelConfig {
 /**
  * Initialize OpenTelemetry providers.
  *
+ * On the first call, registers the OTel ESM loader hook (IITM) before any
+ * instrumented module can be loaded: RITM (require-in-the-middle) patches
+ * `Module.prototype.require`, which Node's ESM loader bypasses, so CJS
+ * packages (e.g. `@grpc/grpc-js`) imported from ESM are only instrumented via
+ * the hook registered here. Timing contract: `init()` (and thus the hook
+ * registration) must complete before a bootstrap dynamically imports its
+ * server module — see
+ * specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md §2.
+ *
  * Behaviour depends on the deployment environment:
  *
  * **Deploy mode** (all three env vars `SERVICE_APP`, `DOMINION_ENVIRONMENT`,
@@ -114,6 +128,16 @@ export interface OtelConfig {
 export async function init(config?: OtelConfig): Promise<void> {
 	if (_initialized) {
 		return;
+	}
+
+	// ---- ESM instrumentation hook --------------------------------------
+	// parentURL is this module's own URL; @opentelemetry/instrumentation is
+	// a direct dependency of this package, so hook.mjs resolves reliably in
+	// both the Bazel runfiles tree and the flattened npm closure in a
+	// service tar.
+	if (!_esmHookRegistered) {
+		register("@opentelemetry/instrumentation/hook.mjs", import.meta.url);
+		_esmHookRegistered = true;
 	}
 
 	const deploy = isDeploy();

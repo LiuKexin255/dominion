@@ -3,9 +3,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { recognizeBoard } from "./recognize";
-import { renderBoardText } from "./render";
-import { isWin } from "./win";
+import { recognizeBoard } from "./recognize.js";
+import { renderBoardText } from "./render.js";
+import { isWin } from "./win.js";
 
 /**
  * golden.test.ts — Golden recognition tests against real desktop screenshots.
@@ -19,7 +19,7 @@ import { isWin } from "./win";
  * screenshot.
  */
 
-const TESTDATA = path.join(__dirname, "..", "..", "testdata");
+const TESTDATA = path.join(import.meta.dirname, "..", "..", "testdata");
 const CASES = [
   "saolei_1",
   "saolei_2",

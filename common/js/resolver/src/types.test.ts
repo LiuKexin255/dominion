@@ -1,6 +1,6 @@
 import { describe, it, expect, expectTypeOf } from "vitest";
-import type { PortSelector, StatefulInstance } from "./types";
-import type { Target } from "./target";
+import type { PortSelector, StatefulInstance } from "./types.js";
+import type { Target } from "./target.js";
 
 // ---------------------------------------------------------------------------
 // Type-level tests — these verify that the exported types are structurally

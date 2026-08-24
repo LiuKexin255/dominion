@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { cellSymbol, renderBoardText, renderGridWithRuler } from "./render";
-import type { GameState } from "./types";
+import { cellSymbol, renderBoardText, renderGridWithRuler } from "./render.js";
+import type { GameState } from "./types.js";
 
 function state(grid: GameState["grid"]): GameState {
   return { width: grid[0]?.length ?? 0, height: grid.length, grid };
