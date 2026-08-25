@@ -358,6 +358,9 @@ def _artifact_pkg_js_impl(ctx):
     args = ctx.actions.args()
     args.add(output.path)
     args.add(base_dir)
+    # Third positional argument: the service manifest, asserted by the
+    # ESM-only build gate at the start of the action command.
+    args.add(ctx.file.package_json.path)
 
     # Phase 1: ts_project files (unchanged)
     ts_project_label = ctx.attr.ts_project.label
@@ -493,7 +496,15 @@ def _artifact_pkg_js_impl(ctx):
         command = """set -euo pipefail
 out="$1"
 base_dir="$2"
-shift 2
+manifest="$3"
+shift 3
+# ESM-only build gate: Node resolves the deployed .js files against the
+# nearest package.json, so a manifest without "type": "module" would
+# silently flip the whole service back to CJS parsing.
+if ! grep -q '"type": *"module"' "${manifest}"; then
+  echo "ERROR: ${manifest} does not declare \\"type\\": \\"module\\" — ESM-only 构建，CJS 服务产物不再支持" >&2
+  exit 1
+fi
 # Phase 1: ts_project files
 while (( "$#" )); do
   if [[ "$1" == "--workspace-deps" ]] || [[ "$1" == "--proto-files" ]] || [[ "$1" == "--npm-deps" ]]; then
@@ -604,12 +615,17 @@ _artifact_pkg_js = rule(
     Non-TS data files listed in ``data_files`` (e.g. ``.md``, ``.json``)
     are placed relative to the package directory using the same path
     logic as ``ts_project`` files, so runtime ``fs.readFileSync`` against
-    ``__dirname``-relative paths resolves them in the deployed image.
+    ``import.meta.dirname``-relative paths resolves them in the deployed
+    image.
 
     The service manifest (``package_json``) is shipped at
     ``/dominion/{app}/{service}/package.json``: Node determines the module
     format of the deployed ``.js`` files from the nearest package.json, so
-    the service root must carry its manifest.
+    the service root must carry its manifest. Two build-time gates make
+    ESM-only packaging a structural invariant: a BUILD package missing
+    ``package.json`` fails at analysis time (label resolution), and the
+    packaging action fails unless the manifest declares
+    ``"type": "module"`` — CJS service artifacts are not buildable.
     """,
     attrs = {
         "app": attr.string(mandatory = True),
@@ -638,7 +654,9 @@ _artifact_pkg_js = rule(
             mandatory = True,
             doc = "Service package manifest shipped at " +
                   "``dominion/{app}/{service}/package.json``. Instantiated by the " +
-                  "``artifact_pkg_js`` macro with the BUILD package's ``package.json``.",
+                  "``artifact_pkg_js`` macro with the BUILD package's ``package.json``. " +
+                  "The packaging action asserts it declares ``\"type\": \"module\"`` " +
+                  "(ESM-only builds; CJS service artifacts are not supported).",
         ),
         "data_files": attr.label_list(
             allow_files = True,
@@ -658,8 +676,10 @@ def artifact_pkg_js(name, package_json = "package.json", **kwargs):
     the module format of the deployed ``.js`` files from the nearest
     package.json, so the service root must carry its manifest. The default
     cannot be turned off — a package missing that file fails at analysis
-    time. Targets must not re-carry package.json via ``data_files``
-    (destination conflict with this mandatory copy).
+    time, and the manifest must declare ``"type": "module"`` or the
+    packaging action fails (ESM-only builds). Targets must not re-carry
+    package.json via ``data_files`` (destination conflict with this
+    mandatory copy).
 
     Args:
         name: Base target name.

@@ -49,8 +49,9 @@ rg '__dirname|__filename|module\.exports' -g '*.ts' common/js projects/game expe
 rg 'require\(' -g '*.ts' --glob '!*.test.ts' --glob '!frontend' common/js projects/game experimental third_party
 # 测试文件 require(：唯一豁免 common/js/grpc/otel/src/index.test.ts（createRequire 场景，otel 契约 §3）
 rg 'require\(' -g '*.test.ts' --glob '!frontend' -g '!common/js/grpc/otel/src/index.test.ts' common/js projects experimental third_party
-# workspace 包缺 "type": "module"（唯一例外：仓库根 package.json，非 workspace 包且无 JS 源）
-rg -L '"type": *"module"' -g 'package.json' common projects experimental third_party
+# workspace 包缺 "type": "module"（期望零命中；third_party/github.com 的 vendored 上游
+# package.json 不属于 pnpm workspace，其命中是预期噪音。仓库根不在搜索路径，见 §1 例外）
+rg --files-without-match '"type": *"module"' -g 'package.json' common projects experimental third_party
 ```
 
 前端包 `projects/game/desktop/frontend` 不在本契约审计范围（自有 bundler 体系，`moduleResolution: bundler` 合法）；其不变量是"持续可用"（FR-002），由既有 build/test target 回归保证。
