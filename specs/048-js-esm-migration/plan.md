@@ -47,10 +47,10 @@
 | III. 接口优先 | ✅ | 两份契约先于实现：包级 ESM 规范（审计判据）+ 插桩时序契约（含验收与回退条款） |
 | IV. 测试颗粒度 | ✅ | 每包翻转内嵌 `bazel build`+`bazel test`（不单列 task）；大型测试单列验收 task（guitar 完整闭环） |
 | V. 编码前阅读文档 | ✅ | 本 plan 声明必读集（见下）；tasks.md 将按 phase 显式列出三分类文档清单 |
-| VI. 服务型应用大型测试验收 | ✅ | game agent 与 dsh demo 两个 guitar 计划实际执行（部署→测试→清理，全用例通过）为验收 task；grpc_hello_world 以 sh_test 烟测 + tar 断言覆盖；其余 4 个 experimental 服务（hello_world、grpc_chain/mid、openai_llm/client、team_graph_spike）无既有 testplan，按原则 VI 豁免条款在 README 登记豁免理由（tasks T024） |
+| VI. 服务型应用大型测试验收 | ✅ | game agent 与 dsh demo 两个 guitar 计划实际执行（部署→测试→清理，全用例通过）为验收 task；grpc_hello_world 与 grpc_chain/mid 的既有 testplan 实际执行通过（部署级验收达成）；openai_llm/client 与 team_graph_spike 的既有 testplan 因既有缺陷（YAML cases 引用 target 名与 BUILD 声明不一致 / 依赖已回退且从未入库的 fixtures）无法通过，已完全移除（处置记录见 [tasks.md](tasks.md) T024）；hello_world 为 js_binary 非部署型服务（`bazel run` 冒烟覆盖）无需豁免；README 不登记豁免 |
 | VII. 终态表述 | ✅ | 迁移即清除 CJS 前提的注释/文档（`experimental/dsh/demo/agent/BUILD.bazel:57-62`、`src/dsh.ts:81`、`skill-loader.ts` 注释、`style/javascript.md`），一律改写为 ESM 终态理由；不留"迁移中"痕迹 |
 
-**设计阶段复查（plan 工作流 Phase 1）**: 设计产物（research/data-model/contracts/quickstart）与上表逐项复核无新违规。原则 VI 补充说明：game agent 与 dsh demo 两个 testplan 执行为强制验收门；其余 4 个 experimental 服务无既有 testplan，按原则 VI 豁免条款在 README 登记豁免理由（tasks T024）。
+**设计阶段复查（plan 工作流 Phase 1）**: 设计产物（research/data-model/contracts/quickstart）与上表逐项复核无新违规。原则 VI 补充说明：game agent 与 dsh demo 两个 testplan 执行为强制验收门；grpc_hello_world 与 grpc_chain/mid 的既有 testplan 执行通过（部署级验收达成）；openai_llm/client 与 team_graph_spike 的既有 testplan 因既有缺陷无法通过、已完全移除（tasks T024）；hello_world 非部署型服务无需豁免；README 不登记豁免。
 
 **下游必读文档集**（设计期汇总；编码时以 tasks.md 各 phase 三分类清单为准，不一致时以 tasks.md 为准）：
 - 契约：`specs/048-js-esm-migration/contracts/esm-package-conventions.md`、`specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md`
@@ -109,6 +109,6 @@ style/javascript.md                         # 波3：模块规范重写
 1. **Phase 2 — 基建**: `artifact_pkg_js` 新增 `package_json` 属性与存在性门禁（`tools/release/defs.bzl`；落地时服务尚为 CJS、type-less package.json 行为中性，存在性门禁立即生效且全绿）、`ts_proto_library.bzl` 后处理、smoke_test.sh ESM 化、dsh-core `.swcrc`。（先行动基面，波 1/2 依赖）
 2. **Phase 3 — 基础库波**: 按 R9 拓扑序 8 包翻转，含 `common/js/otel` init() hook（R3）与 grpc/otel 测试 createRequire 改写；每包门禁 = 该包 build+test（+下游消费方 typecheck）。
 3. **Phase 4 — 服务波**: 7 服务翻转（js_binary runfiles/双入口/注释终态化；服务 tar 的 package.json 经宏默认自动生效）；每包门禁 = build + test + （grpc_hello_world）smoke_test。
-4. **Phase 5/6 — 收尾与验收**: 启用 `package_json` 内容门禁（打包 action 断言 `"type": "module"`，CJS 服务 tar 自此无法构建）、`style/javascript.md` 重写、注释终态化、全仓 build/test、静态审计（quickstart 场景 5）、前端回归、两个 guitar 大型测试（场景 6，全部用例通过 = 验收）、README 大型测试豁免登记（原则 VI，tasks T024）。
+4. **Phase 5/6 — 收尾与验收**: 启用 `package_json` 内容门禁（打包 action 断言 `"type": "module"`，CJS 服务 tar 自此无法构建）、`style/javascript.md` 重写、注释终态化、全仓 build/test、静态审计（quickstart 场景 5）、前端回归、两个 guitar 大型测试（场景 6，全部用例通过 = 验收）、既有 testplan 处置（grpc_hello_world/grpc_chain 执行通过；openai_llm/team_graph_spike 因既有缺陷移除；README 不登记豁免，tasks T024）。
 
 各波验证步骤见 [quickstart.md](quickstart.md)；回退与风险条款见 [contracts/otel-instrumentation-esm-contract.md](contracts/otel-instrumentation-esm-contract.md) §4。

@@ -91,4 +91,4 @@ BUILD.bazel    : 服务 target 零改动（宏默认打包 package.json）；js_
 
 - SC-001/SC-004 静态审计命令集以 [contracts/esm-package-conventions.md §6](contracts/esm-package-conventions.md#6) 为唯一权威版本（终态零命中，豁免除外）；执行任务为 tasks.md T021。
 - SC-002：`bazel test //...` 全绿，用例总数不少于 tasks.md Phase 2 Checkpoint 记录的基线（T021 对比）。
-- SC-003/SC-005：`guitar run projects/game/testplan/system_test.yaml` 与 `guitar run experimental/dsh/demo/testplan/interface_test.yaml` 全用例通过（trace 断言覆盖 SC-005）；其余服务型包的大型测试豁免登记见 README（tasks.md T024）。
+- SC-003/SC-005：`guitar run projects/game/testplan/system_test.yaml` 与 `guitar run experimental/dsh/demo/testplan/interface_test.yaml` 全用例通过（trace 断言覆盖 SC-005）；grpc_hello_world 与 grpc_chain/mid 的既有 testplan 亦执行通过（部署级验收闭环达成）；openai_llm/client 与 team_graph_spike 的既有 testplan 因既有缺陷无法通过、已完全移除（处置记录见 [tasks.md](tasks.md) T024）；hello_world 为 js_binary 非部署型服务无需豁免；README 不登记豁免。

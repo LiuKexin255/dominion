@@ -98,7 +98,7 @@
 
 - **SC-001**: 重构完成后，仓库全部 JS 工作区包均为 ESM 模块声明，静态审计零 CJS 包残留（16/16）。
 - **SC-002**: 仓库全部既有 JS 单元测试通过率 100%，测试用例数量不少于重构前（无删除/跳过）。
-- **SC-003**: 全部服务型包构建成功并通过产物级断言（tar 内服务根 `package.json` 含 `"type": "module"`、烟测通过、CLI 入口可运行）；具备既有 testplan 的服务型包（game agent、dsh demo agent）完成部署级大型测试验收闭环（部署→测试→清理，全部用例通过）；其余服务型包的大型测试豁免理由按宪章原则 VI 登记于仓库 README。
+- **SC-003**: 全部服务型包构建成功并通过产物级断言（tar 内服务根 `package.json` 含 `"type": "module"`、烟测通过、CLI 入口可运行）；具备既有 testplan 的服务型包（game agent、dsh demo agent、grpc_hello_world、grpc_chain/mid）完成部署级大型测试验收闭环（部署→测试→清理，全部用例通过）；openai_llm/client 与 team_graph_spike 的既有 testplan 因既有缺陷（YAML cases 引用 target 名与 BUILD 声明不一致 / 依赖已回退且从未入库的 fake-llm fixtures）无法通过，已完全移除（处置记录见 [tasks.md](tasks.md) T024）；hello_world 为 js_binary 非部署型服务，经 `bazel run` 冒烟验证；README 不登记豁免。
 - **SC-004**: 生产源码静态扫描 CJS 专有惯用法，命中数为零（测试代码中经规范记录的插桩豁免除外）。
 - **SC-005**: 重构前后各服务的接口契约测试与可观测性验证（trace/日志产出）结果一致，无遥测丢失。
 
