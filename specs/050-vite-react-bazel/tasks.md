@@ -119,8 +119,8 @@
   - `specs/050-vite-react-bazel/contracts/vite-build-target.md`（README 中 049 消费指引的引用目标）
   - `projects/game/fake-llm/README.md`（宪法 VI 大型测试豁免声明先例）
 
-- [ ] T012 [P] 创建 `experimental/js/vite_react_demo/README.md`：demo 定位（vite + React bazel 构建实证）、构建/测试命令、前置条件说明（`bazel run @pnpm -- --dir /mnt/code/dominion` 安装 node_modules；缺少 node_modules 时构建失败的原因与解决方式——spec Edge Cases「本地执行环境差异」）、宪法 VI 大型测试豁免声明（非服务型构建基建，验收 = bazel build + bazel test，参照 `projects/game/fake-llm/README.md` 豁免先例）、049 web 前端的消费指引（链接 `specs/050-vite-react-bazel/contracts/vite-build-target.md`）
-- [ ] T013 终验：按 `specs/050-vite-react-bazel/quickstart.md` 场景 1–6 逐条执行——含 `bazel clean` 后可重复构建（场景 5）与 `grep` 依赖合规检查（场景 6：`experimental/js/vite_react_demo/package.json` 中 React 相关条目全部 `catalog:`）；全部通过后 feature 验收完成
+- [X] T012 [P] 创建 `experimental/js/vite_react_demo/README.md`：demo 定位（vite + React bazel 构建实证）、构建/测试命令、前置条件说明（`bazel run @pnpm -- --dir /mnt/code/dominion` 安装 node_modules；缺少 node_modules 时构建失败的原因与解决方式——spec Edge Cases「本地执行环境差异」）、宪法 VI 大型测试豁免声明（非服务型构建基建，验收 = bazel build + bazel test，参照 `projects/game/fake-llm/README.md` 豁免先例）、049 web 前端的消费指引（链接 `specs/050-vite-react-bazel/contracts/vite-build-target.md`）
+- [X] T013 终验：按 `specs/050-vite-react-bazel/quickstart.md` 场景 1–6 逐条执行——含 `bazel clean` 后可重复构建（场景 5）与 `grep` 依赖合规检查（场景 6：`experimental/js/vite_react_demo/package.json` 中 React 相关条目全部 `catalog:`）；全部通过后 feature 验收完成
 
 ---
 
