@@ -100,7 +100,7 @@
 - **技术文章/技术参考文档**：
   - `specs/050-vite-react-bazel/quickstart.md`（场景 4 验证步骤与预期）
 
-- [ ] T011 [US3] 存量回归验证：`bazel build //projects/game/desktop/frontend:dist` 与 `bazel test //projects/game/desktop/frontend:lib_test` 全绿，产物结构与 feature 合入前一致（`specs/050-vite-react-bazel/quickstart.md` 场景 4；SC-003）。若出现回归，本 phase **不直接编辑修复**：定位至 Phase 1/2 的依赖或规则变更，回退至对应任务按该 phase 文档清单修复，再重跑本验证至全绿
+- [X] T011 [US3] 存量回归验证：`bazel build //projects/game/desktop/frontend:dist` 与 `bazel test //projects/game/desktop/frontend:lib_test` 全绿，产物结构与 feature 合入前一致（`specs/050-vite-react-bazel/quickstart.md` 场景 4；SC-003）。若出现回归，本 phase **不直接编辑修复**：定位至 Phase 1/2 的依赖或规则变更，回退至对应任务按该 phase 文档清单修复，再重跑本验证至全绿
 
 **Checkpoint**: 全部 user story 完成（US3 为验证型 story，无新交付物）。
 
