@@ -1,7 +1,7 @@
 ---
 description: executor for sdd task 
 mode: primary
-model: opencode-go/deepseek-v4-flash
+model: zhipuai-coding-plan/glm-5.3
 reasoningEffort: max
 temperature: 0.1
 tools:
