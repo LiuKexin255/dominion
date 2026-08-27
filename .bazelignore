@@ -17,5 +17,6 @@ experimental/openai_llm/client/node_modules
 experimental/ts/team_graph_spike/node_modules
 third_party/dsh/core/node_modules
 experimental/dsh/demo/agent/node_modules
+experimental/js/vite_react_demo/node_modules
 
 

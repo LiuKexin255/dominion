@@ -1,0 +1,14 @@
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vite.bzl", "vite_build")
+
+npm_link_all_packages(name = "node_modules")
+
+vite_build(
+    name = "dist",
+    srcs = glob(["src/**"]),
+    config = "vite.config.ts",
+    index_html = "index.html",
+    package_json = "package.json",
+    tsconfig = "tsconfig.json",
+    visibility = ["//visibility:public"],
+)
