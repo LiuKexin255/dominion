@@ -52,6 +52,7 @@ vite_build(
 vitest_test(
     name = "lib_test",
     data = glob(["src/**"]) + [
+        "tsconfig.json",
         ":node_modules/react",
         ":node_modules/react-dom",
         ":node_modules/@testing-library/react",
@@ -67,6 +68,7 @@ vitest_test(
 | `data` 镜像 | 必须列入组件测试运行所需的全套 `:node_modules/*` 条目 | `style/javascript.md` §js_test 执行模型（丢失即 runfiles `Cannot find package`） |
 | DOM 环境 | 需 DOM 的测试文件顶部声明 `// @vitest-environment jsdom`（per-file） | `specs/019-js-test-reliability/contracts/run-vitest-shim.md`（shim 不传环境选项，docblock 是唯一 per-file 机制） |
 | 源码形态 | data 传原始 `.ts/.tsx` 源，不传任何预编译产物 | 同上契约（模块单实例不变式） |
+| `tsconfig.json` 入 data | React 项目 MUST 将包内 `tsconfig.json` 一并列入 `data` | shim（`tools/dev/js/run_vitest.mjs`）不设 `root`，其驱动的 vite 实例 `root` 缺省为 `process.cwd()`（[vite `root` 默认值](https://v6.vite.dev/config/shared-options.html#root)）——js_test 进程 cwd 是 runfiles workspace 根，该层不存在任何项目 config，vitest 以零项目配置运行；`.tsx` 转译经 vite 的 esbuild 管线（[vite `esbuild` 选项](https://v6.vite.dev/config/shared-options.html#esbuild)），esbuild 从被转译文件的最近父目录发现 `tsconfig.json` 并读取 `"jsx": "react-jsx"`（automatic runtime；[esbuild tsconfig 字段与发现规则](https://esbuild.github.io/content-types/#tsconfig-json)）；缺失时按 classic runtime 发射且不自动引入 React（[esbuild JSX auto-import](https://esbuild.github.io/content-types/#auto-import-for-jsx)），运行期报 `ReferenceError: React is not defined`。实证记录：`experimental/js/vite_react_demo/BUILD.bazel` 注释 |
 
 ## 兼容性边界
 

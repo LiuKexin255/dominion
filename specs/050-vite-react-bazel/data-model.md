@@ -12,7 +12,7 @@
 <target-out>/              # tree artifact 根
 ├── index.html             # 入口 HTML（必有）
 └── assets/
-    ├── index-<hash>.js    # bundle（必有，<hash> = 8 位内容哈希，具体位数以 vite 输出为准）
+    ├── index-<hash>.js    # bundle（必有；<hash> = rollup 内容哈希 url-safe base64 段 [0-9A-Za-z_-]，默认 8 位，见 contracts/dist-artifact-assertions.md A3）
     └── index-<hash>.css   # 样式（demo 无独立样式文件时可缺省）
 ```
 
@@ -22,7 +22,7 @@
 |-----------|------|--------|
 | `index.html` | 必须存在于产物根 | sh_test 断言 A1 |
 | 资源引用 | `index.html` 引用的每个本地资源路径（`<script src>` / `<link href>`）必须解析到产物目录内的既有文件 | sh_test 断言 A2 |
-| 资源命名 | JS/CSS 以内容哈希命名（`*-<hash>.js|css` 形态） | sh_test 断言 A3 |
+| 资源命名 | JS/CSS 以内容哈希命名（`*-<hash>.js|css` 形态；hash 字符集与默认长度见 `contracts/dist-artifact-assertions.md` A3） | sh_test 断言 A3 |
 | bundle 内容 | demo 组件特征字符串（`dominion-vite-react-demo`）必须在某 `.js` 资源内容中出现 | sh_test 断言 A4 |
 | React 运行时 | bundle 内含 react-dom 产物的 `@license` banner 字面量（`react-dom.production.min.js`；vite 默认 `esbuild.legalComments: "eof"` 保留 license 注释） | sh_test 断言 A4（与特征字符串共同检出） |
 
