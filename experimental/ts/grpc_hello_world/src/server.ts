@@ -4,8 +4,8 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { readConfig } from "@dominion/common-js-config";
 import { info } from "@dominion/common-js-logs";
-import type { GreeterHandlers } from "../greeter_types/experimental/ts/grpc_hello_world/Greeter";
-import type { ProtoGrpcType } from "../greeter_types/greeter";
+import type { GreeterHandlers } from "../greeter_types/experimental/ts/grpc_hello_world/Greeter.js";
+import type { ProtoGrpcType } from "../greeter_types/greeter.js";
 
 /** Greeting data shape declared in the service.yaml `service_config` config block. */
 interface Greeting {
@@ -26,8 +26,8 @@ const greetingSuffixSegment = greetingSuffix === "" ? "" : ` ${greetingSuffix}`;
 
 // Service root: the parent directory of the src/ directory.
 // In the deployed package, src/server.js is at service/src/server.js,
-// so __dirname points to service/src/, and ".." gives us service/.
-const protoRoot = path.join(__dirname, "..");
+// so import.meta.dirname points to service/src/, and ".." gives us service/.
+const protoRoot = path.join(import.meta.dirname, "..");
 
 // Proto files are placed at their canonical import paths under the service root.
 // For example: service/experimental/ts/grpc_hello_world/greeter.proto

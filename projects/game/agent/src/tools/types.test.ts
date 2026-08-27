@@ -14,7 +14,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import { describe, expect, it } from "vitest";
 
-import { isStandalone, type StandaloneExtras } from "./types";
+import { isStandalone, type StandaloneExtras } from "./types.js";
 
 /**
  * Build a minimal mock tool carrying only the `extras` field. The helper

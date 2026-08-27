@@ -70,17 +70,17 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 
-import type { ChatModel } from "../model-provider";
-import type { MemoryClient } from "../memory-client";
-import { resolveStreamIdleTimeout } from "../reasoning-timeouts";
-import type { FrozenMemorySnapshot } from "./memory-snapshot";
-import type { GameEnded, TeamStateValue } from "./state";
-import type { EphemeralGameBuffer } from "./team-sink";
-import { createCompressNode } from "./compress";
-import { createInstructionNode } from "./instruction-node";
-import { createPlayerNode } from "./player";
-import type { CreateAgentFn } from "./player";
-import { createPlannerNode } from "./planner";
+import type { ChatModel } from "../model-provider.js";
+import type { MemoryClient } from "../memory-client.js";
+import { resolveStreamIdleTimeout } from "../reasoning-timeouts.js";
+import type { FrozenMemorySnapshot } from "./memory-snapshot.js";
+import type { GameEnded, TeamStateValue } from "./state.js";
+import type { EphemeralGameBuffer } from "./team-sink.js";
+import { createCompressNode } from "./compress.js";
+import { createInstructionNode } from "./instruction-node.js";
+import { createPlayerNode } from "./player.js";
+import type { CreateAgentFn } from "./player.js";
+import { createPlannerNode } from "./planner.js";
 
 /**
  * The saolei team graph state schema (contract §1). Module-private: see the

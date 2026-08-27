@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package experimental.dsh.demo;
+
+import "google/api/annotations.proto";
+
+option go_package = "dominion/experimental/dsh/demo";
+
+// Chat service serves the dsh chat agent demo.
+// Prefix Path: /experimental/dsh-demo
+service Chat {
+  // Sends one user message to a conversation and returns the assistant reply.
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse) {
+    option (google.api.http) = {
+      post: "/experimental/dsh-demo/{name=conversations/*}:sendMessage"
+      body: "*"
+    };
+  }
+}
+message SendMessageRequest {
+  // Conversation resource name, e.g. "conversations/conv-1".
+  string name = 1;
+  // The user message text for this turn.
+  string message = 2;
+}
+message SendMessageResponse {
+  // Conversation resource name (echo).
+  string name = 1;
+  // The assistant reply for this turn.
+  string reply = 2;
+}

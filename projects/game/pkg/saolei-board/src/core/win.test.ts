@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { CellStatus, GameState, MineCounter } from "./types";
-import { isWin } from "./win";
+import type { CellStatus, GameState, MineCounter } from "./types.js";
+import { isWin } from "./win.js";
 
 /**
  * win.test.ts — Unit tests for the pure `isWin` predicate.

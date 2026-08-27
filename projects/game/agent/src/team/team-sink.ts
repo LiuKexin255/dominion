@@ -33,12 +33,12 @@
 import { isWin } from "@dominion/game-saolei-board";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { isTerminalState } from "../mcp/saolei/saolei-mcp";
+import { isTerminalState } from "../mcp/saolei/saolei-mcp.js";
 import type {
 	CellOperation,
 	GameStats,
 	SaoleiEventSink,
-} from "../mcp/saolei/saolei-mcp";
+} from "../mcp/saolei/saolei-mcp.js";
 
 /** A structured game-end event written by the sink (D6 step 3). */
 export interface GameEventRecord {

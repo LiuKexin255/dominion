@@ -54,13 +54,13 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 
-import { appendSkillBodyToPrompt } from "../skill-loader";
-import { buildContentBlocks } from "../llm";
-import type { TurnContent } from "../llm";
-import type { ChatModel } from "../model-provider";
-import type { TeamStateValue } from "./state";
-import type { EphemeralGameBuffer } from "./team-sink";
-import { consumeGameEvent } from "./team-sink";
+import { appendSkillBodyToPrompt } from "../skill-loader.js";
+import { buildContentBlocks } from "../llm.js";
+import type { TurnContent } from "../llm.js";
+import type { ChatModel } from "../model-provider.js";
+import type { TeamStateValue } from "./state.js";
+import type { EphemeralGameBuffer } from "./team-sink.js";
+import { consumeGameEvent } from "./team-sink.js";
 
 /** The player agent's name — the `TeamFrame.agent` value (FR-023/D12). */
 export const PLAYER_AGENT_NAME = "player";

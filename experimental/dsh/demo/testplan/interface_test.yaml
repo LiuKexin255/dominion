@@ -1,0 +1,32 @@
+name: dsh-demo-interface-test
+description: |
+  dsh-demo chat interface test — verifies the 3-service chat link:
+  grpc-gateway (Go) → dsh agent (grpc-js/TS, B1-embedded dsh) → fake-llm (Go).
+
+  Single-plan principle (style/large_test.md §测试计划数量): later stories
+  (US2 multi-turn) append cases/targets to this plan's suite — never a new
+  plan YAML.
+
+  Test cases:
+    1. TestChatReply — single-turn template hits and the no-match fallback
+       return verbatim deterministic replies (US1-1/US1-3)
+    2. TestChatReplyDeterminism — repeating the identical request returns
+       the identical reply (US1-2)
+    3. TestChatInvalidRequest — empty/missing message → 400; resource names
+       outside conversations/* → routing-level 404 (Edge)
+    4. TestMultiturnBranch — a conversation's second identical "hello"
+       turn takes the greeting-again multi-turn template (US2-1)
+    5. TestMultiturnIsolation — a fresh conversation's first "hello" stays
+       on the first-turn greeting template (US2-2)
+    6. TestMultiturnInterleaved — two interleaved conversations each follow
+       their own branch sequence (US2-3)
+
+suites:
+  - name: default
+    deploy: //experimental/dsh/demo/testplan/deploy.yaml
+    endpoint:
+      http:
+        public: https://apitest.liukexin.com
+    cases:
+      - //experimental/dsh/demo/testplan:testplan_test
+      - //experimental/dsh/demo/testplan:multiturn_test

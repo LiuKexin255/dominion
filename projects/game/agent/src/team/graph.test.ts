@@ -25,27 +25,27 @@ import { NodeTimeoutError } from "@langchain/langgraph";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { appendSkillBodyToPrompt, loadSkillBody, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
-import { refreshTeamChannels } from "../context-middleware";
-import { PRIMARY_AGENT_NAME } from "../session-team";
-import type { MemoryClient } from "../memory-client";
-import type { GameStats } from "../mcp/saolei/saolei-mcp";
+import { appendSkillBodyToPrompt, loadSkillBody, SKILL_PROMPT_SEPARATOR } from "../skill-loader.js";
+import { refreshTeamChannels } from "../context-middleware.js";
+import { PRIMARY_AGENT_NAME } from "../session-team.js";
+import type { MemoryClient } from "../memory-client.js";
+import type { GameStats } from "../mcp/saolei/saolei-mcp.js";
 import {
 	createEphemeralGameBuffer,
 	createTeamSink,
 	type EphemeralGameBuffer,
-} from "./team-sink";
-import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
-import type { TeamGraphHandle } from "./graph";
-import { STREAM_IDLE_TIMEOUT_MS } from "../llm";
+} from "./team-sink.js";
+import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph.js";
+import type { TeamGraphHandle } from "./graph.js";
+import { STREAM_IDLE_TIMEOUT_MS } from "../llm.js";
 import {
 	FrozenMemorySnapshot,
 	PLANNER_MEMORY_SNAPSHOT_ID,
-} from "./memory-snapshot";
-import { createPlayerNode, DEFAULT_PLAYER_BASE, PLAYER_AGENT_NAME } from "./player";
-import type { CreateAgentFn } from "./player";
-import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
-import type { TeamStateValue } from "./state";
+} from "./memory-snapshot.js";
+import { createPlayerNode, DEFAULT_PLAYER_BASE, PLAYER_AGENT_NAME } from "./player.js";
+import type { CreateAgentFn } from "./player.js";
+import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner.js";
+import type { TeamStateValue } from "./state.js";
 
 /** The built-in skill bodies (loaded from the test runfiles — skill-loader). */
 const SAOLEI_SKILL_BODY = loadSkillBody("saolei");
@@ -2770,9 +2770,9 @@ describe("team graph — 044 US2: explicit env below the reasoning floor wins as
 		else process.env[envKey] = original;
 	});
 
-	async function reloadBuilder(): Promise<typeof import("./graph")> {
+	async function reloadBuilder(): Promise<typeof import("./graph.js")> {
 		vi.resetModules();
-		return await import("./graph");
+		return await import("./graph.js");
 	}
 
 	it("GAME_STREAM_IDLE_TIMEOUT_MS=90000 + DeepSeek spec → 90_000, not the 600s floor", async () => {

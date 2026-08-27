@@ -1,5 +1,5 @@
-import type { FetchLike, ServiceEndpoints, StatefulInstance } from "./types";
-import { DeployServiceError, ServiceNotFoundError } from "./errors";
+import type { FetchLike, ServiceEndpoints, StatefulInstance } from "./types.js";
+import { DeployServiceError, ServiceNotFoundError } from "./errors.js";
 
 /** Default base URL for the deploy service. */
 const DEFAULT_DEPLOY_BASE_URL = "http://infra.liukexin.com";

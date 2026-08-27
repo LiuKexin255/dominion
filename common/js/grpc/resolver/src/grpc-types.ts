@@ -1,4 +1,4 @@
-import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address";
+import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address.js";
 
 export type ResolverState =
   | { status: "unresolved" }

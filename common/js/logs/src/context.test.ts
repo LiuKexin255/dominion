@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { currentLogger, currentAttributes, withAttributes, withLogger } from "./context";
-import { Logger, defaultLogger, LogLevel, type LogAttributes } from "./logger";
+import { currentLogger, currentAttributes, withAttributes, withLogger } from "./context.js";
+import { Logger, defaultLogger, LogLevel, type LogAttributes } from "./logger.js";
 
 describe("currentLogger", () => {
   it("returns default logger when no scope active", () => {

@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   PromptClient,
   buildChannelOptionsForTest,
-} from "./prompt-client";
+} from "./prompt-client.js";
 
 // ---------------------------------------------------------------------------
 // Tests

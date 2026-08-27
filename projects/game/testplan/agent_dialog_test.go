@@ -118,10 +118,18 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 	textFrame := buildTextFrame(sessionID, "player", "Hello ordering test")
 	writeWSFrame(t, conn, textFrame)
 
-	// Read frames in order — first must be thinking, second must be text
-	frame1 := readWSFrame(t, conn)
-	if !frameHasThinking(frame1) {
-		t.Fatal("frame 1: expected thinking, got something else")
+	// Drain to the user turn's thinking frame: UpdateTeam's fire-and-forget
+	// init-instruction turn (specs/041-realtime-init-push) may still be in
+	// flight when this sink binds, and its frames (planner request/response,
+	// player write-back) are pushed live ahead of the turn output — the turn
+	// awaits the in-flight init turn first (specs/039-planner-memory-
+	// calibration FR-015). The ordering guarantee under test is WITHIN the
+	// turn: the frame right after thinking must be the text frame.
+	frame1 := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
+		return frameHasThinking(f)
+	})
+	if frame1 == nil {
+		t.Fatal("did not receive thinking frame")
 	}
 	if !strings.Contains(frameThinking(frame1), expectedGreetingReasoning) {
 		t.Errorf("frame 1 thinking = %q, want to contain %q", frameThinking(frame1), expectedGreetingReasoning)

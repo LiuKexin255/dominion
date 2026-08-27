@@ -24,15 +24,15 @@ import { tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { clearChannel, refreshTeamChannels } from "./context-middleware";
+import { clearChannel, refreshTeamChannels } from "./context-middleware.js";
 import {
   createEphemeralGameBuffer,
   createTeamSink,
-} from "./team/team-sink";
-import { buildTeamGraph } from "./team/graph";
-import { FrozenMemorySnapshot } from "./team/memory-snapshot";
-import type { MemoryClient } from "./memory-client";
-import type { TeamStateValue } from "./team/state";
+} from "./team/team-sink.js";
+import { buildTeamGraph } from "./team/graph.js";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot.js";
+import type { MemoryClient } from "./memory-client.js";
+import type { TeamStateValue } from "./team/state.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 
 /**

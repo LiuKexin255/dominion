@@ -14,9 +14,9 @@
 
 import { readFileSync } from "node:fs";
 
-import { recognizeBoard } from "../core/recognize";
-import { renderBoardText } from "../core/render";
-import type { MineCounter } from "../core/types";
+import { recognizeBoard } from "../core/recognize.js";
+import { renderBoardText } from "../core/render.js";
+import type { MineCounter } from "../core/types.js";
 
 interface ParsedArgs {
   path: string;
@@ -131,6 +131,6 @@ export function main(argv: string[]): number {
   return 0;
 }
 
-if (require.main === module) {
+if (import.meta.main) {
   process.exit(main(process.argv));
 }

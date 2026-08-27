@@ -1,0 +1,39 @@
+version: "3.0"
+# Environment name scope must match ^[a-z][a-z0-9]{0,7}$ (deploy schema,
+# tools/release/deploy/README.md §环境名格式) — hyphens are rejected, so the
+# specs/047-dsh-chat-demo/tasks.md T018 literal "dsh-demo.{{run}}" is normalized to "dshdemo.{{run}}".
+# The env name is a test-environment identifier only and is not coupled to
+# the app name (dsh-demo) the resolver validates against SERVICE_APP.
+name: dshdemo.{{run}}
+type: test
+desc: "dsh-demo chat integration test (gateway→agent→fake-llm)"
+services:
+  - artifact:
+      path: //experimental/dsh/demo/fake-llm/service.yaml
+      name: fake-llm
+  - artifact:
+      path: //experimental/dsh/demo/agent/service.yaml
+      name: agent
+      env:
+        # Dummy credential consumed by the cordis.yml llm-deepseek row
+        # (apiKeyEnv: FAKE_LLM_API_KEY): fake-llm ignores the authorization
+        # header (specs/047-dsh-chat-demo/contracts/fake-llm-wire.md §2) and
+        # the adapter only checks non-empty
+        # (specs/047-dsh-chat-demo/research.md D2). FAKE_LLM_BASE_URL is
+        # intentionally NOT set here — the agent resolves fake-llm at runtime
+        # via Dominion service discovery (specs/047-dsh-chat-demo/spec.md
+        # FR-011). SERVICE_APP / DOMINION_ENVIRONMENT are platform-reserved
+        # and injected by the deploy system
+        # (tools/release/deploy/README.md §环境变量配置).
+        FAKE_LLM_API_KEY: dummy-key
+  - artifact:
+      path: //experimental/dsh/demo/gateway/service.yaml
+      name: gateway
+    http:
+      hostnames:
+        - apitest.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /experimental/dsh-demo

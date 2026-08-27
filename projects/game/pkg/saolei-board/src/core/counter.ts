@@ -36,9 +36,9 @@
  * image only (style/javascript.md §测试 — DI / pure-function testing).
  */
 
-import type { DecodedImage } from "./decode";
-import { getRGB } from "./decode";
-import type { CounterProfile, MineCounter, SegmentId } from "./types";
+import type { DecodedImage } from "./decode.js";
+import { getRGB } from "./decode.js";
+import type { CounterProfile, MineCounter, SegmentId } from "./types.js";
 
 /** Classic Win32 Microsoft Minesweeper mine-counter decode profile, using the
  *  measured constants from `specs/028-saolei-win-counter-fix/research.md`

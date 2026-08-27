@@ -36,24 +36,24 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { info } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
-import type { ProtoGrpcType } from "../game_types/game";
+import type { ProtoGrpcType } from "../game_types/game.js";
 
-import { readSecret } from "./secrets";
-import { PromptClient } from "./prompt-client";
-import { MemoryClient } from "./memory-client";
-import { ModelProviderCache } from "./model-provider";
-import type { ChatModel } from "./model-provider";
-import { SessionTeamStore } from "./session-team";
-import { SessionTeam } from "./session-team";
-import { Handler } from "./handler";
-import { startMcpHost, DEFAULT_MCP_PORT } from "./mcp-host";
-import { buildMemoryMcpTools, buildSaoleiMcpTools, defaultMcpClientFactory } from "./llm";
-import { OperationBridge } from "./operation-bridge";
-import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
-import type { EphemeralGameBuffer } from "./team/team-sink";
-import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
-import { buildTeamGraph } from "./team/graph";
-import { FrozenMemorySnapshot } from "./team/memory-snapshot";
+import { readSecret } from "./secrets.js";
+import { PromptClient } from "./prompt-client.js";
+import { MemoryClient } from "./memory-client.js";
+import { ModelProviderCache } from "./model-provider.js";
+import type { ChatModel } from "./model-provider.js";
+import { SessionTeamStore } from "./session-team.js";
+import { SessionTeam } from "./session-team.js";
+import { Handler } from "./handler.js";
+import { startMcpHost, DEFAULT_MCP_PORT } from "./mcp-host.js";
+import { buildMemoryMcpTools, buildSaoleiMcpTools, defaultMcpClientFactory } from "./llm.js";
+import { OperationBridge } from "./operation-bridge.js";
+import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink.js";
+import type { EphemeralGameBuffer } from "./team/team-sink.js";
+import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp.js";
+import { buildTeamGraph } from "./team/graph.js";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { MemorySaver } from "@langchain/langgraph";
 
@@ -61,7 +61,7 @@ import type { MemorySaver } from "@langchain/langgraph";
 // Exported startServer
 // ---------------------------------------------------------------------------
 
-const protoRoot = path.join(__dirname, "..");
+const protoRoot = path.join(import.meta.dirname, "..");
 const protoPath = path.join(protoRoot, "projects", "game", "game.proto");
 const protoIncludeDirs = [protoRoot];
 

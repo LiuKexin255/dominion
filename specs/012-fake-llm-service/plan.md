@@ -160,6 +160,6 @@ See `data-model.md` for entity definitions and state transitions; `contracts/fak
 - OpenAI streaming guide — https://platform.openai.com/docs/api-reference/streaming
 - LangChain Python issue confirming reasoning-content preservation gap — https://github.com/langchain-ai/langchain/issues/34706
 - LangChain Python PR preserving `reasoning_content` in `additional_kwargs` — https://github.com/langchain-ai/langchain/pull/34705
-- Repository prototype evidence — `experimental/openai_llm/testplan/interface_test.yaml` and `experimental/openai_llm/testplan/interface_test.go`
+- Repository prototype evidence — the openai_llm prototype interface testplan, since removed in `specs/048-js-esm-migration/tasks.md` T024 (its YAML cases referenced a bazel target name that never matched the BUILD declaration, so it could not run as delivered); the 2026-06-17 prototype execution result is recorded in `specs/012-fake-llm-service/spec.md` References
 - Current agent fake adapter path — `projects/game/agent/src/fake-llm.ts`, `projects/game/agent/src/bootstrap-test.ts`, `projects/game/agent/BUILD.bazel`
 - Current test deployment path — `projects/game/testplan/deploy_agent.yaml`, `projects/game/testplan/system_test.yaml`

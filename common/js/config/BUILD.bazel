@@ -1,18 +1,27 @@
 load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
-load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("//tools/dev/js:vitest_test.bzl", "vitest_test")
 load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
 
 npm_link_all_packages(name = "node_modules")
 
+# tsc type-checks the bin-tree copies of srcs; the nearest package.json for
+# format detection must therefore also be a bin-tree input declaring
+# "type": "module" (NodeNext per-file ESM detection), hence the deps entry.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["package.json"],
+)
+
 ts_project(
     name = "lib",
     srcs = glob(["src/**/*.ts"]),
     declaration = True,
     transpiler = swc,
-    tsconfig = ":tsconfig.json",
+    tsconfig = ":tsconfig",
     visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@types/node",
@@ -51,6 +60,12 @@ js_runtime_library(
 vitest_test(
     name = "lib_test",
     size = "small",
+    # Tests live in test/ (not src/), so the vitest filter defaults
+    # ["run", "src/"] would match nothing.
+    args = [
+        "run",
+        "test/",
+    ],
     # Fix B: test against the package's raw .ts source (NOT the compiled :lib).
     # The node_modules mirror the :lib deps (dropping :lib removed their
     # transitive runfiles carry-in); external npm packages have no .ts source in
@@ -64,10 +79,7 @@ vitest_test(
         ["test/**/*.ts"],
         allow_empty = True,
     ) + [
-        ":node_modules/js-yaml",
         ":node_modules/@types/node",
+        ":node_modules/js-yaml",
     ],
-    # Tests live in test/ (not src/), so the vitest filter defaults
-    # ["run", "src/"] would match nothing.
-    args = ["run", "test/"],
 )

@@ -12,7 +12,7 @@ import {
   STATUS_SIGNAL_STATUS_ACTIVE,
   STATUS_SIGNAL_STATUS_IDLE,
   STATUS_SIGNAL_STATUS_UNSPECIFIED,
-} from "./status-signal";
+} from "./status-signal.js";
 
 describe("deriveStatusSignal", () => {
   it("returns ACTIVE when a turn is in-flight, regardless of binding", () => {

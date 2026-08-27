@@ -1,15 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "commonjs",
+    "module": "nodenext",
     "strict": true,
     "declaration": false,
     "skipLibCheck": true,
     "types": ["node"],
     "paths": {
-      "@dominion/common-js-logs": ["../../../common/js/logs/src"],
-      "@dominion/common-js-otel": ["../../../common/js/otel/src"],
-      "@dominion/common-js-resolver": ["../../../common/js/resolver/src"]
+      "@dominion/common-js-logs": ["../../../common/js/logs/src/index.js"],
+      "@dominion/common-js-otel": ["../../../common/js/otel/src/index.js"],
+      "@dominion/common-js-resolver": ["../../../common/js/resolver/src/index.js"]
     }
   },
   "include": ["src/**/*.ts"]

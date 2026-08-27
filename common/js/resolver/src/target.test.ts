@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { InvalidTargetError } from "./errors";
-import { parseTarget, type Target } from "./target";
+import { InvalidTargetError } from "./errors.js";
+import { parseTarget, type Target } from "./target.js";
 
 describe("parseTarget", () => {
   describe("valid numeric port", () => {

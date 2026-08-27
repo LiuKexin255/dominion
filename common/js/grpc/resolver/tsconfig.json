@@ -1,13 +1,13 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "commonjs",
+    "module": "nodenext",
     "rootDir": "src",
     "strict": true,
     "declaration": true,
     "types": ["node"],
     "paths": {
-      "@dominion/common-js-resolver": ["../../resolver/src"]
+      "@dominion/common-js-resolver": ["../../resolver/src/index.js"]
     }
   },
   "include": ["src/**/*.ts"]

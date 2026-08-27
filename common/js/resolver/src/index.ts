@@ -1,10 +1,10 @@
-export * from "./errors";
-export * from "./target";
-export { createDeployClient, DEFAULT_REQUEST_TIMEOUT_MS } from "./deploy-client";
-export type { DeployClient } from "./deploy-client";
-export { validateServiceApp, parseDominionEnvironment, buildResourceName } from "./environment";
-export { createResolver } from "./resolver";
-export { createStatefulResolver } from "./stateful";
+export * from "./errors.js";
+export * from "./target.js";
+export { createDeployClient, DEFAULT_REQUEST_TIMEOUT_MS } from "./deploy-client.js";
+export type { DeployClient } from "./deploy-client.js";
+export { validateServiceApp, parseDominionEnvironment, buildResourceName } from "./environment.js";
+export { createResolver } from "./resolver.js";
+export { createStatefulResolver } from "./stateful.js";
 export type {
   FetchLike,
   Scheduler,
@@ -14,4 +14,4 @@ export type {
   DominionEnvironment,
   EndpointResolver,
   StatefulEndpointResolver,
-} from "./types";
+} from "./types.js";

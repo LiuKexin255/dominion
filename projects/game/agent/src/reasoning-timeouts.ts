@@ -20,8 +20,8 @@
 import {
 	STREAM_IDLE_TIMEOUT_MS,
 	STREAM_IDLE_TIMEOUT_EXPLICIT,
-} from "./llm";
-import { parseModelSpec } from "./model-provider";
+} from "./llm.js";
+import { parseModelSpec } from "./model-provider.js";
 
 /**
  * The reasoning-model floor allowlist: `[substring, floorMs]` pairs matched

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyCell } from "./classify";
+import { classifyCell } from "./classify.js";
 import {
   blankCell,
   flagCell,
@@ -9,7 +9,7 @@ import {
   numberCell,
   CELL,
   unopenedCell,
-} from "./test-helpers";
+} from "./test-helpers.js";
 
 describe("classifyCell", () => {
   it("classifies an unopened beveled cell as INITIAL", () => {

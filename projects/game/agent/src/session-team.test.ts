@@ -43,18 +43,18 @@ import { createAgent, tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
-import { SessionTeam, SessionTeamStore, mergePartialBlocks } from "./session-team";
-import type { TurnBlock } from "./turn-loop";
-import type { TurnContent } from "./llm";
-import { OperationBridge } from "./operation-bridge";
-import { extractToolCalls } from "./llm";
-import type { MemoryClient } from "./memory-client";
-import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
-import { buildTeamGraph, type TeamGraphHandle } from "./team/graph";
-import { FrozenMemorySnapshot } from "./team/memory-snapshot";
-import type { TeamStateValue } from "./team/state";
+import { SessionTeam, SessionTeamStore, mergePartialBlocks } from "./session-team.js";
+import type { TurnBlock } from "./turn-loop.js";
+import type { TurnContent } from "./llm.js";
+import { OperationBridge } from "./operation-bridge.js";
+import { extractToolCalls } from "./llm.js";
+import type { MemoryClient } from "./memory-client.js";
+import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink.js";
+import { buildTeamGraph, type TeamGraphHandle } from "./team/graph.js";
+import { FrozenMemorySnapshot } from "./team/memory-snapshot.js";
+import type { TeamStateValue } from "./team/state.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame.js";
 
 /**
  * Residual constant-override mock (style/javascript.md §测试 — Mock 约定
@@ -67,8 +67,8 @@ import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
  * The mock is positively asserted by the timeout test: with the real 120s
  * value its deadline checks would fail — no silent bypass.
  */
-vi.mock("./llm", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./llm")>();
+vi.mock("./llm.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./llm.js")>();
 	return { ...actual, INIT_TURN_TIMEOUT_MS: 1000 };
 });
 

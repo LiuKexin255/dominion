@@ -49,10 +49,10 @@ import { describe, expect, it } from "vitest";
 
 import { NodeTimeoutError } from "@langchain/langgraph";
 
-import type { ContentBlock, TurnContent } from "./llm";
-import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
-import { TurnLoop } from "./turn-loop";
-import type { TurnBlock, TurnRunner } from "./turn-loop";
+import type { ContentBlock, TurnContent } from "./llm.js";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame.js";
+import { TurnLoop } from "./turn-loop.js";
+import type { TurnBlock, TurnRunner } from "./turn-loop.js";
 
 // ---------------------------------------------------------------------------
 // Test fakes / helpers

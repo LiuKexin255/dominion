@@ -7,23 +7,23 @@
  * it (grid + counter) from each new screenshot.
  */
 
-import { classifyCell, DEFAULT_COLOR_PROFILE } from "./classify";
-import { DEFAULT_COUNTER_PROFILE, decodeMineCounter } from "./counter";
-import { decodePng, extractCellRegion } from "./decode";
-import { cellOrigin, detectBoardSize, resolveGeometry } from "./geometry";
-import { renderBoardText } from "./render";
+import { classifyCell, DEFAULT_COLOR_PROFILE } from "./classify.js";
+import { DEFAULT_COUNTER_PROFILE, decodeMineCounter } from "./counter.js";
+import { decodePng, extractCellRegion } from "./decode.js";
+import { cellOrigin, detectBoardSize, resolveGeometry } from "./geometry.js";
+import { renderBoardText } from "./render.js";
 import type {
   CellStatus,
   ColorProfile,
   CounterProfile,
   GameState,
   RecognizeOptions,
-} from "./types";
+} from "./types.js";
 import {
   BoardDimensionMismatchError,
   BoardStateIncompatibleError,
   checkCompatible,
-} from "./validate";
+} from "./validate.js";
 
 /** Internal result of recognizing a board, with optional per-cell diagnostics. */
 export interface RecognizeResult {

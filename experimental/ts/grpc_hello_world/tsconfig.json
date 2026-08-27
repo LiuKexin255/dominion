@@ -1,16 +1,16 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "commonjs",
+    "module": "nodenext",
     "strict": true,
     "declaration": true,
     "skipLibCheck": true,
     "types": ["node"],
     "paths": {
-      "@dominion/common-js-config": ["../../../common/js/config/src"],
-      "@dominion/common-js-logs": ["../../../common/js/logs/src"],
-      "@dominion/common-js-grpc-otel": ["../../../common/js/grpc/otel/src"],
-      "@dominion/common-js-otel": ["../../../common/js/otel/src"]
+      "@dominion/common-js-config": ["../../../common/js/config/src/index.js"],
+      "@dominion/common-js-logs": ["../../../common/js/logs/src/index.js"],
+      "@dominion/common-js-grpc-otel": ["../../../common/js/grpc/otel/src/index.js"],
+      "@dominion/common-js-otel": ["../../../common/js/otel/src/index.js"]
     }
   },
   "include": ["src/**/*.ts", "generated/**/*.ts"]

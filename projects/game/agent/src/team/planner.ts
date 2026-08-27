@@ -64,23 +64,23 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
-import type { ChatModel } from "../model-provider";
+import type { ChatModel } from "../model-provider.js";
 import {
 	PRIMARY_AGENT_NAME,
 	type ChannelFrameEmitter,
-} from "../session-team";
-import { appendSkillBodyToPrompt } from "../skill-loader";
-import type { TeamStateValue } from "./state";
-import type { EphemeralGameBuffer } from "./team-sink";
-import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot";
-import type { FrozenMemorySnapshot } from "./memory-snapshot";
-import type { CreateAgentFn } from "./player";
-import { invokeAgentWithRetry } from "./agent-invoke";
-import { ensureMessageId } from "./instruction-node";
+} from "../session-team.js";
+import { appendSkillBodyToPrompt } from "../skill-loader.js";
+import type { TeamStateValue } from "./state.js";
+import type { EphemeralGameBuffer } from "./team-sink.js";
+import { PLANNER_MEMORY_SNAPSHOT_ID } from "./memory-snapshot.js";
+import type { FrozenMemorySnapshot } from "./memory-snapshot.js";
+import type { CreateAgentFn } from "./player.js";
+import { invokeAgentWithRetry } from "./agent-invoke.js";
+import { ensureMessageId } from "./instruction-node.js";
 import {
 	buildInstructPlayerTool,
 	type InstructionBuffer,
-} from "./instruction-tool";
+} from "./instruction-tool.js";
 
 /** The planner agent's name — the `TeamFrame.agent` value (FR-023/D12). */
 export const PLANNER_AGENT_NAME = "planner";

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { createDeployClient, DeployClient } from "./deploy-client";
-import { DeployServiceError, ServiceNotFoundError } from "./errors";
-import type { ServiceEndpoints } from "./types";
+import { createDeployClient, DeployClient } from "./deploy-client.js";
+import { DeployServiceError, ServiceNotFoundError } from "./errors.js";
+import type { ServiceEndpoints } from "./types.js";
 
 /** Helper: create a fake Response with the given status and JSON body. */
 function jsonResponse(status: number, body: unknown): Response {

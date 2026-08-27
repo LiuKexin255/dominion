@@ -52,29 +52,29 @@ import { info, warn, error } from "@dominion/common-js-logs";
 
 import type { BaseMessage } from "@langchain/core/messages";
 
-import type { TeamServiceHandlers } from "../game_types/projects/game/TeamService";
-import type { Team } from "../game_types/projects/game/Team";
-import type { TeamAgent } from "../game_types/projects/game/TeamAgent";
-import type { UpdateTeamRequest } from "../game_types/projects/game/UpdateTeamRequest";
-import type { UserFrame } from "../game_types/projects/game/UserFrame";
-import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
-import type { MessagePart } from "../game_types/projects/game/MessagePart";
-import type { FlowPart } from "../game_types/projects/game/FlowPart";
-import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
-import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
-import type { Message as MessageProto } from "../game_types/projects/game/Message";
-import type { TeamStateValue } from "./team/state";
+import type { TeamServiceHandlers } from "../game_types/projects/game/TeamService.js";
+import type { Team } from "../game_types/projects/game/Team.js";
+import type { TeamAgent } from "../game_types/projects/game/TeamAgent.js";
+import type { UpdateTeamRequest } from "../game_types/projects/game/UpdateTeamRequest.js";
+import type { UserFrame } from "../game_types/projects/game/UserFrame.js";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame.js";
+import type { MessagePart } from "../game_types/projects/game/MessagePart.js";
+import type { FlowPart } from "../game_types/projects/game/FlowPart.js";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart.js";
+import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart.js";
+import type { Message as MessageProto } from "../game_types/projects/game/Message.js";
+import type { TeamStateValue } from "./team/state.js";
 
-import { buildTeamFrame } from "./turn-loop";
-import { PRIMARY_AGENT_NAME } from "./session-team";
-import type { SessionTeamStore } from "./session-team";
-import type { TurnContent } from "./llm";
-import { extractToolCalls, readToolResultStatus } from "./llm";
-import type { SinkHandle } from "./operation-bridge";
-import { parseToolResultFields } from "./tools/shared/result-blocks";
-import { deriveStatusSignal } from "./status-signal";
-import { SAOLEI_TEAM_AGENTS } from "./team/graph";
-import type { TeamAgent as TeamAgentSchema } from "./team/graph";
+import { buildTeamFrame } from "./turn-loop.js";
+import { PRIMARY_AGENT_NAME } from "./session-team.js";
+import type { SessionTeamStore } from "./session-team.js";
+import type { TurnContent } from "./llm.js";
+import { extractToolCalls, readToolResultStatus } from "./llm.js";
+import type { SinkHandle } from "./operation-bridge.js";
+import { parseToolResultFields } from "./tools/shared/result-blocks.js";
+import { deriveStatusSignal } from "./status-signal.js";
+import { SAOLEI_TEAM_AGENTS } from "./team/graph.js";
+import type { TeamAgent as TeamAgentSchema } from "./team/graph.js";
 
 /**
  * The per-agent message channel map (D5 / FR-005).

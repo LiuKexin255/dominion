@@ -5,8 +5,8 @@ import {
   ServiceNotStatefulError,
   StatefulInstanceNoReadyEndpointsError,
   StatefulInstanceNotFoundError,
-} from "./errors";
-import { createStatefulResolver } from "./stateful";
+} from "./errors.js";
+import { createStatefulResolver } from "./stateful.js";
 
 /**
  * Helper to build a fake fetch that returns the given JSON body.

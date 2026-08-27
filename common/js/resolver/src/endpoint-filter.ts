@@ -1,4 +1,4 @@
-import { PortSelector } from "./target";
+import { PortSelector } from "./target.js";
 
 const PORT_PATTERN = /:(\d+)$/;
 

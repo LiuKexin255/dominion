@@ -8,8 +8,10 @@
  * `@langchain/langgraph` ^1.4.8 / `langchain` ^1.5.4 / `@langchain/core` ^1.2.3
  * (pnpm-workspace.yaml catalog).
  *
- * The HTTP/service integration (A5) is covered separately by the testplan
- * Go interface test in testplan/interface_test.go.
+ * The HTTP/service integration (A5) was covered by a testplan Go interface
+ * test, since removed — it depended on fake-llm fixtures that were reverted
+ * at spike end and never committed. The removal reason and the A5 historical
+ * execution result are recorded in FINDINGS.md (A5) in this package.
  */
 
 import { describe, expect, it, vi } from "vitest";

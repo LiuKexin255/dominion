@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { recognizeBoard, SaoleiBoard } from "./recognize";
-import { renderBoardText } from "./render";
+import { recognizeBoard, SaoleiBoard } from "./recognize.js";
+import { renderBoardText } from "./render.js";
 import {
   blankCell,
   buildScreenshot,
@@ -10,11 +10,11 @@ import {
   mineCell,
   numberCell,
   unopenedCell,
-} from "./test-helpers";
+} from "./test-helpers.js";
 import {
   BoardDimensionMismatchError,
   BoardStateIncompatibleError,
-} from "./validate";
+} from "./validate.js";
 
 describe("recognizeBoard", () => {
   it("decodes a synthetic 3×2 screenshot and classifies each cell", () => {

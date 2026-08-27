@@ -73,14 +73,14 @@ import * as grpc from "@grpc/grpc-js";
 import { warn } from "@dominion/common-js-logs";
 import { isNodeTimeoutError, NodeTimeoutError } from "@langchain/langgraph";
 
-import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
-import type { MessagePart } from "../game_types/projects/game/MessagePart";
-import type { MessageRole } from "../game_types/projects/game/MessageRole";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame.js";
+import type { MessagePart } from "../game_types/projects/game/MessagePart.js";
+import type { MessageRole } from "../game_types/projects/game/MessageRole.js";
 
-import type { OperationBridge, SinkHandle, OperationResult } from "./operation-bridge";
-import { TurnLoop, buildTeamFrame } from "./turn-loop";
-import type { TurnBlock } from "./turn-loop";
-import type { ContentBlock, TurnContent } from "./llm";
+import type { OperationBridge, SinkHandle, OperationResult } from "./operation-bridge.js";
+import { TurnLoop, buildTeamFrame } from "./turn-loop.js";
+import type { TurnBlock } from "./turn-loop.js";
+import type { ContentBlock, TurnContent } from "./llm.js";
 import {
 	buildContentBlocks,
 	extractToolCalls,
@@ -88,14 +88,14 @@ import {
 	readToolResultStatus,
 	RECURSION_LIMIT,
 	STATUS_UNSPECIFIED,
-} from "./llm";
-import { buildResultBlocks, parseToolResultFields } from "./tools/shared/result-blocks";
-import { refreshTeamChannels } from "./context-middleware";
-import type { TeamGraphHandle } from "./team/graph";
+} from "./llm.js";
+import { buildResultBlocks, parseToolResultFields } from "./tools/shared/result-blocks.js";
+import { refreshTeamChannels } from "./context-middleware.js";
+import type { TeamGraphHandle } from "./team/graph.js";
 import type { MemorySaver } from "@langchain/langgraph";
-import type { TeamStateValue } from "./team/state";
-import type { EphemeralGameBuffer } from "./team/team-sink";
-import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
+import type { TeamStateValue } from "./team/state.js";
+import type { EphemeralGameBuffer } from "./team/team-sink.js";
+import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp.js";
 
 /** The session's primary agent — stamped on control frames (D12). */
 export const PRIMARY_AGENT_NAME = "player";

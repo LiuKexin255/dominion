@@ -22,11 +22,11 @@ import { info } from "@dominion/common-js-logs";
 import {
 	loadAgentTimeoutOverrides,
 	resolveAgentTimeouts,
-} from "./agent-timeouts";
-import { createMouseClickTool } from "./tools/mouse_click/mouse-click";
-import { createMouseMoveTool } from "./tools/mouse_move/mouse-move";
-import type { OperationBridge } from "./operation-bridge";
-import { DEFAULT_MCP_PORT } from "./mcp-host";
+} from "./agent-timeouts.js";
+import { createMouseClickTool } from "./tools/mouse_click/mouse-click.js";
+import { createMouseMoveTool } from "./tools/mouse_move/mouse-move.js";
+import type { OperationBridge } from "./operation-bridge.js";
+import { DEFAULT_MCP_PORT } from "./mcp-host.js";
 
 /**
  * LangGraph recursion limit (super-steps) per team turn. The framework

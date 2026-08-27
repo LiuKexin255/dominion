@@ -90,4 +90,4 @@ The solution is a narrow `agent_test` artifact whose test bootstrap injects a re
 - OpenAI streaming API: https://platform.openai.com/docs/api-reference/streaming
 - LangChain reasoning-content issue: https://github.com/langchain-ai/langchain/issues/34706
 - LangChain reasoning-content PR: https://github.com/langchain-ai/langchain/pull/34705
-- Internal prototype: `experimental/openai_llm/testplan/interface_test.yaml`, `experimental/openai_llm/testplan/interface_test.go`
+- Internal prototype: the openai_llm prototype interface testplan, since removed in `specs/048-js-esm-migration/tasks.md` T024 (its YAML cases referenced a bazel target name that never matched the BUILD declaration, so it could not run as delivered)

@@ -1,18 +1,18 @@
-import { createDeployClient } from "./deploy-client";
+import { createDeployClient } from "./deploy-client.js";
 import {
   validateServiceApp,
   parseDominionEnvironment,
   buildResourceName,
-} from "./environment";
-import { filterEndpoints } from "./endpoint-filter";
+} from "./environment.js";
+import { filterEndpoints } from "./endpoint-filter.js";
 import {
   ServiceNotStatefulError,
   StatefulInstanceNotFoundError,
   StatefulInstanceNoReadyEndpointsError,
-} from "./errors";
-import { parseTarget } from "./target";
-import type { Target } from "./target";
-import type { ResolverConfig, StatefulEndpointResolver } from "./types";
+} from "./errors.js";
+import { parseTarget } from "./target.js";
+import type { Target } from "./target.js";
+import type { ResolverConfig, StatefulEndpointResolver } from "./types.js";
 
 const DEFAULT_DEPLOY_BASE_URL = "http://infra.liukexin.com";
 

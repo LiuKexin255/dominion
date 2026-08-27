@@ -6,8 +6,11 @@
 `@langchain/openai` 1.5.5 · `zod` 3.25.76.
 
 Each hypothesis below is the empirical outcome of the spike
-(`src/spike.test.ts` vitest for A1/A2/A3/A4/A6; `testplan/` Go interface test
-for A5). Evidence cites the test names + observed values. Design-impact notes
+(`src/spike.test.ts` vitest for A1/A2/A3/A4/A6; the A5 Go interface testplan,
+which no longer exists — it was removed in `specs/048-js-esm-migration/tasks.md`
+T024 because the fake-llm fixtures it depended on were reverted at spike end
+and never committed, so it could not run green as delivered; see the A5 note).
+Evidence cites the test names + observed values. Design-impact notes
 reference the spec decision they validate/revise.
 
 **Summary table**
@@ -18,7 +21,7 @@ reference the spec decision they validate/revise.
 | A2 createAgent embedded in outer graph node | **confirmed** | player createAgent tool-loop runs to LLM self-stop inside the node; outer reads shared state after (`spike.test.ts` A2) |
 | A3 single TeamState + per-agent channels + MemorySaver | **confirmed (architecture i)** | `getState().values` returns BOTH channels after a full run; per-agent history reconstructed from one checkpointer (`spike.test.ts` A3) |
 | A4 createAgent middleware hook surface | **confirmed** | `beforeAgent`/`beforeModel`/`wrapModelCall`/`afterModel`/`wrapToolCall`/`afterAgent`; middleware CAN return `REMOVE_ALL_MESSAGES` (`spike.test.ts` A4) |
-| A5 ChatOpenAI → fake-llm end-to-end | **confirmed** | `guitar run` green: playerMsgs=4, plannerMsgs=4, strategy="corner-first approach" (`testplan/`) |
+| A5 ChatOpenAI → fake-llm end-to-end | **confirmed** | `guitar run` green: playerMsgs=4, plannerMsgs=4, strategy="corner-first approach" (testplan since removed — see A5) |
 | A6 conditional edge on non-messages field | **confirmed** | routes player→planner iff `gameEnded` set; player→END when null (`spike.test.ts` A6) |
 
 ---
@@ -174,8 +177,9 @@ Source: `langchain` `AgentMiddleware`
 fake-llm (OpenAI-compatible `/v1/chat/completions`) drives the team graph
 end-to-end: player calls a tool then stops; planner calls `update_strategy`.
 
-**Evidence** (`testplan/`, `guitar run interface_test.yaml` — full deploy→test→
-cleanup loop, all green):
+**Evidence** (the spike's Go interface testplan, run once during the spike
+session — full deploy→test→cleanup loop via `guitar run`, all green; that
+testplan has since been removed, see the note below):
 - `bazel run @pnpm`/`guitar` deployed `game/fake-llm` + `team-graph-spike`
   (app=game so the resolver's `validateServiceApp` matches; see note below).
 - The Go interface test POSTed to the deployed endpoint; observed:
@@ -196,13 +200,19 @@ is purely a resolver/deploy concern, not a graph concern.
 + embedsrcs entries to drive `make_move`/`update_strategy`. **Reverted at task
 end** (the real feature will drive saolei MCP tools, not these stubs). Note the
 loader requires ONE message per file (a YAML list breaks `parseMessage`).
+Because these fixtures never landed in git, the testplan could not run green
+as delivered; it was removed in `specs/048-js-esm-migration/tasks.md` T024.
+The A5 confirmation above stands as the historical execution result from the
+spike session (with the temporary fixtures in place).
 
 **Design impact**: A5 confirms ChatOpenAI → fake-llm can drive a multi-agent
 team graph. The fake-llm's keyword/tool-name matching is adequate to script
 deterministic multi-step agent flows for large tests.
 
-Source: `experimental/ts/team_graph_spike/testplan/` (deploy.yaml,
-interface_test.yaml, interface_test.go); guitar run log.
+Source: the spike's Go interface testplan (deploy.yaml, interface_test.yaml,
+interface_test.go — the `testplan/` directory was removed in
+`specs/048-js-esm-migration/tasks.md` T024); guitar run log from the spike
+session.
 
 ---
 
@@ -260,8 +270,10 @@ Source: `experimental/ts/team_graph_spike/src/spike.test.ts` describe("A6").
 - Spike (NEW, the only permanent additions):
   `experimental/ts/team_graph_spike/` — `service.yaml`, `package.json`,
   `tsconfig.json`, `.swcrc`, `BUILD.bazel`, `src/{bootstrap,server,team-graph,
-  spike.test}.ts`, `testplan/{deploy,interface_test}.yaml`,
-  `testplan/{interface_test.go,BUILD.bazel}`, `FINDINGS.md` (this file).
+  spike.test}.ts`, `FINDINGS.md` (this file). The `testplan/` directory
+  (deploy.yaml, interface_test.yaml, interface_test.go, BUILD.bazel) was later
+  removed (`specs/048-js-esm-migration/tasks.md` T024) — its fake-llm fixtures
+  were reverted at spike end and never committed, so it could not run green.
 - Build-infra (NEW, required to register the workspace package, mirrors
   `experimental/openai_llm/client`): `.bazelignore` +1 line.
 - Temporary (REVERTED at task end): `projects/game/fake-llm/service/BUILD.bazel`

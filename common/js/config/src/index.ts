@@ -13,7 +13,7 @@ import path from "node:path";
 
 import { load } from "js-yaml";
 
-import { deepMerge } from "./merge";
+import { deepMerge } from "./merge.js";
 
 const CONFIG_DIR_ENV = "DOMINION_CONFIG_DIR";
 

@@ -1,4 +1,4 @@
-import { InvalidTargetError } from "./errors";
+import { InvalidTargetError } from "./errors.js";
 
 /**
  * Numeric port selector — port must be an integer in `0..65535`.

@@ -1,0 +1,23 @@
+# dsh composition manifest — the single source of truth for the enabled plugin
+# set (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §2). Two rows:
+# the official executor-less agent spine with its tool surface trimmed off, and
+# the official DeepSeek chat-completions adapter pointed at fake-llm via the
+# Dominion-resolved baseURL (specs/047-dsh-chat-demo/spec.md FR-011).
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    persona: 'You are a helpful demo chat assistant.'
+    workspaceContext: false        # 唯一必填键：显式关闭 runtime-context 注入
+    includeRuntimeContext: false
+    includeHarnessIdentity: false
+    skills: { enabled: false }
+    toolBash: false
+    toolJobs: false
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKeyEnv: FAKE_LLM_API_KEY   # dummy 值（deploy env 注入）；免 credentials 插件
+    baseURL: !!js process.env.FAKE_LLM_BASE_URL   # 运行期 Dominion 服务发现注入（specs/047-dsh-chat-demo/spec.md FR-011）
+    models:
+      - id: fake-chat-v1
+        contextWindow: 100000

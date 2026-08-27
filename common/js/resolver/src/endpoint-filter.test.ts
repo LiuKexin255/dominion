@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { InvalidTargetError } from "./errors";
-import { filterEndpoints } from "./endpoint-filter";
-import type { PortSelector } from "./target";
+import { InvalidTargetError } from "./errors.js";
+import { filterEndpoints } from "./endpoint-filter.js";
+import type { PortSelector } from "./target.js";
 
 describe("filterEndpoints", () => {
   describe("numeric port", () => {

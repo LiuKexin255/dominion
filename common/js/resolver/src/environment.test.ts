@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { Target } from "./target";
-import type { DominionEnvironment } from "./types";
+import type { Target } from "./target.js";
+import type { DominionEnvironment } from "./types.js";
 import {
   parseDominionEnvironment,
   validateServiceApp,
   buildResourceName,
-} from "./environment";
+} from "./environment.js";
 import {
   MissingEnvironmentError,
   InvalidEnvironmentError,
   InvalidTargetError,
-} from "./errors";
+} from "./errors.js";
 
 const ENV_KEY = "DOMINION_ENVIRONMENT";
 const APP_KEY = "SERVICE_APP";

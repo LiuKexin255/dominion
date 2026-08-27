@@ -35,17 +35,17 @@ import { randomUUID } from "node:crypto";
 
 import { info, warn } from "@dominion/common-js-logs";
 
-import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
-import type { FlowPart } from "../game_types/projects/game/FlowPart";
-import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
-import type { ImagePart } from "../game_types/projects/game/ImagePart";
-import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
-import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
-import type { KeyboardPressPart } from "../game_types/projects/game/KeyboardPressPart";
-import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMoveAndClickPart";
-import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame.js";
+import type { FlowPart } from "../game_types/projects/game/FlowPart.js";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart.js";
+import type { ImagePart } from "../game_types/projects/game/ImagePart.js";
+import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart.js";
+import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart.js";
+import type { KeyboardPressPart } from "../game_types/projects/game/KeyboardPressPart.js";
+import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMoveAndClickPart.js";
+import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus.js";
 
-import { buildTeamFrame } from "./turn-loop";
+import { buildTeamFrame } from "./turn-loop.js";
 
 // Maximum wait time (ms) for a tool result before timing out. Raised from 5 s
 // to 20 min as a safety-net backstop: the desktop's 15-min auto-continue

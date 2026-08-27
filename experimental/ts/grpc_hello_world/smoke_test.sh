@@ -4,6 +4,7 @@
 set -euo pipefail
 
 # Tar structure: everything under dominion/{app}/{service}/
+#   dominion/grpc-hello-world-ts/service/package.json
 #   dominion/grpc-hello-world-ts/service/src/bootstrap.js
 #   dominion/grpc-hello-world-ts/service/node_modules/@dominion/...
 #   dominion/grpc-hello-world-ts/service/node_modules/@grpc/...
@@ -87,36 +88,52 @@ echo "=== Checking npm deps ==="
 check_file "${SVC}/node_modules/@grpc/grpc-js/package.json"
 check_file "${SVC}/node_modules/@grpc/proto-loader/package.json"
 
+# --- Verify service root package.json declares ESM ---
+echo ""
+echo "=== Checking service root package.json (ESM) ==="
+if [[ ! -f "${SVC}/package.json" ]]; then
+  echo "FAIL: missing ${SVC}/package.json"
+  exit 1
+fi
+if ! grep -q '"type": "module"' "${SVC}/package.json"; then
+  echo "FAIL: ${SVC}/package.json does not declare \"type\": \"module\""
+  exit 1
+fi
+echo "OK: service root package.json declares \"type\": \"module\""
+
 # --- Verify module resolution with Node.js ---
 echo ""
-echo "=== Testing module resolution with Node.js ==="
+echo "=== Testing module resolution with Node.js (ESM) ==="
 
-# Run node from the service root so module resolution uses local node_modules
-NODE_OUTPUT=$(cd "${SVC}" && node \
-  -e "
-    const assert = require('assert');
+# Run node from the service root so module resolution uses local node_modules.
+# --input-type=module makes the eval script an ES module (top-level await +
+# dynamic import), matching the ESM artifacts shipped in the tar.
+NODE_OUTPUT=$(cd "${SVC}" && node --input-type=module -e "
+    import assert from 'node:assert';
+    import fs from 'node:fs';
 
     // Test 1: Workspace packages resolve
-    const logs = require('./node_modules/@dominion/common-js-logs/src/index.js');
+    const logs = await import('./node_modules/@dominion/common-js-logs/src/index.js');
     console.log('OK: @dominion/common-js-logs loaded, exports:', Object.keys(logs).join(', '));
 
-    const otel = require('./node_modules/@dominion/common-js-otel/src/index.js');
+    const otel = await import('./node_modules/@dominion/common-js-otel/src/index.js');
     console.log('OK: @dominion/common-js-otel loaded, exports:', Object.keys(otel).join(', '));
 
-    const grpcOtel = require('./node_modules/@dominion/common-js-grpc-otel/src/index.js');
+    const grpcOtel = await import('./node_modules/@dominion/common-js-grpc-otel/src/index.js');
     console.log('OK: @dominion/common-js-grpc-otel loaded, exports:', Object.keys(grpcOtel).join(', '));
 
-    // Test 2: npm deps resolve
-    const grpcJs = require('./node_modules/@grpc/grpc-js');
+    // Test 2: npm deps resolve. Bare specifiers (not directory paths) —
+    // ESM resolves packages via node_modules lookup + package.json main,
+    // while directory imports are a CJS-only feature.
+    const grpcJs = await import('@grpc/grpc-js');
     console.log('OK: @grpc/grpc-js loaded');
 
-    const protoLoader = require('./node_modules/@grpc/proto-loader');
+    const protoLoader = await import('@grpc/proto-loader');
     console.log('OK: @grpc/proto-loader loaded');
 
-    // Test 3: Bootstrap entrypoint is parseable JS (don't require it — it starts the server)
-    const fs = require('fs');
+    // Test 3: Bootstrap entrypoint is parseable JS (don't import it — it starts the server)
     const bootstrap = fs.readFileSync('./src/bootstrap.js', 'utf8');
-    assert(bootstrap.includes('require'), 'bootstrap.js should contain require calls');
+    assert(bootstrap.includes('import'), 'bootstrap.js should contain import statements');
     console.log('OK: bootstrap.js is parseable (' + bootstrap.length + ' chars)');
 
     console.log('ALL MODULE RESOLUTION CHECKS PASSED');

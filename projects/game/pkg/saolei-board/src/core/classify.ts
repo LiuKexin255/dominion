@@ -25,7 +25,7 @@
  * — https://online.games.narkive.com/FUc9B1QB/colors-in-minesweeper).
  */
 
-import type { CellStatus, ColorProfile, RGB } from "./types";
+import type { CellStatus, ColorProfile, RGB } from "./types.js";
 
 /** Classic Win32 Microsoft Minesweeper recognition profile. */
 export const DEFAULT_COLOR_PROFILE: ColorProfile = {

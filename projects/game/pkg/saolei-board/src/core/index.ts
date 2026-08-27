@@ -17,37 +17,37 @@ export type {
   ColorProfile,
   CellDiagnostics,
   RecognizeOptions,
-} from "./types";
+} from "./types.js";
 
 export {
   DEFAULT_GEOMETRY,
   resolveGeometry,
   detectBoardSize,
   cellOrigin,
-} from "./geometry";
+} from "./geometry.js";
 
-export { decodePng, getRGB, pixelIndex, extractCellRegion } from "./decode";
-export type { DecodedImage } from "./decode";
+export { decodePng, getRGB, pixelIndex, extractCellRegion } from "./decode.js";
+export type { DecodedImage } from "./decode.js";
 
-export { classifyCell, DEFAULT_COLOR_PROFILE } from "./classify";
-export type { CellClassifyDiagnostics } from "./classify";
+export { classifyCell, DEFAULT_COLOR_PROFILE } from "./classify.js";
+export type { CellClassifyDiagnostics } from "./classify.js";
 
-export { decodeMineCounter, DEFAULT_COUNTER_PROFILE } from "./counter";
+export { decodeMineCounter, DEFAULT_COUNTER_PROFILE } from "./counter.js";
 
-export { recognizeBoard, SaoleiBoard } from "./recognize";
+export { recognizeBoard, SaoleiBoard } from "./recognize.js";
 export type {
   RecognizeResult,
   RecognizeBoardOptions,
   CellDiagInternal,
-} from "./recognize";
+} from "./recognize.js";
 
-export { renderBoardText, renderGridWithRuler, cellSymbol } from "./render";
+export { renderBoardText, renderGridWithRuler, cellSymbol } from "./render.js";
 
 export {
   checkCompatible,
   BoardDimensionMismatchError,
   BoardStateIncompatibleError,
-} from "./validate";
-export type { Compatibility } from "./validate";
+} from "./validate.js";
+export type { Compatibility } from "./validate.js";
 
-export { isWin } from "./win";
+export { isWin } from "./win.js";

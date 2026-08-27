@@ -1,6 +1,6 @@
 import { describe, it, expect, expectTypeOf } from "vitest";
-import type { ResolverState } from "./grpc-types";
-import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address";
+import type { ResolverState } from "./grpc-types.js";
+import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address.js";
 
 describe("ResolverState discriminated union", () => {
   it("narrows to unresolved on status === 'unresolved'", () => {

@@ -10,7 +10,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import { defaultLogger, type Logger, type LogAttributes } from "./logger";
+import { defaultLogger, type Logger, type LogAttributes } from "./logger.js";
 
 interface ContextState {
   logger?: Logger;

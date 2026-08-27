@@ -9,8 +9,7 @@
  *
  * The SKILL.md files are carried into the deployed image via the
  * `artifact_pkg_js` `data_files` attribute; at runtime they are resolved
- * relative to this module's `__dirname` (the project compiles to CommonJS,
- * tsconfig.json `"module": "commonjs"`).
+ * relative to this module's `import.meta.dirname`.
  */
 
 import { readFileSync } from "node:fs";
@@ -26,8 +25,8 @@ export const SKILL_PROMPT_SEPARATOR = "\n\n---\n\n";
  * Read the body of a built-in skill Markdown file, stripping its YAML
  * frontmatter.
  *
- * The file is resolved at `{__dirname}/skill/{name}/SKILL.md`. In the
- * deployed image the `.md` is placed alongside the compiled JS (via
+ * The file is resolved at `{import.meta.dirname}/skill/{name}/SKILL.md`. In
+ * the deployed image the `.md` is placed alongside the compiled JS (via
  * `artifact_pkg_js` `data_files`), so the path resolves under the service
  * directory. In tests the `.md` is in the vitest_test runfiles.
  *
@@ -36,7 +35,7 @@ export const SKILL_PROMPT_SEPARATOR = "\n\n---\n\n";
  *   file is missing (no crash — same behavior as an unknown skill).
  */
 function readSkillBody(name: string): string {
-	const mdPath = join(__dirname, "skill", name, "SKILL.md");
+	const mdPath = join(import.meta.dirname, "skill", name, "SKILL.md");
 	let raw: string;
 	try {
 		raw = readFileSync(mdPath, "utf8");

@@ -8,17 +8,21 @@
  * @module
  */
 
-import { defaultLogger, type LogAttributes } from "./logger";
+import { defaultLogger, type LogAttributes } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from the context module
 // ---------------------------------------------------------------------------
-export { currentLogger, withAttributes, withLogger } from "./context";
+export { currentLogger, withAttributes, withLogger } from "./context.js";
 // ---------------------------------------------------------------------------
 // Re-exports from the logger module
 // ---------------------------------------------------------------------------
-export { defaultLogger, Logger, LogLevel, LogAttributeValue } from "./logger";
-export type { LogAttributes } from "./logger";
+// Type-only members are re-exported with `export type`: swc transpiles files
+// in isolation, so value-form re-exports of types survive into the ESM output
+// and fail module linking (the compiled target module no longer has those
+// bindings).
+export { defaultLogger, Logger } from "./logger.js";
+export type { LogLevel, LogAttributeValue, LogAttributes } from "./logger.js";
 // ---------------------------------------------------------------------------
 // Re-exports from the reporter module
 // ---------------------------------------------------------------------------
@@ -27,8 +31,8 @@ export {
 	installReporter,
 	createOTelReporter,
 	OTelReporter,
-	Reporter,
-} from "./reporter";
+} from "./reporter.js";
+export type { Reporter } from "./reporter.js";
 
 // ---------------------------------------------------------------------------
 // Package-level convenience functions

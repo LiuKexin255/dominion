@@ -1,0 +1,12 @@
+version: "3.0"
+name: gateway
+app: dsh-demo
+kind: stateless
+desc: dsh demo gateway (public HTTP entry point, transcodes Chat gRPC onto the agent service)
+ports:
+  - name: http
+    port: 80
+artifacts:
+  - name: gateway
+    target: :cmd_image
+    tls: true

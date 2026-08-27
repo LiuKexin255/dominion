@@ -1,0 +1,12 @@
+version: "3.0"
+name: agent
+app: dsh-demo
+kind: stateless
+desc: dsh chat demo agent service (TypeScript grpc-js embedding dsh)
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: agent
+    target: :cmd_image
+    tls: true

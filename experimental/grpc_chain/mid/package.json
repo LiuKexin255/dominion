@@ -1,6 +1,7 @@
 {
     "name": "@dominion/grpc_chain_mid",
     "private": true,
+    "type": "module",
     "dependencies": {
         "@grpc/grpc-js": "catalog:",
         "@grpc/proto-loader": "catalog:",

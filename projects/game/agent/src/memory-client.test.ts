@@ -17,8 +17,8 @@ import {
 	MemoryClient,
 	memoryName,
 	MEMORY_SERVICE_TARGET,
-} from "./memory-client";
-import { buildChannelOptionsForTest } from "./prompt-client";
+} from "./memory-client.js";
+import { buildChannelOptionsForTest } from "./prompt-client.js";
 
 /**
  * The real gRPC stub contract (memory-client.ts `call`) is

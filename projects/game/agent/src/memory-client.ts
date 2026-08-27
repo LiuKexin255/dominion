@@ -35,7 +35,7 @@ import {
   buildClientCredentials,
   buildChannelOptions,
   probeChannel,
-} from "./prompt-client";
+} from "./prompt-client.js";
 
 /** Dominion resolver target for the memory service. */
 export const MEMORY_SERVICE_TARGET = "dominion:///game/memory:50051";

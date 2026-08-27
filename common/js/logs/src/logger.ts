@@ -16,10 +16,13 @@
 import {
   type LogLevel,
   getReporter,
-} from "./reporter";
+} from "./reporter.js";
 
-// Re-export shared types for consumer convenience.
-export { LogLevel } from "./reporter";
+// Re-export shared types for consumer convenience. `export type` is required:
+// swc transpiles files in isolation, so a value-form re-export of a type would
+// survive into the ESM output and fail linking (the compiled reporter.js no
+// longer has that binding).
+export type { LogLevel } from "./reporter.js";
 
 /**
  * Types accepted as log attribute values.

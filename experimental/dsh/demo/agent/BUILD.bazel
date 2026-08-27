@@ -1,0 +1,145 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
+
+npm_link_all_packages(name = "node_modules")
+
+# tsc type-checks the bin-tree copies of srcs; the nearest package.json for
+# format detection must therefore also be a bin-tree input declaring
+# "type": "module" (NodeNext per-file ESM detection), hence the deps entry.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["package.json"],
+)
+
+# package.json is exported for the closure audit test
+# (//experimental/dsh/demo/testplan:closure_audit_test), which generates its
+# expected package set from the service's declared direct dependencies.
+exports_files(
+    ["package.json"],
+    visibility = ["//experimental/dsh/demo/testplan:__pkg__"],
+)
+
+ts_proto_library(
+    name = "chat_types",
+    proto = "//experimental/dsh/demo:chat_proto",
+    visibility = ["//visibility:public"],
+)
+
+js_library(
+    name = "chat_types_lib",
+    srcs = [":chat_types"],
+)
+
+ts_project(
+    name = "server_lib",
+    srcs = glob(
+        ["src/**/*.ts"],
+        exclude = ["**/*.test.ts"],
+    ),
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig",
+    deps = [
+        ":chat_types_lib",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-llm-deepseek",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@types/node",
+    ],
+)
+
+# Module format: Node determines the format of the deployed `.js` files
+# from the nearest package.json. artifact_pkg_js's package_json attribute
+# (default: this BUILD package's package.json) ships the service manifest
+# at dominion/dsh-demo/agent/package.json, so the tar always carries it;
+# package.json must not also be listed in data_files (destination conflict,
+# specs/048-js-esm-migration/contracts/esm-package-conventions.md §4).
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "dsh-demo",
+    data_files = [
+        "cordis.yml",
+    ],
+    entrypoint = "src/bootstrap.js",
+    npm_deps = [
+        # Service-declared dsh rows and imports (closure contract:
+        # specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §4): the
+        # spine + adapter rows must be physically present for the Loader, and
+        # boot/agent/llm are imported by src/*.ts. The remaining plugin
+        # closure materializes transitively through these link targets.
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-llm-deepseek",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
+    runtime_protos = [
+        "//experimental/dsh/demo:chat_proto",
+    ],
+    service = "agent",
+    ts_project = ":server_lib",
+    # The shipped tar is audit data for the closure audit test
+    # (//experimental/dsh/demo/testplan:closure_audit_test).
+    visibility = ["//experimental/dsh/demo/testplan:__pkg__"],
+    runtime_deps = [
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/grpc/resolver:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+        "//common/js/resolver:runtime_pkg",
+        "//third_party/dsh/core:runtime_pkg",
+    ],
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "dsh-demo",
+    pkg = ":server_pkg",
+    service = "agent",
+    visibility = ["//visibility:public"],
+)
+
+# Tests run against the raw .ts sources through vitest's single Vite pipeline
+# (style/javascript.md data rules): production + test sources only, plus the
+# node_modules mirror of :server_lib's deps. :chat_types_lib is absent — the
+# sources reference the generated proto types via `import type` only, which
+# vitest erases at transform time.
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-llm-deepseek",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@types/node",
+    ],
+)

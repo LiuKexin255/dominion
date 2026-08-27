@@ -1,4 +1,4 @@
-import type { Target, PortSelector } from "./target";
+import type { Target, PortSelector } from "./target.js";
 
 export type { Target, PortSelector };
 

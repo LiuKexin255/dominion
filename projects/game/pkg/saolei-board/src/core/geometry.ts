@@ -9,7 +9,7 @@
  * Both share X=24 and cell size 32 (`specs/018-saolei-mcp/research.md` D6).
  */
 
-import type { BoardGeometry } from "./types";
+import type { BoardGeometry } from "./types.js";
 
 /** Default layout targeting classic Win32 Microsoft Minesweeper. */
 export const DEFAULT_GEOMETRY: BoardGeometry = {

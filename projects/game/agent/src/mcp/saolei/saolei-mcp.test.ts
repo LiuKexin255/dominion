@@ -45,26 +45,26 @@
 
 import { describe, expect, it } from "vitest";
 
-import { OperationBridge } from "../../operation-bridge";
-import type { OperationResult } from "../../operation-bridge";
+import { OperationBridge } from "../../operation-bridge.js";
+import type { OperationResult } from "../../operation-bridge.js";
 import {
 	createSaoleiMcpServer,
 	validateMove,
 	isTerminalState,
 	computeGameStats,
-} from "./saolei-mcp";
+} from "./saolei-mcp.js";
 import type {
 	SaoleiBoardApi,
 	SaoleiEventSink,
 	GameStats,
 	CellOperation,
-} from "./saolei-mcp";
-import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
+} from "./saolei-mcp.js";
+import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry.js";
 import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
-import type { FlowPart } from "../../../../game_types/projects/game/FlowPart";
-import type { TeamFrame } from "../../../../game_types/projects/game/TeamFrame";
-import type { KeyboardPressPart } from "../../../../game_types/projects/game/KeyboardPressPart";
-import type { MouseMoveAndClickPart } from "../../../../game_types/projects/game/MouseMoveAndClickPart";
+import type { FlowPart } from "../../../../game_types/projects/game/FlowPart.js";
+import type { TeamFrame } from "../../../../game_types/projects/game/TeamFrame.js";
+import type { KeyboardPressPart } from "../../../../game_types/projects/game/KeyboardPressPart.js";
+import type { MouseMoveAndClickPart } from "../../../../game_types/projects/game/MouseMoveAndClickPart.js";
 
 /**
  * String status carried by `OperationResult.status` (proto enum). Used to

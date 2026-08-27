@@ -15,5 +15,7 @@ projects/game/pkg/saolei-board/node_modules
 experimental/grpc_chain/mid/node_modules
 experimental/openai_llm/client/node_modules
 experimental/ts/team_graph_spike/node_modules
+third_party/dsh/core/node_modules
+experimental/dsh/demo/agent/node_modules
 
 

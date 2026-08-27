@@ -54,15 +54,15 @@ import { randomUUID } from "node:crypto";
 
 import { warn } from "@dominion/common-js-logs";
 
-import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
-import type { ImagePart } from "../game_types/projects/game/ImagePart";
-import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame.js";
+import type { ImagePart } from "../game_types/projects/game/ImagePart.js";
+import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart.js";
 import type {
   ContentBlock,
   TurnContent,
   TurnContentPart,
-} from "./llm";
-import { toParts } from "./llm";
+} from "./llm.js";
+import { toParts } from "./llm.js";
 
 /**
  * Oneof case names for `TeamFrame.payload` (`projects/game/game.proto`).

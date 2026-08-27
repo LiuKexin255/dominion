@@ -28,7 +28,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-import type { MemoryClient, MemoryEntry } from "../../memory-client";
+import type { MemoryClient, MemoryEntry } from "../../memory-client.js";
 
 /** The hermes memory tool's actions (contract §1). */
 export const MEMORY_ACTIONS = ["add", "replace", "remove"] as const;
