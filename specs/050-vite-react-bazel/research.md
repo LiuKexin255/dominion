@@ -87,6 +87,31 @@
 
 **Rationale**: "能构建"必须被证明为"React 真实参与构建"（US2）：交互组件 + 特征字符串 + RTL 行为断言三者共同构成证据链；其余一概最小化。
 
+## D8: 部署交付形态——deploy CLI 直连部署 + prod 型直连路由 + Go embed 静态服务器
+
+**Decision**:
+1. **部署入口 = deploy CLI**（`deploy apply //experimental/js/vite_react_demo/deploy.yaml` / `deploy del vite.demo`），不使用 guitar run。
+2. **部署环境 = `vite.demo`、`type: prod`、独立 hostname `vite-react-demo.liukexin.com`、`PathPrefix /`**：浏览器免 header 直连访问 `https://vite-react-demo.liukexin.com/`。
+3. **服务载体 = Go 静态服务器**（fake-llm 样板：`flag` port → mux → `phttp.Handler` otel 包装 → `bootstrap.HTTPServer` + `otel.Component`），dist 产物经 `wails_asset_library` 在构建期 embed 进二进制。
+4. **布局 = demo 包内 `server/` 子目录**（`main.go`/`main_test.go`/`service.yaml`/`BUILD.bazel`）+ `server/assets/BUILD.bazel`（wails_asset_library）+ demo 根 `deploy.yaml`。
+
+**Rationale**:
+
+- **guitar 无"仅部署"形态（源码实证）**：`guitar run` = 校验→deploy apply→bazel test→deploy del 闭环——suite `cases` 必填（`tools/test/guitar/pkg/validate/validate.go:87` "cases must not be empty"），且 `runSuite` 的 `defer` 无条件执行 `deploy del` 清理（`tools/test/guitar/pkg/run/run.go:137-149`），执行后环境必然删除，无法保持运行供人工访问。guitar 与 deploy 是同一工具链（guitar 内部调用 `deploy` 二进制，`tools/test/guitar/pkg/run/run.go:25-28`）；`deploy apply` 部署后保持运行直至 `deploy del`（`tools/release/deploy/README.md` §命令），且内部自动构建并推送镜像（`tools/release/deploy/v3/apply.go:163` resolveV3Images → bazel runner）——正是"被 deploy 工具部署 + 部署后可访问"的形态。手动 `deploy apply` 先例：`specs/032-guitar-deploy-failure-state/quickstart.md:81`。
+- **test/dev 型路由强制 env header，浏览器无法访问（源码实证）**：deploy service 对 `test`/`dev` 型环境的 HTTPRoute 强制注入 `env` header 精确匹配（值为完整环境名，`projects/infra/deploy/runtime/k8s/builder.go:669-676`；`tools/release/deploy/README.md` §环境类型同述）；浏览器无法便捷携带自定义 header，而用户验证形态是"本人浏览器访问页面"。`prod` 型按 hostname+path 直接访问，是唯一满足浏览器直连的类型。demo 级独立 hostname 先例（`*.liukexin.com` 通配 DNS/TLS + traefik-gateway）：`hello.liukexin.com`、`mongo-demo.liukexin.com`、`apitest.liukexin.com`。
+- **环境名固定、无 `{{run}}`**：`{{run}}` 占位符仅为 guitar 逐次生成隔离测试环境之用（guitar validate 还强制 deploy 名为 `{scope}.{{run}}` 形态，`tools/test/guitar/pkg/validate/validate.go:18`）；人工部署使用固定环境名（无占位符时 `deploy apply` 不需要 `--run`，`tools/release/deploy/v3/apply.go:126-134`）。`vite.demo` 满足环境名格式 `^[a-z][a-z0-9]{0,7}$`（两段各 ≤8 字符）。固定名项目根 deploy.yaml 先例：`experimental/golang/grpc_hello_world/deploy.yaml`（`liukexin.demo`）、`experimental/golang/mongo_demo/deploy.yaml`。
+- **静态资源必须 embed 进 Go 二进制**：`artifact_pkg_go` 仅打包单个二进制、无 data 文件属性（`tools/release/defs.bzl:294-348`，对照 `artifact_pkg_js` 的 `data_files`）；而 `//go:embed` 模式不允许 `..` 路径元素（[Go embed 官方文档 §Directives](https://pkg.go.dev/embed)），跨包消费 dist tree artifact 必须先 stage 到 embed 库自身包内——`wails_asset_library`（`tools/release/wails/private/assets.bzl`）正是现成的"dist → stage 进包 → 生成 `//go:embed all:frontend_dist` 的 `assets.go` → `go_library`"机制（生成物见 `tools/release/wails/helpers/generate_assets_go.go:10-16`），desktop 消费先例 `projects/game/desktop/assets/BUILD.bazel`（`src = "//projects/game/desktop/frontend:dist"`）。机制本身与 wails 框架零耦合（stage+embed 通用），复用它即"零新建构建机制"。embed 内容位于 `frontend_dist/` 前缀下，服务侧 `fs.Sub` 剥离后交给 `http.FileServerFS`。
+- **无健康检查端点**：deploy 生成的 artifact 服务 Deployment 不配置探针（`projects/infra/deploy/runtime/k8s/builder.go` `BuildDeployment` 无 probe；仅 mongo infra 有 TCP 探针），进程监听即视为就绪——不引入 `/health`（原则 II 最小化）。
+- **与 049 对齐**：049 FR-013 要求 web 服务"以自身 HTTP 监听直接 serve 前端页面"（`specs/049-agent-v2-dsh-init/spec.md`）——本载体即该交付形态的最小先例。
+- **embed 库独立子目录 + 消费方 resolve 指令**：`//go:embed` 禁止 `..`，跨包 dist 必须经 stage 进 embed 库自身包（见上一条）；gazelle 无法自动将生成型 embed 库（wails_asset_library 产出的 go_library）的 importpath 解析到 target，消费方 BUILD 顶部 MUST 声明 `# gazelle:resolve go <importpath> <label>`（同构先例 `projects/game/desktop/BUILD.bazel:6`；本 demo 落点 `experimental/js/vite_react_demo/server/BUILD.bazel:1`）；resolve 的 label 要求 embed 库为真实存在的 BUILD 包——独立子目录 `server/assets/`，镜像 desktop 布局（`projects/game/desktop/assets/`）。另：embed 库对消费方的包级 visibility 必须写 `//experimental/js/vite_react_demo/server:__pkg__`——省略 `:__pkg__` 的 `//pkg` 短格式会被 bazel 解析为同名 target 而非包（报 `does not refer to a package group`），先例 `experimental/dsh/demo/agent/BUILD.bazel:25`。
+
+**Alternatives considered**:
+- **guitar run 携带占位/空转用例实现"部署后访问"**：guitar 强制用例非空且执行后必然 `deploy del`，无法保持运行；伪造用例违背测试诚信与 FR-009 决策。
+- **`type: test` + `env` header（curl/浏览器插件）访问**：不满足"用户浏览器直接访问"的人工验证形态（header 门槛）；适合未来 web E2E 用例（测试代码可设 header），届时新建 test 型 `testplan/deploy.yaml` 引用同一 `service.yaml` 即可。
+- **Node 静态服务器（artifact_pkg_js + data_files）**：为静态托管引入 Node 运行时与 npm 依赖面；Go embed 是仓库既有先例形态（desktop）。
+- **自写 stage+embed genrule 或新增通用规则**：复制 `wails_asset_library` 已有机制/新建构建机制，违背"零新构建机制"约束。
+- **镜像内挂载静态文件（非 embed）**：`artifact_pkg_go` 无 data 能力，需改打包规则（改共享构建机制影响面大）。
+
 ## 版本兼容性结论汇总
 
 | 依赖 | catalog 约束 | 兼容依据 |
@@ -103,6 +128,8 @@
 - **vite 6 + plugin-react 5 的 peer 告警**：已实测兼容；如 `pnpm up` 解析出告警，以 lockfile 为准确认版本组合。
 - **jsdom 体积/速度**：仅 demo 组件测试文件使用（docblock 按需加载），不影响其他包测试。
 - **gazelle 对 `experimental/js/` 的误生成**：vite 项目与 `ts_project` 形态不同，BUILD 以 desktop frontend 为样板手工声明（gazelle 生成后按 `AGENTS.md` 惯例调整 target）。
+- **入口 hostname 冲突/不可达**：`vite-react-demo.liukexin.com` 为新 hostname（仓库内无占用）；依赖 `*.liukexin.com` 通配解析（demo 服务既有前提）。异常时更名 `deploy.yaml` 单点修改。
+- **server 构建对 node_modules 的依赖传递**：`:cmd_image` 依赖 `:dist`（本地执行的 `vite_build`），首次构建需先安装 node_modules（与前端构建同前提，demo README 已说明）。
 
 ## 参考
 
@@ -112,3 +139,13 @@
 - `experimental/ts/grpc_hello_world/BUILD.bazel:115` + `smoke_test.sh`（sh_test 先例）
 - `style/javascript.md` §js_test 执行模型
 - npm registry: `@vitejs/plugin-react`、`@vitejs/plugin-react-swc` peer 元数据（2026-08-27 查询）
+- `tools/test/guitar/pkg/run/run.go` + `tools/test/guitar/pkg/validate/validate.go`（guitar 闭环与用例必填约束）
+- `tools/release/deploy/README.md`（deploy.yaml/service.yaml schema、apply/del 命令、环境类型）
+- `tools/release/deploy/v3/apply.go`（占位符解析与镜像推送）
+- `projects/infra/deploy/runtime/k8s/builder.go:669-676`（test/dev 型 env header 强制匹配）
+- `tools/release/defs.bzl`（`artifact_pkg_go`/`artifact_image`）
+- `tools/release/wails/private/assets.bzl` + `tools/release/wails/helpers/generate_assets_go.go`（wails_asset_library stage+embed 机制）
+- `projects/game/desktop/assets/BUILD.bazel`（dist → embed 库消费先例）
+- `experimental/dsh/demo/fake-llm/`（最小 Go HTTP 服务样板：`cmd/main.go`、`BUILD.bazel`、`service.yaml`）
+- `experimental/golang/grpc_hello_world/deploy.yaml`、`experimental/golang/mongo_demo/deploy.yaml`（固定环境名项目根 deploy.yaml 先例）
+- [Go embed 官方文档](https://pkg.go.dev/embed)（`//go:embed` 模式语义）

@@ -1,0 +1,16 @@
+version: "3.0"
+name: vite.demo
+type: prod
+desc: "vite react demo 静态页面环境（浏览器直连人工验证入口）"
+services:
+  - artifact:
+      path: //experimental/js/vite_react_demo/server/service.yaml
+      name: server
+    http:
+      hostnames:
+        - vite-react-demo.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /

@@ -19,18 +19,18 @@
 - [x] Success criteria are technology-agnostic — SC-004（依赖治理）与 SC-005（可复用性）以交付物形态表述；构建基建 feature 的技术栈为用户输入显式约束
 - [x] All acceptance scenarios are defined
 - [x] Edge cases are identified
-- [x] Scope is clearly bounded（FR-006 显式排除服务/dev server/HMR/SSR/UI 库接入）
-- [x] Dependencies and assumptions identified（Assumptions 6 条）
+- [x] Scope is clearly bounded（FR-006 显式排除业务服务能力与 dev server/HMR/SSR/UI 库接入；demo 唯一服务形态为静态页面托管载体——FR-007/FR-008）
+- [x] Dependencies and assumptions identified（Assumptions 9 条：含部署平台前提、deploy 工具入口、路由访问语义）
 
 ## Feature Readiness
 
 - [x] All functional requirements have clear acceptance criteria
-- [x] User scenarios cover primary flows（构建 React 项目 + demo 实证 + 存量零回归）
+- [x] User scenarios cover primary flows（构建 React 项目 + demo 实证 + 存量零回归 + 部署交付与人工访问）
 - [x] Feature meets measurable outcomes defined in Success Criteria
 - [x] No implementation details leak into specification（除用户输入显式指定的构建基建目标）
 
 ## Notes
 
 - 全部条目通过：spec 就绪，可进入 `/speckit.plan`
-- 本 feature 为构建基建（非服务型交付）：大型测试不适用，验收 = bazel build + bazel test（产物断言 + 组件单测），豁免说明见 spec Assumptions（宪法 VI 豁免条款）
-- 与 `specs/049-agent-v2-dsh-init` 的关系：本 feature 为其前置基建（049 的 web 前端按同一模式建项目）；建议先完成本 feature 再进入 049 plan/tasks
+- 交付形态：构建基建 + 静态页面部署载体；web E2E 大型测试暂缓（用户决策 2026-08-27，spec FR-009），验收 = bazel build/test（产物断言 + 组件单测 + server 单测）+ quickstart 部署场景实际部署与人工访问，宪法 VI 豁免说明随 demo README 交付
+- 与 `specs/049-agent-v2-dsh-init` 的关系：本 feature 为其前置基建（049 的 web 前端按同一模式建项目、web 服务按同一形态 serve 前端页面）；建议先完成本 feature 再进入 049 plan/tasks

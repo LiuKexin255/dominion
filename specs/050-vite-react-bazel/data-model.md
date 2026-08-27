@@ -2,7 +2,7 @@
 
 **Feature**: [050-vite-react-bazel](spec.md) | **Date**: 2026-08-27
 
-本 feature 为构建基建，无运行时持久化数据实体。本文档建模两类静态结构：**构建产物的结构契约**（dist tree artifact）与**构建图的依赖关系**（catalog 依赖 → demo 包 → bazel targets → 产物/测试）。
+本 feature 交付构建基建与静态页面部署载体，无运行时持久化数据实体。本文档建模三类静态结构：**构建产物的结构契约**（dist tree artifact）、**构建图的依赖关系**（catalog 依赖 → demo 包 → bazel targets → 产物/测试/镜像）与**部署链路的数据流**（deploy 声明 → 环境 → 访问入口）。
 
 ## 1. Dist Tree Artifact（静态产物目录）
 
@@ -40,16 +40,28 @@ pnpm-workspace.yaml (catalog)
   ├─ @testing-library/react ^16 ─┤
   ├─ @testing-library/dom ^10 ───┤
   └─ jsdom（稳定线）──────────────┘
-          │
-          ▼
+           │
+           ▼
 experimental/js/vite_react_demo/        # pnpm workspace 成员（packages += "experimental/js/*"）
   ├─ package.json                       # @dominion/experimental-vite-react-demo
+  ├─ deploy.yaml                        # 部署声明（环境 vite.demo，§4）
   ├─ BUILD.bazel
   │   ├─ npm_link_all_packages("node_modules")
-  │   ├─ vite_build(":dist")  ────────▶ Dist Tree Artifact（§1）
-  │   ├─ vitest_test(":lib_test")      # data = src glob + 镜像 node_modules 条目
-  │   └─ sh_test(":dist_assert_test")  # data = [":dist"]，断言 §1 约束
-  └─ src/{main.tsx, App.tsx, App.test.tsx}
+  │   ├─ vite_build(":dist")  ────────────────────┬─▶ Dist Tree Artifact（§1）
+  │   ├─ vitest_test(":lib_test")                 │   # data = src glob + 镜像 node_modules 条目
+  │   └─ sh_test(":dist_assert_test")             │   # data = [":dist"]，断言 §1 约束
+  │                                               │
+  └─ server/（静态页面部署载体）                    │
+      ├─ assets/BUILD.bazel                       │
+      │   └─ wails_asset_library(":assets") ──────┘   # stage + go:embed all:frontend_dist
+      ├─ main.go / main_test.go
+      ├─ service.yaml                             # 服务/端口/产物声明（§4）
+      └─ BUILD.bazel
+          ├─ # gazelle:resolve（embed 库 importpath → :assets 映射，消费方 BUILD 顶部）
+          ├─ go_library/go_binary(":server")      # embed dist，静态托管 :8080
+          ├─ go_unittest(":server_test")          # 表驱动断言托管行为（§3；go_test 仓库 wrapper）
+          ├─ artifact_pkg_go(":server_pkg")       # tar 层 /dominion/vite-react-demo/server/bin/server
+          └─ artifact_image(":cmd_image")         # OCI 镜像 → registry.liukexin.com/vite-react-demo/server
 ```
 
 **依赖治理规则**（SC-004，来源 `AGENTS.md` TS/JS 依赖规则）：
@@ -64,5 +76,27 @@ experimental/js/vite_react_demo/        # pnpm workspace 成员（packages += "e
 |-------------|------|----------|------|
 | `:lib_test`（vitest） | `src/**/*.tsx` 原始源码 + 镜像 `:node_modules/*` | 组件渲染与交互行为（RTL） | jsdom（per-file docblock `// @vitest-environment jsdom`） |
 | `:dist_assert_test`（sh_test） | `:dist` tree artifact | §1 结构约束 A1–A4 | bash（runfiles） |
+| `server:server_test`（go_unittest） | embed 内的 dist 内容（经 `server/assets` 库随二进制编译期嵌入） | 静态托管行为：`/` 返回入口 HTML（引用 `assets/` 资源）、产物内资源可服务、未知路径 404 | go test（httptest，无外部依赖） |
 
 不涉及数据库、配置文件或跨服务数据交换；无状态迁移。
+
+## 4. 部署链路数据流
+
+部署载体只读消费构建产物，环境无持久化（`deploy.yaml` 不设置 `persistence`）。
+
+```text
+deploy.yaml（环境声明：vite.demo / type prod / hostname vite-react-demo.liukexin.com / PathPrefix /）
+  └─ deploy apply（tools/release/deploy CLI）
+      ├─ service.yaml 解析 → artifact 解析（//experimental/js/vite_react_demo/server:cmd_image）
+      ├─ bazel 构建镜像并推送 registry.liukexin.com/vite-react-demo/server
+      └─ deploy service 提交环境（K8s Deployment + Service + HTTPRoute）
+            └─ 浏览器访问 https://vite-react-demo.liukexin.com/ （免 header 直连，prod 型路由）
+deploy del vite.demo → 环境与路由清理
+```
+
+| 数据 | 内容 | 声明位置 |
+|------|------|----------|
+| 环境名 | `vite.demo`（固定名，`{scope}.{env}` 各段 `^[a-z][a-z0-9]{0,7}$`） | `deploy.yaml` `name` |
+| 访问入口 | `https://vite-react-demo.liukexin.com/`（hostname 直连 + `PathPrefix /`） | `deploy.yaml` `services[].http` |
+| 服务端口 | `http`/8080（`deploy.yaml` `matches.backend: http` 引用端口名） | `server/service.yaml` `ports` |
+| 环境类型 | `prod`（仅表示免 header 直连路由模式；`test`/`dev` 型强制 `env` header，浏览器不可达） | `deploy.yaml` `type`，语义见 `projects/infra/deploy/runtime/k8s/builder.go:669-676` |
