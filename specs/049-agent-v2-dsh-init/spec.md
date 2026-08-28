@@ -42,7 +42,7 @@
 
 **Why this priority**: 这是本阶段的 MVP 与最终目标（"完全 session 对话页面迁移并接入模型，可以完成对话"）的最小完整切片：单此一条用户故事即可独立演示"网页 + dsh agent + 真实模型"的端到端价值。
 
-**Independent Test**: 部署新服务后，浏览器（或直接调用 gateway 的 `/api/v2` 对话 API）新建 session、发送消息，断言在超时时间内收到模型回复且回复以流式渐进呈现；再发第二条消息断言回复依赖首轮上下文。
+**Independent Test**: 部署新服务后，浏览器（或直接调用 gateway 的 `/api/v2` 对话 API）新建 session、发送消息，断言在 60 秒内收到模型回复且回复以流式渐进呈现；再发第二条消息断言回复依赖首轮上下文。
 
 **Acceptance Scenarios**:
 
@@ -121,15 +121,15 @@
 - **FR-002**: agent_v2 MUST 以 dsh 进程内嵌入（B1 模式，`survey/deepseek-harness-b1-bazel-packaging.md` §5.4）方式运行：启动时按声明式组合清单（cordis.yml）组装插件树、fail-loud（解析/peer 失败即携带诊断退出）、收到终止信号优雅释放后退出——对齐 `experimental/dsh/demo/agent/` 已实证的样板。
 - **FR-003**: session 管理 MUST 沿用 game 域 session 模型（`templates/{template}/sessions/{session}`），管理数据面基于现有 game session 服务（`projects/game/session/`，Mongo 持久化）复用而非重建。
 - **FR-004**: session 对话页 MUST 流式渲染模型输出：正文（text）渐进呈现；思考内容（think）MUST 与正文区分展示（默认折叠、可展开），流式期间渐进更新。
-- **FR-005**: session 对话页 MUST 具备工具调用渲染能力：工具名称、输入参数、执行状态与结果，作为独立于正文的内容块，且工具调用与其结果关联展示；该能力的端到端验收推迟到后续第一个工具实现的 step（本阶段 agent_v2 零工具，见 FR-006），本阶段以构造数据在页面/接口层验证渲染能力。
+- **FR-005**: session 对话页 MUST 具备工具调用渲染能力：工具名称、输入参数、执行状态与结果，作为独立于正文的内容块，且工具调用与其结果关联展示；本阶段 agent_v2 零工具（见 FR-006），该能力以构造数据在页面/接口层验证，端到端验收安排见 FR-006。
 - **FR-006**: agent_v2 本阶段 MUST NOT 启用任何工具（组合清单裁剪全部工具面）：工具接入及对话页 tools 的端到端验证推迟到后续第一个工具实现的 step（2026-08-27 澄清）。
 - **FR-007**: agent_v2 MUST 通过 GLM codingplan 接入模型，采用 OpenAI **Responses** 协议（Base URL `https://open.bigmodel.cn/api/v1`，https://docs.bigmodel.cn/cn/coding-plan/tool/others ）；模型 id 可配置（默认 `glm-5.2`）；以 dsh LLM 适配插件形态接入（官方仅有 chat-completions 适配器，Responses 需自研适配插件——`specs/047-dsh-chat-demo/research.md` D1 回退路径），模型端点地址 MUST 可经配置替换（供确定性测试以 fake 端点替换真实端点）。
 - **FR-008**: 模型 API token MUST 与现有 agent 一致经仓库 secret 机制提供：`service.yaml` artifact 声明逻辑 secret 名 + `deploy.yaml` 绑定 k8s secret + 运行期经 `DOMINION_SECRET_DIR` 文件读取（`specs/002-deploy-secret-config/` 契约）；token MUST NOT 出现在代码、配置明文或镜像中。
 - **FR-009**: web 对话页的实现与页面风格 MUST 参考 dsh-web（https://github.com/deepseek-ai/deepseek-harness ），复用级别为**组件级复用**（2026-08-27 澄清）：前端复用 `@deepseek-ai/dsh-client-ui-primitives`（零 Cordis 依赖的纯 React 组件库，0.1.1-rc.2 同线）的 markdown/代码块等渲染组件；think 折叠、工具卡片等交互组件参照 dsh-web 源码（`dsh-client-ui-conversation`/`dsh-client-ui-tool`）自建。
 - **FR-010**: 范围边界：agent_v2 与 web MUST NOT 迁移 team 模式、desktop 操作桥（鼠标/截图）、saolei/memory MCP、prompt/memory 服务联动等本阶段不需要的能力；现有 `projects/game/agent`、`projects/game/desktop`、`projects/game/proxy` 等存量服务及其链路 MUST 保持不变。唯一例外（2026-08-27 澄清）：存量 gateway 允许**新增** `/api/v2` 前缀的对话路由（agent_v2 对话 API 的暴露通道，见 FR-013），MUST NOT 修改其既有 `/api/v1` 路由与行为。
-- **FR-011**: 系统 MUST 附带大型测试（testplan）：部署新服务（模型端点以确定性 fake 替换、零外部网络依赖），经验收入口验证 session 管理闭环（US4）、端到端对话（US1/US2 的 text/think 流式可区分获取、多轮连续性）、tools 渲染能力（US3，以构造数据验证）与刷新后历史回填一致性（FR-014），完成清理；验收标准为经 testplan skill（`guitar run`）实际执行完整部署→测试→清理闭环且**全部用例通过**（`.specify/memory/constitution.md` 原则 VI）。
+- **FR-011**: 系统 MUST 附带大型测试（testplan）：部署新服务（模型端点以确定性 fake 替换、零外部网络依赖），经验收入口验证 session 管理闭环（US4）、端到端对话（US1/US2 的 text/think 流式可区分获取、多轮连续性）与刷新后历史回填一致性（FR-014），完成清理；tools 渲染能力（US3）以构造数据在页面/接口层经组件单测验证（FR-005，随编译+单测门禁执行，本阶段 agent_v2 零工具、无真实工具块流经系统）；验收标准为经 testplan skill（`guitar run`）实际执行完整部署→测试→清理闭环且**全部用例通过**（`.specify/memory/constitution.md` 原则 VI）。
 - **FR-012**: 同一 session 内回合进行中收到的新用户消息 MUST 排队：对话页呈现排队状态（入队消息与数量可见），当前回合结束后按序自动发送入队消息（2026-08-27 澄清，行为对齐 desktop 队列基线 `specs/030-queued-chat-input`、`specs/038-queue-input-mid-turn`，仅迁移其最小行为、不迁移 observe-only 等扩展）；不同 session 之间互不排队、互不阻塞。
-- **FR-013**: 对外暴露形态 MUST 为"页面独立 + API 经 gateway"（2026-08-27 澄清）：web 服务以自身 HTTP 监听直接 serve 前端页面；浏览器侧 API 统一访问存量 gateway——session 管理复用既有 `/api/v1` 路由，agent_v2 对话 API（流式）经 gateway **新增路由**暴露、绑定 **`/api/v2` 前缀**（与旧接口区分，gateway 对 agent_v2 经服务发现寻址）。
+- **FR-013**: 对外暴露形态 MUST 为"页面独立 + API 经 gateway"（2026-08-27 澄清）：web 服务以自身 HTTP 监听直接 serve 前端页面；浏览器侧 API 统一访问存量 gateway——session 管理复用既有 `/api/v1` 路由，agent_v2 对话 API（流式）经 gateway **新增路由**暴露、绑定 **`/api/v2` 前缀**（gateway 对 agent_v2 经服务发现寻址；路由增量例外边界见 FR-010）。
 - **FR-014**: agent_v2 MUST 为每个会话维护内存态对话记录并暴露历史查询 API（2026-08-27 澄清，对齐 desktop `ListMessages` 行为基线）：记录以内容块（text/think/tool call/tool result）形式保序、保分类；对话页刷新/重连后经该 API **完整回填**会话已有对话内容（agent_v2 存活期间）；记录随 agent_v2 进程重启丢失（内存态，见 Assumptions），且回填内容与此前流式呈现的内容一致。
 - **FR-015**: session 删除的生命周期 MUST 为"立即终止释放"（2026-08-27 澄清）：session 元数据删除成功后，agent_v2 MUST 立即释放该会话占用的 dsh 资源（dispose）——进行中的回合终止、未发送的排队消息作废、该会话的内存对话记录不再可查询；随后对同一 session 资源名的新建得到全新会话（无残留状态）。
 
@@ -156,7 +156,7 @@
 
 - **dsh 版本线**：全家族按 0.1.1-rc.2 同线精确 pin（对齐 `third_party/dsh/core` 与 `specs/047-dsh-chat-demo` 的锁定决策；dist-tag 不可信）。
 - **GLM Responses 适配为自研 dsh 插件**：官方 `dsh-llm-deepseek` 适配器仅支持 chat-completions wire（`specs/047-dsh-chat-demo/research.md` D1），用户指定 Responses 协议，故需自研 LLM 适配插件（实现 dsh LLM 适配缝，注册路由）。
-- **大型测试的确定性**：真实 GLM 端点不进大型测试（外部网络/成本/非确定性）；FR-007 的可替换端点配置使测试以 Responses 协议的确定性 fake 服务替代（复用/扩展 `experimental/dsh/demo/fake-llm/` 或新建，plan 阶段决定）；真实端点接入以手工冒烟验证并记录在交付文档。
+- **大型测试的确定性**：真实 GLM 端点不进大型测试（外部网络/成本/非确定性）；FR-007 的可替换端点配置使测试以 Responses 协议的确定性 fake 服务替代（扩展 `projects/game/fake-llm` 新增 Responses 端点，见 `specs/049-agent-v2-dsh-init/research.md` D7）；真实端点接入以手工冒烟验证并记录在交付文档。
 - **对话历史为内存态**：agent_v2 内对话历史随进程重启丢失（与现有 agent 内存 checkpoint 行为一致），存活期间经内存记录 + 历史查询 API 支撑刷新回填（FR-014）；session 列表因复用 session 服务而持久。dsh persistence 插件接入留待后续 step。
 - **template 复用 saolei**：本阶段新建 session 固定使用 `saolei`（2026-08-27 澄清），存量 session 服务的 template 校验零改动；网页与桌面的 session 列表互通（同一 template 空间）。引入独立对话 template 留待后续 step 评估。
 - **web 服务内网暴露、无鉴权**：与 game 现有网关一致（内网环境）；暴露形态已定为"web 直接 serve 页面 + API 经 gateway（session 复用 `/api/v1`、对话走新增 `/api/v2`）"（FR-013）。
