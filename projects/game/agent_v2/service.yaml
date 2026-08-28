@@ -1,0 +1,14 @@
+version: "3.0"
+name: agent_v2
+app: game
+kind: stateless
+desc: game agent service (dsh host)
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: agent_v2
+    target: :cmd_image
+    tls: true
+    secrets:
+      - glm-api-token

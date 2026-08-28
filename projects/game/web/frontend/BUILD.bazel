@@ -1,0 +1,40 @@
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vite.bzl", "vite_build")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+
+npm_link_all_packages(name = "node_modules")
+
+vite_build(
+    name = "dist",
+    srcs = glob(["src/**"]),
+    config = "vite.config.ts",
+    index_html = "index.html",
+    package_json = "package.json",
+    tsconfig = "tsconfig.json",
+    visibility = ["//visibility:public"],
+)
+
+# Component tests via the shared vitest shim. data mirrors the full set of
+# inputs the tests need at runtime (style/javascript.md §js_test execution
+# model — a missing entry crashes in runfiles with `Cannot find package`):
+# - the raw .ts/.tsx sources plus tsconfig.json: the js_test process cwd is the
+#   runfiles workspace root, where no vite/vitest config exists, so vitest runs
+#   without a project config. esbuild therefore picks up `"jsx":
+#   "react-jsx"` from the nearest tsconfig.json it discovers relative to each
+#   transformed file — omitting tsconfig.json from data yields the classic
+#   runtime and fails with `ReferenceError: React is not defined`.
+# - the React test stack's node_modules per
+#   specs/050-vite-react-bazel/contracts/vite-build-target.md.
+# :node_modules/vitest is auto-injected by the macro; do not add it here.
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    data = glob(["src/**"]) + [
+        "tsconfig.json",
+        ":node_modules/react",
+        ":node_modules/react-dom",
+        ":node_modules/@testing-library/react",
+        ":node_modules/@testing-library/dom",
+        ":node_modules/jsdom",
+    ],
+)

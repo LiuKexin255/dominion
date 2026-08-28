@@ -12,9 +12,13 @@ const (
 	SessionTarget = "game/session:grpc"
 	// TeamTarget is the gRPC target of the TeamService (hosted by the proxy
 	// service, which replaced ProxyService per spec 031-team-template-mode).
-	TeamTarget   = "game/proxy:grpc"
-	AgentTarget  = "game/agent:grpc"
-	PromptTarget = "game/prompt:grpc"
+	TeamTarget  = "game/proxy:grpc"
+	AgentTarget = "game/agent:grpc"
+	// AgentV2Target is the service discovery target of the agent_v2 gRPC
+	// service, the dsh-hosted game agent
+	// (specs/049-agent-v2-dsh-init/spec.md FR-013).
+	AgentV2Target = "game/agent_v2:grpc"
+	PromptTarget  = "game/prompt:grpc"
 	// MemoryTarget is the gRPC target of the MemoryService (spec 039
 	// planner-memory-calibration, contracts/memory-service-contract.md §5).
 	MemoryTarget = "game/memory:grpc"

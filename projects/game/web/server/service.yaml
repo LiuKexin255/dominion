@@ -1,0 +1,11 @@
+version: "3.0"
+name: web
+app: game
+kind: stateless
+desc: game web service
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  - name: web
+    target: :cmd_image

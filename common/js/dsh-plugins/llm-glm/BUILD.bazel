@@ -1,0 +1,46 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages(name = "node_modules")
+
+# tsc type-checks the bin-tree copies of srcs; the nearest package.json for
+# format detection must therefore also be a bin-tree input declaring
+# "type": "module" (NodeNext per-file ESM detection), hence the deps entry.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["package.json"],
+)
+
+ts_project(
+    name = "lib",
+    srcs = glob(
+        ["src/**/*.ts"],
+        exclude = ["**/*.test.ts"],
+    ),
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/schemastery",
+        ":node_modules/@types/node",
+        ":node_modules/eventsource-parser",
+    ],
+)
+
+# Workspace package target required by npm_link_all_packages for workspace:*
+# deps. package.json is required here so that the npm linker populates the
+# virtual store entry with the package manifest.
+js_library(
+    name = "pkg",
+    srcs = [
+        "package.json",
+        ":lib",
+    ],
+    visibility = ["//visibility:public"],
+)

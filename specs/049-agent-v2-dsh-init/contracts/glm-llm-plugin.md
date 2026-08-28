@@ -12,7 +12,14 @@
   "name": "@dominion/dsh-llm-glm",
   "private": true,
   "type": "module",                    // ESM（specs/048 契约）
-  "main": "src/index.ts",              // vitest 直跑源码（仓库惯例）
+  "main": "./src/index.js",            // 编译产物（workspace 包运行期经 npm 链接解析；先例 common/js/otel/package.json，specs/048-js-esm-migration/contracts/esm-package-conventions.md）
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
   "dependencies": {
     "eventsource-parser": "catalog:",  // SSE 解析（对齐官方 dsh-llm-deepseek deps）
     "@deepseek-ai/schemastery": "^3.18.1"
