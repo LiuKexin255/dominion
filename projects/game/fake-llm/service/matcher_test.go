@@ -169,6 +169,62 @@ func TestMatch_FallbackExcludesHangCapable(t *testing.T) {
 	}
 }
 
+// TestMatch_FallbackExcludesResponsesOnly verifies the responses-only
+// fallback exclusion (specs/049-agent-v2-dsh-init/contracts/fake-responses-
+// wire.md §3 — the isResponsesOnly set): a no-match request must never
+// randomly pick a template marked responses_only, declaring multi-turn
+// conditions (history_keywords / min_turn above the default), or carrying
+// a failure injection, so chat turns cannot randomly observe a template
+// authored for the agent_v2 tests. Plain keyword templates stay eligible.
+func TestMatch_FallbackExcludesResponsesOnly(t *testing.T) {
+	// given: a catalogue whose every keyword fails to match the request,
+	// so the fallback pool is the only path. Only the plain template must
+	// remain in the pool.
+	messages := []*Message{
+		{
+			Name:          "responses-marker",
+			Keywords:      []string{"never-marker"},
+			Text:          "marker-text",
+			ResponsesOnly: true,
+		},
+		{
+			Name:            "responses-history-keywords",
+			Keywords:        []string{"never-history"},
+			HistoryKeywords: []string{"earlier"},
+			Text:            "history-text",
+		},
+		{
+			Name:     "responses-min-turn",
+			Keywords: []string{"never-min-turn"},
+			MinTurn:  2,
+			Text:     "min-turn-text",
+		},
+		{
+			Name:     "responses-failure",
+			Keywords: []string{"never-failure"},
+			Failure:  &ResponseFailure{Code: "glm_test_failure", Message: "injected"},
+			Text:     "failure-text",
+		},
+		{
+			Name:     "plain-eligible",
+			Keywords: []string{"never-plain"},
+			Text:     "plain-text",
+		},
+	}
+
+	// when: many seeded fallback attempts, so any pool leak would show
+	// up across seeds rather than by luck of one draw.
+	for i := range 100 {
+		got, matched := Match(messages, "nothing matches any keyword", rand.New(rand.NewPCG(uint64(i), 0)))
+		if matched {
+			t.Fatalf("iteration %d: Match matched=true on no-match input, want false", i)
+		}
+		if got.Name != "plain-eligible" {
+			t.Fatalf("iteration %d: fallback picked %q, want only the plain template", i, got.Name)
+		}
+	}
+}
+
 // TestMatch_NoMatchLogsWarning verifies the no-match path emits a WARN
 // log carrying the user-text snippet and the randomly chosen Name, so
 // operators can correlate fallback responses with their prompts. The

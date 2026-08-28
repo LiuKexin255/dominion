@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package projects.game.v2;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "dominion/projects/game/v2";
+
+// ConversationService is the agent_v2 conversation surface, exposed through
+// the game gateway under /api/v2 (AIP-136 custom methods,
+// https://google.aip.dev/136; the session field carries the full game
+// session resource name per AIP-122, https://google.aip.dev/122).
+// Contract: specs/049-agent-v2-dsh-init/contracts/conversation-api.md §1.
+// Prefix Path: /api/v2
+service ConversationService {
+  // Send one user message and stream the turn's events until its turn ends
+  // (including queued waiting, specs/049-agent-v2-dsh-init/spec.md FR-012).
+  rpc Send(SendRequest) returns (stream ChatEvent) {
+    option (google.api.http) = {
+      post: "/api/v2/{session=templates/*/sessions/*}:send"
+      body: "*"
+    };
+  }
+  // ListHistory returns the session's in-memory conversation history for
+  // refresh/reconnect backfill (specs/049-agent-v2-dsh-init/spec.md FR-014).
+  rpc ListHistory(ListHistoryRequest) returns (ListHistoryResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/{session=templates/*/sessions/*}:history"
+    };
+  }
+  // Dispose releases the session's dsh resources immediately: in-flight turn
+  // aborted, queued messages dropped, history no longer queryable
+  // (specs/049-agent-v2-dsh-init/spec.md FR-015). Idempotent: an absent
+  // session is treated as already released.
+  rpc Dispose(DisposeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/api/v2/{session=templates/*/sessions/*}:dispose"
+      body: "*"
+    };
+  }
+}
+
+message SendRequest {
+  // Full game session resource name: templates/{template}/sessions/{session}.
+  string session = 1 [(google.api.field_behavior) = REQUIRED];
+  // The user message text for this turn. Non-empty (INVALID_ARGUMENT).
+  string text = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message ListHistoryRequest {
+  string session = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DisposeRequest {
+  string session = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+// ─── Streaming events ────────────────────────────────────────────────────────
+
+// ChatEvent is one streamed conversation event of a Send call. The payload
+// vocabulary mirrors dsh StreamChunk one-to-one (plus the queued/turn
+// lifecycle envelopes); block indexes follow first-seen stream order.
+// Mapping table: specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4.
+message ChatEvent {
+  string session = 1 [(google.api.field_behavior) = REQUIRED];
+  // Server-minted turn identity (UUID); constant across one turn's events.
+  string turn_id = 2;
+  oneof payload {
+    QueuedEvent queued = 10;
+    TurnStartEvent turn_start = 11;
+    BlockStartEvent block_start = 12;
+    BlockDeltaEvent delta = 13;
+    BlockEndEvent block_end = 14;
+    TurnEndEvent turn_end = 15;
+  }
+}
+
+// The message was enqueued behind a running turn
+// (specs/049-agent-v2-dsh-init/spec.md FR-012); position is the 1-based
+// queue slot at enqueue time.
+message QueuedEvent { int32 position = 1; }
+
+message TurnStartEvent {}
+
+// BlockType selects the delta semantics of a content block.
+enum BlockType {
+  BLOCK_TYPE_UNSPECIFIED = 0;
+  BLOCK_TYPE_TEXT = 1;
+  BLOCK_TYPE_THINK = 2;
+  BLOCK_TYPE_TOOL_CALL = 3;
+}
+
+message BlockStartEvent {
+  int32 index = 1;
+  BlockType type = 2;
+  // TOOL_CALL only: the provider-issued call id and tool name.
+  string tool_id = 3;
+  string name = 4;
+}
+
+// One incremental text fragment of the block at `index`; semantics derive
+// from the owning BlockStartEvent.type (TEXT body / THINK reasoning /
+// TOOL_CALL raw JSON argument fragment).
+message BlockDeltaEvent {
+  int32 index = 1;
+  string text = 2;
+}
+
+message BlockEndEvent {
+  int32 index = 1;
+  ContentBlock block = 2;
+}
+
+enum TurnStatus {
+  TURN_STATUS_UNSPECIFIED = 0;
+  TURN_STATUS_COMPLETED = 1;
+  TURN_STATUS_ERROR = 2;   // model/transport failure; session stays usable
+  TURN_STATUS_ABORTED = 3; // session disposed mid-turn / queue dropped
+}
+
+message TurnError {
+  string code = 1;
+  string message = 2;
+}
+
+message TurnUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 reasoning_tokens = 3;
+}
+
+message TurnEndEvent {
+  TurnStatus status = 1;
+  TurnError error = 2;
+  TurnUsage usage = 3;
+}
+
+// ─── History ─────────────────────────────────────────────────────────────────
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_USER = 1;
+  ROLE_AGENT = 2;
+}
+
+message ListHistoryResponse {
+  repeated HistoryMessage messages = 1;
+}
+
+message HistoryMessage {
+  // Server-assigned per-session sequence id (e.g. "m1", "m2").
+  string message_id = 1;
+  Role role = 2;
+  google.protobuf.Timestamp create_time = 3;
+  repeated ContentBlock blocks = 4;
+}
+
+// ContentBlock is one display content block (behavior baseline: game.proto
+// MessagePart semantics — text/think classified, tool call & result linked).
+message ContentBlock {
+  oneof kind {
+    TextBlock text = 1;
+    ThinkBlock think = 2;
+    ToolCallBlock tool_call = 3;
+  }
+}
+
+message TextBlock { string content = 1; }
+
+message ThinkBlock { string content = 1; }
+
+enum ToolStatus {
+  TOOL_STATUS_UNSPECIFIED = 0;
+  TOOL_STATUS_RUNNING = 1;
+  TOOL_STATUS_SUCCEEDED = 2;
+  TOOL_STATUS_FAILED = 3;
+}
+
+message ToolCallBlock {
+  string tool_id = 1;
+  string name = 2;
+  // Raw JSON arguments string, as produced by the model.
+  string args_json = 3;
+  ToolStatus status = 4;
+  // Human-readable execution result; linked to the call in one block (US3).
+  string result = 5;
+}

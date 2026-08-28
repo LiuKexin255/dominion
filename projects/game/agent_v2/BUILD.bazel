@@ -1,5 +1,10 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
 
 npm_link_all_packages(name = "node_modules")
 
@@ -10,4 +15,57 @@ ts_config(
     name = "tsconfig",
     src = "tsconfig.json",
     deps = ["package.json"],
+)
+
+proto_library(
+    name = "agent_v2_proto",
+    srcs = ["agent_v2.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_protobuf//:empty_proto",
+        "@com_google_protobuf//:timestamp_proto",
+        "@googleapis//google/api:annotations_proto",
+        "@googleapis//google/api:field_behavior_proto",
+    ],
+)
+
+# Go codegen mirrors //projects/game:game_go_proto (compilers incl.
+# grpc-gateway + AIP resource parsers). importpath dominion/projects/game/v2
+# is the go_package of specs/049-agent-v2-dsh-init/contracts/conversation-api.md
+# §1 and is disjoint from the v1 namespace dominion/projects/game.
+go_proto_library(
+    name = "agent_v2_go_proto",
+    compilers = [
+        "@rules_go//proto:go_grpc_v2",
+        "@rules_go//proto:go_proto",
+        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
+        "//:go_gen_aip",
+    ],
+    importpath = "dominion/projects/game/v2",
+    proto = ":agent_v2_proto",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@googleapis//google/api:annotations_go_proto",
+        "@googleapis//google/api:field_behavior_go_proto",
+    ],
+)
+
+go_library(
+    name = "agent_v2",
+    embed = [":agent_v2_go_proto"],
+    importpath = "dominion/projects/game/v2",
+    visibility = ["//visibility:public"],
+)
+
+# TS types for the proto-loader runtime (same shape as the demo's
+# //experimental/dsh/demo:chat_types).
+ts_proto_library(
+    name = "agent_v2_types",
+    proto = ":agent_v2_proto",
+    visibility = ["//visibility:public"],
+)
+
+js_library(
+    name = "agent_v2_types_lib",
+    srcs = [":agent_v2_types"],
 )

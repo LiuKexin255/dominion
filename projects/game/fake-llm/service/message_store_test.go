@@ -511,26 +511,37 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 17 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 17 (chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
+	if len(got) != 22 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 22 (agent-v2-fail + agent-v2-followup + agent-v2-greet + agent-v2-plain + agent-v2-slow + chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
 	}
 
-	// Sorted alphabetically: chat-only before compact-instruction before
-	// compress-planner-summary before compress-player-summary before
-	// farewell before greeting before init-instruction before mouse-trigger
-	// before planner-memory-add before saolei-remain before saolei-single-op
-	// before saolei-start before saolei-structural-stop before
-	// stall-mid-reasoning before think-healthy-cadence before
-	// think-interrupt-gap before think-interrupt-stall
-	// ("compact-instruction" < "compress-planner-summary" because 'a' < 'r'
-	// at the first differing rune; "planner-memory-add" < "saolei-remain"
-	// because 'p' < 's'; "saolei-single-op" < "saolei-start" because 'i' <
-	// 't'; "saolei-start" < "saolei-structural-stop" because 'a' < 'r';
+	// Sorted alphabetically: agent-v2-fail before agent-v2-followup before
+	// agent-v2-greet before agent-v2-plain before agent-v2-slow (the
+	// responses-only family, specs/049-agent-v2-dsh-init/contracts/
+	// fake-responses-wire.md §3) before chat-only before
+	// compact-instruction before compress-planner-summary before
+	// compress-player-summary before farewell before greeting before
+	// init-instruction before mouse-trigger before planner-memory-add
+	// before saolei-remain before saolei-single-op before saolei-start
+	// before saolei-structural-stop before stall-mid-reasoning before
+	// think-healthy-cadence before think-interrupt-gap before
+	// think-interrupt-stall
+	// ("agent-v2-fail" < "agent-v2-followup" because 'a' < 'o' at the
+	// first differing rune; "compact-instruction" < "compress-planner-
+	// summary" because 'a' < 'r' at the first differing rune;
+	// "planner-memory-add" < "saolei-remain" because 'p' < 's';
+	// "saolei-single-op" < "saolei-start" because 'i' < 't'; "saolei-start"
+	// < "saolei-structural-stop" because 'a' < 'r';
 	// "saolei-structural-stop" < "stall-mid-reasoning" because 'o' < 't';
 	// "stall-mid-reasoning" < "think-healthy-cadence" because 's' < 't';
 	// "think-healthy-cadence" < "think-interrupt-gap" because 'h' < 'i';
 	// "think-interrupt-gap" < "think-interrupt-stall" because 'g' < 's').
 	wantNames := []string{
+		"agent-v2-fail",
+		"agent-v2-followup",
+		"agent-v2-greet",
+		"agent-v2-plain",
+		"agent-v2-slow",
 		"chat-only",
 		"compact-instruction",
 		"compress-planner-summary",
@@ -555,7 +566,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		}
 	}
 
-	chatOnly := got[0]
+	chatOnly := got[5]
 	if chatOnly.Reasoning != "Responding with text only, no tools needed." {
 		t.Errorf("chat-only reasoning = %q, want the no-tools reasoning", chatOnly.Reasoning)
 	}
@@ -566,7 +577,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("chat-only keywords missing chat: %v", chatOnly.Keywords)
 	}
 
-	farewell := got[4]
+	farewell := got[9]
 	if farewell.Reasoning != "The user is saying goodbye." {
 		t.Errorf("farewell reasoning = %q, want the goodbye reasoning", farewell.Reasoning)
 	}
@@ -577,7 +588,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("farewell keywords missing bye: %v", farewell.Keywords)
 	}
 
-	greeting := got[5]
+	greeting := got[10]
 	if greeting.Reasoning != "The user is greeting me, I should respond warmly." {
 		t.Errorf("greeting reasoning = %q, want the warm greeting reasoning", greeting.Reasoning)
 	}
@@ -597,7 +608,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// instruct_player tool_call deterministically. The contents are pinned
 	// in helpers_test.go (expectedInitInstructionText /
 	// expectedCompactInstructionText — keep in sync).
-	initInstruction := got[6]
+	initInstruction := got[11]
 	if initInstruction.ToolCall == nil {
 		t.Fatalf("init-instruction tool_call is nil")
 	}
@@ -611,7 +622,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("init-instruction content = %v, want the pinned initial instruction", initInstruction.ToolCall.Arguments["content"])
 	}
 
-	compactInstruction := got[1]
+	compactInstruction := got[6]
 	if compactInstruction.ToolCall == nil {
 		t.Fatalf("compact-instruction tool_call is nil")
 	}
@@ -635,7 +646,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// post-compression channel message and live summary frame
 	// (helpers_test.go expectedPlayerCompressionSummary /
 	// expectedPlannerCompressionSummary — keep in sync).
-	compressPlanner := got[2]
+	compressPlanner := got[7]
 	if compressPlanner.ToolCall != nil {
 		t.Errorf("compress-planner-summary must carry a plain text response (a tool_call would abort compression — FR-012)")
 	}
@@ -646,7 +657,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("compress-planner-summary keywords missing '已复盘局数': %v", compressPlanner.Keywords)
 	}
 
-	compressPlayer := got[3]
+	compressPlayer := got[8]
 	if compressPlayer.ToolCall != nil {
 		t.Errorf("compress-player-summary must carry a plain text response (a tool_call would abort compression — FR-012)")
 	}
@@ -660,7 +671,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// mouse-trigger carries a tool_call (the dispatch fix): a user turn
 	// matching its keyword makes fake-LLM return a mouse_move tool_call
 	// so the agent_operation large tests drive the real dispatch chain.
-	mouseTrigger := got[7]
+	mouseTrigger := got[12]
 	if mouseTrigger.ToolCall == nil {
 		t.Fatalf("mouse-trigger tool_call is nil")
 	}
@@ -680,7 +691,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// deterministically, so the saolei_team / memory large tests drive the
 	// planner→memory→MemoryService flow end-to-end. The former
 	// update_strategy fixture (spec 031 FR-012) is gone (FR-013 — Phase 6).
-	plannerMemory := got[8]
+	plannerMemory := got[13]
 	if plannerMemory.ToolCall == nil {
 		t.Fatalf("planner-memory-add tool_call is nil")
 	}
@@ -705,7 +716,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// tool_call so the agent_saolei large test drives the read-only remain
 	// query end-to-end (specs/029-saolei-coord-remain/contracts/saolei-
 	// remain-tool-contract.md §8).
-	saoleiRemain := got[9]
+	saoleiRemain := got[14]
 	if saoleiRemain.ToolCall == nil {
 		t.Fatalf("saolei-remain tool_call is nil")
 	}
@@ -719,7 +730,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// saolei-single-op carries a SINGLE-FORM saolei_operate tool_call (spec
 	// 039 US1 — FR-001 dual form: ordinary type/x/y == a length-1 batch):
 	// used by the agent_saolei dual-form-equivalence test's second turn.
-	saoleiSingle := got[10]
+	saoleiSingle := got[15]
 	if saoleiSingle.ToolCall == nil {
 		t.Fatalf("saolei-single-op tool_call is nil")
 	}
@@ -736,7 +747,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// 039 FR-017: the appended review instruction becomes the player's last
 	// user message, so the continuation keyword keeps the multi-game flow
 	// deterministic).
-	saoleiStart := got[11]
+	saoleiStart := got[16]
 	if saoleiStart.ToolCall == nil {
 		t.Fatalf("saolei-start tool_call is nil")
 	}
@@ -753,7 +764,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// saolei-structural-stop carries a saolei_operate batch whose second op
 	// is out-of-bounds (spec 039 US1 — FR-002 structural stop): used by the
 	// agent_saolei structural-stop test's second turn.
-	saoleiStructural := got[12]
+	saoleiStructural := got[17]
 	if saoleiStructural.ToolCall == nil {
 		t.Fatalf("saolei-structural-stop tool_call is nil")
 	}
@@ -772,7 +783,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// random fallback pool — an unrelated turn can never stall randomly.
 	// The pinned reasoning/text/helpers constants live in helpers_test.go
 	// (expectedStallReasoning — keep in sync).
-	stallMidReasoning := got[13]
+	stallMidReasoning := got[18]
 	if !stallMidReasoning.Stall {
 		t.Errorf("stall-mid-reasoning must carry stall=true (the stream must pause after the first chunk)")
 	}
@@ -792,7 +803,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// chunked-reasoning / chunk_delays / stall_after fields end-to-end in the
 	// embedded store, and each is excluded from the no-match random fallback
 	// pool by isHangCapable (FR-011).
-	thinkHealthy := got[14]
+	thinkHealthy := got[19]
 	if len(thinkHealthy.ReasoningChunks) != 3 {
 		t.Errorf("think-healthy-cadence reasoning_chunks = %v, want 3 chunks", thinkHealthy.ReasoningChunks)
 	}
@@ -809,7 +820,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-healthy-cadence text = %q, want 'Done.'", thinkHealthy.Text)
 	}
 
-	thinkGap := got[15]
+	thinkGap := got[20]
 	if len(thinkGap.ReasoningChunks) != 3 {
 		t.Errorf("think-interrupt-gap reasoning_chunks = %v, want 3 chunks", thinkGap.ReasoningChunks)
 	}
@@ -826,7 +837,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-interrupt-gap text = %q, want 'Placing the flag at (3,4).'", thinkGap.Text)
 	}
 
-	thinkStall := got[16]
+	thinkStall := got[21]
 	if len(thinkStall.ReasoningChunks) != 2 {
 		t.Errorf("think-interrupt-stall reasoning_chunks = %v, want 2 chunks", thinkStall.ReasoningChunks)
 	}

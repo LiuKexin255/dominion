@@ -33,6 +33,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/chat/completions", service.NewChatHandler(store, rng))
+	mux.Handle("/v1/responses", service.NewResponsesHandler(store))
 	mux.HandleFunc("/health", handleHealth)
 
 	srv := &http.Server{
