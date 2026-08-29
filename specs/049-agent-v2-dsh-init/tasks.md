@@ -147,8 +147,8 @@
 - **官方文档**：[React API Reference](https://react.dev/reference/react)
 - **技术文章/技术参考文档**：`specs/049-agent-v2-dsh-init/contracts/web-frontend.md`（§2/§5 删除编排与 API 面）；`specs/049-agent-v2-dsh-init/contracts/conversation-api.md`（§1 Dispose 幂等语义）；行为基线源码：`projects/game/desktop/frontend/src/components/SessionList.svelte`（列表/时间/操作）、`projects/game/desktop/frontend/src/components/ChatView.svelte`（切换/隔离/pending 标记）
 
-- [ ] T028 [US4] 完善 `projects/game/web/frontend/src/components/SessionList.tsx`：列表（名称+创建时间格式化）、Refresh、Delete 编排（`deleteSession`(/api/v1) 成功→`disposeSession`(/api/v2)，dispose 失败仅记录不阻断——`specs/049-agent-v2-dsh-init/research.md` D6）、选中态与切换回调 + 组件测试（含 dispose 失败容错分支）
-- [ ] T029 [US4] 实现 `projects/game/web/frontend/src/App.tsx` 多会话隔离：每 session 独立 `ChatState`（切换不串扰、刷新经 `listHistory` 回填——FR-014 前端侧）、回合中切换/返回列表的输入态管理 + 组件测试（双会话切换隔离断言）
+- [X] T028 [US4] 完善 `projects/game/web/frontend/src/components/SessionList.tsx`：列表（名称+创建时间格式化）、Refresh、Delete 编排（`deleteSession`(/api/v1) 成功→`disposeSession`(/api/v2)，dispose 失败仅记录不阻断——`specs/049-agent-v2-dsh-init/research.md` D6）、选中态与切换回调 + 组件测试（含 dispose 失败容错分支）
+- [X] T029 [US4] 实现 `projects/game/web/frontend/src/App.tsx` 多会话隔离：每 session 独立 `ChatState`（切换不串扰、刷新经 `listHistory` 回填——FR-014 前端侧）、回合中切换/返回列表的输入态管理 + 组件测试（双会话切换隔离断言）
 
 **Checkpoint**: `bazel test //projects/game/web/frontend:lib_test` US4 用例全绿；US1–US4 全部就绪。
 
