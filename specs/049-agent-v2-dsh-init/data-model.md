@@ -1,6 +1,6 @@
 # Data Model: Game Agent v2 — dsh 迁移 Step 1：session 对话页面与模型接入
 
-**Feature**: [spec.md](spec.md) | **Phase**: 1（设计） | **依据**: [research.md](research.md) D1–D10
+**Feature**: [spec.md](spec.md) | **Phase**: 1（设计；2026-08-29 修订 proxy 路由） | **依据**: [research.md](research.md) D1–D12
 
 本文档定义本 feature 引入/消费的实体、字段、关系、校验规则与状态迁移。存量实体（Game Session 元数据、TeamProfile 等，`projects/game/game.proto`）仅消费不修改。
 
@@ -17,15 +17,22 @@
                │ 资源名直映射（1:1，get-or-create）
                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ agent_v2 进程内（内存态，随进程重启丢失）                        │
+│ agent_v2 有状态实例（kind: stateful，内存态随进程重启丢失）        │
 │  AgentSession ─1:1─ dsh Agent (sessionId = 资源名)            │
 │      ├─ FIFO 队列 [QueuedMessage]                             │
 │      ├─ TurnRunner（当前 ChatTurn 状态机）                     │
 │      └─ ConversationHistory [HistoryMessage{blocks}]          │
-└──────────────┬──────────────────────────────────────────────┘
-               │ 事件流（assistant/chunk → ChatEvent）
-               ▼
-┌─────────────────────────────────────────────────────────────┐
+└──────────────▲──────────────────────────────────────────────┘
+               │ owner 亲和定向（AgentV2Owner，§2.9）
+┌──────────────┴──────────────────────────────────────────────┐
+│ proxy（ConversationService 转发面 + Mongo AgentV2Owner）        │
+└──────────────▲──────────────────────────────────────────────┘
+               │ gRPC（/api/v2 三 RPC）
+┌──────────────┴──────────────────────────────────────────────┐
+│ gateway（HTTP 出口：/api/v1 → session 等存量；/api/v2 → proxy） │
+└──────────────▲──────────────────────────────────────────────┘
+               │ 相对路径（/api/v1、/api/v2）
+┌──────────────┴──────────────────────────────────────────────┐
 │ web 前端（浏览器内存态）                                        │
 │  SessionListView ← /api/v1    ChatView ← /api/v2 流 + history │
 └─────────────────────────────────────────────────────────────┘
@@ -39,7 +46,7 @@
 - 元数据（`create_time` 等）由现有 session 服务持久化（Mongo）；管理面 = 既有 `/api/v1` REST（`projects/game/game.proto` SessionService）。
 - **映射规则**：一个 game session 资源名 ↔ agent_v2 内一个 `AgentSession` 条目 ↔ 一个 dsh agent（`sessionId` 即资源名字符串，宿主自选，047 D5）。
 
-### 2.2 AgentSession（agent_v2 内存态）
+### 2.2 AgentSession（agent_v2 实例内存态，owner 亲和）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -49,7 +56,9 @@
 | `runner` | TurnRunner | 会话内回合串行驱动器（chain 模式） |
 | `history` | `HistoryMessage[]` | 内存对话记录（FR-014），保序追加 |
 
-**校验**：资源名必须匹配 `templates/{template}/sessions/{session}` 形状（`{session}` 非空、`{template}` ∈ gameconst 固定集合），否则 `INVALID_ARGUMENT`（对齐 gateway 的 identity 注入模式，`projects/game/gateway/cmd/main.go` extractConnectIdentity 注释）。
+**归属实例语义（owner 亲和，[research.md](research.md) D4）**：AgentSession 的生命周期与其所在 agent_v2 实例绑定——归属实例由 proxy 侧 AgentV2Owner 映射（§2.9）在**首次 Send** 时选定并持久；此后该 `(template, session)` 的全部 ConversationService 调用（Send/ListHistory/Dispose）经 proxy 定向同实例。`AgentSessions` 注册表是**每实例局部**的：同一资源名在不同实例上是互不相干的两个会话，owner 映射保证调用不会跨实例漂移（否则内存会话/历史被撕裂）。agent_v2 实例重启后 owner 映射仍指向同序号实例（StatefulSet 序号稳定，`specs/006-grpc-js-service-discovery` FR-009），内存历史丢失（spec Assumptions）。请求在 proxy 侧的路由短路（无 owner）见 [contracts/conversation-api.md](contracts/conversation-api.md) §2：ListHistory → 空列表、Dispose → 幂等 Empty（读路径不分配 owner）。
+
+**校验**：资源名必须匹配 `templates/{template}/sessions/{session}` 形状（`{session}` 非空、`{template}` ∈ gameconst 固定集合），否则 `INVALID_ARGUMENT`——proxy 与 agent_v2 两级同规则校验（proxy 先拦，agent_v2 兜底；对齐 gateway 的 identity 注入模式，`projects/game/gateway/cmd/main.go` extractConnectIdentity 注释）。
 
 **状态迁移**：
 
@@ -138,12 +147,35 @@
 
 `projects/game/fake-llm` 新增 `POST /v1/responses`：消费 OpenAI Responses 请求（model 忽略、input items、`stream:true`），按模板匹配产出 `reasoning_summary_text.delta`（think）与 `output_text.delta`（text）事件序列；沿用既有模板/多轮条件/延迟设施。
 
+### 2.9 AgentV2Owner（proxy 侧路由实体，[research.md](research.md) D4）
+
+proxy 为 agent_v2 维护的 `(template, session) → 实例` 亲和映射，复用 v1 路由实体形态（`domain.AgentOwner`）与设施（`domain.OwnerStore` 接口、hash picker、agentclient manager）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `template_id` + `session_id` | string 复合主键 | 同 v1 AgentOwner 键形（同 template 不同 session、同 session 不同 template 均为不同键） |
+| `owner_index` | int | agent_v2 StatefulSet 实例序号（分配时 `FNV32a(sessionID) % 实例数`） |
+| `owner` | string | 实例名（resolver Hostname） |
+| `create_time` | timestamp | 分配时间 |
+
+- **存储**：Mongo `game_proxy.agent_v2_owners` collection——与 v1 `agent_owners` **不同 collection 隔离**：两个服务实例池独立（owner_index 语义互不通用），同一 game session 可同时存在 v1 team owner 与 v2 conversation owner 两条映射、互不干扰；owner store 构造函数语义化（`NewAgentOwnerStore(client)` / `NewAgentV2OwnerStore(client)`），db/collection 常量私有化于 `projects/game/proxy/runtime/mongo` 包内——collection 命名知识由 store 层单一持有，`cmd/main.go` 只做装配、不出现 collection 字符串（[research.md](research.md) D4）；v1 存储位置与行为零改动（调用点仅构造名变化）。
+- **分配**：首次 `Send` get-or-create（并发竞态 `ErrOwnerAlreadyExists` → 重读胜者，复用 v1 `assignOwner` 模式 `projects/game/proxy/handler/handler.go`）；读路径（ListHistory/Dispose）不分配。
+- **生命周期**：创建后不删除——dispose 不清 owner（映射是亲和锚点而非会话状态，与 v1 owner 生命周期一致）；同资源名再 Send 定向同实例，agent_v2 侧 get-or-create 全新会话（FR-015 无残留由 agent_v2 保证）。
+- **状态迁移**：
+
+```text
+[absent] --首次 Send（get-or-create + 持久）--> [assigned{owner_index}]
+[assigned] --实例缩容至 < owner_index --> 转发失败 UNAVAILABLE（503），
+             与 v1 缩容语义一致（本阶段不做迁移）
+```
+
 ## 3. 关系与一致性规则
 
 1. **资源名即身份**：game session 资源名贯穿 `/api/v1`（元数据）与 `/api/v2`（对话）两面；两面独立生命周期（元数据持久、对话内存），删除编排（D6）保证"元数据删除成功 ⇒ 资源释放"。
 2. **事件与历史一致**：同一回合内 `block_end` 终态块 ⊕ 历史追加块 = `assistant/message` 载荷（上游装配语义，`/tmp/opencode/dsh/packages/core/agent-loop/src/agent.ts` assembler）；刷新回填与流式呈现一致（FR-014）由此结构保证。
 3. **分类保序**：text/think/tool-call 按发生顺序保序；块内增量按 index 归属；tool 结果按 `tool_id` 关联。
 4. **隔离**：会话间状态（agent/queue/history）零共享；并发互不阻塞（US1 场景 3/Edge）。
+5. **owner 亲和（2026-08-29 修订）**：同一 `(template, session)` 的全部对话调用经 proxy 定向唯一 agent_v2 实例（§2.9）；映射持久于 Mongo、实例重启不漂移；无 owner 的读请求在 proxy 短路（空 history/幂等 dispose），不产生分配副作用。
 
 ## 4. 非目标（本阶段明确不建模）
 

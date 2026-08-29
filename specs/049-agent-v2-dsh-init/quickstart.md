@@ -9,9 +9,9 @@
 - 仓库构建入口 bazel（`AGENTS.md`）；大型测试经 testplan skill（`tools/test/guitar`，规范 `style/large_test.md`）。
 - 交付物（实现后）：
   - 插件 `common/js/dsh-plugins/llm-glm`（[contracts/glm-llm-plugin.md](contracts/glm-llm-plugin.md)）
-  - 服务 `projects/game/agent_v2`（[contracts/conversation-api.md](contracts/conversation-api.md)）
+  - 服务 `projects/game/agent_v2`（有状态 dsh 宿主，[contracts/conversation-api.md](contracts/conversation-api.md)）
   - 服务 `projects/game/web`（[contracts/web-frontend.md](contracts/web-frontend.md)）
-  - 存量增量：gateway `/api/v2` 路由、fake-llm `/v1/responses`、game deploy.yaml（agent_v2+web+secret 绑定）
+  - 存量增量：proxy ConversationService 转发面（owner 亲和路由）、`projects/game/pkg/bind` server-streaming 泵、gateway `/api/v2` 路由（经 proxy 两跳）、fake-llm `/v1/responses`、game deploy.yaml（agent_v2+web+secret 绑定）
   - 大型测试 `projects/game/testplan/deploy_agent_v2.yaml`（部署拓扑）+ 既有 `system_test.yaml` 新增 agent_v2 suite（用例集与执行入口）
 
 ## 1. 构建与单测门禁（每次变更，constitution 原则 IV）
@@ -21,7 +21,7 @@ bazel build //projects/game/... //common/js/dsh-plugins/...
 bazel test  //projects/game/... //common/js/dsh-plugins/...
 ```
 
-覆盖：插件序列化/wire/协议义务单测、agent_v2 会话注册表/队列/历史单测、gateway 路由单测、前端组件（US3 构造数据）与 reducer 单测、fake-llm Responses 端点单测。
+覆盖：插件序列化/wire/协议义务单测、agent_v2 会话注册表/队列/历史单测、bind server-streaming 泵单测、proxy ConversationHandler 单测、gateway 路由单测、前端组件（US3 构造数据）与 reducer 单测、fake-llm Responses 端点单测。
 
 ## 2. 大型测试（MVP 验收，constitution 原则 VI——必须实际执行）
 
@@ -32,7 +32,7 @@ bazel test  //projects/game/... //common/js/dsh-plugins/...
 guitar run projects/game/testplan/system_test.yaml
 ```
 
-**部署拓扑**（deploy_agent_v2.yaml）：mongo + session + fake-llm + agent_v2 + web + gateway（ingress：`game.liukexin.com`，`/api/v1/`+`/api/v2/`→gateway、`/`→web）。
+**部署拓扑**（deploy_agent_v2.yaml）：mongo + session + fake-llm + proxy + agent_v2 + web + gateway（ingress：`game.liukexin.com`，`/api/v1/`+`/api/v2/`→gateway、`/`→web；agent_v2 为有状态服务，`/api/v2` 经 gateway→proxy→agent_v2 实例两跳 owner 亲和路由）。
 
 **用例集与预期**（全部通过 = 验收，零 failed/flaky）：
 
@@ -67,11 +67,11 @@ tools 渲染能力（US3/SC-002）在页面/接口层以构造数据验证（vit
 ## 4. 存量零回归（SC-005）
 
 ```bash
-bazel test //projects/game/gateway/... //projects/game/agent/... //projects/game/desktop/...
+bazel test //projects/game/gateway/... //projects/game/agent/... //projects/game/proxy/... //projects/game/pkg/bind/... //projects/game/desktop/...
 # 既有 game 大型测试（如需）：guitar run projects/game/testplan/system_test.yaml
 ```
 
-断言：既有 `/api/v1` 路由与行为不变（gateway 仅新增 `/api/v2` 注册）；agent/desktop/proxy 构建与测试不受影响。
+断言：既有 `/api/v1` 路由与行为不变（gateway 仅新增 `/api/v2` 注册，且经 proxy 转发）；proxy 既有 TeamService 行为与既有测试不变（仅增量注册 ConversationService 转发面）；`pkg/bind` v1 双向 `Bind` 行为不变（仅新增 server-streaming 泵）；agent/desktop 构建与测试不受影响。
 
 ## 5. 交付核对清单
 
