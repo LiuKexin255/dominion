@@ -27,6 +27,7 @@ go_unittest(
     name = "server_test",
     srcs = ["main_test.go"],
     embed = [":server_lib"],
+    deps = ["//projects/game/web/server/assets"],
 )
 
 artifact_pkg_go(

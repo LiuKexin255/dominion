@@ -1,10 +1,10 @@
 load("@aspect_rules_js//js:defs.bzl", "js_library")
-load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
-load("@rules_go//go:def.bzl", "go_library")
-load("@rules_go//proto:def.bzl", "go_proto_library")
-load("@rules_proto//proto:defs.bzl", "proto_library")
 load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
 
 npm_link_all_packages(name = "node_modules")
 
@@ -17,55 +17,124 @@ ts_config(
     deps = ["package.json"],
 )
 
-proto_library(
-    name = "agent_v2_proto",
-    srcs = ["agent_v2.proto"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "@com_google_protobuf//:empty_proto",
-        "@com_google_protobuf//:timestamp_proto",
-        "@googleapis//google/api:annotations_proto",
-        "@googleapis//google/api:field_behavior_proto",
-    ],
-)
-
-# Go codegen mirrors //projects/game:game_go_proto (compilers incl.
-# grpc-gateway + AIP resource parsers). importpath dominion/projects/game/v2
-# is the go_package of specs/049-agent-v2-dsh-init/contracts/conversation-api.md
-# §1 and is disjoint from the v1 namespace dominion/projects/game.
-go_proto_library(
-    name = "agent_v2_go_proto",
-    compilers = [
-        "@rules_go//proto:go_grpc_v2",
-        "@rules_go//proto:go_proto",
-        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
-        "//:go_gen_aip",
-    ],
-    importpath = "dominion/projects/game/v2",
-    proto = ":agent_v2_proto",
-    visibility = ["//visibility:public"],
-    deps = [
-        "@googleapis//google/api:annotations_go_proto",
-        "@googleapis//google/api:field_behavior_go_proto",
-    ],
-)
-
-go_library(
-    name = "agent_v2",
-    embed = [":agent_v2_go_proto"],
-    importpath = "dominion/projects/game/v2",
-    visibility = ["//visibility:public"],
-)
-
-# TS types for the proto-loader runtime (same shape as the demo's
-# //experimental/dsh/demo:chat_types).
+# TS types for the proto-loader runtime, cross-referencing the app-root proto
+# target (same shape as the demo's //experimental/dsh/demo:chat_types and the
+# agent v1 game_types precedent). The proto_library / go_proto_library /
+# go_library targets live in //projects/game (specs/049-agent-v2-dsh-init/
+# research.md D12).
 ts_proto_library(
     name = "agent_v2_types",
-    proto = ":agent_v2_proto",
+    proto = "//projects/game:agent_v2_proto",
     visibility = ["//visibility:public"],
 )
 
 js_library(
     name = "agent_v2_types_lib",
     srcs = [":agent_v2_types"],
+)
+
+ts_project(
+    name = "server_lib",
+    srcs = glob(
+        ["src/**/*.ts"],
+        exclude = ["**/*.test.ts"],
+    ),
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig",
+    deps = [
+        ":agent_v2_types_lib",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@dominion/dsh-llm-glm",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@types/node",
+    ],
+)
+
+# Module format: Node determines the format of the deployed `.js` files
+# from the nearest package.json. artifact_pkg_js's package_json attribute
+# (default: this BUILD package's package.json) ships the service manifest
+# at dominion/game/agent_v2/package.json, so the tar always carries it;
+# package.json must not also be listed in data_files (destination conflict,
+# specs/048-js-esm-migration/contracts/esm-package-conventions.md §4).
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "game",
+    data_files = [
+        "cordis.yml",
+    ],
+    entrypoint = "src/bootstrap.js",
+    npm_deps = [
+        # Service-declared dsh rows and imports (closure contract:
+        # specs/049-agent-v2-dsh-init/data-model.md §2.6 for the rows): the
+        # spine + llm-glm rows must be physically present for the Loader, and
+        # boot/agent/llm are imported by src/*.ts. The remaining plugin
+        # closure materializes transitively through these link targets.
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@dominion/dsh-llm-glm",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
+    runtime_protos = [
+        "//projects/game:agent_v2_proto",
+    ],
+    service = "agent_v2",
+    ts_project = ":server_lib",
+    runtime_deps = [
+        "//common/js/dsh-plugins/llm-glm:runtime_pkg",
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/grpc/resolver:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+        "//common/js/resolver:runtime_pkg",
+        "//third_party/dsh/core:runtime_pkg",
+    ],
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "game",
+    pkg = ":server_pkg",
+    service = "agent_v2",
+    visibility = ["//visibility:public"],
+)
+
+# Tests run against the raw .ts sources through vitest's single Vite pipeline
+# (style/javascript.md data rules): production + test sources only, plus the
+# node_modules mirror of :server_lib's deps. :agent_v2_types_lib is absent —
+# the sources reference the generated proto types via `import type` only,
+# which vitest erases at transform time.
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@dominion/dsh-llm-glm",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@types/node",
+    ],
 )

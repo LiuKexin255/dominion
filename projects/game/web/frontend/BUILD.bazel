@@ -31,10 +31,21 @@ vitest_test(
     size = "small",
     data = glob(["src/**"]) + [
         "tsconfig.json",
+        ":node_modules/@deepseek-ai/dsh-client-ui-primitives",
+        ":node_modules/@testing-library/dom",
+        ":node_modules/@testing-library/react",
+        ":node_modules/jsdom",
         ":node_modules/react",
         ":node_modules/react-dom",
-        ":node_modules/@testing-library/react",
-        ":node_modules/@testing-library/dom",
-        ":node_modules/jsdom",
     ],
+    env = {
+        # @deepseek-ai/dsh-client-ui-primitives' lib entry imports raw
+        # *.module.css. vite_build resolves those at bundle time, but vitest
+        # externalizes node_modules deps to the Node ESM loader, which rejects
+        # the .css extension — inline the package so it flows through vitest's
+        # vite pipeline (CSS mocked; class names are irrelevant to these
+        # tests). Consumes the opt-in viteOverrides env of the shared shim
+        # (tools/dev/js/run_vitest.mjs).
+        "VITEST_VITE_OVERRIDES": '{"test":{"server":{"deps":{"inline":["@deepseek-ai/dsh-client-ui-primitives"]}}}}',
+    },
 )

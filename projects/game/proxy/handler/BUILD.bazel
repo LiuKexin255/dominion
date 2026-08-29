@@ -3,16 +3,22 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "handler",
-    srcs = ["handler.go"],
+    srcs = [
+        "conversation.go",
+        "handler.go",
+    ],
     importpath = "dominion/projects/game/proxy/handler",
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//projects/game",
+        "//projects/game:agent_v2",
         "//projects/game/pkg/bind",
+        "//projects/game/pkg/gameconst",
         "//projects/game/proxy/domain",
         "//projects/game/proxy/runtime/agentclient",
+        "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//types/known/emptypb",
@@ -21,10 +27,14 @@ go_library(
 
 go_unittest(
     name = "handler_test",
-    srcs = ["handler_test.go"],
+    srcs = [
+        "conversation_test.go",
+        "handler_test.go",
+    ],
     embed = [":handler"],
     deps = [
         "//projects/game",
+        "//projects/game:agent_v2",
         "//projects/game/pkg/bind",
         "//projects/game/proxy/domain",
         "//projects/game/proxy/runtime/agentclient",

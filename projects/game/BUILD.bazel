@@ -44,6 +44,54 @@ go_library(
     visibility = ["//visibility:public"],
 )
 
+# /api/v2 conversation surface (specs/049-agent-v2-dsh-init). Lives in the
+# app root next to game.proto — the app-root directory carries every proto of
+# this app (specs/049-agent-v2-dsh-init/research.md D12) — while keeping the
+# versioned proto package projects.game.v2 disjoint from the v1 namespace.
+proto_library(
+    name = "agent_v2_proto",
+    srcs = ["agent_v2.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_protobuf//:empty_proto",
+        "@com_google_protobuf//:timestamp_proto",
+        "@googleapis//google/api:annotations_proto",
+        "@googleapis//google/api:field_behavior_proto",
+    ],
+)
+
+# Go codegen mirrors :game_go_proto (compilers incl. grpc-gateway + AIP
+# resource parsers). importpath dominion/projects/game/v2 is the go_package of
+# specs/049-agent-v2-dsh-init/contracts/conversation-api.md §1.
+go_proto_library(
+    name = "agent_v2_go_proto",
+    compilers = [
+        "@rules_go//proto:go_grpc_v2",
+        "@rules_go//proto:go_proto",
+        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
+        "//:go_gen_aip",
+    ],
+    importpath = "dominion/projects/game/v2",
+    proto = ":agent_v2_proto",
+    visibility = ["//visibility:public"],
+    deps = [
+        # annotations_go_proto alone: its protos closure already contains
+        # field_behavior (and http/resource/routing), and adding
+        # field_behavior_go_proto would emit a second Go package for the
+        # same importpath (google.golang.org/genproto/googleapis/api/annotations)
+        # into every binary linking both game protos — the Go linker rejects
+        # that as "multiple copies of package passed to linker".
+        "@googleapis//google/api:annotations_go_proto",
+    ],
+)
+
+go_library(
+    name = "agent_v2",
+    embed = [":agent_v2_go_proto"],
+    importpath = "dominion/projects/game/v2",
+    visibility = ["//visibility:public"],
+)
+
 go_unittest(
     name = "game_test",
     srcs = ["proto_test.go"],

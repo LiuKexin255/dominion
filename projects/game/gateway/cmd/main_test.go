@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	pgrpc "dominion/common/gopkg/grpc"
 	game "dominion/projects/game"
+	gamev2 "dominion/projects/game/v2"
 
 	"github.com/coder/websocket"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -922,5 +925,117 @@ func TestReadLimitSet(t *testing.T) {
 	_, _, err = conn.Read(ctx)
 	if err != nil {
 		t.Fatalf("read echoed frame (64KB payload): %v — ReadLimit may not be set to 10MB", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: root mux routing (/api/v2 conversation surface, /api/v1 regression)
+// ---------------------------------------------------------------------------
+
+// newRoutingTestMux builds the root mux the way main() assembles it: one
+// proxy connection (teamConn) carrying both the v1 TeamService and the v2
+// ConversationService handlers, pointed at an unreachable backend. Routing
+// assertions can then distinguish "reached grpc-gateway and proxied" (503,
+// backend unavailable) from "no route" (404).
+func newRoutingTestMux(t *testing.T) *http.ServeMux {
+	t.Helper()
+
+	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
+	proxyConn, err := grpc.NewClient(
+		"unreachable-proxy.invalid:50051",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	t.Cleanup(func() { proxyConn.Close() })
+
+	if err := game.RegisterTeamServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
+		t.Fatalf("register team handler: %v", err)
+	}
+	if err := gamev2.RegisterConversationServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
+		t.Fatalf("register conversation handler: %v", err)
+	}
+
+	return newRootMux(gwmux, proxyConn)
+}
+
+// TestRootMuxAPIv2SendProxiesToGrpcGateway verifies the /api/v2/ subtree is
+// bound to grpc-gateway: a :send request reaches the ConversationService
+// route and fails proxying to the unreachable backend with 503 (grpc code
+// Unavailable) instead of a routing 404 (spec 049-agent-v2-dsh-init FR-013).
+func TestRootMuxAPIv2SendProxiesToGrpcGateway(t *testing.T) {
+	httpSrv := httptest.NewServer(newRoutingTestMux(t))
+	defer httpSrv.Close()
+
+	resp, err := http.Post(
+		httpSrv.URL+"/api/v2/templates/saolei/sessions/route-test:send",
+		"application/json",
+		strings.NewReader(`{"text":"hi"}`),
+	)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (grpc-gateway proxy failure, not a routing 404)", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+// TestRootMuxAPIv2UnknownPathStillReachesGrpcGateway verifies an /api/v2/
+// path that matches no ConversationService HTTP rule is answered by
+// grpc-gateway's 404 (the subtree routes there), not by the root mux's own
+// 404 handler.
+func TestRootMuxAPIv2UnknownPathStillReachesGrpcGateway(t *testing.T) {
+	httpSrv := httptest.NewServer(newRoutingTestMux(t))
+	defer httpSrv.Close()
+
+	resp, err := http.Get(httpSrv.URL + "/api/v2/not-a-resource")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	// grpc-gateway answers unmatched routes with a JSON status body — the
+	// root mux's http.NotFound would be plain text.
+	body, _ := io.ReadAll(resp.Body)
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("content-type = %q, want grpc-gateway's application/json error body (got body %q)", ct, string(body))
+	}
+}
+
+// TestRootMuxAPIv1UnrelatedPathsUnchanged verifies the pre-existing /api/v1/
+// behavior is untouched: non-connect paths fall through to grpc-gateway
+// (503 against the unreachable backend — the same outcome the session
+// services produce when unreachable), and unknown /api/v3/ paths have no
+// route at all (FR-010 / SC-005: the gateway only gains /api/v2/).
+func TestRootMuxAPIv1UnrelatedPathsUnchanged(t *testing.T) {
+	httpSrv := httptest.NewServer(newRoutingTestMux(t))
+	defer httpSrv.Close()
+
+	// GetSession rule (game.proto: get /api/v1/{name=templates/*/sessions/*}).
+	// The routing mux registers TeamService (proxy), not SessionService —
+	// assert a v1 TeamService rule instead: RefreshTeam
+	// (post /api/v1/{name=templates/*/sessions/*/team}:refresh).
+	resp, err := http.Post(httpSrv.URL+"/api/v1/templates/saolei/sessions/route-test/team:refresh", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("api/v1 fallback status = %d, want %d (grpc-gateway proxy failure)", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	missing, err := http.Get(httpSrv.URL + "/api/v3/anything")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("api/v3 status = %d, want %d", missing.StatusCode, http.StatusNotFound)
 	}
 }

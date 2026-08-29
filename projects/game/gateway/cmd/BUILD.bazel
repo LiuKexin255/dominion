@@ -1,6 +1,14 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
 load("//tools/dev/go:defs.bzl", "go_unittest")
 
+# gazelle:resolve go dominion/projects/game/v2 //projects/game:agent_v2
+# The v2 proto's go_package (dominion/projects/game/v2,
+# projects/game/agent_v2.proto) is disjoint from its BUILD package directory;
+# without this mapping gazelle rewrites the import to the directory path and
+# misses the real generated package. The proto/go targets live in
+# //projects/game next to game.proto (specs/049-agent-v2-dsh-init/research.md
+# D12).
+
 go_library(
     name = "cmd_lib",
     srcs = ["main.go"],
@@ -15,6 +23,7 @@ go_library(
         "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//projects/game",
+        "//projects/game:agent_v2",
         "//projects/game/pkg/bind",
         "//projects/game/pkg/gameconst",
         "@com_github_coder_websocket//:websocket",
@@ -35,8 +44,11 @@ go_unittest(
     srcs = ["main_test.go"],
     embed = [":cmd_lib"],
     deps = [
+        "//common/gopkg/grpc",
         "//projects/game",
+        "//projects/game:agent_v2",
         "@com_github_coder_websocket//:websocket",
+        "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials/insecure",

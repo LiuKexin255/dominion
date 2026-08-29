@@ -1,15 +1,16 @@
 // The game web server hosts the React frontend's vite build output as static
 // pages: the dist tree artifact is embedded into the binary at build time via
-// the //projects/game/web/server/assets asset library (Bazel wiring mirrors
-// experimental/js/vite_react_demo/server, specs/049-agent-v2-dsh-init/plan.md
-// D8). The static file-server wiring lands with the hosting step
-// (specs/049-agent-v2-dsh-init/tasks.md T022); until then every request is
-// answered by the 404 placeholder below.
+// the //projects/game/web/server/assets asset library and served as-is — no
+// API, routing logic, or persistence beyond process observability. Wiring
+// mirrors experimental/js/vite_react_demo/server
+// (specs/049-agent-v2-dsh-init/contracts/web-frontend.md §1 托管；API 全部经
+// gateway 的 /api/v1、/api/v2 相对路径访问，零 CORS).
 package main
 
 import (
 	"context"
 	"flag"
+	"io/fs"
 	"log"
 	"net/http"
 
@@ -19,27 +20,31 @@ import (
 	"dominion/projects/game/web/server/assets"
 )
 
-// FrontendDist is the embedded frontend dist tree staged under the
-// wails_asset_library default "frontend_dist" prefix
-// (tools/release/wails/private/assets.bzl); the hosting step serves
-// fs.Sub(FrontendDist, "frontend_dist") at "/". The reference keeps the
-// assets package linked ahead of that step.
-var _ = assets.FrontendDist
+// embedDistDir is the directory prefix the staged dist lives under inside the
+// embed FS — the wails_asset_library default out
+// (tools/release/wails/private/assets.bzl).
+const embedDistDir = "frontend_dist"
 
 var port = flag.String("port", "8080", "Port to listen on")
 
-// newHandler returns the web service's HTTP handler. Placeholder 404 until
-// the static hosting wiring (T022).
-func newHandler() http.Handler {
+func newHandler() (http.Handler, error) {
+	dist, err := fs.Sub(assets.FrontendDist, embedDistDir)
+	if err != nil {
+		return nil, err
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", http.NotFound)
-	return mux
+	mux.Handle("/", http.FileServerFS(dist))
+	return mux, nil
 }
 
 func main() {
 	flag.Parse()
 
-	handler := newHandler()
+	handler, err := newHandler()
+	if err != nil {
+		log.Fatalf("failed to build static file handler: %v", err)
+	}
 
 	srv := &http.Server{
 		Addr:    ":" + *port,

@@ -12,6 +12,7 @@ go_library(
         "//common/gopkg/otel",
         "//common/gopkg/solver",
         "//projects/game",
+        "//projects/game:agent_v2",
         "//projects/game/pkg/bind",
         "//projects/game/pkg/gameconst",
         "//projects/game/proxy/handler",

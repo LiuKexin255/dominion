@@ -6,6 +6,7 @@ go_library(
     srcs = [
         "binder.go",
         "first_frame.go",
+        "server_stream.go",
     ],
     importpath = "dominion/projects/game/pkg/bind",
     visibility = ["//visibility:public"],
@@ -17,9 +18,8 @@ go_unittest(
     srcs = [
         "binder_test.go",
         "first_frame_test.go",
+        "server_stream_test.go",
     ],
-    deps = [
-        ":bind",
-        "//projects/game",
-    ],
+    embed = [":bind"],
+    deps = ["//projects/game"],
 )

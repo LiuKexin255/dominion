@@ -1,0 +1,23 @@
+# dsh composition manifest — the single source of truth for the enabled plugin
+# set (specs/049-agent-v2-dsh-init/data-model.md §2.6; zero tools, FR-006).
+# Two rows: the executor-less agent spine with its tool surface trimmed off,
+# and the GLM Responses adapter whose baseURL/token are injected by the host
+# bootstrap before boot (specs/049-agent-v2-dsh-init/research.md D9).
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    persona: 'You are the game conversation assistant: a friendly Chinese-speaking helper for the game workspace. Answer questions about game sessions concisely, reason step by step when the question needs it, and keep replies focused on what the player asked.'
+    workspaceContext: false        # 唯一必填键：显式关闭 runtime-context 注入
+    includeRuntimeContext: false
+    includeHarnessIdentity: false
+    skills: { enabled: false }
+    toolBash: false                # 零工具（specs/049-agent-v2-dsh-init/spec.md FR-006）
+    toolJobs: false
+- id: llm-glm
+  name: '@dominion/dsh-llm-glm'
+  config:
+    apiKeyEnv: GLM_API_KEY                      # bootstrap 由 secret 文件注入（specs/049-agent-v2-dsh-init/research.md D9）
+    baseURL: !!js process.env.GLM_BASE_URL      # bootstrap 解析/默认（specs/049-agent-v2-dsh-init/research.md D9）
+    models:
+      - id: !!js process.env.GLM_MODEL || 'glm-5.2'
+        contextWindow: 1000000

@@ -15,8 +15,10 @@ const (
 	TeamTarget  = "game/proxy:grpc"
 	AgentTarget = "game/agent:grpc"
 	// AgentV2Target is the service discovery target of the agent_v2 gRPC
-	// service, the dsh-hosted game agent
-	// (specs/049-agent-v2-dsh-init/spec.md FR-013).
+	// service, the stateful dsh-hosted game agent. Its consumer is the
+	// proxy's stateful-instance resolver (owner affinity for the /api/v2
+	// conversation surface); the gateway never addresses agent_v2 directly
+	// (specs/049-agent-v2-dsh-init/research.md D4).
 	AgentV2Target = "game/agent_v2:grpc"
 	PromptTarget  = "game/prompt:grpc"
 	// MemoryTarget is the gRPC target of the MemoryService (spec 039

@@ -51,7 +51,7 @@ type mockConnTracker struct {
 	count int32
 }
 
-func (t *mockConnTracker) factory(ctx context.Context, instanceIndex int) (*grpc.ClientConn, error) {
+func (t *mockConnTracker) factory(ctx context.Context, target string, instanceIndex int) (*grpc.ClientConn, error) {
 	conn, err := grpc.NewClient("passthrough:///localhost:0",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -346,10 +346,10 @@ func TestManager_NewDaemonComponent(t *testing.T) {
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
-	daemon := NewDaemon(mgr, time.Minute)
+	daemon := NewDaemon(DefaultDaemonName, mgr, time.Minute)
 
-	if daemon.Name() != "agentclient-manager" {
-		t.Fatalf("expected Name 'agentclient-manager', got %q", daemon.Name())
+	if daemon.Name() != DefaultDaemonName {
+		t.Fatalf("expected Name %q, got %q", DefaultDaemonName, daemon.Name())
 	}
 
 	if daemon.Stage() != 250 {
