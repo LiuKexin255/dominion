@@ -5,16 +5,19 @@
  * (GLM endpoint resolution + GLM API token injection, research
  * specs/049-agent-v2-dsh-init/research.md D9), then boots the two-row
  * composition manifest (agent spine + GLM Responses adapter) in-process
- * (B1 embedding, specs/049-agent-v2-dsh-init/spec.md FR-002). Any failure is
- * fail-loud: diagnostics are logged and the process exits non-zero — a
- * half-started composition never serves traffic. Diagnostics never contain
- * the token value (specs/049-agent-v2-dsh-init/spec.md SC-004).
+ * (B1 embedding, specs/049-agent-v2-dsh-init/spec.md FR-002). Resolver and
+ * boot failures are fail-loud — a half-started composition never serves
+ * traffic; a missing GLM token is tolerated: the host boots WITHOUT
+ * `GLM_API_KEY` and model requests then skip the Authorization header
+ * (specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §3 义务 6).
+ * Diagnostics never contain the token value (specs/049-agent-v2-dsh-init/
+ * spec.md SC-004).
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { boot } from "@deepseek-ai/dsh-app-boot";
-import { error, info } from "@dominion/common-js-logs";
+import { error, info, warn } from "@dominion/common-js-logs";
 import { createResolver } from "@dominion/common-js-resolver";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
 
@@ -81,7 +84,10 @@ export async function bootDsh(deps: DshBootDeps = {}): Promise<DshContext> {
   const doBoot = deps.boot ?? boot;
   try {
     env.GLM_BASE_URL = await resolveBaseURL(deps);
-    env.GLM_API_KEY = readGlmApiKey(deps);
+    const apiKey = resolveGlmApiKey(deps);
+    if (apiKey !== undefined) {
+      env.GLM_API_KEY = apiKey;
+    }
 
     const configPath = cordisConfigPath();
     // boot's 5th parameter anchors bare plugin-name resolution at this
@@ -129,32 +135,48 @@ async function resolveBaseURL(deps: DshBootDeps): Promise<string> {
 }
 
 /**
- * Read the GLM token file into `GLM_API_KEY`. Missing or empty token is a
- * fail-loud startup error; the error names the path and the secret file,
- * never the value (specs/049-agent-v2-dsh-init/spec.md SC-004;
- * specs/002-deploy-secret-config/contracts/secret-config.md §5).
+ * Resolve `GLM_API_KEY` in three levels (specs/049-agent-v2-dsh-init/
+ * research.md D9): a pre-set env value wins (trimmed, whitespace-only counts
+ * as unset); otherwise the GLM token file is read. A missing file, a read
+ * error, or empty content all count as absent — the function returns
+ * `undefined` and the caller boots WITHOUT `GLM_API_KEY`: the plugin then
+ * sends model requests without an Authorization header
+ * (specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §3 义务 6 — the
+ * fake endpoint ignores credentials; a real endpoint's 401 surfaces as the
+ * first turn's `turn_end{ERROR}`). The absence warning names the env and
+ * the secret file path, never any key value (specs/049-agent-v2-dsh-init/
+ * spec.md SC-004).
  */
-function readGlmApiKey(deps: DshBootDeps): string {
+function resolveGlmApiKey(deps: DshBootDeps): string | undefined {
   const env = deps.env ?? process.env;
+  const envKey = env.GLM_API_KEY?.trim();
+  if (envKey) {
+    return envKey;
+  }
   const dir = deps.secretDir ?? env.DOMINION_SECRET_DIR ?? SECRET_DIR_FALLBACK;
   const file = path.join(dir, GLM_SECRET_FILE);
   const read = deps.readSecretFile ?? readSecretFile;
-  // Trim on the consumer side so an injected reader observes the raw file
-  // while the injected value still normalizes (trailing newline).
-  const token = read(file).trim();
-  if (!token) {
-    throw new Error(
-      `GLM API token missing: secret file "${GLM_SECRET_FILE}" at ${file} is absent or empty; check the k8s secret binding (specs/002-deploy-secret-config/contracts/secret-config.md §2)`,
-    );
+
+  let reason: string;
+  try {
+    // Trim on the consumer side so an injected reader observes the raw file
+    // while the value still normalizes (trailing newline).
+    const token = read(file).trim();
+    if (token) {
+      return token;
+    }
+    reason = "absent or empty";
+  } catch (err) {
+    reason = err instanceof Error ? err.message : String(err);
   }
-  return token;
+  warn("GLM API token unavailable; booting without GLM_API_KEY", {
+    env: "GLM_API_KEY",
+    secretFile: file,
+    reason,
+  });
+  return undefined;
 }
 
 function readSecretFile(file: string): string {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`secret file "${GLM_SECRET_FILE}" unreadable at ${file}: ${message}`);
-  }
+  return fs.readFileSync(file, "utf8");
 }

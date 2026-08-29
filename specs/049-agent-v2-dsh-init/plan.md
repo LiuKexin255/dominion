@@ -10,7 +10,9 @@
 
 架构硬约束（用户指令，2026-08-28）：**所有对 dsh 的扩展（GLM Responses 适配器等）都以插件形态交付；agent_v2 服务本体只保留"嵌入并服务 built-in dsh"所需的最小宿主代码**（bootstrap、组合清单、gRPC 服务面、会话注册表/队列/历史等托管逻辑）。
 
-架构硬约束（用户指令，2026-08-29）：**agent_v2 为有状态服务，经存量 proxy 亲和路由接入、不被 gateway 直连**（gateway→proxy→agent_v2 两跳，proxy 按 owner 映射定向实例，gateway 仍是唯一 HTTP 出口）；**proxy 转发 server-streaming 流的泵以 bind 包扩展交付**（v1 双向 Bind 零行为改动）；**agent_v2 proto 与 game 既有 proto 同目录**（app 根目录）；**proxy owner store 的 database/collection 命名知识归 store 层**（语义化构造 `NewAgentOwnerStore`/`NewAgentV2OwnerStore`，常量私有化于 `runtime/mongo` 包内，`cmd/main.go` 只做装配不出现 collection 字符串）。
+架构硬约束（用户指令，2026-08-29）：**agent_v2 为有状态服务，经存量 proxy 亲和路由接入、不被 gateway 直连**（gateway→proxy→agent-v2 两跳，proxy 按 owner 映射定向实例，gateway 仍是唯一 HTTP 出口）；**proxy 转发 server-streaming 流的泵以 bind 包扩展交付**（v1 双向 Bind 零行为改动）；**agent_v2 proto 与 game 既有 proto 同目录**（app 根目录）；**proxy owner store 的 database/collection 命名知识归 store 层**（语义化构造 `NewAgentOwnerStore`/`NewAgentV2OwnerStore`，常量私有化于 `runtime/mongo` 包内，`cmd/main.go` 只做装配不出现 collection 字符串）。
+
+架构硬约束（用户裁定，2026-08-29 第三批，方向 1——[research.md](research.md) D13）：**服务发现名与 artifact 名为 `agent-v2`/`agent-v2-test`**（deploy API 约束 `^[a-z][a-z0-9-]{0,19}$` 禁下划线；目录/proto/包名/bazel target/collection 保持 `agent_v2`——命名区分规则见 D13）；**proxy agentclient 对"管理服务缺席"（deploy `ErrServiceNotFound`）容忍**——manager.refresh 错误分类为空实例集，daemon 重启策略与其余错误类别零改动（spec FR-016）。
 
 技术路线（编号对应 [research.md](research.md) 决策号）：
 
@@ -99,7 +101,8 @@ projects/game/
 ├── BUILD.bazel                       # 增量：agent_v2_proto（proto_library）+ agent_v2_go_proto（go_proto_library，
 │                                     #   importpath dominion/projects/game/v2）+ agent_v2（go_library），与 game_proto 并列
 ├── pkg/
-│   ├── gameconst/const.go            # 增量：AgentV2Target = "game/agent_v2:grpc"（消费方 = proxy 有状态解析）
+│   ├── gameconst/const.go            # 增量：AgentV2Target = "game/agent-v2:grpc"（消费方 = proxy 有状态解析；服务发现名
+│   │                                 #   agent-v2 遵循 deploy API 约束，research.md D13）
 │   └── bind/
 │       ├── binder.go / first_frame.go        # 不动（v1 bidi，两个既有使用点）
 │       ├── server_stream.go                  # 增量：泛型 ServerStreamBinder server-streaming 泵（research.md D11）
@@ -140,7 +143,7 @@ projects/game/
 ├── gateway/cmd/main.go               # 增量：ConversationServiceHandler 注册挂既有 teamConn（经 proxy）+ /api/v2/ 子树
 │                                     #       （既有 /api/v1 不动；无 agent_v2 直连 conn）
 ├── fake-llm/                         # 增量：新增 POST /v1/responses 端点（Responses wire，复用模板/延迟设施）+ testdata
-├── deploy.yaml                       # 增量：agent_v2（kind: stateful 由 service.yaml 声明；secret 绑定
+├── deploy.yaml                       # 增量：agent-v2（kind: stateful 由 service.yaml 声明；secret 绑定
 │                                     #   glm-api-token→llm-secrets/glm-codingplan）+ web（host game.liukexin.com `/`）
 │                                     #   + gateway matches 增 /api/v2/（同主机名路径分流，research.md D5）
 └── testplan/

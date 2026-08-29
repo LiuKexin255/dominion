@@ -102,6 +102,25 @@ description: |
       SC-002/SC-003): after the stalled turn terminates, ListMessages
       returns the already-streamed reasoning with
       completion = PART_COMPLETION_INTERRUPTED on the tail part.
+  Suite 12 (agent-v2-conversation): session + proxy + agent-v2 + fake-llm +
+    web + gateway (deploy_agent_v2.yaml — the /api/v2 two-hop topology
+    gateway→proxy→agent-v2 with the fake /v1/responses endpoint replacing
+    the real GLM endpoint, specs/049-agent-v2-dsh-init/contracts/
+    fake-responses-wire.md §4).
+    - agent-v2 conversation surface over the gateway /api/v2 NDJSON API
+      (case binary is agent_v2_conversation_test; quickstart §2 用例 2–9):
+      streamed event sequences with multi-frame THINK deltas and pure-text
+      turns (用例 2 — US1-1/US2), multi-turn continuity via the fake
+      history_keywords template (用例 3 — US1-2), concurrent session
+      isolation (用例 4 — US1-3), queued{position}→auto-resume in the
+      slow-template window (用例 5 — FR-012), history backfill consistency
+      (用例 6 — FR-014), dispose ABORTED + fresh same-name session (用例 7 —
+      FR-015/US4-3), model-failure ERROR + recovery (用例 8 — Edge), and
+      400 INVALID_ARGUMENT mapping (用例 9 — Edge).
+    - web static hosting + the page's management closed loop at the HTTP
+      layer the frontend drives (case binary is web_test; quickstart §2 用例
+      1/10): entry HTML, hashed /assets tree, create → list → converse →
+      delete via /api/v1 + /api/v2 (US4 删除编排, research.md D6).
 
 suites:
   - name: session
@@ -201,3 +220,13 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_stall_test
+
+  - name: agent-v2-conversation
+    description: "agent-v2 conversation surface (/api/v2) + web static hosting with the fake /v1/responses endpoint (specs/049-agent-v2-dsh-init/quickstart.md §2 用例 1–10), deployed via deploy_agent_v2.yaml — the two-hop topology gateway→proxy→agent-v2 (owner affinity, specs/049-agent-v2-dsh-init/contracts/conversation-api.md §1 托管拓扑) with GLM_LLM_TARGET resolving to fake-llm (fake-responses-wire.md §4). agent_v2_conversation_test covers 用例 2–9: streamed event sequence with multi-frame THINK deltas and the pure-text zero-THINK turn (用例 2 — US1-1/US2, SC-002), multi-turn continuity via the history_keywords template (用例 3 — US1-2), concurrent session isolation without cross-session queueing (用例 4 — US1-3), queued{position}→auto-resume in the slow-template window (用例 5 — FR-012), history backfill equal to the streamed terminal state (用例 6 — FR-014), mid-turn dispose ABORTED with a fresh same-name session and idempotent dispose (用例 7 — FR-015/US4-3), model-failure turn_end{ERROR} with a usable session (用例 8 — Edge), and empty-text/unknown-template 400 mapping with the service healthy (用例 9 — Edge). web_test covers 用例 1/10: entry HTML + hashed /assets hosting (FR-013) and the management closed loop create → list → converse → delete through /api/v1 + /api/v2 as the page drives it (US4, research.md D6)"
+    deploy: //projects/game/testplan/deploy_agent_v2.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_v2_conversation_test
+      - //projects/game/testplan:web_test

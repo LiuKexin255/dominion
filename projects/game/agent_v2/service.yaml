@@ -1,14 +1,24 @@
 version: "3.0"
-name: agent_v2
+name: agent-v2
 app: game
 kind: stateful
-desc: game agent service (dsh host, stateful — routed by proxy owner affinity, specs/049-agent-v2-dsh-init/research.md D4)
+desc: game agent-v2 service (dsh host, stateful — routed by proxy owner affinity, specs/049-agent-v2-dsh-init/research.md D4)
 ports:
   - name: grpc
     port: 50051
 artifacts:
-  - name: agent_v2
+  - name: agent-v2
     target: :cmd_image
     tls: true
     secrets:
       - glm-api-token
+  # The test artifact declares NO secrets: the zero-secret test deployment
+  # (projects/game/testplan/deploy_agent_v2.yaml) selects it by
+  # artifact.name, so the deploy-time secret double validation
+  # (tools/release/deploy/README.md §服务类型) never requires a glm-api-token
+  # prerequisite in the test cluster (specs/049-agent-v2-dsh-init/research.md
+  # D9) — the boot tolerates the missing token and model requests skip the
+  # Authorization header (contracts/glm-llm-plugin.md §3 义务 6).
+  - name: agent-v2-test
+    target: :cmd_image
+    tls: true

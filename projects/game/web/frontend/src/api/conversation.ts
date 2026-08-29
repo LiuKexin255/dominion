@@ -128,7 +128,11 @@ export async function* sendStream(
   })
   if (!res.ok || !res.body) throw new ApiError(res.status, await res.text())
   for await (const line of ndjsonLines(res.body)) {
-    yield JSON.parse(line) as ChatEvent
+    // grpc-gateway v2's default streaming marshaler wraps every message in a
+    // "result" key — one {"result": <ChatEvent>} JSON object per line
+    // (conversation-api.md §2; runtime/handler.go
+    // handleForwardResponseServerStream at the repo-pinned v2.27.6).
+    yield (JSON.parse(line) as { result: ChatEvent }).result
   }
 }
 

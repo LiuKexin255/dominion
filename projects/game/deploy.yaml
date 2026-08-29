@@ -29,12 +29,14 @@ services:
         provider:
           secret: llm-secrets
           key: opencode-go
-  # agent_v2 is stateful (service.yaml kind) and reached only through the
+  # agent-v2 is stateful (service.yaml kind) and reached only through the
   # proxy's owner affinity — no http block, same as the v1 agent
-  # (specs/049-agent-v2-dsh-init/research.md D4).
+  # (specs/049-agent-v2-dsh-init/research.md D4). The discovery name carries
+  # hyphens (deploy API constraint, specs/049-agent-v2-dsh-init/research.md
+  # D13); the project directory keeps agent_v2.
   - artifact:
       path: //projects/game/agent_v2/service.yaml
-      name: agent_v2
+      name: agent-v2
       secrets:
         glm-api-token:
           secret: llm-secrets

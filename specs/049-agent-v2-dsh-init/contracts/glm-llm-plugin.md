@@ -45,7 +45,7 @@ export const name = "llm-glm";
 export const inject = ["llm"];
 
 export interface GlmConfig {
-  /** GLM API token 的环境变量名；值非空（assertUsableApiKey 校验）。 */
+  /** GLM API token 的环境变量名；值可为空——空 key 请求不携带 Authorization（§3 义务 6，宿主三级解析容忍缺失的终点，research.md D9）；非空值经 assertUsableApiKey 校验。 */
   apiKeyEnv: string;
   /** OpenAI Responses 端点，含版本路径（如 https://open.bigmodel.cn/api/v1）。 */
   baseURL: string;
@@ -82,7 +82,7 @@ export class GlmResponsesAdapter extends LlmAdapter {
 3. 错误两条路径：传输/协议失败 → 从 `stream()` **throw** `LlmError`（稳定 code，如 `GLM_HTTP_500`/`GLM_PROTOCOL`）；provider 带内失败（`response.failed`/`error` 事件）→ 终局 `finish{kind:'error', failure}`。
 4. 尊重 `options.signal`（传入 fetch；abort 时终局 `finish{kind:'aborted'}` 或 throw）。
 5. 无法满足的 `GenerateOptions` 字段（如 `stop` 序列、`reasoningEffort` 未支持值）→ throw `LlmError(..., 'UNSUPPORTED')`，不静默丢弃。
-6. 请求头必含 `Authorization: Bearer <env(apiKeyEnv)>` 与 attribution headers（`attributionHeaders()`，dsh-llm 导出）。
+6. Authorization **条件携带**（宿主 token 解析容忍缺失的对应端，[research.md](../research.md) D9）：key 非空 → 请求头必含 `Authorization: Bearer <env(apiKeyEnv)>`（非空值经 `assertUsableApiKey` 校验，含 header 安全字符校验）；key 为空（未设/空白）→ 请求**不携带** Authorization header、照常发出。attribution headers（`attributionHeaders()`，dsh-llm 导出）任何情形必含。
 7. **不**发送 `replayState`（Responses 端点按 input 全量重建；无服务端 response id 复用需求——`store:false` 语义）。
 
 ## 4. 请求序列化（`src/serialize.ts`：`GenerateOptions` → Responses 请求体）
@@ -136,7 +136,8 @@ input item 格式依据 OpenAI Responses 官方规范（[openai-openapi response
 1. **序列化单测**：user/assistant 历史往返（多轮）、system→instructions、reasoning 不回传、image/tool 内容 UNSUPPORTED_CONTENT。
 2. **wire 单测**：构造 SSE 帧序列（含 reasoning→message 交错、多块多 delta、completed 带 usage）断言 StreamChunk 序（index 分配、usage-先-finish、终态一致）；`response.failed` → error finish；HTTP 非 200 → throw LlmError。
 3. **协议义务回归**：finish 后零输出、delta index 复用。
-4. fixture SSE 与 [fake-responses-wire.md](fake-responses-wire.md) 共享词汇（同一事件构造器输出）。
+4. **空 key 行为**（条件 Authorization，§3 义务 6）：env(apiKeyEnv) 为空/未设 → 请求头**无** Authorization、请求照常发出；非空 → `Bearer` 头存在（既有 header 断言用例覆盖）。
+5. fixture SSE 与 [fake-responses-wire.md](fake-responses-wire.md) 共享词汇（同一事件构造器输出）。
 
 ## 7. 交付边界
 

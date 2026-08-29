@@ -19,6 +19,13 @@ function jsonResponse(body: unknown): Response {
   })
 }
 
+// wireChunk wraps one bare ChatEvent JSON line in the grpc-gateway v2
+// streaming envelope the real /api/v2 wire carries ({"result": <ChatEvent>}
+// + "\n" — conversation-api.md §2).
+function wireChunk(eventLine: string): string {
+  return `{"result":${eventLine}}\n`
+}
+
 // makeFetchMock routes the app's relative-path API calls. The Send route
 // streams the turn's NDJSON events (conversation-api.md §2) in two phases:
 // the remaining frames are only enqueued once the test releases them, so the
@@ -31,13 +38,13 @@ function makeFetchMock() {
 
   const encoder = new TextEncoder()
   const firstPhase =
-    '{"turnId":"t1","turnStart":{}}\n' +
-    '{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}\n' +
-    '{"turnId":"t1","delta":{"index":0,"text":"部"}}\n'
+    wireChunk('{"turnId":"t1","turnStart":{}}') +
+    wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+    wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}')
   const restPhase = [
-    '{"turnId":"t1","delta":{"index":0,"text":"分"}}\n',
-    '{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}\n',
-    '{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}\n',
+    wireChunk('{"turnId":"t1","delta":{"index":0,"text":"分"}}'),
+    wireChunk('{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}'),
+    wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}'),
   ]
 
   const fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
@@ -252,13 +259,13 @@ describe('App 多会话隔离（US4/T029）', () => {
 
   it('双会话切换互不串扰：发送中切走后流在后台归约，返回保留状态且不重复回填', async () => {
     const s1Send = pausedSend(
-      '{"turnId":"t1","turnStart":{}}\n' +
-        '{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}\n' +
-        '{"turnId":"t1","delta":{"index":0,"text":"部"}}\n',
+      wireChunk('{"turnId":"t1","turnStart":{}}') +
+        wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+        wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}'),
       [
-        '{"turnId":"t1","delta":{"index":0,"text":"分"}}\n',
-        '{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}\n',
-        '{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}\n',
+        wireChunk('{"turnId":"t1","delta":{"index":0,"text":"分"}}'),
+        wireChunk('{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}'),
+        wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}'),
       ],
     )
     fetchMock = makeUs4FetchMock([
@@ -323,13 +330,13 @@ describe('App 回填竞态与失败路径（US4 回归）', () => {
   ): Promise<{ open: () => void; send: ReturnType<typeof pausedSend> }> {
     const historyGate = gatedResponse(make)
     const s1Send = pausedSend(
-      '{"turnId":"t1","turnStart":{}}\n' +
-        '{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}\n' +
-        '{"turnId":"t1","delta":{"index":0,"text":"部"}}\n',
+      wireChunk('{"turnId":"t1","turnStart":{}}') +
+        wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+        wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}'),
       [
-        '{"turnId":"t1","delta":{"index":0,"text":"分"}}\n',
-        '{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}\n',
-        '{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}\n',
+        wireChunk('{"turnId":"t1","delta":{"index":0,"text":"分"}}'),
+        wireChunk('{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}'),
+        wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}'),
       ],
     )
     fetchMock = makeUs4FetchMock([

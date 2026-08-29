@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { defaultLogger } from "@dominion/common-js-logs";
 import { bootDsh, cordisConfigPath, GLM_DEFAULT_BASE_URL, GLM_SECRET_FILE } from "./dsh.js";
 import type { DshBootDeps, DshContext } from "./dsh.js";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
@@ -121,6 +122,38 @@ describe("bootDsh", () => {
     expect(exit).not.toHaveBeenCalled();
   });
 
+  it("prefers a pre-set GLM_API_KEY env without reading the secret file", async () => {
+    const ctx = { marker: "ctx" } as unknown as DshContext;
+    const boot = fakeBoot(ctx);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const env: Record<string, string | undefined> = { GLM_API_KEY: `  ${TOKEN}  ` };
+    const readSecretFile = vi.fn(() => {
+      throw new Error("secret file must not be read when GLM_API_KEY is set");
+    });
+
+    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
+
+    expect(readSecretFile).not.toHaveBeenCalled();
+    expect(env.GLM_API_KEY).toBe(TOKEN);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("treats a whitespace-only GLM_API_KEY env as unset and reads the secret file", async () => {
+    // Same empty-is-missing rule as the file path: a blank credential must
+    // never satisfy the boot.
+    const ctx = { marker: "ctx" } as unknown as DshContext;
+    const boot = fakeBoot(ctx);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const env: Record<string, string | undefined> = { GLM_API_KEY: "   " };
+    const readSecretFile = vi.fn(() => TOKEN);
+
+    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
+
+    expect(readSecretFile).toHaveBeenCalledWith(`/tmp/secret/${GLM_SECRET_FILE}`);
+    expect(env.GLM_API_KEY).toBe(TOKEN);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
   it("uses $DOMINION_SECRET_DIR for the token file lookup", async () => {
     const ctx = { marker: "ctx" } as unknown as DshContext;
     const boot = fakeBoot(ctx);
@@ -136,35 +169,49 @@ describe("bootDsh", () => {
     expect(readSecretFile).toHaveBeenCalledWith(`/mnt/dominion/secret/${GLM_SECRET_FILE}`);
   });
 
-  it("fails loud with diagnostics and exit(1) when the token file is missing, leaking no token content", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("tolerates a missing token file: warns and boots with GLM_API_KEY unset", async () => {
+    // Three-level resolution terminal state (specs/049-agent-v2-dsh-init/
+    // research.md D9): an absent secret never blocks the boot — the plugin
+    // then sends requests without an Authorization header (glm-llm-plugin.md
+    // §3 义务 6). The warning carries the env name and the resolved secret
+    // file path, never any key value (SC-004).
     const boot = fakeBoot({} as DshContext);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
+    const env: Record<string, string | undefined> = {};
     const readSecretFile = vi.fn(() => {
       throw new Error(`ENOENT: no such file or directory, open '/mnt/dominion/secret/${GLM_SECRET_FILE}'`);
     });
 
-    await bootDsh({ boot, env: {}, readSecretFile });
+    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
 
-    expect(boot).not.toHaveBeenCalled();
-    expect(exit).toHaveBeenCalledWith(1);
-    const logged = consoleError.mock.calls.map((call) => call.join(" ")).join("\n");
-    expect(logged).toContain("fail-loud");
-    expect(logged).toContain(GLM_SECRET_FILE);
-    expect(logged).not.toContain(TOKEN);
+    expect(boot).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(env.GLM_API_KEY).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message, attrs] = warnSpy.mock.calls[0] as [string, Record<string, string>];
+    expect(message).toContain("GLM_API_KEY");
+    expect(message + JSON.stringify(attrs)).toContain(`/tmp/secret/${GLM_SECRET_FILE}`);
+    expect(message + JSON.stringify(attrs)).toContain("ENOENT");
+    expect(message + JSON.stringify(attrs)).not.toContain(TOKEN);
   });
 
-  it("fails loud when the token file is empty, leaking no token content", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("tolerates an empty token file: warns and boots with GLM_API_KEY unset", async () => {
     const boot = fakeBoot({} as DshContext);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
+    const env: Record<string, string | undefined> = {};
 
-    await bootDsh({ boot, env: {}, secretDir: "/tmp/secret", readSecretFile: () => "   " });
+    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => "   " });
 
-    expect(boot).not.toHaveBeenCalled();
-    expect(exit).toHaveBeenCalledWith(1);
-    const logged = consoleError.mock.calls.map((call) => call.join(" ")).join("\n");
-    expect(logged).toContain("absent or empty");
+    expect(boot).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(env.GLM_API_KEY).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message, attrs] = warnSpy.mock.calls[0] as [string, Record<string, string>];
+    expect(message + JSON.stringify(attrs)).toContain(`/tmp/secret/${GLM_SECRET_FILE}`);
+    expect(message + JSON.stringify(attrs)).toContain("absent or empty");
+    expect(message + JSON.stringify(attrs)).not.toContain(TOKEN);
   });
 
   it("fails loud when the resolver returns no endpoints for GLM_LLM_TARGET", async () => {

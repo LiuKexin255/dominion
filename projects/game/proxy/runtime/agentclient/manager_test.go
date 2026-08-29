@@ -266,6 +266,93 @@ func TestManager_RefreshResolveErrorKeepsExisting(t *testing.T) {
 	}
 }
 
+// TestManager_RefreshServiceNotFoundTreatedAsEmpty covers the D13 tolerance
+// (specs/049-agent-v2-dsh-init/research.md D13, spec 049 FR-016): a resolver
+// error chain carrying solver.ErrServiceNotFound (the deploy API's 404 for a
+// managed stateful service absent from this environment) is normalized to an
+// empty instance set — refresh returns nil and the pre-existing entries are
+// torn down, instead of the error reaching the daemon's restart policy.
+func TestManager_RefreshServiceNotFoundTreatedAsEmpty(t *testing.T) {
+	resolver := &mockResolver{
+		instances: makeInstances(0),
+	}
+	target := solver.MustParseTarget("game/agent:grpc")
+
+	restore, tracker := setMockNewAgentConn()
+	defer restore()
+
+	mgr := NewManager(resolver, target, time.Minute)
+
+	if err := mgr.refresh(context.Background()); err != nil {
+		t.Fatalf("unexpected refresh error: %v", err)
+	}
+
+	// A wrapped sentinel: 404 → bare ErrServiceNotFound (deploy_http_client)
+	// → %w (deploy_stateful_resolver) → %w (manager) — errors.Is reachable.
+	resolver.setError(fmt.Errorf("deploy lookup: %w", solver.ErrServiceNotFound))
+
+	if err := mgr.refresh(context.Background()); err != nil {
+		t.Fatalf("refresh with ErrServiceNotFound = %v, want nil (tolerated as empty instance set)", err)
+	}
+
+	refs, err := mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected List error: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("expected entries cleared after not-found refresh, got %d refs", len(refs))
+	}
+	if tracker.createdCount() == 0 {
+		t.Fatal("expected the priming refresh to have created a connection")
+	}
+}
+
+// TestManager_RefreshServiceNotFoundThenAppears covers the recovery half of
+// the D13 tolerance: after a not-found refresh cleared the pool, a later
+// refresh seeing the service again rebuilds connections through the same
+// periodic path (no daemon restart involved).
+func TestManager_RefreshServiceNotFoundThenAppears(t *testing.T) {
+	resolver := &mockResolver{
+		instances: makeInstances(0),
+	}
+	target := solver.MustParseTarget("game/agent:grpc")
+
+	restore, tracker := setMockNewAgentConn()
+	defer restore()
+
+	mgr := NewManager(resolver, target, time.Minute)
+
+	if err := mgr.refresh(context.Background()); err != nil {
+		t.Fatalf("unexpected refresh error: %v", err)
+	}
+	createdBefore := tracker.createdCount()
+
+	resolver.setError(fmt.Errorf("deploy lookup: %w", solver.ErrServiceNotFound))
+	if err := mgr.refresh(context.Background()); err != nil {
+		t.Fatalf("not-found refresh = %v, want nil", err)
+	}
+
+	resolver.setInstances(makeInstances(0))
+	resolver.setError(nil)
+	if err := mgr.refresh(context.Background()); err != nil {
+		t.Fatalf("unexpected refresh error after service reappears: %v", err)
+	}
+
+	refs, err := mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected List error: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref after the service reappears, got %d", len(refs))
+	}
+	if tracker.createdCount() <= createdBefore {
+		t.Fatalf("expected a rebuilt connection (had %d), got %d", createdBefore, tracker.createdCount())
+	}
+	if refs[0].Owner != "agent-0" {
+		t.Fatalf("rebuilt ref owner = %q, want agent-0", refs[0].Owner)
+	}
+}
+
 func TestManager_CloseClosesAll(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0, 1),

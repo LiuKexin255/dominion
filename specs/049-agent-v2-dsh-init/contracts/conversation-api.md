@@ -194,21 +194,21 @@ message ToolCallBlock {
 
 Go 侧代码生成目标位于 `projects/game/BUILD.bazel`（`agent_v2_proto` proto_library + `agent_v2_go_proto` go_proto_library + `agent_v2` go_library，与 `game_proto` 并列；compilers 同 `game_go_proto`：go_grpc_v2 + go_proto + grpc-gateway + go_gen_aip，importpath `dominion/projects/game/v2`，deps 仅 `@googleapis//google/api:annotations_go_proto`——annotations 与 field_behavior 的 go_proto 共享 importpath，同列会触发 "multiple copies of package passed to linker"）；TS 侧类型目标保留在 `projects/game/agent_v2/BUILD.bazel`（`agent_v2_types` ts_proto_library 跨目录引用 `//projects/game:agent_v2_proto`，agent v1 `game_types` 先例 `projects/game/agent/BUILD.bazel:20-24`）+ proto-loader 运行时加载（`experimental/dsh/demo/agent/BUILD.bazel`、`src/server.ts`——加载路径为标准导入路径物化位置 `SERVICE_ROOT/projects/game/agent_v2.proto`）。
 
-**托管拓扑**（[research.md](../research.md) D4）：agent_v2 为有状态服务（`kind: stateful`），ConversationService 的 gRPC 实现注册于 **proxy**（owner 亲和路由，代理转发全部三 RPC）；gateway 仅做 HTTP 绑定（grpc-gateway handler 挂既有 proxy conn）；浏览器路径 = `gateway → proxy → agent_v2 实例` 两跳。
+**托管拓扑**（[research.md](../research.md) D4）：agent-v2 为有状态服务（`kind: stateful`，服务发现名约束见 D13），ConversationService 的 gRPC 实现注册于 **proxy**（owner 亲和路由，代理转发全部三 RPC）；gateway 仅做 HTTP 绑定（grpc-gateway handler 挂既有 proxy conn）；浏览器路径 = `gateway → proxy → agent-v2 实例` 两跳。
 
 ## 2. REST/流式绑定与错误映射
 
 | RPC | HTTP | 成功 | 请求级失败（流不开启） |
 |---|---|---|---|
-| Send | `POST /api/v2/templates/{t}/sessions/{s}:send`，body `{"text": "..."}` | 200 + `application/json` NDJSON chunked，逐事件 flush | 资源名非法/空文本 → 400 INVALID_ARGUMENT（proxy 校验，或 agent_v2 透传）；路由/下游不可达 → 503（见下表） |
+| Send | `POST /api/v2/templates/{t}/sessions/{s}:send`，body `{"text": "..."}` | 200 + `application/json` NDJSON chunked，逐事件 flush | 资源名非法/空文本 → 400 INVALID_ARGUMENT（proxy 校验，或 agent-v2 透传）；路由/下游不可达 → 503（见下表） |
 | ListHistory | `GET ...:history` | 200 JSON（`ListHistoryResponse`）；无 owner（会话从未发过消息）→ 200 空列表（proxy 短路，不分配 owner） | 资源名非法 → 400 |
 | Dispose | `POST ...:dispose`，body `{}` | 200 `{}`（幂等：不存在亦成功；无 owner → proxy 幂等短路） | 资源名非法 → 400 |
 
-- **NDJSON 帧**：每个 `ChatEvent` 序列化为单行 JSON + `\n`（grpc-gateway v2 默认流式 marshaler 行为）。事件内未知 oneof 分支必须被消费端忽略（proto3 forward-compat）。
+- **NDJSON 帧**：grpc-gateway v2 默认流式 marshaler 将每个 `ChatEvent` 包装为单行 `{"result": <ChatEvent>}` JSON + `\n`（grpc-gateway `runtime/handler.go` `handleForwardResponseServerStream`，仓库 pin [v2.27.6](https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.27.6/runtime/handler.go)），消费端解包 `result` 后得到事件。事件内未知 oneof 分支必须被消费端忽略（proto3 forward-compat）。
 - **回合内错误走事件**（`turn_end{ERROR}`，HTTP 仍 200）：模型端点不可达/超时/流中断——进程存活、会话可恢复（spec Edge Cases）。
 - **同源**：经 game.liukexin.com 路径分流（[research.md](../research.md) D5），前端相对路径调用，零 CORS。
 
-### 2.1 两跳链路失败语义（gateway→proxy→agent_v2）
+### 2.1 两跳链路失败语义（gateway→proxy→agent-v2）
 
 请求级失败（流未开启）经 gRPC status 由 proxy 返回、grpc-gateway 按 `HTTPStatusFromCode` 映射为 HTTP（仓库 pin v2.27.6，映射源实证 [grpc-gateway runtime/errors.go @ v2.27.6](https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.27.6/runtime/errors.go)：InvalidArgument→400、Internal→500、Unavailable→503）：
 
@@ -216,11 +216,11 @@ Go 侧代码生成目标位于 `projects/game/BUILD.bazel`（`agent_v2_proto` pr
 |---|---|---|---|
 | gateway→proxy 不可达 | UNAVAILABLE（gateway 侧 grpc client） | 503 | proxy 未部署/网络不通 |
 | proxy 路由存储故障（Mongo 不可达） | INTERNAL | 500 | owner 读写失败 |
-| agent_v2 无可用实例（分配时实例列表为空） | UNAVAILABLE | 503 | `ErrNoAgentInstances`（v1 同映射） |
-| owner 指向实例离线 / 建流失败（proxy→agent_v2） | UNAVAILABLE | 503 | manager 无该实例连接或 agent_v2 建流失败 |
-| agent_v2 请求级错误（INVALID_ARGUMENT 等） | 原码透传 | 按码映射（400 等） | proxy 不改写下游 status（`propagateAgentError` 语义，`projects/game/proxy/handler/handler.go`） |
+| agent-v2 无可用实例（分配时实例列表为空） | UNAVAILABLE | 503 | `ErrNoAgentInstances`（v1 同映射） |
+| owner 指向实例离线 / 建流失败（proxy→agent-v2） | UNAVAILABLE | 503 | manager 无该实例连接或 agent-v2 建流失败 |
+| agent-v2 请求级错误（INVALID_ARGUMENT 等） | 原码透传 | 按码映射（400 等） | proxy 不改写下游 status（`propagateAgentError` 语义，`projects/game/proxy/handler/handler.go`） |
 
-同为 503 的两跳（gateway→proxy / proxy→agent_v2）以 gRPC status message 与跨两跳的 OTel tracing 区分定位；流已开启后的传输异常终止 chunked 响应（回合终止语义仍由 `turn_end` 事件承载，正常路径流尾即 `turn_end`）。
+同为 503 的两跳（gateway→proxy / proxy→agent-v2）以 gRPC status message 与跨两跳的 OTel tracing 区分定位；流已开启后的传输异常终止 chunked 响应（回合终止语义仍由 `turn_end` 事件承载，正常路径流尾即 `turn_end`）。
 
 ## 3. 事件序不变式（消费端可依赖的顺序保证）
 
@@ -233,7 +233,7 @@ Go 侧代码生成目标位于 `projects/game/BUILD.bazel`（`agent_v2_proto` pr
 7. **排队**：忙时到达的 Send 首帧为 `queued{position}`；此后流静默直至该消息回合 `turn_start`（FR-012 自动按序发送）。
 8. **处置**：Dispose 后该会话在途流各收一帧 `turn_end{ABORTED}` 后关闭；排队消息的流同样收 `turn_end{ABORTED}`（作废）。
 
-## 4. dsh 事件 → ChatEvent 映射（agent_v2 转发规则）
+## 4. dsh 事件 → ChatEvent 映射（agent-v2 转发规则）
 
 | dsh 事件（`session/event` 载荷） | ChatEvent | 说明 |
 |---|---|---|
@@ -254,12 +254,13 @@ Go 侧代码生成目标位于 `projects/game/BUILD.bazel`（`agent_v2_proto` pr
 - **回填**：进入/刷新对话页 → `GET :history` 全量回填（存活期间）；流式与回填一致性由"事件终态 ⊕ 历史 = assistant/message"结构保证（[data-model.md](../data-model.md) §3-2）。
 - **中途断开**：浏览器断开只停转发不停服务端回合；刷新后 history 呈现已产出前缀，随回合推进增长直至完整。
 - **多标签页**（已知限制，记录于 research.md）：未发送消息的标签页不收实时事件；可刷新经 history 查询看到进展。
-- **历史丢失**：agent_v2 重启后 history 为空（spec Assumptions：内存态）；session 列表（/api/v1）不受影响。
+- **历史丢失**：agent-v2 重启后 history 为空（spec Assumptions：内存态）；session 列表（/api/v1）不受影响。
 
 ## 6. 消费端样例（前端流读取）
 
 ```ts
-// NDJSON 行流读取（fetch + ReadableStream；EventSource 不适用——POST body）
+// NDJSON 行流读取（fetch + ReadableStream；EventSource 不适用——POST body）。
+// 每行是 grpc-gateway 的 {"result": <ChatEvent>} 包装（§2），解包后交付事件。
 async function* sendStream(session: string, text: string): AsyncIterable<ChatEvent> {
   const res = await fetch(`/api/v2/${session}:send`, {
     method: "POST",
@@ -276,7 +277,7 @@ async function* sendStream(session: string, text: string): AsyncIterable<ChatEve
     buf += decoder.decode(value, { stream: true });
     let nl: number;
     while ((nl = buf.indexOf("\n")) >= 0) {
-      yield JSON.parse(buf.slice(0, nl)) as ChatEvent;
+      yield (JSON.parse(buf.slice(0, nl)) as { result: ChatEvent }).result;
       buf = buf.slice(nl + 1);
     }
   }

@@ -2,6 +2,7 @@ package agentclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -137,7 +138,24 @@ func (m *manager) Close() error {
 func (m *manager) refresh(ctx context.Context) error {
 	instances, err := m.resolver.Resolve(ctx, m.target)
 	if err != nil {
-		return fmt.Errorf("agentclient: resolve failed: %w", err)
+		if errors.Is(err, solver.ErrServiceNotFound) {
+			// The managed stateful service does not exist in this
+			// environment — a topology state, not a failure: normalize to
+			// an empty instance set and walk the existing teardown below
+			// (stale connections closed, entry map cleared, nil error).
+			// The periodic refresh discovers the service once it appears
+			// (specs/049-agent-v2-dsh-init/research.md D13). Every other
+			// resolve error stays fatal, and a 400 invalid-name from the
+			// deploy API is a plain error (not this sentinel), so a wrong
+			// target name keeps its fail-loud semantics.
+			logs.Warn(ctx, "stateful service not found, treating as empty instance set",
+				event.String("app", m.target.App),
+				event.String("service", m.target.Service),
+			)
+			instances = nil
+		} else {
+			return fmt.Errorf("agentclient: resolve failed: %w", err)
+		}
 	}
 
 	m.mu.Lock()

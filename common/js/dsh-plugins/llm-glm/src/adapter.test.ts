@@ -216,15 +216,42 @@ describe("GlmResponsesAdapter", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
-  it("throws when the API key env is empty instead of sending the request", async () => {
+  it("sends the request without an Authorization header when the key env is empty", async () => {
+    // Conditional Authorization (glm-llm-plugin.md §3 义务 6, §6 测试义务 4):
+    // the host tolerates a missing secret (research.md D9), so the request
+    // goes out headerless and the stream is consumed normally.
     process.env[API_KEY_ENV] = "";
-    const fetchImpl = vi.fn();
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+      sseResponse(textTurnFrames(), init?.signal instanceof AbortSignal ? init.signal : undefined),
+    );
     const adapter = new GlmResponsesAdapter(testConfig(), fetchImpl as unknown as typeof fetch);
 
-    await expect(collect(adapter.stream(baseOptions({})))).rejects.toMatchObject({
-      code: "INVALID_CREDENTIAL",
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    const chunks = await collect(adapter.stream(baseOptions({})));
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers).not.toHaveProperty("Authorization");
+    // attribution headers ride every request regardless of the key.
+    expect(headers["user-agent"]).toBeTruthy();
+    expect(chunks.at(-1)?.type).toBe("finish");
+  });
+
+  it("sends the request without an Authorization header when the key env is blank", async () => {
+    process.env[API_KEY_ENV] = "   ";
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+      sseResponse(textTurnFrames(), init?.signal instanceof AbortSignal ? init.signal : undefined),
+    );
+    const adapter = new GlmResponsesAdapter(testConfig(), fetchImpl as unknown as typeof fetch);
+
+    const chunks = await collect(adapter.stream(baseOptions({})));
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers).not.toHaveProperty("Authorization");
+    expect(headers["user-agent"]).toBeTruthy();
+    expect(chunks.at(-1)?.type).toBe("finish");
   });
 
   it("resolves catalog models with their context window and unknown models minimally", async () => {

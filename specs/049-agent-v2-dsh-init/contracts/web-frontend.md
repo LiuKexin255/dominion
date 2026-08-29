@@ -86,7 +86,7 @@ type BlockDraft =
 | `listHistory(session)` | `GET /api/v2/...:history` | 回填 |
 | `disposeSession(session)` | `POST /api/v2/...:dispose` | 删除编排第二跳（D6；DELETE /api/v1 成功后调用，幂等容错） |
 
-删除编排：`deleteSession` 成功 → `disposeSession`（失败仅记录不阻断——资源随 agent_v2 重启释放，[research.md](../research.md) D6）。
+删除编排：`deleteSession` 成功 → `disposeSession`（失败仅记录不阻断——资源随 agent-v2 重启释放，[research.md](../research.md) D6）。
 
 ## 6. 测试义务（US3 验证载体 + 行为回归）
 

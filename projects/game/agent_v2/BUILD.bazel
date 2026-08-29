@@ -77,20 +77,31 @@ artifact_pkg_js(
         # Service-declared dsh rows and imports (closure contract:
         # specs/049-agent-v2-dsh-init/data-model.md §2.6 for the rows): the
         # spine + llm-glm rows must be physically present for the Loader, and
-        # boot/agent/llm are imported by src/*.ts. The remaining plugin
-        # closure materializes transitively through these link targets.
+        # boot/agent/llm are imported by src/*.ts.
+        #
+        # npm_deps carries THIRD-PARTY link targets only. The workspace
+        # package @dominion/dsh-llm-glm enters exclusively through
+        # runtime_deps (llm-glm:runtime_pkg → the Phase-4 closure): its link
+        # target must NOT appear here — Phase 3 stages npm-dep entries with
+        # `rm -rf` + `cp -aL` on the same node_modules path Phase 4 already
+        # wrote, which deleted the staged package.json/.d.ts and replaced
+        # them with the manifest-less linker store (the runtime crash
+        # "Cannot find package … @dominion/dsh-llm-glm"). The healthy
+        # precedent is the common-js-* packages: runtime_deps only.
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
-        ":node_modules/@dominion/dsh-llm-glm",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],
     runtime_protos = [
         "//projects/game:agent_v2_proto",
     ],
-    service = "agent_v2",
+    # The discovery-plane service name (image metadata / deploy validation) —
+    # hyphens per specs/049-agent-v2-dsh-init/research.md D13; the directory
+    # and bazel target names keep agent_v2.
+    service = "agent-v2",
     ts_project = ":server_lib",
     runtime_deps = [
         "//common/js/dsh-plugins/llm-glm:runtime_pkg",
@@ -107,7 +118,7 @@ artifact_image(
     name = "cmd_image",
     app = "game",
     pkg = ":server_pkg",
-    service = "agent_v2",
+    service = "agent-v2",
     visibility = ["//visibility:public"],
 )
 

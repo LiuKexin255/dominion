@@ -38,7 +38,7 @@ function gracefulStop(server: Server, timeoutMs = 10_000): Promise<void> {
 
 async function main(): Promise<void> {
   await init({ instrumentations: [createGrpcInstrumentation()] });
-  const uninstallReporter = installReporter(createOTelReporter("game/agent_v2"));
+  const uninstallReporter = installReporter(createOTelReporter("game/agent-v2"));
   info("otel initialized", { service: "game-agent-v2" });
 
   // Safety net for the long-lived streaming surface: a write racing a peer

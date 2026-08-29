@@ -16,7 +16,7 @@
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:
-    apiKeyEnv: GLM_API_KEY                      # bootstrap 由 secret 文件注入（specs/049-agent-v2-dsh-init/research.md D9）
+    apiKeyEnv: GLM_API_KEY                      # bootstrap 三级解析：env 已设直用 → secret 文件注入 → 未设（插件空 key 跳过 Authorization，specs/049-agent-v2-dsh-init/research.md D9）
     baseURL: !!js process.env.GLM_BASE_URL      # bootstrap 解析/默认（specs/049-agent-v2-dsh-init/research.md D9）
     models:
       - id: !!js process.env.GLM_MODEL || 'glm-5.2'

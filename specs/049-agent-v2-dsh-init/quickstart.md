@@ -1,6 +1,6 @@
 # Quickstart: Game Agent v2 — dsh 迁移 Step 1 验证指南
 
-**Feature**: [spec.md](spec.md) | **Date**: 2026-08-28
+**Feature**: [spec.md](spec.md) | **Date**: 2026-08-28（2026-08-29 修订：测试部署零 secret）
 
 本指南给出从零验证本 feature 的可执行步骤：构建/单测门禁 → 大型测试闭环（MVP 验收）→ 真实 GLM 端点手工冒烟。实现细节见 [tasks.md](tasks.md)；接口契约见 [contracts/](contracts/)。
 
@@ -9,10 +9,10 @@
 - 仓库构建入口 bazel（`AGENTS.md`）；大型测试经 testplan skill（`tools/test/guitar`，规范 `style/large_test.md`）。
 - 交付物（实现后）：
   - 插件 `common/js/dsh-plugins/llm-glm`（[contracts/glm-llm-plugin.md](contracts/glm-llm-plugin.md)）
-  - 服务 `projects/game/agent_v2`（有状态 dsh 宿主，[contracts/conversation-api.md](contracts/conversation-api.md)）
+  - 服务 `projects/game/agent_v2`（有状态 dsh 宿主，[contracts/conversation-api.md](contracts/conversation-api.md)；service.yaml 双 artifact——生产 `agent-v2` 含 `glm-api-token` secret 声明、测试 `agent-v2-test` 无 secret（[research.md](research.md) D9））
   - 服务 `projects/game/web`（[contracts/web-frontend.md](contracts/web-frontend.md)）
-  - 存量增量：proxy ConversationService 转发面（owner 亲和路由）、`projects/game/pkg/bind` server-streaming 泵、gateway `/api/v2` 路由（经 proxy 两跳）、fake-llm `/v1/responses`、game deploy.yaml（agent_v2+web+secret 绑定）
-  - 大型测试 `projects/game/testplan/deploy_agent_v2.yaml`（部署拓扑）+ 既有 `system_test.yaml` 新增 agent_v2 suite（用例集与执行入口）
+  - 存量增量：proxy ConversationService 转发面（owner 亲和路由）、`projects/game/pkg/bind` server-streaming 泵、gateway `/api/v2` 路由（经 proxy 两跳）、fake-llm `/v1/responses`、game deploy.yaml（agent-v2+web+secret 绑定）
+  - 大型测试 `projects/game/testplan/deploy_agent_v2.yaml`（部署拓扑）+ 既有 `system_test.yaml` 新增 agent-v2 suite（用例集与执行入口）
 
 ## 1. 构建与单测门禁（每次变更，constitution 原则 IV）
 
@@ -32,7 +32,7 @@ bazel test  //projects/game/... //common/js/dsh-plugins/...
 guitar run projects/game/testplan/system_test.yaml
 ```
 
-**部署拓扑**（deploy_agent_v2.yaml）：mongo + session + fake-llm + proxy + agent_v2 + web + gateway（ingress：`game.liukexin.com`，`/api/v1/`+`/api/v2/`→gateway、`/`→web；agent_v2 为有状态服务，`/api/v2` 经 gateway→proxy→agent_v2 实例两跳 owner 亲和路由）。
+**部署拓扑**（deploy_agent_v2.yaml）：mongo + session + fake-llm + proxy + agent-v2 + web + gateway（ingress：`game.liukexin.com`，`/api/v1/`+`/api/v2/`→gateway、`/`→web；agent-v2 为有状态服务，`/api/v2` 经 gateway→proxy→agent-v2 实例两跳 owner 亲和路由）。**测试部署零 secret**：agent-v2 选用 service.yaml 测试 artifact `agent-v2-test`（无 secret 声明，[research.md](research.md) D9）——无 secret 绑定、env 仅 `GLM_LLM_TARGET`；bootstrap token 解析容忍缺失（warning 后继续 boot），插件空 key 请求不携带 Authorization（fake 端点 header 容忍，[contracts/fake-responses-wire.md](contracts/fake-responses-wire.md) §1）。
 
 **用例集与预期**（全部通过 = 验收，零 failed/flaky）：
 
@@ -45,7 +45,7 @@ guitar run projects/game/testplan/system_test.yaml
 | 5 | 排队（FR-012） | 长延迟模板回合中 Send → 首帧 `queued{position}` → 前序 turn_end 后自动 turn_start 按序完成 |
 | 6 | 刷新回填一致性（FR-014） | 回合完成后 `:history` 内容与流式终态一致；中途断开后重连回填前缀→完整 |
 | 7 | 删除生命周期（FR-015/US4-3） | 回合中删除（DELETE /api/v1 + :dispose）→ 在途流收 `turn_end{ABORTED}`；同资源名新建为全新会话（无历史残留） |
-| 8 | 模型故障恢复（Edge） | 失败模板 → `turn_end{ERROR}` 呈现；agent_v2/web 进程存活；后续轮次成功 |
+| 8 | 模型故障恢复（Edge） | 失败模板 → `turn_end{ERROR}` 呈现；agent-v2/web 进程存活；后续轮次成功 |
 | 9 | 非法输入（Edge） | 空文本 Send → 400；服务不崩 |
 | 10 | web 页面托管（FR-013） | `GET /` 返回入口 HTML；静态资源可解析；（US3 渲染能力由前端组件单测覆盖） |
 
@@ -56,7 +56,9 @@ tools 渲染能力（US3/SC-002）在页面/接口层以构造数据验证（vit
 ```bash
 # 1) 运维预置 k8s secret：llm-secrets 增加 key glm-codingplan（GLM codingplan API Key，
 #    https://docs.bigmodel.cn/cn/coding-plan/quick-start 套餐页新建）
-# 2) 部署 game 域（deploy.yaml 含 agent_v2 secret 绑定 glm-api-token → llm-secrets/glm-codingplan）
+#    ——生产冒烟必须预置：生产 artifact 绑定 glm-api-token，token 缺失时请求免
+#    Authorization、真实端点将以 401 拒绝（FR-008 / research.md D9）
+# 2) 部署 game 域（deploy.yaml 选用生产 artifact agent-v2，含 secret 绑定 glm-api-token → llm-secrets/glm-codingplan）
 # 3) 浏览器打开 https://game.liukexin.com/
 #    新建 session → 发送 "你好，介绍一下你自己" → 观察思考折叠（THINK）与正文（TEXT）流式渐进
 #    第二条消息验证多轮连续性；刷新页面验证历史回填
@@ -75,9 +77,9 @@ bazel test //projects/game/gateway/... //projects/game/agent/... //projects/game
 
 ## 5. 交付核对清单
 
-- [ ] `bazel build //...` 全仓通过
-- [ ] §1 单测全绿（含 US3 构造数据组件测试）
-- [ ] §2 大型测试经 `guitar run` 实际执行，全部用例通过（非构建检查替代）
-- [ ] §3 真实端点冒烟步骤记录于本文件与本节（可手工复验）
-- [ ] §4 存量零回归
-- [ ] 交付物零明文 token（代码/配置/镜像/文档，SC-004）
+- [X] `bazel build //...` 全仓通过
+- [X] §1 单测全绿（含 US3 构造数据组件测试）
+- [X §2 大型测试经 `guitar run` 实际执行，全部用例通过（非构建检查替代）
+- [X §3 真实端点冒烟步骤记录于本文件与本节（可手工复验）
+- [X §4 存量零回归
+- [X 交付物零明文 token（代码/配置/镜像/文档，SC-004）

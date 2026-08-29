@@ -8,10 +8,10 @@
 
 ```jsonc
 POST /v1/responses
-Authorization: Bearer <任意值，忽略>       // header 容忍（对齐 demo fake-llm §2）
+Authorization: Bearer <任意值，忽略；无此 header 亦无碍>   // header 容忍（对齐 demo fake-llm §2）——测试部署零 secret，插件空 key 不携带该 header（research.md D9）
 Content-Type: application/json
 {
-  "model": "<忽略>",                       // 模型目录由 agent_v2 侧 cordis.yml 对齐
+  "model": "<忽略>",                       // 模型目录由 agent-v2 侧 cordis.yml 对齐
   "instructions": "<可选，忽略>",
   "input": [ ...message items... ],        // 仅消费 message items 的文本
   "stream": true                           // 必须支持；stream:false 返回等价非流式 JSON
@@ -75,9 +75,9 @@ data: {"type":"response.completed","response":{"id":"resp_fake_1","status":"comp
 
 ## 4. 部署与替换机制
 
-- 测试部署（`projects/game/testplan/deploy_agent_v2.yaml`）包含 fake-llm 服务；agent_v2 环境变量 `GLM_LLM_TARGET=dominion:///game/fake-llm:8080` → bootstrap 解析 → `GLM_BASE_URL=http://{endpoint}/v1`（[research.md](../research.md) D9）+ `GLM_API_KEY=dummy-key`。
-- 生产部署不包含 fake-llm；`GLM_BASE_URL` 默认 `https://open.bigmodel.cn/api/v1`（真实端点手工冒烟，SC-003）。
-- **零外部网络**：大型测试期间 agent_v2 仅访问 fake（SC-001）。
+- 测试部署（`projects/game/testplan/deploy_agent_v2.yaml`）包含 fake-llm 服务；agent-v2 选用 service.yaml 双 artifact 中**无 secret 声明**的测试 artifact `agent-v2-test`（[research.md](../research.md) D9）——零 secret 绑定；环境变量仅 `GLM_LLM_TARGET=dominion:///game/fake-llm:8080` → bootstrap 解析 → `GLM_BASE_URL=http://{endpoint}/v1`（[research.md](../research.md) D9），不注入 `GLM_API_KEY`（bootstrap token 解析容忍缺失、保持未设，插件空 key 请求不携带 Authorization——§1 header 容忍）。测试集群无需为 agent-v2 预置任何 secret。
+- 生产部署不包含 fake-llm，选用生产 artifact `agent-v2`（secret 绑定 `glm-api-token → llm-secrets/glm-codingplan`）；`GLM_BASE_URL` 默认 `https://open.bigmodel.cn/api/v1`（真实端点手工冒烟，SC-003）。
+- **零外部网络**：大型测试期间 agent-v2 仅访问 fake（SC-001）。
 
 ## 5. 验收锚点
 
@@ -85,6 +85,6 @@ data: {"type":"response.completed","response":{"id":"resp_fake_1","status":"comp
 |---|---|
 | 流式词汇 | 事件序符合 §2 不变式；插件（[glm-llm-plugin.md](glm-llm-plugin.md) §6 fixture 共享）与 fake 双向对齐 |
 | 确定性 | 同输入同输出（含 usage 常量） |
-| think 区分 | think 模板 → agent_v2 流中出现 THINK 块；纯 text 模板 → 零 THINK 块 |
+| think 区分 | think 模板 → agent-v2 流中出现 THINK 块；纯 text 模板 → 零 THINK 块 |
 | 多轮 | 第二轮消息命中 history_keywords 模板（回复内容依赖首轮） |
 | 延迟窗口 | 长延迟模板下 Send(2nd) 在回合结束前到达 → queued 路径可测 |

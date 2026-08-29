@@ -73,6 +73,7 @@ The shipped samples are:
 
 | file                      | name      | keywords                 | reasoning                                  | text                                |
 |---------------------------|-----------|--------------------------|--------------------------------------------|-------------------------------------|
+| `agent_v2.yaml`           | agent-v2-*| agent-v2-think, agent-v2-plain, agent-v2-slow, agent-v2-fail | see below | see below |
 | `sample_chat.yaml`        | chat-only | chat, conversation       | "Responding with text only, no tools needed." | "Sure, let's chat!"              |
 | `sample_compact_instruction.yaml` | compact-instruction | 上下文刚被压缩 | — | — (carries a `tool_call: instruct_player`) |
 | `sample_compression_player.yaml` | compress-player-summary | 已玩局数、胜负记录 | — | "已玩 5 局，其中 4 局失败。下一局按复盘指令调整打法。" |
@@ -115,6 +116,19 @@ matching their keyword makes fake-LLM return a `tool_calls` response so the
 large tests drive the real model→tool_call→dispatch chain (see §7). They are
 excluded from the random no-match fallback (a random tool_call would
 nonsensically invoke a desktop operation).
+
+`agent_v2.yaml` serves the `/v1/responses` Responses endpoint
+(specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md) consumed by
+the agent-v2 conversation suite (`agent-v2-conversation` in
+`system_test.yaml`, binaries `agent_v2_conversation_test` + `web_test`):
+`agent-v2-greet` (think+text main path), `agent-v2-followup` (fires only
+when the history contains the greet reply — multi-turn continuity),
+`agent-v2-plain` (zero reasoning — US2 scenario 2), `agent-v2-slow`
+(3s inter-chunk delay — the queued-turn window), and `agent-v2-fail`
+(response.failed injection — the recovery path). Every entry carries
+`responses_only: true` so the chat-completions no-match fallback pool never
+observes them, and its expected reasoning/text pieces are pinned as the
+`agentV2*` constants in `agent_v2_helpers_test.go`.
 
 `stall-mid-reasoning` carries the stream-stall trigger
 (specs/043-llm-stream-stall-recovery — the T011 large test): a user turn

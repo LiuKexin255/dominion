@@ -213,6 +213,67 @@ go_largetest(
     ],
 )
 
+# agent_v2_conversation_test is the agent_v2 conversation surface suite
+# (specs/049-agent-v2-dsh-init — quickstart §2 用例 2–9): streamed event
+# sequences with multi-frame think deltas and pure-text turns, multi-turn
+# continuity via the fake history_keywords template, concurrent session
+# isolation, the queued{position}→auto-resume window, history backfill
+# consistency, dispose ABORTED + fresh same-name session, model-failure
+# recovery, and 400 INVALID_ARGUMENT mapping — all over the gateway /api/v2
+# NDJSON surface (conversation-api.md §2/§3) with the fake /v1/responses
+# endpoint (fake-responses-wire.md §4). It reuses the shared helpers
+# (helpers_test.go — the /api/v2 client + §3 invariant checker).
+#
+# size = medium: the queued and dispose cases each burn a ~3s slow-template
+# window and the isolation case runs two of them concurrently, while every
+# case drives a fresh session through the gateway→proxy→agent_v2 chain —
+# small's 60s budget leaves too little headroom for the dsh get-or-create
+# latency (style/large_test.md §测试用例: size per actual need).
+go_largetest(
+    name = "agent_v2_conversation_test",
+    size = "medium",
+    srcs = [
+        "agent_v2_conversation_test.go",
+        "agent_v2_helpers_test.go",
+        "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game:agent_v2",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# web_test is the web service hosting suite (specs/049-agent-v2-dsh-init —
+# quickstart §2 用例 1/10): the entry HTML, the hashed /assets tree it
+# references, and the page's management closed loop (create → list →
+# converse → delete via /api/v1 + /api/v2) at the HTTP layer the frontend
+# drives. It shares the helpers with agent_v2_conversation_test.
+go_largetest(
+    name = "web_test",
+    size = "small",
+    srcs = [
+        "agent_v2_helpers_test.go",
+        "helpers_test.go",
+        "web_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game:agent_v2",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
 # agent_stall_test is the stream-stall recovery suite (specs/043-llm-stream-
 # stall-recovery — T011 large test, plus specs/044-llm-stall-recovery-fix
 # T011 cases b/c/d), run against the stall deploy

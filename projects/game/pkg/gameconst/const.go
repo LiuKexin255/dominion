@@ -14,12 +14,15 @@ const (
 	// service, which replaced ProxyService per spec 031-team-template-mode).
 	TeamTarget  = "game/proxy:grpc"
 	AgentTarget = "game/agent:grpc"
-	// AgentV2Target is the service discovery target of the agent_v2 gRPC
+	// AgentV2Target is the service discovery target of the agent-v2 gRPC
 	// service, the stateful dsh-hosted game agent. Its consumer is the
 	// proxy's stateful-instance resolver (owner affinity for the /api/v2
-	// conversation surface); the gateway never addresses agent_v2 directly
-	// (specs/049-agent-v2-dsh-init/research.md D4).
-	AgentV2Target = "game/agent_v2:grpc"
+	// conversation surface); the gateway never addresses agent-v2 directly
+	// (specs/049-agent-v2-dsh-init/research.md D4). The discovery name is
+	// "agent-v2" (hyphens — the deploy API's service-name constraint,
+	// specs/049-agent-v2-dsh-init/research.md D13) while the project
+	// directory and bazel targets keep agent_v2.
+	AgentV2Target = "game/agent-v2:grpc"
 	PromptTarget  = "game/prompt:grpc"
 	// MemoryTarget is the gRPC target of the MemoryService (spec 039
 	// planner-memory-calibration, contracts/memory-service-contract.md §5).

@@ -36,9 +36,19 @@
 
 ### Session 2026-08-29（用户架构指令，修订执行中方案）
 
-- Q: agent_v2 如何接入 gateway？ → A: **经 proxy 路由，不直连**：agent_v2 为有状态服务（会话/队列/历史驻留进程内存），MUST 经存量 proxy 亲和路由接入（gateway→proxy→agent_v2 两跳；proxy 按 owner 映射将 `(template, session)` 定向到 agent_v2 的有状态实例，agent_v2 `kind: stateful` 对齐 v1 agent）；gateway 仍是唯一 HTTP 出口，proxy 保持无 HTTP 面。
+- Q: agent_v2 如何接入 gateway？ → A: **经 proxy 路由，不直连**：agent_v2 为有状态服务（会话/队列/历史驻留进程内存），MUST 经存量 proxy 亲和路由接入（gateway→proxy→agent-v2 两跳；proxy 按 owner 映射将 `(template, session)` 定向到 agent-v2 的有状态实例，agent-v2 `kind: stateful` 对齐 v1 agent）；gateway 仍是唯一 HTTP 出口，proxy 保持无 HTTP 面。
 - Q: proxy 转发 server-streaming 流的泵实现落位？ → A: **扩展 `projects/game/pkg/bind`**：新增泛型 server-streaming 绑定（与 v1 双向 `Bind` 共存、v1 行为零改动）。
 - Q: agent_v2 的 proto 文件位置？ → A: **与 game 既有 proto 同目录**：`projects/game/agent_v2.proto`（app 根目录，不单独分目录；package `projects.game.v2` 保留）。
+
+### Session 2026-08-29（第二批，用户架构指令——测试零 secret 与空 key 容忍）
+
+- Q: 大型测试是否依赖真实 secret？ → A: **零 secret**：`service.yaml` 声明双 artifact——生产 `agent-v2`（含 `glm-api-token` secret 声明，`deploy.yaml` 绑定不变）与测试 `agent-v2-test`（同 target `:cmd_image`、tls、**无 secrets**）；测试 deploy 按 `artifact.name` 选用测试 artifact，不设 secret 绑定、不注入 `GLM_API_KEY` env。测试集群无需为 agent-v2 预置任何 secret。
+- Q: 读取不到 key 时 agent_v2 的启动与请求行为？ → A: **容忍缺失**：bootstrap 三级解析（`GLM_API_KEY` env → `$DOMINION_SECRET_DIR/glm-api-token` 文件 → 未设），皆无时 log 一条 warning（含 env 名/文件路径，不含 key 内容）后继续 boot；插件空 key 时 LLM 请求**不携带 Authorization header**（key 非空照常 `Bearer <key>`）。原"缺失即 fail-loud"方案被否决（用户指令："读取不到 key 就在 llm 请求时跳过设置 key 的流程"）。
+
+### Session 2026-08-29（第三批，用户裁定——服务发现名约束返工与 proxy 容忍）
+
+- Q: agent_v2 的服务发现名违反 deploy API 命名约束（`^[a-z][a-z0-9-]{0,19}$` 禁下划线，`projects/infra/deploy/domain/service_endpoints_name.go`；原名 `agent_v2` 部署成功但 endpoints 查询被 400 拒绝、服务发现永不可达）如何处理？ → A: **服务改名 `agent-v2`，目录/proto/包名不动**：服务名与 artifact 名改为 `agent-v2`（生产）/`agent-v2-test`（测试），k8s 清洗名与既有 suite 命名（`agent-v2-conversation`）一致；目录 `projects/game/agent_v2/`、proto 文件/package、`/api/v2`、bazel target、测试文件名、owner collection 均保持（命名区分规则见 [research.md](research.md) D13）。
+- Q: proxy 对"管理的有状态服务不存在"的致命行为（agent-v2 测试环境不部署 v1 agent → v1 manager 重试耗尽 → proxy crash loop；既有 suite 因 T037 起 proxy 恒装配 v2 daemon 同样暴露）如何修复？ → A: **manager.refresh 错误分类**：agentclient manager 将 deploy `ErrServiceNotFound`（404）归一为空实例集（warn 日志、连接表清空、刷新成功返回），服务出现后由周期刷新自然发现；daemon 重启策略与其余错误类别（非法服务名 400、API 故障、网络错误）语义不变（FR-016；机制选型与候选否决依据见 [research.md](research.md) D13）。
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -102,22 +112,23 @@
 
 1. **Given** 用户处于 session 管理页，**When** 新建 session，**Then** 列表出现新条目并可进入其对话页。
 2. **Given** 列表中存在 session S，**When** 删除 S，**Then** S 从列表消失且其对话页不再可达。
-3. **Given** session S 的对话回合正在进行中（或有排队消息），**When** 删除 S，**Then** 进行中回合终止、排队消息作废、agent_v2 释放该会话资源，S 从列表消失（FR-015）。
+3. **Given** session S 的对话回合正在进行中（或有排队消息），**When** 删除 S，**Then** 进行中回合终止、排队消息作废、agent-v2 释放该会话资源，S 从列表消失（FR-015）。
 4. **Given** 存在多个 session 且其一正在对话中，**When** 用户切换到另一 session，**Then** 对话页展示对应 session 的内容，互不串扰。
 
 ---
 
 ### Edge Cases
 
-- **模型端点不可达/超时**：本轮对话以明确错误在页面呈现，agent_v2 与 web 服务进程存活，后续轮次可恢复。
-- **路由链路不可达**（gateway→proxy 或 proxy→agent_v2 实例不可达，2026-08-29 架构指令引入的两跳拓扑）：请求级失败（503）在页面明确呈现，各服务进程存活，链路恢复后可用；错误语义见 `specs/049-agent-v2-dsh-init/contracts/conversation-api.md` §2.1。
-- **token 无效或缺失**：在启动或首次调用时明确报错（fail-loud），不静默降级；错误信息不泄露 token 内容。
-- **页面刷新/重连**：对话页刷新后可重新进入会话并看到该会话已有的对话内容，回填内容与此前流式呈现一致（agent_v2 存活期间，FR-014）。
-- **agent_v2 重启**：session 列表仍完整（session 元数据持久于现有 session 服务）；对话历史为内存态、随进程丢失——本阶段接受该限制（与现有 agent 的内存 checkpoint 行为一致，见 Assumptions）。
+- **模型端点不可达/超时**：本轮对话以明确错误在页面呈现，agent-v2 与 web 服务进程存活，后续轮次可恢复。
+- **路由链路不可达**（gateway→proxy 或 proxy→agent-v2 实例不可达，2026-08-29 架构指令引入的两跳拓扑）：请求级失败（503）在页面明确呈现，各服务进程存活，链路恢复后可用；错误语义见 `specs/049-agent-v2-dsh-init/contracts/conversation-api.md` §2.1。
+- **token 无效或缺失**：缺失/空 → 启动继续（log warning、不含 key 内容，FR-008），LLM 请求不携带 Authorization header——确定性 fake 端点容忍该形态（大型测试零 secret）；真实端点将以 401 拒绝 → 首次调用以 `turn_end{ERROR}` 在页面明确呈现（进程存活，会话可恢复）。token 无效（真实端点 401/403）同路径呈现；错误信息不泄露 token 内容。
+- **页面刷新/重连**：对话页刷新后可重新进入会话并看到该会话已有的对话内容，回填内容与此前流式呈现一致（agent-v2 存活期间，FR-014）。
+- **agent-v2 重启**：session 列表仍完整（session 元数据持久于现有 session 服务）；对话历史为内存态、随进程丢失——本阶段接受该限制（与现有 agent 的内存 checkpoint 行为一致，见 Assumptions）。
 - **超长会话**：上下文随轮次单调增长，本阶段不做压缩（与 `specs/047-dsh-chat-demo` 的纯 chat 组合限制一致）。
 - **并发多 session 对话**：多个 session 并发收发消息互不串扰、不阻塞。
 - **回合进行中的新输入**：同一 session 回合进行中收到的新用户消息入队（不丢失、不拒绝），页面呈现排队指示；当前回合结束后自动按序发送（FR-012）。
 - **对话中删除 session**：删除成功后进行中回合终止、排队消息作废、会话资源立即释放（FR-015）；删除后以相同资源名新建的 session 为全新会话。
+- **proxy 管理的服务缺席**（2026-08-29 第三批）：部署拓扑不含 proxy 某个管理池的目标服务时（agent-v2 测试部署不含 v1 agent；既有 suite 不含 agent-v2），proxy 存活并保持该池空连接表（FR-016）；对该池的请求按既有不可用语义映射（v2 对话 → 503），目标服务部署后自动恢复。
 - **非法输入**：空消息等非法请求得到明确提示，服务不崩溃。
 
 ## Requirements *(mandatory)*
@@ -131,24 +142,29 @@
 - **FR-005**: session 对话页 MUST 具备工具调用渲染能力：工具名称、输入参数、执行状态与结果，作为独立于正文的内容块，且工具调用与其结果关联展示；本阶段 agent_v2 零工具（见 FR-006），该能力以构造数据在页面/接口层验证，端到端验收安排见 FR-006。
 - **FR-006**: agent_v2 本阶段 MUST NOT 启用任何工具（组合清单裁剪全部工具面）：工具接入及对话页 tools 的端到端验证推迟到后续第一个工具实现的 step（2026-08-27 澄清）。
 - **FR-007**: agent_v2 MUST 通过 GLM codingplan 接入模型，采用 OpenAI **Responses** 协议（Base URL `https://open.bigmodel.cn/api/v1`，https://docs.bigmodel.cn/cn/coding-plan/tool/others ）；模型 id 可配置（默认 `glm-5.2`）；以 dsh LLM 适配插件形态接入（官方仅有 chat-completions 适配器，Responses 需自研适配插件——`specs/047-dsh-chat-demo/research.md` D1 回退路径），模型端点地址 MUST 可经配置替换（供确定性测试以 fake 端点替换真实端点）。
-- **FR-008**: 模型 API token MUST 与现有 agent 一致经仓库 secret 机制提供：`service.yaml` artifact 声明逻辑 secret 名 + `deploy.yaml` 绑定 k8s secret + 运行期经 `DOMINION_SECRET_DIR` 文件读取（`specs/002-deploy-secret-config/` 契约）；token MUST NOT 出现在代码、配置明文或镜像中。
+- **FR-008**: 模型 API token 的提供与消费遵循以下语义（2026-08-29 第二批架构指令修订）：
+  - 生产路径 MUST 与现有 agent 一致经仓库 secret 机制提供：`service.yaml` 生产 artifact 声明逻辑 secret 名 + `deploy.yaml` 绑定 k8s secret + 运行期经 `DOMINION_SECRET_DIR` 文件读取（`specs/002-deploy-secret-config/` 契约）；token MUST NOT 出现在代码、配置明文或镜像中。生产部署 SHOULD 预置该 secret——真实端点对无 Authorization 的请求以 401 拒绝（缺失时首轮调用以 `turn_end{ERROR}` 明确呈现，见 Edge Cases）。
+  - token 解析 MUST 容忍缺失：`GLM_API_KEY` env 已设则直用；否则读 secret 文件；两者皆无时保持未设、log 一条 warning（含 env 名/文件路径、不含 key 内容，SC-004）后继续启动——MUST NOT fail-loud。
+  - LLM 请求在 key 为空时 MUST NOT 携带 Authorization header（key 非空照常 `Bearer <key>`；[contracts/glm-llm-plugin.md](contracts/glm-llm-plugin.md) §3 义务 6）。
+  - 测试部署 MUST 零 secret：`service.yaml` 另声明无 secrets 的测试 artifact（`agent-v2-test`，同 target/tls），测试 deploy 按名选用、不设 secret 绑定与 `GLM_API_KEY` env（[specs/049-agent-v2-dsh-init/research.md](research.md) D9；服务名与 artifact 名遵循 D13 命名约束：不含下划线）。
 - **FR-009**: web 对话页的实现与页面风格 MUST 参考 dsh-web（https://github.com/deepseek-ai/deepseek-harness ），复用级别为**组件级复用**（2026-08-27 澄清）：前端复用 `@deepseek-ai/dsh-client-ui-primitives`（零 Cordis 依赖的纯 React 组件库，0.1.1-rc.2 同线）的 markdown/代码块等渲染组件；think 折叠、工具卡片等交互组件参照 dsh-web 源码（`dsh-client-ui-conversation`/`dsh-client-ui-tool`）自建。
 - **FR-010**: 范围边界：agent_v2 与 web MUST NOT 迁移 team 模式、desktop 操作桥（鼠标/截图）、saolei/memory MCP、prompt/memory 服务联动等本阶段不需要的能力；现有 `projects/game/agent`、`projects/game/desktop` 等存量服务及其链路 MUST 保持不变。例外边界（2026-08-27 澄清 + 2026-08-29 架构指令）：(a) 存量 gateway 允许**新增** `/api/v2` 前缀的对话路由（agent_v2 对话 API 的暴露通道，见 FR-013），MUST NOT 修改其既有 `/api/v1` 路由与行为；(b) 存量 proxy 允许**增量注册** ConversationService 转发面（owner 亲和路由，`specs/049-agent-v2-dsh-init/research.md` D4），其既有 TeamService 行为 MUST 保持不变；(c) 共享包 `projects/game/pkg/bind` 允许**新增** server-streaming 绑定（`specs/049-agent-v2-dsh-init/research.md` D11），v1 双向 `Bind` 行为 MUST 零改动。
 - **FR-011**: 系统 MUST 附带大型测试（testplan）：部署新服务（模型端点以确定性 fake 替换、零外部网络依赖），经验收入口验证 session 管理闭环（US4）、端到端对话（US1/US2 的 text/think 流式可区分获取、多轮连续性）与刷新后历史回填一致性（FR-014），完成清理；tools 渲染能力（US3）以构造数据在页面/接口层经组件单测验证（FR-005，随编译+单测门禁执行，本阶段 agent_v2 零工具、无真实工具块流经系统）；验收标准为经 testplan skill（`guitar run`）实际执行完整部署→测试→清理闭环且**全部用例通过**（`.specify/memory/constitution.md` 原则 VI）。
 - **FR-012**: 同一 session 内回合进行中收到的新用户消息 MUST 排队：对话页呈现排队状态（入队消息与数量可见），当前回合结束后按序自动发送入队消息（2026-08-27 澄清，行为对齐 desktop 队列基线 `specs/030-queued-chat-input`、`specs/038-queue-input-mid-turn`，仅迁移其最小行为、不迁移 observe-only 等扩展）；不同 session 之间互不排队、互不阻塞。
-- **FR-013**: 对外暴露形态 MUST 为"页面独立 + API 经 gateway"（2026-08-27 澄清；2026-08-29 架构指令修订路由拓扑）：web 服务以自身 HTTP 监听直接 serve 前端页面；浏览器侧 API 统一访问存量 gateway——session 管理复用既有 `/api/v1` 路由，agent_v2 对话 API（流式）经 gateway **新增路由**暴露、绑定 **`/api/v2` 前缀**。gateway 对 agent_v2 MUST 经存量 **proxy 路由**（gateway→proxy→agent_v2 两跳）：proxy 按 owner 映射将 `(template, session)` 亲和定向到 agent_v2 的有状态实例（agent_v2 `kind: stateful`，路由设计 `specs/049-agent-v2-dsh-init/research.md` D4；增量例外边界见 FR-010）；gateway MUST NOT 直连 agent_v2。
-- **FR-014**: agent_v2 MUST 为每个会话维护内存态对话记录并暴露历史查询 API（2026-08-27 澄清，对齐 desktop `ListMessages` 行为基线）：记录以内容块（text/think/tool call/tool result）形式保序、保分类；对话页刷新/重连后经该 API **完整回填**会话已有对话内容（agent_v2 存活期间）；记录随 agent_v2 进程重启丢失（内存态，见 Assumptions），且回填内容与此前流式呈现的内容一致。
-- **FR-015**: session 删除的生命周期 MUST 为"立即终止释放"（2026-08-27 澄清）：session 元数据删除成功后，agent_v2 MUST 立即释放该会话占用的 dsh 资源（dispose）——进行中的回合终止、未发送的排队消息作废、该会话的内存对话记录不再可查询；随后对同一 session 资源名的新建得到全新会话（无残留状态）。
+- **FR-013**: 对外暴露形态 MUST 为"页面独立 + API 经 gateway"（2026-08-27 澄清；2026-08-29 架构指令修订路由拓扑）：web 服务以自身 HTTP 监听直接 serve 前端页面；浏览器侧 API 统一访问存量 gateway——session 管理复用既有 `/api/v1` 路由，agent_v2 对话 API（流式）经 gateway **新增路由**暴露、绑定 **`/api/v2` 前缀**。gateway 对 agent_v2 MUST 经存量 **proxy 路由**（gateway→proxy→agent-v2 两跳）：proxy 按 owner 映射将 `(template, session)` 亲和定向到 agent-v2 的有状态实例（agent-v2 `kind: stateful`，路由设计 `specs/049-agent-v2-dsh-init/research.md` D4；增量例外边界见 FR-010）；gateway MUST NOT 直连 agent-v2。
+- **FR-014**: agent_v2 MUST 为每个会话维护内存态对话记录并暴露历史查询 API（2026-08-27 澄清，对齐 desktop `ListMessages` 行为基线）：记录以内容块（text/think/tool call/tool result）形式保序、保分类；对话页刷新/重连后经该 API **完整回填**会话已有对话内容（agent-v2 存活期间）；记录随 agent-v2 进程重启丢失（内存态，见 Assumptions），且回填内容与此前流式呈现的内容一致。
+- **FR-015**: session 删除的生命周期 MUST 为"立即终止释放"（2026-08-27 澄清）：session 元数据删除成功后，agent-v2 MUST 立即释放该会话占用的 dsh 资源（dispose）——进行中的回合终止、未发送的排队消息作废、该会话的内存对话记录不再可查询；随后对同一 session 资源名的新建得到全新会话（无残留状态）。
+- **FR-016**: proxy MUST 容忍其管理的有状态服务在部署环境中不存在（2026-08-29 第三批裁定，[research.md](research.md) D13）：agentclient 连接刷新对 deploy `ErrServiceNotFound`（服务缺席，HTTP 404）MUST 归一为空实例集——warn 日志、关闭陈旧连接、刷新成功返回，MUST NOT 因此触发 daemon 重启计数耗尽导致的 proxy 进程退出；服务出现后 MUST 经周期刷新自动发现。该容忍 MUST NOT 改变其余错误类别（非法服务名、API 故障、网络错误）的重启/致命语义，MUST NOT 改变目标服务存在环境下的任何既有行为（SC-005）。
 
 ### Key Entities
 
-- **Game Session**: game 域会话，资源名 `templates/{template}/sessions/{session}`，元数据（创建时间等）由现有 session 服务持久化；本阶段新建 session 固定使用 `saolei` template（2026-08-27 澄清，存量 session 服务零改动），网页对话 session 与桌面扫雷 session 共用该 template 的 session 空间（列表互通）；一个 game session 映射 agent_v2 内一个 dsh agent 会话（映射方式对齐 demo 样板的 get-or-create 模式）。
+- **Game Session**: game 域会话，资源名 `templates/{template}/sessions/{session}`，元数据（创建时间等）由现有 session 服务持久化；本阶段新建 session 固定使用 `saolei` template（2026-08-27 澄清，存量 session 服务零改动），网页对话 session 与桌面扫雷 session 共用该 template 的 session 空间（列表互通）；一个 game session 映射 agent-v2 内一个 dsh agent 会话（映射方式对齐 demo 样板的 get-or-create 模式）。
 - **Chat Turn（对话轮次）**: 一轮"用户消息 → agent 回复"；回复由若干内容块构成。
 - **Content Block（内容块）**: 对话内容的分类单元——text（正文）、think（思考）、tool call（工具调用）、tool result（工具结果）；行为基线对齐 `projects/game/game.proto` 的 MessagePart 语义与 desktop ChatView 的渲染规则。
 - **Tool Call（工具调用）**: 名称、输入参数、执行状态、执行结果。
 - **dsh Composition Manifest（组合清单）**: agent_v2 启动时消费的声明式插件组装清单（每行 = 启用的插件 + 配置），是启用面的唯一事实源（`experimental/dsh/demo/agent/cordis.yml` 样板）。
-- **Conversation Owner（agent_v2 路由映射）**: proxy 侧 Mongo 持久的 `(template, session) → agent_v2 实例` 亲和映射，首次 Send get-or-create 分配、此后定向同实例；与 v1 TeamService owner 以独立 collection 隔离（2026-08-29 架构指令；详见 `specs/049-agent-v2-dsh-init/data-model.md` §2.9）。
-- **Model Endpoint（模型端点）**: GLM codingplan 的 OpenAI Responses 协议端点（`https://open.bigmodel.cn/api/v1`）+ 经 secret 提供的 API token + 可配置模型 id；测试态可替换为确定性 fake 端点。
+- **Conversation Owner（agent_v2 路由映射）**: proxy 侧 Mongo 持久的 `(template, session) → agent-v2 实例` 亲和映射，首次 Send get-or-create 分配、此后定向同实例；与 v1 TeamService owner 以独立 collection 隔离（2026-08-29 架构指令；详见 `specs/049-agent-v2-dsh-init/data-model.md` §2.9）。
+- **Model Endpoint（模型端点）**: GLM codingplan 的 OpenAI Responses 协议端点（`https://open.bigmodel.cn/api/v1`）+ 经 secret 提供的 API token（可空：测试态零 secret，空 key 请求免 Authorization header——FR-008）+ 可配置模型 id；测试态可替换为确定性 fake 端点。
 
 ## Success Criteria *(mandatory)*
 
@@ -158,16 +174,16 @@
 - **SC-002**: text 与 think 在端到端对话中可区分获取且以流式渐进方式呈现；tools 渲染能力以构造数据在页面/接口层验证可用（端到端验证随后续第一个工具接入进行）。
 - **SC-003**: 端到端对话可完成：从新建 session 到收到模型回复的完整路径在部署环境中可稳定走通（大型测试外，真实 GLM 端点的冒烟步骤在交付文档中记录并可手工复验）。
 - **SC-004**: token 零泄漏：全部交付物（代码、构建产物、部署声明、文档示例）中不存在明文模型 token；token 仅经 secret 机制注入运行时。
-- **SC-005**: 存量零回归：现有 agent/desktop 等存量服务的既有测试与部署不受本变更影响；存量 gateway 的既有路由（`/api/v1`）行为与测试不变（仅允许新增 `/api/v2` 路由）；存量 proxy 的既有 TeamService 行为与既有测试不变（仅增量注册 ConversationService 转发面）；`projects/game/pkg/bind` 的 v1 双向 `Bind` 行为不变（仅新增 server-streaming 绑定）。
+- **SC-005**: 存量零回归：现有 agent/desktop 等存量服务的既有测试与部署不受本变更影响；存量 gateway 的既有路由（`/api/v1`）行为与测试不变（仅允许新增 `/api/v2` 路由）；存量 proxy 的既有 TeamService 行为与既有测试不变（仅增量注册 ConversationService 转发面；agentclient 对"管理服务缺席"的容忍（FR-016）在目标服务存在的环境零行为差异）；`projects/game/pkg/bind` 的 v1 双向 `Bind` 行为不变（仅新增 server-streaming 绑定）。
 
 ## Assumptions
 
 - **dsh 版本线**：全家族按 0.1.1-rc.2 同线精确 pin（对齐 `third_party/dsh/core` 与 `specs/047-dsh-chat-demo` 的锁定决策；dist-tag 不可信）。
 - **GLM Responses 适配为自研 dsh 插件**：官方 `dsh-llm-deepseek` 适配器仅支持 chat-completions wire（`specs/047-dsh-chat-demo/research.md` D1），用户指定 Responses 协议，故需自研 LLM 适配插件（实现 dsh LLM 适配缝，注册路由）。
-- **大型测试的确定性**：真实 GLM 端点不进大型测试（外部网络/成本/非确定性）；FR-007 的可替换端点配置使测试以 Responses 协议的确定性 fake 服务替代（扩展 `projects/game/fake-llm` 新增 Responses 端点，见 `specs/049-agent-v2-dsh-init/research.md` D7）；真实端点接入以手工冒烟验证并记录在交付文档。
-- **对话历史为内存态**：agent_v2 内对话历史随进程重启丢失（与现有 agent 内存 checkpoint 行为一致），存活期间经内存记录 + 历史查询 API 支撑刷新回填（FR-014）；session 列表因复用 session 服务而持久。dsh persistence 插件接入留待后续 step。
+- **大型测试的确定性**：真实 GLM 端点不进大型测试（外部网络/成本/非确定性），测试集群亦不为 agent-v2 预置任何 secret（2026-08-29 第二批指令：测试部署零 secret，FR-008）；FR-007 的可替换端点配置使测试以 Responses 协议的确定性 fake 服务替代（扩展 `projects/game/fake-llm` 新增 Responses 端点，见 `specs/049-agent-v2-dsh-init/research.md` D7）；真实端点接入以手工冒烟验证并记录在交付文档。
+- **对话历史为内存态**：agent-v2 内对话历史随进程重启丢失（与现有 agent 内存 checkpoint 行为一致），存活期间经内存记录 + 历史查询 API 支撑刷新回填（FR-014）；session 列表因复用 session 服务而持久。dsh persistence 插件接入留待后续 step。
 - **template 复用 saolei**：本阶段新建 session 固定使用 `saolei`（2026-08-27 澄清），存量 session 服务的 template 校验零改动；网页与桌面的 session 列表互通（同一 template 空间）。引入独立对话 template 留待后续 step 评估。
-- **web 服务内网暴露、无鉴权**：与 game 现有网关一致（内网环境）；暴露形态已定为"web 直接 serve 页面 + API 经 gateway（session 复用 `/api/v1`、对话走新增 `/api/v2`，gateway 经 proxy 亲和路由 agent_v2）"（FR-013）。
+- **web 服务内网暴露、无鉴权**：与 game 现有网关一致（内网环境）；暴露形态已定为"web 直接 serve 页面 + API 经 gateway（session 复用 `/api/v1`、对话走新增 `/api/v2`，gateway 经 proxy 亲和路由 agent-v2）"（FR-013）。
 - **流式呈现为本阶段要求**：对齐 dsh-web 与 desktop 的既有体验；仅非流式回复不构成"完全迁移"。
 - **样板复用**：agent_v2 的 dsh 嵌入骨架（boot 前 endpoint 注入、fail-loud、优雅退出、get-or-create 会话注册表、回合事件收集）对齐 `experimental/dsh/demo/agent/` 实证模式；proxy 侧路由复用 v1 owner 设施（store/picker/manager，`specs/049-agent-v2-dsh-init/research.md` D4）。
 - **存量不动**：现有 agent/desktop/session/prompt/memory 服务与 desktop 发布链路本阶段不下线、不修改既有行为；例外（2026-08-27 澄清 + 2026-08-29 架构指令）：存量 gateway 新增 `/api/v2` 对话路由（经 proxy，FR-010/FR-013）、存量 proxy 增量注册 ConversationService 转发面（既有 TeamService 行为零改动）、共享包 `pkg/bind` 增量 server-streaming 绑定（v1 双向 Bind 零行为改动，`specs/049-agent-v2-dsh-init/research.md` D11）；新服务与存量并存部署。

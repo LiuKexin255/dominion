@@ -25,7 +25,7 @@ import { createResponsesWire } from "./wire.js";
 
 /** Plugin configuration (cordis row: data-model.md §2.6). */
 export interface GlmConfig {
-  /** GLM API token 的环境变量名；值非空（assertUsableApiKey 校验）。 */
+  /** GLM API token 的环境变量名；值可为空——空 key 请求不携带 Authorization（§3 义务 6，宿主三级解析容忍缺失的终点，research.md D9）；非空值经 assertUsableApiKey 校验。 */
   apiKeyEnv: string;
   /** OpenAI Responses 端点，含版本路径（如 https://open.bigmodel.cn/api/v1）。 */
   baseURL: string;
@@ -79,24 +79,35 @@ export class GlmResponsesAdapter extends LlmAdapter {
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    // The key value never enters a message or log; only its env reference does.
-    const apiKey = assertUsableApiKey(
-      process.env[this.config.apiKeyEnv] ?? "",
-      PACKAGE_NAME,
-      `env ${this.config.apiKeyEnv}`,
-    );
+    // Conditional Authorization (glm-llm-plugin.md §3 义务 6): the host's
+    // three-level token resolution tolerates a missing secret (research.md
+    // D9), so an empty/whitespace key sends the request WITHOUT an
+    // Authorization header — the fake endpoint ignores credentials and a
+    // real endpoint's 401 surfaces as turn_end{ERROR}. A non-empty key is
+    // validated (assertUsableApiKey's header-safe-character diagnostics)
+    // and sent as Bearer. The key value never enters a message or log; only
+    // its env reference does.
+    const rawApiKey = process.env[this.config.apiKeyEnv] ?? "";
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+      ...attributionHeaders(),
+    };
+    if (rawApiKey.trim() !== "") {
+      const apiKey = assertUsableApiKey(
+        rawApiKey,
+        PACKAGE_NAME,
+        `env ${this.config.apiKeyEnv}`,
+      );
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
 
     const request = serializeRequest(options);
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.config.baseURL}/responses`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "text/event-stream",
-          "Authorization": `Bearer ${apiKey}`,
-          ...attributionHeaders(),
-        },
+        headers,
         body: JSON.stringify(request),
         signal: options.signal,
       });
