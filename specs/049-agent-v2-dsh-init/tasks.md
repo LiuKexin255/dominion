@@ -109,8 +109,8 @@
 - **官方文档**：[React API Reference](https://react.dev/reference/react)；[dsh-client-ui-primitives README](https://cdn.jsdelivr.net/npm/@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2/README.md)（DisclosureRow/MessageText 用法）
 - **技术文章/技术参考文档**：`specs/049-agent-v2-dsh-init/contracts/web-frontend.md`（§3.2 ReasoningRow 契约）；[dsh ReasoningRow.tsx 参照源码](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/src/client/chat/ReasoningRow.tsx)（折叠摘要 latest/first line、running 跟随、data-state）
 
-- [ ] T024 [P] [US2] 实现 `projects/game/web/frontend/src/components/ReasoningRow.tsx`（自建：`DisclosureRow` 外壳 + `IconThinkOutline14` + 默认折叠 + 折叠摘要行（running=最新行/完成=首行）+ 展开全文 + `data-state="running|ok"`；参照源码改造并去 locale/slot 依赖）+ `ReasoningRow.test.tsx`（折叠默认、展开切换、无思考文本不渲染该组件）
-- [ ] T025 [US2] 集成 `projects/game/web/frontend/src/components/ChatView.tsx`：THINK 块渲染分支（think 与 text 分类呈现不混排、流式渐进更新折叠摘要、纯 text 回合零 THINK 区域）+ `ChatView` 组件测试补 THINK 场景（含"无思考不出现空区域"——US2 场景 2）
+- [X] T024 [P] [US2] 实现 `projects/game/web/frontend/src/components/ReasoningRow.tsx`（自建：`DisclosureRow` 外壳 + `IconThinkOutline14` + 默认折叠 + 折叠摘要行（running=最新行/完成=首行）+ 展开全文 + `data-state="running|ok"`；参照源码改造并去 locale/slot 依赖）+ `ReasoningRow.test.tsx`（折叠默认、展开切换、无思考文本不渲染该组件）
+- [X] T025 [US2] 集成 `projects/game/web/frontend/src/components/ChatView.tsx`：THINK 块渲染分支（think 与 text 分类呈现不混排、流式渐进更新折叠摘要、纯 text 回合零 THINK 区域）+ `ChatView` 组件测试补 THINK 场景（含"无思考不出现空区域"——US2 场景 2）
 
 **Checkpoint**: `bazel test //projects/game/web/frontend:lib_test` think 场景全绿。
 

@@ -1,11 +1,13 @@
 // 对话主区：历史回填 + 实时流合并渲染 + 排队指示 + 发送输入
 // （行为基线 desktop ChatView，契约 specs/049-agent-v2-dsh-init/contracts/
-// web-frontend.md §3.2）。本阶段只渲染 TEXT 块；THINK/TOOL_CALL 渲染分支由
-// Phase 4/5（T025/T027）加入，事件模型已在 store 层归类。
+// web-frontend.md §3.2）。Agent 消息按块类型分类呈现：THINK → ReasoningRow
+// （running 态由 live 流/历史回填区分）、TEXT → MessageText，两者不混排；
+// TOOL_CALL 渲染分支由 Phase 5（T027）加入，事件模型已在 store 层归类。
 import { useEffect, useRef, useState } from 'react'
 import { Button, Input, MessageText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ContentBlock, HistoryMessage } from '../api/conversation.js'
 import type { BlockDraft, LiveTurn, QueuedMsg } from '../store/chat.js'
+import { ReasoningRow } from './ReasoningRow.js'
 
 export interface ChatViewProps {
   session: string
@@ -17,22 +19,46 @@ export interface ChatViewProps {
 }
 
 // blockText projects the TEXT content out of either block shape (history
-// protojson ContentBlock / live BlockDraft); TOOL_CALL drafts have no
-// renderable text in this phase.
+// protojson ContentBlock / live BlockDraft); THINK blocks render through
+// ReasoningRow and TOOL_CALL blocks through the Phase 5 (T027) card, so
+// neither contributes body text here.
 function blockText(b: ContentBlock | BlockDraft): string | undefined {
-  if ('type' in b) return b.type === 'TOOL_CALL' ? undefined : b.text
+  if ('type' in b) return b.type === 'TEXT' ? b.text : undefined
   return b.text?.content
 }
 
-// AgentBlocks renders the TEXT blocks of one agent message via MessageText
-// （web-frontend.md §2: TEXT → MessageText）。
-function AgentBlocks({ blocks }: { blocks: (ContentBlock | BlockDraft)[] }) {
+// blockThink projects the THINK content out of either block shape.
+function blockThink(b: ContentBlock | BlockDraft): string | undefined {
+  if ('type' in b) return b.type === 'THINK' ? b.text : undefined
+  return b.think?.content
+}
+
+// AgentBlocks renders one agent message's blocks in order: THINK →
+// ReasoningRow、TEXT → MessageText （web-frontend.md §2: 分类呈现不混排）。
+// streaming running 只落在 live 回合的尾块上——流式块按序 append 恒为尾块，
+// 已终结的 THINK 块（其后还有 TEXT 在流式）因此呈现完成态摘要。
+function AgentBlocks({
+  blocks,
+  running,
+}: {
+  blocks: (ContentBlock | BlockDraft)[]
+  running: boolean
+}) {
   return (
     <div className="msg-agent">
       {blocks.map((b, i) => {
-        // THINK/TOOL_CALL 分支留 Phase 4/5（T025/T027）。
+        const think = blockThink(b)
+        if (think !== undefined) {
+          return (
+            <ReasoningRow
+              key={i}
+              text={think}
+              running={running && i === blocks.length - 1}
+            />
+          )
+        }
         const text = blockText(b)
-        if (text === undefined || text === '') return null
+        if (text === undefined || text.trim() === '') return null
         return (
           <div key={i} data-testid="agent-text">
             <MessageText text={text} />
@@ -78,10 +104,10 @@ export function ChatView({
               ))}
             </div>
           ) : (
-            <AgentBlocks key={i} blocks={m.blocks} />
+            <AgentBlocks key={i} blocks={m.blocks} running={false} />
           ),
         )}
-        {live !== null && <AgentBlocks blocks={live.blocks} />}
+        {live !== null && <AgentBlocks blocks={live.blocks} running />}
         {queue.map((q, i) => (
           <div key={i} className="queue-chip" data-testid="queue-chip">
             排队中 #{q.position}
