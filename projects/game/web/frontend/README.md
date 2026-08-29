@@ -30,6 +30,8 @@ Bazel target（按 `specs/050-vite-react-bazel/contracts/vite-build-target.md` �
 - `ReasoningRow`（think 折叠行）参照
   [packages/client/ui-chat/src/client/chat/ReasoningRow.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/src/client/chat/ReasoningRow.tsx)
 - `ToolCard`（工具调用卡片）参照
-  [packages/client/ui-tool/src/client/tool/ToolCallTree.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/ToolCallTree.tsx)
+  [packages/client/ui-tool/src/client/tool/ToolCallTree.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/ToolCallTree.tsx)，
+  卡内布局另参照
+  [packages/client/ui-tool/src/client/tool/toolviews/GenericToolCard.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/toolviews/GenericToolCard.tsx)
 - markdown/代码块等渲染组件直接复用 npm 包
   [@deepseek-ai/dsh-client-ui-primitives](https://cdn.jsdelivr.net/npm/@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2/README.md)

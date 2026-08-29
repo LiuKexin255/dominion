@@ -128,8 +128,8 @@
 - **官方文档**：[React API Reference](https://react.dev/reference/react)；[dsh-client-ui-primitives README](https://cdn.jsdelivr.net/npm/@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2/README.md)（StateDot/JsonBlock 用法）
 - **技术文章/技术参考文档**：`specs/049-agent-v2-dsh-init/contracts/web-frontend.md`（§3.2 ToolCard 契约）；[dsh ToolCallTree.tsx 参照源码](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/ToolCallTree.tsx)（单卡形态，剥离 slot 系统）
 
-- [ ] T026 [P] [US3] 实现 `projects/game/web/frontend/src/components/ToolCard.tsx`（自建：名称/参数（JsonBlock 折叠）/状态（StateDot：RUNNING/SUCCEEDED/FAILED）/result 关联同卡；props 照 `specs/049-agent-v2-dsh-init/contracts/web-frontend.md` §3.2）+ `ToolCard.test.tsx`（US3 三场景：RUNNING 态、结果关联、失败态）
-- [ ] T027 [US3] 集成 `projects/game/web/frontend/src/components/ChatView.tsx`：TOOL_CALL 块渲染分支 + 历史回填的 tool_call 块渲染（tool_id 关联展示）+ 混合保序测试（构造"正文+思考+多次工具调用"数据断言三类内容按序可区分呈现——US3 场景 3）
+- [X] T026 [P] [US3] 实现 `projects/game/web/frontend/src/components/ToolCard.tsx`（自建：名称/参数（JsonBlock 折叠）/状态（StateDot：RUNNING/SUCCEEDED/FAILED）/result 关联同卡；props 照 `specs/049-agent-v2-dsh-init/contracts/web-frontend.md` §3.2）+ `ToolCard.test.tsx`（US3 三场景：RUNNING 态、结果关联、失败态）
+- [X] T027 [US3] 集成 `projects/game/web/frontend/src/components/ChatView.tsx`：TOOL_CALL 块渲染分支 + 历史回填的 tool_call 块渲染（tool_id 关联展示）+ 混合保序测试（构造"正文+思考+多次工具调用"数据断言三类内容按序可区分呈现——US3 场景 3）
 
 **Checkpoint**: `bazel test //projects/game/web/frontend:lib_test` US3 构造数据用例全绿（US3 端到端验证延后，此为页面/接口层验收）。
 

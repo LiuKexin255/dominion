@@ -298,3 +298,47 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* 工具调用卡片（契约 specs/049-agent-v2-dsh-init/contracts/web-frontend.md
+ * §3.2 ToolCard：名称/参数/状态/结果关联同卡；形态参照 dsh-web ToolCallTree
+ * 单卡形态改造、来源链接见 projects/game/web/frontend/README.md；色彩使用
+ * 本仓库 theme.css 定义的 token 集）。 */
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+}
+
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tool-card-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card-state {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.tool-card-id {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}

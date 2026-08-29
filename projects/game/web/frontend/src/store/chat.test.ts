@@ -85,6 +85,87 @@ describe('ChatStore reducer', () => {
     ])
   })
 
+  it('reduces a TOOL_CALL block: delta-concatenated args, terminal overlay with RUNNING→SUCCEEDED, merged into history', () => {
+    const store = new ChatStore()
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({
+      turnId: 't1',
+      blockStart: {
+        index: 0,
+        type: 'BLOCK_TYPE_TOOL_CALL',
+        toolId: 'call-1',
+        name: 'bash',
+      },
+    })
+
+    // block_start opens a RUNNING draft; deltas stream-concatenate args.
+    expect(store.getSnapshot().live?.blocks).toEqual([
+      {
+        index: 0,
+        type: 'TOOL_CALL',
+        toolId: 'call-1',
+        name: 'bash',
+        args: '',
+        status: 'TOOL_STATUS_RUNNING',
+      },
+    ])
+    store.applyEvent({ turnId: 't1', delta: { index: 0, text: '{"command":"ls' } })
+    store.applyEvent({ turnId: 't1', delta: { index: 0, text: ' -la"}' } })
+    expect(store.getSnapshot().live?.blocks[0]).toMatchObject({
+      args: '{"command":"ls -la"}',
+      status: 'TOOL_STATUS_RUNNING',
+    })
+
+    // block_end overlays the terminal block: status transition + result.
+    store.applyEvent({
+      turnId: 't1',
+      blockEnd: {
+        index: 0,
+        block: {
+          toolCall: {
+            toolId: 'call-1',
+            name: 'bash',
+            argsJson: '{"command":"ls -la"}',
+            status: 'TOOL_STATUS_SUCCEEDED',
+            result: 'file-a.txt',
+          },
+        },
+      },
+    })
+    expect(store.getSnapshot().live?.blocks).toEqual([
+      {
+        index: 0,
+        type: 'TOOL_CALL',
+        toolId: 'call-1',
+        name: 'bash',
+        args: '{"command":"ls -la"}',
+        status: 'TOOL_STATUS_SUCCEEDED',
+        result: 'file-a.txt',
+      },
+    ])
+
+    // turn_end{COMPLETED} merges the turn into history as the protojson
+    // ContentBlock projection (与回填历史同一渲染路径，FR-014).
+    store.applyEvent({ turnId: 't1', turnEnd: { status: 'TURN_STATUS_COMPLETED' } })
+    expect(store.getSnapshot().history).toEqual([
+      {
+        role: 'ROLE_AGENT',
+        blocks: [
+          {
+            toolCall: {
+              toolId: 'call-1',
+              name: 'bash',
+              argsJson: '{"command":"ls -la"}',
+              status: 'TOOL_STATUS_SUCCEEDED',
+              result: 'file-a.txt',
+            },
+          },
+        ],
+      },
+    ])
+    expect(store.getSnapshot().live).toBeNull()
+  })
+
   it('turn_end{ERROR} surfaces the error, keeps the session usable', () => {
     const store = new ChatStore()
     store.applyEvent({ turnId: 't1', turnStart: {} })
