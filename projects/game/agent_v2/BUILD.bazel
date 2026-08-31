@@ -57,6 +57,7 @@ ts_project(
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
+        ":node_modules/mongodb",
     ],
 )
 
@@ -147,5 +148,6 @@ vitest_test(
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
+        ":node_modules/mongodb",
     ],
 )

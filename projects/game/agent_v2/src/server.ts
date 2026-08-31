@@ -1,13 +1,18 @@
 /**
- * server.ts — grpc-js ConversationService for the game agent_v2.
+ * server.ts — grpc-js AgentService + DesktopBridgeService for the game
+ * agent_v2.
  *
  * Loads the runtime proto via proto-loader (materialized at its canonical
  * import path under the service root, the experimental/grpc_chain/mid
- * pattern) and maps the three RPCs onto AgentSessions
- * (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §1/§2):
- * Send streams ChatEvent frames until the turn ends; malformed resource
- * names and empty text are request-level INVALID_ARGUMENT failures (the
- * stream never opens); Dispose is idempotent.
+ * pattern) and registers both services on the single 50051 server
+ * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2 D8):
+ * AgentService handlers map onto AgentSessions
+ * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2) — Send
+ * streams ChatEvent frames until the turn ends, malformed resource names
+ * and empty text are request-level INVALID_ARGUMENT failures (the stream
+ * never opens). UpdateAgent/GetAgent and the preset/model catalog RPCs are
+ * UNIMPLEMENTED placeholders until the host wiring task replaces them with
+ * the real agent/materialization logic.
  */
 
 import * as fs from "node:fs";
@@ -18,7 +23,8 @@ import { info } from "@dominion/common-js-logs";
 import { AgentSessions } from "./session.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
-import type { ConversationServiceHandlers } from "../agent_v2_types/projects/game/v2/ConversationService.js";
+import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
+import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/v2/DesktopBridgeService.js";
 import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 import type { ProtoGrpcType } from "../agent_v2_types/agent_v2.js";
@@ -46,15 +52,19 @@ const GRPC_PORT = "0.0.0.0:50051";
  */
 const KNOWN_TEMPLATES = new Set(["saolei"]);
 
-/** The session service surface consumed by the gRPC handlers. */
-export interface ConversationSink {
+/**
+ * The agent surface consumed by the gRPC handlers: the session-scoped
+ * operations of AgentService
+ * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2). Preset and
+ * model catalog handlers take separate collaborators once implemented.
+ */
+export interface AgentSink {
   send(session: string, text: string, stream: TurnStream): void;
-  listHistory(session: string): Promise<HistoryMessage[]>;
-  dispose(session: string): Promise<void>;
+  listMessages(session: string): Promise<HistoryMessage[]>;
 }
 
 /** What {@link startServer} hands back to the bootstrap for shutdown. */
-export interface StartedConversationServer {
+export interface StartedAgentServer {
   server: grpc.Server;
   sessions: AgentSessions;
 }
@@ -80,6 +90,19 @@ export function parseSessionResource(name: string): ParsedSessionResource | unde
     return undefined;
   }
   return { template, session };
+}
+
+/**
+ * Validate the agent parent resource name — the session resource name plus
+ * the `/agent` singleton segment (AIP-156:
+ * https://google.aip.dev/156) — and return the underlying session identity.
+ */
+export function parseAgentParent(parent: string): ParsedSessionResource | undefined {
+  const match = /^(.+)\/agent$/.exec(parent);
+  if (match === null) {
+    return undefined;
+  }
+  return parseSessionResource(match[1]);
 }
 
 function loadProto(): ProtoGrpcType {
@@ -135,6 +158,19 @@ function rejectStream(call: grpc.ServerWritableStream<unknown, unknown>, message
 }
 
 /**
+ * The Phase-2 placeholder error for handlers whose host wiring lands with
+ * the US1/US2 implementation tasks (specs/051-agent-v2-dsh-migration/
+ * tasks.md T014). Fails loudly at the RPC boundary rather than silently
+ * answering empty data.
+ */
+function unimplemented(method: string): grpc.ServiceError {
+  return {
+    code: grpc.status.UNIMPLEMENTED,
+    details: `${method} is not implemented yet`,
+  } as grpc.ServiceError;
+}
+
+/**
  * Guard one streaming write: a peer that disconnected mid-turn makes
  * `call.write` throw (or the call is already destroyed) — the failure is
  * logged and swallowed so a late frame from the collector/queue can never
@@ -158,10 +194,10 @@ function safeWrite(
 }
 
 /**
- * Build the ConversationService handlers over a session sink. Exported for
- * unit tests so the gRPC status mapping is asserted without binding a port.
+ * Build the AgentService handlers over a session sink. Exported for unit
+ * tests so the gRPC status mapping is asserted without binding a port.
  */
-export function buildConversationHandlers(sink: ConversationSink): ConversationServiceHandlers {
+export function buildAgentHandlers(sink: AgentSink): AgentServiceHandlers {
   return {
     Send: (call) => {
       const name = call.request.session ?? "";
@@ -205,21 +241,23 @@ export function buildConversationHandlers(sink: ConversationSink): ConversationS
       });
     },
 
-    ListHistory: (call, callback) => {
-      const name = call.request.session ?? "";
-      if (parseSessionResource(name) === undefined) {
+    ListAgentMessages: (call, callback) => {
+      const parent = call.request.parent ?? "";
+      const parsed = parseAgentParent(parent);
+      if (parsed === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `session must be a game session resource name ("templates/{template}/sessions/{session}"), got "${name}"`,
+          message: `parent must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${parent}"`,
         });
         return;
       }
-      sink.listHistory(name).then(
+      const name = `templates/${parsed.template}/sessions/${parsed.session}`;
+      sink.listMessages(name).then(
         (messages) => {
           callback(null, { messages });
         },
         (err: unknown) => {
-          info("ListHistory: failed", {
+          info("ListAgentMessages: failed", {
             session: name,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -231,45 +269,50 @@ export function buildConversationHandlers(sink: ConversationSink): ConversationS
       );
     },
 
-    Dispose: (call, callback) => {
-      const name = call.request.session ?? "";
-      if (parseSessionResource(name) === undefined) {
-        callback({
-          code: grpc.status.INVALID_ARGUMENT,
-          message: `session must be a game session resource name ("templates/{template}/sessions/{session}"), got "${name}"`,
-        });
-        return;
-      }
-      sink.dispose(name).then(
-        () => {
-          // Idempotent Empty reply: an absent session is already released.
-          callback(null, {});
-        },
-        (err: unknown) => {
-          info("Dispose: failed", {
-            session: name,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          callback({
-            code: grpc.status.INTERNAL,
-            message: `dispose failed: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        },
-      );
+    UpdateAgent: (call, callback) => callback(unimplemented("UpdateAgent")),
+    GetAgent: (call, callback) => callback(unimplemented("GetAgent")),
+    CreatePreset: (call, callback) => callback(unimplemented("CreatePreset")),
+    ListPresets: (call, callback) => callback(unimplemented("ListPresets")),
+    GetPreset: (call, callback) => callback(unimplemented("GetPreset")),
+    UpdatePreset: (call, callback) => callback(unimplemented("UpdatePreset")),
+    DeletePreset: (call, callback) => callback(unimplemented("DeletePreset")),
+    ListModels: (call, callback) => callback(unimplemented("ListModels")),
+  };
+}
+
+/**
+ * Build the DesktopBridgeService handlers. Connect is a Phase-2 placeholder
+ * — the flow stream wires up with the desktop-bridge plugin's handler face
+ * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2) and is
+ * replaced by the real registration then.
+ */
+export function buildDesktopBridgeHandlers(): DesktopBridgeServiceHandlers {
+  return {
+    Connect: (call) => {
+      call.emit("error", {
+        code: grpc.status.UNIMPLEMENTED,
+        details: "Connect is not implemented yet",
+      } as grpc.ServiceError);
     },
   };
 }
 
-/** Create, bind, and start the ConversationService server on 0.0.0.0:50051. */
-export async function startServer(options: { ctx: DshContext }): Promise<StartedConversationServer> {
+/** Create, bind, and start the agent_v2 gRPC server on 0.0.0.0:50051. */
+export async function startServer(options: { ctx: DshContext }): Promise<StartedAgentServer> {
   const sessions = new AgentSessions(options.ctx);
   const proto = loadProto();
   const server = new grpc.Server();
   server.addService(
-    (proto.projects.game.v2.ConversationService as unknown as {
+    (proto.projects.game.v2.AgentService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
-    buildConversationHandlers(sessions),
+    buildAgentHandlers(sessions),
+  );
+  server.addService(
+    (proto.projects.game.v2.DesktopBridgeService as unknown as {
+      service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
+    }).service,
+    buildDesktopBridgeHandlers(),
   );
 
   return new Promise((resolve, reject) => {
@@ -280,7 +323,7 @@ export async function startServer(options: { ctx: DshContext }): Promise<Started
         return;
       }
       server.start();
-      info("game agent_v2 conversation server listening", { port, tls: hasTlsFiles() });
+      info("game agent_v2 server listening", { port, tls: hasTlsFiles() });
       resolve({ server, sessions });
     });
   });

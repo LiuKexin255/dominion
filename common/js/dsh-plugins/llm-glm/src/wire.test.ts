@@ -4,6 +4,7 @@ import { LlmError } from "@deepseek-ai/dsh-llm";
 import type { StreamChunk } from "@deepseek-ai/dsh-llm";
 
 import { createResponsesWire } from "./wire.js";
+import { serializeRequest } from "./serialize.js";
 
 // frame renders one SSE frame the way the fake Responses endpoint and the
 // real GLM endpoint emit them (event line + JSON data line).
@@ -243,6 +244,96 @@ describe("Responses wire mapping", () => {
       },
       { type: "usage", usage: { inputTokens: 3, outputTokens: 2 } },
       { type: "finish", reason: { kind: "tool-calls" } },
+    ]);
+  });
+
+  it("maps an interleaved reasoning/message/tool-call stream with distinct indexes and a round-trippable block", () => {
+    // Multi-block tool turn: reasoning and text interleave before the
+    // function_call; each block keeps its own first-seen index. The
+    // block-end tool-call block is exactly the shape serializeRequest
+    // consumes, so the streamed call replays as a `function_call` input
+    // item on the next step (D11 round-trip seam).
+    const chunks = feedAll([
+      frame("response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "reasoning", id: "rs_1" },
+      }),
+      frame("response.reasoning_summary_text.delta", {
+        type: "response.reasoning_summary_text.delta",
+        item_id: "rs_1",
+        output_index: 0,
+        delta: "thinking",
+      }),
+      frame("response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "message", role: "assistant" },
+      }),
+      frame("response.output_text.delta", {
+        type: "response.output_text.delta",
+        item_id: "msg_1",
+        output_index: 1,
+        delta: "Opening the board.",
+      }),
+      frame("response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: 2,
+        item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "saolei_init" },
+      }),
+      frame("response.function_call_arguments.delta", {
+        type: "response.function_call_arguments.delta",
+        item_id: "fc_1",
+        output_index: 2,
+        delta: "{}",
+      }),
+      frame("response.output_item.done", {
+        type: "response.output_item.done",
+        output_index: 2,
+        item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "saolei_init", arguments: "{}" },
+      }),
+      frame("response.completed", {
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 5, output_tokens: 4 } },
+      }),
+    ]);
+
+    expect(chunks).toEqual([
+      { type: "block-start", index: 0, blockType: "reasoning" },
+      { type: "reasoning-delta", index: 0, text: "thinking" },
+      { type: "block-start", index: 1, blockType: "text" },
+      { type: "text-delta", index: 1, text: "Opening the board." },
+      // The tool identity rides the block-end block; block-start carries
+      // only the index and block type (same shape as the single-call case
+      // above).
+      { type: "block-start", index: 2, blockType: "tool-call" },
+      { type: "tool-call-delta", index: 2, id: "call_1", argumentsDelta: "{}" },
+      {
+        type: "block-end",
+        index: 2,
+        block: { type: "tool-call", id: "call_1", name: "saolei_init", arguments: "{}" },
+      },
+      { type: "usage", usage: { inputTokens: 5, outputTokens: 4 } },
+      { type: "finish", reason: { kind: "tool-calls" } },
+    ]);
+
+    // Round-trip seam: the terminal tool-call block feeds the request
+    // serializer unchanged and comes back out as the official input item.
+    const toolCallBlock = (chunks.find((c) => c.type === "block-end") as { block: unknown }).block;
+    const request = serializeRequest({
+      provider: "glm-responses",
+      model: "glm-5.2",
+      messages: [
+        {
+          id: "a1" as never,
+          role: "assistant",
+          content: [toolCallBlock as never],
+          source: { provider: "glm-responses", model: "glm-5.2" },
+        } as never,
+      ],
+    });
+    expect(request.input).toEqual([
+      { type: "function_call", call_id: "call_1", name: "saolei_init", arguments: "{}" },
     ]);
   });
 

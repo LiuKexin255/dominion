@@ -138,19 +138,154 @@ describe("Responses request serialization", () => {
     }
   });
 
-  it("throws UNSUPPORTED_CONTENT for tool blocks in history", () => {
+  it("maps an assistant tool-call block to a function_call input item", () => {
+    // D11 (specs/051-agent-v2-dsh-migration/research.md): the assistant
+    // tool-call block replays as the official `function_call` input item —
+    // the 049 UNSUPPORTED_CONTENT placeholder is lifted.
+    const request = serializeRequest(
+      baseOptions({
+        messages: [
+          createAssistantMessage({
+            content: [
+              { type: "text", text: "Let me check the board." },
+              {
+                type: "tool-call",
+                id: "call_1",
+                name: "saolei_init",
+                arguments: "{}",
+              },
+            ],
+            source: { provider: "glm-responses", model: "glm-5.2" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.input).toEqual([
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "Let me check the board." }] },
+      { type: "function_call", call_id: "call_1", name: "saolei_init", arguments: "{}" },
+    ]);
+  });
+
+  it("maps a tool-result message to a function_call_output input item", () => {
+    // createToolResultMessage fixes the user role and couples the tool
+    // source to its result block; the rendered text becomes `output`,
+    // joined to the call by call_id (OpenAI Responses input item shape).
+    const request = serializeRequest(
+      baseOptions({
+        messages: [
+          createUserMessage({
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call_1",
+                content: [{ type: "text", text: "new game started\nboard size 9*9" }],
+              },
+            ],
+            source: { kind: "tool" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.input).toEqual([
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: "new game started\nboard size 9*9",
+      },
+    ]);
+  });
+
+  it("serializes a full tool round-trip with steps interleaved in stream order", () => {
+    // Multi-step turn round-trip: user ask → assistant text + tool call →
+    // tool result → assistant summary. Items interleave in history order;
+    // call_id links every function_call to its function_call_output.
+    const request = serializeRequest(
+      baseOptions({
+        system: "You are a game table assistant.",
+        messages: [
+          createUserMessage({
+            content: [{ type: "text", text: "Start a game." }],
+            source: { kind: "user" },
+          }),
+          createAssistantMessage({
+            content: [
+              { type: "reasoning", text: "chain of thought" },
+              { type: "text", text: "Opening the board." },
+              { type: "tool-call", id: "call_1", name: "saolei_init", arguments: "{}" },
+            ],
+            source: { provider: "glm-responses", model: "glm-5.2" },
+          }),
+          createUserMessage({
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call_1",
+                content: [{ type: "text", text: "new game started" }],
+              },
+            ],
+            source: { kind: "tool" },
+          }),
+          createAssistantMessage({
+            content: [{ type: "text", text: "The game has started." }],
+            source: { provider: "glm-responses", model: "glm-5.2" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Start a game." }] },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "Opening the board." }] },
+      { type: "function_call", call_id: "call_1", name: "saolei_init", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_1", output: "new game started" },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "The game has started." }] },
+    ]);
+  });
+
+  it("joins multiple text blocks of one tool result with newlines", () => {
+    const request = serializeRequest(
+      baseOptions({
+        messages: [
+          createUserMessage({
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call_9",
+                content: [
+                  { type: "text", text: "saolei_operate → executed 2 ops" },
+                  { type: "text", text: "game status: playing" },
+                ],
+              },
+            ],
+            source: { kind: "tool" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.input).toEqual([
+      {
+        type: "function_call_output",
+        call_id: "call_9",
+        output: "saolei_operate → executed 2 ops\ngame status: playing",
+      },
+    ]);
+  });
+
+  it("throws UNSUPPORTED_CONTENT for non-text tool result content", () => {
     const options = baseOptions({
       messages: [
-        createAssistantMessage({
+        createUserMessage({
           content: [
             {
-              type: "tool-call",
-              id: "call_1",
-              name: "mouse_move",
-              arguments: "{}",
-            } as never,
+              type: "tool-result",
+              toolCallId: "call_1",
+              content: [{ type: "image", attachment: {} } as never],
+            },
           ],
-          source: { provider: "glm-responses", model: "glm-5.2" },
+          source: { kind: "tool" },
         }),
       ],
     });

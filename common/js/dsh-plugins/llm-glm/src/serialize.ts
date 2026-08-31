@@ -1,7 +1,8 @@
 /**
  * Request serialization: harness GenerateOptions → OpenAI Responses
  * request body for the GLM codingplan endpoint. Mapping table is
- * contractual: specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §4;
+ * contractual: specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §4
+ * (tool items per specs/051-agent-v2-dsh-migration/research.md D11);
  * input item shapes follow the official Responses schema
  * (https://github.com/openai/openai-openapi/blob/main/openapi.yaml).
  */
@@ -16,22 +17,74 @@ export interface ResponsesInputMessage {
   content: Array<{ type: "input_text" | "output_text"; text: string }>;
 }
 
+/**
+ * One function tool call the model issued in a previous step, replayed so
+ * the next request's history stays consistent with its function_call_output
+ * (OpenAI Responses `function_call` input item).
+ */
+export interface ResponsesFunctionCallItem {
+  type: "function_call";
+  call_id: string;
+  name: string;
+  /** Raw JSON arguments string, as produced by the model. */
+  arguments: string;
+}
+
+/**
+ * The rendered result of one function tool call, joined to its call by
+ * call_id (OpenAI Responses `function_call_output` input item).
+ */
+export interface ResponsesFunctionCallOutputItem {
+  type: "function_call_output";
+  call_id: string;
+  output: string;
+}
+
+/** One item of the Responses `input` array. */
+export type ResponsesInputItem =
+  | ResponsesInputMessage
+  | ResponsesFunctionCallItem
+  | ResponsesFunctionCallOutputItem;
+
 /** The Responses request body this adapter posts to `{baseURL}/responses`. */
 export interface ResponsesRequest {
   model: string;
   instructions?: string;
-  input: ResponsesInputMessage[];
+  input: ResponsesInputItem[];
   stream: true;
   temperature?: number;
   max_output_tokens?: number;
 }
 
 /**
+ * Render a tool result's content into the function_call_output text. The
+ * harness tool surface is text-only (tool outputs render as result text),
+ * so text blocks concatenate and any other block type fails loudly instead
+ * of silently degrading the model-visible result.
+ */
+function renderToolResultContent(content: ReadonlyArray<{ type: string; text?: string }>): string {
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === "text") {
+      parts.push(block.text ?? "");
+      continue;
+    }
+    throw new LlmError(
+      `GLM Responses adapter supports text-only tool result content; got ${block.type}`,
+      "UNSUPPORTED_CONTENT",
+    );
+  }
+  return parts.join("\n");
+}
+
+/**
  * Serialize one fully-assembled model call into the Responses request
  * body. Assistant reasoning blocks are intentionally not replayed (GLM
- * regenerates reasoning each turn; contract §4). Unsupported content
- * (images, tool calls/results) and unsupported options (stop sequences,
- * reasoning efforts) fail loudly instead of being silently dropped.
+ * regenerates reasoning each turn; contract §4). Tool calls and results
+ * replay as `function_call` / `function_call_output` input items (D11) so
+ * a follow-up tool step can carry its results. Unsupported content (images)
+ * and unsupported options (stop sequences, reasoning efforts) fail loudly
+ * instead of being silently dropped.
  */
 export function serializeRequest(options: GenerateOptions): ResponsesRequest {
   if (options.stop !== undefined && options.stop.length > 0) {
@@ -47,14 +100,23 @@ export function serializeRequest(options: GenerateOptions): ResponsesRequest {
     );
   }
 
-  const input: ResponsesInputMessage[] = [];
+  const input: ResponsesInputItem[] = [];
   for (const message of options.messages) {
     switch (message.role) {
       case "user": {
         const content: Array<{ type: "input_text"; text: string }> = [];
+        const toolItems: ResponsesInputItem[] = [];
         for (const block of message.content) {
           if (block.type === "text") {
             content.push({ type: "input_text", text: block.text });
+            continue;
+          }
+          if (block.type === "tool-result") {
+            toolItems.push({
+              type: "function_call_output",
+              call_id: block.toolCallId,
+              output: renderToolResultContent(block.content),
+            });
             continue;
           }
           throw new LlmError(
@@ -62,11 +124,17 @@ export function serializeRequest(options: GenerateOptions): ResponsesRequest {
             "UNSUPPORTED_CONTENT",
           );
         }
-        input.push({ type: "message", role: "user", content });
+        // Message text first, then the tool outputs — an empty content
+        // array (a pure tool-result message) produces no message item.
+        if (content.length > 0) {
+          input.push({ type: "message", role: "user", content });
+        }
+        input.push(...toolItems);
         continue;
       }
       case "assistant": {
         const content: Array<{ type: "output_text"; text: string }> = [];
+        const toolItems: ResponsesInputItem[] = [];
         for (const block of message.content) {
           if (block.type === "text") {
             content.push({ type: "output_text", text: block.text });
@@ -76,19 +144,28 @@ export function serializeRequest(options: GenerateOptions): ResponsesRequest {
             // Reasoning is not replayed (contract §4).
             continue;
           }
+          if (block.type === "tool-call") {
+            toolItems.push({
+              type: "function_call",
+              call_id: block.id,
+              name: block.name,
+              arguments: block.arguments,
+            });
+            continue;
+          }
           throw new LlmError(
             `GLM Responses adapter supports text-only assistant history; got ${block.type}`,
             "UNSUPPORTED_CONTENT",
           );
         }
-        // Reasoning is not replayed, so an assistant message that carried
-        // only reasoning would serialize to an empty content array — a
-        // shape the Responses endpoint can reject. Skip it: the message
-        // has no sendable content.
-        if (content.length === 0) {
-          continue;
+        // Assistant text message first, then its function calls (matching
+        // the model's output-item order); reasoning-only messages produce
+        // no message item — an empty content array is a shape the
+        // Responses endpoint can reject.
+        if (content.length > 0) {
+          input.push({ type: "message", role: "assistant", content });
         }
-        input.push({ type: "message", role: "assistant", content });
+        input.push(...toolItems);
         continue;
       }
       default:

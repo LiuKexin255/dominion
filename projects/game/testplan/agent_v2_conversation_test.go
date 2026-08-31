@@ -275,8 +275,8 @@ func TestAgentV2ConcurrentSessionIsolation(t *testing.T) {
 	}
 
 	// Each history carries only its own marker (no cross-session bleed).
-	hist1 := listAgentV2History(t, ctx, sutHostURL, sutEnvName, name1)
-	hist2 := listAgentV2History(t, ctx, sutHostURL, sutEnvName, name2)
+	hist1 := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, name1)
+	hist2 := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, name2)
 	if len(hist1.GetMessages()) == 0 || agentV2MessageText(hist1.GetMessages()[0]) != text1 {
 		t.Errorf("session 1 history[0] = %+v, want the session-1 user marker %q", hist1.GetMessages()[0], text1)
 	}
@@ -361,7 +361,7 @@ func TestAgentV2QueuedTurnAutoResumes(t *testing.T) {
 		t.Errorf("turns A and B share turn_id %q", eventsA[0].GetTurnId())
 	}
 	// The queue was consumed in order: both user messages persisted.
-	hist := listAgentV2History(t, ctx, sutHostURL, sutEnvName, sessionName)
+	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
 	if len(hist.GetMessages()) != 4 {
 		t.Fatalf("history messages = %d, want 4 (two user turns + two agent replies)", len(hist.GetMessages()))
 	}
@@ -369,8 +369,8 @@ func TestAgentV2QueuedTurnAutoResumes(t *testing.T) {
 
 // TestAgentV2HistoryBackfillMatchesStream covers quickstart §2 用例 6
 // (FR-014): a never-seen session reads an empty history through the proxy
-// short-circuit (no owner allocation, conversation.go ListHistory); after a
-// greet turn, :history returns the user message plus the agent reply whose
+// short-circuit (no owner allocation, conversation.go agent read paths); after a
+// greet turn, ListAgentMessages returns the user message plus the agent reply whose
 // blocks equal the streamed terminal state (think = the two reasoning
 // pieces, text = the reply body) with per-message ids.
 func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
@@ -381,7 +381,7 @@ func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
 	// A session that never sent a message: 200 with an empty list — the
 	// read path must not allocate an owner (conversation-api.md §2).
 	ghostName := "templates/" + saoleiTemplateID + "/sessions/ghost-" + uniqueSuffix()
-	hist := listAgentV2History(t, ctx, sutHostURL, sutEnvName, ghostName)
+	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, ghostName)
 	if len(hist.GetMessages()) != 0 {
 		t.Fatalf("never-used session history = %d messages, want 0", len(hist.GetMessages()))
 	}
@@ -396,7 +396,7 @@ func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
 	assertAgentV2TurnWellFormed(t, sessionName, events)
 	term := agentV2TerminalBlocksFromEvents(events)
 
-	hist = listAgentV2History(t, ctx, sutHostURL, sutEnvName, sessionName)
+	hist = listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
 	messages := hist.GetMessages()
 	if len(messages) != 2 {
 		t.Fatalf("history messages = %d, want 2 (user turn + agent reply)", len(messages))
@@ -420,83 +420,6 @@ func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
 	if messages[0].GetMessageId() == messages[1].GetMessageId() {
 		t.Errorf("history message ids collide on %q", messages[0].GetMessageId())
 	}
-}
-
-// TestAgentV2DisposeAbortsAndFreshSession covers quickstart §2 用例 7
-// (FR-015/US4-3): disposing mid-turn makes the in-flight stream terminate
-// with turn_end{ABORTED}; the /api/v1 delete completes the lifecycle
-// orchestration; the disposed session reads an empty history; a new Send to
-// the same resource name is a brand-new session (fresh turn, greet reply,
-// history holds only the new turn), and dispose stays idempotent.
-func TestAgentV2DisposeAbortsAndFreshSession(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-	ctx := traceContext(t)
-
-	sessionID, rawCreate := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
-	sessionName := agentV2SessionName(sessionID)
-
-	// In-flight turn: the slow template keeps the stream open ~3s.
-	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerSlow+" dispose mid-turn")
-	first := nextAgentV2Event(t, stream.Scanner)
-	if first.GetTurnStart() == nil {
-		stream.Close()
-		t.Fatalf("first frame payload = %T, want turn_start", first.GetPayload())
-	}
-
-	// Orchestrate the delete (US4-3 order: /api/v1 delete first, then
-	// dispose — specs/049-agent-v2-dsh-init/research.md D6) while the turn
-	// runs; the in-flight stream must observe turn_end{ABORTED}.
-	delResp := deleteSession(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
-	if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNoContent {
-		stream.Close()
-		t.Fatalf("DELETE session status = %d, want 200 or 204 (create response: %s)", delResp.StatusCode, rawCreate)
-	}
-	disposeAgentV2(t, ctx, sutHostURL, sutEnvName, sessionName)
-
-	ch := drainAgentV2TurnAsync(stream)
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			t.Fatalf("in-flight stream after dispose: %v", r.err)
-		}
-		events := append([]*gamev2.ChatEvent{first}, r.events...)
-		assertAgentV2TurnWellFormed(t, sessionName, events)
-		end := events[len(events)-1].GetTurnEnd()
-		if end.GetStatus() != gamev2.TurnStatus_TURN_STATUS_ABORTED {
-			t.Fatalf("in-flight turn ended %v, want ABORTED (FR-015)", end.GetStatus())
-		}
-	case <-time.After(wsReadTimeout):
-		t.Fatal("in-flight stream was not aborted within the read window")
-	}
-
-	// The disposed session's history is gone.
-	hist := listAgentV2History(t, ctx, sutHostURL, sutEnvName, sessionName)
-	if len(hist.GetMessages()) != 0 {
-		t.Fatalf("history after dispose = %d messages, want 0 (FR-015)", len(hist.GetMessages()))
-	}
-
-	// Same resource name → brand-new session: idle start, full greet turn,
-	// history holds only the new exchange.
-	stream2 := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerThink+" fresh after dispose")
-	defer stream2.Close()
-	events2 := drainAgentV2Turn(t, stream2)
-	assertAgentV2TurnWellFormed(t, sessionName, events2)
-	if events2[0].GetQueued() != nil {
-		t.Fatalf("fresh session first frame is queued — disposed session state leaked (FR-015)")
-	}
-	if got := agentV2TerminalBlocksFromEvents(events2).text; got != agentV2GreetText {
-		t.Errorf("fresh session text = %q, want %q", got, agentV2GreetText)
-	}
-	hist = listAgentV2History(t, ctx, sutHostURL, sutEnvName, sessionName)
-	if len(hist.GetMessages()) != 2 {
-		t.Fatalf("fresh session history = %d messages, want 2 — old history must not survive dispose (FR-015)", len(hist.GetMessages()))
-	}
-
-	// Dispose is idempotent — an already-released session disposes 200 again.
-	disposeAgentV2(t, ctx, sutHostURL, sutEnvName, sessionName)
 }
 
 // TestAgentV2ModelFailureRecovers covers quickstart §2 用例 8 (Edge-模型故障):

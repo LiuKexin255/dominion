@@ -319,7 +319,7 @@ describe("AgentSessions.send", () => {
     sessions.send("templates/saolei/sessions/s1", "second", second);
     await flush();
 
-    const history = await sessions.listHistory("templates/saolei/sessions/s1");
+    const history = await sessions.listMessages("templates/saolei/sessions/s1");
     expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_USER"]);
     expect(history[0]?.blocks[0]?.text?.content).toBe("first");
     expect(history[1]?.blocks[0]?.text?.content).toBe("second");
@@ -345,7 +345,7 @@ describe("AgentSessions.send", () => {
     emit(harness, "agent/status", { agent, status: "idle" });
     await flush();
 
-    const history = await sessions.listHistory("templates/saolei/sessions/s1");
+    const history = await sessions.listMessages("templates/saolei/sessions/s1");
     expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_AGENT"]);
     const agentBlocks = history[1]?.blocks ?? [];
     expect(agentBlocks[0]?.think?.content).toBe("thinking");
@@ -387,7 +387,7 @@ describe("AgentSessions.dispose", () => {
 
     // The disposed session's history is no longer queryable: re-asking
     // get-or-creates a fresh entry with an empty record (data-model.md §2.2).
-    const historyAfter = await sessions.listHistory("templates/saolei/sessions/s1");
+    const historyAfter = await sessions.listMessages("templates/saolei/sessions/s1");
     expect(historyAfter).toEqual([]);
     expect(handle.dispose).toHaveBeenCalledTimes(1);
   });
@@ -428,7 +428,7 @@ describe("AgentSessions.dispose", () => {
     await driveTurn(harness, second, "new reply");
 
     expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
-    const history = await sessions.listHistory("templates/saolei/sessions/s1");
+    const history = await sessions.listMessages("templates/saolei/sessions/s1");
     expect(history.map((message) => message.blocks[0]?.text?.content)).toEqual([
       "after dispose",
       "new reply",
@@ -469,7 +469,7 @@ describe("AgentSessions.dispose", () => {
   });
 });
 
-describe("AgentSessions.listHistory", () => {
+describe("AgentSessions.listMessages", () => {
   it("returns an empty history for a fresh session (get-or-create)", async () => {
     const harness = createHarness();
     const agent = fakeAgent("templates/saolei/sessions/s1");
@@ -477,7 +477,7 @@ describe("AgentSessions.listHistory", () => {
     harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
     const sessions = new AgentSessions(harness.ctx);
-    const history = await sessions.listHistory("templates/saolei/sessions/s1");
+    const history = await sessions.listMessages("templates/saolei/sessions/s1");
     expect(history).toEqual([]);
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
   });

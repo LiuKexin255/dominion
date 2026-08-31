@@ -126,11 +126,13 @@ export class AgentSessions {
   }
 
   /**
-   * In-memory history for refresh/reconnect backfill (FR-014). Absent
-   * sessions get-or-create a fresh entry (data-model.md §2.2), so a disposed
-   * session queried again yields an empty, brand-new conversation.
+   * In-memory conversation history for refresh/reconnect backfill
+   * (ListAgentMessages, agent-api.md §2.3; 049 FR-014 semantics carried
+   * over). Absent sessions get-or-create a fresh entry (data-model.md
+   * §2.2), so a disposed session queried again yields an empty, brand-new
+   * conversation.
    */
-  async listHistory(session: string): Promise<HistoryMessage[]> {
+  async listMessages(session: string): Promise<HistoryMessage[]> {
     const entry = await this.getOrCreate(session);
     return entry.history.list();
   }

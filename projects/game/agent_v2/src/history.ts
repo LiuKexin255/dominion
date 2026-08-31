@@ -217,7 +217,7 @@ export class SessionHistory {
     this.nextSeq += 1;
   }
 
-  /** Snapshot of the history for ListHistory (defensive copy). */
+  /** Snapshot of the history for ListAgentMessages (defensive copy). */
   list(): HistoryMessage[] {
     return [...this.messages];
   }

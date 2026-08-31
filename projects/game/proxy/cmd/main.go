@@ -36,10 +36,10 @@ func main() {
 	}
 
 	// MongoDB-backed owner stores. The v1 team-owner store and the agent_v2
-	// conversation-owner store live in dedicated collections: the two
+	// owner store live in dedicated collections: the two
 	// stateful instance pools are independent, and the same game session may
-	// hold a v1 team owner and a v2 conversation owner at once
-	// (specs/049-agent-v2-dsh-init/data-model.md §2.9).
+	// hold a v1 team owner and a v2 agent owner at once
+	// (specs/051-agent-v2-dsh-migration/data-model.md §2.9).
 	mongoClient, err := mongo.NewClient("game/mongo")
 	if err != nil {
 		log.Fatalf("failed to create mongo client: %v", err)
@@ -64,7 +64,7 @@ func main() {
 	agentV2Manager := agentclient.NewManager(statefulResolver, agentV2Target, agentclient.DefaultRefreshInterval)
 
 	// Bidirectional stream binder (v1 TeamService.Connect) and the generic
-	// server-streaming pump (ConversationService.Send relay).
+	// server-streaming pump (AgentService.Send relay).
 	binder := bind.NewBinder()
 
 	// Team handler implements the TeamService gRPC server interface directly:
@@ -72,11 +72,11 @@ func main() {
 	// (spec 031-team-template-mode: ProxyService/AgentService merged into TeamService.)
 	grpcHandler := handler.NewTeamHandler(mongoOwnerStore, hashPicker, manager, binder)
 
-	// Conversation handler forwards the /api/v2 surface (Send/ListHistory/
-	// Dispose) to the agent_v2 instance owning the (template, session) pair —
-	// owner affinity keeps the in-memory sessions from drifting across
-	// instances (specs/049-agent-v2-dsh-init/research.md D4).
-	conversationHandler := handler.NewConversationHandler(
+	// Agent handler forwards the /api/v2 agent surface to the agent_v2
+	// instance owning the (template, session) pair — owner affinity keeps
+	// the in-memory sessions from drifting across instances
+	// (specs/051-agent-v2-dsh-migration/research.md D9).
+	agentHandler := handler.NewAgentHandler(
 		agentV2OwnerStore,
 		hashPicker,
 		agentV2Manager,
@@ -96,7 +96,7 @@ func main() {
 	)
 	grpcServer := grpcgo.NewServer(serverOpts...)
 	game.RegisterTeamServiceServer(grpcServer, grpcHandler)
-	gamev2.RegisterConversationServiceServer(grpcServer, conversationHandler)
+	gamev2.RegisterAgentServiceServer(grpcServer, agentHandler)
 	reflection.Register(grpcServer)
 
 	// Bootstrap lifecycle: OTEL → Mongo client → Agent client managers → gRPC server.

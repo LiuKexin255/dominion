@@ -929,12 +929,12 @@ func TestReadLimitSet(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: root mux routing (/api/v2 conversation surface, /api/v1 regression)
+// Tests: root mux routing (/api/v2 agent surface, /api/v1 regression)
 // ---------------------------------------------------------------------------
 
 // newRoutingTestMux builds the root mux the way main() assembles it: one
 // proxy connection (teamConn) carrying both the v1 TeamService and the v2
-// ConversationService handlers, pointed at an unreachable backend. Routing
+// AgentService handlers, pointed at an unreachable backend. Routing
 // assertions can then distinguish "reached grpc-gateway and proxied" (503,
 // backend unavailable) from "no route" (404).
 func newRoutingTestMux(t *testing.T) *http.ServeMux {
@@ -953,15 +953,15 @@ func newRoutingTestMux(t *testing.T) *http.ServeMux {
 	if err := game.RegisterTeamServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
 		t.Fatalf("register team handler: %v", err)
 	}
-	if err := gamev2.RegisterConversationServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
-		t.Fatalf("register conversation handler: %v", err)
+	if err := gamev2.RegisterAgentServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
+		t.Fatalf("register agent handler: %v", err)
 	}
 
 	return newRootMux(gwmux, proxyConn)
 }
 
 // TestRootMuxAPIv2SendProxiesToGrpcGateway verifies the /api/v2/ subtree is
-// bound to grpc-gateway: a :send request reaches the ConversationService
+// bound to grpc-gateway: a :send request reaches the AgentService
 // route and fails proxying to the unreachable backend with 503 (grpc code
 // Unavailable) instead of a routing 404 (spec 049-agent-v2-dsh-init FR-013).
 func TestRootMuxAPIv2SendProxiesToGrpcGateway(t *testing.T) {
@@ -984,7 +984,7 @@ func TestRootMuxAPIv2SendProxiesToGrpcGateway(t *testing.T) {
 }
 
 // TestRootMuxAPIv2UnknownPathStillReachesGrpcGateway verifies an /api/v2/
-// path that matches no ConversationService HTTP rule is answered by
+// path that matches no AgentService HTTP rule is answered by
 // grpc-gateway's 404 (the subtree routes there), not by the root mux's own
 // 404 handler.
 func TestRootMuxAPIv2UnknownPathStillReachesGrpcGateway(t *testing.T) {

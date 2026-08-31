@@ -25,15 +25,15 @@ import (
 
 // ─── agent_v2 conversation helpers (the /api/v2 NDJSON surface) ─────────────
 //
-// The ConversationService surface (specs/049-agent-v2-dsh-init/contracts/
-// conversation-api.md) is exposed by the gateway under /api/v2: Send is a
-// chunked NDJSON stream, ListHistory/Dispose are unary JSON. Shared by the
+// The AgentService surface (specs/051-agent-v2-dsh-migration/contracts/
+// agent-api.md) is exposed by the gateway under /api/v2: Send is a
+// chunked NDJSON stream, ListAgentMessages is unary JSON. Shared by the
 // agent_v2 conversation module tests and the web hosting smoke — shared
 // helpers live here, never copied per test file (style/large_test.md
 // §反模式3).
 
-// agentV2PathPrefix is the /api/v2 gateway route prefix the ConversationService
-// handler is bound to (conversation-api.md §2).
+// agentV2PathPrefix is the /api/v2 gateway route prefix the AgentService
+// handler is bound to (agent-api.md §1).
 const agentV2PathPrefix = "/api/v2/"
 
 // User-message keyword triggers of projects/game/fake-llm/service/testdata/
@@ -66,8 +66,8 @@ const (
 )
 
 // agentV2SessionName builds the full game session resource name the
-// ConversationService session field carries
-// (templates/{template}/sessions/{session}, conversation-api.md §1).
+// AgentService session field carries
+// (templates/{template}/sessions/{session}, agent-api.md §1).
 func agentV2SessionName(sessionID string) string {
 	return game.SessionName{TemplateID: saoleiTemplateID, SessionID: sessionID}.String()
 }
@@ -416,33 +416,20 @@ func agentV2MessageText(m *gamev2.HistoryMessage) string {
 	return s
 }
 
-// listAgentV2History issues GET /api/v2/{session}:history and returns the
-// parsed ListHistoryResponse (conversation-api.md §2). Calls t.Fatal on
-// non-200 responses.
-func listAgentV2History(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *gamev2.ListHistoryResponse {
+// listAgentV2Messages issues GET /api/v2/{session}/agent/messages and
+// returns the parsed ListAgentMessagesResponse (agent-api.md §1). Calls
+// t.Fatal on non-200 responses.
+func listAgentV2Messages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *gamev2.ListAgentMessagesResponse {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%s%s:history", sutHostURL, agentV2PathPrefix, sessionName)
+	reqURL := fmt.Sprintf("%s%s%s/agent/messages", sutHostURL, agentV2PathPrefix, sessionName)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET history status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("GET agent messages status=%d, body=%s", resp.StatusCode, respBody)
 	}
-	hist := new(gamev2.ListHistoryResponse)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, hist); err != nil {
-		t.Fatalf("Unmarshal ListHistoryResponse: %v (raw: %s)", err, respBody)
+	messages := new(gamev2.ListAgentMessagesResponse)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, messages); err != nil {
+		t.Fatalf("Unmarshal ListAgentMessagesResponse: %v (raw: %s)", err, respBody)
 	}
-	return hist
-}
-
-// disposeAgentV2 issues POST /api/v2/{session}:dispose and asserts the
-// idempotent 200 (an absent session is treated as already released —
-// conversation-api.md §2).
-func disposeAgentV2(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%s%s:dispose", sutHostURL, agentV2PathPrefix, sessionName)
-	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST dispose status=%d, body=%s", resp.StatusCode, respBody)
-	}
+	return messages
 }

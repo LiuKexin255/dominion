@@ -17,26 +17,34 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// newConversationClient wraps the generated client constructor as a
-// package-level variable so tests can drive the forwarding branches against
-// fake streams (the agentclient.NewAgentClient precedent).
-var newConversationClient = func(conn *grpc.ClientConn) gamev2.ConversationServiceClient {
-	return gamev2.NewConversationServiceClient(conn)
+// newAgentClient wraps the generated client constructor as a package-level
+// variable so tests can drive the forwarding branches against fake streams
+// (the agentclient.NewAgentClient precedent).
+var newAgentClient = func(conn *grpc.ClientConn) gamev2.AgentServiceClient {
+	return gamev2.NewAgentServiceClient(conn)
 }
 
-// ConversationHandler implements gamev2.ConversationServiceServer: the
-// owner-affinity forwarding surface that routes /api/v2 conversation RPCs to
-// the agent_v2 stateful instance owning the (template, session) pair
-// (specs/049-agent-v2-dsh-init/research.md D4). agent_v2 keeps sessions,
-// queues, and history in process memory, so requests must not drift across
-// instances: Send is the only RPC that allocates an owner (get-or-create),
-// while ListHistory/Dispose never allocate — a session that never sent a
-// message short-circuits to an empty history / idempotent Empty at the proxy.
-type ConversationHandler struct {
-	gamev2.UnimplementedConversationServiceServer
+// AgentHandler implements gamev2.AgentServiceServer: the owner-affinity
+// forwarding surface that routes /api/v2 agent RPCs to the agent_v2 stateful
+// instance owning the (template, session) pair
+// (specs/051-agent-v2-dsh-migration/research.md D9). agent_v2 keeps
+// sessions, queues, and history in process memory, so requests must not
+// drift across instances.
+//
+// Phase-2 wiring state: Send is the only implemented RPC — it forwards the
+// stream and allocates the owner via assignConversationOwner (get-or-create,
+// the 049 allocation semantics kept as a placeholder). Every other AgentService
+// RPC (UpdateAgent, GetAgent, ListAgentMessages, preset CRUD, ListModels)
+// answers UNIMPLEMENTED via the embedded server interface. The real proxy
+// semantics — UpdateAgent as the owner allocation point, Send lookup without
+// allocation (specs/051-agent-v2-dsh-migration/data-model.md §2.9) — and the
+// DesktopBridgeService forwarding surface are defined by
+// specs/051-agent-v2-dsh-migration/tasks.md T018 (host-side handler wiring:
+// T014).
+type AgentHandler struct {
+	gamev2.UnimplementedAgentServiceServer
 
 	ownerStore  domain.OwnerStore
 	ownerPicker domain.OwnerPicker
@@ -44,14 +52,14 @@ type ConversationHandler struct {
 	binder      bind.ServerStreamBinder[gamev2.ChatEvent]
 }
 
-// NewConversationHandler creates a new ConversationHandler.
-func NewConversationHandler(
+// NewAgentHandler creates a new AgentHandler.
+func NewAgentHandler(
 	ownerStore domain.OwnerStore,
 	ownerPicker domain.OwnerPicker,
 	manager agentclient.Manager,
 	binder bind.ServerStreamBinder[gamev2.ChatEvent],
-) *ConversationHandler {
-	return &ConversationHandler{
+) *AgentHandler {
+	return &AgentHandler{
 		ownerStore:  ownerStore,
 		ownerPicker: ownerPicker,
 		manager:     manager,
@@ -64,17 +72,17 @@ func NewConversationHandler(
 // the owner (get-or-create; ErrOwnerAlreadyExists races re-read the winner,
 // same semantics as the v1 assignOwner); the routing-layer validation rejects
 // malformed resource names with INVALID_ARGUMENT before any allocation.
-func (h *ConversationHandler) Send(req *gamev2.SendRequest, stream gamev2.ConversationService_SendServer) error {
+func (h *AgentHandler) Send(req *gamev2.SendRequest, stream gamev2.AgentService_SendServer) error {
 	ctx := stream.Context()
 
-	name, err := parseConversationSession(req.GetSession())
+	name, err := parseAgentSession(req.GetSession())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if req.GetText() == "" {
 		// Same routing-layer rule as agent_v2's own handler (the proxy
 		// checks first, agent_v2 re-validates as the backstop):
-		// contracts/conversation-api.md §2.
+		// contracts/agent-api.md §2.4.
 		return status.Error(codes.InvalidArgument, "text must be non-empty")
 	}
 
@@ -83,14 +91,14 @@ func (h *ConversationHandler) Send(req *gamev2.SendRequest, stream gamev2.Conver
 		return err
 	}
 
-	connRef, err := h.conversationConn(ctx, owner)
+	connRef, err := h.agentConn(ctx, owner)
 	if err != nil {
 		return err
 	}
 
-	upstream, err := newConversationClient(connRef.Conn).Send(ctx, req)
+	upstream, err := newAgentClient(connRef.Conn).Send(ctx, req)
 	if err != nil {
-		logs.Error(ctx, "conversation send: open upstream stream failed",
+		logs.Error(ctx, "agent send: open upstream stream failed",
 			event.String("template_id", name.TemplateID),
 			event.String("session_id", name.SessionID),
 			event.Int("agent_index", owner.OwnerIndex),
@@ -100,20 +108,20 @@ func (h *ConversationHandler) Send(req *gamev2.SendRequest, stream gamev2.Conver
 		// INVALID_ARGUMENT) keep their gRPC status so the front end sees the
 		// mapped HTTP code; only a non-status transport failure (conn broken
 		// while opening) is a proxy→agent_v2 hop break → UNAVAILABLE
-		// (contracts/conversation-api.md §2.1).
+		// (contracts/agent-api.md §3).
 		if st, ok := status.FromError(err); ok {
 			return st.Err()
 		}
-		return status.Errorf(codes.Unavailable, "open conversation stream: %v", err)
+		return status.Errorf(codes.Unavailable, "open agent stream: %v", err)
 	}
 
-	logs.Info(ctx, "conversation stream connected",
+	logs.Info(ctx, "agent stream connected",
 		event.String("session_id", name.SessionID),
 		event.Int("agent_index", owner.OwnerIndex),
 	)
 
 	if err := h.binder.BindServerStream(stream, upstream); err != nil {
-		logs.Error(ctx, "conversation send: bind failed",
+		logs.Error(ctx, "agent send: bind failed",
 			event.String("session_id", name.SessionID),
 			event.Int("agent_index", owner.OwnerIndex),
 			event.Err(err),
@@ -126,93 +134,12 @@ func (h *ConversationHandler) Send(req *gamev2.SendRequest, stream gamev2.Conver
 	return nil
 }
 
-// ListHistory returns the session's in-memory conversation history for
-// refresh/reconnect backfill. Read path: no owner (the session never sent a
-// message) short-circuits to an empty response without allocating one.
-func (h *ConversationHandler) ListHistory(ctx context.Context, req *gamev2.ListHistoryRequest) (*gamev2.ListHistoryResponse, error) {
-	name, err := parseConversationSession(req.GetSession())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	owner, err := h.ownerStore.Get(ctx, name.TemplateID, name.SessionID)
-	if err != nil {
-		if errors.Is(err, domain.ErrOwnerNotFound) {
-			// Never-conversed session: empty history, no allocation side effect.
-			return &gamev2.ListHistoryResponse{}, nil
-		}
-		logs.Error(ctx, "conversation history: owner lookup failed",
-			event.String("template_id", name.TemplateID),
-			event.String("session_id", name.SessionID),
-			event.Err(err),
-		)
-		return nil, mapDomainError(err)
-	}
-
-	connRef, err := h.conversationConn(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := newConversationClient(connRef.Conn).ListHistory(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "conversation history: downstream call failed",
-			event.String("session_id", name.SessionID),
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "list history")
-	}
-	return resp, nil
-}
-
-// Dispose releases the session's agent_v2 resources (in-flight turn aborted,
-// queued messages dropped). Read path: no owner short-circuits to an
-// idempotent Empty — an absent session is already released. The owner record
-// itself is NOT deleted: the mapping is an affinity anchor, not session state
-// (same lifecycle as the v1 owner; a fresh session re-created under the same
-// resource name is guaranteed by agent_v2, FR-015).
-func (h *ConversationHandler) Dispose(ctx context.Context, req *gamev2.DisposeRequest) (*emptypb.Empty, error) {
-	name, err := parseConversationSession(req.GetSession())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	owner, err := h.ownerStore.Get(ctx, name.TemplateID, name.SessionID)
-	if err != nil {
-		if errors.Is(err, domain.ErrOwnerNotFound) {
-			// Idempotent: an absent session is treated as already released.
-			return &emptypb.Empty{}, nil
-		}
-		logs.Error(ctx, "conversation dispose: owner lookup failed",
-			event.String("template_id", name.TemplateID),
-			event.String("session_id", name.SessionID),
-			event.Err(err),
-		)
-		return nil, mapDomainError(err)
-	}
-
-	connRef, err := h.conversationConn(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := newConversationClient(connRef.Conn).Dispose(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "conversation dispose: downstream call failed",
-			event.String("session_id", name.SessionID),
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "dispose")
-	}
-	return resp, nil
-}
-
-// parseConversationSession validates a game session resource name of the
+// parseAgentSession validates a game session resource name of the
 // form templates/{template}/sessions/{session} with a known template
 // (same rule as agent_v2's own handler — the proxy checks first, agent_v2
-// re-validates as the backstop, specs/049-agent-v2-dsh-init/data-model.md
-// §2.2).
-func parseConversationSession(name string) (game.SessionName, error) {
+// re-validates as the backstop, specs/051-agent-v2-dsh-migration/
+// data-model.md §3).
+func parseAgentSession(name string) (game.SessionName, error) {
 	parsed, err := game.ParseSessionName(name)
 	if err != nil {
 		return game.SessionName{}, err
@@ -225,17 +152,16 @@ func parseConversationSession(name string) (game.SessionName, error) {
 
 // assignConversationOwner returns the existing agent_v2 owner for a
 // (templateID, sessionID) pair, or picks and persists a new one when no
-// owner exists yet. Send is the only allocation point: under a
-// concurrent-allocation race the persisted owner wins (ErrOwnerAlreadyExists
-// re-reads the winner) — same semantics as the v1 assignOwner
-// (specs/040-team-singleton-conformance/research.md §R10).
-func (h *ConversationHandler) assignConversationOwner(ctx context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
+// owner exists yet. Under a concurrent-allocation race the persisted owner
+// wins (ErrOwnerAlreadyExists re-reads the winner) — same semantics as the
+// v1 assignOwner (specs/040-team-singleton-conformance/research.md §R10).
+func (h *AgentHandler) assignConversationOwner(ctx context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
 	owner, err := h.ownerStore.Get(ctx, templateID, sessionID)
 	if err == nil {
 		return owner, nil
 	}
 	if !errors.Is(err, domain.ErrOwnerNotFound) {
-		logs.Error(ctx, "assign conversation owner: store lookup failed",
+		logs.Error(ctx, "assign agent owner: store lookup failed",
 			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
@@ -245,7 +171,7 @@ func (h *ConversationHandler) assignConversationOwner(ctx context.Context, templ
 
 	conns, err := h.manager.List(ctx)
 	if err != nil {
-		logs.Error(ctx, "assign conversation owner: list connections failed",
+		logs.Error(ctx, "assign agent owner: list connections failed",
 			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
@@ -268,25 +194,25 @@ func (h *ConversationHandler) assignConversationOwner(ctx context.Context, templ
 	}
 	if err := h.ownerStore.Create(ctx, owner); err != nil {
 		if errors.Is(err, domain.ErrOwnerAlreadyExists) {
-			// Concurrent Send race: another request already persisted an
-			// owner for this session — reuse the winner's owner.
+			// Concurrent allocation race: another request already persisted
+			// an owner for this session — reuse the winner's owner.
 			existing, getErr := h.ownerStore.Get(ctx, templateID, sessionID)
 			if getErr != nil {
-				logs.Error(ctx, "assign conversation owner: re-read after race failed",
+				logs.Error(ctx, "assign agent owner: re-read after race failed",
 					event.String("template_id", templateID),
 					event.String("session_id", sessionID),
 					event.Err(getErr),
 				)
 				return nil, mapDomainError(getErr)
 			}
-			logs.Info(ctx, "conversation owner already allocated by concurrent send; reusing it",
+			logs.Info(ctx, "agent owner already allocated by a concurrent request; reusing it",
 				event.String("template_id", templateID),
 				event.String("session_id", sessionID),
 				event.Int("agent_index", existing.OwnerIndex),
 			)
 			return existing, nil
 		}
-		logs.Error(ctx, "assign conversation owner: create record failed",
+		logs.Error(ctx, "assign agent owner: create record failed",
 			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
@@ -294,7 +220,7 @@ func (h *ConversationHandler) assignConversationOwner(ctx context.Context, templ
 		return nil, mapDomainError(err)
 	}
 
-	logs.Info(ctx, "conversation owner created on send",
+	logs.Info(ctx, "agent owner created",
 		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 		event.String("owner", pickedRef.Owner),
@@ -303,12 +229,11 @@ func (h *ConversationHandler) assignConversationOwner(ctx context.Context, templ
 	return owner, nil
 }
 
-// conversationConn resolves the agent_v2 instance connection for an owner.
-// Unlike the v1 team path this maps a missing connection to UNAVAILABLE: a
-// chat request against an offline instance is retryable, and the two-hop
+// agentConn resolves the agent_v2 instance connection for an owner.
+// A chat request against an offline instance is retryable, and the two-hop
 // failure table keeps proxy→agent_v2 breaks on 503
-// (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §2.1).
-func (h *ConversationHandler) conversationConn(ctx context.Context, owner *domain.AgentOwner) (*agentclient.ConnRef, error) {
+// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §3).
+func (h *AgentHandler) agentConn(ctx context.Context, owner *domain.AgentOwner) (*agentclient.ConnRef, error) {
 	connRef, err := h.manager.Get(ctx, owner.OwnerIndex)
 	if err != nil {
 		logs.Error(ctx, "get agent_v2 connection failed",

@@ -27,10 +27,10 @@ const (
 	// agentOwnersCollection holds the v1 team-owner pool: owners of the
 	// stateful agent instances serving TeamService.
 	agentOwnersCollection = "agent_owners"
-	// agentV2OwnersCollection holds the agent_v2 conversation-owner pool:
-	// owners of the stateful agent_v2 instances serving ConversationService.
+	// agentV2OwnersCollection holds the agent_v2 owner pool:
+	// owners of the stateful agent_v2 instances serving AgentService.
 	// The two pools are independent (owner indexes are not interchangeable),
-	// and one game session may hold a v1 team owner and a v2 conversation
+	// and one game session may hold a v1 team owner and a v2 agent
 	// owner at once
 	// (specs/049-agent-v2-dsh-init/data-model.md §2.9).
 	agentV2OwnersCollection = "agent_v2_owners"
@@ -84,10 +84,9 @@ func NewAgentOwnerStore(client *mongodriver.Client) domain.OwnerStore {
 }
 
 // NewAgentV2OwnerStore creates the MongoDB-backed OwnerStore of the agent_v2
-// conversation-owner pool (stateful agent_v2 instances serving
-// ConversationService). The dedicated collection keeps the two instance
-// pools isolated
-// (specs/049-agent-v2-dsh-init/data-model.md §2.9).
+// owner pool (stateful agent_v2 instances serving AgentService). The
+// dedicated collection keeps the two instance pools isolated
+// (specs/051-agent-v2-dsh-migration/data-model.md §2.9).
 func NewAgentV2OwnerStore(client *mongodriver.Client) domain.OwnerStore {
 	return &mongoOwnerStore{
 		collection: newOwnerCollection(client, databaseName, agentV2OwnersCollection),

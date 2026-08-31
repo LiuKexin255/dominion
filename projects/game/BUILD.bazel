@@ -44,16 +44,20 @@ go_library(
     visibility = ["//visibility:public"],
 )
 
-# /api/v2 conversation surface (specs/049-agent-v2-dsh-init). Lives in the
-# app root next to game.proto — the app-root directory carries every proto of
-# this app (specs/049-agent-v2-dsh-init/research.md D12) — while keeping the
-# versioned proto package projects.game.v2 disjoint from the v1 namespace.
+# /api/v2 agent surface (specs/051-agent-v2-dsh-migration/contracts/
+# agent-api.md §1). Lives in the app root next to game.proto — the app-root
+# directory carries every proto of this app (specs/049-agent-v2-dsh-init/
+# research.md D12) — while keeping the versioned proto package
+# projects.game.v2 disjoint from the v1 namespace. game.proto is imported
+# for the DesktopBridgeService frame reuse only.
 proto_library(
     name = "agent_v2_proto",
     srcs = ["agent_v2.proto"],
     visibility = ["//visibility:public"],
     deps = [
+        ":game_proto",
         "@com_google_protobuf//:empty_proto",
+        "@com_google_protobuf//:field_mask_proto",
         "@com_google_protobuf//:timestamp_proto",
         "@googleapis//google/api:annotations_proto",
         "@googleapis//google/api:field_behavior_proto",
@@ -62,7 +66,7 @@ proto_library(
 
 # Go codegen mirrors :game_go_proto (compilers incl. grpc-gateway + AIP
 # resource parsers). importpath dominion/projects/game/v2 is the go_package of
-# specs/049-agent-v2-dsh-init/contracts/conversation-api.md §1.
+# specs/051-agent-v2-dsh-migration/contracts/agent-api.md §1.
 go_proto_library(
     name = "agent_v2_go_proto",
     compilers = [
@@ -82,6 +86,14 @@ go_proto_library(
         # into every binary linking both game protos — the Go linker rejects
         # that as "multiple copies of package passed to linker".
         "@googleapis//google/api:annotations_go_proto",
+        # DesktopBridgeService reuses the v1 frame types (UserFrame/TeamFrame
+        # from game.proto), so the generated v2 package imports the v1 one.
+        # The dep is the packaged :game go_library (not :game_go_proto) so
+        # binaries linking both protos see one "dominion/projects/game"
+        # archive — a second copy via the raw proto target makes the Go
+        # linker reject the binary as "multiple copies of package passed to
+        # linker" (same rule as the annotations_go_proto note above).
+        ":game",
     ],
 )
 

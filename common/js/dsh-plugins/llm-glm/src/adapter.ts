@@ -15,6 +15,7 @@ import {
 } from "@deepseek-ai/dsh-llm";
 import type {
   GenerateOptions,
+  LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
   StreamChunk,
@@ -57,6 +58,18 @@ export class GlmResponsesAdapter extends LlmAdapter {
 
   override providerInfo(provider: string): LlmProviderInfo {
     return { id: provider, name: PROVIDER_NAME };
+  }
+
+  /**
+   * The static model catalog: `config.models` projected onto LlmModelInfo,
+   * with no endpoint call. This is the single source the agent_v2
+   * ListModels RPC and UpdateAgent's model validation share
+   * (specs/051-agent-v2-dsh-migration/research.md D4) — the official
+   * adapter default advertises no models (dsh-llm README "Extension
+   * points"), the override is the reserved selector-metadata seam.
+   */
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    return this.config.models.map((entry) => ({ provider, id: entry.id, name: entry.id }));
   }
 
   override async resolveModel(

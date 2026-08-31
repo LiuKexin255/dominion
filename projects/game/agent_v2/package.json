@@ -14,7 +14,8 @@
         "@dominion/common-js-resolver": "workspace:*",
         "@dominion/dsh-llm-glm": "workspace:*",
         "@grpc/grpc-js": "catalog:",
-        "@grpc/proto-loader": "catalog:"
+        "@grpc/proto-loader": "catalog:",
+        "mongodb": "catalog:"
     },
     "devDependencies": {
         "@types/node": "catalog:",

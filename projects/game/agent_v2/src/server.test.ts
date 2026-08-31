@@ -1,35 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
 import * as grpc from "@grpc/grpc-js";
-import { buildConversationHandlers, parseSessionResource, PROTO_PATH } from "./server.js";
-import type { ConversationSink } from "./server.js";
-import type { ConversationServiceHandlers } from "../agent_v2_types/projects/game/v2/ConversationService.js";
+import { buildAgentHandlers, buildDesktopBridgeHandlers, parseAgentParent, parseSessionResource, PROTO_PATH } from "./server.js";
+import type { AgentSink } from "./server.js";
+import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 
 /**
  * Handler-level unit tests for the gRPC status mapping
- * (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §2): malformed
+ * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2): malformed
  * resource names and empty text are request-level INVALID_ARGUMENT failures
- * (the stream never opens), ListHistory wraps the history snapshot, and
- * Dispose is idempotent. The session sink is a `vi.fn()` double injected
- * through the buildConversationHandlers seam — no server binding, no module
- * interception (style/javascript.md Mock convention).
+ * (the stream never opens), ListAgentMessages wraps the history snapshot,
+ * and the not-yet-wired handlers fail loudly with UNIMPLEMENTED. The session
+ * sink is a `vi.fn()` double injected through the buildAgentHandlers seam —
+ * no server binding, no module interception (style/javascript.md Mock
+ * convention).
  */
 
-type SendCall = Parameters<ConversationServiceHandlers["Send"]>[0];
-type UnaryCall = Parameters<ConversationServiceHandlers["ListHistory"]>[0];
-type UnaryCallback = Parameters<ConversationServiceHandlers["ListHistory"]>[1];
+type SendCall = Parameters<AgentServiceHandlers["Send"]>[0];
+type UnaryCall = Parameters<AgentServiceHandlers["ListAgentMessages"]>[0];
+type UnaryCallback = Parameters<AgentServiceHandlers["ListAgentMessages"]>[1];
 
 const VALID = "templates/saolei/sessions/s1";
+const VALID_AGENT = "templates/saolei/sessions/s1/agent";
 
-function fakeSink(): ConversationSink & {
+function fakeSink(): AgentSink & {
   send: ReturnType<typeof vi.fn>;
-  listHistory: ReturnType<typeof vi.fn>;
-  dispose: ReturnType<typeof vi.fn>;
+  listMessages: ReturnType<typeof vi.fn>;
 } {
   return {
     send: vi.fn(),
-    listHistory: vi.fn(async () => []),
-    dispose: vi.fn(async () => {}),
+    listMessages: vi.fn(async () => []),
   };
 }
 
@@ -64,7 +64,7 @@ function fakeSendCall(request: { session?: string; text?: string }) {
   return { call: call as unknown as SendCall, written, end: call.end, errors };
 }
 
-function invokeSend(handlers: ConversationServiceHandlers, request: { session?: string; text?: string }) {
+function invokeSend(handlers: AgentServiceHandlers, request: { session?: string; text?: string }) {
   const fake = fakeSendCall(request);
   handlers.Send(fake.call);
   return fake;
@@ -72,7 +72,7 @@ function invokeSend(handlers: ConversationServiceHandlers, request: { session?: 
 
 function invokeUnary(
   handler: (call: UnaryCall, callback: UnaryCallback) => void,
-  request: { session?: string },
+  request: Record<string, unknown>,
 ): ReturnType<typeof vi.fn> {
   const callback = vi.fn();
   handler({ request } as unknown as UnaryCall, callback as unknown as UnaryCallback);
@@ -101,10 +101,23 @@ describe("parseSessionResource", () => {
   });
 });
 
-describe("ConversationService.Send handler", () => {
+describe("parseAgentParent", () => {
+  it("strips the /agent singleton segment and validates the session underneath", () => {
+    expect(parseAgentParent(VALID_AGENT)).toEqual({ template: "saolei", session: "s1" });
+  });
+
+  it("rejects names without the agent segment and invalid sessions", () => {
+    expect(parseAgentParent(VALID)).toBeUndefined();
+    expect(parseAgentParent("templates/saolei/sessions/s1/agent/x")).toBeUndefined();
+    expect(parseAgentParent("templates/unknown/sessions/s1/agent")).toBeUndefined();
+    expect(parseAgentParent("")).toBeUndefined();
+  });
+});
+
+describe("AgentService.Send handler", () => {
   it("adapts the grpc call into the TurnStream and dispatches to the sink", () => {
     const sink = fakeSink();
-    const handlers = buildConversationHandlers(sink);
+    const handlers = buildAgentHandlers(sink);
     const fake = invokeSend(handlers, { session: VALID, text: "hello" });
 
     expect(sink.send).toHaveBeenCalledTimes(1);
@@ -121,7 +134,7 @@ describe("ConversationService.Send handler", () => {
 
   it("rejects a malformed session resource before the stream opens", () => {
     const sink = fakeSink();
-    const handlers = buildConversationHandlers(sink);
+    const handlers = buildAgentHandlers(sink);
     const fake = invokeSend(handlers, { session: "projects/p1", text: "hello" });
 
     expect(fake.errors).toHaveLength(1);
@@ -132,7 +145,7 @@ describe("ConversationService.Send handler", () => {
 
   it("rejects an unknown template segment", () => {
     const sink = fakeSink();
-    const handlers = buildConversationHandlers(sink);
+    const handlers = buildAgentHandlers(sink);
     const fake = invokeSend(handlers, { session: "templates/unknown/sessions/s1", text: "hello" });
 
     expect(fake.errors).toHaveLength(1);
@@ -142,7 +155,7 @@ describe("ConversationService.Send handler", () => {
 
   it("rejects an empty text with INVALID_ARGUMENT", () => {
     const sink = fakeSink();
-    const handlers = buildConversationHandlers(sink);
+    const handlers = buildAgentHandlers(sink);
     const fake = invokeSend(handlers, { session: VALID, text: "" });
 
     expect(fake.errors).toHaveLength(1);
@@ -152,35 +165,35 @@ describe("ConversationService.Send handler", () => {
   });
 });
 
-describe("ConversationService.ListHistory handler", () => {
+describe("AgentService.ListAgentMessages handler", () => {
   it("wraps the history snapshot in the response message", async () => {
     const sink = fakeSink();
     const messages = [{ messageId: "m1", role: "ROLE_USER" }];
-    sink.listHistory.mockResolvedValue(messages);
-    const handlers = buildConversationHandlers(sink);
-    const callback = invokeUnary(handlers.ListHistory, { session: VALID });
+    sink.listMessages.mockResolvedValue(messages);
+    const handlers = buildAgentHandlers(sink);
+    const callback = invokeUnary(handlers.ListAgentMessages, { parent: VALID_AGENT });
 
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
-    expect(sink.listHistory).toHaveBeenCalledWith(VALID);
+    expect(sink.listMessages).toHaveBeenCalledWith(VALID);
     expect(callback).toHaveBeenCalledWith(null, { messages });
   });
 
-  it("rejects a malformed resource name with INVALID_ARGUMENT", () => {
+  it("rejects a malformed parent with INVALID_ARGUMENT", () => {
     const sink = fakeSink();
-    const handlers = buildConversationHandlers(sink);
-    const callback = invokeUnary(handlers.ListHistory, { session: "nope" });
+    const handlers = buildAgentHandlers(sink);
+    const callback = invokeUnary(handlers.ListAgentMessages, { parent: "nope" });
 
     expect(callback).toHaveBeenCalledTimes(1);
     const error = callback.mock.calls[0][0] as grpc.ServiceError;
     expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
-    expect(sink.listHistory).not.toHaveBeenCalled();
+    expect(sink.listMessages).not.toHaveBeenCalled();
   });
 
   it("maps a sink failure to INTERNAL without throwing", async () => {
     const sink = fakeSink();
-    sink.listHistory.mockRejectedValue(new Error("boom"));
-    const handlers = buildConversationHandlers(sink);
-    const callback = invokeUnary(handlers.ListHistory, { session: VALID });
+    sink.listMessages.mockRejectedValue(new Error("boom"));
+    const handlers = buildAgentHandlers(sink);
+    const callback = invokeUnary(handlers.ListAgentMessages, { parent: VALID_AGENT });
 
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
     const error = callback.mock.calls[0][0] as grpc.ServiceError;
@@ -189,37 +202,46 @@ describe("ConversationService.ListHistory handler", () => {
   });
 });
 
-describe("ConversationService.Dispose handler", () => {
-  it("acknowledges with an Empty reply (idempotent)", async () => {
-    const sink = fakeSink();
-    const handlers = buildConversationHandlers(sink);
-    const callback = invokeUnary(handlers.Dispose, { session: VALID });
-
-    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
-    expect(sink.dispose).toHaveBeenCalledWith(VALID);
-    expect(callback).toHaveBeenCalledWith(null, {});
+describe("AgentService placeholder handlers", () => {
+  it("fail loudly with UNIMPLEMENTED until the host wiring lands", async () => {
+    // Phase-2 placeholders (specs/051-agent-v2-dsh-migration/tasks.md T014
+    // replaces them): every not-yet-wired handler must answer UNIMPLEMENTED
+    // rather than fabricating an empty success.
+    const handlers = buildAgentHandlers(fakeSink());
+    const methods: Array<keyof AgentServiceHandlers> = [
+      "UpdateAgent",
+      "GetAgent",
+      "CreatePreset",
+      "ListPresets",
+      "GetPreset",
+      "UpdatePreset",
+      "DeletePreset",
+      "ListModels",
+    ];
+    for (const method of methods) {
+      const handler = handlers[method] as NonNullable<AgentServiceHandlers[typeof method]>;
+      const callback = vi.fn();
+      (handler as (call: unknown, cb: unknown) => void)({}, callback);
+      await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+      const error = callback.mock.calls[0][0] as grpc.ServiceError;
+      expect(error?.code, String(method)).toBe(grpc.status.UNIMPLEMENTED);
+    }
   });
+});
 
-  it("rejects a malformed resource name with INVALID_ARGUMENT", () => {
-    const sink = fakeSink();
-    const handlers = buildConversationHandlers(sink);
-    const callback = invokeUnary(handlers.Dispose, { session: "templates/unknown/sessions/s1" });
-
-    expect(callback).toHaveBeenCalledTimes(1);
-    const error = callback.mock.calls[0][0] as grpc.ServiceError;
-    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
-    expect(sink.dispose).not.toHaveBeenCalled();
-  });
-
-  it("maps a dispose failure to INTERNAL", async () => {
-    const sink = fakeSink();
-    sink.dispose.mockRejectedValue(new Error("handle gone"));
-    const handlers = buildConversationHandlers(sink);
-    const callback = invokeUnary(handlers.Dispose, { session: VALID });
-
-    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
-    const error = callback.mock.calls[0][0] as grpc.ServiceError;
-    expect(error?.code).toBe(grpc.status.INTERNAL);
-    expect(error?.message).toContain("handle gone");
+describe("DesktopBridgeService.Connect placeholder", () => {
+  it("emits UNIMPLEMENTED on the duplex stream until the bridge plugin lands", () => {
+    const handlers = buildDesktopBridgeHandlers();
+    const errors: grpc.ServiceError[] = [];
+    const call = {
+      emit: vi.fn((name: string, err: grpc.ServiceError) => {
+        if (name === "error") {
+          errors.push(err);
+        }
+      }),
+    };
+    (handlers.Connect as (c: unknown) => void)(call);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.code).toBe(grpc.status.UNIMPLEMENTED);
   });
 });

@@ -9,12 +9,12 @@
 //   - /api/v1/templates/{template}/sessions/{session}/connect → WebSocket
 //     (TeamService.Connect stream; the WebSocket endpoint mirrors the Team
 //     resource hierarchy per spec 031-team-template-mode FR-004)
-//   - /api/v2/* → grpc-gateway (ConversationService — the agent_v2
-//     conversation surface, including the Send server-streaming RPC served as
+//   - /api/v2/* → grpc-gateway (AgentService — the agent_v2
+//     surface, including the Send server-streaming RPC served as
 //     chunked NDJSON. The handler rides the proxy connection: the proxy owns
 //     owner affinity for the stateful agent_v2 instances
-//     (specs/049-agent-v2-dsh-init/research.md D4). The /api/v1 routes and
-//     behavior above are unchanged.)
+//     (specs/051-agent-v2-dsh-migration/research.md D9). The /api/v1 routes
+//     and behavior above are unchanged.)
 package main
 
 import (
@@ -69,11 +69,11 @@ func main() {
 
 	// teamConn hosts both stateful-routing services (spec
 	// 031-team-template-mode merged ProxyService/AgentService into
-	// TeamService; specs/049-agent-v2-dsh-init/research.md D4 routes the
-	// stateful agent_v2 through the same proxy instead of a direct gateway
-	// connection): the proxy owns owner affinity for the stateful agent and
-	// agent_v2 instances. The TeamService.Connect bidi stream and the
-	// ConversationService.Send server stream are long-lived, so this conn
+	// TeamService; specs/051-agent-v2-dsh-migration/research.md D9 routes
+	// the stateful agent_v2 through the same proxy instead of a direct
+	// gateway connection): the proxy owns owner affinity for the stateful
+	// agent and agent_v2 instances. The TeamService.Connect bidi stream and
+	// the AgentService.Send server stream are long-lived, so this conn
 	// opts into keepalive pings (paired with the proxy's
 	// WithLongLivedServerKeepalive); session/prompt stay unary → default.
 	teamClientOpts := append(
@@ -116,13 +116,13 @@ func main() {
 	if err := game.RegisterMemoryServiceHandler(ctx, gwmux, memoryConn); err != nil {
 		log.Fatalf("register memory handler: %v", err)
 	}
-	// The ConversationService handler rides the proxy connection: the proxy
+	// The AgentService handler rides the proxy connection: the proxy
 	// forwards /api/v2 traffic to the agent_v2 stateful instance owning the
 	// session (owner affinity — agent_v2 keeps sessions in process memory
-	// and must not be addressed directly, specs/049-agent-v2-dsh-init/
-	// research.md D4).
-	if err := gamev2.RegisterConversationServiceHandler(ctx, gwmux, teamConn); err != nil {
-		log.Fatalf("register agent_v2 conversation handler: %v", err)
+	// and must not be addressed directly, specs/051-agent-v2-dsh-migration/
+	// research.md D9).
+	if err := gamev2.RegisterAgentServiceHandler(ctx, gwmux, teamConn); err != nil {
+		log.Fatalf("register agent_v2 handler: %v", err)
 	}
 
 	// 3. Create root HTTP mux with path-based routing.
@@ -153,8 +153,8 @@ func main() {
 
 // newRootMux builds the path-based routing mux. /api/v1/ dispatches
 // WebSocket upgrades before falling through to grpc-gateway; /api/v2/ flows
-// straight to grpc-gateway for the agent_v2 ConversationService (spec
-// 049-agent-v2-dsh-init FR-013; the /api/v1 routes and behavior are
+// straight to grpc-gateway for the agent_v2 AgentService (spec
+// 051-agent-v2-dsh-migration; the /api/v1 routes and behavior are
 // unchanged). A single subtree pattern avoids Go's ServeMux 307 redirect when
 // both "/api/v1/" and "/api/v1/sessions/" are registered separately.
 func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeMux {

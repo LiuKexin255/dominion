@@ -734,6 +734,9 @@ importers:
       '@grpc/proto-loader':
         specifier: 'catalog:'
         version: 0.8.1
+      mongodb:
+        specifier: 'catalog:'
+        version: 7.5.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

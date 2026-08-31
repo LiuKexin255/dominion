@@ -254,6 +254,35 @@ describe("GlmResponsesAdapter", () => {
     expect(chunks.at(-1)?.type).toBe("finish");
   });
 
+  it("advertises the static config.models catalog without an endpoint call", async () => {
+    // D4 (specs/051-agent-v2-dsh-migration/research.md): the catalog is
+    // static — projected from config.models with no network I/O — and is
+    // the same source UpdateAgent's model validation consults.
+    const fetchImpl = vi.fn(async () => sseResponse(textTurnFrames()));
+    const adapter = new GlmResponsesAdapter(
+      {
+        apiKeyEnv: API_KEY_ENV,
+        baseURL: "https://glm.test/api/v1",
+        models: [
+          { id: "glm-5.2", contextWindow: 1000000 },
+          { id: "glm-5-turbo", contextWindow: 128000 },
+        ],
+      },
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    const models = await adapter.listModels("glm-responses");
+
+    expect(models).toEqual([
+      { provider: "glm-responses", id: "glm-5.2", name: "glm-5.2" },
+      { provider: "glm-responses", id: "glm-5-turbo", name: "glm-5-turbo" },
+    ]);
+    // Positive assertion that the static catalog truly bypasses the
+    // transport (style/javascript.md: every intercepted call must be
+    // asserted — here, asserted to NOT happen).
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("resolves catalog models with their context window and unknown models minimally", async () => {
     process.env[API_KEY_ENV] = "test-key-value";
     const fetchImpl = vi.fn(async () => sseResponse(textTurnFrames()));
