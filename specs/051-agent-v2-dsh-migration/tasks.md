@@ -26,9 +26,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/048-js-esm-migration/contracts/esm-package-conventions.md`（style/javascript.md 引用的 ESM 包契约：新包 tsconfig/.swcrc/package.json 契约）、`specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md` §1（workspace 插件包契约先例：package.json/exports/peers 形态）、`specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §1–§5（三包的名称/inject/依赖定义）
 
-- [ ] T001 创建 `@dominion/dsh-desktop-bridge` 包骨架：`common/js/dsh-plugins/desktop-bridge/`（package.json `"type": "module"` + exports、tsconfig.json（nodenext + paths 指向 dsh peers 源码）、`.swcrc`、src/index.ts 占位导出 `export const name = "desktop-bridge"`、BUILD.bazel `js_library`）——镜像 `common/js/dsh-plugins/llm-glm/` 形态；执行 `bazel run @pnpm -- --dir /mnt/code/dominion`（install）+ 目标目录下 `bazel run //:gazelle common/js/dsh-plugins/desktop-bridge`，`bazel build //common/js/dsh-plugins/desktop-bridge` 通过
-- [ ] T002 [P] 创建 `@dominion/dsh-saolei-loop` 包骨架：`common/js/dsh-plugins/saolei-loop/`（同 T001 形态；package.json 依赖声明 `@dominion/game-saolei-board`（workspace）+ dsh 0.1.1-rc.2 peers（dsh-agent/dsh-session/dsh-llm/dsh-system-prompt/dsh-tools/dsh-scope/cordis）），构建门禁同 T001
-- [ ] T003 [P] 创建 `@dominion/dsh-saolei` 包骨架：`common/js/dsh-plugins/saolei/`（同 T001 形态；依赖 `@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-system-prompt`、`@dominion/dsh-saolei-loop`（workspace，消费 saoleiGame 服务类型）），构建门禁同 T001
+- [X] T001 创建 `@dominion/dsh-desktop-bridge` 包骨架：`common/js/dsh-plugins/desktop-bridge/`（package.json `"type": "module"` + exports、tsconfig.json（nodenext + paths 指向 dsh peers 源码）、`.swcrc`、src/index.ts 占位导出 `export const name = "desktop-bridge"`、BUILD.bazel `js_library`）——镜像 `common/js/dsh-plugins/llm-glm/` 形态；执行 `bazel run @pnpm -- --dir /mnt/code/dominion`（install）+ 目标目录下 `bazel run //:gazelle common/js/dsh-plugins/desktop-bridge`，`bazel build //common/js/dsh-plugins/desktop-bridge` 通过
+- [X] T002 [P] 创建 `@dominion/dsh-saolei-loop` 包骨架：`common/js/dsh-plugins/saolei-loop/`（同 T001 形态；package.json 依赖声明 `@dominion/game-saolei-board`（workspace）+ dsh 0.1.1-rc.2 peers（dsh-agent/dsh-session/dsh-llm/dsh-system-prompt/dsh-tools/dsh-scope/cordis）），构建门禁同 T001
+- [X] T003 [P] 创建 `@dominion/dsh-saolei` 包骨架：`common/js/dsh-plugins/saolei/`（同 T001 形态；依赖 `@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-system-prompt`、`@dominion/dsh-saolei-loop`（workspace，消费 saoleiGame 服务类型）），构建门禁同 T001
 
 **Checkpoint**: 三个空插件包可编译、可被组合清单按名引用。
 
