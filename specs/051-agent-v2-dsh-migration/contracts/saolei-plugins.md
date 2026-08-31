@@ -23,10 +23,15 @@ declare module "@deepseek-ai/dsh-agent" {
 
 export const DEFAULT_PLAYER_BASE = "<v1 player base 提示词，源 projects/game/agent/src/team/player.ts:79-85>";
 
-// 服务面（host 级）
-export interface SaoleiGameService /* ctx.saoleiGame */ {
-  /** 调用者 session 的游戏运行时；不存在（agent 未创建）= 内部不变式破坏，fail-loud。 */
-  for(agent: Agent): GameRuntime;
+// 服务面（agent-scoped）：工厂在 prepare() 内、agent 发布前，把 GameRuntime 以
+// Service class 形态注册为该 agent scope 的 "saoleiGame" 服务——cordis Service 契约
+// 保证随 agent scope 卸载自动注销（无手动清理路径）。
+export interface SaoleiGame extends GameRuntime {}
+declare module "@deepseek-ai/cordis" {
+  interface Context {
+    /** 仅在 agent.ctx 及其派生 scope 上可见；host/root 上下文上为 undefined。 */
+    saoleiGame?: SaoleiGame;
+  }
 }
 export interface GameRuntime {
   init(signal?: AbortSignal): Promise<ToolOutcome>;
@@ -41,7 +46,7 @@ export type ToolOutcome = { isError: false; text: string } | { isError: true; er
 ### 2.1 工厂与驱动（FR-010）
 
 - `apply()` 构造时 `ctx.agents.setFactory(this)`（官方 AgentLoop 同型）。
-- `createAgent(ownerCtx, options)`：发布序列对齐官方（setup → 注册 session/agent → `agent/session-start` → 启动驱动；teardown 注册先于 publish）；创建 GameRuntime 登记 `Map<SessionId, …>`；于 `agent.ctx` 注册 agent-scoped `systemPrompt.section({name: "deployment:persona", order: 0, text: options.agentOptions.persona || DEFAULT_PLAYER_BASE})`（shadow 全局同名 section，research D3）；注册 loop 模板变量（`model`/`cwd`，官方行为对齐）。
+- `createAgent(ownerCtx, options)`：发布序列对齐官方（setup → 注册 session/agent → `agent/session-start` → 启动驱动；teardown 注册先于 publish）；创建 GameRuntime 并以 Service class 形态注册为 **`agent.ctx` 的 `saoleiGame` 服务**（agent-scoped，随 scope 卸载自动注销）；于 `agent.ctx` 注册 agent-scoped `systemPrompt.section({name: "deployment:persona", order: 0, text: options.agentOptions.persona || DEFAULT_PLAYER_BASE})`（shadow 全局同名 section，research D3）；注册 loop 模板变量（`model`/`cwd`，官方行为对齐）。
 - `resume(ownerCtx, options)`：**抛错**（A2 无 persistence——不挂 dsh-session-persistence，resume 不可达；fail-loud 优于静默）。
 - 驱动器 `SaoleiLoopAgent implements Agent`（dsh-agent `Agent` 全接口：id/options/session/inbox/status/ctx、cancel/whenIdle/runMaintenance/send/followup/steer）——**必继承调研 §4.7 八条**：
   1. turn/step 状态机骨架（phase idle/running/maintenance + `setPhase` 广播 + activityDone 静默追踪）；
@@ -53,7 +58,7 @@ export type ToolOutcome = { isError: false; text: string } | { isError: true; er
   7. 工厂所有权（插件 dispose：拒绝新工作 + 全量 abort + 等待 startup/settlement 静默）；
   8. Inbox/事件面复用 dsh-agent（durable splice、`agent/*` 事件、turn/end 兜底 + TurnEndReason 区分）。
 - 工具调度：经 `ctx.tools` 官方管线（`TOOL_RUNTIME_SCHEDULER` 语义：prepare→dispatch→finalize、exclusive/parallel 有界、abort 未启动调用合成错误结果——"tool_call 必有 tool_result" wire 不变量）；`maxParallelToolCalls` 默认 10。
-- **GameRuntime 生命周期挂接**：`agent/disposed`/`session/disposed` 监听清理注册表项（调研 §5.5 认可形态）。
+- **GameRuntime 生命周期挂接**：注册于 `agent.ctx`（Service class 形态），随 agent scope 卸载**自动注销**——无手动清理监听（调研 §5.5 判定的吻合形态；测试注入经 `SaoleiLoopPluginOptions.createRuntime` seam）。
 
 ### 2.2 GameRuntime 行为（FR-011，v1 契约语义迁移）
 
@@ -68,14 +73,16 @@ export type ToolOutcome = { isError: false; text: string } | { isError: true; er
 ```ts
 // common/js/dsh-plugins/saolei/src/index.ts
 export const name = "saolei";
-export const inject = ["tools", "systemPrompt", "saoleiGame"];
+// saoleiGame 是 agent-scoped 服务（插件加载时无任何 agent 存在），不能静态 inject；
+// 工具执行期经 exec.agent.ctx 惰性解析。
+export const inject = ["tools", "systemPrompt"];
 ```
 
 - **三工具全局注册**（`ctx.tools.register(defineTool(...))`，dsh-tools）：
   - `saolei_init`（无参）：`runtime.init(exec.signal)` → outcome；
   - `saolei_operate`（参数双形式：single `{type: click|flag|chord, x: int≥0, y: int≥0}` 或 `{operations: [{type,x,y}...]}`，互斥校验文本 = v1 `MISSING_ARGS_TEXT`/`AMBIGUOUS_ARGS_TEXT`/`INCOMPLETE_ARGS_TEXT` 字面量）：`runtime.operate(input, exec.signal)`；
   - `saolei_remain`（无参）：`runtime.remain()`。
-  - exec 体：`ctx.saoleiGame.for(exec.agent)` 解析 runtime（`ToolExecution.agent` 携带调用者，dsh-tools `lib/types/index.d.ts:192-200`）；工具自身无状态（FR-013）。
+  - exec 体：经 **`exec.agent.ctx`** 解析该 agent scope 内注册的 `saoleiGame` 服务（声明合并类型；`ToolExecution.agent` 携带调用者，dsh-tools `lib/types/index.d.ts:192-200`；`exec.agent` 缺失或服务不在 scope = 非 loop 驱动的调用/注册前窗口，**fail-loud 抛错**）；工具自身无状态（FR-013）。
   - output 声明：`{result: string}` canonical JSON（render = 棋盘文本）；`ToolOutcome.isError` → 工具抛错（模型可见失败，不伪造成功）。
 - **prompt section**（FR-014）：`ctx.systemPrompt.section({name: "saolei:guidance", order: 100, text})`——内容迁移 `projects/game/agent/src/skill/saolei/SKILL.md`（识别棋盘非截图/符号表/坐标标尺/三层结果体/坐标约定/三工具用法/校验 triage 表/示例流程/禁用项），措辞适配插件工具语境；**不保留 skill 文件**。
 
@@ -124,9 +131,9 @@ export const inject = ["tools", "systemPrompt", "saoleiGame"];
 
 ## 7. 测试义务（每包 vitest 随交付）
 
-1. **saolei-loop**：驱动器状态机（turn/step/abort/排队语义，fake llm/tools 注入——对齐 049 session.test.ts 模式）；GameRuntime 全契约（fake bridge + fake boardApi——v1 `saolei-mcp.test.ts` 2015 行用例基线迁移：三工具/双形式/逐条拒绝/batch triage/chord 宽松/识别失败/信号透传/每调用一条 gameLog）；persona 回退；注册表清理（agent dispose）。
+1. **saolei-loop**：驱动器状态机（turn/step/abort/排队语义，fake llm/tools 注入——对齐 049 session.test.ts 模式）；GameRuntime 全契约（fake bridge + fake boardApi——v1 `saolei-mcp.test.ts` 2015 行用例基线迁移：三工具/双形式/逐条拒绝/batch triage/chord 宽松/识别失败/信号透传/每调用一条 gameLog）；persona 回退；agent-scoped 生命周期（agent dispose 后其 scope 上 `saoleiGame` 不可达——scope 注销断言；root ctx 恒不可达——隔离断言）。
 2. **desktop-bridge**：attach/接管/断连结算/超时/abort/uuid tool_id/stale 回执忽略（v1 `operation-bridge.test.ts` 基线迁移）。
-3. **saolei**：工具 schema/参数互斥文本/exec 转发（fake saoleiGame）；prompt section 注册生效。
+3. **saolei**：工具 schema/参数互斥文本/exec 经 `exec.agent.ctx` 解析转发（fake saoleiGame 注册于 agent scope；`exec.agent` 缺失时 fail-loud 断言）；prompt section 注册生效。
 4. **llm-glm**：listModels 返回 config.models；function_call/function_call_output 序列化往返；既有 049 用例零回归。
 5. **agent_v2 宿主**：049 既有用例（send/queue/history/backfill/dispose-shutdown）零回归（接口更名后）；新增 UpdateAgent 语义/未物化 Send 拒绝/preset CRUD/模型校验用例。
 

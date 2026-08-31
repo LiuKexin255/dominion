@@ -8,7 +8,7 @@
 
 - loop 可替换：`AgentFactory` 在 `@deepseek-ai/dsh-agent` 公共面，`ctx.agents.setFactory` 替换，消费者零改动（调研 §2.1）。
 - 官方 `dsh-agent-spine-demo` 硬挂载 `AgentLoop` 且 `AgentRegistry.setFactory` 不允许二次注册（spec Motivation）→ 直组核心件为必经路径。
-- 插件可为插件提供能力（Service + inject，调研 §5.1）；事件四模式 + scope 过滤（§5.2）；per-session 状态 host Map + dispose 清理为官方认可形态（§5.5）。
+- 插件可为插件提供能力（Service + inject，调研 §5.1）；事件四模式 + scope 过滤（§5.2）；per-session 状态以 agent-scoped 注册为 §5.5 判定的吻合形态（host Map 是跨会话统计场景下的可选退化）。
 - dsh 的 preset（会话级组合内容）不含模型路由；模型是 per-agent 创建期选项（`AgentOptions {provider, model, maxTokens}`，`dsh-agent` `lib/types/runtime-types.d.ts`；注释原文 "Persona belongs to system-prompt sections"）。
 
 ---
@@ -96,23 +96,23 @@
 1. **Service 插件** `name: "saolei-loop"`，`inject = ["agents", "sessions", "llm", "tools", "systemPrompt", "desktopBridge"]`（官方 AgentLoop 的 5 必需 + 桥接服务；对齐调研 §3.1 层 2）。构造时 `ctx.agents.setFactory(this)`。
 2. **`AgentOptions` 扩展 `persona`**（D3）。
 3. **驱动器 `SaoleiLoopAgent implements Agent`**（dsh-agent `Agent` 接口：followup/steer/inject/cancel/whenIdle/runMaintenance/status/inbox/options）——turn/step 状态机**按官方 `ReactLoopAgent` 模式重写**（"抄设计"非继承代码，A8；物化源码 `node_modules/.pnpm/@deepseek-ai+dsh-agent-loop@0.1.1-rc.2_*/…/lib/index.js`），必继承调研 §4.7 八条：phase 状态机与广播、abort 检查点布局（每 chunk/step/turn）、中断流部分内容 `interrupted: true` 落日志、abort 后唤醒重定向（wakingAfterAbort + wake latch）、四个决策点 waterfall/serial 语义（`agent/pre-step`/`agent/request`/`agent/request-error`/`agent/turn-stopping`）、driver containment（kick catch-all + `agent/error` 先发后抛）、工厂所有权（插件卸载全量 abort + 静默等待）、事件面/Inbox 复用（dsh-agent 提供，durable splice 自动获得）。
-4. **游戏状态 = host 级 `ctx.saoleiGame` 服务 + `Map<SessionId, GameRuntime>`**（调研 §5.5 认可形态）：工厂 createAgent 时创建 GameRuntime 并登记，监听 `agent/disposed`/`session/disposed` 清理。**不采用 agent-scoped 服务注册**——工具需在全局注册面解析 per-agent runtime（D7），host Map 是唯一从全局上下文可达的形态。
+4. **游戏状态 = agent-scoped 服务注册**（调研 §5.5 判定的吻合形态）：工厂 `prepare()` 在 agent 发布前，将 GameRuntime 以 **Service class 形态注册为该 agent scope 的 `saoleiGame` 服务**（`new ...(agent.ctx, "saoleiGame")`；cordis `Service` 契约："Register this instance as `name` in the current context … the service is unregistered automatically when the owning fiber unloads"——**随 agent scope 卸载自动注销，无手动清理路径**）。**不采用 host 级 `Map<SessionId, GameRuntime>` 注册表**：host Map 把 per-agent 状态放进全局可达面（宿主任意代码都能按 agent id 反查任何 runtime）、需要手动维护 scope 事件与表项的一致性（`agent/disposed`/`session/disposed` 监听删除）；host 级注册表仅当未来需要跨会话统计（胜率/局数）时再引入（调研 §5.5"host Map 退化为可选优化"）。
 5. **GameRuntime**（每 session）：持有 `recognized`/`initState`/`operationCount`（游戏状态）与 `gameLog`/`gameEvent`（游戏历史，v1 `EphemeralGameBuffer`/`SaoleiEventSink` 语义，`projects/game/agent/src/team/team-sink.ts:92-169`）；API `init(signal)` / `operate(ops, signal)` / `remain()` → 返回 v1 契约文本（outcome 行 + `game status:` 行 + 标尺棋盘，源契约 `projects/game/agent/src/skill/saolei/SKILL.md` §Tool-result body shape 与 `projects/game/agent/src/mcp/saolei/saolei-mcp.ts:601-757` 的文本构造器——**迁移语义不重写契约**）；操作下发经 `ctx.desktopBridge.dispatch(sessionName, part, signal)`；识别经 `@dominion/game-saolei-board`（FR-015：`SaoleiBoard.init/updateFromScreenshot`，截图空间识别 + client 空间下发的坐标纪律，`projects/game/agent/src/mcp/saolei/geometry.ts` 常量随迁）。拒绝码三元组/批量 triage（SKIP/STOP）/counter-informed win 判定全部按 v1 `saolei-mcp.ts:241-541` 语义移植。
 6. **物化配置校验**：工厂对 `agentOptions.provider/model` 不做目录校验（目录校验在宿主 UpdateAgent，D4）；persona 空回退 DEFAULT_PLAYER_BASE（D3）。
 
 **Rationale**：spec FR-010/011/013 的直接映射；"loop 即游戏控制点"由 GameRuntime 归属 loop 插件实现；宿主 `AgentSessions`（`projects/game/agent_v2/src/session.ts`）面向 `ctx.agents` 编程零改动（调研 §2.1 承诺）——049 对话行为零回归的结构保证。
 
-**Alternatives**：保留官方 loop + 独立游戏插件持有状态——被 spec FR-010 否决（且工具经 loop 下发的控制点要求状态与 loop 同生命周期）；GameRuntime 挂 agent.ctx 的 agent-scoped 服务——全局工具无法从 `exec.agent` 反查作用域服务（dsh 无此反查 API）。
+**Alternatives**：保留官方 loop + 独立游戏插件持有状态——被 spec FR-010 否决（且工具经 loop 下发的控制点要求状态与 loop 同生命周期）；host 级服务 + `Map<SessionId, GameRuntime>`（`for(agent)` 按 id 查找 + dispose 监听删除）——状态同样按 session 隔离，但注册表面全局、生命周期手动维护，仅在需要 host 级跨会话统计时有价值。
 
 ## D7: saolei 工具插件的注册形态（FR-013/FR-014）
 
-**Decision**：包 `@dominion/dsh-saolei`（`common/js/dsh-plugins/saolei/`）：`name: "saolei"`，`inject = ["tools", "systemPrompt", "saoleiGame"]`。
+**Decision**：包 `@dominion/dsh-saolei`（`common/js/dsh-plugins/saolei/`）：`name: "saolei"`，`inject = ["tools", "systemPrompt"]`——`saoleiGame` 是 agent-scoped 服务（插件加载时不存在任何 agent），**不能静态 inject**，工具执行期经调用者 agent 的 scope 惰性解析（见下）。
 
-1. **全局注册三工具**（`ctx.tools.register(defineTool(...))`）：`saolei_init`（无参）、`saolei_operate`（双形式参数：single `type/x/y` 或 `operations[]`，互斥校验文本按 v1 `AMBIGUOUS_ARGS_TEXT` 等字面量）、`saolei_remain`（无参）。**exec 体内经 `exec.agent` 从 `ctx.saoleiGame` 解析调用者 session 的 GameRuntime**（`ToolExecution` 携带 `agent?`——"the pending call (name, parsed arguments, caller agent)"，dsh-tools `lib/types/index.d.ts:192-200`），转发到 `runtime.init/operate/remain`。工具自身无状态（FR-013"工具是无状态面向模型的人口"）。
+1. **全局注册三工具**（`ctx.tools.register(defineTool(...))`）：`saolei_init`（无参）、`saolei_operate`（双形式参数：single `type/x/y` 或 `operations[]`，互斥校验文本按 v1 `AMBIGUOUS_ARGS_TEXT` 等字面量）、`saolei_remain`（无参）。**exec 体内经 `exec.agent.ctx` 解析该 agent scope 内注册的 `saoleiGame` 服务（GameRuntime 实例）**（`ToolExecution` 携带 `agent?`——"the pending call (name, parsed arguments, caller agent)"，dsh-tools `lib/types/index.d.ts:192-200`；`Agent.ctx` 是公开的 agent-scoped context，服务经声明合并按名访问、cordis reflect 按作用域链解析——宿主/根上下文上看不到任何 `saoleiGame`；`exec.agent` 缺失 = 非 loop 驱动的调用，fail-loud），转发到 `runtime.init/operate/remain`。工具自身无状态（FR-013"工具是无状态面向模型的人口"）。
 2. **output 声明**：`{result: string}` JSON schema（render 即文本棋盘结果）；工具失败（desktop 缺席等）按 dsh 语义抛错 → `isError: true` 的模型可见失败（不伪造成功，调研 §4.3）——v1 的"拒绝是正常结果、桥接失败是 FAILED 结果"语义映射：游戏规则拒绝（no_active_game 等）是**正常结果文本**（`rejected: <reason>` 行）；desktop 缺席/断开是 runtime 返回的 FAILED `OperationResult` → 转为**错误结果**（US1 场景 4"明确的可读错误结果"）。两者区分见 data-model §GameRuntime。
 3. **prompt section**：`ctx.systemPrompt.section({name: "saolei:guidance", order: 100, text})`——内容迁移 `projects/game/agent/src/skill/saolei/SKILL.md` 的工具使用守则（符号表/坐标约定/三层结果体/校验规则/示例流/禁用项），措辞从 "MCP 工具" 调整为插件工具语义；order 落在官方 tool-guidance 频带 100–199（dsh-system-prompt README "Order bands"）。**不保留 skill 文件形态**（FR-014：插件自注册 prompt section，随插件启停生效）。
 
-**Rationale**：全局注册 + `exec.agent` 反查是 dsh 工具面消费 per-agent 状态的标准路径；prompt section 与工具同插件交付满足 dsh 所有权原则（"tool packages own their cross-call guidance"）。
+**Rationale**：工具**目录**全局注册（一次注册、全体 agent 可见——官方 tool 插件形态）+ **状态解析走调用者 agent scope**（saolei-loop 在该 scope 注册的服务）——"saolei 建立在 saolei-loop 之上"的机制表达 = workspace 包依赖（类型）+ 服务名契约 + 作用域解析；prompt section 与工具同插件交付满足 dsh 所有权原则（"tool packages own their cross-call guidance"）。
 
 **Alternatives**：loop 工厂在 agent.ctx 逐 agent 注册工具——工具归属 loop，与 FR-013 的插件分工冲突；MCP server 形态（dsh-mcp-client 挂载）——引入 stdio/http 进程与 schema 转换，v1 的 MCP 层正是被本 feature 拆除的对象（spec 2.3）。
 

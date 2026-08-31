@@ -23,7 +23,7 @@
 │ agent-v2 stateful 实例（dsh 组合：直组核心件 + 3 自研插件）            │
 │  PresetStore(Mongo)   ModelCatalog(ctx.llm)   AgentMaterializer     │
 │  AgentSession = dsh Agent + SessionHistory + FIFO queue             │
-│  GameRuntime(session) ← ctx.saoleiGame（saolei-loop 持有）           │
+│  GameRuntime(session)（saolei-loop 注册于 agent.ctx，agent-scoped）│
 │  DesktopConnection(session) ← ctx.desktopBridge（desktop-bridge）   │
 └──────────────▲───────────────────────────────┬──────────────────────┘
                │ NDJSON /api/v2（对话流）        │ WS /api/v2/.../connect（flow 流，独立）
@@ -66,7 +66,7 @@
 | `agent`/`handle` | dsh `Agent`/`AgentHandle` | `ctx.agents.create({sessionId: <session 资源名>, agentOptions: {provider: "glm-responses", model, persona}})` 产物（persona 经 D3 扩展传入） |
 | `history` | SessionHistory | 内存对话记录（049 §2.5 延续 + D10 工具块回填） |
 | `queue` | QueuedMessage[] | 每会话 FIFO（049 FR-012 延续） |
-| `runtime` | GameRuntime | saolei-loop 按注册表自动创建/清理（§2.5），随 agent dispose 消亡 |
+| `runtime` | GameRuntime | saolei-loop 在 `agent.ctx` 注册的 agent-scoped `saoleiGame` 服务实例（§2.5），随 agent dispose 自动注销 |
 
 **UpdateAgent 统一语义**（FR-006，refresh 并入）：
 
@@ -111,7 +111,7 @@
 
 ### 2.5 GameRuntime（saolei-loop 持有，每 session）
 
-host 级 `ctx.saoleiGame` 服务 + `Map<SessionId, GameRuntime>`；agent 创建时登记、`agent/disposed`/`session/disposed` 清理（D6）。
+agent-scoped 服务：工厂在 agent 发布前于 `agent.ctx` 注册 `saoleiGame` 服务（GameRuntime 实例，Service class 形态），随 agent scope 卸载自动注销（D6）；宿主/根上下文不可见（无全局注册表）。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
