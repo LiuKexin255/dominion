@@ -19,6 +19,9 @@ third_party/dsh/core/node_modules
 experimental/dsh/demo/agent/node_modules
 experimental/js/vite_react_demo/node_modules
 common/js/dsh-plugins/llm-glm/node_modules
+common/js/dsh-plugins/desktop-bridge/node_modules
+common/js/dsh-plugins/saolei-loop/node_modules
+common/js/dsh-plugins/saolei/node_modules
 projects/game/agent_v2/node_modules
 projects/game/web/frontend/node_modules
 
