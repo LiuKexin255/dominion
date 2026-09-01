@@ -34,3 +34,4 @@
 - All checklist items pass — specification is ready for `/speckit.plan`.
 - 全部 3 个澄清问题已由用户确认（2026-09-01）并回填 spec：FR-006 = 全量对齐 Go bootstrap；FR-009 = 标识符（proto 包名/HTTP 路径/Go importpath）随目录一并更名为 js；FR-012 = 仅 `experimental/` 目录下的 JS 服务接入，其他 JS 服务不动。
 - 本仓库为基础设施仓库，spec 风格沿用 specs/052-deploy-health-probe 先例：允许引用仓库内既有约定（如健康端点约定）作为需求语义锚点；目录路径（experimental/js）为需求显式给定的工作对象而非实现选型。
+- 复验记录（2026-09-01，`specs/053-js-bootstrap-migration/tasks.md` Phase 5 / T019-T020 验收）：大型测试 `guitar run experimental/js/grpc_hello_world/testplan/interface_test.yaml` 全部 case 通过（default suite 接口契约 + selfheal suite 自愈周期，部署→测试→清理闭环完成，signoz 日志证实 HEALTH_STOP_AFTER_MS 注入后判死重启恢复全周期）；`specs/053-js-bootstrap-migration/contracts/migration-rename-map.md` §3 四条与 `specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md` §7 两条审计命令零命中；`bazel build //...` 与 `bazel test //...`（104 tests）全绿。

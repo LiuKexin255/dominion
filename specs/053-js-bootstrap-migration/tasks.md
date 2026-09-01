@@ -154,8 +154,8 @@
 
 **Tasks**:
 
-- [ ] T019 大型测试执行（原则 VI：实际执行，禁止以构建检查替代）：加载 testplan skill 后执行 `guitar run experimental/js/grpc_hello_world/testplan/interface_test.yaml`——default suite（新路径 `/experimental/js/grpc-hello-world/say-hello` 接口契约 + 配置语义 + 探针就绪）与 selfheal suite（HEALTH_STOP_AFTER_MS 注入 → 判死失败窗口 → 自动重启恢复）全部 case 通过且清理完成；任何失败/flaky：修复后**重新完整执行**直至全部通过。
-- [ ] T020 终态审计与全量回归：执行 `contracts/migration-rename-map.md` §3 四条命令 + `contracts/bootstrap-js-api.md` §7 两条命令（零命中）；`bazel build //...` + `bazel test //...` 全仓库回归全绿；更新 `specs/053-js-bootstrap-migration/checklists/requirements.md` 复验状态。
+- [X] T019 大型测试执行（原则 VI：实际执行，禁止以构建检查替代）：加载 testplan skill 后执行 `guitar run experimental/js/grpc_hello_world/testplan/interface_test.yaml`——default suite（新路径 `/experimental/js/grpc-hello-world/say-hello` 接口契约 + 配置语义 + 探针就绪）与 selfheal suite（HEALTH_STOP_AFTER_MS 注入 → 判死失败窗口 → 自动重启恢复）全部 case 通过且清理完成；任何失败/flaky：修复后**重新完整执行**直至全部通过。
+- [X] T020 终态审计与全量回归：执行 `contracts/migration-rename-map.md` §3 四条命令 + `contracts/bootstrap-js-api.md` §7 两条命令（零命中）；`bazel build //...` + `bazel test //...` 全仓库回归全绿；更新 `specs/053-js-bootstrap-migration/checklists/requirements.md` 复验状态。
 
 **Phase 5 Gate**: guitar 全部 case 通过 + 全部审计零命中 + 全仓库 build/test 绿。
 
