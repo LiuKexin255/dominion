@@ -168,6 +168,9 @@ importers:
         specifier: workspace:*
         version: link:../logs
     devDependencies:
+      '@grpc/grpc-js':
+        specifier: 'catalog:'
+        version: 1.14.4
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.1

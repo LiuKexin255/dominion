@@ -14,6 +14,7 @@
         "@dominion/common-js-logs": "workspace:*"
     },
     "devDependencies": {
+        "@grpc/grpc-js": "catalog:",
         "@types/node": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:"

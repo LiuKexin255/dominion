@@ -28,6 +28,7 @@ ts_project(
     visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
     ],
 )
@@ -75,6 +76,7 @@ vitest_test(
         allow_empty = True,
     ) + [
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
     ],
 )
