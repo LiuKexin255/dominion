@@ -40,7 +40,9 @@ guitar run <plan.yaml>
 guitar run <plan.yaml> --suite <suite-name>
 ```
 
-执行完整测试计划：校验 → 部署 → 测试 → 清理。suites 按 YAML 中的顺序串行执行，任一 suite 失败后立即停止。
+执行完整测试计划：校验 → 部署 → 等待 → 测试 → 清理。suites 按 YAML 中的顺序串行执行，任一 suite 失败后立即停止。
+
+每个 suite 部署成功后会固定等待 60 秒再执行测试用例：startupProbe/livenessProbe（`specs/052-deploy-health-probe/spec.md`）延后了 pod ready 时间，环境 READY 时服务 DNS 记录可能尚未传播完成，gRPC 客户端首次 resolve 可能得到空地址列表（grpc-go DNS resolver 每 30s 才刷新一次），60s 覆盖一个完整刷新周期，让 DNS/端点状态稳定后再打流量。等待期间 ctrl-C 或全局 `--timeout` 仍可立即中断。
 
 `--suite <suite-name>` 可选参数，指定只执行测试计划中的单个套件（通过 `name` 匹配）。未指定时执行全部套件。
 
@@ -67,6 +69,7 @@ guitar run <plan.yaml> --suite <suite-name>
 run={runID} env={envName} deploy={deployPath}
   Deploy
   ...
+  Wait 60s for DNS/endpoint settle
   Test
     ...
   Cleanup
@@ -75,7 +78,7 @@ run={runID} env={envName} deploy={deployPath}
 
 - 每个 suite 输出以 `--- Suite: {name} ---` 标题开头
 - 第二行显示 runID、自动生成的环境名、deploy 路径
-- 步骤（Deploy / Test / Cleanup）缩进 2 个空格
+- 步骤（Deploy / Wait / Test / Cleanup）缩进 2 个空格；`Wait` 行即部署后的固定等待，时长与原因随行输出
 - 状态颜色：成功为绿色，失败为红色，运行中为黄色
 - TTY 模式下自动启用颜色，非 TTY 或管道模式下自动禁用
 - 每个 suite 执行受其 `timeout` 或全局 `--timeout` 限制，超时则终止该 suite
