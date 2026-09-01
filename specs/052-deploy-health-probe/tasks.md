@@ -34,8 +34,8 @@
 
 Tasks:
 
-- [ ] T001 在 `common/gopkg/bootstrap/health.go`（新文件）实现 health 服务器：包内私有类型，`Start`（`net.Listen` `:38080`，mux 注册 `/healthz` 返回 200 `ok\n`，Serve 于 goroutine，失败返回含原因错误）与 `Stop`（`Shutdown` 释放端口）；日志用包内既有 `logs.Info` 风格。实现风格参照 `common/gopkg/bootstrap/http.go` 的 `HTTPServer`（两阶段关闭、done 语义可简化——health 无优雅排空需求）。单测（`common/gopkg/bootstrap/health_test.go`，表驱动 given/when/then，遵守 `style/golang.md` §单元测试：`/healthz` 200、其余路径 404、`Stop` 后端口释放、重复 `Start` 报错）。完成后 `bazel run //:gazelle common/gopkg/bootstrap`、`bazel test //common/gopkg/bootstrap/...`
-- [ ] T002 在 `common/gopkg/bootstrap/bootstrap.go` 的 `RunSignal` 集成 health 生命周期（依赖 T001）：组件启动循环成功后、进入等待前调用 health `Start`，失败则执行 `b.shutdown(started)` 回滚并返回错误（日志语义与组件启动失败一致，FR-010）；关闭路径（`stopOnce.Do` 内）先调用 health `Stop` 再执行 `b.shutdown(started)`（先进先出，FR-005）。单测（`common/gopkg/bootstrap/bootstrap_test.go`，用记录启停顺序的 stub 组件断言：health 启动晚于全部组件、停止早于全部组件；占住 38080 后 `RunSignal` 返回错误且已启动组件均被停止）。完成后 `bazel test //common/gopkg/bootstrap/...`、`bazel build //...`
+- [X] T001 在 `common/gopkg/bootstrap/health.go`（新文件）实现 health 服务器：包内私有类型，`Start`（`net.Listen` `:38080`，mux 注册 `/healthz` 返回 200 `ok\n`，Serve 于 goroutine，失败返回含原因错误）与 `Stop`（`Shutdown` 释放端口）；日志用包内既有 `logs.Info` 风格。实现风格参照 `common/gopkg/bootstrap/http.go` 的 `HTTPServer`（两阶段关闭、done 语义可简化——health 无优雅排空需求）。单测（`common/gopkg/bootstrap/health_test.go`，表驱动 given/when/then，遵守 `style/golang.md` §单元测试：`/healthz` 200、其余路径 404、`Stop` 后端口释放、重复 `Start` 报错）。完成后 `bazel run //:gazelle common/gopkg/bootstrap`、`bazel test //common/gopkg/bootstrap/...`
+- [X] T002 在 `common/gopkg/bootstrap/bootstrap.go` 的 `RunSignal` 集成 health 生命周期（依赖 T001）：组件启动循环成功后、进入等待前调用 health `Start`，失败则执行 `b.shutdown(started)` 回滚并返回错误（日志语义与组件启动失败一致，FR-010）；关闭路径（`stopOnce.Do` 内）先调用 health `Stop` 再执行 `b.shutdown(started)`（先进先出，FR-005）。单测（`common/gopkg/bootstrap/bootstrap_test.go`，用记录启停顺序的 stub 组件断言：health 启动晚于全部组件、停止早于全部组件；占住 38080 后 `RunSignal` 返回错误且已启动组件均被停止）。完成后 `bazel test //common/gopkg/bootstrap/...`、`bazel build //...`
 
 **Checkpoint**: 全部 Go bootstrap 使用方（`projects/` 与 `experimental/` Go 服务）零改动自动获得 health 端点；`bazel test //common/gopkg/bootstrap/...` 通过。
 
