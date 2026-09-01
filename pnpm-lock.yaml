@@ -162,6 +162,22 @@ importers:
         specifier: 6.0.2
         version: 6.0.2
 
+  common/js/bootstrap:
+    dependencies:
+      '@dominion/common-js-logs':
+        specifier: workspace:*
+        version: link:../logs
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.1
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(jsdom@26.1.0)(yaml@2.9.0)
+
   common/js/config:
     dependencies:
       js-yaml:
