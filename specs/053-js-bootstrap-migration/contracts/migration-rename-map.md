@@ -30,8 +30,8 @@
 |--------|--------|
 | `experimental/ts/grpc_hello_world/greeter.proto` | M4、M5 |
 | `experimental/ts/grpc_hello_world/BUILD.bazel` | M1（target 路径随目录移动）、M6（`go_proto_library.importpath`、`go_library.importpath`）、M7（`artifact_pkg_js.app`、`artifact_image.app`） |
-| `experimental/ts/grpc_hello_world/src/server.ts` | M8、M9（+ 目录移动后 `protoRoot` 相对定位验证） |
-| `experimental/ts/grpc_hello_world/src/bootstrap.ts` | M10；接入共享 bootstrap 时整体重写（见 [bootstrap-js-api.md](bootstrap-js-api.md) §8） |
+| `experimental/ts/grpc_hello_world/src/server.ts` | M4（`proto.experimental.js.grpc_hello_world.Greeter.service` 运行时命名空间）、M8、M9（+ 目录移动后 `protoRoot` 相对定位验证） |
+| `experimental/ts/grpc_hello_world/src/bootstrap.ts` | M7（`info("service starting", { service: ... })` 日志字段的 app 名）、M10；接入共享 bootstrap 时整体重写（见 [bootstrap-js-api.md](bootstrap-js-api.md) §8） |
 | `experimental/ts/grpc_hello_world/smoke_test.sh` | M1、M7（如引用 app 名/路径） |
 | `experimental/ts/grpc_hello_world/service.yaml` | M7（`app` 字段）；**greeting 配置值 `"hello from ts config"` 为测试数据，不改** |
 | `experimental/ts/grpc_hello_world/testplan/BUILD.bazel` | M1（`binary` label 指向 gateway）、M7（`app` 字段 ×2） |
@@ -40,7 +40,7 @@
 | `experimental/ts/grpc_hello_world/testplan/interface_test.yaml` | M1（`deploy:`/`cases:` label 路径） |
 | `experimental/ts/grpc_hello_world/testplan/interface_test.go` | M5（`pathPrefix`） |
 | `experimental/ts/grpc_hello_world/testplan/health_test.go` | M5（`healthPathPrefix`） |
-| `experimental/ts/grpc_hello_world/testplan/gateway/main.go` | M6（import）、M11（solver URI）、M7（日志前缀字符串） |
+| `experimental/ts/grpc_hello_world/testplan/gateway/main.go` | M6（import）、M11（solver URI）、M7（`phttp.Handler` name `grpc-hello-world-js-gateway` 与日志前缀字符串） |
 | `experimental/ts/grpc_hello_world/testplan/gateway/BUILD.bazel` | M1（importpath/deps 路径随移动） |
 | `experimental/ts/grpc_hello_world/testplan/gateway/service.yaml` | M1（`artifacts[].target` 路径）、M7（`app` 字段） |
 | `experimental/ts/hello_world/**` | 仅 M2（目录移动；BUILD 由 gazelle 重生成） |

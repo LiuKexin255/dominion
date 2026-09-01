@@ -32,17 +32,17 @@ vitest_test(
     size = "small",
     data = glob(["src/**"]) + [
         "tsconfig.json",
+        ":node_modules/@testing-library/dom",
+        ":node_modules/@testing-library/react",
+        ":node_modules/jsdom",
         ":node_modules/react",
         ":node_modules/react-dom",
-        ":node_modules/@testing-library/react",
-        ":node_modules/@testing-library/dom",
-        ":node_modules/jsdom",
     ],
 )
 
 # Dist artifact assertions per
 # specs/050-vite-react-bazel/contracts/dist-artifact-assertions.md; wiring
-# mirrors experimental/ts/grpc_hello_world/BUILD.bazel (rules_shell sh_test +
+# mirrors experimental/js/grpc_hello_world/BUILD.bazel (rules_shell sh_test +
 # $(location) into args + runfiles). :dist builds locally, hence the `local`
 # tag (projects/game/desktop/frontend/BUILD.bazel convention).
 sh_test(

@@ -1,6 +1,6 @@
 version: "3.0"
 name: service
-app: grpc-hello-world-ts
+app: grpc-hello-world-js
 kind: stateless
 desc: grpc-js hello world TypeScript service
 ports:

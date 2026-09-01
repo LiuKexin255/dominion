@@ -2,12 +2,12 @@ syntax = "proto3";
 
 import "google/api/annotations.proto";
 
-package experimental.ts.grpc_hello_world;
+package experimental.js.grpc_hello_world;
 
 service Greeter {
   rpc SayHello (HelloRequest) returns (HelloReply) {
     option (google.api.http) = {
-      get: "/experimental/ts/grpc-hello-world/say-hello"
+      get: "/experimental/js/grpc-hello-world/say-hello"
     };
   }
 }

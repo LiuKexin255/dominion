@@ -4,7 +4,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { readConfig } from "@dominion/common-js-config";
 import { info } from "@dominion/common-js-logs";
-import type { GreeterHandlers } from "../greeter_types/experimental/ts/grpc_hello_world/Greeter.js";
+import type { GreeterHandlers } from "../greeter_types/experimental/js/grpc_hello_world/Greeter.js";
 import type { ProtoGrpcType } from "../greeter_types/greeter.js";
 
 /** Greeting data shape declared in the service.yaml `service_config` config block. */
@@ -30,8 +30,8 @@ const greetingSuffixSegment = greetingSuffix === "" ? "" : ` ${greetingSuffix}`;
 const protoRoot = path.join(import.meta.dirname, "..");
 
 // Proto files are placed at their canonical import paths under the service root.
-// For example: service/experimental/ts/grpc_hello_world/greeter.proto
-const protoPath = path.join(protoRoot, "experimental/ts/grpc_hello_world/greeter.proto");
+// For example: service/experimental/js/grpc_hello_world/greeter.proto
+const protoPath = path.join(protoRoot, "experimental/js/grpc_hello_world/greeter.proto");
 
 // All proto dependencies (e.g. google/api/annotations.proto) are also under
 // the service root, so a single includeDir covers all imports.
@@ -111,7 +111,7 @@ export async function startServer(): Promise<grpc.Server> {
 
 	const server = new grpc.Server();
 	server.addService(
-		proto.experimental.ts.grpc_hello_world.Greeter.service,
+		proto.experimental.js.grpc_hello_world.Greeter.service,
 		handlers,
 	);
 

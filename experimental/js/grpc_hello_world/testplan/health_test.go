@@ -28,7 +28,7 @@ const (
 	envHeader = "env"
 	// healthPathPrefix is the public HTTP entry of the service backend
 	// (deploy_selfheal.yaml gateway PathPrefix + service gateway route).
-	healthPathPrefix = "/experimental/ts/grpc-hello-world/say-hello"
+	healthPathPrefix = "/experimental/js/grpc-hello-world/say-hello"
 
 	// This file is compiled into its own go_largetest binary (target
 	// health_test), separate from interface_test.go (target testplan_test),

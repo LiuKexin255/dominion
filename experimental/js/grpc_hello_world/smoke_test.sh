@@ -4,11 +4,11 @@
 set -euo pipefail
 
 # Tar structure: everything under dominion/{app}/{service}/
-#   dominion/grpc-hello-world-ts/service/package.json
-#   dominion/grpc-hello-world-ts/service/src/bootstrap.js
-#   dominion/grpc-hello-world-ts/service/node_modules/@dominion/...
-#   dominion/grpc-hello-world-ts/service/node_modules/@grpc/...
-SERVICE_ROOT="dominion/grpc-hello-world-ts/service"
+#   dominion/grpc-hello-world-js/service/package.json
+#   dominion/grpc-hello-world-js/service/src/bootstrap.js
+#   dominion/grpc-hello-world-js/service/node_modules/@dominion/...
+#   dominion/grpc-hello-world-js/service/node_modules/@grpc/...
+SERVICE_ROOT="dominion/grpc-hello-world-js/service"
 
 # --- Locate the tar via Bazel runfiles ---
 TAR_PATH=""
@@ -20,7 +20,7 @@ done
 
 if [[ -z "${TAR_PATH}" ]]; then
   if [[ -n "${TEST_SRCDIR:-}" ]]; then
-    TAR_PATH="${TEST_SRCDIR}/experimental/ts/grpc_hello_world/server_pkg.tar"
+    TAR_PATH="${TEST_SRCDIR}/experimental/js/grpc_hello_world/server_pkg.tar"
   fi
 fi
 

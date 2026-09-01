@@ -4,7 +4,7 @@ type: test
 desc: "grpc-js hello world self-heal test deployment (timed health stop)"
 services:
   - artifact:
-      path: //experimental/ts/grpc_hello_world/service.yaml
+      path: //experimental/js/grpc_hello_world/service.yaml
       name: service
       # 选择 service.yaml 配置块池中的 service_config（contracts/yaml-schema.md §2）
       configs:
@@ -16,7 +16,7 @@ services:
         # 容器重启，与 health_test.go 的轮询窗口共同覆盖"判死+重启"全周期（> 60s 余量）
         HEALTH_STOP_AFTER_MS: "60000"
   - artifact:
-      path: //experimental/ts/grpc_hello_world/testplan/gateway/service.yaml
+      path: //experimental/js/grpc_hello_world/testplan/gateway/service.yaml
       name: gateway
     http:
       hostnames:
@@ -25,4 +25,4 @@ services:
         - backend: http
           path:
             type: PathPrefix
-            value: /experimental/ts/grpc-hello-world
+            value: /experimental/js/grpc-hello-world

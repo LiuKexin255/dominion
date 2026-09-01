@@ -1,6 +1,6 @@
 # FINDINGS — LangGraph team-graph spike (specs/031-team-template-mode D14)
 
-**Spike**: `experimental/ts/team_graph_spike/` | **Date**: 2026-07-29
+**Spike**: `experimental/js/team_graph_spike/` | **Date**: 2026-07-29
 **Pinned runtime** (`pnpm-workspace.yaml` catalog, verified installed):
 `@langchain/langgraph` 1.4.8 · `langchain` 1.5.4 · `@langchain/core` 1.2.3 ·
 `@langchain/openai` 1.5.5 · `zod` 3.25.76.
@@ -53,7 +53,7 @@ short-term memory. No revision needed.
 
 Source: `@langchain/langgraph` `messagesStateReducer`
 ([LangGraph JS — add memory](https://docs.langchain.com/oss/javascript/langgraph/add-memory));
-`experimental/ts/team_graph_spike/src/spike.test.ts` describe("A1").
+`experimental/js/team_graph_spike/src/spike.test.ts` describe("A1").
 
 ---
 
@@ -93,8 +93,8 @@ is feasible exactly as written. The "createAgent invoked inside an outer node
 function" pattern (not the subgraph-as-node pattern) is the right one — it lets
 the outer graph own per-agent history in its own channels (A3).
 
-Source: `experimental/ts/team_graph_spike/src/team-graph.ts` (`playerNode`);
-`experimental/ts/team_graph_spike/src/spike.test.ts` describe("A2").
+Source: `experimental/js/team_graph_spike/src/team-graph.ts` (`playerNode`);
+`experimental/js/team_graph_spike/src/spike.test.ts` describe("A2").
 
 ---
 
@@ -127,7 +127,7 @@ gives the simplest history-reconstruction path.
 channels in one TeamState" is the correct, verified choice. No need to split
 into independent createAgents with separate checkpointers.
 
-Source: `experimental/ts/team_graph_spike/src/spike.test.ts` describe("A3").
+Source: `experimental/js/team_graph_spike/src/spike.test.ts` describe("A3").
 
 ---
 
@@ -167,7 +167,7 @@ can middleware return `REMOVE_ALL_MESSAGES`.
 
 Source: `langchain` `AgentMiddleware`
 ([types.ts on GitHub](https://github.com/langchain-ai/langchainjs/blob/main/libs/langchain/src/agents/middleware/types.ts));
-`experimental/ts/team_graph_spike/src/spike.test.ts` describe("A4").
+`experimental/js/team_graph_spike/src/spike.test.ts` describe("A4").
 
 ---
 
@@ -192,7 +192,7 @@ testplan has since been removed, see the note below):
 **Resolver constraint (important for deploy)**: `common/js/resolver`'s
 `validateServiceApp` requires `target.app === SERVICE_APP`. The fake-llm is
 `app: game` (in `projects/game/fake-llm/service.yaml`), so the spike service
-MUST also be `app: game` (`experimental/ts/team_graph_spike/service.yaml`). This
+MUST also be `app: game` (`experimental/js/team_graph_spike/service.yaml`). This
 is purely a resolver/deploy concern, not a graph concern.
 
 **Fake-llm testdata (temporary)**: the spike added 3 throwaway testdata files
@@ -232,7 +232,7 @@ correctly.
 plain overwrite channel (not a messages channel) works as a standard LangGraph
 feature.
 
-Source: `experimental/ts/team_graph_spike/src/spike.test.ts` describe("A6").
+Source: `experimental/js/team_graph_spike/src/spike.test.ts` describe("A6").
 
 ---
 
@@ -268,7 +268,7 @@ Source: `experimental/ts/team_graph_spike/src/spike.test.ts` describe("A6").
 ## Files
 
 - Spike (NEW, the only permanent additions):
-  `experimental/ts/team_graph_spike/` — `service.yaml`, `package.json`,
+  `experimental/js/team_graph_spike/` — `service.yaml`, `package.json`,
   `tsconfig.json`, `.swcrc`, `BUILD.bazel`, `src/{bootstrap,server,team-graph,
   spike.test}.ts`, `FINDINGS.md` (this file). The `testplan/` directory
   (deploy.yaml, interface_test.yaml, interface_test.go, BUILD.bazel) was later

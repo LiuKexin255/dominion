@@ -2,7 +2,7 @@
 # Dist artifact assertions for the vite React demo.
 #
 # Contract: specs/050-vite-react-bazel/contracts/dist-artifact-assertions.md
-# (target wiring precedent: experimental/ts/grpc_hello_world/BUILD.bazel).
+# (target wiring precedent: experimental/js/grpc_hello_world/BUILD.bazel).
 # Input: argv[1] = path of the :dist tree artifact ($(location :dist)).
 # Output: one PASS line per assertion (A1..A4); any failure prints FAIL plus
 # the assertion id and exits non-zero — never warn-and-continue.

@@ -41,7 +41,7 @@ go_proto_library(
         "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
         "//:go_gen_aip",
     ],
-    importpath = "dominion/experimental/ts/grpc_hello_world",
+    importpath = "dominion/experimental/js/grpc_hello_world",
     proto = ":greeter_proto",
     visibility = ["//visibility:public"],
     deps = ["@googleapis//google/api:annotations_go_proto"],
@@ -50,7 +50,7 @@ go_proto_library(
 go_library(
     name = "grpc_hello_world_go",
     embed = [":greeter_go_proto"],
-    importpath = "dominion/experimental/ts/grpc_hello_world",
+    importpath = "dominion/experimental/js/grpc_hello_world",
     visibility = ["//visibility:public"],
 )
 
@@ -83,7 +83,7 @@ js_library(
 # Package JS service files into a tar layer
 artifact_pkg_js(
     name = "server_pkg",
-    app = "grpc-hello-world-ts",
+    app = "grpc-hello-world-js",
     entrypoint = "src/bootstrap.js",
     npm_deps = [
         ":node_modules/@grpc/grpc-js",
@@ -105,7 +105,7 @@ artifact_pkg_js(
 # OCI image for the TypeScript gRPC server
 artifact_image(
     name = "cmd_image",
-    app = "grpc-hello-world-ts",
+    app = "grpc-hello-world-js",
     pkg = ":server_pkg",
     service = "service",
     visibility = ["//visibility:public"],

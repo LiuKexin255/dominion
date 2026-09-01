@@ -3,14 +3,14 @@ load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
 
 artifact_pkg_go(
     name = "service_pkg",
-    app = "grpc-hello-world-ts",
-    binary = "//experimental/ts/grpc_hello_world/testplan/gateway:gateway",
+    app = "grpc-hello-world-js",
+    binary = "//experimental/js/grpc_hello_world/testplan/gateway:gateway",
     service = "gateway",
 )
 
 artifact_image(
     name = "cmd_image",
-    app = "grpc-hello-world-ts",
+    app = "grpc-hello-world-js",
     pkg = ":service_pkg",
     service = "gateway",
 )

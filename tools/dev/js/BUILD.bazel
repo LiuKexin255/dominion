@@ -1,4 +1,4 @@
-load("@npm//experimental/ts/grpc_hello_world:@grpc/proto-loader/package_json.bzl", proto_loader = "bin")
+load("@npm//experimental/js/grpc_hello_world:@grpc/proto-loader/package_json.bzl", proto_loader = "bin")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
 exports_files([

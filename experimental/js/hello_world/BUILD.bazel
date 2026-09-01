@@ -23,6 +23,9 @@ ts_project(
 # 运行入口
 js_binary(
     name = "run",
-    data = [":lib", "package.json"],
+    data = [
+        "package.json",
+        ":lib",
+    ],
     entry_point = "src/main.js",
 )

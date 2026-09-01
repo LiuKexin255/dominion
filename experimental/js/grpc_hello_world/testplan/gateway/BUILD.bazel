@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library")
 go_library(
     name = "gateway_lib",
     srcs = ["main.go"],
-    importpath = "dominion/experimental/ts/grpc_hello_world/testplan/gateway",
+    importpath = "dominion/experimental/js/grpc_hello_world/testplan/gateway",
     visibility = ["//visibility:private"],
     deps = [
         "//common/gopkg/bootstrap",
@@ -11,7 +11,7 @@ go_library(
         "//common/gopkg/grpc/solver",
         "//common/gopkg/http",
         "//common/gopkg/otel",
-        "//experimental/ts/grpc_hello_world:grpc_hello_world_go",
+        "//experimental/js/grpc_hello_world:grpc_hello_world_go",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
     ],

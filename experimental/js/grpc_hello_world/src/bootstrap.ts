@@ -97,10 +97,10 @@ async function main() {
   await init({ instrumentations: [createGrpcInstrumentation()] });
 
   // 2. Install OTel reporter for structured logs
-  const uninstallReporter = installReporter(createOTelReporter("grpc-hello-world-ts/service"));
+  const uninstallReporter = installReporter(createOTelReporter("grpc-hello-world-js/service"));
 
   // 3. Log service startup
-  info("service starting", { service: "grpc-hello-world-ts", port: 50051 });
+  info("service starting", { service: "grpc-hello-world-js", port: 50051 });
 
   // 4. Dynamically import server (defers @grpc/grpc-js load after OTel init)
   const { startServer } = await import("./server.js");

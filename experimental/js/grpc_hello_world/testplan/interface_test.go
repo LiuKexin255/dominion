@@ -13,7 +13,7 @@ import (
 
 const (
 	headerEnv  = "env"
-	pathPrefix = "/experimental/ts/grpc-hello-world/say-hello"
+	pathPrefix = "/experimental/js/grpc-hello-world/say-hello"
 	// Expected values sourced from the SUT config/env declarations:
 	//   configMessage / configTimes — service.yaml configs.service_config.greeting
 	//     (contracts/yaml-schema.md §1; overrides the SDK defaults "hello"/1,

@@ -11,7 +11,7 @@ import (
 	"dominion/common/gopkg/grpc/solver"
 	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/otel"
-	"dominion/experimental/ts/grpc_hello_world"
+	"dominion/experimental/js/grpc_hello_world"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -22,7 +22,7 @@ var port = flag.String("port", "80", "Port to listen on")
 func main() {
 	flag.Parse()
 
-	conn, err := grpc.NewClient(solver.URI("grpc-hello-world-ts/service:grpc"), pgrpc.ClientDefault()...)
+	conn, err := grpc.NewClient(solver.URI("grpc-hello-world-js/service:grpc"), pgrpc.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("failed to dial backend: %v", err)
 	}
@@ -35,10 +35,10 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + *port,
-		Handler: phttp.Handler(mux, "grpc-hello-world-ts-gateway"),
+		Handler: phttp.Handler(mux, "grpc-hello-world-js-gateway"),
 	}
 
-	log.Printf("gRPC hello world ts gateway listening :%s", *port)
+	log.Printf("gRPC hello world js gateway listening :%s", *port)
 
 	b := bootstrap.New()
 	b.Register(otel.Component())

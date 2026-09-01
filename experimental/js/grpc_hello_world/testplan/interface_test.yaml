@@ -14,20 +14,20 @@ description: |
 
 suites:
   - name: default
-    deploy: //experimental/ts/grpc_hello_world/testplan/deploy.yaml
+    deploy: //experimental/js/grpc_hello_world/testplan/deploy.yaml
     endpoint:
       http:
         public: https://apitest.liukexin.com
     cases:
-      - //experimental/ts/grpc_hello_world/testplan:testplan_test
+      - //experimental/js/grpc_hello_world/testplan:testplan_test
   # 自愈路径 suite（specs/052-deploy-health-probe/contracts/verification-testplan.md §2）：
   # deploy 注入 HEALTH_STOP_AFTER_MS，health_test 观测"成功 → liveness 判死失败窗口 → 恢复"。
   # timeout 900s 覆盖判死+重启全周期的轮询窗口（窗口设计见 health_test.go 常量）。
   - name: selfheal
     timeout: 900
-    deploy: //experimental/ts/grpc_hello_world/testplan/deploy_selfheal.yaml
+    deploy: //experimental/js/grpc_hello_world/testplan/deploy_selfheal.yaml
     endpoint:
       http:
         public: https://apitest.liukexin.com
     cases:
-      - //experimental/ts/grpc_hello_world/testplan:health_test
+      - //experimental/js/grpc_hello_world/testplan:health_test
