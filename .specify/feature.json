@@ -1,1 +1,3 @@
-{"feature_directory":"specs/051-agent-v2-dsh-migration"}
+{
+  "feature_directory": "specs/052-deploy-health-probe"
+}
