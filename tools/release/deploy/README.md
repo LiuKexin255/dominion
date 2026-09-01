@@ -155,6 +155,22 @@ services:
 - 基础镜像：`@distroless_nodejs`。
 - 容器启动：`ENTRYPOINT ["node"]`，`CMD ["/dominion/{app}/{service}/{entrypoint}"]`。
 
+### 健康探针约定
+
+deploy 为用户服务容器统一附加指向固定约定端点的 `startupProbe` 与 `livenessProbe`（stateless 与 stateful 工作负载同等附加，无服务侧声明或开关）：
+
+- 端点：HTTP GET，端口 `38080`、路径 `/healthz`。
+- `startupProbe`：`periodSeconds: 10`、`failureThreshold: 30`，即启动预算 `10 × 30 = 300s`；超时容器被杀并按 restartPolicy 重启。
+- `livenessProbe`：`periodSeconds: 10`、`failureThreshold: 3`，即连续失败约 30s 后容器被杀并重启（运行期自愈）。
+- 不设置 `initialDelaySeconds`（startupProbe 成功前 liveness 不执行）。
+
+端点的提供方式：
+
+- Go 服务：共享 bootstrap 在所有组件启动成功后自动提供该端点，退出时先行停止，服务无需自行实现。
+- JS 服务：在自身 bootstrap 代码中按同一约定自行实现该端点；统一的 JS bootstrap 公共库为后续独立工作。
+
+风险提示：探针即"是否启动/是否存活"的判定依据，未提供该端点的服务部署后将持续无法就绪（rollout 保持 WAITING，按既有超时语义最终 FAILED）。新增或迁移服务时须遵循本约定。
+
 ### Go 服务
 
 ```python
