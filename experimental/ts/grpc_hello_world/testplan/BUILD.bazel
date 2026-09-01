@@ -21,3 +21,23 @@ go_largetest(
     srcs = ["interface_test.go"],
     deps = ["//common/gopkg/testtool"],
 )
+
+# health_test observes the self-heal path (SC-003): the selfheal suite's
+# deploy injects HEALTH_STOP_AFTER_MS, and the case polls the public entry
+# through "success → liveness-killed failure window → recovery"
+# (specs/052-deploy-health-probe/contracts/verification-testplan.md §2).
+# Compiled separately from testplan_test so the failure-window polling never
+# runs in the default suite, where no failure would ever appear.
+#
+# size = large: the poll windows span up to ~6 min worst case (initial 60s +
+# failure 150s + recovery 150s, health_test.go constants) — the 60s small
+# budget cannot cover the minutes-scale kill+restart cycle.
+go_largetest(
+    name = "health_test",
+    size = "large",
+    srcs = ["health_test.go"],
+    deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//common/gopkg/testtool",
+    ],
+)
