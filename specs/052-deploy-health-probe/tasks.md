@@ -146,7 +146,7 @@ Tasks:
 
 Tasks:
 
-- [ ] T011 最终回归门禁：`bazel build //...` 与 `bazel test //...` 全仓通过；按 `quickstart.md` §1 复核单测清单；确认 `specs/052-deploy-health-probe/checklists/requirements.md` 各项与最终交付一致（如需勾选更新）。已知范围外影响（`system_test.yaml` 全红、静态服务不 READY）确认为记录状态而非缺陷（research.md D9）
+- [X] T011 最终回归门禁：`bazel build //...` 与 `bazel test //...` 全仓通过；按 `quickstart.md` §1 复核单测清单；确认 `specs/052-deploy-health-probe/checklists/requirements.md` 各项与最终交付一致（如需勾选更新）。已知范围外影响（`system_test.yaml` 全红、静态服务不 READY）确认为记录状态而非缺陷（research.md D9）。环境性失败归因：`bazel build`/`bazel test` 的预先失败仅 `//experimental/js/vite_react_demo:dist` 与 `//projects/game/web/frontend:dist` 及其级联 3 个 test target，原因：源码树 node_modules 缺失（`tools/dev/js/vite.bzl` 需 local node_modules）；两目录在本特性全部提交中零改动、与改动包无依赖路径，非本特性回归
 
 ---
 

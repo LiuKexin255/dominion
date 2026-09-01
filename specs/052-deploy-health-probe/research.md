@@ -100,7 +100,7 @@
 ## D9: 已知范围外后果（用户决策记录）
 
 **Decision**: `projects/game/agent`、`agent_v2` 不实现 health 端点（不修改 service 代码）；`experimental/` 之外的服务代码零修改（FR-009）。探针上线后：
-- `projects/game/testplan/system_test.yaml` 全部 13 个 suite（`deploy_agent.yaml`/`deploy_agent_stall.yaml`/`deploy_agent_v2.yaml` 均部署 JS agent 服务）在部署阶段失败。
+- `projects/game/testplan/system_test.yaml` 全部 12 个 suite（`deploy_agent.yaml`/`deploy_agent_stall.yaml`/`deploy_agent_v2.yaml` 均部署 JS agent 服务）在部署阶段失败。
 
 **Rationale**: 用户在 plan 阶段明确选择（见 spec Clarifications 2026-09-01 会话）。后续适配为独立工作。Go 服务（session/gateway/memory/prompt/proxy/fake-llm/web/deploy-manager 及 experimental Go 服务）经 D5 自动覆盖，不受影响；其中 `specs/050-vite-react-bazel` 的静态文件服务（`experimental/js/vite_react_demo/server`）同为 Go + 共享 bootstrap，自动获得约定端点，部署仍可就绪，无需适配。
 
