@@ -511,6 +511,9 @@ importers:
 
   experimental/js/grpc_hello_world:
     dependencies:
+      '@dominion/common-js-bootstrap':
+        specifier: workspace:*
+        version: link:../../../common/js/bootstrap
       '@dominion/common-js-config':
         specifier: workspace:*
         version: link:../../../common/js/config
@@ -545,6 +548,9 @@ importers:
 
   experimental/js/team_graph_spike:
     dependencies:
+      '@dominion/common-js-bootstrap':
+        specifier: workspace:*
+        version: link:../../../common/js/bootstrap
       '@dominion/common-js-logs':
         specifier: workspace:*
         version: link:../../../common/js/logs

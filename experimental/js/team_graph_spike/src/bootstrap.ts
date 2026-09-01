@@ -1,39 +1,67 @@
 /**
  * Bootstrap entry point for the experimental team-graph spike service.
+ *
+ * Two-phase entry per
+ * specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md §2
+ * (no instrumentation passed: the service has no @grpc/grpc-js dependency,
+ * init() still registers the OTel ESM loader hook idempotently). The entry
+ * sequence (init → installReporter → dynamic import → register → run →
+ * uninstall/shutdown → exit) is fixed by
+ * specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §8; the
+ * 38080/healthz endpoint is provided automatically by the shared bootstrap
+ * (specs/053-js-bootstrap-migration/spec.md FR-002).
  */
 
-import { init, shutdown } from "@dominion/common-js-otel";
 import {
+  Bootstrap,
+  createHttpServerComponent,
+} from "@dominion/common-js-bootstrap";
+import {
+  createOTelReporter,
   info,
   installReporter,
-  createOTelReporter,
 } from "@dominion/common-js-logs";
+import { init, shutdown } from "@dominion/common-js-otel";
 
-async function main() {
-  console.error("[bootstrap] starting team-graph-spike");
+// Business port declared in experimental/js/team_graph_spike/service.yaml,
+// overridable through the PORT env; /health and /invoke behavior is
+// unchanged by the bootstrap adoption
+// (specs/053-js-bootstrap-migration/spec.md FR-013).
+const port = process.env.PORT || "8080";
 
+async function main(): Promise<void> {
   await init();
 
   const uninstallReporter = installReporter(
     createOTelReporter("team-graph-spike"),
   );
-  console.error("[bootstrap] OTel initialized");
+  info("service starting", { service: "team-graph-spike", port: Number(port) });
 
-  info("service starting", { service: "team-graph-spike", port: 8080 });
+  let exitCode = 0;
+  try {
+    // Dynamic import keeps the langchain dependency graph out of the
+    // bootstrap static import graph.
+    const { buildServer } = await import("./server.js");
 
-  const { startServer } = await import("./server.js");
-  const server = await startServer();
+    const bootstrap = new Bootstrap();
+    bootstrap.register(
+      createHttpServerComponent("http", buildServer(), { port: Number(port) }),
+    );
 
-  const shutdownHandler = async (signal: string) => {
-    info("shutting down", { signal });
-    uninstallReporter();
-    server.close();
-    await shutdown();
-    process.exit(0);
-  };
+    // Runs until SIGTERM/SIGINT; resolves only on a clean signal exit, with
+    // the health endpoint stopped first (FIFO lifecycle).
+    await bootstrap.run();
+  } catch (err) {
+    console.error("Fatal error:", err);
+    exitCode = 1;
+  }
 
-  process.on("SIGTERM", () => shutdownHandler("SIGTERM"));
-  process.on("SIGINT", () => shutdownHandler("SIGINT"));
+  // OTel lifecycle stays entry-level glue, not a component
+  // (specs/053-js-bootstrap-migration/research.md D4): shutdown runs after
+  // every component has stopped so shutdown-period logs still export.
+  uninstallReporter();
+  await shutdown();
+  process.exit(exitCode);
 }
 
 main().catch((err) => {

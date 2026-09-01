@@ -7,6 +7,7 @@
     "skipLibCheck": true,
     "types": ["node"],
     "paths": {
+      "@dominion/common-js-bootstrap": ["../../../common/js/bootstrap/src/index.js"],
       "@dominion/common-js-config": ["../../../common/js/config/src/index.js"],
       "@dominion/common-js-logs": ["../../../common/js/logs/src/index.js"],
       "@dominion/common-js-grpc-otel": ["../../../common/js/grpc/otel/src/index.js"],

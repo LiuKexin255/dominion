@@ -65,6 +65,7 @@ ts_project(
     tsconfig = ":tsconfig",
     deps = [
         ":greeter_types_lib",
+        ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-config",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-logs",
@@ -95,6 +96,7 @@ artifact_pkg_js(
     service = "service",
     ts_project = ":server",
     runtime_deps = [
+        "//common/js/bootstrap:runtime_pkg",
         "//common/js/config:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/logs:runtime_pkg",

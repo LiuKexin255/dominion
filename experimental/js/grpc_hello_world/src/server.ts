@@ -75,15 +75,21 @@ function buildCredentials(): grpc.ServerCredentials {
 	return grpc.ServerCredentials.createInsecure();
 }
 
+/** The pieces the shared bootstrap gRPC server component needs for binding. */
+interface BuiltServer {
+	server: grpc.Server;
+	credentials: grpc.ServerCredentials;
+}
+
 /**
- * Creates and starts the gRPC server.
+ * Builds the gRPC server without binding it.
  *
- * Loads the proto definition, registers the Greeter service handlers,
- * and binds to port 50051 on all interfaces.
- *
- * @returns A promise that resolves to the started gRPC Server instance.
+ * Loads the proto definition, registers the Greeter service handlers, and
+ * builds the credentials; binding, serving, and graceful shutdown are owned
+ * by the shared bootstrap component
+ * (specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §6).
  */
-export async function startServer(): Promise<grpc.Server> {
+export function buildServer(): BuiltServer {
 	const proto = loadProto();
 	const credentials = buildCredentials();
 
@@ -115,19 +121,5 @@ export async function startServer(): Promise<grpc.Server> {
 		handlers,
 	);
 
-	return new Promise((resolve, reject) => {
-		server.bindAsync(
-			"0.0.0.0:50051",
-			credentials,
-			(err, port) => {
-				if (err) {
-					reject(err);
-					return;
-				}
-				server.start();
-				info("gRPC server listening", { port, tls: true });
-				resolve(server);
-			},
-		);
-	});
+	return { server, credentials };
 }

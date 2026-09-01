@@ -19,7 +19,6 @@ import {
   buildTeamGraph,
 } from "./team-graph.js";
 
-const port = process.env.PORT || "8080";
 const fakeTarget = process.env.FAKE_LLM_TARGET || "game/fake-llm:8080";
 const resolver = createResolver();
 
@@ -131,8 +130,15 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-export async function startServer(): Promise<http.Server> {
-  const server = http.createServer((req, res) => {
+/**
+ * Builds the HTTP server without listening.
+ *
+ * Listening, graceful shutdown, and the 38080/healthz endpoint are owned by
+ * the shared bootstrap
+ * (specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §6).
+ */
+export function buildServer(): http.Server {
+  return http.createServer((req, res) => {
     if (
       req.url === "/invoke" ||
       req.url === "/experimental/team-graph/invoke"
@@ -153,13 +159,5 @@ export async function startServer(): Promise<http.Server> {
       return;
     }
     res.writeHead(404).end("not found");
-  });
-
-  return new Promise((resolve) => {
-    server.listen(Number(port), () => {
-      console.error("[server] team-graph-spike listening on :%s", port);
-      info("server listening", { port, fakeTarget });
-      resolve(server);
-    });
   });
 }

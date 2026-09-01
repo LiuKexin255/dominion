@@ -1,80 +1,49 @@
 /**
- * Bootstrap entry point for the TypeScript gRPC hello world server.
+ * Bootstrap entry point for the gRPC hello world service.
  *
- * Initializes OpenTelemetry BEFORE @grpc/grpc-js loads, installs an OTel
- * log reporter, dynamically imports the server module, serves the k8s health
- * probe endpoint on :38080, and handles graceful shutdown on SIGTERM/SIGINT.
- *
- * This module is the runtime entrypoint for the container image.
+ * Two-phase entry per
+ * specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md §2:
+ * the static import graph carries only OTel/bootstrap wiring; @grpc/grpc-js
+ * loads through the dynamic import below, after init() has registered the
+ * OTel ESM loader hook. The entry sequence (init → installReporter →
+ * dynamic import → register → run → uninstall/shutdown → exit) is fixed by
+ * specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §8.
  */
 
-import * as http from "node:http";
-import { init, shutdown } from "@dominion/common-js-otel";
+import {
+  Bootstrap,
+  createGrpcServerComponent,
+} from "@dominion/common-js-bootstrap";
 import { createGrpcInstrumentation } from "@dominion/common-js-grpc-otel";
-import { info, installReporter, createOTelReporter } from "@dominion/common-js-logs";
+import {
+  createOTelReporter,
+  info,
+  installReporter,
+} from "@dominion/common-js-logs";
+import { init, shutdown } from "@dominion/common-js-otel";
 
-// Fixed probe endpoint convention shared with the Go bootstrap: listens on
-// all interfaces (kubelet probes the Pod IP, not loopback) and keeps a FIFO
-// lifecycle — started after every component, stopped before any of them
-// (specs/052-deploy-health-probe/contracts/bootstrap-health.md §1).
-const HEALTH_PORT = 38080;
-const HEALTH_PATH = "/healthz";
-
-// Starts the health HTTP server. listen() reports bind failures
-// (e.g. EADDRINUSE) asynchronously via the 'error' event
-// (https://nodejs.org/api/http.html#serverlisten), so the promise rejects and
-// the failure lands in main().catch — the process exits instead of running
-// without a health endpoint (specs/052-deploy-health-probe/spec.md FR-010).
-function startHealthServer(): Promise<http.Server> {
-  const server = http.createServer((req, res) => {
-    if (req.method === "GET" && req.url === HEALTH_PATH) {
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("ok\n");
-    } else {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  return new Promise((resolve, reject) => {
-    server.once("error", (err: Error) => {
-      reject(new Error(`health server failed to listen on :${HEALTH_PORT}: ${err.message}`));
-    });
-    server.listen(HEALTH_PORT, () => {
-      // An 'error' event with no listener escapes as an uncaught exception;
-      // once serving, runtime errors are only logged.
-      server.removeAllListeners("error");
-      server.on("error", (err: Error) => {
-        console.error("[health] server error: %s", err.message);
-      });
-      resolve(server);
-    });
-  });
-}
-
-// Releases the health port. close() stops accepting new connections and
-// closes idle ones (https://nodejs.org/api/http.html#serverclosecallback);
-// probe connections are idle, so the callback fires promptly. A server that
-// is not listening (test-only early health stop) reports ERR_SERVER_NOT_RUNNING
-// through the callback, so it is short-circuited here.
-function stopHealthServer(server: http.Server): Promise<void> {
-  return new Promise((resolve) => {
-    if (!server.listening) {
-      resolve();
-      return;
-    }
-    server.close(() => resolve());
-  });
-}
+// Binds on all interfaces, matching the deployed container port declared in
+// experimental/js/grpc_hello_world/service.yaml.
+const GRPC_ADDRESS = "0.0.0.0:50051";
 
 // Test-only self-heal hook for the large test
 // (specs/052-deploy-health-probe/contracts/verification-testplan.md §2): when
 // HEALTH_STOP_AFTER_MS is set, the health endpoint stops responding after the
 // given delay to simulate a hung process. The process itself stays alive (the
 // gRPC server keeps the event loop busy), so the k8s liveness probe — not any
-// exit path — is what fails and restarts the container. This hook exists only
-// in this experimental service, never in shared packages
-// (specs/052-deploy-health-probe/research.md D7).
-function maybeScheduleHealthStop(healthServer: http.Server): void {
+// exit path — is what fails and restarts the container. The hook rides the
+// bootstrap's health handle
+// (specs/053-js-bootstrap-migration/research.md D6) and exists only in this
+// experimental service, never in shared packages
+// (specs/053-js-bootstrap-migration/spec.md FR-014).
+// Timing constraint: the hook is armed before run() (the D6-prescribed form,
+// a plain setTimeout on the entry), so HEALTH_STOP_AFTER_MS must be larger
+// than the service startup time — before the health handle exists the
+// `bootstrap.health?.stop()` below is a silent no-op. The self-heal test
+// injects 60000ms
+// (specs/052-deploy-health-probe/contracts/verification-testplan.md §2), far
+// above startup time, so there is no practical race.
+function armHealthStopHook(bootstrap: Bootstrap): void {
   const raw = process.env.HEALTH_STOP_AFTER_MS;
   // Empty string counts as unset: Number("") is 0, which would stop the
   // endpoint immediately instead of leaving it disabled.
@@ -88,44 +57,47 @@ function maybeScheduleHealthStop(healthServer: http.Server): void {
   }
   setTimeout(() => {
     console.error("[health] HEALTH_STOP_AFTER_MS reached, stopping health endpoint (process stays alive)");
-    void stopHealthServer(healthServer);
+    void bootstrap.health?.stop();
   }, delayMs);
 }
 
-async function main() {
-  // 1. Initialize OTel with gRPC instrumentation BEFORE grpc-js loads
+async function main(): Promise<void> {
+  // 1. OTel init registers the ESM loader hook and registers the gRPC
+  // instrumentation, so @grpc/grpc-js is patched when it loads in step 3.
   await init({ instrumentations: [createGrpcInstrumentation()] });
 
-  // 2. Install OTel reporter for structured logs
-  const uninstallReporter = installReporter(createOTelReporter("grpc-hello-world-js/service"));
+  // 2. Structured logs export through the OTel reporter.
+  const uninstallReporter = installReporter(
+    createOTelReporter("grpc-hello-world-js/service"),
+  );
+  info("service starting", { service: "grpc-hello-world-js", address: GRPC_ADDRESS });
 
-  // 3. Log service startup
-  info("service starting", { service: "grpc-hello-world-js", port: 50051 });
+  let exitCode = 0;
+  try {
+    // 3. Dynamic import keeps @grpc/grpc-js out of the static import graph.
+    const { buildServer } = await import("./server.js");
+    const { server, credentials } = buildServer();
 
-  // 4. Dynamically import server (defers @grpc/grpc-js load after OTel init)
-  const { startServer } = await import("./server.js");
-  const server = await startServer();
+    const bootstrap = new Bootstrap();
+    bootstrap.register(
+      createGrpcServerComponent("grpc", { server, address: GRPC_ADDRESS, credentials }),
+    );
+    armHealthStopHook(bootstrap);
 
-  // Health starts at the tail of the boot chain: 200 then means "all
-  // components started and the process is alive"
-  // (specs/052-deploy-health-probe/contracts/bootstrap-health.md §1).
-  const healthServer = await startHealthServer();
-  maybeScheduleHealthStop(healthServer);
-  info("health endpoint serving", { port: HEALTH_PORT, path: HEALTH_PATH });
+    // 4. Runs until SIGTERM/SIGINT; resolves only on a clean signal exit,
+    // with the health endpoint stopped first (FIFO lifecycle).
+    await bootstrap.run();
+  } catch (err) {
+    console.error("Fatal error:", err);
+    exitCode = 1;
+  }
 
-  // 5. Graceful shutdown — health stops first, before any other component
-  // (FIFO lifecycle, specs/052-deploy-health-probe/contracts/bootstrap-health.md §1).
-  const shutdownHandler = async (signal: string) => {
-    info("shutting down", { signal });
-    await stopHealthServer(healthServer);
-    uninstallReporter();
-    await shutdown();
-    server.forceShutdown();
-    process.exit(0);
-  };
-
-  process.on("SIGTERM", () => shutdownHandler("SIGTERM"));
-  process.on("SIGINT", () => shutdownHandler("SIGINT"));
+  // 5. OTel lifecycle stays entry-level glue, not a component
+  // (specs/053-js-bootstrap-migration/research.md D4): shutdown runs after
+  // every component has stopped so shutdown-period logs still export.
+  uninstallReporter();
+  await shutdown();
+  process.exit(exitCode);
 }
 
 main().catch((err) => {

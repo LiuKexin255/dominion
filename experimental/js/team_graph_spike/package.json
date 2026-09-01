@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@dominion/common-js-bootstrap": "workspace:*",
     "@dominion/common-js-logs": "workspace:*",
     "@dominion/common-js-otel": "workspace:*",
     "@dominion/common-js-resolver": "workspace:*",
