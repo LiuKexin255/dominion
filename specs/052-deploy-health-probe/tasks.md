@@ -92,8 +92,8 @@ Tasks:
 
 Tasks:
 
-- [ ] T005 [P] [US2] 在 `experimental/grpc_chain/mid/src/bootstrap.ts` 自行实现 health（遵守 `contracts/bootstrap-health.md` §1/§3：`node:http` 监听 `:38080`、`GET /healthz` → 200 `ok\n`、其余 404；`startServer` 成功后启动 health；SIGTERM/SIGINT 关闭链第一步停止 health（`server.close`）；启动失败记录原因并按启动失败退出——FR-010；保持既有 OTel 两段式 bootstrap 时序不变）。本地验证：`bazel run //experimental/grpc_chain/mid`（或包内启动方式）后 `curl -i http://localhost:38080/healthz` 得 200。完成后 `bazel build //experimental/grpc_chain/...`
-- [ ] T006 [P] [US2] 在 `experimental/ts/grpc_hello_world/src/bootstrap.ts` 实现与 T005 相同约定的 health（可复制该实现，experimental 定位允许），并增加 test-only 行为：读取环境变量 `HEALTH_STOP_AFTER_MS`（未设置时不启用），到时后停止 health 服务（模拟进程挂死；`server.close` 后保持进程存活以便 liveness 判死）。该逻辑仅存在于本服务（research.md D7 清理约束）。完成后 `bazel build //experimental/ts/grpc_hello_world/...`
+- [X] T005 [P] [US2] 在 `experimental/grpc_chain/mid/src/bootstrap.ts` 自行实现 health（遵守 `contracts/bootstrap-health.md` §1/§3：`node:http` 监听 `:38080`、`GET /healthz` → 200 `ok\n`、其余 404；`startServer` 成功后启动 health；SIGTERM/SIGINT 关闭链第一步停止 health（`server.close`）；启动失败记录原因并按启动失败退出——FR-010；保持既有 OTel 两段式 bootstrap 时序不变）。本地验证：`bazel run //experimental/grpc_chain/mid`（或包内启动方式）后 `curl -i http://localhost:38080/healthz` 得 200。完成后 `bazel build //experimental/grpc_chain/...`
+- [X] T006 [P] [US2] 在 `experimental/ts/grpc_hello_world/src/bootstrap.ts` 实现与 T005 相同约定的 health（可复制该实现，experimental 定位允许），并增加 test-only 行为：读取环境变量 `HEALTH_STOP_AFTER_MS`（未设置时不启用），到时后停止 health 服务（模拟进程挂死；`server.close` 后保持进程存活以便 liveness 判死）。该逻辑仅存在于本服务（research.md D7 清理约束）。完成后 `bazel build //experimental/ts/grpc_hello_world/...`
 
 **Checkpoint**: 两个 experimental JS 服务本地均提供 `/healthz:38080`；US2 可独立验证（不依赖 US1 探针）。
 
