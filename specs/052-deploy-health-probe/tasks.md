@@ -62,8 +62,8 @@ Tasks:
 
 Tasks:
 
-- [ ] T003 [US1] 在 `projects/infra/deploy/runtime/k8s/builder.go` 新增探针构造（如 `buildHealthProbes()`，参数严格按 `contracts/deploy-probe.md` §2：startup `periodSeconds:10`/`failureThreshold:30`，liveness `periodSeconds:10`/`failureThreshold:3`，httpGet `path:/healthz`/`port:38080`；不设置 initialDelaySeconds；不声明 containerPort），并在 `BuildDeployment`（容器字面量，约 `builder.go:273-279`）与 `BuildStatefulSet`（约 `builder.go:441-447`）的用户服务容器上附加 `StartupProbe`/`LivenessProbe`（参照同文件 Mongo 探针先例 `builder.go:764-768`、`builder.go:804-809`；infra 组件不动）。单测（`projects/infra/deploy/runtime/k8s/builder_test.go`：Deployment 与 StatefulSet 两类工作负载的容器均携带契约探针字段与参数，SC-001；表驱动）。完成后 `bazel test //projects/infra/deploy/runtime/k8s/...`
-- [ ] T004 [P] [US1] 在 `tools/release/deploy/README.md` 打包规范章节之后新增"健康探针约定"章节（D8）：端口 38080、路径 /healthz、bootstrap 自动提供（Go）/自行实现（JS，统一公共库为后续工作）、未适配服务部署不就绪的风险、探针参数值（与 `contracts/deploy-probe.md` §2 一致）。纯文档变更，无代码
+- [X] T003 [US1] 在 `projects/infra/deploy/runtime/k8s/builder.go` 新增探针构造（如 `buildHealthProbes()`，参数严格按 `contracts/deploy-probe.md` §2：startup `periodSeconds:10`/`failureThreshold:30`，liveness `periodSeconds:10`/`failureThreshold:3`，httpGet `path:/healthz`/`port:38080`；不设置 initialDelaySeconds；不声明 containerPort），并在 `BuildDeployment`（容器字面量，约 `builder.go:273-279`）与 `BuildStatefulSet`（约 `builder.go:441-447`）的用户服务容器上附加 `StartupProbe`/`LivenessProbe`（参照同文件 Mongo 探针先例 `builder.go:764-768`、`builder.go:804-809`；infra 组件不动）。单测（`projects/infra/deploy/runtime/k8s/builder_test.go`：Deployment 与 StatefulSet 两类工作负载的容器均携带契约探针字段与参数，SC-001；表驱动）。完成后 `bazel test //projects/infra/deploy/runtime/k8s/...`
+- [X] T004 [P] [US1] 在 `tools/release/deploy/README.md` 打包规范章节之后新增"健康探针约定"章节（D8）：端口 38080、路径 /healthz、bootstrap 自动提供（Go）/自行实现（JS，统一公共库为后续工作）、未适配服务部署不就绪的风险、探针参数值（与 `contracts/deploy-probe.md` §2 一致）。纯文档变更，无代码
 
 **Checkpoint**: `bazel test //projects/infra/deploy/...` 通过；README 约定章节可检索。US1 可独立交付（MVP 与 Phase 1 组合即覆盖全部 Go 服务）。
 
