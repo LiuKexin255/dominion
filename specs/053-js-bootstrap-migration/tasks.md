@@ -68,11 +68,11 @@
 
 **Tasks**:
 
-- [ ] T007 包骨架：创建 `common/js/bootstrap/`（`package.json`：`"type": "module"`、name `@dominion/common-js-bootstrap`、依赖 `@dominion/common-js-logs: workspace:*`、devDeps `@types/node`/`typescript`/`vitest`；`tsconfig.json` + `.swcrc` 按 `specs/048-js-esm-migration/contracts/esm-package-conventions.md` §2 锁步；`BUILD.bazel` 三件套对照 `common/js/logs/BUILD.bazel`；空 `src/index.ts`）；`bazel run //:gazelle common/js/bootstrap` 后补齐 BUILD 手工 target；验证 `bazel build //common/js/bootstrap:lib`。
-- [ ] T008 `src/component.ts`：`Stage` as const 常量对象（100/200/250/300）+ 字面量联合类型、`Component` 接口（name/stage/start/stop，AsyncSignal 签名见契约 §2）、`ExitWatchable` 接口（`exited: Promise<Error | undefined>`）。
-- [ ] T009 `src/health.ts` + `src/health.test.ts`：内置健康端点（`:38080` 全接口、`GET /healthz` → 200 `ok\n`、其余 404、`HealthService` 内部接口、`HealthHandle { stop() }`）；测试以真实 38080 绑定（单文件内串行），用例对照 Go `common/gopkg/bootstrap/health_test.go`：healthz 200/ok、`/` 与未知路径与 `/healthz/extra` 404、Stop 释放端口（可重新绑定）。
-- [ ] T010 `src/bootstrap.ts`：`Bootstrap` 类（`register` 重名/run 后 throw；`run(options?)` 按 `contracts/bootstrap-js-api.md` §3.1 五步编排：排序启动→失败逆序回滚（AggregateError）→health 启动（失败同回滚）→等待退出（信号/注入 signal/exited）→health 首位+组件逆序统一预算停止；`get health()` 句柄；`shutdownTimeoutMs` 默认 5000）。
-- [ ] T011 `src/bootstrap.test.ts`：DI 桩（`healthServerFactory` 注入 `vi.fn()` 记录顺序；组件以记录型 fake 实现）：stage+name 排序、重名拒绝、run 后注册拒绝、两次 run 拒绝、启动失败回滚逆序、health FIFO（最后启动/最先停止）、health 启动失败回滚、预算超时聚合、注入 AbortSignal 干净退出 resolve、组件 exited 带错触发全局关停并 reject。所有 mock 断言遵循 `style/javascript.md`（对被拦截调用做正向断言）。
+- [X] T007 包骨架：创建 `common/js/bootstrap/`（`package.json`：`"type": "module"`、name `@dominion/common-js-bootstrap`、依赖 `@dominion/common-js-logs: workspace:*`、devDeps `@types/node`/`typescript`/`vitest`；`tsconfig.json` + `.swcrc` 按 `specs/048-js-esm-migration/contracts/esm-package-conventions.md` §2 锁步；`BUILD.bazel` 三件套对照 `common/js/logs/BUILD.bazel`；空 `src/index.ts`）；`bazel run //:gazelle common/js/bootstrap` 后补齐 BUILD 手工 target；验证 `bazel build //common/js/bootstrap:lib`。
+- [X] T008 `src/component.ts`：`Stage` as const 常量对象（100/200/250/300）+ 字面量联合类型、`Component` 接口（name/stage/start/stop，AsyncSignal 签名见契约 §2）、`ExitWatchable` 接口（`exited: Promise<Error | undefined>`）。
+- [X] T009 `src/health.ts` + `src/health.test.ts`：内置健康端点（`:38080` 全接口、`GET /healthz` → 200 `ok\n`、其余 404、`HealthService` 内部接口、`HealthHandle { stop() }`）；测试以真实 38080 绑定（单文件内串行），用例对照 Go `common/gopkg/bootstrap/health_test.go`：healthz 200/ok、`/` 与未知路径与 `/healthz/extra` 404、Stop 释放端口（可重新绑定）。
+- [X] T010 `src/bootstrap.ts`：`Bootstrap` 类（`register` 重名/run 后 throw；`run(options?)` 按 `contracts/bootstrap-js-api.md` §3.1 五步编排：排序启动→失败逆序回滚（AggregateError）→health 启动（失败同回滚）→等待退出（信号/注入 signal/exited）→health 首位+组件逆序统一预算停止；`get health()` 句柄；`shutdownTimeoutMs` 默认 5000）。
+- [X] T011 `src/bootstrap.test.ts`：DI 桩（`healthServerFactory` 注入 `vi.fn()` 记录顺序；组件以记录型 fake 实现）：stage+name 排序、重名拒绝、run 后注册拒绝、两次 run 拒绝、启动失败回滚逆序、health FIFO（最后启动/最先停止）、health 启动失败回滚、预算超时聚合、注入 AbortSignal 干净退出 resolve、组件 exited 带错触发全局关停并 reject。所有 mock 断言遵循 `style/javascript.md`（对被拦截调用做正向断言）。
 
 **Phase 2 Gate**: `bazel test //common/js/bootstrap:lib_test` 全绿；`bazel build //common/js/bootstrap:...` 通过。
 
