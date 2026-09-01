@@ -100,10 +100,10 @@
 
 **Tasks**:
 
-- [ ] T012 `src/http-server.ts` + 测试：`createHttpServerComponent(name, server, { port, host? })`（start=listen，error 事件 reject；stop=close 排空、预算 abort 后 `closeAllConnections()`；`exited` 承接意外 close/error）。测试：listen 成功/端口冲突 reject、stop 后端口释放、abort 触发 closeAllConnections、exited 意外错误 resolve。
-- [ ] T013 `src/grpc-server.ts` + `src/grpc-conn.ts` + 测试：`createGrpcServerComponent(name, { server, address, credentials })`（start=bindAsync+start；stop=tryShutdown 与预算竞速→forceShutdown；**不提供 exited**，research.md D7）与 `createGrpcConnComponent(name, client)`（start no-op、stop=client.close()）。对 `@grpc/grpc-js` 仅 `import type`。测试用结构化 fake（实现 bindAsync/tryShutdown/forceShutdown/close 的 vi.fn 对象，DI 注入），覆盖两阶段停止与 forceShutdown 回退。
-- [ ] T014 `src/daemon.ts` + 测试：`createDaemon(name, buildWorker, options?)`（监督循环、指数退避 `min(cur*2, max)`、maxRestarts 耗尽→fatal 经 `exited` 上报、默认分类：AbortError+信号取消→stop / 无错完成→stop / 其余→restart）。测试：build 失败重启、worker 错误退避序列（fake timers 或缩短 backoff）、耗尽→fatal、信号取消不重启、自定义 classifyError。
-- [ ] T015 barrel 与隔离审计：`src/index.ts` 全量导出（值具名导出 + `export type` 显式类型再导出，对照 `common/js/logs/src/index.ts` 风格）；`package.json` devDeps 增加 `@grpc/grpc-js: catalog:`、BUILD `:lib`/`:lib_test` 增加对应 `:node_modules/@grpc/grpc-js` 类型依赖；执行 `contracts/bootstrap-js-api.md` §7 两条审计命令零命中（包内无 `@grpc/grpc-js` 运行时导入）。
+- [X] T012 `src/http-server.ts` + 测试：`createHttpServerComponent(name, server, { port, host? })`（start=listen，error 事件 reject；stop=close 排空、预算 abort 后 `closeAllConnections()`；`exited` 承接意外 close/error）。测试：listen 成功/端口冲突 reject、stop 后端口释放、abort 触发 closeAllConnections、exited 意外错误 resolve。
+- [X] T013 `src/grpc-server.ts` + `src/grpc-conn.ts` + 测试：`createGrpcServerComponent(name, { server, address, credentials })`（start=bindAsync+start；stop=tryShutdown 与预算竞速→forceShutdown；**不提供 exited**，research.md D7）与 `createGrpcConnComponent(name, client)`（start no-op、stop=client.close()）。对 `@grpc/grpc-js` 仅 `import type`。测试用结构化 fake（实现 bindAsync/tryShutdown/forceShutdown/close 的 vi.fn 对象，DI 注入），覆盖两阶段停止与 forceShutdown 回退。
+- [X] T014 `src/daemon.ts` + 测试：`createDaemon(name, buildWorker, options?)`（监督循环、指数退避 `min(cur*2, max)`、maxRestarts 耗尽→fatal 经 `exited` 上报、默认分类：AbortError+信号取消→stop / 无错完成→stop / 其余→restart）。测试：build 失败重启、worker 错误退避序列（fake timers 或缩短 backoff）、耗尽→fatal、信号取消不重启、自定义 classifyError。
+- [X] T015 barrel 与隔离审计：`src/index.ts` 全量导出（值具名导出 + `export type` 显式类型再导出，对照 `common/js/logs/src/index.ts` 风格）；`package.json` devDeps 增加 `@grpc/grpc-js: catalog:`、BUILD `:lib`/`:lib_test` 增加对应 `:node_modules/@grpc/grpc-js` 类型依赖；执行 `contracts/bootstrap-js-api.md` §7 两条审计命令零命中（包内无 `@grpc/grpc-js` 运行时导入）。
 
 **Phase 3 Gate**: `bazel test //common/js/bootstrap:lib_test` 全绿；§7 审计零命中；`bazel build //common/js/bootstrap:runtime_pkg` 通过。
 
