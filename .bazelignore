@@ -1,8 +1,8 @@
 node_modules
-experimental/ts/hello_world/node_modules
+experimental/js/hello_world/node_modules
 projects/game/windows_agent/frontend/node_modules
 projects/game/desktop/frontend/node_modules
-experimental/ts/grpc_hello_world/node_modules
+experimental/js/grpc_hello_world/node_modules
 common/js/logs/event/node_modules
 common/js/logs/node_modules
 common/js/grpc/otel/node_modules
@@ -14,7 +14,7 @@ projects/game/agent/node_modules
 projects/game/pkg/saolei-board/node_modules
 experimental/grpc_chain/mid/node_modules
 experimental/openai_llm/client/node_modules
-experimental/ts/team_graph_spike/node_modules
+experimental/js/team_graph_spike/node_modules
 third_party/dsh/core/node_modules
 experimental/dsh/demo/agent/node_modules
 experimental/js/vite_react_demo/node_modules
