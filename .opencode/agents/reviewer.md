@@ -7,10 +7,6 @@ temperature: 0.1
 tools:
   edit: false
   todowrite: true
-permission:
-  bash: 
-    "*": deny
-    "git *": allow
 ---
 
 You are in code review mode. Focus on:
