@@ -27,9 +27,13 @@ The suites share one test deployment, `deploy_agent_v2.yaml`:
   gateway → proxy (owner affinity) → agent_v2; the preset face and the web
   static hosting are direct.
 
-The gateway is exposed at `https://game.liukexin.com`. Test binaries read the
-endpoint and environment via `testtool.MustEndpoint` / `testtool.MustEnv`
-(injected by `guitar`).
+The gateway is exposed at `https://game.liukexin.com`. `test`-type deployments
+share that hostname with the production environment — requests reach a test
+environment only when they carry the `env` header set to the full environment
+name (e.g. `game.lt3x8q2`; deploy convention, `tools/release/deploy/README.md`).
+Test binaries get this for free: `testtool.MustEndpoint` / `testtool.MustEnv`
+read the guitar-injected variables and the shared helpers set the header on
+every request (`helpers_test.go` `doHTTPTrace`).
 
 ## 2. Suites
 
@@ -126,7 +130,13 @@ guitar validate projects/game/testplan/system_test.yaml
 
 # Run the plan end-to-end: deploy the SUT, run every suite's cases, then
 # tear the deployment down. --suite <name> runs a single suite.
-guitar run projects/game/testplan/system_test.yaml
+#
+# --timeout is the OVERALL budget for the whole run (default 10m). Each
+# suite pays deploy + a fixed 60s settle wait + tests + cleanup, so the
+# full seven-suite plan exceeds the default; pass an explicit budget or
+# the run is cancelled mid-plan (the failure surfaces as
+# "wait after deploy: context deadline exceeded" on a later suite).
+guitar run projects/game/testplan/system_test.yaml --timeout=90m
 ```
 
 ## 6. How to add or update fake-llm templates

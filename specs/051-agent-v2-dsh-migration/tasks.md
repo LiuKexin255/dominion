@@ -201,9 +201,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/051-agent-v2-dsh-migration/quickstart.md`（验收对照）、`tools/test/guitar/README.md`（guitar 用法）、`.opencode/skills/testplan/SKILL.md`（执行 skill 指引：安装、`guitar run`、失败排查 signoz 流程）
 
-- [ ] T037 全量大型测试验收：`bazel run //:deploy_install` + `bazel run //:guitar_install` 后执行 `guitar validate projects/game/testplan/system_test.yaml` 与 `guitar run projects/game/testplan/system_test.yaml`——全部 suites（session/memory/agent-v2-conversation/agent-v2-preset/agent-v2-game/agent-v2-game-disconnect/desktop-flow）**所有用例通过**（零 failed、零 flaky；失败用 signoz skill 查 tracing/log 修复后重跑至全 green；constitution 原则 VI——构建检查不构成验收）；**FR-005 重启持久化**：验收环境内对 agent-v2 执行一次重启（deploy 工具重启/重建该服务）后经 preset Get/List 读回，断言重启前创建的 preset 数据仍存（US2 验收项）
-- [ ] T038 手工冒烟与文档收尾：按 `specs/051-agent-v2-dsh-migration/quickstart.md` §3 执行可选项并记录（如具备环境）；更新 `projects/game/agent_v2/README.md`（组合清单/物化语义/环境变量 MONGO_URI）、`projects/game/fake-desktop/README.md`（新建设施说明）、`projects/game/testplan/README.md`（套件拓扑变更）
-- [ ] T039 终态一致性检查：全交付物 grep 无明文 token（SC-006：`GLM_API_KEY` 值、secret 内容）；核对 spec FR-001..FR-020 与 SC-001..SC-006 逐条达成；确认无 v1 半迁移残留描述（constitution 原则 VII 终态表述）
+- [X] T037 全量大型测试验收：`bazel run //:deploy_install` + `bazel run //:guitar_install` 后执行 `guitar validate projects/game/testplan/system_test.yaml` 与 `guitar run projects/game/testplan/system_test.yaml`——全部 suites（session/memory/agent-v2-conversation/agent-v2-preset/agent-v2-game/agent-v2-game-disconnect/desktop-flow）**所有用例通过**（零 failed、零 flaky；失败用 signoz skill 查 tracing/log 修复后重跑至全 green；constitution 原则 VI——构建检查不构成验收）；**FR-005 重启持久化**：验收环境内对 agent-v2 执行一次重启（deploy 工具重启/重建该服务）后经 preset Get/List 读回，断言重启前创建的 preset 数据仍存（US2 验收项）
+- [X] T038 手工冒烟与文档收尾：按 `specs/051-agent-v2-dsh-migration/quickstart.md` §3 执行可选项并记录（如具备环境）；更新 `projects/game/agent_v2/README.md`（组合清单/物化语义/环境变量 MONGO_URI）、`projects/game/fake-desktop/README.md`（新建设施说明）、`projects/game/testplan/README.md`（套件拓扑变更）
+- [X] T039 终态一致性检查：全交付物 grep 无明文 token（SC-006：`GLM_API_KEY` 值、secret 内容）；核对 spec FR-001..FR-020 与 SC-001..SC-006 逐条达成；确认无 v1 半迁移残留描述（constitution 原则 VII 终态表述）
 
 ---
 
