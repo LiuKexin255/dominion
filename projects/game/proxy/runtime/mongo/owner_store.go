@@ -24,15 +24,10 @@ type ownerFilter struct {
 const (
 	// databaseName is the MongoDB database name for proxy storage.
 	databaseName = "game_proxy"
-	// agentOwnersCollection holds the v1 team-owner pool: owners of the
-	// stateful agent instances serving TeamService.
-	agentOwnersCollection = "agent_owners"
 	// agentV2OwnersCollection holds the agent_v2 owner pool:
 	// owners of the stateful agent_v2 instances serving AgentService.
-	// The two pools are independent (owner indexes are not interchangeable),
-	// and one game session may hold a v1 team owner and a v2 agent
-	// owner at once
-	// (specs/049-agent-v2-dsh-init/data-model.md §2.9).
+	// The dedicated collection keeps the owner index isolated
+	// (specs/051-agent-v2-dsh-migration/data-model.md §2.9).
 	agentV2OwnersCollection = "agent_v2_owners"
 )
 
@@ -75,17 +70,9 @@ type mongoOwnerStore struct {
 	collection collectionOps
 }
 
-// NewAgentOwnerStore creates the MongoDB-backed OwnerStore of the v1 team
-// owner pool (stateful agent instances serving TeamService).
-func NewAgentOwnerStore(client *mongodriver.Client) domain.OwnerStore {
-	return &mongoOwnerStore{
-		collection: newOwnerCollection(client, databaseName, agentOwnersCollection),
-	}
-}
-
 // NewAgentV2OwnerStore creates the MongoDB-backed OwnerStore of the agent_v2
 // owner pool (stateful agent_v2 instances serving AgentService). The
-// dedicated collection keeps the two instance pools isolated
+// dedicated collection keeps the owner index isolated
 // (specs/051-agent-v2-dsh-migration/data-model.md §2.9).
 func NewAgentV2OwnerStore(client *mongodriver.Client) domain.OwnerStore {
 	return &mongoOwnerStore{

@@ -17,23 +17,13 @@ services:
       path: //projects/game/proxy/service.yaml
       name: proxy
   - artifact:
-      path: //projects/game/prompt/service.yaml
-      name: prompt
-  - artifact:
       path: //projects/game/memory/service.yaml
       name: memory
-  - artifact:
-      path: //projects/game/agent/service.yaml
-      name: agent
-      secrets:
-        provider:
-          secret: llm-secrets
-          key: opencode-go
   # agent-v2 is stateful (service.yaml kind) and reached only through the
-  # proxy's owner affinity — no http block, same as the v1 agent
-  # (specs/049-agent-v2-dsh-init/research.md D4). The discovery name carries
-  # hyphens (deploy API constraint, specs/049-agent-v2-dsh-init/research.md
-  # D13); the project directory keeps agent_v2.
+  # proxy's owner affinity — no http block (specs/051-agent-v2-dsh-migration/
+  # research.md D9). The discovery name carries hyphens (deploy API
+  # constraint, specs/049-agent-v2-dsh-init/research.md D13); the project
+  # directory keeps agent_v2.
   - artifact:
       path: //projects/game/agent_v2/service.yaml
       name: agent-v2
@@ -42,8 +32,8 @@ services:
           secret: llm-secrets
           key: glm-codingplan
   # Same-hostname path split (specs/049-agent-v2-dsh-init/research.md D5):
-  # web serves `/`, the gateway keeps /api/v1/ and adds /api/v2/ — Gateway
-  # API merges same-hostname routes by longest PathPrefix.
+  # web serves `/`, the gateway serves /api/v1/ and /api/v2/ — Gateway API
+  # merges same-hostname routes by longest PathPrefix.
   - artifact:
       path: //projects/game/web/server/service.yaml
       name: web

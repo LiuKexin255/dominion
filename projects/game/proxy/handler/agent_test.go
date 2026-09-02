@@ -545,3 +545,30 @@ func TestAgentHandler_ListAgentMessages_InvalidParentReturnsInvalidArgument(t *t
 		t.Fatalf("ListAgentMessages() code = %v, want InvalidArgument", status.Code(err))
 	}
 }
+
+// TestMapDomainError pins the shared domain→gRPC error mapping used by both
+// forwarding handlers (mapDomainError in agent.go).
+func TestMapDomainError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode codes.Code
+	}{
+		{name: "owner not found", err: domain.ErrOwnerNotFound, wantCode: codes.NotFound},
+		{name: "owner already exists", err: domain.ErrOwnerAlreadyExists, wantCode: codes.AlreadyExists},
+		{name: "no agent instances", err: domain.ErrNoAgentInstances, wantCode: codes.Unavailable},
+		// Unexpected store failures (e.g. Mongo unreachable) map to Internal,
+		// not grpc-go's Unknown fallback for a bare error (agent-api §3).
+		{name: "unknown error", err: errors.New("something else"), wantCode: codes.Internal},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapDomainError(tt.err)
+
+			if status.Code(got) != tt.wantCode {
+				t.Fatalf("mapDomainError(%v) status = %v, want %v", tt.err, status.Code(got), tt.wantCode)
+			}
+		})
+	}
+}

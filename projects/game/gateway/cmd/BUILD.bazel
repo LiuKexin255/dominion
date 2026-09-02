@@ -40,9 +40,7 @@ go_unittest(
         "@com_github_coder_websocket//:websocket",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials/insecure",
-        "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//proto",
     ],
 )

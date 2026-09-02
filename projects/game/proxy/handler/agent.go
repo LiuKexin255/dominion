@@ -1,3 +1,12 @@
+// Package handler implements the proxy's gRPC forwarding surface: the
+// agent_v2 AgentService face (UpdateAgent/GetAgent/ListAgentMessages/Send)
+// and the DesktopBridgeService flow stream. Both route to the agent_v2
+// instance owning the (template, session) pair through the owner store —
+// owner affinity, because the agent/game state lives in the serving
+// instance's process memory and must not drift across instances
+// (specs/051-agent-v2-dsh-migration/research.md D9). The handlers own owner
+// resolution, agent-client routing, and stream binding directly; there is no
+// separate service layer.
 package handler
 
 import (
@@ -377,4 +386,34 @@ func agentV2Conn(ctx context.Context, manager agentclient.Manager, owner *domain
 		return nil, status.Errorf(codes.Unavailable, "agent_v2 instance %d unreachable: %v", owner.OwnerIndex, err)
 	}
 	return connRef, nil
+}
+
+// propagateAgentError returns a downstream gRPC status error unchanged, or wraps
+// a non-status error as Internal so the proxy does not mask agent-level codes.
+func propagateAgentError(err error, msg string) error {
+	if err == nil {
+		return nil
+	}
+	if st, ok := status.FromError(err); ok {
+		return st.Err()
+	}
+	return status.Errorf(codes.Internal, "%s: %v", msg, err)
+}
+
+// mapDomainError converts domain errors to gRPC status errors. The default
+// branch is an unexpected owner-store failure (e.g. Mongo unreachable) — it
+// maps to Internal so the two-hop failure table's store-failure row holds
+// instead of grpc-go's Unknown fallback for a bare error
+// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §3).
+func mapDomainError(err error) error {
+	switch {
+	case errors.Is(err, domain.ErrOwnerNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, domain.ErrOwnerAlreadyExists):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, domain.ErrNoAgentInstances):
+		return status.Error(codes.Unavailable, err.Error())
+	default:
+		return status.Errorf(codes.Internal, "%v", err)
+	}
 }

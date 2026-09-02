@@ -3,12 +3,8 @@
 // and a WebSocket handler for bidirectional streaming RPCs.
 //
 // Routes:
-//   - /api/v1/* → grpc-gateway (SessionService + TeamService unary RPCs:
-//     UpdateTeam/GetTeam/ListMessages/RefreshTeam per
+//   - /api/v1/* → grpc-gateway (SessionService + MemoryService unary RPCs per
 //     projects/game/game.proto HTTP annotations, AIP-127)
-//   - /api/v1/templates/{template}/sessions/{session}/connect → WebSocket
-//     (TeamService.Connect stream; the WebSocket endpoint mirrors the Team
-//     resource hierarchy per spec 031-team-template-mode FR-004)
 //   - /api/v2/* → grpc-gateway, split by where the RPC's state lives
 //     (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §4):
 //     the session-scoped AgentService face (UpdateAgent/GetAgent/
@@ -25,7 +21,6 @@
 //     (DesktopBridgeService.Connect stream relayed over the proxy
 //     connection; specs/051-agent-v2-dsh-migration/contracts/
 //     desktop-bridge.md §3).
-//     The /api/v1 routes and behavior above are unchanged.
 package main
 
 import (
@@ -77,15 +72,15 @@ func main() {
 		log.Fatalf("session dial: %v", err)
 	}
 
-	// teamConn hosts both stateful-routing services (spec
-	// 031-team-template-mode merged ProxyService/AgentService into
-	// TeamService; specs/051-agent-v2-dsh-migration/research.md D9 routes
-	// the stateful agent_v2 through the same proxy instead of a direct
-	// gateway connection): the proxy owns owner affinity for the stateful
-	// agent and agent_v2 instances. The TeamService.Connect bidi stream and
-	// the AgentService.Send server stream are long-lived, so this conn
-	// opts into keepalive pings (paired with the proxy's
-	// WithLongLivedServerKeepalive); session/prompt stay unary → default.
+	// teamConn hosts the stateful-routing services on the proxy: the proxy
+	// owns owner affinity for the stateful agent_v2 instances, so both the
+	// AgentService face (UpdateAgent/GetAgent/ListAgentMessages/Send) and the
+	// DesktopBridgeService bidi stream route through it
+	// (specs/051-agent-v2-dsh-migration/research.md D9). The
+	// DesktopBridgeService.Connect bidi stream and the AgentService.Send
+	// server stream are long-lived, so this conn opts into keepalive pings
+	// (paired with the proxy's WithLongLivedServerKeepalive); session/memory
+	// stay unary → default.
 	teamClientOpts := append(
 		clientOpts,
 		pgrpc.WithLongLivedClientKeepalive(),
@@ -95,16 +90,10 @@ func main() {
 		log.Fatalf("team dial: %v", err)
 	}
 
-	promptConn, err := grpc.NewClient(solver.URI(gameconst.PromptTarget), clientOpts...)
-	if err != nil {
-		log.Fatalf("prompt dial: %v", err)
-	}
-
 	// memoryConn hosts the MemoryService — the planner's long-term memory
 	// (spec 039-planner-memory-calibration FR-006). Registered on the gateway
 	// so the /api/v1/templates/{template}/sessions/{session}/memories surface
-	// is reachable through the public HTTP entry (the 039 large tests verify
-	// memory persistence/pagination through it — spec quickstart.md 场景 2).
+	// is reachable through the public HTTP entry.
 	memoryConn, err := grpc.NewClient(solver.URI(gameconst.MemoryTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("memory dial: %v", err)
@@ -130,12 +119,6 @@ func main() {
 	if err := game.RegisterSessionServiceHandler(ctx, gwmux, sessionConn); err != nil {
 		log.Fatalf("register session handler: %v", err)
 	}
-	if err := game.RegisterTeamServiceHandler(ctx, gwmux, teamConn); err != nil {
-		log.Fatalf("register team handler: %v", err)
-	}
-	if err := game.RegisterPromptServiceHandler(ctx, gwmux, promptConn); err != nil {
-		log.Fatalf("register prompt handler: %v", err)
-	}
 	if err := game.RegisterMemoryServiceHandler(ctx, gwmux, memoryConn); err != nil {
 		log.Fatalf("register memory handler: %v", err)
 	}
@@ -156,10 +139,11 @@ func main() {
 	}
 
 	// 3. Create root HTTP mux with path-based routing.
-	// All /api/v1/ requests flow through a single handler that dispatches
-	// WebSocket upgrades before falling through to grpc-gateway.
-	// A single subtree pattern avoids Go's ServeMux 307 redirect when
-	// both "/api/v1/" and "/api/v1/sessions/" are registered separately.
+	// The /api/v1/ subtree falls through to grpc-gateway (session + memory
+	// faces); the /api/v2/ subtree dispatches WebSocket upgrades before
+	// falling through to grpc-gateway. Single subtree patterns avoid Go's
+	// ServeMux 307 redirect when both "/api/v2/" and "/api/v2/templates/"
+	// would otherwise be registered separately.
 	rootMux := newRootMux(gwmux, teamConn)
 
 	// 5. Create HTTP server.
@@ -175,31 +159,23 @@ func main() {
 	b.Register(otel.Component())
 	b.Register(bootstrap.GRPCConn("session", sessionConn))
 	b.Register(bootstrap.GRPCConn("team", teamConn))
-	b.Register(bootstrap.GRPCConn("prompt", promptConn))
 	b.Register(bootstrap.GRPCConn("memory", memoryConn))
 	b.Register(bootstrap.GRPCConn("agent-v2", presetConn))
 	b.Register(bootstrap.HTTPServer("http", srv))
 	log.Fatal(b.Run(context.Background()))
 }
 
-// newRootMux builds the path-based routing mux. /api/v1/ and /api/v2/
-// dispatch WebSocket upgrades before falling through to grpc-gateway: the
-// v1 TeamService connect and the v2 DesktopBridgeService connect share the
-// pattern /api/{version}/templates/{template}/sessions/{session}/connect
-// (the v2 shape per specs/051-agent-v2-dsh-migration/contracts/
-// desktop-bridge.md §3). Single subtree patterns avoid Go's ServeMux 307
-// redirect when both "/api/v1/" and "/api/v1/sessions/" are registered
-// separately.
+// newRootMux builds the path-based routing mux. The /api/v2/ subtree
+// dispatches the desktop-bridge WebSocket upgrade before falling through to
+// grpc-gateway: /api/v2/templates/{template}/sessions/{session}/connect
+// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3). The
+// /api/v1/ subtree serves grpc-gateway only (session + memory faces). Single
+// subtree patterns avoid Go's ServeMux 307 redirect when a subtree prefix
+// and a longer path would otherwise be registered separately.
 func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeMux {
 	rootMux := http.NewServeMux()
 
-	rootMux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
-		if isWebSocketConnectPath(r.URL.Path) {
-			handleWebSocketConnect(w, r, teamConn)
-			return
-		}
-		gwmux.ServeHTTP(w, r)
-	})
+	rootMux.Handle("/api/v1/", gwmux)
 
 	rootMux.HandleFunc("/api/v2/", func(w http.ResponseWriter, r *http.Request) {
 		if isWebSocketConnectPathV2(r.URL.Path) {
@@ -209,13 +185,6 @@ func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeM
 		gwmux.ServeHTTP(w, r)
 	})
 	return rootMux
-}
-
-// isWebSocketConnectPath reports whether the request path matches the
-// WebSocket connect pattern: /api/v1/templates/{template}/sessions/{session}/connect
-// (spec 031-team-template-mode FR-004).
-func isWebSocketConnectPath(path string) bool {
-	return isWebSocketConnectPathIn(apiV1, path)
 }
 
 // isWebSocketConnectPathV2 reports whether the request path matches the
@@ -236,17 +205,10 @@ func isWebSocketConnectPathIn(version, path string) bool {
 		parts[5] != "" && parts[6] == "connect"
 }
 
-// extractConnectIdentity extracts the template and session segments from a
-// path matching /api/v1/templates/{template}/sessions/{session}/connect. It
-// only accepts the full connect path shape (delegating to
-// isWebSocketConnectPath) so a foreign path such as
-// .../sessions/{id}/team never yields a template/session id.
-func extractConnectIdentity(path string) (template, session string) {
-	return extractConnectIdentityIn(apiV1, path)
-}
-
-// extractConnectIdentityV2 is extractConnectIdentity for the v2
-// desktop-bridge connect path.
+// extractConnectIdentityV2 extracts the template and session segments from a
+// v2 desktop-bridge connect path. It only accepts the full connect path shape
+// (delegating to isWebSocketConnectPathV2) so a foreign path such as
+// .../sessions/{id}/agent never yields a template/session id.
 func extractConnectIdentityV2(path string) (template, session string) {
 	return extractConnectIdentityIn(apiV2, path)
 }
@@ -321,25 +283,12 @@ func isProtocolError(err error) bool {
 }
 
 // streamOpener opens the backend gRPC bidirectional stream for a WebSocket
-// connect: both the v1 TeamService.Connect and the v2
-// DesktopBridgeService.Connect clients structurally satisfy
+// connect: the DesktopBridgeService.Connect client structurally satisfies
 // bind.TeamFrameStream (Send UserFrame / Recv TeamFrame).
 type streamOpener func(ctx context.Context) (bind.TeamFrameStream, error)
 
-// API version path segments of the connect routes.
-const (
-	apiV1 = "v1"
-	apiV2 = "v2"
-)
-
-// handleWebSocketConnect upgrades an HTTP connection to WebSocket and
-// establishes a bidirectional forwarding bridge between the WebSocket
-// and the underlying TeamService.Connect gRPC stream (the v1 desktop face).
-func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
-	pumpWebSocketConnect(w, r, apiV1, func(ctx context.Context) (bind.TeamFrameStream, error) {
-		return game.NewTeamServiceClient(teamConn).Connect(ctx)
-	})
-}
+// API version path segment of the connect route.
+const apiV2 = "v2"
 
 // handleDesktopBridgeConnect upgrades an HTTP connection to WebSocket and
 // establishes a bidirectional forwarding bridge between the WebSocket and
@@ -352,12 +301,12 @@ func handleDesktopBridgeConnect(w http.ResponseWriter, r *http.Request, teamConn
 	})
 }
 
-// pumpWebSocketConnect is the shared WebSocket↔gRPC relay of both connect
-// faces. Messages are serialized as binary protobuf over WebSocket binary
-// frames in both directions: UserFrame inbound (desktop → server), TeamFrame
-// outbound (server → desktop). proto.Unmarshal preserves unknown fields for
-// forward compatibility. The template/session identity is extracted from the
-// URL path of the given API version and injected into every received frame.
+// pumpWebSocketConnect is the WebSocket↔gRPC relay of the desktop-bridge
+// connect face. Messages are serialized as binary protobuf over WebSocket
+// binary frames in both directions: UserFrame inbound (desktop → server),
+// TeamFrame outbound (server → desktop). proto.Unmarshal preserves unknown
+// fields for forward compatibility. The template/session identity is
+// extracted from the URL path and injected into every received frame.
 func pumpWebSocketConnect(w http.ResponseWriter, r *http.Request, version string, openStream streamOpener) {
 	templateID, sessionID := extractConnectIdentityIn(version, r.URL.Path)
 	if templateID == "" || sessionID == "" {

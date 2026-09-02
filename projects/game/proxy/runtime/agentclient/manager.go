@@ -49,13 +49,13 @@ type manager struct {
 	refreshInterval time.Duration
 }
 
-// DefaultDaemonName is the default bootstrap component name of the v1 agent
+// DefaultDaemonName is the default bootstrap component name of an agent
 // connection refresh daemon.
 const DefaultDaemonName = "agentclient-manager"
 
 // newAgentConn is a package-level variable for creating gRPC connections.
 // The manager passes its own raw target so one factory serves every
-// stateful service pool (v1 agent, agent_v2 conversation instances).
+// stateful service pool.
 // Tests can replace it with a mock factory via save/restore.
 var newAgentConn = func(ctx context.Context, target string, instanceIndex int) (*grpc.ClientConn, error) {
 	uri := grpcsolver.URI(target, grpcsolver.WithInstance(instanceIndex))
@@ -250,8 +250,8 @@ func (w *refresherWorker) Stop(ctx context.Context) error {
 
 // NewDaemon creates a bootstrap.Component (Daemon) that manages the agent
 // connection refresh loop with automatic restart on failure. `name` is the
-// bootstrap component name (one daemon per stateful pool: the v1 agent pool
-// uses DefaultDaemonName, the agent_v2 conversation pool gets its own name).
+// bootstrap component name (one daemon per stateful pool; each pool picks
+// its own name at registration).
 func NewDaemon(name string, m Manager, interval time.Duration) bootstrap.Component {
 	mgr, ok := m.(*manager)
 	if !ok {

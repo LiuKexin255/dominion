@@ -1,47 +1,54 @@
-# game agent testplan
+# game testplan
 
 This directory holds the large-test (`go_largetest`) targets that exercise the
-real game agent end-to-end (gateway → session → proxy → `agent_test` →
-`fake-llm`) via the WebSocket + HTTP surface. The plan is orchestrated by
+game system end-to-end (gateway → proxy → agent-v2, plus the session and
+memory faces) via the HTTP + WebSocket surface. The plan is orchestrated by
 `guitar` through `system_test.yaml`.
 
-## 1. Why a standalone fake-llm service
+## 1. Deployment under test
 
-`fake-llm` replaces the old in-process `FakeLlmAdapter`. It is a separate Go
-HTTP service (`projects/game/fake-llm`) deployed alongside the `agent_test`
-artifact inside the same test deployment (`deploy_agent.yaml`).
+The suites share one test deployment, `deploy_agent_v2.yaml`:
 
-Running the fake as a standalone service — instead of a TypeScript adapter
-injected into the agent process — means the **real** `AgentAdapterImpl` and
-the full LangChain pipeline (`createAgent` → `streamEvents`) run unmodified in
-tests. The agent talks to `fake-llm` over plain HTTP, exactly as it would talk
-to a real OpenAI endpoint in production. This catches integration regressions
-(provider wiring, streaming shape, reasoning extraction, frame ordering) that
-an in-process adapter cannot.
+- `mongodb`, `session`, `memory` — the persistence and the /api/v1 faces
+  (session CRUD + memory CRUD through the gateway).
+- `fake-llm` — a deterministic OpenAI-compatible LLM stand-in. The agent_v2
+  artifact points `GLM_LLM_TARGET` at it (`dominion:///game/fake-llm:8080`,
+  resolved by the bootstrap to `http://{endpoint}/v1`,
+  specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §4); fake-llm
+  ignores credentials either way, so the zero-secret `agent-v2-test` artifact
+  needs no token prerequisite.
+- `fake-desktop` — the deterministic desktop executor
+  (specs/051-agent-v2-dsh-migration/research.md D15): it connects to the
+  gateway's /api/v2 flow WebSocket for its configured session and answers
+  FlowPart operations with recognizable board screenshots + SUCCEEDED
+  receipts. `deploy_agent_v2_drop.yaml` is the same topology with the
+  progressive + disconnect fault env for the mid-game disconnect suite.
+- `proxy`, `agent-v2-test`, `web`, `gateway` — the session face routes
+  gateway → proxy (owner affinity) → agent_v2; the preset face and the web
+  static hosting are direct.
 
-## 2. How the agent_test resolver-aware provider reaches fake-llm
+The gateway is exposed at `https://game.liukexin.com`. Test binaries read the
+endpoint and environment via `testtool.MustEndpoint` / `testtool.MustEnv`
+(injected by `guitar`).
 
-The `agent_test` test bootstrap does **not** hard-code a hostname. It uses the
-CORE resolver to discover `fake-llm` at runtime:
+## 2. Suites
 
-1. The bootstrap imports `createResolver()` from `@dominion/common-js-resolver`
-   (the CORE resolver, **not** the gRPC plugin). Production gRPC name
-   resolution uses a different package; the test bootstrap only needs to turn
-   a fixed target into a `host:port` string.
-2. `buildResolverAwareChatModel(resolver)` resolves the fixed target
-   `dominion:///game/fake-llm:8080` against the Dominion service registry and
-   reads back one or more `host:port` endpoints.
-3. It builds `http://<endpoint>/v1` as the `baseURL` for `ChatOpenAI` and
-   throws if the resolver returns no endpoints.
-4. The real pipeline (`AgentAdapterImpl` → `createAgent` → `streamEvents`)
-   then calls `fake-llm` via plain HTTP, streaming `reasoning_content` then
-   `content` exactly like an OpenAI-compatible provider.
+| suite | deploy | binaries | focus |
+|---|---|---|---|
+| session | deploy_agent_v2.yaml | `testplan_test` | session CRUD + ListSessions pagination (/api/v1) |
+| memory | deploy_agent_v2.yaml | `memory_test` | MemoryService CRUD + AIP-158 pagination through the gateway (/api/v1) |
+| agent-v2-conversation | deploy_agent_v2.yaml | `agent_v2_conversation_test`, `web_test` | the /api/v2 NDJSON conversation surface + web hosting |
+| agent-v2-preset | deploy_agent_v2.yaml | `agent_v2_preset_test` | preset CRUD/materialization closed loop (/api/v2) |
+| agent-v2-game | deploy_agent_v2.yaml | `agent_v2_game_test` | US1 game loop with the fake game chain + fake-desktop (won topology) |
+| agent-v2-game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | mid-game disconnect and recovery branch |
+| desktop-flow | deploy_agent_v2.yaml | `desktop_flow_test` | the flow stream from the desktop's side |
 
-Because discovery goes through the registry, no `OPENAI_BASE_URL` or
-platform-reserved env is set on the `agent_test` artifact, and `fake-llm` is
-internal-only (no `http:` ingress in `deploy_agent.yaml`).
+`guitar run` executes whole bazel targets as suite cases without per-suite
+test-function filtering, which is why the disconnect branch has its own
+binary (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+§1.4).
 
-## 3. Data file format
+## 3. fake-llm data file format
 
 Sample messages live in `projects/game/fake-llm/service/testdata/` and are
 embedded into the `fake-llm` binary via `//go:embed`. Each file is JSON or
@@ -69,127 +76,60 @@ Fields:
 - `reasoning` — the thinking-frame content returned to the agent.
 - `text` — the response content returned to the agent.
 
-The shipped samples are:
-
-| file                      | name      | keywords                 | reasoning                                  | text                                |
-|---------------------------|-----------|--------------------------|--------------------------------------------|-------------------------------------|
-| `agent_v2.yaml`           | agent-v2-*| agent-v2-think, agent-v2-plain, agent-v2-slow, agent-v2-fail | see below | see below |
-| `sample_chat.yaml`        | chat-only | chat, conversation       | "Responding with text only, no tools needed." | "Sure, let's chat!"              |
-| `sample_compact_instruction.yaml` | compact-instruction | 上下文刚被压缩 | — | — (carries a `tool_call: instruct_player`) |
-| `sample_compression_player.yaml` | compress-player-summary | 已玩局数、胜负记录 | — | "已玩 5 局，其中 4 局失败。下一局按复盘指令调整打法。" |
-| `sample_compression_planner.yaml` | compress-planner-summary | 已复盘局数 | — | "已复盘 5 局，长期记忆更新正常。" |
-| `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
-| `sample_greeting.yaml`    | greeting  | hello, greetings        | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
-| `sample_init_instruction.yaml` | init-instruction | 团队初始化 | — | — (carries a `tool_call: instruct_player`) |
-| `sample_mouse_trigger.yaml` | mouse-trigger | move the mouse, position cursor | — | — (carries a `tool_call: mouse_move`) |
-| `sample_planner_memory.yaml` | planner-memory-add | 本局游戏过程 | "复盘完成，本局经验值得写入长期记忆。" | — (carries a `tool_call: memory` batch add) |
-| `sample_saolei_remain.yaml` | saolei-remain | show remaining mines, saolei remain | — | — (carries a `tool_call: saolei_remain`) |
-| `sample_saolei_single_op.yaml` | saolei-single-op | single operate | — | — (carries a `tool_call: saolei_operate` single form) |
-| `sample_saolei_start.yaml` | saolei-start | start saolei, play minesweeper | — | — (carries a `tool_call: saolei_init`) |
-| `sample_saolei_structural_stop.yaml` | saolei-structural-stop | structural stop | — | — (carries a `tool_call: saolei_operate` with an out-of-bounds op) |
-| `sample_stall.yaml` | stall-mid-reasoning | stall now, simulate a stall | "The user asked me to simulate a stream stall. I will send this reasoning chunk and then stop sending data while keeping the connection alive." | — (carries `stall: true` — the stream pauses after the reasoning chunk; the `text` is NEVER delivered) |
-
-`compress-player-summary` / `compress-planner-summary` are the plain-text
-responses for the team graph's COMPRESS node (specs/037-saolei-team-optimize
-US2 / FR-008/FR-012): the compress node (agent/src/team/compress.ts
-summarizeChannel) invokes the player/planner models DIRECTLY with its summary
-prompts + the serialized channel messages. The keywords are substrings of
-those prompts' instruction lines ("已玩局数、胜负记录" / "已复盘局数"), and
-the names sort alphabetically BEFORE the configs the serialized channel text
-would otherwise match (`saolei-start` for the player channel's user text,
-`planner-memory-add` for the planner channel's review prefix) — so the
-summary calls resolve deterministically to a text summary, never to a
-tool_call response (a tool_call carries empty content → compress.ts rejects
-it as a blank summary → FR-013 abort). They carry NO `reasoning:` field on
-purpose: a reasoning_content-bearing response is parsed by the LangChain
-OpenAI adapter into content BLOCKS, which the compress node rejects as
-"non-string content" — text-only responses yield the plain string the
-`model.invoke` call requires (the same reason the compress node now
-normalizes content-blocks via `extractTextContent`, compress.ts). The
-wording reflects the 039 architecture (spec 039 FR-013 — the shared
-StrategyStore/update_strategy flow is gone).
-
-`mouse-trigger`, `planner-memory-add`, `saolei-start`, `saolei-remain`,
-`saolei-single-op`, `saolei-structural-stop`, `init-instruction` and
-`compact-instruction` carry a `tool_call` instead of text: a user turn
-matching their keyword makes fake-LLM return a `tool_calls` response so the
-large tests drive the real model→tool_call→dispatch chain (see §7). They are
-excluded from the random no-match fallback (a random tool_call would
-nonsensically invoke a desktop operation).
-
-`agent_v2.yaml` serves the `/v1/responses` Responses endpoint
-(specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md) consumed by
-the agent-v2 conversation suite (`agent-v2-conversation` in
-`system_test.yaml`, binaries `agent_v2_conversation_test` + `web_test`):
-`agent-v2-greet` (think+text main path), `agent-v2-followup` (fires only
-when the history contains the greet reply — multi-turn continuity),
-`agent-v2-plain` (zero reasoning — US2 scenario 2), `agent-v2-slow`
-(3s inter-chunk delay — the queued-turn window), and `agent-v2-fail`
-(response.failed injection — the recovery path). Every entry carries
+`agent_v2.yaml` serves the `/v1/responses` Responses endpoint consumed by the
+agent-v2 conversation suite: `agent-v2-think` (think+text main path),
+`agent-v2-plain` (zero reasoning), `agent-v2-slow` (3s inter-chunk delay —
+the queued-turn window), and `agent-v2-fail` (response.failed injection —
+the recovery path). `agent_v2_saolei.yaml` chains the game surface: a user
+turn matching the saolei-start keyword returns a `saolei_init` tool_call,
+`tools:` rules match the tool results (the "new game started" receipt, board
+outcomes) to drive the operate batch, and the `game status: won` result
+resolves to the final summary text. Every `agent_v2*` entry carries
 `responses_only: true` so the chat-completions no-match fallback pool never
-observes them, and its expected reasoning/text pieces are pinned as the
-`agentV2*` constants in `agent_v2_helpers_test.go`.
+observes it; the expected reasoning/text pieces are pinned as the `agentV2*`
+constants in `agent_v2_helpers_test.go`.
 
-`stall-mid-reasoning` carries the stream-stall trigger
-(specs/043-llm-stream-stall-recovery — the T011 large test): a user turn
-matching its keyword makes fake-LLM emit the opening reasoning delta and
-then stop with the connection alive (no more data until the caller cancels
-the request — the agent's idle-timeout abort). Its `text` field is never
-delivered, and it is excluded from the random no-match fallback like the
-tool_call messages (a random stall would hang an unrelated turn).
-
-`planner-memory-add` is the team-model fixture (spec
-039-planner-memory-calibration): the team graph's planner agent (planner.ts)
-ends its model input with a HumanMessage rendered from the buffer's gameLog
-whose text always starts with the fixed prefix "本局游戏过程" (planner.ts
-buildReviewInput renders the numbered move lines "1. <tool>(operations) →
-status" plus each board — specs/036-team-mode-bugfix/contracts/team-graph-
-fix-contract.md §2.2; the gameLog renders saolei_operate entries per FR-004)
-— matching that prefix makes fake-LLM return a `memory` tool_call
-deterministically (the hermes-style BATCH add form, FR-008), so the
-saolei_team / memory suites drive the planner→memory→MemoryService flow
-end-to-end (FR-011/FR-012). The former update_strategy fixture
-(sample_planner_strategy.yaml, spec 031 FR-012) is gone (FR-013 — Phase 6).
-The follow-up responses after the memory / instruct_player tools execute live
-in `sample_planner_tools.yaml` (the deterministic 0-hit → multi-hit → review
-instruction chain).
-
-The tool configs in `sample_tools.yaml` (mouse/keyboard) and
-`sample_saolei_tools.yaml` (saolei init→operate chaining) are matched
-against the `role:"tool"` messages returned by LangChain after a tool
-invocation, keyed by `tool_name` and the `match_result_contains` substrings.
-`sample_saolei_tools.yaml` chains every saolei_init result into ONE
-`saolei_operate` BATCH call (operations [click{3,4}, click{5,6}] — the 039
-merged dual-form tool, FR-001/FR-002) and terminates ANY saolei_operate
-result with text (the executed/skipped/stopped outcome lines carry no
-distinguishing coordinates), so the post-operate tool loop stays
-deterministic instead of falling into the random no-match fallback (whose
-pool includes mouse tool_calls the team's player agent does not hold;
-FR-028). See `style/large_test.md` for the test organization rules and
-`fake-llm/service/message_store.go` for the loader contract.
+The chat-completions fixtures (`sample_*.yaml`/`sample_*.json`) match
+`POST /v1/chat/completions` requests; they remain loaded as fallback
+candidates, and the tool-result configs in `sample_saolei_tools.yaml`
+(`match_result_contains` chaining) document the deterministic
+tool-call→result→follow-up mechanism the game templates build on.
 
 ## 4. Stateless matching model
 
-`fake-llm` keeps **no** per-session state. For each `POST /v1/chat/completions`
-request the handler:
+`fake-llm` keeps **no** per-session state. For each request the handler:
 
-1. Extracts the last `role:"user"` message text (string form, or the
-   concatenated `type:"text"` parts of the array form).
+1. Extracts the last user message text (string form, or the concatenated
+   `type:"text"` parts of the array form).
 2. Scans every loaded message for one whose `keywords` contains a
    case-insensitive substring of that text.
 3. Among all matches, the message with the alphabetically-**lowest** `name`
-   wins. With the shipped samples that means `farewell` sorts before
-   `greeting`, so a prompt containing both "hello" and "goodbye" resolves to
-   `farewell`.
-4. If nothing matches, a uniformly-random message is returned and a `WARN` log
-   line is emitted (`user_snippet`, `random_name`). The HTTP status is still
-   `200`; the handler never surfaces a match failure as an error.
+   wins.
+4. If nothing matches, a uniformly-random eligible message is returned and a
+   `WARN` log line is emitted (`user_snippet`, `random_name`). The HTTP
+   status is still `200`; the handler never surfaces a match failure as an
+   error.
 
 Because matching is stateless and keyword-driven, the large tests send prompts
 that contain a **single** template's keyword to get a deterministic response,
-and use **distinct** keywords per turn to prove FIFO ordering.
+and keep each trigger out of unrelated turns' texts.
 
-## 5. How to add or update messages (and keep assertions in sync)
+## 5. How to run the testplan
+
+```bash
+# Install the tools (first time)
+bazel run //:deploy_install
+bazel run //:guitar_install
+
+# Validate the plan (deployment topology, suite/case wiring, endpoint shape)
+guitar validate projects/game/testplan/system_test.yaml
+
+# Run the plan end-to-end: deploy the SUT, run every suite's cases, then
+# tear the deployment down. --suite <name> runs a single suite.
+guitar run projects/game/testplan/system_test.yaml
+```
+
+## 6. How to add or update fake-llm templates
 
 1. **Edit the data.** Add or modify JSON/YAML files in
    `projects/game/fake-llm/service/testdata/`. The file is embedded at build
@@ -197,109 +137,15 @@ and use **distinct** keywords per turn to prove FIFO ordering.
    `go_library`).
 2. **Mind the model-name rules.** The `ModelProviderCache` routes models whose
    names start with `claude`, `minimax-`, or `qwen3.` to the Anthropic
-   platform. The `agent_test` test profiles must therefore use a **non-**
-   Anthropic name — `gpt-4`, `gpt-4-turbo`, `gpt-4o`, `gpt-3.5-turbo`, or any
-   custom name not caught by those prefix checks. `fake-llm` itself ignores
-   the model field; only the agent-side routing cares.
-3. **Update the large-test assertions.** The expected `reasoning`/`text`
-   strings are pinned as constants in `helpers_test.go`
-   (`expectedChatReasoning`, `expectedChatText`, `expectedGreetingReasoning`,
-   `expectedGreetingText`, `expectedFarewellReasoning`,
-   `expectedFarewellText`, `expectedStallReasoning` — the stall template's
-   reasoning, the only field it delivers) with a comment marking them as
-   needing sync with the testdata. Update those constants whenever the
-   testdata changes, and adjust any `strings.Contains` assertions that
-   depend on them.
+   platform. Test profiles must therefore use a non-Anthropic name (`gpt-4`
+   or similar). `fake-llm` itself ignores the model field; only the
+   agent-side routing cares.
+3. **Update the large-test assertions.** The expected reasoning/text pieces
+   consumed by the suites are pinned as the `agentV2*` constants in
+   `agent_v2_helpers_test.go`. Update those constants whenever the testdata
+   changes, and adjust any `strings.Contains` assertions that depend on them.
 4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
    in `projects/game/fake-llm/service/message_store_test.go` pins the real
-   embedded testdata (chat-only before compress-planner-summary before
-   compress-player-summary before farewell before greeting, with exact
-   `Reasoning` / `Text` / `Keywords` values). It is the single source
-   of truth — if the testdata changes, that test breaks first and reminds
-   you to update the helpers constants and assertions in lockstep.
-
-## 6. How to run the testplan
-
-```bash
-# Validate the plan (deployment topology, suite/case wiring, endpoint shape)
-guitar validate projects/game/testplan/system_test.yaml
-
-# Run the plan end-to-end: deploy agent_test + fake-llm + dependencies,
-# run every suite's cases, then tear the deployment down.
-guitar run projects/game/testplan/system_test.yaml
-```
-
-The deployment (`deploy_agent.yaml`) stands up `mongodb`, `session`, `proxy`,
-`fake-llm`, `agent_test`, `prompt`, and `gateway`, and exposes the gateway at
-`https://game.liukexin.com`. Test binaries read the endpoint and environment
-via `testtool.MustEndpoint` / `testtool.MustEnv` (injected by `guitar`).
-
-The stall-recovery suite (`agent-stall` in `system_test.yaml`, binary
-`agent_stall_test`) deploys through `deploy_agent_stall.yaml` — the same
-topology with the `agent_timeouts` config block (streamIdleTimeoutMs=5000,
-toolHeartbeatIntervalMs=2000) selected on the `agent_test` artifact via
-the 045 deploy-config channel. Config values bypass the env channel's
-60s clamp by design, which is how the suite gets its sub-60s idle window
-(specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5).
-The config overrides are resolved once at agent startup (module load),
-hence the block must be selected at deploy time (specs/043-llm-stream-
-stall-recovery T011; specs/044-llm-stall-recovery-fix T011 re-baseline).
-
-## 7. Tool-call / operation-history coverage
-
-The large tests drive the real model→tool_call→dispatch chain through the
-fake-LLM `tool_call` Message support (a user turn matching a keyword returns
-a `tool_calls` response), producing `AIMessage`-with-`tool_calls` and
-`ToolMessage` entries in the LangGraph checkpoint state:
-
-- **Dispatch loop (post-031, saolei tools):** `agent_operation_test.go`
-  drives a saolei_init/saolei_click dispatch loop through the team's player
-  agent (the ONLY holder of the saolei MCP tools, FR-010/FR-028) and asserts
-  the bridge-minted operation-channel id is decoupled from the conversation
-  tool_call.id (spec 023 D10), plus the failed/no-screenshot recovery path
-  (FR-017). The former mouse-tool dispatch tests were replaced by this suite
-  (mouse tools no longer exist on the saolei template).
-- **Saolei MCP init→operate:** `agent_saolei_test.go` drives the saolei
-  init→operate batch flow with real board screenshots (spec 025
-  FR-012/FR-013/FR-022; spec 039 US1 dual form + failure triage).
-- **Team memory flow:** `saolei_team_test.go` + `memory_test.go` drive a full
-  team turn to a terminal won/lost board, the planner's `memory` tool_call
-  chain (hermes-style batch add + old_text 0-hit/multi-hit replaces), the
-  persistence assertions via ListMemories through the gateway, and the
-  calibration instruction scenarios + message order (spec 039-planner-memory-
-  calibration FR-008/FR-014..FR-019). The strategy flow (spec 031
-  FR-010..FR-018) is replaced — the shared StrategyStore is gone (FR-013).
-- **US4 (operation/operation_result history):** `handler.ts:ListMessages`
-  reconstruction of `operation` / `operation_result` Messages is covered at
-  the **unit** level in `projects/game/agent/src/handler.test.ts`
-  ("emits operation Message for AIMessage with tool_calls",
-  "emits operation_result Message for ToolMessage ...").
-
-### How the large tests drive a real tool_call (the dispatch fix)
-
-Originally fake-LLM's `Message` templates could only return text from a user
-turn, so large tests could not make the model initiate a tool_call — they
-injected a `ToolResultPart` directly, bypassing the model→tool_call→dispatch
-chain. `Message` now carries an optional `tool_call`; when a user turn matches
-its keyword, fake-LLM returns a `tool_calls` response (finish_reason
-`"tool_calls"`), and the existing `ToolConfig` tool-result chaining drives the
-follow-up calls. The `agent_operation` tests (`TestAgentOperationResultSuccess`
-/ `Failed`) now send a `mouse_move` tool_call from a user turn, read the
-dispatched `MouseMovePart` off the WebSocket, and reply with a
-`ToolResultPart`; the `agent_saolei` test does the same for the saolei MCP F2
-+ window-message-mouse Parts.
-
-When updating mouse tool names or argument schemas, sync
-`sample_tools.yaml`, `message_store_test.go`
-(`TestNewMessageStore_LoadsEmbeddedTools`), and any mouse-tool assertions in
-lockstep.
-
-> **Spec 031 (team template mode) migration note**: the mouse tools
-> (`mouse_move`/`mouse_click`) are no longer part of the saolei template's
-> tool surface — the template fixes the player's tools to the saolei MCP
-> tools (FR-028). The former `mouseSplitToolNames` profile wiring and the
-> mouse-specific dispatch tests were replaced by the saolei-tool dispatch
-> loop (`agent_operation_test.go`) and the saolei TEAM suite
-> (`saolei_team_test.go`, `testplan_test` target). The mouse/keyboard
-> `sample_tools.yaml` configs remain in the store only as inert fallback
-> candidates for unmatched tool results.
+   embedded testdata. It is the single source of truth — if the testdata
+   changes, that test breaks first and reminds you to update the pinned
+   constants and assertions in lockstep.

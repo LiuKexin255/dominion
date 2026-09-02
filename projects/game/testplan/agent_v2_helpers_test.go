@@ -1,8 +1,8 @@
 // Package testplan contains the shared agent_v2 conversation helpers used by
-// the agent_v2 conversation and web hosting large-test files. Kept separate
-// from helpers_test.go (the /api/v1 + WebSocket helper set) so only the
-// suites that drive /api/v2 pay its dependency closure — the same selective
-// inclusion pattern as saolei_fixtures_test.go.
+// the agent_v2 large-test files. Kept separate from helpers_test.go (the
+// shared /api/v1 session + memory HTTP helper set) so only the suites that
+// drive /api/v2 pay its dependency closure — the same selective inclusion
+// pattern as saolei_fixtures_test.go.
 package testplan
 
 import (
