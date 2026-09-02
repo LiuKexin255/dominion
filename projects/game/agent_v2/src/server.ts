@@ -1,19 +1,22 @@
 /**
- * server.ts — grpc-js AgentService + DesktopBridgeService for the game
- * agent_v2.
+ * server.ts — grpc-js AgentService + PresetService + DesktopBridgeService
+ * for the game agent_v2.
  *
  * Loads the runtime proto via proto-loader (materialized at its canonical
  * import path under the service root, the experimental/grpc_chain/mid
- * pattern) and registers both services on the single 50051 server
- * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2):
- * - AgentService handlers implement the method semantics of
+ * pattern) and registers all three services on the single 50051 server
+ * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2;
+ * specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.7):
+ * - AgentService handlers implement the session-face method semantics of
  *   specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2 — validation
  *   is fail-fast (malformed resource names and empty text are request-level
  *   INVALID_ARGUMENT failures with the stream never opened; UpdateAgent
- *   checks the preset then the model catalog before materializing), Send has
- *   no lazy creation (unmaterialized → FAILED_PRECONDITION), preset CRUD
- *   delegates to the PresetStore, and the model catalog shares
- *   ctx.llm.listModels with UpdateAgent's validation (research.md D4).
+ *   checks the preset then the model catalog before materializing), and
+ *   Send has no lazy creation (unmaterialized → FAILED_PRECONDITION).
+ * - PresetService handlers are the stateless configuration face (built by
+ *   {@link buildPresetHandlers} over its own deps): preset CRUD delegates
+ *   to the PresetStore, and the model catalog shares ctx.llm.listModels
+ *   with UpdateAgent's validation (research.md D4).
  * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
  *   (`ctx.desktopBridge.handlers()`).
  */
@@ -35,6 +38,7 @@ import type { PresetRecord, PresetStore } from "./presets.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
+import type { PresetServiceHandlers } from "../agent_v2_types/projects/game/v2/PresetService.js";
 import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/v2/DesktopBridgeService.js";
 import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
@@ -55,8 +59,6 @@ const SERVICE_ROOT = path.resolve(import.meta.dirname, "..");
  */
 export const PROTO_PATH = path.join(SERVICE_ROOT, "projects/game/agent_v2.proto");
 
-const GRPC_PORT = "0.0.0.0:50051";
-
 /**
  * Known template path segments — the TS-side mirror of the game domain's
  * fixed template set (dominion/projects/game/pkg/gameconst/const.go
@@ -72,23 +74,26 @@ export interface ModelCatalogEntry {
 }
 
 /**
- * The collaborators the AgentService handlers consume: the session
- * materialization registry, the preset persistence, and the deployment
- * model catalog (specs/051-agent-v2-dsh-migration/contracts/agent-api.md
- * §2). The catalog is a single seam so UpdateAgent's validation and the
- * ListModels RPC cannot drift apart. Faces are structural so tests inject
- * `vi.fn()` doubles (style/javascript.md Mock convention).
+ * The collaborators the PresetService handlers consume: the preset
+ * persistence and the deployment model catalog
+ * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.5/§2.6). The
+ * catalog is a single seam so UpdateAgent's validation and the ListModels
+ * RPC cannot drift apart. Faces are structural so tests inject `vi.fn()`
+ * doubles (style/javascript.md Mock convention).
  */
-export interface AgentServiceDeps {
-  sessions: Pick<AgentSessions, "send" | "listMessages" | "materialize" | "getAgent">;
+export interface PresetServiceDeps {
   presets: PresetStore;
   listModels(provider: string): Promise<ModelCatalogEntry[]>;
 }
 
-/** What {@link startServer} hands back to the bootstrap for shutdown. */
-export interface StartedAgentServer {
-  server: grpc.Server;
-  sessions: AgentSessions;
+/**
+ * The collaborators the gRPC handlers consume: the session materialization
+ * registry plus the {@link PresetServiceDeps} faces — UpdateAgent's
+ * fail-fast validation reads the preset store and the model catalog before
+ * materializing (agent-api.md §2.1).
+ */
+export interface AgentServiceDeps extends PresetServiceDeps {
+  sessions: Pick<AgentSessions, "send" | "listMessages" | "materialize" | "getAgent">;
 }
 
 export interface ParsedSessionResource {
@@ -125,38 +130,6 @@ export function parseAgentParent(parent: string): ParsedSessionResource | undefi
     return undefined;
   }
   return parseSessionResource(match[1]);
-}
-
-/**
- * Validate the preset resource name `templates/{template}/presets/{preset}`
- * (AIP-122) against the known template set.
- */
-export function parsePresetResource(name: string): ParsedSessionResource | undefined {
-  const match = /^templates\/([^/]+)\/presets\/([^/]+)$/.exec(name);
-  if (match === null) {
-    return undefined;
-  }
-  const template = match[1];
-  if (!KNOWN_TEMPLATES.has(template)) {
-    return undefined;
-  }
-  return { template, session: match[2] };
-}
-
-/**
- * Validate the template parent resource name `templates/{template}`
- * (AIP-122) against the known template set.
- */
-export function parseTemplateParent(parent: string): { template: string } | undefined {
-  const match = /^templates\/([^/]+)$/.exec(parent);
-  if (match === null) {
-    return undefined;
-  }
-  const template = match[1];
-  if (!KNOWN_TEMPLATES.has(template)) {
-    return undefined;
-  }
-  return { template };
 }
 
 function loadProto(): ProtoGrpcType {
@@ -297,9 +270,10 @@ function safeWrite(
 }
 
 /**
- * Build the AgentService handlers over the session/preset/catalog
- * collaborators. Exported for unit tests so the gRPC status mapping is
- * asserted without binding a port.
+ * Build the AgentService handlers over the session-face collaborators
+ * (Send/UpdateAgent/GetAgent/ListAgentMessages — the owner-affinity surface,
+ * agent-api.md §2.1–§2.4). Exported for unit tests so the gRPC status
+ * mapping is asserted without binding a port.
  */
 export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers {
   return {
@@ -490,6 +464,52 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
       );
     },
 
+  };
+}
+
+/**
+ * Validate the preset resource name `templates/{template}/presets/{preset}`
+ * (AIP-122) against the known template set.
+ */
+export function parsePresetResource(name: string): ParsedSessionResource | undefined {
+  const match = /^templates\/([^/]+)\/presets\/([^/]+)$/.exec(name);
+  if (match === null) {
+    return undefined;
+  }
+  const template = match[1];
+  if (!KNOWN_TEMPLATES.has(template)) {
+    return undefined;
+  }
+  return { template, session: match[2] };
+}
+
+/**
+ * Validate the template parent resource name `templates/{template}`
+ * (AIP-122) against the known template set.
+ */
+export function parseTemplateParent(parent: string): { template: string } | undefined {
+  const match = /^templates\/([^/]+)$/.exec(parent);
+  if (match === null) {
+    return undefined;
+  }
+  const template = match[1];
+  if (!KNOWN_TEMPLATES.has(template)) {
+    return undefined;
+  }
+  return { template };
+}
+
+/**
+ * Build the PresetService handlers over the stateless configuration
+ * collaborators (preset CRUD + ListModels — served by the same process as
+ * the AgentService but routed by the gateway without proxy owner affinity,
+ * specs/051-agent-v2-dsh-migration/contracts/agent-api.md §1/§4 and
+ * specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.7).
+ * Exported for unit tests so the gRPC status mapping is asserted without
+ * binding a port.
+ */
+export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandlers {
+  return {
     CreatePreset: (call, callback) => {
       const parent = call.request.parent ?? "";
       if (parseTemplateParent(parent) === undefined) {
@@ -661,11 +681,28 @@ async function listModelCatalog(ctx: DshContext, provider: string): Promise<Mode
   );
 }
 
-/** Create, bind, and start the agent_v2 gRPC server on 0.0.0.0:50051. */
-export async function startServer(options: {
+/**
+ * What {@link buildServer} hands to the bootstrap's gRPC server component:
+ * the unbound server, its credentials, and the session registry the
+ * composition stop drains.
+ */
+export interface BuiltAgentServer {
+  server: grpc.Server;
+  credentials: grpc.ServerCredentials;
+  sessions: AgentSessions;
+}
+
+/**
+ * Construct the session registry, the handler deps, and register the three
+ * services — without binding. Binding, serving, and the graceful stop
+ * (tryShutdown racing the shutdown budget → forceShutdown) are owned by the
+ * bootstrap's gRPC server component
+ * (specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §6).
+ */
+export function buildServer(options: {
   ctx: DshContext;
   presetStore: PresetStore;
-}): Promise<StartedAgentServer> {
+}): BuiltAgentServer {
   const sessions = new AgentSessions(options.ctx);
   const deps: AgentServiceDeps = {
     sessions,
@@ -674,11 +711,22 @@ export async function startServer(options: {
   };
   const proto = loadProto();
   const server = new grpc.Server();
+  // Dedicated per-service handler factories over one deps object: the
+  // AgentService registration binds the session face and the PresetService
+  // registration the configuration face (agent_v2 serves both on this
+  // process; the gateway routes them differently — agent-api.md §4, and
+  // specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.7).
   server.addService(
     (proto.projects.game.v2.AgentService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
     buildAgentHandlers(deps),
+  );
+  server.addService(
+    (proto.projects.game.v2.PresetService as unknown as {
+      service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
+    }).service,
+    buildPresetHandlers(deps),
   );
   server.addService(
     (proto.projects.game.v2.DesktopBridgeService as unknown as {
@@ -687,16 +735,5 @@ export async function startServer(options: {
     buildDesktopBridgeHandlers(options.ctx.desktopBridge.handlers()),
   );
 
-  return new Promise((resolve, reject) => {
-    server.bindAsync(GRPC_PORT, buildServerCredentials(), (err, port) => {
-      if (err) {
-        info("startServer: bind failed", { error: err.message });
-        reject(err);
-        return;
-      }
-      server.start();
-      info("game agent_v2 server listening", { port, tls: hasTlsFiles() });
-      resolve({ server, sessions });
-    });
-  });
+  return { server, credentials: buildServerCredentials(), sessions };
 }

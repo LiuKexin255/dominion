@@ -14,7 +14,6 @@ import (
 
 	pgrpc "dominion/common/gopkg/grpc"
 	game "dominion/projects/game"
-	gamev2 "dominion/projects/game/v2"
 
 	"github.com/coder/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -171,10 +170,10 @@ func setupTestGRPC(t *testing.T, mock game.TeamServiceServer) (*grpc.ClientConn,
 }
 
 // setupTestGRPCBridge is setupTestGRPC for the v2 DesktopBridgeService.
-func setupTestGRPCBridge(t *testing.T, mock gamev2.DesktopBridgeServiceServer) (*grpc.ClientConn, context.CancelFunc) {
+func setupTestGRPCBridge(t *testing.T, mock game.DesktopBridgeServiceServer) (*grpc.ClientConn, context.CancelFunc) {
 	t.Helper()
 	return startTestGRPC(t, func(srv *grpc.Server) {
-		gamev2.RegisterDesktopBridgeServiceServer(srv, mock)
+		game.RegisterDesktopBridgeServiceServer(srv, mock)
 	})
 }
 
@@ -950,11 +949,12 @@ func TestReadLimitSet(t *testing.T) {
 // Tests: root mux routing (/api/v2 agent surface, /api/v1 regression)
 // ---------------------------------------------------------------------------
 
-// newRoutingTestMux builds the root mux the way main() assembles it: one
-// proxy connection (teamConn) carrying both the v1 TeamService and the v2
-// AgentService handlers, pointed at an unreachable backend. Routing
-// assertions can then distinguish "reached grpc-gateway and proxied" (503,
-// backend unavailable) from "no route" (404).
+// newRoutingTestMux builds the root mux the way main() assembles it: the
+// proxy connection (teamConn) carrying the v1 TeamService and the v2
+// AgentService handlers, plus the direct agent_v2 connection (presetConn)
+// carrying the PresetService handler — both pointed at unreachable
+// backends. Routing assertions can then distinguish "reached grpc-gateway
+// and proxied" (503, backend unavailable) from "no route" (404).
 func newRoutingTestMux(t *testing.T) *http.ServeMux {
 	t.Helper()
 
@@ -968,11 +968,23 @@ func newRoutingTestMux(t *testing.T) *http.ServeMux {
 	}
 	t.Cleanup(func() { proxyConn.Close() })
 
+	presetConn, err := grpc.NewClient(
+		"unreachable-agent-v2.invalid:50051",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial agent-v2: %v", err)
+	}
+	t.Cleanup(func() { presetConn.Close() })
+
 	if err := game.RegisterTeamServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
 		t.Fatalf("register team handler: %v", err)
 	}
-	if err := gamev2.RegisterAgentServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
+	if err := game.RegisterAgentServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
 		t.Fatalf("register agent handler: %v", err)
+	}
+	if err := game.RegisterPresetServiceHandler(context.Background(), gwmux, presetConn); err != nil {
+		t.Fatalf("register preset handler: %v", err)
 	}
 
 	return newRootMux(gwmux, proxyConn)
@@ -1023,6 +1035,91 @@ func TestRootMuxAPIv2UnknownPathStillReachesGrpcGateway(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Fatalf("content-type = %q, want grpc-gateway's application/json error body (got body %q)", ct, string(body))
+	}
+}
+
+// TestRootMuxAPIv2PresetPathsRouteToDirectHandler verifies the /api/v2
+// preset CRUD + ListModels paths are bound to the PresetService handler —
+// the direct agent_v2 connection, not the proxy. Every path of the six-RPC
+// face reaches grpc-gateway and fails proxying to the unreachable backend
+// with 503 (grpc code Unavailable — the one-hop configuration-face failure
+// table, contracts/agent-api.md §3) instead of a routing 404
+// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.4).
+func TestRootMuxAPIv2PresetPathsRouteToDirectHandler(t *testing.T) {
+	httpSrv := httptest.NewServer(newRoutingTestMux(t))
+	defer httpSrv.Close()
+
+	tests := []struct {
+		name string
+		req  func(url string) (*http.Response, error)
+	}{
+		{
+			name: "ListModels",
+			req:  func(url string) (*http.Response, error) { return http.Get(url + "/api/v2/models") },
+		},
+		{
+			name: "ListPresets",
+			req:  func(url string) (*http.Response, error) { return http.Get(url + "/api/v2/templates/saolei/presets") },
+		},
+		{
+			name: "CreatePreset",
+			req: func(url string) (*http.Response, error) {
+				return http.Post(
+					url+"/api/v2/templates/saolei/presets?preset_id=base",
+					"application/json",
+					strings.NewReader(`{"preset":{"name":"templates/saolei/presets/base"}}`),
+				)
+			},
+		},
+		{
+			name: "GetPreset",
+			req: func(url string) (*http.Response, error) {
+				return http.Get(url + "/api/v2/templates/saolei/presets/base")
+			},
+		},
+		{
+			name: "UpdatePreset",
+			req: func(url string) (*http.Response, error) {
+				req, err := http.NewRequest(
+					http.MethodPatch,
+					url+"/api/v2/templates/saolei/presets/base",
+					// body: "preset" — the HTTP body maps to the
+					// UpdatePresetRequest.preset field itself; the
+					// {preset.name} path variable fills the name.
+					strings.NewReader(`{"playerPrompt":"hi"}`),
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Header.Set("Content-Type", "application/json")
+				return http.DefaultClient.Do(req)
+			},
+		},
+		{
+			name: "DeletePreset",
+			req: func(url string) (*http.Response, error) {
+				req, err := http.NewRequest(http.MethodDelete, url+"/api/v2/templates/saolei/presets/base", nil)
+				if err != nil {
+					return nil, err
+				}
+				return http.DefaultClient.Do(req)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := tt.req(httpSrv.URL)
+			if err != nil {
+				t.Fatalf("%s: request: %v", tt.name, err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("%s: status = %d, want %d (grpc-gateway proxy failure on the direct handler, not a routing 404)",
+					tt.name, resp.StatusCode, http.StatusServiceUnavailable)
+			}
+		})
 	}
 }
 
@@ -1117,18 +1214,18 @@ func TestExtractConnectIdentityV2(t *testing.T) {
 	}
 }
 
-// mockDesktopBridgeServer implements gamev2.DesktopBridgeServiceServer for
+// mockDesktopBridgeServer implements game.DesktopBridgeServiceServer for
 // testing.
 type mockDesktopBridgeServer struct {
-	gamev2.UnimplementedDesktopBridgeServiceServer
+	game.UnimplementedDesktopBridgeServiceServer
 
 	// onConnect mirrors mockTeamServer.onConnect: it receives the bidi
 	// stream (Recv returns UserFrame, Send takes TeamFrame) and returns when
 	// done or on error.
-	onConnect func(stream gamev2.DesktopBridgeService_ConnectServer) error
+	onConnect func(stream game.DesktopBridgeService_ConnectServer) error
 }
 
-func (m *mockDesktopBridgeServer) Connect(stream gamev2.DesktopBridgeService_ConnectServer) error {
+func (m *mockDesktopBridgeServer) Connect(stream game.DesktopBridgeService_ConnectServer) error {
 	if m.onConnect != nil {
 		return m.onConnect(stream)
 	}
@@ -1248,7 +1345,7 @@ func TestRootMuxAPIv2WebSocketConnectRoutedToDesktopBridge(t *testing.T) {
 	if err := game.RegisterTeamServiceHandler(context.Background(), gwmux, bridgeConn); err != nil {
 		t.Fatalf("register team handler: %v", err)
 	}
-	if err := gamev2.RegisterAgentServiceHandler(context.Background(), gwmux, bridgeConn); err != nil {
+	if err := game.RegisterAgentServiceHandler(context.Background(), gwmux, bridgeConn); err != nil {
 		t.Fatalf("register agent handler: %v", err)
 	}
 

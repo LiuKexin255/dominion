@@ -3,8 +3,6 @@ package handler
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"dominion/common/gopkg/logs"
@@ -14,50 +12,40 @@ import (
 	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
-	gamev2 "dominion/projects/game/v2"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // newAgentClient wraps the generated client constructor as a package-level
 // variable so tests can drive the forwarding branches against fake streams
 // (the agentclient.NewAgentClient precedent).
-var newAgentClient = func(conn *grpc.ClientConn) gamev2.AgentServiceClient {
-	return gamev2.NewAgentServiceClient(conn)
+var newAgentClient = func(conn *grpc.ClientConn) game.AgentServiceClient {
+	return game.NewAgentServiceClient(conn)
 }
 
-// listModelsPickKey is the hash key for the deployment-level ListModels RPC:
-// the model catalog has no parent resource, so a fixed key keeps the
-// request-to-instance mapping stable across callers
-// (specs/051-agent-v2-dsh-migration/data-model.md §2.9).
-const listModelsPickKey = "models"
-
-// AgentHandler implements gamev2.AgentServiceServer: the forwarding surface
-// that routes /api/v2 agent RPCs to the agent_v2 stateful instances
-// (specs/051-agent-v2-dsh-migration/research.md D9). Routing is split by
-// where the RPC's state lives
-// (specs/051-agent-v2-dsh-migration/data-model.md §2.9):
-//   - owner-affinity (the in-memory agent state must not drift across
-//     instances): UpdateAgent is the only owner allocation point
-//     (get-or-create — materialization lands the owner, so a desktop flow
-//     connection and the conversation that follows reach the same instance);
-//     GetAgent/ListAgentMessages/Send only look the owner up and answer
-//     NOT_FOUND when absent (Send has no lazy materialization —
-//     specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.4).
-//   - affinity-free (state lives in Mongo, any live instance can serve):
-//     preset CRUD and ListModels pick an instance by stable-hashing a
-//     request-derived key (the preset resource name; the parent collection
-//     for lists) with no owner record.
+// AgentHandler implements game.AgentServiceServer: the forwarding surface
+// that routes the /api/v2 agent RPCs to the agent_v2 instance owning the
+// session — owner affinity, because the agent/queue/game state lives in the
+// serving instance's process memory and must not drift across instances
+// (specs/051-agent-v2-dsh-migration/research.md D9). UpdateAgent is the only
+// owner allocation point (get-or-create — materialization lands the owner,
+// so a desktop flow connection and the conversation that follow reach the
+// same instance); GetAgent/ListAgentMessages/Send only look the owner up and
+// answer NOT_FOUND when absent (Send has no lazy materialization —
+// specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.4). The
+// stateless configuration face (PresetService) is not routed here: preset
+// state lives in Mongo and the model catalog is static, so the gateway dials
+// agent_v2 directly for it
+// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.4).
 type AgentHandler struct {
-	gamev2.UnimplementedAgentServiceServer
+	game.UnimplementedAgentServiceServer
 
 	ownerStore  domain.OwnerStore
 	ownerPicker domain.OwnerPicker
 	manager     agentclient.Manager
-	binder      bind.ServerStreamBinder[gamev2.ChatEvent]
+	binder      bind.ServerStreamBinder[game.ChatEvent]
 }
 
 // NewAgentHandler creates a new AgentHandler.
@@ -65,7 +53,7 @@ func NewAgentHandler(
 	ownerStore domain.OwnerStore,
 	ownerPicker domain.OwnerPicker,
 	manager agentclient.Manager,
-	binder bind.ServerStreamBinder[gamev2.ChatEvent],
+	binder bind.ServerStreamBinder[game.ChatEvent],
 ) *AgentHandler {
 	return &AgentHandler{
 		ownerStore:  ownerStore,
@@ -82,7 +70,7 @@ func NewAgentHandler(
 // create-or-update semantics (AIP-134 create-or-update,
 // https://google.aip.dev/134#create-or-update) belong to agent_v2
 // (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.1).
-func (h *AgentHandler) UpdateAgent(ctx context.Context, req *gamev2.UpdateAgentRequest) (*gamev2.Agent, error) {
+func (h *AgentHandler) UpdateAgent(ctx context.Context, req *game.UpdateAgentRequest) (*game.Agent, error) {
 	name, err := parseAgentResourceName(req.GetAgent().GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -113,7 +101,7 @@ func (h *AgentHandler) UpdateAgent(ctx context.Context, req *gamev2.UpdateAgentR
 // already exist (UpdateAgent allocates it): no owner → NOT_FOUND — the
 // agent is not materialized for routing purposes either
 // (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.2).
-func (h *AgentHandler) GetAgent(ctx context.Context, req *gamev2.GetAgentRequest) (*gamev2.Agent, error) {
+func (h *AgentHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) (*game.Agent, error) {
 	name, err := parseAgentResourceName(req.GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -144,7 +132,7 @@ func (h *AgentHandler) GetAgent(ctx context.Context, req *gamev2.GetAgentRequest
 // already exist: no owner → NOT_FOUND (a never-materialized agent has no
 // history to list, specs/051-agent-v2-dsh-migration/contracts/
 // agent-api.md §2.2/§2.3).
-func (h *AgentHandler) ListAgentMessages(ctx context.Context, req *gamev2.ListAgentMessagesRequest) (*gamev2.ListAgentMessagesResponse, error) {
+func (h *AgentHandler) ListAgentMessages(ctx context.Context, req *game.ListAgentMessagesRequest) (*game.ListAgentMessagesResponse, error) {
 	name, err := parseAgentResourceName(req.GetParent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -180,7 +168,7 @@ func (h *AgentHandler) ListAgentMessages(ctx context.Context, req *gamev2.ListAg
 // contracts/agent-api.md §2.4). The routing-layer validation rejects
 // malformed resource names and empty text with INVALID_ARGUMENT before any
 // owner lookup.
-func (h *AgentHandler) Send(req *gamev2.SendRequest, stream gamev2.AgentService_SendServer) error {
+func (h *AgentHandler) Send(req *game.SendRequest, stream game.AgentService_SendServer) error {
 	ctx := stream.Context()
 
 	name, err := parseAgentSession(req.GetSession())
@@ -242,182 +230,6 @@ func (h *AgentHandler) Send(req *gamev2.SendRequest, stream gamev2.AgentService_
 	return nil
 }
 
-// CreatePreset forwards preset creation to an arbitrary live agent_v2
-// instance (affinity-free: preset state lives in Mongo). The routing layer
-// validates the parent template and the caller-supplied id fail-fast
-// (specs/051-agent-v2-dsh-migration/data-model.md §3).
-func (h *AgentHandler) CreatePreset(ctx context.Context, req *gamev2.CreatePresetRequest) (*gamev2.Preset, error) {
-	templateID, err := parseTemplateParent(req.GetParent())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if req.GetPresetId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "preset_id must be non-empty")
-	}
-
-	connRef, err := h.affinityFreeConn(ctx, req.GetParent()+"/presets/"+req.GetPresetId())
-	if err != nil {
-		return nil, err
-	}
-
-	preset, err := newAgentClient(connRef.Conn).CreatePreset(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "create preset: downstream call failed",
-			event.String("template_id", templateID),
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "create preset")
-	}
-	return preset, nil
-}
-
-// ListPresets lists a template's presets on an arbitrary live instance
-// (affinity-free; hashed by the parent collection name).
-func (h *AgentHandler) ListPresets(ctx context.Context, req *gamev2.ListPresetsRequest) (*gamev2.ListPresetsResponse, error) {
-	templateID, err := parseTemplateParent(req.GetParent())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	connRef, err := h.affinityFreeConn(ctx, req.GetParent())
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := newAgentClient(connRef.Conn).ListPresets(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "list presets: downstream call failed",
-			event.String("template_id", templateID),
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "list presets")
-	}
-	return resp, nil
-}
-
-// GetPreset gets a preset on an arbitrary live instance (affinity-free;
-// hashed by the preset resource name).
-func (h *AgentHandler) GetPreset(ctx context.Context, req *gamev2.GetPresetRequest) (*gamev2.Preset, error) {
-	if _, err := parsePresetName(req.GetName()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	connRef, err := h.affinityFreeConn(ctx, req.GetName())
-	if err != nil {
-		return nil, err
-	}
-
-	preset, err := newAgentClient(connRef.Conn).GetPreset(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "get preset: downstream call failed",
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "get preset")
-	}
-	return preset, nil
-}
-
-// UpdatePreset updates a preset on an arbitrary live instance
-// (affinity-free; hashed by the preset resource name). The routing layer
-// rejects a missing resource name fail-fast
-// (specs/051-agent-v2-dsh-migration/data-model.md §3); the FieldMask
-// application is agent_v2 semantics (AIP-134, https://google.aip.dev/134).
-func (h *AgentHandler) UpdatePreset(ctx context.Context, req *gamev2.UpdatePresetRequest) (*gamev2.Preset, error) {
-	if _, err := parsePresetName(req.GetPreset().GetName()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	connRef, err := h.affinityFreeConn(ctx, req.GetPreset().GetName())
-	if err != nil {
-		return nil, err
-	}
-
-	preset, err := newAgentClient(connRef.Conn).UpdatePreset(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "update preset: downstream call failed",
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "update preset")
-	}
-	return preset, nil
-}
-
-// DeletePreset deletes a preset on an arbitrary live instance
-// (affinity-free; hashed by the preset resource name). Deletion does not
-// cascade to materialized agents — that is agent_v2 semantics
-// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.5).
-func (h *AgentHandler) DeletePreset(ctx context.Context, req *gamev2.DeletePresetRequest) (*emptypb.Empty, error) {
-	if _, err := parsePresetName(req.GetName()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	connRef, err := h.affinityFreeConn(ctx, req.GetName())
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := newAgentClient(connRef.Conn).DeletePreset(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "delete preset: downstream call failed",
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "delete preset")
-	}
-	return resp, nil
-}
-
-// ListModels forwards the read-only model catalog query to an arbitrary live
-// instance (affinity-free; the catalog is deployment-level with no parent
-// resource, so a fixed key keeps the mapping stable).
-func (h *AgentHandler) ListModels(ctx context.Context, req *gamev2.ListModelsRequest) (*gamev2.ListModelsResponse, error) {
-	connRef, err := h.affinityFreeConn(ctx, listModelsPickKey)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := newAgentClient(connRef.Conn).ListModels(ctx, req)
-	if err != nil {
-		logs.Error(ctx, "list models: downstream call failed",
-			event.Err(err),
-		)
-		return nil, propagateAgentError(err, "list models")
-	}
-	return resp, nil
-}
-
-// affinityFreeConn resolves an agent_v2 connection for an affinity-free RPC:
-// the hash picker spreads requests by the request-derived stable key across
-// the live instances, then the connection is resolved by instance index. No
-// owner record is read or written. Failures are logged by the pick key
-// (not session_id) — these RPCs are not session-scoped, so a session field
-// would always be empty and misleading.
-func (h *AgentHandler) affinityFreeConn(ctx context.Context, key string) (*agentclient.ConnRef, error) {
-	conns, err := h.manager.List(ctx)
-	if err != nil {
-		logs.Error(ctx, "pick agent_v2 instance: list connections failed",
-			event.String("route_key", key),
-			event.Err(err),
-		)
-		return nil, status.Errorf(codes.Internal, "list agent_v2 connections: %v", err)
-	}
-
-	pickedRef, err := h.ownerPicker.Pick(ctx, key, conns)
-	if err != nil {
-		return nil, mapDomainError(err)
-	}
-
-	connRef, err := h.manager.Get(ctx, pickedRef.OwnerIndex)
-	if err != nil {
-		logs.Error(ctx, "get agent_v2 connection failed",
-			event.String("route_key", key),
-			event.Int("agent_index", pickedRef.OwnerIndex),
-			event.Err(err),
-		)
-		return nil, status.Errorf(codes.Unavailable, "agent_v2 instance %d unreachable: %v", pickedRef.OwnerIndex, err)
-	}
-	return connRef, nil
-}
-
 // parseAgentSession validates a game session resource name of the
 // form templates/{template}/sessions/{session} with a known template
 // (same rule as agent_v2's own handler — the proxy checks first, agent_v2
@@ -435,46 +247,22 @@ func parseAgentSession(name string) (game.SessionName, error) {
 }
 
 // parseAgentResourceName validates an agent singleton resource name of the
-// form templates/{template}/sessions/{session}/agent and returns the
-// underlying session (the owner key); the template check follows
-// parseAgentSession's rule.
-func parseAgentResourceName(name string) (game.SessionName, error) {
-	segments := strings.Split(name, "/")
-	if len(segments) != 5 || segments[4] != "agent" {
-		return game.SessionName{}, errors.New("agent resource name must be of the form templates/{template}/sessions/{session}/agent")
-	}
-	return parseAgentSession(strings.Join(segments[:4], "/"))
-}
-
-// parseTemplateParent validates a template parent resource name
-// (templates/{template}) with a known template.
-func parseTemplateParent(parent string) (string, error) {
-	parsed, err := game.ParseTemplateName(parent)
+// form templates/{template}/sessions/{session}/agent and returns the parsed
+// name whose fields are the owner key. The name shape (5 segments, the
+// templates/sessions/agent literals, non-empty variables) is carried by the
+// generated parser; the known-template check is a business rule owned by
+// gameconst — codegen does not carry it (same rule as agent_v2's own
+// handler: the proxy checks first, agent_v2 re-validates as the backstop,
+// specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §2.4).
+func parseAgentResourceName(name string) (game.AgentName, error) {
+	parsed, err := game.ParseAgentName(name)
 	if err != nil {
-		return "", err
+		return game.AgentName{}, err
 	}
 	if !gameconst.IsKnownTemplateID(parsed.TemplateID) {
-		return "", fmt.Errorf("unknown template %s", parsed.TemplateID)
+		return game.AgentName{}, errors.New("unknown template " + parsed.TemplateID)
 	}
-	return parsed.TemplateID, nil
-}
-
-// parsePresetName validates a preset resource name of the form
-// templates/{template}/presets/{preset} with a known template and non-empty
-// preset id (AIP-122, https://google.aip.dev/122; the preset resource has no
-// proto resource annotation, so the pattern is parsed here).
-func parsePresetName(name string) (string, error) {
-	segments := strings.Split(name, "/")
-	if len(segments) != 4 || segments[0] != "templates" || segments[2] != "presets" {
-		return "", errors.New("preset resource name must be of the form templates/{template}/presets/{preset}")
-	}
-	if segments[3] == "" {
-		return "", errors.New("preset resource name must have a non-empty preset id")
-	}
-	if _, err := parseTemplateParent("templates/" + segments[1]); err != nil {
-		return "", err
-	}
-	return name, nil
+	return parsed, nil
 }
 
 // lookupAgentOwner returns the existing agent_v2 owner for a

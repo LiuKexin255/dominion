@@ -47,6 +47,7 @@ ts_project(
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
@@ -121,6 +122,7 @@ artifact_pkg_js(
     service = "agent-v2",
     ts_project = ":server_lib",
     runtime_deps = [
+        "//common/js/bootstrap:runtime_pkg",
         "//common/js/dsh-plugins/desktop-bridge:runtime_pkg",
         "//common/js/dsh-plugins/llm-glm:runtime_pkg",
         "//common/js/dsh-plugins/saolei:runtime_pkg",
@@ -160,6 +162,7 @@ vitest_test(
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",

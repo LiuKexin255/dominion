@@ -9,7 +9,6 @@ import (
 	"dominion/projects/game/pkg/bind"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
-	gamev2 "dominion/projects/game/v2"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -19,11 +18,11 @@ import (
 // fakeBridgeClient is the downstream DesktopBridgeServiceClient double: it
 // hands the handler the scripted bidi stream (or refuses the open).
 type fakeBridgeClient struct {
-	connectStream gamev2.DesktopBridgeService_ConnectClient
+	connectStream game.DesktopBridgeService_ConnectClient
 	connectErr    error
 }
 
-func (c *fakeBridgeClient) Connect(_ context.Context, _ ...grpc.CallOption) (gamev2.DesktopBridgeService_ConnectClient, error) {
+func (c *fakeBridgeClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.DesktopBridgeService_ConnectClient, error) {
 	return c.connectStream, c.connectErr
 }
 
@@ -32,7 +31,7 @@ func (c *fakeBridgeClient) Connect(_ context.Context, _ ...grpc.CallOption) (gam
 func setFakeBridgeClient(t *testing.T, fake *fakeBridgeClient) {
 	t.Helper()
 	old := newBridgeClient
-	newBridgeClient = func(_ *grpc.ClientConn) gamev2.DesktopBridgeServiceClient {
+	newBridgeClient = func(_ *grpc.ClientConn) game.DesktopBridgeServiceClient {
 		return fake
 	}
 	t.Cleanup(func() { newBridgeClient = old })

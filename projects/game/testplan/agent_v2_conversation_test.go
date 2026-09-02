@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/testtool"
-	gamev2 "dominion/projects/game/v2"
+	game "dominion/projects/game"
 )
 
 // agentV2Prep creates one saolei-template session, materializes its agent
@@ -59,7 +59,7 @@ func TestAgentV2StreamedTurnSequenceAndBlocks(t *testing.T) {
 	if events[0].GetTurnStart() == nil {
 		t.Fatalf("first frame payload = %T, want turn_start", events[0].GetPayload())
 	}
-	if start := events[1].GetBlockStart(); start == nil || start.GetType() != gamev2.BlockType_BLOCK_TYPE_THINK {
+	if start := events[1].GetBlockStart(); start == nil || start.GetType() != game.BlockType_BLOCK_TYPE_THINK {
 		t.Fatalf("frame 2 payload = %T, want block_start{THINK}", events[1].GetPayload())
 	}
 	if delta := events[2].GetDelta(); delta == nil || delta.GetText() != agentV2GreetThink1 {
@@ -68,7 +68,7 @@ func TestAgentV2StreamedTurnSequenceAndBlocks(t *testing.T) {
 	if delta := events[3].GetDelta(); delta == nil || delta.GetText() != agentV2GreetThink2 {
 		t.Fatalf("frame 4 = %v, want THINK delta %q (multi-frame progressive think)", delta, agentV2GreetThink2)
 	}
-	if start := events[4].GetBlockStart(); start == nil || start.GetType() != gamev2.BlockType_BLOCK_TYPE_TEXT {
+	if start := events[4].GetBlockStart(); start == nil || start.GetType() != game.BlockType_BLOCK_TYPE_TEXT {
 		t.Fatalf("frame 5 payload = %T, want block_start{TEXT}", events[4].GetPayload())
 	}
 	if delta := events[5].GetDelta(); delta == nil || delta.GetText() != agentV2GreetText {
@@ -79,7 +79,7 @@ func TestAgentV2StreamedTurnSequenceAndBlocks(t *testing.T) {
 		t.Fatalf("frame 7 payload = %T, want block_end{text}", events[6].GetPayload())
 	}
 	turnEnd := events[7].GetTurnEnd()
-	if turnEnd == nil || turnEnd.GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if turnEnd == nil || turnEnd.GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("frame 8 = %v, want turn_end{COMPLETED}", turnEnd)
 	}
 	if got := end.GetBlock().GetText().GetContent(); got != agentV2GreetText {
@@ -118,7 +118,7 @@ func TestAgentV2PlainTextTurnHasNoThink(t *testing.T) {
 	assertAgentV2TurnWellFormed(t, sessionName, events)
 
 	for i, e := range events {
-		if start := e.GetBlockStart(); start != nil && start.GetType() == gamev2.BlockType_BLOCK_TYPE_THINK {
+		if start := e.GetBlockStart(); start != nil && start.GetType() == game.BlockType_BLOCK_TYPE_THINK {
 			t.Fatalf("frame %d starts a THINK block — the pure-text turn must stream zero THINK blocks (US2 场景 2)", i)
 		}
 	}
@@ -221,7 +221,7 @@ func TestAgentV2ConcurrentSessionIsolation(t *testing.T) {
 	// would surface as one stream starving the other.
 	ch1 := drainAgentV2TurnAsync(stream1)
 	ch2 := drainAgentV2TurnAsync(stream2)
-	var events1, events2 []*gamev2.ChatEvent
+	var events1, events2 []*game.ChatEvent
 	for events1 == nil || events2 == nil {
 		select {
 		case r := <-ch1:
@@ -238,8 +238,8 @@ func TestAgentV2ConcurrentSessionIsolation(t *testing.T) {
 			t.Fatal("concurrent turns did not both complete within the read window")
 		}
 	}
-	assertAgentV2TurnWellFormed(t, name1, append([]*gamev2.ChatEvent{first1}, events1...))
-	assertAgentV2TurnWellFormed(t, name2, append([]*gamev2.ChatEvent{first2}, events2...))
+	assertAgentV2TurnWellFormed(t, name1, append([]*game.ChatEvent{first1}, events1...))
+	assertAgentV2TurnWellFormed(t, name2, append([]*game.ChatEvent{first2}, events2...))
 	if got := agentV2TerminalBlocksFromEvents(events1).text; got != agentV2SlowText {
 		t.Errorf("session 1 text = %q, want %q", got, agentV2SlowText)
 	}
@@ -257,7 +257,7 @@ func TestAgentV2ConcurrentSessionIsolation(t *testing.T) {
 		t.Errorf("session 1 history[0] = %+v, want the session-1 user marker %q", hist1.GetMessages()[0], text1)
 	}
 	for i, m := range hist2.GetMessages() {
-		if m.GetRole() == gamev2.Role_ROLE_USER && agentV2MessageText(m) == text1 {
+		if m.GetRole() == game.Role_ROLE_USER && agentV2MessageText(m) == text1 {
 			t.Errorf("session 2 history[%d] carries session 1's marker — histories are not isolated (US1-3)", i)
 		}
 	}
@@ -299,7 +299,7 @@ func TestAgentV2QueuedTurnAutoResumes(t *testing.T) {
 
 	chA := drainAgentV2TurnAsync(streamA)
 	chB := drainAgentV2TurnAsync(streamB)
-	var eventsA, eventsB []*gamev2.ChatEvent
+	var eventsA, eventsB []*game.ChatEvent
 	for eventsA == nil || eventsB == nil {
 		select {
 		case r := <-chA:
@@ -316,15 +316,15 @@ func TestAgentV2QueuedTurnAutoResumes(t *testing.T) {
 			t.Fatal("queued turn did not auto-resume within the read window")
 		}
 	}
-	fullA := append([]*gamev2.ChatEvent{firstA}, eventsA...)
-	fullB := append([]*gamev2.ChatEvent{firstB}, eventsB...)
+	fullA := append([]*game.ChatEvent{firstA}, eventsA...)
+	fullB := append([]*game.ChatEvent{firstB}, eventsB...)
 	assertAgentV2TurnWellFormed(t, sessionName, fullA)
 	assertAgentV2TurnWellFormed(t, sessionName, fullB)
 
 	// Turn A completed and turn B was answered in order (queued → automatic
 	// start → completion, FR-012); assertAgentV2TurnWellFormed already pins
 	// queued-first and turn_start-before-blocks within each stream.
-	if eventsA[len(eventsA)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if eventsA[len(eventsA)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("turn A ended %v, want COMPLETED", eventsA[len(eventsA)-1].GetTurnEnd().GetStatus())
 	}
 	if got := agentV2TerminalBlocksFromEvents(eventsA).text; got != agentV2SlowText {
@@ -382,10 +382,10 @@ func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("history messages = %d, want 2 (user turn + agent reply)", len(messages))
 	}
-	if messages[0].GetRole() != gamev2.Role_ROLE_USER || agentV2MessageText(messages[0]) != userText {
+	if messages[0].GetRole() != game.Role_ROLE_USER || agentV2MessageText(messages[0]) != userText {
 		t.Errorf("history[0] role = %s text = %q, want USER %q", messages[0].GetRole(), agentV2MessageText(messages[0]), userText)
 	}
-	if messages[1].GetRole() != gamev2.Role_ROLE_AGENT {
+	if messages[1].GetRole() != game.Role_ROLE_AGENT {
 		t.Errorf("history[1] role = %s, want AGENT", messages[1].GetRole())
 	}
 	// Backfill equals the streamed terminal state (FR-014: 回填内容与流式终态一致).
@@ -424,7 +424,7 @@ func TestAgentV2ModelFailureRecovers(t *testing.T) {
 		}
 	}
 	end := events[len(events)-1].GetTurnEnd()
-	if end.GetStatus() != gamev2.TurnStatus_TURN_STATUS_ERROR {
+	if end.GetStatus() != game.TurnStatus_TURN_STATUS_ERROR {
 		t.Fatalf("failed turn ended %v, want ERROR (Edge-模型故障)", end.GetStatus())
 	}
 	if end.GetError() == nil || end.GetError().GetMessage() == "" {
@@ -440,7 +440,7 @@ func TestAgentV2ModelFailureRecovers(t *testing.T) {
 	defer stream2.Close()
 	events2 := drainAgentV2Turn(t, stream2)
 	assertAgentV2TurnWellFormed(t, sessionName, events2)
-	if events2[len(events2)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if events2[len(events2)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("recovery turn ended %v, want COMPLETED", events2[len(events2)-1].GetTurnEnd().GetStatus())
 	}
 	if got := agentV2TerminalBlocksFromEvents(events2).text; got != agentV2PlainText {
@@ -482,7 +482,7 @@ func TestAgentV2InvalidInputRejected(t *testing.T) {
 	defer stream.Close()
 	events := drainAgentV2Turn(t, stream)
 	assertAgentV2TurnWellFormed(t, sessionName, events)
-	if events[len(events)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if events[len(events)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("post-rejection turn ended %v, want COMPLETED", events[len(events)-1].GetTurnEnd().GetStatus())
 	}
 }

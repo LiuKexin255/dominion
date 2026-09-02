@@ -19,7 +19,6 @@ import (
 	"dominion/projects/game/proxy/runtime/agentclient"
 	proxymongo "dominion/projects/game/proxy/runtime/mongo"
 	"dominion/projects/game/proxy/runtime/picker"
-	gamev2 "dominion/projects/game/v2"
 
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -29,14 +28,17 @@ var port = flag.String("port", "50051", "Port to listen on")
 
 // registerServices wires the proxy's gRPC surface onto one server: the v1
 // TeamService forwarding face plus the agent_v2 AgentService (the /api/v2
-// conversation surface) and DesktopBridgeService (the desktop flow stream)
-// faces, all dispatched to the agent_v2 stateful pool through the owner
-// store. Registration only — callers keep ownership of the handlers'
-// lifecycle.
-func registerServices(srv *grpcgo.Server, teamHandler game.TeamServiceServer, agentHandler gamev2.AgentServiceServer, bridgeHandler gamev2.DesktopBridgeServiceServer) {
+// session-scoped agent face) and DesktopBridgeService (the desktop flow
+// stream) faces, all dispatched to the agent_v2 stateful pool through the
+// owner store. The agent_v2 stateless configuration face (PresetService) is
+// not registered here — preset state lives in Mongo and the model catalog is
+// static, so the gateway dials agent_v2 directly for it
+// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.4).
+// Registration only — callers keep ownership of the handlers' lifecycle.
+func registerServices(srv *grpcgo.Server, teamHandler game.TeamServiceServer, agentHandler game.AgentServiceServer, bridgeHandler game.DesktopBridgeServiceServer) {
 	game.RegisterTeamServiceServer(srv, teamHandler)
-	gamev2.RegisterAgentServiceServer(srv, agentHandler)
-	gamev2.RegisterDesktopBridgeServiceServer(srv, bridgeHandler)
+	game.RegisterAgentServiceServer(srv, agentHandler)
+	game.RegisterDesktopBridgeServiceServer(srv, bridgeHandler)
 	reflection.Register(srv)
 }
 
@@ -85,15 +87,18 @@ func main() {
 	// (spec 031-team-template-mode: ProxyService/AgentService merged into TeamService.)
 	grpcHandler := handler.NewTeamHandler(mongoOwnerStore, hashPicker, manager, binder)
 
-	// Agent handler forwards the /api/v2 agent surface to the agent_v2
-	// instance owning the (template, session) pair — owner affinity keeps
-	// the in-memory sessions from drifting across instances
-	// (specs/051-agent-v2-dsh-migration/research.md D9).
+	// Agent handler forwards the /api/v2 session-scoped agent RPCs
+	// (UpdateAgent/GetAgent/ListAgentMessages/Send) to the agent_v2 instance
+	// owning the (template, session) pair — owner affinity keeps the
+	// in-memory sessions from drifting across instances. The stateless
+	// configuration face (PresetService) bypasses the proxy entirely: the
+	// gateway dials agent_v2 directly for it
+	// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.4).
 	agentHandler := handler.NewAgentHandler(
 		agentV2OwnerStore,
 		hashPicker,
 		agentV2Manager,
-		bind.NewServerStreamBinder[gamev2.ChatEvent](),
+		bind.NewServerStreamBinder[game.ChatEvent](),
 	)
 
 	// Bridge handler relays the desktop flow-control WebSocket stream

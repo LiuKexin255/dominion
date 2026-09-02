@@ -3,9 +3,21 @@ load("@rules_go//proto:def.bzl", "go_proto_library")
 load("@rules_proto//proto:defs.bzl", "proto_library")
 load("//tools/dev/go:defs.bzl", "go_unittest")
 
+# Both protos of the game app live in one proto_library / go_proto_library
+# generation unit: agent_v2.proto's Go surface is merged into the v1 package
+# (go_package dominion/projects/game) because protoc-gen-go-aip v0.1.3 emits
+# the parent constructor's receiver unqualified, which only resolves when
+# the parent resources (v1 Template/Session) share the generated file's Go
+# package (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+# §2.6). A second go_proto_library on the same importpath is not possible —
+# the Go linker rejects binaries linking both as "multiple copies of package
+# passed to linker".
 proto_library(
     name = "game_proto",
-    srcs = ["game.proto"],
+    srcs = [
+        "agent_v2.proto",
+        "game.proto",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "@com_google_protobuf//:empty_proto",
@@ -44,12 +56,12 @@ go_library(
     visibility = ["//visibility:public"],
 )
 
-# /api/v2 agent surface (specs/051-agent-v2-dsh-migration/contracts/
-# agent-api.md §1). Lives in the app root next to game.proto — the app-root
-# directory carries every proto of this app (specs/049-agent-v2-dsh-init/
-# research.md D12) — while keeping the versioned proto package
-# projects.game.v2 disjoint from the v1 namespace. game.proto is imported
-# for the DesktopBridgeService frame reuse only.
+# /api/v2 TS/RP face (specs/051-agent-v2-dsh-migration/contracts/
+# agent-api.md §1). This proto_library exists for the TS consumers —
+# ts_proto_library and the artifact_pkg_js runtime_protos load agent_v2.proto
+# standalone. Sharing the .proto file with :game_proto is legal in Bazel
+# (protoc runs per target). The Go generation unit is :game_proto above —
+# same importpath precludes a second go_proto_library.
 proto_library(
     name = "agent_v2_proto",
     srcs = ["agent_v2.proto"],
@@ -61,47 +73,8 @@ proto_library(
         "@com_google_protobuf//:timestamp_proto",
         "@googleapis//google/api:annotations_proto",
         "@googleapis//google/api:field_behavior_proto",
+        "@googleapis//google/api:resource_proto",
     ],
-)
-
-# Go codegen mirrors :game_go_proto (compilers incl. grpc-gateway + AIP
-# resource parsers). importpath dominion/projects/game/v2 is the go_package of
-# specs/051-agent-v2-dsh-migration/contracts/agent-api.md §1.
-go_proto_library(
-    name = "agent_v2_go_proto",
-    compilers = [
-        "@rules_go//proto:go_grpc_v2",
-        "@rules_go//proto:go_proto",
-        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
-        "//:go_gen_aip",
-    ],
-    importpath = "dominion/projects/game/v2",
-    proto = ":agent_v2_proto",
-    visibility = ["//visibility:public"],
-    deps = [
-        # annotations_go_proto alone: its protos closure already contains
-        # field_behavior (and http/resource/routing), and adding
-        # field_behavior_go_proto would emit a second Go package for the
-        # same importpath (google.golang.org/genproto/googleapis/api/annotations)
-        # into every binary linking both game protos — the Go linker rejects
-        # that as "multiple copies of package passed to linker".
-        "@googleapis//google/api:annotations_go_proto",
-        # DesktopBridgeService reuses the v1 frame types (UserFrame/TeamFrame
-        # from game.proto), so the generated v2 package imports the v1 one.
-        # The dep is the packaged :game go_library (not :game_go_proto) so
-        # binaries linking both protos see one "dominion/projects/game"
-        # archive — a second copy via the raw proto target makes the Go
-        # linker reject the binary as "multiple copies of package passed to
-        # linker" (same rule as the annotations_go_proto note above).
-        ":game",
-    ],
-)
-
-go_library(
-    name = "agent_v2",
-    embed = [":agent_v2_go_proto"],
-    importpath = "dominion/projects/game/v2",
-    visibility = ["//visibility:public"],
 )
 
 go_unittest(

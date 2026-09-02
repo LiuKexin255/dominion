@@ -246,7 +246,6 @@ go_largetest(
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
-        "//projects/game:agent_v2",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
@@ -275,7 +274,6 @@ go_largetest(
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
-        "//projects/game:agent_v2",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
@@ -286,17 +284,17 @@ go_largetest(
 
 # agent_v2_game_test is the agent_v2 US1 game-loop suite (specs/051-agent-v2-
 # dsh-migration — quickstart §2 agent-v2-game): the fake-llm game chain over
-# the /api/v2 Send stream against the fake-desktop executors — the won-chain
-# tool stream with the board-text contract and the game_won terminal reject,
-# the desktop-absent branch, the mid-game disconnect and reconnect recovery,
-# concurrent multi-session isolation, and two-stream independence. It shares
-# the agent_v2 helpers (agent_v2_helpers_test.go) and embeds the win-board
-# fixture used to answer its own flow receipts.
+# the /api/v2 Send stream against the deployed fake-desktop executor — the
+# won-chain tool stream with the board-text contract and the game_won
+# terminal reject, the desktop-absent branch, concurrent multi-session
+# isolation, and two-stream independence. It shares the agent_v2 helpers
+# (agent_v2_helpers_test.go) and embeds the win-board fixture used to answer
+# its own flow receipts. The mid-game disconnect branch has its own binary
+# (agent_v2_game_disconnect_test) bound to the drop deploy.
 #
-# size = medium: the disconnect case waits out the fake-desktop's reconnect
-# cycle between its two games and the isolation/two-stream cases run full
-# game chains per session — well beyond small's 60s budget alongside the
-# materialization latency of every case (style/large_test.md §测试用例).
+# size = medium: the isolation/two-stream cases run full game chains per
+# session — well beyond small's 60s budget alongside the materialization
+# latency of every case (style/large_test.md §测试用例).
 go_largetest(
     name = "agent_v2_game_test",
     size = "medium",
@@ -310,7 +308,40 @@ go_largetest(
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
-        "//projects/game:agent_v2",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# agent_v2_game_disconnect_test is the mid-game disconnect/recovery branch
+# of the US1 game loop (US1 场景 5/6, desktop-bridge.md §6 验收锚点 3) in its
+# own binary: the case needs the drop topology (deploy_agent_v2_drop.yaml
+# deploys the fake-desktop with the progressive + disconnect-after-ops env),
+# and guitar runs whole bazel targets as suite cases with no per-suite
+# test-function filter — sharing agent_v2_game_test would run the won-chain
+# cases against a topology with no won executor
+# (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4).
+# Shares the agent_v2 helpers and the saolei fixtures like agent_v2_game_test.
+#
+# size = medium: the case waits out the fake-desktop's reconnect cycle
+# between its games and drives three full game chains
+# (style/large_test.md §测试用例).
+go_largetest(
+    name = "agent_v2_game_disconnect_test",
+    size = "medium",
+    srcs = [
+        "agent_v2_game_disconnect_test.go",
+        "agent_v2_helpers_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",
@@ -339,7 +370,6 @@ go_largetest(
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
-        "//projects/game:agent_v2",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
         "@com_github_gorilla_websocket//:websocket",

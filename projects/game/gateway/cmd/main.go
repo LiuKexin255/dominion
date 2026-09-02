@@ -9,15 +9,23 @@
 //   - /api/v1/templates/{template}/sessions/{session}/connect → WebSocket
 //     (TeamService.Connect stream; the WebSocket endpoint mirrors the Team
 //     resource hierarchy per spec 031-team-template-mode FR-004)
-//   - /api/v2/* → grpc-gateway (AgentService — the agent_v2
-//     surface, including the Send server-streaming RPC served as
-//     chunked NDJSON) except the desktop-bridge connect path:
+//   - /api/v2/* → grpc-gateway, split by where the RPC's state lives
+//     (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §4):
+//     the session-scoped AgentService face (UpdateAgent/GetAgent/
+//     ListAgentMessages/Send, including the Send server-streaming RPC served
+//     as chunked NDJSON) rides the proxy connection — the proxy owns owner
+//     affinity for the stateful agent_v2 instances
+//     (specs/051-agent-v2-dsh-migration/research.md D9); the stateless
+//     PresetService face (preset CRUD + ListModels) is registered on a
+//     direct agent_v2 connection — preset state lives in Mongo and the
+//     model catalog is static, so no proxy hop
+//     (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+//     §3.4) — except the desktop-bridge connect path:
 //     /api/v2/templates/{template}/sessions/{session}/connect → WebSocket
-//     (DesktopBridgeService.Connect stream relayed over the same proxy
-//     connection — the proxy owns owner affinity for the stateful agent_v2
-//     instances, specs/051-agent-v2-dsh-migration/research.md D9;
-//     specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3).
-//     The /api/v1 routes and behavior above are unchanged.)
+//     (DesktopBridgeService.Connect stream relayed over the proxy
+//     connection; specs/051-agent-v2-dsh-migration/contracts/
+//     desktop-bridge.md §3).
+//     The /api/v1 routes and behavior above are unchanged.
 package main
 
 import (
@@ -39,7 +47,6 @@ import (
 	game "dominion/projects/game"
 	"dominion/projects/game/pkg/bind"
 	gameconst "dominion/projects/game/pkg/gameconst"
-	gamev2 "dominion/projects/game/v2"
 
 	"github.com/coder/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -103,6 +110,19 @@ func main() {
 		log.Fatalf("memory dial: %v", err)
 	}
 
+	// presetConn dials agent_v2 directly for the stateless configuration
+	// surface (PresetService): preset state lives in Mongo and the model
+	// catalog is static plugin configuration, so any live instance serves —
+	// the resolver returns every ready endpoint and the gRPC client LB
+	// spreads the load, with no proxy owner affinity
+	// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+	// §3.4). Unary RPCs only → default keepalive, same as
+	// sessionConn/memoryConn.
+	presetConn, err := grpc.NewClient(solver.URI(gameconst.AgentV2Target), clientOpts...)
+	if err != nil {
+		log.Fatalf("preset dial: %v", err)
+	}
+
 	// 2. Create grpc-gateway mux and register handlers for unary RPCs.
 	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
 
@@ -120,12 +140,19 @@ func main() {
 		log.Fatalf("register memory handler: %v", err)
 	}
 	// The AgentService handler rides the proxy connection: the proxy
-	// forwards /api/v2 traffic to the agent_v2 stateful instance owning the
-	// session (owner affinity — agent_v2 keeps sessions in process memory
-	// and must not be addressed directly, specs/051-agent-v2-dsh-migration/
-	// research.md D9).
-	if err := gamev2.RegisterAgentServiceHandler(ctx, gwmux, teamConn); err != nil {
+	// forwards the session-scoped agent RPCs to the agent_v2 stateful
+	// instance owning the session (owner affinity — agent_v2 keeps sessions
+	// in process memory, specs/051-agent-v2-dsh-migration/research.md D9).
+	if err := game.RegisterAgentServiceHandler(ctx, gwmux, teamConn); err != nil {
 		log.Fatalf("register agent_v2 handler: %v", err)
+	}
+	// The PresetService handler rides the direct agent_v2 connection: preset
+	// state lives in Mongo and the model catalog is static, so no proxy hop
+	// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+	// §3.4). Its /api/v2 paths (preset CRUD + /api/v2/models) are disjoint
+	// from the AgentService handler's four agent paths.
+	if err := game.RegisterPresetServiceHandler(ctx, gwmux, presetConn); err != nil {
+		log.Fatalf("register preset handler: %v", err)
 	}
 
 	// 3. Create root HTTP mux with path-based routing.
@@ -150,6 +177,7 @@ func main() {
 	b.Register(bootstrap.GRPCConn("team", teamConn))
 	b.Register(bootstrap.GRPCConn("prompt", promptConn))
 	b.Register(bootstrap.GRPCConn("memory", memoryConn))
+	b.Register(bootstrap.GRPCConn("agent-v2", presetConn))
 	b.Register(bootstrap.HTTPServer("http", srv))
 	log.Fatal(b.Run(context.Background()))
 }
@@ -320,7 +348,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 // contracts/desktop-bridge.md §3).
 func handleDesktopBridgeConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
 	pumpWebSocketConnect(w, r, apiV2, func(ctx context.Context) (bind.TeamFrameStream, error) {
-		return gamev2.NewDesktopBridgeServiceClient(teamConn).Connect(ctx)
+		return game.NewDesktopBridgeServiceClient(teamConn).Connect(ctx)
 	})
 }
 

@@ -15,10 +15,14 @@ const (
 	TeamTarget  = "game/proxy:grpc"
 	AgentTarget = "game/agent:grpc"
 	// AgentV2Target is the service discovery target of the agent-v2 gRPC
-	// service, the stateful dsh-hosted game agent. Its consumer is the
-	// proxy's stateful-instance resolver (owner affinity for the /api/v2
-	// conversation surface); the gateway never addresses agent-v2 directly
-	// (specs/049-agent-v2-dsh-init/research.md D4). The discovery name is
+	// service, the stateful dsh-hosted game agent. Two consumers dial it:
+	// the proxy's stateful-instance resolver, giving the session face
+	// (AgentService/DesktopBridgeService) owner affinity, and the gateway's
+	// presetConn, which dials agent-v2 directly for the stateless
+	// configuration face (PresetService — preset state lives in Mongo and
+	// the model catalog is static, so any instance serves and no proxy hop
+	// is needed; specs/051-agent-v2-dsh-migration/revisions/
+	// directive-2026-09-01.md §3). The discovery name is
 	// "agent-v2" (hyphens — the deploy API's service-name constraint,
 	// specs/049-agent-v2-dsh-init/research.md D13) while the project
 	// directory and bazel targets keep agent_v2.

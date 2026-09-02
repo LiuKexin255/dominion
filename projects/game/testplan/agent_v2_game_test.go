@@ -1,11 +1,14 @@
 // Package testplan contains the agent_v2 game large tests: the US1 game
 // loop end to end over the /api/v2 conversation stream with the
-// deterministic fake-llm game chain and the fake-desktop executors
+// deterministic fake-llm game chain and the deployed fake-desktop executor
 // (specs/051-agent-v2-dsh-migration — quickstart.md §2 agent-v2-game row).
-// Cases are grouped by tested concern (tool chain, board text contract,
-// terminal states, desktop-absent and mid-game-disconnect branches,
-// multi-session isolation, two-stream independence), one test per concern —
-// style/large_test.md §测试组织.
+// Cases are grouped by tested concern (won-chain tool stream, board text
+// contract, terminal states, desktop-absent branch, multi-session
+// isolation, two-stream independence), one test per concern —
+// style/large_test.md §测试组织. The mid-game disconnect branch needs the
+// drop deploy topology and lives in its own binary,
+// agent_v2_game_disconnect_test.go
+// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4).
 package testplan
 
 import (
@@ -14,15 +17,8 @@ import (
 	"time"
 
 	"dominion/common/gopkg/testtool"
-	gamev2 "dominion/projects/game/v2"
+	game "dominion/projects/game"
 )
-
-// gameFlowReconnectWait is the pause before re-driving a game on the
-// fake-desktop-drop session: the executor's fault injection tears the flow
-// connection down once per connection lifetime and reconnects after its
-// fixed reconnectDelay (projects/game/fake-desktop/service/session.go), so
-// the wait must cover one reconnect cycle (2s delay + dial + probe).
-const gameFlowReconnectWait = 8 * time.Second
 
 // assertGameToolResults walks the turn's tool_result frames and checks the
 // game chain's shape against the fake-desktop scenario:
@@ -30,14 +26,14 @@ const gameFlowReconnectWait = 8 * time.Second
 //	won:   saolei_init SUCCEEDED (the 9×9 win board) then saolei_operate
 //	       SUCCEEDED (pre-dispatch game_won stop — the terminal-reject
 //	       branch of specs/051-agent-v2-dsh-migration/data-model.md §2.5).
-//	absent / disconnected: exactly one FAILED result whose text names the
+//	absent: exactly one FAILED result whose text names the
 //	       bridge disconnect cause — a tool ERROR result (model-visible,
 //	       not a fabricated success), agent-api.md §2.4.
 //
 // The board-text contract assertions (three-layer body: outcome line, game
 // status line, ruler board) pin the v1 text contract the tools must keep
 // (data-model.md §2.5, migrated verbatim into the saolei plugin).
-func assertGameToolResults(t *testing.T, results []*gamev2.ToolResultEvent) {
+func assertGameToolResults(t *testing.T, results []*game.ToolResultEvent) {
 	t.Helper()
 
 	if len(results) == 0 {
@@ -51,7 +47,8 @@ func assertGameToolResults(t *testing.T, results []*gamev2.ToolResultEvent) {
 }
 
 // TestAgentV2GameWonChainToolStream drives the full won-scenario chain on
-// the fake-desktop-won session: the "开始一局扫雷" keyword fires
+// the desktop-e2e-won session (the executor session bound by
+// deploy_agent_v2.yaml): the "开始一局扫雷" keyword fires
 // saolei_init, the 9×9 win board opens the operate batch, and the batch
 // stops pre-dispatch on game_won — the terminal-reject branch proving the
 // final state gates further cell operations before any dispatch
@@ -75,7 +72,7 @@ func TestAgentV2GameWonChainToolStream(t *testing.T) {
 	events := drainAgentV2Turn(t, stream)
 	assertAgentV2TurnWellFormed(t, sessionName, events)
 
-	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("game turn ended %v, want COMPLETED", end.GetStatus())
 	}
 
@@ -90,8 +87,8 @@ func TestAgentV2GameWonChainToolStream(t *testing.T) {
 	// saolei_init: the win board recognized from the executor's screenshot —
 	// outcome line, game status line, and the ruler board in the fixed
 	// three-layer order (data-model.md §2.5 结果文本契约).
-	if init.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED {
-		t.Fatalf("saolei_init status = %v, want SUCCEEDED (fake-desktop-won is connected)", init.GetStatus())
+	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("saolei_init status = %v, want SUCCEEDED (the desktop-e2e-won executor is connected)", init.GetStatus())
 	}
 	if !strings.Contains(init.GetResult(), agentV2WonInitContains) {
 		t.Errorf("saolei_init result = %q, want the outcome line %q", init.GetResult(), agentV2WonInitContains)
@@ -112,7 +109,7 @@ func TestAgentV2GameWonChainToolStream(t *testing.T) {
 	// saolei_operate: the batch stops at the first op BEFORE dispatch — the
 	// game_won terminal rejection (终局后拒绝), still a normal SUCCEEDED tool
 	// result (拒绝是正常结果文本, data-model.md §2.5).
-	if operate.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED {
+	if operate.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
 		t.Fatalf("saolei_operate status = %v, want SUCCEEDED (a game-rules rejection is a normal result)", operate.GetStatus())
 	}
 	if !strings.Contains(operate.GetResult(), agentV2WonRejectContains) {
@@ -137,7 +134,7 @@ func TestAgentV2GameWonChainToolStream(t *testing.T) {
 	if len(messages) != 4 {
 		t.Fatalf("history messages = %d, want 4 (user + init step + operate step + summary)", len(messages))
 	}
-	var toolBlocks []*gamev2.ToolCallBlock
+	var toolBlocks []*game.ToolCallBlock
 	for _, m := range messages {
 		for _, b := range m.GetBlocks() {
 			if call := b.GetToolCall(); call != nil {
@@ -150,7 +147,7 @@ func TestAgentV2GameWonChainToolStream(t *testing.T) {
 	}
 	wantResults := []string{init.GetResult(), operate.GetResult()}
 	for i, call := range toolBlocks {
-		if call.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		if call.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
 			t.Errorf("history tool block %d (%s) status = %v, want SUCCEEDED", i, call.GetName(), call.GetStatus())
 		}
 		if call.GetName() != "saolei_init" && call.GetName() != "saolei_operate" {
@@ -185,7 +182,7 @@ func TestAgentV2GameDesktopAbsent(t *testing.T) {
 	defer stream.Close()
 	events := drainAgentV2Turn(t, stream)
 	assertAgentV2TurnWellFormed(t, sessionName, events)
-	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("desktop-absent turn ended %v, want COMPLETED (回合存活, US1 场景 4)", end.GetStatus())
 	}
 
@@ -195,7 +192,7 @@ func TestAgentV2GameDesktopAbsent(t *testing.T) {
 		t.Fatalf("tool_result count = %d, want 1 (the failed saolei_init)", len(results))
 	}
 	init := results[0]
-	if init.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_FAILED {
+	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_FAILED {
 		t.Fatalf("saolei_init status = %v, want FAILED (no desktop connection, desktop-bridge.md §2)", init.GetStatus())
 	}
 	if !strings.Contains(init.GetResult(), agentV2DisconnectedContain) {
@@ -213,110 +210,11 @@ func TestAgentV2GameDesktopAbsent(t *testing.T) {
 	defer stream2.Close()
 	events2 := drainAgentV2Turn(t, stream2)
 	assertAgentV2TurnWellFormed(t, sessionName, events2)
-	if events2[len(events2)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if events2[len(events2)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("follow-up turn ended %v, want COMPLETED", events2[len(events2)-1].GetTurnEnd().GetStatus())
 	}
 	if got := agentV2TerminalBlocksFromEvents(events2).text; got != agentV2PlainText {
 		t.Errorf("follow-up text = %q, want %q", got, agentV2PlainText)
-	}
-}
-
-// TestAgentV2GameDisconnectMidGameThenRecover covers US1 scenario 5 on the
-// fake-desktop-drop session. The executor closes its flow connection once
-// per connection lifetime, right after the third operation receipt (the
-// init F2 press + the two progressive cell ops), which yields a
-// three-game sequence:
-//
-//	game 1: the full progressive chain SUCCEEDS — the disconnect fires after
-//	        the last receipt, so the conversation stream never notices it
-//	        (两流独立性 — flow 故障不影响对话流, US1 场景 6);
-//	game 2: the connection is gone, saolei_init's dispatch fails with the
-//	        model-visible "desktop disconnected" error and the turn still
-//	        completes (回合存活);
-//	game 3: after the executor reconnects, the same session plays a full
-//	        game again with the board state re-seeded by init
-//	        (desktop-bridge.md §6 验收锚点 3 — 重连后游戏可继续).
-func TestAgentV2GameDisconnectMidGameThenRecover(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		agentV2DesktopDropID, "game-drop-"+uniqueSuffix(), "recover after the drop")
-
-	// Game 1: the whole chain lands while the disconnect injection fires
-	// invisibly behind the last receipt.
-	stream1 := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerSaoleiProgressive+" first attempt")
-	events1 := drainAgentV2Turn(t, stream1)
-	assertAgentV2TurnWellFormed(t, sessionName, events1)
-	if events1[len(events1)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
-		t.Fatalf("game 1 ended %v, want COMPLETED", events1[len(events1)-1].GetTurnEnd().GetStatus())
-	}
-	results1 := collectAgentV2GameEvents(events1)
-	if len(results1) != 2 {
-		t.Fatalf("game 1 tool_result count = %d, want 2", len(results1))
-	}
-	for i, r := range results1 {
-		if r.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED {
-			t.Fatalf("game 1 tool_result[%d] status = %v, want SUCCEEDED (the fault fires only after the last receipt)", i, r.GetStatus())
-		}
-	}
-	if !strings.Contains(results1[1].GetResult(), agentV2ProgExecContains) {
-		t.Errorf("game 1 operate result = %q, want %q", results1[1].GetResult(), agentV2ProgExecContains)
-	}
-	if got := agentV2TerminalBlocksFromEvents(events1).text; got != agentV2ProgSummaryText {
-		t.Errorf("game 1 terminal text = %q, want %q", got, agentV2ProgSummaryText)
-	}
-
-	// Game 2, right after: the connection is gone — the init dispatch fails
-	// with the readable cause and the turn survives.
-	stream2 := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerSaoleiProgressive+" while disconnected")
-	events2 := drainAgentV2Turn(t, stream2)
-	assertAgentV2TurnWellFormed(t, sessionName, events2)
-	if events2[len(events2)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
-		t.Fatalf("game 2 ended %v, want COMPLETED (回合存活, US1 场景 4/5)", events2[len(events2)-1].GetTurnEnd().GetStatus())
-	}
-	results2 := collectAgentV2GameEvents(events2)
-	if len(results2) != 1 {
-		t.Fatalf("game 2 tool_result count = %d, want 1 (the failed saolei_init)", len(results2))
-	}
-	if results2[0].GetStatus() != gamev2.ToolStatus_TOOL_STATUS_FAILED {
-		t.Fatalf("game 2 saolei_init status = %v, want FAILED (the flow connection was torn down)", results2[0].GetStatus())
-	}
-	if !strings.Contains(results2[0].GetResult(), agentV2DisconnectedContain) {
-		t.Errorf("game 2 init error = %q, want %q", results2[0].GetResult(), agentV2DisconnectedContain)
-	}
-	if got := agentV2TerminalBlocksFromEvents(events2).text; got != agentV2NodesktopSummary {
-		t.Errorf("game 2 terminal text = %q, want %q", got, agentV2NodesktopSummary)
-	}
-
-	// The executor re-dials its session after the fixed reconnect delay;
-	// the fresh connection attaches and game 3 runs the full chain again.
-	time.Sleep(gameFlowReconnectWait)
-
-	stream3 := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerSaoleiProgressive+" after reconnect")
-	defer stream3.Close()
-	events3 := drainAgentV2Turn(t, stream3)
-	assertAgentV2TurnWellFormed(t, sessionName, events3)
-	if events3[len(events3)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
-		t.Fatalf("game 3 ended %v, want COMPLETED", events3[len(events3)-1].GetTurnEnd().GetStatus())
-	}
-	results3 := collectAgentV2GameEvents(events3)
-	if len(results3) != 2 {
-		t.Fatalf("game 3 tool_result count = %d, want 2", len(results3))
-	}
-	if results3[0].GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED || results3[1].GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED {
-		t.Fatalf("game 3 statuses = %v / %v, want both SUCCEEDED (desktop reconnected, US1 场景 5 恢复)", results3[0].GetStatus(), results3[1].GetStatus())
-	}
-	if !strings.Contains(results3[1].GetResult(), agentV2ProgExecContains) || !strings.Contains(results3[1].GetResult(), agentV2ProgStatusContains) {
-		t.Errorf("game 3 operate result = %q, want %q + %q", results3[1].GetResult(), agentV2ProgExecContains, agentV2ProgStatusContains)
-	}
-	if got := agentV2TerminalBlocksFromEvents(events3).text; got != agentV2ProgSummaryText {
-		t.Errorf("game 3 terminal text = %q, want %q", got, agentV2ProgSummaryText)
-	}
-	if events1[0].GetTurnId() == events3[0].GetTurnId() {
-		t.Errorf("game 1 and game 3 share turn_id %q", events1[0].GetTurnId())
 	}
 }
 
@@ -346,7 +244,7 @@ func TestAgentV2GameMultiSessionIsolation(t *testing.T) {
 
 	chConnected := drainAgentV2TurnAsync(streamConnected)
 	chIsolated := drainAgentV2TurnAsync(streamIsolated)
-	var eventsConnected, eventsIsolated []*gamev2.ChatEvent
+	var eventsConnected, eventsIsolated []*game.ChatEvent
 	for eventsConnected == nil || eventsIsolated == nil {
 		select {
 		case r := <-chConnected:
@@ -369,11 +267,11 @@ func TestAgentV2GameMultiSessionIsolation(t *testing.T) {
 	// Distinct outcomes on the shared instance: the connected session's
 	// chain reached the won board, the isolated one failed on dispatch.
 	resultsConnected := collectAgentV2GameEvents(eventsConnected)
-	if len(resultsConnected) == 0 || resultsConnected[0].GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED {
+	if len(resultsConnected) == 0 || resultsConnected[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
 		t.Fatalf("connected session tool results = %+v, want a SUCCEEDED saolei_init", resultsConnected)
 	}
 	resultsIsolated := collectAgentV2GameEvents(eventsIsolated)
-	if len(resultsIsolated) == 0 || resultsIsolated[0].GetStatus() != gamev2.ToolStatus_TOOL_STATUS_FAILED {
+	if len(resultsIsolated) == 0 || resultsIsolated[0].GetStatus() != game.ToolStatus_TOOL_STATUS_FAILED {
 		t.Fatalf("isolated session tool results = %+v, want a FAILED saolei_init (no desktop)", resultsIsolated)
 	}
 	if eventsConnected[0].GetTurnId() == eventsIsolated[0].GetTurnId() {
@@ -384,13 +282,13 @@ func TestAgentV2GameMultiSessionIsolation(t *testing.T) {
 	histConnected := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, connected)
 	histIsolated := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, isolated)
 	for i, m := range histIsolated.GetMessages() {
-		if m.GetRole() == gamev2.Role_ROLE_USER && agentV2MessageText(m) == textConnected {
+		if m.GetRole() == game.Role_ROLE_USER && agentV2MessageText(m) == textConnected {
 			t.Errorf("isolated session history[%d] carries the connected session's marker — game histories are not isolated", i)
 		}
 	}
 	foundIsolatedMarker := false
 	for _, m := range histIsolated.GetMessages() {
-		if m.GetRole() == gamev2.Role_ROLE_USER && agentV2MessageText(m) == textIsolated {
+		if m.GetRole() == game.Role_ROLE_USER && agentV2MessageText(m) == textIsolated {
 			foundIsolatedMarker = true
 		}
 	}
@@ -403,7 +301,7 @@ func TestAgentV2GameMultiSessionIsolation(t *testing.T) {
 	settledBlocks := 0
 	for _, m := range histConnected.GetMessages() {
 		for _, b := range m.GetBlocks() {
-			if call := b.GetToolCall(); call != nil && call.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_RUNNING {
+			if call := b.GetToolCall(); call != nil && call.GetStatus() != game.ToolStatus_TOOL_STATUS_RUNNING {
 				settledBlocks++
 			}
 		}
@@ -442,7 +340,7 @@ func TestAgentV2GameConversationStreamIndependentOfFlow(t *testing.T) {
 	dropped := false
 	for !dropped {
 		evt := nextAgentV2Event(t, stream.Scanner)
-		if start := evt.GetBlockStart(); start != nil && start.GetType() == gamev2.BlockType_BLOCK_TYPE_TOOL_CALL {
+		if start := evt.GetBlockStart(); start != nil && start.GetType() == game.BlockType_BLOCK_TYPE_TOOL_CALL {
 			stream.Close()
 			dropped = true
 		}
@@ -480,13 +378,13 @@ func TestAgentV2GameConversationStreamIndependentOfFlow(t *testing.T) {
 // gameTurnHistoryComplete reports whether the history shows the full
 // post-close turn: the user message, at least one settled tool-call block,
 // and the terminal summary text.
-func gameTurnHistoryComplete(t *testing.T, hist *gamev2.ListAgentMessagesResponse, summaryText string) bool {
+func gameTurnHistoryComplete(t *testing.T, hist *game.ListAgentMessagesResponse, summaryText string) bool {
 	t.Helper()
 
 	sawTool := false
 	for _, m := range hist.GetMessages() {
 		for _, b := range m.GetBlocks() {
-			if call := b.GetToolCall(); call != nil && call.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_RUNNING {
+			if call := b.GetToolCall(); call != nil && call.GetStatus() != game.ToolStatus_TOOL_STATUS_RUNNING {
 				sawTool = true
 			}
 			if text := b.GetText(); text != nil && text.GetContent() == summaryText {

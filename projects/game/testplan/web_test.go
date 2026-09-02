@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"dominion/common/gopkg/testtool"
-	gamev2 "dominion/projects/game/v2"
+	game "dominion/projects/game"
 )
 
 // assetsReferenceRe matches the built asset URLs vite rewrites into the
@@ -146,7 +146,7 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 	defer stream.Close()
 	events := drainAgentV2Turn(t, stream)
 	assertAgentV2TurnWellFormed(t, sessionName, events)
-	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("smoke turn ended %v, want COMPLETED", end.GetStatus())
 	}
 	if got := agentV2TerminalBlocksFromEvents(events).text; got != agentV2GreetText {

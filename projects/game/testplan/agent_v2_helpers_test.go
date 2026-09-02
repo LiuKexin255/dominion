@@ -20,7 +20,6 @@ import (
 
 	"dominion/common/gopkg/otel/tracecontext"
 	game "dominion/projects/game"
-	gamev2 "dominion/projects/game/v2"
 
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -163,7 +162,7 @@ func postAgentV2SendStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnv
 // api.md §2) — so the wrapper is mandatory and unwrapped here. Calls t.Fatal
 // on transport, framing, or decode errors; reader goroutines must use
 // nextAgentV2EventNoFatal instead.
-func nextAgentV2Event(t *testing.T, scanner *bufio.Scanner) *gamev2.ChatEvent {
+func nextAgentV2Event(t *testing.T, scanner *bufio.Scanner) *game.ChatEvent {
 	t.Helper()
 
 	if !scanner.Scan() {
@@ -175,7 +174,7 @@ func nextAgentV2Event(t *testing.T, scanner *bufio.Scanner) *gamev2.ChatEvent {
 // nextAgentV2EventNoFatal is nextAgentV2Event without t.Fatal: it returns the
 // decoded ChatEvent or an error, for drain goroutines (t.Fatal must only run
 // on the test goroutine).
-func nextAgentV2EventNoFatal(scanner *bufio.Scanner) (*gamev2.ChatEvent, error) {
+func nextAgentV2EventNoFatal(scanner *bufio.Scanner) (*game.ChatEvent, error) {
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return nil, err
@@ -187,7 +186,7 @@ func nextAgentV2EventNoFatal(scanner *bufio.Scanner) (*gamev2.ChatEvent, error) 
 
 // decodeAgentV2Chunk unwraps and decodes one NDJSON chunk on the test
 // goroutine (fatal variant of decodeAgentV2ChunkNoFatal).
-func decodeAgentV2Chunk(t *testing.T, line []byte) *gamev2.ChatEvent {
+func decodeAgentV2Chunk(t *testing.T, line []byte) *game.ChatEvent {
 	t.Helper()
 
 	evt, err := decodeAgentV2ChunkNoFatal(line)
@@ -200,7 +199,7 @@ func decodeAgentV2Chunk(t *testing.T, line []byte) *gamev2.ChatEvent {
 // decodeAgentV2ChunkNoFatal decodes one `{"result": <ChatEvent>}` NDJSON
 // line into a ChatEvent (protojson camelCase projection, unknown fields
 // ignored per proto3 forward-compat — conversation-api.md §2).
-func decodeAgentV2ChunkNoFatal(line []byte) (*gamev2.ChatEvent, error) {
+func decodeAgentV2ChunkNoFatal(line []byte) (*game.ChatEvent, error) {
 	var chunk struct {
 		Result json.RawMessage `json:"result"`
 	}
@@ -210,7 +209,7 @@ func decodeAgentV2ChunkNoFatal(line []byte) (*gamev2.ChatEvent, error) {
 	if len(chunk.Result) == 0 {
 		return nil, fmt.Errorf("chunk lacks the grpc-gateway %q wrapper", "result")
 	}
-	evt := new(gamev2.ChatEvent)
+	evt := new(game.ChatEvent)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(chunk.Result, evt); err != nil {
 		return nil, err
 	}
@@ -220,10 +219,10 @@ func decodeAgentV2ChunkNoFatal(line []byte) (*gamev2.ChatEvent, error) {
 // drainAgentV2Turn reads frames until the turn's turn_end (inclusive) and
 // asserts the stream ends there — no frames may follow the terminal event
 // (conversation-api.md §3 invariant 1). Test-goroutine only.
-func drainAgentV2Turn(t *testing.T, stream *agentV2EventStream) []*gamev2.ChatEvent {
+func drainAgentV2Turn(t *testing.T, stream *agentV2EventStream) []*game.ChatEvent {
 	t.Helper()
 
-	var events []*gamev2.ChatEvent
+	var events []*game.ChatEvent
 	for {
 		evt := nextAgentV2Event(t, stream.Scanner)
 		events = append(events, evt)
@@ -259,7 +258,7 @@ func drainAgentV2Turn(t *testing.T, stream *agentV2EventStream) []*gamev2.ChatEv
 // left unsettled. A provider block that never receives a done event (the
 // fake's reasoning item — fake-responses-wire.md §2) simply has no block_end
 // and is not an interleaving violation.
-func assertAgentV2TurnWellFormed(t *testing.T, sessionName string, events []*gamev2.ChatEvent) {
+func assertAgentV2TurnWellFormed(t *testing.T, sessionName string, events []*game.ChatEvent) {
 	t.Helper()
 
 	if len(events) == 0 {
@@ -293,11 +292,11 @@ func assertAgentV2TurnWellFormed(t *testing.T, sessionName string, events []*gam
 
 	sawTurnStart := false
 	announced := map[int32]bool{}
-	kindByIndex := map[int32]gamev2.BlockType{}
+	kindByIndex := map[int32]game.BlockType{}
 	deltas := map[int32][]string{}
 	closedRuns := map[int32]bool{}
 	lastDeltaIdx := int32(-1)
-	blockEnds := map[int32]*gamev2.ContentBlock{}
+	blockEnds := map[int32]*game.ContentBlock{}
 	// tool pairing bookkeeping: the tool-call blocks seen (by tool_id, most
 	// recent unsettled last) and the tool_result frames observed.
 	unsettledToolCalls := []string{}
@@ -368,7 +367,7 @@ func assertAgentV2TurnWellFormed(t *testing.T, sessionName string, events []*gam
 				t.Errorf("tool_result at frame %d carries an empty tool_id (§2.4)", i)
 				continue
 			}
-			if result.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED && result.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_FAILED {
+			if result.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED && result.GetStatus() != game.ToolStatus_TOOL_STATUS_FAILED {
 				t.Errorf("tool_result at frame %d status = %v, want a terminal SUCCEEDED/FAILED", i, result.GetStatus())
 			}
 			// Settle the most recent unsettled call with this id (the same
@@ -388,7 +387,7 @@ func assertAgentV2TurnWellFormed(t *testing.T, sessionName string, events []*gam
 	if !sawTurnStart {
 		t.Error("no turn_start frame in the stream (§3 invariant 2)")
 	}
-	if events[len(events)-1].GetTurnEnd().GetStatus() == gamev2.TurnStatus_TURN_STATUS_COMPLETED && len(unsettledToolCalls) > 0 {
+	if events[len(events)-1].GetTurnEnd().GetStatus() == game.TurnStatus_TURN_STATUS_COMPLETED && len(unsettledToolCalls) > 0 {
 		t.Errorf("COMPLETED turn ends with %d tool call(s) without a tool_result: %v (data-model.md §4-2)", len(unsettledToolCalls), unsettledToolCalls)
 	}
 
@@ -407,7 +406,7 @@ func assertAgentV2TurnWellFormed(t *testing.T, sessionName string, events []*gam
 			}
 		case block.GetToolCall() != nil:
 			call := block.GetToolCall()
-			if call.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_RUNNING {
+			if call.GetStatus() != game.ToolStatus_TOOL_STATUS_RUNNING {
 				t.Errorf("block %d: block_end tool_call status = %v, want RUNNING (the terminal status arrives via tool_result, data-model.md §2.3)", idx, call.GetStatus())
 			}
 			if got := call.GetArgsJson(); got != joined {
@@ -430,9 +429,9 @@ type agentV2TerminalBlocks struct {
 	text  string
 }
 
-func agentV2TerminalBlocksFromEvents(events []*gamev2.ChatEvent) agentV2TerminalBlocks {
+func agentV2TerminalBlocksFromEvents(events []*game.ChatEvent) agentV2TerminalBlocks {
 	var out agentV2TerminalBlocks
-	kindByIndex := map[int32]gamev2.BlockType{}
+	kindByIndex := map[int32]game.BlockType{}
 	for _, e := range events {
 		if start := e.GetBlockStart(); start != nil {
 			kindByIndex[start.GetIndex()] = start.GetType()
@@ -443,9 +442,9 @@ func agentV2TerminalBlocksFromEvents(events []*gamev2.ChatEvent) agentV2Terminal
 			continue
 		}
 		switch kindByIndex[delta.GetIndex()] {
-		case gamev2.BlockType_BLOCK_TYPE_THINK:
+		case game.BlockType_BLOCK_TYPE_THINK:
 			out.think += delta.GetText()
-		case gamev2.BlockType_BLOCK_TYPE_TEXT:
+		case game.BlockType_BLOCK_TYPE_TEXT:
 			out.text += delta.GetText()
 		}
 	}
@@ -454,7 +453,7 @@ func agentV2TerminalBlocksFromEvents(events []*gamev2.ChatEvent) agentV2Terminal
 
 // agentV2MessageThink returns the concatenated ThinkBlock contents of one
 // history message; agentV2MessageText the TextBlock contents.
-func agentV2MessageThink(m *gamev2.HistoryMessage) string {
+func agentV2MessageThink(m *game.HistoryMessage) string {
 	var s string
 	for _, b := range m.GetBlocks() {
 		if think := b.GetThink(); think != nil {
@@ -464,7 +463,7 @@ func agentV2MessageThink(m *gamev2.HistoryMessage) string {
 	return s
 }
 
-func agentV2MessageText(m *gamev2.HistoryMessage) string {
+func agentV2MessageText(m *game.HistoryMessage) string {
 	var s string
 	for _, b := range m.GetBlocks() {
 		if text := b.GetText(); text != nil {
@@ -477,7 +476,7 @@ func agentV2MessageText(m *gamev2.HistoryMessage) string {
 // listAgentV2Messages issues GET /api/v2/{session}/agent/messages and
 // returns the parsed ListAgentMessagesResponse (agent-api.md §1). Calls
 // t.Fatal on non-200 responses.
-func listAgentV2Messages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *gamev2.ListAgentMessagesResponse {
+func listAgentV2Messages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *game.ListAgentMessagesResponse {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s%s%s/agent/messages", sutHostURL, agentV2PathPrefix, sessionName)
@@ -485,7 +484,7 @@ func listAgentV2Messages(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET agent messages status=%d, body=%s", resp.StatusCode, respBody)
 	}
-	messages := new(gamev2.ListAgentMessagesResponse)
+	messages := new(game.ListAgentMessagesResponse)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, messages); err != nil {
 		t.Fatalf("Unmarshal ListAgentMessagesResponse: %v (raw: %s)", err, respBody)
 	}
@@ -497,12 +496,12 @@ func listAgentV2Messages(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 // assert the 404 NOT_FOUND of a never-materialized agent (agent-api.md §2.3:
 // no owner → the read paths answer NOT_FOUND, specs/051-agent-v2-dsh-
 // migration/contracts/agent-api.md §2.2).
-func listAgentV2MessagesWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, *gamev2.ListAgentMessagesResponse) {
+func listAgentV2MessagesWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, *game.ListAgentMessagesResponse) {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s%s%s/agent/messages", sutHostURL, agentV2PathPrefix, sessionName)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
-	messages := new(gamev2.ListAgentMessagesResponse)
+	messages := new(game.ListAgentMessagesResponse)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, messages); err != nil {
 		t.Logf("ListAgentMessagesResponse body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
 	}
@@ -532,16 +531,17 @@ const (
 // and the terminal TEXT deltas must carry per fake-desktop scenario
 // (testdata/agent_v2_saolei_tools.yaml rule set).
 const (
-	// won chain (fake-desktop-won, the 9×9 win board): init sees the already
-	// won board, the operate batch stops pre-dispatch on game_won, and the
-	// terminal summary closes the chain.
+	// won chain (the desktop-e2e-won executor session, the 9×9 win board):
+	// init sees the already won board, the operate batch stops pre-dispatch
+	// on game_won, and the terminal summary closes the chain.
 	agentV2WonInitContains   = "new game started"
 	agentV2WonBoardContains  = "board size 9*9"
 	agentV2WonStatusContains = "game status: won"
 	agentV2WonRejectContains = "stopped at click(0,0) (game_won)"
 	agentV2WonSummaryText    = "本局扫雷已完成：全部雷区排除，游戏获胜。"
-	// progressive chain (fake-desktop-drop before its fault fires): two cell
-	// ops land on the board model and the batch reports playing.
+	// progressive chain (the desktop-e2e-drop executor before its fault
+	// fires): two cell ops land on the board model and the batch reports
+	// playing.
 	agentV2ProgInitContains   = "new game started"
 	agentV2ProgBoardContains  = "board size 16*16"
 	agentV2ProgStatusContains = "game status: playing"
@@ -554,9 +554,12 @@ const (
 	agentV2DisconnectSummary   = "桌面连接中断，操作未能完成。请等待桌面重连后再试。"
 )
 
-// Fixed caller-id sessions the deployed fake-desktop executors bind
-// (deploy_agent_v2.yaml FAKE_DESKTOP_SESSION). The suites create these
-// sessions idempotently and address the executors through them.
+// Fixed caller-id sessions the deployed fake-desktop executor binds: the
+// won session is bound by projects/game/testplan/deploy_agent_v2.yaml and
+// the drop session by projects/game/testplan/deploy_agent_v2_drop.yaml
+// (FAKE_DESKTOP_SESSION — one executor instance per deploy). The suites
+// create these sessions idempotently and address the deployment's single
+// fake-desktop instance through them.
 const (
 	agentV2DesktopWonSessionID = "desktop-e2e-won"
 	agentV2DesktopDropID       = "desktop-e2e-drop"
@@ -590,10 +593,10 @@ func ensureAgentV2Session(t *testing.T, sutHostURL, sutEnvName, sessionID string
 // created resource (agent-api.md §1 CreatePreset; the caller-supplied id
 // rides the query string per the body:"preset" binding). Calls t.Fatal on
 // non-200 responses.
-func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, playerPrompt string) *gamev2.Preset {
+func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, playerPrompt string) *game.Preset {
 	t.Helper()
 
-	preset := &gamev2.Preset{PlayerPrompt: playerPrompt}
+	preset := &game.Preset{PlayerPrompt: playerPrompt}
 	body, err := protojson.Marshal(preset)
 	if err != nil {
 		t.Fatalf("protojson.Marshal Preset: %v", err)
@@ -604,7 +607,7 @@ func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST create preset status=%d, body=%s", resp.StatusCode, respBody)
 	}
-	created := new(gamev2.Preset)
+	created := new(game.Preset)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, created); err != nil {
 		t.Fatalf("Unmarshal Preset: %v (raw: %s)", err, respBody)
 	}
@@ -618,10 +621,10 @@ func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 // derives the update_mask from the body's set fields, so a name here would
 // produce an invalid `name` mask path (the identity rides the URL path).
 // Calls t.Fatal on non-200 responses.
-func updateAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, presetName, model string) *gamev2.Agent {
+func updateAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, presetName, model string) *game.Agent {
 	t.Helper()
 
-	agent := &gamev2.Agent{Preset: presetName}
+	agent := &game.Agent{Preset: presetName}
 	if model != "" {
 		agent.Model = model
 	}
@@ -634,7 +637,7 @@ func updateAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvNam
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH update agent status=%d, body=%s", resp.StatusCode, respBody)
 	}
-	materialized := new(gamev2.Agent)
+	materialized := new(game.Agent)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, materialized); err != nil {
 		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, respBody)
 	}
@@ -801,8 +804,8 @@ func readFlowTeamFrameNoFatal(conn *websocket.Conn, timeout time.Duration) (*gam
 // collectAgentV2GameEvents folds a completed game turn's tool_result frames
 // into the per-tool rendered results keyed by the fake's tool name order:
 // it returns the tool_result payloads in arrival order.
-func collectAgentV2GameEvents(events []*gamev2.ChatEvent) []*gamev2.ToolResultEvent {
-	var results []*gamev2.ToolResultEvent
+func collectAgentV2GameEvents(events []*game.ChatEvent) []*game.ToolResultEvent {
+	var results []*game.ToolResultEvent
 	for _, e := range events {
 		if r := e.GetToolResult(); r != nil {
 			results = append(results, r)
@@ -815,7 +818,7 @@ func collectAgentV2GameEvents(events []*gamev2.ChatEvent) []*gamev2.ToolResultEv
 // events plus the first read error, if any. t.Fatal must only run on the test
 // goroutine, so async drains report through this channel instead.
 type agentV2TurnResult struct {
-	events []*gamev2.ChatEvent
+	events []*game.ChatEvent
 	err    error
 }
 
@@ -849,7 +852,7 @@ func drainAgentV2TurnAsync(stream *agentV2EventStream) <-chan agentV2TurnResult 
 // fake-desktop-bound) session exists, create its preset, and materialize the
 // agent on it. Returns the context, the session resource name, and the
 // materialized Agent.
-func agentV2GamePrep(t *testing.T, sutHostURL, sutEnvName, sessionID, presetID, playerPrompt string) (context.Context, string, *gamev2.Agent) {
+func agentV2GamePrep(t *testing.T, sutHostURL, sutEnvName, sessionID, presetID, playerPrompt string) (context.Context, string, *game.Agent) {
 	t.Helper()
 
 	ctx := traceContext(t)

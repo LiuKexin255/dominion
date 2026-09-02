@@ -3,6 +3,7 @@ import * as grpc from "@grpc/grpc-js";
 import {
   buildAgentHandlers,
   buildDesktopBridgeHandlers,
+  buildPresetHandlers,
   parseAgentParent,
   parsePresetResource,
   parseSessionResource,
@@ -20,11 +21,12 @@ import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js"
  * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2): malformed
  * resource names and empty text are request-level INVALID_ARGUMENT failures
  * (the stream never opens), unmaterialized Sends are FAILED_PRECONDITION,
- * preset CRUD delegates to the store with AIP error mapping, and UpdateAgent
- * validates fail-fast (preset → model catalog) before materializing. The
- * collaborators are `vi.fn()` doubles injected through the buildAgentHandlers
- * seam — no server binding, no module interception (style/javascript.md Mock
- * convention).
+ * UpdateAgent validates fail-fast (preset → model catalog) before
+ * materializing, and the PresetService surface (preset CRUD + ListModels,
+ * directive-2026-09-01.md §3.7) delegates to the store/catalog with AIP
+ * error mapping. The collaborators are `vi.fn()` doubles injected through
+ * the buildAgentHandlers/buildPresetHandlers seams — no server binding, no
+ * module interception (style/javascript.md Mock convention).
  */
 
 type SendCall = Parameters<AgentServiceHandlers["Send"]>[0];
@@ -377,10 +379,10 @@ describe("AgentService.ListAgentMessages handler", () => {
   });
 });
 
-describe("AgentService preset CRUD handlers", () => {
+describe("PresetService preset CRUD handlers", () => {
   it("creates under the parent with server-maintained timestamps and maps ALREADY_EXISTS", async () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildPresetHandlers(deps);
 
     const created = invokeUnary(handlers.CreatePreset as never, {
       parent: "templates/saolei",
@@ -417,7 +419,7 @@ describe("AgentService preset CRUD handlers", () => {
 
   it("rejects a malformed parent or preset_id with INVALID_ARGUMENT", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildPresetHandlers(deps);
 
     for (const request of [
       { parent: "templates", presetId: "p1", preset: {} },
@@ -441,7 +443,7 @@ describe("AgentService preset CRUD handlers", () => {
       ],
       nextPageToken: VALID_PRESET,
     });
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildPresetHandlers(deps);
     const callback = invokeUnary(handlers.ListPresets as never, {
       parent: "templates/saolei",
       pageSize: 10,
@@ -463,7 +465,7 @@ describe("AgentService preset CRUD handlers", () => {
     deps.presets.delete.mockRejectedValue(
       new PresetStoreError("NOT_FOUND", `preset ${VALID_PRESET} not found`),
     );
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildPresetHandlers(deps);
 
     const got = invokeUnary(handlers.GetPreset as never, { name: VALID_PRESET });
     await vi.waitFor(() => expect(got).toHaveBeenCalledTimes(1));
@@ -476,7 +478,7 @@ describe("AgentService preset CRUD handlers", () => {
 
   it("updates player_prompt, preserves create_time, refreshes update_time, and validates the mask", async () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildPresetHandlers(deps);
 
     const updated = invokeUnary(handlers.UpdatePreset as never, {
       preset: { name: VALID_PRESET, playerPrompt: "new prompt" },
@@ -505,10 +507,10 @@ describe("AgentService preset CRUD handlers", () => {
   });
 });
 
-describe("AgentService.ListModels handler", () => {
+describe("PresetService.ListModels handler", () => {
   it("serves the shared catalog and maps failures to INTERNAL", async () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildPresetHandlers(deps);
 
     const callback = invokeUnary(handlers.ListModels as never, {});
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));

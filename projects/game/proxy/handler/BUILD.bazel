@@ -14,7 +14,6 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//projects/game",
-        "//projects/game:agent_v2",
         "//projects/game/pkg/bind",
         "//projects/game/pkg/gameconst",
         "//projects/game/proxy/domain",
@@ -36,7 +35,6 @@ go_unittest(
     embed = [":handler"],
     deps = [
         "//projects/game",
-        "//projects/game:agent_v2",
         "//projects/game/pkg/bind",
         "//projects/game/proxy/domain",
         "//projects/game/proxy/runtime/agentclient",

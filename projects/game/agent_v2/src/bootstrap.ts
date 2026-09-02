@@ -1,49 +1,61 @@
 /**
  * Bootstrap entry point for the game agent_v2 service.
  *
- * Order matters (demo pattern, specs/047-dsh-chat-demo/contracts/
- * dsh-agent-service.md §1; specs/049-agent-v2-dsh-init/spec.md FR-002):
- * OTel + gRPC instrumentation initializes BEFORE @grpc/grpc-js loads; the
- * dsh composition boots fail-loud (any failure exits non-zero); the preset
- * store's Mongo client connects fail-loud (preset CRUD is part of the
- * served surface, specs/051-agent-v2-dsh-migration/spec.md FR-005); only
- * then does the gRPC server module load and start serving. SIGTERM/SIGINT
- * triggers the graceful chain in dependency order (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §6):
- * stop the server → dispose every agent session (in-flight turns aborted)
- * → dispose the composition's root fiber (both inside sessions.shutdown)
- * → close the Mongo client → flush OTel → exit 0.
+ * Two-phase entry per
+ * specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md §2:
+ * the static import graph carries only OTel/bootstrap wiring; @grpc/grpc-js
+ * and mongodb load through the dynamic imports below, after init() has
+ * registered the OTel ESM loader hook. The entry sequence (init →
+ * installReporter → dynamic import → register → run → uninstall/shutdown →
+ * exit) is fixed by
+ * specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §8; the
+ * migration sample is experimental/js/grpc_hello_world/src/bootstrap.ts.
+ *
+ * Component lifecycle (specs/051-agent-v2-dsh-migration/contracts/
+ * saolei-plugins.md §6 invariant): the preset Mongo storage starts first and
+ * stops last; the dsh composition (agent sessions + root fiber) starts
+ * second and stops between the gRPC server and Mongo — the server drains
+ * first, then every session disposes (in-flight turns aborted) followed by
+ * the composition's root fiber, then the Mongo client closes. Stages
+ * (Foundation 100 < Client 200 < Server 300) encode that order: start runs
+ * stage-ascending, stop runs strictly reversed. The 38080/healthz endpoint
+ * is built into Bootstrap and serves only after every component has started
+ * (specs/052-deploy-health-probe/contracts/deploy-probe.md).
  */
 
-import type { Server } from "@grpc/grpc-js";
-import type { MongoClient } from "mongodb";
-import { init, shutdown } from "@dominion/common-js-otel";
+import {
+  Bootstrap,
+  createGrpcServerComponent,
+  Stage,
+  type Component,
+} from "@dominion/common-js-bootstrap";
 import { createGrpcInstrumentation } from "@dominion/common-js-grpc-otel";
-import { error, info, installReporter, createOTelReporter } from "@dominion/common-js-logs";
-import { bootDsh } from "./dsh.js";
+import {
+  createOTelReporter,
+  error,
+  info,
+  installReporter,
+} from "@dominion/common-js-logs";
+import { init, shutdown } from "@dominion/common-js-otel";
+// Type-only: erased at compile time, so none of these put @grpc/grpc-js or
+// mongodb into the static import graph ahead of the OTel loader hook.
+import type { MongoClient } from "mongodb";
+import type { AgentSessions } from "./session.js";
+import type { PresetStore } from "./presets.js";
+import type { DshContext } from "./dsh.js";
 
-/**
- * Graceful server stop: tryShutdown waits for in-flight RPCs to finish; the
- * bounded-time fallback to forceShutdown keeps a stuck call from blocking the
- * agent/fiber teardown behind it. `Server` is a type-only import so this
- * module still loads no @grpc/grpc-js runtime code before OTel init.
- */
-function gracefulStop(server: Server, timeoutMs = 10_000): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      server.forceShutdown();
-      resolve();
-    }, timeoutMs);
-    server.tryShutdown(() => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-}
+// Binds on all interfaces, matching the deployed container port declared in
+// projects/game/agent_v2/service.yaml.
+const GRPC_ADDRESS = "0.0.0.0:50051";
 
 async function main(): Promise<void> {
+  // 1. OTel init registers the ESM loader hook and the gRPC instrumentation,
+  // so @grpc/grpc-js is patched when the dynamic imports below load it.
   await init({ instrumentations: [createGrpcInstrumentation()] });
+
+  // 2. Structured logs export through the OTel reporter.
   const uninstallReporter = installReporter(createOTelReporter("game/agent-v2"));
-  info("otel initialized", { service: "game-agent-v2" });
+  info("service starting", { service: "game-agent-v2" });
 
   // Safety net for the long-lived streaming surface: a write racing a peer
   // disconnect could escape an async listener as an unhandled rejection,
@@ -55,64 +67,123 @@ async function main(): Promise<void> {
     error("unhandled promise rejection", { reason: String(reason) });
   });
 
-  // Fail-loud composition boot: resolves only on a fully settled plugin tree.
-  const ctx = await bootDsh();
+  let exitCode = 0;
+  try {
+    // 3. Dynamic imports keep @grpc/grpc-js and mongodb out of the static
+    // import graph (one uniform wiring point, the grpc_hello_world pattern).
+    const { bootDsh } = await import("./dsh.js");
+    const { MongoClient } = await import("mongodb");
+    const {
+      MongoPresetStore,
+      PRESET_COLLECTION_NAME,
+      PRESET_DATABASE,
+      mongoPresetCollection,
+      resolveMongoUri,
+    } = await import("./presets.js");
+    const { buildServer } = await import("./server.js");
 
-  // Dynamic imports defer @grpc/grpc-js loading until after OTel init (the
-  // proto-loader stack inside server.js and the preset-store module both sit
-  // behind it); mongodb is not an instrumented package but travels with the
-  // same deferred block for one uniform wiring point.
-  const { startServer } = await import("./server.js");
-  const { MongoClient } = await import("mongodb");
-  const {
-    MongoPresetStore,
-    PRESET_COLLECTION_NAME,
-    PRESET_DATABASE,
-    mongoPresetCollection,
-    resolveMongoUri,
-  } = await import("./presets.js");
+    // Cells filled by component starts: the composition stop reads the
+    // sessions created by the gRPC server start, and the gRPC server start
+    // consumes the composition and preset store from the earlier stages
+    // (start order is stage-ascending, stop strictly reversed).
+    let mongo: MongoClient | undefined;
+    let presetStore: PresetStore | undefined;
+    let ctx: DshContext | undefined;
+    let sessions: AgentSessions | undefined;
+    let bound: Component | undefined;
 
-  // Fail-loud preset storage (specs/051-agent-v2-dsh-migration/spec.md
-  // FR-005): the service serves preset CRUD from
-  // its own Mongo database, so a connect/index failure must never half-start
-  // the surface — the process exits non-zero through the main catch.
-  const mongoUri = await resolveMongoUri();
-  const mongo: MongoClient = new MongoClient(mongoUri);
-  await mongo.connect();
-  const presetStore = new MongoPresetStore(
-    mongoPresetCollection(mongo.db(PRESET_DATABASE).collection(PRESET_COLLECTION_NAME)),
-  );
-  await presetStore.ensureIndexes();
-  info("preset store connected", { database: PRESET_DATABASE, collection: PRESET_COLLECTION_NAME });
+    const presetStoreComponent: Component = {
+      name: "preset-store",
+      stage: Stage.Foundation,
+      start: async () => {
+        // Fail-loud preset storage
+        // (specs/051-agent-v2-dsh-migration/spec.md FR-005): the service
+        // serves preset CRUD from its own Mongo database, so a
+        // connect/index failure must never half-start the surface — the
+        // failure rejects the start and Bootstrap rolls back and exits
+        // non-zero through the main catch.
+        const client = new MongoClient(await resolveMongoUri());
+        mongo = client;
+        await client.connect();
+        const store = new MongoPresetStore(
+          mongoPresetCollection(client.db(PRESET_DATABASE).collection(PRESET_COLLECTION_NAME)),
+        );
+        await store.ensureIndexes();
+        presetStore = store;
+        info("preset store connected", { database: PRESET_DATABASE, collection: PRESET_COLLECTION_NAME });
+      },
+      stop: async () => {
+        // Closed after the fiber: nothing may outlive the Mongo handle it
+        // serves from.
+        await mongo?.close();
+        mongo = undefined;
+        presetStore = undefined;
+      },
+    };
 
-  const started = await startServer({ ctx, presetStore });
-  info("service started", { service: "game-agent-v2", port: 50051 });
+    const dshComponent: Component = {
+      name: "dsh",
+      stage: Stage.Client,
+      start: async () => {
+        // Fail-loud composition boot: resolves only on a fully settled
+        // plugin tree.
+        ctx = await bootDsh();
+      },
+      stop: async () => {
+        // Disposes every session (in-flight turns aborted, queued messages
+        // dropped) and then the composition's root fiber. `sessions` is
+        // created by the gRPC server start, which stops before this.
+        await sessions?.shutdown();
+        sessions = undefined;
+        ctx = undefined;
+      },
+    };
 
-  let exiting = false;
-  const shutdownHandler = async (signal: string): Promise<void> => {
-    if (exiting) return;
-    exiting = true;
-    info("shutting down", { signal, service: "game-agent-v2" });
-    try {
-      await gracefulStop(started.server);
-      // Disposes every session (in-flight turns aborted, queued messages
-      // dropped) and then the composition's root fiber.
-      await started.sessions.shutdown();
-      // The client is closed after the fiber: nothing may outlive the
-      // Mongo handle it serves from.
-      await mongo.close();
-    } catch (err) {
-      error("shutdown cleanup failed", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-    uninstallReporter();
-    await shutdown();
-    process.exit(0);
-  };
+    const grpcComponent: Component = {
+      name: "grpc",
+      stage: Stage.Server,
+      start: async (signal) => {
+        // The server object needs the booted composition and the connected
+        // preset store — both earlier-stage component starts.
+        if (ctx === undefined || presetStore === undefined) {
+          throw new Error("bootstrap: dsh composition / preset store not started");
+        }
+        const { server, credentials, sessions: live } = buildServer({
+          ctx,
+          presetStore,
+        });
+        sessions = live;
+        // Binding and the graceful stop (tryShutdown racing the shutdown
+        // budget → forceShutdown) are the adapter's semantics
+        // (specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §6).
+        bound = createGrpcServerComponent("grpc", { server, address: GRPC_ADDRESS, credentials });
+        await bound.start(signal);
+      },
+      stop: async (signal) => {
+        await bound?.stop(signal);
+        bound = undefined;
+      },
+    };
 
-  process.on("SIGTERM", () => void shutdownHandler("SIGTERM"));
-  process.on("SIGINT", () => void shutdownHandler("SIGINT"));
+    const bootstrap = new Bootstrap();
+    bootstrap.register(presetStoreComponent);
+    bootstrap.register(dshComponent);
+    bootstrap.register(grpcComponent);
+
+    // 4. Runs until SIGTERM/SIGINT; resolves only on a clean signal exit,
+    // with the health endpoint stopped first (FIFO lifecycle).
+    await bootstrap.run();
+  } catch (err) {
+    console.error("Fatal error:", err);
+    exitCode = 1;
+  }
+
+  // 5. OTel lifecycle stays entry-level glue, not a component
+  // (specs/053-js-bootstrap-migration/research.md D4): shutdown runs after
+  // every component has stopped so shutdown-period logs still export.
+  uninstallReporter();
+  await shutdown();
+  process.exit(exitCode);
 }
 
 main().catch((err) => {

@@ -17,7 +17,6 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
-	gamev2 "dominion/projects/game/v2"
 
 	"github.com/gorilla/websocket"
 )
@@ -116,7 +115,7 @@ func TestDesktopFlowOperationDeliveryAndReceipt(t *testing.T) {
 
 	serveWonInitReceipt(t, flow, sessionID, wsReadTimeout)
 
-	var events []*gamev2.ChatEvent
+	var events []*game.ChatEvent
 	select {
 	case r := <-ch:
 		if r.err != nil {
@@ -133,7 +132,7 @@ func TestDesktopFlowOperationDeliveryAndReceipt(t *testing.T) {
 		t.Fatal("the game turn produced no tool_result frames")
 	}
 	init := results[0]
-	if init.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_SUCCEEDED {
+	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
 		t.Fatalf("saolei_init tool_result status = %v, want SUCCEEDED (the receipt screenshot is recognizable)", init.GetStatus())
 	}
 	if !containsAll(init.GetResult(), agentV2WonInitContains, agentV2WonStatusContains, agentV2WonBoardContains) {
@@ -177,7 +176,7 @@ func TestDesktopFlowDisconnectFailsInFlight(t *testing.T) {
 		t.Fatalf("close flow connection: %v", err)
 	}
 
-	var events []*gamev2.ChatEvent
+	var events []*game.ChatEvent
 	select {
 	case r := <-ch:
 		if r.err != nil {
@@ -188,7 +187,7 @@ func TestDesktopFlowDisconnectFailsInFlight(t *testing.T) {
 		t.Fatal("turn did not settle after the flow connection vanished")
 	}
 	assertAgentV2TurnWellFormed(t, sessionName, events)
-	if events[len(events)-1].GetTurnEnd().GetStatus() != gamev2.TurnStatus_TURN_STATUS_COMPLETED {
+	if events[len(events)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
 		t.Fatalf("vanish turn ended %v, want COMPLETED (回合存活)", events[len(events)-1].GetTurnEnd().GetStatus())
 	}
 
@@ -197,7 +196,7 @@ func TestDesktopFlowDisconnectFailsInFlight(t *testing.T) {
 		t.Fatal("the vanish turn produced no tool_result frames")
 	}
 	init := results[0]
-	if init.GetStatus() != gamev2.ToolStatus_TOOL_STATUS_FAILED {
+	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_FAILED {
 		t.Fatalf("saolei_init tool_result status = %v, want FAILED (in-flight dispatch settled on disconnect)", init.GetStatus())
 	}
 	if !strings.Contains(init.GetResult(), agentV2DisconnectedContain) {

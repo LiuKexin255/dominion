@@ -3,11 +3,11 @@ package handler
 import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
+	game "dominion/projects/game"
 	"dominion/projects/game/pkg/bind"
 	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
-	gamev2 "dominion/projects/game/v2"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -17,11 +17,11 @@ import (
 // newBridgeClient wraps the generated client constructor as a package-level
 // variable so tests can drive the forwarding branch against a fake stream
 // (the newAgentClient precedent).
-var newBridgeClient = func(conn *grpc.ClientConn) gamev2.DesktopBridgeServiceClient {
-	return gamev2.NewDesktopBridgeServiceClient(conn)
+var newBridgeClient = func(conn *grpc.ClientConn) game.DesktopBridgeServiceClient {
+	return game.NewDesktopBridgeServiceClient(conn)
 }
 
-// DesktopBridgeHandler implements gamev2.DesktopBridgeServiceServer: it
+// DesktopBridgeHandler implements game.DesktopBridgeServiceServer: it
 // relays the desktop flow-control stream from the gateway's
 // /api/v2 WebSocket endpoint to the agent_v2 instance owning the session
 // (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §4).
@@ -35,7 +35,7 @@ var newBridgeClient = func(conn *grpc.ClientConn) gamev2.DesktopBridgeServiceCli
 // directions; the pre-read first frame is replayed to the upstream so the
 // agent_v2 bridge sees the probe that bound the connection.
 type DesktopBridgeHandler struct {
-	gamev2.UnimplementedDesktopBridgeServiceServer
+	game.UnimplementedDesktopBridgeServiceServer
 
 	ownerStore  domain.OwnerStore
 	ownerPicker domain.OwnerPicker
@@ -64,7 +64,7 @@ func NewDesktopBridgeHandler(
 // malformed first-frame identity → INVALID_ARGUMENT, no instance to
 // allocate (Mongo/store failures) → INTERNAL via mapDomainError, no live
 // instance or unreachable owner instance → UNAVAILABLE.
-func (h *DesktopBridgeHandler) Connect(stream gamev2.DesktopBridgeService_ConnectServer) error {
+func (h *DesktopBridgeHandler) Connect(stream game.DesktopBridgeService_ConnectServer) error {
 	ctx := stream.Context()
 
 	frame, err := stream.Recv()
