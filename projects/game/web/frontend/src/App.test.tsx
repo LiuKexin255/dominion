@@ -1,5 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App.js'
 
@@ -422,10 +429,21 @@ describe('App 删除编排（FR-007：仅元数据删除）', () => {
     await screen.findByTestId('chat-input')
   }
 
+  // deleteViaMenu 走条目 `···` 菜单的删除确认步（FR-003：删除入口在每
+  // 条目右侧菜单、不依赖选中态，specs/051-agent-v2-dsh-migration/
+  // contracts/web-frontend.md §1）。
+  function deleteViaMenu(name: string): void {
+    const entry = screen.getByText(name).closest('li')
+    expect(entry).toBeTruthy()
+    fireEvent.click(within(entry as HTMLElement).getByTestId('session-actions'))
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '确认删除' }))
+  }
+
   it('DELETE /api/v1 成功后条目移除并提示返回列表（无 agent 释放调用）', async () => {
     await selectS1()
 
-    fireEvent.click(screen.getByTestId('delete-session'))
+    deleteViaMenu('s1')
     await waitFor(() => {
       expect(screen.queryByTestId('session-item')).toBeNull()
     })
@@ -454,7 +472,7 @@ describe('App 删除编排（FR-007：仅元数据删除）', () => {
     await selectS1()
 
     // await 窗口内导航到 s2。
-    fireEvent.click(screen.getByTestId('delete-session'))
+    deleteViaMenu('s1')
     fireEvent.click(screen.getByText('s2'))
     await waitFor(() => {
       expect(screen.getByTestId('chat-input').getAttribute('aria-label')).toContain('s2')
@@ -475,7 +493,7 @@ describe('App 删除编排（FR-007：仅元数据删除）', () => {
     vi.stubGlobal('fetch', fetchMock)
     await selectS1()
 
-    fireEvent.click(screen.getByTestId('delete-session'))
+    deleteViaMenu('s1')
     await waitFor(() => {
       expect(screen.getByTestId('session-error')).toBeTruthy()
     })

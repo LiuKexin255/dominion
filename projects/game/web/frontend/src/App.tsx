@@ -290,9 +290,9 @@ export function App() {
           onCreate={() => {
             void onCreate()
           }}
-          onDelete={(name) => {
-            void onDelete(name)
-          }}
+          // 直传 async 编排（返回的 Promise 供 SessionList 驱动"该条目
+          // 删除进行中"的条目级禁用）；编排体本身不变。
+          onDelete={onDelete}
         />
         <div className="view-switch" data-testid="view-switch">
           <Button

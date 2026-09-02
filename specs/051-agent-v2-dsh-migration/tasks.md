@@ -166,8 +166,8 @@
 - **官方文档**：`node_modules/.pnpm/@deepseek-ai+dsh-client-ui-primitives@0.1.1-rc.2_*/node_modules/@deepseek-ai/dsh-client-ui-primitives/`（图标/按钮组件面）
 - **技术文章/技术参考文档**：`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §1（四项契约与 testid 约定）、`specs/049-agent-v2-dsh-init/contracts/web-frontend.md` §3.2（SessionList 基线）；`projects/game/web/frontend/src/theme.css` 与 `src/components/SessionList.tsx`（改造对象——阅读现状实现）
 
-- [ ] T032 [P] [US4] 侧栏样式：`projects/game/web/frontend/src/theme.css`——`.sidebar-title` `white-space: nowrap`（FR-001）；session 名称容器右侧渐隐遮罩（无滚动条不换行）+ 悬停横向滚动（滚动条隐藏）+ 移出复位类（FR-004 的 CSS 面）
-- [ ] T033 [US4] SessionList 交互：`projects/game/web/frontend/src/components/SessionList.tsx`——新建/刷新改图标按钮（加号/圆环箭头 + aria-label/tooltip，保留 `data-testid`，loading 禁用延续，FR-002）；每条目右侧 `···` 按钮弹出菜单含"删除"（不依赖选中态，FR-003）；长名悬停滚动 + `scrollLeft` 复位（FR-004 的行为面）；`SessionList.test.tsx` 扩展四项断言；`bazel test //projects/game/web/frontend` 通过
+- [X] T032 [P] [US4] 侧栏样式：`projects/game/web/frontend/src/theme.css`——`.sidebar-title` `white-space: nowrap`（FR-001）；session 名称容器右侧渐隐遮罩（无滚动条不换行）+ 悬停横向滚动（滚动条隐藏）+ 移出复位类（FR-004 的 CSS 面）
+- [X] T033 [US4] SessionList 交互：`projects/game/web/frontend/src/components/SessionList.tsx`——新建/刷新改图标按钮（加号/圆环箭头 + aria-label/tooltip，保留 `data-testid`，loading 禁用延续，FR-002）；每条目右侧 `···` 按钮弹出菜单含"删除"（不依赖选中态，FR-003）；长名悬停滚动 + `scrollLeft` 复位（FR-004 的行为面）；`SessionList.test.tsx` 扩展四项断言；`bazel test //projects/game/web/frontend` 通过
 
 **Checkpoint**: 全部 user story 完成；进入 v1 处置与全量验收。
 

@@ -67,10 +67,13 @@ body {
   justify-content: space-between;
 }
 
+/* 标题单行（FR-001，specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
+ * §1）：侧栏任意常规宽度下 "Sessions (n)" 计数不换行。 */
 .sidebar-title {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .sidebar-actions {
@@ -86,6 +89,19 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* 条目行：名称主按钮占满剩余宽度，右侧 `···` 操作按钮固定宽
+ * （web-frontend.md §1 `···` 菜单，组件见 src/components/SessionList.tsx）。 */
+.session-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.session-entry .session-item {
+  flex: 1;
+  min-width: 0;
 }
 
 .session-item {
@@ -116,6 +132,30 @@ body {
 .session-item .session-time {
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* session 名称长名虚化与悬停滚动（FR-004，web-frontend.md §1）：默认右侧
+ * 渐隐遮罩、无横向滚动条、不换行；悬停态由 SessionList 以 mouseenter/
+ * mouseleave 切换 scrollable 类（jsdom 可断言类切换，:hover 伪类不可达），
+ * 移出条目时 scrollLeft 复位同由 SessionList 执行。 */
+.session-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 80%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 80%, transparent 100%);
+}
+
+.session-name.scrollable {
+  overflow-x: auto;
+  -webkit-mask-image: none;
+  mask-image: none;
+  scrollbar-width: none;
+}
+
+.session-name::-webkit-scrollbar {
+  display: none;
 }
 
 .sidebar-note {
