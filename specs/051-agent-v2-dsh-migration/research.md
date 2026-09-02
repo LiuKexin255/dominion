@@ -171,7 +171,7 @@
 ## D12: desktop 退化边界（FR-016/FR-017/FR-018，A4）
 
 **Decision**：
-- **移除**：SessionList 的管理操作（新建/删除/刷新按钮，保留**只读列表 + 选择**）、ProfileManagement.svelte、ProfileSelectDialog.svelte、ChatView/ChatMessage/ScreenshotModal 的对话展示、chatstream SSE 子系统（`internal/chatstream/` + `chat-stream.ts`/`stream-merge.ts`/`chat-fifo.ts`——仅为对话 UI 供给而存在）、Go 侧 team/profile/message 绑定（GetTeam/UpdateTeam/RefreshTeam/ListMessages/List/Create/Get/Delete/UpdateTeamProfile，`projects/game/desktop/app.go:1039-1471`）、session CRUD 写操作绑定（Create/Delete；保留 ListSessions/GetSession 供只读选择）。
+- **移除**：SessionList 的管理操作（新建/删除/刷新按钮，保留**只读列表 + 选择**）、ProfileManagement.svelte、ProfileSelectDialog.svelte、ChatView/ChatMessage/ScreenshotModal 的对话展示、chatstream SSE 子系统（`internal/chatstream/` + `chat-stream.ts`/`stream-merge.ts`/`chat-fifo.ts`——仅为对话 UI 供给而存在）、Go 侧 team/profile/message 绑定（GetTeam/UpdateTeam/RefreshTeam/ListMessages/List/Create/Get/Delete/UpdateTeamProfile，`projects/game/desktop/app.go:1039-1471`）、session CRUD 写操作绑定（Create/Delete）。GetSession 绑定一并移除——其前端零消费，只读选择的数据源仅 ListSessions（保留面见 [web-frontend.md](web-frontend.md) §5）。
 - **保留并延续**：WSClient + Connect 探测 + readLoop + `handleInboundOperation`/`executeAgentOperation` + hold/确认抽屉（`OperationConfirmDrawer.svelte`）+ debug 模式、ListWindows/SetSelectedWindow/截图、config（GatewayURL/Env/Template）+ 日志查看。
 - **改向**：连接 URL `/api/v1/.../connect` → `/api/v2/.../connect`（D8）；session 选择为只读（A4：列表或输入，指定连接目标，无任何管理操作）。
 

@@ -84,7 +84,7 @@ export interface DesktopBridgeService /* ctx.desktopBridge */ {
 ## 5. desktop 侧（退化后保留面，FR-016/017/018）
 
 - **改向**：`internal/api/websocket.go` URL 模板 `/api/v1/.../connect` → `/api/v2/.../connect`（GatewayURL 配置与探测/接管/readLoop 语义零改动）。
-- **保留**：连接探测（StatusSignal 首帧 + 10s 超时）、新连接接管、`readLoop` 操作路由（FlowParts → `handleInboundOperation`，信号帧转发，recv 错误合成 wait 帧退出）、`executeAgentOperation`（窗口解析 → 执行器分发 → 500ms 后截图回传 5MiB 上限）、确认抽屉（hold/release、15min 自动放行、`game:debug:result-held/released` 事件）、debug 模式、窗口枚举/绑定/截图、config/logs。
+- **保留**：连接探测（StatusSignal 首帧 + 10s 超时）、新连接接管、`readLoop` 操作路由（FlowParts 操作 kinds → `handleInboundOperation`；信号 kinds（wait/warn/status/queue）记日志观测、不终止 reader；recv 错误记日志退出）、`executeAgentOperation`（窗口解析 → 执行器分发 → 500ms 后截图回传 5MiB 上限）、确认抽屉（hold/release、15min 自动放行、`game:debug:result-held/released` 事件）、debug 模式、窗口枚举/绑定/截图、config/logs。信号帧的转发载体（chatstream SSE）与消费 UI 属移除面（见下条与 [web-frontend.md](web-frontend.md) §5），故信号帧仅落日志。
 - **移除**（对话/管理面）：见 [web-frontend.md](web-frontend.md) §5 清单（chatstream 子系统、Profile/Chat/Session 管理 UI 与绑定）。
 - **session 选择只读**（A4）：`ListSessions`（`GET /api/v1/templates/{t}/sessions`）拉取列表供选择连接目标；无新建/删除/切换管理操作。
 

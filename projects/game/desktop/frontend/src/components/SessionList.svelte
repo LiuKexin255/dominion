@@ -1,24 +1,21 @@
 <script lang="ts">
   import type { Session } from '../api'
 
+  // Read-only session picker (contracts/desktop-bridge.md §5): the desktop
+  // selects a flow-connection target from the ListSessions data source; it
+  // performs no session create/delete/refresh management.
   let {
     sessions,
     selectedSessionId,
     loading,
     error,
-    onSelect,
-    onRefresh,
-    onCreate,
-    onDelete
+    onSelect
   }: {
     sessions: Session[]
     selectedSessionId: string | null
     loading: boolean
     error: string | null
     onSelect: (session: Session) => void
-    onRefresh: () => void
-    onCreate: () => void
-    onDelete: (sessionId: string) => void
   } = $props()
 
   function displayName(session: Session): string {
@@ -33,17 +30,6 @@
 <div class="session-list">
   <div class="session-header">
     <span class="session-title">Sessions ({sessions.length})</span>
-    <div class="session-actions">
-      <button class="btn btn-small" onclick={onRefresh} disabled={loading}>Refresh</button>
-      <button class="btn btn-small btn-primary" onclick={onCreate} disabled={loading}>Create</button>
-      <button
-        class="btn btn-small"
-        onclick={() => selectedSessionId && onDelete(selectedSessionId)}
-        disabled={loading || !selectedSessionId}
-      >
-        Delete
-      </button>
-    </div>
   </div>
 
   <div class="session-container">
@@ -52,7 +38,7 @@
     {:else if error}
       <div class="session-error">{error}</div>
     {:else if sessions.length === 0}
-      <div class="session-empty">No sessions found. Click Create to add one.</div>
+      <div class="session-empty">No sessions found. Create one from the web console.</div>
     {:else}
       {#each sessions as session (session.sessionId)}
         <div
@@ -94,11 +80,6 @@
 
   .session-title {
     font-weight: 600;
-  }
-
-  .session-actions {
-    display: flex;
-    gap: 4px;
   }
 
   .session-container {

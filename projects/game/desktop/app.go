@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
 	"dominion/projects/game/desktop/internal/capture"
-	"dominion/projects/game/desktop/internal/chatstream"
 	"dominion/projects/game/desktop/internal/operation"
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
 
@@ -169,8 +167,9 @@ type hold struct {
 // session-top debug drawer can render a human-readable request line without
 // proto knowledge (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md
 // §2). The Go backend builds it from the FlowPart the desktop received and
-// executed. It is purely an operation-channel artifact (decoupled from the
-// conversation render path — research.md D10/D11).
+// executed. It is purely an operation-channel artifact: its id is the
+// bridge-minted operation id, decoupled from any conversation tool_call.id
+// (research.md D10/D11).
 type heldOperation struct {
 	kind    string
 	summary string
@@ -207,8 +206,6 @@ type App struct {
 	sessionID    string        // active session set on WebSocket connect
 	recvMu       sync.Mutex    // guards recvDone's capture-and-reassign in Connect (reconnect handover) and CloseAgent
 	recvDone     chan struct{} // closed when the continuous reader (readLoop) exits; nil when no reader runs
-	chatStreams  *chatstream.Registry
-	chatServer   *chatstream.Server
 	debugEnabled atomic.Bool
 	holds        map[string]*hold // active debug-mode holds keyed by tool_id
 	holdsMu      sync.Mutex       // guards holds
@@ -227,13 +224,6 @@ func NewApp(logger *applog.Logger) *App {
 // SetContext is called by the Wails OnStartup hook to store the app context.
 func (a *App) SetContext(ctx context.Context) {
 	a.ctx = ctx
-}
-
-// SetChatStream injects the chatstream Registry and Server into the App.
-// Called once from main.go OnStartup before the frontend binds.
-func (a *App) SetChatStream(reg *chatstream.Registry, srv *chatstream.Server) {
-	a.chatStreams = reg
-	a.chatServer = srv
 }
 
 // SetDebugMode enables or disables desktop debug mode (Wails-bound;
@@ -318,50 +308,6 @@ func (a *App) SetConfig(cfg api.Config) error {
 	return nil
 }
 
-// CreateSession creates a game session under the given template via the
-// gateway. template is the Template path segment (e.g. "saolei"; the
-// Template resource name "templates/{template}", gameconst.SaoleiTemplate).
-// The session ID is generated server-side.
-func (a *App) CreateSession(template string) (*SessionView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("create session: template is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Creating session", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"correlation_id": corrID,
-	})
-	session, err := a.client.CreateSession(ctx, template)
-	if err != nil {
-		a.logger.Error("backend", "Create session failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	sessionID := ""
-	if name, err := game.ParseSessionName(session.GetName()); err == nil {
-		sessionID = name.SessionID
-	}
-	a.logger.Info("backend", "Session created", map[string]any{
-		"session_id":     sessionID,
-		"template":       template,
-		"trace_id":       traceID,
-		"correlation_id": corrID,
-	})
-	return sessionViewFromProto(session), nil
-}
-
 // ListSessions lists sessions under a template with pagination support.
 func (a *App) ListSessions(template string, pageSize int, pageToken string) (*ListSessionsView, error) {
 	if template == "" {
@@ -401,92 +347,9 @@ func (a *App) ListSessions(template string, pageSize int, pageToken string) (*Li
 	return listSessionsViewFromProto(resp), nil
 }
 
-// GetSession retrieves a session by ID under a template.
-func (a *App) GetSession(template, sessionID string) (*SessionView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("get session: template is required")
-	}
-	if sessionID == "" {
-		return nil, fmt.Errorf("get session: session_id is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("get session: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Getting session", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	session, err := a.client.GetSession(ctx, template, sessionID)
-	if err != nil {
-		a.logger.Error("backend", "Get session failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"session_id":     sessionID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Session retrieved", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	return sessionViewFromProto(session), nil
-}
-
-// DeleteSession deletes a session by ID under a template.
-func (a *App) DeleteSession(template, sessionID string) error {
-	if template == "" {
-		return fmt.Errorf("delete session: template is required")
-	}
-	if sessionID == "" {
-		return fmt.Errorf("delete session: session_id is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("delete session: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Deleting session", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	if err := a.client.DeleteSession(ctx, template, sessionID); err != nil {
-		a.logger.Error("backend", "Delete session failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"session_id":     sessionID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-	a.logger.Info("backend", "Session deleted", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	return nil
-}
-
-// maxScreenshotBytes is the maximum allowed screenshot payload for a single
-// user turn (5 MiB). Per FR-005a the desktop rejects oversized screenshots
-// before any WebSocket send.
+// maxScreenshotBytes is the maximum allowed screenshot payload attached to a
+// single operation result (5 MiB). Per FR-005a the desktop rejects oversized
+// screenshots before any WebSocket send.
 const maxScreenshotBytes = 5 * 1024 * 1024
 
 // postActionScreenshotDelay is the pause between completing a mouse action
@@ -495,117 +358,8 @@ const maxScreenshotBytes = 5 * 1024 * 1024
 // is taken.
 const postActionScreenshotDelay = 500 * time.Millisecond
 
-// readLoopEndFrameID is the FrameId stamped on the terminal wait the
-// continuous reader synthesizes when its RecvFrame errors (connection closed
-// or torn down by CloseAgent/CloseNow). It is a local marker only — the
-// frontend keys dedup on messageParts frame_id, never on flowParts — so the
-// fixed value keeps the synthesized wait traceable in the chatstream log
-// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
-// Exit, FR-010).
-const readLoopEndFrameID = "read-loop-end"
-
-// SendUserTurn sends a single user turn bundling text and an optional
-// screenshot to the team agent via WebSocket, then returns immediately. The
-// inbound response frames are drained by the continuous reader (readLoop,
-// started at Connect) and appended to the session's chat stream.
-//
-// agent selects which team agent receives the turn (the agent accepting
-// user input — FR-032; saolei: player; D12 replaces the former
-// agentProfileName field). template is the Template path segment; the connect
-// must have been established with the same template/session pair.
-// screenshotData is the raw PNG bytes of the selected window; pass an empty
-// slice when no screenshot is attached. screenshotWidth and screenshotHeight
-// describe the pixel dimensions of screenshotData and are ignored when it is
-// empty.
-//
-// The user turn is carried as a messageParts frame whose MessageParts holds a
-// text MessagePart and, when a screenshot is attached, an image MessagePart.
-// Inbound FlowParts operations (mouse/keyboard) are auto-executed by the
-// continuous reader and a matching FlowResultPart is sent back over the same
-// WebSocket connection on the control channel (FR-013; spec 025
-// FR-023/FR-024). The result part carries a post-action screenshot of the
-// selected window (FR-007).
-func (a *App) SendUserTurn(template, sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agent string) error {
-	if template == "" {
-		return fmt.Errorf("send user turn: template is required")
-	}
-	if a.ws == nil {
-		return fmt.Errorf("send user turn: not connected")
-	}
-	if strings.TrimSpace(text) == "" {
-		return fmt.Errorf("send user turn: text is required and cannot be empty")
-	}
-	if agent == "" {
-		return fmt.Errorf("send user turn: agent is required")
-	}
-	if len(screenshotData) > maxScreenshotBytes {
-		return fmt.Errorf("send user turn: screenshot size %d exceeds 5 MiB limit (%d)", len(screenshotData), maxScreenshotBytes)
-	}
-
-	frameID, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("send user turn: %w", err)
-	}
-
-	parts := []*game.MessagePart{
-		{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: text}}},
-	}
-	if len(screenshotData) > 0 {
-		// The screenshot was captured from the selected window; resolve it to
-		// attach ScaleFactor/WindowTitle (spec 025 FR-003/FR-006). No selection
-		// is a graceful failure (FR-005).
-		win, err := a.resolveSelectedWindow()
-		if err != nil {
-			return fmt.Errorf("send user turn: %w", err)
-		}
-		parts = append(parts, &game.MessagePart{
-			Kind: &game.MessagePart_Image{Image: &game.ImagePart{
-				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:        screenshotData,
-				WidthPx:     int32(screenshotWidth),
-				HeightPx:    int32(screenshotHeight),
-				ScaleFactor: win.ScaleFactor,
-				WindowTitle: win.Title,
-			}},
-		})
-	}
-
-	frame := &game.UserFrame{
-		SessionId:  sessionID,
-		TemplateId: template,
-		Agent:      agent,
-		Payload: &game.UserFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: parts},
-		},
-	}
-
-	a.logger.Info("backend", "SendUserTurn: sending user turn frame", map[string]any{
-		"template":         template,
-		"session_id":       sessionID,
-		"frame_id":         frameID,
-		"agent":            agent,
-		"text_len":         len(text),
-		"screenshot_bytes": len(screenshotData),
-	})
-
-	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
-		a.logger.Error("backend", "SendUserTurn: send failed", map[string]any{
-			"session_id": sessionID,
-			"error":      err.Error(),
-		})
-		return fmt.Errorf("send user turn: %w", err)
-	}
-
-	// FR-012: SendUserTurn MUST NOT start a reader — the continuous reader
-	// started at Connect is the sole reader on the connection, including for
-	// this turn's response frames (specs/041-realtime-init-push/contracts/
-	// realtime-channel-contract.md §3.4; FR-011 single-reader invariant).
-	return nil
-}
-
 // readLoop is the continuous connection reader: it drains inbound WebSocket
-// frames for the whole connection lifetime and appends each display/control
-// frame to the session's chat stream as needed. It runs in its own goroutine
+// frames for the whole connection lifetime. It runs in its own goroutine
 // started at Connect, after the one-shot status probe RecvFrame returns
 // (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
 // Start; specs/041-realtime-init-push/research.md D5 — the probe is a
@@ -616,25 +370,21 @@ func (a *App) SendUserTurn(template, sessionID string, text string, screenshotDa
 //
 // A frame carries exactly one payload: a batch of display blocks (MessageParts)
 // OR a batch of control blocks (FlowParts) (content-model split, spec 023 C3).
-//   - messageParts: appended to the chat stream for the frontend to render
-//     (text/thinking/image/tool_call/tool_result).
 //   - flowParts: operation kinds (mouse/keyboard) are executed via
-//     handleInboundOperation and are NOT appended to the chat stream (FR-005:
-//     operations never render as conversation entries); signal kinds
-//     (wait/warn/status) ARE appended so the frontend can react (wait clears
-//     the typing indicator, warn shows a warning, status is a no-op for chat).
+//     handleInboundOperation; signal kinds (wait/warn/status/queue) drive no
+//     desktop-side state — the v2 desktop has no conversation UI, so the
+//     signal-forwarding consumers (typing indicator, warning bubbles) no
+//     longer exist and signals are logged for observability only
+//     (contracts/desktop-bridge.md §5).
+//   - messageParts frames are not produced on the /api/v2 flow channel
+//     (contracts/desktop-bridge.md §1) and are ignored.
 //
-// The wait FlowPart is forwarded but does NOT terminate the reader (FR-008,
+// The wait FlowPart does NOT terminate the reader (FR-008,
 // specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.3):
-// the TurnLoop emits wait only at turn boundaries
-// (specs/030-queued-chat-input/contracts/turn-loop-contract.md), so the reader
-// keeps reading through queued turns and any background frames (e.g. the init
-// instruction) until the connection dies.
+// the reader keeps reading across turn boundaries until the connection dies.
 //
-// On RecvFrame error a synthesized wait FlowPart is appended so the frontend
-// can settle the turn before the failure surfaces (data-model.md §9;
-// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
-// Exit), then the reader returns and closes recvDone.
+// On RecvFrame error the reader logs the failure and returns, closing
+// recvDone so CloseAgent / the reconnect handover unblock.
 func (a *App) readLoop(sessionID string) {
 	defer close(a.recvDone)
 
@@ -647,16 +397,6 @@ func (a *App) readLoop(sessionID string) {
 				"frame_count": frameCount,
 				"error":       err.Error(),
 			})
-			a.chatStreams.Append(sessionID, &game.TeamFrame{
-				SessionId:  sessionID,
-				TemplateId: a.template,
-				FrameId:    readLoopEndFrameID,
-				Payload: &game.TeamFrame_FlowParts{
-					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-						{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}},
-					}},
-				},
-			})
 			return
 		}
 		frameCount++
@@ -666,15 +406,10 @@ func (a *App) readLoop(sessionID string) {
 			"frame_count": frameCount,
 		})
 
-		switch payload := resp.GetPayload().(type) {
-		case *game.TeamFrame_MessageParts:
-			// Display channel: render in the conversation.
-			a.chatStreams.Append(sessionID, resp)
-		case *game.TeamFrame_FlowParts:
+		if payload, ok := resp.GetPayload().(*game.TeamFrame_FlowParts); ok {
 			for _, fp := range payload.FlowParts.GetParts() {
-				// Operation kinds drive desktop execution and are never
-				// conversation entries (FR-005). Signal kinds are forwarded to
-				// the chat stream so the frontend can react (wait/warn/status).
+				// Operation kinds drive desktop execution; signal kinds are
+				// logged (no forwarding consumer on the v2 desktop).
 				if fp.GetMouseMove() != nil || fp.GetMouseClick() != nil ||
 					fp.GetKeyboardPress() != nil || fp.GetMouseMoveAndClick() != nil {
 					if err := a.handleInboundOperation(sessionID, fp); err != nil {
@@ -687,22 +422,30 @@ func (a *App) readLoop(sessionID string) {
 					}
 					continue
 				}
-				// Signal FlowPart (wait/warn/status): append so the frontend
-				// reacts; not rendered as a chat bubble by ChatView. A wait
-				// does NOT terminate the reader (FR-008,
-				// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.3).
-				a.chatStreams.Append(sessionID, &game.TeamFrame{
-					SessionId:  resp.GetSessionId(),
-					TemplateId: a.template,
-					FrameId:    resp.GetFrameId(),
-					CreateTime: resp.GetCreateTime(),
-					Role:       resp.GetRole(),
-					Payload: &game.TeamFrame_FlowParts{
-						FlowParts: &game.FlowParts{Parts: []*game.FlowPart{fp}},
-					},
+				a.logger.Debug("backend", "readLoop: signal frame", map[string]any{
+					"session_id": sessionID,
+					"kind":       signalKind(fp),
 				})
 			}
 		}
+	}
+}
+
+// signalKind names the FlowPart variant for observability logs. Operation
+// kinds never reach it (readLoop routes them to handleInboundOperation
+// first), so the fallback covers only unknown/empty payloads.
+func signalKind(fp *game.FlowPart) string {
+	switch {
+	case fp.GetWait() != nil:
+		return "wait"
+	case fp.GetWarn() != nil:
+		return "warn"
+	case fp.GetStatus() != nil:
+		return "status"
+	case fp.GetQueue() != nil:
+		return "queue"
+	default:
+		return "unknown"
 	}
 }
 
@@ -714,11 +457,8 @@ func (a *App) readLoop(sessionID string) {
 // when the bound window can be captured.
 //
 // Per spec 025 FR-023/FR-024 the operation outcome travels as a FlowResultPart
-// (a FlowPart kind) on the control channel, NOT as a display tool_result
-// MessagePart. Per spec 023 FR-010/C8 the result is NOT mirrored into the chat
-// stream: the screenshot the conversation shows comes from the agent's later
-// tool_result MessagePart (the LLM tool result), not a desktop-side mirror. The
-// desktop returns the result only over the WS (resolving the agent's dispatch).
+// (a FlowPart kind) on the control channel — the WS is the only path the
+// result takes, resolving the agent's dispatch.
 //
 // Debug mode reorders the result-return boundary
 // (specs/022-desktop-debug-mode spec.md FR-006/FR-007/FR-011, data-model.md
@@ -760,7 +500,7 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 				"tool_id":    toolID,
 				"error":      err.Error(),
 			})
-			return fmt.Errorf("send user turn: operation result: %w", err)
+			return fmt.Errorf("send operation result: %w", err)
 		}
 		return nil
 	}
@@ -771,7 +511,7 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 			"tool_id":    toolID,
 			"error":      err.Error(),
 		})
-		return fmt.Errorf("send user turn: operation result: %w", err)
+		return fmt.Errorf("send operation result: %w", err)
 	}
 	return nil
 }
@@ -1033,443 +773,6 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	return result
 }
 
-// GetTeam retrieves the Team of a session (Wails-bound; desktop-contract §4).
-// The Team must already exist — it is materialized only via UpdateTeam (spec
-// 031 design decision: no lazy creation).
-func (a *App) GetTeam(template, sessionID string) (*TeamView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("get team: template is required")
-	}
-	if sessionID == "" {
-		return nil, fmt.Errorf("get team: session_id is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("get team: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Getting team", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	team, err := a.client.GetTeam(ctx, template, sessionID)
-	if err != nil {
-		a.logger.Error("backend", "Get team failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"session_id":     sessionID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Team retrieved", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	return teamViewFromProto(team), nil
-}
-
-// UpdateTeam materializes or updates the per-session singleton Team
-// (Wails-bound; desktop-contract §4 — AIP-134 create-or-update + AIP-156, the
-// ONLY Team creation point). profile is the TeamProfile full resource name
-// (templates/{template}/profiles/{profile}, AIP-122); the server validates
-// its template segment against the session. allowMissing=true materializes
-// the Team when it does not exist yet (idempotent for repeated calls, FR-002
-// of specs/040-team-singleton-conformance/spec.md).
-func (a *App) UpdateTeam(template, sessionID, profile string, updateMaskPaths []string, allowMissing bool) (*TeamView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("update team: template is required")
-	}
-	if sessionID == "" {
-		return nil, fmt.Errorf("update team: session_id is required")
-	}
-	if profile == "" {
-		return nil, fmt.Errorf("update team: profile is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("update team: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Updating team", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"profile":        profile,
-		"update_mask":    updateMaskPaths,
-		"allow_missing":  allowMissing,
-		"correlation_id": corrID,
-	})
-	team, err := a.client.UpdateTeam(ctx, template, sessionID, profile, updateMaskPaths, allowMissing)
-	if err != nil {
-		a.logger.Error("backend", "Update team failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"session_id":     sessionID,
-			"profile":        profile,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Team updated", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	return teamViewFromProto(team), nil
-}
-
-// RefreshTeam clears the session's short-term memory (Wails-bound;
-// desktop-contract §4 — FR-018). The long-term strategy memory is unaffected.
-func (a *App) RefreshTeam(template, sessionID string) error {
-	if template == "" {
-		return fmt.Errorf("refresh team: template is required")
-	}
-	if sessionID == "" {
-		return fmt.Errorf("refresh team: session_id is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("refresh team: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Refreshing team", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	if err := a.client.RefreshTeam(ctx, template, sessionID); err != nil {
-		a.logger.Error("backend", "Refresh team failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"session_id":     sessionID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-	a.logger.Info("backend", "Team refreshed", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	return nil
-}
-
-// ListMessages lists messages of one team agent's partition (Wails-bound;
-// desktop-contract §4 — FR-005). agent is the team agent name
-// (e.g. player/planner, from Team.agents).
-func (a *App) ListMessages(template, sessionID, agent string) ([]*MessageViewModel, error) {
-	if template == "" {
-		return nil, fmt.Errorf("list messages: template is required")
-	}
-	if sessionID == "" {
-		return nil, fmt.Errorf("list messages: session_id is required")
-	}
-	if agent == "" {
-		return nil, fmt.Errorf("list messages: agent is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("list messages: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Listing messages", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"agent":          agent,
-		"correlation_id": corrID,
-	})
-	resp, err := a.client.ListMessages(ctx, template, sessionID, agent)
-	if err != nil {
-		a.logger.Error("backend", "List messages failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"session_id":     sessionID,
-			"agent":          agent,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Messages listed", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"session_id":     sessionID,
-		"agent":          agent,
-		"correlation_id": corrID,
-		"count":          len(resp.GetMessages()),
-	})
-	return ToMessageViewModels(resp.GetMessages()), nil
-}
-
-// ListTeamProfiles lists TeamProfiles under a template (Wails-bound;
-// desktop-contract §4 — AIP-132).
-func (a *App) ListTeamProfiles(template string, pageSize int, pageToken string) (*ListTeamProfilesView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("list team profiles: template is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("list team profiles: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Listing team profiles", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"page_size":      pageSize,
-		"correlation_id": corrID,
-	})
-	resp, err := a.client.ListTeamProfiles(ctx, template, int32(pageSize), pageToken)
-	if err != nil {
-		a.logger.Error("backend", "List team profiles failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Team profiles listed", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"count":          len(resp.GetTeamProfiles()),
-		"correlation_id": corrID,
-	})
-	return listTeamProfilesViewFromProto(resp), nil
-}
-
-// CreateTeamProfile creates a new TeamProfile under a template (Wails-bound;
-// desktop-contract §4 — AIP-133). The template-specific spec is the typed
-// oneof variant: for saolei the req's PlayerModel/PlannerModel project to
-// SaoleiProfile, plus the optional PlayerPrompt/PlannerPrompt base prompts
-// (empty = template default base, FR-034 — tools/MCP are not configurable,
-// FR-027/FR-028).
-func (a *App) CreateTeamProfile(template string, req CreateTeamProfileView) (*TeamProfileView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("create team profile: template is required")
-	}
-	if req.ProfileName == "" {
-		return nil, fmt.Errorf("create team profile: profile name is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("create team profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Creating team profile", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   req.ProfileName,
-		"correlation_id": corrID,
-	})
-	protoProfile := &game.TeamProfile{
-		// Resource name construction is codegen-owned (spec
-		// 031-team-template-mode contracts/api-contract.md §5).
-		Spec: &game.TeamProfile_Saolei{
-			Saolei: &game.SaoleiProfile{
-				PlayerModel:   req.PlayerModel,
-				PlannerModel:  req.PlannerModel,
-				PlayerPrompt:  req.PlayerPrompt,
-				PlannerPrompt: req.PlannerPrompt,
-			},
-		},
-	}
-	profile, err := a.client.CreateTeamProfile(ctx, template, req.ProfileName, protoProfile)
-	if err != nil {
-		a.logger.Error("backend", "Create team profile failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"profile_name":   req.ProfileName,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Team profile created", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   req.ProfileName,
-		"correlation_id": corrID,
-	})
-	return teamProfileViewFromProto(profile), nil
-}
-
-// GetTeamProfile retrieves a TeamProfile by name under a template
-// (Wails-bound; desktop-contract §4 — AIP-131).
-func (a *App) GetTeamProfile(template, profileName string) (*TeamProfileView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("get team profile: template is required")
-	}
-	if profileName == "" {
-		return nil, fmt.Errorf("get team profile: profile name is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("get team profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Getting team profile", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   profileName,
-		"correlation_id": corrID,
-	})
-	profile, err := a.client.GetTeamProfile(ctx, template, profileName)
-	if err != nil {
-		a.logger.Error("backend", "Get team profile failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"profile_name":   profileName,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Team profile retrieved", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   profileName,
-		"correlation_id": corrID,
-	})
-	return teamProfileViewFromProto(profile), nil
-}
-
-// DeleteTeamProfile deletes a TeamProfile by name under a template
-// (Wails-bound; desktop-contract §4 — AIP-135).
-func (a *App) DeleteTeamProfile(template, profileName string) error {
-	if template == "" {
-		return fmt.Errorf("delete team profile: template is required")
-	}
-	if profileName == "" {
-		return fmt.Errorf("delete team profile: profile name is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("delete team profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Deleting team profile", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   profileName,
-		"correlation_id": corrID,
-	})
-	err = a.client.DeleteTeamProfile(ctx, template, profileName)
-	if err != nil {
-		a.logger.Error("backend", "Delete team profile failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"profile_name":   profileName,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-	a.logger.Info("backend", "Team profile deleted", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   profileName,
-		"correlation_id": corrID,
-	})
-	return nil
-}
-
-// UpdateTeamProfile partially updates a TeamProfile via PATCH (Wails-bound;
-// desktop-contract §4 — AIP-134). Per grpc-gateway binding the profile
-// fields are sent as the PATCH body and updateMaskPaths are sent as repeated
-// update_mask.paths query parameters; the mask supports oneof-member paths
-// (e.g. saolei.player_model / saolei.planner_model / saolei.player_prompt /
-// saolei.planner_prompt).
-func (a *App) UpdateTeamProfile(template, profileName string, profile TeamProfileView, updateMaskPaths []string) (*TeamProfileView, error) {
-	if template == "" {
-		return nil, fmt.Errorf("update team profile: template is required")
-	}
-	if profileName == "" {
-		return nil, fmt.Errorf("update team profile: profile name is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("update team profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Updating team profile", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   profileName,
-		"update_mask":    updateMaskPaths,
-		"correlation_id": corrID,
-	})
-	protoProfile := &game.TeamProfile{
-		// Resource name construction is codegen-owned (spec
-		// 031-team-template-mode contracts/api-contract.md §5).
-		Name: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
-		Spec: &game.TeamProfile_Saolei{
-			Saolei: &game.SaoleiProfile{
-				PlayerModel:   profile.PlayerModel,
-				PlannerModel:  profile.PlannerModel,
-				PlayerPrompt:  profile.PlayerPrompt,
-				PlannerPrompt: profile.PlannerPrompt,
-			},
-		},
-	}
-	updated, err := a.client.UpdateTeamProfile(ctx, template, profileName, protoProfile, updateMaskPaths)
-	if err != nil {
-		a.logger.Error("backend", "Update team profile failed", map[string]any{
-			"trace_id":       traceID,
-			"template":       template,
-			"profile_name":   profileName,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Team profile updated", map[string]any{
-		"trace_id":       traceID,
-		"template":       template,
-		"profile_name":   profileName,
-		"correlation_id": corrID,
-	})
-	return teamProfileViewFromProto(updated), nil
-}
-
 // ListWindows enumerates visible top-level windows (Windows only).
 // Returns a not-supported error on other platforms.
 func (a *App) ListWindows() ([]capture.WindowRef, error) {
@@ -1489,7 +792,7 @@ func (a *App) ListWindows() ([]capture.WindowRef, error) {
 }
 
 // SetSelectedWindow stores the handle of the window currently selected in the
-// desktop session chat dropdown (Wails-bound; exposed to the frontend). The
+// session view's window dropdown (Wails-bound; exposed to the frontend). The
 // selected window is the single source of truth for every screenshot and
 // operation — there is no separate "bind" step (spec 025 FR-001/FR-006,
 // contracts/window-select-contract.md §2). The WindowRef is resolved from
@@ -1505,7 +808,7 @@ func (a *App) SetSelectedWindow(hwnd uintptr) error {
 }
 
 // GetSelectedWindow returns the handle of the window currently selected in the
-// desktop session chat dropdown (Wails-bound; exposed to the frontend). The
+// session view's window dropdown (Wails-bound; exposed to the frontend). The
 // frontend restores its dropdown selection from this value on session entry,
 // so re-entering a session keeps the previously selected window instead of
 // forcing the user to re-select it (spec 025 FR-001/FR-006,
@@ -1603,18 +906,17 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 }
 
 // Connect establishes a WebSocket connection for the session under a template
-// (Wails-bound; desktop-contract §4 — FR-004). template is the Template path
-// segment. The Team must already exist (materialized via UpdateTeam); the
-// connect path is /api/v1/templates/{template}/sessions/{sessionID}/connect
-// (contracts/api-contract.md §2.2).
+// (Wails-bound). template is the Template path segment. The connect path is
+// /api/v2/templates/{template}/sessions/{sessionID}/connect — the v2 flow
+// channel (contracts/desktop-bridge.md §1, §5).
 // After the WebSocket handshake, it performs an application-level probe
 // (round-trip ping) to verify the full path: desktop → gateway → proxy.
 // The probe has a 10-second timeout. On failure, the WebSocket is closed
 // and no state is stored.
 //
 // On success the probe response's StatusSignalStatus enum name is returned
-// (e.g. "STATUS_SIGNAL_STATUS_IDLE") so the frontend can reconcile its typing
-// indicator against the agent's real working state
+// (e.g. "STATUS_SIGNAL_STATUS_IDLE") so the frontend can surface the agent's
+// reported working state
 // (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
 func (a *App) Connect(template, sessionID string) (string, error) {
 	if template == "" {
@@ -1723,9 +1025,9 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	}
 
 	// Capture the probe response's StatusSignalStatus enum name so the frontend
-	// can reconcile its typing indicator. The status rides as a FlowPart kind
-	// (spec 023 C3); when the response carries no status FlowPart, the
-	// zero-value enum resolves to STATUS_SIGNAL_STATUS_UNSPECIFIED.
+	// can surface the agent's reported working state. The status rides as a
+	// FlowPart kind (spec 023 C3); when the response carries no status
+	// FlowPart, the zero-value enum resolves to STATUS_SIGNAL_STATUS_UNSPECIFIED.
 	status := "STATUS_SIGNAL_STATUS_UNSPECIFIED"
 	if fp, ok := resp.GetPayload().(*game.TeamFrame_FlowParts); ok {
 		for _, p := range fp.FlowParts.GetParts() {
@@ -1774,26 +1076,6 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	return status, nil
 }
 
-// SendAgentFrame sends a UserFrame over the WebSocket and returns the
-// response TeamFrame.
-func (a *App) SendAgentFrame(frame *game.UserFrame) (*game.TeamFrame, error) {
-	if a.ws == nil {
-		return nil, fmt.Errorf("send frame: not connected")
-	}
-	a.logger.Info("backend", "Sending frame", map[string]any{"session_id": frame.GetSessionId()})
-	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
-		a.logger.Error("backend", "Send frame failed", map[string]any{"error": err.Error()})
-		return nil, err
-	}
-	resp, err := a.ws.RecvFrame(a.ctx)
-	if err != nil {
-		a.logger.Error("backend", "Receive frame failed", map[string]any{"error": err.Error()})
-		return nil, err
-	}
-	a.logger.Info("backend", "Frame received", map[string]any{"session_id": resp.GetSessionId()})
-	return resp, nil
-}
-
 // CloseAgent closes the WebSocket connection.
 func (a *App) CloseAgent() error {
 	if a.ws == nil {
@@ -1820,78 +1102,9 @@ func (a *App) CloseAgent() error {
 	return nil
 }
 
-// OpenChatStream opens (or reopens) the chat push channel for sessionID,
-// seeding it with the given team agent's message partition (messages are
-// partitioned per team agent — FR-005; the frontend opens one stream per
-// active agent tab, Batch 3).
-//
-// On first access the stream is created and seeded synchronously from
-// ListMessages (F11: history fits in memory for a single-session desktop
-// client; a very large history may block entry — acceptable for the
-// current scope). On re-entry the existing stream is reused without
-// re-seeding, but RotateToken is called so any stale EventSource from a
-// previous entry is invalidated (R11) and the handoff always carries a
-// fresh, non-empty token.
-//
-// The frontend MUST call CloseChatStream(sessionID) AFTER closeAgent()
-// returns on session leave (F5 ordering): closeAgent closes the WS and
-// waits on recvDone, so readLoop has already exited by the time the log
-// is dropped.
-func (a *App) OpenChatStream(sessionID, agent string) (*ChatStreamHandoff, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("open chat stream: sessionID is empty")
-	}
-	if agent == "" {
-		return nil, fmt.Errorf("open chat stream: agent is empty")
-	}
-	a.ensureClient()
-	if a.chatStreams == nil || a.chatServer == nil {
-		return nil, fmt.Errorf("open chat stream: server not started")
-	}
-
-	stream, err := a.chatStreams.Open(sessionID, func() ([]*game.Message, error) {
-		resp, err := a.client.ListMessages(a.ctx, a.template, sessionID, agent)
-		if err != nil {
-			return nil, err
-		}
-		return resp.GetMessages(), nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open chat stream: %w", err)
-	}
-
-	// C3/C10: RotateToken on EVERY call — first creation and re-entry —
-	// so old subscribers are disconnected and the handoff always carries a
-	// fresh token.
-	token := stream.RotateToken()
-
-	return &ChatStreamHandoff{
-		Endpoint:    a.chatServer.Endpoint(),
-		Token:       token,
-		LastEventID: stream.LastID(),
-	}, nil
-}
-
-// CloseChatStream closes the chat push channel for sessionID. It is
-// idempotent (F5: safe to call on an already-closed or never-opened
-// stream). The caller MUST close the agent first so readLoop has exited
-// before the event log is dropped (F5 ordering).
-func (a *App) CloseChatStream(sessionID string) error {
-	if a.chatStreams == nil {
-		return nil
-	}
-	a.chatStreams.Close(sessionID)
-	return nil
-}
-
 // Logs returns all current log entries.
 func (a *App) Logs() []applog.Entry {
 	return a.logger.Entries()
-}
-
-// currentSessionID returns the session ID associated with the current WS connection.
-func (a *App) currentSessionID() string {
-	return a.sessionID
 }
 
 // randomHex generates n random bytes and returns them as a hex string (2*n chars).
