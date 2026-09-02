@@ -596,6 +596,20 @@ func ensureAgentV2Session(t *testing.T, sutHostURL, sutEnvName, sessionID string
 func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, playerPrompt string) *game.Preset {
 	t.Helper()
 
+	preset, status, respBody := createAgentV2PresetWithStatus(t, ctx, sutHostURL, sutEnvName, presetID, playerPrompt)
+	if status != http.StatusOK {
+		t.Fatalf("POST create preset status=%d, body=%s", status, respBody)
+	}
+	return preset
+}
+
+// createAgentV2PresetWithStatus is createAgentV2Preset without the 200
+// fatality: it returns the HTTP status with the parsed resource (nil unless
+// the body decodes as a Preset) — used to assert the 409 ALREADY_EXISTS of a
+// duplicate caller-id (agent-api.md §2.5).
+func createAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, playerPrompt string) (*game.Preset, int, []byte) {
+	t.Helper()
+
 	preset := &game.Preset{PlayerPrompt: playerPrompt}
 	body, err := protojson.Marshal(preset)
 	if err != nil {
@@ -604,14 +618,111 @@ func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 	reqURL := fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s",
 		sutHostURL, agentV2PathPrefix, saoleiTemplateID, url.QueryEscape(presetID))
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST create preset status=%d, body=%s", resp.StatusCode, respBody)
-	}
 	created := new(game.Preset)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, created); err != nil {
+		t.Logf("Preset body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
+		return nil, resp.StatusCode, respBody
+	}
+	return created, resp.StatusCode, respBody
+}
+
+// listAgentV2Presets issues GET /api/v2/templates/saolei/presets and returns
+// the parsed ListPresetsResponse (agent-api.md §1 ListPresets). Calls t.Fatal
+// on non-200 responses.
+func listAgentV2Presets(t *testing.T, ctx context.Context, sutHostURL, sutEnvName string) *game.ListPresetsResponse {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets", sutHostURL, agentV2PathPrefix, saoleiTemplateID)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET list presets status=%d, body=%s", resp.StatusCode, respBody)
+	}
+	list := new(game.ListPresetsResponse)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, list); err != nil {
+		t.Fatalf("Unmarshal ListPresetsResponse: %v (raw: %s)", err, respBody)
+	}
+	return list
+}
+
+// getAgentV2PresetWithStatus issues GET /api/v2/{name} for a preset and
+// returns the HTTP status with the parsed resource — the existence probe
+// (200 while stored, 404 after delete; agent-api.md §2.5).
+func getAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name string) (*game.Preset, int) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, agentV2PathPrefix, name)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	preset := new(game.Preset)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, preset); err != nil {
+		t.Logf("Preset body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
+		return nil, resp.StatusCode
+	}
+	return preset, resp.StatusCode
+}
+
+// getAgentV2Preset is getAgentV2PresetWithStatus with the 200 fatality.
+func getAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name string) *game.Preset {
+	t.Helper()
+
+	preset, status := getAgentV2PresetWithStatus(t, ctx, sutHostURL, sutEnvName, name)
+	if status != http.StatusOK {
+		t.Fatalf("GET preset %s status=%d, want 200", name, status)
+	}
+	return preset
+}
+
+// updateAgentV2Preset patches a preset's player_prompt through the gateway
+// (PATCH /api/v2/{name}?update_mask=player_prompt, agent-api.md §1
+// UpdatePreset). The explicit mask rides the query string (the body:"preset"
+// binding leaves no room for it in the body) and the identity rides the URL
+// path — the body carries only the mutable field. Calls t.Fatal on non-200
+// responses.
+func updateAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name, playerPrompt string) *game.Preset {
+	t.Helper()
+
+	body, err := protojson.Marshal(&game.Preset{PlayerPrompt: playerPrompt})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Preset: %v", err)
+	}
+	reqURL := fmt.Sprintf("%s%s%s?update_mask=player_prompt", sutHostURL, agentV2PathPrefix, name)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPatch, reqURL, sutEnvName, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH update preset status=%d, body=%s", resp.StatusCode, respBody)
+	}
+	updated := new(game.Preset)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, updated); err != nil {
 		t.Fatalf("Unmarshal Preset: %v (raw: %s)", err, respBody)
 	}
-	return created
+	return updated
+}
+
+// deleteAgentV2PresetWithStatus issues DELETE /api/v2/{name} for a preset and
+// returns the HTTP status with the raw body (agent-api.md §2.5: Delete does
+// not touch already-materialized agents).
+func deleteAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, agentV2PathPrefix, name)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodDelete, reqURL, sutEnvName, nil)
+	return resp.StatusCode, respBody
+}
+
+// listAgentV2Models fetches the deployment-level model catalog
+// (GET /api/v2/models, agent-api.md §2.6) and returns the parsed response.
+// Calls t.Fatal on non-200 responses.
+func listAgentV2Models(t *testing.T, ctx context.Context, sutHostURL, sutEnvName string) *game.ListModelsResponse {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%smodels", sutHostURL, agentV2PathPrefix)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET list models status=%d, body=%s", resp.StatusCode, respBody)
+	}
+	list := new(game.ListModelsResponse)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, list); err != nil {
+		t.Fatalf("Unmarshal ListModelsResponse: %v (raw: %s)", err, respBody)
+	}
+	return list
 }
 
 // updateAgentV2Agent materializes (or refreshes) the session's agent
@@ -624,6 +735,20 @@ func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 func updateAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, presetName, model string) *game.Agent {
 	t.Helper()
 
+	agent, status, respBody := updateAgentV2AgentWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName, presetName, model)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH update agent status=%d, body=%s", status, respBody)
+	}
+	return agent
+}
+
+// updateAgentV2AgentWithStatus is updateAgentV2Agent without the 200
+// fatality: it returns the HTTP status with the parsed resource (nil unless
+// the body decodes as an Agent) — used to assert the fail-fast rejections
+// (unknown model → 400 INVALID_ARGUMENT, US2 场景 7).
+func updateAgentV2AgentWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, presetName, model string) (*game.Agent, int, []byte) {
+	t.Helper()
+
 	agent := &game.Agent{Preset: presetName}
 	if model != "" {
 		agent.Model = model
@@ -634,14 +759,12 @@ func updateAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvNam
 	}
 	reqURL := fmt.Sprintf("%s%s%s/agent?allow_missing=true", sutHostURL, agentV2PathPrefix, sessionName)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPatch, reqURL, sutEnvName, body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("PATCH update agent status=%d, body=%s", resp.StatusCode, respBody)
-	}
 	materialized := new(game.Agent)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, materialized); err != nil {
-		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, respBody)
+		t.Logf("Agent body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
+		return nil, resp.StatusCode, respBody
 	}
-	return materialized
+	return materialized, resp.StatusCode, respBody
 }
 
 // getAgentV2AgentWithStatus issues GET /api/v2/.../agent and returns the
@@ -653,6 +776,24 @@ func getAgentV2AgentWithStatus(t *testing.T, ctx context.Context, sutHostURL, su
 	reqURL := fmt.Sprintf("%s%s%s/agent", sutHostURL, agentV2PathPrefix, sessionName)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
 	return resp.StatusCode, respBody
+}
+
+// getAgentV2Agent fetches the session's materialized agent and returns the
+// parsed Agent resource. Calls t.Fatal on non-200 responses (404 means not
+// materialized — use getAgentV2AgentWithStatus to observe that branch).
+func getAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *game.Agent {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s/agent", sutHostURL, agentV2PathPrefix, sessionName)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET agent status=%d, body=%s", resp.StatusCode, respBody)
+	}
+	agent := new(game.Agent)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, agent); err != nil {
+		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, respBody)
+	}
+	return agent
 }
 
 // connectAgentV2Flow dials the gateway's /api/v2 flow WebSocket for one

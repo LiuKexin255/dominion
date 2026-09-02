@@ -282,6 +282,41 @@ go_largetest(
     ],
 )
 
+# agent_v2_preset_test is the agent_v2 US2 configuration suite
+# (specs/051-agent-v2-dsh-migration — quickstart §2 agent-v2-preset): preset
+# CRUD round trip through the gateway with the Mongo-backed read-back
+# agreement, materialized-config GetAgent consistency (model picked from the
+# ListModels catalog), Update refresh clearing the in-memory history, the
+# two-layer unmaterialized-Send rejection (404 no-owner / 400
+# FAILED_PRECONDITION owner-without-agent) and the empty-prompt persona
+# fallback. It shares the agent_v2 helpers (the preset CRUD + model catalog
+# helpers it introduces live there, style/large_test.md §反模式3).
+#
+# size = small: every case uses the fast plain template (no slow-template
+# window), five materializations and a handful of direct CRUD calls — the
+# estimated wall time stays within small's 60s budget
+# (style/large_test.md §测试用例: size per actual need).
+go_largetest(
+    name = "agent_v2_preset_test",
+    size = "small",
+    srcs = [
+        "agent_v2_helpers_test.go",
+        "agent_v2_preset_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
 # agent_v2_game_test is the agent_v2 US1 game-loop suite (specs/051-agent-v2-
 # dsh-migration — quickstart §2 agent-v2-game): the fake-llm game chain over
 # the /api/v2 Send stream against the deployed fake-desktop executor — the

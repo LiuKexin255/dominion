@@ -128,11 +128,180 @@ body {
   color: var(--dsw-alias-state-error-primary);
 }
 
+/* 侧栏底部视图切换（sessions | presets，web-frontend.md §2）。 */
+.view-switch {
+  margin-top: auto;
+  display: flex;
+  gap: 4px;
+}
+
+/* ── preset 管理视图（web-frontend.md §2） ──────────────────────────── */
+
+.presets-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 24px;
+}
+
+.presets-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.presets-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.presets-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.presets-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.presets-error {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-state-error-primary);
+  white-space: pre-wrap;
+}
+
+.presets-note {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.presets-empty {
+  padding: 24px;
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.presets-empty-actions {
+  display: flex;
+}
+
+.preset-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+}
+
+.preset-item-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preset-item-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-item-time {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.preset-item-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preset-delete-confirm {
+  font-size: 12px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.preset-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+}
+
+.preset-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.preset-prompt-input {
+  width: 100%;
+  min-height: 160px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+.preset-form-actions {
+  display: flex;
+  gap: 4px;
+}
+
 .main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 视图面板容器：会话面板常驻挂载，非当前视图以 display:none 隐藏——卸载会
+ * 重跑 ChatPanel 的回填 effect 并覆盖在途回合（web-frontend.md §4 不变量）；
+ * presets 视图（PresetsView）无持久状态，按当前视图条件挂载。 */
+.view-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.view-pane.hidden {
+  display: none;
 }
 
 .empty-hint {
@@ -148,6 +317,90 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* ── agent 物化面板与引导态（web-frontend.md §3） ────────────────────── */
+
+.agent-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 24px 0;
+}
+
+.agent-status {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.agent-guide {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 24px 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--dsw-alias-state-warn-primary);
+  border-radius: 8px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.agent-settings-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 24px 0;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+}
+
+.agent-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.agent-refresh-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.agent-panel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.agent-panel-field select {
+  padding: 6px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: inherit;
+  font: inherit;
+}
+
+.agent-panel-error {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.agent-panel-actions {
+  display: flex;
+  gap: 4px;
 }
 
 .chat-messages {

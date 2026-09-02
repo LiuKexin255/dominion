@@ -1,14 +1,27 @@
-// 应用装配：侧栏 session 列表 + 主区对话（web-frontend.md §2 单页双区）。
-// 无路由库——视图切换由选中 session 状态驱动。每 session 的 ChatStore 以资源名
-// 为键存于 App 级 Map：切换/返回列表不丢各自进度（发送中的 Send 流由 store
-// 持有、在后台继续归约，fetch 不中断——FR-012/FR-014 前端侧），未选中会话的
-// 面板保持挂载仅不渲染，再次进入直接呈现既有状态。
+// 应用装配：侧栏（session 列表 + 视图切换）+ 主区（对话 / preset 管理）。
+// 无路由库——会话视图由选中 session 状态驱动，presets 视图为单页 state 切换
+// （specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2）。每
+// session 的 ChatStore 以资源名为键存于 App 级 Map：切换/返回列表不丢各自
+// 进度（发送中的 Send 流由 store 持有、在后台继续归约，fetch 不中断——
+// FR-012/FR-014 前端侧）。会话面板在两种视图下都常驻挂载：视图切换仅以
+// CSS 隐藏会话面板（unmount 会让 ChatPanel 的回填 effect 重跑，回填响应
+// 落地时覆盖在途回合——web-frontend.md §4），未选中会话的面板保持挂载仅
+// 不渲染，再次进入直接呈现既有状态。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './theme.css'
-import { listHistory, sendStream } from './api/conversation.js'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { ApiError, listHistory, sendStream } from './api/conversation.js'
+import type { ChatEvent } from './api/conversation.js'
+import type { Agent } from './api/agent.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
+import {
+  AgentSettingsPanel,
+  isUnmaterializedError,
+  probeAgent,
+} from './components/AgentSettingsPanel.js'
 import { ChatView } from './components/ChatView.js'
+import { PresetsView } from './components/PresetsView.js'
 import { SessionList } from './components/SessionList.js'
 import { ChatStore, useChatState } from './store/chat.js'
 
@@ -16,9 +29,17 @@ import { ChatStore, useChatState } from './store/chat.js'
 // 常量口径对齐 desktop 前端 api.ts 的 TEMPLATES）。
 const TEMPLATE_SAOLEI = 'saolei'
 
+// 侧栏底部视图切换的两个视图（web-frontend.md §2：sessions | presets）。
+type AppView = 'sessions' | 'presets'
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
+
+// agent 单例的物化状态（data-model.md §2.10）：GetAgent 404 / ListAgentMessages
+// 404 / Send 前置错误（FAILED_PRECONDITION→400、NOT_FOUND→404）驱动
+// unmaterialized；探测/请求级失败为 unknown（不引导）。
+type AgentStatus = 'unknown' | 'unmaterialized' | 'materialized'
 
 // ChatPanel hosts one session's store-backed chat view. The store outlives the
 // panel's active state (owned by App's per-session map), so an in-flight turn
@@ -37,6 +58,9 @@ function ChatPanel({
 }) {
   const state = useChatState(store)
   const [backfillError, setBackfillError] = useState<string | null>(null)
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>('unknown')
+  const [agent, setAgent] = useState<Agent | null>(null)
+  const [panelOpen, setPanelOpen] = useState(false)
   // 回填发起后本面板是否有 send 开始：send 与回填竞态时整体让位于 send
   // （判据说明见下方 loadHistory 调用处注释）。
   const sentSinceBackfill = useRef(false)
@@ -44,6 +68,13 @@ function ChatPanel({
   useEffect(() => {
     sentSinceBackfill.current = false
     let cancelled = false
+    // 物化状态探测（web-frontend.md §3）：GetAgent 404 → 未物化引导态；
+    // 其余失败仅置 unknown，不影响对话。
+    void probeAgent(session).then((probe) => {
+      if (cancelled) return
+      setAgentStatus(probe.status)
+      setAgent(probe.agent)
+    })
     listHistory(session)
       .then((messages) => {
         if (cancelled) return
@@ -57,9 +88,19 @@ function ChatPanel({
         if (!sentSinceBackfill.current) store.loadHistory(messages)
       })
       .catch((err: unknown) => {
+        if (cancelled) return
+        // 未物化（含无 owner）session 的 ListAgentMessages 是 404
+        // （agent-api.md §2.2/§2.3）——这是"尚无历史"而非错误：置空历史并
+        // 进入未物化引导态。
+        if (isUnmaterializedError(err)) {
+          setAgentStatus('unmaterialized')
+          setAgent(null)
+          if (!sentSinceBackfill.current) store.loadHistory([])
+          return
+        }
         // 仅提示不清状态：回填失败时在途回合与本地消息保持不变，可刷新
         // 重试回填（FR-014 前端侧）。
-        if (!cancelled) setBackfillError(errorMessage(err))
+        setBackfillError(errorMessage(err))
       })
     return () => {
       cancelled = true
@@ -69,25 +110,86 @@ function ChatPanel({
   const onSend = useCallback(
     (text: string) => {
       sentSinceBackfill.current = true
-      void store.send(text, sendStream(session, text))
+      // Send 前置拒绝（未物化 FAILED_PRECONDITION→400 / 无 owner
+      // NOT_FOUND→404，agent-api.md §2.4）驱动引导态：流失败后探测 agent
+      // 单例，仅 404 确认未物化（400 的其他来源如空文本不引导）。
+      async function* guidedSend(): AsyncGenerator<ChatEvent> {
+        try {
+          yield* sendStream(session, text)
+        } catch (err) {
+          if (err instanceof ApiError && (err.status === 400 || err.status === 404)) {
+            const probe = await probeAgent(session)
+            if (probe.status === 'unmaterialized') {
+              setAgentStatus('unmaterialized')
+              setAgent(null)
+            }
+          }
+          throw err
+        }
+      }
+      void store.send(text, guidedSend())
     },
     [store, session],
   )
 
+  const onApplied = useCallback(
+    (materialized: Agent) => {
+      setAgent(materialized)
+      setAgentStatus('materialized')
+      setPanelOpen(false)
+    },
+    [],
+  )
+
   if (!active) return null
   return (
-    <ChatView
-      session={session}
-      history={state.history}
-      live={state.live}
-      queue={state.queue}
-      error={state.error ?? backfillError}
-      onSend={onSend}
-    />
+    <div className="chat">
+      <div className="agent-toolbar">
+        <span className="agent-status" data-testid="agent-status">
+          {agentStatus === 'materialized'
+            ? `已物化${agent?.model ? ` · ${agent.model}` : ' · 默认模型'}`
+            : agentStatus === 'unmaterialized'
+              ? '未物化'
+              : ''}
+        </span>
+        <Button data-testid="agent-settings-button" onClick={() => setPanelOpen((o) => !o)}>
+          设置 agent
+        </Button>
+      </div>
+      {agentStatus === 'unmaterialized' && !panelOpen && (
+        <div className="agent-guide" data-testid="agent-guide">
+          <span>该会话尚未设置 agent——选择 preset（必选）与模型完成物化后即可对话。</span>
+          <Button
+            variant="primary"
+            data-testid="agent-guide-open"
+            onClick={() => setPanelOpen(true)}
+          >
+            设置 agent
+          </Button>
+        </div>
+      )}
+      {panelOpen && (
+        <AgentSettingsPanel
+          session={session}
+          materialized={agent}
+          onApplied={onApplied}
+          onClose={() => setPanelOpen(false)}
+        />
+      )}
+      <ChatView
+        session={session}
+        history={state.history}
+        live={state.live}
+        queue={state.queue}
+        error={state.error ?? backfillError}
+        onSend={onSend}
+      />
+    </div>
   )
 }
 
 export function App() {
+  const [view, setView] = useState<AppView>('sessions')
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -192,25 +294,46 @@ export function App() {
             void onDelete(name)
           }}
         />
+        <div className="view-switch" data-testid="view-switch">
+          <Button
+            variant={view === 'sessions' ? 'primary' : 'ghost'}
+            data-testid="view-sessions"
+            onClick={() => setView('sessions')}
+          >
+            Sessions
+          </Button>
+          <Button
+            variant={view === 'presets' ? 'primary' : 'ghost'}
+            data-testid="view-presets"
+            onClick={() => setView('presets')}
+          >
+            Presets
+          </Button>
+        </div>
       </aside>
       <main className="main">
-        {selected === null ? (
-          <div className="empty-hint" data-testid="empty-hint">
-            {notice ?? '选择或新建一个 session 开始对话'}
-          </div>
-        ) : null}
-        {opened.map((name) => {
-          const store = storesRef.current?.get(name)
-          if (store === undefined) return null
-          return (
-            <ChatPanel
-              key={name}
-              session={name}
-              store={store}
-              active={name === selected}
-            />
-          )
-        })}
+        {/* 会话面板容器常驻挂载（面板不因视图切换卸载，回填 effect 不重跑）；
+            空态提示属纯展示内容，仅在本视图是当前视图时渲染。 */}
+        <div className={view === 'sessions' ? 'view-pane' : 'view-pane hidden'}>
+          {view === 'sessions' && selected === null ? (
+            <div className="empty-hint" data-testid="empty-hint">
+              {notice ?? '选择或新建一个 session 开始对话'}
+            </div>
+          ) : null}
+          {opened.map((name) => {
+            const store = storesRef.current?.get(name)
+            if (store === undefined) return null
+            return (
+              <ChatPanel
+                key={name}
+                session={name}
+                store={store}
+                active={name === selected}
+              />
+            )
+          })}
+        </div>
+        {view === 'presets' ? <PresetsView template={TEMPLATE_SAOLEI} /> : null}
       </main>
     </div>
   )

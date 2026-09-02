@@ -240,6 +240,15 @@ suites:
     cases:
       - //projects/game/testplan:agent_v2_game_test
 
+  - name: agent-v2-preset
+    description: "agent_v2 US2 configuration closed loop over /api/v2 (specs/051-agent-v2-dsh-migration/quickstart.md §2 agent-v2-preset — US2 场景 1–7), deployed via deploy_agent_v2.yaml. agent_v2_preset_test covers, per concern: the preset CRUD round trip through the gateway's direct PresetService routes (create → Get/List read-back agreement → duplicate caller-id 409 → update via update_mask=player_prompt → delete → 404, agent-api.md §2.5 — Mongo-backed persistence is what makes the read-backs agree; restart survival is T037's item), the materialized-config GetAgent consistency with the model picked from the ListModels catalog plus idempotent re-Apply (US2 场景 2), Update refresh clearing the in-memory history while keeping the configuration (US2 场景 4), the two-layer unmaterialized-Send rejection — 404 NOT_FOUND with no owner and 400 FAILED_PRECONDITION with owner-without-agent (reached deterministically via a fail-fast unknown-model UpdateAgent, which also pins US2 场景 7), and the empty-prompt persona fallback completing a fake-llm round-trip (US2 场景 6)"
+    deploy: //projects/game/testplan/deploy_agent_v2.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_v2_preset_test
+
   - name: agent-v2-game-disconnect
     description: "agent_v2 US1 mid-game disconnect and recovery branch (specs/051-agent-v2-dsh-migration/quickstart.md §2 agent-v2-game-disconnect — US1 场景 5/6, desktop-bridge.md §6 验收锚点 3), deployed via deploy_agent_v2_drop.yaml: the topology matches deploy_agent_v2.yaml but the single fake-desktop executor runs the progressive scenario with the disconnect-after-3-ops fault env (no won executor here — the disconnect binary is separate from agent_v2_game_test because guitar runs whole bazel targets as suite cases without per-suite test-function filtering, specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4). agent_v2_game_disconnect_test covers the three-game sequence on the desktop-e2e-drop session: game 1 completes the full progressive chain with the disconnect firing invisibly behind the last receipt (两流独立性 — flow 故障不影响对话流, US1 场景 6); game 2 meets the torn-down connection — saolei_init fails with the model-visible 'desktop disconnected' error while the turn survives (回合存活); game 3, after the executor's reconnect cycle, plays a full game again with the board state re-seeded by init (重连后游戏可继续)"
     deploy: //projects/game/testplan/deploy_agent_v2_drop.yaml
