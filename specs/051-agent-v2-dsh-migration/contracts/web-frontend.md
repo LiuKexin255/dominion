@@ -20,6 +20,7 @@
 - 侧栏底部视图切换 `Sessions | Presets`（单页 state 切换，无 router）。
 - **PresetsView**：列表（name + 更新时间）；新建/编辑表单（名称 + `player_prompt` 多行文本——提示词编辑主体）；删除带确认；空态引导"先创建 preset 才能物化 agent"（无内置默认 persona，Q2 裁定）。
 - API（`api/agent.ts`）：`listPresets` GET `/api/v2/templates/{t}/presets`、`createPreset` POST、`getPreset` GET、`updatePreset` PATCH（`update_mask: ["player_prompt"]`）、`deletePreset` DELETE。
+- 后端路由说明：上述 API 路径与请求形状不变，仅后端路由为 PresetService（gateway 直连 agent-v2，[revisions/directive-2026-09-01.md](../revisions/directive-2026-09-01.md) §3）——前端零改动。
 
 ## 3. agent 物化面板（FR-008 web 面，US2）
 
@@ -27,6 +28,7 @@
   - preset 下拉（ListPresets；**必选**）；
   - model 下拉（ListModels + "默认"项；选项与提交校验同源——`/api/v2/models`）；
   - Apply = `UpdateAgent`（PATCH `/api/v2/{session}/agent`，body `{agent: {name, preset, model}}`）；成功后刷新 `agentStatus`。
+- preset/models 两个下拉同属 PresetService 面（gateway 直连），API 路径与请求形状不变——前端零改动。
 - **未物化引导**：进入未物化 session（GetAgent 404）或 Send 前置错误（FAILED_PRECONDITION/NOT_FOUND）→ 对话区呈现引导态（"该会话尚未设置 agent"）+ 物化面板入口；完成物化后可发送（US2 场景 5）。
 - 面板对已物化 session 同样可用（再次 Apply = 刷新：清空短期记忆 + 重读 preset，US2 场景 3/4——UI 提示该语义）。
 

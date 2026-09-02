@@ -35,7 +35,8 @@ guitar run projects/game/testplan/system_test.yaml --suite agent-v2-game
 |---|---|
 | `agent-v2-conversation` | 049 零回归：流式 text/think、多轮、排队、历史回填（经更名后 ListAgentMessages）；工具调用块流式可见（真实工具链路首次兑现） |
 | `agent-v2-preset` | US2：preset CRUD/持久化（重启 agent-v2 后 preset 仍在）/物化与模型选择/Update 刷新（记忆清空）/未物化 Send 拒绝/未知模型拒绝/空 prompt 回退 base |
-| `agent-v2-game` | US1：fake-llm 模板驱动"开始一局扫雷"→ saolei_init/operate/remain 工具链 → fake-desktop 执行 + 棋盘回传 → 文本棋盘契约（`board size`/`game status:` 行）→ 终局（won/lost）与终局后拒绝；desktop 缺席/中途断连异常分支（回合存活）；多 session 隔离；**两流独立性** |
+| `agent-v2-game` | US1（won 拓扑）：fake-llm 模板驱动"开始一局扫雷"→ saolei_init/operate/remain 工具链 → fake-desktop 执行 + 棋盘回传 → 文本棋盘契约（`board size`/`game status:` 行）→ 终局（won）与终局后拒绝；desktop 缺席分支；多 session 隔离；**两流独立性** |
+| `agent-v2-game-disconnect` | US1 断连分支（drop 拓扑，deploy = `deploy_agent_v2_drop.yaml`：fake-desktop 以 progressive + disconnect-after-ops env 部署）：mid-game 断连三局序列——断连不可见 → 断连后 init FAILED 回合存活 → 重连后完整重播（US1 场景 5/6） |
 | `desktop-flow` | US3：fake-desktop 连接/探测/接管/操作回执（真 desktop 冒烟可作补充记录） |
 | `session` / `memory` | gateway `/api/v1` 保留面回归 |
 

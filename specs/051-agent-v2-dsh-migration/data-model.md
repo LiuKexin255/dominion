@@ -14,11 +14,14 @@
 │  game_session.sessions（存量）   game_memory（存量，不动）            │
 │  game_agent_v2.presets（新，FR-005）                                 │
 └──────────────┬─────────────────────────────────────────────────────┘
-               │ preset CRUD（无亲和）/ owner 亲和（agent 面）
+               │ preset CRUD + ListModels（gateway 直连，PresetService）
+               │ owner 亲和（agent 会话面，经 proxy）
 ┌──────────────▼─────────────────────────────────────────────────────┐
-│ proxy：AgentHandler + DesktopBridgeHandler（agent_v2_owners 亲和）    │
+│ proxy：AgentHandler + DesktopBridgeHandler（agent_v2_owners 亲和；    │
+│        仅承载会话面——配置面 PresetService 由 gateway 直连，不经 proxy）│
 └──────────────┬─────────────────────────────────────────────────────┘
-               │ gRPC（AgentService / DesktopBridgeService @50051）
+               │ gRPC（AgentService / PresetService / DesktopBridgeService
+               │      同宿主 agent-v2 @50051）
 ┌──────────────▼─────────────────────────────────────────────────────┐
 │ agent-v2 stateful 实例（dsh 组合：直组核心件 + 3 自研插件）            │
 │  PresetStore(Mongo)   ModelCatalog(ctx.llm)   AgentMaterializer     │
@@ -178,14 +181,14 @@ agent-scoped 服务：工厂在 agent 发布前于 `agent.ctx` 注册 `saoleiGam
 
 启用面唯一事实源（[research.md](research.md) D5）：`timer`、`llm`、`session`、`system-prompt`（`includeHarnessIdentity: false`、`includeRuntimeContext: false`）、`tools`、`agents`、`invariants` + 三伴生、`llm-retry`、`llm-glm`（models 目录行延续 049）、`desktop-bridge`、`saolei-loop`、`saolei`。**无 spine 行、无官方 agent-loop 行**（FR-012）；全局 persona 配置移除（persona 全部来自 preset 物化，D3）。
 
-### 2.9 Proxy 路由（agent_v2_owners 语义演进）
+### 2.9 路由（agent_v2_owners 语义演进；配置面直连，directive §3）
 
-| RPC | 路由 | 分配语义 |
+| RPC / 服务 | 路由 | 分配语义 |
 |---|---|---|
-| `UpdateAgent` | owner 亲和 | **get-or-create**（物化即落 owner——新分配点） |
-| `GetAgent` / `ListAgentMessages` / `Send` | owner 亲和 | 只查不分配；无 owner → `NOT_FOUND`（Send 的未物化错误第一层） |
-| preset CRUD / `ListModels` | 无亲和（请求派生键稳定哈希） | 任意活实例；无实例 → `UNAVAILABLE` |
-| `DesktopBridgeService.Connect` | owner 亲和 | **get-or-create**（desktop 可先于对话连接；与对话同实例——游戏状态所在） |
+| `UpdateAgent` | owner 亲和（经 proxy） | **get-or-create**（物化即落 owner——新分配点） |
+| `GetAgent` / `ListAgentMessages` / `Send` | owner 亲和（经 proxy） | 只查不分配；无 owner → `NOT_FOUND`（Send 的未物化错误第一层） |
+| `PresetService`（preset CRUD / `ListModels`） | **gateway 直连 agent-v2**（不经 proxy） | 任意活实例（gRPC 客户端 LB）；无实例 → `UNAVAILABLE` |
+| `DesktopBridgeService.Connect` | owner 亲和（经 proxy） | **get-or-create**（desktop 可先于对话连接；与对话同实例——游戏状态所在） |
 
 ### 2.10 web 前端状态（演进）
 
@@ -204,7 +207,7 @@ agent-scoped 服务：工厂在 agent 发布前于 `agent.ctx` 注册 `saoleiGam
 | UpdateAgent preset 不存在 / model 未知非空 | `NOT_FOUND` / `INVALID_ARGUMENT`（fail-fast，无半物化） |
 | GetAgent 未物化 | `NOT_FOUND` |
 | preset 重复创建 | `ALREADY_EXISTS` |
-| 无 agent-v2 活实例（任意 RPC） | `UNAVAILABLE`（proxy） |
+| 无 agent-v2 活实例 | `UNAVAILABLE`（会话面由 proxy 应答；配置面由 gateway 直连应答，[contracts/agent-api.md](contracts/agent-api.md) §3） |
 
 ## 4. 不变量
 

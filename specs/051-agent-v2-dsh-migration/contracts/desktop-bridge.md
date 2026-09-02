@@ -72,12 +72,12 @@ export interface DesktopBridgeService /* ctx.desktopBridge */ {
 
 - 路径匹配 `/api/v2/templates/{template}/sessions/{session}/connect`（7 段，v1 `isWebSocketConnectPath` 模式移植）；`/api/v2/` 子树先查 WS 分支再落 gwmux（对齐 v1 `/api/v1/` 子树结构，`projects/game/gateway/cmd/main.go:160-173`）。
 - `websocket.Accept`（OriginPatterns `["*"]`、10MB 读限）、binary proto 帧双向泵、关闭分类（normal/clean/protocol/internal → websocket status 映射）——v1 `handleWebSocketConnect` 移植（`main.go:266-339`）。
-- 后端：`gamev2.NewDesktopBridgeServiceClient(teamConn).Connect(ctx)` bidi。
-- **v1 面移除**（FR-019）：`/api/v1` 的 WS connect 分支与路径匹配、TeamService/PromptService 的 handler 注册，以及 promptConn（prompt 服务随部署下线）；teamConn 保留、改承载 v2 面（AgentService HTTP + DesktopBridgeService bidi）。
+- 后端：`game.NewDesktopBridgeServiceClient(teamConn).Connect(ctx)` bidi。
+- **v1 面移除**（FR-019）：`/api/v1` 的 WS connect 分支与路径匹配、TeamService/PromptService 的 handler 注册，以及 promptConn（prompt 服务随部署下线）；teamConn 承载 AgentService（会话面）HTTP + DesktopBridgeService bidi；PresetService 经 gateway 直连 agent-v2（presetConn），不经 proxy（[research.md](../research.md) D9、[revisions/directive-2026-09-01.md](../revisions/directive-2026-09-01.md) §3）。
 
 ## 4. proxy 转发（DesktopBridgeHandler）
 
-- implements `gamev2.DesktopBridgeServiceServer`（`projects/game/proxy/`，049 ConversationHandler 同层新增）。
+- implements `game.DesktopBridgeServiceServer`（`projects/game/proxy/`，049 ConversationHandler 同层新增）。
 - `Connect`：等待首帧 → 解析 `template_id/session_id` → **owner get-or-create**（复用 `assignConversationOwner` 语义与 `agent_v2_owners` 池——desktop 可先于对话/物化连接；owner 保证后续对话与游戏落在同实例）→ 目标实例 conn → `bind.WithFirstFrame` + bidi pump（v1 TeamHandler.Connect 模式，`projects/game/proxy/handler/handler.go:179-226`）。
 - 错误映射：无 owner 可建（Mongo 故障）→ INTERNAL；无活实例 → UNAVAILABLE；资源名形状非法 → INVALID_ARGUMENT（首帧注入值校验）。
 

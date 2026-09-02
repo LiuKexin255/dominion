@@ -90,7 +90,7 @@
 
 - 仓库已全仓接入 `protoc-contrib/protoc-gen-go-aip` v0.1.3：根 `BUILD.bazel:51-63` 定义 `go_proto_compiler` `//:go_gen_aip`（注释明示 "generating type-safe resource-name parsers (e.g. ParseSessionName) from google.api.resource annotations"），并经 gazelle 指令 `go_grpc_compilers`/`go_proto_compilers`（`BUILD.bazel:6-7`）应用于**全部** `go_proto_library`。
 - `projects/game/BUILD.bazel:70-98` 的 `agent_v2_go_proto` compilers **已含** `//:go_gen_aip`（`:76`）。当前它只为 agent_v2.proto 生成 `// +build ignore` stub——因为无 resource 注解可生成（`experimental/golang/aip_codegen/FINDINGS.md` F4："for a proto with no google.api.resource messages the plugin emits a 2-line stub"）。
-- 插件行为（源码核实，`/home/liukexin/go/pkg/mod/github.com/protoc-contrib/protoc-gen-go-aip@v0.1.3/internal/generator/resource/generator.go`）：只为被生成文件（`f.Generate`）产出解析器，但 registry 遍历编译单元内**全部**文件——跨文件（如 agent_v2.proto 引用 game.proto 声明的 Session/Template 资源类型）的 parent 与 `resource_reference` 可解析；`Parent()` 方法返回类型取父资源的 GoIdent（v1 包 `dominion/projects/game`），生成文件自动 import——`agent_v2_go_proto` 的 deps 已含 `:game`，链接无碍。
+- 插件行为（源码核实，`/home/liukexin/go/pkg/mod/github.com/protoc-contrib/protoc-gen-go-aip@v0.1.3/internal/generator/resource/generator.go`）：只为被生成文件（`f.Generate`）产出解析器，但 registry 遍历编译单元内**全部**文件——跨文件（agent_v2.proto 引用 game.proto 声明的 Session/Template 资源类型）的 parent 与 `resource_reference` 在 registry 层可解析；`Parent()` 方法（`emitParent`，`:644`）以 GoIdent 输出返回类型、跨包会被正确限定。**但 parent 构造器方法（`emitParentConstructor`，`:596-614`）的 receiver 以裸名 `parent.Variant.GoName` 输出**——跨 Go 包场景产物不可编译，处置裁定见 §2.6。
 - 生成 API 形状（FINDINGS F5 + spike 测试实证）：`ParseAgentName(s) (AgentName{TemplateID, SessionID}, error)`、`String()/FullName()/Validate()`、trailing-literal 单例（`templates/{t}/sessions/{s}/agent` 末段字面量 `agent`）已被 v1 `Team`（`.../team`）同形实证；`resource_reference` 字段生成委托 `Parse<Field>()` 方法。
 - 运行时 TS 面零影响：`ts_proto_library` 类型为 import-only；proto-loader 运行时打包的 `google/api/resource.proto` 已在 `agent_v2/server_pkg.tar` 内（game.proto 传递闭包带入，tar 清单实证），`includeDirs` 可解析新 import。
 
@@ -129,7 +129,7 @@ message Preset {
 | 字段 | 注解 | 生成物 |
 |---|---|---|
 | `Agent.preset` | `(google.api.resource_reference) = {type: "game.liukexin.com/Preset"}` | `Agent.ParsePreset() (PresetName, error)` |
-| `SendRequest.session` | `type: "game.liukexin.com/Session"`（跨文件，v1 声明） | `SendRequest.ParseSession() (game.SessionName, error)` |
+| `SendRequest.session` | `type: "game.liukexin.com/Session"`（v1 文件声明的资源；Go 侧经 §2.6 同包化后为同包引用） | `SendRequest.ParseSession() (SessionName, error)`（同包裸名；消费方经 `game.` 限定） |
 | `GetAgentRequest.name` / `ListAgentMessagesRequest.parent` | `type: "game.liukexin.com/Agent"`（parent 即 Agent 资源本体，用 `type` 而非 `child_type`） | `ParseName()` / `ParseParent()` → `AgentName` |
 | `CreatePresetRequest.parent` / `ListPresetsRequest.parent` | `child_type: "game.liukexin.com/Preset"`（AIP-133/132 与 v1 `ListMessagesRequest.parent` 先例形态） | 无方法生成（`child_type` 仅引用语义，v1 同例） |
 | `GetPresetRequest.name` / `DeletePresetRequest.name` | `type: "game.liukexin.com/Preset"` | `ParseName() (PresetName, error)` |
@@ -141,17 +141,17 @@ message Preset {
 - **type 命名沿用 `game.liukexin.com/*`**（AIP-123：`{service_name}/{Type}`，单一 `/`、PascalCase）。v1/v2 是同一 game API service 的两个版本面，资源共享类型域；v1 已注册六类型（Template/Session/Team/TeamProfile/Memory/Message），`Agent`/`Preset` 与之无冲突（插件 registry 按全类型域键控，重名会静默覆盖，必须避开——已核对无碰撞）。
 - **`HistoryMessage` 不加注解**：无 `name` 字段、无单条 Get/子资源寻址消费方（web 按 message_id 展示、proxy 只解析 parent），生成解析器无消费点——按原则 II 取最小面。若未来出现按消息名寻址的 RPC 再补。
 
-### 2.3 BUILD 接线（最小增量）
+### 2.3 BUILD 接线（按 §2.6 裁定 D 的生成单元合并）
 
-- `projects/game/BUILD.bazel` `agent_v2_proto` deps 增 `@googleapis//google/api:resource_proto`（直接 import 显式声明；root gazelle 指令 `BUILD.bazel:14` 已映射该 proto 的 resolve）。
-- Go 侧其余**零改动**：`//:go_gen_aip` 已在 compilers（gazelle 指令保证不被剥离，FINDINGS F3）；`annotations_go_proto` 闭包含 resource（`projects/game/BUILD.bazel:82-88` 既有注释）；`:game` dep 已在。
-- 产物：`agent_v2_aip.pb.resource.go` 由 ignore-stub 变为实际解析器（`ParseAgentName`/`ParsePresetName` 等）。
+- `projects/game/BUILD.bazel`：`agent_v2.proto` 并入 `game_proto` srcs 与 `game_go_proto` 生成单元（compilers 已含 grpc-gateway + `//:go_gen_aip`，v2 双服务的 gRPC/gateway/AIP 产物随同 importpath 产出）；**撤销** `agent_v2_go_proto` target 与 `agent_v2` go_library（同一 importpath 不能并存两个 go_proto_library——"multiple copies of package passed to linker"，Phase 2 实测注释 `projects/game/BUILD.bazel:82-96`）。`agent_v2_proto`（proto_library）保留供 TS `ts_proto_library` 与 `runtime_protos` 消费（与 `game_proto` 共享同一 .proto 文件在 Bazel 下合法——protoc 按 target 独立执行），其 deps 增 `@googleapis//google/api:resource_proto`（新 import 的直接声明；`game_proto` 已有该 dep）。
+- 产物：`agent_v2_*.pb.go`（含 `agent_v2_aip.pb.resource.go` 的解析器，取代 ignore-stub）生成于 `dominion/projects/game` 包内（`ParseAgentName`/`ParsePresetName` 等）。
+- `//:go_gen_aip` 仍由 gazelle 指令保证不被剥离（FINDINGS F3）；TS/运行时打包面零改动。
 
 ### 2.4 手写解析的处置（决策：生成替换 + 保留业务校验薄 wrapper）
 
 | 手写代码 | 处置 | 说明 |
 |---|---|---|
-| `parseAgentResourceName`（`projects/game/proxy/handler/agent.go:441`） | **改为生成解析 + 已知模板校验的薄 wrapper**：`gamev2.ParseAgentName(name)` + `gameconst.IsKnownTemplateID(parsed.TemplateID)`，返回 `gamev2.AgentName`（字段 `TemplateID`/`SessionID` 与现调用点 `assignAgentOwner(ctx, ..., name.TemplateID, name.SessionID)` 源码兼容） | 形状校验（5 段、字面量 `templates`/`sessions`/`agent`、非空变量）由生成器承载且语义等价；**已知模板集合校验是业务规则**（`gameconst`），codegen 不承载，保留在 wrapper。测试断言仅校验 status code（`agent_test.go` 核实），生成器错误文案不同不破坏测试 |
+| `parseAgentResourceName`（`projects/game/proxy/handler/agent.go:441`） | **改为生成解析 + 已知模板校验的薄 wrapper**：`game.ParseAgentName(name)` + `gameconst.IsKnownTemplateID(parsed.TemplateID)`，返回 `game.AgentName`（字段 `TemplateID`/`SessionID` 与现调用点 `assignAgentOwner(ctx, ..., name.TemplateID, name.SessionID)` 源码兼容；生成 API 经 §2.6 并入 `dominion/projects/game` 包） | 形状校验（5 段、字面量 `templates`/`sessions`/`agent`、非空变量）由生成器承载且语义等价；**已知模板集合校验是业务规则**（`gameconst`），codegen 不承载，保留在 wrapper。测试断言仅校验 status code（`agent_test.go` 核实），生成器错误文案不同不破坏测试 |
 | `parsePresetName`（`agent.go:466`） | **随意见 4 整体删除**（proxy preset 转发面移除，解析无残留消费点） | 其注释自认缺注解才手写——注解补齐 + 转发面移除后双双失效 |
 | `parseTemplateParent`（`agent.go:451`） | **随意见 4 删除**（仅 preset 转发路径使用，已核实无其他调用点） | `parseAgentSession`（`game.ParseSessionName` 生成 + 模板校验）保留，`Send` 继续使用 |
 | v1 `handler.go:260 parseMessagesParent` 等手写解析 | **不动**（v1 代码保留仓库，`spec.md` FR-019） | 不在本 feature 范围 |
@@ -161,7 +161,21 @@ message Preset {
 
 ### 2.5 对 T004 已交付契约面的影响：**增量、非破坏**
 
-`google.api.resource`/`resource_reference`/`IDENTIFIER` 均为 non-wire 选项——不改 wire format、REST 路径、方法签名、字段编号。`specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §1 proto 列表同步增补注解（见 §5 修订清单），下游（web/testplan）零感知。
+`google.api.resource`/`resource_reference`/`IDENTIFIER` 均为 non-wire 选项——不改 wire format、REST 路径、方法签名、字段编号。`go_package` 变更（§2.6）同样仅影响生成代码的 Go 包归属，proto package `projects.game.v2`、wire、REST、TS 面全部不变。`specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §1 proto 列表同步增补注解并修订 `go_package` 表述（该文件头部 "go_package ... 不变" 的陈述随 T004a 更新，见 §5 修订清单），下游（web/testplan）零感知。
+
+### 2.6 工具链缺陷与裁定 D：v2 Go 包并入 v1 同包（2026-09-02 用户裁定）
+
+**缺陷事实**：`protoc-gen-go-aip` v0.1.3 的 parent 构造器发射器（`internal/generator/resource/generator.go:596-614` `emitParentConstructor`）以**裸名** `parent.Variant.GoName` 输出 receiver——跨 Go 包父资源场景（`Preset` 的父资源 `Template`、`Agent` 的父资源 `Session` 均声明于 game.proto/v1 包，而 v2 生成文件属 `dominion/projects/game/v2`）产出形如 `func (n TemplateName) PresetName(...)` 的未限定类型引用，v2 包内不可解析，**产物不可编译**；上游无修复版本。T004a 注解落地时实测触发。
+
+**裁定（选项 D）**：放弃对插件打模块补丁的路线，**v2 Go 生成面并入 v1 同包**——`projects/game/agent_v2.proto:13` 的 `option go_package` 从 `dominion/projects/game/v2` 改为 `dominion/projects/game`。生成产物与 v1 同包后，parent 构造器/`Parent()`/`resource_reference` 委托（如 `SendRequest.ParseSession()` 返回 `SessionName`）全部为同包裸名引用，天然可解析，缺陷不再触发。
+
+**配套（一次性）**：
+
+1. **BUILD 生成单元合并**（§2.3）：`agent_v2.proto` 并入 `game_proto`/`game_go_proto`，撤销 `agent_v2_go_proto` target 与 `agent_v2` go_library（同 importpath 双 target 触发链接器 "multiple copies of package" 拒绝）；grpc-gateway 双服务 handler 产物并入 `game_go_proto` 的编译目标。`agent_v2_proto`（proto_library）保留供 TS（`ts_proto_library`、`runtime_protos`）消费——同一 .proto 文件被两个 proto_library 引用在 Bazel 下合法（protoc 按 target 独立执行）。
+2. **Go 导入面改名（机械性，12 处）**：`gamev2 "dominion/projects/game/v2"` 导入与 `gamev2.` 限定符并入 `dominion/projects/game` 导入（限定符统一 `game.`）——proxy `cmd/main.go`、`handler/agent.go`、`handler/bridge.go`、`handler/agent_test.go`、`handler/bridge_test.go`；gateway `cmd/main.go`、`cmd/main_test.go`；testplan `agent_v2_conversation_test.go`、`agent_v2_game_test.go`、`agent_v2_helpers_test.go`、`desktop_flow_test.go`、`web_test.go`。
+3. **名称安全（已验证）**：v1/v2 proto 包独立（`projects.game` vs `projects.game.v2`），服务/消息/枚举名零碰撞（AgentService/PresetService/DesktopBridgeService、Agent/Preset/Model、ChatEvent 事件家族、ToolStatus 等 v2 名与 v1 名无重合），resource type 无重复声明（§2.2 的类型域核对）——同包合并不产生声明冲突。
+
+**不受影响项**：proto package、wire format、REST 路径、TS 生成与运行时打包、`gameconst.AgentV2Target` 服务发现（服务名与 proto 无关）。
 
 ---
 
@@ -227,8 +241,8 @@ service PresetService {
 // directive-2026-09-01.md §3). Unary RPCs → default keepalive.
 presetConn, err := grpc.NewClient(solver.URI(gameconst.AgentV2Target), clientOpts)
 ...
-gamev2.RegisterPresetServiceHandler(ctx, gwmux, presetConn)   // 新注册
-gamev2.RegisterAgentServiceHandler(ctx, gwmux, teamConn)      // 既有，仅剩 agent 面 4 RPC 的路径
+game.RegisterPresetServiceHandler(ctx, gwmux, presetConn)    // 新注册（生成 API 经 §2.6 并入 dominion/projects/game 包）
+game.RegisterAgentServiceHandler(ctx, gwmux, teamConn)       // 既有，仅剩 agent 面 4 RPC 的路径
 b.Register(bootstrap.GRPCConn("agent-v2", presetConn))
 ```
 
@@ -295,6 +309,7 @@ PresetService 的 REST 注解与现 AgentService 逐字相同（`/api/v2/{parent
 | 意见 4 vs `server.ts` 单 `buildAgentHandlers`（preset handlers 内嵌）与 `server.test.ts` | §3.7 拆分重组 |
 | 意见 3 改 proto vs T004 已交付契约面 | §2.5：增量注解（non-wire），`contracts/agent-api.md` §1 增补——非破坏 |
 | 意见 3 vs `parseAgentResourceName` 手写与 INVALID_ARGUMENT 用例 | §2.4：wrapper 替换；用例仅断言 status code，不破 |
+| 裁定 D vs T005 已交付的独立 `agent_v2_go_proto` codegen 面 | §2.6：生成单元并入 `game_go_proto`、撤销独立 target；12 处 Go 导入面随 T004a (c) 机械改名——proxy/gateway/testplan 的后续任务（T018a/T019a 等）消费改名后的 `game.` 限定符，均在 T004a 之后执行，无顺序变化 |
 | 意见 1 vs T022 已交付 deploy/system_test/测试文件 | §1.2–1.6 重组；`deploy_agent_v2.yaml` 从"两实例"修剪为单 won 实例 |
 | 意见 1+4 交互 | `system_test.yaml` 的 suite 重组与 deploy 注释修订一次编辑完成；`agent-v2-conversation` 套件 deploy 内注释同步 |
 | 意见 3+4 交互 | `parsePresetName` 随 preset 转发面删除（不再需要生成替换）；proto 的注解增补与服务拆分**同一次变更**交付，避免两次 codegen 波动 |
@@ -323,7 +338,7 @@ T004a 落地而 T019a 未落地的时间窗内，gateway 的 gwmux 上 preset �
 
 | 文档 | 节 | 变更 |
 |---|---|---|
-| `specs/051-agent-v2-dsh-migration/contracts/agent-api.md` | §1 | proto：AgentService 缩为 4 RPC；新 PresetService（6 RPC）；resource 注解与 `resource_reference`/`IDENTIFIER` 增补 |
+| `specs/051-agent-v2-dsh-migration/contracts/agent-api.md` | §1 | proto：AgentService 缩为 4 RPC；新 PresetService（6 RPC）；resource 注解与 `resource_reference`/`IDENTIFIER` 增补；**`go_package` 表述修订**（`dominion/projects/game/v2` → `dominion/projects/game`，§2.6 裁定 D；文件头部 "go_package 不变" 陈述同步更新） |
 | 同上 | §2.5/§2.6 | 语义不变；归属面标注 PresetService |
 | 同上 | §3 | 错误表：preset/models 行改一跳语义 |
 | 同上 | §4 | 路由拓扑双面描述（teamConn 会话面 / presetConn 配置面） |
@@ -343,7 +358,7 @@ T004a 落地而 T019a 未落地的时间窗内，gateway 的 gwmux 上 preset �
 
 任务文本以 tasks.md 落地版本为准；此处为摘要：
 
-- **T004a** proto 增量修订（意见 3 注解 + 意见 4 服务拆分）+ §5 契约文档同步 + codegen/`resource_proto` 接线；门禁 `bazel build //projects/game/...` + 相关单测。
+- **T004a** proto 增量修订（意见 3 注解 + 意见 4 服务拆分 + 裁定 D 同包化）+ §5 契约文档同步 + codegen/生成单元合并；门禁 `bazel build //projects/game/...` + 相关单测。
 - **T014a** agent_v2 宿主 `PresetService` 注册拆分（`server.ts`/`server.test.ts`）；门禁 `bazel test //projects/game/agent_v2`。
 - **T018a** proxy 移除 preset/models 转发面 + `parseAgentResourceName` 换生成解析；门禁 `bazel test //projects/game/proxy/...`。
 - **T019a** gateway `PresetService` 直连注册；门禁 `bazel test //projects/game/gateway`。
@@ -354,10 +369,11 @@ T004a 落地而 T019a 未落地的时间窗内，gateway 的 gwmux 上 preset �
 
 ---
 
-## 7. 开放问题（已裁定，2026-09-02）
+## 7. 裁定记录
 
-1. **ListModels 移入 PresetService**（§3.3）——✅ 用户裁定：移入。proxy 无状态转发面（含稳定哈希/零 owner 交互机制）整体移除。
-2. **resource type 沿用 `game.liukexin.com/*` 前缀**（§2.2）——✅ 用户裁定：沿用（`game.liukexin.com/Agent`、`game.liukexin.com/Preset`，v1/v2 同一 API service 共享类型域）。
+1. **ListModels 移入 PresetService**（§3.3）——✅ 用户裁定（2026-09-02）：移入。proxy 无状态转发面（含稳定哈希/零 owner 交互机制）整体移除。
+2. **resource type 沿用 `game.liukexin.com/*` 前缀**（§2.2）——✅ 用户裁定（2026-09-02）：沿用（`game.liukexin.com/Agent`、`game.liukexin.com/Preset`，v1/v2 同一 API service 共享类型域）。
+3. **工具链缺陷处置 = 选项 D（v2 Go 包并入 v1 同包）**（§2.6）——✅ 用户裁定（2026-09-02）：`protoc-gen-go-aip` v0.1.3 跨 Go 包父构造器缺陷以 `go_package` 并入 `dominion/projects/game` 规避（放弃模块补丁路线）；配套 BUILD 生成单元合并（撤销 `agent_v2_go_proto`）与 12 处 Go 导入面改名，随 T004a (c) 交付。
 
 ---
 

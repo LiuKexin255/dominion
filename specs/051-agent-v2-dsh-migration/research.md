@@ -130,19 +130,21 @@
 
 **Alternatives**：统一桥接（对话 + flow 一个 gRPC 面）——049 对话面是宿主直连 gRPC（server.ts），统一需把对话面迁入插件且 gateway 双协议耦合，调研 §7.3 待定项 1 的收敛方案被 spec FR-009 的"两流独立"要求反推为分离面更稳；desktop 直连 agent-v2——绕过 owner 亲和，多实例下无法定位 session 归属实例。
 
-## D9: proxy 转发面与 owner 分配点变化（FR-007/FR-019）
+## D9: 路由分工与 owner 分配点变化（FR-007/FR-019；Directive 2026-09-01 意见 4 修订）
 
 **Decision**：
 - **移除**：`TeamHandler`（TeamService 转发面）、v1 agentclient manager、`agent_owners` collection 使用（代码与部署移除；mongo 旧集合不迁移不清理——v1 链路整体下线）。
-- **`ConversationHandler` → `AgentHandler` implements `gamev2.AgentServiceServer`**（`projects/game/proxy/handler/conversation.go` 演进）：
+- **`ConversationHandler` → `AgentHandler` implements `game.AgentServiceServer`**（`projects/game/proxy/handler/conversation.go` 演进）：proxy 只承载**会话面**（agent/队列/游戏状态在进程内存，必须 owner 亲和）：
   - **owner 亲和 RPC**（既有 `agent_v2_owners` 池，get-or-create 语义复用 `assignConversationOwner`）：`UpdateAgent`（**成为 owner 分配点**——物化即落 owner，desktop 先连/先物化均成立）、`GetAgent`、`ListAgentMessages`、`Send`（**不再分配**：无 owner → `NOT_FOUND`，对齐"未物化 Send 明确报错"；有 owner 但实例内未物化（如重启后）→ agent-v2 返回 `FAILED_PRECONDITION`，两级错误语义在 contracts/agent-api.md §错误分层 定义）。
-  - **无亲和 RPC**（任意活实例可服务，状态在 Mongo）：`CreatePreset/GetPreset/ListPresets/UpdatePreset/DeletePreset`、`ListModels`——实例选择用既有 picker 对请求派生键（preset 资源名；List 用父集合名）做稳定哈希，无实例 → `UNAVAILABLE`（复用 `ErrNoAgentInstances` 映射）。
-  - `DesktopBridgeHandler` implements `gamev2.DesktopBridgeServiceServer`：`Connect` bidi——首帧身份解析（gateway 注入）→ get-or-create owner → `bind.WithFirstFrame` + bidi pump（v1 `handler.go:179-226` 模式）。
-- **gateway**：移除 TeamService/PromptService handler 注册与 v1 WS 分支；`/api/v1/` 子树只剩 session+memory 的 gwmux；`/api/v2/` 子树 = gwmux（AgentService HTTP 绑定）+ 新 WS connect 路径分支；teamConn（→ proxy）不变名只换注册面。
+  - `DesktopBridgeHandler` implements `game.DesktopBridgeServiceServer`：`Connect` bidi——首帧身份解析（gateway 注入）→ get-or-create owner → `bind.WithFirstFrame` + bidi pump（v1 `handler.go:179-226` 模式）。
+- **`PresetService` 拆分 + gateway 直连**（2026-09-01 用户指令，[revisions/directive-2026-09-01.md](revisions/directive-2026-09-01.md) §3）：preset CRUD 与 `ListModels` 是**无状态配置面**（preset 状态在 Mongo `game_agent_v2.presets`，D2 已论证多实例一致性；模型目录为静态插件配置）——自 `AgentService` 拆出独立 gRPC 服务（同宿主 agent-v2 进程 50051），**不经 proxy**：gateway 以 `presetConn` 直连 agent-v2（`gameconst.AgentV2Target` 服务发现，resolver 返回全部 ready 端点，gRPC 客户端 LB 覆盖多实例；无 session 亲和诉求，任意活实例正确服务）。
+- **gateway**：移除 TeamService/PromptService handler 注册与 v1 WS 分支；`/api/v1/` 子树只剩 session+memory 的 gwmux；`/api/v2/` 子树 = gwmux（teamConn 上的会话面 AgentService HTTP + presetConn 直连的 PresetService HTTP，路径集不相交）+ 新 WS connect 路径分支；teamConn 不变名只换注册面。
 
-**Rationale**：Update 分配 owner 是 Send 去懒物化后的必然推论（否则首次 Send 无路由目标）；preset 无亲和是资源性质决定（全局资源 + Mongo 共享态）；v1 owner 池保留给 memory？——否，memory 服务的 gateway 路由是 gateway→memory 直连（`memoryConn`，`projects/game/gateway/cmd/main.go:54-101`），不经 proxy，v1 owner 池随 TeamHandler 一起消失。
+**Rationale**：Update 分配 owner 是 Send 去懒物化后的必然推论（否则首次 Send 无路由目标）；preset/models 面不设任何实例选择机制——按**状态归属**拆服务（directive §3.1）：有状态会话面经 proxy 亲和，无状态配置面直连，proxy 转发层对无状态 RPC 是纯开销；v1 owner 池保留给 memory？——否，memory 服务的 gateway 路由是 gateway→memory 直连（`memoryConn`，`projects/game/gateway/cmd/main.go:54-101`），不经 proxy，v1 owner 池随 TeamHandler 一起消失。
 
-**Alternatives**：preset 也走 owner 分配（按 template 键）——为无状态 RPC 强造粘性，实例滚动时反而不必要地失效。
+**Alternatives**：
+- preset 也走 owner 分配（按 template 键）——为无状态 RPC 强造粘性，实例滚动时反而不必要地失效。
+- preset/models 经 proxy 无亲和稳定哈希转发（Directive 2026-09-01 前的设计，**被否决**）——为无状态 RPC 强造 proxy 中转层：proxy 需维护 `affinityFreeConn`/请求派生键哈希整套机制只为绕过自己；gateway 直连后该面整体移除（directive §0 意见 4、§3.6）。
 
 ## D10: ChatEvent 事件模型扩展（US1 工具调用块的端到端兑现）
 
@@ -241,7 +243,7 @@
 | 组合清单构成 | D5（直组 13 行 + invariant 伴生挂载双案） |
 | ChatEvent 工具结果通道 | D10（tool_result 事件 + 全局 index + tool_id join） |
 | GLM 工具序列化 | D11（function_call/output 回传） |
-| proxy 路由语义 | D9（Update 分配 owner；preset 无亲和；bridge get-or-create） |
+| proxy 路由语义 | D9（会话面 owner 亲和——Update 分配 owner；配置面 gateway 直连；bridge get-or-create） |
 | desktop 移除/保留边界 | D12 |
 | web 结构 | D13 |
 | v1/testplan 处置 | D14 |

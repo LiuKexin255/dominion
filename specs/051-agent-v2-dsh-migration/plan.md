@@ -37,7 +37,7 @@
 
 **Performance Goals**: 无新增硬性指标；延续 049 语义（流式回合、会话间不互阻）
 
-**Constraints**: dsh 0.x-rc 无稳定性承诺（全家族精确 pin，A8）；agent-v2 仅经 proxy owner 亲和可达（无 http 块，049 D4）；token 零泄漏（SC-006）；零外部网络依赖的大型测试
+**Constraints**: dsh 0.x-rc 无稳定性承诺（全家族精确 pin，A8）；agent-v2 的**会话面**（AgentService/DesktopBridgeService）仅经 proxy owner 亲和可达（无 http 块，049 D4）；其**无状态配置面**（PresetService：preset CRUD + 模型目录）由 gateway 直连 agent-v2（2026-09-01 用户指令，[revisions/directive-2026-09-01.md](revisions/directive-2026-09-01.md) §3）——preset 状态在 Mongo、目录为静态配置，无 session 亲和诉求；token 零泄漏（SC-006）；零外部网络依赖的大型测试
 
 **Scale/Scope**: 单部署（game.liukexin.com）；session/preset 数量为个人工具规模；agent-v2 stateful 可多实例（owner 亲和路由）
 
