@@ -1016,6 +1016,116 @@ func TestBuildStatefulSet(t *testing.T) {
 	}
 }
 
+// --- User Container Health Probes Tests ---
+
+// TestBuildUserContainerHealthProbes 断言 Deployment 与 StatefulSet 的用户服务
+// 容器均携带指向固定约定端点（38080/healthz）的探针契约参数
+// （SC-001，specs/052-deploy-health-probe/contracts/deploy-probe.md §2）。
+func TestBuildUserContainerHealthProbes(t *testing.T) {
+	tests := []struct {
+		name  string
+		given func() (*corev1.Container, error)
+	}{
+		{
+			name: "deployment user container carries contract probes",
+			given: func() (*corev1.Container, error) {
+				deploy, err := BuildDeployment(testDeploymentWorkload(), testK8sConfig())
+				if err != nil {
+					return nil, err
+				}
+				return &deploy.Spec.Template.Spec.Containers[0], nil
+			},
+		},
+		{
+			name: "statefulset user container carries contract probes",
+			given: func() (*corev1.Container, error) {
+				sts, err := BuildStatefulSet(testStatefulWorkload(), testK8sConfig())
+				if err != nil {
+					return nil, err
+				}
+				return &sts.Spec.Template.Spec.Containers[0], nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			container, err := tt.given()
+			if err != nil {
+				t.Fatalf("build container: %v", err)
+			}
+
+			// when / then: startupProbe 契约参数。
+			startup := container.StartupProbe
+			if startup == nil {
+				t.Fatalf("StartupProbe = nil, want httpGet /healthz:38080")
+			}
+			if startup.ProbeHandler.HTTPGet == nil {
+				t.Fatalf("StartupProbe HTTPGet = nil, want path /healthz port 38080")
+			}
+			if got := startup.ProbeHandler.HTTPGet.Path; got != "/healthz" {
+				t.Fatalf("StartupProbe Path = %q, want %q", got, "/healthz")
+			}
+			if got := startup.ProbeHandler.HTTPGet.Port.IntValue(); got != 38080 {
+				t.Fatalf("StartupProbe Port = %d, want 38080", got)
+			}
+			if got := startup.PeriodSeconds; got != 10 {
+				t.Fatalf("StartupProbe PeriodSeconds = %d, want 10", got)
+			}
+			if got := startup.FailureThreshold; got != 30 {
+				t.Fatalf("StartupProbe FailureThreshold = %d, want 30 (10s×30=300s startup budget)", got)
+			}
+			if got := startup.InitialDelaySeconds; got != 0 {
+				t.Fatalf("StartupProbe InitialDelaySeconds = %d, want unset (0)", got)
+			}
+			if got := startup.TimeoutSeconds; got != 0 {
+				t.Fatalf("StartupProbe TimeoutSeconds = %d, want unset (0, k8s default 1)", got)
+			}
+			if got := startup.SuccessThreshold; got != 0 {
+				t.Fatalf("StartupProbe SuccessThreshold = %d, want unset (0, k8s default 1)", got)
+			}
+
+			// livenessProbe 契约参数。
+			liveness := container.LivenessProbe
+			if liveness == nil {
+				t.Fatalf("LivenessProbe = nil, want httpGet /healthz:38080")
+			}
+			if liveness.ProbeHandler.HTTPGet == nil {
+				t.Fatalf("LivenessProbe HTTPGet = nil, want path /healthz port 38080")
+			}
+			if got := liveness.ProbeHandler.HTTPGet.Path; got != "/healthz" {
+				t.Fatalf("LivenessProbe Path = %q, want %q", got, "/healthz")
+			}
+			if got := liveness.ProbeHandler.HTTPGet.Port.IntValue(); got != 38080 {
+				t.Fatalf("LivenessProbe Port = %d, want 38080", got)
+			}
+			if got := liveness.PeriodSeconds; got != 10 {
+				t.Fatalf("LivenessProbe PeriodSeconds = %d, want 10", got)
+			}
+			if got := liveness.FailureThreshold; got != 3 {
+				t.Fatalf("LivenessProbe FailureThreshold = %d, want 3 (10s×3≈30s kill window)", got)
+			}
+			if got := liveness.InitialDelaySeconds; got != 0 {
+				t.Fatalf("LivenessProbe InitialDelaySeconds = %d, want unset (0)", got)
+			}
+			if got := liveness.TimeoutSeconds; got != 0 {
+				t.Fatalf("LivenessProbe TimeoutSeconds = %d, want unset (0, k8s default 1)", got)
+			}
+			if got := liveness.SuccessThreshold; got != 0 {
+				t.Fatalf("LivenessProbe SuccessThreshold = %d, want unset (0, k8s default 1)", got)
+			}
+
+			// 探针按端口号寻址，不声明 38080 为 containerPort（不进 Service ports）。
+			for _, port := range container.Ports {
+				if port.ContainerPort == 38080 {
+					t.Fatalf("ContainerPort %d should not be declared, got {Name: %q}", port.ContainerPort, port.Name)
+				}
+			}
+		})
+	}
+}
+
 // --- Secret Bindings Tests ---
 
 func TestBuildDeployment_WithoutSecretBindings(t *testing.T) {

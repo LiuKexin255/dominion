@@ -6,7 +6,6 @@ reasoningEffort: max
 temperature: 0.1
 tools:
   edit: false
-  bash: false
   todowrite: true
 ---
 

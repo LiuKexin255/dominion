@@ -1,6 +1,5 @@
 packages:
   - experimental/js/*
-  - experimental/ts/*
   - experimental/grpc_chain/mid
   - experimental/dsh/demo/agent
   - experimental/openai_llm/client

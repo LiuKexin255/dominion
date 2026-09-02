@@ -37,6 +37,17 @@ var (
 	runCommand = defaultRunCommand
 	// generateRunID creates the per-suite run identifier. Tests replace it with a stub.
 	generateRunID = runid.Generate
+	// postDeploySettle is the fixed wait between a successful deploy apply and
+	// the first test case. startupProbe/livenessProbe attached to service
+	// containers (specs/052-deploy-health-probe/spec.md) delay pod readiness,
+	// so an environment that already reports READY may still have unpropagated
+	// DNS records: a gRPC client's first resolve can then return an empty
+	// address list, and the grpc-go DNS resolver re-resolves at most once per
+	// 30s (https://github.com/grpc/grpc-go/blob/master/internal/resolver/dns/dns_resolver.go).
+	// The 60s wait covers one full refresh cycle so test traffic starts only
+	// after DNS/endpoint state is stable. Tests replace it with a short value;
+	// it is deliberately not user-configurable.
+	postDeploySettle = 60 * time.Second
 )
 
 // options configures Run behavior.
@@ -154,12 +165,35 @@ func runSuite(ctx context.Context, suite *guitarconfig.Suite, r *Reporter) (err 
 		return fmt.Errorf("deploy apply %s: %w", suite.Deploy, applyErr)
 	}
 
+	if settleErr := waitPostDeploySettle(ctx, r); settleErr != nil {
+		return fmt.Errorf("wait after deploy: %w", settleErr)
+	}
+
 	r.Step("Test")
 	if testErr := runTests(ctx, suite, fullEnvName); testErr != nil {
 		return testErr
 	}
 
 	return nil
+}
+
+// waitPostDeploySettle announces the post-deploy settle step, then blocks for
+// postDeploySettle (rationale: see the postDeploySettle var comment). It
+// watches ctx so ctrl-C or the overall timeout interrupts the wait immediately
+// instead of stalling for the full duration; on cancellation it returns the
+// context error.
+func waitPostDeploySettle(ctx context.Context, r *Reporter) error {
+	// %d seconds instead of time.Duration's %s (which renders 60s as "1m0s")
+	// keeps the step line stable and easy to grep.
+	r.Step(fmt.Sprintf("Wait %ds for DNS/endpoint settle", int(postDeploySettle/time.Second)))
+	timer := time.NewTimer(postDeploySettle)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // diagnoseDeployFailure prints environment-state diagnostics after a deploy

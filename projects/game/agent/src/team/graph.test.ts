@@ -4,7 +4,7 @@
  * research.md D6/D14).
  *
  * Deterministic fake-model + fake-tool driven (same pattern as
- * `experimental/ts/team_graph_spike/src/spike.test.ts`): the player's fake
+ * `experimental/js/team_graph_spike/src/spike.test.ts`): the player's fake
  * tool triggers the real team sink (writing the ephemeral buffer), so the
  * full sink → buffer → node post-process → conditional-edge → planner path is
  * exercised without any LLM or MCP server (DI seams, style/javascript.md

@@ -1,0 +1,18 @@
+{
+    "name": "@dominion/grpc_hello_world",
+    "private": true,
+    "type": "module",
+    "dependencies": {
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:",
+        "@dominion/common-js-bootstrap": "workspace:*",
+        "@dominion/common-js-config": "workspace:*",
+        "@dominion/common-js-logs": "workspace:*",
+        "@dominion/common-js-grpc-otel": "workspace:*",
+        "@dominion/common-js-otel": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:"
+    }
+}

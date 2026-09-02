@@ -115,13 +115,25 @@ func (b *Bootstrap) RunSignal(ctx context.Context, signals ...os.Signal) error {
 	for _, c := range sorted {
 		if err := c.Start(ctx); err != nil {
 			logs.Error(ctx, "component start failed, rolling back", event.String(logFieldComponent, c.Name()), event.String(logFieldStage, c.Stage().String()), event.Err(err))
-			// 4. Rollback: stop all successfully-started components in reverse order.
+			// Rollback: stop all successfully-started components in reverse order.
 			rollbackErr := b.shutdown(started)
 			startErr := fmt.Errorf("bootstrap: component %q failed to start: %w", c.Name(), err)
 			return errors.Join(startErr, rollbackErr)
 		}
 		logs.Info(ctx, "component started", event.String(logFieldComponent, c.Name()), event.String(logFieldStage, c.Stage().String()))
 		started = append(started, c)
+	}
+
+	// 4. Start the health server only after every component started, so the
+	// endpoint reports "all components up" (FR-004 in
+	// specs/052-deploy-health-probe/spec.md). Its lifetime nests inside the
+	// components': a health start failure is treated exactly like a component
+	// start failure — roll back and return (FR-010).
+	health := newHealthServer()
+	if err := health.Start(ctx); err != nil {
+		logs.Error(ctx, "health server start failed, rolling back", event.Err(err))
+		rollbackErr := b.shutdown(started)
+		return errors.Join(err, rollbackErr)
 	}
 
 	// 5. Create signal.NotifyContext to listen for shutdown signals.
@@ -142,13 +154,19 @@ func (b *Bootstrap) RunSignal(ctx context.Context, signals ...os.Signal) error {
 		shutdownCause = err
 	}
 
-	// 8-12. Shutdown: use sync.Once to ensure shutdown only executes once.
+	// 8. Shutdown: use sync.Once to ensure shutdown only executes once.
+	// Health stops first, before any component (FR-005 in
+	// specs/052-deploy-health-probe/spec.md), with the same shutdown budget
+	// as the components.
 	var shutdownErr error
 	b.stopOnce.Do(func() {
-		shutdownErr = b.shutdown(started)
+		stopCtx, cancel := context.WithTimeout(context.Background(), b.cfg.shutdownTimeout)
+		defer cancel()
+		healthStopErr := health.Stop(stopCtx)
+		shutdownErr = errors.Join(healthStopErr, b.shutdown(started))
 	})
 
-	// 13. Return appropriate error: clean signal shutdown returns nil.
+	// 9. Return appropriate error: clean signal shutdown returns nil.
 	if shutdownCause != nil {
 		return errors.Join(shutdownCause, shutdownErr)
 	}
