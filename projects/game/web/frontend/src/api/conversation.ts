@@ -1,9 +1,9 @@
-// /api/v2 对话 API 客户端（ConversationService，契约
-// specs/049-agent-v2-dsh-init/contracts/conversation-api.md）。sendStream 以
-// fetch + ReadableStream 消费 NDJSON 事件流（EventSource 不适用——POST body，
-// §6）；listHistory 回填、disposeSession 幂等释放（§5）。全部类型为 protojson
-// 投影：camelCase 字段名、枚举输出名字符串、oneof 展平为可选字段——未知
-// oneof 分支被消费端忽略（proto3 forward-compat，§2）。
+// /api/v2 对话 API 客户端（AgentService，契约
+// specs/051-agent-v2-dsh-migration/contracts/agent-api.md）。sendStream 以
+// fetch + ReadableStream 消费 NDJSON 事件流（EventSource 不适用——POST body）；
+// listHistory 为 agent 单例（AIP-156）消息子资源的标准 List（AIP-132）。
+// 全部类型为 protojson 投影：camelCase 字段名、枚举输出名字符串、oneof 展平
+// 为可选字段——未知 oneof 分支被消费端忽略（proto3 forward-compat）。
 
 // ─── 流事件（ChatEvent，conversation-api.md §1 protojson 投影） ──────────────
 
@@ -51,9 +51,12 @@ export interface ChatEvent {
     error?: { code: string; message: string }
     usage?: { inputTokens?: string; outputTokens?: string; reasoningTokens?: string }
   }
+  // One tool execution's terminal outcome (agent_v2.proto ToolResultEvent);
+  // toolId joins back to the originating tool-call block (research D10).
+  toolResult?: { toolId: string; status: string; result: string }
 }
 
-// ─── 历史（HistoryMessage，conversation-api.md §1） ─────────────────────────
+// ─── 历史（HistoryMessage，agent-api.md §1 ListAgentMessages） ───────────────
 
 export type Role = 'ROLE_UNSPECIFIED' | 'ROLE_USER' | 'ROLE_AGENT'
 
@@ -65,8 +68,9 @@ export interface HistoryMessage {
   blocks: ContentBlock[]
 }
 
-export interface ListHistoryResponse {
+export interface ListAgentMessagesResponse {
   messages?: HistoryMessage[]
+  nextPageToken?: string
 }
 
 // ─── 错误与请求设施 ──────────────────────────────────────────────────────────
@@ -136,21 +140,12 @@ export async function* sendStream(
   }
 }
 
+// listHistory backfills the agent singleton's messages via the standard
+// List method (AIP-132): parent is the agent resource name
+// templates/{template}/sessions/{session}/agent.
 export async function listHistory(session: string): Promise<HistoryMessage[]> {
-  const res = await requestJson<ListHistoryResponse>(
-    `/api/v2/${session}:history`,
+  const res = await requestJson<ListAgentMessagesResponse>(
+    `/api/v2/${session}/agent/messages`,
   )
   return res.messages ?? []
-}
-
-// disposeSession releases the agent_v2 session immediately; idempotent — an
-// absent session is treated as already released (conversation-api.md §2), so
-// callers may run it after the /api/v1 delete and ignore failures
-// (specs/049-agent-v2-dsh-init/research.md D6).
-export async function disposeSession(session: string): Promise<void> {
-  await requestJson(`/api/v2/${session}:dispose`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  })
 }

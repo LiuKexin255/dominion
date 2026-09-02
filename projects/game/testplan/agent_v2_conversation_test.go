@@ -18,48 +18,19 @@ import (
 	gamev2 "dominion/projects/game/v2"
 )
 
-// agentV2TurnResult is what a drain goroutine reports back: the collected
-// events plus the first read error, if any. t.Fatal must only run on the test
-// goroutine, so async drains report through this channel instead.
-type agentV2TurnResult struct {
-	events []*gamev2.ChatEvent
-	err    error
-}
-
-// drainAgentV2TurnAsync drains a Send stream to its turn_end on a reader
-// goroutine and reports the events (or the read error) on the channel. The
-// stream body is closed after the turn ends.
-func drainAgentV2TurnAsync(stream *agentV2EventStream) <-chan agentV2TurnResult {
-	ch := make(chan agentV2TurnResult, 1)
-	go func() {
-		var result agentV2TurnResult
-		defer func() {
-			stream.Close()
-			ch <- result
-		}()
-		for {
-			evt, err := nextAgentV2EventNoFatal(stream.Scanner)
-			if err != nil {
-				result.err = err
-				return
-			}
-			result.events = append(result.events, evt)
-			if evt.GetTurnEnd() != nil {
-				return
-			}
-		}
-	}()
-	return ch
-}
-
-// agentV2Prep creates one saolei-template session and returns its full
-// /api/v2 resource name — the shared arrange step of every conversation
-// test (the /api/v2 surface keys sessions off the resource name alone).
+// agentV2Prep creates one saolei-template session, materializes its agent
+// (preset + UpdateAgent — Send has no lazy materialization since FR-007),
+// and returns the full /api/v2 resource name — the shared arrange step of
+// every conversation test (the /api/v2 surface keys sessions off the
+// resource name alone).
 func agentV2Prep(t *testing.T, sutHostURL, sutEnvName string) (ctx context.Context, sessionName string) {
 	t.Helper()
 	ctx = traceContext(t)
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
-	return ctx, agentV2SessionName(sessionID)
+	sessionName = agentV2SessionName(sessionID)
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-"+uniqueSuffix(), "conversation persona")
+	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
+	return ctx, sessionName
 }
 
 // TestAgentV2StreamedTurnSequenceAndBlocks covers quickstart §2 用例 2
@@ -215,6 +186,11 @@ func TestAgentV2ConcurrentSessionIsolation(t *testing.T) {
 	id2, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 	name1 := agentV2SessionName(id1)
 	name2 := agentV2SessionName(id2)
+	// Both sessions materialize their own agent before the turns (FR-007).
+	preset1 := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-iso-1-"+uniqueSuffix(), "isolation one")
+	preset2 := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-iso-2-"+uniqueSuffix(), "isolation two")
+	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, name1, preset1.GetName(), "")
+	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, name2, preset2.GetName(), "")
 
 	text1 := agentV2TriggerSlow + " session one isolation marker"
 	text2 := agentV2TriggerSlow + " session two isolation marker"
@@ -368,27 +344,32 @@ func TestAgentV2QueuedTurnAutoResumes(t *testing.T) {
 }
 
 // TestAgentV2HistoryBackfillMatchesStream covers quickstart §2 用例 6
-// (FR-014): a never-seen session reads an empty history through the proxy
-// short-circuit (no owner allocation, conversation.go agent read paths); after a
-// greet turn, ListAgentMessages returns the user message plus the agent reply whose
-// blocks equal the streamed terminal state (think = the two reasoning
-// pieces, text = the reply body) with per-message ids.
+// (FR-014): a never-materialized session reads its history as 404 NOT_FOUND
+// — the read paths only look the owner up and never allocate one
+// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.2/§2.3); after
+// a greet turn, ListAgentMessages returns the user message plus the agent
+// reply whose blocks equal the streamed terminal state (think = the two
+// reasoning pieces, text = the reply body) with per-message ids.
 func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// A session that never sent a message: 200 with an empty list — the
-	// read path must not allocate an owner (conversation-api.md §2).
+	// A session that never materialized an agent: 404 NOT_FOUND — the read
+	// path must not allocate an owner (agent-api.md §2.2/§2.3).
 	ghostName := "templates/" + saoleiTemplateID + "/sessions/ghost-" + uniqueSuffix()
-	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, ghostName)
-	if len(hist.GetMessages()) != 0 {
-		t.Fatalf("never-used session history = %d messages, want 0", len(hist.GetMessages()))
+	status, _ := listAgentV2MessagesWithStatus(t, ctx, sutHostURL, sutEnvName, ghostName)
+	if status != http.StatusNotFound {
+		t.Fatalf("never-materialized session history status = %d, want 404 NOT_FOUND (agent-api.md §2.3)", status)
 	}
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 	sessionName := agentV2SessionName(sessionID)
 	userText := agentV2TriggerThink + " remember this turn"
+
+	// Materialize before the turn (FR-007: no lazy creation).
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-backfill-"+uniqueSuffix(), "backfill persona")
+	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 
 	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName, userText)
 	defer stream.Close()
@@ -396,7 +377,7 @@ func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
 	assertAgentV2TurnWellFormed(t, sessionName, events)
 	term := agentV2TerminalBlocksFromEvents(events)
 
-	hist = listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
 	messages := hist.GetMessages()
 	if len(messages) != 2 {
 		t.Fatalf("history messages = %d, want 2 (user turn + agent reply)", len(messages))
@@ -480,7 +461,7 @@ func TestAgentV2InvalidInputRejected(t *testing.T) {
 		session string
 		text    string
 	}{
-		// The proxy validates empty text (conversation.go Send) before any
+		// The proxy validates empty text (agent.go Send) before any
 		// owner work; unknown templates fail resource-name parsing — both
 		// INVALID_ARGUMENT → 400 (conversation-api.md §2.1).
 		{name: "empty text", session: sessionName, text: ""},

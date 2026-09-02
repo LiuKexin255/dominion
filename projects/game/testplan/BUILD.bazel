@@ -236,7 +236,13 @@ go_largetest(
         "agent_v2_conversation_test.go",
         "agent_v2_helpers_test.go",
         "helpers_test.go",
+        # The shared agent_v2 helpers now stage flow receipts (the
+        # desktop-flow/game suites' serveWonInitReceipt), which consume the
+        # embedded board fixtures — the shared-fixture file travels with the
+        # helper set (style/large_test.md §反模式3).
+        "saolei_fixtures_test.go",
     ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
@@ -260,8 +266,76 @@ go_largetest(
     srcs = [
         "agent_v2_helpers_test.go",
         "helpers_test.go",
+        # Shared agent_v2 helpers + fixtures travel together (see the
+        # agent_v2_conversation_test target note).
+        "saolei_fixtures_test.go",
         "web_test.go",
     ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game:agent_v2",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# agent_v2_game_test is the agent_v2 US1 game-loop suite (specs/051-agent-v2-
+# dsh-migration — quickstart §2 agent-v2-game): the fake-llm game chain over
+# the /api/v2 Send stream against the fake-desktop executors — the won-chain
+# tool stream with the board-text contract and the game_won terminal reject,
+# the desktop-absent branch, the mid-game disconnect and reconnect recovery,
+# concurrent multi-session isolation, and two-stream independence. It shares
+# the agent_v2 helpers (agent_v2_helpers_test.go) and embeds the win-board
+# fixture used to answer its own flow receipts.
+#
+# size = medium: the disconnect case waits out the fake-desktop's reconnect
+# cycle between its two games and the isolation/two-stream cases run full
+# game chains per session — well beyond small's 60s budget alongside the
+# materialization latency of every case (style/large_test.md §测试用例).
+go_largetest(
+    name = "agent_v2_game_test",
+    size = "medium",
+    srcs = [
+        "agent_v2_game_test.go",
+        "agent_v2_helpers_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game:agent_v2",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# desktop_flow_test is the flow-control stream suite from the desktop's side
+# (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点):
+# the connect probe echo, the second-connection takeover, the operation
+# delivery → receipt → recognition loop with the test serving the win-board
+# receipt, and the in-flight failure when the connection vanishes mid-dispatch.
+# It shares the agent_v2 helpers (the /api/v2 flow WS dial and the game prep)
+# and the saolei fixtures (the recognizable receipt screenshot).
+go_largetest(
+    name = "desktop_flow_test",
+    size = "medium",
+    srcs = [
+        "agent_v2_helpers_test.go",
+        "desktop_flow_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",

@@ -27,6 +27,19 @@ import (
 
 var port = flag.String("port", "50051", "Port to listen on")
 
+// registerServices wires the proxy's gRPC surface onto one server: the v1
+// TeamService forwarding face plus the agent_v2 AgentService (the /api/v2
+// conversation surface) and DesktopBridgeService (the desktop flow stream)
+// faces, all dispatched to the agent_v2 stateful pool through the owner
+// store. Registration only — callers keep ownership of the handlers'
+// lifecycle.
+func registerServices(srv *grpcgo.Server, teamHandler game.TeamServiceServer, agentHandler gamev2.AgentServiceServer, bridgeHandler gamev2.DesktopBridgeServiceServer) {
+	game.RegisterTeamServiceServer(srv, teamHandler)
+	gamev2.RegisterAgentServiceServer(srv, agentHandler)
+	gamev2.RegisterDesktopBridgeServiceServer(srv, bridgeHandler)
+	reflection.Register(srv)
+}
+
 func main() {
 	flag.Parse()
 
@@ -83,6 +96,18 @@ func main() {
 		bind.NewServerStreamBinder[gamev2.ChatEvent](),
 	)
 
+	// Bridge handler relays the desktop flow-control WebSocket stream
+	// (gateway /api/v2 connect) to the agent_v2 instance owning the session
+	// — the owner is allocated get-or-create so the flow stream and the
+	// conversation share one instance
+	// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §4).
+	bridgeHandler := handler.NewDesktopBridgeHandler(
+		agentV2OwnerStore,
+		hashPicker,
+		agentV2Manager,
+		binder,
+	)
+
 	// gRPC server with default service options (OTel tracing, TLS).
 	// The gateway's TeamService.Connect client pings every 30s
 	// (WithLongLivedClientKeepalive); without a relaxed enforcement policy
@@ -95,9 +120,7 @@ func main() {
 		pgrpc.WithLongLivedServerKeepalive(),
 	)
 	grpcServer := grpcgo.NewServer(serverOpts...)
-	game.RegisterTeamServiceServer(grpcServer, grpcHandler)
-	gamev2.RegisterAgentServiceServer(grpcServer, agentHandler)
-	reflection.Register(grpcServer)
+	registerServices(grpcServer, grpcHandler, agentHandler, bridgeHandler)
 
 	// Bootstrap lifecycle: OTEL → Mongo client → Agent client managers → gRPC server.
 	b := bootstrap.New()

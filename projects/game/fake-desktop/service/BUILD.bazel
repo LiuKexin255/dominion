@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "service",
+    srcs = [
+        "board.go",
+        "executor.go",
+        "scenarios.go",
+        "session.go",
+    ],
+    embedsrcs = [
+        "testdata/saolei_1.png",
+        "testdata/saolei_10.png",
+        "testdata/saolei_3.png",
+        "testdata/saolei_4.png",
+        "testdata/saolei_5.png",
+    ],
+    importpath = "dominion/projects/game/fake-desktop/service",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//projects/game",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_unittest(
+    name = "service_test",
+    srcs = [
+        "board_test.go",
+        "executor_test.go",
+        "session_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":service"],
+    deps = [
+        "//projects/game",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

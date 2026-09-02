@@ -241,9 +241,11 @@ func NewChatHandler(store *MessageStore, rng *rand.Rand) *ChatHandler {
 // bearer (no validation), decodes the request body, and dispatches by
 // the role of the LAST message:
 //
-//   - role "tool" → tools branch: MatchToolResult against store.Tools()
-//     by tool_name (+ optional match_result_contains), producing either
-//     a text response or a tool_call response.
+//   - role "tool" → tools branch: MatchToolResult against the
+//     chat-completions scope of store.Tools() (the non-responses-only
+//     entries — ToolsForEndpoint) by tool_name (+ optional
+//     match_result_contains), producing either a text response or a
+//     tool_call response.
 //   - any other role (user/assistant/system) → messages branch: the
 //     existing keyword-match path against store.Messages().
 //
@@ -305,7 +307,7 @@ func (h *ChatHandler) dispatch(messages []*messageParam) responseSpec {
 	if lastMessageRole(messages) == "tool" {
 		toolName := extractToolName(messages)
 		resultText := decodeContent(lastMessageContent(messages))
-		tc, _ := MatchToolResult(h.store.Tools(), toolName, resultText, h.rng)
+		tc, _ := MatchToolResult(ToolsForEndpoint(h.store.Tools(), false), toolName, resultText, h.rng)
 		return specFromTool(tc)
 	}
 

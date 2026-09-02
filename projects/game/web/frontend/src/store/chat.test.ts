@@ -166,6 +166,175 @@ describe('ChatStore reducer', () => {
     expect(store.getSnapshot().live).toBeNull()
   })
 
+  it('tool_result settles the live RUNNING block by tool_id (status + result)', () => {
+    const store = new ChatStore()
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({
+      turnId: 't1',
+      blockStart: {
+        index: 0,
+        type: 'BLOCK_TYPE_TOOL_CALL',
+        toolId: 'call-1',
+        name: 'saolei_init',
+      },
+    })
+    store.applyEvent({ turnId: 't1', delta: { index: 0, text: '{}' } })
+
+    store.applyEvent({
+      turnId: 't1',
+      toolResult: {
+        toolId: 'call-1',
+        status: 'TOOL_STATUS_SUCCEEDED',
+        result: 'new game started\ngame status: playing',
+      },
+    })
+
+    // RUNNING → SUCCEEDED with the rendered result; args stay intact.
+    expect(store.getSnapshot().live?.blocks[0]).toEqual({
+      index: 0,
+      type: 'TOOL_CALL',
+      toolId: 'call-1',
+      name: 'saolei_init',
+      args: '{}',
+      status: 'TOOL_STATUS_SUCCEEDED',
+      result: 'new game started\ngame status: playing',
+    })
+    expect(store.getSnapshot().history).toEqual([])
+  })
+
+  it('tool_result FAILED settles the live block with the error text', () => {
+    const store = new ChatStore()
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({
+      turnId: 't1',
+      blockStart: {
+        index: 0,
+        type: 'BLOCK_TYPE_TOOL_CALL',
+        toolId: 'call-2',
+        name: 'saolei_operate',
+      },
+    })
+
+    store.applyEvent({
+      turnId: 't1',
+      toolResult: {
+        toolId: 'call-2',
+        status: 'TOOL_STATUS_FAILED',
+        result: 'desktop disconnected',
+      },
+    })
+
+    expect(store.getSnapshot().live?.blocks[0]).toMatchObject({
+      status: 'TOOL_STATUS_FAILED',
+      result: 'desktop disconnected',
+    })
+  })
+
+  it('tool_result falls back to the most recent matching RUNNING history block', () => {
+    const store = new ChatStore()
+    // A turn ended with its tool call still RUNNING (assistant-message
+    // projection, data-model.md §2.3): the block lands in history as RUNNING.
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({
+      turnId: 't1',
+      blockStart: {
+        index: 0,
+        type: 'BLOCK_TYPE_TOOL_CALL',
+        toolId: 'call-9',
+        name: 'saolei_init',
+      },
+    })
+    store.applyEvent({ turnId: 't1', turnEnd: { status: 'TURN_STATUS_COMPLETED' } })
+    expect(
+      store.getSnapshot().history[0]?.blocks[0],
+    ).toMatchObject({ toolCall: { status: 'TOOL_STATUS_RUNNING' } })
+
+    // A later stream (live is null) carries the missing result frame.
+    store.applyEvent({
+      turnId: 't2',
+      toolResult: {
+        toolId: 'call-9',
+        status: 'TOOL_STATUS_SUCCEEDED',
+        result: 'board text',
+      },
+    })
+
+    const block = store.getSnapshot().history[0]?.blocks[0]
+    expect(block).toMatchObject({
+      toolCall: { toolId: 'call-9', status: 'TOOL_STATUS_SUCCEEDED', result: 'board text' },
+    })
+    expect(store.getSnapshot().live).toBeNull()
+  })
+
+  it('tool_result with an unknown tool_id is ignored (forward-compat)', () => {
+    const store = new ChatStore()
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({
+      turnId: 't1',
+      blockStart: {
+        index: 0,
+        type: 'BLOCK_TYPE_TOOL_CALL',
+        toolId: 'call-1',
+        name: 'saolei_init',
+      },
+    })
+
+    store.applyEvent({
+      turnId: 't1',
+      toolResult: {
+        toolId: 'call-unknown',
+        status: 'TOOL_STATUS_SUCCEEDED',
+        result: 'stale',
+      },
+    })
+
+    // No state transition: the running block stays RUNNING and untouched.
+    expect(store.getSnapshot().live?.blocks[0]).toEqual({
+      index: 0,
+      type: 'TOOL_CALL',
+      toolId: 'call-1',
+      name: 'saolei_init',
+      args: '',
+      status: 'TOOL_STATUS_RUNNING',
+    })
+  })
+
+  it('tool_result does not re-settle an already terminal block', () => {
+    const store = new ChatStore()
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({
+      turnId: 't1',
+      blockStart: {
+        index: 0,
+        type: 'BLOCK_TYPE_TOOL_CALL',
+        toolId: 'call-1',
+        name: 'bash',
+      },
+    })
+    store.applyEvent({
+      turnId: 't1',
+      toolResult: {
+        toolId: 'call-1',
+        status: 'TOOL_STATUS_SUCCEEDED',
+        result: 'first',
+      },
+    })
+    store.applyEvent({
+      turnId: 't1',
+      toolResult: {
+        toolId: 'call-1',
+        status: 'TOOL_STATUS_FAILED',
+        result: 'second',
+      },
+    })
+
+    // The first terminal status wins; the late duplicate is ignored.
+    expect(store.getSnapshot().live?.blocks[0]).toMatchObject({
+      status: 'TOOL_STATUS_SUCCEEDED',
+      result: 'first',
+    })
+  })
+
   it('turn_end{ERROR} surfaces the error, keeps the session usable', () => {
     const store = new ChatStore()
     store.applyEvent({ turnId: 't1', turnStart: {} })
@@ -204,7 +373,7 @@ describe('ChatStore reducer', () => {
     })
   })
 
-  it('loadHistory rebuilds the state from a :history backfill', () => {
+  it('loadHistory rebuilds the state from a List backfill', () => {
     const store = new ChatStore()
     store.applyEvent({ queued: { position: 1 } })
     store.applyEvent({ turnId: 't1', turnStart: {} })
@@ -326,7 +495,8 @@ describe('ChatStore reducer', () => {
 
     // Session-create failure: the stream opens straight into turn_end{ERROR}
     // — no queued/turn_start frame ever carried this send's text out of the
-    // FIFO (dispose-race turn_end{ABORTED} first frames share this path).
+    // FIFO (re-materialization race turn_end{ABORTED} first frames share
+    // this path).
     await store.send(
       '失败消息',
       eventsOf([

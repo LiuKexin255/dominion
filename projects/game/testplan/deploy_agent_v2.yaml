@@ -1,7 +1,7 @@
 version: "3.0"
 name: game.{{run}}
 type: test
-desc: "Game agent_v2 conversation test (dsh agent_v2 + web, fake-llm /v1/responses, gateway→proxy→agent_v2 two-hop)"
+desc: "Game agent_v2 test deployment (dsh agent_v2 + web + game/desktop-flow suites, fake-llm /v1/responses, fake-desktop executors, gateway→proxy→agent_v2 two-hop)"
 services:
   - infra:
       resource: mongodb
@@ -14,8 +14,35 @@ services:
       path: //projects/game/session/service.yaml
       name: session
   - artifact:
+      path: //projects/game/memory/service.yaml
+      name: memory
+  - artifact:
       path: //projects/game/fake-llm/service.yaml
       name: fake-llm
+  # Deterministic desktop executors (specs/051-agent-v2-dsh-migration/
+  # research.md D15). Each instance binds ONE caller-id session so the game
+  # suites can address a known flow-connected board; sessions without a
+  # fake-desktop connection exercise the desktop-absent branch. The drop
+  # instance injects one mid-game disconnect per connection lifetime: after
+  # the third operation receipt (init F2 + two cell ops) the connection
+  # closes, so the NEXT game's init dispatch fails with "desktop
+  # disconnected" while a game already in flight finished unaffected
+  # (US1 scenarios 5/6).
+  - artifact:
+      path: //projects/game/fake-desktop/service.yaml
+      name: fake-desktop-won
+      env:
+        FAKE_DESKTOP_GATEWAY_URL: dominion:///game/gateway:80
+        FAKE_DESKTOP_SESSION: desktop-e2e-won
+        FAKE_DESKTOP_SCENARIO: won
+  - artifact:
+      path: //projects/game/fake-desktop/service-drop.yaml
+      name: fake-desktop-drop
+      env:
+        FAKE_DESKTOP_GATEWAY_URL: dominion:///game/gateway:80
+        FAKE_DESKTOP_SESSION: desktop-e2e-drop
+        FAKE_DESKTOP_SCENARIO: progressive
+        FAKE_DESKTOP_FAULT_DISCONNECT_AFTER_OPS: "3"
   # The proxy is a mandatory hop for /api/v2: gateway → proxy (owner affinity,
   # game_proxy.agent_v2_owners) → agent_v2 stateful instance
   # (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §1 托管拓扑).

@@ -101,9 +101,11 @@ func TestWebServesStaticAssets(t *testing.T) {
 }
 
 // TestWebManagementLoopSmoke covers quickstart §2 用例 1 (US4) at the HTTP
-// layer the page drives: 新建 → 列表可见 → 进入对话发一轮 → 删除 闭环, with
-// the conversation riding /api/v2 exactly as the frontend does
-// (specs/049-agent-v2-dsh-init/research.md D6 删除编排).
+// layer the page drives: 新建 → 物化 agent（preset + UpdateAgent）→ 发一轮
+// 对话 → 回填可见 → 删除 闭环 (specs/051-agent-v2-dsh-migration/
+// contracts/agent-api.md §2/§5; web-frontend.md §2/§3 — the page guides the
+// unmaterialized session through the preset/model panel before sending, and
+// the delete orchestration is the bare session DELETE with no dispose hop).
 func TestWebManagementLoopSmoke(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -113,6 +115,11 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 	sessionName := agentV2SessionName(sessionID)
 	t.Logf("created session %s", sessionName)
+
+	// 物化：the page's agent panel applies a preset (agent-api.md §2.1 —
+	// Send has no lazy materialization).
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "web-loop-"+uniqueSuffix(), "web smoke persona")
+	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 
 	// 列表可见：the new session appears in the template listing.
 	listBody := listSessions(t, sutHostURL, sutEnvName, saoleiTemplateID, 50)
@@ -146,19 +153,19 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 		t.Errorf("smoke turn text = %q, want %q", got, agentV2GreetText)
 	}
 
-	// 回填：the conversation history is queryable for the page refresh path.
-	hist := listAgentV2History(t, ctx, sutHostURL, sutEnvName, sessionName)
+	// 回填：the materialized agent's history is queryable through the
+	// standard List method (agent-api.md §2.3) for the page refresh path.
+	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
 	if len(hist.GetMessages()) != 2 {
 		t.Errorf("history messages = %d, want 2", len(hist.GetMessages()))
 	}
 
-	// 删除：delete orchestrates dispose (D6) and the session vanishes from
-	// the listing (US4 场景 2).
+	// 删除：the delete orchestration is ONLY the session DELETE — Dispose
+	// is gone and the agent is not fanned out (FR-007, web-frontend.md §5).
 	delResp := deleteSession(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE session status = %d, want 200 or 204", delResp.StatusCode)
 	}
-	disposeAgentV2(t, ctx, sutHostURL, sutEnvName, sessionName)
 
 	listBody = listSessions(t, sutHostURL, sutEnvName, saoleiTemplateID, 50)
 	list = listSessionsResponse{}

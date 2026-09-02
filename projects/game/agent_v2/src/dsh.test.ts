@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultLogger } from "@dominion/common-js-logs";
+import * as fs from "node:fs";
+// js-yaml v5 ships a real ESM build — named imports are statically resolved.
+import { YAML11_SCHEMA, defineScalarTag, load } from "js-yaml";
 import { bootDsh, cordisConfigPath, GLM_DEFAULT_BASE_URL, GLM_SECRET_FILE } from "./dsh.js";
 import type { DshBootDeps, DshContext } from "./dsh.js";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
@@ -10,7 +13,11 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * (GLM_BASE_URL > GLM_LLM_TARGET resolved > default), secret-file token
  * injection with zero token leakage in diagnostics (SC-004), and the
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
- * shape.
+ * shape — plus the composition manifest contract
+ * (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5): the
+ * direct-composed 15-row set, no spine row and no official agent-loop row
+ * (FR-012), the trimmed system-prompt config, the subpath invariant
+ * companion rows (research.md D5), and the llm-glm model catalog.
  *
  * `boot`, the resolver, and the secret reader are injected as `vi.fn()`
  * doubles through the DshBootDeps seam; `process.exit` is spied so the
@@ -262,5 +269,111 @@ describe("bootDsh", () => {
     expect(args[3]).toBeUndefined();
     // The bare-module anchor pins plugin resolution at this module.
     expect(String(args[4])).toContain("dsh.ts");
+  });
+});
+
+// ── composition manifest (saolei-plugins.md §5 / data-model.md §2.8) ────────
+
+/** One parsed cordis.yml entry row (`!!js` scalars round-trip as their text). */
+interface ManifestRow {
+  id: string;
+  name: string;
+  config?: Record<string, unknown>;
+}
+
+/**
+ * Parse the composition manifest with the Loader's entry-list dialect: the
+ * `!!js` scalars are expression nodes the Loader evaluates at activation
+ * (dsh-app-boot JsExpr tag); for assertions the expression text itself is
+ * the expected value, so the tag resolves to its verbatim source.
+ */
+function loadManifest(): ManifestRow[] {
+  const jsExpr = defineScalarTag("tag:yaml.org,2002:js", {
+    resolve: (source: string) => source,
+  });
+  const schema = YAML11_SCHEMA.withTags(jsExpr);
+  const text = fs.readFileSync(cordisConfigPath(), "utf8");
+  return load(text, { schema }) as ManifestRow[];
+}
+
+describe("cordis.yml composition manifest", () => {
+  const rows = loadManifest();
+
+  it("direct-composes the 15-row plugin set in contract order", () => {
+    expect(rows.map((row) => row.id)).toEqual([
+      "timer",
+      "llm",
+      "session",
+      "system-prompt",
+      "tools",
+      "agents",
+      "invariants",
+      "invariant-session",
+      "invariant-agent",
+      "invariant-scope",
+      "llm-retry",
+      "llm-glm",
+      "desktop-bridge",
+      "saolei-loop",
+      "saolei",
+    ]);
+  });
+
+  it("mounts no spine row and no official agent-loop row (FR-012)", () => {
+    const names = rows.map((row) => row.name);
+    expect(names).not.toContain("@deepseek-ai/dsh-agent-spine-demo");
+    expect(names).not.toContain("@deepseek-ai/dsh-agent-loop");
+    expect(names.filter((name) => name.includes("spine"))).toEqual([]);
+  });
+
+  it("trims the system-prompt config (no harness identity, no runtime context)", () => {
+    const row = rows.find((entry) => entry.id === "system-prompt");
+    expect(row?.config).toEqual({
+      includeHarnessIdentity: false,
+      includeRuntimeContext: false,
+    });
+  });
+
+  it("mounts the invariant companions as subpath rows (research.md D5 case A)", () => {
+    expect(rows.find((row) => row.id === "invariant-session")?.name).toBe(
+      "@deepseek-ai/dsh-session/invariant",
+    );
+    expect(rows.find((row) => row.id === "invariant-agent")?.name).toBe(
+      "@deepseek-ai/dsh-agent/invariant",
+    );
+    expect(rows.find((row) => row.id === "invariant-scope")?.name).toBe(
+      "@deepseek-ai/dsh-scope/invariant",
+    );
+  });
+
+  it("keeps the GLM adapter row with the env-sourced default model catalog", () => {
+    const row = rows.find((entry) => entry.id === "llm-glm");
+    expect(row?.name).toBe("@dominion/dsh-llm-glm");
+    const config = row?.config as {
+      apiKeyEnv: string;
+      baseURL: string;
+      models: Array<{ id: string; contextWindow: number }>;
+    };
+    expect(config.apiKeyEnv).toBe("GLM_API_KEY");
+    expect(config.baseURL).toContain("GLM_BASE_URL");
+    // The catalog default is the SAME expression the host's default-model
+    // resolution uses (research.md D4 同源).
+    expect(config.models).toHaveLength(1);
+    expect(config.models[0].id).toContain("GLM_MODEL");
+    expect(config.models[0].id).toContain("glm-5.2");
+    expect(config.models[0].contextWindow).toBe(1_000_000);
+  });
+
+  it("mounts the three Dominion plugins (bridge, loop, tools)", () => {
+    const byId = new Map(rows.map((row) => [row.id, row.name]));
+    expect(byId.get("desktop-bridge")).toBe("@dominion/dsh-desktop-bridge");
+    expect(byId.get("saolei-loop")).toBe("@dominion/dsh-saolei-loop");
+    expect(byId.get("saolei")).toBe("@dominion/dsh-saolei");
+  });
+
+  it("mounts no persistence and no settings row (research.md §3.1)", () => {
+    const names = rows.map((row) => row.name).join(" ");
+    expect(names).not.toContain("session-persistence");
+    expect(names).not.toContain("dsh-settings");
   });
 });

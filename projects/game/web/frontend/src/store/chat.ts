@@ -1,8 +1,9 @@
 // 会话对话状态 store：ChatEvent 归约 + useSyncExternalStore 绑定。归约不变式
-// 照 specs/049-agent-v2-dsh-init/contracts/web-frontend.md §4，事件序保证见
-// specs/049-agent-v2-dsh-init/contracts/conversation-api.md §3（每流恰好一个
-// 终结 turn_end、queued 先于 turn_start、delta 按到达序拼接）。store 无框架
-// 依赖；React 侧经 useChatState 订阅（react.dev/reference/react/
+// 照 specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §4，事件序保证
+// 见 specs/049-agent-v2-dsh-init/contracts/conversation-api.md §3（每流恰好一
+// 个终结 turn_end、queued 先于 turn_start、delta 按到达序拼接；tool_result 为
+// 051 扩展帧，specs/051-agent-v2-dsh-migration/data-model.md §2.4）。store 无
+// 框架依赖；React 侧经 useChatState 订阅（react.dev/reference/react/
 // useSyncExternalStore——getSnapshot 返回缓存快照，未变化时同一引用）。
 import { useSyncExternalStore } from 'react'
 import type { ChatEvent, ContentBlock, HistoryMessage, Role } from '../api/conversation.js'
@@ -33,7 +34,7 @@ export interface LiveTurn {
 }
 
 export interface ChatState {
-  // :history 回填 + 流式回合合并产物（web-frontend.md §4）。
+  // 标准 List 回填 + 流式回合合并产物（web-frontend.md §4）。
   history: HistoryMessage[]
   live: LiveTurn | null
   queue: QueuedMsg[]
@@ -104,6 +105,35 @@ function blockEndTerminal(
   return { index: draft.index, type: draft.type, text }
 }
 
+// settleDraft overlays one tool_result frame onto a RUNNING tool-call draft;
+// non-matching drafts pass through unchanged (data-model.md §2.4: tool_id is
+// the join key; only the RUNNING block settles).
+function settleDraft(draft: BlockDraft, toolId: string, status: string, result: string): BlockDraft {
+  if (draft.type !== 'TOOL_CALL' || draft.toolId !== toolId || draft.status !== 'TOOL_STATUS_RUNNING') {
+    return draft
+  }
+  return { ...draft, status, result }
+}
+
+// settleHistoryMessage applies one tool_result frame to a backfilled history
+// message: the matching RUNNING tool-call block (by tool_id) reaches its
+// terminal status with the rendered result.
+function settleHistoryMessage(
+  message: HistoryMessage,
+  toolId: string,
+  status: string,
+  result: string,
+): HistoryMessage {
+  return {
+    ...message,
+    blocks: message.blocks.map((b) =>
+      b.toolCall?.toolId === toolId && b.toolCall.status === 'TOOL_STATUS_RUNNING'
+        ? { ...b, toolCall: { ...b.toolCall, status, result } }
+        : b,
+    ),
+  }
+}
+
 // turnId anchors delta/block events to the live turn (server-minted UUID,
 // constant across one turn's events — conversation-api.md §1).
 function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatState {
@@ -145,6 +175,35 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
     )
     return { ...state, live: { ...state.live, blocks } }
   }
+  if (event.toolResult) {
+    // 工具结果终态化（web-frontend.md §4）：按 tool_id 找 live/history 中
+    // 最近的 RUNNING ToolCallBlock 更新终态；找不到（如重启后残留流）忽略。
+    const { toolId, status, result } = event.toolResult
+    if (state.live) {
+      let hit = false
+      const blocks = state.live.blocks.map((b) => {
+        const next = settleDraft(b, toolId, status, result)
+        hit = hit || next !== b
+        return next
+      })
+      if (hit) return { ...state, live: { ...state.live, blocks } }
+    }
+    // live 未命中：回退到历史（逆序 = 最近的 AGENT 消息优先），仅存在匹配块
+    // 时重建数组。
+    for (let i = state.history.length - 1; i >= 0; i -= 1) {
+      const m = state.history[i]
+      if (
+        m.blocks.some(
+          (b) => b.toolCall?.toolId === toolId && b.toolCall.status === 'TOOL_STATUS_RUNNING',
+        )
+      ) {
+        const history = state.history.slice()
+        history[i] = settleHistoryMessage(m, toolId, status, result)
+        return { ...state, history }
+      }
+    }
+    return state
+  }
   if (event.turnEnd) {
     switch (event.turnEnd.status) {
       case 'TURN_STATUS_COMPLETED': {
@@ -160,7 +219,7 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
       }
       case 'TURN_STATUS_ERROR':
         // 本轮失败：明确提示，会话不崩、输入可重试（web-frontend.md §4）；
-        // 失败回合的部分内容不并入历史，刷新后以服务端 :history 为准。
+        // 失败回合的部分内容不并入历史，刷新后以服务端 List 回填为准。
         return { ...state, live: null, error: event.turnEnd.error?.message ?? '对话回合失败' }
       case 'TURN_STATUS_ABORTED':
         // 会话已删除：清空（提示与返回列表由 App 层编排，web-frontend.md §4）。
@@ -207,7 +266,7 @@ export class ChatStore {
     this.apply(event)
   }
 
-  // loadHistory rebuilds the state from a :history backfill (FR-014 回填，
+  // loadHistory rebuilds the state from a List backfill (FR-014 回填，
   // web-frontend.md §4「刷新/切换会话 → 全量重建」)。
   loadHistory(messages: HistoryMessage[]): void {
     this.setState({ history: messages, live: null, queue: [], error: null })
@@ -261,8 +320,8 @@ export class ChatStore {
       }
       // Stream ended normally without ever delivering queued/turn_start (e.g.
       // first frame is turn_end{ERROR} on a session-create failure, or
-      // turn_end{ABORTED} on a dispose race): the text never left the FIFO —
-      // drop it so a later queued chip cannot pick it up.
+      // turn_end{ABORTED} on a re-materialization race): the text never left
+      // the FIFO — drop it so a later queued chip cannot pick it up.
       if (!consumed) consumeSendText()
     } catch (err) {
       if (!consumed) consumeSendText()

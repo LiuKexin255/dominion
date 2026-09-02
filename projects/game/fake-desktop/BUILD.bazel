@@ -1,0 +1,35 @@
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+
+# One image per deploy instance manifest (service.yaml / service-drop.yaml):
+# the deploy plane validates the image metadata's service name against the
+# manifest's top-level name, so the disconnect-injection instance carries its
+# own pkg/image pair with the matching service name.
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "game",
+    binary = "//projects/game/fake-desktop/cmd:cmd",
+    service = "fake-desktop-won",
+)
+
+artifact_image(
+    name = "cmd_image_won",
+    app = "game",
+    pkg = ":service_pkg",
+    service = "fake-desktop-won",
+    visibility = ["//visibility:public"],
+)
+
+artifact_pkg_go(
+    name = "service_pkg_drop",
+    app = "game",
+    binary = "//projects/game/fake-desktop/cmd:cmd",
+    service = "fake-desktop-drop",
+)
+
+artifact_image(
+    name = "cmd_image_drop",
+    app = "game",
+    pkg = ":service_pkg_drop",
+    service = "fake-desktop-drop",
+    visibility = ["//visibility:public"],
+)

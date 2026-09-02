@@ -7,9 +7,11 @@ bazel target 保留 `agent_v2`）：以 **dsh 进程内嵌入（B1 模式）**�
 0.1.1-rc.2，与 `third_party/dsh/core` 同线），通过自研 LLM 插件
 `@dominion/dsh-llm-glm`（`common/js/dsh-plugins/llm-glm`）接入 GLM codingplan
 的 OpenAI **Responses** 协议端点（`https://open.bigmodel.cn/api/v1`，
-https://docs.bigmodel.cn/cn/coding-plan/tool/others）。本阶段为零工具的纯对话
-agent（组合清单 `cordis.yml` 裁剪全部工具面，spec FR-006），需求与验收锚点见
-`specs/049-agent-v2-dsh-init/spec.md` 与 `specs/049-agent-v2-dsh-init/quickstart.md`。
+https://docs.bigmodel.cn/cn/coding-plan/tool/others）。组合清单 `cordis.yml`
+直组 dsh 核心件（无 spine、无官方 agent-loop）加桌面桥接与 saolei 游戏插件
+三件（`specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §5，
+FR-012），需求与验收锚点见 `specs/051-agent-v2-dsh-migration/spec.md` 与
+`specs/049-agent-v2-dsh-init/spec.md`。
 
 ## 服务形态与拓扑
 

@@ -21,7 +21,7 @@ function jsonResponse(body: unknown): Response {
 
 // wireChunk wraps one bare ChatEvent JSON line in the grpc-gateway v2
 // streaming envelope the real /api/v2 wire carries ({"result": <ChatEvent>}
-// + "\n" — conversation-api.md §2).
+// + "\n" — conversation-api.md §2, extended by the 051 tool_result frame).
 function wireChunk(eventLine: string): string {
   return `{"result":${eventLine}}\n`
 }
@@ -54,7 +54,7 @@ function makeFetchMock() {
     if (url === '/api/v1/templates/saolei/sessions' && init?.method === 'POST') {
       return jsonResponse({ name: SESSION, createTime: '2026-08-29T00:00:00Z' })
     }
-    if (url === `/api/v2/${SESSION}:history`) {
+    if (url === `/api/v2/${SESSION}/agent/messages`) {
       return jsonResponse({ messages: [] })
     }
     if (url === `/api/v2/${SESSION}:send` && init?.method === 'POST') {
@@ -139,7 +139,7 @@ describe('App 对话闭环', () => {
   })
 })
 
-// ─── US4（T028 删除编排 / T029 多会话隔离） ──────────────────────────────────
+// ─── 多会话隔离与删除编排（web-frontend.md §4/§6，FR-007） ──────────────────
 
 const S1 = 'templates/saolei/sessions/s1'
 const S2 = 'templates/saolei/sessions/s2'
@@ -147,16 +147,14 @@ const S2 = 'templates/saolei/sessions/s2'
 interface Us4Fixture {
   name: string
   deleteStatus?: number
-  disposeStatus?: number
   // 自定义响应（延迟/失败注入）；未提供时按默认成功响应路由。
   historyResponse?: () => Promise<Response>
   deleteResponse?: () => Promise<Response>
   send?: () => Response
 }
 
-// makeUs4FetchMock routes list/delete/dispose/history/send per fixture.
-// delete/dispose default to success so each test overrides only the branch it
-// exercises.
+// makeUs4FetchMock routes list/delete/messages/send per fixture. Delete
+// defaults to success so each test overrides only the branch it exercises.
 function makeUs4FetchMock(fixtures: Us4Fixture[]) {
   return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? 'GET'
@@ -174,18 +172,12 @@ function makeUs4FetchMock(fixtures: Us4Fixture[]) {
         const status = f.deleteStatus ?? 200
         return new Response(status === 200 ? '{}' : 'delete failed', { status })
       }
-      if (url === `/api/v2/${f.name}:history`) {
+      if (url === `/api/v2/${f.name}/agent/messages`) {
         if (f.historyResponse !== undefined) return f.historyResponse()
         return jsonResponse({ messages: [] })
       }
       if (url === `/api/v2/${f.name}:send` && method === 'POST') {
         return f.send?.() ?? jsonResponse({})
-      }
-      if (url === `/api/v2/${f.name}:dispose` && method === 'POST') {
-        const status = f.disposeStatus ?? 200
-        return new Response(status === 200 ? '{}' : 'dispose failed', {
-          status,
-        })
       }
     }
     throw new Error(`unexpected fetch: ${url}`)
@@ -245,7 +237,7 @@ function pausedSend(firstPhase: string, restFrames: string[]) {
   }
 }
 
-describe('App 多会话隔离（US4/T029）', () => {
+describe('App 多会话隔离', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -297,20 +289,20 @@ describe('App 多会话隔离（US4/T029）', () => {
     await s1Send.done
 
     // 回到 s1：「部分」已由后台归约合并入历史，用户消息「一」仍在；
-    // :history 仅首次进入请求一次（返回不重置状态、不重复回填）。
+    // List 仅首次进入请求一次（返回不重置状态、不重复回填）。
     fireEvent.click(screen.getByText('s1'))
     await waitFor(() => {
       expect(screen.getByTestId('agent-text').textContent).toBe('部分')
     })
     expect(screen.getByText('一')).toBeTruthy()
     const s1HistoryCalls = fetchMock.mock.calls.filter(
-      (call) => call[0] === `/api/v2/${S1}:history`,
+      (call) => call[0] === `/api/v2/${S1}/agent/messages`,
     )
     expect(s1HistoryCalls).toHaveLength(1)
   })
 })
 
-describe('App 回填竞态与失败路径（US4 回归）', () => {
+describe('App 回填竞态与失败路径', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -351,7 +343,9 @@ describe('App 回填竞态与失败路径（US4 回归）', () => {
 
     fireEvent.click(await screen.findByText('s1'))
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}:history`)).toBe(true)
+      expect(fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}/agent/messages`)).toBe(
+        true,
+      )
     })
     const input = await screen.findByTestId('chat-input')
     fireEvent.change(input, { target: { value: '一' } })
@@ -410,7 +404,7 @@ describe('App 回填竞态与失败路径（US4 回归）', () => {
   })
 })
 
-describe('App 删除编排（US4/T028）', () => {
+describe('App 删除编排（FR-007：仅元数据删除）', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -428,7 +422,7 @@ describe('App 删除编排（US4/T028）', () => {
     await screen.findByTestId('chat-input')
   }
 
-  it('DELETE /api/v1 成功后 POST :dispose，条目移除并提示返回列表', async () => {
+  it('DELETE /api/v1 成功后条目移除并提示返回列表（无 agent 释放调用）', async () => {
     await selectS1()
 
     fireEvent.click(screen.getByTestId('delete-session'))
@@ -436,43 +430,18 @@ describe('App 删除编排（US4/T028）', () => {
       expect(screen.queryByTestId('session-item')).toBeNull()
     })
 
-    // 编排顺序（research.md D6）：先 /api/v1 元数据删除，成功才 /api/v2 释放。
+    // 删除编排仅 DELETE /api/v1 元数据——Dispose RPC 已移除，无任何
+    // /api/v2 释放跳（agent-api.md §2，FR-007）。
     const calls = fetchMock.mock.calls
-    const deleteIdx = calls.findIndex(
-      (call) => call[0] === `/api/v1/${S1}` && (call[1] as RequestInit).method === 'DELETE',
-    )
-    const disposeIdx = calls.findIndex(
-      (call) => call[0] === `/api/v2/${S1}:dispose`,
-    )
-    expect(deleteIdx).toBeGreaterThanOrEqual(0)
-    expect(disposeIdx).toBeGreaterThan(deleteIdx)
-    expect((calls[disposeIdx]?.[1] as RequestInit).method).toBe('POST')
+    expect(
+      calls.some(
+        (call) => call[0] === `/api/v1/${S1}` && (call[1] as RequestInit).method === 'DELETE',
+      ),
+    ).toBe(true)
+    expect(calls.some((call) => String(call[0]).includes(':dispose'))).toBe(false)
 
     // 返回列表页 + 删除提示（web-frontend.md §4）。
     expect(screen.getByTestId('empty-hint').textContent).toContain('会话已删除')
-  })
-
-  it('dispose 失败仅记录不阻断：条目仍移除、返回列表（容错分支）', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    try {
-      fetchMock = makeUs4FetchMock([{ name: S1, disposeStatus: 500 }])
-      vi.stubGlobal('fetch', fetchMock)
-      await selectS1()
-
-      fireEvent.click(screen.getByTestId('delete-session'))
-      await waitFor(() => {
-        expect(screen.queryByTestId('session-item')).toBeNull()
-      })
-
-      // mock 正向断言：dispose 确实被调用且以失败收场，失败仅记录。
-      expect(
-        fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}:dispose`),
-      ).toBe(true)
-      expect(errorSpy).toHaveBeenCalled()
-      expect(screen.getByTestId('empty-hint').textContent).toContain('会话已删除')
-    } finally {
-      errorSpy.mockRestore()
-    }
   })
 
   it('删除 await 窗口内切换到其他会话：删除完成后停留在新会话', async () => {
@@ -496,16 +465,12 @@ describe('App 删除编排（US4/T028）', () => {
     await waitFor(() => {
       expect(screen.queryByText('s1')).toBeNull()
     })
-    // 完整编排仍执行（DELETE 成功后 dispose）。
-    expect(
-      fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}:dispose`),
-    ).toBe(true)
     expect(screen.getByTestId('chat-input').getAttribute('aria-label')).toContain('s2')
     expect(screen.queryByTestId('empty-hint')).toBeNull()
     expect(screen.queryByText(/会话已删除/)).toBeNull()
   })
 
-  it('DELETE /api/v1 失败：错误呈现、条目保留、不触发 dispose', async () => {
+  it('DELETE /api/v1 失败：错误呈现、条目保留', async () => {
     fetchMock = makeUs4FetchMock([{ name: S1, deleteStatus: 500 }])
     vi.stubGlobal('fetch', fetchMock)
     await selectS1()
@@ -516,8 +481,5 @@ describe('App 删除编排（US4/T028）', () => {
     })
 
     expect(screen.getByTestId('session-item')).toBeTruthy()
-    expect(
-      fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}:dispose`),
-    ).toBe(false)
   })
 })

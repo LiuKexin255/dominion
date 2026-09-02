@@ -877,7 +877,9 @@ func TestMapDomainError(t *testing.T) {
 		{name: "owner not found", err: domain.ErrOwnerNotFound, wantCode: codes.NotFound},
 		{name: "owner already exists", err: domain.ErrOwnerAlreadyExists, wantCode: codes.AlreadyExists},
 		{name: "no agent instances", err: domain.ErrNoAgentInstances, wantCode: codes.Unavailable},
-		{name: "unknown error", err: errors.New("something else"), wantCode: codes.Unknown},
+		// Unexpected store failures (e.g. Mongo unreachable) map to Internal,
+		// not grpc-go's Unknown fallback for a bare error (agent-api §3).
+		{name: "unknown error", err: errors.New("something else"), wantCode: codes.Internal},
 	}
 
 	for _, tt := range tests {

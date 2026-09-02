@@ -3,8 +3,9 @@
  *
  * Prepares the configuration surface the cordis.yml `!!js` expressions read
  * (GLM endpoint resolution + GLM API token injection, research
- * specs/049-agent-v2-dsh-init/research.md D9), then boots the two-row
- * composition manifest (agent spine + GLM Responses adapter) in-process
+ * specs/049-agent-v2-dsh-init/research.md D9), then boots the composition
+ * manifest (direct-composed dsh core plugins + the saolei plugin set,
+ * specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5) in-process
  * (B1 embedding, specs/049-agent-v2-dsh-init/spec.md FR-002). Resolver and
  * boot failures are fail-loud — a half-started composition never serves
  * traffic; a missing GLM token is tolerated: the host boots WITHOUT

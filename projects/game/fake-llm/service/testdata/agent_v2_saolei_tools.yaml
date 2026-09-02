@@ -1,0 +1,116 @@
+# agent_v2_saolei_tools.yaml — the tool-result rules chaining the agent_v2
+# game loop end to end (specs/051-agent-v2-dsh-migration/tasks.md T021,
+# research.md D16), served through the /v1/responses tools branch. Every entry
+# carries `responses_only: true`: the two endpoints see disjoint tool scopes
+# (ToolsForEndpoint), so these rules are invisible to the v1
+# chat-completions chains in saolei_tools.yaml and vice versa — agent_v2 and
+# v1 can emit byte-identical board texts without either chain intercepting
+# the other.
+#
+# Rule set per fake-desktop scenario (research.md D15):
+#   won (default, saolei_10 9×9):  init → operate batch → `game_won`
+#         pre-dispatch reject → won summary
+#   progressive (saolei_1 16×16):  init → operate batch [click(3,4),
+#         flag(4,8)] — both land on the board model (INITIAL cells in
+#         saolei_1/saolei_3, the latter flagged in saolei_4) — then the
+#         playing board text terminates the chain
+#   lost (saolei_5 16×16):         init result already carries `game status:
+#         lost` → lost summary, no dispatch
+# Every operate result resolves to exactly one rule (the status line plus the
+# board-size token are jointly exhaustive for the scenarios above), so the
+# chain always reaches a plain-text terminal deterministically.
+tools:
+  # Won-scenario init: the 9×9 win board opens the operate batch whose ops
+  # the agent rejects pre-dispatch (`game_won` — the terminal-reject branch).
+  - name: agent-v2-saolei-init-operate
+    tool_name: saolei_init
+    responses_only: true
+    match_result_contains:
+      - new game started
+      - board size 9*9
+    respond_with:
+      tool_call:
+        name: saolei_operate
+        arguments:
+          operations:
+            - type: click
+              x: 0
+              y: 0
+            - type: click
+              x: 1
+              y: 1
+  # Progressive-scenario init: the fresh 16×16 board opens the batch that
+  # drives one click and one flag through the fake-desktop board model.
+  - name: agent-v2-saolei-init-operate-progressive
+    tool_name: saolei_init
+    responses_only: true
+    match_result_contains:
+      - new game started
+      - "game status: playing"
+      - board size 16*16
+    respond_with:
+      tool_call:
+        name: saolei_operate
+        arguments:
+          operations:
+            - type: click
+              x: 3
+              y: 4
+            - type: flag
+              x: 4
+              y: 8
+  # Lost-scenario init: the loss board is terminal from the first result —
+  # summarize directly.
+  - name: agent-v2-saolei-init-lost
+    tool_name: saolei_init
+    responses_only: true
+    match_result_contains:
+      - "game status: lost"
+    respond_with:
+      text: 本局扫雷已结束：触雷失败，可重新开局再试。
+  # Desktop-absent init: the dispatch failed with the bridge's disconnect
+  # error — a tool ERROR result (the model-visible failure of US1 scenario
+  # 4). A plain-text reply terminates the chain deterministically.
+  - name: agent-v2-saolei-init-nodesktop
+    tool_name: saolei_init
+    responses_only: true
+    match_result_contains:
+      - desktop disconnected
+    respond_with:
+      text: 桌面未连接，无法开局。请先连接桌面后再试。
+  # Desktop-absent / mid-game-disconnect operate: the same bridge error on an
+  # operate call (the disconnect injection settles the in-flight receipt).
+  - name: agent-v2-saolei-operate-nodesktop
+    tool_name: saolei_operate
+    responses_only: true
+    match_result_contains:
+      - desktop disconnected
+    respond_with:
+      text: 桌面连接中断，操作未能完成。请等待桌面重连后再试。
+  # Terminal win on an operate result — a plain text response ends the tool
+  # loop deterministically.
+  - name: agent-v2-saolei-operate-won
+    tool_name: saolei_operate
+    responses_only: true
+    match_result_contains:
+      - "game status: won"
+    respond_with:
+      text: 本局扫雷已完成：全部雷区排除，游戏获胜。
+  # Terminal loss on an operate result.
+  - name: agent-v2-saolei-operate-lost
+    tool_name: saolei_operate
+    responses_only: true
+    match_result_contains:
+      - "game status: lost"
+    respond_with:
+      text: 本局扫雷已结束：触雷失败，可重新开局再试。
+  # Progressive-scenario operate result: the batch landed (still playing) —
+  # summarize and stop.
+  - name: agent-v2-saolei-operate-final
+    tool_name: saolei_operate
+    responses_only: true
+    match_result_contains:
+      - "game status: playing"
+      - board size 16*16
+    respond_with:
+      text: 已完成一轮扫雷操作：点击揭示与标记旗子均已执行，棋盘已刷新。

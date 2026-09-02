@@ -1,13 +1,21 @@
 /**
  * history.ts — per-session conversation history and the dsh→ChatEvent turn
- * collector (specs/049-agent-v2-dsh-init/data-model.md §2.4/§2.5).
+ * collector (specs/049-agent-v2-dsh-init/data-model.md §2.4/§2.5;
+ * tool-result extension: specs/051-agent-v2-dsh-migration/data-model.md
+ * §2.3/§2.4, research.md D10).
  *
  * The collector is armed once per session entry (session lifetime, not stream
  * lifetime — specs/049-agent-v2-dsh-init/research.md D10-2) and maps dsh
  * turn events to proto ChatEvents for the active turn's stream; the mapping
- * table is specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4.
- * `assistant/message` appends the final content blocks to the in-memory
- * history (FR-014), which stays collected even when no stream is attached.
+ * table is specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4 plus
+ * the `tool_result` frame of specs/051-agent-v2-dsh-migration/data-model.md
+ * §2.4. dsh chunk indexes are per-step (every model request restarts at 0),
+ * so the collector remaps them onto one turn-global monotonic sequence,
+ * resetting the step-local table at every step boundary. `assistant/message`
+ * appends the final content blocks to the in-memory history
+ * (specs/049-agent-v2-dsh-init/spec.md FR-014), which stays collected even
+ * when no stream is attached; `tool/result` settles the matching
+ * ToolCallBlock by tool_id in that same history.
  */
 
 import { randomUUID } from "node:crypto";
@@ -19,13 +27,17 @@ import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
 import type { BlockStartEvent } from "../agent_v2_types/projects/game/v2/BlockStartEvent.js";
 import type { BlockDeltaEvent } from "../agent_v2_types/projects/game/v2/BlockDeltaEvent.js";
 import type { BlockEndEvent } from "../agent_v2_types/projects/game/v2/BlockEndEvent.js";
+import type { ToolResultEvent } from "../agent_v2_types/projects/game/v2/ToolResultEvent.js";
+import type { ToolStatus } from "../agent_v2_types/projects/game/v2/ToolStatus.js";
 import type { DshContext } from "./dsh.js";
 
 /**
- * Structural subset of a dsh `session/event` payload read by the collector
- * (same pattern as the demo agent; upstream shape anchored at
- * /tmp/opencode/dsh/packages/core/agent-loop/src/agent.ts —
- * `assistant/chunk` = `{turn, step, chunk}` with chunk a raw StreamChunk).
+ * Structural subset of a dsh `session/event` payload read by the collector.
+ * The event-type vocabulary and payload shapes anchor at the dsh-session
+ * SessionEventMap (node_modules/.pnpm/@deepseek-ai+dsh-session@0.1.1-rc.2_
+ * a4e4bb24a1f3580ac25e11cfa3c6b8cc/node_modules/@deepseek-ai/dsh-session/
+ * lib/types/types.d.ts) — `assistant/chunk` = `{turn, step, chunk}` with
+ * chunk a raw StreamChunk.
  */
 export interface DshSessionEvent {
   type: string;
@@ -71,6 +83,47 @@ export interface AssistantMessageEvent extends DshSessionEvent {
 }
 
 /**
+ * The `tool/call` event shape (dsh-session SessionEventMap; the loop appends
+ * one per model-requested call — common/js/dsh-plugins/saolei-loop/src/
+ * driver.ts appendToolCall).
+ */
+export interface ToolCallEvent extends DshSessionEvent {
+  type: "tool/call";
+  data: {
+    turn: number;
+    step: number;
+    callId: string;
+    name: string;
+    arguments: string;
+  };
+}
+
+/**
+ * The `tool/result` event shape (dsh-session SessionEventMap; the loop
+ * appends one per settled call — driver.ts appendToolResult). The message's
+ * single tool-result block carries the outcome (`toolCallId`, `isError`) and
+ * the tool's rendered model-facing content (saolei tools render one text
+ * block with the board text).
+ */
+export interface ToolResultMessageEvent extends DshSessionEvent {
+  type: "tool/result";
+  data: {
+    turn: number;
+    step: number;
+    message: {
+      content: ReadonlyArray<{
+        type: "tool-result";
+        toolCallId?: string;
+        isError?: boolean;
+        content?: ReadonlyArray<DshContentBlockView>;
+      }>;
+    };
+    error?: { name: string; code: string };
+    meta?: unknown;
+  };
+}
+
+/**
  * The server-streaming write end of one Send call. server.ts adapts the
  * grpc call to this interface; tests inject plain recorders.
  */
@@ -103,9 +156,12 @@ function nowTimestamp(): Timestamp {
 }
 
 /**
- * Map one dsh content block to a proto ContentBlock; unknown block types
- * (image/tool-result) have no display projection in this phase and yield
- * undefined (forward-compat drop; FR-006 zero tools).
+ * Map one dsh content block to a proto ContentBlock. The display projection
+ * covers exactly text/reasoning/tool-call; other block types (image,
+ * tool-result — the latter reaches clients through the `tool_result` event
+ * instead) have no block projection and yield undefined, the same
+ * forward-compat drop as unknown oneof branches on the consumer side
+ * (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §2).
  */
 export function blockToContentBlock(block: DshContentBlockView): ContentBlock | undefined {
   if (block.type === "text") {
@@ -115,9 +171,9 @@ export function blockToContentBlock(block: DshContentBlockView): ContentBlock | 
     return { think: { content: block.text ?? "" } };
   }
   if (block.type === "tool-call") {
-    // No terminal status source in this phase: the block is surfaced as
-    // RUNNING (conversation-api.md §4; US3 validates richer states with
-    // constructed data).
+    // The block is recorded RUNNING; the loop's `tool/result` session event
+    // settles it by tool_id (specs/051-agent-v2-dsh-migration/data-model.md
+    // §2.3 — history and live stream share that terminal source).
     return {
       toolCall: {
         toolId: block.id ?? "",
@@ -136,11 +192,16 @@ export function blockToContentBlock(block: DshContentBlockView): ContentBlock | 
  * `finish` chunks are ignored — turn termination is driven by
  * agent/status→idle (specs/047-dsh-chat-demo/research.md D3), so both return
  * undefined here.
+ *
+ * `remapIndex` projects the chunk's per-step provider index onto the
+ * turn-global block sequence (specs/051-agent-v2-dsh-migration/data-model.md
+ * §2.4); omitted, the index passes through unchanged.
  */
 export function chunkToChatEvent(
   chunk: DshStreamChunk,
   sessionName: string,
   turnId: string,
+  remapIndex: (index: number) => number = (index) => index,
 ): ChatEvent | undefined {
   if (chunk.type === "block-start") {
     // Unknown block types have no display projection in this phase and are
@@ -150,7 +211,7 @@ export function chunkToChatEvent(
       return undefined;
     }
     const start: BlockStartEvent = {
-      index: chunk.index ?? 0,
+      index: remapIndex(chunk.index ?? 0),
       type: blockType,
     };
     if (chunk.blockType === "tool-call") {
@@ -160,11 +221,11 @@ export function chunkToChatEvent(
     return { session: sessionName, turnId, blockStart: start };
   }
   if (chunk.type === "text-delta" || chunk.type === "reasoning-delta") {
-    const delta: BlockDeltaEvent = { index: chunk.index ?? 0, text: chunk.text ?? "" };
+    const delta: BlockDeltaEvent = { index: remapIndex(chunk.index ?? 0), text: chunk.text ?? "" };
     return { session: sessionName, turnId, delta };
   }
   if (chunk.type === "tool-call-delta") {
-    const delta: BlockDeltaEvent = { index: chunk.index ?? 0, text: chunk.argumentsDelta ?? "" };
+    const delta: BlockDeltaEvent = { index: remapIndex(chunk.index ?? 0), text: chunk.argumentsDelta ?? "" };
     return { session: sessionName, turnId, delta };
   }
   if (chunk.type === "block-end") {
@@ -172,16 +233,17 @@ export function chunkToChatEvent(
     if (block === undefined) {
       return undefined;
     }
-    const end: BlockEndEvent = { index: chunk.index ?? 0, block };
+    const end: BlockEndEvent = { index: remapIndex(chunk.index ?? 0), block };
     return { session: sessionName, turnId, blockEnd: end };
   }
   return undefined;
 }
 
 /**
- * Per-session in-memory conversation record (FR-014): user messages are
- * appended at enqueue time, agent replies at `assistant/message` finality;
- * ordering and text/think/tool-call classification are preserved
+ * Per-session in-memory conversation record (specs/049-agent-v2-dsh-init/
+ * spec.md FR-014): user messages are appended at enqueue time, agent replies
+ * at `assistant/message` finality; ordering and text/think/tool-call
+ * classification are preserved
  * (specs/049-agent-v2-dsh-init/data-model.md §2.5).
  */
 export class SessionHistory {
@@ -221,6 +283,29 @@ export class SessionHistory {
   list(): HistoryMessage[] {
     return [...this.messages];
   }
+
+  /**
+   * Settle the most recent RUNNING ToolCallBlock carrying `toolId` with the
+   * tool's terminal status and rendered result (specs/051-agent-v2-dsh-
+   * migration/data-model.md §2.3: the turn's tool ids are unique, so the
+   * newest match is the block). A result with no unsettled matching block is
+   * ignored (returns false) — never fabricated into history.
+   */
+  settleToolResult(toolId: string, status: ToolStatus, result: string): boolean {
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+      const blocks = this.messages[i]?.blocks ?? [];
+      for (let j = blocks.length - 1; j >= 0; j -= 1) {
+        // The oneof arm is nullable in the generated projection.
+        const block = blocks[j]?.toolCall ?? null;
+        if (block !== null && block.toolId === toolId && block.status === "TOOL_STATUS_RUNNING") {
+          block.status = status;
+          block.result = result;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 }
 
 interface ActiveTurn {
@@ -228,6 +313,14 @@ interface ActiveTurn {
   stream: TurnStream;
   usage: DshTokenUsage | undefined;
   failure: { code: string; message: string } | undefined;
+  /** The step number of the last seen event; a change resets the local table. */
+  step: number | undefined;
+  /** Step-local → turn-global block index assignments (data-model.md §2.4). */
+  localIndexes: Map<number, number>;
+  /** The next turn-global block index to hand out. */
+  nextIndex: number;
+  /** Tool ids with a `tool/call` and no `tool/result` yet this turn. */
+  pendingTools: Set<string>;
 }
 
 /**
@@ -274,7 +367,16 @@ export class TurnCollector {
 
   /** Start collecting for a turn: mapped events stream to `stream`. */
   begin(turnId: string, stream: TurnStream): void {
-    this.active = { turnId, stream, usage: undefined, failure: undefined };
+    this.active = {
+      turnId,
+      stream,
+      usage: undefined,
+      failure: undefined,
+      step: undefined,
+      localIndexes: new Map(),
+      nextIndex: 0,
+      pendingTools: new Set(),
+    };
     this.settlement = undefined;
     this.pendingAbort = false;
   }
@@ -348,11 +450,26 @@ export class TurnCollector {
       this.history.appendAssistant(message.content);
       return;
     }
+    if (event.type === "tool/call") {
+      // Wire invariant (specs/051-agent-v2-dsh-migration/data-model.md §4-2):
+      // the loop pairs every call with a result — the pending set is the
+      // collector's in-turn bookkeeping of that pairing; the call's own
+      // display frames already streamed as tool-call chunks.
+      const call = event as ToolCallEvent;
+      if (this.active !== undefined) {
+        this.active.pendingTools.add(call.data.callId);
+      }
+      return;
+    }
+    if (event.type === "tool/result") {
+      this.onToolResult(event as ToolResultMessageEvent);
+      return;
+    }
     if (!this.active) {
       return;
     }
     if (event.type === "assistant/chunk") {
-      this.onChunk(event.data as { chunk?: DshStreamChunk } | undefined);
+      this.onChunk(event.data as { turn?: number; step?: number; chunk?: DshStreamChunk } | undefined);
       return;
     }
     if (event.type === "turn/end") {
@@ -364,7 +481,34 @@ export class TurnCollector {
     }
   }
 
-  private onChunk(data: { chunk?: DshStreamChunk } | undefined): void {
+  /**
+   * Map one `tool/result` session event to the `tool_result` ChatEvent frame
+   * (specs/051-agent-v2-dsh-migration/data-model.md §2.4) and settle the
+   * matching history block. The frame is keyed by tool_id — a web client
+   * finalizes its matching block on arrival — so it emits whenever the turn
+   * stream is live, while the history settlement is session-lifetime like
+   * every history projection. A result with no unsettled matching block is
+   * ignored on the history side (data-model.md §2.3), never fabricated.
+   */
+  private onToolResult(event: ToolResultMessageEvent): void {
+    const block = event.data.message.content[0];
+    const toolId = block?.toolCallId ?? "";
+    const status: ToolStatus = block?.isError ? "TOOL_STATUS_FAILED" : "TOOL_STATUS_SUCCEEDED";
+    const result = (block?.content ?? [])
+      .map((candidate) => (candidate.type === "text" ? candidate.text ?? "" : ""))
+      .join("");
+    this.history.settleToolResult(toolId, status, result);
+    if (this.active === undefined) {
+      return;
+    }
+    this.active.pendingTools.delete(toolId);
+    const toolResult: ToolResultEvent = { toolId, status, result };
+    this.active.stream.write({ session: this.sessionName, turnId: this.active.turnId, toolResult });
+  }
+
+  private onChunk(
+    data: { turn?: number; step?: number; chunk?: DshStreamChunk } | undefined,
+  ): void {
     const chunk = data?.chunk;
     if (!chunk || !this.active) {
       return;
@@ -374,10 +518,39 @@ export class TurnCollector {
       this.active.usage = chunk.usage;
       return;
     }
-    const chatEvent = chunkToChatEvent(chunk, this.sessionName, this.active.turnId);
+    // Step-boundary reset (data-model.md §2.4): dsh chunk indexes restart at
+    // 0 on every model request, so a new step number drops the step-local
+    // table; the turn-global counter keeps monotonic across steps.
+    const step = data?.step;
+    if (step !== undefined && step !== this.active.step) {
+      this.active.step = step;
+      this.active.localIndexes = new Map();
+    }
+    const chatEvent = chunkToChatEvent(
+      chunk,
+      this.sessionName,
+      this.active.turnId,
+      (index) => this.remapIndex(index),
+    );
     if (chatEvent !== undefined) {
       this.active.stream.write(chatEvent);
     }
+  }
+
+  /** Assign the turn-global index for a step-local one, first sight wins. */
+  private remapIndex(localIndex: number): number {
+    const active = this.active;
+    if (active === undefined) {
+      return localIndex;
+    }
+    const assigned = active.localIndexes.get(localIndex);
+    if (assigned !== undefined) {
+      return assigned;
+    }
+    const global = active.nextIndex;
+    active.nextIndex += 1;
+    active.localIndexes.set(localIndex, global);
+    return global;
   }
 
   private onStatus(payload: { agent?: Agent; status?: string }): void {

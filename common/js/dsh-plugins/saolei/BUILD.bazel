@@ -2,6 +2,7 @@ load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
 load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
 
 npm_link_all_packages(name = "node_modules")
@@ -61,5 +62,23 @@ js_runtime_library(
     visibility = ["//visibility:public"],
     runtime_deps = [
         "//common/js/dsh-plugins/saolei-loop:runtime_pkg",
+    ],
+)
+
+# Tests run against the raw .ts sources through vitest's single Vite pipeline
+# (style/javascript.md data rules): production + test sources only, plus the
+# node_modules mirror of :lib's deps.
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@dominion/dsh-saolei-loop",
+        ":node_modules/@types/node",
     ],
 )

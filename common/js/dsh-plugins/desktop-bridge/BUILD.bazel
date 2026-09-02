@@ -2,6 +2,7 @@ load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
 load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
 
 npm_link_all_packages(name = "node_modules")
@@ -26,6 +27,8 @@ ts_project(
     tsconfig = ":tsconfig",
     visibility = ["//visibility:public"],
     deps = [
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@dominion/common-js-logs",
         ":node_modules/@types/node",
     ],
 )
@@ -48,8 +51,34 @@ js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-desktop-bridge",
     lib = ":lib",
-    npm_deps = [],
+    npm_deps = [
+        # Third-party deps only: a workspace package listed here makes
+        # artifact_pkg_js treat its source tree as an npm dep and overwrite
+        # the compiled closure entry in the service tar (the missing
+        # @dominion/common-js-logs package.json crash of the first
+        # agent-v2-game suite run). Workspace deps travel through
+        # runtime_deps below.
+        ":node_modules/@deepseek-ai/cordis",
+    ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
-    runtime_deps = [],
+    runtime_deps = [
+        "//common/js/logs:runtime_pkg",
+    ],
+)
+
+# Tests run against the raw .ts sources through vitest's single Vite pipeline
+# (style/javascript.md data rules): production + test sources only, plus the
+# node_modules mirror of :lib's deps.
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@types/node",
+    ],
 )

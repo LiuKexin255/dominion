@@ -5,14 +5,17 @@
  * Loads the runtime proto via proto-loader (materialized at its canonical
  * import path under the service root, the experimental/grpc_chain/mid
  * pattern) and registers both services on the single 50051 server
- * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2 D8):
- * AgentService handlers map onto AgentSessions
- * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2) — Send
- * streams ChatEvent frames until the turn ends, malformed resource names
- * and empty text are request-level INVALID_ARGUMENT failures (the stream
- * never opens). UpdateAgent/GetAgent and the preset/model catalog RPCs are
- * UNIMPLEMENTED placeholders until the host wiring task replaces them with
- * the real agent/materialization logic.
+ * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2):
+ * - AgentService handlers implement the method semantics of
+ *   specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2 — validation
+ *   is fail-fast (malformed resource names and empty text are request-level
+ *   INVALID_ARGUMENT failures with the stream never opened; UpdateAgent
+ *   checks the preset then the model catalog before materializing), Send has
+ *   no lazy creation (unmaterialized → FAILED_PRECONDITION), preset CRUD
+ *   delegates to the PresetStore, and the model catalog shares
+ *   ctx.llm.listModels with UpdateAgent's validation (research.md D4).
+ * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
+ *   (`ctx.desktopBridge.handlers()`).
  */
 
 import * as fs from "node:fs";
@@ -20,13 +23,23 @@ import * as path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { info } from "@dominion/common-js-logs";
-import { AgentSessions } from "./session.js";
+import type { LlmModelInfo } from "@deepseek-ai/dsh-llm";
+// Type-only: the plugin's `ctx.desktopBridge` declaration merge and its
+// handler-face types (the handlers are consumed at runtime through the
+// composed context, not through a direct import).
+import type { BidiStream, DesktopBridgeServiceHandlers as PluginBridgeHandlers } from "@dominion/dsh-desktop-bridge";
+import { AgentSessionError, AgentSessions, PROVIDER } from "./session.js";
+import type { AgentView } from "./session.js";
+import { PresetStoreError } from "./presets.js";
+import type { PresetRecord, PresetStore } from "./presets.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
 import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/v2/DesktopBridgeService.js";
 import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { Preset } from "../agent_v2_types/projects/game/v2/Preset.js";
+import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
 import type { ProtoGrpcType } from "../agent_v2_types/agent_v2.js";
 
 // Service root: parent of the compiled src/ directory.
@@ -52,15 +65,24 @@ const GRPC_PORT = "0.0.0.0:50051";
  */
 const KNOWN_TEMPLATES = new Set(["saolei"]);
 
+/** One entry of the read-only model catalog (agent-api.md §2.6). */
+export interface ModelCatalogEntry {
+  id: string;
+  contextWindow: number;
+}
+
 /**
- * The agent surface consumed by the gRPC handlers: the session-scoped
- * operations of AgentService
- * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2). Preset and
- * model catalog handlers take separate collaborators once implemented.
+ * The collaborators the AgentService handlers consume: the session
+ * materialization registry, the preset persistence, and the deployment
+ * model catalog (specs/051-agent-v2-dsh-migration/contracts/agent-api.md
+ * §2). The catalog is a single seam so UpdateAgent's validation and the
+ * ListModels RPC cannot drift apart. Faces are structural so tests inject
+ * `vi.fn()` doubles (style/javascript.md Mock convention).
  */
-export interface AgentSink {
-  send(session: string, text: string, stream: TurnStream): void;
-  listMessages(session: string): Promise<HistoryMessage[]>;
+export interface AgentServiceDeps {
+  sessions: Pick<AgentSessions, "send" | "listMessages" | "materialize" | "getAgent">;
+  presets: PresetStore;
+  listModels(provider: string): Promise<ModelCatalogEntry[]>;
 }
 
 /** What {@link startServer} hands back to the bootstrap for shutdown. */
@@ -105,6 +127,38 @@ export function parseAgentParent(parent: string): ParsedSessionResource | undefi
   return parseSessionResource(match[1]);
 }
 
+/**
+ * Validate the preset resource name `templates/{template}/presets/{preset}`
+ * (AIP-122) against the known template set.
+ */
+export function parsePresetResource(name: string): ParsedSessionResource | undefined {
+  const match = /^templates\/([^/]+)\/presets\/([^/]+)$/.exec(name);
+  if (match === null) {
+    return undefined;
+  }
+  const template = match[1];
+  if (!KNOWN_TEMPLATES.has(template)) {
+    return undefined;
+  }
+  return { template, session: match[2] };
+}
+
+/**
+ * Validate the template parent resource name `templates/{template}`
+ * (AIP-122) against the known template set.
+ */
+export function parseTemplateParent(parent: string): { template: string } | undefined {
+  const match = /^templates\/([^/]+)$/.exec(parent);
+  if (match === null) {
+    return undefined;
+  }
+  const template = match[1];
+  if (!KNOWN_TEMPLATES.has(template)) {
+    return undefined;
+  }
+  return { template };
+}
+
 function loadProto(): ProtoGrpcType {
   if (!fs.existsSync(PROTO_PATH)) {
     throw new Error(`agent_v2.proto not found at ${PROTO_PATH}`);
@@ -143,6 +197,67 @@ function buildServerCredentials(): grpc.ServerCredentials {
   return grpc.ServerCredentials.createInsecure();
 }
 
+function dateToTimestamp(date: Date): Timestamp {
+  const ms = date.getTime();
+  return { seconds: Math.floor(ms / 1000), nanos: (ms % 1000) * 1e6 };
+}
+
+function presetToProto(record: PresetRecord): Preset {
+  return {
+    name: record.name,
+    playerPrompt: record.playerPrompt,
+    createTime: dateToTimestamp(record.createTime),
+    updateTime: dateToTimestamp(record.updateTime),
+  };
+}
+
+function agentViewToProto(view: AgentView): {
+  name: string;
+  preset: string;
+  model: string;
+  createTime: Timestamp;
+  updateTime: Timestamp;
+} {
+  return {
+    name: view.name,
+    preset: view.preset,
+    model: view.model,
+    createTime: dateToTimestamp(view.createTime),
+    updateTime: dateToTimestamp(view.updateTime),
+  };
+}
+
+const SESSION_STATUS_BY_CODE: Record<AgentSessionError["code"], grpc.status> = {
+  INVALID_ARGUMENT: grpc.status.INVALID_ARGUMENT,
+  NOT_FOUND: grpc.status.NOT_FOUND,
+  FAILED_PRECONDITION: grpc.status.FAILED_PRECONDITION,
+};
+
+const PRESET_STATUS_BY_CODE: Record<PresetStoreError["code"], grpc.status> = {
+  ALREADY_EXISTS: grpc.status.ALREADY_EXISTS,
+  NOT_FOUND: grpc.status.NOT_FOUND,
+};
+
+/**
+ * Map a request-level failure onto its gRPC status (AIP-193 canonical codes;
+ * v1 precedent: projects/game/agent/src/handler.ts propagates numeric
+ * status-carrying errors unchanged). Non-domain errors fall back to
+ * INTERNAL.
+ */
+function toServiceError(err: unknown): grpc.ServiceError {
+  const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof AgentSessionError) {
+    return { code: SESSION_STATUS_BY_CODE[err.code], message } as grpc.ServiceError;
+  }
+  if (err instanceof PresetStoreError) {
+    return { code: PRESET_STATUS_BY_CODE[err.code], message } as grpc.ServiceError;
+  }
+  if (err instanceof Error && typeof (err as grpc.ServiceError).code === "number") {
+    return { code: (err as grpc.ServiceError).code, message } as grpc.ServiceError;
+  }
+  return { code: grpc.status.INTERNAL, message } as grpc.ServiceError;
+}
+
 /**
  * Reject a server-streaming request before any frame is written. grpc-js
  * delivers a streaming call's final status from an 'error' event on the
@@ -150,24 +265,12 @@ function buildServerCredentials(): grpc.ServerCredentials {
  * @grpc/grpc-js server-call.js), matching the game agent handler convention
  * (dominion/projects/game/agent/src/handler.ts).
  */
-function rejectStream(call: grpc.ServerWritableStream<unknown, unknown>, message: string): void {
-  call.emit("error", {
-    code: grpc.status.INVALID_ARGUMENT,
-    details: message,
-  } as grpc.ServiceError);
-}
-
-/**
- * The Phase-2 placeholder error for handlers whose host wiring lands with
- * the US1/US2 implementation tasks (specs/051-agent-v2-dsh-migration/
- * tasks.md T014). Fails loudly at the RPC boundary rather than silently
- * answering empty data.
- */
-function unimplemented(method: string): grpc.ServiceError {
-  return {
-    code: grpc.status.UNIMPLEMENTED,
-    details: `${method} is not implemented yet`,
-  } as grpc.ServiceError;
+function rejectStream(
+  call: grpc.ServerWritableStream<unknown, unknown>,
+  code: grpc.status,
+  message: string,
+): void {
+  call.emit("error", { code, details: message } as grpc.ServiceError);
 }
 
 /**
@@ -194,26 +297,27 @@ function safeWrite(
 }
 
 /**
- * Build the AgentService handlers over a session sink. Exported for unit
- * tests so the gRPC status mapping is asserted without binding a port.
+ * Build the AgentService handlers over the session/preset/catalog
+ * collaborators. Exported for unit tests so the gRPC status mapping is
+ * asserted without binding a port.
  */
-export function buildAgentHandlers(sink: AgentSink): AgentServiceHandlers {
+export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers {
   return {
     Send: (call) => {
       const name = call.request.session ?? "";
       if (parseSessionResource(name) === undefined) {
         rejectStream(
           call,
+          grpc.status.INVALID_ARGUMENT,
           `session must be a game session resource name ("templates/{template}/sessions/{session}"), got "${name}"`,
         );
         return;
       }
       const text = call.request.text ?? "";
       if (!text) {
-        rejectStream(call, "text must be non-empty");
+        rejectStream(call, grpc.status.INVALID_ARGUMENT, "text must be non-empty");
         return;
       }
-      info("Send: dispatching to agent session", { session: name });
       // Long-lived stream write guards (the v1 agent handler precedent,
       // projects/game/agent/src/handler.ts safeWrite): a peer disconnect
       // surfaces as an 'error' event / write failure on the call. Without
@@ -226,7 +330,7 @@ export function buildAgentHandlers(sink: AgentSink): AgentServiceHandlers {
           error: err.message,
         });
       });
-      sink.send(name, text, {
+      const stream: TurnStream = {
         write: (event) => safeWrite(call, event, name),
         end: () => {
           try {
@@ -238,7 +342,122 @@ export function buildAgentHandlers(sink: AgentSink): AgentServiceHandlers {
             });
           }
         },
-      });
+      };
+      try {
+        // No lazy materialization (specs/051-agent-v2-dsh-migration/spec.md
+        // FR-007): an unmaterialized session throws
+        // FAILED_PRECONDITION here and the stream never opens
+        // (agent-api.md §2.4).
+        deps.sessions.send(name, text, stream);
+      } catch (err) {
+        const serviceError = toServiceError(err);
+        info("Send rejected", { session: name, code: serviceError.code });
+        rejectStream(call, serviceError.code, serviceError.message);
+      }
+    },
+
+    UpdateAgent: (call, callback) => {
+      const agent = call.request.agent ?? undefined;
+      const name = agent?.name ?? "";
+      const session = parseAgentParent(name);
+      if (session === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `agent.name must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${name}"`,
+        });
+        return;
+      }
+      // preset is REQUIRED on this singleton and no default preset resource
+      // is provisioned — use requires creating one first
+      // (specs/051-agent-v2-dsh-migration/spec.md Clarifications, Q&A
+      // "agent 经 Update 显式物化时，preset 引用是必填还是可选？", session
+      // 2026-08-31) — empty means INVALID_ARGUMENT.
+      const presetName = agent?.preset ?? "";
+      if (presetName === "") {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: "agent.preset is required; create a preset and reference it",
+        });
+        return;
+      }
+      const preset = parsePresetResource(presetName);
+      if (preset === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `agent.preset must be a preset resource name ("templates/{template}/presets/{preset}"), got "${presetName}"`,
+        });
+        return;
+      }
+      if (preset.template !== session.template) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `preset template ${preset.template} does not match agent template ${session.template}`,
+        });
+        return;
+      }
+      // An explicit mask may only name the singleton's mutable fields
+      // (AIP-134: https://google.aip.dev/134); the mutable fields are always
+      // taken from the request body.
+      const maskPaths = call.request.updateMask?.paths ?? [];
+      if (maskPaths.some((path) => path !== "preset" && path !== "model")) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `update_mask paths must be "preset" or "model", got [${maskPaths.join(", ")}]`,
+        });
+        return;
+      }
+      const model = agent?.model ?? "";
+      const sessionName = `templates/${session.template}/sessions/${session.session}`;
+      void (async () => {
+        try {
+          // Fail-fast validation before any teardown (data-model.md §2.2
+          // step 1 — no half-materialized state): preset must exist, then a
+          // non-empty model must be in the catalog (US2 场景 7).
+          const presetRecord = await deps.presets.get(presetName);
+          if (model !== "") {
+            const catalog = await deps.listModels(PROVIDER);
+            if (!catalog.some((entry) => entry.id === model)) {
+              callback({
+                code: grpc.status.INVALID_ARGUMENT,
+                message: `unknown model "${model}"; see ListModels for the available catalog`,
+              });
+              return;
+            }
+          }
+          const view = await deps.sessions.materialize(sessionName, {
+            preset: presetName,
+            ...(model === "" ? {} : { model }),
+            persona: presetRecord.playerPrompt,
+          });
+          callback(null, agentViewToProto(view));
+        } catch (err) {
+          const serviceError = toServiceError(err);
+          info("UpdateAgent failed", {
+            session: sessionName,
+            code: serviceError.code,
+            error: serviceError.message,
+          });
+          callback(serviceError);
+        }
+      })();
+    },
+
+    GetAgent: (call, callback) => {
+      const name = call.request.name ?? "";
+      const session = parseAgentParent(name);
+      if (session === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `name must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${name}"`,
+        });
+        return;
+      }
+      const sessionName = `templates/${session.template}/sessions/${session.session}`;
+      try {
+        callback(null, agentViewToProto(deps.sessions.getAgent(sessionName)));
+      } catch (err) {
+        callback(toServiceError(err));
+      }
     },
 
     ListAgentMessages: (call, callback) => {
@@ -251,68 +470,221 @@ export function buildAgentHandlers(sink: AgentSink): AgentServiceHandlers {
         });
         return;
       }
-      const name = `templates/${parsed.template}/sessions/${parsed.session}`;
-      sink.listMessages(name).then(
-        (messages) => {
-          callback(null, { messages });
+      // Pagination fields are protocol compliance only: the history is
+      // in-memory and returned whole, nextPageToken is always empty
+      // (agent-api.md §2.3).
+      const sessionName = `templates/${parsed.template}/sessions/${parsed.session}`;
+      void deps.sessions.listMessages(sessionName).then(
+        (messages: HistoryMessage[]) => {
+          callback(null, { messages, nextPageToken: "" });
         },
         (err: unknown) => {
+          const serviceError = toServiceError(err);
           info("ListAgentMessages: failed", {
-            session: name,
-            error: err instanceof Error ? err.message : String(err),
+            parent,
+            code: serviceError.code,
+            error: serviceError.message,
           });
-          callback({
-            code: grpc.status.INTERNAL,
-            message: `history lookup failed: ${err instanceof Error ? err.message : String(err)}`,
-          });
+          callback(serviceError);
         },
       );
     },
 
-    UpdateAgent: (call, callback) => callback(unimplemented("UpdateAgent")),
-    GetAgent: (call, callback) => callback(unimplemented("GetAgent")),
-    CreatePreset: (call, callback) => callback(unimplemented("CreatePreset")),
-    ListPresets: (call, callback) => callback(unimplemented("ListPresets")),
-    GetPreset: (call, callback) => callback(unimplemented("GetPreset")),
-    UpdatePreset: (call, callback) => callback(unimplemented("UpdatePreset")),
-    DeletePreset: (call, callback) => callback(unimplemented("DeletePreset")),
-    ListModels: (call, callback) => callback(unimplemented("ListModels")),
-  };
-}
+    CreatePreset: (call, callback) => {
+      const parent = call.request.parent ?? "";
+      if (parseTemplateParent(parent) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `parent must be a template resource name ("templates/{template}"), got "${parent}"`,
+        });
+        return;
+      }
+      const presetId = call.request.presetId ?? "";
+      if (presetId === "" || presetId.includes("/")) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `preset_id must be non-empty and free of "/" (AIP-133 caller-supplied id), got "${presetId}"`,
+        });
+        return;
+      }
+      // create_time/update_time are server-maintained (AIP-133); a caller
+      // value in the body is ignored.
+      const now = new Date();
+      const record: PresetRecord = {
+        name: `${parent}/presets/${presetId}`,
+        playerPrompt: call.request.preset?.playerPrompt ?? "",
+        createTime: now,
+        updateTime: now,
+      };
+      void deps.presets.create(record).then(
+        () => callback(null, presetToProto(record)),
+        (err: unknown) => callback(toServiceError(err)),
+      );
+    },
 
-/**
- * Build the DesktopBridgeService handlers. Connect is a Phase-2 placeholder
- * — the flow stream wires up with the desktop-bridge plugin's handler face
- * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2) and is
- * replaced by the real registration then.
- */
-export function buildDesktopBridgeHandlers(): DesktopBridgeServiceHandlers {
-  return {
-    Connect: (call) => {
-      call.emit("error", {
-        code: grpc.status.UNIMPLEMENTED,
-        details: "Connect is not implemented yet",
-      } as grpc.ServiceError);
+    ListPresets: (call, callback) => {
+      const parent = call.request.parent ?? "";
+      if (parseTemplateParent(parent) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `parent must be a template resource name ("templates/{template}"), got "${parent}"`,
+        });
+        return;
+      }
+      void deps.presets
+        .list(parent, call.request.pageSize ?? 0, call.request.pageToken ?? "")
+        .then(
+          (page) => {
+            callback(null, {
+              presets: page.presets.map(presetToProto),
+              nextPageToken: page.nextPageToken,
+            });
+          },
+          (err: unknown) => callback(toServiceError(err)),
+        );
+    },
+
+    GetPreset: (call, callback) => {
+      const name = call.request.name ?? "";
+      if (parsePresetResource(name) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
+        });
+        return;
+      }
+      void deps.presets.get(name).then(
+        (record) => callback(null, presetToProto(record)),
+        (err: unknown) => callback(toServiceError(err)),
+      );
+    },
+
+    UpdatePreset: (call, callback) => {
+      const preset = call.request.preset ?? undefined;
+      const name = preset?.name ?? "";
+      if (parsePresetResource(name) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `preset.name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
+        });
+        return;
+      }
+      // player_prompt is the only mutable field (data-model.md §2.1 — presets
+      // MUST NOT carry model fields); an explicit mask may only name it.
+      const maskPaths = call.request.updateMask?.paths;
+      if (maskPaths !== undefined && maskPaths.length === 0) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: "update_mask must be omitted or carry the \"player_prompt\" path",
+        });
+        return;
+      }
+      if (maskPaths !== undefined && maskPaths.some((path) => path !== "player_prompt")) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `update_mask paths must be "player_prompt", got [${maskPaths.join(", ")}]`,
+        });
+        return;
+      }
+      void (async () => {
+        try {
+          // create_time is preserved from the stored row (AIP-134); a
+          // missing preset is the store's NOT_FOUND.
+          const current = await deps.presets.get(name);
+          const updated: PresetRecord = {
+            name,
+            playerPrompt: preset?.playerPrompt ?? "",
+            createTime: current.createTime,
+            updateTime: new Date(),
+          };
+          await deps.presets.update(updated);
+          callback(null, presetToProto(updated));
+        } catch (err) {
+          callback(toServiceError(err));
+        }
+      })();
+    },
+
+    DeletePreset: (call, callback) => {
+      const name = call.request.name ?? "";
+      if (parsePresetResource(name) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
+        });
+        return;
+      }
+      // No fan-out: an already-materialized agent keeps its materialization-
+      // time persona snapshot (data-model.md §2.1).
+      void deps.presets.delete(name).then(
+        () => callback(null, {}),
+        (err: unknown) => callback(toServiceError(err)),
+      );
+    },
+
+    ListModels: (call, callback) => {
+      void deps.listModels(PROVIDER).then(
+        (models) => callback(null, { models }),
+        (err: unknown) => callback(toServiceError(err)),
+      );
     },
   };
 }
 
+/**
+ * Build the DesktopBridgeService handlers from the desktop-bridge plugin's
+ * handler face (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md
+ * §2): the plugin's structural BidiStream is the grpc-js duplex stream the
+ * generated Connect handler receives.
+ */
+export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): DesktopBridgeServiceHandlers {
+  return {
+    Connect: (call) => {
+      bridge.Connect(call as unknown as BidiStream);
+    },
+  };
+}
+
+/**
+ * The deployment model catalog: the ids come from `ctx.llm.listModels`
+ * (the llm-glm plugin's static config.models — research.md D4) and the
+ * context windows from the same adapter's exact-model resolution, so the
+ * ListModels RPC and UpdateAgent's validation share one source.
+ */
+async function listModelCatalog(ctx: DshContext, provider: string): Promise<ModelCatalogEntry[]> {
+  const models: ReadonlyArray<LlmModelInfo> = await ctx.llm.listModels(provider);
+  return Promise.all(
+    models.map(async (model) => {
+      const resolved = await ctx.llm.resolveModelInfo(provider, model.id).catch(() => undefined);
+      return { id: model.id, contextWindow: resolved?.context?.contextWindow ?? 0 };
+    }),
+  );
+}
+
 /** Create, bind, and start the agent_v2 gRPC server on 0.0.0.0:50051. */
-export async function startServer(options: { ctx: DshContext }): Promise<StartedAgentServer> {
+export async function startServer(options: {
+  ctx: DshContext;
+  presetStore: PresetStore;
+}): Promise<StartedAgentServer> {
   const sessions = new AgentSessions(options.ctx);
+  const deps: AgentServiceDeps = {
+    sessions,
+    presets: options.presetStore,
+    listModels: (provider) => listModelCatalog(options.ctx, provider),
+  };
   const proto = loadProto();
   const server = new grpc.Server();
   server.addService(
     (proto.projects.game.v2.AgentService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
-    buildAgentHandlers(sessions),
+    buildAgentHandlers(deps),
   );
   server.addService(
     (proto.projects.game.v2.DesktopBridgeService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
-    buildDesktopBridgeHandlers(),
+    buildDesktopBridgeHandlers(options.ctx.desktopBridge.handlers()),
   );
 
   return new Promise((resolve, reject) => {

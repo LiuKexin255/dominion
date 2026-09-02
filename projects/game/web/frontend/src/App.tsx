@@ -5,7 +5,7 @@
 // 面板保持挂载仅不渲染，再次进入直接呈现既有状态。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './theme.css'
-import { disposeSession, listHistory, sendStream } from './api/conversation.js'
+import { listHistory, sendStream } from './api/conversation.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
 import { ChatView } from './components/ChatView.js'
@@ -22,7 +22,8 @@ function errorMessage(err: unknown): string {
 
 // ChatPanel hosts one session's store-backed chat view. The store outlives the
 // panel's active state (owned by App's per-session map), so an in-flight turn
-// keeps reducing while this panel renders nothing. The :history backfill runs
+// keeps reducing while this panel renders nothing. The ListAgentMessages
+// backfill runs
 // once on first entry (FR-014) and must not overwrite a turn that started
 // before the backfill response landed.
 function ChatPanel({
@@ -143,22 +144,17 @@ export function App() {
     async (name: string) => {
       setLoading(true)
       try {
-        // 删除编排第一跳：/api/v1 元数据删除（specs/049-agent-v2-dsh-init/
-        // contracts/web-frontend.md §5，D6——成功才进入第二跳）。
+        // 删除编排：仅 /api/v1 元数据删除——session 删除不联动 agent 清理
+        // （specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2，
+        // FR-007 Dispose 移除）。
         await deleteSession(name)
       } catch (err) {
         setListError(errorMessage(err))
         setLoading(false)
         return
       }
-      try {
-        await disposeSession(name)
-      } catch (err) {
-        // dispose 失败仅记录不阻断：会话资源随 agent_v2 重启释放
-        // （specs/049-agent-v2-dsh-init/research.md D6）。
-        console.error(`dispose ${name} failed (ignored):`, errorMessage(err))
-      }
-      // 同资源名的新建是全新会话（FR-015）：丢弃本地 store 与面板。
+      // 同资源名的新建命中残留 agent 为已接受限制（spec Edge Cases）：
+      // 丢弃本地 store 与面板。
       storesRef.current?.delete(name)
       setSessions((prev) => prev.filter((s) => s.name !== name))
       setOpened((prev) => prev.filter((n) => n !== name))

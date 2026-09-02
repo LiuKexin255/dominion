@@ -14,5 +14,7 @@ GameRuntime 行为、依赖 pin）见
   （`specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md`，A8）。peer 划分对齐
   官方 `@deepseek-ai/dsh-agent-loop`（同型工厂插件全 peer 形态）。
 - `@deepseek-ai/cordis` peer `^4.0.1`（插件框架，与 dsh 版本线解耦）。
+- `@deepseek-ai/schemastery` 运行时依赖：服务 `Config`（`maxParallelToolCalls`）的
+  schema 声明，与官方 loop 的 Config 形态同源。
 - `@dominion/game-saolei-board` 经 `workspace:*` 依赖：棋盘识别
   （`SaoleiBoard.init/updateFromScreenshot`）与坐标几何复用（FR-015）。

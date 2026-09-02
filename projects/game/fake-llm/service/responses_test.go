@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,7 +109,7 @@ func postResponses(t *testing.T, handler *ResponsesHandler, body string) *httpte
 func TestResponsesHandler_StreamThinkText(t *testing.T) {
 	// given: the agent_v2 store and a turn-1 request matching the greet
 	// template.
-	handler := NewResponsesHandler(responsesTestStore(t))
+	handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
 	body := `{"model":"glm-5.2","stream":true,"input":[` +
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"please agent-v2-think"}]}]}`
 
@@ -213,7 +214,7 @@ func TestResponsesHandler_StreamThinkText(t *testing.T) {
 // message item sits at output_index 0.
 func TestResponsesHandler_StreamPlainText(t *testing.T) {
 	// given: a request matching the plain template.
-	handler := NewResponsesHandler(responsesTestStore(t))
+	handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
 	body := `{"model":"glm-5.2","stream":true,"input":[` +
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"agent-v2-plain please"}]}]}`
 
@@ -274,7 +275,7 @@ func TestResponsesHandler_MultiTurnHistoryKeywords(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewResponsesHandler(responsesTestStore(t))
+			handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
 			body := `{"model":"glm-5.2","stream":true,"input":` + tt.input + `}`
 
 			// when
@@ -305,7 +306,7 @@ func TestResponsesHandler_MultiTurnHistoryKeywords(t *testing.T) {
 // code/message, and no think/text events at all.
 func TestResponsesHandler_FailureInjection(t *testing.T) {
 	// given: a request matching the failure template.
-	handler := NewResponsesHandler(responsesTestStore(t))
+	handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
 	body := `{"model":"glm-5.2","stream":true,"input":[` +
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"agent-v2-fail"}]}]}`
 
@@ -339,7 +340,7 @@ func TestResponsesHandler_FailureInjection(t *testing.T) {
 // output items plus the derived usage.
 func TestResponsesHandler_NonStreaming(t *testing.T) {
 	// given
-	handler := NewResponsesHandler(responsesTestStore(t))
+	handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
 	body := `{"model":"glm-5.2","stream":false,"input":[` +
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"agent-v2-think"}]}]}`
 
@@ -372,7 +373,7 @@ func TestResponsesHandler_NonStreaming(t *testing.T) {
 // TestResponsesHandler_BadRequests covers the 400/405 guards and the
 // input-tolerance rules (fake-responses-wire.md §1).
 func TestResponsesHandler_BadRequests(t *testing.T) {
-	handler := NewResponsesHandler(responsesTestStore(t))
+	handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
 
 	tests := []struct {
 		name   string
@@ -438,7 +439,7 @@ func TestResponsesHandler_BadRequests(t *testing.T) {
 // determinism anchor) and never picks the failure template.
 func TestResponsesHandler_DeterministicFallback(t *testing.T) {
 	// given: a request matching no keyword.
-	handler := NewResponsesHandler(responsesTestStore(t))
+	handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
 	body := `{"model":"glm-5.2","stream":false,"input":[` +
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"xyzzy-no-such-keyword"}]}]}`
 
@@ -501,7 +502,7 @@ func TestResponsesHandler_LongDelayWiring(t *testing.T) {
 			}, "\n")),
 		},
 	})
-	srv := httptest.NewServer(NewResponsesHandler(store))
+	srv := httptest.NewServer(NewResponsesHandler(store, rand.New(rand.NewPCG(1, 0))))
 	defer srv.Close()
 
 	// when: stream through the real server, recording arrival times.
@@ -534,5 +535,290 @@ func TestResponsesHandler_LongDelayWiring(t *testing.T) {
 	gap := arrivals[3].Sub(arrivals[2])
 	if gap < 60*time.Millisecond || gap > 2*time.Second {
 		t.Errorf("gap between reasoning deltas = %v, want ≈ 80ms", gap)
+	}
+}
+
+// responsesSaoleiStore builds the store carrying BOTH the game chain
+// (agent_v2_saolei.yaml) and the v1 chat fixture chain (saolei_tools.yaml +
+// its messages file) so every test asserts the real shared-store matching —
+// the agent_v2 rules must interoperate with the v1 configs without stealing
+// their matches (template-comment 互不干扰契约).
+func responsesSaoleiStore(t *testing.T) *MessageStore {
+	t.Helper()
+	store := newStoreFromMap(t, fstest.MapFS{
+		"testdata/agent_v2_saolei.yaml": &fstest.MapFile{
+			Data: embeddedTestdata(t, "agent_v2_saolei.yaml"),
+		},
+		"testdata/agent_v2_saolei_tools.yaml": &fstest.MapFile{
+			Data: embeddedTestdata(t, "agent_v2_saolei_tools.yaml"),
+		},
+		"testdata/saolei_tools.yaml": &fstest.MapFile{
+			Data: embeddedTestdata(t, "saolei_tools.yaml"),
+		},
+		"testdata/saolei.yaml": &fstest.MapFile{
+			Data: embeddedTestdata(t, "saolei.yaml"),
+		},
+	})
+	return store
+}
+
+// embeddedTestdata reads a template file from the binary's embedded store —
+// the fixture source of truth (style/golang.md: the test body must carry all
+// information; binary fixtures stay in testdata).
+func embeddedTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := embeddedFiles.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatalf("embedded testdata %s: %v", name, err)
+	}
+	return data
+}
+
+// saoleiResponsesHandler wires the saolei store with a fixed-seed RNG so a
+// no-match fallback is still deterministic.
+func saoleiResponsesHandler(t *testing.T) *ResponsesHandler {
+	t.Helper()
+	return NewResponsesHandler(responsesSaoleiStore(t), rand.New(rand.NewPCG(1, 0)))
+}
+
+// toolInput builds the Responses input array of one mid-chain request: the
+// original user turn, the replayed model call, and the tool result output.
+// arguments follows the real wire shape (serialize.ts): a JSON STRING, not an
+// object.
+func toolInput(callID, toolName, arguments, output string) string {
+	return `{"model":"m","stream":true,"input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"开始一局扫雷"}]},` +
+		`{"type":"function_call","call_id":"` + callID + `","name":"` + toolName + `","arguments":` + strconvQuote(arguments) + `},` +
+		`{"type":"function_call_output","call_id":"` + callID + `","output":` + strconvQuote(output) + `}]}`
+}
+
+// strconvQuote JSON-escapes s as a JSON string literal.
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// TestResponsesHandler_ToolCallChainWon verifies the agent_v2 won-scenario
+// chain (fake-desktop default scenario): the keyword fires saolei_init, the
+// won-board init result re-triggers saolei_operate, the game_won reject text
+// terminates with the summary, and the progressive 16×16 chain drives a
+// click+flag batch to its own terminator.
+func TestResponsesHandler_ToolCallChainWon(t *testing.T) {
+	handler := saoleiResponsesHandler(t)
+
+	t.Run("user keyword triggers saolei_init", func(t *testing.T) {
+		rec := postResponses(t, handler, `{"model":"m","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我开始一局扫雷"}]}]}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		events := scanResponsesEvents(t, rec.Body)
+		if events[0][0] != "response.created" {
+			t.Fatalf("first event = %s, want response.created", events[0][0])
+		}
+		if events[1][0] != "response.output_item.added" {
+			t.Fatalf("second event = %s, want output_item.added", events[1][0])
+		}
+		added := responsesEvent(t, events[1][1])
+		item := added["item"].(map[string]any)
+		if item["type"] != "function_call" || item["name"] != "saolei_init" {
+			t.Fatalf("added item = %v, want function_call saolei_init", item)
+		}
+		if item["call_id"] != "call_fake_1" {
+			t.Fatalf("call_id = %v, want the deterministic call_fake_1", item["call_id"])
+		}
+		// The terminal event carries the same call assembled (finish maps
+		// to tool-calls on the adapter side).
+		last := events[len(events)-1]
+		if last[0] != "response.completed" {
+			t.Fatalf("last event = %s, want response.completed", last[0])
+		}
+	})
+
+	t.Run("init result continues with the operate batch", func(t *testing.T) {
+		initResult := "new game started\ngame status: won\ngame status: won board follows\nboard size 9*9"
+		rec := postResponses(t, handler, toolInput("call_1", "saolei_init", "{}", initResult))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+		}
+		events := scanResponsesEvents(t, rec.Body)
+		done := events[len(events)-2]
+		if done[0] != "response.output_item.done" {
+			t.Fatalf("event before completed = %s, want output_item.done", done[0])
+		}
+		item := responsesEvent(t, done[1])["item"].(map[string]any)
+		if item["name"] != "saolei_operate" {
+			t.Fatalf("follow-up call = %v, want saolei_operate", item)
+		}
+		args, ok := item["arguments"].(string)
+		if !ok || !strings.Contains(args, `"operations"`) {
+			t.Fatalf("arguments = %v, want the batch operations JSON", item["arguments"])
+		}
+	})
+
+	t.Run("won operate result terminates with the summary text", func(t *testing.T) {
+		operateResult := "saolei_operate → stopped at click(0,0) (game_won)\ngame status: won\n\nboard size 9*9"
+		rec := postResponses(t, handler, toolInput("call_2", "saolei_operate", "{}", operateResult))
+		events := scanResponsesEvents(t, rec.Body)
+		var text string
+		for _, ev := range events {
+			if ev[0] == "response.output_text.delta" {
+				text = responsesEvent(t, ev[1])["delta"].(string)
+			}
+		}
+		if !strings.Contains(text, "游戏获胜") {
+			t.Fatalf("final text = %q, want the won summary", text)
+		}
+	})
+
+	t.Run("progressive init result drives a click+flag batch", func(t *testing.T) {
+		initResult := "new game started\ngame status: playing\n\nboard size 16*16"
+		rec := postResponses(t, handler, toolInput("call_3", "saolei_init", "{}", initResult))
+		events := scanResponsesEvents(t, rec.Body)
+		done := events[len(events)-2]
+		item := responsesEvent(t, done[1])["item"].(map[string]any)
+		args, ok := item["arguments"].(string)
+		if !ok {
+			t.Fatalf("arguments = %v, want the batch JSON", item["arguments"])
+		}
+		// The agent_v2 progressive batch carries one click AND one flag —
+		// the v1 follow-up would be two clicks (no flag).
+		if !strings.Contains(args, `"click"`) || !strings.Contains(args, `"flag"`) {
+			t.Fatalf("arguments = %q, want the click+flag progressive batch", args)
+		}
+	})
+
+	t.Run("progressive operate result terminates with the board summary", func(t *testing.T) {
+		operateResult := "saolei_operate → executed 2 ops\ngame status: playing\n\nboard size 16*16"
+		rec := postResponses(t, handler, toolInput("call_4", "saolei_operate", "{}", operateResult))
+		events := scanResponsesEvents(t, rec.Body)
+		var text string
+		for _, ev := range events {
+			if ev[0] == "response.output_text.delta" {
+				text = responsesEvent(t, ev[1])["delta"].(string)
+			}
+		}
+		if !strings.Contains(text, "棋盘已刷新") {
+			t.Fatalf("final text = %q, want the progressive terminator", text)
+		}
+	})
+}
+
+// TestToolChainEndpointIsolation verifies the endpoint scoping of the tool
+// fixtures (ToolConfig.ResponsesOnly / ToolsForEndpoint): the v1
+// chat-completions chain and the agent_v2 Responses chain share one store but
+// never intercept each other's results — the two agents can emit
+// byte-identical board texts, so the tools scope MUST be endpoint-keyed.
+func TestToolChainEndpointIsolation(t *testing.T) {
+	// ToolsForEndpoint keeps each endpoint's scope disjoint, including the
+	// no-match fallback pool each endpoint draws from.
+	tools := []*ToolConfig{
+		{Name: "v1-only"},
+		{Name: "shared-responses", ResponsesOnly: true},
+		{Name: "v1-only-b"},
+	}
+	if got := ToolsForEndpoint(tools, false); len(got) != 2 || got[0].Name != "v1-only" || got[1].Name != "v1-only-b" {
+		t.Fatalf("ToolsForEndpoint(chat) = %v, want the two non-responses-only entries", got)
+	}
+	if got := ToolsForEndpoint(tools, true); len(got) != 1 || got[0].Name != "shared-responses" {
+		t.Fatalf("ToolsForEndpoint(responses) = %v, want only the responses-only entry", got)
+	}
+
+	// Behavioral direction 1 — the RESPONSES endpoint must not resolve
+	// through a v1 rule: a progressive-scenario init result takes the
+	// agent_v2 progressive batch (one click AND one flag); the v1
+	// follow-up rule would answer two clicks. Both rules are candidates on
+	// a shared store, so the flag proves the v1 rule was out of scope.
+	handler := saoleiResponsesHandler(t)
+	initResult := "new game started\ngame status: playing\n\nboard size 16*16"
+	rec := postResponses(t, handler, toolInput("call_1", "saolei_init", "{}", initResult))
+	events := scanResponsesEvents(t, rec.Body)
+	done := events[len(events)-2]
+	item := responsesEvent(t, done[1])["item"].(map[string]any)
+	args, ok := item["arguments"].(string)
+	if !ok {
+		t.Fatalf("arguments = %v, want the batch JSON", item["arguments"])
+	}
+	if !strings.Contains(args, `"flag"`) {
+		t.Fatalf("arguments = %q, want the agent_v2 click+flag batch — the v1 two-click rule leaked into the responses scope", args)
+	}
+
+	// Behavioral direction 2 — the CHAT endpoint must not resolve through
+	// an agent_v2 rule: the 9×9 won init text matches
+	// agent-v2-saolei-init-operate's constraints, but the chat scope is
+	// blind to it, so the v1 follow-up (click(3,4), click(5,6)) answers.
+	// The v2 rule would answer click(0,0)/click(1,1) — the coordinates
+	// prove which rule fired.
+	chatHandler := NewChatHandler(responsesSaoleiStore(t), rand.New(rand.NewPCG(1, 0)))
+	wonInit := "new game started\ngame status: won\n\nboard size 9*9"
+	spec := chatHandler.dispatch([]*messageParam{
+		{Role: "user", Content: jsonRaw(`"开始一局扫雷"`)},
+		{Role: "assistant", Content: jsonRaw(`""`), ToolCalls: []*toolCallParam{{
+			ID: "c1", Type: "function",
+			Function: toolCallParamFunction{Name: "saolei_init", Arguments: "{}"},
+		}}},
+		{Role: "tool", ToolCallID: "c1", Name: "saolei_init", Content: jsonRaw(strconvQuote(wonInit))},
+	})
+	if spec.ToolCall == nil {
+		t.Fatal("chat tools branch produced no tool_call")
+	}
+	if spec.ToolCall.Name != "saolei_operate" {
+		t.Fatalf("chat follow-up = %v, want saolei_operate", spec.ToolCall.Name)
+	}
+	b, _ := json.Marshal(spec.ToolCall.Arguments)
+	if !strings.Contains(string(b), "3") || !strings.Contains(string(b), "5") {
+		t.Fatalf("chat arguments = %s, want the v1 batch click(3,4)/click(5,6) — an agent_v2 rule leaked into the chat scope", b)
+	}
+}
+
+// jsonRaw marshals s as a JSON raw message for messageParam fields.
+func jsonRaw(s string) json.RawMessage {
+	return json.RawMessage(s)
+}
+
+// TestResponsesHandler_ToolOutputNotLastKeepsKeywordMatching verifies the
+// dispatch rule: a function_call_output that is NOT the last input item does
+// not route into the tools branch — the request keeps matching by keywords.
+func TestResponsesHandler_ToolOutputNotLastKeepsKeywordMatching(t *testing.T) {
+	handler := saoleiResponsesHandler(t)
+	body := `{"model":"m","stream":true,"input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"开始一局扫雷"}]},` +
+		`{"type":"function_call","call_id":"c1","name":"saolei_init","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"c1","output":"stale result"},` +
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"called init"}]}]}`
+	rec := postResponses(t, handler, body)
+	events := scanResponsesEvents(t, rec.Body)
+	// The keyword match fires saolei_init again (tools branch would need a
+	// trailing function_call_output).
+	var sawFunctionCall bool
+	for _, ev := range events {
+		if ev[0] == "response.output_item.added" {
+			item := responsesEvent(t, ev[1])["item"].(map[string]any)
+			sawFunctionCall = item["type"] == "function_call"
+		}
+	}
+	if !sawFunctionCall {
+		t.Fatal("expected the keyword path to emit the saolei_init function_call")
+	}
+}
+
+// TestResponsesHandler_ToolCallNonStreaming verifies the stream:false shape
+// of a tool-call response: output carries exactly the function_call item.
+func TestResponsesHandler_ToolCallNonStreaming(t *testing.T) {
+	handler := saoleiResponsesHandler(t)
+	rec := postResponses(t, handler, `{"model":"m","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"开始一局扫雷"}]}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	output := payload["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output items = %d, want only the function_call", len(output))
+	}
+	item := output[0].(map[string]any)
+	if item["type"] != "function_call" || item["name"] != "saolei_init" {
+		t.Fatalf("item = %v, want function_call saolei_init", item)
 	}
 }

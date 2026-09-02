@@ -4,14 +4,18 @@
  * Order matters (demo pattern, specs/047-dsh-chat-demo/contracts/
  * dsh-agent-service.md §1; specs/049-agent-v2-dsh-init/spec.md FR-002):
  * OTel + gRPC instrumentation initializes BEFORE @grpc/grpc-js loads; the
- * dsh composition boots fail-loud (any failure exits non-zero); only then
- * does the gRPC server module load and start serving. SIGTERM/SIGINT
- * triggers the graceful chain: stop the server, dispose every agent session
- * (in-flight turns aborted, FR-015), dispose the composition's root fiber,
- * flush OTel, exit 0.
+ * dsh composition boots fail-loud (any failure exits non-zero); the preset
+ * store's Mongo client connects fail-loud (preset CRUD is part of the
+ * served surface, specs/051-agent-v2-dsh-migration/spec.md FR-005); only
+ * then does the gRPC server module load and start serving. SIGTERM/SIGINT
+ * triggers the graceful chain in dependency order (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §6):
+ * stop the server → dispose every agent session (in-flight turns aborted)
+ * → dispose the composition's root fiber (both inside sessions.shutdown)
+ * → close the Mongo client → flush OTel → exit 0.
  */
 
 import type { Server } from "@grpc/grpc-js";
+import type { MongoClient } from "mongodb";
 import { init, shutdown } from "@dominion/common-js-otel";
 import { createGrpcInstrumentation } from "@dominion/common-js-grpc-otel";
 import { error, info, installReporter, createOTelReporter } from "@dominion/common-js-logs";
@@ -54,9 +58,34 @@ async function main(): Promise<void> {
   // Fail-loud composition boot: resolves only on a fully settled plugin tree.
   const ctx = await bootDsh();
 
-  // Dynamic import defers @grpc/grpc-js loading until after OTel init.
+  // Dynamic imports defer @grpc/grpc-js loading until after OTel init (the
+  // proto-loader stack inside server.js and the preset-store module both sit
+  // behind it); mongodb is not an instrumented package but travels with the
+  // same deferred block for one uniform wiring point.
   const { startServer } = await import("./server.js");
-  const started = await startServer({ ctx });
+  const { MongoClient } = await import("mongodb");
+  const {
+    MongoPresetStore,
+    PRESET_COLLECTION_NAME,
+    PRESET_DATABASE,
+    mongoPresetCollection,
+    resolveMongoUri,
+  } = await import("./presets.js");
+
+  // Fail-loud preset storage (specs/051-agent-v2-dsh-migration/spec.md
+  // FR-005): the service serves preset CRUD from
+  // its own Mongo database, so a connect/index failure must never half-start
+  // the surface — the process exits non-zero through the main catch.
+  const mongoUri = await resolveMongoUri();
+  const mongo: MongoClient = new MongoClient(mongoUri);
+  await mongo.connect();
+  const presetStore = new MongoPresetStore(
+    mongoPresetCollection(mongo.db(PRESET_DATABASE).collection(PRESET_COLLECTION_NAME)),
+  );
+  await presetStore.ensureIndexes();
+  info("preset store connected", { database: PRESET_DATABASE, collection: PRESET_COLLECTION_NAME });
+
+  const started = await startServer({ ctx, presetStore });
   info("service started", { service: "game-agent-v2", port: 50051 });
 
   let exiting = false;
@@ -69,6 +98,9 @@ async function main(): Promise<void> {
       // Disposes every session (in-flight turns aborted, queued messages
       // dropped) and then the composition's root fiber.
       await started.sessions.shutdown();
+      // The client is closed after the fiber: nothing may outlive the
+      // Mongo handle it serves from.
+      await mongo.close();
     } catch (err) {
       error("shutdown cleanup failed", {
         error: err instanceof Error ? err.message : String(err),

@@ -1,0 +1,15 @@
+version: "3.0"
+name: fake-desktop-won
+app: game
+kind: stateless
+desc: game fake desktop executor, default-scenario instance (testplan only — deterministic operation receipts with recognizable screenshots)
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  # One artifact per deploy instance: the platform keys the deployed service
+  # by the manifest's top-level name, so the disconnect-injection instance is
+  # a separate manifest (service-drop.yaml) — the agent_v2 agent-v2-test
+  # precedent of per-instance artifact selection needs distinct names.
+  - name: fake-desktop-won
+    target: :cmd_image_won

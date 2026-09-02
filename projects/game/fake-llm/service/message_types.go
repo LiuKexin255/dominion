@@ -127,9 +127,20 @@ func (m *Message) isResponsesOnly() bool {
 // (see MessageStore). They are completely independent of Message
 // entries: a request whose last message role is "tool" dispatches into
 // the tools branch and never touches the messages branch.
+//
+// ResponsesOnly marks the entry as serving the /v1/responses tools branch
+// only — the endpoint-scoped counterpart of the Message field of the same
+// name. v1 flows reach the tools branch through the chat-completions
+// endpoint and agent_v2 flows through the Responses endpoint, and their
+// fixture chains must not intercept each other's results (the two agents
+// can emit byte-identical board texts), so the endpoints see disjoint
+// scopes: chat matching only non-responses-only entries, Responses
+// matching only responses-only entries — including each endpoint's
+// no-match fallback pool.
 type ToolConfig struct {
 	Name                string       `json:"name" yaml:"name"`
 	ToolName            string       `json:"tool_name" yaml:"tool_name"`
+	ResponsesOnly       bool         `json:"responses_only,omitempty" yaml:"responses_only,omitempty"`
 	MatchResultContains []string     `json:"match_result_contains,omitempty" yaml:"match_result_contains,omitempty"`
 	RespondWith         ToolResponse `json:"respond_with" yaml:"respond_with"`
 }

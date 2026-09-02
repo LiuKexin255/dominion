@@ -1,23 +1,41 @@
 # dsh composition manifest — the single source of truth for the enabled plugin
-# set (specs/049-agent-v2-dsh-init/data-model.md §2.6; zero tools, FR-006).
-# Two rows: the executor-less agent spine with its tool surface trimmed off,
-# and the GLM Responses adapter whose baseURL/token are injected by the host
-# bootstrap before boot (specs/049-agent-v2-dsh-init/research.md D9).
-- id: agent-spine
-  name: '@deepseek-ai/dsh-agent-spine-demo'
+# set (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5,
+# research.md D5): the dsh core plugins composed directly (no spine row — the
+# spine hard-mounts the official agent-loop and the agent registry forbids a
+# second factory, FR-012) plus the Dominion plugins. Rows are order-insensitive
+# (cordis awaits by inject); the ordering below is dependency-layered for
+# reading.
+# - timer/invariants/system-prompt enter through the framework-core baseline
+#   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining dsh
+#   rows are service-declared npm deps (projects/game/agent_v2/package.json).
+# - GLM endpoint/token injection happens host-side before boot
+#   (projects/game/agent_v2/src/dsh.ts, specs/049-agent-v2-dsh-init/research.md D9).
+- { id: timer,           name: '@deepseek-ai/cordis-plugin-timer' }
+- { id: llm,             name: '@deepseek-ai/dsh-llm' }
+- { id: session,         name: '@deepseek-ai/dsh-session' }
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
   config:
-    persona: 'You are the game conversation assistant: a friendly Chinese-speaking helper for the game workspace. Answer questions about game sessions concisely, reason step by step when the question needs it, and keep replies focused on what the player asked.'
-    workspaceContext: false        # 唯一必填键：显式关闭 runtime-context 注入
-    includeRuntimeContext: false
-    includeHarnessIdentity: false
-    skills: { enabled: false }
-    toolBash: false                # 零工具（specs/049-agent-v2-dsh-init/spec.md FR-006）
-    toolJobs: false
+    includeHarnessIdentity: false   # 部署自有完整 system prompt（049 D3 延续）
+    includeRuntimeContext: false    # 游戏事实只经工具结果落日志（FR-011）
+- { id: tools,           name: '@deepseek-ai/dsh-tools' }
+- { id: agents,          name: '@deepseek-ai/dsh-agent' }
+- { id: invariants,      name: '@deepseek-ai/dsh-invariants' }
+# 一致性防护伴生（自研 loop 的高风险面防护，research.md D5/D6）：三个包的
+# ./invariant subpath 导出为普通插件模块（name/inject/apply），Loader 按裸
+# 说明符动态 import，Node ESM exports map 直接解析 subpath 行名。
+- { id: invariant-session, name: '@deepseek-ai/dsh-session/invariant' }
+- { id: invariant-agent,   name: '@deepseek-ai/dsh-agent/invariant' }
+- { id: invariant-scope,   name: '@deepseek-ai/dsh-scope/invariant' }
+- { id: llm-retry,       name: '@deepseek-ai/dsh-llm-retry' }
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:
-    apiKeyEnv: GLM_API_KEY                      # bootstrap 三级解析：env 已设直用 → secret 文件注入 → 未设（插件空 key 跳过 Authorization，specs/049-agent-v2-dsh-init/research.md D9）
-    baseURL: !!js process.env.GLM_BASE_URL      # bootstrap 解析/默认（specs/049-agent-v2-dsh-init/research.md D9）
-    models:
+    apiKeyEnv: GLM_API_KEY                      # bootstrap 三级解析（specs/049-agent-v2-dsh-init/research.md D9）
+    baseURL: !!js process.env.GLM_BASE_URL      # bootstrap 解析/默认（同上）
+    models:                                     # 模型目录唯一来源（research.md D4；默认模型与 ListModels 同源）
       - id: !!js process.env.GLM_MODEL || 'glm-5.2'
         contextWindow: 1000000
+- { id: desktop-bridge,  name: '@dominion/dsh-desktop-bridge' }
+- { id: saolei-loop,     name: '@dominion/dsh-saolei-loop' }
+- { id: saolei,          name: '@dominion/dsh-saolei' }

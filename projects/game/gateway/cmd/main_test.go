@@ -165,9 +165,27 @@ func echoAsTeamFrame(f *game.UserFrame) *game.TeamFrame {
 // client connection. Caller must call conn.Close() and cancel() when done.
 func setupTestGRPC(t *testing.T, mock game.TeamServiceServer) (*grpc.ClientConn, context.CancelFunc) {
 	t.Helper()
+	return startTestGRPC(t, func(srv *grpc.Server) {
+		game.RegisterTeamServiceServer(srv, mock)
+	})
+}
+
+// setupTestGRPCBridge is setupTestGRPC for the v2 DesktopBridgeService.
+func setupTestGRPCBridge(t *testing.T, mock gamev2.DesktopBridgeServiceServer) (*grpc.ClientConn, context.CancelFunc) {
+	t.Helper()
+	return startTestGRPC(t, func(srv *grpc.Server) {
+		gamev2.RegisterDesktopBridgeServiceServer(srv, mock)
+	})
+}
+
+// startTestGRPC starts a gRPC server whose services the register callback
+// installs, and returns the client connection. Resources are released on
+// test cleanup.
+func startTestGRPC(t *testing.T, register func(srv *grpc.Server)) (*grpc.ClientConn, context.CancelFunc) {
+	t.Helper()
 
 	srv := grpc.NewServer()
-	game.RegisterTeamServiceServer(srv, mock)
+	register(srv)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1037,5 +1055,247 @@ func TestRootMuxAPIv1UnrelatedPathsUnchanged(t *testing.T) {
 	defer missing.Body.Close()
 	if missing.StatusCode != http.StatusNotFound {
 		t.Fatalf("api/v3 status = %d, want %d", missing.StatusCode, http.StatusNotFound)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: /api/v2 desktop-bridge WebSocket surface
+// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3)
+// ---------------------------------------------------------------------------
+
+func TestIsWebSocketConnectPathV2(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "/api/v2/templates/saolei/sessions/abc/connect", want: true},
+		{path: "api/v2/templates/saolei/sessions/abc/connect", want: true},
+		{path: "/api/v2/templates/saolei/sessions/abc/connect/", want: true},
+		{path: "/api/v2/templates//sessions/abc/connect", want: false},
+		{path: "/api/v2/templates/saolei/sessions//connect", want: false},
+		{path: "/api/v2/templates/saolei/sessions/abc", want: false},
+		{path: "/api/v2/templates/saolei/sessions/abc/agent", want: false},
+		{path: "/api/v2/models", want: false},
+		// Cross-version: the v1 connect path is not a v2 connect (the v1
+		// TeamService face stays untouched; the v2 face serves the bridge).
+		{path: "/api/v1/templates/saolei/sessions/abc/connect", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := isWebSocketConnectPathV2(tt.path)
+			if got != tt.want {
+				t.Fatalf("isWebSocketConnectPathV2(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractConnectIdentityV2(t *testing.T) {
+	tests := []struct {
+		path         string
+		wantTemplate string
+		wantSession  string
+	}{
+		{path: "/api/v2/templates/saolei/sessions/abc123/connect", wantTemplate: "saolei", wantSession: "abc123"},
+		{path: "/api/v2/templates/saolei/sessions/x-y-z/connect", wantTemplate: "saolei", wantSession: "x-y-z"},
+		{path: "/api/v2/templates/saolei/sessions//connect", wantTemplate: "", wantSession: ""},
+		{path: "/api/v2/templates/saolei/sessions/abc/agent", wantTemplate: "", wantSession: ""},
+		{path: "/api/v1/templates/saolei/sessions/abc/connect", wantTemplate: "", wantSession: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			gotTemplate, gotSession := extractConnectIdentityV2(tt.path)
+			if gotTemplate != tt.wantTemplate {
+				t.Fatalf("extractConnectIdentityV2(%q) template = %q, want %q", tt.path, gotTemplate, tt.wantTemplate)
+			}
+			if gotSession != tt.wantSession {
+				t.Fatalf("extractConnectIdentityV2(%q) session = %q, want %q", tt.path, gotSession, tt.wantSession)
+			}
+		})
+	}
+}
+
+// mockDesktopBridgeServer implements gamev2.DesktopBridgeServiceServer for
+// testing.
+type mockDesktopBridgeServer struct {
+	gamev2.UnimplementedDesktopBridgeServiceServer
+
+	// onConnect mirrors mockTeamServer.onConnect: it receives the bidi
+	// stream (Recv returns UserFrame, Send takes TeamFrame) and returns when
+	// done or on error.
+	onConnect func(stream gamev2.DesktopBridgeService_ConnectServer) error
+}
+
+func (m *mockDesktopBridgeServer) Connect(stream gamev2.DesktopBridgeService_ConnectServer) error {
+	if m.onConnect != nil {
+		return m.onConnect(stream)
+	}
+	// Default: echo each received frame back as a TeamFrame (Recv returns
+	// UserFrame, Send takes TeamFrame).
+	for {
+		frame, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(echoAsTeamFrame(frame)); err != nil {
+			return err
+		}
+	}
+}
+
+// TestHandleDesktopBridgeConnect_ProbeRoundtrip drives the v2 connect face
+// end to end: a WS dial to /api/v2/.../connect reaches a real
+// DesktopBridgeService gRPC server, the URL-derived identity overwrites the
+// client-supplied frame identity, and the probe echoes back as a TeamFrame.
+func TestHandleDesktopBridgeConnect_ProbeRoundtrip(t *testing.T) {
+	bridgeConn, _ := setupTestGRPCBridge(t, &mockDesktopBridgeServer{})
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleDesktopBridgeConnect(w, r, bridgeConn)
+	}))
+	defer httpSrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v2/templates/saolei/sessions/probe-session/connect", nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// The probe frame carries a deliberately wrong session id — the gateway
+	// must overwrite it with the URL path value
+	// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §1).
+	sendFrame := &game.UserFrame{
+		TemplateId: "wrong",
+		SessionId:  "from-proto",
+		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
+		}}},
+	}
+	msg, err := proto.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, resp, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	recvFrame := new(game.TeamFrame)
+	if err := proto.Unmarshal(resp, recvFrame); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if recvFrame.GetTemplateId() != "saolei" {
+		t.Fatalf("template_id = %q, want %q (from URL, not protobuf)", recvFrame.GetTemplateId(), "saolei")
+	}
+	if recvFrame.GetSessionId() != "probe-session" {
+		t.Fatalf("session_id = %q, want %q (from URL, not protobuf)", recvFrame.GetSessionId(), "probe-session")
+	}
+	status := recvFrame.GetFlowParts().GetParts()[0].GetStatus()
+	if status == nil {
+		t.Fatal("response flowParts[0] kind = nil, want status")
+	}
+	if status.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE {
+		t.Fatalf("status = %q, want %q", status.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
+	}
+}
+
+// TestHandleDesktopBridgeConnect_MissingSessionID mirrors the v1 routing
+// guard: a connect path with an empty session segment is answered with HTTP
+// 400 before any upgrade.
+func TestHandleDesktopBridgeConnect_MissingSessionID(t *testing.T) {
+	bridgeConn, _ := setupTestGRPCBridge(t, &mockDesktopBridgeServer{})
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleDesktopBridgeConnect(w, r, bridgeConn)
+	}))
+	defer httpSrv.Close()
+
+	resp, err := http.Get(httpSrv.URL + "/api/v2/templates/saolei/sessions//connect")
+	if err != nil {
+		t.Fatalf("http get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestRootMuxAPIv2WebSocketConnectRoutedToDesktopBridge verifies the
+// /api/v2/ subtree diverts the connect path to the WebSocket pump before
+// grpc-gateway: a WS dial through the full root mux reaches the desktop
+// bridge backend and round-trips a probe (desktop-bridge.md §3: the
+// /api/v2/ subtree checks the WS branch first, then falls through to
+// gwmux).
+func TestRootMuxAPIv2WebSocketConnectRoutedToDesktopBridge(t *testing.T) {
+	bridgeConn, _ := setupTestGRPCBridge(t, &mockDesktopBridgeServer{})
+
+	// The mux mirrors main(): one proxy connection carries the grpc-gateway
+	// handlers and the WebSocket pumps. The gateway handlers registered on
+	// this conn are never exercised by the WS path under test.
+	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
+	if err := game.RegisterTeamServiceHandler(context.Background(), gwmux, bridgeConn); err != nil {
+		t.Fatalf("register team handler: %v", err)
+	}
+	if err := gamev2.RegisterAgentServiceHandler(context.Background(), gwmux, bridgeConn); err != nil {
+		t.Fatalf("register agent handler: %v", err)
+	}
+
+	httpSrv := httptest.NewServer(newRootMux(gwmux, bridgeConn))
+	defer httpSrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v2/templates/saolei/sessions/routed/connect", nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	sendFrame := probeUserFrame("saolei", "from-proto")
+	msg, err := proto.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, resp, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	recvFrame := new(game.TeamFrame)
+	if err := proto.Unmarshal(resp, recvFrame); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if recvFrame.GetSessionId() != "routed" {
+		t.Fatalf("session_id = %q, want %q (identity injected from the routed URL)", recvFrame.GetSessionId(), "routed")
+	}
+}
+
+// probeUserFrame builds the StatusSignal probe UserFrame with a
+// client-supplied (overwritable) identity.
+func probeUserFrame(templateID, sessionID string) *game.UserFrame {
+	return &game.UserFrame{
+		TemplateId: templateID,
+		SessionId:  sessionID,
+		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
+		}}},
 	}
 }

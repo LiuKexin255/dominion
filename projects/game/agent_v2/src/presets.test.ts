@@ -72,7 +72,7 @@ describe("resolveMongoUri", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("resolves the Dominion mongo target and rewrites it to a mongodb URI", async () => {
+  it("resolves the Dominion mongo target into a credentialed mongodb URI", async () => {
     const resolve = vi.fn(async () => ["10.0.0.9:27017"]);
 
     const uri = await resolveMongoUri({
@@ -81,7 +81,26 @@ describe("resolveMongoUri", () => {
     });
 
     expect(resolve).toHaveBeenCalledWith(MONGO_TARGET);
-    expect(uri).toBe("mongodb://10.0.0.9:27017");
+    // The password is the deterministic deployment derivation (same-source
+    // with dominion/common/gopkg/mongo/credentials.go; the cross-implementation
+    // match is pinned by that package's client_test.go vectors) for the
+    // default environment.
+    expect(uri).toBe(
+      "mongodb://admin:JaOE4KM29XdamfOs9zUqhC2QHavC2UJn@10.0.0.9:27017/admin?authSource=admin",
+    );
+  });
+
+  it("derives the credential from DOMINION_ENVIRONMENT", async () => {
+    const resolve = vi.fn(async () => ["10.0.0.9:27017"]);
+
+    const uri = await resolveMongoUri({
+      env: { DOMINION_ENVIRONMENT: "test-env" },
+      resolver: { resolve } as unknown as EndpointResolver,
+    });
+
+    expect(uri).toBe(
+      "mongodb://admin:iiG62he1f7TPRHuY7ooNT2uVfVgJ4fKN@10.0.0.9:27017/admin?authSource=admin",
+    );
   });
 
   it("fails loud when the resolver returns no endpoints", async () => {

@@ -221,8 +221,11 @@ export function createResponsesWire(): ResponsesWire {
     if (kind === "tool-call") {
       sawToolCall = true;
     }
-    const start: StreamChunk = { type: "block-start", index: block.index, blockType: kind };
-    pendingChunks.push(start);
+    // The tool call's provider id and name first surface on the block_end
+    // chunk's tool-call block (the dsh StreamChunk block-start carries no
+    // id field); the agent_v2 collector and the web store correlate from
+    // there (chat.ts blockEndTerminal).
+    pendingChunks.push({ type: "block-start", index: block.index, blockType: kind });
   }
 
   function blockAt(outputIndex: number): WireBlock | undefined {

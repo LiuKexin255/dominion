@@ -183,11 +183,57 @@ describe("SessionHistory", () => {
   });
 });
 
+describe("SessionHistory.settleToolResult", () => {
+  function historyWithToolCall(toolId: string) {
+    const history = new SessionHistory();
+    history.appendUser("go");
+    history.appendAssistant([
+      { type: "text", text: "calling" },
+      { type: "tool-call", id: toolId, name: "saolei_init", arguments: "{}" },
+    ]);
+    return history;
+  }
+
+  it("settles the most recent RUNNING block with the matching tool_id", () => {
+    const history = historyWithToolCall("call-1");
+
+    expect(history.settleToolResult("call-1", "TOOL_STATUS_SUCCEEDED", "board text")).toBe(true);
+
+    const block = history.list()[1]?.blocks[1]?.toolCall;
+    expect(block?.status).toBe("TOOL_STATUS_SUCCEEDED");
+    expect(block?.result).toBe("board text");
+    // The other blocks of the message are untouched.
+    expect(history.list()[1]?.blocks[0]).toEqual({ text: { content: "calling" } });
+  });
+
+  it("ignores a result with no matching tool_id (never fabricated into history)", () => {
+    const history = historyWithToolCall("call-1");
+
+    expect(history.settleToolResult("call-unknown", "TOOL_STATUS_FAILED", "err")).toBe(false);
+
+    const block = history.list()[1]?.blocks[1]?.toolCall;
+    expect(block?.status).toBe("TOOL_STATUS_RUNNING");
+    expect(block?.result).toBeUndefined();
+  });
+
+  it("prefers the newest match and refuses to re-settle a terminal block", () => {
+    const history = historyWithToolCall("call-1");
+    history.settleToolResult("call-1", "TOOL_STATUS_SUCCEEDED", "first");
+
+    // Second turn re-uses a stale id: only RUNNING blocks are candidates, so
+    // the terminal block from the earlier turn is left alone.
+    expect(history.settleToolResult("call-1", "TOOL_STATUS_FAILED", "second")).toBe(false);
+    const block = history.list()[1]?.blocks[1]?.toolCall;
+    expect(block?.status).toBe("TOOL_STATUS_SUCCEEDED");
+    expect(block?.result).toBe("first");
+  });
+});
+
 describe("TurnCollector", () => {
   const SESSION = "templates/saolei/sessions/s1";
 
-  function chunkEvent(chunk: DshStreamChunk) {
-    return { type: "assistant/chunk", data: { turn: 1, step: 1, chunk } };
+  function chunkEvent(chunk: DshStreamChunk, step = 1) {
+    return { type: "assistant/chunk", data: { turn: 1, step, chunk } };
   }
 
   it("streams mapped events for the active turn and settles COMPLETED with usage on idle", async () => {
@@ -293,5 +339,142 @@ describe("TurnCollector", () => {
     collector.begin("turn-1", stream);
     emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "z" }));
     expect(stream.events).toEqual([]);
+  });
+
+  // ── multi-step tool turns (specs/051-agent-v2-dsh-migration/data-model.md
+  // §2.3/§2.4): turn-global index remap + tool_result frame + backfill ──────
+
+  function toolResultEvent(step: number, callId: string, text: string, isError = false) {
+    return {
+      type: "tool/result",
+      data: {
+        turn: 1,
+        step,
+        message: {
+          content: [{ type: "tool-result", toolCallId: callId, isError, content: [{ type: "text", text }] }],
+        },
+      },
+    };
+  }
+
+  function assistantMessageEvent(step: number, blocks: Array<Record<string, unknown>>) {
+    return {
+      type: "assistant/message",
+      data: { turn: 1, step, message: { content: blocks } },
+    };
+  }
+
+  it("remaps per-step block indexes onto one turn-global monotonic sequence", () => {
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    const collector = new TurnCollector(ctx, agent, SESSION, history);
+    const stream = recorder();
+    collector.begin("turn-1", stream);
+
+    // Step 1: two blocks (indexes 0, 1).
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "calling" }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "calling" } }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 1, blockType: "tool-call", id: "call-1", name: "saolei_init" }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "tool-call-delta", index: 1, argumentsDelta: "{}" }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 1, block: { type: "tool-call", id: "call-1", name: "saolei_init", arguments: "{}" } }));
+    emit(listeners, "session/event", agent.session, assistantMessageEvent(1, [
+      { type: "text", text: "calling" },
+      { type: "tool-call", id: "call-1", name: "saolei_init", arguments: "{}" },
+    ]));
+
+    // Step 2: the provider restarts at index 0 — it must NOT collide with
+    // step 1's block 0 (data-model.md §2.4 turn-global monotonicity).
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }, 2));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "board" }, 2));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "board" } }, 2));
+
+    const indexes = stream.events
+      .filter((event) => event.blockStart !== undefined || event.blockEnd !== undefined)
+      .map((event) => event.blockStart?.index ?? event.blockEnd?.index);
+    // Step 1 locals (0,1) keep globals (0,1); step 2's local 0 becomes the
+    // next global (2) — no collision with step 1's block 0.
+    expect(indexes).toEqual([0, 0, 1, 1, 2, 2]);
+    // Deltas carry the remapped index of their block.
+    expect(stream.events[1]?.delta?.index).toBe(0);
+    const stepTwoDelta = stream.events[stream.events.length - 2];
+    expect(stepTwoDelta?.delta?.text).toBe("board");
+    expect(stepTwoDelta?.delta?.index).toBe(2);
+    collector.abort();
+  });
+
+  it("emits a tool_result frame and settles the history block by tool_id", () => {
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    const collector = new TurnCollector(ctx, agent, SESSION, history);
+    const stream = recorder();
+    collector.begin("turn-1", stream);
+
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "tool-call", id: "call-1", name: "saolei_init" }));
+    emit(listeners, "session/event", agent.session, assistantMessageEvent(1, [
+      { type: "tool-call", id: "call-1", name: "saolei_init", arguments: "{}" },
+    ]));
+    emit(listeners, "session/event", agent.session, { type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name: "saolei_init", arguments: "{}" } });
+    emit(listeners, "session/event", agent.session, toolResultEvent(1, "call-1", "new game started"));
+
+    const frame = stream.events[stream.events.length - 1];
+    expect(frame?.toolResult).toEqual({
+      toolId: "call-1",
+      status: "TOOL_STATUS_SUCCEEDED",
+      result: "new game started",
+    });
+    expect(frame?.turnId).toBe("turn-1");
+    expect(frame?.session).toBe(SESSION);
+
+    const block = history.list()[0]?.blocks[0]?.toolCall;
+    expect(block?.status).toBe("TOOL_STATUS_SUCCEEDED");
+    expect(block?.result).toBe("new game started");
+    collector.abort();
+  });
+
+  it("maps an error tool result to TOOL_STATUS_FAILED and ignores unknown tool ids in history", () => {
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    const collector = new TurnCollector(ctx, agent, SESSION, history);
+    const stream = recorder();
+    collector.begin("turn-1", stream);
+
+    emit(listeners, "session/event", agent.session, assistantMessageEvent(1, [
+      { type: "tool-call", id: "call-1", name: "saolei_operate", arguments: "{}" },
+    ]));
+    // Unknown id first: the history has no unsettled match for it.
+    emit(listeners, "session/event", agent.session, toolResultEvent(1, "call-unknown", "boom", true));
+    emit(listeners, "session/event", agent.session, { type: "tool/call", data: { turn: 1, step: 1, callId: "call-1", name: "saolei_operate", arguments: "{}" } });
+    emit(listeners, "session/event", agent.session, toolResultEvent(1, "call-1", "desktop disconnected", true));
+
+    const failed = stream.events[stream.events.length - 1]?.toolResult;
+    expect(failed?.status).toBe("TOOL_STATUS_FAILED");
+    expect(failed?.result).toBe("desktop disconnected");
+
+    // The unknown id left no trace in history; the known one is settled.
+    expect(history.settleToolResult("call-1", "TOOL_STATUS_RUNNING", "")).toBe(false);
+    const block = history.list()[0]?.blocks[0]?.toolCall;
+    expect(block?.status).toBe("TOOL_STATUS_FAILED");
+    collector.abort();
+  });
+
+  it("settles history from tool results even when no stream is attached", () => {
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    const collector = new TurnCollector(ctx, agent, SESSION, history);
+
+    emit(listeners, "session/event", agent.session, assistantMessageEvent(1, [
+      { type: "tool-call", id: "call-1", name: "saolei_init", arguments: "{}" },
+    ]));
+    emit(listeners, "session/event", agent.session, toolResultEvent(1, "call-1", "new game started"));
+
+    const block = history.list()[0]?.blocks[0]?.toolCall;
+    expect(block?.status).toBe("TOOL_STATUS_SUCCEEDED");
+    expect(block?.result).toBe("new game started");
+    collector.abort();
   });
 });

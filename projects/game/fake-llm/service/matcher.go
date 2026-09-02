@@ -79,6 +79,22 @@ func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool
 	return pick, false
 }
 
+// ToolsForEndpoint filters the store's tool configs to one endpoint's scope
+// (the ToolConfig.ResponsesOnly marker): the chat-completions tools branch
+// matches only non-responses-only entries, the Responses tools branch only
+// responses-only entries. The returned slice feeds both the deterministic
+// match and the endpoint's no-match random fallback, so the two endpoints'
+// fixture chains can never intercept each other's results.
+func ToolsForEndpoint(tools []*ToolConfig, responsesOnly bool) []*ToolConfig {
+	var scoped []*ToolConfig
+	for i := range tools {
+		if tools[i].ResponsesOnly == responsesOnly {
+			scoped = append(scoped, tools[i])
+		}
+	}
+	return scoped
+}
+
 // MatchToolResult picks the ToolConfig for a tool-result request. The
 // primary key is toolName (case-insensitive exact match against
 // ToolConfig.ToolName). When MatchResultContains is non-empty on a

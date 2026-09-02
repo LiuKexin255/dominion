@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -23,6 +24,11 @@ const (
 	responsesRespID = "resp_fake_1"
 	responsesRsnID  = "rs_fake_1"
 	responsesMsgID  = "msg_fake_1"
+	// The function_call wire identity of a tool-call response — fixed like
+	// the other ids so the same request always observes the same wire
+	// (fake-responses-wire.md §2 invariant 3).
+	responsesCallID = "call_fake_1"
+	responsesFcID   = "fc_fake_1"
 )
 
 // responsesRequest is the subset of the OpenAI /v1/responses request
@@ -38,13 +44,22 @@ type responsesRequest struct {
 	Stream       bool                   `json:"stream"`
 }
 
-// responsesInputItem is one entry of the request's input array. Only
-// message items are consumed; every other item type (reasoning,
-// function_call, …) is ignored (fake-responses-wire.md §1).
+// responsesInputItem is one entry of the request's input array. Message
+// items drive the keyword/multi-turn matching; function_call items replay a
+// model call (call_id/name) and function_call_output items carry the joined
+// tool result — together they drive the tools branch of the dispatch (the
+// multi-step tool chains of the agent_v2 game templates). Reasoning and other
+// item types are ignored (fake-responses-wire.md §1).
 type responsesInputItem struct {
 	Type    string          `json:"type"`
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
+	// function_call item fields: the provider call id and the tool name.
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	// function_call_output item field: the rendered tool result.
+	Output string `json:"output"`
 }
 
 // responsesContentPart is one element of the array-form Content. Both the
@@ -67,12 +82,18 @@ type responsesMessage struct {
 // chat-completions endpoint.
 type ResponsesHandler struct {
 	store *MessageStore
+	// rng backs the no-match fallbacks (messages and tools) — the same
+	// semantics as the chat handler's shared generator: *rand.Rand is not
+	// concurrency-safe, which only degrades fallback distribution, never
+	// validity.
+	rng *rand.Rand
 }
 
-// NewResponsesHandler wires the handler to a loaded MessageStore. The
-// store must already be loaded and validated (see NewMessageStore).
-func NewResponsesHandler(store *MessageStore) *ResponsesHandler {
-	return &ResponsesHandler{store: store}
+// NewResponsesHandler wires the handler to a loaded MessageStore and the
+// shared fallback RNG. The store must already be loaded and validated (see
+// NewMessageStore); the rng must be non-nil.
+func NewResponsesHandler(store *MessageStore, rng *rand.Rand) *ResponsesHandler {
+	return &ResponsesHandler{store: store, rng: rng}
 }
 
 // ServeHTTP implements http.Handler. Any Authorization bearer is accepted
@@ -81,6 +102,13 @@ func NewResponsesHandler(store *MessageStore) *ResponsesHandler {
 // matched template streams (or, for stream:false, returns as one JSON
 // object) its think/text projection; a Failure template emits
 // response.failed with the configured code/message.
+//
+// Dispatch inspects the LAST input item: a function_call_output (the tool
+// result the adapter replays after a model call) routes into the tools
+// branch — MatchToolResult by the call's tool name (+ optional
+// match_result_contains), exactly the chat-completions tool-message
+// branch — while any other tail falls through to the keyword/multi-turn
+// matching.
 func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -101,34 +129,54 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages := normalizeResponsesInput(*req.Input)
-	msg := matchResponses(h.store.Messages(), messages)
-	spec := specFromMessage(msg)
+	messages, toolCalls, toolOutput := projectResponsesInput(*req.Input)
+	var spec responseSpec
+	var failure *ResponseFailure
+	if toolOutput != nil {
+		toolName := toolCalls[toolOutput.CallID]
+		tc, _ := MatchToolResult(ToolsForEndpoint(h.store.Tools(), true), toolName, toolOutput.Output, h.rng)
+		spec = specFromTool(tc)
+	} else {
+		msg := matchResponses(h.store.Messages(), messages)
+		spec = specFromMessage(msg)
+		failure = msg.Failure
+	}
 
 	if req.Stream {
-		serveResponsesStreaming(w, r, spec, msg)
+		serveResponsesStreaming(w, r, spec, failure)
 		return
 	}
-	serveResponsesNonStreaming(w, spec, msg)
+	serveResponsesNonStreaming(w, spec, failure)
 }
 
-// normalizeResponsesInput flattens the input items into messages: message
-// items contribute their role and the joined input_text/output_text text
-// (string content counts as one text part); unknown item types are
-// dropped. Malformed content degrades to the empty string so matching
-// falls through deterministically rather than failing the request.
-func normalizeResponsesInput(items []*responsesInputItem) []responsesMessage {
+// projectResponsesInput flattens the input items into (messages, toolCalls,
+// toolOutput): message items contribute their role and joined text; function
+// call items record call_id → tool name; and when the LAST item is a
+// function_call_output, it is returned as the pending tool result that
+// routes the request into the tools branch.
+func projectResponsesInput(items []*responsesInputItem) ([]responsesMessage, map[string]string, *responsesInputItem) {
 	var messages []responsesMessage
-	for _, item := range items {
-		if item == nil || item.Type != "message" {
+	toolCalls := map[string]string{}
+	var toolOutput *responsesInputItem
+	for i, item := range items {
+		if item == nil {
 			continue
 		}
-		messages = append(messages, responsesMessage{
-			Role: item.Role,
-			Text: decodeResponsesContent(item.Content),
-		})
+		switch item.Type {
+		case "message":
+			messages = append(messages, responsesMessage{
+				Role: item.Role,
+				Text: decodeResponsesContent(item.Content),
+			})
+		case "function_call":
+			toolCalls[item.CallID] = item.Name
+		case "function_call_output":
+			if i == len(items)-1 {
+				toolOutput = item
+			}
+		}
 	}
-	return messages
+	return messages, toolCalls, toolOutput
 }
 
 // decodeResponsesContent handles both content forms: a JSON string is the
@@ -396,10 +444,10 @@ func usageFromSpec(spec responseSpec) responsesUsage {
 }
 
 // serveResponsesNonStreaming writes the stream:false shape: one JSON
-// response object whose output carries the reasoning and message items
-// with the full text, plus the derived usage. A Failure template returns
-// the failed status with the configured error.
-func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, msg *Message) {
+// response object whose output carries the function_call / reasoning /
+// message items with the full content, plus the derived usage. A Failure
+// template returns the failed status with the configured error.
+func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failure *ResponseFailure) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -408,13 +456,13 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, msg *M
 		"object": "response",
 		"status": "completed",
 	}
-	if msg.Failure != nil {
+	if failure != nil {
 		// The failure path carries no usage, mirroring the streaming
 		// path's response.failed event.
 		resp["status"] = "failed"
 		resp["error"] = map[string]any{
-			"code":    msg.Failure.Code,
-			"message": msg.Failure.Message,
+			"code":    failure.Code,
+			"message": failure.Message,
 		}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			slog.Error("failed to encode responses non-streaming body",
@@ -425,20 +473,26 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, msg *M
 
 	resp["usage"] = usageFromSpec(spec)
 	var output []map[string]any
-	if think := strings.Join(spec.Reasoning, ""); think != "" {
+	if spec.isToolCall() {
+		// A tool-call response is only the function_call item — no
+		// message content follows (the agent executes the call next).
+		output = append(output, functionCallItem(spec.ToolCall))
+	} else {
+		if think := strings.Join(spec.Reasoning, ""); think != "" {
+			output = append(output, map[string]any{
+				"type": "reasoning",
+				"id":   responsesRsnID,
+			})
+		}
 		output = append(output, map[string]any{
-			"type": "reasoning",
-			"id":   responsesRsnID,
+			"type": "message",
+			"id":   responsesMsgID,
+			"role": "assistant",
+			"content": []map[string]any{
+				{"type": "output_text", "text": spec.Text},
+			},
 		})
 	}
-	output = append(output, map[string]any{
-		"type": "message",
-		"id":   responsesMsgID,
-		"role": "assistant",
-		"content": []map[string]any{
-			{"type": "output_text", "text": spec.Text},
-		},
-	})
 	resp["output"] = output
 
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -462,6 +516,12 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, msg *M
 //  4. response.completed with the derived usage, always last (§2
 //     invariant 3).
 //
+// A tool-call template streams the function_call item instead of the
+// message item (added → one function_call_arguments.delta with the full
+// JSON arguments → done carrying the complete item) so the agent executes
+// the call next — the multi-step tool chains of the agent_v2 game
+// templates. There is no message content on this path.
+//
 // A Failure template emits response.created then response.failed with the
 // configured code/message and nothing else (§2 invariant 4).
 //
@@ -470,7 +530,7 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, msg *M
 // think-chunking) is a chat-completions facility and is deliberately not
 // projected here: the Responses handler honors only the inter-chunk
 // chunk_delays, which is what the FR-012 queue-window scenarios need.
-func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, msg *Message) {
+func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, failure *ResponseFailure) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -487,18 +547,23 @@ func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec respon
 		"response": map[string]any{"id": responsesRespID, "status": "in_progress"},
 	})
 
-	if msg.Failure != nil {
+	if failure != nil {
 		writeEvent(w, flusher, "response.failed", map[string]any{
 			"type": "response.failed",
 			"response": map[string]any{
 				"id":     responsesRespID,
 				"status": "failed",
 				"error": map[string]any{
-					"code":    msg.Failure.Code,
-					"message": msg.Failure.Message,
+					"code":    failure.Code,
+					"message": failure.Message,
 				},
 			},
 		})
+		return
+	}
+
+	if spec.isToolCall() {
+		serveResponsesToolCall(w, flusher, spec)
 		return
 	}
 
@@ -576,4 +641,69 @@ func writeEvent(w http.ResponseWriter, flusher http.Flusher, event string, paylo
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 	flusher.Flush()
 	slog.Info("responses stream event emitted", slog.String("event", event))
+}
+
+// serveResponsesToolCall streams one tool-call response as the Responses
+// function_call item vocabulary (added → arguments delta → done → completed).
+// The full arguments arrive in the single delta and again in the done item,
+// matching how a real provider streams a small argument payload while keeping
+// the assembled item authoritative.
+func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec responseSpec) {
+	args := "{}"
+	if spec.ToolCall != nil && len(spec.ToolCall.Arguments) > 0 {
+		if b, err := json.Marshal(spec.ToolCall.Arguments); err == nil {
+			args = string(b)
+		}
+	}
+
+	writeEvent(w, flusher, "response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"type":    "function_call",
+			"call_id": responsesCallID,
+			"name":    spec.ToolCall.Name,
+		},
+	})
+	writeEvent(w, flusher, "response.function_call_arguments.delta", map[string]any{
+		"type":         "response.function_call_arguments.delta",
+		"item_id":      responsesFcID,
+		"output_index": 0,
+		"delta":        args,
+	})
+	writeEvent(w, flusher, "response.output_item.done", map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item":         functionCallItem(spec.ToolCall),
+	})
+	writeEvent(w, flusher, "response.completed", map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     responsesRespID,
+			"status": "completed",
+			"usage":  usageFromSpec(spec),
+		},
+	})
+}
+
+// functionCallItem builds the complete function_call output item for a
+// config ToolCall (non-streaming body and the streaming done event).
+func functionCallItem(tc *ToolCall) map[string]any {
+	args := "{}"
+	if tc != nil && len(tc.Arguments) > 0 {
+		if b, err := json.Marshal(tc.Arguments); err == nil {
+			args = string(b)
+		}
+	}
+	name := ""
+	if tc != nil {
+		name = tc.Name
+	}
+	return map[string]any{
+		"type":      "function_call",
+		"id":        responsesFcID,
+		"call_id":   responsesCallID,
+		"name":      name,
+		"arguments": args,
+	}
 }

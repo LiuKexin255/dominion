@@ -4,21 +4,28 @@
     "type": "module",
     "dependencies": {
         "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
-        "@deepseek-ai/dsh-agent-spine-demo": "0.1.1-rc.2",
         "@deepseek-ai/dsh-app-boot": "0.1.1-rc.2",
         "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+        "@deepseek-ai/dsh-llm-retry": "0.1.1-rc.2",
+        "@deepseek-ai/dsh-scope": "0.1.1-rc.2",
+        "@deepseek-ai/dsh-session": "0.1.1-rc.2",
+        "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
         "@dominion/common-js-grpc-otel": "workspace:*",
         "@dominion/common-js-grpc-resolver": "workspace:*",
         "@dominion/common-js-logs": "workspace:*",
         "@dominion/common-js-otel": "workspace:*",
         "@dominion/common-js-resolver": "workspace:*",
+        "@dominion/dsh-desktop-bridge": "workspace:*",
         "@dominion/dsh-llm-glm": "workspace:*",
+        "@dominion/dsh-saolei": "workspace:*",
+        "@dominion/dsh-saolei-loop": "workspace:*",
         "@grpc/grpc-js": "catalog:",
         "@grpc/proto-loader": "catalog:",
         "mongodb": "catalog:"
     },
     "devDependencies": {
         "@types/node": "catalog:",
+        "js-yaml": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:"
     }

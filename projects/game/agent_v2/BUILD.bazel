@@ -45,7 +45,6 @@ ts_project(
     deps = [
         ":agent_v2_types_lib",
         ":node_modules/@deepseek-ai/dsh-agent",
-        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@dominion/common-js-grpc-otel",
@@ -53,7 +52,13 @@ ts_project(
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
+        # Type-only imports: the bridge handlers face and the loop plugin's
+        # AgentOptions.persona declaration merge (specs/051-agent-v2-dsh-
+        # migration/research.md D3/D8). Their runtime link targets enter
+        # through :server_pkg runtime_deps.
+        ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-llm-glm",
+        ":node_modules/@dominion/dsh-saolei-loop",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
@@ -75,26 +80,37 @@ artifact_pkg_js(
     ],
     entrypoint = "src/bootstrap.js",
     npm_deps = [
-        # Service-declared dsh rows and imports (closure contract:
-        # specs/049-agent-v2-dsh-init/data-model.md §2.6 for the rows): the
-        # spine + llm-glm rows must be physically present for the Loader, and
-        # boot/agent/llm are imported by src/*.ts.
+        # Service-declared dsh rows and imports (closure contract: the
+        # manifest rows must be physically present for the Loader, and
+        # boot/agent/llm are imported by src/*.ts). The framework-core rows
+        # (timer/invariants/system-prompt + the cordis loader stack) enter
+        # through @dominion/dsh-core in runtime_deps; the remaining direct-
+        # composed dsh rows are declared here
+        # (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5).
         #
         # npm_deps carries THIRD-PARTY link targets only. The workspace
-        # package @dominion/dsh-llm-glm enters exclusively through
-        # runtime_deps (llm-glm:runtime_pkg → the Phase-4 closure): its link
-        # target must NOT appear here — Phase 3 stages npm-dep entries with
-        # `rm -rf` + `cp -aL` on the same node_modules path Phase 4 already
-        # wrote, which deleted the staged package.json/.d.ts and replaced
-        # them with the manifest-less linker store (the runtime crash
-        # "Cannot find package … @dominion/dsh-llm-glm"). The healthy
-        # precedent is the common-js-* packages: runtime_deps only.
+        # packages (@dominion/dsh-llm-glm and the saolei plugin set) enter
+        # exclusively through runtime_deps (…:runtime_pkg → the Phase-4
+        # closure): their link targets must NOT appear here — Phase 3 stages
+        # npm-dep entries with `rm -rf` + `cp -aL` on the same node_modules
+        # path Phase 4 already wrote, which deleted the staged
+        # package.json/.d.ts and replaced them with the manifest-less linker
+        # store (the runtime crash "Cannot find package …
+        # @dominion/dsh-llm-glm"). The healthy precedent is the common-js-*
+        # packages: runtime_deps only.
         ":node_modules/@deepseek-ai/dsh-agent",
-        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-llm-retry",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
+        # presets.ts imports the driver at runtime (the Mongo-backed
+        # PresetStore) — without it the container crashes on boot with
+        # ERR_MODULE_NOT_FOUND.
+        ":node_modules/mongodb",
     ],
     runtime_protos = [
         "//projects/game:agent_v2_proto",
@@ -105,7 +121,10 @@ artifact_pkg_js(
     service = "agent-v2",
     ts_project = ":server_lib",
     runtime_deps = [
+        "//common/js/dsh-plugins/desktop-bridge:runtime_pkg",
         "//common/js/dsh-plugins/llm-glm:runtime_pkg",
+        "//common/js/dsh-plugins/saolei:runtime_pkg",
+        "//common/js/dsh-plugins/saolei-loop:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
@@ -125,9 +144,11 @@ artifact_image(
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
 # (style/javascript.md data rules): production + test sources only, plus the
-# node_modules mirror of :server_lib's deps. :agent_v2_types_lib is absent —
+# node_modules mirror of :server_lib's deps and the test-only imports
+# (js-yaml for the manifest assertions). :agent_v2_types_lib is absent —
 # the sources reference the generated proto types via `import type` only,
-# which vitest erases at transform time.
+# which vitest erases at transform time. cordis.yml travels as data: the
+# manifest tests assert the composition contract against the shipped file.
 vitest_test(
     name = "lib_test",
     size = "small",
@@ -135,8 +156,8 @@ vitest_test(
         ["src/**/*.ts"],
         allow_empty = True,
     ) + [
+        "cordis.yml",
         ":node_modules/@deepseek-ai/dsh-agent",
-        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@dominion/common-js-grpc-otel",
@@ -148,6 +169,7 @@ vitest_test(
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
+        ":node_modules/js-yaml",
         ":node_modules/mongodb",
     ],
 )

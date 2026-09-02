@@ -230,3 +230,21 @@ suites:
     cases:
       - //projects/game/testplan:agent_v2_conversation_test
       - //projects/game/testplan:web_test
+
+  - name: agent-v2-game
+    description: "agent_v2 US1 game loop over /api/v2 with the fake-llm game chain and the fake-desktop executors (specs/051-agent-v2-dsh-migration/quickstart.md §2 agent-v2-game), deployed via deploy_agent_v2.yaml. agent_v2_game_test covers, per concern: the full won-scenario tool chain on the fake-desktop-won session (saolei_init → operate batch stopping pre-dispatch on game_won — 终局与终局后拒绝) with the board-text contract asserted on the tool_result frames (outcome line / game status line / ruler board, data-model.md §2.5) and the history backfill settling both tool-call blocks by tool_id; the desktop-absent branch (a session with no flow connection fails saolei_init with the model-visible 'desktop disconnected' error while the turn completes and the process stays usable — US1 场景 4); the mid-game disconnect and recovery on the fake-desktop-drop session (the operate batch's in-flight dispatch settles FAILED mid-turn while the conversation stream keeps flowing, and the reconnected executor plays a full progressive game — US1 场景 5/6); concurrent multi-session isolation (a connected and an absent session keep distinct outcomes, turn ids, and histories); and two-stream independence from the conversation side (a client-dropped Send stream lets the turn finish with the flow connection still serviceable — 验收锚点 4)"
+    deploy: //projects/game/testplan/deploy_agent_v2.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_v2_game_test
+
+  - name: desktop-flow
+    description: "agent_v2 flow-control stream from the desktop's side over the gateway /api/v2 WebSocket (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点), deployed via deploy_agent_v2.yaml with the test acting as the desktop client. desktop_flow_test covers, per concern: the connect probe echo (the ACTIVE status signal answered with a status frame — US3-2), the second-connection takeover (a new flow connection for the session ends the previous one — the v1 baseline), the operation delivery → receipt → recognition loop (the F2 new-game dispatch read off the flow stream answered with the recognizable win-board screenshot; the agent recognizes it and the conversation stream carries the SUCCEEDED board text — US1-1/US3-3), and the in-flight failure when the desktop vanishes mid-dispatch (the bridge settles the dispatch FAILED 'desktop disconnected' and the turn completes — US1-5/§2 断连结算)"
+    deploy: //projects/game/testplan/deploy_agent_v2.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:desktop_flow_test

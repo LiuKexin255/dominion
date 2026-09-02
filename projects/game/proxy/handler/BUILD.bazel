@@ -4,7 +4,8 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 go_library(
     name = "handler",
     srcs = [
-        "conversation.go",
+        "agent.go",
+        "bridge.go",
         "handler.go",
     ],
     importpath = "dominion/projects/game/proxy/handler",
@@ -28,7 +29,8 @@ go_library(
 go_unittest(
     name = "handler_test",
     srcs = [
-        "conversation_test.go",
+        "agent_test.go",
+        "bridge_test.go",
         "handler_test.go",
     ],
     embed = [":handler"],

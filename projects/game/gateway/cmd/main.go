@@ -11,10 +11,13 @@
 //     resource hierarchy per spec 031-team-template-mode FR-004)
 //   - /api/v2/* → grpc-gateway (AgentService — the agent_v2
 //     surface, including the Send server-streaming RPC served as
-//     chunked NDJSON. The handler rides the proxy connection: the proxy owns
-//     owner affinity for the stateful agent_v2 instances
-//     (specs/051-agent-v2-dsh-migration/research.md D9). The /api/v1 routes
-//     and behavior above are unchanged.)
+//     chunked NDJSON) except the desktop-bridge connect path:
+//     /api/v2/templates/{template}/sessions/{session}/connect → WebSocket
+//     (DesktopBridgeService.Connect stream relayed over the same proxy
+//     connection — the proxy owns owner affinity for the stateful agent_v2
+//     instances, specs/051-agent-v2-dsh-migration/research.md D9;
+//     specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3).
+//     The /api/v1 routes and behavior above are unchanged.)
 package main
 
 import (
@@ -151,12 +154,14 @@ func main() {
 	log.Fatal(b.Run(context.Background()))
 }
 
-// newRootMux builds the path-based routing mux. /api/v1/ dispatches
-// WebSocket upgrades before falling through to grpc-gateway; /api/v2/ flows
-// straight to grpc-gateway for the agent_v2 AgentService (spec
-// 051-agent-v2-dsh-migration; the /api/v1 routes and behavior are
-// unchanged). A single subtree pattern avoids Go's ServeMux 307 redirect when
-// both "/api/v1/" and "/api/v1/sessions/" are registered separately.
+// newRootMux builds the path-based routing mux. /api/v1/ and /api/v2/
+// dispatch WebSocket upgrades before falling through to grpc-gateway: the
+// v1 TeamService connect and the v2 DesktopBridgeService connect share the
+// pattern /api/{version}/templates/{template}/sessions/{session}/connect
+// (the v2 shape per specs/051-agent-v2-dsh-migration/contracts/
+// desktop-bridge.md §3). Single subtree patterns avoid Go's ServeMux 307
+// redirect when both "/api/v1/" and "/api/v1/sessions/" are registered
+// separately.
 func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeMux {
 	rootMux := http.NewServeMux()
 
@@ -168,7 +173,13 @@ func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeM
 		gwmux.ServeHTTP(w, r)
 	})
 
-	rootMux.HandleFunc("/api/v2/", gwmux.ServeHTTP)
+	rootMux.HandleFunc("/api/v2/", func(w http.ResponseWriter, r *http.Request) {
+		if isWebSocketConnectPathV2(r.URL.Path) {
+			handleDesktopBridgeConnect(w, r, teamConn)
+			return
+		}
+		gwmux.ServeHTTP(w, r)
+	})
 	return rootMux
 }
 
@@ -176,9 +187,23 @@ func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeM
 // WebSocket connect pattern: /api/v1/templates/{template}/sessions/{session}/connect
 // (spec 031-team-template-mode FR-004).
 func isWebSocketConnectPath(path string) bool {
+	return isWebSocketConnectPathIn(apiV1, path)
+}
+
+// isWebSocketConnectPathV2 reports whether the request path matches the
+// desktop-bridge WebSocket connect pattern:
+// /api/v2/templates/{template}/sessions/{session}/connect
+// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3).
+func isWebSocketConnectPathV2(path string) bool {
+	return isWebSocketConnectPathIn(apiV2, path)
+}
+
+// isWebSocketConnectPathIn reports whether the request path matches the
+// WebSocket connect pattern under the given API version.
+func isWebSocketConnectPathIn(version, path string) bool {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	return len(parts) == 7 &&
-		parts[0] == "api" && parts[1] == "v1" && parts[2] == "templates" &&
+		parts[0] == "api" && parts[1] == version && parts[2] == "templates" &&
 		parts[3] != "" && parts[4] == "sessions" &&
 		parts[5] != "" && parts[6] == "connect"
 }
@@ -189,7 +214,19 @@ func isWebSocketConnectPath(path string) bool {
 // isWebSocketConnectPath) so a foreign path such as
 // .../sessions/{id}/team never yields a template/session id.
 func extractConnectIdentity(path string) (template, session string) {
-	if !isWebSocketConnectPath(path) {
+	return extractConnectIdentityIn(apiV1, path)
+}
+
+// extractConnectIdentityV2 is extractConnectIdentity for the v2
+// desktop-bridge connect path.
+func extractConnectIdentityV2(path string) (template, session string) {
+	return extractConnectIdentityIn(apiV2, path)
+}
+
+// extractConnectIdentityIn extracts the template and session segments from a
+// connect path under the given API version.
+func extractConnectIdentityIn(version, path string) (template, session string) {
+	if !isWebSocketConnectPathIn(version, path) {
 		return "", ""
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -255,16 +292,46 @@ func isProtocolError(err error) bool {
 	return errors.Is(err, errProtocol)
 }
 
+// streamOpener opens the backend gRPC bidirectional stream for a WebSocket
+// connect: both the v1 TeamService.Connect and the v2
+// DesktopBridgeService.Connect clients structurally satisfy
+// bind.TeamFrameStream (Send UserFrame / Recv TeamFrame).
+type streamOpener func(ctx context.Context) (bind.TeamFrameStream, error)
+
+// API version path segments of the connect routes.
+const (
+	apiV1 = "v1"
+	apiV2 = "v2"
+)
+
 // handleWebSocketConnect upgrades an HTTP connection to WebSocket and
 // establishes a bidirectional forwarding bridge between the WebSocket
-// and the underlying TeamService.Connect gRPC stream.
-//
-// Messages are serialized as binary protobuf over WebSocket binary frames in
-// both directions: UserFrame inbound (desktop → server), TeamFrame outbound
-// (server → desktop). proto.Unmarshal preserves unknown fields for forward
-// compatibility.
+// and the underlying TeamService.Connect gRPC stream (the v1 desktop face).
 func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
-	templateID, sessionID := extractConnectIdentity(r.URL.Path)
+	pumpWebSocketConnect(w, r, apiV1, func(ctx context.Context) (bind.TeamFrameStream, error) {
+		return game.NewTeamServiceClient(teamConn).Connect(ctx)
+	})
+}
+
+// handleDesktopBridgeConnect upgrades an HTTP connection to WebSocket and
+// establishes a bidirectional forwarding bridge between the WebSocket and
+// the DesktopBridgeService.Connect gRPC stream on the proxy connection —
+// the v2 desktop flow-control face (specs/051-agent-v2-dsh-migration/
+// contracts/desktop-bridge.md §3).
+func handleDesktopBridgeConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
+	pumpWebSocketConnect(w, r, apiV2, func(ctx context.Context) (bind.TeamFrameStream, error) {
+		return gamev2.NewDesktopBridgeServiceClient(teamConn).Connect(ctx)
+	})
+}
+
+// pumpWebSocketConnect is the shared WebSocket↔gRPC relay of both connect
+// faces. Messages are serialized as binary protobuf over WebSocket binary
+// frames in both directions: UserFrame inbound (desktop → server), TeamFrame
+// outbound (server → desktop). proto.Unmarshal preserves unknown fields for
+// forward compatibility. The template/session identity is extracted from the
+// URL path of the given API version and injected into every received frame.
+func pumpWebSocketConnect(w http.ResponseWriter, r *http.Request, version string, openStream streamOpener) {
+	templateID, sessionID := extractConnectIdentityIn(version, r.URL.Path)
 	if templateID == "" || sessionID == "" {
 		http.Error(w, "missing template_id or session_id", http.StatusBadRequest)
 		return
@@ -290,10 +357,9 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 	// Allow up to 10MB per frame to support PNG screenshot uploads.
 	conn.SetReadLimit(10 << 20)
 
-	teamClient := game.NewTeamServiceClient(teamConn)
-	stream, err := teamClient.Connect(r.Context())
+	stream, err := openStream(r.Context())
 	if err != nil {
-		logs.Error(r.Context(), "team Connect: stream creation failed",
+		logs.Error(r.Context(), "connect: stream creation failed",
 			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
@@ -306,7 +372,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 	err = b.Bind(ws, stream)
 
 	if err == nil {
-		logs.Info(r.Context(), "agent connect stream closed",
+		logs.Info(r.Context(), "connect stream closed",
 			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 		)
@@ -314,7 +380,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 		return
 	}
 	if isCleanClose(err) {
-		logs.Info(r.Context(), "agent connect stream closed (clean)",
+		logs.Info(r.Context(), "connect stream closed (clean)",
 			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 		)
@@ -322,7 +388,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 		return
 	}
 	if isProtocolError(err) {
-		logs.Warn(r.Context(), "agent connect: protocol error",
+		logs.Warn(r.Context(), "connect: protocol error",
 			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
@@ -330,7 +396,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid frame protobuf")
 		return
 	}
-	logs.Error(r.Context(), "agent connect: internal error",
+	logs.Error(r.Context(), "connect: internal error",
 		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 		event.Err(err),

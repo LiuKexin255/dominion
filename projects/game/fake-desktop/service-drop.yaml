@@ -1,0 +1,11 @@
+version: "3.0"
+name: fake-desktop-drop
+app: game
+kind: stateless
+desc: game fake desktop executor, disconnect-injection instance (testplan only — closes the flow connection after N receipts, then reconnects)
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  - name: fake-desktop-drop
+    target: :cmd_image_drop

@@ -1,31 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentSessions } from "./session.js";
+import { AgentSessionError, AgentSessions } from "./session.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 
 /**
- * Unit tests for the session registry, per-session FIFO queue, and dispose
- * semantics (specs/049-agent-v2-dsh-init/data-model.md §2.2/§2.3;
- * contracts/conversation-api.md §3 event-order invariants). The cordis
- * Context is a hand-rolled fake whose `on` captures listeners; tests drive
- * the dsh event sequence (running → turn/start → assistant/chunk →
- * assistant/message → turn/end → idle,
- * https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/agent-lifecycle.md)
- * by emitting into the captured listeners — no module interception
- * (style/javascript.md Mock convention).
+ * Unit tests for the materialization registry, per-session FIFO queue, and
+ * the UpdateAgent semantics (specs/051-agent-v2-dsh-migration/data-model.md
+ * §2.2/§2.3; contracts/conversation-api.md §3 event-order invariants).
+ * Materialization is explicit — Send has no lazy creation and fails
+ * FAILED_PRECONDITION before any frame. The cordis Context is a hand-rolled
+ * fake whose `on` captures listeners; tests drive the dsh event sequence
+ * (running → turn/start → assistant/chunk → assistant/message → turn/end →
+ * idle, https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/
+ * agent-lifecycle.md) by emitting into the captured listeners — no module
+ * interception (style/javascript.md Mock convention).
  */
 
 type Listener = (...args: never[]) => void;
 
 interface Harness {
   ctx: DshContext;
+  sessions: AgentSessions;
   agentsGet: ReturnType<typeof vi.fn>;
   agentsCreate: ReturnType<typeof vi.fn>;
   fiberDispose: ReturnType<typeof vi.fn>;
   listeners: Map<string, Listener[]>;
 }
+
+const S1 = "templates/saolei/sessions/s1";
+const P1 = "templates/saolei/presets/p1";
 
 function fakeAgent(id: string) {
   return {
@@ -60,7 +65,8 @@ function createHarness(): Harness {
     agents: { get: agentsGet, create: agentsCreate },
     fiber: { dispose: fiberDispose },
   } as unknown as DshContext;
-  return { ctx, agentsGet, agentsCreate, fiberDispose, listeners };
+  const sessions = new AgentSessions(ctx);
+  return { ctx, sessions, agentsGet, agentsCreate, fiberDispose, listeners };
 }
 
 function emit(harness: Harness, name: string, ...args: unknown[]): void {
@@ -111,6 +117,7 @@ function payloadOf(event: ChatEvent): string {
   if (event.delta !== undefined) return "delta";
   if (event.blockEnd !== undefined) return "blockEnd";
   if (event.turnEnd !== undefined) return "turnEnd";
+  if (event.toolResult !== undefined) return "toolResult";
   return "";
 }
 
@@ -138,28 +145,247 @@ async function driveTurn(harness: Harness, agent: Agent, text: string): Promise<
   emit(harness, "agent/status", { agent, status: "idle" });
 }
 
+/**
+ * Materialize a session on the harness and leave the registry lookup
+ * pointing at the created agent (live-entry re-validation).
+ */
+async function materializeSession(
+  harness: Harness,
+  session: string,
+  agent: Agent,
+  options: { preset?: string; model?: string; persona?: string } = {},
+): Promise<unknown> {
+  harness.agentsGet.mockReturnValue(agent);
+  const handle = fakeHandle(agent);
+  harness.agentsCreate.mockResolvedValueOnce(handle);
+  const view = await harness.sessions.materialize(session, {
+    preset: options.preset ?? P1,
+    ...(options.model === undefined ? {} : { model: options.model }),
+    persona: options.persona ?? "player persona",
+  });
+  await flush();
+  return view;
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("AgentSessions.materialize", () => {
+  it("creates the dsh agent with the provider, model, and persona snapshot", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    harness.agentsGet.mockReturnValue(agent);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+
+    const view = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      model: "glm-5.5",
+      persona: "careful player",
+    })) as { name: string; preset: string; model: string; createTime: Date; updateTime: Date };
+
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+    expect(harness.agentsCreate).toHaveBeenCalledWith({
+      sessionId: S1,
+      agentOptions: { provider: "glm-responses", model: "glm-5.5", persona: "careful player" },
+    });
+    expect(view.name).toBe(`${S1}/agent`);
+    expect(view.preset).toBe(P1);
+    expect(view.model).toBe("glm-5.5");
+    expect(view.createTime).toBeInstanceOf(Date);
+    expect(view.updateTime).toBeInstanceOf(Date);
+  });
+
+  it("falls back to the process default model when none is given", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    harness.agentsGet.mockReturnValue(agent);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+
+    expect(harness.agentsCreate).toHaveBeenCalledWith({
+      sessionId: S1,
+      agentOptions: { provider: "glm-responses", model: "glm-5.2", persona: "p" },
+    });
+  });
+
+  it("re-materializing tears down the old agent and yields a clean one (refresh folded in)", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    const secondHandle = fakeHandle(second);
+    harness.agentsCreate.mockResolvedValueOnce(firstHandle).mockResolvedValueOnce(secondHandle);
+    harness.agentsGet.mockReturnValue(first);
+
+    await harness.sessions.materialize(S1, { preset: P1, persona: "old persona" });
+    const stream = fakeStream();
+    harness.sessions.send(S1, "first message", stream);
+    await flush();
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
+    expect(stream.ended).toBe(false);
+
+    // Re-materialize with an unchanged configuration: the in-flight turn is
+    // aborted and the agent is disposed and rebuilt regardless (refresh).
+    const view = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      persona: "old persona",
+    })) as { preset: string };
+    expect(view.preset).toBe(P1);
+    expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    expect(harness.agentsCreate).toHaveBeenLastCalledWith({
+      sessionId: S1,
+      agentOptions: { provider: "glm-responses", model: "glm-5.2", persona: "old persona" },
+    });
+
+    // The in-flight stream received exactly one terminal ABORTED frame.
+    expect(stream.ended).toBe(true);
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "turnEnd"]);
+    expect(stream.events[stream.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
+
+    // The new entry is clean: history restarts empty.
+    harness.agentsGet.mockReturnValue(second);
+    expect(await harness.sessions.listMessages(S1)).toEqual([]);
+  });
+
+  it("aborts queued messages when re-materializing mid-queue", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    harness.agentsCreate
+      .mockResolvedValueOnce(firstHandle)
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
+
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    const inFlight = fakeStream();
+    harness.sessions.send(S1, "in flight", inFlight);
+    await flush();
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
+
+    const queued = fakeStream();
+    harness.sessions.send(S1, "queued", queued);
+    await flush();
+    expect(queued.events.map(payloadOf)).toEqual(["queued"]);
+
+    harness.agentsGet.mockReturnValue(second);
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+
+    expect(queued.ended).toBe(true);
+    expect(queued.events[queued.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
+    expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves create_time across re-materialization and refreshes update_time", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    harness.agentsCreate
+      .mockResolvedValueOnce(fakeHandle(first))
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
+
+    const firstView = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      persona: "p",
+    })) as { createTime: Date; updateTime: Date };
+    harness.agentsGet.mockReturnValue(second);
+    const secondView = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      persona: "p",
+    })) as { createTime: Date; updateTime: Date };
+
+    expect(secondView.createTime).toBe(firstView.createTime);
+    expect(secondView.updateTime.getTime()).toBeGreaterThanOrEqual(firstView.updateTime.getTime());
+  });
+
+  it("keeps the settled stream's terminal frame and EOF across a re-materialization", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    harness.agentsCreate
+      .mockResolvedValueOnce(fakeHandle(first))
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
+
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    const stream = fakeStream();
+    harness.sessions.send(S1, "hello", stream);
+    await flush();
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
+    emit(harness, "session/event", first.session, assistantMessage([{ type: "text", text: "reply" }]));
+    emit(harness, "session/event", first.session, { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    emit(harness, "agent/status", { agent: first, status: "idle" });
+    // Behavioral assertion: once the idle transition has settled the turn, a
+    // re-materialization must leave the client stream with its terminal
+    // turn_end{COMPLETED} frame AND the EOF. The narrower interleaving that
+    // motivated the unconditional end() in runTurn's finally (teardown
+    // landing between the terminal frame and the finally) is not
+    // constructible in this harness — the runner always drains before the
+    // teardown's microtasks here — and stays a known test blind spot; the
+    // unconditional end() itself is the guard.
+    harness.agentsGet.mockReturnValue(second);
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await flush();
+
+    const payloads = stream.events.map(payloadOf);
+    expect(payloads).toEqual(["turnStart", "turnEnd"]);
+    expect(stream.events[payloads.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
+    expect(stream.ended).toBe(true);
+  });
+
+  it("serializes concurrent materializations of one session", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    const secondHandle = fakeHandle(second);
+    let resolveCreate: ((handle: AgentHandle) => void) | undefined;
+    harness.agentsCreate.mockImplementation(
+      () =>
+        new Promise<AgentHandle>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    const jobOne = harness.sessions.materialize(S1, { preset: P1, persona: "one" });
+    await flush();
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+
+    // The second materialization joins the per-session chain: no second
+    // create fires while the first one is still in flight.
+    const jobTwo = harness.sessions.materialize(S1, { preset: P1, persona: "two" });
+    await flush();
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+
+    resolveCreate?.(firstHandle);
+    await flush();
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    resolveCreate?.(secondHandle);
+    await Promise.all([jobOne, jobTwo]);
+
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    expect(secondHandle.dispose).not.toHaveBeenCalled();
+  });
 });
 
 describe("AgentSessions.send", () => {
   it("streams mapped block events and closes with turn_end{COMPLETED} carrying usage", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    harness.agentsGet.mockReturnValue(undefined);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    const sessions = new AgentSessions(harness.ctx);
     const stream = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "hello", stream);
+    harness.sessions.send(S1, "hello", stream);
     await driveTurn(harness, agent, "Hi there!");
 
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
-    expect(harness.agentsCreate).toHaveBeenCalledWith({
-      sessionId: "templates/saolei/sessions/s1",
-      agentOptions: { provider: "glm-responses", model: "glm-5.2" },
-    });
-
     const payloads = stream.events.map(payloadOf);
     // The turn's first frame is turn_start (contract §3-2), then the mapped
     // block frames, then the single terminal turn_end.
@@ -176,19 +402,44 @@ describe("AgentSessions.send", () => {
     expect(followup.source).toEqual({ kind: "user" });
   });
 
+  it("rejects an unmaterialized session with FAILED_PRECONDITION before any frame", () => {
+    const harness = createHarness();
+
+    const stream = fakeStream();
+    expect(() => harness.sessions.send(S1, "hello", stream)).toThrow(AgentSessionError);
+    try {
+      harness.sessions.send(S1, "hello", stream);
+    } catch (err) {
+      expect((err as AgentSessionError).code).toBe("FAILED_PRECONDITION");
+      expect((err as Error).message).toContain("UpdateAgent");
+    }
+    expect(stream.events).toEqual([]);
+    expect(stream.ended).toBe(false);
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
+  });
+
+  it("treats a stale entry (agent gone from the registry) as unmaterialized", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    // The loop-level reload disposed the agent behind our record.
+    harness.agentsGet.mockReturnValue(undefined);
+    expect(() => harness.sessions.send(S1, "hello", fakeStream())).toThrow(AgentSessionError);
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("reuses the live agent for the same session without re-creating", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    harness.agentsGet.mockReturnValue(agent);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    const sessions = new AgentSessions(harness.ctx);
     const first = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "one", first);
+    harness.sessions.send(S1, "one", first);
     await driveTurn(harness, agent, "first reply");
 
     const second = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "two", second);
+    harness.sessions.send(S1, "two", second);
     await driveTurn(harness, agent, "second reply");
 
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
@@ -199,13 +450,11 @@ describe("AgentSessions.send", () => {
 
   it("queues a mid-turn send with queued{position} and auto-runs it at turn end", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    harness.agentsGet.mockReturnValue(agent);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    const sessions = new AgentSessions(harness.ctx);
     const first = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "first", first);
+    harness.sessions.send(S1, "first", first);
 
     // Turn one is mid-flight (no idle yet): the second send must enqueue.
     await flush();
@@ -213,7 +462,7 @@ describe("AgentSessions.send", () => {
     emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
 
     const second = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "second", second);
+    harness.sessions.send(S1, "second", second);
     await flush();
 
     expect(second.events.map(payloadOf)).toEqual(["queued"]);
@@ -247,14 +496,17 @@ describe("AgentSessions.send", () => {
     const harness = createHarness();
     const agentA = fakeAgent("templates/saolei/sessions/a");
     const agentB = fakeAgent("templates/saolei/sessions/b");
-    harness.agentsCreate.mockResolvedValueOnce(fakeHandle(agentA)).mockResolvedValueOnce(fakeHandle(agentB));
-    harness.agentsGet.mockReturnValue(undefined);
+    await materializeSession(harness, "templates/saolei/sessions/a", agentA);
+    await materializeSession(harness, "templates/saolei/sessions/b", agentB);
+    // live-entry re-validation resolves each session to its own agent.
+    harness.agentsGet.mockImplementation((id: unknown) =>
+      id === "templates/saolei/sessions/a" ? agentA : agentB,
+    );
 
-    const sessions = new AgentSessions(harness.ctx);
     const streamA = fakeStream();
     const streamB = fakeStream();
-    sessions.send("templates/saolei/sessions/a", "to a", streamA);
-    sessions.send("templates/saolei/sessions/b", "to b", streamB);
+    harness.sessions.send("templates/saolei/sessions/a", "to a", streamA);
+    harness.sessions.send("templates/saolei/sessions/b", "to b", streamB);
 
     await driveTurn(harness, agentA, "reply a");
     expect(streamA.events.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "blockEnd", "turnEnd"]);
@@ -269,13 +521,11 @@ describe("AgentSessions.send", () => {
 
   it("maps a model failure to turn_end{ERROR} and keeps the session reusable", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    harness.agentsGet.mockReturnValue(agent);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    const sessions = new AgentSessions(harness.ctx);
     const failed = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "hello", failed);
+    harness.sessions.send(S1, "hello", failed);
     await flush();
     emit(harness, "agent/status", { agent, status: "running" });
     const boom = { message: "fake-llm unreachable", code: "GLM_TRANSPORT" };
@@ -296,7 +546,7 @@ describe("AgentSessions.send", () => {
 
     // Edge case recovery: the next turn on the same session succeeds.
     const recovered = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "hello again", recovered);
+    harness.sessions.send(S1, "hello again", recovered);
     await driveTurn(harness, agent, "back online");
     expect(recovered.events[recovered.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
@@ -304,22 +554,20 @@ describe("AgentSessions.send", () => {
 
   it("appends user messages to history at enqueue time (also for queued ones)", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    harness.agentsGet.mockReturnValue(agent);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    const sessions = new AgentSessions(harness.ctx);
     const first = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "first", first);
+    harness.sessions.send(S1, "first", first);
     await flush();
     emit(harness, "agent/status", { agent, status: "running" });
     emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
 
     const second = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "second", second);
+    harness.sessions.send(S1, "second", second);
     await flush();
 
-    const history = await sessions.listMessages("templates/saolei/sessions/s1");
+    const history = await harness.sessions.listMessages(S1);
     expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_USER"]);
     expect(history[0]?.blocks[0]?.text?.content).toBe("first");
     expect(history[1]?.blocks[0]?.text?.content).toBe("second");
@@ -327,13 +575,11 @@ describe("AgentSessions.send", () => {
 
   it("returns agent replies in history from assistant/message finality", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    harness.agentsGet.mockReturnValue(agent);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    const sessions = new AgentSessions(harness.ctx);
     const stream = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "hello", stream);
+    harness.sessions.send(S1, "hello", stream);
     await flush();
     emit(harness, "agent/status", { agent, status: "running" });
     emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
@@ -345,7 +591,7 @@ describe("AgentSessions.send", () => {
     emit(harness, "agent/status", { agent, status: "idle" });
     await flush();
 
-    const history = await sessions.listMessages("templates/saolei/sessions/s1");
+    const history = await harness.sessions.listMessages(S1);
     expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_AGENT"]);
     const agentBlocks = history[1]?.blocks ?? [];
     expect(agentBlocks[0]?.think?.content).toBe("thinking");
@@ -355,86 +601,33 @@ describe("AgentSessions.send", () => {
   });
 });
 
-describe("AgentSessions.dispose", () => {
-  it("aborts the in-flight turn, drops queued messages, and releases the agent", async () => {
+describe("AgentSessions.getAgent / listMessages on unmaterialized sessions", () => {
+  it("answers NOT_FOUND for GetAgent and ListAgentMessages and never creates", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    const handle = fakeHandle(agent);
-    harness.agentsGet.mockReturnValue(agent);
-    harness.agentsCreate.mockResolvedValue(handle);
 
-    const sessions = new AgentSessions(harness.ctx);
-    const inFlight = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "in flight", inFlight);
-    await flush();
-    emit(harness, "agent/status", { agent, status: "running" });
-    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
-
-    const queued = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "queued", queued);
-    await flush();
-    expect(queued.events.map(payloadOf)).toEqual(["queued"]);
-
-    await sessions.dispose("templates/saolei/sessions/s1");
-
-    expect(inFlight.ended).toBe(true);
-    const inFlightEnd = inFlight.events[inFlight.events.length - 1]?.turnEnd;
-    expect(inFlightEnd?.status).toBe("TURN_STATUS_ABORTED");
-    expect(queued.ended).toBe(true);
-    const queuedEnd = queued.events[queued.events.length - 1]?.turnEnd;
-    expect(queuedEnd?.status).toBe("TURN_STATUS_ABORTED");
-    expect(handle.dispose).toHaveBeenCalledTimes(1);
-
-    // The disposed session's history is no longer queryable: re-asking
-    // get-or-creates a fresh entry with an empty record (data-model.md §2.2).
-    const historyAfter = await sessions.listMessages("templates/saolei/sessions/s1");
-    expect(historyAfter).toEqual([]);
-    expect(handle.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it("is idempotent for an absent session", async () => {
-    const harness = createHarness();
-    const sessions = new AgentSessions(harness.ctx);
-    await expect(sessions.dispose("templates/saolei/sessions/absent")).resolves.toBeUndefined();
+    expect(() => harness.sessions.getAgent(S1)).toThrow(AgentSessionError);
+    try {
+      harness.sessions.getAgent(S1);
+    } catch (err) {
+      expect((err as AgentSessionError).code).toBe("NOT_FOUND");
+    }
+    await expect(harness.sessions.listMessages(S1)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(harness.agentsCreate).not.toHaveBeenCalled();
   });
 
-  it("yields a brand-new session (no stale state) for the same resource name", async () => {
+  it("returns the materialized configuration from getAgent", async () => {
     const harness = createHarness();
-    const first = fakeAgent("templates/saolei/sessions/s1");
-    const second = fakeAgent("templates/saolei/sessions/s1");
-    const handleFirst = fakeHandle(first);
-    const handleSecond = fakeHandle(second);
-    // Only consulted on registry hits (staleness re-validation): both
-    // post-dispose lookups should find the fresh agent live.
-    harness.agentsGet.mockReturnValue(second);
-    harness.agentsCreate.mockResolvedValueOnce(handleFirst).mockResolvedValueOnce(handleSecond);
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent, { preset: P1, model: "glm-5.5" });
 
-    const sessions = new AgentSessions(harness.ctx);
-    const streamOne = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "before dispose", streamOne);
-    await driveTurn(harness, first, "old reply");
-    expect(streamOne.ended).toBe(true);
-    const framesBeforeDispose = streamOne.events.length;
-
-    // The turn already settled (idle): dispose must not append a spurious
-    // turn_end{ABORTED} to the completed stream.
-    await sessions.dispose("templates/saolei/sessions/s1");
-    expect(streamOne.events).toHaveLength(framesBeforeDispose);
-    expect(streamOne.events[streamOne.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
-
-    const streamTwo = fakeStream();
-    sessions.send("templates/saolei/sessions/s1", "after dispose", streamTwo);
-    await driveTurn(harness, second, "new reply");
-
-    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
-    const history = await sessions.listMessages("templates/saolei/sessions/s1");
-    expect(history.map((message) => message.blocks[0]?.text?.content)).toEqual([
-      "after dispose",
-      "new reply",
-    ]);
+    const view = harness.sessions.getAgent(S1) as { name: string; preset: string; model: string };
+    expect(view.name).toBe(`${S1}/agent`);
+    expect(view.preset).toBe(P1);
+    expect(view.model).toBe("glm-5.5");
   });
+});
 
+describe("AgentSessions.shutdown", () => {
   it("aborts in-flight turns during shutdown and disposes the fiber last", async () => {
     const harness = createHarness();
     const agentA = fakeAgent("templates/saolei/sessions/a");
@@ -442,15 +635,17 @@ describe("AgentSessions.dispose", () => {
     const handleA = fakeHandle(agentA);
     const handleB = fakeHandle(agentB);
     harness.agentsCreate.mockResolvedValueOnce(handleA).mockResolvedValueOnce(handleB);
-    harness.agentsGet.mockReturnValue(undefined);
+    await harness.sessions.materialize("templates/saolei/sessions/a", { preset: P1, persona: "p" });
+    await harness.sessions.materialize("templates/saolei/sessions/b", { preset: P1, persona: "p" });
+    harness.agentsGet.mockImplementation((id: unknown) =>
+      id === "templates/saolei/sessions/a" ? agentA : agentB,
+    );
 
-    const sessions = new AgentSessions(harness.ctx);
     const streamA = fakeStream();
     const streamB = fakeStream();
-    sessions.send("templates/saolei/sessions/a", "a", streamA);
-    await driveTurn(harness, agentA, "reply a");
-    sessions.send("templates/saolei/sessions/b", "b", streamB);
-    await driveTurn(harness, agentB, "reply b");
+    harness.sessions.send("templates/saolei/sessions/a", "a", streamA);
+    harness.sessions.send("templates/saolei/sessions/b", "b", streamB);
+    await flush();
 
     const order: string[] = [];
     (handleA.dispose as ReturnType<typeof vi.fn>).mockImplementation(async () => {
@@ -463,22 +658,8 @@ describe("AgentSessions.dispose", () => {
       order.push("fiber");
     });
 
-    await sessions.shutdown();
+    await harness.sessions.shutdown();
     expect(order).toEqual(["dispose a", "dispose b", "fiber"]);
     expect(streamA.ended && streamB.ended).toBe(true);
-  });
-});
-
-describe("AgentSessions.listMessages", () => {
-  it("returns an empty history for a fresh session (get-or-create)", async () => {
-    const harness = createHarness();
-    const agent = fakeAgent("templates/saolei/sessions/s1");
-    harness.agentsGet.mockReturnValue(undefined);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
-
-    const sessions = new AgentSessions(harness.ctx);
-    const history = await sessions.listMessages("templates/saolei/sessions/s1");
-    expect(history).toEqual([]);
-    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
   });
 });

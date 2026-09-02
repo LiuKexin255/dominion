@@ -393,7 +393,11 @@ func propagateAgentError(err error, msg string) error {
 	return status.Errorf(codes.Internal, "%s: %v", msg, err)
 }
 
-// mapDomainError converts domain errors to gRPC status errors.
+// mapDomainError converts domain errors to gRPC status errors. The default
+// branch is an unexpected owner-store failure (e.g. Mongo unreachable) — it
+// maps to Internal so the two-hop failure table's store-failure row holds
+// instead of grpc-go's Unknown fallback for a bare error
+// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §3).
 func mapDomainError(err error) error {
 	switch {
 	case errors.Is(err, domain.ErrOwnerNotFound):
@@ -403,6 +407,6 @@ func mapDomainError(err error) error {
 	case errors.Is(err, domain.ErrNoAgentInstances):
 		return status.Error(codes.Unavailable, err.Error())
 	default:
-		return err
+		return status.Errorf(codes.Internal, "%v", err)
 	}
 }

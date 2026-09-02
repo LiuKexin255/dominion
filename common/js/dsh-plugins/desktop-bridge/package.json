@@ -10,6 +10,12 @@
             "default": "./src/index.js"
         }
     },
+    "dependencies": {
+        "@dominion/common-js-logs": "workspace:*"
+    },
+    "peerDependencies": {
+        "@deepseek-ai/cordis": "^4.0.1"
+    },
     "devDependencies": {
         "@types/node": "catalog:",
         "typescript": "catalog:",

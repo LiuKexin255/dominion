@@ -20,6 +20,8 @@
  * https://google.aip.dev/131#errors) that the gRPC layer maps to status.
  */
 
+import { createHmac } from "node:crypto";
+
 import { createResolver } from "@dominion/common-js-resolver";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
 import type { Collection as MongoCollection } from "mongodb";
@@ -130,11 +132,63 @@ const MAX_PAGE_SIZE = 1000;
 /** Logical Dominion target backing agent_v2's preset storage (research D2). */
 export const MONGO_TARGET = "dominion:///game/mongo:27017";
 
+// ── Deployment Mongo credential derivation ──────────────────────────────────
+//
+// The platform MongoDB instances authenticate (admin user), and every Go
+// service of the app connects with a deterministic admin password derived
+// from the deploy environment (dominion/common/gopkg/mongo/credentials.go
+// generateStablePassword + client.go buildMongoURI). The resolver path below
+// derives the same credential so agent_v2 authenticates exactly like the Go
+// services against the same instance; a direct MONGO_URI keeps precedence.
+
+const MONGO_PASSWORD_HMAC_KEY = "dominion-mongo-stable-password";
+const MONGO_PASSWORD_ALPHABET =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const MONGO_PASSWORD_MIN_LEN = 24;
+const MONGO_PASSWORD_JOINER = "\x00";
+const DOMINION_ENVIRONMENT_ENV_KEY = "DOMINION_ENVIRONMENT";
+const DEFAULT_MONGO_ENVIRONMENT = "default";
+const MONGO_USERNAME = "admin";
+const MONGO_AUTH_DATABASE = "admin";
+
+/**
+ * Derive the deployment Mongo admin password — byte-for-byte the Go
+ * algorithm (credentials.go): HMAC-SHA256 over the trim-normalized inputs
+ * joined with NUL, each digest byte mapped onto the alphanumeric alphabet;
+ * a digest shorter than the minimum length is extended by re-walking the
+ * digest bytes.
+ */
+function deriveStableMongoPassword(inputs: string[]): string {
+  const normalized = inputs.map((input) => input.trim());
+  const mac = createHmac("sha256", MONGO_PASSWORD_HMAC_KEY);
+  mac.update(normalized.join(MONGO_PASSWORD_JOINER));
+  const sum = mac.digest();
+  const encoded: string[] = [];
+  for (const byte of sum) {
+    encoded.push(MONGO_PASSWORD_ALPHABET[byte % MONGO_PASSWORD_ALPHABET.length] ?? "");
+  }
+  for (const byte of sum) {
+    while (encoded.length < MONGO_PASSWORD_MIN_LEN) {
+      encoded.push(MONGO_PASSWORD_ALPHABET[byte % MONGO_PASSWORD_ALPHABET.length] ?? "");
+    }
+  }
+  return encoded.join("");
+}
+
+/** The `app`/`service` halves of a {@link MONGO_TARGET}-shaped target. */
+function mongoTargetParts(target: string): { app: string; service: string } {
+  const bare = target.replace(/^dominion:\/\/\//, "");
+  const withoutPort = bare.slice(0, bare.lastIndexOf(":"));
+  const [app = "", service = ""] = withoutPort.split("/");
+  return { app, service };
+}
+
 /**
  * Endpoint precedence (research D2): `MONGO_URI` as-is (tests/local direct
  * connect) > the Dominion resolver answer for {@link MONGO_TARGET}, turned
- * into a `mongodb://` URI. Injectable for tests (style/javascript.md Mock
- * convention).
+ * into a credentialed `mongodb://` URI (the deployment Mongo authenticates —
+ * the derived credential is same-source with the Go services'). Injectable
+ * for tests (style/javascript.md Mock convention).
  */
 export async function resolveMongoUri(
   deps: { env?: Record<string, string | undefined>; resolver?: EndpointResolver } = {},
@@ -149,7 +203,10 @@ export async function resolveMongoUri(
   if (endpoints.length === 0) {
     throw new Error(`resolver returned no endpoints for ${MONGO_TARGET}`);
   }
-  return `mongodb://${endpoints[0]}`;
+  const envName = (env[DOMINION_ENVIRONMENT_ENV_KEY] ?? "").trim() || DEFAULT_MONGO_ENVIRONMENT;
+  const { app, service } = mongoTargetParts(MONGO_TARGET);
+  const password = deriveStableMongoPassword([app, envName, service]);
+  return `mongodb://${MONGO_USERNAME}:${password}@${endpoints[0]}/${MONGO_AUTH_DATABASE}?authSource=${MONGO_AUTH_DATABASE}`;
 }
 
 /** E11000 duplicate-key write error (v1 IsDuplicateKeyError precedent). */
