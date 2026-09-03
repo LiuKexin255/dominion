@@ -464,6 +464,18 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
       );
     },
 
+    // Explicit UNIMPLEMENTED placeholder: the generated AgentServiceHandlers
+    // interface (proto-loader-gen-types) declares every RPC as a mandatory
+    // property, so the object literal must carry a Cancel entry. Returning
+    // UNIMPLEMENTED is behaviorally identical to grpc-js's default handler
+    // for a missing method — the wire contract stays inert until the real
+    // cancel semantics land (specs/054-agent-v2-bugfixes/revisions/
+    // phase2-proxy-cancel.md §0.2; implementation task: specs/054-agent-v2-
+    // bugfixes/tasks.md T013).
+    Cancel: (_call, callback) => {
+      callback({ code: grpc.status.UNIMPLEMENTED, message: "Cancel is not implemented" });
+    },
+
   };
 }
 

@@ -78,6 +78,21 @@ service AgentService {
       body: "*"
     };
   }
+
+  // Cancel gracefully terminates the session's in-flight agent turn: the
+  // model stream and in-flight tool executions propagate cancellation, and
+  // queued messages land as user history messages without triggering a new
+  // turn (unlike the official dsh client, which keeps its pending queue).
+  // Idempotent: a no-op success when no turn is running and the queue is
+  // empty; the agent must already be materialized. Custom method on the
+  // agent singleton resource (AIP-136: https://google.aip.dev/136).
+  // Semantics: specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §3.
+  rpc Cancel(CancelRequest) returns (CancelResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/{name=templates/*/sessions/*/agent}:cancel"
+      body: "*"
+    };
+  }
 }
 
 // PresetService is the stateless configuration surface of agent_v2: the
@@ -184,6 +199,10 @@ message Agent {
   string model = 3;
   google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The session's desktop bridge connection fact, read from the agent-side
+  // connection registry (specs/054-agent-v2-bugfixes/contracts/
+  // agent-api-changes.md §4); false when there is no live connection.
+  bool desktop_connected = 6;
 }
 
 // UpdateAgentRequest materializes or refreshes the agent singleton. The
@@ -245,6 +264,23 @@ message SendRequest {
   // The user message text for this turn. Non-empty (INVALID_ARGUMENT).
   string text = 2 [(google.api.field_behavior) = REQUIRED];
 }
+
+// CancelRequest cancels the session's in-flight agent turn.
+message CancelRequest {
+  // The agent resource name whose in-flight turn to cancel.
+  // Format: templates/{template}/sessions/{session}/agent
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Agent"
+    }
+  ];
+}
+
+// CancelResponse is the empty response of a successful Cancel; the cancel
+// is idempotent (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md
+// §3).
+message CancelResponse {}
 
 // Preset is the per-template configuration resource an agent materializes
 // from. Persistence is the agent_v2 service's own (Mongo, survives
@@ -396,6 +432,10 @@ message BlockStartEvent {
   // TOOL_CALL only: the provider-issued call id and tool name.
   string tool_id = 3;
   string name = 4;
+  // Model output step this block belongs to (0-based, monotonic within a
+  // turn); blocks sharing a step form one display segment
+  // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
+  int32 step = 5;
 }
 
 // One incremental text fragment of the block at `index`; semantics derive
@@ -404,11 +444,19 @@ message BlockStartEvent {
 message BlockDeltaEvent {
   int32 index = 1;
   string text = 2;
+  // Model output step this block belongs to (0-based, monotonic within a
+  // turn); blocks sharing a step form one display segment
+  // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
+  int32 step = 3;
 }
 
 message BlockEndEvent {
   int32 index = 1;
   ContentBlock block = 2;
+  // Model output step this block belongs to (0-based, monotonic within a
+  // turn); blocks sharing a step form one display segment
+  // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
+  int32 step = 3;
 }
 
 // ToolResultEvent carries one tool execution's terminal outcome. tool_id is
@@ -428,6 +476,7 @@ enum TurnStatus {
   TURN_STATUS_COMPLETED = 1;
   TURN_STATUS_ERROR = 2;   // model/transport failure; session stays usable
   TURN_STATUS_ABORTED = 3; // turn aborted mid-flight (re-materialization / shutdown)
+  TURN_STATUS_CANCELED = 4; // user terminated the turn via :cancel
 }
 
 message TurnError {

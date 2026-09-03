@@ -73,6 +73,9 @@ type fakeAgentClient struct {
 	listMessagesResult *game.ListAgentMessagesResponse
 	listMessagesErr    error
 	listMessagesReq    *game.ListAgentMessagesRequest
+
+	cancelErr error
+	cancelReq *game.CancelRequest
 }
 
 func (c *fakeAgentClient) Send(_ context.Context, req *game.SendRequest, _ ...grpc.CallOption) (game.AgentService_SendClient, error) {
@@ -114,6 +117,16 @@ func (c *fakeAgentClient) ListAgentMessages(_ context.Context, req *game.ListAge
 		return c.listMessagesResult, nil
 	}
 	return &game.ListAgentMessagesResponse{}, nil
+}
+
+// Cancel mirrors the ListAgentMessages unary shape; the response is an empty
+// message, so no result field is configurable.
+func (c *fakeAgentClient) Cancel(_ context.Context, req *game.CancelRequest, _ ...grpc.CallOption) (*game.CancelResponse, error) {
+	c.cancelReq = req
+	if c.cancelErr != nil {
+		return nil, c.cancelErr
+	}
+	return &game.CancelResponse{}, nil
 }
 
 // errFakeNotImplemented marks the double's undriven methods.
