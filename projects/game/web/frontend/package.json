@@ -3,7 +3,7 @@
     "private": true,
     "type": "module",
     "dependencies": {
-        "@deepseek-ai/dsh-client-ui-primitives": "0.1.1-rc.2",
+        "@deepseek-ai/dsh-client-ui-primitives": "catalog:",
         "react": "catalog:",
         "react-dom": "catalog:"
     },
