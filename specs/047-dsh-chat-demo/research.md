@@ -71,7 +71,7 @@
 
 ## D6 — `third_party/dsh/core` 底座：≈11 包闭包清单 workspace 包
 
-**Decision**: 照 `common/js/otel` 范式（`common/js/otel/BUILD.bazel`）实现零插件底座：package.json 精确 pin（底座包内直接物化，survey §4-2）+ `js_runtime_library(name="runtime_pkg", package_name="@dominion/dsh-core", lib=":version_lib", npm_deps=[全部核心 link targets])`。核心包清单（0.1.1-rc.2 线）：
+**Decision**: 照 `common/js/otel` 范式（`common/js/otel/BUILD.bazel`）实现零插件底座：package.json 精确 pin（版本经 catalog 统一管理，survey §4-2）+ `js_runtime_library(name="runtime_pkg", package_name="@dominion/dsh-core", lib=":version_lib", npm_deps=[全部核心 link targets])`。核心包清单（0.1.1-rc.2 线）：
 
 `@deepseek-ai/dsh-app-boot`、`@deepseek-ai/cordis`、`@deepseek-ai/cordis-plugin-loader`、`@deepseek-ai/cordis-plugin-include`、`@deepseek-ai/cordis-plugin-group`、`@deepseek-ai/cordis-plugin-timer`、`node-addon-require-builtin`（native addon 前提）、`@deepseek-ai/dsh-home-paths`、`@deepseek-ai/dsh-invariants`、`@deepseek-ai/dsh-system-prompt`、`@deepseek-ai/dsh-launch-environment`。
 

@@ -19,7 +19,7 @@
 **Language/Version**: TypeScript（ESM，web 前端 React 18 + vite + vitest；saolei-loop/desktop-bridge/agent_v2 宿主）、Go（gateway/proxy/testplan）、proto3（`projects/game/agent_v2.proto` 扩展）
 
 **Primary Dependencies**:
-- 既有 dsh 家族 0.1.1-rc.2 精确 pin（A8 延续）：cordis 4.0.1、dsh-agent、dsh-session 等；依赖治理：dsh 插件族统一 `pnpm-workspace.yaml` catalog 管理（rc 线精确版本、cordis/schemastery 保持 range），直接版本仅限 `third_party/dsh/core` 底座
+- 既有 dsh 家族 0.1.1-rc.2 精确 pin（A8 延续）：cordis 4.0.1、dsh-agent、dsh-session 等；依赖治理：dsh 依赖统一 `pnpm-workspace.yaml` catalog 管理（含 `third_party/dsh/core` 底座；rc 线精确版本、cordis/schemastery 保持 range）
 - 官方 UI 复用（同版本线 0.1.1-rc.2）：`@deepseek-ai/dsh-client-ui-primitives`（`MarkdownText` 等原子，已在用）、**新增** `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2`（仅消费其 `src/styles/` token CSS 表，不引入其 cordis runtime——research D4）
 - 官方行为参考（不引入代码）：`@deepseek-ai/dsh-client-ui-chat@0.1.2-rc.1` 与 `@deepseek-ai/dsh-client-ui-conversation@0.1.2-rc.1`（Turn Process Folding、`'assistant-step'` 三态、`IConversation.cancel()`——research D1/D2）
 - workspace 包：`@dominion/dsh-saolei-loop`（driver ERROR 固化）、`@dominion/dsh-desktop-bridge`（连接状态查询）

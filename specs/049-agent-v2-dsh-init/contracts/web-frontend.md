@@ -8,7 +8,7 @@
 |---|---|
 | 框架 | vite + React 18 + TypeScript（050 基建，`specs/050-vite-react-bazel/`） |
 | workspace | pnpm-workspace.yaml 增条目 `projects/game/web/frontend`；React 栈走 catalog（050 已落） |
-| dsh 组件库 | `@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2` **精确 pin**（`pnpm-workspace.yaml` catalog 引用；dsh 插件族统一 catalog 管理，直接版本仅限 `third_party/dsh/core` 底座） |
+| dsh 组件库 | `@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2` **精确 pin**（`pnpm-workspace.yaml` catalog 引用；dsh 依赖统一 catalog 管理） |
 | 构建 | `vite_build`（`tools/dev/js/vite.bzl`）；组件测试 `vitest_test` + `@testing-library/react`（用法照 `experimental/js/vite_react_demo/BUILD.bazel`） |
 | 模块格式 | ESM（`"type":"module"`；`specs/048-js-esm-migration/contracts/esm-package-conventions.md`） |
 | 托管 | `projects/game/web/server`：Go + `embed.FS(dist)` + `http.FileServerFS`（逐行照 `experimental/js/vite_react_demo/server/main.go`，050 US4 实证） |

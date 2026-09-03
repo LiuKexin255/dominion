@@ -14,7 +14,7 @@
 
 | 项 | 契约 |
 |---|---|
-| 引入 | `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2` 仅消费 `src/styles/*.css`（按官方顺序 import；dsh 插件族统一 catalog 管理，直接版本仅限 `third_party/dsh/core` 底座），不引入其 cordis runtime |
+| 引入 | `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2` 仅消费 `src/styles/*.css`（按官方顺序 import；dsh 依赖统一 catalog 管理，含 `third_party/dsh/core` 底座），不引入其 cordis runtime |
 | 主题形态 | 深色单一主题：以 token sheets 的 dark 值激活（`body[data-ds-dark-theme]` 或 sheets 实际选择器，引入时实读确认）；不提供主题切换 |
 | 自有样式 | `theme.css` 保留 `--app-*` 布局变量与布局规则；手写的 `--dsw-*` 变量子集**删除**（token sheets 为唯一权威，防漂移） |
 | 验收 | Menu 卡片呈现背景/边框/阴影（组件测试断言计算样式或 token 变量存在）；既有组件（Button/Input/StateDot/ReasoningRow 等）视觉无缺失 |

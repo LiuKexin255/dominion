@@ -232,7 +232,7 @@ closed runtime 不含 HMR 依赖也能工作（hmr 是 optional peer）；`watch
 | 维度 | 事实 | 与 B1 的关系 |
 |---|---|---|
 | Node 版本 | dsh 要求 `^22.19 \|\| >=24`；本仓库 Bazel toolchain 24.14.0、`@types/node` ^22.20.1 | 兼容（24.14 满足；internal loader 走 Node 24 v2 接口） |
-| 依赖管理 | TS 版本统一在 `pnpm-workspace.yaml` catalog | dsh 插件族统一入 catalog（rc 线精确版本；cordis/schemastery 保持 range）；`third_party/dsh/core` 底座包内直接 pin |
+| 依赖管理 | TS 版本统一在 `pnpm-workspace.yaml` catalog | dsh 依赖统一入 catalog（含 `third_party/dsh/core` 底座；rc 线精确版本，cordis/schemastery 保持 range） |
 | 产物形态 | Bazel + oci_image | **Loader 依赖运行时真实 node_modules 解析（§3.3）**：产物必须携带物化 node_modules 树（pnpm deploy / pnpm install --prod 或等价物进镜像层）；不能把插件 bundle 进单文件。Bazel 的 hermetic runfiles 树不适用于运行时 Loader 解析，运行时环境必须脱离 bazel 沙箱 |
 | native 依赖 | 本仓库已有 node-gyp/build 体系 | `node-addon-require-builtin`（平台 optionalDeps，0.1.2 起无 install script，见 §4.1 更新）+ 若用 PTY 工具则 `node-pty`（官方 rc.7 起用 1.2 beta）——容器镜像需按平台选好 |
 | 闭包校验 | 无对应物 | 官方 `verify-runtime-closure` 的思路（遍历组合闭包校验 peers）可移植为镜像构建检查 |

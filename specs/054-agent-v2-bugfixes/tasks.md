@@ -16,21 +16,21 @@
 
 ## Phase 1: Setup（共享基础设施）
 
-**Purpose**: dsh 插件族依赖统一 catalog 治理 + 引入官方 token 依赖（US8 消费；依赖管理为仓库级操作）
+**Purpose**: dsh 依赖统一 catalog 治理（含 `third_party/dsh/core` 底座）+ 引入官方 token 依赖（US8 消费；依赖管理为仓库级操作）
 
 ### 文档清单
 
 - **代码规范文档**：`style/javascript.md`（ESM/依赖约定）；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)（`style/javascript.md` 引用基准）
 - **官方文档**：无
-- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/research.md` D4（引入方式与版本决策）、`survey/deepseek-harness-b1-bazel-packaging.md` §4.2（dsh 依赖治理：插件族统一 catalog、直接版本仅限 `third_party/dsh/core` 底座）
+- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/research.md` D4（引入方式与版本决策）、`survey/deepseek-harness-b1-bazel-packaging.md` §4.2（dsh 依赖治理：统一 catalog 管理，含底座闭包）
 
-- [ ] T001 dsh 插件族依赖统一 catalog 管理（例外仅限 `third_party/dsh/core` 底座）：
-  1. `pnpm-workspace.yaml` catalog 新增 14 个条目（rc 线精确版本 0.1.1-rc.2；cordis/schemastery 保持既有 range）：`@deepseek-ai/dsh-agent`、`dsh-agent-spine-demo`、`dsh-app-boot`、`dsh-llm`、`dsh-llm-deepseek`、`dsh-llm-retry`、`dsh-scope`、`dsh-session`、`dsh-system-prompt`、`dsh-tools`、`dsh-client-ui-primitives`、`dsh-client-ui-theme`（新增，消费在 Phase 10）、`cordis`（`^4.0.1`）、`schemastery`（`^3.18.1`）；
-  2. 以下 manifest 的直接 `@deepseek-ai/*` 版本声明改为 `catalog:`：`projects/game/web/frontend/`、`projects/game/agent_v2/`、`experimental/dsh/demo/agent/`、`common/js/dsh-plugins/saolei-loop/`、`common/js/dsh-plugins/saolei/`、`common/js/dsh-plugins/llm-glm/`、`common/js/dsh-plugins/desktop-bridge/`（`third_party/dsh/core/package.json` 保持包内直接 pin 不动）；
-  3. 经 `bazel run @pnpm -- --dir /mnt/code/dominion install` 更新 lock（禁止手改 `pnpm-lock.yaml`）；核对迁移前后解析版本一致（cordis 4.0.1 / schemastery 3.18.1 / rc 线 0.1.1-rc.2）；
-  4. 审计门禁：除 `third_party/dsh/core/package.json` 外全仓 manifest 零直接 `@deepseek-ai/*` 版本声明；`bazel build //projects/game/... //common/js/dsh-plugins/... //experimental/dsh/...` 通过
+- [ ] T001 dsh 依赖统一 catalog 管理（含 `third_party/dsh/core` 底座，无任何例外）：
+  1. `pnpm-workspace.yaml` catalog 新增 22 个条目（rc 线精确版本 0.1.1-rc.2；cordis/schemastery 保持既有 range；cordis-plugin 家族与 node-addon-require-builtin 精确版本）：`@deepseek-ai/dsh-agent`、`dsh-agent-spine-demo`、`dsh-app-boot`、`dsh-home-paths`、`dsh-invariants`、`dsh-launch-environment`、`dsh-llm`、`dsh-llm-deepseek`、`dsh-llm-retry`、`dsh-scope`、`dsh-session`、`dsh-system-prompt`、`dsh-tools`、`dsh-client-ui-primitives`、`dsh-client-ui-theme`（新增，消费在 Phase 10）、`cordis`（`^4.0.1`）、`cordis-plugin-group`（`1.0.1`）、`cordis-plugin-include`（`1.0.6`）、`cordis-plugin-loader`（`1.0.2`）、`cordis-plugin-timer`（`1.1.3`）、`schemastery`（`^3.18.1`）、`node-addon-require-builtin`（`0.1.5`）；
+  2. 以下 manifest 的直接依赖版本声明改为 `catalog:`：`third_party/dsh/core/`、`projects/game/web/frontend/`、`projects/game/agent_v2/`、`experimental/dsh/demo/agent/`、`common/js/dsh-plugins/saolei-loop/`、`common/js/dsh-plugins/saolei/`、`common/js/dsh-plugins/llm-glm/`、`common/js/dsh-plugins/desktop-bridge/`；
+  3. 经 `bazel run @pnpm -- --dir /mnt/code/dominion install` 更新 lock（禁止手改 `pnpm-lock.yaml`）；核对迁移前后解析版本一致（rc 线 0.1.1-rc.2 / cordis 4.0.1 / cordis-plugin 1.0.x 线 / schemastery 3.18.1 / node-addon 0.1.5）；`third_party/dsh/core/version.ts` 的 DSH_CORE_SNAPSHOT 语义不变；
+  4. 审计门禁：全仓 manifest 零直接 `@deepseek-ai/*` 与 `node-addon-require-builtin` 版本声明；`bazel build //third_party/dsh/... //projects/game/... //common/js/dsh-plugins/... //experimental/dsh/...` 通过；`closure_audit_test`（声明面名称集校验）不受影响
 
-**Checkpoint**: 依赖迁移完成、审计通过，`bazel build //projects/game/web/...` 通过
+**Checkpoint**: 依赖迁移完成、审计通过，`bazel build //projects/game/web/... //third_party/dsh/...` 通过
 
 ---
 

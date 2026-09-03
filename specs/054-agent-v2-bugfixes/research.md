@@ -51,7 +51,7 @@
 
 **Alternatives considered**: 手动在 theme.css 补缺失变量（放弃——逐组件打补丁，遗漏面大且与官方漂移）；引入 ui-theme 完整插件（放弃——需要 cordis client runtime + settings 生态）。
 
-**版本注意**: dsh 插件族统一 `pnpm-workspace.yaml` catalog 管理（rc 线精确版本 0.1.1-rc.2；cordis/schemastery 保持既有 range；直接版本仅限 `third_party/dsh/core` 底座——见 `survey/deepseek-harness-b1-bazel-packaging.md` §4.2）；ui-theme 0.1.1-rc.2 与 primitives 0.1.1-rc.2 同线。
+**版本注意**: dsh 依赖统一 `pnpm-workspace.yaml` catalog 管理（含 `third_party/dsh/core` 底座闭包；rc 线精确版本 0.1.1-rc.2，cordis/schemastery 保持既有 range——见 `survey/deepseek-harness-b1-bazel-packaging.md` §4.2）；ui-theme 0.1.1-rc.2 与 primitives 0.1.1-rc.2 同线。
 
 ## D5: 失败回合固化——driver ERROR 路径补 interrupted append
 
