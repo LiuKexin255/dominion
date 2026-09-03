@@ -62,10 +62,10 @@
 - **官方文档**：[dsh-client-ui-chat README（npm，含 "Turn Process Folding" 章节）](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-chat)（折叠规则的行为基线：流式全展开/turn 结束折叠/无最终答案不折叠）；源仓库 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §2、`specs/054-agent-v2-bugfixes/data-model.md` §5.1、`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §4（事件模型基线）、`specs/049-agent-v2-dsh-init/contracts/web-frontend.md`（store reducer 不变量基线）
 
-- [ ] T003 [P] [US2] `projects/game/agent_v2/src/history.ts`：chunk→ChatEvent 映射透传 step——`BlockStartEvent`/`BlockDeltaEvent`/`BlockEndEvent` 携带 `ActiveTurn` 已跟踪的 step 序号（`data.step`，缺失置 0）；`projects/game/agent_v2/src/history.test.ts` 增加 step 透传与缺省用例
-- [ ] T004 [P] [US2] `projects/game/web/frontend/src/store/chat.ts`：`LiveTurn` 改造为 `steps: StepDraft[]`（块事件按 `event.step` 路由分组、缺 step 归组 0、下一 step 到达即置前一 step settled）；`turn_end{COMPLETED}` 将 steps 依序投影为**多条** `HistoryMessage`（废除整回合合并）；`turn_end{ERROR/ABORTED}` 行为此阶段暂保持现状（US4 处理）；`store/chat` 测试更新（step 分组/退化/多消息投影/tool_result 跨 step 按 tool_id 关联）
-- [ ] T005 [US2] `projects/game/web/frontend/src/components/ChatView.tsx`：按 steps 分段依次独立渲染（每 step 一个分段容器，步骤内 think→ReasoningRow、toolCall→ToolCard、text→正文分类分列；空 text 跳过语义保留）；`ChatView` 组件测试（流式分段依次呈现、分类分列、用户消息不变）
-- [ ] T006 [US2] `projects/game/web/frontend/src/components/ChatView.tsx`：回合完成后的折叠——最终答案判定（最后一个含非空 text 块且无 tool-call 块的 step）独立呈现，此前 steps 折叠为"思考过程"摘要区（步骤/工具计数、点击展开、手动展开页面会话内保持）；无最终答案的回合全可见不折叠（此阶段以 ERROR 外的既有终态覆盖，ERROR/CANCELED 专属呈现随 US4/US5 完善）；回填默认折叠态；组件测试（折叠/展开/计数/回填默认态）
+- [x] T003 [P] [US2] `projects/game/agent_v2/src/history.ts`：chunk→ChatEvent 映射透传 step——`BlockStartEvent`/`BlockDeltaEvent`/`BlockEndEvent` 携带 `ActiveTurn` 已跟踪的 step 序号（`data.step`，缺失置 0）；`projects/game/agent_v2/src/history.test.ts` 增加 step 透传与缺省用例
+- [x] T004 [P] [US2] `projects/game/web/frontend/src/store/chat.ts`：`LiveTurn` 改造为 `steps: StepDraft[]`（块事件按 `event.step` 路由分组、缺 step 归组 0、下一 step 到达即置前一 step settled）；`turn_end{COMPLETED}` 将 steps 依序投影为**多条** `HistoryMessage`（废除整回合合并）；`turn_end{ERROR/ABORTED}` 行为此阶段暂保持现状（US4 处理）；`store/chat` 测试更新（step 分组/退化/多消息投影/tool_result 跨 step 按 tool_id 关联）
+- [x] T005 [US2] `projects/game/web/frontend/src/components/ChatView.tsx`：按 steps 分段依次独立渲染（每 step 一个分段容器，步骤内 think→ReasoningRow、toolCall→ToolCard、text→正文分类分列；空 text 跳过语义保留）；`ChatView` 组件测试（流式分段依次呈现、分类分列、用户消息不变）
+- [x] T006 [US2] `projects/game/web/frontend/src/components/ChatView.tsx`：回合完成后的折叠——最终答案判定（最后一个含非空 text 块且无 tool-call 块的 step）独立呈现，此前 steps 折叠为"思考过程"摘要区（步骤/工具计数、点击展开、手动展开页面会话内保持）；无最终答案的回合全可见不折叠（此阶段以 ERROR 外的既有终态覆盖，ERROR/CANCELED 专属呈现随 US4/US5 完善）；回填默认折叠态；组件测试（折叠/展开/计数/回填默认态）
 
 **Checkpoint**: 流式分段与回填一致，既有对话用例零回归
 
