@@ -96,10 +96,9 @@ describe("chunkToChatEvent", () => {
   const TURN = "turn-1";
 
   it("maps block-start with the BlockType vocabulary and tool fields", () => {
-    expect(chunkToChatEvent({ type: "block-start", index: 0, blockType: "text" }, SESSION, TURN)?.blockStart).toEqual({
-      index: 0,
-      type: "BLOCK_TYPE_TEXT",
-    });
+    expect(
+      chunkToChatEvent({ type: "block-start", index: 0, blockType: "text" }, SESSION, TURN)?.blockStart,
+    ).toEqual({ index: 0, type: "BLOCK_TYPE_TEXT", step: 0 });
     const think = chunkToChatEvent({ type: "block-start", index: 1, blockType: "reasoning" }, SESSION, TURN)?.blockStart;
     expect(think?.type).toBe("BLOCK_TYPE_THINK");
     const tool = chunkToChatEvent(
@@ -107,7 +106,7 @@ describe("chunkToChatEvent", () => {
       SESSION,
       TURN,
     )?.blockStart;
-    expect(tool).toEqual({ index: 2, type: "BLOCK_TYPE_TOOL_CALL", toolId: "call-1", name: "bash" });
+    expect(tool).toEqual({ index: 2, type: "BLOCK_TYPE_TOOL_CALL", toolId: "call-1", name: "bash", step: 0 });
   });
 
   it("drops a block-start with an unknown blockType (no TEXT fallback)", () => {
@@ -122,14 +121,16 @@ describe("chunkToChatEvent", () => {
     expect(chunkToChatEvent({ type: "text-delta", index: 0, text: "a" }, SESSION, TURN)?.delta).toEqual({
       index: 0,
       text: "a",
+      step: 0,
     });
     expect(chunkToChatEvent({ type: "reasoning-delta", index: 1, text: "b" }, SESSION, TURN)?.delta).toEqual({
       index: 1,
       text: "b",
+      step: 0,
     });
     expect(
       chunkToChatEvent({ type: "tool-call-delta", index: 2, argumentsDelta: "{\"x" }, SESSION, TURN)?.delta,
-    ).toEqual({ index: 2, text: "{\"x" });
+    ).toEqual({ index: 2, text: "{\"x", step: 0 });
   });
 
   it("maps block-end with the terminal ContentBlock projection", () => {
@@ -138,7 +139,22 @@ describe("chunkToChatEvent", () => {
       SESSION,
       TURN,
     );
-    expect(event?.blockEnd).toEqual({ index: 0, block: { text: { content: "done" } } });
+    expect(event?.blockEnd).toEqual({ index: 0, block: { text: { content: "done" } }, step: 0 });
+  });
+
+  it("stamps the given step onto every mapped block frame", () => {
+    // specs/054-agent-v2-bugfixes/data-model.md §1.1: the step number rides
+    // on every block event so clients can segment the turn by model-output
+    // step.
+    expect(
+      chunkToChatEvent({ type: "block-start", index: 0, blockType: "text" }, SESSION, TURN, undefined, 3)
+        ?.blockStart?.step,
+    ).toBe(3);
+    expect(chunkToChatEvent({ type: "text-delta", index: 0, text: "a" }, SESSION, TURN, undefined, 3)?.delta?.step).toBe(3);
+    expect(
+      chunkToChatEvent({ type: "block-end", index: 0, block: { type: "text", text: "a" } }, SESSION, TURN, undefined, 3)
+        ?.blockEnd?.step,
+    ).toBe(3);
   });
 
   it("never frames usage or finish chunks (folded into turn_end / idle-driven)", () => {
@@ -363,6 +379,32 @@ describe("TurnCollector", () => {
       data: { turn: 1, step, message: { content: blocks } },
     };
   }
+
+  it("stamps block frames with the ActiveTurn-tracked step, defaulting to 0 when absent", () => {
+    // specs/054-agent-v2-bugfixes/data-model.md §1.1: the collector tracks the
+    // event's step and forwards it on every mapped block frame; a dsh event
+    // without a step number degrades to step 0.
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const collector = new TurnCollector(ctx, agent, SESSION, new SessionHistory());
+    const stream = recorder();
+    collector.begin("turn-1", stream);
+
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "one" }, 2));
+    emit(
+      listeners,
+      "session/event",
+      agent.session,
+      { type: "assistant/chunk", data: { turn: 1, chunk: { type: "text-delta", index: 0, text: "zero" } } },
+    );
+    collector.abort();
+
+    expect(stream.events[0]?.blockStart?.step).toBe(1);
+    expect(stream.events[1]?.delta?.step).toBe(2);
+    // An event carrying no step number maps to step 0 (data-model.md §1.1).
+    expect(stream.events[2]?.delta?.step).toBe(0);
+  });
 
   it("remaps per-step block indexes onto one turn-global monotonic sequence", () => {
     const { ctx, listeners } = fakeCtx();

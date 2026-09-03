@@ -2,8 +2,10 @@
 // 照 specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §4，事件序保证
 // 见 specs/049-agent-v2-dsh-init/contracts/conversation-api.md §3（每流恰好一
 // 个终结 turn_end、queued 先于 turn_start、delta 按到达序拼接；tool_result 为
-// 051 扩展帧，specs/051-agent-v2-dsh-migration/data-model.md §2.4）。store 无
-// 框架依赖；React 侧经 useChatState 订阅（react.dev/reference/react/
+// 051 扩展帧，specs/051-agent-v2-dsh-migration/data-model.md §2.4）。块事件按
+// step 分段路由（specs/054-agent-v2-bugfixes/data-model.md §5.1：step 为分组
+// 维度、index 仍为块序维度），COMPLETED 回合依 step 投影多条历史。store 无框
+// 架依赖；React 侧经 useChatState 订阅（react.dev/reference/react/
 // useSyncExternalStore——getSnapshot 返回缓存快照，未变化时同一引用）。
 import { useSyncExternalStore } from 'react'
 import type { ChatEvent, ContentBlock, HistoryMessage, Role } from '../api/conversation.js'
@@ -28,9 +30,18 @@ export type BlockDraft =
       result?: string
     }
 
+// StepDraft 是一个模型输出步骤的草稿（specs/054-agent-v2-bugfixes/
+// data-model.md §5.1）：块按事件 step 归组；下一 step 的块事件到达即把此前
+// step 置 settled（分段边界）。settled 供呈现层区分流式中的活跃分段。
+export interface StepDraft {
+  step: number
+  blocks: BlockDraft[]
+  settled: boolean
+}
+
 export interface LiveTurn {
   turnId: string
-  blocks: BlockDraft[]
+  steps: StepDraft[]
 }
 
 export interface ChatState {
@@ -115,6 +126,32 @@ function settleDraft(draft: BlockDraft, toolId: string, status: string, result: 
   return { ...draft, status, result }
 }
 
+// eventStep 落定事件的分组维度：缺 step（旧服务端/残留流）归组 0，行为退化
+// 不崩溃（specs/054-agent-v2-bugfixes/data-model.md §5.1）。
+function eventStep(step: number | undefined): number {
+  return step ?? 0
+}
+
+// appendBlockStart routes one block_start onto its step group：新 step 的首
+// 个块事件把此前全部 step 置 settled（分段边界）并开新组；同 step 的后续块
+// 直接追加。
+function appendBlockStart(steps: StepDraft[], step: number, draft: BlockDraft): StepDraft[] {
+  if (steps.some((s) => s.step === step)) {
+    return steps.map((s) => (s.step === step ? { ...s, blocks: [...s.blocks, draft] } : s))
+  }
+  return [...steps.map((s) => (s.settled ? s : { ...s, settled: true })), { step, blocks: [draft], settled: false }]
+}
+
+// mapStepBlocks applies one block-序 operation inside the step group the
+// event routes to；group 不存在（病态序）时原样返回。
+function mapStepBlocks(
+  steps: StepDraft[],
+  step: number,
+  map: (blocks: BlockDraft[]) => BlockDraft[],
+): StepDraft[] {
+  return steps.map((s) => (s.step === step ? { ...s, blocks: map(s.blocks) } : s))
+}
+
 // settleHistoryMessage applies one tool_result frame to a backfilled history
 // message: the matching RUNNING tool-call block (by tool_id) reaches its
 // terminal status with the rendered result.
@@ -148,7 +185,7 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
     return {
       ...state,
       queue: rest,
-      live: { turnId: event.turnId ?? '', blocks: [] },
+      live: { turnId: event.turnId ?? '', steps: [] },
       error: null,
     }
   }
@@ -156,37 +193,60 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
     if (!state.live) return state
     return {
       ...state,
-      live: { ...state.live, blocks: [...state.live.blocks, blockStartDraft(event.blockStart)] },
+      live: {
+        ...state.live,
+        steps: appendBlockStart(state.live.steps, eventStep(event.blockStart.step), blockStartDraft(event.blockStart)),
+      },
     }
   }
   if (event.delta) {
     if (!state.live) return state
-    const blocks = state.live.blocks.map((b) => {
-      if (b.index !== event.delta!.index) return b
-      if (b.type === 'TOOL_CALL') return { ...b, args: b.args + event.delta!.text }
-      return { ...b, text: b.text + event.delta!.text }
-    })
-    return { ...state, live: { ...state.live, blocks } }
+    const { index, text } = event.delta
+    return {
+      ...state,
+      live: {
+        ...state.live,
+        steps: mapStepBlocks(state.live.steps, eventStep(event.delta.step), (blocks) =>
+          blocks.map((b) => {
+            if (b.index !== index) return b
+            if (b.type === 'TOOL_CALL') return { ...b, args: b.args + text }
+            return { ...b, text: b.text + text }
+          }),
+        ),
+      },
+    }
   }
   if (event.blockEnd) {
     if (!state.live) return state
-    const blocks = state.live.blocks.map((b) =>
-      b.index === event.blockEnd!.index ? blockEndTerminal(b, event.blockEnd!.block) : b,
-    )
-    return { ...state, live: { ...state.live, blocks } }
+    const { index, block } = event.blockEnd
+    return {
+      ...state,
+      live: {
+        ...state.live,
+        steps: mapStepBlocks(state.live.steps, eventStep(event.blockEnd.step), (blocks) =>
+          blocks.map((b) => (b.index === index ? blockEndTerminal(b, block) : b)),
+        ),
+      },
+    }
   }
   if (event.toolResult) {
-    // 工具结果终态化（web-frontend.md §4）：按 tool_id 找 live/history 中
-    // 最近的 RUNNING ToolCallBlock 更新终态；找不到（如重启后残留流）忽略。
+    // 工具结果终态化（web-frontend.md §4）：按 tool_id 在 live 全部 step
+    // （跨 step，tool_id 为回合内唯一关联键）与 history 中最近的 RUNNING
+    // ToolCallBlock 更新终态；找不到（如重启后残留流）忽略。
     const { toolId, status, result } = event.toolResult
     if (state.live) {
       let hit = false
-      const blocks = state.live.blocks.map((b) => {
-        const next = settleDraft(b, toolId, status, result)
-        hit = hit || next !== b
-        return next
+      const steps = state.live.steps.map((s) => {
+        let stepHit = false
+        const blocks = s.blocks.map((b) => {
+          const next = settleDraft(b, toolId, status, result)
+          stepHit = stepHit || next !== b
+          return next
+        })
+        hit = hit || stepHit
+        return stepHit ? { ...s, blocks } : s
       })
-      if (hit) return { ...state, live: { ...state.live, blocks } }
+      if (hit) return { ...state, live: { ...state.live, steps } }
     }
     // live 未命中：回退到历史（逆序 = 最近的 AGENT 消息优先），仅存在匹配块
     // 时重建数组。
@@ -207,13 +267,17 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
   if (event.turnEnd) {
     switch (event.turnEnd.status) {
       case 'TURN_STATUS_COMPLETED': {
-        const merged: HistoryMessage =
-          state.live && state.live.blocks.length > 0
-            ? { role: ROLE_AGENT, blocks: liveBlocksToContentBlocks(state.live.blocks) }
-            : { role: ROLE_AGENT, blocks: [] }
+        // steps 依序投影为多条 HistoryMessage（每 step 一条，对齐服务端
+        // 每 step 一条 assistant/message——specs/054-agent-v2-bugfixes/
+        // data-model.md §5.2）；无块的空回合不投影空气泡。
+        if (!state.live) return state
+        const merged = state.live.steps.map((s) => ({
+          role: ROLE_AGENT,
+          blocks: liveBlocksToContentBlocks(s.blocks),
+        }))
         return {
           ...state,
-          history: state.live ? [...state.history, merged] : state.history,
+          history: merged.length > 0 ? [...state.history, ...merged] : state.history,
           live: null,
         }
       }

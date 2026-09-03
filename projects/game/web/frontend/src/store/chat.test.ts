@@ -99,19 +99,25 @@ describe('ChatStore reducer', () => {
     })
 
     // block_start opens a RUNNING draft; deltas stream-concatenate args.
-    expect(store.getSnapshot().live?.blocks).toEqual([
+    expect(store.getSnapshot().live?.steps).toEqual([
       {
-        index: 0,
-        type: 'TOOL_CALL',
-        toolId: 'call-1',
-        name: 'bash',
-        args: '',
-        status: 'TOOL_STATUS_RUNNING',
+        step: 0,
+        settled: false,
+        blocks: [
+          {
+            index: 0,
+            type: 'TOOL_CALL',
+            toolId: 'call-1',
+            name: 'bash',
+            args: '',
+            status: 'TOOL_STATUS_RUNNING',
+          },
+        ],
       },
     ])
     store.applyEvent({ turnId: 't1', delta: { index: 0, text: '{"command":"ls' } })
     store.applyEvent({ turnId: 't1', delta: { index: 0, text: ' -la"}' } })
-    expect(store.getSnapshot().live?.blocks[0]).toMatchObject({
+    expect(store.getSnapshot().live?.steps[0]?.blocks[0]).toMatchObject({
       args: '{"command":"ls -la"}',
       status: 'TOOL_STATUS_RUNNING',
     })
@@ -132,15 +138,21 @@ describe('ChatStore reducer', () => {
         },
       },
     })
-    expect(store.getSnapshot().live?.blocks).toEqual([
+    expect(store.getSnapshot().live?.steps).toEqual([
       {
-        index: 0,
-        type: 'TOOL_CALL',
-        toolId: 'call-1',
-        name: 'bash',
-        args: '{"command":"ls -la"}',
-        status: 'TOOL_STATUS_SUCCEEDED',
-        result: 'file-a.txt',
+        step: 0,
+        settled: false,
+        blocks: [
+          {
+            index: 0,
+            type: 'TOOL_CALL',
+            toolId: 'call-1',
+            name: 'bash',
+            args: '{"command":"ls -la"}',
+            status: 'TOOL_STATUS_SUCCEEDED',
+            result: 'file-a.txt',
+          },
+        ],
       },
     ])
 
@@ -190,7 +202,7 @@ describe('ChatStore reducer', () => {
     })
 
     // RUNNING → SUCCEEDED with the rendered result; args stay intact.
-    expect(store.getSnapshot().live?.blocks[0]).toEqual({
+    expect(store.getSnapshot().live?.steps[0]?.blocks[0]).toEqual({
       index: 0,
       type: 'TOOL_CALL',
       toolId: 'call-1',
@@ -224,7 +236,7 @@ describe('ChatStore reducer', () => {
       },
     })
 
-    expect(store.getSnapshot().live?.blocks[0]).toMatchObject({
+    expect(store.getSnapshot().live?.steps[0]?.blocks[0]).toMatchObject({
       status: 'TOOL_STATUS_FAILED',
       result: 'desktop disconnected',
     })
@@ -289,7 +301,7 @@ describe('ChatStore reducer', () => {
     })
 
     // No state transition: the running block stays RUNNING and untouched.
-    expect(store.getSnapshot().live?.blocks[0]).toEqual({
+    expect(store.getSnapshot().live?.steps[0]?.blocks[0]).toEqual({
       index: 0,
       type: 'TOOL_CALL',
       toolId: 'call-1',
@@ -329,10 +341,112 @@ describe('ChatStore reducer', () => {
     })
 
     // The first terminal status wins; the late duplicate is ignored.
-    expect(store.getSnapshot().live?.blocks[0]).toMatchObject({
+    expect(store.getSnapshot().live?.steps[0]?.blocks[0]).toMatchObject({
       status: 'TOOL_STATUS_SUCCEEDED',
       result: 'first',
     })
+  })
+
+  it('routes block events onto their step groups and settles prior steps on step boundaries', () => {
+    const store = new ChatStore()
+    const events: ChatEvent[] = [
+      { turnId: 't1', turnStart: {} },
+      { turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 } },
+      { turnId: 't1', delta: { index: 0, text: '想一下', step: 0 } },
+      {
+        turnId: 't1',
+        blockEnd: { index: 0, block: { think: { content: '想一下' } }, step: 0 },
+      },
+      { turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 } },
+      { turnId: 't1', delta: { index: 1, text: '正文', step: 1 } },
+    ]
+    for (const e of events) {
+      store.applyEvent(e)
+    }
+
+    const steps = store.getSnapshot().live?.steps ?? []
+    // 两个 step 分组；下一 step 到达即把前一 step 置 settled（分段边界）。
+    expect(steps).toHaveLength(2)
+    expect(steps[0]).toMatchObject({ step: 0, settled: true })
+    expect(steps[0]?.blocks).toEqual([{ index: 0, type: 'THINK', text: '想一下' }])
+    expect(steps[1]).toMatchObject({ step: 1, settled: false })
+    expect(steps[1]?.blocks).toEqual([{ index: 1, type: 'TEXT', text: '正文' }])
+  })
+
+  it('groups stepless events into step 0 (degraded old-server streams)', () => {
+    // 旧服务端块事件无 step 字段：全部归组 0，行为退化不崩溃
+    // （specs/054-agent-v2-bugfixes/data-model.md §5.1）。
+    const store = new ChatStore()
+    for (const e of turnTextEvents('t1', ['你', '好'])) {
+      store.applyEvent(e)
+    }
+
+    const steps = store.getSnapshot().live?.steps ?? []
+    expect(steps).toHaveLength(1)
+    expect(steps[0]).toMatchObject({ step: 0, settled: false })
+    expect(steps[0]?.blocks).toEqual([{ index: 0, type: 'TEXT', text: '你好' }])
+  })
+
+  it('projects completed steps into one history message per step', () => {
+    // turn_end{COMPLETED} 将 steps 依序投影为多条 HistoryMessage（对齐服务端
+    // 每 step 一条 assistant/message，specs/054-agent-v2-bugfixes/
+    // data-model.md §5.2），废除整回合合并。
+    const store = new ChatStore()
+    const events: ChatEvent[] = [
+      { turnId: 't1', turnStart: {} },
+      {
+        turnId: 't1',
+        blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_init', step: 0 },
+      },
+      { turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 } },
+      { turnId: 't1', delta: { index: 1, text: '开好了', step: 1 } },
+      {
+        turnId: 't1',
+        blockEnd: { index: 1, block: { text: { content: '开好了' } }, step: 1 },
+      },
+      { turnId: 't1', turnEnd: { status: 'TURN_STATUS_COMPLETED' } },
+    ]
+    for (const e of events) {
+      store.applyEvent(e)
+    }
+
+    expect(store.getSnapshot().live).toBeNull()
+    expect(store.getSnapshot().history).toEqual([
+      {
+        role: 'ROLE_AGENT',
+        blocks: [
+          { toolCall: { toolId: 'call-1', name: 'saolei_init', argsJson: '', status: 'TOOL_STATUS_RUNNING' } },
+        ],
+      },
+      { role: 'ROLE_AGENT', blocks: [{ text: { content: '开好了' } }] },
+    ])
+  })
+
+  it('an empty turn projects no empty agent bubble', () => {
+    const store = new ChatStore()
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({ turnId: 't1', turnEnd: { status: 'TURN_STATUS_COMPLETED' } })
+
+    expect(store.getSnapshot().live).toBeNull()
+    expect(store.getSnapshot().history).toEqual([])
+  })
+
+  it('tool_result settles an earlier-step tool-call block by tool_id', () => {
+    // tool_result 无 step、跨 step 按 tool_id 关联（既有语义，
+    // specs/054-agent-v2-bugfixes/data-model.md §1.1）。
+    const store = new ChatStore()
+    store.applyEvent({ turnId: 't1', turnStart: {} })
+    store.applyEvent({
+      turnId: 't1',
+      blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_init', step: 0 },
+    })
+    store.applyEvent({ turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 } })
+    store.applyEvent({ turnId: 't1', toolResult: { toolId: 'call-1', status: 'TOOL_STATUS_SUCCEEDED', result: 'board' } })
+
+    const steps = store.getSnapshot().live?.steps ?? []
+    expect(steps[0]?.blocks[0]).toMatchObject({ type: 'TOOL_CALL', status: 'TOOL_STATUS_SUCCEEDED', result: 'board' })
+    // 其他 step 不受影响。
+    expect(steps[1]?.blocks).toEqual([{ index: 1, type: 'TEXT', text: '' }])
   })
 
   it('turn_end{ERROR} surfaces the error, keeps the session usable', () => {

@@ -196,12 +196,19 @@ export function blockToContentBlock(block: DshContentBlockView): ContentBlock | 
  * `remapIndex` projects the chunk's per-step provider index onto the
  * turn-global block sequence (specs/051-agent-v2-dsh-migration/data-model.md
  * §2.4); omitted, the index passes through unchanged.
+ *
+ * `step` is the turn's model-output step the block belongs to (specs/
+ * 054-agent-v2-bugfixes/data-model.md §1.1: the display segmentation
+ * dimension, monotonic within the turn); the collector passes the
+ * ActiveTurn-tracked number and defaults to 0 when the dsh event carries no
+ * step.
  */
 export function chunkToChatEvent(
   chunk: DshStreamChunk,
   sessionName: string,
   turnId: string,
   remapIndex: (index: number) => number = (index) => index,
+  step = 0,
 ): ChatEvent | undefined {
   if (chunk.type === "block-start") {
     // Unknown block types have no display projection in this phase and are
@@ -213,6 +220,7 @@ export function chunkToChatEvent(
     const start: BlockStartEvent = {
       index: remapIndex(chunk.index ?? 0),
       type: blockType,
+      step,
     };
     if (chunk.blockType === "tool-call") {
       start.toolId = chunk.id ?? "";
@@ -221,11 +229,11 @@ export function chunkToChatEvent(
     return { session: sessionName, turnId, blockStart: start };
   }
   if (chunk.type === "text-delta" || chunk.type === "reasoning-delta") {
-    const delta: BlockDeltaEvent = { index: remapIndex(chunk.index ?? 0), text: chunk.text ?? "" };
+    const delta: BlockDeltaEvent = { index: remapIndex(chunk.index ?? 0), text: chunk.text ?? "", step };
     return { session: sessionName, turnId, delta };
   }
   if (chunk.type === "tool-call-delta") {
-    const delta: BlockDeltaEvent = { index: remapIndex(chunk.index ?? 0), text: chunk.argumentsDelta ?? "" };
+    const delta: BlockDeltaEvent = { index: remapIndex(chunk.index ?? 0), text: chunk.argumentsDelta ?? "", step };
     return { session: sessionName, turnId, delta };
   }
   if (chunk.type === "block-end") {
@@ -233,7 +241,7 @@ export function chunkToChatEvent(
     if (block === undefined) {
       return undefined;
     }
-    const end: BlockEndEvent = { index: remapIndex(chunk.index ?? 0), block };
+    const end: BlockEndEvent = { index: remapIndex(chunk.index ?? 0), block, step };
     return { session: sessionName, turnId, blockEnd: end };
   }
   return undefined;
@@ -531,6 +539,10 @@ export class TurnCollector {
       this.sessionName,
       this.active.turnId,
       (index) => this.remapIndex(index),
+      // Step numbers reach clients on every block frame for the display
+      // segmentation (specs/054-agent-v2-bugfixes/data-model.md §1.1); a dsh
+      // event without one degrades to step 0.
+      step ?? 0,
     );
     if (chatEvent !== undefined) {
       this.active.stream.write(chatEvent);

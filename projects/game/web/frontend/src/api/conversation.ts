@@ -43,9 +43,12 @@ export interface ChatEvent {
     type: BlockType
     toolId?: string
     name?: string
+    // 块所属的模型输出步骤序号（turn 内从 0 单调递增，agent_v2.proto
+    // BlockStartEvent；分组维度，index 仍为块序维度）。
+    step?: number
   }
-  delta?: { index: number; text: string }
-  blockEnd?: { index: number; block: ContentBlock }
+  delta?: { index: number; text: string; step?: number }
+  blockEnd?: { index: number; block: ContentBlock; step?: number }
   turnEnd?: {
     status: TurnStatus
     error?: { code: string; message: string }

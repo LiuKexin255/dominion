@@ -477,6 +477,27 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* 回合完成后的"思考过程"折叠摘要（specs/054-agent-v2-bugfixes/contracts/
+ * web-ui.md §2.2 Turn Process Folding：此前 steps 默认折叠，点击展开全过
+ * 程；最终答案独立呈现在摘要之下）。 */
+.turn-process-toggle {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.turn-process {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .queue-chip {
   align-self: flex-start;
   padding: 4px 10px;
