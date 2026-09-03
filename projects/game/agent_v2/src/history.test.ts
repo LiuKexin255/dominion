@@ -197,6 +197,19 @@ describe("SessionHistory", () => {
     snapshot.pop();
     expect(history.list()).toHaveLength(1);
   });
+
+  it("records the interrupted flag sparsely: only a true append lands the field", () => {
+    // specs/054-agent-v2-bugfixes/data-model.md §1.5: the driver's interrupted
+    // fixation marks the history message so List consumers can exclude it
+    // from final-answer folding; settled appends (default) stay field-free.
+    const history = new SessionHistory();
+    history.appendAssistant([{ type: "text", text: "settled" }]);
+    history.appendAssistant([{ type: "text", text: "partial" }], true);
+
+    const messages = history.list();
+    expect(messages[0]?.interrupted).toBeUndefined();
+    expect(messages[1]?.interrupted).toBe(true);
+  });
 });
 
 describe("SessionHistory.settleToolResult", () => {
@@ -344,6 +357,31 @@ describe("TurnCollector", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.role).toBe("ROLE_AGENT");
     expect(messages[0]?.blocks[0]?.text?.content).toBe("final");
+  });
+
+  it("forwards the event's interrupted flag onto the history message", () => {
+    // specs/054-agent-v2-bugfixes/data-model.md §1.5: the driver's
+    // interrupted fixation (assistant/message with data.interrupted) marks
+    // the history message; List 透出后 web 折叠判定据此排除中断前缀。
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    new TurnCollector(ctx, agent, SESSION, history);
+
+    emit(listeners, "session/event", agent.session, {
+      type: "assistant/message",
+      data: {
+        turn: 1,
+        step: 1,
+        message: { content: [{ type: "text", text: "partial prefix" }] },
+        interrupted: true,
+      },
+    });
+
+    const messages = history.list();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.interrupted).toBe(true);
+    expect(messages[0]?.blocks[0]?.text?.content).toBe("partial prefix");
   });
 
   it("detaches its listeners on dispose", () => {

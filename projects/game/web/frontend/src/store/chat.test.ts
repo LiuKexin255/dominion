@@ -449,24 +449,99 @@ describe('ChatStore reducer', () => {
     expect(steps[1]?.blocks).toEqual([{ index: 1, type: 'TEXT', text: '' }])
   })
 
-  it('turn_end{ERROR} surfaces the error, keeps the session usable', () => {
+  it('turn_end{ERROR} keeps the presented steps in history, error stays independent', () => {
+    // 失败回合内容保留（specs/054-agent-v2-bugfixes/data-model.md §5.2，
+    // FR-013）：已呈现 step 并入本地历史，错误提示独立，live 清空。
+    const store = new ChatStore()
+    const events: ChatEvent[] = [
+      { turnId: 't1', turnStart: {} },
+      {
+        turnId: 't1',
+        blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 },
+      },
+      { turnId: 't1', delta: { index: 0, text: '已完成的思考', step: 0 } },
+      {
+        turnId: 't1',
+        blockEnd: { index: 0, block: { think: { content: '已完成的思考' } }, step: 0 },
+      },
+      {
+        turnId: 't1',
+        blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 },
+      },
+      { turnId: 't1', delta: { index: 1, text: '部分正文', step: 1 } },
+      {
+        turnId: 't1',
+        turnEnd: {
+          status: 'TURN_STATUS_ERROR',
+          error: { code: 'LLM_UPSTREAM', message: '模型端点不可达' },
+        },
+      },
+    ]
+    for (const e of events) {
+      store.applyEvent(e)
+    }
+
+    const s = store.getSnapshot()
+    // 错误提示独立呈现（不吞已产出内容）。
+    expect(s.error).toBe('模型端点不可达')
+    expect(s.live).toBeNull()
+    // 已 settled 的 step 与未完成尾步都以已流出内容并入历史（每 step 一条，
+    // 尾块无 blockEnd 也保留 delta 前缀）；仅尾步消息标记 interrupted
+    // （specs/054-agent-v2-bugfixes/data-model.md §1.5，与回填 List 同构）。
+    expect(s.history).toEqual([
+      { role: 'ROLE_AGENT', blocks: [{ think: { content: '已完成的思考' } }] },
+      { role: 'ROLE_AGENT', blocks: [{ text: { content: '部分正文' } }], interrupted: true },
+    ])
+  })
+
+  it('turn_end{ERROR} keeps an unfinished RUNNING tool-call draft for the interrupted rendering', () => {
+    // 尾步未结算的 RUNNING tool-call draft 原样并入历史（status 不伪造、无
+    // result）——与服务端工具异常路径固化的历史形态一致，中断终态由呈现层在
+    // 历史语境推导（specs/054-agent-v2-bugfixes/data-model.md §2/§5.2）。
     const store = new ChatStore()
     store.applyEvent({ turnId: 't1', turnStart: {} })
     store.applyEvent({
       turnId: 't1',
-      blockStart: { index: 0, type: 'BLOCK_TYPE_TEXT' },
+      blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_operate' },
     })
-    store.applyEvent({ turnId: 't1', delta: { index: 0, text: '部分' } })
+    store.applyEvent({ turnId: 't1', delta: { index: 0, text: '{"type":"click"' } })
+    store.applyEvent({
+      turnId: 't1',
+      turnEnd: { status: 'TURN_STATUS_ERROR', error: { code: 'TOOL', message: '工具执行异常' } },
+    })
+
+    const s = store.getSnapshot()
+    expect(s.error).toBe('工具执行异常')
+    expect(s.history).toEqual([
+      {
+        role: 'ROLE_AGENT',
+        blocks: [
+          {
+            toolCall: {
+              toolId: 'call-1',
+              name: 'saolei_operate',
+              argsJson: '{"type":"click"',
+              status: 'TOOL_STATUS_RUNNING',
+            },
+          },
+        ],
+        interrupted: true,
+      },
+    ])
+  })
+
+  it('turn_end{ERROR} without a live turn only sets the error', () => {
+    // 首帧即 turn_end{ERROR}（会话创建失败）：无 live 可保留，只设置错误。
+    const store = new ChatStore()
     store.applyEvent({
       turnId: 't1',
       turnEnd: {
         status: 'TURN_STATUS_ERROR',
-        error: { code: 'LLM_UPSTREAM', message: '模型端点不可达' },
+        error: { code: 'SESSION_CREATE', message: '会话创建失败' },
       },
     })
-
     const s = store.getSnapshot()
-    expect(s.error).toBe('模型端点不可达')
+    expect(s.error).toBe('会话创建失败')
     expect(s.live).toBeNull()
     expect(s.history).toEqual([])
   })

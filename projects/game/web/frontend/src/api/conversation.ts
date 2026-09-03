@@ -69,6 +69,12 @@ export interface HistoryMessage {
   // protojson Timestamp: RFC 3339 string.
   createTime?: string
   blocks: ContentBlock[]
+  // True when this assistant step's content is an interrupted prefix (the
+  // LLM stream failed or was cancelled before the step settled): the step
+  // carries no final answer, so the web folding check excludes the message
+  // (specs/054-agent-v2-bugfixes/data-model.md §1.5). Absent for settled
+  // steps and user messages (proto3 default-omitted).
+  interrupted?: boolean
 }
 
 export interface ListAgentMessagesResponse {

@@ -25,7 +25,7 @@
 
 - `LiveTurn.steps: StepDraft[]`（step 分组，见 data-model §5.1）；块事件按 `step` 路由；缺 step 归组 0（退化不崩溃）。
 - `turn_end{COMPLETED}` → steps 依序投影为多条 HistoryMessage（**废除**整回合合并单条）。
-- `turn_end{ERROR/CANCELED}` → 已呈现 step 保留并入本地历史，未完成尾块 interrupted 呈现；提示独立（error / "已终止"）。
+- `turn_end{ERROR/CANCELED}` → 已呈现 step 保留并入本地历史，尾步消息标记 `interrupted: true`（与回填 List 的 `HistoryMessage.interrupted` 同构——刷新前后判定一致，data-model §1.5），未完成尾块 interrupted 呈现；提示独立（error / "已终止"）。
 - `turn_end{ABORTED}` → 清空（051 既有，App 层编排）。
 - 049 reducer 不变量延续（turn 序、块 index 对齐、delta 拼接、tool_id 关联、未知事件忽略）。
 
@@ -34,8 +34,8 @@
 | 状态 | 呈现 |
 |---|---|
 | 流式中（turn 打开） | 各 step 分段依次独立呈现，全部展开；步骤内 think→ReasoningRow（折叠块）、toolCall→ToolCard、text→正文气泡（分类分列，官方折叠规则"while a Turn is open … remain expanded"） |
-| turn COMPLETED | **折叠**：最终答案 step（最后一个含非空 text 且无 tool-call 的 step）独立呈现；此前 step 折叠进"思考过程"摘要区（规模提示：步骤数/工具调用数；点击展开全过程；手动展开在页面会话内保持） |
-| 无最终答案（ERROR/CANCELED/纯工具结束） | 全部过程可见，不折叠（官方规则 "a closed Turn with no final answer keeps all process evidence visible"） |
+| turn COMPLETED | **折叠**：最终答案 step（最后一个含非空 text 且无 tool-call 且非 `interrupted` 的 step——中断消息非终态答案，A1 interrupted 三态基线）独立呈现；此前 step 折叠进"思考过程"摘要区（规模提示：步骤数/工具调用数；点击展开全过程；手动展开在页面会话内保持） |
+| 无最终答案（ERROR/CANCELED/纯工具结束） | 全部过程可见，不折叠（官方规则 "a closed Turn with no final answer keeps all process evidence visible"）（判定基准：内容形态 + `HistoryMessage.interrupted` 标记——中断的部分正文不构成最终答案，data-model §1.5） |
 | 回填 | 默认折叠态（每回合独立折叠）；与流式结束时形态一致 |
 
 用户消息、排队指示（queue-chip）、错误提示呈现不变。
@@ -91,8 +91,8 @@
 
 ## 8. 测试义务（vitest 组件级/store 级）
 
-1. **store**：step 分组（含缺 step 退化）、COMPLETED 多消息投影、ERROR/CANCELED 保留、ABORTED 清空、tool_id 跨 step 关联——reducer 用例全覆盖。
-2. **ChatView**：流式分段依次呈现、完成后折叠/展开（含计数）、无最终答案不折叠、回填默认折叠、终止按钮可见性/点击/终态、连接状态三态。
+1. **store**：step 分组（含缺 step 退化）、COMPLETED 多消息投影、ERROR/CANCELED 保留、ERROR/CANCELED 尾步 interrupted 标记投影、ABORTED 清空、tool_id 跨 step 关联——reducer 用例全覆盖。
+2. **ChatView**：流式分段依次呈现、完成后折叠/展开（含计数）、无最终答案不折叠（含部分文本尾步，本地/回填两路径）、回填默认折叠、终止按钮可见性/点击/终态、连接状态三态。
 3. **markdown**：GFM 元素渲染、流式增量稳定性、棋盘等宽对齐（ToolCard）。
 4. **PresetsView**：视图切换矩阵（进入/保存/取消/失败）、字段语义。
 5. **SessionList**：token 引入后 Menu 卡片视觉断言（新增）；既有交互用例零回归。

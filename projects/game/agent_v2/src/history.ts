@@ -79,6 +79,12 @@ export interface AssistantMessageEvent extends DshSessionEvent {
   data: {
     message: { content: ReadonlyArray<DshContentBlockView> };
     usage?: DshTokenUsage;
+    // True on the interrupted fixation the driver appends when a stream
+    // fails or is cancelled before the step settles (saolei-loop driver
+    // appendInterrupted) — recorded on the history message so List
+    // consumers can exclude the prefix from final-answer folding
+    // (specs/054-agent-v2-bugfixes/data-model.md §1.5).
+    interrupted?: boolean;
   };
 }
 
@@ -269,8 +275,16 @@ export class SessionHistory {
     this.nextSeq += 1;
   }
 
-  /** Append the agent reply from the round's final assistant message. */
-  appendAssistant(content: ReadonlyArray<DshContentBlockView>): void {
+  /**
+   * Append the agent reply from the round's final assistant message. An
+   * interrupted append records the sparse flag on the history message so
+   * List consumers can exclude the prefix from final-answer folding
+   * (specs/054-agent-v2-bugfixes/data-model.md §1.5).
+   */
+  appendAssistant(
+    content: ReadonlyArray<DshContentBlockView>,
+    interrupted = false,
+  ): void {
     const blocks: ContentBlock[] = [];
     for (const block of content) {
       const mapped = blockToContentBlock(block);
@@ -283,6 +297,7 @@ export class SessionHistory {
       role: "ROLE_AGENT",
       createTime: nowTimestamp(),
       blocks,
+      ...(interrupted ? { interrupted: true } : {}),
     });
     this.nextSeq += 1;
   }
@@ -450,12 +465,18 @@ export class TurnCollector {
     if (event.type === "assistant/message") {
       // History collection is session-lifetime: the final blocks are
       // recorded even when no stream is attached (or already detached), so
-      // refresh backfill stays consistent (research.md D10-2).
-      const message = (event as AssistantMessageEvent).data.message;
+      // refresh backfill stays consistent (research.md D10-2). The driver's
+      // interrupted fixation flag rides along onto the history message
+      // (specs/054-agent-v2-bugfixes/data-model.md §1.5).
+      const assistantEvent = event as AssistantMessageEvent;
+      const message = assistantEvent.data.message;
       if (this.active !== undefined) {
-        this.active.usage = (event as AssistantMessageEvent).data.usage ?? this.active.usage;
+        this.active.usage = assistantEvent.data.usage ?? this.active.usage;
       }
-      this.history.appendAssistant(message.content);
+      this.history.appendAssistant(
+        message.content,
+        assistantEvent.data.interrupted === true,
+      );
       return;
     }
     if (event.type === "tool/call") {

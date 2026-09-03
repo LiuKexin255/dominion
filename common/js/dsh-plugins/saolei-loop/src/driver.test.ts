@@ -87,11 +87,14 @@ interface Harness {
   requests: GenerateOptions[];
   /** Script the NEXT model response; `hang` keeps the stream open until
    * released/failed (abort tests). */
-  respond(script: StreamChunk[] | "hang"): StreamHandle;
+  respond(script: StreamChunk[] | "hang" | "hang-empty"): StreamHandle;
   /** The tool-execution recorder: every dispatched call, in order. */
   toolCalls: Array<{ name: string; args: unknown }>;
   /** Resolve one hanging dispatched tool call (FIFO). */
   settleTool(resultText: string): void;
+  /** Reject one hanging dispatched tool call (FIFO): the scheduler failure
+   * surfaces as a turn error after the step's assistant/message. */
+  failTool(error: unknown): void;
   statusEvents: Array<{ status: string }>;
   errorEvents: Array<{ turn: number; step: number; error: unknown }>;
   session: Session;
@@ -102,12 +105,13 @@ function createHarness(): Harness {
   const requests: GenerateOptions[] = [];
   const toolCalls: Harness["toolCalls"] = [];
   const pendingTools: Array<(text: string) => void> = [];
+  const pendingToolFailures: Array<(error: unknown) => void> = [];
   const statusEvents: Array<{ status: string }> = [];
   const errorEvents: Array<{ turn: number; step: number; error: unknown }> = [];
   /** One entry per opened model stream, in order: script provider + the
    * release/fail controls of its (potential) hang. */
   const openStreams: Array<{
-    script: (script: StreamChunk[] | "hang") => void;
+    script: (script: StreamChunk[] | "hang" | "hang-empty") => void;
     release: () => void;
     fail: (reason: unknown) => void;
   }> = [];
@@ -150,7 +154,7 @@ function createHarness(): Harness {
       // normal result (the driver drains started calls, mirrors a real
       // tool body observing exec.signal).
       dispatch: (exec: ToolRunContext) =>
-        new Promise((resolve) => {
+        new Promise((resolve, reject) => {
           const settle = (text: string) => {
             exec.signal.removeEventListener("abort", onAbort);
             resolve({
@@ -169,6 +173,7 @@ function createHarness(): Harness {
           }
           exec.signal.addEventListener("abort", onAbort, { once: true });
           pendingTools.push(settle);
+          pendingToolFailures.push(reject);
         }),
       finalize: async () => {
         throw new Error("finalize not expected in this harness");
@@ -188,16 +193,18 @@ function createHarness(): Harness {
       release = () => reject(new Error("__release__"));
       fail = reject;
     });
-    const scripted = new Promise<StreamChunk[] | "hang">((resolve) => {
+    const scripted = new Promise<StreamChunk[] | "hang" | "hang-empty">((resolve) => {
       openStreams.push({ script: resolve, release, fail });
     });
     return (async function* () {
       // Wait for the test's script decision for THIS request (FIFO with
       // respond()).
       const script = await scripted;
-      if (script === "hang") {
-        yield { type: "block-start", index: 0, blockType: "text" } as StreamChunk;
-        yield { type: "text-delta", index: 0, text: "partial" } as StreamChunk;
+      if (script === "hang" || script === "hang-empty") {
+        if (script === "hang") {
+          yield { type: "block-start", index: 0, blockType: "text" } as StreamChunk;
+          yield { type: "text-delta", index: 0, text: "partial" } as StreamChunk;
+        }
         // A real adapter stream honors the caller signal: abort or an
         // explicit fail rejects here; release() lets the stream finish.
         const aborted = new Promise<never>((_, rejectAbort) => {
@@ -256,6 +263,13 @@ function createHarness(): Harness {
         throw new Error("no tool call awaiting settlement");
       }
       settle(resultText);
+    },
+    failTool(error: unknown) {
+      const reject = pendingToolFailures.shift();
+      if (reject === undefined) {
+        throw new Error("no tool call awaiting failure");
+      }
+      reject(error);
     },
     agent: undefined as unknown as SaoleiLoopAgent,
   };
@@ -546,6 +560,228 @@ describe("SaoleiLoopAgent", () => {
     expect(retries).toBeGreaterThanOrEqual(1);
     const turnEnd = eventsOf(session).at(-1)!.data as { reason: { kind: string } };
     expect(turnEnd.reason.kind).toBe("completed");
+  });
+
+  it("fixates the partial stream prefix when the stream throws without abort (data-model.md §2)", async () => {
+    const { agent, session } = harness;
+    agent.followup(userMessage("会失败的话"));
+    await waitForRequests(harness, 1);
+    const handle = harness.respond("hang");
+    await vi.waitFor(() => {
+      // Let the driver consume the two scripted prefix chunks first.
+      expect(
+        session.events.filter((event) => event.type === "assistant/chunk"),
+      ).toHaveLength(2);
+    });
+    handle.fail(new Error("fake llm unreachable"));
+
+    await agent.whenIdle();
+
+    // Same fixation shape as the abort path: one `assistant/message` with
+    // `interrupted: true` holding the produced prefix only.
+    const events = eventsOf(session);
+    const interrupted = events.find(
+      (event) =>
+        event.type === "assistant/message" && (event.data as { interrupted?: boolean }).interrupted === true,
+    );
+    expect(interrupted).toBeDefined();
+    expect((interrupted!.data as { turn: number; step: number }).turn).toBe(1);
+    expect((interrupted!.data.message as { content: unknown[] }).content[0]).toMatchObject({
+      text: "partial",
+    });
+    expect((interrupted!.data as { usage?: unknown }).usage).toBeUndefined();
+    const turnEnd = events.at(-1)!.data as { reason: { kind: string } };
+    expect(turnEnd.reason.kind).toBe("error");
+  });
+
+  it("fixates produced blocks before a failure finish surfaces as LlmError", async () => {
+    const { agent, session } = harness;
+    agent.followup(userMessage("provider 失败"));
+    await waitForRequests(harness, 1);
+    // A completed stream carrying content plus an error finish reason: the
+    // produced text block must land before the turn closes error.
+    harness.respond([
+      { type: "block-start", index: 0, blockType: "text" },
+      { type: "text-delta", index: 0, text: "半截回复" },
+      {
+        type: "block-end",
+        index: 0,
+        block: { type: "text", text: "半截回复" },
+      },
+      { type: "usage", usage: { inputTokens: 3, outputTokens: 5 } },
+      {
+        type: "finish",
+        reason: { kind: "error", failure: { message: "upstream exploded", code: "PROVIDER_ERROR" } },
+      },
+    ]);
+
+    await agent.whenIdle();
+
+    const events = eventsOf(session);
+    const interrupted = events.find(
+      (event) =>
+        event.type === "assistant/message" && (event.data as { interrupted?: boolean }).interrupted === true,
+    );
+    expect(interrupted).toBeDefined();
+    expect((interrupted!.data.message as { content: unknown[] }).content[0]).toMatchObject({
+      text: "半截回复",
+    });
+    // Usage rides along when the stream reported it (same conditional as the
+    // normal append).
+    expect((interrupted!.data as { usage?: unknown }).usage).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 5,
+    });
+    expect(harness.errorEvents).toHaveLength(1);
+    const turnEnd = events.at(-1)!.data as {
+      reason: { kind: string; error: { message: string; code: string } };
+    };
+    expect(turnEnd.reason.kind).toBe("error");
+    expect(turnEnd.reason.error).toMatchObject({ code: "PROVIDER_ERROR", message: "upstream exploded" });
+  });
+
+  it("fixates nothing when the failed stream produced no content", async () => {
+    const { agent, session } = harness;
+    // Empty assembler on the thrown-stream path.
+    agent.followup(userMessage("立即失败"));
+    await waitForRequests(harness, 1);
+    const handle = harness.respond("hang-empty");
+    handle.fail(new Error("immediate failure"));
+    await agent.whenIdle();
+    expect(eventsOf(session).some((event) => event.type === "assistant/message")).toBe(false);
+
+    // Empty assembler on the failure-finish path.
+    agent.followup(userMessage("再来一次"));
+    await waitForRequests(harness, 2);
+    harness.respond(failureChunks("terminal"));
+    await agent.whenIdle();
+    const messages = eventsOf(session).filter((event) => event.type === "assistant/message");
+    expect(messages).toHaveLength(0);
+    const turnEnd = eventsOf(session).at(-1)!.data as { reason: { kind: string } };
+    expect(turnEnd.reason.kind).toBe("error");
+    expect(agent.status).toBe("idle");
+  });
+
+  it("request-error retries skip fixation: the failed attempt leaves no assistant/message", async () => {
+    const { agent, session } = harness;
+    harness.ctx.on(
+      "agent/request-error",
+      (_payload: unknown, next: () => Promise<undefined>) =>
+        Promise.resolve({ kind: "retry" as const }) as unknown as Promise<undefined>,
+    );
+    agent.followup(userMessage("重试一次"));
+    await waitForRequests(harness, 1);
+    harness.respond([
+      { type: "block-start", index: 0, blockType: "text" },
+      { type: "text-delta", index: 0, text: "将被丢弃的" },
+      {
+        type: "finish",
+        reason: { kind: "error", failure: { message: "transient", code: "PROVIDER_ERROR" } },
+      },
+    ]);
+    await vi.waitFor(() => expect(harness.requests.length).toBeGreaterThanOrEqual(2));
+    harness.respond(textChunks("重试成功"));
+
+    await agent.whenIdle();
+
+    // Fixation happens only before the terminal error; a retried attempt
+    // re-assembles from scratch and the successful attempt appends normally.
+    const messages = eventsOf(session).filter((event) => event.type === "assistant/message");
+    expect(messages).toHaveLength(1);
+    expect((messages[0]!.data as { interrupted?: boolean }).interrupted).toBeUndefined();
+    expect((messages[0]!.data.message as { content: unknown[] }).content[0]).toMatchObject({
+      text: "重试成功",
+    });
+    const turnEnd = eventsOf(session).at(-1)!.data as { reason: { kind: string } };
+    expect(turnEnd.reason.kind).toBe("completed");
+  });
+
+  it("tool dispatch failure keeps the step's assistant/message already appended (append precedes executeToolCalls)", async () => {
+    const { agent, session } = harness;
+    agent.followup(userMessage("工具会炸"));
+    await waitForRequests(harness, 1);
+    harness.respond(
+      toolCallChunks([{ id: "call-1", name: "saolei_init", args: "{}" }]),
+    );
+    await vi.waitFor(() => expect(harness.toolCalls).toHaveLength(1));
+    harness.failTool(new Error("scheduler boom"));
+
+    await agent.whenIdle();
+
+    // The normal append lands before executeToolCalls opens, so the step's
+    // produced blocks are already in the log when the failure bubbles
+    // (research D5: 工具执行异常路径零改动，顺序断言)。
+    const events = eventsOf(session);
+    const messageIdx = events.findIndex((event) => event.type === "assistant/message");
+    const callIdx = events.findIndex((event) => event.type === "tool/call");
+    expect(messageIdx).toBeGreaterThanOrEqual(0);
+    expect(callIdx).toBeGreaterThan(messageIdx);
+    const message = events[messageIdx]!;
+    expect((message.data as { interrupted?: boolean }).interrupted).toBeUndefined();
+    expect((message.data.message as { content: unknown[] }).content[0]).toMatchObject({
+      type: "tool-call",
+      id: "call-1",
+      name: "saolei_init",
+    });
+    const turnEnd = events.at(-1)!.data as {
+      reason: { kind: string; error: { message: string; code: string } };
+    };
+    expect(turnEnd.reason.kind).toBe("error");
+    expect(turnEnd.reason.error).toMatchObject({ code: "UNKNOWN" });
+  });
+
+  it("fixates the produced prefix when abort lands during the request-error waterfall", async () => {
+    const { agent, session } = harness;
+    let enterWaterfall: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      enterWaterfall = resolve;
+    });
+    let releaseWaterfall: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseWaterfall = resolve;
+    });
+    harness.ctx.on("agent/request-error", (_payload: unknown, _next: () => Promise<undefined>) => {
+      enterWaterfall!();
+      return gate.then(() => undefined) as unknown as Promise<undefined>;
+    });
+
+    agent.followup(userMessage("waterfall 中止"));
+    await waitForRequests(harness, 1);
+    harness.respond([
+      { type: "block-start", index: 0, blockType: "text" },
+      { type: "text-delta", index: 0, text: "waterfall 前缀" },
+      {
+        type: "finish",
+        reason: { kind: "error", failure: { message: "boom", code: "PROVIDER_ERROR" } },
+      },
+    ]);
+
+    // Park the driver inside the waterfall listener, then cancel while it
+    // waits — the window where the abort used to skip fixation (revision
+    // §7-2).
+    await entered;
+    agent.cancel({ kind: "user" });
+    releaseWaterfall!();
+
+    await agent.whenIdle();
+
+    const events = eventsOf(session);
+    const interrupted = events.find(
+      (event) =>
+        event.type === "assistant/message" && (event.data as { interrupted?: boolean }).interrupted === true,
+    );
+    expect(interrupted).toBeDefined();
+    expect((interrupted!.data.message as { content: unknown[] }).content[0]).toMatchObject({
+      text: "waterfall 前缀",
+    });
+    // The abort closes the turn aborted (lifecycle, not a failure).
+    const turnEnd = events.at(-1)!.data as {
+      reason: { kind: string; reason?: { kind: string } };
+    };
+    expect(turnEnd.reason.kind).toBe("aborted");
+    expect(turnEnd.reason.reason).toMatchObject({ kind: "user" });
+    expect(harness.errorEvents).toHaveLength(0);
+    expect(agent.status).toBe("idle");
   });
 
   it("agent/pre-step reject closes the turn blocked", async () => {

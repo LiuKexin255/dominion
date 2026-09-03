@@ -171,6 +171,22 @@ function settleHistoryMessage(
   }
 }
 
+// stepsToHistory projects live step drafts onto history messages (one per
+// step，对齐服务端每 step 一条 assistant/message——specs/054-agent-v2-bugfixes/
+// data-model.md §5.1)。COMPLETED 与 ERROR 终态共用：ERROR（interrupted=true）
+// 仅尾步消息标记 `interrupted: true`（与回填 List 的 HistoryMessage.interrupted
+// 同构——刷新前后折叠判定一致，data-model §1.5；此前 step 不标记）；未完成尾
+// 块以已流出内容原样投影（RUNNING 的 tool-call draft 保留 RUNNING，中断终态
+// 由呈现层在历史语境推导），刷新回填后经同一呈现路径得到一致形态（FR-013）。
+// CANCELED 终态复用 interrupted=true 投影（Phase 6 T014）。
+function stepsToHistory(steps: StepDraft[], interrupted: boolean): HistoryMessage[] {
+  return steps.map((s, i) => ({
+    role: ROLE_AGENT,
+    blocks: liveBlocksToContentBlocks(s.blocks),
+    ...(interrupted && i === steps.length - 1 ? { interrupted: true } : {}),
+  }))
+}
+
 // turnId anchors delta/block events to the live turn (server-minted UUID,
 // constant across one turn's events — conversation-api.md §1).
 function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatState {
@@ -271,20 +287,29 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
         // 每 step 一条 assistant/message——specs/054-agent-v2-bugfixes/
         // data-model.md §5.2）；无块的空回合不投影空气泡。
         if (!state.live) return state
-        const merged = state.live.steps.map((s) => ({
-          role: ROLE_AGENT,
-          blocks: liveBlocksToContentBlocks(s.blocks),
-        }))
+        const merged = stepsToHistory(state.live.steps, false)
         return {
           ...state,
           history: merged.length > 0 ? [...state.history, ...merged] : state.history,
           live: null,
         }
       }
-      case 'TURN_STATUS_ERROR':
-        // 本轮失败：明确提示，会话不崩、输入可重试（web-frontend.md §4）；
-        // 失败回合的部分内容不并入历史，刷新后以服务端 List 回填为准。
-        return { ...state, live: null, error: event.turnEnd.error?.message ?? '对话回合失败' }
+      case 'TURN_STATUS_ERROR': {
+        // 失败回合保留已呈现内容（specs/054-agent-v2-bugfixes/data-model.md
+        // §5.2）：已呈现 step 并入本地历史（不清空、不原地消失），尾步消息
+        // 标记 interrupted（§1.5，中断前缀非终态答案——折叠判定排除），
+        // 错误提示独立、不吞内容（FR-013）；无 live 的失败（如首帧即
+        // turn_end）只设置错误。
+        const error = event.turnEnd.error?.message ?? '对话回合失败'
+        if (!state.live) return { ...state, live: null, error }
+        const merged = stepsToHistory(state.live.steps, true)
+        return {
+          ...state,
+          history: merged.length > 0 ? [...state.history, ...merged] : state.history,
+          live: null,
+          error,
+        }
+      }
       case 'TURN_STATUS_ABORTED':
         // 会话已删除：清空（提示与返回列表由 App 层编排，web-frontend.md §4）。
         return EMPTY_STATE

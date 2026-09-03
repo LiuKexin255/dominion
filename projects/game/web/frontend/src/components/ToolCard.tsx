@@ -9,7 +9,7 @@
 import { JsonBlock, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 
-export type ToolCardStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+export type ToolCardStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'INTERRUPTED'
 
 export interface ToolCardProps {
   toolId: string
@@ -19,18 +19,21 @@ export interface ToolCardProps {
   result?: string
 }
 
-// StateDot 仅有的四态中本卡取三态（StateDot aria-hidden，状态语义由
-// STATUS_TEXT 可见文本承载）。
+// StateDot 仅有的四态中本卡取四态（StateDot aria-hidden，状态语义由
+// STATUS_TEXT 可见文本承载）；INTERRUPTED 取警示点——中断非失败（工具未
+// 执行完，specs/054-agent-v2-bugfixes/data-model.md §2）。
 const DOT_STATE: Record<ToolCardStatus, StateDotState> = {
   RUNNING: 'ongoing',
   SUCCEEDED: 'done',
   FAILED: 'error',
+  INTERRUPTED: 'warning',
 }
 
 const STATUS_TEXT: Record<ToolCardStatus, string> = {
   RUNNING: '运行中',
   SUCCEEDED: '已完成',
   FAILED: '失败',
+  INTERRUPTED: '已中断',
 }
 
 // parseJson tolerates payloads that are not complete JSON (流式 delta 拼接中

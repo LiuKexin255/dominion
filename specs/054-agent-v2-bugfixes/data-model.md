@@ -62,6 +62,18 @@ bool desktop_connected = <next>;  // 该 session 的桌面桥接连接事实（a
 - 刷新时效：前端轮询 10s + 关键时刻（进入会话/send 前/turn 结束）；接管/断开在下一个轮询沿反映（SC-005）。
 - agent 未物化（GetAgent 404）：前端降级"未知"（不显示已连接）。
 
+### 1.5 HistoryMessage 扩展 interrupted（FR-005）
+
+`HistoryMessage`（:507）新增：
+
+```proto
+bool interrupted = 5;  // 该 assistant step 为中断前缀（流失败/终止前已产出）
+```
+
+- 语义：true 表示该消息内容是 §2 的中断固化前缀（`interrupted: true` append），非终态答案；仅 agent 消息可为 true（user 消息恒缺省）。消费面：web 折叠判定排除该消息（FR-005 无最终答案 → 全可见不折叠，前端无法从内容形态区分完整正文与中断部分正文——信号经本字段传递）。
+- 传递：driver `assistant/message` 事件 data 的 `interrupted: true` → `SessionHistory.appendAssistant` 记录 → List 响应透出；本地路径 store 投影对尾步消息同构标记（§5.2）。
+- 兼容性：proto3 默认 false 缺省（protojson 仅 true 时输出）；字段扩展经 gateway/proxy 既有透传自动生效（同 §1.4 `desktop_connected`）。设计裁定见 [revisions/phase4-failed-turn-folding.md](revisions/phase4-failed-turn-folding.md)。
+
 ## 2. 历史固化语义变更（FR-012，saolei-loop driver）
 
 | 回合结局 | 现状 | 变更后 |
@@ -71,8 +83,10 @@ bool desktop_connected = <next>;  // 该 session 的桌面桥接连接事实（a
 | **ERROR（LLM 流失败/finish error/异常冒泡）** | **不 append（整 step 丢弃）** | **有部分内容时 append `interrupted: true`**（对齐 abort 路径与官方 interrupted 语义） |
 
 - 固化粒度：已产出的块（assembler 的部分内容）；空 assembler 不 append（无内容可固化）。
-- `SessionHistory.appendAssistant`/回填路径零改动（session-lifetime 收集既有）。
-- 回填后失败/终止回合的呈现：无最终答案 → 全部过程可见不折叠（FR-005）；无 result 的工具块按中断终态呈现（Edge Cases 既有裁定，回填侧 ToolCard 状态映射补 INTERRUPTED 呈现——toolCall status 仍为 RUNNING 的陈旧块由前端在回填时按消息终态推导，不改 proto）。
+- `SessionHistory.appendAssistant` 记录事件 data 的 `interrupted`（§1.5）；List 透出。收集时机不变（session-lifetime 既有）。
+- 回填后失败/终止回合的呈现：无最终答案 → 全部过程可见不折叠（FR-005）——判定基准为内容形态 + `HistoryMessage.interrupted`（§1.5）：内容形态无法区分"完整正文（COMPLETED）"与"中断部分正文（ERROR/CANCELED）"，前端最终答案判定排除 interrupted 消息。
+- 无 result 的工具块按中断终态呈现（Edge Cases 既有裁定，回填侧 ToolCard 状态映射补 INTERRUPTED 呈现——toolCall status 仍为 RUNNING 的陈旧块由前端在回填时按消息终态推导）。此处的"不改 proto"指**块级** ToolStatus 枚举与块状态不加中断值；消息级 interrupted 信号是 §1.5 的独立字段扩展，二者边界如此。
+- 两形态边界（已裁定）：中断固化只保留 text/think 安全前缀（assembler `interruptedBlocks()` 丢弃未派发的 tool-call，不虚构其参数与结果），mid-tool-call 流死亡的尾步本地保留 RUNNING tool-call draft（呈现"已中断"卡片，FR-013 不原地清空）、回填无该块（刷新后卡片消失）；失败发生在下一 step 起步时（尾步为已完成的纯正文 step），回填按内容判定折叠而本地不折叠。正文/思考前缀在上述边界外两路径一致，折叠分歧仅影响摘要形态、内容零丢失。
 
 ## 3. 排队消息落地语义（FR-017，用户裁定）
 
@@ -119,8 +133,8 @@ StepDraft {
 
 | turn_end | steps 投影 | 终态 UI |
 |---|---|---|
-| COMPLETED | 全部 step 入历史 | 折叠：最终答案 step（最后一个含非空 text 块且无 tool-call 块）独立，此前 step 折叠进"思考过程"区（计数=step 数/工具调用数；手动展开页面会话内保持） |
-| ERROR | 已呈现 step 入历史；未完成尾块 interrupted | 错误提示独立，不折叠（无最终答案） |
+| COMPLETED | 全部 step 入历史 | 折叠：最终答案 step（最后一个含非空 text 块且无 tool-call 块且非 `interrupted` 的 step——§1.5）独立，此前 step 折叠进"思考过程"区（计数=step 数/工具调用数；手动展开页面会话内保持） |
+| ERROR | 已呈现 step 入历史；尾步消息标记 `interrupted: true`（§1.5，未完成尾块原样投影） | 错误提示独立，不折叠（无最终答案） |
 | CANCELED | 同 ERROR | "已终止"标识，不折叠 |
 | ABORTED | 清空（不变） | —（App 层会话删除编排） |
 

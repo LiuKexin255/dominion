@@ -36,9 +36,16 @@ function blockThink(b: ContentBlock | BlockDraft): string | undefined {
 }
 
 // protojson ToolStatus 枚举名（projects/game/agent_v2.proto ToolStatus）→
-// ToolCard 三值 status；proto3 forward-compat：未知枚举值视作执行中
+// ToolCard 状态；proto3 forward-compat：未知枚举值视作执行中
 // （conversation-api.md §2 未知 oneof/枚举消费端忽略的同一容错方向）。
-function toolCardStatus(status: string): ToolCardStatus {
+// historical 语境（历史回填/已 settled 分段）：status 仍为 RUNNING 且无
+// result 的陈旧工具块按中断终态呈现（回合已异常结束、结果不再会到达——
+// specs/054-agent-v2-bugfixes/data-model.md §2 回填侧推导，Edge Cases"无
+// 结果的工具块不得呈现为永久运行中"）；流式活跃分段中的 RUNNING 仍为执行中。
+function toolCardStatus(status: string, result: string | undefined, historical: boolean): ToolCardStatus {
+  if (historical && status === 'TOOL_STATUS_RUNNING' && result === undefined) {
+    return 'INTERRUPTED'
+  }
   switch (status) {
     case 'TOOL_STATUS_SUCCEEDED':
       return 'SUCCEEDED'
@@ -60,14 +67,15 @@ interface ToolCallView {
 // blockToolCall projects the TOOL_CALL content out of either block shape
 // (BlockDraft 存 protojson 枚举名形式的 status，见 store/chat.ts
 // blockStartDraft/blockEndTerminal；ContentBlock 为 protojson 投影本体).
-function blockToolCall(b: ContentBlock | BlockDraft): ToolCallView | undefined {
+// historical 透传给 toolCardStatus（历史语境的陈旧 RUNNING 推导中断态）。
+function blockToolCall(b: ContentBlock | BlockDraft, historical: boolean): ToolCallView | undefined {
   if ('type' in b) {
     if (b.type !== 'TOOL_CALL') return undefined
     return {
       toolId: b.toolId,
       name: b.name,
       argsJson: b.args,
-      status: toolCardStatus(b.status),
+      status: toolCardStatus(b.status, b.result, historical),
       ...(b.result === undefined ? {} : { result: b.result }),
     }
   }
@@ -76,7 +84,7 @@ function blockToolCall(b: ContentBlock | BlockDraft): ToolCallView | undefined {
     toolId: b.toolCall.toolId,
     name: b.toolCall.name,
     argsJson: b.toolCall.argsJson,
-    status: toolCardStatus(b.toolCall.status),
+    status: toolCardStatus(b.toolCall.status, b.toolCall.result, historical),
     ...(b.toolCall.result === undefined ? {} : { result: b.toolCall.result }),
   }
 }
@@ -85,7 +93,8 @@ function blockToolCall(b: ContentBlock | BlockDraft): ToolCallView | undefined {
 // TEXT → MessageText、TOOL_CALL → ToolCard （web-frontend.md §2: 分类呈现
 // 不混排）。streaming running 只落在流式回合最后一段的尾块上——流式块按序
 // append 恒为尾块，已终结的 THINK 块（其后还有 TEXT 在流式）因此呈现完成态
-// 摘要。
+// 摘要。非 running 语境（历史回填/已 settled 分段）中陈旧 RUNNING 工具块
+// 推导中断终态（specs/054-agent-v2-bugfixes/data-model.md §2）。
 function AgentStep({
   blocks,
   running,
@@ -106,7 +115,7 @@ function AgentStep({
             />
           )
         }
-        const tool = blockToolCall(b)
+        const tool = blockToolCall(b, !running)
         if (tool !== undefined) {
           return <ToolCard key={i} {...tool} />
         }
@@ -123,12 +132,15 @@ function AgentStep({
 }
 
 // isFinalAnswer 判定一个 step 是否为回合的最终答案：含非空 text 块且无
-// tool-call 块（specs/054-agent-v2-bugfixes/contracts/web-ui.md §2.2 折叠
-// 规则，对齐官方 Turn Process Folding 的 final-answer boundary）。
-function isFinalAnswer(blocks: ContentBlock[]): boolean {
+// tool-call 块，且非 interrupted（specs/054-agent-v2-bugfixes/contracts/
+// web-ui.md §2.2 折叠规则；interrupted 消息是中断前缀、非终态答案——
+// specs/054-agent-v2-bugfixes/revisions/phase4-failed-turn-folding.md §1，
+// A1 官方 'assistant-step' interrupted 三态基线）。
+function isFinalAnswer(message: HistoryMessage): boolean {
   return (
-    !blocks.some((b) => b.toolCall !== undefined) &&
-    blocks.some((b) => (b.text?.content ?? '').trim() !== '')
+    !message.interrupted &&
+    !message.blocks.some((b) => b.toolCall !== undefined) &&
+    message.blocks.some((b) => (b.text?.content ?? '').trim() !== '')
   )
 }
 
@@ -148,8 +160,8 @@ function CompletedTurn({
 }) {
   let finalIndex = -1
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const blocks = messages[i]?.blocks ?? []
-    if (isFinalAnswer(blocks)) {
+    const message = messages[i]
+    if (message !== undefined && isFinalAnswer(message)) {
       finalIndex = i
       break
     }

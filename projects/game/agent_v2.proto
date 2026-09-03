@@ -510,6 +510,12 @@ message HistoryMessage {
   Role role = 2;
   google.protobuf.Timestamp create_time = 3;
   repeated ContentBlock blocks = 4;
+  // True when this assistant step's content is an interrupted prefix: the
+  // LLM stream failed or was cancelled before the step settled, so the
+  // step carries no final answer and failed turns stay unfolded
+  // (specs/054-agent-v2-bugfixes/data-model.md §2/§1.5, FR-005). Absent
+  // for settled steps and user messages.
+  bool interrupted = 5;
 }
 
 // ContentBlock is one display content block.

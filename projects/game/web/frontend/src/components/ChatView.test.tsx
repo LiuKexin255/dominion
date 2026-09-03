@@ -2,8 +2,9 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { RenderResult } from '@testing-library/react'
-import type { ContentBlock, HistoryMessage } from '../api/conversation.js'
+import type { ChatEvent, ContentBlock, HistoryMessage } from '../api/conversation.js'
 import type { BlockDraft, LiveTurn } from '../store/chat.js'
+import { ChatStore } from '../store/chat.js'
 import { ChatView } from './ChatView.js'
 
 // vitest does not expose a global afterEach here (no `globals: true`), so RTL's
@@ -429,7 +430,7 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
     expect(screen.getByTestId('agent-text').textContent).toBe('棋盘已就绪，请下令。')
   })
 
-  it('无最终答案的回合（以纯工具调用结束）全可见不折叠', () => {
+  it('无最终答案的回合（以纯工具调用结束）全可见不折叠，陈旧 RUNNING 工具块呈现中断终态', () => {
     renderChatView({
       history: [
         {
@@ -452,6 +453,77 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
     expect(screen.getAllByTestId('agent-step')).toHaveLength(2)
     expect(screen.getByTestId('reasoning-row')).not.toBeNull()
     expect(screen.getAllByTestId('tool-card')).toHaveLength(2)
+    // 回合已结束而结果不再会到达：历史中 RUNNING 且无 result 的陈旧工具块
+    // 按中断终态呈现，而非"永久运行中"（specs/054-agent-v2-bugfixes/
+    // data-model.md §2 回填侧推导；Edge Cases 裁定）。
+    const stale = screen
+      .getAllByTestId('tool-card')
+      .find((card) => card.getAttribute('data-tool-id') === 'call-b')
+    expect(stale?.getAttribute('data-status')).toBe('INTERRUPTED')
+    expect(
+      screen
+        .getAllByTestId('tool-card-state')
+        .map((el) => el.textContent),
+    ).toContain('已中断')
+    expect(stale?.querySelector('[data-state="warning"]')).not.toBeNull()
+  })
+
+  it('注入失败的回合回填后全部过程内容可见、失败前已产出的 RUNNING 工具块按中断终态呈现', () => {
+    // US4 场景（specs/054-agent-v2-bugfixes/spec.md US4 场景 1）：流式呈现
+    // 过的内容（思考、工具调用、部分正文）经回填再次可见，无最终答案不折叠；
+    // 服务端工具异常路径固化历史中 RUNNING 无 result 的工具块按中断呈现。
+    renderChatView({
+      history: [
+        { role: 'ROLE_USER', blocks: [{ text: { content: '开始一局扫雷' } }] },
+        {
+          role: 'ROLE_AGENT',
+          blocks: [
+            { think: { content: '先初始化棋盘' } },
+            { toolCall: { toolId: 'call-a', name: 'saolei_init', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'ok' } },
+          ],
+        },
+        {
+          role: 'ROLE_AGENT',
+          blocks: [
+            {
+              toolCall: { toolId: 'call-b', name: 'saolei_operate', argsJson: '{"type":"click"}', status: 'TOOL_STATUS_RUNNING' },
+            },
+            { text: { content: '正要点击第一格' } },
+          ],
+        },
+      ],
+    })
+
+    // 无最终答案（尾步含工具块）：不折叠、全部过程可见。
+    expect(screen.queryByTestId('turn-process-toggle')).toBeNull()
+    expect(screen.getByTestId('chat-messages').querySelector('.msg-user')?.textContent).toBe('开始一局扫雷')
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(2)
+    expect(screen.getByTestId('reasoning-row')).not.toBeNull()
+    expect(screen.getAllByTestId('agent-text').map((el) => el.textContent)).toEqual(['正要点击第一格'])
+    // 已得结果的工具保持完成态；未回结果的陈旧工具块为中断终态。
+    const cards = screen.getAllByTestId('tool-card')
+    expect(cards).toHaveLength(2)
+    expect(cards[0]?.getAttribute('data-status')).toBe('SUCCEEDED')
+    expect(cards[1]?.getAttribute('data-status')).toBe('INTERRUPTED')
+    expect(screen.getAllByTestId('tool-card-state').map((el) => el.textContent)).toEqual([
+      '已完成',
+      '已中断',
+    ])
+  })
+
+  it('live 流式活跃分段中的 RUNNING 工具块仍呈现执行中（中断推导仅限历史语境）', () => {
+    renderChatView({
+      live: {
+        turnId: 't1',
+        steps: [
+          { step: 0, settled: false, blocks: [{ index: 0, type: 'TOOL_CALL', toolId: 'call-a', name: 'bash', args: '{}', status: 'TOOL_STATUS_RUNNING' }] },
+        ],
+      },
+    })
+    const card = screen.getByTestId('tool-card')
+    expect(card.getAttribute('data-status')).toBe('RUNNING')
+    expect(screen.getByTestId('tool-card-state').textContent).toBe('运行中')
+    expect(card.querySelector('[data-state="ongoing"]')).not.toBeNull()
   })
 
   it('单 step 纯正文回合无折叠控件（无过程可收）', () => {
@@ -548,5 +620,91 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
 
     expect(screen.getByTestId('turn-process-toggle').getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByTestId('turn-process')).toBeNull()
+  })
+})
+
+describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-failed-turn-folding.md）', () => {
+  // 部分正文尾步（含非空 text、无 tool-call）在内容形态上与最终答案无法区
+  // 分：HistoryMessage.interrupted 是两路径共同的判定信号（data-model §1.5）
+  // ——本地（store ERROR 投影尾步标记）与回填（服务端 List 透出）都必须不折
+  // 叠（FR-005/US2 场景 5）。
+  const FAILED_TURN_BACKFILL: HistoryMessage[] = [
+    {
+      role: 'ROLE_AGENT',
+      blocks: [
+        { think: { content: '先初始化棋盘' } },
+        { toolCall: { toolId: 'call-a', name: 'saolei_init', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'ok' } },
+      ],
+    },
+    { role: 'ROLE_AGENT', blocks: [{ text: { content: '正要播报开局' } }], interrupted: true },
+  ]
+
+  function expectFailedTurnUnfolded(): void {
+    expect(screen.queryByTestId('turn-process-toggle')).toBeNull()
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(2)
+    expect(screen.getByTestId('reasoning-row')).not.toBeNull()
+    expect(screen.getAllByTestId('tool-card')).toHaveLength(1)
+    expect(screen.getByTestId('agent-text').textContent).toBe('正要播报开局')
+  }
+
+  it('回填路径：interrupted 尾步（部分正文）排除出最终答案，回合全可见不折叠', () => {
+    renderChatView({ history: FAILED_TURN_BACKFILL })
+    expectFailedTurnUnfolded()
+  })
+
+  it('本地路径：store ERROR 投影的尾步标记与回填渲染形态一致（FR-013）', () => {
+    const store = new ChatStore()
+    const events: ChatEvent[] = [
+      { turnId: 't1', turnStart: {} },
+      { turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 } },
+      { turnId: 't1', delta: { index: 0, text: '先初始化棋盘', step: 0 } },
+      {
+        turnId: 't1',
+        blockEnd: { index: 0, block: { think: { content: '先初始化棋盘' } }, step: 0 },
+      },
+      {
+        turnId: 't1',
+        blockStart: { index: 1, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-a', name: 'saolei_init', step: 0 },
+      },
+      { turnId: 't1', delta: { index: 1, text: '{}', step: 0 } },
+      {
+        turnId: 't1',
+        blockEnd: {
+          index: 1,
+          block: { toolCall: { toolId: 'call-a', name: 'saolei_init', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'ok' } },
+          step: 0,
+        },
+      },
+      { turnId: 't1', blockStart: { index: 2, type: 'BLOCK_TYPE_TEXT', step: 1 } },
+      { turnId: 't1', delta: { index: 2, text: '正要播报开局', step: 1 } },
+      {
+        turnId: 't1',
+        turnEnd: { status: 'TURN_STATUS_ERROR', error: { code: 'LLM_UPSTREAM', message: '流中断' } },
+      },
+    ]
+    for (const e of events) {
+      store.applyEvent(e)
+    }
+    const s = store.getSnapshot()
+    expect(s.error).toBe('流中断')
+    expect(s.live).toBeNull()
+
+    // 本地投影渲染：与回填同构的 interrupted 尾步标记驱动同一折叠判定。
+    render(
+      <ChatView
+        session={SESSION}
+        history={s.history}
+        live={s.live}
+        queue={s.queue}
+        error={s.error}
+        onSend={noop}
+      />,
+    )
+    expectFailedTurnUnfolded()
+
+    // 同构造以回填形态（store 投影产物即 List 消息形态）重渲染：形态一致。
+    cleanup()
+    renderChatView({ history: s.history })
+    expectFailedTurnUnfolded()
   })
 })

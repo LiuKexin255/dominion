@@ -69,9 +69,9 @@ POST /api/v2/{name=templates/*/sessions/*/agent}:cancel
 
 ## 6. 服务端历史固化（FR-012，实现面契约）
 
-- `@dominion/dsh-saolei-loop` driver：LLM 流失败/finish error 抛错前，assembler 有部分内容则 append `assistant/message`（`interrupted: true`）——与既有 abort 路径同构。
-- `SessionHistory`/List 回填路径零改动。
-- 验收锚点：注入 LLM 流失败的回合，其已流式内容经 List 回填可见（tool-call 块的中断终态由消费端按消息终态推导）。
+- `@dominion/dsh-saolei-loop` driver：LLM 流失败/finish error 抛错前，assembler 有部分内容则 append `assistant/message`（`interrupted: true`）——与既有 abort 路径同构；finish error 经 `agent/request-error` waterfall 后 abort 的窗口同样固化（retry 已不可执行，[revisions/phase4-failed-turn-folding.md](../revisions/phase4-failed-turn-folding.md) §7-2）。
+- `SessionHistory.appendAssistant` 记录事件 data 的 `interrupted`；List 响应以 `HistoryMessage.interrupted` 透出（proto 字段扩展，[data-model.md](../data-model.md) §1.5）：消费端据此判定失败/终止回合无最终答案（FR-005 不折叠）。字段扩展经 gateway/proxy 既有透传自动生效（§4 同类）。
+- 验收锚点：注入 LLM 流失败的回合，其已流式内容经 List 回填可见且尾步 `interrupted=true`（tool-call 块的中断终态由消费端按消息终态推导）。
 
 ## 7. 义务与验收锚点
 

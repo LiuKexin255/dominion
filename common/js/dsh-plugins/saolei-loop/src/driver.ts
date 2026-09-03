@@ -768,6 +768,37 @@ export class SaoleiLoopAgent implements Agent {
       );
       const assembler = new BlockAssembler();
       const chunkSeqs: number[] = [];
+      // Interrupted fixation shared by every non-happy stream exit
+      // (specs/054-agent-v2-bugfixes/data-model.md §2): the partial content a
+      // cancelled or failed stream already produced lands as one
+      // `assistant/message` with `interrupted: true` — same shape as the
+      // normal append. `interruptedBlocks()` yields the safe prefix
+      // (non-blank text/reasoning; undispatched tool calls stay absent, a
+      // fabricated result would be required otherwise) and is empty for an
+      // assembler with nothing to keep.
+      const appendInterrupted = (): void => {
+        const content = assembler.interruptedBlocks();
+        if (content.length === 0) {
+          return;
+        }
+        this.session.append(
+          "assistant/message",
+          {
+            turn,
+            step,
+            message: createAssistantMessage({
+              content,
+              source: {
+                provider: request.provider,
+                model: request.model,
+              },
+            }),
+            interrupted: true,
+            ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
+          },
+          { surfaceOp: "append", sourceEventSeqs: chunkSeqs },
+        );
+      };
       try {
         const stream =
           preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request);
@@ -782,30 +813,9 @@ export class SaoleiLoopAgent implements Agent {
         }
         signal.throwIfAborted();
       } catch (error) {
-        if (signal.aborted) {
-          // §4.7 item 3: interrupted stream prefix lands in the log with
-          // `interrupted: true`; undispatched tool calls stay absent.
-          const content = assembler.interruptedBlocks();
-          if (content.length > 0) {
-            this.session.append(
-              "assistant/message",
-              {
-                turn,
-                step,
-                message: createAssistantMessage({
-                  content,
-                  source: {
-                    provider: request.provider,
-                    model: request.model,
-                  },
-                }),
-                interrupted: true,
-                ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
-              },
-              { surfaceOp: "append", sourceEventSeqs: chunkSeqs },
-            );
-          }
-        }
+        // §4.7 item 3: interrupted stream prefix lands in the log with
+        // `interrupted: true` — cancellation and provider failure alike.
+        appendInterrupted();
         throw error;
       }
       const finish = assembler.finish;
@@ -824,6 +834,15 @@ export class SaoleiLoopAgent implements Agent {
           },
           () => Promise.resolve(undefined),
         );
+        // A retry decision re-assembles from scratch: the failed attempt
+        // skips fixation (only terminal exits fixate). An abort during the
+        // waterfall, though, can no longer be retried (the next attempt
+        // would abort before producing anything), so the produced prefix
+        // fixates like every other non-happy stream exit
+        // (specs/054-agent-v2-bugfixes/revisions/phase4-failed-turn-folding.md §7-2).
+        if (action?.kind !== "retry" || signal.aborted) {
+          appendInterrupted();
+        }
         signal.throwIfAborted();
         if (action?.kind !== "retry") {
           throw new LlmError(finish.failure.message, finish.failure.code, finish.failure);
