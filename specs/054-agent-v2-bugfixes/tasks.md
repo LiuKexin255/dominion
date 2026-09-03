@@ -75,17 +75,18 @@
 
 **Goal**: 回合无论成功/失败/终止，已产出内容固化进历史并保留呈现，刷新回填可见（FR-012/013/014）
 
-**Independent Test**: `bazel test //common/js/dsh-plugins/saolei-loop/... //projects/game/web/frontend/...`——driver interrupted 固化、store ERROR 保留、回填一致性用例全绿
+**Independent Test**: `bazel test //common/js/dsh-plugins/saolei-loop/... //projects/game/agent_v2/... //projects/game/web/frontend/...`——driver interrupted 固化、HistoryMessage.interrupted 记录与 List 透出、store ERROR 保留与尾步标记、回填一致性（含失败回合不折叠）用例全绿
 
 ### 文档清单
 
-- **代码规范文档**：`style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)
+- **代码规范文档**：`style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)；`style/api.md`；[AIP-140 Field names](https://google.aip.dev/140)（T009b 的 HistoryMessage 字段扩展）
 - **官方文档**：[dsh-client-ui-chat README（npm）](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-chat)（Turn Process Folding 规则——"a closed Turn with no final answer keeps all process evidence visible" 与 interrupted 呈现基线）
-- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md` §2/§6、`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §2.1–2.2、`specs/054-agent-v2-bugfixes/data-model.md` §2/§5.2、`specs/054-agent-v2-bugfixes/research.md` D2（`'assistant-step'` running/settled/interrupted 三态语义——源自包内 `chat-nodes.d.ts`，README 不含该枚举）/D5/D6
+- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md` §2/§6、`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §2.1–2.2、`specs/054-agent-v2-bugfixes/data-model.md` §2/§5.2、`specs/054-agent-v2-bugfixes/research.md` D2（`'assistant-step'` running/settled/interrupted 三态语义——源自包内 `chat-nodes.d.ts`，README 不含该枚举）/D5/D6、`specs/054-agent-v2-bugfixes/revisions/phase4-failed-turn-folding.md`（T009b 补充设计：失败回合折叠裁定与 interrupted 信号传递）
 
 - [ ] T007 [P] [US4] `common/js/dsh-plugins/saolei-loop/src/driver.ts`：ERROR 路径 interrupted 固化——LLM 流失败 catch（非 abort）与 finish error 抛 `LlmError` 前，assembler 有部分内容时 append `assistant/message`（`interrupted: true`，仅含已产出块，与既有 abort 路径同构）；`driver` 单测（流失败/finish error 两路径的固化断言、空 assembler 不 append、工具执行异常路径"assistant/message 已先 append"的既有顺序验证——research D5）
 - [ ] T008 [P] [US4] `projects/game/web/frontend/src/store/chat.ts`：终态保留——`turn_end{ERROR}` 不再丢弃 live：已 settled 的 steps 保留并入本地历史，未完成尾块按 interrupted 呈现，错误提示独立；`turn_end{ABORTED}` 清空语义保持不变；store 测试（ERROR 保留/ABORTED 清空/尾块 interrupted）
 - [ ] T009 [US4] `projects/game/web/frontend/src/components/ChatView.tsx` + store：回填一致性——无最终答案回合回填后全可见不折叠；历史中 status 仍为 RUNNING 且无 result 的陈旧工具块按中断终态呈现（回填侧推导）；组件测试（注入失败的回填可见性、RUNNING 陈旧块终态）
+- [ ] T009b [US4] 失败回合折叠缺口修复（依据 `specs/054-agent-v2-bugfixes/revisions/phase4-failed-turn-folding.md` §3）：`projects/game/agent_v2.proto`：`HistoryMessage` 增加 `bool interrupted = 5`（注释含 FR-005 语义；codegen 验证 `bazel build //projects/game/agent_v2/... //projects/game/gateway/... //projects/game/proxy/...`，gateway/proxy 零源码改动）；`projects/game/agent_v2/src/history.ts`：`AssistantMessageEvent.data` 补 `interrupted?: boolean`、`SessionHistory.appendAssistant` 增加 interrupted 参数（仅 true 落字段）、`onSessionEvent` 透传；`projects/game/web/frontend/src/api/conversation.ts`：`HistoryMessage` 补 `interrupted?: boolean`；`projects/game/web/frontend/src/store/chat.ts`：`stepsToHistory` 增加 interrupted 参数——ERROR 投影时仅尾步消息标记 `interrupted: true`（CANCELED 同构，Phase 6 T014 复用）；`projects/game/web/frontend/src/components/ChatView.tsx`：最终答案判定排除 interrupted 消息（`isFinalAnswer` 改收 message）；`common/js/dsh-plugins/saolei-loop/src/driver.ts`：finish-error waterfall 后 abort 窗口的 interrupted 固化补齐（revision §7-2）；契约文档同步（data-model.md §1.5/§2/§5.2、contracts/agent-api-changes.md §6、contracts/web-ui.md §2.1/2.2/§8，文本见 revision §5）；测试：`history.test.ts`（append 记录+TurnCollector 透出）、`chat.test.ts`（尾步标记+更新既有 :490/:514 断言）、`ChatView.test.tsx`（部分文本尾 ERROR 回合不折叠——本地/回填两路径、COMPLETED 折叠零回归）、`driver.test.ts`（waterfall abort 固化）
 
 **Checkpoint**: 注入失败的回合内容"看过不再丢"，成功回合回填零回归
 
@@ -220,7 +221,7 @@
 - [ ] T021 `projects/game/testplan/deploy_agent_v2.yaml`：既有 fake-desktop 实例更名 `fake-desktop-won`（env 不变）并新增 `fake-desktop-drop` 实例（同 artifact，env：`FAKE_DESKTOP_SESSION=desktop-e2e-drop`、`FAKE_DESKTOP_SCENARIO=progressive`、`FAKE_DESKTOP_FAULT_DISCONNECT_AFTER_OPS=3`）；删除 `projects/game/testplan/deploy_agent_v2_drop.yaml`；全仓引用核查无残留
 - [ ] T022 `projects/game/testplan/system_test.yaml`：7 suite 归并为 1 suite `game-system`（cases 顺序：testplan_test → memory_test → web_test → agent_v2_conversation_test → agent_v2_preset_test → agent_v2_game_test → desktop_flow_test；suite/case description 按模块职能重述，移除对已删 deploy 与独立 disconnect suite 的引用）
 - [ ] T023 `projects/game/testplan/agent_v2_game_disconnect_test.go` 用例并入 `projects/game/testplan/agent_v2_game_test.go`（测试函数迁移、绑定 `desktop-e2e-drop` session 不变）；删除 disconnect 文件；`projects/game/testplan/BUILD.bazel` 移除 `agent_v2_game_disconnect_test` target（`agent_v2_game_test` size 复核；`testplan_test` 保持 gazelle 默认名）+ gazelle 校验
-- [ ] T024 `projects/game/testplan/agent_v2_conversation_test.go` 新增/更新用例（表驱动、given/when/then）：NDJSON 块事件 step 断言与回填每 step 一条、注入 LLM 失败的 ERROR 回合已产出内容回填可见、`:cancel` 全语义（终止/CANCELED 终态/排队落地/幂等/后续 Send 可用）、GetAgent `desktop_connected`（有/无连接）；`projects/game/testplan/agent_v2_preset_test.go`：模型目录断言更新（glm-5.3/glm-5.3-flash/默认值/未知 id 拒绝）；helper 按需补充（复用 `agent_v2_helpers_test.go`，不复制）
+- [ ] T024 `projects/game/testplan/agent_v2_conversation_test.go` 新增/更新用例（表驱动、given/when/then）：NDJSON 块事件 step 断言与回填每 step 一条、注入 LLM 失败的 ERROR 回合已产出内容回填可见（断言尾步 `HistoryMessage.interrupted=true` 透出）、`:cancel` 全语义（终止/CANCELED 终态/排队落地/幂等/后续 Send 可用）、GetAgent `desktop_connected`（有/无连接）；`projects/game/testplan/agent_v2_preset_test.go`：模型目录断言更新（glm-5.3/glm-5.3-flash/默认值/未知 id 拒绝）；helper 按需补充（复用 `agent_v2_helpers_test.go`，不复制）
 - [ ] T025 [P] `projects/game/testplan/README.md`：执行预算与说明更新（单 suite 单部署、超时参数按实测校准）
 
 **Checkpoint**: 编排重构完成、无残留引用、testplan targets 编译通过
@@ -254,7 +255,7 @@
 - **Phase 1 (Setup)**: 无依赖，立即开始
 - **Phase 2 (Foundational)**: 依赖 Phase 1（无关，可并行启动 proto 编辑，但编译验证需依赖就绪）；**阻塞 Phase 3–8 的协议面**
 - **Phase 3 (US2)**: 依赖 Phase 2——store steps 结构是 US4/US5 store 改动的**前置**（严格先行）
-- **Phase 4 (US4)**: 依赖 Phase 3（T008 复用 T004 的 steps 结构）；T007（driver）仅依赖 Phase 2，可与 T003/T004 并行
+- **Phase 4 (US4)**: 依赖 Phase 3（T008 复用 T004 的 steps 结构）；T007（driver）仅依赖 Phase 2，可与 T003/T004 并行；T009b 为 review 补充任务（proto 仅涉 `HistoryMessage` 字段扩展，不重开已闭合的 Phase 2），依赖 T007–T009 顺序执行（driver/history/store/ChatView 同文件串行）
 - **Phase 5 (US3)**: 依赖 Phase 3（T010 与 T005/T006 同文件 ChatView，串行避免冲突）
 - **Phase 6 (US5)**: 依赖 Phase 2 + Phase 4（CANCELED 保留语义复用 US4 的终态保留）
 - **Phase 7 (US1)**: 依赖 Phase 2；与 Phase 3–6 可并行（不同文件）
