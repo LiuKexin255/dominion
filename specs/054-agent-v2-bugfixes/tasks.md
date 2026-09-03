@@ -24,7 +24,7 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/research.md` D4（引入方式与版本决策）、`survey/deepseek-harness-b1-bazel-packaging.md` §4.2（dsh 依赖治理：统一 catalog 管理，含底座闭包）
 
-- [ ] T001 dsh 依赖统一 catalog 管理（含 `third_party/dsh/core` 底座，无任何例外）：
+- [x] T001 dsh 依赖统一 catalog 管理（含 `third_party/dsh/core` 底座，无任何例外）：
   1. `pnpm-workspace.yaml` catalog 新增 22 个条目（rc 线精确版本 0.1.1-rc.2；cordis/schemastery 保持既有 range；cordis-plugin 家族与 node-addon-require-builtin 精确版本）：`@deepseek-ai/dsh-agent`、`dsh-agent-spine-demo`、`dsh-app-boot`、`dsh-home-paths`、`dsh-invariants`、`dsh-launch-environment`、`dsh-llm`、`dsh-llm-deepseek`、`dsh-llm-retry`、`dsh-scope`、`dsh-session`、`dsh-system-prompt`、`dsh-tools`、`dsh-client-ui-primitives`、`dsh-client-ui-theme`（新增，消费在 Phase 10）、`cordis`（`^4.0.1`）、`cordis-plugin-group`（`1.0.1`）、`cordis-plugin-include`（`1.0.6`）、`cordis-plugin-loader`（`1.0.2`）、`cordis-plugin-timer`（`1.1.3`）、`schemastery`（`^3.18.1`）、`node-addon-require-builtin`（`0.1.5`）；
   2. 以下 manifest 的直接依赖版本声明改为 `catalog:`：`third_party/dsh/core/`、`projects/game/web/frontend/`、`projects/game/agent_v2/`、`experimental/dsh/demo/agent/`、`common/js/dsh-plugins/saolei-loop/`、`common/js/dsh-plugins/saolei/`、`common/js/dsh-plugins/llm-glm/`、`common/js/dsh-plugins/desktop-bridge/`；
   3. 经 `bazel run @pnpm -- --dir /mnt/code/dominion install` 更新 lock（禁止手改 `pnpm-lock.yaml`）；核对迁移前后解析版本一致（rc 线 0.1.1-rc.2 / cordis 4.0.1 / cordis-plugin 1.0.x 线 / schemastery 3.18.1 / node-addon 0.1.5）；`third_party/dsh/core/version.ts` 的 DSH_CORE_SNAPSHOT 语义不变；
@@ -40,11 +40,11 @@
 
 ### 文档清单
 
-- **代码规范文档**：`style/api.md`；[AIP-136 Custom methods](https://google.aip.dev/136)（`:cancel` 形态）；[AIP-140 Field names](https://google.aip.dev/140)
+- **代码规范文档**：`style/api.md`；[AIP-136 Custom methods](https://google.aip.dev/136)（`:cancel` 形态）；[AIP-140 Field names](https://google.aip.dev/140)；`style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)（server.ts 的 Cancel 编译适配）；`style/golang.md`；[Google Go Style Guide](https://google.github.io/styleguide/go/guide)（proxy 测试替身的 Cancel 编译适配）
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md`、`specs/054-agent-v2-bugfixes/data-model.md` §1、`specs/051-agent-v2-dsh-migration/contracts/agent-api.md`（051 基线，方法命名/注释/HTTP 注解延续其形态）
 
-- [ ] T002 扩展 `projects/game/agent_v2.proto`：`BlockStartEvent`/`BlockDeltaEvent`/`BlockEndEvent` 各增加 `int32 step` 字段；`TurnStatus` 增加 `TURN_STATUS_CANCELED = 4`；新增 `Cancel` RPC（`:cancel` 自定义方法，POST `{name=templates/*/sessions/*/agent}:cancel`，请求仅 name、响应空对象）及 `CancelRequest`/`CancelResponse` 消息；`Agent` 消息增加 `bool desktop_connected` 字段；Service/Method 注释含 Prefix Path 与语义说明（延续 051 既有注释风格）；codegen 与编译验证：`bazel build //projects/game/agent_v2/... //projects/game/gateway/... //projects/game/proxy/...`（生成类型进 `projects/game/agent_v2/agent_v2_types/`，gateway/proxy 透传预期零代码改动，编译确认）
+- [ ] T002 扩展 `projects/game/agent_v2.proto`：`BlockStartEvent`/`BlockDeltaEvent`/`BlockEndEvent` 各增加 `int32 step` 字段；`TurnStatus` 增加 `TURN_STATUS_CANCELED = 4`；新增 `Cancel` RPC（`:cancel` 自定义方法，POST `{name=templates/*/sessions/*/agent}:cancel`，请求仅 name、响应空对象）及 `CancelRequest`/`CancelResponse` 消息；`Agent` 消息增加 `bool desktop_connected` 字段；Service/Method 注释含 Prefix Path 与语义说明（延续 051 既有注释风格）；codegen 与编译验证：`bazel build //projects/game/agent_v2/... //projects/game/gateway/... //projects/game/proxy/...`（生成类型进 `projects/game/agent_v2/agent_v2_types/`；gateway 零改动——grpc-gateway 注册随 codegen 自动携带 `:cancel` 路由；新增 RPC 另需两处编译适配，行为不变（`:cancel` 端到端仍 Unimplemented，语义落地在 Phase 6）：`projects/game/agent_v2/src/server.ts` 的 `buildAgentHandlers` 补显式 UNIMPLEMENTED `Cancel` 条目（proto-loader-gen-types 的 handler 接口方法为必填属性）、`projects/game/proxy/handler/agent_test.go` 的 `fakeAgentClient` 补 `Cancel` 方法（记录请求/配置错误/默认成功，ListAgentMessages 同构）——依据 `specs/054-agent-v2-bugfixes/revisions/phase2-proxy-cancel.md` §0.2）
 
 **Checkpoint**: 协议扩展就绪且全链编译通过（无行为变更）
 
@@ -114,16 +114,17 @@
 
 **Goal**: 对话页终止运行中回合——优雅终止、排队消息落地、会话立即可用（FR-015/016/017）
 
-**Independent Test**: `bazel test //projects/game/agent_v2/... //projects/game/web/frontend/...`——cancel 服务端全语义与前端编排用例全绿
+**Independent Test**: `bazel test //projects/game/agent_v2/... //projects/game/proxy/... //projects/game/web/frontend/...`——cancel 服务端全语义（agent_v2 + proxy 转发）与前端编排用例全绿
 
 ### 文档清单
 
-- **代码规范文档**：`style/api.md`；[AIP-136 Custom methods](https://google.aip.dev/136)；`style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)
+- **代码规范文档**：`style/api.md`；[AIP-136 Custom methods](https://google.aip.dev/136)；`style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)；`style/golang.md`（T013b proxy Go 转发）；[Google Go Style Guide](https://google.github.io/styleguide/go/guide)（`style/golang.md` 引用基准）
 - **官方文档**：[dsh-client-ui-conversation README（npm）](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-conversation)（composer 运行中 Stop 形态参考；**注意**：官方 cancel 保留 pending Queue，本实现按用户裁定为排队落地——差异见 contracts/agent-api-changes.md §2）
-- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md` §2/§3、`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §4、`specs/054-agent-v2-bugfixes/data-model.md` §1.2/§1.3/§3、`specs/054-agent-v2-bugfixes/research.md` D7
+- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md` §2/§3、`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §4、`specs/054-agent-v2-bugfixes/data-model.md` §1.2/§1.3/§3、`specs/054-agent-v2-bugfixes/research.md` D7、`specs/054-agent-v2-bugfixes/revisions/phase2-proxy-cancel.md`（T013b 设计）、`specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2/§3（两跳错误表与 NOT_FOUND/FAILED_PRECONDITION 分层基线）
 
 - [ ] T012 [US5] `projects/game/agent_v2/src/session.ts`：实现 Cancel——终止在途回合（经 `TurnCollector.abort()` 缝，cancel 传播取消 LLM 流与在途工具；在途流发 `turn_end{TURN_STATUS_CANCELED}`）、排队消息落地（清空待处理队列不触发回合，历史 user 消息保留）、幂等（无回合无队列成功 no-op）、终止后新 Send 立即可用；`session.test.ts` 用例（终止传播[≤5s 内收到 turn_end{CANCELED}，SC-004]/落地/幂等/后续 Send/与 Update 并发）
 - [ ] T013 [US5] `projects/game/agent_v2/src/server.ts`：注册 Cancel handler（路径解析与未物化错误语义同 Send 前置错误族）；handler 单测
+- [ ] T013b [P] [US5] `projects/game/proxy/handler/agent.go`：新增 `Cancel` 转发方法——GetAgent 同构（`parseAgentResourceName` → `lookupAgentOwner`（只查不分配）→ `agentV2Conn` → `newAgentClient.Cancel` → `propagateAgentError`），无本地业务语义（cancel 语义在 T012 的 agent_v2），并同步 agent.go 包/类型注释的方法清单；`projects/game/proxy/handler/agent_test.go`：Cancel 用例（正常转发/INVALID_ARGUMENT 表驱动含未知 template/无 owner NOT_FOUND 且不分配/owner 实例不可达 UNAVAILABLE/下游状态原码传播）；按 `specs/054-agent-v2-bugfixes/revisions/phase2-proxy-cancel.md` §5 在 `specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md` §3 补 proxy 路由说明一行；仅依赖 Phase 2，可与 T012/T013 并行
 - [ ] T014 [US5] `projects/game/web/frontend/src/api/agent.ts`（Agent 单例面，与 GetAgent 客户端同归属）：新增 `cancelAgent(session)` 客户端（POST `{session}/agent:cancel`）；`projects/game/web/frontend/src/components/ChatView.tsx`：composer 区终止按钮（仅 live 运行中可见/可用、重复点击防抖、请求失败错误呈现）；`store/chat.ts` + `App.tsx`：`TURN_STATUS_CANCELED` 终态呈现（保留语义复用 US4、终态标识"已终止"非错误文案）、取消后队列 chip 移除、落地 user 消息呈现；组件测试（可见性/点击编排/CANCELED 终态/排队落地/空闲不可触发）
 
 **Checkpoint**: 终止全链可用（服务端语义 + 前端编排）
@@ -270,7 +271,7 @@
 ### Parallel Opportunities
 
 - Phase 2 完成后：Phase 3 的 T003/T004 并行；Phase 4 的 T007 与 Phase 3 并行；Phase 7 全部与 Phase 3–6 并行；Phase 8/9/10 三者并行
-- Phase 5 内 T010/T011 并行（不同组件文件）
+- Phase 5 内 T010/T011 并行（不同组件文件）；Phase 6 内 T013b（proxy Cancel 转发，仅依赖 Phase 2）可与 T012/T013 并行
 - Phase 11 内 T025 与 T021–T024 并行
 
 ---

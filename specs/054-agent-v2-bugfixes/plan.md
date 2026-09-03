@@ -95,7 +95,7 @@ projects/game/
 │   ├── system_test.yaml         # 7 suite → 1 suite（一次部署，cases 顺序执行）
 │   ├── deploy_agent_v2.yaml     # +第二个 fake-desktop 实例（drop 场景）
 │   └── deploy_agent_v2_drop.yaml  # 删除（拓扑并入主 deploy）
-└── (gateway/proxy：/api/v2 透传，无面变更预期)
+└── (gateway：/api/v2 透传零改动；proxy：Cancel 转发见 revisions/phase2-proxy-cancel.md)
 
 common/js/dsh-plugins/
 ├── saolei-loop/src/driver.ts    # ERROR 路径 interrupted 固化（对齐 abort 路径与官方 interrupted 语义）
