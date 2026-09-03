@@ -138,7 +138,7 @@ runtime_protos ───────────┘   （五阶段：ts 文件 /
 ## 4. 版本与依赖治理输入（B1 调研结论在本仓库的落点）
 
 1. **全家桶精确 pin、不用 dist-tag**（B1 调研 §4.2/§4.3：#1032 实证部分包 latest 停在旧线；prerelease semver range 不跨 minor 匹配）。pnpm workspace 的 `pnpm-lock.yaml` 天然承载精确 pin——**本仓库的 lockfile 流程（AGENTS.md）与该要求完全同构，无新增机制**。
-2. **catalog 治理的例外**：宪法要求 TS 依赖版本统一在 `pnpm-workspace.yaml` catalog；dsh 闭包是 60-100 个版本互锁到同一 rc 线的包集合，逐包入 catalog 是噪音——闭包清单包内**直接精确版本**（`"x.y.z-rc.n"` 无前缀）+ 文档记录为 catalog 例外，更符合 catalog"统一治理"的本意（闭包整体即一个版本单元）。
+2. **catalog 治理的例外（仅限底座）**：宪法要求 TS 依赖版本统一在 `pnpm-workspace.yaml` catalog；`third_party/dsh/core` 底座作为框架基线在包内以**直接精确版本**（`"x.y.z-rc.n"` 无前缀）物化（闭包整体即一个版本单元）；**其余 dsh 插件/组件包统一入 catalog**（rc 线精确版本，cordis/schemastery 保持 range）。
 3. **闭包校验是硬门禁**（B1 调研 §7 风险 8）：官方 npx 路线在干净环境的断裂证明安装器不会代劳。bazel 侧以校验 target 承接（§5.3-②）：pin 一致性、组合 YAML 行 ⊆ 物化 node_modules、每个列出包的非可选 peer 在场（`verify-runtime-closure` 思路，B1 调研 §3.2 第 4 步）。
 
 ---
@@ -155,7 +155,7 @@ runtime_protos ───────────┘   （五阶段：ts 文件 /
 third_party/dsh/core/                   ← 框架核心 baseline（唯一枚举点，决策后收缩为 ~10 包）
 ├── package.json                        ← pnpm 侧单点：框架核心精确 pin
 │                                          （app-boot + cordis/loader/include/group[/timer] + 4 个 dsh peers 包
-│                                           + node-addon-require-builtin；catalog 例外，§4-2）
+│                                           + node-addon-require-builtin；底座直接物化，§4-2）
 ├── BUILD.bazel                         ← bazel 侧单点：
 │   js_runtime_library(
 │       name = "runtime_pkg",
@@ -323,7 +323,7 @@ third_party/dsh/
 
 ### 6.2 需要新增（按最小路径 → macro 增量排序）
 
-1. **baseline workspace 包**（§5.1/§5.6，唯一必须项）：`third_party/dsh/core`（框架核心 ≈10 包精确 pin，catalog 例外记录）+ 按需的场景 baseline 包（如 `coding`，`runtime_deps=[core]` + 增量枚举；枚举可从各自 package.json 脚本生成）。
+1. **baseline workspace 包**（§5.1/§5.6，唯一必须项）：`third_party/dsh/core`（框架核心 ≈10 包精确 pin，包内直接物化）+ 按需的场景 baseline 包（如 `coding`，`runtime_deps=[core]` + 增量枚举；枚举可从各自 package.json 脚本生成）。
 2. bootstrap 模板（boot + 生命周期；官方 jsonrpc-demo runner 的仓库化，B1 调研 §2.1）。
 3. 闭包校验 target（§5.3-②；独立 target 亦可，macro 内联只是便利）。
 4. （可选便利）`dsh_pkg` macro：`composition` 一等属性 + 闭包校验内联展开（§5.3）；产物单 tar 与现状一致。

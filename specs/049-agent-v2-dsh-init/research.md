@@ -160,7 +160,7 @@ export function apply(ctx: Context, config: Config) {
 
 **Decision**:
 
-1. **依赖**：`@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2` **精确 pin**（package.json 直接版本——dsh 家族锁定决策的 catalog 例外，对齐 `third_party/dsh/core` 与 047 D6 先例）。实测该包运行时**零 cordis/dsh-invariants import**（0.1.1-rc.2 tarball `lib/index.js` grep 实证；peerDependencies 声明为残留），React 18、11 个 `--dsw-*` CSS token 自建主题即可。
+1. **依赖**：`@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2` **精确 pin**（`pnpm-workspace.yaml` catalog 引用；dsh 插件族统一 catalog 管理，直接版本仅限 `third_party/dsh/core` 底座）。实测该包运行时**零 cordis/dsh-invariants import**（0.1.1-rc.2 tarball `lib/index.js` grep 实证；peerDependencies 声明为残留），React 18、11 个 `--dsw-*` CSS token 自建主题即可。
 2. **复用组件**：`MessageText`/`MarkdownText`/`CodeBlock`/`JsonBlock`（markdown 渲染）、`DisclosureRow`（think 折叠外壳）、`IconThinkOutline14`/`StateDot`/`Button`/`Input` 等。
 3. **自建组件**（参照源码）：`ReasoningRow`——照 `dsh-client-ui-chat` 的 [ReasoningRow.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/src/client/chat/ReasoningRow.tsx)（DisclosureRow + 折叠摘要行 latest/first line + 流式跟随滚动 + `data-state=running`）；`ToolCard`——参照 [ui-tool ToolCallTree.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/ToolCallTree.tsx) 但剥离 slot 系统，仅名称/参数/状态/结果关联展示（US3）。
 4. **web 服务**：`projects/game/web/server/`（Go + `embed.FS` dist + `http.FileServerFS`），逐行照 `experimental/js/vite_react_demo/server/main.go`（050 US4 已实证，样板说明见 [experimental/js/vite_react_demo/README.md](../../experimental/js/vite_react_demo/README.md)）。

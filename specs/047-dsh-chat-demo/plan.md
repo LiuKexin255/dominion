@@ -72,7 +72,7 @@ specs/047-dsh-chat-demo/
 ```text
 third_party/dsh/
 └── core/                       # dsh 框架核心底座（闭包清单 workspace 包，零插件）
-    ├── package.json            #   精确 pin ≈11 个核心包（catalog 例外，见 survey §4-2）
+    ├── package.json            #   精确 pin ≈11 个核心包（底座直接物化，见 survey §4-2）
     ├── version.ts              #   导出底座快照标识（js_runtime_library 的 lib 载荷）
     ├── tsconfig.json
     └── BUILD.bazel             #   npm_link_all_packages + js_runtime_library(runtime_pkg)

@@ -1,0 +1,139 @@
+# Data Model: agent-v2 对话呈现与游戏链路缺陷修复 + testplan 重构
+
+**Feature**: [spec.md](spec.md) | **Plan**: [plan.md](plan.md) | **Research**: [research.md](research.md)
+
+本文只定义**变更面**；未提及的 051 数据模型（preset 资源、agent 单例、消息子资源、游戏状态/历史、桥接帧）全部延续（基线：`specs/051-agent-v2-dsh-migration/data-model.md`）。
+
+## 1. 协议变更（`projects/game/agent_v2.proto`）
+
+### 1.1 ChatEvent 块事件扩展 step（FR-004）
+
+`BlockStartEvent`（:393）、`BlockDeltaEvent`（:404）、`BlockEndEvent`（:409）各新增：
+
+```proto
+int32 step = <next>;  // 块所属的模型输出步骤序号（turn 内从 0 单调递增）
+```
+
+- 语义：turn 内 step 序号与服务端 step 循环一致；同 step 的块共享序号；step 变化即新分段。
+- 兼容性：proto3 可选字段——旧客户端忽略未知字段（051 既有 forward-compat 方向不变）；服务端在事件 `data.step` 缺失时置 0。
+- `ToolResultEvent`（:417）不扩展（结果按 tool_id 关联既有语义不变，无需 step）。
+- turn-global `index` 字段保留不变（049 reducer 不变量延续，step 为分组维度、index 为块序维度）。
+
+### 1.2 TurnStatus 新增 CANCELED（FR-015/016）
+
+```proto
+enum TurnStatus {
+  TURN_STATUS_UNSPECIFIED = 0;
+  TURN_STATUS_COMPLETED = 1;
+  TURN_STATUS_ERROR = 2;
+  TURN_STATUS_ABORTED = 3;
+  TURN_STATUS_CANCELED = 4;  // 用户经 :cancel 终止（新增）
+}
+```
+
+| 终态 | 语义 | 前端处置（store 归约） |
+|---|---|---|
+| COMPLETED | 回合正常完成 | 按 step 分段并入本地历史；终态折叠（最终答案独立） |
+| ERROR | 回合失败 | **保留**已呈现分段（尾块 interrupted 呈现）；错误提示独立 |
+| CANCELED | 用户终止（新增） | 同 ERROR 的保留语义；终态标识"已终止" |
+| ABORTED | 会话销毁/重物化（既有，语义收窄） | 清空（051 既有处置不变） |
+
+未知枚举值：消费端 forward-compat 忽略/视作 ERROR 呈现（既有方向）。
+
+### 1.3 Cancel 方法（FR-015/016/017）
+
+```proto
+rpc Cancel(CancelRequest) returns (CancelResponse) // POST /api/v2/{session}/agent:cancel
+```
+
+- `CancelRequest`：仅 `name` 路径参数（agent 资源名），无额外字段。
+- `CancelResponse`：空（或后续按需扩展）；幂等——无在途回合且无排队消息时成功 no-op。
+- 服务端行为（时序）：终止在途回合（cancel 传播）→ 清空待处理队列（落地语义，§3）→ 在途流收到 `turn_end{CANCELED}` → 新 Send 立即可用。
+
+### 1.4 Agent 消息扩展连接状态（FR-002）
+
+`Agent` 消息（GetAgent 响应）新增：
+
+```proto
+bool desktop_connected = <next>;  // 该 session 的桌面桥接连接事实（agent 侧注册表）
+```
+
+- 事实来源：`@dominion/dsh-desktop-bridge` 连接注册表（新查询面 `isDesktopConnected(sessionName)`）。
+- 刷新时效：前端轮询 10s + 关键时刻（进入会话/send 前/turn 结束）；接管/断开在下一个轮询沿反映（SC-005）。
+- agent 未物化（GetAgent 404）：前端降级"未知"（不显示已连接）。
+
+## 2. 历史固化语义变更（FR-012，saolei-loop driver）
+
+| 回合结局 | 现状 | 变更后 |
+|---|---|---|
+| step 正常完成 | append `assistant/message`（进历史） | 不变 |
+| abort（既有） | append interrupted 前缀 | 不变 |
+| **ERROR（LLM 流失败/finish error/异常冒泡）** | **不 append（整 step 丢弃）** | **有部分内容时 append `interrupted: true`**（对齐 abort 路径与官方 interrupted 语义） |
+
+- 固化粒度：已产出的块（assembler 的部分内容）；空 assembler 不 append（无内容可固化）。
+- `SessionHistory.appendAssistant`/回填路径零改动（session-lifetime 收集既有）。
+- 回填后失败/终止回合的呈现：无最终答案 → 全部过程可见不折叠（FR-005）；无 result 的工具块按中断终态呈现（Edge Cases 既有裁定，回填侧 ToolCard 状态映射补 INTERRUPTED 呈现——toolCall status 仍为 RUNNING 的陈旧块由前端在回填时按消息终态推导，不改 proto）。
+
+## 3. 排队消息落地语义（FR-017，用户裁定）
+
+| 时机 | 现状 | 变更后（:cancel 时） |
+|---|---|---|
+| enqueue | `appendUser` 进历史 + 入队 | 不变 |
+| 队列消费 | 依序触发回合 | **cancel 后队列清空，不再触发**（历史 user 消息保留——落地事实已在 enqueue 时成立） |
+| 流事件 | queued 事件（position） | 受影响流上队列状态更新（既有 queued 事件面，无新事件类型） |
+
+无新实体；行为变更仅"清空待处理队列"。
+
+## 4. 模型目录（FR-018，配置数据）
+
+`projects/game/agent_v2/cordis.yml` llm-glm `models`（目录唯一来源）：
+
+| id | contextWindow | 说明 |
+|---|---|---|
+| `glm-5.3` | 1000000 | 旗舰（新默认；`DEFAULT_MODEL = GLM_MODEL \|\| 'glm-5.3'`） |
+| `glm-5.3-flash` | 实现期核实（D9 开放项） | 高速变体 |
+
+- 移除 `glm-5.2` 条目（历史别名，官方端点自动切换——目录仅呈现实际有效模型）。
+- ListModels/物化校验/默认模型全部同源（051 FR-006 机制零改动）。
+
+## 5. 前端状态模型（store/chat.ts 变更）
+
+### 5.1 LiveTurn 结构
+
+```text
+LiveTurn {
+  steps: StepDraft[]          // 新：按 step 分段的草稿序列（替代单 blocks 平铺）
+  …
+}
+StepDraft {
+  step: number
+  blocks: BlockDraft[]        // 既有 BlockDraft 结构不变（+step 归组）
+  settled: boolean            // 下一 step 的块事件到达即置 true（分段边界）
+}
+```
+
+- 归约：`blockStart/delta/blockEnd` 按 `event.step` 路由到对应 StepDraft（缺失则新建）；`tool_result` 跨 step 按 tool_id 全局匹配（既有语义）；`turn_end{COMPLETED}` 将 steps 依序投影为多条 HistoryMessage（对齐服务端每 step 一条），不再合并单条。
+- 兼容：事件缺 step 字段（旧服务端/残留流）→ 归组 step=0（行为退化为现状，不崩溃）。
+
+### 5.2 回合终态处置
+
+| turn_end | steps 投影 | 终态 UI |
+|---|---|---|
+| COMPLETED | 全部 step 入历史 | 折叠：最终答案 step（最后一个含非空 text 块且无 tool-call 块）独立，此前 step 折叠进"思考过程"区（计数=step 数/工具调用数；手动展开页面会话内保持） |
+| ERROR | 已呈现 step 入历史；未完成尾块 interrupted | 错误提示独立，不折叠（无最终答案） |
+| CANCELED | 同 ERROR | "已终止"标识，不折叠 |
+| ABORTED | 清空（不变） | —（App 层会话删除编排） |
+
+### 5.3 连接状态（ChatPanel 级）
+
+```text
+DesktopConn = 'connected' | 'disconnected' | 'unknown'
+```
+
+来源：GetAgent 轮询（10s + 关键时刻）；404/请求失败 → unknown。
+
+## 6. testplan 数据变更（详见 [contracts/testplan.md](contracts/testplan.md)）
+
+- deploy：`deploy_agent_v2.yaml` 服务清单 +1（第二个 fake-desktop 实例 `fake-desktop-drop`）；`deploy_agent_v2_drop.yaml` 删除。
+- suite：`system_test.yaml` 7 suite → 1 suite（cases 顺序：session → memory → web → conversation → preset → game(含 disconnect) → desktop-flow）。
+- binary：`agent_v2_game_disconnect_test` 并入 `agent_v2_game_test`（target 数 8→7）。
