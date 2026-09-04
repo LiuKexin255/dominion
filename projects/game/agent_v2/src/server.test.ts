@@ -45,14 +45,14 @@ function fakeDeps() {
       materialize: vi.fn(async () => ({
         name: VALID_AGENT,
         preset: VALID_PRESET,
-        model: "glm-5.2",
+        model: "glm-5.3",
         createTime: new Date(1000),
         updateTime: new Date(2000),
       })),
       getAgent: vi.fn(() => ({
         name: VALID_AGENT,
         preset: VALID_PRESET,
-        model: "glm-5.2",
+        model: "glm-5.3",
         createTime: new Date(1000),
         updateTime: new Date(2000),
       })),
@@ -72,7 +72,8 @@ function fakeDeps() {
       delete: vi.fn(async () => undefined),
     },
     listModels: vi.fn(async (): Promise<ModelCatalogEntry[]> => [
-      { id: "glm-5.2", contextWindow: 1_000_000 },
+      { id: "glm-5.3", contextWindow: 1_000_000 },
+      { id: "glm-5.3-flash", contextWindow: 1_000_000 },
     ]),
   };
 }
@@ -239,7 +240,7 @@ describe("AgentService.UpdateAgent handler", () => {
     const deps = fakeDeps();
     const handlers = buildAgentHandlers(deps);
     const callback = invokeUnary(handlers.UpdateAgent as never, updateRequest({
-      agent: { name: VALID_AGENT, preset: VALID_PRESET, model: "glm-5.2" },
+      agent: { name: VALID_AGENT, preset: VALID_PRESET, model: "glm-5.3" },
     }));
 
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
@@ -249,7 +250,7 @@ describe("AgentService.UpdateAgent handler", () => {
     expect(deps.listModels).toHaveBeenCalledWith("glm-responses");
     expect(deps.sessions.materialize).toHaveBeenCalledWith(VALID, {
       preset: VALID_PRESET,
-      model: "glm-5.2",
+      model: "glm-5.3",
       persona: "play carefully",
     });
     const [err, response] = callback.mock.calls[0];
@@ -257,7 +258,7 @@ describe("AgentService.UpdateAgent handler", () => {
     expect(response).toEqual({
       name: VALID_AGENT,
       preset: VALID_PRESET,
-      model: "glm-5.2",
+      model: "glm-5.3",
       createTime: { seconds: 1, nanos: 0 },
       updateTime: { seconds: 2, nanos: 0 },
     });
@@ -582,7 +583,12 @@ describe("PresetService.ListModels handler", () => {
     expect(deps.listModels).toHaveBeenCalledWith("glm-responses");
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
-    expect(response).toEqual({ models: [{ id: "glm-5.2", contextWindow: 1_000_000 }] });
+    expect(response).toEqual({
+      models: [
+        { id: "glm-5.3", contextWindow: 1_000_000 },
+        { id: "glm-5.3-flash", contextWindow: 1_000_000 },
+      ],
+    });
 
     deps.listModels.mockRejectedValue(new Error("catalog down"));
     const failed = invokeUnary(handlers.ListModels as never, {});

@@ -346,7 +346,7 @@ describe("cordis.yml composition manifest", () => {
     );
   });
 
-  it("keeps the GLM adapter row with the env-sourced default model catalog", () => {
+  it("keeps the GLM adapter row with the env-sourced dual-model catalog", () => {
     const row = rows.find((entry) => entry.id === "llm-glm");
     expect(row?.name).toBe("@dominion/dsh-llm-glm");
     const config = row?.config as {
@@ -356,12 +356,15 @@ describe("cordis.yml composition manifest", () => {
     };
     expect(config.apiKeyEnv).toBe("GLM_API_KEY");
     expect(config.baseURL).toContain("GLM_BASE_URL");
-    // The catalog default is the SAME expression the host's default-model
-    // resolution uses (research.md D4 同源).
-    expect(config.models).toHaveLength(1);
+    // The catalog leads with the SAME env-parameterized expression the host's
+    // default-model resolution uses (specs/054-agent-v2-bugfixes/
+    // contracts/agent-api-changes.md §5 同源), followed by the literal flash
+    // variant (specs/054-agent-v2-bugfixes/data-model.md §4).
+    expect(config.models).toHaveLength(2);
     expect(config.models[0].id).toContain("GLM_MODEL");
-    expect(config.models[0].id).toContain("glm-5.2");
+    expect(config.models[0].id).toContain("glm-5.3");
     expect(config.models[0].contextWindow).toBe(1_000_000);
+    expect(config.models[1]).toEqual({ id: "glm-5.3-flash", contextWindow: 1_000_000 });
   });
 
   it("mounts the three Dominion plugins (bridge, loop, tools)", () => {

@@ -49,8 +49,11 @@ type SessionId = CreateAgentOptions["sessionId"];
 /** Adapter route registered by @dominion/dsh-llm-glm (contracts/glm-llm-plugin.md §2). */
 export const PROVIDER = "glm-responses";
 
-/** Default model, aligned with the cordis.yml `models[]` catalog (data-model.md §2.7). */
-export const DEFAULT_MODEL = process.env.GLM_MODEL || "glm-5.2";
+/**
+ * Default model, aligned with the cordis.yml `models[]` catalog
+ * (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §5).
+ */
+export const DEFAULT_MODEL = process.env.GLM_MODEL || "glm-5.3";
 
 /**
  * Stable AIP error codes the gRPC layer maps onto statuses

@@ -207,7 +207,7 @@ describe("AgentSessions.materialize", () => {
 
     expect(harness.agentsCreate).toHaveBeenCalledWith({
       sessionId: S1,
-      agentOptions: { provider: "glm-responses", model: "glm-5.2", persona: "p" },
+      agentOptions: { provider: "glm-responses", model: "glm-5.3", persona: "p" },
     });
   });
 
@@ -239,7 +239,7 @@ describe("AgentSessions.materialize", () => {
     expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
     expect(harness.agentsCreate).toHaveBeenLastCalledWith({
       sessionId: S1,
-      agentOptions: { provider: "glm-responses", model: "glm-5.2", persona: "old persona" },
+      agentOptions: { provider: "glm-responses", model: "glm-5.3", persona: "old persona" },
     });
 
     // The in-flight stream received exactly one terminal ABORTED frame.

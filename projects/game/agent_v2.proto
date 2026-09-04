@@ -194,7 +194,7 @@ message Agent {
       type: "game.liukexin.com/Preset"
     }
   ];
-  // The model id; empty = process default (GLM_MODEL || "glm-5.2", same
+  // The model id; empty = process default (GLM_MODEL || "glm-5.3", same
   // source as the ListModels catalog).
   string model = 3;
   google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
