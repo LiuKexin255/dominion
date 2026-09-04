@@ -22,7 +22,13 @@ const HEALTH_BODY = "ok\n";
  * rejection so it receives the component-start-failure treatment.
  */
 export interface HealthService {
-  start(): Promise<void>;
+  /**
+   * Binds the given port, defaulting to the fixed probe port 38080.
+   * Passing an OS-assigned port (0) is a test seam so concurrent test
+   * targets cannot collide on the fixed port; production code MUST NOT
+   * pass it.
+   */
+  start(port?: number): Promise<void>;
   /** Releases the port within the given budget signal. */
   stop(signal: AbortSignal): Promise<void>;
 }
@@ -54,22 +60,25 @@ export function createHealthServer(): HealthService {
   });
 
   let started = false;
+  /** Port passed to start; the fixed probe port until a start succeeds. */
+  let boundPort = HEALTH_PORT;
 
   return {
-    async start(): Promise<void> {
+    async start(port: number = HEALTH_PORT): Promise<void> {
       if (started) {
-        throw new Error(`bootstrap: health server already listening on :${HEALTH_PORT}`);
+        throw new Error(`bootstrap: health server already listening on :${boundPort}`);
       }
       await new Promise<void>((resolve, reject) => {
         const onError = (err: Error) => reject(err);
         server.once("error", onError);
-        server.listen(HEALTH_PORT, () => {
+        server.listen(port, () => {
           server.removeListener("error", onError);
           resolve();
         });
       });
       started = true;
-      info("health server started", { port: HEALTH_PORT });
+      boundPort = port;
+      info("health server started", { port: boundPort });
     },
 
     async stop(signal: AbortSignal): Promise<void> {
@@ -91,11 +100,11 @@ export function createHealthServer(): HealthService {
       } catch (err) {
         // started stays true so a failed/aborted stop can be retried while
         // the port may still be held.
-        error("health server stop failed", { port: HEALTH_PORT, err: err as Error });
+        error("health server stop failed", { port: boundPort, err: err as Error });
         throw err;
       }
       started = false;
-      info("health server stopped", { port: HEALTH_PORT });
+      info("health server stopped", { port: boundPort });
     },
   };
 }

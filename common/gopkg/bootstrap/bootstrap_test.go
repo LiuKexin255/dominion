@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +17,24 @@ import (
 
 	"dominion/common/gopkg/logs"
 )
+
+// noopHealth is a healthService that starts and stops without binding a port.
+type noopHealth struct{}
+
+func (noopHealth) Start(context.Context) error { return nil }
+func (noopHealth) Stop(context.Context) error  { return nil }
+
+// TestMain replaces the real health server with a no-op stub for the whole
+// test binary: the orchestrator tests here assert lifecycle semantics, not
+// endpoint binding, and binding the fixed probe port would collide across
+// concurrent test runs (bazel schedules repeated runs of this target in
+// parallel). Tests that need a real listener construct healthServer directly
+// (health_test.go) or substitute newHealthServer explicitly
+// (TestBootstrap_HealthStartFailureRollback).
+func TestMain(m *testing.M) {
+	newHealthServer = func() healthService { return noopHealth{} }
+	os.Exit(m.Run())
+}
 
 // mockComponent implements Component for testing.
 // It records start/stop calls and call order for verification.
@@ -95,7 +115,7 @@ func orderSequence(t *testing.T, order []string, a, b string) {
 
 // recordingHealth is a healthService stub that records lifecycle calls into
 // the shared test order instead of binding a port, so health/component
-// ordering can be asserted without touching :38080.
+// ordering can be asserted without network I/O.
 type recordingHealth struct {
 	orderMu *sync.Mutex
 	order   *[]string
@@ -276,16 +296,23 @@ func TestBootstrap_HealthLifecycleOrder(t *testing.T) {
 }
 
 // TestBootstrap_HealthStartFailureRollback verifies that when the health
-// endpoint cannot bind its fixed port (already taken), RunSignal treats it
-// like a component start failure: returns an error and rolls back every
-// started component (specs/052-deploy-health-probe/spec.md FR-010).
+// endpoint cannot bind its port (already taken), RunSignal treats it like a
+// component start failure: returns an error and rolls back every started
+// component (specs/052-deploy-health-probe/spec.md FR-010).
 func TestBootstrap_HealthStartFailureRollback(t *testing.T) {
-	// given: another listener already holds the health port.
-	ln, err := net.Listen("tcp", healthAddr)
+	// given: another listener already holds an OS-assigned port, and the
+	// health server targets that port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
 	defer ln.Close()
+
+	orig := newHealthServer
+	newHealthServer = func() healthService {
+		return &healthServer{server: &http.Server{Addr: ln.Addr().String()}}
+	}
+	t.Cleanup(func() { newHealthServer = orig })
 
 	b := New()
 	mu, ord := newTestOrder()
@@ -300,8 +327,8 @@ func TestBootstrap_HealthStartFailureRollback(t *testing.T) {
 	if runErr == nil {
 		t.Fatal("expected error when the health port is occupied, got nil")
 	}
-	if !strings.Contains(runErr.Error(), healthAddr) {
-		t.Fatalf("expected error to mention %s, got: %v", healthAddr, runErr)
+	if !strings.Contains(runErr.Error(), ln.Addr().String()) {
+		t.Fatalf("expected error to mention %s, got: %v", ln.Addr().String(), runErr)
 	}
 
 	mu.Lock()

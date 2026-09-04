@@ -31,17 +31,24 @@ type healthService interface {
 	Stop(ctx context.Context) error
 }
 
-// newHealthServer builds the health server consumed by RunSignal. It is a
-// package variable so tests can substitute a recording stub; the real
-// implementation serves healthPath on healthAddr.
-var newHealthServer = func() healthService {
+// newHealthMux builds the mux serving the probe endpoint: healthPath returns
+// 200 with healthBody, every other path is a 404
+// (specs/052-deploy-health-probe/contracts/bootstrap-health.md §1).
+func newHealthMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(healthBody))
 	})
+	return mux
+}
+
+// newHealthServer builds the health server consumed by RunSignal. It is a
+// package variable so tests can substitute a recording stub; the real
+// implementation serves healthPath on healthAddr.
+var newHealthServer = func() healthService {
 	return &healthServer{
-		server: &http.Server{Addr: healthAddr, Handler: mux},
+		server: &http.Server{Addr: healthAddr, Handler: newHealthMux()},
 	}
 }
 
@@ -60,30 +67,32 @@ type healthServer struct {
 	ln     net.Listener
 }
 
-// Start binds healthAddr synchronously and serves the endpoint in a
-// background goroutine. Binding happens in the caller's goroutine so a bind
+// Start binds server.Addr synchronously and serves the endpoint in a
+// background goroutine. The address comes from server.Addr so tests can bind
+// an OS-assigned port instead of the fixed probe port; production always
+// carries healthAddr. Binding happens in the caller's goroutine so a bind
 // failure (e.g. the port is already taken) is returned as an error and gets
 // the component-start-failure treatment: roll back and exit
 // (specs/052-deploy-health-probe/spec.md FR-010).
 func (h *healthServer) Start(ctx context.Context) error {
-	ln, err := net.Listen("tcp", healthAddr)
+	ln, err := net.Listen("tcp", h.server.Addr)
 	if err != nil {
-		return fmt.Errorf("bootstrap: health server listen %s: %w", healthAddr, err)
+		return fmt.Errorf("bootstrap: health server listen %s: %w", h.server.Addr, err)
 	}
 	h.ln = ln
 	go func() {
 		// Serve returns ErrServerClosed after Stop; anything else means the
 		// endpoint is gone (k8s liveness will then restart the container).
 		if serveErr := h.server.Serve(ln); serveErr != nil && serveErr != http.ErrServerClosed {
-			logs.Error(context.Background(), "health server exited", event.String(logFieldPort, healthAddr), event.Err(serveErr))
+			logs.Error(context.Background(), "health server exited", event.String(logFieldPort, h.server.Addr), event.Err(serveErr))
 		}
 	}()
-	logs.Info(ctx, "health server started", event.String(logFieldPort, healthAddr))
+	logs.Info(ctx, "health server started", event.String(logFieldPort, h.server.Addr))
 	return nil
 }
 
-// Stop gracefully shuts the server down, releasing healthAddr. Health has no
-// drain requirement, so what matters is the port being free when Stop
+// Stop gracefully shuts the server down, releasing the bound address. Health
+// has no drain requirement, so what matters is the port being free when Stop
 // returns; the error is logged here because health is not a Component and
 // bypasses the bootstrap shutdown error logging.
 func (h *healthServer) Stop(ctx context.Context) error {
@@ -101,9 +110,9 @@ func (h *healthServer) Stop(ctx context.Context) error {
 		}
 	}
 	if err != nil {
-		logs.Error(context.Background(), "health server stop failed", event.String(logFieldPort, healthAddr), event.Err(err))
+		logs.Error(context.Background(), "health server stop failed", event.String(logFieldPort, h.server.Addr), event.Err(err))
 		return err
 	}
-	logs.Info(context.Background(), "health server stopped", event.String(logFieldPort, healthAddr))
+	logs.Info(context.Background(), "health server stopped", event.String(logFieldPort, h.server.Addr))
 	return nil
 }
