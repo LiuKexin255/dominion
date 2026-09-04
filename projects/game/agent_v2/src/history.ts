@@ -138,9 +138,9 @@ export interface TurnStream {
   end(): void;
 }
 
-/** How a turn ended: COMPLETED on idle, ERROR on failure, ABORTED on dispose. */
+/** How a turn ended: COMPLETED on idle, ERROR on failure, ABORTED on dispose, CANCELED on user cancel. */
 export interface TurnOutcome {
-  status: "COMPLETED" | "ERROR" | "ABORTED";
+  status: "COMPLETED" | "ERROR" | "ABORTED" | "CANCELED";
   error?: { code: string; message: string };
 }
 
@@ -362,7 +362,8 @@ export class TurnCollector {
   private settle: ((settlement: TurnSettlement) => void) | undefined;
   /** Settlement observed before awaitSettled registered (idle can race the await). */
   private settlement: TurnSettlement | undefined;
-  private pendingAbort = false;
+  /** Abort outcome observed before awaitSettled registered (abort can race the await). */
+  private pendingAbort: TurnOutcome | undefined;
   private readonly off: Array<() => void> = [];
 
   constructor(
@@ -401,18 +402,18 @@ export class TurnCollector {
       pendingTools: new Set(),
     };
     this.settlement = undefined;
-    this.pendingAbort = false;
+    this.pendingAbort = undefined;
   }
 
   /**
-   * Resolve when the turn settles (idle→COMPLETED/ERROR, abort→ABORTED).
+   * Resolve when the turn settles (idle→COMPLETED/ERROR, abort→its outcome).
    * A settlement (or abort) that raced ahead of the call resolves
    * immediately — the dsh lifecycle can settle the turn before the runner's
    * await registers.
    */
   awaitSettled(): Promise<TurnSettlement> {
-    if (this.pendingAbort) {
-      return Promise.resolve({ status: "ABORTED", usage: undefined });
+    if (this.pendingAbort !== undefined) {
+      return Promise.resolve({ ...this.pendingAbort, usage: undefined });
     }
     if (this.settlement !== undefined) {
       return Promise.resolve(this.settlement);
@@ -423,19 +424,24 @@ export class TurnCollector {
   }
 
   /**
-   * Dispose path: stop forwarding and settle the in-flight turn as ABORTED.
-   * Returns the in-flight turn's stream and turn id (so the caller can
-   * deliver the turn_end{ABORTED} frame), or undefined when no turn is
-   * running — an already-settled turn must not receive a spurious ABORTED.
+   * Settle the in-flight turn with `outcome` (default ABORTED on the dispose
+   * path; the user cancel passes CANCELED) and stop forwarding. The caller
+   * owns the in-flight turn's terminal frame — it receives the stream and
+   * turn id so it can deliver turn_end — or undefined when no turn is
+   * running (an already-settled turn must not receive a spurious frame).
+   * Whatever settles here wins over the agent/status→idle transition, so
+   * callers must abort BEFORE stopping the turn at its source (teardown's
+   * dispose, cancel's Agent.cancel): the driver's cancellation converges to
+   * an idle status that would otherwise settle the slot COMPLETED.
    */
-  abort(): { stream: TurnStream; turnId: string } | undefined {
+  abort(outcome: TurnOutcome = { status: "ABORTED" }): { stream: TurnStream; turnId: string } | undefined {
     const inFlight = this.active;
     if (inFlight === undefined) {
       return undefined;
     }
     this.active = undefined;
-    this.pendingAbort = true;
-    this.resolve({ status: "ABORTED", usage: undefined });
+    this.pendingAbort = outcome;
+    this.resolve({ ...outcome, usage: undefined });
     return { stream: inFlight.stream, turnId: inFlight.turnId };
   }
 

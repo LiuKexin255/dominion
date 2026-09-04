@@ -17,7 +17,13 @@ export interface ChatViewProps {
   live: LiveTurn | null
   queue: QueuedMsg[]
   error: string | null
+  // 最近回合是否以"已终止"终态收束（store 归约 turn_end{CANCELED}，
+  // specs/054-agent-v2-bugfixes/contracts/web-ui.md §4）。
+  canceled: boolean
   onSend: (text: string) => void
+  // 终止在途回合（POST {session}/agent:cancel 编排，App.tsx ChatPanel）；
+  // promise 落定后解除防抖，请求失败由编排层呈现错误。
+  onCancel: () => Promise<void>
 }
 
 // blockText projects the TEXT content out of either block shape (history
@@ -227,7 +233,9 @@ export function ChatView({
   live,
   queue,
   error,
+  canceled,
   onSend,
+  onCancel,
 }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   // 手动展开的完成回合（组首消息的 history index 为键；历史只追加，index
@@ -235,6 +243,9 @@ export function ChatView({
   // 会话（loadHistory 重建 history）后旧 index 键指向另一回合，重置展开
   // 状态使回填回到默认折叠。
   const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<number>>(new Set())
+  // 终止请求在途标记：运行中重复点击防抖（web-ui.md §4）——在途期间按钮
+  // 禁用并忽略后续点击，promise 落定即解除。
+  const [cancelPending, setCancelPending] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -252,6 +263,15 @@ export function ChatView({
     if (text === '') return
     onSend(text)
     setDraft('')
+  }
+
+  // 终止入口仅 live 回合运行中呈现（web-ui.md §4：空闲不呈现触发面）；点击
+  // 后等待流上 turn_end{CANCELED} 由 store 归约承载，按钮在请求在途期间
+  // 禁用（防抖）。
+  const cancel = () => {
+    if (cancelPending) return
+    setCancelPending(true)
+    void onCancel().finally(() => setCancelPending(false))
   }
 
   const toggleTurn = (start: number): void => {
@@ -310,6 +330,12 @@ export function ChatView({
             {error}
           </div>
         )}
+        {canceled && (
+          // "已终止"终态标识：独立于错误文案（web-ui.md §4）。
+          <div className="chat-canceled" data-testid="turn-canceled">
+            已终止
+          </div>
+        )}
       </div>
       <div className="chat-composer">
         <Input
@@ -322,6 +348,15 @@ export function ChatView({
             if (e.key === 'Enter') submit()
           }}
         />
+        {live !== null && (
+          <Button
+            data-testid="cancel-button"
+            disabled={cancelPending}
+            onClick={cancel}
+          >
+            终止
+          </Button>
+        )}
         <Button
           variant="primary"
           data-testid="send-button"

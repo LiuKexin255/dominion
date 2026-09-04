@@ -50,9 +50,14 @@ export interface ChatState {
   live: LiveTurn | null
   queue: QueuedMsg[]
   error: string | null
+  // 最近的回合以"已终止"终态收束（turn_end{CANCELED}，用户 :cancel）：
+  // 呈现层据此渲染"已终止"标识——独立于 error（非错误文案，
+  // specs/054-agent-v2-bugfixes/contracts/web-ui.md §4）。新回合开始
+  // （turn_start）或回填重建时清除。
+  canceled: boolean
 }
 
-const EMPTY_STATE: ChatState = { history: [], live: null, queue: [], error: null }
+const EMPTY_STATE: ChatState = { history: [], live: null, queue: [], error: null, canceled: false }
 
 // liveBlocksToContentBlocks projects the accumulated drafts back to the
 // protojson ContentBlock shape so merged turns render through the same path
@@ -203,6 +208,7 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
       queue: rest,
       live: { turnId: event.turnId ?? '', steps: [] },
       error: null,
+      canceled: false,
     }
   }
   if (event.blockStart) {
@@ -310,6 +316,26 @@ function reduceEvent(state: ChatState, event: ChatEvent, queuedText = ''): ChatS
           error,
         }
       }
+      case 'TURN_STATUS_CANCELED': {
+        // 用户终止（specs/054-agent-v2-bugfixes/data-model.md §5.2）：保留
+        // 语义复用 ERROR（已呈现 step 并入历史、尾步 interrupted 标记），
+        // 终态标识为 canceled（"已终止"，非错误文案——web-ui.md §4）。服务
+        // 端 :cancel 同时清空了待处理队列：每个排队流都会收到
+        // turn_end{CANCELED}（无 live 的归约分支），排队 chip 随之移除；
+        // 落地 user 消息已在其 queued 帧时入历史（enqueue 即固化，
+        // data-model §3），故此处只清 chip 不动历史。
+        if (!state.live) {
+          return { ...state, live: null, queue: [], canceled: true }
+        }
+        const merged = stepsToHistory(state.live.steps, true)
+        return {
+          ...state,
+          history: merged.length > 0 ? [...state.history, ...merged] : state.history,
+          live: null,
+          queue: [],
+          canceled: true,
+        }
+      }
       case 'TURN_STATUS_ABORTED':
         // 会话已删除：清空（提示与返回列表由 App 层编排，web-frontend.md §4）。
         return EMPTY_STATE
@@ -358,7 +384,7 @@ export class ChatStore {
   // loadHistory rebuilds the state from a List backfill (FR-014 回填，
   // web-frontend.md §4「刷新/切换会话 → 全量重建」)。
   loadHistory(messages: HistoryMessage[]): void {
-    this.setState({ history: messages, live: null, queue: [], error: null })
+    this.setState({ history: messages, live: null, queue: [], error: null, canceled: false })
   }
 
   // send consumes one Send stream: the user text feeds the queued indicator,

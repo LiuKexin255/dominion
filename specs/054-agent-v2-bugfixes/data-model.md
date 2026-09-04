@@ -94,7 +94,7 @@ bool interrupted = 5;  // 该 assistant step 为中断前缀（流失败/终止�
 |---|---|---|
 | enqueue | `appendUser` 进历史 + 入队 | 不变 |
 | 队列消费 | 依序触发回合 | **cancel 后队列清空，不再触发**（历史 user 消息保留——落地事实已在 enqueue 时成立） |
-| 流事件 | queued 事件（position） | 受影响流上队列状态更新（既有 queued 事件面，无新事件类型） |
+| 流事件 | queued 事件（position） | 每个排队流收到 `turn_end{CANCELED}` 终帧并关闭（既有 turn_end 事件面，无新事件类型——cancel 原子清空队列无可重报 position，终帧使消费端确定性移除排队指示） |
 
 无新实体；行为变更仅"清空待处理队列"。
 

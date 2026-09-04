@@ -18,6 +18,9 @@ export type TurnStatus =
   | 'TURN_STATUS_COMPLETED'
   | 'TURN_STATUS_ERROR'
   | 'TURN_STATUS_ABORTED'
+  // 用户经 :cancel 终止（agent_v2.proto TurnStatus；specs/054-agent-v2-
+  // bugfixes/data-model.md §1.2）。
+  | 'TURN_STATUS_CANCELED'
 
 // ContentBlock is the terminal content block carried by block_end and
 // history messages (oneof kind flattened to optional protojson fields).

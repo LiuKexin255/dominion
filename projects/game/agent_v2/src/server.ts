@@ -93,7 +93,7 @@ export interface PresetServiceDeps {
  * materializing (agent-api.md §2.1).
  */
 export interface AgentServiceDeps extends PresetServiceDeps {
-  sessions: Pick<AgentSessions, "send" | "listMessages" | "materialize" | "getAgent">;
+  sessions: Pick<AgentSessions, "send" | "listMessages" | "materialize" | "getAgent" | "cancel">;
 }
 
 export interface ParsedSessionResource {
@@ -271,9 +271,10 @@ function safeWrite(
 
 /**
  * Build the AgentService handlers over the session-face collaborators
- * (Send/UpdateAgent/GetAgent/ListAgentMessages — the owner-affinity surface,
- * agent-api.md §2.1–§2.4). Exported for unit tests so the gRPC status
- * mapping is asserted without binding a port.
+ * (Send/UpdateAgent/GetAgent/ListAgentMessages/Cancel — the owner-affinity
+ * surface, agent-api.md §2.1–§2.4 and specs/054-agent-v2-bugfixes/
+ * contracts/agent-api-changes.md §3). Exported for unit tests so the gRPC
+ * status mapping is asserted without binding a port.
  */
 export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers {
   return {
@@ -464,16 +465,36 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
       );
     },
 
-    // Explicit UNIMPLEMENTED placeholder: the generated AgentServiceHandlers
-    // interface (proto-loader-gen-types) declares every RPC as a mandatory
-    // property, so the object literal must carry a Cancel entry. Returning
-    // UNIMPLEMENTED is behaviorally identical to grpc-js's default handler
-    // for a missing method — the wire contract stays inert until the real
-    // cancel semantics land (specs/054-agent-v2-bugfixes/revisions/
-    // phase2-proxy-cancel.md §0.2; implementation task: specs/054-agent-v2-
-    // bugfixes/tasks.md T013).
-    Cancel: (_call, callback) => {
-      callback({ code: grpc.status.UNIMPLEMENTED, message: "Cancel is not implemented" });
+    // Same shape as GetAgent: the request carries only the agent resource
+    // name. Path and preconditions follow Send's rejection family — a
+    // malformed name is INVALID_ARGUMENT and an unmaterialized session is
+    // FAILED_PRECONDITION (specs/054-agent-v2-bugfixes/contracts/
+    // agent-api-changes.md §3); the cancel semantics themselves (in-flight
+    // turn termination, queue landing, idempotent no-op) live in
+    // AgentSessions.cancel (specs/054-agent-v2-bugfixes/data-model.md §1.3).
+    Cancel: (call, callback) => {
+      const name = call.request.name ?? "";
+      const session = parseAgentParent(name);
+      if (session === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `name must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${name}"`,
+        });
+        return;
+      }
+      const sessionName = `templates/${session.template}/sessions/${session.session}`;
+      try {
+        deps.sessions.cancel(sessionName);
+        callback(null, {});
+      } catch (err) {
+        const serviceError = toServiceError(err);
+        info("Cancel failed", {
+          session: sessionName,
+          code: serviceError.code,
+          error: serviceError.message,
+        });
+        callback(serviceError);
+      }
     },
 
   };

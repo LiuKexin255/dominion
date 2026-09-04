@@ -559,6 +559,83 @@ describe('ChatStore reducer', () => {
       live: null,
       queue: [],
       error: null,
+      canceled: false,
+    })
+  })
+
+  describe('turn_end{CANCELED}（specs/054-agent-v2-bugfixes/data-model.md §5.2，web-ui.md §4）', () => {
+    it('preserves the presented steps in history with an interrupted tail and a non-error canceled marker', () => {
+      // 保留语义复用 ERROR：已呈现 step 并入历史、尾步 interrupted 标记；
+      // 终态标识为 canceled（"已终止"，独立于 error 文案）。
+      const store = new ChatStore()
+      const events: ChatEvent[] = [
+        { turnId: 't1', turnStart: {} },
+        {
+          turnId: 't1',
+          blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 },
+        },
+        { turnId: 't1', delta: { index: 0, text: '已完成的思考', step: 0 } },
+        {
+          turnId: 't1',
+          blockEnd: { index: 0, block: { think: { content: '已完成的思考' } }, step: 0 },
+        },
+        {
+          turnId: 't1',
+          blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 },
+        },
+        { turnId: 't1', delta: { index: 1, text: '正要点击第一格', step: 1 } },
+        { turnId: 't1', turnEnd: { status: 'TURN_STATUS_CANCELED' } },
+      ]
+      for (const e of events) {
+        store.applyEvent(e)
+      }
+
+      const s = store.getSnapshot()
+      expect(s.canceled).toBe(true)
+      expect(s.error).toBeNull()
+      expect(s.live).toBeNull()
+      expect(s.history).toEqual([
+        { role: 'ROLE_AGENT', blocks: [{ think: { content: '已完成的思考' } }] },
+        { role: 'ROLE_AGENT', blocks: [{ text: { content: '正要点击第一格' } }], interrupted: true },
+      ])
+    })
+
+    it('clears the queue chips and keeps the landed user messages when the canceled stream holds no live turn', async () => {
+      // 排队流落地（data-model §3）：服务端 :cancel 清空待处理队列后，每个
+      // 排队流收到 turn_end{CANCELED}（该流无 live）——排队 chip 移除；落地
+      // user 消息已在其 queued 帧时入历史，此处只清 chip 不动历史。
+      const store = new ChatStore()
+      async function* canceledQueuedStream(): AsyncGenerator<ChatEvent> {
+        yield { queued: { position: 1 } }
+        yield { turnId: 't2', turnEnd: { status: 'TURN_STATUS_CANCELED' } }
+      }
+      await store.send('排队消息', canceledQueuedStream())
+
+      const s = store.getSnapshot()
+      expect(s.queue).toEqual([])
+      expect(s.canceled).toBe(true)
+      expect(s.live).toBeNull()
+      expect(s.error).toBeNull()
+      expect(s.history).toEqual([
+        { role: 'ROLE_USER', blocks: [{ text: { content: '排队消息' } }] },
+      ])
+    })
+
+    it('clears the canceled marker when the next turn starts and on backfill', () => {
+      const store = new ChatStore()
+      store.applyEvent({ turnId: 't1', turnStart: {} })
+      store.applyEvent({ turnId: 't1', turnEnd: { status: 'TURN_STATUS_CANCELED' } })
+      expect(store.getSnapshot().canceled).toBe(true)
+
+      // 新回合开始：终态标识清除。
+      store.applyEvent({ turnId: 't2', turnStart: {} })
+      expect(store.getSnapshot().canceled).toBe(false)
+      expect(store.getSnapshot().live).toEqual({ turnId: 't2', steps: [] })
+
+      // 回填重建：终态标识清除。
+      store.applyEvent({ turnId: 't2', turnEnd: { status: 'TURN_STATUS_CANCELED' } })
+      store.loadHistory([{ role: 'ROLE_USER', blocks: [{ text: { content: 'hi' } }] }])
+      expect(store.getSnapshot().canceled).toBe(false)
     })
   })
 

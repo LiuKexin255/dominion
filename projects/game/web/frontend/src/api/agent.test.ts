@@ -4,6 +4,7 @@
 // test-double + 对被拦截调用做正向断言。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  cancelAgent,
   createPreset,
   deletePreset,
   getAgent,
@@ -178,6 +179,31 @@ describe('agent api 客户端', () => {
         }),
       }),
     )
+  })
+
+  it('cancelAgent POST {session}/agent:cancel，body 空对象；未物化失败抛 ApiError(400)', async () => {
+    // AIP-136 自定义方法（specs/054-agent-v2-bugfixes/contracts/
+    // agent-api-changes.md §3）：请求仅 name 路径参数，body:"*" 下 body 为
+    // 空对象；幂等 no-op 同样 200。
+    fetchMock.mockImplementation(async () => jsonResponse({}))
+    await expect(cancelAgent('templates/saolei/sessions/s1')).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v2/templates/saolei/sessions/s1/agent:cancel',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }),
+    )
+
+    // 未物化 → FAILED_PRECONDITION → 400（与 Send 前置错误同族），错误不吞。
+    fetchMock.mockImplementation(async () => new Response('agent not materialized', { status: 400 }))
+    const err = await cancelAgent('templates/saolei/sessions/s1').then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(400)
   })
 
   it('请求级失败映射为 ApiError（携带 HTTP status 与 body）', async () => {

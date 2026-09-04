@@ -501,3 +501,123 @@ describe('App 删除编排（FR-007：仅元数据删除）', () => {
     expect(screen.getByTestId('session-item')).toBeTruthy()
   })
 })
+
+// ─── App cancel 编排（specs/054-agent-v2-bugfixes/contracts/web-ui.md §8
+// ─── 测试义务 6：请求 + 流终态；ChatPanel 的 onCancel → cancelAgent → 错误
+// ─── 呈现/终态归约链路） ────────────────────────────────────────────────────
+
+// makeCancelFetchMock routes the faces the cancel scenarios touch: session
+// list, empty backfill, a paused Send stream, and the :cancel custom method
+// whose response the test injects.
+function makeCancelFetchMock(options: {
+  send: () => Response
+  cancelResponse: () => Response
+}) {
+  return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET'
+    if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+      return jsonResponse({
+        sessions: [{ name: S1, createTime: '2026-08-29T00:00:00Z' }],
+      })
+    }
+    if (url === `/api/v2/${S1}/agent/messages`) {
+      return jsonResponse({ messages: [] })
+    }
+    if (url === `/api/v2/${S1}:send` && method === 'POST') {
+      return options.send()
+    }
+    if (url === `/api/v2/${S1}/agent:cancel` && method === 'POST') {
+      return options.cancelResponse()
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  })
+}
+
+describe('App cancel 编排（web-ui.md §4/§8-6）', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // enterRunningS1 renders the app, enters s1 and sends a message whose
+  // stream stays paused mid-turn — the cancel button is up for the running
+  // turn. `restFrames` are the frames the test releases at the end; they
+  // default to the turn_end{CANCELED} terminal frame (终态经流，cancel 请求
+  // 本身只承载请求级结果——web-ui.md §4).
+  async function enterRunningS1(
+    cancelResponse: () => Response,
+    restFrames: string[] = [wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_CANCELED"}}')],
+  ): Promise<ReturnType<typeof pausedSend>> {
+    const s1Send = pausedSend(
+      wireChunk('{"turnId":"t1","turnStart":{}}') +
+        wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+        wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}'),
+      restFrames,
+    )
+    fetchMock = makeCancelFetchMock({ send: () => s1Send.response, cancelResponse })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    fireEvent.click(await screen.findByText('s1'))
+    const input = await screen.findByTestId('chat-input')
+    fireEvent.change(input, { target: { value: '失控回合' } })
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-text').textContent).toBe('部')
+    })
+    return s1Send
+  }
+
+  it('运行中点击终止：POST {session}/agent:cancel 请求形状正确，流上 turn_end{CANCELED} 呈现"已终止"终态', async () => {
+    const s1Send = await enterRunningS1(() => jsonResponse({}))
+    expect(screen.getByTestId('cancel-button')).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('cancel-button'))
+
+    // cancelAgent 的请求形状（请求仅 name 路径参数，body 空对象）。
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/v2/${S1}/agent:cancel`,
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }),
+      )
+    })
+
+    // 终态经流上 turn_end{CANCELED} 由 store 归约：已产出分段保留入历史、
+    // "已终止"标识呈现且不复用错误呈现面。
+    s1Send.release()
+    await s1Send.done
+    await waitFor(() => {
+      expect(screen.getByTestId('turn-canceled').textContent).toBe('已终止')
+    })
+    expect(screen.queryByTestId('chat-error')).toBeNull()
+    expect(screen.getByTestId('agent-text').textContent).toBe('部')
+    // 回合已收束：输入立即可用（终止按钮随 live 归空消失）。
+    expect(screen.queryByTestId('cancel-button')).toBeNull()
+  })
+
+  it('cancel 请求失败不吞：错误经 chat-error 呈现，无"已终止"终态（终态只能来自流）', async () => {
+    // 空剩余帧：本用例断言"无 turn_end{CANCELED}"的失败路径，流不在途。
+    const s1Send = await enterRunningS1(() => new Response('agent not materialized', { status: 400 }), [])
+
+    fireEvent.click(screen.getByTestId('cancel-button'))
+
+    // 请求级失败（未物化 FAILED_PRECONDITION→400）呈现，不吞（web-ui.md §4）。
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-error').textContent).toContain('400')
+    })
+    // 流上无 turn_end{CANCELED}，终态标识不出现；在途回合保持运行中。
+    expect(screen.queryByTestId('turn-canceled')).toBeNull()
+    expect(screen.getByTestId('agent-text').textContent).toBe('部')
+    expect(screen.getByTestId('cancel-button')).toBeTruthy()
+
+    // 收尾 release：流 close 后 store.send 循环正常结束（无 turn_end 不报
+    // 错），不留未完成的异步任务。
+    s1Send.release()
+    await s1Send.done
+  })
+})

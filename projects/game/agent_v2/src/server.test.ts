@@ -56,6 +56,7 @@ function fakeDeps() {
         createTime: new Date(1000),
         updateTime: new Date(2000),
       })),
+      cancel: vi.fn(),
     },
     presets: {
       create: vi.fn(async () => undefined),
@@ -376,6 +377,49 @@ describe("AgentService.ListAgentMessages handler", () => {
     const error = broken.mock.calls[0][0] as grpc.ServiceError;
     expect(error?.code).toBe(grpc.status.INTERNAL);
     expect(error?.message).toContain("boom");
+  });
+});
+
+describe("AgentService.Cancel handler", () => {
+  it("cancels the session's agent and answers the empty CancelResponse", () => {
+    const deps = fakeDeps();
+    const handlers = buildAgentHandlers(deps);
+    const callback = invokeUnary(handlers.Cancel as never, { name: VALID_AGENT });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    // The handler strips the /agent singleton segment; the registry keys
+    // entries by the session resource name.
+    expect(deps.sessions.cancel).toHaveBeenCalledWith(VALID);
+    expect(deps.sessions.cancel).toHaveBeenCalledTimes(1);
+    const [err, response] = callback.mock.calls[0];
+    expect(err).toBeNull();
+    expect(response).toEqual({});
+  });
+
+  it("rejects a malformed name with INVALID_ARGUMENT and an unmaterialized agent with FAILED_PRECONDITION", () => {
+    const deps = fakeDeps();
+    const handlers = buildAgentHandlers(deps);
+
+    // Malformed name (missing the /agent segment): request-level rejection
+    // before any session interaction.
+    const malformed = invokeUnary(handlers.Cancel as never, { name: VALID });
+    const error = malformed.mock.calls[0][0] as grpc.ServiceError;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+    expect(error?.message).toContain("agent resource name");
+    expect(deps.sessions.cancel).not.toHaveBeenCalled();
+
+    // Same precondition family as Send (contracts/agent-api-changes.md §3):
+    // owner present but agent not materialized → FAILED_PRECONDITION → 400.
+    deps.sessions.cancel.mockImplementation(() => {
+      throw new AgentSessionError(
+        "FAILED_PRECONDITION",
+        `agent not materialized for session ${VALID}; send UpdateAgent first`,
+      );
+    });
+    const absent = invokeUnary(handlers.Cancel as never, { name: VALID_AGENT });
+    expect(deps.sessions.cancel).toHaveBeenCalledTimes(1);
+    expect((absent.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.FAILED_PRECONDITION);
+    expect((absent.mock.calls[0][0] as grpc.ServiceError).message).toContain("UpdateAgent");
   });
 });
 

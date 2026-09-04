@@ -216,6 +216,31 @@ export class AgentSessions {
   }
 
   /**
+   * Cancel the session's in-flight turn and land queued messages (the
+   * `:cancel` semantics, specs/054-agent-v2-bugfixes/contracts/
+   * agent-api-changes.md §3; data-model.md §1.3): the model stream and
+   * in-flight tools propagate cancellation, every affected stream receives
+   * turn_end{CANCELED}, and the session immediately accepts a new Send.
+   * Queued user messages stay in history — enqueue already appended them —
+   * so clearing the queue lands them without triggering a turn (data-model.md
+   * §3; the user ruling that departs from the official client's kept queue,
+   * specs/054-agent-v2-bugfixes/research.md D2). Idempotent: with no
+   * in-flight turn and an empty queue this is a successful no-op.
+   * Unmaterialized sessions fail like Send (FAILED_PRECONDITION before any
+   * frame).
+   */
+  cancel(session: string): void {
+    const entry = this.liveEntry(session);
+    if (entry === undefined) {
+      throw new AgentSessionError(
+        "FAILED_PRECONDITION",
+        `agent not materialized for session ${session}; send UpdateAgent first`,
+      );
+    }
+    this.cancelEntry(entry);
+  }
+
+  /**
    * Materialize (or refresh) the session's agent singleton — the UpdateAgent
    * semantics (data-model.md §2.2): any existing entry is torn down first
    * (in-flight turn receives turn_end{ABORTED}, queued messages dropped,
@@ -358,26 +383,63 @@ export class AgentSessions {
   }
 
   /**
-   * Deliver turn_end{ABORTED} to every stream the entry still holds — the
-   * queued messages and (when one is running) the in-flight turn — and close
-   * each after its final frame. The agent teardown itself belongs to the
-   * caller (materialize replaces, shutdown releases).
+   * Deliver one terminal `turn_end{outcome}` frame to every stream the entry
+   * still holds — the queued messages and (when one is running) the in-flight
+   * turn — and close each after its final frame, then clear the queue. The
+   * collector settles through {@link TurnCollector.abort} before the caller
+   * stops the turn at its source, so the driver's idle convergence cannot
+   * re-settle the slot as COMPLETED. Shared skeleton of the two teardown
+   * shapes: the dispose path (teardownEntry, agent stop owned by the
+   * caller's handle.dispose) and the user cancel path (cancelEntry, agent
+   * stopped here via Agent.cancel). Returns whether a turn was in flight.
    */
-  private teardownEntry(entry: SessionEntry): void {
-    entry.disposed = true;
-
+  private drainEntry(entry: SessionEntry, outcome: TurnOutcome): boolean {
     for (const message of entry.queue) {
-      message.stream.write(turnEndEvent(entry.sessionName, message.turnId, { status: "ABORTED" }, undefined));
+      message.stream.write(turnEndEvent(entry.sessionName, message.turnId, outcome, undefined));
       message.stream.end();
     }
     entry.queue.length = 0;
 
-    const inFlight = entry.collector.abort();
+    const inFlight = entry.collector.abort(outcome);
     if (inFlight !== undefined) {
-      inFlight.stream.write(turnEndEvent(entry.sessionName, inFlight.turnId, { status: "ABORTED" }, undefined));
+      inFlight.stream.write(turnEndEvent(entry.sessionName, inFlight.turnId, outcome, undefined));
       inFlight.stream.end();
+      return true;
     }
+    return false;
+  }
+
+  /**
+   * Dispose path only (the Dispose RPC face is gone —
+   * specs/051-agent-v2-dsh-migration/spec.md FR-007): mark the entry
+   * disposed and settle every held stream with turn_end{ABORTED}. The agent
+   * teardown itself belongs to the caller (materialize replaces, shutdown
+   * releases).
+   */
+  private teardownEntry(entry: SessionEntry): void {
+    entry.disposed = true;
+    this.drainEntry(entry, { status: "ABORTED" });
     entry.collector.dispose();
+  }
+
+  /**
+   * User cancel (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md
+   * §3): every held stream learns turn_end{CANCELED}, the queue lands
+   * without triggering a turn, and the driver propagates cancellation to the
+   * LLM stream and in-flight tools (the saolei-loop driver aborts the active
+   * turn, settling in-flight desktop operations through its existing abort
+   * semantics). Unlike teardown the entry stays live — runTurn drains the
+   * (now empty) queue and resets busy, so the session accepts a new Send
+   * immediately.
+   */
+  private cancelEntry(entry: SessionEntry): void {
+    // Propagation only concerns an in-flight turn — with none, a dsh cancel
+    // would be an inbox-clearing no-op touching a settled agent for nothing.
+    // The collector already settled inside drainEntry, so the driver's
+    // cancellation converging to idle cannot re-settle the slot COMPLETED.
+    if (this.drainEntry(entry, { status: "CANCELED" })) {
+      entry.agent.cancel({ kind: "user" });
+    }
   }
 
   private async enqueue(entry: SessionEntry, text: string, stream: TurnStream): Promise<void> {
@@ -422,11 +484,19 @@ export class AgentSessions {
       );
       const settlement: TurnSettlement = await collector.awaitSettled();
       if (settlement.status === "ABORTED") {
-        // Teardown delivered the turn_end{ABORTED} frame; the finally below
-        // still closes this stream.
+        // Teardown delivered the turn_end{ABORTED} frame and the entry is
+        // disposed — neither the queue drain nor the busy reset below
+        // applies. The finally below still closes this stream.
         return;
       }
-      message.stream.write(turnEndEvent(session, message.turnId, settlement, settlement.usage));
+      if (settlement.status !== "CANCELED") {
+        message.stream.write(turnEndEvent(session, message.turnId, settlement, settlement.usage));
+      }
+      // CANCELED: the cancel call delivered the turn_end{CANCELED} frame
+      // itself. Unlike ABORTED the entry stays live, so the runner falls
+      // through to the (cancel-cleared) queue drain and the busy reset —
+      // the session accepts a new Send with no cooldown
+      // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §3).
     } catch (err) {
       // followup rejection (e.g. disposed agent): the request-level failure
       // becomes a turn_end{ERROR} frame — the process stays alive.

@@ -124,3 +124,16 @@ export async function updateAgent(
     },
   )
 }
+
+// cancelAgent 终止 session 在途回合并落地排队消息（AIP-136 自定义方法，
+// specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §3）。请求仅
+// name 路径参数（body:"*" 注解下 body 为空对象）；幂等——无在途回合且无
+// 队列时成功 no-op；未物化 → 400/FAILED_PRECONDITION（与 Send 前置错误
+// 同族）。终态经流上 turn_end{CANCELED} 呈现，本调用只承载请求级结果。
+export async function cancelAgent(session: string): Promise<void> {
+  await requestJson(`/api/v2/${session}/agent:cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}

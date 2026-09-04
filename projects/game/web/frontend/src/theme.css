@@ -517,6 +517,18 @@ body {
   white-space: pre-wrap;
 }
 
+/* "已终止"终态标识（specs/054-agent-v2-bugfixes/contracts/web-ui.md §4）：
+ * 形态与 .chat-error 同构，警示色调区分"用户终止"的非错误语义。 */
+.chat-canceled {
+  align-self: stretch;
+  margin: 0 24px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-state-warn-secondary);
+  color: var(--dsw-alias-state-warn-primary);
+  white-space: pre-wrap;
+}
+
 .chat-composer {
   flex: none;
   display: flex;

@@ -559,6 +559,106 @@ func TestAgentHandler_ListAgentMessages_InvalidParentReturnsInvalidArgument(t *t
 	}
 }
 
+func TestAgentHandler_Cancel_SuccessForwardsName(t *testing.T) {
+	fake := &fakeAgentClient{}
+	handler, store, manager, _ := newAgentHarness(t, fake)
+	seedAgentOwner(store, 3)
+
+	resp, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
+
+	if err != nil {
+		t.Fatalf("Cancel() error = %v, want nil", err)
+	}
+	if resp == nil {
+		t.Fatal("Cancel() got nil response")
+	}
+	if len(manager.getCalls) != 1 || manager.getCalls[0] != 3 {
+		t.Fatalf("manager Get calls = %v, want [3]", manager.getCalls)
+	}
+	if fake.cancelReq.GetName() != agentResource {
+		t.Fatalf("downstream name = %q, want %q", fake.cancelReq.GetName(), agentResource)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("owner Create calls = %d, want 0 (cancel must not allocate)", store.createCalls)
+	}
+}
+
+func TestAgentHandler_Cancel_InvalidNameReturnsInvalidArgument(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *game.CancelRequest
+	}{
+		{name: "malformed resource name", req: &game.CancelRequest{Name: "projects/p1"}},
+		{name: "missing agent segment", req: &game.CancelRequest{Name: agentSession}},
+		{name: "unknown template", req: &game.CancelRequest{Name: "templates/unknown/sessions/s1/agent"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeAgentClient{}
+			handler, store, _, _ := newAgentHarness(t, fake)
+
+			_, err := handler.Cancel(context.Background(), tt.req)
+
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("Cancel() code = %v, want InvalidArgument", status.Code(err))
+			}
+			if store.createCalls != 0 {
+				t.Fatalf("owner Create calls = %d, want 0 (no allocation on invalid input)", store.createCalls)
+			}
+		})
+	}
+}
+
+func TestAgentHandler_Cancel_NoOwnerReturnsNotFoundWithoutAllocation(t *testing.T) {
+	// given: a fresh store — no UpdateAgent ever materialized the session
+	fake := &fakeAgentClient{}
+	handler, store, _, _ := newAgentHarness(t, fake)
+
+	// when
+	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
+
+	// then: for routing purposes there is no agent to cancel — NOT_FOUND,
+	// and Cancel is not a materialization entry point
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("Cancel() code = %v, want NotFound", status.Code(err))
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("owner Create calls = %d, want 0 (cancel must not allocate)", store.createCalls)
+	}
+}
+
+func TestAgentHandler_Cancel_InstanceUnreachable(t *testing.T) {
+	// given: the owner exists but its instance has no cached connection
+	fake := &fakeAgentClient{}
+	handler, store, manager, _ := newAgentHarness(t, fake)
+	seedAgentOwner(store, 7)
+	manager.getErr = errors.New("no connection for owner index 7")
+
+	// when
+	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
+
+	// then: proxy→agent_v2 break maps to UNAVAILABLE (503, agent-api §3)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("Cancel() code = %v, want Unavailable", status.Code(err))
+	}
+}
+
+func TestAgentHandler_Cancel_DownstreamErrorPropagates(t *testing.T) {
+	// given: agent_v2 rejects the cancel (unmaterialized agent — the owner
+	// was found but the agent is gone, e.g. after an agent_v2 restart); the
+	// agent-level code must survive the hop so the front end sees the mapped
+	// HTTP 400 rather than a 5xx hop failure (agent-api §3).
+	fake := &fakeAgentClient{cancelErr: status.Error(codes.FailedPrecondition, "agent not materialized; send UpdateAgent first")}
+	handler, store, _, _ := newAgentHarness(t, fake)
+	seedAgentOwner(store, 1)
+
+	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
+
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("Cancel() code = %v, want FailedPrecondition (original code preserved)", status.Code(err))
+	}
+}
+
 // TestMapDomainError pins the shared domain→gRPC error mapping used by both
 // forwarding handlers (mapDomainError in agent.go).
 func TestMapDomainError(t *testing.T) {

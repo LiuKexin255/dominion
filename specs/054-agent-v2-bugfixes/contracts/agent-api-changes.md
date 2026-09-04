@@ -40,12 +40,13 @@ POST /api/v2/{name=templates/*/sessions/*/agent}:cancel
 |---|---|
 | 前置 | agent 已物化（未物化 → 与 Send 同语义的明确错误） |
 | 在途回合 | 终止：模型流与在途工具传播取消；在途桌面操作经既有 abort 语义结算（FAILED "aborted"，不悬挂）；流上发 `turn_end{CANCELED}` |
-| 排队消息 | 落地：待处理队列清空、不触发回合；历史 user 消息保留（enqueue 已固化）；受影响流收到队列状态更新（既有 queued 事件面） |
+| 排队消息 | 落地：待处理队列清空、不触发回合；历史 user 消息保留（enqueue 已固化）；每个排队流收到 `turn_end{CANCELED}` 终帧并关闭——cancel 原子清空队列无可重报 position，排队流以既有 turn_end 词汇确定性收束（无新事件类型） |
 | 幂等 | 无在途回合且无队列 → 成功 no-op |
 | 后置 | session 立即可接受新 Send（无冷却/锁定） |
 | 并发 | 与 Update 重物化并发 → 后到者胜出前的在途回合按既有终态语义收束，不产生半清理状态 |
 
 错误码：路径非法/未物化 → 400/FAILED_PRECONDITION（与 Send 前置错误同族，051 FR-007 语义）。
+- 路由：会话面两跳（gateway→proxy→agent_v2，051 §4 拓扑）——gateway 的 grpc-gateway 注册随 codegen 自动携带 `:cancel` 路由（零代码改动）；proxy `AgentHandler` 以 owner 亲和显式转发（GetAgent 同构，无本地语义），设计见 [revisions/phase2-proxy-cancel.md](../revisions/phase2-proxy-cancel.md)。
 
 ## 4. GetAgent 连接状态（FR-002）
 

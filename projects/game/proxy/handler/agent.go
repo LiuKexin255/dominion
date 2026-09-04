@@ -1,8 +1,8 @@
 // Package handler implements the proxy's gRPC forwarding surface: the
-// agent_v2 AgentService face (UpdateAgent/GetAgent/ListAgentMessages/Send)
-// and the DesktopBridgeService flow stream. Both route to the agent_v2
-// instance owning the (template, session) pair through the owner store —
-// owner affinity, because the agent/game state lives in the serving
+// agent_v2 AgentService face (UpdateAgent/GetAgent/ListAgentMessages/Send/
+// Cancel) and the DesktopBridgeService flow stream. Both route to the
+// agent_v2 instance owning the (template, session) pair through the owner
+// store — owner affinity, because the agent/game state lives in the serving
 // instance's process memory and must not drift across instances
 // (specs/051-agent-v2-dsh-migration/research.md D9). The handlers own owner
 // resolution, agent-client routing, and stream binding directly; there is no
@@ -41,8 +41,8 @@ var newAgentClient = func(conn *grpc.ClientConn) game.AgentServiceClient {
 // (specs/051-agent-v2-dsh-migration/research.md D9). UpdateAgent is the only
 // owner allocation point (get-or-create — materialization lands the owner,
 // so a desktop flow connection and the conversation that follow reach the
-// same instance); GetAgent/ListAgentMessages/Send only look the owner up and
-// answer NOT_FOUND when absent (Send has no lazy materialization —
+// same instance); GetAgent/ListAgentMessages/Send/Cancel only look the owner
+// up and answer NOT_FOUND when absent (Send has no lazy materialization —
 // specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.4). The
 // stateless configuration face (PresetService) is not routed here: preset
 // state lives in Mongo and the model catalog is static, so the gateway dials
@@ -164,6 +164,40 @@ func (h *AgentHandler) ListAgentMessages(ctx context.Context, req *game.ListAgen
 			event.Err(err),
 		)
 		return nil, propagateAgentError(err, "list agent messages")
+	}
+	return resp, nil
+}
+
+// Cancel forwards the cancel request to the agent_v2 instance owning the
+// session. The owner is looked up, never allocated (lookup-only family:
+// GetAgent/ListAgentMessages/Send/Cancel): no owner → NOT_FOUND — for
+// routing purposes there is no agent to cancel. All cancel semantics
+// (in-flight turn termination, queue landing, idempotent no-op) live in
+// agent_v2 (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §3);
+// the proxy is a pure routing layer.
+func (h *AgentHandler) Cancel(ctx context.Context, req *game.CancelRequest) (*game.CancelResponse, error) {
+	name, err := parseAgentResourceName(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	owner, err := lookupAgentOwner(ctx, h.ownerStore, name.TemplateID, name.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	connRef, err := agentV2Conn(ctx, h.manager, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := newAgentClient(connRef.Conn).Cancel(ctx, req)
+	if err != nil {
+		logs.Error(ctx, "cancel agent: downstream call failed",
+			event.String("session_id", name.SessionID),
+			event.Err(err),
+		)
+		return nil, propagateAgentError(err, "cancel agent")
 	}
 	return resp, nil
 }

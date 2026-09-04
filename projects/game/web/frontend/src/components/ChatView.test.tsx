@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RenderResult } from '@testing-library/react'
 import type { ChatEvent, ContentBlock, HistoryMessage } from '../api/conversation.js'
 import type { BlockDraft, LiveTurn } from '../store/chat.js'
@@ -13,6 +13,7 @@ afterEach(cleanup)
 
 const SESSION = 'templates/saolei/sessions/s1'
 const noop = (): void => {}
+const noopCancel = async (): Promise<void> => {}
 
 // ChatView 集成测试：构造 store 层 BlockDraft / protojson ContentBlock 两种块
 // 形态直接驱动渲染（不经过 fetch 流），断言 THINK/TEXT/TOOL_CALL 三分类保序
@@ -22,6 +23,8 @@ function renderChatView(props: {
   history?: HistoryMessage[]
   live?: LiveTurn | null
   session?: string
+  canceled?: boolean
+  onCancel?: () => Promise<void>
 }): RenderResult {
   return render(
     <ChatView
@@ -30,14 +33,16 @@ function renderChatView(props: {
       live={props.live ?? null}
       queue={[]}
       error={null}
+      canceled={props.canceled ?? false}
       onSend={noop}
+      onCancel={props.onCancel ?? noopCancel}
     />,
   )
 }
 
 function rerenderChatView(
   result: RenderResult,
-  props: { history?: HistoryMessage[]; live?: LiveTurn | null; session?: string },
+  props: { history?: HistoryMessage[]; live?: LiveTurn | null; session?: string; canceled?: boolean },
 ): void {
   result.rerender(
     <ChatView
@@ -46,7 +51,9 @@ function rerenderChatView(
       live={props.live ?? null}
       queue={[]}
       error={null}
+      canceled={props.canceled ?? false}
       onSend={noop}
+      onCancel={noopCancel}
     />,
   )
 }
@@ -697,7 +704,9 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
         live={s.live}
         queue={s.queue}
         error={s.error}
+        canceled={false}
         onSend={noop}
+        onCancel={noopCancel}
       />,
     )
     expectFailedTurnUnfolded()
@@ -804,5 +813,108 @@ describe('ChatView markdown 渲染（specs/054-agent-v2-bugfixes/contracts/web-u
     expect(user?.textContent).toBe('**这不是粗体** 与 `这不是代码`')
     expect(user?.querySelector('strong')).toBeNull()
     expect(user?.querySelector('code')).toBeNull()
+  })
+})
+
+describe('ChatView 终止按钮（specs/054-agent-v2-bugfixes/contracts/web-ui.md §4）', () => {
+  it('仅 live 回合运行中可见：空闲不呈现触发面（不可触发、无副作用）', () => {
+    // 空闲：无终止按钮。
+    const result = renderChatView({ history: [{ role: 'ROLE_USER', blocks: [{ text: { content: 'hi' } }] }] })
+    expect(screen.queryByTestId('cancel-button')).toBeNull()
+
+    // 运行中（live 非空）：终止按钮出现在 composer 区（发送按钮旁）。
+    rerenderChatView(result, { live: liveOf([{ index: 0, type: 'TEXT', text: '流式中' }]) })
+    expect(screen.getByTestId('cancel-button')).not.toBeNull()
+    expect(screen.getByTestId('cancel-button').textContent).toBe('终止')
+    expect(screen.getByTestId('send-button')).not.toBeNull()
+
+    // 回合结束（live 归空）：触发面消失。
+    rerenderChatView(result, { live: null })
+    expect(screen.queryByTestId('cancel-button')).toBeNull()
+  })
+
+  it('点击编排：一次点击触发一次 onCancel，请求在途期间重复点击防抖', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const onCancel = vi.fn(() => gate)
+    renderChatView({ live: liveOf([{ index: 0, type: 'TEXT', text: '失控回合' }]), onCancel })
+
+    fireEvent.click(screen.getByTestId('cancel-button'))
+    fireEvent.click(screen.getByTestId('cancel-button'))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    // 在途期间按钮禁用（防抖的呈现面）。
+    expect((screen.getByTestId('cancel-button') as HTMLButtonElement).disabled).toBe(true)
+
+    release()
+    await waitFor(() =>
+      expect((screen.getByTestId('cancel-button') as HTMLButtonElement).disabled).toBe(false),
+    )
+    // 请求落定后可再次触发（新一次终止请求）。
+    fireEvent.click(screen.getByTestId('cancel-button'))
+    expect(onCancel).toHaveBeenCalledTimes(2)
+  })
+
+  it('onCancel 请求失败不吞：编排层错误经 error prop 呈现（终态标识独立于错误文案）', async () => {
+    // 请求失败呈现由 App.tsx ChatPanel 编排（cancelAgent catch → error），
+    // 组件面断言：error 与 canceled 同屏时各自独立呈现——"已终止"非错误
+    // 文案。
+    renderChatView({
+      live: liveOf([{ index: 0, type: 'TEXT', text: '部分产出' }]),
+      canceled: true,
+      onCancel: async () => {
+        throw new Error('503 unavailable')
+      },
+    })
+    fireEvent.click(screen.getByTestId('cancel-button'))
+    // promise rejection 由编排层承载，组件不因 rejection 崩溃；等待防抖解除。
+    await waitFor(() =>
+      expect((screen.getByTestId('cancel-button') as HTMLButtonElement).disabled).toBe(false),
+    )
+  })
+
+  it('CANCELED 终态呈现"已终止"标识：非错误文案、独立呈现', () => {
+    renderChatView({ canceled: true })
+    const marker = screen.getByTestId('turn-canceled')
+    expect(marker.textContent).toBe('已终止')
+    // 不复用错误呈现面（role=alert 的 chat-error）。
+    expect(screen.queryByTestId('chat-error')).toBeNull()
+    expect(marker.getAttribute('role')).toBeNull()
+  })
+
+  it('取消后排队 chip 移除、落地 user 消息以历史形态呈现（store 驱动）', async () => {
+    // store 走真实归约：排队流 queued 帧（chip + 落地 user 消息）→
+    // turn_end{CANCELED}（chip 移除），渲染面断言 web-ui.md §4 排队落地。
+    const store = new ChatStore()
+    async function* canceledQueuedStream(): AsyncGenerator<ChatEvent> {
+      yield { queued: { position: 1 } }
+      yield { turnId: 't2', turnEnd: { status: 'TURN_STATUS_CANCELED' } }
+    }
+    const renderWithStore = (): void => {
+      const s = store.getSnapshot()
+      cleanup()
+      render(
+        <ChatView
+          session={SESSION}
+          history={s.history}
+          live={s.live}
+          queue={s.queue}
+          error={s.error}
+          canceled={s.canceled}
+          onSend={noop}
+          onCancel={noopCancel}
+        />,
+      )
+    }
+    renderWithStore()
+    expect(screen.queryByTestId('queue-chip')).toBeNull()
+
+    await store.send('排队消息', canceledQueuedStream())
+    renderWithStore()
+    expect(screen.queryByTestId('queue-chip')).toBeNull()
+    // 排队消息以历史 user 消息形态出现在对话流（落地）。
+    expect(screen.getByTestId('chat-messages').querySelector('.msg-user')?.textContent).toBe('排队消息')
+    expect(screen.getByTestId('turn-canceled')).not.toBeNull()
   })
 })

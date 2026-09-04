@@ -38,6 +38,7 @@ function fakeAgent(id: string) {
     session: { id },
     followup: vi.fn(),
     whenIdle: vi.fn(async () => {}),
+    cancel: vi.fn(),
   } as unknown as Agent;
 }
 
@@ -624,6 +625,160 @@ describe("AgentSessions.getAgent / listMessages on unmaterialized sessions", () 
     expect(view.name).toBe(`${S1}/agent`);
     expect(view.preset).toBe(P1);
     expect(view.model).toBe("glm-5.5");
+  });
+});
+
+describe("AgentSessions.cancel", () => {
+  it("cancels the in-flight turn: turn_end{CANCELED} lands synchronously (SC-004 ≤5s) and late dsh events are not forwarded", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    const stream = fakeStream();
+    harness.sessions.send(S1, "hello", stream);
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+    emit(harness, "session/event", agent.session, chunk({ type: "block-start", index: 0, blockType: "text" }));
+    emit(harness, "session/event", agent.session, chunk({ type: "text-delta", index: 0, text: "partial" }));
+
+    // SC-004 (终止后回合停止 ≤5 秒): the CANCELED terminal frame is written
+    // synchronously by the cancel call itself — no wait, let alone five
+    // seconds, passes before the stream holds its terminal frame.
+    harness.sessions.cancel(S1);
+    expect(stream.ended).toBe(true);
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "turnEnd"]);
+    expect(stream.events[stream.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
+    // Cancellation propagates to the dsh driver (LLM stream + in-flight tools).
+    expect(agent.cancel).toHaveBeenCalledWith({ kind: "user" });
+
+    // The collector settled before Agent.cancel: the driver's cancellation
+    // converges to an idle status and late chunks must not re-open the slot.
+    await flush();
+    emit(harness, "session/event", agent.session, chunk({ type: "text-delta", index: 0, text: "late" }));
+    emit(harness, "agent/status", { agent, status: "idle" });
+    await flush();
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "turnEnd"]);
+  });
+
+  it("lands queued messages on cancel: queue cleared without a turn, history keeps the user messages", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    const inFlight = fakeStream();
+    harness.sessions.send(S1, "in flight", inFlight);
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+
+    const queued = fakeStream();
+    harness.sessions.send(S1, "queued", queued);
+    await flush();
+    expect(queued.events.map(payloadOf)).toEqual(["queued"]);
+
+    harness.sessions.cancel(S1);
+    await flush();
+
+    // The queued stream learns its message will not run through the existing
+    // turn_end vocabulary and closes; no followup fires for it.
+    expect(queued.ended).toBe(true);
+    expect(queued.events.map(payloadOf)).toEqual(["queued", "turnEnd"]);
+    expect(queued.events[queued.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
+    expect(agent.followup).toHaveBeenCalledTimes(1);
+
+    // Landing: the user messages (in-flight + queued) stay in history —
+    // enqueue-time appendUser already fixed them (data-model.md §3).
+    const history = await harness.sessions.listMessages(S1);
+    expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_USER"]);
+    expect(history[1]?.blocks[0]?.text?.content).toBe("queued");
+  });
+
+  it("is a no-op success with no in-flight turn and an empty queue", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    expect(() => harness.sessions.cancel(S1)).not.toThrow();
+    expect(agent.cancel).not.toHaveBeenCalled();
+    expect(agent.followup).not.toHaveBeenCalled();
+    expect((await harness.sessions.listMessages(S1)).map((m) => m.role)).toEqual([]);
+  });
+
+  it("accepts a new Send immediately after a cancel (no cooldown, direct turn start)", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    const first = fakeStream();
+    harness.sessions.send(S1, "first", first);
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+
+    harness.sessions.cancel(S1);
+    await flush();
+
+    // busy was reset: the next send starts a turn directly instead of
+    // receiving a queued frame.
+    const next = fakeStream();
+    harness.sessions.send(S1, "next", next);
+    await flush();
+    expect(next.events.map(payloadOf)).toEqual(["turnStart"]);
+    expect(agent.followup).toHaveBeenCalledTimes(2);
+
+    await driveTurn(harness, agent, "recovered");
+    const payloads = next.events.map(payloadOf);
+    expect(payloads[payloads.length - 1]).toBe("turnEnd");
+    expect(next.events[next.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancel racing a re-materialization leaves no half-cleaned state", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    harness.agentsCreate
+      .mockResolvedValueOnce(firstHandle)
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
+
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    const stream = fakeStream();
+    harness.sessions.send(S1, "in flight", stream);
+    await flush();
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
+
+    // Cancel first, then re-materialize: the cancel already settled the
+    // in-flight turn, so the teardown finds nothing in flight and adds no
+    // second terminal frame.
+    harness.sessions.cancel(S1);
+    harness.agentsGet.mockReturnValue(second);
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await flush();
+
+    expect(stream.ended).toBe(true);
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "turnEnd"]);
+    expect(stream.events[1]?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
+    expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
+
+    // The new entry is clean; cancel resolves against it as a no-op.
+    harness.sessions.cancel(S1);
+    expect(await harness.sessions.listMessages(S1)).toEqual([]);
+  });
+
+  it("fails FAILED_PRECONDITION on an unmaterialized session and never creates", () => {
+    const harness = createHarness();
+
+    expect(() => harness.sessions.cancel(S1)).toThrow(AgentSessionError);
+    try {
+      harness.sessions.cancel(S1);
+    } catch (err) {
+      expect((err as AgentSessionError).code).toBe("FAILED_PRECONDITION");
+    }
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
   });
 });
 

@@ -12,6 +12,7 @@ import './theme.css'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ApiError, listHistory, sendStream } from './api/conversation.js'
 import type { ChatEvent } from './api/conversation.js'
+import { cancelAgent } from './api/agent.js'
 import type { Agent } from './api/agent.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
@@ -61,6 +62,9 @@ function ChatPanel({
   const [agentStatus, setAgentStatus] = useState<AgentStatus>('unknown')
   const [agent, setAgent] = useState<Agent | null>(null)
   const [panelOpen, setPanelOpen] = useState(false)
+  // 终止请求失败呈现（不吞，specs/054-agent-v2-bugfixes/contracts/web-ui.md
+  // §4）；请求成功不设错误——终态经流上 turn_end{CANCELED} 由 store 归约。
+  const [cancelError, setCancelError] = useState<string | null>(null)
   // 回填发起后本面板是否有 send 开始：send 与回填竞态时整体让位于 send
   // （判据说明见下方 loadHistory 调用处注释）。
   const sentSinceBackfill = useRef(false)
@@ -110,6 +114,7 @@ function ChatPanel({
   const onSend = useCallback(
     (text: string) => {
       sentSinceBackfill.current = true
+      setCancelError(null)
       // Send 前置拒绝（未物化 FAILED_PRECONDITION→400 / 无 owner
       // NOT_FOUND→404，agent-api.md §2.4）驱动引导态：流失败后探测 agent
       // 单例，仅 404 确认未物化（400 的其他来源如空文本不引导）。
@@ -131,6 +136,15 @@ function ChatPanel({
     },
     [store, session],
   )
+
+  const onCancel = useCallback(async () => {
+    setCancelError(null)
+    try {
+      await cancelAgent(session)
+    } catch (err) {
+      setCancelError(errorMessage(err))
+    }
+  }, [session])
 
   const onApplied = useCallback(
     (materialized: Agent) => {
@@ -181,8 +195,10 @@ function ChatPanel({
         history={state.history}
         live={state.live}
         queue={state.queue}
-        error={state.error ?? backfillError}
+        error={state.error ?? cancelError ?? backfillError}
+        canceled={state.canceled}
         onSend={onSend}
+        onCancel={onCancel}
       />
     </div>
   )
