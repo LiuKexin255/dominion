@@ -192,15 +192,15 @@
 
 **Goal**: 引入官方 token 表系统性修复组件视觉（FR-021/022/023）
 
-**Independent Test**: `bazel test //projects/game/web/frontend/...`——Menu 卡片视觉断言与既有组件用例全绿；人工浏览器目验菜单弹出形态
+**Independent Test**: `bazel test //projects/game/web/frontend/...`——sheets 同步防漂移门禁、Menu 卡片视觉断言与既有组件用例全绿；`bazel build //projects/game/web/frontend:dist` 通过；人工浏览器目验菜单弹出形态
 
 ### 文档清单
 
-- **代码规范文档**：`style/javascript.md`；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)
-- **官方文档**：[dsh-client-ui-theme README（npm）](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-theme)（token sheets 清单与引入顺序：base→design-platform→scrollbar→gradient-shadow-text→shiki；dark 激活选择器形态——引入时以包内 `src/styles/*.css` 实读为准）
-- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §1/§7、`specs/054-agent-v2-bugfixes/research.md` D4
+- **代码规范文档**：`style/javascript.md`（ESM/依赖约定）；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)
+- **官方文档**：[dsh-client-ui-theme README（npm）](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-theme)（token sheets 官方顺序与 "sole color authority" 语义；注意其 `src/styles/` 路径描述与 npm tarball 实态不符——载体验证与裁定见 revisions 文档）
+- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §1/§7、`specs/054-agent-v2-bugfixes/research.md` D4（含载体重设计修正注）、`specs/054-agent-v2-bugfixes/revisions/phase10-theme-css-carrier.md`（T020 权威依据：载体验证、终态设计 §3、同步与门禁机制 §3.2/§3.6、测试义务 §4）
 
-- [ ] T020 [US8] `projects/game/web/frontend/src/main.tsx` + `projects/game/web/frontend/src/theme.css`：按官方顺序 import `@deepseek-ai/dsh-client-ui-theme/src/styles/` 五个 CSS（vite 直接 import），以 sheets 实际选择器激活深色 token（`body[data-ds-dark-theme]` 或等效），**删除** `theme.css` 中手写的 `--dsw-*` 变量子集（token sheets 为唯一权威；`--app-*` 布局样式保留）；新增 `SessionList` Menu 卡片视觉断言（容器 token/计算样式存在）；核查既有使用组件（Button/Input/StateDot/ReasoningRow/ToolCard 等）无视觉回归；组件测试更新
+- [ ] T020 [US8] token CSS 引入与 Menu 视觉修复（依据 `specs/054-agent-v2-bugfixes/revisions/phase10-theme-css-carrier.md` §3 终态设计）：1) 依赖：`projects/game/web/frontend/package.json` dependencies 增 `"@deepseek-ai/dsh-client-ui-theme": "catalog:"`（catalog 条目 Phase 1 已建，0.1.1-rc.2 与 primitives 同线），`bazel run @pnpm -- --dir /mnt/code/dominion install` 后 `bazel run //:gazelle projects/game/web/frontend`；2) 同步脚本 `projects/game/web/frontend/scripts/sync-dsh-theme.mjs`（从安装包 `lib/client.js` region 锚点提取五 sheet 与 `STYLES` 官方顺序，revision §3.2）生成 `projects/game/web/frontend/src/dsh-theme/`（五个字节精确 css + `index.css` 有序 `@import` + `README.md` 溯源，revision §3.1）；3) 引入与激活：`src/App.tsx` 在 `import './theme.css'` 前增 `import './dsh-theme/index.css'`；`index.html` 的 `<body>` 置静态 `data-ds-dark-theme` 布尔属性；`src/theme.css` `:root` 删除 11 个手写 `--dsw-*` 声明、保留 `--app-*` 并新增 `color-scheme: dark`、头注释更新为指向 dsh-theme sheets（revision §3.3–3.4）；4) BUILD：`projects/game/web/frontend/BUILD.bazel` 的 `vitest_test` data 增 `:node_modules/@deepseek-ai/dsh-client-ui-theme`（revision §3.5）；5) 测试：新增 `src/dsh-theme.test.ts` 防漂移门禁（字节同步/`@import` 顺序=STYLES/README 版本一致/FR-022 消费覆盖+豁免 `--dsw-hovercard-bg`，revision §3.6/§4）；`src/components/SessionList.test.tsx` 增 Menu 卡片视觉断言（sheets 定义 `--dsw-specific-menu`/`--dsw-alias-border-inverted`/`--dsw-shadow-lv3`、含 dark 激活选择器、`index.html` 含激活属性、theme.css 零 `--dsw-*` 声明）；`projects/game/web/frontend/README.md` attribution 增 vendored sheets 条目并修正依赖 pin 过时表述（revision §3.7）；6) 核查既有组件（Button/Input/StateDot/ReasoningRow/ToolCard 等）视觉零回归（FR-022 覆盖门禁 + 既有用例全绿；token 值向官方 dark 值靠拢属预期修复非回归）；人工浏览器目验 `···` 菜单完整卡片形态
 
 **Checkpoint**: `···` 菜单以完整卡片视觉弹出，同类隐患系统性消除
 

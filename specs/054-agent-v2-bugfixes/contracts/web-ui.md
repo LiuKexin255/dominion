@@ -8,16 +8,16 @@
 
 - `@deepseek-ai/dsh-client-ui-chat@0.1.2-rc.1` README "Turn Process Folding" 章节（https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-chat ，源仓库 https://github.com/deepseek-ai/deepseek-harness ）——分段折叠规则的行为陈述。
 - `@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2` README "Markdown rendering" 章节——MarkdownText 能力与流式增量语义。
-- `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2` README——token sheets 清单与引入顺序（`src/styles/`：base → design-platform → scrollbar → gradient-shadow-text → shiki）。
+- `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2` README——token sheets 官方顺序（base → design-platform → scrollbar → gradient-shadow-text → shiki）与 "The token sheets are the sole color authority" 语义。**注意**：README 所述 `src/styles/` 路径与 npm tarball 实态不符（CSS 内嵌于 `lib/client.js` 字符串，见 §1 载体）。
 
 ## 1. 主题与 token（FR-021/022）
 
 | 项 | 契约 |
 |---|---|
-| 引入 | `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2` 仅消费 `src/styles/*.css`（按官方顺序 import；dsh 依赖统一 catalog 管理，含 `third_party/dsh/core` 底座），不引入其 cordis runtime |
-| 主题形态 | 深色单一主题：以 token sheets 的 dark 值激活（`body[data-ds-dark-theme]` 或 sheets 实际选择器，引入时实读确认）；不提供主题切换 |
-| 自有样式 | `theme.css` 保留 `--app-*` 布局变量与布局规则；手写的 `--dsw-*` 变量子集**删除**（token sheets 为唯一权威，防漂移） |
-| 验收 | Menu 卡片呈现背景/边框/阴影（组件测试断言计算样式或 token 变量存在）；既有组件（Button/Input/StateDot/ReasoningRow 等）视觉无缺失 |
+| 引入 | `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2`（catalog 管理，与 primitives 同线）不以 runtime import 消费——npm tarball 不含 `src/styles/`（CSS 以字符串内嵌于 `lib/client.js`，该文件为 dsh ModuleLoader 格式不可 import）。官方 token sheets 经同步脚本（`scripts/sync-dsh-theme.mjs`）从安装包提取，以字节精确形态 vendor 至 `src/dsh-theme/`（`index.css` 按官方顺序 `@import` 五个 sheet），`App.tsx` 引入 `./dsh-theme/index.css`；同步与防漂移门禁（`src/dsh-theme.test.ts`）见 [revisions/phase10-theme-css-carrier.md](../revisions/phase10-theme-css-carrier.md)；不引入其 cordis runtime |
+| 主题形态 | 深色单一主题：`index.html` 以静态 `data-ds-dark-theme` 布尔属性激活 sheets 的 dark 块（token 定义在 `body` 作用域）；`theme.css` `:root` 置 `color-scheme: dark`（官方 bootstrap 成对语义）；不提供主题切换 |
+| 自有样式 | `theme.css` 保留 `--app-*` 布局变量与布局规则；不定义任何 `--dsw-*` 变量（token sheets 为唯一权威，防漂移——含消费覆盖门禁：所消费的 `--dsw-*` MUST ⊆ sheets 定义，豁免仅 `--dsw-hovercard-bg`——HoverCard 未使用） |
+| 验收 | Menu 卡片视觉断言（jsdom 不能应用外部样式表/解析 `var()`，断言面为文件内容：sheets 定义 Menu 消费的 `--dsw-specific-menu`/`--dsw-alias-border-inverted`/`--dsw-shadow-lv3`，`index.html` 含激活属性）；既有组件（Button/Input/StateDot/ReasoningRow 等）消费的 `--dsw-*` 全部由 sheets 定义（FR-022 覆盖门禁）；人工浏览器目验菜单弹出形态 |
 
 ## 2. 对话页分段与折叠（FR-004/005/006/007）
 

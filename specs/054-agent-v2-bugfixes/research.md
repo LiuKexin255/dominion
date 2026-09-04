@@ -53,6 +53,8 @@
 
 **版本注意**: dsh 依赖统一 `pnpm-workspace.yaml` catalog 管理（含 `third_party/dsh/core` 底座闭包；rc 线精确版本 0.1.1-rc.2，cordis/schemastery 保持既有 range——见 `survey/deepseek-harness-b1-bazel-packaging.md` §4.2）；ui-theme 0.1.1-rc.2 与 primitives 0.1.1-rc.2 同线。
 
+> **载体重设计（2026-09-04 修正）**: 本条"该包 exports 含 `./src/*`，vite 可直接 import css"的引入方式与 npm tarball 实态不符（0.1.1-rc.2/0.1.2-rc.1 均不含 `src/`；CSS 以字符串内嵌于 `lib/client.js`，该文件为 dsh ModuleLoader 格式不可 import；官方注入路径是 cordis 客户端插件，与"不引入 cordis runtime"冲突）。引入载体改为"从安装包提取 vendor 至 `src/dsh-theme/` + 同步防漂移门禁"，候选验证与终态设计见 [revisions/phase10-theme-css-carrier.md](revisions/phase10-theme-css-carrier.md)。本条其余裁定（token 表复用替代手写子集、深色单一主题、不引入 cordis runtime、catalog 版本治理）不变。
+
 ## D5: 失败回合固化——driver ERROR 路径补 interrupted append
 
 **Decision**: `common/js/dsh-plugins/saolei-loop/src/driver.ts` 的 step 循环：LLM 流失败（catch 非 abort 路径）与 finish error 抛 `LlmError` 前，若 assembler 已有部分内容，按 abort 路径同构的方式 append `assistant/message`（`interrupted: true`，仅含已产出块）。工具执行异常同理（executeToolCalls 异常冒泡前，本 step 的 assistant/message 已 append——现有顺序天然如此，验证即可）。
@@ -146,7 +148,7 @@
 | 项 | 归属 | 验证方式 |
 |---|---|---|
 | glm-5.3-flash context window 与 `[1m]` 后缀必要性 | D9 | 官方调用配置文档核实 + 实测 |
-| ui-theme token sheets 的 dark 激活选择器形态 | D4 | 解包 `src/styles/*.css` 实读（引入时） |
+| ui-theme token sheets 的 dark 激活选择器形态 | D4 | 已落定：`body[data-ds-dark-theme]` 布尔属性存在性选择器（token 定义于 `body` 作用域），见 [revisions/phase10-theme-css-carrier.md](revisions/phase10-theme-css-carrier.md) §1.2 |
 | gateway/proxy 对 proto 新字段的透传 | D8 | codegen 后集成验证（预期零改动） |
 | guitar 单 suite 多 case 的执行顺序保证 | D11 | guitar 文档/实测（README 已证 suites 串行） |
 | 排查断点定位（D10 假设 a/b/c 孰是） | D10 | 真实环境 signoz 取证 |
