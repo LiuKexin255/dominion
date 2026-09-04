@@ -115,14 +115,18 @@ agent-v2 预置任何 secret。
 
 ## 大型测试
 
-`projects/game/testplan/system_test.yaml` 的 agent-v2 面套件
-（agent-v2-conversation / agent-v2-preset / agent-v2-game / desktop-flow，部署
-`projects/game/testplan/deploy_agent_v2.yaml`；agent-v2-game-disconnect 部署
-`projects/game/testplan/deploy_agent_v2_drop.yaml`——同拓扑、fake-desktop 以
-progressive 场景 + 断连故障 env 运行，fake-llm `/v1/responses` 替换
-真实端点、fake-desktop 替换真实桌面、零外部网络）覆盖对话面、preset
-CRUD/持久化/物化、游戏闭环与断连分支、desktop flow 面；套件-场景对照见
-`specs/051-agent-v2-dsh-migration/quickstart.md` §2。
+`projects/game/testplan/system_test.yaml` 以两个 suite 覆盖 agent-v2 面与
+周边模块：主 suite `game-system`（部署
+`projects/game/testplan/deploy_agent_v2.yaml`——won 拓扑，fake-desktop
+以 won 场景绑定 `desktop-e2e-won`）按模块顺序串行执行配置面、对话面
+（/api/v2 NDJSON 流式语义、历史回填、失败/终止语义、连接状态）、preset
+CRUD/持久化/物化与模型目录、游戏闭环（won 链路、desktop 缺席）与
+desktop flow 面；断连 suite `game-disconnect`（部署
+`projects/game/testplan/deploy_agent_v2_drop.yaml`——同拓扑、fake-desktop
+以 progressive 场景 + 断连故障 env 绑定 `desktop-e2e-drop`）承载 mid-game
+断连恢复三局序列。测试替换面：fake-llm `/v1/responses` 替换真实端点、
+fake-desktop 替换真实桌面、零外部网络；套件-拓扑对照见
+`projects/game/testplan/README.md` §2。
 
 ## 已知限制
 

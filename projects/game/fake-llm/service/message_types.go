@@ -72,9 +72,15 @@ import "time"
 //
 // Failure injects a provider failure into the Responses stream
 // (fake-responses-wire.md §2 invariant 4): a matched template carrying a
-// Failure emits response.failed with the configured code/message instead of
-// the think/text payload. Failure templates are excluded from both
-// endpoints' fallback pools so an unrelated turn never fails by accident.
+// Failure ends its stream with response.failed (configured code/message)
+// instead of response.completed. The template's declared think/text still
+// streams first, so a content-carrying Failure template is the
+// "partial content then provider failure" shape whose produced prefix the
+// agent solidifies as the interrupted history entry
+// (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §6); a
+// Failure template with no content streams created → failed only.
+// Failure templates are excluded from both endpoints' fallback pools so an
+// unrelated turn never fails by accident.
 type ResponseFailure struct {
 	Code    string `json:"code" yaml:"code"`
 	Message string `json:"message" yaml:"message"`

@@ -4,7 +4,8 @@ fake-desktop 是 game 大型测试专用的**确定性 desktop 执行器**：对
 FlowPart 操作以固定图集截图回执，替代真实 Windows desktop 进被测系统
 （`specs/051-agent-v2-dsh-migration/research.md` D15，spec A9）。仅被
 testplan 部署引用（`projects/game/testplan/deploy_agent_v2.yaml` /
-`deploy_agent_v2_drop.yaml`），不进生产部署。
+`deploy_agent_v2_drop.yaml` 各部署一个实例，服务名同为 `fake-desktop`、
+行为差异全由 env 驱动），不进生产部署。
 
 ## 进程形态
 
@@ -49,8 +50,15 @@ cmp 相同副本——大型测试中 agent 侧运行**真实识别器**，执�
 
 ## 大型测试中的用法
 
-- won 拓扑（`deploy_agent_v2.yaml`）：`FAKE_DESKTOP_SESSION=desktop-e2e-won`
-  + `progressive`-free 的 `won` 场景，服务 agent-v2-game / desktop-flow 套件。
-- drop 拓扑（`deploy_agent_v2_drop.yaml`）：单一执行器跑 `progressive` 场景
-  并注入 `FAKE_DESKTOP_FAULT_DISCONNECT_AFTER_OPS=3`（init F2 + 两次单元格
-  操作后断开），服务 agent-v2-game-disconnect 套件的三局序列。
+两个部署各含一个 `fake-desktop` 实例（服务名不改——guitar 为每个 suite
+生成独立环境，两 deploy 的服务名空间互不可见），以 `FAKE_DESKTOP_SESSION`
+绑定各自的 session 资源、以 `FAKE_DESKTOP_SCENARIO` 选择场景
+（套件-拓扑对照见 `projects/game/testplan/README.md` §2）：
+
+- won 拓扑（`deploy_agent_v2.yaml`，suite `game-system`）：
+  `FAKE_DESKTOP_SESSION=desktop-e2e-won` + `won` 场景，服务游戏面的胜局
+  链路（agent_v2_game_test）与 desktop-flow 面的执行器依赖。
+- drop 拓扑（`deploy_agent_v2_drop.yaml`，suite `game-disconnect`）：
+  `FAKE_DESKTOP_SESSION=desktop-e2e-drop` + `progressive` 场景 +
+  `FAKE_DESKTOP_FAULT_DISCONNECT_AFTER_OPS=3`（init F2 + 两次单元格操作后
+  断开），服务 agent_v2_game_disconnect_test 的三局断连恢复序列。

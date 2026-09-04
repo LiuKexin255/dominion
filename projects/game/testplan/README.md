@@ -7,7 +7,10 @@ memory faces) via the HTTP + WebSocket surface. The plan is orchestrated by
 
 ## 1. Deployment under test
 
-The suites share one test deployment, `deploy_agent_v2.yaml`:
+The suites use two test deployments with the same service list —
+`deploy_agent_v2.yaml` (the won topology) and `deploy_agent_v2_drop.yaml`
+(the progressive + disconnect fault topology for the disconnect suite) —
+whose fake-desktop env is the only difference:
 
 - `mongodb`, `session`, `memory` — the persistence and the /api/v1 faces
   (session CRUD + memory CRUD through the gateway).
@@ -21,8 +24,10 @@ The suites share one test deployment, `deploy_agent_v2.yaml`:
   (specs/051-agent-v2-dsh-migration/research.md D15): it connects to the
   gateway's /api/v2 flow WebSocket for its configured session and answers
   FlowPart operations with recognizable board screenshots + SUCCEEDED
-  receipts. `deploy_agent_v2_drop.yaml` is the same topology with the
-  progressive + disconnect fault env for the mid-game disconnect suite.
+  receipts. The two deployments differ only in this service's env — the
+  won scenario on `desktop-e2e-won` vs the progressive scenario with the
+  disconnect fault on `desktop-e2e-drop` — so each topology gets one
+  dedicated executor under the same `fake-desktop` service name.
 - `proxy`, `agent-v2-test`, `web`, `gateway` — the session face routes
   gateway → proxy (owner affinity) → agent_v2; the preset face and the web
   static hosting are direct.
@@ -37,20 +42,22 @@ every request (`helpers_test.go` `doHTTPTrace`).
 
 ## 2. Suites
 
+Two suites over the two deployment topologies
+(specs/054-agent-v2-bugfixes/contracts/testplan.md §2) — the six
+won-topology suites of the pre-refactor plan share one deployment, so the
+plan pays two deploys instead of seven:
+
 | suite | deploy | binaries | focus |
 |---|---|---|---|
-| session | deploy_agent_v2.yaml | `testplan_test` | session CRUD + ListSessions pagination (/api/v1) |
-| memory | deploy_agent_v2.yaml | `memory_test` | MemoryService CRUD + AIP-158 pagination through the gateway (/api/v1) |
-| agent-v2-conversation | deploy_agent_v2.yaml | `agent_v2_conversation_test`, `web_test` | the /api/v2 NDJSON conversation surface + web hosting |
-| agent-v2-preset | deploy_agent_v2.yaml | `agent_v2_preset_test` | preset CRUD/materialization closed loop (/api/v2) |
-| agent-v2-game | deploy_agent_v2.yaml | `agent_v2_game_test` | US1 game loop with the fake game chain + fake-desktop (won topology) |
-| agent-v2-game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | mid-game disconnect and recovery branch |
-| desktop-flow | deploy_agent_v2.yaml | `desktop_flow_test` | the flow stream from the desktop's side |
+| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the conversation face (/api/v2 NDJSON + preset) → the game face (won topology) → the desktop face (flow stream), cases serial in module order |
+| game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
 
-`guitar run` executes whole bazel targets as suite cases without per-suite
-test-function filtering, which is why the disconnect branch has its own
-binary (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
-§1.4).
+`guitar run` executes suites and cases serially in YAML order and stops on
+the first failure — the main suite runs first so a trunk regression surfaces
+before the disconnect branch. `guitar run` executes whole bazel targets as
+suite cases without per-suite test-function filtering, which is why the
+disconnect branch has its own binary
+(specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4).
 
 ## 3. fake-llm data file format
 
@@ -83,8 +90,11 @@ Fields:
 `agent_v2.yaml` serves the `/v1/responses` Responses endpoint consumed by the
 agent-v2 conversation suite: `agent-v2-think` (think+text main path),
 `agent-v2-plain` (zero reasoning), `agent-v2-slow` (3s inter-chunk delay —
-the queued-turn window), and `agent-v2-fail` (response.failed injection —
-the recovery path). `agent_v2_saolei.yaml` chains the game surface: a user
+the queued/cancel window), `agent-v2-fail` (response.failed injection with
+no content — the recovery path), and `agent-v2-fail-mid` (think+text first,
+then response.failed — the partial-content failure whose interrupted
+history tail the conversation suite asserts).
+`agent_v2_saolei.yaml` chains the game surface: a user
 turn matching the saolei-start keyword returns a `saolei_init` tool_call,
 `tools:` rules match the tool results (the "new game started" receipt, board
 outcomes) to drive the operate batch, and the `game status: won` result
@@ -132,10 +142,12 @@ guitar validate projects/game/testplan/system_test.yaml
 # tear the deployment down. --suite <name> runs a single suite.
 #
 # --timeout is the OVERALL budget for the whole run (default 10m). Each
-# suite pays deploy + a fixed 60s settle wait + tests + cleanup, so the
-# full seven-suite plan exceeds the default; pass an explicit budget or
-# the run is cancelled mid-plan (the failure surfaces as
-# "wait after deploy: context deadline exceeded" on a later suite).
+# suite pays deploy + a fixed 60s settle wait + tests + cleanup. The
+# two-suite plan fits the default only when the suites stay well under
+# their share of it — calibrate the explicit budget against a measured
+# full run (the Phase 12 acceptance run records the duration) rather
+# than guessing; an undersized budget surfaces as
+# "wait after deploy: context deadline exceeded" on a later suite.
 guitar run projects/game/testplan/system_test.yaml --timeout=90m
 ```
 

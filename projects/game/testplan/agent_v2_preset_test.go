@@ -110,10 +110,13 @@ func TestAgentV2PresetCrudRoundTrip(t *testing.T) {
 
 // TestAgentV2MaterializedConfigConsistency covers US2 场景 2/7 (quickstart §2
 // agent-v2-preset: 物化与模型选择): UpdateAgent materializes the agent
-// singleton with the chosen preset and a model picked from the ListModels
-// catalog, and GetAgent reports exactly that configuration (agent-api.md
+// singleton with the chosen preset and an explicit model id honored against
+// the pinned model catalog, an empty model resolves to the default glm-5.3,
+// and GetAgent reports exactly that configuration (agent-api.md
 // §2.1/§2.2 — create-or-update on the AIP-156 singleton, get answers the
-// stored config).
+// stored config). The catalog is pinned per agent-api-changes.md §5:
+// glm-5.3 and glm-5.3-flash, glm-5.3 first (the default), and the same
+// source UpdateAgent validates against (模型目录同源, agent-api.md §2.6).
 func TestAgentV2MaterializedConfigConsistency(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -122,15 +125,20 @@ func TestAgentV2MaterializedConfigConsistency(t *testing.T) {
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "preset-mat-"+uniqueSuffix())
 	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-mat-"+uniqueSuffix(), "materialization persona")
 
-	// The model under test comes from the same catalog UpdateAgent validates
-	// against (模型目录同源, agent-api.md §2.6) — the deployment must expose
-	// at least one entry.
 	catalog := listAgentV2Models(t, ctx, sutHostURL, sutEnvName)
-	if len(catalog.GetModels()) == 0 {
-		t.Fatal("ListModels returned an empty catalog — UpdateAgent's model validation has nothing to agree with")
+	models := catalog.GetModels()
+	if len(models) != 2 {
+		t.Fatalf("ListModels returned %d entries, want 2 (glm-5.3 + glm-5.3-flash, agent-api-changes.md §5)", len(models))
 	}
-	model := catalog.GetModels()[0].GetId()
+	if models[0].GetId() != "glm-5.3" {
+		t.Errorf("catalog[0] = %q, want glm-5.3 (first entry = the default model)", models[0].GetId())
+	}
+	if models[1].GetId() != "glm-5.3-flash" {
+		t.Errorf("catalog[1] = %q, want glm-5.3-flash", models[1].GetId())
+	}
 
+	// An explicit catalog id is honored: materialize with glm-5.3-flash.
+	model := models[1].GetId()
 	materialized := updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), model)
 	if want := sessionName + "/agent"; materialized.GetName() != want {
 		t.Fatalf("materialized agent name = %q, want %q", materialized.GetName(), want)
@@ -151,11 +159,30 @@ func TestAgentV2MaterializedConfigConsistency(t *testing.T) {
 		t.Errorf("GetAgent timestamps = %q / %q, want server-maintained values", stored.GetCreateTime(), stored.GetUpdateTime())
 	}
 
+	// An empty model resolves to the process default glm-5.3 at
+	// materialization (agent-api-changes.md §5: GLM_MODEL || "glm-5.3"; the
+	// test cluster sets no GLM_MODEL).
+	defaulted := updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
+	if defaulted.GetModel() != "glm-5.3" {
+		t.Errorf("default-materialized model = %q, want glm-5.3", defaulted.GetModel())
+	}
+
 	// Idempotent re-Apply of the same config yields the same configuration
 	// (agent-api.md §2.1 幂等：同配置重复 Update → 同配置干净 agent).
-	again := updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), model)
-	if again.GetPreset() != preset.GetName() || again.GetModel() != model {
-		t.Errorf("re-Apply config = {%q %q}, want the unchanged {%q %q}", again.GetPreset(), again.GetModel(), preset.GetName(), model)
+	again := updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
+	if again.GetPreset() != preset.GetName() || again.GetModel() != "glm-5.3" {
+		t.Errorf("re-Apply config = {%q %q}, want the unchanged {%q %q}", again.GetPreset(), again.GetModel(), preset.GetName(), "glm-5.3")
+	}
+
+	// 未知 id 拒绝 (US2 场景 7): a model outside the catalog fails the
+	// fail-fast validation with 400 INVALID_ARGUMENT and leaves the standing
+	// configuration untouched (no half-materialization).
+	_, failedStatus, failedBody := updateAgentV2AgentWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "no-such-model")
+	if failedStatus != http.StatusBadRequest {
+		t.Errorf("UpdateAgent with unknown model status = %d (body: %s), want 400 INVALID_ARGUMENT", failedStatus, failedBody)
+	}
+	if after := getAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName); after.GetModel() != "glm-5.3" {
+		t.Errorf("GetAgent after the rejected update = %q, want the standing glm-5.3 (fail-fast leaves no half-materialized state)", after.GetModel())
 	}
 }
 

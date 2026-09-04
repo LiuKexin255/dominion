@@ -57,3 +57,21 @@ messages:
       code: "glm_test_failure"
       message: "Injected fake-llm failure for recovery testing"
     responses_only: true
+  # agent-v2-fail-mid is the partial-content failure template (FR-005/
+  # FR-012 interrupted backfill): the turn streams think+text first and
+  # only then response.failed, so the agent produces content before the
+  # ERROR finish and the interrupted tail-step HistoryMessage becomes
+  # assertable end to end (agent-v2-fail fails before any content).
+  # The keyword must not contain "agent-v2-fail": that trigger would match
+  # both templates and the alphabetical tie-break hands the turn to
+  # agent-v2-fail (README §4).
+  - name: agent-v2-fail-mid
+    keywords:
+      - agent-v2-midfail
+    reasoning_chunks:
+      - "Thinking about the request before it breaks."
+    text: "Partial answer streamed before the failure."
+    failure:
+      code: "glm_test_failure"
+      message: "Injected fake-llm failure after partial content"
+    responses_only: true

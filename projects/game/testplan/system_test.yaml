@@ -1,104 +1,47 @@
 name: game-system-test
 description: |
-  Game system integration test — suites organized by tested object.
+  Game system integration test — two suites over two deployment topologies
+  (specs/054-agent-v2-bugfixes/contracts/testplan.md §2). Six formerly
+  separate suites share one deployment, so the plan pays two deploys
+  instead of seven (five deployments and their 60s settle waits saved).
 
-  Suite 1 (session): mongo + session + memory + fake-llm + fake-desktop +
-    proxy + agent-v2 + web + gateway (deploy_agent_v2.yaml).
-    - Session CRUD + ListSessions pagination (template-scoped,
-      templates/saolei/sessions/...) over the /api/v1 session face.
-  Suite 2 (memory): the same deployment.
-    - MemoryService storage API through the gateway's public /api/v1
-      memories routes: Create/Update/Delete/List, AIP-158 pagination, and
-      AIP-193 error codes (ALREADY_EXISTS/NOT_FOUND/INVALID_ARGUMENT).
-  Suite 3 (agent-v2-conversation): the same deployment.
-    - agent-v2 conversation surface over the gateway /api/v2 NDJSON API
-      (streamed think/text/tool_result blocks, multi-turn continuity,
-      queued{position}→auto-resume, history backfill, dispose/model-failure
-      recovery, 400 mapping) + web static hosting and the page's management
-      closed loop.
-  Suite 4 (agent-v2-preset): the same deployment.
-    - preset CRUD through the gateway's direct PresetService routes
-      (Mongo-backed persistence), agent materialization + model selection,
-      Update refresh semantics, unmaterialized-Send rejection, and the
-      empty-prompt persona fallback.
-  Suite 5 (agent-v2-game): the same deployment (fake-desktop bound to the
-    won session).
-    - The US1 game loop over /api/v2: the fake-llm game chain driving the
-      saolei tools, the board-text contract on tool_result frames, terminal
-      and post-terminal rejection, the desktop-absent branch, multi-session
-      isolation, and two-stream independence.
-  Suite 6 (agent-v2-game-disconnect): deploy_agent_v2_drop.yaml — the same
-    topology with the fake-desktop progressive + disconnect fault env.
-    - Mid-game disconnect and recovery: the invisible disconnect behind a
-      completed game, the torn-connection failure branch, and the
-      post-reconnect full game.
-  Suite 7 (desktop-flow): the agent-v2 deployment with the test acting as
-    the desktop client.
-    - The flow-control stream from the desktop's side: connect probe echo,
-      second-connection takeover, operation delivery → receipt →
-      recognition, and the in-flight failure when the connection vanishes.
+  Suite 1 (game-system): the full system on deploy_agent_v2.yaml — the
+    won topology whose fake-desktop executor plays the won board on the
+    desktop-e2e-won session. Cases run serially in module order: the
+    configuration face (session CRUD, MemoryService storage API, web
+    static hosting) → the conversation face (the /api/v2 NDJSON surface
+    and the preset configuration closed loop) → the game face (the
+    fake-llm game chain over the executor session) → the desktop face
+    (the flow-control stream from the desktop's side, test-driven).
+  Suite 2 (game-disconnect): the mid-game disconnect and recovery branch
+    on deploy_agent_v2_drop.yaml — the same service list with the
+    executor running the progressive scenario plus the disconnect fault
+    env. Placed after the main suite: guitar runs suites serially and
+    stops on the first failure, so the trunk regression surfaces first.
+
+  Cases isolate through unique session/preset resource names, so the
+  shared deployment needs no per-case redeployment.
 
 suites:
-  - name: session
-    description: "Session CRUD + ListSessions pagination over the /api/v1 session face (templates/saolei/sessions/...)"
+  - name: game-system
+    description: "The full game system on the won topology (deploy_agent_v2.yaml), cases ordered by tested module: session CRUD and ListSessions pagination over /api/v1; the MemoryService storage API (Create/Update/Delete/List, AIP-158 pagination, AIP-193 error codes); web static hosting and the page's management loop; the agent_v2 conversation surface (/api/v2 NDJSON streaming with per-step block segmentation, history backfill, injected-failure ERROR turns with the interrupted tail visible, :cancel semantics, desktop connection status); the preset configuration closed loop (CRUD, materialization, model catalog); the game loop over the desktop-e2e-won executor session (won chain, desktop-absent, multi-session isolation, two-stream independence); and the flow-control stream from the desktop's side"
     deploy: //projects/game/testplan/deploy_agent_v2.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:testplan_test
-
-  - name: memory
-    description: "MemoryService storage API through the gateway's public /api/v1 memories routes: Create/Update/Delete/List (memory_id-based resources), AIP-158 pagination, and the AIP-193 error codes (ALREADY_EXISTS on duplicate memory_id, NOT_FOUND on missing update/delete, INVALID_ARGUMENT on a bad memory_id)"
-    deploy: //projects/game/testplan/deploy_agent_v2.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:memory_test
-
-  - name: agent-v2-conversation
-    description: "agent-v2 conversation surface (/api/v2) + web static hosting with the fake /v1/responses endpoint (specs/051-agent-v2-dsh-migration/contracts/agent-api.md), deployed via deploy_agent_v2.yaml — the two-hop topology gateway→proxy→agent-v2 for the session face (owner affinity, specs/051-agent-v2-dsh-migration/research.md D9) with GLM_LLM_TARGET resolving to fake-llm. agent_v2_conversation_test covers, per concern: the streamed event sequence with multi-frame THINK deltas and the tool_result blocks carried by the tool-capable game surface (agent-api.md §2.5), the pure-text zero-THINK turn, multi-turn continuity via the history_keywords template, concurrent session isolation without cross-session queueing, queued{position}→auto-resume in the slow-template window, history backfill equal to the streamed terminal state, model-failure turn_end{ERROR} with a usable session, and empty-text/unknown-template 400 mapping with the service healthy. web_test covers the entry HTML + hashed /assets hosting and the management closed loop create → list → converse → delete through /api/v1 + /api/v2 as the page drives it"
-    deploy: //projects/game/testplan/deploy_agent_v2.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
+      - //projects/game/testplan:testplan_test          # session module
+      - //projects/game/testplan:memory_test            # memory module
+      - //projects/game/testplan:web_test               # web static hosting
       - //projects/game/testplan:agent_v2_conversation_test
-      - //projects/game/testplan:web_test
-
-  - name: agent-v2-preset
-    description: "agent_v2 US2 configuration closed loop over /api/v2 (specs/051-agent-v2-dsh-migration/quickstart.md §2 agent-v2-preset — US2 场景 1–7), deployed via deploy_agent_v2.yaml. agent_v2_preset_test covers, per concern: the preset CRUD round trip through the gateway's direct PresetService routes (create → Get/List read-back agreement → duplicate caller-id 409 → update via update_mask=player_prompt → delete → 404, agent-api.md §2.5 — Mongo-backed persistence is what makes the read-backs agree; restart survival is T037's item), the materialized-config GetAgent consistency with the model picked from the ListModels catalog plus idempotent re-Apply (US2 场景 2), Update refresh clearing the in-memory history while keeping the configuration (US2 场景 4), the two-layer unmaterialized-Send rejection — 404 NOT_FOUND with no owner and 400 FAILED_PRECONDITION with owner-without-agent (reached deterministically via a fail-fast unknown-model UpdateAgent, which also pins US2 场景 7), and the empty-prompt persona fallback completing a fake-llm round-trip (US2 场景 6)"
-    deploy: //projects/game/testplan/deploy_agent_v2.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
       - //projects/game/testplan:agent_v2_preset_test
-
-  - name: agent-v2-game
-    description: "agent_v2 US1 game loop over /api/v2 with the fake-llm game chain and the fake-desktop executor in the won topology (specs/051-agent-v2-dsh-migration/quickstart.md §2 agent-v2-game), deployed via deploy_agent_v2.yaml. agent_v2_game_test covers, per concern: the full won-scenario tool chain on the desktop-e2e-won session (saolei_init → operate batch stopping pre-dispatch on game_won — 终局与终局后拒绝) with the board-text contract asserted on the tool_result frames (outcome line / game status line / ruler board, data-model.md §2.5) and the history backfill settling both tool-call blocks by tool_id; the desktop-absent branch (a session with no flow connection fails saolei_init with the model-visible 'desktop disconnected' error while the turn completes and the process stays usable — US1 场景 4); concurrent multi-session isolation (a connected and an absent session keep distinct outcomes, turn ids, and histories); and two-stream independence from the conversation side (a client-dropped Send stream lets the turn finish with the flow connection still serviceable — 验收锚点 4). The mid-game disconnect branch needs the drop topology and runs in the agent-v2-game-disconnect suite (deploy_agent_v2_drop.yaml)"
-    deploy: //projects/game/testplan/deploy_agent_v2.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_v2_game_test
-
-  - name: agent-v2-game-disconnect
-    description: "agent_v2 US1 mid-game disconnect and recovery branch (specs/051-agent-v2-dsh-migration/quickstart.md §2 agent-v2-game-disconnect — US1 场景 5/6, desktop-bridge.md §6 验收锚点 3), deployed via deploy_agent_v2_drop.yaml: the topology matches deploy_agent_v2.yaml but the single fake-desktop executor runs the progressive scenario with the disconnect-after-3-ops fault env (no won executor here — the disconnect binary is separate from agent_v2_game_test because guitar runs whole bazel targets as suite cases without per-suite test-function filtering, specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4). agent_v2_game_disconnect_test covers the three-game sequence on the desktop-e2e-drop session: game 1 completes the full progressive chain with the disconnect firing invisibly behind the last receipt (两流独立性 — flow 故障不影响对话流, US1 场景 6); game 2 meets the torn-down connection — saolei_init fails with the model-visible 'desktop disconnected' error while the turn survives (回合存活); game 3, after the executor's reconnect cycle, plays a full game again with the board state re-seeded by init (重连后游戏可继续)"
+      - //projects/game/testplan:agent_v2_game_test     # game face on the won topology
+      - //projects/game/testplan:desktop_flow_test
+  - name: game-disconnect
+    description: "The mid-game disconnect and recovery branch (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点 3) on the drop topology (deploy_agent_v2_drop.yaml): the service list matches deploy_agent_v2.yaml but the single fake-desktop executor runs the progressive scenario with the disconnect-after-3-ops fault env, bound to the desktop-e2e-drop session. agent_v2_game_disconnect_test drives the three-game sequence: game 1 completes with the disconnect firing invisibly behind the last receipt (flow fault, conversation stream unaffected); game 2 meets the torn connection — saolei_init fails with the model-visible 'desktop disconnected' error while the turn survives; game 3, after the executor's reconnect, plays a full game with the board re-seeded by init. The disconnect binary is separate from agent_v2_game_test because guitar runs whole bazel targets as suite cases without per-suite test-function filtering"
     deploy: //projects/game/testplan/deploy_agent_v2_drop.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:agent_v2_game_disconnect_test
-
-  - name: desktop-flow
-    description: "agent_v2 flow-control stream from the desktop's side over the gateway /api/v2 WebSocket (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点), deployed via deploy_agent_v2.yaml with the test acting as the desktop client. desktop_flow_test covers, per concern: the connect probe echo (the ACTIVE status signal answered with a status frame — US3-2), the second-connection takeover (a new flow connection for the session ends the previous one — the v1 baseline), the operation delivery → receipt → recognition loop (the F2 new-game dispatch read off the flow stream answered with the recognizable win-board screenshot; the agent recognizes it and the conversation stream carries the SUCCEEDED board text — US1-1/US3-3), and the in-flight failure when the desktop vanishes mid-dispatch (the bridge settles the dispatch FAILED 'desktop disconnected' and the turn completes — US1-5/§2 断连结算)"
-    deploy: //projects/game/testplan/deploy_agent_v2.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:desktop_flow_test
+      - //projects/game/testplan:agent_v2_game_disconnect_test  # mid-game disconnect three-game sequence

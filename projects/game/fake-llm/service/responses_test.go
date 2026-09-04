@@ -48,6 +48,16 @@ func responsesTestStore(t *testing.T) *MessageStore {
 				"      code: \"glm_test_failure\"",
 				"      message: \"Injected failure\"",
 				"    responses_only: true",
+				"  - name: agent-v2-fail-mid",
+				"    keywords:",
+				"      - agent-v2-midfail",
+				"    reasoning_chunks:",
+				"      - \"Thinking before the break.\"",
+				"    text: \"Partial answer.\"",
+				"    failure:",
+				"      code: \"glm_test_failure\"",
+				"      message: \"Injected failure after content\"",
+				"    responses_only: true",
 				"",
 			}, "\n")),
 		},
@@ -331,6 +341,61 @@ func TestResponsesHandler_FailureInjection(t *testing.T) {
 		t.Fatalf("failed error = %v, want an error object", resp["error"])
 	}
 	if errObj["code"] != "glm_test_failure" || errObj["message"] != "Injected failure" {
+		t.Errorf("error = %v, want the configured code/message", errObj)
+	}
+}
+
+// TestResponsesHandler_FailureAfterPartialContent verifies the
+// content-carrying failure template (agent_v2.yaml agent-v2-fail-mid): the
+// think and text events stream first, and response.failed replaces the
+// terminal completed — the "partial content then provider failure" wire
+// whose produced prefix the agent solidifies as the interrupted history
+// entry (agent-api-changes.md §6).
+func TestResponsesHandler_FailureAfterPartialContent(t *testing.T) {
+	// given: a request matching the partial-content failure template.
+	handler := NewResponsesHandler(responsesTestStore(t), rand.New(rand.NewPCG(1, 0)))
+	body := `{"model":"glm-5.2","stream":true,"input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"agent-v2-midfail"}]}]}`
+
+	// when
+	rec := postResponses(t, handler, body)
+
+	// then: created → reasoning delta → message added → text delta →
+	// message done → failed (no completed, no usage).
+	events := scanResponsesEvents(t, rec.Body)
+	wantNames := []string{
+		"response.created",
+		"response.output_item.added",
+		"response.reasoning_summary_text.delta",
+		"response.output_item.added",
+		"response.output_text.delta",
+		"response.output_item.done",
+		"response.failed",
+	}
+	if len(events) != len(wantNames) {
+		t.Fatalf("got %d events, want %d: %v", len(events), len(wantNames), events)
+	}
+	for i, want := range wantNames {
+		if events[i][0] != want {
+			t.Fatalf("event[%d] = %q, want %q", i, events[i][0], want)
+		}
+	}
+	if delta := responsesEvent(t, events[2][1])["delta"]; delta != "Thinking before the break." {
+		t.Errorf("reasoning delta = %v, want the template's think piece", delta)
+	}
+	if delta := responsesEvent(t, events[4][1])["delta"]; delta != "Partial answer." {
+		t.Errorf("text delta = %v, want the template's text", delta)
+	}
+	failed := responsesEvent(t, events[len(events)-1][1])
+	resp, ok := failed["response"].(map[string]any)
+	if !ok || resp["status"] != "failed" {
+		t.Fatalf("failed response = %v, want status failed", failed["response"])
+	}
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("failed error = %v, want an error object", resp["error"])
+	}
+	if errObj["code"] != "glm_test_failure" || errObj["message"] != "Injected failure after content" {
 		t.Errorf("error = %v, want the configured code/message", errObj)
 	}
 }

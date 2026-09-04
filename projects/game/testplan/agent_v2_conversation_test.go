@@ -486,3 +486,431 @@ func TestAgentV2InvalidInputRejected(t *testing.T) {
 		t.Fatalf("post-rejection turn ended %v, want COMPLETED", events[len(events)-1].GetTurnEnd().GetStatus())
 	}
 }
+
+// agentV2BlockSpan is one streamed block's segmentation facts: the block
+// index, the model-output step it belongs to (agent-api-changes.md §1), and
+// the block type.
+type agentV2BlockSpan struct {
+	index int32
+	step  int32
+	kind  game.BlockType
+}
+
+// agentV2BlockSpansFromEvents folds a turn's block_start frames into the
+// per-block segmentation facts, in stream order.
+func agentV2BlockSpansFromEvents(events []*game.ChatEvent) []agentV2BlockSpan {
+	var spans []agentV2BlockSpan
+	for _, e := range events {
+		if start := e.GetBlockStart(); start != nil {
+			spans = append(spans, agentV2BlockSpan{index: start.GetIndex(), step: start.GetStep(), kind: start.GetType()})
+		}
+	}
+	return spans
+}
+
+// TestAgentV2StepSegmentedBlocksAndHistory covers the step extension
+// (agent-api-changes.md §1) end to end on a multi-step game chain: every
+// block event carries the step of the model output that produced it, the
+// steps are non-decreasing and segment the turn (one tool call per model
+// request, the terminal text on its own step), and the history backfill
+// holds ONE assistant message per step (specs/054-agent-v2-bugfixes/
+// data-model.md §6). The chain runs on the test's own session with the test
+// answering the init dispatch over its own flow connection — the
+// desktop_flow suite's serving pattern — so the game suite's executor
+// session history is untouched.
+func TestAgentV2StepSegmentedBlocksAndHistory(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "conv-steps-" + uniqueSuffix()
+	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
+		sessionID, "conv-steps-"+uniqueSuffix(), "step segmentation")
+
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+
+	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
+		agentV2TriggerSaoleiGame+" across model steps")
+	ch := drainAgentV2TurnAsync(stream)
+
+	serveWonInitReceipt(t, flow, sessionID, wsReadTimeout)
+
+	var events []*game.ChatEvent
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("send stream: %v", r.err)
+		}
+		events = r.events
+	case <-time.After(wsReadTimeout):
+		t.Fatal("multi-step game turn did not complete within the read window")
+	}
+	assertAgentV2TurnWellFormed(t, sessionName, events)
+	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("game turn ended %v, want COMPLETED", end.GetStatus())
+	}
+
+	// Chain segmentation: init call (step 0) → operate call (step 1) →
+	// summary text (step 2) — the won chain's three model requests.
+	spans := agentV2BlockSpansFromEvents(events)
+	wantSpans := []agentV2BlockSpan{
+		{index: 0, step: 0, kind: game.BlockType_BLOCK_TYPE_TOOL_CALL},
+		{index: 1, step: 1, kind: game.BlockType_BLOCK_TYPE_TOOL_CALL},
+		{index: 2, step: 2, kind: game.BlockType_BLOCK_TYPE_TEXT},
+	}
+	if len(spans) != len(wantSpans) {
+		t.Fatalf("block count = %d (%v), want %d blocks on steps 0/1/2", len(spans), spans, len(wantSpans))
+	}
+	for i, span := range spans {
+		if span != wantSpans[i] {
+			t.Errorf("block[%d] = %+v, want %+v (the chain's step segmentation)", i, span, wantSpans[i])
+		}
+	}
+
+	// Every delta and block_end of a block carries that block's step —
+	// consumers group the events into per-step segments by this field.
+	stepByIndex := map[int32]int32{}
+	for _, span := range spans {
+		stepByIndex[span.index] = span.step
+	}
+	lastStep := int32(-1)
+	for i, e := range events {
+		var index, step int32
+		switch {
+		case e.GetDelta() != nil:
+			index, step = e.GetDelta().GetIndex(), e.GetDelta().GetStep()
+		case e.GetBlockEnd() != nil:
+			index, step = e.GetBlockEnd().GetIndex(), e.GetBlockEnd().GetStep()
+		default:
+			continue
+		}
+		if want := stepByIndex[index]; step != want {
+			t.Errorf("frame %d carries step %d for block %d, want the block's step %d", i, step, index, want)
+		}
+		if step < lastStep {
+			t.Errorf("frame %d step = %d, below the previous event's step %d (steps must be non-decreasing)", i, step, lastStep)
+		}
+		lastStep = step
+	}
+
+	// History backfill: user + ONE assistant message per step, each holding
+	// exactly that step's settled blocks (the game suite pins the same
+	// per-step shape on the executor session — data-model.md §6).
+	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	messages := hist.GetMessages()
+	if len(messages) != 4 {
+		t.Fatalf("history messages = %d, want 4 (user + one assistant message per step)", len(messages))
+	}
+	if messages[0].GetRole() != game.Role_ROLE_USER {
+		t.Errorf("history[0] role = %s, want USER", messages[0].GetRole())
+	}
+	wantBlocks := []struct {
+		role    game.Role
+		name    string
+		tool    bool
+		summary string
+	}{
+		{role: game.Role_ROLE_AGENT, name: "saolei_init", tool: true},
+		{role: game.Role_ROLE_AGENT, name: "saolei_operate", tool: true},
+		{role: game.Role_ROLE_AGENT, summary: agentV2WonSummaryText},
+	}
+	for i, want := range wantBlocks {
+		m := messages[i+1]
+		if m.GetRole() != want.role {
+			t.Errorf("history[%d] role = %s, want %s", i+1, m.GetRole(), want.role)
+		}
+		if m.GetInterrupted() {
+			t.Errorf("history[%d] interrupted = true, want false (the chain completed)", i+1)
+		}
+		blocks := m.GetBlocks()
+		if len(blocks) != 1 {
+			t.Errorf("history[%d] blocks = %d, want 1 (one block per step on this chain)", i+1, len(blocks))
+			continue
+		}
+		if want.tool {
+			call := blocks[0].GetToolCall()
+			if call == nil {
+				t.Errorf("history[%d] block = %T, want a tool-call block", i+1, blocks[0].GetKind())
+				continue
+			}
+			if call.GetName() != want.name {
+				t.Errorf("history[%d] tool name = %q, want %q", i+1, call.GetName(), want.name)
+			}
+			if call.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+				t.Errorf("history[%d] tool status = %v, want SUCCEEDED", i+1, call.GetStatus())
+			}
+		} else if got := agentV2MessageText(m); got != want.summary {
+			t.Errorf("history[%d] text = %q, want %q", i+1, got, want.summary)
+		}
+	}
+}
+
+// TestAgentV2FailedTurnBackfillsInterruptedTail covers the failed-turn
+// content fixation end to end (agent-api-changes.md §6): the partial-content
+// failure template (agent-v2-fail-mid) streams think+text and only then
+// response.failed, so the turn ends turn_end{ERROR} with the produced
+// blocks on the stream and ListAgentMessages backfills the same content as
+// the tail assistant message with interrupted=true — the FR-005 signal that
+// keeps failed turns unfolded.
+func TestAgentV2FailedTurnBackfillsInterruptedTail(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx, sessionName := agentV2Prep(t, sutHostURL, sutEnvName)
+
+	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
+		agentV2TriggerFailMid+" produce content, then break")
+	defer stream.Close()
+	events := drainAgentV2Turn(t, stream)
+	assertAgentV2TurnWellFormed(t, sessionName, events)
+
+	// The produced content reached the stream before the failure.
+	term := agentV2TerminalBlocksFromEvents(events)
+	if term.think != agentV2FailMidThink {
+		t.Errorf("streamed think = %q, want %q", term.think, agentV2FailMidThink)
+	}
+	if term.text != agentV2FailMidText {
+		t.Errorf("streamed text = %q, want %q", term.text, agentV2FailMidText)
+	}
+	end := events[len(events)-1].GetTurnEnd()
+	if end.GetStatus() != game.TurnStatus_TURN_STATUS_ERROR {
+		t.Fatalf("turn ended %v, want ERROR (the injected provider failure)", end.GetStatus())
+	}
+	if end.GetError() == nil || end.GetError().GetMessage() == "" {
+		t.Errorf("turn_end.error = %+v, want a structured error payload", end.GetError())
+	}
+
+	// Backfill: user + the interrupted assistant tail, content equal to the
+	// streamed prefix and interrupted=true (data-model.md §1.5).
+	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	messages := hist.GetMessages()
+	if len(messages) != 2 {
+		t.Fatalf("history messages = %d, want 2 (user turn + interrupted assistant tail)", len(messages))
+	}
+	if messages[1].GetRole() != game.Role_ROLE_AGENT {
+		t.Errorf("history[1] role = %s, want AGENT", messages[1].GetRole())
+	}
+	if !messages[1].GetInterrupted() {
+		t.Errorf("history[1].interrupted = false, want true (the step never settled — FR-005)")
+	}
+	if got := agentV2MessageThink(messages[1]); got != term.think {
+		t.Errorf("history[1] think = %q, want the streamed prefix %q", got, term.think)
+	}
+	if got := agentV2MessageText(messages[1]); got != term.text {
+		t.Errorf("history[1] text = %q, want the streamed prefix %q", got, term.text)
+	}
+}
+
+// TestAgentV2CancelTerminatesRunningTurn covers the :cancel in-flight half
+// (agent-api-changes.md §3): canceling a running turn answers 200 and ends
+// the turn's stream with turn_end{TURN_STATUS_CANCELED}, and the session
+// accepts a new Send immediately (no cooldown — the CANCELED settlement
+// keeps the entry live, data-model.md §1.3).
+func TestAgentV2CancelTerminatesRunningTurn(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx, sessionName := agentV2Prep(t, sutHostURL, sutEnvName)
+
+	// Confirm the turn is running before canceling (the slow template's 3s
+	// inter-chunk window — testdata/agent_v2.yaml agent-v2-slow — is the
+	// controllable cancellation target).
+	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
+		agentV2TriggerSlow+" to be canceled")
+	first := nextAgentV2Event(t, stream.Scanner)
+	if first.GetTurnStart() == nil {
+		stream.Close()
+		t.Fatalf("first frame payload = %T, want turn_start", first.GetPayload())
+	}
+
+	if status, body := postAgentV2Cancel(t, ctx, sutHostURL, sutEnvName, sessionName); status != http.StatusOK {
+		t.Fatalf("cancel status = %d (body: %s), want 200", status, body)
+	}
+
+	ch := drainAgentV2TurnAsync(stream)
+	var events []*game.ChatEvent
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("canceled stream: %v", r.err)
+		}
+		events = r.events
+	case <-time.After(wsReadTimeout):
+		t.Fatal("canceled turn did not settle within the read window")
+	}
+	full := append([]*game.ChatEvent{first}, events...)
+	assertAgentV2TurnWellFormed(t, sessionName, full)
+	if last := events[len(events)-1].GetTurnEnd(); last.GetStatus() != game.TurnStatus_TURN_STATUS_CANCELED {
+		t.Fatalf("canceled turn ended %v, want CANCELED", last.GetStatus())
+	}
+
+	// 后置: a follow-up Send starts and completes right away.
+	stream2 := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
+		agentV2TriggerPlain+" right after the cancel")
+	defer stream2.Close()
+	events2 := drainAgentV2Turn(t, stream2)
+	assertAgentV2TurnWellFormed(t, sessionName, events2)
+	if events2[len(events2)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("post-cancel turn ended %v, want COMPLETED", events2[len(events2)-1].GetTurnEnd().GetStatus())
+	}
+}
+
+// TestAgentV2CancelLandsQueuedMessages covers the :cancel queue half
+// (agent-api-changes.md §3): every queued stream receives
+// turn_end{TURN_STATUS_CANCELED} and closes, and the queued messages stay
+// in the history as user messages without triggering a turn (the user
+// ruling that departs from the official client's kept queue — research.md
+// D2, data-model.md §3).
+func TestAgentV2CancelLandsQueuedMessages(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx, sessionName := agentV2Prep(t, sutHostURL, sutEnvName)
+
+	// Turn A runs; turn B queues behind it.
+	streamA := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
+		agentV2TriggerSlow+" running when the cancel fires")
+	firstA := nextAgentV2Event(t, streamA.Scanner)
+	if firstA.GetTurnStart() == nil {
+		streamA.Close()
+		t.Fatalf("turn A first frame payload = %T, want turn_start", firstA.GetPayload())
+	}
+	streamB := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
+		agentV2TriggerPlain+" queued when the cancel fires")
+	firstB := nextAgentV2Event(t, streamB.Scanner)
+	if firstB.GetQueued() == nil {
+		streamA.Close()
+		streamB.Close()
+		t.Fatalf("turn B first frame payload = %T, want queued{position}", firstB.GetPayload())
+	}
+
+	if status, body := postAgentV2Cancel(t, ctx, sutHostURL, sutEnvName, sessionName); status != http.StatusOK {
+		t.Fatalf("cancel status = %d (body: %s), want 200", status, body)
+	}
+
+	chA := drainAgentV2TurnAsync(streamA)
+	chB := drainAgentV2TurnAsync(streamB)
+	var eventsA, eventsB []*game.ChatEvent
+	for eventsA == nil || eventsB == nil {
+		select {
+		case r := <-chA:
+			if r.err != nil {
+				t.Fatalf("turn A stream: %v", r.err)
+			}
+			eventsA = r.events
+		case r := <-chB:
+			if r.err != nil {
+				t.Fatalf("turn B stream: %v", r.err)
+			}
+			eventsB = r.events
+		case <-time.After(wsReadTimeout):
+			t.Fatal("the canceled turns did not both settle within the read window")
+		}
+	}
+	fullA := append([]*game.ChatEvent{firstA}, eventsA...)
+	assertAgentV2TurnWellFormed(t, sessionName, fullA)
+	if eventsA[len(eventsA)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_CANCELED {
+		t.Fatalf("running turn A ended %v, want CANCELED", eventsA[len(eventsA)-1].GetTurnEnd().GetStatus())
+	}
+	// The queued stream is exactly queued{position} → turn_end{CANCELED}:
+	// the cancel closes it without a turn_start — the stream-level proof
+	// that the queued message never triggered a turn.
+	if len(eventsB) != 1 || eventsB[0].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_CANCELED {
+		t.Fatalf("queued stream frames after the queued frame = %v, want exactly one turn_end{CANCELED}", eventsB)
+	}
+
+	// The queued message stays in the history as a user message (enqueue
+	// appended it; the cancel cleared the queue without running a turn).
+	queuedText := agentV2TriggerPlain + " queued when the cancel fires"
+	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	landed := false
+	for _, m := range hist.GetMessages() {
+		if m.GetRole() == game.Role_ROLE_USER && agentV2MessageText(m) == queuedText {
+			landed = true
+			break
+		}
+	}
+	if !landed {
+		t.Errorf("queued message %q never landed as a history user message", queuedText)
+	}
+
+	// The session stays live after draining the queue: a follow-up Send
+	// starts and completes (agent-api-changes.md §3 后置).
+	stream2 := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
+		agentV2TriggerPlain+" right after the cancel")
+	defer stream2.Close()
+	events2 := drainAgentV2Turn(t, stream2)
+	assertAgentV2TurnWellFormed(t, sessionName, events2)
+	if events2[len(events2)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("post-cancel turn ended %v, want COMPLETED", events2[len(events2)-1].GetTurnEnd().GetStatus())
+	}
+}
+
+// TestAgentV2CancelNoopAndPrecondition covers the :cancel edge semantics
+// (agent-api-changes.md §3), layered like Send's rejection family: a never-
+// materialized session has no owner and answers 404 NOT_FOUND (the proxy's
+// routing layer — no agent to cancel), an owner-without-agent session
+// reaches agent_v2 and answers 400 FAILED_PRECONDITION, and an idle
+// materialized agent answers 200 as a no-op (idempotent — repeating it
+// stays 200).
+func TestAgentV2CancelNoopAndPrecondition(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx, sessionName := agentV2Prep(t, sutHostURL, sutEnvName)
+
+	// owner-without-agent: the fail-fast unknown-model UpdateAgent
+	// allocates the owner, then rejects without materializing (US2 场景 7).
+	unmatName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "cancel-unmat-"+uniqueSuffix())
+	unmatPreset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "cancel-unmat-"+uniqueSuffix(), "cancel precondition")
+	updateAgentV2AgentWithStatus(t, ctx, sutHostURL, sutEnvName, unmatName, unmatPreset.GetName(), "no-such-model")
+
+	tests := []struct {
+		name    string
+		session string
+		want    int
+	}{
+		{name: "idle materialized agent", session: sessionName, want: http.StatusOK},
+		{name: "never-materialized session has no owner", session: "templates/" + saoleiTemplateID + "/sessions/ghost-" + uniqueSuffix(), want: http.StatusNotFound},
+		{name: "owner without a materialized agent", session: unmatName, want: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, body := postAgentV2Cancel(t, ctx, sutHostURL, sutEnvName, tt.session)
+			if status != tt.want {
+				t.Fatalf("cancel status = %d (body: %s), want %d", status, body, tt.want)
+			}
+		})
+	}
+
+	// Idempotence: the second no-op cancel on the idle session succeeds.
+	if status, body := postAgentV2Cancel(t, ctx, sutHostURL, sutEnvName, sessionName); status != http.StatusOK {
+		t.Errorf("second cancel status = %d (body: %s), want 200 (idempotent no-op)", status, body)
+	}
+}
+
+// TestAgentV2GetAgentDesktopConnected covers the GetAgent connection fact
+// (agent-api-changes.md §4): a materialized session with no flow
+// connection reports desktop_connected=false, and attaching a flow
+// connection flips it to true. The "connected" half attaches the test's own
+// flow to the executor session (the won topology's fake-desktop binding) —
+// the read is pinned to the test's own live connection, not to the
+// executor's boot timing.
+func TestAgentV2GetAgentDesktopConnected(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-conn-"+uniqueSuffix(), "connection status")
+
+	// 无连接: a materialized session that never saw a flow connection.
+	lonelyName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "conv-conn-"+uniqueSuffix())
+	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, lonelyName, preset.GetName(), "")
+	if lonely := getAgentV2Agent(t, ctx, sutHostURL, sutEnvName, lonelyName); lonely.GetDesktopConnected() {
+		t.Errorf("desktop_connected = true with no flow connection, want false")
+	}
+
+	// 有连接: attach the test's flow to the executor session and read true.
+	wonName := ensureAgentV2Session(t, sutHostURL, sutEnvName, agentV2DesktopWonSessionID)
+	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, wonName, preset.GetName(), "")
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, agentV2DesktopWonSessionID)
+	defer flow.Close()
+	connected := getAgentV2Agent(t, ctx, sutHostURL, sutEnvName, wonName)
+	if !connected.GetDesktopConnected() {
+		t.Errorf("desktop_connected = false with a live flow connection attached, want true")
+	}
+}

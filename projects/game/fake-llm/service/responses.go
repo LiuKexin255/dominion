@@ -445,8 +445,9 @@ func usageFromSpec(spec responseSpec) responsesUsage {
 
 // serveResponsesNonStreaming writes the stream:false shape: one JSON
 // response object whose output carries the function_call / reasoning /
-// message items with the full content, plus the derived usage. A Failure
-// template returns the failed status with the configured error.
+// message items for the content the template declares, plus the derived
+// usage. A Failure template returns the failed status with the configured
+// error (no output, no usage).
 func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failure *ResponseFailure) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -484,14 +485,16 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 				"id":   responsesRsnID,
 			})
 		}
-		output = append(output, map[string]any{
-			"type": "message",
-			"id":   responsesMsgID,
-			"role": "assistant",
-			"content": []map[string]any{
-				{"type": "output_text", "text": spec.Text},
-			},
-		})
+		if spec.Text != "" {
+			output = append(output, map[string]any{
+				"type": "message",
+				"id":   responsesMsgID,
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "output_text", "text": spec.Text},
+				},
+			})
+		}
 	}
 	resp["output"] = output
 
@@ -509,12 +512,13 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 //     item, output_index 0), then one reasoning_summary_text.delta per
 //     think piece — the configured chunk_delays gap precedes each piece
 //     after the first (context-aware, so caller aborts unblock promptly);
-//  3. one output_item.added (message item, next output_index — think and
-//     text never share an output item, §2 invariant 2), one
-//     output_text.delta with the full text, and the output_item.done
-//     carrying the complete message item;
-//  4. response.completed with the derived usage, always last (§2
-//     invariant 3).
+//  3. when the template has text: one output_item.added (message item,
+//     next output_index — think and text never share an output item, §2
+//     invariant 2), one output_text.delta with the full text, and the
+//     output_item.done carrying the complete message item;
+//  4. the terminal event: response.failed with the configured error (no
+//     usage) when the template carries a Failure, response.completed with
+//     the derived usage otherwise — always last (§2 invariant 3).
 //
 // A tool-call template streams the function_call item instead of the
 // message item (added → one function_call_arguments.delta with the full
@@ -522,8 +526,13 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 // the call next — the multi-step tool chains of the agent_v2 game
 // templates. There is no message content on this path.
 //
-// A Failure template emits response.created then response.failed with the
-// configured code/message and nothing else (§2 invariant 4).
+// The Failure terminal arrives AFTER the template's content events, so a
+// content-carrying failure template is the "partial content then provider
+// failure" stream whose produced prefix the consuming agent solidifies as
+// the interrupted history entry (specs/054-agent-v2-bugfixes/contracts/
+// agent-api-changes.md §6); a failure template with no content streams
+// only created → failed. A template declaring neither think nor text
+// emits no content items at all — the message item is the text carrier.
 //
 // The chat-completions endpoint's permanent-stall simulation (stall /
 // stall_after, specs/043-llm-stream-stall-recovery / specs/046-fake-llm-
@@ -546,21 +555,6 @@ func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec respon
 		"type":     "response.created",
 		"response": map[string]any{"id": responsesRespID, "status": "in_progress"},
 	})
-
-	if failure != nil {
-		writeEvent(w, flusher, "response.failed", map[string]any{
-			"type": "response.failed",
-			"response": map[string]any{
-				"id":     responsesRespID,
-				"status": "failed",
-				"error": map[string]any{
-					"code":    failure.Code,
-					"message": failure.Message,
-				},
-			},
-		})
-		return
-	}
 
 	if spec.isToolCall() {
 		serveResponsesToolCall(w, flusher, spec)
@@ -594,29 +588,47 @@ func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec respon
 		}
 	}
 
-	writeEvent(w, flusher, "response.output_item.added", map[string]any{
-		"type":         "response.output_item.added",
-		"output_index": textOutputIndex,
-		"item":         map[string]any{"type": "message", "role": "assistant"},
-	})
-	writeEvent(w, flusher, "response.output_text.delta", map[string]any{
-		"type":         "response.output_text.delta",
-		"item_id":      responsesMsgID,
-		"output_index": textOutputIndex,
-		"delta":        spec.Text,
-	})
-	writeEvent(w, flusher, "response.output_item.done", map[string]any{
-		"type":         "response.output_item.done",
-		"output_index": textOutputIndex,
-		"item": map[string]any{
-			"type": "message",
-			"id":   responsesMsgID,
-			"role": "assistant",
-			"content": []map[string]any{
-				{"type": "output_text", "text": spec.Text},
+	if spec.Text != "" {
+		writeEvent(w, flusher, "response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": textOutputIndex,
+			"item":         map[string]any{"type": "message", "role": "assistant"},
+		})
+		writeEvent(w, flusher, "response.output_text.delta", map[string]any{
+			"type":         "response.output_text.delta",
+			"item_id":      responsesMsgID,
+			"output_index": textOutputIndex,
+			"delta":        spec.Text,
+		})
+		writeEvent(w, flusher, "response.output_item.done", map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": textOutputIndex,
+			"item": map[string]any{
+				"type": "message",
+				"id":   responsesMsgID,
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "output_text", "text": spec.Text},
+				},
 			},
-		},
-	})
+		})
+	}
+
+	if failure != nil {
+		writeEvent(w, flusher, "response.failed", map[string]any{
+			"type": "response.failed",
+			"response": map[string]any{
+				"id":     responsesRespID,
+				"status": "failed",
+				"error": map[string]any{
+					"code":    failure.Code,
+					"message": failure.Message,
+				},
+			},
+		})
+		return
+	}
+
 	writeEvent(w, flusher, "response.completed", map[string]any{
 		"type": "response.completed",
 		"response": map[string]any{

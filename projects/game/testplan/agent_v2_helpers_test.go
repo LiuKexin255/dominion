@@ -55,10 +55,11 @@ const agentV2PathPrefix = "/api/v2/"
 // no message may carry two triggers (the alphabetical lowest-name template
 // would win) and none may contain the followup history keyword below.
 const (
-	agentV2TriggerThink = "agent-v2-think"
-	agentV2TriggerPlain = "agent-v2-plain"
-	agentV2TriggerSlow  = "agent-v2-slow"
-	agentV2TriggerFail  = "agent-v2-fail"
+	agentV2TriggerThink   = "agent-v2-think"
+	agentV2TriggerPlain   = "agent-v2-plain"
+	agentV2TriggerSlow    = "agent-v2-slow"
+	agentV2TriggerFail    = "agent-v2-fail"
+	agentV2TriggerFailMid = "agent-v2-midfail"
 )
 
 // Expected /v1/responses contents pinned from testdata/agent_v2.yaml. MUST be
@@ -75,6 +76,11 @@ const (
 	agentV2SlowThink1   = "Thinking slowly."
 	agentV2SlowThink2   = "Still thinking."
 	agentV2SlowText     = "Finally done thinking."
+	// The partial-content failure template (agent-v2-fail-mid): the content
+	// streams first, then response.failed — the interrupted backfill's
+	// expected prefix (agent-api-changes.md §6).
+	agentV2FailMidThink = "Thinking about the request before it breaks."
+	agentV2FailMidText  = "Partial answer streamed before the failure."
 )
 
 // agentV2SessionName builds the full game session resource name the
@@ -151,6 +157,19 @@ func postAgentV2SendStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnv
 	}
 	reqURL := fmt.Sprintf("%s%s%s:send", sutHostURL, agentV2PathPrefix, sessionName)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
+	return resp.StatusCode, respBody
+}
+
+// postAgentV2Cancel issues POST /api/v2/{agent}:cancel (agent-api-changes.md
+// §3) and returns the HTTP status with the raw body: 200 on success — both
+// the terminating and the idempotent no-op cancel — and 400
+// FAILED_PRECONDITION for an unmaterialized agent (the Send rejection
+// family).
+func postAgentV2Cancel(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s/agent:cancel", sutHostURL, agentV2PathPrefix, sessionName)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
 	return resp.StatusCode, respBody
 }
 
