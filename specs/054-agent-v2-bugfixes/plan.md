@@ -20,7 +20,7 @@
 
 **Primary Dependencies**:
 - 既有 dsh 家族 0.1.1-rc.2 精确 pin（A8 延续）：cordis 4.0.1、dsh-agent、dsh-session 等；依赖治理：dsh 依赖统一 `pnpm-workspace.yaml` catalog 管理（含 `third_party/dsh/core` 底座；rc 线精确版本、cordis/schemastery 保持 range）
-- 官方 UI 复用（同版本线 0.1.1-rc.2）：`@deepseek-ai/dsh-client-ui-primitives`（`MarkdownText` 等原子，已在用）、**新增** `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2`（仅消费其 `src/styles/` token CSS 表，不引入其 cordis runtime——research D4）
+- 官方 UI 复用（同版本线 0.1.1-rc.2）：`@deepseek-ai/dsh-client-ui-primitives`（`MarkdownText` 等原子，已在用）、`@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2` 的官方 token CSS 表（以源码形态 vendored 于 frontend `src/dsh-theme/`，不引入该 npm 依赖与其 cordis runtime——research D4 / revisions/phase10-theme-css-carrier.md）
 - 官方行为参考（不引入代码）：`@deepseek-ai/dsh-client-ui-chat@0.1.2-rc.1` 与 `@deepseek-ai/dsh-client-ui-conversation@0.1.2-rc.1`（Turn Process Folding、`'assistant-step'` 三态、`IConversation.cancel()`——research D1/D2）
 - workspace 包：`@dominion/dsh-saolei-loop`（driver ERROR 固化）、`@dominion/dsh-desktop-bridge`（连接状态查询）
 - MongoDB（preset 持久化，不动）
@@ -86,7 +86,7 @@ projects/game/
 │       ├── server.ts            # Cancel handler 注册；GetAgent 响应携带连接状态
 │       └── history.ts           # 块事件携带 step 序号（chunk→ChatEvent 映射扩展）
 ├── web/frontend/src/
-│   ├── main.tsx / theme.css     # 引入官方 token CSS（ui-theme src/styles），自有布局样式保留
+│   ├── App.tsx / theme.css / dsh-theme/  # 引入官方 token CSS（vendored sheets，App.tsx import），自有布局样式保留
 │   ├── store/chat.ts           # step 感知分段（不合并整回合）、ERROR/CANCELED 保留、ABORTED 语义拆分
 │   ├── components/ChatView.tsx  # 分段渲染+完成后折叠（Turn Process Folding）、终止按钮、连接状态指示
 │   ├── components/ReasoningRow.tsx / ToolCard.tsx  # MarkdownText、棋盘等宽呈现

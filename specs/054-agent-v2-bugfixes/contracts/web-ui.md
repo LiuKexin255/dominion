@@ -14,10 +14,10 @@
 
 | 项 | 契约 |
 |---|---|
-| 引入 | `@deepseek-ai/dsh-client-ui-theme@0.1.1-rc.2`（catalog 管理，与 primitives 同线）不以 runtime import 消费——npm tarball 不含 `src/styles/`（CSS 以字符串内嵌于 `lib/client.js`，该文件为 dsh ModuleLoader 格式不可 import）。官方 token sheets 经同步脚本（`scripts/sync-dsh-theme.mjs`）从安装包提取，以字节精确形态 vendor 至 `src/dsh-theme/`（`index.css` 按官方顺序 `@import` 五个 sheet），`App.tsx` 引入 `./dsh-theme/index.css`；同步与防漂移门禁（`src/dsh-theme.test.ts`）见 [revisions/phase10-theme-css-carrier.md](../revisions/phase10-theme-css-carrier.md)；不引入其 cordis runtime |
+| 引入 | `@deepseek-ai/dsh-client-ui-theme` **不作为 npm 依赖引入**（npm tarball 不含独立 css 文件——CSS 以字符串内嵌于 `lib/client.js`，该文件为 dsh ModuleLoader 格式不可 import；官方注入路径需 cordis runtime，不引入）。其官方 token sheets（0.1.1-rc.2，与 primitives 同线）以**源码形态 vendored** 于 `src/dsh-theme/`（五个字节精确 css + `index.css` 按官方顺序 `@import`；溯源与人工升级流程见 `src/dsh-theme/README.md`），`App.tsx` 引入 `./dsh-theme/index.css`；载体裁定与终态设计见 [revisions/phase10-theme-css-carrier.md](../revisions/phase10-theme-css-carrier.md) |
 | 主题形态 | 深色单一主题：`index.html` 以静态 `data-ds-dark-theme` 布尔属性激活 sheets 的 dark 块（token 定义在 `body` 作用域）；`theme.css` `:root` 置 `color-scheme: dark`（官方 bootstrap 成对语义）；不提供主题切换 |
-| 自有样式 | `theme.css` 保留 `--app-*` 布局变量与布局规则；不定义任何 `--dsw-*` 变量（token sheets 为唯一权威，防漂移——含消费覆盖门禁：所消费的 `--dsw-*` MUST ⊆ sheets 定义，豁免仅 `--dsw-hovercard-bg`——HoverCard 未使用） |
-| 验收 | Menu 卡片视觉断言（jsdom 不能应用外部样式表/解析 `var()`，断言面为文件内容：sheets 定义 Menu 消费的 `--dsw-specific-menu`/`--dsw-alias-border-inverted`/`--dsw-shadow-lv3`，`index.html` 含激活属性）；既有组件（Button/Input/StateDot/ReasoningRow 等）消费的 `--dsw-*` 全部由 sheets 定义（FR-022 覆盖门禁）；人工浏览器目验菜单弹出形态 |
+| 自有样式 | `theme.css` 保留 `--app-*` 布局变量与布局规则；不定义任何 `--dsw-*` 变量（token sheets 为唯一权威——含消费覆盖断言：所消费的 `--dsw-*` MUST ⊆ sheets 定义，豁免仅 `--dsw-hovercard-bg`——HoverCard 未使用） |
+| 验收 | Menu 卡片视觉断言（jsdom 不能应用外部样式表/解析 `var()`，断言面为文件内容：sheets 定义 Menu 消费的 `--dsw-specific-menu`/`--dsw-alias-border-inverted`/`--dsw-shadow-lv3`，`index.html` 含激活属性）；既有组件（Button/Input/StateDot/ReasoningRow 等）消费的 `--dsw-*` 全部由 sheets 定义（FR-022 覆盖断言，`src/dsh-theme.test.ts`）；人工浏览器目验菜单弹出形态 |
 
 ## 2. 对话页分段与折叠（FR-004/005/006/007）
 

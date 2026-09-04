@@ -53,7 +53,7 @@
 
 **版本注意**: dsh 依赖统一 `pnpm-workspace.yaml` catalog 管理（含 `third_party/dsh/core` 底座闭包；rc 线精确版本 0.1.1-rc.2，cordis/schemastery 保持既有 range——见 `survey/deepseek-harness-b1-bazel-packaging.md` §4.2）；ui-theme 0.1.1-rc.2 与 primitives 0.1.1-rc.2 同线。
 
-> **载体重设计（2026-09-04 修正）**: 本条"该包 exports 含 `./src/*`，vite 可直接 import css"的引入方式与 npm tarball 实态不符（0.1.1-rc.2/0.1.2-rc.1 均不含 `src/`；CSS 以字符串内嵌于 `lib/client.js`，该文件为 dsh ModuleLoader 格式不可 import；官方注入路径是 cordis 客户端插件，与"不引入 cordis runtime"冲突）。引入载体改为"从安装包提取 vendor 至 `src/dsh-theme/` + 同步防漂移门禁"，候选验证与终态设计见 [revisions/phase10-theme-css-carrier.md](revisions/phase10-theme-css-carrier.md)。本条其余裁定（token 表复用替代手写子集、深色单一主题、不引入 cordis runtime、catalog 版本治理）不变。
+> **载体重设计（2026-09-04 修正）**: 本条"该包 exports 含 `./src/*`，vite 可直接 import css"的引入方式与 npm tarball 实态不符（0.1.1-rc.2/0.1.2-rc.1 均不含 `src/`；CSS 以字符串内嵌于 `lib/client.js`，该文件为 dsh ModuleLoader 格式不可 import；官方注入路径是 cordis 客户端插件，与"不引入 cordis runtime"冲突）。引入载体终态为：官方 token sheets（0.1.1-rc.2）以**源码形态 vendored** 于 frontend `src/dsh-theme/`——不引入该 npm 依赖、无提取脚本、无同步门禁，升级走目录 README 记录的人工流程（依用户反馈裁定："npm 依赖 + 提取脚本 + 防漂移门禁"形态复杂且不稳定，已否决）；候选验证与终态设计见 [revisions/phase10-theme-css-carrier.md](revisions/phase10-theme-css-carrier.md)。本条其余裁定（token 表复用替代手写子集、深色单一主题、不引入 cordis runtime）不变。
 
 ## D5: 失败回合固化——driver ERROR 路径补 interrupted append
 
