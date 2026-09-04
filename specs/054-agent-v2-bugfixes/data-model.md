@@ -11,13 +11,14 @@
 `BlockStartEvent`（:393）、`BlockDeltaEvent`（:404）、`BlockEndEvent`（:409）各新增：
 
 ```proto
-int32 step = <next>;  // 块所属的模型输出步骤序号（turn 内从 0 单调递增）
+int32 step = <next>;  // 块所属的模型输出步骤序号（turn 内从 1 单调递增，服务端 step 循环序号透传）
 ```
 
-- 语义：turn 内 step 序号与服务端 step 循环一致；同 step 的块共享序号；step 变化即新分段。
-- 兼容性：proto3 可选字段——旧客户端忽略未知字段（051 既有 forward-compat 方向不变）；服务端在事件 `data.step` 缺失时置 0。
+- 语义：turn 内 step 序号与服务端 step 循环一致——即 dsh session 事件（step/start、assistant/chunk）携带的 step 序号，turn 内从 1 单调递增；同 step 的块共享序号；step 变化即新分段。
+- 兼容性：proto3 可选字段——旧客户端忽略未知字段（051 既有 forward-compat 方向不变）；事件 `data.step` 缺失时置 0——该 0 仅为字段缺失哨兵（真实 step 自 1 起，0 永不为真实 step 值）。
 - `ToolResultEvent`（:417）不扩展（结果按 tool_id 关联既有语义不变，无需 step）。
 - turn-global `index` 字段保留不变（049 reducer 不变量延续，step 为分组维度、index 为块序维度）。
+- step 起始值裁定见 [revisions/phase11-step-numbering.md](revisions/phase11-step-numbering.md)。
 
 ### 1.2 TurnStatus 新增 CANCELED（FR-015/016）
 

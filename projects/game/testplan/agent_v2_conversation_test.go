@@ -549,16 +549,17 @@ func TestAgentV2StepSegmentedBlocksAndHistory(t *testing.T) {
 		t.Fatalf("game turn ended %v, want COMPLETED", end.GetStatus())
 	}
 
-	// Chain segmentation: init call (step 0) → operate call (step 1) →
-	// summary text (step 2) — the won chain's three model requests.
+	// Chain segmentation: init call (step 1) → operate call (step 2) →
+	// summary text (step 3) — the won chain's three model requests (the
+	// server step loop numbers steps from 1; agent-api-changes.md §1).
 	spans := agentV2BlockSpansFromEvents(events)
 	wantSpans := []agentV2BlockSpan{
-		{index: 0, step: 0, kind: game.BlockType_BLOCK_TYPE_TOOL_CALL},
-		{index: 1, step: 1, kind: game.BlockType_BLOCK_TYPE_TOOL_CALL},
-		{index: 2, step: 2, kind: game.BlockType_BLOCK_TYPE_TEXT},
+		{index: 0, step: 1, kind: game.BlockType_BLOCK_TYPE_TOOL_CALL},
+		{index: 1, step: 2, kind: game.BlockType_BLOCK_TYPE_TOOL_CALL},
+		{index: 2, step: 3, kind: game.BlockType_BLOCK_TYPE_TEXT},
 	}
 	if len(spans) != len(wantSpans) {
-		t.Fatalf("block count = %d (%v), want %d blocks on steps 0/1/2", len(spans), spans, len(wantSpans))
+		t.Fatalf("block count = %d (%v), want %d blocks on steps 1/2/3", len(spans), spans, len(wantSpans))
 	}
 	for i, span := range spans {
 		if span != wantSpans[i] {

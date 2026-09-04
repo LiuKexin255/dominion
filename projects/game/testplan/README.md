@@ -142,13 +142,12 @@ guitar validate projects/game/testplan/system_test.yaml
 # tear the deployment down. --suite <name> runs a single suite.
 #
 # --timeout is the OVERALL budget for the whole run (default 10m). Each
-# suite pays deploy + a fixed 60s settle wait + tests + cleanup. The
-# two-suite plan fits the default only when the suites stay well under
-# their share of it — calibrate the explicit budget against a measured
-# full run (the Phase 12 acceptance run records the duration) rather
-# than guessing; an undersized budget surfaces as
-# "wait after deploy: context deadline exceeded" on a later suite.
-guitar run projects/game/testplan/system_test.yaml --timeout=90m
+# suite pays deploy + a fixed 60s settle wait + tests + cleanup; the
+# two-suite plan measures ~6-7 minutes end-to-end, so --timeout=15m
+# leaves a conservative margin for deploy jitter. An undersized budget
+# surfaces as "wait after deploy: context deadline exceeded" on a later
+# suite.
+guitar run projects/game/testplan/system_test.yaml --timeout=15m
 ```
 
 ## 6. How to add or update fake-llm templates

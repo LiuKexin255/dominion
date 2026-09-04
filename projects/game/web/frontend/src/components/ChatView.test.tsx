@@ -58,10 +58,12 @@ function rerenderChatView(
   )
 }
 
-// liveOf wraps one step's block drafts into a single-step live turn（单 step
-// 是旧用例的退化形态：无 step 事件的流全部归组 0）。
+// liveOf wraps one step's block drafts into a single-step live turn. The
+// server step loop numbers steps from 1 (monotonic within a turn); 0 is only
+// the missing-field sentinel for stepless events
+// (specs/054-agent-v2-bugfixes/revisions/phase11-step-numbering.md §1).
 function liveOf(blocks: BlockDraft[]): LiveTurn {
-  return { turnId: 't1', steps: [{ step: 0, blocks, settled: false }] }
+  return { turnId: 't1', steps: [{ step: 1, blocks, settled: false }] }
 }
 
 describe('ChatView THINK 渲染分支', () => {
@@ -274,7 +276,7 @@ describe('ChatView step 分段呈现（specs/054-agent-v2-bugfixes/contracts/web
         turnId: 't1',
         steps: [
           {
-            step: 0,
+            step: 1,
             settled: true,
             blocks: [
               { index: 0, type: 'THINK', text: '第一步思考' },
@@ -282,7 +284,7 @@ describe('ChatView step 分段呈现（specs/054-agent-v2-bugfixes/contracts/web
             ],
           },
           {
-            step: 1,
+            step: 2,
             settled: false,
             blocks: [
               { index: 2, type: 'THINK', text: '第二步思考' },
@@ -313,8 +315,8 @@ describe('ChatView step 分段呈现（specs/054-agent-v2-bugfixes/contracts/web
       live: {
         turnId: 't1',
         steps: [
-          { step: 0, settled: true, blocks: [{ index: 0, type: 'THINK', text: '第一段第一行\n第一段第二行' }] },
-          { step: 1, settled: false, blocks: [{ index: 1, type: 'THINK', text: '第二段第一行\n第二段最新行' }] },
+          { step: 1, settled: true, blocks: [{ index: 0, type: 'THINK', text: '第一段第一行\n第一段第二行' }] },
+          { step: 2, settled: false, blocks: [{ index: 1, type: 'THINK', text: '第二段第一行\n第二段最新行' }] },
         ],
       },
     })
@@ -369,7 +371,7 @@ describe('ChatView step 分段呈现（specs/054-agent-v2-bugfixes/contracts/web
         turnId: 't1',
         steps: [
           {
-            step: 0,
+            step: 1,
             settled: false,
             blocks: [
               { index: 0, type: 'TEXT', text: '' },
@@ -523,7 +525,7 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
       live: {
         turnId: 't1',
         steps: [
-          { step: 0, settled: false, blocks: [{ index: 0, type: 'TOOL_CALL', toolId: 'call-a', name: 'bash', args: '{}', status: 'TOOL_STATUS_RUNNING' }] },
+          { step: 1, settled: false, blocks: [{ index: 0, type: 'TOOL_CALL', toolId: 'call-a', name: 'bash', args: '{}', status: 'TOOL_STATUS_RUNNING' }] },
         ],
       },
     })
@@ -663,27 +665,27 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
     const store = new ChatStore()
     const events: ChatEvent[] = [
       { turnId: 't1', turnStart: {} },
-      { turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 } },
-      { turnId: 't1', delta: { index: 0, text: '先初始化棋盘', step: 0 } },
+      { turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 1 } },
+      { turnId: 't1', delta: { index: 0, text: '先初始化棋盘', step: 1 } },
       {
         turnId: 't1',
-        blockEnd: { index: 0, block: { think: { content: '先初始化棋盘' } }, step: 0 },
+        blockEnd: { index: 0, block: { think: { content: '先初始化棋盘' } }, step: 1 },
       },
       {
         turnId: 't1',
-        blockStart: { index: 1, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-a', name: 'saolei_init', step: 0 },
+        blockStart: { index: 1, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-a', name: 'saolei_init', step: 1 },
       },
-      { turnId: 't1', delta: { index: 1, text: '{}', step: 0 } },
+      { turnId: 't1', delta: { index: 1, text: '{}', step: 1 } },
       {
         turnId: 't1',
         blockEnd: {
           index: 1,
           block: { toolCall: { toolId: 'call-a', name: 'saolei_init', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'ok' } },
-          step: 0,
+          step: 1,
         },
       },
-      { turnId: 't1', blockStart: { index: 2, type: 'BLOCK_TYPE_TEXT', step: 1 } },
-      { turnId: 't1', delta: { index: 2, text: '正要播报开局', step: 1 } },
+      { turnId: 't1', blockStart: { index: 2, type: 'BLOCK_TYPE_TEXT', step: 2 } },
+      { turnId: 't1', delta: { index: 2, text: '正要播报开局', step: 2 } },
       {
         turnId: 't1',
         turnEnd: { status: 'TURN_STATUS_ERROR', error: { code: 'LLM_UPSTREAM', message: '流中断' } },

@@ -351,14 +351,14 @@ describe('ChatStore reducer', () => {
     const store = new ChatStore()
     const events: ChatEvent[] = [
       { turnId: 't1', turnStart: {} },
-      { turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 } },
-      { turnId: 't1', delta: { index: 0, text: '想一下', step: 0 } },
+      { turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 1 } },
+      { turnId: 't1', delta: { index: 0, text: '想一下', step: 1 } },
       {
         turnId: 't1',
-        blockEnd: { index: 0, block: { think: { content: '想一下' } }, step: 0 },
+        blockEnd: { index: 0, block: { think: { content: '想一下' } }, step: 1 },
       },
-      { turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 } },
-      { turnId: 't1', delta: { index: 1, text: '正文', step: 1 } },
+      { turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 2 } },
+      { turnId: 't1', delta: { index: 1, text: '正文', step: 2 } },
     ]
     for (const e of events) {
       store.applyEvent(e)
@@ -367,9 +367,9 @@ describe('ChatStore reducer', () => {
     const steps = store.getSnapshot().live?.steps ?? []
     // 两个 step 分组；下一 step 到达即把前一 step 置 settled（分段边界）。
     expect(steps).toHaveLength(2)
-    expect(steps[0]).toMatchObject({ step: 0, settled: true })
+    expect(steps[0]).toMatchObject({ step: 1, settled: true })
     expect(steps[0]?.blocks).toEqual([{ index: 0, type: 'THINK', text: '想一下' }])
-    expect(steps[1]).toMatchObject({ step: 1, settled: false })
+    expect(steps[1]).toMatchObject({ step: 2, settled: false })
     expect(steps[1]?.blocks).toEqual([{ index: 1, type: 'TEXT', text: '正文' }])
   })
 
@@ -396,13 +396,13 @@ describe('ChatStore reducer', () => {
       { turnId: 't1', turnStart: {} },
       {
         turnId: 't1',
-        blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_init', step: 0 },
+        blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_init', step: 1 },
       },
-      { turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 } },
-      { turnId: 't1', delta: { index: 1, text: '开好了', step: 1 } },
+      { turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 2 } },
+      { turnId: 't1', delta: { index: 1, text: '开好了', step: 2 } },
       {
         turnId: 't1',
-        blockEnd: { index: 1, block: { text: { content: '开好了' } }, step: 1 },
+        blockEnd: { index: 1, block: { text: { content: '开好了' } }, step: 2 },
       },
       { turnId: 't1', turnEnd: { status: 'TURN_STATUS_COMPLETED' } },
     ]
@@ -438,9 +438,9 @@ describe('ChatStore reducer', () => {
     store.applyEvent({ turnId: 't1', turnStart: {} })
     store.applyEvent({
       turnId: 't1',
-      blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_init', step: 0 },
+      blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_init', step: 1 },
     })
-    store.applyEvent({ turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 } })
+    store.applyEvent({ turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 2 } })
     store.applyEvent({ turnId: 't1', toolResult: { toolId: 'call-1', status: 'TOOL_STATUS_SUCCEEDED', result: 'board' } })
 
     const steps = store.getSnapshot().live?.steps ?? []
@@ -457,18 +457,18 @@ describe('ChatStore reducer', () => {
       { turnId: 't1', turnStart: {} },
       {
         turnId: 't1',
-        blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 },
+        blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 1 },
       },
-      { turnId: 't1', delta: { index: 0, text: '已完成的思考', step: 0 } },
+      { turnId: 't1', delta: { index: 0, text: '已完成的思考', step: 1 } },
       {
         turnId: 't1',
-        blockEnd: { index: 0, block: { think: { content: '已完成的思考' } }, step: 0 },
+        blockEnd: { index: 0, block: { think: { content: '已完成的思考' } }, step: 1 },
       },
       {
         turnId: 't1',
-        blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 },
+        blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 2 },
       },
-      { turnId: 't1', delta: { index: 1, text: '部分正文', step: 1 } },
+      { turnId: 't1', delta: { index: 1, text: '部分正文', step: 2 } },
       {
         turnId: 't1',
         turnEnd: {
@@ -572,18 +572,18 @@ describe('ChatStore reducer', () => {
         { turnId: 't1', turnStart: {} },
         {
           turnId: 't1',
-          blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 0 },
+          blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 1 },
         },
-        { turnId: 't1', delta: { index: 0, text: '已完成的思考', step: 0 } },
+        { turnId: 't1', delta: { index: 0, text: '已完成的思考', step: 1 } },
         {
           turnId: 't1',
-          blockEnd: { index: 0, block: { think: { content: '已完成的思考' } }, step: 0 },
+          blockEnd: { index: 0, block: { think: { content: '已完成的思考' } }, step: 1 },
         },
         {
           turnId: 't1',
-          blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 1 },
+          blockStart: { index: 1, type: 'BLOCK_TYPE_TEXT', step: 2 },
         },
-        { turnId: 't1', delta: { index: 1, text: '正要点击第一格', step: 1 } },
+        { turnId: 't1', delta: { index: 1, text: '正要点击第一格', step: 2 } },
         { turnId: 't1', turnEnd: { status: 'TURN_STATUS_CANCELED' } },
       ]
       for (const e of events) {

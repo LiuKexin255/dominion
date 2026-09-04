@@ -432,9 +432,10 @@ message BlockStartEvent {
   // TOOL_CALL only: the provider-issued call id and tool name.
   string tool_id = 3;
   string name = 4;
-  // Model output step this block belongs to (0-based, monotonic within a
-  // turn); blocks sharing a step form one display segment
-  // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
+  // Model output step this block belongs to (1-based: the server step
+  // loop's sequence number, monotonic within a turn; 0 is only the
+  // missing-field sentinel); blocks sharing a step form one display
+  // segment (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
   int32 step = 5;
 }
 
@@ -444,18 +445,20 @@ message BlockStartEvent {
 message BlockDeltaEvent {
   int32 index = 1;
   string text = 2;
-  // Model output step this block belongs to (0-based, monotonic within a
-  // turn); blocks sharing a step form one display segment
-  // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
+  // Model output step this block belongs to (1-based: the server step
+  // loop's sequence number, monotonic within a turn; 0 is only the
+  // missing-field sentinel); blocks sharing a step form one display
+  // segment (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
   int32 step = 3;
 }
 
 message BlockEndEvent {
   int32 index = 1;
   ContentBlock block = 2;
-  // Model output step this block belongs to (0-based, monotonic within a
-  // turn); blocks sharing a step form one display segment
-  // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
+  // Model output step this block belongs to (1-based: the server step
+  // loop's sequence number, monotonic within a turn; 0 is only the
+  // missing-field sentinel); blocks sharing a step form one display
+  // segment (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
   int32 step = 3;
 }
 

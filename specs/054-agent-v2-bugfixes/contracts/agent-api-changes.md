@@ -8,13 +8,14 @@
 
 | 事件 | 变更 | 语义 |
 |---|---|---|
-| `blockStart` / `delta` / `blockEnd` | +`int32 step` | turn 内模型输出步骤序号（0 起单调）；同 step 块共享；step 变化=新分段 |
+| `blockStart` / `delta` / `blockEnd` | +`int32 step` | turn 内模型输出步骤序号（1 起单调——服务端 step 循环序号透传；0 仅作字段缺失哨兵）；同 step 块共享；step 变化=新分段 |
 | `toolResult` | 不变 | 按 tool_id 关联（跨 step 全局匹配） |
 | `turnStart` / `turnEnd` / `queued` | 不变 | — |
 
 - NDJSON 流形态与事件序不变（051 agent-api.md §4 延续）；`index`（turn-global 块序）保留，与 `step`（分组）正交。
 - 服务端实现：TurnCollector 已跟踪 `ActiveTurn.step`（chunk 事件 `data.step`），映射层透传。
 - 兼容：旧客户端忽略未知字段；事件缺 step → 消费端归组 step=0（退化行为）。
+- step 起始值裁定见 [revisions/phase11-step-numbering.md](../revisions/phase11-step-numbering.md)。
 
 ## 2. TurnStatus 扩展与终态语义（FR-015/016）
 
