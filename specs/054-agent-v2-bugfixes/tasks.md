@@ -182,7 +182,7 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §6
 
-- [ ] T019 [US7] `projects/game/web/frontend/src/components/PresetsView.tsx`：FormMode 驱动独占视图切换（create/edit 期间列表不渲染；保存成功/取消返回列表；失败停留+内容不丢+错误呈现；编辑名称只读/新建可输入延续；正在编辑条目被删返回列表）；组件测试更新（进入/保存/取消/失败/竞态矩阵）
+- [x] T019 [US7] `projects/game/web/frontend/src/components/PresetsView.tsx`：FormMode 驱动独占视图切换（create/edit 期间列表不渲染；保存成功/取消返回列表；失败停留+内容不丢+错误呈现；编辑名称只读/新建可输入延续；正在编辑条目被删返回列表）；组件测试更新（进入/保存/取消/失败/竞态矩阵）
 
 **Checkpoint**: preset 编辑中间态缺陷清零
 
