@@ -144,9 +144,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md` §4、`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §5、`specs/054-agent-v2-bugfixes/data-model.md` §1.4/§5.3、`specs/054-agent-v2-bugfixes/research.md` D8
 
-- [ ] T015 [P] [US1] `common/js/dsh-plugins/desktop-bridge/src/index.ts`（及 `bridge.ts`）：服务接口新增 `isDesktopConnected(sessionName): boolean`（直读连接注册表）；插件单测（有/无连接、接管后状态）
-- [ ] T016 [P] [US1] `projects/game/agent_v2/src/server.ts`：GetAgent 响应填充 `desktop_connected`（经宿主持有的 bridge 服务实例）；单测（物化会话两态、未物化 404 路径不变）
-- [ ] T017 [US1] `projects/game/web/frontend/src/api/agent.ts`：GetAgent 响应类型扩展 `desktopConnected`；`projects/game/web/frontend/src/App.tsx`（ChatPanel 编排）：连接状态三态（connected/disconnected/unknown）——进入会话、send 前、turn 结束即时刷新 + 10s 轮询，GetAgent 404/失败降级 unknown；`ChatPanel` 头部（对话页顶部，契约 `specs/054-agent-v2-bugfixes/contracts/web-ui.md` §5）：状态指示呈现（文案+状态色）；组件测试（三态、轮询触发面、降级不显示已连接）
+- [x] T015 [P] [US1] `common/js/dsh-plugins/desktop-bridge/src/index.ts`（及 `bridge.ts`）：服务接口新增 `isDesktopConnected(sessionName): boolean`（直读连接注册表）；插件单测（有/无连接、接管后状态）
+- [x] T016 [P] [US1] `projects/game/agent_v2/src/server.ts`：GetAgent 响应填充 `desktop_connected`（经宿主持有的 bridge 服务实例）；单测（物化会话两态、未物化 404 路径不变）
+- [x] T017 [US1] `projects/game/web/frontend/src/api/agent.ts`：GetAgent 响应类型扩展 `desktopConnected`；`projects/game/web/frontend/src/App.tsx`（ChatPanel 编排）：连接状态三态（connected/disconnected/unknown）——进入会话、send 前、turn 结束即时刷新 + 10s 轮询，GetAgent 404/失败降级 unknown；`ChatPanel` 头部（对话页顶部，契约 `specs/054-agent-v2-bugfixes/contracts/web-ui.md` §5）：状态指示呈现（文案+状态色）；组件测试（三态、轮询触发面、降级不显示已连接）
 
 **Checkpoint**: 连接状态全链可见（排查 fr-001 的可观测性前提就绪）
 
