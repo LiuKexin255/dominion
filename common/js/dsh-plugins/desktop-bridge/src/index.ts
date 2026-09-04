@@ -47,6 +47,12 @@ export interface DesktopBridgeService {
     part: WireFlowPart,
     signal?: AbortSignal,
   ): Promise<OperationResult>;
+  /**
+   * Whether the session's bridge connection registry holds a live
+   * connection (the GetAgent `desktop_connected` fact source,
+   * specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4).
+   */
+  isDesktopConnected(sessionName: string): boolean;
   /** Handler implementation for the host's DesktopBridgeService registration. */
   handlers(): DesktopBridgeServiceHandlers;
 }
@@ -87,6 +93,10 @@ export class DesktopBridgePlugin extends Service implements DesktopBridgeService
     signal?: AbortSignal,
   ): Promise<OperationResult> {
     return this.bridge.dispatch(sessionName, part, signal);
+  }
+
+  isDesktopConnected(sessionName: string): boolean {
+    return this.bridge.isDesktopConnected(sessionName);
   }
 
   handlers(): DesktopBridgeServiceHandlers {

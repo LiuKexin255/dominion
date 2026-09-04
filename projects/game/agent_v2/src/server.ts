@@ -90,10 +90,14 @@ export interface PresetServiceDeps {
  * The collaborators the gRPC handlers consume: the session materialization
  * registry plus the {@link PresetServiceDeps} faces — UpdateAgent's
  * fail-fast validation reads the preset store and the model catalog before
- * materializing (agent-api.md §2.1).
+ * materializing (agent-api.md §2.1), and GetAgent reads the desktop-bridge
+ * connection registry through the structured query face
+ * (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4).
  */
 export interface AgentServiceDeps extends PresetServiceDeps {
   sessions: Pick<AgentSessions, "send" | "listMessages" | "materialize" | "getAgent" | "cancel">;
+  /** The desktop-bridge connection fact read directly off the registry at GetAgent time. */
+  isDesktopConnected(sessionName: string): boolean;
 }
 
 export interface ParsedSessionResource {
@@ -429,7 +433,17 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
       }
       const sessionName = `templates/${session.template}/sessions/${session.session}`;
       try {
-        callback(null, agentViewToProto(deps.sessions.getAgent(sessionName)));
+        // desktop_connected is the bridge registry fact at query time, filled
+        // at the handler layer — the connection state is not session storage
+        // state, so AgentView stays free of it
+        // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4).
+        // UpdateAgent's response deliberately omits the field: proto3
+        // default false is dropped by protojson, and (re)materialization
+        // never touches the desktop connection.
+        callback(null, {
+          ...agentViewToProto(deps.sessions.getAgent(sessionName)),
+          desktopConnected: deps.isDesktopConnected(sessionName),
+        });
       } catch (err) {
         callback(toServiceError(err));
       }
@@ -741,6 +755,10 @@ export function buildServer(options: {
     sessions,
     presets: options.presetStore,
     listModels: (provider) => listModelCatalog(options.ctx, provider),
+    // The composed context mounts the bridge plugin service (the
+    // declaration merge in @dominion/dsh-desktop-bridge); GetAgent reads
+    // the registry through this face.
+    isDesktopConnected: (sessionName) => options.ctx.desktopBridge.isDesktopConnected(sessionName),
   };
   const proto = loadProto();
   const server = new grpc.Server();

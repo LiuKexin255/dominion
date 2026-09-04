@@ -58,6 +58,7 @@ function fakeDeps() {
       })),
       cancel: vi.fn(),
     },
+    isDesktopConnected: vi.fn(() => false),
     presets: {
       create: vi.fn(async () => undefined),
       get: vi.fn(async () => ({
@@ -306,17 +307,32 @@ describe("AgentService.UpdateAgent handler", () => {
 });
 
 describe("AgentService.GetAgent handler", () => {
-  it("returns the materialized configuration", () => {
+  it("returns the materialized configuration with the registry's desktop_connected", () => {
     const deps = fakeDeps();
     const handlers = buildAgentHandlers(deps);
     const callback = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
 
     expect(callback).toHaveBeenCalledTimes(1);
     expect(deps.sessions.getAgent).toHaveBeenCalledWith(VALID);
+    expect(deps.isDesktopConnected).toHaveBeenCalledWith(VALID);
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
     expect(response?.name).toBe(VALID_AGENT);
     expect(response?.preset).toBe(VALID_PRESET);
+    expect(response?.desktopConnected).toBe(false);
+  });
+
+  it("reflects both registry states on desktop_connected (agent-api-changes.md §4)", () => {
+    const deps = fakeDeps();
+    const handlers = buildAgentHandlers(deps);
+
+    deps.isDesktopConnected.mockReturnValue(true);
+    const connected = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
+    expect(connected.mock.calls[0][1]?.desktopConnected).toBe(true);
+
+    deps.isDesktopConnected.mockReturnValue(false);
+    const disconnected = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
+    expect(disconnected.mock.calls[0][1]?.desktopConnected).toBe(false);
   });
 
   it("rejects a malformed name with INVALID_ARGUMENT and an unmaterialized agent with NOT_FOUND", () => {
@@ -332,6 +348,11 @@ describe("AgentService.GetAgent handler", () => {
     });
     const absent = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
     expect((absent.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
+    // The unmaterialized path short-circuits before the bridge read: no
+    // connection fact is fabricated for an absent agent
+    // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4 — the
+    // frontend degrades to "unknown" on the 404).
+    expect(deps.isDesktopConnected).not.toHaveBeenCalled();
   });
 });
 

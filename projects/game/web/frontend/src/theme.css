@@ -375,6 +375,25 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* 桌面连接状态指示（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：
+ * 已连接 success 色 / 未连接警示色 / 未知中性降级色（禁止显示为已连接）；
+ * data-state 同时作为测试与样式钩。 */
+.desktop-conn {
+  font-size: 12px;
+}
+
+.desktop-conn[data-state='connected'] {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.desktop-conn[data-state='disconnected'] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.desktop-conn[data-state='unknown'] {
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .agent-guide {
   flex: none;
   display: flex;

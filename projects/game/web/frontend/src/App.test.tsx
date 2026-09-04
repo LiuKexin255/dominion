@@ -533,6 +533,197 @@ function makeCancelFetchMock(options: {
   })
 }
 
+// ─── 桌面连接状态三态与刷新（specs/054-agent-v2-bugfixes/contracts/
+// ─── web-ui.md §5/§8-6：ChatPanel 的 GetAgent desktop_connected 投影、
+// ─── 进入会话/send 前/turn 结束即时刷新 + 10s 轮询、404/失败降级 unknown） ────
+
+// makeConnFetchMock routes the faces the connection-status scenarios touch:
+// session list, per-session empty backfill, per-session GetAgent (the
+// connection fact source), and an optional Send stream. GetAgent responses
+// are injected per session so each test drives only the state it asserts.
+function makeConnFetchMock(
+  sessions: string[],
+  agentFor: (name: string) => Response,
+  sendFor?: (name: string) => Response,
+) {
+  return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET'
+    if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+      return jsonResponse({
+        sessions: sessions.map((name) => ({ name, createTime: '2026-08-29T00:00:00Z' })),
+      })
+    }
+    for (const name of sessions) {
+      if (url === `/api/v2/${name}/agent/messages`) {
+        return jsonResponse({ messages: [] })
+      }
+      if (url === `/api/v2/${name}/agent` && method === 'GET') {
+        return agentFor(name)
+      }
+      if (url === `/api/v2/${name}:send` && method === 'POST') {
+        return sendFor?.(name) ?? jsonResponse({})
+      }
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  })
+}
+
+// agentGetCalls counts the GetAgent reads for one session — the refresh
+// trigger assertions below are phrased as deltas over this count (positive
+// assertions that the GetAgent route is actually exercised;
+// style/javascript.md Mock 约定).
+function agentGetCalls(fetchMock: ReturnType<typeof vi.fn>, name: string): number {
+  return fetchMock.mock.calls.filter(
+    (call) =>
+      call[0] === `/api/v2/${name}/agent` &&
+      ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'GET',
+  ).length
+}
+
+function agentView(name: string, body: Record<string, unknown>): Response {
+  return jsonResponse({ name: `${name}/agent`, preset: 'templates/saolei/presets/p1', ...body })
+}
+
+describe('App 桌面连接状态三态（web-ui.md §5）', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = makeConnFetchMock([S1], () => agentView(S1, {}))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function enterS1(): Promise<HTMLElement> {
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+    return await screen.findByTestId('desktop-conn-status')
+  }
+
+  it('desktop_connected=true → 已连接（success 态呈现）', async () => {
+    fetchMock = makeConnFetchMock([S1], () => agentView(S1, { desktopConnected: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const status = await enterS1()
+    await waitFor(() => {
+      expect(status.getAttribute('data-state')).toBe('connected')
+    })
+    expect(status.textContent).toBe('桌面已连接')
+  })
+
+  it('desktop_connected 缺省（protojson false 不输出）→ 未连接（警示呈现）', async () => {
+    const status = await enterS1()
+    await waitFor(() => {
+      expect(status.getAttribute('data-state')).toBe('disconnected')
+    })
+    expect(status.textContent).toBe('桌面未连接')
+  })
+
+  it('GetAgent 404（未物化）→ 降级未知，禁止显示为已连接', async () => {
+    fetchMock = makeConnFetchMock([S1], () => new Response('not found', { status: 404 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const status = await enterS1()
+    await waitFor(() => {
+      expect(status.getAttribute('data-state')).toBe('unknown')
+    })
+    expect(status.textContent).toBe('桌面连接未知')
+    expect(status.textContent).not.toContain('已连接')
+  })
+
+  it('GetAgent 请求失败（500）→ 同样降级未知', async () => {
+    fetchMock = makeConnFetchMock([S1], () => new Response('boom', { status: 500 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const status = await enterS1()
+    await waitFor(() => {
+      expect(status.getAttribute('data-state')).toBe('unknown')
+    })
+    expect(status.textContent).not.toContain('已连接')
+  })
+})
+
+describe('App 连接状态刷新时机（web-ui.md §5：即时刷新 + 轮询）', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = makeConnFetchMock([S1], () => agentView(S1, { desktopConnected: true }))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('send 前与 turn 结束各即时刷新一次连接状态', async () => {
+    const s1Send = pausedSend(
+      wireChunk('{"turnId":"t1","turnStart":{}}') +
+        wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+        wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}'),
+      [
+        wireChunk('{"turnId":"t1","delta":{"index":0,"text":"分"}}'),
+        wireChunk('{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}'),
+        wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}'),
+      ],
+    )
+    fetchMock = makeConnFetchMock(
+      [S1],
+      () => agentView(S1, { desktopConnected: true }),
+      () => s1Send.response,
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+
+    // 进入会话：物化探测 + 连接刷新各读一次 GetAgent，随后以增量为断言面。
+    await screen.findByTestId('desktop-conn-status')
+    await waitFor(() => {
+      expect(agentGetCalls(fetchMock, S1)).toBeGreaterThanOrEqual(2)
+    })
+    const before = agentGetCalls(fetchMock, S1)
+
+    const input = await screen.findByTestId('chat-input')
+    fireEvent.change(input, { target: { value: '你好' } })
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => {
+      expect(agentGetCalls(fetchMock, S1)).toBe(before + 1)
+    })
+
+    s1Send.release()
+    await s1Send.done
+    await waitFor(() => {
+      expect(agentGetCalls(fetchMock, S1)).toBe(before + 2)
+    })
+  })
+
+  it('10s 轮询仅在 active 会话触发，后台面板不轮询', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    fetchMock = makeConnFetchMock(
+      [S1, S2],
+      (name) => agentView(name, { desktopConnected: name === S1 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    // 进入 s1 后切到 s2：s1 面板保持挂载（后台），s2 为唯一 active 面板。
+    fireEvent.click(await screen.findByText('s1'))
+    await screen.findByTestId('chat-input')
+    fireEvent.click(screen.getByText('s2'))
+    await screen.findByTestId('chat-input')
+    await waitFor(() => {
+      expect(agentGetCalls(fetchMock, S2)).toBeGreaterThanOrEqual(2)
+    })
+    const s1Before = agentGetCalls(fetchMock, S1)
+    const s2Before = agentGetCalls(fetchMock, S2)
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await waitFor(() => {
+      expect(agentGetCalls(fetchMock, S2)).toBe(s2Before + 1)
+    })
+    expect(agentGetCalls(fetchMock, S1)).toBe(s1Before)
+  })
+})
+
 describe('App cancel 编排（web-ui.md §4/§8-6）', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 

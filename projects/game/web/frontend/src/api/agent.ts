@@ -33,12 +33,16 @@ export interface ListModelsResponse {
 }
 
 // Agent 是 session 的 agent 单例资源（AIP-156）；model 空 = 进程默认。
+// desktopConnected 为该 session 的桌面桥接连接事实（agent 侧注册表直读，
+// specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4）——proto3
+// 缺省 false 经 protojson 不输出，可选语义正好（缺字段 = 未连接）。
 export interface Agent {
   name: string
   preset: string
   model?: string
   createTime?: string
   updateTime?: string
+  desktopConnected?: boolean
 }
 
 // ─── PresetService（gateway 直连面） ─────────────────────────────────────────

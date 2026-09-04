@@ -186,6 +186,18 @@ export class DesktopBridge {
   }
 
   /**
+   * Whether the session's connection registry currently holds a live
+   * connection — the `desktop_connected` fact source read directly off the
+   * registry (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md
+   * §4). Takeover-window semantics are eventually consistent by
+   * construction: the superseded stream's late disconnect is a
+   * compare-and-delete no-op, so it can never clear the fresh registration.
+   */
+  isDesktopConnected(sessionName: string): boolean {
+    return this.connections.has(sessionName);
+  }
+
+  /**
    * Dispatch a FlowPart operation to the session's desktop connection and
    * await the matching FlowResultPart. Minting a fresh UUID tool_id is
    * unconditional — the id correlates dispatch↔result only and is unrelated

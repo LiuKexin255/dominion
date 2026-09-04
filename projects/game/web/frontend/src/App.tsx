@@ -12,7 +12,7 @@ import './theme.css'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ApiError, listHistory, sendStream } from './api/conversation.js'
 import type { ChatEvent } from './api/conversation.js'
-import { cancelAgent } from './api/agent.js'
+import { cancelAgent, getAgent } from './api/agent.js'
 import type { Agent } from './api/agent.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
@@ -42,6 +42,12 @@ function errorMessage(err: unknown): string {
 // unmaterialized；探测/请求级失败为 unknown（不引导）。
 type AgentStatus = 'unknown' | 'unmaterialized' | 'materialized'
 
+// 桌面连接状态三态（specs/054-agent-v2-bugfixes/data-model.md §5.3，契约
+// specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：connected/
+// disconnected 由 GetAgent desktop_connected 投影；unknown 为降级态
+// （agent 未物化 404 或查询失败）——禁止显示为已连接。
+type DesktopConn = 'connected' | 'disconnected' | 'unknown'
+
 // ChatPanel hosts one session's store-backed chat view. The store outlives the
 // panel's active state (owned by App's per-session map), so an in-flight turn
 // keeps reducing while this panel renders nothing. The ListAgentMessages
@@ -61,6 +67,9 @@ function ChatPanel({
   const [backfillError, setBackfillError] = useState<string | null>(null)
   const [agentStatus, setAgentStatus] = useState<AgentStatus>('unknown')
   const [agent, setAgent] = useState<Agent | null>(null)
+  // 连接态独立承载 probe/轮询结果（不复用 agent state：onApplied 的物化
+  // 响应不带连接字段，复用会被覆盖回 unknown）。
+  const [desktopConn, setDesktopConn] = useState<DesktopConn>('unknown')
   const [panelOpen, setPanelOpen] = useState(false)
   // 终止请求失败呈现（不吞，specs/054-agent-v2-bugfixes/contracts/web-ui.md
   // §4）；请求成功不设错误——终态经流上 turn_end{CANCELED} 由 store 归约。
@@ -68,6 +77,18 @@ function ChatPanel({
   // 回填发起后本面板是否有 send 开始：send 与回填竞态时整体让位于 send
   // （判据说明见下方 loadHistory 调用处注释）。
   const sentSinceBackfill = useRef(false)
+
+  // 连接状态即时刷新（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：
+  // GetAgent 200 → desktop_connected 投影 connected/disconnected；404（未
+  // 物化）与其他请求级失败一律降级 unknown——不虚构连接事实。
+  const refreshDesktopConn = useCallback(async () => {
+    try {
+      const view = await getAgent(session)
+      setDesktopConn(view.desktopConnected === true ? 'connected' : 'disconnected')
+    } catch {
+      setDesktopConn('unknown')
+    }
+  }, [session])
 
   useEffect(() => {
     sentSinceBackfill.current = false
@@ -79,6 +100,8 @@ function ChatPanel({
       setAgentStatus(probe.status)
       setAgent(probe.agent)
     })
+    // 进入会话即时刷新连接状态（web-ui.md §5）。
+    void refreshDesktopConn()
     listHistory(session)
       .then((messages) => {
         if (cancelled) return
@@ -109,12 +132,14 @@ function ChatPanel({
     return () => {
       cancelled = true
     }
-  }, [session, store])
+  }, [session, store, refreshDesktopConn])
 
   const onSend = useCallback(
     (text: string) => {
       sentSinceBackfill.current = true
       setCancelError(null)
+      // send 前即时刷新连接状态（web-ui.md §5；不阻塞发送，指示仅是观测面）。
+      void refreshDesktopConn()
       // Send 前置拒绝（未物化 FAILED_PRECONDITION→400 / 无 owner
       // NOT_FOUND→404，agent-api.md §2.4）驱动引导态：流失败后探测 agent
       // 单例，仅 404 确认未物化（400 的其他来源如空文本不引导）。
@@ -134,7 +159,7 @@ function ChatPanel({
       }
       void store.send(text, guidedSend())
     },
-    [store, session],
+    [store, session, refreshDesktopConn],
   )
 
   const onCancel = useCallback(async () => {
@@ -155,10 +180,49 @@ function ChatPanel({
     [],
   )
 
+  // turn 结束即时刷新（web-ui.md §5）：全部回合终态（COMPLETED/ERROR/
+  // CANCELED/流传输失败）在 store 归约中均把 live 归 null，以 live→null
+  // 迁移为触发面即可覆盖 canceled 等全部终态。已知边界：若 turnStart+
+  // turnEnd 在同一渲染批次内同步归约（React 18 自动批处理），本 effect 只
+  // 观察到最终 null 态、漏掉该回合的一次即时刷新——实际流式场景事件跨
+  // chunk 到达不会合并批次，且 send 前刷新与 10s 轮询兜底，该边界可接受。
+  const hadLive = useRef(false)
+  useEffect(() => {
+    if (state.live !== null) {
+      hadLive.current = true
+      return
+    }
+    if (!hadLive.current) return
+    hadLive.current = false
+    void refreshDesktopConn()
+  }, [state.live, refreshDesktopConn])
+
+  // 10s 轮询（SC-005：连接/断开/接管后 ≤10s 反映）。ChatPanel 对所有已
+  // 打开会话常驻挂载（active 仅控制渲染），轮询必须以 active 门控——否则
+  // 每个打开过的会话都永久轮询。
+  useEffect(() => {
+    if (!active) return
+    const id = setInterval(() => {
+      void refreshDesktopConn()
+    }, 10_000)
+    return () => clearInterval(id)
+  }, [active, refreshDesktopConn])
+
   if (!active) return null
   return (
     <div className="chat">
       <div className="agent-toolbar">
+        <span
+          className="desktop-conn"
+          data-testid="desktop-conn-status"
+          data-state={desktopConn}
+        >
+          {desktopConn === 'connected'
+            ? '桌面已连接'
+            : desktopConn === 'disconnected'
+              ? '桌面未连接'
+              : '桌面连接未知'}
+        </span>
         <span className="agent-status" data-testid="agent-status">
           {agentStatus === 'materialized'
             ? `已物化${agent?.model ? ` · ${agent.model}` : ' · 默认模型'}`
