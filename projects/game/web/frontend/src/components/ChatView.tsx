@@ -3,9 +3,9 @@
 // web-frontend.md §3.2）。agent 输出按模型输出步骤分段呈现（specs/
 // 054-agent-v2-bugfixes/contracts/web-ui.md §2.2）：历史一条消息即一个 step、
 // live 回合每个 step 一个分段容器，依次独立呈现；步骤内 THINK →
-// ReasoningRow、TEXT → MessageText、TOOL_CALL → ToolCard 分类分列不混排。
+// ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard 分类分列不混排。
 import { useEffect, useRef, useState } from 'react'
-import { Button, Input, MessageText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ContentBlock, HistoryMessage } from '../api/conversation.js'
 import type { BlockDraft, LiveTurn, QueuedMsg } from '../store/chat.js'
 import { ReasoningRow } from './ReasoningRow.js'
@@ -90,11 +90,20 @@ function blockToolCall(b: ContentBlock | BlockDraft, historical: boolean): ToolC
 }
 
 // AgentStep renders one step's blocks in order: THINK → ReasoningRow、
-// TEXT → MessageText、TOOL_CALL → ToolCard （web-frontend.md §2: 分类呈现
+// TEXT → MarkdownText、TOOL_CALL → ToolCard （web-frontend.md §2: 分类呈现
 // 不混排）。streaming running 只落在流式回合最后一段的尾块上——流式块按序
 // append 恒为尾块，已终结的 THINK 块（其后还有 TEXT 在流式）因此呈现完成态
 // 摘要。非 running 语境（历史回填/已 settled 分段）中陈旧 RUNNING 工具块
 // 推导中断终态（specs/054-agent-v2-bugfixes/data-model.md §2）。
+//
+// TEXT 块经 MarkdownText 渲染（specs/054-agent-v2-bugfixes/contracts/
+// web-ui.md §3：GFM 正文、流式增量解析、不完整片段不崩溃）。streaming prop
+// 传给仍在其流式回合活跃分段尾块上的 TEXT（与 THINK 的 running 判定同一
+// 模式）：MarkdownText streaming 时按尾块增量重解析、已完结块冻结缓存
+// （包 README "Markdown rendering"，@deepseek-ai/dsh-client-ui-primitives
+// https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives ），
+// settle 后全量重解析落定。codeLabels 不传（无代码复制文案本地化需求，
+// 包内默认标签即可，省去引用稳定性维护）。
 function AgentStep({
   blocks,
   running,
@@ -123,7 +132,7 @@ function AgentStep({
         if (text === undefined || text.trim() === '') return null
         return (
           <div key={i} data-testid="agent-text">
-            <MessageText text={text} />
+            <MarkdownText text={text} streaming={running && i === blocks.length - 1} />
           </div>
         )
       })}

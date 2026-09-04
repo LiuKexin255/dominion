@@ -61,14 +61,16 @@ describe('ToolCard', () => {
     expect(
       screen.getByTestId('tool-card').querySelector('[data-state="done"]'),
     ).not.toBeNull()
-    // 参数区与结果区同卡关联，均默认折叠、展开可见内容。
+    // 参数区默认折叠、展开可见内容；结果区预格式化等宽直接呈现（web-ui.md
+    // §3）：原文原样（非 JSON.stringify 字面量形态）、无需展开。
     expect(screen.getByTestId('tool-card-args').querySelector('pre')).toBeNull()
-    expect(screen.getByTestId('tool-card-result').textContent).toContain('结果')
-    expect(screen.getByTestId('tool-card-result').querySelector('pre')).toBeNull()
-    toggleBlock('tool-card-result')
+    toggleBlock('tool-card-args')
     expect(
-      screen.getByTestId('tool-card-result').querySelector('pre')?.textContent,
-    ).toContain('"title": "Example Domain"')
+      screen.getByTestId('tool-card-args').querySelector('pre')?.textContent,
+    ).toContain('"url": "https://example.com"')
+    const resultPre = screen.getByTestId('tool-card-result-pre')
+    expect(resultPre.textContent).toBe('{"title":"Example Domain"}')
+    expect(resultPre.querySelector('button')).toBeNull()
   })
 
   it('FAILED 态：失败状态标识与错误结果关联（US3 场景 2 失败分支）', () => {
@@ -89,11 +91,10 @@ describe('ToolCard', () => {
     expect(
       screen.getByTestId('tool-card').querySelector('[data-state="error"]'),
     ).not.toBeNull()
-    // 非 JSON 的错误文本落为字符串字面量关联展示。
-    toggleBlock('tool-card-result')
-    expect(
-      screen.getByTestId('tool-card-result').querySelector('pre')?.textContent,
-    ).toContain('command failed with exit code 1')
+    // 非 JSON 的错误文本以原文预格式化呈现（无引号/转义的字符串字面量形态）。
+    expect(screen.getByTestId('tool-card-result-pre').textContent).toBe(
+      'command failed with exit code 1',
+    )
   })
 
   it('不完整 JSON 参数（流式中途）按字符串字面量容错展示', () => {
@@ -105,5 +106,38 @@ describe('ToolCard', () => {
     expect(
       screen.getByTestId('tool-card-args').querySelector('pre')?.textContent,
     ).toContain('{\\"command\\":\\"ls')
+  })
+
+  it('多行棋盘结果等宽预格式化：换行与空格逐字符保留、行列不错位（web-ui.md §3）', () => {
+    // 文本棋盘含坐标标尺：每行空格数决定列对齐，任一空白丢失即错位。
+    const board = [
+      '  0 1 2 3',
+      '0 · 1 · ?',
+      '1 1 1 · ?',
+      '2 0 0 1 ?',
+    ].join('\n')
+    render(
+      <ToolCard
+        toolId="call-5"
+        name="saolei_view"
+        argsJson='{}'
+        status="SUCCEEDED"
+        result={board}
+      />,
+    )
+    const pre = screen.getByTestId('tool-card-result-pre')
+    // 换行与行首空格逐字符保留（white-space: pre 语义；等宽下同列字符
+    // 上下对齐，行列不错位）。
+    expect(pre.textContent).toBe(board)
+    const lines = pre.textContent?.split('\n') ?? []
+    expect(lines).toHaveLength(4)
+    expect(lines.every((line) => line.length === lines[0]?.length)).toBe(true)
+    // pre 元素 UA 样式（jsdom 内建 UA stylesheet）：空白保持 + 等宽族。
+    const style = window.getComputedStyle(pre)
+    expect(style.whiteSpace).toBe('pre')
+    expect(style.fontFamily).toContain('monospace')
+    // 结果不 markdown 化、不经 JSON 处理：无 markdown/JSON 容器痕迹。
+    expect(pre.closest('.md-code-block')).toBeNull()
+    expect(pre.querySelector('code')).toBeNull()
   })
 })

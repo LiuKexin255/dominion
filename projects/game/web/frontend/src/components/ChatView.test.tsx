@@ -708,3 +708,101 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
     expectFailedTurnUnfolded()
   })
 })
+
+describe('ChatView markdown 渲染（specs/054-agent-v2-bugfixes/contracts/web-ui.md §3）', () => {
+  it('GFM 元素渲染为格式化内容：标题/列表/粗体/行内代码/代码块/表格/链接，无原始符号裸露', () => {
+    renderChatView({
+      history: [
+        {
+          role: 'ROLE_AGENT',
+          blocks: [
+            {
+              text: {
+                content: [
+                  '## 扫雷开局',
+                  '',
+                  '- 白棋在角落',
+                  '- 黑棋在中路',
+                  '',
+                  '**注意**避开 `雷区` 标记',
+                  '',
+                  '[规则说明](https://example.com/rules)',
+                  '',
+                  '| 行 | 列 |',
+                  '|---|---|',
+                  '| 1 | 2 |',
+                  '',
+                  '```text',
+                  '0 1 2',
+                  '```',
+                ].join('\n'),
+              },
+            },
+          ],
+        },
+      ],
+    })
+    const text = screen.getByTestId('agent-text')
+    expect(text.querySelector('h2')?.textContent).toBe('扫雷开局')
+    expect(text.querySelectorAll('li')).toHaveLength(2)
+    expect(text.querySelector('strong')?.textContent).toBe('注意')
+    expect(text.querySelector('p code')?.textContent).toBe('雷区')
+    expect(text.querySelector('a')?.getAttribute('href')).toBe('https://example.com/rules')
+    expect(text.querySelector('a')?.getAttribute('rel')).toContain('noopener')
+    expect(text.querySelector('table')?.querySelector('td')?.textContent).toBe('1')
+    expect(text.querySelector('pre code')?.textContent).toContain('0 1 2')
+    // 原始 markdown 符号不裸露（FR-008）。
+    for (const raw of ['##', '**', '`', '|---|', '```']) {
+      expect(text.textContent).not.toContain(raw)
+    }
+  })
+
+  it('流式增量稳定：正文块持续追加渲染正确，已冻结首块跨 chunk 保持同一元素（FR-009）', () => {
+    const result = renderChatView({
+      live: liveOf([{ index: 0, type: 'TEXT', text: '# 开局' }]),
+    })
+    rerenderChatView(result, {
+      live: liveOf([{ index: 0, type: 'TEXT', text: '# 开局\n\n第一段播报' }]),
+    })
+    rerenderChatView(result, {
+      live: liveOf([{ index: 0, type: 'TEXT', text: '# 开局\n\n第一段播报\n\n第二段播报' }]),
+    })
+    // 增量到达第三块后首块进入冻结区：再次增量，首块元素保持同一节点
+    // （MarkdownText 冻结块缓存跨 chunk reconcile、不重挂载——包 README
+    // "Markdown rendering"，https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives ）。
+    const heading = screen.getByTestId('agent-text').querySelector('h1')
+    expect(heading?.textContent).toBe('开局')
+    rerenderChatView(result, {
+      live: liveOf([
+        { index: 0, type: 'TEXT', text: '# 开局\n\n第一段播报\n\n第二段播报\n\n第三段播报' },
+      ]),
+    })
+    expect(screen.getByTestId('agent-text').querySelector('h1')).toBe(heading)
+    expect(screen.getByTestId('agent-text').querySelectorAll('p')).toHaveLength(3)
+  })
+
+  it('不完整 markdown 片段（流式未闭合代码块）容错呈现不崩溃', () => {
+    expect(() =>
+      renderChatView({
+        live: liveOf([{ index: 0, type: 'TEXT', text: '结果如下\n\n```js\nconsole.log("x' }]),
+      }),
+    ).not.toThrow()
+    const text = screen.getByTestId('agent-text')
+    expect(text.querySelector('code')?.textContent).toContain('console.log("x')
+  })
+
+  it('用户消息保持纯文本：markdown 符号原样保留、不渲染为格式化元素（web-ui.md §3）', () => {
+    renderChatView({
+      history: [
+        {
+          role: 'ROLE_USER',
+          blocks: [{ text: { content: '**这不是粗体** 与 `这不是代码`' } }],
+        },
+      ],
+    })
+    const user = screen.getByTestId('chat-messages').querySelector('.msg-user')
+    expect(user?.textContent).toBe('**这不是粗体** 与 `这不是代码`')
+    expect(user?.querySelector('strong')).toBeNull()
+    expect(user?.querySelector('code')).toBeNull()
+  })
+})

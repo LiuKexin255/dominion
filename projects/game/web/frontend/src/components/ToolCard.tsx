@@ -1,7 +1,11 @@
 // 工具调用卡片（props 契约 specs/049-agent-v2-dsh-init/contracts/
 // web-frontend.md §3.2 ToolCard）：名称 / 参数（JsonBlock 默认折叠）/ 状态
 // （StateDot：RUNNING→ongoing、SUCCEEDED→done、FAILED→error）/ result 关联
-// 展示于同一卡片。单卡形态参照 dsh-web ToolCallTree（剥离 renderSlot/
+// 展示于同一卡片。result 为预格式化等宽文本直接呈现（specs/
+// 054-agent-v2-bugfixes/contracts/web-ui.md §3：坐标标尺对齐、不 markdown
+// 化、不以 JSON 字符串字面量形态呈现——文本棋盘逐字符原样，<pre> 保持
+// 空白与换行）；参数区仍是 JSON（流式拼接中的不完整参数经 parseJson 容错）。
+// 单卡形态参照 dsh-web ToolCallTree（剥离 renderSlot/
 // 子调用树，attribution 与来源链接见包 README）：
 // https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/ToolCallTree.tsx
 // 卡内布局另参照同上游的单卡形态 GenericToolCard：
@@ -38,7 +42,8 @@ const STATUS_TEXT: Record<ToolCardStatus, string> = {
 
 // parseJson tolerates payloads that are not complete JSON (流式 delta 拼接中
 // 的不完整参数): valid JSON pretty-prints as its value, other text falls
-// through verbatim as a JSON string literal.
+// through verbatim as a JSON string literal. 仅参数区消费（结果区为
+// 预格式化原文呈现，不经 JSON 处理）。
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text) as unknown
@@ -70,7 +75,9 @@ export function ToolCard({ toolId, name, argsJson, status, result }: ToolCardPro
       </div>
       {result !== undefined && (
         <div data-testid="tool-card-result">
-          <JsonBlock label="结果" payload={parseJson(result)} />
+          <pre className="tool-card-result-pre" data-testid="tool-card-result-pre">
+            {result}
+          </pre>
         </div>
       )}
     </div>

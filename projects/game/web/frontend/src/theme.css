@@ -661,3 +661,21 @@ body {
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
 }
+
+/* 工具结果预格式化等宽呈现（specs/054-agent-v2-bugfixes/contracts/web-ui.md
+ * §3：文本棋盘坐标标尺对齐、不 markdown 化、不以 JSON 字符串字面量形态
+ * 呈现）：等宽字体 + white-space: pre 保证行列逐字符对齐；长行横向滚动而
+ * 不折行错位。 */
+.tool-card-result-pre {
+  margin: 0;
+  overflow-x: auto;
+  font-family:
+    ui-monospace,
+    'Cascadia Mono',
+    'Segoe UI Mono',
+    Menlo,
+    Consolas,
+    monospace;
+  font-size: 12px;
+  white-space: pre;
+}
