@@ -2,8 +2,10 @@
  * Request serialization: harness GenerateOptions → OpenAI Responses
  * request body for the GLM codingplan endpoint. Mapping table is
  * contractual: specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §4
- * (tool items per specs/051-agent-v2-dsh-migration/research.md D11);
- * input item shapes follow the official Responses schema
+ * (tool items per specs/051-agent-v2-dsh-migration/research.md D11, tool
+ * definitions per
+ * specs/054-agent-v2-bugfixes/revisions/t029-glm-tools-serialization.md);
+ * input item and tool shapes follow the official Responses schema
  * (https://github.com/openai/openai-openapi/blob/main/openapi.yaml).
  */
 
@@ -46,12 +48,26 @@ export type ResponsesInputItem =
   | ResponsesFunctionCallItem
   | ResponsesFunctionCallOutputItem;
 
+/**
+ * One entry of the Responses `tools` array: the OpenAI Responses API
+ * `FunctionTool` flat shape (`type`/`name`/`parameters` at the top level,
+ * unlike chat-completions' nested `function` object;
+ * https://github.com/openai/openai-openapi `FunctionTool` schema).
+ */
+export interface ResponsesFunctionTool {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
 /** The Responses request body this adapter posts to `{baseURL}/responses`. */
 export interface ResponsesRequest {
   model: string;
   instructions?: string;
   input: ResponsesInputItem[];
   stream: true;
+  tools?: ResponsesFunctionTool[];
   temperature?: number;
   max_output_tokens?: number;
 }
@@ -82,9 +98,11 @@ function renderToolResultContent(content: ReadonlyArray<{ type: string; text?: s
  * body. Assistant reasoning blocks are intentionally not replayed (GLM
  * regenerates reasoning each turn; contract §4). Tool calls and results
  * replay as `function_call` / `function_call_output` input items (D11) so
- * a follow-up tool step can carry its results. Unsupported content (images)
- * and unsupported options (stop sequences, reasoning efforts) fail loudly
- * instead of being silently dropped.
+ * a follow-up tool step can carry its results, and tool definitions map to
+ * the top-level `tools` array so the model can issue function calls at
+ * all. Unsupported content (images) and unsupported options (stop
+ * sequences, reasoning efforts) fail loudly instead of being silently
+ * dropped.
  */
 export function serializeRequest(options: GenerateOptions): ResponsesRequest {
   if (options.stop !== undefined && options.stop.length > 0) {
@@ -189,6 +207,21 @@ export function serializeRequest(options: GenerateOptions): ResponsesRequest {
   }
   if (options.maxTokens !== undefined) {
     request.max_output_tokens = options.maxTokens;
+  }
+  // Tool definitions ride the top-level `tools` array in the flat
+  // FunctionTool shape (dsh-llm GenerateOptions.tools contract: "adapters
+  // map to the provider's tools field"). A `strict` flag is never emitted:
+  // the saolei dual-form schemas do not satisfy strict mode's constraints,
+  // and an explicit `strict:false` is semantically equal to omitting the
+  // field
+  // (specs/054-agent-v2-bugfixes/revisions/t029-glm-tools-serialization.md §1).
+  if (options.tools !== undefined && options.tools.length > 0) {
+    request.tools = options.tools.map((tool) => ({
+      type: "function" as const,
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    }));
   }
   return request;
 }

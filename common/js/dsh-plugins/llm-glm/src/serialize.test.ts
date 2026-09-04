@@ -14,6 +14,45 @@ function baseOptions(overrides: Partial<GenerateOptions>): GenerateOptions {
   };
 }
 
+// Real tool-surface shapes (common/js/dsh-plugins/saolei/src/index.ts):
+// saolei_operate's dual-form parameters schema (single op via type/x/y, or
+// a batch via the operations array) plus a no-argument tool.
+const OPERATE_PARAMETERS = {
+  type: {
+    type: "string",
+    enum: ["click", "flag", "chord"],
+    description: "Single form: the operation type (mutually exclusive with operations)",
+  },
+  x: { type: "integer", description: "Single form: column index (0-based)" },
+  y: { type: "integer", description: "Single form: row index (0-based)" },
+  operations: {
+    type: "array",
+    description: "Batch form: ordered cell operations (mutually exclusive with type/x/y)",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        type: { type: "string", enum: ["click", "flag", "chord"], required: true },
+        x: { type: "integer", required: true },
+        y: { type: "integer", required: true },
+      },
+    },
+  },
+};
+
+const TOOL_FIXTURES = [
+  {
+    name: "saolei_operate",
+    description: "Execute one or more minesweeper cell operations IN ORDER.",
+    parameters: OPERATE_PARAMETERS,
+  },
+  {
+    name: "saolei_init",
+    description: "Start a new minesweeper game.",
+    parameters: {},
+  },
+];
+
 describe("Responses request serialization", () => {
   it("maps a multi-turn user/assistant round-trip without replaying reasoning", () => {
     const request = serializeRequest(
@@ -111,6 +150,87 @@ describe("Responses request serialization", () => {
 
     expect(request.temperature).toBe(0.5);
     expect(request.max_output_tokens).toBe(256);
+  });
+
+  it("maps tool schemas to the flat Responses function tools array", () => {
+    // GenerateOptions.tools must reach the wire or the model can never
+    // issue a function call (specs/054-agent-v2-bugfixes/revisions/
+    // t029-glm-tools-serialization.md §0). Each entry flattens to the
+    // OpenAI Responses FunctionTool shape — type/name/description/
+    // parameters at the top level.
+    const request = serializeRequest(
+      baseOptions({
+        tools: TOOL_FIXTURES,
+        messages: [
+          createUserMessage({
+            content: [{ type: "text", text: "Start a game." }],
+            source: { kind: "user" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.tools).toEqual([
+      {
+        type: "function",
+        name: "saolei_operate",
+        description: "Execute one or more minesweeper cell operations IN ORDER.",
+        parameters: OPERATE_PARAMETERS,
+      },
+      {
+        type: "function",
+        name: "saolei_init",
+        description: "Start a new minesweeper game.",
+        parameters: {},
+      },
+    ]);
+  });
+
+  it("omits the tools field when tool schemas are absent or empty", () => {
+    const messages = [
+      createUserMessage({
+        content: [{ type: "text", text: "hi" }],
+        source: { kind: "user" },
+      }),
+    ];
+    const expectedBody = {
+      model: "glm-5.2",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+      stream: true,
+    };
+
+    const withoutTools = serializeRequest(baseOptions({ messages }));
+    expect(withoutTools).not.toHaveProperty("tools");
+    // Full-body assertion guards against field drift, not just the
+    // absence of tools.
+    expect(withoutTools).toEqual(expectedBody);
+
+    const emptyTools = serializeRequest(baseOptions({ tools: [], messages }));
+    expect(emptyTools).not.toHaveProperty("tools");
+    expect(emptyTools).toEqual(withoutTools);
+  });
+
+  it("never emits a strict field on serialized tools", () => {
+    // Strict mode requires a closed JSON-schema subset; the saolei
+    // dual-form schemas do not satisfy it, and explicit strict:false is
+    // semantically equal to omitting the field
+    // (specs/054-agent-v2-bugfixes/revisions/t029-glm-tools-serialization.md §1).
+    const request = serializeRequest(
+      baseOptions({
+        tools: TOOL_FIXTURES,
+        messages: [
+          createUserMessage({
+            content: [{ type: "text", text: "hi" }],
+            source: { kind: "user" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.tools).toHaveLength(2);
+    for (const tool of request.tools ?? []) {
+      expect(tool).not.toHaveProperty("strict");
+    }
   });
 
   it("throws UNSUPPORTED_CONTENT for image content", () => {

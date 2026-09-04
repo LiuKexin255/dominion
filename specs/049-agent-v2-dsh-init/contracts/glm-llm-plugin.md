@@ -94,6 +94,7 @@ POST {baseURL}/responses
   "instructions": "<options.system>",          // system slot（spine persona 渲染产物）
   "input": [ /* 见下表映射 */ ],
   "stream": true,
+  "tools": [ /* GenerateOptions.tools 平铺 FunctionTool（见下表 tools 行，非空时携带） */ ],
   // temperature/maxTokens（如提供）: "temperature"/"max_output_tokens"
 }
 ```
@@ -103,10 +104,11 @@ POST {baseURL}/responses
 | `Message{role:'user', content:[text]}` | `{type:'message', role:'user', content:[{type:'input_text', text}]}` | |
 | `Message{role:'assistant', content:[text]}` | `{type:'message', role:'assistant', content:[{type:'output_text', text}]}` | |
 | assistant `reasoning` 块 | **不回传**（GLM 逐轮重生成推理；简化历史、上下文随轮次单调增长对齐 spec Edge 超长会话行为） | |
-| `tool-result` 消息 / `ToolCallBlock` | 后续工具 step 扩展点（本阶段零工具，遇到即 throw `UNSUPPORTED_CONTENT`） | fail-loud |
+| assistant `tool-call` 块 / `tool-result` 消息 | `{type:'function_call', call_id, name, arguments}` / `{type:'function_call_output', call_id, output}`（多 step 工具回传，specs/051-agent-v2-dsh-migration/research.md D11） | |
+| `GenerateOptions.tools` | 请求体顶层 `tools[]`：每项平铺 `{type:'function', name, description, parameters}`（OpenAI Responses `FunctionTool`） | 仅非空时携带；不发送 `strict`——saolei 双形式 schema 不满足 strict 前提，`strict:false` 与缺省语义等价（specs/054-agent-v2-bugfixes/revisions/t029-glm-tools-serialization.md §1）；依据 [openai-openapi](https://github.com/openai/openai-openapi) 的 `FunctionTool` schema |
 | user `image` 块 | throw `UNSUPPORTED_CONTENT`（text-only，FR-006 范围） | |
 
-input item 格式依据 OpenAI Responses 官方规范（[openai-openapi responses](https://github.com/openai/openai-openapi)：`input_text`/`output_text` content 类型与 message item 形状）。
+input item 与 tools 格式依据 OpenAI Responses 官方规范（[openai-openapi responses](https://github.com/openai/openai-openapi)：`input_text`/`output_text` content 类型与 message item 形状、`FunctionTool` schema）。
 
 ## 5. SSE 事件 → StreamChunk 映射（`src/wire.ts`）
 
@@ -133,7 +135,7 @@ input item 格式依据 OpenAI Responses 官方规范（[openai-openapi response
 
 ## 6. 测试义务（vitest，随包交付）
 
-1. **序列化单测**：user/assistant 历史往返（多轮）、system→instructions、reasoning 不回传、image/tool 内容 UNSUPPORTED_CONTENT。
+1. **序列化单测**：user/assistant 历史往返（多轮）、system→instructions、reasoning 不回传、tools 平铺映射与非空才携带（strict 零出现）、image/非文本工具结果内容 UNSUPPORTED_CONTENT。
 2. **wire 单测**：构造 SSE 帧序列（含 reasoning→message 交错、多块多 delta、completed 带 usage）断言 StreamChunk 序（index 分配、usage-先-finish、终态一致）；`response.failed` → error finish；HTTP 非 200 → throw LlmError。
 3. **协议义务回归**：finish 后零输出、delta index 复用。
 4. **空 key 行为**（条件 Authorization，§3 义务 6）：env(apiKeyEnv) 为空/未设 → 请求头**无** Authorization、请求照常发出；非空 → `Bearer` 头存在（既有 header 断言用例覆盖）。
