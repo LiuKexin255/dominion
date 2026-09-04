@@ -238,8 +238,8 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/quickstart.md`（§2 testplan 执行、§3 真实环境端到端步骤、§4 SC 对照）、`specs/054-agent-v2-bugfixes/research.md` D10（排查 playbook：signoz 取证路径与候选断点）、`specs/054-agent-v2-bugfixes/contracts/testplan.md` §5（验收锚点）
 
-- [ ] T026 全量编译+单测终态门禁（区别于各任务内嵌的增量门禁）：`bazel build //...` 与 `bazel test //...` 全绿（含全部新单测/组件用例与既有零回归）
-- [ ] T027 经 testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`：完成部署→测试→清理闭环，**全部用例通过**（任何 failed/flaky 修复后重跑直至全绿；不以 build 替代执行——constitution VI）；记录重构后执行时长（对照预算）
+- [x] T026 全量编译+单测终态门禁（区别于各任务内嵌的增量门禁）：`bazel build //...` 与 `bazel test //...` 全绿（含全部新单测/组件用例与既有零回归）
+- [x] T027 经 testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`：完成部署→测试→清理闭环，**全部用例通过**（任何 failed/flaky 修复后重跑直至全绿；不以 build 替代执行——constitution VI）；记录重构后执行时长（对照预算）
 - [ ] T028 [US1] 手工验收（与用户配合，正式部署）：将修复部署至正式环境（`projects/game/deploy.yaml` 拓扑，真实 GLM 端点）；引导用户按 `specs/054-agent-v2-bugfixes/quickstart.md` §3 执行——desktop 连接正确 session 并绑定扫雷窗口、web 确认连接状态指示、物化 agent（模型目录双模型）、发起"开始一局扫雷"；**与用户核对验收点**：desktop 真实收到并执行操作、桌面扫雷游戏真实开始与推进、web 棋盘与桌面一致、分段/折叠/markdown/终止/刷新一致性、断开 desktop 后错误呈现；记录执行证据（desktop 执行记录/对话截图/trace id）
 - [ ] T029 [US1] 反馈排查循环（如 T028 任一验收点不通过）：按 `specs/054-agent-v2-bugfixes/research.md` D10 playbook 用 signoz skill 拉取用户操作对应的 trace/log（`desktop connection attached`、dispatch 结果、turn_end 终态与 error），定位断点并修复（禁止凭推测改代码），修复后与用户复验该验收点；循环直至 §3 全部验收点通过
 - [ ] T030 [US1] 验收证据与记录归档：按 `specs/054-agent-v2-bugfixes/quickstart.md` §4 SC 对照表逐项填写验证结果（SC-001 执行证据、SC-002~007 对应用例/记录），归档至 feature 目录（如 `specs/054-agent-v2-bugfixes/revisions/acceptance-2026-09.md`，含 trace id 与时长数据）
