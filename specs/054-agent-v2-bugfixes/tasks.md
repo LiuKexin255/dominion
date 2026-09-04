@@ -104,8 +104,8 @@
 - **官方文档**：[dsh-client-ui-primitives README（npm，含 "Markdown rendering" 章节）](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives)（MarkdownText 能力边界：GFM+KaTeX、流式增量、安全渲染、不完整片段容错——本任务只消费不重造）
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §3
 
-- [ ] T010 [P] [US3] `projects/game/web/frontend/src/components/ChatView.tsx`：agent 正文 `MessageText` 替换为 `MarkdownText`（import 自 `@deepseek-ai/dsh-client-ui-primitives`）；`projects/game/web/frontend/src/components/ReasoningRow.tsx`：展开体同样替换为 `MarkdownText`；组件测试（标题/列表/粗体/行内代码/代码块/表格/链接渲染、无原始符号裸露、流式增量稳定、不完整片段不崩溃、用户消息保持纯文本）
-- [ ] T011 [P] [US3] `projects/game/web/frontend/src/components/ToolCard.tsx`：结果呈现由 JSON 字符串字面量（`JsonBlock`）改为预格式化等宽文本呈现（`<pre>`/等宽样式，保持棋盘坐标标尺对齐，不 markdown 化）；组件测试（多行棋盘对齐、行列不错位）
+- [x] T010 [P] [US3] `projects/game/web/frontend/src/components/ChatView.tsx`：agent 正文 `MessageText` 替换为 `MarkdownText`（import 自 `@deepseek-ai/dsh-client-ui-primitives`）；`projects/game/web/frontend/src/components/ReasoningRow.tsx`：展开体同样替换为 `MarkdownText`；组件测试（标题/列表/粗体/行内代码/代码块/表格/链接渲染、无原始符号裸露、流式增量稳定、不完整片段不崩溃、用户消息保持纯文本）
+- [x] T011 [P] [US3] `projects/game/web/frontend/src/components/ToolCard.tsx`：结果呈现由 JSON 字符串字面量（`JsonBlock`）改为预格式化等宽文本呈现（`<pre>`/等宽样式，保持棋盘坐标标尺对齐，不 markdown 化）；组件测试（多行棋盘对齐、行列不错位）
 
 **Checkpoint**: markdown 缺陷清零，既有 ToolCard 用例更新通过
 
