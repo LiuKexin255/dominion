@@ -30,10 +30,9 @@ guitar run projects/game/testplan/system_test.yaml
 
 预期：
 
-- 单 suite 单部署（deploy 合并后含双 fake-desktop 实例），cases 顺序执行；
-- 全部用例通过（含新增：step 分段/ERROR 回填/cancel 语义/连接状态/模型目录；含既有：session/memory/web/conversation/preset/game(won+drop)/desktop-flow 零回归）；
-- 总执行时间较重构前（7 次部署 + 超预算需 `--timeout=90m`）显著下降；
-- `projects/game/testplan/deploy_agent_v2_drop.yaml` 已删除且无残留引用。
+- 两 suite 两部署：主 suite `game-system`（won 拓扑）按"配置面→对话面→游戏面→桌面面"顺序执行全部主干用例，断连 suite `game-disconnect`（drop 拓扑）执行 mid-game 断连三局序列；
+- 全部用例通过（含新增：step 分段/ERROR 回填/cancel 语义/连接状态/模型目录；含既有：session/memory/web/conversation/preset/game(won)/game-disconnect/desktop-flow 零回归）；
+- 总执行时间较重构前（7 次部署 + 超预算需 `--timeout=90m`）显著下降（部署次数 7→2，`--timeout` 按实测校准）。
 
 ## 3. 真实环境端到端（SC-001，US1 验收）
 

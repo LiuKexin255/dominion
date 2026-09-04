@@ -208,23 +208,23 @@
 
 ## Phase 11: testplan 重构（用户指令②）
 
-**Goal**: deploy 合并 + suite 归并，部署次数 7→1，执行时间显著下降（FR-024 载体重构）
+**Goal**: 同拓扑 suite 归并（7→2）——won 主拓扑单 suite 顺序执行全部主干用例 + drop 断连拓扑独立 suite，部署次数 7→2，执行时间显著下降（FR-024 载体重构；deploy 维持两拓扑——用户裁定 2026-09-04，见 `specs/054-agent-v2-bugfixes/revisions/phase11-two-deploy-topologies.md`）
 
-**Independent Test**: 部署配置/YAML/target 无残留引用（`rg deploy_agent_v2_drop` 零命中）；`bazel build //projects/game/testplan/...` 通过（实际执行验证在 Phase 12）
+**Independent Test**: `guitar validate projects/game/testplan/system_test.yaml` 通过；被否决合并形态零残留（`rg 'fake-desktop-won|fake-desktop-drop'` 全仓零命中）；`bazel build //projects/game/testplan/...` 通过（实际执行验证在 Phase 12）
 
 ### 文档清单
 
 - **代码规范文档**：`style/large_test.md`（模块/suite 编排与反模式）、`style/golang.md`（表驱动/given-when-then/命名）；[Google Go Style Guide](https://google.github.io/styleguide/go/guide)（`style/golang.md` 引用基准）
 - **官方文档**：无
-- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/testplan.md`、`specs/054-agent-v2-bugfixes/research.md` D11、`specs/054-agent-v2-bugfixes/data-model.md` §6、`tools/test/guitar/README.md`（suite/case 串行执行语义出处，contracts/testplan.md §2 引证）
+- **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/testplan.md`、`specs/054-agent-v2-bugfixes/revisions/phase11-two-deploy-topologies.md`（终态设计与工作区返工处置）、`specs/054-agent-v2-bugfixes/research.md` D11（含两拓扑修正注）、`specs/054-agent-v2-bugfixes/data-model.md` §6、`tools/test/guitar/README.md`（suite/case 串行执行语义出处，contracts/testplan.md §2 引证）
 
-- [ ] T021 `projects/game/testplan/deploy_agent_v2.yaml`：既有 fake-desktop 实例更名 `fake-desktop-won`（env 不变）并新增 `fake-desktop-drop` 实例（同 artifact，env：`FAKE_DESKTOP_SESSION=desktop-e2e-drop`、`FAKE_DESKTOP_SCENARIO=progressive`、`FAKE_DESKTOP_FAULT_DISCONNECT_AFTER_OPS=3`）；删除 `projects/game/testplan/deploy_agent_v2_drop.yaml`；全仓引用核查无残留
-- [ ] T022 `projects/game/testplan/system_test.yaml`：7 suite 归并为 1 suite `game-system`（cases 顺序：testplan_test → memory_test → web_test → agent_v2_conversation_test → agent_v2_preset_test → agent_v2_game_test → desktop_flow_test；suite/case description 按模块职能重述，移除对已删 deploy 与独立 disconnect suite 的引用）
-- [ ] T023 `projects/game/testplan/agent_v2_game_disconnect_test.go` 用例并入 `projects/game/testplan/agent_v2_game_test.go`（测试函数迁移、绑定 `desktop-e2e-drop` session 不变）；删除 disconnect 文件；`projects/game/testplan/BUILD.bazel` 移除 `agent_v2_game_disconnect_test` target（`agent_v2_game_test` size 复核；`testplan_test` 保持 gazelle 默认名）+ gazelle 校验
-- [ ] T024 `projects/game/testplan/agent_v2_conversation_test.go` 新增/更新用例（表驱动、given/when/then）：NDJSON 块事件 step 断言与回填每 step 一条、注入 LLM 失败的 ERROR 回合已产出内容回填可见（断言尾步 `HistoryMessage.interrupted=true` 透出）、`:cancel` 全语义（终止/CANCELED 终态/排队落地/幂等/后续 Send 可用）、GetAgent `desktop_connected`（有/无连接）；`projects/game/testplan/agent_v2_preset_test.go`：模型目录断言更新（glm-5.3/glm-5.3-flash/默认值/未知 id 拒绝）；helper 按需补充（复用 `agent_v2_helpers_test.go`，不复制）
-- [ ] T025 [P] `projects/game/testplan/README.md`：执行预算与说明更新（单 suite 单部署、超时参数按实测校准）
+- [ ] T021 deploy 两拓扑保持（工作区返工，revision §2.1/§4）：`projects/game/testplan/deploy_agent_v2.yaml` 恢复单 fake-desktop 实例形态（服务名 `fake-desktop`、session `desktop-e2e-won`、scenario won——**不改名**，两 deploy 服务名空间独立）；恢复 `projects/game/testplan/deploy_agent_v2_drop.yaml`（同拓扑、fake-desktop 以 progressive + `FAKE_DESKTOP_FAULT_DISCONNECT_AFTER_OPS=3` env 运行）——两文件 HEAD 内容即终态，`git restore` 后核对与 contracts/testplan.md §1 一致；`guitar validate projects/game/testplan/system_test.yaml` 通过（依赖 T022 的 suite 结构，可在 T022 后一并执行）
+- [ ] T022 `projects/game/testplan/system_test.yaml`：7 suite 归并为 2 suite（contracts/testplan.md §2）——主 suite `game-system`（`deploy_agent_v2.yaml`，cases 顺序：testplan_test → memory_test → web_test → agent_v2_conversation_test → agent_v2_preset_test → agent_v2_game_test → desktop_flow_test）+ 断连 suite `game-disconnect`（`deploy_agent_v2_drop.yaml`，cases：agent_v2_game_disconnect_test，置于主 suite 之后）；suite description 按模块职能重述（配置面→对话面→游戏面→桌面面 / mid-game 断连三局序列 + drop 拓扑差异），不残留"双 fake-desktop 实例"与已不存在的 suite 名表述
+- [ ] T023 binary 独立性保持（工作区返工，revision §1/§4）：恢复 `projects/game/testplan/agent_v2_game_disconnect_test.go` 与 `projects/game/testplan/BUILD.bazel` 的 `agent_v2_game_disconnect_test` target；`agent_v2_game_test.go`/`agent_v2_helpers_test.go` 恢复单拓扑形态（disconnect 函数与 `gameFlowReconnectWait` 常量回独立文件、头注释恢复 won 拓扑表述）——四文件 HEAD 内容即终态，`git restore` 后核对；gazelle 校验（`testplan_test` 保持默认名 target）+ `bazel build --config=largetest //projects/game/testplan/...` 通过
+- [ ] T024 `projects/game/testplan/agent_v2_conversation_test.go` 新增/更新用例（表驱动、given/when/then）：NDJSON 块事件 step 断言与回填每 step 一条、注入 LLM 失败的 ERROR 回合已产出内容回填可见（断言尾步 `HistoryMessage.interrupted=true` 透出）、`:cancel` 全语义（终止/CANCELED 终态/排队落地/幂等/后续 Send 可用）、GetAgent `desktop_connected`（有/无连接——"有连接"经主拓扑 `desktop-e2e-won` session 断言）；`projects/game/testplan/agent_v2_preset_test.go`：模型目录断言更新（glm-5.3/glm-5.3-flash/默认值/未知 id 拒绝）；helper 按需补充（复用 `agent_v2_helpers_test.go`，不复制）
+- [ ] T025 [P] README 更新（revision §4）：`projects/game/testplan/README.md`（§2 suite 表 7→2、§5 执行预算 7→2 与 `--timeout` 按实测校准）；`projects/game/agent_v2/README.md` 大型测试节与 `projects/game/fake-desktop/README.md`（两拓扑两 suite 终态表述，套件名按新编排更新，套件-拓扑对照指向 `projects/game/testplan/README.md` §2）
 
-**Checkpoint**: 编排重构完成、无残留引用、testplan targets 编译通过
+**Checkpoint**: 两拓扑两 suite 编排就绪、被否决合并形态零残留、testplan targets 编译通过、guitar validate 通过
 
 ---
 

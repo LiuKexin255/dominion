@@ -128,6 +128,8 @@
 
 **Alternatives considered**: 保留 2 个 suite（配置面/全链路各一，两次部署）——放弃，单 suite 收益最大且隔离手段充分；为 disconnect 保留独立 deploy——放弃，正是用户要求消除的重复部署。
 
+> **两拓扑修正（2026-09-04）**: 本条决策 1（deploy 合并——单 deploy 内两个 fake-desktop 实例）与 051 directive 意见 1 的否决冲突（"不应改名单部署两个相同服务，应拆成两个 suite 搭配不同 deploy 配置"，`specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md` §1）——设计时误读该否决为仅约束"同 deploy 内服务不能同名"。用户裁定（2026-09-04）回归两拓扑形态：deploy 不合并（won/drop 两份 deploy 保持、服务名不改）、suite 7→2（主 suite + 断连 suite，即上方被放弃的"两 suite"方向按 won/drop 拓扑分组落地）、binary 保持独立 target（guitar 无函数筛选的复核：`tools/test/guitar/pkg/config/config.go` `Cases []string`、`tools/test/guitar/pkg/run/run.go` runTests 以 cases 为位置参数直接拼 bazel 命令）；部署次数 7→2。终态设计与工作区返工处置见 [revisions/phase11-two-deploy-topologies.md](revisions/phase11-two-deploy-topologies.md)，契约见 [contracts/testplan.md](contracts/testplan.md)。决策 2 的"唯一资源名隔离"与执行预算方向仍有效（数值修正为 7→2）。
+
 ## D12: 前端组件与 store 改造面汇总
 
 **Decision**: 改造集中在既有组件，不引入新框架/路由：

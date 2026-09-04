@@ -12,7 +12,7 @@
 2. **终止能力**（US5）：AgentService 新增 `:cancel` 自定义方法（对齐官方 `IConversation.cancel()` 命令名，语义按用户裁定：排队消息落地为历史 user message，区别于官方的保留 Queue——差异已在 research D2 指出）；TurnStatus 新增 `TURN_STATUS_CANCELED` 终态；对话页 composer 区终止按钮。
 3. **链路真实性与可观测**（US1）：以正式环境执行证据排查"desktop 无执行"断点（排查 playbook 见 research D10）；desktop-bridge 暴露连接状态查询，GetAgent 响应携带 `desktop_connected`，对话页呈现连接状态指示。
 4. **配置面**（US6/7/8）：模型目录改为 GLM Coding Plan 实际支持模型（glm-5.3、glm-5.3-flash）；PresetsView 改独占编辑视图；引入官方 `dsh-client-ui-theme` 的 token CSS 表（`--dsw-*` 唯一色彩权威）系统性修复 Menu 等组件的视觉变量缺口。
-5. **testplan 重构**（用户指令②）：deploy 合并（两个 fake-desktop 实例进一份 deploy，7 次部署 → 1 次）+ suite 归并 + 相应 binary/helper 调整，契约见 [contracts/testplan.md](contracts/testplan.md)。
+5. **testplan 重构**（用户指令②）：同拓扑 suite 归并（7→2——won 主拓扑单 suite 顺序执行 + drop 断连拓扑独立 suite，部署次数 7→2）；deploy 维持两拓扑（用户裁定 2026-09-04，回归 051 directive 意见 1 形态——[revisions/phase11-two-deploy-topologies.md](revisions/phase11-two-deploy-topologies.md)），契约见 [contracts/testplan.md](contracts/testplan.md)。
 
 ## Technical Context
 
@@ -27,13 +27,13 @@
 
 **Storage**: 无新增存储；preset Mongo 延续；agent/历史/游戏状态维持内存态（051 A2 延续）
 
-**Testing**: vitest（web 组件/store + TS 插件单测，每次变更必带）；Go test（gateway/proxy 如有面变更）；bazel build/test；大型测试经 testplan skill（`guitar run projects/game/testplan/system_test.yaml`）——重构后 1 suite 全量通过（constitution 原则 VI：实际执行部署→测试→清理闭环）
+**Testing**: vitest（web 组件/store + TS 插件单测，每次变更必带）；Go test（gateway/proxy 如有面变更）；bazel build/test；大型测试经 testplan skill（`guitar run projects/game/testplan/system_test.yaml`）——重构后 2 suite 全量通过（constitution 原则 VI：实际执行部署→测试→清理闭环）
 
 **Target Platform**: Linux 容器（agent-v2/gateway/proxy/web/testplan）+ Windows desktop（真实执行端，人工验证）
 
 **Project Type**: 多服务 web 系统（SDD/speckit）
 
-**Performance Goals**: 终止后回合停止 ≤5 秒（SC-004，组件/模块测试断言）；testplan 总执行时间显著下降（部署次数 7→1，见 contracts/testplan.md 预算）
+**Performance Goals**: 终止后回合停止 ≤5 秒（SC-004，组件/模块测试断言）；testplan 总执行时间显著下降（部署次数 7→2，见 contracts/testplan.md 预算）
 
 **Constraints**: dsh 家族维持 0.1.1-rc.2 精确 pin（官方 UI 完整栈不可用性见 research D1——数据面协议与依赖生态不匹配，peer cordis ^4.0.2 与本仓库 4.0.1 冲突且 0.1.1-rc.2 线无 chat 包/无折叠特性）；token 零泄漏延续；testplan 零外部网络依赖（fake LLM + fake desktop）
 
@@ -53,7 +53,7 @@
 | IV. 测试颗粒度 | ✅ | 编译+单测为每次变更的一部分（不单列）；大型测试验收单列（含 testplan 重构本身的执行验证） |
 | V. 编码前阅读文档 | ✅ | tasks.md 阶段按三分类格式声明每 phase 文档清单；本 plan 的 research/contracts 均基于实读的官方包源码/README（npm 包解包验证），无凭印象引用 |
 | VI. 服务型应用大型测试验收 | ✅ | 修复后经 testplan skill 实际执行重构后的 `system_test.yaml`（完整部署→测试→清理闭环），全部用例通过为验收；不以 bazel build 替代 |
-| VII. 终态表述 | ✅ | 交付物只表述终态（testplan 重构移除旧 deploy/suite 结构不留残留；spec/plan 中被否决的官方栈方案仅作为决策记录保留于 research） |
+| VII. 终态表述 | ✅ | 交付物只表述终态（testplan 重构后被否决的单 deploy 合并形态不残留于交付物，用户裁定记录于 revisions/phase11-two-deploy-topologies.md；被否决的官方 UI 完整栈方案仅作为决策记录保留于 research） |
 
 无未辩护违反项 → **Complexity Tracking 无需填写**。
 
@@ -70,7 +70,7 @@ specs/054-agent-v2-bugfixes/
 ├── contracts/
 │   ├── agent-api-changes.md     # /api/v2 协议变更（块事件 step 字段、:cancel、GetAgent 连接状态、模型目录）
 │   ├── web-ui.md                # web 前端契约（分段折叠/markdown/终止按钮/连接状态/preset 独占视图/token CSS 引入）
-│   └── testplan.md              # testplan 重构契约（deploy 合并/suite 归并/binary 与 helper 调整）
+│   └── testplan.md              # testplan 重构契约（两拓扑两 suite 归并/binary 保持）
 └── tasks.md                     # Phase 2 output (/speckit.tasks command - NOT created by /speckit.plan)
 ```
 
@@ -92,9 +92,9 @@ projects/game/
 │   ├── components/ReasoningRow.tsx / ToolCard.tsx  # MarkdownText、棋盘等宽呈现
 │   └── components/PresetsView.tsx  # 独占编辑视图
 ├── testplan/
-│   ├── system_test.yaml         # 7 suite → 1 suite（一次部署，cases 顺序执行）
-│   ├── deploy_agent_v2.yaml     # +第二个 fake-desktop 实例（drop 场景）
-│   └── deploy_agent_v2_drop.yaml  # 删除（拓扑并入主 deploy）
+│   ├── system_test.yaml         # 7 suite → 2 suite（主拓扑 suite 顺序执行 + 断连 suite，两部署）
+│   ├── deploy_agent_v2.yaml     # 保持 won 单实例拓扑（fake-desktop，env 驱动）
+│   └── deploy_agent_v2_drop.yaml  # 保持（断连拓扑：fake-desktop 以 progressive + 断连故障 env 运行）
 └── (gateway：/api/v2 透传零改动；proxy：Cancel 转发见 revisions/phase2-proxy-cancel.md)
 
 common/js/dsh-plugins/
@@ -115,7 +115,7 @@ common/js/dsh-plugins/
 3. **agent_v2 宿主**：history.ts 块事件 step 映射、session.ts :cancel（排队落地）、server.ts 连接状态、模型目录配置——vitest + 既有用例零回归。
 4. **web 前端主体**：token CSS 引入 → store 分段/CANCELED → ChatView 折叠/markdown/终止/连接状态 → PresetsView 独占视图（vitest 组件级全覆盖）。
 5. **真实环境链路排查与修复**（US1）：按 research D10 playbook 执行（signoz tracing 定位断点），产出执行证据；此 phase 需要真实 desktop + 正式环境配合。
-6. **testplan 重构**：deploy 合并 + suite 归并 + binary/helper 调整；`guitar run system_test.yaml` 全量通过（部署→测试→清理闭环，全部用例 green）。
+6. **testplan 重构**：同拓扑 suite 归并（7→2）+ 断连拓扑独立 suite（两 deploy 保持）；`guitar run system_test.yaml` 全量通过（部署→测试→清理闭环，全部用例 green）。
 7. **最终验收**（单列 task）：组件/单测全绿 + testplan 全量执行记录 + 真实环境端到端证据（SC-001）归档。
 
 每 phase 的必读文档清单（三分类格式）由 tasks.md 显式声明；官方包参考文档（`dsh-client-ui-chat` README 的 Turn Process Folding 章节、primitives README 的 MarkdownText 章节、ui-theme README 的 token sheets 章节）与 `style/large_test.md` 为关键间接引用，tasks.md 必须显式列出。

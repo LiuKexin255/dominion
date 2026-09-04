@@ -148,6 +148,6 @@ DesktopConn = 'connected' | 'disconnected' | 'unknown'
 
 ## 6. testplan 数据变更（详见 [contracts/testplan.md](contracts/testplan.md)）
 
-- deploy：`deploy_agent_v2.yaml` 服务清单 +1（第二个 fake-desktop 实例 `fake-desktop-drop`）；`deploy_agent_v2_drop.yaml` 删除。
-- suite：`system_test.yaml` 7 suite → 1 suite（cases 顺序：session → memory → web → conversation → preset → game(含 disconnect) → desktop-flow）。
-- binary：`agent_v2_game_disconnect_test` 并入 `agent_v2_game_test`（target 数 8→7）。
+- deploy：两拓扑保持——`deploy_agent_v2.yaml`（won）与 `deploy_agent_v2_drop.yaml`（drop）均为单 `fake-desktop` 实例（服务名不改，两 deploy 服务名空间独立），行为差异全由 env 驱动（`FAKE_DESKTOP_SESSION`/`FAKE_DESKTOP_SCENARIO`/`FAKE_DESKTOP_FAULT_DISCONNECT_AFTER_OPS`）。
+- suite：`system_test.yaml` 7 suite → 2 suite——主 suite `game-system`（主 deploy，cases 顺序：session → memory → web → conversation → preset → game → desktop-flow）+ 断连 suite `game-disconnect`（drop deploy，disconnect case 置于主 suite 之后）。
+- binary：8 个 target 全部保持——`agent_v2_game_disconnect_test` 维持独立文件与 target（guitar 以整个 bazel target 为 case 粒度、无测试函数筛选，断连用例绑定 drop 拓扑；`tools/test/guitar/pkg/run/run.go`）。
