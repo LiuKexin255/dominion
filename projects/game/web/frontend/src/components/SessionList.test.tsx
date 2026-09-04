@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from '../api/sessions.js'
@@ -30,6 +30,43 @@ function loadThemeCss(): string {
 }
 
 const THEME_CSS = loadThemeCss()
+
+// vendored 官方 token sheets 的 union 内容与 index.html 原文（Menu 卡片视觉
+// 断言面：specs/054-agent-v2-bugfixes/contracts/web-ui.md §1/§7 与
+// specs/054-agent-v2-bugfixes/revisions/phase10-theme-css-carrier.md §4——
+// jsdom 不应用外部样式表、不解析 var()，文件内容断言是本仓库可行断言面）。
+function loadDshThemeSheets(): string {
+  const dir = resolveFirstDir('src/dsh-theme')
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.css') && f !== 'index.css')
+    .map((f) => readFileSync(join(dir, f), 'utf8'))
+    .join('\n')
+}
+
+function loadIndexHtml(): string {
+  for (const base of [
+    process.cwd(),
+    resolve(process.cwd(), 'projects/game/web/frontend'),
+  ]) {
+    const path = resolve(base, 'index.html')
+    if (existsSync(path)) return readFileSync(path, 'utf8')
+  }
+  throw new Error('index.html not found relative to cwd')
+}
+
+function resolveFirstDir(rel: string): string {
+  for (const base of [
+    process.cwd(),
+    resolve(process.cwd(), 'projects/game/web/frontend'),
+  ]) {
+    const path = resolve(base, rel)
+    if (existsSync(path)) return path
+  }
+  throw new Error(`${rel} not found relative to cwd`)
+}
+
+const DSH_SHEETS = loadDshThemeSheets()
+const INDEX_HTML = loadIndexHtml()
 
 // Callback props 均以 vi.fn() 注入（style/javascript.md Mock 约定：DI seam，
 // 零模块拦截），并对触发路径做正向断言。onDelete 可注入自定义 double（如
@@ -334,5 +371,28 @@ describe('SessionList 选中态与切换（US4）', () => {
     fireEvent.click(items[0] as HTMLElement)
     expect(onSelect).toHaveBeenCalledTimes(1)
     expect(onSelect).toHaveBeenCalledWith(S1)
+  })
+})
+
+// ─── Menu 卡片视觉断言（US8，specs/054-agent-v2-bugfixes/contracts/web-ui.md
+// §1/§7，specs/054-agent-v2-bugfixes/revisions/phase10-theme-css-carrier.md §4；
+// 组件行为零改动，视觉由 vendored token sheets 承载） ───
+
+describe('SessionList Menu 卡片视觉（US8）', () => {
+  it('vendored sheets 定义 Menu 卡片消费的三 token（union 面）', () => {
+    expect(DSH_SHEETS).toMatch(/--dsw-specific-menu\s*:/)
+    expect(DSH_SHEETS).toMatch(/--dsw-alias-border-inverted\s*:/)
+    expect(DSH_SHEETS).toMatch(/--dsw-shadow-lv3\s*:/)
+  })
+
+  it('sheets 含 dark 激活选择器，index.html body 携带激活属性', () => {
+    expect(DSH_SHEETS).toMatch(/body\[data-ds-dark-theme\]/)
+    expect(INDEX_HTML).toMatch(/<body[^>]*\bdata-ds-dark-theme\b/)
+  })
+
+  it('theme.css 不再定义任何 --dsw-* 变量（sheets 为唯一权威），保留 --app-* 与深色基色', () => {
+    expect(THEME_CSS).not.toMatch(/--dsw-[a-z0-9-]+\s*:/)
+    expect(THEME_CSS).toMatch(/color-scheme:\s*dark/)
+    expect(THEME_CSS).toMatch(/--app-bg\s*:/)
   })
 })

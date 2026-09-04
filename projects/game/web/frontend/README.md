@@ -14,13 +14,13 @@ Bazel target（按 `specs/050-vite-react-bazel/contracts/vite-build-target.md` �
 - `//projects/game/web/frontend:dist` — `vite_build`，产出 dist tree artifact
 - `//projects/game/web/frontend:lib_test` — `vitest_test`，组件单测入口
 
-## 依赖 pin 决策
+## 依赖
 
-- `react`/`react-dom` 与全部前端工程链（vite/vitest/@vitejs/plugin-react/@types/*/
-  @testing-library/*）统一经根 `pnpm-workspace.yaml` catalog 管理。
-- `@deepseek-ai/dsh-client-ui-primitives` 以精确版本 `0.1.1-rc.2` 直接 pin（catalog
-  例外）：dsh 家族按 0.1.1-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），
-  dist-tag 不可信；依据 `specs/049-agent-v2-dsh-init/research.md` D8。
+全部依赖（含 `@deepseek-ai/dsh-client-ui-primitives`，dsh 0.1.1-rc.2 线——
+`third_party/dsh/core` 同线，dist-tag 不可信，依据 `specs/049-agent-v2-dsh-init/research.md` D8）
+统一经根 `pnpm-workspace.yaml` catalog 管理。`@deepseek-ai/dsh-client-ui-theme`
+不作为依赖引入——其 token sheets 以源码形态 vendored 于 `src/dsh-theme/`
+（见 Attribution 与 `src/dsh-theme/README.md`）。
 
 ## Attribution
 
@@ -35,3 +35,8 @@ Bazel target（按 `specs/050-vite-react-bazel/contracts/vite-build-target.md` �
   [packages/client/ui-tool/src/client/tool/toolviews/GenericToolCard.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/toolviews/GenericToolCard.tsx)
 - markdown/代码块等渲染组件直接复用 npm 包
   [@deepseek-ai/dsh-client-ui-primitives](https://cdn.jsdelivr.net/npm/@deepseek-ai/dsh-client-ui-primitives@0.1.1-rc.2/README.md)
+- `src/dsh-theme/`（官方 token sheets，以源码形态 vendored）来自 npm 包
+  [@deepseek-ai/dsh-client-ui-theme](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-theme)（MIT，
+  上游
+  [packages/client/ui-theme](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/client/ui-theme)）；
+  溯源与人工升级流程见 `src/dsh-theme/README.md`

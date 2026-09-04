@@ -8,6 +8,7 @@
 // 落地时覆盖在途回合——web-frontend.md §4），未选中会话的面板保持挂载仅
 // 不渲染，再次进入直接呈现既有状态。
 import { useCallback, useEffect, useRef, useState } from 'react'
+import './dsh-theme/index.css'
 import './theme.css'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ApiError, listHistory, sendStream } from './api/conversation.js'

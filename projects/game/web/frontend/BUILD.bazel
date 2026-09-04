@@ -30,6 +30,7 @@ vitest_test(
     name = "lib_test",
     size = "small",
     data = glob(["src/**"]) + [
+        "index.html",
         "tsconfig.json",
         ":node_modules/@deepseek-ai/dsh-client-ui-primitives",
         ":node_modules/@testing-library/dom",
