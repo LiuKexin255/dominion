@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
-// PresetsView 组件测试（specs/051-agent-v2-dsh-migration/contracts/
-// web-frontend.md §6 测试义务 2）：CRUD 交互与 API 调用形状（fetch mock 正向
-// 断言）、删除确认二步流、空态引导；另覆盖 App 层视图切换（sessions |
-// presets 单页 state）。Mock 约定照 style/javascript.md：vi.fn() double。
+// PresetsView 组件测试（specs/054-agent-v2-bugfixes/contracts/web-ui.md §8
+// 测试义务 4：视图切换矩阵——进入/保存/取消/失败/外部删除竞态与字段语义；
+// CRUD 交互与 API 调用形状的契约基线见 specs/051-agent-v2-dsh-migration/
+// contracts/web-frontend.md §6 测试义务 2）；另覆盖 App 层视图切换
+// （sessions | presets 单页 state）。Mock 约定照 style/javascript.md：
+// vi.fn() double。
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App.js'
@@ -31,6 +33,11 @@ interface PresetsRoute {
   // 与真实 CRUD 往返一致）。
   initial?: typeof PRESET_P1[]
   createStatus?: number
+  // updatePreset（PATCH）的响应状态；非 200 时模拟编辑保存失败路径。
+  patchStatus?: number
+  // 模拟外部删除：置位后 GET 列表不再返回该条目（组件 UI 之外的删除路径），
+  // 用于驱动"正在编辑的条目被外部删除"的竞态检测。
+  externalDelete?: string
 }
 
 // makeFetchMock routes the PresetsView calls: list/create/get/patch/delete on
@@ -42,7 +49,8 @@ function makeFetchMock(route: PresetsRoute = {}) {
   return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? 'GET'
     if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
-      return jsonResponse({ presets })
+      const visible = route.externalDelete !== undefined ? presets.filter((p) => p.name !== route.externalDelete) : presets
+      return jsonResponse({ presets: visible })
     }
     if (url.startsWith('/api/v2/templates/saolei/presets?preset_id=') && method === 'POST') {
       if (route.createStatus !== undefined && route.createStatus !== 200) {
@@ -63,6 +71,9 @@ function makeFetchMock(route: PresetsRoute = {}) {
     // 刷新后据此断言更新后的条目呈现。
     if (url.startsWith('/api/v2/templates/saolei/presets/p1?update_mask=') && method === 'PATCH') {
       const prompt = JSON.parse(String(init?.body)).playerPrompt as string
+      if (route.patchStatus !== undefined && route.patchStatus !== 200) {
+        return jsonResponse('preset not found', route.patchStatus)
+      }
       const updated = { ...PRESET_P1, playerPrompt: prompt, updateTime: '2026-08-29T03:00:00Z' }
       const idx = presets.findIndex((p) => p.name === PRESET_P1.name)
       if (idx >= 0) presets[idx] = updated
@@ -103,9 +114,10 @@ describe('PresetsView', () => {
     const empty = await screen.findByTestId('presets-empty')
     expect(empty.textContent).toContain('先创建 preset 才能物化 agent')
 
-    // 空态新建入口打开表单。
+    // 空态新建入口打开表单；独占编辑视图下空态引导不再渲染。
     fireEvent.click(screen.getByTestId('presets-empty-create'))
     expect(screen.getByTestId('preset-form')).toBeTruthy()
+    expect(screen.queryByTestId('presets-empty')).toBeNull()
   })
 
   it('新建：POST 携带 query preset_id 与 body playerPrompt，成功后刷新列表', async () => {
@@ -127,10 +139,11 @@ describe('PresetsView', () => {
         }),
       )
     })
-    // 保存后列表刷新（第二次 GET），新条目呈现。
+    // 保存后列表刷新（第二次 GET），新条目呈现——表单关闭、列表回归。
     await waitFor(() => {
       expect((screen.getByTestId('preset-name') as HTMLElement).textContent).toBe('p2')
     })
+    expect(screen.getByTestId('preset-item')).toBeTruthy()
     expect(screen.queryByTestId('preset-form')).toBeNull()
   })
 
@@ -147,6 +160,15 @@ describe('PresetsView', () => {
   it('编辑：表单预填、名称只读，保存走 PATCH update_mask=player_prompt', async () => {
     render(<PresetsView template="saolei" />)
     fireEvent.click(await screen.findByTestId('preset-edit'))
+
+    // 独占编辑视图：编辑期间列表条目不渲染（无"可见但禁用"残留）。
+    expect(screen.getByTestId('preset-form')).toBeTruthy()
+    expect(screen.queryByTestId('preset-item')).toBeNull()
+    expect(screen.queryByTestId('presets-empty')).toBeNull()
+    // 头部按钮守卫：新建禁用（防止静默重置进行中的表单），刷新保持可用
+    // （竞态检测的驱动面）。
+    expect((screen.getByTestId('create-preset') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('refresh-presets') as HTMLButtonElement).disabled).toBe(false)
 
     const nameInput = screen.getByTestId('preset-name-input') as HTMLInputElement
     expect(nameInput.value).toBe('p1')
@@ -172,6 +194,7 @@ describe('PresetsView', () => {
       expect(screen.queryByTestId('preset-form')).toBeNull()
     })
     expect(screen.queryByTestId('presets-error')).toBeNull()
+    expect(screen.getByTestId('preset-item')).toBeTruthy()
     const listGets = fetchMock.mock.calls.filter(
       (c) => c[0] === '/api/v2/templates/saolei/presets' && ((c[1] as RequestInit | undefined)?.method ?? 'GET') === 'GET',
     )
@@ -210,19 +233,126 @@ describe('PresetsView', () => {
     expect(screen.getByTestId('presets-empty')).toBeTruthy()
   })
 
-  it('创建冲突（409）呈现错误且表单保留', async () => {
+  it('创建冲突（409）：错误呈现、停留编辑视图且内容不丢；取消返回列表并清除错误', async () => {
     fetchMock = makeFetchMock({ initial: [], createStatus: 409 })
     vi.stubGlobal('fetch', fetchMock)
     render(<PresetsView template="saolei" />)
 
     fireEvent.click(await screen.findByTestId('presets-empty-create'))
     fireEvent.change(screen.getByTestId('preset-name-input'), { target: { value: 'p1' } })
+    fireEvent.change(screen.getByTestId('preset-prompt-input'), { target: { value: '草稿提示词' } })
     fireEvent.click(screen.getByTestId('preset-save'))
 
     await waitFor(() => {
       expect(screen.getByTestId('presets-error')).toBeTruthy()
     })
+    // 失败停留编辑视图：表单保留、已输入内容不丢，列表/空态均不渲染。
     expect(screen.getByTestId('preset-form')).toBeTruthy()
+    expect((screen.getByTestId('preset-name-input') as HTMLInputElement).value).toBe('p1')
+    expect((screen.getByTestId('preset-prompt-input') as HTMLTextAreaElement).value).toBe('草稿提示词')
+    expect(screen.queryByTestId('presets-empty')).toBeNull()
+
+    // 取消返回列表，错误横幅随表单关闭一并清除（错误属于编辑操作上下文，
+    // 不残留为列表态错误）。
+    fireEvent.click(screen.getByTestId('preset-cancel'))
+    expect(screen.queryByTestId('preset-form')).toBeNull()
+    expect(screen.queryByTestId('presets-error')).toBeNull()
+    expect(screen.getByTestId('presets-empty')).toBeTruthy()
+  })
+
+  it('编辑保存失败（PATCH 500）：错误呈现、停留编辑视图且 prompt 草稿不丢', async () => {
+    fetchMock = makeFetchMock({ patchStatus: 500 })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PresetsView template="saolei" />)
+
+    fireEvent.click(await screen.findByTestId('preset-edit'))
+    fireEvent.change(screen.getByTestId('preset-prompt-input'), { target: { value: '改了一半的提示词' } })
+    fireEvent.click(screen.getByTestId('preset-save'))
+
+    // 保存请求按 update_mask 发出（正向断言 mock 被 exercise）。
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/v2/templates/saolei/presets/p1?update_mask=player_prompt',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ playerPrompt: '改了一半的提示词' }) }),
+      )
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('presets-error')).toBeTruthy()
+    })
+    // 失败停留编辑视图：表单保留、prompt 草稿不丢、名称仍只读。
+    expect(screen.getByTestId('preset-form')).toBeTruthy()
+    expect((screen.getByTestId('preset-prompt-input') as HTMLTextAreaElement).value).toBe('改了一半的提示词')
+    expect((screen.getByTestId('preset-name-input') as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('新建为独占视图：进入后列表不渲染，取消返回列表且内容不变', async () => {
+    render(<PresetsView template="saolei" />)
+    await screen.findByTestId('preset-name')
+
+    fireEvent.click(screen.getByTestId('create-preset'))
+    expect(screen.getByTestId('preset-form')).toBeTruthy()
+    expect(screen.queryByTestId('preset-item')).toBeNull()
+    expect(screen.queryByTestId('presets-empty')).toBeNull()
+    // 新建：名称可输入（051 语义延续）。
+    const nameInput = screen.getByTestId('preset-name-input') as HTMLInputElement
+    expect(nameInput.disabled).toBe(false)
+    fireEvent.change(nameInput, { target: { value: 'draft' } })
+
+    // 取消返回列表：条目原样呈现，草稿不落入列表。
+    fireEvent.click(screen.getByTestId('preset-cancel'))
+    expect(screen.queryByTestId('preset-form')).toBeNull()
+    expect(screen.getByTestId('preset-item')).toBeTruthy()
+    expect((screen.getByTestId('preset-name') as HTMLElement).textContent).toBe('p1')
+    expect(screen.queryByTestId('presets-error')).toBeNull()
+  })
+
+  it('正在编辑的条目被外部删除：刷新列表后自动关闭表单返回列表', async () => {
+    const route: PresetsRoute = { patchStatus: 500 }
+    fetchMock = makeFetchMock(route)
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PresetsView template="saolei" />)
+
+    fireEvent.click(await screen.findByTestId('preset-edit'))
+    expect(screen.getByTestId('preset-form')).toBeTruthy()
+    expect(screen.queryByTestId('preset-item')).toBeNull()
+
+    // 先制造编辑态错误：保存失败，错误横幅呈现且表单停留。
+    fireEvent.change(screen.getByTestId('preset-prompt-input'), { target: { value: '改了一半的提示词' } })
+    fireEvent.click(screen.getByTestId('preset-save'))
+    await waitFor(() => {
+      expect(screen.getByTestId('presets-error')).toBeTruthy()
+    })
+    expect(screen.getByTestId('preset-form')).toBeTruthy()
+
+    // 条目在组件之外被删除（独占视图下无删除入口），用户点击刷新拉取
+    // 最新列表——刷新按钮在编辑期间保持可用，是竞态检测的触发面。
+    route.externalDelete = PRESET_P1.name
+    fireEvent.click(screen.getByTestId('refresh-presets'))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('preset-form')).toBeNull()
+    })
+    // 错误横幅随表单关闭一并清除（closeForm 统一收口编辑态错误），不残留
+    // 为列表态错误。
+    expect(screen.queryByTestId('presets-error')).toBeNull()
+    // 返回列表视图（集合已空 → 空态引导），不残留已删除条目的编辑态。
+    expect(screen.getByTestId('presets-empty')).toBeTruthy()
+  })
+
+  it('编辑期间刷新且条目仍在：表单保持打开（竞态误关闭负向路径）', async () => {
+    render(<PresetsView template="saolei" />)
+    fireEvent.click(await screen.findByTestId('preset-edit'))
+    fireEvent.change(screen.getByTestId('preset-prompt-input'), { target: { value: '编辑中的草稿' } })
+
+    // 刷新返回的集合仍含被编辑条目（externalDelete 未启用）→ 不误关闭。
+    fireEvent.click(screen.getByTestId('refresh-presets'))
+    await waitFor(() => {
+      // 刷新完成：加载态退出（此时 presets 更新已提交、竞态 effect 已执行）。
+      expect(screen.queryByText('加载中…')).toBeNull()
+    })
+    expect(screen.getByTestId('preset-form')).toBeTruthy()
+    // 编辑草稿不受刷新影响。
+    expect((screen.getByTestId('preset-prompt-input') as HTMLTextAreaElement).value).toBe('编辑中的草稿')
   })
 })
 

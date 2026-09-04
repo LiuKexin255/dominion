@@ -1,9 +1,12 @@
-// preset 管理视图：列表（name + 更新时间）、新建/编辑表单（名称 +
-// player_prompt 多行文本）、删除确认与空态引导（契约
-// specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2）。preset 无
-// 内置默认（spec Q2 裁定：使用前需先创建），空态引导用户先创建才能物化
-// agent。名称创建后不可改（UpdatePreset 的可变字段仅 player_prompt，
-// agent-api.md §1 UpdatePresetRequest）。
+// preset 管理视图：列表（name + 更新时间）、新建/编辑独占表单（编辑期间
+// 列表不渲染，specs/054-agent-v2-bugfixes/contracts/web-ui.md §6）、删除
+// 确认与空态引导（specs/051-agent-v2-dsh-migration/contracts/
+// web-frontend.md §2）。preset 无内置默认（spec Q2 裁定：使用前需先创建），
+// 空态引导用户先创建才能物化 agent。名称创建后不可改（UpdatePreset 的
+// 可变字段仅 player_prompt，specs/051-agent-v2-dsh-migration/contracts/
+// agent-api.md §1 UpdatePresetRequest）；正在编辑的条目被外部删除时经列表
+// 刷新自动关闭表单返回列表（051 自动关闭语义在独占视图下的延续，
+// web-ui.md §6 竞态行）。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
@@ -77,7 +80,13 @@ export function PresetsView({ template }: PresetsViewProps) {
     setError(null)
   }, [])
 
-  const closeForm = useCallback(() => setForm({ kind: 'closed' }), [])
+  // 关闭表单返回列表：同步清除错误横幅——错误属于编辑操作上下文（保存
+  // 失败等），返回列表后残留会误导为列表自身出错；列表加载错误由 refresh
+  // 自行设置。
+  const closeForm = useCallback(() => {
+    setForm({ kind: 'closed' })
+    setError(null)
+  }, [])
 
   const save = useCallback(async () => {
     const presetId = nameDraft.trim()
@@ -89,14 +98,14 @@ export function PresetsView({ template }: PresetsViewProps) {
       } else if (form.kind === 'edit') {
         await updatePreset(form.preset.name, promptDraft)
       }
-      setForm({ kind: 'closed' })
+      closeForm()
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setSaving(false)
     }
-  }, [form, nameDraft, promptDraft, template, refresh])
+  }, [form, nameDraft, promptDraft, template, refresh, closeForm])
 
   const confirmDelete = useCallback(
     async (name: string) => {
@@ -104,7 +113,6 @@ export function PresetsView({ template }: PresetsViewProps) {
       try {
         await deletePreset(name)
         setDeletePending(null)
-        if (form.kind === 'edit' && form.preset.name === name) setForm({ kind: 'closed' })
         await refresh()
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -112,14 +120,25 @@ export function PresetsView({ template }: PresetsViewProps) {
         setSaving(false)
       }
     },
-    [form, refresh],
+    [refresh],
   )
+
+  // 独占编辑期间被编辑条目被外部删除（列表刷新后缺失）→ 自动关闭表单
+  // 返回列表，不残留已删除条目的编辑态。
+  useEffect(() => {
+    if (form.kind === 'edit' && !presets.some((p) => p.name === form.preset.name)) {
+      closeForm()
+    }
+  }, [form, presets, closeForm])
 
   return (
     <div className="presets-view" data-testid="presets-view">
       <div className="presets-header">
         <h2 className="presets-title">Presets</h2>
         <div className="presets-actions">
+          {/* 刷新在编辑期间保持可用——独占视图下它是竞态检测（被编辑条目被
+              外部删除后自动关闭表单）的驱动面，不禁用；新建按钮编辑期间
+              禁用，避免静默重置进行中的表单。 */}
           <Button data-testid="refresh-presets" disabled={loading} onClick={() => void refresh()}>
             刷新
           </Button>
@@ -135,7 +154,7 @@ export function PresetsView({ template }: PresetsViewProps) {
         </div>
       )}
 
-      {form.kind === 'create' && (
+      {form.kind !== 'closed' && (
         <form
           className="preset-form"
           data-testid="preset-form"
@@ -145,15 +164,19 @@ export function PresetsView({ template }: PresetsViewProps) {
           }}
         >
           <label className="preset-form-field" htmlFor="preset-name-input">
-            <span>名称</span>
-            <Input
-              id="preset-name-input"
-              data-testid="preset-name-input"
-              aria-label="preset 名称"
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              placeholder="如 default"
-            />
+            <span>{form.kind === 'create' ? '名称' : '名称（创建后不可改）'}</span>
+            {form.kind === 'create' ? (
+              <Input
+                id="preset-name-input"
+                data-testid="preset-name-input"
+                aria-label="preset 名称"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="如 default"
+              />
+            ) : (
+              <Input id="preset-name-input" data-testid="preset-name-input" aria-label="preset 名称" value={nameDraft} disabled readOnly />
+            )}
           </label>
           <label className="preset-form-field" htmlFor="preset-prompt-input">
             <span>player_prompt（空 = 物化时回退默认提示词）</span>
@@ -168,7 +191,12 @@ export function PresetsView({ template }: PresetsViewProps) {
             />
           </label>
           <div className="preset-form-actions">
-            <Button variant="primary" data-testid="preset-save" disabled={saving || nameDraft.trim() === ''} onClick={() => void save()}>
+            <Button
+              variant="primary"
+              data-testid="preset-save"
+              disabled={saving || (form.kind === 'create' && nameDraft.trim() === '')}
+              onClick={() => void save()}
+            >
               保存
             </Button>
             <Button data-testid="preset-cancel" disabled={saving} onClick={closeForm}>
@@ -178,96 +206,61 @@ export function PresetsView({ template }: PresetsViewProps) {
         </form>
       )}
 
-      {form.kind === 'edit' && (
-        <form
-          className="preset-form"
-          data-testid="preset-form"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void save()
-          }}
-        >
-          <label className="preset-form-field" htmlFor="preset-name-input-readonly">
-            <span>名称（创建后不可改）</span>
-            <Input id="preset-name-input-readonly" data-testid="preset-name-input" aria-label="preset 名称" value={nameDraft} disabled readOnly />
-          </label>
-          <label className="preset-form-field" htmlFor="preset-prompt-input">
-            <span>player_prompt（空 = 物化时回退默认提示词）</span>
-            <textarea
-              id="preset-prompt-input"
-              className="preset-prompt-input"
-              data-testid="preset-prompt-input"
-              aria-label="player_prompt"
-              rows={8}
-              value={promptDraft}
-              onChange={(e) => setPromptDraft(e.target.value)}
-            />
-          </label>
-          <div className="preset-form-actions">
-            <Button variant="primary" data-testid="preset-save" disabled={saving} onClick={() => void save()}>
-              保存
-            </Button>
-            <Button data-testid="preset-cancel" disabled={saving} onClick={closeForm}>
-              取消
-            </Button>
+      {form.kind === 'closed' &&
+        (!loading && presets.length === 0 && error === null ? (
+          <div className="presets-empty" data-testid="presets-empty">
+            还没有 preset。先创建 preset 才能物化 agent——在会话页的「设置 agent」里需要选择一个 preset。
+            <div className="presets-empty-actions">
+              <Button variant="primary" data-testid="presets-empty-create" onClick={openCreate}>
+                新建 preset
+              </Button>
+            </div>
           </div>
-        </form>
-      )}
-
-      {!loading && presets.length === 0 && error === null ? (
-        <div className="presets-empty" data-testid="presets-empty">
-          还没有 preset。先创建 preset 才能物化 agent——在会话页的「设置 agent」里需要选择一个 preset。
-          <div className="presets-empty-actions">
-            <Button variant="primary" data-testid="presets-empty-create" onClick={openCreate}>
-              新建 preset
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <ul className="preset-items">
-          {presets.map((p) => (
-            <li key={p.name} className="preset-item" data-testid="preset-item">
-              <div className="preset-item-main">
-                <span className="preset-item-name" data-testid="preset-name">
-                  {presetTitle(p.name)}
-                </span>
-                {p.updateTime !== undefined && (
-                  <span className="preset-item-time" data-testid="preset-time">
-                    {formatTime(p.updateTime)}
+        ) : (
+          <ul className="preset-items">
+            {presets.map((p) => (
+              <li key={p.name} className="preset-item" data-testid="preset-item">
+                <div className="preset-item-main">
+                  <span className="preset-item-name" data-testid="preset-name">
+                    {presetTitle(p.name)}
                   </span>
-                )}
-              </div>
-              <div className="preset-item-actions">
-                {deletePending === p.name ? (
-                  <>
-                    <span className="preset-delete-confirm">确认删除？</span>
-                    <Button
-                      variant="primary"
-                      data-testid="preset-delete-confirm"
-                      disabled={saving}
-                      onClick={() => void confirmDelete(p.name)}
-                    >
-                      确认
-                    </Button>
-                    <Button data-testid="preset-delete-cancel" disabled={saving} onClick={() => setDeletePending(null)}>
-                      取消
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button data-testid="preset-edit" disabled={form.kind !== 'closed' || saving} onClick={() => openEdit(p)}>
-                      编辑
-                    </Button>
-                    <Button data-testid="preset-delete" disabled={form.kind !== 'closed' || saving} onClick={() => setDeletePending(p.name)}>
-                      删除
-                    </Button>
-                  </>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+                  {p.updateTime !== undefined && (
+                    <span className="preset-item-time" data-testid="preset-time">
+                      {formatTime(p.updateTime)}
+                    </span>
+                  )}
+                </div>
+                <div className="preset-item-actions">
+                  {deletePending === p.name ? (
+                    <>
+                      <span className="preset-delete-confirm">确认删除？</span>
+                      <Button
+                        variant="primary"
+                        data-testid="preset-delete-confirm"
+                        disabled={saving}
+                        onClick={() => void confirmDelete(p.name)}
+                      >
+                        确认
+                      </Button>
+                      <Button data-testid="preset-delete-cancel" disabled={saving} onClick={() => setDeletePending(null)}>
+                        取消
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button data-testid="preset-edit" disabled={saving} onClick={() => openEdit(p)}>
+                        编辑
+                      </Button>
+                      <Button data-testid="preset-delete" disabled={saving} onClick={() => setDeletePending(p.name)}>
+                        删除
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ))}
       {loading && <div className="presets-note">加载中…</div>}
     </div>
   )
