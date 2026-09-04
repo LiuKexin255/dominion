@@ -164,7 +164,7 @@
 - **官方文档**：[GLM Coding Plan 套餐概览](https://docs.bigmodel.cn/cn/coding-plan/overview)（支持模型集合与自动切换规则）；[GLM Coding Plan 最新模型与调用配置](https://docs.bigmodel.cn/cn/coding-plan/latest-model.md)（`glm-5.3-flash` context window 与 1M 形态——实现前核实）
 - **技术文章/技术参考文档**：`specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md` §5、`specs/054-agent-v2-bugfixes/data-model.md` §4、`specs/054-agent-v2-bugfixes/research.md` D9（开放项验证点）
 
-- [ ] T018 [US6] `projects/game/agent_v2/cordis.yml`：llm-glm `models` 改为 `glm-5.3`（contextWindow 1000000）与 `glm-5.3-flash`（contextWindow 以 latest-model.md 核实值为准，[1m] 后缀形态按文档判定）双条目，移除 `glm-5.2`；`projects/game/agent_v2/src/session.ts`：`DEFAULT_MODEL` 改 `GLM_MODEL || 'glm-5.3'`；相关单测/既有 models 目录用例更新（双模型、默认值、未知 id 拒绝零回归）
+- [x] T018 [US6] `projects/game/agent_v2/cordis.yml`：llm-glm `models` 改为 `glm-5.3`（contextWindow 1000000）与 `glm-5.3-flash`（contextWindow 以 latest-model.md 核实值为准，[1m] 后缀形态按文档判定）双条目，移除 `glm-5.2`；`projects/game/agent_v2/src/session.ts`：`DEFAULT_MODEL` 改 `GLM_MODEL || 'glm-5.3'`；相关单测/既有 models 目录用例更新（双模型、默认值、未知 id 拒绝零回归）
 
 **Checkpoint**: 物化下拉双模型可选且校验同源
 
