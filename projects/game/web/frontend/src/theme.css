@@ -616,11 +616,19 @@ body {
 }
 
 /* 折叠态布局围栏（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md
- * §2，对齐上游 `.root:not([data-expanded])`）：折叠盒尺寸与内容解耦——
- * 流式中的思考行不影响任何祖先布局；height 直接 24px（本地无
- * content-font-delta 变量体系，research.md F1）。 */
+ * §2）：height 固定 24px 保证垂直围栏——折叠盒高度与流式内容解耦，思考
+ * 输出不影响任何祖先的纵向布局（FR-001 防纵向布局逃逸）；contain: layout
+ * 提供独立格式化上下文。不使用上游同款的 contain: size layout：本地
+ * `.msg-agent` 是 fit-content 宽度卡片（align-self: flex-start;
+ * max-width: 80%），size containment 把 intrinsic 宽度归零，THINK-only
+ * 卡片会塌缩不可见（上游全宽 block 布局宽度不依赖子元素 intrinsic 尺寸
+ * 故可用 size；根因分析见
+ * specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md；上游样式
+ * https://github.com/deepseek-ai/deepseek-harness/blob/master/
+ * packages/client/ui-chat/src/client/chat/ReasoningRow.module.css ）。height
+ * 直接 24px（本地无 content-font-delta 变量体系）。 */
 .reasoning-row:not([data-expanded]) {
-  contain: size layout;
+  contain: layout;
   height: 24px;
 }
 

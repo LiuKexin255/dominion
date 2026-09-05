@@ -4,7 +4,7 @@
 // （specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §2，对齐上游
 // 双层 summary > summaryText 结构，无程序化滚动），完成态显示首行 + ellipsis；
 // 根节点 data-expanded 是折叠态布局围栏（theme.css
-// `.reasoning-row:not([data-expanded])` contain: size layout）的样式钩子；
+// `.reasoning-row:not([data-expanded])` contain: layout）的样式钩子；
 // 展开体以 MarkdownText 渲染完整思考文本（specs/054-agent-v2-bugfixes/
 // contracts/web-ui.md §3：思考展开体与正文同能力，GFM、流式增量、不完整
 // 片段不崩溃——running 即流式增长中，传给 MarkdownText 的 streaming prop）；

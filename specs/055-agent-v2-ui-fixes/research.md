@@ -32,7 +32,7 @@
 
 - **上游**: `.root:not([data-expanded]) { contain: size layout; height: calc(24px + var(--dsh-content-font-delta, 0px)); }`（ReasoningRow.module.css）；TSX 根节点带 `data-expanded={expanded || undefined}`。
 - **本地**: 无 `data-expanded` 属性、无 `contain`、无固定高度（`projects/game/web/frontend/src/theme.css` 的 `.reasoning-row`）。流式期间思考行的内容测量可影响祖先布局——文档级滚动条（问题 4）的已知候选根因；最终以部署环境复现验证（spec A3）。
-- **修复**: ReasoningRow.tsx 根节点加 `data-expanded`；theme.css 加 `.reasoning-row:not([data-expanded]) { contain: size layout; height: 24px; }`（本地无 content-font-delta 变量体系，直接 24px，与 DisclosureRow `.row` 高度一致）。
+- **修复**: ReasoningRow.tsx 根节点加 `data-expanded`；theme.css 加 `.reasoning-row:not([data-expanded]) { contain: layout; height: 24px; }`（本地无 content-font-delta 变量体系，直接 24px，与 DisclosureRow `.row` 高度一致）。不采用上游 `contain: size layout`：本地 `.msg-agent` 是 fit-content 宽度卡片，size containment 把 intrinsic 宽度归零使 THINK-only 卡片塌缩不可见（与本地布局不相容，断点分析见 `specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md`）。
 
 #### F2 跟随摘要（follow-end）机制偏离：程序化 scrollLeft → 上游纯 CSS
 

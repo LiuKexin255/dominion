@@ -22,13 +22,15 @@ function loadThemeCss(): string {
 const THEME_CSS = loadThemeCss()
 
 // F1 折叠态布局围栏（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md
-// §2、data-model.md §2）：折叠盒（无 data-expanded）尺寸与内容解耦——
-// contain: size layout + 固定 24px 高，流式增长不影响祖先布局。
+// §2、data-model.md §2）：折叠盒（无 data-expanded）垂直围栏——contain:
+// layout + 固定 24px 高，流式增长不影响祖先纵向布局；不用 contain: size
+// 的原因见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md
+// （size containment 与本地 fit-content 卡片不相容）。
 describe('theme.css 思考折叠行围栏（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §2）', () => {
-  it('折叠态围栏规则存在：contain: size layout + height: 24px（F1）', () => {
+  it('折叠态围栏规则存在：contain: layout + height: 24px（F1）', () => {
     const fence = /\.reasoning-row:not\(\[data-expanded\]\)\s*\{([^}]*)\}/.exec(THEME_CSS)
     expect(fence).not.toBeNull()
-    expect(fence?.[1]).toContain('contain: size layout')
+    expect(fence?.[1]).toContain('contain: layout')
     expect(fence?.[1]).toContain('height: 24px')
   })
 })

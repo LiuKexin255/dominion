@@ -18,7 +18,7 @@
 
 对齐上游 [ReasoningRow.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/src/client/chat/ReasoningRow.tsx) / [ReasoningRow.module.css](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/src/client/chat/ReasoningRow.module.css)：
 
-1. 根节点承载 `data-expanded`（展开时存在）与 `data-state`（running/ok）；折叠态（无 `data-expanded`）样式施加 `contain: size layout` 且高度固定 24px——折叠盒尺寸与内容解耦，流式增长不影响祖先布局。
+1. 根节点承载 `data-expanded`（展开时存在）与 `data-state`（running/ok）；折叠态（无 `data-expanded`）样式施加 `contain: layout` 且高度固定 24px——高度围栏使折叠盒纵向尺寸与内容解耦，流式增长不影响祖先布局。与上游 [ReasoningRow.module.css](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/src/client/chat/ReasoningRow.module.css) 的 `contain: size layout` 为有意差异：本地 `.msg-agent` 是 fit-content 宽度卡片，size containment 会把卡片 intrinsic 宽度归零使 THINK-only 卡片塌缩不可见（上游全宽 block 布局无此依赖）；根因分析见 `specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md`。
 2. 折叠摘要为双层结构（`summary > summaryText`）：running 时 `data-follow-end` 以纯 CSS 右对齐露出最新行末尾（行容器 `overflow: hidden` 裁剪），非 running 显示首行 + ellipsis；**不使用任何程序化 scrollLeft/动画帧机制**。
 3. running 扫描动画渐变色为 `color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent)`（主题感知），不得硬编码颜色字面量。
 4. 展开体渲染维持本地既有语义：MarkdownText（有意偏离 D1，见 §5）。

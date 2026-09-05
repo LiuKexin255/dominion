@@ -27,7 +27,7 @@
 实体：`expanded: boolean`（本地 UI 态）× `running: boolean`（流式尾块判定，来自 store）。
 
 - 根节点 `data-expanded={expanded || undefined}`、`data-state={running ? 'running' : 'ok'}`（对齐上游）。
-- 样式契约：`.reasoning-row:not([data-expanded])` 施加 `contain: size layout; height: 24px`——折叠态盒尺寸与内容解耦（上游对齐义务）；展开态随 thinkBody 自然增长。FR-001 的根因（用户观察：折叠/展开两态均出现窗口滚动条）以部署环境复现排查为准（research.md §2.3 排查协议），围栏是候选修复之一而非预设结论。
+- 样式契约：`.reasoning-row:not([data-expanded])` 施加 `contain: layout; height: 24px`——高度围栏使折叠态盒纵向尺寸与流式内容解耦；与上游 `contain: size layout`（[ReasoningRow.module.css](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/src/client/chat/ReasoningRow.module.css)）的差异是有意的：本地 `.msg-agent` 为 fit-content 宽度卡片，size containment 会把 intrinsic 宽度归零使 THINK-only 卡片塌缩不可见（分析见 `specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md`）。展开态随 thinkBody 自然增长。FR-001 的根因（用户观察：折叠/展开两态均出现窗口滚动条）以部署环境复现排查为准（research.md §2.3 排查协议），围栏是候选修复之一而非预设结论。
 - 折叠摘要：双层 `summary > summaryText`；`running` 时 `data-follow-end` → 右对齐露出最新行末尾（纯 CSS，由行容器 `overflow: hidden` 裁剪）；非 running 显示首行 + ellipsis。
 - `running` 时扫描动画 `::after` 渐变色 = `color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent)`（主题感知，对齐上游）。
 
