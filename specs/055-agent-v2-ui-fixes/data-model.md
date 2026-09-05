@@ -36,9 +36,9 @@
 | 变量 | 解析 | 用于 |
 | --- | --- | --- |
 | `--app-banner-error-bg` | `var(--dsw-static-red-900)` `#570c0c` | `.chat-error` / `.presets-error` / `.agent-panel-error` 背景 |
-| `--app-banner-error-fg` | `var(--dsw-alias-state-error-primary)` `#f25a5a` | 同上文字（对比度 ≈5.0:1） |
+| `--app-banner-error-fg` | `var(--dsw-static-red-100)` `#fee2e2` | 同上文字（对比度 ≈11.7:1） |
 | `--app-banner-warn-bg` | `var(--dsw-alias-state-warn-tertiary)` `#27241f` | `.chat-canceled` 背景 |
-| `--app-banner-warn-fg` | `var(--dsw-alias-state-warn-primary)` `#f59e0b` | 同上文字（对比度 ≈6.9:1） |
+| `--app-banner-warn-fg` | `var(--dsw-alias-state-warn-primary)` `#f59e0b` | 同上文字（对比度 ≈7.2:1） |
 
 约束：值必须解析到 vendored token 表（`src/dsh-theme/design-platform.css`）中已定义的 token；对比度下限 4.5:1 由 `src/theme-contrast.test.ts` 以 `?raw` CSS 解析断言（R2）。透明底 + 前景色用法（`.queue-chip`/`.agent-guide`/`.desktop-conn` 等）不在此映射内、不改动。
 

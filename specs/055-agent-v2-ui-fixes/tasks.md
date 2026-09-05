@@ -93,11 +93,11 @@
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T008 [US2] 新增 `projects/game/web/frontend/src/theme-contrast.test.ts`：以 `?raw` 导入 `projects/game/web/frontend/src/theme.css` 与 `src/dsh-theme/design-platform.css`，解析四类横幅规则的 `background`/`color` 变量引用链至具体色值，按 WCAG 相对亮度公式计算对比度并断言 ≥ 4.5:1——先跑确认失败
+- [X] T008 [US2] 新增 `projects/game/web/frontend/src/theme-contrast.test.ts`：按文件内容读取 `projects/game/web/frontend/src/theme.css` 与 `src/dsh-theme/design-platform.css`（vitest `css:false` 下 `?raw` 为空串，仓库既有 readFileSync 惯例），解析四类横幅规则的 `background`/`color` 变量引用链至具体色值，按 WCAG 相对亮度公式计算对比度并断言 ≥ 4.5:1——先跑确认失败
 
 ### Implementation for User Story 2
 
-- [ ] T009 [US2] `projects/game/web/frontend/src/theme.css`：新增 `--app-banner-error-bg/-fg`、`--app-banner-warn-bg/-fg` 四个 app 级变量（映射值见 data-model.md §3：red-900/error-primary、warn-tertiary/warn-primary），`.chat-error`/`.presets-error`/`.agent-panel-error` 改用 error 组、`.chat-canceled` 改用 warn 组（依赖 T008 完成后使其转绿）
+- [X] T009 [US2] `projects/game/web/frontend/src/theme.css`：新增 `--app-banner-error-bg/-fg`、`--app-banner-warn-bg/-fg` 四个 app 级变量（映射值见 data-model.md §3：red-900/red-100、warn-tertiary/warn-primary），`.chat-error`/`.presets-error`/`.agent-panel-error` 改用 error 组、`.chat-canceled` 改用 warn 组（依赖 T008 完成后使其转绿）
 
 **Checkpoint**: US2 独立可测——对比度断言全绿；红/黄色系视觉可区分。
 

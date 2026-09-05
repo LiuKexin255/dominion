@@ -1,7 +1,7 @@
 /* 主题与布局：--dsw-* token 的唯一权威是 src/dsh-theme/（官方 token sheets
  * 的 vendored 副本，溯源与升级流程见 src/dsh-theme/README.md；dark 块经
  * index.html 的 body[data-ds-dark-theme] 激活），本文件只保留自有 --app-*
- * 布局变量与布局样式（侧栏 + 主区双栏，
+ * 变量与布局样式（侧栏 + 主区双栏，
  * specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2），不定义
  * 任何 --dsw-* 变量。 */
 
@@ -11,6 +11,20 @@
   --app-bg: #0f1216;
   --app-panel: #171b22;
   --app-border: #262c36;
+
+  /* 状态横幅配色单一来源（specs/055-agent-v2-ui-fixes/contracts/
+   * ui-interactions.md §3、data-model.md §3）。web 为深色单一主题
+   * （index.html 静态 body[data-ds-dark-theme]），对比度按 dark 解析值计，
+   * 断言见 src/theme-contrast.test.ts。error 文字取 red-100（red-900 底在
+   * vendored 表中的浅色对位，与 warn/success tertiary 的 -100/-900 跨主题
+   * 同槽模式一致；对比度 11.75:1）——error-primary 别名在 dark 下解析为
+   * red-400 #f25a5a，对 red-900 底仅 4.36:1，低于 FR-005 的 4.5:1 下限，
+   * 不可作填充底色上的文字色。warn 组对比度 7.20:1。红/黄两色系保持
+   * FR-006 要求的类别区分。 */
+  --app-banner-error-bg: var(--dsw-static-red-900);
+  --app-banner-error-fg: var(--dsw-static-red-100);
+  --app-banner-warn-bg: var(--dsw-alias-state-warn-tertiary);
+  --app-banner-warn-fg: var(--dsw-alias-state-warn-primary);
 }
 
 * {
@@ -205,8 +219,8 @@ body {
 .presets-error {
   padding: 8px 12px;
   border-radius: 8px;
-  background: var(--dsw-alias-state-error-secondary);
-  color: var(--dsw-alias-state-error-primary);
+  background: var(--app-banner-error-bg);
+  color: var(--app-banner-error-fg);
   white-space: pre-wrap;
 }
 
@@ -443,8 +457,8 @@ body {
 .agent-panel-error {
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--dsw-alias-state-error-secondary);
-  color: var(--dsw-alias-state-error-primary);
+  background: var(--app-banner-error-bg);
+  color: var(--app-banner-error-fg);
   font-size: 12px;
   white-space: pre-wrap;
 }
@@ -550,8 +564,8 @@ body {
   margin: 0 24px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: var(--dsw-alias-state-error-secondary);
-  color: var(--dsw-alias-state-error-primary);
+  background: var(--app-banner-error-bg);
+  color: var(--app-banner-error-fg);
   white-space: pre-wrap;
 }
 
@@ -562,8 +576,8 @@ body {
   margin: 0 24px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: var(--dsw-alias-state-warn-secondary);
-  color: var(--dsw-alias-state-warn-primary);
+  background: var(--app-banner-warn-bg);
+  color: var(--app-banner-warn-fg);
   white-space: pre-wrap;
 }
 

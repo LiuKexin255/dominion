@@ -81,9 +81,10 @@
 
 | 用途 | 背景 | 文字 | WCAG 对比度（计算值） |
 | --- | --- | --- | --- |
-| 错误横幅（`.chat-error`/`.presets-error`/`.agent-panel-error`） | `var(--dsw-static-red-900)` `#570c0c` | `var(--dsw-alias-state-error-primary)` `#f25a5a` | ≈5.0:1 ✓ |
-| 警示横幅（`.chat-canceled`） | `var(--dsw-alias-state-warn-tertiary)` `#27241f` | `var(--dsw-alias-state-warn-primary)` `#f59e0b` | ≈6.9:1 ✓ |
+| 错误横幅（`.chat-error`/`.presets-error`/`.agent-panel-error`） | `var(--dsw-static-red-900)` `#570c0c` | `var(--dsw-static-red-100)` `#fee2e2` | ≈11.7:1 ✓ |
+| 警示横幅（`.chat-canceled`） | `var(--dsw-alias-state-warn-tertiary)` `#27241f` | `var(--dsw-alias-state-warn-primary)` `#f59e0b` | ≈7.2:1 ✓ |
 
+- error 前景取 static red-100：vendored 表内可作深色填充底的最深红是 red-900，alias error-primary（dark 下解析为 red-400 `#f25a5a`）在其上按 [WCAG 2.2 相对亮度公式](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html) 为 4.36:1，低于 FR-005 的 4.5:1 下限；red-100 是表内达标的红系前景，与 warn/success tertiary 的 -100/-900 跨主题槽位配对一致，保持 FR-006 红系可区分（断言见 `projects/game/web/frontend/src/theme-contrast.test.ts`）。
 - 红黄两色系区分保持（FR-006）；`.queue-chip`/`.agent-guide`/`.desktop-conn` 等透明底 + 前景色用法本就可读，不动。
 - **备选被否**: 亮底深字（red-100 底）——与深色主题整体风格冲突；直接改 vendored token 表——上游文件不应本地语义化改写（`src/dsh-theme/README.md` 升级流程会被破坏）。
 
