@@ -25,6 +25,7 @@ function renderChatView(props: {
   session?: string
   canceled?: boolean
   onCancel?: () => Promise<void>
+  onSend?: (text: string) => void
 }): RenderResult {
   return render(
     <ChatView
@@ -34,7 +35,7 @@ function renderChatView(props: {
       queue={[]}
       error={null}
       canceled={props.canceled ?? false}
-      onSend={noop}
+      onSend={props.onSend ?? noop}
       onCancel={props.onCancel ?? noopCancel}
     />,
   )
@@ -42,7 +43,13 @@ function renderChatView(props: {
 
 function rerenderChatView(
   result: RenderResult,
-  props: { history?: HistoryMessage[]; live?: LiveTurn | null; session?: string; canceled?: boolean },
+  props: {
+    history?: HistoryMessage[]
+    live?: LiveTurn | null
+    session?: string
+    canceled?: boolean
+    onSend?: (text: string) => void
+  },
 ): void {
   result.rerender(
     <ChatView
@@ -52,7 +59,7 @@ function rerenderChatView(
       queue={[]}
       error={null}
       canceled={props.canceled ?? false}
-      onSend={noop}
+      onSend={props.onSend ?? noop}
       onCancel={noopCancel}
     />,
   )
@@ -918,5 +925,184 @@ describe('ChatView 终止按钮（specs/054-agent-v2-bugfixes/contracts/web-ui.m
     // 排队消息以历史 user 消息形态出现在对话流（落地）。
     expect(screen.getByTestId('chat-messages').querySelector('.msg-user')?.textContent).toBe('排队消息')
     expect(screen.getByTestId('turn-canceled')).not.toBeNull()
+  })
+})
+
+// 条件跟随与回底入口（FR-002~004，specs/055-agent-v2-ui-fixes/contracts/
+// ui-interactions.md §1、data-model.md §1 跟随状态机）。jsdom 无布局引擎：
+// 以实例属性覆写 .chat-messages 的 scrollTop/scrollHeight/clientHeight 为
+// 可赋值驱动（覆写遮蔽 Element.prototype 上的只读实现，程序化赋值即生效）。
+interface ScrollMockState {
+  scrollTop: number
+  scrollHeight: number
+  clientHeight: number
+}
+
+function mockScrollable(): {
+  el: HTMLElement
+  set: (next: Partial<ScrollMockState>) => void
+} {
+  const el = screen.getByTestId('chat-messages')
+  const state: ScrollMockState = { scrollTop: 0, scrollHeight: 0, clientHeight: 0 }
+  Object.defineProperty(el, 'scrollTop', {
+    get: () => state.scrollTop,
+    set: (value: number) => {
+      state.scrollTop = value
+    },
+    configurable: true,
+  })
+  Object.defineProperty(el, 'scrollHeight', { get: () => state.scrollHeight, configurable: true })
+  Object.defineProperty(el, 'clientHeight', { get: () => state.clientHeight, configurable: true })
+  return { el, set: (next) => Object.assign(state, next) }
+}
+
+describe('ChatView 条件跟随滚动（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §1）', () => {
+  it('贴底时内容增长保持贴底，贴底期间不渲染回底按钮（FR-002/FR-004）', () => {
+    const result = renderChatView({ live: liveOf([{ index: 0, type: 'TEXT', text: '初始正文' }]) })
+    const { el, set } = mockScrollable()
+    set({ scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+    fireEvent.scroll(el)
+    expect(screen.queryByTestId('to-bottom-button')).toBeNull()
+
+    // 贴底 + 内容增长：视图写入新的 scrollHeight（跟随生效）。
+    set({ scrollHeight: 1200 })
+    rerenderChatView(result, {
+      live: liveOf([{ index: 0, type: 'TEXT', text: '初始正文\n\n第一段增量' }]),
+    })
+    expect(el.scrollTop).toBe(1200)
+    expect(screen.queryByTestId('to-bottom-button')).toBeNull()
+  })
+
+  it('思考流式（THINK 块）同样受条件跟随约束：贴底跟随、非贴底位置保持（US1 独立测试要求思考/正文两阶段分别断言）', () => {
+    const result = renderChatView({ live: liveOf([{ index: 0, type: 'THINK', text: '先拆解问题' }]) })
+    const { el, set } = mockScrollable()
+    set({ scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+    fireEvent.scroll(el)
+    expect(screen.getByTestId('reasoning-row').getAttribute('data-state')).toBe('running')
+
+    // 贴底 + 思考流式增长：跟随贴底（折叠摘要行的增长也是内容增长）。
+    set({ scrollHeight: 1200 })
+    rerenderChatView(result, {
+      live: liveOf([{ index: 0, type: 'THINK', text: '先拆解问题\n再给出步骤' }]),
+    })
+    expect(el.scrollTop).toBe(1200)
+
+    // 用户上滚后再增长：阅读位置保持、不被拉回。
+    set({ scrollTop: 500 })
+    fireEvent.scroll(el)
+    set({ scrollHeight: 1500 })
+    rerenderChatView(result, {
+      live: liveOf([{ index: 0, type: 'THINK', text: '先拆解问题\n再给出步骤\n开始作答' }]),
+    })
+    expect(el.scrollTop).toBe(500)
+  })
+
+  it('非贴底时位置保持不被拉回，回底按钮呈现（FR-002/FR-004）', () => {
+    const result = renderChatView({ live: liveOf([{ index: 0, type: 'TEXT', text: '初始正文' }]) })
+    const { el, set } = mockScrollable()
+    set({ scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+    fireEvent.scroll(el)
+
+    // 用户上滚离开底部：后续输出不改变阅读位置；按钮 aria-label 对齐
+    // 契约 §1.4（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md）。
+    set({ scrollTop: 200 })
+    fireEvent.scroll(el)
+    expect(screen.getByTestId('to-bottom-button').getAttribute('aria-label')).toBe('回到底部')
+    set({ scrollHeight: 1500 })
+    rerenderChatView(result, {
+      live: liveOf([{ index: 0, type: 'TEXT', text: '初始正文\n\n大量新增输出内容' }]),
+    })
+    expect(el.scrollTop).toBe(200)
+    expect(screen.getByTestId('to-bottom-button')).not.toBeNull()
+  })
+
+  it('点击回底按钮：视角回底、按钮消失、跟随恢复（FR-004）', () => {
+    const result = renderChatView({ live: liveOf([{ index: 0, type: 'TEXT', text: '初始正文' }]) })
+    const { el, set } = mockScrollable()
+    set({ scrollTop: 200, scrollHeight: 1000, clientHeight: 400 })
+    fireEvent.scroll(el)
+
+    fireEvent.click(screen.getByTestId('to-bottom-button'))
+    expect(el.scrollTop).toBe(1000)
+    expect(screen.queryByTestId('to-bottom-button')).toBeNull()
+
+    // 回底后跟随恢复：内容增长重新贴底。
+    set({ scrollHeight: 1300 })
+    rerenderChatView(result, {
+      live: liveOf([{ index: 0, type: 'TEXT', text: '初始正文\n\n回底后的增量' }]),
+    })
+    expect(el.scrollTop).toBe(1300)
+  })
+
+  it('非贴底时发新消息：无条件回底并恢复跟随（FR-003）', () => {
+    const onSend = vi.fn()
+    const result = renderChatView({
+      history: [{ role: 'ROLE_USER', blocks: [{ text: { content: '第一条' } }] }],
+      onSend,
+    })
+    const { el, set } = mockScrollable()
+    set({ scrollTop: 100, scrollHeight: 1000, clientHeight: 400 })
+    fireEvent.scroll(el)
+    expect(screen.getByTestId('to-bottom-button')).not.toBeNull()
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: '新消息' } })
+    fireEvent.click(screen.getByTestId('send-button'))
+    expect(onSend).toHaveBeenCalledWith('新消息')
+
+    // 父层将 user 消息落入 history 后重渲染：视角已在底部、按钮消失。
+    rerenderChatView(result, {
+      history: [
+        { role: 'ROLE_USER', blocks: [{ text: { content: '第一条' } }] },
+        { role: 'ROLE_USER', blocks: [{ text: { content: '新消息' } }] },
+      ],
+      onSend,
+    })
+    expect(el.scrollTop).toBe(1000)
+    expect(screen.queryByTestId('to-bottom-button')).toBeNull()
+    expect(screen.getByTestId('chat-messages').textContent).toContain('新消息')
+  })
+
+  it('贴底判定阈值为 24px：距底 ≤ 24 视为贴底、> 24 离底（R7，上游 FOLLOW_THRESHOLD）', () => {
+    const r1 = renderChatView({ live: liveOf([{ index: 0, type: 'TEXT', text: '正文' }]) })
+    const m1 = mockScrollable()
+    m1.set({ scrollTop: 976, scrollHeight: 1400, clientHeight: 400 })
+    fireEvent.scroll(m1.el)
+    expect(screen.queryByTestId('to-bottom-button')).toBeNull()
+    rerenderChatView(r1, { live: liveOf([{ index: 0, type: 'TEXT', text: '正文\n\n增量' }]) })
+    expect(m1.el.scrollTop).toBe(1400)
+
+    cleanup()
+    renderChatView({ live: liveOf([{ index: 0, type: 'TEXT', text: '正文' }]) })
+    const m2 = mockScrollable()
+    m2.set({ scrollTop: 975, scrollHeight: 1400, clientHeight: 400 })
+    fireEvent.scroll(m2.el)
+    expect(screen.getByTestId('to-bottom-button')).not.toBeNull()
+  })
+
+  it('回合结束时用户已上滚：终态横幅出现不强行拉底（Edge Cases"回合结束时的视角"）', () => {
+    const result = renderChatView({ live: liveOf([{ index: 0, type: 'TEXT', text: '流式正文' }]) })
+    const { el, set } = mockScrollable()
+    set({ scrollTop: 300, scrollHeight: 1000, clientHeight: 400 })
+    fireEvent.scroll(el)
+
+    // 回合以错误终态收束（live 归空、error 呈现）：阅读位置保持原位。
+    result.rerender(
+      <ChatView
+        session={SESSION}
+        history={[]}
+        live={null}
+        queue={[]}
+        error="流中断"
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
+    expect(screen.getByTestId('chat-error').textContent).toBe('流中断')
+    expect(el.scrollTop).toBe(300)
+    // 回底按钮存在性仅由滚动位置决定，与回合状态无关（specs/
+    // 055-agent-v2-ui-fixes/spec.md Edge Cases"回底入口的存在条件"）：
+    // 回合已结束（live 归空、error 呈现）且非贴底时仍然呈现。
+    expect(screen.getByTestId('to-bottom-button')).not.toBeNull()
   })
 })

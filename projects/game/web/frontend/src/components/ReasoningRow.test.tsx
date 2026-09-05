@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ReasoningRow } from './ReasoningRow.js'
 
 // vitest does not expose a global afterEach here (no `globals: true`), so RTL's
@@ -81,5 +81,57 @@ describe('ReasoningRow', () => {
     const { container } = render(<ReasoningRow text={'  \n '} running={false} />)
     expect(container.querySelector('[data-testid="reasoning-row"]')).toBeNull()
     expect(container.textContent).toBe('')
+  })
+})
+
+// 上游对齐结构（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §2、
+// data-model.md §2）：根节点 data-expanded 围栏钩子 + follow-end 纯 CSS 双层
+// 摘要，无任何程序化滚动。
+describe('ReasoningRow 对齐结构', () => {
+  it('根节点承载 data-expanded：折叠时不存在、展开时存在（F1 围栏钩子）', () => {
+    render(<ReasoningRow text={'思考首行摘要\n后续思考行'} running={false} />)
+    const root = screen.getByTestId('reasoning-row')
+    expect(root.getAttribute('data-expanded')).toBeNull()
+
+    fireEvent.click(disclosureRow())
+    expect(root.getAttribute('data-expanded')).toBe('true')
+
+    fireEvent.click(disclosureRow())
+    expect(root.getAttribute('data-expanded')).toBeNull()
+  })
+
+  it('折叠摘要是双层结构（summary > summaryText）：running 与完成态同构', () => {
+    render(<ReasoningRow text={'已完成的一行\n仍在生成的一行'} running />)
+    const summary = screen.getByTestId('reasoning-summary')
+    expect(summary.getAttribute('data-follow-end')).not.toBeNull()
+    const summaryText = summary.querySelector('.reasoning-summary-text')
+    expect(summaryText).not.toBeNull()
+    expect(summaryText?.textContent).toBe('仍在生成的一行')
+
+    cleanup()
+    render(<ReasoningRow text={'思考首行摘要\n后续思考行'} running={false} />)
+    const settled = screen.getByTestId('reasoning-summary')
+    expect(settled.getAttribute('data-follow-end')).toBeNull()
+    expect(settled.querySelector('.reasoning-summary-text')?.textContent).toBe('思考首行摘要')
+  })
+
+  it('流式增长不产生程序化 scrollLeft 写入（follow-end 为纯 CSS 机制，F2）', async () => {
+    const result = render(<ReasoningRow text={'第一行'} running />)
+    const summary = screen.getByTestId('reasoning-summary')
+    // 以 setter 探针拦截 scrollLeft 写入：旧机制（rAF 节流 3 帧后写
+    // scrollLeft）若在，跨帧后必有调用。
+    const scrollLeftWrites = vi.fn()
+    Object.defineProperty(summary, 'scrollLeft', {
+      get: () => 0,
+      set: (value: number) => scrollLeftWrites(value),
+      configurable: true,
+    })
+
+    result.rerender(<ReasoningRow text={'第一行\n第二行\n第三行\n第四行'} running />)
+    for (let i = 0; i < 6; i += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    }
+    expect(scrollLeftWrites).not.toHaveBeenCalled()
+    expect(summary.scrollLeft).toBe(0)
   })
 })

@@ -4,12 +4,21 @@
 // 054-agent-v2-bugfixes/contracts/web-ui.md §2.2）：历史一条消息即一个 step、
 // live 回合每个 step 一个分段容器，依次独立呈现；步骤内 THINK →
 // ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard 分类分列不混排。
-import { useEffect, useRef, useState } from 'react'
-import { Button, Input, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  Button,
+  IconChevronDownOutline14,
+  Input,
+  MarkdownText,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ContentBlock, HistoryMessage } from '../api/conversation.js'
 import type { BlockDraft, LiveTurn, QueuedMsg } from '../store/chat.js'
 import { ReasoningRow } from './ReasoningRow.js'
 import { ToolCard, type ToolCardStatus } from './ToolCard.js'
+
+// 贴底判定阈值（px）：距底 ≤ 阈值视为贴底并跟随（R7，取上游既定值 24，
+// 上游来源与设计见 specs/055-agent-v2-ui-fixes/research.md §2.2）。
+const FOLLOW_THRESHOLD = 24
 
 export interface ChatViewProps {
   session: string
@@ -247,22 +256,60 @@ export function ChatView({
   // 禁用并忽略后续点击，promise 落定即解除。
   const [cancelPending, setCancelPending] = useState(false)
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  // 贴底跟随状态机（specs/055-agent-v2-ui-fixes/data-model.md §1）：仅贴底
+  // 时内容增长跟随；ref 镜像供 scroll 监听（mount 一次）比对去重。
+  const [atBottom, setAtBottom] = useState(true)
+  const atBottomRef = useRef(true)
 
   useEffect(() => {
     setExpandedTurns(new Set())
+    // 切换会话回到底部视角（specs/055-agent-v2-ui-fixes/spec.md Edge Cases
+    // "多会话切换"；既有回填回底行为零回归）。
+    atBottomRef.current = true
+    setAtBottom(true)
   }, [session])
 
-  // 流式跟随滚动：内容增长（历史、实时块、排队指示）即贴底。
+  // scroll 监听维护 atBottom：距底 ≤ FOLLOW_THRESHOLD 视为贴底（R7，上游
+  // FOLLOW_THRESHOLD = 24，specs/055-agent-v2-ui-fixes/data-model.md §1）。
   useEffect(() => {
     const el = messagesRef.current
+    if (el === null) return undefined
+    const onScroll = (): void => {
+      const next = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD
+      if (next === atBottomRef.current) return
+      atBottomRef.current = next
+      setAtBottom(next)
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // 内容增长的贴底 effect：仅贴底时跟随；非贴底（跟随停止）不改变阅读
+  // 位置——含回合终态横幅出现时（Edge Cases"回合结束时的视角"不强行拉底）。
+  // useLayoutEffect 使滚动写入在浏览器 paint 前完成（视觉同步：流式高频
+  // chunk 下避免"内容已增长、视图晚一帧回底"的闪烁；对齐上游同型视觉
+  // effect，React 文档 https://react.dev/reference/react/useLayoutEffect ）。
+  useLayoutEffect(() => {
+    const el = messagesRef.current
+    if (el === null || !atBottom) return
+    el.scrollTop = el.scrollHeight
+  }, [history, live, queue, error, atBottom])
+
+  // 无条件回底入口：发新消息（FR-003）与"回到底部"按钮共用——回底即恢复
+  // 跟随（specs/055-agent-v2-ui-fixes/data-model.md §1）。
+  const toBottom = (): void => {
+    const el = messagesRef.current
     if (el !== null) el.scrollTop = el.scrollHeight
-  }, [history, live, queue, error])
+    atBottomRef.current = true
+    setAtBottom(true)
+  }
 
   const submit = () => {
     const text = draft.trim()
     if (text === '') return
     onSend(text)
     setDraft('')
+    toBottom()
   }
 
   // 终止入口仅 live 回合运行中呈现（web-ui.md §4：空闲不呈现触发面）；点击
@@ -334,6 +381,22 @@ export function ChatView({
           // "已终止"终态标识：独立于错误文案（web-ui.md §4）。
           <div className="chat-canceled" data-testid="turn-canceled">
             已终止
+          </div>
+        )}
+        {/* 回到底部浮动入口：渲染条件 = !atBottom，与回合状态无关（FR-004、
+         * specs/055-agent-v2-ui-fixes/data-model.md §1 不变量）；sticky 槽
+         * 挂在消息区（唯一滚动面）内随视口浮动，点击回底并恢复跟随。 */}
+        {!atBottom && (
+          <div className="to-bottom-slot">
+            <button
+              type="button"
+              className="to-bottom"
+              aria-label="回到底部"
+              data-testid="to-bottom-button"
+              onClick={toBottom}
+            >
+              <IconChevronDownOutline14 />
+            </button>
           </div>
         )}
       </div>

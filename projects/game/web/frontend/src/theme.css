@@ -552,6 +552,48 @@ body {
   flex: 1;
 }
 
+/* 回到底部浮动入口（非贴底时呈现，specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §1；形态参照 dsh-web ChatView.module.css
+ * .toBottomSlot/.toBottom 改造，attribution 见
+ * projects/game/web/frontend/README.md）。零高 sticky 槽不撑大
+ * scrollHeight，按钮上移入视口、右下浮动；token 适配本地 vendored sheets
+ * （无 --dsw-elevation-* 体系，以 alias-border-l3 描边替代 elevation 描边，
+ * 间距适配本地全幅消息列）。
+ * margin-top 负值抵消 flex gap：.chat-messages 是 column flex 且 gap 12px，
+ * 零高槽作为末位 flex item 仍被计入 gap，使滚动内容底部多出 12px 空隙；
+ * 上游 .scroll 为 block 容器（间距由相邻选择器给出）无此问题。 */
+.to-bottom-slot {
+  position: sticky;
+  bottom: 16px;
+  z-index: 8;
+  height: 0;
+  margin-top: -12px;
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 24px;
+  pointer-events: none;
+}
+
+.to-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-top: -34px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 100px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-button-floating-fill);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.to-bottom:hover {
+  background: var(--dsw-alias-button-floating-hover);
+}
+
 /* 视觉隐藏（供屏幕阅读器的流式状态播报，标准 clip 模式）。 */
 .visually-hidden {
   position: absolute;
@@ -571,6 +613,15 @@ body {
 .reasoning-row {
   display: flex;
   flex-direction: column;
+}
+
+/* 折叠态布局围栏（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md
+ * §2，对齐上游 `.root:not([data-expanded])`）：折叠盒尺寸与内容解耦——
+ * 流式中的思考行不影响任何祖先布局；height 直接 24px（本地无
+ * content-font-delta 变量体系，research.md F1）。 */
+.reasoning-row:not([data-expanded]) {
+  contain: size layout;
+  height: 24px;
 }
 
 .reasoning-row .reasoning-row-line {
@@ -625,11 +676,30 @@ body {
   flex: 1 1 auto;
   color: var(--dsw-alias-label-tertiary);
   font-size: 13px;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.reasoning-summary-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 折叠摘要 follow-end 纯 CSS 跟随（specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §2，对齐上游 .summary[data-follow-end]）：文本右对齐
+ * 自然露出最新行末尾，由 .reasoning-row-line 的 overflow: hidden 裁剪，
+ * 无任何程序化滚动。 */
 .reasoning-summary[data-follow-end] {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.reasoning-summary[data-follow-end] .reasoning-summary-text {
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: 100%;
+  overflow: visible;
+  text-align: start;
   text-overflow: clip;
 }
 
