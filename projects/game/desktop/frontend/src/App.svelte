@@ -229,6 +229,14 @@
     }
   }
 
+  // handleBackToSessions tears down the session flow and re-enters the
+  // sessions list. Returning MUST re-list sessions so external changes (web
+  // creates/deletes) are reflected on entry (FR-007,
+  // specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §4.2):
+  // handleRefresh writes only sessions/loading/error — never
+  // selectedSession/page — so the refresh cannot disturb navigation
+  // (specs/055-agent-v2-ui-fixes/data-model.md §4); on failure the existing
+  // catch semantics surface the error without clearing the rendered list.
   async function handleBackToSessions() {
     error = null
     if (connectionState === 'connected' || connectionState === 'connecting') {
@@ -242,6 +250,7 @@
     resetSessionViewState()
     selectedSession = null
     page = 'sessions'
+    void handleRefresh()
   }
 
   // --- Log handler ---

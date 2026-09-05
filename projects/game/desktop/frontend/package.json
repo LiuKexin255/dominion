@@ -17,6 +17,7 @@
         "vite": "catalog:",
         "@types/node": "catalog:",
         "svelte-check": "catalog:",
-        "vitest": "catalog:"
+        "vitest": "catalog:",
+        "jsdom": "catalog:"
     }
 }

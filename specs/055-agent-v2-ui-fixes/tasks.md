@@ -123,12 +123,12 @@
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T010 [P] [US3] `projects/game/desktop/frontend/package.json` devDependencies 增加 `"jsdom": "catalog:"`（根 `pnpm-workspace.yaml` catalog 已有 `^26.0.0`），执行 `bazel run @pnpm -- --dir /mnt/code/dominion/projects/game/desktop/frontend up`、`bazel run //:gazelle projects/game/desktop/frontend`、`bazel mod tidy` 更新依赖与 BUILD
-- [ ] T011 [P] [US3] 新增 `projects/game/desktop/frontend/src/App.test.ts`：`// @vitest-environment jsdom` pragma；`vi.mock('./api')`（包内相对模块）并 `mount(App)` + `flushSync` 驱动——断言 (a) 点击 Back 后 `listSessions` 再次调用、(b) 刷新失败（mock reject）时错误呈现且既有列表不清空、(c) 每个 mock 均有正向调用断言（style/javascript.md 规则）；`window.runtime` 缺省安全（jsdom 无 Wails 注入）——依赖 T010 的 jsdom devDep 就位，先跑确认失败
+- [X] T010 [P] [US3] `projects/game/desktop/frontend/package.json` devDependencies 增加 `"jsdom": "catalog:"`（根 `pnpm-workspace.yaml` catalog 已有 `^26.0.0`），执行 `bazel run @pnpm -- --dir /mnt/code/dominion/projects/game/desktop/frontend up`、`bazel run //:gazelle projects/game/desktop/frontend`、`bazel mod tidy` 更新依赖与 BUILD
+- [X] T011 [P] [US3] 新增 `projects/game/desktop/frontend/src/App.test.ts`：`// @vitest-environment jsdom` pragma；`vi.mock('./api')`（包内相对模块）并 `mount(App)` + `flushSync` 驱动——断言 (a) 点击 Back 后 `listSessions` 再次调用、(b) 刷新失败（mock reject）时错误呈现且既有列表不清空、(c) 每个 mock 均有正向调用断言（style/javascript.md 规则）；`window.runtime` 缺省安全（jsdom 无 Wails 注入）——依赖 T010 的 jsdom devDep 就位，先跑确认失败
 
 ### Implementation for User Story 3
 
-- [ ] T012 [US3] `projects/game/desktop/frontend/src/App.svelte`：`handleBackToSessions()` 在 `page = 'sessions'` 后追加 `void handleRefresh()`（契约 §4.2：刷新仅写 `sessions`/`loading`/`error`，不触碰 `selectedSession`/`page`）——完成后 T010 断言转绿
+- [X] T012 [US3] `projects/game/desktop/frontend/src/App.svelte`：`handleBackToSessions()` 在 `page = 'sessions'` 后追加 `void handleRefresh()`（契约 §4.2：刷新仅写 `sessions`/`loading`/`error`，不触碰 `selectedSession`/`page`）——完成后 T010 断言转绿
 
 **Checkpoint**: US3 独立可测——desktop `lib_test` 全绿；既有 api.test.ts 零回归。
 
