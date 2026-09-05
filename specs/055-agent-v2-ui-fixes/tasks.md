@@ -66,7 +66,7 @@
 - [X] T004 [P] [US1] `projects/game/web/frontend/src/components/ChatView.tsx`：实现条件跟随状态机（data-model.md §1）——scroll 监听维护 atBottom（`scrollHeight - scrollTop - clientHeight <= 24`）、内容增长 effect 改为仅贴底时 `scrollTop = scrollHeight`、submit 无条件回底；替换现有无条件贴底 effect
 - [X] T005 [P] [US1] `projects/game/web/frontend/src/components/ReasoningRow.tsx` + `projects/game/web/frontend/src/theme.css`：F1 折叠态布局围栏（根节点 `data-expanded`；`.reasoning-row:not([data-expanded]) { contain: size layout; height: 24px; }`）；F2 follow-end 改上游纯 CSS 双层结构（`summary > summaryText`、`data-follow-end` 右对齐、行容器 `overflow: hidden` 裁剪），**删除** `useThrottledVisualUpdate`/`summaryRef`/`scheduleSummaryScroll` 机制
 - [X] T006 [US1] `projects/game/web/frontend/src/components/ChatView.tsx` + `projects/game/web/frontend/src/theme.css`：非贴底渲染"回到底部"浮动入口（`IconChevronDownOutline14`、sticky 右下 34px、`aria-label`、`data-testid="to-bottom-button"`，样式参照上游 ChatView.module.css `.toBottomSlot/.toBottom` 适配本地布局），点击回底并恢复跟随（依赖 T004、T005 完成——ChatView.tsx 与 theme.css 串行）
-- [ ] T007 [US1] FR-001 排查与修复验证（research.md §2.3 协议）：真实浏览器环境（本地 vite dev 或 testplan 部署）复现思考流式**折叠/展开两态 + 正文输出**三场景；执行隔离实验 A（禁用 sweep 动画/`prefers-reduced-motion`）与 B（核查部署构建中行容器 `overflow` 裁剪实际生效）；断点结论与修复记录写入 `specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md`——若 F1/F2 落地后仍复现，按实际断点继续修复直至三场景均无窗口滚动条
+- [X] T007 [US1] FR-001 排查与修复验证（research.md §2.3 协议）：真实浏览器环境（本地 vite dev 或 testplan 部署）复现思考流式**折叠/展开两态 + 正文输出**三场景；执行隔离实验 A（禁用 sweep 动画/`prefers-reduced-motion`）与 B（核查部署构建中行容器 `overflow` 裁剪实际生效）；断点结论与修复记录写入 `specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md`——若 F1/F2 落地后仍复现，按实际断点继续修复直至三场景均无窗口滚动条
 
 **Checkpoint**: US1 独立可测——`bazel test //projects/game/web/frontend:lib_test` 全绿；T007 三场景人工验证通过并有排查记录。
 

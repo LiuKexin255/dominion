@@ -47,13 +47,15 @@ describe('theme.css 消息区布局包含（specs/055-agent-v2-ui-fixes/contract
   })
 })
 
-// code 块贴合内容宽（用户裁定：代码块不强行与 fit-content 卡片同宽；
-// 断点数据见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md）。
+// code 块贴合内容宽（用户裁定：代码块不强行与 fit-content 卡片同宽）+
+// 右侧内边距校准（44px = 左侧 16px + "复制"文案宽，用户裁定）；断点数据
+// 见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md。
 describe('theme.css code 块宽度（specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md）', () => {
-  it('.msg-agent 内 code 块包装贴合内容宽、受卡片宽约束', () => {
+  it('.msg-agent 内 code 块包装贴合内容宽、受卡片宽约束并带右侧内边距', () => {
     const rule = /\.msg-agent \.md-code-block\s*\{([^}]*)\}/.exec(THEME_CSS)
     expect(rule).not.toBeNull()
     expect(rule?.[1]).toContain('width: fit-content')
     expect(rule?.[1]).toContain('max-width: 100%')
+    expect(rule?.[1]).toContain('padding-right: 44px')
   })
 })

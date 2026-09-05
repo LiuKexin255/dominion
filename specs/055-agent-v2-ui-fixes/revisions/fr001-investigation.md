@@ -2,7 +2,7 @@
 
 **Feature**: `specs/055-agent-v2-ui-fixes/spec.md`（FR-001 / US1 / T007 排查回路）
 **日期**: 2026-09-05（部署验证反馈与复验，同日两轮）
-**结论**: 三项断点均已定位并修复；待部署环境复验（见"待验证项"）。
+**结论**: 三项断点均已定位、修复并经部署环境复验全部通过（2026-09-05，见"复验记录"）。
 
 ## 现象
 
@@ -40,12 +40,12 @@
 
 - **断点 0（第一轮）**：`projects/game/web/frontend/src/theme.css` 折叠围栏 `contain: size layout` → `contain: layout`（保留 `height: 24px` 垂直围栏）；断言与契约/文档终态同步（`theme-fence.test.ts`、`specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md` §2.1、`specs/055-agent-v2-ui-fixes/data-model.md` §2、`specs/055-agent-v2-ui-fixes/research.md` §1.2）。
 - **断点 1（第二轮）**：`.chat-messages` 增加 `position: relative`——滚动容器成为其内部所有绝对定位后代的 containing block（随内容滚动、被滚动容器裁剪），结构性消除逃逸；对 ToolCard/JsonBlock 等包内组件潜在的 abspos 一并生效。契约登记于 `specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md` §1.5。`.visually-hidden` span 保留（无障碍播报是正当需求，逃逸由容器定位修复，不改 DOM）。
-- **断点 2（第二轮）**：theme.css 新增 `.msg-agent .md-code-block { width: fit-content; max-width: 100% }`——短代码块贴合内容宽，长代码受卡片内容宽约束换行（包内 `pre` 为 `pre-wrap + break-all`）。属本地卡片布局适配，不登记契约。
+- **断点 2（第二轮）**：theme.css 新增 `.msg-agent .md-code-block { width: fit-content; max-width: 100% }`——短代码块贴合内容宽，长代码受卡片内容宽约束换行（包内 `pre` 为 `pre-wrap + break-all`）。属本地卡片布局适配，不登记契约。右侧内边距校准（用户 2026-09-05 裁定）：fit-content 后代码内容与 head 的"复制"按钮距块右缘过近，追加 `padding-right: 44px` = 左侧内边距 16px（包内 pre）+ "复制"文案宽（2 个 CJK 字符 @13px banner 字号）——padding 计入 fit-content 宽度，块背景覆盖 padding，"复制"按钮随之获得右侧留白。
 - DOM 结构与组件逻辑不变（ReasoningRow.tsx / ChatView.tsx 无改动）；组件级测试断言全部有效。
 
-## 待验证项（部署环境，待用户复验）
+## 复验记录（2026-09-05 部署环境，用户确认全部通过）
 
-1. 展开思考体（含 DevTools 打开缩短视口的极端场景）窗口无滚动条、页面整体不可滚动。
-2. 折叠态回归确认：思考折叠输出期间卡片可见、无窗口滚动条（第一轮修复不回归）。
-3. code 块贴合内容宽：短代码不满宽；长代码受卡片宽度约束并换行（`pre-wrap + break-all`）。
-4. 若窗口滚动条仍复现，下一个探针：暂时禁用包内 code 块 `.bannerWrap` 的 `position: sticky`（Chromium sticky 扩大根滚动范围的已知怪癖类别，`CodeBlock.module.css .bannerWrap`），再回报现象。
+1. 展开思考体（含 DevTools 打开缩短视口的极端场景）窗口无滚动条、页面整体不可滚动（断点 1 修复生效）。
+2. 折叠态回归正常：思考折叠输出期间卡片可见、无窗口滚动条（断点 0 修复无回归）。
+3. code 块贴合内容宽：短代码不满宽、长代码受卡片宽度约束换行；右侧内边距校准（44px）生效，"复制"按钮获得右侧留白（用户追加裁定）。
+4. sticky head（包内 CodeBlock `.bannerWrap` 的 `position: sticky`）经用户裁定保留——包内默认行为，未引入根滚动范围异常，探针无需执行。

@@ -503,10 +503,16 @@ body {
  * .block），在 fit-content 卡片内自动填满剩余宽度——短代码也绘制满宽背
  * 景块。width: fit-content 使其贴合自身内容宽，max-width: 100% 受卡片
  * 内容宽约束（长代码由包内 pre 的 pre-wrap + break-all 换行）。断点数据
- * 见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md。 */
+ * 见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md。
+ * padding-right 为用户裁定的右侧内边距校准：fit-content 后代码内容与
+ * head 的"复制"按钮距块右缘过近，44px = 左侧内边距 16px（包内 pre）+
+ * "复制"文案宽（2 个 CJK 字符 @13px banner 字号）；padding 计入
+ * fit-content 宽度，块背景覆盖 padding，head 的"复制"按钮随之获得右侧
+ * 留白。 */
 .msg-agent .md-code-block {
   width: fit-content;
   max-width: 100%;
+  padding-right: 44px;
 }
 
 /* 回合完成后的"思考过程"折叠摘要（specs/054-agent-v2-bugfixes/contracts/
