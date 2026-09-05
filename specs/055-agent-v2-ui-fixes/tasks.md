@@ -175,7 +175,7 @@
 - **技术文章/技术参考文档**：
   - `specs/055-agent-v2-ui-fixes/quickstart.md`（§2 自动化命令、§3 人工场景、§4 预期结果）
 
-- [ ] T015 全量人工验证记录：按 `specs/055-agent-v2-ui-fixes/quickstart.md` §3 执行五场景（窗口无滚动两态 / 跟随不劫持与回底 / 横幅可读 / desktop 刷新 / 对齐复查）并留存记录（部署环境；FR-001 布局验收以本记录闭合——spec Clarifications 2026-09-05 Q2=A）
+- [X] T015 全量人工验证记录：按 `specs/055-agent-v2-ui-fixes/quickstart.md` §3 执行五场景（窗口无滚动两态 / 跟随不劫持与回底 / 横幅可读 / desktop 刷新 / 对齐复查）并留存记录（部署环境；FR-001 布局验收以本记录闭合——spec Clarifications 2026-09-05 Q2=A）
 - [X] T016 大型测试回归：通过 testplan skill 执行 054 既有测试计划 `projects/game/testplan/system_test.yaml`（含 agent_v2 两 suite 拓扑，`guitar run` 完成部署→测试→清理闭环），全部用例通过（宪法 VI gate 5 + spec A5 回归面承诺；本 feature 无新增大型测试面）
 
 ---
