@@ -454,7 +454,16 @@ body {
   gap: 4px;
 }
 
+/* position: relative 使滚动容器成为其内部所有绝对定位后代的 containing
+ * block：内部 abspos（如 ReasoningRow running 态的 visually-hidden 播报
+ * span）随内容滚动、被滚动容器裁剪，不会以 ICB 为参照逃逸到文档层撑大根
+ * 滚动范围（FR-001 布局包含的结构保证；断点分析见
+ * specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md；上游以
+ * ChatView .root 的 position: relative 承接同类 abspos，
+ * https://github.com/deepseek-ai/deepseek-harness/blob/master/
+ * packages/client/ui-chat/src/client/chat/ChatView.module.css ）。 */
 .chat-messages {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -486,6 +495,18 @@ body {
   border: 1px solid var(--app-border);
   background: var(--app-panel);
   overflow-wrap: anywhere;
+}
+
+/* markdown code 块贴合内容宽度（用户裁定：代码块不强行与卡片同宽）：
+ * 包内 CodeBlock 包装是块级盒子（全局类 .md-code-block，
+ * @deepseek-ai/dsh-client-ui-primitives lib/markdown/CodeBlock.module.css
+ * .block），在 fit-content 卡片内自动填满剩余宽度——短代码也绘制满宽背
+ * 景块。width: fit-content 使其贴合自身内容宽，max-width: 100% 受卡片
+ * 内容宽约束（长代码由包内 pre 的 pre-wrap + break-all 换行）。断点数据
+ * 见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md。 */
+.msg-agent .md-code-block {
+  width: fit-content;
+  max-width: 100%;
 }
 
 /* 回合完成后的"思考过程"折叠摘要（specs/054-agent-v2-bugfixes/contracts/

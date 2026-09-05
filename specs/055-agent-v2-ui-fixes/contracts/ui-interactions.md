@@ -11,6 +11,7 @@
 2. **条件跟随**：消息区滚动位置满足 `scrollHeight - scrollTop - clientHeight <= 24`（`FOLLOW_THRESHOLD = 24`）时视为**贴底**；仅贴底时内容增长触发 `scrollTop = scrollHeight`；非贴底时内容增长不改变滚动位置。
 3. **新消息回底**：用户发送新消息（经输入区 submit）无条件将消息区滚至底部并进入贴底态。
 4. **回底入口**：非贴底时在消息区右下呈现"回到底部"按钮（chevron-down 图标、34px、sticky 定位、`aria-label`、`data-testid="to-bottom-button"`）；点击回底并恢复跟随；贴底时不渲染。按钮存在性仅由滚动位置决定，与回合状态无关。
+5. **布局包含**：消息区滚动容器 `position: relative`——它是其内部所有绝对定位后代（如 ReasoningRow running 态的 visually-hidden 播报 span）的 containing block，abspos 随内容滚动、被滚动容器裁剪，布局不逃逸到文档层（FR-001 布局包含的结构保证）。
 
 **测试口径**：§1.2/1.3/1.4 行为以组件级测试断言（jsdom 中以可赋值的 `scrollTop`/`scrollHeight`/`clientHeight` 驱动）；§1.1 布局约束以部署环境人工验证记录闭合（spec Clarifications 2026-09-05 Q2=A）。
 

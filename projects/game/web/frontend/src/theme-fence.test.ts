@@ -34,3 +34,26 @@ describe('theme.css 思考折叠行围栏（specs/055-agent-v2-ui-fixes/contract
     expect(fence?.[1]).toContain('height: 24px')
   })
 })
+
+// FR-001 布局包含（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md
+// §1）：消息区滚动容器定位为绝对定位后代的 containing block，内部 abspos
+// 随内容滚动、被滚动容器裁剪，不逃逸到文档层撑大根滚动范围（断点分析见
+// specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md）。
+describe('theme.css 消息区布局包含（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §1）', () => {
+  it('.chat-messages 含 position: relative（滚动容器承接内部绝对定位）', () => {
+    const rule = /^\.chat-messages\s*\{([^}]*)\}/m.exec(THEME_CSS)
+    expect(rule).not.toBeNull()
+    expect(rule?.[1]).toContain('position: relative')
+  })
+})
+
+// code 块贴合内容宽（用户裁定：代码块不强行与 fit-content 卡片同宽；
+// 断点数据见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md）。
+describe('theme.css code 块宽度（specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md）', () => {
+  it('.msg-agent 内 code 块包装贴合内容宽、受卡片宽约束', () => {
+    const rule = /\.msg-agent \.md-code-block\s*\{([^}]*)\}/.exec(THEME_CSS)
+    expect(rule).not.toBeNull()
+    expect(rule?.[1]).toContain('width: fit-content')
+    expect(rule?.[1]).toContain('max-width: 100%')
+  })
+})
