@@ -446,6 +446,25 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
     expect(screen.getByTestId('agent-text').textContent).toBe('棋盘已就绪，请下令。')
   })
 
+  it('折叠开关 chevron 化：图标 svg 存在、data-open 随展开态切换（F5，对齐上游 TurnProcessNodeView，FR-009）', () => {
+    // 上游形态：按钮 data-open={open || undefined} + IconChevronDownOutline14
+    // （https://github.com/deepseek-ai/deepseek-harness/blob/master/
+    // packages/client/ui-chat/src/client/chat/TurnProcessNodeView.tsx ）。
+    renderChatView({ history: COMPLETED_TURN })
+    const toggle = screen.getByTestId('turn-process-toggle')
+    // 折叠态：chevron 图标存在、data-open 不存在；文字箭头不再使用。
+    expect(toggle.querySelector('svg')).not.toBeNull()
+    expect(toggle.getAttribute('data-open')).toBeNull()
+    expect(toggle.textContent).not.toContain('▾')
+    expect(toggle.textContent).not.toContain('▸')
+
+    // 展开：data-open 出现（CSS 据此旋转 chevron -90deg → 0）；收起后消失。
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('data-open')).toBe('true')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('data-open')).toBeNull()
+  })
+
   it('无最终答案的回合（以纯工具调用结束）全可见不折叠，陈旧 RUNNING 工具块呈现中断终态', () => {
     renderChatView({
       history: [

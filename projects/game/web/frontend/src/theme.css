@@ -531,9 +531,17 @@ body {
 
 /* 回合完成后的"思考过程"折叠摘要（specs/054-agent-v2-bugfixes/contracts/
  * web-ui.md §2.2 Turn Process Folding：此前 steps 默认折叠，点击展开全过
- * 程；最终答案独立呈现在摘要之下）。 */
+ * 程；最终答案独立呈现在摘要之下）。chevron 旋转形态对齐上游
+ * TurnProcessNodeView.module.css：折叠 rotate(-90deg) → 展开 rotate(0)
+ * （data-open 属性驱动，100ms 过渡，prefers-reduced-motion 降级为无过渡；
+ * https://github.com/deepseek-ai/deepseek-harness/blob/master/
+ * packages/client/ui-chat/src/client/chat/TurnProcessNodeView.module.css ）。
+ * 标签文案保留本地口径（specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §5 D5）。 */
 .turn-process-toggle {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
   padding: 4px 10px;
   border: 1px dashed var(--app-border);
   border-radius: 8px;
@@ -542,6 +550,25 @@ body {
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+}
+
+.turn-process-toggle .turn-process-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  transform: rotate(-90deg);
+  transition: transform 100ms ease;
+}
+
+.turn-process-toggle[data-open] .turn-process-chevron {
+  transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-process-toggle .turn-process-chevron {
+    transition: none;
+  }
 }
 
 .turn-process {
@@ -687,7 +714,7 @@ body {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(15, 18, 22, 0.6) 55%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%,
     transparent 100%
   );
   animation: reasoning-row-sweep 2.6s ease-out infinite;

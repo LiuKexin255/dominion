@@ -33,6 +33,15 @@ describe('theme.css 思考折叠行围栏（specs/055-agent-v2-ui-fixes/contract
     expect(fence?.[1]).toContain('contain: layout')
     expect(fence?.[1]).toContain('height: 24px')
   })
+
+  it('running sweep 渐变主题感知化：color-mix 引用 bg-base、无硬编码颜色字面量（F3，契约 §2.3）', () => {
+    const sweep = /\.reasoning-row\[data-state='running'\] \.reasoning-row-line::after\s*\{([^}]*)\}/.exec(
+      THEME_CSS,
+    )
+    expect(sweep).not.toBeNull()
+    expect(sweep?.[1]).toContain('color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent)')
+    expect(sweep?.[1]).not.toContain('rgba(15, 18, 22')
+  })
 })
 
 // FR-001 布局包含（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md

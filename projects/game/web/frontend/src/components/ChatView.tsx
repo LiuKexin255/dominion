@@ -215,11 +215,19 @@ function CompletedTurn({
         type="button"
         className="turn-process-toggle"
         data-testid="turn-process-toggle"
+        data-open={expanded || undefined}
         aria-expanded={expanded}
-        onClick={onToggle}
+        onClick={(event) => {
+          // 显式聚焦加固（对齐上游 TurnProcessNodeView.tsx onClick）：Safari
+          // 等 click 不聚焦 button 的浏览器保证焦点落回开关。
+          // https://github.com/deepseek-ai/deepseek-harness/blob/master/
+          // packages/client/ui-chat/src/client/chat/TurnProcessNodeView.tsx
+          event.currentTarget.focus()
+          onToggle()
+        }}
       >
         思考过程（{process.length} 步骤 · {toolCount} 次工具调用）
-        {expanded ? ' ▾' : ' ▸'}
+        <IconChevronDownOutline14 className="turn-process-chevron" />
       </button>
       {expanded && (
         <div className="turn-process" data-testid="turn-process">

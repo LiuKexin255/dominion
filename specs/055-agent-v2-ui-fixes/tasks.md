@@ -155,8 +155,8 @@
 
 ### Implementation for User Story 4
 
-- [ ] T013 [US4] `projects/game/web/frontend/src/theme.css` + `projects/game/web/frontend/src/components/ChatView.tsx`：F3 扫描动画渐变改 `color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent)`（删除硬编码 rgba）；F5 `.turn-process-toggle` 文字箭头 ▸/▾ 换 `IconChevronDownOutline14` + `data-open` 旋转样式（参照上游 TurnProcessNodeView.module.css 形态，标签文案保留本地口径 D5）
-- [ ] T014 [US4] 偏离清单闭合复查（SC-005）：对照 `specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md` §5 逐项核对代码实际行为与清单声明一致、清单外无未声明的交互偏差；复查记录写入 `specs/055-agent-v2-ui-fixes/revisions/parity-audit-review.md`（发现出入时修契约或修代码，以终态一致为准）
+- [X] T013 [US4] `projects/game/web/frontend/src/theme.css` + `projects/game/web/frontend/src/components/ChatView.tsx`：F3 扫描动画渐变改 `color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent)`（删除硬编码 rgba）；F5 `.turn-process-toggle` 文字箭头 ▸/▾ 换 `IconChevronDownOutline14` + `data-open` 旋转样式（参照上游 TurnProcessNodeView.module.css 形态，标签文案保留本地口径 D5）
+- [X] T014 [US4] 偏离清单闭合复查（SC-005）：对照 `specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md` §5 逐项核对代码实际行为与清单声明一致、清单外无未声明的交互偏差；复查记录写入 `specs/055-agent-v2-ui-fixes/revisions/parity-audit-review.md`（发现出入时修契约或修代码，以终态一致为准）
 
 **Checkpoint**: US4 交付后四项 story 全部完成；审计闭环（修复 + 清单 + 复查记录）。
 
