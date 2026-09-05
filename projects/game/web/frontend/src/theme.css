@@ -11,16 +11,23 @@
   --app-bg: #0f1216;
   --app-panel: #171b22;
   --app-border: #262c36;
+}
 
-  /* 状态横幅配色单一来源（specs/055-agent-v2-ui-fixes/contracts/
-   * ui-interactions.md §3、data-model.md §3）。web 为深色单一主题
-   * （index.html 静态 body[data-ds-dark-theme]），对比度按 dark 解析值计，
-   * 断言见 src/theme-contrast.test.ts。error 文字取 red-100（red-900 底在
-   * vendored 表中的浅色对位，与 warn/success tertiary 的 -100/-900 跨主题
-   * 同槽模式一致；对比度 11.75:1）——error-primary 别名在 dark 下解析为
-   * red-400 #f25a5a，对 red-900 底仅 4.36:1，低于 FR-005 的 4.5:1 下限，
-   * 不可作填充底色上的文字色。warn 组对比度 7.20:1。红/黄两色系保持
-   * FR-006 要求的类别区分。 */
+/* 状态横幅配色单一来源（specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §3、data-model.md §3），声明在 body 块：--dsw-* token
+ * 定义于 body / body[data-ds-dark-theme] 域
+ * （src/dsh-theme/design-platform.css），自定义属性不向上继承，var() 引用链
+ * 只在同域可见——:root（html）上引用 body 域变量得到 guaranteed-invalid，
+ * 使用处按 unset 回退（背景透明、文字继承，T015 部署验证白字黑底缺陷的
+ * 根因）。:root 保留 color-scheme 与无 var() 引用的字面值变量（作用域
+ * 无关）。web 为深色单一主题（index.html 静态 body[data-ds-dark-theme]），
+ * 对比度按 dark 解析值计，断言见 src/theme-contrast.test.ts。error 文字取
+ * red-100（red-900 底在 vendored 表中的浅色对位，与 warn/success tertiary
+ * 的 -100/-900 跨主题同槽模式一致；对比度 11.75:1）——error-primary 别名
+ * 在 dark 下解析为 red-400 #f25a5a，对 red-900 底仅 4.36:1，低于 FR-005 的
+ * 4.5:1 下限，不可作填充底色上的文字色。warn 组对比度 7.20:1。红/黄两色
+ * 系保持 FR-006 要求的类别区分。 */
+body {
   --app-banner-error-bg: var(--dsw-static-red-900);
   --app-banner-error-fg: var(--dsw-static-red-100);
   --app-banner-warn-bg: var(--dsw-alias-state-warn-tertiary);

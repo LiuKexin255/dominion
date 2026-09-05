@@ -29,7 +29,7 @@
 
 | 条款 | 代码位置 | 结论 |
 | --- | --- | --- |
-| §3.1 四个 app 级变量唯一来源化、解析到 vendored token | `theme.css` `:root` 块 `--app-banner-error-bg: var(--dsw-static-red-900)`、`--app-banner-error-fg: var(--dsw-static-red-100)`、`--app-banner-warn-bg: var(--dsw-alias-state-warn-tertiary)`、`--app-banner-warn-fg: var(--dsw-alias-state-warn-primary)` | 一致（映射表 `specs/055-agent-v2-ui-fixes/data-model.md` §3 与代码同值；US2 交付时即以 red-100 为终态，理由见 `specs/055-agent-v2-ui-fixes/research.md` §2.1——alias error-primary 4.36:1 不达 FR-005 下限） |
+| §3.1 四个 app 级变量唯一来源化、解析到 vendored token | `theme.css` `body` 块 `--app-banner-error-bg: var(--dsw-static-red-900)`、`--app-banner-error-fg: var(--dsw-static-red-100)`、`--app-banner-warn-bg: var(--dsw-alias-state-warn-tertiary)`、`--app-banner-warn-fg: var(--dsw-alias-state-warn-primary)` | 一致（映射表 `specs/055-agent-v2-ui-fixes/data-model.md` §3 与代码同值；US2 交付时即以 red-100 为终态，理由见 `specs/055-agent-v2-ui-fixes/research.md` §2.1——alias error-primary 4.36:1 不达 FR-005 下限） |
 | §3.2 error 组三类横幅 + warn 组终止标识、对比度 ≥ 4.5:1 | `theme.css` `.chat-error` / `.presets-error` / `.agent-panel-error`（error 组）、`.chat-canceled`（warn 组）；`projects/game/web/frontend/src/theme-contrast.test.ts`（`MIN_CONTRAST = 4.5`，变量引用链解析至色值计算） | 一致 |
 | §3.3 红/黄色系可区分、透明底用法不改动 | 同上 + `theme-contrast.test.ts` 色系区分断言；`.queue-chip` / `.agent-guide` / `.desktop-conn` 等未触碰 | 一致 |
 

@@ -453,7 +453,10 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
     renderChatView({ history: COMPLETED_TURN })
     const toggle = screen.getByTestId('turn-process-toggle')
     // 折叠态：chevron 图标存在、data-open 不存在；文字箭头不再使用。
-    expect(toggle.querySelector('svg')).not.toBeNull()
+    // 断言 class 落点而非裸 svg：className 由包 IconChevronDownOutline14
+    // 透传，jsdom 可断言；CSS transform 旋转无法在 jsdom 断言，class 落点
+    // 是可测的最近端点。
+    expect(toggle.querySelector('svg.turn-process-chevron')).not.toBeNull()
     expect(toggle.getAttribute('data-open')).toBeNull()
     expect(toggle.textContent).not.toContain('▾')
     expect(toggle.textContent).not.toContain('▸')

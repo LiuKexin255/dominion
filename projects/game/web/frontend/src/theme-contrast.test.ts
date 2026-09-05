@@ -62,15 +62,27 @@ function darkVarScope(css: string): Map<string, string> {
 
 const DSW_VARS = darkVarScope(DESIGN_PLATFORM_CSS)
 
-function rootVarScope(css: string): Map<string, string> {
-  const root = parseBlocks(css).find((block) => block.selector === ':root')
-  if (!root) throw new Error(':root block not found')
-  return root.decls
+// app 级横幅变量的解析模型与真实级联作用域一致：theme.css 的
+// --app-banner-* 声明在 body 块（--dsw-* token 定义于 body /
+// body[data-ds-dark-theme] 域，自定义属性不向上继承，var() 引用链只在同域
+// 可见——:root 上引用 body 域变量得到 guaranteed-invalid，原因说明见
+// theme.css 的 body 变量规则注释）。theme.css 存在多个 selector 恰为
+// body 的规则（主布局规则与新变量规则），解析合并全部该类块的自定义属性；
+// 变量若被挪回 :root，此 scope 中找不到对应名字，下游断言失败（作用域
+// 回归防护）。
+function bodyVarScope(css: string): Map<string, string> {
+  const scope = new Map<string, string>()
+  for (const block of parseBlocks(css)) {
+    if (block.selector === 'body') {
+      for (const [name, value] of block.decls) scope.set(name, value)
+    }
+  }
+  return scope
 }
 
-// theme.css :root 的 app 级变量优先于 vendored token（app 层在查找序首位；
+// theme.css body 块的 app 级变量优先于 vendored token（app 层在查找序首位；
 // 现无同名碰撞，序仅表达层级行为）。
-const APP_VARS = rootVarScope(THEME_CSS)
+const APP_VARS = bodyVarScope(THEME_CSS)
 
 // var() 引用链逐层解引用（alias → static），终止于具体色值字面量。
 function resolveVar(name: string): string {
@@ -183,9 +195,10 @@ describe('状态横幅文字-背景对比度（specs/055-agent-v2-ui-fixes/spec.
 })
 
 // data-model.md §3 约束"值必须解析到 vendored token 表中已定义的 token"：
-// 四个 --app-banner-* 变量在 theme.css :root 的声明值本身必须是
+// 四个 --app-banner-* 变量在 theme.css body 块的声明值本身必须是
 // var(--dsw-...) 引用形式——防止硬编码 hex 绕过（硬编码值即使通过对比度与
-// 色相断言，也偏离 vendored token 单一来源）。
+// 色相断言，也偏离 vendored token 单一来源）。APP_VARS 读自 body 块，变量
+// 被挪回 :root 时同因找不到名字而失败（作用域回归防护）。
 describe('横幅配色变量解析到 vendored token（specs/055-agent-v2-ui-fixes/data-model.md §3）', () => {
   it('四个 --app-banner-* 变量声明值均为 var(--dsw-...) 引用形式', () => {
     for (const name of [
@@ -195,7 +208,7 @@ describe('横幅配色变量解析到 vendored token（specs/055-agent-v2-ui-fix
       '--app-banner-warn-fg',
     ]) {
       const value = APP_VARS.get(name)
-      expect(value, `${name} 未在 theme.css :root 定义`).toBeDefined()
+      expect(value, `${name} 未在 theme.css body 块定义`).toBeDefined()
       expect(
         value,
         `${name} 声明值 ${value} 非 var(--dsw-...) 引用形式`,
