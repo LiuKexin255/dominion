@@ -1,10 +1,11 @@
 // 侧栏 session 列表：图标按钮（新建=加号/刷新=圆环箭头，FR-002）、每条目
 // 右侧 `···` 操作菜单（删除带确认，不依赖选中态，FR-003）、长名渐隐 +
-// 悬停滚动复位（FR-004）——契约
-// specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §1。删除的
+// 悬停自动滚动揭示与移出复位（FR-004，specs/051-agent-v2-dsh-migration/
+// contracts/web-frontend.md §1；自动滚动交互契约见
+// specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §1）。删除的
 // /api/v1 编排在 App 层执行，本组件仅回调选中资源名并等待其 Promise 完成
 // 以驱动"该条目删除进行中"的条目级禁用。
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Button,
   IconEllipsisOutline16,
@@ -39,6 +40,14 @@ function formatTime(createTime: string): string {
   const date = new Date(createTime)
   return Number.isNaN(date.getTime()) ? createTime : date.toLocaleString()
 }
+
+// 悬停自动滚动（marquee）参数为契约登记的终态基线
+// （specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §1，research
+// D4）：250ms 启动延迟吸收指针掠过，30ms 步进 3px（≈100px/s）单程至尾后
+// hold，滚动仅发生在名称容器内。
+const MARQUEE_DELAY_MS = 250
+const MARQUEE_STEP_MS = 30
+const MARQUEE_STEP_PX = 3
 
 // 图标按钮的 tooltip 用原生 title 而非 primitives 的 Tooltip：后者经
 // cloneElement 向锚点注入 ref（node_modules/.pnpm/
@@ -94,6 +103,54 @@ export function SessionList({
   // 悬停中的条目：名称容器切换 scrollable 类（theme.css .session-name
   // 由渐隐遮罩切换为可横向滚动；类驱动使悬停态在 jsdom 下可断言）。
   const [hovered, setHovered] = useState<string | null>(null)
+  // 悬停自动滚动的在途定时器（延迟句柄 + 可选的步进 interval 句柄）。
+  // 悬停互斥：指针同一时刻至多停留一个条目，整个列表共享一组定时器，
+  // 状态机（idle→armed→scrolling→held，任意态经移出/卸载复位）见
+  // specs/057-agent-v2-ui-fixes-2/data-model.md §2。
+  const marquee = useRef<{
+    delay: ReturnType<typeof setTimeout>
+    step?: ReturnType<typeof setInterval>
+  } | null>(null)
+
+  const stopMarquee = () => {
+    const timers = marquee.current
+    if (timers === null) return
+    clearTimeout(timers.delay)
+    if (timers.step !== undefined) clearInterval(timers.step)
+    marquee.current = null
+  }
+
+  // 卸载时清除在途定时器（armed/scrolling 随组件消亡，无残留回调）。
+  useEffect(() => stopMarquee, [])
+
+  // 溢出判定（scrollWidth > clientWidth）与 reduced-motion 降级任一不满足
+  // 则悬停无任何动作（specs/057-agent-v2-ui-fixes-2/contracts/
+  // ui-interactions.md §1：短名/降级场景零副作用）。
+  const startMarquee = (entry: HTMLElement) => {
+    stopMarquee()
+    const name = entry.querySelector<HTMLElement>('.session-name')
+    if (
+      name === null ||
+      name.scrollWidth <= name.clientWidth ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return
+    }
+    const delay = setTimeout(() => {
+      const step = setInterval(() => {
+        const max = name.scrollWidth - name.clientWidth
+        if (name.scrollLeft + MARQUEE_STEP_PX >= max) {
+          name.scrollLeft = max
+          clearInterval(step)
+          marquee.current = null
+          return
+        }
+        name.scrollLeft += MARQUEE_STEP_PX
+      }, MARQUEE_STEP_MS)
+      marquee.current = { delay, step }
+    }, MARQUEE_DELAY_MS)
+    marquee.current = { delay }
+  }
 
   // 执行删除：deleting 置位后无论 onDelete 同步抛错、返回 rejected
   // promise 还是正常完成，都必然清理（async 包裹使同步抛错与 rejection
@@ -180,8 +237,14 @@ export function SessionList({
                 s.name === selected ? 'session-item selected' : 'session-item'
               }
               onClick={() => onSelect(s.name)}
-              onMouseEnter={() => setHovered(s.name)}
+              onMouseEnter={(e) => {
+                setHovered(s.name)
+                startMarquee(e.currentTarget)
+              }}
               onMouseLeave={(e) => {
+                // 悬停互斥复位：移出清除在途定时器（若步进已到尾则本就为
+                // 空），scrollLeft 归零回到渐隐默认态（契约 §1.3）。
+                stopMarquee()
                 setHovered(null)
                 // FR-004 复位面：指针移出条目时名称容器 scrollLeft 归零
                 // （悬停可滚动态见 theme.css .session-name.scrollable）。
@@ -198,6 +261,11 @@ export function SessionList({
                     : 'session-name'
                 }
                 data-testid="session-name"
+                // 原生 title 提供悬停滚动之外的静态阅读全名途径（可达性
+                // 兜底，specs/057-agent-v2-ui-fixes-2/contracts/
+                // ui-interactions.md §1；沿用本组件 IconButton 既有
+                // 原生 title 模式）。
+                title={sessionTitle(s.name)}
               >
                 {sessionTitle(s.name)}
               </span>

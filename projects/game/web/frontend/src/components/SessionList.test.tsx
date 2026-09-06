@@ -2,13 +2,23 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from '../api/sessions.js'
 import { SessionList } from './SessionList.js'
 
 // vitest does not expose a global afterEach here (no `globals: true`), so RTL's
 // auto-cleanup never registers — clean up explicitly to keep test DOM isolated.
-afterEach(cleanup)
+// jsdom does not implement window.matchMedia: a file-level double (default
+// non-reduce, overridable per test) keeps mouseenter handlers exercisable, and
+// is restored after every test.
+beforeEach(() => {
+  stubMatchMedia(false)
+})
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const S1 = 'templates/saolei/sessions/s1'
 const S2 = 'templates/saolei/sessions/s2'
@@ -394,5 +404,142 @@ describe('SessionList Menu 卡片视觉（US8）', () => {
     expect(THEME_CSS).not.toMatch(/--dsw-[a-z0-9-]+\s*:/)
     expect(THEME_CSS).toMatch(/color-scheme:\s*dark/)
     expect(THEME_CSS).toMatch(/--app-bg\s*:/)
+  })
+})
+
+// ─── 长名悬停自动滚动（US2，specs/057-agent-v2-ui-fixes-2/contracts/
+// ui-interactions.md §1：250ms 延迟、3px/30ms 步进、到尾 hold、移出复位） ───
+
+// jsdom 未实现 window.matchMedia：注入可切换 matches 的 MediaQueryList
+// double（vi.stubGlobal，还原走文件级 afterEach）。返回 double 本体供
+// "mock 确被 exercise" 正向断言（style/javascript.md Mock 约定）。
+function stubMatchMedia(reduce: boolean) {
+  const mql = vi.fn(() => ({ matches: reduce }) as MediaQueryList)
+  vi.stubGlobal('matchMedia', mql)
+  return mql
+}
+
+// 滚动几何 stub：jsdom 对所有滚动度量恒报 0，经 defineProperty 注入
+// scrollWidth/clientWidth 与带 setter 的 scrollLeft，组件的步进/复位在
+// jsdom 下可断言（模式参照上游 deepseek-harness
+// https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-attachment/tests/attachment-rail.client.spec.tsx
+// 的 attachment-rail stubGeometry）。
+function stubScrollGeometry(
+  el: HTMLElement,
+  geometry: { scrollWidth: number; clientWidth: number },
+): void {
+  Object.defineProperty(el, 'scrollWidth', {
+    value: geometry.scrollWidth,
+    configurable: true,
+  })
+  Object.defineProperty(el, 'clientWidth', {
+    value: geometry.clientWidth,
+    configurable: true,
+  })
+  let scrollLeft = 0
+  Object.defineProperty(el, 'scrollLeft', {
+    configurable: true,
+    get: () => scrollLeft,
+    set: (value: number) => {
+      scrollLeft = value
+    },
+  })
+}
+
+describe('SessionList 长名悬停自动滚动（US2）', () => {
+  // fake timers 推进 250ms 启动延迟与 30ms 步进 interval（vitest
+  // vi.useFakeTimers，https://vitest.dev/api/vi.html#vi-usefaketimers）。
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const advance = (ms: number) => {
+    act(() => {
+      vi.advanceTimersByTime(ms)
+    })
+  }
+
+  // 溢出几何 390/300 → 步进上限 90px = 30 步 × 3px。
+  const OVERFLOW = { scrollWidth: 390, clientWidth: 300 }
+
+  it('FR-002 悬停 250ms 延迟后按 3px/30ms 步进至 scrollLeft 上限并 hold', () => {
+    const longName = `templates/saolei/sessions/${'x'.repeat(120)}`
+    renderList({ sessions: [{ name: longName }] })
+    const name = screen.getByTestId('session-name')
+    stubScrollGeometry(name, OVERFLOW)
+
+    fireEvent.mouseEnter(screen.getByTestId('session-item'))
+    // 启动延迟内：延迟定时器已挂起但未触发，scrollLeft 不动。
+    advance(249)
+    expect(name.scrollLeft).toBe(0)
+    expect(vi.getTimerCount()).toBe(1)
+    advance(1)
+    expect(name.scrollLeft).toBe(0)
+
+    // 每 30ms 步进 3px，30 步后抵达上限 90px（scrollWidth - clientWidth）。
+    for (let step = 1; step <= 30; step++) {
+      advance(30)
+      expect(name.scrollLeft).toBe(step * 3)
+    }
+
+    // 单程到尾 hold：上限后继续推进不再增长，步进 interval 已清除。
+    advance(300)
+    expect(name.scrollLeft).toBe(90)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('FR-002 mouseleave 清除定时器并复位 scrollLeft，此后推进无变化', () => {
+    const longName = `templates/saolei/sessions/${'x'.repeat(120)}`
+    renderList({ sessions: [{ name: longName }] })
+    const name = screen.getByTestId('session-name')
+    stubScrollGeometry(name, OVERFLOW)
+
+    fireEvent.mouseEnter(screen.getByTestId('session-item'))
+    advance(250 + 30 * 10)
+    expect(name.scrollLeft).toBe(30)
+
+    fireEvent.mouseLeave(screen.getByTestId('session-item'))
+    expect(name.scrollLeft).toBe(0)
+    // 定时器已随移出清除：继续推进不产生任何滚动。
+    advance(1000)
+    expect(name.scrollLeft).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('FR-002 短名（scrollWidth <= clientWidth，无横向溢出）悬停无任何滚动', () => {
+    renderList({ sessions: [{ name: S1 }] })
+    const name = screen.getByTestId('session-name')
+    stubScrollGeometry(name, { scrollWidth: 280, clientWidth: 300 })
+
+    fireEvent.mouseEnter(screen.getByTestId('session-item'))
+    advance(250 + 30 * 100)
+    expect(name.scrollLeft).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('FR-002 prefers-reduced-motion: reduce 悬停不滚动', () => {
+    const longName = `templates/saolei/sessions/${'x'.repeat(120)}`
+    renderList({ sessions: [{ name: longName }] })
+    const matchMedia = stubMatchMedia(true)
+    const name = screen.getByTestId('session-name')
+    stubScrollGeometry(name, OVERFLOW)
+
+    fireEvent.mouseEnter(screen.getByTestId('session-item'))
+    // 正向断言 reduce 判定确经 matchMedia 查询（mock 非静默未拦截）。
+    expect(matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)')
+    advance(250 + 30 * 100)
+    expect(name.scrollLeft).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('FR-002 .session-name span 携带完整名称 title 属性（悬停外静态阅读途径）', () => {
+    const longName = `templates/saolei/sessions/${'x'.repeat(120)}`
+    renderList({ sessions: [{ name: longName }] })
+
+    const name = screen.getByTestId('session-name')
+    expect(name.getAttribute('title')).toBe('x'.repeat(120))
   })
 })
