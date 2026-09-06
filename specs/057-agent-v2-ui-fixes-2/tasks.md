@@ -55,17 +55,18 @@
 - **技术文章/技术参考文档**：
   - `specs/057-agent-v2-ui-fixes-2/research.md` §1.1（根因事实链）、§2 D1（决策与被否备选）
   - `specs/057-agent-v2-ui-fixes-2/data-model.md` §1（回填 epoch、runBackfill 调用点、收敛矩阵）
-  - `specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md` §2（重建同步契约 + 测试口径）
+  - `specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md` §2（重建同步契约 + 测试口径 + AgentSettingsPanel.test.tsx mock 对齐要求）
+  - `specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2.1/§2.3（UpdateAgent 清理重建与 ListAgentMessages 语义——mock fixture 对齐的服务端契约依据）
 
 ### Tests for User Story 1 ⚠️
 
-- [ ] T001 [P] [US1] 扩展 `projects/game/web/frontend/src/App.test.tsx`（沿用既有 fetch mock 按路由分发模式）：新增重建同步断言——(a) 已物化会话 Apply 成功（PATCH `/api/v2/.../agent` 200）后再次 GET `.../agent/messages`（回填触发）且对话区旧消息清空；(b) 回填慢返回与紧随 send 的让位（send 后空历史不覆盖新回合）；(c) 回填请求失败（500）→ 既有回填错误呈现、对话不清空；(d) Apply 失败（PATCH 4xx/5xx）→ 不触发第二次回填、面板错误既有呈现；(e) 忙时收敛：在途流 `turn_end{ABORTED}`（store 归约清空）与回填落地任意序 → 与空闲路径收敛同一干净终态（无重复/冲突中间态，data-model §1.3 收敛矩阵）；(f) 首次物化（未物化→物化）Apply 成功 → 回填 200 空、引导态消退、对话面为空；对每个 mock 路由做正向调用断言（`style/javascript.md` 规则）——先跑确认失败
+- [ ] T001 [P] [US1] 扩展 `projects/game/web/frontend/src/App.test.tsx`（沿用既有 fetch mock 按路由分发模式）：新增重建同步断言——(a) 已物化会话 Apply 成功（PATCH `/api/v2/.../agent` 200）后再次 GET `.../agent/messages`（回填触发）且对话区旧消息清空；(b) 回填慢返回与紧随 send 的让位（send 后空历史不覆盖新回合）；(c) 回填请求失败（500）→ 既有回填错误呈现、对话不清空；(d) Apply 失败（PATCH 4xx/5xx）→ 不触发第二次回填、面板错误既有呈现；(e) 忙时收敛：在途流 `turn_end{ABORTED}`（store 归约清空）与回填落地任意序 → 与空闲路径收敛同一干净终态（无重复/冲突中间态，data-model §1.3 收敛矩阵）；(f) 首次物化（未物化→物化）Apply 成功 → 回填 200 空、引导态消退、对话面为空；对每个 mock 路由做正向调用断言（`style/javascript.md` 规则）——先跑确认失败。另修正既有 `projects/game/web/frontend/src/components/AgentSettingsPanel.test.tsx` "App 未物化引导" describe 的 messages mock：引入物化状态标记——PATCH `/api/v2/{session}/agent?allow_missing=true` 成功前 messages 路由返回 404、成功后返回 200 `{"messages":[]}`，并同步更新该路由注释（契约 §2.7；服务端语义依据 `specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2.1/§2.3——物化成功后 ListAgentMessages 恒 200 空）；该 fixture 对齐在 T002 落地前后均保持该用例通过（T002 之前 messages 路由仅在挂载期命中且彼时未物化，404 语义不变），不属于"先失败"范围
 
 ### Implementation for User Story 1
 
-- [ ] T002 [US1] `projects/game/web/frontend/src/App.tsx`：ChatPanel 内提取 `runBackfill`（`useCallback`，deps `[session, store]`）——置 `sentSinceBackfill.current = false`（epoch 复位）→ `listHistory(session)` → 成功且守卫仍 false 时 `store.loadHistory(messages)`、`setBackfillError(null)`；404 走既有未物化分支、其余失败 `setBackfillError`（逻辑自现挂载 effect 原样迁移，挂载 effect 改调 `runBackfill` 保持 `cancelled` 清理语义与零行为回归）；`onApplied` 在既有 setAgent/setAgentStatus/setPanelOpen 之外追加 `void runBackfill()`（契约 §2；依赖 T001 完成后使其转绿）
+- [ ] T002 [US1] `projects/game/web/frontend/src/App.tsx`：ChatPanel 内提取 `runBackfill`（`useCallback`，deps `[session, store]`）——置 `sentSinceBackfill.current = false`（epoch 复位）→ `listHistory(session)` → 成功且守卫仍 false 时 `store.loadHistory(messages)`、`setBackfillError(null)`；404 走既有未物化分支、其余失败 `setBackfillError`（逻辑自现挂载 effect 原样迁移，挂载 effect 改调 `runBackfill` 保持 `cancelled` 清理语义与零行为回归）；`onApplied` 在既有 setAgent/setAgentStatus/setPanelOpen 之外追加 `void runBackfill()`（契约 §2；依赖 T001 完成后使其转绿；T002 落地后 `AgentSettingsPanel.test.tsx` 既有引导流转用例保持通过——其 messages mock 已由 T001 对齐物化后 200 空语义）
 
-**Checkpoint**: US1 独立可测——`bazel test //projects/game/web/frontend:lib_test` 全绿（含既有挂载回填/切换会话/发送让位断言零回归）。
+**Checkpoint**: US1 独立可测——`bazel test //projects/game/web/frontend:lib_test` 全绿（含既有挂载回填/切换会话/发送让位断言与 `AgentSettingsPanel.test.tsx` 引导流转用例零回归）。
 
 ---
 

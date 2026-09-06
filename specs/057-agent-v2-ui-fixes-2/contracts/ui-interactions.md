@@ -27,7 +27,7 @@ ChatPanel 的应用成功 → 对话视图同步契约：
 4. **失败语义**：回填请求失败 → 既有 `backfillError` 呈现（提示可见、可重试），对话状态不清空、不静默。
 5. **收敛**：空闲/忙时（ABORTED 流事件与回填任意序落地）/首次物化三路径收敛到同一干净终态（`loadHistory` 语义：history 重建、`live/queue/error/canceled` 复位）；收敛矩阵见 [data-model.md](../data-model.md) §1.3。
 6. **边界（不变）**：多标签页/外部 API 触发的重建不在通知范围（spec A2）；`ChatStore` 归约不变式（`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §4）零改动。
-7. **测试口径**：App 组件级（mock api 层）：应用成功触发第二次 `listHistory` 且对话区清空；慢回填 + 紧随 send 的让位；回填失败呈现；updateAgent reject 不触发回填；忙时收敛（ABORTED 流事件与回填任意序落地 → 同一干净终态）；首次物化（未物化→物化）回填 200 空、引导态消退。
+7. **测试口径**：App 组件级（mock api 层）：应用成功触发第二次 `listHistory` 且对话区清空；慢回填 + 紧随 send 的让位；回填失败呈现；updateAgent reject 不触发回填；忙时收敛（ABORTED 流事件与回填任意序落地 → 同一干净终态）；首次物化（未物化→物化）回填 200 空、引导态消退。既有 `projects/game/web/frontend/src/components/AgentSettingsPanel.test.tsx` 的"App 未物化引导"用例（经 App 全流程驱动 Apply）其 messages mock 须按物化状态区分：PATCH 物化成功前返回 404、成功后返回 200 空集合——物化成功后 ListAgentMessages 恒为 200 空（`specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2.1/§2.3，服务端重建即清空历史），无状态 404 mock 与该契约不符。
 
 ## §3 desktop 手动刷新（FR-003）
 
@@ -43,4 +43,5 @@ sessions 列表页的显式刷新入口契约：
 
 - `projects/game/agent_v2`（服务端重建语义已满足需求，见 [research.md](../research.md) §1.1）、`projects/game/gateway`、`projects/game/proxy`、proto：零改动。
 - web `ChatView.tsx` / `ReasoningRow.tsx` / `store/chat.ts`（归约器）、desktop `SessionList.svelte`：零改动。
+- 测试变更面登记（非生产行为变更）：`projects/game/web/frontend/src/components/AgentSettingsPanel.test.tsx`——"App 未物化引导" describe 的 messages mock 路由按 PATCH 物化成功与否返回 404 / 200 空集合（§2.7，对齐 `specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2.1/§2.3 服务端真实语义）；该文件的其余用例与断言零改动。
 - 无新增依赖（web/desktop 复用既有 vitest/jsdom 基建）。

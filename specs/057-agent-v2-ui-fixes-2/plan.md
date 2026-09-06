@@ -26,7 +26,7 @@
 
 **Constraints**: 051/054/055 交付行为零回归（`.session-name.scrollable` 类切换与 mouseleave 复位断言、ChatStore 归约不变式、desktop handleRefresh 三态写集）；交互参数以 contracts §1 登记值为终态基线（250ms/3px/30ms/hold）
 
-**Scale/Scope**: 变更面——web：`src/App.tsx`（runBackfill 提取 + onApplied 追加）、`src/components/SessionList.tsx`（marquee 定时器 + title 静态途径）、对应 `App.test.tsx` / `SessionList.test.tsx` 扩展；desktop：`src/App.svelte`（toolbar 按钮）、`src/App.test.ts` 扩展
+**Scale/Scope**: 变更面——web：`src/App.tsx`（runBackfill 提取 + onApplied 追加）、`src/components/SessionList.tsx`（marquee 定时器 + title 静态途径）、对应 `App.test.tsx` / `SessionList.test.tsx` 扩展、`src/components/AgentSettingsPanel.test.tsx`（"App 未物化引导"用例 messages mock 按物化状态区分 404 / 200 空集合——测试 fixture 修正，非生产行为变更，[contracts/ui-interactions.md](./contracts/ui-interactions.md) §2.7/§4）；desktop：`src/App.svelte`（toolbar 按钮）、`src/App.test.ts` 扩展
 
 ## Constitution Check
 
@@ -68,6 +68,9 @@ projects/game/web/frontend/
     │                                 # onApplied 追加 void runBackfill()（FR-001，research D1）
     ├── App.test.tsx                 # 重建同步断言（触发/让位/失败/应用失败/忙时收敛/首次物化，contracts §2.7）
     ├── components/
+    │   ├── AgentSettingsPanel.test.tsx  # 既有"App 未物化引导"用例 messages mock
+    │   │                                # 按物化状态区分 404 / 200 空集合
+    │   │                                # （契约 §2.7/§4，fixture 修正）
     │   ├── SessionList.tsx          # marquee：悬停定时器步进 scrollLeft + title 静态途径（FR-002，research D2~D4，契约 §1）
     │   └── SessionList.test.tsx     # stub 几何 + fake timers 断言（contracts §1.7）；
     │                                 # 既有 hover/复位断言零回归
@@ -79,7 +82,7 @@ projects/game/desktop/frontend/
     └── App.test.ts                  # 手动刷新断言（触发/失败/禁用/既有语义回归，contracts §3.5）
 ```
 
-**Structure Decision**: 全部为既有目录内变更，无新模块/包/依赖；web 变更收敛于 App.tsx 与 SessionList.tsx 两文件及其测试，desktop 收敛于 App.svelte 及其测试（055 交付的 jsdom 测试基建同套复用）。
+**Structure Decision**: 全部为既有目录内变更，无新模块/包/依赖；web 变更收敛于 App.tsx 与 SessionList.tsx 两文件及其测试，另含一处既有测试 fixture 对齐（`AgentSettingsPanel.test.tsx` messages mock 按服务端契约区分物化前后，契约 §2.7/§4）；desktop 收敛于 App.svelte 及其测试（055 交付的 jsdom 测试基建同套复用）。
 
 ## Complexity Tracking
 

@@ -82,7 +82,7 @@
 
 **Decision**:
 - **web SessionList marquee**（`SessionList.test.tsx` 扩展）：对 `.session-name` 元素 `defineProperty` stub `scrollWidth`/`clientWidth`/`scrollLeft`（上游 attachment-rail 模式）+ `vi.useFakeTimers()`；断言：悬停后推进 250ms 延迟 + N×30ms 步进 → scrollLeft 步进至 max 且到 max 后不再增长（hold）；mouseleave → 定时器清除 + scrollLeft=0；短名（stub 无溢出）悬停无 scrollLeft 变化；`matchMedia` stub 为 reduce 时跳过；既有 scrollable 类切换/遮罩样式断言零回归。
-- **web 重建同步**（`App.test.tsx` 扩展，mock `./api/agent.js` / `./api/conversation.js`）：应用成功（updateAgent resolve）后断言触发第二次 listHistory 且对话区清空（旧消息消失）；listHistory 慢返回与紧随 send 的竞态——send 先开始则空历史不覆盖（守卫）；listHistory reject → 既有回填错误呈现、对话不清空；updateAgent reject → 不触发回填（面板错误既有路径）；忙时收敛（ABORTED 流事件与回填任意序落地 → 与空闲路径同一干净终态）；首次物化（未物化→物化）Apply 成功 → 回填 200 空、引导态消退。
+- **web 重建同步**（`App.test.tsx` 扩展，mock `./api/agent.js` / `./api/conversation.js`）：应用成功（updateAgent resolve）后断言触发第二次 listHistory 且对话区清空（旧消息消失）；listHistory 慢返回与紧随 send 的竞态——send 先开始则空历史不覆盖（守卫）；listHistory reject → 既有回填错误呈现、对话不清空；updateAgent reject → 不触发回填（面板错误既有路径）；忙时收敛（ABORTED 流事件与回填任意序落地 → 与空闲路径同一干净终态）；首次物化（未物化→物化）Apply 成功 → 回填 200 空、引导态消退。既有 `AgentSettingsPanel.test.tsx` "App 未物化引导" 用例（经 App 全流程驱动 Apply）的 messages mock 按物化状态区分 404 / 200 空集合——apply 路径回填在物化成功后命中该路由，mock 须如实建模服务端语义（`specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2.1/§2.3：物化成功后 ListAgentMessages 恒 200 空）。
 - **desktop 刷新**（`App.test.ts` 扩展，对齐 055 "App sessions refresh" 块）：点击 refresh-sessions 触发第二次 listSessions；失败保持列表 + 错误呈现；请求在途时按钮 disabled。
 - **回归**：`bazel test //projects/game/web/frontend:lib_test //projects/game/desktop/frontend:lib_test` 全绿；布局/滚动可达性与重建同步的真实体验以部署环境人工验证记录闭合（spec A3，对齐 055 A5 口径）。
 
