@@ -312,6 +312,16 @@
     <div class="sessions-page">
       <div class="sessions-toolbar">
         <span class="sessions-template">Template: {template}</span>
+        <!-- Manual refresh entry
+             (specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §3):
+             re-lists via the shared handleRefresh, which writes only
+             sessions/loading/error, so navigation and selection are never
+             disturbed. Disabling while loading makes repeat clicks idempotent.
+             Restores only the read-only "refresh" item from the 051
+             degradation list
+             (specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §5) —
+             no create/delete management. -->
+        <button class="btn btn-small" data-testid="refresh-sessions" onclick={handleRefresh} disabled={loading}>Refresh</button>
       </div>
       <SessionList
         {sessions}

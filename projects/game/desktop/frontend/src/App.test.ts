@@ -2,16 +2,18 @@
 import { flushSync, mount, unmount } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.svelte'
-import type { Session } from './api'
+import type { ListSessionsResponse, Session } from './api'
 
-// Component-level assertions for the desktop back-navigation refresh contract
-// (specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §4.2): returning
-// to the sessions page re-lists sessions, a failed refresh surfaces the
-// existing error semantics without clearing the rendered list, and the
-// refresh writes only sessions/loading/error — never selectedSession/page
-// (specs/055-agent-v2-ui-fixes/data-model.md §4). jsdom has no Wails runtime,
-// so window.runtime stays undefined and onMount's event subscription is
-// skipped (safe-by-default path).
+// Component-level assertions for the desktop refresh contract. Returning to
+// the sessions page re-lists sessions, a failed refresh surfaces the existing
+// error semantics without clearing the rendered list, and the refresh writes
+// only sessions/loading/error — never selectedSession/page
+// (specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §4.2,
+// specs/055-agent-v2-ui-fixes/data-model.md §4). The manual refresh button in
+// the sessions toolbar re-drives the same handleRefresh semantics
+// (specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §3). jsdom has
+// no Wails runtime, so window.runtime stays undefined and onMount's event
+// subscription is skipped (safe-by-default path).
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
@@ -144,6 +146,91 @@ describe('App sessions refresh', () => {
     // would render instead of the two held rows.
     required('.btn-primary').click()
     await waitForFlush(() => {
+      expect(document.querySelectorAll('.session-row')).toHaveLength(2)
+    })
+  })
+
+  it('re-lists sessions and renders the updated list when the refresh button is clicked', async () => {
+    instance = mount(App, { target: document.body })
+    await waitForFlush(() => {
+      expect(mocks.listSessions).toHaveBeenCalledTimes(1)
+      expect(document.querySelectorAll('.session-row')).toHaveLength(2)
+    })
+
+    // External change while the user stays on the list page: the next fetch
+    // resolves with an additional session (spec US3 acceptance scenario 1).
+    mocks.listSessions.mockResolvedValue({
+      sessions: [
+        ...SESSIONS,
+        { name: 'sessions/c', sessionId: 'c', createTime: '2026-09-05T00:00:02Z' },
+      ],
+      nextPageToken: '',
+    })
+
+    required('[data-testid="refresh-sessions"]').click()
+    await waitForFlush(() => {
+      expect(mocks.listSessions).toHaveBeenCalledTimes(2)
+      expect(document.querySelectorAll('.session-row')).toHaveLength(3)
+    })
+  })
+
+  it('keeps the existing list and renders the error when the manual refresh fails', async () => {
+    instance = mount(App, { target: document.body })
+    await waitForFlush(() => {
+      expect(document.querySelectorAll('.session-row')).toHaveLength(2)
+    })
+
+    mocks.listSessions.mockRejectedValueOnce(new Error('refresh exploded'))
+
+    required('[data-testid="refresh-sessions"]').click()
+
+    // Failed refresh surfaces the shared error semantics — banner plus error
+    // log entry (specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md
+    // §3.3).
+    await waitForFlush(() => {
+      expect(document.querySelector('.session-error')?.textContent).toContain('refresh exploded')
+      expect(document.querySelector('.log-error')?.textContent).toContain('Refresh failed')
+    })
+    expect(mocks.listSessions).toHaveBeenCalledTimes(2)
+
+    // The failed refresh must not clear the held sessions: clearing `error`
+    // (Apply Config handler) switches SessionList out of its error branch — if
+    // the catch had emptied `sessions`, the empty state would render instead
+    // of the two held rows.
+    required('.btn-primary').click()
+    await waitForFlush(() => {
+      expect(document.querySelectorAll('.session-row')).toHaveLength(2)
+    })
+  })
+
+  it('disables the refresh button while a refresh request is in flight', async () => {
+    instance = mount(App, { target: document.body })
+    await waitForFlush(() => {
+      expect(document.querySelectorAll('.session-row')).toHaveLength(2)
+    })
+
+    // Controlled promise keeps the request in flight so the loading window is
+    // observable without real timers.
+    let releaseRefresh!: (value: ListSessionsResponse) => void
+    const inFlight = new Promise<ListSessionsResponse>(resolve => {
+      releaseRefresh = resolve
+    })
+    mocks.listSessions.mockReturnValueOnce(inFlight)
+
+    const refreshButton = required('[data-testid="refresh-sessions"]')
+    refreshButton.click()
+    flushSync()
+    expect(refreshButton.hasAttribute('disabled')).toBe(true)
+
+    // A disabled control does not dispatch further clicks: the in-flight
+    // refresh stays the only pending request (spec US3 acceptance scenario 5).
+    refreshButton.click()
+    flushSync()
+    expect(mocks.listSessions).toHaveBeenCalledTimes(2)
+
+    releaseRefresh({ sessions: SESSIONS, nextPageToken: '' })
+    await waitForFlush(() => {
+      expect(refreshButton.hasAttribute('disabled')).toBe(false)
       expect(document.querySelectorAll('.session-row')).toHaveLength(2)
     })
   })
