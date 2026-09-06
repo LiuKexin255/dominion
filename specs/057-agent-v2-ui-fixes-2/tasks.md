@@ -60,11 +60,11 @@
 
 ### Tests for User Story 1 ⚠️
 
-- [ ] T001 [P] [US1] 扩展 `projects/game/web/frontend/src/App.test.tsx`（沿用既有 fetch mock 按路由分发模式）：新增重建同步断言——(a) 已物化会话 Apply 成功（PATCH `/api/v2/.../agent` 200）后再次 GET `.../agent/messages`（回填触发）且对话区旧消息清空；(b) 回填慢返回与紧随 send 的让位（send 后空历史不覆盖新回合）；(c) 回填请求失败（500）→ 既有回填错误呈现、对话不清空；(d) Apply 失败（PATCH 4xx/5xx）→ 不触发第二次回填、面板错误既有呈现；(e) 忙时收敛：在途流 `turn_end{ABORTED}`（store 归约清空）与回填落地任意序 → 与空闲路径收敛同一干净终态（无重复/冲突中间态，data-model §1.3 收敛矩阵）；(f) 首次物化（未物化→物化）Apply 成功 → 回填 200 空、引导态消退、对话面为空；对每个 mock 路由做正向调用断言（`style/javascript.md` 规则）——先跑确认失败。另修正既有 `projects/game/web/frontend/src/components/AgentSettingsPanel.test.tsx` "App 未物化引导" describe 的 messages mock：引入物化状态标记——PATCH `/api/v2/{session}/agent?allow_missing=true` 成功前 messages 路由返回 404、成功后返回 200 `{"messages":[]}`，并同步更新该路由注释（契约 §2.7；服务端语义依据 `specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2.1/§2.3——物化成功后 ListAgentMessages 恒 200 空）；该 fixture 对齐在 T002 落地前后均保持该用例通过（T002 之前 messages 路由仅在挂载期命中且彼时未物化，404 语义不变），不属于"先失败"范围
+- [X] T001 [P] [US1] 扩展 `projects/game/web/frontend/src/App.test.tsx`（沿用既有 fetch mock 按路由分发模式）：新增重建同步断言——(a) 已物化会话 Apply 成功（PATCH `/api/v2/.../agent` 200）后再次 GET `.../agent/messages`（回填触发）且对话区旧消息清空；(b) 回填慢返回与紧随 send 的让位（send 后空历史不覆盖新回合）；(c) 回填请求失败（500）→ 既有回填错误呈现、对话不清空；(d) Apply 失败（PATCH 4xx/5xx）→ 不触发第二次回填、面板错误既有呈现；(e) 忙时收敛：在途流 `turn_end{ABORTED}`（store 归约清空）与回填落地任意序 → 与空闲路径收敛同一干净终态（无重复/冲突中间态，data-model §1.3 收敛矩阵）；(f) 首次物化（未物化→物化）Apply 成功 → 回填 200 空、引导态消退、对话面为空；对每个 mock 路由做正向调用断言（`style/javascript.md` 规则）——先跑确认失败。另修正既有 `projects/game/web/frontend/src/components/AgentSettingsPanel.test.tsx` "App 未物化引导" describe 的 messages mock：引入物化状态标记——PATCH `/api/v2/{session}/agent?allow_missing=true` 成功前 messages 路由返回 404、成功后返回 200 `{"messages":[]}`，并同步更新该路由注释（契约 §2.7；服务端语义依据 `specs/051-agent-v2-dsh-migration/contracts/agent-api.md` §2.1/§2.3——物化成功后 ListAgentMessages 恒 200 空）；该 fixture 对齐在 T002 落地前后均保持该用例通过（T002 之前 messages 路由仅在挂载期命中且彼时未物化，404 语义不变），不属于"先失败"范围
 
 ### Implementation for User Story 1
 
-- [ ] T002 [US1] `projects/game/web/frontend/src/App.tsx`：ChatPanel 内提取 `runBackfill`（`useCallback`，deps `[session, store]`）——置 `sentSinceBackfill.current = false`（epoch 复位）→ `listHistory(session)` → 成功且守卫仍 false 时 `store.loadHistory(messages)`、`setBackfillError(null)`；404 走既有未物化分支、其余失败 `setBackfillError`（逻辑自现挂载 effect 原样迁移，挂载 effect 改调 `runBackfill` 保持 `cancelled` 清理语义与零行为回归）；`onApplied` 在既有 setAgent/setAgentStatus/setPanelOpen 之外追加 `void runBackfill()`（契约 §2；依赖 T001 完成后使其转绿；T002 落地后 `AgentSettingsPanel.test.tsx` 既有引导流转用例保持通过——其 messages mock 已由 T001 对齐物化后 200 空语义）
+- [X] T002 [US1] `projects/game/web/frontend/src/App.tsx`：ChatPanel 内提取 `runBackfill`（`useCallback`，deps `[session, store]`）——置 `sentSinceBackfill.current = false`（epoch 复位）→ `listHistory(session)` → 成功且守卫仍 false 时 `store.loadHistory(messages)`、`setBackfillError(null)`；404 走既有未物化分支、其余失败 `setBackfillError`（逻辑自现挂载 effect 原样迁移，挂载 effect 改调 `runBackfill` 保持 `cancelled` 清理语义与零行为回归）；`onApplied` 在既有 setAgent/setAgentStatus/setPanelOpen 之外追加 `void runBackfill()`（契约 §2；依赖 T001 完成后使其转绿；T002 落地后 `AgentSettingsPanel.test.tsx` 既有引导流转用例保持通过——其 messages mock 已由 T001 对齐物化后 200 空语义）
 
 **Checkpoint**: US1 独立可测——`bazel test //projects/game/web/frontend:lib_test` 全绿（含既有挂载回填/切换会话/发送让位断言与 `AgentSettingsPanel.test.tsx` 引导流转用例零回归）。
 
@@ -92,11 +92,11 @@
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T003 [P] [US2] 扩展 `projects/game/web/frontend/src/components/SessionList.test.tsx`：stub `window.matchMedia`（jsdom 未实现；默认非 reduce、可切 reduce 两种返回）+ 对 `.session-name` 元素以 `defineProperty` stub 滚动几何（`scrollWidth`/`clientWidth`/`scrollLeft`，模式参照上游 attachment-rail 测试）+ `vi.useFakeTimers()`——断言 (a) 悬停后未到 250ms 无滚动，`advanceTimersByTime(250 + N*30)` 后 `scrollLeft` 按 3px/步递增至 max 且到 max 后不再增长（hold）；(b) mouseleave 后再 advance 无变化且 `scrollLeft = 0`；(c) 短名（stub `scrollWidth <= clientWidth`）悬停无任何 `scrollLeft` 变化；(d) reduce 悬停不滚动；(e) 既有 scrollable 类切换/移出复位/THEME_CSS 遮罩断言保持通过；(f) `.session-name` span 携带完整名称 `title` 属性（可达性静态途径，契约 §1）——先跑确认失败
+- [X] T003 [P] [US2] 扩展 `projects/game/web/frontend/src/components/SessionList.test.tsx`：stub `window.matchMedia`（jsdom 未实现；默认非 reduce、可切 reduce 两种返回）+ 对 `.session-name` 元素以 `defineProperty` stub 滚动几何（`scrollWidth`/`clientWidth`/`scrollLeft`，模式参照上游 attachment-rail 测试）+ `vi.useFakeTimers()`——断言 (a) 悬停后未到 250ms 无滚动，`advanceTimersByTime(250 + N*30)` 后 `scrollLeft` 按 3px/步递增至 max 且到 max 后不再增长（hold）；(b) mouseleave 后再 advance 无变化且 `scrollLeft = 0`；(c) 短名（stub `scrollWidth <= clientWidth`）悬停无任何 `scrollLeft` 变化；(d) reduce 悬停不滚动；(e) 既有 scrollable 类切换/移出复位/THEME_CSS 遮罩断言保持通过；(f) `.session-name` span 携带完整名称 `title` 属性（可达性静态途径，契约 §1）——先跑确认失败
 
 ### Implementation for User Story 2
 
-- [ ] T004 [US2] `projects/game/web/frontend/src/components/SessionList.tsx`：实现 marquee 机制（data-model.md §2 状态机）——mouseenter（既有 hovered 切换入口）时若名称元素 `scrollWidth > clientWidth` 且 `!matchMedia('(prefers-reduced-motion: reduce)').matches` 则 250ms 延迟后启动 30ms 间隔步进 `scrollLeft += 3px` 至 max 停止；新悬停/移出/组件卸载清除既有定时器（悬停互斥），mouseleave 复用既有 `scrollLeft = 0` 复位点；元素定位沿用 `e.currentTarget.querySelector('.session-name')` 既有模式；`.session-name` span 补充原生 `title={sessionTitle(s.name)}` 静态阅读途径（契约 §1 决策，沿用本组件 IconButton 既有原生 title 模式）；`projects/game/web/frontend/src/theme.css` 预期零改动（`.session-name.scrollable` 既有承载）——依赖 T003 完成后使其转绿
+- [X] T004 [US2] `projects/game/web/frontend/src/components/SessionList.tsx`：实现 marquee 机制（data-model.md §2 状态机）——mouseenter（既有 hovered 切换入口）时若名称元素 `scrollWidth > clientWidth` 且 `!matchMedia('(prefers-reduced-motion: reduce)').matches` 则 250ms 延迟后启动 30ms 间隔步进 `scrollLeft += 3px` 至 max 停止；新悬停/移出/组件卸载清除既有定时器（悬停互斥），mouseleave 复用既有 `scrollLeft = 0` 复位点；元素定位沿用 `e.currentTarget.querySelector('.session-name')` 既有模式；`.session-name` span 补充原生 `title={sessionTitle(s.name)}` 静态阅读途径（契约 §1 决策，沿用本组件 IconButton 既有原生 title 模式）；`projects/game/web/frontend/src/theme.css` 预期零改动（`.session-name.scrollable` 既有承载）——依赖 T003 完成后使其转绿
 
 **Checkpoint**: US2 独立可测——`bazel test //projects/game/web/frontend:lib_test` 全绿（US1 断言不回归；两 story 文件无交集）。
 
@@ -123,11 +123,11 @@
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T005 [P] [US3] 扩展 `projects/game/desktop/frontend/src/App.test.ts`（"App sessions refresh" 既有 describe 块同套模式）：新增断言——(a) sessions 页渲染 `data-testid="refresh-sessions"` 按钮，点击后 `listSessions` 再次调用且列表更新；(b) 刷新失败（mock reject）错误呈现且既有列表不清空；(c) 请求在途时按钮 `disabled`（可控 promise 驱动）；(d) 每个 mock 正向调用断言（`style/javascript.md` 规则）——先跑确认失败
+- [X] T005 [P] [US3] 扩展 `projects/game/desktop/frontend/src/App.test.ts`（"App sessions refresh" 既有 describe 块同套模式）：新增断言——(a) sessions 页渲染 `data-testid="refresh-sessions"` 按钮，点击后 `listSessions` 再次调用且列表更新；(b) 刷新失败（mock reject）错误呈现且既有列表不清空；(c) 请求在途时按钮 `disabled`（可控 promise 驱动）；(d) 每个 mock 正向调用断言（`style/javascript.md` 规则）——先跑确认失败
 
 ### Implementation for User Story 3
 
-- [ ] T006 [US3] `projects/game/desktop/frontend/src/App.svelte`：sessions-toolbar 内模板标识 span 之后添加 `<button class="btn btn-small" data-testid="refresh-sessions" onclick={handleRefresh} disabled={loading}>Refresh</button>`（契约 §3：不改 handleRefresh、不改 SessionList.svelte；`space-between` 布局使按钮自然落右侧）——依赖 T005 完成后使其转绿
+- [X] T006 [US3] `projects/game/desktop/frontend/src/App.svelte`：sessions-toolbar 内模板标识 span 之后添加 `<button class="btn btn-small" data-testid="refresh-sessions" onclick={handleRefresh} disabled={loading}>Refresh</button>`（契约 §3：不改 handleRefresh、不改 SessionList.svelte；`space-between` 布局使按钮自然落右侧）——依赖 T005 完成后使其转绿
 
 **Checkpoint**: US3 独立可测——`bazel test //projects/game/desktop/frontend:lib_test` 全绿（含 055 返回刷新/api.test.ts 零回归）。
 
@@ -147,7 +147,7 @@
   - `specs/057-agent-v2-ui-fixes-2/quickstart.md`（§2 自动化命令、§3 人工场景、§5 预期结果汇总）
 
 - [ ] T007 人工验证记录：按 `specs/057-agent-v2-ui-fixes-2/quickstart.md` §3 在部署环境执行三组场景（§3.1 悬停自动滚动真实浏览器行为 / §3.2 重建同步即时清空与忙时收敛 / §3.3 desktop 手动刷新含失败路径），结果记录写入 `specs/057-agent-v2-ui-fixes-2/revisions/manual-verification.md`（spec A3/FR-004：滚动可达性与重建体验以本记录闭合）
-- [ ] T008 大型测试回归：通过 testplan skill 执行既有测试计划 `projects/game/testplan/system_test.yaml`（`guitar run` 完成部署→测试→清理闭环），全部用例通过（宪法 VI gate 5 + spec A3 回归面承诺；本 feature 无服务行为变更、不新增测试计划 YAML——`style/large_test.md` 既有计划复用原则）
+- [X] T008 大型测试回归：通过 testplan skill 执行既有测试计划 `projects/game/testplan/system_test.yaml`（`guitar run` 完成部署→测试→清理闭环），全部用例通过（宪法 VI gate 5 + spec A3 回归面承诺；本 feature 无服务行为变更、不新增测试计划 YAML——`style/large_test.md` 既有计划复用原则）
 
 ---
 
