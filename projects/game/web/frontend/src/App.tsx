@@ -52,9 +52,10 @@ type DesktopConn = 'connected' | 'disconnected' | 'unknown'
 // ChatPanel hosts one session's store-backed chat view. The store outlives the
 // panel's active state (owned by App's per-session map), so an in-flight turn
 // keeps reducing while this panel renders nothing. The ListAgentMessages
-// backfill runs
-// once on first entry (FR-014) and must not overwrite a turn that started
-// before the backfill response landed.
+// backfill (runBackfill) runs on first entry (FR-014) and after a successful
+// agent re-apply (rebuild sync, specs/057-agent-v2-ui-fixes-2/contracts/
+// ui-interactions.md §2), and must not overwrite a turn that started before
+// the backfill response landed.
 function ChatPanel({
   session,
   store,
@@ -76,7 +77,7 @@ function ChatPanel({
   // §4）；请求成功不设错误——终态经流上 turn_end{CANCELED} 由 store 归约。
   const [cancelError, setCancelError] = useState<string | null>(null)
   // 回填发起后本面板是否有 send 开始：send 与回填竞态时整体让位于 send
-  // （判据说明见下方 loadHistory 调用处注释）。
+  // （判据说明见 runBackfill 内守卫处注释）。
   const sentSinceBackfill = useRef(false)
 
   // 连接状态即时刷新（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：
@@ -91,35 +92,34 @@ function ChatPanel({
     }
   }, [session])
 
-  useEffect(() => {
-    sentSinceBackfill.current = false
-    let cancelled = false
-    // 物化状态探测（web-frontend.md §3）：GetAgent 404 → 未物化引导态；
-    // 其余失败仅置 unknown，不影响对话。
-    void probeAgent(session).then((probe) => {
-      if (cancelled) return
-      setAgentStatus(probe.status)
-      setAgent(probe.agent)
-    })
-    // 进入会话即时刷新连接状态（web-ui.md §5）。
-    void refreshDesktopConn()
-    listHistory(session)
-      .then((messages) => {
-        if (cancelled) return
+  // runBackfill 是挂载回填与重建同步（Apply 成功）共用的唯一回填路径
+  // （specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §2，
+  // specs/057-agent-v2-ui-fixes-2/research.md D1）：发起即复位让位守卫
+  // （新 epoch），ListAgentMessages 落地且守卫仍 false 时经 store.loadHistory
+  // 全量重建——两处调用同一函数使挂载与应用路径行为永不分叉。isCancelled
+  // 供挂载 effect 在会话切换/卸载时丢弃在途响应（清理语义）；Apply 路径
+  // 无清理面，缺省不取消。
+  const runBackfill = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
+      sentSinceBackfill.current = false
+      try {
+        const messages = await listHistory(session)
+        if (isCancelled()) return
         setBackfillError(null)
         // 让位判据 = 自回填发起后是否有 send 开始，而非响应落地时刻的
         // live/queue 快照——快照判据留有两个竞态窗口：(a) 回合已完成
         // （慢网络下过期历史覆盖已合并入历史的回合）；(b) 服务端已记录
         // 用户消息但客户端首帧未达（回填含该消息，随后首帧
         // acceptUserMessage 再追加 = 重复消息）。send 一经开始，回填整体
-        // 让位（FR-012/FR-014 前端侧，切换/返回不丢各自进度）。
+        // 让位（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
+        // §4，FR-012/FR-014 前端侧，切换/返回不丢各自进度）。
         if (!sentSinceBackfill.current) store.loadHistory(messages)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
+      } catch (err) {
+        if (isCancelled()) return
         // 未物化（含无 owner）session 的 ListAgentMessages 是 404
-        // （agent-api.md §2.2/§2.3）——这是"尚无历史"而非错误：置空历史并
-        // 进入未物化引导态。
+        // （specs/051-agent-v2-dsh-migration/contracts/agent-api.md
+        // §2.2/§2.3）——这是"尚无历史"而非错误：置空历史并进入未物化
+        // 引导态。
         if (isUnmaterializedError(err)) {
           setAgentStatus('unmaterialized')
           setAgent(null)
@@ -127,13 +127,30 @@ function ChatPanel({
           return
         }
         // 仅提示不清状态：回填失败时在途回合与本地消息保持不变，可刷新
-        // 重试回填（FR-014 前端侧）。
+        // 重试回填（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
+        // §4）。
         setBackfillError(errorMessage(err))
-      })
+      }
+    },
+    [session, store],
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    // 物化状态探测（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
+    // §3）：GetAgent 404 → 未物化引导态；其余失败仅置 unknown，不影响对话。
+    void probeAgent(session).then((probe) => {
+      if (cancelled) return
+      setAgentStatus(probe.status)
+      setAgent(probe.agent)
+    })
+    // 进入会话即时刷新连接状态（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）。
+    void refreshDesktopConn()
+    void runBackfill(() => cancelled)
     return () => {
       cancelled = true
     }
-  }, [session, store, refreshDesktopConn])
+  }, [session, store, refreshDesktopConn, runBackfill])
 
   const onSend = useCallback(
     (text: string) => {
@@ -177,8 +194,15 @@ function ChatPanel({
       setAgent(materialized)
       setAgentStatus('materialized')
       setPanelOpen(false)
+      // 重建同步（specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md
+      // §2）：UpdateAgent 为清理重建，服务端历史已随旧 agent 清空
+      // （specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.1）——
+      // Apply 成功即以同一回填路径重取历史，空闲/忙时（在途回合 ABORTED）/
+      // 首次物化收敛同一干净终态（specs/057-agent-v2-ui-fixes-2/data-model.md
+      // §1.3）。
+      void runBackfill()
     },
-    [],
+    [runBackfill],
   )
 
   // turn 结束即时刷新（web-ui.md §5）：全部回合终态（COMPLETED/ERROR/

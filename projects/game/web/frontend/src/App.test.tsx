@@ -812,3 +812,427 @@ describe('App cancel 编排（web-ui.md §4/§8-6）', () => {
     await s1Send.done
   })
 })
+
+// ─── App 重建同步（specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md
+// ─── §2：Apply 成功（UpdateAgent 清理重建，specs/051-agent-v2-dsh-migration/
+// ─── contracts/agent-api.md §2.1）后经与挂载回填同一的 runBackfill 重建对话
+// ─── 视图；测试口径 = 契约 §2.7，收敛矩阵 = data-model.md §1.3） ─────────────
+
+const PRESET_P1 = {
+  name: 'templates/saolei/presets/p1',
+  playerPrompt: '你是扫雷玩家',
+  createTime: '2026-08-29T00:00:00Z',
+  updateTime: '2026-08-29T00:00:00Z',
+}
+const AGENT_MATERIALIZED = {
+  name: `${S1}/agent`,
+  preset: PRESET_P1.name,
+  model: 'glm-5.2',
+  createTime: '2026-08-29T01:00:00Z',
+  updateTime: '2026-08-29T01:00:00Z',
+}
+const OLD_HISTORY = {
+  messages: [{ role: 'ROLE_AGENT', blocks: [{ text: { content: '旧历史' } }] }],
+}
+
+const SEND_FIRST_PHASE =
+  wireChunk('{"turnId":"t1","turnStart":{}}') +
+  wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+  wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}')
+const SEND_COMPLETED_REST = [
+  wireChunk('{"turnId":"t1","delta":{"index":0,"text":"分"}}'),
+  wireChunk('{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}'),
+  wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}'),
+]
+const SEND_ABORTED_REST = [wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_ABORTED"}}')]
+
+// makeApplyFetchMock routes the faces the rebuild-sync scenarios touch: the
+// session list, sequenced ListAgentMessages responses（第 N 次 GET 依序取用、
+// 末项重复——挂载回填与 Apply 后回填两次命中，契约 §2.7）, GetAgent, panel
+// data sources, PATCH (updateAgent), and Send. historyCallCount positively
+// tracks the messages GETs — the rebuild-sync trigger assertion
+// (style/javascript.md Mock 约定).
+function makeApplyFetchMock(fixtures: {
+  historyResponses?: (() => Response | Promise<Response>)[]
+  agentGet?: () => Response
+  patchResponse?: () => Response
+  sendResponse?: () => Response
+}) {
+  let historyCalls = 0
+  const history = fixtures.historyResponses ?? [() => jsonResponse({ messages: [] })]
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET'
+    if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+      return jsonResponse({ sessions: [{ name: S1, createTime: '2026-08-29T00:00:00Z' }] })
+    }
+    if (url === `/api/v2/${S1}/agent/messages` && method === 'GET') {
+      const respond = history[Math.min(historyCalls, history.length - 1)]
+      historyCalls += 1
+      return respond()
+    }
+    if (url === `/api/v2/${S1}/agent` && method === 'GET') {
+      return fixtures.agentGet?.() ?? agentView(S1, {})
+    }
+    if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
+      return jsonResponse({ presets: [PRESET_P1] })
+    }
+    if (url === '/api/v2/models' && method === 'GET') {
+      return jsonResponse({ models: [{ id: 'glm-5.2' }] })
+    }
+    if (url === `/api/v2/${S1}/agent?allow_missing=true` && method === 'PATCH') {
+      return fixtures.patchResponse?.() ?? jsonResponse(AGENT_MATERIALIZED)
+    }
+    if (url === `/api/v2/${S1}:send` && method === 'POST') {
+      return fixtures.sendResponse?.() ?? jsonResponse({})
+    }
+    throw new Error(`unexpected fetch: ${url} ${method}`)
+  })
+  return { fetchMock, historyCallCount: () => historyCalls }
+}
+
+describe('App 重建同步（Apply 成功后对话视图即时同步）', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let historyCallCount: () => number
+
+  beforeEach(() => {
+    const mock = makeApplyFetchMock({})
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // flush drains two macrotask turns: promise continuations queued by an
+  // opened response gate（microtask chain，含 Response body 消费）在超时宏任务
+  // 前全部落地，使"回填响应已处理"的断言确定。
+  async function flush(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
+  // lastAgentText reads the last agent-text element's content: ChatView renders
+  // history before the live turn, so the last element is the current turn's
+  // newest content（历史含旧消息时 agent-text 有多个，getBy 会多匹配抛错）.
+  function lastAgentText(): string {
+    const texts = screen.getAllByTestId('agent-text')
+    return (texts[texts.length - 1] as HTMLElement).textContent ?? ''
+  }
+
+  // enterS1 renders the app and enters s1; positive assertions cover the
+  // routes the rebuild-sync scenarios rely on（style/javascript.md mock 约定：
+  // 证明 GetAgent 探测与首次回填确实被 exercise）.
+  async function enterS1(): Promise<void> {
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+    await screen.findByTestId('chat-input')
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}/agent/messages`)).toBe(
+        true,
+      )
+      expect(fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}/agent`)).toBe(true)
+    })
+  }
+
+  // waitForPanelReady waits for the settings panel and its data sources with
+  // positive fetch assertions（presets/models 下拉同源面）.
+  async function waitForPanelReady(): Promise<void> {
+    expect(await screen.findByTestId('agent-settings-panel')).toBeTruthy()
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/v2/templates/saolei/presets', undefined)
+      expect(fetchMock).toHaveBeenCalledWith('/api/v2/models', undefined)
+    })
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId('agent-preset-select') as HTMLSelectElement).querySelectorAll('option')
+          .length,
+      ).toBeGreaterThan(1)
+    })
+  }
+
+  // applyPreset selects the fixture preset and clicks Apply（preset 必选）.
+  function applyPreset(): void {
+    fireEvent.change(screen.getByTestId('agent-preset-select'), {
+      target: { value: PRESET_P1.name },
+    })
+    fireEvent.click(screen.getByTestId('agent-apply'))
+  }
+
+  // assertPatchApplied positively asserts the UpdateAgent PATCH request shape
+  // （agent-api.md §2.1：PATCH allow_missing=true，body 仅 {preset, model?}）.
+  async function assertPatchApplied(body: Record<string, string>): Promise<void> {
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/v2/${S1}/agent?allow_missing=true`,
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify(body) }),
+      )
+    })
+  }
+
+  // assertCleanChat asserts the converged clean chat face（data-model.md
+  // §1.3 收敛矩阵终态：history/live/queue/error/canceled 全部复位）.
+  function assertCleanChat(): void {
+    expect(screen.queryByTestId('agent-text')).toBeNull()
+    expect(screen.queryByText('旧历史')).toBeNull()
+    expect(screen.queryByText('一')).toBeNull()
+    expect(screen.queryByTestId('queue-chip')).toBeNull()
+    expect(screen.queryByTestId('chat-error')).toBeNull()
+    expect(screen.queryByTestId('turn-canceled')).toBeNull()
+  }
+
+  // enterBusyS1 drives s1 into the busy premise shared by the two convergence
+  // orders: old history rendered, a turn live mid-stream, then a successful
+  // Apply whose rebuild backfill is held in flight by the gate.
+  async function enterBusyS1(): Promise<void> {
+    await enterS1()
+    const input = await screen.findByTestId('chat-input')
+    fireEvent.change(input, { target: { value: '一' } })
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/v2/${S1}:send`,
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    await waitFor(() => {
+      expect(lastAgentText()).toBe('部')
+    })
+    fireEvent.click(await screen.findByTestId('agent-settings-button'))
+    await waitForPanelReady()
+    applyPreset()
+    await assertPatchApplied({ preset: PRESET_P1.name })
+    await waitFor(() => {
+      expect(historyCallCount()).toBe(2)
+    })
+  }
+
+  it('已物化会话 Apply 成功：PATCH 200 后再次回填历史，旧消息清空', async () => {
+    const mock = makeApplyFetchMock({
+      historyResponses: [() => jsonResponse(OLD_HISTORY), () => jsonResponse({ messages: [] })],
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+    await enterS1()
+    expect(screen.getByText('旧历史')).toBeTruthy()
+
+    fireEvent.click(await screen.findByTestId('agent-settings-button'))
+    await waitForPanelReady()
+    applyPreset()
+    await assertPatchApplied({ preset: PRESET_P1.name })
+
+    // Apply 成功触发第二次回填（重建同步动作，契约 §2.2）。
+    await waitFor(() => {
+      expect(historyCallCount()).toBe(2)
+    })
+    await waitFor(() => {
+      expect(screen.queryByText('旧历史')).toBeNull()
+    })
+    // onApplied 既有语义零回归：面板关闭、状态已物化；无错误呈现。
+    expect(screen.queryByTestId('agent-settings-panel')).toBeNull()
+    expect(screen.getByTestId('agent-status').textContent).toContain('已物化')
+    expect(screen.queryByTestId('chat-error')).toBeNull()
+  })
+
+  it('Apply 后紧随 send：慢回填让位，空历史不覆盖新回合', async () => {
+    const backfillGate = gatedResponse(() => jsonResponse({ messages: [] }))
+    const s1Send = pausedSend(SEND_FIRST_PHASE, SEND_COMPLETED_REST)
+    const mock = makeApplyFetchMock({
+      historyResponses: [() => jsonResponse(OLD_HISTORY), backfillGate.respond],
+      sendResponse: () => s1Send.response,
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+    await enterS1()
+
+    fireEvent.click(await screen.findByTestId('agent-settings-button'))
+    await waitForPanelReady()
+    applyPreset()
+    await assertPatchApplied({ preset: PRESET_P1.name })
+    // Apply 触发的回填已发出且在途（gate 关闭）。
+    await waitFor(() => {
+      expect(historyCallCount()).toBe(2)
+    })
+
+    // 紧随发送：send 一经开始，回填整体让位（契约 §2.3）。
+    const input = await screen.findByTestId('chat-input')
+    fireEvent.change(input, { target: { value: '一' } })
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/v2/${S1}:send`,
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    await waitFor(() => {
+      expect(lastAgentText()).toBe('部')
+    })
+
+    // 空历史落地但让位：live、用户消息与既有历史均保持。
+    backfillGate.open()
+    await flush()
+    expect(lastAgentText()).toBe('部')
+    expect(screen.getByText('一')).toBeTruthy()
+    expect(screen.getByText('旧历史')).toBeTruthy()
+
+    // 回合照常完成合并，回填内容仍不出现。
+    s1Send.release()
+    await s1Send.done
+    await waitFor(() => {
+      expect(lastAgentText()).toBe('部分')
+    })
+    expect(screen.getByText('一')).toBeTruthy()
+    expect(screen.getByText('旧历史')).toBeTruthy()
+    expect(screen.queryByTestId('chat-error')).toBeNull()
+  })
+
+  it('Apply 成功后回填失败（500）：既有回填错误呈现、对话不清空', async () => {
+    const mock = makeApplyFetchMock({
+      historyResponses: [
+        () => jsonResponse(OLD_HISTORY),
+        () => new Response('history failed', { status: 500 }),
+      ],
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+    await enterS1()
+
+    fireEvent.click(await screen.findByTestId('agent-settings-button'))
+    await waitForPanelReady()
+    applyPreset()
+    await assertPatchApplied({ preset: PRESET_P1.name })
+
+    // 回填失败 → 既有 backfillError 呈现（契约 §2.4），对话不清空。
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-error').textContent).toContain('500')
+    })
+    expect(screen.getByText('旧历史')).toBeTruthy()
+    expect(screen.queryByTestId('agent-settings-panel')).toBeNull()
+    expect(screen.getByTestId('agent-status').textContent).toContain('已物化')
+  })
+
+  it('Apply 失败（PATCH 500）：面板错误呈现、不触发回填、对话不清空', async () => {
+    const mock = makeApplyFetchMock({
+      historyResponses: [() => jsonResponse(OLD_HISTORY)],
+      patchResponse: () => new Response('apply failed', { status: 500 }),
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+    await enterS1()
+
+    fireEvent.click(await screen.findByTestId('agent-settings-button'))
+    await waitForPanelReady()
+    applyPreset()
+
+    // 面板错误既有呈现（AgentSettingsPanel apply 的 catch 路径）。
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-settings-error').textContent).toContain('500')
+    })
+    await flush()
+    // 回填触发只在 Apply 成功路径（契约 §2.1）：失败后无第二次回填。
+    expect(historyCallCount()).toBe(1)
+    expect(screen.getByTestId('agent-settings-panel')).toBeTruthy()
+    expect(screen.getByText('旧历史')).toBeTruthy()
+    expect(screen.queryByTestId('chat-error')).toBeNull()
+  })
+
+  it('忙时收敛（ABORTED 先落地、回填后落地）：收敛同一干净终态', async () => {
+    const backfillGate = gatedResponse(() => jsonResponse({ messages: [] }))
+    const s1Send = pausedSend(SEND_FIRST_PHASE, SEND_ABORTED_REST)
+    const mock = makeApplyFetchMock({
+      historyResponses: [() => jsonResponse(OLD_HISTORY), backfillGate.respond],
+      sendResponse: () => s1Send.response,
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+    await enterBusyS1()
+
+    // 事件一：在途流收 turn_end{ABORTED}，store 归约清空（web-frontend.md §4）。
+    s1Send.release()
+    await s1Send.done
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-text')).toBeNull()
+    })
+    expect(screen.queryByText('旧历史')).toBeNull()
+    expect(screen.queryByText('一')).toBeNull()
+
+    // 事件二：回填 200 空后落地（守卫仍 false）→ 同一干净终态，无复活残留。
+    backfillGate.open()
+    await flush()
+    assertCleanChat()
+  })
+
+  it('忙时收敛（回填先落地、ABORTED 后落地）：收敛同一干净终态', async () => {
+    const backfillGate = gatedResponse(() => jsonResponse({ messages: [] }))
+    const s1Send = pausedSend(SEND_FIRST_PHASE, SEND_ABORTED_REST)
+    const mock = makeApplyFetchMock({
+      historyResponses: [() => jsonResponse(OLD_HISTORY), backfillGate.respond],
+      sendResponse: () => s1Send.response,
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+    await enterBusyS1()
+
+    // 事件一：回填先落地（守卫 false）→ loadHistory([]) 全量清空（含 live）。
+    backfillGate.open()
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-text')).toBeNull()
+    })
+    expect(screen.queryByText('旧历史')).toBeNull()
+    expect(screen.queryByText('一')).toBeNull()
+
+    // 事件二：ABORTED 落地于空态，归约幂等 → 终态不变。
+    s1Send.release()
+    await s1Send.done
+    await flush()
+    assertCleanChat()
+  })
+
+  it('首次物化：未物化 Apply 成功 → 回填 200 空、引导消退、对话面为空', async () => {
+    const mock = makeApplyFetchMock({
+      agentGet: () => new Response('not materialized', { status: 404 }),
+      historyResponses: [
+        () => new Response('not found', { status: 404 }),
+        () => jsonResponse({ messages: [] }),
+      ],
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+    const guide = await screen.findByTestId('agent-guide')
+    expect(guide.textContent).toContain('该会话尚未设置 agent')
+    expect(screen.getByTestId('agent-status').textContent).toBe('未物化')
+    await waitFor(() => {
+      expect(historyCallCount()).toBe(1)
+    })
+
+    // 引导入口打开面板并 Apply（web-frontend.md §3 引导流转）。
+    fireEvent.click(screen.getByTestId('agent-guide-open'))
+    await waitForPanelReady()
+    applyPreset()
+    await assertPatchApplied({ preset: PRESET_P1.name })
+
+    // Apply 成功：面板与引导消退（onApplied 既有语义零回归）。
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-settings-panel')).toBeNull()
+    })
+    expect(screen.queryByTestId('agent-guide')).toBeNull()
+    expect(screen.getByTestId('agent-status').textContent).toContain('已物化')
+
+    // Apply 后回填触发且返回 200 空（agent 已存在，research D1）→ 对话面为空。
+    await waitFor(() => {
+      expect(historyCallCount()).toBe(2)
+    })
+    assertCleanChat()
+    expect(screen.queryByTestId('agent-settings-error')).toBeNull()
+  })
+})

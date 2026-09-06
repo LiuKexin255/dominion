@@ -167,17 +167,28 @@ describe('App 未物化引导', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    // 物化状态标记：PATCH（UpdateAgent）成功前 session 未物化；成功后 agent
+    // 已存在且历史随清理重建清空——ListAgentMessages 未物化 404、物化后恒
+    // 200 空集合（specs/051-agent-v2-dsh-migration/contracts/agent-api.md
+    // §2.1/§2.3）。
+    let materialized = false
     fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
       const method = init?.method ?? 'GET'
       if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
         return jsonResponse({ sessions: [{ name: SESSION, createTime: '2026-08-29T00:00:00Z' }] })
       }
-      // 未物化：GetAgent 与 ListAgentMessages 均 404（agent-api.md §2.2/§2.3）。
+      // 未物化：GetAgent 404（agent-api.md §2.2）。
       if (url === `/api/v2/${SESSION}/agent` && method === 'GET') {
         return new Response('not materialized', { status: 404 })
       }
+      // ListAgentMessages 按物化状态分流：未物化 404；物化成功后 agent 已
+      // 存在、服务端历史为空（specs/051-agent-v2-dsh-migration/contracts/
+      // agent-api.md §2.1/§2.3；specs/057-agent-v2-ui-fixes-2/contracts/
+      // ui-interactions.md §2.7）。
       if (url === `/api/v2/${SESSION}/agent/messages` && method === 'GET') {
-        return new Response('not found', { status: 404 })
+        return materialized
+          ? jsonResponse({ messages: [] })
+          : new Response('not found', { status: 404 })
       }
       if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
         return jsonResponse({ presets: [PRESET_P1] })
@@ -186,6 +197,7 @@ describe('App 未物化引导', () => {
         return jsonResponse({ models: [{ id: 'glm-5.2' }] })
       }
       if (url === `/api/v2/${SESSION}/agent?allow_missing=true` && method === 'PATCH') {
+        materialized = true
         return jsonResponse(AGENT_MATERIALIZED)
       }
       // 物化后的正常回合。
