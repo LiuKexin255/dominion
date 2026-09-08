@@ -1,0 +1,77 @@
+# agent_v2.yaml — templates serving the /v1/responses endpoint
+# (specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §3), the
+# deterministic model endpoint for the agent_v2 large tests. Every entry
+# carries responses_only:true so the chat-completions no-match fallback
+# pool never observes them; keywords are agent_v2-specific and never sent
+# by existing chat tests.
+messages:
+  # agent-v2-greet is the turn-1 think+text main path (US1/US2): two
+  # reasoning deltas then the text delta, think and text on separate
+  # output items.
+  - name: agent-v2-greet
+    keywords:
+      - agent-v2-think
+    reasoning_chunks:
+      - "Analyzing the user's request."
+      - "Drafting a friendly reply."
+    text: "Hello! I can help you play and manage your game sessions."
+    responses_only: true
+  # agent-v2-followup is the multi-turn condition variant (US1-2
+  # continuity): it fires only when the history already contains the greet
+  # reply, and its text references the earlier exchange so a large test
+  # can assert the second turn depends on the first.
+  - name: agent-v2-followup
+    keywords:
+      - agent-v2-think
+    history_keywords:
+      - "manage your game sessions"
+    text: "As I said when we started, I help you play and manage your game sessions."
+    responses_only: true
+  # agent-v2-plain is the pure text template (US2 scenario 2): no
+  # reasoning fields at all, so the stream carries zero reasoning events
+  # and a consumer sees no THINK block.
+  - name: agent-v2-plain
+    keywords:
+      - agent-v2-plain
+    text: "Plain answer with no thinking this time."
+    responses_only: true
+  # agent-v2-slow is the long-delay template (FR-012 queue window): the
+  # 3s inter-chunk delay keeps the turn in progress long enough for a
+  # second Send to observe the queued path.
+  - name: agent-v2-slow
+    keywords:
+      - agent-v2-slow
+    reasoning_chunks:
+      - "Thinking slowly."
+      - "Still thinking."
+    chunk_delays: ["3s"]
+    text: "Finally done thinking."
+    responses_only: true
+  # agent-v2-fail is the failure injection template (Edge-model failure):
+  # a matched turn emits response.failed with the fixed code/message so the
+  # session-stays-usable recovery path can be asserted.
+  - name: agent-v2-fail
+    keywords:
+      - agent-v2-fail
+    failure:
+      code: "glm_test_failure"
+      message: "Injected fake-llm failure for recovery testing"
+    responses_only: true
+  # agent-v2-fail-mid is the partial-content failure template (FR-005/
+  # FR-012 interrupted backfill): the turn streams think+text first and
+  # only then response.failed, so the agent produces content before the
+  # ERROR finish and the interrupted tail-step HistoryMessage becomes
+  # assertable end to end (agent-v2-fail fails before any content).
+  # The keyword must not contain "agent-v2-fail": that trigger would match
+  # both templates and the alphabetical tie-break hands the turn to
+  # agent-v2-fail (README §4).
+  - name: agent-v2-fail-mid
+    keywords:
+      - agent-v2-midfail
+    reasoning_chunks:
+      - "Thinking about the request before it breaks."
+    text: "Partial answer streamed before the failure."
+    failure:
+      code: "glm_test_failure"
+      message: "Injected fake-llm failure after partial content"
+    responses_only: true

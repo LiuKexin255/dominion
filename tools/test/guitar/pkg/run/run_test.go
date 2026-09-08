@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,17 @@ import (
 type commandCall struct {
 	name string
 	args []string
+}
+
+// shortenSettle replaces the production post-deploy settle duration with a
+// short value so tests that run a successful deploy do not block for 60s.
+// Tests that verify the settle behavior itself set postDeploySettle directly.
+func shortenSettle(t *testing.T) {
+	t.Helper()
+
+	original := postDeploySettle
+	postDeploySettle = time.Millisecond
+	t.Cleanup(func() { postDeploySettle = original })
 }
 
 func TestRun(t *testing.T) {
@@ -310,6 +322,7 @@ func TestRun(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := newBazelWorkspace(t)
+			shortenSettle(t)
 			cfg := tt.config(t, root)
 
 			var calls []commandCall
@@ -351,6 +364,208 @@ func TestRun(t *testing.T) {
 				tt.assertStderr(t, errOutput.String())
 			}
 		})
+	}
+}
+
+func TestRun_SettleWaitOrder(t *testing.T) {
+	root := newBazelWorkspace(t)
+	cfg := newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
+
+	const settle = time.Second
+	originalSettle := postDeploySettle
+	postDeploySettle = settle
+	defer func() { postDeploySettle = originalSettle }()
+
+	type timedCall struct {
+		call commandCall
+		at   time.Time
+	}
+	var timed []timedCall
+	originalRunCommand := runCommand
+	runCommand = func(_ context.Context, name string, args ...string) error {
+		timed = append(timed, timedCall{call: commandCall{name: name, args: append([]string(nil), args...)}, at: time.Now()})
+		return nil
+	}
+	defer func() { runCommand = originalRunCommand }()
+	var logOutput bytes.Buffer
+	originalStdout := stdout
+	stdout = &logOutput
+	defer func() { stdout = originalStdout }()
+
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+
+	// given: deploy apply, bazel test and cleanup succeed; when: Run executes;
+	// then: the settle wait blocks the configured duration between them.
+	if len(timed) != 3 {
+		t.Fatalf("calls = %d, want 3", len(timed))
+	}
+	assertCommand(t, timed[0].call, deployBinary, deployApplyCommand)
+	assertCommand(t, timed[1].call, bazelBinary, bazelTestCommand)
+	if elapsed := timed[1].at.Sub(timed[0].at); elapsed < settle {
+		t.Fatalf("elapsed between deploy apply and bazel test = %v, want >= %v", elapsed, settle)
+	}
+
+	output := logOutput.String()
+	deployIdx := strings.Index(output, "  Deploy\n")
+	settleIdx := strings.Index(output, "  Wait 1s for DNS/endpoint settle\n")
+	testIdx := strings.Index(output, "  Test\n")
+	if deployIdx < 0 || settleIdx < 0 || testIdx < 0 || !(deployIdx < settleIdx && settleIdx < testIdx) {
+		t.Fatalf("output = %q, want settle step between Deploy and Test", output)
+	}
+}
+
+func TestRun_NoSettleWaitAfterDeployFailure(t *testing.T) {
+	root := newBazelWorkspace(t)
+	cfg := newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
+
+	const settle = 10 * time.Second
+	originalSettle := postDeploySettle
+	postDeploySettle = settle
+	defer func() { postDeploySettle = originalSettle }()
+
+	var calls []commandCall
+	originalRunCommand := runCommand
+	runCommand = func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, commandCall{name: name, args: append([]string(nil), args...)})
+		if name == deployBinary && len(args) >= 2 && args[0] == deployApplyCommand {
+			return fmt.Errorf("apply failed")
+		}
+		return nil
+	}
+	defer func() { runCommand = originalRunCommand }()
+	var logOutput bytes.Buffer
+	originalStdout := stdout
+	stdout = &logOutput
+	defer func() { stdout = originalStdout }()
+
+	err := Run(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "deploy apply") {
+		t.Fatalf("Run() error = %v, want deploy apply error", err)
+	}
+	// The settle step line is only printed when the wait executes; its absence
+	// proves the failure path skips the wait entirely.
+	if output := logOutput.String(); strings.Contains(output, "  Wait 10s for DNS/endpoint settle\n") {
+		t.Fatalf("output = %q, settle step must not run after deploy failure", output)
+	}
+	for _, call := range calls {
+		if call.name == bazelBinary {
+			t.Fatalf("bazel test ran after deploy failure: %+v", calls)
+		}
+	}
+}
+
+func TestRun_SettleWaitContextCancel(t *testing.T) {
+	root := newBazelWorkspace(t)
+	cfg := newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
+
+	const settle = 10 * time.Second
+	originalSettle := postDeploySettle
+	postDeploySettle = settle
+	defer func() { postDeploySettle = originalSettle }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls []commandCall
+	originalRunCommand := runCommand
+	runCommand = func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, commandCall{name: name, args: append([]string(nil), args...)})
+		if name == deployBinary && len(args) >= 2 && args[0] == deployApplyCommand {
+			cancel()
+		}
+		return nil
+	}
+	defer func() { runCommand = originalRunCommand }()
+
+	err := Run(ctx, cfg)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	for _, call := range calls {
+		if call.name == bazelBinary {
+			t.Fatalf("bazel test ran after settle wait was canceled: %+v", calls)
+		}
+	}
+	// Cleanup still runs after the canceled wait (WithoutCancel context).
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (deploy apply + cleanup)", len(calls))
+	}
+	assertCleanupEnv(t, calls[1], "game."+deployRunID(t, calls[0]))
+}
+
+func Test_waitPostDeploySettle(t *testing.T) {
+	tests := []struct {
+		name      string
+		settle    time.Duration
+		ctx       func(t *testing.T) context.Context
+		wantErr   error
+		wantBlock bool // true: must block the full settle; false: must return before it
+	}{
+		{
+			name:      "blocks for the full duration",
+			settle:    20 * time.Millisecond,
+			ctx:       func(t *testing.T) context.Context { return context.Background() },
+			wantErr:   nil,
+			wantBlock: true,
+		},
+		{
+			name:   "returns context error when canceled",
+			settle: 10 * time.Second,
+			ctx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantErr:   context.Canceled,
+			wantBlock: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalSettle := postDeploySettle
+			postDeploySettle = tt.settle
+			defer func() { postDeploySettle = originalSettle }()
+
+			start := time.Now()
+			err := waitPostDeploySettle(tt.ctx(t), NewReporter(io.Discard))
+			elapsed := time.Since(start)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("waitPostDeploySettle() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantBlock && elapsed < tt.settle {
+				t.Fatalf("elapsed = %v, want >= %v", elapsed, tt.settle)
+			}
+			if !tt.wantBlock && elapsed >= tt.settle {
+				t.Fatalf("elapsed = %v, want < %v (must return before the full wait)", elapsed, tt.settle)
+			}
+		})
+	}
+}
+
+// Test_waitPostDeploySettle_StepLineFormat locks the production settle value's
+// step line format: 60s must render as "60s", not time.Duration's "1m0s".
+// The already-canceled context makes the wait return immediately.
+func Test_waitPostDeploySettle_StepLineFormat(t *testing.T) {
+	originalSettle := postDeploySettle
+	postDeploySettle = 60 * time.Second
+	defer func() { postDeploySettle = originalSettle }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var buf bytes.Buffer
+	err := waitPostDeploySettle(ctx, NewReporter(&buf))
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitPostDeploySettle() error = %v, want context.Canceled", err)
+	}
+	want := "  Wait 60s for DNS/endpoint settle\n"
+	if buf.String() != want {
+		t.Fatalf("step line = %q, want %q", buf.String(), want)
 	}
 }
 
@@ -577,6 +792,7 @@ func TestSuiteFilter(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := newBazelWorkspace(t)
+			shortenSettle(t)
 			suites := make([]*guitarconfig.Suite, len(tt.suiteNames))
 			for i, name := range tt.suiteNames {
 				suites[i] = newSuite(t, root, name, "//case:"+name)
@@ -618,6 +834,7 @@ func TestSuiteFilter(t *testing.T) {
 
 func TestSuiteFilter_DuplicateNameFirstMatchWins(t *testing.T) {
 	root := newBazelWorkspace(t)
+	shortenSettle(t)
 	// Create two suites with the same Name but different Cases to distinguish them.
 	suite1 := newSuite(t, root, "dup-first", "//case:first")
 	suite1.Name = "dup"
@@ -709,6 +926,7 @@ func TestSuiteTimeout(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := newBazelWorkspace(t)
+			shortenSettle(t)
 			suite := newSuite(t, root, "suite-a", "//case:a")
 			suite.Timeout = tt.timeout
 			cfg := newConfig(t, suite)
@@ -811,6 +1029,7 @@ func TestReporter(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := newBazelWorkspace(t)
+			shortenSettle(t)
 			cfg := newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
 
 			originalRunCommand := runCommand

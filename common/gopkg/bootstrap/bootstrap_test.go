@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
+	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +17,24 @@ import (
 
 	"dominion/common/gopkg/logs"
 )
+
+// noopHealth is a healthService that starts and stops without binding a port.
+type noopHealth struct{}
+
+func (noopHealth) Start(context.Context) error { return nil }
+func (noopHealth) Stop(context.Context) error  { return nil }
+
+// TestMain replaces the real health server with a no-op stub for the whole
+// test binary: the orchestrator tests here assert lifecycle semantics, not
+// endpoint binding, and binding the fixed probe port would collide across
+// concurrent test runs (bazel schedules repeated runs of this target in
+// parallel). Tests that need a real listener construct healthServer directly
+// (health_test.go) or substitute newHealthServer explicitly
+// (TestBootstrap_HealthStartFailureRollback).
+func TestMain(m *testing.M) {
+	newHealthServer = func() healthService { return noopHealth{} }
+	os.Exit(m.Run())
+}
 
 // mockComponent implements Component for testing.
 // It records start/stop calls and call order for verification.
@@ -90,6 +111,28 @@ func orderSequence(t *testing.T, order []string, a, b string) {
 	if aIdx >= bIdx {
 		t.Fatalf("expected %q before %q, got order: %v", a, b, order)
 	}
+}
+
+// recordingHealth is a healthService stub that records lifecycle calls into
+// the shared test order instead of binding a port, so health/component
+// ordering can be asserted without network I/O.
+type recordingHealth struct {
+	orderMu *sync.Mutex
+	order   *[]string
+}
+
+func (h *recordingHealth) Start(_ context.Context) error {
+	h.orderMu.Lock()
+	*h.order = append(*h.order, "start:health")
+	h.orderMu.Unlock()
+	return nil
+}
+
+func (h *recordingHealth) Stop(_ context.Context) error {
+	h.orderMu.Lock()
+	*h.order = append(*h.order, "stop:health")
+	h.orderMu.Unlock()
+	return nil
 }
 
 // TestBootstrap_StartOrderByStage verifies components start in Stage asc then
@@ -215,6 +258,87 @@ func TestBootstrap_StartupFailureRollback(t *testing.T) {
 		t.Fatalf("failing component had %d Stop calls", second.stopCount)
 	}
 	mu.Unlock()
+}
+
+// TestBootstrap_HealthLifecycleOrder verifies the health server's FIFO
+// lifetime: it starts strictly after every component and stops strictly
+// before every component (specs/052-deploy-health-probe/spec.md FR-004/FR-005).
+func TestBootstrap_HealthLifecycleOrder(t *testing.T) {
+	mu, ord := newTestOrder()
+	stub := &recordingHealth{orderMu: mu, order: ord}
+	orig := newHealthServer
+	newHealthServer = func() healthService { return stub }
+	t.Cleanup(func() { newHealthServer = orig })
+
+	b := New()
+	_ = b.Register(newMock("otel", StageFoundation, mu, ord))
+	_ = b.Register(newMock("server", StageServer, mu, ord))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.RunSignal(ctx, syscall.SIGUSR1) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	got := make([]string, len(*ord))
+	copy(got, *ord)
+	mu.Unlock()
+
+	// Health starts after every component.
+	orderSequence(t, got, "start:otel", "start:health")
+	orderSequence(t, got, "start:server", "start:health")
+	// Health stops before every component.
+	orderSequence(t, got, "stop:health", "stop:server")
+	orderSequence(t, got, "stop:health", "stop:otel")
+	// Health start/stop bracket each other once.
+	orderSequence(t, got, "start:health", "stop:health")
+}
+
+// TestBootstrap_HealthStartFailureRollback verifies that when the health
+// endpoint cannot bind its port (already taken), RunSignal treats it like a
+// component start failure: returns an error and rolls back every started
+// component (specs/052-deploy-health-probe/spec.md FR-010).
+func TestBootstrap_HealthStartFailureRollback(t *testing.T) {
+	// given: another listener already holds an OS-assigned port, and the
+	// health server targets that port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	orig := newHealthServer
+	newHealthServer = func() healthService {
+		return &healthServer{server: &http.Server{Addr: ln.Addr().String()}}
+	}
+	t.Cleanup(func() { newHealthServer = orig })
+
+	b := New()
+	mu, ord := newTestOrder()
+	_ = b.Register(newMock("c1", StageFoundation, mu, ord))
+	_ = b.Register(newMock("c2", StageServer, mu, ord))
+
+	// when: RunSignal runs with the health port occupied.
+	runErr := b.RunSignal(context.Background(), syscall.SIGUSR1)
+
+	// then: RunSignal fails with the health bind reason and both started
+	// components are rolled back.
+	if runErr == nil {
+		t.Fatal("expected error when the health port is occupied, got nil")
+	}
+	if !strings.Contains(runErr.Error(), ln.Addr().String()) {
+		t.Fatalf("expected error to mention %s, got: %v", ln.Addr().String(), runErr)
+	}
+
+	mu.Lock()
+	got := make([]string, len(*ord))
+	copy(got, *ord)
+	mu.Unlock()
+
+	orderContains(t, got, "start:c1")
+	orderContains(t, got, "start:c2")
+	orderSequence(t, got, "stop:c2", "stop:c1")
 }
 
 // TestBootstrap_StopErrorsJoined verifies that when multiple components return

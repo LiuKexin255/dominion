@@ -2,6 +2,7 @@ package agentclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/solver"
-	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/grpc"
 )
@@ -39,17 +39,26 @@ type connEntry struct {
 
 // manager implements Manager.
 type manager struct {
-	resolver        solver.StatefulResolver
-	target          *solver.Target
+	resolver solver.StatefulResolver
+	target   *solver.Target
+	// targetRaw is the app/service:port form of target, consumed by the
+	// conn factory's URI builder (solver.Target has no String form).
+	targetRaw       string
 	entries         map[int]*connEntry
 	mu              sync.RWMutex
 	refreshInterval time.Duration
 }
 
+// DefaultDaemonName is the default bootstrap component name of an agent
+// connection refresh daemon.
+const DefaultDaemonName = "agentclient-manager"
+
 // newAgentConn is a package-level variable for creating gRPC connections.
+// The manager passes its own raw target so one factory serves every
+// stateful service pool.
 // Tests can replace it with a mock factory via save/restore.
-var newAgentConn = func(ctx context.Context, instanceIndex int) (*grpc.ClientConn, error) {
-	uri := grpcsolver.URI(gameconst.AgentTarget, grpcsolver.WithInstance(instanceIndex))
+var newAgentConn = func(ctx context.Context, target string, instanceIndex int) (*grpc.ClientConn, error) {
+	uri := grpcsolver.URI(target, grpcsolver.WithInstance(instanceIndex))
 	opts := append(
 		pgrpc.ClientDefault(),
 		// The agent bidi Connect stream is long-lived: opt into keepalive
@@ -72,6 +81,7 @@ func NewManager(resolver solver.StatefulResolver, target *solver.Target, refresh
 	return &manager{
 		resolver:        resolver,
 		target:          target,
+		targetRaw:       fmt.Sprintf("%s/%s:%s", target.App, target.Service, target.PortSelector),
 		entries:         make(map[int]*connEntry),
 		refreshInterval: refreshInterval,
 	}
@@ -128,7 +138,24 @@ func (m *manager) Close() error {
 func (m *manager) refresh(ctx context.Context) error {
 	instances, err := m.resolver.Resolve(ctx, m.target)
 	if err != nil {
-		return fmt.Errorf("agentclient: resolve failed: %w", err)
+		if errors.Is(err, solver.ErrServiceNotFound) {
+			// The managed stateful service does not exist in this
+			// environment — a topology state, not a failure: normalize to
+			// an empty instance set and walk the existing teardown below
+			// (stale connections closed, entry map cleared, nil error).
+			// The periodic refresh discovers the service once it appears
+			// (specs/049-agent-v2-dsh-init/research.md D13). Every other
+			// resolve error stays fatal, and a 400 invalid-name from the
+			// deploy API is a plain error (not this sentinel), so a wrong
+			// target name keeps its fail-loud semantics.
+			logs.Warn(ctx, "stateful service not found, treating as empty instance set",
+				event.String("app", m.target.App),
+				event.String("service", m.target.Service),
+			)
+			instances = nil
+		} else {
+			return fmt.Errorf("agentclient: resolve failed: %w", err)
+		}
 	}
 
 	m.mu.Lock()
@@ -155,7 +182,7 @@ func (m *manager) refresh(ctx context.Context) error {
 		if _, ok := m.entries[index]; ok {
 			continue
 		}
-		conn, err := newAgentConn(ctx, index)
+		conn, err := newAgentConn(ctx, m.targetRaw, index)
 		if err != nil {
 			return fmt.Errorf("agentclient: create connection for instance %d: %w", index, err)
 		}
@@ -221,9 +248,11 @@ func (w *refresherWorker) Stop(ctx context.Context) error {
 	return w.manager.Close()
 }
 
-// NewDaemon creates a bootstrap.Component (Daemon) that manages the agent connection
-// refresh loop with automatic restart on failure.
-func NewDaemon(m Manager, interval time.Duration) bootstrap.Component {
+// NewDaemon creates a bootstrap.Component (Daemon) that manages the agent
+// connection refresh loop with automatic restart on failure. `name` is the
+// bootstrap component name (one daemon per stateful pool; each pool picks
+// its own name at registration).
+func NewDaemon(name string, m Manager, interval time.Duration) bootstrap.Component {
 	mgr, ok := m.(*manager)
 	if !ok {
 		panic("NewDaemon: Manager must be *manager")
@@ -232,7 +261,7 @@ func NewDaemon(m Manager, interval time.Duration) bootstrap.Component {
 		Manager:  mgr,
 		Interval: interval,
 	}
-	return bootstrap.Daemon("agentclient-manager",
+	return bootstrap.Daemon(name,
 		bootstrap.WorkerBuilderFunc(func(ctx context.Context) (bootstrap.Worker, error) {
 			return builder.Build(ctx)
 		}),

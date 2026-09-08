@@ -1,203 +1,47 @@
 name: game-system-test
 description: |
-  Game system integration test — suites organized by tested object.
+  Game system integration test — two suites over two deployment topologies
+  (specs/054-agent-v2-bugfixes/contracts/testplan.md §2). Six formerly
+  separate suites share one deployment, so the plan pays two deploys
+  instead of seven (five deployments and their 60s settle waits saved).
 
-  Suite 1 (session): session + proxy + agent(test) + prompt + gateway.
-    - Session CRUD + ListSessions pagination (template-scoped,
-      templates/saolei/sessions/...)
-  Suite 2 (agent dialog): session + proxy + agent(test) + prompt + gateway.
-    - Team player-agent dialog with fake LLM: connect chat,
-      thinking + text response, FIFO queue behavior,
-      deterministic content, TeamProfile loose coupling
-  Suite 3 (agent queue): session + proxy + agent(test) + prompt + gateway.
-    - Mid-turn injection of a queued message during a saolei TOOL turn
-      (specs/038-queue-input-mid-turn FR-001); the no-tool fallback (FR-004)
-      and spec 030 hand-off/combine are unit-tested in turn-loop.test.ts, not
-      large-tested.
-  Suite 4 (checkpoint-resume): session + proxy + agent(test) + prompt + gateway.
-    - Send messages, leave, re-enter, verify ListMessages
-    - Verify agent remains functional after re-enter
-    - Tool-result status neutrality across re-entry (saolei MCP)
-  Suite 5 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
-    - Checkpoint resume + tool-result status suites (case binary is
-      agent_checkpoint_test); rapid-send serialization/FIFO is NOT
-      large-tested — it is covered deterministically by turn-loop.test.ts
-      unit tests (see suite description below)
-  Suite 6 (agent-multimodal): session + proxy + agent(test) + prompt + gateway.
-    - Text-plus-image turn (message_parts of [TextPart, ImagePart] processed end-to-end)
-    - Image-only turn accepted (empty text, random fallback acceptable)
-    - Large-image (> 32 KiB) round-trip over the binary-protobuf WS leg
-      (spec 025 FR-007/FR-008/FR-010 — would have torn the session under the
-      old protojson-text + 32 KiB read-limit regime)
-  Suite 7 (agent-operation): session + proxy + agent(test) + prompt + gateway.
-    - Saolei-tool dispatch loop: the player agent dispatches a FlowPart on the
-      control channel and the FlowResultPart reply resolves the pending
-      dispatch end-to-end (spec 025 FR-023..FR-026); the bridge-minted
-      operation-channel id is decoupled from the conversation tool_call.id
-      (spec 023 D10); a failed/no-screenshot dispatch recovers (FR-017) and
-      the connection stays usable.
-  Suite 8 (agent-saolei): session + proxy + agent(test) + prompt + gateway.
-    - saolei MCP returns a TEXT board (no image block; spec 025 FR-012/FR-022)
-      recognized by @dominion/game-saolei-board from the FlowResultPart.screenshot;
-      the merged dual-form saolei_operate (specs/039-planner-memory-calibration
-      US1): batch ops dispatch in order with one return (FR-002), single
-      form == length-1 batch (FR-001), harmless no-op skips, structural and
-      terminal stops; saolei tool_result status is neutral (UNSPECIFIED,
-      never FAILED) per spec 023 D12.
-  Suite 9 (saolei-team): session + proxy + agent(test) + prompt + gateway.
-    - saolei template TEAM behaviour (specs/040-team-singleton-conformance
-      quickstart.md): team lifecycle (UpdateTeam/Connect/GetTeam, NOT_FOUND
-      without materialization, UpdateTeam idempotency + profile-change rebuild,
-      in-flight rebuild rejection, connection exclusivity, disconnect/reconnect
-      history, status ping-pong, reconnect dispatch reliability); TeamProfile
-      CRUD (create/get/list/update via update_mask/delete + template↔oneof
-      consistency, FR-006/FR-027); per-TeamProfile player/planner model
-      resolution; player-exclusive desktop control (FR-010); planner triggered
-      exactly once per game end (FR-011/D6); planner long-term memory
-      persistence via the memory service + the `memory` tool agent conversion
-      and the calibration instruction scenarios + message order
-      (specs/039-planner-memory-calibration FR-014..FR-019 — the shared
-      StrategyStore/update_strategy flow is gone, FR-013); RefreshTeam clears
-      short-term memory and keeps the long-term memory (FR-018/D8); per-agent
-      message partitioning (FR-005).
-    - Merged from the removed prompt (AgentProfile/Skill CRUD),
-      session-agent lifecycle (profile switching/GetAgent), and
-      per-profile-model suites (tasks.md Phase 8 T029).
-  Suite 10 (planner-memory): session + proxy + agent(test) + fake-llm +
-    prompt + memory + gateway.
-    - planner long-term memory MODULE (specs/039-planner-memory-calibration
-      US2 — FR-006..FR-012/FR-018/FR-020): the MemoryService storage API +
-      AIP-158 pagination through the gateway public entry; the game-driven
-      planner `memory` tool flow — hermes-style args (action/content/
-      old_text/operations, no memory_id/target), agent-side conversion
-      persistence, old_text 0-hit/multi-hit error feedback with pure-content
-      entries, player never holding the memory tool. The memory service is
-      part of deploy_agent.yaml (spec 039 Phase 1 T003).
-  Suite 11 (agent-stall): session + proxy + agent(test) + fake-llm +
-    prompt + gateway, deployed with deploy_agent_stall.yaml selecting the
-    agent_timeouts config block (streamIdleTimeoutMs=5000,
-    toolHeartbeatIntervalMs=2000) via the 045 deploy-config channel — the
-    agent resolves env > config > default, and config values bypass the
-    env channel's 60s clamp (specs/044-llm-stall-recovery-fix/contracts/
-    idle-timeout-contract.md §5).
-    - End-to-end stall recovery (specs/043-llm-stream-stall-recovery
-      US1/US2, quickstart Scenario 5): a fake-llm turn that emits its
-      reasoning delta then stops with the connection alive (sample_stall.yaml)
-      is detected within the idle window — warn + wait emitted, the queued
-      message RETAINED (no QueueSignal(0), FR-006) and delivered on the
-      next turn (FR-007).
-    - No false stall during long tool execution (043 US3, Scenario 6): a
-      saolei_operate dispatch delayed > 12s (> idleTimeout) on the
-      production saolei MCP path (buildSaoleiMcpTools → MCP HTTP →
-      bridge.dispatch) does not raise NodeTimeoutError — the client-side
-      heartbeat wrapper (withIdleHeartbeat, TOOL_HEARTBEAT_INTERVAL_MS)
-      keeps the idle timer alive (FR-003/SC-003).
-    - Real silent dropout still detected within the config-driven 5s
-      window (spec 044 US1 regression, FR-001/SC-004): the elapsed stall
-      detection time is bracketed to catch a regression to any older
-      window (15s/30s/60s) or the 120s default. (US2's reasoning-floor
-      large-test case is dropped — the explicit config suppresses the
-      floor, specs/044-llm-stall-recovery-fix/quickstart.md A4.)
-    - Partial output survives a stall (spec 044 US3, FR-004/FR-005/
-      SC-002/SC-003): after the stalled turn terminates, ListMessages
-      returns the already-streamed reasoning with
-      completion = PART_COMPLETION_INTERRUPTED on the tail part.
+  Suite 1 (game-system): the full system on deploy_agent_v2.yaml — the
+    won topology whose fake-desktop executor plays the won board on the
+    desktop-e2e-won session. Cases run serially in module order: the
+    configuration face (session CRUD, MemoryService storage API, web
+    static hosting) → the conversation face (the /api/v2 NDJSON surface
+    and the preset configuration closed loop) → the game face (the
+    fake-llm game chain over the executor session) → the desktop face
+    (the flow-control stream from the desktop's side, test-driven).
+  Suite 2 (game-disconnect): the mid-game disconnect and recovery branch
+    on deploy_agent_v2_drop.yaml — the same service list with the
+    executor running the progressive scenario plus the disconnect fault
+    env. Placed after the main suite: guitar runs suites serially and
+    stops on the first failure, so the trunk regression surfaces first.
+
+  Cases isolate through unique session/preset resource names, so the
+  shared deployment needs no per-case redeployment.
 
 suites:
-  - name: session
-    deploy: //projects/game/testplan/deploy_agent.yaml
+  - name: game-system
+    description: "The full game system on the won topology (deploy_agent_v2.yaml), cases ordered by tested module: session CRUD and ListSessions pagination over /api/v1; the MemoryService storage API (Create/Update/Delete/List, AIP-158 pagination, AIP-193 error codes); web static hosting and the page's management loop; the agent_v2 conversation surface (/api/v2 NDJSON streaming with per-step block segmentation, history backfill, injected-failure ERROR turns with the interrupted tail visible, :cancel semantics, desktop connection status); the preset configuration closed loop (CRUD, materialization, model catalog); the game loop over the desktop-e2e-won executor session (won chain, desktop-absent, multi-session isolation, two-stream independence); and the flow-control stream from the desktop's side"
+    deploy: //projects/game/testplan/deploy_agent_v2.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:session_test
-
-  - name: agent-dialog
-    description: "Agent dialog with fake-llm service: connect, chat, verify thinking + text response with FIFO ordering"
-    deploy: //projects/game/testplan/deploy_agent.yaml
+      - //projects/game/testplan:testplan_test          # session module
+      - //projects/game/testplan:memory_test            # memory module
+      - //projects/game/testplan:web_test               # web static hosting
+      - //projects/game/testplan:agent_v2_conversation_test
+      - //projects/game/testplan:agent_v2_preset_test
+      - //projects/game/testplan:agent_v2_game_test     # game face on the won topology
+      - //projects/game/testplan:desktop_flow_test
+  - name: game-disconnect
+    description: "The mid-game disconnect and recovery branch (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点 3) on the drop topology (deploy_agent_v2_drop.yaml): the service list matches deploy_agent_v2.yaml but the single fake-desktop executor runs the progressive scenario with the disconnect-after-3-ops fault env, bound to the desktop-e2e-drop session. agent_v2_game_disconnect_test drives the three-game sequence: game 1 completes with the disconnect firing invisibly behind the last receipt (flow fault, conversation stream unaffected); game 2 meets the torn connection — saolei_init fails with the model-visible 'desktop disconnected' error while the turn survives; game 3, after the executor's reconnect, plays a full game with the board re-seeded by init. The disconnect binary is separate from agent_v2_game_test because guitar runs whole bazel targets as suite cases without per-suite test-function filtering"
+    deploy: //projects/game/testplan/deploy_agent_v2_drop.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:agent_dialog_test
-
-  - name: agent-queue
-    description: "Agent queue-while-running with fake-llm service: the large test covers mid-turn injection of a queued message during a saolei TOOL turn — the message is drained at the next beforeModel boundary, QueueSignal 1→0 precedes the terminal wait, and the message is persisted in history (specs/038-queue-input-mid-turn/spec.md FR-001; specs/038-queue-input-mid-turn/contracts/turn-loop-drain-contract.md). The no-tool fallback (specs/038-queue-input-mid-turn/spec.md FR-004) and the spec 030 handoff/combine/does-not-disturb behaviors (specs/030-queued-chat-input/spec.md FR-002/FR-005/FR-006, QueueSignal visibility FR-008/FR-009) are deterministically covered by unit tests in projects/game/agent/src/turn-loop.test.ts (turn-loop.test.ts:242/398/526/665), not at the large-test layer — fake-llm has no delay mechanism and a no-tool turn responds in milliseconds, so the no-tool fallback window cannot be synchronized end-to-end"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_dialog_test
-
-  - name: checkpoint-resume
-    description: "Agent checkpoint-resume with fake-llm service: send messages, leave/re-enter, verify history and tool-result status neutrality across re-entry"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_checkpoint_test
-
-  - name: concurrent-serialization
-    description: "Agent checkpoint suite (case binary //projects/game/testplan:agent_checkpoint_test) with fake-llm service: runs the checkpoint resume and tool-result status persistence tests. Per-session serialization (spec 015) and queue FIFO/handoff (spec 030) for rapid-succession messages are NOT large-tested here — they are covered deterministically by the gate-controlled unit tests in projects/game/agent/src/turn-loop.test.ts (handoff [1,0] / combine / QueueSignal depth / turn-end drain); fake-llm has no delay and no-tool turns respond in milliseconds, so the rapid-succession FIFO path cannot be synchronized end-to-end (specs/038-queue-input-mid-turn/spec.md FR-004/FR-001)"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_checkpoint_test
-
-  - name: agent-multimodal
-    description: "Agent multimodal turns with fake-llm service: text+image message_parts payload processed end-to-end; image-only turn accepted; large-image (> 32 KiB) round-trip over the binary-protobuf WS leg (spec 025 FR-007/FR-010)"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_multimodal_test
-
-  - name: agent-operation
-    description: "Agent saolei-tool dispatch loop with fake-llm service: the player agent dispatches a FlowPart on the control channel and the FlowResultPart reply resolves the pending dispatch end-to-end (spec 025 FR-023/FR-024); operation FlowPart carries a bridge-minted id decoupled from the conversation tool_call.id (spec 023 D10); a failed/no-screenshot dispatch invalidates the recognized state (FR-017) and the connection recovers"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_operation_test
-
-  - name: agent-saolei
-    description: "Agent saolei MCP text-board flow with fake-llm service: saolei tools return a TEXT board recognized by @dominion/game-saolei-board from the FlowResultPart.screenshot (spec 025 FR-012/FR-022, no model-facing image); illegal moves rejected BEFORE dispatch with a stable reason code (spec 025 FR-014/FR-015); saolei tool_result status is neutral (UNSPECIFIED, never FAILED) per spec 023 D12"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_saolei_test
-
-  - name: saolei-team
-    description: "saolei template TEAM behaviour with fake-llm service (specs/040-team-singleton-conformance/quickstart.md): team lifecycle incl UpdateTeam(allow_missing=true) materialization/idempotency/profile-rebuild/in-flight rejection (FR-002/FR-005/FR-006) + GetTeam/connection exclusivity (FR-003/FR-004); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); planner long-term memory persistence + the calibration instruction scenarios + message order (specs/039-planner-memory-calibration FR-014..FR-019 — StrategyStore/update_strategy removed, FR-013); RefreshTeam clears short-term memory and keeps the long-term memory (FR-018/D8); per-agent message partitioning (FR-005). 037 saolei-team optimize (specs/037-saolei-team-optimize FR-034): planner review input real-time visibility (US1/FR-001..FR-003), 5-game compression trigger with channel shrink + player stop + memory preserved + compact instruction delivered with the next activation (US2/FR-006..FR-012/FR-015; 039 FR-016), planner systemPrompt tool-description injection (US3/FR-016..FR-018 — prompt content verified via fake-llm 'system prompt received' INFO logs), game-end stats in the review input (US5/FR-026..FR-033). 041 real-time init delivery (specs/041-realtime-init-push/quickstart.md §B): init instruction frames pushed through the live Connect stream with no user message (B1/B3 — FR-001/FR-006, frameId == messageId via ListMessages), status probe IDLE during the init (B2 — FR-003/SC-002), RefreshTeam/profile-change rebuild rejected FAILED_PRECONDITION while the init is in flight (B4 — FR-007/SC-005), re-entry after the init completed delivers the instruction exactly once with no duplicate push (B5 — FR-004)"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:testplan_test
-
-  - name: planner-memory
-    description: "Planner long-term memory MODULE with fake-llm service (specs/039-planner-memory-calibration US2 — FR-006..FR-012/FR-018/FR-020): MemoryService storage API + AIP-158 pagination through the gateway public entry (Create/Update/Delete/List, memory_id-based resources, ALREADY_EXISTS/NOT_FOUND/INVALID_ARGUMENT); the game-driven planner `memory` tool flow — hermes-style single tool (action/content/old_text/operations, no memory_id/target), agent-side conversion persisting entries into the memory service (verified via ListMemories), old_text 0-hit/multi-hit error feedback rendering the current entries as pure content, and the player never holding the memory tool (FR-009). The deployment topology reuses deploy_agent.yaml — it already contains the memory service artifact (spec 039 Phase 1 T003)"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:memory_test
-
-  - name: agent-stall
-    description: "Agent stream-stall recovery with fake-llm service (specs/043-llm-stream-stall-recovery T011 + specs/044-llm-stall-recovery-fix T011 cases b/c/d), deployed via deploy_agent_stall.yaml which selects the agent_timeouts config block (streamIdleTimeoutMs=5000, toolHeartbeatIntervalMs=2000) through the 045 deploy-config channel (the agent resolves env > config > default; config values bypass the env 60s clamp — specs/044-llm-stall-recovery-fix/contracts/idle-timeout-contract.md §5). 043 US1/US2 (quickstart Scenario 5): a fake-llm turn that emits its reasoning delta then stops with the connection alive (sample_stall.yaml) is detected within the idle window — warn + wait emitted (FR-004/FR-005), the queued message RETAINED (no QueueSignal(0) before the recovery wait, FR-006) and delivered as the next turn's input (FR-007). 043 US3 (Scenario 6): a saolei_operate dispatch delayed > 12s (> idleTimeout) on the PRODUCTION saolei MCP path (buildSaoleiMcpTools → MCP HTTP → bridge.dispatch) does NOT false-stall — the client-side heartbeat wrapper (withIdleHeartbeat calling config.heartbeat every TOOL_HEARTBEAT_INTERVAL_MS=2s, specs/043-llm-stream-stall-recovery/research.md R7.2) keeps the idle timer alive (FR-003/SC-003). 044 US1 regression (FR-001/SC-004): a real silent dropout is still detected within the config-driven 5s window — elapsed detection bracketed against any older window (15s/30s/60s) and the 120s default (US2's floor has NO large-test case — the explicit config suppresses the floor, specs/044-llm-stall-recovery-fix/quickstart.md A4). 044 US3 (FR-004/FR-005/SC-002/SC-003): after the stalled turn terminates, ListMessages returns the already-streamed reasoning partial with completion = PART_COMPLETION_INTERRUPTED on the tail part"
-    deploy: //projects/game/testplan/deploy_agent_stall.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_stall_test
+      - //projects/game/testplan:agent_v2_game_disconnect_test  # mid-game disconnect three-game sequence

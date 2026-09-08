@@ -15,7 +15,14 @@ import { startVitest } from "vitest/node";
 
 async function main() {
   const filters = process.argv.slice(2).filter((a) => a !== "run" && a !== "watch");
-  const vitest = await startVitest("test", filters, { watch: false });
+  // Opt-in Vite config overrides (JSON env, e.g. server.deps.inline for an npm
+  // package whose entry imports raw *.module.css — vitest externalizes
+  // node_modules deps to the Node ESM loader, which rejects the extension;
+  // inlining routes the package through Vitest's Vite pipeline). Unset env
+  // keeps the plain zero-config run unchanged.
+  const overrides = process.env.VITEST_VITE_OVERRIDES;
+  const viteOverrides = overrides === undefined ? undefined : JSON.parse(overrides);
+  const vitest = await startVitest("test", filters, { watch: false }, viteOverrides);
   // FR-004: await full teardown before reading the result so the exit does not
   // race with asynchronous reporters/cleanup.
   await vitest.close();

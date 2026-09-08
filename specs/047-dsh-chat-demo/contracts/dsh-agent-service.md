@@ -68,7 +68,7 @@ init(otel) → resolver.resolve("dominion:///dsh-demo/fake-llm:8080")
 
 | 层 | 内容 | 归属 |
 |---|---|---|
-| 框架核心底座 | ≈11 包（app-boot + cordis 家族 loader/include/group/timer + node-addon-require-builtin + home-paths/invariants/system-prompt/launch-environment），精确 pin 0.1.1-rc.2 线 | `third_party/dsh/core:runtime_pkg`（**零插件**，catalog 例外） |
+| 框架核心底座 | ≈11 包（app-boot + cordis 家族 loader/include/group/timer + node-addon-require-builtin + home-paths/invariants/system-prompt/launch-environment），精确 pin 0.1.1-rc.2 线 | `third_party/dsh/core:runtime_pkg`（**零插件**，版本经 catalog 统一管理） |
 | 服务直接声明 | 服务代码直接 import 的包：`dsh-app-boot`（boot）、`dsh-llm`（createUserMessage）、`dsh-agent`（类型）、`dsh-agent-spine-demo` + `dsh-llm-deepseek`（启用行物理在场）+ grpc-js 公共包 | agent 服务 package.json / BUILD `npm_deps` |
 | 传递闭包 | 上述声明的 peer 闭包（spine 26 peers + adapter 12 peers 等） | 经 link target files 物化（`survey/deepseek-harness-b1-bazel-packaging.md` §3.3） |
 

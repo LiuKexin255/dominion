@@ -1,0 +1,52 @@
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vite.bzl", "vite_build")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+
+npm_link_all_packages(name = "node_modules")
+
+vite_build(
+    name = "dist",
+    srcs = glob(["src/**"]),
+    config = "vite.config.ts",
+    index_html = "index.html",
+    package_json = "package.json",
+    tsconfig = "tsconfig.json",
+    visibility = ["//visibility:public"],
+)
+
+# Component tests via the shared vitest shim. data mirrors the full set of
+# inputs the tests need at runtime (style/javascript.md §js_test execution
+# model — a missing entry crashes in runfiles with `Cannot find package`):
+# - the raw .ts/.tsx sources plus tsconfig.json: the js_test process cwd is the
+#   runfiles workspace root, where no vite/vitest config exists, so vitest runs
+#   without a project config. esbuild therefore picks up `"jsx":
+#   "react-jsx"` from the nearest tsconfig.json it discovers relative to each
+#   transformed file — omitting tsconfig.json from data yields the classic
+#   runtime and fails with `ReferenceError: React is not defined`.
+# - the React test stack's node_modules per
+#   specs/050-vite-react-bazel/contracts/vite-build-target.md.
+# :node_modules/vitest is auto-injected by the macro; do not add it here.
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    data = glob(["src/**"]) + [
+        "index.html",
+        "tsconfig.json",
+        ":node_modules/@deepseek-ai/dsh-client-ui-primitives",
+        ":node_modules/@testing-library/dom",
+        ":node_modules/@testing-library/react",
+        ":node_modules/jsdom",
+        ":node_modules/react",
+        ":node_modules/react-dom",
+    ],
+    env = {
+        # @deepseek-ai/dsh-client-ui-primitives' lib entry imports raw
+        # *.module.css. vite_build resolves those at bundle time, but vitest
+        # externalizes node_modules deps to the Node ESM loader, which rejects
+        # the .css extension — inline the package so it flows through vitest's
+        # vite pipeline (CSS mocked; class names are irrelevant to these
+        # tests). Consumes the opt-in viteOverrides env of the shared shim
+        # (tools/dev/js/run_vitest.mjs).
+        "VITEST_VITE_OVERRIDES": '{"test":{"server":{"deps":{"inline":["@deepseek-ai/dsh-client-ui-primitives"]}}}}',
+    },
+)

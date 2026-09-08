@@ -1,0 +1,36 @@
+# agent_v2_saolei.yaml — the user-keyword trigger of the deterministic
+# agent_v2 game chain (specs/051-agent-v2-dsh-migration/tasks.md T021,
+# research.md D16): the game keyword yields a saolei_init call, whose result
+# the agent_v2_saolei_tools.yaml configs chain through init → operate →
+# terminal summary. responses_only keeps this template out of every
+# chat-completions fallback pool.
+messages:
+  # agent-v2-saolei-start fires the game: the game keyword yields a
+  # saolei_init call.
+  - name: agent-v2-saolei-start
+    keywords:
+      - 开始一局扫雷
+    tool_call:
+      name: saolei_init
+      arguments: {}
+    responses_only: true
+  # agent-v2-saolei-progressive is the trigger of the progressive-scenario
+  # chain (the fake-desktop instance running the saolei_1 16×16 board): the
+  # init result chains through the progressive tool rules below.
+  - name: agent-v2-saolei-progressive
+    keywords:
+      - progressive minesweeper
+    tool_call:
+      name: saolei_init
+      arguments: {}
+    responses_only: true
+  # agent-v2-saolei-nodesktop drives the desktop-absent branch (US1 scenario
+  # 4): the init dispatches against a session with no desktop connection and
+  # the FAILED receipt terminates the chain through the matching tool rule.
+  - name: agent-v2-saolei-nodesktop
+    keywords:
+      - minesweeper without desktop
+    tool_call:
+      name: saolei_init
+      arguments: {}
+    responses_only: true

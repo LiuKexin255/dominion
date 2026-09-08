@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "nodenext",
+    "rootDir": "src",
+    "strict": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@dominion/common-js-logs": ["../../../logs/src/index.js"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

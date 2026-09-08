@@ -52,14 +52,19 @@ func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool
 	// specs/046-fake-llm-think-chunking FR-011) is likewise excluded — a
 	// random stall or gap would hang an unrelated turn
 	// (specs/043-llm-stream-stall-recovery large tests depend on stall
-	// being a deliberate, keyword-gated trigger). Spec 012's random-
+	// being a deliberate, keyword-gated trigger). Responses-only Messages
+	// (specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §3 —
+	// the isResponsesOnly set) stay out of THIS fallback pool so a no-match
+	// chat turn never randomly picks a template authored for the agent_v2
+	// tests; the keyword path still serves them, and the Responses
+	// endpoint has its own matcher (responses.go). Spec 012's random-
 	// fallback contract (FR-008) predates tool_call Messages, so
-	// restricting the fallback pool to text-only, non-hang-capable
-	// Messages is the coherent extension. When every Message is excluded
-	// the full set is used rather than panicking on IntN(0).
+	// restricting the fallback pool is the coherent extension. When every
+	// Message is excluded the full set is used rather than panicking on
+	// IntN(0).
 	var pool []*Message
 	for i := range messages {
-		if messages[i].ToolCall == nil && !isHangCapable(messages[i]) {
+		if messages[i].ToolCall == nil && !isHangCapable(messages[i]) && !messages[i].isResponsesOnly() {
 			pool = append(pool, messages[i])
 		}
 	}
@@ -72,6 +77,22 @@ func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool
 		slog.String("random_name", pick.Name),
 	)
 	return pick, false
+}
+
+// ToolsForEndpoint filters the store's tool configs to one endpoint's scope
+// (the ToolConfig.ResponsesOnly marker): the chat-completions tools branch
+// matches only non-responses-only entries, the Responses tools branch only
+// responses-only entries. The returned slice feeds both the deterministic
+// match and the endpoint's no-match random fallback, so the two endpoints'
+// fixture chains can never intercept each other's results.
+func ToolsForEndpoint(tools []*ToolConfig, responsesOnly bool) []*ToolConfig {
+	var scoped []*ToolConfig
+	for i := range tools {
+		if tools[i].ResponsesOnly == responsesOnly {
+			scoped = append(scoped, tools[i])
+		}
+	}
+	return scoped
 }
 
 // MatchToolResult picks the ToolConfig for a tool-result request. The

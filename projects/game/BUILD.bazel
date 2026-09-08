@@ -3,9 +3,21 @@ load("@rules_go//proto:def.bzl", "go_proto_library")
 load("@rules_proto//proto:defs.bzl", "proto_library")
 load("//tools/dev/go:defs.bzl", "go_unittest")
 
+# Both protos of the game app live in one proto_library / go_proto_library
+# generation unit: agent_v2.proto's Go surface is merged into the v1 package
+# (go_package dominion/projects/game) because protoc-gen-go-aip v0.1.3 emits
+# the parent constructor's receiver unqualified, which only resolves when
+# the parent resources (v1 Template/Session) share the generated file's Go
+# package (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+# §2.6). A second go_proto_library on the same importpath is not possible —
+# the Go linker rejects binaries linking both as "multiple copies of package
+# passed to linker".
 proto_library(
     name = "game_proto",
-    srcs = ["game.proto"],
+    srcs = [
+        "agent_v2.proto",
+        "game.proto",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "@com_google_protobuf//:empty_proto",
@@ -42,6 +54,27 @@ go_library(
     embed = [":game_go_proto"],
     importpath = "dominion/projects/game",
     visibility = ["//visibility:public"],
+)
+
+# /api/v2 TS/RP face (specs/051-agent-v2-dsh-migration/contracts/
+# agent-api.md §1). This proto_library exists for the TS consumers —
+# ts_proto_library and the artifact_pkg_js runtime_protos load agent_v2.proto
+# standalone. Sharing the .proto file with :game_proto is legal in Bazel
+# (protoc runs per target). The Go generation unit is :game_proto above —
+# same importpath precludes a second go_proto_library.
+proto_library(
+    name = "agent_v2_proto",
+    srcs = ["agent_v2.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":game_proto",
+        "@com_google_protobuf//:empty_proto",
+        "@com_google_protobuf//:field_mask_proto",
+        "@com_google_protobuf//:timestamp_proto",
+        "@googleapis//google/api:annotations_proto",
+        "@googleapis//google/api:field_behavior_proto",
+        "@googleapis//google/api:resource_proto",
+    ],
 )
 
 go_unittest(

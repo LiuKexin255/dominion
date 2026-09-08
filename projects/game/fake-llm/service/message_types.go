@@ -53,16 +53,74 @@ import "time"
 // emitting ReasoningChunks[i+1], missing entries default to 0, and the
 // list length must not exceed len(ReasoningChunks)-1 (validation rule V2,
 // specs/046-fake-llm-think-chunking/research.md D2).
+// ResponsesOnly marks a template as serving the /v1/responses endpoint
+// only (specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §3).
+// Responses-only templates stay out of the chat-completions no-match
+// random fallback pool, so a no-match chat turn never randomly picks a
+// template authored for the agent_v2 large tests; the keyword path still
+// serves them, and the Responses endpoint matches through its own matcher
+// (responses.go).
+//
+// HistoryKeywords and MinTurn are the optional multi-turn conditions of
+// the Responses projection (fake-responses-wire.md §3, aligned with the
+// demo fake-llm pattern, specs/047-dsh-chat-demo/research.md D7): EVERY
+// history keyword must hit some message before the last user message, and
+// the request's user-message count must reach MinTurn (default 1). For a
+// multi-turn template an empty Keywords leaves the keyword condition
+// vacuous. Templates declaring either condition are also multi-turn
+// templates for isResponsesOnly purposes.
+//
+// Failure injects a provider failure into the Responses stream
+// (fake-responses-wire.md §2 invariant 4): a matched template carrying a
+// Failure ends its stream with response.failed (configured code/message)
+// instead of response.completed. The template's declared think/text still
+// streams first, so a content-carrying Failure template is the
+// "partial content then provider failure" shape whose produced prefix the
+// agent solidifies as the interrupted history entry
+// (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §6); a
+// Failure template with no content streams created → failed only.
+// Failure templates are excluded from both endpoints' fallback pools so an
+// unrelated turn never fails by accident.
+type ResponseFailure struct {
+	Code    string `json:"code" yaml:"code"`
+	Message string `json:"message" yaml:"message"`
+}
+
 type Message struct {
-	Name            string    `json:"name" yaml:"name"`
-	Keywords        []string  `json:"keywords" yaml:"keywords"`
-	Reasoning       string    `json:"reasoning" yaml:"reasoning"`
-	ReasoningChunks []string  `json:"reasoning_chunks,omitempty" yaml:"reasoning_chunks,omitempty"`
-	ChunkDelays     []string  `json:"chunk_delays,omitempty" yaml:"chunk_delays,omitempty"`
-	Text            string    `json:"text" yaml:"text"`
-	ToolCall        *ToolCall `json:"tool_call,omitempty" yaml:"tool_call,omitempty"`
-	Stall           bool      `json:"stall,omitempty" yaml:"stall,omitempty"`
-	StallAfter      *int      `json:"stall_after,omitempty" yaml:"stall_after,omitempty"`
+	Name            string           `json:"name" yaml:"name"`
+	Keywords        []string         `json:"keywords" yaml:"keywords"`
+	Reasoning       string           `json:"reasoning" yaml:"reasoning"`
+	ReasoningChunks []string         `json:"reasoning_chunks,omitempty" yaml:"reasoning_chunks,omitempty"`
+	ChunkDelays     []string         `json:"chunk_delays,omitempty" yaml:"chunk_delays,omitempty"`
+	Text            string           `json:"text" yaml:"text"`
+	ToolCall        *ToolCall        `json:"tool_call,omitempty" yaml:"tool_call,omitempty"`
+	Stall           bool             `json:"stall,omitempty" yaml:"stall,omitempty"`
+	StallAfter      *int             `json:"stall_after,omitempty" yaml:"stall_after,omitempty"`
+	ResponsesOnly   bool             `json:"responses_only,omitempty" yaml:"responses_only,omitempty"`
+	HistoryKeywords []string         `json:"history_keywords,omitempty" yaml:"history_keywords,omitempty"`
+	MinTurn         int              `json:"min_turn,omitempty" yaml:"min_turn,omitempty"`
+	Failure         *ResponseFailure `json:"failure,omitempty" yaml:"failure,omitempty"`
+}
+
+// effectiveMinTurn returns the turn lower bound with the contract default
+// applied: an undeclared (zero) MinTurn means 1
+// (specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §2 semantics,
+// aligned by specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md
+// §3). Negative values are clamped so matching stays well-defined.
+func (m *Message) effectiveMinTurn() int {
+	if m.MinTurn < 1 {
+		return 1
+	}
+	return m.MinTurn
+}
+
+// isResponsesOnly reports whether the template serves the /v1/responses
+// endpoint only: an explicit responses_only marker, declared multi-turn
+// conditions (history_keywords / min_turn above the default), or a failure
+// injection. Such templates MUST stay out of the chat-completions no-match
+// random fallback pool (see the ResponsesOnly field doc).
+func (m *Message) isResponsesOnly() bool {
+	return m.ResponsesOnly || len(m.HistoryKeywords) > 0 || m.effectiveMinTurn() > 1 || m.Failure != nil
 }
 
 // ToolConfig is a single templated response to a tool result message.
@@ -75,9 +133,20 @@ type Message struct {
 // (see MessageStore). They are completely independent of Message
 // entries: a request whose last message role is "tool" dispatches into
 // the tools branch and never touches the messages branch.
+//
+// ResponsesOnly marks the entry as serving the /v1/responses tools branch
+// only — the endpoint-scoped counterpart of the Message field of the same
+// name. v1 flows reach the tools branch through the chat-completions
+// endpoint and agent_v2 flows through the Responses endpoint, and their
+// fixture chains must not intercept each other's results (the two agents
+// can emit byte-identical board texts), so the endpoints see disjoint
+// scopes: chat matching only non-responses-only entries, Responses
+// matching only responses-only entries — including each endpoint's
+// no-match fallback pool.
 type ToolConfig struct {
 	Name                string       `json:"name" yaml:"name"`
 	ToolName            string       `json:"tool_name" yaml:"tool_name"`
+	ResponsesOnly       bool         `json:"responses_only,omitempty" yaml:"responses_only,omitempty"`
 	MatchResultContains []string     `json:"match_result_contains,omitempty" yaml:"match_result_contains,omitempty"`
 	RespondWith         ToolResponse `json:"respond_with" yaml:"respond_with"`
 }

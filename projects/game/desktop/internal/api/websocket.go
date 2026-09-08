@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// WSClient is a WebSocket client for the game gateway team connect endpoint.
+// WSClient is a WebSocket client for the game gateway flow connect endpoint.
 type WSClient struct {
 	mu        sync.Mutex
 	conn      *websocket.Conn
@@ -23,12 +23,12 @@ type WSClient struct {
 	sessionID string
 }
 
-// Connect establishes a WebSocket connection to the gateway's team connect
+// Connect establishes a WebSocket connection to the gateway's flow connect
 // endpoint. gatewayURL is the HTTP URL (e.g., "https://game.liukexin.com").
 // The URL is converted from https:// to wss:// (or http:// to ws://).
-// The connect path follows the gateway convention
-// /api/v1/templates/{template}/sessions/{sessionID}/connect (spec
-// 031-team-template-mode contracts/api-contract.md §2.2, FR-004).
+// The connect path is
+// /api/v2/templates/{template}/sessions/{sessionID}/connect — the v2 flow
+// channel (contracts/desktop-bridge.md §1, §5).
 func (w *WSClient) Connect(ctx context.Context, gatewayURL, template, sessionID, env string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -39,8 +39,8 @@ func (w *WSClient) Connect(ctx context.Context, gatewayURL, template, sessionID,
 		return fmt.Errorf("connect: %w", err)
 	}
 
-	// Build full connect URL: wss://host/api/v1/templates/{template}/sessions/{id}/connect
-	fullURL := fmt.Sprintf("%s/api/v1/templates/%s/sessions/%s/connect",
+	// Build full connect URL: wss://host/api/v2/templates/{template}/sessions/{id}/connect
+	fullURL := fmt.Sprintf("%s/api/v2/templates/%s/sessions/%s/connect",
 		strings.TrimSuffix(wsURL, "/"), url.PathEscape(template), url.PathEscape(sessionID))
 
 	// Set up headers

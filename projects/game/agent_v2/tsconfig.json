@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "nodenext",
+    "strict": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@dominion/common-js-bootstrap": ["../../../common/js/bootstrap/src/index.js"],
+      "@dominion/common-js-grpc-otel": ["../../../common/js/grpc/otel/src/index.js"],
+      "@dominion/common-js-grpc-resolver": ["../../../common/js/grpc/resolver/src/index.js"],
+      "@dominion/common-js-logs": ["../../../common/js/logs/src/index.js"],
+      "@dominion/common-js-otel": ["../../../common/js/otel/src/index.js"],
+      "@dominion/common-js-resolver": ["../../../common/js/resolver/src/index.js"],
+      "@dominion/dsh-desktop-bridge": ["../../../common/js/dsh-plugins/desktop-bridge/src/index.js"],
+      "@dominion/dsh-llm-glm": ["../../../common/js/dsh-plugins/llm-glm/src/index.js"],
+      "@dominion/dsh-saolei-loop": ["../../../common/js/dsh-plugins/saolei-loop/src/index.js"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

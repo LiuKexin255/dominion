@@ -24,8 +24,11 @@ type ownerFilter struct {
 const (
 	// databaseName is the MongoDB database name for proxy storage.
 	databaseName = "game_proxy"
-	// collectionName is the MongoDB collection name for agent owners.
-	collectionName = "agent_owners"
+	// agentV2OwnersCollection holds the agent_v2 owner pool:
+	// owners of the stateful agent_v2 instances serving AgentService.
+	// The dedicated collection keeps the owner index isolated
+	// (specs/051-agent-v2-dsh-migration/data-model.md §2.9).
+	agentV2OwnersCollection = "agent_v2_owners"
 )
 
 // singleResult wraps the decode behavior of a MongoDB single document query result.
@@ -67,10 +70,13 @@ type mongoOwnerStore struct {
 	collection collectionOps
 }
 
-// NewMongoOwnerStore creates a MongoDB-backed OwnerStore.
-func NewMongoOwnerStore(client *mongodriver.Client) domain.OwnerStore {
+// NewAgentV2OwnerStore creates the MongoDB-backed OwnerStore of the agent_v2
+// owner pool (stateful agent_v2 instances serving AgentService). The
+// dedicated collection keeps the owner index isolated
+// (specs/051-agent-v2-dsh-migration/data-model.md §2.9).
+func NewAgentV2OwnerStore(client *mongodriver.Client) domain.OwnerStore {
 	return &mongoOwnerStore{
-		collection: newOwnerCollection(client, databaseName, collectionName),
+		collection: newOwnerCollection(client, databaseName, agentV2OwnersCollection),
 	}
 }
 

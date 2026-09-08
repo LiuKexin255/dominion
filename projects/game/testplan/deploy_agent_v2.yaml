@@ -1,0 +1,91 @@
+version: "3.0"
+name: game.{{run}}
+type: test
+desc: "Game agent_v2 test deployment (dsh agent_v2 + web + game/desktop-flow suites, fake-llm /v1/responses, single fake-desktop executor (won scenario), session face gateway→proxy→agent_v2 two-hop / preset face gateway→agent_v2 direct)"
+services:
+  - infra:
+      resource: mongodb
+      profile: dev-single
+      name: mongo
+      app: game
+      persistence:
+        enabled: false
+  - artifact:
+      path: //projects/game/session/service.yaml
+      name: session
+  - artifact:
+      path: //projects/game/memory/service.yaml
+      name: memory
+  - artifact:
+      path: //projects/game/fake-llm/service.yaml
+      name: fake-llm
+  # Single deterministic desktop executor (specs/051-agent-v2-dsh-migration/
+  # research.md D15) bound to the won session, so the game suites can address
+  # a known flow-connected board; sessions without a fake-desktop connection
+  # exercise the desktop-absent branch. Behavior is env-driven — the
+  # mid-game disconnect variant deploys this same service with different env
+  # in deploy_agent_v2_drop.yaml
+  # (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.3).
+  - artifact:
+      path: //projects/game/fake-desktop/service.yaml
+      name: fake-desktop
+      env:
+        FAKE_DESKTOP_GATEWAY_URL: dominion:///game/gateway:80
+        FAKE_DESKTOP_SESSION: desktop-e2e-won
+        FAKE_DESKTOP_SCENARIO: won
+  # /api/v2 routing splits by where an RPC's state lives
+  # (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3):
+  # the session face (AgentService / DesktopBridgeService) is a mandatory
+  # proxy hop — gateway → proxy (owner affinity, game_proxy.agent_v2_owners)
+  # → agent_v2 stateful instance (specs/049-agent-v2-dsh-init/contracts/
+  # conversation-api.md §1 托管拓扑); the stateless configuration face
+  # (PresetService: preset state in Mongo, static model catalog) is dialed
+  # by the gateway directly, with no proxy owner affinity.
+  - artifact:
+      path: //projects/game/proxy/service.yaml
+      name: proxy
+  - artifact:
+      # The zero-secret test artifact (service.yaml declares agent-v2-test
+      # with no secrets — specs/049-agent-v2-dsh-init/research.md D9): the
+      # boot tolerates the missing GLM token and model requests skip the
+      # Authorization header (specs/049-agent-v2-dsh-init/contracts/
+      # glm-llm-plugin.md §3 义务 6); fake-llm ignores credentials either
+      # way (fake-responses-wire.md §1). The test cluster needs no
+      # glm-api-token prerequisite. The artifact name carries hyphens
+      # (deploy API constraint, specs/049-agent-v2-dsh-init/research.md D13).
+      path: //projects/game/agent_v2/service.yaml
+      name: agent-v2-test
+      env:
+        # The fake model endpoint via Dominion service discovery; the
+        # bootstrap resolves it to http://{endpoint}/v1
+        # (specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §4).
+        GLM_LLM_TARGET: dominion:///game/fake-llm:8080
+  # Same-hostname path split: web serves `/`, the gateway keeps /api/v1/ and
+  # /api/v2/ (Gateway API merges same-hostname routes by longest PathPrefix —
+  # specs/049-agent-v2-dsh-init/research.md D5).
+  - artifact:
+      path: //projects/game/web/server/service.yaml
+      name: web
+    http:
+      hostnames:
+        - game.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /
+  - artifact:
+      path: //projects/game/gateway/service.yaml
+      name: gateway
+    http:
+      hostnames:
+        - game.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /api/v1/
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /api/v2/

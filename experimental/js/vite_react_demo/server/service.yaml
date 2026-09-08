@@ -1,0 +1,11 @@
+version: "3.0"
+name: server
+app: vite-react-demo
+kind: stateless
+desc: vite react demo static web server
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  - name: server
+    target: :cmd_image

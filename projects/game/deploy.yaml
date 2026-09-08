@@ -17,18 +17,34 @@ services:
       path: //projects/game/proxy/service.yaml
       name: proxy
   - artifact:
-      path: //projects/game/prompt/service.yaml
-      name: prompt
-  - artifact:
       path: //projects/game/memory/service.yaml
       name: memory
+  # agent-v2 is stateful (service.yaml kind) and reached only through the
+  # proxy's owner affinity — no http block (specs/051-agent-v2-dsh-migration/
+  # research.md D9). The discovery name carries hyphens (deploy API
+  # constraint, specs/049-agent-v2-dsh-init/research.md D13); the project
+  # directory keeps agent_v2.
   - artifact:
-      path: //projects/game/agent/service.yaml
-      name: agent
+      path: //projects/game/agent_v2/service.yaml
+      name: agent-v2
       secrets:
-        provider:
+        glm-api-token:
           secret: llm-secrets
-          key: opencode-go
+          key: glm-codingplan
+  # Same-hostname path split (specs/049-agent-v2-dsh-init/research.md D5):
+  # web serves `/`, the gateway serves /api/v1/ and /api/v2/ — Gateway API
+  # merges same-hostname routes by longest PathPrefix.
+  - artifact:
+      path: //projects/game/web/server/service.yaml
+      name: web
+    http:
+      hostnames:
+        - game.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /
   - artifact:
       path: //projects/game/gateway/service.yaml
       name: gateway
@@ -40,3 +56,7 @@ services:
           path:
             type: PathPrefix
             value: /api/v1/
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /api/v2/

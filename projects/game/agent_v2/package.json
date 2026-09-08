@@ -1,0 +1,33 @@
+{
+    "name": "@dominion/game-agent-v2",
+    "private": true,
+    "type": "module",
+    "dependencies": {
+        "@deepseek-ai/dsh-agent": "catalog:",
+        "@deepseek-ai/dsh-app-boot": "catalog:",
+        "@deepseek-ai/dsh-llm": "catalog:",
+        "@deepseek-ai/dsh-llm-retry": "catalog:",
+        "@deepseek-ai/dsh-scope": "catalog:",
+        "@deepseek-ai/dsh-session": "catalog:",
+        "@deepseek-ai/dsh-tools": "catalog:",
+        "@dominion/common-js-bootstrap": "workspace:*",
+        "@dominion/common-js-grpc-otel": "workspace:*",
+        "@dominion/common-js-grpc-resolver": "workspace:*",
+        "@dominion/common-js-logs": "workspace:*",
+        "@dominion/common-js-otel": "workspace:*",
+        "@dominion/common-js-resolver": "workspace:*",
+        "@dominion/dsh-desktop-bridge": "workspace:*",
+        "@dominion/dsh-llm-glm": "workspace:*",
+        "@dominion/dsh-saolei": "workspace:*",
+        "@dominion/dsh-saolei-loop": "workspace:*",
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:",
+        "mongodb": "catalog:"
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "js-yaml": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}

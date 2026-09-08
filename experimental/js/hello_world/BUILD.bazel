@@ -1,0 +1,31 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+
+# tsc type-checks the bin-tree copies of srcs; the nearest package.json for
+# format detection must therefore also be a bin-tree input declaring
+# "type": "module" (NodeNext per-file ESM detection), hence the deps entry.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["package.json"],
+)
+
+# 编译 TS
+ts_project(
+    name = "lib",
+    srcs = ["src/main.ts"],
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig",
+)
+
+# 运行入口
+js_binary(
+    name = "run",
+    data = [
+        "package.json",
+        ":lib",
+    ],
+    entry_point = "src/main.js",
+)

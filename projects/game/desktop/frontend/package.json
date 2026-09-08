@@ -9,8 +9,6 @@
         "typecheck": "svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
-        "dompurify": "catalog:",
-        "marked": "catalog:",
         "svelte": "catalog:",
         "@sveltejs/vite-plugin-svelte": "catalog:"
     },
@@ -19,6 +17,7 @@
         "vite": "catalog:",
         "@types/node": "catalog:",
         "svelte-check": "catalog:",
-        "vitest": "catalog:"
+        "vitest": "catalog:",
+        "jsdom": "catalog:"
     }
 }

@@ -1,0 +1,857 @@
+/* 主题与布局：--dsw-* token 的唯一权威是 src/dsh-theme/（官方 token sheets
+ * 的 vendored 副本，溯源与升级流程见 src/dsh-theme/README.md；dark 块经
+ * index.html 的 body[data-ds-dark-theme] 激活），本文件只保留自有 --app-*
+ * 变量与布局样式（侧栏 + 主区双栏，
+ * specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2），不定义
+ * 任何 --dsw-* 变量。 */
+
+:root {
+  color-scheme: dark;
+
+  --app-bg: #0f1216;
+  --app-panel: #171b22;
+  --app-border: #262c36;
+}
+
+/* 状态横幅配色单一来源（specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §3、data-model.md §3），声明在 body 块：--dsw-* token
+ * 定义于 body / body[data-ds-dark-theme] 域
+ * （src/dsh-theme/design-platform.css），自定义属性不向上继承，var() 引用链
+ * 只在同域可见——:root（html）上引用 body 域变量得到 guaranteed-invalid，
+ * 使用处按 unset 回退（背景透明、文字继承，T015 部署验证白字黑底缺陷的
+ * 根因）。:root 保留 color-scheme 与无 var() 引用的字面值变量（作用域
+ * 无关）。web 为深色单一主题（index.html 静态 body[data-ds-dark-theme]），
+ * 对比度按 dark 解析值计，断言见 src/theme-contrast.test.ts。error 文字取
+ * red-100（red-900 底在 vendored 表中的浅色对位，与 warn/success tertiary
+ * 的 -100/-900 跨主题同槽模式一致；对比度 11.75:1）——error-primary 别名
+ * 在 dark 下解析为 red-400 #f25a5a，对 red-900 底仅 4.36:1，低于 FR-005 的
+ * 4.5:1 下限，不可作填充底色上的文字色。warn 组对比度 7.20:1。红/黄两色
+ * 系保持 FR-006 要求的类别区分。 */
+body {
+  --app-banner-error-bg: var(--dsw-static-red-900);
+  --app-banner-error-fg: var(--dsw-static-red-100);
+  --app-banner-warn-bg: var(--dsw-alias-state-warn-tertiary);
+  --app-banner-warn-fg: var(--dsw-alias-state-warn-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--dsw-alias-label-primary);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  font-size: 14px;
+}
+
+.app {
+  display: flex;
+  height: 100%;
+}
+
+.sidebar {
+  width: 260px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-right: 1px solid var(--app-border);
+  background: var(--app-panel);
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 标题单行（FR-001，specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
+ * §1）：侧栏任意常规宽度下 "Sessions (n)" 计数不换行。 */
+.sidebar-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.session-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 条目行：名称主按钮占满剩余宽度，右侧 `···` 操作按钮固定宽
+ * （web-frontend.md §1 `···` 菜单，组件见 src/components/SessionList.tsx）。 */
+.session-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.session-entry .session-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-item:hover {
+  background: rgba(93, 141, 234, 0.12);
+}
+
+.session-item.selected {
+  border-color: var(--dsw-static-blue-400);
+  background: rgba(93, 141, 234, 0.18);
+}
+
+.session-item .session-time {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* session 名称长名虚化与悬停滚动（FR-004，web-frontend.md §1）：默认右侧
+ * 渐隐遮罩、无横向滚动条、不换行；悬停态由 SessionList 以 mouseenter/
+ * mouseleave 切换 scrollable 类（jsdom 可断言类切换，:hover 伪类不可达），
+ * 移出条目时 scrollLeft 复位同由 SessionList 执行。 */
+.session-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 80%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 80%, transparent 100%);
+}
+
+.session-name.scrollable {
+  overflow-x: auto;
+  -webkit-mask-image: none;
+  mask-image: none;
+  scrollbar-width: none;
+}
+
+.session-name::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-note {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.sidebar-error {
+  font-size: 12px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/* 侧栏底部视图切换（sessions | presets，web-frontend.md §2）。 */
+.view-switch {
+  margin-top: auto;
+  display: flex;
+  gap: 4px;
+}
+
+/* ── preset 管理视图（web-frontend.md §2） ──────────────────────────── */
+
+.presets-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 24px;
+}
+
+.presets-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.presets-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.presets-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.presets-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.presets-error {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--app-banner-error-bg);
+  color: var(--app-banner-error-fg);
+  white-space: pre-wrap;
+}
+
+.presets-note {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.presets-empty {
+  padding: 24px;
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.presets-empty-actions {
+  display: flex;
+}
+
+.preset-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+}
+
+.preset-item-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preset-item-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-item-time {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.preset-item-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preset-delete-confirm {
+  font-size: 12px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.preset-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+}
+
+.preset-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.preset-prompt-input {
+  width: 100%;
+  min-height: 160px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+.preset-form-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 视图面板容器：会话面板常驻挂载，非当前视图以 display:none 隐藏——卸载会
+ * 重跑 ChatPanel 的回填 effect 并覆盖在途回合（web-frontend.md §4 不变量）；
+ * presets 视图（PresetsView）无持久状态，按当前视图条件挂载。 */
+.view-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.view-pane.hidden {
+  display: none;
+}
+
+.empty-hint {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── agent 物化面板与引导态（web-frontend.md §3） ────────────────────── */
+
+.agent-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 24px 0;
+}
+
+.agent-status {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* 桌面连接状态指示（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：
+ * 已连接 success 色 / 未连接警示色 / 未知中性降级色（禁止显示为已连接）；
+ * data-state 同时作为测试与样式钩。 */
+.desktop-conn {
+  font-size: 12px;
+}
+
+.desktop-conn[data-state='connected'] {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.desktop-conn[data-state='disconnected'] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.desktop-conn[data-state='unknown'] {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.agent-guide {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 24px 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--dsw-alias-state-warn-primary);
+  border-radius: 8px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.agent-settings-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 24px 0;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+}
+
+.agent-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.agent-refresh-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.agent-panel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.agent-panel-field select {
+  padding: 6px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: inherit;
+  font: inherit;
+}
+
+.agent-panel-error {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--app-banner-error-bg);
+  color: var(--app-banner-error-fg);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.agent-panel-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* position: relative 使滚动容器成为其内部所有绝对定位后代的 containing
+ * block：内部 abspos（如 ReasoningRow running 态的 visually-hidden 播报
+ * span）随内容滚动、被滚动容器裁剪，不会以 ICB 为参照逃逸到文档层撑大根
+ * 滚动范围（FR-001 布局包含的结构保证；断点分析见
+ * specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md；上游以
+ * ChatView .root 的 position: relative 承接同类 abspos，
+ * https://github.com/deepseek-ai/deepseek-harness/blob/master/
+ * packages/client/ui-chat/src/client/chat/ChatView.module.css ）。 */
+.chat-messages {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msg-user {
+  align-self: flex-end;
+  max-width: 72%;
+  padding: 8px 12px;
+  border-radius: 12px 12px 2px 12px;
+  background: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-label-primary-inverted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-agent {
+  align-self: flex-start;
+  max-width: 80%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 12px 12px 12px 2px;
+  border: 1px solid var(--app-border);
+  background: var(--app-panel);
+  overflow-wrap: anywhere;
+}
+
+/* markdown code 块贴合内容宽度（用户裁定：代码块不强行与卡片同宽）：
+ * 包内 CodeBlock 包装是块级盒子（全局类 .md-code-block，
+ * @deepseek-ai/dsh-client-ui-primitives lib/markdown/CodeBlock.module.css
+ * .block），在 fit-content 卡片内自动填满剩余宽度——短代码也绘制满宽背
+ * 景块。width: fit-content 使其贴合自身内容宽，max-width: 100% 受卡片
+ * 内容宽约束（长代码由包内 pre 的 pre-wrap + break-all 换行）。断点数据
+ * 见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md。
+ * padding-right 为用户裁定的右侧内边距校准：fit-content 后代码内容与
+ * head 的"复制"按钮距块右缘过近，44px = 左侧内边距 16px（包内 pre）+
+ * "复制"文案宽（2 个 CJK 字符 @13px banner 字号）；padding 计入
+ * fit-content 宽度，块背景覆盖 padding，head 的"复制"按钮随之获得右侧
+ * 留白。 */
+.msg-agent .md-code-block {
+  width: fit-content;
+  max-width: 100%;
+  padding-right: 44px;
+}
+
+/* 回合完成后的"思考过程"折叠摘要（specs/054-agent-v2-bugfixes/contracts/
+ * web-ui.md §2.2 Turn Process Folding：此前 steps 默认折叠，点击展开全过
+ * 程；最终答案独立呈现在摘要之下）。chevron 旋转形态对齐上游
+ * TurnProcessNodeView.module.css：折叠 rotate(-90deg) → 展开 rotate(0)
+ * （data-open 属性驱动，100ms 过渡，prefers-reduced-motion 降级为无过渡；
+ * https://github.com/deepseek-ai/deepseek-harness/blob/master/
+ * packages/client/ui-chat/src/client/chat/TurnProcessNodeView.module.css ）。
+ * 标签文案保留本地口径（specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §5 D5）。 */
+.turn-process-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.turn-process-toggle .turn-process-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  transform: rotate(-90deg);
+  transition: transform 100ms ease;
+}
+
+.turn-process-toggle[data-open] .turn-process-chevron {
+  transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-process-toggle .turn-process-chevron {
+    transition: none;
+  }
+}
+
+.turn-process {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.queue-chip {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--dsw-alias-state-warn-primary);
+  color: var(--dsw-alias-state-warn-primary);
+  font-size: 12px;
+}
+
+.chat-error {
+  align-self: stretch;
+  margin: 0 24px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--app-banner-error-bg);
+  color: var(--app-banner-error-fg);
+  white-space: pre-wrap;
+}
+
+/* "已终止"终态标识（specs/054-agent-v2-bugfixes/contracts/web-ui.md §4）：
+ * 形态与 .chat-error 同构，警示色调区分"用户终止"的非错误语义。 */
+.chat-canceled {
+  align-self: stretch;
+  margin: 0 24px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--app-banner-warn-bg);
+  color: var(--app-banner-warn-fg);
+  white-space: pre-wrap;
+}
+
+.chat-composer {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--app-border);
+}
+
+.chat-composer .chat-input {
+  flex: 1;
+}
+
+/* 回到底部浮动入口（非贴底时呈现，specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §1；形态参照 dsh-web ChatView.module.css
+ * .toBottomSlot/.toBottom 改造，attribution 见
+ * projects/game/web/frontend/README.md）。零高 sticky 槽不撑大
+ * scrollHeight，按钮上移入视口、右下浮动；token 适配本地 vendored sheets
+ * （无 --dsw-elevation-* 体系，以 alias-border-l3 描边替代 elevation 描边，
+ * 间距适配本地全幅消息列）。
+ * margin-top 负值抵消 flex gap：.chat-messages 是 column flex 且 gap 12px，
+ * 零高槽作为末位 flex item 仍被计入 gap，使滚动内容底部多出 12px 空隙；
+ * 上游 .scroll 为 block 容器（间距由相邻选择器给出）无此问题。 */
+.to-bottom-slot {
+  position: sticky;
+  bottom: 16px;
+  z-index: 8;
+  height: 0;
+  margin-top: -12px;
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 24px;
+  pointer-events: none;
+}
+
+.to-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-top: -34px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 100px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-button-floating-fill);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.to-bottom:hover {
+  background: var(--dsw-alias-button-floating-hover);
+}
+
+/* 视觉隐藏（供屏幕阅读器的流式状态播报，标准 clip 模式）。 */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 思考折叠行（样式参照 dsh-web ReasoningRow.module.css 改造，attribution 见
+ * projects/game/web/frontend/README.md；--dsw-* token 来自 src/dsh-theme/
+ * 的官方 token sheets）。 */
+.reasoning-row {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 折叠态布局围栏（specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md
+ * §2）：height 固定 24px 保证垂直围栏——折叠盒高度与流式内容解耦，思考
+ * 输出不影响任何祖先的纵向布局（FR-001 防纵向布局逃逸）；contain: layout
+ * 提供独立格式化上下文。不使用上游同款的 contain: size layout：本地
+ * `.msg-agent` 是 fit-content 宽度卡片（align-self: flex-start;
+ * max-width: 80%），size containment 把 intrinsic 宽度归零，THINK-only
+ * 卡片会塌缩不可见（上游全宽 block 布局宽度不依赖子元素 intrinsic 尺寸
+ * 故可用 size；根因分析见
+ * specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md；上游样式
+ * https://github.com/deepseek-ai/deepseek-harness/blob/master/
+ * packages/client/ui-chat/src/client/chat/ReasoningRow.module.css ）。height
+ * 直接 24px（本地无 content-font-delta 变量体系）。 */
+.reasoning-row:not([data-expanded]) {
+  contain: layout;
+  height: 24px;
+}
+
+.reasoning-row .reasoning-row-line {
+  position: relative;
+  overflow: hidden;
+}
+
+.reasoning-row[data-state='running'] .reasoning-row-line::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 300px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%,
+    transparent 100%
+  );
+  animation: reasoning-row-sweep 2.6s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes reasoning-row-sweep {
+  0% {
+    left: -300px;
+  }
+  90%,
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-row[data-state='running'] .reasoning-row-line::after {
+    animation: none;
+  }
+}
+
+.reasoning-separator {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.reasoning-summary {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.reasoning-summary-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 折叠摘要 follow-end 纯 CSS 跟随（specs/055-agent-v2-ui-fixes/contracts/
+ * ui-interactions.md §2，对齐上游 .summary[data-follow-end]）：文本右对齐
+ * 自然露出最新行末尾，由 .reasoning-row-line 的 overflow: hidden 裁剪，
+ * 无任何程序化滚动。 */
+.reasoning-summary[data-follow-end] {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.reasoning-summary[data-follow-end] .reasoning-summary-text {
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: 100%;
+  overflow: visible;
+  text-align: start;
+  text-overflow: clip;
+}
+
+.reasoning-body {
+  padding: 4px 0 4px 22px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 工具调用卡片（契约 specs/049-agent-v2-dsh-init/contracts/web-frontend.md
+ * §3.2 ToolCard：名称/参数/状态/结果关联同卡；形态参照 dsh-web ToolCallTree
+ * 单卡形态改造、来源链接见 projects/game/web/frontend/README.md；--dsw-*
+ * token 来自 src/dsh-theme/ 的官方 token sheets）。 */
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+}
+
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tool-card-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card-state {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.tool-card-id {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+/* 工具结果预格式化等宽呈现（specs/054-agent-v2-bugfixes/contracts/web-ui.md
+ * §3：文本棋盘坐标标尺对齐、不 markdown 化、不以 JSON 字符串字面量形态
+ * 呈现）：等宽字体 + white-space: pre 保证行列逐字符对齐；长行横向滚动而
+ * 不折行错位。 */
+.tool-card-result-pre {
+  margin: 0;
+  overflow-x: auto;
+  font-family:
+    ui-monospace,
+    'Cascadia Mono',
+    'Segoe UI Mono',
+    Menlo,
+    Consolas,
+    monospace;
+  font-size: 12px;
+  white-space: pre;
+}

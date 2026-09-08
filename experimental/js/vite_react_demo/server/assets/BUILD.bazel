@@ -1,0 +1,14 @@
+load("//tools/release/wails:defs.bzl", "wails_asset_library")
+
+# Lives in its own BUILD package (mirroring projects/game/desktop/assets/)
+# because //go:embed patterns cannot contain ".." (https://pkg.go.dev/embed):
+# the cross-package dist tree artifact must be staged into the embed library's
+# own directory, and gazelle resolves the import from the importpath that
+# matches this physical directory
+# (specs/050-vite-react-bazel/research.md D8).
+wails_asset_library(
+    name = "assets",
+    src = "//experimental/js/vite_react_demo:dist",
+    importpath = "dominion/experimental/js/vite_react_demo/server/assets",
+    visibility = ["//experimental/js/vite_react_demo/server:__pkg__"],
+)

@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "nodenext",
+    "rootDir": "src",
+    "strict": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@dominion/game-saolei-board": ["../../../../projects/game/pkg/saolei-board/src/core/index.js"],
+      "@dominion/dsh-desktop-bridge": ["../../dsh-plugins/desktop-bridge/src/index.js"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

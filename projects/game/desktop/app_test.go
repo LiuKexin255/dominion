@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,10 +14,8 @@ import (
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
 	"dominion/projects/game/desktop/internal/capture"
-	"dominion/projects/game/desktop/internal/chatstream"
 
 	"github.com/coder/websocket"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -77,12 +74,6 @@ func TestConnect_ProbeSuccess(t *testing.T) {
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
-	// chatStreams is required from Connect onward: the continuous reader
-	// (readLoop) starts at the end of Connect, and its RecvFrame errors as
-	// soon as the mock server closes the connection after the probe — the
-	// reader then appends a synthesized wait (FR-010,
-	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1).
-	app.chatStreams = chatstream.NewRegistry(logger)
 
 	status, err := app.Connect("saolei", "test-session")
 
@@ -224,192 +215,6 @@ func TestConnect_ProbeTimeout(t *testing.T) {
 	t.Logf("timeout occurred after: %v", elapsed)
 }
 
-// TestListMessages_Success verifies ListMessages delegates to client and
-// converts proto messages to MessageViewModels (partitioned per team agent).
-func TestListMessages_Success(t *testing.T) {
-	// given: mock server responding to GET
-	// /api/v1/templates/saolei/sessions/test-session/team/agents/player/messages
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/sessions/test-session/team/agents/player/messages"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","role":"MESSAGE_ROLE_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","role":"MESSAGE_ROLE_AGENT","agent":"player","content":{"parts":[{"thinking":{"content":"pondering"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	views, err := app.ListMessages("saolei", "test-session", "player")
-
-	// then
-	if err != nil {
-		t.Fatalf("ListMessages() unexpected error: %v", err)
-	}
-	if views == nil {
-		t.Fatal("ListMessages() returned nil views")
-	}
-	if len(views) != 2 {
-		t.Fatalf("expected 2 view models, got %d", len(views))
-	}
-	if views[0].MessageID != "msg-1" {
-		t.Errorf("expected first MessageID %q, got %q", "msg-1", views[0].MessageID)
-	}
-	if views[0].Role != "MESSAGE_ROLE_USER" {
-		t.Errorf("expected first Role %q, got %q", "MESSAGE_ROLE_USER", views[0].Role)
-	}
-	if views[0].Agent != "player" {
-		t.Errorf("expected first Agent %q, got %q", "player", views[0].Agent)
-	}
-	if got := messagePartText(views[0].Content); got != "hello" {
-		t.Errorf("expected first text part content %q, got %q", "hello", got)
-	}
-	if views[1].MessageID != "msg-2" {
-		t.Errorf("expected second MessageID %q, got %q", "msg-2", views[1].MessageID)
-	}
-	if got := messagePartThinking(views[1].Content); got != "pondering" {
-		t.Errorf("expected second thinking part content %q, got %q", "pondering", got)
-	}
-}
-
-// messagePartText extracts the first text part content from a serialized
-// PartBlock view-model Content map ({"parts":[{"text":{"content":"..."}}]}),
-// or "" when absent. Used by ListMessages tests to assert history content.
-func messagePartText(content map[string]any) string {
-	return messagePartString(content, "text")
-}
-
-// messagePartThinking extracts the first thinking part content from a
-// serialized PartBlock view-model Content map, or "" when absent.
-func messagePartThinking(content map[string]any) string {
-	return messagePartString(content, "thinking")
-}
-
-// messagePartString extracts the content string of the first part with the
-// given kind key in a serialized PartBlock view-model Content map.
-func messagePartString(content map[string]any, kind string) string {
-	parts, ok := content["parts"].([]any)
-	if !ok {
-		return ""
-	}
-	for _, p := range parts {
-		part, ok := p.(map[string]any)
-		if !ok {
-			continue
-		}
-		kindBlock, ok := part[kind].(map[string]any)
-		if !ok {
-			continue
-		}
-		if s, ok := kindBlock["content"].(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// TestListMessages_Empty verifies ListMessages returns no view models for empty list.
-func TestListMessages_Empty(t *testing.T) {
-	// given: mock server returning empty messages list
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"messages":[]}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	views, err := app.ListMessages("saolei", "empty-session", "player")
-
-	// then
-	if err != nil {
-		t.Fatalf("ListMessages() unexpected error: %v", err)
-	}
-	if len(views) != 0 {
-		t.Errorf("expected 0 view models, got %d", len(views))
-	}
-}
-
-// TestListMessages_EmptyParams verifies empty template/sessionID/agent return
-// error immediately.
-func TestListMessages_EmptyParams(t *testing.T) {
-	tests := []struct {
-		name     string
-		template string
-		session  string
-		agent    string
-		wantErr  string
-	}{
-		{name: "empty template", template: "", session: "s1", agent: "player", wantErr: "template"},
-		{name: "empty session_id", template: "saolei", session: "", agent: "player", wantErr: "session_id"},
-		{name: "empty agent", template: "saolei", session: "s1", agent: "", wantErr: "agent"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given: App with no client needed
-			logger := applog.NewLogger()
-			app := NewApp(logger)
-			app.SetContext(context.Background())
-
-			// when
-			views, err := app.ListMessages(tt.template, tt.session, tt.agent)
-
-			// then
-			if err == nil {
-				t.Fatal("ListMessages() expected error, got nil")
-			}
-			if views != nil {
-				t.Fatal("ListMessages() expected nil views on error")
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("error should mention %q, got: %s", tt.wantErr, err.Error())
-			}
-		})
-	}
-}
-
-// TestListMessages_Error verifies ListMessages propagates client error.
-func TestListMessages_Error(t *testing.T) {
-	// given: mock server returning 500
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, "internal error")
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	views, err := app.ListMessages("saolei", "bad-session", "player")
-
-	// then
-	if err == nil {
-		t.Fatal("ListMessages() expected error, got nil")
-	}
-	if views != nil {
-		t.Fatal("ListMessages() expected nil views on error")
-	}
-	if !strings.Contains(err.Error(), "list messages") {
-		t.Errorf("error should contain 'list messages', got %q", err.Error())
-	}
-}
-
 // Test_executeAgentOperation_NoWindowSelected verifies spec 025 FR-005: when no
 // window is selected the result is FAILED with "no window selected" and no
 // screenshot is attached (precondition early-return — no screenshot is
@@ -515,166 +320,15 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 	}
 }
 
-// waitForStreamEvents polls the chat stream snapshot until it holds at least
-// want events or the 2s deadline elapses, returning the latest snapshot and
-// whether the target was reached. The continuous reader (readLoop) appends
-// asynchronously and no longer terminates on wait (FR-008), so tests must
-// poll the stream instead of waiting on recvDone.
-func waitForStreamEvents(stream *chatstream.ChatStream, want int) ([]*chatstream.ChatEvent, bool) {
-	deadline := time.After(2 * time.Second)
-	for {
-		sub, snap := stream.Subscribe(0)
-		sub.Close()
-		if len(snap) >= want {
-			return snap, true
-		}
-		select {
-		case <-deadline:
-			return snap, false
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-}
-
-// TestReadLoop_AppendsToChatStream verifies the T6 delivery-hop refactor in
-// the continuous-reader model: readLoop delivers inbound WS frames to the
-// session's chat stream via chatStreams.Append (with stable monotonic IDs)
-// instead of the former runtime.EventsEmit("game:frame"). A content frame, a
-// wait signal, and a second content frame must all land in the log, in order —
-// the wait MUST NOT terminate the reader
-// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.3,
-// FR-008).
-func TestReadLoop_AppendsToChatStream(t *testing.T) {
-	// given: a mock WS server that sends a content frame, a wait signal, and
-	// then another content frame (proving the reader survives turn boundaries)
-	contentFrame1 := &game.TeamFrame{
-		SessionId:  "recv-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-content-1",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello from agent"}}},
-			}},
-		},
-	}
-	waitFrame := &game.TeamFrame{
-		SessionId:  "recv-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-wait-1",
-		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
-	}
-	contentFrame2 := &game.TeamFrame{
-		SessionId:  "recv-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-content-2",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "next turn's frame"}}},
-			}},
-		},
-	}
+// TestReadLoop_ExitsOnRecvError verifies the reader error path: when
+// RecvFrame errors (connection closed by the peer), readLoop logs the failure,
+// returns, and closes recvDone so CloseAgent and the reconnect handover
+// unblock (FR-010, specs/041-realtime-init-push/contracts/
+// realtime-channel-contract.md §3.1 Exit).
+func TestReadLoop_ExitsOnRecvError(t *testing.T) {
+	// given: mock WS server that closes the connection immediately, causing
+	// the first RecvFrame to error.
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		for _, f := range []*game.TeamFrame{contentFrame1, waitFrame, contentFrame2} {
-			data, _ := proto.Marshal(f)
-			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-				return
-			}
-		}
-		select {} // keep the connection open until the client tears it down
-	})
-	defer srv.Close()
-
-	// given: an App wired with a chatstream Registry (stream pre-opened so
-	// Append is a real enqueue, not a no-op) and a connected WSClient
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	stream, err := reg.Open("recv-session", func() ([]*game.Message, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("recv-session")
-
-	app.ws = &api.WSClient{}
-	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "recv-session", "test-env"); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-
-	// when: run the continuous reader (it survives wait — FR-008)
-	app.recvDone = make(chan struct{})
-	go app.readLoop("recv-session")
-
-	// then: all three frames were appended with monotonic 1-based IDs
-	snap, ok := waitForStreamEvents(stream, 3)
-	if !ok {
-		t.Fatalf("readLoop appended %d events within 2s, want 3 (content, wait, content)", len(snap))
-	}
-	if snap[0].ID != 1 || snap[1].ID != 2 || snap[2].ID != 3 {
-		t.Errorf("event IDs = [%d, %d, %d], want [1, 2, 3]", snap[0].ID, snap[1].ID, snap[2].ID)
-	}
-	// first appended frame is the received messageParts frame
-	if snap[0].Frame.GetMessageParts() == nil {
-		t.Errorf("snap[0] expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
-	}
-	// second appended frame is the wait signal (turn terminus), carried as a
-	// FlowParts kind — and it does NOT stop the reader.
-	waitFlow := snap[1].Frame.GetFlowParts()
-	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
-		t.Errorf("snap[1] expected FlowParts wait payload, got %T", snap[1].Frame.GetPayload())
-	}
-	// third appended frame proves the reader continued after wait (FR-008)
-	if snap[2].Frame.GetMessageParts() == nil {
-		t.Errorf("snap[2] expected MessageParts payload, got %T", snap[2].Frame.GetPayload())
-	}
-
-	// and: the wait did NOT terminate the reader — recvDone is still open
-	select {
-	case <-app.recvDone:
-		t.Fatal("readLoop terminated on the wait signal; it must survive wait (FR-008)")
-	default:
-	}
-
-	// cleanup: tear the socket down so the reader exits cleanly
-	if err := app.CloseAgent(); err != nil {
-		t.Fatalf("CloseAgent() unexpected error: %v", err)
-	}
-}
-
-// TestReadLoop_SynthesizesWaitOnRecvError verifies the T6 error path in the
-// continuous-reader model: when RecvFrame errors, readLoop appends a
-// synthesized TeamFrame_Wait carrying readLoopEndFrameID so the frontend can
-// settle the turn before the failure surfaces (F13b; FR-010,
-// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
-// Exit). The synthesized wait lands in the log after any frames already
-// delivered, with a monotonic id.
-func TestReadLoop_SynthesizesWaitOnRecvError(t *testing.T) {
-	// given: mock WS server that sends one content frame then closes the
-	// connection, causing the next RecvFrame to error.
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		contentFrame := &game.TeamFrame{
-			SessionId:  "sess-recv",
-			TemplateId: "saolei",
-			FrameId:    "srv-frame-1",
-			Payload: &game.TeamFrame_MessageParts{
-				MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},
-				}},
-			},
-		}
-		data, _ := proto.Marshal(contentFrame)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		// Closing after the write guarantees (via TCP ordering) the client
-		// reads the content frame first, then sees the closure as an error.
 		conn.Close(websocket.StatusNormalClosure, "")
 	})
 	defer srv.Close()
@@ -691,61 +345,35 @@ func TestReadLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 	defer ws.Close()
 	app.ws = ws
 
-	// wire up the chatstream registry and open a stream for the session
-	reg := chatstream.NewRegistry(logger)
-	app.SetChatStream(reg, nil)
-	stream, err := reg.Open("sess-recv", func() ([]*game.Message, error) { return nil, nil })
-	if err != nil {
-		t.Fatalf("registry Open: %v", err)
-	}
-
-	// when: run readLoop synchronously — it appends the content frame, then
-	// on the next RecvFrame error appends a synthesized wait and returns.
+	// when: run readLoop synchronously — it errors on the first RecvFrame,
+	// logs, and returns.
 	app.recvDone = make(chan struct{})
-	app.readLoop("sess-recv")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.readLoop("sess-recv")
+	}()
 
-	// then: the log carries exactly 2 events with monotonic ids 1 and 2.
-	if got := stream.LastID(); got != 2 {
-		t.Fatalf("LastID = %d, want 2", got)
+	// then: the reader exited and recvDone is closed.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readLoop did not exit within 2s after a recv error")
 	}
-	sub, snap := stream.Subscribe(0)
-	defer sub.Close()
-	if len(snap) != 2 {
-		t.Fatalf("snapshot len = %d, want 2", len(snap))
-	}
-	if snap[0].ID != 1 || snap[1].ID != 2 {
-		t.Errorf("event ids = [%d, %d], want [1, 2]", snap[0].ID, snap[1].ID)
-	}
-
-	// event 1: the messageParts frame delivered from the server verbatim.
-	if snap[0].Frame.GetMessageParts() == nil {
-		t.Fatal("event 0: expected MessageParts payload, got nil")
-	}
-
-	// event 2: the synthesized wait (a FlowParts kind) carrying the
-	// reader-end frame marker (F13b).
-	waitFrame := snap[1].Frame
-	waitFlow := waitFrame.GetFlowParts()
-	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
-		t.Fatal("event 1: expected FlowParts wait payload, got nil")
-	}
-	if got := waitFrame.GetFrameId(); got != readLoopEndFrameID {
-		t.Errorf("event 1 FrameId = %q, want %q (synthesized wait carries the reader-end marker)", got, readLoopEndFrameID)
+	select {
+	case <-app.recvDone:
+	default:
+		t.Fatal("recvDone not closed after readLoop exited")
 	}
 }
 
-// TestReadLoop_ExecutesOperationAndSendsResultNotMirrored verifies the US1
-// readLoop behavior (spec 023 FR-005/FR-010, research.md D8; spec 025
-// FR-023/FR-024; FR-009 in
-// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.2):
+// TestReadLoop_ExecutesOperationAndSurvivesWait verifies the core readLoop
+// behavior (spec 025 FR-023/FR-024; FR-009 in
+// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.2/§3.3):
 // an inbound operation FlowPart is executed and its FlowResultPart is sent
-// back over the WebSocket to the agent on the control channel — but the
-// operation request and the result are NOT appended to the chatstream
-// (operations never render as conversation entries; the screenshot the
-// conversation shows comes from the agent's later tool_result MessagePart,
-// not a desktop mirror). Only the terminating wait FlowPart lands in the
-// chatstream.
-func TestReadLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
+// back over the WebSocket to the agent on the control channel, and the
+// trailing wait signal does NOT terminate the continuous reader (FR-008).
+func TestReadLoop_ExecutesOperationAndSurvivesWait(t *testing.T) {
 	// given: mock WS server sends a flowParts frame with a MouseClickPart, then
 	// a wait signal. It captures client-sent frames (the tool result) so the
 	// test can assert the result was returned to the agent over the WS.
@@ -796,23 +424,13 @@ func TestReadLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	})
 	defer srv.Close()
 
-	// given: App with a chatstream Registry (stream pre-opened). No window is
-	// selected, so executeAgentOperation fails fast with "no window selected" —
-	// the result frame is still produced and sent over the WS.
+	// given: an App with a connected WSClient. No window is selected, so
+	// executeAgentOperation fails fast with "no window selected" — the result
+	// frame is still produced and sent over the WS.
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	stream, err := reg.Open("op-session", func() ([]*game.Message, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("op-session")
 
 	app.ws = &api.WSClient{}
 	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "op-session", "test-env"); err != nil {
@@ -847,16 +465,12 @@ func TestReadLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 		t.Errorf("result status = %v, want FAILED (no window selected)", resultPart.GetStatus())
 	}
 
-	// and: the chatstream does NOT mirror the operation request or the result —
-	// only the wait FlowPart is appended (FR-005/FR-010).
-	snap, ok := waitForStreamEvents(stream, 1)
-	if !ok {
-		t.Fatalf("chatstream snapshot has %d events within 2s, want 1 (only the wait signal; "+
-			"operations and results are not mirrored)", len(snap))
-	}
-	waitFlow := snap[0].Frame.GetFlowParts()
-	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
-		t.Errorf("snap[0] expected FlowParts wait payload, got %T", snap[0].Frame.GetPayload())
+	// and: the wait signal did NOT terminate the reader — recvDone is still
+	// open (FR-008).
+	select {
+	case <-app.recvDone:
+		t.Fatal("readLoop terminated on the wait signal; it must survive wait (FR-008)")
+	default:
 	}
 }
 
@@ -903,9 +517,9 @@ func TestReadLoop_ExecutesNewPartKinds(t *testing.T) {
 
 // runReadLoopFilterAdmissionTest verifies op passes the readLoop filter and
 // reaches executeAgentOperation by asserting a FlowResultPart with toolID is
-// sent back over the WS (and NOT mirrored into the chatstream). The setup
-// mirrors TestReadLoop_ExecutesOperationAndSendsResultNotMirrored but is
-// intentionally minimal — this is a regression guard for filter admission.
+// sent back over the WS. The setup mirrors
+// TestReadLoop_ExecutesOperationAndSurvivesWait but is intentionally minimal —
+// this is a regression guard for filter admission.
 func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID string) {
 	t.Helper()
 
@@ -954,22 +568,13 @@ func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 	})
 	defer srv.Close()
 
-	// given: App with a chatstream Registry. No window is selected, so
+	// given: an App with a connected WSClient. No window is selected, so
 	// executeAgentOperation fails fast — but the FlowResultPart must still be
 	// produced and sent (proving the filter admitted op).
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	if _, err := reg.Open("filter-session", func() ([]*game.Message, error) {
-		return nil, nil
-	}); err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("filter-session")
 
 	app.ws = &api.WSClient{}
 	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "filter-session", "test-env"); err != nil {
@@ -1003,482 +608,6 @@ func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
 		t.Errorf("status = %v, want FAILED (no window selected — expected precondition failure, not filter rejection)",
 			resultPart.GetStatus())
-	}
-}
-
-// TestConnect_StartsContinuousReaderReceivesBackgroundFrame verifies SC-003
-// and specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-// §3.1 Start (specs/041-realtime-init-push/research.md D5): Connect starts
-// the continuous reader after the
-// status probe, so a background messageParts frame — produced with NO user
-// turn, e.g. the init instruction — is appended to the chat stream
-// automatically (FR-002).
-func TestConnect_StartsContinuousReaderReceivesBackgroundFrame(t *testing.T) {
-	// given: mock WS server that answers the probe, then pushes a background
-	// messageParts frame with no user turn in between
-	backgroundFrame := &game.TeamFrame{
-		SessionId:  "bg-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-bg-1",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "background instruction"}}},
-			}},
-		},
-	}
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		if _, _, err := conn.Read(ctx); err != nil {
-			return
-		}
-		probeResp := &game.TeamFrame{
-			SessionId:  "bg-session",
-			TemplateId: "saolei",
-			FrameId:    "probe-resp",
-			Payload: &game.TeamFrame_FlowParts{
-				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
-				}},
-			},
-		}
-		data, _ := proto.Marshal(probeResp)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		data, _ = proto.Marshal(backgroundFrame)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		select {} // keep the connection open until the client tears it down
-	})
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	stream, err := reg.Open("bg-session", func() ([]*game.Message, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("bg-session")
-
-	// when: Connect — which starts the continuous reader after the probe
-	if _, err := app.Connect("saolei", "bg-session"); err != nil {
-		t.Fatalf("Connect() unexpected error: %v", err)
-	}
-	t.Cleanup(func() { app.CloseAgent() })
-
-	// then: the background frame arrives with no user turn (SC-003)
-	snap, ok := waitForStreamEvents(stream, 1)
-	if !ok {
-		t.Fatalf("background frame not appended within 2s; snapshot has %d events", len(snap))
-	}
-	if snap[0].Frame.GetMessageParts() == nil {
-		t.Errorf("expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
-	}
-
-	// and: the reader keeps running after delivering it (recvDone open —
-	// FR-002 continuous delivery)
-	select {
-	case <-app.recvDone:
-		t.Fatal("readLoop exited after delivering the background frame; it must run for the connection lifetime")
-	default:
-	}
-}
-
-// TestReadLoop_BackgroundMessagePartsSynthesizesNoStatus verifies the US2
-// desktop half (specs/041-realtime-init-push/spec.md FR-003, SC-002;
-// contracts/realtime-channel-contract.md §3.2/§2.4): when the continuous
-// reader receives a background messageParts frame — e.g. the init instruction
-// (messageParts only, no wait/status, specs/041-realtime-init-push/contracts/
-// realtime-channel-contract.md §2.4) — it appends the frame
-// to the chat stream and synthesizes NO status ACTIVE signal on top. Any
-// injected ACTIVE/typing signal would appear as a further flowParts status
-// event; the stream must hold exactly the one messageParts event.
-func TestReadLoop_BackgroundMessagePartsSynthesizesNoStatus(t *testing.T) {
-	// given: a mock WS server that pushes a single background messageParts
-	// frame (no user turn, no flowParts) and keeps the connection open
-	bgFrame := &game.TeamFrame{
-		SessionId:  "bg-no-status",
-		TemplateId: "saolei",
-		FrameId:    "srv-bg-1",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "background instruction"}}},
-			}},
-		},
-	}
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		data, _ := proto.Marshal(bgFrame)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		select {} // keep the connection open until the client tears it down
-	})
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	stream, err := reg.Open("bg-no-status", func() ([]*game.Message, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("bg-no-status")
-
-	app.ws = &api.WSClient{}
-	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "bg-no-status", "test-env"); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-
-	// when: run the continuous reader over the background frame
-	app.recvDone = make(chan struct{})
-	go app.readLoop("bg-no-status")
-
-	// then: the messageParts frame lands in the chat stream...
-	snap, ok := waitForStreamEvents(stream, 1)
-	if !ok {
-		t.Fatalf("background frame not appended within 2s; snapshot has %d events", len(snap))
-	}
-	if snap[0].Frame.GetMessageParts() == nil {
-		t.Errorf("expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
-	}
-
-	// ...and after a settle window the stream STILL holds exactly the one
-	// messageParts event: no synthesized status/typing signal (FR-003,
-	// contracts/realtime-channel-contract.md §3.2 — messageParts appends only;
-	// §2.4 — the init emits no status FlowPart).
-	time.Sleep(300 * time.Millisecond)
-	sub, after := stream.Subscribe(0)
-	defer sub.Close()
-	if len(after) != 1 {
-		t.Errorf("chat stream holds %d events after settle, want exactly 1 (no synthesized status/typing signal)", len(after))
-	}
-	if after[0].Frame.GetMessageParts() == nil {
-		t.Errorf("only event expected MessageParts payload, got %T", after[0].Frame.GetPayload())
-	}
-
-	// cleanup: tear the socket down so the reader exits cleanly
-	if err := app.CloseAgent(); err != nil {
-		t.Fatalf("CloseAgent() unexpected error: %v", err)
-	}
-}
-
-// TestSendUserTurn_StartsNoSecondReader verifies FR-012 /
-// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.4:
-// SendUserTurn only sends the UserFrame and MUST NOT start a second reader —
-// the continuous reader already running (started at Connect) reads the turn's
-// response frames.
-func TestSendUserTurn_StartsNoSecondReader(t *testing.T) {
-	// given: mock WS server that answers the probe, then reads the user turn
-	// and responds with a messageParts frame
-	turnResp := &game.TeamFrame{
-		SessionId:  "turn-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-turn-resp",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "turn response"}}},
-			}},
-		},
-	}
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		if _, _, err := conn.Read(ctx); err != nil {
-			return
-		}
-		probeResp := &game.TeamFrame{
-			SessionId:  "turn-session",
-			TemplateId: "saolei",
-			FrameId:    "probe-resp",
-			Payload: &game.TeamFrame_FlowParts{
-				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
-				}},
-			},
-		}
-		data, _ := proto.Marshal(probeResp)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		// wait for the user turn, then respond
-		if _, _, err := conn.Read(ctx); err != nil {
-			return
-		}
-		data, _ = proto.Marshal(turnResp)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		select {} // keep the connection open until the client tears it down
-	})
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	stream, err := reg.Open("turn-session", func() ([]*game.Message, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("turn-session")
-
-	// when: Connect starts the continuous reader, then SendUserTurn submits
-	// a turn
-	if _, err := app.Connect("saolei", "turn-session"); err != nil {
-		t.Fatalf("Connect() unexpected error: %v", err)
-	}
-	t.Cleanup(func() { app.CloseAgent() })
-	connectDone := app.recvDone
-
-	if err := app.SendUserTurn("saolei", "turn-session", "open a cell", nil, 0, 0, "player"); err != nil {
-		t.Fatalf("SendUserTurn() unexpected error: %v", err)
-	}
-
-	// then: the turn response was read by the already-running reader
-	snap, ok := waitForStreamEvents(stream, 1)
-	if !ok {
-		t.Fatalf("turn response not appended within 2s; snapshot has %d events", len(snap))
-	}
-	if snap[0].Frame.GetMessageParts() == nil {
-		t.Errorf("expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
-	}
-
-	// and: SendUserTurn started no second reader — recvDone was not
-	// reassigned and the original reader is still alive (FR-012)
-	if app.recvDone != connectDone {
-		t.Fatal("SendUserTurn reassigned recvDone; it must not start a second reader (FR-012)")
-	}
-	select {
-	case <-app.recvDone:
-		t.Fatal("reader exited; it must keep running after SendUserTurn (FR-012)")
-	default:
-	}
-}
-
-// TestReadLoop_DeliversFullUserTurn verifies tasks.md T008 (a) — the SC-004
-// regression against the previous per-turn model: a full user turn's frames —
-// text, a tool call, an operation FlowPart (executed, its FlowResultPart
-// returned over the WS, NOT mirrored to the chatstream), and the terminal wait
-// — are all delivered by the already-running continuous reader started at
-// Connect (FR-002, FR-008, FR-009, FR-012;
-// specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.2/§3.3;
-// specs/041-realtime-init-push/quickstart.md B6). The reader keeps running
-// after the terminal wait, ready for the next turn or background frames.
-func TestReadLoop_DeliversFullUserTurn(t *testing.T) {
-	// given: a mock WS server answering the probe, then — after the user turn —
-	// streaming the complete turn response sequence (text, tool call,
-	// operation, terminal wait), while capturing client-sent frames (the tool
-	// result) over the WS.
-	textFrame := &game.TeamFrame{
-		SessionId:  "full-turn-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-text-1",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "agent reply text"}}},
-			}},
-		},
-	}
-	toolCallFrame := &game.TeamFrame{
-		SessionId:  "full-turn-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-toolcall-1",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_ToolCall{ToolCall: &game.ToolCallPart{
-					ToolId:   "tool-1",
-					Name:     "instruct_player",
-					ArgsJson: `{"instruction":"open a cell"}`,
-				}}},
-			}},
-		},
-	}
-	opFrame := &game.TeamFrame{
-		SessionId:  "full-turn-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-op-1",
-		Payload: &game.TeamFrame_FlowParts{
-			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-				{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{
-					ToolId: "click-1",
-					Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
-				}}},
-			}},
-		},
-	}
-	waitFrame := &game.TeamFrame{
-		SessionId:  "full-turn-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-wait-1",
-		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
-	}
-	sentFrames := make(chan *game.TeamFrame, 4)
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		if _, _, err := conn.Read(ctx); err != nil {
-			return
-		}
-		probeResp := &game.TeamFrame{
-			SessionId:  "full-turn-session",
-			TemplateId: "saolei",
-			FrameId:    "probe-resp",
-			Payload: &game.TeamFrame_FlowParts{
-				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
-				}},
-			},
-		}
-		data, _ := proto.Marshal(probeResp)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		// wait for the user turn, then stream the full turn response. The
-		// result-capture goroutine starts only after the user-turn read so it
-		// does not steal the probe/user-turn frames.
-		if _, _, err := conn.Read(ctx); err != nil {
-			return
-		}
-		go func() {
-			for {
-				_, data, err := conn.Read(ctx)
-				if err != nil {
-					return
-				}
-				var f game.TeamFrame
-				if err := proto.Unmarshal(data, &f); err == nil {
-					select {
-					case sentFrames <- &f:
-					default:
-					}
-				}
-			}
-		}()
-		for _, f := range []*game.TeamFrame{textFrame, toolCallFrame, opFrame, waitFrame} {
-			data, _ := proto.Marshal(f)
-			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-				return
-			}
-		}
-		select {} // keep the connection open until the client tears it down
-	})
-	defer srv.Close()
-
-	// given: an App wired with a chatstream Registry and a connected WSClient
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	stream, err := reg.Open("full-turn-session", func() ([]*game.Message, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("full-turn-session")
-
-	// when: Connect starts the continuous reader (after the probe), then the
-	// user submits a turn — SendUserTurn only sends, it starts no second
-	// reader (FR-012)
-	if _, err := app.Connect("saolei", "full-turn-session"); err != nil {
-		t.Fatalf("Connect() unexpected error: %v", err)
-	}
-	t.Cleanup(func() { app.CloseAgent() })
-	if err := app.SendUserTurn("saolei", "full-turn-session", "open a cell", nil, 0, 0, "player"); err != nil {
-		t.Fatalf("SendUserTurn() unexpected error: %v", err)
-	}
-
-	// then: the display frames land in the chatstream in order — text, tool
-	// call, terminal wait — with monotonic 1-based IDs
-	// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-	// §3.2)
-	snap, ok := waitForStreamEvents(stream, 3)
-	if !ok {
-		t.Fatalf("full turn frames not appended within 2s; snapshot has %d events, want 3 (text, tool call, wait)", len(snap))
-	}
-	if snap[0].ID != 1 || snap[1].ID != 2 || snap[2].ID != 3 {
-		t.Errorf("event IDs = [%d, %d, %d], want [1, 2, 3]", snap[0].ID, snap[1].ID, snap[2].ID)
-	}
-	textParts := snap[0].Frame.GetMessageParts()
-	if textParts == nil || len(textParts.GetParts()) == 0 || textParts.GetParts()[0].GetText() == nil {
-		t.Errorf("snap[0] expected text MessageParts payload, got %T", snap[0].Frame.GetPayload())
-	}
-	toolParts := snap[1].Frame.GetMessageParts()
-	if toolParts == nil || len(toolParts.GetParts()) == 0 {
-		t.Errorf("snap[1] expected toolCall MessageParts payload, got %T", snap[1].Frame.GetPayload())
-	} else if got := toolParts.GetParts()[0].GetToolCall(); got == nil || got.GetName() != "instruct_player" {
-		t.Errorf("snap[1] expected instruct_player toolCall part, got %T", toolParts.GetParts()[0].GetKind())
-	}
-	waitFlow := snap[2].Frame.GetFlowParts()
-	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
-		t.Errorf("snap[2] expected FlowParts wait payload, got %T", snap[2].Frame.GetPayload())
-	}
-
-	// and: the operation was executed and its FlowResultPart sent back to the
-	// agent over the WS (FR-009,
-	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-	// §3.2) with the same tool_id; status
-	// FAILED (no window selected)
-	var resultPart *game.FlowResultPart
-	deadline := time.After(2 * time.Second)
-	for resultPart == nil {
-		select {
-		case f := <-sentFrames:
-			fp := f.GetFlowParts()
-			if fp != nil && len(fp.GetParts()) > 0 {
-				resultPart = fp.GetParts()[0].GetFlowResult()
-			}
-		case <-deadline:
-			t.Fatal("no flow-result frame sent over WS within 2s")
-		}
-	}
-	if resultPart.GetToolId() != "click-1" {
-		t.Errorf("result tool_id = %q, want %q", resultPart.GetToolId(), "click-1")
-	}
-	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
-		t.Errorf("result status = %v, want FAILED (no window selected)", resultPart.GetStatus())
-	}
-
-	// and: the operation request and its result are NOT mirrored into the
-	// chatstream — the stream still holds exactly the 3 display/control
-	// events (text, tool call, wait; FR-005/FR-009,
-	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-	// §3.2)
-	sub, after := stream.Subscribe(0)
-	defer sub.Close()
-	if len(after) != 3 {
-		t.Errorf("chatstream holds %d events, want exactly 3 (operation and result are not mirrored)", len(after))
-	}
-
-	// and: the reader is still running after the terminal wait (FR-008,
-	// specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-	// §3.3) — recvDone stays open, ready for the next turn or
-	// background frames (FR-002)
-	select {
-	case <-app.recvDone:
-		t.Fatal("readLoop exited on the terminal wait; it must continue after wait (FR-008)")
-	default:
 	}
 }
 
@@ -1519,7 +648,6 @@ func TestConnect_ReconnectHandoverWaitsForPriorReader(t *testing.T) {
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
-	app.chatStreams = chatstream.NewRegistry(logger)
 
 	// when: first Connect starts reader 1
 	if _, err := app.Connect("saolei", "reconnect-session"); err != nil {
@@ -1562,21 +690,9 @@ func TestConnect_ReconnectHandoverWaitsForPriorReader(t *testing.T) {
 // TestCloseAgent_CleanClose verifies FR-010 /
 // specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
 // Close: CloseAgent tears the socket down (unblocking the reader's
-// RecvFrame), waits on recvDone, and clears a.ws; the reader synthesizes a
-// terminal wait before exiting.
+// RecvFrame), waits on recvDone, and clears a.ws.
 func TestCloseAgent_CleanClose(t *testing.T) {
-	// given: mock WS server answering the probe, pushing one content frame,
-	// then staying open
-	contentFrame := &game.TeamFrame{
-		SessionId:  "close-session",
-		TemplateId: "saolei",
-		FrameId:    "srv-content-1",
-		Payload: &game.TeamFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "last frame"}}},
-			}},
-		},
-	}
+	// given: mock WS server answering the probe, then staying open
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		if _, _, err := conn.Read(ctx); err != nil {
@@ -1596,10 +712,6 @@ func TestCloseAgent_CleanClose(t *testing.T) {
 		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 			return
 		}
-		data, _ = proto.Marshal(contentFrame)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
 		select {} // keep the connection open until CloseAgent tears it down
 	})
 	defer srv.Close()
@@ -1609,22 +721,9 @@ func TestCloseAgent_CleanClose(t *testing.T) {
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
 
-	reg := chatstream.NewRegistry(logger)
-	app.chatStreams = reg
-	stream, err := reg.Open("close-session", func() ([]*game.Message, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("reg.Open: %v", err)
-	}
-	defer reg.Close("close-session")
-
 	// given: a connected app with the continuous reader running
 	if _, err := app.Connect("saolei", "close-session"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
-	}
-	if _, ok := waitForStreamEvents(stream, 1); !ok {
-		t.Fatal("content frame not appended within 2s")
 	}
 
 	// when: CloseAgent tears the socket down
@@ -1640,25 +739,6 @@ func TestCloseAgent_CleanClose(t *testing.T) {
 	}
 	if app.ws != nil {
 		t.Fatal("expected a.ws to be nil after CloseAgent")
-	}
-
-	// and: a synthesized terminal wait was appended after the content frame
-	// (FR-010, specs/041-realtime-init-push/contracts/
-	// realtime-channel-contract.md §3.1 Exit) — CloseAgent returns only after
-	// the
-	// reader appended it (it waits on recvDone, and the append precedes
-	// close(recvDone)), so no polling is needed.
-	sub, snap := stream.Subscribe(0)
-	defer sub.Close()
-	if len(snap) != 2 {
-		t.Fatalf("snapshot length = %d, want 2 (content + synthesized wait)", len(snap))
-	}
-	waitFlow := snap[1].Frame.GetFlowParts()
-	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
-		t.Errorf("snap[1] expected FlowParts wait payload, got %T", snap[1].Frame.GetPayload())
-	}
-	if got := snap[1].Frame.GetFrameId(); got != readLoopEndFrameID {
-		t.Errorf("snap[1] FrameId = %q, want %q", got, readLoopEndFrameID)
 	}
 }
 
@@ -2698,634 +1778,5 @@ func TestCaptureScreenshot_SelectionButCaptureFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("expected 'not supported' from Linux stub (resolve succeeded), got %q", err.Error())
-	}
-}
-
-// --- Template/Team/TeamProfile binding tests (Phase 6 US4) ---
-//
-// These tests cover the Wails bindings added in T025
-// (specs/031-team-template-mode/contracts/desktop-contract.md §4): the
-// template-scoped session bindings, the Team bindings (GetTeam/UpdateTeam/
-// RefreshTeam), and the TeamProfile CRUD bindings. They follow the same
-// httptest-server pattern as the pre-existing binding tests.
-
-// TestCreateSession_Template verifies CreateSession delegates to client with
-// the template and converts the response to a view model.
-func TestCreateSession_Template(t *testing.T) {
-	// given: mock server responding to POST /api/v1/templates/saolei/sessions
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/sessions"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1","sessionId":"s1","createTime":"2024-01-01T00:00:00Z"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.CreateSession("saolei")
-
-	// then
-	if err != nil {
-		t.Fatalf("CreateSession() unexpected error: %v", err)
-	}
-	if view == nil {
-		t.Fatal("CreateSession() returned nil view")
-	}
-	if view.SessionID != "s1" {
-		t.Errorf("expected SessionID %q, got %q", "s1", view.SessionID)
-	}
-}
-
-// TestCreateSession_EmptyTemplate verifies CreateSession rejects empty template.
-func TestCreateSession_EmptyTemplate(t *testing.T) {
-	// given: App with no client
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-
-	// when
-	view, err := app.CreateSession("")
-
-	// then
-	if err == nil {
-		t.Fatal("CreateSession() expected error for empty template, got nil")
-	}
-	if view != nil {
-		t.Fatal("CreateSession() expected nil view on error")
-	}
-	if !strings.Contains(err.Error(), "template") {
-		t.Errorf("error should mention template, got %q", err.Error())
-	}
-}
-
-// TestGetTeam_Success verifies GetTeam delegates to client and converts the
-// Team (with agents) to a view model.
-func TestGetTeam_Success(t *testing.T) {
-	// given: mock server responding to GET /api/v1/templates/saolei/sessions/s1/team
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/sessions/s1/team"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1/team","agents":[{"name":"player","acceptsUserInput":true},{"name":"planner","acceptsUserInput":false}],"createTime":"2024-01-01T00:00:00Z"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.GetTeam("saolei", "s1")
-
-	// then
-	if err != nil {
-		t.Fatalf("GetTeam() unexpected error: %v", err)
-	}
-	if view == nil {
-		t.Fatal("GetTeam() returned nil view")
-	}
-	if view.SessionID != "s1" {
-		t.Errorf("expected SessionID %q, got %q", "s1", view.SessionID)
-	}
-	if len(view.Agents) != 2 {
-		t.Fatalf("expected 2 agents, got %d", len(view.Agents))
-	}
-	if view.Agents[0].Name != "player" || !view.Agents[0].AcceptsUserInput {
-		t.Errorf("expected first agent player/acceptsUserInput=true, got %+v", view.Agents[0])
-	}
-	if view.Agents[1].Name != "planner" || view.Agents[1].AcceptsUserInput {
-		t.Errorf("expected second agent planner/acceptsUserInput=false, got %+v", view.Agents[1])
-	}
-}
-
-// TestGetTeam_NotFound verifies GetTeam propagates NOT_FOUND (team not
-// created yet — the frontend's create-if-missing flow reacts to this).
-func TestGetTeam_NotFound(t *testing.T) {
-	// given: mock server returning 404
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprint(w, `{"error":"not found"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.GetTeam("saolei", "no-team")
-
-	// then
-	if err == nil {
-		t.Fatal("GetTeam() expected error, got nil")
-	}
-	if view != nil {
-		t.Fatal("GetTeam() expected nil view on error")
-	}
-	if !strings.Contains(err.Error(), "get team") {
-		t.Errorf("error should contain 'get team', got %q", err.Error())
-	}
-}
-
-// TestUpdateTeam_Success verifies UpdateTeam delegates to client with the
-// TeamProfile resource name, PATCH method, Team body, and allow_missing query,
-// and returns the updated Team view.
-func TestUpdateTeam_Success(t *testing.T) {
-	// given: mock server responding to PATCH /api/v1/templates/saolei/sessions/s1/team
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch {
-			t.Errorf("expected PATCH, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/sessions/s1/team"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		if got := r.URL.Query().Get("allow_missing"); got != "true" {
-			t.Errorf("expected allow_missing true, got %q", got)
-		}
-		body, _ := io.ReadAll(r.Body)
-		req := new(game.Team)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
-			t.Fatalf("failed to parse request body: %v", err)
-		}
-		if req.GetName() != "templates/saolei/sessions/s1/team" {
-			t.Errorf("expected name %q, got %q", "templates/saolei/sessions/s1/team", req.GetName())
-		}
-		if req.GetProfile() != "templates/saolei/profiles/p1" {
-			t.Errorf("expected profile %q, got %q", "templates/saolei/profiles/p1", req.GetProfile())
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1/team","profile":"templates/saolei/profiles/p1","agents":[{"name":"player","acceptsUserInput":true},{"name":"planner","acceptsUserInput":false}],"createTime":"2024-01-01T00:00:00Z"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.UpdateTeam("saolei", "s1", "templates/saolei/profiles/p1", []string{"profile"}, true)
-
-	// then
-	if err != nil {
-		t.Fatalf("UpdateTeam() unexpected error: %v", err)
-	}
-	if view == nil {
-		t.Fatal("UpdateTeam() returned nil view")
-	}
-	if len(view.Agents) != 2 {
-		t.Fatalf("expected 2 agents, got %d", len(view.Agents))
-	}
-	if view.Agents[0].Name != "player" {
-		t.Errorf("expected first agent %q, got %q", "player", view.Agents[0].Name)
-	}
-}
-
-// TestUpdateTeam_EmptyProfile verifies UpdateTeam rejects an empty profile.
-func TestUpdateTeam_EmptyProfile(t *testing.T) {
-	// given: App with no client
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-
-	// when
-	view, err := app.UpdateTeam("saolei", "s1", "", nil, true)
-
-	// then
-	if err == nil {
-		t.Fatal("UpdateTeam() expected error for empty profile, got nil")
-	}
-	if view != nil {
-		t.Fatal("UpdateTeam() expected nil view on error")
-	}
-	if !strings.Contains(err.Error(), "profile") {
-		t.Errorf("error should mention profile, got %q", err.Error())
-	}
-}
-
-// TestRefreshTeam_Success verifies RefreshTeam delegates to client.
-func TestRefreshTeam_Success(t *testing.T) {
-	// given: mock server responding to POST /api/v1/templates/saolei/sessions/s1/team:refresh
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/sessions/s1/team:refresh"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	err := app.RefreshTeam("saolei", "s1")
-
-	// then
-	if err != nil {
-		t.Fatalf("RefreshTeam() unexpected error: %v", err)
-	}
-}
-
-// TestRefreshTeam_EmptyParams verifies RefreshTeam rejects empty params.
-func TestRefreshTeam_EmptyParams(t *testing.T) {
-	tests := []struct {
-		name     string
-		template string
-		session  string
-		wantErr  string
-	}{
-		{name: "empty template", template: "", session: "s1", wantErr: "template"},
-		{name: "empty session_id", template: "saolei", session: "", wantErr: "session_id"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			logger := applog.NewLogger()
-			app := NewApp(logger)
-			app.SetContext(context.Background())
-
-			// when
-			err := app.RefreshTeam(tt.template, tt.session)
-
-			// then
-			if err == nil {
-				t.Fatal("RefreshTeam() expected error, got nil")
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("error should mention %q, got %q", tt.wantErr, err.Error())
-			}
-		})
-	}
-}
-
-// TestCreateTeamProfile_Success verifies CreateTeamProfile builds the typed
-// saolei spec from the view and returns the converted view model.
-func TestCreateTeamProfile_Success(t *testing.T) {
-	// given: mock server responding to POST /api/v1/templates/saolei/profiles
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if r.URL.Path != "/api/v1/templates/saolei/profiles" {
-			t.Errorf("expected /api/v1/templates/saolei/profiles, got %s", r.URL.Path)
-		}
-		body, _ := io.ReadAll(r.Body)
-		profile := new(game.TeamProfile)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, profile); err != nil {
-			t.Fatalf("failed to parse request body: %v", err)
-		}
-		gotID := r.URL.Query().Get("team_profile_id")
-		if gotID != "my-profile" {
-			t.Errorf("expected team_profile_id %q, got %q", "my-profile", gotID)
-		}
-		if profile.GetSaolei() == nil || profile.GetSaolei().GetPlayerModel() != "openai/gpt-4o" {
-			t.Errorf("expected player_model %q, got %+v", "openai/gpt-4o", profile.GetSaolei())
-		}
-		if profile.GetSaolei().GetPlannerModel() != "anthropic/claude-3-5-sonnet" {
-			t.Errorf("expected planner_model %q, got %q", "anthropic/claude-3-5-sonnet", profile.GetSaolei().GetPlannerModel())
-		}
-		if profile.GetSaolei().GetPlayerPrompt() != "player base prompt" {
-			t.Errorf("expected player_prompt %q, got %q", "player base prompt", profile.GetSaolei().GetPlayerPrompt())
-		}
-		if profile.GetSaolei().GetPlannerPrompt() != "planner base prompt" {
-			t.Errorf("expected planner_prompt %q, got %q", "planner base prompt", profile.GetSaolei().GetPlannerPrompt())
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.CreateTeamProfile("saolei", CreateTeamProfileView{
-		ProfileName:   "my-profile",
-		PlayerModel:   "openai/gpt-4o",
-		PlannerModel:  "anthropic/claude-3-5-sonnet",
-		PlayerPrompt:  "player base prompt",
-		PlannerPrompt: "planner base prompt",
-	})
-
-	// then
-	if err != nil {
-		t.Fatalf("CreateTeamProfile() unexpected error: %v", err)
-	}
-	if view == nil {
-		t.Fatal("CreateTeamProfile() returned nil view")
-	}
-	if view.ProfileName != "my-profile" {
-		t.Errorf("expected ProfileName %q, got %q", "my-profile", view.ProfileName)
-	}
-	if view.PlayerModel != "openai/gpt-4o" {
-		t.Errorf("expected PlayerModel %q, got %q", "openai/gpt-4o", view.PlayerModel)
-	}
-	if view.PlannerModel != "anthropic/claude-3-5-sonnet" {
-		t.Errorf("expected PlannerModel %q, got %q", "anthropic/claude-3-5-sonnet", view.PlannerModel)
-	}
-	if view.PlayerPrompt != "player base prompt" {
-		t.Errorf("expected PlayerPrompt %q, got %q", "player base prompt", view.PlayerPrompt)
-	}
-	if view.PlannerPrompt != "planner base prompt" {
-		t.Errorf("expected PlannerPrompt %q, got %q", "planner base prompt", view.PlannerPrompt)
-	}
-}
-
-// TestCreateTeamProfile_Error verifies CreateTeamProfile propagates client error.
-func TestCreateTeamProfile_Error(t *testing.T) {
-	// given: mock server returning 409 Conflict
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusConflict)
-		fmt.Fprint(w, `{"error":"already exists"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.CreateTeamProfile("saolei", CreateTeamProfileView{ProfileName: "existing"})
-
-	// then
-	if err == nil {
-		t.Fatal("CreateTeamProfile() expected error, got nil")
-	}
-	if view != nil {
-		t.Fatal("CreateTeamProfile() expected nil view on error")
-	}
-	if !strings.Contains(err.Error(), "create team profile") {
-		t.Errorf("error should contain 'create team profile', got %q", err.Error())
-	}
-}
-
-// TestGetTeamProfile_Success verifies GetTeamProfile delegates to client and
-// returns the view with the flattened saolei spec.
-func TestGetTeamProfile_Success(t *testing.T) {
-	// given: mock server responding to GET /api/v1/templates/saolei/profiles/my-profile
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/profiles/my-profile"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.GetTeamProfile("saolei", "my-profile")
-
-	// then
-	if err != nil {
-		t.Fatalf("GetTeamProfile() unexpected error: %v", err)
-	}
-	if view == nil {
-		t.Fatal("GetTeamProfile() returned nil view")
-	}
-	if view.ProfileName != "my-profile" {
-		t.Errorf("expected ProfileName %q, got %q", "my-profile", view.ProfileName)
-	}
-	if view.PlayerModel != "openai/gpt-4o" {
-		t.Errorf("expected PlayerModel %q, got %q", "openai/gpt-4o", view.PlayerModel)
-	}
-}
-
-// TestGetTeamProfile_NotFound verifies GetTeamProfile propagates 404.
-func TestGetTeamProfile_NotFound(t *testing.T) {
-	// given: mock server returning 404
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprint(w, `{"error":"not found"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.GetTeamProfile("saolei", "nonexistent")
-
-	// then
-	if err == nil {
-		t.Fatal("GetTeamProfile() expected error, got nil")
-	}
-	if view != nil {
-		t.Fatal("GetTeamProfile() expected nil view on error")
-	}
-	if !strings.Contains(err.Error(), "get team profile") {
-		t.Errorf("error should contain 'get team profile', got %q", err.Error())
-	}
-}
-
-// TestListTeamProfiles_Success verifies ListTeamProfiles converts the
-// response to view models.
-func TestListTeamProfiles_Success(t *testing.T) {
-	// given: mock server responding to GET /api/v1/templates/saolei/profiles
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		if r.URL.Path != "/api/v1/templates/saolei/profiles" {
-			t.Errorf("expected /api/v1/templates/saolei/profiles, got %s", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"teamProfiles":[{"name":"templates/saolei/profiles/p1","saolei":{"playerModel":"a/b"}},{"name":"templates/saolei/profiles/p2"}],"nextPageToken":"next"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	view, err := app.ListTeamProfiles("saolei", 0, "")
-
-	// then
-	if err != nil {
-		t.Fatalf("ListTeamProfiles() unexpected error: %v", err)
-	}
-	if view == nil {
-		t.Fatal("ListTeamProfiles() returned nil view")
-	}
-	if len(view.TeamProfiles) != 2 {
-		t.Fatalf("expected 2 team profiles, got %d", len(view.TeamProfiles))
-	}
-	if view.TeamProfiles[0].ProfileName != "p1" {
-		t.Errorf("expected first ProfileName %q, got %q", "p1", view.TeamProfiles[0].ProfileName)
-	}
-	if view.TeamProfiles[0].PlayerModel != "a/b" {
-		t.Errorf("expected first PlayerModel %q, got %q", "a/b", view.TeamProfiles[0].PlayerModel)
-	}
-	if view.TeamProfiles[1].ProfileName != "p2" {
-		t.Errorf("expected second ProfileName %q, got %q", "p2", view.TeamProfiles[1].ProfileName)
-	}
-	if view.NextPageToken != "next" {
-		t.Errorf("expected NextPageToken %q, got %q", "next", view.NextPageToken)
-	}
-}
-
-// TestUpdateTeamProfile_Success verifies UpdateTeamProfile sends the PATCH
-// with the saolei oneof-member mask and returns the updated view.
-func TestUpdateTeamProfile_Success(t *testing.T) {
-	// given: mock server responding to PATCH /api/v1/templates/saolei/profiles/my-profile
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch {
-			t.Errorf("expected PATCH, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/profiles/my-profile"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		if got := r.URL.Query().Get("update_mask"); got != "saolei.player_model,saolei.planner_model,saolei.player_prompt,saolei.planner_prompt" {
-			t.Errorf("expected update_mask with model+prompt paths, got %q", got)
-		}
-		body, _ := io.ReadAll(r.Body)
-		profile := new(game.TeamProfile)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, profile); err != nil {
-			t.Fatalf("failed to parse patch body: %v", err)
-		}
-		if profile.GetName() != "templates/saolei/profiles/my-profile" {
-			t.Errorf("expected name %q, got %q", "templates/saolei/profiles/my-profile", profile.GetName())
-		}
-		if profile.GetSaolei().GetPlayerModel() != "openai/gpt-5" {
-			t.Errorf("expected player_model %q, got %q", "openai/gpt-5", profile.GetSaolei().GetPlayerModel())
-		}
-		if profile.GetSaolei().GetPlayerPrompt() != "custom player base" {
-			t.Errorf("expected player_prompt %q, got %q", "custom player base", profile.GetSaolei().GetPlayerPrompt())
-		}
-		if profile.GetSaolei().GetPlannerPrompt() != "custom planner base" {
-			t.Errorf("expected planner_prompt %q, got %q", "custom planner base", profile.GetSaolei().GetPlannerPrompt())
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	updated, err := app.UpdateTeamProfile("saolei", "my-profile", TeamProfileView{
-		PlayerModel:   "openai/gpt-5",
-		PlayerPrompt:  "custom player base",
-		PlannerPrompt: "custom planner base",
-	}, []string{
-		"saolei.player_model",
-		"saolei.planner_model",
-		"saolei.player_prompt",
-		"saolei.planner_prompt",
-	})
-
-	// then
-	if err != nil {
-		t.Fatalf("UpdateTeamProfile() unexpected error: %v", err)
-	}
-	if updated == nil {
-		t.Fatal("UpdateTeamProfile() returned nil view")
-	}
-	if updated.PlayerModel != "openai/gpt-5" {
-		t.Errorf("expected PlayerModel %q, got %q", "openai/gpt-5", updated.PlayerModel)
-	}
-	if updated.PlayerPrompt != "custom player base" {
-		t.Errorf("expected PlayerPrompt %q, got %q", "custom player base", updated.PlayerPrompt)
-	}
-	if updated.PlannerPrompt != "custom planner base" {
-		t.Errorf("expected PlannerPrompt %q, got %q", "custom planner base", updated.PlannerPrompt)
-	}
-}
-
-// TestDeleteTeamProfile_Success verifies DeleteTeamProfile returns nil on success.
-func TestDeleteTeamProfile_Success(t *testing.T) {
-	// given: mock server responding to DELETE /api/v1/templates/saolei/profiles/del-me
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			t.Errorf("expected DELETE, got %s", r.Method)
-		}
-		wantPath := "/api/v1/templates/saolei/profiles/del-me"
-		if r.URL.Path != wantPath {
-			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	err := app.DeleteTeamProfile("saolei", "del-me")
-
-	// then
-	if err != nil {
-		t.Fatalf("DeleteTeamProfile() unexpected error: %v", err)
-	}
-}
-
-// TestDeleteTeamProfile_NotFound verifies DeleteTeamProfile propagates 404.
-func TestDeleteTeamProfile_NotFound(t *testing.T) {
-	// given: mock server returning 404
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprint(w, `{"error":"not found"}`)
-	}))
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
-
-	// when
-	err := app.DeleteTeamProfile("saolei", "nonexistent")
-
-	// then
-	if err == nil {
-		t.Fatal("DeleteTeamProfile() expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "delete team profile") {
-		t.Errorf("error should contain 'delete team profile', got %q", err.Error())
 	}
 }

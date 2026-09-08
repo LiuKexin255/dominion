@@ -29,7 +29,7 @@
  * update flows through each channel's `messagesStateReducer`, so per-channel
  * `RemoveMessage({ id: REMOVE_ALL_MESSAGES })` clears that channel
  * independently (spike A1). This module provides the `clearChannel` helper
- * (ported from `experimental/ts/team_graph_spike/src/team-graph.ts`) and the
+ * (ported from `experimental/js/team_graph_spike/src/team-graph.ts`) and the
  * `refreshTeamChannels` entry point `SessionTeam`/handler use.
  */
 

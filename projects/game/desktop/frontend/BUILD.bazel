@@ -15,16 +15,41 @@ vite_build(
     visibility = ["//visibility:public"],
 )
 
-# US4 (037-saolei-team-optimize FR-020..FR-025, SC-006): vitest target for the
-# pure chat-fifo module. Tests run against the raw .ts source through the shared
-# shim (tools/dev/js/vitest_test.bzl + specs/019-js-test-reliability/
-# contracts/run-vitest-shim.md); vitest itself is auto-injected by the macro.
-# No :lib exists here (vite_build only), so the glob is the entire test surface.
+# Component tests via the shared vitest shim (style/javascript.md §测试).
+# data mirrors the full set of inputs the tests need at runtime: the raw .ts
+# sources (production + tests) plus the test-stack node_modules — a missing
+# entry crashes in runfiles with `Cannot find package`. jsdom backs the
+# `// @vitest-environment jsdom` docblock in App.test.ts; svelte + the svelte
+# vite plugin make App.svelte transformable inside the vitest pipeline (the
+# js_test cwd is the runfiles workspace root, where no vite/vitest config
+# exists, so VITEST_VITE_OVERRIDES pins the vite root to this package so
+# vitest discovers the package vite.config.ts / svelte.config.js — the same
+# shim opt-in the web frontend consumes, tools/dev/js/run_vitest.mjs).
+# :node_modules/vitest is auto-injected by the macro; do not add it here.
 vitest_test(
     name = "lib_test",
     size = "small",
     data = glob(
-        ["src/**/*.ts"],
+        [
+            "src/**/*.ts",
+            "src/**/*.svelte",
+        ],
         allow_empty = True,
-    ),
+    ) + [
+        "package.json",
+        "svelte.config.js",
+        "vite.config.ts",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/jsdom",
+        ":node_modules/svelte",
+    ],
+    env = {
+        # - root: the js_test cwd is the runfiles workspace root, so pin the
+        #   vite root to this package for vitest to discover the package
+        #   vite.config.ts / svelte.config.js.
+        # - resolve.conditions: the vite dev-client default set — vitest's SSR
+        #   resolver otherwise picks svelte's node entry (index-server.js),
+        #   where mount() is unavailable for the jsdom component tests.
+        "VITEST_VITE_OVERRIDES": '{"root":"projects/game/desktop/frontend","resolve":{"conditions":["module","browser","development|production"]}}',
+    },
 )

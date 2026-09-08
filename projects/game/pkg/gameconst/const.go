@@ -10,11 +10,25 @@ import (
 // gRPC target constants
 const (
 	SessionTarget = "game/session:grpc"
-	// TeamTarget is the gRPC target of the TeamService (hosted by the proxy
-	// service, which replaced ProxyService per spec 031-team-template-mode).
-	TeamTarget   = "game/proxy:grpc"
-	AgentTarget  = "game/agent:grpc"
-	PromptTarget = "game/prompt:grpc"
+	// TeamTarget is the gRPC target of the proxy service: the proxy hosts
+	// the v2 session face (AgentService + DesktopBridgeService) with owner
+	// affinity for the stateful agent_v2 instances
+	// (specs/051-agent-v2-dsh-migration/research.md D9). The constant keeps
+	// the "team" name, as does the gateway's teamConn dialing it.
+	TeamTarget = "game/proxy:grpc"
+	// AgentV2Target is the service discovery target of the agent-v2 gRPC
+	// service, the stateful dsh-hosted game agent. Two consumers dial it:
+	// the proxy's stateful-instance resolver, giving the session face
+	// (AgentService/DesktopBridgeService) owner affinity, and the gateway's
+	// presetConn, which dials agent-v2 directly for the stateless
+	// configuration face (PresetService — preset state lives in Mongo and
+	// the model catalog is static, so any instance serves and no proxy hop
+	// is needed; specs/051-agent-v2-dsh-migration/revisions/
+	// directive-2026-09-01.md §3). The discovery name is
+	// "agent-v2" (hyphens — the deploy API's service-name constraint,
+	// specs/049-agent-v2-dsh-init/research.md D13) while the project
+	// directory and bazel targets keep agent_v2.
+	AgentV2Target = "game/agent-v2:grpc"
 	// MemoryTarget is the gRPC target of the MemoryService (spec 039
 	// planner-memory-calibration, contracts/memory-service-contract.md §5).
 	MemoryTarget = "game/memory:grpc"

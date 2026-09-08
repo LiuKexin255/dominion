@@ -6,9 +6,8 @@
   //
   // Pure operation-channel surface: it associates with a held operation via
   // the bridge-minted operation id (`entry.toolId`), NOT via any conversation
-  // `tool_call.id` (decoupled per research.md D10). The conversation renderer
-  // (`ChatView`) is uninvolved. Rows stack vertically in arrival order; the
-  // drawer is hidden when `heldOperations` is empty.
+  // `tool_call.id` (decoupled per research.md D10). Rows stack vertically in
+  // arrival order; the drawer is hidden when `heldOperations` is empty.
 
   import type { HeldOperation } from '../api'
 
@@ -38,8 +37,7 @@
 {/if}
 
 <style>
-  /* Drawer panel pinned to the top of the session chat area, visually
-     separable from the conversation transcript below. */
+  /* Drawer panel pinned to the top of the session view. */
   .op-confirm-drawer {
     display: flex;
     flex-direction: column;
@@ -77,9 +75,8 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
-  /* Confirm control — reuses the existing `.btn btn-small` baseline; the
-     color scheme mirrors the prior bubble Confirm so users see a familiar
-     accent on the new surface. */
+  /* Confirm control — reuses the existing `.btn btn-small` baseline with a
+     cyan accent so the confirm affordance stands out from the neutral row. */
   .confirm-btn {
     margin-left: auto;
     background: rgba(139, 233, 253, 0.12);

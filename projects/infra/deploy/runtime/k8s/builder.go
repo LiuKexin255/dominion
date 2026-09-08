@@ -69,6 +69,18 @@ const (
 	// envConfigDir 为 Config 挂载目录环境变量名（平台保留，用户 env 不可覆盖）。
 	envConfigDir = "DOMINION_CONFIG_DIR"
 
+	// healthProbe 常量为用户服务容器探针的固定约定端点与参数
+	// （specs/052-deploy-health-probe/contracts/deploy-probe.md §2）。
+	healthProbePort   = 38080
+	healthProbePath   = "/healthz"
+	healthProbePeriod = 10
+	// healthProbeStartupFailureThreshold 与 healthProbePeriod 组成 10s×30=300s
+	// 启动预算（k8s 官方慢启动范例：
+	// https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/）。
+	healthProbeStartupFailureThreshold = 30
+	// healthProbeLivenessFailureThreshold 与 healthProbePeriod 组成 ≈30s 运行期判死窗口。
+	healthProbeLivenessFailureThreshold = 3
+
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
 	// statefulSetPodNameLabelKey 为 StatefulSet Pod 单实例选择器标签。
@@ -253,6 +265,8 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		containerEnv = append(containerEnv, configEnv)
 	}
 
+	startupProbe, livenessProbe := buildHealthProbes()
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.WorkloadName(),
@@ -271,11 +285,13 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 				Spec: corev1.PodSpec{
 					Volumes: volumes,
 					Containers: []corev1.Container{{
-						Name:         workload.WorkloadName(),
-						Image:        workload.Image,
-						Ports:        ports,
-						VolumeMounts: volumeMounts,
-						Env:          containerEnv,
+						Name:          workload.WorkloadName(),
+						Image:         workload.Image,
+						Ports:         ports,
+						VolumeMounts:  volumeMounts,
+						Env:           containerEnv,
+						StartupProbe:  startupProbe,
+						LivenessProbe: livenessProbe,
 					}},
 				},
 			},
@@ -420,6 +436,8 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		containerEnv = append(containerEnv, configEnv)
 	}
 
+	startupProbe, livenessProbe := buildHealthProbes()
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.WorkloadName(),
@@ -439,11 +457,13 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 				Spec: corev1.PodSpec{
 					Volumes: volumes,
 					Containers: []corev1.Container{{
-						Name:         workload.WorkloadName(),
-						Image:        workload.Image,
-						Ports:        ports,
-						VolumeMounts: volumeMounts,
-						Env:          containerEnv,
+						Name:          workload.WorkloadName(),
+						Image:         workload.Image,
+						Ports:         ports,
+						VolumeMounts:  volumeMounts,
+						Env:           containerEnv,
+						StartupProbe:  startupProbe,
+						LivenessProbe: livenessProbe,
 					}},
 				},
 			},
@@ -1063,6 +1083,34 @@ func defaultLogLevel(envType domain.EnvironmentType) string {
 	default:
 		return "info"
 	}
+}
+
+// buildHealthProbes 返回用户服务容器的 startupProbe 与 livenessProbe，均指向
+// 固定约定端点（healthProbePort/healthProbePath）。startupProbe 成功前 k8s 不执行
+// liveness（https://kubernetes.io/docs/concepts/workloads/pods/probes/），故两者
+// 均不设置 initialDelaySeconds。参数为固定契约、无配置面，Deployment 与
+// StatefulSet 的用户服务容器同等附加
+// （specs/052-deploy-health-probe/contracts/deploy-probe.md §2/§3）。探针按端口号
+// 寻址且不在 containerPorts 声明，避免进入 Service ports
+// （specs/052-deploy-health-probe/research.md D3）；infra 组件（Mongo 等）不使用。
+func buildHealthProbes() (startup, liveness *corev1.Probe) {
+	newHTTPGet := func() *corev1.HTTPGetAction {
+		return &corev1.HTTPGetAction{
+			Path: healthProbePath,
+			Port: intstr.FromInt32(healthProbePort),
+		}
+	}
+	startup = &corev1.Probe{
+		ProbeHandler:     corev1.ProbeHandler{HTTPGet: newHTTPGet()},
+		PeriodSeconds:    healthProbePeriod,
+		FailureThreshold: healthProbeStartupFailureThreshold,
+	}
+	liveness = &corev1.Probe{
+		ProbeHandler:     corev1.ProbeHandler{HTTPGet: newHTTPGet()},
+		PeriodSeconds:    healthProbePeriod,
+		FailureThreshold: healthProbeLivenessFailureThreshold,
+	}
+	return startup, liveness
 }
 
 func buildContainerPorts(ports []*DeploymentPort) ([]corev1.ContainerPort, error) {

@@ -1,0 +1,45 @@
+# gazelle:resolve go dominion/projects/game/web/server/assets //projects/game/web/server/assets:assets
+
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+
+go_library(
+    name = "server_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/game/web/server",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/http",
+        "//common/gopkg/otel",
+        "//projects/game/web/server/assets",
+    ],
+)
+
+go_binary(
+    name = "server",
+    embed = [":server_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "server_test",
+    srcs = ["main_test.go"],
+    embed = [":server_lib"],
+    deps = ["//projects/game/web/server/assets"],
+)
+
+artifact_pkg_go(
+    name = "server_pkg",
+    app = "game",
+    binary = ":server",
+    service = "web",
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "game",
+    pkg = ":server_pkg",
+    service = "web",
+)
