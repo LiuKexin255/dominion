@@ -26,7 +26,7 @@ bazel test //experimental/dsh/demo/testplan:closure_audit_test
 guitar run experimental/dsh/demo/testplan/interface_test.yaml
 ```
 
-- 部署三服务（含 emptyDir writable root 与模板数据 env 注入，contracts/composition-manifest.md §2）。
+- 部署三服务（含容器临时可写层 writable root 与模板数据 env 注入，contracts/composition-manifest.md §2）。
 - **047 既有用例全部保持通过**（聊天往返/多轮/并发——回归门禁）。
 - 新增 preset 场景用例（覆盖 spec US1×4 + US2×4 验收场景）：
   1. CreateConversation(preset=demo-tools) + SendMessage → system_keywords 断言 tools persona + `demo_echo` guidance（V1-1/V2-3）
