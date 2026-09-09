@@ -40,7 +40,7 @@
     roots:
       - path: !!js process.env.PRESET_TEMPLATES_ROOT   # 镜像内模板数据（R9）
         trust: system
-      - path: !!js process.env.PRESET_WRITABLE_ROOT    # emptyDir；第一个且唯一 user root
+      - path: !!js process.env.PRESET_WRITABLE_ROOT    # 容器临时可写层（§2）；第一个且唯一 user root
         trust: user
 - { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }
 ```
@@ -52,10 +52,12 @@
 | env | 注入方 | 值 |
 |---|---|---|
 | `PRESET_TEMPLATES_ROOT` | 镜像内固定路径（部署清单声明） | `/dominion/dsh-demo/agent/presets-templates`（artifact_pkg_js data 目录，随包分发） |
-| `PRESET_WRITABLE_ROOT` | 部署清单声明 | emptyDir 卷挂载点（如 `/var/lib/dsh-demo/presets`） |
+| `PRESET_WRITABLE_ROOT` | 部署清单声明 | 容器临时可写层固定路径 `/var/lib/dsh-demo/presets`（非卷挂载点，见下） |
 
+- 可写 root 位于容器临时可写层，无卷声明：deploy 平台不提供用户服务卷通道——deploy v3 schema 的 artifact 服务属性仅 `path`/`name`/`replicas`/`env`/`secrets`/`configs` 且 `additionalProperties: false`（`tools/release/deploy/pkg/schema/deploy.schema.json`）；k8s builder 为用户服务生成的卷均为平台管理的只读投影卷（TLS/secrets/configs，`projects/infra/deploy/runtime/k8s/builder.go`，唯一可写卷是 infra MongoDB 专用的数据卷）。根目录无须预置——roster 首次 `copy()` 自动创建。
+- 临时可写层随 Pod 重建即丢失——与内存态 preset store 的重启丢失已知限制一致（`specs/058-dsh-preset-roster-demo/spec.md` Edge Cases「服务重启」）；模板 root 为镜像数据，不受影响。
 - 可写 root MUST 是 roster roots 中**第一个 user-trust root**（roster `copy()`/`remove()` 的目标约束）。
-- 两 root 的 config 经 `!!js process.env.*` 读取——boot 前必须已设（deploy env 注入；本地/单测直设），未设则 roster 解析失败 → boot fail-loud（FR-009 语义延续）。
+- 两 root 的 config 经 `!!js process.env.*` 读取——boot 前必须已设（deploy env 注入；本地/单测直设），未设则 roster roots 解析失败 → boot fail-loud：boot 任一步失败即非零退出并携带诊断、不存在半启动状态（fail-loud 定义：`specs/047-dsh-chat-demo/contracts/dsh-agent-service.md` §1；两 root 配置语境：`specs/058-dsh-preset-roster-demo/spec.md` FR-001）。
 
 ## 3. 模板 preset（部署数据，`experimental/dsh/demo/agent/presets-templates/`）
 

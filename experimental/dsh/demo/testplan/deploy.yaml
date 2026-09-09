@@ -26,6 +26,15 @@ services:
         # and injected by the deploy system
         # (tools/release/deploy/README.md §环境变量配置).
         FAKE_LLM_API_KEY: dummy-key
+        # Roster roots (specs/058-dsh-preset-roster-demo/contracts/
+        # composition-manifest.md §2): the templates root is the artifact's
+        # packaged data directory, the writable root is an ephemeral
+        # in-container path. The deploy schema carries no volume channel, so
+        # the writable root lives on the container's ephemeral writable layer
+        # (the roster creates it on first copy) — the restart-loss semantics
+        # match the in-memory preset store's known limitation.
+        PRESET_TEMPLATES_ROOT: /dominion/dsh-demo/agent/presets-templates
+        PRESET_WRITABLE_ROOT: /var/lib/dsh-demo/presets
   - artifact:
       path: //experimental/dsh/demo/gateway/service.yaml
       name: gateway

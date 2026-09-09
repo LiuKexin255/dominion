@@ -36,6 +36,6 @@
     roots:
       - path: !!js process.env.PRESET_TEMPLATES_ROOT   # 镜像内模板数据（system 信任）
         trust: system
-      - path: !!js process.env.PRESET_WRITABLE_ROOT    # emptyDir；第一个且唯一 user root
+      - path: !!js process.env.PRESET_WRITABLE_ROOT    # 容器临时可写层（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §2）；第一个且唯一 user root
         trust: user
 - { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }

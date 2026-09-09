@@ -43,11 +43,11 @@ HTTP 注解（AIP 风格，与 agent_v2 PresetService 同型）：
 
 | RPC | HTTP | 路径 |
 |---|---|---|
-| CreatePreset | POST | `/experimental/dsh-demo/presets?preset_id={id}` |
-| GetPreset | GET | `/experimental/dsh-demo/presets/{id}` |
+| CreatePreset | POST | `/experimental/dsh-demo/presets`（body: `"*"`；`preset_id` 经 body 携带——grpc-gateway 对 `body: "*"` 不解析 query string，AIP-127） |
+| GetPreset | GET | `/experimental/dsh-demo/{name=presets/*}` |
 | ListPresets | GET | `/experimental/dsh-demo/presets`（demo 规模：无分页参数，全量返回） |
-| UpdatePreset | PATCH | `/experimental/dsh-demo/presets/{id}`（body 携带 `update_mask`，AIP-134） |
-| DeletePreset | DELETE | `/experimental/dsh-demo/presets/{id}` |
+| UpdatePreset | PATCH | `/experimental/dsh-demo/{name=presets/*}`（body 携带 `update_mask`，AIP-134） |
+| DeletePreset | DELETE | `/experimental/dsh-demo/{name=presets/*}` |
 
 **Preset 资源**：`name`（`presets/{id}`）、`template`、`persona`、`display_name`、`create_time`、`update_time`。
 

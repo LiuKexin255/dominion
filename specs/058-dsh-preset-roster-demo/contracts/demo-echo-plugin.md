@@ -26,7 +26,7 @@ echo: {text}
 
 ## 3. Guidance section（同 `apply()` 注册）
 
-- `ctx.systemPrompt.register(...)`：order 100-199 频段（工具守则带，`survey/deepseek-harness-team-mode.md` §4.5 的 order 约定），标题含关键词 `demo_echo`（供 fake-llm `system_keywords` 端到端断言——R6：guidance 与 persona 同走 system prompt）。
+- `ctx.systemPrompt.section(...)`：注册一条 PromptSection（order 100-199 频段，工具守则带，`survey/deepseek-harness-team-mode.md` §4.5 的 order 约定），标题含关键词 `demo_echo`（供 fake-llm `system_keywords` 端到端断言——R6：guidance 与 persona 同走 system prompt）。
 - 内容要点：说明 `demo_echo` 的用途与输出格式（几行内）。
 
 ## 4. 一致性要求（FR-006 / V2-3 的机制保证）

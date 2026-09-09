@@ -71,9 +71,12 @@ ts_project(
 artifact_pkg_js(
     name = "server_pkg",
     app = "dsh-demo",
-    data_files = [
-        "cordis.yml",
-    ],
+    data_files = ["cordis.yml"] + glob(
+        # Template presets ship with the artifact under
+        # /dominion/dsh-demo/agent/presets-templates (PRESET_TEMPLATES_ROOT,
+        # specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §2-§3).
+        ["presets-templates/**"],
+    ),
     entrypoint = "src/bootstrap.js",
     npm_deps = [
         # Service-declared dsh rows and imports (closure contract:

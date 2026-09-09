@@ -128,6 +128,17 @@ export function buildChatHandlers(sink: ChatSessionSink): ChatHandlers {
         },
       );
     },
+
+    // CreateConversation is declared by the extended proto (specs/
+    // 058-dsh-preset-roster-demo/contracts/chat-api.md §1.1) and lands with
+    // the session-preset binding work; until then the RPC answers the
+    // standard unimplemented status instead of failing the build surface.
+    CreateConversation: (_call, callback) => {
+      callback({
+        code: grpc.status.UNIMPLEMENTED,
+        message: "CreateConversation is not implemented yet; it lands with the session-preset binding work",
+      });
+    },
   };
 }
 

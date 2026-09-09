@@ -11,7 +11,8 @@
         }
     },
     "dependencies": {
-        "@deepseek-ai/schemastery": "catalog:"
+        "@deepseek-ai/dsh-system-prompt": "catalog:",
+        "@deepseek-ai/dsh-tools": "catalog:"
     },
     "peerDependencies": {
         "@deepseek-ai/cordis": "catalog:"
