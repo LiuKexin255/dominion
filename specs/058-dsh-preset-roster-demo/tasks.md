@@ -97,7 +97,7 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md`（§2 边界声明）
 
-- [ ] T020 [US3] 执行边界审计并在 `specs/058-dsh-preset-roster-demo/checklists/` 记录结论：grep 审计 service 层（`rg "agentPresets|node:fs" experimental/dsh/demo/agent/src/`）与插件层（RPC/proto 概念）；发现越界则回改对应文件后复审
+- [X] T020 [US3] 执行边界审计并在 `specs/058-dsh-preset-roster-demo/checklists/` 记录结论：grep 审计 service 层（`rg "agentPresets|node:fs" experimental/dsh/demo/agent/src/`）与插件层（RPC/proto 概念）；发现越界则回改对应文件后复审
 
 **Checkpoint**: V4-2 通过——边界交付物完成（对 agent_v2 迁移的模板价值）
 

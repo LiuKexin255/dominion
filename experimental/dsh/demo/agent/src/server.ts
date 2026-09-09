@@ -14,9 +14,11 @@
  * empty fields map to INVALID_ARGUMENT, the not-created domain error maps to
  * FAILED_PRECONDITION (FR-002), preset-authoring rejections map onto their
  * error codes one-to-one (preset-authoring-plugin.md §6), and agent failures
- * map to INTERNAL without taking the process down. The service layer holds
- * zero roster API and zero filesystem references (FR-005): preset domain
- * operations flow exclusively through the preset-authoring service face.
+ * map to INTERNAL without taking the process down. The service layer makes
+ * zero roster API calls and zero preset-file filesystem accesses (FR-005):
+ * preset domain operations flow exclusively through the preset-authoring
+ * service face; the only filesystem uses here are the transport's own proto
+ * and TLS loading, which stand apart from the preset domain.
  */
 
 import * as fs from "node:fs";
