@@ -57,12 +57,12 @@
 - **官方文档**：`node_modules/.pnpm/@deepseek-ai+dsh-agent@0.1.1-rc.2_c1537a8836b04097f168b024f1e38d85/node_modules/@deepseek-ai/dsh-agent/lib/types/index.d.ts`（`CreateAgentOptions.setup`/`meta.agentPreset`/`AgentSetup` 类型）
 - **技术文章/技术参考文档**：`specs/058-dsh-preset-roster-demo/contracts/chat-api.md`（§1）、`specs/058-dsh-preset-roster-demo/contracts/fake-llm-system-keywords.md`、`specs/058-dsh-preset-roster-demo/data-model.md`（§3 Conversation 状态转移）、`specs/047-dsh-chat-demo/contracts/fake-llm-templates.md`（匹配语义母本）、`node_modules/.pnpm/@deepseek-ai+dsh-host-apiproxy@0.1.1-rc.2_7a1c54e2b954eca6f88bad802758761b/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js:1717-1765`（`composeAgent`/`assertPresetUnchanged` 官方接线参照）、`specs/058-dsh-preset-roster-demo/research.md`（R2/R4/R6）
 
-- [ ] T012 [US1] `experimental/dsh/demo/agent/src/session.ts` 显式会话改造：`AgentSessions` 增 conversation 注册表（preset 绑定），`create()` 改为消费 `ctx.get("presetAuthoring").compose(presetId)`（`meta: {cwd, agentPreset}` + `setup`）；同 preset 幂等 / 异 preset dispose 重建（R4）；`send()` 对未创建会话抛 FAILED_PRECONDITION 域错误
-- [ ] T013 [US1] `experimental/dsh/demo/agent/src/server.ts` 增 `CreateConversation` handler（校验/错误映射/资源视图）+ `server.test.ts`（域错误 → gRPC status 映射、preset 校验失败透传）
-- [ ] T014 [P] [US1] fake-llm 扩展：`experimental/dsh/demo/fake-llm/service/message_types.go`（模板结构体增 `SystemKeywords []string`，yaml `system_keywords`）+ `matcher.go`（`S` 集合计算 + every-hit 并入条件模板判定，未声明零行为变化）+ `matcher_test.go`/`handler_test.go` 表驱动用例
-- [ ] T015 [P] [US1] fake-llm testdata：`experimental/dsh/demo/fake-llm/service/testdata/` 新增 preset 场景模板组（contracts/fake-llm-system-keywords.md §3：persona 差异/guidance 在场与缺席）
-- [ ] T016 [US1] 集成单测：`experimental/dsh/demo/agent/src/composition.test.ts`——boot 真直组组合（temp roots + 两模板），断言 V1-1 单测面（两 preset 会话 persona/system prompt 差异 + deployment persona 遮蔽，mock LLM 适配或 llm 请求面断言）、V1-3（header `agentPreset` 落对）、V2-1（preset 行工具仅成员可见）、V2-2（同 preset 两会话共享一份注册）
-- [ ] T017 [US1] 大型测试会话绑定用例：`experimental/dsh/demo/testplan/preset_test.go`（模块=preset 会话绑定面：V1-1/V1-2/V2-3 端到端、US1-AS3 同 preset 两会话行为一致、US1-AS4 会话级稳定性（后续消息组合保持绑定不变）、幂等/重建、FAILED_PRECONDITION；遵守 `style/large_test.md` 模块维度与 helper 复用 `helpers_test.go`）+ `interface_test.yaml` 挂载 case
+- [X] T012 [US1] `experimental/dsh/demo/agent/src/session.ts` 显式会话改造：`AgentSessions` 增 conversation 注册表（preset 绑定），`create()` 改为消费 `ctx.get("presetAuthoring").compose(presetId)`（`meta: {cwd, agentPreset}` + `setup`）；同 preset 幂等 / 异 preset dispose 重建（R4）；`send()` 对未创建会话抛 FAILED_PRECONDITION 域错误
+- [X] T013 [US1] `experimental/dsh/demo/agent/src/server.ts` 增 `CreateConversation` handler（校验/错误映射/资源视图）+ `server.test.ts`（域错误 → gRPC status 映射、preset 校验失败透传）
+- [X] T014 [P] [US1] fake-llm 扩展：`experimental/dsh/demo/fake-llm/service/message_types.go`（模板结构体增 `SystemKeywords []string`，yaml `system_keywords`）+ `matcher.go`（`S` 集合计算 + every-hit 并入条件模板判定，未声明零行为变化）+ `matcher_test.go`/`handler_test.go` 表驱动用例
+- [X] T015 [P] [US1] fake-llm testdata：`experimental/dsh/demo/fake-llm/service/testdata/` 新增 preset 场景模板组（contracts/fake-llm-system-keywords.md §3：persona 差异/guidance 在场与缺席）
+- [X] T016 [US1] 集成单测：`experimental/dsh/demo/agent/src/composition.test.ts`——boot 真直组组合（temp roots + 两模板），断言 V1-1 单测面（两 preset 会话 persona/system prompt 差异 + deployment persona 遮蔽，mock LLM 适配或 llm 请求面断言）、V1-3（header `agentPreset` 落对）、V2-1（preset 行工具仅成员可见）、V2-2（同 preset 两会话共享一份注册）
+- [X] T017 [US1] 大型测试会话绑定用例：`experimental/dsh/demo/testplan/preset_test.go`（模块=preset 会话绑定面：V1-1/V1-2/V2-3 端到端、US1-AS3 同 preset 两会话行为一致、US1-AS4 会话级稳定性（后续消息组合保持绑定不变）、幂等/重建、FAILED_PRECONDITION；遵守 `style/large_test.md` 模块维度与 helper 复用 `helpers_test.go`）+ `interface_test.yaml` 挂载 case
 
 **Checkpoint**: MVP 完成——US1 全部验收场景可独立演示（quickstart §3 场景 1-3、7-8）
 

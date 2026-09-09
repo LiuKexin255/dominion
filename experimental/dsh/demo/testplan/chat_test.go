@@ -48,12 +48,19 @@ func TestChatReply(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given: one fresh conversation and the user message under test.
+			// given: one fresh conversation — created explicitly, since
+			// sendMessage no longer creates lazily (058 FR-002) — and the
+			// user message under test. The default preset keeps the plain
+			// 047 chat flows intact.
 			resourceName := "conversations/" + tt.conversationID
+			status, respBody := createConversation(t, ctx, baseURL, envName, tt.conversationID, "")
+			if status != http.StatusOK {
+				t.Fatalf("createConversation status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+			}
 
 			// when: one sendMessage round trip through the public entry.
 			body := []byte(`{"message": "` + tt.message + `"}`)
-			status, respBody := postChatTurn(t, ctx, baseURL, envName, resourceName, body)
+			status, respBody = postChatTurn(t, ctx, baseURL, envName, resourceName, body)
 
 			// then: the reply is the template text, verbatim, and the
 			// resource name echoes back.
@@ -90,11 +97,15 @@ func TestChatReplyDeterminism(t *testing.T) {
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: one conversation and one request body, sent as-is twice.
-	const (
-		resourceName = "conversations/us1-determinism"
-		wantReply    = "Sure, let's chat!"
-	)
+	// given: one conversation — created explicitly (058 FR-002: no lazy
+	// creation) — and one request body, sent as-is twice.
+	const conversationID = "us1-determinism"
+	const wantReply = "Sure, let's chat!"
+	status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, "")
+	if status != http.StatusOK {
+		t.Fatalf("createConversation status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+	}
+	const resourceName = "conversations/" + conversationID
 	body := []byte(`{"message": "can we chat"}`)
 
 	// when: the identical request is repeated in the same conversation.

@@ -76,3 +76,30 @@ go_largetest(
         "//common/gopkg/testtool",
     ],
 )
+
+# preset_test is the preset conversation-binding suite
+# (specs/058-dsh-preset-roster-demo/tasks.md T017): explicit
+# CreateConversation with a preset (default/差异 selection), end-to-end
+# composition assertions via the fake-llm system_keywords probes, shared
+# behaviour for same-preset sessions, session-level binding stability,
+# idempotent/rebuild repeats, the unknown-preset rejection, and the
+# no-lazy-creation FAILED_PRECONDITION edge. Appended to the same suite in
+# interface_test.yaml (single-plan principle, style/large_test.md
+# §测试计划数量); helpers and anchors are shared with the other suites
+# through helpers_test.go (style/large_test.md §测试组织).
+#
+# size = small: a handful of tests, each a few HTTP round trips of
+# sub-second chat turns or conversation creates — comfortably inside the
+# 60s small budget even as cases accumulate.
+go_largetest(
+    name = "preset_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "preset_test.go",
+    ],
+    deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//common/gopkg/testtool",
+    ],
+)

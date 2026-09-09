@@ -291,9 +291,10 @@ func TestValidate(t *testing.T) {
 // tests rely on (specs/047-dsh-chat-demo/contracts/fake-llm-templates.md
 // §4): greeting.text for the first-turn round trip, greeting-again.text
 // for the second-turn multi-turn branch (specs/047-dsh-chat-demo/tasks.md
-// T022), farewell.text for the no-match fallback. If these change, the
-// testplan cases (specs/047-dsh-chat-demo/tasks.md T019/T022) must be
-// updated in lockstep.
+// T022), farewell.text for the no-match fallback — and, for the preset
+// scenarios, the persona/guidance probe anchors of
+// specs/058-dsh-preset-roster-demo/contracts/fake-llm-system-keywords.md
+// §3. If these change, the testplan cases must be updated in lockstep.
 func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	// when
 	store, err := NewMessageStore()
@@ -304,12 +305,22 @@ func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 4 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 4 (chat-only + farewell + greeting + greeting-again)", len(got))
+	if len(got) != 7 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 7 (chat-only + farewell + greeting + greeting-again + 3 preset templates)", len(got))
 	}
 
-	// Sorted alphabetically: chat-only < farewell < greeting < greeting-again.
-	wantNames := []string{"chat-only", "farewell", "greeting", "greeting-again"}
+	// Sorted alphabetically: chat-only < farewell < greeting <
+	// greeting-again < preset-persona-standard < preset-persona-tools <
+	// tool-guidance-present.
+	wantNames := []string{
+		"chat-only",
+		"farewell",
+		"greeting",
+		"greeting-again",
+		"preset-persona-standard",
+		"preset-persona-tools",
+		"tool-guidance-present",
+	}
 	for i, want := range wantNames {
 		if got[i].Name != want {
 			t.Fatalf("message[%d] = %q, want %q", i, got[i].Name, want)
@@ -349,5 +360,30 @@ func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	}
 	if greetingAgain.Text != "Hello again! We have already met." {
 		t.Errorf("greeting-again text = %q, want the multi-turn branch text", greetingAgain.Text)
+	}
+
+	// The preset scenario anchors: the system_keywords mirror the deployed
+	// template personas and the demo-echo guidance heading; the texts are
+	// what the preset large-test cases assert verbatim.
+	presetAnchors := []struct {
+		index          int
+		systemKeywords []string
+		text           string
+	}{
+		{4, []string{"demo standard assistant"}, "persona-standard-hit"},
+		{5, []string{"demo tools assistant"}, "persona-tools-hit"},
+		{6, []string{"demo_echo"}, "tool-guidance-hit"},
+	}
+	for _, anchor := range presetAnchors {
+		tpl := got[anchor.index]
+		if !slices.Equal(tpl.SystemKeywords, anchor.systemKeywords) {
+			t.Errorf("%s system_keywords = %v, want %v", tpl.Name, tpl.SystemKeywords, anchor.systemKeywords)
+		}
+		if !slices.Contains(tpl.Keywords, "preset-probe") && !slices.Contains(tpl.Keywords, "guidance-probe") {
+			t.Errorf("%s keywords = %v, want a probe keyword", tpl.Name, tpl.Keywords)
+		}
+		if tpl.Text != anchor.text {
+			t.Errorf("%s text = %q, want %q", tpl.Name, tpl.Text, anchor.text)
+		}
 	}
 }

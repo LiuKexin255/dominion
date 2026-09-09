@@ -1,0 +1,28 @@
+# preset.yaml — 058 preset scenario templates for the dsh-demo fake-llm
+# (specs/058-dsh-preset-roster-demo/contracts/fake-llm-system-keywords.md §3).
+# The persona texts in system_keywords mirror the deployed template presets
+# (experimental/dsh/demo/agent/presets-templates/): demo-standard's persona
+# is "You are the demo standard assistant.", demo-tools' is "You are the
+# demo tools assistant.", and the demo-echo guidance heading carries
+# "demo_echo" (experimental/dsh/demo/agent-plugins/demo-echo/src/index.ts).
+#
+# Every template here is a multi-turn condition template pairing a
+# system_keywords condition with a deliberate user-keyword probe, so the
+# templates only fire on requests that probe the preset behaviour — plain
+# 047 chat flows (hello/chat/no-match) are unaffected, and templates
+# without a probe keyword never match. The guidance-absent direction is
+# covered by the unique pure fallback template (farewell in chat.yaml),
+# which is what a demo-standard session answers a guidance-probe with.
+messages:
+  - name: preset-persona-standard
+    keywords: [preset-probe]
+    system_keywords: ["demo standard assistant"]
+    text: "persona-standard-hit"
+  - name: preset-persona-tools
+    keywords: [preset-probe]
+    system_keywords: ["demo tools assistant"]
+    text: "persona-tools-hit"
+  - name: tool-guidance-present
+    keywords: [guidance-probe]
+    system_keywords: ["demo_echo"]
+    text: "tool-guidance-hit"

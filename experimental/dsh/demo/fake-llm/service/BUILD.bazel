@@ -10,7 +10,10 @@ go_library(
         "message_types.go",
         "startup.go",
     ],
-    embedsrcs = ["testdata/chat.yaml"],
+    embedsrcs = [
+        "testdata/chat.yaml",
+        "testdata/preset.yaml",
+    ],
     importpath = "dominion/experimental/dsh/demo/fake-llm/service",
     visibility = ["//visibility:public"],
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],

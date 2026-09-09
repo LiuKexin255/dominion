@@ -35,13 +35,29 @@ ts_project(
 )
 
 # Workspace package target required by npm_link_all_packages for workspace:*
-# deps (common/js/dsh-plugins/llm-glm/BUILD.bazel precedent): the manifest is
-# carried by the pnpm workspace scan, NOT a js_library src — the packaged
-# manifest is staged by artifact_pkg_js from js_runtime_library's
-# package_json.
+# deps (common/js/dsh-plugins/llm-glm/BUILD.bazel precedent).
+#
+# "package.json" in srcs is REQUIRED for the npm-linker's runfiles store
+# entry of a workspace package: the entry is populated from the js_library
+# srcs, and without the manifest in it, Node cannot resolve the bare
+# specifier (no package.json to read exports/main from). This row is a
+# PRESET composition row — resolved by bare name from the host base when
+# the roster mounts it — and the composition integration test exercises
+# that exact path, so omitting it fails the test with "Cannot find package
+# @dominion/dsh-demo-echo" (common/js/bootstrap/BUILD.bazel precedent).
+#
+# This does NOT revive the assumption llm-glm's comment disproved: that
+# disproof concerns the PACKAGING face — the manifest shipped in the
+# artifact tar is staged by artifact_pkg_js from js_runtime_library's
+# package_json regardless of this srcs entry, so adding it here changes
+# nothing about what ships. The two conclusions hold on different faces:
+# packaging needs nothing here, vitest/Loader resolution needs the manifest.
 js_library(
     name = "pkg",
-    srcs = [":lib"],
+    srcs = [
+        "package.json",
+        ":lib",
+    ],
     visibility = ["//visibility:public"],
 )
 

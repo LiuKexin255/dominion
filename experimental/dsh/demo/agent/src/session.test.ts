@@ -1,14 +1,23 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { AgentSessions, finalResponse } from "./session.js";
+import {
+  AgentSessions,
+  ConversationNotCreatedError,
+  finalResponse,
+} from "./session.js";
 import type { DshContext } from "./dsh.js";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
 
 /**
- * Unit tests for the conversation registry and round driver. The cordis
- * Context is a hand-rolled fake whose `on` captures listeners; tests drive
- * the dsh event sequence (running → turn/start → assistant/message →
+ * Unit tests for the explicit conversation registry and round driver. The
+ * cordis Context is a hand-rolled fake whose `on` captures listeners; tests
+ * drive the dsh event sequence (running → turn/start → assistant/message →
  * turn/end → idle, https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/agent-lifecycle.md) by emitting into the captured
  * listeners — no module interception (style/javascript.md Mock convention).
+ *
+ * The preset composition resolves through the `presetAuthoring` seam
+ * (specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md §2):
+ * the harness injects a `vi.fn()` compose double, so the create/rebuild
+ * semantics (R4) are asserted against the calls the service makes.
  */
 
 type Listener = (...args: never[]) => void;
@@ -17,9 +26,14 @@ interface Harness {
   ctx: DshContext;
   agentsGet: ReturnType<typeof vi.fn>;
   agentsCreate: ReturnType<typeof vi.fn>;
+  compose: ReturnType<typeof vi.fn>;
   fiberDispose: ReturnType<typeof vi.fn>;
   listeners: Map<string, Listener[]>;
 }
+
+/** The setup hook compose() returns; asserted by identity on agentsCreate. */
+const standardSetup = vi.fn(async () => {});
+const toolsSetup = vi.fn(async () => {});
 
 function fakeAgent(id: string) {
   return {
@@ -48,13 +62,21 @@ function createHarness(): Harness {
   });
   const agentsGet = vi.fn();
   const agentsCreate = vi.fn();
+  const compose = vi.fn(async (presetId?: string) => {
+    if (presetId === "demo-tools") {
+      return { agentPreset: "demo-tools", setup: toolsSetup };
+    }
+    // undefined and "demo-standard" both resolve to the roster default.
+    return { agentPreset: "demo-standard", setup: standardSetup };
+  });
   const fiberDispose = vi.fn(async () => {});
   const ctx = {
     on,
+    get: vi.fn(() => ({ compose })),
     agents: { get: agentsGet, create: agentsCreate },
     fiber: { dispose: fiberDispose },
   } as unknown as DshContext;
-  return { ctx, agentsGet, agentsCreate, fiberDispose, listeners };
+  return { ctx, agentsGet, agentsCreate, compose, fiberDispose, listeners };
 }
 
 function emit(harness: Harness, name: string, ...args: unknown[]): void {
@@ -93,27 +115,132 @@ async function driveRound(harness: Harness, agent: Agent, replies: string[]): Pr
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  standardSetup.mockClear();
+  toolsSetup.mockClear();
 });
 
-describe("AgentSessions.send", () => {
-  it("creates the agent once, follows up with a user message, and returns the reply", async () => {
+describe("AgentSessions.create", () => {
+  it("composes the preset and records the resolved id in the creation meta (V1-3)", async () => {
     const harness = createHarness();
     const agent = fakeAgent("conv-1");
-    const handle = fakeHandle(agent);
     harness.agentsGet.mockReturnValue(undefined);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+
+    const sessions = new AgentSessions(harness.ctx);
+    const view = await sessions.create("conv-1", "demo-tools");
+
+    expect(harness.compose).toHaveBeenCalledWith("demo-tools");
+    // The meta is the session header source: the resolved preset id rides
+    // into it alongside cwd, and the compose setup hook is the factory's
+    // mount hook (specs/058-dsh-preset-roster-demo/research.md R10).
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+    const options = harness.agentsCreate.mock.calls[0][0] as Record<string, unknown>;
+    expect(options.meta).toEqual({ cwd: process.cwd(), agentPreset: "demo-tools" });
+    expect(options.setup).toBe(toolsSetup);
+    expect(view).toEqual({
+      name: "conversations/conv-1",
+      preset: "demo-tools",
+      createTime: expect.any(Date),
+    });
+  });
+
+  it("resolves the roster default when no preset is named (V1-2)", async () => {
+    const harness = createHarness();
+    harness.agentsGet.mockReturnValue(undefined);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(fakeAgent("conv-1")));
+
+    const sessions = new AgentSessions(harness.ctx);
+    const view = await sessions.create("conv-1");
+
+    expect(harness.compose).toHaveBeenCalledWith(undefined);
+    const options = harness.agentsCreate.mock.calls[0][0] as Record<string, unknown>;
+    // The RESOLVED default id is what lands in the header and the view.
+    expect(options.meta).toEqual({ cwd: process.cwd(), agentPreset: "demo-standard" });
+    expect(view.preset).toBe("demo-standard");
+  });
+
+  it("is idempotent for the same conversation id and same preset", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent("conv-1");
+    harness.agentsGet.mockReturnValue(agent);
+    const handle = fakeHandle(agent);
     harness.agentsCreate.mockResolvedValue(handle);
 
     const sessions = new AgentSessions(harness.ctx);
+    const first = await sessions.create("conv-1", "demo-tools");
+    const second = await sessions.create("conv-1", "demo-tools");
+
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+    expect(handle.dispose).not.toHaveBeenCalled();
+    expect(second).toEqual(first);
+  });
+
+  it("rebuilds on a different preset after disposing the old agent (R4)", async () => {
+    const harness = createHarness();
+    const standard = fakeAgent("conv-1");
+    const tools = fakeAgent("conv-1");
+    const standardHandle = fakeHandle(standard);
+    harness.agentsGet.mockReturnValue(standard);
+    harness.agentsCreate.mockResolvedValueOnce(standardHandle).mockResolvedValueOnce(fakeHandle(tools));
+
+    const sessions = new AgentSessions(harness.ctx);
+    const first = await sessions.create("conv-1", "demo-standard");
+    const second = await sessions.create("conv-1", "demo-tools");
+
+    expect(standardHandle.dispose).toHaveBeenCalledTimes(1);
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    const secondOptions = harness.agentsCreate.mock.calls[1][0] as Record<string, unknown>;
+    expect(secondOptions.meta).toEqual({ cwd: process.cwd(), agentPreset: "demo-tools" });
+    expect(second.preset).toBe("demo-tools");
+    expect(second.preset).not.toBe(first.preset);
+  });
+
+  it("serializes concurrent creates into one composition (dedup)", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent("conv-1");
+    // The live registry holds the created agent, so the second create's
+    // idempotency check sees a live entry instead of a stale one.
+    harness.agentsGet.mockReturnValue(agent);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+
+    const sessions = new AgentSessions(harness.ctx);
+    const [first, second] = await Promise.all([
+      sessions.create("conv-1", "demo-tools"),
+      sessions.create("conv-1", "demo-tools"),
+    ]);
+
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+  });
+
+  it("surfaces a compose rejection without creating any agent", async () => {
+    const harness = createHarness();
+    harness.agentsGet.mockReturnValue(undefined);
+    harness.compose.mockRejectedValue(
+      Object.assign(new Error('unknown preset "nope"; available: demo-standard, demo-tools'), {
+        name: "PresetAuthoringError",
+      }),
+    );
+
+    const sessions = new AgentSessions(harness.ctx);
+    await expect(sessions.create("conv-1", "nope")).rejects.toThrow("unknown preset");
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("AgentSessions.send", () => {
+  it("follows up on the created conversation's agent and returns the reply", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent("conv-1");
+    harness.agentsGet.mockReturnValue(agent);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
+
+    const sessions = new AgentSessions(harness.ctx);
+    await sessions.create("conv-1", "demo-tools");
     const promise = sessions.send("conv-1", "hello there");
     await driveRound(harness, agent, ["Hello! How can I help you today?"]);
 
     await expect(promise).resolves.toBe("Hello! How can I help you today?");
-    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
-    expect(harness.agentsCreate).toHaveBeenCalledWith({
-      sessionId: "conv-1",
-      meta: { cwd: process.cwd() },
-      agentOptions: { provider: "deepseek-official", model: "fake-chat-v1" },
-    });
     expect(agent.followup).toHaveBeenCalledTimes(1);
     const message = (agent.followup as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(message.content).toEqual([{ type: "text", text: "hello there" }]);
@@ -121,14 +248,14 @@ describe("AgentSessions.send", () => {
     expect(message.role).toBe("user");
   });
 
-  it("reuses the live agent for the same conversation without re-creating", async () => {
+  it("reuses the created agent for every round without re-creating", async () => {
     const harness = createHarness();
     const agent = fakeAgent("conv-1");
-    const handle = fakeHandle(agent);
     harness.agentsGet.mockReturnValue(agent);
-    harness.agentsCreate.mockResolvedValue(handle);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
     const sessions = new AgentSessions(harness.ctx);
+    await sessions.create("conv-1", "demo-standard");
     const first = sessions.send("conv-1", "one");
     await driveRound(harness, agent, ["first reply"]);
     await expect(first).resolves.toBe("first reply");
@@ -141,57 +268,60 @@ describe("AgentSessions.send", () => {
     expect(agent.followup).toHaveBeenCalledTimes(2);
   });
 
-  it("deduplicates concurrent first creations of the same conversation", async () => {
+  it("rejects a send on a conversation that was never created (FR-002)", async () => {
     const harness = createHarness();
-    const agent = fakeAgent("conv-1");
-    const handle = fakeHandle(agent);
-    harness.agentsGet.mockReturnValue(undefined);
-    let resolveCreate: (value: AgentHandle) => void = () => {};
-    harness.agentsCreate.mockImplementation(
-      () =>
-        new Promise<AgentHandle>((resolve) => {
-          resolveCreate = resolve;
-        }),
-    );
 
     const sessions = new AgentSessions(harness.ctx);
-    const first = sessions.send("conv-1", "a");
-    const second = sessions.send("conv-1", "b");
-    await flush();
-    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
-    resolveCreate(handle);
-    await flush();
+    await expect(sessions.send("never-created", "hello")).rejects.toBeInstanceOf(
+      ConversationNotCreatedError,
+    );
+    await expect(sessions.send("never-created", "hello")).rejects.toThrow(
+      "conversation never-created not created; call CreateConversation first",
+    );
+  });
 
-    // Rounds serialize per conversation: exactly one followup is in flight.
-    expect(agent.followup).toHaveBeenCalledTimes(1);
-    emit(harness, "agent/status", { agent, status: "running" });
-    emit(harness, "session/event", agent.session, assistantEvent("reply a"));
-    emit(harness, "agent/status", { agent, status: "idle" });
-    await expect(first).resolves.toBe("reply a");
+  it("counts a session whose registry entry went stale as not created", async () => {
+    const harness = createHarness();
+    const stale = fakeAgent("conv-1");
+    harness.agentsCreate.mockResolvedValue(fakeHandle(stale));
+    // The live registry never holds the agent (loop-level reload disposed
+    // it behind our record) — create() registers without a registry check,
+    // so the miss only surfaces at send time.
+    harness.agentsGet.mockReturnValue(undefined);
 
-    await driveRound(harness, agent, ["reply b"]);
-    await expect(second).resolves.toBe("reply b");
-    expect(agent.followup).toHaveBeenCalledTimes(2);
+    const sessions = new AgentSessions(harness.ctx);
+    await sessions.create("conv-1", "demo-standard");
+
+    await expect(sessions.send("conv-1", "hello")).rejects.toBeInstanceOf(
+      ConversationNotCreatedError,
+    );
+    // The stale record was evicted; no agent is re-created lazily.
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("re-creates a session whose registry entry went stale", async () => {
+  it("fails an in-flight round when the conversation is rebuilt (R4)", async () => {
     const harness = createHarness();
-    const stale = fakeAgent("conv-1");
-    const fresh = fakeAgent("conv-1");
-    harness.agentsCreate.mockResolvedValueOnce(fakeHandle(stale)).mockResolvedValueOnce(fakeHandle(fresh));
-    // Miss on the first send; a different live agent on the second (loop reload).
-    harness.agentsGet.mockReturnValueOnce(undefined).mockReturnValueOnce(fresh);
+    const standard = fakeAgent("conv-1");
+    harness.agentsGet.mockReturnValue(standard);
+    const standardHandle = fakeHandle(standard);
+    harness.agentsCreate
+      .mockResolvedValueOnce(standardHandle)
+      .mockResolvedValueOnce(fakeHandle(fakeAgent("conv-1")));
 
     const sessions = new AgentSessions(harness.ctx);
-    const first = sessions.send("conv-1", "one");
-    await driveRound(harness, stale, ["stale reply"]);
-    await expect(first).resolves.toBe("stale reply");
+    await sessions.create("conv-1", "demo-standard");
+    const round = sessions.send("conv-1", "hello");
+    await flush();
+    emit(harness, "agent/status", { agent: standard, status: "running" });
 
-    const second = sessions.send("conv-1", "two");
-    await driveRound(harness, fresh, ["fresh reply"]);
-    await expect(second).resolves.toBe("fresh reply");
-    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    // Rebuild while the round is in flight: dispose emits agent/disposed,
+    // which must settle the round as a failure instead of hanging on idle.
+    const rebuild = sessions.create("conv-1", "demo-tools");
+    await flush();
+    emit(harness, "agent/disposed", { agent: standard });
+    await expect(round).rejects.toThrow("disposed mid-round");
+    await rebuild;
+    expect(standardHandle.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("returns the LAST assistant message when a round produced several", async () => {
@@ -201,6 +331,7 @@ describe("AgentSessions.send", () => {
     harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
     const sessions = new AgentSessions(harness.ctx);
+    await sessions.create("conv-1", "demo-standard");
     const promise = sessions.send("conv-1", "hello");
     await driveRound(harness, agent, ["draft one", "draft two", "final answer"]);
 
@@ -214,24 +345,24 @@ describe("AgentSessions.send", () => {
     harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
     const sessions = new AgentSessions(harness.ctx);
+    await sessions.create("conv-1", "demo-standard");
     const promise = sessions.send("conv-1", "hello");
     await driveRound(harness, agent, []);
 
     await expect(promise).resolves.toBe("");
   });
 
-  it("rejects a failed round but keeps the session reusable and the process alive", async () => {
+  it("rejects a failed round but keeps the conversation reusable and the process alive", async () => {
     // Edge case: fake-llm unreachable — the round fails (mapped to INTERNAL /
     // HTTP 500 upstream), the conversation stays registered, and the next
-    // round succeeds on the same agent. Registry lookups confirm the live
-    // agent so the entry is reused instead of re-created (the first send
-    // misses on the sessions map, not on agents.get).
+    // round succeeds on the same agent.
     const harness = createHarness();
     const agent = fakeAgent("conv-1");
     harness.agentsGet.mockReturnValue(agent);
     harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
     const sessions = new AgentSessions(harness.ctx);
+    await sessions.create("conv-1", "demo-standard");
     const failed = sessions.send("conv-1", "hello");
     await flush();
     emit(harness, "agent/status", { agent, status: "running" });
@@ -264,12 +395,8 @@ describe("AgentSessions.shutdown", () => {
     harness.agentsCreate.mockResolvedValueOnce(handleA).mockResolvedValueOnce(handleB);
 
     const sessions = new AgentSessions(harness.ctx);
-    const roundA = sessions.send("conv-a", "a");
-    await driveRound(harness, agentA, ["ra"]);
-    await roundA;
-    const roundB = sessions.send("conv-b", "b");
-    await driveRound(harness, agentB, ["rb"]);
-    await roundB;
+    await sessions.create("conv-a", "demo-standard");
+    await sessions.create("conv-b", "demo-tools");
 
     await sessions.shutdown();
 

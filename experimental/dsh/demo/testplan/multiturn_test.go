@@ -8,18 +8,6 @@ import (
 	"dominion/common/gopkg/testtool"
 )
 
-// The fake-llm template texts asserted by the multi-turn suites — the
-// single-source-of-truth anchors pinned by
-// experimental/dsh/demo/fake-llm/service/message_store_test.go
-// (TestNewMessageStore_LoadsEmbeddedChat), defined in
-// experimental/dsh/demo/fake-llm/service/testdata/chat.yaml and mapped
-// to the acceptance scenarios by
-// specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §4.
-const (
-	greetingText      = "Hello! How can I help you today?"
-	greetingAgainText = "Hello again! We have already met."
-)
-
 // TestMultiturnBranch verifies the multi-turn branch through the public
 // HTTP entry (US2-1, specs/047-dsh-chat-demo/contracts/chat-api.md §4):
 // within ONE conversation the first "hello" turn takes the greeting
@@ -34,9 +22,13 @@ func TestMultiturnBranch(t *testing.T) {
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: one fresh conversation and one request body reused by both
-	// turns.
+	// given: one fresh conversation — created explicitly (058 FR-002: no
+	// lazy creation) — and one request body reused by both turns.
 	const resourceName = "conversations/us2-multiturn-branch"
+	status, respBody := createConversation(t, ctx, baseURL, envName, "us2-multiturn-branch", "")
+	if status != http.StatusOK {
+		t.Fatalf("createConversation status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+	}
 	body := []byte(`{"message": "hello"}`)
 	turns := []struct {
 		turn      int
@@ -77,11 +69,18 @@ func TestMultiturnIsolation(t *testing.T) {
 	// given: conversation A will complete two hello turns — first the
 	// greeting branch, then the greeting-again multi-turn branch, making
 	// A's multi-turn history real before B sends anything — and then a
-	// fresh conversation B sends the same message.
+	// fresh conversation B sends the same message. Both are created
+	// explicitly (058 FR-002: no lazy creation).
 	const (
 		convA = "conversations/us2-isolation-a"
 		convB = "conversations/us2-isolation-b"
 	)
+	for _, id := range []string{"us2-isolation-a", "us2-isolation-b"} {
+		status, respBody := createConversation(t, ctx, baseURL, envName, id, "")
+		if status != http.StatusOK {
+			t.Fatalf("createConversation(%s) status = %d, want %d (body: %s)", id, status, http.StatusOK, respBody)
+		}
+	}
 	body := []byte(`{"message": "hello"}`)
 	turnsA := []struct {
 		turn      int
@@ -131,11 +130,18 @@ func TestMultiturnInterleaved(t *testing.T) {
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: two fresh conversations whose turns strictly alternate.
+	// given: two fresh conversations — created explicitly (058 FR-002: no
+	// lazy creation) — whose turns strictly alternate.
 	const (
 		convA = "conversations/us2-interleave-a"
 		convB = "conversations/us2-interleave-b"
 	)
+	for _, id := range []string{"us2-interleave-a", "us2-interleave-b"} {
+		status, respBody := createConversation(t, ctx, baseURL, envName, id, "")
+		if status != http.StatusOK {
+			t.Fatalf("createConversation(%s) status = %d, want %d (body: %s)", id, status, http.StatusOK, respBody)
+		}
+	}
 	body := []byte(`{"message": "hello"}`)
 	turns := []struct {
 		conversation string

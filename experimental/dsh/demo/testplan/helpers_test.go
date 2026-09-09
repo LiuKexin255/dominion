@@ -24,11 +24,78 @@ const (
 	headerXDominionEnv = "x-dominion-env"
 )
 
+// The fake-llm template texts asserted by the testplan suites — the
+// single-source-of-truth anchors pinned by
+// experimental/dsh/demo/fake-llm/service/message_store_test.go
+// (TestNewMessageStore_LoadsEmbeddedChat), defined in
+// experimental/dsh/demo/fake-llm/service/testdata/{chat,preset}.yaml and
+// mapped to the acceptance scenarios by
+// specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §4 and
+// specs/058-dsh-preset-roster-demo/contracts/fake-llm-system-keywords.md §3.
+// Shared here because multiple largetest targets in this directory assert
+// them (style/large_test.md — shared constants live in the helper file).
+const (
+	greetingText      = "Hello! How can I help you today?"
+	greetingAgainText = "Hello again! We have already met."
+	farewellText      = "I'm sorry, I didn't catch that."
+	// Preset scenario replies: the fake-llm answers a probe turn with the
+	// template whose system_keywords match the session's model-visible
+	// composition (persona text / demo_echo guidance heading).
+	personaStandardReply = "persona-standard-hit"
+	personaToolsReply    = "persona-tools-hit"
+	guidanceReply        = "tool-guidance-hit"
+)
+
 // sendMessageResponse mirrors the SendMessageResponse JSON body returned by
 // the gateway (specs/047-dsh-chat-demo/contracts/chat-api.md §1).
 type sendMessageResponse struct {
 	Name  string `json:"name"`
 	Reply string `json:"reply"`
+}
+
+// conversationResponse mirrors the Conversation resource JSON body returned
+// by the gateway for CreateConversation (specs/058-dsh-preset-roster-demo/
+// contracts/chat-api.md §1.1): the resource name, the RESOLVED preset id the
+// conversation is bound to, and the creation timestamp.
+type conversationResponse struct {
+	Name       string `json:"name"`
+	Preset     string `json:"preset"`
+	CreateTime string `json:"createTime"`
+}
+
+// createConversation POSTs one CreateConversation request against the public
+// HTTP entry and returns the HTTP status plus the raw response body. presetID
+// may be empty (the roster default); it is only included in the body when
+// non-empty so the default-selection case exercises the absent field.
+func createConversation(t *testing.T, ctx context.Context, baseURL, envName, conversationID, presetID string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s/experimental/dsh-demo/conversations", baseURL)
+	bodyFields := fmt.Sprintf(`"conversation_id": %q`, conversationID)
+	if presetID != "" {
+		bodyFields += fmt.Sprintf(`, "preset": %q`, presetID)
+	}
+	body := []byte("{" + bodyFields + "}")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("http.NewRequestWithContext %s %s: %v", http.MethodPost, reqURL, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerEnv, envName)
+	req.Header.Set(headerXDominionEnv, envName)
+
+	client := &http.Client{Transport: tracecontext.NewHTTPTransport(http.DefaultTransport)}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", http.MethodPost, reqURL, err)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response %s %s: %v", http.MethodPost, reqURL, err)
+	}
+	return resp.StatusCode, respBody
 }
 
 // traceContext returns a context carrying a W3C trace context for the test

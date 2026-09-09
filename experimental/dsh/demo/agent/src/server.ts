@@ -3,10 +3,14 @@
  *
  * Loads the runtime proto via proto-loader (materialized at its canonical
  * import path under the service root, the experimental/grpc_chain/mid
- * pattern), maps `SendMessage` onto `AgentSessions.send`: the resource name
- * `conversations/{id}` (AIP-122/136 custom-method pattern,
- * specs/047-dsh-chat-demo/contracts/chat-api.md §2) supplies the conversation
- * id, malformed or empty fields map to INVALID_ARGUMENT, and agent failures
+ * pattern), maps `SendMessage` onto `AgentSessions.send` (the resource name
+ * `conversations/{id}`, AIP-122/136 custom-method pattern,
+ * specs/047-dsh-chat-demo/contracts/chat-api.md §2) and `CreateConversation`
+ * onto `AgentSessions.create` (explicit preset binding,
+ * specs/058-dsh-preset-roster-demo/contracts/chat-api.md §1.1). Malformed or
+ * empty fields map to INVALID_ARGUMENT, the not-created domain error maps to
+ * FAILED_PRECONDITION (FR-002), preset-authoring rejections map onto their
+ * error codes one-to-one (preset-authoring-plugin.md §6), and agent failures
  * map to INTERNAL without taking the process down.
  */
 
@@ -14,8 +18,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
+import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import { info } from "@dominion/common-js-logs";
-import { AgentSessions } from "./session.js";
+import { AgentSessions, ConversationNotCreatedError } from "./session.js";
+import type { ConversationView } from "./session.js";
 import type { DshContext } from "./dsh.js";
 import type { ChatHandlers } from "../chat_types/experimental/dsh/demo/Chat.js";
 import type { ProtoGrpcType } from "../chat_types/chat.js";
@@ -28,8 +34,17 @@ const protoPath = path.join(serviceRoot, "experimental/dsh/demo/chat.proto");
 
 const CONVERSATION_PREFIX = "conversations/";
 
+/**
+ * The conversation id grammar: the id becomes a dsh SessionId and a resource
+ * name segment (AIP-122 resource ID guidance — RFC-1034 characters, lower
+ * case), so this check is a containment boundary, not a style rule
+ * (chat-api.md §1.1: 非法字符 → INVALID_ARGUMENT).
+ */
+const CONVERSATION_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
 /** The session service surface consumed by the gRPC handlers. */
 export interface ChatSessionSink {
+  create(conversationId: string, presetId?: string): Promise<ConversationView>;
   send(conversationId: string, text: string): Promise<string>;
 }
 
@@ -85,11 +100,68 @@ export function conversationIdOf(name: string): string {
 }
 
 /**
+ * Map a session/preset domain rejection onto its gRPC status. Preset
+ * authoring error codes map one-to-one
+ * (specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md §6);
+ * the not-created domain error is FAILED_PRECONDITION (FR-002). Any other
+ * failure is an unexpected INTERNAL carrying the raw error message.
+ */
+function domainStatusOf(err: unknown): { code: grpc.status; message: string } {
+  if (err instanceof ConversationNotCreatedError) {
+    return { code: grpc.status.FAILED_PRECONDITION, message: err.message };
+  }
+  if (err instanceof PresetAuthoringError) {
+    return { code: grpc.status[err.code], message: err.message };
+  }
+  return {
+    code: grpc.status.INTERNAL,
+    message: err instanceof Error ? err.message : String(err),
+  };
+}
+
+/**
  * Build the Chat handlers over a session sink. Exported for unit tests so
  * the gRPC status mapping is asserted without binding a port.
  */
 export function buildChatHandlers(sink: ChatSessionSink): ChatHandlers {
   return {
+    CreateConversation: (call, callback) => {
+      const conversationId = call.request.conversationId ?? "";
+      if (!CONVERSATION_ID.test(conversationId)) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `conversation_id must match ${CONVERSATION_ID.source}, got "${conversationId}"`,
+        });
+        return;
+      }
+      // An absent preset names the roster default (chat-api.md §1.1; the
+      // wire default is the empty string).
+      const preset = call.request.preset || undefined;
+      info("CreateConversation: dispatching to agent session", { conversationId, preset });
+
+      sink.create(conversationId, preset).then(
+        (view) => {
+          callback(null, {
+            name: view.name,
+            preset: view.preset,
+            createTime: {
+              seconds: Math.floor(view.createTime.getTime() / 1000),
+              nanos: (view.createTime.getTime() % 1000) * 1e6,
+            },
+          });
+        },
+        (err: unknown) => {
+          const mapped = domainStatusOf(err);
+          info("CreateConversation: rejected", {
+            conversationId,
+            code: mapped.code,
+            error: mapped.message,
+          });
+          callback(mapped);
+        },
+      );
+    },
+
     SendMessage: (call, callback) => {
       const rawName = call.request.name ?? "";
       const conversationId = conversationIdOf(rawName);
@@ -115,29 +187,24 @@ export function buildChatHandlers(sink: ChatSessionSink): ChatHandlers {
           callback(null, { name: rawName, reply });
         },
         (err: unknown) => {
-          // Agent/round failures are per-request errors (specs/047-dsh-chat-demo/contracts/chat-api.md §1:
-          // INTERNAL / HTTP 500, process stays alive).
+          // Not-created is a domain status (FAILED_PRECONDITION, FR-002);
+          // other round failures are per-request INTERNAL errors
+          // (specs/047-dsh-chat-demo/contracts/chat-api.md §1, process stays
+          // alive).
+          const mapped = domainStatusOf(err);
           info("SendMessage: agent round failed", {
             conversationId,
-            error: err instanceof Error ? err.message : String(err),
+            code: mapped.code,
+            error: mapped.message,
           });
           callback({
-            code: grpc.status.INTERNAL,
-            message: `agent round failed: ${err instanceof Error ? err.message : String(err)}`,
+            code: mapped.code,
+            message: mapped.code === grpc.status.INTERNAL
+              ? `agent round failed: ${mapped.message}`
+              : mapped.message,
           });
         },
       );
-    },
-
-    // CreateConversation is declared by the extended proto (specs/
-    // 058-dsh-preset-roster-demo/contracts/chat-api.md §1.1) and lands with
-    // the session-preset binding work; until then the RPC answers the
-    // standard unimplemented status instead of failing the build surface.
-    CreateConversation: (_call, callback) => {
-      callback({
-        code: grpc.status.UNIMPLEMENTED,
-        message: "CreateConversation is not implemented yet; it lands with the session-preset binding work",
-      });
     },
   };
 }

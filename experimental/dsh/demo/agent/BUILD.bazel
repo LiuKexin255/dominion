@@ -56,6 +56,10 @@ ts_project(
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
+        # The service face the session/server layer consumes (R10):
+        # PresetAuthoringError for the gRPC status mapping, and the
+        # PresetAuthoringService typing behind ctx.get("presetAuthoring").
+        ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
@@ -134,22 +138,49 @@ artifact_image(
 # node_modules mirror of :server_lib's deps. :chat_types_lib is absent — the
 # sources reference the generated proto types via `import type` only, which
 # vitest erases at transform time.
+#
+# composition.test.ts additionally boots the REAL direct composition, so the
+# data also mirrors the cordis.yml row packages (services + roster + authoring
+# + demo-echo, which the Loader resolves by bare name from this package's
+# node_modules) and the template presets the roster scans (PRESET_TEMPLATES_ROOT
+# points at the runfiles copy in the test).
 vitest_test(
     name = "lib_test",
     size = "small",
     data = glob(
         ["src/**/*.ts"],
         allow_empty = True,
+    ) + glob(
+        ["presets-templates/**"],
+        allow_empty = True,
     ) + [
+        "cordis.yml",
+        # Composition-boot baseline rows outside the dependency closure of
+        # any direct dep (app-infrastructure rows shipped via
+        # //third_party/dsh/core in production): linked as devDependencies so
+        # composition.test.ts can boot the real cordis.yml verbatim — the
+        # Loader resolves every row's bare specifier from this package's
+        # node_modules.
+        ":node_modules/@deepseek-ai/cordis-plugin-timer",
         ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-loop",
+        ":node_modules/@deepseek-ai/dsh-agent-presets",
         ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-invariants",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-llm-deepseek",
+        ":node_modules/@deepseek-ai/dsh-persona",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@dominion/dsh-demo-echo",
+        ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
