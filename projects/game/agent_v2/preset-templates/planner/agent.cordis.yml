@@ -1,0 +1,6 @@
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: 你是扫雷 planner。
+- id: memory
+  name: '@dominion/dsh-memory/preset-row'

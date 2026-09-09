@@ -1,0 +1,6 @@
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: 你是扫雷 player。
+- id: saolei
+  name: '@dominion/dsh-saolei'
