@@ -4,7 +4,8 @@
 > **第一轮**：① planner 是**顶层 agent**而非派发对象——planner 必须拿到原始游戏过程（游戏指令+结果），subagent/委派路径排除（child 输入由 player 的转述/指令决定，压缩失真且目标被 player 左右）。② 双 agent 不共享 history；每 agent 的 history/store 一致性 per-session 独立成立（§4.3）。
 > **第二轮**：③ **拓扑拍板——loop 持有多 agent（player/planner 双顶层 agent）**，取代 2026-08-28 的"单 agent 双角色"决策（`survey/deepseek-harness-agent-loop-prereq.md` §5.6，理由：该拓扑与模型更契合）。④ 广播消息与原消息 **1:1**（一条产出消息对应一条广播消息，不聚合）；广播包装**只有发送者标注、无收件人定向**（群聊模型，面向特定成员时在 message 内容内指出，§5.3）。⑤ **team 层独立抽象**：把"群聊"抽为 team 插件，只负责群聊消息同步与团队 prompt（团队介绍/目标/成员职责），不含 saolei 特定逻辑；saolei-loop 经注册 API 注入 player/planner 分工；**agent persona 与团队 prompt 分开管理**（§4.5）。⑥ **角色差异全部由 preset 承载、与物化无关**：工具选择（player 的 saolei-*、planner 的 memory 工具）在**编辑 preset 时**固定，物化 agent 零定制（用户编辑面只有 persona，§3.3）。
 > **第三轮**：⑦ **team 只投递不驱动**——广播机制只负责消息收集与投递；**agent 何时执行由 saolei-loop 决定**。投递目标是**成员 buffer**（team 层 per-member 队列），不是 agent log；loop 驱动 agent 时从 buffer 取出消息注入（§4.4）。⑧ **工具调用与结果归属 agent 输出**：player 的 tool 调用+结果作为其输出经 team 广播给 planner（抽象层面是"tools 的调用和结果"这一 agent 通用语义，"saolei 游戏过程"是更高层概念，落到 agent 层经由 tools 实现）——不经 saolei-loop 特殊注入，不破坏 team+群聊模型。⑨ **游戏事件流与 team 消息流解耦**：saolei-loop 持有游戏事件流（saolei-loop 定义、saolei 插件仅提供扫雷游戏实现，二者不做进一步解耦——收益不大）；游戏状态归 saolei-loop/saolei 插件侧，agent 不持有。⑩ 待定项处理：team API 泛化场景无关语义（`gameId`→泛化 context）；preset **分池**（与 player/planner 模型一致）；外置 memory 实现延后至 team 模型确定后单独调研；team section order 频段等关键词定义留到开发时决定。⑪ **工具与配套 prompt 一致性**：插件提供的 tools 与配套 prompt 必须配套使用——选择发生在 preset 的插件行/config 层（决策 ⑥ 的形态）则天然一致；**不得用 per-agent restriction 选工具**（dsh 已知不对称：restriction 不移除 guidance，§3.6）。
-> **第四轮**：⑫ **buffer 由 team 自持轻量持久化**——llm 历史（session persistence）已持久化，team buffer 同样持久化（轻量实现，形态开发时定）。⑬ **tool result 原样广播**——保证其他成员看到的 tools 的 input/output 与原样一致（wire 序列化差异不算），不做摘要/引用化。⑭ **插件是 tools 使用的最小颗粒度，preset 实际上是选择插件而不是选择工具**——agent 对工具的引用与 preset 插件行对齐，不存在"插件提供的工具与 preset 插件行不一致"的情况（工具插件按角色划分包边界，行内不再拆分）。其余细节留开发时决定。**至此全部核心待定项已决策（除 memory 延后调研），可进入 spec/plan 阶段。**
+> **第四轮**：⑫ **buffer 由 team 自持轻量持久化**——llm 历史（session persistence）已持久化，team buffer 同样持久化（轻量实现，形态开发时定）。⑬ **tool result 原样广播**——保证其他成员看到的 tools 的 input/output 与原样一致（wire 序列化差异不算），不做摘要/引用化。⑭ **插件是 tools 使用的最小颗粒度，preset 实际上是选择插件而不是选择工具**——agent 对工具的引用与 preset 插件行对齐，不存在"插件提供的工具与 preset 插件行不一致"的情况（工具插件按角色划分包边界，行内不再拆分）。其余细节留开发时决定。
+> **第五轮**：⑮ **buffer 从成员 log 派生重建（取代 ⑫ 的独立持久化形态）**——team buffer 不是独立事实源，而是各成员 session log 的**派生缓存**：广播条目 = sender log 产出的投影（决策 ⑧ 广播面严格限于成员 log 产出），消费状态 = receiver log 中 `team-broadcast` 消息的 `messageId` 锚点集合。重建即一致（构造即一致，无需独立持久化下的对账检查）；丢失广播重建自愈、已消费条目不重复（**exactly-once 语义天然成立**）。team 轻量持久化缩小为：团队注册事实（成员/goal）与（如需精确跨 log 顺序时）顺序锚点。边界：跨 log 顺序恢复在串行驱动（当前形态）下按驱动轮次/阶段事实推导；并发驱动需顺序锚点。**至此全部核心待定项已决策（除 memory 延后调研），可进入 spec/plan 阶段。**
 > **日期**：2026-09-08（同日四轮修订）
 > **术语变更**：**saolei-loop 的定义发生层级改变——从 agent loop（agent 驱动层，即替换官方 `dsh-agent-loop` 的那一层）成为 team loop（更高层次的团队编排层）**；agent 驱动沿用传统 agent loop（官方 `dsh-agent-loop` 行保留，§9.3）。前序调研（`survey/deepseek-harness-agent-loop-prereq.md`）中"saolei-loop"一词指其旧含义（agent loop 层的自研替换物），按此变更阅读。
 > **前置调研**：`survey/deepseek-harness-agent-loop-prereq.md`（agent-loop 解剖；其 §5.6"单 agent 双角色"决策已被本文头部决策 ③ 取代）、`survey/deepseek-harness-preset.md`（preset 机制）、`survey/agent-team-mode.md`（LangGraph 侧 team mode）、`specs/047-dsh-chat-demo/research.md`（D5 多 session 实证）
@@ -235,7 +236,7 @@ preset 的原子单位是"**一个 agent 的组合**"：一个 `agent.cordis.yml
 **模型的四个机制要点**：
 
 1. **唤醒语义张力被 buffer 消解**：广播不直接驱动 agent（不调用 followup/inject 于广播时），上一轮记录的"followup 每条独占 turn / inject 可丢"的取舍不复存在——取舍上移到 loop 的驱动策略（何时驱动、驱动时消费哪些 buffer 消息），team 是纯消息基础设施。
-2. **buffer 语义**：team 层 per-member 队列。未消费的 buffer 消息**不在任何 agent log 中**（"Model-visible means logged"按目标侧语义成立——只有驱动消费时落 log）；**buffer 由 team 自持轻量持久化**（头部决策 ⑫：llm 历史既有 session persistence，buffer 同样持久化，轻量实现、形态开发时定）。成员 dispose 时 buffer 随团队注册事实清理。
+2. **buffer 语义**：team 层 per-member 队列。未消费的 buffer 消息**不在任何 agent log 中**（"Model-visible means logged"按目标侧语义成立——只有驱动消费时落 log）；**buffer 是各成员 log 的派生缓存而非独立事实源**（头部决策 ⑮，§4.4a）。成员 dispose 时 buffer 随团队注册事实清理。
 3. **1:1 粒度贯穿 buffer**：一条原消息（发言 / 一次 tool 调用+其结果）= 一条 buffer 条目 = 驱动时一条注入消息；不聚合。驱动一次可消费多条 buffer 条目（多条独立 UserMessage 同 turn 注入——`agent/pre-step` 的 enter 决策携带一批 messages 是官方语义）。
 4. **时序权威**：广播顺序（"群聊记录"顺序）权威在 team 层；各成员 log 内因果序由各自 inbox/turn 状态机保证。全局序号不存在，需要时由 team 层在广播条目/source 中携带序号或时间戳。
 
@@ -250,6 +251,26 @@ player 被驱动 → 调 saolei-* 工具 → tool/call+tool/result 落 player lo
   → team 收集 → 1:1 广播进 player buffer
 下一局开始 → loop 驱动 player：取出 buffer（策略消息）注入 → 执行
 ```
+
+### 4.4a buffer 的持久化形态：从成员 log 派生重建（头部决策 ⑮）
+
+buffer 持久化**不走独立存储 + 对账检查**路线（独立事实源必然引入"重建后 buffer 与 agent log 匹配"的一致性检查义务），而是**从成员 log 派生重建**——buffer 是派生缓存，不是事实源。这与 dsh 的核心模式同构（"LLM message history is *derived* from the log"、"不存在两份需要同步的数据"，§4.3）：**team-visible means logged**——team 能广播到的必先落成员 log。
+
+**重建算法**（对每个成员 M 的 buffer）：
+
+1. **条目来源**：收集其他成员 log 的产出事件——`assistant/message`（发言）与 `tool/call`+`tool/result`（按 callId 配对为一条广播单元）——投影为广播条目（加 sender 标注，格式 §5.3）。机制依据：同 log 内 seq 单调、turn/step 包围、same-step tool call/result 配对均为官方 invariant（`dsh-session/invariant`，重放校验）；`MessageId`/`CallId` "stable identity preserved across every representation boundary"。
+2. **消费状态**：读 M 自己 log 中 `source.kind === 'team-broadcast'` 的 `user/message` 集合，取其 `messageId` 锚点——**已消费的条目（messageId 命中）不进 buffer**。§5.3 第 2 层的 `messageId` 字段由此承担双重角色：1:1 追溯锚 + 消费状态锚。
+3. **顺序归并**：串行驱动（当前形态：loop 驱动权唯一，player/planner 驱动时段不重叠）下按驱动轮次/阶段事实归并即可；事件级时间戳可作辅助。
+
+**由此获得的性质**：
+
+- **重建即一致**：buffer 由 log 构造，无双事实源对账——用户提出的一致性检查问题被结构消解。
+- **exactly-once 天然成立**：崩溃时丢失的广播（sender log 已有产出、未进 buffer）在重建时自动补齐（自愈）；已消费条目被 messageId 锚点排除（不重复）。比 at-least-once + 重放兜底更强。
+- **读取面有官方先例**：live session store + optional persistence 直读（`dsh-subagent` `listChildren` 同模式："Reads the live session store and optional session persistence directly"）。
+
+**team 持久化面缩小为**：团队注册事实（成员列表/goal——不在任何 agent log 中，可由 saolei-loop 重建时重新 register 兜底）与（未来并发驱动时的）跨 log 顺序锚点；buffer 本体不持久化。
+
+**边界**：派生前提是 team 广播面**严格限于成员 log 产出**（决策 ⑧ 已保证——游戏事件流与 team 消息流解耦，saolei-loop 不经 team 广播游戏事件）；并发驱动形态下精确广播顺序需 team 自持顺序锚点（当前串行驱动不触发）。
 
 ### 4.5 team 层独立抽象（team 插件）：职责边界与机制落点
 
@@ -346,7 +367,7 @@ declare module "@deepseek-ai/dsh-llm/types" {
 ```
 
 - `ContextForm` 直接复用官方 `relay`（语义精确命中），不发明新 form。
-- 注入时机（loop 驱动消费 buffer 时）：`memberAgent.followup(createUserMessage({ content: [{type:"text", text}], source: {kind:"team-broadcast", role, senderSessionId, messageId, context, form:"relay"} }))`——消息此刻落成员 log 的 `user/message` 事件（"its typed `source` is the only channel that tells them apart"，§2.5），`deriveMessages()` 原样投影进该成员的 LLM 请求。`messageId` 字段承载 1:1 锚点（原消息 ↔ 广播条目 ↔ 注入消息可互相追溯，team 层权威记录据此重建）。
+- 注入时机（loop 驱动消费 buffer 时）：`memberAgent.followup(createUserMessage({ content: [{type:"text", text}], source: {kind:"team-broadcast", role, senderSessionId, messageId, context, form:"relay"} }))`——消息此刻落成员 log 的 `user/message` 事件（"its typed `source` is the only channel that tells them apart"，§2.5），`deriveMessages()` 原样投影进该成员的 LLM 请求。`messageId` 字段承担**双重角色**：1:1 追溯锚（原消息 ↔ 广播条目 ↔ 注入消息互相追溯，team 层权威记录据此重建）+ **消费状态锚**（buffer 派生重建时以 receiver log 中该字段集合判定已消费条目，§4.4a）。
 
 **第 3 层：prompt 分层声明**（让模型理解标注语义；persona 与团队 prompt 分开管理，头部决策 ⑤）。
 
@@ -406,7 +427,7 @@ result: 已揭示，周边 2 雷；剩余 38 格
 | 角色差异由 preset 承载、物化零定制 | ✅（已定） | 工具选择编辑期固定于 preset 行；物化只传 presetId + model route（§3.3） |
 | 工具与配套 prompt 一致 | ✅（已定，决策 ⑥/⑭） | preset 选择单位 = 插件行，工具与 guidance 同插件同生命周期天然一致；per-agent restriction 不一致（官方已知不对称）——不得使用（§3.6） |
 | team 只投递不驱动 | ✅（已定，头部决策 ⑦） | 投递目标是成员 buffer；驱动权唯一归 saolei-loop；唤醒张力被 buffer 消解（§4.4） |
-| buffer 持久化 | ✅（已定，头部决策 ⑫） | team 自持轻量持久化，对齐 session persistence 的存在；形态开发时定 |
+| buffer 持久化 | ✅（已定，头部决策 ⑫→⑮） | **从成员 log 派生重建**（派生缓存，非事实源）：重建即一致、exactly-once 天然成立；team 持久化缩小为注册事实 + 顺序锚点（并发驱动时） |
 | 每 agent 的 history/store 一致性 | ✅ 结构保证 | log 纯函数投影 + 官方 invariant 逐字节校验；per-session 独立成立；buffer 消息未消费不进 log（§4.3/§4.4） |
 | loop 层权威记录 + 各 agent 视图 | ✅（已定） | team 消息流（team 持有）与游戏事件流（saolei-loop 持有）**解耦**（头部决策 ⑨）；视图=驱动消费的消息投影（§4.4） |
 | team 层独立抽象（persona 与团队 prompt 分开） | ✅（已定） | team 插件：注册 API + 消息收集/广播（buffer）+ team section（per-agent scope 注册）；persona 留 preset（§4.5） |
@@ -440,7 +461,7 @@ player Agent（player 池 preset：persona + saolei-* 工具行）  planner Agen
 ## 7. 风险与限制记录
 
 1. **preset 机制与 subagent seam 均为 0.1.1-rc.2 时点快照**：developer preview 破坏性变更承诺（047 D10-5）；`dsh-agent-presets` 设计文档自述多轮踩坑修正。
-2. **buffer 持久化为 team 自持轻量实现**（头部决策 ⑫）：不在 dsh session 机制内（buffer 消息未消费不进 log），崩溃恢复语义由 team 自己的轻量存储负责——与 session persistence 的可靠性等级存在差异（轻量 vs 框架级），实现时注意两者恢复顺序（team 重放 buffer 需在 agent resume 之后）。
+2. **buffer 派生重建的两个边界**（头部决策 ⑮）：① 顺序恢复精度——串行驱动下按驱动轮次/阶段事实归并足够；并发驱动形态需 team 自持跨 log 顺序锚点。② 派生前提是 team 广播面严格限于成员 log 产出（决策 ⑧ 已保证；若未来把游戏事件经 team 广播，该前提破坏，需重新设计）。重建的读取面依赖 session persistence 可用（live store + persistence 直读，`listChildren` 同模式）。
 3. **`recompose` 仅 blank agent**：游戏进行中不能切换 preset；若 preset 池支持运行中切换，需要重建 agent/session 的编排语义（超出 dsh 原生能力）。
 4. **preset 的工具固定性是约定级**（决策已接受，头部决策 ⑥）：preset 层无"必须有某行"的约束原语，固定性由 saolei 侧 authoring 流程（模板 preset + copy 后仅编辑 persona）保证；且**不得用 per-agent restriction 替代行级选择**（guidance 残留不一致，§3.6）。
 5. **`session-reference` 是快照非订阅**："No live link"——team 的成员消息收集必须自己订阅 `session/event`（这正是 team 插件的设计职责，非风险，记录机制边界）。
@@ -452,18 +473,18 @@ player Agent（player 池 preset：persona + saolei-* 工具行）  planner Agen
 
 ## 8. 对后续设计的输入与待定项
 
-已确认决策（2026-09-08 四轮，见头部）：双 agent 拓扑（loop 持有多 agent）；planner 顶层 agent（subagent 排除）；角色差异由 preset 承载、物化零定制、分池；team 层独立抽象（只投递不驱动，buffer 模型，team 自持轻量持久化；persona 与团队 prompt 分开管理）；广播 1:1、sender-only 标注、@mention 在内容内；工具调用与结果归属 agent 输出、**原样广播**（input/output 逐字一致，wire 差异不算）；游戏事件流（saolei-loop 持有）与 team 消息流解耦（saolei 插件仅是游戏实现）；team API 场景无关泛化（`context` 键）；**插件 = 工具使用最小颗粒度，preset 选择插件而非工具**。
+已确认决策（2026-09-08 五轮，见头部）：双 agent 拓扑（loop 持有多 agent）；planner 顶层 agent（subagent 排除）；角色差异由 preset 承载、物化零定制、分池；team 层独立抽象（只投递不驱动，buffer 模型，**buffer 从成员 log 派生重建**；persona 与团队 prompt 分开管理）；广播 1:1、sender-only 标注、@mention 在内容内；工具调用与结果归属 agent 输出、**原样广播**（input/output 逐字一致，wire 差异不算）；游戏事件流（saolei-loop 持有）与 team 消息流解耦（saolei 插件仅是游戏实现）；team API 场景无关泛化（`context` 键）；**插件 = 工具使用最小颗粒度，preset 选择插件而非工具**。
 
 **核心待定项全部已决策（除 memory 延后调研），本调研可进入 spec/plan 阶段。** 组合清单视角的堆叠基线（host 层行清单、两个 preset 池行清单、依赖方向、物化流程、无先例验证项）见 **§9**。
 
 设计基线输入（§6 架构图）：
 
-- **team 插件**：`register({goal, members})` + 成员输出订阅（`assistant/message` + `tool/call`/`tool/result`）+ 1:1 原样广播进成员 buffer（`team-broadcast` source + `form:'relay'` + `messageId`/`context`）+ team section（per-agent scope 注册）+ buffer 轻量持久化；buffer 读取面（`drain(member)` 或等价）供 loop 驱动时消费；投递结构参照 `dsh-subagent` continuation manager（持有 AgentHandle + 投递规则），平级拓扑。
+- **team 插件**：`register({goal, members})` + 成员输出订阅（`assistant/message` + `tool/call`/`tool/result`）+ 1:1 原样广播进成员 buffer（`team-broadcast` source + `form:'relay'` + `messageId`/`context`）+ team section（per-agent scope 注册）+ **buffer 从成员 log 派生重建（live+persistence 直读；消费状态由 receiver log 的 `messageId` 锚点判定）**；buffer 读取面（`drain(member)` 或等价）供 loop 驱动时消费；投递结构参照 `dsh-subagent` continuation manager（持有 AgentHandle + 投递规则），平级拓扑。
 - **saolei-loop**：驱动权唯一归属（驱动时机与 buffer 消费策略）；游戏阶段机与游戏事件流持有者；preset 选择与物化（零定制）。
 - **preset**：官方 `dsh-agent-presets` roster，player/planner 两个 root 池；选择单位 = 插件行（player 池含 saolei 工具插件行、planner 池含 memory 工具插件行，按角色划分包边界），persona 是唯一用户编辑面；**不用 per-agent restriction 选工具**（§3.6）。
 - 049 GLM Responses 适配器不引入 wire `name` 依赖（§5.3 排除项）。
 
-开发时再决定的细节（非待定项，记录免遗失）：team 插件 API 精确签名与 buffer 逐出/清理策略、广播条目序号/时间戳承载、team section order 频段与标签词汇表、buffer 轻量持久化的具体形态、authoring 流程（模板 preset 生成、persona 编辑面）。
+开发时再决定的细节（非待定项，记录免遗失）：team 插件 API 精确签名与 buffer 逐出/清理策略、广播条目序号/时间戳承载（并发驱动时的顺序锚点）、team 注册事实的持久化形态、team section order 频段与标签词汇表、authoring 流程（模板 preset 生成、persona 编辑面）。
 
 延后调研：**外置 memory**（planner 的 memory 工具族实现形态，team 模型已确定，可单独立项调研——头部决策 ⑩）。
 
@@ -481,7 +502,7 @@ player Agent（player 池 preset：persona + saolei-* 工具行）  planner Agen
 |---|---|---|---|
 | `dsh-app-boot` + cordis 底座（11 包闭包） | 官方 | B1 底座（`specs/047-dsh-chat-demo/research.md` D6 清单） | 既有基线 |
 | `dsh-session` | 官方 | Session 事件日志（唯一事实源）、`deriveMessages()` | §2.6 |
-| `dsh-session-persistence` + 后端（jsonl/sqlite） | 官方 | resume 冷恢复；buffer 持久化对齐的前提（决策 ⑫） | §2.6、§4.4 |
+| `dsh-session-persistence` + 后端（jsonl/sqlite） | 官方 | resume 冷恢复；**buffer 派生重建的读取前提**（live+persistence 直读，决策 ⑮） | §2.6、§4.4a |
 | `dsh-llm` + **GLM Responses 适配器（自研）** | 官方 + 自研 | 消息构造/BlockAssembler；provider 路由（049 FR-007；不引入 wire `name`，§5.3） | 049 spec |
 | `dsh-tools` | 官方 | 工具注册/调度管线（saolei 工具经 `ctx.tools` 注册） | prereq §3.1 |
 | `dsh-system-prompt` | 官方 | prompt 装配管线（persona/team section/工具 guidance 三来源） | §4.5 |
@@ -490,7 +511,7 @@ player Agent（player 池 preset：persona + saolei-* 工具行）  planner Agen
 | **`dsh-agent-loop`（保留官方行）** | 官方 | ReactLoopAgent 驱动（每 agent 一个）；提供 AgentFactory | §9.3 推论 |
 | `dsh-agent-presets` | 官方 | preset roster；config：`roots: [player 池, planner 池]` + `default` | §3.2、决策 ⑩ |
 | `dsh-llm-retry`（可选） | 官方 | 请求重试（挂行即得，无需实现） | prereq §4.4 |
-| **team 插件（自研）** | 自研 | `ctx.team`：成员注册、输出收集（发言+tool 调用/结果）、1:1 原样广播进 buffer、buffer 轻量持久化、team section | §4.4/§4.5 |
+| **team 插件（自研）** | 自研 | `ctx.team`：成员注册、输出收集（发言+tool 调用/结果）、1:1 原样广播进 buffer、buffer 从成员 log 派生重建（决策 ⑮，不独立持久化 buffer 本体）、team section | §4.4/§4.4a/§4.5 |
 | **saolei-loop 插件（自研）** | 自研 | 编排：游戏阶段机、驱动权（驱动时机+buffer 消费策略）、游戏事件流持有、agent 物化（create + preset mount） | §4.2/§4.5、决策 ⑨ |
 | **saolei 游戏插件（自研）** | 自研 | 扫雷游戏实现（`ctx.saoleiGame` 服务：棋盘/规则/操作执行）；游戏状态持有者 | 决策 ⑨ |
 | **桥接插件（自研，grpc）** | 自研 | 对外面（gateway/desktop）；消费 `ctx.team`（群聊记录读面）与 `ctx.saoleiGame`（棋盘推送） | prereq §5.4（插件桥接决策） |
@@ -554,7 +575,7 @@ prereq §3.1 的依赖最小集分析语义更新为：那 7 项必需 peers 是
 
 1. **SDK 直组 + preset roster 组合无先例**：roster 的官方消费者是 web host；B1/SDK 直组形态（047 demo）不挂 roster。挂 `dsh-agent-presets` 行 + 动态 create + setup mount 的组合属探索项（同 B1 调研 §5.4"直组核心件"的探索属性），需在 spec/plan 阶段以最小 PoC 验证（两池各一 preset、双 agent 物化、mount 幂等）。
 2. **双 agent 并发 + team 广播的压力面**：1:1 原样广播（决策 ⑬）下 planner buffer 单局条目数 = player 工具调用次数；drain 一次注入的消息量与 `agent/pre-step` enter 决策的批量语义需实测（官方语义支持一批 messages，§4.4 要点 3）。
-3. **buffer 轻量持久化的恢复顺序**：team 重放 buffer 需在 agent resume 之后（§7 风险 2）；开发时定具体形态（文件/SQLite 独立表均可，勿复用 session 事件流）。
+3. **buffer 派生重建的验证**：重建算法（sender 投影 + receiver `messageId` 消费锚点 + 串行归并）与崩溃场景（广播中途崩溃自愈、已消费不重复）需 PoC 覆盖；team 注册事实的持久化形态（或 saolei-loop 重建时重新 register 兜底）开发时定（§4.4a、§7 风险 2）。
 
 ---
 
