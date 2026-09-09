@@ -305,18 +305,21 @@ func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 7 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 7 (chat-only + farewell + greeting + greeting-again + 3 preset templates)", len(got))
+	if len(got) != 9 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 9 (chat-only + farewell + greeting + greeting-again + 5 preset templates)", len(got))
 	}
 
 	// Sorted alphabetically: chat-only < farewell < greeting <
-	// greeting-again < preset-persona-standard < preset-persona-tools <
-	// tool-guidance-present.
+	// greeting-again < preset-persona-authored-one <
+	// preset-persona-authored-two < preset-persona-standard <
+	// preset-persona-tools < tool-guidance-present.
 	wantNames := []string{
 		"chat-only",
 		"farewell",
 		"greeting",
 		"greeting-again",
+		"preset-persona-authored-one",
+		"preset-persona-authored-two",
 		"preset-persona-standard",
 		"preset-persona-tools",
 		"tool-guidance-present",
@@ -363,23 +366,28 @@ func TestNewMessageStore_LoadsEmbeddedChat(t *testing.T) {
 	}
 
 	// The preset scenario anchors: the system_keywords mirror the deployed
-	// template personas and the demo-echo guidance heading; the texts are
+	// template personas, the demo-echo guidance heading, and the authored
+	// persona markers the resource-face large tests inject; the texts are
 	// what the preset large-test cases assert verbatim.
 	presetAnchors := []struct {
 		index          int
 		systemKeywords []string
 		text           string
 	}{
-		{4, []string{"demo standard assistant"}, "persona-standard-hit"},
-		{5, []string{"demo tools assistant"}, "persona-tools-hit"},
-		{6, []string{"demo_echo"}, "tool-guidance-hit"},
+		{4, []string{"authored persona marker one"}, "persona-authored-one-hit"},
+		{5, []string{"authored persona marker two"}, "persona-authored-two-hit"},
+		{6, []string{"demo standard assistant"}, "persona-standard-hit"},
+		{7, []string{"demo tools assistant"}, "persona-tools-hit"},
+		{8, []string{"demo_echo"}, "tool-guidance-hit"},
 	}
 	for _, anchor := range presetAnchors {
 		tpl := got[anchor.index]
 		if !slices.Equal(tpl.SystemKeywords, anchor.systemKeywords) {
 			t.Errorf("%s system_keywords = %v, want %v", tpl.Name, tpl.SystemKeywords, anchor.systemKeywords)
 		}
-		if !slices.Contains(tpl.Keywords, "preset-probe") && !slices.Contains(tpl.Keywords, "guidance-probe") {
+		if !slices.Contains(tpl.Keywords, "preset-probe") &&
+			!slices.Contains(tpl.Keywords, "guidance-probe") &&
+			!slices.Contains(tpl.Keywords, "authored-probe") {
 			t.Errorf("%s keywords = %v, want a probe keyword", tpl.Name, tpl.Keywords)
 		}
 		if tpl.Text != anchor.text {

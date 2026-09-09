@@ -34,6 +34,18 @@ description: |
         conversation is FAILED_PRECONDITION (058 FR-002)
     13. TestPresetUnknownPresetRejected — an unknown preset id is rejected
         with INVALID_ARGUMENT and leaves no conversation behind
+    14. TestPresetAuthoringLifecycle — the C1 closed loop: create → a new
+        session runs the authored persona (hot creation) → persona update →
+        the joined session keeps its generation while a new session lands on
+        the new one → delete → the joined session stays servable while new
+        binds are rejected (058 US2 V3-1/V3-2/V4-1/V4-3)
+    15. TestPresetCreateRejections — duplicate id → 409 with the original
+        intact; unknown template / malformed id / empty persona / empty
+        update_mask / unknown-id update → 400/404; every rejection leaves no
+        half-materialized state (058 US2-AS4)
+    16. TestPresetTemplateDeleteRefused — deleting a deployment template is
+        refused (FAILED_PRECONDITION) and the template keeps serving
+        (058 US2, chat-api §2 DeletePreset)
 
 suites:
   - name: default

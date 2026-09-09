@@ -6,6 +6,14 @@
 # demo tools assistant.", and the demo-echo guidance heading carries
 # "demo_echo" (experimental/dsh/demo/agent-plugins/demo-echo/src/index.ts).
 #
+# The authored-marker templates assert presets created through
+# PresetService: the test composes the persona prose with the marker string
+# ("authored persona marker one" / "...two"), the patched persona row lands
+# in the session's system prompt, and the marker template answers the
+# authored-probe turn — the end-to-end proof that the authored generation is
+# what the model received (V3-1/V3-2, specs/058-dsh-preset-roster-demo/
+# research.md R11).
+#
 # Every template here is a multi-turn condition template pairing a
 # system_keywords condition with a deliberate user-keyword probe, so the
 # templates only fire on requests that probe the preset behaviour — plain
@@ -26,3 +34,11 @@ messages:
     keywords: [guidance-probe]
     system_keywords: ["demo_echo"]
     text: "tool-guidance-hit"
+  - name: preset-persona-authored-one
+    keywords: [authored-probe]
+    system_keywords: ["authored persona marker one"]
+    text: "persona-authored-one-hit"
+  - name: preset-persona-authored-two
+    keywords: [authored-probe]
+    system_keywords: ["authored persona marker two"]
+    text: "persona-authored-two-hit"

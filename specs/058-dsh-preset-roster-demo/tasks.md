@@ -79,8 +79,8 @@
 - **官方文档**：`node_modules/.pnpm/@deepseek-ai+dsh-agent-presets@0.1.1-rc.2_5200ead8959daeaefdf3dd69ba905368/node_modules/@deepseek-ai/dsh-agent-presets/README.md`（`copy`/`remove`/发现热读取/stamp generation 各节——handler 语义透传依据）
 - **技术文章/技术参考文档**：`specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md`（§4 物化算法/§6 错误码）、`specs/058-dsh-preset-roster-demo/contracts/chat-api.md`（§2 PresetService）、`specs/058-dsh-preset-roster-demo/data-model.md`（§2 AuthoredPreset 状态转移）、`projects/game/agent_v2/src/presets.ts`（Store 错误码与 keyset 先例参照）、`specs/058-dsh-preset-roster-demo/research.md`（R3/R5）
 
-- [ ] T018 [US2] `experimental/dsh/demo/agent/src/server.ts` 增 `PresetService` 五 handlers（校验：id 语法/template 可 resolve/persona 非空/update_mask 限定；错误映射 contracts §6）+ `server.test.ts`（handler 面单测：域错误 → status、字段校验、模板拒绝删除透传）
-- [ ] T019 [US2] 大型测试 CRUD/generation 用例：`experimental/dsh/demo/testplan/preset_test.go` 追加（模块=preset 资源面：V3-1 热创作、V3-2 generation 切换、V4-1 闭环、V4-3 删除语义、US2-AS4 重复 id→ALREADY_EXISTS / 未知模板→INVALID_ARGUMENT / 拒绝且无半物化残留；V3-3 broken 场景经 preset 创建后损坏文件的测试步骤承载）
+- [X] T018 [US2] `experimental/dsh/demo/agent/src/server.ts` 增 `PresetService` 五 handlers（校验：id 语法/template 可 resolve/persona 非空/update_mask 限定；错误映射 contracts §6）+ `server.test.ts`（handler 面单测：域错误 → status、字段校验、模板拒绝删除透传）
+- [X] T019 [US2] 大型测试 CRUD/generation 用例：`experimental/dsh/demo/testplan/preset_test.go` 追加（模块=preset 资源面：V3-1 热创作、V3-2 generation 切换、V4-1 闭环、V4-3 删除语义、US2-AS4 重复 id→ALREADY_EXISTS / 未知模板→INVALID_ARGUMENT / 拒绝且无半物化残留；V3-3 broken 场景归单测承载——R11 承载表，测试进程无法触达容器内可写层文件，preset_test.go 文件头已说明）
 
 **Checkpoint**: US1 + US2 均独立可用；C1 闭环全链路（store↔文件↔roster）经端到端验证
 
