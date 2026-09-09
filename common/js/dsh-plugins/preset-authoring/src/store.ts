@@ -10,24 +10,20 @@
  * (agent_v2 precedent: projects/game/agent_v2/src/presets.ts:40-50).
  */
 
-/**
- * The preset pool a record belongs to — the store-level twin of the proto
- * `PresetRole` enum (PLAYER/PLANNER, specs/059-agent-v2-team-mode/
- * contracts/preset-api.md §2): the role decides the pool the preset was
- * materialized from and is immutable after create. Optional at the seam —
- * role-less consumers (the 058 demo) record presets without a pool; the
- * agent_v2 service face makes it REQUIRED.
- */
-export type PresetRole = "player" | "planner";
-
 /** One authored preset's dynamic fields (data-model.md §2). */
 export interface PresetRecord {
   /** Preset id = resource id (`presets/{id}`) = the materialized directory name. */
   id: string;
   /** Source template id the copy was materialized from. */
   template: string;
-  /** The pool the preset belongs to (immutable; absent for role-less consumers). */
-  role?: PresetRole;
+  /**
+   * The caller-defined pool label the preset belongs to (immutable after
+   * create; role-less consumers may omit it). The plugin treats it as an
+   * opaque string — the vocabulary and its validation belong to the
+   * consumer's service face (agent_v2 example: PLAYER/PLANNER service
+   * semantics, specs/059-agent-v2-team-mode/contracts/preset-api.md §2).
+   */
+  role?: string;
   /** Persona prose materialized into the copy's persona row `config.text`. */
   persona: string;
   /** Display name materialized into the copy's `preset.yml`; absent = the id. */

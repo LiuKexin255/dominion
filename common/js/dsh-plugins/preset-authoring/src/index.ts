@@ -26,13 +26,13 @@ import {
 } from "./materialize.js";
 import type { MaterializeFs, RosterSeam } from "./materialize.js";
 import { MemoryPresetStore, PresetStoreError } from "./store.js";
-import type { PresetRecord, PresetRole, PresetStore } from "./store.js";
+import type { PresetRecord, PresetStore } from "./store.js";
 import { createMongoPresetStore } from "./store.mongo.js";
 
 export { PERSONA_ROW_NAME, PresetAuthoringError } from "./materialize.js";
 export type { PresetAuthoringErrorCode } from "./materialize.js";
 export { MemoryPresetStore, PresetStoreError } from "./store.js";
-export type { PresetRecord, PresetRole, PresetStore, PresetStoreErrorCode } from "./store.js";
+export type { PresetRecord, PresetStore, PresetStoreErrorCode } from "./store.js";
 export { createMongoPresetStore, mongoPresetCollection, MongoPresetStore } from "./store.mongo.js";
 export type { MongoPresetConnection } from "./store.mongo.js";
 
@@ -71,9 +71,10 @@ export const Config: z<PresetAuthoringConfig> = z.object({
 export interface PresetView {
   id: string;
   template: string;
-  /** The pool the preset belongs to (immutable after create; absent for
-   * role-less consumers). */
-  role?: PresetRole;
+  /** The caller-defined pool label (opaque to the plugin; immutable after
+   * create; absent for role-less consumers — see
+   * common/js/dsh-plugins/preset-authoring/src/store.ts `PresetRecord.role`). */
+  role?: string;
   persona: string;
   displayName?: string;
   createTime: Date;
@@ -96,8 +97,9 @@ export interface ComposeResult {
 export interface CreatePresetInput {
   id: string;
   template: string;
-  /** The pool the preset belongs to; the agent_v2 face requires it. */
-  role?: PresetRole;
+  /** The caller-defined pool label (opaque to the plugin); the agent_v2
+   * face requires it (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). */
+  role?: string;
   persona: string;
   displayName?: string;
 }
@@ -107,8 +109,8 @@ export interface PresetAuthoringService {
   compose(presetId?: string): Promise<ComposeResult>;
   create(input: CreatePresetInput): Promise<PresetView>;
   get(id: string): Promise<PresetView>;
-  /** Authored presets, optionally narrowed to one role pool. */
-  list(role?: PresetRole): Promise<PresetView[]>;
+  /** Authored presets, optionally narrowed to one pool label. */
+  list(role?: string): Promise<PresetView[]>;
   update(id: string, patch: { persona?: string; displayName?: string }): Promise<PresetView>;
   remove(id: string): Promise<void>;
 }
@@ -227,7 +229,7 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
       return toView(await storeGet(id));
     },
 
-    async list(role?: PresetRole): Promise<PresetView[]> {
+    async list(role?: string): Promise<PresetView[]> {
       // Authored copies only — templates are deployment data, not resources (R5).
       const records = await store.list();
       return records

@@ -39,7 +39,7 @@ import type { BidiStream, DesktopBridgeServiceHandlers as PluginBridgeHandlers }
 // team-mode/contracts/preset-api.md); the error class is a runtime import
 // (instanceof discrimination in toServiceError, roster-verification §4.1).
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { PresetAuthoringService, PresetRole, PresetView } from "@dominion/dsh-preset-authoring";
+import type { PresetAuthoringService, PresetView } from "@dominion/dsh-preset-authoring";
 import { AgentSessionError, AgentSessions, PROVIDER } from "./session.js";
 import type { AgentView } from "./session.js";
 import type { TurnStream } from "./history.js";
@@ -189,7 +189,16 @@ function dateToTimestamp(date: Date): Timestamp {
   return { seconds: Math.floor(ms / 1000), nanos: (ms % 1000) * 1e6 };
 }
 
-/** The proto wire value of an authoring role (the generated enum union). */
+/**
+ * The saolei team-mode service-face role vocabulary: the role decides the
+ * pool a preset is materialized from and is immutable after create
+ * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). The proto enum
+ * `PresetRole` (projects/game/agent_v2.proto) is the wire-level strong-validation face;
+ * the authoring plugin stores the role as an opaque caller-defined label.
+ */
+type PresetRole = "player" | "planner";
+
+/** The proto wire value of a service role (the generated enum union). */
 function roleToProto(role: PresetRole): PresetRoleProto {
   switch (role) {
     case "player":
@@ -199,7 +208,7 @@ function roleToProto(role: PresetRole): PresetRoleProto {
   }
 }
 
-/** Map a request's wire role value onto the authoring role; undefined when
+/** Map a request's wire role value onto the service role; undefined when
  * the request carries none (UNSPECIFIED). */
 function protoToRole(value: string | undefined): PresetRole | undefined {
   if (value === "PRESET_ROLE_PLAYER") {
@@ -230,9 +239,11 @@ function presetToProto(view: PresetView): Preset {
   };
   // Every preset this service creates carries a role (required on create);
   // the undefined arm is the seam's role-less-consumer case and stays
-  // unset on the wire (proto3 omits it).
+   // unset on the wire (proto3 omits it). The assertion is safe because the
+   // vocabulary lives in this module — any seam value outside it falls
+   // through roleToProto's switch and leaves the field unset.
   if (view.role !== undefined) {
-    preset.role = roleToProto(view.role);
+    preset.role = roleToProto(view.role as PresetRole);
   }
   return preset;
 }

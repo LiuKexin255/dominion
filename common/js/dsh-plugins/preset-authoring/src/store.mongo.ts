@@ -22,13 +22,13 @@
 import type { Collection as MongoCollection } from "mongodb";
 
 import { PresetStoreError } from "./store.js";
-import type { PresetRecord, PresetRole } from "./store.js";
+import type { PresetRecord } from "./store.js";
 
 /** Stored document shape (`_id` deliberately absent — database-generated). */
 export interface MongoPresetDocument {
   id: string;
   template: string;
-  role?: PresetRole;
+  role?: string;
   persona: string;
   display_name?: string;
   create_time: Date;
