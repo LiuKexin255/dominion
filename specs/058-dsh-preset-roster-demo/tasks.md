@@ -111,8 +111,8 @@
 - **技术文章/技术参考文档**：`specs/058-dsh-preset-roster-demo/quickstart.md`（§2/§3 验证命令与场景）、`experimental/dsh/demo/README.md`（现状描述，更新对象）、`specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md`（§1/§2 组合清单与 roots/env——T021 描述对象）、`specs/058-dsh-preset-roster-demo/contracts/chat-api.md`（§1/§2 API 面——T021 描述对象）、`specs/058-dsh-preset-roster-demo/discussion-2026-09-08.md`（§9 survey 写作指引）、`specs/058-dsh-preset-roster-demo/research.md`（R1-R12 实践对照——T023 survey 底稿）、`survey/deepseek-harness-team-mode.md`（§2.3/§3——survey 实证对照对象）
 
 - [X] T021 [P] 更新 `experimental/dsh/demo/README.md`：组合清单（直组+roster+authoring 行）、PresetService/CreateConversation 面、roots/emptyDir/env 说明、"preset 资源与物化文件为进程态、重启丢失"已知限制（终态表述，原则 VII）
-- [ ] T022 大型测试验收闭环（Constitution 原则 VI）：经 testplan skill 执行 `guitar run experimental/dsh/demo/testplan/interface_test.yaml`——部署→全部用例（047 既有回归 + preset 新用例）→清理；**全部通过**（零 failed/flaky）为准，失败则修复后重跑；同步 `bazel test //experimental/dsh/demo/testplan:closure_audit_test`
-- [ ] T023 survey 落档（FR-010）：按 `discussion-2026-09-08.md` §9 写入 `survey/deepseek-harness-roster-verification.md`（roster 机制实证对照、C1 实践摩擦、边界最佳实践与 agent_v2 迁移建议；被实践修订的纸面结论对照记录）
+- [X] T022 大型测试验收闭环（Constitution 原则 VI）：经 testplan skill 执行 `guitar run experimental/dsh/demo/testplan/interface_test.yaml`——部署→全部用例（047 既有回归 + preset 新用例）→清理；**全部通过**（零 failed/flaky）为准，失败则修复后重跑；同步 `bazel test //experimental/dsh/demo/testplan:closure_audit_test`
+- [X] T023 survey 落档（FR-010）：按 `discussion-2026-09-08.md` §9 写入 `survey/deepseek-harness-roster-verification.md`（roster 机制实证对照、C1 实践摩擦、边界最佳实践与 agent_v2 迁移建议；被实践修订的纸面结论对照记录）
 
 ---
 
