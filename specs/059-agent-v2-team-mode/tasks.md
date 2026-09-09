@@ -35,10 +35,10 @@
 
 ### Tasks
 
-- [ ] T001 在 `pnpm-workspace.yaml` catalog 中新增本 feature 依赖（`@deepseek-ai/dsh-agent-presets`、`@deepseek-ai/dsh-agent-loop`，0.1.1-rc.2 同线精确 pin），执行 `pnpm up` 更新锁文件；不修改 `projects/game/agent` 相关条目（US1 范围）
-- [ ] T002 [P] 创建 `common/js/dsh-plugins/team/` 包骨架：`package.json`（`@dominion/dsh-team`，ESM 契约）、`tsconfig.json` + `.swcrc` 锁步、`src/index.ts` 导出最小 Service 插件（可被组合加载的空 `apply`）、`BUILD.bazel`（gazelle 生成 + `vitest_test` 宏）
-- [ ] T003 [P] 创建 `common/js/dsh-plugins/memory/` 包骨架（`@dominion/dsh-memory`，同 T002 形态；含 host 服务面与工具行的双导出入口占位）
-- [ ] T004 [P] 创建模板 preset 数据目录 `projects/game/agent_v2/preset-templates/`：`player/`（persona 行占位——含"你是扫雷 player…"第一人称身份开头锚行，锚行前缀为跨 phase 稳定契约，其余默认 base 内容由 T021 完善；+ `@dominion/dsh-saolei` 工具插件行）与 `planner/`（persona 行占位——同型锚行"你是扫雷 planner…"；+ `@dominion/dsh-memory` 插件行）各含 `agent.cordis.yml` + `preset.yml`（形态对照 `experimental/dsh/demo/agent/presets-templates/demo-standard/agent.cordis.yml` 与同目录 `preset.yml`）
+- [X] T001 在 `pnpm-workspace.yaml` catalog 中新增本 feature 依赖（`@deepseek-ai/dsh-agent-presets`、`@deepseek-ai/dsh-agent-loop`，0.1.1-rc.2 同线精确 pin），执行 `pnpm up` 更新锁文件；不修改 `projects/game/agent` 相关条目（US1 范围）
+- [X] T002 [P] 创建 `common/js/dsh-plugins/team/` 包骨架：`package.json`（`@dominion/dsh-team`，ESM 契约）、`tsconfig.json` + `.swcrc` 锁步、`src/index.ts` 导出最小 Service 插件（可被组合加载的空 `apply`）、`BUILD.bazel`（gazelle 生成 + `vitest_test` 宏）
+- [X] T003 [P] 创建 `common/js/dsh-plugins/memory/` 包骨架（`@dominion/dsh-memory`，同 T002 形态；含 host 服务面与工具行的双导出入口占位）
+- [X] T004 [P] 创建模板 preset 数据目录 `projects/game/agent_v2/preset-templates/`：`player/`（persona 行占位——含"你是扫雷 player…"第一人称身份开头锚行，锚行前缀为跨 phase 稳定契约，其余默认 base 内容由 T021 完善；+ `@dominion/dsh-saolei` 工具插件行）与 `planner/`（persona 行占位——同型锚行"你是扫雷 planner…"；+ `@dominion/dsh-memory` 插件行）各含 `agent.cordis.yml` + `preset.yml`（形态对照 `experimental/dsh/demo/agent/presets-templates/demo-standard/agent.cordis.yml` 与同目录 `preset.yml`）
 
 **Checkpoint / 验证门禁**: `bazel build //common/js/dsh-plugins/... //projects/game/agent_v2/...` 通过；两个新包 `bazel test`（空套件）通过。
 
