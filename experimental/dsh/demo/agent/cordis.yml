@@ -1,18 +1,24 @@
 # dsh composition manifest — the single source of truth for the enabled plugin
-# set (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §2). Two rows:
-# the official executor-less agent spine with its tool surface trimmed off, and
-# the official DeepSeek chat-completions adapter pointed at fake-llm via the
-# Dominion-resolved baseURL (specs/047-dsh-chat-demo/spec.md FR-011).
-- id: agent-spine
-  name: '@deepseek-ai/dsh-agent-spine-demo'
+# set (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §2). Direct rows
+# per specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §1:
+# baseline rows materialize through //third_party/dsh/core:runtime_pkg, service
+# rows through the agent package.json / BUILD npm_deps. Row order carries no
+# dependency semantics (cordis awaits by inject); layering is readability only.
+# ── 基线行（经 //third_party/dsh/core:runtime_pkg 物化，不进 demo agent package.json）
+- { id: timer,          name: '@deepseek-ai/cordis-plugin-timer' }
+- { id: invariants,     name: '@deepseek-ai/dsh-invariants' }
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
   config:
-    persona: 'You are a helpful demo chat assistant.'
-    workspaceContext: false        # 唯一必填键：显式关闭 runtime-context 注入
-    includeRuntimeContext: false
-    includeHarnessIdentity: false
-    skills: { enabled: false }
-    toolBash: false
-    toolJobs: false
+    includeHarnessIdentity: false   # 部署自有完整 system prompt
+    includeRuntimeContext: false    # 无运行时上下文注入
+    persona: 'You are a helpful demo chat assistant.'   # deployment persona——被 preset 的 dsh-persona 行遮蔽
+# ── 服务声明行（demo agent package.json / BUILD npm_deps）
+- { id: llm,            name: '@deepseek-ai/dsh-llm' }
+- { id: session,        name: '@deepseek-ai/dsh-session' }
+- { id: tools,          name: '@deepseek-ai/dsh-tools' }
+- { id: agents,         name: '@deepseek-ai/dsh-agent' }
+- { id: agent-loop,     name: '@deepseek-ai/dsh-agent-loop' }
 - id: llm-deepseek
   name: '@deepseek-ai/dsh-llm-deepseek'
   config:
@@ -21,3 +27,15 @@
     models:
       - id: fake-chat-v1
         contextWindow: 100000
+# ── roster 与 preset 扩展（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §1-§2）
+- id: agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config:
+    default: demo-standard
+    includeUserRoot: false        # 确定性：不扫机器 <dshHome>/.agent-presets
+    roots:
+      - path: !!js process.env.PRESET_TEMPLATES_ROOT   # 镜像内模板数据（system 信任）
+        trust: system
+      - path: !!js process.env.PRESET_WRITABLE_ROOT    # emptyDir；第一个且唯一 user root
+        trust: user
+- { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }

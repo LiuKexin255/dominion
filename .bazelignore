@@ -25,5 +25,7 @@ common/js/dsh-plugins/saolei-loop/node_modules
 common/js/dsh-plugins/saolei/node_modules
 projects/game/agent_v2/node_modules
 projects/game/web/frontend/node_modules
+common/js/dsh-plugins/preset-authoring/node_modules
+experimental/dsh/demo/agent-plugins/demo-echo/node_modules
 
 

@@ -1,0 +1,32 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
+
+npm_link_all_packages(name = "node_modules")
+
+# Workspace package target required by npm_link_all_packages for workspace:*
+# deps. The manifest IS a src here, unlike the llm-glm precedent — the npm
+# linker takes the workspace manifest from the pnpm workspace scan, not from
+# this target: the manifest is in srcs because :pkg doubles as :runtime_pkg's
+# lib payload, and without compiled sources the manifest is the package's
+# entire shipped file set (artifact_pkg_js copies lib files under
+# node_modules/{pkg_name}/).
+js_library(
+    name = "pkg",
+    srcs = ["package.json"],
+    visibility = ["//visibility:public"],
+)
+
+# Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
+# runtime_deps closure walking (common/js/otel/BUILD.bazel precedent).
+# Separate from :pkg because npm_link_all_packages requires JsInfo provider
+# which only js_library provides.
+js_runtime_library(
+    name = "runtime_pkg",
+    package_name = "@dominion/dsh-preset-authoring",
+    lib = ":pkg",
+    npm_deps = [],
+    package_json = "package.json",
+    visibility = ["//visibility:public"],
+    runtime_deps = [],
+)

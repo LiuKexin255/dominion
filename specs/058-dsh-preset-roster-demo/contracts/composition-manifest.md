@@ -87,10 +87,11 @@
 
 ## 4. BUILD.bazel 增删要点
 
-- `npm_deps`：删 `@deepseek-ai/dsh-agent-spine-demo`；增 `dsh-session`、`dsh-tools`、`dsh-agent-loop`、`dsh-llm-deepseek`（保留）、`@deepseek-ai/dsh-agent-presets`、`@deepseek-ai/dsh-persona`（preset 行解析需物理在场）、`@dominion/dsh-demo-echo`（同）、`@dominion/dsh-preset-authoring`。
+- `npm_deps`：删 `@deepseek-ai/dsh-agent-spine-demo`；增 `dsh-session`、`dsh-tools`、`dsh-agent-loop`、`@deepseek-ai/dsh-agent-presets`、`@deepseek-ai/dsh-persona`（preset 行解析需物理在场；`dsh-llm-deepseek` 保留）。npm_deps 通道仅适用于 registry 包——link target 携带 store 真实文件；workspace 包的 link target 不含可打包文件，经 npm_deps 打包是 no-op。
+- workspace 包通道：`@dominion/dsh-demo-echo` 与 `@dominion/dsh-preset-authoring` 各自以 `js_runtime_library :runtime_pkg` 暴露 `JsRuntimePackageInfo`，经 agent 的 `runtime_deps` 进入打包闭包（artifact_pkg_js 拷贝为 `node_modules/{pkg_name}/` 真实文件，与既有 `//common/js/*:runtime_pkg` 同型）。
 - `artifact_pkg_js.data_files`：增 `presets-templates`（模板随包分发）。
 - `runtime_deps`：`//third_party/dsh/core:runtime_pkg` 不变（基线行物化）。
-- `closure_audit_test`：expected 集随 package.json 重算（047 US3 语义保持：基线零插件、服务声明可溯源）。
+- `closure_audit_test`：expected 集随 package.json 重算（047 US3 语义保持：基线零插件、服务声明可溯源）；cordis 行解析器 fail-closed——每个 `- ` item 必须产出一行，无法识别的行格式报错而非静默跳过。
 
 ## 5. workspace 与 catalog（pnpm-workspace.yaml）
 

@@ -22,9 +22,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md`（§5 workspace/catalog 增项）、`specs/058-dsh-preset-roster-demo/research.md`（R1 版本线、R8 宿主依赖面）
 
-- [ ] T001 [P] `pnpm-workspace.yaml`：`packages` 增 `experimental/dsh/demo/agent-plugins/*`；`catalog` 增 `@deepseek-ai/dsh-agent-loop: 0.1.1-rc.2`、`@deepseek-ai/dsh-agent-presets: 0.1.1-rc.2`、`@deepseek-ai/dsh-persona: 0.1.1-rc.2`
-- [ ] T002 [P] 新包骨架：`common/js/dsh-plugins/preset-authoring/{package.json,tsconfig.json,.swcrc}`（name `@dominion/dsh-preset-authoring`；deps：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery`、`@deepseek-ai/dsh-agent-presets`（类型面）、`js-yaml`，均 catalog）与 `experimental/dsh/demo/agent-plugins/demo-echo/{package.json,tsconfig.json,.swcrc}`（name `@dominion/dsh-demo-echo`；deps：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery`）
-- [ ] T003 `experimental/dsh/demo/agent/package.json` 依赖增删（research.md R8/R12：删 `dsh-agent-spine-demo`；增 `dsh-agent-loop`/`dsh-session`/`dsh-tools`/`dsh-agent-presets`/`dsh-persona` catalog 项与 `@dominion/dsh-demo-echo`/`@dominion/dsh-preset-authoring` workspace 项）→ `bazel run @pnpm -- --dir /mnt/code/dominion/experimental/dsh/demo/agent up` → 目标目录 `bazel run //:gazelle` → `bazel mod tidy`
+- [X] T001 [P] `pnpm-workspace.yaml`：`packages` 增 `experimental/dsh/demo/agent-plugins/*`；`catalog` 增 `@deepseek-ai/dsh-agent-loop: 0.1.1-rc.2`、`@deepseek-ai/dsh-agent-presets: 0.1.1-rc.2`、`@deepseek-ai/dsh-persona: 0.1.1-rc.2`
+- [X] T002 [P] 新包骨架：`common/js/dsh-plugins/preset-authoring/{package.json,tsconfig.json,.swcrc}`（name `@dominion/dsh-preset-authoring`；deps：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery`、`@deepseek-ai/dsh-agent-presets`（类型面）、`js-yaml`，均 catalog）与 `experimental/dsh/demo/agent-plugins/demo-echo/{package.json,tsconfig.json,.swcrc}`（name `@dominion/dsh-demo-echo`；deps：`@deepseek-ai/cordis`、`@deepseek-ai/schemastery`）
+- [X] T003 `experimental/dsh/demo/agent/package.json` 依赖增删（research.md R8/R12：删 `dsh-agent-spine-demo`；增 `dsh-agent-loop`/`dsh-session`/`dsh-tools`/`dsh-agent-presets`/`dsh-persona` catalog 项与 `@dominion/dsh-demo-echo`/`@dominion/dsh-preset-authoring` workspace 项）→ `bazel run @pnpm -- --dir /mnt/code/dominion/experimental/dsh/demo/agent up` → 目标目录 `bazel run //:gazelle` → `bazel mod tidy`
 
 ---
 
