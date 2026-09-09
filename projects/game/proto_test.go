@@ -871,3 +871,133 @@ func TestEmptyCreateSessionRequest(t *testing.T) {
 		t.Errorf("empty CreateSessionRequest: got %s, want {}", string(jsonBytes))
 	}
 }
+
+func TestPresetRoleRoundtrip(t *testing.T) {
+	// given: Preset resources of both pools (the 059 role extension,
+	// specs/059-agent-v2-team-mode/contracts/preset-api.md §2): the role is
+	// an output-only resource field whose protojson form is the enum STRING
+	// name, and persona stays the user-editable persona carrier.
+	tests := []struct {
+		name     string
+		preset   *game.Preset
+		wantJSON string
+		wantRole game.PresetRole
+	}{
+		{
+			name: "player pool preset",
+			preset: &game.Preset{
+				Name:         "templates/saolei/presets/p1",
+				Persona: "你是扫雷 player。",
+				Role:         game.PresetRole_PRESET_ROLE_PLAYER,
+			},
+			wantJSON: "PRESET_ROLE_PLAYER",
+			wantRole: game.PresetRole_PRESET_ROLE_PLAYER,
+		},
+		{
+			name: "planner pool preset",
+			preset: &game.Preset{
+				Name:         "templates/saolei/presets/p2",
+				Persona: "你是扫雷 planner。",
+				Role:         game.PresetRole_PRESET_ROLE_PLANNER,
+			},
+			wantJSON: "PRESET_ROLE_PLANNER",
+			wantRole: game.PresetRole_PRESET_ROLE_PLANNER,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when: marshal to protojson, then unmarshal back
+			jsonBytes, err := protojson.Marshal(tt.preset)
+			if err != nil {
+				t.Fatalf("protojson.Marshal() error: %v", err)
+			}
+			jsonStr := string(jsonBytes)
+			if !strings.Contains(jsonStr, tt.wantJSON) {
+				t.Errorf("JSON output missing role enum name %q, got: %s", tt.wantJSON, jsonStr)
+			}
+			if !strings.Contains(jsonStr, `"persona"`) {
+				t.Errorf("JSON output missing persona field, got: %s", jsonStr)
+			}
+
+			got := new(game.Preset)
+			if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+				t.Fatalf("protojson.Unmarshal() error: %v", err)
+			}
+			if got.GetRole() != tt.wantRole {
+				t.Errorf("role: got %v, want %v", got.GetRole(), tt.wantRole)
+			}
+			if got.GetPersona() != tt.preset.GetPersona() {
+				t.Errorf("persona: got %q, want %q", got.GetPersona(), tt.preset.GetPersona())
+			}
+		})
+	}
+}
+
+func TestCreatePresetRequestCarriesRole(t *testing.T) {
+	// given: a CreatePresetRequest whose role decides the pool the preset is
+	// created into (create 必填、不可变 — preset-api.md §2); the role rides
+	// the REQUEST, not the resource body (AIP-133 user-specified fields on
+	// the request message).
+	given := &game.CreatePresetRequest{
+		Parent:   "templates/saolei",
+		PresetId: "p1",
+		Preset:   &game.Preset{Persona: "persona"},
+		Role:     game.PresetRole_PRESET_ROLE_PLANNER,
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, "PRESET_ROLE_PLANNER") {
+		t.Errorf("JSON output missing request role enum name, got: %s", jsonStr)
+	}
+
+	// then: unmarshal carries the role back
+	got := new(game.CreatePresetRequest)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+	if got.GetRole() != game.PresetRole_PRESET_ROLE_PLANNER {
+		t.Errorf("role: got %v, want %v", got.GetRole(), game.PresetRole_PRESET_ROLE_PLANNER)
+	}
+	if got.GetPresetId() != "p1" {
+		t.Errorf("presetId: got %q, want %q", got.GetPresetId(), "p1")
+	}
+}
+
+func TestListPresetsRequestRoleFilter(t *testing.T) {
+	// given: a ListPresetsRequest with the optional role filter set
+	given := &game.ListPresetsRequest{
+		Parent:   "templates/saolei",
+		PageSize: 10,
+		Role:     game.PresetRole_PRESET_ROLE_PLAYER,
+	}
+
+	// when: marshal to protojson, then unmarshal back
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	if !strings.Contains(string(jsonBytes), "PRESET_ROLE_PLAYER") {
+		t.Errorf("JSON output missing role filter enum name, got: %s", string(jsonBytes))
+	}
+
+	got := new(game.ListPresetsRequest)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: the filter survives the round trip; UNSPECIFIED means no
+	// filtering
+	if got.GetRole() != game.PresetRole_PRESET_ROLE_PLAYER {
+		t.Errorf("role: got %v, want %v", got.GetRole(), game.PresetRole_PRESET_ROLE_PLAYER)
+	}
+	unfiltered := protojson.Format(new(game.ListPresetsRequest))
+	if strings.Contains(unfiltered, "ROLE") {
+		t.Errorf("unspecified request JSON should omit the role filter, got: %s", unfiltered)
+	}
+}

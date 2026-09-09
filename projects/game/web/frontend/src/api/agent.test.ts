@@ -55,7 +55,7 @@ describe('agent api 客户端', () => {
         presets: [
           {
             name: 'templates/saolei/presets/p1',
-            playerPrompt: '你是扫雷玩家',
+            persona: '你是扫雷玩家',
             createTime: '2026-08-29T00:00:00Z',
             updateTime: '2026-08-29T01:00:00Z',
           },
@@ -65,12 +65,12 @@ describe('agent api 客户端', () => {
     const presets = await listPresets('saolei')
     expect(presets).toHaveLength(1)
     expect(presets[0].name).toBe('templates/saolei/presets/p1')
-    expect(presets[0].playerPrompt).toBe('你是扫雷玩家')
+    expect(presets[0].persona).toBe('你是扫雷玩家')
   })
 
   it('createPreset POST，caller-supplied id 走 query，body 为 Preset 本体', async () => {
     fetchMock.mockImplementation(async () =>
-      jsonResponse({ name: 'templates/saolei/presets/p1', playerPrompt: 'p' }),
+      jsonResponse({ name: 'templates/saolei/presets/p1', persona: 'p' }),
     )
     const created = await createPreset('saolei', 'p1', '你是扫雷玩家')
     expect(created.name).toBe('templates/saolei/presets/p1')
@@ -78,14 +78,14 @@ describe('agent api 客户端', () => {
       '/api/v2/templates/saolei/presets?preset_id=p1',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ playerPrompt: '你是扫雷玩家' }),
+        body: JSON.stringify({ persona: '你是扫雷玩家' }),
       }),
     )
   })
 
   it('getPreset GET 完整资源名', async () => {
     fetchMock.mockImplementation(async () =>
-      jsonResponse({ name: 'templates/saolei/presets/p1', playerPrompt: 'x' }),
+      jsonResponse({ name: 'templates/saolei/presets/p1', persona: 'x' }),
     )
     await getPreset('templates/saolei/presets/p1')
     expect(fetchMock).toHaveBeenCalledWith(
@@ -94,16 +94,16 @@ describe('agent api 客户端', () => {
     )
   })
 
-  it('updatePreset PATCH 携带 update_mask=player_prompt 与新内容', async () => {
+  it('updatePreset PATCH 携带 update_mask=persona 与新内容', async () => {
     fetchMock.mockImplementation(async () =>
-      jsonResponse({ name: 'templates/saolei/presets/p1', playerPrompt: '新的' }),
+      jsonResponse({ name: 'templates/saolei/presets/p1', persona: '新的' }),
     )
     await updatePreset('templates/saolei/presets/p1', '新的')
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/v2/templates/saolei/presets/p1?update_mask=player_prompt',
+      '/api/v2/templates/saolei/presets/p1?update_mask=persona',
       expect.objectContaining({
         method: 'PATCH',
-        body: JSON.stringify({ playerPrompt: '新的' }),
+        body: JSON.stringify({ persona: '新的' }),
       }),
     )
   })

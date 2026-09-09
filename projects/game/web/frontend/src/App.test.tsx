@@ -820,7 +820,7 @@ describe('App cancel 编排（web-ui.md §4/§8-6）', () => {
 
 const PRESET_P1 = {
   name: 'templates/saolei/presets/p1',
-  playerPrompt: '你是扫雷玩家',
+  persona: '你是扫雷玩家',
   createTime: '2026-08-29T00:00:00Z',
   updateTime: '2026-08-29T00:00:00Z',
 }

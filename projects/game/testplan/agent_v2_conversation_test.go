@@ -28,7 +28,7 @@ func agentV2Prep(t *testing.T, sutHostURL, sutEnvName string) (ctx context.Conte
 	ctx = traceContext(t)
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 	sessionName = agentV2SessionName(sessionID)
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-"+uniqueSuffix(), "conversation persona")
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-"+uniqueSuffix(), "你是扫雷 player，conversation persona")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 	return ctx, sessionName
 }
@@ -187,8 +187,8 @@ func TestAgentV2ConcurrentSessionIsolation(t *testing.T) {
 	name1 := agentV2SessionName(id1)
 	name2 := agentV2SessionName(id2)
 	// Both sessions materialize their own agent before the turns (FR-007).
-	preset1 := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-iso-1-"+uniqueSuffix(), "isolation one")
-	preset2 := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-iso-2-"+uniqueSuffix(), "isolation two")
+	preset1 := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-iso-1-"+uniqueSuffix(), "你是扫雷 player，isolation one")
+	preset2 := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-iso-2-"+uniqueSuffix(), "你是扫雷 player，isolation two")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, name1, preset1.GetName(), "")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, name2, preset2.GetName(), "")
 
@@ -368,7 +368,7 @@ func TestAgentV2HistoryBackfillMatchesStream(t *testing.T) {
 	userText := agentV2TriggerThink + " remember this turn"
 
 	// Materialize before the turn (FR-007: no lazy creation).
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-backfill-"+uniqueSuffix(), "backfill persona")
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-backfill-"+uniqueSuffix(), "你是扫雷 player，backfill persona")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 
 	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName, userText)
@@ -523,7 +523,7 @@ func TestAgentV2StepSegmentedBlocksAndHistory(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	sessionID := "conv-steps-" + uniqueSuffix()
 	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		sessionID, "conv-steps-"+uniqueSuffix(), "step segmentation")
+		sessionID, "conv-steps-"+uniqueSuffix(), "你是扫雷 player，step segmentation")
 
 	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
@@ -858,7 +858,7 @@ func TestAgentV2CancelNoopAndPrecondition(t *testing.T) {
 	// owner-without-agent: the fail-fast unknown-model UpdateAgent
 	// allocates the owner, then rejects without materializing (US2 场景 7).
 	unmatName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "cancel-unmat-"+uniqueSuffix())
-	unmatPreset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "cancel-unmat-"+uniqueSuffix(), "cancel precondition")
+	unmatPreset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "cancel-unmat-"+uniqueSuffix(), "你是扫雷 player，cancel precondition")
 	updateAgentV2AgentWithStatus(t, ctx, sutHostURL, sutEnvName, unmatName, unmatPreset.GetName(), "no-such-model")
 
 	tests := []struct {
@@ -896,7 +896,7 @@ func TestAgentV2GetAgentDesktopConnected(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-conn-"+uniqueSuffix(), "connection status")
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "conv-conn-"+uniqueSuffix(), "你是扫雷 player，connection status")
 
 	// 无连接: a materialized session that never saw a flow connection.
 	lonelyName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "conv-conn-"+uniqueSuffix())

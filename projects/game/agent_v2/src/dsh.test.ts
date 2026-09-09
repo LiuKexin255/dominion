@@ -14,10 +14,11 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * injection with zero token leakage in diagnostics (SC-004), and the
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
- * (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5): the
- * direct-composed 15-row set, no spine row and no official agent-loop row
- * (FR-012), the trimmed system-prompt config, the subpath invariant
- * companion rows (research.md D5), and the llm-glm model catalog.
+ * (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5): the
+ * direct-composed 19-row set with the official agent-loop row and the
+ * preset roster (two template system roots + one writable user root), the
+ * trimmed system-prompt config, the subpath invariant companion rows
+ * (research.md D5), and the llm-glm model catalog.
  *
  * `boot`, the resolver, and the secret reader are injected as `vi.fn()`
  * doubles through the DshBootDeps seam; `process.exit` is spied so the
@@ -299,7 +300,7 @@ function loadManifest(): ManifestRow[] {
 describe("cordis.yml composition manifest", () => {
   const rows = loadManifest();
 
-  it("direct-composes the 15-row plugin set in contract order", () => {
+  it("direct-composes the 19-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -307,6 +308,7 @@ describe("cordis.yml composition manifest", () => {
       "system-prompt",
       "tools",
       "agents",
+      "agent-loop",
       "invariants",
       "invariant-session",
       "invariant-agent",
@@ -314,15 +316,20 @@ describe("cordis.yml composition manifest", () => {
       "llm-retry",
       "llm-glm",
       "desktop-bridge",
+      "agent-presets",
+      "preset-authoring",
+      "team",
+      "memory",
       "saolei-loop",
-      "saolei",
     ]);
   });
 
-  it("mounts no spine row and no official agent-loop row (FR-012)", () => {
+  it("mounts the official agent loop and no spine row (R1/R7)", () => {
     const names = rows.map((row) => row.name);
+    // 官方驱动回归：the agent-loop row owns the factory (Config.agents[]
+    // left empty — agents materialize dynamically through ctx.agents.create).
+    expect(names).toContain("@deepseek-ai/dsh-agent-loop");
     expect(names).not.toContain("@deepseek-ai/dsh-agent-spine-demo");
-    expect(names).not.toContain("@deepseek-ai/dsh-agent-loop");
     expect(names.filter((name) => name.includes("spine"))).toEqual([]);
   });
 
@@ -367,11 +374,54 @@ describe("cordis.yml composition manifest", () => {
     expect(config.models[1]).toEqual({ id: "glm-5.3-flash", contextWindow: 1_000_000 });
   });
 
-  it("mounts the three Dominion plugins (bridge, loop, tools)", () => {
+  it("mounts the roster with two template system roots and one writable user root", () => {
+    const row = rows.find((entry) => entry.id === "agent-presets");
+    expect(row?.name).toBe("@deepseek-ai/dsh-agent-presets");
+    const config = row?.config as {
+      default: string;
+      includeUserRoot: boolean;
+      roots: Array<{ path: string; trust: string }>;
+    };
+    // Preset selection is mandatory in this service: the schema-required
+    // default points at no preset, so an id-less resolve fails loud.
+    expect(config.default).toBe("");
+    expect(config.includeUserRoot).toBe(false);
+    expect(config.roots).toHaveLength(3);
+    expect(config.roots[0]).toMatchObject({ path: expect.stringContaining("PRESET_TEMPLATES_ROOT"), trust: "system" });
+    expect(config.roots[0].path).toContain("player");
+    expect(config.roots[1]).toMatchObject({ path: expect.stringContaining("PRESET_TEMPLATES_ROOT"), trust: "system" });
+    expect(config.roots[1].path).toContain("planner");
+    // The writable root is the first and ONLY user root (authoring lands
+    // there; copy/remove trust semantics).
+    expect(config.roots[2]).toMatchObject({ path: expect.stringContaining("PRESET_WRITABLE_ROOT"), trust: "user" });
+    expect(config.roots.filter((root) => root.trust === "user")).toHaveLength(1);
+  });
+
+  it("mounts the authoring plugin with the host-injected Mongo connection", () => {
+    const row = rows.find((entry) => entry.id === "preset-authoring");
+    expect(row?.name).toBe("@dominion/dsh-preset-authoring");
+    // The credential/URI resolution is the host's (presets.ts, T006) —
+    // injected via the MONGO_URI environment variable, the GLM_BASE_URL
+    // injection pattern; the plugin carries no Dominion deployment logic.
+    expect(row?.config).toEqual({
+      storage: "mongo",
+      mongoUri: expect.stringContaining("MONGO_URI"),
+      mongoDatabase: "game_agent_v2",
+      mongoCollection: "presets",
+    });
+  });
+
+  it("mounts the team and memory host rows and the team-loop row", () => {
     const byId = new Map(rows.map((row) => [row.id, row.name]));
     expect(byId.get("desktop-bridge")).toBe("@dominion/dsh-desktop-bridge");
+    expect(byId.get("team")).toBe("@dominion/dsh-team");
+    expect(byId.get("memory")).toBe("@dominion/dsh-memory");
     expect(byId.get("saolei-loop")).toBe("@dominion/dsh-saolei-loop");
-    expect(byId.get("saolei")).toBe("@dominion/dsh-saolei");
+  });
+
+  it("mounts no host-level saolei tool row (it rides the player template preset)", () => {
+    expect(rows.find((row) => row.id === "saolei")).toBeUndefined();
+    expect(rows.map((row) => row.name)).not.toContain("@dominion/dsh-saolei");
   });
 
   it("mounts no persistence and no settings row (research.md §3.1)", () => {

@@ -672,7 +672,10 @@ func TestResponsesHandler_ToolCallChainWon(t *testing.T) {
 	handler := saoleiResponsesHandler(t)
 
 	t.Run("user keyword triggers saolei_init", func(t *testing.T) {
-		rec := postResponses(t, handler, `{"model":"m","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我开始一局扫雷"}]}]}`)
+		// The instructions carry the materialized preset's persona anchor
+		// line — the saolei fixtures declare it as a system_keywords
+		// condition (T008), mirroring the post-pivot agent_v2 wire.
+		rec := postResponses(t, handler, `{"model":"m","stream":true,"instructions":"你是扫雷 player。","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我开始一局扫雷"}]}]}`)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d", rec.Code)
 		}
@@ -870,7 +873,7 @@ func TestResponsesHandler_ToolOutputNotLastKeepsKeywordMatching(t *testing.T) {
 // of a tool-call response: output carries exactly the function_call item.
 func TestResponsesHandler_ToolCallNonStreaming(t *testing.T) {
 	handler := saoleiResponsesHandler(t)
-	rec := postResponses(t, handler, `{"model":"m","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"开始一局扫雷"}]}]}`)
+	rec := postResponses(t, handler, `{"model":"m","stream":false,"instructions":"你是扫雷 player。","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"开始一局扫雷"}]}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -885,5 +888,65 @@ func TestResponsesHandler_ToolCallNonStreaming(t *testing.T) {
 	item := output[0].(map[string]any)
 	if item["type"] != "function_call" || item["name"] != "saolei_init" {
 		t.Fatalf("item = %v, want function_call saolei_init", item)
+	}
+}
+
+// TestMatchResponsesSystemKeywords pins the system-prompt condition
+// (specs/059-agent-v2-team-mode/tasks.md T008): every declared system
+// keyword must hit the lowered `instructions` text — the persona anchor
+// carrier after the preset-roster pivot — while an undeclared set stays
+// vacuous and a miss defers to the next candidate.
+func TestMatchResponsesSystemKeywords(t *testing.T) {
+	anchored := &Message{
+		Name:           "b-anchored",
+		Keywords:       []string{"trigger"},
+		SystemKeywords: []string{"你是扫雷 player"},
+		Text:           "anchored reply",
+	}
+	plain := &Message{
+		Name: "a-plain",
+		Text: "plain reply",
+	}
+	templates := []*Message{anchored, plain}
+	userOnly := []responsesMessage{{Role: "user", Text: "trigger please"}}
+	instructions := "你是扫雷 player。冷静、精确。"
+
+	tests := []struct {
+		name        string
+		templates   []*Message
+		messages    []responsesMessage
+		instruction string
+		want        string
+	}{
+		{
+			name:        "anchor hit selects the system-conditioned template",
+			templates:   templates,
+			messages:    userOnly,
+			instruction: instructions,
+			want:        "anchored reply",
+		},
+		{
+			name:        "anchor miss defers to the unconditioned candidate",
+			templates:   templates,
+			messages:    userOnly,
+			instruction: "unrelated system prompt",
+			want:        "plain reply",
+		},
+		{
+			name:        "no declared system keywords stays vacuous",
+			templates:   []*Message{plain},
+			messages:    userOnly,
+			instruction: "",
+			want:        "plain reply",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchResponses(tt.templates, tt.messages, strings.ToLower(tt.instruction))
+			if got.Text != tt.want {
+				t.Fatalf("matchResponses() = %q, want %q", got.Text, tt.want)
+			}
+		})
 	}
 }

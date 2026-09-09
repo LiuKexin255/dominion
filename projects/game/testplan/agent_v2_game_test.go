@@ -57,7 +57,7 @@ func TestAgentV2GameWonChainToolStream(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	ctx, sessionName, agent := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		agentV2DesktopWonSessionID, "game-won-"+uniqueSuffix(), "play the win board")
+		agentV2DesktopWonSessionID, "game-won-"+uniqueSuffix(), "你是扫雷 player，play the win board")
 
 	if agent.GetName() != sessionName+"/agent" {
 		t.Fatalf("materialized agent name = %q, want %q", agent.GetName(), sessionName+"/agent")
@@ -175,7 +175,7 @@ func TestAgentV2GameDesktopAbsent(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		"desktop-absent-"+uniqueSuffix(), "game-absent-"+uniqueSuffix(), "no desktop around")
+		"desktop-absent-"+uniqueSuffix(), "game-absent-"+uniqueSuffix(), "你是扫雷 player，no desktop around")
 
 	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
 		agentV2TriggerSaoleiNodesktop+" now")
@@ -230,11 +230,11 @@ func TestAgentV2GameMultiSessionIsolation(t *testing.T) {
 
 	connected := ensureAgentV2Session(t, sutHostURL, sutEnvName, agentV2DesktopWonSessionID)
 	isolated := ensureAgentV2Session(t, sutHostURL, sutEnvName, "desktop-absent-iso-"+uniqueSuffix())
-	isolatedPreset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "game-iso-"+uniqueSuffix(), "isolated session")
+	isolatedPreset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "game-iso-"+uniqueSuffix(), "你是扫雷 player，isolated session")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, isolated, isolatedPreset.GetName(), "")
 	// The connected session reuses its materialization from the won-chain
 	// case when present; materializing again is the idempotent refresh.
-	connectedPreset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "game-conn-iso-"+uniqueSuffix(), "connected session")
+	connectedPreset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "game-conn-iso-"+uniqueSuffix(), "你是扫雷 player，connected session")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, connected, connectedPreset.GetName(), "")
 
 	textConnected := agentV2TriggerSaoleiGame + " isolation probe"
@@ -322,7 +322,7 @@ func TestAgentV2GameConversationStreamIndependentOfFlow(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	sessionID := "desktop-flow-independent-" + uniqueSuffix()
 	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		sessionID, "game-independent-"+uniqueSuffix(), "play while the page closes")
+		sessionID, "game-independent-"+uniqueSuffix(), "你是扫雷 player，play while the page closes")
 
 	// The test's own flow connection — the desktop half of the two streams.
 	flow := connectAgentV2Flow(t, ctx, sutHostURL, sutEnvName, sessionID)

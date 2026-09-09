@@ -258,6 +258,86 @@ describe("SessionHistory.settleToolResult", () => {
   });
 });
 
+describe("TurnCollector interrupted-tail backfill", () => {
+  const SESSION = "templates/saolei/sessions/s1";
+
+  function chunkEvent(chunk: DshStreamChunk, step = 1) {
+    return { type: "assistant/chunk", data: { turn: 1, step, chunk } };
+  }
+
+  it("appends the streamed prefix as an interrupted history entry when a provider failure settles the turn", async () => {
+    // specs/054 semantics through the official loop: the loop solidifies an
+    // interrupted prefix only on cancellation, so the collector carries the
+    // streamed blocks and appends the interrupted history entry itself when
+    // the turn settles ERROR (specs/059-agent-v2-team-mode loop pivot).
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    const collector = new TurnCollector(ctx, agent, SESSION, history);
+    const stream = recorder();
+
+    collector.begin("turn-1", stream);
+    // The reasoning prefix streams as bare deltas (no block-end before the
+    // failure) — the fail-mid wire shape.
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "Thinking about " }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "the request" }));
+    // A text block that fully closed carries its authoritative view.
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 1, blockType: "text" }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 1, text: "partial answer" }));
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 1, block: { type: "text", text: "partial answer" } }));
+    emit(listeners, "agent/error", { agent, error: { message: "provider failure", code: "GLM_TRANSPORT" } });
+    emit(listeners, "agent/status", { agent, status: "idle" });
+
+    const settlement = await collector.awaitSettled();
+    expect(settlement.status).toBe("ERROR");
+
+    const messages = history.list();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.interrupted).toBe(true);
+    expect(messages[0]?.blocks[0]?.think?.content).toBe("Thinking about the request");
+    expect(messages[0]?.blocks[1]?.text?.content).toBe("partial answer");
+  });
+
+  it("appends nothing when a failed turn streamed no content", async () => {
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    const collector = new TurnCollector(ctx, agent, SESSION, history);
+    collector.begin("turn-1", recorder());
+
+    emit(listeners, "agent/error", { agent, error: { message: "boom", code: "GLM_HTTP_500" } });
+    emit(listeners, "agent/status", { agent, status: "idle" });
+    await collector.awaitSettled();
+
+    expect(history.list()).toEqual([]);
+  });
+
+  it("clears the pending prefix when the step finalizes normally", () => {
+    const { ctx, listeners } = fakeCtx();
+    const agent = fakeAgent(SESSION);
+    const history = new SessionHistory();
+    const collector = new TurnCollector(ctx, agent, SESSION, history);
+    collector.begin("turn-1", recorder());
+
+    // Step 1 fails to settle? No: a finalizing assistant/message clears the
+    // pending prefix; a later step-2 failure must not re-append step 1.
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "step one" } }, 1));
+    emit(listeners, "session/event", agent.session, {
+      type: "assistant/message",
+      data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "step one" }] } },
+    });
+    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "step two prefix" } }, 2));
+    emit(listeners, "agent/error", { agent, error: { message: "boom", code: "GLM_HTTP_500" } });
+    emit(listeners, "agent/status", { agent, status: "idle" });
+    void collector.awaitSettled();
+
+    const messages = history.list();
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.interrupted).toBe(true);
+    expect(messages[1]?.blocks[0]?.text?.content).toBe("step two prefix");
+  });
+});
+
 describe("TurnCollector", () => {
   const SESSION = "templates/saolei/sessions/s1";
 

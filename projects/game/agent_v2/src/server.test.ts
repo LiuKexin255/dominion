@@ -12,7 +12,7 @@ import {
 } from "./server.js";
 import type { ModelCatalogEntry } from "./server.js";
 import { AgentSessionError } from "./session.js";
-import { PresetStoreError } from "./presets.js";
+import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 
@@ -23,8 +23,9 @@ import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js"
  * (the stream never opens), unmaterialized Sends are FAILED_PRECONDITION,
  * UpdateAgent validates fail-fast (preset → model catalog) before
  * materializing, and the PresetService surface (preset CRUD + ListModels,
- * directive-2026-09-01.md §3.7) delegates to the store/catalog with AIP
- * error mapping. The collaborators are `vi.fn()` doubles injected through
+ * directive-2026-09-01.md §3.7) delegates to the authoring service/catalog
+ * with AIP error mapping (specs/059-agent-v2-team-mode/contracts/
+ * preset-api.md). The collaborators are `vi.fn()` doubles injected through
  * the buildAgentHandlers/buildPresetHandlers seams — no server binding, no
  * module interception (style/javascript.md Mock convention).
  */
@@ -36,6 +37,20 @@ type UnaryCallback = Parameters<AgentServiceHandlers["ListAgentMessages"]>[1];
 const VALID = "templates/saolei/sessions/s1";
 const VALID_AGENT = "templates/saolei/sessions/s1/agent";
 const VALID_PRESET = "templates/saolei/presets/p1";
+
+/** The authored-preset projection the authoring service returns. */
+function presetView(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "p1",
+    template: "player",
+    role: "player",
+    persona: "play carefully",
+    displayName: undefined,
+    createTime: new Date(1000),
+    updateTime: new Date(2000),
+    ...overrides,
+  };
+}
 
 function fakeDeps() {
   return {
@@ -59,17 +74,16 @@ function fakeDeps() {
       cancel: vi.fn(),
     },
     isDesktopConnected: vi.fn(() => false),
-    presets: {
-      create: vi.fn(async () => undefined),
-      get: vi.fn(async () => ({
-        name: VALID_PRESET,
-        playerPrompt: "play carefully",
-        createTime: new Date(1000),
-        updateTime: new Date(2000),
-      })),
-      list: vi.fn(async () => ({ presets: [], nextPageToken: "" })),
-      update: vi.fn(async () => undefined),
-      delete: vi.fn(async () => undefined),
+    authoring: {
+      compose: vi.fn(),
+      // Mirror the service: create stamps both timestamps at handling time.
+      create: vi.fn(async (input: { persona: string }) =>
+        presetView({ persona: input.persona, createTime: new Date(1000), updateTime: new Date(1000) })),
+      get: vi.fn(async () => presetView()),
+      list: vi.fn(async () => []),
+      update: vi.fn(async (_id: string, patch: { persona?: string }) =>
+        presetView({ persona: patch.persona ?? "" })),
+      remove: vi.fn(async () => undefined),
     },
     listModels: vi.fn(async (): Promise<ModelCatalogEntry[]> => [
       { id: "glm-5.3", contextWindow: 1_000_000 },
@@ -236,7 +250,7 @@ describe("AgentService.UpdateAgent handler", () => {
     };
   }
 
-  it("validates fail-fast then materializes with the preset persona snapshot", async () => {
+  it("validates fail-fast then materializes through the preset reference", async () => {
     const deps = fakeDeps();
     const handlers = buildAgentHandlers(deps);
     const callback = invokeUnary(handlers.UpdateAgent as never, updateRequest({
@@ -246,12 +260,11 @@ describe("AgentService.UpdateAgent handler", () => {
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
     // Order: preset lookup → model catalog → materialize (no teardown before
     // validation, data-model.md §2.2).
-    expect(deps.presets.get).toHaveBeenCalledWith(VALID_PRESET);
+    expect(deps.authoring.get).toHaveBeenCalledWith("p1");
     expect(deps.listModels).toHaveBeenCalledWith("glm-responses");
     expect(deps.sessions.materialize).toHaveBeenCalledWith(VALID, {
       preset: VALID_PRESET,
       model: "glm-5.3",
-      persona: "play carefully",
     });
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
@@ -282,13 +295,13 @@ describe("AgentService.UpdateAgent handler", () => {
       expect(error?.message).toContain(fragment);
     }
     expect(deps.sessions.materialize).not.toHaveBeenCalled();
-    expect(deps.presets.get).not.toHaveBeenCalled();
+    expect(deps.authoring.get).not.toHaveBeenCalled();
   });
 
   it("maps an unknown preset to NOT_FOUND and an unknown model to INVALID_ARGUMENT", async () => {
     const deps = fakeDeps();
-    deps.presets.get.mockRejectedValueOnce(
-      new PresetStoreError("NOT_FOUND", `preset ${VALID_PRESET} not found`),
+    deps.authoring.get.mockRejectedValueOnce(
+      new PresetAuthoringError("NOT_FOUND", `preset p1 not found`),
     );
     const handlers = buildAgentHandlers(deps);
     const missingPreset = invokeUnary(handlers.UpdateAgent as never, updateRequest());
@@ -446,41 +459,83 @@ describe("AgentService.Cancel handler", () => {
 });
 
 describe("PresetService preset CRUD handlers", () => {
-  it("creates under the parent with server-maintained timestamps and maps ALREADY_EXISTS", async () => {
+  it("creates from the role's pool template and maps ALREADY_EXISTS", async () => {
     const deps = fakeDeps();
     const handlers = buildPresetHandlers(deps);
 
     const created = invokeUnary(handlers.CreatePreset as never, {
       parent: "templates/saolei",
       presetId: "p1",
-      preset: { playerPrompt: "body prompt" },
+      preset: { persona: "body prompt" },
+      role: "PRESET_ROLE_PLAYER",
     });
     await vi.waitFor(() => expect(created).toHaveBeenCalledTimes(1));
-    expect(deps.presets.create).toHaveBeenCalledWith({
-      name: VALID_PRESET,
-      playerPrompt: "body prompt",
-      createTime: expect.any(Date),
-      updateTime: expect.any(Date),
+    // Copy-then-patch from the PLAYER pool template (preset-api.md §2): the
+    // role decides the template and lands in the store record.
+    expect(deps.authoring.create).toHaveBeenCalledWith({
+      id: "p1",
+      template: "player",
+      role: "player",
+      persona: "body prompt",
     });
     const [err, response] = created.mock.calls[0];
     expect(err).toBeNull();
     expect(response?.name).toBe(VALID_PRESET);
-    expect(response?.playerPrompt).toBe("body prompt");
+    expect(response?.persona).toBe("body prompt");
+    expect(response?.role).toBe("PRESET_ROLE_PLAYER");
     // create_time/update_time are server-maintained at handling time and
     // equal (AIP-133; the update time refreshes on UpdatePreset).
     expect(response?.createTime?.seconds).toBeTypeOf("number");
     expect(response?.updateTime).toEqual(response?.createTime);
 
-    deps.presets.create.mockRejectedValueOnce(
-      new PresetStoreError("ALREADY_EXISTS", `preset ${VALID_PRESET} already exists`),
+    // The PLANNER role materializes from the planner pool template.
+    deps.authoring.create.mockResolvedValueOnce(
+      presetView({ id: "p2", template: "planner", role: "planner" }),
+    );
+    const planner = invokeUnary(handlers.CreatePreset as never, {
+      parent: "templates/saolei",
+      presetId: "p2",
+      preset: {},
+      role: "PRESET_ROLE_PLANNER",
+    });
+    await vi.waitFor(() => expect(planner).toHaveBeenCalledTimes(1));
+    expect(deps.authoring.create).toHaveBeenLastCalledWith({
+      id: "p2",
+      template: "planner",
+      role: "planner",
+      persona: "",
+    });
+
+    deps.authoring.create.mockRejectedValueOnce(
+      new PresetAuthoringError("ALREADY_EXISTS", "preset p1 already exists"),
     );
     const duplicate = invokeUnary(handlers.CreatePreset as never, {
       parent: "templates/saolei",
       presetId: "p1",
       preset: {},
+      role: "PRESET_ROLE_PLAYER",
     });
     await vi.waitFor(() => expect(duplicate).toHaveBeenCalledTimes(1));
     expect((duplicate.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.ALREADY_EXISTS);
+  });
+
+  it("requires a concrete role on create (INVALID_ARGUMENT)", async () => {
+    const deps = fakeDeps();
+    const handlers = buildPresetHandlers(deps);
+
+    for (const role of [undefined, "PRESET_ROLE_UNSPECIFIED", "PRESET_ROLE_OPERATOR"]) {
+      const callback = invokeUnary(handlers.CreatePreset as never, {
+        parent: "templates/saolei",
+        presetId: "p1",
+        preset: {},
+        role,
+      });
+      await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+      const error = callback.mock.calls[0][0] as grpc.ServiceError;
+      expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+      expect(error?.message).toContain("role is required");
+    }
+    expect(deps.authoring.create).not.toHaveBeenCalled();
   });
 
   it("rejects a malformed parent or preset_id with INVALID_ARGUMENT", () => {
@@ -488,82 +543,126 @@ describe("PresetService preset CRUD handlers", () => {
     const handlers = buildPresetHandlers(deps);
 
     for (const request of [
-      { parent: "templates", presetId: "p1", preset: {} },
-      { parent: "templates/unknown", presetId: "p1", preset: {} },
-      { parent: "templates/saolei", presetId: "", preset: {} },
-      { parent: "templates/saolei", presetId: "a/b", preset: {} },
+      { parent: "templates", presetId: "p1", preset: {}, role: "PRESET_ROLE_PLAYER" },
+      { parent: "templates/unknown", presetId: "p1", preset: {}, role: "PRESET_ROLE_PLAYER" },
+      { parent: "templates/saolei", presetId: "", preset: {}, role: "PRESET_ROLE_PLAYER" },
+      { parent: "templates/saolei", presetId: "a/b", preset: {}, role: "PRESET_ROLE_PLAYER" },
     ]) {
       const callback = invokeUnary(handlers.CreatePreset as never, request);
       expect((callback.mock.calls[0][0] as grpc.ServiceError).code).toBe(
         grpc.status.INVALID_ARGUMENT,
       );
     }
-    expect(deps.presets.create).not.toHaveBeenCalled();
+    expect(deps.authoring.create).not.toHaveBeenCalled();
   });
 
-  it("lists under the parent and returns the store's page token", async () => {
+  it("lists with role filtering and in-memory keyset pagination", async () => {
     const deps = fakeDeps();
-    deps.presets.list.mockResolvedValue({
-      presets: [
-        { name: VALID_PRESET, playerPrompt: "a", createTime: new Date(1), updateTime: new Date(2) },
-      ],
-      nextPageToken: VALID_PRESET,
-    });
+    deps.authoring.list.mockResolvedValue([
+      presetView({ id: "a", persona: "a" }),
+      presetView({ id: "b", role: "planner", template: "planner", persona: "b" }),
+      presetView({ id: "c", persona: "c" }),
+    ]);
     const handlers = buildPresetHandlers(deps);
-    const callback = invokeUnary(handlers.ListPresets as never, {
-      parent: "templates/saolei",
-      pageSize: 10,
-    });
 
-    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
-    expect(deps.presets.list).toHaveBeenCalledWith("templates/saolei", 10, "");
-    const [err, response] = callback.mock.calls[0];
+    const firstPage = invokeUnary(handlers.ListPresets as never, {
+      parent: "templates/saolei",
+      pageSize: 2,
+    });
+    await vi.waitFor(() => expect(firstPage).toHaveBeenCalledTimes(1));
+    // No role filter: the whole sorted set paginates by id (AIP-158).
+    expect(deps.authoring.list).toHaveBeenCalledWith(undefined);
+    const [err, response] = firstPage.mock.calls[0];
     expect(err).toBeNull();
-    expect(response?.presets).toHaveLength(1);
-    expect(response?.nextPageToken).toBe(VALID_PRESET);
+    expect(response?.presets.map((preset: { name: string }) => preset.name)).toEqual([
+      "templates/saolei/presets/a",
+      "templates/saolei/presets/b",
+    ]);
+    expect(response?.nextPageToken).toBe("templates/saolei/presets/b");
+
+    // The token resumes after the last returned id.
+    const secondPage = invokeUnary(handlers.ListPresets as never, {
+      parent: "templates/saolei",
+      pageSize: 2,
+      pageToken: "templates/saolei/presets/b",
+    });
+    await vi.waitFor(() => expect(secondPage).toHaveBeenCalledTimes(1));
+    const [, tail] = secondPage.mock.calls[0];
+    expect(tail?.presets.map((preset: { name: string }) => preset.name)).toEqual([
+      "templates/saolei/presets/c",
+    ]);
+    expect(tail?.nextPageToken).toBe("");
+
+    // A role filter narrows the authoring query.
+    const planners = invokeUnary(handlers.ListPresets as never, {
+      parent: "templates/saolei",
+      role: "PRESET_ROLE_PLANNER",
+    });
+    await vi.waitFor(() => expect(planners).toHaveBeenCalledTimes(1));
+    expect(deps.authoring.list).toHaveBeenLastCalledWith("planner");
   });
 
-  it("gets and deletes by name, mapping the store's NOT_FOUND", async () => {
+  it("returns an empty page for a page token beyond every id", async () => {
     const deps = fakeDeps();
-    deps.presets.get.mockRejectedValue(
-      new PresetStoreError("NOT_FOUND", `preset ${VALID_PRESET} not found`),
+    deps.authoring.list.mockResolvedValue([
+      presetView({ id: "a", persona: "a" }),
+      presetView({ id: "b", persona: "b" }),
+    ]);
+    const handlers = buildPresetHandlers(deps);
+
+    // A stale cursor (tail deleted) or fabricated token past the last id
+    // yields an empty page, not a wrap-around to the first page.
+    const outOfRange = invokeUnary(handlers.ListPresets as never, {
+      parent: "templates/saolei",
+      pageToken: "templates/saolei/presets/zzz",
+    });
+    await vi.waitFor(() => expect(outOfRange).toHaveBeenCalledTimes(1));
+    const [err, response] = outOfRange.mock.calls[0];
+    expect(err).toBeNull();
+    expect(response?.presets).toEqual([]);
+    expect(response?.nextPageToken).toBe("");
+  });
+
+  it("gets and deletes by name, mapping the authoring NOT_FOUND", async () => {
+    const deps = fakeDeps();
+    deps.authoring.get.mockRejectedValue(
+      new PresetAuthoringError("NOT_FOUND", "preset p1 not found"),
     );
-    deps.presets.delete.mockRejectedValue(
-      new PresetStoreError("NOT_FOUND", `preset ${VALID_PRESET} not found`),
+    deps.authoring.remove.mockRejectedValue(
+      new PresetAuthoringError("NOT_FOUND", "preset p1 not found"),
     );
     const handlers = buildPresetHandlers(deps);
 
     const got = invokeUnary(handlers.GetPreset as never, { name: VALID_PRESET });
     await vi.waitFor(() => expect(got).toHaveBeenCalledTimes(1));
+    expect(deps.authoring.get).toHaveBeenCalledWith("p1");
     expect((got.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
 
     const deleted = invokeUnary(handlers.DeletePreset as never, { name: VALID_PRESET });
     await vi.waitFor(() => expect(deleted).toHaveBeenCalledTimes(1));
+    expect(deps.authoring.remove).toHaveBeenCalledWith("p1");
     expect((deleted.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
   });
 
-  it("updates player_prompt, preserves create_time, refreshes update_time, and validates the mask", async () => {
+  it("updates the persona through the authoring service and validates the mask", async () => {
     const deps = fakeDeps();
+    deps.authoring.update.mockResolvedValueOnce(presetView({ persona: "new prompt" }));
     const handlers = buildPresetHandlers(deps);
 
     const updated = invokeUnary(handlers.UpdatePreset as never, {
-      preset: { name: VALID_PRESET, playerPrompt: "new prompt" },
-      updateMask: { paths: ["player_prompt"] },
+      preset: { name: VALID_PRESET, persona: "new prompt" },
+      updateMask: { paths: ["persona"] },
     });
     await vi.waitFor(() => expect(updated).toHaveBeenCalledTimes(1));
-    expect(deps.presets.update).toHaveBeenCalledWith({
-      name: VALID_PRESET,
-      playerPrompt: "new prompt",
-      createTime: new Date(1000),
-      updateTime: expect.any(Date),
-    });
+    expect(deps.authoring.update).toHaveBeenCalledWith("p1", { persona: "new prompt" });
     const [err, response] = updated.mock.calls[0];
     expect(err).toBeNull();
-    expect(response?.playerPrompt).toBe("new prompt");
+    expect(response?.persona).toBe("new prompt");
 
-    for (const mask of [{ paths: [] }, { paths: ["name"] }]) {
+    // role is immutable: it is not an allowed mask path (preset-api.md §2).
+    for (const mask of [{ paths: [] }, { paths: ["name"] }, { paths: ["role"] }]) {
       const rejected = invokeUnary(handlers.UpdatePreset as never, {
-        preset: { name: VALID_PRESET, playerPrompt: "x" },
+        preset: { name: VALID_PRESET, persona: "x" },
         updateMask: mask,
       });
       expect((rejected.mock.calls[0][0] as grpc.ServiceError).code).toBe(

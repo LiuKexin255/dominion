@@ -39,7 +39,7 @@ func listContainsPreset(list *game.ListPresetsResponse, name string) *game.Prese
 // TestAgentV2PresetCrudRoundTrip covers the preset CRUD closed loop through
 // the gateway (quickstart §2 agent-v2-preset: preset CRUD；US2 场景 1) —
 // create → Get equals the created resource → List carries it → duplicate
-// caller-id → 409 ALREADY_EXISTS → update (update_mask=player_prompt) →
+// caller-id → 409 ALREADY_EXISTS → update (update_mask=persona) →
 // Get/List reflect the new prompt with server-maintained timestamps →
 // delete → Get 404 → List without. Mongo-backed persistence is what makes
 // every read-back here agree with the write (data-model.md §2.1); restart
@@ -54,27 +54,27 @@ func TestAgentV2PresetCrudRoundTrip(t *testing.T) {
 
 	// create → the response is the stored resource with its server-assigned
 	// name and OUTPUT_ONLY timestamps.
-	created := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, id, "crud persona v1")
+	created := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, id, "你是扫雷 player（crud persona v1）")
 	if created.GetName() != name {
 		t.Fatalf("created preset name = %q, want %q", created.GetName(), name)
 	}
-	if created.GetPlayerPrompt() != "crud persona v1" {
-		t.Errorf("created player_prompt = %q, want %q", created.GetPlayerPrompt(), "crud persona v1")
+	if created.GetPersona() != "你是扫雷 player（crud persona v1）" {
+		t.Errorf("created persona = %q, want %q", created.GetPersona(), "你是扫雷 player（crud persona v1）")
 	}
 	if created.GetCreateTime() == nil || created.GetUpdateTime() == nil {
 		t.Errorf("created preset timestamps = %q / %q, want server-maintained values", created.GetCreateTime(), created.GetUpdateTime())
 	}
 
 	// Get round-trips the stored state (Mongo 读回).
-	if got := getAgentV2Preset(t, ctx, sutHostURL, sutEnvName, name); got.GetPlayerPrompt() != "crud persona v1" {
-		t.Errorf("Get after create player_prompt = %q, want %q", got.GetPlayerPrompt(), "crud persona v1")
+	if got := getAgentV2Preset(t, ctx, sutHostURL, sutEnvName, name); got.GetPersona() != "你是扫雷 player（crud persona v1）" {
+		t.Errorf("Get after create persona = %q, want %q", got.GetPersona(), "你是扫雷 player（crud persona v1）")
 	}
 
 	// List carries the created preset.
 	if got := listContainsPreset(listAgentV2Presets(t, ctx, sutHostURL, sutEnvName), name); got == nil {
 		t.Fatalf("ListPresets does not contain %q", name)
-	} else if got.GetPlayerPrompt() != "crud persona v1" {
-		t.Errorf("Listed player_prompt = %q, want %q", got.GetPlayerPrompt(), "crud persona v1")
+	} else if got.GetPersona() != "你是扫雷 player（crud persona v1）" {
+		t.Errorf("Listed persona = %q, want %q", got.GetPersona(), "你是扫雷 player（crud persona v1）")
 	}
 
 	// Duplicate caller-id → 409 ALREADY_EXISTS (agent-api.md §2.5).
@@ -83,16 +83,16 @@ func TestAgentV2PresetCrudRoundTrip(t *testing.T) {
 		t.Errorf("duplicate create status = %d (body: %s), want 409 ALREADY_EXISTS", dupStatus, dupBody)
 	}
 
-	// Update patches only player_prompt (AIP-134 update_mask) and both read
+	// Update patches only persona (AIP-134 update_mask) and both read
 	// paths reflect it.
-	updated := updateAgentV2Preset(t, ctx, sutHostURL, sutEnvName, name, "crud persona v2")
-	if updated.GetPlayerPrompt() != "crud persona v2" || updated.GetName() != name {
-		t.Errorf("updated preset = {%s %q}, want {%s %q}", updated.GetName(), updated.GetPlayerPrompt(), name, "crud persona v2")
+	updated := updateAgentV2Preset(t, ctx, sutHostURL, sutEnvName, name, "你是扫雷 player（crud persona v2）")
+	if updated.GetPersona() != "你是扫雷 player（crud persona v2）" || updated.GetName() != name {
+		t.Errorf("updated preset = {%s %q}, want {%s %q}", updated.GetName(), updated.GetPersona(), name, "你是扫雷 player（crud persona v2）")
 	}
-	if got := getAgentV2Preset(t, ctx, sutHostURL, sutEnvName, name); got.GetPlayerPrompt() != "crud persona v2" {
-		t.Errorf("Get after update player_prompt = %q, want %q", got.GetPlayerPrompt(), "crud persona v2")
+	if got := getAgentV2Preset(t, ctx, sutHostURL, sutEnvName, name); got.GetPersona() != "你是扫雷 player（crud persona v2）" {
+		t.Errorf("Get after update persona = %q, want %q", got.GetPersona(), "你是扫雷 player（crud persona v2）")
 	}
-	if got := listContainsPreset(listAgentV2Presets(t, ctx, sutHostURL, sutEnvName), name); got == nil || got.GetPlayerPrompt() != "crud persona v2" {
+	if got := listContainsPreset(listAgentV2Presets(t, ctx, sutHostURL, sutEnvName), name); got == nil || got.GetPersona() != "你是扫雷 player（crud persona v2）" {
 		t.Errorf("List after update carries %q with prompt %v, want the updated prompt", name, got)
 	}
 
@@ -123,7 +123,7 @@ func TestAgentV2MaterializedConfigConsistency(t *testing.T) {
 	ctx := traceContext(t)
 
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "preset-mat-"+uniqueSuffix())
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-mat-"+uniqueSuffix(), "materialization persona")
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-mat-"+uniqueSuffix(), "你是扫雷 player，materialization persona")
 
 	catalog := listAgentV2Models(t, ctx, sutHostURL, sutEnvName)
 	models := catalog.GetModels()
@@ -198,7 +198,7 @@ func TestAgentV2UpdateRefreshClearsHistory(t *testing.T) {
 	ctx := traceContext(t)
 
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "preset-refresh-"+uniqueSuffix())
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-refresh-"+uniqueSuffix(), "refresh persona")
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-refresh-"+uniqueSuffix(), "你是扫雷 player，refresh persona")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 
 	// One completed turn puts the user message and the agent reply into the
@@ -265,7 +265,7 @@ func TestAgentV2SendUnmaterializedRejected(t *testing.T) {
 	// half-materialization) and Send is rejected with FAILED_PRECONDITION
 	// mapped to 400.
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "preset-unmat-"+uniqueSuffix())
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-unmat-"+uniqueSuffix(), "unmaterialized persona")
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-unmat-"+uniqueSuffix(), "你是扫雷 player，unmaterialized persona")
 
 	_, failedStatus, failedBody := updateAgentV2AgentWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "no-such-model")
 	if failedStatus != http.StatusBadRequest {
@@ -287,10 +287,11 @@ func TestAgentV2SendUnmaterializedRejected(t *testing.T) {
 }
 
 // TestAgentV2EmptyPromptPersonaFallback covers US2 场景 6 (quickstart §2
-// agent-v2-preset: 空 prompt 回退 base): a preset with an empty player_prompt
+// agent-v2-preset: 空 prompt 回退 base): a preset with an empty persona
 // materializes fine (empty is the documented fallback trigger, data-model.md
-// §2.1) and the rebuilt agent answers a turn — the DEFAULT_PLAYER_BASE
-// persona is what rides the model context end to end. The persona CONTENT
+// §2.1) and the rebuilt agent answers a turn — the copy's persona row rides
+// the model context end to end carrying the pool template's persona row
+// text (the anchor line 「你是扫雷 player。」). The persona CONTENT
 // itself is observable operator-side in the fake-llm logs (the fake logs the
 // request's system prompt; the Responses endpoint ignores it for matching,
 // responses.go), so the machine-checkable half is the successful model
@@ -301,10 +302,10 @@ func TestAgentV2EmptyPromptPersonaFallback(t *testing.T) {
 	ctx := traceContext(t)
 
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "preset-empty-"+uniqueSuffix())
-	// Empty player_prompt: materialization must accept it (场景 6 前提).
+	// Empty persona: materialization must accept it (场景 6 前提).
 	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "preset-empty-"+uniqueSuffix(), "")
-	if preset.GetPlayerPrompt() != "" {
-		t.Fatalf("created player_prompt = %q, want empty", preset.GetPlayerPrompt())
+	if preset.GetPersona() != "" {
+		t.Fatalf("created persona = %q, want empty", preset.GetPersona())
 	}
 	materialized := updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 	if materialized.GetPreset() != preset.GetName() {

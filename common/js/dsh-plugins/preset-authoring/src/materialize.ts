@@ -186,6 +186,24 @@ function parseCompositionRows(text: string, compositionPath: string): Compositio
 }
 
 /**
+ * Locate the single persona row, rejecting a non-exactly-one row count with
+ * INVALID_ARGUMENT — the C1 patch precondition (composition-manifest.md §3).
+ */
+function locatePersonaRow(rows: CompositionRow[], compositionPath: string): CompositionRow {
+  const personaIndexes = rows
+    .map((row, index) => (row.name === PERSONA_ROW_NAME ? index : -1))
+    .filter((index) => index >= 0);
+  if (personaIndexes.length !== 1) {
+    throw new PresetAuthoringError(
+      "INVALID_ARGUMENT",
+      `template convention violated in ${compositionPath}: expected exactly one ` +
+        `${PERSONA_ROW_NAME} row, found ${personaIndexes.length}`,
+    );
+  }
+  return rows[personaIndexes[0]];
+}
+
+/**
  * Rewrite the copy's persona row `config.text` in place (atomic write).
  * Throws INVALID_ARGUMENT when the template convention is violated (the
  * persona row count is not exactly one) — the C1 patch precondition
@@ -197,20 +215,25 @@ export async function patchPersona(
   fs: MaterializeFs,
 ): Promise<void> {
   const rows = parseCompositionRows(await fs.readTextFile(compositionPath), compositionPath);
-  const personaIndexes = rows
-    .map((row, index) => (row.name === PERSONA_ROW_NAME ? index : -1))
-    .filter((index) => index >= 0);
-  if (personaIndexes.length !== 1) {
-    throw new PresetAuthoringError(
-      "INVALID_ARGUMENT",
-      `template convention violated in ${compositionPath}: expected exactly one ` +
-        `${PERSONA_ROW_NAME} row, found ${personaIndexes.length}`,
-    );
-  }
-  const row = rows[personaIndexes[0]];
+  const row = locatePersonaRow(rows, compositionPath);
   row.config = { ...row.config, text: persona };
   // lineWidth: -1 keeps long persona prose unwrapped across the round trip.
   await fs.writeTextFileAtomic(compositionPath, dump(rows, { lineWidth: -1 }));
+}
+
+/**
+ * The persona row text a template carries — the role's default base an
+ * empty persona resolves to (specs/059-agent-v2-team-mode/contracts/
+ * preset-api.md §2 persona 空值). Same one-persona-row precondition as
+ * {@link patchPersona}; a row without `config.text` reads as empty.
+ */
+async function templatePersonaText(
+  compositionPath: string,
+  fs: MaterializeFs,
+): Promise<string> {
+  const rows = parseCompositionRows(await fs.readTextFile(compositionPath), compositionPath);
+  const text = locatePersonaRow(rows, compositionPath).config?.text;
+  return typeof text === "string" ? text : "";
 }
 
 /**
@@ -239,10 +262,14 @@ export interface MaterializeCopyInput {
 /**
  * Create the materialized copy: resolve the template, roster-copy it under
  * the writable root (the display name rides the copy's third parameter into
- * the copy's `preset.yml`), then patch the copy's persona row. Any failure
- * after the copy landed rolls the half-materialized directory back
- * (best-effort) before the error propagates — store state is the caller's
- * concern, so the caller rolls its own record back on its own failures.
+ * the copy's `preset.yml`), then patch the copy's persona row. An EMPTY
+ * persona skips the patch — the copy then carries the template's persona row
+ * text, which is the role's default base the empty-persona fallback resolves
+ * to (specs/059-agent-v2-team-mode/contracts/preset-api.md §2 persona 空值).
+ * Any failure after the copy landed rolls the half-materialized directory
+ * back (best-effort) before the error propagates — store state is the
+ * caller's concern, so the caller rolls its own record back on its own
+ * failures.
  */
 export async function materializeCopy(
   deps: { roster: RosterSeam; fs: MaterializeFs },
@@ -274,6 +301,10 @@ export async function materializeCopy(
     throw mapRosterError(err);
   }
 
+  if (input.persona === "") {
+    return;
+  }
+
   try {
     const copy = await deps.roster.resolve(input.id);
     await patchPersona(copy.path, input.persona, deps.fs);
@@ -299,7 +330,12 @@ export interface UpdatePatch {
 /**
  * Apply an update to the copy's files: `persona` re-patches the composition
  * (a new file stamp → new generation for later sessions); `displayName`
- * rewrites only `preset.yml` (name + the template's description).
+ * rewrites only `preset.yml` (name + the template's description). An EMPTY
+ * `persona` resets the copy's persona row to the template's row text — the
+ * role default base — making update(persona="") equivalent to create with
+ * no persona (specs/059-agent-v2-team-mode/contracts/preset-api.md §2
+ * persona 空值); skipping the patch instead would leave the copy's previous
+ * non-empty text in place.
  */
 export async function updateMaterialization(
   deps: { roster: RosterSeam; fs: MaterializeFs },
@@ -321,7 +357,17 @@ export async function updateMaterialization(
   }
 
   if (input.patch.persona !== undefined) {
-    await patchPersona(copy.path, input.patch.persona, deps.fs);
+    let persona = input.patch.persona;
+    if (persona === "") {
+      let template: AgentPreset;
+      try {
+        template = await deps.roster.resolve(input.template);
+      } catch (err) {
+        throw mapRosterError(err);
+      }
+      persona = await templatePersonaText(template.path, deps.fs);
+    }
+    await patchPersona(copy.path, persona, deps.fs);
   }
 
   if (input.patch.displayName !== undefined) {

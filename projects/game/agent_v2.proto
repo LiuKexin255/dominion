@@ -127,7 +127,7 @@ service PresetService {
     };
   }
 
-  // UpdatePreset updates a Preset (mutable field: player_prompt).
+  // UpdatePreset updates a Preset (mutable field: persona).
   // AIP-134: https://google.aip.dev/134
   rpc UpdatePreset(UpdatePresetRequest) returns (Preset) {
     option (google.api.http) = {
@@ -282,6 +282,18 @@ message CancelRequest {
 // §3).
 message CancelResponse {}
 
+// PresetRole is the pool a Preset belongs to. The role is caller-chosen at
+// create time and immutable afterwards: it decides which pool template the
+// preset materializes from and the tool-plugin row the preset's composition
+// carries (PLAYER → the saolei tool-plugin row, PLANNER → the memory plugin
+// row — the tool set and its guidance live or die together at the plugin-row
+// granularity, specs/059-agent-v2-team-mode/contracts/preset-api.md §2).
+enum PresetRole {
+  PRESET_ROLE_UNSPECIFIED = 0;
+  PRESET_ROLE_PLAYER = 1;
+  PRESET_ROLE_PLANNER = 2;
+}
+
 // Preset is the per-template configuration resource an agent materializes
 // from. Persistence is the agent_v2 service's own (Mongo, survives
 // restarts).
@@ -296,15 +308,22 @@ message Preset {
   // The preset resource name.
   // Format: templates/{template}/presets/{preset}
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  // The player prompt; empty = fall back to the default player base at
+  // The persona prompt (the preset's ONLY user-editable content,
+  // preset-api.md §2); empty = fall back to the role default base at
   // materialization time. MUST NOT carry model fields.
-  string player_prompt = 2;
+  string persona = 2;
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The pool the preset belongs to (output-only: chosen at create,
+  // immutable afterwards).
+  PresetRole role = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // CreatePresetRequest creates a Preset under a template (AIP-133:
-// https://google.aip.dev/133; caller-supplied id).
+// https://google.aip.dev/133; caller-supplied id). The creation materializes
+// a copy of the role's pool template (copy-then-patch: the copy carries the
+// pool's plugin rows; the caller's persona is patched into the
+// persona row, empty = the template's persona stands).
 message CreatePresetRequest {
   // The template to create the preset in.
   // Format: templates/{template}
@@ -316,6 +335,9 @@ message CreatePresetRequest {
   ];
   string preset_id = 2 [(google.api.field_behavior) = REQUIRED];
   Preset preset = 3 [(google.api.field_behavior) = REQUIRED];
+  // The pool to create the preset into; REQUIRED and immutable afterwards
+  // (specs/059-agent-v2-team-mode/contracts/preset-api.md §2).
+  PresetRole role = 4 [(google.api.field_behavior) = REQUIRED];
 }
 
 // ListPresetsRequest lists Presets under a template (AIP-132:
@@ -331,6 +353,10 @@ message ListPresetsRequest {
   ];
   int32 page_size = 2;
   string page_token = 3;
+  // Optional filter: only presets of this pool are returned; UNSPECIFIED =
+  // no role filtering (specs/059-agent-v2-team-mode/contracts/preset-api.md
+  // §1).
+  PresetRole role = 4;
 }
 
 // ListPresetsResponse is the response for listing Presets.
@@ -355,7 +381,10 @@ message GetPresetRequest {
 // https://google.aip.dev/134). The resource's name field (Preset.name,
 // pattern templates/{template}/presets/{preset}) is the target identity,
 // surfaced in the HTTP path via {preset.name=...}. update_mask supports the
-// player_prompt path; an omitted mask replaces all mutable fields.
+// persona path only; an omitted mask replaces all mutable fields. The
+// role is immutable: it is not a mutable field, so a mask naming it is
+// INVALID_ARGUMENT (specs/059-agent-v2-team-mode/contracts/preset-api.md
+// §2).
 message UpdatePresetRequest {
   Preset preset = 1 [(google.api.field_behavior) = REQUIRED];
   google.protobuf.FieldMask update_mask = 2;

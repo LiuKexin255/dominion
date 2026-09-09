@@ -35,6 +35,21 @@ function mockFs(compositionText: string) {
   return { fs, readTextFile, writeTextFileAtomic, removeDeep };
 }
 
+/** An fs double answering each path with its own composition text. */
+function mockFsPerPath(texts: Record<string, string>) {
+  const readTextFile = vi.fn(async (path: string) => {
+    const text = texts[path];
+    if (text === undefined) {
+      throw new Error(`unexpected read: ${path}`);
+    }
+    return text;
+  });
+  const writeTextFileAtomic = vi.fn().mockResolvedValue(undefined);
+  const removeDeep = vi.fn().mockResolvedValue(undefined);
+  const fs: MaterializeFs = { readTextFile, writeTextFileAtomic, removeDeep };
+  return { fs, readTextFile, writeTextFileAtomic, removeDeep };
+}
+
 function mockRoster() {
   const resolve = vi.fn().mockResolvedValue({
     id: "demo-tools",
@@ -91,6 +106,20 @@ describe("materializeCopy", () => {
     );
 
     expect(copy).toHaveBeenCalledWith("demo-tools", "mine", "Mine");
+  });
+
+  it("keeps the template persona row (the role default base) when the create persona is empty", async () => {
+    const { roster, copy, resolve } = mockRoster();
+    resolveTemplateThenCopy(resolve, "/writable/mine/agent.cordis.yml");
+    const { fs, writeTextFileAtomic } = mockFs(dumpRows(TEMPLATE_COMPOSITION));
+
+    await materializeCopy({ roster, fs }, { id: "mine", template: "demo-tools", persona: "" });
+
+    // No patch: the roster copy carries the template's persona row verbatim —
+    // the role default base the empty-persona fallback resolves to
+    // (specs/059-agent-v2-team-mode/contracts/preset-api.md §2 persona 空值).
+    expect(copy).toHaveBeenCalledOnce();
+    expect(writeTextFileAtomic).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown template with INVALID_ARGUMENT naming the available ids", async () => {
@@ -234,6 +263,43 @@ describe("updateMaterialization", () => {
     const [path, data] = writeTextFileAtomic.mock.calls[0];
     expect(path).toBe("/writable/mine/agent.cordis.yml");
     expect(parseRows(data as string)[0]?.config?.text).toBe("P2");
+  });
+
+  it("resets the persona row to the template base when the patch persona is empty", async () => {
+    const { roster, resolve } = mockRoster();
+    // First resolve answers the copy, second the template.
+    resolve
+      .mockResolvedValueOnce({ id: "mine", trust: "user", path: "/writable/mine/agent.cordis.yml" })
+      .mockResolvedValueOnce({
+        id: "demo-tools",
+        trust: "system",
+        path: "/templates/demo-tools/agent.cordis.yml",
+      });
+    const { fs, writeTextFileAtomic } = mockFsPerPath({
+      "/templates/demo-tools/agent.cordis.yml": dumpRows([
+        { id: "persona", name: PERSONA_ROW_NAME, config: { text: "default base" } },
+        { id: "demo-echo", name: "@dominion/dsh-demo-echo" },
+      ]),
+      "/writable/mine/agent.cordis.yml": dumpRows([
+        { id: "persona", name: PERSONA_ROW_NAME, config: { text: "P-old" } },
+        { id: "demo-echo", name: "@dominion/dsh-demo-echo" },
+      ]),
+    });
+
+    await updateMaterialization(
+      { roster, fs },
+      { id: "mine", template: "demo-tools", patch: { persona: "" } },
+    );
+
+    // Neither the previous text nor an empty string survives: the copy's
+    // persona row reads the template base again (preset-api.md §2 persona
+    // 空值), equivalent to create with no persona.
+    expect(writeTextFileAtomic).toHaveBeenCalledOnce();
+    const [path, data] = writeTextFileAtomic.mock.calls[0];
+    expect(path).toBe("/writable/mine/agent.cordis.yml");
+    const written = parseRows(data as string);
+    expect(written[0]?.config?.text).toBe("default base");
+    expect(written[1]?.name).toBe("@dominion/dsh-demo-echo");
   });
 
   it("rewrites only preset.yml (name + template description) for a displayName update", async () => {

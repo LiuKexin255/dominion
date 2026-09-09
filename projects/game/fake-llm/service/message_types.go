@@ -70,6 +70,18 @@ import "time"
 // vacuous. Templates declaring either condition are also multi-turn
 // templates for isResponsesOnly purposes.
 //
+// SystemKeywords is the system-prompt condition of the same Responses
+// projection (specs/059-agent-v2-team-mode/tasks.md T008): EVERY system
+// keyword must be a case-insensitive substring of the request's
+// `instructions` text — after the preset-roster pivot the agent_v2 system
+// prompt opens with the materialized preset's persona anchor line
+// (「你是扫雷 player」/「你是扫雷 planner」, the跨-phase stable contract),
+// so anchoring a template on that line asserts end to end that the persona
+// row reached the model context. An undeclared (empty) set is vacuous.
+// Templates declaring it are multi-turn templates (priority 1, all
+// conditions) for the Responses matcher and responses-only for the
+// chat-completions fallback gate.
+//
 // Failure injects a provider failure into the Responses stream
 // (fake-responses-wire.md §2 invariant 4): a matched template carrying a
 // Failure ends its stream with response.failed (configured code/message)
@@ -98,6 +110,7 @@ type Message struct {
 	StallAfter      *int             `json:"stall_after,omitempty" yaml:"stall_after,omitempty"`
 	ResponsesOnly   bool             `json:"responses_only,omitempty" yaml:"responses_only,omitempty"`
 	HistoryKeywords []string         `json:"history_keywords,omitempty" yaml:"history_keywords,omitempty"`
+	SystemKeywords  []string         `json:"system_keywords,omitempty" yaml:"system_keywords,omitempty"`
 	MinTurn         int              `json:"min_turn,omitempty" yaml:"min_turn,omitempty"`
 	Failure         *ResponseFailure `json:"failure,omitempty" yaml:"failure,omitempty"`
 }
@@ -116,11 +129,12 @@ func (m *Message) effectiveMinTurn() int {
 
 // isResponsesOnly reports whether the template serves the /v1/responses
 // endpoint only: an explicit responses_only marker, declared multi-turn
-// conditions (history_keywords / min_turn above the default), or a failure
-// injection. Such templates MUST stay out of the chat-completions no-match
-// random fallback pool (see the ResponsesOnly field doc).
+// conditions (history_keywords / system_keywords / min_turn above the
+// default), or a failure injection. Such templates MUST stay out of the
+// chat-completions no-match random fallback pool (see the ResponsesOnly
+// field doc).
 func (m *Message) isResponsesOnly() bool {
-	return m.ResponsesOnly || len(m.HistoryKeywords) > 0 || m.effectiveMinTurn() > 1 || m.Failure != nil
+	return m.ResponsesOnly || len(m.HistoryKeywords) > 0 || len(m.SystemKeywords) > 0 || m.effectiveMinTurn() > 1 || m.Failure != nil
 }
 
 // ToolConfig is a single templated response to a tool result message.

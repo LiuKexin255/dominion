@@ -6,13 +6,14 @@
  * data-model.md §2.5).
  *
  * Registration form: a cordis Service class constructed with
- * `(agent.ctx, "saoleiGame")` by the saolei-loop factory's prepare phase, so
- * the instance registers as the agent-scoped `saoleiGame` service and cordis
- * unregisters it automatically when the agent scope unloads — there is no
- * host-level registry and no manual cleanup path. The production builder
- * (`createAgentGameRuntime`) is the factory's default
- * `SaoleiLoopPluginOptions.createRuntime`; tests inject a builder wired to
- * fake dispatch/board doubles (style/javascript.md Mock convention).
+ * `(agent.ctx, "saoleiGame", deps)` by the agent-creation setup hook (the
+ * host's materialization path — projects/game/agent_v2/src/session.ts —
+ * calls {@link createAgentGameRuntime} inside `ctx.agents.create({setup})`),
+ * so the instance registers as the agent-scoped `saoleiGame` service and
+ * cordis unregisters it automatically when the agent scope unloads — there
+ * is no host-level registry and no manual cleanup path. Tests inject a
+ * builder wired to fake dispatch/board doubles (style/javascript.md Mock
+ * convention).
  *
  * Error-result discipline (data-model.md §2.5): a game-rule rejection is a
  * NORMAL result text (`rejected: <reason>`), while a desktop-side failure
@@ -377,17 +378,22 @@ export class GameRuntimeService extends Service implements GameRuntime {
 }
 
 /**
- * Production builder: the factory's default `createRuntime`. Wires the
- * runtime to the session's desktop-bridge connection (`agent.id` is the
- * session resource name) and the real recognition engine; the constructor
- * call registers the instance as the agent scope's `saoleiGame` service.
+ * Production builder: the materialization setup's registration call. Wires
+ * the runtime to the session's desktop-bridge connection (`agent.id` is the
+ * session resource name) and the real recognition engine. The instance
+ * registers on an `isolate("saoleiGame")` child of the agent context — a
+ * per-agent isolation label keeps the underlying registration slot unique
+ * per agent (re-materializations and concurrent members never collide), and
+ * the isolated child shares the agent scope's fiber, so the service stays
+ * resolvable from `agent.ctx` (and from `exec.agent.ctx` in the saolei
+ * tools) and unregisters with the agent scope.
  */
 export function createAgentGameRuntime(
   agent: Agent,
   desktopBridge: DesktopBridgeService,
 ): SaoleiGame {
   const sessionName = agent.id;
-  return new GameRuntimeService(agent.ctx, "saoleiGame", {
+  return new GameRuntimeService(agent.ctx.isolate("saoleiGame"), "saoleiGame", {
     sessionName,
     dispatch: (part, signal) => desktopBridge.dispatch(sessionName, part, signal),
     boardApi: createDefaultBoardApi(),

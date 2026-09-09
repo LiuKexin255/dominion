@@ -15,8 +15,11 @@
  *   Send has no lazy creation (unmaterialized → FAILED_PRECONDITION).
  * - PresetService handlers are the stateless configuration face (built by
  *   {@link buildPresetHandlers} over its own deps): preset CRUD delegates
- *   to the PresetStore, and the model catalog shares ctx.llm.listModels
- *   with UpdateAgent's validation (research.md D4).
+ *   to the authoring plugin's `ctx.presetAuthoring` domain service
+ *   (copy-then-patch creation over the roster, role-pooled records —
+ *   specs/059-agent-v2-team-mode/contracts/preset-api.md), and the model
+ *   catalog shares ctx.llm.listModels with UpdateAgent's validation
+ *   (research.md D4).
  * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
  *   (`ctx.desktopBridge.handlers()`).
  */
@@ -31,10 +34,14 @@ import type { LlmModelInfo } from "@deepseek-ai/dsh-llm";
 // handler-face types (the handlers are consumed at runtime through the
 // composed context, not through a direct import).
 import type { BidiStream, DesktopBridgeServiceHandlers as PluginBridgeHandlers } from "@dominion/dsh-desktop-bridge";
+// The preset domain service face and its error surface: the PresetService
+// RPC handlers translate onto `ctx.presetAuthoring` (specs/059-agent-v2-
+// team-mode/contracts/preset-api.md); the error class is a runtime import
+// (instanceof discrimination in toServiceError, roster-verification §4.1).
+import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
+import type { PresetAuthoringService, PresetRole, PresetView } from "@dominion/dsh-preset-authoring";
 import { AgentSessionError, AgentSessions, PROVIDER } from "./session.js";
 import type { AgentView } from "./session.js";
-import { PresetStoreError } from "./presets.js";
-import type { PresetRecord, PresetStore } from "./presets.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
@@ -43,6 +50,7 @@ import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/ga
 import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 import type { Preset } from "../agent_v2_types/projects/game/v2/Preset.js";
+import type { PresetRole as PresetRoleProto } from "../agent_v2_types/projects/game/v2/PresetRole.js";
 import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
 import type { ProtoGrpcType } from "../agent_v2_types/agent_v2.js";
 
@@ -74,15 +82,17 @@ export interface ModelCatalogEntry {
 }
 
 /**
- * The collaborators the PresetService handlers consume: the preset
- * persistence and the deployment model catalog
- * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.5/§2.6). The
- * catalog is a single seam so UpdateAgent's validation and the ListModels
- * RPC cannot drift apart. Faces are structural so tests inject `vi.fn()`
- * doubles (style/javascript.md Mock convention).
+ * The collaborators the PresetService handlers consume: the preset domain
+ * service (the authoring plugin's `ctx.presetAuthoring` — copy-then-patch
+ * creation over the roster plus the role-pooled record store) and the
+ * deployment model catalog (specs/051-agent-v2-dsh-migration/contracts/
+ * agent-api.md §2.5/§2.6). The catalog is a single seam so UpdateAgent's
+ * validation and the ListModels RPC cannot drift apart. Faces are
+ * structural so tests inject `vi.fn()` doubles (style/javascript.md Mock
+ * convention).
  */
 export interface PresetServiceDeps {
-  presets: PresetStore;
+  authoring: PresetAuthoringService;
   listModels(provider: string): Promise<ModelCatalogEntry[]>;
 }
 
@@ -179,13 +189,52 @@ function dateToTimestamp(date: Date): Timestamp {
   return { seconds: Math.floor(ms / 1000), nanos: (ms % 1000) * 1e6 };
 }
 
-function presetToProto(record: PresetRecord): Preset {
-  return {
-    name: record.name,
-    playerPrompt: record.playerPrompt,
-    createTime: dateToTimestamp(record.createTime),
-    updateTime: dateToTimestamp(record.updateTime),
+/** The proto wire value of an authoring role (the generated enum union). */
+function roleToProto(role: PresetRole): PresetRoleProto {
+  switch (role) {
+    case "player":
+      return "PRESET_ROLE_PLAYER";
+    case "planner":
+      return "PRESET_ROLE_PLANNER";
+  }
+}
+
+/** Map a request's wire role value onto the authoring role; undefined when
+ * the request carries none (UNSPECIFIED). */
+function protoToRole(value: string | undefined): PresetRole | undefined {
+  if (value === "PRESET_ROLE_PLAYER") {
+    return "player";
+  }
+  if (value === "PRESET_ROLE_PLANNER") {
+    return "planner";
+  }
+  return undefined;
+}
+
+/**
+ * The pool template a role's presets materialize from (copy-then-patch,
+ * preset-api.md §2): the roster root layout pins the template directory
+ * names (cordis.yml roots — presets-templates/{player,planner}).
+ */
+const ROLE_TEMPLATE: Record<PresetRole, string> = { player: "player", planner: "planner" };
+
+/** The RPC resource parent all preset names live under (KNOWN_TEMPLATES). */
+const SAOLEI_TEMPLATE = "saolei";
+
+function presetToProto(view: PresetView): Preset {
+  const preset: Preset = {
+    name: `templates/${SAOLEI_TEMPLATE}/presets/${view.id}`,
+    persona: view.persona,
+    createTime: dateToTimestamp(view.createTime),
+    updateTime: dateToTimestamp(view.updateTime),
   };
+  // Every preset this service creates carries a role (required on create);
+  // the undefined arm is the seam's role-less-consumer case and stays
+  // unset on the wire (proto3 omits it).
+  if (view.role !== undefined) {
+    preset.role = roleToProto(view.role);
+  }
+  return preset;
 }
 
 function agentViewToProto(view: AgentView): {
@@ -210,23 +259,28 @@ const SESSION_STATUS_BY_CODE: Record<AgentSessionError["code"], grpc.status> = {
   FAILED_PRECONDITION: grpc.status.FAILED_PRECONDITION,
 };
 
-const PRESET_STATUS_BY_CODE: Record<PresetStoreError["code"], grpc.status> = {
+const PRESET_STATUS_BY_CODE: Record<PresetAuthoringError["code"], grpc.status> = {
+  INVALID_ARGUMENT: grpc.status.INVALID_ARGUMENT,
   ALREADY_EXISTS: grpc.status.ALREADY_EXISTS,
   NOT_FOUND: grpc.status.NOT_FOUND,
+  FAILED_PRECONDITION: grpc.status.FAILED_PRECONDITION,
+  INTERNAL: grpc.status.INTERNAL,
 };
 
 /**
  * Map a request-level failure onto its gRPC status (AIP-193 canonical codes;
  * v1 precedent: projects/game/agent/src/handler.ts propagates numeric
  * status-carrying errors unchanged). Non-domain errors fall back to
- * INTERNAL.
+ * INTERNAL. The authoring plugin's stable domain codes map one-to-one
+ * (roster-verification §4.1: instanceof discrimination, cause chain kept on
+ * the error object).
  */
 function toServiceError(err: unknown): grpc.ServiceError {
   const message = err instanceof Error ? err.message : String(err);
   if (err instanceof AgentSessionError) {
     return { code: SESSION_STATUS_BY_CODE[err.code], message } as grpc.ServiceError;
   }
-  if (err instanceof PresetStoreError) {
+  if (err instanceof PresetAuthoringError) {
     return { code: PRESET_STATUS_BY_CODE[err.code], message } as grpc.ServiceError;
   }
   if (err instanceof Error && typeof (err as grpc.ServiceError).code === "number") {
@@ -392,7 +446,7 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
           // Fail-fast validation before any teardown (data-model.md §2.2
           // step 1 — no half-materialized state): preset must exist, then a
           // non-empty model must be in the catalog (US2 场景 7).
-          const presetRecord = await deps.presets.get(presetName);
+          await deps.authoring.get(preset.session);
           if (model !== "") {
             const catalog = await deps.listModels(PROVIDER);
             if (!catalog.some((entry) => entry.id === model)) {
@@ -406,7 +460,6 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
           const view = await deps.sessions.materialize(sessionName, {
             preset: presetName,
             ...(model === "" ? {} : { model }),
-            persona: presetRecord.playerPrompt,
           });
           callback(null, agentViewToProto(view));
         } catch (err) {
@@ -547,13 +600,23 @@ export function parseTemplateParent(parent: string): { template: string } | unde
 }
 
 /**
+ * Default List page size (agent-api.md §2.5: personal scale defaults to 100).
+ */
+const DEFAULT_PAGE_SIZE = 100;
+
+/** Maximum List page size (values above are coerced down, AIP-158). */
+const MAX_PAGE_SIZE = 1000;
+
+/**
  * Build the PresetService handlers over the stateless configuration
- * collaborators (preset CRUD + ListModels — served by the same process as
- * the AgentService but routed by the gateway without proxy owner affinity,
- * specs/051-agent-v2-dsh-migration/contracts/agent-api.md §1/§4 and
- * specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.7).
- * Exported for unit tests so the gRPC status mapping is asserted without
- * binding a port.
+ * collaborators (the preset authoring service + ListModels — served by the
+ * same process as the AgentService but routed by the gateway without proxy
+ * owner affinity, specs/051-agent-v2-dsh-migration/contracts/agent-api.md
+ * §1/§4 and specs/051-agent-v2-dsh-migration/revisions/
+ * directive-2026-09-01.md §3.7). Creation is copy-then-patch from the
+ * role's pool template (preset-api.md §2); role is REQUIRED on create and
+ * immutable afterwards. Exported for unit tests so the gRPC status mapping
+ * is asserted without binding a port.
  */
 export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandlers {
   return {
@@ -574,19 +637,31 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
+      // role is REQUIRED on create and decides the pool template the copy
+      // materializes from (preset-api.md §2).
+      const role = protoToRole(call.request.role);
+      if (role === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: "role is required and must be PRESET_ROLE_PLAYER or PRESET_ROLE_PLANNER",
+        });
+        return;
+      }
       // create_time/update_time are server-maintained (AIP-133); a caller
-      // value in the body is ignored.
-      const now = new Date();
-      const record: PresetRecord = {
-        name: `${parent}/presets/${presetId}`,
-        playerPrompt: call.request.preset?.playerPrompt ?? "",
-        createTime: now,
-        updateTime: now,
-      };
-      void deps.presets.create(record).then(
-        () => callback(null, presetToProto(record)),
-        (err: unknown) => callback(toServiceError(err)),
-      );
+      // value in the body is ignored. An empty persona skips the
+      // persona patch, so the copy carries the pool template's persona row
+      // (the role default base).
+      void deps.authoring
+        .create({
+          id: presetId,
+          template: ROLE_TEMPLATE[role],
+          role,
+          persona: call.request.preset?.persona ?? "",
+        })
+        .then(
+          (view) => callback(null, presetToProto(view)),
+          (err: unknown) => callback(toServiceError(err)),
+        );
     },
 
     ListPresets: (call, callback) => {
@@ -598,30 +673,53 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
-      void deps.presets
-        .list(parent, call.request.pageSize ?? 0, call.request.pageToken ?? "")
-        .then(
-          (page) => {
-            callback(null, {
-              presets: page.presets.map(presetToProto),
-              nextPageToken: page.nextPageToken,
-            });
-          },
-          (err: unknown) => callback(toServiceError(err)),
-        );
+      const roleFilter = protoToRole(call.request.role);
+      // Coerce per AIP-158: unspecified/0 → default, above max → max.
+      const size =
+        (call.request.pageSize ?? 0) <= 0
+          ? DEFAULT_PAGE_SIZE
+          : Math.min(call.request.pageSize ?? 0, MAX_PAGE_SIZE);
+      void deps.authoring.list(roleFilter).then(
+        (views) => {
+          // In-memory keyset pagination over the id sort: the authored
+          // preset scale is personal, so the whole filtered set is cheap to
+          // project; one extra slice detects a next page without a second
+          // read. The page token is the last returned resource name; the
+          // keyset compares the id segment.
+          const sorted = [...views].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          const tokenId = call.request.pageToken?.split("/").pop() ?? "";
+          let startIdx = 0;
+          if (tokenId !== "") {
+            const found = sorted.findIndex((view) => view.id > tokenId);
+            // A token beyond every id (stale cursor after tail deletions, or
+            // a fabricated token) yields an empty page — never a wrap-around
+            // to the first page, which would replay already-consumed items.
+            startIdx = found === -1 ? sorted.length : found;
+          }
+          const page = sorted.slice(startIdx);
+          const hasMore = page.length > size;
+          const presets = (hasMore ? page.slice(0, size) : page).map(presetToProto);
+          callback(null, {
+            presets,
+            nextPageToken: hasMore ? presets[presets.length - 1].name : "",
+          });
+        },
+        (err: unknown) => callback(toServiceError(err)),
+      );
     },
 
     GetPreset: (call, callback) => {
       const name = call.request.name ?? "";
-      if (parsePresetResource(name) === undefined) {
+      const parsed = parsePresetResource(name);
+      if (parsed === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
           message: `name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
         });
         return;
       }
-      void deps.presets.get(name).then(
-        (record) => callback(null, presetToProto(record)),
+      void deps.authoring.get(parsed.session).then(
+        (view) => callback(null, presetToProto(view)),
         (err: unknown) => callback(toServiceError(err)),
       );
     },
@@ -629,52 +727,44 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
     UpdatePreset: (call, callback) => {
       const preset = call.request.preset ?? undefined;
       const name = preset?.name ?? "";
-      if (parsePresetResource(name) === undefined) {
+      const parsed = parsePresetResource(name);
+      if (parsed === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
           message: `preset.name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
         });
         return;
       }
-      // player_prompt is the only mutable field (data-model.md §2.1 — presets
-      // MUST NOT carry model fields); an explicit mask may only name it.
+      // persona is the only mutable field (data-model.md §2.1 — presets
+      // MUST NOT carry model fields; role is immutable, preset-api.md §2); an
+      // explicit mask may only name it.
       const maskPaths = call.request.updateMask?.paths;
       if (maskPaths !== undefined && maskPaths.length === 0) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: "update_mask must be omitted or carry the \"player_prompt\" path",
+          message: "update_mask must be omitted or carry the \"persona\" path",
         });
         return;
       }
-      if (maskPaths !== undefined && maskPaths.some((path) => path !== "player_prompt")) {
+      if (maskPaths !== undefined && maskPaths.some((path) => path !== "persona")) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `update_mask paths must be "player_prompt", got [${maskPaths.join(", ")}]`,
+          message: `update_mask paths must be "persona", got [${maskPaths.join(", ")}]`,
         });
         return;
       }
-      void (async () => {
-        try {
-          // create_time is preserved from the stored row (AIP-134); a
-          // missing preset is the store's NOT_FOUND.
-          const current = await deps.presets.get(name);
-          const updated: PresetRecord = {
-            name,
-            playerPrompt: preset?.playerPrompt ?? "",
-            createTime: current.createTime,
-            updateTime: new Date(),
-          };
-          await deps.presets.update(updated);
-          callback(null, presetToProto(updated));
-        } catch (err) {
-          callback(toServiceError(err));
-        }
-      })();
+      void deps.authoring
+        .update(parsed.session, { persona: preset?.persona ?? "" })
+        .then(
+          (view) => callback(null, presetToProto(view)),
+          (err: unknown) => callback(toServiceError(err)),
+        );
     },
 
     DeletePreset: (call, callback) => {
       const name = call.request.name ?? "";
-      if (parsePresetResource(name) === undefined) {
+      const parsed = parsePresetResource(name);
+      if (parsed === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
           message: `name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
@@ -682,8 +772,9 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         return;
       }
       // No fan-out: an already-materialized agent keeps its materialization-
-      // time persona snapshot (data-model.md §2.1).
-      void deps.presets.delete(name).then(
+      // time composition (the standing mount outlives the copy's deletion,
+      // roster README "joined sessions keep their standing mount").
+      void deps.authoring.remove(parsed.session).then(
         () => callback(null, {}),
         (err: unknown) => callback(toServiceError(err)),
       );
@@ -745,15 +836,15 @@ export interface BuiltAgentServer {
  * (tryShutdown racing the shutdown budget → forceShutdown) are owned by the
  * bootstrap's gRPC server component
  * (specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §6).
+ * The preset domain face comes from the composed context: the
+ * preset-authoring plugin row provides `ctx.presetAuthoring` (storage wired
+ * by the row's config), so no store handle crosses the bootstrap boundary.
  */
-export function buildServer(options: {
-  ctx: DshContext;
-  presetStore: PresetStore;
-}): BuiltAgentServer {
+export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
   const sessions = new AgentSessions(options.ctx);
   const deps: AgentServiceDeps = {
     sessions,
-    presets: options.presetStore,
+    authoring: options.ctx.presetAuthoring,
     listModels: (provider) => listModelCatalog(options.ctx, provider),
     // The composed context mounts the bridge plugin service (the
     // declaration merge in @dominion/dsh-desktop-bridge); GetAgent reads

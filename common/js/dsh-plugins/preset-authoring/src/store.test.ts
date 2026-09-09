@@ -8,7 +8,8 @@ function record(overrides: Partial<PresetRecord> = {}): PresetRecord {
   const now = new Date("2026-09-09T00:00:00Z");
   return {
     id: "my-preset",
-    template: "demo-standard",
+    template: "player",
+    role: "player",
     persona: "You are mine.",
     displayName: undefined,
     createTime: now,
@@ -25,7 +26,8 @@ describe("MemoryPresetStore", () => {
     const got = await store.get("my-preset");
 
     expect(got.id).toBe("my-preset");
-    expect(got.template).toBe("demo-standard");
+    expect(got.template).toBe("player");
+    expect(got.role).toBe("player");
     expect(got.persona).toBe("You are mine.");
     expect(got.displayName).toBeUndefined();
   });

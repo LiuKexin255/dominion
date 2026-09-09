@@ -44,7 +44,7 @@ func TestAgentV2GameDisconnectMidGameThenRecover(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		agentV2DesktopDropID, "game-drop-"+uniqueSuffix(), "recover after the drop")
+		agentV2DesktopDropID, "game-drop-"+uniqueSuffix(), "你是扫雷 player，recover after the drop")
 
 	// Game 1: the whole chain lands while the disconnect injection fires
 	// invisibly behind the last receipt.

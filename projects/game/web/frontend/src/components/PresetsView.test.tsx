@@ -16,7 +16,7 @@ afterEach(cleanup)
 
 const PRESET_P1 = {
   name: 'templates/saolei/presets/p1',
-  playerPrompt: '你是扫雷玩家',
+  persona: '你是扫雷玩家',
   createTime: '2026-08-29T00:00:00Z',
   updateTime: '2026-08-29T01:00:00Z',
 }
@@ -59,7 +59,7 @@ function makeFetchMock(route: PresetsRoute = {}) {
       const id = decodeURIComponent(url.split('preset_id=')[1] ?? '')
       const created = {
         name: `templates/saolei/presets/${id}`,
-        playerPrompt: JSON.parse(String(init?.body)).playerPrompt as string,
+        persona: JSON.parse(String(init?.body)).persona as string,
         createTime: '2026-08-29T02:00:00Z',
         updateTime: '2026-08-29T02:00:00Z',
       }
@@ -70,11 +70,11 @@ function makeFetchMock(route: PresetsRoute = {}) {
     // 匹配；更新同时刷新 update_time（服务端 OUTPUT_ONLY 字段语义），列表
     // 刷新后据此断言更新后的条目呈现。
     if (url.startsWith('/api/v2/templates/saolei/presets/p1?update_mask=') && method === 'PATCH') {
-      const prompt = JSON.parse(String(init?.body)).playerPrompt as string
+      const prompt = JSON.parse(String(init?.body)).persona as string
       if (route.patchStatus !== undefined && route.patchStatus !== 200) {
         return jsonResponse('preset not found', route.patchStatus)
       }
-      const updated = { ...PRESET_P1, playerPrompt: prompt, updateTime: '2026-08-29T03:00:00Z' }
+      const updated = { ...PRESET_P1, persona: prompt, updateTime: '2026-08-29T03:00:00Z' }
       const idx = presets.findIndex((p) => p.name === PRESET_P1.name)
       if (idx >= 0) presets[idx] = updated
       return jsonResponse(updated)
@@ -120,7 +120,7 @@ describe('PresetsView', () => {
     expect(screen.queryByTestId('presets-empty')).toBeNull()
   })
 
-  it('新建：POST 携带 query preset_id 与 body playerPrompt，成功后刷新列表', async () => {
+  it('新建：POST 携带 query preset_id 与 body persona，成功后刷新列表', async () => {
     fetchMock = makeFetchMock({ initial: [] })
     vi.stubGlobal('fetch', fetchMock)
     render(<PresetsView template="saolei" />)
@@ -135,7 +135,7 @@ describe('PresetsView', () => {
         '/api/v2/templates/saolei/presets?preset_id=p2',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ playerPrompt: '提示词\n第二行' }),
+          body: JSON.stringify({ persona: '提示词\n第二行' }),
         }),
       )
     })
@@ -157,7 +157,7 @@ describe('PresetsView', () => {
     expect(fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'POST')).toHaveLength(0)
   })
 
-  it('编辑：表单预填、名称只读，保存走 PATCH update_mask=player_prompt', async () => {
+  it('编辑：表单预填、名称只读，保存走 PATCH update_mask=persona', async () => {
     render(<PresetsView template="saolei" />)
     fireEvent.click(await screen.findByTestId('preset-edit'))
 
@@ -180,10 +180,10 @@ describe('PresetsView', () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/v2/templates/saolei/presets/p1?update_mask=player_prompt',
+        '/api/v2/templates/saolei/presets/p1?update_mask=persona',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ playerPrompt: '新的提示词' }),
+          body: JSON.stringify({ persona: '新的提示词' }),
         }),
       )
     })
@@ -272,8 +272,8 @@ describe('PresetsView', () => {
     // 保存请求按 update_mask 发出（正向断言 mock 被 exercise）。
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/v2/templates/saolei/presets/p1?update_mask=player_prompt',
-        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ playerPrompt: '改了一半的提示词' }) }),
+        '/api/v2/templates/saolei/presets/p1?update_mask=persona',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ persona: '改了一半的提示词' }) }),
       )
     })
     await waitFor(() => {

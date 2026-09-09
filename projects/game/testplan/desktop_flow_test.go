@@ -102,7 +102,7 @@ func TestDesktopFlowOperationDeliveryAndReceipt(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	sessionID := "flow-receipt-" + uniqueSuffix()
 	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		sessionID, "flow-receipt-"+uniqueSuffix(), "recognize the receipt")
+		sessionID, "flow-receipt-"+uniqueSuffix(), "你是扫雷 player，recognize the receipt")
 
 	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
@@ -151,7 +151,7 @@ func TestDesktopFlowDisconnectFailsInFlight(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	sessionID := "flow-vanish-" + uniqueSuffix()
 	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		sessionID, "flow-vanish-"+uniqueSuffix(), "vanish mid-dispatch")
+		sessionID, "flow-vanish-"+uniqueSuffix(), "你是扫雷 player，vanish mid-dispatch")
 
 	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 

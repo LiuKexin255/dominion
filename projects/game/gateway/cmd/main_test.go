@@ -384,7 +384,7 @@ func TestRootMuxAPIv2PresetPathsRouteToDirectHandler(t *testing.T) {
 					// body: "preset" — the HTTP body maps to the
 					// UpdatePresetRequest.preset field itself; the
 					// {preset.name} path variable fills the name.
-					strings.NewReader(`{"playerPrompt":"hi"}`),
+					strings.NewReader(`{"persona":"hi"}`),
 				)
 				if err != nil {
 					return nil, err

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { AgentSessionError, AgentSessions } from "./session.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
@@ -25,6 +26,7 @@ interface Harness {
   sessions: AgentSessions;
   agentsGet: ReturnType<typeof vi.fn>;
   agentsCreate: ReturnType<typeof vi.fn>;
+  compose: ReturnType<typeof vi.fn>;
   fiberDispose: ReturnType<typeof vi.fn>;
   listeners: Map<string, Listener[]>;
 }
@@ -60,14 +62,20 @@ function createHarness(): Harness {
   });
   const agentsGet = vi.fn();
   const agentsCreate = vi.fn();
+  const compose = vi.fn(async (presetId?: string) => ({
+    agentPreset: presetId ?? "",
+    setup: vi.fn(async () => {}),
+  }));
   const fiberDispose = vi.fn(async () => {});
   const ctx = {
     on,
     agents: { get: agentsGet, create: agentsCreate },
+    get: vi.fn((name: string) => (name === "presetAuthoring" ? { compose } : undefined)),
+    desktopBridge: {},
     fiber: { dispose: fiberDispose },
   } as unknown as DshContext;
   const sessions = new AgentSessions(ctx);
-  return { ctx, sessions, agentsGet, agentsCreate, fiberDispose, listeners };
+  return { ctx, sessions, agentsGet, agentsCreate, compose, fiberDispose, listeners };
 }
 
 function emit(harness: Harness, name: string, ...args: unknown[]): void {
@@ -154,7 +162,7 @@ async function materializeSession(
   harness: Harness,
   session: string,
   agent: Agent,
-  options: { preset?: string; model?: string; persona?: string } = {},
+  options: { preset?: string; model?: string } = {},
 ): Promise<unknown> {
   harness.agentsGet.mockReturnValue(agent);
   const handle = fakeHandle(agent);
@@ -162,7 +170,6 @@ async function materializeSession(
   const view = await harness.sessions.materialize(session, {
     preset: options.preset ?? P1,
     ...(options.model === undefined ? {} : { model: options.model }),
-    persona: options.persona ?? "player persona",
   });
   await flush();
   return view;
@@ -173,7 +180,7 @@ beforeEach(() => {
 });
 
 describe("AgentSessions.materialize", () => {
-  it("creates the dsh agent with the provider, model, and persona snapshot", async () => {
+  it("creates the dsh agent through the compose() wiring (meta snapshot + setup)", async () => {
     const harness = createHarness();
     const agent = fakeAgent(S1);
     harness.agentsGet.mockReturnValue(agent);
@@ -182,13 +189,14 @@ describe("AgentSessions.materialize", () => {
     const view = (await harness.sessions.materialize(S1, {
       preset: P1,
       model: "glm-5.5",
-      persona: "careful player",
     })) as { name: string; preset: string; model: string; createTime: Date; updateTime: Date };
 
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
     expect(harness.agentsCreate).toHaveBeenCalledWith({
       sessionId: S1,
-      agentOptions: { provider: "glm-responses", model: "glm-5.5", persona: "careful player" },
+      meta: { cwd: process.cwd(), agentPreset: "p1" },
+      agentOptions: { provider: "glm-responses", model: "glm-5.5" },
+      setup: expect.any(Function),
     });
     expect(view.name).toBe(`${S1}/agent`);
     expect(view.preset).toBe(P1);
@@ -203,11 +211,13 @@ describe("AgentSessions.materialize", () => {
     harness.agentsGet.mockReturnValue(agent);
     harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
-    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await harness.sessions.materialize(S1, { preset: P1 });
 
     expect(harness.agentsCreate).toHaveBeenCalledWith({
       sessionId: S1,
-      agentOptions: { provider: "glm-responses", model: "glm-5.3", persona: "p" },
+      meta: { cwd: process.cwd(), agentPreset: "p1" },
+      agentOptions: { provider: "glm-responses", model: "glm-5.3" },
+      setup: expect.any(Function),
     });
   });
 
@@ -220,7 +230,7 @@ describe("AgentSessions.materialize", () => {
     harness.agentsCreate.mockResolvedValueOnce(firstHandle).mockResolvedValueOnce(secondHandle);
     harness.agentsGet.mockReturnValue(first);
 
-    await harness.sessions.materialize(S1, { preset: P1, persona: "old persona" });
+    await harness.sessions.materialize(S1, { preset: P1 });
     const stream = fakeStream();
     harness.sessions.send(S1, "first message", stream);
     await flush();
@@ -232,14 +242,15 @@ describe("AgentSessions.materialize", () => {
     // aborted and the agent is disposed and rebuilt regardless (refresh).
     const view = (await harness.sessions.materialize(S1, {
       preset: P1,
-      persona: "old persona",
     })) as { preset: string };
     expect(view.preset).toBe(P1);
     expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
     expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
     expect(harness.agentsCreate).toHaveBeenLastCalledWith({
       sessionId: S1,
-      agentOptions: { provider: "glm-responses", model: "glm-5.3", persona: "old persona" },
+      meta: { cwd: process.cwd(), agentPreset: "p1" },
+      agentOptions: { provider: "glm-responses", model: "glm-5.3" },
+      setup: expect.any(Function),
     });
 
     // The in-flight stream received exactly one terminal ABORTED frame.
@@ -262,7 +273,7 @@ describe("AgentSessions.materialize", () => {
       .mockResolvedValueOnce(fakeHandle(second));
     harness.agentsGet.mockReturnValue(first);
 
-    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await harness.sessions.materialize(S1, { preset: P1 });
     const inFlight = fakeStream();
     harness.sessions.send(S1, "in flight", inFlight);
     await flush();
@@ -275,7 +286,7 @@ describe("AgentSessions.materialize", () => {
     expect(queued.events.map(payloadOf)).toEqual(["queued"]);
 
     harness.agentsGet.mockReturnValue(second);
-    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await harness.sessions.materialize(S1, { preset: P1 });
 
     expect(queued.ended).toBe(true);
     expect(queued.events[queued.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
@@ -293,12 +304,10 @@ describe("AgentSessions.materialize", () => {
 
     const firstView = (await harness.sessions.materialize(S1, {
       preset: P1,
-      persona: "p",
     })) as { createTime: Date; updateTime: Date };
     harness.agentsGet.mockReturnValue(second);
     const secondView = (await harness.sessions.materialize(S1, {
       preset: P1,
-      persona: "p",
     })) as { createTime: Date; updateTime: Date };
 
     expect(secondView.createTime).toBe(firstView.createTime);
@@ -314,7 +323,7 @@ describe("AgentSessions.materialize", () => {
       .mockResolvedValueOnce(fakeHandle(second));
     harness.agentsGet.mockReturnValue(first);
 
-    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await harness.sessions.materialize(S1, { preset: P1 });
     const stream = fakeStream();
     harness.sessions.send(S1, "hello", stream);
     await flush();
@@ -332,13 +341,51 @@ describe("AgentSessions.materialize", () => {
     // teardown's microtasks here — and stays a known test blind spot; the
     // unconditional end() itself is the guard.
     harness.agentsGet.mockReturnValue(second);
-    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await harness.sessions.materialize(S1, { preset: P1 });
     await flush();
 
     const payloads = stream.events.map(payloadOf);
     expect(payloads).toEqual(["turnStart", "turnEnd"]);
     expect(stream.events[payloads.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
     expect(stream.ended).toBe(true);
+  });
+
+  it("mounts the composed preset and registers the game runtime inside the setup hook", async () => {
+    const harness = createHarness();
+    harness.agentsGet.mockReturnValue(fakeAgent(S1));
+    const mount = vi.fn(async () => {});
+    harness.compose.mockResolvedValueOnce({ agentPreset: "p1", setup: mount });
+    harness.agentsCreate.mockImplementation(
+      async (options: { setup?: (agentCtx: unknown) => Promise<void> }) => {
+        await options.setup?.({ agent: { id: S1, ctx: new Context() } });
+        return fakeHandle(fakeAgent(S1));
+      },
+    );
+
+    const view = (await harness.sessions.materialize(S1, {
+      preset: P1,
+    })) as { preset: string };
+
+    expect(view.preset).toBe(P1);
+    // compose() resolved by preset id BEFORE the factory call (the id lands
+    // in the creation meta) and its mount setup ran inside the hook.
+    expect(harness.compose).toHaveBeenCalledWith("p1");
+    expect(mount).toHaveBeenCalledOnce();
+    expect(harness.agentsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ meta: { cwd: process.cwd(), agentPreset: "p1" } }),
+    );
+  });
+
+  it("fails the materialization when the preset composition rejects, before any create", async () => {
+    const harness = createHarness();
+    harness.compose.mockRejectedValueOnce(
+      new Error('unknown preset "p1"; available: player, planner'),
+    );
+
+    await expect(
+      harness.sessions.materialize(S1, { preset: P1 }),
+    ).rejects.toThrow(/unknown preset/);
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
   });
 
   it("serializes concurrent materializations of one session", async () => {
@@ -355,13 +402,13 @@ describe("AgentSessions.materialize", () => {
         }),
     );
 
-    const jobOne = harness.sessions.materialize(S1, { preset: P1, persona: "one" });
+    const jobOne = harness.sessions.materialize(S1, { preset: P1 });
     await flush();
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
 
     // The second materialization joins the per-session chain: no second
     // create fires while the first one is still in flight.
-    const jobTwo = harness.sessions.materialize(S1, { preset: P1, persona: "two" });
+    const jobTwo = harness.sessions.materialize(S1, { preset: P1 });
     await flush();
     expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
 
@@ -744,7 +791,7 @@ describe("AgentSessions.cancel", () => {
       .mockResolvedValueOnce(fakeHandle(second));
     harness.agentsGet.mockReturnValue(first);
 
-    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await harness.sessions.materialize(S1, { preset: P1 });
     const stream = fakeStream();
     harness.sessions.send(S1, "in flight", stream);
     await flush();
@@ -756,7 +803,7 @@ describe("AgentSessions.cancel", () => {
     // second terminal frame.
     harness.sessions.cancel(S1);
     harness.agentsGet.mockReturnValue(second);
-    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await harness.sessions.materialize(S1, { preset: P1 });
     await flush();
 
     expect(stream.ended).toBe(true);
@@ -790,8 +837,8 @@ describe("AgentSessions.shutdown", () => {
     const handleA = fakeHandle(agentA);
     const handleB = fakeHandle(agentB);
     harness.agentsCreate.mockResolvedValueOnce(handleA).mockResolvedValueOnce(handleB);
-    await harness.sessions.materialize("templates/saolei/sessions/a", { preset: P1, persona: "p" });
-    await harness.sessions.materialize("templates/saolei/sessions/b", { preset: P1, persona: "p" });
+    await harness.sessions.materialize("templates/saolei/sessions/a", { preset: P1 });
+    await harness.sessions.materialize("templates/saolei/sessions/b", { preset: P1 });
     harness.agentsGet.mockImplementation((id: unknown) =>
       id === "templates/saolei/sessions/a" ? agentA : agentB,
     );

@@ -118,7 +118,7 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 
 	// 物化：the page's agent panel applies a preset (agent-api.md §2.1 —
 	// Send has no lazy materialization).
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "web-loop-"+uniqueSuffix(), "web smoke persona")
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "web-loop-"+uniqueSuffix(), "你是扫雷 player，web smoke persona")
 	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 
 	// 列表可见：the new session appears in the template listing.

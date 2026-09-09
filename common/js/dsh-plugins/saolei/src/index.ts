@@ -6,8 +6,9 @@
  * (FR-013), resolved per call through the calling agent's scope.
  *
  * `saoleiGame` is an agent-scoped service (registered on `agent.ctx` by the
- * saolei-loop factory when an agent materializes; at plugin-load time no
- * agent exists), so it CANNOT be statically injected — the tool exec bodies
+ * host's agent-creation setup hook when an agent materializes — the
+ * saolei-loop plugin's createAgentGameRuntime; at plugin-load time no agent
+ * exists), so it CANNOT be statically injected — the tool exec bodies
  * resolve it lazily via `exec.agent.ctx` (dsh-tools `ToolExecution.agent`
  * carries the calling agent; research.md D7). `exec.agent` absent, or no
  * `saoleiGame` in the caller's scope (non-loop-driven call, or the service
@@ -80,6 +81,12 @@ function normalizeOperateArgs(args: OperateToolArgs): OperateInput | { rejection
  * `exec.agent` (non-loop-driven dispatch) or an out-of-scope `saoleiGame`
  * (the owning agent scope unloaded) throws — the pipeline turns the throw
  * into a model-visible error result, never a fabricated success.
+ *
+ * Resolution reads the `saoleiGame` context PROPERTY (the proxy's
+ * fiber-walking lookup), not `ctx.get` — the builder registers the runtime
+ * under a per-agent isolation label (`agent.ctx.isolate("saoleiGame")`,
+ * createAgentGameRuntime), which the property walk resolves from the shared
+ * agent fiber while `get`'s label-keyed store lookup would not.
  */
 function resolveRuntime(exec: ToolRunContext): SaoleiGame {
   if (exec.agent === undefined) {
@@ -87,10 +94,10 @@ function resolveRuntime(exec: ToolRunContext): SaoleiGame {
       "saolei tools require a loop-driven agent caller: no agent on the tool execution",
     );
   }
-  const runtime = exec.agent.ctx.get("saoleiGame");
+  const runtime = exec.agent.ctx.saoleiGame;
   if (runtime === undefined) {
     throw new Error(
-      `saolei tools require the agent-scoped "saoleiGame" service; agent "${exec.agent.id}" has none (the saolei-loop factory registers it on agent.ctx at materialization)`,
+      `saolei tools require the agent-scoped "saoleiGame" service; agent "${exec.agent.id}" has none (the materialization setup registers it on agent.ctx via createAgentGameRuntime)`,
     );
   }
   return runtime;

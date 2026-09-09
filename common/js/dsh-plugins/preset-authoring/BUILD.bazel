@@ -30,8 +30,10 @@ ts_project(
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-agent-presets",
         ":node_modules/@deepseek-ai/schemastery",
+        ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@types/node",
         ":node_modules/js-yaml",
+        ":node_modules/mongodb",
     ],
 )
 
@@ -66,8 +68,10 @@ js_library(
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
 # runtime_deps closure walking. npm_deps carries the plugin's runtime
 # imports: the roster seam types/values (dsh-agent-presets), the Config
-# schema (schemastery), and the composition-file patcher (js-yaml)
-# (specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
+# schema (schemastery), the composition-file patcher (js-yaml), the preset
+# persistence driver (mongodb), and the deployment endpoint resolver the
+# Mongo URI derivation consumes (workspace — resolved from the host
+# composition; specs/059-agent-v2-team-mode/contracts/preset-api.md §3).
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-preset-authoring",
@@ -76,10 +80,13 @@ js_runtime_library(
         ":node_modules/@deepseek-ai/dsh-agent-presets",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/js-yaml",
+        ":node_modules/mongodb",
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
-    runtime_deps = [],
+    runtime_deps = [
+        "//common/js/resolver:runtime_pkg",
+    ],
 )
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
@@ -95,7 +102,9 @@ vitest_test(
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-agent-presets",
         ":node_modules/@deepseek-ai/schemastery",
+        ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@types/node",
         ":node_modules/js-yaml",
+        ":node_modules/mongodb",
     ],
 )

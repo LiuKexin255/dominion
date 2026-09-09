@@ -8,11 +8,11 @@
 
 import { ApiError, requestJson } from './conversation.js'
 
-// Preset per agent_v2.proto Preset（protojson 投影）；player_prompt 空 =
+// Preset per agent_v2.proto Preset（protojson 投影）；persona 空 =
 // 物化时回退默认 base（data-model.md §2.1）。
 export interface Preset {
   name: string
-  playerPrompt?: string
+  persona?: string
   createTime?: string
   updateTime?: string
 }
@@ -59,14 +59,14 @@ export async function listPresets(template: string): Promise<Preset[]> {
 export async function createPreset(
   template: string,
   presetId: string,
-  playerPrompt: string,
+  persona: string,
 ): Promise<Preset> {
   return requestJson<Preset>(
     `/api/v2/templates/${template}/presets?preset_id=${encodeURIComponent(presetId)}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playerPrompt }),
+      body: JSON.stringify({ persona }),
     },
   )
 }
@@ -75,16 +75,16 @@ export async function getPreset(name: string): Promise<Preset> {
   return requestJson<Preset>(`/api/v2/${name}`)
 }
 
-// updatePreset 仅可变字段 player_prompt（AIP-134）；显式 update_mask 经
+// updatePreset 仅可变字段 persona（AIP-134）；显式 update_mask 经
 // query 传递（body:"preset" 绑定下 mask 无法进 body），服务端校验 mask 路径。
 export async function updatePreset(
   name: string,
-  playerPrompt: string,
+  persona: string,
 ): Promise<Preset> {
-  return requestJson<Preset>(`/api/v2/${name}?update_mask=player_prompt`, {
+  return requestJson<Preset>(`/api/v2/${name}?update_mask=persona`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ playerPrompt }),
+    body: JSON.stringify({ persona }),
   })
 }
 

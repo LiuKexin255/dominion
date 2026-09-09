@@ -3,8 +3,8 @@
 // 确认与空态引导（specs/051-agent-v2-dsh-migration/contracts/
 // web-frontend.md §2）。preset 无内置默认（spec Q2 裁定：使用前需先创建），
 // 空态引导用户先创建才能物化 agent。名称创建后不可改（UpdatePreset 的
-// 可变字段仅 player_prompt，specs/051-agent-v2-dsh-migration/contracts/
-// agent-api.md §1 UpdatePresetRequest）；正在编辑的条目被外部删除时经列表
+// 可变字段仅 persona，specs/059-agent-v2-team-mode/contracts/
+// preset-api.md §1 UpdatePreset）；正在编辑的条目被外部删除时经列表
 // 刷新自动关闭表单返回列表（051 自动关闭语义在独占视图下的延续，
 // web-ui.md §6 竞态行）。
 import { useCallback, useEffect, useState } from 'react'
@@ -75,7 +75,7 @@ export function PresetsView({ template }: PresetsViewProps) {
   const openEdit = useCallback((preset: Preset) => {
     setForm({ kind: 'edit', preset })
     setNameDraft(presetTitle(preset.name))
-    setPromptDraft(preset.playerPrompt ?? '')
+    setPromptDraft(preset.persona ?? '')
     setDeletePending(null)
     setError(null)
   }, [])
@@ -179,12 +179,12 @@ export function PresetsView({ template }: PresetsViewProps) {
             )}
           </label>
           <label className="preset-form-field" htmlFor="preset-prompt-input">
-            <span>player_prompt（空 = 物化时回退默认提示词）</span>
+            <span>persona（空 = 物化时回退默认提示词）</span>
             <textarea
               id="preset-prompt-input"
               className="preset-prompt-input"
               data-testid="preset-prompt-input"
-              aria-label="player_prompt"
+              aria-label="persona"
               rows={8}
               value={promptDraft}
               onChange={(e) => setPromptDraft(e.target.value)}

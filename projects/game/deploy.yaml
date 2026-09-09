@@ -31,6 +31,14 @@ services:
         glm-api-token:
           secret: llm-secrets
           key: glm-codingplan
+      env:
+        # preset roster roots (specs/059-agent-v2-team-mode/research.md R3):
+        # the template system roots scan the shipped preset-templates data,
+        # and the writable user root is a fixed path on the container's
+        # temporary writable layer (Pod 重建即丢 — store 为 source of truth,
+        # 副本可从 store 记录重建; roster-verification §5 对照 1 precedent).
+        PRESET_TEMPLATES_ROOT: /dominion/game/agent-v2/preset-templates
+        PRESET_WRITABLE_ROOT: /var/lib/game-agent-v2/presets
   # Same-hostname path split (specs/049-agent-v2-dsh-init/research.md D5):
   # web serves `/`, the gateway serves /api/v1/ and /api/v2/ — Gateway API
   # merges same-hostname routes by longest PathPrefix.

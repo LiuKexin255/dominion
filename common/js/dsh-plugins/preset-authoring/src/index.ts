@@ -26,12 +26,15 @@ import {
 } from "./materialize.js";
 import type { MaterializeFs, RosterSeam } from "./materialize.js";
 import { MemoryPresetStore, PresetStoreError } from "./store.js";
-import type { PresetRecord, PresetStore } from "./store.js";
+import type { PresetRecord, PresetRole, PresetStore } from "./store.js";
+import { createMongoPresetStore } from "./store.mongo.js";
 
 export { PERSONA_ROW_NAME, PresetAuthoringError } from "./materialize.js";
 export type { PresetAuthoringErrorCode } from "./materialize.js";
 export { MemoryPresetStore, PresetStoreError } from "./store.js";
-export type { PresetRecord, PresetStore, PresetStoreErrorCode } from "./store.js";
+export type { PresetRecord, PresetRole, PresetStore, PresetStoreErrorCode } from "./store.js";
+export { createMongoPresetStore, mongoPresetCollection, MongoPresetStore } from "./store.mongo.js";
+export type { MongoPresetConnection } from "./store.mongo.js";
 
 export const name = "preset-authoring";
 
@@ -40,20 +43,37 @@ export const inject = ["agentPresets"];
 
 /** Validated configuration owned by the plugin. */
 export interface PresetAuthoringConfig {
-  storage: "memory";
+  /** The preset record storage: in-memory (demo) or Mongo (agent_v2). */
+  storage: "memory" | "mongo";
+  /**
+   * storage=mongo connection inputs, injected through the row config. The
+   * credentialed URI is resolved HOST-side (deployment credential logic
+   * never crosses this seam — agent_v2 derives it in
+   * projects/game/agent_v2/src/presets.ts and injects it via the
+   * MONGO_URI environment variable, the GLM_BASE_URL injection pattern).
+   */
+  mongoUri?: string;
+  mongoDatabase?: string;
+  mongoCollection?: string;
 }
 
 // Schemastery's ObjectS input shape is wider than the validated output type;
 // the cast mirrors the official adapters' declared `Config: z<Config>` shape
 // (common/js/dsh-plugins/llm-glm/src/index.ts precedent).
 export const Config: z<PresetAuthoringConfig> = z.object({
-  storage: z.const("memory").default("memory"),
+  storage: z.union([z.const("memory"), z.const("mongo")]).default("memory"),
+  mongoUri: z.string(),
+  mongoDatabase: z.string(),
+  mongoCollection: z.string(),
 }) as unknown as z<PresetAuthoringConfig>;
 
 /** The preset resource projection served to the service layer (contract §2). */
 export interface PresetView {
   id: string;
   template: string;
+  /** The pool the preset belongs to (immutable after create; absent for
+   * role-less consumers). */
+  role?: PresetRole;
   persona: string;
   displayName?: string;
   createTime: Date;
@@ -72,12 +92,23 @@ export interface ComposeResult {
   setup(agentCtx: Context): Promise<void>;
 }
 
+/** The create input: the dynamic field set of a new authored preset. */
+export interface CreatePresetInput {
+  id: string;
+  template: string;
+  /** The pool the preset belongs to; the agent_v2 face requires it. */
+  role?: PresetRole;
+  persona: string;
+  displayName?: string;
+}
+
 /** The service face mounted as `ctx.presetAuthoring` (contract §2, R10). */
 export interface PresetAuthoringService {
   compose(presetId?: string): Promise<ComposeResult>;
-  create(input: { id: string; template: string; persona: string; displayName?: string }): Promise<PresetView>;
+  create(input: CreatePresetInput): Promise<PresetView>;
   get(id: string): Promise<PresetView>;
-  list(): Promise<PresetView[]>;
+  /** Authored presets, optionally narrowed to one role pool. */
+  list(role?: PresetRole): Promise<PresetView[]>;
   update(id: string, patch: { persona?: string; displayName?: string }): Promise<PresetView>;
   remove(id: string): Promise<void>;
 }
@@ -99,6 +130,7 @@ function toView(record: PresetRecord): PresetView {
   return {
     id: record.id,
     template: record.template,
+    role: record.role,
     persona: record.persona,
     displayName: record.displayName,
     createTime: record.createTime,
@@ -195,9 +227,12 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
       return toView(await storeGet(id));
     },
 
-    async list(): Promise<PresetView[]> {
+    async list(role?: PresetRole): Promise<PresetView[]> {
       // Authored copies only — templates are deployment data, not resources (R5).
-      return (await store.list()).map(toView);
+      const records = await store.list();
+      return records
+        .filter((record) => role === undefined || record.role === role)
+        .map(toView);
     },
 
     async update(id, patch): Promise<PresetView> {
@@ -236,7 +271,25 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
   };
 }
 
-/** Function-form cordis plugin providing `ctx.presetAuthoring`. */
-export function apply(ctx: Context, _config: PresetAuthoringConfig): void {
+/** Function-form cordis plugin providing `ctx.presetAuthoring`.
+ *
+ * With `storage: "mongo"` the Mongo store connects and indexes BEFORE the
+ * plugin's activation settles — the composition boot fails loud on a
+ * storage failure — and the client closes when the plugin's fiber unwinds.
+ */
+export async function apply(ctx: Context, config: PresetAuthoringConfig): Promise<void> {
+  if (config.storage === "mongo") {
+    const { store, client } = await createMongoPresetStore({
+      uri: config.mongoUri ?? process.env.MONGO_URI ?? "",
+      database: config.mongoDatabase,
+      collection: config.mongoCollection,
+    });
+    ctx.effect(
+      () => () => client.close(),
+      "preset-authoring.storage()",
+    );
+    ctx.provide("presetAuthoring", createPresetAuthoring(ctx, { store }));
+    return;
+  }
   ctx.provide("presetAuthoring", createPresetAuthoring(ctx));
 }

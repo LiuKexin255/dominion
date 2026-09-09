@@ -1,13 +1,17 @@
 # dsh composition manifest — the single source of truth for the enabled plugin
-# set (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5,
-# research.md D5): the dsh core plugins composed directly (no spine row — the
-# spine hard-mounts the official agent-loop and the agent registry forbids a
-# second factory, FR-012) plus the Dominion plugins. Rows are order-insensitive
-# (cordis awaits by inject); the ordering below is dependency-layered for
-# reading.
+# set (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5;
+# specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5): the dsh core
+# plugins composed directly plus the Dominion plugins and the official
+# agent-loop / preset-roster rows. Rows are order-insensitive (cordis awaits
+# by inject); the ordering below is dependency-layered for reading.
 # - timer/invariants/system-prompt enter through the framework-core baseline
-#   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining dsh
-#   rows are service-declared npm deps (projects/game/agent_v2/package.json).
+#   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining
+#   dsh rows are service-declared npm deps (projects/game/agent_v2/
+#   package.json). Preset-composition rows (@deepseek-ai/dsh-persona,
+#   @dominion/dsh-saolei, @dominion/dsh-memory/preset-row) resolve by bare
+#   package name from this host composition too, so their packages are
+#   declared in the same manifest and shipped in the same closure
+#   (specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
 # - GLM endpoint/token injection happens host-side before boot
 #   (projects/game/agent_v2/src/dsh.ts, specs/049-agent-v2-dsh-init/research.md D9).
 - { id: timer,           name: '@deepseek-ai/cordis-plugin-timer' }
@@ -20,10 +24,16 @@
     includeRuntimeContext: false    # 游戏事实只经工具结果落日志（FR-011）
 - { id: tools,           name: '@deepseek-ai/dsh-tools' }
 - { id: agents,          name: '@deepseek-ai/dsh-agent' }
+# 官方 agent loop 回归（specs/059-agent-v2-team-mode/research.md R1/R7）：
+# 驱动权回归 ReactLoopAgent，saolei-loop 升为 team loop 编排层；
+# Config.agents[] 留空（缺省 = 无 boot-time 声明，agent 全部经
+# ctx.agents.create 动态物化）。
+- { id: agent-loop,      name: '@deepseek-ai/dsh-agent-loop' }
 - { id: invariants,      name: '@deepseek-ai/dsh-invariants' }
-# 一致性防护伴生（自研 loop 的高风险面防护，research.md D5/D6）：三个包的
-# ./invariant subpath 导出为普通插件模块（name/inject/apply），Loader 按裸
-# 说明符动态 import，Node ESM exports map 直接解析 subpath 行名。
+# 一致性防护伴生（官方 loop + session/agent/scope 的 request-reconstruction
+# 不变量；research.md D5）：三个包的 ./invariant subpath 导出为普通插件模块
+# （name/inject/apply），Loader 按裸说明符动态 import，Node ESM exports map
+# 直接解析 subpath 行名。
 - { id: invariant-session, name: '@deepseek-ai/dsh-session/invariant' }
 - { id: invariant-agent,   name: '@deepseek-ai/dsh-agent/invariant' }
 - { id: invariant-scope,   name: '@deepseek-ai/dsh-scope/invariant' }
@@ -42,5 +52,44 @@
       - id: glm-5.3-flash
         contextWindow: 1000000
 - { id: desktop-bridge,  name: '@dominion/dsh-desktop-bridge' }
+# preset roster（specs/059-agent-v2-team-mode/research.md R3）：roots = 两个
+# 模板 system root（player/planner 池各一，trust: system，不可写不可删）+
+# 一个可写 user root（copy-then-patch 创作落点，第一个且唯一 user root）。
+# includeUserRoot: false 保确定性（不扫机器 <dshHome>/.agent-presets）。
+# default 必填（roster Config schema required）但指向空 id：preset 选择在本
+# 服务是必选语义（UpdateAgent/物化必须显式给 preset），空 id 使无 id 的
+# resolve 走 UnknownPresetError fail-loud，而不是静默落某个默认模板。
+- id: agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config:
+    default: ''
+    includeUserRoot: false
+    roots:
+      - path: !!js process.env.PRESET_TEMPLATES_ROOT + '/player'   # player 池模板（镜像内数据，system 信任）
+        trust: system
+      - path: !!js process.env.PRESET_TEMPLATES_ROOT + '/planner'  # planner 池模板（同上）
+        trust: system
+      - path: !!js process.env.PRESET_WRITABLE_ROOT                # 容器临时可写层（第一个且唯一 user root）；store 为 source of truth，副本可从 store 记录重建
+        trust: user
+# preset 创作/编辑面（058 产出复用）：copy-then-patch + role 池记录；生产
+# 存储切换为 Mongo（game_agent_v2.presets，preset-authoring Store seam 的
+# Mongo 实现）。连接由宿主注入：凭据/URI 解析在 agent_v2 侧（presets.ts，
+# T006"Mongo 连接/凭据"模块），经 MONGO_URI 环境变量到达行配置——与
+# GLM_BASE_URL 注入同型的宿主注入模式，部署凭据逻辑不进通用插件。
+- id: preset-authoring
+  name: '@dominion/dsh-preset-authoring'
+  config:
+    storage: mongo
+    mongoUri: !!js process.env.MONGO_URI
+    mongoDatabase: game_agent_v2
+    mongoCollection: presets
+# team 群聊原语（ctx.team；specs/059-agent-v2-team-mode/contracts/
+# dsh-plugins.md §1）与 planner memory host 服务面（ctx.plannerMemory；
+# 同契约 §3——memory 工具行不经 host 层，经 planner 池模板 preset 的
+# 插件行挂载）。
+- { id: team,            name: '@dominion/dsh-team' }
+- { id: memory,          name: '@dominion/dsh-memory' }
+# saolei 工具行不再挂 host 层：改经 player 池模板 preset 的插件行挂载
+# （工具可见性由挂载层隔离——host 行会对全员可见，模板行使 player 独占）。
+# saolei-loop 保留行位（语义已变为 team loop 编排层，R7）。
 - { id: saolei-loop,     name: '@dominion/dsh-saolei-loop' }
-- { id: saolei,          name: '@dominion/dsh-saolei' }

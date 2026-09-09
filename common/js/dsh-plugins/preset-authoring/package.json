@@ -13,7 +13,9 @@
     "dependencies": {
         "@deepseek-ai/dsh-agent-presets": "catalog:",
         "@deepseek-ai/schemastery": "catalog:",
-        "js-yaml": "catalog:"
+        "@dominion/common-js-resolver": "workspace:*",
+        "js-yaml": "catalog:",
+        "mongodb": "catalog:"
     },
     "peerDependencies": {
         "@deepseek-ai/cordis": "catalog:"

@@ -17,13 +17,13 @@
  */
 
 import { Context } from "@deepseek-ai/cordis";
-import { AgentRegistry } from "@deepseek-ai/dsh-agent";
-import { SessionId, SessionStore } from "@deepseek-ai/dsh-session";
+import type { Agent } from "@deepseek-ai/dsh-agent";
+import { createScope } from "@deepseek-ai/dsh-scope";
 import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
 import type { WireFlowPart } from "@dominion/dsh-desktop-bridge";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SaoleiLoopPlugin, DEFAULT_PLAYER_BASE } from "../index.js";
+import { createAgentGameRuntime } from "../index.js";
 import { GameRuntimeService } from "./runtime.js";
 import type { OperationResult } from "@dominion/dsh-desktop-bridge";
 import type { SaoleiBoardApi } from "./board.js";
@@ -607,100 +607,88 @@ describe("GameRuntime: remain", () => {
 /** The session resource name shared by the lifecycle fixtures. */
 const LIFECYCLE_SESSION = "templates/saolei/sessions/t1";
 
+/** Drain the microtask queue so a Service registration's availability settles. */
+async function flushProvide(): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+}
+
 /**
- * Plugin harness over a real cordis Context: the REAL AgentRegistry and
- * SessionStore services plus fake collaborators; the factory's createRuntime
- * seam injects a GameRuntimeService over fake dispatch/board doubles — one
- * recognition engine PER AGENT (keyed by session id), so a crosstalk
- * assertion can never be masked by a shared mutable double.
+ * Agent-scope harness: a real cordis plugin fiber stands in for the agent
+ * scope that the host's materialization setup owns
+ * (projects/game/agent_v2/src/session.ts calls createAgentGameRuntime inside
+ * `ctx.agents.create({setup})`); the runtime registers through the SAME
+ * GameRuntimeService construction the production builder performs, with fake
+ * dispatch/board doubles — one recognition engine PER AGENT (keyed by session
+ * id), so a crosstalk assertion can never be masked by a shared mutable
+ * double.
  */
-function makePluginHarness() {
+function makeScopeHarness() {
   const ctx = new Context();
-  new AgentRegistry(ctx);
-  new SessionStore(ctx);
-  const sections: Array<{ name: string; order: number; text: string }> = [];
-  ctx.provide("systemPrompt", {
-    section: vi.fn((section: { name: string; order: number; text: string }) => {
-      sections.push(section);
-      return () => {};
-    }),
-    variable: vi.fn(() => () => {}),
-    assemble: async () => ({ sections: [], tools: [], variables: {} }),
-  });
-  ctx.provide("tools", {});
-  ctx.provide("llm", {});
   const dispatched: { sessionName: string; part: WireFlowPart }[] = [];
-  ctx.provide("desktopBridge", {
-    attach: vi.fn(),
-    handlers: vi.fn(),
-    dispatch: vi.fn(async (sessionName: string, part: WireFlowPart) => {
-      dispatched.push({ sessionName, part });
-      return succeeded();
-    }),
-  });
+  const desktopBridge = {
+    dispatch: vi.fn(
+      async (sessionName: string, part: WireFlowPart, _signal?: AbortSignal) => {
+        dispatched.push({ sessionName, part });
+        return succeeded();
+      },
+    ),
+  };
   const boards = new Map<string, ReturnType<typeof makeFakeBoardApi>>();
-  const plugin = new SaoleiLoopPlugin(ctx, { maxParallelToolCalls: 10 }, {
-    createRuntime: (agent) => {
-      const fakeBoard = makeFakeBoardApi(board(["* *", "* *"]));
-      boards.set(agent.id, fakeBoard);
-      return new GameRuntimeService(agent.ctx, "saoleiGame", {
-        sessionName: agent.id,
-        dispatch: (part, signal) =>
-          (
-            ctx.desktopBridge as {
-              dispatch: (
-                sessionName: string,
-                part: WireFlowPart,
-                signal?: AbortSignal,
-              ) => Promise<OperationResult>;
-            }
-          ).dispatch(agent.id, part, signal),
-        boardApi: fakeBoard.api,
-      });
-    },
-  });
-  return { ctx, plugin, sections, dispatched, boards };
+  /** Start one agent scope: the runtime registers through the REAL scope
+   * primitive (createScope — the production agent-scope boundary) with the
+   * per-agent service label isolation the agent scope performs, and
+   * unregisters with the scope dispose (the Service contract under test). */
+  const startAgentScope = async (sessionName: string) => {
+    const fakeBoard = makeFakeBoardApi(board(["* *", "* *"]));
+    boards.set(sessionName, fakeBoard);
+    const scope = createScope(ctx, { sessionName });
+    const agentCtx = scope.ctx.isolate("saoleiGame");
+    new GameRuntimeService(agentCtx, "saoleiGame", {
+      sessionName,
+      dispatch: (part, signal) => desktopBridge.dispatch(sessionName, part, signal),
+      boardApi: fakeBoard.api,
+    });
+    await flushProvide();
+    return {
+      scope,
+      runtime: () => agentCtx.get("saoleiGame") as GameRuntimeService | undefined,
+    };
+  };
+  return { ctx, dispatched, boards, startAgentScope };
 }
 
 describe("agent-scoped saoleiGame lifecycle", () => {
   it("registers the runtime on the agent scope, unreachable from the root context", async () => {
-    const harness = makePluginHarness();
-    const handle = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
+    const harness = makeScopeHarness();
+    const { scope, runtime } = await harness.startAgentScope(LIFECYCLE_SESSION);
 
     // Reachable on the agent scope; invisible on the host/root context
     // (agent-scoped services never leak upward).
-    expect(handle.agent.ctx.get("saoleiGame")).toBeDefined();
+    expect(runtime()).toBeDefined();
     expect(harness.ctx.get("saoleiGame")).toBeUndefined();
 
-    await handle.dispose();
+    await scope.dispose();
   });
 
   it("unregisters the service when the agent scope disposes", async () => {
-    const harness = makePluginHarness();
-    const handle = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    expect(handle.agent.ctx.get("saoleiGame")).toBeDefined();
+    const harness = makeScopeHarness();
+    const { scope, runtime } = await harness.startAgentScope(LIFECYCLE_SESSION);
+    expect(runtime()).toBeDefined();
 
-    await handle.dispose();
+    await scope.dispose();
 
-    expect(handle.agent.ctx.get("saoleiGame")).toBeUndefined();
+    expect(runtime()).toBeUndefined();
   });
 
   it("routes runtime dispatches through the bridge under the agent's session name", async () => {
-    const harness = makePluginHarness();
-    const handle = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    const runtime = handle.agent.ctx.get("saoleiGame");
-    expect(runtime).toBeDefined();
+    const harness = makeScopeHarness();
+    const { scope, runtime } = await harness.startAgentScope(LIFECYCLE_SESSION);
+    const game = runtime();
+    expect(game).toBeDefined();
 
-    await runtime!.init();
+    await game!.init();
 
     expect(harness.dispatched).toHaveLength(1);
     expect(harness.dispatched[0]).toMatchObject({
@@ -708,25 +696,19 @@ describe("agent-scoped saoleiGame lifecycle", () => {
       part: { keyboardPress: { key: "KEYBOARD_KEY_F2" } },
     });
 
-    await handle.dispose();
+    await scope.dispose();
   });
 
   it("isolates two agents: each scope resolves its own runtime and states never cross", async () => {
-    const harness = makePluginHarness();
+    const harness = makeScopeHarness();
     const sessionA = "templates/saolei/sessions/a";
     const sessionB = "templates/saolei/sessions/b";
-    const handleA = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(sessionA),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    const handleB = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(sessionB),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
+    const agentA = await harness.startAgentScope(sessionA);
+    const agentB = await harness.startAgentScope(sessionB);
 
     // Each scope resolves ITS OWN runtime instance, never the other's.
-    const runtimeA = handleA.agent.ctx.get("saoleiGame") as GameRuntimeService | undefined;
-    const runtimeB = handleB.agent.ctx.get("saoleiGame") as GameRuntimeService | undefined;
+    const runtimeA = agentA.runtime();
+    const runtimeB = agentB.runtime();
     expect(runtimeA).toBeDefined();
     expect(runtimeB).toBeDefined();
     expect(runtimeB).not.toBe(runtimeA);
@@ -752,41 +734,54 @@ describe("agent-scoped saoleiGame lifecycle", () => {
     );
 
     // Disposing B does not touch A: A's runtime stays reachable and playable.
-    await handleB.dispose();
-    expect(handleB.agent.ctx.get("saoleiGame")).toBeUndefined();
-    expect(handleA.agent.ctx.get("saoleiGame")).toBeDefined();
+    await agentB.scope.dispose();
+    expect(agentB.runtime()).toBeUndefined();
     const after = await runtimeA!.operate({ type: "click", x: 0, y: 0 });
     expect((after as { text: string }).text).toContain(
       "saolei_operate → executed 1 ops",
     );
 
-    await handleA.dispose();
+    await agentA.scope.dispose();
   });
+});
 
-  it("registers the persona section with the DEFAULT_PLAYER_BASE fallback", async () => {
-    const fallback = makePluginHarness();
-    const fallbackHandle = await fallback.plugin.createAgent(fallback.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    expect(fallback.sections).toContainEqual({
-      name: "deployment:persona",
-      order: 0,
-      text: DEFAULT_PLAYER_BASE,
-    });
-    await fallbackHandle.dispose();
+describe("createAgentGameRuntime wiring", () => {
+  it("binds the runtime to the agent's id and registers it on the agent ctx", async () => {
+    const ctx = new Context();
+    const dispatched: { sessionName: string; part: WireFlowPart }[] = [];
+    const desktopBridge = {
+      dispatch: vi.fn(
+        async (sessionName: string, part: WireFlowPart, _signal?: AbortSignal) => {
+          dispatched.push({ sessionName, part });
+          return succeeded();
+        },
+      ),
+    };
+    // The host's materialization setup call shape: the scope boundary mints
+    // the agent ctx and the agent handle's id/ctx are the only agent face
+    // the builder consumes.
+    const scope = createScope(ctx, { sessionName: LIFECYCLE_SESSION });
+    const agentCtx = scope.ctx.isolate("saoleiGame");
+    createAgentGameRuntime(
+      { id: LIFECYCLE_SESSION, ctx: agentCtx } as unknown as Agent,
+      desktopBridge as never,
+    );
+    await flushProvide();
 
-    const custom = makePluginHarness();
-    const customHandle = await custom.plugin.createAgent(custom.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test", persona: "自定义人设" },
-    });
-    expect(custom.sections).toContainEqual({
-      name: "deployment:persona",
-      order: 0,
-      text: "自定义人设",
-    });
-    await customHandle.dispose();
+    // Resolution reads the context PROPERTY (the proxy's fiber-walking
+    // lookup) — the exact face the saolei tools resolve through.
+    const runtime = agentCtx.saoleiGame;
+    expect(runtime).toBeDefined();
+    await runtime!.init();
+    expect(dispatched[0]?.sessionName).toBe(LIFECYCLE_SESSION);
+    expect(desktopBridge.dispatch).toHaveBeenCalledOnce();
+
+    await scope.dispose();
+    // Post-dispose the property walk fails loud (inject semantics) instead
+    // of answering a stale service.
+    expect(() => (agentCtx as { saoleiGame: unknown }).saoleiGame).toThrow(
+      /without inject/,
+    );
   });
 });
 

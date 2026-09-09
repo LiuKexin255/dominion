@@ -84,6 +84,13 @@ Fields:
   a substring of another template's trigger text: the former 2-char "hi"
   matched "t(hi)nk", so `greeting` hijacked every `think-*` trigger via the
   alphabetical tie-break (specs/044-llm-stall-recovery-fix/tasks.md T021).
+- `system_keywords` — Responses-endpoint system-prompt condition: EVERY
+  declared keyword must be a case-insensitive substring of the request's
+  `instructions` text (the GLM adapter sends the assembled system prompt
+  there). Declaring it makes the template multi-turn (priority 1, all
+  conditions) and responses-only for the chat fallback gate. Mechanism:
+  `fake-llm/service/responses.go` `matchResponsesMultiTurn` /
+  `allSystemKeywordsHit` (specs/059-agent-v2-team-mode/tasks.md T008).
 - `reasoning` — the thinking-frame content returned to the agent.
 - `text` — the response content returned to the agent.
 

@@ -191,10 +191,10 @@ describe("create (V4-1 C1 materialization through the service)", () => {
   it("materializes the copy, patches the persona, and records the dynamic fields", async () => {
     const { service, store, base, copy } = await serviceHarness();
 
-    const view = await service.create({ id: "mine", template: "demo-tools", persona: "P1" });
+    const view = await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
 
     expect(copy).toHaveBeenCalledOnce();
-    expect(view).toMatchObject({ id: "mine", template: "demo-tools", persona: "P1" });
+    expect(view).toMatchObject({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
     // The store holds the dynamic fields, not composition content (D2).
     expect(await store.list()).toHaveLength(1);
 
@@ -212,9 +212,9 @@ describe("create (V4-1 C1 materialization through the service)", () => {
 
   it("rejects a duplicate id with ALREADY_EXISTS", async () => {
     const { service } = await serviceHarness();
-    await service.create({ id: "mine", template: "demo-tools", persona: "P1" });
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
 
-    await expect(service.create({ id: "mine", template: "demo-tools", persona: "P2" })).rejects.toMatchObject({
+    await expect(service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P2" })).rejects.toMatchObject({
       code: "ALREADY_EXISTS",
     });
   });
@@ -222,11 +222,28 @@ describe("create (V4-1 C1 materialization through the service)", () => {
   it("rejects an unknown template with INVALID_ARGUMENT and leaves no residue", async () => {
     const { service, store, copy } = await serviceHarness();
 
-    await expect(service.create({ id: "mine", template: "ghost", persona: "P1" })).rejects.toMatchObject({
+    await expect(service.create({ id: "mine", template: "ghost", role: "planner", persona: "P1" })).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
     });
     expect(copy).not.toHaveBeenCalled();
     expect(await store.list()).toEqual([]);
+  });
+
+  it("materializes the template base persona when created with an empty persona", async () => {
+    const { service, base } = await serviceHarness();
+
+    const view = await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "" });
+
+    expect(view.persona).toBe("");
+    // No patch ran: the copy carries the template's persona row text — the
+    // role default base (specs/059-agent-v2-team-mode/contracts/preset-api.md
+    // §2 persona 空值).
+    const composition = load(await readFile(join(base, "writable", "mine", "agent.cordis.yml"), "utf8")) as Array<{
+      name?: string;
+      config?: { text?: string };
+    }>;
+    expect(composition[0]?.name).toBe("@deepseek-ai/dsh-persona");
+    expect(composition[0]?.config?.text).toBe("placeholder");
   });
 
   it("rolls the store record and the copy back together when the store write fails", async () => {
@@ -234,7 +251,7 @@ describe("create (V4-1 C1 materialization through the service)", () => {
     vi.spyOn(failingStore, "create").mockRejectedValue(new Error("store down"));
     const { service, base, remove } = await serviceHarness({ store: failingStore });
 
-    await expect(service.create({ id: "mine", template: "demo-tools", persona: "P1" })).rejects.toMatchObject({
+    await expect(service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" })).rejects.toMatchObject({
       message: expect.stringContaining("store down"),
     });
     // 无半物化残留: the copied directory was rolled back.
@@ -252,7 +269,7 @@ describe("get/list/update/remove", () => {
 
   it("updates the persona in the copy file and refreshes updateTime", async () => {
     const { service, base } = await serviceHarness();
-    await service.create({ id: "mine", template: "demo-tools", persona: "P1" });
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
 
     const view = await service.update("mine", { persona: "P2" });
 
@@ -263,9 +280,38 @@ describe("get/list/update/remove", () => {
     expect(composition[0]?.config?.text).toBe("P2");
   });
 
+  it("resets the persona row to the template base on an empty-persona update", async () => {
+    const { service, base } = await serviceHarness();
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+
+    const view = await service.update("mine", { persona: "" });
+
+    // Neither the previous "P1" nor an empty string survives: the copy's
+    // persona row reads the template base again (preset-api.md §2 persona
+    // 空值), equivalent to create with no persona.
+    expect(view.persona).toBe("");
+    const composition = load(await readFile(join(base, "writable", "mine", "agent.cordis.yml"), "utf8")) as Array<{
+      config?: { text?: string };
+    }>;
+    expect(composition[0]?.config?.text).toBe("placeholder");
+  });
+
+  it("lists authored presets narrowed to one role pool", async () => {
+    const { service } = await serviceHarness();
+    await service.create({ id: "p1", template: "demo-tools", role: "player", persona: "a" });
+    await service.create({ id: "p2", template: "demo-tools", role: "planner", persona: "b" });
+
+    const all = await service.list();
+    expect(all.map((view) => view.id).sort()).toEqual(["p1", "p2"]);
+    const players = await service.list("player");
+    expect(players.map((view) => view.id)).toEqual(["p1"]);
+    const planners = await service.list("planner");
+    expect(planners.map((view) => view.id)).toEqual(["p2"]);
+  });
+
   it("updates only preset.yml for a displayName change (composition stamp untouched)", async () => {
     const { service, base } = await serviceHarness();
-    await service.create({ id: "mine", template: "demo-tools", persona: "P1" });
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
     const compositionBefore = await readFile(join(base, "writable", "mine", "agent.cordis.yml"), "utf8");
 
     const view = await service.update("mine", { displayName: "Mine" });
@@ -282,7 +328,7 @@ describe("get/list/update/remove", () => {
 
   it("removes through the roster and the store; joined sessions are a roster concern", async () => {
     const { service, store, remove } = await serviceHarness();
-    await service.create({ id: "mine", template: "demo-tools", persona: "P1" });
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
 
     await service.remove("mine");
 

@@ -344,6 +344,19 @@ interface ActiveTurn {
   nextIndex: number;
   /** Tool ids with a `tool/call` and no `tool/result` yet this turn. */
   pendingTools: Set<string>;
+  /**
+   * Streamed-but-unfinalized display blocks of the CURRENT step, in arrival
+   * order, keyed per provider block index. Reasoning chunks stream as bare
+   * deltas (their block view only materializes at `block-end`), so both
+   * deltas and block-end views accumulate here. The official loop
+   * solidifies an interrupted prefix into an `assistant/message` only when
+   * its abort signal fired (cancellation); a provider failure drops the
+   * prefix at the loop layer, so the collector carries it here and appends
+   * the interrupted history entry itself when the turn settles ERROR
+   * (specs/054-agent-v2-bugfixes semantics preserved through the loop
+   * pivot).
+   */
+  pending: Array<{ index: number; view: DshContentBlockView }>;
 }
 
 /**
@@ -400,6 +413,7 @@ export class TurnCollector {
       localIndexes: new Map(),
       nextIndex: 0,
       pendingTools: new Set(),
+      pending: [],
     };
     this.settlement = undefined;
     this.pendingAbort = undefined;
@@ -478,6 +492,7 @@ export class TurnCollector {
       const message = assistantEvent.data.message;
       if (this.active !== undefined) {
         this.active.usage = assistantEvent.data.usage ?? this.active.usage;
+        this.active.pending = [];
       }
       this.history.appendAssistant(
         message.content,
@@ -555,11 +570,24 @@ export class TurnCollector {
     }
     // Step-boundary reset (data-model.md §2.4): dsh chunk indexes restart at
     // 0 on every model request, so a new step number drops the step-local
-    // table; the turn-global counter keeps monotonic across steps.
+    // table and the pending interrupted-prefix blocks; the turn-global
+    // counter keeps monotonic across steps.
     const step = data?.step;
     if (step !== undefined && step !== this.active.step) {
       this.active.step = step;
       this.active.localIndexes = new Map();
+      this.active.pending = [];
+    }
+    const index = chunk.index ?? 0;
+    if (chunk.type === "reasoning-delta" || chunk.type === "text-delta") {
+      const view = this.findPending(index) ?? this.createPending(index, chunk.type === "reasoning-delta" ? "reasoning" : "text");
+      view.text += chunk.text ?? "";
+    } else if (chunk.type === "block-end" && chunk.block !== undefined) {
+      const existing = this.findPending(index);
+      if (existing !== undefined) {
+        this.active.pending = this.active.pending.filter((entry) => entry.index !== index);
+      }
+      this.active.pending.push({ index, view: chunk.block });
     }
     const chatEvent = chunkToChatEvent(
       chunk,
@@ -574,6 +602,17 @@ export class TurnCollector {
     if (chatEvent !== undefined) {
       this.active.stream.write(chatEvent);
     }
+  }
+
+  /** The pending prefix entry for a provider block index, if any. */
+  private findPending(index: number): DshContentBlockView | undefined {
+    return this.active?.pending.find((entry) => entry.index === index)?.view;
+  }
+
+  private createPending(index: number, type: "text" | "reasoning"): DshContentBlockView {
+    const view: DshContentBlockView = { type, text: "" };
+    this.active?.pending.push({ index, view });
+    return view;
   }
 
   /** Assign the turn-global index for a step-local one, first sight wins. */
@@ -598,9 +637,17 @@ export class TurnCollector {
     }
     const failure = this.active.failure;
     const usage = this.active.usage;
+    const pendingBlocks = this.active.pending.map((entry) => entry.view);
     // The turn is over: clear the active slot so a late abort() (dispose)
     // observes nothing in flight and does not rewrite the settlement.
     this.active = undefined;
+    if (failure !== undefined && pendingBlocks.length > 0) {
+      // Provider failure with a streamed prefix: the loop layer dropped it
+      // (it only solidifies interrupted prefixes on cancellation), so the
+      // collector appends the interrupted history entry here — the specs/
+      // 054 backfill semantics the large tests assert.
+      this.history.appendAssistant(pendingBlocks, true);
+    }
     this.resolve(
       failure === undefined
         ? { status: "COMPLETED", usage }

@@ -24,9 +24,8 @@
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { error, info } from "@dominion/common-js-logs";
 import type { Agent, AgentHandle, CreateAgentOptions } from "@deepseek-ai/dsh-agent";
-// Type-only: pulls the plugin's `AgentOptions.persona` declaration merge
-// into the type-check program (research.md D3) without a runtime edge.
-import type {} from "@dominion/dsh-saolei-loop";
+import { createAgentGameRuntime } from "@dominion/dsh-saolei-loop";
+import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
 import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
 import type { TurnEndEvent } from "../agent_v2_types/projects/game/v2/TurnEndEvent.js";
 import type { TurnStartEvent } from "../agent_v2_types/projects/game/v2/TurnStartEvent.js";
@@ -87,14 +86,15 @@ export interface AgentView {
   readonly updateTime: Date;
 }
 
-/** The materialize request: preset reference, optional model, snapshot persona. */
+/** The materialize request: preset reference and optional model. The
+ * persona is NOT a materialization parameter — it lives in the preset's
+ * persona row and reaches the agent through the roster mount (specs/
+ * 059-agent-v2-team-mode/research.md R3). */
 export interface MaterializeOptions {
   /** Full preset resource name (validated by the caller, server.ts). */
   readonly preset: string;
   /** Model id; empty/undefined = the process default. */
   readonly model?: string;
-  /** Persona snapshot from the preset's current player_prompt. */
-  readonly persona: string;
 }
 
 interface QueuedMessage {
@@ -289,11 +289,28 @@ export class AgentSessions {
     // (data-model.md §2.2).
     const createTime = existing?.createTime ?? new Date();
     const updateTime = new Date();
+    // Compose resolves BEFORE the factory call so the resolved preset id is
+    // snapshotted into the creation meta (`meta.agentPreset`, the official
+    // composeAgent wiring shape) and an unresolvable/broken preset fails
+    // before any session exists; the mount happens in the factory's `setup`
+    // hook, where a rejection rolls the whole creation back — no
+    // half-composed session (roster-verification §2.2). The same setup
+    // registers the agent-scoped game runtime (`saoleiGame`), the
+    // registration point moved here from the removed saolei-loop factory
+    // (specs/059-agent-v2-team-mode/research.md R6).
+    const authoring = this.ctx.get("presetAuthoring") as PresetAuthoringService;
+    const presetId = options.preset.split("/").pop() ?? "";
+    const composed = await authoring.compose(presetId);
     let handle: AgentHandle;
     try {
       handle = await this.ctx.agents.create({
         sessionId: session as SessionId,
-        agentOptions: { provider: PROVIDER, model, persona: options.persona },
+        meta: { cwd: process.cwd(), agentPreset: composed.agentPreset },
+        agentOptions: { provider: PROVIDER, model },
+        setup: async (agentCtx) => {
+          await composed.setup(agentCtx);
+          createAgentGameRuntime(agentCtx.agent as Agent, this.ctx.desktopBridge);
+        },
       });
     } catch (err) {
       error("agent materialization failed", {
@@ -322,7 +339,7 @@ export class AgentSessions {
       session,
       provider: PROVIDER,
       model,
-      preset: options.preset,
+      preset: composed.agentPreset,
       replaced: existing !== undefined,
     });
     return toAgentView(entry);

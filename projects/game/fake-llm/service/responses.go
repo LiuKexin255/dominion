@@ -137,7 +137,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tc, _ := MatchToolResult(ToolsForEndpoint(h.store.Tools(), true), toolName, toolOutput.Output, h.rng)
 		spec = specFromTool(tc)
 	} else {
-		msg := matchResponses(h.store.Messages(), messages)
+		msg := matchResponses(h.store.Messages(), messages, strings.ToLower(req.Instructions))
 		spec = specFromMessage(msg)
 		failure = msg.Failure
 	}
@@ -211,12 +211,14 @@ func decodeResponsesContent(raw json.RawMessage) string {
 // projected by specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md
 // §3):
 //
-//  1. Multi-turn templates (history_keywords non-empty or min_turn > 1)
-//     whose every condition holds — the keyword condition (vacuous when
-//     the template declares no keywords), ALL history keywords each
-//     hitting some message before the last user message, and the
-//     user-message count reaching min_turn. Conflicts resolve to the most
-//     declared conditions first, then the lowest Name.
+//  1. Multi-turn templates (history_keywords non-empty, system_keywords
+//     non-empty, or min_turn > 1) whose every condition holds — the
+//     keyword condition (vacuous when the template declares no keywords),
+//     ALL history keywords each hitting some message before the last user
+//     message, ALL system keywords each hitting the request's
+//     instructions text, and the user-message count reaching min_turn.
+//     Conflicts resolve to the most declared conditions first, then the
+//     lowest Name.
 //  2. Pure keyword templates (non-multi-turn, non-empty Keywords) whose
 //     ANY keyword is a case-insensitive substring of the last user
 //     message — ties broken by the lowest Name.
@@ -227,10 +229,10 @@ func decodeResponsesContent(raw json.RawMessage) string {
 //
 // The store cannot be empty (startup validation), so the third priority
 // always returns a template for a validated store.
-func matchResponses(templates []*Message, messages []responsesMessage) *Message {
+func matchResponses(templates []*Message, messages []responsesMessage, loweredSystem string) *Message {
 	loweredLast := strings.ToLower(lastResponsesUserText(messages))
 
-	if best := matchResponsesMultiTurn(templates, loweredLast, loweredResponsesHistory(messages), userTurnCount(messages)); best != nil {
+	if best := matchResponsesMultiTurn(templates, loweredLast, loweredResponsesHistory(messages), loweredSystem, userTurnCount(messages)); best != nil {
 		return best
 	}
 
@@ -261,7 +263,7 @@ func matchResponses(templates []*Message, messages []responsesMessage) *Message 
 
 // matchResponsesMultiTurn resolves matching priority 1; the pick is the
 // most specific (more declared conditions first, then the lowest Name).
-func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHistory []string, turn int) *Message {
+func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHistory []string, loweredSystem string, turn int) *Message {
 	var best *Message
 	for _, t := range templates {
 		if !t.isMultiTurnTemplate() {
@@ -271,6 +273,9 @@ func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHi
 			continue
 		}
 		if !allHistoryKeywordsHit(t.HistoryKeywords, loweredHistory) {
+			continue
+		}
+		if !allSystemKeywordsHit(t.SystemKeywords, loweredSystem) {
 			continue
 		}
 		if turn < t.effectiveMinTurn() {
@@ -284,10 +289,10 @@ func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHi
 }
 
 // isMultiTurnTemplate reports whether the template declares multi-turn
-// conditions (fake-responses-wire.md §3 多轮条件): history_keywords
-// non-empty or min_turn above the default 1.
+// conditions (fake-responses-wire.md §3 多轮条件): history_keywords or
+// system_keywords non-empty, or min_turn above the default 1.
 func (m *Message) isMultiTurnTemplate() bool {
-	return len(m.HistoryKeywords) > 0 || m.effectiveMinTurn() > 1
+	return len(m.HistoryKeywords) > 0 || len(m.SystemKeywords) > 0 || m.effectiveMinTurn() > 1
 }
 
 // moreSpecificResponses orders two fully-matched multi-turn templates:
@@ -310,10 +315,27 @@ func declaredResponsesConditions(m *Message) int {
 	if len(m.HistoryKeywords) > 0 {
 		n++
 	}
+	if len(m.SystemKeywords) > 0 {
+		n++
+	}
 	if m.effectiveMinTurn() > 1 {
 		n++
 	}
 	return n
+}
+
+// allSystemKeywordsHit reports whether EVERY system keyword is a
+// case-insensitive substring of the lowered `instructions` text — the
+// request's system prompt (the persona anchor carrier after the roster
+// pivot). An undeclared (empty) keyword set is vacuous and always passes;
+// a declared keyword over an empty text never hits.
+func allSystemKeywordsHit(systemKeywords []string, loweredSystem string) bool {
+	for _, kw := range systemKeywords {
+		if !strings.Contains(loweredSystem, strings.ToLower(kw)) {
+			return false
+		}
+	}
+	return true
 }
 
 // allHistoryKeywordsHit reports whether EVERY history keyword is a

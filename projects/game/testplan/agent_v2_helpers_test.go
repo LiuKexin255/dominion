@@ -608,14 +608,15 @@ func ensureAgentV2Session(t *testing.T, sutHostURL, sutEnvName, sessionID string
 }
 
 // createAgentV2Preset creates a preset through the gateway
-// (POST /api/v2/templates/saolei/presets?preset_id=...) and returns the
-// created resource (agent-api.md §1 CreatePreset; the caller-supplied id
-// rides the query string per the body:"preset" binding). Calls t.Fatal on
-// non-200 responses.
-func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, playerPrompt string) *game.Preset {
+// (POST /api/v2/templates/saolei/presets?preset_id=...&role=... — the
+// body:"preset" binding carries the resource while the caller-supplied id
+// and the REQUIRED role ride the query parameters per AIP-133) and returns
+// the created resource (agent-api.md §1 CreatePreset; preset-api.md §2 role
+// 语义). Calls t.Fatal on non-200 responses.
+func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string) *game.Preset {
 	t.Helper()
 
-	preset, status, respBody := createAgentV2PresetWithStatus(t, ctx, sutHostURL, sutEnvName, presetID, playerPrompt)
+	preset, status, respBody := createAgentV2PresetWithStatus(t, ctx, sutHostURL, sutEnvName, presetID, persona)
 	if status != http.StatusOK {
 		t.Fatalf("POST create preset status=%d, body=%s", status, respBody)
 	}
@@ -626,16 +627,22 @@ func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 // fatality: it returns the HTTP status with the parsed resource (nil unless
 // the body decodes as a Preset) — used to assert the 409 ALREADY_EXISTS of a
 // duplicate caller-id (agent-api.md §2.5).
-func createAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, playerPrompt string) (*game.Preset, int, []byte) {
+func createAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string) (*game.Preset, int, []byte) {
 	t.Helper()
 
-	preset := &game.Preset{PlayerPrompt: playerPrompt}
-	body, err := protojson.Marshal(preset)
+	// The body:"preset" binding carries only the resource; the remaining
+	// CreatePresetRequest fields map to URI query parameters (AIP-133). role
+	// is REQUIRED on create (specs/059-agent-v2-team-mode/contracts/
+	// preset-api.md §2): the large tests create PLAYER-pool presets — the
+	// single materialized agent of the Phase-2 surface is the player.
+	body, err := protojson.Marshal(&game.Preset{Persona: persona})
 	if err != nil {
 		t.Fatalf("protojson.Marshal Preset: %v", err)
 	}
-	reqURL := fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s",
-		sutHostURL, agentV2PathPrefix, saoleiTemplateID, url.QueryEscape(presetID))
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s&role=%s",
+		sutHostURL, agentV2PathPrefix, saoleiTemplateID,
+		url.QueryEscape(presetID),
+		url.QueryEscape(game.PresetRole_PRESET_ROLE_PLAYER.String()))
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
 	created := new(game.Preset)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, created); err != nil {
@@ -690,20 +697,20 @@ func getAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName,
 	return preset
 }
 
-// updateAgentV2Preset patches a preset's player_prompt through the gateway
-// (PATCH /api/v2/{name}?update_mask=player_prompt, agent-api.md §1
+// updateAgentV2Preset patches a preset's persona through the gateway
+// (PATCH /api/v2/{name}?update_mask=persona, agent-api.md §1
 // UpdatePreset). The explicit mask rides the query string (the body:"preset"
 // binding leaves no room for it in the body) and the identity rides the URL
 // path — the body carries only the mutable field. Calls t.Fatal on non-200
 // responses.
-func updateAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name, playerPrompt string) *game.Preset {
+func updateAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name, persona string) *game.Preset {
 	t.Helper()
 
-	body, err := protojson.Marshal(&game.Preset{PlayerPrompt: playerPrompt})
+	body, err := protojson.Marshal(&game.Preset{Persona: persona})
 	if err != nil {
 		t.Fatalf("protojson.Marshal Preset: %v", err)
 	}
-	reqURL := fmt.Sprintf("%s%s%s?update_mask=player_prompt", sutHostURL, agentV2PathPrefix, name)
+	reqURL := fmt.Sprintf("%s%s%s?update_mask=persona", sutHostURL, agentV2PathPrefix, name)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPatch, reqURL, sutEnvName, body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH update preset status=%d, body=%s", resp.StatusCode, respBody)
@@ -1012,12 +1019,12 @@ func drainAgentV2TurnAsync(stream *agentV2EventStream) <-chan agentV2TurnResult 
 // fake-desktop-bound) session exists, create its preset, and materialize the
 // agent on it. Returns the context, the session resource name, and the
 // materialized Agent.
-func agentV2GamePrep(t *testing.T, sutHostURL, sutEnvName, sessionID, presetID, playerPrompt string) (context.Context, string, *game.Agent) {
+func agentV2GamePrep(t *testing.T, sutHostURL, sutEnvName, sessionID, presetID, persona string) (context.Context, string, *game.Agent) {
 	t.Helper()
 
 	ctx := traceContext(t)
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, presetID, playerPrompt)
+	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, presetID, persona)
 	agent := updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
 	return ctx, sessionName, agent
 }
