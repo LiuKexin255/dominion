@@ -75,10 +75,12 @@ export interface ChatSessionSink {
   send(conversationId: string, text: string): Promise<string>;
 }
 
-/** What {@link startServer} hands back to the bootstrap for shutdown. */
-export interface StartedChatServer {
+/** What {@link buildServer} hands to the bootstrap orchestrator. */
+export interface BuiltChatServer {
+  /** Unbound server; the bootstrap's grpc adapter owns bindAsync/tryShutdown. */
   server: grpc.Server;
   sessions: AgentSessions;
+  credentials: grpc.ServerCredentials;
 }
 
 function loadProto(): ProtoGrpcType {
@@ -446,10 +448,14 @@ export function buildPresetHandlers(authoring: PresetAuthoringService): PresetSe
 }
 
 /**
- * Create, bind, and start the Chat and PresetService servers on
- * 0.0.0.0:50051.
+ * Build (but do not bind) the Chat and PresetService server over the
+ * session registry and the preset-authoring face. Binding and the graceful
+ * shutdown semantics (tryShutdown within the orchestrator's budget, then
+ * forceShutdown) belong to the bootstrap's grpc adapter, so the build step
+ * stays free of serving concerns and the two-phase entry keeps @grpc/grpc-js
+ * out of the bootstrap's static import graph.
  */
-export async function startServer(options: { ctx: DshContext }): Promise<StartedChatServer> {
+export async function buildServer(options: { ctx: DshContext }): Promise<BuiltChatServer> {
   const sessions = new AgentSessions(options.ctx);
   const authoring = options.ctx.get("presetAuthoring") as PresetAuthoringService;
   const proto = loadProto();
@@ -466,17 +472,5 @@ export async function startServer(options: { ctx: DshContext }): Promise<Started
     }).service,
     buildPresetHandlers(authoring),
   );
-
-  return new Promise((resolve, reject) => {
-    server.bindAsync("0.0.0.0:50051", buildServerCredentials(), (err, port) => {
-      if (err) {
-        info("startServer: bind failed", { error: err.message });
-        reject(err);
-        return;
-      }
-      server.start();
-      info("dsh chat agent server listening", { port, tls: hasTlsFiles() });
-      resolve({ server, sessions });
-    });
-  });
+  return { server, sessions, credentials: buildServerCredentials() };
 }

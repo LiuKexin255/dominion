@@ -144,6 +144,16 @@ func traceContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// conversationName builds the conversation resource name from its bare id
+// (specs/058-dsh-preset-roster-demo/contracts/chat-api.md §1.1:
+// conversations/{id}, AIP-122). postChatTurn takes the FULL resource name —
+// its URL template splices the argument below the service prefix — so every
+// caller holding a bare conversation id must wrap it through this helper or
+// the gateway route misses (404).
+func conversationName(conversationID string) string {
+	return "conversations/" + conversationID
+}
+
 // postChatTurn POSTs one sendMessage custom-method request for resourceName
 // (the `conversations/{id}` value) against the public HTTP entry and returns
 // the HTTP status plus the raw response body. The request runs on ctx (see

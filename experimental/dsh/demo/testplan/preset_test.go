@@ -149,7 +149,7 @@ func TestPresetDefaultSelection(t *testing.T) {
 	}
 
 	// when: the probe turn fires.
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationID, []byte(`{"message": "preset-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(conversationID), []byte(`{"message": "preset-probe"}`))
 
 	// then: the default preset's persona answered.
 	if status != http.StatusOK {
@@ -197,7 +197,7 @@ func TestPresetSamePresetSharedBehaviour(t *testing.T) {
 	// when: both conversations send the probe turn.
 	replies := map[string]string{}
 	for _, id := range []string{conversationA, conversationB} {
-		status, respBody := postChatTurn(t, ctx, baseURL, envName, id, []byte(`{"message": "preset-probe"}`))
+		status, respBody := postChatTurn(t, ctx, baseURL, envName, conversationName(id), []byte(`{"message": "preset-probe"}`))
 		if status != http.StatusOK {
 			t.Fatalf("sendMessage(%s) status = %d, want %d (body: %s)", id, status, http.StatusOK, respBody)
 		}
@@ -252,7 +252,7 @@ func TestPresetSessionStability(t *testing.T) {
 
 	for _, tt := range turns {
 		// when: each turn fires on the same conversation.
-		status, respBody := postChatTurn(t, ctx, baseURL, envName, conversationID, []byte(`{"message": "`+tt.message+`"}`))
+		status, respBody := postChatTurn(t, ctx, baseURL, envName, conversationName(conversationID), []byte(`{"message": "`+tt.message+`"}`))
 
 		// then: the reply matches the turn's expectation — the binding
 		// stays demo-tools across the conversation's lifetime.
@@ -318,7 +318,7 @@ func TestPresetIdempotentAndRebuild(t *testing.T) {
 
 	// then: the rebuilt session runs the NEW composition — the standard
 	// persona answers the probe (and the tools persona cannot).
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationID, []byte(`{"message": "preset-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(conversationID), []byte(`{"message": "preset-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("probe after rebuild: status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
@@ -352,8 +352,11 @@ func TestPresetSendMessageWithoutCreate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// when: the turn fires on the never-created conversation.
-			status, respBody := postChatTurn(t, ctx, baseURL, envName, tt.conversationID, []byte(`{"message": "hello"}`))
+			// when: the turn fires on the never-created conversation. The
+			// full resource name is required for the request to reach the
+			// handler at all — a bare id would miss the gateway route
+			// (404) instead of exercising the FAILED_PRECONDITION edge.
+			status, respBody := postChatTurn(t, ctx, baseURL, envName, conversationName(tt.conversationID), []byte(`{"message": "hello"}`))
 
 			// then: FAILED_PRECONDITION maps to HTTP 400 (grpc-gateway
 			// status mapping) and the reply body names the remedy.
@@ -390,7 +393,7 @@ func TestPresetUnknownPresetRejected(t *testing.T) {
 	// FAILED_PRECONDITION, so the body is pinned to the not-created
 	// message ("call CreateConversation first") which only the
 	// FAILED_PRECONDITION path produces.
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationID, []byte(`{"message": "hello"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(conversationID), []byte(`{"message": "hello"}`))
 	if status != http.StatusBadRequest {
 		t.Errorf("follow-up send status = %d, want %d (body: %s)", status, http.StatusBadRequest, respBody)
 	}
@@ -451,7 +454,7 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 
 	// then: the authored persona reached the model — the marker-one
 	// template answers the probe.
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, oldSession, []byte(`{"message": "authored-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(oldSession), []byte(`{"message": "authored-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("sendMessage status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
@@ -480,7 +483,7 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 
 	// then: the joined session keeps its generation — the probe still
 	// answers with marker ONE.
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, oldSession, []byte(`{"message": "authored-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(oldSession), []byte(`{"message": "authored-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("old-session probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
@@ -497,7 +500,7 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("new-session create status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, newSession, []byte(`{"message": "authored-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(newSession), []byte(`{"message": "authored-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("new-session probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
@@ -518,7 +521,7 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 
 	// then: the joined session keeps its standing mount — the probe still
 	// answers with its generation (marker ONE).
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, oldSession, []byte(`{"message": "authored-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(oldSession), []byte(`{"message": "authored-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("post-delete probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
@@ -722,7 +725,7 @@ func TestPresetTemplateDeleteRefused(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("createConversation on template status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, "preset-template-intact", []byte(`{"message": "preset-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName("preset-template-intact"), []byte(`{"message": "preset-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("template probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}

@@ -37,9 +37,16 @@ ts_project(
 )
 
 # Workspace package target required by npm_link_all_packages for workspace:* deps.
+# "package.json" in srcs populates the npm-linker's runfiles store entry with
+# the manifest — without it, a vitest import of this package cannot resolve
+# the bare specifier (resolution face; full two-face note in
+# common/js/dsh-plugins/llm-glm/BUILD.bazel).
 js_library(
     name = "pkg",
-    srcs = [":lib"],
+    srcs = [
+        "package.json",
+        ":lib",
+    ],
     visibility = ["//visibility:public"],
 )
 
