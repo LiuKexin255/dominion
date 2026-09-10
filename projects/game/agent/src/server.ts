@@ -1,8 +1,10 @@
 /**
  * server.ts — Game agent gRPC server (TeamService).
  *
- * Loads game.proto, wires the team-service dependencies and registers the
- * TeamService (which replaced AgentService, specs/031-team-template-mode/
+ * Loads game_agent_legacy.proto (the v1 team surface: shared game.proto
+ * types plus the TeamService declarations kept out of the v2 generation
+ * unit), wires the team-service dependencies and registers the TeamService
+ * (which replaced AgentService, specs/031-team-template-mode/
  * contracts/api-contract.md §2.2):
  *
  * - **PromptClient** → `getTeamProfile` (the saolei TeamProfile's
@@ -36,7 +38,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { info } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
-import type { ProtoGrpcType } from "../game_types/game.js";
+import type { ProtoGrpcType } from "../game_types/game_agent_legacy.js";
 
 import { readSecret } from "./secrets.js";
 import { PromptClient } from "./prompt-client.js";
@@ -62,12 +64,37 @@ import type { MemorySaver } from "@langchain/langgraph";
 // ---------------------------------------------------------------------------
 
 const protoRoot = path.join(import.meta.dirname, "..");
-const protoPath = path.join(protoRoot, "projects", "game", "game.proto");
-const protoIncludeDirs = [protoRoot];
 
-function loadProto(): ProtoGrpcType {
+/**
+ * The v1 team surface proto. Its declarations live apart from game.proto so
+ * the v2 Go generation unit (which merges projects/game/agent_v2.proto into
+ * the same Go package) stays collision-free; runtime_protos materializes it
+ * at this canonical import path under the service root, and the file is
+ * removed together with this service in phase 5
+ * (specs/059-agent-v2-team-mode/tasks.md). Exported for the path test.
+ */
+export const PROTO_PATH = path.join(
+  protoRoot,
+  "projects",
+  "game",
+  "agent",
+  "game_agent_legacy.proto",
+);
+
+/**
+ * Load a proto package definition from its canonical runtime path. The
+ * include root is derived from the canonical layout
+ * (`<root>/projects/game/agent/game_agent_legacy.proto`) so the same loader
+ * serves the deployed tar layout (root = service root) and the raw-source
+ * test runfiles (root = workspace root). WKT imports resolve through
+ * proto-loader's bundled common protos.
+ */
+export function loadProtoAt(
+  protoPath: string,
+  includeDirs?: readonly string[],
+): ProtoGrpcType {
   if (!fs.existsSync(protoPath)) {
-    throw new Error(`game.proto not found at ${protoPath}`);
+    throw new Error(`game_agent_legacy.proto not found at ${protoPath}`);
   }
 
   const packageDefinition = protoLoader.loadSync(protoPath, {
@@ -75,12 +102,19 @@ function loadProto(): ProtoGrpcType {
     enums: String,
     defaults: true,
     oneofs: true,
-    includeDirs: protoIncludeDirs,
+    includeDirs:
+      includeDirs === undefined
+        ? [path.resolve(path.dirname(protoPath), "..", "..", "..")]
+        : [...includeDirs],
   });
 
   return grpc.loadPackageDefinition(
     packageDefinition,
   ) as unknown as ProtoGrpcType;
+}
+
+function loadProto(): ProtoGrpcType {
+  return loadProtoAt(PROTO_PATH);
 }
 
 // ---------------------------------------------------------------------------

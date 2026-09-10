@@ -28,6 +28,10 @@ ts_project(
     visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@types/node",
     ],
 )
@@ -49,13 +53,18 @@ js_library(
 )
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
-# runtime_deps closure walking. The placeholder plugin has no npm imports
-# beyond the cordis peer (resolved from the host composition, not bundled).
+# runtime_deps closure walking. npm_deps carries the plugin's runtime imports:
+# the cordis Service base class and the dsh-llm message helpers (createUserMessage,
+# brand/summary helpers) used by drain. dsh-agent/dsh-session/dsh-system-prompt
+# are type-only faces and resolve from the host composition.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-team",
     lib = ":lib",
-    npm_deps = [],
+    npm_deps = [
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-llm",
+    ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
     runtime_deps = [],
@@ -63,7 +72,8 @@ js_runtime_library(
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
 # (style/javascript.md data rules): production + test sources only, plus the
-# node_modules mirror of :lib's deps.
+# node_modules mirror of :lib's deps and the test-only scope primitive the
+# agent-scope cleanup harness mints scopes through.
 vitest_test(
     name = "lib_test",
     size = "small",
@@ -72,6 +82,11 @@ vitest_test(
         allow_empty = True,
     ) + [
         ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@types/node",
     ],
 )

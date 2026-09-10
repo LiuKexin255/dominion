@@ -3,7 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RenderResult } from '@testing-library/react'
 import type { ChatEvent, ContentBlock, HistoryMessage } from '../api/conversation.js'
-import type { BlockDraft, LiveTurn } from '../store/chat.js'
+import { USER_MEMBER } from '../api/conversation.js'
+import type {
+  BlockDraft,
+  LiveMemberTurn,
+  StepDraft,
+  TeamMessageEntry,
+} from '../store/chat.js'
 import { ChatStore } from '../store/chat.js'
 import { ChatView } from './ChatView.js'
 
@@ -14,6 +20,32 @@ afterEach(cleanup)
 const SESSION = 'templates/saolei/sessions/s1'
 const noop = (): void => {}
 const noopCancel = async (): Promise<void> => {}
+
+// LiveTurn is the local single-turn fixture shape the liveOf helper builds;
+// teamLive wraps it into the store's (member, turnId)-grouped live drafts.
+interface LiveTurn {
+  turnId: string
+  steps: StepDraft[]
+}
+
+// teamHistory wraps step messages into the team merged-sequence entries the
+// ChatView consumes (team-api.md §3.2; USER-role messages are attributed to
+// the reserved USER_MEMBER producer, others to the given member role string;
+// seq assigned in order). Team-specific tests build entries explicitly.
+function teamHistory(messages: HistoryMessage[], member = 'player'): TeamMessageEntry[] {
+  return messages.map((message, i) => ({
+    member: message.role === 'ROLE_USER' ? USER_MEMBER : member,
+    message,
+    seq: i + 1,
+  }))
+}
+
+// teamLive wraps a LiveTurn fixture into the (member, turnId)-grouped live
+// drafts the team stream produces.
+function teamLive(live: LiveTurn | null, member = 'player'): LiveMemberTurn[] {
+  if (live === null) return []
+  return [{ member, turnId: live.turnId, steps: live.steps, fixedSteps: 0, owners: {} }]
+}
 
 // ChatView 集成测试：构造 store 层 BlockDraft / protojson ContentBlock 两种块
 // 形态直接驱动渲染（不经过 fetch 流），断言 THINK/TEXT/TOOL_CALL 三分类保序
@@ -30,8 +62,8 @@ function renderChatView(props: {
   return render(
     <ChatView
       session={props.session ?? SESSION}
-      history={props.history ?? []}
-      live={props.live ?? null}
+      history={teamHistory(props.history ?? [])}
+      live={teamLive(props.live ?? null)}
       queue={[]}
       error={null}
       canceled={props.canceled ?? false}
@@ -54,8 +86,8 @@ function rerenderChatView(
   result.rerender(
     <ChatView
       session={props.session ?? SESSION}
-      history={props.history ?? []}
-      live={props.live ?? null}
+      history={teamHistory(props.history ?? [])}
+      live={teamLive(props.live ?? null)}
       queue={[]}
       error={null}
       canceled={props.canceled ?? false}
@@ -693,19 +725,22 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
   it('本地路径：store ERROR 投影的尾步标记与回填渲染形态一致（FR-013）', () => {
     const store = new ChatStore()
     const events: ChatEvent[] = [
-      { turnId: 't1', turnStart: {} },
-      { turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 1 } },
-      { turnId: 't1', delta: { index: 0, text: '先初始化棋盘', step: 1 } },
+      { member: 'player', turnId: 't1', turnStart: {} },
+      { member: 'player', turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 1 } },
+      { member: 'player', turnId: 't1', delta: { index: 0, text: '先初始化棋盘', step: 1 } },
       {
+        member: 'player',
         turnId: 't1',
         blockEnd: { index: 0, block: { think: { content: '先初始化棋盘' } }, step: 1 },
       },
       {
+        member: 'player',
         turnId: 't1',
         blockStart: { index: 1, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-a', name: 'saolei_init', step: 1 },
       },
-      { turnId: 't1', delta: { index: 1, text: '{}', step: 1 } },
+      { member: 'player', turnId: 't1', delta: { index: 1, text: '{}', step: 1 } },
       {
+        member: 'player',
         turnId: 't1',
         blockEnd: {
           index: 1,
@@ -713,9 +748,10 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
           step: 1,
         },
       },
-      { turnId: 't1', blockStart: { index: 2, type: 'BLOCK_TYPE_TEXT', step: 2 } },
-      { turnId: 't1', delta: { index: 2, text: '正要播报开局', step: 2 } },
+      { member: 'player', turnId: 't1', blockStart: { index: 2, type: 'BLOCK_TYPE_TEXT', step: 2 } },
+      { member: 'player', turnId: 't1', delta: { index: 2, text: '正要播报开局', step: 2 } },
       {
+        member: 'player',
         turnId: 't1',
         turnEnd: { status: 'TURN_STATUS_ERROR', error: { code: 'LLM_UPSTREAM', message: '流中断' } },
       },
@@ -725,7 +761,7 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
     }
     const s = store.getSnapshot()
     expect(s.error).toBe('流中断')
-    expect(s.live).toBeNull()
+    expect(s.live).toEqual([])
 
     // 本地投影渲染：与回填同构的 interrupted 尾步标记驱动同一折叠判定。
     render(
@@ -744,7 +780,18 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
 
     // 同构造以回填形态（store 投影产物即 List 消息形态）重渲染：形态一致。
     cleanup()
-    renderChatView({ history: s.history })
+    render(
+      <ChatView
+        session={SESSION}
+        history={s.history}
+        live={[]}
+        queue={[]}
+        error={null}
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
     expectFailedTurnUnfolded()
   })
 })
@@ -888,7 +935,7 @@ describe('ChatView 终止按钮（specs/054-agent-v2-bugfixes/contracts/web-ui.m
   })
 
   it('onCancel 请求失败不吞：编排层错误经 error prop 呈现（终态标识独立于错误文案）', async () => {
-    // 请求失败呈现由 App.tsx ChatPanel 编排（cancelAgent catch → error），
+    // 请求失败呈现由 App.tsx ChatPanel 编排（cancelTeam catch → error），
     // 组件面断言：error 与 canceled 同屏时各自独立呈现——"已终止"非错误
     // 文案。
     renderChatView({
@@ -915,11 +962,19 @@ describe('ChatView 终止按钮（specs/054-agent-v2-bugfixes/contracts/web-ui.m
   })
 
   it('取消后排队 chip 移除、落地 user 消息以历史形态呈现（store 驱动）', async () => {
-    // store 走真实归约：排队流 queued 帧（chip + 落地 user 消息）→
-    // turn_end{CANCELED}（chip 移除），渲染面断言 web-ui.md §4 排队落地。
+    // store 走真实归约：排队流 queued 帧（chip）+ user 的 team_message 帧
+    // （落地）→ turn_end{CANCELED}（chip 移除、user 消息保留在归并序列），
+    // 渲染面断言 web-ui.md §4 排队落地与团队视图 user 气泡。
     const store = new ChatStore()
     async function* canceledQueuedStream(): AsyncGenerator<ChatEvent> {
       yield { queued: { position: 1 } }
+      yield {
+        teamMessage: {
+          member: USER_MEMBER,
+          message: { role: 'ROLE_USER', blocks: [{ text: { content: '排队消息' } }] },
+          seq: 1,
+        },
+      }
       yield { turnId: 't2', turnEnd: { status: 'TURN_STATUS_CANCELED' } }
     }
     const renderWithStore = (): void => {
@@ -1112,7 +1167,7 @@ describe('ChatView 条件跟随滚动（specs/055-agent-v2-ui-fixes/contracts/ui
       <ChatView
         session={SESSION}
         history={[]}
-        live={null}
+        live={[]}
         queue={[]}
         error="流中断"
         canceled={false}
@@ -1126,5 +1181,179 @@ describe('ChatView 条件跟随滚动（specs/055-agent-v2-ui-fixes/contracts/ui
     // 055-agent-v2-ui-fixes/spec.md Edge Cases"回底入口的存在条件"）：
     // 回合已结束（live 归空、error 呈现）且非贴底时仍然呈现。
     expect(screen.getByTestId('to-bottom-button')).not.toBeNull()
+  })
+})
+
+// ─── 团队视图雏形（web-views.md §3：成员标签与按成员分组；视图切换器与
+// ─── 成员视角视图是 T030/Phase 6，不在本组件） ────────────────────────────────
+
+describe('ChatView 团队视图雏形', () => {
+  it('归并序列按成员渲染标签：USER 气泡 + player/planner 成员产出各自标签', () => {
+    render(
+      <ChatView
+        session={SESSION}
+        history={[
+          {
+            member: USER_MEMBER,
+            message: { role: 'ROLE_USER', blocks: [{ text: { content: '开始一局' } }] },
+            seq: 1,
+          },
+          {
+            member: 'planner',
+            message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '策略' } }] },
+            seq: 2,
+          },
+          {
+            member: 'player',
+            message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '落子' } }] },
+            seq: 3,
+          },
+        ]}
+        live={[]}
+        queue={[]}
+        error={null}
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
+
+    // 成员标签区分 player/planner（web-views.md §3），不显示广播包装形态；
+    // 用户消息仍是普通气泡。
+    const tags = screen.getAllByTestId('member-tag')
+    expect(tags.map((t) => t.getAttribute('data-member'))).toEqual(['planner', 'player'])
+    expect(tags.map((t) => t.textContent)).toEqual(['planner', 'player'])
+    expect(screen.getByTestId('chat-messages').querySelector('.msg-user')?.textContent).toBe(
+      '开始一局',
+    )
+    expect(screen.queryByText(/planner-message|player-message/)).toBeNull()
+  })
+
+  it('同成员连续 step 归入同一成员分组并应用折叠；另一成员条目断开分组', () => {
+    render(
+      <ChatView
+        session={SESSION}
+        history={[
+          {
+            member: 'planner',
+            message: {
+              role: 'ROLE_AGENT',
+              blocks: [
+                {
+                  toolCall: {
+                    toolId: 'call-a',
+                    name: 'memory',
+                    argsJson: '{}',
+                    status: 'TOOL_STATUS_SUCCEEDED',
+                    result: 'ok',
+                  },
+                },
+              ],
+            },
+            seq: 1,
+          },
+          {
+            member: 'planner',
+            message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '复盘结论' } }] },
+            seq: 2,
+          },
+          {
+            member: 'player',
+            message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '继续下一局' } }] },
+            seq: 3,
+          },
+        ]}
+        live={[]}
+        queue={[]}
+        error={null}
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
+
+    // 两个成员分组各自带标签；planner 组含折叠过程、player 组单 step 直出。
+    const groups = screen.getAllByTestId('member-turn')
+    expect(groups.map((g) => g.getAttribute('data-member'))).toEqual(['planner', 'player'])
+    expect(groups[0]?.querySelector('[data-testid="turn-process-toggle"]')?.textContent).toContain(
+      '1 步骤',
+    )
+    expect(screen.getAllByTestId('agent-text').map((el) => el.textContent)).toEqual([
+      '复盘结论',
+      '继续下一局',
+    ])
+  })
+
+  it('live 回合带成员标签，已由 team_message 固化的前导 step 不再重复渲染', () => {
+    render(
+      <ChatView
+        session={SESSION}
+        history={[
+          {
+            member: 'player',
+            message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '第一步已固化' } }] },
+            seq: 1,
+          },
+        ]}
+        live={[
+          {
+            member: 'player',
+            turnId: 't1',
+            fixedSteps: 1,
+            owners: {},
+            steps: [
+              { step: 1, settled: true, blocks: [{ index: 0, type: 'TEXT', text: '第一步已固化' }] },
+              { step: 2, settled: false, blocks: [{ index: 1, type: 'TEXT', text: '第二步流式中' }] },
+            ],
+          },
+        ]}
+        queue={[]}
+        error={null}
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
+
+    expect(screen.getAllByTestId('member-tag')).toHaveLength(2)
+    // 只渲染未固化的尾步（第一步在归并序列中）。
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(2)
+    expect(screen.getAllByTestId('agent-text').map((el) => el.textContent)).toEqual([
+      '第一步已固化',
+      '第二步流式中',
+    ])
+  })
+
+  it('多个成员回合的 live 草稿各自带标签、独立呈现，终止入口仅在 live 存在时呈现', () => {
+    render(
+      <ChatView
+        session={SESSION}
+        history={[]}
+        live={[
+          {
+            member: 'planner',
+            turnId: 't1',
+            fixedSteps: 0,
+            owners: {},
+            steps: [{ step: 1, settled: false, blocks: [{ index: 0, type: 'TEXT', text: '策略' }] }],
+          },
+          {
+            member: 'player',
+            turnId: 't2',
+            fixedSteps: 0,
+            owners: {},
+            steps: [{ step: 1, settled: false, blocks: [{ index: 0, type: 'TEXT', text: '落子' }] }],
+          },
+        ]}
+        queue={[]}
+        error={null}
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
+    const groups = screen.getAllByTestId('member-turn')
+    expect(groups.map((g) => g.getAttribute('data-member'))).toEqual(['planner', 'player'])
+    expect(screen.getByTestId('cancel-button')).not.toBeNull()
   })
 })

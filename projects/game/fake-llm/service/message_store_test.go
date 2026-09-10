@@ -511,8 +511,8 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 26 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 26 (agent-v2-fail + agent-v2-fail-mid + agent-v2-followup + agent-v2-greet + agent-v2-plain + agent-v2-saolei-nodesktop + agent-v2-saolei-progressive + agent-v2-saolei-start + agent-v2-slow + chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
+	if len(got) != 35 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 35 (agent-v2-fail + agent-v2-fail-mid + agent-v2-followup + agent-v2-greet + agent-v2-plain + agent-v2-saolei-nodesktop + agent-v2-saolei-progressive + agent-v2-saolei-start + agent-v2-slow + chat-only + compact-instruction + compress-planner-summary + compress-player-summary + farewell + greeting + init-instruction + mouse-trigger + planner-memory-add + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + team-planner-opening + team-planner-review-continue + team-planner-review-stop + team-planner-user-reply + team-planner-wait + team-player-opening + team-player-resume-start + team-player-resume-stop + team-player-user-intake + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
 	}
 
 	// Sorted alphabetically: agent-v2-fail before agent-v2-fail-mid before
@@ -525,8 +525,9 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// farewell before greeting before init-instruction before
 	// mouse-trigger before planner-memory-add before saolei-remain before
 	// saolei-single-op before saolei-start before saolei-structural-stop
-	// before stall-mid-reasoning before think-healthy-cadence before
-	// think-interrupt-gap before think-interrupt-stall
+	// before stall-mid-reasoning before the team entries (specs/059-agent-
+	// v2-team-mode/tasks.md T011 — 's' < 't') before think-healthy-cadence
+	// before think-interrupt-gap before think-interrupt-stall
 	// ("agent-v2-fail" < "agent-v2-fail-mid" because the former is a
 	// prefix of the latter; "agent-v2-fail-mid" < "agent-v2-followup"
 	// because 'a' < 'o' at the first differing rune;
@@ -541,6 +542,13 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// "saolei-single-op" < "saolei-start" because 'i' < 't'; "saolei-start"
 	// < "saolei-structural-stop" because 'a' < 'r';
 	// "saolei-structural-stop" < "stall-mid-reasoning" because 'o' < 't';
+	// "stall-mid-reasoning" < "team-planner-opening" because 's' < 't';
+	// "team-planner-*" < "team-player-*" because 'n' < 'y' at the first
+	// differing rune of the middle token; "team-planner-user-reply" <
+	// "team-planner-wait" because 'u' < 'w', and "team-planner-wait" <
+	// "team-player-opening" by the same middle-token rule; "team-player-*" <
+	// "think-healthy-cadence" because
+	// 'e' < 'h' at the second rune;
 	// "stall-mid-reasoning" < "think-healthy-cadence" because 's' < 't';
 	// "think-healthy-cadence" < "think-interrupt-gap" because 'h' < 'i';
 	// "think-interrupt-gap" < "think-interrupt-stall" because 'g' < 's').
@@ -568,6 +576,15 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		"saolei-start",
 		"saolei-structural-stop",
 		"stall-mid-reasoning",
+		"team-planner-opening",
+		"team-planner-review-continue",
+		"team-planner-review-stop",
+		"team-planner-user-reply",
+		"team-planner-wait",
+		"team-player-opening",
+		"team-player-resume-start",
+		"team-player-resume-stop",
+		"team-player-user-intake",
 		"think-healthy-cadence",
 		"think-interrupt-gap",
 		"think-interrupt-stall",
@@ -809,13 +826,120 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("stall-mid-reasoning keywords missing 'stall now': %v", stallMidReasoning.Keywords)
 	}
 
+	// The team entries (specs/059-agent-v2-team-mode/tasks.md T011/T018)
+	// serve the deterministic two-role team chain: the planner persona anchor
+	// distinguishes them from every other family, the review entries carry
+	// the task's terminal-result history condition, the wait entry carries
+	// the controllable in-flight window the queue/cancel/refresh cases use,
+	// and the player entries carry the saolei_init tool call / no-new-game
+	// text the drive script consumes. The ordered block below is pinned
+	// against team_planner.yaml / team_player.yaml (README.md §6 lockstep).
+	teamPlannerOpening := got[23]
+	if teamPlannerOpening.Name != "team-planner-opening" {
+		t.Errorf("messages[23] name = %q, want team-planner-opening", teamPlannerOpening.Name)
+	}
+	if !slices.Contains(teamPlannerOpening.SystemKeywords, "你是扫雷 planner") {
+		t.Errorf("team-planner-opening system_keywords missing the planner persona anchor: %v", teamPlannerOpening.SystemKeywords)
+	}
+	if teamPlannerOpening.ToolCall != nil {
+		t.Errorf("team-planner-opening must carry a plain text response (the opening strategy body)")
+	}
+	if !strings.Contains(teamPlannerOpening.Text, "以下开局计划") {
+		t.Errorf("team-planner-opening text = %q, want the player-side opening anchor", teamPlannerOpening.Text)
+	}
+
+	teamPlannerReviewContinue := got[24]
+	if !slices.Contains(teamPlannerReviewContinue.Keywords, "<player-message>") {
+		t.Errorf("team-planner-review-continue keywords missing the player broadcast marker: %v", teamPlannerReviewContinue.Keywords)
+	}
+	if !slices.Contains(teamPlannerReviewContinue.HistoryKeywords, "game status: won") {
+		t.Errorf("team-planner-review-continue history_keywords missing the won terminal result: %v", teamPlannerReviewContinue.HistoryKeywords)
+	}
+	if teamPlannerReviewContinue.MinTurn != 2 {
+		t.Errorf("team-planner-review-continue min_turn = %d, want 2 (off the first drive)", teamPlannerReviewContinue.MinTurn)
+	}
+	if !strings.Contains(teamPlannerReviewContinue.Text, "开始下一局") {
+		t.Errorf("team-planner-review-continue text = %q, want the continue-next-game instruction", teamPlannerReviewContinue.Text)
+	}
+
+	teamPlannerReviewStop := got[25]
+	if !slices.Contains(teamPlannerReviewStop.HistoryKeywords, "game status: lost") {
+		t.Errorf("team-planner-review-stop history_keywords missing the lost terminal result: %v", teamPlannerReviewStop.HistoryKeywords)
+	}
+	if teamPlannerReviewStop.MinTurn != 2 {
+		t.Errorf("team-planner-review-stop min_turn = %d, want 2 (off the first drive)", teamPlannerReviewStop.MinTurn)
+	}
+	if !strings.Contains(teamPlannerReviewStop.Text, "本局到此") || strings.Contains(teamPlannerReviewStop.Text, "开始下一局") {
+		t.Errorf("team-planner-review-stop text = %q, want the stop wording and no next-game instruction", teamPlannerReviewStop.Text)
+	}
+
+	teamPlannerUserReply := got[26]
+	if !slices.Contains(teamPlannerUserReply.Keywords, "暂停") {
+		t.Errorf("team-planner-user-reply keywords missing the queued-user anchor: %v", teamPlannerUserReply.Keywords)
+	}
+	if teamPlannerUserReply.MinTurn != 2 {
+		t.Errorf("team-planner-user-reply min_turn = %d, want 2 (off the first drive)", teamPlannerUserReply.MinTurn)
+	}
+
+	teamPlannerWait := got[27]
+	if !slices.Contains(teamPlannerWait.Keywords, "planner-wait") {
+		t.Errorf("team-planner-wait keywords missing the controllable-window anchor: %v", teamPlannerWait.Keywords)
+	}
+	if len(teamPlannerWait.ReasoningChunks) != 2 {
+		t.Errorf("team-planner-wait reasoning_chunks = %v, want 2 chunks (the inter-chunk window)", teamPlannerWait.ReasoningChunks)
+	}
+	if !slices.Equal(teamPlannerWait.ChunkDelays, []string{"4s"}) {
+		t.Errorf("team-planner-wait chunk_delays = %v, want [4s] (the queue/cancel/refresh window)", teamPlannerWait.ChunkDelays)
+	}
+	if teamPlannerWait.ToolCall != nil {
+		t.Errorf("team-planner-wait must carry a plain text response (the long-running planner turn)")
+	}
+
+	teamPlayerOpening := got[28]
+	if !slices.Contains(teamPlayerOpening.SystemKeywords, "你是扫雷 player") {
+		t.Errorf("team-player-opening system_keywords missing the player persona anchor: %v", teamPlayerOpening.SystemKeywords)
+	}
+	if teamPlayerOpening.ToolCall == nil || teamPlayerOpening.ToolCall.Name != "saolei_init" {
+		t.Errorf("team-player-opening tool_call = %+v, want saolei_init", teamPlayerOpening.ToolCall)
+	}
+
+	teamPlayerResumeStart := got[29]
+	if teamPlayerResumeStart.ToolCall == nil || teamPlayerResumeStart.ToolCall.Name != "saolei_init" {
+		t.Errorf("team-player-resume-start tool_call = %+v, want saolei_init", teamPlayerResumeStart.ToolCall)
+	}
+	if teamPlayerResumeStart.MinTurn != 2 {
+		t.Errorf("team-player-resume-start min_turn = %d, want 2 (off the first drive)", teamPlayerResumeStart.MinTurn)
+	}
+
+	teamPlayerResumeStop := got[30]
+	if teamPlayerResumeStop.ToolCall != nil {
+		t.Errorf("team-player-resume-stop must carry a plain text response (no new game opened)")
+	}
+	if !strings.Contains(teamPlayerResumeStop.Text, "本局到此") {
+		t.Errorf("team-player-resume-stop text = %q, want the stop acknowledgement", teamPlayerResumeStop.Text)
+	}
+	if teamPlayerResumeStop.MinTurn != 2 {
+		t.Errorf("team-player-resume-stop min_turn = %d, want 2 (off the first drive)", teamPlayerResumeStop.MinTurn)
+	}
+
+	teamPlayerUserIntake := got[31]
+	if teamPlayerUserIntake.ToolCall != nil {
+		t.Errorf("team-player-user-intake must carry a plain text response (the queued-message digest)")
+	}
+	if !slices.Contains(teamPlayerUserIntake.Keywords, "继续") {
+		t.Errorf("team-player-user-intake keywords missing the queued-user anchor: %v", teamPlayerUserIntake.Keywords)
+	}
+	if teamPlayerUserIntake.MinTurn != 2 {
+		t.Errorf("team-player-user-intake min_turn = %d, want 2 (off the first drive)", teamPlayerUserIntake.MinTurn)
+	}
+
 	// The three think-interrupt demonstration templates (specs/046-fake-llm-
 	// think-chunking — contract specs/046-fake-llm-think-chunking/contracts/
 	// template-config.md §3.3-§3.5, added in T012): they exercise the
 	// chunked-reasoning / chunk_delays / stall_after fields end-to-end in the
 	// embedded store, and each is excluded from the no-match random fallback
 	// pool by isHangCapable (FR-011).
-	thinkHealthy := got[23]
+	thinkHealthy := got[32]
 	if len(thinkHealthy.ReasoningChunks) != 3 {
 		t.Errorf("think-healthy-cadence reasoning_chunks = %v, want 3 chunks", thinkHealthy.ReasoningChunks)
 	}
@@ -832,7 +956,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-healthy-cadence text = %q, want 'Done.'", thinkHealthy.Text)
 	}
 
-	thinkGap := got[24]
+	thinkGap := got[33]
 	if len(thinkGap.ReasoningChunks) != 3 {
 		t.Errorf("think-interrupt-gap reasoning_chunks = %v, want 3 chunks", thinkGap.ReasoningChunks)
 	}
@@ -849,7 +973,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-interrupt-gap text = %q, want 'Placing the flag at (3,4).'", thinkGap.Text)
 	}
 
-	thinkStall := got[25]
+	thinkStall := got[34]
 	if len(thinkStall.ReasoningChunks) != 2 {
 		t.Errorf("think-interrupt-stall reasoning_chunks = %v, want 2 chunks", thinkStall.ReasoningChunks)
 	}

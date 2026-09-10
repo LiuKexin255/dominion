@@ -29,7 +29,9 @@ ts_project(
     deps = [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@dominion/dsh-desktop-bridge",
+        ":node_modules/@dominion/dsh-team",
         ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],
@@ -59,14 +61,17 @@ js_library(
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
 # runtime_deps closure walking (common/js/dsh-plugins/llm-glm/BUILD.bazel
 # precedent). npm_deps carries the plugin's runtime imports: the cordis
-# Service base class (game/runtime.ts). The remaining faces are type-only
-# (dsh-agent, dsh-desktop-bridge) and resolve from the host composition.
+# Service base class (game/runtime.ts) and the dsh-llm message helper
+# (orchestrator.ts builds user/opening messages). The remaining faces
+# (dsh-agent, dsh-desktop-bridge, dsh-team) are type-only and resolve from
+# the host composition.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-saolei-loop",
     lib = ":lib",
     npm_deps = [
         ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-llm",
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
@@ -88,8 +93,10 @@ vitest_test(
     ) + [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-scope",
         ":node_modules/@dominion/dsh-desktop-bridge",
+        ":node_modules/@dominion/dsh-team",
         ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],

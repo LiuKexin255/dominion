@@ -16,9 +16,7 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//common/gopkg/solver",
-        "//projects/game",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_protobuf//types/known/emptypb",
     ],
 )
 

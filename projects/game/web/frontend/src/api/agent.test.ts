@@ -1,18 +1,21 @@
 // api/agent.js 的 fetch mock 单测：断言每个方法的 URL/method/body 请求形状
-// 与响应投影（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §6
-// 测试义务 2/3 的客户端面）。Mock 约定照 style/javascript.md：vi.fn()
+// 与响应投影（specs/059-agent-v2-team-mode/contracts/team-api.md 与
+// contracts/web-views.md §1 的客户端面；role/member/sender 均为场景词汇字符串
+// ——2026-09-10 用户裁定）。Mock 约定照 style/javascript.md：vi.fn()
 // test-double + 对被拦截调用做正向断言。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  cancelAgent,
+  cancelTeam,
   createPreset,
   deletePreset,
-  getAgent,
   getPreset,
+  getTeam,
+  listMemberMessages,
   listModels,
   listPresets,
-  updateAgent,
+  listTeamMessages,
   updatePreset,
+  updateTeam,
 } from './agent.js'
 import { ApiError } from './conversation.js'
 
@@ -56,6 +59,7 @@ describe('agent api 客户端', () => {
           {
             name: 'templates/saolei/presets/p1',
             persona: '你是扫雷玩家',
+            role: 'player',
             createTime: '2026-08-29T00:00:00Z',
             updateTime: '2026-08-29T01:00:00Z',
           },
@@ -66,20 +70,50 @@ describe('agent api 客户端', () => {
     expect(presets).toHaveLength(1)
     expect(presets[0].name).toBe('templates/saolei/presets/p1')
     expect(presets[0].persona).toBe('你是扫雷玩家')
+    expect(presets[0].role).toBe('player')
   })
 
-  it('createPreset POST，caller-supplied id 走 query，body 为 Preset 本体', async () => {
+  it('listPresets 携带 role 过滤参数（分池下拉，preset-api.md §1）；空 = 不过滤', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ presets: [] }))
+    await listPresets('saolei', 'player')
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v2/templates/saolei/presets?role=player',
+      undefined,
+    )
+
+    await listPresets('saolei', 'planner')
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v2/templates/saolei/presets?role=planner',
+      undefined,
+    )
+
+    // 空字符串 = 不过滤（preset-api.md §1）。
+    await listPresets('saolei', '')
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v2/templates/saolei/presets',
+      undefined,
+    )
+  })
+
+  it('createPreset POST，caller-supplied id 与 role 走 query，body 为 Preset 本体', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse({ name: 'templates/saolei/presets/p1', persona: 'p' }),
     )
-    const created = await createPreset('saolei', 'p1', '你是扫雷玩家')
+    const created = await createPreset('saolei', 'p1', '你是扫雷玩家', 'player')
     expect(created.name).toBe('templates/saolei/presets/p1')
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/v2/templates/saolei/presets?preset_id=p1',
+      '/api/v2/templates/saolei/presets?preset_id=p1&role=player',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ persona: '你是扫雷玩家' }),
       }),
+    )
+
+    // role 省略（T022 表单就位前的兼容调用）：query 仅 preset_id。
+    await createPreset('saolei', 'p1', 'p')
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v2/templates/saolei/presets?preset_id=p1',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ persona: 'p' }) }),
     )
   })
 
@@ -132,63 +166,100 @@ describe('agent api 客户端', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/v2/models', undefined)
   })
 
-  it('getAgent GET session 的 agent 单例', async () => {
+  it('getTeam GET session 的 team 单例（成员清单与连接状态投影）', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse({
-        name: 'templates/saolei/sessions/s1/agent',
-        preset: 'templates/saolei/presets/p1',
-        model: 'glm-5.2',
+        name: 'templates/saolei/sessions/s1/team',
+        members: [
+          {
+            name: 'templates/saolei/sessions/s1/team/members/player',
+            role: 'player',
+            preset: 'templates/saolei/presets/p1',
+            model: 'glm-5.2',
+          },
+          {
+            name: 'templates/saolei/sessions/s1/team/members/planner',
+            role: 'planner',
+            preset: 'templates/saolei/presets/p2',
+          },
+        ],
+        desktopConnected: true,
       }),
     )
-    const agent = await getAgent('templates/saolei/sessions/s1')
-    expect(agent.name).toBe('templates/saolei/sessions/s1/agent')
+    const team = await getTeam('templates/saolei/sessions/s1')
+    expect(team.name).toBe('templates/saolei/sessions/s1/team')
+    expect(team.members).toHaveLength(2)
+    expect(team.members?.[0]?.role).toBe('player')
+    expect(team.members?.[1]?.preset).toBe('templates/saolei/presets/p2')
+    expect(team.desktopConnected).toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/v2/templates/saolei/sessions/s1/agent',
+      '/api/v2/templates/saolei/sessions/s1/team',
       undefined,
     )
   })
 
-  it('updateAgent PATCH allow_missing=true，body 仅可变字段且 model 空时省略', async () => {
-    fetchMock.mockImplementation(async () =>
-      jsonResponse({ name: 'templates/saolei/sessions/s1/agent', preset: 'templates/saolei/presets/p1' }),
-    )
-    await updateAgent('templates/saolei/sessions/s1', 'templates/saolei/presets/p1', '')
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/v2/templates/saolei/sessions/s1/agent?allow_missing=true',
-      expect.objectContaining({
-        method: 'PATCH',
-        body: JSON.stringify({ preset: 'templates/saolei/presets/p1' }),
-      }),
-    )
-
+  it('updateTeam PATCH allow_missing=true，body 为 Team.members 输入列表（model 空省略）', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse({
-        name: 'templates/saolei/sessions/s1/agent',
-        preset: 'templates/saolei/presets/p1',
-        model: 'glm-5.2',
+        name: 'templates/saolei/sessions/s1/team',
+        members: [
+          { role: 'player', preset: 'templates/saolei/presets/p1' },
+          { role: 'planner', preset: 'templates/saolei/presets/p2' },
+        ],
       }),
     )
-    await updateAgent('templates/saolei/sessions/s1', 'templates/saolei/presets/p1', 'glm-5.2')
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      '/api/v2/templates/saolei/sessions/s1/agent?allow_missing=true',
+    await updateTeam('templates/saolei/sessions/s1', [
+      { role: 'player', preset: 'templates/saolei/presets/p1' },
+      { role: 'planner', preset: 'templates/saolei/presets/p2' },
+    ])
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v2/templates/saolei/sessions/s1/team?allow_missing=true',
       expect.objectContaining({
         method: 'PATCH',
         body: JSON.stringify({
-          preset: 'templates/saolei/presets/p1',
-          model: 'glm-5.2',
+          members: [
+            { role: 'player', preset: 'templates/saolei/presets/p1' },
+            { role: 'planner', preset: 'templates/saolei/presets/p2' },
+          ],
+        }),
+      }),
+    )
+
+    // output-only 字段（name/systemPrompt）与空 model 不进 body。
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ name: 'templates/saolei/sessions/s1/team', members: [] }),
+    )
+    await updateTeam('templates/saolei/sessions/s1', [
+      {
+        name: 'templates/saolei/sessions/s1/team/members/player',
+        role: 'player',
+        preset: 'templates/saolei/presets/p1',
+        model: 'glm-5.2',
+        systemPrompt: 'server-filled',
+      },
+      { role: 'planner', preset: 'templates/saolei/presets/p2', model: '' },
+    ])
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v2/templates/saolei/sessions/s1/team?allow_missing=true',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          members: [
+            { role: 'player', preset: 'templates/saolei/presets/p1', model: 'glm-5.2' },
+            { role: 'planner', preset: 'templates/saolei/presets/p2' },
+          ],
         }),
       }),
     )
   })
 
-  it('cancelAgent POST {session}/agent:cancel，body 空对象；未物化失败抛 ApiError(400)', async () => {
-    // AIP-136 自定义方法（specs/054-agent-v2-bugfixes/contracts/
-    // agent-api-changes.md §3）：请求仅 name 路径参数，body:"*" 下 body 为
-    // 空对象；幂等 no-op 同样 200。
+  it('cancelTeam POST {session}/team:cancel，body 空对象；未物化失败抛 ApiError(400)', async () => {
+    // AIP-136 自定义方法（team-api.md §4）：请求仅 name 路径参数，body:"*"
+    // 下 body 为空对象；幂等 no-op 同样 200。
     fetchMock.mockImplementation(async () => jsonResponse({}))
-    await expect(cancelAgent('templates/saolei/sessions/s1')).resolves.toBeUndefined()
+    await expect(cancelTeam('templates/saolei/sessions/s1')).resolves.toBeUndefined()
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/v2/templates/saolei/sessions/s1/agent:cancel',
+      '/api/v2/templates/saolei/sessions/s1/team:cancel',
       expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -197,13 +268,65 @@ describe('agent api 客户端', () => {
     )
 
     // 未物化 → FAILED_PRECONDITION → 400（与 Send 前置错误同族），错误不吞。
-    fetchMock.mockImplementation(async () => new Response('agent not materialized', { status: 400 }))
-    const err = await cancelAgent('templates/saolei/sessions/s1').then(
+    fetchMock.mockImplementation(async () => new Response('team not materialized', { status: 400 }))
+    const err = await cancelTeam('templates/saolei/sessions/s1').then(
       () => null,
       (e: unknown) => e,
     )
     expect(err).toBeInstanceOf(ApiError)
     expect((err as ApiError).status).toBe(400)
+  })
+
+  it('listTeamMessages GET team/messages 并返回归并序列（member 字符串）', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        messages: [
+          {
+            member: 'user',
+            message: { role: 'ROLE_USER', blocks: [{ text: { content: '开局' } }] },
+            seq: '1',
+          },
+          {
+            member: 'player',
+            message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '收到' } }] },
+            seq: '2',
+          },
+        ],
+      }),
+    )
+    const messages = await listTeamMessages('templates/saolei/sessions/s1')
+    expect(messages).toHaveLength(2)
+    expect(messages[0]?.member).toBe('user')
+    expect(messages[0]?.message.role).toBe('ROLE_USER')
+    expect(messages[1]?.member).toBe('player')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v2/templates/saolei/sessions/s1/team/messages',
+      undefined,
+    )
+  })
+
+  it('listMemberMessages GET 成员视角历史（sender 字符串标注）', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        messages: [
+          {
+            message: { role: 'ROLE_USER', blocks: [{ text: { content: '开局' } }] },
+            sender: 'user',
+          },
+          {
+            message: { role: 'ROLE_USER', blocks: [{ text: { content: '[planner] 策略' } }] },
+            sender: 'planner',
+          },
+        ],
+      }),
+    )
+    const messages = await listMemberMessages('templates/saolei/sessions/s1', 'player')
+    expect(messages).toHaveLength(2)
+    expect(messages[1]?.sender).toBe('planner')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v2/templates/saolei/sessions/s1/team/members/player/messages',
+      undefined,
+    )
   })
 
   it('请求级失败映射为 ApiError（携带 HTTP status 与 body）', async () => {
@@ -218,9 +341,9 @@ describe('agent api 客户端', () => {
     expect((err as ApiError).status).toBe(409)
     expect((err as ApiError).body).toContain('already exists')
 
-    // getAgent 未物化 → 404（agent-api.md §2.2，调用方据此进入引导态）。
+    // getTeam 未物化 → 404（team-api.md §1/§2，调用方据此进入引导态）。
     fetchMock.mockImplementation(async () => new Response('not found', { status: 404 }))
-    const get404 = await getAgent('templates/saolei/sessions/s1').then(
+    const get404 = await getTeam('templates/saolei/sessions/s1').then(
       () => null,
       (e: unknown) => e,
     )

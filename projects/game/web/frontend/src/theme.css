@@ -372,9 +372,9 @@ body {
   flex-direction: column;
 }
 
-/* ── agent 物化面板与引导态（web-frontend.md §3） ────────────────────── */
+/* ── team 物化面板与引导态（web-views.md §1） ────────────────────────── */
 
-.agent-toolbar {
+.team-toolbar {
   flex: none;
   display: flex;
   align-items: center;
@@ -383,7 +383,16 @@ body {
   padding: 8px 24px 0;
 }
 
-.agent-status {
+.team-status {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* 成员清单（web-views.md §1 状态呈现：role + preset + model）：
+ * 各成员一项，弱化着色不抢对话主区视觉。 */
+.team-members {
+  display: flex;
+  gap: 10px;
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
 }
@@ -407,7 +416,7 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
-.agent-guide {
+.team-guide {
   flex: none;
   display: flex;
   align-items: center;
@@ -420,7 +429,19 @@ body {
   color: var(--dsw-alias-state-warn-primary);
 }
 
-.agent-settings-panel {
+/* 物化后静止等待提示（用户首驱裁定：首次驱动由用户第一条消息触发）：
+ * 非警示语义，成功色系单行提示。 */
+.team-ready-guide {
+  flex: none;
+  margin: 8px 24px 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--dsw-alias-state-success-primary);
+  border-radius: 8px;
+  color: var(--dsw-alias-state-success-primary);
+  font-size: 12px;
+}
+
+.team-settings-panel {
   flex: none;
   display: flex;
   flex-direction: column;
@@ -432,19 +453,19 @@ body {
   background: var(--app-panel);
 }
 
-.agent-panel-header {
+.team-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
-.agent-refresh-hint {
+.team-refresh-hint {
   margin: 0;
   font-size: 12px;
   color: var(--dsw-alias-state-warn-primary);
 }
 
-.agent-panel-field {
+.team-panel-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -452,7 +473,7 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
-.agent-panel-field select {
+.team-panel-field select {
   padding: 6px 8px;
   border: 1px solid var(--app-border);
   border-radius: 8px;
@@ -461,7 +482,7 @@ body {
   font: inherit;
 }
 
-.agent-panel-error {
+.team-panel-error {
   padding: 6px 10px;
   border-radius: 8px;
   background: var(--app-banner-error-bg);
@@ -470,7 +491,7 @@ body {
   white-space: pre-wrap;
 }
 
-.agent-panel-actions {
+.team-panel-actions {
   display: flex;
   gap: 4px;
 }
@@ -516,6 +537,31 @@ body {
   border: 1px solid var(--app-border);
   background: var(--app-panel);
   overflow-wrap: anywhere;
+}
+
+/* 团队视图成员分组（web-views.md §3）：成员产出归属到所属成员名下，成员
+ * 标签区分 player/planner；分组容器保持既有 .msg-agent 的宽度约束。 */
+.member-turn {
+  align-self: flex-start;
+  max-width: 80%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.member-turn .msg-agent {
+  max-width: 100%;
+}
+
+.member-tag {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--app-border);
+  background: var(--app-bg);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* markdown code 块贴合内容宽度（用户裁定：代码块不强行与卡片同宽）：

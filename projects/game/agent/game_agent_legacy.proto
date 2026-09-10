@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package projects.game;
+
+// game_agent_legacy.proto holds the v1 team surface that agent v1 still
+// consumes: it is excluded from the v2 Go generation unit
+// (//projects/game:game_proto) because the merged Go package would collide
+// with the v2 team declarations, and it is removed together with the v1
+// service (specs/059-agent-v2-team-mode/ phase 5). The shared v1 types
+// (Session/UserFrame/TeamFrame/TeamProfile/...) stay in game.proto.
+
+import "google/api/annotations.proto";
+import "google/api/client.proto";
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "projects/game/game.proto";
+
+// TeamService manages the Team resource within a Session and provides a
+// bidirectional stream for real-time team communication. It replaces the
+// former ProxyService/AgentService pair (clean break, spec
+// 031-team-template-mode): the Team is the session's execution subject and
+// its messages are partitioned per team agent.
+//
+// Prefix Path: /api/v1/templates/{template}/sessions/{session}
+service TeamService {
+  // UpdateTeam is the Team singleton's materialization and mutation point
+  // (AIP-156: https://google.aip.dev/156; AIP-134 create-or-update:
+  // https://google.aip.dev/134#create-or-update). The Team is a per-session
+  // singleton — its resource id is the literal "team" — so there is no Create
+  // RPC (AIP-156: singleton resources must not define the Create/Delete
+  // standard methods): allow_missing=true materializes the Team on the first
+  // call, repeated calls with the same profile are idempotent, and a different
+  // profile updates it (team graph rebuild, FR-005 of
+  // specs/040-team-singleton-conformance/spec.md). It replaces the former
+  // CreateTeam (specs/040-team-singleton-conformance/contracts/api-contract.md
+  // §2). UpdateTeam is the ONLY Team creation point: GetTeam/Connect/
+  // ListMessages/RefreshTeam require the Team to already exist (no lazy
+  // creation — the former implicit creation with a fixed default profile is
+  // removed, specs/031-team-template-mode/ design decision).
+  rpc UpdateTeam(UpdateTeamRequest) returns (Team) {
+    option (google.api.http) = {
+      patch: "/api/v1/{team.name=templates/*/sessions/*/team}"
+      body: "team"
+    };
+    option (google.api.method_signature) = "team,update_mask";
+  }
+
+  // GetTeam gets the Team of a Session. AIP-131: https://google.aip.dev/131
+  rpc GetTeam(GetTeamRequest) returns (Team) {
+    option (google.api.http) = {
+      get: "/api/v1/{name=templates/*/sessions/*/team}"
+    };
+    option (google.api.method_signature) = "name";
+  }
+
+  // Connect establishes a bidirectional streaming channel for team
+  // communication. The client sends UserFrame (user input, operation results,
+  // connectivity probes); the server sends TeamFrame (agent display content,
+  // control signals, operation requests). Each frame carries exactly one
+  // payload: a MessageParts batch of content or a FlowParts control batch.
+  // User-input frames are routed to the team agent that accepts user input
+  // (FR-032). No REST binding: bidirectional streaming RPCs are not natively
+  // supported over HTTP/1.1 (AIP-127 https://google.aip.dev/127;
+  // specs/035-proto-contract-refine/contracts/frame-split.md §1).
+  rpc Connect(stream projects.game.UserFrame) returns (stream projects.game.TeamFrame);
+
+  // ListMessages lists Messages of one team agent's partition.
+  // AIP-132: https://google.aip.dev/132
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/{parent=templates/*/sessions/*/team/agents/*}/messages"
+    };
+    option (google.api.method_signature) = "parent";
+  }
+
+  // RefreshTeam clears the session's short-term memory (messages); the
+  // long-term strategy memory is unaffected (FR-018). AIP-136 custom method:
+  // https://google.aip.dev/136
+  rpc RefreshTeam(RefreshTeamRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/api/v1/{name=templates/*/sessions/*/team}:refresh"
+      body: "*"
+    };
+    option (google.api.method_signature) = "name";
+  }
+}
+
+
+// Team is the v1 team singleton — the execution subject of a Session,
+// replacing the former Agent resource (clean break, FR-003). It is an
+// AIP-156 singleton (https://google.aip.dev/156): there is no Create/Delete
+// RPC — it is materialized via UpdateTeam(allow_missing=true) (AIP-134
+// create-or-update: https://google.aip.dev/134#create-or-update), replacing
+// the former explicit CreateTeam (AIP-133: https://google.aip.dev/133). It
+// cannot be created lazily or independently; its agents are exported from the
+// template's graph schema definition (typed, not hard-coded by clients).
+//
+// During the transition this message shares the `game.liukexin.com/Team`
+// resource type with the v2 team resource (projects/game/agent_v2.proto)
+// although the field shapes differ; the declarations live in separate
+// proto_libraries so the v2 Go generation unit stays collision-free. Removed
+// together with the v1 service in phase 5
+// (specs/059-agent-v2-team-mode/tasks.md).
+message Team {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Team"
+    pattern: "templates/{template}/sessions/{session}/team"
+    plural: "teams"
+    singular: "team"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // The TeamProfile full resource name the team is built from (AIP-122:
+  // https://google.aip.dev/122); mutable. Set at materialization via
+  // UpdateTeam.team.profile; changing it rebuilds the team graph (FR-004/
+  // FR-005 of specs/040-team-singleton-conformance/spec.md).
+  string profile = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/TeamProfile"
+    }
+  ];
+  // Derived from the template's graph schema; not client-settable.
+  repeated projects.game.TeamAgent agents = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+
+message GetTeamRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Team"
+    }
+  ];
+}
+
+
+// UpdateTeamRequest updates the Team singleton of a Session. AIP-134:
+// https://google.aip.dev/134. The resource's name field (Team.name, pattern
+// templates/{template}/sessions/{session}/team) is the target identity,
+// surfaced in the HTTP path via {team.name=...}; update_mask supports partial
+// updates. allow_missing=true materializes the singleton on the first call
+// (AIP-134 create-or-update: https://google.aip.dev/134#create-or-update) —
+// the only Team creation point (AIP-156: https://google.aip.dev/156),
+// replacing the former CreateTeam.
+message UpdateTeamRequest {
+  Team team = 1 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 2;
+  // If set, and the Team is not found, a new Team is materialized. In this
+  // situation, update_mask is ignored.
+  bool allow_missing = 3;
+}
+

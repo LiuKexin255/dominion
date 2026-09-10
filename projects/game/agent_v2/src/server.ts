@@ -1,25 +1,26 @@
 /**
- * server.ts — grpc-js AgentService + PresetService + DesktopBridgeService
- * for the game agent_v2.
+ * server.ts — grpc-js AgentService (team session face) + PresetService +
+ * DesktopBridgeService for the game agent_v2.
  *
  * Loads the runtime proto via proto-loader (materialized at its canonical
  * import path under the service root, the experimental/grpc_chain/mid
  * pattern) and registers all three services on the single 50051 server
  * (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2;
  * specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.7):
- * - AgentService handlers implement the session-face method semantics of
- *   specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2 — validation
- *   is fail-fast (malformed resource names and empty text are request-level
- *   INVALID_ARGUMENT failures with the stream never opened; UpdateAgent
- *   checks the preset then the model catalog before materializing), and
- *   Send has no lazy creation (unmaterialized → FAILED_PRECONDITION).
+ * - AgentService handlers implement the team session face of
+ *   specs/059-agent-v2-team-mode/contracts/team-api.md §1–§6 — validation is
+ *   fail-fast (malformed resource names, missing preset references and empty
+ *   text are request-level INVALID_ARGUMENT failures), UpdateTeam validates
+ *   both presets and models before materializing, Send has no lazy creation
+ *   (unmaterialized → FAILED_PRECONDITION) and relays the team stream
+ *   (member event frames + team_message frames) until the team quiesces, and
+ *   the List faces read the T015 history projections.
  * - PresetService handlers are the stateless configuration face (built by
  *   {@link buildPresetHandlers} over its own deps): preset CRUD delegates
  *   to the authoring plugin's `ctx.presetAuthoring` domain service
  *   (copy-then-patch creation over the roster, role-pooled records —
  *   specs/059-agent-v2-team-mode/contracts/preset-api.md), and the model
- *   catalog shares ctx.llm.listModels with UpdateAgent's validation
- *   (research.md D4).
+ *   catalog shares ctx.llm.listModels with UpdateTeam's validation.
  * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
  *   (`ctx.desktopBridge.handlers()`).
  */
@@ -40,17 +41,18 @@ import type { BidiStream, DesktopBridgeServiceHandlers as PluginBridgeHandlers }
 // (instanceof discrimination in toServiceError, roster-verification §4.1).
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService, PresetView } from "@dominion/dsh-preset-authoring";
-import { AgentSessionError, AgentSessions, PROVIDER } from "./session.js";
-import type { AgentView } from "./session.js";
+import { TeamSessionError, TeamSessions, PROVIDER } from "./session.js";
+import type { TeamView } from "./session.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
 import type { PresetServiceHandlers } from "../agent_v2_types/projects/game/v2/PresetService.js";
 import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/v2/DesktopBridgeService.js";
-import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 import type { Preset } from "../agent_v2_types/projects/game/v2/Preset.js";
-import type { PresetRole as PresetRoleProto } from "../agent_v2_types/projects/game/v2/PresetRole.js";
+import type { Team as TeamProto } from "../agent_v2_types/projects/game/v2/Team.js";
+import type { TeamMember as TeamMemberProto } from "../agent_v2_types/projects/game/v2/TeamMember.js";
+import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/v2/TeamMessage.js";
 import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
 import type { ProtoGrpcType } from "../agent_v2_types/agent_v2.js";
 
@@ -85,8 +87,7 @@ export interface ModelCatalogEntry {
  * The collaborators the PresetService handlers consume: the preset domain
  * service (the authoring plugin's `ctx.presetAuthoring` — copy-then-patch
  * creation over the roster plus the role-pooled record store) and the
- * deployment model catalog (specs/051-agent-v2-dsh-migration/contracts/
- * agent-api.md §2.5/§2.6). The catalog is a single seam so UpdateAgent's
+ * deployment model catalog. The catalog is a single seam so UpdateTeam's
  * validation and the ListModels RPC cannot drift apart. Faces are
  * structural so tests inject `vi.fn()` doubles (style/javascript.md Mock
  * convention).
@@ -97,16 +98,24 @@ export interface PresetServiceDeps {
 }
 
 /**
- * The collaborators the gRPC handlers consume: the session materialization
- * registry plus the {@link PresetServiceDeps} faces — UpdateAgent's
- * fail-fast validation reads the preset store and the model catalog before
- * materializing (agent-api.md §2.1), and GetAgent reads the desktop-bridge
- * connection registry through the structured query face
- * (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4).
+ * The collaborators the team session handlers consume: the team registry
+ * plus the {@link PresetServiceDeps} faces — UpdateTeam's fail-fast
+ * validation and the List faces read through the registry, and GetTeam fills
+ * `desktop_connected` from the desktop-bridge connection registry
+ * (specs/059-agent-v2-team-mode/contracts/team-api.md §1/§6).
  */
-export interface AgentServiceDeps extends PresetServiceDeps {
-  sessions: Pick<AgentSessions, "send" | "listMessages" | "materialize" | "getAgent" | "cancel">;
-  /** The desktop-bridge connection fact read directly off the registry at GetAgent time. */
+export interface TeamServiceDeps extends PresetServiceDeps {
+  sessions: Pick<
+    TeamSessions,
+    | "send"
+    | "listTeamMessages"
+    | "listMemberMessages"
+    | "materialize"
+    | "getTeam"
+    | "getTeamMember"
+    | "cancel"
+  >;
+  /** The desktop-bridge connection fact read directly off the registry at GetTeam/UpdateTeam time. */
   isDesktopConnected(sessionName: string): boolean;
 }
 
@@ -118,7 +127,7 @@ export interface ParsedSessionResource {
 /**
  * Validate the game session resource name
  * `templates/{template}/sessions/{session}`: both segments non-empty and the
- * template in the known set (data-model.md §2.2 validation rule).
+ * template in the known set.
  */
 export function parseSessionResource(name: string): ParsedSessionResource | undefined {
   const match = /^templates\/([^/]+)\/sessions\/([^/]+)$/.exec(name);
@@ -134,16 +143,34 @@ export function parseSessionResource(name: string): ParsedSessionResource | unde
 }
 
 /**
- * Validate the agent parent resource name — the session resource name plus
- * the `/agent` singleton segment (AIP-156:
- * https://google.aip.dev/156) — and return the underlying session identity.
+ * Validate the team singleton resource name — the session resource name plus
+ * the `/team` singleton segment (AIP-156: https://google.aip.dev/156) — and
+ * return the underlying session identity.
  */
-export function parseAgentParent(parent: string): ParsedSessionResource | undefined {
-  const match = /^(.+)\/agent$/.exec(parent);
+export function parseTeamResource(name: string): ParsedSessionResource | undefined {
+  const match = /^(.+)\/team$/.exec(name);
   if (match === null) {
     return undefined;
   }
   return parseSessionResource(match[1]);
+}
+
+/**
+ * Validate a team member resource name — the team resource name plus
+ * `/members/{member}` — and return the session identity plus the member id.
+ */
+export function parseTeamMemberResource(
+  name: string,
+): (ParsedSessionResource & { member: string }) | undefined {
+  const match = /^(.+)\/team\/members\/([^/]+)$/.exec(name);
+  if (match === null) {
+    return undefined;
+  }
+  const session = parseSessionResource(match[1]);
+  if (session === undefined) {
+    return undefined;
+  }
+  return { ...session, member: match[2] };
 }
 
 function loadProto(): ProtoGrpcType {
@@ -190,34 +217,17 @@ function dateToTimestamp(date: Date): Timestamp {
 }
 
 /**
- * The saolei team-mode service-face role vocabulary: the role decides the
- * pool a preset is materialized from and is immutable after create
- * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). The proto enum
- * `PresetRole` (projects/game/agent_v2.proto) is the wire-level strong-validation face;
- * the authoring plugin stores the role as an opaque caller-defined label.
+ * The saolei scene role vocabulary: the role decides the pool a preset is
+ * materialized from and is immutable after create
+ * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). The wire form is
+ * a plain string (scene-agnostic proto, 2026-09-10 user ruling); this
+ * service — the saolei scene host — validates the vocabulary.
  */
 type PresetRole = "player" | "planner";
 
-/** The proto wire value of a service role (the generated enum union). */
-function roleToProto(role: PresetRole): PresetRoleProto {
-  switch (role) {
-    case "player":
-      return "PRESET_ROLE_PLAYER";
-    case "planner":
-      return "PRESET_ROLE_PLANNER";
-  }
-}
-
-/** Map a request's wire role value onto the service role; undefined when
- * the request carries none (UNSPECIFIED). */
-function protoToRole(value: string | undefined): PresetRole | undefined {
-  if (value === "PRESET_ROLE_PLAYER") {
-    return "player";
-  }
-  if (value === "PRESET_ROLE_PLANNER") {
-    return "planner";
-  }
-  return undefined;
+/** Whether a wire role string is part of the saolei scene vocabulary. */
+function isSceneRole(value: string): value is PresetRole {
+  return value === "player" || value === "planner";
 }
 
 /**
@@ -239,32 +249,46 @@ function presetToProto(view: PresetView): Preset {
   };
   // Every preset this service creates carries a role (required on create);
   // the undefined arm is the seam's role-less-consumer case and stays
-   // unset on the wire (proto3 omits it). The assertion is safe because the
-   // vocabulary lives in this module — any seam value outside it falls
-   // through roleToProto's switch and leaves the field unset.
+  // unset on the wire (proto3 omits it).
   if (view.role !== undefined) {
-    preset.role = roleToProto(view.role as PresetRole);
+    preset.role = view.role;
   }
   return preset;
 }
 
-function agentViewToProto(view: AgentView): {
-  name: string;
-  preset: string;
-  model: string;
-  createTime: Timestamp;
-  updateTime: Timestamp;
-} {
+/**
+ * Project the team registry view onto the proto Team resource. The
+ * output-only member states carry the configured preset/model snapshots;
+ * `system_prompt` is populated from the assembly surface in the US5 phase.
+ */
+function teamViewToProto(view: TeamView, desktopConnected: boolean): TeamProto {
+  const members: TeamMemberProto[] = view.members.map((member) => ({
+    name: member.name,
+    role: member.role,
+    preset: member.preset,
+    model: member.model,
+    systemPrompt: member.systemPrompt,
+  }));
   return {
     name: view.name,
-    preset: view.preset,
-    model: view.model,
+    members,
+    desktopConnected,
     createTime: dateToTimestamp(view.createTime),
     updateTime: dateToTimestamp(view.updateTime),
   };
 }
 
-const SESSION_STATUS_BY_CODE: Record<AgentSessionError["code"], grpc.status> = {
+function teamMemberViewToProto(member: TeamView["members"][number]): TeamMemberProto {
+  return {
+    name: member.name,
+    role: member.role,
+    preset: member.preset,
+    model: member.model,
+    systemPrompt: member.systemPrompt,
+  };
+}
+
+const SESSION_STATUS_BY_CODE: Record<TeamSessionError["code"], grpc.status> = {
   INVALID_ARGUMENT: grpc.status.INVALID_ARGUMENT,
   NOT_FOUND: grpc.status.NOT_FOUND,
   FAILED_PRECONDITION: grpc.status.FAILED_PRECONDITION,
@@ -280,48 +304,45 @@ const PRESET_STATUS_BY_CODE: Record<PresetAuthoringError["code"], grpc.status> =
 
 /**
  * Map a request-level failure onto its gRPC status (AIP-193 canonical codes;
- * v1 precedent: projects/game/agent/src/handler.ts propagates numeric
- * status-carrying errors unchanged). Non-domain errors fall back to
- * INTERNAL. The authoring plugin's stable domain codes map one-to-one
- * (roster-verification §4.1: instanceof discrimination, cause chain kept on
- * the error object).
+ * https://google.aip.dev/193). Non-domain errors fall back to INTERNAL. The
+ * original error rides along as the status object's `cause`, keeping the
+ * chain inspectable in-process (the wire projection carries code/message
+ * only).
  */
 function toServiceError(err: unknown): grpc.ServiceError {
   const message = err instanceof Error ? err.message : String(err);
-  if (err instanceof AgentSessionError) {
-    return { code: SESSION_STATUS_BY_CODE[err.code], message } as grpc.ServiceError;
+  let code: grpc.status = grpc.status.INTERNAL;
+  if (err instanceof TeamSessionError) {
+    code = SESSION_STATUS_BY_CODE[err.code];
+  } else if (err instanceof PresetAuthoringError) {
+    code = PRESET_STATUS_BY_CODE[err.code];
+  } else if (err instanceof Error && typeof (err as grpc.ServiceError).code === "number") {
+    code = (err as grpc.ServiceError).code;
   }
-  if (err instanceof PresetAuthoringError) {
-    return { code: PRESET_STATUS_BY_CODE[err.code], message } as grpc.ServiceError;
-  }
-  if (err instanceof Error && typeof (err as grpc.ServiceError).code === "number") {
-    return { code: (err as grpc.ServiceError).code, message } as grpc.ServiceError;
-  }
-  return { code: grpc.status.INTERNAL, message } as grpc.ServiceError;
+  return { code, message, cause: err } as unknown as grpc.ServiceError;
 }
 
 /**
  * Reject a server-streaming request before any frame is written. grpc-js
  * delivers a streaming call's final status from an 'error' event on the
  * stream (ServerWritableStreamImpl sets the pending status and ends —
- * @grpc/grpc-js server-call.js), matching the game agent handler convention
- * (dominion/projects/game/agent/src/handler.ts).
+ * @grpc/grpc-js server-call.js), matching the game agent handler convention.
  */
 function rejectStream(
   call: grpc.ServerWritableStream<unknown, unknown>,
   code: grpc.status,
   message: string,
+  cause?: unknown,
 ): void {
-  call.emit("error", { code, details: message } as grpc.ServiceError);
+  call.emit("error", { code, details: message, cause } as unknown as grpc.ServiceError);
 }
 
 /**
- * Guard one streaming write: a peer that disconnected mid-turn makes
+ * Guard one streaming write: a peer that disconnected mid-stream makes
  * `call.write` throw (or the call is already destroyed) — the failure is
- * logged and swallowed so a late frame from the collector/queue can never
- * escape the async write path as an unhandled rejection and kill the
- * multi-session process (v1 precedent: projects/game/agent/src/handler.ts
- * safeWrite).
+ * logged and swallowed so a late frame from the collectors can never escape
+ * the async write path as an unhandled rejection and kill the multi-session
+ * process.
  */
 function safeWrite(
   call: grpc.ServerWritableStream<unknown, unknown>,
@@ -339,13 +360,13 @@ function safeWrite(
 }
 
 /**
- * Build the AgentService handlers over the session-face collaborators
- * (Send/UpdateAgent/GetAgent/ListAgentMessages/Cancel — the owner-affinity
- * surface, agent-api.md §2.1–§2.4 and specs/054-agent-v2-bugfixes/
- * contracts/agent-api-changes.md §3). Exported for unit tests so the gRPC
- * status mapping is asserted without binding a port.
+ * Build the AgentService handlers over the team session collaborators
+ * (UpdateTeam/GetTeam/GetTeamMember/ListTeamMessages/ListMemberMessages/
+ * Send/Cancel — the owner-affinity team surface,
+ * specs/059-agent-v2-team-mode/contracts/team-api.md §1–§6). Exported for
+ * unit tests so the gRPC status mapping is asserted without binding a port.
  */
-export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers {
+export function buildTeamHandlers(deps: TeamServiceDeps): AgentServiceHandlers {
   return {
     Send: (call) => {
       const name = call.request.session ?? "";
@@ -362,21 +383,37 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
         rejectStream(call, grpc.status.INVALID_ARGUMENT, "text must be non-empty");
         return;
       }
-      // Long-lived stream write guards (the v1 agent handler precedent,
-      // projects/game/agent/src/handler.ts safeWrite): a peer disconnect
-      // surfaces as an 'error' event / write failure on the call. Without
-      // the listener an async write failure becomes an unhandled
-      // 'error' event and can take the multi-session process down; with it,
-      // late writes from the collector/queue are silently dropped.
+      // Long-lived stream write guards: a peer disconnect surfaces as an
+      // 'error'/'cancelled' event on the call. The disconnect only detaches
+      // the stream — it MUST NOT cancel the team orchestration
+      // (contracts/team-api.md §3.3). A server-issued terminal event (clean
+      // end or orchestration failure) marks the stream settled first so its
+      // own 'error' emission is not misread as a peer disconnect.
+      let detach: (() => void) | undefined;
+      let settled = false;
+      const settle = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        detach?.();
+      };
       call.on("error", (err: Error) => {
-        info("Send stream error (peer disconnected?)", {
-          session: name,
-          error: err.message,
-        });
+        if (!settled) {
+          info("Send stream error (peer disconnected?)", {
+            session: name,
+            error: err.message,
+          });
+        }
+        settle();
+      });
+      call.on("cancelled", () => {
+        settle();
       });
       const stream: TurnStream = {
         write: (event) => safeWrite(call, event, name),
         end: () => {
+          settled = true;
           try {
             call.end();
           } catch (err) {
@@ -386,96 +423,128 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
             });
           }
         },
+        fail: (streamError) => {
+          settled = true;
+          try {
+            // grpc-js terminates a server stream with the emitted status
+            // (ServerWritableStreamImpl sets pendingStatus on 'error' —
+            // @grpc/grpc-js server-call.js): the orchestration failure
+            // surfaces as INTERNAL mid-stream (AIP-193, contracts/team-api.md
+            // §6) instead of a silent EOF.
+            call.emit("error", {
+              code: grpc.status.INTERNAL,
+              details: streamError.message,
+              cause: streamError,
+            } as unknown as grpc.ServiceError);
+          } catch (err) {
+            info("Send stream error close failed (already closed)", {
+              session: name,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        },
       };
       try {
-        // No lazy materialization (specs/051-agent-v2-dsh-migration/spec.md
-        // FR-007): an unmaterialized session throws
-        // FAILED_PRECONDITION here and the stream never opens
-        // (agent-api.md §2.4).
-        deps.sessions.send(name, text, stream);
+        // No lazy materialization: an unmaterialized session throws
+        // FAILED_PRECONDITION here and the stream never opens; the returned
+        // detach removes exactly this subscription.
+        detach = deps.sessions.send(name, text, stream);
       } catch (err) {
         const serviceError = toServiceError(err);
         info("Send rejected", { session: name, code: serviceError.code });
-        rejectStream(call, serviceError.code, serviceError.message);
+        rejectStream(call, serviceError.code, serviceError.message, err);
       }
     },
 
-    UpdateAgent: (call, callback) => {
-      const agent = call.request.agent ?? undefined;
-      const name = agent?.name ?? "";
-      const session = parseAgentParent(name);
+    UpdateTeam: (call, callback) => {
+      const team = call.request.team ?? undefined;
+      const name = team?.name ?? "";
+      const session = parseTeamResource(name);
       if (session === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `agent.name must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${name}"`,
+          message: `team.name must be a team resource name ("templates/{template}/sessions/{session}/team"), got "${name}"`,
         });
         return;
       }
-      // preset is REQUIRED on this singleton and no default preset resource
-      // is provisioned — use requires creating one first
-      // (specs/051-agent-v2-dsh-migration/spec.md Clarifications, Q&A
-      // "agent 经 Update 显式物化时，preset 引用是必填还是可选？", session
-      // 2026-08-31) — empty means INVALID_ARGUMENT.
-      const presetName = agent?.preset ?? "";
-      if (presetName === "") {
+      // Layer 1 — structure (scene-agnostic, contracts/team-api.md §2):
+      // the members list is the materialization input, every member carries
+      // a non-empty role and a preset resource name under the session
+      // template; the model is optional.
+      const wireMembers = team?.members ?? [];
+      if (wireMembers.length === 0) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: "agent.preset is required; create a preset and reference it",
+          message: "team.members must not be empty",
         });
         return;
       }
-      const preset = parsePresetResource(presetName);
-      if (preset === undefined) {
+      const members = [] as Array<{ role: string; preset: string; model?: string }>;
+      for (const wireMember of wireMembers) {
+        const role = wireMember.role ?? "";
+        if (role === "") {
+          callback({
+            code: grpc.status.INVALID_ARGUMENT,
+            message: "every team member must carry a non-empty role",
+          });
+          return;
+        }
+        const presetName = wireMember.preset ?? "";
+        const preset = parsePresetResource(presetName);
+        if (preset === undefined) {
+          callback({
+            code: grpc.status.INVALID_ARGUMENT,
+            message: `member "${role}" preset must be a preset resource name ("templates/{template}/presets/{preset}"), got "${presetName}"`,
+          });
+          return;
+        }
+        if (preset.template !== session.template) {
+          callback({
+            code: grpc.status.INVALID_ARGUMENT,
+            message: `member "${role}" preset template ${preset.template} does not match team template ${session.template}`,
+          });
+          return;
+        }
+        const model = wireMember.model ?? "";
+        members.push({
+          role,
+          preset: presetName,
+          ...(model === "" ? {} : { model }),
+        });
+      }
+      // An explicit mask may only name the singleton's mutable field
+      // (AIP-134: https://google.aip.dev/134; members is replaced whole —
+      // contracts/team-api.md §2). An explicit empty mask is rejected: the
+      // same convention as UpdatePreset ("omitted" is the way to replace all
+      // mutable fields).
+      const maskPaths = call.request.updateMask?.paths;
+      if (maskPaths !== undefined && maskPaths.length === 0) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `agent.preset must be a preset resource name ("templates/{template}/presets/{preset}"), got "${presetName}"`,
+          message: 'update_mask must be omitted or carry the "members" path',
         });
         return;
       }
-      if (preset.template !== session.template) {
+      const badPath = (maskPaths ?? []).find((maskPath) => maskPath !== "members");
+      if (badPath !== undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `preset template ${preset.template} does not match agent template ${session.template}`,
+          message: `update_mask paths must be "members", got "${badPath}"`,
         });
         return;
       }
-      // An explicit mask may only name the singleton's mutable fields
-      // (AIP-134: https://google.aip.dev/134); the mutable fields are always
-      // taken from the request body.
-      const maskPaths = call.request.updateMask?.paths ?? [];
-      if (maskPaths.some((path) => path !== "preset" && path !== "model")) {
-        callback({
-          code: grpc.status.INVALID_ARGUMENT,
-          message: `update_mask paths must be "preset" or "model", got [${maskPaths.join(", ")}]`,
-        });
-        return;
-      }
-      const model = agent?.model ?? "";
       const sessionName = `templates/${session.template}/sessions/${session.session}`;
       void (async () => {
         try {
-          // Fail-fast validation before any teardown (data-model.md §2.2
-          // step 1 — no half-materialized state): preset must exist, then a
-          // non-empty model must be in the catalog (US2 场景 7).
-          await deps.authoring.get(preset.session);
-          if (model !== "") {
-            const catalog = await deps.listModels(PROVIDER);
-            if (!catalog.some((entry) => entry.id === model)) {
-              callback({
-                code: grpc.status.INVALID_ARGUMENT,
-                message: `unknown model "${model}"; see ListModels for the available catalog`,
-              });
-              return;
-            }
-          }
-          const view = await deps.sessions.materialize(sessionName, {
-            preset: presetName,
-            ...(model === "" ? {} : { model }),
-          });
-          callback(null, agentViewToProto(view));
+          // Layer 2 — saolei scene validation (exactly two members with the
+          // {player, planner} roles, preset existence + role equality, model
+          // catalog) happens inside the registry BEFORE any teardown — no
+          // half-materialized state (contracts/team-api.md §2).
+          const view = await deps.sessions.materialize(sessionName, { members });
+          callback(null, teamViewToProto(view, deps.isDesktopConnected(sessionName)));
         } catch (err) {
           const serviceError = toServiceError(err);
-          info("UpdateAgent failed", {
+          info("UpdateTeam failed", {
             session: sessionName,
             code: serviceError.code,
             error: serviceError.message,
@@ -485,78 +554,122 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
       })();
     },
 
-    GetAgent: (call, callback) => {
+    GetTeam: (call, callback) => {
       const name = call.request.name ?? "";
-      const session = parseAgentParent(name);
+      const session = parseTeamResource(name);
       if (session === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `name must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${name}"`,
+          message: `name must be a team resource name ("templates/{template}/sessions/{session}/team"), got "${name}"`,
         });
         return;
       }
       const sessionName = `templates/${session.template}/sessions/${session.session}`;
       try {
         // desktop_connected is the bridge registry fact at query time, filled
-        // at the handler layer — the connection state is not session storage
-        // state, so AgentView stays free of it
-        // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4).
-        // UpdateAgent's response deliberately omits the field: proto3
-        // default false is dropped by protojson, and (re)materialization
-        // never touches the desktop connection.
-        callback(null, {
-          ...agentViewToProto(deps.sessions.getAgent(sessionName)),
-          desktopConnected: deps.isDesktopConnected(sessionName),
-        });
+        // at the handler layer — the connection state is not team storage
+        // state (contracts/team-api.md §1).
+        callback(null, teamViewToProto(deps.sessions.getTeam(sessionName), deps.isDesktopConnected(sessionName)));
       } catch (err) {
         callback(toServiceError(err));
       }
     },
 
-    ListAgentMessages: (call, callback) => {
-      const parent = call.request.parent ?? "";
-      const parsed = parseAgentParent(parent);
+    GetTeamMember: (call, callback) => {
+      const name = call.request.name ?? "";
+      const parsed = parseTeamMemberResource(name);
       if (parsed === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `parent must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${parent}"`,
+          message: `name must be a team member resource name ("templates/{template}/sessions/{session}/team/members/{member}"), got "${name}"`,
         });
         return;
       }
-      // Pagination fields are protocol compliance only: the history is
-      // in-memory and returned whole, nextPageToken is always empty
-      // (agent-api.md §2.3).
       const sessionName = `templates/${parsed.template}/sessions/${parsed.session}`;
-      void deps.sessions.listMessages(sessionName).then(
-        (messages: HistoryMessage[]) => {
-          callback(null, { messages, nextPageToken: "" });
-        },
-        (err: unknown) => {
-          const serviceError = toServiceError(err);
-          info("ListAgentMessages: failed", {
-            parent,
-            code: serviceError.code,
-            error: serviceError.message,
-          });
-          callback(serviceError);
-        },
-      );
+      try {
+        const member = deps.sessions.getTeamMember(sessionName, parsed.member);
+        callback(null, teamMemberViewToProto(member));
+      } catch (err) {
+        callback(toServiceError(err));
+      }
     },
 
-    // Same shape as GetAgent: the request carries only the agent resource
-    // name. Path and preconditions follow Send's rejection family — a
-    // malformed name is INVALID_ARGUMENT and an unmaterialized session is
-    // FAILED_PRECONDITION (specs/054-agent-v2-bugfixes/contracts/
-    // agent-api-changes.md §3); the cancel semantics themselves (in-flight
-    // turn termination, queue landing, idempotent no-op) live in
-    // AgentSessions.cancel (specs/054-agent-v2-bugfixes/data-model.md §1.3).
-    Cancel: (call, callback) => {
-      const name = call.request.name ?? "";
-      const session = parseAgentParent(name);
+    ListTeamMessages: (call, callback) => {
+      const parent = call.request.parent ?? "";
+      const session = parseTeamResource(parent);
       if (session === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `name must be an agent resource name ("templates/{template}/sessions/{session}/agent"), got "${name}"`,
+          message: `parent must be a team resource name ("templates/{template}/sessions/{session}/team"), got "${parent}"`,
+        });
+        return;
+      }
+      // Pagination fields are protocol compliance only: the merged sequence
+      // is in-memory and returned whole, next_page_token stays empty
+      // (contracts/team-api.md §5).
+      const sessionName = `templates/${session.template}/sessions/${session.session}`;
+      try {
+        const messages: TeamMessageProto[] = deps.sessions
+          .listTeamMessages(sessionName)
+          .map((entry) => ({
+            // The producer label is the scene role string itself ("user"
+            // reserved for user input) — no enum mapping (2026-09-10 ruling).
+            member: entry.member,
+            message: entry.message,
+            seq: String(entry.seq),
+          }));
+        callback(null, { messages, nextPageToken: "" });
+      } catch (err) {
+        const serviceError = toServiceError(err);
+        info("ListTeamMessages: failed", {
+          parent,
+          code: serviceError.code,
+          error: serviceError.message,
+        });
+        callback(serviceError);
+      }
+    },
+
+    ListMemberMessages: (call, callback) => {
+      const parent = call.request.parent ?? "";
+      const parsed = parseTeamMemberResource(parent);
+      if (parsed === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `parent must be a team member resource name ("templates/{template}/sessions/{session}/team/members/{member}"), got "${parent}"`,
+        });
+        return;
+      }
+      const sessionName = `templates/${parsed.template}/sessions/${parsed.session}`;
+      try {
+        const messages = deps.sessions.listMemberMessages(sessionName, parsed.member).map((entry) => ({
+          message: entry.message,
+          sender: entry.sender,
+        }));
+        callback(null, { messages, nextPageToken: "" });
+      } catch (err) {
+        const serviceError = toServiceError(err);
+        info("ListMemberMessages: failed", {
+          parent,
+          code: serviceError.code,
+          error: serviceError.message,
+        });
+        callback(serviceError);
+      }
+    },
+
+    // Cancel keeps the Send rejection family: a malformed name is
+    // INVALID_ARGUMENT and an unmaterialized team is FAILED_PRECONDITION.
+    // The cancel semantics themselves (in-flight turn termination, queue
+    // preservation, idempotent no-op) live in TeamSessions.cancel
+    // (specs/059-agent-v2-team-mode/contracts/team-api.md §4).
+    Cancel: (call, callback) => {
+      const name = call.request.name ?? "";
+      const session = parseTeamResource(name);
+      if (session === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `name must be a team resource name ("templates/{template}/sessions/{session}/team"), got "${name}"`,
         });
         return;
       }
@@ -574,15 +687,20 @@ export function buildAgentHandlers(deps: AgentServiceDeps): AgentServiceHandlers
         callback(serviceError);
       }
     },
-
   };
+}
+
+/** The parsed shape of `templates/{template}/presets/{preset}`. */
+export interface ParsedPresetResource {
+  template: string;
+  preset: string;
 }
 
 /**
  * Validate the preset resource name `templates/{template}/presets/{preset}`
  * (AIP-122) against the known template set.
  */
-export function parsePresetResource(name: string): ParsedSessionResource | undefined {
+export function parsePresetResource(name: string): ParsedPresetResource | undefined {
   const match = /^templates\/([^/]+)\/presets\/([^/]+)$/.exec(name);
   if (match === null) {
     return undefined;
@@ -591,7 +709,7 @@ export function parsePresetResource(name: string): ParsedSessionResource | undef
   if (!KNOWN_TEMPLATES.has(template)) {
     return undefined;
   }
-  return { template, session: match[2] };
+  return { template, preset: match[2] };
 }
 
 /**
@@ -623,11 +741,10 @@ const MAX_PAGE_SIZE = 1000;
  * collaborators (the preset authoring service + ListModels — served by the
  * same process as the AgentService but routed by the gateway without proxy
  * owner affinity, specs/051-agent-v2-dsh-migration/contracts/agent-api.md
- * §1/§4 and specs/051-agent-v2-dsh-migration/revisions/
- * directive-2026-09-01.md §3.7). Creation is copy-then-patch from the
- * role's pool template (preset-api.md §2); role is REQUIRED on create and
- * immutable afterwards. Exported for unit tests so the gRPC status mapping
- * is asserted without binding a port.
+ * §1/§4). Creation is copy-then-patch from the role's pool template
+ * (preset-api.md §2); role is REQUIRED on create and immutable afterwards.
+ * Exported for unit tests so the gRPC status mapping is asserted without
+ * binding a port.
  */
 export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandlers {
   return {
@@ -649,12 +766,13 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         return;
       }
       // role is REQUIRED on create and decides the pool template the copy
-      // materializes from (preset-api.md §2).
-      const role = protoToRole(call.request.role);
-      if (role === undefined) {
+      // materializes from (preset-api.md §2). The wire value is a plain
+      // string; this scene host validates the vocabulary.
+      const role = call.request.role ?? "";
+      if (!isSceneRole(role)) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: "role is required and must be PRESET_ROLE_PLAYER or PRESET_ROLE_PLANNER",
+          message: `role is required and must be a known saolei scene role ("player" or "planner"), got "${role}"`,
         });
         return;
       }
@@ -684,7 +802,17 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
-      const roleFilter = protoToRole(call.request.role);
+      // Empty = no role filtering; a non-empty filter must be scene
+      // vocabulary (preset-api.md §1).
+      const roleValue = call.request.role ?? "";
+      if (roleValue !== "" && !isSceneRole(roleValue)) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: `role filter must be a known saolei scene role ("player" or "planner"), got "${roleValue}"`,
+        });
+        return;
+      }
+      const roleFilter = roleValue === "" ? undefined : roleValue;
       // Coerce per AIP-158: unspecified/0 → default, above max → max.
       const size =
         (call.request.pageSize ?? 0) <= 0
@@ -729,7 +857,7 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
-      void deps.authoring.get(parsed.session).then(
+      void deps.authoring.get(parsed.preset).then(
         (view) => callback(null, presetToProto(view)),
         (err: unknown) => callback(toServiceError(err)),
       );
@@ -765,7 +893,7 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         return;
       }
       void deps.authoring
-        .update(parsed.session, { persona: preset?.persona ?? "" })
+        .update(parsed.preset, { persona: preset?.persona ?? "" })
         .then(
           (view) => callback(null, presetToProto(view)),
           (err: unknown) => callback(toServiceError(err)),
@@ -782,10 +910,11 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
-      // No fan-out: an already-materialized agent keeps its materialization-
-      // time composition (the standing mount outlives the copy's deletion,
-      // roster README "joined sessions keep their standing mount").
-      void deps.authoring.remove(parsed.session).then(
+      // No fan-out: an already-materialized team keeps its
+      // materialization-time composition (the standing mount outlives the
+      // copy's deletion, roster README "joined sessions keep their standing
+      // mount").
+      void deps.authoring.remove(parsed.preset).then(
         () => callback(null, {}),
         (err: unknown) => callback(toServiceError(err)),
       );
@@ -818,7 +947,7 @@ export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): Deskto
  * The deployment model catalog: the ids come from `ctx.llm.listModels`
  * (the llm-glm plugin's static config.models — research.md D4) and the
  * context windows from the same adapter's exact-model resolution, so the
- * ListModels RPC and UpdateAgent's validation share one source.
+ * ListModels RPC and UpdateTeam's validation share one source.
  */
 async function listModelCatalog(ctx: DshContext, provider: string): Promise<ModelCatalogEntry[]> {
   const models: ReadonlyArray<LlmModelInfo> = await ctx.llm.listModels(provider);
@@ -832,17 +961,17 @@ async function listModelCatalog(ctx: DshContext, provider: string): Promise<Mode
 
 /**
  * What {@link buildServer} hands to the bootstrap's gRPC server component:
- * the unbound server, its credentials, and the session registry the
+ * the unbound server, its credentials, and the team registry the
  * composition stop drains.
  */
 export interface BuiltAgentServer {
   server: grpc.Server;
   credentials: grpc.ServerCredentials;
-  sessions: AgentSessions;
+  sessions: TeamSessions;
 }
 
 /**
- * Construct the session registry, the handler deps, and register the three
+ * Construct the team registry, the handler deps, and register the three
  * services — without binding. Binding, serving, and the graceful stop
  * (tryShutdown racing the shutdown budget → forceShutdown) are owned by the
  * bootstrap's gRPC server component
@@ -852,28 +981,32 @@ export interface BuiltAgentServer {
  * by the row's config), so no store handle crosses the bootstrap boundary.
  */
 export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
-  const sessions = new AgentSessions(options.ctx);
-  const deps: AgentServiceDeps = {
+  const sessions = new TeamSessions(options.ctx, {
+    authoring: options.ctx.presetAuthoring,
+    listModels: (provider) => listModelCatalog(options.ctx, provider),
+  });
+  const deps: TeamServiceDeps = {
     sessions,
     authoring: options.ctx.presetAuthoring,
     listModels: (provider) => listModelCatalog(options.ctx, provider),
     // The composed context mounts the bridge plugin service (the
-    // declaration merge in @dominion/dsh-desktop-bridge); GetAgent reads
+    // declaration merge in @dominion/dsh-desktop-bridge); GetTeam reads
     // the registry through this face.
     isDesktopConnected: (sessionName) => options.ctx.desktopBridge.isDesktopConnected(sessionName),
   };
   const proto = loadProto();
   const server = new grpc.Server();
   // Dedicated per-service handler factories over one deps object: the
-  // AgentService registration binds the session face and the PresetService
-  // registration the configuration face (agent_v2 serves both on this
-  // process; the gateway routes them differently — agent-api.md §4, and
-  // specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.7).
+  // AgentService registration binds the team session face and the
+  // PresetService registration the configuration face (agent_v2 serves both
+  // on this process; the gateway routes them differently — agent-api.md §4,
+  // and specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+  // §3.7).
   server.addService(
     (proto.projects.game.v2.AgentService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
-    buildAgentHandlers(deps),
+    buildTeamHandlers(deps),
   );
   server.addService(
     (proto.projects.game.v2.PresetService as unknown as {

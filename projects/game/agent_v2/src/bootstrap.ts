@@ -40,7 +40,7 @@ import {
 import { init, shutdown } from "@dominion/common-js-otel";
 // Type-only: erased at compile time, so none of these put @grpc/grpc-js into
 // the static import graph ahead of the OTel loader hook.
-import type { AgentSessions } from "./session.js";
+import type { TeamSessions } from "./session.js";
 import type { DshContext } from "./dsh.js";
 
 // Binds on all interfaces, matching the deployed container port declared in
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     // sessions created by the gRPC server start (start order is
     // stage-ascending, stop strictly reversed).
     let ctx: DshContext | undefined;
-    let sessions: AgentSessions | undefined;
+    let sessions: TeamSessions | undefined;
     let bound: Component | undefined;
 
     const dshComponent: Component = {

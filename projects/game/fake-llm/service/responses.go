@@ -18,18 +18,35 @@ import (
 	"time"
 )
 
-// Deterministic wire identities: the same request always observes the
-// same ids and usage numbers (fake-responses-wire.md §2 invariant 3).
+// Deterministic wire identities: the same request always observes the same
+// ids and usage numbers (fake-responses-wire.md §2 invariant 3). The
+// function_call identity is derived from the request input instead of being
+// a constant: a real provider mints a unique call id per call, and the team
+// broadcast reference model anchors a member's tool units on that id — two
+// tool calls sharing one id inside a member log would render/consume as the
+// same unit (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1).
 const (
 	responsesRespID = "resp_fake_1"
 	responsesRsnID  = "rs_fake_1"
 	responsesMsgID  = "msg_fake_1"
-	// The function_call wire identity of a tool-call response — fixed like
-	// the other ids so the same request always observes the same wire
-	// (fake-responses-wire.md §2 invariant 3).
-	responsesCallID = "call_fake_1"
-	responsesFcID   = "fc_fake_1"
 )
+
+// responsesWireIDs derives the function_call identities from the request
+// input: deterministic for the same request (repeatable assertions) and
+// distinct across a tool chain's steps (each step's input differs by the
+// replayed call and its result).
+func responsesWireIDs(input []*responsesInputItem) (callID, fcID string) {
+	h := fnv.New64a()
+	for _, item := range input {
+		if item == nil {
+			continue
+		}
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00",
+			item.Type, item.Role, string(item.Content), item.CallID, item.Name, item.Arguments, item.Output)
+	}
+	sum := h.Sum64()
+	return fmt.Sprintf("call_fake_%x", sum), fmt.Sprintf("fc_fake_%x", sum)
+}
 
 // responsesRequest is the subset of the OpenAI /v1/responses request
 // schema the handler consumes. Model and instructions are decoded but
@@ -142,11 +159,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = msg.Failure
 	}
 
+	callID, fcID := responsesWireIDs(*req.Input)
 	if req.Stream {
-		serveResponsesStreaming(w, r, spec, failure)
+		serveResponsesStreaming(w, r, spec, failure, callID, fcID)
 		return
 	}
-	serveResponsesNonStreaming(w, spec, failure)
+	serveResponsesNonStreaming(w, spec, failure, callID, fcID)
 }
 
 // projectResponsesInput flattens the input items into (messages, toolCalls,
@@ -470,7 +488,7 @@ func usageFromSpec(spec responseSpec) responsesUsage {
 // message items for the content the template declares, plus the derived
 // usage. A Failure template returns the failed status with the configured
 // error (no output, no usage).
-func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failure *ResponseFailure) {
+func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failure *ResponseFailure, callID, fcID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -499,7 +517,7 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 	if spec.isToolCall() {
 		// A tool-call response is only the function_call item — no
 		// message content follows (the agent executes the call next).
-		output = append(output, functionCallItem(spec.ToolCall))
+		output = append(output, functionCallItem(spec.ToolCall, callID, fcID))
 	} else {
 		if think := strings.Join(spec.Reasoning, ""); think != "" {
 			output = append(output, map[string]any{
@@ -561,7 +579,7 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 // think-chunking) is a chat-completions facility and is deliberately not
 // projected here: the Responses handler honors only the inter-chunk
 // chunk_delays, which is what the FR-012 queue-window scenarios need.
-func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, failure *ResponseFailure) {
+func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, failure *ResponseFailure, callID, fcID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -579,7 +597,7 @@ func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec respon
 	})
 
 	if spec.isToolCall() {
-		serveResponsesToolCall(w, flusher, spec)
+		serveResponsesToolCall(w, flusher, spec, callID, fcID)
 		return
 	}
 
@@ -682,7 +700,7 @@ func writeEvent(w http.ResponseWriter, flusher http.Flusher, event string, paylo
 // The full arguments arrive in the single delta and again in the done item,
 // matching how a real provider streams a small argument payload while keeping
 // the assembled item authoritative.
-func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec responseSpec) {
+func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec responseSpec, callID, fcID string) {
 	args := "{}"
 	if spec.ToolCall != nil && len(spec.ToolCall.Arguments) > 0 {
 		if b, err := json.Marshal(spec.ToolCall.Arguments); err == nil {
@@ -695,20 +713,20 @@ func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec re
 		"output_index": 0,
 		"item": map[string]any{
 			"type":    "function_call",
-			"call_id": responsesCallID,
+			"call_id": callID,
 			"name":    spec.ToolCall.Name,
 		},
 	})
 	writeEvent(w, flusher, "response.function_call_arguments.delta", map[string]any{
 		"type":         "response.function_call_arguments.delta",
-		"item_id":      responsesFcID,
+		"item_id":      fcID,
 		"output_index": 0,
 		"delta":        args,
 	})
 	writeEvent(w, flusher, "response.output_item.done", map[string]any{
 		"type":         "response.output_item.done",
 		"output_index": 0,
-		"item":         functionCallItem(spec.ToolCall),
+		"item":         functionCallItem(spec.ToolCall, callID, fcID),
 	})
 	writeEvent(w, flusher, "response.completed", map[string]any{
 		"type": "response.completed",
@@ -722,7 +740,7 @@ func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec re
 
 // functionCallItem builds the complete function_call output item for a
 // config ToolCall (non-streaming body and the streaming done event).
-func functionCallItem(tc *ToolCall) map[string]any {
+func functionCallItem(tc *ToolCall, callID, fcID string) map[string]any {
 	args := "{}"
 	if tc != nil && len(tc.Arguments) > 0 {
 		if b, err := json.Marshal(tc.Arguments); err == nil {
@@ -735,8 +753,8 @@ func functionCallItem(tc *ToolCall) map[string]any {
 	}
 	return map[string]any{
 		"type":      "function_call",
-		"id":        responsesFcID,
-		"call_id":   responsesCallID,
+		"id":        fcID,
+		"call_id":   callID,
 		"name":      name,
 		"arguments": args,
 	}

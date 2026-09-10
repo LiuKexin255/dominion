@@ -1,51 +1,62 @@
 /**
- * session.ts — game session ↔ dsh agent mapping for agent_v2.
+ * session.ts — game session ↔ dsh team mapping for agent_v2.
  *
- * `AgentSessions` owns the materialization registry over `ctx.agents`
- * (session resource name → live dsh agent, host-chosen SessionId per
- * specs/049-agent-v2-dsh-init/data-model.md §2.2), a per-session FIFO queue
- * with a TurnRunner (mid-turn sends enqueue with a queued{position} frame
- * and auto-run at turn end, specs/049-agent-v2-dsh-init/spec.md FR-012), and
- * the UpdateAgent materialization semantics (specs/051-agent-v2-dsh-migration/data-model.md §2.2): agents
- * are created ONLY through {@link AgentSessions.materialize} — Send has no
- * lazy creation and fails FAILED_PRECONDITION on an unmaterialized session,
- * and re-materializing tears the in-flight turn down (turn_end{ABORTED},
- * queue dropped) before the agent is disposed and rebuilt, whatever the
- * configuration (refresh folded into Update). Everything except the preset
- * store is process memory (A2): shutdown disposes every entry and the
- * composition's root fiber. Sessions are independent: each entry drives its
- * own turns, and concurrent sessions never block each other.
+ * `TeamSessions` owns the materialization registry over the team
+ * orchestrator (`@dominion/dsh-saolei-loop`): one {@link TeamOrchestrator}
+ * per materialized session, two member runtimes (player + planner), the
+ * session-lifetime team history projections, and the active team streams.
  *
- * The Context injected at construction is the dependency seam: unit tests
- * pass a mock `ctx` and drive the captured event listeners instead of
- * intercepting modules (style/javascript.md Mock convention).
+ * Materialization semantics (specs/059-agent-v2-team-mode/contracts/
+ * team-api.md §2): UpdateTeam materializes or refreshes the session's team
+ * singleton; validation is fail-fast (both presets exist and match their
+ * member role, a non-empty model is in the catalog) and runs BEFORE any
+ * teardown; a refresh terminates the in-flight member turn, voids the queued
+ * messages, clears both members' short-term memory (a fresh orchestrator +
+ * history), and rebuilds — with create_time preserved. Any materialization
+ * failure (including a member setup error such as the planner memory
+ * prefetch) rolls the created members back inside the orchestrator, so no
+ * half-materialized team can ever be observed (GetTeam NOT_FOUND afterwards)
+ * and the caller can retry.
+ *
+ * Send has no lazy creation (FAILED_PRECONDITION while unmaterialized) and is
+ * a pure subscription over the orchestrator: the user message is handed to
+ * {@link TeamOrchestrator.submit}, the stream is attached to the session's
+ * active set, and the stream ends when the team reaches its static point
+ * (specs/059-agent-v2-team-mode/contracts/team-api.md §3.1). A client
+ * disconnect only detaches the stream — it MUST NOT stop the orchestration;
+ * cancelling the team happens only through {@link TeamSessions.cancel}.
+ *
+ * The Context injected at construction plus the optional {@link
+ * TeamSessionsDeps} are the dependency seams: unit tests pass doubles
+ * instead of intercepting modules (style/javascript.md Mock convention).
  */
 
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { error, info } from "@dominion/common-js-logs";
-import type { Agent, AgentHandle, CreateAgentOptions } from "@deepseek-ai/dsh-agent";
-import { createAgentGameRuntime } from "@dominion/dsh-saolei-loop";
+import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
+import {
+  OrchestratorStateError,
+  TeamOrchestrator,
+} from "@dominion/dsh-saolei-loop";
+import type {
+  AgentCreationSeam,
+  ComposePreset,
+  LoadPlannerMemory,
+  MountPlayerRuntime,
+  OrchestratorFailure,
+  OrchestratorLogger,
+  TeamSeam,
+} from "@dominion/dsh-saolei-loop";
 import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
-import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
-import type { TurnEndEvent } from "../agent_v2_types/projects/game/v2/TurnEndEvent.js";
-import type { TurnStartEvent } from "../agent_v2_types/projects/game/v2/TurnStartEvent.js";
-import type { TurnUsage } from "../agent_v2_types/projects/game/v2/TurnUsage.js";
-import type { QueuedEvent } from "../agent_v2_types/projects/game/v2/QueuedEvent.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 import type { DshContext } from "./dsh.js";
-import { mintTurnId, SessionHistory, TurnCollector } from "./history.js";
-import type { DshTokenUsage, TurnOutcome, TurnSettlement, TurnStream } from "./history.js";
+import { MemberCollector, TeamHistory } from "./history.js";
+import type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
 
-export type { TurnStream } from "./history.js";
+export type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
 
 /**
- * The dsh SessionId brand (`Branded<'SessionId'>` in dsh-session, a
- * transitive peer reached through `CreateAgentOptions`), so this package
- * never imports `@deepseek-ai/dsh-session` directly.
+ * Adapter route registered by @dominion/dsh-llm-glm (contracts/glm-llm-plugin.md §2).
  */
-type SessionId = CreateAgentOptions["sessionId"];
-
-/** Adapter route registered by @dominion/dsh-llm-glm (contracts/glm-llm-plugin.md §2). */
 export const PROVIDER = "glm-responses";
 
 /**
@@ -54,207 +65,261 @@ export const PROVIDER = "glm-responses";
  */
 export const DEFAULT_MODEL = process.env.GLM_MODEL || "glm-5.3";
 
+/** The team goal rendered into the shared team section (scene-agnostic plugin input). */
+export const TEAM_GOAL =
+  "协作完成多局扫雷游戏：player 执行操作、planner 复盘与制定策略，共同提高胜率。";
+
 /**
  * Stable AIP error codes the gRPC layer maps onto statuses
- * (specs/051-agent-v2-dsh-migration/data-model.md §3).
+ * (specs/059-agent-v2-team-mode/contracts/team-api.md §6).
  */
-export type AgentSessionErrorCode = "INVALID_ARGUMENT" | "NOT_FOUND" | "FAILED_PRECONDITION";
+export type TeamSessionErrorCode = "INVALID_ARGUMENT" | "NOT_FOUND" | "FAILED_PRECONDITION";
 
-/** A request-level session error carrying its stable AIP code. */
-export class AgentSessionError extends Error {
-  readonly code: AgentSessionErrorCode;
+/** A request-level team error carrying its stable AIP code. */
+export class TeamSessionError extends Error {
+  readonly code: TeamSessionErrorCode;
 
-  constructor(code: AgentSessionErrorCode, message: string) {
+  constructor(code: TeamSessionErrorCode, message: string) {
     super(message);
-    this.name = "AgentSessionError";
+    this.name = "TeamSessionError";
     this.code = code;
   }
 }
 
-/** The effective configuration an entry was materialized with. */
-export interface MaterializedConfig {
+/** One member's configuration and runtime state (View projection). */
+export interface TeamMemberView {
+  /** Member resource name (server-constructed from the role). */
+  readonly name: string;
+  /** Member role (scene vocabulary; saolei: "player" / "planner"). */
+  readonly role: string;
+  /** Full preset resource name the member materialized from. */
   readonly preset: string;
+  /** Effective model id. */
   readonly model: string;
+  /**
+   * The member instance's complete effective system prompt; populated from
+   * the assembly surface in the US5 phase (T032). Empty until then.
+   */
+  readonly systemPrompt: string;
 }
 
-/** The Agent singleton resource projection served by GetAgent/UpdateAgent. */
-export interface AgentView {
+/** The team singleton projection served by GetTeam/UpdateTeam. */
+export interface TeamView {
   readonly name: string;
-  readonly preset: string;
-  readonly model: string;
+  readonly members: readonly TeamMemberView[];
   readonly createTime: Date;
   readonly updateTime: Date;
 }
 
-/** The materialize request: preset reference and optional model. The
- * persona is NOT a materialization parameter — it lives in the preset's
- * persona row and reaches the agent through the roster mount (specs/
- * 059-agent-v2-team-mode/research.md R3). */
-export interface MaterializeOptions {
-  /** Full preset resource name (validated by the caller, server.ts). */
+/**
+ * One caller-supplied member configuration — the scene-agnostic
+ * materialization primitive (proto `TeamMember` input side).
+ */
+export interface TeamMemberOptions {
+  /** Member role (scene vocabulary; saolei: "player" / "planner"). */
+  readonly role: string;
+  /** Full preset resource name. */
   readonly preset: string;
   /** Model id; empty/undefined = the process default. */
   readonly model?: string;
 }
 
-interface QueuedMessage {
-  readonly text: string;
-  readonly stream: TurnStream;
-  /** Minted at enqueue time; the queued frame and this message's turn share it. */
-  readonly turnId: string;
-}
-
-interface SessionEntry {
-  readonly sessionName: string;
-  readonly agent: Agent;
-  readonly handle: AgentHandle;
-  readonly collector: TurnCollector;
-  readonly history: SessionHistory;
-  readonly queue: QueuedMessage[];
-  readonly config: MaterializedConfig;
-  readonly createTime: Date;
-  updateTime: Date;
-  busy: boolean;
-  /** Set by teardown; a turn started after it must abort immediately. */
-  disposed: boolean;
-}
-
-function queuedEvent(sessionName: string, turnId: string, position: number): ChatEvent {
-  const queued: QueuedEvent = { position };
-  return { session: sessionName, turnId, queued };
-}
-
-function turnStartEvent(sessionName: string, turnId: string): ChatEvent {
-  const turnStart: TurnStartEvent = {};
-  return { session: sessionName, turnId, turnStart };
-}
-
-function usageEvent(usage: { inputTokens: number; outputTokens: number; reasoningTokens?: number } | undefined): TurnUsage | undefined {
-  if (usage === undefined) {
-    return undefined;
-  }
-  // int64 fields are materialized as strings under proto-loader longs:String.
-  const mapped: TurnUsage = {
-    inputTokens: String(usage.inputTokens),
-    outputTokens: String(usage.outputTokens),
-  };
-  if (usage.reasoningTokens !== undefined) {
-    mapped.reasoningTokens = String(usage.reasoningTokens);
-  }
-  return mapped;
-}
-
-function turnEndEvent(
-  sessionName: string,
-  turnId: string,
-  outcome: TurnOutcome,
-  usage: DshTokenUsage | undefined,
-): ChatEvent {
-  const end: TurnEndEvent = { status: `TURN_STATUS_${outcome.status}` };
-  if (outcome.error !== undefined) {
-    end.error = { code: outcome.error.code, message: outcome.error.message };
-  }
-  const mappedUsage = usageEvent(usage);
-  if (mappedUsage !== undefined) {
-    end.usage = mappedUsage;
-  }
-  return { session: sessionName, turnId, turnEnd: end };
+/** The materialize/refresh request: the caller-supplied member list. */
+export interface MaterializeTeamOptions {
+  readonly members: readonly TeamMemberOptions[];
 }
 
 /**
- * Owns the live session entries, their FIFO queues, turn serialization, and
- * the UpdateAgent materialization semantics.
+ * The collaborator seams of {@link TeamSessions}. Production resolves them
+ * from the composed context; unit tests inject doubles.
  */
-export class AgentSessions {
-  private readonly sessions = new Map<string, SessionEntry>();
-  /** Serializes re-materializations per session (data-model.md §2.2 concurrency rule). */
+export interface TeamSessionsDeps {
+  /** Preset compose/lookup face; defaults to `ctx.presetAuthoring`. */
+  readonly authoring?: Pick<PresetAuthoringService, "compose" | "get">;
+  /** Deployment model catalog; defaults to the composition's `ctx.llm`. */
+  readonly listModels?: (provider: string) => Promise<ReadonlyArray<{ id: string }>>;
+  /** Agent registry creation seam; defaults to `ctx.agents`. */
+  readonly agents?: AgentCreationSeam;
+  /** Team service seam; defaults to `ctx.team`. */
+  readonly team?: TeamSeam;
+  /** Player game-runtime mount; defaults to the desktop-bridge builder. */
+  readonly mountPlayerRuntime?: MountPlayerRuntime;
+  /** Planner memory prefetch seam; defaults to `ctx.plannerMemory.load` when present. */
+  readonly loadPlannerMemory?: LoadPlannerMemory;
+  /** Orchestration failure reporter; defaults to the repo logger face. */
+  readonly logger?: OrchestratorLogger;
+  /** Provider route for both members; defaults to {@link PROVIDER}. */
+  readonly provider?: string;
+}
+
+interface MemberRuntime {
+  readonly role: MemberRole;
+  readonly preset: string;
+  readonly model: string;
+  readonly handle: AgentHandle;
+  readonly collector: MemberCollector;
+}
+
+interface TeamEntry {
+  readonly sessionName: string;
+  readonly template: string;
+  readonly orchestrator: TeamOrchestrator;
+  readonly history: TeamHistory;
+  readonly members: Record<MemberRole, MemberRuntime>;
+  readonly streams: Set<TurnStream>;
+  readonly createTime: Date;
+  updateTime: Date;
+  /** The armed quiescence watcher; null when none is pending. */
+  quiescenceWatch: Promise<void> | null;
+  disposed: boolean;
+}
+
+const SESSION_RESOURCE = /^templates\/([^/]+)\/sessions\/([^/]+)$/;
+const PRESET_RESOURCE = /^templates\/([^/]+)\/presets\/([^/]+)$/;
+
+function parseSessionResource(name: string): { template: string; session: string } | undefined {
+  const match = SESSION_RESOURCE.exec(name);
+  if (match === null) {
+    return undefined;
+  }
+  return { template: match[1] as string, session: match[2] as string };
+}
+
+function parsePresetResource(name: string): { template: string; preset: string } | undefined {
+  const match = PRESET_RESOURCE.exec(name);
+  if (match === null) {
+    return undefined;
+  }
+  return { template: match[1] as string, preset: match[2] as string };
+}
+
+/**
+ * Owns the live team entries, their per-session materialization serialization,
+ * the history projections, and the active team streams.
+ */
+export class TeamSessions {
+  private readonly teams = new Map<string, TeamEntry>();
+  /** Serializes re-materializations per session (refresh-in-flight rule). */
   private readonly materializations = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly ctx: DshContext) {}
+  constructor(
+    private readonly ctx: DshContext,
+    private readonly deps: TeamSessionsDeps = {},
+  ) {}
 
   /**
-   * Accept one user message for a MATERIALIZED session. Returns immediately:
-   * when a turn is running the message is enqueued and its stream receives
-   * queued{position} and stays open (specs/049-agent-v2-dsh-init/spec.md
-   * FR-012); otherwise the turn starts.
-   * Turn failures surface as turn_end{ERROR} frames — never as rejections —
-   * so the process and session survive model endpoint failures.
+   * Accept one user message for a MATERIALIZED team. The message is fixed
+   * into the merged sequence at acceptance (enqueue-time, including the
+   * queued path), the stream is attached to the session's active stream set,
+   * and a `queued` frame is written first on this stream only when the
+   * current member's turn is in flight. The returned detach removes exactly
+   * this stream — a client disconnect must not touch the orchestration.
    *
-   * There is no lazy creation: an unmaterialized (or stale — e.g. post-
-   * restart) session throws FAILED_PRECONDITION before any frame is written
-   * (specs/051-agent-v2-dsh-migration/data-model.md §3;
-   * specs/051-agent-v2-dsh-migration/spec.md FR-007).
+   * An unmaterialized session throws FAILED_PRECONDITION before any frame
+   * (specs/059-agent-v2-team-mode/contracts/team-api.md §3).
    */
-  send(session: string, text: string, stream: TurnStream): void {
-    const entry = this.liveEntry(session);
-    if (entry === undefined) {
-      throw new AgentSessionError(
-        "FAILED_PRECONDITION",
-        `agent not materialized for session ${session}; send UpdateAgent first`,
-      );
+  send(session: string, text: string, stream: TurnStream): () => void {
+    const entry = this.requireEntry(session, "FAILED_PRECONDITION");
+    // The queued frame is this stream's first frame (contract §3.3), so the
+    // queued branch is written before the stream joins the active set. The
+    // snapshot is taken synchronously before submit, and submit's queued
+    // state derives from the same orchestrator state.
+    const before = entry.orchestrator.snapshot();
+    const willQueue = before.active !== null;
+    if (willQueue) {
+      stream.write({ session, turnId: "", queued: { position: before.queued + 1 } });
     }
-    void this.enqueue(entry, text, stream);
+    const detach = this.attach(entry, stream);
+    // Fix the user message into the merged sequence at acceptance (enqueue
+    // included) and fan out its team_message frame before the first drive.
+    entry.history.appendUser(text);
+    try {
+      entry.orchestrator.submit(text);
+    } catch (err) {
+      detach();
+      throw this.mapOrchestratorError(err);
+    }
+    this.watchQuiescence(entry);
+    return detach;
   }
 
   /**
-   * In-memory conversation history for refresh/reconnect backfill
-   * (ListAgentMessages, agent-api.md §2.3;
-   * specs/049-agent-v2-dsh-init/spec.md FR-014 semantics carried
-   * over). Messages live with the materialized agent — an unmaterialized
-   * session has none (NOT_FOUND, data-model.md §3).
-   */
-  async listMessages(session: string): Promise<HistoryMessage[]> {
-    const entry = this.requireEntry(session, "NOT_FOUND");
-    return entry.history.list();
-  }
-
-  /**
-   * The session's agent singleton projection (GetAgent); NOT_FOUND while
-   * unmaterialized (data-model.md §3, AIP-156:
-   * https://google.aip.dev/156).
-   */
-  getAgent(session: string): AgentView {
-    const entry = this.requireEntry(session, "NOT_FOUND");
-    return toAgentView(entry);
-  }
-
-  /**
-   * Cancel the session's in-flight turn and land queued messages (the
-   * `:cancel` semantics, specs/054-agent-v2-bugfixes/contracts/
-   * agent-api-changes.md §3; data-model.md §1.3): the model stream and
-   * in-flight tools propagate cancellation, every affected stream receives
-   * turn_end{CANCELED}, and the session immediately accepts a new Send.
-   * Queued user messages stay in history — enqueue already appended them —
-   * so clearing the queue lands them without triggering a turn (data-model.md
-   * §3; the user ruling that departs from the official client's kept queue,
-   * specs/054-agent-v2-bugfixes/research.md D2). Idempotent: with no
-   * in-flight turn and an empty queue this is a successful no-op.
-   * Unmaterialized sessions fail like Send (FAILED_PRECONDITION before any
-   * frame).
+   * Cancel the team (FR-017 / contracts/team-api.md §4): terminate the
+   * in-flight member turn with a CANCELED terminal frame, suspend automatic
+   * continuation, keep the queued messages as already-fixed history (they
+   * entered the merged sequence at Send acceptance), and end the active
+   * streams at the resulting static point. Idempotent.
+   * Unmaterialized sessions fail like Send (FAILED_PRECONDITION).
    */
   cancel(session: string): void {
-    const entry = this.liveEntry(session);
-    if (entry === undefined) {
-      throw new AgentSessionError(
-        "FAILED_PRECONDITION",
-        `agent not materialized for session ${session}; send UpdateAgent first`,
-      );
+    const entry = this.requireEntry(session, "FAILED_PRECONDITION");
+    const active = entry.orchestrator.snapshot().active;
+    if (active !== null) {
+      // Known window: the snapshot can report the member active before its
+      // collector observed the running transition, in which case the mark is
+      // consumed by the first idle that finds an active turn (see
+      // MemberCollector.markOutcome).
+      entry.members[active].collector.markOutcome({ status: "CANCELED" });
     }
-    this.cancelEntry(entry);
+    entry.orchestrator.cancel();
+    this.watchQuiescence(entry);
   }
 
   /**
-   * Materialize (or refresh) the session's agent singleton — the UpdateAgent
-   * semantics (data-model.md §2.2): any existing entry is torn down first
-   * (in-flight turn receives turn_end{ABORTED}, queued messages dropped,
-   * history/game state released with the agent) and a clean agent is created
-   * with the given configuration — even when the configuration is unchanged
-   * (refresh folded into Update). Validation of the preset/model happened in
-   * the caller; this method cannot produce a half-materialized state.
-   * Concurrent materializations of one session serialize; different sessions
-   * never block each other.
+   * The session's team singleton projection (GetTeam); NOT_FOUND while
+   * unmaterialized (AIP-156: https://google.aip.dev/156).
    */
-  async materialize(session: string, options: MaterializeOptions): Promise<AgentView> {
+  getTeam(session: string): TeamView {
+    const entry = this.requireEntry(session, "NOT_FOUND");
+    return toTeamView(entry);
+  }
+
+  /**
+   * One fixed member's projection (GetTeamMember); NOT_FOUND while
+   * unmaterialized or when the member id is outside the fixed roster.
+   */
+  getTeamMember(session: string, member: string): TeamMemberView {
+    const entry = this.requireEntry(session, "NOT_FOUND");
+    if (member !== "player" && member !== "planner") {
+      throw new TeamSessionError(
+        "NOT_FOUND",
+        `team member "${member}" does not exist; the roster is player/planner`,
+      );
+    }
+    return toMemberView(entry, member);
+  }
+
+  /** The merged team sequence snapshot (ListTeamMessages data source). */
+  listTeamMessages(session: string): TeamMergeEntry[] {
+    const entry = this.requireEntry(session, "NOT_FOUND");
+    return entry.history.listTeamMessages();
+  }
+
+  /** One member's view snapshot (ListMemberMessages data source). */
+  listMemberMessages(session: string, member: string): MemberViewEntry[] {
+    const entry = this.requireEntry(session, "NOT_FOUND");
+    if (member !== "player" && member !== "planner") {
+      throw new TeamSessionError(
+        "NOT_FOUND",
+        `team member "${member}" does not exist; the roster is player/planner`,
+      );
+    }
+    return entry.history.listMemberMessages(member);
+  }
+
+  /**
+   * Materialize (or refresh) the session's team singleton — the UpdateTeam
+   * semantics (contracts/team-api.md §2): an existing team is torn down
+   * first (in-flight member turn terminated with turn_end{ABORTED}, queued
+   * messages voided, both members released with all history), then a fresh
+   * team is built with the given configuration — even when the configuration
+   * is unchanged (refresh folded into Update). Validation of both presets
+   * (existence + role match) and the models happened before any teardown;
+   * this method cannot produce a half-materialized state. Concurrent
+   * materializations of one session serialize; different sessions never
+   * block each other.
+   */
+  async materialize(session: string, options: MaterializeTeamOptions): Promise<TeamView> {
     const previous = this.materializations.get(session) ?? Promise.resolve();
     const job = previous.then(() => this.doMaterialize(session, options));
     this.materializations.set(
@@ -267,100 +332,158 @@ export class AgentSessions {
     return job;
   }
 
-  private async doMaterialize(session: string, options: MaterializeOptions): Promise<AgentView> {
-    const existing = this.sessions.get(session);
-    if (existing) {
-      this.sessions.delete(session);
-      this.teardownEntry(existing);
-      try {
-        await existing.handle.dispose();
-      } catch (err) {
-        error("agent session dispose failed", {
-          session,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        throw err;
-      }
+  private async doMaterialize(
+    session: string,
+    options: MaterializeTeamOptions,
+  ): Promise<TeamView> {
+    const parsedSession = parseSessionResource(session);
+    if (parsedSession === undefined) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `session must be a game session resource name ("templates/{template}/sessions/{session}"), got "${session}"`,
+      );
+    }
+    // Layer 1 — structure (scene-agnostic): members non-empty, every member
+    // role non-empty, preset a valid resource name under the session
+    // template, model optional (data-model.md §4).
+    this.validateMemberStructure(options.members, parsedSession.template);
+    // Layer 2 — saolei scene (agent_v2 is the scene host): exactly two
+    // members whose roles are exactly {"player", "planner"}.
+    this.validateSaoleiMembers(options.members);
+    const player = this.memberFor(options.members, "player");
+    const planner = this.memberFor(options.members, "planner");
+    const playerModel = player.model || DEFAULT_MODEL;
+    const plannerModel = planner.model || DEFAULT_MODEL;
+
+    // Fail-fast validation BEFORE any teardown (data-model.md §4): preset
+    // existence + role equality, then the model catalog.
+    await this.validateMemberPreset(player.preset, "player");
+    await this.validateMemberPreset(planner.preset, "planner");
+    await this.validateModel(playerModel);
+    await this.validateModel(plannerModel);
+
+    const existing = this.teams.get(session);
+    if (existing !== undefined) {
+      this.teams.delete(session);
+      await this.teardownEntry(existing);
     }
 
-    const model = options.model || DEFAULT_MODEL;
-    // The singleton's create_time survives re-materialization (AIP-134
-    // output-only create_time); update_time refreshes on every UpdateAgent
-    // (data-model.md §2.2).
+    // The singleton's create_time survives re-materialization; update_time
+    // refreshes on every UpdateTeam (contracts/team-api.md §2).
     const createTime = existing?.createTime ?? new Date();
     const updateTime = new Date();
-    // Compose resolves BEFORE the factory call so the resolved preset id is
-    // snapshotted into the creation meta (`meta.agentPreset`, the official
-    // composeAgent wiring shape) and an unresolvable/broken preset fails
-    // before any session exists; the mount happens in the factory's `setup`
-    // hook, where a rejection rolls the whole creation back — no
-    // half-composed session (roster-verification §2.2). The same setup
-    // registers the agent-scoped game runtime (`saoleiGame`), the
-    // registration point moved here from the removed saolei-loop factory
-    // (specs/059-agent-v2-team-mode/research.md R6).
-    const authoring = this.ctx.get("presetAuthoring") as PresetAuthoringService;
-    const presetId = options.preset.split("/").pop() ?? "";
-    const composed = await authoring.compose(presetId);
-    let handle: AgentHandle;
+
+    const streams = new Set<TurnStream>();
+    const broadcast = (event: ChatEvent): void => {
+      for (const stream of [...streams]) {
+        try {
+          stream.write(event);
+        } catch (err) {
+          // A disconnected peer must not take the orchestration down: drop
+          // the stream, keep the team running (contract §3.3).
+          streams.delete(stream);
+          info("team stream write failed (detached)", {
+            session,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    };
+    const history = new TeamHistory(session, broadcast);
+    const orchestrator = this.createOrchestrator();
     try {
-      handle = await this.ctx.agents.create({
-        sessionId: session as SessionId,
-        meta: { cwd: process.cwd(), agentPreset: composed.agentPreset },
-        agentOptions: { provider: PROVIDER, model },
-        setup: async (agentCtx) => {
-          await composed.setup(agentCtx);
-          createAgentGameRuntime(agentCtx.agent as Agent, this.ctx.desktopBridge);
-        },
+      await orchestrator.materialize({
+        session,
+        template: parsedSession.template,
+        goal: TEAM_GOAL,
+        player: { preset: this.presetId(player.preset), model: playerModel },
+        planner: { preset: this.presetId(planner.preset), model: plannerModel },
       });
     } catch (err) {
-      error("agent materialization failed", {
+      // The orchestrator rolled every created member back; no entry and no
+      // history survive, so the caller can retry (no half-materialized team).
+      error("team materialization failed", {
         session,
         error: err instanceof Error ? err.message : String(err),
       });
+      await orchestrator.dispose().catch(() => undefined);
       throw err;
     }
-    const history = new SessionHistory();
-    const collector = new TurnCollector(this.ctx, handle.agent, session, history);
-    const entry: SessionEntry = {
+
+    const playerHandle = orchestrator.member("player");
+    const plannerHandle = orchestrator.member("planner");
+    if (playerHandle === undefined || plannerHandle === undefined) {
+      await orchestrator.dispose().catch(() => undefined);
+      throw new Error("team materialization invariant violated: members are missing");
+    }
+    const members: Record<MemberRole, MemberRuntime> = {
+      player: this.createMemberRuntime(orchestrator, playerHandle, "player", player.preset, playerModel, session, history, broadcast),
+      planner: this.createMemberRuntime(orchestrator, plannerHandle, "planner", planner.preset, plannerModel, session, history, broadcast),
+    };
+    const entry: TeamEntry = {
       sessionName: session,
-      agent: handle.agent,
-      handle,
-      collector,
+      template: parsedSession.template,
+      orchestrator,
       history,
-      queue: [],
-      config: { preset: options.preset, model },
+      members,
+      streams,
       createTime,
       updateTime,
-      busy: false,
+      quiescenceWatch: null,
       disposed: false,
     };
-    this.sessions.set(session, entry);
-    info("agent session materialized", {
+    this.teams.set(session, entry);
+    info("team materialized", {
       session,
-      provider: PROVIDER,
-      model,
-      preset: composed.agentPreset,
+      template: parsedSession.template,
+      members: options.members.map((member) => `${member.role}:${member.preset}`).join(","),
+      playerModel,
+      plannerModel,
       replaced: existing !== undefined,
     });
-    return toAgentView(entry);
+    return toTeamView(entry);
   }
 
   /**
-   * Shutdown path only (the Dispose RPC face is gone —
-   * specs/051-agent-v2-dsh-migration/spec.md FR-007): dispose
-   * every session entry, then the composition's root fiber — the graceful
-   * order (bootstrap: stop server → dispose agents → dispose fiber → mongo →
-   * flush OTel).
+   * One member's runtime: the orchestrator-owned handle plus the
+   * session-lifetime collector feeding the shared history projections and
+   * the active stream set.
+   */
+  private createMemberRuntime(
+    orchestrator: TeamOrchestrator,
+    handle: AgentHandle,
+    role: MemberRole,
+    preset: string,
+    model: string,
+    session: string,
+    history: TeamHistory,
+    broadcast: (event: ChatEvent) => void,
+  ): MemberRuntime {
+    // The orchestrator owns creation and teardown; this guard documents the
+    // ownership invariant (the handle must belong to this orchestrator).
+    if (orchestrator.member(role) !== handle) {
+      throw new Error(`team materialization invariant violated: ${role} handle mismatch`);
+    }
+    const collector = new MemberCollector(
+      this.ctx,
+      handle.agent as Agent,
+      role,
+      session,
+      history,
+      broadcast,
+    );
+    return { role, preset, model, handle, collector };
+  }
+
+  /**
+   * Shutdown path only: end every active stream, dispose every team entry,
+   * then the composition's root fiber — the graceful order (bootstrap: stop
+   * server → dispose teams → dispose fiber → mongo → flush OTel).
    */
   async shutdown(): Promise<void> {
-    const entries = [...this.sessions.values()];
-    this.sessions.clear();
-    for (const entry of entries) {
-      this.teardownEntry(entry);
-    }
-    const results = await Promise.allSettled(
-      entries.map((entry) => entry.handle.dispose()),
-    );
+    const entries = [...this.teams.values()];
+    this.teams.clear();
+    const results = await Promise.allSettled(entries.map((entry) => this.teardownEntry(entry)));
     await this.ctx.fiber.dispose();
     const failure = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",
@@ -370,189 +493,347 @@ export class AgentSessions {
     }
   }
 
-  private requireEntry(
-    session: string,
-    code: AgentSessionErrorCode,
-  ): SessionEntry {
+  /** The live entry for a session, or undefined while unmaterialized. */
+  private liveEntry(session: string): TeamEntry | undefined {
+    const entry = this.teams.get(session);
+    if (entry === undefined || entry.disposed) {
+      return undefined;
+    }
+    return entry;
+  }
+
+  private requireEntry(session: string, code: TeamSessionErrorCode): TeamEntry {
     const entry = this.liveEntry(session);
     if (entry === undefined) {
-      throw new AgentSessionError(
+      throw new TeamSessionError(
         code,
-        `agent not materialized for session ${session}; send UpdateAgent first`,
+        `team not materialized for session ${session}; send UpdateTeam first`,
       );
     }
     return entry;
   }
 
   /**
-   * The live entry for a session, or undefined while unmaterialized. A
-   * retained record whose agent left the dsh registry (loop-level reload) is
-   * stale: it is dropped here so every face answers uniformly as
-   * unmaterialized.
+   * Refresh teardown: settle the in-flight member turn as ABORTED (the
+   * orchestrator's dispose cancellation converges to idle, and the collector
+   * maps it to the terminal frame), release both members through the
+   * orchestrator (its rollback/ownership contract), then end every active
+   * stream — the old lifecycle's subscriptions die with it.
    */
-  private liveEntry(session: string): SessionEntry | undefined {
-    const entry = this.sessions.get(session);
-    if (entry === undefined) {
-      return undefined;
-    }
-    if (this.ctx.agents.get(entry.agent.id) !== entry.agent) {
-      this.sessions.delete(session);
-      return undefined;
-    }
-    return entry;
-  }
-
-  /**
-   * Deliver one terminal `turn_end{outcome}` frame to every stream the entry
-   * still holds — the queued messages and (when one is running) the in-flight
-   * turn — and close each after its final frame, then clear the queue. The
-   * collector settles through {@link TurnCollector.abort} before the caller
-   * stops the turn at its source, so the driver's idle convergence cannot
-   * re-settle the slot as COMPLETED. Shared skeleton of the two teardown
-   * shapes: the dispose path (teardownEntry, agent stop owned by the
-   * caller's handle.dispose) and the user cancel path (cancelEntry, agent
-   * stopped here via Agent.cancel). Returns whether a turn was in flight.
-   */
-  private drainEntry(entry: SessionEntry, outcome: TurnOutcome): boolean {
-    for (const message of entry.queue) {
-      message.stream.write(turnEndEvent(entry.sessionName, message.turnId, outcome, undefined));
-      message.stream.end();
-    }
-    entry.queue.length = 0;
-
-    const inFlight = entry.collector.abort(outcome);
-    if (inFlight !== undefined) {
-      inFlight.stream.write(turnEndEvent(entry.sessionName, inFlight.turnId, outcome, undefined));
-      inFlight.stream.end();
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Dispose path only (the Dispose RPC face is gone —
-   * specs/051-agent-v2-dsh-migration/spec.md FR-007): mark the entry
-   * disposed and settle every held stream with turn_end{ABORTED}. The agent
-   * teardown itself belongs to the caller (materialize replaces, shutdown
-   * releases).
-   */
-  private teardownEntry(entry: SessionEntry): void {
+  private async teardownEntry(entry: TeamEntry): Promise<void> {
     entry.disposed = true;
-    this.drainEntry(entry, { status: "ABORTED" });
-    entry.collector.dispose();
+    const active = entry.orchestrator.snapshot().active;
+    if (active !== null) {
+      entry.members[active].collector.markOutcome({ status: "ABORTED" });
+    }
+    await entry.orchestrator.dispose();
+    entry.members.player.collector.dispose();
+    entry.members.planner.collector.dispose();
+    this.endStreams(entry);
   }
 
-  /**
-   * User cancel (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md
-   * §3): every held stream learns turn_end{CANCELED}, the queue lands
-   * without triggering a turn, and the driver propagates cancellation to the
-   * LLM stream and in-flight tools (the saolei-loop driver aborts the active
-   * turn, settling in-flight desktop operations through its existing abort
-   * semantics). Unlike teardown the entry stays live — runTurn drains the
-   * (now empty) queue and resets busy, so the session accepts a new Send
-   * immediately.
-   */
-  private cancelEntry(entry: SessionEntry): void {
-    // Propagation only concerns an in-flight turn — with none, a dsh cancel
-    // would be an inbox-clearing no-op touching a settled agent for nothing.
-    // The collector already settled inside drainEntry, so the driver's
-    // cancellation converging to idle cannot re-settle the slot COMPLETED.
-    if (this.drainEntry(entry, { status: "CANCELED" })) {
-      entry.agent.cancel({ kind: "user" });
-    }
-  }
-
-  private async enqueue(entry: SessionEntry, text: string, stream: TurnStream): Promise<void> {
-    const session = entry.sessionName;
-    entry.history.appendUser(text);
-    const message: QueuedMessage = { text, stream, turnId: mintTurnId() };
-    if (entry.busy) {
-      entry.queue.push(message);
-      message.stream.write(queuedEvent(session, message.turnId, entry.queue.length));
-      return;
-    }
-    entry.busy = true;
-    await this.runTurn(entry, session, message);
-  }
-
-  /**
-   * TurnRunner: run one turn to completion, then auto-run the queue head
-   * (specs/049-agent-v2-dsh-init/spec.md FR-012). Serializes turns within
-   * the session; distinct sessions run on
-   * their own entries and never block each other.
-   */
-  private async runTurn(entry: SessionEntry, session: string, message: QueuedMessage): Promise<void> {
-    const { collector } = entry;
-    if (entry.disposed) {
-      // teardown raced ahead of the turn start: the queue is already dropped
-      // and the caller's stream gets the ABORTED frame here.
-      message.stream.write(turnEndEvent(session, message.turnId, { status: "ABORTED" }, undefined));
-      message.stream.end();
-      return;
-    }
-    collector.begin(message.turnId, message.stream);
-    // Contract §3-2: turn_start precedes every block_*/delta frame of the
-    // turn (both the direct-start and the queued-turn-takes-over paths run
-    // through here). specs/049-agent-v2-dsh-init/contracts/conversation-api.md
-    message.stream.write(turnStartEvent(session, message.turnId));
-    try {
-      entry.agent.followup(
-        createUserMessage({
-          content: [{ type: "text", text: message.text }],
-          source: { kind: "user" },
-        }),
-      );
-      const settlement: TurnSettlement = await collector.awaitSettled();
-      if (settlement.status === "ABORTED") {
-        // Teardown delivered the turn_end{ABORTED} frame and the entry is
-        // disposed — neither the queue drain nor the busy reset below
-        // applies. The finally below still closes this stream.
+  /** Attach one stream to the session's active set; returns the detach. */
+  private attach(entry: TeamEntry, stream: TurnStream): () => void {
+    entry.streams.add(stream);
+    let detached = false;
+    return () => {
+      if (detached) {
         return;
       }
-      if (settlement.status !== "CANCELED") {
-        message.stream.write(turnEndEvent(session, message.turnId, settlement, settlement.usage));
-      }
-      // CANCELED: the cancel call delivered the turn_end{CANCELED} frame
-      // itself. Unlike ABORTED the entry stays live, so the runner falls
-      // through to the (cancel-cleared) queue drain and the busy reset —
-      // the session accepts a new Send with no cooldown
-      // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §3).
-    } catch (err) {
-      // followup rejection (e.g. disposed agent): the request-level failure
-      // becomes a turn_end{ERROR} frame — the process stays alive.
-      error("agent turn failed", {
-        session,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      message.stream.write(
-        turnEndEvent(session, message.turnId, {
-          status: "ERROR",
-          error: { code: "TURN_FAILED", message: err instanceof Error ? err.message : String(err) },
-        }, undefined),
-      );
-    } finally {
-      // Every turn path converges here for the EOF: the terminal frame may
-      // have been written above or delivered by the teardown (ABORTED), but
-      // this is the only close that runs on every path. grpc-js
-      // Writable.end() is idempotent, so overlapping with the teardown's own
-      // end() is harmless (the server.ts end() adapter keeps its try/catch).
-      message.stream.end();
-    }
+      detached = true;
+      entry.streams.delete(stream);
+    };
+  }
 
-    const next = entry.queue.shift();
-    if (next !== undefined) {
-      await this.runTurn(entry, session, next);
+  /** End every active stream at a team static point (natural / cancel). */
+  private endStreams(entry: TeamEntry): void {
+    const streams = [...entry.streams];
+    entry.streams.clear();
+    for (const stream of streams) {
+      try {
+        stream.end();
+      } catch (err) {
+        info("team stream end failed (already closed)", {
+          session: entry.sessionName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  /**
+   * Terminate every active stream at an orchestration failure: the failure
+   * is surfaced as a stream error (the gRPC adapter maps it to INTERNAL —
+   * contracts/team-api.md §6) and as a repo-logger line, never as a clean
+   * EOF that would disguise the stall.
+   */
+  private failStreams(entry: TeamEntry, failure: OrchestratorFailure): void {
+    error("team stream closed after an orchestration failure", {
+      session: entry.sessionName,
+      phase: failure.phase,
+      member: failure.member ?? "",
+      error: failure.message,
+    });
+    const streams = [...entry.streams];
+    entry.streams.clear();
+    for (const stream of streams) {
+      try {
+        if (stream.fail !== undefined) {
+          stream.fail({ code: "INTERNAL", message: failure.message });
+        } else {
+          stream.end();
+        }
+      } catch (err) {
+        info("team stream error close failed (already closed)", {
+          session: entry.sessionName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  /**
+   * Arm the per-entry quiescence watcher: resolve the Send-established team
+   * stream lifecycle at the orchestrator's static point (no in-flight turn
+   * and no pending digestible input — contracts/team-api.md §3.1). New
+   * activity started while the watcher settles re-arms through the
+   * snapshot re-check; a Send always arms a watcher, so an already-ended
+   * epoch cannot swallow a later stream.
+   *
+   * A paused orchestrator has no scheduled pump — `whenQuiescent()` resolves
+   * immediately — so waiting for active/queued alone would spin the
+   * microtask queue. The pause also carries the terminal state: a failed
+   * step (surfaced as a stream error) or the Cancel static point.
+   */
+  private watchQuiescence(entry: TeamEntry): void {
+    if (entry.quiescenceWatch !== null || entry.disposed) {
       return;
     }
-    entry.busy = false;
+    const watch = (async () => {
+      for (;;) {
+        await entry.orchestrator.whenQuiescent();
+        const snapshot = entry.orchestrator.snapshot();
+        if (snapshot.paused || (snapshot.active === null && snapshot.queued === 0)) {
+          break;
+        }
+      }
+      const snapshot = entry.orchestrator.snapshot();
+      entry.quiescenceWatch = null;
+      if (entry.disposed) {
+        return;
+      }
+      if (snapshot.failed && snapshot.lastError !== null) {
+        this.failStreams(entry, snapshot.lastError);
+      } else {
+        this.endStreams(entry);
+      }
+    })();
+    entry.quiescenceWatch = watch;
+  }
+
+  /** The production orchestrator, composed over the ctx plus injected seams. */
+  private createOrchestrator(): TeamOrchestrator {
+    const loadPlannerMemory = this.loadPlannerMemorySeam();
+    return new TeamOrchestrator(this.ctx, {
+      compose: this.composeSeam(),
+      logger: this.deps.logger ?? {
+        error: (message, context) =>
+          error(message, {
+            session: context.session,
+            phase: context.phase,
+            member: context.member ?? "",
+            error: context.error,
+          }),
+      },
+      ...(this.deps.agents === undefined ? {} : { agents: this.deps.agents }),
+      ...(this.deps.team === undefined ? {} : { team: this.deps.team }),
+      ...(this.deps.mountPlayerRuntime === undefined
+        ? {}
+        : { mountPlayerRuntime: this.deps.mountPlayerRuntime }),
+      ...(loadPlannerMemory === undefined ? {} : { loadPlannerMemory }),
+      ...(this.deps.provider === undefined ? {} : { provider: this.deps.provider }),
+    });
+  }
+
+  /** Preset compose seam: host injection first, else `ctx.presetAuthoring`. */
+  private composeSeam(): ComposePreset {
+    if (this.deps.authoring !== undefined) {
+      return (preset) => this.deps.authoring!.compose(preset);
+    }
+    const authoring = this.ctx.get("presetAuthoring") as
+      | Pick<PresetAuthoringService, "compose" | "get">
+      | undefined;
+    if (authoring === undefined) {
+      throw new Error("team sessions: ctx.presetAuthoring is not composed");
+    }
+    return (preset) => authoring.compose(preset);
+  }
+
+  /** Planner memory prefetch: host injection first, else `ctx.plannerMemory`. */
+  private loadPlannerMemorySeam(): LoadPlannerMemory | undefined {
+    if (this.deps.loadPlannerMemory !== undefined) {
+      return this.deps.loadPlannerMemory;
+    }
+    const memory = this.ctx.get("plannerMemory") as
+      | { load?: LoadPlannerMemory }
+      | undefined;
+    return memory?.load;
+  }
+
+  /**
+   * Layer 1 (scene-agnostic) structure check: members non-empty, every
+   * member role non-empty, preset a valid preset resource name under the
+   * session template, model free to be empty (deployment default).
+   */
+  private validateMemberStructure(
+    members: readonly TeamMemberOptions[],
+    template: string,
+  ): void {
+    if (members.length === 0) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        "team.members must not be empty",
+      );
+    }
+    for (const member of members) {
+      if (member.role === "") {
+        throw new TeamSessionError(
+          "INVALID_ARGUMENT",
+          "every team member must carry a non-empty role",
+        );
+      }
+      const parsed = parsePresetResource(member.preset);
+      if (parsed === undefined) {
+        throw new TeamSessionError(
+          "INVALID_ARGUMENT",
+          `member "${member.role}" preset must be a preset resource name ("templates/{template}/presets/{preset}"), got "${member.preset}"`,
+        );
+      }
+      if (parsed.template !== template) {
+        throw new TeamSessionError(
+          "INVALID_ARGUMENT",
+          `member "${member.role}" preset template ${parsed.template} does not match session template ${template}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Layer 2 (saolei scene): exactly two members whose roles are exactly
+   * {"player", "planner"} — the scene's fixed roster, enforced here because
+   * the proto is a scene-agnostic primitive.
+   */
+  private validateSaoleiMembers(members: readonly TeamMemberOptions[]): void {
+    if (members.length !== 2) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `saolei team materialization requires exactly 2 members (player and planner), got ${members.length}`,
+      );
+    }
+    const roles = members.map((member) => member.role);
+    if (!roles.includes("player") || !roles.includes("planner")) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `saolei team member roles must be exactly {"player", "planner"}, got [${roles.join(", ")}]`,
+      );
+    }
+  }
+
+  /** The scene member entry for a validated role. */
+  private memberFor(members: readonly TeamMemberOptions[], role: MemberRole): TeamMemberOptions {
+    const found = members.find((member) => member.role === role);
+    if (found === undefined) {
+      // validateSaoleiMembers already guarantees presence; this is a
+      // programming-error backstop.
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `saolei team member "${role}" is missing`,
+      );
+    }
+    return found;
+  }
+
+  /** The preset id segment of a validated preset resource name. */
+  private presetId(presetName: string): string {
+    const parsed = parsePresetResource(presetName);
+    if (parsed === undefined) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `preset must be a preset resource name ("templates/{template}/presets/{preset}"), got "${presetName}"`,
+      );
+    }
+    return parsed.preset;
+  }
+
+  /**
+   * Validate one member preset: it exists and its scene role equals the
+   * member role (string equality — both are scene vocabulary).
+   */
+  private async validateMemberPreset(presetName: string, role: MemberRole): Promise<void> {
+    const authoring =
+      this.deps.authoring ??
+      (this.ctx.get("presetAuthoring") as Pick<PresetAuthoringService, "get"> | undefined);
+    if (authoring === undefined) {
+      throw new Error("team sessions: ctx.presetAuthoring is not composed");
+    }
+    const presetId = this.presetId(presetName);
+    let view: { role?: string };
+    try {
+      view = await authoring.get(presetId);
+    } catch {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `unknown preset "${presetId}"; create a preset in the ${role} pool first`,
+      );
+    }
+    if (view.role !== role) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `scene check failed: preset "${presetId}" carries role "${view.role ?? ""}" but member "${role}" requires the matching role`,
+      );
+    }
+  }
+
+  /** Validate one effective model against the deployment catalog (shared with ListModels). */
+  private async validateModel(model: string): Promise<void> {
+    const catalog =
+      this.deps.listModels ??
+      ((provider: string) => this.ctx.llm.listModels(provider));
+    const models = await catalog(this.deps.provider ?? PROVIDER);
+    if (!models.some((entry) => entry.id === model)) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `unknown model "${model}"; see ListModels for the available catalog`,
+      );
+    }
+  }
+
+  /** Map an orchestration state error onto the request-level error surface. */
+  private mapOrchestratorError(err: unknown): unknown {
+    if (err instanceof OrchestratorStateError) {
+      return new TeamSessionError("FAILED_PRECONDITION", err.message);
+    }
+    return err;
   }
 }
 
-function toAgentView(entry: SessionEntry): AgentView {
+function toMemberView(entry: TeamEntry, role: MemberRole): TeamMemberView {
+  const member = entry.members[role];
   return {
-    name: `${entry.sessionName}/agent`,
-    preset: entry.config.preset,
-    model: entry.config.model,
+    name: `${entry.sessionName}/team/members/${role}`,
+    role,
+    // The configured full resource name; mirrored from the materialization
+    // request so the view is stable even if the store record changes.
+    preset: member.preset,
+    model: member.model,
+    systemPrompt: "",
+  };
+}
+
+function toTeamView(entry: TeamEntry): TeamView {
+  return {
+    name: `${entry.sessionName}/team`,
+    members: [toMemberView(entry, "player"), toMemberView(entry, "planner")],
     createTime: entry.createTime,
     updateTime: entry.updateTime,
   };

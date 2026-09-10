@@ -73,6 +73,19 @@ var saoleiBoardLossPNG []byte
 //go:embed testdata/saolei_9.png
 var saoleiBoardOverFlagPNG []byte
 
+// saoleiBoardCompatWinPNG is a real Minesweeper screenshot (9×9, almost
+// every cell INITIAL plus 6 flags — saolei_8.png) recognized as an
+// in-progress game. The team-mode terminal-win flow seeds a game with this
+// board and then answers the first operate dispatch with saoleiBoardWinPNG:
+// the two boards are cell-compatible (a same-game successor — no revealed
+// cell regresses, checkCompatible in
+// projects/game/pkg/saolei-board/src/core/validate.ts), so the operate
+// result carries `game status: won` and the GameRuntime records the terminal
+// game event that triggers the planner review.
+//
+//go:embed testdata/saolei_8.png
+var saoleiBoardCompatWinPNG []byte
+
 // saolei cell geometry constants. The fake-LLM fixture drives ONE
 // saolei_operate BATCH whose ops are click{3,4} and click{5,6}
 // (spec 039-planner-memory-calibration FR-001 — the merged dual-form tool;

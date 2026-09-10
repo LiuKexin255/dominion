@@ -5,6 +5,23 @@ game system end-to-end (gateway → proxy → agent-v2, plus the session and
 memory faces) via the HTTP + WebSocket surface. The plan is orchestrated by
 `guitar` through `system_test.yaml`.
 
+The agent_v2 session face is the **team model**
+(`specs/059-agent-v2-team-mode/contracts/team-api.md`): each session carries a
+team singleton with a player and a planner member, the Send stream carries
+member-labelled frames plus the merged `team_message` sequence, and the
+orchestration drives the members in alternation (planner opening → player
+game → planner review → structurally driven next game) with no synthesized
+drive messages.
+
+The team proto is a **scene-agnostic primitive**: `UpdateTeam` takes a
+`members` list (one `{role, preset, model?}` per member) and the role/sender
+labels are plain strings (reserved `"user"` for user input; scene vocabulary
+`"player"`/`"planner"` for saolei members) — no enums on the wire. The saolei
+scene host enforces the scene in two validation layers (structure, then
+roster size + role set + preset existence/role equality + model catalog); the
+configuration-face preset role is a string with the same vocabulary and the
+list role filter validates it.
+
 ## 1. Deployment under test
 
 The suites use two test deployments with the same service list —
@@ -49,8 +66,8 @@ plan pays two deploys instead of seven:
 
 | suite | deploy | binaries | focus |
 |---|---|---|---|
-| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the conversation face (/api/v2 NDJSON + preset) → the game face (won topology) → the desktop face (flow stream), cases serial in module order |
-| game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
+| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the team conversation face (team stream, member views, queue/cancel/refresh windows, preset pools, materialization) → the team game face (won chain on the executor, terminal win/loss reviews, desktop-absent, multi-session isolation) → the desktop face (flow stream), cases serial in module order |
+| game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the team mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
 
 `guitar run` executes suites and cases serially in YAML order and stops on
 the first failure — the main suite runs first so a trunk regression surfaces
@@ -109,6 +126,24 @@ resolves to the final summary text. Every `agent_v2*` entry carries
 `responses_only: true` so the chat-completions no-match fallback pool never
 observes it; the expected reasoning/text pieces are pinned as the `agentV2*`
 constants in `agent_v2_helpers_test.go`.
+
+The team fixtures `team_planner.yaml` and `team_player.yaml` serve the
+two-role chain (specs/059-agent-v2-team-mode/tasks.md T011/T018): every entry
+anchors on the member persona's identity opening (`system_keywords`), the
+planner side emits the opening strategy / game-end review / queued-message
+digest, and the player side opens the game when a strategy broadcast arrives,
+optionally opens the next game, or stops. `team-planner-wait` is the
+controllable long-running planner turn (4s inter-chunk delay) the
+queue/cancel/refresh cases pivot on; queued user messages must carry one of
+`暂停/稍等/等待/继续` and the first user message one of the opening anchors
+(see the per-file comments). The expected texts are pinned as the `team*`
+constants in `agent_v2_helpers_test.go`.
+
+The Responses endpoint derives each tool-call's wire identity from the request
+input (`responsesWireIDs` in `responses.go`): deterministic for the same
+request, distinct across a chain's steps. A constant call id would make two
+tool calls in one member log indistinguishable to the team broadcast's
+callId-anchored reference model (real providers mint unique call ids).
 
 The chat-completions fixtures (`sample_*.yaml`/`sample_*.json`) match
 `POST /v1/chat/completions` requests; they remain loaded as fallback
@@ -169,7 +204,7 @@ guitar run projects/game/testplan/system_test.yaml --timeout=15m
    or similar). `fake-llm` itself ignores the model field; only the
    agent-side routing cares.
 3. **Update the large-test assertions.** The expected reasoning/text pieces
-   consumed by the suites are pinned as the `agentV2*` constants in
+   consumed by the suites are pinned as the `agentV2*` / `team*` constants in
    `agent_v2_helpers_test.go`. Update those constants whenever the testdata
    changes, and adjust any `strings.Contains` assertions that depend on them.
 4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`

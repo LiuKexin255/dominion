@@ -67,7 +67,7 @@
 ### Tasks
 
 - [X] T005 演进 `projects/game/agent_v2/cordis.yml` 组合清单（三面原子：cordis.yml ⟷ `projects/game/agent_v2/package.json` ⟷ tar 物化）：新增 `dsh-agent-loop`（Config.agents[] 留空）、`dsh-agent-presets`（roots = 1 个可写 user root + player/planner 两个模板 system root，不设 default）、`@dominion/dsh-team` 行、`@dominion/dsh-memory` host 行、`@dominion/dsh-preset-authoring` 行；`@dominion/dsh-saolei` 行从 host 层移除（改经 player 模板 preset 挂载，T004）；`projects/game/agent_v2/BUILD.bazel` 按 `runtime_deps`（workspace 包）/`npm_deps`（registry 包）通道补依赖（对照 `experimental/dsh/demo/agent/BUILD.bazel`）
-- [X] T006 演进 `common/js/dsh-plugins/preset-authoring/src/`（Store seam 增加 Mongo 实现：`game_agent_v2.presets`、文档含 role/persona/时间戳，索引与凭据解析迁移自 `projects/game/agent_v2/src/presets.ts`；`Config.storage` 切换）+ `projects/game/agent_v2.proto`（`Preset` 增加 `role`（PLAYER/PLANNER，create 必填不可变）、`CreatePresetRequest.role`、`ListPresetsRequest.role` 过滤）+ `projects/game/agent_v2/src/server.ts` presets RPC 面切换到 authoring 插件（`ctx.presetAuthoring`，废弃直接读 `presets.ts` PresetRecord；`projects/game/agent_v2/src/presets.ts` 相应收缩为 Mongo 连接/凭据供 authoring Store 复用）
+- [X] T006 演进 `common/js/dsh-plugins/preset-authoring/src/`（Store seam 增加 Mongo 实现：`game_agent_v2.presets`、文档含 role/persona/时间戳，索引与凭据解析迁移自 `projects/game/agent_v2/src/presets.ts`；`Config.storage` 切换）+ `projects/game/agent_v2.proto`（`Preset` 增加 `role`（string——场景词汇，saolei 下 "player"/"planner"；create 必填不可变）、`CreatePresetRequest.role`、`ListPresetsRequest.role` 过滤（空=不过滤））+ `projects/game/agent_v2/src/server.ts` presets RPC 面切换到 authoring 插件（`ctx.presetAuthoring`，废弃直接读 `presets.ts` PresetRecord；`projects/game/agent_v2/src/presets.ts` 相应收缩为 Mongo 连接/凭据供 authoring Store 复用）
 - [X] T007 重构 `common/js/dsh-plugins/saolei-loop/src/` 为 team loop 骨架：删除 `driver.ts`（自研 turn/step 状态机）与 `ctx.agents.setFactory` 工厂认领及 `AgentOptions.persona` declaration-merge（`src/index.ts:67-71`、`:295`、`:412-416`）；物化编排改为 `ctx.agents.create`（官方 factory）+ `ctx.presetAuthoring.compose()` 返回的 setup 内 mount + `GameRuntime` 以 agent-scoped `saoleiGame` 注册（注册点从 factory 迁至物化 setup，`src/game/runtime.ts` 归属不变）；`projects/game/agent_v2/src/session.ts` 物化调用点同步（现有单 agent UpdateAgent API 形态保持，内部换新路径）
 - [X] T008 回归收口：`projects/game/fake-llm/service/testdata/agent_v2.yaml`、`agent_v2_saolei.yaml` 夹具适配 preset 行 persona（system_keywords 锚定模板 persona 身份开头锚行——T004 建立、T021 完善时保持不变的跨 phase 稳定前缀）；执行 `guitar run projects/game/testplan/system_test.yaml`（其 suite 1 引用 `deploy_agent_v2.yaml` 拓扑）确认既有单 agent 用例经官方 loop + roster 路径全量通过
 
@@ -77,9 +77,9 @@
 
 ## Phase 3: User Story 2 - 在 web 上与 team 协作完成多局扫雷游戏 (Priority: P1) 🎯 MVP
 
-**Goal**: team 物化（双成员）、群聊消息流、交替激活编排（自动开局/续驱/排队优先/取消暂停）、team API 与实时流、web team 化最小面（配置面板 + 归并流渲染）。
+**Goal**: team 物化（双成员）、群聊消息流、交替激活编排（用户首驱/续驱/排队优先/取消暂停）、team API 与实时流、web team 化最小面（配置面板 + 归并流渲染）。
 
-**Independent Test**: 部署后物化 team（fake LLM + fake desktop），断言：物化后自动出现 planner 开局策略 → player 被驱动游戏至终局 → 自动复盘 → 结构性续驱第二局；全程无用户触发消息；排队/取消语义正确（quickstart V3/V4/V6）。
+**Independent Test**: 部署后物化 team（fake LLM + fake desktop），断言：物化后静止等待（无成员被驱动）；用户首条消息触发 planner 开局策略 → player 被驱动游戏至终局 → 自动复盘 → 结构性续驱第二局；除首条消息外无用户触发消息；排队/取消语义正确（quickstart V3/V4/V6）。
 
 ### 文档清单（本 phase 必读）
 
@@ -102,18 +102,18 @@
 
 ### Tasks
 
-- [ ] T009 [P] [US2] 实现 `common/js/dsh-plugins/team/src/` 核心一：`ctx.team.register({goal, members})`（幂等；经成员 `agent.ctx` 注册 team section——order 1–49、内容=goal+名册（每成员 `[role] summary` 第三人称一句话）+ 广播格式约定、不含第一人称身份）；成员 `session/event` 订阅收集（`assistant/message` 发言；`tool/call`+`tool/result` 按 callId 配对）；`MessageSourceMap` merge 扩展 `team-broadcast`（`form:'relay'`、role/senderSessionId/messageId/context）；dispose 时 scope 自动清理（含单测）
-- [ ] T010 [P] [US2] 实现 `common/js/dsh-plugins/team/src/` 核心二：**引用投递**（产出事件 → messageId/callId 锚点按到达序追加进除发送者外各成员待消费列表；不复制内容；无全局消息副本队列，中转条目在进入全部接收方列表后即移除）；`drain(member)`（team 内部按锚点经 session 读取面取实际内容 → 渲染广播格式：`[sender] 摘要` 头行 + 标签对包裹的**原样正文**——发言原文、工具 args 与 result 全文，不截断不聚合（FR-008）→ 返回注入就绪 UserMessage；索引不对外暴露）；派生重建（待消费 = sender log 产出 − receiver 消费锚点集合；exactly-once、丢失自愈）（含单测）
-- [ ] T011 [P] [US2] 新增 fake-llm team 双角色夹具 `projects/game/fake-llm/service/testdata/`：`team_planner.yaml`（system_keywords 识别 planner persona；产出开局策略与复盘正文；含 memory 工具调用步骤——本 phase 可不含，US3 启用）、`team_player.yaml`（识别 player persona；依脚本调用 saolei 工具至终局；接收策略广播后续驱）
-- [ ] T012 [US2] 演进 `projects/game/agent_v2.proto` 会话面为 team 模型（对照 `specs/059-agent-v2-team-mode/contracts/team-api.md` 全量一次到位）：`Team`（单例资源 + members/desktop_connected）、`TeamMember`（含 output-only `system_prompt` 字段定义）、`UpdateTeam`/`GetTeam`/`GetTeamMember`/`ListTeamMessages`/`ListMemberMessages`、`Send` 不变、`Cancel` target 改 team、`ChatEvent` 增加 `member` 字段、移除 `Agent`/`UpdateAgent`/`GetAgent`/`ListAgentMessages`；更新 `projects/game/proto_test.go` 与生成类型
-- [ ] T013 [US2] 实现 `common/js/dsh-plugins/saolei-loop/src/` 编排状态机（消费 `ctx.team`）：交替激活（任一时刻至多一成员被驱动）；物化后自动驱动 planner 产出开局策略；planner 回合结束→排队消息先由 planner 消化（消化优先于切换）→结构性续驱 player；player 侧 gameEnded（GameRuntime 游戏事件流）→驱动 planner 复盘；取消=终止在途回合+暂停续驱；用户消息经注入 seam 由当前激活成员处理（planner memory load 以 DI seam 注入，US3 接真实实现）（含单测：状态机转移/排队优先/取消暂停/恢复）
-- [ ] T014 [US2] 重构 `projects/game/agent_v2/src/session.ts` 为 team 注册表：per-session team 物化/刷新（fail-fast 校验 preset 存在且 role 匹配、model 在目录；**物化任一步失败——含成员 setup 抛错（planner memory 预取 fail-loud，T013 seam / T021 真实实现）——清理已建成员并整体回滚：不残留半物化 team（GetTeam NOT_FOUND）、可重试**；刷新=终止在途回合+排队作废+清空记忆+重建；create_time 保留）、team 级 FIFO 排队、cancel 编排、与 saolei-loop 编排服务的接缝（含单测：物化中途失败整体回滚无半物化）
-- [ ] T015 [US2] 演进 `projects/game/agent_v2/src/history.ts`：双成员事件收集（`session/event`/`agent/status` 按成员标注）、ChatEvent `member` 归并、团队归并序列与成员视角历史的内存投影（List 面数据源，US4 启用 RPC）
-- [ ] T016 [US2] 重构 `projects/game/agent_v2/src/server.ts` RPC 面：`UpdateTeam`/`GetTeam`/`GetTeamMember`/`Send`（member 标注流）/`Cancel`（team 语义）+ 错误映射（`INVALID_ARGUMENT`/`FAILED_PRECONDITION`/`NOT_FOUND`，cause 链）；`projects/game/gateway/cmd/main.go` 路由同步（`/api/v2` team 面，经 proxy；移除旧 agent 面注册）
-- [ ] T017 [P] [US2] web team 化最小面 `projects/game/web/frontend/src/`：`AgentSettingsPanel.tsx` → `TeamSettingsPanel.tsx`（player/planner preset 下拉按 role 过滤 + 双 model 下拉 + Apply=UpdateTeam + 刷新语义提示）；`api/agent.ts` → team API 客户端；对话页消费 member 标注事件归并渲染（团队视图雏形：成员标签区分 player/planner）；未物化引导态对齐
-- [ ] T018 [US2] 大型测试：在 `projects/game/testplan/deploy_agent_v2.yaml` 既有计划中按模块归位新增用例（team 物化与自动开局 / 完整局至终局 / 复盘与续驱第二局 / 排队消化优先 / 取消暂停与恢复 / 刷新 team——在途回合终止+排队作废+记忆清空+重建+create_time 保留（US2 场景 7）/ desktop 断连与重连恢复——工具错误结果可见、进程存活（US2 场景 8）/ 未物化拒绝），对照 `projects/game/testplan/` 既有 Go 测试文件组织（helper 复用 `helpers_test.go`，资源名全称包装）
+- [X] T009 [P] [US2] 实现 `common/js/dsh-plugins/team/src/` 核心一：`ctx.team.register({goal, members})`（幂等；经成员 `agent.ctx` 注册 team section——order 1–49、内容=goal+名册（每成员 `[role] summary` 第三人称一句话）+ 广播格式约定、不含第一人称身份）；成员 `session/event` 订阅收集（`assistant/message` 发言；`tool/call`+`tool/result` 按 callId 配对）；`MessageSourceMap` merge 扩展 `team-broadcast`（`form:'relay'`、role/senderSessionId/messageId/context）；dispose 时 scope 自动清理（含单测）
+- [X] T010 [P] [US2] 实现 `common/js/dsh-plugins/team/src/` 核心二：**引用投递**（产出事件 → messageId/callId 锚点按到达序追加进除发送者外各成员待消费列表；不复制内容；无全局消息副本队列，中转条目在进入全部接收方列表后即移除）；`drain(member)`（team 内部按锚点经 session 读取面取实际内容 → 渲染广播格式：`[sender] 摘要` 头行 + 标签对包裹的**原样正文**——发言原文、工具 args 与 result 全文，不截断不聚合（FR-008）→ 返回注入就绪 UserMessage；索引不对外暴露）；派生重建（待消费 = sender log 产出 − receiver 消费锚点集合；exactly-once、丢失自愈）（含单测）
+- [X] T011 [P] [US2] 新增 fake-llm team 双角色夹具 `projects/game/fake-llm/service/testdata/`：`team_planner.yaml`（system_keywords 识别 planner persona；产出开局策略与复盘正文；含 memory 工具调用步骤——本 phase 可不含，US3 启用）、`team_player.yaml`（识别 player persona；依脚本调用 saolei 工具至终局；接收策略广播后续驱）
+- [X] T012 [US2] 演进 `projects/game/agent_v2.proto` 会话面为 team 模型（对照 `specs/059-agent-v2-team-mode/contracts/team-api.md` 全量一次到位；**泛化约束（2026-09-10 用户裁定）：会话面与 saolei 场景解耦——无 role 枚举、无场景特化字段**）：`Team`（单例资源；物化输入 = `members` 列表——每成员 `{role, preset, model?}`，不设 player_preset/planner_preset/player_model/planner_model 类字段；输出 members 与输入同形 + desktop_connected）、`TeamMember`（role/preset/model 与 Team.members 同形 + output-only `system_prompt`）、`UpdateTeam`/`GetTeam`/`GetTeamMember`/`ListTeamMessages`/`ListMemberMessages`、`Send` 请求面不变（流语义为 team 流，team-api.md §3.1）、`Cancel` target 改 team、`ChatEvent` 增加 `member` 字段与 team 级 `team_message` 帧（`{member, message, seq}`，与 ListTeamMessages 元素同构、seq 同源同值——team-api.md §3.2）、移除 `Agent`/`UpdateAgent`/`GetAgent`/`ListAgentMessages`；`TeamRole`/`PresetRole` 枚举不引入——`TeamMember.role`/`ChatEvent.member`/`TeamMessage.member`/`MemberViewMessage.sender`/`Preset.role`/`CreatePresetRequest.role`/`ListPresetsRequest.role` 全部 string（约定值：成员 role=场景词汇 "player"/"planner"；用户消息标注保留值 "user"；空字符串=未设置）；场景约束（members 恰 2、role 集合恰 {"player","planner"}、preset.role 与成员 role 字符串相等、model 在目录）由 agent_v2 服务端校验承载（team-api.md §2）；受影响消费方（`src/server.ts` 校验/`src/session.ts` 物化/`src/history.ts` 成员标注/web `parseMember` 与 preset 过滤值/夹具与 testplan 断言）按契约同步适配；更新 `projects/game/proto_test.go` 与生成类型
+- [X] T013 [US2] 实现 `common/js/dsh-plugins/saolei-loop/src/` 编排状态机（消费 `ctx.team`）：交替激活（任一时刻至多一成员被驱动）；物化后静止等待（初始激活 = planner，不自动驱动任何成员），用户首条消息驱动 planner 产出开局策略；一切驱动以群聊消息为输入（drain 未消费团队消息 + 排队用户消息），无合成驱动消息、无输入保持静止在当前激活成员；planner 回合结束→排队消息先由 planner 消化（消化优先于切换）→结构性续驱 player；player 侧 gameEnded（GameRuntime 游戏事件流）→驱动 planner 复盘；取消=终止在途回合+暂停续驱；用户消息经注入 seam 由当前激活成员处理（planner memory load 以 DI seam 注入，US3 接真实实现）（含单测：状态机转移/排队优先/取消暂停/恢复）
+- [X] T014 [US2] 重构 `projects/game/agent_v2/src/session.ts` 为 team 注册表：per-session team 物化/刷新（fail-fast 校验 preset 存在且 role 匹配、model 在目录；**物化任一步失败——含成员 setup 抛错（planner memory 预取 fail-loud，T013 seam / T021 真实实现）——清理已建成员并整体回滚：不残留半物化 team（GetTeam NOT_FOUND）、可重试**；刷新=终止在途回合+排队作废+清空记忆+重建；create_time 保留）、team 级 FIFO 排队、cancel 编排、与 saolei-loop 编排服务的接缝（含单测：物化中途失败整体回滚无半物化）
+- [X] T015 [US2] 演进 `projects/game/agent_v2/src/history.ts`：双成员事件收集（`session/event`/`agent/status` 按成员标注）、ChatEvent `member` 归并、团队归并序列（seq 单调分配——`team_message` 帧载荷与 ListTeamMessages 元素同源同值）与成员视角历史的内存投影（List 面数据源，US4 启用 RPC）
+- [X] T016 [US2] 重构 `projects/game/agent_v2/src/server.ts` RPC 面：`UpdateTeam`/`GetTeam`/`GetTeamMember`/`Send`（team 流：持续至 team 静止、成员事件帧 + `team_message` 帧双承载、扇出至全部活跃流且 `queued` 帧仅回执本流、断开不终止编排——team-api.md §3）/`Cancel`（team 语义）+ 错误映射（`INVALID_ARGUMENT`/`FAILED_PRECONDITION`/`NOT_FOUND`，cause 链）；`projects/game/gateway/cmd/main.go` 路由同步（`/api/v2` team 面，经 proxy；移除旧 agent 面注册）
+- [X] T017 [P] [US2] web team 化最小面 `projects/game/web/frontend/src/`：`AgentSettingsPanel.tsx` → `TeamSettingsPanel.tsx`（player/planner preset 下拉按 role 过滤 + 双 model 下拉 + Apply=UpdateTeam + 刷新语义提示）；`api/agent.ts` → team API 客户端；对话页消费 team 流（成员事件帧按 member 归并增量渲染 + `team_message` 帧 seq 锚归并——team-api.md §3.2；团队视图雏形：成员标签区分 player/planner）；未物化引导态对齐
+- [X] T018 [US2] 大型测试：在 `projects/game/testplan/deploy_agent_v2.yaml` 既有计划中按模块归位新增用例（team 物化、静止等待与用户首驱（物化后无 Send 不出现任何驱动） / 完整局至终局 / 复盘与续驱第二局 / 排队消化优先 / 取消暂停与恢复 / 刷新 team——在途回合终止+排队作废+记忆清空+重建+create_time 保留（US2 场景 7）/ desktop 断连与重连恢复——工具错误结果可见、进程存活（US2 场景 8）/ 未物化拒绝），对照 `projects/game/testplan/` 既有 Go 测试文件组织（helper 复用 `helpers_test.go`，资源名全称包装）
 
-**Checkpoint / 验证门禁**: `bazel build/test` 通过；`guitar run projects/game/testplan/deploy_agent_v2.yaml` 全量通过（含既有回归）——US2 独立可验收。
+**Checkpoint / 验证门禁**: `bazel build/test` 通过；`guitar run projects/game/testplan/system_test.yaml` 全量通过（含既有回归）——US2 独立可验收。
 
 ---
 
@@ -178,7 +178,7 @@
 - [ ] T027 [P] [US1] 清理 fake-llm v1 专属夹具 `projects/game/fake-llm/service/testdata/`（`planner.yaml`、`planner_tools.yaml` 及其余仅引用 v1 源码路径/语义的 v1 时期夹具——以 grep `projects/game/agent` 引用与 v1 复盘关键词核查为准逐一判定），保留 v2/team 夹具
 - [ ] T028 [US1] 过期引用清理：`projects/game/pkg/gameconst/const.go` 的 `TeamTarget` 更名（现为 v2 proxy 目标，名实对齐，如 `AgentV2Target`）及注释；`projects/game/fake-desktop/service/executor.go:10` 等几何公式注释自包含化（公式本体随 v1 删除，内联公式内容并标注来源语义）；全仓 grep `projects/game/agent`、`@dominion/game-agent`、`TeamService`、`PromptService` 断言零残留（specs/survey 历史文档除外）
 
-**Checkpoint / 验证门禁**: 检索零残留；`bazel build //... && bazel test //...` 通过；`guitar run projects/game/testplan/deploy_agent_v2.yaml` 全绿。
+**Checkpoint / 验证门禁**: 检索零残留；`bazel build //... && bazel test //...` 通过；`guitar run projects/game/testplan/system_test.yaml` 全绿。
 
 ---
 
@@ -256,7 +256,7 @@
 ### Tasks
 
 - [ ] T035 更新 `projects/game/agent_v2/README.md` 为 team 模型终态（三服务、team 物化/刷新语义、preset 分池、双视图、已知限制——compact 排除与 planner 上下文增长、内存态重启重物化）；核对 `projects/game/deploy.yaml` 服务清单无 v1 残留引用
-- [ ] T036 执行 quickstart V1–V7 全量验证：`guitar run projects/game/testplan/deploy_agent_v2.yaml` 完整部署→测试→清理闭环，全部用例通过（无 failed/flaky）；对照 spec SC-001–SC-005 逐条判定达成
+- [ ] T036 执行 quickstart V1–V7 全量验证：`guitar run projects/game/testplan/system_test.yaml` 完整部署→测试→清理闭环，全部用例通过（无 failed/flaky）；对照 spec SC-001–SC-005 逐条判定达成
 
 ---
 

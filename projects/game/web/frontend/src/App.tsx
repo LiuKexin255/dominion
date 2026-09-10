@@ -2,26 +2,26 @@
 // 无路由库——会话视图由选中 session 状态驱动，presets 视图为单页 state 切换
 // （specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2）。每
 // session 的 ChatStore 以资源名为键存于 App 级 Map：切换/返回列表不丢各自
-// 进度（发送中的 Send 流由 store 持有、在后台继续归约，fetch 不中断——
-// FR-012/FR-014 前端侧）。会话面板在两种视图下都常驻挂载：视图切换仅以
+// 进度（发送中的 team 流由 store 持有、在后台继续归约，fetch 不中断——
+// FR-014/FR-017 前端侧）。会话面板在两种视图下都常驻挂载：视图切换仅以
 // CSS 隐藏会话面板（unmount 会让 ChatPanel 的回填 effect 重跑，回填响应
-// 落地时覆盖在途回合——web-frontend.md §4），未选中会话的面板保持挂载仅
+// 落地时覆盖在途回合——web-views.md §2），未选中会话的面板保持挂载仅
 // 不渲染，再次进入直接呈现既有状态。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './dsh-theme/index.css'
 import './theme.css'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import { ApiError, listHistory, sendStream } from './api/conversation.js'
+import { ApiError, sendStream } from './api/conversation.js'
 import type { ChatEvent } from './api/conversation.js'
-import { cancelAgent, getAgent } from './api/agent.js'
-import type { Agent } from './api/agent.js'
+import { cancelTeam, getTeam, listTeamMessages } from './api/agent.js'
+import type { Team } from './api/agent.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
 import {
-  AgentSettingsPanel,
   isUnmaterializedError,
-  probeAgent,
-} from './components/AgentSettingsPanel.js'
+  probeTeam,
+  TeamSettingsPanel,
+} from './components/TeamSettingsPanel.js'
 import { ChatView } from './components/ChatView.js'
 import { PresetsView } from './components/PresetsView.js'
 import { SessionList } from './components/SessionList.js'
@@ -38,23 +38,29 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-// agent 单例的物化状态（data-model.md §2.10）：GetAgent 404 / ListAgentMessages
+// team 单例的物化状态（team-api.md §1/§2）：GetTeam 404 / ListTeamMessages
 // 404 / Send 前置错误（FAILED_PRECONDITION→400、NOT_FOUND→404）驱动
 // unmaterialized；探测/请求级失败为 unknown（不引导）。
-type AgentStatus = 'unknown' | 'unmaterialized' | 'materialized'
+type TeamStatus = 'unknown' | 'unmaterialized' | 'materialized'
 
 // 桌面连接状态三态（specs/054-agent-v2-bugfixes/data-model.md §5.3，契约
 // specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：connected/
-// disconnected 由 GetAgent desktop_connected 投影；unknown 为降级态
-// （agent 未物化 404 或查询失败）——禁止显示为已连接。
+// disconnected 由 GetTeam desktop_connected 投影（player 独占使用）；
+// unknown 为降级态（team 未物化 404 或查询失败）——禁止显示为已连接。
 type DesktopConn = 'connected' | 'disconnected' | 'unknown'
 
-// ChatPanel hosts one session's store-backed chat view. The store outlives the
-// panel's active state (owned by App's per-session map), so an in-flight turn
-// keeps reducing while this panel renders nothing. The ListAgentMessages
+// presetTitle projects a preset resource name to its display id.
+function presetTitle(name: string | undefined): string {
+  if (name === undefined || name === '') return '—'
+  return name.split('/').pop() ?? name
+}
+
+// ChatPanel hosts one session's store-backed team view. The store outlives the
+// panel's active state (owned by App's per-session map), so an in-flight team
+// stream keeps reducing while this panel renders nothing. The ListTeamMessages
 // backfill (runBackfill) runs on first entry (FR-014) and after a successful
-// agent re-apply (rebuild sync, specs/057-agent-v2-ui-fixes-2/contracts/
-// ui-interactions.md §2), and must not overwrite a turn that started before
+// team re-apply (refresh rebuilds the conversation from an empty merged
+// sequence, team-api.md §1), and must not overwrite a turn that started before
 // the backfill response landed.
 function ChatPanel({
   session,
@@ -67,10 +73,9 @@ function ChatPanel({
 }) {
   const state = useChatState(store)
   const [backfillError, setBackfillError] = useState<string | null>(null)
-  const [agentStatus, setAgentStatus] = useState<AgentStatus>('unknown')
-  const [agent, setAgent] = useState<Agent | null>(null)
-  // 连接态独立承载 probe/轮询结果（不复用 agent state：onApplied 的物化
-  // 响应不带连接字段，复用会被覆盖回 unknown）。
+  const [teamStatus, setTeamStatus] = useState<TeamStatus>('unknown')
+  const [team, setTeam] = useState<Team | null>(null)
+  // 连接态独立承载查询结果（不复用 team state，避免探测失败时虚构连接）。
   const [desktopConn, setDesktopConn] = useState<DesktopConn>('unknown')
   const [panelOpen, setPanelOpen] = useState(false)
   // 终止请求失败呈现（不吞，specs/054-agent-v2-bugfixes/contracts/web-ui.md
@@ -80,12 +85,13 @@ function ChatPanel({
   // （判据说明见 runBackfill 内守卫处注释）。
   const sentSinceBackfill = useRef(false)
 
-  // 连接状态即时刷新（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：
-  // GetAgent 200 → desktop_connected 投影 connected/disconnected；404（未
-  // 物化）与其他请求级失败一律降级 unknown——不虚构连接事实。
-  const refreshDesktopConn = useCallback(async () => {
+  // team 状态与连接状态即时刷新（web-views.md §1：GetTeam 定期刷新，节奏沿用
+  // 现状 10s + 关键时机即时刷新）：GetTeam 200 → 成员清单与 desktop_connected
+  // 投影；404（未物化）与其他请求级失败一律降级 unknown——不虚构连接事实。
+  const refreshTeam = useCallback(async () => {
     try {
-      const view = await getAgent(session)
+      const view = await getTeam(session)
+      setTeam(view)
       setDesktopConn(view.desktopConnected === true ? 'connected' : 'disconnected')
     } catch {
       setDesktopConn('unknown')
@@ -93,42 +99,38 @@ function ChatPanel({
   }, [session])
 
   // runBackfill 是挂载回填与重建同步（Apply 成功）共用的唯一回填路径
-  // （specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §2，
-  // specs/057-agent-v2-ui-fixes-2/research.md D1）：发起即复位让位守卫
-  // （新 epoch），ListAgentMessages 落地且守卫仍 false 时经 store.loadHistory
-  // 全量重建——两处调用同一函数使挂载与应用路径行为永不分叉。isCancelled
-  // 供挂载 effect 在会话切换/卸载时丢弃在途响应（清理语义）；Apply 路径
-  // 无清理面，缺省不取消。
+  // （specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §2）：发起即
+  // 复位让位守卫（新 epoch），ListTeamMessages 落地且守卫仍 false 时经
+  // store.loadHistory 全量重建（seq 锚对齐，web-views.md §2）——两处调用同一
+  // 函数使挂载与应用路径行为永不分叉。isCancelled 供挂载 effect 在会话切换/
+  // 卸载时丢弃在途响应（清理语义）；Apply 路径无清理面，缺省不取消。
   const runBackfill = useCallback(
     async (isCancelled: () => boolean = () => false) => {
       sentSinceBackfill.current = false
       try {
-        const messages = await listHistory(session)
+        const messages = await listTeamMessages(session)
         if (isCancelled()) return
         setBackfillError(null)
         // 让位判据 = 自回填发起后是否有 send 开始，而非响应落地时刻的
         // live/queue 快照——快照判据留有两个竞态窗口：(a) 回合已完成
         // （慢网络下过期历史覆盖已合并入历史的回合）；(b) 服务端已记录
-        // 用户消息但客户端首帧未达（回填含该消息，随后首帧
-        // acceptUserMessage 再追加 = 重复消息）。send 一经开始，回填整体
-        // 让位（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
-        // §4，FR-012/FR-014 前端侧，切换/返回不丢各自进度）。
+        // 用户消息但客户端首帧未达（回填含该消息，随后 team_message 帧到达
+        // 再追加 = 重复）。send 一经开始，回填整体让位（web-views.md §2，
+        // FR-014/FR-017 前端侧，切换/返回不丢各自进度）。
         if (!sentSinceBackfill.current) store.loadHistory(messages)
       } catch (err) {
         if (isCancelled()) return
-        // 未物化（含无 owner）session 的 ListAgentMessages 是 404
-        // （specs/051-agent-v2-dsh-migration/contracts/agent-api.md
-        // §2.2/§2.3）——这是"尚无历史"而非错误：置空历史并进入未物化
-        // 引导态。
+        // 未物化（含无 owner）session 的 ListTeamMessages 是 404
+        // （team-api.md §1/§2）——这是"尚无历史"而非错误：置空历史并进入
+        // 未物化引导态。
         if (isUnmaterializedError(err)) {
-          setAgentStatus('unmaterialized')
-          setAgent(null)
+          setTeamStatus('unmaterialized')
+          setTeam(null)
           if (!sentSinceBackfill.current) store.loadHistory([])
           return
         }
         // 仅提示不清状态：回填失败时在途回合与本地消息保持不变，可刷新
-        // 重试回填（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
-        // §4）。
+        // 重试回填（web-views.md §2）。
         setBackfillError(errorMessage(err))
       }
     },
@@ -137,106 +139,115 @@ function ChatPanel({
 
   useEffect(() => {
     let cancelled = false
-    // 物化状态探测（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
-    // §3）：GetAgent 404 → 未物化引导态；其余失败仅置 unknown，不影响对话。
-    void probeAgent(session).then((probe) => {
+    // 物化状态探测（web-views.md §1）：GetTeam 404 → 未物化引导态；其余
+    // 失败仅置 unknown，不影响对话。
+    void probeTeam(session).then((probe) => {
       if (cancelled) return
-      setAgentStatus(probe.status)
-      setAgent(probe.agent)
+      setTeamStatus(probe.status)
+      setTeam(probe.team)
     })
-    // 进入会话即时刷新连接状态（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）。
-    void refreshDesktopConn()
+    // 进入会话即时刷新连接状态与成员清单（web-views.md §1）。
+    void refreshTeam()
     void runBackfill(() => cancelled)
     return () => {
       cancelled = true
     }
-  }, [session, store, refreshDesktopConn, runBackfill])
+  }, [session, store, refreshTeam, runBackfill])
 
   const onSend = useCallback(
     (text: string) => {
       sentSinceBackfill.current = true
       setCancelError(null)
-      // send 前即时刷新连接状态（web-ui.md §5；不阻塞发送，指示仅是观测面）。
-      void refreshDesktopConn()
+      // send 前即时刷新状态（web-views.md §1；不阻塞发送，指示仅是观测面）。
+      void refreshTeam()
       // Send 前置拒绝（未物化 FAILED_PRECONDITION→400 / 无 owner
-      // NOT_FOUND→404，agent-api.md §2.4）驱动引导态：流失败后探测 agent
+      // NOT_FOUND→404，team-api.md §3/§6）驱动引导态：流失败后探测 team
       // 单例，仅 404 确认未物化（400 的其他来源如空文本不引导）。
       async function* guidedSend(): AsyncGenerator<ChatEvent> {
         try {
           yield* sendStream(session, text)
         } catch (err) {
           if (err instanceof ApiError && (err.status === 400 || err.status === 404)) {
-            const probe = await probeAgent(session)
+            const probe = await probeTeam(session)
             if (probe.status === 'unmaterialized') {
-              setAgentStatus('unmaterialized')
-              setAgent(null)
+              setTeamStatus('unmaterialized')
+              setTeam(null)
             }
           }
           throw err
         }
       }
-      void store.send(text, guidedSend())
+      void store.send(text, guidedSend()).then(() => {
+        // 流断开的收敛（用户裁定 2026-09-10：流断开后经 List 回填 + 下次 Send
+        // 重建）：store 已把已流出尾步投影入归并序列并置错误，此处经
+        // ListTeamMessages 重新对齐服务端权威序列（seq 锚），下次 Send 建立
+        // 新流。正常读到 team 静止结束（无错误）不触发。
+        if (store.getSnapshot().error !== null) void runBackfill()
+      })
     },
-    [store, session, refreshDesktopConn],
+    [store, session, refreshTeam, runBackfill],
   )
 
   const onCancel = useCallback(async () => {
     setCancelError(null)
     try {
-      await cancelAgent(session)
+      await cancelTeam(session)
     } catch (err) {
       setCancelError(errorMessage(err))
     }
   }, [session])
 
   const onApplied = useCallback(
-    (materialized: Agent) => {
-      setAgent(materialized)
-      setAgentStatus('materialized')
+    (materialized: Team) => {
+      setTeam(materialized)
+      setTeamStatus('materialized')
+      setDesktopConn(
+        materialized.desktopConnected === true ? 'connected' : 'disconnected',
+      )
       setPanelOpen(false)
-      // 重建同步（specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md
-      // §2）：UpdateAgent 为清理重建，服务端历史已随旧 agent 清空
-      // （specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.1）——
-      // Apply 成功即以同一回填路径重取历史，空闲/忙时（在途回合 ABORTED）/
-      // 首次物化收敛同一干净终态（specs/057-agent-v2-ui-fixes-2/data-model.md
-      // §1.3）。
+      // 刷新为新生命周期（team-api.md §5：刷新 team 后为新生命周期，服务端
+      // 归并序列已随重建清空）：本地归并序列即时复位，避免旧生命周期的 seq
+      // 锚与新序列冲突；随后经同一回填路径取服务端当前序列（重建同步，
+      // specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §2）。
+      store.loadHistory([])
       void runBackfill()
     },
-    [runBackfill],
+    [runBackfill, store],
   )
 
-  // turn 结束即时刷新（web-ui.md §5）：全部回合终态（COMPLETED/ERROR/
-  // CANCELED/流传输失败）在 store 归约中均把 live 归 null，以 live→null
-  // 迁移为触发面即可覆盖 canceled 等全部终态。已知边界：若 turnStart+
-  // turnEnd 在同一渲染批次内同步归约（React 18 自动批处理），本 effect 只
-  // 观察到最终 null 态、漏掉该回合的一次即时刷新——实际流式场景事件跨
-  // chunk 到达不会合并批次，且 send 前刷新与 10s 轮询兜底，该边界可接受。
+  // 回合结束即时刷新（web-views.md §1）：全部成员回合终态（COMPLETED/ERROR/
+  // CANCELED/流传输失败）在 store 归约中均把 live 收束（移除或投影入归并
+  // 序列），以 live 非空→空的迁移为触发面即可覆盖 canceled 等全部终态。
+  // 已知边界：若 turnStart+turnEnd 在同一渲染批次内同步归约（React 18 自动
+  // 批处理），本 effect 只观察到最终空态、漏掉该回合的一次即时刷新——实际
+  // 流式场景事件跨 chunk 到达不会合并批次，且 send 前刷新与 10s 轮询兜底，
+  // 该边界可接受。
   const hadLive = useRef(false)
   useEffect(() => {
-    if (state.live !== null) {
+    if (state.live.length > 0) {
       hadLive.current = true
       return
     }
     if (!hadLive.current) return
     hadLive.current = false
-    void refreshDesktopConn()
-  }, [state.live, refreshDesktopConn])
+    void refreshTeam()
+  }, [state.live, refreshTeam])
 
-  // 10s 轮询（SC-005：连接/断开/接管后 ≤10s 反映）。ChatPanel 对所有已
-  // 打开会话常驻挂载（active 仅控制渲染），轮询必须以 active 门控——否则
-  // 每个打开过的会话都永久轮询。
+  // 10s 轮询（web-views.md §1：desktop 连接状态 10s + 关键时机即时）。ChatPanel
+  // 对所有已打开会话常驻挂载（active 仅控制渲染），轮询必须以 active 门控——
+  // 否则每个打开过的会话都永久轮询。
   useEffect(() => {
     if (!active) return
     const id = setInterval(() => {
-      void refreshDesktopConn()
+      void refreshTeam()
     }, 10_000)
     return () => clearInterval(id)
-  }, [active, refreshDesktopConn])
+  }, [active, refreshTeam])
 
   if (!active) return null
   return (
     <div className="chat">
-      <div className="agent-toolbar">
+      <div className="team-toolbar">
         <span
           className="desktop-conn"
           data-testid="desktop-conn-status"
@@ -248,33 +259,57 @@ function ChatPanel({
               ? '桌面未连接'
               : '桌面连接未知'}
         </span>
-        <span className="agent-status" data-testid="agent-status">
-          {agentStatus === 'materialized'
-            ? `已物化${agent?.model ? ` · ${agent.model}` : ' · 默认模型'}`
-            : agentStatus === 'unmaterialized'
+        <span className="team-status" data-testid="team-status">
+          {teamStatus === 'materialized'
+            ? '已物化'
+            : teamStatus === 'unmaterialized'
               ? '未物化'
               : ''}
         </span>
-        <Button data-testid="agent-settings-button" onClick={() => setPanelOpen((o) => !o)}>
-          设置 agent
+        {/* 成员清单（web-views.md §1 状态呈现：role + preset + model；role
+            为 wire 字符串，直接渲染）。 */}
+        <span className="team-members" data-testid="team-members">
+          {team?.members?.map((member, i) => (
+            <span
+              key={member.name ?? i}
+              className="team-member"
+              data-testid="team-member"
+              data-role={member.role}
+            >
+              {member.role} · {presetTitle(member.preset)} ·{' '}
+              {member.model !== undefined && member.model !== '' ? member.model : '默认模型'}
+            </span>
+          ))}
+        </span>
+        <Button data-testid="team-settings-button" onClick={() => setPanelOpen((o) => !o)}>
+          设置 team
         </Button>
       </div>
-      {agentStatus === 'unmaterialized' && !panelOpen && (
-        <div className="agent-guide" data-testid="agent-guide">
-          <span>该会话尚未设置 agent——选择 preset（必选）与模型完成物化后即可对话。</span>
+      {teamStatus === 'unmaterialized' && !panelOpen && (
+        <div className="team-guide" data-testid="team-guide">
+          <span>
+            该会话尚未物化 team——选择 player 与 planner 的 preset（各自必选）与模型完成物化后即可对话。
+          </span>
           <Button
             variant="primary"
-            data-testid="agent-guide-open"
+            data-testid="team-guide-open"
             onClick={() => setPanelOpen(true)}
           >
-            设置 agent
+            设置 team
           </Button>
         </div>
       )}
+      {teamStatus === 'materialized' && !panelOpen && state.history.length === 0 && state.live.length === 0 && (
+        // 用户首驱裁定（spec Clarifications 2026-09-10）：物化后 team 静止
+        // 等待，开始游戏的首次驱动由用户第一条消息触发（由 planner 处理）。
+        <div className="team-ready-guide" data-testid="team-ready-guide">
+          team 已物化并静止等待——发送第一条消息开始工作流（由 planner 处理）。
+        </div>
+      )}
       {panelOpen && (
-        <AgentSettingsPanel
+        <TeamSettingsPanel
           session={session}
-          materialized={agent}
+          materialized={team}
           onApplied={onApplied}
           onClose={() => setPanelOpen(false)}
         />
@@ -351,16 +386,15 @@ export function App() {
     async (name: string) => {
       setLoading(true)
       try {
-        // 删除编排：仅 /api/v1 元数据删除——session 删除不联动 agent 清理
-        // （specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2，
-        // FR-007 Dispose 移除）。
+        // 删除编排：仅 /api/v1 元数据删除——session 删除不联动 team 清理
+        // （team 为进程内存态，重启/删除后回到未物化引导态；team-api.md §1）。
         await deleteSession(name)
       } catch (err) {
         setListError(errorMessage(err))
         setLoading(false)
         return
       }
-      // 同资源名的新建命中残留 agent 为已接受限制（spec Edge Cases）：
+      // 同资源名的新建命中残留 team 为已接受限制（spec Edge Cases）：
       // 丢弃本地 store 与面板。
       storesRef.current?.delete(name)
       setSessions((prev) => prev.filter((s) => s.name !== name))

@@ -379,20 +379,24 @@ export class GameRuntimeService extends Service implements GameRuntime {
 
 /**
  * Production builder: the materialization setup's registration call. Wires
- * the runtime to the session's desktop-bridge connection (`agent.id` is the
- * session resource name) and the real recognition engine. The instance
- * registers on an `isolate("saoleiGame")` child of the agent context — a
- * per-agent isolation label keeps the underlying registration slot unique
- * per agent (re-materializations and concurrent members never collide), and
- * the isolated child shares the agent scope's fiber, so the service stays
- * resolvable from `agent.ctx` (and from `exec.agent.ctx` in the saolei
- * tools) and unregisters with the agent scope.
+ * the runtime to the game session's desktop-bridge connection and the real
+ * recognition engine. `sessionName` is the GAME session resource name
+ * (templates/{template}/sessions/{session}) the bridge connection is
+ * registered under — the member's dsh session id is namespaced
+ * (`{session}/player`) and is NOT the dispatch key, so the caller passes the
+ * game session explicitly; the default keeps the single-agent tests working.
+ * The instance registers on an `isolate("saoleiGame")` child of the agent
+ * context — a per-agent isolation label keeps the underlying registration
+ * slot unique per agent (re-materializations and concurrent members never
+ * collide), and the isolated child shares the agent scope's fiber, so the
+ * service stays resolvable from `agent.ctx` (and from `exec.agent.ctx` in the
+ * saolei tools) and unregisters with the agent scope.
  */
 export function createAgentGameRuntime(
   agent: Agent,
   desktopBridge: DesktopBridgeService,
+  sessionName: string = agent.id,
 ): SaoleiGame {
-  const sessionName = agent.id;
   return new GameRuntimeService(agent.ctx.isolate("saoleiGame"), "saoleiGame", {
     sessionName,
     dispatch: (part, signal) => desktopBridge.dispatch(sessionName, part, signal),

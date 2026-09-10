@@ -8,11 +8,13 @@ load("//tools/dev/go:defs.bzl", "go_largetest")
 # owned by the saolei-board package (golden-tested). The fixtures span every
 # game outcome (specs/027-chat-bubble-game-state/research.md D12;
 # specs/028-saolei-win-counter-fix): in-progress (saolei_1.png 16×16
-# all-INITIAL, saolei_2.png 9×9 partially revealed), win (saolei_10.png 9×9
-# win board, counter 000), loss (saolei_5.png 16×16 with HIT_MINE/MINE), and
-# the over-flag false-positive (saolei_9.png 9×9 grid all-revealed with 11
-# flags, counter -01 — spec 028). Each is a cmp-identical copy of its
-# library-original, mirroring the saolei_1/saolei_2 precedent.
+# all-INITIAL, saolei_2.png 9×9 partially revealed), a same-game
+# in-progress→win pair (saolei_8.png 9×9 all-INITIAL with 6 flags →
+# saolei_10.png 9×9 win board, counter 000 — the team terminal-win flow of
+# specs/059-agent-v2-team-mode/tasks.md T018), loss (saolei_5.png 16×16 with
+# HIT_MINE/MINE), and the over-flag false-positive (saolei_9.png 9×9 grid
+# all-revealed with 11 flags, counter -01 — spec 028). Each is a cmp-identical
+# copy of its library-original, mirroring the saolei_1/saolei_2 precedent.
 SAOLEI_FIXTURES = [
     "saolei_fixtures_test.go",
 ]
@@ -20,6 +22,7 @@ SAOLEI_FIXTURES = [
 SAOLEI_EMBEDSRCS = [
     "testdata/saolei_1.png",
     "testdata/saolei_2.png",
+    "testdata/saolei_8.png",
     "testdata/saolei_10.png",
     "testdata/saolei_5.png",
     "testdata/saolei_9.png",
@@ -79,17 +82,16 @@ go_largetest(
     ],
 )
 
-# agent_v2_conversation_test is the agent_v2 conversation surface suite
-# (specs/049-agent-v2-dsh-init — quickstart §2 用例 2–9): streamed event
-# sequences with multi-frame think deltas and pure-text turns, multi-turn
-# continuity via the fake history_keywords template, concurrent session
-# isolation, the queued{position}→auto-resume window, history backfill
-# consistency, dispose ABORTED + fresh same-name session, model-failure
-# recovery, and 400 INVALID_ARGUMENT mapping — all over the gateway /api/v2
-# NDJSON surface (conversation-api.md §2/§3) with the fake /v1/responses
-# endpoint (fake-responses-wire.md §4). It reuses the agent_v2 helpers
-# (agent_v2_helpers_test.go — the /api/v2 client + §3 invariant checker) and
-# the shared HTTP helpers (helpers_test.go).
+# agent_v2_conversation_test is the team conversation suite
+# (specs/059-agent-v2-team-mode — quickstart V3/V6): the static wait and first
+# user drive, the member-labelled team stream with the team_message seq
+# anchor, member-view relays, the queued-message digest priority, cancel
+# pause/resume, refresh with in-flight termination + queue void + memory
+# clear, the per-member streamed/error/interrupted turns, request-level
+# rejections, and concurrent session isolation — all over the gateway /api/v2
+# NDJSON surface with the fake /v1/responses endpoint. It reuses the agent_v2
+# team helpers (agent_v2_helpers_test.go — the /api/v2 team client + stream
+# invariant checker) and the shared HTTP helpers (helpers_test.go).
 #
 # size = medium: the queued and dispose cases each burn a ~3s slow-template
 # window and the isolation case runs two of them concurrently, while every
@@ -149,15 +151,15 @@ go_largetest(
     ],
 )
 
-# agent_v2_preset_test is the agent_v2 US2 configuration suite
-# (specs/051-agent-v2-dsh-migration — quickstart §2 agent-v2-preset): preset
-# CRUD round trip through the gateway with the Mongo-backed read-back
-# agreement, materialized-config GetAgent consistency (model picked from the
-# ListModels catalog), Update refresh clearing the in-memory history, the
-# two-layer unmaterialized-Send rejection (404 no-owner / 400
-# FAILED_PRECONDITION owner-without-agent) and the empty-prompt persona
-# fallback. It shares the agent_v2 helpers (the preset CRUD + model catalog
-# helpers it introduces live there, style/large_test.md §反模式3).
+# agent_v2_preset_test is the team configuration suite
+# (specs/059-agent-v2-team-mode — preset-api.md / team-api.md §2): role-pooled
+# preset CRUD with the Mongo-backed read-back and role filter, team
+# materialization validation (role match, model catalog, fail-fast rejects),
+# the refresh memory-clear with create_time preservation, the unmaterialized
+# rejection family (404 no-owner / 400 FAILED_PRECONDITION owner-without-team)
+# and the empty-persona fallback. It shares the agent_v2 team helpers (the
+# preset/team CRUD + model catalog helpers live there, style/large_test.md
+# §反模式3).
 #
 # size = small: every case uses the fast plain template (no slow-template
 # window), five materializations and a handful of direct CRUD calls — the
@@ -184,14 +186,15 @@ go_largetest(
     ],
 )
 
-# agent_v2_game_test is the agent_v2 US1 game-loop suite (specs/051-agent-v2-
-# dsh-migration — quickstart §2 agent-v2-game): the fake-llm game chain over
-# the /api/v2 Send stream against the deployed fake-desktop executor — the
-# won-chain tool stream with the board-text contract and the game_won
-# terminal reject, the desktop-absent branch, concurrent multi-session
-# isolation, and two-stream independence. It shares the agent_v2 helpers
-# (agent_v2_helpers_test.go) and embeds the win-board fixture used to answer
-# its own flow receipts. The mid-game disconnect branch has its own binary
+# agent_v2_game_test is the team game-loop suite (specs/059-agent-v2-team-mode
+# — quickstart V4): the fake-llm team chain over the /api/v2 Send stream with
+# the planner opening, the player game turn against either the deployed
+# fake-desktop executor (won chain) or the test's own flow connection
+# (terminal won + review continuation, terminal lost + review stop), the
+# desktop-absent branch, concurrent multi-session isolation, and stream
+# independence from the flow. It shares the agent_v2 team helpers
+# (agent_v2_helpers_test.go) and embeds the board fixtures used to answer its
+# own flow receipts. The mid-game disconnect branch has its own binary
 # (agent_v2_game_disconnect_test) bound to the drop deploy.
 #
 # size = medium: the isolation/two-stream cases run full game chains per
@@ -218,15 +221,16 @@ go_largetest(
     ],
 )
 
-# agent_v2_game_disconnect_test is the mid-game disconnect/recovery branch
-# of the US1 game loop (US1 场景 5/6, desktop-bridge.md §6 验收锚点 3) in its
-# own binary: the case needs the drop topology (deploy_agent_v2_drop.yaml
-# deploys the fake-desktop with the progressive + disconnect-after-ops env),
-# and guitar runs whole bazel targets as suite cases with no per-suite
-# test-function filter — sharing agent_v2_game_test would run the won-chain
-# cases against a topology with no won executor
+# agent_v2_game_disconnect_test is the team mid-game disconnect/recovery
+# branch (specs/059-agent-v2-team-mode — US2 场景 8) in its own binary: the
+# case needs the drop topology (deploy_agent_v2_drop.yaml deploys the
+# fake-desktop with the progressive + disconnect-after-ops env), and guitar
+# runs whole bazel targets as suite cases with no per-suite test-function
+# filter — sharing agent_v2_game_test would run the won-chain cases against a
+# topology with no won executor
 # (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4).
-# Shares the agent_v2 helpers and the saolei fixtures like agent_v2_game_test.
+# Shares the agent_v2 team helpers and the saolei fixtures like
+# agent_v2_game_test.
 #
 # size = medium: the case waits out the fake-desktop's reconnect cycle
 # between its games and drives three full game chains
@@ -253,12 +257,13 @@ go_largetest(
 )
 
 # desktop_flow_test is the flow-control stream suite from the desktop's side
-# (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点):
-# the connect probe echo, the second-connection takeover, the operation
-# delivery → receipt → recognition loop with the test serving the win-board
-# receipt, and the in-flight failure when the connection vanishes mid-dispatch.
-# It shares the agent_v2 helpers (the /api/v2 flow WS dial and the game prep)
-# and the saolei fixtures (the recognizable receipt screenshot).
+# (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点;
+# specs/059-agent-v2-team-mode/tasks.md T018): the connect probe echo, the
+# second-connection takeover, the team operation delivery → receipt →
+# recognition loop with the test serving the win-board receipt, and the
+# in-flight failure when the connection vanishes mid-dispatch. It shares the
+# agent_v2 team helpers (the /api/v2 flow WS dial, the flow script, and the
+# team prep) and the saolei fixtures (the recognizable receipt screenshot).
 go_largetest(
     name = "desktop_flow_test",
     size = "medium",

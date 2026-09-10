@@ -746,7 +746,7 @@ describe("agent-scoped saoleiGame lifecycle", () => {
 });
 
 describe("createAgentGameRuntime wiring", () => {
-  it("binds the runtime to the agent's id and registers it on the agent ctx", async () => {
+  it("binds the runtime to the explicit game session name and registers it on the agent ctx", async () => {
     const ctx = new Context();
     const dispatched: { sessionName: string; part: WireFlowPart }[] = [];
     const desktopBridge = {
@@ -757,14 +757,16 @@ describe("createAgentGameRuntime wiring", () => {
         },
       ),
     };
-    // The host's materialization setup call shape: the scope boundary mints
-    // the agent ctx and the agent handle's id/ctx are the only agent face
-    // the builder consumes.
+    // The host's materialization setup call shape: the member's dsh session
+    // id is namespaced (`{game-session}/player`), while the desktop-bridge
+    // connection is keyed by the GAME session resource name the orchestrator
+    // passes explicitly.
     const scope = createScope(ctx, { sessionName: LIFECYCLE_SESSION });
     const agentCtx = scope.ctx.isolate("saoleiGame");
     createAgentGameRuntime(
-      { id: LIFECYCLE_SESSION, ctx: agentCtx } as unknown as Agent,
+      { id: `${LIFECYCLE_SESSION}/player`, ctx: agentCtx } as unknown as Agent,
       desktopBridge as never,
+      LIFECYCLE_SESSION,
     );
     await flushProvide();
 

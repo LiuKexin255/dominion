@@ -1,8 +1,16 @@
-// Package testplan contains the shared agent_v2 conversation helpers used by
-// the agent_v2 large-test files. Kept separate from helpers_test.go (the
-// shared /api/v1 session + memory HTTP helper set) so only the suites that
-// drive /api/v2 pay its dependency closure — the same selective inclusion
-// pattern as saolei_fixtures_test.go.
+// Package testplan contains the shared agent_v2 team helpers used by the
+// agent_v2 large-test files. Kept separate from helpers_test.go (the shared
+// /api/v1 session + memory HTTP helper set) so only the suites that drive
+// /api/v2 pay its dependency closure — the same selective inclusion pattern
+// as saolei_fixtures_test.go.
+//
+// The surface is the team model of
+// specs/059-agent-v2-team-mode/contracts/team-api.md: the team singleton
+// (UpdateTeam/GetTeam/GetTeamMember), the merged and member-view histories
+// (ListTeamMessages/ListMemberMessages), the team Send stream (member event
+// frames + team_message frames until quiescence) and the Cancel custom
+// method. Shared helpers live here, never copied per test file
+// (style/large_test.md §反模式3).
 package testplan
 
 import (
@@ -26,87 +34,161 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ─── agent_v2 conversation helpers (the /api/v2 NDJSON surface) ─────────────
-//
-// The AgentService surface (specs/051-agent-v2-dsh-migration/contracts/
-// agent-api.md) is exposed by the gateway under /api/v2: Send is a
-// chunked NDJSON stream, ListAgentMessages is unary JSON. Shared by the
-// agent_v2 conversation module tests and the web hosting smoke — shared
-// helpers live here, never copied per test file (style/large_test.md
-// §反模式3).
-//
-// Every helper here dials straight into the surface with no startup
-// probing: the deployment's startup probe (the /healthz:38080 readiness
-// contract, specs/052-deploy-health-probe/contracts/deploy-probe.md) keeps
-// the environment from turning ready before the agent_v2 instances can
-// serve, and guitar holds postDeploySettle (60s) after a successful apply
-// before running any case (tools/test/guitar/pkg/run/run.go) — so the
-// proxy's instance discovery has settled by the time the first request
-// fires.
-
-// agentV2PathPrefix is the /api/v2 gateway route prefix the AgentService
-// handler is bound to (agent-api.md §1).
+// agentV2PathPrefix is the /api/v2 gateway route prefix both the session
+// team face (through the proxy) and the preset configuration face are bound
+// to (specs/059-agent-v2-team-mode/contracts/team-api.md §1).
 const agentV2PathPrefix = "/api/v2/"
 
-// User-message keyword triggers of projects/game/fake-llm/service/testdata/
-// agent_v2.yaml — every /v1/responses template is matched by ONE of these
-// case-insensitive substrings of the last user message (responses.go
-// matchResponses). Tests must keep each trigger out of unrelated turns' texts:
-// no message may carry two triggers (the alphabetical lowest-name template
-// would win) and none may contain the followup history keyword below.
+// ─── Fixture vocabulary: user-message triggers ──────────────────────────────
+//
+// The team fixtures (projects/game/fake-llm/service/testdata/team_planner.yaml
+// and team_player.yaml) are keyword/system-keyword driven; the constants below
+// are the suite-side anchors. Keep them aligned with the fixture comments
+// (projects/game/testplan/README.md §6 lockstep).
+
 const (
+	// teamStartMessage carries one of the planner-opening startup tokens
+	// (请/开始/工作/就绪/团队/扫雷/开局) so the first Send drives
+	// team-planner-opening and yields the opening strategy.
+	teamStartMessage = "请开始扫雷"
+	// teamNextGameMessage carries the team-player-resume-start anchors
+	// (下一局计划/开始下一局) — the structural continuation's next game.
+	teamNextGameMessage = "开始下一局"
+	// teamQueueMessage carries the queued-digest tokens (暂停/稍等/等待/继续)
+	// shared by team-planner-user-reply and team-player-user-intake.
+	teamQueueMessage = "稍等，继续按计划观察"
+	// teamWaitMessage selects team-planner-wait — the long-running planner
+	// turn (4s inter-chunk delay) the queue/cancel/refresh cases pivot on.
+	teamWaitMessage = "planner-wait"
+)
+
+// ─── Fixture vocabulary: pinned expected contents ───────────────────────────
+//
+// Texts pinned from projects/game/fake-llm/service/testdata/agent_v2*.yaml and
+// team_*.yaml; the message_store_test.go lockstep keeps the embedded store and
+// these constants honest (projects/game/testplan/README.md §6).
+
+const (
+	// Team chain texts (team_planner.yaml / team_player.yaml):
+	teamPlannerOpeningText        = "开局计划：优先从棋盘中心区域开始，逐步向边缘推进；遇到数字边界时先标记周边可疑格。@player 请按以下开局计划开始本局游戏。"
+	teamPlannerReviewContinueText = "本局复盘：全部雷区排除，节奏正确；下一局仍从中心区域推进，数字密集处先推理再操作。@player 请按以下下一局计划开始下一局。"
+	teamPlannerReviewStopText     = "本局复盘：触雷失败，边角判断有偏差。本局到此为止，不再安排新一局。@player 请保持待命。"
+	teamPlannerUserReplyText      = "收到你的消息。本局到此为止，不再安排新一局。"
+	teamPlannerWaitText           = "延迟排查完成，暂无新计划。"
+	teamPlayerResumeStopText      = "收到复盘。本局到此为止，暂不开新局，保持待命。"
+	teamPlayerUserIntakeText      = "收到你的消息，我这边情况正常，会继续关注棋盘。"
+
+	// agent_v2.yaml user-message triggers; every /v1/responses template is
+	// matched by ONE of these case-insensitive substrings of the last user
+	// message (responses.go matchResponses). Tests must keep each trigger out
+	// of unrelated turns' texts.
 	agentV2TriggerThink   = "agent-v2-think"
 	agentV2TriggerPlain   = "agent-v2-plain"
 	agentV2TriggerSlow    = "agent-v2-slow"
 	agentV2TriggerFail    = "agent-v2-fail"
 	agentV2TriggerFailMid = "agent-v2-midfail"
-)
 
-// Expected /v1/responses contents pinned from testdata/agent_v2.yaml. MUST be
-// kept in sync with that file (the same lockstep rule as the chat-completions
-// constants in helpers_test.go — testplan/README.md §5): the reasoning
-// pieces stream as separate THINK deltas (fake-responses-wire.md §2), the
-// text arrives as a single TEXT delta.
-const (
+	// agent_v2.yaml expected contents (the same lockstep rule): the reasoning
+	// pieces stream as separate THINK deltas, the text as one TEXT delta.
 	agentV2GreetThink1  = "Analyzing the user's request."
 	agentV2GreetThink2  = "Drafting a friendly reply."
 	agentV2GreetText    = "Hello! I can help you play and manage your game sessions."
 	agentV2FollowupText = "As I said when we started, I help you play and manage your game sessions."
 	agentV2PlainText    = "Plain answer with no thinking this time."
-	agentV2SlowThink1   = "Thinking slowly."
-	agentV2SlowThink2   = "Still thinking."
 	agentV2SlowText     = "Finally done thinking."
-	// The partial-content failure template (agent-v2-fail-mid): the content
-	// streams first, then response.failed — the interrupted backfill's
-	// expected prefix (agent-api-changes.md §6).
 	agentV2FailMidThink = "Thinking about the request before it breaks."
 	agentV2FailMidText  = "Partial answer streamed before the failure."
 )
 
-// agentV2SessionName builds the full game session resource name the
-// AgentService session field carries
-// (templates/{template}/sessions/{session}, agent-api.md §1).
+// ─── Fixture vocabulary: game-chain texts (agent_v2_saolei*) ────────────────
+
+const (
+	// agent_v2_saolei_tools.yaml rule texts for the deterministic tool chain.
+	// won chain (9×9 boards): init playing/revealed board → operate terminal
+	// win; progressive chain (16×16): init → two-op batch still playing;
+	// lost chain: the operate receipt is the loss board.
+	agentV2WonInitContains    = "new game started"
+	agentV2WonBoardContains   = "board size 9*9"
+	agentV2WonStatusContains  = "game status: won"
+	agentV2WonRejectContains  = "stopped at click(0,0) (game_won)"
+	agentV2WonSummaryText     = "本局扫雷已完成：全部雷区排除，游戏获胜。"
+	agentV2LostStatusContains = "game status: lost"
+	agentV2LostSummaryText    = "本局扫雷已结束：触雷失败，可重新开局再试。"
+
+	agentV2ProgInitContains   = "new game started"
+	agentV2ProgBoardContains  = "board size 16*16"
+	agentV2ProgStatusContains = "game status: playing"
+	agentV2ProgExecContains   = "executed 2 ops"
+	agentV2ProgSummaryText    = "已完成一轮扫雷操作：点击揭示与标记旗子均已执行，棋盘已刷新。"
+
+	// Desktop-absent / mid-game-disconnect chain: the bridge's FAILED receipt
+	// becomes a tool ERROR result whose text names the cause.
+	agentV2DisconnectedContain = "desktop disconnected"
+	agentV2NodesktopSummary    = "桌面未连接，无法开局。请先连接桌面后再试。"
+	agentV2DisconnectSummary   = "桌面连接中断，操作未能完成。请等待桌面重连后再试。"
+)
+
+// Fixed caller-id sessions the deployed fake-desktop executor binds: the won
+// session is bound by projects/game/testplan/deploy_agent_v2.yaml and the drop
+// session by deploy_agent_v2_drop.yaml (one executor instance per deploy).
+const (
+	agentV2DesktopWonSessionID = "desktop-e2e-won"
+	agentV2DesktopDropID       = "desktop-e2e-drop"
+)
+
+// ─── Resource-name helpers ──────────────────────────────────────────────────
+
+// agentV2SessionName builds the full game session resource name
+// (templates/{template}/sessions/{session}, team-api.md §1).
 func agentV2SessionName(sessionID string) string {
 	return game.SessionName{TemplateID: saoleiTemplateID, SessionID: sessionID}.String()
 }
 
-// agentV2EventStream is an open Send stream: the NDJSON frame scanner plus
-// the response handle it wraps (Close terminates the HTTP stream).
-type agentV2EventStream struct {
+// agentV2TeamName builds the session's team singleton resource name
+// (AIP-156: https://google.aip.dev/156).
+func agentV2TeamName(sessionName string) string {
+	return sessionName + "/team"
+}
+
+// agentV2MemberName builds one fixed member resource name (members/player or
+// members/planner — the role IS the id, data-model.md §1).
+func agentV2MemberName(sessionName, member string) string {
+	return agentV2TeamName(sessionName) + "/members/" + member
+}
+
+// sessionIDFromName extracts the session id segment from a session resource
+// name (the inverse of agentV2SessionName; the flow WebSocket path addresses
+// the session by its raw id).
+func sessionIDFromName(t *testing.T, sessionName string) string {
+	t.Helper()
+
+	parsed, err := game.ParseSessionName(sessionName)
+	if err != nil {
+		t.Fatalf("parse session resource name %q: %v", sessionName, err)
+	}
+	return parsed.SessionID
+}
+
+// ─── Send stream (the team NDJSON surface) ──────────────────────────────────
+
+// teamStream is an open Send stream: the NDJSON frame scanner plus the
+// response handle it wraps (Close terminates the HTTP stream). The stream
+// runs from Send acceptance until the team quiesces (team-api.md §3.1).
+type teamStream struct {
 	resp    *http.Response
 	Scanner *bufio.Scanner
 }
 
 // Close releases the stream's HTTP body.
-func (s *agentV2EventStream) Close() { s.resp.Body.Close() }
+func (s *teamStream) Close() { s.resp.Body.Close() }
 
-// startAgentV2Send issues POST /api/v2/{session}:send (conversation-api.md
-// §2) and returns the open NDJSON event stream. The body is left
-// unconsumed: the caller reads ChatEvents via nextAgentV2Event (test
-// goroutine) or nextAgentV2EventNoFatal (reader goroutines) and Closes the
-// stream when done. Only the HTTP status is checked here — a stream that
-// never opens is a fatal request-level failure.
-func startAgentV2Send(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, text string) *agentV2EventStream {
+// startTeamSend issues POST /api/v2/{session}:send (AIP-136 custom method,
+// team-api.md §1/§3) and returns the open NDJSON stream. The body is left
+// unconsumed: the caller reads ChatEvents via nextTeamEvent (test goroutine)
+// or drainTeamStreamAsync (reader goroutines) and Closes the stream when
+// done. Only the HTTP status is checked here — a stream that never opens is a
+// fatal request-level failure.
+func startTeamSend(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, text string) *teamStream {
 	t.Helper()
 
 	body, err := json.Marshal(struct {
@@ -139,14 +221,14 @@ func startAgentV2Send(t *testing.T, ctx context.Context, sutHostURL, sutEnvName,
 	// Frame bodies are tiny; the oversized buffer just rules out
 	// bufio.ErrTooLong on pathological content.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	return &agentV2EventStream{resp: resp, Scanner: scanner}
+	return &teamStream{resp: resp, Scanner: scanner}
 }
 
-// postAgentV2SendStatus is startAgentV2Send for request-level failures
-// (stream never opens): it consumes the whole response and returns the HTTP
-// status with the raw body — used to assert the 400 INVALID_ARGUMENT mapping
-// (conversation-api.md §2.1).
-func postAgentV2SendStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, text string) (int, []byte) {
+// postTeamSendStatus is startTeamSend for request-level failures (stream
+// never opens): it consumes the whole response and returns the HTTP status
+// with the raw body — used to assert the INVALID_ARGUMENT / NOT_FOUND /
+// FAILED_PRECONDITION rejection family (team-api.md §3/§6).
+func postTeamSendStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, text string) (int, []byte) {
 	t.Helper()
 
 	body, err := json.Marshal(struct {
@@ -160,28 +242,14 @@ func postAgentV2SendStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnv
 	return resp.StatusCode, respBody
 }
 
-// postAgentV2Cancel issues POST /api/v2/{agent}:cancel (agent-api-changes.md
-// §3) and returns the HTTP status with the raw body: 200 on success — both
-// the terminating and the idempotent no-op cancel — and 400
-// FAILED_PRECONDITION for an unmaterialized agent (the Send rejection
-// family).
-func postAgentV2Cancel(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, []byte) {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%s%s/agent:cancel", sutHostURL, agentV2PathPrefix, sessionName)
-	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
-	return resp.StatusCode, respBody
-}
-
-// nextAgentV2Event reads one NDJSON frame from a Send stream and decodes it
-// into a ChatEvent. grpc-gateway v2 streams every message wrapped in a
-// "result" key — one `{"result": <ChatEvent>} JSON object per "\n"-terminated
-// line (the default streaming marshaler, grpc-gateway runtime/handler.go
-// handleForwardResponseServerStream at the repo-pinned v2.27.6; conversation-
-// api.md §2) — so the wrapper is mandatory and unwrapped here. Calls t.Fatal
-// on transport, framing, or decode errors; reader goroutines must use
-// nextAgentV2EventNoFatal instead.
-func nextAgentV2Event(t *testing.T, scanner *bufio.Scanner) *game.ChatEvent {
+// nextTeamEvent reads one NDJSON frame from a Send stream and decodes it into
+// a ChatEvent. grpc-gateway v2 streams every message wrapped in a "result"
+// key — one `{"result": <ChatEvent>} JSON object per "\n"-terminated line
+// (the default streaming marshaler, grpc-gateway runtime/handler.go
+// handleForwardResponseServerStream at the repo-pinned v2.27.6). Calls
+// t.Fatal on transport, framing, or decode errors; reader goroutines must use
+// nextTeamEventNoFatal instead.
+func nextTeamEvent(t *testing.T, scanner *bufio.Scanner) *game.ChatEvent {
 	t.Helper()
 
 	if !scanner.Scan() {
@@ -190,10 +258,11 @@ func nextAgentV2Event(t *testing.T, scanner *bufio.Scanner) *game.ChatEvent {
 	return decodeAgentV2Chunk(t, scanner.Bytes())
 }
 
-// nextAgentV2EventNoFatal is nextAgentV2Event without t.Fatal: it returns the
+// nextTeamEventNoFatal is nextTeamEvent without t.Fatal: it returns the
 // decoded ChatEvent or an error, for drain goroutines (t.Fatal must only run
-// on the test goroutine).
-func nextAgentV2EventNoFatal(scanner *bufio.Scanner) (*game.ChatEvent, error) {
+// on the test goroutine). io.EOF means the server ended the stream at the
+// team static point (team-api.md §3.1).
+func nextTeamEventNoFatal(scanner *bufio.Scanner) (*game.ChatEvent, error) {
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return nil, err
@@ -217,7 +286,7 @@ func decodeAgentV2Chunk(t *testing.T, line []byte) *game.ChatEvent {
 
 // decodeAgentV2ChunkNoFatal decodes one `{"result": <ChatEvent>}` NDJSON
 // line into a ChatEvent (protojson camelCase projection, unknown fields
-// ignored per proto3 forward-compat — conversation-api.md §2).
+// ignored per proto3 forward-compat).
 func decodeAgentV2ChunkNoFatal(line []byte) (*game.ChatEvent, error) {
 	var chunk struct {
 		Result json.RawMessage `json:"result"`
@@ -235,236 +304,432 @@ func decodeAgentV2ChunkNoFatal(line []byte) (*game.ChatEvent, error) {
 	return evt, nil
 }
 
-// drainAgentV2Turn reads frames until the turn's turn_end (inclusive) and
-// asserts the stream ends there — no frames may follow the terminal event
-// (conversation-api.md §3 invariant 1). Test-goroutine only.
-func drainAgentV2Turn(t *testing.T, stream *agentV2EventStream) []*game.ChatEvent {
+// teamStreamResult is what a drain goroutine reports back: the collected
+// frames plus the first non-EOF read error, if any.
+type teamStreamResult struct {
+	events []*game.ChatEvent
+	err    error
+}
+
+// drainTeamStreamAsync drains a Send stream to its natural end (the team
+// static point, team-api.md §3.1) on a reader goroutine and reports the
+// frames (or the read error) on the channel. io.EOF is the expected terminal
+// (err stays nil); the stream body is closed after the drain.
+func drainTeamStreamAsync(stream *teamStream) <-chan teamStreamResult {
+	ch := make(chan teamStreamResult, 1)
+	go func() {
+		var result teamStreamResult
+		defer func() {
+			stream.Close()
+			ch <- result
+		}()
+		for {
+			evt, err := nextTeamEventNoFatal(stream.Scanner)
+			if err != nil {
+				if err != io.EOF {
+					result.err = err
+				}
+				return
+			}
+			result.events = append(result.events, evt)
+		}
+	}()
+	return ch
+}
+
+// drainTeamStream drains a stream to its natural end on the test goroutine
+// and returns the frames. Use it when no other flow work must progress
+// concurrently; otherwise run drainTeamStreamAsync and waitTeamStream.
+func drainTeamStream(t *testing.T, stream *teamStream) []*game.ChatEvent {
 	t.Helper()
 
-	var events []*game.ChatEvent
-	for {
-		evt := nextAgentV2Event(t, stream.Scanner)
-		events = append(events, evt)
-		if evt.GetTurnEnd() != nil {
-			break
-		}
-	}
-	if stream.Scanner.Scan() {
-		t.Fatalf("frames after turn_end: %s", stream.Scanner.Text())
-	}
-	if err := stream.Scanner.Err(); err != nil {
-		t.Fatalf("drain send stream after turn_end: %v", err)
-	}
+	events := waitTeamStream(t, drainTeamStreamAsync(stream), "team stream")
 	return events
 }
 
-// assertAgentV2TurnWellFormed checks the event-order invariants every turn
-// stream must satisfy regardless of content (conversation-api.md §3, plus
-// the 051 tool extension of specs/051-agent-v2-dsh-migration/data-model.md
-// §2.4): exactly one turn_end and it is the last frame (1); every event
-// carries the requested session resource name and one shared non-empty
-// turn_id (§1); queued, when present, is the first frame and precedes
-// turn_start (2/7); turn_start precedes all block events (2); each
-// block_start occurs exactly once, every delta is announced by its
-// block_start, deltas of one index form a contiguous run (blocks never
-// interleave — 3), each block_end arrives at most once per index and its
-// block content equals the delta concatenation (4); every tool_result frame
-// carries a non-empty tool_id and a terminal status, and settles the most
-// recent unsettled tool-call block with that id — the tool identity first
-// surfaces on the closing block (the dsh block-start chunk carries no id;
-// the web store correlates from block_end too, chat.ts blockEndTerminal) —
-// so a COMPLETED turn ends with no tool call
-// left unsettled. A provider block that never receives a done event (the
-// fake's reasoning item — fake-responses-wire.md §2) simply has no block_end
-// and is not an interleaving violation.
-func assertAgentV2TurnWellFormed(t *testing.T, sessionName string, events []*game.ChatEvent) {
+// waitTeamStream waits for a drain goroutine to finish within the shared read
+// window and returns the frames; a non-EOF read error or a timeout fails the
+// case.
+func waitTeamStream(t *testing.T, ch <-chan teamStreamResult, what string) []*game.ChatEvent {
 	t.Helper()
 
-	if len(events) == 0 {
-		t.Fatal("empty event stream")
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("%s: %v", what, r.err)
+		}
+		return r.events
+	case <-time.After(wsReadTimeout):
+		t.Fatalf("%s did not quiesce within %s", what, wsReadTimeout)
+		return nil
 	}
-	if last := events[len(events)-1]; last.GetTurnEnd() == nil {
-		t.Fatalf("last frame is not turn_end (payload = %T)", last.GetPayload())
+}
+
+// waitTeamQuiescence polls ListTeamMessages until cond holds, up to the shared
+// read window — the List 回填 anchor for a stream the client dropped
+// (team-api.md §3.3).
+func waitTeamQuiescence(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, cond func([]*game.TeamMessage) bool) []*game.TeamMessage {
+	t.Helper()
+
+	deadline := time.Now().Add(wsReadTimeout)
+	for {
+		entries := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+		if cond(entries) {
+			return entries
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("team history did not reach the expected state within %s; entries = %d", wsReadTimeout, len(entries))
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	turnEnds := 0
-	for _, e := range events {
-		if e.GetTurnEnd() != nil {
+}
+
+// ─── Stream frame analysis ──────────────────────────────────────────────────
+
+// teamMemberTurn groups one member turn's frames (same turn_id) in arrival
+// order. Team-level frames (queued / team_message) carry no turn_id and are
+// not part of a group.
+type teamMemberTurn struct {
+	member string
+	turnID string
+	events []*game.ChatEvent
+}
+
+// groupTeamMemberTurns folds a stream's frames into member turns by turn_id,
+// in first-arrival order (team-api.md §3.2: turn_id is minted per member
+// turn, so it is the grouping key).
+func groupTeamMemberTurns(events []*game.ChatEvent) []*teamMemberTurn {
+	var turns []*teamMemberTurn
+	byID := map[string]*teamMemberTurn{}
+	for _, event := range events {
+		if event.GetMember() == "" || event.GetTurnId() == "" {
+			continue
+		}
+		turn := byID[event.GetTurnId()]
+		if turn == nil {
+			turn = &teamMemberTurn{member: event.GetMember(), turnID: event.GetTurnId()}
+			byID[event.GetTurnId()] = turn
+			turns = append(turns, turn)
+		}
+		turn.events = append(turn.events, event)
+	}
+	return turns
+}
+
+// teamTurnBlocks folds one member turn's TEXT and THINK deltas (the block
+// content per conversation-api.md §3 invariant 4).
+func teamTurnBlocks(turn *teamMemberTurn) (think, text string) {
+	kindByIndex := map[int32]game.BlockType{}
+	var thinkOut, textOut strings.Builder
+	for _, event := range turn.events {
+		if start := event.GetBlockStart(); start != nil {
+			kindByIndex[start.GetIndex()] = start.GetType()
+			continue
+		}
+		delta := event.GetDelta()
+		if delta == nil {
+			continue
+		}
+		switch kindByIndex[delta.GetIndex()] {
+		case game.BlockType_BLOCK_TYPE_TEXT:
+			textOut.WriteString(delta.GetText())
+		case game.BlockType_BLOCK_TYPE_THINK:
+			thinkOut.WriteString(delta.GetText())
+		}
+	}
+	return thinkOut.String(), textOut.String()
+}
+
+// teamTurnToolResults returns one member turn's tool_result frames in order.
+func teamTurnToolResults(turn *teamMemberTurn) []*game.ToolResultEvent {
+	var results []*game.ToolResultEvent
+	for _, event := range turn.events {
+		if result := event.GetToolResult(); result != nil {
+			results = append(results, result)
+		}
+	}
+	return results
+}
+
+// teamTurnsForMember filters a stream's member turns by producer role.
+func teamTurnsForMember(events []*game.ChatEvent, member string) []*teamMemberTurn {
+	var turns []*teamMemberTurn
+	for _, turn := range groupTeamMemberTurns(events) {
+		if turn.member == member {
+			turns = append(turns, turn)
+		}
+	}
+	return turns
+}
+
+// teamTurnEndStatus returns the turn's terminal status.
+func teamTurnEndStatus(turn *teamMemberTurn) game.TurnStatus {
+	return turn.events[len(turn.events)-1].GetTurnEnd().GetStatus()
+}
+
+// teamStreamMessages returns a stream's team_message frames (the merged
+// sequence entries with their seq anchors).
+func teamStreamMessages(events []*game.ChatEvent) []*game.TeamMessage {
+	var messages []*game.TeamMessage
+	for _, event := range events {
+		if message := event.GetTeamMessage(); message != nil {
+			messages = append(messages, message)
+		}
+	}
+	return messages
+}
+
+// assertTeamMemberTurnWellFormed checks one member turn's frame invariants:
+// exactly one turn_start (first) and one turn_end (last), a constant turn_id
+// and member, announced block starts with contiguous per-index delta runs and
+// matching terminal content, and tool_result frames settling the tool calls
+// (conversation-api.md §3; data-model.md §2.4).
+func assertTeamMemberTurnWellFormed(t *testing.T, sessionName string, turn *teamMemberTurn) {
+	t.Helper()
+
+	if len(turn.events) == 0 {
+		t.Fatalf("member turn %s has no frames", turn.turnID)
+	}
+	if turn.events[0].GetTurnStart() == nil {
+		t.Fatalf("member turn %s first frame = %T, want turn_start", turn.turnID, turn.events[0].GetPayload())
+	}
+	if last := turn.events[len(turn.events)-1]; last.GetTurnEnd() == nil {
+		t.Fatalf("member turn %s last frame is not turn_end (payload = %T)", turn.turnID, last.GetPayload())
+	}
+	turnStarts, turnEnds := 0, 0
+	for i, event := range turn.events {
+		if event.GetSession() != sessionName {
+			t.Errorf("turn %s frame %d session = %q, want %q", turn.turnID, i, event.GetSession(), sessionName)
+		}
+		if event.GetTurnId() != turn.turnID {
+			t.Errorf("turn %s frame %d turn_id = %q", turn.turnID, i, event.GetTurnId())
+		}
+		if event.GetMember() != turn.member {
+			t.Errorf("turn %s frame %d member = %v, want %v", turn.turnID, i, event.GetMember(), turn.member)
+		}
+		switch {
+		case event.GetTurnStart() != nil:
+			turnStarts++
+		case event.GetTurnEnd() != nil:
 			turnEnds++
 		}
 	}
-	if turnEnds != 1 {
-		t.Fatalf("turn_end frame count = %d, want exactly 1", turnEnds)
+	if turnStarts != 1 || turnEnds != 1 {
+		t.Fatalf("turn %s frame counts: turn_start=%d turn_end=%d, want exactly 1 each", turn.turnID, turnStarts, turnEnds)
 	}
 
-	turnID := events[0].GetTurnId()
-	if turnID == "" {
-		t.Fatal("first frame carries an empty turn_id")
-	}
-	for i, e := range events {
-		if e.GetSession() != sessionName {
-			t.Errorf("frame %d session = %q, want %q", i, e.GetSession(), sessionName)
-		}
-		if e.GetTurnId() != turnID {
-			t.Errorf("frame %d turn_id = %q, want constant %q across the turn", i, e.GetTurnId(), turnID)
-		}
-	}
-
-	sawTurnStart := false
 	announced := map[int32]bool{}
 	kindByIndex := map[int32]game.BlockType{}
 	deltas := map[int32][]string{}
 	closedRuns := map[int32]bool{}
 	lastDeltaIdx := int32(-1)
 	blockEnds := map[int32]*game.ContentBlock{}
-	// tool pairing bookkeeping: the tool-call blocks seen (by tool_id, most
-	// recent unsettled last) and the tool_result frames observed.
 	unsettledToolCalls := []string{}
-	for i, e := range events {
+	for i, event := range turn.events {
 		switch {
-		case e.GetQueued() != nil:
-			if i != 0 {
-				t.Errorf("queued at frame %d is not the first frame (§3 invariant 2/7)", i)
-			}
-			if pos := e.GetQueued().GetPosition(); pos < 1 {
-				t.Errorf("queued position = %d, want >= 1 (1-based queue slot)", pos)
-			}
-		case e.GetTurnStart() != nil:
-			if sawTurnStart {
-				t.Errorf("duplicate turn_start at frame %d", i)
-			}
-			sawTurnStart = true
-		case e.GetBlockStart() != nil:
-			if !sawTurnStart {
-				t.Errorf("block_start at frame %d precedes turn_start (§3 invariant 2)", i)
-			}
-			start := e.GetBlockStart()
+		case event.GetBlockStart() != nil:
+			start := event.GetBlockStart()
 			if announced[start.GetIndex()] {
-				t.Errorf("duplicate block_start for index %d", start.GetIndex())
+				t.Errorf("turn %s: duplicate block_start for index %d", turn.turnID, start.GetIndex())
 			}
 			announced[start.GetIndex()] = true
 			kindByIndex[start.GetIndex()] = start.GetType()
-		case e.GetDelta() != nil:
-			if !sawTurnStart {
-				t.Errorf("delta at frame %d precedes turn_start (§3 invariant 2)", i)
-			}
-			idx := e.GetDelta().GetIndex()
+		case event.GetDelta() != nil:
+			idx := event.GetDelta().GetIndex()
 			if !announced[idx] {
-				t.Errorf("delta at frame %d carries index %d without a block_start (§3 invariant 3)", i, idx)
+				t.Errorf("turn %s frame %d: delta carries index %d without a block_start", turn.turnID, i, idx)
 				continue
 			}
 			if lastDeltaIdx != -1 && lastDeltaIdx != idx {
 				closedRuns[lastDeltaIdx] = true
 			}
 			if closedRuns[idx] {
-				t.Errorf("delta at frame %d reopens index %d — block deltas interleave (§3 invariant 3)", i, idx)
+				t.Errorf("turn %s frame %d: delta reopens index %d — block deltas interleave", turn.turnID, i, idx)
 			}
-			deltas[idx] = append(deltas[idx], e.GetDelta().GetText())
+			deltas[idx] = append(deltas[idx], event.GetDelta().GetText())
 			lastDeltaIdx = idx
-		case e.GetBlockEnd() != nil:
-			idx := e.GetBlockEnd().GetIndex()
+		case event.GetBlockEnd() != nil:
+			idx := event.GetBlockEnd().GetIndex()
 			if !announced[idx] {
-				t.Errorf("block_end at frame %d carries index %d without a block_start (§3 invariant 3)", i, idx)
+				t.Errorf("turn %s frame %d: block_end carries index %d without a block_start", turn.turnID, i, idx)
 				continue
 			}
 			if _, dup := blockEnds[idx]; dup {
-				t.Errorf("duplicate block_end for index %d", idx)
+				t.Errorf("turn %s: duplicate block_end for index %d", turn.turnID, idx)
 				continue
 			}
-			blockEnds[idx] = e.GetBlockEnd().GetBlock()
+			blockEnds[idx] = event.GetBlockEnd().GetBlock()
 			// The tool identity first surfaces on the closing block (the dsh
 			// block-start chunk carries no id): register the pending call
 			// from there, so the tool_result pairing below has its key.
-			if call := e.GetBlockEnd().GetBlock().GetToolCall(); call != nil {
+			if call := event.GetBlockEnd().GetBlock().GetToolCall(); call != nil {
 				if call.GetToolId() == "" || call.GetName() == "" {
-					t.Errorf("block_end at frame %d carries tool_id %q name %q, want both non-empty (data-model.md §2.3)", i, call.GetToolId(), call.GetName())
+					t.Errorf("turn %s: block_end carries tool_id %q name %q, want both non-empty", turn.turnID, call.GetToolId(), call.GetName())
 				}
 				unsettledToolCalls = append(unsettledToolCalls, call.GetToolId())
 			}
-		case e.GetToolResult() != nil:
-			result := e.GetToolResult()
+		case event.GetToolResult() != nil:
+			result := event.GetToolResult()
 			if result.GetToolId() == "" {
-				t.Errorf("tool_result at frame %d carries an empty tool_id (§2.4)", i)
+				t.Errorf("turn %s frame %d: tool_result carries an empty tool_id", turn.turnID, i)
 				continue
 			}
 			if result.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED && result.GetStatus() != game.ToolStatus_TOOL_STATUS_FAILED {
-				t.Errorf("tool_result at frame %d status = %v, want a terminal SUCCEEDED/FAILED", i, result.GetStatus())
+				t.Errorf("turn %s frame %d: tool_result status = %v, want a terminal SUCCEEDED/FAILED", turn.turnID, i, result.GetStatus())
 			}
-			// Settle the most recent unsettled call with this id (the same
-			// newest-match rule the history applies, data-model.md §2.3).
 			for j := len(unsettledToolCalls) - 1; j >= 0; j-- {
 				if unsettledToolCalls[j] == result.GetToolId() {
 					unsettledToolCalls = append(unsettledToolCalls[:j], unsettledToolCalls[j+1:]...)
 					break
 				}
 			}
-		case e.GetTurnEnd() != nil:
-			// Position/count already asserted above.
-		default:
-			t.Errorf("frame %d carries an unknown payload (proto3 oneof branch %T)", i, e.GetPayload())
 		}
 	}
-	if !sawTurnStart {
-		t.Error("no turn_start frame in the stream (§3 invariant 2)")
+	if teamTurnEndStatus(turn) == game.TurnStatus_TURN_STATUS_COMPLETED && len(unsettledToolCalls) > 0 {
+		t.Errorf("turn %s: COMPLETED turn ends with %d unsettled tool call(s): %v", turn.turnID, len(unsettledToolCalls), unsettledToolCalls)
 	}
-	if events[len(events)-1].GetTurnEnd().GetStatus() == game.TurnStatus_TURN_STATUS_COMPLETED && len(unsettledToolCalls) > 0 {
-		t.Errorf("COMPLETED turn ends with %d tool call(s) without a tool_result: %v (data-model.md §4-2)", len(unsettledToolCalls), unsettledToolCalls)
-	}
-
-	// §3 invariant 4: for every block that DID terminate, the delta
-	// concatenation equals the terminal block content.
 	for idx, block := range blockEnds {
 		joined := strings.Join(deltas[idx], "")
 		switch {
 		case block.GetText() != nil:
 			if got := block.GetText().GetContent(); got != joined {
-				t.Errorf("block %d: block_end text = %q, want delta concatenation %q", idx, got, joined)
+				t.Errorf("turn %s block %d: block_end text = %q, want delta concatenation %q", turn.turnID, idx, got, joined)
 			}
 		case block.GetThink() != nil:
 			if got := block.GetThink().GetContent(); got != joined {
-				t.Errorf("block %d: block_end think = %q, want delta concatenation %q", idx, got, joined)
+				t.Errorf("turn %s block %d: block_end think = %q, want delta concatenation %q", turn.turnID, idx, got, joined)
 			}
 		case block.GetToolCall() != nil:
 			call := block.GetToolCall()
 			if call.GetStatus() != game.ToolStatus_TOOL_STATUS_RUNNING {
-				t.Errorf("block %d: block_end tool_call status = %v, want RUNNING (the terminal status arrives via tool_result, data-model.md §2.3)", idx, call.GetStatus())
+				t.Errorf("turn %s block %d: block_end tool_call status = %v, want RUNNING", turn.turnID, idx, call.GetStatus())
 			}
 			if got := call.GetArgsJson(); got != joined {
-				t.Errorf("block %d: block_end args_json = %q, want delta concatenation %q", idx, got, joined)
+				t.Errorf("turn %s block %d: block_end args_json = %q, want delta concatenation %q", turn.turnID, idx, got, joined)
 			}
 		}
 	}
 }
 
-// agentV2TerminalBlocks folds a completed turn's stream events into the
-// per-type terminal block contents: each block's deltas joined in arrival
-// order (conversation-api.md §3 invariant 4 — the delta concatenation IS the
-// block content). THINK deltas are attributed via their block_start type;
-// a THINK block whose provider wire never sends a done event (the fake's
-// reasoning item emits no output_item.done — fake-responses-wire.md §2)
-// still contributes its deltas. This is the expected history backfill of
-// the same turn (FR-014 consistency).
-type agentV2TerminalBlocks struct {
-	think string
-	text  string
+// assertTeamStreamWellFormed checks the stream-level invariants of a team
+// stream established at its lifecycle start (team-api.md §3.2/§3.3): every
+// frame carries the session; a queued frame is the first frame only; the
+// team_message frames carry a producer label, a message, and a strictly
+// increasing seq; and each member turn is well formed (assertTeamMemberTurnWellFormed).
+func assertTeamStreamWellFormed(t *testing.T, sessionName string, events []*game.ChatEvent) {
+	t.Helper()
+
+	if len(events) == 0 {
+		t.Fatal("empty team stream")
+	}
+	lastSeq := int64(0)
+	for i, event := range events {
+		if event.GetSession() != sessionName {
+			t.Errorf("frame %d session = %q, want %q", i, event.GetSession(), sessionName)
+		}
+		switch {
+		case event.GetQueued() != nil:
+			if i != 0 {
+				t.Errorf("queued at frame %d is not the first frame (team-api.md §3.3)", i)
+			}
+			if pos := event.GetQueued().GetPosition(); pos < 1 {
+				t.Errorf("queued position = %d, want >= 1", pos)
+			}
+		case event.GetTeamMessage() != nil:
+			frame := event.GetTeamMessage()
+			if frame.GetMember() == "" {
+				t.Errorf("team_message at frame %d lacks its producer label", i)
+			}
+			if frame.GetMessage() == nil {
+				t.Errorf("team_message at frame %d lacks its message payload", i)
+			}
+			if frame.GetSeq() <= lastSeq {
+				t.Errorf("team_message at frame %d seq = %d, want > previous %d", i, frame.GetSeq(), lastSeq)
+			}
+			lastSeq = frame.GetSeq()
+		case event.GetPayload() == nil:
+			t.Errorf("frame %d carries an empty payload", i)
+		default:
+			if event.GetMember() == "" || event.GetTurnId() == "" {
+				t.Errorf("member frame %d lacks member/turn_id", i)
+			}
+		}
+	}
+	for _, turn := range groupTeamMemberTurns(events) {
+		assertTeamMemberTurnWellFormed(t, sessionName, turn)
+	}
 }
 
-func agentV2TerminalBlocksFromEvents(events []*game.ChatEvent) agentV2TerminalBlocks {
-	var out agentV2TerminalBlocks
-	kindByIndex := map[int32]game.BlockType{}
-	for _, e := range events {
-		if start := e.GetBlockStart(); start != nil {
-			kindByIndex[start.GetIndex()] = start.GetType()
-			continue
+// teamHistoryMessagesEquivalent compares one streamed team_message payload
+// with the listed entry: role and every block's native content must agree. A
+// tool-call block may differ in its terminal settlement — the frame is
+// emitted when the entry is appended (status RUNNING) while the List read
+// observes the settled status/result backfilled by tool/result
+// (team-api.md §3.2); the terminal state travels through the tool_result
+// frames and the member view, so only id/name/args are compared here.
+func teamHistoryMessagesEquivalent(streamed, listed *game.HistoryMessage) bool {
+	if streamed.GetRole() != listed.GetRole() {
+		return false
+	}
+	streamedBlocks, listedBlocks := streamed.GetBlocks(), listed.GetBlocks()
+	if len(streamedBlocks) != len(listedBlocks) {
+		return false
+	}
+	for i := range streamedBlocks {
+		a, b := streamedBlocks[i], listedBlocks[i]
+		switch {
+		case a.GetText() != nil || b.GetText() != nil:
+			if a.GetText().GetContent() != b.GetText().GetContent() {
+				return false
+			}
+		case a.GetThink() != nil || b.GetThink() != nil:
+			if a.GetThink().GetContent() != b.GetThink().GetContent() {
+				return false
+			}
+		case a.GetToolCall() != nil || b.GetToolCall() != nil:
+			ca, cb := a.GetToolCall(), b.GetToolCall()
+			if ca.GetToolId() != cb.GetToolId() || ca.GetName() != cb.GetName() || ca.GetArgsJson() != cb.GetArgsJson() {
+				return false
+			}
+		default:
+			return false
 		}
-		delta := e.GetDelta()
-		if delta == nil {
-			continue
+	}
+	return true
+}
+
+// assertTeamStreamMessagesMatchList asserts the Seq 锚 consistency the team
+// stream and ListTeamMessages share (team-api.md §3.2): the frames a stream
+// from the lifecycle start observed are exactly the listed entries, in order,
+// with equal seq, producer label, and native message content (SC-003).
+func assertTeamStreamMessagesMatchList(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, events []*game.ChatEvent) {
+	t.Helper()
+
+	frames := teamStreamMessages(events)
+	listed := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	if len(frames) != len(listed) {
+		t.Fatalf("stream team_message frames = %d, ListTeamMessages entries = %d, want equal", len(frames), len(listed))
+	}
+	for i, frame := range frames {
+		entry := listed[i]
+		if frame.GetSeq() != entry.GetSeq() {
+			t.Fatalf("frame[%d] seq = %d, listed seq = %d", i, frame.GetSeq(), entry.GetSeq())
 		}
-		switch kindByIndex[delta.GetIndex()] {
-		case game.BlockType_BLOCK_TYPE_THINK:
-			out.think += delta.GetText()
-		case game.BlockType_BLOCK_TYPE_TEXT:
-			out.text += delta.GetText()
+		if frame.GetMember() != entry.GetMember() {
+			t.Errorf("frame[%d] member = %v, listed member = %v", i, frame.GetMember(), entry.GetMember())
+		}
+		if !teamHistoryMessagesEquivalent(frame.GetMessage(), entry.GetMessage()) {
+			t.Errorf("frame[%d] (seq %d) message differs from the listed entry", i, frame.GetSeq())
+		}
+	}
+}
+
+// teamMessagesForMember filters merge entries by producer label.
+func teamMessagesForMember(entries []*game.TeamMessage, member string) []*game.TeamMessage {
+	var out []*game.TeamMessage
+	for _, entry := range entries {
+		if entry.GetMember() == member {
+			out = append(out, entry)
 		}
 	}
 	return out
@@ -492,149 +757,293 @@ func agentV2MessageText(m *game.HistoryMessage) string {
 	return s
 }
 
-// listAgentV2Messages issues GET /api/v2/{session}/agent/messages and
-// returns the parsed ListAgentMessagesResponse (agent-api.md §1). Calls
-// t.Fatal on non-200 responses.
-func listAgentV2Messages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *game.ListAgentMessagesResponse {
+// ─── Team resource helpers (the /api/v2 team singleton surface) ─────────────
+
+// teamMember builds one members-list entry for the UpdateTeam input (the
+// generalized wire shape: one {role, preset, model?} per member,
+// specs/059-agent-v2-team-mode/contracts/team-api.md §2). An empty model is
+// omitted from the wire body (empty = deployment default).
+func teamMember(role, preset, model string) *game.TeamMember {
+	member := &game.TeamMember{Role: role, Preset: preset}
+	if model != "" {
+		member.Model = model
+	}
+	return member
+}
+
+// updateAgentV2Team materializes (or refreshes) the session's team through
+// the gateway with the scene's two-member roster (player + planner) and
+// returns the stored Team. Calls t.Fatal on non-200 responses.
+func updateAgentV2Team(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, playerPreset, plannerPreset, playerModel, plannerModel string) *game.Team {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%s%s/agent/messages", sutHostURL, agentV2PathPrefix, sessionName)
+	team, status, respBody := updateAgentV2TeamWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName, playerPreset, plannerPreset, playerModel, plannerModel)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH update team status=%d, body=%s", status, respBody)
+	}
+	return team
+}
+
+// updateAgentV2TeamWithStatus is updateAgentV2Team without the 200 fatality:
+// it builds the same scene roster and returns the HTTP status with the parsed
+// resource (nil unless the body decodes as a Team) — the fail-fast matrix's
+// convenience path (INVALID_ARGUMENT, team-api.md §2/§6).
+func updateAgentV2TeamWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, playerPreset, plannerPreset, playerModel, plannerModel string) (*game.Team, int, []byte) {
+	t.Helper()
+
+	return updateAgentV2TeamMembers(t, ctx, sutHostURL, sutEnvName, sessionName, []*game.TeamMember{
+		teamMember("player", playerPreset, playerModel),
+		teamMember("planner", plannerPreset, plannerModel),
+	}, "")
+}
+
+// updateAgentV2TeamMembers sends an exact members list as the materialization
+// input (PATCH /api/v2/.../team?allow_missing=true, AIP-134 create-or-update)
+// and returns the parsed Team with the HTTP status. The proto imposes no
+// roster size or role vocabulary (scene-agnostic primitive), so this raw path
+// is what the structural/scene validation cases use; updateMask is the raw
+// mask value ("members" or "", the latter omitting the query parameter).
+func updateAgentV2TeamMembers(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, members []*game.TeamMember, updateMask string) (*game.Team, int, []byte) {
+	t.Helper()
+
+	body, err := protojson.Marshal(&game.Team{Members: members})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Team: %v", err)
+	}
+	reqURL := fmt.Sprintf("%s%s%s/team?allow_missing=true", sutHostURL, agentV2PathPrefix, sessionName)
+	if updateMask != "" {
+		reqURL += "&update_mask=" + url.QueryEscape(updateMask)
+	}
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPatch, reqURL, sutEnvName, body)
+	stored := new(game.Team)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, stored); err != nil {
+		t.Logf("Team body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
+		return nil, resp.StatusCode, respBody
+	}
+	return stored, resp.StatusCode, respBody
+}
+
+// getAgentV2TeamWithStatus issues GET /api/v2/.../team and returns the HTTP
+// status with the raw body — the materialization probe (200 with the Team,
+// 404 while unmaterialized, team-api.md §1/§3).
+func getAgentV2TeamWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s/team", sutHostURL, agentV2PathPrefix, sessionName)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	return resp.StatusCode, respBody
+}
+
+// getAgentV2Team fetches the session's materialized team. Calls t.Fatal on
+// non-200 responses (404 means not materialized — use
+// getAgentV2TeamWithStatus to observe that branch).
+func getAgentV2Team(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *game.Team {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s/team", sutHostURL, agentV2PathPrefix, sessionName)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET agent messages status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("GET team status=%d, body=%s", resp.StatusCode, respBody)
 	}
-	messages := new(game.ListAgentMessagesResponse)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, messages); err != nil {
-		t.Fatalf("Unmarshal ListAgentMessagesResponse: %v (raw: %s)", err, respBody)
+	team := new(game.Team)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, team); err != nil {
+		t.Fatalf("Unmarshal Team: %v (raw: %s)", err, respBody)
 	}
-	return messages
+	return team
 }
 
-// listAgentV2MessagesWithStatus is listAgentV2Messages without the 200
-// fatality: it returns the HTTP status with the parsed response — used to
-// assert the 404 NOT_FOUND of a never-materialized agent (agent-api.md §2.3:
-// no owner → the read paths answer NOT_FOUND, specs/051-agent-v2-dsh-
-// migration/contracts/agent-api.md §2.2).
-func listAgentV2MessagesWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, *game.ListAgentMessagesResponse) {
+// getAgentV2TeamMemberWithStatus issues GET .../team/members/{member} and
+// returns the HTTP status with the parsed member (nil unless the body decodes
+// as a TeamMember) — the fixed-roster probe (team-api.md §1).
+func getAgentV2TeamMemberWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, member string) (*game.TeamMember, int, []byte) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%s%s/agent/messages", sutHostURL, agentV2PathPrefix, sessionName)
+	reqURL := fmt.Sprintf("%s%s", sutHostURL, agentV2PathPrefix)
+	reqURL += strings.TrimPrefix(agentV2MemberName(sessionName, member), "/")
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
-	messages := new(game.ListAgentMessagesResponse)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, messages); err != nil {
-		t.Logf("ListAgentMessagesResponse body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
+	parsed := new(game.TeamMember)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, parsed); err != nil {
+		t.Logf("TeamMember body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
+		return nil, resp.StatusCode, respBody
 	}
-	return resp.StatusCode, messages
+	return parsed, resp.StatusCode, respBody
 }
 
-// ─── agent_v2 game helpers (preset / materialization / flow WS) ─────────────
-//
-// The US1 game suites drive the full loop: preset creation → UpdateAgent
-// materialization → a fake-llm game chain over the /api/v2 Send stream, with
-// the flow half observed either through the deployed fake-desktop executors
-// or through a test-created /api/v2 WebSocket connection
-// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §1/§6).
-
-// User-message keyword triggers of projects/game/fake-llm/service/testdata/
-// agent_v2_saolei.yaml. Same matching rules as the agentV2Trigger* constants
-// above — keep each trigger out of every other turn's text.
-const (
-	agentV2TriggerSaoleiGame        = "开始一局扫雷"
-	agentV2TriggerSaoleiProgressive = "progressive minesweeper"
-	agentV2TriggerSaoleiNodesktop   = "minesweeper without desktop"
-)
-
-// Expected /v1/responses game-chain contents pinned from
-// testdata/agent_v2_saolei_tools.yaml (the same lockstep rule as the
-// agentV2* constants above). The chain texts are what the tool_result frames
-// and the terminal TEXT deltas must carry per fake-desktop scenario
-// (testdata/agent_v2_saolei_tools.yaml rule set).
-const (
-	// won chain (the desktop-e2e-won executor session, the 9×9 win board):
-	// init sees the already won board, the operate batch stops pre-dispatch
-	// on game_won, and the terminal summary closes the chain.
-	agentV2WonInitContains   = "new game started"
-	agentV2WonBoardContains  = "board size 9*9"
-	agentV2WonStatusContains = "game status: won"
-	agentV2WonRejectContains = "stopped at click(0,0) (game_won)"
-	agentV2WonSummaryText    = "本局扫雷已完成：全部雷区排除，游戏获胜。"
-	// progressive chain (the desktop-e2e-drop executor before its fault
-	// fires): two cell ops land on the board model and the batch reports
-	// playing.
-	agentV2ProgInitContains   = "new game started"
-	agentV2ProgBoardContains  = "board size 16*16"
-	agentV2ProgStatusContains = "game status: playing"
-	agentV2ProgExecContains   = "executed 2 ops"
-	agentV2ProgSummaryText    = "已完成一轮扫雷操作：点击揭示与标记旗子均已执行，棋盘已刷新。"
-	// desktop-absent / mid-game-disconnect chain: the bridge's FAILED receipt
-	// becomes a tool ERROR result whose text names the cause.
-	agentV2DisconnectedContain = "desktop disconnected"
-	agentV2NodesktopSummary    = "桌面未连接，无法开局。请先连接桌面后再试。"
-	agentV2DisconnectSummary   = "桌面连接中断，操作未能完成。请等待桌面重连后再试。"
-)
-
-// Fixed caller-id sessions the deployed fake-desktop executor binds: the
-// won session is bound by projects/game/testplan/deploy_agent_v2.yaml and
-// the drop session by projects/game/testplan/deploy_agent_v2_drop.yaml
-// (FAKE_DESKTOP_SESSION — one executor instance per deploy). The suites
-// create these sessions idempotently and address the deployment's single
-// fake-desktop instance through them.
-const (
-	agentV2DesktopWonSessionID = "desktop-e2e-won"
-	agentV2DesktopDropID       = "desktop-e2e-drop"
-)
-
-// ensureAgentV2Session creates a caller-id session, tolerating an
-// ALREADY_EXISTS (409) from a prior case in the same deployment — the
-// session resource itself is what matters, not who created it. Returns the
-// full /api/v2 session resource name.
-func ensureAgentV2Session(t *testing.T, sutHostURL, sutEnvName, sessionID string) string {
+// getAgentV2TeamMember fetches one fixed member. Calls t.Fatal on non-200.
+func getAgentV2TeamMember(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, member string) *game.TeamMember {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions?session_id=%s",
-		sutHostURL, pathPrefix, saoleiTemplateID, url.QueryEscape(sessionID))
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusConflict:
-		// Already created by a sibling case — verify it is still readable.
-		if status, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID); status != http.StatusOK {
-			t.Fatalf("session %s reported already exists but is not readable: status=%d body=%s", sessionID, status, respBody)
+	parsed, status, respBody := getAgentV2TeamMemberWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName, member)
+	if status != http.StatusOK {
+		t.Fatalf("GET team member %s status=%d, body=%s", member, status, respBody)
+	}
+	return parsed
+}
+
+// listTeamMessagesWithStatus issues GET .../team/messages and returns the
+// HTTP status with the raw body (404 while unmaterialized, team-api.md §5).
+func listTeamMessagesWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s/team/messages", sutHostURL, agentV2PathPrefix, sessionName)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	return resp.StatusCode, respBody
+}
+
+// listTeamMessages fetches the merged team sequence (ListTeamMessages,
+// team-api.md §5). Calls t.Fatal on non-200 responses.
+func listTeamMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) []*game.TeamMessage {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s/team/messages", sutHostURL, agentV2PathPrefix, sessionName)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET team messages status=%d, body=%s", resp.StatusCode, respBody)
+	}
+	listed := new(game.ListTeamMessagesResponse)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, listed); err != nil {
+		t.Fatalf("Unmarshal ListTeamMessagesResponse: %v (raw: %s)", err, respBody)
+	}
+	return listed.GetMessages()
+}
+
+// listMemberMessagesWithStatus issues GET .../team/members/{member}/messages
+// and returns the HTTP status with the raw body.
+func listMemberMessagesWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, member string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s", sutHostURL, agentV2PathPrefix)
+	reqURL += strings.TrimPrefix(agentV2MemberName(sessionName, member), "/") + "/messages"
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	return resp.StatusCode, respBody
+}
+
+// listMemberMessages fetches one member's view history (ListMemberMessages,
+// team-api.md §5). Calls t.Fatal on non-200 responses.
+func listMemberMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, member string) []*game.MemberViewMessage {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s", sutHostURL, agentV2PathPrefix)
+	reqURL += strings.TrimPrefix(agentV2MemberName(sessionName, member), "/") + "/messages"
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET member messages (%s) status=%d, body=%s", member, resp.StatusCode, respBody)
+	}
+	listed := new(game.ListMemberMessagesResponse)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, listed); err != nil {
+		t.Fatalf("Unmarshal ListMemberMessagesResponse: %v (raw: %s)", err, respBody)
+	}
+	return listed.GetMessages()
+}
+
+// postTeamCancel issues POST /api/v2/{team}:cancel (AIP-136, team-api.md §4)
+// and returns the HTTP status with the raw body: 200 on success — both the
+// terminating and the idempotent no-op cancel — 404 for a never-materialized
+// session, 400 FAILED_PRECONDITION for an owner without a materialized team.
+func postTeamCancel(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%s%s/team:cancel", sutHostURL, agentV2PathPrefix, sessionName)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
+	return resp.StatusCode, respBody
+}
+
+// teamMemberByRole returns the team's member with the given scene role string
+// ("player" / "planner"), or nil.
+func teamMemberByRole(team *game.Team, role string) *game.TeamMember {
+	for _, member := range team.GetMembers() {
+		if member.GetRole() == role {
+			return member
 		}
-	default:
-		t.Fatalf("POST ensure session %s status=%d, body=%s", sessionID, resp.StatusCode, respBody)
 	}
-	return agentV2SessionName(sessionID)
+	return nil
 }
 
-// createAgentV2Preset creates a preset through the gateway
-// (POST /api/v2/templates/saolei/presets?preset_id=...&role=... — the
-// body:"preset" binding carries the resource while the caller-supplied id
-// and the REQUIRED role ride the query parameters per AIP-133) and returns
-// the created resource (agent-api.md §1 CreatePreset; preset-api.md §2 role
-// 语义). Calls t.Fatal on non-200 responses.
-func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string) *game.Preset {
+// teamMemberPreset returns one scene member's preset snapshot from the
+// members list (the generalized Team shape — the former player_preset /
+// planner_preset scalar fields are gone, team-api.md §2). Empty when the role
+// is absent.
+func teamMemberPreset(team *game.Team, role string) string {
+	if member := teamMemberByRole(team, role); member != nil {
+		return member.GetPreset()
+	}
+	return ""
+}
+
+// teamMemberModel returns one scene member's effective model (members-list
+// accessor, see teamMemberPreset). Empty when the role is absent.
+func teamMemberModel(team *game.Team, role string) string {
+	if member := teamMemberByRole(team, role); member != nil {
+		return member.GetModel()
+	}
+	return ""
+}
+
+// waitTeamDesktopConnected polls GetTeam until the session's desktop bridge
+// fact reads true (the deployed fake-desktop executors re-dial after their
+// injected fault cycles, so a game case must not race the reconnect).
+func waitTeamDesktopConnected(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, timeout time.Duration) {
 	t.Helper()
 
-	preset, status, respBody := createAgentV2PresetWithStatus(t, ctx, sutHostURL, sutEnvName, presetID, persona)
+	deadline := time.Now().Add(timeout)
+	for {
+		if getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName).GetDesktopConnected() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("desktop did not reconnect for %s within %s", sessionName, timeout)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// ─── Preset helpers (the stateless configuration face) ──────────────────────
+
+// createAgentV2TeamPreset creates a preset in the given pool (role REQUIRED on
+// create, preset-api.md §2). The body:"preset" binding carries only the
+// resource; the caller-supplied id and the role ride the URI query parameters
+// (AIP-133). Calls t.Fatal on non-200 responses.
+func createAgentV2TeamPreset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string, role string) *game.Preset {
+	t.Helper()
+
+	preset, status, respBody := createAgentV2PresetWithRole(t, ctx, sutHostURL, sutEnvName, presetID, persona, role)
 	if status != http.StatusOK {
 		t.Fatalf("POST create preset status=%d, body=%s", status, respBody)
 	}
 	return preset
 }
 
-// createAgentV2PresetWithStatus is createAgentV2Preset without the 200
-// fatality: it returns the HTTP status with the parsed resource (nil unless
-// the body decodes as a Preset) — used to assert the 409 ALREADY_EXISTS of a
-// duplicate caller-id (agent-api.md §2.5).
-func createAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string) (*game.Preset, int, []byte) {
+// createAgentV2TeamPresetPair creates one player-pool and one planner-pool
+// preset for a team materialization. Both personas carry the role's
+// system-prompt anchor (你是扫雷 player / 你是扫雷 planner) so the fake-llm
+// team fixtures match the materialized members (the cross-phase stable
+// contract, specs/059-agent-v2-team-mode/tasks.md T004/T011). Calls t.Fatal
+// on non-200 responses.
+func createAgentV2TeamPresetPair(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, idPrefix, marker string) (*game.Preset, *game.Preset) {
 	t.Helper()
 
-	// The body:"preset" binding carries only the resource; the remaining
-	// CreatePresetRequest fields map to URI query parameters (AIP-133). role
-	// is REQUIRED on create (specs/059-agent-v2-team-mode/contracts/
-	// preset-api.md §2): the large tests create PLAYER-pool presets — the
-	// single materialized agent of the Phase-2 surface is the player.
+	player := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, idPrefix+"-player-"+uniqueSuffix(),
+		"你是扫雷 player，"+marker, "player")
+	planner := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, idPrefix+"-planner-"+uniqueSuffix(),
+		"你是扫雷 planner，"+marker, "planner")
+	return player, planner
+}
+
+// createAgentV2Preset creates a player-pool preset (the common case for the
+// single-purpose fixtures). Calls t.Fatal on non-200 responses.
+func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string) *game.Preset {
+	t.Helper()
+
+	return createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, presetID, persona, "player")
+}
+
+// createAgentV2PresetWithStatus is the role-aware preset creation without the
+// 200 fatality: it returns the HTTP status with the parsed resource (nil
+// unless the body decodes as a Preset) — used to assert the 409
+// ALREADY_EXISTS and the missing-role 400 (preset-api.md §2).
+func createAgentV2PresetWithRole(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string, role string) (*game.Preset, int, []byte) {
+	t.Helper()
+
 	body, err := protojson.Marshal(&game.Preset{Persona: persona})
 	if err != nil {
 		t.Fatalf("protojson.Marshal Preset: %v", err)
@@ -642,7 +1051,7 @@ func createAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL
 	reqURL := fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s&role=%s",
 		sutHostURL, agentV2PathPrefix, saoleiTemplateID,
 		url.QueryEscape(presetID),
-		url.QueryEscape(game.PresetRole_PRESET_ROLE_PLAYER.String()))
+		url.QueryEscape(role))
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
 	created := new(game.Preset)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, created); err != nil {
@@ -652,16 +1061,44 @@ func createAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL
 	return created, resp.StatusCode, respBody
 }
 
+// postAgentV2PresetCreate issues a raw preset-create request with the given
+// query values (roleQuery empty = the parameter is omitted) and returns the
+// HTTP status with the raw body — the role-vocabulary reject path
+// (missing/unknown/empty role; preset-api.md §2).
+func postAgentV2PresetCreate(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona, roleQuery string) (int, []byte) {
+	t.Helper()
+
+	body, err := protojson.Marshal(&game.Preset{Persona: persona})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Preset: %v", err)
+	}
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s",
+		sutHostURL, agentV2PathPrefix, saoleiTemplateID, url.QueryEscape(presetID))
+	if roleQuery != "" {
+		reqURL += "&role=" + url.QueryEscape(roleQuery)
+	}
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
+	return resp.StatusCode, respBody
+}
+
 // listAgentV2Presets issues GET /api/v2/templates/saolei/presets and returns
-// the parsed ListPresetsResponse (agent-api.md §1 ListPresets). Calls t.Fatal
-// on non-200 responses.
+// the parsed ListPresetsResponse. Calls t.Fatal on non-200 responses.
 func listAgentV2Presets(t *testing.T, ctx context.Context, sutHostURL, sutEnvName string) *game.ListPresetsResponse {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/presets", sutHostURL, agentV2PathPrefix, saoleiTemplateID)
-	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET list presets status=%d, body=%s", resp.StatusCode, respBody)
+	return listAgentV2PresetsByRole(t, ctx, sutHostURL, sutEnvName, "")
+}
+
+// listAgentV2PresetsByRole is listAgentV2Presets with an optional role filter
+// (empty = the query parameter is omitted — no filtering; preset-api.md §1)
+// and the 200 fatality. The filter value is a scene role string
+// ("player" / "planner").
+func listAgentV2PresetsByRole(t *testing.T, ctx context.Context, sutHostURL, sutEnvName string, role string) *game.ListPresetsResponse {
+	t.Helper()
+
+	resp, respBody := listAgentV2PresetsWithStatus(t, ctx, sutHostURL, sutEnvName, role)
+	if resp != http.StatusOK {
+		t.Fatalf("GET list presets status=%d, body=%s", resp, respBody)
 	}
 	list := new(game.ListPresetsResponse)
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, list); err != nil {
@@ -670,9 +1107,23 @@ func listAgentV2Presets(t *testing.T, ctx context.Context, sutHostURL, sutEnvNam
 	return list
 }
 
+// listAgentV2PresetsWithStatus issues the preset list with the raw role query
+// value (empty = omitted) and returns the HTTP status with the raw body — the
+// role-vocabulary filter reject path (preset-api.md §1).
+func listAgentV2PresetsWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, role string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets", sutHostURL, agentV2PathPrefix, saoleiTemplateID)
+	if role != "" {
+		reqURL += "?role=" + url.QueryEscape(role)
+	}
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
+	return resp.StatusCode, respBody
+}
+
 // getAgentV2PresetWithStatus issues GET /api/v2/{name} for a preset and
 // returns the HTTP status with the parsed resource — the existence probe
-// (200 while stored, 404 after delete; agent-api.md §2.5).
+// (200 while stored, 404 after delete; preset-api.md §1).
 func getAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name string) (*game.Preset, int) {
 	t.Helper()
 
@@ -698,11 +1149,8 @@ func getAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName,
 }
 
 // updateAgentV2Preset patches a preset's persona through the gateway
-// (PATCH /api/v2/{name}?update_mask=persona, agent-api.md §1
-// UpdatePreset). The explicit mask rides the query string (the body:"preset"
-// binding leaves no room for it in the body) and the identity rides the URL
-// path — the body carries only the mutable field. Calls t.Fatal on non-200
-// responses.
+// (PATCH /api/v2/{name}?update_mask=persona, AIP-134; persona is the only
+// mutable field, preset-api.md §2). Calls t.Fatal on non-200 responses.
 func updateAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name, persona string) *game.Preset {
 	t.Helper()
 
@@ -723,8 +1171,8 @@ func updateAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 }
 
 // deleteAgentV2PresetWithStatus issues DELETE /api/v2/{name} for a preset and
-// returns the HTTP status with the raw body (agent-api.md §2.5: Delete does
-// not touch already-materialized agents).
+// returns the HTTP status with the raw body (no fan-out to materialized teams,
+// preset-api.md §5).
 func deleteAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, name string) (int, []byte) {
 	t.Helper()
 
@@ -734,7 +1182,7 @@ func deleteAgentV2PresetWithStatus(t *testing.T, ctx context.Context, sutHostURL
 }
 
 // listAgentV2Models fetches the deployment-level model catalog
-// (GET /api/v2/models, agent-api.md §2.6) and returns the parsed response.
+// (GET /api/v2/models, preset-api.md §3) and returns the parsed response.
 // Calls t.Fatal on non-200 responses.
 func listAgentV2Models(t *testing.T, ctx context.Context, sutHostURL, sutEnvName string) *game.ListModelsResponse {
 	t.Helper()
@@ -751,76 +1199,67 @@ func listAgentV2Models(t *testing.T, ctx context.Context, sutHostURL, sutEnvName
 	return list
 }
 
-// updateAgentV2Agent materializes (or refreshes) the session's agent
-// singleton through the gateway (PATCH /api/v2/.../agent, agent-api.md §2.1
-// — allow_missing=true as the web always sends) and returns the
-// materialized Agent. The body carries only the mutable fields: grpc-gateway
-// derives the update_mask from the body's set fields, so a name here would
-// produce an invalid `name` mask path (the identity rides the URL path).
-// Calls t.Fatal on non-200 responses.
-func updateAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, presetName, model string) *game.Agent {
+// ─── Team arrange helpers ───────────────────────────────────────────────────
+
+// ensureAgentV2Session creates a caller-id session, tolerating an
+// ALREADY_EXISTS (409) from a prior case in the same deployment — the session
+// resource itself is what matters, not who created it. Returns the full
+// /api/v2 session resource name.
+func ensureAgentV2Session(t *testing.T, sutHostURL, sutEnvName, sessionID string) string {
 	t.Helper()
 
-	agent, status, respBody := updateAgentV2AgentWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName, presetName, model)
-	if status != http.StatusOK {
-		t.Fatalf("PATCH update agent status=%d, body=%s", status, respBody)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions?session_id=%s",
+		sutHostURL, pathPrefix, saoleiTemplateID, url.QueryEscape(sessionID))
+	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusConflict:
+		if status, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID); status != http.StatusOK {
+			t.Fatalf("session %s reported already exists but is not readable: status=%d body=%s", sessionID, status, respBody)
+		}
+	default:
+		t.Fatalf("POST ensure session %s status=%d, body=%s", sessionID, resp.StatusCode, respBody)
 	}
-	return agent
+	return agentV2SessionName(sessionID)
 }
 
-// updateAgentV2AgentWithStatus is updateAgentV2Agent without the 200
-// fatality: it returns the HTTP status with the parsed resource (nil unless
-// the body decodes as an Agent) — used to assert the fail-fast rejections
-// (unknown model → 400 INVALID_ARGUMENT, US2 场景 7).
-func updateAgentV2AgentWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, presetName, model string) (*game.Agent, int, []byte) {
+// teamPrep is the team suites' arrange step: ensure the session exists, create
+// its player/planner preset pair, and materialize the team (UpdateTeam,
+// team-api.md §2). Returns the context, the session resource name, and the
+// materialized Team.
+func teamPrep(t *testing.T, sutHostURL, sutEnvName, sessionID, marker string) (context.Context, string, *game.Team) {
 	t.Helper()
 
-	agent := &game.Agent{Preset: presetName}
-	if model != "" {
-		agent.Model = model
-	}
-	body, err := protojson.Marshal(agent)
-	if err != nil {
-		t.Fatalf("protojson.Marshal Agent: %v", err)
-	}
-	reqURL := fmt.Sprintf("%s%s%s/agent?allow_missing=true", sutHostURL, agentV2PathPrefix, sessionName)
-	resp, respBody := doHTTPTrace(t, ctx, http.MethodPatch, reqURL, sutEnvName, body)
-	materialized := new(game.Agent)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, materialized); err != nil {
-		t.Logf("Agent body (status %d) is not a response proto: %s", resp.StatusCode, respBody)
-		return nil, resp.StatusCode, respBody
-	}
-	return materialized, resp.StatusCode, respBody
+	ctx := traceContext(t)
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	playerPreset, plannerPreset := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-"+marker, marker)
+	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName,
+		playerPreset.GetName(), plannerPreset.GetName(), "", "")
+	return ctx, sessionName, team
 }
 
-// getAgentV2AgentWithStatus issues GET /api/v2/.../agent and returns the
-// HTTP status with the raw body — the materialization probe (200 with the
-// Agent, 404 while unmaterialized, agent-api.md §2.2).
-func getAgentV2AgentWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) (int, []byte) {
+// teamPlayerActivation materializes a desktop-less team and runs its opening
+// cycle — the first Send drives the planner's opening strategy, the
+// structural continuation drives the player whose saolei_init fails with the
+// desktop-absent error. The cycle leaves the player as the orchestrator's
+// current activation, so a following Send drives the player directly (the
+// member-turn fixtures' player-scope tests). Returns the context and the
+// session resource name.
+func teamPlayerActivation(t *testing.T, sutHostURL, sutEnvName, sessionID, marker string) (context.Context, string) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%s%s/agent", sutHostURL, agentV2PathPrefix, sessionName)
-	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
-	return resp.StatusCode, respBody
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, marker)
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	turns := groupTeamMemberTurns(events)
+	if len(turns) == 0 || turns[0].member != "planner" {
+		t.Fatalf("opening cycle turns = %v, want the planner first", turns)
+	}
+	return ctx, sessionName
 }
 
-// getAgentV2Agent fetches the session's materialized agent and returns the
-// parsed Agent resource. Calls t.Fatal on non-200 responses (404 means not
-// materialized — use getAgentV2AgentWithStatus to observe that branch).
-func getAgentV2Agent(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *game.Agent {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%s%s/agent", sutHostURL, agentV2PathPrefix, sessionName)
-	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET agent status=%d, body=%s", resp.StatusCode, respBody)
-	}
-	agent := new(game.Agent)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, agent); err != nil {
-		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, respBody)
-	}
-	return agent
-}
+// ─── Flow-control stream helpers (the desktop's side) ───────────────────────
 
 // connectAgentV2Flow dials the gateway's /api/v2 flow WebSocket for one
 // session (desktop-bridge.md §3: the gateway binds the connection from the
@@ -867,8 +1306,8 @@ func sendFlowUserFrame(t *testing.T, conn *websocket.Conn, frame *game.UserFrame
 }
 
 // flowProbeFrame builds the connect probe: the first UserFrame carrying the
-// session identity (gateway-injected values are authoritative — desktop-
-// bridge.md §1) with the ACTIVE status signal the bridge echoes back.
+// session identity (gateway-injected values are authoritative —
+// desktop-bridge.md §1) with the ACTIVE status signal the bridge echoes back.
 func flowProbeFrame(sessionID string) *game.UserFrame {
 	return &game.UserFrame{
 		SessionId:  sessionID,
@@ -882,11 +1321,8 @@ func flowProbeFrame(sessionID string) *game.UserFrame {
 }
 
 // dialAgentV2FlowProbed dials the flow WebSocket and runs the connect probe
-// to completion (probe frame out, status echo back). The environment is
-// already serving when the case starts (the deployment startup probe +
-// guitar's postDeploySettle — see the section note above), so a probe
-// failure here is a plain case failure, not a startup race. Returns the
-// live connection and the echo frame.
+// to completion (probe frame out, status echo back). Returns the live
+// connection and the echo frame.
 func dialAgentV2FlowProbed(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionID string) (*websocket.Conn, *game.TeamFrame) {
 	t.Helper()
 
@@ -907,15 +1343,12 @@ func sendFlowProbe(t *testing.T, conn *websocket.Conn, sessionID string) {
 	sendFlowUserFrame(t, conn, flowProbeFrame(sessionID))
 }
 
-// replyFlowReceipt writes the operation receipt the desktop half owes the
-// bridge: the dispatched tool_id echoed back with the given status and, on
-// success, the screenshot the agent's recognizer consumes
-// (desktop-bridge.md §1 FlowResultPart row). The gateway injects the
-// session identity from the connect URL, so the frame's own fields are
-// advisory — they are filled in for wire conformance.
-func replyFlowReceipt(t *testing.T, conn *websocket.Conn, sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) {
-	t.Helper()
-
+// sendFlowReceiptNoFatal writes the operation receipt the desktop half owes
+// the bridge: the dispatched tool_id echoed back with the given status and,
+// on success, the screenshot the agent's recognizer consumes
+// (desktop-bridge.md §1 FlowResultPart row). The flow-script goroutine uses
+// this variant because t.Fatal must only run on the test goroutine.
+func sendFlowReceiptNoFatal(conn *websocket.Conn, sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) error {
 	result := &game.FlowResultPart{ToolId: toolID, Status: status}
 	if screenshotPNG != nil {
 		result.Screenshot = &game.ImagePart{
@@ -923,13 +1356,30 @@ func replyFlowReceipt(t *testing.T, conn *websocket.Conn, sessionID, toolID stri
 			Data:     screenshotPNG,
 		}
 	}
-	sendFlowUserFrame(t, conn, &game.UserFrame{
+	frame := &game.UserFrame{
 		SessionId:  sessionID,
 		TemplateId: saoleiTemplateID,
 		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{
 			Kind: &game.FlowPart_FlowResult{FlowResult: result},
 		}}}},
-	})
+	}
+	data, err := proto.Marshal(frame)
+	if err != nil {
+		return fmt.Errorf("marshal flow receipt: %w", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return fmt.Errorf("write flow receipt: %w", err)
+	}
+	return nil
+}
+
+// replyFlowReceipt is sendFlowReceiptNoFatal on the test goroutine.
+func replyFlowReceipt(t *testing.T, conn *websocket.Conn, sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) {
+	t.Helper()
+
+	if err := sendFlowReceiptNoFatal(conn, sessionID, toolID, status, screenshotPNG); err != nil {
+		t.Fatalf("reply flow receipt: %v", err)
+	}
 }
 
 // readFlowTeamFrame reads one binary-proto TeamFrame with a deadline.
@@ -968,91 +1418,69 @@ func readFlowTeamFrameNoFatal(conn *websocket.Conn, timeout time.Duration) (*gam
 	return frame, nil
 }
 
-// collectAgentV2GameEvents folds a completed game turn's tool_result frames
-// into the per-tool rendered results keyed by the fake's tool name order:
-// it returns the tool_result payloads in arrival order.
-func collectAgentV2GameEvents(events []*game.ChatEvent) []*game.ToolResultEvent {
-	var results []*game.ToolResultEvent
-	for _, e := range events {
-		if r := e.GetToolResult(); r != nil {
-			results = append(results, r)
-		}
-	}
-	return results
+// teamFlowScript is the receipt sequence the test's desktop half serves: each
+// F2 keyboard dispatch consumes the next initBoards entry, each cell dispatch
+// the next stepBoards entry. The script ends when both lists are exhausted.
+type teamFlowScript struct {
+	initBoards [][]byte
+	stepBoards [][]byte
 }
 
-// agentV2TurnResult is what a drain goroutine reports back: the collected
-// events plus the first read error, if any. t.Fatal must only run on the test
-// goroutine, so async drains report through this channel instead.
-type agentV2TurnResult struct {
-	events []*game.ChatEvent
-	err    error
-}
-
-// drainAgentV2TurnAsync drains a Send stream to its turn_end on a reader
-// goroutine and reports the events (or the read error) on the channel. The
-// stream body is closed after the turn ends.
-func drainAgentV2TurnAsync(stream *agentV2EventStream) <-chan agentV2TurnResult {
-	ch := make(chan agentV2TurnResult, 1)
+// serveTeamFlowScript reads flow frames and answers every dispatch per the
+// script, then reports nil on the returned channel. It runs on its own
+// goroutine so the Send-stream drain can proceed concurrently; errors are
+// reported instead of calling t.Fatal.
+func serveTeamFlowScript(conn *websocket.Conn, sessionID string, script teamFlowScript, timeout time.Duration) <-chan error {
+	ch := make(chan error, 1)
 	go func() {
-		var result agentV2TurnResult
-		defer func() {
-			stream.Close()
-			ch <- result
-		}()
-		for {
-			evt, err := nextAgentV2EventNoFatal(stream.Scanner)
+		initIdx, stepIdx := 0, 0
+		for initIdx < len(script.initBoards) || stepIdx < len(script.stepBoards) {
+			frame, err := readFlowTeamFrameNoFatal(conn, timeout)
 			if err != nil {
-				result.err = err
+				ch <- fmt.Errorf("read flow dispatch: %w", err)
 				return
 			}
-			result.events = append(result.events, evt)
-			if evt.GetTurnEnd() != nil {
-				return
+			for _, part := range frame.GetFlowParts().GetParts() {
+				switch {
+				case part.GetKeyboardPress() != nil:
+					if initIdx >= len(script.initBoards) {
+						ch <- fmt.Errorf("unexpected keyboard dispatch after %d init replies", initIdx)
+						return
+					}
+					if err := sendFlowReceiptNoFatal(conn, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx]); err != nil {
+						ch <- err
+						return
+					}
+					initIdx++
+				case part.GetMouseMoveAndClick() != nil:
+					if stepIdx >= len(script.stepBoards) {
+						ch <- fmt.Errorf("unexpected cell dispatch after %d step replies", stepIdx)
+						return
+					}
+					if err := sendFlowReceiptNoFatal(conn, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx]); err != nil {
+						ch <- err
+						return
+					}
+					stepIdx++
+				}
 			}
 		}
+		ch <- nil
 	}()
 	return ch
 }
 
-// agentV2GamePrep is the game suites' arrange step: ensure the (possibly
-// fake-desktop-bound) session exists, create its preset, and materialize the
-// agent on it. Returns the context, the session resource name, and the
-// materialized Agent.
-func agentV2GamePrep(t *testing.T, sutHostURL, sutEnvName, sessionID, presetID, persona string) (context.Context, string, *game.Agent) {
+// waitTeamFlowScript waits for the flow script to serve every scheduled
+// receipt within the shared read window.
+func waitTeamFlowScript(t *testing.T, ch <-chan error, timeout time.Duration) {
 	t.Helper()
 
-	ctx := traceContext(t)
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, presetID, persona)
-	agent := updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
-	return ctx, sessionName, agent
-}
-
-// serveWonInitReceipt reads flow frames until the saolei_init F2 dispatch
-// arrives and answers it with a SUCCEEDED receipt carrying the recognizable
-// win-board screenshot (the same fixture the deployed fake-desktop uses).
-// It fails the test if no operation shows up within the timeout. Reading
-// happens on the test goroutine — call this only when no other reader
-// consumes the flow connection.
-func serveWonInitReceipt(t *testing.T, flow *websocket.Conn, sessionID string, timeout time.Duration) {
-	t.Helper()
-
-	for {
-		frame, err := readFlowTeamFrameNoFatal(flow, timeout)
+	select {
+	case err := <-ch:
 		if err != nil {
-			t.Fatalf("read flow dispatch: %v", err)
+			t.Fatalf("flow script: %v", err)
 		}
-		for _, part := range frame.GetFlowParts().GetParts() {
-			press := part.GetKeyboardPress()
-			if press == nil {
-				continue
-			}
-			if press.GetKey() != game.KeyboardKey_KEYBOARD_KEY_F2 {
-				t.Fatalf("dispatched key = %v, want F2 (the saolei_init new-game press)", press.GetKey())
-			}
-			replyFlowReceipt(t, flow, sessionID, press.GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, saoleiBoardWinPNG)
-			return
-		}
+	case <-time.After(timeout):
+		t.Fatal("flow script did not serve every scheduled receipt")
 	}
 }

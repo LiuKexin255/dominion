@@ -1,16 +1,18 @@
 /**
- * cordis plugin entry for the team group-chat primitive. This entry is the
- * minimal composable placeholder: an empty apply with no service
- * requirements, so the row loads in any host composition. The ctx.team
- * service contract (register / reference relay / drain) is
+ * cordis plugin row for the team group-chat primitive: the class-form Service
+ * plugin that exposes `ctx.team` (register / reference relay / drain). The
+ * member sections, output subscriptions, and buffers are host-row state; the
+ * service never drives a member. Contract:
  * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1.
  */
 
-import type { Context } from "@deepseek-ai/cordis";
-
 export const name = "team";
 
-/** Host-row plugin: no service requirements. */
-export const inject: string[] = [];
-
-export function apply(_ctx: Context): void {}
+export { TeamService as default, TeamService } from "./team.js";
+export { TEAM_SECTION_NAME, TEAM_SECTION_ORDER } from "./team.js";
+export type {
+  TeamBroadcastSource,
+  TeamHandle,
+  TeamMemberRegistration,
+  TeamRegistration,
+} from "./team.js";

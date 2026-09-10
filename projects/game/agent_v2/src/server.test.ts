@@ -1,42 +1,47 @@
 import { describe, expect, it, vi } from "vitest";
 import * as grpc from "@grpc/grpc-js";
 import {
-  buildAgentHandlers,
+  buildTeamHandlers,
   buildDesktopBridgeHandlers,
   buildPresetHandlers,
-  parseAgentParent,
   parsePresetResource,
   parseSessionResource,
+  parseTeamMemberResource,
+  parseTeamResource,
   parseTemplateParent,
   PROTO_PATH,
 } from "./server.js";
 import type { ModelCatalogEntry } from "./server.js";
-import { AgentSessionError } from "./session.js";
+import { TeamSessionError } from "./session.js";
+import type { TeamView } from "./session.js";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { TurnStream } from "./history.js";
 
 /**
- * Handler-level unit tests for the gRPC status mapping
- * (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2): malformed
- * resource names and empty text are request-level INVALID_ARGUMENT failures
- * (the stream never opens), unmaterialized Sends are FAILED_PRECONDITION,
- * UpdateAgent validates fail-fast (preset → model catalog) before
- * materializing, and the PresetService surface (preset CRUD + ListModels,
- * directive-2026-09-01.md §3.7) delegates to the authoring service/catalog
- * with AIP error mapping (specs/059-agent-v2-team-mode/contracts/
- * preset-api.md). The collaborators are `vi.fn()` doubles injected through
- * the buildAgentHandlers/buildPresetHandlers seams — no server binding, no
- * module interception (style/javascript.md Mock convention).
+ * Handler-level unit tests for the gRPC status mapping (specs/059-agent-v2-
+ * team-mode/contracts/team-api.md §1–§6): malformed resource names, missing
+ * preset references and empty text are request-level INVALID_ARGUMENT
+ * failures (the stream never opens), unmaterialized Sends are
+ * FAILED_PRECONDITION, UpdateTeam delegates fail-fast validation and
+ * materialization to the team registry, the List faces project the history
+ * entries, and the PresetService surface (preset CRUD + ListModels) delegates
+ * to the authoring service/catalog with AIP error mapping. The collaborators
+ * are `vi.fn()` doubles injected through the buildTeamHandlers/
+ * buildPresetHandlers seams — no server binding, no module interception
+ * (style/javascript.md Mock convention).
  */
 
 type SendCall = Parameters<AgentServiceHandlers["Send"]>[0];
-type UnaryCall = Parameters<AgentServiceHandlers["ListAgentMessages"]>[0];
-type UnaryCallback = Parameters<AgentServiceHandlers["ListAgentMessages"]>[1];
+type UnaryCall = Parameters<AgentServiceHandlers["ListTeamMessages"]>[0];
+type UnaryCallback = Parameters<AgentServiceHandlers["ListTeamMessages"]>[1];
 
 const VALID = "templates/saolei/sessions/s1";
-const VALID_AGENT = "templates/saolei/sessions/s1/agent";
+const VALID_TEAM = "templates/saolei/sessions/s1/team";
+const VALID_MEMBER = "templates/saolei/sessions/s1/team/members/player";
 const VALID_PRESET = "templates/saolei/presets/p1";
+const P2 = "templates/saolei/presets/p2";
 
 /** The authored-preset projection the authoring service returns. */
 function presetView(overrides: Record<string, unknown> = {}) {
@@ -52,28 +57,66 @@ function presetView(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** The team registry projection the session layer returns. */
+function teamView(overrides: Partial<TeamView> = {}): TeamView {
+  return {
+    name: VALID_TEAM,
+    members: [
+      {
+        name: `${VALID_TEAM}/members/player`,
+        role: "player",
+        preset: VALID_PRESET,
+        model: "glm-5.3",
+        systemPrompt: "player prompt",
+      },
+      {
+        name: `${VALID_TEAM}/members/planner`,
+        role: "planner",
+        preset: P2,
+        model: "glm-5.3",
+        systemPrompt: "planner prompt",
+      },
+    ],
+    createTime: new Date(1000),
+    updateTime: new Date(2000),
+    ...overrides,
+  };
+}
+
 function fakeDeps() {
   return {
     sessions: {
-      send: vi.fn(),
-      listMessages: vi.fn(async () => []),
-      materialize: vi.fn(async () => ({
-        name: VALID_AGENT,
-        preset: VALID_PRESET,
-        model: "glm-5.3",
-        createTime: new Date(1000),
-        updateTime: new Date(2000),
-      })),
-      getAgent: vi.fn(() => ({
-        name: VALID_AGENT,
-        preset: VALID_PRESET,
-        model: "glm-5.3",
-        createTime: new Date(1000),
-        updateTime: new Date(2000),
-      })),
+      send: vi.fn(() => vi.fn()),
+      listTeamMessages: vi.fn(() => [
+        {
+          member: "user",
+          message: { messageId: "m1", role: "ROLE_USER" as const, blocks: [{ text: { content: "hello" } }] },
+          seq: 1,
+        },
+        {
+          member: "planner",
+          message: { messageId: "m2", role: "ROLE_AGENT" as const, blocks: [{ text: { content: "strategy" } }] },
+          seq: 2,
+        },
+      ]),
+      listMemberMessages: vi.fn(() => [
+        {
+          message: { messageId: "m3", role: "ROLE_USER" as const, blocks: [{ text: { content: "[player] moved" } }] },
+          sender: "player",
+        },
+      ]),
+      materialize: vi.fn(async () => teamView()),
+      getTeam: vi.fn(() => teamView()),
+      getTeamMember: vi.fn((_session: string, member: string) => {
+        const found = teamView().members.find((entry) => entry.role === member);
+        if (found === undefined) {
+          throw new TeamSessionError("NOT_FOUND", `team member "${member}" does not exist`);
+        }
+        return found;
+      }),
       cancel: vi.fn(),
     },
-    isDesktopConnected: vi.fn(() => false),
+    isDesktopConnected: vi.fn(() => true),
     authoring: {
       compose: vi.fn(),
       // Mirror the service: create stamps both timestamps at handling time.
@@ -92,10 +135,23 @@ function fakeDeps() {
   };
 }
 
-function fakeSendCall(request: { session?: string; text?: string }) {
+interface FakeCall {
+  readonly call: SendCall;
+  readonly written: ChatEvent[];
+  readonly errors: grpc.ServiceError[];
+  readonly end: ReturnType<typeof vi.fn>;
+  readonly detach: ReturnType<typeof vi.fn>;
+  emitCancelled(): void;
+}
+
+function fakeSendCall(
+  request: { session?: string; text?: string },
+  detach: ReturnType<typeof vi.fn>,
+): FakeCall {
   const written: ChatEvent[] = [];
   const errors: grpc.ServiceError[] = [];
   const errorListeners: Array<(err: Error) => void> = [];
+  const cancelListeners: Array<() => void> = [];
   const call = {
     request,
     write: vi.fn((event: ChatEvent) => {
@@ -110,21 +166,41 @@ function fakeSendCall(request: { session?: string; text?: string }) {
         }
       }
     }),
-    // The Send handler registers an 'error' listener on the real call
-    // (long-lived stream write guard); the double records listeners so tests
-    // can drive the failure path through emit().
-    on: vi.fn((name: string, listener: (err: Error) => void) => {
+    // The Send handler registers 'error' and 'cancelled' listeners on the
+    // real call; the double records them so tests can drive the
+    // disconnect path.
+    on: vi.fn((name: string, listener: (err?: Error) => void) => {
       if (name === "error") {
-        errorListeners.push(listener);
+        errorListeners.push(listener as (err: Error) => void);
+      }
+      if (name === "cancelled") {
+        cancelListeners.push(listener as () => void);
       }
       return call;
     }),
   };
-  return { call: call as unknown as SendCall, written, end: call.end, errors };
+  return {
+    call: call as unknown as SendCall,
+    written,
+    errors,
+    end: call.end,
+    detach,
+    emitCancelled: () => {
+      for (const listener of cancelListeners) {
+        listener();
+      }
+    },
+  };
 }
 
-function invokeSend(handlers: AgentServiceHandlers, request: { session?: string; text?: string }) {
-  const fake = fakeSendCall(request);
+function invokeSend(
+  handlers: AgentServiceHandlers,
+  deps: ReturnType<typeof fakeDeps>,
+  request: { session?: string; text?: string },
+): FakeCall {
+  const detach = vi.fn();
+  deps.sessions.send.mockReturnValueOnce(detach);
+  const fake = fakeSendCall(request, detach);
   handlers.Send(fake.call);
   return fake;
 }
@@ -141,8 +217,7 @@ function invokeUnary(
 describe("resource-name parsers", () => {
   it("resolves the runtime proto at its canonical import path under the service root", () => {
     // runtime_protos materializes the app-root proto at its standard import
-    // path (tools/release/deploy/README.md §runtime_protos); the demo loads
-    // its app-root proto the same way.
+    // path (tools/release/deploy/README.md §runtime_protos).
     expect(PROTO_PATH.endsWith("projects/game/agent_v2.proto")).toBe(true);
   });
 
@@ -159,16 +234,27 @@ describe("resource-name parsers", () => {
     expect(parseSessionResource("")).toBeUndefined();
   });
 
-  it("strips the /agent singleton segment and validates the session underneath", () => {
-    expect(parseAgentParent(VALID_AGENT)).toEqual({ template: "saolei", session: "s1" });
-    expect(parseAgentParent(VALID)).toBeUndefined();
-    expect(parseAgentParent("templates/saolei/sessions/s1/agent/x")).toBeUndefined();
-    expect(parseAgentParent("templates/unknown/sessions/s1/agent")).toBeUndefined();
-    expect(parseAgentParent("")).toBeUndefined();
+  it("strips the /team singleton segment and validates the session underneath", () => {
+    expect(parseTeamResource(VALID_TEAM)).toEqual({ template: "saolei", session: "s1" });
+    expect(parseTeamResource(VALID)).toBeUndefined();
+    expect(parseTeamResource("templates/saolei/sessions/s1/team/x")).toBeUndefined();
+    expect(parseTeamResource("templates/unknown/sessions/s1/team")).toBeUndefined();
+    expect(parseTeamResource("")).toBeUndefined();
+  });
+
+  it("parses the member resource shape including the member id", () => {
+    expect(parseTeamMemberResource(VALID_MEMBER)).toEqual({
+      template: "saolei",
+      session: "s1",
+      member: "player",
+    });
+    expect(parseTeamMemberResource(VALID_TEAM)).toBeUndefined();
+    expect(parseTeamMemberResource("templates/saolei/sessions/s1/team/members/")).toBeUndefined();
+    expect(parseTeamMemberResource("templates/unknown/sessions/s1/team/members/player")).toBeUndefined();
   });
 
   it("validates preset resource names and template parents against the known set", () => {
-    expect(parsePresetResource(VALID_PRESET)).toEqual({ template: "saolei", session: "p1" });
+    expect(parsePresetResource(VALID_PRESET)).toEqual({ template: "saolei", preset: "p1" });
     expect(parsePresetResource("templates/saolei/presets/a/b")).toBeUndefined();
     expect(parsePresetResource("templates/unknown/presets/p1")).toBeUndefined();
     expect(parsePresetResource(VALID)).toBeUndefined();
@@ -179,17 +265,17 @@ describe("resource-name parsers", () => {
 });
 
 describe("AgentService.Send handler", () => {
-  it("adapts the grpc call into the TurnStream and dispatches to the sink", () => {
+  it("adapts the grpc call into the team stream and dispatches to the sink", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-    const fake = invokeSend(handlers, { session: VALID, text: "hello" });
+    const handlers = buildTeamHandlers(deps);
+    const fake = invokeSend(handlers, deps, { session: VALID, text: "hello" });
 
     expect(deps.sessions.send).toHaveBeenCalledTimes(1);
     const [session, text, stream] = (deps.sessions.send as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(session).toBe(VALID);
     expect(text).toBe("hello");
 
-    const event = { session: VALID, turnId: "t1", turnStart: {} } as unknown as ChatEvent;
+    const event = { session: VALID, turnId: "t1", turnStart: {}, member: "player" } as unknown as ChatEvent;
     stream.write(event);
     expect(fake.written).toEqual([event]);
     stream.end();
@@ -198,8 +284,8 @@ describe("AgentService.Send handler", () => {
 
   it("rejects a malformed session resource before the stream opens", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-    const fake = invokeSend(handlers, { session: "projects/p1", text: "hello" });
+    const handlers = buildTeamHandlers(deps);
+    const fake = invokeSend(handlers, deps, { session: "projects/p1", text: "hello" });
 
     expect(fake.errors).toHaveLength(1);
     expect(fake.errors[0]?.code).toBe(grpc.status.INVALID_ARGUMENT);
@@ -209,8 +295,8 @@ describe("AgentService.Send handler", () => {
 
   it("rejects an empty text with INVALID_ARGUMENT", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-    const fake = invokeSend(handlers, { session: VALID, text: "" });
+    const handlers = buildTeamHandlers(deps);
+    const fake = invokeSend(handlers, deps, { session: VALID, text: "" });
 
     expect(fake.errors).toHaveLength(1);
     expect(fake.errors[0]?.code).toBe(grpc.status.INVALID_ARGUMENT);
@@ -219,242 +305,264 @@ describe("AgentService.Send handler", () => {
   });
 
   it("maps an unmaterialized session to FAILED_PRECONDITION with the stream never opening", () => {
-    // specs/051-agent-v2-dsh-migration/spec.md FR-007: no lazy
-    // materialization — the owner exists but no agent does
-    // (e.g. after a restart): FAILED_PRECONDITION, HTTP 400 via grpc-gateway
-    // (agent-api.md §2.4, data-model.md §3).
     const deps = fakeDeps();
-    deps.sessions.send.mockImplementation(() => {
-      throw new AgentSessionError(
+    deps.sessions.send.mockImplementationOnce(() => {
+      throw new TeamSessionError(
         "FAILED_PRECONDITION",
-        `agent not materialized for session ${VALID}; send UpdateAgent first`,
+        `team not materialized for session ${VALID}; send UpdateTeam first`,
       );
     });
-    const handlers = buildAgentHandlers(deps);
-    const fake = invokeSend(handlers, { session: VALID, text: "hello" });
+    const handlers = buildTeamHandlers(deps);
+    const fake = invokeSend(handlers, deps, { session: VALID, text: "hello" });
 
-    expect(deps.sessions.send).toHaveBeenCalledTimes(1);
     expect(fake.errors).toHaveLength(1);
     expect(fake.errors[0]?.code).toBe(grpc.status.FAILED_PRECONDITION);
-    expect(fake.errors[0]?.details).toContain("UpdateAgent");
+    expect(fake.errors[0]?.details).toContain("UpdateTeam");
+    expect(fake.errors[0]?.cause).toBeInstanceOf(TeamSessionError);
     expect(fake.written).toEqual([]);
     expect(fake.end).not.toHaveBeenCalled();
   });
+
+  it("detaches the subscription on client disconnect without cancelling the team", () => {
+    const deps = fakeDeps();
+    const handlers = buildTeamHandlers(deps);
+    const fake = invokeSend(handlers, deps, { session: VALID, text: "hello" });
+
+    fake.emitCancelled();
+
+    expect(fake.detach).toHaveBeenCalledTimes(1);
+    // A disconnect is a subscription concern only: the team keeps running
+    // (cancelling is the Cancel RPC's job — contracts/team-api.md §3.3).
+    expect(deps.sessions.cancel).not.toHaveBeenCalled();
+  });
+
+  it("terminates the stream with an INTERNAL status on a session-reported orchestration failure", () => {
+    const deps = fakeDeps();
+    const handlers = buildTeamHandlers(deps);
+    const fake = invokeSend(handlers, deps, { session: VALID, text: "hello" });
+    const stream = (deps.sessions.send as ReturnType<typeof vi.fn>).mock.calls[0][2] as TurnStream;
+
+    stream.fail?.({ code: "INTERNAL", message: "orchestration exploded" });
+
+    expect(fake.errors).toHaveLength(1);
+    expect(fake.errors[0]?.code).toBe(grpc.status.INTERNAL);
+    expect(fake.errors[0]?.details).toBe("orchestration exploded");
+    // The server-issued close is not a peer disconnect: no detach.
+    expect(fake.detach).not.toHaveBeenCalled();
+  });
 });
 
-describe("AgentService.UpdateAgent handler", () => {
+describe("AgentService.UpdateTeam handler", () => {
+  /** The scene-agnostic members-list materialization input. */
+  function member(role: string, preset: string, model?: string) {
+    return model === undefined ? { role, preset } : { role, preset, model };
+  }
   function updateRequest(overrides: Record<string, unknown> = {}) {
     return {
-      agent: { name: VALID_AGENT, preset: VALID_PRESET, model: "" },
+      team: {
+        name: VALID_TEAM,
+        members: [member("player", VALID_PRESET), member("planner", P2)],
+      },
       ...overrides,
     };
   }
 
-  it("validates fail-fast then materializes through the preset reference", async () => {
+  it("accepts the members list and delegates scene validation + materialization to the registry", async () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-    const callback = invokeUnary(handlers.UpdateAgent as never, updateRequest({
-      agent: { name: VALID_AGENT, preset: VALID_PRESET, model: "glm-5.3" },
+    const handlers = buildTeamHandlers(deps);
+    const callback = invokeUnary(handlers.UpdateTeam as never, updateRequest({
+      team: {
+        name: VALID_TEAM,
+        members: [member("player", VALID_PRESET, "glm-5.3"), member("planner", P2)],
+      },
+      updateMask: { paths: ["members"] },
     }));
 
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
-    // Order: preset lookup → model catalog → materialize (no teardown before
-    // validation, data-model.md §2.2).
-    expect(deps.authoring.get).toHaveBeenCalledWith("p1");
-    expect(deps.listModels).toHaveBeenCalledWith("glm-responses");
     expect(deps.sessions.materialize).toHaveBeenCalledWith(VALID, {
-      preset: VALID_PRESET,
-      model: "glm-5.3",
+      members: [
+        { role: "player", preset: VALID_PRESET, model: "glm-5.3" },
+        { role: "planner", preset: P2 },
+      ],
     });
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
-    expect(response).toEqual({
-      name: VALID_AGENT,
-      preset: VALID_PRESET,
-      model: "glm-5.3",
-      createTime: { seconds: 1, nanos: 0 },
-      updateTime: { seconds: 2, nanos: 0 },
-    });
+    expect(response?.name).toBe(VALID_TEAM);
+    expect(response?.desktopConnected).toBe(true);
+    expect(
+      response?.members?.map((wire: { name: string; role: string; preset: string }) => [
+        wire.name,
+        wire.role,
+        wire.preset,
+      ]),
+    ).toEqual([
+      [`${VALID_TEAM}/members/player`, "player", VALID_PRESET],
+      [`${VALID_TEAM}/members/planner`, "planner", P2],
+    ]);
+    expect(response?.members?.[1]?.systemPrompt).toBe("planner prompt");
   });
 
-  it("rejects a malformed agent name, an empty preset, and cross-template presets", () => {
+  it("rejects malformed names and layer-1 structure violations with INVALID_ARGUMENT", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildTeamHandlers(deps);
 
     for (const [request, fragment] of [
-      [updateRequest({ agent: { name: "sessions/s1/agent", preset: VALID_PRESET } }), "agent resource name"],
-      [updateRequest({ agent: { name: VALID_AGENT, preset: "" } }), "agent.preset is required"],
-      [updateRequest({ agent: { name: VALID_AGENT, preset: "presets/p1" } }), "preset resource name"],
-      [updateRequest({ agent: { name: VALID_AGENT, preset: "templates/unknown/presets/p1" } }), "preset resource name"],
+      [updateRequest({ team: { name: "sessions/s1/team", members: [] } }), "team resource name"],
+      [updateRequest({ team: { name: VALID_TEAM, members: [] } }), "must not be empty"],
+      [updateRequest({ team: { name: VALID_TEAM, members: [member("", VALID_PRESET)] } }), "non-empty role"],
+      [updateRequest({ team: { name: VALID_TEAM, members: [member("player", "")] } }), "preset resource name"],
+      [updateRequest({ team: { name: VALID_TEAM, members: [member("player", "presets/p1")] } }), "preset resource name"],
+      [
+        updateRequest({ team: { name: VALID_TEAM, members: [member("player", "templates/unknown/presets/p1")] } }),
+        "preset resource name",
+      ],
       [updateRequest({ updateMask: { paths: ["name"] } }), "update_mask"],
+      [updateRequest({ updateMask: { paths: ["members", "name"] } }), "update_mask"],
+      // An explicit empty mask is rejected (parity with UpdatePreset):
+      // omitting the mask is the way to replace all mutable fields.
+      [updateRequest({ updateMask: { paths: [] } }), "update_mask"],
     ] as Array<[Record<string, unknown>, string]>) {
-      const callback = invokeUnary(handlers.UpdateAgent as never, request);
+      const callback = invokeUnary(handlers.UpdateTeam as never, request);
       expect(callback).toHaveBeenCalledTimes(1);
       const error = callback.mock.calls[0][0] as grpc.ServiceError;
       expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
       expect(error?.message).toContain(fragment);
     }
     expect(deps.sessions.materialize).not.toHaveBeenCalled();
-    expect(deps.authoring.get).not.toHaveBeenCalled();
   });
 
-  it("maps an unknown preset to NOT_FOUND and an unknown model to INVALID_ARGUMENT", async () => {
+  it("maps a registry scene INVALID_ARGUMENT through the cause chain", async () => {
     const deps = fakeDeps();
-    deps.authoring.get.mockRejectedValueOnce(
-      new PresetAuthoringError("NOT_FOUND", `preset p1 not found`),
+    deps.sessions.materialize.mockRejectedValueOnce(
+      new TeamSessionError(
+        "INVALID_ARGUMENT",
+        'scene check failed: preset "p1" carries role "planner" but member "player" requires the matching role',
+      ),
     );
-    const handlers = buildAgentHandlers(deps);
-    const missingPreset = invokeUnary(handlers.UpdateAgent as never, updateRequest());
-    await vi.waitFor(() => expect(missingPreset).toHaveBeenCalledTimes(1));
-    expect((missingPreset.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
-    expect(deps.sessions.materialize).not.toHaveBeenCalled();
+    const handlers = buildTeamHandlers(deps);
+    const callback = invokeUnary(handlers.UpdateTeam as never, updateRequest());
 
-    const unknownModel = invokeUnary(handlers.UpdateAgent as never, updateRequest({
-      agent: { name: VALID_AGENT, preset: VALID_PRESET, model: "glm-9.9" },
-    }));
-    await vi.waitFor(() => expect(unknownModel).toHaveBeenCalledTimes(1));
-    const error = unknownModel.mock.calls[0][0] as grpc.ServiceError;
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+    const error = callback.mock.calls[0][0] as grpc.ServiceError;
     expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
-    expect(error?.message).toContain("unknown model");
-    expect(deps.sessions.materialize).not.toHaveBeenCalled();
+    expect(error?.message).toContain("scene check failed");
+    expect(error?.cause).toBeInstanceOf(TeamSessionError);
   });
 });
 
-describe("AgentService.GetAgent handler", () => {
-  it("returns the materialized configuration with the registry's desktop_connected", () => {
+describe("AgentService.GetTeam / GetTeamMember handlers", () => {
+  it("returns the team with the registry's desktop_connected", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-    const callback = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
+    const handlers = buildTeamHandlers(deps);
+    const callback = invokeUnary(handlers.GetTeam as never, { name: VALID_TEAM });
 
     expect(callback).toHaveBeenCalledTimes(1);
-    expect(deps.sessions.getAgent).toHaveBeenCalledWith(VALID);
+    expect(deps.sessions.getTeam).toHaveBeenCalledWith(VALID);
     expect(deps.isDesktopConnected).toHaveBeenCalledWith(VALID);
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
-    expect(response?.name).toBe(VALID_AGENT);
-    expect(response?.preset).toBe(VALID_PRESET);
-    expect(response?.desktopConnected).toBe(false);
+    expect(response?.name).toBe(VALID_TEAM);
+    expect(response?.desktopConnected).toBe(true);
   });
 
-  it("reflects both registry states on desktop_connected (agent-api-changes.md §4)", () => {
+  it("returns one member including its system prompt and rejects unknown members", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildTeamHandlers(deps);
+    const callback = invokeUnary(handlers.GetTeamMember as never, { name: VALID_MEMBER });
 
-    deps.isDesktopConnected.mockReturnValue(true);
-    const connected = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
-    expect(connected.mock.calls[0][1]?.desktopConnected).toBe(true);
+    expect(deps.sessions.getTeamMember).toHaveBeenCalledWith(VALID, "player");
+    const [err, response] = callback.mock.calls[0];
+    expect(err).toBeNull();
+    expect(response?.role).toBe("player");
+    expect(response?.systemPrompt).toBe("player prompt");
 
-    deps.isDesktopConnected.mockReturnValue(false);
-    const disconnected = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
-    expect(disconnected.mock.calls[0][1]?.desktopConnected).toBe(false);
-  });
-
-  it("rejects a malformed name with INVALID_ARGUMENT and an unmaterialized agent with NOT_FOUND", () => {
-    const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-
-    const malformed = invokeUnary(handlers.GetAgent as never, { name: VALID });
-    const error = malformed.mock.calls[0][0] as grpc.ServiceError;
-    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
-
-    deps.sessions.getAgent.mockImplementation(() => {
-      throw new AgentSessionError("NOT_FOUND", `agent not materialized for session ${VALID}`);
+    const unknown = invokeUnary(handlers.GetTeamMember as never, {
+      name: "templates/saolei/sessions/s1/team/members/robot",
     });
-    const absent = invokeUnary(handlers.GetAgent as never, { name: VALID_AGENT });
+    expect((unknown.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
+  });
+
+  it("rejects malformed names and maps an unmaterialized team to NOT_FOUND", () => {
+    const deps = fakeDeps();
+    const handlers = buildTeamHandlers(deps);
+
+    const malformed = invokeUnary(handlers.GetTeam as never, { name: VALID });
+    expect((malformed.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    deps.sessions.getTeam.mockImplementationOnce(() => {
+      throw new TeamSessionError("NOT_FOUND", `team not materialized for session ${VALID}`);
+    });
+    const absent = invokeUnary(handlers.GetTeam as never, { name: VALID_TEAM });
     expect((absent.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
-    // The unmaterialized path short-circuits before the bridge read: no
-    // connection fact is fabricated for an absent agent
-    // (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4 — the
-    // frontend degrades to "unknown" on the 404).
-    expect(deps.isDesktopConnected).not.toHaveBeenCalled();
   });
 });
 
-describe("AgentService.ListAgentMessages handler", () => {
-  it("wraps the history snapshot in the response with an empty page token", async () => {
+describe("AgentService.ListTeamMessages / ListMemberMessages handlers", () => {
+  it("projects the merged sequence with the seq strings and the member view with senders", () => {
     const deps = fakeDeps();
-    const messages = [{ messageId: "m1", role: "ROLE_USER" }];
-    deps.sessions.listMessages.mockResolvedValue(messages);
-    const handlers = buildAgentHandlers(deps);
-    const callback = invokeUnary(handlers.ListAgentMessages, { parent: VALID_AGENT });
+    const handlers = buildTeamHandlers(deps);
 
-    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
-    // The registry keys entries by the session resource name; the handler
-    // strips the /agent singleton segment.
-    expect(deps.sessions.listMessages).toHaveBeenCalledWith(VALID);
-    expect(callback).toHaveBeenCalledWith(null, { messages, nextPageToken: "" });
+    const team = invokeUnary(handlers.ListTeamMessages as never, { parent: VALID_TEAM });
+    expect(deps.sessions.listTeamMessages).toHaveBeenCalledWith(VALID);
+    const [teamErr, teamResponse] = team.mock.calls[0];
+    expect(teamErr).toBeNull();
+    expect(teamResponse?.nextPageToken).toBe("");
+    expect(teamResponse?.messages?.map((message: { member: string; seq: string }) => [message.member, message.seq])).toEqual([
+      ["user", "1"],
+      ["planner", "2"],
+    ]);
+
+    const member = invokeUnary(handlers.ListMemberMessages as never, { parent: VALID_MEMBER });
+    expect(deps.sessions.listMemberMessages).toHaveBeenCalledWith(VALID, "player");
+    const [memberErr, memberResponse] = member.mock.calls[0];
+    expect(memberErr).toBeNull();
+    expect(memberResponse?.messages?.[0]?.sender).toBe("player");
   });
 
-  it("rejects a malformed parent with INVALID_ARGUMENT", () => {
+  it("rejects malformed parents and maps an unmaterialized team to NOT_FOUND", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-    const callback = invokeUnary(handlers.ListAgentMessages, { parent: "nope" });
+    const handlers = buildTeamHandlers(deps);
 
-    expect(callback).toHaveBeenCalledTimes(1);
-    const error = callback.mock.calls[0][0] as grpc.ServiceError;
-    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
-    expect(deps.sessions.listMessages).not.toHaveBeenCalled();
-  });
+    const malformed = invokeUnary(handlers.ListTeamMessages as never, { parent: "nope" });
+    expect((malformed.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.INVALID_ARGUMENT);
 
-  it("maps an unmaterialized agent to NOT_FOUND and other failures to INTERNAL", async () => {
-    const deps = fakeDeps();
-    deps.sessions.listMessages.mockRejectedValue(
-      new AgentSessionError("NOT_FOUND", `agent not materialized for session ${VALID}`),
-    );
-    const handlers = buildAgentHandlers(deps);
-    const absent = invokeUnary(handlers.ListAgentMessages, { parent: VALID_AGENT });
-    await vi.waitFor(() => expect(absent).toHaveBeenCalledTimes(1));
+    deps.sessions.listTeamMessages.mockImplementationOnce(() => {
+      throw new TeamSessionError("NOT_FOUND", "team not materialized");
+    });
+    const absent = invokeUnary(handlers.ListTeamMessages as never, { parent: VALID_TEAM });
     expect((absent.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
-
-    deps.sessions.listMessages.mockRejectedValue(new Error("boom"));
-    const broken = invokeUnary(handlers.ListAgentMessages, { parent: VALID_AGENT });
-    await vi.waitFor(() => expect(broken).toHaveBeenCalledTimes(1));
-    const error = broken.mock.calls[0][0] as grpc.ServiceError;
-    expect(error?.code).toBe(grpc.status.INTERNAL);
-    expect(error?.message).toContain("boom");
   });
 });
 
 describe("AgentService.Cancel handler", () => {
-  it("cancels the session's agent and answers the empty CancelResponse", () => {
+  it("cancels the team and answers the empty CancelResponse", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
-    const callback = invokeUnary(handlers.Cancel as never, { name: VALID_AGENT });
+    const handlers = buildTeamHandlers(deps);
+    const callback = invokeUnary(handlers.Cancel as never, { name: VALID_TEAM });
 
-    expect(callback).toHaveBeenCalledTimes(1);
-    // The handler strips the /agent singleton segment; the registry keys
-    // entries by the session resource name.
     expect(deps.sessions.cancel).toHaveBeenCalledWith(VALID);
-    expect(deps.sessions.cancel).toHaveBeenCalledTimes(1);
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
     expect(response).toEqual({});
   });
 
-  it("rejects a malformed name with INVALID_ARGUMENT and an unmaterialized agent with FAILED_PRECONDITION", () => {
+  it("rejects a malformed name and maps an unmaterialized team to FAILED_PRECONDITION", () => {
     const deps = fakeDeps();
-    const handlers = buildAgentHandlers(deps);
+    const handlers = buildTeamHandlers(deps);
 
-    // Malformed name (missing the /agent segment): request-level rejection
-    // before any session interaction.
     const malformed = invokeUnary(handlers.Cancel as never, { name: VALID });
-    const error = malformed.mock.calls[0][0] as grpc.ServiceError;
-    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
-    expect(error?.message).toContain("agent resource name");
+    expect((malformed.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.INVALID_ARGUMENT);
     expect(deps.sessions.cancel).not.toHaveBeenCalled();
 
-    // Same precondition family as Send (contracts/agent-api-changes.md §3):
-    // owner present but agent not materialized → FAILED_PRECONDITION → 400.
-    deps.sessions.cancel.mockImplementation(() => {
-      throw new AgentSessionError(
+    deps.sessions.cancel.mockImplementationOnce(() => {
+      throw new TeamSessionError(
         "FAILED_PRECONDITION",
-        `agent not materialized for session ${VALID}; send UpdateAgent first`,
+        `team not materialized for session ${VALID}; send UpdateTeam first`,
       );
     });
-    const absent = invokeUnary(handlers.Cancel as never, { name: VALID_AGENT });
-    expect(deps.sessions.cancel).toHaveBeenCalledTimes(1);
+    const absent = invokeUnary(handlers.Cancel as never, { name: VALID_TEAM });
     expect((absent.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.FAILED_PRECONDITION);
-    expect((absent.mock.calls[0][0] as grpc.ServiceError).message).toContain("UpdateAgent");
+    expect((absent.mock.calls[0][0] as grpc.ServiceError).cause).toBeInstanceOf(TeamSessionError);
   });
 });
 
@@ -467,7 +575,7 @@ describe("PresetService preset CRUD handlers", () => {
       parent: "templates/saolei",
       presetId: "p1",
       preset: { persona: "body prompt" },
-      role: "PRESET_ROLE_PLAYER",
+      role: "player",
     });
     await vi.waitFor(() => expect(created).toHaveBeenCalledTimes(1));
     // Copy-then-patch from the PLAYER pool template (preset-api.md §2): the
@@ -482,7 +590,7 @@ describe("PresetService preset CRUD handlers", () => {
     expect(err).toBeNull();
     expect(response?.name).toBe(VALID_PRESET);
     expect(response?.persona).toBe("body prompt");
-    expect(response?.role).toBe("PRESET_ROLE_PLAYER");
+    expect(response?.role).toBe("player");
     // create_time/update_time are server-maintained at handling time and
     // equal (AIP-133; the update time refreshes on UpdatePreset).
     expect(response?.createTime?.seconds).toBeTypeOf("number");
@@ -496,7 +604,7 @@ describe("PresetService preset CRUD handlers", () => {
       parent: "templates/saolei",
       presetId: "p2",
       preset: {},
-      role: "PRESET_ROLE_PLANNER",
+      role: "planner",
     });
     await vi.waitFor(() => expect(planner).toHaveBeenCalledTimes(1));
     expect(deps.authoring.create).toHaveBeenLastCalledWith({
@@ -513,7 +621,7 @@ describe("PresetService preset CRUD handlers", () => {
       parent: "templates/saolei",
       presetId: "p1",
       preset: {},
-      role: "PRESET_ROLE_PLAYER",
+      role: "player",
     });
     await vi.waitFor(() => expect(duplicate).toHaveBeenCalledTimes(1));
     expect((duplicate.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.ALREADY_EXISTS);
@@ -523,7 +631,7 @@ describe("PresetService preset CRUD handlers", () => {
     const deps = fakeDeps();
     const handlers = buildPresetHandlers(deps);
 
-    for (const role of [undefined, "PRESET_ROLE_UNSPECIFIED", "PRESET_ROLE_OPERATOR"]) {
+    for (const role of [undefined, "", "referee"]) {
       const callback = invokeUnary(handlers.CreatePreset as never, {
         parent: "templates/saolei",
         presetId: "p1",
@@ -543,10 +651,10 @@ describe("PresetService preset CRUD handlers", () => {
     const handlers = buildPresetHandlers(deps);
 
     for (const request of [
-      { parent: "templates", presetId: "p1", preset: {}, role: "PRESET_ROLE_PLAYER" },
-      { parent: "templates/unknown", presetId: "p1", preset: {}, role: "PRESET_ROLE_PLAYER" },
-      { parent: "templates/saolei", presetId: "", preset: {}, role: "PRESET_ROLE_PLAYER" },
-      { parent: "templates/saolei", presetId: "a/b", preset: {}, role: "PRESET_ROLE_PLAYER" },
+      { parent: "templates", presetId: "p1", preset: {}, role: "player" },
+      { parent: "templates/unknown", presetId: "p1", preset: {}, role: "player" },
+      { parent: "templates/saolei", presetId: "", preset: {}, role: "player" },
+      { parent: "templates/saolei", presetId: "a/b", preset: {}, role: "player" },
     ]) {
       const callback = invokeUnary(handlers.CreatePreset as never, request);
       expect((callback.mock.calls[0][0] as grpc.ServiceError).code).toBe(
@@ -596,7 +704,7 @@ describe("PresetService preset CRUD handlers", () => {
     // A role filter narrows the authoring query.
     const planners = invokeUnary(handlers.ListPresets as never, {
       parent: "templates/saolei",
-      role: "PRESET_ROLE_PLANNER",
+      role: "planner",
     });
     await vi.waitFor(() => expect(planners).toHaveBeenCalledTimes(1));
     expect(deps.authoring.list).toHaveBeenLastCalledWith("planner");

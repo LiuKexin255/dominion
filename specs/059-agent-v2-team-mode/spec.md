@@ -33,7 +33,7 @@
 
 ## Clarifications
 
-> 本节为已裁定决策的来源记录（决策依据）；各裁定的终态规范已编码于 FR-008~FR-011、FR-017 与 Assumptions 条款，规范冲突时以 FR/Assumptions 为准。
+> 本节为已裁定决策的来源记录（决策依据）；各裁定的终态规范已编码于 FR-008~FR-011、FR-014、FR-017 与 Assumptions 条款（2026-09-10 切换锚点澄清、无自动首驱/切换零合成消息与 team 流裁定的终态规范另编码于 [data-model.md](data-model.md) §5、[contracts/dsh-plugins.md](contracts/dsh-plugins.md) §2 与 [contracts/team-api.md](contracts/team-api.md) §3；proto 场景解耦裁定的终态规范另编码于 [contracts/team-api.md](contracts/team-api.md) §1–§3/§5、[contracts/preset-api.md](contracts/preset-api.md) 与 [data-model.md](data-model.md) §2/§4），规范冲突时以 FR/Assumptions 为准。
 
 ### Session 2026-09-09（用户裁定）
 
@@ -41,6 +41,13 @@
 - Q: team 的多局循环在 planner 复盘后是否自动继续下一局？ → A：编排层继续驱动 player 进入下一轮（结构性续驱），是否继续游戏（开启新局）由 player（LLM）自行决定。
 - Q: Cancel 是否同时暂停自动续驱循环？ → A：取消 = 终止在途回合 + 暂停自动续驱；用户再次发送消息即恢复（消息由当前激活成员处理，循环继续）。
 - Q: 用户消息是否可定向 planner（@planner）？ → 系统层面无定向：用户输入进入团队记录并广播全员，由**当前激活成员**处理（player/planner 交替激活）；排队消息同样驱动当前激活成员，且若消化排队消息时恰逢编排层即将切换成员（如 planner 回合结束准备切换 player），切换延后至排队消息消化完成后再继续编排；@标记仅为消息内容表达，不影响系统流程；planner 无需指令工具（v1 的 instruct_player 不迁移），成员间通信经团队消息流承载。
+
+### Session 2026-09-10（用户澄清与裁定）
+
+- Q: team 在 player 与 planner 之间切换的确切节点是什么？ → A：① **player → planner**：切换发生在游戏结束后——gameEnded 事实的确立来源是 **saolei 工具返回游戏终局结果**（工具结果层面，如失败/胜利返回）；切换评估遵循既有状态机优先级（player 回合结束时：排队消息先消化 → gameEnded? 是 → 驱动 planner 复盘 / 否 → 结构性续驱 player）。② **planner → player**：切换节点是 planner **完成静止**——turn 结束**并且**不会再触发新的 turn（两种新 turn 触发源都不存在：工具调用引发的后续 turn、待消化排队消息）；即"planner 回合结束"的切换评估必须确认 planner 已静止，才续驱 player。
+- Q: spec 是否需要任何额外驱动消息？"物化后无需用户 Send 即自动出现 planner 开局策略"是否为需求？ → A（用户裁定）：**不是需求**。spec 不需要任何额外驱动消息；开始游戏的**首次驱动由用户消息触发**——物化（UpdateTeam）成功后 team 静止等待，不自动驱动任何成员（初始激活成员 = planner、初始相位 = planning），首条用户消息由 planner 处理。planner 与 player 的所有切换/续驱（planner→player 结构性续驱、player→planner gameEnded 复盘、排队消化）**不使用任何编排层合成的驱动消息**，直接以群聊消息（drain 返回的未消费团队消息历史 + 排队用户消息）驱动目标 agent（FR-010 的完全落实）；若无未消费群聊消息且无排队消息（无输入），编排层保持静止在当前激活成员——不合成消息、不空转（"结构性续驱"只在存在未消费输入时发生）。取消暂停后再次 Send 恢复（FR-017 既有语义：再次 Send 即有输入即驱动）。
+- Q: 编排自动驱动的回合事件如何到达前端（web-views.md §2 悬置项）？实时承载应基于 Send 创建的 stream 流还是 List 面定时拉取？ → A（用户裁定）：**使用 Send 创建的 stream 流，并将流从 agent 回合提升为 team turn 持续流**——从发起持续输出，覆盖后续所有编排自动驱动的成员回合（结构性续驱 player、gameEnded 复盘、排队消化、多局循环），直到 team 静止（编排层无在途回合且无待消化输入）才结束流。同一流同时返回 agent message（成员原生事件 + member 标注）与 team message（归并序列条目 + seq 单调锚，与 ListTeamMessages 返回元素同构）；流是编排事件的订阅面——客户端断开/流取消不终止编排循环（取消编排仍走 Cancel RPC）；流的自然终点为 team 静止（含自然收敛与 Cancel 后的暂停静止），异常断开由客户端重连 + List 回填补齐。终态规范编码于 [contracts/team-api.md](contracts/team-api.md) §3（FR-017 流式响应对象）。
+- Q: proto 会话面的 team 及相关定义是否应携带 saolei 场景特化（TeamRole/PresetRole 枚举、player_preset/planner_preset 等双角色字段）？ → A（用户裁定）：**team 及相关定义与 saolei 场景解耦**——role 用开放字符串：成员 role 为场景词汇（saolei 下 "player"/"planner"），用户消息标注为保留值 "user"，空字符串=未设置；Team 物化输入泛化为 members 列表（每成员 {role, preset, model?}），不设场景特化字段；saolei 场景约束（members 恰 2、roles 恰为 player/planner、preset.role 与成员 role 字符串相等、model 在目录）由 agent_v2 服务端校验承载（仍 INVALID_ARGUMENT，错误不含"proto 限制"色彩）。泛化层级：完全泛化（采纳）> oneof（备选不采用——泛化可行时徒增分支）> bytes（禁止——破坏接口协议鲁棒性）。终态规范编码于 [contracts/team-api.md](contracts/team-api.md)、[contracts/preset-api.md](contracts/preset-api.md)、[data-model.md](data-model.md)。
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -64,23 +71,23 @@
 
 ### User Story 2 - 在 web 上与 team 协作完成多局扫雷游戏 (Priority: P1) 🎯 MVP
 
-用户为 session 物化一个 team（选定 player preset 与 planner preset 及各自模型）后，团队自动开始工作：planner 产出开局策略指令 → player 按策略执行游戏（调用扫雷工具，经 desktop 真实操作）→ 游戏结束（won/lost）→ planner 复盘总结并产出下一局策略 → 编排层自动驱动 player 进入下一轮（是否继续开局由 player 自行决定，典型情形为按策略开始下一局），循环往复。用户随时可以发消息参与（进入团队消息流广播全员，由当前激活成员处理）。全程的驱动不需要任何人工注入的额外触发提示词——编排层直接以团队消息历史驱动对应成员。web 对话页实时可见团队各成员的响应流。
+用户为 session 物化一个 team（选定 player preset 与 planner preset 及各自模型）后，team 静止等待用户消息；用户发送第一条消息即触发工作流（由当前激活成员 planner 处理）：planner 产出开局策略指令 → player 按策略执行游戏（调用扫雷工具，经 desktop 真实操作）→ 游戏结束（won/lost）→ planner 复盘总结并产出下一局策略 → 编排层自动驱动 player 进入下一轮（是否继续开局由 player 自行决定，典型情形为按策略开始下一局），循环往复。用户随时可以发消息参与（进入团队消息流广播全员，由当前激活成员处理）。全程的驱动不需要任何人工注入的额外触发提示词——编排层直接以团队消息历史驱动对应成员。web 对话页实时可见团队各成员的响应流。
 
-**Why this priority**: 本 feature 的核心价值切片——"team 模式的多 agent 协作游戏"端到端成立；单独此故事即可演示 v1 team 模式在 v2 上的完整复刻与超越（群聊模型、无触发消息）。
+**Why this priority**: 本 feature 的核心价值切片——"team 模式的多 agent 协作游戏"端到端成立；单独此故事即可演示 v1 team 模式在 v2 上的完整复刻与超越（群聊模型、零合成驱动消息）。
 
-**Independent Test**: 部署后（大型测试以 fake LLM + fake desktop 替换真实端点）物化 team，断言：物化后自动出现 planner 开局策略消息；player 随后被驱动开始游戏并产出工具调用与结果；终局后 planner 自动产出复盘与下一局策略；下一局 player 按策略执行；全程用户未发送任何额外触发消息。
+**Independent Test**: 部署后（大型测试以 fake LLM + fake desktop 替换真实端点）物化 team，断言：物化后 team 静止等待（无任何成员被驱动、不出现编排层合成的驱动消息）；用户发送第一条消息后 planner 产出开局策略消息；player 随后被驱动开始游戏并产出工具调用与结果；终局后 planner 自动产出复盘与下一局策略；下一局 player 按策略执行；除首条用户消息外全程无需用户发送任何额外触发消息。
 
 **Acceptance Scenarios**:
 
 1. **Given** session S 未物化 team，**When** 用户发送消息，**Then** 请求被明确拒绝并引导先完成 team 物化。
-2. **Given** session S 已物化 team（player preset P1 + planner preset P2 + 各自模型），**When** 物化完成，**Then** team 自动开始工作：planner 被驱动产出开局策略指令，随后 player 被驱动按策略开始游戏（调用扫雷工具），无需用户发送任何消息触发。
+2. **Given** session S 已物化 team（player preset P1 + planner preset P2 + 各自模型），**When** 物化完成，**Then** team 静止等待用户消息（当前激活成员为 planner，不自动驱动任何成员、不出现任何编排层合成的驱动消息）；用户发送第一条消息后，planner 被驱动处理该消息并产出开局策略指令，随后 player 被驱动按策略开始游戏（调用扫雷工具）。
 3. **Given** 一局游戏进行中（player 回合中），**When** 工具操作依次执行，**Then** 每次工具调用与结果对 team 全员可见（planner 能在后续被驱动时看到本局完整过程），desktop 收到并执行对应操作。
 4. **Given** 某操作触发终局（won/lost），**When** 该操作结果返回，**Then** 编排层自动驱动 planner 复盘总结并产出下一局策略；planner 回合结束后编排层自动驱动 player 进入下一轮（无需用户触发；是否开启新局由 player 自行决定，典型情形为按策略开始下一局）。
 5. **Given** 一局终局后 planner 被驱动复盘，**When** planner 调用 memory 工具记录跨局观察，**Then** 修改立即持久化到既有 memory 服务（经其管理路由可查证），调用与结果进入 planner 视角历史并经团队消息流对 player 可见（可区分来自 planner），planner system prompt 中的记忆快照保持不变（新快照待下次物化生效）。
 6. **Given** 一局或多局进行中，**When** 用户发送消息，**Then** 消息进入团队消息流广播全员；若当前激活成员回合进行中则排队，回合结束后由当前激活成员消化；若此时编排层即将切换成员，切换延后至排队消息消化完成后继续。
 7. **Given** team 已物化并对话多轮，**When** 用户刷新 team 配置（改 preset 或模型），**Then** 在途回合按既定终止语义处理、短期记忆清空、按新配置重建 team 并重新开始工作流。
 8. **Given** desktop 未连接或中途断开，**When** player 调用需要桌面执行的工具，**Then** 工具以明确可读的错误结果返回（模型可见、非假成功），团队流程不崩溃、进程存活，重连后可继续。
-9. **Given** team 的自动循环运行中（某成员回合进行中或等待续驱），**When** 用户执行取消，**Then** 在途回合按取消语义终止、排队消息落地为历史且不触发新驱动、自动续驱暂停；用户再次发送消息后循环恢复（消息由当前激活成员处理）。
+9. **Given** team 的自动循环运行中（某成员回合进行中或等待续驱），**When** 用户执行取消，**Then** 在途回合按取消语义终止、排队消息保留为已固化历史且不触发新驱动、自动续驱暂停、活跃 team 流在静止点结束；用户再次发送消息后循环恢复（消息由当前激活成员处理）。
 
 ---
 
@@ -169,7 +176,7 @@
 **团队消息流与驱动**
 
 - **FR-008**: team MUST 以群聊模型同步消息：用户输入与各成员的输出（发言、工具调用及其结果）构成团队消息流；任一成员的输出 MUST 以 1:1 原样形态对其他成员可见——注入其他成员的消息为"发送者标注头行 + 标签对包裹的原样正文"结构：正文 MUST 含完整原文（发言全文、工具调用的完整输入与结果全文），头行可含简短摘要标签仅作标注，MUST NOT 以摘要/引用替代或截断正文。成员间通信（含 planner 向 player 传达策略）MUST 经团队消息流承载，MUST NOT 引入专用指令传递工具（v1 的 instruct_player 工具不迁移）。
-- **FR-009**: 成员的驱动时机 MUST 由编排层统一持有：游戏开始时驱动 planner 产出开局策略指令；随后驱动 player 执行游戏；游戏结束（won/lost）后驱动 planner 复盘总结；planner 回合结束后编排层 MUST 自动驱动 player 进入下一轮（结构性续驱，无需用户触发），是否继续游戏（开启新局）由 player 自行决定；循环持续直到用户干预（取消/刷新 team）。team 成员 MUST NOT 被团队消息自动唤醒（谁执行、何时执行只由编排层决定）。
+- **FR-009**: 成员的驱动时机 MUST 由编排层统一持有：team 物化成功后 MUST 处于静止等待（初始激活成员 = planner、初始相位 = planning），MUST NOT 自动驱动任何成员——开始游戏的首次驱动由用户第一条消息触发（由当前激活成员 planner 处理，FR-011），planner 产出开局策略指令；随后驱动 player 执行游戏；游戏结束（won/lost）后驱动 planner 复盘总结；planner 回合结束后编排层 MUST 自动驱动 player 进入下一轮（结构性续驱，无需用户触发），是否继续游戏（开启新局）由 player 自行决定；循环持续直到用户干预（取消/刷新 team）。一切切换与续驱（planner→player 结构性续驱、player→planner gameEnded 复盘、排队消息消化）MUST 直接以群聊消息（drain 返回的未消费团队消息历史 + 排队用户消息）驱动目标成员，编排层 MUST NOT 合成任何驱动消息（FR-010 的完全落实）；无未消费团队消息且无排队消息时，编排层 MUST 保持静止在当前激活成员（不合成消息、不空转）。team 成员 MUST NOT 被团队消息自动唤醒（谁执行、何时执行只由编排层决定）。
 - **FR-010**: 驱动任一成员时 MUST 以该成员尚未消费的团队消息历史作为驱动输入；编排层 MUST NOT 依赖额外合成的触发提示词消息（区别于 agent v1 驱动 planner 需内部构建复盘请求提示词的形态）。
 - **FR-011**: 用户在会话中发送的消息 MUST 进入团队消息流并广播全员（系统层面不存在对特定角色的定向投递；消息内容中的 @ 标记仅为内容表达，不影响系统流程）；消息 MUST 由编排层驱动当前激活成员处理（任一时刻至多一个成员被驱动，player/planner 交替激活）；当前成员回合进行中到达的用户消息 MUST 排队，回合结束后由当前激活成员消化——若此时编排层即将切换成员（如 planner 回合结束准备切换 player），切换 MUST 延后至排队消息消化完成后继续。
 - **FR-012**: 桌面控制 MUST 由 player 独占；desktop 连接与绑定语义（以 session 为单位、新连接接管、断连错误语义）在 team 模型下保持不变。
@@ -177,10 +184,10 @@
 **web UI**
 
 - **FR-013**: web UI MUST 以 session → team 模型组织（替换现有单 agent 模型）：team 配置面板支持物化/刷新（选两个池的 preset 与模型）、状态呈现（物化状态、desktop 连接、成员清单）。
-- **FR-014**: web UI MUST 为每个 team 会话提供恰好 1 个团队视图：全部消息（用户与各成员）按时间归并，各成员消息取该成员的原始输出（正文、思考、工具调用与结果），MUST NOT 显示转发/包装形态。
+- **FR-014**: web UI MUST 为每个 team 会话提供恰好 1 个团队视图：全部消息（用户与各成员）按时间归并，各成员消息取该成员的原始输出（正文、思考、工具调用与结果），MUST NOT 显示转发/包装形态。团队视图的实时呈现与 List 回填 MUST 共用同一归并序锚（`seq`，与 ListTeamMessages 同源，经 team 流的 `team_message` 帧到达，[contracts/team-api.md](contracts/team-api.md) §3）。
 - **FR-015**: web UI MUST 为 team 中每个成员提供 1 个视角视图（数量 = 成员数）：该成员视角下用户消息为 user、自己的输出为 agent、其他成员的消息为标注来源的 user 消息。
 - **FR-016**: web UI MUST 支持查看 team 中每个成员实例当前生效的完整 system prompt 内容，且内容 MUST 与该实例实际使用的系统提示词一致。
-- **FR-017**: 既有对话能力（流式响应、排队消息、取消、历史回填、未物化拒绝与引导）MUST 在 team 模型下继续成立（对象从单 agent 扩展为 team 及其成员）。取消在 team 模型下的语义 MUST 为：终止在途回合（无论哪个成员被驱动）+ 暂停编排层自动续驱 + 排队消息落地为历史且不触发新驱动；用户再次发送消息即恢复循环（消息进入团队消息流由当前激活成员处理，FR-011）；操作幂等。
+- **FR-017**: 既有对话能力（流式响应、排队消息、取消、历史回填、未物化拒绝与引导）MUST 在 team 模型下继续成立（对象从单 agent 扩展为 team 及其成员）。流式响应的承载 MUST 为 **team 流**（[contracts/team-api.md](contracts/team-api.md) §3）：Send 建立的流 MUST 从发起持续输出至 team 静止（编排层无在途回合且无待消化输入），覆盖其间全部成员回合（含编排自动驱动的回合）；同一流 MUST 同时承载成员事件帧（member 标注）与 team message 帧（归并序列条目，seq 与 ListTeamMessages 同源同值）；流 MUST 为编排事件的订阅面——客户端断开 MUST NOT 终止编排循环，取消编排仅经 Cancel。取消在 team 模型下的语义 MUST 为：终止在途回合（无论哪个成员被驱动）+ 暂停编排层自动续驱 + 排队消息保留为已固化历史且不触发新驱动；用户再次发送消息即恢复循环（消息进入团队消息流由当前激活成员处理，FR-011）；操作幂等。
 
 **范围排除**
 
@@ -200,7 +207,7 @@
 ### Measurable Outcomes
 
 - **SC-001**: 全仓构建与测试通过；对 v1 服务目录、包名、v1 专属协议 service、v1 专属夹具的代码检索确认零残留引用。
-- **SC-002**: 部署环境可完成完整多局闭环——物化后自动产出开局策略、一局游戏至终局、自动复盘总结与下一局策略、下一局执行——全程无需用户发送额外触发消息（大型测试全部用例通过，含本 feature 新增用例与既有回归用例，无 failed/flaky）。
+- **SC-002**: 部署环境可完成完整多局闭环——物化后 team 静止等待、用户首条消息触发 planner 产出开局策略、一局游戏至终局、自动复盘总结与下一局策略、下一局执行——除首条用户消息外全程无需用户发送任何额外触发消息（大型测试全部用例通过，含本 feature 新增用例与既有回归用例，无 failed/flaky）。
 - **SC-003**: 每个已物化的 team 会话提供 1 个团队视图 + 数量等于成员数的成员视角视图；三类典型消息（用户消息、含工具调用的成员产出、策略正文产出）在团队视图与各成员视角视图中的呈现符合 FR-014/FR-015 定义，同一消息跨视图正文一致。
 - **SC-004**: player 成员与 planner 成员的可用工具集和 system prompt 因角色严格分化（player 恰为扫雷工具组、planner 恰为 memory 工具组并含记忆快照），不存在工具与守则不一致的组合；preset 数据持久化（服务重启不丢失）；memory 修改即时持久化于既有 memory 服务（快照在实例生命周期内固定）。
 - **SC-005**: 每个成员的完整 system prompt 可在 web UI 查看且与实际生效内容一致；配置刷新后视图与 system prompt 随新配置更新。
@@ -209,7 +216,7 @@
 
 - **v1 移除边界**（依据前期调研与用户"完全移除"要求）：memory Go 服务及既有 memory 管理路由保留（`survey/deepseek-harness-memory-plugin.md` 决策 ⑤：存储沿用 memory 服务）；prompt 配置服务（Go）随 v1 移除（v1 专属消费方、未部署）；SessionService 与 desktop 桥帧类型保留（v2 复用中）。
 - **API 形态**：现有 `/api/v2` 的 agent 单例模型被 team 模型替换（用户明确"session 下面 team 模型，而不是现在的单 agent 模型"）；agent 为进程内存态，无需存量数据迁移，旧 session 在新模型下呈现未物化引导态。
-- **开局驱动时机**：team 物化后自动驱动 planner 产出首局开局策略（对齐 v1 物化即触发开局指令的语义）；后续局的策略来自 planner 复盘产出。
+- **开局驱动时机**：team 物化后静止等待用户消息（初始激活成员 = planner、初始相位 = planning，不自动驱动任何成员）；游戏的首次驱动由用户第一条消息触发（由 planner 处理）；后续局的策略来自 planner 复盘产出。
 - **用户输入语义**：用户消息进入团队消息流广播全员，由当前激活成员处理（player/planner 交替激活，对齐 v1 交替驱动形态）；@标记仅为内容层面表达，系统不解析、不影响投递与驱动；planner 无指令工具（成员间通信经团队消息流，v1 的 instruct_player 不迁移）。
 - **compact 排除的衍生限制**：planner 视角历史随局数持续增长（工具结果原样转发，不裁剪）；本 feature 接受该 token 代价（调研决策 ⑬ 同源结论），治理留待后续 feature。
 - **memory 快照刷新边界**：快照在 planner 实例物化时读取一次、生命周期内固定（`survey/deepseek-harness-memory-plugin.md` 决策 ③）；v1 的"每 5 局压缩边界刷新"不迁移（与 compact 排除一致），快照与写入差异由 planner 自己的调用历史补偿呈现。

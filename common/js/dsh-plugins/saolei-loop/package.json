@@ -16,7 +16,9 @@
     "peerDependencies": {
         "@deepseek-ai/cordis": "catalog:",
         "@deepseek-ai/dsh-agent": "catalog:",
-        "@dominion/dsh-desktop-bridge": "workspace:*"
+        "@deepseek-ai/dsh-llm": "catalog:",
+        "@dominion/dsh-desktop-bridge": "workspace:*",
+        "@dominion/dsh-team": "workspace:*"
     },
     "devDependencies": {
         "@deepseek-ai/dsh-scope": "catalog:",

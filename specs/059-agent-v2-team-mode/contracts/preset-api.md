@@ -7,19 +7,19 @@
 
 | RPC | HTTP | 演进点 |
 |---|---|---|
-| `CreatePreset` | `POST /api/v2/{parent=templates/*}/presets` | 请求增加必填 `role`（PLAYER/PLANNER，caller-supplied id 惯例不变）；creation 经 copy-then-patch 从对应池的模板 preset 物化 |
-| `ListPresets` | `GET /api/v2/{parent=templates/*}/presets` | 增加可选 `role` 过滤参数；返回项含 role |
-| `GetPreset` | `GET /api/v2/{name=templates/*/presets/*}` | 返回含 role |
+| `CreatePreset` | `POST /api/v2/{parent=templates/*}/presets` | 请求含必填 `role`（string——场景词汇，saolei 下 `"player"`/`"planner"`；caller-supplied id 惯例不变）；creation 经 copy-then-patch 从对应池的模板 preset 物化 |
+| `ListPresets` | `GET /api/v2/{parent=templates/*}/presets` | 可选 `role` 过滤参数（string；空字符串=不过滤）；返回项含 role（string） |
+| `GetPreset` | `GET /api/v2/{name=templates/*/presets/*}` | 返回含 role（string） |
 | `UpdatePreset` | `PATCH /api/v2/{name=templates/*/presets/*}` | update_mask 仍仅 `persona`（role 不可变）；create_time 保留 |
 | `DeletePreset` | `DELETE /api/v2/{name=templates/*/presets/*}` | 无 fan-out 语义不变（已物化 team 不受影响） |
 | `ListModels` | `GET /api/v2/models` | 零变更（两成员共用同一目录） |
 
 ## 2. 行为规范
 
-- **role 语义**：role 决定 preset 所属池与绑定的工具插件行（PLAYER→saolei 工具组、PLANNER→memory 工具组），编辑期固定（模板 preset 内置对应插件行，用户编辑面仅 persona——"选择单位是插件组"）。role 在 create 时必填且不可变；对已存在 preset 的 role 更新请求 → `INVALID_ARGUMENT`。
+- **role 语义**：role 为场景词汇字符串（proto 层无枚举约束——场景无关原语；saolei 下 `"player"`/`"planner"`），决定 preset 所属池与绑定的工具插件行（`"player"`→saolei 工具组、`"planner"`→memory 工具组），编辑期固定（模板 preset 内置对应插件行，用户编辑面仅 persona——"选择单位是插件组"）。role 在 create 时必填（非空且为已知场景词汇——它决定 copy-then-patch 的拷贝源池模板，非法值 → `INVALID_ARGUMENT`，校验由 agent_v2 服务端按场景承载）且不可变；对已存在 preset 的 role 更新请求 → `INVALID_ARGUMENT`。
 - **唯一性**：preset id 同 template 内全局唯一（跨池不重复）；重复创建 → `ALREADY_EXISTS`。
 - **模板与创作**：每池提供内置模板 preset（内置角色插件行 + 角色 persona 占位）；Create = 模板拷贝 + persona patch（copy-then-patch，058 实证算法）；模板不可写/不可删（`FAILED_PRECONDITION`）。创作后零重启即可被新物化引用（热创作，V3-1 实证）。
-- **persona 空值**：物化时 persona 为空回退该角色默认 base（PLAYER/PLANNER 各一份，第一人称身份声明开头，R2）。
+- **persona 空值**：物化时 persona 为空回退该角色默认 base（`"player"`/`"planner"` 各一份，第一人称身份声明开头，R2）。
 - **generation**：persona 编辑产生新 generation，新物化命中新内容、已物化成员保持旧内容（V3-2 实证）——刷新 team 即取新。
 - **错误语义**：AIP-133/134/135 + AIP-193，沿用现状（`INVALID_ARGUMENT`/`ALREADY_EXISTS`/`NOT_FOUND`/`FAILED_PRECONDITION`，`cause` 链保留）。
 

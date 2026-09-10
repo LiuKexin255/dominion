@@ -16,62 +16,103 @@ import "projects/game/game.proto";
 // parent resources (v1 Template/Session) share the generated file's Go
 // package (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
 // §2.6). The proto package stays projects.game.v2: wire, REST, and TS are
-// unaffected.
+// unaffected. Because the Go package is shared, every v2 message/service
+// name MUST stay disjoint from the v1 names that coexist until the v1
+// removal lands (the team model therefore keeps the service name
+// AgentService and removes the v1 TeamService/Team/UpdateTeamRequest/
+// GetTeamRequest symbols in the same change — same-package declaration
+// collision).
 option go_package = "dominion/projects/game";
 
 // AgentService is the session-scoped stateful surface of agent_v2: the
-// session's agent singleton (AIP-156 singletons,
-// https://google.aip.dev/156), its in-memory message history, and the Send
-// turn stream. Agent/queue/game state lives in the serving instance's
+// session's team singleton (AIP-156 singletons,
+// https://google.aip.dev/156) with its player/planner members, the merged
+// team message sequence, the member-view projections, and the Send team
+// stream. Team/member/queue/game state lives in the serving instance's
 // process memory, so every RPC requires proxy owner affinity — the gateway
 // routes this service through the proxy, while the stateless configuration
 // surface (PresetService, same host and port) is dialed directly
-// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §4).
-// Exposed through the game gateway under /api/v2 (AIP-134 create-or-update,
-// https://google.aip.dev/134#create-or-update; AIP-132 standard List,
+// (specs/059-agent-v2-team-mode/contracts/team-api.md §1).
+// Exposed through the game gateway under /api/v2 (AIP-131 Get,
+// https://google.aip.dev/131; AIP-132 standard List,
 // https://google.aip.dev/132; AIP-136 custom methods,
 // https://google.aip.dev/136; resource names per AIP-122,
 // https://google.aip.dev/122).
-// Contract: specs/051-agent-v2-dsh-migration/contracts/agent-api.md §1/§2.
 // Prefix Path: /api/v2
 service AgentService {
-  // UpdateAgent materializes (or refreshes) the session's agent singleton:
+  // UpdateTeam materializes (or refreshes) the session's team singleton:
   // create-or-update on an AIP-156 singleton (AIP-134 create-or-update,
   // https://google.aip.dev/134#create-or-update) — there is no Create/Delete
-  // RPC. Validation is fail-fast (preset must exist, model must be in the
-  // catalog); an existing agent is torn down and rebuilt with the new
-  // configuration, so every call yields a clean agent (refresh semantics
-  // included).
-  rpc UpdateAgent(UpdateAgentRequest) returns (Agent) {
+  // RPC. The materialization input is the `members` list (one caller-supplied
+  // {role, preset, model?} per member; the session face is a scene-agnostic
+  // team primitive). Validation is fail-fast and precedes any teardown: the
+  // hosting service checks member structure, the scene vocabulary and pool
+  // matching, and the model catalog. An already-materialized team is
+  // refreshed (in-flight turns terminated, queued messages voided, every
+  // member's short-term memory cleared, members rebuilt; create_time
+  // preserved).
+  rpc UpdateTeam(UpdateTeamRequest) returns (Team) {
     option (google.api.http) = {
-      patch: "/api/v2/{agent.name=templates/*/sessions/*/agent}"
-      body: "agent"
+      patch: "/api/v2/{team.name=templates/*/sessions/*/team}"
+      body: "team"
     };
   }
 
-  // GetAgent returns the session's materialized agent configuration;
-  // NOT_FOUND when the agent is not materialized. AIP-131:
+  // GetTeam returns the session's materialized team (member states,
+  // desktop_connected, timestamps); NOT_FOUND while the team is not
+  // materialized — the web front end renders its onboarding state from that
+  // code. AIP-131: https://google.aip.dev/131
+  rpc GetTeam(GetTeamRequest) returns (Team) {
+    option (google.api.http) = {
+      get: "/api/v2/{name=templates/*/sessions/*/team}"
+    };
+  }
+
+  // GetTeamMember returns one fixed member (members/player or
+  // members/planner) including its output-only system_prompt — the complete
+  // assembly result the member instance actually uses. AIP-131:
   // https://google.aip.dev/131
-  rpc GetAgent(GetAgentRequest) returns (Agent) {
+  rpc GetTeamMember(GetTeamMemberRequest) returns (TeamMember) {
     option (google.api.http) = {
-      get: "/api/v2/{name=templates/*/sessions/*/agent}"
+      get: "/api/v2/{name=templates/*/sessions/*/team/members/*}"
     };
   }
 
-  // ListAgentMessages lists the agent's in-memory conversation history for
-  // refresh/reconnect backfill. AIP-132 standard List over the agent
-  // singleton's message child collection (the parent is the agent resource
+  // ListTeamMessages lists the team view history: the merged sequence where
+  // user input and every member's native output are ordered by the
+  // monotonically assigned seq anchor. AIP-132 standard List over the team
+  // singleton's message child collection (the parent is the team resource
   // name); AIP-158: https://google.aip.dev/158
-  rpc ListAgentMessages(ListAgentMessagesRequest) returns (ListAgentMessagesResponse) {
+  rpc ListTeamMessages(ListTeamMessagesRequest) returns (ListTeamMessagesResponse) {
     option (google.api.http) = {
-      get: "/api/v2/{parent=templates/*/sessions/*/agent}/messages"
+      get: "/api/v2/{parent=templates/*/sessions/*/team}/messages"
     };
   }
 
-  // Send one user message and stream the turn's events until its turn ends
-  // (including queued waiting). Custom method on the session resource
-  // (AIP-136: https://google.aip.dev/136); the agent must already be
-  // materialized — there is no lazy creation.
+  // ListMemberMessages lists one member's view history: user messages as
+  // user, the member's own output as agent, and other members' relayed
+  // messages as user messages annotated with their sender (rendered as
+  // `user: [sender]…`). AIP-132: https://google.aip.dev/132
+  rpc ListMemberMessages(ListMemberMessagesRequest) returns (ListMemberMessagesResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/{parent=templates/*/sessions/*/team/members/*}/messages"
+    };
+  }
+
+  // Send one user message and subscribe to the team stream: the server
+  // stream runs from acceptance until the team quiesces (no in-flight turn
+  // and no pending digestible input), covering every member turn in
+  // between, including the orchestrator-driven ones (structural
+  // continuation, game-end review, queue digestion, further rounds). The
+  // stream carries member event frames (member-labelled turn_start/
+  // block_start/delta/block_end/tool_result/turn_end) plus team-level
+  // `team_message` frames (the merged-sequence entries, same seq as
+  // ListTeamMessages). It is a subscription surface, not the orchestration:
+  // a client disconnect MUST NOT stop the team, and cancelling the
+  // orchestration happens only through Cancel. Custom method on the session
+  // resource (AIP-136: https://google.aip.dev/136); the team must already be
+  // materialized — there is no lazy creation
+  // (specs/059-agent-v2-team-mode/contracts/team-api.md §3).
   rpc Send(SendRequest) returns (stream ChatEvent) {
     option (google.api.http) = {
       post: "/api/v2/{session=templates/*/sessions/*}:send"
@@ -79,28 +120,30 @@ service AgentService {
     };
   }
 
-  // Cancel gracefully terminates the session's in-flight agent turn: the
-  // model stream and in-flight tool executions propagate cancellation, and
-  // queued messages land as user history messages without triggering a new
-  // turn (unlike the official dsh client, which keeps its pending queue).
-  // Idempotent: a no-op success when no turn is running and the queue is
-  // empty; the agent must already be materialized. Custom method on the
-  // agent singleton resource (AIP-136: https://google.aip.dev/136).
-  // Semantics: specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §3.
+  // Cancel gracefully terminates the team's in-flight member turn (whichever
+  // member is active), pauses the orchestrator's automatic continuation, and
+  // preserves queued messages as already-fixed history without triggering a
+  // new turn; active team streams end at the resulting static point.
+  // Idempotent: a no-op success while already paused. A later Send resumes
+  // the loop (the message is handled by the current activation). Custom
+  // method on the team singleton resource (AIP-136:
+  // https://google.aip.dev/136). Semantics:
+  // specs/059-agent-v2-team-mode/contracts/team-api.md §4.
   rpc Cancel(CancelRequest) returns (CancelResponse) {
     option (google.api.http) = {
-      post: "/api/v2/{name=templates/*/sessions/*/agent}:cancel"
+      post: "/api/v2/{name=templates/*/sessions/*/team}:cancel"
       body: "*"
     };
   }
 }
 
 // PresetService is the stateless configuration surface of agent_v2: the
-// preset collection backing agent materialization and the deployment-level
-// model catalog. Preset state lives in Mongo and the catalog is static
-// plugin configuration, so any agent_v2 instance can serve every RPC — the
-// gateway dials agent_v2 directly for this service (no proxy owner
-// affinity). Contract: specs/051-agent-v2-dsh-migration/contracts/agent-api.md.
+// role-pooled preset collection backing team materialization and the
+// deployment-level model catalog. Preset state lives in Mongo and the
+// catalog is static plugin configuration, so any agent_v2 instance can serve
+// every RPC — the gateway dials agent_v2 directly for this service (no proxy
+// owner affinity). Contract:
+// specs/059-agent-v2-team-mode/contracts/preset-api.md.
 // Prefix Path: /api/v2
 service PresetService {
   // CreatePreset creates a Preset under a template; a duplicate caller-id
@@ -137,7 +180,7 @@ service PresetService {
   }
 
   // DeletePreset deletes a Preset; it does not affect already-materialized
-  // agents (their persona is a materialization-time snapshot).
+  // team members (their composition is a materialization-time snapshot).
   // AIP-135: https://google.aip.dev/135
   rpc DeletePreset(DeletePresetRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
@@ -147,7 +190,7 @@ service PresetService {
 
   // ListModels returns the read-only deployment-level model catalog
   // (no parent collection, no CRUD). The catalog source is the llm-glm
-  // plugin configuration, shared with UpdateAgent's model validation.
+  // plugin configuration, shared with UpdateTeam's model validation.
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse) {
     option (google.api.http) = {
       get: "/api/v2/models"
@@ -160,7 +203,7 @@ service PresetService {
 // the frames are relayed to the agent_v2 instance owning the session.
 // Bidirectional streaming has no REST binding (AIP-127,
 // https://google.aip.dev/127) — the WS path is carried by a gateway custom
-// route, mirroring the v1 TeamService.Connect shape. Frame semantics:
+// route. Frame semantics:
 // specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §1.
 // Prefix Path: /api/v2/templates/{template}/sessions/{session}/connect
 service DesktopBridgeService {
@@ -173,83 +216,183 @@ service DesktopBridgeService {
   rpc Connect(stream projects.game.UserFrame) returns (stream projects.game.TeamFrame);
 }
 
-// Agent is the session's agent singleton resource (AIP-156:
-// https://google.aip.dev/156): exactly one per session, materialized via
-// UpdateAgent (no Create/Delete RPC).
-message Agent {
+// TeamMember is one member of the session's team (the role IS the id;
+// members have no independent lifecycle, they are created and released with
+// the team). It carries both the caller-supplied materialization
+// configuration and the materialized runtime state — input and output are
+// the same shape (specs/059-agent-v2-team-mode/data-model.md §2).
+message TeamMember {
   option (google.api.resource) = {
-    type: "game.liukexin.com/Agent"
-    pattern: "templates/{template}/sessions/{session}/agent"
-    singular: "agent"
-    plural: "agents"
+    type: "game.liukexin.com/TeamMember"
+    pattern: "templates/{template}/sessions/{session}/team/members/{member}"
+    singular: "teamMember"
+    plural: "teamMembers"
   };
 
-  // The agent resource name.
-  // Format: templates/{template}/sessions/{session}/agent
+  // The member resource name; the server constructs it from the member role
+  // on the output side (the materialization input leaves it unset).
+  // Format: templates/{template}/sessions/{session}/team/members/{member}
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  // The full preset resource name the agent materializes from; required.
-  string preset = 2 [
-    (google.api.field_behavior) = REQUIRED,
+  // The member role — a scene vocabulary string (saolei: "player" /
+  // "planner"); required in the materialization input and echoed back
+  // unchanged on the output side.
+  string role = 2;
+  // The full preset resource name the member materializes from; required in
+  // the materialization input and served as the materialization-time
+  // snapshot on the output side.
+  string preset = 3 [
     (google.api.resource_reference) = {
       type: "game.liukexin.com/Preset"
     }
   ];
-  // The model id; empty = process default (GLM_MODEL || "glm-5.3", same
-  // source as the ListModels catalog).
-  string model = 3;
-  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
-  google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // The session's desktop bridge connection fact, read from the agent-side
-  // connection registry (specs/054-agent-v2-bugfixes/contracts/
-  // agent-api-changes.md §4); false when there is no live connection.
-  bool desktop_connected = 6;
+  // The model id; empty in the materialization input means the deployment
+  // default, and the output side carries the effective value.
+  string model = 4;
+  // The member instance's complete effective system prompt assembly
+  // (persona + team section + tool guidance + memory snapshot), served only
+  // by GetTeamMember.
+  string system_prompt = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
-// UpdateAgentRequest materializes or refreshes the agent singleton. The
-// resource's name field (Agent.name, pattern
-// templates/{template}/sessions/{session}/agent) is the target identity,
-// surfaced in the HTTP path via {agent.name=...}. An omitted update_mask
-// replaces all mutable fields (preset, model); allow_missing=true makes the
-// call create the agent on first use (AIP-134 create-or-update).
-message UpdateAgentRequest {
-  Agent agent = 1 [(google.api.field_behavior) = REQUIRED];
+// Team is the session's team singleton resource (AIP-156:
+// https://google.aip.dev/156): exactly one per session, materialized via
+// UpdateTeam (no Create/Delete RPC). It carries the member configuration
+// plus the output-only runtime state.
+message Team {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Team"
+    pattern: "templates/{template}/sessions/{session}/team"
+    singular: "team"
+    plural: "teams"
+  };
+
+  // The team resource name.
+  // Format: templates/{template}/sessions/{session}/team
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // The member configurations: caller-supplied on the materialization input
+  // (one {role, preset, model?} per member) and the materialized member
+  // snapshots on the output side — the same shape, so the field is not
+  // output-only. The proto imposes no member count or role vocabulary
+  // (scene-agnostic primitive); the hosting service validates the scene.
+  repeated TeamMember members = 2;
+  // The session's desktop bridge connection fact, read from the agent-side
+  // connection registry; false when there is no live connection. Output-only.
+  bool desktop_connected = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The materialization timestamp; preserved across refreshes (AIP-134
+  // output-only create_time). Output-only.
+  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The last materialization/refresh timestamp; refreshed on every
+  // UpdateTeam. Output-only.
+  google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// UpdateTeamRequest materializes or refreshes the team singleton. The
+// resource's name field (Team.name, pattern
+// templates/{template}/sessions/{session}/team) is the target identity,
+// surfaced in the HTTP path via {team.name=...}. An omitted update_mask
+// replaces all mutable fields; the only allowed mask path is `members`
+// (whole-list replacement, no per-member patch). allow_missing=true makes
+// the call create the team on first use (AIP-134 create-or-update).
+message UpdateTeamRequest {
+  Team team = 1 [(google.api.field_behavior) = REQUIRED];
   google.protobuf.FieldMask update_mask = 2;
   bool allow_missing = 3;
 }
 
-// GetAgentRequest gets the session's agent singleton.
-message GetAgentRequest {
-  // The agent resource name to retrieve.
-  // Format: templates/{template}/sessions/{session}/agent
+// GetTeamRequest gets the session's team singleton.
+message GetTeamRequest {
+  // The team resource name to retrieve.
+  // Format: templates/{template}/sessions/{session}/team
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "game.liukexin.com/Agent"
+      type: "game.liukexin.com/Team"
     }
   ];
 }
 
-// ListAgentMessagesRequest lists the agent singleton's messages.
-message ListAgentMessagesRequest {
-  // The parent agent resource name.
-  // Format: templates/{template}/sessions/{session}/agent
+// GetTeamMemberRequest gets one of the team's fixed members.
+message GetTeamMemberRequest {
+  // The member resource name to retrieve.
+  // Format: templates/{template}/sessions/{session}/team/members/{member}
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/TeamMember"
+    }
+  ];
+}
+
+// TeamMessage is one entry of the merged team view sequence: the producer
+// label (USER or a member), the native message, and the monotonically
+// assigned seq anchor (data-model.md §2). The Send team stream carries the
+// same shape in its `team_message` frame with the same seq value.
+message TeamMessage {
+  // The message producer: the reserved value "user" for user input, or a
+  // member role (scene vocabulary; saolei: "player" / "planner") for member
+  // output. Empty = unset.
+  string member = 1;
+  // The native message (user input, or the member's own output blocks).
+  HistoryMessage message = 2;
+  // The merged-sequence anchor: assigned by the single team projection,
+  // monotonically increasing, and shared by ListTeamMessages, the
+  // team_message stream frame, and the front-end merge.
+  int64 seq = 3;
+}
+
+// MemberViewMessage is one entry of a member's view history: the message as
+// seen by that member plus the sender annotation (USER input, or a relaying
+// member — rendered as `user: [sender]…`).
+message MemberViewMessage {
+  // The message in this member's view (role USER or AGENT).
+  HistoryMessage message = 1;
+  // The message source: the reserved value "user" for user input, or a
+  // member role (scene vocabulary; saolei: "player" / "planner") for a
+  // team-broadcast relay. Empty = unset.
+  string sender = 2;
+}
+
+// ListTeamMessagesRequest lists the team view history.
+message ListTeamMessagesRequest {
+  // The parent team resource name.
+  // Format: templates/{template}/sessions/{session}/team
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "game.liukexin.com/Agent"
+      type: "game.liukexin.com/Team"
     }
   ];
   int32 page_size = 2;
   string page_token = 3;
 }
 
-// ListAgentMessagesResponse is the response for listing agent messages.
-message ListAgentMessagesResponse {
-  repeated HistoryMessage messages = 1;
+// ListTeamMessagesResponse is the response for listing team messages.
+message ListTeamMessagesResponse {
+  repeated TeamMessage messages = 1;
   string next_page_token = 2;
 }
 
-// SendRequest sends one user message to the session's agent.
+// ListMemberMessagesRequest lists one member's view history.
+message ListMemberMessagesRequest {
+  // The parent member resource name.
+  // Format: templates/{template}/sessions/{session}/team/members/{member}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/TeamMember"
+    }
+  ];
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+// ListMemberMessagesResponse is the response for listing member messages.
+message ListMemberMessagesResponse {
+  repeated MemberViewMessage messages = 1;
+  string next_page_token = 2;
+}
+
+// SendRequest sends one user message to the session's team.
 message SendRequest {
   // Full game session resource name: templates/{template}/sessions/{session}.
   // The Session type is declared by projects/game/game.proto (the v1 face
@@ -265,38 +408,26 @@ message SendRequest {
   string text = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
-// CancelRequest cancels the session's in-flight agent turn.
+// CancelRequest cancels the team's in-flight member turn and pauses the
+// orchestrator's automatic continuation.
 message CancelRequest {
-  // The agent resource name whose in-flight turn to cancel.
-  // Format: templates/{template}/sessions/{session}/agent
+  // The team resource name whose in-flight turn to cancel.
+  // Format: templates/{template}/sessions/{session}/team
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "game.liukexin.com/Agent"
+      type: "game.liukexin.com/Team"
     }
   ];
 }
 
 // CancelResponse is the empty response of a successful Cancel; the cancel
-// is idempotent (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md
-// §3).
+// is idempotent (specs/059-agent-v2-team-mode/contracts/team-api.md §4).
 message CancelResponse {}
 
-// PresetRole is the pool a Preset belongs to. The role is caller-chosen at
-// create time and immutable afterwards: it decides which pool template the
-// preset materializes from and the tool-plugin row the preset's composition
-// carries (PLAYER → the saolei tool-plugin row, PLANNER → the memory plugin
-// row — the tool set and its guidance live or die together at the plugin-row
-// granularity, specs/059-agent-v2-team-mode/contracts/preset-api.md §2).
-enum PresetRole {
-  PRESET_ROLE_UNSPECIFIED = 0;
-  PRESET_ROLE_PLAYER = 1;
-  PRESET_ROLE_PLANNER = 2;
-}
-
-// Preset is the per-template configuration resource an agent materializes
-// from. Persistence is the agent_v2 service's own (Mongo, survives
-// restarts).
+// Preset is the per-template configuration resource a team member
+// materializes from. Persistence is the agent_v2 service's own (Mongo,
+// survives restarts).
 message Preset {
   option (google.api.resource) = {
     type: "game.liukexin.com/Preset"
@@ -314,9 +445,10 @@ message Preset {
   string persona = 2;
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
-  // The pool the preset belongs to (output-only: chosen at create,
-  // immutable afterwards).
-  PresetRole role = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The pool the preset belongs to — a scene vocabulary string (saolei:
+  // "player" / "planner"); chosen at create and immutable afterwards
+  // (output-only).
+  string role = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // CreatePresetRequest creates a Preset under a template (AIP-133:
@@ -335,9 +467,10 @@ message CreatePresetRequest {
   ];
   string preset_id = 2 [(google.api.field_behavior) = REQUIRED];
   Preset preset = 3 [(google.api.field_behavior) = REQUIRED];
-  // The pool to create the preset into; REQUIRED and immutable afterwards
+  // The pool to create the preset into — a scene vocabulary string (saolei:
+  // "player" / "planner"); REQUIRED and immutable afterwards
   // (specs/059-agent-v2-team-mode/contracts/preset-api.md §2).
-  PresetRole role = 4 [(google.api.field_behavior) = REQUIRED];
+  string role = 4 [(google.api.field_behavior) = REQUIRED];
 }
 
 // ListPresetsRequest lists Presets under a template (AIP-132:
@@ -353,10 +486,10 @@ message ListPresetsRequest {
   ];
   int32 page_size = 2;
   string page_token = 3;
-  // Optional filter: only presets of this pool are returned; UNSPECIFIED =
-  // no role filtering (specs/059-agent-v2-team-mode/contracts/preset-api.md
+  // Optional filter: only presets of this pool are returned; empty = no
+  // role filtering (specs/059-agent-v2-team-mode/contracts/preset-api.md
   // §1).
-  PresetRole role = 4;
+  string role = 4;
 }
 
 // ListPresetsResponse is the response for listing Presets.
@@ -419,16 +552,26 @@ message ListModelsResponse {
 
 // ─── Streaming events ────────────────────────────────────────────────────────
 
-// ChatEvent is one streamed conversation event of a Send call. The payload
-// vocabulary mirrors dsh StreamChunk one-to-one (plus the queued/turn
-// lifecycle envelopes); block indexes are globally monotonic within one
-// turn (per-step provider indexes are remapped by the collector).
-// Mapping table: specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4;
-// tool_result extension: specs/051-agent-v2-dsh-migration/research.md D10.
+// ChatEvent is one streamed event of a Send team stream. Two frame classes
+// share the envelope (specs/059-agent-v2-team-mode/contracts/team-api.md
+// §3.2):
+//
+// - member event frames (turn_start/block_start/delta/block_end/tool_result/
+//   turn_end): `member` names the producing member; turn_id is minted per
+//   member turn, block index is globally monotonic and step is monotonic
+//   within that member turn (front-end groups by (member, turn_id));
+// - team-level frames (`queued`, `team_message`): no outer `member`.
+//
+// The payload vocabulary mirrors dsh StreamChunk one-to-one (plus the
+// queued/turn lifecycle envelopes).
 message ChatEvent {
   string session = 1 [(google.api.field_behavior) = REQUIRED];
-  // Server-minted turn identity (UUID); constant across one turn's events.
+  // Server-minted member-turn identity (UUID); constant across one member
+  // turn's events. Empty on team-level frames.
   string turn_id = 2;
+  // The producing member of a member event frame — a scene vocabulary role
+  // string (saolei: "player" / "planner"); unset on team-level frames.
+  string member = 3;
   oneof payload {
     QueuedEvent queued = 10;
     TurnStartEvent turn_start = 11;
@@ -437,12 +580,15 @@ message ChatEvent {
     BlockEndEvent block_end = 14;
     TurnEndEvent turn_end = 15;
     ToolResultEvent tool_result = 16;
+    // One merged-sequence entry appended to the team history, carrying the
+    // same seq value as the ListTeamMessages element for that entry.
+    TeamMessage team_message = 17;
   }
 }
 
-// The message was enqueued behind a running turn
-// (specs/049-agent-v2-dsh-init/spec.md FR-012); position is the 1-based
-// queue slot at enqueue time.
+// The message was enqueued behind a running turn; position is the 1-based
+// queue slot at enqueue time. Team-level frame (no outer member); emitted
+// only on the stream that accepted the message, as its first frame.
 message QueuedEvent { int32 position = 1; }
 
 message TurnStartEvent {}
@@ -462,7 +608,7 @@ message BlockStartEvent {
   string tool_id = 3;
   string name = 4;
   // Model output step this block belongs to (1-based: the server step
-  // loop's sequence number, monotonic within a turn; 0 is only the
+  // loop's sequence number, monotonic within a member turn; 0 is only the
   // missing-field sentinel); blocks sharing a step form one display
   // segment (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
   int32 step = 5;
@@ -475,7 +621,7 @@ message BlockDeltaEvent {
   int32 index = 1;
   string text = 2;
   // Model output step this block belongs to (1-based: the server step
-  // loop's sequence number, monotonic within a turn; 0 is only the
+  // loop's sequence number, monotonic within a member turn; 0 is only the
   // missing-field sentinel); blocks sharing a step form one display
   // segment (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
   int32 step = 3;
@@ -485,7 +631,7 @@ message BlockEndEvent {
   int32 index = 1;
   ContentBlock block = 2;
   // Model output step this block belongs to (1-based: the server step
-  // loop's sequence number, monotonic within a turn; 0 is only the
+  // loop's sequence number, monotonic within a member turn; 0 is only the
   // missing-field sentinel); blocks sharing a step form one display
   // segment (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
   int32 step = 3;
@@ -506,8 +652,8 @@ message ToolResultEvent {
 enum TurnStatus {
   TURN_STATUS_UNSPECIFIED = 0;
   TURN_STATUS_COMPLETED = 1;
-  TURN_STATUS_ERROR = 2;   // model/transport failure; session stays usable
-  TURN_STATUS_ABORTED = 3; // turn aborted mid-flight (re-materialization / shutdown)
+  TURN_STATUS_ERROR = 2;   // model/transport failure; team stays usable
+  TURN_STATUS_ABORTED = 3; // turn aborted mid-flight (refresh / shutdown)
   TURN_STATUS_CANCELED = 4; // user terminated the turn via :cancel
 }
 

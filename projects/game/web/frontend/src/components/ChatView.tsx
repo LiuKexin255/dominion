@@ -1,9 +1,12 @@
-// 对话主区：历史回填 + 实时流合并渲染 + 排队指示 + 发送输入
-// （行为基线 desktop ChatView，契约 specs/049-agent-v2-dsh-init/contracts/
-// web-frontend.md §3.2）。agent 输出按模型输出步骤分段呈现（specs/
-// 054-agent-v2-bugfixes/contracts/web-ui.md §2.2）：历史一条消息即一个 step、
-// live 回合每个 step 一个分段容器，依次独立呈现；步骤内 THINK →
-// ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard 分类分列不混排。
+// 对话主区：团队视图雏形（history/stream 归并渲染 + 成员标签）+ 排队指示 +
+// 发送输入（行为基线 desktop ChatView，契约 specs/059-agent-v2-team-mode/
+// contracts/web-views.md §2/§3）。team 归并序列条目按 seq 序呈现（USER 气泡 /
+// 成员原生输出带 player/planner 标签，不显示广播包装形态）；成员输出按模型
+// 输出步骤分段呈现（specs/054-agent-v2-bugfixes/contracts/web-ui.md §2.2）：
+// 历史一条消息即一个 step、live 回合每个 step 一个分段容器，依次独立呈现；
+// 步骤内 THINK → ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard
+// 分类分列不混排。视图切换器与成员视角视图属 Phase 6（T030），本组件只呈现
+// 团队视图。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Button,
@@ -12,7 +15,8 @@ import {
   MarkdownText,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ContentBlock, HistoryMessage } from '../api/conversation.js'
-import type { BlockDraft, LiveTurn, QueuedMsg } from '../store/chat.js'
+import { USER_MEMBER } from '../api/conversation.js'
+import type { BlockDraft, LiveMemberTurn, QueuedMsg, TeamMessageEntry } from '../store/chat.js'
 import { ReasoningRow } from './ReasoningRow.js'
 import { ToolCard, type ToolCardStatus } from './ToolCard.js'
 
@@ -22,15 +26,17 @@ const FOLLOW_THRESHOLD = 24
 
 export interface ChatViewProps {
   session: string
-  history: HistoryMessage[]
-  live: LiveTurn | null
+  // 团队视图归并序列（seq 锚；web-views.md §2）：team_message 帧 + List 回填。
+  history: TeamMessageEntry[]
+  // team 流覆盖的流式成员回合（按 (member, turnId) 分组；多回合持续流）。
+  live: LiveMemberTurn[]
   queue: QueuedMsg[]
   error: string | null
   // 最近回合是否以"已终止"终态收束（store 归约 turn_end{CANCELED}，
   // specs/054-agent-v2-bugfixes/contracts/web-ui.md §4）。
   canceled: boolean
   onSend: (text: string) => void
-  // 终止在途回合（POST {session}/agent:cancel 编排，App.tsx ChatPanel）；
+  // 终止 team 在途回合（POST {session}/team:cancel 编排，App.tsx ChatPanel）；
   // promise 落定后解除防抖，请求失败由编排层呈现错误。
   onCancel: () => Promise<void>
 }
@@ -165,6 +171,39 @@ function isFinalAnswer(message: HistoryMessage): boolean {
     !message.interrupted &&
     !message.blocks.some((b) => b.toolCall !== undefined) &&
     message.blocks.some((b) => (b.text?.content ?? '').trim() !== '')
+  )
+}
+
+// MemberTag 标注成员归属（web-views.md §3：成员消息归属到所属成员名下，
+// 团队视图用成员标签区分 player/planner；MUST NOT 显示广播包装形态）。
+// member 为 wire role 字符串，直接渲染（无枚举名前缀归一化）。
+function MemberTag({ member }: { member: string }) {
+  return (
+    <span className="member-tag" data-testid="member-tag" data-member={member}>
+      {member}
+    </span>
+  )
+}
+
+// MemberTurn renders one member's finished turn group (consecutive
+// same-member step messages) with its member label; folding stays per member
+// (web-views.md §3). A user entry or another member breaks the group.
+function MemberTurn({
+  member,
+  messages,
+  expanded,
+  onToggle,
+}: {
+  member: string
+  messages: HistoryMessage[]
+  expanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div className="member-turn" data-testid="member-turn" data-member={member}>
+      <MemberTag member={member} />
+      <CompletedTurn messages={messages} expanded={expanded} onToggle={onToggle} />
+    </div>
   )
 }
 
@@ -326,7 +365,12 @@ export function ChatView({
   const cancel = () => {
     if (cancelPending) return
     setCancelPending(true)
-    void onCancel().finally(() => setCancelPending(false))
+    // onCancel 的请求级失败由编排层（App.tsx ChatPanel）呈现；组件侧仅在
+    // 落定后解除防抖，不让 rejection 变成未处理拒绝。
+    void onCancel().then(
+      () => setCancelPending(false),
+      () => setCancelPending(false),
+    )
   }
 
   const toggleTurn = (start: number): void => {
@@ -344,37 +388,71 @@ export function ChatView({
   return (
     <div className="chat">
       <div className="chat-messages" data-testid="chat-messages" ref={messagesRef}>
-        {history.map((m, i) => {
-          if (m.role === 'ROLE_USER') {
+        {history.map((entry, i) => {
+          const { member, message } = entry
+          if (member === USER_MEMBER) {
             return (
               <div key={i} className="msg-user">
-                {m.blocks.map((b, j) => (
+                {message.blocks.map((b, j) => (
                   <span key={j}>{b.text?.content ?? ''}</span>
                 ))}
               </div>
             )
           }
-          // 连续 ROLE_AGENT 消息构成一个已完成回合（服务端每 step 一条），
-          // 由组首渲染整组并应用折叠；组内其余消息跳过。
-          if (i > 0 && history[i - 1]?.role === 'ROLE_AGENT') return null
+          // 连续同成员 AGENT 条目构成该成员的一个已完成回合（服务端每 step
+          // 一条），由组首渲染整组并应用折叠（web-views.md §3：折叠按成员
+          // 维度）；组内其余条目跳过；USER 或另一成员条目断开分组。
+          if (
+            i > 0 &&
+            history[i - 1]?.member === member &&
+            history[i - 1]?.message.role === 'ROLE_AGENT'
+          ) {
+            return null
+          }
           let end = i
-          while (end < history.length && history[end]?.role === 'ROLE_AGENT') end += 1
-          const messages = history.slice(i, end)
+          while (
+            end < history.length &&
+            history[end]?.member === member &&
+            history[end]?.message.role === 'ROLE_AGENT'
+          ) {
+            end += 1
+          }
+          const messages = history.slice(i, end).map((e) => e.message)
           return (
-            <CompletedTurn
+            <MemberTurn
               key={i}
+              member={member}
               messages={messages}
               expanded={expandedTurns.has(i)}
               onToggle={() => toggleTurn(i)}
             />
           )
         })}
-        {/* 流式回合各 step 分段依次独立呈现，全部展开（官方折叠规则：Turn
-         * 打开期间过程行保持展开——web-ui.md §2.2）；running 只属最后一段。 */}
-        {live !== null &&
-          live.steps.map((step, i) => (
-            <AgentStep key={step.step} blocks={step.blocks} running={i === live.steps.length - 1} />
-          ))}
+        {/* 流式成员回合各 step 分段依次独立呈现（全部展开——官方折叠规则：
+         * Turn 打开期间过程行保持展开，web-ui.md §2.2）；running 只属该回合
+         * 最后一段；已由 team_message 帧固化的前导 step 已进入归并序列，
+         * 跳过以免重复呈现。 */}
+        {live.map((turn) => {
+          const steps = turn.steps.slice(turn.fixedSteps)
+          if (steps.length === 0) return null
+          return (
+            <div
+              key={`${turn.member}:${turn.turnId}`}
+              className="member-turn"
+              data-testid="member-turn"
+              data-member={turn.member}
+            >
+              <MemberTag member={turn.member} />
+              {steps.map((step, i) => (
+                <AgentStep
+                  key={step.step}
+                  blocks={step.blocks}
+                  running={i === steps.length - 1}
+                />
+              ))}
+            </div>
+          )
+        })}
         {queue.map((q, i) => (
           <div key={i} className="queue-chip" data-testid="queue-chip">
             排队中 #{q.position}
@@ -419,7 +497,7 @@ export function ChatView({
             if (e.key === 'Enter') submit()
           }}
         />
-        {live !== null && (
+        {live.length > 0 && (
           <Button
             data-testid="cancel-button"
             disabled={cancelPending}

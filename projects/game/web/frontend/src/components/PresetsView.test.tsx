@@ -420,10 +420,16 @@ describe('App 视图切换', () => {
       if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
         return jsonResponse({ presets: [PRESET_P1] })
       }
-      if (url === `/api/v2/${S1}/agent`) {
-        return jsonResponse({ name: `${S1}/agent`, preset: PRESET_P1.name })
+      if (url === `/api/v2/${S1}/team`) {
+        return jsonResponse({
+          name: `${S1}/team`,
+          members: [
+            { name: `${S1}/team/members/player`, role: 'player', preset: PRESET_P1.name },
+            { name: `${S1}/team/members/planner`, role: 'planner', preset: PRESET_P1.name },
+          ],
+        })
       }
-      if (url === `/api/v2/${S1}/agent/messages`) {
+      if (url === `/api/v2/${S1}/team/messages`) {
         return jsonResponse({ messages: [] })
       }
       if (url === `/api/v2/${S1}:send` && method === 'POST') {
@@ -431,15 +437,19 @@ describe('App 视图切换', () => {
           async start(controller) {
             controller.enqueue(
               encoder.encode(
-                wireChunk('{"turnId":"t1","turnStart":{}}') +
-                  wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
-                  wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}'),
+                wireChunk(
+                  '{"teamMessage":{"member":"user","message":{"role":"ROLE_USER","blocks":[{"text":{"content":"一"}}]},"seq":"1"}}',
+                ) +
+                  wireChunk('{"member":"player","turnId":"t1","turnStart":{}}') +
+                  wireChunk('{"member":"player","turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+                  wireChunk('{"member":"player","turnId":"t1","delta":{"index":0,"text":"部"}}'),
               ),
             )
             await restReleased
-            controller.enqueue(encoder.encode(wireChunk('{"turnId":"t1","delta":{"index":0,"text":"分"}}')))
-            controller.enqueue(encoder.encode(wireChunk('{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}')))
-            controller.enqueue(encoder.encode(wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}')))
+            controller.enqueue(encoder.encode(wireChunk('{"member":"player","turnId":"t1","delta":{"index":0,"text":"分"}}')))
+            controller.enqueue(encoder.encode(wireChunk('{"member":"player","turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}')))
+            controller.enqueue(encoder.encode(wireChunk('{"teamMessage":{"member":"player","message":{"role":"ROLE_AGENT","blocks":[{"text":{"content":"部分"}}]},"seq":"2"}}')))
+            controller.enqueue(encoder.encode(wireChunk('{"member":"player","turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}')))
             controller.close()
             markDone()
           },
@@ -471,7 +481,7 @@ describe('App 视图切换', () => {
       expect((screen.getByTestId('agent-text') as HTMLElement).textContent).toBe('部分')
     })
     expect(screen.getByText('一')).toBeTruthy()
-    const listCalls = fetchMock.mock.calls.filter((c) => c[0] === `/api/v2/${S1}/agent/messages`)
+    const listCalls = fetchMock.mock.calls.filter((c) => c[0] === `/api/v2/${S1}/team/messages`)
     expect(listCalls).toHaveLength(1)
   })
 })

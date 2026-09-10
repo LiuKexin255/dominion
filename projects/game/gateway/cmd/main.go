@@ -6,11 +6,12 @@
 //   - /api/v1/* → grpc-gateway (SessionService + MemoryService unary RPCs per
 //     projects/game/game.proto HTTP annotations, AIP-127)
 //   - /api/v2/* → grpc-gateway, split by where the RPC's state lives
-//     (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §4):
-//     the session-scoped AgentService face (UpdateAgent/GetAgent/
-//     ListAgentMessages/Send, including the Send server-streaming RPC served
-//     as chunked NDJSON) rides the proxy connection — the proxy owns owner
-//     affinity for the stateful agent_v2 instances
+//     (specs/059-agent-v2-team-mode/contracts/team-api.md §1): the
+//     session-scoped AgentService team face (UpdateTeam/GetTeam/
+//     GetTeamMember/ListTeamMessages/ListMemberMessages/Send/Cancel,
+//     including the Send team server-streaming RPC served as chunked NDJSON)
+//     rides the proxy connection — the proxy owns owner affinity for the
+//     stateful agent_v2 instances
 //     (specs/051-agent-v2-dsh-migration/research.md D9); the stateless
 //     PresetService face (preset CRUD + ListModels) is registered on a
 //     direct agent_v2 connection — preset state lives in Mongo and the
@@ -74,11 +75,12 @@ func main() {
 
 	// teamConn hosts the stateful-routing services on the proxy: the proxy
 	// owns owner affinity for the stateful agent_v2 instances, so both the
-	// AgentService face (UpdateAgent/GetAgent/ListAgentMessages/Send) and the
+	// AgentService team face (UpdateTeam/GetTeam/GetTeamMember/
+	// ListTeamMessages/ListMemberMessages/Send/Cancel) and the
 	// DesktopBridgeService bidi stream route through it
 	// (specs/051-agent-v2-dsh-migration/research.md D9). The
 	// DesktopBridgeService.Connect bidi stream and the AgentService.Send
-	// server stream are long-lived, so this conn opts into keepalive pings
+	// team stream are long-lived, so this conn opts into keepalive pings
 	// (paired with the proxy's WithLongLivedServerKeepalive); session/memory
 	// stay unary → default.
 	teamClientOpts := append(
@@ -123,17 +125,18 @@ func main() {
 		log.Fatalf("register memory handler: %v", err)
 	}
 	// The AgentService handler rides the proxy connection: the proxy
-	// forwards the session-scoped agent RPCs to the agent_v2 stateful
-	// instance owning the session (owner affinity — agent_v2 keeps sessions
-	// in process memory, specs/051-agent-v2-dsh-migration/research.md D9).
+	// forwards the session-scoped team RPCs to the agent_v2 stateful
+	// instance owning the session (owner affinity — agent_v2 keeps the team,
+	// queue, and game state in process memory,
+	// specs/059-agent-v2-team-mode/contracts/team-api.md §1).
 	if err := game.RegisterAgentServiceHandler(ctx, gwmux, teamConn); err != nil {
-		log.Fatalf("register agent_v2 handler: %v", err)
+		log.Fatalf("register agent_v2 team handler: %v", err)
 	}
 	// The PresetService handler rides the direct agent_v2 connection: preset
 	// state lives in Mongo and the model catalog is static, so no proxy hop
 	// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
 	// §3.4). Its /api/v2 paths (preset CRUD + /api/v2/models) are disjoint
-	// from the AgentService handler's four agent paths.
+	// from the AgentService handler's team paths.
 	if err := game.RegisterPresetServiceHandler(ctx, gwmux, presetConn); err != nil {
 		log.Fatalf("register preset handler: %v", err)
 	}

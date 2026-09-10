@@ -55,15 +55,16 @@ for each (role, presetId, model) in {player, planner}:
     },
   })
 ctx.team.register({ goal, members, context? })
-# 物化成功后自动进入工作流：驱动 planner（drain → followup 注入团队消息历史）
+# 物化成功后静止等待：初始激活成员 = planner，不自动驱动任何成员（执行期用户裁定 2026-09-10）
+# 游戏首次驱动由用户首条消息触发：驱动 planner（drain → followup；首驱输入 = 用户消息本身，drain 为空）
 ```
 
 **编排状态机契约**（交替激活；详见 [data-model.md](../data-model.md) §5 状态图）：
 
-- 驱动成员 = `ctx.team.drain(member)` → 构造 UserMessage（source: `team-broadcast`/用户消息）→ `agent.followup()` → 等待 `agent/status` idle。
-- 结构性续驱：planner 回合结束 → 若有排队用户消息先由 planner 消化（消化优先于切换）→ 否则续驱 player；player 侧 gameEnded（来自 saolei 插件游戏事件流）→ 驱动 planner 复盘。
+- 驱动成员 = `ctx.team.drain(member)` → 构造 UserMessage（source: `team-broadcast`/用户消息）→ `agent.followup()` → 等待 `agent/status` idle。一切驱动（用户首驱、结构性续驱、gameEnded 复盘驱动、排队消化）的输入皆为群聊消息（drain 返回的未消费团队消息 + 排队用户消息），编排层不合成任何驱动消息；无未消费团队消息且无排队消息时，编排层保持静止在当前激活成员（不合成消息、不空转）。
+- 结构性续驱：planner 回合结束 → 若有排队用户消息先由 planner 消化（消化优先于切换）→ 消化完成且 planner 静止后续驱 player——静止 = turn 结束并且不会再触发新的 turn（工具调用引发的后续 turn、待消化排队消息两种触发源都不存在；机械信号即上面的 `agent/status` idle）——续驱仅在 player 存在未消费团队消息（planner 产出广播）时发生（驱动输入 = drain(player)，无合成消息；无输入则编排层静止在当前激活成员）；player 侧 gameEnded 事实确立于 saolei 工具返回游戏终局结果（won/lost，即 `saolei_operate` 终局结果——终局记录由 GameRuntime 在该次工具执行内写入，编排层经 `peekGameEvent` 读取）→ 驱动 planner 复盘（驱动输入 = drain(planner)——player 游戏过程的广播，无合成消息）。
 - 取消：编排层暂停续驱标志（配合成员 `cancel()`）；用户再次 Send 恢复。
-- 游戏事实（局开始/结束、胜负）经 saolei 插件的游戏事件流获取，与 team 消息流解耦（决策 ⑨）；**不经 team 广播游戏事件**（buffer 派生前提，team-mode §4.4a 边界）。
+- 游戏事实（局开始/结束、胜负）由 GameRuntime 的游戏事件流承载（game 模块位于 saolei-loop：`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts`，经 agent-scoped `saoleiGame` 暴露给 player 侧；gameEnded 事实随 saolei 工具返回终局结果一并确立），与 team 消息流解耦（决策 ⑨）；**不经 team 广播游戏事件**（buffer 派生前提，team-mode §4.4a 边界）。
 
 ## 3. memory 插件（`@dominion/dsh-memory`，新增）
 

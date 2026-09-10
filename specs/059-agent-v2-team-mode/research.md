@@ -54,15 +54,15 @@
 ## R6 saolei-loop team loop：交替激活编排状态机（含 clarify session 语义）
 
 - **Decision**：`common/js/dsh-plugins/saolei-loop` 重构为编排层（移除 `driver.ts` 的自研 turn/step 状态机与 `setFactory` 工厂认领）：
-  - **物化编排**：`UpdateTeam` → 校验（preset 存在且池匹配角色、model 在目录）→ 逐成员 `ctx.agents.create({ sessionId, agentOptions: {provider, model}, meta: { agentPreset }, setup })`，setup 链 = roster mount（compose 返回）+ **player 专属**：agent-scoped 注册 `saoleiGame`（GameRuntime 从现 factory 迁来，绑定 sessionName/desktopBridge）+ **planner 专属**：`await ctx.plannerMemory.load(...)` 预取快照（fail-loud）→ `ctx.team.register({goal, members})` → 自动开始工作流（驱动 planner 产出开局策略）。两角色 create 调用同构（差异全在 preset 内容，物化零定制）。
-  - **交替激活状态机**：任一时刻至多一个成员激活；阶段流转 = planner(开局/复盘) ⇄ player(游戏/轮次)；驱动 = `drain(成员 buffer)` → 构造 UserMessage → `followup()` 注入 → 等待回合结束（`agent/status` idle）。
-  - **续驱规则**（spec clarify 裁定）：planner 回合结束后**结构性续驱** player 进入下一轮（是否开局由 LLM 决定）；player 游戏结束（gameEnded，来自其持有的游戏事件流）→ 驱动 planner 复盘。
+  - **物化编排**：`UpdateTeam` → 校验（preset 存在且池匹配角色、model 在目录）→ 逐成员 `ctx.agents.create({ sessionId, agentOptions: {provider, model}, meta: { agentPreset }, setup })`，setup 链 = roster mount（compose 返回）+ **player 专属**：agent-scoped 注册 `saoleiGame`（GameRuntime 从现 factory 迁来，绑定 sessionName/desktopBridge）+ **planner 专属**：`await ctx.plannerMemory.load(...)` 预取快照（fail-loud）→ `ctx.team.register({goal, members})` → 静止等待用户消息（初始激活成员 = planner，不自动驱动任何成员；游戏的首次驱动由用户首条消息触发——执行期用户裁定 2026-09-10）。两角色 create 调用同构（差异全在 preset 内容，物化零定制）。
+  - **交替激活状态机**：任一时刻至多一个成员激活；阶段流转 = planner(开局/复盘) ⇄ player(游戏/轮次)；驱动 = `drain(成员 buffer)` → 构造 UserMessage → `followup()` 注入 → 等待回合结束（`agent/status` idle）——一切驱动以群聊消息（drain 未消费团队消息 + 排队用户消息）为输入，编排层不合成任何驱动消息，无未消费输入且无排队消息时静止在当前激活成员（执行期用户裁定 2026-09-10）。
+  - **续驱规则**（spec clarify 裁定 + 执行期用户澄清/裁定 2026-09-10）：planner 回合结束后**结构性续驱** player 进入下一轮（是否开局由 LLM 决定）——切换节点是 planner 完成静止：turn 结束并且不会再触发新的 turn（工具调用引发的后续 turn、待消化排队消息两种触发源都不存在）；player 游戏结束（gameEnded，事实确立于 saolei 工具返回终局结果 won/lost——终局记录由 GameRuntime 在该次工具执行内写入其持有的游戏事件流，编排层经 peekGameEvent 读取）→ 驱动 planner 复盘。结构性续驱只在存在未消费输入时发生——无未消费团队消息且无排队消息时，编排层静止在当前激活成员（不合成消息、不空转）。
   - **排队消息优先于切换**：当前激活成员回合结束时若有排队用户消息，先驱动当前成员消化，再执行编排切换。
   - **取消**：终止在途回合 + 暂停续驱；用户再次 Send 恢复（消息进团队流，由当前激活成员处理）。
-  - **游戏事件流持有**：GameRuntime（棋盘/规则/操作/胜负判定）留在 saolei 侧（`common/js/dsh-plugins/saolei/src/game/` 迁移归属不变），经 agent-scoped `saoleiGame` 服务暴露；游戏事实与 team 消息流解耦（决策 ⑨）。
-- **Rationale**：team-mode §9.3/§9.4（物化与运行流程）；spec Clarifications（2026-09-09 三项裁定）；GameRuntime 归属沿用 051 决策（游戏状态在 saolei 插件侧）。
+  - **游戏事件流持有**：GameRuntime（棋盘/规则/操作/胜负判定）留在 saolei-loop（game 模块 `common/js/dsh-plugins/saolei-loop/src/game/`，归属不变），经 agent-scoped `saoleiGame` 服务暴露；游戏事实与 team 消息流解耦（决策 ⑨）。
+- **Rationale**：team-mode §9.3/§9.4（物化与运行流程）；spec Clarifications（2026-09-09 三项裁定、2026-09-10 切换锚点澄清与无自动首驱/切换零合成消息裁定）；GameRuntime 归属沿用 051 决策（游戏状态在 saolei-loop 插件侧，`specs/051-agent-v2-dsh-migration/data-model.md` §2.5）。
 - **Alternatives**：v1 的 LangGraph 状态机迁移（用户明确"不要过度迁移旧版本方案"——LangChain 驱动模型不适用 dsh，且 v1 的 configurable 标志/内部构建消息机制被"群聊历史直接驱动"取代）。
-- **引用**：team-mode §4.2/§9.4；spec FR-009/FR-010/FR-011/FR-017；`common/js/dsh-plugins/saolei-loop/src/`（现状代码）、`common/js/dsh-plugins/saolei/src/game/runtime.ts`（GameRuntime）。
+- **引用**：team-mode §4.2/§9.4；spec FR-009/FR-010/FR-011/FR-017；`common/js/dsh-plugins/saolei-loop/src/`（现状代码）、`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts`（GameRuntime）。
 
 ## R7 组合清单变更与 session persistence 取舍（plan 阶段决策）
 
@@ -74,22 +74,28 @@
 ## R8 对外 API：agent 单例 → team 单例 + member 子资源（plan 阶段决策）
 
 - **Decision**：`agent_v2.proto` 的 `AgentService` 演进为 team 模型（契约全文见 [contracts/team-api.md](contracts/team-api.md)）：
-  - `Agent` 单例资源 → **`Team` 单例资源**（`templates/{template}/sessions/{session}/team`，AIP-156）：`UpdateTeam`（物化/刷新：player_preset/planner_preset 必填 + 各自 model 可选）、`GetTeam`（成员清单 + desktop_connected + 物化状态）；
+  - `Agent` 单例资源 → **`Team` 单例资源**（`templates/{template}/sessions/{session}/team`，AIP-156）：`UpdateTeam`（物化/刷新：物化输入 = `members` 列表——每成员 `{role, preset, model?}`）、`GetTeam`（成员清单 + desktop_connected + 物化状态）；
   - **`TeamMember` 子资源**：`GetTeamMember` 返回含 output-only `system_prompt`（FR-016 查看）；`ListMemberMessages`（成员视角历史，消息带 `sender`/`source_kind` 标注支撑"他人=标注来源的 user"渲染）；
   - **`ListTeamMessages`**：团队视图历史（归并序列，每条标注产出成员；user 消息与成员原生输出）；
-  - `Send` 路径不变（`POST /api/v2/{session}:send`，NDJSON 流），**ChatEvent 增加 `member` 字段**（PLAYER/PLANNER）标注产出成员，`queued`/`turn_start`/`turn_end` 等回合级帧标注当前激活成员；
+  - `Send` 路径不变（`POST /api/v2/{session}:send`，NDJSON 流），流生命周期 team 化为 **team turn 持续流**（执行期用户裁定 2026-09-10，spec Clarifications）：从发起持续输出至 team 静止（编排层无在途回合且无待消化输入），覆盖全部编排自动驱动的成员回合（结构性续驱/gameEnded 复盘/排队消化/多局循环）；**双帧承载**——成员事件帧（现有词汇 + `member` 字段〔string——产出成员 role〕标注产出成员）+ 新增 team 级 `team_message` 帧（`{member, message, seq}`，与 ListTeamMessages 元素同构、seq 同源同值）；流与编排解耦（流是订阅面：断开不终止编排、取消编排仅经 Cancel RPC、事件扇出至该 session 全部活跃流）；并发流每流完整扇出、不跨流去重，前端按 `(member, turn_id)`/seq 锚幂等应用（契约全文见 [contracts/team-api.md](contracts/team-api.md) §3）；
   - `Cancel` 语义按 FR-017 扩展（target 改为 team）；
-  - **PresetService**：`Preset` 增加 `role`（PLAYER/PLANNER，create 必填不可变），`ListPresets` 支持 role 过滤（契约见 [contracts/preset-api.md](contracts/preset-api.md)）；
+  - **PresetService**：`Preset` 增加 `role`（string——场景词汇，saolei 下 `"player"`/`"planner"`；create 必填不可变），`ListPresets` 支持 role 过滤（契约见 [contracts/preset-api.md](contracts/preset-api.md)）；
   - `DesktopBridgeService` 不变（session 单位连接、player 独占使用，FR-012）。
-- **Rationale**：对齐 AIP-156 单例 + 子资源惯例与既有 `/api/v2` 路由分层（会话面经 proxy、配置面直连）；事件带成员标识是团队视图实时归并渲染的最小扩展；沿用 NDJSON 流（现状消费方式零破坏性概念迁移）。
-- **Alternatives**：保留 Agent 资源名仅扩字段（名不符实且 AIP 资源模型混乱）；多 agent 泛化集合（`agents[]` 任意数量）——spec 拍板恰 2 成员、角色固定，泛化是过度设计（原则 II）。
+  - **proto 会话面场景解耦**（执行期用户裁定 2026-09-10：team 及相关定义与 saolei 场景无关）：
+    - **role 字符串化**：不引入 role 枚举（已交付 proto 的 `TeamRole`/`PresetRole` 返工移除）；`TeamMember.role`、`ChatEvent.member`、`TeamMessage.member`、`MemberViewMessage.sender`、`Preset.role`、`CreatePresetRequest.role`、`ListPresetsRequest.role` 全部为 string。约定值：成员 role 为场景词汇（saolei 下 `"player"`/`"planner"`）；用户消息标注为保留值 `"user"`（仅 TeamMessage.member/MemberViewMessage.sender 使用，与成员 role 值域不相交）；空字符串=未设置（`ChatEvent.member` 于 team 级帧——queued/team_message——不设）。
+    - **Team 资源去特化**：物化输入泛化为 `members` 列表（caller-supplied：每成员 `{role, preset, model?}`），不设 `player_preset`/`planner_preset`/`player_model`/`planner_model` 类场景特化字段；输出 `members` 与输入同形（TeamMember：role/preset/model + name/system_prompt，system_prompt output-only 仅 GetTeamMember）；desktop_connected/create_time/update_time 语义不变。
+    - **场景约束下沉服务端校验**：proto 层只承载场景无关 team 原语；saolei 场景约束（members 恰 2、role 集合恰为 `{"player","planner"}`、preset.role 与成员 role 字符串相等、model 在目录）由 agent_v2 服务端校验承载（saolei 场景宿主，KNOWN_TEMPLATES 机制不变），失败仍 `INVALID_ARGUMENT`，错误为场景校验表述（不含"proto 限制"色彩）。
+    - **泛化层级**（用户裁定原文："如果可以泛化最好，使用 oneof 次之。但不要使用 bytes 类型强行泛化，会破坏接口协议鲁棒性。"）：完全泛化（members 列表 + string role）**采纳**；oneof 承载场景特化载荷**备选不采用**（泛化可行时徒增分支）；bytes 自由载荷**否决**（破坏接口协议鲁棒性）。
+    - **端到端词汇一致**：进程内 team 插件层的 role 本就是开放字符串（R5，[contracts/dsh-plugins.md](contracts/dsh-plugins.md) §1 `TeamMemberRegistration.role`），proto 会话面对齐后 wire→服务→插件全链路同词汇；web 端成员标识按 wire 字符串值消费（无枚举名前缀归一化），fake-llm/testplan 断言按字符串值（`"user"`/`"player"`/`"planner"`），成员视角 `user: [sender]` 渲染语义不变（sender 即 role 字符串原值）。
+- **Rationale**：对齐 AIP-156 单例 + 子资源惯例与既有 `/api/v2` 路由分层（会话面经 proxy、配置面直连）；事件带成员标识是团队视图实时归并渲染的最小扩展；沿用 NDJSON 流（现状消费方式零破坏性概念迁移）。流生命周期 team 化与双帧承载由用户裁定（2026-09-10）：编排自动驱动的回合事件必须与用户触发的回合事件经同一 Send 流到达前端；`team_message` 帧以 seq 锚保证团队视图归并序与 List 回填跨视图一致（SC-003）。proto 会话面场景解耦由用户裁定（2026-09-10）：协议原语泛化（members 列表 + string role）不改变行为语义（spec 恰 2 成员约束〔FR-004〕仍在，由服务端场景校验承载），并与进程内 team 插件层的开放字符串 role（R5）端到端一致。
+- **Alternatives**：保留 Agent 资源名仅扩字段（名不符实且 AIP 资源模型混乱）；proto 场景特化形态（TeamRole/PresetRole 枚举 + `player_preset`/`planner_preset` 等双角色字段）——否决（2026-09-10 用户裁定：team 及相关定义应当与 saolei 场景无关）；场景特化载荷经 oneof 承载——备选不采用（完全泛化可行，oneof 徒增分支）；场景自由载荷经 bytes 承载——否决（破坏接口协议鲁棒性，用户裁定原文）；任意数量成员的行为泛化——不在范围（spec 拍板 saolei team 恰 2 成员〔FR-004〕，由服务端场景校验承载，proto 原语泛化不改变行为语义）。实时事件承载的两个被否决备选（2026-09-10 用户裁定）：① List 面定时拉取事件（执行期初拟——推翻其"流仅覆盖单个成员回合"的前提，裁定要求流升级为 team turn 持续流）；② 流生命周期维持"至当前处理用户消息的成员回合结束"（无法覆盖编排自动驱动的成员回合，与 US2/US4 实时可见断言冲突）。并发流的后端单流复用合并（每流完整扇出更简：服务端无跨流状态、可测性由 seq 锚保证）。
 - **引用**：`projects/game/agent_v2.proto`（现状）；[contracts/team-api.md](contracts/team-api.md)、[contracts/preset-api.md](contracts/preset-api.md)；https://google.aip.dev/156。
 
 ## R9 web UI：team 模型 + 双视图 + system prompt 查看（plan 阶段决策）
 
-- **Decision**：web 前端（`projects/game/web/frontend/src/`）演进：① AgentSettingsPanel → TeamSettingsPanel（双 preset 下拉按池过滤 + 双 model + Apply=UpdateTeam）；② 对话区视图切换（1 团队视图 + 2 成员视角视图）：团队视图消费 `ListTeamMessages` + member 标注的实时事件归并；成员视角视图消费 `ListMemberMessages` + 该成员的实时事件；③ 成员详情入口查看 system prompt（GetTeamMember）。既有 ChatStore/流式渲染/排队/取消/回填机制按 member 维度扩展。契约见 [contracts/web-views.md](contracts/web-views.md)。
-- **Rationale**：FR-013~FR-017；团队视图"原生输出"要求事件与历史按成员归并（非广播包装形态）——数据源是各成员原生事件流；成员视角视图的数据源是该成员 history（含广播注入的 user 消息 + sender 标注）。
-- **Alternatives**：团队视图复用广播包装消息渲染（违反 FR-014"不显示转发/包装形态"）。
+- **Decision**：web 前端（`projects/game/web/frontend/src/`）演进：① AgentSettingsPanel → TeamSettingsPanel（双 preset 下拉按池过滤 + 双 model + Apply=UpdateTeam）；② 对话区视图切换（1 团队视图 + 2 成员视角视图）：团队视图消费 `ListTeamMessages` 回填 + **team 流**实时（成员事件帧按 member 归并增量渲染、`team_message` 帧按 seq 锚定归并序，R8）；成员视角视图消费 `ListMemberMessages` 回填 + team 流按 member 过滤的成员事件帧（其他成员产出在其被驱动消费前不出现，经回填呈现）；③ 成员详情入口查看 system prompt（GetTeamMember）。既有 ChatStore/流式渲染/排队/取消/回填机制按 member 维度扩展。契约见 [contracts/web-views.md](contracts/web-views.md)。
+- **Rationale**：FR-013~FR-017；团队视图"原生输出"要求事件与历史按成员归并（非广播包装形态）——实时数据源是 team 流的成员事件帧与 `team_message` 帧（seq 与 List 同源，实时归并序与回填一致，SC-003）；成员视角视图的数据源是该成员 history（含广播注入的 user 消息 + sender 标注）。
+- **Alternatives**：团队视图复用广播包装消息渲染（违反 FR-014"不显示转发/包装形态"）；实时事件承载以 List 面定时拉取替代 team 流（2026-09-10 用户裁定否决，见 R8）。
 - **引用**：spec FR-013~FR-017、US4/US5；`projects/game/web/frontend/src/`（现状组件）。
 
 ## R10 v1 移除清单（实证盘点，含保留项）
@@ -101,15 +107,15 @@
 
 ## R11 驱动语义细则（spec clarify session 裁定的工程化表述）
 
-- **Decision**（并入 R6 状态机实现）：① 用户消息进团队消息流广播全员，由**当前激活成员**处理；② @标记仅为内容表达，系统不解析；③ 排队消息在当前回合结束后由当前激活成员消化，**消化优先于编排切换**；④ 取消 = 终止在途回合 + 暂停续驱 + 排队消息落地不触发新驱动，再次 Send 恢复；⑤ planner 无指令工具（instruct_player 不迁移），成员间通信经团队消息流（FR-008）。
-- **Rationale**：用户在 plan 前 clarify 阶段的补充裁定（2026-09-09，spec Clarifications 第 3 条）；交替激活对齐 v1 驱动形态（player/planner 交替，`projects/game/agent/src/team/graph.ts` 状态机同构），但实现为 dsh 编排层（不迁移 LangGraph）。
-- **引用**：spec Clarifications、FR-008/FR-011/FR-017。
+- **Decision**（并入 R6 状态机实现）：① 用户消息进团队消息流广播全员，由**当前激活成员**处理；物化成功后 team 静止等待（初始激活成员 = planner、初始相位 = planning，不自动驱动任何成员），游戏的首次驱动由用户第一条消息触发（由 planner 处理，首驱输入 = 用户消息本身，drain(planner) 为空）；② @标记仅为内容表达，系统不解析；③ 排队消息在当前回合结束后由当前激活成员消化（消化驱动输入即排队消息本身，无合成消息），**消化优先于编排切换**；④ 取消 = 终止在途回合 + 暂停续驱 + 排队消息保留为已固化历史（Send 接受时已入归并序列）且不触发新驱动，再次 Send 恢复；⑤ planner 无指令工具（instruct_player 不迁移），成员间通信经团队消息流（FR-008）；⑥ player → planner 切换发生在游戏结束后——gameEnded 事实的确立来源是 saolei 工具返回游戏终局结果（工具结果层面，如失败/胜利返回），player 回合结束时的切换评估遵循状态机优先级（排队消息先消化 → gameEnded? 是则驱动 planner 复盘 / 否则结构性续驱 player）；⑦ planner → player 切换节点是 planner 完成静止——turn 结束并且不会再触发新的 turn（工具调用引发的后续 turn、待消化排队消息两种触发源都不存在），确认静止才续驱 player；⑧ 切换零合成消息——一切切换/续驱（planner→player 结构性续驱、player→planner gameEnded 复盘、排队消化）不使用任何编排层合成的驱动消息，一律直接以群聊消息（drain 返回的未消费团队消息历史 + 排队用户消息）驱动目标 agent（FR-010 的完全落实）；无未消费团队消息且无排队消息（无输入）时，编排层保持静止在当前激活成员——不合成消息、不空转（"结构性续驱"只在存在未消费输入时发生）；取消暂停后再次 Send 恢复（FR-017 既有语义：再次 Send 即有输入即驱动）。
+- **Rationale**：用户在 plan 前 clarify 阶段的补充裁定（2026-09-09，spec Clarifications 第 3 条）与执行期澄清/裁定（2026-09-10，spec Clarifications：切换锚点澄清、无自动首驱与切换零合成消息裁定——①/⑧）；交替激活对齐 v1 驱动形态（player/planner 交替，`projects/game/agent/src/team/graph.ts` 状态机同构；v1"物化即自动触发开局指令"的语义不迁移——首驱为用户消息触发），但实现为 dsh 编排层（不迁移 LangGraph）。
+- **引用**：spec Clarifications、FR-008/FR-009/FR-011/FR-017。
 
 ## R12 测试策略
 
 - **Decision**：
   - **单测**（每次变更必过，`bazel test`）：team 插件（buffer 派生重建/消费锚点/广播格式/team section 渲染/注册清理）、saolei-loop 编排状态机（交替激活/续驱/排队优先/取消暂停/物化编排含 fail-loud）、memory 插件（工具 schema/批量原子/子串定位/快照 section 时机/fail-loud）、preset authoring Mongo Store、agent_v2 gRPC 面（team 资源校验/错误映射）、web store reducer（member 归并）。
-  - **大型测试**（验收，`guitar run` 全量通过）：fake-llm 新增 team 双角色夹具——player 夹具（按 system_keywords 识别 persona、依序调用 saolei 工具直至终局、接收策略广播）、planner 夹具（产出开局策略/复盘正文、调用 memory 工具）；用例覆盖：team 物化与自动开局、完整局至终局、复盘+memory 持久化（经 memory 服务断言）、结构性续驱第二局、排队消息消化优先于切换、取消暂停与恢复、双视图历史断言（ListTeamMessages/ListMemberMessages）、system prompt 内容断言（player 无 memory 痕迹/planner 有）、preset 分池 CRUD 与角色锁定、既有对话能力回归。
+  - **大型测试**（验收，`guitar run` 全量通过）：fake-llm 新增 team 双角色夹具——player 夹具（按 system_keywords 识别 persona、依序调用 saolei 工具直至终局、接收策略广播）、planner 夹具（产出开局策略/复盘正文、调用 memory 工具）；用例覆盖：team 物化、静止等待与用户首驱（物化后无 Send 不出现任何驱动；首条 Send 触发 planner 开局）、完整局至终局、复盘+memory 持久化（经 memory 服务断言）、结构性续驱第二局、排队消息消化优先于切换、取消暂停与恢复、双视图历史断言（ListTeamMessages/ListMemberMessages）、system prompt 内容断言（player 无 memory 痕迹/planner 有）、preset 分池 CRUD 与角色锁定、既有对话能力回归。
 - **Rationale**：constitution 原则 IV/VI（单测小颗粒高频、大型测试全量通过验收）；fake-llm 机制（scenario 夹具 + system_keywords）已被 046/047/051/058 实证支撑确定性端到端。
 - **引用**：`projects/game/fake-llm/`（机制）；`experimental/dsh/demo/testplan/`（testplan 形态样板）；`specs/058-dsh-preset-roster-demo/checklists/boundaries.md`（边界审计模板可复用于移除验收）。
 

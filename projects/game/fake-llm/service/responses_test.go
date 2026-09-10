@@ -675,7 +675,8 @@ func TestResponsesHandler_ToolCallChainWon(t *testing.T) {
 		// The instructions carry the materialized preset's persona anchor
 		// line — the saolei fixtures declare it as a system_keywords
 		// condition (T008), mirroring the post-pivot agent_v2 wire.
-		rec := postResponses(t, handler, `{"model":"m","stream":true,"instructions":"你是扫雷 player。","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我开始一局扫雷"}]}]}`)
+		request := `{"model":"m","stream":true,"instructions":"你是扫雷 player。","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我开始一局扫雷"}]}]}`
+		rec := postResponses(t, handler, request)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d", rec.Code)
 		}
@@ -691,8 +692,24 @@ func TestResponsesHandler_ToolCallChainWon(t *testing.T) {
 		if item["type"] != "function_call" || item["name"] != "saolei_init" {
 			t.Fatalf("added item = %v, want function_call saolei_init", item)
 		}
-		if item["call_id"] != "call_fake_1" {
-			t.Fatalf("call_id = %v, want the deterministic call_fake_1", item["call_id"])
+		callID, _ := item["call_id"].(string)
+		if !strings.HasPrefix(callID, "call_fake_") || callID == "call_fake_" {
+			t.Fatalf("call_id = %q, want the request-derived call_fake_<hash>", callID)
+		}
+		// Deterministic for the same request (the fake-wire invariant) …
+		again := postResponses(t, handler, request)
+		againItem := responsesEvent(t, scanResponsesEvents(t, again.Body)[1][1])["item"].(map[string]any)
+		if againItem["call_id"] != callID {
+			t.Errorf("repeated request call_id = %v, want the deterministic %q", againItem["call_id"], callID)
+		}
+		// … and distinct across a chain's steps: the team broadcast
+		// reference model anchors a member's tool units on the call id, so a
+		// later tool call sharing this id would render/consume as the same
+		// unit (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1).
+		other := postResponses(t, handler, toolInput("call_1", "saolei_init", "{}", "new game started\ngame status: won\n\nboard size 9*9"))
+		otherItem := responsesEvent(t, scanResponsesEvents(t, other.Body)[1][1])["item"].(map[string]any)
+		if otherItem["call_id"] == callID {
+			t.Errorf("chain follow-up call_id = %v, want a distinct id from %q", otherItem["call_id"], callID)
 		}
 		// The terminal event carries the same call assembled (finish maps
 		// to tool-calls on the adapter side).
