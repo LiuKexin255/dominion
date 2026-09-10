@@ -62,11 +62,13 @@ function teamMessageEvent(
   seq: number,
   content: string,
   role: 'ROLE_USER' | 'ROLE_AGENT' = 'ROLE_AGENT',
+  messageId?: string,
 ): ChatEvent {
-  const message: HistoryMessage =
-    role === 'ROLE_USER'
-      ? { role, blocks: [{ text: { content } }] }
-      : { role, blocks: [{ text: { content } }] }
+  const message: HistoryMessage = {
+    role,
+    blocks: [{ text: { content } }],
+    ...(messageId === undefined ? {} : { messageId }),
+  }
   // protojson int64：seq 序列化为 JSON 字符串（store 以 seqOf 归一化）。
   return { teamMessage: { member: wireMember(member), message, seq: String(seq) } }
 }
@@ -381,6 +383,7 @@ describe('ChatStore team 流归约', () => {
 
     expect(store.getSnapshot()).toEqual({
       history: [],
+      memberHistory: {},
       live: [],
       queue: [],
       error: null,
@@ -705,5 +708,191 @@ describe('ChatStore team 流归约', () => {
       ['planner', 2],
     ])
     expect(s.history[1]?.message.blocks[0]?.text?.content).toBe('部分')
+  })
+})
+
+// ─── store 双形态：团队归并序列 + 每成员视角序列（web-views.md §2/§4） ─────────
+// 成员自身输出在固化时双写（team_message 帧与服务端 appendMemberOutput 的
+// 双投影同源）；用户输入与跨成员广播注入在被成员消费时进入其视角——消费锚
+// 只有服务端历史可见，经 ListMemberMessages 回填（loadMemberHistory）。
+
+describe('ChatStore 成员视角序列（双形态）', () => {
+  it('team_message 成员产出双写：团队归并序列 + 该成员自身视角（同源同对象）；用户消息只进归并序列', () => {
+    const store = new ChatStore()
+    const userFrame = teamMessageEvent('USER', 1, '开始', 'ROLE_USER', 'm1')
+    const plannerFrame = teamMessageEvent('PLANNER', 2, '开局策略', 'ROLE_AGENT', 'm2')
+    store.applyEvent(userFrame)
+    store.applyEvent(plannerFrame)
+
+    const s = store.getSnapshot()
+    expect(s.history.map((e) => [e.member, e.seq])).toEqual([
+      ['user', 1],
+      ['planner', 2],
+    ])
+    // 成员自身视角：sender = 自身 role，message 与归并序列条目同源（同一对象）。
+    const own = s.memberHistory.planner ?? []
+    expect(own).toHaveLength(1)
+    expect(own[0]?.sender).toBe('planner')
+    expect(own[0]?.message).toBe(s.history[1]?.message)
+    // 用户消息在 Send 固化时不进入任何成员视角（消费事实在服务端历史，
+    // 经回填呈现）。
+    expect(s.memberHistory.player).toBeUndefined()
+    expect(s.memberHistory.user).toBeUndefined()
+  })
+
+  it('并发流重复帧按 messageId 幂等：成员视角不重复追加', () => {
+    const store = new ChatStore()
+    // 不同 seq 但同一 messageId（跨流扇出的同一固化条目）：团队序列按 seq
+    // 各自入列（合成边界），成员视角按 messageId 去重。
+    store.applyEvent(teamMessageEvent('PLAYER', 2, '落子', 'ROLE_AGENT', 'm2'))
+    store.applyEvent(teamMessageEvent('PLAYER', 9, '落子', 'ROLE_AGENT', 'm2'))
+    expect(store.getSnapshot().memberHistory.player).toHaveLength(1)
+  })
+
+  it('loadMemberHistory 回填三类条目（user/relay/own 的 sender 标注），响应期间新固化的自身输出保留', () => {
+    const store = new ChatStore()
+    // 结构续驱可能在回填响应落地前先固化下一回合的自身输出（messageId 已
+    // 由服务端分配）：响应缺失该条目时不得丢失。
+    store.applyEvent(teamMessageEvent('PLANNER', 5, '下一轮策略', 'ROLE_AGENT', 'm5'))
+    store.loadMemberHistory('planner', [
+      {
+        message: { messageId: 'm1', role: 'ROLE_USER', blocks: [{ text: { content: '开始一局' } }] },
+        sender: 'user',
+      },
+      {
+        message: {
+          messageId: 'm2',
+          role: 'ROLE_USER',
+          blocks: [{ text: { content: '[player] 落子\n<player-message>\n落子\n</player-message>' } }],
+        },
+        sender: 'player',
+      },
+    ])
+
+    const view = store.getSnapshot().memberHistory.planner ?? []
+    expect(view.map((e) => e.sender)).toEqual(['user', 'player', 'planner'])
+    expect(view[0]?.message.blocks[0]?.text?.content).toBe('开始一局')
+    expect(view[1]?.message.blocks[0]?.text?.content).toContain('[player] 落子')
+    expect(view[2]?.message.messageId).toBe('m5')
+    expect(view[2]?.message.blocks[0]?.text?.content).toBe('下一轮策略')
+  })
+
+  it('loadMemberHistory 以服务端序列为准：同 messageId 不重复，投影占位被取代', () => {
+    const store = new ChatStore()
+    store.applyEvent(teamMessageEvent('PLAYER', 1, '自身输出', 'ROLE_AGENT', 'm1'))
+    // 错误收束产生未固化尾步的本地投影占位（无 messageId）。
+    for (const e of [
+      startTurn('PLAYER', 't1'),
+      blockStart('PLAYER', 't1', 0, 1),
+      delta('PLAYER', 't1', 0, '半截', 1),
+      endTurn('PLAYER', 't1', 'TURN_STATUS_ERROR'),
+    ]) {
+      store.applyEvent(e)
+    }
+    expect(store.getSnapshot().memberHistory.player?.some((e) => e.projected === true)).toBe(true)
+
+    store.loadMemberHistory('player', [
+      {
+        message: { messageId: 'm1', role: 'ROLE_AGENT', blocks: [{ text: { content: '自身输出' } }] },
+        sender: 'player',
+      },
+    ])
+    const view = store.getSnapshot().memberHistory.player ?? []
+    expect(view).toHaveLength(1)
+    expect(view[0]?.projected).toBeUndefined()
+    expect(view[0]?.message.messageId).toBe('m1')
+  })
+
+  it('回合收束（无 team_message 帧）尾步同时投影进归并序列与自身视角；真实帧到达原位替换', () => {
+    const store = new ChatStore()
+    for (const e of [startTurn('PLAYER', 't1'), ...oneTextStep('PLAYER', 't1', 1, '落子'), endTurn('PLAYER', 't1')]) {
+      store.applyEvent(e)
+    }
+
+    const projected = store.getSnapshot().memberHistory.player ?? []
+    expect(projected).toHaveLength(1)
+    expect(projected[0]?.projected).toBe(true)
+    expect(projected[0]?.sender).toBe('player')
+    expect(projected[0]?.message.blocks[0]?.text?.content).toBe('落子')
+
+    store.applyEvent(teamMessageEvent('PLAYER', 7, '落子', 'ROLE_AGENT', 'm7'))
+    const view = store.getSnapshot().memberHistory.player ?? []
+    expect(view).toHaveLength(1)
+    expect(view[0]?.projected).toBeUndefined()
+    expect(view[0]?.message.messageId).toBe('m7')
+  })
+
+  it('tool_result 终态化同时更新自身视角中的 RUNNING 工具块', () => {
+    const store = new ChatStore()
+    store.applyEvent({
+      teamMessage: {
+        member: 'player',
+        message: {
+          messageId: 'm1',
+          role: 'ROLE_AGENT',
+          blocks: [
+            {
+              toolCall: {
+                toolId: 'call-1',
+                name: 'saolei_init',
+                argsJson: '{}',
+                status: 'TOOL_STATUS_RUNNING',
+              },
+            },
+          ],
+        },
+        seq: '1',
+      },
+    })
+    store.applyEvent({
+      member: 'player',
+      toolResult: { toolId: 'call-1', status: 'TOOL_STATUS_SUCCEEDED', result: 'board' },
+    })
+
+    const view = store.getSnapshot().memberHistory.player ?? []
+    expect(view[0]?.message.blocks[0]?.toolCall?.status).toBe('TOOL_STATUS_SUCCEEDED')
+    expect(view[0]?.message.blocks[0]?.toolCall?.result).toBe('board')
+    // 归并序列同消息同步终态化（双投影一致）。
+    expect(store.getSnapshot().history[0]?.message.blocks[0]?.toolCall?.status).toBe(
+      'TOOL_STATUS_SUCCEEDED',
+    )
+  })
+
+  it('跨视图正文一致：同一产出在团队归并序列与该成员自身视角为同一消息对象', () => {
+    const store = new ChatStore()
+    store.applyEvent(teamMessageEvent('PLANNER', 2, '策略正文', 'ROLE_AGENT', 'm2'))
+    const s = store.getSnapshot()
+    expect(s.memberHistory.planner?.[0]?.message).toBe(s.history[0]?.message)
+  })
+
+  it('TURN_STATUS_ABORTED（会话删除）清空成员视角序列', () => {
+    const store = new ChatStore()
+    store.loadMemberHistory('player', [
+      {
+        message: { role: 'ROLE_AGENT', blocks: [{ text: { content: 'x' } }] },
+        sender: 'player',
+      },
+    ])
+    store.applyEvent({
+      member: wireMember('PLAYER'),
+      turnId: 't1',
+      turnEnd: { status: 'TURN_STATUS_ABORTED' },
+    })
+    expect(store.getSnapshot().memberHistory).toEqual({})
+  })
+
+  it('loadHistory（团队重对齐）保留成员视角；clearMemberHistory 显式复位（刷新生命周期）', () => {
+    const store = new ChatStore()
+    store.loadMemberHistory('player', [
+      {
+        message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '保持' } }] },
+        sender: 'player',
+      },
+    ])
+    store.loadHistory([])
+    expect(store.getSnapshot().memberHistory.player).toHaveLength(1)
+
+    store.clearMemberHistory()
+    expect(store.getSnapshot().memberHistory).toEqual({})
   })
 })

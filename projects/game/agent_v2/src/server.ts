@@ -13,8 +13,9 @@
  *   text are request-level INVALID_ARGUMENT failures), UpdateTeam validates
  *   both presets and models before materializing, Send has no lazy creation
  *   (unmaterialized → FAILED_PRECONDITION) and relays the team stream
- *   (member event frames + team_message frames) until the team quiesces, and
- *   the List faces read the T015 history projections.
+ *   (member event frames + team_message frames) until the team quiesces, the
+ *   List faces read the T015 history projections, and GetTeamMember reads the
+ *   member instance's live prompt assembly (src/system-prompt.ts).
  * - PresetService handlers are the stateless configuration face (built by
  *   {@link buildPresetHandlers} over its own deps): preset CRUD delegates
  *   to the authoring plugin's `ctx.presetAuthoring` domain service
@@ -259,7 +260,8 @@ function presetToProto(view: PresetView): Preset {
 /**
  * Project the team registry view onto the proto Team resource. The
  * output-only member states carry the configured preset/model snapshots;
- * `system_prompt` is populated from the assembly surface in the US5 phase.
+ * `system_prompt` stays empty here — it is served only by GetTeamMember
+ * (the proto field is OUTPUT_ONLY; contracts/team-api.md §1).
  */
 function teamViewToProto(view: TeamView, desktopConnected: boolean): TeamProto {
   const members: TeamMemberProto[] = view.members.map((member) => ({
@@ -586,12 +588,23 @@ export function buildTeamHandlers(deps: TeamHandlersDeps): AgentServiceHandlers 
         return;
       }
       const sessionName = `templates/${parsed.template}/sessions/${parsed.session}`;
-      try {
-        const member = deps.sessions.getTeamMember(sessionName, parsed.member);
-        callback(null, teamMemberViewToProto(member));
-      } catch (err) {
-        callback(toServiceError(err));
-      }
+      void (async () => {
+        try {
+          // The system_prompt read assembles from the member instance's live
+          // prompt surface (src/system-prompt.ts); an assembly failure maps
+          // to INTERNAL with its cause chain (contracts/team-api.md §6).
+          const member = await deps.sessions.getTeamMember(sessionName, parsed.member);
+          callback(null, teamMemberViewToProto(member));
+        } catch (err) {
+          const serviceError = toServiceError(err);
+          info("GetTeamMember failed", {
+            name,
+            code: serviceError.code,
+            error: serviceError.message,
+          });
+          callback(serviceError);
+        }
+      })();
     },
 
     ListTeamMessages: (call, callback) => {

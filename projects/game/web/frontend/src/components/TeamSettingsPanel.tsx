@@ -3,11 +3,14 @@
 // specs/059-agent-v2-team-mode/contracts/web-views.md §1）。model 空 = 部署
 // 默认（team-api.md §2 members[].model 空 = 部署默认）；已物化会话再次
 // Apply 即刷新（终止在途回合、清空短期记忆并按新配置重建，team-api.md §1），
-// 面板对该语义显式提示。
-import { useCallback, useEffect, useState } from 'react'
+// 面板对该语义显式提示。成员清单提供每成员"查看 system prompt"入口：
+// GetTeamMember 返回该实例当前生效的完整装配结果，只读等宽全文呈现，刷新
+// team（新物化快照）后重新打开即取新值（web-views.md §5）。
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   getTeam,
+  getTeamMember,
   listModels,
   listPresets,
   updateTeam,
@@ -37,6 +40,12 @@ function memberOf(team: Team | null, role: string): TeamMember | undefined {
   return team?.members?.find((m) => m.role === role)
 }
 
+// presetTitle projects a preset resource name to its display id.
+function presetTitle(name: string | undefined): string {
+  if (name === undefined || name === '') return '—'
+  return name.split('/').pop() ?? name
+}
+
 export function TeamSettingsPanel({
   session,
   materialized,
@@ -55,6 +64,54 @@ export function TeamSettingsPanel({
   const [playerModel, setPlayerModel] = useState(memberOf(materialized, 'player')?.model ?? '')
   const [plannerModel, setPlannerModel] = useState(memberOf(materialized, 'planner')?.model ?? '')
   const [applying, setApplying] = useState(false)
+  // system prompt 查看（web-views.md §5）：promptMember = 已打开入口的成员
+  // role；promptText/promptError 为该成员的取数结果（请求竞态以序号守卫）。
+  const [promptMember, setPromptMember] = useState<string | null>(null)
+  const [promptText, setPromptText] = useState<string | null>(null)
+  const [promptError, setPromptError] = useState<string | null>(null)
+  const [promptLoading, setPromptLoading] = useState(false)
+  const promptRequest = useRef(0)
+
+  // 刷新 team（新物化快照：updateTime 变化）或切换会话后收起已打开的
+  // system prompt——内容必须与当前实例一致，重新打开入口即取新值
+  // （web-views.md §5）。物化成员实例随刷新重建，旧快照的全文不再有呈现
+  // 语境。
+  useEffect(() => {
+    promptRequest.current += 1
+    setPromptMember(null)
+    setPromptText(null)
+    setPromptError(null)
+    setPromptLoading(false)
+  }, [session, materialized?.updateTime])
+
+  const openSystemPrompt = useCallback(
+    async (role: string) => {
+      const request = ++promptRequest.current
+      setPromptMember(role)
+      setPromptText(null)
+      setPromptError(null)
+      setPromptLoading(true)
+      try {
+        const member = await getTeamMember(session, role)
+        if (promptRequest.current !== request) return
+        setPromptText(member.systemPrompt ?? '')
+      } catch (err) {
+        if (promptRequest.current !== request) return
+        setPromptError(err instanceof Error ? err.message : String(err))
+      } finally {
+        if (promptRequest.current === request) setPromptLoading(false)
+      }
+    },
+    [session],
+  )
+
+  const closeSystemPrompt = useCallback(() => {
+    promptRequest.current += 1
+    setPromptMember(null)
+    setPromptText(null)
+    setPromptError(null)
+    setPromptLoading(false)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -139,6 +196,63 @@ export function TeamSettingsPanel({
         <p className="team-refresh-hint" data-testid="team-refresh-hint">
           该会话已有 team：再次应用将终止在途回合、清空短期记忆并按新配置重建（刷新语义）。
         </p>
+      )}
+      {materialized !== null && (
+        // 成员清单（web-views.md §1 状态呈现 + §5 查看入口）：每成员一项，
+        // 提供只读 system prompt 全文入口。
+        <div className="team-panel-members" data-testid="team-panel-members">
+          <span className="team-panel-members-title">成员清单</span>
+          {(materialized.members ?? []).map((member) => (
+            <div
+              key={member.role}
+              className="team-panel-member"
+              data-testid="team-panel-member"
+              data-role={member.role}
+            >
+              <span className="team-panel-member-info">
+                {member.role} · {presetTitle(member.preset)} ·{' '}
+                {member.model !== undefined && member.model !== ''
+                  ? member.model
+                  : '默认模型'}
+              </span>
+              <Button
+                data-testid={`member-system-prompt-${member.role}`}
+                onClick={() => void openSystemPrompt(member.role)}
+              >
+                查看 system prompt
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+      {promptMember !== null && (
+        <div className="system-prompt" data-testid="system-prompt" data-role={promptMember}>
+          <div className="system-prompt-header">
+            <span data-testid="system-prompt-title">
+              {promptMember} 的 system prompt（只读）
+            </span>
+            <Button data-testid="system-prompt-close" onClick={closeSystemPrompt}>
+              关闭
+            </Button>
+          </div>
+          {promptLoading && (
+            <div className="system-prompt-note" data-testid="system-prompt-loading">
+              加载中…
+            </div>
+          )}
+          {promptError !== null && (
+            <div className="system-prompt-error" data-testid="system-prompt-error" role="alert">
+              {promptError}
+            </div>
+          )}
+          {promptText !== null && (
+            // 只读全文（等宽/原文呈现，web-views.md §5）：<pre> 保留换行与
+            // 空白，不做 markdown 解析。
+            <pre className="system-prompt-text" data-testid="system-prompt-text">
+              {promptText}
+            </pre>
+          )}
+        </div>
       )}
       <label className="team-panel-field" htmlFor="team-player-preset-select">
         <span>player preset（必选）</span>

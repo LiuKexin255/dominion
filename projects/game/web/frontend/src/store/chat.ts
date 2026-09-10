@@ -1,12 +1,16 @@
 // 会话对话状态 store：team 流 ChatEvent 归约 + useSyncExternalStore 绑定。
 // 归约契约见 specs/059-agent-v2-team-mode/contracts/team-api.md §3 与
-// contracts/web-views.md §2/§3——双帧承载：成员事件帧按 (member, turn_id)
+// contracts/web-views.md §2/§3/§4——双帧承载：成员事件帧按 (member, turn_id)
 // 分组增量渲染（block index/step 以成员回合为单位），`team_message` 帧按
 // seq 作归并序锚（与 ListTeamMessages 同源，保证实时归并序与回填一致）。
-// 并发流重复帧按锚幂等：`team_message` 同 seq 忽略，成员帧按
-// (member, turn_id) + index 幂等（team-api.md §3.4）。store 无框架依赖；
-// React 侧经 useChatState 订阅（react.dev/reference/react/
-// useSyncExternalStore——getSnapshot 返回缓存快照，未变化时同一引用）。
+// store 维护双形态：团队归并序列（history，web-views.md §3）与每成员视角
+// 序列（memberHistory，§4）——成员自身输出在固化时双写；用户输入与跨成员
+// 广播注入在被成员消费时进入其视角，消费锚只有服务端历史可见，故经
+// ListMemberMessages 回填（前端无消费事实，不伪造）。并发流重复帧按锚幂等：
+// `team_message` 同 seq / 同 messageId 忽略，成员帧按 (member, turn_id) +
+// index 幂等（team-api.md §3.4）。store 无框架依赖；React 侧经 useChatState
+// 订阅（react.dev/reference/react/useSyncExternalStore——getSnapshot 返回
+// 缓存快照，未变化时同一引用）。
 import { useSyncExternalStore } from 'react'
 import type {
   ChatEvent,
@@ -15,7 +19,7 @@ import type {
   Role,
   TeamMessage,
 } from '../api/conversation.js'
-import { seqOf } from '../api/conversation.js'
+import { seqOf, USER_MEMBER } from '../api/conversation.js'
 
 // Role values the store produces when merging live member turns into history.
 const ROLE_AGENT: Role = 'ROLE_AGENT'
@@ -90,12 +94,29 @@ export interface TeamMessageEntry {
   projected?: boolean
 }
 
+// MemberViewEntry 是成员视角序列条目（web-views.md §4：与 ListMemberMessages
+// 的 MemberViewMessage 同构）。message.role 沿用 HistoryMessage 枚举：
+// ROLE_AGENT = 该成员自己的输出；ROLE_USER + sender="user" = 用户输入；
+// ROLE_USER + sender=成员 role = 广播注入（渲染 `user: [sender] 正文`）。
+export interface MemberViewEntry {
+  message: HistoryMessage
+  sender: string
+  // 本地投影占位（语义同 TeamMessageEntry.projected）：该成员回合收束但
+  // team_message 帧未到达的尾步先行投影，后续同成员真实条目按 FIFO 原位
+  // 替换；ListMemberMessages 回填以服务端序列整体取代时丢弃。
+  projected?: boolean
+}
+
 export interface ChatState {
   // 归并序列（seq 锚）：team_message 帧实时追加 + ListTeamMessages 回填；
   // 回合收束但帧未到达的尾步以本地投影占位先行进入（见 TeamMessageEntry）。
   history: TeamMessageEntry[]
+  // 每成员视角序列（member 为 wire role 字符串）：ListMemberMessages 回填 +
+  // 成员自身输出固化（team_message 帧与该成员团队视图条目同源同值）。
+  memberHistory: Record<string, MemberViewEntry[]>
   // 流式成员回合草稿（team 流覆盖的多回合）：按到达序排列，串行驱动下同一
-  // 时刻至多一个进行中回合；回合收束（turn_end/流断开）即投影入归并序列。
+  // 时刻至多一个进行中回合；回合收束（turn_end/流断开）即投影入归并序列
+  // 与该成员自身视角序列。
   live: LiveMemberTurn[]
   queue: QueuedMsg[]
   error: string | null
@@ -108,6 +129,7 @@ export interface ChatState {
 
 const EMPTY_STATE: ChatState = {
   history: [],
+  memberHistory: {},
   live: [],
   queue: [],
   error: null,
@@ -237,6 +259,46 @@ function settleHistoryEntry(
   }
 }
 
+// settleMemberHistory applies one tool_result frame to the matching RUNNING
+// tool-call block inside a member's own view: the consolidated output is the
+// same message the merged sequence carries (appendMemberView), so the tool
+// settlement is mirrored there (the server mutates the shared message, both
+// projections observe it — projects/game/agent_v2/src/history.ts
+// settleToolResult).
+function settleMemberHistory(
+  memberHistory: Record<string, MemberViewEntry[]>,
+  member: string,
+  toolId: string,
+  status: string,
+  result: string,
+): Record<string, MemberViewEntry[]> {
+  const view = memberHistory[member]
+  if (view === undefined) return memberHistory
+  let changed = false
+  const next = view.map((entry) => {
+    if (
+      !entry.message.blocks.some(
+        (b) => b.toolCall?.toolId === toolId && b.toolCall.status === 'TOOL_STATUS_RUNNING',
+      )
+    ) {
+      return entry
+    }
+    changed = true
+    return {
+      ...entry,
+      message: {
+        ...entry.message,
+        blocks: entry.message.blocks.map((b) =>
+          b.toolCall?.toolId === toolId && b.toolCall.status === 'TOOL_STATUS_RUNNING'
+            ? { ...b, toolCall: { ...b.toolCall, status, result } }
+            : b,
+        ),
+      },
+    }
+  })
+  return changed ? { ...memberHistory, [member]: next } : memberHistory
+}
+
 // stepsToHistory projects live step drafts onto history messages (one per
 // step，对齐服务端每 step 一条 assistant/message——specs/054-agent-v2-bugfixes/
 // data-model.md §5.1)。COMPLETED 与 ERROR 终态共用：ERROR（interrupted=true）
@@ -296,20 +358,71 @@ function projectTail(
   })
 }
 
+// appendMemberView consolidates one member output into that member's own view
+// (web-views.md §2/§4: the team_message frame for a member output carries the
+// same message object the server writes into both projections — the merged
+// sequence and the producer's own view). Concurrent-stream duplicate frames
+// are idempotent by messageId; a projected local placeholder is replaced in
+// arrival order, mirroring the merged sequence.
+function appendMemberView(
+  memberHistory: Record<string, MemberViewEntry[]>,
+  member: string,
+  message: HistoryMessage,
+): Record<string, MemberViewEntry[]> {
+  const view = memberHistory[member] ?? []
+  const messageId = message.messageId
+  if (
+    messageId !== undefined &&
+    messageId !== '' &&
+    view.some((e) => e.message.messageId === messageId)
+  ) {
+    return memberHistory
+  }
+  const entry: MemberViewEntry = { message, sender: member }
+  const projectedIndex = view.findIndex((e) => e.projected === true)
+  const next =
+    projectedIndex >= 0
+      ? view.map((e, i) => (i === projectedIndex ? entry : e))
+      : [...view, entry]
+  return { ...memberHistory, [member]: next }
+}
+
+// projectMemberTail projects one closed/failed turn's unconsolidated steps into
+// the producer's own view as local placeholders (same semantics as projectTail
+// for the merged sequence: a later real team_message frame replaces the first
+// placeholder in arrival order; a ListMemberMessages backfill drops them all).
+function projectMemberTail(
+  memberHistory: Record<string, MemberViewEntry[]>,
+  member: string,
+  messages: HistoryMessage[],
+): Record<string, MemberViewEntry[]> {
+  const view = memberHistory[member] ?? []
+  return {
+    ...memberHistory,
+    [member]: [
+      ...view,
+      ...messages.map((message) => ({ message, sender: member, projected: true })),
+    ],
+  }
+}
+
 // closeLiveTurn closes a live turn by projecting its unconsolidated tail into
-// the merged sequence (steps already consolidated through team_message frames
-// are already there). Interrupted turns mark the tail message so the folding
-// check treats it as a prefix (specs/054-agent-v2-bugfixes/data-model.md §5.2).
+// the merged sequence and the producer's own member view (steps already
+// consolidated through team_message frames are already there). Interrupted
+// turns mark the tail message so the folding check treats it as a prefix
+// (specs/054-agent-v2-bugfixes/data-model.md §5.2).
 function closeLiveTurn(state: ChatState, index: number, interrupted: boolean): ChatState {
   const turn = state.live[index]
   if (turn === undefined) return state
   const live = state.live.filter((_, i) => i !== index)
   const pending = turn.steps.slice(turn.fixedSteps)
   if (pending.length === 0) return { ...state, live }
+  const messages = stepsToHistory(pending, interrupted)
   return {
     ...state,
     live,
-    history: [...state.history, ...projectTail(state.history, turn.member, stepsToHistory(pending, interrupted))],
+    history: [...state.history, ...projectTail(state.history, turn.member, messages)],
+    memberHistory: projectMemberTail(state.memberHistory, turn.member, messages),
   }
 }
 
@@ -356,9 +469,18 @@ function reduceEvent(
       projectedIndex >= 0
         ? state.history.map((e, i) => (i === projectedIndex ? entry : e))
         : insertBySeq(state.history, entry)
+    // 成员自身输出双写进其视角（服务端 appendMemberOutput 的同一双投影）；
+    // 用户消息与跨成员广播注入在被该成员消费时进入其视角——消费锚只有
+    // 服务端历史可见，前端不伪造，经 loadMemberHistory 回填
+    // （web-views.md §2「经回填呈现」）。
+    const memberHistory =
+      member === USER_MEMBER
+        ? state.memberHistory
+        : appendMemberView(state.memberHistory, member, frame.message)
     return {
       ...state,
       history,
+      memberHistory,
       live: consumeFixedStep(state.live, member),
     }
   }
@@ -492,7 +614,17 @@ function reduceEvent(
       ) {
         const history = state.history.slice()
         history[i] = settleHistoryEntry(entry, toolId, status, result)
-        return { ...state, history }
+        return {
+          ...state,
+          history,
+          memberHistory: settleMemberHistory(
+            state.memberHistory,
+            entry.member,
+            toolId,
+            status,
+            result,
+          ),
+        }
       }
     }
     return state
@@ -590,7 +722,59 @@ export class ChatStore {
       history.push({ member, message: m.message, seq: seqOf(m.seq) })
     }
     history.sort((a, b) => a.seq - b.seq)
-    this.setState({ history, live: [], queue: [], error: null, canceled: false })
+    // 团队归并序列重建不触碰成员视角序列：同一生命周期的重对齐（流断开
+    // 回填）保留成员视角已回填内容；刷新（新生命周期）由调用方经
+    // clearMemberHistory 显式复位后重新回填。
+    this.setState({
+      history,
+      memberHistory: this.state.memberHistory,
+      live: [],
+      queue: [],
+      error: null,
+      canceled: false,
+    })
+  }
+
+  // loadMemberHistory applies one ListMemberMessages backfill (web-views.md §2):
+  // the server sequence is authoritative (consumption order with sender
+  // annotations). Local entries absent from the response are kept — an own
+  // output consolidated after the request was issued (structural continuation
+  // can start before the response lands) must not vanish; projected
+  // placeholders are dropped because the response is their authoritative
+  // replacement. Server order is preserved (no local seq anchor exists for a
+  // member view).
+  loadMemberHistory(
+    member: string,
+    messages: ReadonlyArray<{ message: HistoryMessage; sender?: string }>,
+  ): void {
+    const server: MemberViewEntry[] = messages.map((m) => ({
+      message: m.message,
+      sender: m.sender ?? '',
+    }))
+    const serverIds = new Set(
+      server
+        .map((e) => e.message.messageId)
+        .filter((id): id is string => id !== undefined && id !== ''),
+    )
+    const local = (this.state.memberHistory[member] ?? []).filter(
+      (e) =>
+        e.projected !== true &&
+        (e.message.messageId === undefined ||
+          e.message.messageId === '' ||
+          !serverIds.has(e.message.messageId)),
+    )
+    const next = [...server, ...local]
+    this.setState({
+      ...this.state,
+      memberHistory: { ...this.state.memberHistory, [member]: next },
+    })
+  }
+
+  // clearMemberHistory resets every member-view sequence (refresh/rebuild
+  // lifecycle, team-api.md §1/§5): the caller re-backfills afterwards.
+  clearMemberHistory(): void {
+    if (Object.keys(this.state.memberHistory).length === 0) return
+    this.setState({ ...this.state, memberHistory: {} })
   }
 
   // releaseStreamOwnership drops one terminated stream's delta block

@@ -443,6 +443,14 @@ body {
   padding: 8px 24px 0;
 }
 
+/* 对话页顶部视图切换器（web-views.md §2：团队 | player | planner，恰 3
+ * 视图）：左对齐置首（margin-right: auto），状态与设置维持右对齐。 */
+.chat-view-switch {
+  display: flex;
+  gap: 4px;
+  margin-right: auto;
+}
+
 .team-status {
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
@@ -556,6 +564,84 @@ body {
   gap: 4px;
 }
 
+/* 成员清单（web-views.md §1 状态呈现 + §5 system prompt 入口）：每成员一行
+ * （role · preset · model + 查看入口）。 */
+.team-panel-members {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.team-panel-members-title {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.team-panel-member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.team-panel-member-info {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* system prompt 只读全文（web-views.md §5）：等宽原文，长内容限高滚动、
+ * 保留换行与空白。 */
+.system-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+}
+
+.system-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.system-prompt-note {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.system-prompt-error {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--app-banner-error-bg);
+  color: var(--app-banner-error-fg);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.system-prompt-text {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  font-family:
+    ui-monospace,
+    'Cascadia Mono',
+    'Segoe UI Mono',
+    Menlo,
+    Consolas,
+    monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* position: relative 使滚动容器成为其内部所有绝对定位后代的 containing
  * block：内部 abspos（如 ReasoningRow running 态的 visually-hidden 播报
  * span）随内容滚动、被滚动容器裁剪，不会以 ICB 为参照逃逸到文档层撑大根
@@ -582,6 +668,25 @@ body {
   border-radius: 12px 12px 2px 12px;
   background: var(--dsw-alias-state-business-primary);
   color: var(--dsw-alias-label-primary-inverted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 成员视角的广播注入条目（web-views.md §4：role=USER + sender=成员 role 的
+ * 标注来源用户消息，渲染 `user: [sender] 正文`）：保持 user 气泡形态，
+ * 来源标注弱化呈现，正文为该成员消费到的注入原文（保留换行）。 */
+.msg-relay {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.relay-source {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.relay-body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

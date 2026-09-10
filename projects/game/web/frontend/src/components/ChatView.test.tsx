@@ -7,6 +7,7 @@ import { USER_MEMBER } from '../api/conversation.js'
 import type {
   BlockDraft,
   LiveMemberTurn,
+  MemberViewEntry,
   StepDraft,
   TeamMessageEntry,
 } from '../store/chat.js'
@@ -1355,5 +1356,203 @@ describe('ChatView 团队视图雏形', () => {
     const groups = screen.getAllByTestId('member-turn')
     expect(groups.map((g) => g.getAttribute('data-member'))).toEqual(['planner', 'player'])
     expect(screen.getByTestId('cancel-button')).not.toBeNull()
+  })
+})
+
+// ─── 成员视角视图（web-views.md §4：自己=agent、他人=标注来源的 user；T030） ──
+
+// renderMemberView 渲染一个成员视角（团队历史为空、live 缺省为空）：成员
+// 视角消费 memberHistory[member] 与按 member 过滤的 live。
+function renderMemberView(props: {
+  member: string
+  entries: MemberViewEntry[]
+  live?: LiveMemberTurn[]
+}): RenderResult {
+  return render(
+    <ChatView
+      session={SESSION}
+      view={props.member}
+      history={[]}
+      memberHistory={{ [props.member]: props.entries }}
+      live={props.live ?? []}
+      queue={[]}
+      error={null}
+      canceled={false}
+      onSend={noop}
+      onCancel={noopCancel}
+    />,
+  )
+}
+
+describe('ChatView 成员视角视图', () => {
+  it('三类条目按视角规范渲染：sender=user → 用户气泡、ROLE_AGENT → 自己的输出、sender=成员 → user: [sender] 标注', () => {
+    renderMemberView({
+      member: 'player',
+      entries: [
+        {
+          message: { role: 'ROLE_USER', blocks: [{ text: { content: '开始一局' } }] },
+          sender: 'user',
+        },
+        {
+          message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '落子 a1' } }] },
+          sender: 'player',
+        },
+        {
+          message: {
+            role: 'ROLE_USER',
+            blocks: [
+              {
+                text: {
+                  content: '[planner] 先开左上角\n<planner-message>\n先开左上角\n</planner-message>',
+                },
+              },
+            ],
+          },
+          sender: 'planner',
+        },
+      ],
+    })
+
+    // 用户输入 = 普通 user 气泡（与团队视图同形态）。
+    expect(screen.getByTestId('chat-messages').querySelector('.msg-user')?.textContent).toBe(
+      '开始一局',
+    )
+    // 自己的输出 = agent 形态（无需成员标签：自己即 agent）。
+    expect(screen.getByTestId('agent-text').textContent).toBe('落子 a1')
+    expect(screen.queryByTestId('member-tag')).toBeNull()
+    // 他人消息 = 标注来源的 user 消息（`user: [sender] 正文`，正文为该成员
+    // 消费到的注入原文）。
+    const relay = screen.getByTestId('member-relay')
+    expect(relay.getAttribute('data-sender')).toBe('planner')
+    expect(screen.getByTestId('relay-source').textContent).toBe('user: [planner]')
+    expect(screen.getByTestId('relay-body').textContent).toContain('先开左上角')
+  })
+
+  it('live 事件按 member 过滤：其他成员的流式产出不进入本视角（其消费面经回填呈现）', () => {
+    const plannerLive: LiveMemberTurn = {
+      member: 'planner',
+      turnId: 't1',
+      fixedSteps: 0,
+      owners: {},
+      steps: [{ step: 1, settled: false, blocks: [{ index: 0, type: 'TEXT', text: '策略流式中' }] }],
+    }
+    const playerLive: LiveMemberTurn = {
+      member: 'player',
+      turnId: 't2',
+      fixedSteps: 0,
+      owners: {},
+      steps: [{ step: 1, settled: false, blocks: [{ index: 0, type: 'TEXT', text: '落子流式中' }] }],
+    }
+    renderMemberView({ member: 'player', entries: [], live: [plannerLive, playerLive] })
+
+    // 仅本成员（player）的流式回合呈现。
+    const turns = screen.getAllByTestId('member-turn')
+    expect(turns.map((t) => t.getAttribute('data-member'))).toEqual(['player'])
+    expect(screen.getByTestId('agent-text').textContent).toBe('落子流式中')
+    expect(screen.queryByText('策略流式中')).toBeNull()
+  })
+
+  it('已固化的前导 step 不重复渲染（fixedSteps 语义在成员视角一致）', () => {
+    renderMemberView({
+      member: 'planner',
+      entries: [
+        {
+          message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '第一步已固化' } }] },
+          sender: 'planner',
+        },
+      ],
+      live: [
+        {
+          member: 'planner',
+          turnId: 't1',
+          fixedSteps: 1,
+          owners: {},
+          steps: [
+            { step: 1, settled: true, blocks: [{ index: 0, type: 'TEXT', text: '第一步已固化' }] },
+            { step: 2, settled: false, blocks: [{ index: 1, type: 'TEXT', text: '第二步流式中' }] },
+          ],
+        },
+      ],
+    })
+    expect(screen.getAllByTestId('agent-text').map((el) => el.textContent)).toEqual([
+      '第一步已固化',
+      '第二步流式中',
+    ])
+  })
+
+  it('自身输出按回合折叠：过程默认折叠、最终答案独立呈现，展开后过程可见', () => {
+    renderMemberView({
+      member: 'planner',
+      entries: [
+        {
+          message: {
+            role: 'ROLE_AGENT',
+            blocks: [
+              {
+                toolCall: {
+                  toolId: 'call-a',
+                  name: 'memory',
+                  argsJson: '{}',
+                  status: 'TOOL_STATUS_SUCCEEDED',
+                  result: 'ok',
+                },
+              },
+            ],
+          },
+          sender: 'planner',
+        },
+        {
+          message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '复盘结论' } }] },
+          sender: 'planner',
+        },
+      ],
+    })
+
+    expect(screen.getByTestId('turn-process-toggle').textContent).toContain('1 步骤')
+    expect(screen.queryByTestId('tool-card')).toBeNull()
+    expect(screen.getByTestId('agent-text').textContent).toBe('复盘结论')
+
+    fireEvent.click(screen.getByTestId('turn-process-toggle'))
+    expect(screen.getByTestId('tool-card')).not.toBeNull()
+  })
+
+  it('跨视图正文一致：同一成员产出在团队视图与其自身视角的正文相同', () => {
+    const message = {
+      role: 'ROLE_AGENT' as const,
+      blocks: [{ text: { content: '棋盘已就绪' } }],
+    }
+    const teamEntry: TeamMessageEntry = { member: 'planner', message, seq: 1 }
+    const ownEntry: MemberViewEntry = { message, sender: 'planner' }
+
+    const memberResult = renderMemberView({ member: 'planner', entries: [ownEntry] })
+    expect(screen.getByTestId('agent-text').textContent).toBe('棋盘已就绪')
+    memberResult.unmount()
+
+    render(
+      <ChatView
+        session={SESSION}
+        history={[teamEntry]}
+        live={[]}
+        queue={[]}
+        error={null}
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
+    expect(screen.getByTestId('agent-text').textContent).toBe('棋盘已就绪')
+  })
+
+  it('团队视图不呈现广播包装形态：成员产出以原生正文渲染（无 [sender] 前缀/标签对）', () => {
+    renderChatView({
+      history: [{ role: 'ROLE_AGENT', blocks: [{ text: { content: '策略正文' } }] }],
+    })
+    const text = screen.getByTestId('agent-text')
+    expect(text.textContent).toBe('策略正文')
+    // 成员标签（player 是 teamHistory 缺省成员）区分归属，但不引入包装形态。
+    expect(screen.getByTestId('member-tag').getAttribute('data-member')).toBe('player')
+    expect(text.textContent).not.toContain('[player]')
+    expect(text.textContent).not.toContain('<player-message>')
+    expect(screen.queryByTestId('member-relay')).toBeNull()
   })
 })

@@ -121,6 +121,14 @@ function makeFetchMock() {
     if (url === `/api/v2/${SESSION}/team/messages`) {
       return jsonResponse({ messages: [] })
     }
+    // 成员视角回填（web-views.md §2）：挂载与回合结束各请求一次，测试面
+    // 默认为空（成员视角渲染专项用例在各自 fixture 中给出行数据）。
+    if (
+      url === `/api/v2/${SESSION}/team/members/player/messages` ||
+      url === `/api/v2/${SESSION}/team/members/planner/messages`
+    ) {
+      return jsonResponse({ messages: [] })
+    }
     if (url === `/api/v2/${SESSION}:send` && init?.method === 'POST') {
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -213,6 +221,9 @@ interface Us4Fixture {
   deleteStatus?: number
   // 自定义响应（延迟/失败注入）；未提供时按默认成功响应路由。
   historyResponse?: () => Promise<Response> | Response
+  // 成员视角回填注入（member = 'player' | 'planner'；web-views.md §2）；
+  // 未提供时返回空集合。
+  memberHistoryResponse?: (member: string) => Promise<Response> | Response
   deleteResponse?: () => Promise<Response>
   send?: () => Response
 }
@@ -238,6 +249,16 @@ function makeUs4FetchMock(fixtures: Us4Fixture[]) {
       }
       if (url === `/api/v2/${f.name}/team/messages`) {
         if (f.historyResponse !== undefined) return f.historyResponse()
+        return jsonResponse({ messages: [] })
+      }
+      // 成员视角回填（web-views.md §2）：默认空；专项用例以 memberHistoryResponse
+      // 注入视角序列。
+      if (
+        url === `/api/v2/${f.name}/team/members/player/messages` ||
+        url === `/api/v2/${f.name}/team/members/planner/messages`
+      ) {
+        const member = url.includes('/members/player/') ? 'player' : 'planner'
+        if (f.memberHistoryResponse !== undefined) return f.memberHistoryResponse(member)
         return jsonResponse({ messages: [] })
       }
       if (url === `/api/v2/${f.name}/team` && method === 'GET') {
@@ -743,6 +764,12 @@ function makeCancelFetchMock(options: {
     if (url === `/api/v2/${S1}/team/messages`) {
       return jsonResponse({ messages: [] })
     }
+    if (
+      url === `/api/v2/${S1}/team/members/player/messages` ||
+      url === `/api/v2/${S1}/team/members/planner/messages`
+    ) {
+      return jsonResponse({ messages: [] })
+    }
     if (url === `/api/v2/${S1}/team` && method === 'GET') {
       return teamView(S1)
     }
@@ -778,6 +805,12 @@ function makeConnFetchMock(
     }
     for (const name of sessions) {
       if (url === `/api/v2/${name}/team/messages`) {
+        return jsonResponse({ messages: [] })
+      }
+      if (
+        url === `/api/v2/${name}/team/members/player/messages` ||
+        url === `/api/v2/${name}/team/members/planner/messages`
+      ) {
         return jsonResponse({ messages: [] })
       }
       if (url === `/api/v2/${name}/team` && method === 'GET') {
@@ -1069,11 +1102,15 @@ const SEND_ABORTED_REST = [
 // (style/javascript.md Mock 约定).
 function makeApplyFetchMock(fixtures: {
   historyResponses?: (() => Response | Promise<Response>)[]
+  // memberHistoryResponse：成员视角回填注入（member + 该成员第 N 次请求），
+  // 缺省为空集合（web-views.md §2）。
+  memberHistoryResponse?: (member: string, call: number) => Response | Promise<Response>
   teamGet?: () => Response
   patchResponse?: () => Response
   sendResponse?: () => Response
 }) {
   let historyCalls = 0
+  const memberCalls: Record<string, number> = {}
   const history = fixtures.historyResponses ?? [() => jsonResponse({ messages: [] })]
   const fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? 'GET'
@@ -1084,6 +1121,17 @@ function makeApplyFetchMock(fixtures: {
       const respond = history[Math.min(historyCalls, history.length - 1)]
       historyCalls += 1
       return respond()
+    }
+    if (
+      url === `/api/v2/${S1}/team/members/player/messages` ||
+      url === `/api/v2/${S1}/team/members/planner/messages`
+    ) {
+      const member = url.includes('/members/player/') ? 'player' : 'planner'
+      memberCalls[member] = (memberCalls[member] ?? 0) + 1
+      return (
+        fixtures.memberHistoryResponse?.(member, memberCalls[member]) ??
+        jsonResponse({ messages: [] })
+      )
     }
     if (url === `/api/v2/${S1}/team` && method === 'GET') {
       return fixtures.teamGet?.() ?? teamView(S1)
@@ -1483,5 +1531,142 @@ describe('App 重建同步（Apply 成功后对话视图即时同步）', () => 
     })
     assertCleanChat()
     expect(screen.queryByTestId('team-settings-error')).toBeNull()
+  })
+
+  it('刷新生命周期与在途成员回填竞态：旧生命周期的视角响应落地不复活', async () => {
+    // 挂载时的成员视角回填被 gate 持有；Apply（新生命周期）后旧响应才落地：
+    // 纪元守卫必须整体丢弃它——旧视角内容不得复活（merge 规则保留响应外
+    // 条目的前提是同一生命周期）。
+    const staleGate = gatedResponse(() =>
+      jsonResponse({
+        messages: [
+          {
+            message: {
+              messageId: 'old-lifecycle',
+              role: 'ROLE_AGENT',
+              blocks: [{ text: { content: '旧生命周期视角内容' } }],
+            },
+            sender: 'player',
+          },
+        ],
+      }),
+    )
+    const mock = makeApplyFetchMock({
+      memberHistoryResponse: (member, call) => {
+        if (member !== 'player') return jsonResponse({ messages: [] })
+        // 第 1 次 = 挂载（旧生命周期，gate 持有）；第 2 次 = Apply 后重建。
+        return call === 1 ? staleGate.respond() : jsonResponse({ messages: [] })
+      },
+    })
+    fetchMock = mock.fetchMock
+    historyCallCount = mock.historyCallCount
+    vi.stubGlobal('fetch', fetchMock)
+
+    await enterS1()
+    fireEvent.click(await screen.findByTestId('team-settings-button'))
+    await waitForPanelReady()
+    applyPreset()
+    await assertPatchApplied()
+
+    // 旧响应在刷新后才落地：成员视角保持重建后的空序列。
+    staleGate.open()
+    await flush()
+    fireEvent.click(screen.getByTestId('view-player'))
+    expect(screen.queryByText('旧生命周期视角内容')).toBeNull()
+  })
+})
+
+// ─── App 双视图切换（T030：恰 3 视图、成员视角按回填渲染、切换不重填） ─────────
+
+describe('App 双视图切换', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('恰 3 个视图；成员视角按回填渲染 user/relay/agent；切换不触发重新回填（各视图历史常驻）', async () => {
+    const playerView = {
+      messages: [
+        {
+          message: { role: 'ROLE_USER', blocks: [{ text: { content: '开始一局' } }] },
+          sender: 'user',
+        },
+        {
+          message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '落子 a1' } }] },
+          sender: 'player',
+        },
+        {
+          message: {
+            role: 'ROLE_USER',
+            blocks: [
+              {
+                text: {
+                  content: '[planner] 先开左上角\n<planner-message>\n先开左上角\n</planner-message>',
+                },
+              },
+            ],
+          },
+          sender: 'planner',
+        },
+      ],
+    }
+    const plannerView = {
+      messages: [
+        {
+          message: { role: 'ROLE_USER', blocks: [{ text: { content: '开始一局' } }] },
+          sender: 'user',
+        },
+        {
+          message: { role: 'ROLE_AGENT', blocks: [{ text: { content: '先开左上角' } }] },
+          sender: 'planner',
+        },
+      ],
+    }
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? 'GET'
+      if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+        return jsonResponse({ sessions: [{ name: S1, createTime: '2026-08-29T00:00:00Z' }] })
+      }
+      if (url === `/api/v2/${S1}/team/messages`) {
+        return jsonResponse({ messages: [] })
+      }
+      if (url === `/api/v2/${S1}/team/members/player/messages`) {
+        return jsonResponse(playerView)
+      }
+      if (url === `/api/v2/${S1}/team/members/planner/messages`) {
+        return jsonResponse(plannerView)
+      }
+      if (url === `/api/v2/${S1}/team` && method === 'GET') {
+        return teamView(S1)
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    fireEvent.click(await screen.findByText('s1'))
+    const switcher = await screen.findByTestId('chat-view-switch')
+    // 恰 3 个视图：团队 | player | planner；缺省团队视图。
+    expect(switcher.querySelectorAll('button')).toHaveLength(3)
+    expect(screen.getByTestId('view-team').getAttribute('data-active')).toBe('true')
+
+    // player 视角：回填序列按 `user 气泡 / agent 输出 / user: [sender] 标注` 渲染。
+    fireEvent.click(screen.getByTestId('view-player'))
+    expect(screen.getByTestId('view-player').getAttribute('data-active')).toBe('true')
+    expect(screen.getByTestId('relay-source').textContent).toBe('user: [planner]')
+    expect(screen.getByTestId('agent-text').textContent).toBe('落子 a1')
+
+    // planner 视角：用户消息 + 自己的输出，无 relay 条目。
+    fireEvent.click(screen.getByTestId('view-planner'))
+    expect(screen.getByTestId('agent-text').textContent).toBe('先开左上角')
+    expect(screen.queryByTestId('member-relay')).toBeNull()
+
+    // 切回团队视图：数据面即时恢复且切换不触发任何回填请求——成员视角各恰
+    // 一次挂载回填（web-views.md §2：切换为纯前端状态、各视图历史常驻）。
+    fireEvent.click(screen.getByTestId('view-team'))
+    expect(screen.getByTestId('view-team').getAttribute('data-active')).toBe('true')
+    const memberCalls = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes('/members/'),
+    )
+    expect(memberCalls).toHaveLength(2)
   })
 })

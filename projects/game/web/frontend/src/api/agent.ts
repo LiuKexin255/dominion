@@ -152,6 +152,14 @@ export async function getTeam(session: string): Promise<Team> {
   return requestJson<Team>(`/api/v2/${session}/team`)
 }
 
+// getTeamMember GET 单个成员实例（AIP-131，team-api.md §1）：返回 output-only
+// systemPrompt——该实例当前生效的完整系统提示词装配结果（persona + team
+// section + 工具守则 + [planner] 记忆快照），服务端从装配面取实际内容而非
+// 另行拼装（web-views.md §5 查看入口的数据源）。
+export async function getTeamMember(session: string, member: string): Promise<TeamMember> {
+  return requestJson<TeamMember>(`/api/v2/${session}/team/members/${member}`)
+}
+
 // updateTeam 物化/刷新 team 单例（AIP-134 create-or-update），提交
 // team.members 成员配置列表。HTTP body 即 Team 资源本体（gateway 注解
 // body:"team"）：只序列化输入侧字段 {role, preset, model?}，name 等

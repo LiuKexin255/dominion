@@ -131,6 +131,152 @@ func TestAgentV2TeamStaticWaitAndFirstDrive(t *testing.T) {
 	}
 }
 
+// TestAgentV2TeamViewDataProjections covers the two List projections side by
+// side (US4 / quickstart V5-1/V5-2, SC-003): ListTeamMessages returns the
+// merged sequence with producer labels ("user"/"player"/"planner"), strictly
+// monotonic seq, and the members' NATIVE output (settled tool-call blocks, no
+// relay wrapper); ListMemberMessages follows the perspective contract per
+// member (own output = AGENT, user input = USER/sender "user", the other
+// member's relay = USER/sender <role>); every merged member output is the
+// same message (messageId + body) as its entry in that member's own view;
+// both envelopes leave the pagination compat slot empty; and a later
+// player-handled Send puts the user input in the player view too (user→user
+// on both sides).
+func TestAgentV2TeamViewDataProjections(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-views-" + uniqueSuffix()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-views")
+
+	// A won game that continues into a second one on the test's own desktop
+	// half (V4): the merged sequence then carries both members' native output
+	// with two settled tool calls per player game.
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardWinPNG},
+		stepBoards: [][]byte{saoleiBoardWinPNG},
+	}, wsReadTimeout)
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, events)
+
+	// ListTeamMessages: labels, seq monotonicity, native output.
+	teamEnvelope := listTeamMessagesResponse(t, ctx, sutHostURL, sutEnvName, sessionName)
+	if token := teamEnvelope.GetNextPageToken(); token != "" {
+		t.Errorf("ListTeamMessages next_page_token = %q, want the empty pagination compat slot", token)
+	}
+	entries := teamEnvelope.GetMessages()
+	counts := map[string]int{}
+	lastSeq := int64(0)
+	for i, entry := range entries {
+		counts[entry.GetMember()]++
+		if entry.GetSeq() <= lastSeq {
+			t.Errorf("merge entry[%d] seq = %d, want > previous %d (seq 单调)", i, entry.GetSeq(), lastSeq)
+		}
+		lastSeq = entry.GetSeq()
+		if text := agentV2MessageText(entry.GetMessage()); strings.Contains(text, "<player-") || strings.Contains(text, "<planner-") {
+			t.Errorf("merge entry[%d] (member %q) carries a relay wrapper: %q (团队视图取原生输出)", i, entry.GetMember(), text)
+		}
+	}
+	if counts["user"] != 1 {
+		t.Errorf("merge USER entries = %d, want exactly the initial Send", counts["user"])
+	}
+	if counts["player"] == 0 || counts["planner"] == 0 {
+		t.Errorf("merge member entries = player:%d planner:%d, want both members present", counts["player"], counts["planner"])
+	}
+	userEntries := teamMessagesForMember(entries, "user")
+	if len(userEntries) != 1 || agentV2MessageText(userEntries[0].GetMessage()) != teamStartMessage {
+		t.Fatalf("merge USER entries = %+v, want exactly the sent message", userEntries)
+	}
+	var toolCalls []*game.ToolCallBlock
+	for _, entry := range teamMessagesForMember(entries, "player") {
+		for _, block := range entry.GetMessage().GetBlocks() {
+			if call := block.GetToolCall(); call != nil {
+				toolCalls = append(toolCalls, call)
+			}
+		}
+	}
+	if len(toolCalls) != 4 {
+		t.Fatalf("merge player tool-call blocks = %d, want 4 (init + operate per game)", len(toolCalls))
+	}
+	for i, call := range toolCalls {
+		if call.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || call.GetResult() == "" {
+			t.Errorf("merge tool block[%d] (%s) = %v/%q, want a settled SUCCEEDED result", i, call.GetName(), call.GetStatus(), call.GetResult())
+		}
+		if call.GetName() != "saolei_init" && call.GetName() != "saolei_operate" {
+			t.Errorf("merge tool block[%d] name = %q, want a saolei tool", i, call.GetName())
+		}
+	}
+
+	// ListMemberMessages: the perspective contract per member.
+	plannerEnvelope := listMemberMessagesResponse(t, ctx, sutHostURL, sutEnvName, sessionName, "planner")
+	playerEnvelope := listMemberMessagesResponse(t, ctx, sutHostURL, sutEnvName, sessionName, "player")
+	for name, envelope := range map[string]*game.ListMemberMessagesResponse{
+		"planner": plannerEnvelope,
+		"player":  playerEnvelope,
+	} {
+		if token := envelope.GetNextPageToken(); token != "" {
+			t.Errorf("ListMemberMessages(%s) next_page_token = %q, want the empty pagination compat slot", name, token)
+		}
+	}
+	plannerView := plannerEnvelope.GetMessages()
+	playerView := playerEnvelope.GetMessages()
+	assertMemberViewPerspective(t, "planner", plannerView, "planner")
+	assertMemberViewPerspective(t, "player", playerView, "player")
+
+	// The planner consumed the user's first Send directly, and the chain
+	// relayed both members' output to the other side.
+	sawPlannerUserInput, sawPlannerPlayerRelay := false, false
+	for _, entry := range plannerView {
+		switch {
+		case entry.GetSender() == "user" && agentV2MessageText(entry.GetMessage()) == teamStartMessage:
+			sawPlannerUserInput = true
+		case entry.GetSender() == "player":
+			sawPlannerPlayerRelay = true
+		}
+	}
+	if !sawPlannerUserInput {
+		t.Error("planner view has no user input entry (user→user)")
+	}
+	if !sawPlannerPlayerRelay {
+		t.Error("planner view has no relayed player output")
+	}
+	sawPlayerRelay := false
+	for _, entry := range playerView {
+		if entry.GetSender() == "planner" {
+			sawPlayerRelay = true
+		}
+	}
+	if !sawPlayerRelay {
+		t.Error("player view has no relayed planner output")
+	}
+
+	// Cross-view consistency: every merged member output is the same message
+	// (messageId + body) as its entry in that member's own view.
+	assertMergeMatchesMemberViews(t, entries, map[string][]*game.MemberViewMessage{
+		"planner": plannerView,
+		"player":  playerView,
+	})
+
+	// A later Send reaches the player (the current activation after the last
+	// game), so the player view carries the user input as well.
+	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamQueueMessage)
+	events2 := drainTeamStream(t, stream2)
+	assertTeamStreamWellFormed(t, sessionName, events2)
+	playerView = listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player")
+	sawPlayerUserInput := false
+	for _, entry := range playerView {
+		if entry.GetSender() == "user" && agentV2MessageText(entry.GetMessage()) == teamQueueMessage {
+			sawPlayerUserInput = true
+		}
+	}
+	if !sawPlayerUserInput {
+		t.Fatal("player view has no user input entry after the player-handled Send (user→user)")
+	}
+}
+
 // TestAgentV2TeamQueueDigestPriority covers V6-1/2 (FR-011): a message sent
 // while the planner's long turn is in flight queues behind it (queued frame
 // first on its own stream), and after the running turn ends the CURRENT

@@ -13,7 +13,12 @@ import './theme.css'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ApiError, sendStream } from './api/conversation.js'
 import type { ChatEvent } from './api/conversation.js'
-import { cancelTeam, getTeam, listTeamMessages } from './api/agent.js'
+import {
+  cancelTeam,
+  getTeam,
+  listMemberMessages,
+  listTeamMessages,
+} from './api/agent.js'
 import type { Team } from './api/agent.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
@@ -22,7 +27,7 @@ import {
   probeTeam,
   TeamSettingsPanel,
 } from './components/TeamSettingsPanel.js'
-import { ChatView } from './components/ChatView.js'
+import { ChatView, TEAM_VIEW } from './components/ChatView.js'
 import { PresetsView } from './components/PresetsView.js'
 import { SessionList } from './components/SessionList.js'
 import { ChatStore, useChatState } from './store/chat.js'
@@ -30,6 +35,10 @@ import { ChatStore, useChatState } from './store/chat.js'
 // 本阶段新建 session 固定 saolei template（spec 澄清，存量 session 服务零改动；
 // 常量口径对齐 desktop 前端 api.ts 的 TEMPLATES）。
 const TEMPLATE_SAOLEI = 'saolei'
+
+// 成员视角视图的成员集合（场景词汇字符串；web-views.md §2：成员视角视图
+// 数量 = 成员数，saolei 恰 player/planner——切换器恰 3 视图：团队 + 2 成员）。
+const MEMBER_VIEWS = ['player', 'planner'] as const
 
 // 侧栏底部视图切换的两个视图（web-frontend.md §2：sessions | presets）。
 type AppView = 'sessions' | 'presets'
@@ -78,12 +87,20 @@ function ChatPanel({
   // 连接态独立承载查询结果（不复用 team state，避免探测失败时虚构连接）。
   const [desktopConn, setDesktopConn] = useState<DesktopConn>('unknown')
   const [panelOpen, setPanelOpen] = useState(false)
+  // 对话页顶部视图（web-views.md §2：团队 | player | planner）：纯前端状态，
+  // 切换不重新回填（各视图历史常驻于 store）；按 session 常驻于本面板，
+  // 会话切换/返回时保持所选视图。
+  const [chatView, setChatView] = useState<string>(TEAM_VIEW)
   // 终止请求失败呈现（不吞，specs/054-agent-v2-bugfixes/contracts/web-ui.md
   // §4）；请求成功不设错误——终态经流上 turn_end{CANCELED} 由 store 归约。
   const [cancelError, setCancelError] = useState<string | null>(null)
   // 回填发起后本面板是否有 send 开始：send 与回填竞态时整体让位于 send
   // （判据说明见 runBackfill 内守卫处注释）。
   const sentSinceBackfill = useRef(false)
+  // 成员视角回填的生命周期纪元：Apply 刷新（新生命周期）时递增；在途响应
+  // 落地时纪元不匹配即丢弃——旧生命周期的视角序列不得在 clear 之后复活
+  // （merge 规则保留响应外条目的前提是同一生命周期）。
+  const memberEpoch = useRef(0)
 
   // team 状态与连接状态即时刷新（web-views.md §1：GetTeam 定期刷新，节奏沿用
   // 现状 10s + 关键时机即时刷新）：GetTeam 200 → 成员清单与 desktop_connected
@@ -137,6 +154,37 @@ function ChatPanel({
     [session, store],
   )
 
+  // runMemberBackfill 同步两个成员视角视图（web-views.md §2）：用户输入与
+  // 跨成员广播注入在被成员消费时进入其视角，消费事实只有服务端历史可见
+  // （前端无消费锚，不伪造），故在挂载、回合结束（消费面已固化）与 Apply
+  // 重建后经 ListMemberMessages 回填。store 侧按 messageId 合并（响应期间
+  // 新固化的自身输出保留，投影占位以服务端序列为准被取代）。未物化 404
+  // 是"尚无视角历史"而非错误。
+  const runMemberBackfill = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
+      const epoch = memberEpoch.current
+      const results = await Promise.all(
+        MEMBER_VIEWS.map(async (member) => {
+          try {
+            return { member, messages: await listMemberMessages(session, member) }
+          } catch (err) {
+            return { member, messages: null, error: err }
+          }
+        }),
+      )
+      // 纪元不匹配 = 响应属于旧生命周期（期间发生了 Apply 刷新）：整体丢弃。
+      if (isCancelled() || epoch !== memberEpoch.current) return
+      for (const result of results) {
+        if (result.messages !== null) {
+          store.loadMemberHistory(result.member, result.messages)
+          continue
+        }
+        if (!isUnmaterializedError(result.error)) setBackfillError(errorMessage(result.error))
+      }
+    },
+    [session, store],
+  )
+
   useEffect(() => {
     let cancelled = false
     // 物化状态探测（web-views.md §1）：GetTeam 404 → 未物化引导态；其余
@@ -146,13 +194,15 @@ function ChatPanel({
       setTeamStatus(probe.status)
       setTeam(probe.team)
     })
-    // 进入会话即时刷新连接状态与成员清单（web-views.md §1）。
+    // 进入会话即时刷新连接状态与成员清单（web-views.md §1）与两成员视角
+    // 历史（web-views.md §2 回填）。
     void refreshTeam()
     void runBackfill(() => cancelled)
+    void runMemberBackfill(() => cancelled)
     return () => {
       cancelled = true
     }
-  }, [session, store, refreshTeam, runBackfill])
+  }, [session, store, refreshTeam, runBackfill, runMemberBackfill])
 
   const onSend = useCallback(
     (text: string) => {
@@ -206,13 +256,19 @@ function ChatPanel({
       )
       setPanelOpen(false)
       // 刷新为新生命周期（team-api.md §5：刷新 team 后为新生命周期，服务端
-      // 归并序列已随重建清空）：本地归并序列即时复位，避免旧生命周期的 seq
-      // 锚与新序列冲突；随后经同一回填路径取服务端当前序列（重建同步，
-      // specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §2）。
+      // 归并序列与成员视角历史已随重建清空）：本地归并序列与成员视角序列
+      // 即时复位，避免旧生命周期的 seq/消息锚污染新序列；随后经同一回填
+      // 路径取服务端当前序列（重建同步，
+      // specs/057-agent-v2-ui-fixes-2/contracts/ui-interactions.md §2；
+      // 成员视角重建同步见 web-views.md §2）。纪元先递增：在途的旧生命周期
+      // 成员回填响应按纪元丢弃。
+      memberEpoch.current += 1
       store.loadHistory([])
+      store.clearMemberHistory()
       void runBackfill()
+      void runMemberBackfill()
     },
-    [runBackfill, store],
+    [runBackfill, runMemberBackfill, store],
   )
 
   // 回合结束即时刷新（web-views.md §1）：全部成员回合终态（COMPLETED/ERROR/
@@ -231,7 +287,11 @@ function ChatPanel({
     if (!hadLive.current) return
     hadLive.current = false
     void refreshTeam()
-  }, [state.live, refreshTeam])
+    // 回合结束是成员视角消费面的固化点（回合开始时成员消费了用户消息/
+    // 广播注入，回合内自身输出逐步固化）：即时回填两成员视角
+    // （web-views.md §2「经回填呈现」）。
+    void runMemberBackfill()
+  }, [state.live, refreshTeam, runMemberBackfill])
 
   // 10s 轮询（web-views.md §1：desktop 连接状态 10s + 关键时机即时）。ChatPanel
   // 对所有已打开会话常驻挂载（active 仅控制渲染），轮询必须以 active 门控——
@@ -248,6 +308,30 @@ function ChatPanel({
   return (
     <div className="chat">
       <div className="team-toolbar">
+        {/* 视图切换器（web-views.md §2：团队 | player | planner，恰 3 视图）：
+            纯前端状态切换、各视图历史常驻不重填——切换只更换呈现的数据面，
+            不触发任何回填请求。 */}
+        <div className="chat-view-switch" data-testid="chat-view-switch">
+          <Button
+            variant={chatView === TEAM_VIEW ? 'primary' : 'ghost'}
+            data-testid="view-team"
+            data-active={chatView === TEAM_VIEW || undefined}
+            onClick={() => setChatView(TEAM_VIEW)}
+          >
+            团队
+          </Button>
+          {MEMBER_VIEWS.map((member) => (
+            <Button
+              key={member}
+              variant={chatView === member ? 'primary' : 'ghost'}
+              data-testid={`view-${member}`}
+              data-active={chatView === member || undefined}
+              onClick={() => setChatView(member)}
+            >
+              {member}
+            </Button>
+          ))}
+        </div>
         <span
           className="desktop-conn"
           data-testid="desktop-conn-status"
@@ -316,7 +400,9 @@ function ChatPanel({
       )}
       <ChatView
         session={session}
+        view={chatView}
         history={state.history}
+        memberHistory={state.memberHistory}
         live={state.live}
         queue={state.queue}
         error={state.error ?? cancelError ?? backfillError}

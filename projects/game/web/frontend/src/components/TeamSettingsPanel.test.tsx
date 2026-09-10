@@ -302,6 +302,16 @@ describe('App 未物化引导与 team 物化', () => {
           ? jsonResponse({ messages: [] })
           : new Response('not found', { status: 404 })
       }
+      // 成员视角回填（web-views.md §2）与归并序列同分流：未物化 404，物化
+      // 后为空消费面。
+      if (
+        url === `/api/v2/${SESSION}/team/members/player/messages` ||
+        url === `/api/v2/${SESSION}/team/members/planner/messages`
+      ) {
+        return materialized
+          ? jsonResponse({ messages: [] })
+          : new Response('not found', { status: 404 })
+      }
       if (url === '/api/v2/templates/saolei/presets?role=player' && method === 'GET') {
         return jsonResponse({ presets: [PLAYER_PRESET] })
       }
@@ -427,5 +437,183 @@ describe('App 未物化引导与 team 物化', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('team-ready-guide')).toBeNull()
     })
+  })
+})
+
+// ─── system prompt 查看入口（web-views.md §5，T033） ─────────────────────────
+
+describe('TeamSettingsPanel system prompt 查看', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let onApplied: ReturnType<typeof vi.fn>
+  let onClose: ReturnType<typeof vi.fn>
+
+  const PLAYER_PROMPT = [
+    '你是扫雷 player：在 9x9 棋盘上完成扫雷。',
+    '',
+    '团队目标：按策略完成对局并复盘。',
+    '- [player] 执行游戏操作',
+    '- [planner] 制定策略与复盘',
+    '',
+    '扫雷工具守则：先 init 再 operate。',
+  ].join('\n')
+
+  // panelRoutes 路由面板的数据源与 GetTeamMember：promptFor 按成员 role 返回
+  // 全文（string）或错误响应（Response）。
+  function panelRoutes(
+    promptFor: (role: string) => string | Response,
+  ): (url: string, init?: RequestInit) => Promise<Response> {
+    return async (url: string, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? 'GET'
+      if (url === '/api/v2/templates/saolei/presets?role=player' && method === 'GET') {
+        return jsonResponse({ presets: [PLAYER_PRESET] })
+      }
+      if (url === '/api/v2/templates/saolei/presets?role=planner' && method === 'GET') {
+        return jsonResponse({ presets: [PLANNER_PRESET] })
+      }
+      if (url === '/api/v2/models' && method === 'GET') {
+        return jsonResponse({ models: [{ id: 'glm-5.2' }] })
+      }
+      if (url === `/api/v2/${SESSION}/team/members/player` && method === 'GET') {
+        const value = promptFor('player')
+        return typeof value === 'string'
+          ? jsonResponse({
+              name: `${SESSION}/team/members/player`,
+              role: 'player',
+              preset: PLAYER_PRESET.name,
+              model: 'glm-5.2',
+              systemPrompt: value,
+            })
+          : value
+      }
+      if (url === `/api/v2/${SESSION}/team/members/planner` && method === 'GET') {
+        const value = promptFor('planner')
+        return typeof value === 'string'
+          ? jsonResponse({
+              name: `${SESSION}/team/members/planner`,
+              role: 'planner',
+              preset: PLANNER_PRESET.name,
+              model: 'glm-5.1',
+              systemPrompt: value,
+            })
+          : value
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`)
+    }
+  }
+
+  beforeEach(() => {
+    onApplied = vi.fn()
+    onClose = vi.fn()
+    fetchMock = vi.fn(panelRoutes(() => 'prompt'))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('成员清单提供每成员入口：GET GetTeamMember 取实际装配结果，<pre> 等宽只读全文呈现', async () => {
+    fetchMock = vi.fn(panelRoutes((role) => (role === 'player' ? PLAYER_PROMPT : 'planner prompt')))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <TeamSettingsPanel
+        session={SESSION}
+        materialized={TEAM_MATERIALIZED}
+        onApplied={onApplied}
+        onClose={onClose}
+      />,
+    )
+
+    // 成员清单（role + preset + model）与每成员入口。
+    expect(screen.getAllByTestId('team-panel-member')).toHaveLength(2)
+    expect(screen.getByTestId('member-system-prompt-planner')).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('member-system-prompt-player'))
+    await waitFor(() => {
+      // mock 正向断言：GetTeamMember 被实际调用（style/javascript.md 约定）。
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/v2/${SESSION}/team/members/player`,
+        undefined,
+      )
+    })
+    const pre = await screen.findByTestId('system-prompt-text')
+    expect(pre.tagName).toBe('PRE')
+    expect(pre.className).toContain('system-prompt-text')
+    expect(pre.textContent).toBe(PLAYER_PROMPT)
+    expect(screen.getByTestId('system-prompt-title').textContent).toContain('player')
+  })
+
+  it('切换成员重新取数：同一入口重复打开也重新请求，内容随之更新', async () => {
+    const prompts: Record<string, string> = { player: '旧 player prompt', planner: 'planner prompt' }
+    fetchMock = vi.fn(panelRoutes((role) => prompts[role] ?? ''))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <TeamSettingsPanel
+        session={SESSION}
+        materialized={TEAM_MATERIALIZED}
+        onApplied={onApplied}
+        onClose={onClose}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('member-system-prompt-player'))
+    expect((await screen.findByTestId('system-prompt-text')).textContent).toBe('旧 player prompt')
+
+    // 关闭后内容更新（如外部编辑 persona + 刷新 team）：重新打开取新值。
+    fireEvent.click(screen.getByTestId('system-prompt-close'))
+    expect(screen.queryByTestId('system-prompt')).toBeNull()
+    prompts.player = '新 player prompt'
+    fireEvent.click(screen.getByTestId('member-system-prompt-player'))
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(
+          (call) => call[0] === `/api/v2/${SESSION}/team/members/player`,
+        ),
+      ).toHaveLength(2)
+    })
+    expect((await screen.findByTestId('system-prompt-text')).textContent).toBe('新 player prompt')
+  })
+
+  it('刷新 team（新物化快照 updateTime）收起已打开的全文，避免呈现旧实例内容', async () => {
+    const { rerender } = render(
+      <TeamSettingsPanel
+        session={SESSION}
+        materialized={TEAM_MATERIALIZED}
+        onApplied={onApplied}
+        onClose={onClose}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('member-system-prompt-player'))
+    expect(await screen.findByTestId('system-prompt-text')).toBeTruthy()
+
+    rerender(
+      <TeamSettingsPanel
+        session={SESSION}
+        materialized={{ ...TEAM_MATERIALIZED, updateTime: '2026-08-29T02:00:00Z' }}
+        onApplied={onApplied}
+        onClose={onClose}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.queryByTestId('system-prompt')).toBeNull()
+      expect(screen.queryByTestId('system-prompt-text')).toBeNull()
+    })
+  })
+
+  it('取数失败呈现错误且不显示全文', async () => {
+    fetchMock = vi.fn(panelRoutes(() => new Response('member unavailable', { status: 500 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <TeamSettingsPanel
+        session={SESSION}
+        materialized={TEAM_MATERIALIZED}
+        onApplied={onApplied}
+        onClose={onClose}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('member-system-prompt-planner'))
+    expect((await screen.findByTestId('system-prompt-error')).textContent).toContain('500')
+    expect(screen.queryByTestId('system-prompt-text')).toBeNull()
   })
 })

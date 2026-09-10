@@ -768,6 +768,64 @@ func agentV2MessageText(m *game.HistoryMessage) string {
 	return s
 }
 
+// assertMemberViewPerspective checks one member view's perspective contract
+// (team-api.md §5): a user input is a USER-role message with sender "user";
+// the member's own output is an AGENT-role message with sender = the member;
+// another member's relayed output is a USER-role message with sender = that
+// role (the `user: [sender] …` shape). viewName and member only label
+// failures.
+func assertMemberViewPerspective(t *testing.T, viewName string, view []*game.MemberViewMessage, member string) {
+	t.Helper()
+
+	for i, entry := range view {
+		message := entry.GetMessage()
+		switch sender := entry.GetSender(); sender {
+		case "user":
+			if message.GetRole() != game.Role_ROLE_USER {
+				t.Errorf("%s view[%d] user input role = %v, want USER", viewName, i, message.GetRole())
+			}
+		case member:
+			if message.GetRole() != game.Role_ROLE_AGENT {
+				t.Errorf("%s view[%d] own output role = %v, want AGENT", viewName, i, message.GetRole())
+			}
+		case "player", "planner":
+			if message.GetRole() != game.Role_ROLE_USER {
+				t.Errorf("%s view[%d] relayed output from %q role = %v, want USER (the injected broadcast is a user-role message)", viewName, i, sender, message.GetRole())
+			}
+		default:
+			t.Errorf("%s view[%d] sender = %q, want \"user\" or a member role", viewName, i, sender)
+		}
+	}
+}
+
+// assertMergeMatchesMemberViews asserts every member output in the merged
+// sequence is the SAME message as its entry in that member's own view — same
+// messageId and equal body. The two projections share one message object
+// (history.ts appendMemberOutput), so this pins the cross-view正文一致
+// requirement (SC-003) the List faces expose.
+func assertMergeMatchesMemberViews(t *testing.T, entries []*game.TeamMessage, views map[string][]*game.MemberViewMessage) {
+	t.Helper()
+
+	for i, entry := range entries {
+		if entry.GetMember() == "user" {
+			continue
+		}
+		found := false
+		for _, viewEntry := range views[entry.GetMember()] {
+			if viewEntry.GetMessage().GetMessageId() != entry.GetMessage().GetMessageId() {
+				continue
+			}
+			found = true
+			if !proto.Equal(viewEntry.GetMessage(), entry.GetMessage()) {
+				t.Errorf("merge entry[%d] %s message %s differs from the same message in that member's view", i, entry.GetMember(), entry.GetMessage().GetMessageId())
+			}
+		}
+		if !found {
+			t.Errorf("merge entry[%d] %s message %s is missing from that member's view", i, entry.GetMember(), entry.GetMessage().GetMessageId())
+		}
+	}
+}
+
 // ─── Team resource helpers (the /api/v2 team singleton surface) ─────────────
 
 // teamMember builds one members-list entry for the UpdateTeam input (the
@@ -901,9 +959,12 @@ func listTeamMessagesWithStatus(t *testing.T, ctx context.Context, sutHostURL, s
 	return resp.StatusCode, respBody
 }
 
-// listTeamMessages fetches the merged team sequence (ListTeamMessages,
-// team-api.md §5). Calls t.Fatal on non-200 responses.
-func listTeamMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) []*game.TeamMessage {
+// listTeamMessagesResponse issues GET .../team/messages and returns the
+// parsed response envelope — the raw ListTeamMessages read for assertions
+// that need the wrapper (the pagination compat slot: next_page_token stays
+// empty, the List face returns the whole sequence; team-api.md §5). Calls
+// t.Fatal on non-200 responses.
+func listTeamMessagesResponse(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) *game.ListTeamMessagesResponse {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s%s%s/team/messages", sutHostURL, agentV2PathPrefix, sessionName)
@@ -915,7 +976,15 @@ func listTeamMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName,
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, listed); err != nil {
 		t.Fatalf("Unmarshal ListTeamMessagesResponse: %v (raw: %s)", err, respBody)
 	}
-	return listed.GetMessages()
+	return listed
+}
+
+// listTeamMessages fetches the merged team sequence (ListTeamMessages,
+// team-api.md §5). Calls t.Fatal on non-200 responses.
+func listTeamMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) []*game.TeamMessage {
+	t.Helper()
+
+	return listTeamMessagesResponse(t, ctx, sutHostURL, sutEnvName, sessionName).GetMessages()
 }
 
 // listMemberMessagesWithStatus issues GET .../team/members/{member}/messages
@@ -929,9 +998,12 @@ func listMemberMessagesWithStatus(t *testing.T, ctx context.Context, sutHostURL,
 	return resp.StatusCode, respBody
 }
 
-// listMemberMessages fetches one member's view history (ListMemberMessages,
-// team-api.md §5). Calls t.Fatal on non-200 responses.
-func listMemberMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, member string) []*game.MemberViewMessage {
+// listMemberMessagesResponse issues GET .../team/members/{member}/messages
+// and returns the parsed response envelope — the raw ListMemberMessages read
+// for assertions that need the wrapper (the pagination compat slot:
+// next_page_token stays empty; team-api.md §5). Calls t.Fatal on non-200
+// responses.
+func listMemberMessagesResponse(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, member string) *game.ListMemberMessagesResponse {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s%s", sutHostURL, agentV2PathPrefix)
@@ -944,7 +1016,15 @@ func listMemberMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvNam
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, listed); err != nil {
 		t.Fatalf("Unmarshal ListMemberMessagesResponse: %v (raw: %s)", err, respBody)
 	}
-	return listed.GetMessages()
+	return listed
+}
+
+// listMemberMessages fetches one member's view history (ListMemberMessages,
+// team-api.md §5). Calls t.Fatal on non-200 responses.
+func listMemberMessages(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, member string) []*game.MemberViewMessage {
+	t.Helper()
+
+	return listMemberMessagesResponse(t, ctx, sutHostURL, sutEnvName, sessionName, member).GetMessages()
 }
 
 // postTeamCancel issues POST /api/v2/{team}:cancel (AIP-136, team-api.md §4)

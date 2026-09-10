@@ -52,6 +52,7 @@ import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js"
 import type { DshContext } from "./dsh.js";
 import { MemberCollector, TeamHistory } from "./history.js";
 import type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
+import { readMemberSystemPrompt } from "./system-prompt.js";
 
 export type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
 
@@ -98,8 +99,10 @@ export interface TeamMemberView {
   /** Effective model id. */
   readonly model: string;
   /**
-   * The member instance's complete effective system prompt; populated from
-   * the assembly surface in the US5 phase (T032). Empty until then.
+   * The member instance's complete effective system prompt (persona + team
+   * section + tool guidance + the planner memory snapshot). Filled only by
+   * GetTeamMember from the instance's live assembly surface; empty in the
+   * Team member snapshots (GetTeam/UpdateTeam).
    */
   readonly systemPrompt: string;
 }
@@ -180,6 +183,14 @@ interface TeamEntry {
 
 const SESSION_RESOURCE = /^templates\/([^/]+)\/sessions\/([^/]+)$/;
 const PRESET_RESOURCE = /^templates\/([^/]+)\/presets\/([^/]+)$/;
+
+/**
+ * Read attempts for one GetTeamMember call: each attempt samples a live entry
+ * generation and re-samples after a refresh tears it down mid-read. Three
+ * strikes is comfortably beyond the realistic (user-initiated) double-Apply
+ * window; a team still churning afterwards surfaces NOT_FOUND (retryable).
+ */
+const MEMBER_READ_ATTEMPTS = 3;
 
 function parseSessionResource(name: string): { template: string; session: string } | undefined {
   const match = SESSION_RESOURCE.exec(name);
@@ -280,17 +291,63 @@ export class TeamSessions {
 
   /**
    * One fixed member's projection (GetTeamMember); NOT_FOUND while
-   * unmaterialized or when the member id is outside the fixed roster.
+   * unmaterialized or when the member id is outside the fixed roster. The
+   * output-only `system_prompt` is read off the member instance's live
+   * assembly surface ({@link readMemberSystemPrompt}) — the same prompt the
+   * official loop feeds to the model, never a separate re-composition (FR-016,
+   * specs/059-agent-v2-team-mode/contracts/web-views.md §5).
+   *
+   * A concurrent refresh (UpdateTeam) may tear the entry down between the
+   * generation snapshot and the asynchronous assembly: the disposed member
+   * scope drops its sections, so an assembly crossing the teardown would
+   * render a partial (global-layers-only) prompt — neither the old nor the
+   * new instance's content (specs/059-agent-v2-team-mode/contracts/
+   * team-api.md §1 刷新语义). The read therefore verifies the entry
+   * generation after every await and re-reads the current entry, so a refresh
+   * race serves the new instance's content and a failure from a superseded
+   * instance is retried rather than surfaced as a live assembly error; a team
+   * churning through back-to-back refreshes yields NOT_FOUND once the attempt
+   * budget is spent.
    */
-  getTeamMember(session: string, member: string): TeamMemberView {
-    const entry = this.requireEntry(session, "NOT_FOUND");
+  async getTeamMember(session: string, member: string): Promise<TeamMemberView> {
     if (member !== "player" && member !== "planner") {
       throw new TeamSessionError(
         "NOT_FOUND",
         `team member "${member}" does not exist; the roster is player/planner`,
       );
     }
-    return toMemberView(entry, member);
+    for (let attempt = 0; attempt < MEMBER_READ_ATTEMPTS; attempt += 1) {
+      const entry = this.requireEntry(session, "NOT_FOUND");
+      // The live handle comes off the orchestration's member read surface
+      // (TeamOrchestrator.member) — the instance the orchestrator created and
+      // drives, so a refresh is followed naturally.
+      const handle = entry.orchestrator.member(member);
+      if (handle === undefined) {
+        throw new TeamSessionError(
+          "NOT_FOUND",
+          `team member "${member}" is not materialized`,
+        );
+      }
+      try {
+        const systemPrompt = await readMemberSystemPrompt(handle.agent);
+        // Linearization point: only the generation that is still live after
+        // the await may be served.
+        if (this.liveEntry(session) === entry) {
+          return { ...memberStateView(entry, member), systemPrompt };
+        }
+      } catch (err) {
+        // An assembly failure of the still-live generation is a genuine
+        // INTERNAL; a failure from a superseded instance is part of the
+        // teardown and re-samples the current generation below.
+        if (this.liveEntry(session) === entry) {
+          throw err;
+        }
+      }
+    }
+    throw new TeamSessionError(
+      "NOT_FOUND",
+      `team for session ${session} is being refreshed; retry the read`,
+    );
   }
 
   /** The merged team sequence snapshot (ListTeamMessages data source). */
@@ -845,7 +902,13 @@ export class TeamSessions {
   }
 }
 
-function toMemberView(entry: TeamEntry, role: MemberRole): TeamMemberView {
+/**
+ * One member's configured state: the Team snapshot member projection
+ * (GetTeam/UpdateTeam). `system_prompt` stays empty — it is served only by
+ * GetTeamMember ({@link TeamSessions.getTeamMember}; the proto field is
+ * OUTPUT_ONLY and the assembly read is a separate, on-demand face).
+ */
+function memberStateView(entry: TeamEntry, role: MemberRole): TeamMemberView {
   const member = entry.members[role];
   return {
     name: `${entry.sessionName}/team/members/${role}`,
@@ -861,7 +924,7 @@ function toMemberView(entry: TeamEntry, role: MemberRole): TeamMemberView {
 function toTeamView(entry: TeamEntry): TeamView {
   return {
     name: `${entry.sessionName}/team`,
-    members: [toMemberView(entry, "player"), toMemberView(entry, "planner")],
+    members: [memberStateView(entry, "player"), memberStateView(entry, "planner")],
     createTime: entry.createTime,
     updateTime: entry.updateTime,
   };

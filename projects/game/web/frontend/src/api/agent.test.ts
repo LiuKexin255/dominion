@@ -10,6 +10,7 @@ import {
   deletePreset,
   getPreset,
   getTeam,
+  getTeamMember,
   listMemberMessages,
   listModels,
   listPresets,
@@ -197,6 +198,24 @@ describe('agent api 客户端', () => {
     expect(team.desktopConnected).toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v2/templates/saolei/sessions/s1/team',
+      undefined,
+    )
+  })
+
+  it('getTeamMember GET 成员实例并投影 output-only systemPrompt（FR-016 查看入口）', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        name: 'templates/saolei/sessions/s1/team/members/planner',
+        role: 'planner',
+        preset: 'templates/saolei/presets/p2',
+        systemPrompt: '你是扫雷 planner：…\n\n[team] 目标…\n\n[memory] 快照…',
+      }),
+    )
+    const member = await getTeamMember('templates/saolei/sessions/s1', 'planner')
+    expect(member.role).toBe('planner')
+    expect(member.systemPrompt).toContain('你是扫雷 planner')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v2/templates/saolei/sessions/s1/team/members/planner',
       undefined,
     )
   })

@@ -1,12 +1,14 @@
-// 对话主区：团队视图雏形（history/stream 归并渲染 + 成员标签）+ 排队指示 +
-// 发送输入（行为基线 desktop ChatView，契约 specs/059-agent-v2-team-mode/
-// contracts/web-views.md §2/§3）。team 归并序列条目按 seq 序呈现（USER 气泡 /
-// 成员原生输出带 player/planner 标签，不显示广播包装形态）；成员输出按模型
-// 输出步骤分段呈现（specs/054-agent-v2-bugfixes/contracts/web-ui.md §2.2）：
-// 历史一条消息即一个 step、live 回合每个 step 一个分段容器，依次独立呈现；
-// 步骤内 THINK → ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard
-// 分类分列不混排。视图切换器与成员视角视图属 Phase 6（T030），本组件只呈现
-// 团队视图。
+// 对话主区：团队视图（history/stream 归并渲染 + 成员标签）+ 成员视角视图
+// （memberHistory 回填/自身输出固化 + live 按 member 过滤）+ 排队指示 + 发送
+// 输入（行为基线 desktop ChatView，契约 specs/059-agent-v2-team-mode/
+// contracts/web-views.md §2/§3/§4）。team 归并序列条目按 seq 序呈现（USER
+// 气泡 / 成员原生输出带 player/planner 标签，不显示广播包装形态）；成员
+// 视角序列按消费面呈现（ROLE_AGENT=自己的输出（agent 形态）；ROLE_USER +
+// sender="user"=用户气泡；ROLE_USER + sender=成员 role=标注来源的用户消息
+// `user: [sender] 正文`）。成员输出按模型输出步骤分段呈现
+// （specs/054-agent-v2-bugfixes/contracts/web-ui.md §2.2）：历史一条消息即
+// 一个 step、live 回合每个 step 一个分段容器，依次独立呈现；步骤内 THINK →
+// ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard 分类分列不混排。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Button,
@@ -16,9 +18,19 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ContentBlock, HistoryMessage } from '../api/conversation.js'
 import { USER_MEMBER } from '../api/conversation.js'
-import type { BlockDraft, LiveMemberTurn, QueuedMsg, TeamMessageEntry } from '../store/chat.js'
+import type {
+  BlockDraft,
+  LiveMemberTurn,
+  MemberViewEntry,
+  QueuedMsg,
+  TeamMessageEntry,
+} from '../store/chat.js'
 import { ReasoningRow } from './ReasoningRow.js'
 import { ToolCard, type ToolCardStatus } from './ToolCard.js'
+
+// TEAM_VIEW 是团队视图的 view 值；其余取值即成员 role 字符串（场景词汇，
+// saolei 下 "player"/"planner"），直接按 wire 字符串消费（web-views.md §2）。
+export const TEAM_VIEW = 'team'
 
 // 贴底判定阈值（px）：距底 ≤ 阈值视为贴底并跟随（R7，取上游既定值 24，
 // 上游来源与设计见 specs/055-agent-v2-ui-fixes/research.md §2.2）。
@@ -26,8 +38,14 @@ const FOLLOW_THRESHOLD = 24
 
 export interface ChatViewProps {
   session: string
+  // 活动视图：TEAM_VIEW（团队视图）或成员 role 字符串（成员视角视图）。
+  // 缺省团队视图（切换为纯前端状态，由调用方持有；web-views.md §2）。
+  view?: string
   // 团队视图归并序列（seq 锚；web-views.md §2）：team_message 帧 + List 回填。
   history: TeamMessageEntry[]
+  // 每成员视角序列（web-views.md §2/§4）：ListMemberMessages 回填 + 自身
+  // 输出固化；按 memberHistory[view] 取当前成员视角。
+  memberHistory?: Record<string, MemberViewEntry[]>
   // team 流覆盖的流式成员回合（按 (member, turnId) 分组；多回合持续流）。
   live: LiveMemberTurn[]
   queue: QueuedMsg[]
@@ -283,9 +301,209 @@ function CompletedTurn({
   )
 }
 
+// messageText joins a history message's text blocks (成员视角的广播注入条目
+// 为纯文本——服务端 appendMemberViewUser 只投影 text 块，
+// projects/game/agent_v2/src/history.ts)。
+function messageText(message: HistoryMessage): string {
+  return message.blocks.map((b) => b.text?.content ?? '').join('')
+}
+
+// UserBubble 是用户消息气泡（团队视图的用户输入与成员视角的用户输入共用
+// 形态；web-views.md §3/§4：纯文本、不 markdown 化）。
+function UserBubble({ message }: { message: HistoryMessage }) {
+  return (
+    <div className="msg-user">
+      {message.blocks.map((b, j) => (
+        <span key={j}>{b.text?.content ?? ''}</span>
+      ))}
+    </div>
+  )
+}
+
+// TeamMessages renders the merged team sequence（web-views.md §3）：全部消息
+// 按 seq 归并；成员原生输出归属成员名下（成员标签），连续同成员 AGENT 条目
+// 构成该成员的一个已完成回合并由 CompletedTurn 折叠（按成员维度）。广播
+// 包装形态（`[sender] <sender-message>` 标签对）属于成员视角的注入格式，
+// 不进入本视图——数据源即原生输出（ListTeamMessages/team_message 帧）。
+function TeamMessages({
+  history,
+  live,
+  expanded,
+  onToggle,
+}: {
+  history: TeamMessageEntry[]
+  live: LiveMemberTurn[]
+  expanded: ReadonlySet<string>
+  onToggle: (key: string) => void
+}) {
+  return (
+    <>
+      {history.map((entry, i) => {
+        const { member, message } = entry
+        if (member === USER_MEMBER) {
+          return <UserBubble key={i} message={message} />
+        }
+        // 连续同成员 AGENT 条目构成该成员的一个已完成回合（服务端每 step
+        // 一条），由组首渲染整组并应用折叠（web-views.md §3：折叠按成员
+        // 维度）；组内其余条目跳过；USER 或另一成员条目断开分组。
+        if (
+          i > 0 &&
+          history[i - 1]?.member === member &&
+          history[i - 1]?.message.role === 'ROLE_AGENT'
+        ) {
+          return null
+        }
+        let end = i
+        while (
+          end < history.length &&
+          history[end]?.member === member &&
+          history[end]?.message.role === 'ROLE_AGENT'
+        ) {
+          end += 1
+        }
+        const messages = history.slice(i, end).map((e) => e.message)
+        const key = `${TEAM_VIEW}:${i}`
+        return (
+          <MemberTurn
+            key={i}
+            member={member}
+            messages={messages}
+            expanded={expanded.has(key)}
+            onToggle={() => onToggle(key)}
+          />
+        )
+      })}
+      {/* 流式成员回合各 step 分段依次独立呈现（全部展开——官方折叠规则：
+       * Turn 打开期间过程行保持展开，web-ui.md §2.2）；running 只属该回合
+       * 最后一段；已由 team_message 帧固化的前导 step 已进入归并序列，
+       * 跳过以免重复呈现。 */}
+      {live.map((turn) => {
+        const steps = turn.steps.slice(turn.fixedSteps)
+        if (steps.length === 0) return null
+        return (
+          <div
+            key={`${turn.member}:${turn.turnId}`}
+            className="member-turn"
+            data-testid="member-turn"
+            data-member={turn.member}
+          >
+            <MemberTag member={turn.member} />
+            {steps.map((step, i) => (
+              <AgentStep
+                key={step.step}
+                blocks={step.blocks}
+                running={i === steps.length - 1}
+              />
+            ))}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+// MemberMessages renders one member's view sequence（web-views.md §4）：
+// ROLE_AGENT = 该成员自己的输出（agent 形态，折叠按自身回合分组）；
+// ROLE_USER + sender="user" = 用户输入气泡；ROLE_USER + sender=成员 role =
+// 标注来源的用户消息（`user: [sender] 正文`——正文为该成员实际消费的注入
+// 原文，含其转发的工具调用与正文）。live 为按 member 过滤后的流式回合
+// （其他成员的流式事件不进入本视角——其他成员产出在其被驱动消费前不出现，
+// 经回填以消费面呈现）。
+function MemberMessages({
+  member,
+  entries,
+  live,
+  expanded,
+  onToggle,
+}: {
+  member: string
+  entries: MemberViewEntry[]
+  live: LiveMemberTurn[]
+  expanded: ReadonlySet<string>
+  onToggle: (key: string) => void
+}) {
+  return (
+    <>
+      {entries.map((entry, i) => {
+        const { message, sender } = entry
+        if (message.role === 'ROLE_AGENT') {
+          // 连续 AGENT 条目构成该成员的一个已完成回合（服务端每 step 一条），
+          // 由组首渲染整组并应用折叠。
+          if (i > 0 && entries[i - 1]?.message.role === 'ROLE_AGENT') return null
+          let end = i
+          while (
+            end < entries.length &&
+            entries[end]?.message.role === 'ROLE_AGENT'
+          ) {
+            end += 1
+          }
+          const messages = entries.slice(i, end).map((e) => e.message)
+          const key = `${member}:${i}`
+          return (
+            <div
+              key={i}
+              className="member-turn"
+              data-testid="member-turn"
+              data-member={member}
+            >
+              <CompletedTurn
+                messages={messages}
+                expanded={expanded.has(key)}
+                onToggle={() => onToggle(key)}
+              />
+            </div>
+          )
+        }
+        // 空 sender = 未设置（proto3 缺省；防御性按用户输入呈现）。sender 为
+        // 另一成员 role 时是广播注入（sender 即 role 字符串原值）。
+        if (sender === undefined || sender === '' || sender === USER_MEMBER) {
+          return <UserBubble key={i} message={message} />
+        }
+        return (
+          <div
+            key={i}
+            className="msg-user msg-relay"
+            data-testid="member-relay"
+            data-sender={sender}
+          >
+            <span className="relay-source" data-testid="relay-source">
+              user: [{sender}]
+            </span>
+            <span className="relay-body" data-testid="relay-body">
+              {messageText(message)}
+            </span>
+          </div>
+        )
+      })}
+      {live.map((turn) => {
+        const steps = turn.steps.slice(turn.fixedSteps)
+        if (steps.length === 0) return null
+        return (
+          <div
+            key={`${turn.member}:${turn.turnId}`}
+            className="member-turn"
+            data-testid="member-turn"
+            data-member={turn.member}
+          >
+            {steps.map((step, i) => (
+              <AgentStep
+                key={step.step}
+                blocks={step.blocks}
+                running={i === steps.length - 1}
+              />
+            ))}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 export function ChatView({
   session,
+  view = TEAM_VIEW,
   history,
+  memberHistory = {},
   live,
   queue,
   error,
@@ -294,11 +512,11 @@ export function ChatView({
   onCancel,
 }: ChatViewProps) {
   const [draft, setDraft] = useState('')
-  // 手动展开的完成回合（组首消息的 history index 为键；历史只追加，index
+  // 手动展开的完成回合（键 = `${view}:${组首 index}`；历史只追加，index
   // 稳定）。页面会话内保持，无持久化（官方差异声明：web-ui.md §2.3）；切换
   // 会话（loadHistory 重建 history）后旧 index 键指向另一回合，重置展开
-  // 状态使回填回到默认折叠。
-  const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<number>>(new Set())
+  // 状态使回填回到默认折叠。视图前缀隔离团队/成员序列的同 index 碰撞。
+  const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(new Set())
   // 终止请求在途标记：运行中重复点击防抖（web-ui.md §4）——在途期间按钮
   // 禁用并忽略后续点击，promise 落定即解除。
   const [cancelPending, setCancelPending] = useState(false)
@@ -340,7 +558,7 @@ export function ChatView({
     const el = messagesRef.current
     if (el === null || !atBottom) return
     el.scrollTop = el.scrollHeight
-  }, [history, live, queue, error, atBottom])
+  }, [view, history, memberHistory, live, queue, error, atBottom])
 
   // 无条件回底入口：发新消息（FR-003）与"回到底部"按钮共用——回底即恢复
   // 跟随（specs/055-agent-v2-ui-fixes/data-model.md §1）。
@@ -373,86 +591,44 @@ export function ChatView({
     )
   }
 
-  const toggleTurn = (start: number): void => {
+  const toggleTurn = (key: string): void => {
     setExpandedTurns((prev) => {
       const next = new Set(prev)
-      if (next.has(start)) {
-        next.delete(start)
+      if (next.has(key)) {
+        next.delete(key)
       } else {
-        next.add(start)
+        next.add(key)
       }
       return next
     })
   }
 
+  // 活动视图的数据面：团队视图直接消费归并序列与全部 live 回合；成员视角
+  // 消费该成员的视角序列与按 member 过滤的 live 回合（其他成员的流式产出
+  // 不进入本视角，web-views.md §2/§4）。
+  const memberView = view !== TEAM_VIEW ? view : null
+  const memberEntries = memberView !== null ? (memberHistory[memberView] ?? []) : []
+  const viewLive = memberView !== null ? live.filter((t) => t.member === memberView) : live
+
   return (
     <div className="chat">
       <div className="chat-messages" data-testid="chat-messages" ref={messagesRef}>
-        {history.map((entry, i) => {
-          const { member, message } = entry
-          if (member === USER_MEMBER) {
-            return (
-              <div key={i} className="msg-user">
-                {message.blocks.map((b, j) => (
-                  <span key={j}>{b.text?.content ?? ''}</span>
-                ))}
-              </div>
-            )
-          }
-          // 连续同成员 AGENT 条目构成该成员的一个已完成回合（服务端每 step
-          // 一条），由组首渲染整组并应用折叠（web-views.md §3：折叠按成员
-          // 维度）；组内其余条目跳过；USER 或另一成员条目断开分组。
-          if (
-            i > 0 &&
-            history[i - 1]?.member === member &&
-            history[i - 1]?.message.role === 'ROLE_AGENT'
-          ) {
-            return null
-          }
-          let end = i
-          while (
-            end < history.length &&
-            history[end]?.member === member &&
-            history[end]?.message.role === 'ROLE_AGENT'
-          ) {
-            end += 1
-          }
-          const messages = history.slice(i, end).map((e) => e.message)
-          return (
-            <MemberTurn
-              key={i}
-              member={member}
-              messages={messages}
-              expanded={expandedTurns.has(i)}
-              onToggle={() => toggleTurn(i)}
-            />
-          )
-        })}
-        {/* 流式成员回合各 step 分段依次独立呈现（全部展开——官方折叠规则：
-         * Turn 打开期间过程行保持展开，web-ui.md §2.2）；running 只属该回合
-         * 最后一段；已由 team_message 帧固化的前导 step 已进入归并序列，
-         * 跳过以免重复呈现。 */}
-        {live.map((turn) => {
-          const steps = turn.steps.slice(turn.fixedSteps)
-          if (steps.length === 0) return null
-          return (
-            <div
-              key={`${turn.member}:${turn.turnId}`}
-              className="member-turn"
-              data-testid="member-turn"
-              data-member={turn.member}
-            >
-              <MemberTag member={turn.member} />
-              {steps.map((step, i) => (
-                <AgentStep
-                  key={step.step}
-                  blocks={step.blocks}
-                  running={i === steps.length - 1}
-                />
-              ))}
-            </div>
-          )
-        })}
+        {memberView === null ? (
+          <TeamMessages
+            history={history}
+            live={viewLive}
+            expanded={expandedTurns}
+            onToggle={toggleTurn}
+          />
+        ) : (
+          <MemberMessages
+            member={memberView}
+            entries={memberEntries}
+            live={viewLive}
+            expanded={expandedTurns}
+            onToggle={toggleTurn}
+          />
+        )}
         {queue.map((q, i) => (
           <div key={i} className="queue-chip" data-testid="queue-chip">
             排队中 #{q.position}

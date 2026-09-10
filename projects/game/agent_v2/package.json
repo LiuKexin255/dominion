@@ -12,6 +12,7 @@
         "@deepseek-ai/dsh-persona": "catalog:",
         "@deepseek-ai/dsh-scope": "catalog:",
         "@deepseek-ai/dsh-session": "catalog:",
+        "@deepseek-ai/dsh-system-prompt": "catalog:",
         "@deepseek-ai/dsh-tools": "catalog:",
         "@dominion/common-js-bootstrap": "workspace:*",
         "@dominion/common-js-grpc-otel": "workspace:*",

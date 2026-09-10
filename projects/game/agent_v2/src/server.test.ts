@@ -101,13 +101,17 @@ function fakeDeps() {
       ]),
       listMemberMessages: vi.fn(() => [
         {
+          message: { messageId: "m0", role: "ROLE_USER" as const, blocks: [{ text: { content: "start" } }] },
+          sender: "user",
+        },
+        {
           message: { messageId: "m3", role: "ROLE_USER" as const, blocks: [{ text: { content: "[player] moved" } }] },
           sender: "player",
         },
       ]),
       materialize: vi.fn(async () => teamView()),
       getTeam: vi.fn(() => teamView()),
-      getTeamMember: vi.fn((_session: string, member: string) => {
+      getTeamMember: vi.fn(async (_session: string, member: string) => {
         const found = teamView().members.find((entry) => entry.role === member);
         if (found === undefined) {
           throw new TeamSessionError("NOT_FOUND", `team member "${member}" does not exist`);
@@ -480,11 +484,12 @@ describe("AgentService.GetTeam / GetTeamMember handlers", () => {
     expect(response?.desktopConnected).toBe(true);
   });
 
-  it("returns one member including its system prompt and rejects unknown members", () => {
+  it("returns one member including its assembly-read system prompt and rejects unknown members", async () => {
     const deps = fakeDeps();
     const handlers = buildTeamHandlers(deps);
     const callback = invokeUnary(handlers.GetTeamMember as never, { name: VALID_MEMBER });
 
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
     expect(deps.sessions.getTeamMember).toHaveBeenCalledWith(VALID, "player");
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
@@ -494,7 +499,21 @@ describe("AgentService.GetTeam / GetTeamMember handlers", () => {
     const unknown = invokeUnary(handlers.GetTeamMember as never, {
       name: "templates/saolei/sessions/s1/team/members/robot",
     });
+    await vi.waitFor(() => expect(unknown).toHaveBeenCalledTimes(1));
     expect((unknown.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
+  });
+
+  it("maps a member assembly failure to INTERNAL with the cause chain", async () => {
+    const deps = fakeDeps();
+    deps.sessions.getTeamMember.mockRejectedValueOnce(new Error("assembly exploded"));
+    const handlers = buildTeamHandlers(deps);
+
+    const callback = invokeUnary(handlers.GetTeamMember as never, { name: VALID_MEMBER });
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+    const error = callback.mock.calls[0][0] as grpc.ServiceError;
+    expect(error?.code).toBe(grpc.status.INTERNAL);
+    expect(error?.message).toBe("assembly exploded");
+    expect(error?.cause).toBeInstanceOf(Error);
   });
 
   it("rejects malformed names and maps an unmaterialized team to NOT_FOUND", () => {
@@ -521,31 +540,90 @@ describe("AgentService.ListTeamMessages / ListMemberMessages handlers", () => {
     expect(deps.sessions.listTeamMessages).toHaveBeenCalledWith(VALID);
     const [teamErr, teamResponse] = team.mock.calls[0];
     expect(teamErr).toBeNull();
+    // Whole-collection read with the always-empty next_page_token
+    // compatibility field (contracts/team-api.md §5).
     expect(teamResponse?.nextPageToken).toBe("");
     expect(teamResponse?.messages?.map((message: { member: string; seq: string }) => [message.member, message.seq])).toEqual([
       ["user", "1"],
       ["planner", "2"],
     ]);
+    // member is the wire string label itself: the reserved "user" value for
+    // user input, the member role for member output (no enum projection).
+    expect(teamResponse?.messages?.[0]?.member).toBe("user");
+    expect(teamResponse?.messages?.[0]?.message?.role).toBe("ROLE_USER");
+    expect(teamResponse?.messages?.[1]?.message?.role).toBe("ROLE_AGENT");
 
     const member = invokeUnary(handlers.ListMemberMessages as never, { parent: VALID_MEMBER });
     expect(deps.sessions.listMemberMessages).toHaveBeenCalledWith(VALID, "player");
     const [memberErr, memberResponse] = member.mock.calls[0];
     expect(memberErr).toBeNull();
-    expect(memberResponse?.messages?.[0]?.sender).toBe("player");
+    expect(memberResponse?.nextPageToken).toBe("");
+    // sender is the source role string: the reserved "user" value for user
+    // input, the relaying member role for a team-broadcast injection;
+    // HistoryMessage.role stays the USER/AGENT view role.
+    expect(memberResponse?.messages?.map((message: { sender: string; message: { role: string } }) => [message.sender, message.message.role])).toEqual([
+      ["user", "ROLE_USER"],
+      ["player", "ROLE_USER"],
+    ]);
   });
 
-  it("rejects malformed parents and maps an unmaterialized team to NOT_FOUND", () => {
+  it("returns the whole collection regardless of page_size/page_token (compat fields only)", () => {
     const deps = fakeDeps();
     const handlers = buildTeamHandlers(deps);
 
-    const malformed = invokeUnary(handlers.ListTeamMessages as never, { parent: "nope" });
-    expect((malformed.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.INVALID_ARGUMENT);
+    // Pagination request fields are protocol compliance only: the in-memory
+    // projection is returned whole and next_page_token stays empty
+    // (contracts/team-api.md §5 分页语义与现状一致).
+    const team = invokeUnary(handlers.ListTeamMessages as never, {
+      parent: VALID_TEAM,
+      pageSize: 1,
+      pageToken: "templates/saolei/sessions/s1/team/messages/1",
+    });
+    expect(team.mock.calls[0][0]).toBeNull();
+    expect(team.mock.calls[0][1]?.messages).toHaveLength(2);
+    expect(team.mock.calls[0][1]?.nextPageToken).toBe("");
+
+    const member = invokeUnary(handlers.ListMemberMessages as never, {
+      parent: VALID_MEMBER,
+      pageSize: 1,
+      pageToken: "templates/saolei/sessions/s1/team/members/player/messages/1",
+    });
+    expect(member.mock.calls[0][0]).toBeNull();
+    expect(member.mock.calls[0][1]?.messages).toHaveLength(2);
+    expect(member.mock.calls[0][1]?.nextPageToken).toBe("");
+    // The sender annotation is the reserved "user" value for user input.
+    expect(member.mock.calls[0][1]?.messages?.[0]?.sender).toBe("user");
+  });
+
+  it("rejects malformed/foreign parents and maps an unmaterialized team to NOT_FOUND", () => {
+    const deps = fakeDeps();
+    const handlers = buildTeamHandlers(deps);
+
+    for (const [handler, parent] of [
+      [handlers.ListTeamMessages, "nope"],
+      [handlers.ListTeamMessages, VALID_MEMBER],
+      [handlers.ListMemberMessages, "nope"],
+      [handlers.ListMemberMessages, VALID_TEAM],
+    ] as Array<[unknown, string]>) {
+      const malformed = invokeUnary(handler as never, { parent });
+      expect((malformed.mock.calls[0][0] as grpc.ServiceError).code).toBe(
+        grpc.status.INVALID_ARGUMENT,
+      );
+    }
 
     deps.sessions.listTeamMessages.mockImplementationOnce(() => {
       throw new TeamSessionError("NOT_FOUND", "team not materialized");
     });
     const absent = invokeUnary(handlers.ListTeamMessages as never, { parent: VALID_TEAM });
     expect((absent.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
+
+    deps.sessions.listMemberMessages.mockImplementationOnce(() => {
+      throw new TeamSessionError("NOT_FOUND", 'team member "robot" does not exist');
+    });
+    const unknown = invokeUnary(handlers.ListMemberMessages as never, {
+      parent: "templates/saolei/sessions/s1/team/members/robot",
+    });
+    expect((unknown.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.NOT_FOUND);
   });
 });
 

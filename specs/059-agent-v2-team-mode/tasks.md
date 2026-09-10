@@ -203,9 +203,9 @@
 
 ### Tasks
 
-- [ ] T029 [US4] 实现 `projects/game/agent_v2/src/` List 面：`ListTeamMessages`（归并序列 + seq 单调 + member 标注）、`ListMemberMessages`（成员视角 + sender 标注），数据源为 T015 历史投影；`server.ts` RPC 接线与分页兼容位
-- [ ] T030 [US4] web 双视图 `projects/game/web/frontend/src/`：视图切换器（团队 | player | planner，各视图历史常驻不重填）；团队视图（原生输出归并、成员标签、不显示广播包装形态、CompletedTurn 折叠按成员维度）；成员视角视图（`user: [sender]` 标注渲染）；`store/chat.ts` 扩展 member 归并与双 store 形态
-- [ ] T031 [US4] 大型测试：视图数据断言用例（两类 List 面内容与标注 / 同一消息跨视图正文一致 / 刷新后历史按新生命周期重建）
+- [X] T029 [US4] 实现 `projects/game/agent_v2/src/` List 面：`ListTeamMessages`（归并序列 + seq 单调 + member 标注）、`ListMemberMessages`（成员视角 + sender 标注），数据源为 T015 历史投影；`server.ts` RPC 接线与分页兼容位
+- [X] T030 [US4] web 双视图 `projects/game/web/frontend/src/`：视图切换器（团队 | player | planner，各视图历史常驻不重填）；团队视图（原生输出归并、成员标签、不显示广播包装形态、CompletedTurn 折叠按成员维度）；成员视角视图（`user: [sender]` 标注渲染）；`store/chat.ts` 扩展 member 归并与双 store 形态
+- [X] T031 [US4] 大型测试：视图数据断言用例（两类 List 面内容与标注 / 同一消息跨视图正文一致 / 刷新后历史按新生命周期重建）
 
 **Checkpoint / 验证门禁**: `bazel build/test` 通过；大型测试全量通过。
 
@@ -232,9 +232,9 @@
 
 ### Tasks
 
-- [ ] T032 [US5] 实现 `projects/game/agent_v2/src/` 的 `GetTeamMember` `system_prompt` 字段：从各成员实例的 system prompt 装配面取实际内容（与发给模型一致，非另行拼装）；接入 saolei-loop 物化编排的成员句柄读取面
-- [ ] T033 [P] [US5] web system prompt 查看入口 `projects/game/web/frontend/src/`：成员清单处入口 + 只读全文呈现（等宽），刷新 team 后内容随新配置更新
-- [ ] T034 [US5] 大型测试：system prompt 断言用例（完整可读 / player-planner 分化 / 编辑 persona 刷新后更新）
+- [X] T032 [US5] 实现 `projects/game/agent_v2/src/` 的 `GetTeamMember` `system_prompt` 字段：从各成员实例的 system prompt 装配面取实际内容（与发给模型一致，非另行拼装）；接入 saolei-loop 物化编排的成员句柄读取面
+- [X] T033 [P] [US5] web system prompt 查看入口 `projects/game/web/frontend/src/`：成员清单处入口 + 只读全文呈现（等宽），刷新 team 后内容随新配置更新
+- [X] T034 [US5] 大型测试：system prompt 断言用例（完整可读 / player-planner 分化 / 编辑 persona 刷新后更新）
 
 **Checkpoint / 验证门禁**: `bazel build/test` 通过；大型测试全量通过。
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AgentHandle, AgentStatus, CreateAgentOptions } from "@deepseek-ai/dsh-agent";
+import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
@@ -41,7 +42,11 @@ const PLANNER_ID = `${S1}/planner`;
 interface MemberFake {
   readonly id: string;
   readonly agent: Agent;
-  readonly ctx: { on: ReturnType<typeof vi.fn> };
+  readonly ctx: {
+    on: ReturnType<typeof vi.fn>;
+    /** The member prompt assembly surface GetTeamMember reads (specs/059-agent-v2-team-mode/tasks.md T032). */
+    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
+  };
   readonly handle: AgentHandle;
   readonly followups: UserMessage[];
   readonly injections: UserMessage[];
@@ -70,7 +75,11 @@ interface Harness {
 function fakeMember(id: string, emitStatus: (member: MemberFake, status: AgentStatus) => void): MemberFake {
   const state = { status: "idle" as AgentStatus };
   const statusListeners: MemberFake["statusListeners"] = [];
-  const memberCtx: { on: ReturnType<typeof vi.fn>; agent?: Agent } = {
+  const memberCtx: {
+    on: ReturnType<typeof vi.fn>;
+    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
+    agent?: Agent;
+  } = {
     on: vi.fn((name: string, listener: (payload: { agent: Agent; status: AgentStatus }) => void) => {
       if (name === "agent/status") {
         statusListeners.push(listener);
@@ -82,6 +91,17 @@ function fakeMember(id: string, emitStatus: (member: MemberFake, status: AgentSt
         }
       };
     }),
+    // The per-member prompt assembly double GetTeamMember reads: an injected
+    // section carrying the member identity, rendered by the real renderPrompt
+    // (the read face itself is covered by system-prompt.test.ts).
+    systemPrompt: {
+      assemble: vi.fn(async () => ({
+        sections: [{ name: "test:member", text: `system prompt of ${id}` }],
+        contexts: [],
+        tools: [],
+        variables: {},
+      })),
+    },
   };
   const agent = {
     id,
@@ -533,7 +553,7 @@ describe("TeamSessions planner memory wiring (T021)", () => {
     // Only the planner member prefetches; the binding passes the planner's
     // agent-scoped context and the (template, session ID) scope key — the ID
     // half, NOT the full session resource name (the memory client builds
-    // `templates/{template}/sessions/{session}` from these halves; T023
+    // `templates/{template}/sessions/{session}` from these halves; T023 memoryScope wiring (specs/059-agent-v2-team-mode/tasks.md)
     // caught the doubled-prefix wiring).
     expect(composedLoad).toHaveBeenCalledTimes(1);
     const planner = member(h, PLANNER_ID);
@@ -804,11 +824,149 @@ describe("TeamSessions projections", () => {
     expect(view[0]?.message.role).toBe("ROLE_USER");
     expect(view[1]?.message.role).toBe("ROLE_AGENT");
 
-    const teamMember = h.sessions.getTeamMember(S1, "player");
+    const teamMember = await h.sessions.getTeamMember(S1, "player");
     expect(teamMember.role).toBe("player");
     expect(teamMember.model).toBe(DEFAULT_MODEL);
     expect(teamMember.preset).toBe(P_PLAYER);
-    expect(() => h.sessions.getTeamMember(S1, "robot")).toThrow(TeamSessionError);
+    expect(teamMember.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
+    // The team snapshot member projection keeps system_prompt empty (the
+    // field is served only by GetTeamMember).
+    expect(h.sessions.getTeam(S1).members.every((entry) => entry.systemPrompt === "")).toBe(true);
+    await expect(h.sessions.getTeamMember(S1, "robot")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("reads system_prompt off each member instance's assembly surface and follows a refresh", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const oldPlayer = member(h, PLAYER_ID);
+
+    const player = await h.sessions.getTeamMember(S1, "player");
+    const planner = await h.sessions.getTeamMember(S1, "planner");
+    expect(player.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
+    expect(planner.systemPrompt).toContain(`system prompt of ${PLANNER_ID}`);
+    expect(oldPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+
+    // A refresh builds fresh member instances: the read goes through the new
+    // instance's assembly surface (the old handle is never consulted), so the
+    // served content follows the new configuration.
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+    const newPlayer = member(h, PLAYER_ID);
+    expect(newPlayer).not.toBe(oldPlayer);
+    newPlayer.ctx.systemPrompt.assemble.mockResolvedValueOnce({
+      sections: [{ name: "deployment:persona", text: "刷新后的 player persona" }],
+      contexts: [],
+      tools: [],
+      variables: {},
+    });
+
+    const refreshed = await h.sessions.getTeamMember(S1, "player");
+    expect(refreshed.systemPrompt).toContain("刷新后的 player persona");
+    expect(oldPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+    expect(newPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a member assembly failure (mapped to INTERNAL at the RPC layer)", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    member(h, PLAYER_ID).ctx.systemPrompt.assemble.mockRejectedValueOnce(
+      new Error("assembly exploded"),
+    );
+
+    await expect(h.sessions.getTeamMember(S1, "player")).rejects.toThrow("assembly exploded");
+  });
+
+  it("re-reads the new generation when a refresh lands mid-read (never a partial prompt)", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const oldPlayer = member(h, PLAYER_ID);
+
+    // Hold the old instance's assembly in flight.
+    let release!: (assembly: PromptAssembly) => void;
+    oldPlayer.ctx.systemPrompt.assemble.mockReturnValueOnce(
+      new Promise<PromptAssembly>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const read = h.sessions.getTeamMember(S1, "player");
+    await flush();
+
+    // The refresh tears the old entry down and materializes the new instance
+    // while the read is still awaiting the old assembly.
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+    const newPlayer = member(h, PLAYER_ID);
+    expect(newPlayer).not.toBe(oldPlayer);
+
+    // The superseded instance resolves with a global-layers-only prompt: the
+    // disposed scope dropped persona/team/guidance, so serving it would be a
+    // partial result (neither the old nor the new content).
+    release({
+      sections: [{ name: "harness:identity", text: "GLOBAL LAYER ONLY" }],
+      contexts: [],
+      tools: [],
+      variables: {},
+    });
+
+    const result = await read;
+    expect(result.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
+    expect(result.systemPrompt).not.toContain("GLOBAL LAYER ONLY");
+    // The served state also belongs to the new generation.
+    expect(result.model).toBe(DEFAULT_MODEL);
+    expect(oldPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+    expect(newPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries onto the current generation when the superseded instance's assembly rejects", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const oldPlayer = member(h, PLAYER_ID);
+
+    // The old assembly rejects while a refresh replaces the entry: the
+    // teardown failure belongs to the superseded generation.
+    let rejectAssembly!: (err: Error) => void;
+    oldPlayer.ctx.systemPrompt.assemble.mockReturnValueOnce(
+      new Promise<PromptAssembly>((_resolve, reject) => {
+        rejectAssembly = reject;
+      }),
+    );
+    const read = h.sessions.getTeamMember(S1, "player");
+    await flush();
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+    const newPlayer = member(h, PLAYER_ID);
+
+    rejectAssembly(new Error("scope unwound mid-assembly"));
+    const result = await read;
+
+    expect(result.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
+    expect(newPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a mid-read teardown without replacement to NOT_FOUND", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const player = member(h, PLAYER_ID);
+
+    let release!: (assembly: PromptAssembly) => void;
+    player.ctx.systemPrompt.assemble.mockReturnValueOnce(
+      new Promise<PromptAssembly>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const read = h.sessions.getTeamMember(S1, "player");
+    await flush();
+
+    // The team is torn down with no replacement; the in-flight read must not
+    // serve the (partial) superseded result.
+    await h.sessions.shutdown();
+    release({
+      sections: [{ name: "harness:identity", text: "GLOBAL LAYER ONLY" }],
+      contexts: [],
+      tools: [],
+      variables: {},
+    });
+
+    await expect(read).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("shutdown disposes every member and the composition fiber last", async () => {

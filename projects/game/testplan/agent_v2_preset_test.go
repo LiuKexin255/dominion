@@ -376,6 +376,13 @@ func TestAgentV2TeamUpdateRefreshRebuilds(t *testing.T) {
 	if got := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName); len(got) != 0 {
 		t.Errorf("history after refresh = %d entries, want 0 (短期记忆清空)", len(got))
 	}
+	// Both projections reset with the lifecycle: the member views are empty
+	// too (刷新后历史按新生命周期重建).
+	for _, member := range []string{"player", "planner"} {
+		if got := listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, member); len(got) != 0 {
+			t.Errorf("%s view after refresh = %d entries, want 0 (new lifecycle)", member, len(got))
+		}
+	}
 	stored := getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName)
 	if teamMemberPreset(stored, "player") != teamMemberPreset(first, "player") || teamMemberPreset(stored, "planner") != teamMemberPreset(first, "planner") {
 		t.Errorf("stored presets after refresh = {%q %q}, want the unchanged configuration", teamMemberPreset(stored, "player"), teamMemberPreset(stored, "planner"))
@@ -387,6 +394,22 @@ func TestAgentV2TeamUpdateRefreshRebuilds(t *testing.T) {
 	assertTeamStreamWellFormed(t, sessionName, events2)
 	if turns := groupTeamMemberTurns(events2); len(turns) == 0 || turns[0].member != "planner" {
 		t.Fatalf("post-refresh turns = %v, want the planner opening", turns)
+	}
+
+	// The rebuilt projections start their own lifecycle: the merged sequence
+	// restarts at seq 1 (the pre-refresh anchors do not leak) and both member
+	// views are populated again.
+	rebuilt := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	if len(rebuilt) == 0 {
+		t.Fatal("rebuilt merge sequence is empty after the post-refresh Send")
+	}
+	if rebuilt[0].GetSeq() != 1 {
+		t.Errorf("rebuilt merge first seq = %d, want 1 (new lifecycle)", rebuilt[0].GetSeq())
+	}
+	for _, member := range []string{"player", "planner"} {
+		if got := listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, member); len(got) == 0 {
+			t.Errorf("%s view after the rebuilt Send is empty, want the new lifecycle's entries", member)
+		}
 	}
 }
 
@@ -502,8 +525,9 @@ func TestAgentV2TeamEmptyPersonaFallback(t *testing.T) {
 // heading — it fires only when the mounted player composition (persona +
 // saolei tool-plugin row guidance) reached the model context. The player's
 // saolei tools are additionally proven by every game case's tool chain. The
-// reverse absence assertion (no memory traces in the player prompt) needs the
-// system-prompt read surface (T032/T034) and is deferred to T034.
+// reverse absence assertions (no memory traces in the player prompt, no
+// saolei guidance in the planner prompt) are the T034 system-prompt cases
+// above, read through GetTeamMember.
 func TestAgentV2TeamPlayerRoleLockGuidance(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -593,6 +617,150 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 	}
 	if _, text := teamTurnBlocks(turns2[0]); text != teamMemorySnapshotText {
 		t.Errorf("post-refresh planner reply = %q, want %q (the persisted observation must reach the fresh system prompt)", text, teamMemorySnapshotText)
+	}
+}
+
+// TestAgentV2TeamMemberSystemPromptCompleteAndSplit covers US5 场景 1/2
+// (quickstart V5-4, SC-005): GetTeamMember returns each member instance's
+// complete effective system prompt — non-empty, carrying the preset persona
+// and the shared team section (goal + roster) — and the two members are
+// strictly split by role: the player carries the saolei tool guidance and no
+// memory snapshot, while the planner carries neither the saolei guidance nor
+// a snapshot on a fresh session (the empty snapshot section does not render).
+func TestAgentV2TeamMemberSystemPromptCompleteAndSplit(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-prompt-"+uniqueSuffix())
+	playerMarker := "T034 完整可读 player persona"
+	plannerMarker := "T034 完整可读 planner persona"
+	player := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-prompt-player-"+uniqueSuffix(), "你是扫雷 player，"+playerMarker, "player")
+	planner := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-prompt-planner-"+uniqueSuffix(), "你是扫雷 planner，"+plannerMarker, "planner")
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
+
+	playerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "player").GetSystemPrompt()
+	if playerPrompt == "" {
+		t.Fatal("player system_prompt is empty, want the assembled prompt")
+	}
+	for _, want := range []string{
+		"你是扫雷 player，" + playerMarker,
+		"## 团队",
+		"你所在的团队目标：协作完成多局扫雷游戏",
+		"- [planner] 复盘对局与制定策略，不操作",
+		"## saolei (Minesweeper tools)",
+	} {
+		if !strings.Contains(playerPrompt, want) {
+			t.Errorf("player system_prompt lacks %q:\n%s", want, playerPrompt)
+		}
+	}
+	for _, absent := range []string{"你是扫雷 planner，", "长期记忆："} {
+		if strings.Contains(playerPrompt, absent) {
+			t.Errorf("player system_prompt carries %q, want no planner/memory traces:\n%s", absent, playerPrompt)
+		}
+	}
+
+	plannerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt()
+	if plannerPrompt == "" {
+		t.Fatal("planner system_prompt is empty, want the assembled prompt")
+	}
+	for _, want := range []string{
+		"你是扫雷 planner，" + plannerMarker,
+		"## 团队",
+		"你所在的团队目标：协作完成多局扫雷游戏",
+		"- [player] 执行扫雷操作，独占桌面控制",
+	} {
+		if !strings.Contains(plannerPrompt, want) {
+			t.Errorf("planner system_prompt lacks %q:\n%s", want, plannerPrompt)
+		}
+	}
+	for _, absent := range []string{"你是扫雷 player，", "## saolei (Minesweeper tools)", "长期记忆："} {
+		if strings.Contains(plannerPrompt, absent) {
+			t.Errorf("planner system_prompt carries %q, want no player/guidance/snapshot traces:\n%s", absent, plannerPrompt)
+		}
+	}
+}
+
+// TestAgentV2TeamSystemPromptSnapshotFixationAndPersonaRefresh covers the
+// snapshot half of SC-004 and US5 场景 3 (quickstart V2-2/V5-4): the memory
+// snapshot is prefetched at materialization and FIXED for the instance's
+// lifetime — the review's freshly written observation does not appear in the
+// running planner's system_prompt — and a refresh (same presets, one player
+// persona edited) rebuilds both prompts: the fresh planner's carries the
+// reloaded snapshot, the player's carries the new persona and still no
+// snapshot.
+func TestAgentV2TeamSystemPromptSnapshotFixationAndPersonaRefresh(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionID := "team-snapshot-" + uniqueSuffix()
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	playerPersonaV1 := "T034 persona v1"
+	playerPersonaV2 := "T034 persona v2"
+	plannerMarker := "T034 快照 planner persona"
+	player := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-snapshot-player-"+uniqueSuffix(), "你是扫雷 player，"+playerPersonaV1, "player")
+	planner := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-snapshot-planner-"+uniqueSuffix(), "你是扫雷 planner，"+plannerMarker, "planner")
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
+
+	// A fresh session has no memory: the empty snapshot section does not render.
+	if got := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt(); strings.Contains(got, "长期记忆：") {
+		t.Fatalf("fresh planner system_prompt carries a snapshot section:\n%s", got)
+	}
+
+	// One lost game drives the review's memory write (the T023 persistence
+	// path; here the write is the snapshot reload's prerequisite).
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardInitPNG},
+		stepBoards: [][]byte{saoleiBoardLossPNG},
+	}, wsReadTimeout)
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	turns := groupTeamMemberTurns(events)
+	if len(turns) != 4 {
+		t.Fatalf("member turns = %d, want 4 (opening, game, memory review, stop ack)", len(turns))
+	}
+	reviewResults := teamTurnToolResults(turns[2])
+	if len(reviewResults) != 1 || reviewResults[0].GetResult() != teamMemoryAddedResult {
+		t.Fatalf("review tool results = %+v, want the single memory add", reviewResults)
+	}
+
+	// Fixation: the running planner's prompt still has no snapshot — the
+	// write takes effect on the NEXT materialization only.
+	midPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt()
+	if strings.Contains(midPrompt, "长期记忆：") {
+		t.Errorf("running planner system_prompt picked up the write inside the instance lifetime:\n%s", midPrompt)
+	}
+
+	// Persona edit + refresh: the new player persona and the reloaded
+	// planner snapshot land in the fresh instances' prompts.
+	updateAgentV2Preset(t, ctx, sutHostURL, sutEnvName, player.GetName(), "你是扫雷 player，"+playerPersonaV2)
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
+
+	playerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "player").GetSystemPrompt()
+	if !strings.Contains(playerPrompt, playerPersonaV2) {
+		t.Errorf("refreshed player system_prompt lacks the edited persona %q:\n%s", playerPersonaV2, playerPrompt)
+	}
+	if strings.Contains(playerPrompt, playerPersonaV1) {
+		t.Errorf("refreshed player system_prompt still carries the old persona %q:\n%s", playerPersonaV1, playerPrompt)
+	}
+	if strings.Contains(playerPrompt, "长期记忆：") {
+		t.Errorf("refreshed player system_prompt carries a memory snapshot, want none:\n%s", playerPrompt)
+	}
+
+	plannerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt()
+	if !strings.Contains(plannerPrompt, "长期记忆：") || !strings.Contains(plannerPrompt, teamMemoryReviewContent) {
+		t.Errorf("refreshed planner system_prompt lacks the reloaded snapshot (header %q + %q):\n%s", "长期记忆：", teamMemoryReviewContent, plannerPrompt)
+	}
+	if !strings.Contains(plannerPrompt, plannerMarker) {
+		t.Errorf("refreshed planner system_prompt lost its persona %q:\n%s", plannerMarker, plannerPrompt)
+	}
+	if strings.Contains(plannerPrompt, "## saolei (Minesweeper tools)") {
+		t.Errorf("refreshed planner system_prompt carries the saolei guidance:\n%s", plannerPrompt)
 	}
 }
 

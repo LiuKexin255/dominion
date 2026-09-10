@@ -87,11 +87,11 @@ messages:
   # BOTH its persona anchor and the saolei tool guidance (the preset-row
   # plugin's `saolei:guidance` section): the second system_keyword is the
   # guidance section's heading, so the entry fires only when the mounted
-  # player composition reached the model context (T023 role-lock positive
-  # assertion). The reverse absence (no memory traces in the player prompt /
-  # no saolei guidance in the planner prompt) awaits the system-prompt read
-  # surface (T032/T034); this phase cannot observe absence through the
-  # keyword matcher.
+  # player composition reached the model context. The reverse absence halves
+  # (no memory traces in the player prompt / no saolei guidance in the planner
+  # prompt) are asserted through the GetTeamMember.system_prompt read surface
+  # by the specs/059-agent-v2-team-mode/tasks.md T034 system-prompt cases in
+  # projects/game/testplan/.
   - name: team-player-role-lock
     keywords:
       - player-role-lock

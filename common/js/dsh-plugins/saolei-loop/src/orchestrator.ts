@@ -218,7 +218,7 @@ export interface TeamMaterializeOptions {
    * the session ID (`templates/{template}/sessions/{session}/memories/{memory}`).
    * This is NOT the full session resource name — the memory plugin builds the
    * parent resource from these halves (the memory service resource model),
-   * so passing `session` here doubles the prefix (T023 caught the wiring).
+   * so passing `session` here doubles the prefix (T023 wiring, specs/059-agent-v2-team-mode/tasks.md).
    */
   readonly memoryScope: PlannerMemoryScope;
   /** Team goal rendered into the team section. */
@@ -540,7 +540,7 @@ export class TeamOrchestrator {
     }
   }
 
-  /** The live member handle (T032 system-prompt read surface), or undefined. */
+  /** The live member handle (the system-prompt read surface of specs/059-agent-v2-team-mode/tasks.md T032), or undefined. */
   member(role: TeamRole): AgentHandle | undefined {
     return this.members?.[role].handle;
   }

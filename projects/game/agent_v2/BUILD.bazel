@@ -47,6 +47,9 @@ ts_project(
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
+        # The system-prompt read face (src/system-prompt.ts) imports
+        # assembleContextFor + renderPrompt at runtime for GetTeamMember.
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
@@ -95,10 +98,12 @@ artifact_pkg_js(
         # Service-declared dsh rows and imports (closure contract: the
         # manifest rows must be physically present for the Loader, and
         # boot/agent/llm are imported by src/*.ts). The framework-core rows
-        # (timer/invariants/system-prompt + the cordis loader stack) enter
-        # through @dominion/dsh-core in runtime_deps; the remaining direct-
-        # composed dsh rows are declared here
+        # (timer/invariants + the cordis loader stack) enter through
+        # @dominion/dsh-core in runtime_deps; the remaining direct-composed
+        # dsh rows are declared here
         # (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5).
+        # system-prompt is both a framework-core row and the
+        # src/system-prompt.ts GetTeamMember import, so it is declared too.
         # dsh-persona has no host row either — the preset compositions'
         # persona row resolves by bare package name from the host base
         # (roster README "How a preset's rows resolve").
@@ -121,6 +126,7 @@ artifact_pkg_js(
         ":node_modules/@deepseek-ai/dsh-persona",
         ":node_modules/@deepseek-ai/dsh-scope",
         ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
@@ -186,6 +192,7 @@ vitest_test(
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
