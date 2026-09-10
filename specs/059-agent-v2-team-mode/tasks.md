@@ -255,8 +255,8 @@
 
 ### Tasks
 
-- [ ] T035 更新 `projects/game/agent_v2/README.md` 为 team 模型终态（三服务、team 物化/刷新语义、preset 分池、双视图、已知限制——compact 排除与 planner 上下文增长、内存态重启重物化）；核对 `projects/game/deploy.yaml` 服务清单无 v1 残留引用
-- [ ] T036 执行 quickstart V1–V7 全量验证：`guitar run projects/game/testplan/system_test.yaml` 完整部署→测试→清理闭环，全部用例通过（无 failed/flaky）；对照 spec SC-001–SC-005 逐条判定达成
+- [X] T035 更新 `projects/game/agent_v2/README.md` 为 team 模型终态（三服务、team 物化/刷新语义、preset 分池、双视图、已知限制——compact 排除与 planner 上下文增长、内存态重启重物化）；核对 `projects/game/deploy.yaml` 服务清单无 v1 残留引用
+- [X] T036 执行 quickstart V1–V7 全量验证：`guitar run projects/game/testplan/system_test.yaml` 完整部署→测试→清理闭环，全部用例通过（无 failed/flaky）；对照 spec SC-001–SC-005 逐条判定达成
 
 ---
 

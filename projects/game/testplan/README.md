@@ -87,6 +87,21 @@ switch-without-refetch behavior). The system-prompt read face
 (specs/059-agent-v2-team-mode/tasks.md T034: complete + role split, snapshot
 fixation and reload, persona edit + refresh).
 
+One quickstart scenario is deliberately carried outside the large tests: the
+**preset persistence across a service restart (V2-3)**. `guitar`'s suite
+lifecycle is deploy → test → cleanup with no per-service restart, so a second
+process generation is not observable in this topology — the same limitation
+the memory-down case documents for its retry-success half
+(`agent_v2_memory_down_test.go`). The persistence claim is carried by
+construction plus unit tests instead: the preset record state lives only in
+Mongo (`game_agent_v2.presets`), never in the agent-v2 process;
+`common/js/dsh-plugins/preset-authoring/src/store.mongo.test.ts` pins the Mongo
+document CRUD (create/get/list/update/remove plus the duplicate-key and index
+behavior); and `common/js/dsh-plugins/preset-authoring/src/index.test.ts` pins
+the composition-copy rebuild after a writable-layer loss ("compose rebuilds a
+missing copy from the store record"; "management survives a lost copy (pod
+restart)").
+
 ## 3. fake-llm data file format
 
 Sample messages live in `projects/game/fake-llm/service/testdata/` and are
