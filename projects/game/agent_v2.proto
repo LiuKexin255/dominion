@@ -10,18 +10,14 @@ import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "projects/game/game.proto";
 
-// go_package: the v2 Go generated surface is merged into the v1 package
+// go_package: the v2 Go generated surface is merged into the game package
 // dominion/projects/game — protoc-gen-go-aip v0.1.3 emits the parent
 // constructor's receiver type unqualified, which only resolves when the
-// parent resources (v1 Template/Session) share the generated file's Go
-// package (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
-// §2.6). The proto package stays projects.game.v2: wire, REST, and TS are
-// unaffected. Because the Go package is shared, every v2 message/service
-// name MUST stay disjoint from the v1 names that coexist until the v1
-// removal lands (the team model therefore keeps the service name
-// AgentService and removes the v1 TeamService/Team/UpdateTeamRequest/
-// GetTeamRequest symbols in the same change — same-package declaration
-// collision).
+// parent resources (Template/Session, declared in game.proto) share the
+// generated file's Go package
+// (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §2.6).
+// The proto package stays projects.game.v2: wire, REST, and TS are
+// unaffected.
 option go_package = "dominion/projects/game";
 
 // AgentService is the session-scoped stateful surface of agent_v2: the

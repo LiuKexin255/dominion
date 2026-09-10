@@ -104,7 +104,7 @@ export interface PresetServiceDeps {
  * `desktop_connected` from the desktop-bridge connection registry
  * (specs/059-agent-v2-team-mode/contracts/team-api.md §1/§6).
  */
-export interface TeamServiceDeps extends PresetServiceDeps {
+export interface TeamHandlersDeps extends PresetServiceDeps {
   sessions: Pick<
     TeamSessions,
     | "send"
@@ -366,7 +366,7 @@ function safeWrite(
  * specs/059-agent-v2-team-mode/contracts/team-api.md §1–§6). Exported for
  * unit tests so the gRPC status mapping is asserted without binding a port.
  */
-export function buildTeamHandlers(deps: TeamServiceDeps): AgentServiceHandlers {
+export function buildTeamHandlers(deps: TeamHandlersDeps): AgentServiceHandlers {
   return {
     Send: (call) => {
       const name = call.request.session ?? "";
@@ -985,7 +985,7 @@ export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
     authoring: options.ctx.presetAuthoring,
     listModels: (provider) => listModelCatalog(options.ctx, provider),
   });
-  const deps: TeamServiceDeps = {
+  const deps: TeamHandlersDeps = {
     sessions,
     authoring: options.ctx.presetAuthoring,
     listModels: (provider) => listModelCatalog(options.ctx, provider),

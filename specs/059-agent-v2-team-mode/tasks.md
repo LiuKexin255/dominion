@@ -172,11 +172,11 @@
 
 ### Tasks
 
-- [ ] T024 [US1] 移除 `projects/game/agent/` 整目录（含 BUILD.bazel/service.yaml/node_modules 清理）及 `pnpm-workspace.yaml:9` 的 workspace 条目与 `pnpm-lock.yaml` 对应 importer 段（`pnpm up` 收敛）；`bazel run //:gazelle` 清理生成 target
-- [ ] T025 [P] [US1] 移除 `projects/game/game.proto` 中 v1 专属定义（`TeamService`、`PromptService` 及 `Team`/`TeamAgent`/`SaoleiProfile`/`UpdateTeamRequest`/`RefreshTeamRequest`/`TeamProfile` 等仅 v1 使用的消息；保留 `SessionService`/`Session`/`UserFrame`/`TeamFrame`/`MemoryService`）；更新 `projects/game/proto_test.go` 与全部生成类型消费方（gateway/agent_v2/desktop/session 等编译面）
-- [ ] T026 [P] [US1] 移除 `projects/game/prompt/` 整目录（v1 专属配置服务）及其 BUILD/部署引用核查
-- [ ] T027 [P] [US1] 清理 fake-llm v1 专属夹具 `projects/game/fake-llm/service/testdata/`（`planner.yaml`、`planner_tools.yaml` 及其余仅引用 v1 源码路径/语义的 v1 时期夹具——以 grep `projects/game/agent` 引用与 v1 复盘关键词核查为准逐一判定），保留 v2/team 夹具
-- [ ] T028 [US1] 过期引用清理：`projects/game/pkg/gameconst/const.go` 的 `TeamTarget` 更名（现为 v2 proxy 目标，名实对齐，如 `AgentV2Target`）及注释；`projects/game/fake-desktop/service/executor.go:10` 等几何公式注释自包含化（公式本体随 v1 删除，内联公式内容并标注来源语义）；全仓 grep `projects/game/agent`、`@dominion/game-agent`、`TeamService`、`PromptService` 断言零残留（specs/survey 历史文档除外）
+- [X] T024 [US1] 移除 `projects/game/agent/` 整目录（含 BUILD.bazel/service.yaml/node_modules 清理）及 `pnpm-workspace.yaml:9` 的 workspace 条目与 `pnpm-lock.yaml` 对应 importer 段（`pnpm up` 收敛）；`bazel run //:gazelle` 清理生成 target
+- [X] T025 [P] [US1] 移除 `projects/game/game.proto` 中 v1 专属定义（`TeamService`、`PromptService` 及 `Team`/`TeamAgent`/`SaoleiProfile`/`UpdateTeamRequest`/`RefreshTeamRequest`/`TeamProfile` 等仅 v1 使用的消息；保留 `SessionService`/`Session`/`UserFrame`/`TeamFrame`/`MemoryService`）；更新 `projects/game/proto_test.go` 与全部生成类型消费方（gateway/agent_v2/desktop/session 等编译面）
+- [X] T026 [P] [US1] 移除 `projects/game/prompt/` 整目录（v1 专属配置服务）及其 BUILD/部署引用核查
+- [X] T027 [P] [US1] 清理 fake-llm v1 专属夹具 `projects/game/fake-llm/service/testdata/`（`planner.yaml`、`planner_tools.yaml` 及其余仅引用 v1 源码路径/语义的 v1 时期夹具——以 grep `projects/game/agent` 引用与 v1 复盘关键词核查为准逐一判定），保留 v2/team 夹具
+- [X] T028 [US1] 过期引用清理：`projects/game/pkg/gameconst/const.go` 的 `TeamTarget` 更名（现为 v2 proxy 目标，名实对齐，如 `AgentV2Target`）及注释；`projects/game/fake-desktop/service/executor.go:10` 等几何公式注释自包含化（公式本体随 v1 删除，内联公式内容并标注来源语义）；全仓 grep `projects/game/agent`、`@dominion/game-agent`、`TeamService`、`PromptService` 断言零残留（specs/survey 历史文档除外）
 
 **Checkpoint / 验证门禁**: 检索零残留；`bazel build //... && bazel test //...` 通过；`guitar run projects/game/testplan/system_test.yaml` 全绿。
 

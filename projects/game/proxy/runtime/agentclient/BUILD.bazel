@@ -26,6 +26,7 @@ go_unittest(
     embed = [":agentclient"],
     deps = [
         "//common/gopkg/solver",
+        "//projects/game/pkg/gameconst",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
     ],

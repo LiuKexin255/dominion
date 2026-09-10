@@ -69,9 +69,10 @@ export type RGB = { r: number; g: number; b: number };
  * the WM_* client coordinates used for clicking. The screenshot captured by
  * the desktop includes the non-client chrome
  * (`projects/game/desktop/internal/capture/capture.go` `CaptureWindow`), so
- * the board top is at Y=200 in screenshot space; the agent's
- * `projects/game/agent/src/mcp/saolei/geometry.ts` subtracts a 96 px chrome
- * offset to get the client-space Y=104 used for `WM_LBUTTONDOWN`. Recognition
+ * the board top is at Y=200 in screenshot space; the dispatch side
+ * (`common/js/dsh-plugins/saolei-loop/src/game/geometry.ts`) subtracts a
+ * 96 px chrome offset to get the client-space Y=104 used for
+ * `WM_LBUTTONDOWN`. Recognition
  * reads pixels from the screenshot, so it uses the screenshot-space values.
  */
 export interface BoardGeometry {

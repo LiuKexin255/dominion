@@ -1,5 +1,5 @@
 /**
- * TeamService tests: section registration and refresh (order band, content,
+ * Team tests: section registration and refresh (order band, content,
  * no first-person identity), idempotent registration, scope/agent cleanup,
  * reference relay (anchor order, sender exclusion, transient relay removal),
  * drain rendering and consumption marks, and derived rebuild (self-heal /
@@ -31,11 +31,7 @@ import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
 import { describe, expect, it, vi } from "vitest";
 
 import { renderTeamSection } from "./section.js";
-import {
-  TEAM_SECTION_NAME,
-  TEAM_SECTION_ORDER,
-  TeamService,
-} from "./team.js";
+import { TEAM_SECTION_NAME, TEAM_SECTION_ORDER, Team } from "./team.js";
 
 interface SectionRecord {
   readonly name: string;
@@ -178,17 +174,17 @@ function textOf(message: UserMessage): string {
   return block !== undefined && block.type === "text" ? block.text : "";
 }
 
-function createTeam(): { ctx: Context; team: TeamService } {
+function createTeam(): { ctx: Context; team: Team } {
   const ctx = new Context();
-  return { ctx, team: new TeamService(ctx) };
+  return { ctx, team: new Team(ctx) };
 }
 
-describe("TeamService.register", () => {
+describe("Team.register", () => {
   it("mounts as the class-form plugin row and exposes ctx.team", async () => {
     const ctx = new Context();
-    const fiber = await ctx.plugin(TeamService);
+    const fiber = await ctx.plugin(Team);
 
-    expect(ctx.team).toBeInstanceOf(TeamService);
+    expect(ctx.team).toBeInstanceOf(Team);
 
     await fiber.dispose();
   });
@@ -318,7 +314,7 @@ describe("TeamService.register", () => {
       session: { id, events: [] },
       ctx: scope.ctx,
     } as unknown as Agent;
-    const team = new TeamService(ctx);
+    const team = new Team(ctx);
     team.register({
       goal: "g",
       members: [
@@ -332,7 +328,7 @@ describe("TeamService.register", () => {
   });
 });
 
-describe("TeamService.drain", () => {
+describe("Team.drain", () => {
   it("delivers each member's speech and paired tool units to every other member in production order", () => {
     const { team } = createTeam();
     const player = createMember("templates/saolei/sessions/s1/player");

@@ -2,12 +2,10 @@
  * The memory snapshot: the planner's long-term memory rendered as one plain
  * text block for the system prompt, plus the prompt-section identity.
  *
- * Rendering semantics are migrated from the v1 agent's
- * `projects/game/agent/src/team/memory-snapshot.ts` (spec 039 T017; removed
- * with agent v1 in spec 059 US1): each entry contributes exactly one line and
- * the service-internal `memory_id` is NEVER rendered — the model locates
- * entries by content through the memory tool's `old_text` substring matching.
- * Unlike v1, an empty memory renders as the empty string, which the
+ * Rendering semantics follow spec 039 T017: each entry contributes exactly
+ * one line and the service-internal `memory_id` is NEVER rendered — the model
+ * locates entries by content through the memory tool's `old_text` substring
+ * matching. An empty memory renders as the empty string, which the
  * system-prompt registry drops from the prompt entirely (empty sections do
  * not render), so no placeholder logic is needed.
  *

@@ -34,7 +34,7 @@ clears that `MessagesValue` channel; clearing is **per-channel**.
 
 **Evidence**:
 - The sentinel is real and exported:
-  `projects/game/agent/node_modules/@langchain/langgraph/dist/graph/messages_reducer.js:9`
+  `@langchain/langgraph` (`dist/graph/messages_reducer.js:9`)
   `const REMOVE_ALL_MESSAGES = "__remove_all__";` and re-exported from the
   package index. Confirmed import in the spike.
 - Behaviour is exactly survey §7.2:
@@ -155,8 +155,8 @@ can middleware return `REMOVE_ALL_MESSAGES`.
   (`langchain/dist/agents/middleware/summarization.ts`).
 
 **Design impact**:
-- D8 RefreshTeam landing point is confirmed: `context-middleware`'s
-  `beforeModel` (already present at `projects/game/agent/src/context-middleware.ts`)
+- D8 RefreshTeam landing point is confirmed: the production agent's
+  `context-middleware` `beforeModel` (present at spike time)
   is the correct hook to emit `RemoveMessage({id: REMOVE_ALL_MESSAGES})` per
   channel. The plan's note about a possible "afterTool" hook should be revised
   to name `wrapToolCall` instead — but RefreshTeam does NOT need a tool hook;
@@ -253,8 +253,8 @@ Source: `experimental/js/team_graph_spike/src/spike.test.ts` describe("A6").
    `StateSchema` const or a `CompiledStateGraph`-typed return triggers TS2883
    ("inferred type cannot be named without a reference to .../web.cjs") under
    the langgraph dual-package CJS/ESM layout. The spike disables `declaration`
-   (it is a leaf service). The production `projects/game/agent` package emits
-   declarations today — if it adopts `Annotation.Root` for `TeamState`, either
+   (it is a leaf service). The production agent package emitted declarations
+   at spike time — if it adopts `Annotation.Root` for `TeamState`, either
    keep `TeamState` module-private and export `typeof TeamState.State`, or
    expect to annotate/cast at the export boundary.
 3. **createAgent without checkpointer**: confirmed optional; a single `.invoke()`

@@ -1,9 +1,9 @@
 /**
- * Model-visible result-text builders for the GameRuntime, migrated verbatim
- * from v1 projects/game/agent/src/mcp/saolei/saolei-mcp.ts (spec A6/FR-013:
- * the text contract is unchanged — three-layer body: outcome line, `game
- * status:` line, ruler board; `valid range:` on rejections; rejections are
- * NORMAL results while desktop/bridge failures are error outcomes).
+ * Model-visible result-text builders for the GameRuntime
+ * (specs/051-agent-v2-dsh-migration/spec.md A6 / FR-013): the text contract
+ * is the three-layer body — outcome line, `game status:` line, ruler board;
+ * `valid range:` on rejections; rejections are NORMAL results while
+ * desktop/bridge failures are error outcomes.
  */
 
 import { renderBoardText, renderGridWithRuler } from "@dominion/game-saolei-board";

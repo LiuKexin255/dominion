@@ -89,14 +89,14 @@ var saoleiBoardCompatWinPNG []byte
 // saolei cell geometry constants. The fake-LLM fixture drives ONE
 // saolei_operate BATCH whose ops are click{3,4} and click{5,6}
 // (spec 039-planner-memory-calibration FR-001 — the merged dual-form tool;
-// sample_saolei_tools.yaml saolei-init-followup-operate); their WM_*
-// client-space cell centres per the formula in
-// projects/game/agent/src/mcp/saolei/geometry.ts
+// saolei_tools.yaml saolei-init-followup-operate); their WM_* client-space
+// cell centres per the dispatch formula in
+// common/js/dsh-plugins/saolei-loop/src/game/geometry.ts
 // (centerX(x) = 24 + x*32 + 16, centerY(y) = 104 + y*32 + 16) are asserted on
 // the dispatched MouseMoveAndClickPart. centerY uses the client-space board
 // top BOARD_ORIGIN_Y_PX = BOARD_ORIGIN_Y_PX_SCREENSHOT(200) − CHROME_OFFSET_Y_PX(96)
-// = 104 — the screenshot→client chrome compensation applied in the agent
-// (specs/024-tool-render-coord-fix/research.md D1/D2) so the desktop's
+// = 104 — the screenshot→client chrome compensation applied on the dispatch
+// side (specs/024-tool-render-coord-fix/research.md D1/D2) so the desktop's
 // WINDOW_MESSAGE path posts the coordinate verbatim (desktop-facing contract
 // unchanged — specs/018-saolei-mcp/contracts/proto-operation-contract.md §3;
 // specs/024-tool-render-coord-fix/contracts/coordinate-space-contract.md §4/§6;
@@ -115,7 +115,7 @@ const (
 
 // expectedSaoleiFinalText is the terminal text fake-LLM returns once
 // the saolei_operate batch result reaches the model
-// (sample_saolei_tools.yaml saolei-operate-final-text). The test asserts
+// (saolei_tools.yaml saolei-operate-final-text). The test asserts
 // it to prove the whole init→operate chain completed.
 const expectedSaoleiFinalText = "Minesweeper sequence complete."
 

@@ -179,15 +179,14 @@ export function apply(ctx: Context): void {
         "dispatch: a no-op rejection is SKIPPED and execution continues; a " +
         "structural rejection (out-of-bounds, no active game) or a game " +
         "end STOPS the batch — earlier successful operations take effect.",
-      // v1 (projects/game/agent/src/mcp/saolei/saolei-mcp.ts operateInputSchema)
-      // bounded x/y with z.number().int().min(0); the dsh-tools 0.1.1-rc.2
-      // enforced schema subset has no numeric-bound keyword (CONSTRAINT_KEYWORDS
-      // = type/oneOf/properties/required/additionalProperties/items/enum/const —
-      // a `minimum` node is REJECTED at registration, not ignored), and the
-      // v1 contract deliberately leaves the upper bound schema-free (board
-      // dimensions are only known after recognition). The negative-coordinate
-      // rejection therefore happens at the runtime rule table: validateMove
-      // answers out_of_bounds before any dispatch.
+      // The operation coordinates are deliberately schema-unbounded: the
+      // dsh-tools 0.1.1-rc.2 enforced schema subset has no numeric-bound
+      // keyword (CONSTRAINT_KEYWORDS = type/oneOf/properties/required/
+      // additionalProperties/items/enum/const — a `minimum` node is REJECTED
+      // at registration, not ignored), and the board dimensions are only
+      // known after recognition anyway. The negative-coordinate rejection
+      // therefore happens at the runtime rule table: validateMove answers
+      // out_of_bounds before any dispatch.
       parameters: {
         type: {
           type: "string",
@@ -253,11 +252,10 @@ export function apply(ctx: Context): void {
 }
 
 /**
- * The saolei tool-guidance section, migrated from v1
- * projects/game/agent/src/skill/saolei/SKILL.md (FR-014: the plugin owns its
- * tools' cross-call guidance; the skill file form is not kept) and adapted
- * to the plugin tool context (no MCP wording, no raw-mouse-tool reference —
- * the composition mounts no generic mouse tools).
+ * The saolei tool-guidance section (FR-014: the plugin owns its tools'
+ * cross-call guidance as a prompt section — no separate skill-file form)
+ * adapted to the plugin tool context (no MCP wording, no raw-mouse-tool
+ * reference — the composition mounts no generic mouse tools).
  */
 export const SAOLEI_GUIDANCE = `## saolei (Minesweeper tools)
 

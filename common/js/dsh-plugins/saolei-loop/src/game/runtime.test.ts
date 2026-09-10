@@ -1,14 +1,13 @@
 /**
- * GameRuntime tests: the v1 saolei MCP contract migrated to the agent-scoped
- * runtime (specs/051-agent-v2-dsh-migration/data-model.md §2.5; contract
- * saolei-plugins.md §2.2/§7.1). Baseline: v1
- * projects/game/agent/src/mcp/saolei/saolei-mcp.test.ts — three-API
- * semantics, dual-form operate, per-rule rejections, batch SKIP/STOP triage,
- * recognition-failure invalidation, signal forwarding, counter-informed win,
- * per-game statistics, and the game-history (gameLog/gameEvent) buffer —
- * plus the agent-scoped lifecycle assertions (the `saoleiGame` service is
- * reachable only on the owning agent scope and unregisters with it; the
- * root context never sees it).
+ * GameRuntime tests: the saolei game contract on the agent-scoped runtime
+ * (specs/051-agent-v2-dsh-migration/data-model.md §2.5; contract
+ * saolei-plugins.md §2.2/§7.1) — three-API semantics, dual-form operate,
+ * per-rule rejections, batch SKIP/STOP triage, recognition-failure
+ * invalidation, signal forwarding, counter-informed win, per-game statistics,
+ * and the game-history (gameLog/gameEvent) buffer — plus the agent-scoped
+ * lifecycle assertions (the `saoleiGame` service is reachable only on the
+ * owning agent scope and unregisters with it; the root context never sees
+ * it).
  *
  * Pattern (style/javascript.md Mock convention): pure DI — a fake dispatch
  * double records the dispatched FlowParts and resolves canned

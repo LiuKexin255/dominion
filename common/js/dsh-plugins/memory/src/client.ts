@@ -1,11 +1,10 @@
 /**
  * MemoryClient — gRPC client for the game memory service (MemoryService).
  *
- * Migrated from the v1 agent's `projects/game/agent/src/memory-client.ts`
- * (removed with agent v1 in spec 059 US1): the storage API is unchanged
- * (`specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §3,
- * https://google.aip.dev/133, https://google.aip.dev/134), so this is a
- * pass-through client for the four RPCs over the resource pattern
+ * The storage API follows
+ * `specs/039-planner-memory-calibration/contracts/memory-mcp-contract.md` §3
+ * (https://google.aip.dev/133, https://google.aip.dev/134): a pass-through
+ * client for the four RPCs over the resource pattern
  * `templates/{template}/sessions/{session}/memories/{memory}`. All
  * hermes-style conversion (old_text location, memory_id generation) lives in
  * `operations.ts`; this client never renders a `memory_id` into model-visible

@@ -3,10 +3,8 @@
  * (specs/051-agent-v2-dsh-migration/data-model.md §2.5): the strict
  * pre-dispatch validation table, the SKIP/STOP batch-triage reason sets, the
  * loss-first counter-informed status derivation, and the per-game statistics.
- * Semantics are migrated verbatim from v1
- * projects/game/agent/src/mcp/saolei/saolei-mcp.ts (spec A6: the
- * recognition/validation/win rules are unchanged, only their carrying module
- * moved into the saolei-loop plugin).
+ * The semantics follow spec 051 A6 (recognition/validation/win rules) with
+ * this module as their saolei-loop carrying implementation.
  */
 
 import { SaoleiBoard, isWin } from "@dominion/game-saolei-board";
@@ -58,8 +56,7 @@ export type OperationType = "click" | "flag" | "chord";
 export type MoveVerdict = { ok: true } | { ok: false; reason: MoveRejection };
 
 /**
- * Stable reason codes for a rejected move (v1 rule table,
- * projects/game/agent/src/mcp/saolei/saolei-mcp.ts `MoveRejection`).
+ * Stable reason codes for a rejected move (the spec 051 A6 rule table).
  */
 export type MoveRejection =
   | "no_active_game"
@@ -175,8 +172,7 @@ export function gameStatus(state: GameState): GameStatus {
 
 /**
  * Per-game quantitative statistics, computed first-hand at game end and
- * carried by the terminal game event (v1
- * projects/game/agent/src/mcp/saolei/saolei-mcp.ts `GameStats`).
+ * carried by the terminal game event (the spec 051 A6 stats contract).
  */
 export interface GameStats {
   /** Successful cell-operation dispatch count this game (init/remain and

@@ -1,5 +1,5 @@
 /**
- * TeamService — the `ctx.team` group-chat primitive: member registration with
+ * Team — the `ctx.team` group-chat primitive: member registration with
  * the team section, `session/event` output collection, reference relay (anchor
  * delivery, no content copies), and drain (read-back + render + consumption).
  * The scenario-agnostic contract is
@@ -94,7 +94,7 @@ interface TeamState {
 
 declare module "@deepseek-ai/cordis" {
   interface Context {
-    team: TeamService;
+    team: Team;
   }
 }
 
@@ -104,7 +104,7 @@ declare module "@deepseek-ai/cordis" {
  * section and the `session/event` subscription are agent-scope effects that
  * unwind with the member even when the team handle is never disposed.
  */
-export class TeamService extends Service {
+export class Team extends Service {
   /** Every registered member's team, keyed by member session id. */
   private readonly byMember = new Map<string, TeamState>();
 
@@ -425,4 +425,4 @@ export class TeamService extends Service {
   }
 }
 
-export default TeamService;
+export default Team;

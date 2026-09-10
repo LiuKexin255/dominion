@@ -164,7 +164,9 @@ export interface TeamGraphDeps {
  * game-end event (D6 step 2). For the spike the tool is a stub "make_move"
  * that ends the game on every call — enough to drive the player createAgent
  * loop and exercise the sink → buffer → node-post-process → conditional-edge
- * path. The real saolei tools live in projects/game/agent/src/mcp/saolei/.
+ * path. The real saolei tools live in the `@dominion/dsh-saolei` plugin
+ * (`common/js/dsh-plugins/saolei/src/index.ts`); the saolei-loop plugin holds
+ * the GameRuntime (`saoleiGame`).
  */
 function buildPlayerTool(sink: GameEventBuffer) {
   return tool(

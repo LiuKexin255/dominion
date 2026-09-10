@@ -1,9 +1,7 @@
 /**
  * The per-agent game runtime: init/operate/remain with recognized text-board
- * state and strict pre-dispatch validation, migrated from v1
- * projects/game/agent/src/mcp/saolei/saolei-mcp.ts (research.md D6; contract
- * specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §2.2,
- * data-model.md §2.5).
+ * state and strict pre-dispatch validation (specs/051-agent-v2-dsh-migration/
+ * research.md D6; contracts/saolei-plugins.md §2.2; data-model.md §2.5).
  *
  * Registration form: a cordis Service class constructed with
  * `(agent.ctx, "saoleiGame", deps)` by the agent-creation setup hook (the
@@ -97,8 +95,8 @@ export type ToolOutcome =
  * One game-log entry: one step of the current game. One `operate` call —
  * single or batch — is ONE entry carrying its full operations list; init
  * resets the log with an `saolei_init` entry; a terminal game appends a
- * `(game-end)` entry (v1 projects/game/agent/src/team/team-sink.ts
- * `EphemeralGameBuffer` semantics).
+ * `(game-end)` entry. The log is ephemeral: it covers only the current game
+ * (reset by init) and is never persisted across games.
  */
 export interface GameLogEntry {
   /** The step trigger: "saolei_init", "saolei_operate", or "(game-end)". */

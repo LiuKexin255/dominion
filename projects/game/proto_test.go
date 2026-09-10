@@ -17,10 +17,9 @@ import (
 // and a control channel (FlowPart — mouse/keyboard operations + wait/warn/
 // status signals). Connect frames are direction-split (spec
 // 035-proto-contract-refine): UserFrame is the inbound transport unit,
-// TeamFrame the outbound one; each payload is message_parts OR flow_parts;
-// Message.content is MessageParts (display only). See
-// specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6 and
-// specs/035-proto-contract-refine/contracts/frame-split.md §1..§5.
+// TeamFrame the outbound one; each payload is message_parts OR flow_parts.
+// See specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6
+// and specs/035-proto-contract-refine/contracts/frame-split.md §1..§5.
 //
 // The old frame types (AgentAckFrame, AgentEchoFrame/AgentTextFrame, ...),
 // the AgentFrame envelope, and the FrameSender enum are all REMOVED: the
@@ -30,9 +29,8 @@ import (
 // The 059 team-mode session face (specs/059-agent-v2-team-mode/contracts/
 // team-api.md §1) is asserted by the Team/TeamMember/TeamMessage/ChatEvent
 // tests below: the former Agent/UpdateAgent/GetAgent/ListAgentMessages
-// definitions no longer exist, and the v1 TeamService/Team/UpdateTeamRequest/
-// GetTeamRequest declarations were removed in the same generation unit (the
-// shared Go package would otherwise redeclare them).
+// definitions no longer exist, and the v1 team/prompt declarations are
+// removed from this generation unit (spec 059 US1).
 
 func TestTeamFrameMessagePartsTextRoundtrip(t *testing.T) {
 	// given: an outbound TeamFrame whose payload is a MessageParts of one
@@ -795,74 +793,6 @@ func TestFlowPartKindDiscriminatorFlattening(t *testing.T) {
 				t.Errorf("round-trip not stable: got %s, want %s", string(jsonBytes2), jsonStr)
 			}
 		})
-	}
-}
-
-func TestMessageContentRoundtrip(t *testing.T) {
-	// given: a Message whose content is a MessageParts (display blocks only)
-	// and whose role is the MessageRole enum (replaced the FrameSender sender
-	// field — FR-020). Message.type is reserved, so the serialized JSON must
-	// contain NO `type` field. Control FlowParts can never appear here
-	// (spec 023 FR-004).
-	given := &game.Message{
-		Name:      "sessions/test/agent/messages/msg-001",
-		MessageId: "msg-001",
-		Role:      game.MessageRole_MESSAGE_ROLE_AGENT,
-		Content: &game.MessageParts{
-			Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{Content: "Analyzing screenshot..."}}},
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "I will click the button."}}},
-			},
-		},
-	}
-
-	// when: marshal to protojson
-	jsonBytes, err := protojson.Marshal(given)
-	if err != nil {
-		t.Fatalf("protojson.Marshal() error: %v", err)
-	}
-
-	// then: the JSON must NOT carry a `type` field (reserved & removed)
-	jsonStr := string(jsonBytes)
-	if strings.Contains(jsonStr, `"type"`) {
-		t.Errorf("Message JSON unexpectedly contains reserved `type` field, got: %s", jsonStr)
-	}
-	// then: the JSON must NOT carry the old content oneof keys
-	for _, old := range []string{`"imageData"`, `"operation"`, `"operationResult"`} {
-		if strings.Contains(jsonStr, old) {
-			t.Errorf("Message JSON unexpectedly contains old content oneof key %s, got: %s", old, jsonStr)
-		}
-	}
-
-	// when: unmarshal from protojson
-	got := new(game.Message)
-	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
-		t.Fatalf("protojson.Unmarshal() error: %v", err)
-	}
-
-	// then: verify the MessageRole round-trips
-	if got.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
-		t.Errorf("role: got %v, want %v", got.GetRole(), game.MessageRole_MESSAGE_ROLE_AGENT)
-	}
-
-	// then: verify the MessageParts content survived with both parts in order
-	content := got.GetContent()
-	if content == nil {
-		t.Fatal("GetContent() returned nil")
-	}
-	parts := content.GetParts()
-	if len(parts) != 2 {
-		t.Fatalf("parts length: got %d, want 2", len(parts))
-	}
-	if parts[0].GetThinking() == nil {
-		t.Error("part[0] is not a ThinkingPart")
-	} else if parts[0].GetThinking().GetContent() != "Analyzing screenshot..." {
-		t.Errorf("part[0].thinking.content: got %q, want %q", parts[0].GetThinking().GetContent(), "Analyzing screenshot...")
-	}
-	if parts[1].GetText() == nil {
-		t.Error("part[1] is not a TextPart")
-	} else if parts[1].GetText().GetContent() != "I will click the button." {
-		t.Errorf("part[1].text.content: got %q, want %q", parts[1].GetText().GetContent(), "I will click the button.")
 	}
 }
 

@@ -1,8 +1,6 @@
 /**
  * Memory tool operations — the hermes-style conversion core behind the
- * `memory` tool, migrated from the v1 agent's
- * `projects/game/agent/src/mcp/memory/memory-mcp.ts` (spec 039 T015; removed
- * with agent v1 in spec 059 US1). The schema/result semantics are unchanged:
+ * `memory` tool (spec 039 T015). The schema/result semantics:
  *
  * - ONE tool with `action` (add/replace/remove) / `content` / `old_text` in
  *   the single-operation form XOR an ordered `operations[]` batch form

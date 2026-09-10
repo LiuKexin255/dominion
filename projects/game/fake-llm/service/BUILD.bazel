@@ -16,8 +16,6 @@ go_library(
         "testdata/chat.yaml",
         "testdata/operation.yaml",
         "testdata/operation_tools.yaml",
-        "testdata/planner.yaml",
-        "testdata/planner_tools.yaml",
         "testdata/saolei.yaml",
         "testdata/saolei_tools.yaml",
         "testdata/stall_recovery.yaml",

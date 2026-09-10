@@ -8,7 +8,7 @@
 
 export const name = "team";
 
-export { TeamService as default, TeamService } from "./team.js";
+export { Team as default, Team } from "./team.js";
 export { TEAM_SECTION_NAME, TEAM_SECTION_ORDER } from "./team.js";
 export type {
   TeamBroadcastSource,

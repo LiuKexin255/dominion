@@ -82,12 +82,14 @@ func main() {
 	// DesktopBridgeService.Connect bidi stream and the AgentService.Send
 	// team stream are long-lived, so this conn opts into keepalive pings
 	// (paired with the proxy's WithLongLivedServerKeepalive); session/memory
-	// stay unary → default.
+	// stay unary → default. The team* names describe the connection's
+	// payload — the /api/v2 team session surface (the Team singleton and its
+	// streams) — while the dial target itself is gameconst.ProxyTarget.
 	teamClientOpts := append(
 		clientOpts,
 		pgrpc.WithLongLivedClientKeepalive(),
 	)
-	teamConn, err := grpc.NewClient(solver.URI(gameconst.TeamTarget), teamClientOpts...)
+	teamConn, err := grpc.NewClient(solver.URI(gameconst.ProxyTarget), teamClientOpts...)
 	if err != nil {
 		log.Fatalf("team dial: %v", err)
 	}

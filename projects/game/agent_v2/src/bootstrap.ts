@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   // which would terminate the process and every live session with it. The
   // primary guards are the Send stream's 'error' listener and safeWrite in
   // server.ts; this handler covers any future regression of the same
-  // category (v1 precedent: projects/game/agent/src/bootstrap.ts).
+  // category.
   process.on("unhandledRejection", (reason) => {
     error("unhandled promise rejection", { reason: String(reason) });
   });

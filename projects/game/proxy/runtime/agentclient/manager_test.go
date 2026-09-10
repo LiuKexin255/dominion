@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/solver"
+	"dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -93,7 +94,7 @@ func TestManager_ListAfterRefresh(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0, 1),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()
@@ -117,7 +118,7 @@ func TestManager_GetReturnsCorrectConnRef(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0, 1),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()
@@ -146,7 +147,7 @@ func TestManager_GetReturnsCorrectConnRef(t *testing.T) {
 
 func TestManager_GetNonExistent(t *testing.T) {
 	resolver := &mockResolver{}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()
@@ -164,7 +165,7 @@ func TestManager_RefreshRemovesStaleConns(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0, 1, 2),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, tracker := setMockNewAgentConn()
 	defer restore()
@@ -206,7 +207,7 @@ func TestManager_RefreshAddsNewConns(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, tracker := setMockNewAgentConn()
 	defer restore()
@@ -239,7 +240,7 @@ func TestManager_RefreshResolveErrorKeepsExisting(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()
@@ -276,7 +277,7 @@ func TestManager_RefreshServiceNotFoundTreatedAsEmpty(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, tracker := setMockNewAgentConn()
 	defer restore()
@@ -315,7 +316,7 @@ func TestManager_RefreshServiceNotFoundThenAppears(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, tracker := setMockNewAgentConn()
 	defer restore()
@@ -357,7 +358,7 @@ func TestManager_CloseClosesAll(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0, 1),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()
@@ -398,7 +399,7 @@ func TestManager_CloseClosesAll(t *testing.T) {
 
 func TestManager_ListEmptyReturnsNil(t *testing.T) {
 	resolver := &mockResolver{}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	mgr := NewManager(resolver, target, time.Minute)
 
@@ -413,7 +414,7 @@ func TestManager_ListEmptyReturnsNil(t *testing.T) {
 }
 
 func TestManager_DefaultRefreshInterval(t *testing.T) {
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	mgr := NewManager(&mockResolver{}, target, 0)
 	if mgr.refreshInterval != DefaultRefreshInterval {
@@ -427,7 +428,7 @@ func TestManager_NewDaemonComponent(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()
@@ -476,7 +477,7 @@ func TestRefresherWorker_InitialRefreshSuccess(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()
@@ -531,7 +532,7 @@ func TestRefresherWorker_InitialRefreshSuccess(t *testing.T) {
 func TestRefresherWorker_InitialRefreshFails(t *testing.T) {
 	resolver := &mockResolver{}
 	resolver.setError(errors.New("connection failed"))
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	mgr := NewManager(resolver, target, time.Minute)
 	worker := &refresherWorker{
@@ -552,7 +553,7 @@ func TestRefresherWorker_PeriodicRefreshFailure(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
-	target := solver.MustParseTarget("game/agent:grpc")
+	target := solver.MustParseTarget(gameconst.AgentV2Target)
 
 	restore, _ := setMockNewAgentConn()
 	defer restore()

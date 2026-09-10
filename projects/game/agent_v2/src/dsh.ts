@@ -35,7 +35,7 @@ export const GLM_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/v1";
 /** Logical secret file name under $DOMINION_SECRET_DIR (specs/049-agent-v2-dsh-init/spec.md FR-008). */
 export const GLM_SECRET_FILE = "glm-api-token";
 
-/** DOMINION_SECRET_DIR fallback, matching the existing game agent convention (projects/game/agent/src/server.ts:124). */
+/** DOMINION_SECRET_DIR fallback, matching the deployment secret-mount convention (specs/049-agent-v2-dsh-init/spec.md FR-008). */
 const SECRET_DIR_FALLBACK = "/etc/secrets";
 
 /** Diagnostic prefix shared by every fail-loud message below. */

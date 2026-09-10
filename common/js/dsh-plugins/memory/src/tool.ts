@@ -1,9 +1,8 @@
 /**
  * The `memory` tool — the single model-facing tool of the memory plugin's
- * preset row. Parameter schema and domain semantics are migrated from the v1
- * agent's `projects/game/agent/src/mcp/memory/memory-mcp.ts:427-471`
- * (spec 039 T015; removed with agent v1 in spec 059 US1): the flat
- * `action`/`content`/`old_text` single-operation form XOR the `operations[]`
+ * preset row. Parameter schema and domain semantics follow spec 039 T015:
+ * the flat `action`/`content`/`old_text` single-operation form XOR the
+ * `operations[]`
  * batch form is validated in the operation core and answered with TEXT, no
  * read action exists, and every failure is a text result (never a thrown
  * tool error — 031 C15 neutral status; specs/059-agent-v2-team-mode/spec.md
