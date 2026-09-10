@@ -28,6 +28,14 @@ ts_project(
     visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
     ],
 )
@@ -50,16 +58,27 @@ js_library(
 )
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
-# runtime_deps closure walking. The placeholder plugin has no npm imports
-# beyond the cordis peer (resolved from the host composition, not bundled).
+# runtime_deps closure walking. npm_deps carries the plugin's runtime imports:
+# the tool definition helper (dsh-tools) and the memory-service gRPC client
+# (grpc-js + proto-loader). dsh-agent/dsh-scope/dsh-system-prompt and cordis
+# are type-only faces and resolve from the host composition. runtime_deps
+# carries the workspace packages the client consumes (the dominion resolver
+# and the logs face).
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-memory",
     lib = ":lib",
-    npm_deps = [],
+    npm_deps = [
+        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
-    runtime_deps = [],
+    runtime_deps = [
+        "//common/js/grpc/resolver:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+    ],
 )
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
@@ -73,6 +92,14 @@ vitest_test(
         allow_empty = True,
     ) + [
         ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
     ],
 )

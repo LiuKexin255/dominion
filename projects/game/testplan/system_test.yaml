@@ -1,9 +1,10 @@
 name: game-system-test
 description: |
-  Game system integration test — two suites over two deployment topologies
-  (specs/054-agent-v2-bugfixes/contracts/testplan.md §2). Six formerly
-  separate suites share one deployment, so the plan pays two deploys
-  instead of seven (five deployments and their 60s settle waits saved).
+  Game system integration test — three suites over three deployment
+  topologies (specs/054-agent-v2-bugfixes/contracts/testplan.md §2;
+  specs/059-agent-v2-team-mode/tasks.md T023). Six formerly separate suites
+  share one deployment, so the trunk regression pays one deploy instead of
+  several 60s settle waits.
 
   Suite 1 (game-system): the full system on deploy_agent_v2.yaml — the
     won topology whose fake-desktop executor plays the won board on the
@@ -18,6 +19,10 @@ description: |
     executor running the progressive scenario plus the disconnect fault
     env. Placed after the main suite: guitar runs suites serially and
     stops on the first failure, so the trunk regression surfaces first.
+  Suite 3 (game-memory-down): the team materialization fail-loud branch
+    (T023 / quickstart V7-2) on deploy_agent_v2_memory_down.yaml — the
+    same service list WITHOUT the memory service, so the planner's
+    memory prefetch rejects. Last: it is the narrowest branch.
 
   Cases isolate through unique session/preset resource names, so the
   shared deployment needs no per-case redeployment.
@@ -45,3 +50,11 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_v2_game_disconnect_test  # mid-game disconnect three-game sequence
+  - name: game-memory-down
+    description: "The team materialization fail-loud branch (specs/059-agent-v2-team-mode/tasks.md T023 / quickstart V7-2) on the memory-down topology (deploy_agent_v2_memory_down.yaml): the same service list as deploy_agent_v2.yaml without the memory service, so the planner member's materialization-time `plannerMemory.load` prefetch cannot resolve its dominion endpoint. agent_v2_memory_down_test asserts UpdateTeam fails with a 5xx, GetTeam stays NOT_FOUND (no half-materialized team), the failure is cleanly retryable, and the Mongo-backed configuration face keeps serving. The binary is separate from agent_v2_preset_test because guitar runs whole bazel targets as suite cases without per-suite test-function filtering and that suite needs memory present"
+    deploy: //projects/game/testplan/deploy_agent_v2_memory_down.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_v2_memory_down_test  # memory-prefetch fail-loud rollback

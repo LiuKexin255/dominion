@@ -83,6 +83,23 @@ messages:
     min_turn: 2
     text: "收到复盘。本局到此为止，暂不开新局，保持待命。"
     responses_only: true
+  # team-player-role-lock asserts the player member's system prompt carries
+  # BOTH its persona anchor and the saolei tool guidance (the preset-row
+  # plugin's `saolei:guidance` section): the second system_keyword is the
+  # guidance section's heading, so the entry fires only when the mounted
+  # player composition reached the model context (T023 role-lock positive
+  # assertion). The reverse absence (no memory traces in the player prompt /
+  # no saolei guidance in the planner prompt) awaits the system-prompt read
+  # surface (T032/T034); this phase cannot observe absence through the
+  # keyword matcher.
+  - name: team-player-role-lock
+    keywords:
+      - player-role-lock
+    system_keywords:
+      - 你是扫雷 player
+      - "## saolei (Minesweeper tools)"
+    text: "player 角色锁定：扫雷工具守则已加载。"
+    responses_only: true
   # team-player-user-intake digests a queued user message (FR-011: 当前成员
   # 回合结束后先消化排队消息): the user message is the last user message of
   # the drive and misses every broadcast anchor, so the intake entry answers

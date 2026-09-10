@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AgentHandle, AgentStatus, CreateAgentOptions } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
+import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TurnStream } from "./history.js";
@@ -122,7 +123,14 @@ function fakeMember(id: string, emitStatus: (member: MemberFake, status: AgentSt
   return member;
 }
 
-function createHarness(): Harness {
+interface HarnessOptions {
+  /** A composed `ctx.plannerMemory` face to resolve instead of the deps seam. */
+  readonly composedPlannerMemory?: { load: ReturnType<typeof vi.fn> };
+  /** Omit both the composed service and the deps seam (composition-error test). */
+  readonly omitPlannerMemory?: boolean;
+}
+
+function createHarness(options: HarnessOptions = {}): Harness {
   const listeners = new Map<string, Listener[]>();
   const on = vi.fn((name: string, listener: Listener) => {
     const list = listeners.get(name) ?? [];
@@ -177,7 +185,15 @@ function createHarness(): Harness {
   const ctx = {
     on,
     agents: { create: agentsCreate, get: vi.fn() },
-    get: vi.fn((name: string) => (name === "presetAuthoring" ? authoring : undefined)),
+    get: vi.fn((name: string) => {
+      if (name === "presetAuthoring") {
+        return authoring;
+      }
+      if (name === "plannerMemory") {
+        return options.composedPlannerMemory;
+      }
+      return undefined;
+    }),
     desktopBridge: {},
     fiber: { dispose: fiberDispose },
     llm: { listModels: vi.fn(async () => [{ id: "glm-5.3" }]) },
@@ -191,9 +207,13 @@ function createHarness(): Harness {
       drain: (member: AgentHandle) => teamQueues.get(String(member.agent.id))?.splice(0) ?? [],
     },
     mountPlayerRuntime,
-    loadPlannerMemory,
     logger: { error: loggerError },
     provider: "glm-responses",
+    // The default harness binds the explicit test seam; the composed-service
+    // cases leave it unset so the production resolution path runs.
+    ...(options.omitPlannerMemory || options.composedPlannerMemory !== undefined
+      ? {}
+      : { loadPlannerMemory }),
   });
   return {
     ctx,
@@ -436,9 +456,29 @@ describe("TeamSessions.materialize", () => {
     expect(h.agentsCreate).not.toHaveBeenCalled();
 
     const missing = createHarness();
-    missing.authoring.get.mockRejectedValueOnce(new Error("preset not found"));
+    missing.authoring.get.mockRejectedValueOnce(
+      new PresetAuthoringError("NOT_FOUND", 'preset "p-player" not found'),
+    );
     await expect(materializeDefault(missing)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(missing.agentsCreate).not.toHaveBeenCalled();
+  });
+
+  it("propagates a preset store failure instead of rewriting it to unknown-preset", async () => {
+    const h = createHarness();
+    h.authoring.get.mockRejectedValueOnce(
+      new PresetAuthoringError("INTERNAL", "preset store operation failed: mongo unreachable"),
+    );
+
+    const err = await materializeDefault(h).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    // The store outage keeps its own code and cause chain; only a NOT_FOUND
+    // lookup is the unknown-preset INVALID_ARGUMENT case.
+    expect(err).toBeInstanceOf(PresetAuthoringError);
+    expect((err as PresetAuthoringError).code).toBe("INTERNAL");
+    expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 
   it("rolls the whole materialization back when a member setup fails, then retries cleanly (no half-materialized team)", async () => {
@@ -480,6 +520,55 @@ describe("TeamSessions.materialize", () => {
     expect(stream.ended).toBe(true);
     // Fresh lifecycle: projections restart empty.
     expect(h.sessions.listTeamMessages(S1)).toEqual([]);
+  });
+});
+
+describe("TeamSessions planner memory wiring (T021)", () => {
+  it("prefetches the planner snapshot through the composed ctx.plannerMemory.load", async () => {
+    const composedLoad = vi.fn(async () => {});
+    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+
+    await materializeDefault(h);
+
+    // Only the planner member prefetches; the binding passes the planner's
+    // agent-scoped context and the (template, session ID) scope key — the ID
+    // half, NOT the full session resource name (the memory client builds
+    // `templates/{template}/sessions/{session}` from these halves; T023
+    // caught the doubled-prefix wiring).
+    expect(composedLoad).toHaveBeenCalledTimes(1);
+    const planner = member(h, PLANNER_ID);
+    expect(composedLoad.mock.calls[0]?.[0]).toBe(planner.ctx);
+    expect(composedLoad.mock.calls[0]?.[1]).toEqual({
+      template: "saolei",
+      session: "s1",
+    });
+  });
+
+  it("rolls the whole materialization back when the composed load rejects (no half-materialized team)", async () => {
+    const composedLoad = vi.fn(async () => {
+      throw new Error("memory service unreachable");
+    });
+    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+
+    await expect(materializeDefault(h)).rejects.toThrow("memory service unreachable");
+    const player = member(h, PLAYER_ID);
+    expect(player.handle.dispose).toHaveBeenCalledTimes(1);
+    expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
+    // The team never registered: the rollback is complete.
+    expect(h.teamRegister).not.toHaveBeenCalled();
+
+    // Retry with the storage reachable materializes from scratch.
+    composedLoad.mockImplementation(async () => {});
+    await materializeDefault(h);
+    expect(h.sessions.getTeam(S1).name).toBe(`${S1}/team`);
+    expect(composedLoad).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails loud when neither the composed service nor the test override is present", async () => {
+    const h = createHarness({ omitPlannerMemory: true });
+
+    await expect(materializeDefault(h)).rejects.toThrow(/ctx\.plannerMemory/);
+    expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 });
 

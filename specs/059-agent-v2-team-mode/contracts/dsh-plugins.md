@@ -70,7 +70,7 @@ ctx.team.register({ goal, members, context? })
 
 **两个功能面**（memory-plugin 决策 ①②③）+ **host 服务面**（决策 ⑥ 路径 A）：
 
-1. **工具行（preset 行挂载）**：`defineTool` 注册单一 `memory` 工具——参数 `{action: add|replace|remove, content, old_text}` 单操作形式 XOR `{operations[]}` 批量形式（互斥校验；批量原子：preflight 全过才提交）；`old_text` 大小写敏感子串定位（0 命中/多命中返回全部条目或预览的文本结果）；无 read 动作；**失败也是文本结果**（不抛错、不中断对话）；存储访问经 host 服务面（工具 exec 时解析，per-agent scope 键控）。
+1. **工具行（preset 行挂载）**：`defineTool` 注册单一 `memory` 工具——参数 `{action: add|replace|remove, content, old_text}` 单操作形式 XOR `{operations[]}` 批量形式（互斥校验；批量原子：preflight 全过才提交）；`old_text` 大小写敏感子串定位（0 命中/多命中返回全部条目或预览的文本结果）；无 read 动作；**失败也是文本结果**（不抛错、不中断对话）；存储访问经 host 服务面——preset 行 `apply` 从本行上下文绑定 `ctx.plannerMemory`（agent scope 的 isolate 边界使 `exec.agent.ctx` 的属性走查不可达，T023 实测修订），exec 时按 agent 解析已绑定的 per-agent scope。
 2. **快照 section（preset 行挂载）**：函数式 `text: (context) => snapshotCache.get(context.scope) ?? ""`，order 200+，空自动不渲染；快照由物化 setup 的 `load` 预取填充（先于首次装配，无竞态）；实例生命周期固定。
 3. **host 服务面（host 行，`ctx.plannerMemory`）**：`load(agentCtx, {template, session})`——异步读 memory 服务（gRPC client，迁移自 v1 `projects/game/agent/src/memory-client.ts`，`dominion:///game/memory:50051`）→ 渲染纯文本快照（每行一条、不含 id）→ 写入快照缓存并经 `agentCtx` 绑定 scope；**失败 throw**（= 物化回滚，fail-loud，决策 ⑧）；写路径（add/replace/remove/批量）同经此服务面落 memory 服务，立即持久化。
 - **不注册 guidance section**（单工具无跨调用协调需求）；工具 description 改写为 v2 快照语义（"快照固定于 agent 启动"）。

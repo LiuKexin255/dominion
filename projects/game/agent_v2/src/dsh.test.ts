@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultLogger } from "@dominion/common-js-logs";
 import * as fs from "node:fs";
+import * as path from "node:path";
 // js-yaml v5 ships a real ESM build — named imports are statically resolved.
 import { YAML11_SCHEMA, defineScalarTag, load } from "js-yaml";
 import { bootDsh, cordisConfigPath, GLM_DEFAULT_BASE_URL, GLM_SECRET_FILE } from "./dsh.js";
@@ -297,6 +298,63 @@ function loadManifest(): ManifestRow[] {
   return load(text, { schema }) as ManifestRow[];
 }
 
+/**
+ * The pool template data (T021): the default persona bases and the role
+ * tool rows. The fake-llm team fixtures anchor on the persona identity
+ * prefixes (system_keywords「你是扫雷 player」/「你是扫雷 planner」,
+ * projects/game/fake-llm/service/testdata/team_{player,planner}.yaml) and the
+ * authoring row rules above must match the shipped rows.
+ */
+describe("preset template data (T021)", () => {
+  const templateRoot = path.resolve(import.meta.dirname, "..", "preset-templates");
+
+  interface TemplateCompositionRow {
+    name?: string;
+    config?: { text?: string };
+  }
+
+  function readTemplate(role: string): {
+    rows: TemplateCompositionRow[];
+    persona: string;
+  } {
+    const file = path.join(templateRoot, role, role, "agent.cordis.yml");
+    const rows = load(fs.readFileSync(file, "utf8")) as TemplateCompositionRow[];
+    const personaRows = rows.filter((entry) => entry.name === "@deepseek-ai/dsh-persona");
+    expect(personaRows).toHaveLength(1);
+    return { rows, persona: personaRows[0]?.config?.text ?? "" };
+  }
+
+  it("keeps the cross-phase identity anchors and the role duties in the default bases", () => {
+    const player = readTemplate("player");
+    // T004/T008/T011 lockstep: the fake-llm system_keywords match this exact
+    // prefix by containment, so the anchor must stay verbatim.
+    expect(player.persona.startsWith("你是扫雷 player")).toBe(true);
+    expect(player.persona).toContain("saolei");
+    expect(player.persona).not.toContain("memory");
+    // R2 boundary: no team-level facts (broadcast wrappers/roster).
+    expect(player.persona).not.toContain("-message>");
+    expect(player.persona).not.toContain("名册");
+
+    const planner = readTemplate("planner");
+    expect(planner.persona.startsWith("你是扫雷 planner")).toBe(true);
+    expect(planner.persona).toContain("复盘");
+    expect(planner.persona).toContain("memory");
+    expect(planner.persona).not.toContain("-message>");
+    expect(planner.persona).not.toContain("名册");
+  });
+
+  it("ships the role's tool-plugin row and no other role's row (authoring rule lockstep)", () => {
+    const playerRows = readTemplate("player").rows.map((entry) => entry.name ?? "");
+    expect(playerRows.filter((name) => name === "@dominion/dsh-saolei")).toHaveLength(1);
+    expect(playerRows).not.toContain("@dominion/dsh-memory");
+    expect(playerRows).not.toContain("@dominion/dsh-memory/preset-row");
+
+    const plannerRows = readTemplate("planner").rows.map((entry) => entry.name ?? "");
+    expect(plannerRows.filter((name) => name === "@dominion/dsh-memory/preset-row")).toHaveLength(1);
+    expect(plannerRows).not.toContain("@dominion/dsh-saolei");
+  });
+});
+
 describe("cordis.yml composition manifest", () => {
   const rows = loadManifest();
 
@@ -408,6 +466,18 @@ describe("cordis.yml composition manifest", () => {
       mongoUri: expect.stringContaining("MONGO_URI"),
       mongoDatabase: "game_agent_v2",
       mongoCollection: "presets",
+      // The scene row lock: each pool template must carry exactly its role's
+      // tool-plugin row (T021; preset-api.md §2, dsh-plugins.md §5).
+      templateRules: {
+        player: {
+          required: ["@dominion/dsh-saolei"],
+          forbidden: ["@dominion/dsh-memory", "@dominion/dsh-memory/preset-row"],
+        },
+        planner: {
+          required: ["@dominion/dsh-memory/preset-row"],
+          forbidden: ["@dominion/dsh-saolei"],
+        },
+      },
     });
   });
 

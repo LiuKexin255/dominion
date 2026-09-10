@@ -59,21 +59,22 @@ every request (`helpers_test.go` `doHTTPTrace`).
 
 ## 2. Suites
 
-Two suites over the two deployment topologies
-(specs/054-agent-v2-bugfixes/contracts/testplan.md §2) — the six
-won-topology suites of the pre-refactor plan share one deployment, so the
-plan pays two deploys instead of seven:
+Three suites over three deployment topologies
+(specs/054-agent-v2-bugfixes/contracts/testplan.md §2;
+specs/059-agent-v2-team-mode/tasks.md T023) — the six won-topology suites
+of the pre-refactor plan share one deployment:
 
 | suite | deploy | binaries | focus |
 |---|---|---|---|
-| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the team conversation face (team stream, member views, queue/cancel/refresh windows, preset pools, materialization) → the team game face (won chain on the executor, terminal win/loss reviews, desktop-absent, multi-session isolation) → the desktop face (flow stream), cases serial in module order |
+| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the team conversation face (team stream, member views, queue/cancel/refresh windows, preset pools, materialization) → the team game face (won chain on the executor, terminal win/loss reviews with the review memory write, desktop-absent, multi-session isolation) → the desktop face (flow stream), cases serial in module order |
 | game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the team mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
+| game-memory-down | deploy_agent_v2_memory_down.yaml | `agent_v2_memory_down_test` | the team materialization fail-loud branch (no memory service: the planner memory prefetch rejects, UpdateTeam 5xx + GetTeam NOT_FOUND + retryable) |
 
 `guitar run` executes suites and cases serially in YAML order and stops on
 the first failure — the main suite runs first so a trunk regression surfaces
-before the disconnect branch. `guitar run` executes whole bazel targets as
+before the narrow branches. `guitar run` executes whole bazel targets as
 suite cases without per-suite test-function filtering, which is why the
-disconnect branch has its own binary
+disconnect and memory-down branches have their own binaries
 (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4).
 
 ## 3. fake-llm data file format
@@ -128,9 +129,9 @@ observes it; the expected reasoning/text pieces are pinned as the `agentV2*`
 constants in `agent_v2_helpers_test.go`.
 
 The team fixtures `team_planner.yaml` and `team_player.yaml` serve the
-two-role chain (specs/059-agent-v2-team-mode/tasks.md T011/T018): every entry
-anchors on the member persona's identity opening (`system_keywords`), the
-planner side emits the opening strategy / game-end review / queued-message
+two-role chain (specs/059-agent-v2-team-mode/tasks.md T011/T018/T023): every
+entry anchors on the member persona's identity opening (`system_keywords`),
+the planner side emits the opening strategy / game-end review / queued-message
 digest, and the player side opens the game when a strategy broadcast arrives,
 optionally opens the next game, or stops. `team-planner-wait` is the
 controllable long-running planner turn (4s inter-chunk delay) the
@@ -138,6 +139,25 @@ queue/cancel/refresh cases pivot on; queued user messages must carry one of
 `暂停/稍等/等待/继续` and the first user message one of the opening anchors
 (see the per-file comments). The expected texts are pinned as the `team*`
 constants in `agent_v2_helpers_test.go`.
+
+The T023 additions:
+
+- `team-planner-review-stop` (the LOSS review) carries a `memory` tool_call
+  with a fixed observation content; the `team-planner-review-stop-text` tool
+  rule in `agent_v2_saolei_tools.yaml` matches the SUT's `memory added`
+  result and continues with the review body. The team memory large test
+  asserts the tool result and the entry persisted through
+  `/api/v1/.../memories`.
+- `team-planner-memory-snapshot` fires only when the planner's assembled
+  system prompt carries the reloaded snapshot (header + the fixed
+  observation): the memory test refreshes the team after the review and
+  asserts the snapshot reply — the fresh planner's setup prefetch must have
+  reached the model context.
+- `team-player-role-lock` requires BOTH the player persona anchor and the
+  saolei guidance heading in `system_keywords`, asserting the mounted player
+  composition (preset persona + `saolei:guidance` section) end to end. The
+  reverse absence assertions need the `GetTeamMember.system_prompt` read
+  surface (T032/T034) and are deferred to T034.
 
 The Responses endpoint derives each tool-call's wire identity from the request
 input (`responsesWireIDs` in `responses.go`): deterministic for the same

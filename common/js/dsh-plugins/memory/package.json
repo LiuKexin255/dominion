@@ -14,8 +14,18 @@
             "default": "./src/preset-row.js"
         }
     },
+    "dependencies": {
+        "@deepseek-ai/dsh-tools": "catalog:",
+        "@dominion/common-js-grpc-resolver": "workspace:*",
+        "@dominion/common-js-logs": "workspace:*",
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:"
+    },
     "peerDependencies": {
-        "@deepseek-ai/cordis": "catalog:"
+        "@deepseek-ai/cordis": "catalog:",
+        "@deepseek-ai/dsh-agent": "catalog:",
+        "@deepseek-ai/dsh-scope": "catalog:",
+        "@deepseek-ai/dsh-system-prompt": "catalog:"
     },
     "devDependencies": {
         "@types/node": "catalog:",

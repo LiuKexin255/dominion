@@ -24,9 +24,14 @@
 #     wrapper, contracts/dsh-plugins.md §1) and require the terminal result
 #     in the pre-last-user history, so the review fires whether the last
 #     player output is the terminal summary or a later queued-user intake
-#     reply. min_turn 2 keeps both off the first turn.
+#     reply. min_turn 2 keeps both off the first turn. The LOSS review writes
+#     one fixed cross-game observation through the memory tool first (T023
+#     persistence path) and continues with its review text through the tool
+#     rule (agent_v2_saolei_tools.yaml).
 #   - queued-user intake — the user message is the last user message, which
 #     misses the broadcast markers, so the reply entry answers it instead.
+#   - snapshot reload — team-planner-memory-snapshot fires only after a
+#     refresh whose planner prefetched the written observation (T023).
 #
 # Lockstep: the expected texts are pinned by the large-test constants in
 # projects/game/testplan/ (T018); the embedded-store count/index lockstep
@@ -85,8 +90,12 @@ messages:
     min_turn: 2
     text: "本局复盘：全部雷区排除，节奏正确；下一局仍从中心区域推进，数字密集处先推理再操作。@player 请按以下下一局计划开始下一局。"
     responses_only: true
-  # team-planner-review-stop is the game-end review of a lost game: it emits
-  # the review body only (no next-game instruction), so the structurally
+  # team-planner-review-stop is the game-end review of a lost game: it writes
+  # the fixed cross-game observation through the memory tool FIRST (T023: the
+  # review path is the memory-write path the team memory large test asserts),
+  # and the tool-result continuation
+  # (testdata/agent_v2_saolei_tools.yaml team-planner-review-stop-text) then
+  # emits the review body only (no next-game instruction), so the structurally
   # driven player consumes the broadcast and opens no new game (quickstart.md
   # V4: "不开局" behavior).
   - name: team-planner-review-stop
@@ -98,7 +107,11 @@ messages:
     history_keywords:
       - "game status: lost"
     min_turn: 2
-    text: "本局复盘：触雷失败，边角判断有偏差。本局到此为止，不再安排新一局。@player 请保持待命。"
+    tool_call:
+      name: memory
+      arguments:
+        action: add
+        content: 本局复盘观察：中心区域开局稳定，边角标记需谨慎。
     responses_only: true
   # team-planner-user-reply digests a queued user message (FR-011 消化优先于
   # 切换, V6-2): the queued message is the last user message and misses the
@@ -143,4 +156,25 @@ messages:
       - "延迟排查：第二段。"
     chunk_delays: ["4s"]
     text: "延迟排查完成，暂无新计划。"
+    responses_only: true
+  # team-planner-memory-snapshot fires only when the planner's materialized
+  # system prompt already carries the RELOADED long-term memory snapshot: its
+  # system_keywords require the snapshot section's header and the fixed
+  # observation line the review path writes. The team memory large test uses
+  # it after a team refresh — the fresh planner instance prefetches the
+  # persisted entry in its setup, so the section is present at its first
+  # assembly — to assert the snapshot reached the model context (T023; the
+  # previous instance's snapshot was fixed at its own start and cannot match).
+  # It shares the opening startup keywords and wins the specificity tie by
+  # Name ("team-planner-memory-snapshot" < "team-planner-opening"), shadowing
+  # the opening entry only for sessions carrying that exact observation (no
+  # other fixture session writes that content).
+  - name: team-planner-memory-snapshot
+    keywords:
+      - 扫雷
+    system_keywords:
+      - 你是扫雷 planner
+      - 长期记忆：
+      - 本局复盘观察：中心区域开局稳定
+    text: "长期记忆快照已生效：中心区域开局稳定，边角标记需谨慎。"
     responses_only: true

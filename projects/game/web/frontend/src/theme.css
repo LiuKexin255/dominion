@@ -223,6 +223,25 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* role 过滤（preset-api.md §1 ListPresets role 参数）：列表顶部单选下拉，
+ * 选项与创建表单的 role 池同源。 */
+.presets-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.presets-filter select {
+  padding: 4px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: inherit;
+  font: inherit;
+}
+
 .presets-error {
   padding: 8px 12px;
   border-radius: 8px;
@@ -277,11 +296,30 @@ body {
   gap: 2px;
 }
 
+.preset-item-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .preset-item-name {
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 列表 role 标识（池归属徽标）：样式对齐成员标签惯例（.member-tag）。 */
+.preset-role-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--app-border);
+  background: var(--app-bg);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .preset-item-time {
@@ -317,6 +355,28 @@ body {
   gap: 4px;
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* 创建表单的 role 单选（player/planner）与编辑表单的 role 只读值：role
+ * 创建必选、创建后不可改（preset-api.md §2）。 */
+.preset-role-options {
+  display: flex;
+  gap: 12px;
+}
+
+.preset-role-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.preset-role-option input {
+  margin: 0;
+}
+
+.preset-role-value {
+  color: var(--dsw-alias-label-primary);
 }
 
 .preset-prompt-input {

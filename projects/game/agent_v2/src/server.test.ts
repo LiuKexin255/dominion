@@ -448,6 +448,21 @@ describe("AgentService.UpdateTeam handler", () => {
     expect(error?.message).toContain("scene check failed");
     expect(error?.cause).toBeInstanceOf(TeamSessionError);
   });
+
+  it("maps a preset-store INTERNAL through the cause chain (never unknown-preset)", async () => {
+    const deps = fakeDeps();
+    deps.sessions.materialize.mockRejectedValueOnce(
+      new PresetAuthoringError("INTERNAL", "preset store operation failed: mongo unreachable"),
+    );
+    const handlers = buildTeamHandlers(deps);
+    const callback = invokeUnary(handlers.UpdateTeam as never, updateRequest());
+
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+    const error = callback.mock.calls[0][0] as grpc.ServiceError;
+    expect(error?.code).toBe(grpc.status.INTERNAL);
+    expect(error?.message).toContain("mongo unreachable");
+    expect(error?.cause).toBeInstanceOf(PresetAuthoringError);
+  });
 });
 
 describe("AgentService.GetTeam / GetTeamMember handlers", () => {

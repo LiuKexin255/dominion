@@ -186,6 +186,56 @@ function parseCompositionRows(text: string, compositionPath: string): Compositio
 }
 
 /**
+ * Composition row rules for one template (the caller's scene lock, e.g.
+ * "the player pool template carries exactly the saolei tool row and no
+ * memory row"). The rule table is CALLER data: the plugin validates package
+ * names as opaque strings, so no scene vocabulary enters this package
+ * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2; the rules are
+ * declared by the hosting composition — agent_v2's cordis.yml).
+ */
+export interface TemplateRowRules {
+  /** Package names the template must contain EXACTLY ONCE each. */
+  readonly required: readonly string[];
+  /** Package names the template must NOT contain. */
+  readonly forbidden: readonly string[];
+}
+
+/**
+ * Validate a resolved template's composition rows against the caller's
+ * rules. Runs BEFORE the copy so a role-broken template can never produce a
+ * materialized preset (fail-fast, INVALID_ARGUMENT — preset-api.md §2
+ * "模板与创作": each pool template ships its role's plugin rows).
+ */
+export async function validateTemplateRows(
+  template: AgentPreset,
+  rules: TemplateRowRules,
+  fs: MaterializeFs,
+): Promise<void> {
+  const rows = parseCompositionRows(await fs.readTextFile(template.path), template.path);
+  const names = rows.map((row) => (typeof row.name === "string" ? row.name : ""));
+  // `?? []` keeps the validator total for callers that bypass Config and
+  // pass a one-sided rule table (the schema fills the omitted half).
+  for (const required of rules.required ?? []) {
+    const count = names.filter((name) => name === required).length;
+    if (count !== 1) {
+      throw new PresetAuthoringError(
+        "INVALID_ARGUMENT",
+        `template "${template.id}" must contain exactly one "${required}" row, found ${count}` +
+          ` (${template.path})`,
+      );
+    }
+  }
+  for (const forbidden of rules.forbidden ?? []) {
+    if (names.includes(forbidden)) {
+      throw new PresetAuthoringError(
+        "INVALID_ARGUMENT",
+        `template "${template.id}" must not contain the "${forbidden}" row (${template.path})`,
+      );
+    }
+  }
+}
+
+/**
  * Locate the single persona row, rejecting a non-exactly-one row count with
  * INVALID_ARGUMENT — the C1 patch precondition (composition-manifest.md §3).
  */
@@ -257,6 +307,8 @@ export interface MaterializeCopyInput {
   template: string;
   persona: string;
   displayName?: string;
+  /** Caller-declared composition row rules for the template (see {@link TemplateRowRules}). */
+  templateRules?: TemplateRowRules;
 }
 
 /**
@@ -266,10 +318,12 @@ export interface MaterializeCopyInput {
  * persona skips the patch — the copy then carries the template's persona row
  * text, which is the role's default base the empty-persona fallback resolves
  * to (specs/059-agent-v2-team-mode/contracts/preset-api.md §2 persona 空值).
- * Any failure after the copy landed rolls the half-materialized directory
- * back (best-effort) before the error propagates — store state is the
- * caller's concern, so the caller rolls its own record back on its own
- * failures.
+ * Caller-declared {@link TemplateRowRules} are validated right after the
+ * template resolves and BEFORE the copy, so a role-broken template fails
+ * fast with no residue. Any failure after the copy landed rolls the
+ * half-materialized directory back (best-effort) before the error
+ * propagates — store state is the caller's concern, so the caller rolls its
+ * own record back on its own failures.
  */
 export async function materializeCopy(
   deps: { roster: RosterSeam; fs: MaterializeFs },
@@ -293,6 +347,12 @@ export async function materializeCopy(
       "INVALID_ARGUMENT",
       `template "${template.id}" is broken: ${template.broken}`,
     );
+  }
+
+  if (input.templateRules !== undefined) {
+    // Fail before any copy side effect: a template missing (or wrongly
+    // carrying) its role's plugin rows must never materialize a preset.
+    await validateTemplateRows(template, input.templateRules, deps.fs);
   }
 
   try {
@@ -345,8 +405,10 @@ export async function updateMaterialization(
   try {
     copy = await deps.roster.resolve(input.id);
   } catch (err) {
-    // The store record exists, so the copy directory must too; a missing
-    // directory means store/disk divergence, which fails loud as INTERNAL.
+    // The service face rebuilds a missing copy from the store record before
+    // calling here (pod-restart management continuity), so an unresolvable
+    // id at this point is a race with another writer (or store/disk
+    // divergence): fail loud as INTERNAL.
     if (err instanceof UnknownPresetError) {
       throw new PresetAuthoringError(
         "INTERNAL",
@@ -389,7 +451,9 @@ export async function updateMaterialization(
 /**
  * Remove the materialized copy's directory (contract §4 remove). Roster
  * refusals surface verbatim through {@link mapRosterError}: a system-trust
- * template hits FAILED_PRECONDITION; an unknown id maps to NOT_FOUND.
+ * template hits FAILED_PRECONDITION; an unknown id maps to NOT_FOUND. The
+ * service face treats that NOT_FOUND as the pod-restart state and still
+ * removes the store record (the copy is a derived artifact).
  */
 export async function removeMaterialization(roster: RosterSeam, id: string): Promise<void> {
   try {

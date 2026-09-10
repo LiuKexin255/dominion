@@ -46,6 +46,7 @@ import type {
   OrchestratorLogger,
   TeamSeam,
 } from "@dominion/dsh-saolei-loop";
+import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
 import type { DshContext } from "./dsh.js";
@@ -144,7 +145,10 @@ export interface TeamSessionsDeps {
   readonly team?: TeamSeam;
   /** Player game-runtime mount; defaults to the desktop-bridge builder. */
   readonly mountPlayerRuntime?: MountPlayerRuntime;
-  /** Planner memory prefetch seam; defaults to `ctx.plannerMemory.load` when present. */
+  /**
+   * Planner memory prefetch override (unit tests); production binds the real
+   * `ctx.plannerMemory.load` host-row service face (T021).
+   */
   readonly loadPlannerMemory?: LoadPlannerMemory;
   /** Orchestration failure reporter; defaults to the repo logger face. */
   readonly logger?: OrchestratorLogger;
@@ -394,7 +398,10 @@ export class TeamSessions {
     try {
       await orchestrator.materialize({
         session,
-        template: parsedSession.template,
+        // The memory scope key halves are the business template and the
+        // session ID — the full session resource name would double the
+        // prefix in the memory service parent (T023 wiring fix).
+        memoryScope: { template: parsedSession.template, session: parsedSession.session },
         goal: TEAM_GOAL,
         player: { preset: this.presetId(player.preset), model: playerModel },
         planner: { preset: this.presetId(planner.preset), model: plannerModel },
@@ -633,9 +640,9 @@ export class TeamSessions {
 
   /** The production orchestrator, composed over the ctx plus injected seams. */
   private createOrchestrator(): TeamOrchestrator {
-    const loadPlannerMemory = this.loadPlannerMemorySeam();
     return new TeamOrchestrator(this.ctx, {
       compose: this.composeSeam(),
+      loadPlannerMemory: this.loadPlannerMemoryBinding(),
       logger: this.deps.logger ?? {
         error: (message, context) =>
           error(message, {
@@ -650,7 +657,6 @@ export class TeamSessions {
       ...(this.deps.mountPlayerRuntime === undefined
         ? {}
         : { mountPlayerRuntime: this.deps.mountPlayerRuntime }),
-      ...(loadPlannerMemory === undefined ? {} : { loadPlannerMemory }),
       ...(this.deps.provider === undefined ? {} : { provider: this.deps.provider }),
     });
   }
@@ -669,15 +675,30 @@ export class TeamSessions {
     return (preset) => authoring.compose(preset);
   }
 
-  /** Planner memory prefetch: host injection first, else `ctx.plannerMemory`. */
-  private loadPlannerMemorySeam(): LoadPlannerMemory | undefined {
+  /**
+   * Bind the planner memory prefetch (T021): the explicit test override
+   * first, else the composed `ctx.plannerMemory` host-row service face
+   * (common/js/dsh-plugins/memory/src/index.ts; the `memory` row in
+   * cordis.yml provides it). The method is a closure, so the extracted
+   * `load` needs no receiver. A missing service is a composition error —
+   * fail-loud rather than silently materializing a planner without its
+   * memory snapshot (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md
+   * §2/§3).
+   */
+  private loadPlannerMemoryBinding(): LoadPlannerMemory {
     if (this.deps.loadPlannerMemory !== undefined) {
       return this.deps.loadPlannerMemory;
     }
     const memory = this.ctx.get("plannerMemory") as
       | { load?: LoadPlannerMemory }
       | undefined;
-    return memory?.load;
+    const load = memory?.load;
+    if (load === undefined) {
+      throw new Error(
+        "team sessions: ctx.plannerMemory is not composed; the memory host row is required to materialize a team",
+      );
+    }
+    return load;
   }
 
   /**
@@ -780,11 +801,18 @@ export class TeamSessions {
     let view: { role?: string };
     try {
       view = await authoring.get(presetId);
-    } catch {
-      throw new TeamSessionError(
-        "INVALID_ARGUMENT",
-        `unknown preset "${presetId}"; create a preset in the ${role} pool first`,
-      );
+    } catch (err) {
+      // Only a genuine store miss is the unknown-preset case. A store outage
+      // keeps its own error (INTERNAL) and cause chain instead of being
+      // rewritten to INVALID_ARGUMENT, matching the preset-api error surface
+      // (specs/059-agent-v2-team-mode/contracts/preset-api.md §2 错误语义).
+      if (err instanceof PresetAuthoringError && err.code === "NOT_FOUND") {
+        throw new TeamSessionError(
+          "INVALID_ARGUMENT",
+          `unknown preset "${presetId}"; create a preset in the ${role} pool first`,
+        );
+      }
+      throw err;
     }
     if (view.role !== role) {
       throw new TeamSessionError(

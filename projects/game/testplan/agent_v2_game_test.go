@@ -281,13 +281,16 @@ func TestAgentV2TeamGameTerminalLostAndReviewStops(t *testing.T) {
 	if _, text := teamTurnBlocks(turns[3]); text != teamPlayerResumeStopText {
 		t.Errorf("stop acknowledgement = %q, want %q (不开局)", text, teamPlayerResumeStopText)
 	}
-	// Total tool results: 2 — no second init was ever dispatched.
-	var toolResults int
-	for _, turn := range turns {
-		toolResults += len(teamTurnToolResults(turn))
+	// The review writes its fixed cross-game observation through the memory
+	// tool (T023); the player's stop acknowledgement dispatches nothing, so
+	// no second init was ever dispatched and the game face still has exactly
+	// its two results.
+	reviewResults := teamTurnToolResults(turns[2])
+	if len(reviewResults) != 1 || reviewResults[0].GetResult() != teamMemoryAddedResult {
+		t.Errorf("review tool results = %+v, want the single memory add", reviewResults)
 	}
-	if toolResults != 2 {
-		t.Errorf("tool results = %d, want 2 (the loss review must not open another game)", toolResults)
+	if got := len(teamTurnToolResults(turns[3])); got != 0 {
+		t.Errorf("stop-ack tool results = %d, want 0 (no second game opened)", got)
 	}
 }
 

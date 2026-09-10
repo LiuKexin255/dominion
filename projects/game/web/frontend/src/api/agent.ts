@@ -97,17 +97,16 @@ export async function listPresets(template: string, role?: string): Promise<Pres
 
 // createPreset 以 caller-supplied id 建资源（AIP-133）；id 与请求级 role 走
 // query 参数（body:"preset" 绑定下非 body 字段映射为 query），body 即 Preset
-// 本体。role 为场景词汇字符串（preset 分池与 copy-then-patch 拷贝源）；
-// T022 的表单提供该值，表单就位前调用方可省略（服务端 INVALID_ARGUMENT）。
+// 本体。role 为场景词汇字符串（preset 分池与 copy-then-patch 拷贝源），
+// create 必填且创建后不可变（preset-api.md §2）。
 export async function createPreset(
   template: string,
   presetId: string,
   persona: string,
-  role?: string,
+  role: string,
 ): Promise<Preset> {
-  const query = role !== undefined && role !== '' ? `&role=${encodeURIComponent(role)}` : ''
   return requestJson<Preset>(
-    `/api/v2/templates/${template}/presets?preset_id=${encodeURIComponent(presetId)}${query}`,
+    `/api/v2/templates/${template}/presets?preset_id=${encodeURIComponent(presetId)}&role=${encodeURIComponent(role)}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

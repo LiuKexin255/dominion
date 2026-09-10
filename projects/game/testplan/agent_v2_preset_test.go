@@ -479,6 +479,121 @@ func TestAgentV2TeamEmptyPersonaFallback(t *testing.T) {
 	if _, text := teamTurnBlocks(turns[1]); text != agentV2NodesktopSummary {
 		t.Errorf("player turn text = %q, want %q (the fallback player persona must match)", text, agentV2NodesktopSummary)
 	}
+
+	// The fallback also still carries the saolei guidance row: the role-lock
+	// entry's system keywords require BOTH the player persona anchor and the
+	// guidance heading, and it answers the player's next activation.
+	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamRoleLockMessage)
+	events2 := drainTeamStream(t, stream2)
+	assertTeamStreamWellFormed(t, sessionName, events2)
+	playerTurns2 := teamTurnsForMember(events2, "player")
+	if len(playerTurns2) != 1 {
+		t.Fatalf("role-lock player turns = %d, want 1", len(playerTurns2))
+	}
+	if _, text := teamTurnBlocks(playerTurns2[0]); text != teamPlayerRoleLockText {
+		t.Errorf("role-lock reply = %q, want %q (the fallback player prompt carries the guidance)", text, teamPlayerRoleLockText)
+	}
+}
+
+// TestAgentV2TeamPlayerRoleLockGuidance covers the player half of the role
+// lock (SC-004 positive, T023): after the opening cycle leaves the player
+// activated, a trigger message is answered by the fixture entry whose system
+// keywords require BOTH the player persona anchor and the saolei guidance
+// heading — it fires only when the mounted player composition (persona +
+// saolei tool-plugin row guidance) reached the model context. The player's
+// saolei tools are additionally proven by every game case's tool chain. The
+// reverse absence assertion (no memory traces in the player prompt) needs the
+// system-prompt read surface (T032/T034) and is deferred to T034.
+func TestAgentV2TeamPlayerRoleLockGuidance(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx, sessionName := teamPlayerActivation(t, sutHostURL, sutEnvName, "team-lock-"+uniqueSuffix(), "role-lock")
+
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamRoleLockMessage)
+	events := drainTeamStream(t, stream)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	playerTurns := teamTurnsForMember(events, "player")
+	if len(playerTurns) != 1 {
+		t.Fatalf("role-lock player turns = %d, want 1", len(playerTurns))
+	}
+	if _, text := teamTurnBlocks(playerTurns[0]); text != teamPlayerRoleLockText {
+		t.Errorf("role-lock reply = %q, want %q (persona + saolei guidance in the assembled prompt)", text, teamPlayerRoleLockText)
+	}
+}
+
+// TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads covers the T023
+// memory assertions end to end: the lost-game review calls the memory tool
+// (the planner preset's memory row supplies it — a missing row would answer
+// `memory failed: …` and the review continuation rule would not match), the
+// add is immediately persisted through the memory service's public route,
+// and a REFRESHED team loads the written observation into the fresh
+// planner's system prompt — the snapshot-entry fixture fires only then,
+// proving the materialization-time prefetch reached the model context (the
+// previous instance's snapshot was fixed at its own start; fixation is
+// pinned at the unit level).
+func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-memory-" + uniqueSuffix()
+	ctx, sessionName, team := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-memory")
+
+	// The review-path write: a lost game ends with the planner's memory add
+	// and the review body from the tool-result continuation.
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardInitPNG},
+		stepBoards: [][]byte{saoleiBoardLossPNG},
+	}, wsReadTimeout)
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	turns := groupTeamMemberTurns(events)
+	if len(turns) != 4 {
+		t.Fatalf("member turns = %d, want 4 (opening, game, memory review, stop ack)", len(turns))
+	}
+	reviewResults := teamTurnToolResults(turns[2])
+	if len(reviewResults) != 1 {
+		t.Fatalf("review tool results = %d, want 1 (the memory add)", len(reviewResults))
+	}
+	if reviewResults[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || reviewResults[0].GetResult() != teamMemoryAddedResult {
+		t.Errorf("review memory result = %v %q, want SUCCEEDED %q (the planner preset's memory row executed)",
+			reviewResults[0].GetStatus(), reviewResults[0].GetResult(), teamMemoryAddedResult)
+	}
+	if _, text := teamTurnBlocks(turns[2]); text != teamPlannerReviewStopText {
+		t.Errorf("review text = %q, want %q (the tool-result continuation)", text, teamPlannerReviewStopText)
+	}
+
+	// The add is immediately persisted: the entry is visible through the
+	// memory service's public /api/v1 route (FR-007).
+	listed := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "")
+	found := false
+	for _, entry := range listed.GetMemories() {
+		if entry.GetContent() == teamMemoryReviewContent {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("session memories = %+v, want the review's %q", listed.GetMemories(), teamMemoryReviewContent)
+	}
+
+	// Refresh: the fresh planner prefetches the persisted entry in its setup,
+	// so the snapshot fixture (system keywords = snapshot header + the
+	// observation line) wins the opening specificity tie by Name and answers
+	// the first Send.
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName,
+		teamMemberPreset(team, "player"), teamMemberPreset(team, "planner"), "", "")
+	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events2 := drainTeamStream(t, stream2)
+	assertTeamStreamWellFormed(t, sessionName, events2)
+	turns2 := groupTeamMemberTurns(events2)
+	if len(turns2) == 0 || turns2[0].member != "planner" {
+		t.Fatalf("post-refresh turns = %v, want the planner first", turns2)
+	}
+	if _, text := teamTurnBlocks(turns2[0]); text != teamMemorySnapshotText {
+		t.Errorf("post-refresh planner reply = %q, want %q (the persisted observation must reach the fresh system prompt)", text, teamMemorySnapshotText)
+	}
 }
 
 // TestAgentV2TeamDesktopConnected covers the GetTeam desktop_connected fact

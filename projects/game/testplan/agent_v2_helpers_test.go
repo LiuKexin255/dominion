@@ -60,6 +60,10 @@ const (
 	// teamWaitMessage selects team-planner-wait — the long-running planner
 	// turn (4s inter-chunk delay) the queue/cancel/refresh cases pivot on.
 	teamWaitMessage = "planner-wait"
+	// teamRoleLockMessage selects team-player-role-lock — its system keywords
+	// require the saolei guidance heading in the player's assembled prompt
+	// (T023 role-lock positive assertion).
+	teamRoleLockMessage = "player-role-lock"
 )
 
 // ─── Fixture vocabulary: pinned expected contents ───────────────────────────
@@ -77,6 +81,13 @@ const (
 	teamPlannerWaitText           = "延迟排查完成，暂无新计划。"
 	teamPlayerResumeStopText      = "收到复盘。本局到此为止，暂不开新局，保持待命。"
 	teamPlayerUserIntakeText      = "收到你的消息，我这边情况正常，会继续关注棋盘。"
+	// T023 role-lock / memory fixtures:
+	teamPlayerRoleLockText  = "player 角色锁定：扫雷工具守则已加载。"
+	teamMemoryReviewContent = "本局复盘观察：中心区域开局稳定，边角标记需谨慎。"
+	teamMemorySnapshotText  = "长期记忆快照已生效：中心区域开局稳定，边角标记需谨慎。"
+	// teamMemoryAddedResult is the memory tool's success text for the review's
+	// add (common/js/dsh-plugins/memory/src/operations.ts ADDED_TEXT).
+	teamMemoryAddedResult = "memory added"
 
 	// agent_v2.yaml user-message triggers; every /v1/responses template is
 	// matched by ONE of these case-insensitive substrings of the last user

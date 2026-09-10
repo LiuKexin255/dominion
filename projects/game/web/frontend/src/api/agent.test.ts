@@ -109,11 +109,14 @@ describe('agent api 客户端', () => {
       }),
     )
 
-    // role 省略（T022 表单就位前的兼容调用）：query 仅 preset_id。
-    await createPreset('saolei', 'p1', 'p')
+    // role 为 create 必填（preset-api.md §2）：每次请求都携带，无省略路径。
+    await createPreset('saolei', 'p2', '你是扫雷 planner', 'planner')
     expect(fetchMock).toHaveBeenLastCalledWith(
-      '/api/v2/templates/saolei/presets?preset_id=p1',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ persona: 'p' }) }),
+      '/api/v2/templates/saolei/presets?preset_id=p2&role=planner',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ persona: '你是扫雷 planner' }),
+      }),
     )
   })
 
@@ -333,7 +336,7 @@ describe('agent api 客户端', () => {
     fetchMock.mockImplementation(async () =>
       new Response('preset already exists', { status: 409 }),
     )
-    const err = await createPreset('saolei', 'p1', 'x').then(
+    const err = await createPreset('saolei', 'p1', 'x', 'player').then(
       () => null,
       (e: unknown) => e,
     )

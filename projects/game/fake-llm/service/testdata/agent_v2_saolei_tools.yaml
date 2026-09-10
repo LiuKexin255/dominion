@@ -114,3 +114,17 @@ tools:
       - board size 16*16
     respond_with:
       text: 已完成一轮扫雷操作：点击揭示与标记旗子均已执行，棋盘已刷新。
+  # team-planner-review-stop-text continues the lost-game review after its
+  # memory add lands (T023): the team_planner.yaml review entry carries the
+  # `memory` tool_call and the SUT's memory tool answers the successful add
+  # with "memory added", so this rule supplies the review body (the constant
+  # pinned as teamPlannerReviewStopText). It lives with the agent_v2 chains
+  # because it continues the same team scenario; the review entry itself
+  # carries no text.
+  - name: team-planner-review-stop-text
+    tool_name: memory
+    responses_only: true
+    match_result_contains:
+      - memory added
+    respond_with:
+      text: 本局复盘：触雷失败，边角判断有偏差。本局到此为止，不再安排新一局。@player 请保持待命。

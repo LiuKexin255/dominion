@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dump, load } from "js-yaml";
 
-import { createPresetAuthoring } from "./index.js";
+import { Config, createPresetAuthoring } from "./index.js";
 import { nodeMaterializeFs } from "./materialize.js";
 import { MemoryPresetStore } from "./store.js";
 
+import type { PresetAuthoringConfig } from "./index.js";
 import type { RosterSeam } from "./materialize.js";
 import type { PresetAuthoringDeps } from "./index.js";
 
@@ -154,13 +155,20 @@ describe("compose", () => {
     expect(broken.mount).not.toHaveBeenCalled();
   });
 
-  it("maps an unknown preset id to INVALID_ARGUMENT carrying the available ids", async () => {
+  it("maps an unknown preset id with no store record to NOT_FOUND carrying the roster detail", async () => {
     const { service } = await serviceHarness();
 
-    await expect(service.compose("missing")).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("demo-tools"),
+    const err = await service.compose("missing").then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(err).toMatchObject({
+      code: "NOT_FOUND",
+      message: expect.stringContaining("missing"),
     });
+    // The roster's unknown-id detail (available ids) rides the cause chain.
+    expect((err as { cause?: Error }).cause?.message).toContain("demo-tools");
   });
 
   it("maps an unexpected resolve failure to INTERNAL (contract §6)", async () => {
@@ -184,6 +192,158 @@ describe("compose", () => {
     });
     expect((err as { cause?: unknown }).cause).toBe(boom);
     expect(harness.mount).not.toHaveBeenCalled();
+  });
+});
+
+describe("compose rebuilds a missing copy from the store record", () => {
+  it("re-materializes a recorded preset after its copy is lost, content-equivalent to create", async () => {
+    const { service, store, writableRoot, remove, copy } = await serviceHarness();
+
+    const created = await service.create({
+      id: "mine",
+      template: "demo-tools",
+      role: "planner",
+      persona: "P1",
+      displayName: "Mine",
+    });
+    const compositionBefore = await readFile(join(writableRoot, "mine", "agent.cordis.yml"), "utf8");
+    const metadataBefore = await readFile(join(writableRoot, "mine", "preset.yml"), "utf8");
+
+    // Simulate the pod restart that empties the writable layer: the copy
+    // disappears while the store record survives.
+    await remove("mine");
+    expect(copy).toHaveBeenCalledTimes(1);
+
+    const result = await service.compose("mine");
+
+    expect(result.agentPreset).toBe("mine");
+    // The rebuild reuses the create materialization, so the copy is
+    // content-equivalent (persona patch + display metadata included).
+    expect(await readFile(join(writableRoot, "mine", "agent.cordis.yml"), "utf8")).toBe(compositionBefore);
+    expect(await readFile(join(writableRoot, "mine", "preset.yml"), "utf8")).toBe(metadataBefore);
+    expect(copy).toHaveBeenCalledTimes(2);
+    // The store record is untouched (the copy is the derived artifact).
+    const record = await store.get("mine");
+    expect(record.persona).toBe("P1");
+    expect(record.displayName).toBe("Mine");
+    expect(record.createTime).toEqual(created.createTime);
+
+    // Idempotent: the next compose hits the rebuilt copy without copying.
+    await service.compose("mine");
+    expect(copy).toHaveBeenCalledTimes(2);
+  });
+
+  it("rebuilds an empty-persona preset to the template base (same as create)", async () => {
+    const { service, writableRoot, remove } = await serviceHarness();
+
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "" });
+    const compositionBefore = await readFile(join(writableRoot, "mine", "agent.cordis.yml"), "utf8");
+    // The create product carries the template base (no persona patch ran).
+    expect(compositionBefore).toContain("placeholder");
+    await remove("mine");
+
+    await service.compose("mine");
+
+    expect(await readFile(join(writableRoot, "mine", "agent.cordis.yml"), "utf8")).toBe(compositionBefore);
+  });
+
+  it("fails a rebuild whose template violates the rules with INVALID_ARGUMENT and leaves no copy", async () => {
+    const { service, templatesRoot, writableRoot, remove, copy } = await serviceHarness({
+      templateRules: {
+        "demo-tools": {
+          required: ["@dominion/dsh-demo-echo"],
+          forbidden: ["@dominion/dsh-memory/preset-row"],
+        },
+      },
+    });
+
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+    await remove("mine");
+    // The template itself became invalid after the copy was lost: the
+    // rebuild must fail exactly like create does (INVALID_ARGUMENT) and
+    // leave no half-materialized copy behind.
+    await writeFile(
+      join(templatesRoot, "demo-tools", "agent.cordis.yml"),
+      dump([{ id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } }], {
+        lineWidth: -1,
+      }),
+      "utf8",
+    );
+
+    await expect(service.compose("mine")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("@dominion/dsh-demo-echo"),
+    });
+    expect(copy).toHaveBeenCalledTimes(1);
+    await expect(readdir(join(writableRoot))).resolves.toEqual([]);
+  });
+
+  it("maps a missing copy without a store record to NOT_FOUND (the preset truly does not exist)", async () => {
+    const { service, store, remove } = await serviceHarness();
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+
+    await remove("mine");
+    await store.remove("mine");
+
+    await expect(service.compose("mine")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("management survives a lost copy (pod restart)", () => {
+  it("rebuilds the copy before patching persona, then updates the store record", async () => {
+    const { service, store, writableRoot, remove, copy } = await serviceHarness();
+    await service.create({
+      id: "mine",
+      template: "demo-tools",
+      role: "planner",
+      persona: "P1",
+      displayName: "Mine",
+    });
+    await remove("mine");
+
+    const view = await service.update("mine", { persona: "P2" });
+
+    expect(view.persona).toBe("P2");
+    // create + rebuild; the patch reuses the rebuilt copy.
+    expect(copy).toHaveBeenCalledTimes(2);
+    const composition = load(
+      await readFile(join(writableRoot, "mine", "agent.cordis.yml"), "utf8"),
+    ) as Array<{ config?: { text?: string } }>;
+    expect(composition[0]?.config?.text).toBe("P2");
+    expect((await store.get("mine")).persona).toBe("P2");
+  });
+
+  it("rebuilds the copy before rewriting display metadata", async () => {
+    const { service, writableRoot, remove } = await serviceHarness();
+    await service.create({
+      id: "mine",
+      template: "demo-tools",
+      role: "planner",
+      persona: "P1",
+      displayName: "Mine",
+    });
+    await remove("mine");
+
+    const view = await service.update("mine", { displayName: "Renamed" });
+
+    expect(view.displayName).toBe("Renamed");
+    const metadata = load(
+      await readFile(join(writableRoot, "mine", "preset.yml"), "utf8"),
+    ) as { name?: string; description?: string };
+    expect(metadata.name).toBe("Renamed");
+    expect(metadata.description).toBe("persona + demo_echo 工具行模板");
+  });
+
+  it("removes the store record and reports NOT_FOUND afterwards when the copy was lost", async () => {
+    const { service, store, writableRoot, remove } = await serviceHarness();
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+    await remove("mine");
+
+    await service.remove("mine");
+
+    expect(await store.list()).toEqual([]);
+    await expect(service.get("mine")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(readdir(writableRoot)).resolves.toEqual([]);
   });
 });
 
@@ -244,6 +404,93 @@ describe("create (V4-1 C1 materialization through the service)", () => {
     }>;
     expect(composition[0]?.name).toBe("@deepseek-ai/dsh-persona");
     expect(composition[0]?.config?.text).toBe("placeholder");
+  });
+
+  it("enforces the caller-declared template row rules before copying (T021)", async () => {
+    const { service, copy, store, templatesRoot } = await serviceHarness({
+      templateRules: {
+        "demo-tools": {
+          required: ["@dominion/dsh-demo-echo"],
+          forbidden: ["@dominion/dsh-memory/preset-row"],
+        },
+      },
+    });
+
+    // The template carries exactly the required row and none of the
+    // forbidden ones: the copy lands normally.
+    const view = await service.create({ id: "mine", template: "demo-tools", role: "player", persona: "P1" });
+    expect(view.id).toBe("mine");
+    expect(copy).toHaveBeenCalledOnce();
+
+    // A template missing the required row is rejected BEFORE any copy side
+    // effect (fail-fast: no half-materialized preset, no store record).
+    await writeFile(
+      join(templatesRoot, "demo-tools", "agent.cordis.yml"),
+      dump([{ id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } }], {
+        lineWidth: -1,
+      }),
+      "utf8",
+    );
+    await expect(
+      service.create({ id: "broken", template: "demo-tools", role: "player", persona: "P1" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("@dominion/dsh-demo-echo"),
+    });
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(await store.list()).toHaveLength(1);
+
+    // A forbidden row is rejected the same way.
+    await writeFile(
+      join(templatesRoot, "demo-tools", "agent.cordis.yml"),
+      dump(
+        [
+          { id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } },
+          { id: "echo", name: "@dominion/dsh-demo-echo" },
+          { id: "memory", name: "@dominion/dsh-memory/preset-row" },
+        ],
+        { lineWidth: -1 },
+      ),
+      "utf8",
+    );
+    await expect(
+      service.create({ id: "broken2", template: "demo-tools", role: "planner", persona: "P1" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("must not contain"),
+    });
+
+    // A duplicated required row violates the exactly-one semantics.
+    await writeFile(
+      join(templatesRoot, "demo-tools", "agent.cordis.yml"),
+      dump(
+        [
+          { id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } },
+          { id: "echo-a", name: "@dominion/dsh-demo-echo" },
+          { id: "echo-b", name: "@dominion/dsh-demo-echo" },
+        ],
+        { lineWidth: -1 },
+      ),
+      "utf8",
+    );
+    await expect(
+      service.create({ id: "broken3", template: "demo-tools", role: "player", persona: "P1" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("exactly one"),
+    });
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it("leaves templates without a configured rule table unvalidated (generic consumers)", async () => {
+    const { service, copy } = await serviceHarness();
+
+    // No templateRules configured: the existing composition (persona +
+    // demo-echo) materializes even though no rule table names it.
+    const view = await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+
+    expect(view.id).toBe("mine");
+    expect(copy).toHaveBeenCalledOnce();
   });
 
   it("rolls the store record and the copy back together when the store write fails", async () => {
@@ -343,6 +590,51 @@ describe("get/list/update/remove", () => {
 
     await expect(service.remove("missing")).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(service.remove("demo-tools")).rejects.toMatchObject({ code: "FAILED_PRECONDITION" });
+  });
+});
+
+describe("Config", () => {
+  it("validates the caller-declared template row rules and defaults them empty", () => {
+    const config = Config({
+      storage: "mongo",
+      mongoUri: "mongodb://x",
+      mongoDatabase: "db",
+      mongoCollection: "c",
+      templateRules: {
+        player: {
+          required: ["@dominion/dsh-saolei"],
+          forbidden: ["@dominion/dsh-memory", "@dominion/dsh-memory/preset-row"],
+        },
+      },
+    });
+
+    expect(config.templateRules).toEqual({
+      player: {
+        required: ["@dominion/dsh-saolei"],
+        forbidden: ["@dominion/dsh-memory", "@dominion/dsh-memory/preset-row"],
+      },
+    });
+    // Omitted rules default to an empty table: generic deployments validate
+    // nothing (the host opts in per template).
+    expect(Config({ storage: "memory" }).templateRules).toEqual({});
+  });
+
+  it("defaults a one-sided rule table's omitted half to an empty list", () => {
+    // A host YAML value reaches the schema untyped; the declared Config input
+    // mirrors the validated output shape, hence the widening cast.
+    const raw: unknown = {
+      storage: "memory",
+      templateRules: {
+        player: { required: ["@dominion/dsh-saolei"] },
+        planner: { forbidden: ["@dominion/dsh-memory/preset-row"] },
+      },
+    };
+    const config = Config(raw as PresetAuthoringConfig);
+
+    expect(config.templateRules).toEqual({
+      player: { required: ["@dominion/dsh-saolei"], forbidden: [] },
+      planner: { required: [], forbidden: ["@dominion/dsh-memory/preset-row"] },
+    });
   });
 });
 

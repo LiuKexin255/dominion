@@ -83,6 +83,22 @@
     mongoUri: !!js process.env.MONGO_URI
     mongoDatabase: game_agent_v2
     mongoCollection: presets
+    # 模板行校验（T021）：池模板必须恰含本角色的工具插件行——工具与配套
+    # 守则同生共死（specs/059-agent-v2-team-mode/contracts/preset-api.md §2；
+    # dsh-plugins.md §5）。规则按模板 id 声明、包名对插件为不透明字符串，
+    # 场景词表留在本宿主配置；创建时校验失败 → INVALID_ARGUMENT，不落副本。
+    templateRules:
+      player:
+        required:
+          - '@dominion/dsh-saolei'
+        forbidden:
+          - '@dominion/dsh-memory'
+          - '@dominion/dsh-memory/preset-row'
+      planner:
+        required:
+          - '@dominion/dsh-memory/preset-row'
+        forbidden:
+          - '@dominion/dsh-saolei'
 # team 群聊原语（ctx.team；specs/059-agent-v2-team-mode/contracts/
 # dsh-plugins.md §1）与 planner memory host 服务面（ctx.plannerMemory；
 # 同契约 §3——memory 工具行不经 host 层，经 planner 池模板 preset 的

@@ -13,6 +13,7 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
+import { UnknownPresetError } from "@deepseek-ai/dsh-agent-presets";
 import type { AgentPreset } from "@deepseek-ai/dsh-agent-presets";
 import z from "@deepseek-ai/schemastery";
 
@@ -23,14 +24,15 @@ import {
   PresetAuthoringError,
   removeMaterialization,
   updateMaterialization,
+  validateTemplateRows,
 } from "./materialize.js";
-import type { MaterializeFs, RosterSeam } from "./materialize.js";
+import type { MaterializeFs, RosterSeam, TemplateRowRules } from "./materialize.js";
 import { MemoryPresetStore, PresetStoreError } from "./store.js";
 import type { PresetRecord, PresetStore } from "./store.js";
 import { createMongoPresetStore } from "./store.mongo.js";
 
-export { PERSONA_ROW_NAME, PresetAuthoringError } from "./materialize.js";
-export type { PresetAuthoringErrorCode } from "./materialize.js";
+export { PERSONA_ROW_NAME, PresetAuthoringError, validateTemplateRows } from "./materialize.js";
+export type { PresetAuthoringErrorCode, TemplateRowRules } from "./materialize.js";
 export { MemoryPresetStore, PresetStoreError } from "./store.js";
 export type { PresetRecord, PresetStore, PresetStoreErrorCode } from "./store.js";
 export { createMongoPresetStore, mongoPresetCollection, MongoPresetStore } from "./store.mongo.js";
@@ -45,6 +47,15 @@ export const inject = ["agentPresets"];
 export interface PresetAuthoringConfig {
   /** The preset record storage: in-memory (demo) or Mongo (agent_v2). */
   storage: "memory" | "mongo";
+  /**
+   * Caller-declared composition row rules, keyed by template id: the
+   * hosting composition pins each pool template's role plugin rows (e.g.
+   * "player" → exactly the saolei row, never a memory row) and every copy
+   * validates against them before landing
+   * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). Omitted
+   * template ids skip validation — generic consumers stay scene-agnostic.
+   */
+  templateRules?: Record<string, TemplateRowRules>;
   /**
    * storage=mongo connection inputs, injected through the row config. The
    * credentialed URI is resolved HOST-side (deployment credential logic
@@ -65,6 +76,14 @@ export const Config: z<PresetAuthoringConfig> = z.object({
   mongoUri: z.string(),
   mongoDatabase: z.string(),
   mongoCollection: z.string(),
+  templateRules: z.dict(
+    z.object({
+      // Explicit defaults: a host rule table may declare only one half, and
+      // the validator must then iterate an empty list instead of undefined.
+      required: z.array(z.string()).default([]),
+      forbidden: z.array(z.string()).default([]),
+    }),
+  ),
 }) as unknown as z<PresetAuthoringConfig>;
 
 /** The preset resource projection served to the service layer (contract §2). */
@@ -126,6 +145,8 @@ export interface PresetAuthoringDeps {
   roster?: RosterSeam;
   store?: PresetStore;
   fs?: MaterializeFs;
+  /** Per-template composition row rules (see {@link PresetAuthoringConfig.templateRules}). */
+  templateRules?: Record<string, TemplateRowRules>;
 }
 
 function toView(record: PresetRecord): PresetView {
@@ -161,6 +182,7 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
   const roster = deps.roster ?? (ctx.agentPresets as RosterSeam);
   const store = deps.store ?? new MemoryPresetStore();
   const fs = deps.fs ?? nodeMaterializeFs();
+  const templateRules = deps.templateRules;
 
   const storeGet = async (id: string): Promise<PresetRecord> => {
     try {
@@ -170,17 +192,99 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
     }
   };
 
+  /**
+   * Rebuild a missing materialized copy from its store record. The copy is a
+   * derived artifact and the store is the source of truth
+   * (specs/059-agent-v2-team-mode/data-model.md §2, contracts/preset-api.md
+   * §3, research.md R3 实现注意③): after a pod restart empties the writable
+   * layer, a recorded preset is re-materialized through the SAME
+   * copy-then-patch function the create path uses, so the rebuilt copy is
+   * content-equivalent to the create product and lands at the same writable
+   * root (the next compose hits it — idempotent). A store miss means the
+   * preset truly does not exist → NOT_FOUND.
+   */
+  const rebuildCopy = async (id: string, cause: unknown): Promise<AgentPreset> => {
+    let record: PresetRecord;
+    try {
+      record = await store.get(id);
+    } catch (err) {
+      if (err instanceof PresetStoreError && err.code === "NOT_FOUND") {
+        throw new PresetAuthoringError(
+          "NOT_FOUND",
+          `preset "${id}" not found: no materialized copy and no store record`,
+          cause,
+        );
+      }
+      throw mapStoreError(err);
+    }
+
+    try {
+      await materializeCopy({ roster, fs }, {
+        id: record.id,
+        template: record.template,
+        persona: record.persona,
+        ...(record.displayName === undefined ? {} : { displayName: record.displayName }),
+        ...(templateRules?.[record.template] === undefined
+          ? {}
+          : { templateRules: templateRules[record.template] }),
+      });
+    } catch (err) {
+      // A concurrent rebuild may have won the copy race; resolving below
+      // then serves the winner's copy instead of failing the compose.
+      if (!(err instanceof PresetAuthoringError) || err.code !== "ALREADY_EXISTS") {
+        throw err;
+      }
+    }
+
+    try {
+      return await roster.resolve(id);
+    } catch (err) {
+      throw new PresetAuthoringError(
+        "INTERNAL",
+        `preset "${id}" was rebuilt from its store record but is still not resolvable: ${err instanceof Error ? err.message : String(err)}`,
+        err,
+      );
+    }
+  };
+
+  /**
+   * Resolve an authored preset, transparently rebuilding its missing copy
+   * from the store record via {@link rebuildCopy}. Management operations
+   * share this so every preset that GET/LIST still serve also stays
+   * PATCHable and DELETEable after a pod restart empties the writable layer
+   * (specs/059-agent-v2-team-mode/data-model.md §2; contracts/preset-api.md
+   * §3).
+   */
+  const resolveOrRebuild = async (id: string): Promise<AgentPreset> => {
+    try {
+      return await roster.resolve(id);
+    } catch (err) {
+      if (!(err instanceof UnknownPresetError)) {
+        throw mapRosterError(err);
+      }
+      return rebuildCopy(id, err);
+    }
+  };
+
   return {
     async compose(presetId?: string): Promise<ComposeResult> {
       // Resolve up front so the id is snapshotted into the creation meta and
       // a broken preset fails BEFORE any session exists (V3-3 fail-fast).
-      // Error split per contract §6: roster semantic misses (unknown id) are
-      // INVALID_ARGUMENT; unexpected failures are INTERNAL (mapRosterError).
+      // A concrete id whose copy is missing is the pod-restart state (empty
+      // writable layer, store record survives), so the copy is REBUILT from
+      // the record and re-resolved (data-model.md §2 source-of-truth
+      // semantics). A concrete id without a store record → NOT_FOUND; the
+      // roster's default-preset resolve keeps its existing mapping
+      // (INVALID_ARGUMENT/INTERNAL — mapRosterError).
       let preset: AgentPreset;
-      try {
-        preset = await roster.resolve(presetId);
-      } catch (err) {
-        throw mapRosterError(err);
+      if (presetId === undefined) {
+        try {
+          preset = await roster.resolve(undefined);
+        } catch (err) {
+          throw mapRosterError(err);
+        }
+      } else {
+        preset = await resolveOrRebuild(presetId);
       }
       if (preset.broken !== undefined) {
         throw new PresetAuthoringError(
@@ -207,7 +311,15 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
         }
       }
 
-      await materializeCopy({ roster, fs }, input);
+      await materializeCopy({ roster, fs }, {
+        id: input.id,
+        template: input.template,
+        persona: input.persona,
+        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+        ...(templateRules?.[input.template] === undefined
+          ? {}
+          : { templateRules: templateRules[input.template] }),
+      });
 
       const now = new Date();
       try {
@@ -242,6 +354,10 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
       if (patch.persona === undefined && patch.displayName === undefined) {
         return toView(record);
       }
+      // The copy may be missing after a pod restart; rebuild it from the
+      // record first so PATCH keeps working on every preset GET still serves
+      // (same transparent rebuild as compose).
+      await resolveOrRebuild(id);
       await updateMaterialization(
         { roster, fs },
         { id, template: record.template, patch },
@@ -262,8 +378,19 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
 
     async remove(id): Promise<void> {
       // Roster first: a template id must surface FAILED_PRECONDITION (system
-      // trust), not a store lookup miss.
-      await removeMaterialization(roster, id);
+      // trust), not a store lookup miss. A missing copy is the pod-restart
+      // state: there is nothing to delete on disk, so the store record is
+      // removed directly — rebuilding a copy only to delete it would also
+      // make deletion depend on a template that may itself be gone. A truly
+      // unknown id stays NOT_FOUND (from the store miss); the end state
+      // matches the copy-present path (no copy, no record).
+      try {
+        await removeMaterialization(roster, id);
+      } catch (err) {
+        if (!(err instanceof PresetAuthoringError) || err.code !== "NOT_FOUND") {
+          throw err;
+        }
+      }
       try {
         await store.remove(id);
       } catch (err) {
@@ -290,8 +417,13 @@ export async function apply(ctx: Context, config: PresetAuthoringConfig): Promis
       () => () => client.close(),
       "preset-authoring.storage()",
     );
-    ctx.provide("presetAuthoring", createPresetAuthoring(ctx, { store }));
+    ctx.provide("presetAuthoring", createPresetAuthoring(ctx, {
+      store,
+      templateRules: config.templateRules,
+    }));
     return;
   }
-  ctx.provide("presetAuthoring", createPresetAuthoring(ctx));
+  ctx.provide("presetAuthoring", createPresetAuthoring(ctx, {
+    templateRules: config.templateRules,
+  }));
 }

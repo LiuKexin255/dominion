@@ -47,6 +47,8 @@ import type {
 import type { GameEventRecord } from "./game/runtime.js";
 
 const SESSION = "templates/saolei/sessions/s1";
+/** The business session ID half of the memory scope key (NOT the full name). */
+const SESSION_ID = "s1";
 const PLAYER_ID = `${SESSION}/player`;
 const PLANNER_ID = `${SESSION}/planner`;
 
@@ -309,7 +311,7 @@ function teamOptions(
 ): TeamMaterializeOptions {
   return {
     session: SESSION,
-    template: "saolei",
+    memoryScope: { template: "saolei", session: SESSION_ID },
     goal: "协作提高扫雷胜率",
     player: { preset: "player-a", model: "model-p" },
     planner: { preset: "planner-a", model: "model-q" },
@@ -356,7 +358,10 @@ describe("TeamOrchestrator.materialize", () => {
     expect(h.mountPlayerRuntime).not.toHaveBeenCalledWith(planner.agent, SESSION);
     expect(h.loadPlannerMemory).toHaveBeenCalledWith(planner.ctx, {
       template: "saolei",
-      session: SESSION,
+      // The ID half, not the full session resource name: the memory plugin
+      // builds `templates/{template}/sessions/{session}` from these halves
+      // (T023 wiring fix).
+      session: SESSION_ID,
     });
     // Team registration: goal + the two-member roster with defaults.
     expect(h.team.registrations).toHaveLength(1);

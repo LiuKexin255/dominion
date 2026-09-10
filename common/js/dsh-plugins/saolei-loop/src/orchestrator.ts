@@ -151,9 +151,9 @@ export interface PlannerMemoryScope {
 }
 
 /**
- * Planner memory prefetch seam. The orchestration layer has no compile or
- * runtime dependency on the memory plugin: the host injects the real
- * `ctx.plannerMemory.load` (common/js/dsh-plugins/memory/src/) and a
+ * Planner memory prefetch seam — mandatory. The orchestration layer has no
+ * compile or runtime dependency on the memory plugin: the host injects the
+ * real `ctx.plannerMemory.load` (common/js/dsh-plugins/memory/src/) and a
  * rejection fails the whole materialization rollback — fail-loud
  * (contracts/dsh-plugins.md §2/§3).
  */
@@ -185,8 +185,14 @@ export interface TeamOrchestratorDeps {
   readonly desktopBridge?: DesktopBridgeService;
   /** Player game-runtime mount; defaults to `createAgentGameRuntime(agent, desktopBridge)`. */
   readonly mountPlayerRuntime?: MountPlayerRuntime;
-  /** Planner memory prefetch; default is a no-op until the host injects `ctx.plannerMemory.load`. */
-  readonly loadPlannerMemory?: LoadPlannerMemory;
+  /**
+   * Planner memory prefetch — REQUIRED. The host binds the real
+   * `ctx.plannerMemory.load` (the memory plugin's host-row service face),
+   * so a planner member is never materialized without its snapshot
+   * prefetch; the seam stays injectable for unit tests
+   * (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2/§3).
+   */
+  readonly loadPlannerMemory: LoadPlannerMemory;
   /** Failure reporter; defaults to a console-backed reporter. */
   readonly logger?: OrchestratorLogger;
   /** Provider route; defaults to {@link TEAM_PROVIDER}. */
@@ -207,8 +213,14 @@ export interface TeamMemberOptions {
 export interface TeamMaterializeOptions {
   /** Team session resource name (`templates/{template}/sessions/{session}`). */
   readonly session: string;
-  /** Template name (memory scope key half). */
-  readonly template: string;
+  /**
+   * The planner memory prefetch scope key halves: the business template and
+   * the session ID (`templates/{template}/sessions/{session}/memories/{memory}`).
+   * This is NOT the full session resource name — the memory plugin builds the
+   * parent resource from these halves (the memory service resource model),
+   * so passing `session` here doubles the prefix (T023 caught the wiring).
+   */
+  readonly memoryScope: PlannerMemoryScope;
   /** Team goal rendered into the team section. */
   readonly goal: string;
   /** Generalized correlation key relayed onto broadcasts (team never interprets it). */
@@ -577,10 +589,7 @@ export class TeamOrchestrator {
           game = this.mountPlayerRuntime()(agentCtx.agent as Agent, options.session);
           return;
         }
-        await this.loadPlannerMemory(agentCtx, {
-          template: options.template,
-          session: options.session,
-        });
+        await this.loadPlannerMemory(agentCtx, options.memoryScope);
       },
     });
 
@@ -628,18 +637,16 @@ export class TeamOrchestrator {
   }
 
   /**
-   * Planner memory prefetch. The injectable seam keeps the orchestration
-   * layer decoupled from the memory plugin; a rejection propagates out of
-   * the setup, which rolls the whole materialization back (fail-loud).
+   * Planner memory prefetch (fail-loud): the host-injected
+   * `ctx.plannerMemory.load`. A rejection propagates out of the member
+   * setup, which rolls the whole materialization back
+   * (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3 item 3).
    */
   private async loadPlannerMemory(
     agentCtx: Context,
     scope: PlannerMemoryScope,
   ): Promise<void> {
-    const load = this.deps.loadPlannerMemory;
-    if (load !== undefined) {
-      await load(agentCtx, scope);
-    }
+    await this.deps.loadPlannerMemory(agentCtx, scope);
   }
 
   /** Roll a failed materialization back: drop created members, no residue. */
