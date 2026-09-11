@@ -4,8 +4,9 @@
  * renders that unit into the injection-ready group-chat text. Anchor identity
  * and the read-back-from-log model are
  * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1 (items 2–5); the
- * exact head-line/wrapper format is survey/deepseek-harness-team-mode.md §5.3
- * (four-layer design, official `notice` summary bound).
+ * wire format is the single tag-pair form of
+ * specs/060-agent-v2-team-optimize/contracts/team-api.md §4 (no head line;
+ * think never enters the broadcast).
  *
  * Content is never copied into a unit: a unit is the anchor plus its sender-log
  * order key, and every render reads the actual events back from the sender's
@@ -15,7 +16,7 @@
  * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.1-rc.2/lib/types/message.d.ts
  */
 
-import { boundContextSummary, createUserMessage, MessageId } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, MessageId } from "@deepseek-ai/dsh-llm";
 import type {
   AssistantMessage,
   ContentBlock,
@@ -78,15 +79,17 @@ export function tagName(role: string): string {
 }
 
 /**
- * The speech text of one assistant message: its text/reasoning blocks in
- * order. Tool-call blocks are excluded because the paired tool unit carries
- * the complete invocation (args + result) verbatim — including them here would
- * duplicate the same arguments (contracts/dsh-plugins.md §1 item 4).
+ * The speech text of one assistant message: its text blocks in order.
+ * Tool-call blocks are excluded because the paired tool unit carries the
+ * complete invocation (args + result) verbatim — including them here would
+ * duplicate the same arguments; reasoning is excluded because the broadcast
+ * carries no think content
+ * (specs/060-agent-v2-team-optimize/contracts/team-api.md §4).
  */
 export function messageBody(message: AssistantMessage): string {
   const parts: string[] = [];
   for (const block of message.content) {
-    if (block.type === "text" || block.type === "reasoning") {
+    if (block.type === "text") {
       parts.push(block.text);
     }
   }
@@ -95,29 +98,16 @@ export function messageBody(message: AssistantMessage): string {
 
 /**
  * The result text of one tool-result message: its nested result blocks in
- * order — text/reasoning verbatim; any other block type keeps its lossless
- * JSON form so the render never silently drops content (FR-008: 全文，不截断、不摘要).
+ * order — text verbatim; any other block type keeps its lossless JSON form so
+ * the render never silently drops content
+ * (specs/060-agent-v2-team-optimize/contracts/team-api.md §4: 全文，不截断、不摘要).
  */
 export function toolResultBody(message: ToolResultMessage): string {
   return (message.content[0]?.content ?? [])
     .map((block: ContentBlock) =>
-      block.type === "text" || block.type === "reasoning"
-        ? block.text
-        : JSON.stringify(block),
+      block.type === "text" ? block.text : JSON.stringify(block),
     )
     .join("\n");
-}
-
-/**
- * The head-line summary: the first non-empty line, whitespace-collapsed and
- * bounded to the official context-summary limit (dsh-llm
- * `CONTEXT_SUMMARY_MAX_CHARS`,
- * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.1-rc.2/lib/types/message.d.ts) —
- * the same bound the official settlement notice applies (survey §5.3).
- */
-export function summarize(text: string): string {
-  const firstLine = text.split("\n").find((line) => line.trim() !== "");
-  return boundContextSummary((firstLine ?? "").trim().replace(/\s+/g, " "));
 }
 
 /**
@@ -125,8 +115,8 @@ export function summarize(text: string): string {
  * own event position; a tool unit takes the position of its `tool/call` (the
  * model's output order — results commit in model order, dsh-tools scheduler).
  * An unpaired call produces no unit (the unit is complete only with its
- * result), and a tool-only assistant message produces none either (the tool
- * units carry its whole output).
+ * result), and an assistant message whose text content is empty produces none
+ * either (its tool units carry the whole output).
  */
 export function deriveUnits(events: readonly SessionEvent[]): BroadcastUnit[] {
   const units: BroadcastUnit[] = [];
@@ -229,12 +219,12 @@ function findToolResult(
 }
 
 /**
- * Render one unit into the group-chat wire form (FR-008):
- *
- * - speech: `[role] 摘要` head + `<role-message>` wrapper around the verbatim
- *   speech body;
- * - tool: `[role] 工具调用 <tool> (context)` head + `<role-tool-call>` wrapper
- *   around `tool:`/`args:`/`result:` lines, args and result verbatim.
+ * Render one unit into the group-chat wire form
+ * (specs/060-agent-v2-team-optimize/contracts/team-api.md §4):
+ * one tag pair around the verbatim body, no head line — a speech is the
+ * `<role-message>` pair; a tool unit is the `<role-tool-call>` pair around the
+ * optional `context:` line and the `tool:`/`args:`/`result:` lines, args and
+ * result verbatim.
  *
  * A missing source event is corruption (the anchor names a logged fact), so
  * reading fails loud rather than fabricating content.
@@ -254,7 +244,7 @@ export function renderBroadcast(
       );
     }
     const body = messageBody(message);
-    return `[${role}] ${summarize(body)}\n<${tag}-message>\n${body}\n</${tag}-message>`;
+    return `<${tag}-message>\n${body}\n</${tag}-message>`;
   }
   const call = findToolCall(senderEvents, unit.anchor);
   const result = findToolResult(senderEvents, unit.anchor);
@@ -263,16 +253,13 @@ export function renderBroadcast(
       `team broadcast: sender log has no complete tool unit for anchor "${unit.anchor}"`,
     );
   }
-  const head =
-    context === undefined
-      ? `[${role}] 工具调用 ${call.name}`
-      : `[${role}] 工具调用 ${call.name} (${context})`;
   const lines = [
+    ...(context === undefined ? [] : [`context: ${context}`]),
     `tool: ${call.name}`,
     `args: ${call.arguments}`,
     `result: ${toolResultBody(result)}`,
   ];
-  return `${head}\n<${tag}-tool-call>\n${lines.join("\n")}\n</${tag}-tool-call>`;
+  return `<${tag}-tool-call>\n${lines.join("\n")}\n</${tag}-tool-call>`;
 }
 
 /**

@@ -30,6 +30,7 @@ ctx.team.drain(member): UserMessage[]   // 注入就绪的广播消息（team �
 4. **drain（构造注入）**：编排层调用 `drain(member)` → team 按锚点从成员 session log（既有读取面）读取实际内容 → 渲染广播格式 → 返回注入就绪的 UserMessage 序列（drain 同时标记消费——注入落 log 后由消费锚点闭环，见 5）。广播格式：
    - 发言：`[sender] 摘要` + `<sender-message>…正文…</sender-message>`；
    - 工具：`[sender] 工具调用 <tool> (context)` + `<sender-tool-call>tool/args/result</sender-tool-call>`（result 原样全文，wire 序列化差异不算；不摘要不聚合）。
+   > 格式条款已被 `specs/060-agent-v2-team-optimize/contracts/team-api.md` §4 修订（单一 XML 标注形态，头行废止，2026-09-11 裁定）；本条款保留 059 基线记录形态，现行格式以该修订为准。
    - 标签词汇（`<*-message>`/`<*-tool-call>`）在 team section 中声明，不与 dsh 自身标签冲突。
 5. **待消费列表派生重建**（决策 ⑮ + 引用模型）：待消费列表非事实源（仅锚点、无内容副本），可在重建时由「sender log 产出 − receiver 消费锚点（receiver log 中 `source.kind === 'team-broadcast'` 的 `user/message` 的 `messageId` 集合）」推导；重建即一致、exactly-once 天然成立（丢失自愈、已消费不重复）；顺序：串行驱动下按驱动轮次归并（锚点插入序即事件到达序）。
 6. **MessageSource 扩展**（merge，declaration-merge）：`"team-broadcast": { kind: "team-broadcast"; role: string; senderSessionId: SessionId; messageId: MessageId; context?: string } & ContextFormed`（`form: 'relay'`）。

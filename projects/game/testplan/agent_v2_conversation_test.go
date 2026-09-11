@@ -116,8 +116,13 @@ func TestAgentV2TeamStaticWaitAndFirstDrive(t *testing.T) {
 	for _, entry := range playerView {
 		if entry.GetSender() == "planner" {
 			sawPlannerRelay = true
-			if text := agentV2MessageText(entry.GetMessage()); !strings.Contains(text, "<planner-message>") || !strings.Contains(text, teamPlannerOpeningText) {
-				t.Errorf("planner relay in the player view = %q, want the wrapper carrying the opening text", text)
+			// The relay body is the injection original: the tag pair around
+			// the verbatim speech, no head line and the body exactly once
+			// (specs/060-agent-v2-team-optimize/contracts/team-api.md §4
+			// 成员视角 relay 呈现).
+			want := "<planner-message>\n" + teamPlannerOpeningText + "\n</planner-message>"
+			if text := agentV2MessageText(entry.GetMessage()); text != want {
+				t.Errorf("planner relay in the player view = %q, want %q", text, want)
 			}
 		}
 	}

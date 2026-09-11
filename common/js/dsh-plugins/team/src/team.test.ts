@@ -352,7 +352,7 @@ describe("Team.drain", () => {
     const plannerView = team.drain(planner.handle);
     expect(plannerView).toHaveLength(3);
     expect(textOf(plannerView[0]!)).toBe(
-      "[player] 我将点击中心\n<player-message>\n我将点击中心\n</player-message>",
+      "<player-message>\n我将点击中心\n</player-message>",
     );
     expect(plannerView[0]?.source).toMatchObject({
       kind: "team-broadcast",
@@ -363,8 +363,7 @@ describe("Team.drain", () => {
       context: "game #3",
     });
     expect(textOf(plannerView[1]!)).toBe(
-      '[player] 工具调用 saolei_operate (game #3)\n' +
-        '<player-tool-call>\ntool: saolei_operate\nargs: {"call":"call-1"}\n' +
+      '<player-tool-call>\ncontext: game #3\ntool: saolei_operate\nargs: {"call":"call-1"}\n' +
         "result: 已揭示，周边 2 雷\n</player-tool-call>",
     );
     expect(plannerView[1]?.source).toMatchObject({ messageId: "call-1" });
@@ -392,6 +391,31 @@ describe("Team.drain", () => {
     const units = team.drain(planner.handle);
     expect(units).toHaveLength(1);
     expect(textOf(units[0]!)).toContain("result: clicked");
+    expect(team.drain(planner.handle)).toEqual([]);
+  });
+
+  it("does not relay a reasoning-only assistant message (live think never broadcasts)", () => {
+    const { team } = createTeam();
+    const player = createMember("templates/saolei/sessions/s1/player");
+    const planner = createMember("templates/saolei/sessions/s1/planner");
+    team.register({
+      goal: "g",
+      members: [
+        { agent: player.handle, role: "player", summary: "a" },
+        { agent: planner.handle, role: "planner", summary: "b" },
+      ],
+    });
+
+    const thinkingOnly = createAssistantMessage({
+      content: [{ type: "reasoning", text: "chain of thought" }],
+      source: { provider: "fake", model: "fake" },
+    });
+    emit(player, {
+      type: "assistant/message",
+      ...order(),
+      data: { turn: 1, step: 1, message: thinkingOnly },
+    } as unknown as SessionEvent);
+
     expect(team.drain(planner.handle)).toEqual([]);
   });
 

@@ -1813,7 +1813,7 @@ describe('App 双视图切换', () => {
             blocks: [
               {
                 text: {
-                  content: '[planner] 先开左上角\n<planner-message>\n先开左上角\n</planner-message>',
+                  content: '<planner-message>\n先开左上角\n</planner-message>',
                 },
               },
             ],
@@ -1862,10 +1862,15 @@ describe('App 双视图切换', () => {
     expect(switcher.querySelectorAll('button')).toHaveLength(3)
     expect(screen.getByTestId('view-team').getAttribute('data-active')).toBe('true')
 
-    // player 视角：回填序列按 `user 气泡 / agent 输出 / user: [sender] 标注` 渲染。
+    // player 视角：回填序列按 `user 气泡 / agent 输出 / user: [sender] 标注` 渲染；
+    // relay 正文为注入原文（标签对原样、不剥离，正文仅出现一次——
+    // specs/060-agent-v2-team-optimize/contracts/team-api.md §4）。
     fireEvent.click(screen.getByTestId('view-player'))
     expect(screen.getByTestId('view-player').getAttribute('data-active')).toBe('true')
     expect(screen.getByTestId('relay-source').textContent).toBe('user: [planner]')
+    expect(screen.getByTestId('relay-body').textContent).toBe(
+      '<planner-message>\n先开左上角\n</planner-message>',
+    )
     expect(screen.getByTestId('agent-text').textContent).toBe('落子 a1')
 
     // planner 视角：用户消息 + 自己的输出，无 relay 条目。

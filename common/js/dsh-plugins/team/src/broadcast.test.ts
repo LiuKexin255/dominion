@@ -1,9 +1,8 @@
 /**
  * Broadcast unit tests: unit derivation (pairing, order, completeness), the
  * consumption-anchor reader, and the rendered group-chat format — the wire
- * shape of specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1 item 4
- * and survey/deepseek-harness-team-mode.md §5.3 (verbatim body, bounded
- * summary head line, no truncation).
+ * shape of specs/060-agent-v2-team-optimize/contracts/team-api.md §4 (single
+ * tag pair, no head line, no think content, verbatim body, no truncation).
  *
  * Pattern (style/javascript.md Mock convention): pure functions over real
  * dsh message values — no interception.
@@ -31,7 +30,6 @@ import {
   deriveUnits,
   messageBody,
   renderBroadcast,
-  summarize,
   tagName,
 } from "./broadcast.js";
 import { renderTeamSection } from "./section.js";
@@ -97,7 +95,7 @@ describe("tagName", () => {
 });
 
 describe("messageBody", () => {
-  it("keeps text and reasoning blocks in order and skips tool-call blocks", () => {
+  it("keeps text blocks in order and drops reasoning and tool-call blocks", () => {
     const message = createAssistantMessage({
       content: [
         { type: "reasoning", text: "thinking" },
@@ -106,17 +104,7 @@ describe("messageBody", () => {
       ],
       source: { provider: "fake", model: "fake" },
     });
-    expect(messageBody(message)).toBe("thinking\n\nanswer");
-  });
-});
-
-describe("summarize", () => {
-  it("takes the first non-empty line, collapsed and bounded to 120 chars", () => {
-    expect(summarize("\n  first   line  \nsecond")).toBe("first line");
-    const long = "x".repeat(300);
-    const summary = summarize(long);
-    expect(summary).toHaveLength(120);
-    expect(summary.endsWith("…")).toBe(true);
+    expect(messageBody(message)).toBe("answer");
   });
 });
 
@@ -163,6 +151,15 @@ describe("deriveUnits", () => {
 
     expect(deriveUnits(events).map((unit) => unit.kind)).toEqual(["tool"]);
   });
+
+  it("drops a reasoning-only assistant message (think never broadcasts)", () => {
+    const thinkingOnly = createAssistantMessage({
+      content: [{ type: "reasoning", text: "chain of thought" }],
+      source: { provider: "fake", model: "fake" },
+    });
+
+    expect(deriveUnits([speechEvent(thinkingOnly)])).toEqual([]);
+  });
 });
 
 describe("consumedAnchors", () => {
@@ -192,7 +189,7 @@ describe("consumedAnchors", () => {
 });
 
 describe("renderBroadcast", () => {
-  it("renders a speech as a bounded head line plus the verbatim wrapped body", () => {
+  it("renders a speech as the tag-wrapped verbatim body with no head line", () => {
     const message = speechMessage("line one\nline two");
     const text = renderBroadcast(
       "player",
@@ -200,12 +197,10 @@ describe("renderBroadcast", () => {
       [speechEvent(message)],
     );
 
-    expect(text).toBe(
-      "[player] line one\n<player-message>\nline one\nline two\n</player-message>",
-    );
+    expect(text).toBe("<player-message>\nline one\nline two\n</player-message>");
   });
 
-  it("renders a tool unit with the context head and verbatim args/result", () => {
+  it("renders a tool unit with the context line inside the wrapper and verbatim args/result", () => {
     const args = `{"operations":[${'{"type":"click","x":1,"y":2},'.repeat(3)}]}`;
     const result = "已揭示，周边 2 雷；剩余 38 格".repeat(40);
     const events = [
@@ -221,13 +216,13 @@ describe("renderBroadcast", () => {
     );
 
     expect(text).toBe(
-      `[player] 工具调用 saolei_operate (game #3)\n` +
-        `<player-tool-call>\ntool: saolei_operate\nargs: ${args}\nresult: ${result}\n</player-tool-call>`,
+      `<player-tool-call>\ncontext: game #3\ntool: saolei_operate\n` +
+        `args: ${args}\nresult: ${result}\n</player-tool-call>`,
     );
     expect(text).toContain(result);
   });
 
-  it("omits the context parenthetical when the registration has none", () => {
+  it("omits the context line when the registration has none", () => {
     const events = [
       toolCallEvent("call-1", "saolei_remain", "{}"),
       toolResultEvent("call-1", [{ type: "text", text: "ok" }]),
@@ -237,7 +232,28 @@ describe("renderBroadcast", () => {
       { kind: "tool", anchor: "call-1", time: 0, seq: 0 },
       events,
     );
-    expect(text.startsWith("[planner] 工具调用 saolei_remain\n")).toBe(true);
+    expect(text).toBe(
+      "<planner-tool-call>\ntool: saolei_remain\nargs: {}\nresult: ok\n</planner-tool-call>",
+    );
+  });
+
+  it("never carries think content and states the body exactly once", () => {
+    const message = createAssistantMessage({
+      content: [
+        { type: "reasoning", text: "hidden chain" },
+        { type: "text", text: "visible answer" },
+      ],
+      source: { provider: "fake", model: "fake" },
+    });
+    const text = renderBroadcast(
+      "player",
+      { kind: "message", anchor: String(message.id), time: 0, seq: 0 },
+      [speechEvent(message)],
+    );
+
+    expect(text).not.toContain("hidden chain");
+    expect(text.match(/visible answer/g)).toHaveLength(1);
+    expect(text).toBe("<player-message>\nvisible answer\n</player-message>");
   });
 
   it("fails loud when the sender log lacks the anchored production", () => {
@@ -283,9 +299,11 @@ describe("renderTeamSection", () => {
     expect(section).toContain("尽量高的胜率");
     expect(section).toContain("[player] 执行扫雷操作并独占桌面控制");
     expect(section).toContain("[planner] 复盘与制定策略，不操作桌面");
-    expect(section).toContain("[角色] 摘要");
     expect(section).toContain("<角色-message>");
     expect(section).toContain("<角色-tool-call>");
+    expect(section).toContain("context: 局 id");
+    expect(section).not.toContain("[角色] 摘要");
+    expect(section).not.toContain("[角色] 工具调用");
   });
 
   it("states no member's first-person identity (R2 ownership boundary)", () => {

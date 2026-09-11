@@ -196,8 +196,9 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	}
 
 	// The planner view carries the player's raw process as a sender-annotated
-	// relay (FR-008: verbatim tool result body, no truncation), and the
-	// player view carries the review relay.
+	// relay (specs/060-agent-v2-team-optimize/contracts/team-api.md §4:
+	// verbatim tool result inside the tag pair, no head line, no truncation),
+	// and the player view carries the review relay.
 	plannerView := listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner")
 	sawPlayerRelay := false
 	for _, entry := range plannerView {
@@ -205,8 +206,12 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 			continue
 		}
 		text := agentV2MessageText(entry.GetMessage())
-		if strings.Contains(text, agentV2WonStatusContains) && strings.Contains(text, "<player-tool-call>") {
-			sawPlayerRelay = true
+		if !strings.Contains(text, agentV2WonStatusContains) || !strings.Contains(text, "<player-tool-call>") {
+			continue
+		}
+		sawPlayerRelay = true
+		if !strings.HasPrefix(text, "<player-tool-call>\n") {
+			t.Errorf("player tool relay = %q, want the tag-wrapped form with no head line", text)
 		}
 	}
 	if !sawPlayerRelay {

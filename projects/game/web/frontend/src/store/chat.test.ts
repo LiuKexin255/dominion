@@ -918,7 +918,7 @@ describe('ChatStore 成员视角序列（双形态）', () => {
         message: {
           messageId: 'm2',
           role: 'ROLE_USER',
-          blocks: [{ text: { content: '[player] 落子\n<player-message>\n落子\n</player-message>' } }],
+          blocks: [{ text: { content: '<player-message>\n落子\n</player-message>' } }],
         },
         sender: 'player',
       },
@@ -927,7 +927,9 @@ describe('ChatStore 成员视角序列（双形态）', () => {
     const view = store.getSnapshot().memberHistory.planner ?? []
     expect(view.map((e) => e.sender)).toEqual(['user', 'player', 'planner'])
     expect(view[0]?.message.blocks[0]?.text?.content).toBe('开始一局')
-    expect(view[1]?.message.blocks[0]?.text?.content).toContain('[player] 落子')
+    expect(view[1]?.message.blocks[0]?.text?.content).toBe(
+      '<player-message>\n落子\n</player-message>',
+    )
     expect(view[2]?.message.messageId).toBe('m5')
     expect(view[2]?.message.blocks[0]?.text?.content).toBe('下一轮策略')
   })

@@ -1403,7 +1403,7 @@ describe('ChatView 成员视角视图', () => {
             blocks: [
               {
                 text: {
-                  content: '[planner] 先开左上角\n<planner-message>\n先开左上角\n</planner-message>',
+                  content: '<planner-message>\n先开左上角\n</planner-message>',
                 },
               },
             ],
@@ -1420,12 +1420,15 @@ describe('ChatView 成员视角视图', () => {
     // 自己的输出 = agent 形态（无需成员标签：自己即 agent）。
     expect(screen.getByTestId('agent-text').textContent).toBe('落子 a1')
     expect(screen.queryByTestId('member-tag')).toBeNull()
-    // 他人消息 = 标注来源的 user 消息（`user: [sender] 正文`，正文为该成员
-    // 消费到的注入原文）。
+    // 他人消息 = 标注来源的 user 消息（`user: [sender] 正文`）。正文为该成员
+    // 消费到的注入原文：标签对原样呈现、不剥离，正文仅出现一次
+    // （specs/060-agent-v2-team-optimize/contracts/team-api.md §4）。
     const relay = screen.getByTestId('member-relay')
     expect(relay.getAttribute('data-sender')).toBe('planner')
     expect(screen.getByTestId('relay-source').textContent).toBe('user: [planner]')
-    expect(screen.getByTestId('relay-body').textContent).toContain('先开左上角')
+    expect(screen.getByTestId('relay-body').textContent).toBe(
+      '<planner-message>\n先开左上角\n</planner-message>',
+    )
   })
 
   it('live 事件按 member 过滤：其他成员的流式产出不进入本视角（其消费面经回填呈现）', () => {
