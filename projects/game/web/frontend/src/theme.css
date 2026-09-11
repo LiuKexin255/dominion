@@ -456,6 +456,13 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* 激活成员徽标（specs/060-agent-v2-team-optimize/contracts/team-api.md §5）：
+ * 呈现当前激活成员（在途驱动成员 / 静止时的下一条输入归属成员）。 */
+.active-member {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 /* 成员清单（web-views.md §1 状态呈现：role + preset + model）：
  * 各成员一项，弱化着色不抢对话主区视觉。 */
 .team-members {
@@ -463,6 +470,27 @@ body {
   gap: 10px;
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* 成员项即 system prompt 查看入口（FR-009）：按钮语义但保持清单文本形态。 */
+.team-member {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.team-member:hover {
+  text-decoration: underline;
+}
+
+/* 主界面 system prompt 浮层（web-views.md §5）：置于工具条与对话区之间，
+ * 不随对话区收缩。 */
+.system-prompt-overlay {
+  flex: none;
+  margin: 8px 24px 0;
 }
 
 /* 桌面连接状态指示（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：

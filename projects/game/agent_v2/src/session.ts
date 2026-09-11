@@ -110,6 +110,14 @@ export interface TeamMemberView {
 /** The team singleton projection served by GetTeam/UpdateTeam. */
 export interface TeamView {
   readonly name: string;
+  /**
+   * The current active member (FR-008 single merged value): the in-flight
+   * driving member while a member turn runs, otherwise the member owning the
+   * next input (activation). Always a role on a materialized team (the
+   * initial activation is "planner"); cancel/pause does not change it
+   * (specs/060-agent-v2-team-optimize/contracts/team-api.md §1).
+   */
+  readonly activeMember: string;
   readonly members: readonly TeamMemberView[];
   readonly createTime: Date;
   readonly updateTime: Date;
@@ -922,8 +930,13 @@ function memberStateView(entry: TeamEntry, role: MemberRole): TeamMemberView {
 }
 
 function toTeamView(entry: TeamEntry): TeamView {
+  // The single merged active-member value (contracts/team-api.md §1): the
+  // in-flight driving member wins while a turn runs; at rest the next input's
+  // owner (activation) is served. A materialized entry always has a role.
+  const snapshot = entry.orchestrator.snapshot();
   return {
     name: `${entry.sessionName}/team`,
+    activeMember: snapshot.active ?? snapshot.activation,
     members: [memberStateView(entry, "player"), memberStateView(entry, "planner")],
     createTime: entry.createTime,
     updateTime: entry.updateTime,

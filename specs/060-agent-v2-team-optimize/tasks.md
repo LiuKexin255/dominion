@@ -143,10 +143,10 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/contracts/team-api.md`（§1/§5）；`specs/060-agent-v2-team-optimize/research.md`（R7/R10）；`specs/059-agent-v2-team-mode/contracts/web-views.md`
 
-- [ ] T022 [P] [US5] `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`：`OrchestratorSnapshot` 外露 `activation`（下一条输入归属成员，即 `current` 字段）；`orchestrator.test.ts` 快照断言更新（物化后 planner / 切换流转 / 取消保持）
-- [ ] T023 [P] [US5] `projects/game/agent_v2.proto`（`Team` 新增 output-only `active_member`）+ `projects/game/agent_v2/src/session.ts`（`TeamView.activeMember = driving?.role ?? activation`，`toTeamView` 投影）+ `projects/game/agent_v2/src/server.ts`（`teamViewToProto` 映射）+ `session.test.ts` 用例
-- [ ] T024 [US5] `projects/game/web/frontend/src/api/agent.ts`（Team.activeMember 类型）+ `src/App.tsx`：对话页工具条激活成员徽标——实时推导（任一成员 `turn_start` 帧覆盖最近 GetTeam 值；live 收束回退 GetTeam 值）+ `App.test.tsx` 用例（徽标渲染/推导切换）
-- [ ] T025 [US5] `projects/game/web/frontend/src/App.tsx` + `src/components/ChatView.tsx`：主界面 system prompt 入口——team 工具条成员清单区每成员可点击，经既有 `getTeamMember` 读取并以只读浮层展示全文（复用 `src/components/TeamSettingsPanel.tsx` 的浮层逻辑；设置面板内入口保留）+ 组件测试用例
+- [X] T022 [P] [US5] `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`：`OrchestratorSnapshot` 外露 `activation`（下一条输入归属成员，即 `current` 字段）；`orchestrator.test.ts` 快照断言更新（物化后 planner / 切换流转 / 取消保持）
+- [X] T023 [P] [US5] `projects/game/agent_v2.proto`（`Team` 新增 output-only `active_member`）+ `projects/game/agent_v2/src/session.ts`（`TeamView.activeMember = driving?.role ?? activation`，`toTeamView` 投影）+ `projects/game/agent_v2/src/server.ts`（`teamViewToProto` 映射）+ `session.test.ts` 用例
+- [X] T024 [US5] `projects/game/web/frontend/src/api/agent.ts`（Team.activeMember 类型）+ `src/App.tsx`：对话页工具条激活成员徽标——实时推导（任一成员 `turn_start` 帧覆盖最近 GetTeam 值；live 收束回退 GetTeam 值）+ `App.test.tsx` 用例（徽标渲染/推导切换）
+- [X] T025 [US5] `projects/game/web/frontend/src/App.tsx` + `src/components/ChatView.tsx`：主界面 system prompt 入口——team 工具条成员清单区每成员可点击，经既有 `getTeamMember` 读取并以只读浮层展示全文（复用 `src/components/TeamSettingsPanel.tsx` 的浮层逻辑；设置面板内入口保留）+ 组件测试用例
 
 **Checkpoint**: 对话页实时可见当前激活成员；主界面直接查看成员 system prompt。
 

@@ -61,6 +61,7 @@ function presetView(overrides: Record<string, unknown> = {}) {
 function teamView(overrides: Partial<TeamView> = {}): TeamView {
   return {
     name: VALID_TEAM,
+    activeMember: "planner",
     members: [
       {
         name: `${VALID_TEAM}/members/player`,
@@ -470,7 +471,7 @@ describe("AgentService.UpdateTeam handler", () => {
 });
 
 describe("AgentService.GetTeam / GetTeamMember handlers", () => {
-  it("returns the team with the registry's desktop_connected", () => {
+  it("returns the team with the registry's desktop_connected and active_member", () => {
     const deps = fakeDeps();
     const handlers = buildTeamHandlers(deps);
     const callback = invokeUnary(handlers.GetTeam as never, { name: VALID_TEAM });
@@ -482,6 +483,9 @@ describe("AgentService.GetTeam / GetTeamMember handlers", () => {
     expect(err).toBeNull();
     expect(response?.name).toBe(VALID_TEAM);
     expect(response?.desktopConnected).toBe(true);
+    // The merged active-member projection is mapped onto the output-only
+    // proto field (contracts/team-api.md §1).
+    expect(response?.activeMember).toBe("planner");
   });
 
   it("returns one member including its assembly-read system prompt and rejects unknown members", async () => {

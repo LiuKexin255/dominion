@@ -282,6 +282,15 @@ message Team {
   // The last materialization/refresh timestamp; refreshed on every
   // UpdateTeam. Output-only.
   google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The current active member — a single merged value
+  // (specs/060-agent-v2-team-optimize/contracts/team-api.md §1): the
+  // in-flight driving member while a member turn runs (at most one at a
+  // time), otherwise the member owning the next input (activation); the
+  // initial activation after materialization is "planner", and cancel/pause
+  // does not change the owner. Never empty on a materialized team (GetTeam is
+  // NOT_FOUND while unmaterialized, so there is no unset-value ambiguity).
+  // Output-only (AIP-129: https://google.aip.dev/129).
+  string active_member = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // UpdateTeamRequest materializes or refreshes the team singleton. The

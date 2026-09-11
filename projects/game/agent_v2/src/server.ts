@@ -262,7 +262,9 @@ function presetToProto(view: PresetView): Preset {
  * Project the team registry view onto the proto Team resource. The
  * output-only member states carry the configured preset/model snapshots;
  * `system_prompt` stays empty here — it is served only by GetTeamMember
- * (the proto field is OUTPUT_ONLY; contracts/team-api.md §1).
+ * (the proto field is OUTPUT_ONLY; contracts/team-api.md §1). `active_member`
+ * is the merged single value the session layer derives from the orchestration
+ * snapshot (the in-flight driving member, else the next input's owner).
  */
 function teamViewToProto(view: TeamView, desktopConnected: boolean): TeamProto {
   const members: TeamMemberProto[] = view.members.map((member) => ({
@@ -276,6 +278,7 @@ function teamViewToProto(view: TeamView, desktopConnected: boolean): TeamProto {
     name: view.name,
     members,
     desktopConnected,
+    activeMember: view.activeMember,
     createTime: dateToTimestamp(view.createTime),
     updateTime: dateToTimestamp(view.updateTime),
   };

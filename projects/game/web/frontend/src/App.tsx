@@ -30,6 +30,10 @@ import {
 import { ChatView, TEAM_VIEW } from './components/ChatView.js'
 import { PresetsView } from './components/PresetsView.js'
 import { SessionList } from './components/SessionList.js'
+import {
+  SystemPromptOverlay,
+  useSystemPrompt,
+} from './components/SystemPromptOverlay.js'
 import { ChatStore, useChatState } from './store/chat.js'
 
 // 本阶段新建 session 固定 saolei template（spec 澄清，存量 session 服务零改动；
@@ -87,6 +91,12 @@ function ChatPanel({
   // 连接态独立承载查询结果（不复用 team state，避免探测失败时虚构连接）。
   const [desktopConn, setDesktopConn] = useState<DesktopConn>('unknown')
   const [panelOpen, setPanelOpen] = useState(false)
+  // 主界面 system prompt 入口（FR-009，
+  // specs/059-agent-v2-team-mode/contracts/web-views.md §5）：工具条成员清单的
+  // 点击入口经既有 GetTeamMember 读取全文，浮层逻辑与设置面板共用
+  // （SystemPromptOverlay 的单一控制器）：工具条成员清单与设置面板成员清单
+  // 共用同一实例，任一时刻至多一个浮层；设置面板内入口保留不变。
+  const systemPrompt = useSystemPrompt(session, team?.updateTime)
   // 对话页顶部视图（web-views.md §2：团队 | player | planner）：纯前端状态，
   // 切换不重新回填（各视图历史常驻于 store）；按 session 常驻于本面板，
   // 会话切换/返回时保持所选视图。
@@ -304,6 +314,14 @@ function ChatPanel({
     return () => clearInterval(id)
   }, [active, refreshTeam])
 
+  // 激活成员（FR-008，specs/060-agent-v2-team-optimize/spec.md）：任一成员
+  // 回合在途时呈现该回合成员（turn_start 帧到达即推导，覆盖最近 GetTeam 快照
+  // 值）；live 全部收束后回退最近 GetTeam 值（回合终态触发的即时刷新使该快照
+  // 随编排收敛更新）。不新增 store 字段——呈现层从 live 派生 + GetTeam 快照
+  // 组合（specs/060-agent-v2-team-optimize/research.md R7）。
+  const liveMember = state.live[state.live.length - 1]?.member
+  const activeMember = liveMember ?? team?.activeMember
+
   if (!active) return null
   return (
     <div className="chat">
@@ -350,25 +368,45 @@ function ChatPanel({
               ? '未物化'
               : ''}
         </span>
-        {/* 成员清单（web-views.md §1 状态呈现：role + preset + model；role
-            为 wire 字符串，直接渲染）。 */}
+        {/* 激活成员徽标（specs/060-agent-v2-team-optimize/contracts/team-api.md
+            §1/§5）：物化后呈现当前激活成员（在途驱动成员，静止为下一条输入
+            归属成员）；未物化不呈现。 */}
+        {teamStatus === 'materialized' &&
+          activeMember !== undefined &&
+          activeMember !== '' && (
+            <span
+              className="active-member"
+              data-testid="active-member"
+              data-member={activeMember}
+            >
+              当前激活：{activeMember}
+            </span>
+          )}
+        {/* 成员清单（specs/059-agent-v2-team-mode/contracts/web-views.md §1
+            状态呈现：role + preset + model；role 为 wire 字符串，直接渲染）。
+            每成员即 system prompt 查看入口（FR-009，
+            specs/060-agent-v2-team-optimize/spec.md：主界面直接可见，无需打开
+            设置面板）。 */}
         <span className="team-members" data-testid="team-members">
           {team?.members?.map((member, i) => (
-            <span
+            <button
               key={member.name ?? i}
+              type="button"
               className="team-member"
               data-testid="team-member"
               data-role={member.role}
+              onClick={() => void systemPrompt.open(member.role)}
             >
               {member.role} · {presetTitle(member.preset)} ·{' '}
               {member.model !== undefined && member.model !== '' ? member.model : '默认模型'}
-            </span>
+            </button>
           ))}
         </span>
         <Button data-testid="team-settings-button" onClick={() => setPanelOpen((o) => !o)}>
           设置 team
         </Button>
       </div>
+      <SystemPromptOverlay controller={systemPrompt} className="system-prompt-overlay" />
       {teamStatus === 'unmaterialized' && !panelOpen && (
         <div className="team-guide" data-testid="team-guide">
           <span>
@@ -394,6 +432,7 @@ function ChatPanel({
         <TeamSettingsPanel
           session={session}
           materialized={team}
+          systemPrompt={systemPrompt}
           onApplied={onApplied}
           onClose={() => setPanelOpen(false)}
         />

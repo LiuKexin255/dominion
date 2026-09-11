@@ -967,6 +967,88 @@ describe('App 连接状态刷新时机（web-ui.md §5：即时刷新 + 轮询�
   })
 })
 
+// ─── App 激活成员徽标（specs/060-agent-v2-team-optimize/contracts/
+// ─── team-api.md §1/§5：GetTeam activeMember 快照 + turn_start 帧实时推导
+// ─── + live 收束回退） ───────────────────────────────────────────────────────
+
+describe('App 激活成员徽标（specs/060-agent-v2-team-optimize/contracts/team-api.md §1/§5）', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = makeConnFetchMock([S1], () => teamView(S1, { activeMember: 'planner' }))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('物化后呈现 GetTeam 的 activeMember（初始 activation = planner）', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('active-member').getAttribute('data-member')).toBe('planner')
+    })
+    expect(screen.getByTestId('active-member').textContent).toContain('planner')
+    // 正向断言 GetTeam 路由被 exercise（style/javascript.md mock 约定）。
+    expect(fetchMock.mock.calls.some((call) => call[0] === `/api/v2/${S1}/team`)).toBe(true)
+  })
+
+  it('未物化（GetTeam 404）不呈现激活成员徽标', async () => {
+    fetchMock = makeConnFetchMock([S1], () => new Response('not found', { status: 404 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+
+    await screen.findByTestId('team-guide')
+    expect(screen.queryByTestId('active-member')).toBeNull()
+  })
+
+  it('在途成员 turn_start 帧覆盖 GetTeam 值；live 收束后回退最近 GetTeam 值', async () => {
+    const send = pausedSend(
+      teamEventWire('USER', 1, '一', 'ROLE_USER') +
+        memberWire('PLAYER', 't1', { turnStart: {} }) +
+        memberWire('PLAYER', 't1', { blockStart: { index: 0, type: 'BLOCK_TYPE_TEXT' } }) +
+        memberWire('PLAYER', 't1', { delta: { index: 0, text: '部' } }),
+      [
+        memberWire('PLAYER', 't1', {
+          blockEnd: { index: 0, block: { text: { content: '部分' } } },
+        }),
+        teamEventWire('PLAYER', 2, '部分'),
+        memberWire('PLAYER', 't1', { turnEnd: { status: 'TURN_STATUS_COMPLETED' } }),
+      ],
+    )
+    fetchMock = makeConnFetchMock(
+      [S1],
+      () => teamView(S1, { activeMember: 'planner' }),
+      () => send.response,
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+
+    fireEvent.click(await screen.findByText('s1'))
+    await waitFor(() => {
+      expect(screen.getByTestId('active-member').getAttribute('data-member')).toBe('planner')
+    })
+
+    // 成员回合在途（PLAYER 的 turn_start 帧）：实时推导覆盖 GetTeam 快照。
+    const input = await screen.findByTestId('chat-input')
+    fireEvent.change(input, { target: { value: '一' } })
+    fireEvent.click(screen.getByTestId('send-button'))
+    await waitFor(() => {
+      expect(screen.getByTestId('active-member').getAttribute('data-member')).toBe('player')
+    })
+
+    // live 全部收束：回退最近 GetTeam 值（该快照仍报 planner）。
+    send.release()
+    await send.done
+    await waitFor(() => {
+      expect(screen.getByTestId('active-member').getAttribute('data-member')).toBe('planner')
+    })
+  })
+})
+
 describe('App cancel 编排（web-ui.md §4/§8-6）', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
@@ -1573,6 +1655,137 @@ describe('App 重建同步（Apply 成功后对话视图即时同步）', () => 
     await flush()
     fireEvent.click(screen.getByTestId('view-player'))
     expect(screen.queryByText('旧生命周期视角内容')).toBeNull()
+  })
+})
+
+// ─── App 主界面 system prompt 入口（FR-009，
+// ─── specs/059-agent-v2-team-mode/contracts/web-views.md §5：工具条成员清单
+// ─── 点击 → GetTeamMember 全文只读浮层；设置面板内入口保留不变） ─────────────
+
+describe('App 主界面 system prompt 入口', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  const PLAYER_PROMPT = 'player 完整 system prompt\n第二行'
+  const PLANNER_PROMPT = 'planner 完整 system prompt'
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? 'GET'
+      if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+        return jsonResponse({ sessions: [{ name: S1, createTime: '2026-08-29T00:00:00Z' }] })
+      }
+      if (url === `/api/v2/${S1}/team` && method === 'GET') {
+        return teamView(S1, { activeMember: 'planner' })
+      }
+      if (url === `/api/v2/${S1}/team/messages`) {
+        return jsonResponse({ messages: [] })
+      }
+      if (
+        url === `/api/v2/${S1}/team/members/player/messages` ||
+        url === `/api/v2/${S1}/team/members/planner/messages`
+      ) {
+        return jsonResponse({ messages: [] })
+      }
+      if (url === `/api/v2/${S1}/team/members/player` && method === 'GET') {
+        return jsonResponse({ role: 'player', systemPrompt: PLAYER_PROMPT })
+      }
+      if (url === `/api/v2/${S1}/team/members/planner` && method === 'GET') {
+        return jsonResponse({ role: 'planner', systemPrompt: PLANNER_PROMPT })
+      }
+      // 设置面板数据面（互斥用例打开面板时消费）。
+      if (url === '/api/v2/templates/saolei/presets?role=player' && method === 'GET') {
+        return jsonResponse({
+          presets: [
+            { name: 'templates/saolei/presets/p-player', role: 'player', persona: 'p' },
+          ],
+        })
+      }
+      if (url === '/api/v2/templates/saolei/presets?role=planner' && method === 'GET') {
+        return jsonResponse({
+          presets: [
+            { name: 'templates/saolei/presets/p-planner', role: 'planner', persona: 'q' },
+          ],
+        })
+      }
+      if (url === '/api/v2/models' && method === 'GET') {
+        return jsonResponse({ models: [{ id: 'glm-5.2' }] })
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('工具条成员清单每成员可点击：GetTeamMember 全文经只读浮层呈现，切换成员重新取数', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+
+    const entries = await screen.findAllByTestId('team-member')
+    expect(entries).toHaveLength(2)
+    // 主界面直接可见入口：无需打开设置面板。
+    expect(screen.queryByTestId('team-settings-panel')).toBeNull()
+
+    // 点击 player 入口：GET GetTeamMember 取实际装配结果（mock 正向断言），
+    // 只读等宽全文 <pre> 呈现。
+    fireEvent.click(entries[0] as HTMLElement)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(`/api/v2/${S1}/team/members/player`, undefined)
+    })
+    const pre = await screen.findByTestId('system-prompt-text')
+    expect(pre.textContent).toBe(PLAYER_PROMPT)
+    expect(screen.getByTestId('system-prompt-title').textContent).toContain('player')
+
+    // 切换另一成员：重新取数并更新全文。
+    fireEvent.click(entries[1] as HTMLElement)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(`/api/v2/${S1}/team/members/planner`, undefined)
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('system-prompt-text').textContent).toBe(PLANNER_PROMPT)
+    })
+
+    // 关闭入口收起浮层。
+    fireEvent.click(screen.getByTestId('system-prompt-close'))
+    expect(screen.queryByTestId('system-prompt')).toBeNull()
+  })
+
+  it('工具条入口与设置面板入口互斥：共享单一浮层，后打开者替换先打开者', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+
+    // 工具条 player 入口打开浮层：DOM 恰一个 system-prompt。
+    const entries = await screen.findAllByTestId('team-member')
+    fireEvent.click(entries[0] as HTMLElement)
+    await waitFor(() => {
+      expect(screen.getByTestId('system-prompt').getAttribute('data-role')).toBe('player')
+    })
+    expect(screen.getAllByTestId('system-prompt')).toHaveLength(1)
+
+    // 打开设置面板并点击面板内 planner 入口：后打开者替换前者，
+    // DOM 仍恰一个浮层（无重复 testid/无叠加）。
+    fireEvent.click(screen.getByTestId('team-settings-button'))
+    await screen.findByTestId('team-settings-panel')
+    fireEvent.click(await screen.findByTestId('member-system-prompt-planner'))
+    await waitFor(() => {
+      expect(screen.getByTestId('system-prompt').getAttribute('data-role')).toBe('planner')
+    })
+    expect(screen.getAllByTestId('system-prompt')).toHaveLength(1)
+    await waitFor(() => {
+      expect(screen.getByTestId('system-prompt-text').textContent).toBe(PLANNER_PROMPT)
+    })
+
+    // 反向：面板开启期间再点工具条 player 入口，同样只保留一个浮层。
+    fireEvent.click(entries[0] as HTMLElement)
+    await waitFor(() => {
+      expect(screen.getByTestId('system-prompt').getAttribute('data-role')).toBe('player')
+    })
+    expect(screen.getAllByTestId('system-prompt')).toHaveLength(1)
+    await waitFor(() => {
+      expect(screen.getByTestId('system-prompt-text').textContent).toBe(PLAYER_PROMPT)
+    })
   })
 })
 

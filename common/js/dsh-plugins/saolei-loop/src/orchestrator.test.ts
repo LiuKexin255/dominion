@@ -384,6 +384,7 @@ describe("TeamOrchestrator.materialize", () => {
       materialized: true,
       phase: "planning",
       active: null,
+      activation: "planner",
       paused: false,
       queued: 0,
       failed: false,
@@ -404,6 +405,7 @@ describe("TeamOrchestrator.materialize", () => {
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "planning",
       active: "planner",
+      activation: "planner",
     });
 
     planner.settle();
@@ -412,6 +414,7 @@ describe("TeamOrchestrator.materialize", () => {
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "playing",
       active: null,
+      activation: "player",
     });
     expectRelayOrUserSources(h);
   });
@@ -456,11 +459,15 @@ describe("TeamOrchestrator transitions", () => {
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "playing",
       active: "player",
+      activation: "player",
     });
 
     player.settle();
     await h.orchestrator.whenQuiescent();
-    expect(h.orchestrator.snapshot()).toMatchObject({ active: null });
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
     expectRelayOrUserSources(h);
   });
 
@@ -486,17 +493,27 @@ describe("TeamOrchestrator transitions", () => {
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "reviewing",
       active: "planner",
+      activation: "planner",
     });
 
-    // Review quiesces; without new player output the loop rests.
+    // Review quiesces; without new player output the loop rests, and the pump
+    // transition leaves the next input to the player (activation).
     planner.settle();
     await h.orchestrator.whenQuiescent();
     expect(player.followups).toHaveLength(1);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
 
     // A later player turn still observing the same record must not re-review.
     h.orchestrator.submit("继续");
     await tick();
     expect(player.followups).toHaveLength(2);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: "player",
+      activation: "player",
+    });
     player.settle();
     await h.orchestrator.whenQuiescent();
     expect(planner.followups).toHaveLength(2);
@@ -580,7 +597,13 @@ describe("TeamOrchestrator cancel and dispose", () => {
     expect(planner.cancels[0]?.cause).toEqual({ kind: "user" });
     await h.orchestrator.whenQuiescent();
     expect(player.followups).toHaveLength(0);
-    expect(h.orchestrator.snapshot()).toMatchObject({ paused: true });
+    // Cancel pauses without changing the activation: the next input still
+    // belongs to the planner (the in-flight turn's member).
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      active: null,
+      activation: "planner",
+    });
 
     // Idempotent while already paused.
     expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
@@ -589,6 +612,10 @@ describe("TeamOrchestrator cancel and dispose", () => {
     const resumed = h.orchestrator.submit("继续");
     expect(resumed.queued).toBe(false);
     expect(planner.followups.map(messageText)).toEqual(["首条", "继续"]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: "planner",
+      activation: "planner",
+    });
     planner.settle();
     await tick();
     expect(player.followups).toHaveLength(1);
@@ -619,10 +646,21 @@ describe("TeamOrchestrator cancel and dispose", () => {
     expect(player.cancels).toHaveLength(1);
     await h.orchestrator.whenQuiescent();
     expect(player.followups).toHaveLength(1);
+    // The player turn was in flight: cancel keeps the player as the next
+    // input's owner (activation does not fall back to the last finished turn).
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      active: null,
+      activation: "player",
+    });
 
     h.orchestrator.submit("新消息");
     await tick();
     expect(player.followups.map(messageText)).toEqual(["策略", "新消息"]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: "player",
+      activation: "player",
+    });
     player.settle();
     await h.orchestrator.whenQuiescent();
     expectRelayOrUserSources(h);

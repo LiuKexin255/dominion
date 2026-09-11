@@ -379,6 +379,9 @@ describe("TeamSessions.materialize", () => {
     expect(h.teamRegister).toHaveBeenCalledTimes(1);
 
     expect(view.name).toBe(`${S1}/team`);
+    // The initial activation after materialization is planner (FR-008: the
+    // single merged active-member value at rest).
+    expect(view.activeMember).toBe("planner");
     expect(
       view.members.map((entry) => [entry.name, entry.role, entry.preset, entry.model]),
     ).toEqual([
@@ -738,6 +741,73 @@ describe("TeamSessions.cancel", () => {
     const h = createHarness();
     expect(() => h.sessions.cancel(S1)).toThrow(TeamSessionError);
     expect(h.agentsCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("TeamSessions active member projection (FR-008)", () => {
+  it("serves planner at rest, the in-flight driving member, and the next input's owner", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const planner = member(h, PLANNER_ID);
+    const player = member(h, PLAYER_ID);
+
+    // Materialized and quiescent: the initial activation is planner.
+    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
+
+    // The first send drives the planner: the merged value is the driving
+    // member (the activation equals it while a turn is in flight).
+    const stream = fakeStream();
+    h.sessions.send(S1, "请开始", stream);
+    await flush();
+    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
+
+    // The planner relays a strategy; its quiescence structurally drives the
+    // player and both the driving member and the activation follow.
+    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "开局策略")]);
+    driveTextTurn(h, planner, "开局策略");
+    await flush();
+    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
+
+    // The player quiesces without a terminal record: at rest the next input
+    // still belongs to the player.
+    driveTextTurn(h, player, "已点击 (0,0)");
+    await flush();
+    expect(stream.ended).toBe(true);
+    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
+  });
+
+  it("keeps the activation when the in-flight turn is canceled", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const planner = member(h, PLANNER_ID);
+    const player = member(h, PLAYER_ID);
+
+    // Cancel mid-planner-turn: the planner stays the next input's owner.
+    h.sessions.send(S1, "first", fakeStream());
+    await flush();
+    h.sessions.cancel(S1);
+    await flush();
+    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
+
+    // A resumed send drives the planner again; its relay moves the team to
+    // the player, then a mid-player-turn cancel keeps the player activation.
+    const resumed = fakeStream();
+    h.sessions.send(S1, "resume", resumed);
+    await flush();
+    expect(planner.followups.map(messageText)).toEqual(["first", "resume"]);
+    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "策略")]);
+    driveTextTurn(h, planner, "策略");
+    await flush();
+    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
+
+    h.sessions.cancel(S1);
+    await flush();
+    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
+
+    // The resumed send is handled by the kept activation.
+    h.sessions.send(S1, "继续", fakeStream());
+    await flush();
+    expect(player.followups.map(messageText)).toEqual(["策略", "继续"]);
   });
 });
 

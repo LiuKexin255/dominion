@@ -273,6 +273,15 @@ export interface OrchestratorSnapshot {
   readonly phase: OrchestrationPhase | null;
   /** The member whose turn is in flight, or null. */
   readonly active: TeamRole | null;
+  /**
+   * The member the next structural/queued input belongs to (activation): the
+   * current member while a turn is in flight, and the next input's owner
+   * while quiescent. Materialization rests in the initial planning
+   * activation (planner); cancel/pause does not change it. The host's team
+   * view merges it with {@link active} into one active-member value
+   * (specs/060-agent-v2-team-optimize/contracts/team-api.md §1).
+   */
+  readonly activation: TeamRole;
   /** Auto-continuation suspended by a cancel until the next user message. */
   readonly paused: boolean;
   readonly queued: number;
@@ -551,6 +560,7 @@ export class TeamOrchestrator {
       materialized: this.members !== null,
       phase: this.members === null ? null : this.phase,
       active: this.drivingMember?.role ?? null,
+      activation: this.current,
       paused: this.paused,
       queued: this.queue.length,
       failed: this.lastError !== null,

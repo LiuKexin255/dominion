@@ -6,17 +6,18 @@
 // 面板对该语义显式提示。成员清单提供每成员"查看 system prompt"入口：
 // GetTeamMember 返回该实例当前生效的完整装配结果，只读等宽全文呈现，刷新
 // team（新物化快照）后重新打开即取新值（web-views.md §5）。
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   getTeam,
-  getTeamMember,
   listModels,
   listPresets,
   updateTeam,
 } from '../api/agent.js'
 import type { Model, Preset, Team, TeamMember } from '../api/agent.js'
 import { ApiError } from '../api/conversation.js'
+import { SystemPromptOverlay, useSystemPrompt } from './SystemPromptOverlay.js'
+import type { SystemPromptController } from './SystemPromptOverlay.js'
 
 interface TeamSettingsPanelProps {
   session: string
@@ -25,6 +26,10 @@ interface TeamSettingsPanelProps {
   // Apply 成功回调：调用方刷新 teamStatus 并关闭面板。
   onApplied: (team: Team) => void
   onClose: () => void
+  // 可选：调用方共享的 system prompt 控制器（App 对话页把同一实例给工具条
+  // 成员清单与本面板成员清单，结构上保证任一时刻至多一个浮层；浮层由调用方
+  // 渲染）。缺省时面板自持实例并在面板内渲染（独立使用/组件测试）。
+  systemPrompt?: SystemPromptController
 }
 
 // templateOf projects the session resource name to its template segment
@@ -51,6 +56,7 @@ export function TeamSettingsPanel({
   materialized,
   onApplied,
   onClose,
+  systemPrompt,
 }: TeamSettingsPanelProps) {
   const template = templateOf(session)
   const [playerPresets, setPlayerPresets] = useState<Preset[]>([])
@@ -64,54 +70,13 @@ export function TeamSettingsPanel({
   const [playerModel, setPlayerModel] = useState(memberOf(materialized, 'player')?.model ?? '')
   const [plannerModel, setPlannerModel] = useState(memberOf(materialized, 'planner')?.model ?? '')
   const [applying, setApplying] = useState(false)
-  // system prompt 查看（web-views.md §5）：promptMember = 已打开入口的成员
-  // role；promptText/promptError 为该成员的取数结果（请求竞态以序号守卫）。
-  const [promptMember, setPromptMember] = useState<string | null>(null)
-  const [promptText, setPromptText] = useState<string | null>(null)
-  const [promptError, setPromptError] = useState<string | null>(null)
-  const [promptLoading, setPromptLoading] = useState(false)
-  const promptRequest = useRef(0)
-
-  // 刷新 team（新物化快照：updateTime 变化）或切换会话后收起已打开的
-  // system prompt——内容必须与当前实例一致，重新打开入口即取新值
-  // （web-views.md §5）。物化成员实例随刷新重建，旧快照的全文不再有呈现
-  // 语境。
-  useEffect(() => {
-    promptRequest.current += 1
-    setPromptMember(null)
-    setPromptText(null)
-    setPromptError(null)
-    setPromptLoading(false)
-  }, [session, materialized?.updateTime])
-
-  const openSystemPrompt = useCallback(
-    async (role: string) => {
-      const request = ++promptRequest.current
-      setPromptMember(role)
-      setPromptText(null)
-      setPromptError(null)
-      setPromptLoading(true)
-      try {
-        const member = await getTeamMember(session, role)
-        if (promptRequest.current !== request) return
-        setPromptText(member.systemPrompt ?? '')
-      } catch (err) {
-        if (promptRequest.current !== request) return
-        setPromptError(err instanceof Error ? err.message : String(err))
-      } finally {
-        if (promptRequest.current === request) setPromptLoading(false)
-      }
-    },
-    [session],
-  )
-
-  const closeSystemPrompt = useCallback(() => {
-    promptRequest.current += 1
-    setPromptMember(null)
-    setPromptText(null)
-    setPromptError(null)
-    setPromptLoading(false)
-  }, [])
+  // system prompt 查看
+  // （specs/059-agent-v2-team-mode/contracts/web-views.md §5）：调用方共享
+  // 控制器时（App 集成）入口驱动同一实例，浮层由调用方单一渲染；否则面板
+  // 自持实例并在面板内渲染（独立使用/组件测试）。刷新 team（新物化快照
+  // updateTime 变化）或切换会话时收起，重新打开入口即取新值。
+  const ownSystemPrompt = useSystemPrompt(session, materialized?.updateTime)
+  const prompt = systemPrompt ?? ownSystemPrompt
 
   useEffect(() => {
     let cancelled = false
@@ -217,7 +182,7 @@ export function TeamSettingsPanel({
               </span>
               <Button
                 data-testid={`member-system-prompt-${member.role}`}
-                onClick={() => void openSystemPrompt(member.role)}
+                onClick={() => void prompt.open(member.role)}
               >
                 查看 system prompt
               </Button>
@@ -225,35 +190,7 @@ export function TeamSettingsPanel({
           ))}
         </div>
       )}
-      {promptMember !== null && (
-        <div className="system-prompt" data-testid="system-prompt" data-role={promptMember}>
-          <div className="system-prompt-header">
-            <span data-testid="system-prompt-title">
-              {promptMember} 的 system prompt（只读）
-            </span>
-            <Button data-testid="system-prompt-close" onClick={closeSystemPrompt}>
-              关闭
-            </Button>
-          </div>
-          {promptLoading && (
-            <div className="system-prompt-note" data-testid="system-prompt-loading">
-              加载中…
-            </div>
-          )}
-          {promptError !== null && (
-            <div className="system-prompt-error" data-testid="system-prompt-error" role="alert">
-              {promptError}
-            </div>
-          )}
-          {promptText !== null && (
-            // 只读全文（等宽/原文呈现，web-views.md §5）：<pre> 保留换行与
-            // 空白，不做 markdown 解析。
-            <pre className="system-prompt-text" data-testid="system-prompt-text">
-              {promptText}
-            </pre>
-          )}
-        </div>
-      )}
+      {systemPrompt === undefined && <SystemPromptOverlay controller={ownSystemPrompt} />}
       <label className="team-panel-field" htmlFor="team-player-preset-select">
         <span>player preset（必选）</span>
         <select

@@ -55,9 +55,13 @@ export interface TeamMember {
 // contracts/team-api.md §1/§2). members is the materialization input and the
 // member-state output (same shape); desktopConnected 为该 session 的桌面桥接
 // 连接事实（player 独占使用，proto3 缺省 false 经 protojson 不输出——缺字段
-// = 未连接）。
+// = 未连接）。activeMember 为 output-only 单一合并值
+// （specs/060-agent-v2-team-optimize/contracts/team-api.md §1）：成员回合在途
+// = 驱动成员，静止 = 下一条输入的归属成员；物化后恒非空（protojson 输出为
+// camelCase 字符串）。
 export interface Team {
   name: string
+  activeMember?: string
   members?: TeamMember[]
   desktopConnected?: boolean
   createTime?: string
