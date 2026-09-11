@@ -33,9 +33,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/contracts/const-lib.md`；`specs/060-agent-v2-team-optimize/research.md`（R4）；`specs/048-js-esm-migration/contracts/esm-package-conventions.md`（`style/javascript.md` 引用的包级契约——新建 JS 包必读）
 
-- [ ] T001 [P] 新建 Go 常量包 `common/gopkg/constants`：`constants.go` 导出 12 个平台保留环境变量名常量（含新增 `DOMINION_ARTIFACT_DIR`，见 `specs/060-agent-v2-team-optimize/contracts/const-lib.md` §1 表）+ doc 注释写明收录原则；`constants_test.go` 断言常量值；`bazel run //:gazelle common/gopkg/constants` 生成 BUILD.bazel
-- [ ] T002 [P] 新建 JS 常量包 `common/js/constants`（包名 `@dominion/common-js-constants`）：`src/index.ts` 导出与 Go 侧一一对齐的 12 个常量 + `src/index.test.ts` 对齐断言；按 `specs/048-js-esm-migration/contracts/esm-package-conventions.md` 配置 `package.json`（`"type": "module"`）/`tsconfig.json`；`pnpm-workspace.yaml` 注册包并经 catalog 管理依赖版本；`bazel run //:gazelle common/js/constants` 生成 BUILD.bazel
-- [ ] T003 常量库工作区接线验证：`bazel mod tidy` + 两包 `bazel test` 绿（新包 workspace 接线收尾，非功能单测）
+- [X] T001 [P] 新建 Go 常量包 `common/gopkg/constants`：`constants.go` 导出 12 个平台保留环境变量名常量（含新增 `DOMINION_ARTIFACT_DIR`，见 `specs/060-agent-v2-team-optimize/contracts/const-lib.md` §1 表）+ doc 注释写明收录原则；`constants_test.go` 断言常量值；`bazel run //:gazelle common/gopkg/constants` 生成 BUILD.bazel
+- [X] T002 [P] 新建 JS 常量包 `common/js/constants`（包名 `@dominion/common-js-constants`）：`src/index.ts` 导出与 Go 侧一一对齐的 12 个常量 + `src/index.test.ts` 对齐断言；按 `specs/048-js-esm-migration/contracts/esm-package-conventions.md` 配置 `package.json`（`"type": "module"`）/`tsconfig.json`；`pnpm-workspace.yaml` 注册包并经 catalog 管理依赖版本；`bazel run //:gazelle common/js/constants` 生成 BUILD.bazel
+- [X] T003 常量库工作区接线验证：`bazel mod tidy` + 两包 `bazel test` 绿（新包 workspace 接线收尾，非功能单测）
 
 **Checkpoint**: 常量库就绪，US1（builder/agent_v2 消费）与 US3（采用清扫）可引用。
 
