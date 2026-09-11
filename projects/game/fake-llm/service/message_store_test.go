@@ -757,6 +757,9 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	if !slices.Contains(teamPlannerOpening.SystemKeywords, "你是扫雷 planner") {
 		t.Errorf("team-planner-opening system_keywords missing the planner persona anchor: %v", teamPlannerOpening.SystemKeywords)
 	}
+	if !slices.Contains(teamPlannerOpening.SystemKeywords, "扫雷玩法") {
+		t.Errorf("team-planner-opening system_keywords missing the saolei:game section anchor: %v", teamPlannerOpening.SystemKeywords)
+	}
 	if teamPlannerOpening.ToolCall != nil {
 		t.Errorf("team-planner-opening must carry a plain text response (the opening strategy body)")
 	}

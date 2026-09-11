@@ -255,7 +255,11 @@ export function apply(ctx: Context): void {
  * The saolei tool-guidance section (FR-014: the plugin owns its tools'
  * cross-call guidance as a prompt section — no separate skill-file form)
  * adapted to the plugin tool context (no MCP wording, no raw-mouse-tool
- * reference — the composition mounts no generic mouse tools).
+ * reference — the composition mounts no generic mouse tools). Tool usage
+ * ONLY: symbol/coordinate reading, result body shape, call forms, and
+ * validation semantics; the game rules live in the saolei-loop plugin's
+ * `saolei:game` section
+ * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2).
  */
 export const SAOLEI_GUIDANCE = `## saolei (Minesweeper tools)
 
@@ -268,8 +272,8 @@ Play the desktop Minesweeper game ONLY through the three saolei tools. The agent
 | \`*\` | Unrevealed (initial) cell |
 | \`0\`–\`8\` | Revealed number |
 | \`F\` | Flag |
-| \`X\` | The triggered mine (you stepped on it — game lost) |
-| \`M\` | A mine revealed at end-game (all mines shown on a loss) |
+| \`X\` | Triggered mine |
+| \`M\` | Mine shown on the end-game board |
 | \`?\` | Recognition uncertain (treat it as possibly unrevealed) |
 
 ### Coordinate ruler
@@ -292,19 +296,19 @@ row2    *    *    1    0    0    0    0    1    *
 Every result body has three layers, in this fixed order:
 
 1. **Outcome line** — \`new game started\` (init); \`saolei_operate → executed N ops\` (with \`, skipped S no-op ops\` when any were skipped); \`saolei_operate → stopped at type(x,y) (reason)\` (mid-batch stop); \`rejected: <reason>\`; \`unable to recognize board\`; \`saolei_remain → computed\`.
-2. **Game-status line** — \`game status: won|lost|playing\`, derived from the recognized board (won = every cell revealed/flagged AND the mine counter reads 000; lost = an X/M is visible). Read it BEFORE parsing the board. It is omitted only when there is no recognized board (\`no_active_game\`, \`unable to recognize board\`) or on an illegal-argument rejection.
+2. **Game-status line** — \`game status: won|lost|playing\`, the recognized board's state. Read it BEFORE parsing the board. It is omitted only when there is no recognized board (\`no_active_game\`, \`unable to recognize board\`) or on an illegal-argument rejection.
 3. **The text board** — the \`board size <w>*<h>\` header and the symbol grid. The \`valid range: x 0..<w-1>, y 0..<h-1>\` line appears on \`rejected: <reason>\` bodies only.
 
-A win or loss is TERMINAL: any further cell operation stops before dispatch with \`game_won\`/\`game_over\`. Call \`saolei_init\` to start a new game.
+A won/lost board is TERMINAL for cell operations: any further cell operation stops before dispatch with \`game_won\`/\`game_over\`. Call \`saolei_init\` to start a new game.
 
 ### Tools
 
 - \`saolei_init()\` — no arguments. Dispatches the F2 new-game keypress, recognizes the initial board, returns it as TEXT. Call it FIRST, and again whenever the game should restart (re-calling re-dispatches F2 and re-seeds the board).
 - \`saolei_operate(type, x, y)\` / \`saolei_operate(operations: [{type, x, y}, ...])\` — execute one or more cell operations in order and return ONE result with the final board. The two forms are mutually exclusive and semantically equivalent (single = length-1 batch); all three of type/x/y must be present together. Operation types:
-  - \`click\` — left-click to reveal; blank cells cascade per Minesweeper rules.
-  - \`flag\` — right-click to toggle a flag (a marker for your reasoning only).
-  - \`chord\` — ONE atomic simultaneous left+right press on a revealed number 1–8; reveals its unflagged neighbors when the adjacent flag count satisfies the number. NEVER emulate a chord with two separate click ops.
-- \`saolei_remain()\` — read-only. No dispatch, no board change. For every revealed number cell it returns \`number − adjacent flags\` (0 = fully satisfied; NEGATIVE = over-flagged, correct the flag); other cells show \`-\`. Not blocked by a terminal board.
+  - \`click\` — a left-click on one cell.
+  - \`flag\` — a right-click on one cell (places/removes the flag).
+  - \`chord\` — ONE atomic simultaneous left+right press on a revealed number 1–8. NEVER emulate a chord with two separate click ops.
+- \`saolei_remain()\` — read-only. No dispatch, no board change. For every revealed number cell it returns \`number − adjacent flags\` (may be 0 or NEGATIVE); other cells show \`-\`. Not blocked by a terminal board.
 
 ### Validation triage (illegal moves are handled before dispatch)
 
@@ -312,7 +316,7 @@ Every op is validated against the recognized board; the desktop never receives a
 
 - **Harmless no-op → SKIPPED, batch continues**: \`cell_already_revealed\` (click on 0–8), \`cell_is_flagged\` (click on F), \`cannot_flag_revealed\` (flag on 0–8), \`chord_requires_number\` (chord on non-number), \`chord_no_unrevealed_neighbor\` (chord with nothing left to reveal).
 - **Structural / terminal → batch STOPS** (\`stopped at type(x,y) (reason)\`; earlier successful ops take effect): \`out_of_bounds\`, \`no_active_game\`, \`game_over\`, \`game_won\`.
-- A rejection is a NORMAL result, not an error: read the reason and the board, then pick a legal cell. A chord with a mismatched adjacent-flag count is still LEGAL (it may simply reveal nothing). A \`?\` cell is never rejected for being uncertain.
+- A rejection is a NORMAL result, not an error: read the reason and the board, then pick a legal cell. A chord that reveals nothing is still LEGAL (not a rejection). A \`?\` cell is never rejected for being uncertain.
 - Illegal argument combinations are refused verbatim: both forms — \`provide EITHER type/x/y (single operation) OR operations (batch), not both.\`; neither — \`provide EITHER type/x/y (single operation) OR an operations array (batch).\`; partial single form — \`the single-operation form requires ALL of type, x and y together.\`
 - An empty \`operations\` list is a no-op returning the current board.
 - If recognition fails (\`unable to recognize board\`), the state is invalidated; subsequent cell ops answer \`no_active_game\` until you call \`saolei_init\` again.

@@ -5,6 +5,9 @@
  * resolution of the agent-scoped `saoleiGame` service through
  * `exec.agent.ctx`, the ToolOutcome.isError → throw mapping, and the
  * fail-loud paths (no `exec.agent`; service absent from the caller's scope).
+ * The guidance-ownership cases (tool usage only; game rules live in the
+ * saolei-loop plugin's `saolei:game` section) follow
+ * specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2.
  *
  * Pattern (style/javascript.md Mock convention): `apply` runs against a real
  * cordis Context whose `tools`/`systemPrompt` services are `vi.fn()`-based
@@ -128,6 +131,49 @@ describe("saolei plugin registration", () => {
 
     const rendered = definition!.output.render({}, { result: "board text" });
     expect(rendered).toEqual([{ type: "text", text: "board text" }]);
+  });
+});
+
+describe("saolei guidance ownership (prompt-sections.md §2)", () => {
+  it("keeps the tool-usage substance after the game-rules split", () => {
+    for (const kept of [
+      "## saolei (Minesweeper tools)",
+      "| `*` |",
+      "| `F` |",
+      "| `X` |",
+      "| `M` |",
+      "| `?` |",
+      "col0 col1",
+      "(x, y)",
+      "game status:",
+      "saolei_init()",
+      "saolei_operate",
+      "saolei_remain()",
+      "SKIPPED",
+      "STOPS",
+      "no_active_game",
+      "Example flow",
+      "Do not",
+    ]) {
+      expect(SAOLEI_GUIDANCE).toContain(kept);
+    }
+  });
+
+  it("states no game rules (they live in the saolei:game section)", () => {
+    for (const removed of [
+      "cascade",
+      "stepped on",
+      "game lost",
+      "all mines",
+      "marker for your reasoning",
+      "over-flagged",
+      "satisfies the number",
+      "every cell revealed",
+      "number of mines adjacent",
+      "reveals its unflagged neighbors",
+    ]) {
+      expect(SAOLEI_GUIDANCE).not.toContain(removed);
+    }
   });
 });
 

@@ -973,8 +973,12 @@ func TestMatchResponsesSystemKeywords(t *testing.T) {
 // (keywords + system) and the snapshot entry shares the startup keyword
 // (扫雷), so the alphabetical tie-break must hand a snapshot-loaded planner
 // turn to team-planner-memory-snapshot; without the snapshot section in the
-// instructions the same message must fall to team-planner-opening. This is
-// the unit-level counterpart of the team memory large test's refresh phase.
+// instructions the same message must fall to team-planner-opening. Both
+// synthetic instructions mirror the real assembled planner prompt, which
+// carries the saolei-loop plugin's `saolei:game` section
+// (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §5 — the
+// opening entry anchors on it). This is the unit-level counterpart of the
+// team memory large test's refresh phase.
 func TestMatchResponsesTeamSnapshotPriority(t *testing.T) {
 	store, err := NewMessageStore()
 	if err != nil {
@@ -985,13 +989,13 @@ func TestMatchResponsesTeamSnapshotPriority(t *testing.T) {
 	snapshot := matchResponses(
 		store.Messages(),
 		messages,
-		strings.ToLower("你是扫雷 planner。\n长期记忆：\n本局复盘观察：中心区域开局稳定，边角标记需谨慎。"),
+		strings.ToLower("你是扫雷 planner。\n## 扫雷玩法与可用操作\n长期记忆：\n本局复盘观察：中心区域开局稳定，边角标记需谨慎。"),
 	)
 	if snapshot.Name != "team-planner-memory-snapshot" {
 		t.Fatalf("snapshot-loaded planner turn matched %q, want team-planner-memory-snapshot", snapshot.Name)
 	}
 
-	opening := matchResponses(store.Messages(), messages, strings.ToLower("你是扫雷 planner。"))
+	opening := matchResponses(store.Messages(), messages, strings.ToLower("你是扫雷 planner。\n## 扫雷玩法与可用操作"))
 	if opening.Name != "team-planner-opening" {
 		t.Fatalf("snapshot-less planner turn matched %q, want team-planner-opening", opening.Name)
 	}

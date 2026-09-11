@@ -50,6 +50,12 @@ messages:
   # The strategy text carries the player-side anchor used by
   # team-player-opening (team_player.yaml).
   #
+  # The second system keyword is the saolei-loop plugin's `saolei:game`
+  # section heading fragment: this entry carries the planner's first turn, so
+  # it fires only when the host-registered game-rules section reached the
+  # planner's system prompt — the section-presence regression assertion of
+  # specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §5.
+  #
   # Review/opening priority: declaredResponsesConditions counts four
   # conditions on the review entries against two here (keywords + system),
   # so game-end reviews always outrank this entry (responses.go
@@ -65,6 +71,7 @@ messages:
       - 开局
     system_keywords:
       - 你是扫雷 planner
+      - 扫雷玩法
     text: "开局计划：优先从棋盘中心区域开始，逐步向边缘推进；遇到数字边界时先标记周边可疑格。@player 请按以下开局计划开始本局游戏。"
     responses_only: true
   # team-planner-review-continue is the game-end review of a won game: it

@@ -21,6 +21,11 @@
  * registers as the agent scope's `saoleiGame` service on the agent context
  * (cordis Service contract — unregistered automatically when the owning
  * agent scope unloads, saolei-plugins.md §2.1).
+ *
+ * `apply` also registers the `saolei:game` prompt section (game rules + the
+ * operations the saolei tools expose; host scope, visible to every member) —
+ * the game domain's single owner. Prompt ownership:
+ * specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1.
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -87,8 +92,8 @@ export type {
 
 export const name = "saolei-loop";
 
-/** Host-row plugin: no service requirements. */
-export const inject: string[] = [];
+/** Host-row plugin: registers the game-rules section on the host scope. */
+export const inject = ["systemPrompt"];
 
 declare module "@deepseek-ai/cordis" {
   interface Context {
@@ -101,4 +106,39 @@ declare module "@deepseek-ai/cordis" {
   }
 }
 
-export function apply(_ctx: Context): void {}
+export function apply(ctx: Context): void {
+  ctx.systemPrompt.section({
+    name: "saolei:game",
+    order: 50,
+    text: SAOLEI_GAME_RULES,
+  });
+}
+
+/**
+ * The `saolei:game` section text: the classic Minesweeper rules plus the
+ * operations the saolei tools actually expose. Ownership boundary
+ * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1): game
+ * facts only — no tool call shapes or result formats (saolei:guidance), no
+ * member identity (persona), no team facts (team section). The rules follow
+ * the classic (Win98-era Microsoft Minesweeper) form described at
+ * https://en.wikipedia.org/wiki/Microsoft_Minesweeper and
+ * https://en.wikipedia.org/wiki/Minesweeper_(video_game) ; the operation set
+ * is the intersection with the saolei plugin's three tools
+ * (`common/js/dsh-plugins/saolei/src/index.ts`).
+ */
+export const SAOLEI_GAME_RULES = `## 扫雷玩法与可用操作
+
+对局为经典扫雷（旧版 Windows / Win98 时代形态）：
+
+- 棋盘是一张隐藏的雷区网格；目标是揭示全部非雷格且不踩雷。
+- 揭示一个非雷格后：数字 1–8 表示该格八邻格中的雷数；空白（0）表示相邻无雷，并会级联展开相邻的非雷区域。
+- 未揭示的格子可以标旗作为推理标记（标旗不改变格内容，可再次操作取消）。
+- 对已揭示的数字格，当其相邻旗数满足该数字时，可以 chord（左右同击）一次展开其余未标旗的邻格。
+- 踩中雷即本局失败（负局棋盘会展示全部雷位）；全部非雷格揭示即本局获胜。
+- 剩余雷数计数 = 总雷数 − 已标旗数，可以为负（表示标旗过多）。
+
+可用操作（与 saolei 工具能力一致）：
+
+- 开局/重开一局：\`saolei_init\`（再次调用即重开并重新播种）。
+- 格子操作：\`saolei_operate\` 支持 click（揭示）、flag（标旗/取消标旗）、chord（同击），可单发或按序批量执行。
+- 只读查询：\`saolei_remain\` 返回每个已揭示数字格的“数字 − 相邻旗数”视图。`;
