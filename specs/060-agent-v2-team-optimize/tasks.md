@@ -123,9 +123,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/contracts/const-lib.md`；`specs/060-agent-v2-team-optimize/research.md`（R4）
 
-- [ ] T019 [P] [US3] `projects/infra/deploy/runtime/k8s/builder.go`：保留变量常量块（L23-70）中 12 个保留变量名（含新增 `DOMINION_ARTIFACT_DIR`）整体替换为 `common/gopkg/constants` 引用（删除本地重复定义；`envLogLevel`/`LOG_LEVEL` 与 volume/path/probe 等非保留常量保留原位；注入行为与 `builder_test.go` 断言零回归）
-- [ ] T020 [P] [US3] `projects/game/agent_v2`：既有保留变量字面量切换——`src/presets.ts` 的 `DOMINION_ENVIRONMENT`、`src/dsh.ts` 的 `DOMINION_SECRET_DIR` 改经 `@dominion/common-js-constants` 引用（行为零变更）
-- [ ] T021 [US3] 采用范围检索断言：`rg` 确认 `projects/infra/deploy/runtime/k8s/` 与 `projects/game/agent_v2/src/` 内 12 个保留变量名零裸字面量（注释/文档字符串除外；common 既有包不在范围——Clarifications 2026-09-11 裁定）；YAML 部署清单（如 `projects/infra/deploy/k8s.yaml`、`projects/game/deploy.yaml`）无法引用语言常量、不在本范围
+- [X] T019 [P] [US3] `projects/infra/deploy/runtime/k8s/builder.go`：保留变量常量块（L23-70）中 12 个保留变量名（含新增 `DOMINION_ARTIFACT_DIR`）整体替换为 `common/gopkg/constants` 引用（删除本地重复定义；`envLogLevel`/`LOG_LEVEL` 与 volume/path/probe 等非保留常量保留原位；注入行为与 `builder_test.go` 断言零回归）
+- [X] T020 [P] [US3] `projects/game/agent_v2`：既有保留变量字面量切换——`src/presets.ts` 的 `DOMINION_ENVIRONMENT`、`src/dsh.ts` 的 `DOMINION_SECRET_DIR` 改经 `@dominion/common-js-constants` 引用（行为零变更）
+- [X] T021 [US3] 采用范围检索断言：`rg` 确认 `projects/infra/deploy/runtime/k8s/` 与 `projects/game/agent_v2/src/` 内 12 个保留变量名零裸字面量（注释/文档字符串除外；common 既有包不在范围——Clarifications 2026-09-11 裁定）；YAML 部署清单（如 `projects/infra/deploy/k8s.yaml`、`projects/game/deploy.yaml`）无法引用语言常量、不在本范围
 
 **Checkpoint**: 常量单一事实源在采用范围内成立。
 
