@@ -184,9 +184,9 @@
 - **官方文档**：[dsh-system-prompt 类型声明（0.1.1-rc.2）](https://unpkg.com/@deepseek-ai/dsh-system-prompt@0.1.1-rc.2/lib/types/index.d.ts)（`SystemPrompt.section()`/PromptSection——`saolei:game` section 注册面）、[同包 README（0.1.1-rc.2）](https://unpkg.com/@deepseek-ai/dsh-system-prompt@0.1.1-rc.2/README.md)
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md`；`specs/060-agent-v2-team-optimize/research.md`（R9）；[Microsoft Minesweeper — Wikipedia](https://en.wikipedia.org/wiki/Microsoft_Minesweeper)；[Minesweeper (video game) — Wikipedia](https://en.wikipedia.org/wiki/Minesweeper_(video_game))（玩法 section 内容依据）
 
-- [ ] T029 [US7] `common/js/dsh-plugins/saolei-loop/src/index.ts`：`apply(ctx)` 注册 `saolei:game` section（`ctx.systemPrompt.section({name: 'saolei:game', order: 50, text: SAOLEI_GAME_RULES})`；`SAOLEI_GAME_RULES` 导出——内容按 `specs/060-agent-v2-team-optimize/contracts/prompt-sections.md` §1：权威玩法 + 与三工具交集的操作，不含工具调用形态细节）+ 注册/文本单测
-- [ ] T030 [US7] `common/js/dsh-plugins/saolei/src/index.ts`：`SAOLEI_GUIDANCE` 收缩为纯工具用法（保留符号表/坐标标尺/结果三层结构/校验拒绝语义/示例流/纪律；移除玩法陈述——切分表见 prompt-sections.md §2）+ `index.test.ts`（无玩法关键词断言 + 保留项断言）
-- [ ] T031 [US7] `projects/game/agent_v2/preset-templates/player/player/agent.cordis.yml`：player persona 瘦身（移除操作清单描述，保留身份/职责/风格——prompt-sections.md §3）；`projects/game/fake-llm/service/testdata/team_player.yaml`/`team_planner.yaml` 的 `system_keywords` 同步（被移文案锚点调整；planner 可加 `saolei:game` 玩法关键词锚点）
+- [X] T029 [US7] `common/js/dsh-plugins/saolei-loop/src/index.ts`：`apply(ctx)` 注册 `saolei:game` section（`ctx.systemPrompt.section({name: 'saolei:game', order: 50, text: SAOLEI_GAME_RULES})`；`SAOLEI_GAME_RULES` 导出——内容按 `specs/060-agent-v2-team-optimize/contracts/prompt-sections.md` §1：权威玩法 + 与三工具交集的操作，不含工具调用形态细节）+ 注册/文本单测
+- [X] T030 [US7] `common/js/dsh-plugins/saolei/src/index.ts`：`SAOLEI_GUIDANCE` 收缩为纯工具用法（保留符号表/坐标标尺/结果三层结构/校验拒绝语义/示例流/纪律；移除玩法陈述——切分表见 prompt-sections.md §2）+ `index.test.ts`（无玩法关键词断言 + 保留项断言）
+- [X] T031 [US7] `projects/game/agent_v2/preset-templates/player/player/agent.cordis.yml`：player persona 瘦身（移除操作清单描述，保留身份/职责/风格——prompt-sections.md §3）；`projects/game/fake-llm/service/testdata/team_player.yaml`/`team_planner.yaml` 的 `system_keywords` 同步（被移文案锚点调整；planner 可加 `saolei:game` 玩法关键词锚点）
 
 **Checkpoint**: planner 获得玩法输入；提示词三层所有权单一。
 
