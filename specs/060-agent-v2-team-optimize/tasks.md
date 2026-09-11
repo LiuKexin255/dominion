@@ -202,8 +202,8 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/quickstart.md`（V1–V7 验证场景）；`specs/060-agent-v2-team-optimize/research.md`（R12）
 
-- [ ] T032 `projects/game/testplan/`：新增/更新断言——`agent_v2_conversation_test.go`（member_view 帧到达断言：planner 首驱消费用户输入即达；工具 tool_result 帧后即时终态的 wire 序断言）、`agent_v2_game_test.go`（GetTeam `active_member` 阶段流转断言）、`agent_v2_preset_test.go`（CRUD→物化派生链路：无副本路径断言）；`projects/game/testplan/saolei_fixtures_test.go` 夹具一致性
-- [ ] T033 `projects/game/agent_v2/README.md` 全面终态化：env 推导/preset 派生/实时性（member_view、三面 settle）/激活成员/广播新格式/提示词分层——只表述终态（constitution 原则 VII），移除被取代机制的描述
+- [X] T032 `projects/game/testplan/`：新增/更新断言——`agent_v2_conversation_test.go`（member_view 帧到达断言：planner 首驱消费用户输入即达；工具 tool_result 帧后即时终态的 wire 序断言）、`agent_v2_game_test.go`（GetTeam `active_member` 阶段流转断言）、`agent_v2_preset_test.go`（CRUD→物化派生链路：无副本路径断言）；`projects/game/testplan/saolei_fixtures_test.go` 夹具一致性
+- [X] T033 `projects/game/agent_v2/README.md` 全面终态化：env 推导/preset 派生/实时性（member_view、三面 settle）/激活成员/广播新格式/提示词分层——只表述终态（constitution 原则 VII），移除被取代机制的描述
 - [ ] T034 大型测试验收：加载 testplan skill 执行 `guitar run projects/game/testplan/system_test.yaml`（三 suite：game-system / game-disconnect / game-memory-down）——完整部署→测试→清理闭环，**全部用例通过**（任何 failed/flaky 修复后重跑直至全绿；仅构建通过不构成验收）；T035 联动：执行 `guitar run experimental/dsh/demo/testplan/interface_test.yaml`（demo 迁移后 wire 面验收，review 2026-09-11 补入，同样全量通过）
 
 ---
