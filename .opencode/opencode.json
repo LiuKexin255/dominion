@@ -11,7 +11,7 @@
       "reasoningEffort": "max"
     },
     "explore": {
-      "model": "zhipuai-coding-plan/glm-5.3-flash",
+      "model": "opencode-go/deepseek-v4.1-flash",
       "reasoningEffort": "max"
     },
     "plan": {
