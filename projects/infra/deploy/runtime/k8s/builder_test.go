@@ -182,14 +182,14 @@ func TestBuildDeployment(t *testing.T) {
 
 	// Verify env vars.
 	envMap := envVarsToMap(container.Env)
-	if envMap[reservedEnvNameServiceApp] != w.App {
-		t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameServiceApp, envMap[reservedEnvNameServiceApp], w.App)
+	if envMap[constants.EnvServiceApp] != w.App {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvServiceApp, envMap[constants.EnvServiceApp], w.App)
 	}
-	if envMap[reservedEnvNameDominionEnvironment] != w.EnvironmentName {
-		t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameDominionEnvironment, envMap[reservedEnvNameDominionEnvironment], w.EnvironmentName)
+	if envMap[constants.EnvDominionEnvironment] != w.EnvironmentName {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionEnvironment, envMap[constants.EnvDominionEnvironment], w.EnvironmentName)
 	}
-	if envMap[reservedEnvNamePodNamespace] != cfg.Namespace {
-		t.Fatalf("Env[%q] = %q, want %q", reservedEnvNamePodNamespace, envMap[reservedEnvNamePodNamespace], cfg.Namespace)
+	if envMap[constants.EnvPodNamespace] != cfg.Namespace {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvPodNamespace, envMap[constants.EnvPodNamespace], cfg.Namespace)
 	}
 	if envMap[constants.EnvDominionArtifactDir] != artifactDirPath(w.App, w.ServiceName) {
 		t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionArtifactDir, envMap[constants.EnvDominionArtifactDir], artifactDirPath(w.App, w.ServiceName))
@@ -213,17 +213,17 @@ func TestBuildDeployment(t *testing.T) {
 		t.Fatalf("VolumeMounts count = %d, want 1 (TLS mount always present)", len(container.VolumeMounts))
 	}
 	envMap = envVarsToMap(container.Env)
-	if envMap[envTLSCAFile] != filepath.Join(tlsMountPath, tlsCAFileName) {
-		t.Fatalf("Env[%q] = %q, want %q", envTLSCAFile, envMap[envTLSCAFile], filepath.Join(tlsMountPath, tlsCAFileName))
+	if envMap[constants.EnvTLSCAFile] != filepath.Join(tlsMountPath, tlsCAFileName) {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSCAFile, envMap[constants.EnvTLSCAFile], filepath.Join(tlsMountPath, tlsCAFileName))
 	}
-	if envMap[envTLSDomain] != cfg.TLS.Domain {
-		t.Fatalf("Env[%q] = %q, want %q", envTLSDomain, envMap[envTLSDomain], cfg.TLS.Domain)
+	if envMap[constants.EnvTLSServerName] != cfg.TLS.Domain {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSServerName, envMap[constants.EnvTLSServerName], cfg.TLS.Domain)
 	}
-	if _, hasCert := envMap[envTLSCertFile]; hasCert {
-		t.Fatalf("Env[%q] should not be set when TLSEnabled is false", envTLSCertFile)
+	if _, hasCert := envMap[constants.EnvTLSCertFile]; hasCert {
+		t.Fatalf("Env[%q] should not be set when TLSEnabled is false", constants.EnvTLSCertFile)
 	}
-	if _, hasKey := envMap[envTLSKeyFile]; hasKey {
-		t.Fatalf("Env[%q] should not be set when TLSEnabled is false", envTLSKeyFile)
+	if _, hasKey := envMap[constants.EnvTLSKeyFile]; hasKey {
+		t.Fatalf("Env[%q] should not be set when TLSEnabled is false", constants.EnvTLSKeyFile)
 	}
 }
 
@@ -279,17 +279,17 @@ func TestBuildDeployment_WithTLS(t *testing.T) {
 
 	// Verify TLS env vars.
 	envMap := envVarsToMap(container.Env)
-	if envMap[envTLSCertFile] != filepath.Join(tlsMountPath, tlsCertFileName) {
-		t.Fatalf("Env[%q] = %q, want %q", envTLSCertFile, envMap[envTLSCertFile], filepath.Join(tlsMountPath, tlsCertFileName))
+	if envMap[constants.EnvTLSCertFile] != filepath.Join(tlsMountPath, tlsCertFileName) {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSCertFile, envMap[constants.EnvTLSCertFile], filepath.Join(tlsMountPath, tlsCertFileName))
 	}
-	if envMap[envTLSKeyFile] != filepath.Join(tlsMountPath, tlsKeyFileName) {
-		t.Fatalf("Env[%q] = %q, want %q", envTLSKeyFile, envMap[envTLSKeyFile], filepath.Join(tlsMountPath, tlsKeyFileName))
+	if envMap[constants.EnvTLSKeyFile] != filepath.Join(tlsMountPath, tlsKeyFileName) {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSKeyFile, envMap[constants.EnvTLSKeyFile], filepath.Join(tlsMountPath, tlsKeyFileName))
 	}
-	if envMap[envTLSCAFile] != filepath.Join(tlsMountPath, tlsCAFileName) {
-		t.Fatalf("Env[%q] = %q, want %q", envTLSCAFile, envMap[envTLSCAFile], filepath.Join(tlsMountPath, tlsCAFileName))
+	if envMap[constants.EnvTLSCAFile] != filepath.Join(tlsMountPath, tlsCAFileName) {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSCAFile, envMap[constants.EnvTLSCAFile], filepath.Join(tlsMountPath, tlsCAFileName))
 	}
-	if envMap[envTLSDomain] != cfg.TLS.Domain {
-		t.Fatalf("Env[%q] = %q, want %q", envTLSDomain, envMap[envTLSDomain], cfg.TLS.Domain)
+	if envMap[constants.EnvTLSServerName] != cfg.TLS.Domain {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSServerName, envMap[constants.EnvTLSServerName], cfg.TLS.Domain)
 	}
 }
 
@@ -351,12 +351,12 @@ func TestBuildDeployment_UserEnvSortedBeforeReserved(t *testing.T) {
 		{"M_VAR", "m"},
 		{"Z_VAR", "z"},
 		{envLogLevel, "info"},
-		{reservedEnvNameServiceApp, w.App},
-		{reservedEnvNameDominionEnvironment, w.EnvironmentName},
-		{reservedEnvNamePodNamespace, cfg.Namespace},
+		{constants.EnvServiceApp, w.App},
+		{constants.EnvDominionEnvironment, w.EnvironmentName},
+		{constants.EnvPodNamespace, cfg.Namespace},
 		{constants.EnvDominionArtifactDir, artifactDirPath(w.App, w.ServiceName)},
-		{envTLSCAFile, filepath.Join(tlsMountPath, tlsCAFileName)},
-		{envTLSDomain, cfg.TLS.Domain},
+		{constants.EnvTLSCAFile, filepath.Join(tlsMountPath, tlsCAFileName)},
+		{constants.EnvTLSServerName, cfg.TLS.Domain},
 	}
 	for i, want := range wantOrder {
 		if envs[i].Name != want.name || envs[i].Value != want.value {
@@ -393,19 +393,19 @@ func TestBuildDeployment_UserEnvWithTLS_ReservedAfterUserBeforeTLS(t *testing.T)
 	}
 
 	// Verify reserved env after user.
-	if envs[2].Name != reservedEnvNameServiceApp {
-		t.Fatalf("Env[2] Name = %q, want %q", envs[2].Name, reservedEnvNameServiceApp)
+	if envs[2].Name != constants.EnvServiceApp {
+		t.Fatalf("Env[2] Name = %q, want %q", envs[2].Name, constants.EnvServiceApp)
 	}
 
 	// Verify artifact dir in the reserved block, TLS env last.
 	if envs[5].Name != constants.EnvDominionArtifactDir {
 		t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, constants.EnvDominionArtifactDir)
 	}
-	if envs[6].Name != envTLSCertFile {
-		t.Fatalf("Env[6] Name = %q, want %q", envs[6].Name, envTLSCertFile)
+	if envs[6].Name != constants.EnvTLSCertFile {
+		t.Fatalf("Env[6] Name = %q, want %q", envs[6].Name, constants.EnvTLSCertFile)
 	}
-	if envs[9].Name != envTLSDomain {
-		t.Fatalf("Env[9] Name = %q, want %q", envs[9].Name, envTLSDomain)
+	if envs[9].Name != constants.EnvTLSServerName {
+		t.Fatalf("Env[9] Name = %q, want %q", envs[9].Name, constants.EnvTLSServerName)
 	}
 }
 
@@ -428,17 +428,17 @@ func TestBuildDeployment_NilEnv_BackwardCompatible(t *testing.T) {
 	if container.Env[0].Name != envLogLevel {
 		t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, envLogLevel)
 	}
-	if container.Env[1].Name != reservedEnvNameServiceApp {
-		t.Fatalf("Env[1] Name = %q, want %q", container.Env[1].Name, reservedEnvNameServiceApp)
+	if container.Env[1].Name != constants.EnvServiceApp {
+		t.Fatalf("Env[1] Name = %q, want %q", container.Env[1].Name, constants.EnvServiceApp)
 	}
 	if container.Env[4].Name != constants.EnvDominionArtifactDir {
 		t.Fatalf("Env[4] Name = %q, want %q", container.Env[4].Name, constants.EnvDominionArtifactDir)
 	}
-	if container.Env[5].Name != envTLSCAFile {
-		t.Fatalf("Env[5] Name = %q, want %q", container.Env[5].Name, envTLSCAFile)
+	if container.Env[5].Name != constants.EnvTLSCAFile {
+		t.Fatalf("Env[5] Name = %q, want %q", container.Env[5].Name, constants.EnvTLSCAFile)
 	}
-	if container.Env[6].Name != envTLSDomain {
-		t.Fatalf("Env[6] Name = %q, want %q", container.Env[6].Name, envTLSDomain)
+	if container.Env[6].Name != constants.EnvTLSServerName {
+		t.Fatalf("Env[6] Name = %q, want %q", container.Env[6].Name, constants.EnvTLSServerName)
 	}
 }
 
@@ -490,8 +490,8 @@ func TestBuildDeployment_WithOSS(t *testing.T) {
 
 	// Verify S3_ACCESS_KEY SecretKeyRef.
 	accessKeyEnv := envs[7]
-	if accessKeyEnv.Name != envS3AccessKey {
-		t.Fatalf("Env[7] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
+	if accessKeyEnv.Name != constants.EnvS3AccessKey {
+		t.Fatalf("Env[7] Name = %q, want %q", accessKeyEnv.Name, constants.EnvS3AccessKey)
 	}
 	if accessKeyEnv.ValueFrom == nil || accessKeyEnv.ValueFrom.SecretKeyRef == nil {
 		t.Fatalf("Env[7] should use SecretKeyRef")
@@ -505,8 +505,8 @@ func TestBuildDeployment_WithOSS(t *testing.T) {
 
 	// Verify S3_SECRET_KEY SecretKeyRef.
 	secretKeyEnv := envs[8]
-	if secretKeyEnv.Name != envS3SecretKey {
-		t.Fatalf("Env[8] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
+	if secretKeyEnv.Name != constants.EnvS3SecretKey {
+		t.Fatalf("Env[8] Name = %q, want %q", secretKeyEnv.Name, constants.EnvS3SecretKey)
 	}
 	if secretKeyEnv.ValueFrom == nil || secretKeyEnv.ValueFrom.SecretKeyRef == nil {
 		t.Fatalf("Env[8] should use SecretKeyRef")
@@ -539,11 +539,11 @@ func TestBuildDeployment_WithTLSAndOSS(t *testing.T) {
 	}
 
 	// Verify OSS env comes after TLS env.
-	if envs[9].Name != envS3AccessKey {
-		t.Fatalf("Env[9] Name = %q, want %q", envs[9].Name, envS3AccessKey)
+	if envs[9].Name != constants.EnvS3AccessKey {
+		t.Fatalf("Env[9] Name = %q, want %q", envs[9].Name, constants.EnvS3AccessKey)
 	}
-	if envs[10].Name != envS3SecretKey {
-		t.Fatalf("Env[10] Name = %q, want %q", envs[10].Name, envS3SecretKey)
+	if envs[10].Name != constants.EnvS3SecretKey {
+		t.Fatalf("Env[10] Name = %q, want %q", envs[10].Name, constants.EnvS3SecretKey)
 	}
 }
 
@@ -572,10 +572,10 @@ func TestBuildDeployment_UserEnvWithOSS_ReservedAfterUserAfterTLS(t *testing.T) 
 
 	wantOrder := []string{
 		"APP_DEBUG", "LOG_LEVEL",
-		reservedEnvNameServiceApp, reservedEnvNameDominionEnvironment, reservedEnvNamePodNamespace,
+		constants.EnvServiceApp, constants.EnvDominionEnvironment, constants.EnvPodNamespace,
 		constants.EnvDominionArtifactDir,
-		envTLSCertFile, envTLSKeyFile, envTLSCAFile, envTLSDomain,
-		envS3AccessKey, envS3SecretKey,
+		constants.EnvTLSCertFile, constants.EnvTLSKeyFile, constants.EnvTLSCAFile, constants.EnvTLSServerName,
+		constants.EnvS3AccessKey, constants.EnvS3SecretKey,
 	}
 	for i, want := range wantOrder {
 		if envs[i].Name != want {
@@ -655,8 +655,8 @@ func TestBuildStatefulSet_WithOSS(t *testing.T) {
 	}
 
 	accessKeyEnv := envs[7]
-	if accessKeyEnv.Name != envS3AccessKey {
-		t.Fatalf("Env[7] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
+	if accessKeyEnv.Name != constants.EnvS3AccessKey {
+		t.Fatalf("Env[7] Name = %q, want %q", accessKeyEnv.Name, constants.EnvS3AccessKey)
 	}
 	if accessKeyEnv.ValueFrom == nil || accessKeyEnv.ValueFrom.SecretKeyRef == nil {
 		t.Fatalf("Env[7] should use SecretKeyRef")
@@ -669,8 +669,8 @@ func TestBuildStatefulSet_WithOSS(t *testing.T) {
 	}
 
 	secretKeyEnv := envs[8]
-	if secretKeyEnv.Name != envS3SecretKey {
-		t.Fatalf("Env[8] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
+	if secretKeyEnv.Name != constants.EnvS3SecretKey {
+		t.Fatalf("Env[8] Name = %q, want %q", secretKeyEnv.Name, constants.EnvS3SecretKey)
 	}
 	if secretKeyEnv.ValueFrom == nil || secretKeyEnv.ValueFrom.SecretKeyRef == nil {
 		t.Fatalf("Env[8] should use SecretKeyRef")
@@ -811,14 +811,14 @@ func TestBuildStatefulSet(t *testing.T) {
 				}
 
 				envMap := envVarsToMap(container.Env)
-				if envMap[reservedEnvNameServiceApp] != workload.App {
-					t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameServiceApp, envMap[reservedEnvNameServiceApp], workload.App)
+				if envMap[constants.EnvServiceApp] != workload.App {
+					t.Fatalf("Env[%q] = %q, want %q", constants.EnvServiceApp, envMap[constants.EnvServiceApp], workload.App)
 				}
-				if envMap[reservedEnvNameDominionEnvironment] != workload.EnvironmentName {
-					t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameDominionEnvironment, envMap[reservedEnvNameDominionEnvironment], workload.EnvironmentName)
+				if envMap[constants.EnvDominionEnvironment] != workload.EnvironmentName {
+					t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionEnvironment, envMap[constants.EnvDominionEnvironment], workload.EnvironmentName)
 				}
-				if envMap[reservedEnvNamePodNamespace] != cfg.Namespace {
-					t.Fatalf("Env[%q] = %q, want %q", reservedEnvNamePodNamespace, envMap[reservedEnvNamePodNamespace], cfg.Namespace)
+				if envMap[constants.EnvPodNamespace] != cfg.Namespace {
+					t.Fatalf("Env[%q] = %q, want %q", constants.EnvPodNamespace, envMap[constants.EnvPodNamespace], cfg.Namespace)
 				}
 				if envMap[constants.EnvDominionArtifactDir] != artifactDirPath(workload.App, workload.ServiceName) {
 					t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionArtifactDir, envMap[constants.EnvDominionArtifactDir], artifactDirPath(workload.App, workload.ServiceName))
@@ -878,17 +878,17 @@ func TestBuildStatefulSet(t *testing.T) {
 				}
 
 				envMap := envVarsToMap(container.Env)
-				if envMap[envTLSCertFile] != filepath.Join(tlsMountPath, tlsCertFileName) {
-					t.Fatalf("Env[%q] = %q, want %q", envTLSCertFile, envMap[envTLSCertFile], filepath.Join(tlsMountPath, tlsCertFileName))
+				if envMap[constants.EnvTLSCertFile] != filepath.Join(tlsMountPath, tlsCertFileName) {
+					t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSCertFile, envMap[constants.EnvTLSCertFile], filepath.Join(tlsMountPath, tlsCertFileName))
 				}
-				if envMap[envTLSKeyFile] != filepath.Join(tlsMountPath, tlsKeyFileName) {
-					t.Fatalf("Env[%q] = %q, want %q", envTLSKeyFile, envMap[envTLSKeyFile], filepath.Join(tlsMountPath, tlsKeyFileName))
+				if envMap[constants.EnvTLSKeyFile] != filepath.Join(tlsMountPath, tlsKeyFileName) {
+					t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSKeyFile, envMap[constants.EnvTLSKeyFile], filepath.Join(tlsMountPath, tlsKeyFileName))
 				}
-				if envMap[envTLSCAFile] != filepath.Join(tlsMountPath, tlsCAFileName) {
-					t.Fatalf("Env[%q] = %q, want %q", envTLSCAFile, envMap[envTLSCAFile], filepath.Join(tlsMountPath, tlsCAFileName))
+				if envMap[constants.EnvTLSCAFile] != filepath.Join(tlsMountPath, tlsCAFileName) {
+					t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSCAFile, envMap[constants.EnvTLSCAFile], filepath.Join(tlsMountPath, tlsCAFileName))
 				}
-				if envMap[envTLSDomain] != cfg.TLS.Domain {
-					t.Fatalf("Env[%q] = %q, want %q", envTLSDomain, envMap[envTLSDomain], cfg.TLS.Domain)
+				if envMap[constants.EnvTLSServerName] != cfg.TLS.Domain {
+					t.Fatalf("Env[%q] = %q, want %q", constants.EnvTLSServerName, envMap[constants.EnvTLSServerName], cfg.TLS.Domain)
 				}
 				if workload == nil {
 					t.Fatalf("workload should not be nil")
@@ -926,24 +926,24 @@ func TestBuildStatefulSet(t *testing.T) {
 					t.Fatalf("Env[2] Name = %q, want %q", envs[2].Name, envLogLevel)
 				}
 
-				if envs[3].Name != reservedEnvNameServiceApp {
-					t.Fatalf("Env[3] Name = %q, want %q", envs[3].Name, reservedEnvNameServiceApp)
+				if envs[3].Name != constants.EnvServiceApp {
+					t.Fatalf("Env[3] Name = %q, want %q", envs[3].Name, constants.EnvServiceApp)
 				}
-				if envs[4].Name != reservedEnvNameDominionEnvironment {
-					t.Fatalf("Env[4] Name = %q, want %q", envs[4].Name, reservedEnvNameDominionEnvironment)
+				if envs[4].Name != constants.EnvDominionEnvironment {
+					t.Fatalf("Env[4] Name = %q, want %q", envs[4].Name, constants.EnvDominionEnvironment)
 				}
-				if envs[5].Name != reservedEnvNamePodNamespace {
-					t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, reservedEnvNamePodNamespace)
+				if envs[5].Name != constants.EnvPodNamespace {
+					t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, constants.EnvPodNamespace)
 				}
 				if envs[6].Name != constants.EnvDominionArtifactDir {
 					t.Fatalf("Env[6] Name = %q, want %q", envs[6].Name, constants.EnvDominionArtifactDir)
 				}
 
-				if envs[7].Name != envTLSCAFile {
-					t.Fatalf("Env[7] Name = %q, want %q", envs[7].Name, envTLSCAFile)
+				if envs[7].Name != constants.EnvTLSCAFile {
+					t.Fatalf("Env[7] Name = %q, want %q", envs[7].Name, constants.EnvTLSCAFile)
 				}
-				if envs[8].Name != envTLSDomain {
-					t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, envTLSDomain)
+				if envs[8].Name != constants.EnvTLSServerName {
+					t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, constants.EnvTLSServerName)
 				}
 			},
 		},
@@ -973,19 +973,19 @@ func TestBuildStatefulSet(t *testing.T) {
 				}
 
 				// Reserved after user.
-				if envs[1].Name != reservedEnvNameServiceApp {
-					t.Fatalf("Env[1] Name = %q, want %q", envs[1].Name, reservedEnvNameServiceApp)
+				if envs[1].Name != constants.EnvServiceApp {
+					t.Fatalf("Env[1] Name = %q, want %q", envs[1].Name, constants.EnvServiceApp)
 				}
 				if envs[4].Name != constants.EnvDominionArtifactDir {
 					t.Fatalf("Env[4] Name = %q, want %q", envs[4].Name, constants.EnvDominionArtifactDir)
 				}
 
 				// TLS last.
-				if envs[5].Name != envTLSCertFile {
-					t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, envTLSCertFile)
+				if envs[5].Name != constants.EnvTLSCertFile {
+					t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, constants.EnvTLSCertFile)
 				}
-				if envs[8].Name != envTLSDomain {
-					t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, envTLSDomain)
+				if envs[8].Name != constants.EnvTLSServerName {
+					t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, constants.EnvTLSServerName)
 				}
 			},
 		},
@@ -1007,17 +1007,17 @@ func TestBuildStatefulSet(t *testing.T) {
 				if container.Env[0].Name != envLogLevel {
 					t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, envLogLevel)
 				}
-				if container.Env[1].Name != reservedEnvNameServiceApp {
-					t.Fatalf("Env[1] Name = %q, want %q", container.Env[1].Name, reservedEnvNameServiceApp)
+				if container.Env[1].Name != constants.EnvServiceApp {
+					t.Fatalf("Env[1] Name = %q, want %q", container.Env[1].Name, constants.EnvServiceApp)
 				}
 				if container.Env[4].Name != constants.EnvDominionArtifactDir {
 					t.Fatalf("Env[4] Name = %q, want %q", container.Env[4].Name, constants.EnvDominionArtifactDir)
 				}
-				if container.Env[5].Name != envTLSCAFile {
-					t.Fatalf("Env[5] Name = %q, want %q", container.Env[5].Name, envTLSCAFile)
+				if container.Env[5].Name != constants.EnvTLSCAFile {
+					t.Fatalf("Env[5] Name = %q, want %q", container.Env[5].Name, constants.EnvTLSCAFile)
 				}
-				if container.Env[6].Name != envTLSDomain {
-					t.Fatalf("Env[6] Name = %q, want %q", container.Env[6].Name, envTLSDomain)
+				if container.Env[6].Name != constants.EnvTLSServerName {
+					t.Fatalf("Env[6] Name = %q, want %q", container.Env[6].Name, constants.EnvTLSServerName)
 				}
 			},
 		},
@@ -1177,8 +1177,8 @@ func TestBuildDeployment_WithoutSecretBindings(t *testing.T) {
 
 	// Verify no DOMINION_SECRET_DIR env var.
 	for _, e := range container.Env {
-		if e.Name == envSecretDir {
-			t.Fatalf("Should not have %s env var when SecretBindings is nil", envSecretDir)
+		if e.Name == constants.EnvDominionSecretDir {
+			t.Fatalf("Should not have %s env var when SecretBindings is nil", constants.EnvDominionSecretDir)
 		}
 	}
 
@@ -1245,11 +1245,11 @@ func TestBuildDeployment_WithSecretBindings(t *testing.T) {
 	// Verify DOMINION_SECRET_DIR env var is appended.
 	envs := container.Env
 	lastEnv := envs[len(envs)-1]
-	if lastEnv.Name != envSecretDir {
-		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envSecretDir)
+	if lastEnv.Name != constants.EnvDominionSecretDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, constants.EnvDominionSecretDir)
 	}
 	if lastEnv.Value != secretMountPath {
-		t.Fatalf("Env[%q] Value = %q, want %q", envSecretDir, lastEnv.Value, secretMountPath)
+		t.Fatalf("Env[%q] Value = %q, want %q", constants.EnvDominionSecretDir, lastEnv.Value, secretMountPath)
 	}
 
 	// LOG_LEVEL + 3 reserved + DOMINION_ARTIFACT_DIR + 2 client TLS + 1 secret = 8.
@@ -1348,11 +1348,11 @@ func TestBuildStatefulSet_WithSecretBindings(t *testing.T) {
 	// Verify DOMINION_SECRET_DIR env var appended last.
 	envs := container.Env
 	lastEnv := envs[len(envs)-1]
-	if lastEnv.Name != envSecretDir {
-		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envSecretDir)
+	if lastEnv.Name != constants.EnvDominionSecretDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, constants.EnvDominionSecretDir)
 	}
 	if lastEnv.Value != secretMountPath {
-		t.Fatalf("Env[%q] Value = %q, want %q", envSecretDir, lastEnv.Value, secretMountPath)
+		t.Fatalf("Env[%q] Value = %q, want %q", constants.EnvDominionSecretDir, lastEnv.Value, secretMountPath)
 	}
 }
 
@@ -1383,8 +1383,8 @@ func TestBuildDeployment_WithoutConfigBlocks(t *testing.T) {
 
 	// Verify no DOMINION_CONFIG_DIR env var.
 	for _, e := range container.Env {
-		if e.Name == envConfigDir {
-			t.Fatalf("Should not have %s env var when ConfigBlocks is nil", envConfigDir)
+		if e.Name == constants.EnvDominionConfigDir {
+			t.Fatalf("Should not have %s env var when ConfigBlocks is nil", constants.EnvDominionConfigDir)
 		}
 	}
 
@@ -1486,11 +1486,11 @@ func TestBuildDeployment_WithConfigBlocks(t *testing.T) {
 	// Verify DOMINION_CONFIG_DIR env var is appended last.
 	envs := container.Env
 	lastEnv := envs[len(envs)-1]
-	if lastEnv.Name != envConfigDir {
-		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envConfigDir)
+	if lastEnv.Name != constants.EnvDominionConfigDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, constants.EnvDominionConfigDir)
 	}
 	if lastEnv.Value != configMountPath {
-		t.Fatalf("Env[%q] Value = %q, want %q", envConfigDir, lastEnv.Value, configMountPath)
+		t.Fatalf("Env[%q] Value = %q, want %q", constants.EnvDominionConfigDir, lastEnv.Value, configMountPath)
 	}
 
 	// LOG_LEVEL + 3 reserved + DOMINION_ARTIFACT_DIR + 2 client TLS + 1 config = 8.
@@ -1568,11 +1568,11 @@ func TestBuildStatefulSet_WithConfigBlocks(t *testing.T) {
 	// Verify DOMINION_CONFIG_DIR env var appended last.
 	envs := container.Env
 	lastEnv := envs[len(envs)-1]
-	if lastEnv.Name != envConfigDir {
-		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envConfigDir)
+	if lastEnv.Name != constants.EnvDominionConfigDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, constants.EnvDominionConfigDir)
 	}
 	if lastEnv.Value != configMountPath {
-		t.Fatalf("Env[%q] Value = %q, want %q", envConfigDir, lastEnv.Value, configMountPath)
+		t.Fatalf("Env[%q] Value = %q, want %q", constants.EnvDominionConfigDir, lastEnv.Value, configMountPath)
 	}
 }
 
@@ -1632,8 +1632,8 @@ func TestBuildDeployment_UserEnvAndConfigCoexist(t *testing.T) {
 	if !foundConfigMount {
 		t.Fatalf("Config volume mount %q not found when config blocks present", configVolumeName)
 	}
-	if envMap[envConfigDir] != configMountPath {
-		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
+	if envMap[constants.EnvDominionConfigDir] != configMountPath {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionConfigDir, envMap[constants.EnvDominionConfigDir], configMountPath)
 	}
 
 	// 用户 env 与平台注入的 env 均保留：2 用户 + LOG_LEVEL + 3 reserved + DOMINION_ARTIFACT_DIR + 2 TLS + 1 config = 10。
@@ -1689,8 +1689,8 @@ func TestBuildStatefulSet_UserEnvAndConfigCoexist(t *testing.T) {
 	if !foundConfigMount {
 		t.Fatalf("Config volume mount %q not found when config blocks present", configVolumeName)
 	}
-	if envMap[envConfigDir] != configMountPath {
-		t.Fatalf("Env[%q] = %q, want %q", envConfigDir, envMap[envConfigDir], configMountPath)
+	if envMap[constants.EnvDominionConfigDir] != configMountPath {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionConfigDir, envMap[constants.EnvDominionConfigDir], configMountPath)
 	}
 }
 
@@ -1929,8 +1929,8 @@ func TestBuildDeployment_SecretBindingsEnvOverridesUser(t *testing.T) {
 	w := testDeploymentWorkload()
 	// User sets DOMINION_SECRET_DIR to a custom value.
 	w.Env = map[string]string{
-		"DOMINION_SECRET_DIR": "/custom/path",
-		"APP_DEBUG":           "true",
+		constants.EnvDominionSecretDir: "/custom/path",
+		"APP_DEBUG":                    "true",
 	}
 	w.SecretBindings = []*domain.SecretBinding{
 		{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
@@ -1955,14 +1955,14 @@ func TestBuildDeployment_SecretBindingsEnvOverridesUser(t *testing.T) {
 	if envs[0].Name != "APP_DEBUG" || envs[0].Value != "true" {
 		t.Fatalf("Env[0] = {Name: %q, Value: %q}, want APP_DEBUG/true", envs[0].Name, envs[0].Value)
 	}
-	if envs[1].Name != "DOMINION_SECRET_DIR" || envs[1].Value != "/custom/path" {
-		t.Fatalf("Env[1] = {Name: %q, Value: %q}, want DOMINION_SECRET_DIR/custom/path (user value)", envs[1].Name, envs[1].Value)
+	if envs[1].Name != constants.EnvDominionSecretDir || envs[1].Value != "/custom/path" {
+		t.Fatalf("Env[1] = {Name: %q, Value: %q}, want %s/custom/path (user value)", envs[1].Name, envs[1].Value, constants.EnvDominionSecretDir)
 	}
 
 	// Last env should be platform-injected DOMINION_SECRET_DIR (overrides user via K8s last-wins).
 	lastEnv := envs[len(envs)-1]
-	if lastEnv.Name != envSecretDir {
-		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envSecretDir)
+	if lastEnv.Name != constants.EnvDominionSecretDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, constants.EnvDominionSecretDir)
 	}
 	if lastEnv.Value != secretMountPath {
 		t.Fatalf("Last env Value = %q, want %q (platform should override user)", lastEnv.Value, secretMountPath)
@@ -1971,12 +1971,12 @@ func TestBuildDeployment_SecretBindingsEnvOverridesUser(t *testing.T) {
 	// Verify both DOMINION_SECRET_DIR entries exist (user first, platform last).
 	count := 0
 	for _, e := range envs {
-		if e.Name == envSecretDir {
+		if e.Name == constants.EnvDominionSecretDir {
 			count++
 		}
 	}
 	if count != 2 {
-		t.Fatalf("DOMINION_SECRET_DIR appears %d times, want 2 (user value + platform override)", count)
+		t.Fatalf("%s appears %d times, want 2 (user value + platform override)", constants.EnvDominionSecretDir, count)
 	}
 }
 
@@ -1988,8 +1988,8 @@ func TestBuildDeployment_ArtifactDirEnvOverridesUser(t *testing.T) {
 	w := testDeploymentWorkload()
 	// User sets DOMINION_ARTIFACT_DIR to a custom value.
 	w.Env = map[string]string{
-		"DOMINION_ARTIFACT_DIR": "/custom/artifact",
-		"APP_DEBUG":             "true",
+		constants.EnvDominionArtifactDir: "/custom/artifact",
+		"APP_DEBUG":                      "true",
 	}
 
 	deploy, err := BuildDeployment(w, cfg)
@@ -2005,7 +2005,7 @@ func TestBuildDeployment_ArtifactDirEnvOverridesUser(t *testing.T) {
 		t.Fatalf("Env[0] = {Name: %q, Value: %q}, want APP_DEBUG/true", envs[0].Name, envs[0].Value)
 	}
 	if envs[1].Name != constants.EnvDominionArtifactDir || envs[1].Value != "/custom/artifact" {
-		t.Fatalf("Env[1] = {Name: %q, Value: %q}, want DOMINION_ARTIFACT_DIR/custom/artifact (user value)", envs[1].Name, envs[1].Value)
+		t.Fatalf("Env[1] = {Name: %q, Value: %q}, want %s/custom/artifact (user value)", envs[1].Name, envs[1].Value, constants.EnvDominionArtifactDir)
 	}
 
 	// The platform entry follows the user entry; the last occurrence must carry
@@ -2019,10 +2019,10 @@ func TestBuildDeployment_ArtifactDirEnvOverridesUser(t *testing.T) {
 		}
 	}
 	if count != 2 {
-		t.Fatalf("DOMINION_ARTIFACT_DIR appears %d times, want 2 (user value + platform override)", count)
+		t.Fatalf("%s appears %d times, want 2 (user value + platform override)", constants.EnvDominionArtifactDir, count)
 	}
 	if want := artifactDirPath(w.App, w.ServiceName); lastValue != want {
-		t.Fatalf("last DOMINION_ARTIFACT_DIR value = %q, want platform value %q", lastValue, want)
+		t.Fatalf("last %s value = %q, want platform value %q", constants.EnvDominionArtifactDir, lastValue, want)
 	}
 }
 
@@ -2309,11 +2309,11 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 
 	// Verify env vars reference the secret.
 	envMap := envVarsToMap(container.Env)
-	if envMap[reservedEnvNameServiceApp] != w.App {
-		t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameServiceApp, envMap[reservedEnvNameServiceApp], w.App)
+	if envMap[constants.EnvServiceApp] != w.App {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvServiceApp, envMap[constants.EnvServiceApp], w.App)
 	}
-	if envMap[reservedEnvNameDominionEnvironment] != w.EnvironmentName {
-		t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameDominionEnvironment, envMap[reservedEnvNameDominionEnvironment], w.EnvironmentName)
+	if envMap[constants.EnvDominionEnvironment] != w.EnvironmentName {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionEnvironment, envMap[constants.EnvDominionEnvironment], w.EnvironmentName)
 	}
 	if _, ok := envMap[constants.EnvDominionArtifactDir]; ok {
 		t.Fatalf("Env[%q] should not be injected for infra workloads", constants.EnvDominionArtifactDir)

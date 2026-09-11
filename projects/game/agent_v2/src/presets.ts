@@ -12,6 +12,7 @@
 
 import { createHmac } from "node:crypto";
 
+import { ENV_DOMINION_ENVIRONMENT } from "@dominion/common-js-constants";
 import { createResolver } from "@dominion/common-js-resolver";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
 
@@ -38,7 +39,6 @@ const MONGO_PASSWORD_ALPHABET =
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const MONGO_PASSWORD_MIN_LEN = 24;
 const MONGO_PASSWORD_JOINER = "\x00";
-const DOMINION_ENVIRONMENT_ENV_KEY = "DOMINION_ENVIRONMENT";
 const DEFAULT_MONGO_ENVIRONMENT = "default";
 const MONGO_USERNAME = "admin";
 const MONGO_AUTH_DATABASE = "admin";
@@ -95,7 +95,7 @@ export async function resolveMongoUri(
   if (endpoints.length === 0) {
     throw new Error(`resolver returned no endpoints for ${MONGO_TARGET}`);
   }
-  const envName = (env[DOMINION_ENVIRONMENT_ENV_KEY] ?? "").trim() || DEFAULT_MONGO_ENVIRONMENT;
+  const envName = (env[ENV_DOMINION_ENVIRONMENT] ?? "").trim() || DEFAULT_MONGO_ENVIRONMENT;
   const { app, service } = mongoTargetParts(MONGO_TARGET);
   const password = deriveStableMongoPassword([app, envName, service]);
   return `mongodb://${MONGO_USERNAME}:${password}@${endpoints[0]}/${MONGO_AUTH_DATABASE}?authSource=${MONGO_AUTH_DATABASE}`;

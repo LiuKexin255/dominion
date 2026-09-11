@@ -19,7 +19,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { boot } from "@deepseek-ai/dsh-app-boot";
-import { ENV_DOMINION_ARTIFACT_DIR } from "@dominion/common-js-constants";
+import { ENV_DOMINION_ARTIFACT_DIR, ENV_DOMINION_SECRET_DIR } from "@dominion/common-js-constants";
 import { error, info, warn } from "@dominion/common-js-logs";
 import { createResolver } from "@dominion/common-js-resolver";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
@@ -191,7 +191,7 @@ function resolveGlmApiKey(deps: DshBootDeps): string | undefined {
   if (envKey) {
     return envKey;
   }
-  const dir = deps.secretDir ?? env.DOMINION_SECRET_DIR ?? SECRET_DIR_FALLBACK;
+  const dir = deps.secretDir ?? env[ENV_DOMINION_SECRET_DIR] ?? SECRET_DIR_FALLBACK;
   const file = path.join(dir, GLM_SECRET_FILE);
   const read = deps.readSecretFile ?? readSecretFile;
 

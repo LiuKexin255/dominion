@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ENV_DOMINION_ENVIRONMENT } from "@dominion/common-js-constants";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
 
 import { MONGO_TARGET, resolveMongoUri } from "./presets.js";
@@ -47,7 +48,7 @@ describe("resolveMongoUri", () => {
     const resolve = vi.fn(async () => ["10.0.0.9:27017"]);
 
     const uri = await resolveMongoUri({
-      env: { DOMINION_ENVIRONMENT: "test-env" },
+      env: { [ENV_DOMINION_ENVIRONMENT]: "test-env" },
       resolver: { resolve } as unknown as EndpointResolver,
     });
 

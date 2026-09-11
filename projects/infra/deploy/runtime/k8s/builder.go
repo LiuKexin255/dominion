@@ -21,14 +21,9 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
+// 平台保留环境变量名统一定义于 common/gopkg/constants，不在此重复
+// （specs/060-agent-v2-team-optimize/contracts/const-lib.md §3）。
 const (
-	// reservedEnvNameServiceApp 为 service app 注入环境变量名。
-	reservedEnvNameServiceApp = "SERVICE_APP"
-	// reservedEnvNameDominionEnvironment 为 Dominion 环境注入环境变量名。
-	reservedEnvNameDominionEnvironment = "DOMINION_ENVIRONMENT"
-	// reservedEnvNamePodNamespace 为 Pod 命名空间注入环境变量名。
-	reservedEnvNamePodNamespace = "POD_NAMESPACE"
-
 	// tlsVolumeName 为 TLS projected volume 固定名称。
 	tlsVolumeName = "tls"
 	// tlsMountPath 为 TLS 文件固定挂载目录。
@@ -39,36 +34,19 @@ const (
 	tlsCertFileName = "tls.crt"
 	// tlsKeyFileName 为容器内固定的私钥文件名。
 	tlsKeyFileName = "tls.key"
-	// envTLSCertFile 为 TLS 证书文件环境变量名。
-	envTLSCertFile = "TLS_CERT_FILE"
-	// envTLSKeyFile 为 TLS 私钥文件环境变量名。
-	envTLSKeyFile = "TLS_KEY_FILE"
-	// envTLSCAFile 为 TLS CA 文件环境变量名。
-	envTLSCAFile = "TLS_CA_FILE"
-	// envTLSDomain 为 TLS 服务名环境变量名。
-	envTLSDomain = "TLS_SERVER_NAME"
 
 	// envLogLevel 为默认日志级别环境变量名。
 	envLogLevel = "LOG_LEVEL"
-
-	// envS3AccessKey 为 S3 Access Key 环境变量名。
-	envS3AccessKey = "S3_ACCESS_KEY"
-	// envS3SecretKey 为 S3 Secret Key 环境变量名。
-	envS3SecretKey = "S3_SECRET_KEY"
 
 	// secretVolumeName 为 Secret projected volume 固定名称。
 	secretVolumeName = "dominion-secrets"
 	// secretMountPath 为 Secret 文件固定挂载目录。
 	secretMountPath = "/mnt/dominion/secret"
-	// envSecretDir 为 Secret 挂载目录环境变量名。
-	envSecretDir = "DOMINION_SECRET_DIR"
 
 	// configVolumeName 为 Config projected volume 固定名称。
 	configVolumeName = "dominion-config"
 	// configMountPath 为 Config 文件固定挂载目录。
 	configMountPath = "/mnt/dominion/config"
-	// envConfigDir 为 Config 挂载目录环境变量名（平台保留，用户 env 不可覆盖）。
-	envConfigDir = "DOMINION_CONFIG_DIR"
 
 	// artifactDirRoot 为打包工具放置服务产物的容器内根目录；产物目录即
 	// artifactDirRoot/{app}/{service}（tools/release/deploy/README.md §服务镜像构建）。
@@ -163,9 +141,9 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		containerEnv = append(containerEnv, corev1.EnvVar{Name: envLogLevel, Value: defaultLogLevel(workload.EnvType)})
 	}
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
-		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
-		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
+		corev1.EnvVar{Name: constants.EnvServiceApp, Value: workload.App},
+		corev1.EnvVar{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
+		corev1.EnvVar{Name: constants.EnvPodNamespace, Value: cfg.Namespace},
 		corev1.EnvVar{Name: constants.EnvDominionArtifactDir, Value: artifactDirPath(workload.App, workload.ServiceName)},
 	)
 
@@ -178,8 +156,8 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
 		)
 		containerEnv = append(containerEnv,
-			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
-			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
+			corev1.EnvVar{Name: constants.EnvTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
+			corev1.EnvVar{Name: constants.EnvTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
 		)
 	}
 	projectedSources = append(projectedSources,
@@ -192,8 +170,8 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		}},
 	)
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+		corev1.EnvVar{Name: constants.EnvTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: constants.EnvTLSServerName, Value: cfg.TLS.Domain},
 	)
 	volumes := []corev1.Volume{{
 		Name: tlsVolumeName,
@@ -210,7 +188,7 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
-				Name: envS3AccessKey,
+				Name: constants.EnvS3AccessKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -219,7 +197,7 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 				},
 			},
 			corev1.EnvVar{
-				Name: envS3SecretKey,
+				Name: constants.EnvS3SecretKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -255,7 +233,7 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 			ReadOnly:  true,
 		})
 		containerEnv = append(containerEnv, corev1.EnvVar{
-			Name:  envSecretDir,
+			Name:  constants.EnvDominionSecretDir,
 			Value: secretMountPath,
 		})
 	}
@@ -339,9 +317,9 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		containerEnv = append(containerEnv, corev1.EnvVar{Name: envLogLevel, Value: defaultLogLevel(workload.EnvType)})
 	}
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
-		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
-		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
+		corev1.EnvVar{Name: constants.EnvServiceApp, Value: workload.App},
+		corev1.EnvVar{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
+		corev1.EnvVar{Name: constants.EnvPodNamespace, Value: cfg.Namespace},
 		corev1.EnvVar{Name: constants.EnvDominionArtifactDir, Value: artifactDirPath(workload.App, workload.ServiceName)},
 	)
 
@@ -352,8 +330,8 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
 		)
 		containerEnv = append(containerEnv,
-			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
-			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
+			corev1.EnvVar{Name: constants.EnvTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
+			corev1.EnvVar{Name: constants.EnvTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
 		)
 	}
 	projectedSources = append(projectedSources,
@@ -366,8 +344,8 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		}},
 	)
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+		corev1.EnvVar{Name: constants.EnvTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: constants.EnvTLSServerName, Value: cfg.TLS.Domain},
 	)
 	volumes := []corev1.Volume{{
 		Name: tlsVolumeName,
@@ -384,7 +362,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
-				Name: envS3AccessKey,
+				Name: constants.EnvS3AccessKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -393,7 +371,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 				},
 			},
 			corev1.EnvVar{
-				Name: envS3SecretKey,
+				Name: constants.EnvS3SecretKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -429,7 +407,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 			ReadOnly:  true,
 		})
 		containerEnv = append(containerEnv, corev1.EnvVar{
-			Name:  envSecretDir,
+			Name:  constants.EnvDominionSecretDir,
 			Value: secretMountPath,
 		})
 	}
@@ -521,7 +499,7 @@ func buildConfigProjection(workload configMapWorkload) (corev1.Volume, corev1.Vo
 		},
 	}
 	mount := corev1.VolumeMount{Name: configVolumeName, MountPath: configMountPath, ReadOnly: true}
-	env := corev1.EnvVar{Name: envConfigDir, Value: configMountPath}
+	env := corev1.EnvVar{Name: constants.EnvDominionConfigDir, Value: configMountPath}
 
 	return volume, mount, env
 }
@@ -1170,10 +1148,10 @@ func buildServicePorts(ports []*DeploymentPort) ([]corev1.ServicePort, error) {
 
 func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string) []corev1.EnvVar {
 	return []corev1.EnvVar{
-		{Name: reservedEnvNameServiceApp, Value: workload.App},
-		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+		{Name: constants.EnvServiceApp, Value: workload.App},
+		{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
 		{
-			Name: reservedEnvNamePodNamespace,
+			Name: constants.EnvPodNamespace,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: mongoPodFieldPathNS},
 			},

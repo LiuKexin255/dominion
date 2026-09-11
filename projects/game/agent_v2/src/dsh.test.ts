@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ENV_DOMINION_ARTIFACT_DIR, ENV_DOMINION_SECRET_DIR } from "@dominion/common-js-constants";
 import { defaultLogger } from "@dominion/common-js-logs";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -61,7 +62,7 @@ describe("bootDsh", () => {
     const resolve = vi.fn(async () => ["10.0.0.9:8080"]);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_BASE_URL: "http://fake-llm:8080/v1",
       GLM_LLM_TARGET: "dominion:///game/fake-llm:8080",
     };
@@ -86,7 +87,7 @@ describe("bootDsh", () => {
     const resolve = vi.fn(async () => ["10.0.0.9:8080"]);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_LLM_TARGET: "dominion:///game/fake-llm:8080",
     };
 
@@ -110,7 +111,7 @@ describe("bootDsh", () => {
     });
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
     };
 
     await bootDsh({
@@ -129,7 +130,7 @@ describe("bootDsh", () => {
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
     };
     const readSecretFile = vi.fn(() => `  ${TOKEN}\n`);
 
@@ -145,7 +146,7 @@ describe("bootDsh", () => {
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_API_KEY: `  ${TOKEN}  `,
     };
     const readSecretFile = vi.fn(() => {
@@ -166,7 +167,7 @@ describe("bootDsh", () => {
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_API_KEY: "   ",
     };
     const readSecretFile = vi.fn(() => TOKEN);
@@ -187,8 +188,8 @@ describe("bootDsh", () => {
     await bootDsh({
       boot,
       env: {
-        DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
-        DOMINION_SECRET_DIR: "/mnt/dominion/secret",
+        [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
+        [ENV_DOMINION_SECRET_DIR]: "/mnt/dominion/secret",
       },
       readSecretFile,
     });
@@ -206,7 +207,7 @@ describe("bootDsh", () => {
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
     };
     const readSecretFile = vi.fn(() => {
       throw new Error(`ENOENT: no such file or directory, open '/mnt/dominion/secret/${GLM_SECRET_FILE}'`);
@@ -230,7 +231,7 @@ describe("bootDsh", () => {
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
     };
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => "   " });
@@ -254,7 +255,7 @@ describe("bootDsh", () => {
       boot,
       resolver: fakeResolver([]),
       env: {
-        DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+        [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
         GLM_LLM_TARGET: "dominion:///game/fake-llm:8080",
       },
       secretDir: "/tmp/secret",
@@ -275,7 +276,7 @@ describe("bootDsh", () => {
 
     await bootDsh({
       boot,
-      env: { DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2" },
+      env: { [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2" },
       secretDir: "/tmp/secret",
       readSecretFile: () => TOKEN,
     });
@@ -293,7 +294,7 @@ describe("bootDsh", () => {
 
     await bootDsh({
       boot,
-      env: { DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2" },
+      env: { [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2" },
       secretDir: "/tmp/secret",
       readSecretFile: () => TOKEN,
     });
@@ -314,7 +315,7 @@ describe("bootDsh", () => {
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
       PRESET_TEMPLATES_ROOT: "/custom/preset-templates",
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
     };
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => TOKEN });
@@ -329,7 +330,7 @@ describe("bootDsh", () => {
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      DOMINION_ARTIFACT_DIR: "/dominion/game/agent-v2",
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
     };
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => TOKEN });
@@ -350,7 +351,7 @@ describe("bootDsh", () => {
     expect(boot).not.toHaveBeenCalled();
     expect(env.PRESET_TEMPLATES_ROOT).toBeUndefined();
     expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("PRESET_TEMPLATES_ROOT"));
-    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("DOMINION_ARTIFACT_DIR"));
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(ENV_DOMINION_ARTIFACT_DIR));
     expect(exit).toHaveBeenCalledWith(1);
   });
 });
