@@ -10,8 +10,10 @@ bazel target 保留 `agent_v2`）：以 **dsh 进程内嵌入（B1 模式）**�
 https://docs.bigmodel.cn/cn/coding-plan/tool/others）。session 的组织模型是
 team：一个 session 至多物化一个 team，恰含 player 与 planner 两个成员，各持
 独立历史与 system prompt；需求与验收锚点见
-`specs/059-agent-v2-team-mode/spec.md`，接口契约见
-`specs/059-agent-v2-team-mode/contracts/`。
+`specs/059-agent-v2-team-mode/spec.md` 与
+`specs/060-agent-v2-team-optimize/spec.md`，接口契约见两者
+`contracts/` 下的 team-api/preset-derivation/deploy-env/prompt-sections
+（060 以增量修订方式更新团队面与提示词面的语义）。
 
 ## 服务形态与拓扑
 
@@ -20,13 +22,15 @@ team：一个 session 至多物化一个 team，恰含 player 与 planner 两个
   定向到同一实例（`specs/049-agent-v2-dsh-init/research.md` D4）。
 - gRPC 监听 `0.0.0.0:50051`，三个服务（`projects/game/agent_v2.proto`）：
   - **AgentService**（team 会话面，
-    `specs/059-agent-v2-team-mode/contracts/team-api.md`）：team 是 session 的
-    单例资源（AIP-156，`templates/{template}/sessions/{session}/team`），成员
+    `specs/059-agent-v2-team-mode/contracts/team-api.md`，060 增量见
+    `specs/060-agent-v2-team-optimize/contracts/team-api.md`）：team 是 session
+    的单例资源（AIP-156，`templates/{template}/sessions/{session}/team`），成员
     资源名即 `.../team/members/{role}`。RPC：`UpdateTeam`（显式物化/刷新，见
-    下节）、`GetTeam`、`GetTeamMember`（含 output-only `system_prompt`）、
-    `ListTeamMessages`（团队视图归并序列）、`ListMemberMessages`（成员视角）、
-    `Send`（server-streaming team 流，经 gateway 以 NDJSON 输出）、`Cancel`
-    （team 语义取消）。
+    下节）、`GetTeam`（含 output-only `active_member`）、`GetTeamMember`（含
+    output-only `system_prompt`）、`ListTeamMessages`（团队视图归并序列）、
+    `ListMemberMessages`（成员视角）、`Send`（server-streaming team 流——成员
+    事件帧 + `team_message`/`member_view` team 级帧，经 gateway 以 NDJSON
+    输出）、`Cancel`（team 语义取消）。
   - **PresetService**（无状态配置面）：分池 preset 标准 CRUD + `ListModels`。
   - **DesktopBridgeService**：desktop 的 flow 控制流 WebSocket 入口
     （`/api/v2/templates/{template}/sessions/{session}/connect`），session 单位、
@@ -80,11 +84,13 @@ team：一个 session 至多物化一个 team，恰含 player 与 planner 两个
 - `preset-authoring`（`@dominion/dsh-preset-authoring`）：创作/编辑面（Store
   Mongo 实现，`game_agent_v2.presets`）+ 模板行校验（`templateRules`）。
 - `team`（`ctx.team`）与 `memory`（`ctx.plannerMemory` host 服务面）：
-  自研群聊原语与 planner 记忆服务面；工具行不经 host 层——`saolei` 经 player
-  池模板 preset 挂载、`memory` 经 planner 池模板 preset 挂载（工具可见性由
-  挂载层隔离）。
+  自研群聊原语（含全员广播的单一 XML 标注格式与 team section 格式约定）与
+  planner 记忆服务面；工具行不经 host 层——`saolei` 经 player 池模板 preset
+  挂载、`memory` 经 planner 池模板 preset 挂载（工具可见性由挂载层隔离）。
 - `desktop-bridge`（`@dominion/dsh-desktop-bridge`）与 `saolei-loop`
-  （`@dominion/dsh-saolei-loop`）。
+  （`@dominion/dsh-saolei-loop`）：后者 boot 时经 `apply(ctx)` 全局注册
+  `saolei:game` prompt section（玩法 + 可用操作，全员可见——见「广播与提示词
+  分层」）。
 
 ## team 物化与刷新（UpdateTeam）
 
@@ -96,8 +102,8 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   是场景无关 team 原语（无 role 枚举、无场景字段）。role 为场景词汇字符串
   （saolei 下 `"player"`/`"planner"`）；preset 为完整 preset 资源名；model 可空
   = 部署默认。输出 members 与输入同形（生效 model、服务端按 role 构造的成员
-  资源名），`desktop_connected` 与时间戳为 output-only；`system_prompt` 仅
-  GetTeamMember 返回。
+  资源名），`desktop_connected`、`active_member` 与时间戳为 output-only；
+  `system_prompt` 仅 GetTeamMember 返回。
 - **两层 fail-fast 校验（先于任何 teardown，无半物化）**：结构层（场景无关）
   ——members 非空、每成员 role 非空、preset 为合法 preset 资源名；saolei 场景
   层——members 恰 2 且 role 集合恰为 `{"player", "planner"}`、每成员 preset
@@ -115,6 +121,11 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   驱动输入 = 成员未消费的团队消息 + 排队用户消息，编排层不合成任何驱动消息
   （`specs/059-agent-v2-team-mode/spec.md` FR-009/FR-010；
   `specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §2）。
+- **当前激活成员（`active_member`，单一合并值）**：成员回合在途时 = 该回合的
+  驱动成员（任一时刻至多一个）；静止时 = 下一条输入的归属成员（activation，
+  物化后初始 planner，取消/暂停不改变归属）。team 物化后恒非空；web 对话页
+  由该值叠加流式 `turn_start` 帧推导呈现
+  （`specs/060-agent-v2-team-optimize/contracts/team-api.md` §1/§5）。
 - **刷新**：已物化 team 再次 UpdateTeam 即刷新——终止在途成员回合
   （`turn_end{ABORTED}`）、排队作废、清空两个成员的短期记忆（历史/游戏状态）、
   按新配置重建；`create_time` 保留、`update_time` 更新；重复 Update 幂等。
@@ -153,16 +164,26 @@ preset 数据按角色分池
 ## team 流与编排（Send）
 
 `Send` 建立的 stream 是 **team 流**
-（`specs/059-agent-v2-team-mode/contracts/team-api.md` §3）：
+（`specs/059-agent-v2-team-mode/contracts/team-api.md` §3；060 增量见
+`specs/060-agent-v2-team-optimize/contracts/team-api.md` §2/§3）：
 
 - 当前成员回合中到达的用户消息入 team FIFO，本流首帧回
   `queued{position}`；用户消息在 Send 被接受时即固化入归并序列（enqueue 即
   固化），并以 `team_message{member="user"}` 帧扇出。
-- **双帧承载**：成员事件帧（`turn_start`/`block_start`/`delta`/`block_end`/
+- **帧三类**：成员事件帧（`turn_start`/`block_start`/`delta`/`block_end`/
   `tool_result`/`turn_end`）外层 `member` 标注产出成员（block index/step 以成员
   回合为一个 index 空间，前端按 `(member, turn_id)` 分组增量渲染）；team 级帧
   `team_message` `{member, message, seq}` 与 `ListTeamMessages` 元素同构、seq
-  同源同值，保证实时归并序与 List 回填跨视图一致。
+  同源同值，保证实时归并序与 List 回填跨视图一致；team 级帧 `member_view`
+  `{member, sender, message}` 是成员消费一条输入（用户输入或广播注入）写入其
+  视角的实时事实（扇出早于/伴随该成员回合事件），`message` 与
+  `ListMemberMessages` 投影同源同值，幂等锚 `message.messageId`
+  （`specs/060-agent-v2-team-optimize/contracts/team-api.md` §2）。
+- **工具结果实时性**：`tool_result` 帧携带 `toolId` + 终态 + 结果文本，服务端
+  帧序为 block_end（toolId 首次完整浮现）→ team_message（step 固化）→
+  tool_result（终态）；前端在一次归约内对 live 草稿、归并序列条目、成员视角
+  条目三个投影面按 `toolId` 幂等终态化，工具块在结果帧到达时即时转为终态并
+  显示结果文本（`specs/060-agent-v2-team-optimize/contracts/team-api.md` §3）。
 - **静止终点**：流从发起持续输出，覆盖其间全部成员回合——含编排自动驱动的
   结构性续驱、gameEnded 复盘、排队消化与多局循环——直到 team 静止（无在途
   回合且无待消化输入）才结束；自然收敛与 Cancel 后的暂停静止都属静止点。
@@ -173,7 +194,7 @@ preset 数据按角色分池
   保留为已固化历史且不触发新驱动；幂等；再次 Send 即恢复（消息由当前激活成员
   处理，建立新 team 流）。
 
-## 双视图与 system prompt 查看
+## 双视图、激活成员与 system prompt 查看
 
 web（`projects/game/web/frontend/src/`）以 session → team 模型组织
 （`specs/059-agent-v2-team-mode/contracts/web-views.md`）：
@@ -181,16 +202,46 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
 - **团队视图**（1 个，`ListTeamMessages` 回填 + team 流实时）：全部消息按 seq
   归并，成员消息取该成员的原始输出（正文/思考/工具调用与结果），归属到成员
   名下，不显示广播包装形态。
-- **成员视角视图**（每成员 1 个，共 2 个，`ListMemberMessages` 回填）：用户消息
-  → user、自己的输出 → agent、其他成员的消息 → 标注来源的 user 消息
-  （渲染为 `user: [sender] 正文`）。
+- **成员视角视图**（每成员 1 个，共 2 个，`ListMemberMessages` 回填 +
+  `member_view` 实时）：用户消息 → user（该成员消费时经 `member_view` 帧即时
+  追加，无需等待回填）、自己的输出 → agent、其他成员的消息 → 标注来源的 user
+  消息（渲染为 `user: [sender] 正文`）。
 - 切换器（团队 | player | planner）为纯前端状态，各视图历史常驻不重填；同一
   消息跨视图正文一致（`specs/059-agent-v2-team-mode/spec.md` SC-003）。
-- **system prompt 查看**：成员清单提供每成员入口，展示 `GetTeamMember` 的
-  `system_prompt` 全文（只读）。内容从成员实例的 system prompt 装配面读取
-  （persona + team section + 工具守则 + [planner] 记忆快照），与该实例实际
-  发给模型的一致，非另行拼装；刷新 team 后随新配置更新
+- **激活成员**：对话页 team 工具条呈现当前激活成员徽标——实时推导为最近成员
+  `turn_start` 帧的 member（流式期间覆盖最近 GetTeam 值），live 全部收束后以
+  GetTeam 的 `active_member` 兜底（刷新时机沿用现状：进入会话/发送前/10s
+  轮询/回合静止）；未物化时不呈现激活成员
+  （`specs/060-agent-v2-team-optimize/contracts/team-api.md` §5）。
+- **system prompt 查看**：对话页 team 工具条的成员清单区为每成员提供入口
+  （点击经 `GetTeamMember` 读取并以只读浮层展示 `system_prompt` 全文），设置
+  面板内入口保留。内容从成员实例的 system prompt 装配面读取（persona + team
+  section + saolei:game 玩法 section + 工具守则 + planner 的长期记忆快照），
+  与该实例实际发给模型的一致，非另行拼装；刷新 team 后随新配置更新
   （`specs/059-agent-v2-team-mode/spec.md` FR-016）。
+
+## 广播与提示词分层
+
+成员间 1:1 广播（team 插件渲染、注入接收方成员上下文）采用**单一 XML 标注
+形态**（`specs/060-agent-v2-team-optimize/contracts/team-api.md` §4）：标签名
+即发送者标注，正文只出现一次、不另有发送者摘要行。
+
+- 发言单元：`<{role}-message>` 标签对包裹发言正文原文（仅 text 块，不含
+  think/reasoning 内容）。
+- 工具单元：`<{role}-tool-call>` 标签对包裹 `tool:`/`args:`/`result:` 行
+  （完整参数与结果全文，不截断不摘要）；广播方提供局上下文时前置 `context:`
+  行。
+- 成员视角渲染为 `user: [sender] 注入原文`（XML 标签对保留、正文仅呈现
+  一次）；team section 的格式约定与该 wire 形态同源。
+
+提示词三层所有权
+（`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md`）：
+
+| 层 | 所有者 | 生效范围 | 内容边界 |
+|---|---|---|---|
+| 玩法 + 可用操作（section `saolei:game`，order 50） | saolei-loop（host 行 boot 注册） | 全员（player/planner 同源同文） | 经典扫雷规则 + 与三工具对齐的可用操作；不含调用形态/结果格式 |
+| 工具守则（section `saolei:guidance`，order 100） | saolei preset 行（player 池） | 仅 player | 仅工具用法（符号表/坐标/结果三层结构/校验拒绝语义/示例/纪律） |
+| persona（order 0） | preset 模板 persona 行 | 各成员 | 身份/职责/风格；不重复玩法与操作描述 |
 
 ## planner memory（快照固定与 fail-loud）
 
@@ -288,7 +339,13 @@ desktop 缺席、多会话隔离）与 desktop flow 面；断连 suite `game-dis
 `projects/game/testplan/deploy_agent_v2_memory_down.yaml`——无 memory
 服务的拓扑变体）承载物化 fail-loud 回滚断言。测试替换面：fake-llm
 `/v1/responses` 替换真实端点、fake-desktop 替换真实桌面、零外部网络；套件-拓扑
-对照见 `projects/game/testplan/README.md` §2。
+对照见 `projects/game/testplan/README.md` §2。060 增量断言：Send 流中 planner
+消费用户输入的 `member_view` 帧与工具 `block_end → team_message →
+tool_result` 帧序（`agent_v2_conversation_test.go`）、`GetTeam.active_member`
+阶段流转（物化后 planner、回合在途为驱动成员、静止为 activation；
+`agent_v2_game_test.go`）、preset store 派生链路（创建 → 物化 persona 与记录
+一致 → 编辑记录后再物化取新值；`agent_v2_preset_test.go`）、广播单一 XML 形态
+与提示词分层锚点（fake-llm 夹具 + 对话/游戏断言）。
 
 ## 已知限制
 
@@ -304,10 +361,10 @@ desktop 缺席、多会话隔离）与 desktop flow 面；断连 suite `game-dis
   时刻删除都不影响 store 数据与后续物化——重建幂等）。磁盘上不存在需要与
   store 对账的副本，也不存在 preset 专用可写根路径
   （`specs/060-agent-v2-team-optimize/contracts/preset-derivation.md` §1/§2）。
-- **roster 已知限制**（`specs/059-agent-v2-team-mode/research.md` R3 实现注意 ④）：
-  superseded generation 不回收（编辑-创建循环累积 watcher）、root 扫描无 watch
-  （每次 list 落盘 readdir）——当前 preset 规模无感知，高频 CRUD 或大池规模需
-  评估（`specs/058-dsh-preset-roster-demo/discussion-2026-09-08.md` §4.1）。
+- **模板发现无 watch**：roster 的模板发现（resolve/list）每次调用落盘
+  readdir，未注册 watch；两个 system 模板根为镜像内静态数据（用户 preset
+  CRUD 只写 store，无运行时创作面），开销固定且有界
+  （`specs/059-agent-v2-team-mode/research.md` R3 实现注意 ④）。
 - **多标签页无实时推送**：team 流只覆盖已建立流（Send）的页面；未发送消息的
   标签页看不到其他页面的回合进展，可刷新经 `ListTeamMessages`/
   `ListMemberMessages` 回填查询。

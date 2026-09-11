@@ -1,13 +1,15 @@
 // Package testplan contains the agent_v2 team configuration large tests: the
 // preset CRUD closed loop over the stateless configuration face, the team
 // materialization/refresh semantics over the team singleton, the
-// unmaterialized rejection family, and the empty-persona fallback — the US2
-// configuration concerns (specs/059-agent-v2-team-mode/contracts/team-api.md
-// §2/§6, preset-api.md). Cases are one per concern —
-// style/large_test.md §测试组织. Preset state lives in the agent_v2 Mongo
-// store, so every assertion round-trips through the gateway's direct
-// PresetService routes; the team singleton routes ride the proxy owner
-// affinity.
+// unmaterialized rejection family, the store-derivation chain, and the
+// empty-persona fallback — the US2 configuration concerns
+// (specs/059-agent-v2-team-mode/contracts/team-api.md §2/§6, preset-api.md;
+// the 060 revision of the authoring/compose semantics:
+// specs/060-agent-v2-team-optimize/contracts/preset-derivation.md). Cases
+// are one per concern — style/large_test.md §测试组织. Preset state lives in
+// the agent_v2 Mongo store, so every assertion round-trips through the
+// gateway's direct PresetService routes; the team singleton routes ride the
+// proxy owner affinity.
 package testplan
 
 import (
@@ -104,6 +106,62 @@ func TestAgentV2TeamPresetCrudRoundTrip(t *testing.T) {
 	}
 	if got := listContainsPreset(listAgentV2Presets(t, ctx, sutHostURL, sutEnvName), name); got != nil {
 		t.Errorf("List after delete still contains %q", name)
+	}
+}
+
+// TestAgentV2TeamPresetStoreDerivationChain covers quickstart V2 场景 2 and
+// the 060 preset-derivation contract
+// (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§2):
+// the API create writes only the Mongo store record, UpdateTeam references
+// that record, and the materialized member's effective system prompt carries
+// exactly the stored persona. Editing the record and re-materializing
+// re-derives the prompt from the new record — no separately maintained
+// composition copy can diverge from the store (the absence of a roster copy
+// path is pinned at the unit level by preset-authoring's derive/index tests).
+func TestAgentV2TeamPresetStoreDerivationChain(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-derive-"+uniqueSuffix())
+	personaV1 := "你是扫雷 player（store 派生 v1）"
+	personaV2 := "你是扫雷 player（store 派生 v2）"
+	plannerPersona := "你是扫雷 planner（store 派生）"
+	player := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-derive-player-"+uniqueSuffix(), personaV1, "player")
+	planner := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-derive-planner-"+uniqueSuffix(), plannerPersona, "planner")
+
+	// The create is store-only: the read-back record is the sole persistent
+	// fact the materialization consumes.
+	if got := getAgentV2Preset(t, ctx, sutHostURL, sutEnvName, player.GetName()); got.GetPersona() != personaV1 || got.GetRole() != "player" {
+		t.Fatalf("store record after create = {%q %q}, want {%q player}", got.GetPersona(), got.GetRole(), personaV1)
+	}
+
+	// UpdateTeam references the record; the materialized member's effective
+	// system prompt carries the stored persona (derived at use time).
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
+	playerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "player").GetSystemPrompt()
+	if !strings.Contains(playerPrompt, personaV1) {
+		t.Errorf("materialized player system_prompt lacks the stored persona %q:\n%s", personaV1, playerPrompt)
+	}
+	plannerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt()
+	if !strings.Contains(plannerPrompt, plannerPersona) {
+		t.Errorf("materialized planner system_prompt lacks the stored persona %q:\n%s", plannerPersona, plannerPrompt)
+	}
+
+	// Edit the record only, then re-materialize: the fresh prompt carries the
+	// new persona and not the replaced one — the composition was re-derived
+	// from the store rather than restored from a maintained copy.
+	updated := updateAgentV2Preset(t, ctx, sutHostURL, sutEnvName, player.GetName(), personaV2)
+	if updated.GetPersona() != personaV2 {
+		t.Fatalf("updated store record persona = %q, want %q", updated.GetPersona(), personaV2)
+	}
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
+	refreshedPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "player").GetSystemPrompt()
+	if !strings.Contains(refreshedPrompt, personaV2) {
+		t.Errorf("re-materialized player system_prompt lacks the edited persona %q:\n%s", personaV2, refreshedPrompt)
+	}
+	if strings.Contains(refreshedPrompt, personaV1) {
+		t.Errorf("re-materialized player system_prompt still carries the replaced persona %q:\n%s", personaV1, refreshedPrompt)
 	}
 }
 

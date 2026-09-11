@@ -5,12 +5,14 @@
 // as saolei_fixtures_test.go.
 //
 // The surface is the team model of
-// specs/059-agent-v2-team-mode/contracts/team-api.md: the team singleton
-// (UpdateTeam/GetTeam/GetTeamMember), the merged and member-view histories
+// specs/059-agent-v2-team-mode/contracts/team-api.md as revised by
+// specs/060-agent-v2-team-optimize/contracts/team-api.md: the team singleton
+// (UpdateTeam/GetTeam/GetTeamMember, including the active_member merged
+// value), the merged and member-view histories
 // (ListTeamMessages/ListMemberMessages), the team Send stream (member event
-// frames + team_message frames until quiescence) and the Cancel custom
-// method. Shared helpers live here, never copied per test file
-// (style/large_test.md §反模式3).
+// frames + team_message/member_view team-level frames until quiescence) and
+// the Cancel custom method. Shared helpers live here, never copied per test
+// file (style/large_test.md §反模式3).
 package testplan
 
 import (
@@ -622,11 +624,106 @@ func assertTeamMemberTurnWellFormed(t *testing.T, sessionName string, turn *team
 	}
 }
 
+// assertTeamToolResultWireOrder checks the server's tool-call frame order and
+// pairing contract (specs/060-agent-v2-team-optimize/contracts/team-api.md
+// §3): for every tool call the stream carries, block_end surfaces the
+// provider-issued tool id first, the step's team_message fixation (the
+// toolCall block still RUNNING, same tool id) follows, and only then does the
+// tool_result frame settle it with the terminal status/result.
+//
+// Precondition: every member turn in the stream settled COMPLETED. A
+// CANCELED/ABORTED turn may legitimately interrupt a tool call without its
+// team_message fixation or tool_result settlement, which this checker would
+// misreport.
+func assertTeamToolResultWireOrder(t *testing.T, sessionName string, events []*game.ChatEvent) {
+	t.Helper()
+
+	blockEndAt := map[string]int{}
+	fixationAt := map[string]int{}
+	settledAt := map[string]int{}
+	for i, event := range events {
+		if event.GetSession() != sessionName {
+			t.Errorf("frame %d session = %q, want %q", i, event.GetSession(), sessionName)
+		}
+		switch {
+		case event.GetBlockEnd() != nil:
+			call := event.GetBlockEnd().GetBlock().GetToolCall()
+			if call == nil {
+				continue
+			}
+			if call.GetToolId() == "" {
+				t.Errorf("frame %d: block_end tool_call lacks its tool_id", i)
+				continue
+			}
+			if _, dup := blockEndAt[call.GetToolId()]; dup {
+				t.Errorf("frame %d: duplicate block_end for tool %q", i, call.GetToolId())
+				continue
+			}
+			blockEndAt[call.GetToolId()] = i
+		case event.GetTeamMessage() != nil:
+			for _, block := range event.GetTeamMessage().GetMessage().GetBlocks() {
+				call := block.GetToolCall()
+				if call == nil || call.GetToolId() == "" {
+					continue
+				}
+				if _, seen := fixationAt[call.GetToolId()]; seen {
+					t.Errorf("frame %d: duplicate team_message fixation for tool %q", i, call.GetToolId())
+					continue
+				}
+				if _, ok := blockEndAt[call.GetToolId()]; !ok {
+					t.Errorf("frame %d: team_message fixes tool %q before its block_end", i, call.GetToolId())
+				}
+				if call.GetStatus() != game.ToolStatus_TOOL_STATUS_RUNNING {
+					t.Errorf("frame %d: team_message fixation for tool %q status = %v, want RUNNING", i, call.GetToolId(), call.GetStatus())
+				}
+				fixationAt[call.GetToolId()] = i
+			}
+		case event.GetToolResult() != nil:
+			result := event.GetToolResult()
+			if _, seen := settledAt[result.GetToolId()]; seen {
+				t.Errorf("frame %d: duplicate tool_result for tool %q", i, result.GetToolId())
+				continue
+			}
+			if result.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED && result.GetStatus() != game.ToolStatus_TOOL_STATUS_FAILED {
+				t.Errorf("frame %d: tool_result for %q status = %v, want a terminal SUCCEEDED/FAILED", i, result.GetToolId(), result.GetStatus())
+			}
+			if _, ok := fixationAt[result.GetToolId()]; !ok {
+				t.Errorf("frame %d: tool_result for %q precedes its team_message fixation", i, result.GetToolId())
+			}
+			settledAt[result.GetToolId()] = i
+		}
+	}
+	for id, endAt := range blockEndAt {
+		fixation, fixed := fixationAt[id]
+		if !fixed {
+			t.Errorf("tool %q: block_end at frame %d has no team_message fixation", id, endAt)
+			continue
+		}
+		settled, ok := settledAt[id]
+		if !ok {
+			t.Errorf("tool %q: block_end at frame %d has no tool_result settlement", id, endAt)
+			continue
+		}
+		if fixation < endAt || settled < fixation {
+			t.Errorf("tool %q frame order = block_end:%d team_message:%d tool_result:%d, want block_end < team_message < tool_result", id, endAt, fixation, settled)
+		}
+	}
+	for id := range settledAt {
+		if _, ok := blockEndAt[id]; !ok {
+			t.Errorf("tool_result for tool %q has no preceding block_end", id)
+		}
+	}
+}
+
 // assertTeamStreamWellFormed checks the stream-level invariants of a team
-// stream established at its lifecycle start (team-api.md §3.2/§3.3): every
-// frame carries the session; a queued frame is the first frame only; the
+// stream established at its lifecycle start (team-api.md §3.2/§3.3; the
+// member_view frame contract
+// specs/060-agent-v2-team-optimize/contracts/team-api.md §2): every frame
+// carries the session; a queued frame is the first frame only; the
 // team_message frames carry a producer label, a message, and a strictly
-// increasing seq; and each member turn is well formed (assertTeamMemberTurnWellFormed).
+// increasing seq; a member_view frame names its consuming member, the input
+// source, and the projected message; and each member turn is well formed
+// (assertTeamMemberTurnWellFormed).
 func assertTeamStreamWellFormed(t *testing.T, sessionName string, events []*game.ChatEvent) {
 	t.Helper()
 
@@ -658,6 +755,13 @@ func assertTeamStreamWellFormed(t *testing.T, sessionName string, events []*game
 				t.Errorf("team_message at frame %d seq = %d, want > previous %d", i, frame.GetSeq(), lastSeq)
 			}
 			lastSeq = frame.GetSeq()
+		case event.GetMemberView() != nil:
+			// Team-level frame (no outer member/turn_id): the payload names
+			// the consuming member, the input source, and the projection.
+			frame := event.GetMemberView()
+			if frame.GetMember() == "" || frame.GetSender() == "" || frame.GetMessage() == nil {
+				t.Errorf("member_view at frame %d lacks member/sender/message", i)
+			}
 		case event.GetPayload() == nil:
 			t.Errorf("frame %d carries an empty payload", i)
 		default:
@@ -798,6 +902,71 @@ func assertMemberViewPerspective(t *testing.T, viewName string, view []*game.Mem
 	}
 }
 
+// assertTeamMemberViewLive checks one live consumption frame against the
+// member_view contract
+// (specs/060-agent-v2-team-optimize/contracts/team-api.md §2): the stream
+// carries a frame naming the consuming member and the input source; the frame
+// is team-level; its message is the member-view projection (ROLE_USER) for
+// the same messageId ListMemberMessages serves; and the frame arrives with
+// the consuming turn — no later than the member's first streamed content
+// frame — so the live view never waits for the turn to settle (the fan-out
+// happens at the member-log injection, which precedes the model request).
+func assertTeamMemberViewLive(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, events []*game.ChatEvent, member, sender string) *game.MemberViewEvent {
+	t.Helper()
+
+	frameIndex, frame := -1, (*game.MemberViewEvent)(nil)
+	for i, event := range events {
+		view := event.GetMemberView()
+		if view == nil || view.GetMember() != member || view.GetSender() != sender {
+			continue
+		}
+		frameIndex, frame = i, view
+		break
+	}
+	if frame == nil {
+		t.Fatalf("stream carries no member_view{member=%q sender=%q}", member, sender)
+	}
+	if event := events[frameIndex]; event.GetMember() != "" || event.GetTurnId() != "" {
+		t.Errorf("member_view at frame %d carries outer member/turn_id (%q/%q), want a team-level frame", frameIndex, event.GetMember(), event.GetTurnId())
+	}
+	if role := frame.GetMessage().GetRole(); role != game.Role_ROLE_USER {
+		t.Errorf("member_view{member=%q sender=%q} message role = %v, want USER", member, sender, role)
+	}
+	if frame.GetMessage().GetMessageId() == "" {
+		t.Errorf("member_view{member=%q sender=%q} message lacks its messageId anchor", member, sender)
+	}
+	for i, event := range events {
+		if event.GetMember() != member {
+			continue
+		}
+		if event.GetBlockStart() == nil && event.GetDelta() == nil {
+			continue
+		}
+		if frameIndex > i {
+			t.Errorf("member_view{member=%q sender=%q} at frame %d arrives after the member's first content frame at frame %d", member, sender, frameIndex, i)
+		}
+		break
+	}
+	matched := false
+	for _, entry := range listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, member) {
+		if entry.GetMessage().GetMessageId() != frame.GetMessage().GetMessageId() {
+			continue
+		}
+		matched = true
+		if entry.GetSender() != sender {
+			t.Errorf("ListMemberMessages(%s) sender = %q, want %q", member, entry.GetSender(), sender)
+		}
+		if !proto.Equal(entry.GetMessage(), frame.GetMessage()) {
+			t.Errorf("member_view{member=%q sender=%q} message differs from the ListMemberMessages projection (messageId %s)", member, sender, frame.GetMessage().GetMessageId())
+		}
+		break
+	}
+	if !matched {
+		t.Errorf("ListMemberMessages(%s) lacks the message the member_view frame carried (messageId %s)", member, frame.GetMessage().GetMessageId())
+	}
+	return frame
+}
+
 // assertMergeMatchesMemberViews asserts every member output in the merged
 // sequence is the SAME message as its entry in that member's own view — same
 // messageId and equal body. The two projections share one message object
@@ -919,6 +1088,17 @@ func getAgentV2Team(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, s
 		t.Fatalf("Unmarshal Team: %v (raw: %s)", err, respBody)
 	}
 	return team
+}
+
+// teamActiveMember reads the materialized team's output-only active_member —
+// the single merged value
+// (specs/060-agent-v2-team-optimize/contracts/team-api.md §1): the driving
+// member while a member turn is in flight, else the activation owning the
+// next input (initial planner; cancel/pause does not change it).
+func teamActiveMember(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) string {
+	t.Helper()
+
+	return getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName).GetActiveMember()
 }
 
 // getAgentV2TeamMemberWithStatus issues GET .../team/members/{member} and

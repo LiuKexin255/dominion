@@ -6,12 +6,13 @@ memory faces) via the HTTP + WebSocket surface. The plan is orchestrated by
 `guitar` through `system_test.yaml`.
 
 The agent_v2 session face is the **team model**
-(`specs/059-agent-v2-team-mode/contracts/team-api.md`): each session carries a
-team singleton with a player and a planner member, the Send stream carries
-member-labelled frames plus the merged `team_message` sequence, and the
-orchestration drives the members in alternation (planner opening → player
-game → planner review → structurally driven next game) with no synthesized
-drive messages.
+(`specs/059-agent-v2-team-mode/contracts/team-api.md`, revised by
+`specs/060-agent-v2-team-optimize/contracts/team-api.md`): each session
+carries a team singleton with a player and a planner member, the Send stream
+carries member-labelled frames plus the merged `team_message` sequence and the
+`member_view` live-consumption frames, and the orchestration drives the
+members in alternation (planner opening → player game → planner review →
+structurally driven next game) with no synthesized drive messages.
 
 The team proto is a **scene-agnostic primitive**: `UpdateTeam` takes a
 `members` list (one `{role, preset, model?}` per member) and the role/sender
@@ -88,7 +89,7 @@ switch-without-refetch behavior). The system-prompt read face
 fixation and reload, persona edit + refresh).
 
 One quickstart scenario is deliberately carried outside the large tests: the
-**preset persistence across a service restart (V2-3)**. `guitar`'s suite
+**preset persistence across a service restart (V2-2)**. `guitar`'s suite
 lifecycle is deploy → test → cleanup with no per-service restart, so a second
 process generation is not observable in this topology — the same limitation
 the memory-down case documents for its retry-success half
@@ -97,10 +98,11 @@ construction plus unit tests instead: the preset record state lives only in
 Mongo (`game_agent_v2.presets`), never in the agent-v2 process;
 `common/js/dsh-plugins/preset-authoring/src/store.mongo.test.ts` pins the Mongo
 document CRUD (create/get/list/update/remove plus the duplicate-key and index
-behavior); and `common/js/dsh-plugins/preset-authoring/src/index.test.ts` pins
-the composition-copy rebuild after a writable-layer loss ("compose rebuilds a
-missing copy from the store record"; "management survives a lost copy (pod
-restart)").
+behavior); and `common/js/dsh-plugins/preset-authoring/src/derive.test.ts` +
+`src/index.test.ts` pin the use-time derivation from the stored record (compose
+reads the record, derives the temporary composition and mounts it; no
+composition copy or roster authoring path exists —
+specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§2).
 
 ## 3. fake-llm data file format
 

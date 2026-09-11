@@ -59,7 +59,8 @@ messages:
   # form: ordinary type/x/y parameters == a length-1 operations batch). Used by
   # TestAgentSaoleiTextBoardFlow's second turn to prove the two forms are
   # equivalent end-to-end: the single-form click dispatches the SAME cell centre
-  # as the batch form's first op (saolei_fixtures_test.go saoleiClick1*).
+  # as the batch form's first op (the fixture is pinned in
+  # message_store_test.go's saolei-single-op case).
   #
   # This keyword is sent as a SECOND user turn, after the saolei-start
   # init→operate chain (turn 1) has seeded the per-session recognized board

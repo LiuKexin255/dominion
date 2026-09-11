@@ -10,6 +10,7 @@
 package testplan
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -472,5 +473,110 @@ func TestAgentV2TeamGameConversationStreamIndependentOfFlow(t *testing.T) {
 	sendFlowProbe(t, flow, sessionID)
 	if frame := readFlowTeamFrame(t, flow, 10*time.Second); len(frame.GetFlowParts().GetParts()) == 0 {
 		t.Fatalf("post-drop probe reply = %+v, want a status echo (flow stream unaffected)", frame)
+	}
+}
+
+// TestAgentV2TeamGameActiveMemberTransitions covers quickstart V7-1 and the
+// single merged active-member value
+// (specs/060-agent-v2-team-optimize/contracts/team-api.md §1):
+// GetTeam.active_member names the in-flight driving member while a turn runs
+// and the activation (the next input's owner) at rest. The planner window is
+// pinned on the controllable team-planner-wait turn (4s), the player window
+// holds the game chain's dispatch receipts until the value is read, and the
+// static windows read the value after materialization, after Cancel, and
+// after the chain's last turn.
+func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-active-" + uniqueSuffix()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "active")
+
+	// 物化静止: no drive ran yet, so the activation is the planner.
+	if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "planner" {
+		t.Fatalf("active_member after materialization = %q, want \"planner\" (初始 activation)", got)
+	}
+
+	// planner 回合在途: team-planner-wait holds its turn open for 4s, so the
+	// read right after its turn_start observes the driving member.
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamWaitMessage)
+	for {
+		event := nextTeamEvent(t, stream.Scanner)
+		if event.GetTurnStart() == nil {
+			continue
+		}
+		if event.GetMember() != "planner" {
+			t.Fatalf("wait turn member = %v, want planner", event.GetMember())
+		}
+		break
+	}
+	if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "planner" {
+		t.Errorf("active_member with the planner turn in flight = %q, want \"planner\"", got)
+	}
+
+	// Cancel terminates the turn and pauses auto-continuation; the next
+	// input's owner must not change (contract §1).
+	if status, body := postTeamCancel(t, ctx, sutHostURL, sutEnvName, sessionName); status != http.StatusOK {
+		t.Fatalf("cancel status = %d (body: %s), want 200", status, body)
+	}
+	events := waitTeamStream(t, drainTeamStreamAsync(stream), "canceled wait stream")
+	if last := events[len(events)-1].GetTurnEnd(); last == nil || last.GetStatus() != game.TurnStatus_TURN_STATUS_CANCELED {
+		t.Fatalf("wait turn terminal after cancel = %+v, want turn_end{CANCELED}", last)
+	}
+	if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "planner" {
+		t.Errorf("active_member after cancel = %q, want the unchanged \"planner\" activation", got)
+	}
+
+	// player 回合在途: the next Send resumes the loop and plays the opening
+	// chain against this test's flow half. Each dispatch proves the player
+	// turn is in flight, so the read before the receipt is deterministic.
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	ch := drainTeamStreamAsync(stream2)
+
+	script := teamFlowScript{
+		// Game 1 seeds the compatible in-progress board and answers the first
+		// cell op with the win board; game 2 opens on the already-won board
+		// (an init-terminal game, so the chain rests after its player turn).
+		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardWinPNG},
+		stepBoards: [][]byte{saoleiBoardWinPNG},
+	}
+	initIdx, stepIdx := 0, 0
+	for initIdx < len(script.initBoards) || stepIdx < len(script.stepBoards) {
+		frame := readFlowTeamFrame(t, flow, wsReadTimeout)
+		for _, part := range frame.GetFlowParts().GetParts() {
+			switch {
+			case part.GetKeyboardPress() != nil:
+				if initIdx >= len(script.initBoards) {
+					t.Fatalf("unexpected keyboard dispatch after %d init replies", initIdx)
+				}
+				if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
+					t.Fatalf("active_member with the player game turn in flight = %q, want \"player\"", got)
+				}
+				replyFlowReceipt(t, flow, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx])
+				initIdx++
+			case part.GetMouseMoveAndClick() != nil:
+				if stepIdx >= len(script.stepBoards) {
+					t.Fatalf("unexpected cell dispatch after %d step replies", stepIdx)
+				}
+				if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
+					t.Fatalf("active_member with the player game turn in flight = %q, want \"player\"", got)
+				}
+				replyFlowReceipt(t, flow, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx])
+				stepIdx++
+			}
+		}
+	}
+	events2 := waitTeamStream(t, ch, "active transition stream")
+	assertTeamStreamWellFormed(t, sessionName, events2)
+	turns := groupTeamMemberTurns(events2)
+	if len(turns) != 4 || turns[2].member != "planner" {
+		t.Fatalf("chain turns = %v, want 4 with the planner review third (the active value crossed the review phase)", turns)
+	}
+
+	// 静止: after the review the structural continuation handed the next
+	// input back to the player, which the merged value reflects.
+	if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
+		t.Errorf("active_member after the chain settled = %q, want \"player\" (the structural continuation's activation)", got)
 	}
 }

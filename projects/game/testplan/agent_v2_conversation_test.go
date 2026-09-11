@@ -29,7 +29,11 @@ import (
 // planner activation, whose opening strategy then structurally drives the
 // player (no synthesized drive message anywhere, FR-009/FR-010), and the
 // stream carries the member-labelled frames plus the team_message entries
-// whose seq the List face shares (SC-003).
+// whose seq the List face shares (SC-003). The 060 increments: the planner's
+// consumption of the user input arrives live as a member_view frame
+// (specs/060-agent-v2-team-optimize/quickstart.md V4-1) and the tool chain
+// keeps the use-time frame order block_end → team_message → tool_result
+// (contracts/team-api.md §3).
 func TestAgentV2TeamStaticWaitAndFirstDrive(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -68,6 +72,25 @@ func TestAgentV2TeamStaticWaitAndFirstDrive(t *testing.T) {
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
 	assertTeamStreamWellFormed(t, sessionName, events)
+
+	// The planner consumed the user input live: the member_view frame arrived
+	// no later than the planner's first content frame, carries the user as
+	// its source, and its projection is the one ListMemberMessages serves. The
+	// player did not receive the raw input (消费前不出现 — the broadcast relay
+	// is a separate consumption).
+	consumed := assertTeamMemberViewLive(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", "user")
+	if got := agentV2MessageText(consumed.GetMessage()); got != teamStartMessage {
+		t.Errorf("member_view planner/user text = %q, want the sent message %q", got, teamStartMessage)
+	}
+	for _, event := range events {
+		if view := event.GetMemberView(); view != nil && view.GetMember() == "player" && view.GetSender() == "user" {
+			t.Errorf("player received the raw user input live before consuming it: %+v", view)
+		}
+	}
+
+	// The player's tool chain keeps the use-time frame order: block_end (tool
+	// id) → team_message fixation → tool_result settlement.
+	assertTeamToolResultWireOrder(t, sessionName, events)
 
 	turns := groupTeamMemberTurns(events)
 	if len(turns) != 2 {
