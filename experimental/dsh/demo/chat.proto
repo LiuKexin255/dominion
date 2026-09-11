@@ -20,10 +20,10 @@ service Chat {
     };
   }
 
-  // Creates a conversation explicitly bound to a preset (specs/
-  // 058-dsh-preset-roster-demo/contracts/chat-api.md §1.1; FR-002/R4 in that
-  // feature's spec.md). Same id + same preset is idempotent; same id + a
-  // different preset rebuilds; no lazy creation on SendMessage.
+  // Creates a conversation explicitly bound to a store preset (specs/
+  // 060-agent-v2-team-optimize/contracts/preset-derivation.md §2/§3; FR-002/
+  // R4 in the 058 feature's spec.md). Same id + same preset is idempotent;
+  // same id + a different preset rebuilds; no lazy creation on SendMessage.
   rpc CreateConversation(CreateConversationRequest) returns (Conversation) {
     option (google.api.http) = {
       post: "/experimental/dsh-demo/conversations"
@@ -49,8 +49,11 @@ message SendMessageResponse {
 message CreateConversationRequest {
   // The caller-specified conversation id.
   string conversation_id = 1;
-  // Optional preset id (template or authored copy, specs/
-  // 058-dsh-preset-roster-demo/research.md R5); empty = roster default.
+  // The store preset id the conversation binds. Required under the 060
+  // derivation semantics (specs/060-agent-v2-team-optimize/contracts/
+  // preset-derivation.md §2/§3): an empty value is rejected
+  // INVALID_ARGUMENT — template ids are derivation sources and are not
+  // directly composable.
   string preset = 2;
 }
 
@@ -63,14 +66,15 @@ message Conversation {
   google.protobuf.Timestamp create_time = 3;
 }
 
-// PresetService is the stateless preset configuration face (C1 authored
-// copies over deployment templates; specs/058-dsh-preset-roster-demo/
-// contracts/chat-api.md §2).
+// PresetService is the stateless preset configuration face (store-only
+// authored presets; specs/060-agent-v2-team-optimize/contracts/
+// preset-derivation.md §1/§2).
 // Prefix Path: /experimental/dsh-demo
 service PresetService {
-  // Creates an authored preset from a template (copy-then-patch; AIP-133:
-  // https://google.aip.dev/133). Duplicate id → ALREADY_EXISTS; unknown or
-  // broken template / malformed id → INVALID_ARGUMENT.
+  // Creates an authored preset record over a template (store-only; AIP-133:
+  // https://google.aip.dev/133). Duplicate id (or a deployment template id)
+  // → ALREADY_EXISTS; unknown or broken template / malformed id →
+  // INVALID_ARGUMENT.
   rpc CreatePreset(CreatePresetRequest) returns (Preset) {
     option (google.api.http) = {
       post: "/experimental/dsh-demo/presets"
@@ -103,7 +107,7 @@ service PresetService {
     };
   }
 
-  // Deletes an authored preset; joined sessions keep their standing
+  // Deletes an authored preset; joined sessions keep their derived
   // composition (AIP-135: https://google.aip.dev/135). Templates are refused
   // → FAILED_PRECONDITION.
   rpc DeletePreset(DeletePresetRequest) returns (google.protobuf.Empty) {
@@ -118,9 +122,9 @@ service PresetService {
 message Preset {
   // The preset resource name. Format: presets/{id}
   string name = 1;
-  // The template id the copy was materialized from.
+  // The template id the composition is derived over.
   string template = 2;
-  // Persona prose materialized into the copy's persona row.
+  // Persona prose carried into the derived composition's persona row.
   string persona = 3;
   // Display name; absent falls back to the id.
   string display_name = 4;

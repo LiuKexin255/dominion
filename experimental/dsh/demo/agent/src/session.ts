@@ -14,7 +14,10 @@
  * `ctx.presetAuthoring.compose()` BEFORE the agent factory call so the resolved
  * id is snapshotted into the creation meta (`meta.agentPreset`, the official
  * composeAgent wiring shape) and the mount happens in the factory's `setup`
- * hook, where a failure rolls the whole creation back. Same id + same preset is
+ * hook, where a failure rolls the whole creation back. Preset selection is
+ * mandatory (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
+ * §2/§3): `presetId` names a STORE preset, and an absent id is rejected
+ * INVALID_ARGUMENT by `compose()`. Same id + same preset is
  * an idempotent no-op; same id + a different preset disposes the old agent and
  * rebuilds (R4 in specs/058-dsh-preset-roster-demo/research.md). `send()` on a
  * conversation that was never created throws `ConversationNotCreatedError` —
@@ -121,7 +124,10 @@ export class AgentSessions {
   constructor(private readonly ctx: DshContext) {}
 
   /**
-   * Create the conversation bound to `presetId` (undefined = roster default).
+   * Create the conversation bound to `presetId`, a store preset id —
+   * preset selection is mandatory under the 060 derivation semantics, so an
+   * absent id reaches `compose(undefined)` and is rejected INVALID_ARGUMENT
+   * (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2/§3).
    *
    * Same conversation id with the same resolved preset returns the existing
    * view without any side effect (idempotent, R4); with a different preset the
@@ -206,8 +212,8 @@ export class AgentSessions {
   ): Promise<ConversationView> {
     // Compose resolves BEFORE the factory call so the resolved id lands in
     // the creation meta (the session boundary snapshots meta before async
-    // setup begins) and an unresolvable/broken preset fails before any
-    // session exists (the composeAgent wiring shape; V3-3 fail-fast).
+    // setup begins) and an unresolvable (no store record) preset fails before
+    // any session exists (the composeAgent wiring shape; V3-3 fail-fast).
     const authoring = this.ctx.get("presetAuthoring") as PresetAuthoringService;
     const composed = await authoring.compose(presetId);
 

@@ -1,38 +1,39 @@
 /**
- * cordis plugin entry for the preset-authoring base plugin: C1
- * copy-then-patch preset authoring over the official roster. Export shape
- * follows the function-form plugin contract (name / inject / Config / apply,
- * common/js/dsh-plugins/llm-glm/src/index.ts precedent); registration is
- * effect-based and disposed with the fiber.
+ * cordis plugin entry for the preset-authoring plugin: preset CRUD over the
+ * store (the single source of truth) and use-time composition derivation over
+ * the official roster. Create/Update/Remove write the store only; `compose`
+ * reads the record, derives the composition rows from the pool template into
+ * a throwaway file and mounts them through the official `mountPreset`.
+ * Export shape follows the function-form plugin contract (name / inject /
+ * Config / apply, common/js/dsh-plugins/llm-glm/src/index.ts precedent);
+ * registration is effect-based and disposed with the fiber.
  *
  * `ctx.presetAuthoring` is the ONLY face the service layer consumes —
  * zero roster API and zero filesystem access outside this plugin
  * (FR-005 in specs/058-dsh-preset-roster-demo/spec.md; the plugin itself
  * carries no RPC/transport concepts).
- * Contract: specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md.
+ * Contract: specs/060-agent-v2-team-optimize/contracts/preset-derivation.md;
+ * specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md.
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { UnknownPresetError } from "@deepseek-ai/dsh-agent-presets";
+import { mountPreset } from "@deepseek-ai/dsh-agent-presets";
 import type { AgentPreset } from "@deepseek-ai/dsh-agent-presets";
 import z from "@deepseek-ai/schemastery";
 
 import {
-  mapRosterError,
-  materializeCopy,
-  nodeMaterializeFs,
+  deriveComposition,
+  nodeDeriveFs,
   PresetAuthoringError,
-  removeMaterialization,
-  updateMaterialization,
   validateTemplateRows,
-} from "./materialize.js";
-import type { MaterializeFs, RosterSeam, TemplateRowRules } from "./materialize.js";
+} from "./derive.js";
+import type { DeriveFs, RosterSeam, TemplateRowRules } from "./derive.js";
 import { MemoryPresetStore, PresetStoreError } from "./store.js";
 import type { PresetRecord, PresetStore } from "./store.js";
 import { createMongoPresetStore } from "./store.mongo.js";
 
-export { PERSONA_ROW_NAME, PresetAuthoringError, validateTemplateRows } from "./materialize.js";
-export type { PresetAuthoringErrorCode, TemplateRowRules } from "./materialize.js";
+export { PERSONA_ROW_NAME, PresetAuthoringError, validateTemplateRows } from "./derive.js";
+export type { PresetAuthoringErrorCode, TemplateRowRules } from "./derive.js";
 export { MemoryPresetStore, PresetStoreError } from "./store.js";
 export type { PresetRecord, PresetStore, PresetStoreErrorCode } from "./store.js";
 export { createMongoPresetStore, mongoPresetCollection, MongoPresetStore } from "./store.mongo.js";
@@ -43,6 +44,16 @@ export const name = "preset-authoring";
 /** Hard dependency on the official roster being composed. */
 export const inject = ["agentPresets"];
 
+/**
+ * The preset id grammar (specs/059-agent-v2-team-mode/contracts/preset-api.md
+ * §2 caller-supplied ids; the official roster's own PRESET_ID is not
+ * re-exported from the package root, so the same containment grammar is
+ * pinned here). The id is the store key and the preset resource id, and stays
+ * interchangeable with the roster's shipped template ids; malformed ids are
+ * rejected at the create edge.
+ */
+const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
+
 /** Validated configuration owned by the plugin. */
 export interface PresetAuthoringConfig {
   /** The preset record storage: in-memory (demo) or Mongo (agent_v2). */
@@ -50,8 +61,8 @@ export interface PresetAuthoringConfig {
   /**
    * Caller-declared composition row rules, keyed by template id: the
    * hosting composition pins each pool template's role plugin rows (e.g.
-   * "player" → exactly the saolei row, never a memory row) and every copy
-   * validates against them before landing
+   * "player" → exactly the saolei row, never a memory row) and every create
+   * validates against them before the record lands
    * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). Omitted
    * template ids skip validation — generic consumers stay scene-agnostic.
    */
@@ -105,9 +116,10 @@ export interface ComposeResult {
   /** Resolved preset id; the service records it in the creation meta. */
   agentPreset: string;
   /**
-   * Agent-factory setup hook: mounts the preset's standing composition.
-   * Called from `ctx.agents.create({meta, setup})`; a rejection there rolls
-   * the whole agent creation back, so no half-composed session can exist.
+   * Agent-factory setup hook: mounts the record's DERIVED composition (the
+   * throwaway file `deriveComposition` wrote for this call). Called from
+   * `ctx.agents.create({meta, setup})`; a rejection there rolls the whole
+   * agent creation back, so no half-composed session can exist.
    */
   setup(agentCtx: Context): Promise<void>;
 }
@@ -142,9 +154,12 @@ declare module "@deepseek-ai/cordis" {
 
 /** Injectable collaborators (contract §5 seam convention). */
 export interface PresetAuthoringDeps {
+  /** Roster discovery (pool templates) plus template-id protection. */
   roster?: RosterSeam;
   store?: PresetStore;
-  fs?: MaterializeFs;
+  fs?: DeriveFs;
+  /** Mounts the derived composition; defaults to the official `mountPreset`. */
+  mount?: (agentCtx: Context, preset: AgentPreset) => Promise<void>;
   /** Per-template composition row rules (see {@link PresetAuthoringConfig.templateRules}). */
   templateRules?: Record<string, TemplateRowRules>;
 }
@@ -174,6 +189,60 @@ function mapStoreError(err: unknown): PresetAuthoringError {
 }
 
 /**
+ * Read the roster's current presets, mapping an unexpected discovery failure
+ * onto the service surface (INTERNAL, cause preserved) — the same mapping the
+ * retired `resolve`-based path produced. Discovery is a live root scan, so a
+ * failure here is a real deployment error, not a miss.
+ */
+async function listRosterPresets(roster: RosterSeam): Promise<AgentPreset[]> {
+  try {
+    return await roster.list();
+  } catch (err) {
+    throw new PresetAuthoringError(
+      "INTERNAL",
+      `roster operation failed: ${err instanceof Error ? err.message : String(err)}`,
+      err,
+    );
+  }
+}
+
+/**
+ * Resolve a pool template by scanning the roster's current presets. A miss is
+ * the caller's INVALID_ARGUMENT (the same message shape the roster's own
+ * unknown-preset error produced), and a broken composition is refused up
+ * front; neither path depends on roster error-class identity, so the check
+ * holds when the host composes a different package instance of the roster.
+ */
+async function resolveTemplate(roster: RosterSeam, templateId: string): Promise<AgentPreset> {
+  const presets = await listRosterPresets(roster);
+  const template = presets.find((preset) => preset.id === templateId);
+  if (template === undefined) {
+    throw new PresetAuthoringError(
+      "INVALID_ARGUMENT",
+      `unknown preset "${templateId}"; available: ${presets.map((preset) => preset.id).join(", ")}`,
+    );
+  }
+  if (template.broken !== undefined) {
+    throw new PresetAuthoringError(
+      "INVALID_ARGUMENT",
+      `template "${template.id}" is broken: ${template.broken}`,
+    );
+  }
+  return template;
+}
+
+/**
+ * The roster preset an id resolves to, or `undefined` when no root supplies
+ * it. The pool templates are system trust; both the create collision check
+ * and the remove protection read this (a list scan, not exception control
+ * flow — the roster instance may come from a different package link).
+ */
+async function rosterPresetFor(roster: RosterSeam, id: string): Promise<AgentPreset | undefined> {
+  const presets = await listRosterPresets(roster);
+  return presets.find((preset) => preset.id === id);
+}
+
+/**
  * Assemble the preset-authoring service. Production resolves every
  * collaborator from the composition context; tests inject `vi.fn()` doubles
  * (style/javascript.md Mock convention — no module interception).
@@ -181,7 +250,8 @@ function mapStoreError(err: unknown): PresetAuthoringError {
 export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = {}): PresetAuthoringService {
   const roster = deps.roster ?? (ctx.agentPresets as RosterSeam);
   const store = deps.store ?? new MemoryPresetStore();
-  const fs = deps.fs ?? nodeMaterializeFs();
+  const fs = deps.fs ?? nodeDeriveFs();
+  const mount = deps.mount ?? mountPreset;
   const templateRules = deps.templateRules;
 
   const storeGet = async (id: string): Promise<PresetRecord> => {
@@ -192,146 +262,95 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
     }
   };
 
-  /**
-   * Rebuild a missing materialized copy from its store record. The copy is a
-   * derived artifact and the store is the source of truth
-   * (specs/059-agent-v2-team-mode/data-model.md §2, contracts/preset-api.md
-   * §3, research.md R3 实现注意③): after a pod restart empties the writable
-   * layer, a recorded preset is re-materialized through the SAME
-   * copy-then-patch function the create path uses, so the rebuilt copy is
-   * content-equivalent to the create product and lands at the same writable
-   * root (the next compose hits it — idempotent). A store miss means the
-   * preset truly does not exist → NOT_FOUND.
-   */
-  const rebuildCopy = async (id: string, cause: unknown): Promise<AgentPreset> => {
-    let record: PresetRecord;
-    try {
-      record = await store.get(id);
-    } catch (err) {
-      if (err instanceof PresetStoreError && err.code === "NOT_FOUND") {
-        throw new PresetAuthoringError(
-          "NOT_FOUND",
-          `preset "${id}" not found: no materialized copy and no store record`,
-          cause,
-        );
-      }
-      throw mapStoreError(err);
-    }
-
-    try {
-      await materializeCopy({ roster, fs }, {
-        id: record.id,
-        template: record.template,
-        persona: record.persona,
-        ...(record.displayName === undefined ? {} : { displayName: record.displayName }),
-        ...(templateRules?.[record.template] === undefined
-          ? {}
-          : { templateRules: templateRules[record.template] }),
-      });
-    } catch (err) {
-      // A concurrent rebuild may have won the copy race; resolving below
-      // then serves the winner's copy instead of failing the compose.
-      if (!(err instanceof PresetAuthoringError) || err.code !== "ALREADY_EXISTS") {
-        throw err;
-      }
-    }
-
-    try {
-      return await roster.resolve(id);
-    } catch (err) {
-      throw new PresetAuthoringError(
-        "INTERNAL",
-        `preset "${id}" was rebuilt from its store record but is still not resolvable: ${err instanceof Error ? err.message : String(err)}`,
-        err,
-      );
-    }
-  };
-
-  /**
-   * Resolve an authored preset, transparently rebuilding its missing copy
-   * from the store record via {@link rebuildCopy}. Management operations
-   * share this so every preset that GET/LIST still serve also stays
-   * PATCHable and DELETEable after a pod restart empties the writable layer
-   * (specs/059-agent-v2-team-mode/data-model.md §2; contracts/preset-api.md
-   * §3).
-   */
-  const resolveOrRebuild = async (id: string): Promise<AgentPreset> => {
-    try {
-      return await roster.resolve(id);
-    } catch (err) {
-      if (!(err instanceof UnknownPresetError)) {
-        throw mapRosterError(err);
-      }
-      return rebuildCopy(id, err);
-    }
-  };
-
   return {
     async compose(presetId?: string): Promise<ComposeResult> {
-      // Resolve up front so the id is snapshotted into the creation meta and
-      // a broken preset fails BEFORE any session exists (V3-3 fail-fast).
-      // A concrete id whose copy is missing is the pod-restart state (empty
-      // writable layer, store record survives), so the copy is REBUILT from
-      // the record and re-resolved (data-model.md §2 source-of-truth
-      // semantics). A concrete id without a store record → NOT_FOUND; the
-      // roster's default-preset resolve keeps its existing mapping
-      // (INVALID_ARGUMENT/INTERNAL — mapRosterError).
-      let preset: AgentPreset;
+      // Preset selection is mandatory in this deployment (the roster default
+      // points at no preset): an id-less compose fails INVALID_ARGUMENT
+      // before anything resolves.
       if (presetId === undefined) {
-        try {
-          preset = await roster.resolve(undefined);
-        } catch (err) {
-          throw mapRosterError(err);
-        }
-      } else {
-        preset = await resolveOrRebuild(presetId);
-      }
-      if (preset.broken !== undefined) {
         throw new PresetAuthoringError(
           "INVALID_ARGUMENT",
-          `preset "${preset.id}" is broken: ${preset.broken}`,
+          "preset id is required: this deployment configures no default preset",
+        );
+      }
+      // Store first: the record is the single source of truth, so a missing
+      // record fails NOT_FOUND before any template read or member creation
+      // (fail-fast semantics unchanged). The composition is then derived for
+      // this use — there is no maintained copy and no rebuild path to
+      // reconcile
+      // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2).
+      // Template problems surface here too, still before setup can create any
+      // session.
+      const record = await storeGet(presetId);
+      const template = await resolveTemplate(roster, record.template);
+      let derived: AgentPreset;
+      try {
+        derived = await deriveComposition(record, template, fs);
+      } catch (err) {
+        if (err instanceof PresetAuthoringError) {
+          throw err;
+        }
+        throw new PresetAuthoringError(
+          "INTERNAL",
+          `deriving preset "${record.id}" failed: ${err instanceof Error ? err.message : String(err)}`,
+          err,
         );
       }
       return {
-        agentPreset: preset.id,
+        agentPreset: record.id,
         setup: async (agentCtx: Context) => {
-          await roster.mount(agentCtx, preset.id);
+          // Official direct mount: the derived file is the composition, so no
+          // roster root discovery is involved; the subtree is owned by
+          // agentCtx's fiber and unwinds with the member agent.
+          await mount(agentCtx, derived);
         },
       };
     },
 
     async create(input): Promise<PresetView> {
+      // A stored record already claims the id → ALREADY_EXISTS; a store miss
+      // (NOT_FOUND) is the pass case.
+      let claimed = true;
       try {
         await storeGet(input.id);
-        throw new PresetAuthoringError("ALREADY_EXISTS", `preset ${input.id} already exists`);
       } catch (err) {
-        // NOT_FOUND is the pass case (id unclaimed); anything else surfaces.
         if (!(err instanceof PresetAuthoringError) || err.code !== "NOT_FOUND") {
           throw err;
         }
+        claimed = false;
+      }
+      if (claimed) {
+        throw new PresetAuthoringError("ALREADY_EXISTS", `preset ${input.id} already exists`);
       }
 
-      await materializeCopy({ roster, fs }, {
-        id: input.id,
-        template: input.template,
-        persona: input.persona,
-        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-        ...(templateRules?.[input.template] === undefined
-          ? {}
-          : { templateRules: templateRules[input.template] }),
-      });
+      if (!PRESET_ID.test(input.id)) {
+        throw new PresetAuthoringError(
+          "INVALID_ARGUMENT",
+          `preset id "${input.id}" must match ${PRESET_ID.source}`,
+        );
+      }
+
+      // Template validation before any store write: a role-broken or missing
+      // template must never produce a record (INVALID_ARGUMENT, no residue).
+      const template = await resolveTemplate(roster, input.template);
+      const rules = templateRules?.[input.template];
+      if (rules !== undefined) {
+        await validateTemplateRows(template, rules, fs);
+      }
+      // A roster root already supplying this id keeps it: the shipped pool
+      // templates are system trust, cannot be shadowed, and a record claiming
+      // one could never be deleted.
+      if ((await rosterPresetFor(roster, input.id)) !== undefined) {
+        throw new PresetAuthoringError(
+          "ALREADY_EXISTS",
+          `preset "${input.id}" is already supplied by a roster root`,
+        );
+      }
 
       const now = new Date();
       try {
         await store.create({ ...input, createTime: now, updateTime: now });
       } catch (err) {
-        // Store/目录同生同灭: a failed store write must not leave the copy on
-        // disk (data-model.md §2; rollback is best-effort, contract §4).
-        try {
-          await removeMaterialization(roster, input.id);
-        } catch {
-          // Rollback failure must not mask the original error.
-        }
         throw mapStoreError(err);
       }
       return toView(await storeGet(input.id));
@@ -342,7 +361,7 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
     },
 
     async list(role?: string): Promise<PresetView[]> {
-      // Authored copies only — templates are deployment data, not resources (R5).
+      // Authored records only — templates are deployment data, not resources (R5).
       const records = await store.list();
       return records
         .filter((record) => role === undefined || record.role === role)
@@ -354,14 +373,9 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
       if (patch.persona === undefined && patch.displayName === undefined) {
         return toView(record);
       }
-      // The copy may be missing after a pod restart; rebuild it from the
-      // record first so PATCH keeps working on every preset GET still serves
-      // (same transparent rebuild as compose).
-      await resolveOrRebuild(id);
-      await updateMaterialization(
-        { roster, fs },
-        { id, template: record.template, patch },
-      );
+      // Store-only: the record IS the composition source, so the next
+      // materialization derives the new persona with no other write
+      // (already-materialized members keep their composition — unchanged).
       const updated: PresetRecord = {
         ...record,
         persona: patch.persona ?? record.persona,
@@ -377,19 +391,15 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
     },
 
     async remove(id): Promise<void> {
-      // Roster first: a template id must surface FAILED_PRECONDITION (system
-      // trust), not a store lookup miss. A missing copy is the pod-restart
-      // state: there is nothing to delete on disk, so the store record is
-      // removed directly — rebuilding a copy only to delete it would also
-      // make deletion depend on a template that may itself be gone. A truly
-      // unknown id stays NOT_FOUND (from the store miss); the end state
-      // matches the copy-present path (no copy, no record).
-      try {
-        await removeMaterialization(roster, id);
-      } catch (err) {
-        if (!(err instanceof PresetAuthoringError) || err.code !== "NOT_FOUND") {
-          throw err;
-        }
+      // Template protection: an id a roster root supplies is system trust
+      // and can never be deleted (FAILED_PRECONDITION), not a store lookup
+      // miss. A non-roster id is the normal authored case — the store record
+      // goes away and nothing else does (no copy, no fan-out).
+      if ((await rosterPresetFor(roster, id)) !== undefined) {
+        throw new PresetAuthoringError(
+          "FAILED_PRECONDITION",
+          `preset "${id}" is not writable: it ships with the deployment`,
+        );
       }
       try {
         await store.remove(id);

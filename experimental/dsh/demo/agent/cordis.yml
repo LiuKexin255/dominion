@@ -27,15 +27,19 @@
     models:
       - id: fake-chat-v1
         contextWindow: 100000
-# ── roster 与 preset 扩展（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §1-§2）
+# ── roster 与 preset 扩展（specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§3）
+# roster roots 只剩模板 system 根（镜像内数据，只作派生来源）；用户 preset
+# 的 CRUD 只写 store（内存实现），物化组合在使用时从 store 记录派生为临时
+# 文件经官方 mountPreset 挂载——没有可写 root，也没有需要维护的副本。
+# default 必填（roster Config schema required）但指向空 id：preset 选择在本
+# 服务是必选语义（CreateConversation 必须显式给 preset），无 id 的 compose
+# 走 INVALID_ARGUMENT fail-loud。
 - id: agent-presets
   name: '@deepseek-ai/dsh-agent-presets'
   config:
-    default: demo-standard
+    default: ''
     includeUserRoot: false        # 确定性：不扫机器 <dshHome>/.agent-presets
     roots:
       - path: !!js process.env.PRESET_TEMPLATES_ROOT   # 镜像内模板数据（system 信任）
         trust: system
-      - path: !!js process.env.PRESET_WRITABLE_ROOT    # 容器临时可写层（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §2）；第一个且唯一 user root
-        trust: user
 - { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }

@@ -151,7 +151,7 @@ describe("Chat.CreateConversation handler", () => {
     expect(view.createTime).toEqual({ seconds: 0, nanos: 0 });
   });
 
-  it("passes an absent preset through as undefined (roster default)", async () => {
+  it("passes an absent preset through as undefined (compose rejects it: preset is mandatory)", async () => {
     const sink = fakeSink();
     const callback = invokeCreate(sink, { conversationId: "conv-1" });
 
@@ -183,6 +183,12 @@ describe("Chat.CreateConversation handler", () => {
     // (preset-authoring-plugin.md §6): an unknown preset surfaces as
     // INVALID_ARGUMENT carrying the roster's available-ids message.
     const tests = [
+      {
+        name: "missing preset",
+        code: "INVALID_ARGUMENT",
+        message: "preset id is required: this deployment configures no default preset",
+        want: grpc.status.INVALID_ARGUMENT,
+      },
       {
         name: "unknown preset",
         code: "INVALID_ARGUMENT",
@@ -333,7 +339,7 @@ describe("Chat.SendMessage handler", () => {
 });
 
 describe("PresetService.CreatePreset handler", () => {
-  it("returns the Preset resource view of the authored copy", async () => {
+  it("returns the Preset resource view of the authored preset", async () => {
     const authoring = fakeAuthoring();
     const callback = invokePreset(authoring, "CreatePreset", {
       presetId: "authored-1",
@@ -379,7 +385,7 @@ describe("PresetService.CreatePreset handler", () => {
     // proto3 cannot distinguish an absent string from an empty one on the
     // wire (proto-loader defaults fill in ""); the handler normalizes the
     // empty wire value to undefined so the store never persists an empty
-    // display name and the roster's fall-back-to-id surface applies.
+    // display name and the picker's fall-back-to-id surface applies.
     const authoring = fakeAuthoring();
     const callback = invokePreset(authoring, "CreatePreset", {
       presetId: "authored-1",
@@ -665,7 +671,7 @@ describe("PresetService.DeletePreset handler", () => {
     authoring.remove = vi.fn(async () => {
       throw new PresetAuthoringError(
         "FAILED_PRECONDITION",
-        'preset "demo-standard" is not writable: does not live under the writable preset root',
+        'preset "demo-standard" is not writable: it ships with the deployment',
       );
     });
     const callback = invokePreset(authoring, "DeletePreset", { name: "presets/demo-standard" });

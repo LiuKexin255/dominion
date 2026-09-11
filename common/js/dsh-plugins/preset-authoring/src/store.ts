@@ -2,9 +2,9 @@
  * PresetStore seam: the preset dynamic-field persistence face of the
  * preset-authoring plugin. The store records ONLY the dynamic field set
  * (specs/058-dsh-preset-roster-demo/data-model.md §2) — composition content
- * never crosses this seam (it lives in the template and the materialized
- * copy on disk, specs/058-dsh-preset-roster-demo/contracts/
- * preset-authoring-plugin.md §3).
+ * never crosses this seam (it lives in the pool template; the composition a
+ * member materializes from is derived at use time, specs/060-agent-v2-team-
+ * optimize/contracts/preset-derivation.md §1/§2).
  *
  * Errors carry stable codes the service layer maps onto gRPC statuses
  * (agent_v2 precedent: projects/game/agent_v2/src/presets.ts:40-50).
@@ -12,9 +12,9 @@
 
 /** One authored preset's dynamic fields (data-model.md §2). */
 export interface PresetRecord {
-  /** Preset id = resource id (`presets/{id}`) = the materialized directory name. */
+  /** Preset id = resource id (`presets/{id}`) = the store key. */
   id: string;
-  /** Source template id the copy was materialized from. */
+  /** Source template id the composition is derived over. */
   template: string;
   /**
    * The caller-defined pool label the preset belongs to (immutable after
@@ -24,9 +24,9 @@ export interface PresetRecord {
    * semantics, specs/059-agent-v2-team-mode/contracts/preset-api.md §2).
    */
   role?: string;
-  /** Persona prose materialized into the copy's persona row `config.text`. */
+  /** Persona prose carried into the derived composition's persona row `config.text`. */
   persona: string;
-  /** Display name materialized into the copy's `preset.yml`; absent = the id. */
+  /** Display name for the resource projection; absent = the id. */
   displayName?: string;
   createTime: Date;
   updateTime: Date;
@@ -51,7 +51,7 @@ export interface PresetStore {
   create(record: PresetRecord): Promise<void>;
   /** Read one record; NOT_FOUND when absent. */
   get(id: string): Promise<PresetRecord>;
-  /** Every stored record (authored copies only — templates are deployment data). */
+  /** Every stored record (authored presets only — templates are deployment data). */
   list(): Promise<PresetRecord[]>;
   /** Replace one record; NOT_FOUND when absent. */
   update(record: PresetRecord): Promise<void>;

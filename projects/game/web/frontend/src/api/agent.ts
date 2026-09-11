@@ -97,8 +97,9 @@ export async function listPresets(template: string, role?: string): Promise<Pres
 
 // createPreset 以 caller-supplied id 建资源（AIP-133）；id 与请求级 role 走
 // query 参数（body:"preset" 绑定下非 body 字段映射为 query），body 即 Preset
-// 本体。role 为场景词汇字符串（preset 分池与 copy-then-patch 拷贝源），
-// create 必填且创建后不可变（preset-api.md §2）。
+// 本体。role 为场景词汇字符串（preset 分池与组合派生的模板来源），create
+// 必填且创建后不可变（specs/059-agent-v2-team-mode/contracts/preset-api.md
+// §2；specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§2）。
 export async function createPreset(
   template: string,
   presetId: string,

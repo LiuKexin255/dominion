@@ -146,9 +146,9 @@ export class MongoPresetStore {
    * rows shaped `{name, player_prompt}` with no `id` field (the v1→v2
    * preset comparison, specs/059-agent-v2-team-mode/spec.md). Such rows
    * cannot map onto the roster-era record — they carry no template/role to
-   * (re)materialize a composition copy from — so dropping them is safe, and
-   * this store is the new schema's source of truth from which copies are
-   * rebuilt (specs/059-agent-v2-team-mode/contracts/preset-api.md §3).
+   * derive a composition from — so dropping them is safe, and this store is
+   * the new schema's source of truth (specs/060-agent-v2-team-optimize/
+   * contracts/preset-derivation.md §1).
    * Keeping them would break startup or poison reads: with ≥2 legacy rows
    * the unique id index build fails on their colliding null keys (E11000 →
    * plugin activation failure); with fewer, `list()` projects them back as

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import {
   AgentSessions,
   ConversationNotCreatedError,
@@ -15,9 +16,10 @@ import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
  * listeners — no module interception (style/javascript.md Mock convention).
  *
  * The preset composition resolves through the `presetAuthoring` seam
- * (specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md §2):
- * the harness injects a `vi.fn()` compose double, so the create/rebuild
- * semantics (R4) are asserted against the calls the service makes.
+ * (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2): the
+ * harness injects a `vi.fn()` compose double, so the create/rebuild
+ * semantics (R4) — and the mandatory-preset rejection for an absent id — are
+ * asserted against the calls the service makes.
  */
 
 type Listener = (...args: never[]) => void;
@@ -63,11 +65,18 @@ function createHarness(): Harness {
   const agentsGet = vi.fn();
   const agentsCreate = vi.fn();
   const compose = vi.fn(async (presetId?: string) => {
-    if (presetId === "demo-tools") {
-      return { agentPreset: "demo-tools", setup: toolsSetup };
+    if (presetId === undefined) {
+      // Preset selection is mandatory (060 preset derivation): the real
+      // plugin rejects an id-less compose INVALID_ARGUMENT before anything
+      // resolves, so the double mirrors that boundary.
+      throw new PresetAuthoringError(
+        "INVALID_ARGUMENT",
+        "preset id is required: this deployment configures no default preset",
+      );
     }
-    // undefined and "demo-standard" both resolve to the roster default.
-    return { agentPreset: "demo-standard", setup: standardSetup };
+    return presetId === "demo-tools"
+      ? { agentPreset: presetId, setup: toolsSetup }
+      : { agentPreset: presetId, setup: standardSetup };
   });
   const fiberDispose = vi.fn(async () => {});
   const ctx = {
@@ -144,19 +153,18 @@ describe("AgentSessions.create", () => {
     });
   });
 
-  it("resolves the roster default when no preset is named (V1-2)", async () => {
+  it("rejects a create without a preset (preset selection is mandatory)", async () => {
     const harness = createHarness();
     harness.agentsGet.mockReturnValue(undefined);
-    harness.agentsCreate.mockResolvedValue(fakeHandle(fakeAgent("conv-1")));
 
     const sessions = new AgentSessions(harness.ctx);
-    const view = await sessions.create("conv-1");
 
+    await expect(sessions.create("conv-1")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
     expect(harness.compose).toHaveBeenCalledWith(undefined);
-    const options = harness.agentsCreate.mock.calls[0][0] as Record<string, unknown>;
-    // The RESOLVED default id is what lands in the header and the view.
-    expect(options.meta).toEqual({ cwd: process.cwd(), agentPreset: "demo-standard" });
-    expect(view.preset).toBe("demo-standard");
+    // The rejection precedes any agent creation.
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
   });
 
   it("is idempotent for the same conversation id and same preset", async () => {

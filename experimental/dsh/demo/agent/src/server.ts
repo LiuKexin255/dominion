@@ -46,12 +46,11 @@ const CONVERSATION_PREFIX = "conversations/";
 const PRESETS_PREFIX = "presets/";
 
 /**
- * The preset id grammar (chat-api.md §2 / data-model.md §1: the id becomes
- * the copy's directory name under the writable root, so this check is a
- * containment boundary, not a style rule). The same grammar is pinned in the
- * plugin (preset-authoring materialize.ts PRESET_ID); the handler repeats it
- * at the API edge so malformed requests fail INVALID_ARGUMENT before any
- * roster call.
+ * The preset id grammar (chat-api.md §2 / data-model.md §1: the id is the
+ * preset resource id and the store key). The same grammar is pinned in the
+ * plugin (preset-authoring index.ts PRESET_ID); the handler repeats it at the
+ * API edge so malformed requests fail INVALID_ARGUMENT before any store
+ * access.
  */
 const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -163,7 +162,7 @@ function presetViewOf(view: PresetView): Preset {
     name: `${PRESETS_PREFIX}${view.id}`,
     template: view.template,
     persona: view.persona,
-    // An absent display name falls back to the id at the roster surface; the
+    // An absent display name falls back to the id in the picker surface; the
     // wire carries the empty string for the absent case (proto3 has no
     // optional string here).
     displayName: view.displayName ?? "",
@@ -207,8 +206,10 @@ export function buildChatHandlers(sink: ChatSessionSink): ChatHandlers {
         });
         return;
       }
-      // An absent preset names the roster default (chat-api.md §1.1; the
-      // wire default is the empty string).
+      // Preset selection is mandatory under the 060 derivation semantics
+      // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
+      // §2/§3): an absent preset reaches compose as undefined and is rejected
+      // INVALID_ARGUMENT. The wire default is the empty string.
       const preset = call.request.preset || undefined;
       info("CreateConversation: dispatching to agent session", { conversationId, preset });
 

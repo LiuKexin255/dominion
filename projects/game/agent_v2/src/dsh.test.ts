@@ -513,7 +513,7 @@ describe("cordis.yml composition manifest", () => {
     expect(config.models[1]).toEqual({ id: "glm-5.3-flash", contextWindow: 1_000_000 });
   });
 
-  it("mounts the roster with two template system roots and one writable user root", () => {
+  it("mounts the roster with the two template system roots and no user root", () => {
     const row = rows.find((entry) => entry.id === "agent-presets");
     expect(row?.name).toBe("@deepseek-ai/dsh-agent-presets");
     const config = row?.config as {
@@ -525,15 +525,15 @@ describe("cordis.yml composition manifest", () => {
     // default points at no preset, so an id-less resolve fails loud.
     expect(config.default).toBe("");
     expect(config.includeUserRoot).toBe(false);
-    expect(config.roots).toHaveLength(3);
+    // User presets are store-only: compositions are derived at use time, so
+    // no writable user root is declared
+    // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §3).
+    expect(config.roots).toHaveLength(2);
     expect(config.roots[0]).toMatchObject({ path: expect.stringContaining("PRESET_TEMPLATES_ROOT"), trust: "system" });
     expect(config.roots[0].path).toContain("player");
     expect(config.roots[1]).toMatchObject({ path: expect.stringContaining("PRESET_TEMPLATES_ROOT"), trust: "system" });
     expect(config.roots[1].path).toContain("planner");
-    // The writable root is the first and ONLY user root (authoring lands
-    // there; copy/remove trust semantics).
-    expect(config.roots[2]).toMatchObject({ path: expect.stringContaining("PRESET_WRITABLE_ROOT"), trust: "user" });
-    expect(config.roots.filter((root) => root.trust === "user")).toHaveLength(1);
+    expect(config.roots.filter((root) => root.trust === "user")).toHaveLength(0);
   });
 
   it("mounts the authoring plugin with the host-injected Mongo connection", () => {

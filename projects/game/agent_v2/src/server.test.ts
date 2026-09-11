@@ -671,8 +671,10 @@ describe("PresetService preset CRUD handlers", () => {
       role: "player",
     });
     await vi.waitFor(() => expect(created).toHaveBeenCalledTimes(1));
-    // Copy-then-patch from the PLAYER pool template (preset-api.md §2): the
-    // role decides the template and lands in the store record.
+    // Creation records the preset in the store over the PLAYER pool template:
+    // the role decides the template and lands in the store record
+    // (specs/059-agent-v2-team-mode/contracts/preset-api.md §2;
+    // specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§2).
     expect(deps.authoring.create).toHaveBeenCalledWith({
       id: "p1",
       template: "player",
@@ -689,7 +691,8 @@ describe("PresetService preset CRUD handlers", () => {
     expect(response?.createTime?.seconds).toBeTypeOf("number");
     expect(response?.updateTime).toEqual(response?.createTime);
 
-    // The PLANNER role materializes from the planner pool template.
+    // The PLANNER role derives its composition from the planner pool template
+    // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2).
     deps.authoring.create.mockResolvedValueOnce(
       presetView({ id: "p2", template: "planner", role: "planner" }),
     );

@@ -61,6 +61,26 @@ const (
 	personaAuthoredTwo = "You are the AUTHORED PERSONA MARKER TWO assistant."
 )
 
+// The store presets the migrated preset suites bind their conversations to
+// (060 preset derivation: a conversation's preset MUST name a store record —
+// template ids are derivation sources, no longer directly composable), plus
+// the template persona rows the records carry so the model-visible
+// composition matches the fake-llm system_keywords fixtures
+// (experimental/dsh/demo/agent/presets-templates/).
+const (
+	authoredToolsPresetID    = "preset-suite-tools"
+	authoredStandardPresetID = "preset-suite-standard"
+	templatePersonaTools     = "You are the demo tools assistant."
+	templatePersonaStandard  = "You are the demo standard assistant."
+)
+
+// chatRegressionPresetID is the store preset the shared createConversation
+// helper provisions for the 047 chat-regression suites. Those suites bind no
+// explicit preset and the deployment no longer has a roster default (060
+// preset derivation makes preset selection mandatory); provisioning it here
+// keeps the 047 test bodies unchanged.
+const chatRegressionPresetID = "chat-regression"
+
 // sendMessageResponse mirrors the SendMessageResponse JSON body returned by
 // the gateway (specs/047-dsh-chat-demo/contracts/chat-api.md §1).
 type sendMessageResponse struct {
@@ -98,9 +118,31 @@ type listPresetsResponse struct {
 
 // createConversation POSTs one CreateConversation request against the public
 // HTTP entry and returns the HTTP status plus the raw response body. presetID
-// may be empty (the roster default); it is only included in the body when
-// non-empty so the default-selection case exercises the absent field.
+// names the STORE preset to bind; an empty presetID means the suite's shared
+// chat-regression preset, provisioned on first use — the deployment has no
+// roster default under the 060 derivation semantics, and the 047 regression
+// suites bind no preset of their own. Use createConversationWithoutPreset for
+// the omitted-preset rejection.
 func createConversation(t *testing.T, ctx context.Context, baseURL, envName, conversationID, presetID string) (int, []byte) {
+	t.Helper()
+
+	if presetID == "" {
+		presetID = mustCreatePreset(t, ctx, baseURL, envName, chatRegressionPresetID, "demo-standard", templatePersonaStandard)
+	}
+	return postCreateConversation(t, ctx, baseURL, envName, conversationID, presetID)
+}
+
+// createConversationWithoutPreset posts the create body with the preset field
+// omitted, exercising the mandatory-preset rejection.
+func createConversationWithoutPreset(t *testing.T, ctx context.Context, baseURL, envName, conversationID string) (int, []byte) {
+	t.Helper()
+
+	return postCreateConversation(t, ctx, baseURL, envName, conversationID, "")
+}
+
+// postCreateConversation sends one create body; the preset field is included
+// only when non-empty so the omitted case can be exercised.
+func postCreateConversation(t *testing.T, ctx context.Context, baseURL, envName, conversationID, presetID string) (int, []byte) {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s/experimental/dsh-demo/conversations", baseURL)
@@ -221,4 +263,21 @@ func presetRequest(t *testing.T, ctx context.Context, baseURL, envName, method, 
 		t.Fatalf("read response %s %s: %v", method, reqURL, err)
 	}
 	return resp.StatusCode, respBody
+}
+
+// mustCreatePreset authors one store preset through the PresetService CRUD
+// face and returns its id. Under the 060 derivation semantics only store
+// records compose, so suites author the preset they bind; the helper is
+// idempotent (200 on first create, 409 once the suite shares one deployment)
+// and fails the test on any other status.
+func mustCreatePreset(t *testing.T, ctx context.Context, baseURL, envName, presetID, template, persona string) string {
+	t.Helper()
+
+	body := fmt.Sprintf(`{"preset_id": %q, "template": %q, "persona": %q}`, presetID, template, persona)
+	status, respBody := presetRequest(t, ctx, baseURL, envName, http.MethodPost, "", []byte(body))
+	if status != http.StatusOK && status != http.StatusConflict {
+		t.Fatalf("createPreset(%s from %s) status = %d, want 200 (created) or 409 (already exists) (body: %s)",
+			presetID, template, status, respBody)
+	}
+	return presetID
 }

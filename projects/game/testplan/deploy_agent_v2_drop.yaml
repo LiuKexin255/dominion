@@ -47,10 +47,6 @@ services:
       name: agent-v2-test
       env:
         GLM_LLM_TARGET: dominion:///game/fake-llm:8080
-        # The writable user root is a fixed path on the container's temporary
-        # writable layer (Pod 重建即丢 — store 为 source of truth, 副本可从
-        # store 记录重建; roster-verification §5 对照 1 precedent).
-        PRESET_WRITABLE_ROOT: /var/lib/game-agent-v2/presets
   - artifact:
       path: //projects/game/web/server/service.yaml
       name: web

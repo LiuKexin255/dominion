@@ -74,9 +74,9 @@ team：一个 session 至多物化一个 team，恰含 player 与 planner 两个
   是部署模型目录的唯一来源（`ListModels` 与物化校验同源）。
 - `agent-presets`（`@deepseek-ai/dsh-agent-presets`）：preset roster，roots =
   两个模板 system root（player/planner 池各一，镜像内
-  `preset-templates/{player,planner}`）+ 一个可写 user root
-  （`PRESET_WRITABLE_ROOT`，copy-then-patch 创作落点）；`default` 指向空 id，
-  preset 选择是必选语义（无 id 的 resolve fail-loud）。
+  `preset-templates/{player,planner}`）；用户 preset 的组合在物化时从 store
+  记录派生，无 user root；`default` 指向空 id，preset 选择是必选语义（无 id
+  的 resolve fail-loud）。
 - `preset-authoring`（`@dominion/dsh-preset-authoring`）：创作/编辑面（Store
   Mongo 实现，`game_agent_v2.presets`）+ 模板行校验（`templateRules`）。
 - `team`（`ctx.team`）与 `memory`（`ctx.plannerMemory` host 服务面）：
@@ -132,20 +132,23 @@ preset 数据按角色分池
 - **用户可编辑内容仅 persona**（update_mask 仅 `persona`）；persona 为空时物化
   回退该角色默认 base（第一人称身份声明开头，
   `specs/059-agent-v2-team-mode/data-model.md` §2）。
-- **创作 = copy-then-patch**：CreatePreset 从对应池的模板 preset 拷贝出组合
-  文件（`projects/game/agent_v2/preset-templates/{player,planner}/`，镜像内
-  system 信任根），再 patch persona；模板不可写/不可删。创建时校验模板行
-  （`cordis.yml` `templateRules`）：player 模板恰含 `@dominion/dsh-saolei` 行、
-  planner 模板恰含 `@dominion/dsh-memory/preset-row`，违者 INVALID_ARGUMENT
-  且不落副本。
+- **创作 = store-only**：Create/Update/DeletePreset 只写 Mongo store（唯一
+  事实源）；创建时校验模板行（`cordis.yml` `templateRules`）：player 模板
+  恰含 `@dominion/dsh-saolei` 行、planner 模板恰含
+  `@dominion/dsh-memory/preset-row`，违者 INVALID_ARGUMENT 且不落任何产物。
+  池模板（`projects/game/agent_v2/preset-templates/{player,planner}/`，镜像内
+  system 信任根）不可写/不可删。
 - **角色工具锁定（行级绑定）**：player preset 绑定扫雷游戏工具插件组
   （`saolei_init`/`saolei_operate`/`saolei_remain` 工具 + `saolei:guidance`
   守则），planner preset 绑定 memory 插件组（memory 工具 + 快照 section）——
   工具与其配套守则作为整体生效或缺席，物化零定制。删除 preset 无 fan-out：
   已物化成员保持其物化时组合，再次物化引用被拒
   （`specs/059-agent-v2-team-mode/spec.md` FR-006）。
-- preset 组合文件副本（含插件行）为派生物，可从 store 记录重建（见
-  「已知限制」）。
+- **物化 = 使用时派生**：成员物化消费的组合在使用时从 store 记录派生——读池
+  模板组合、以记录 persona 替换 persona 行（空值回退模板默认 base，记录
+  persona 即用户可编辑内容），写入系统临时目录的纯临时文件，经官方
+  `mountPreset` 直接挂载；磁盘上不存在需要与 store 对账的副本
+  （`specs/060-agent-v2-team-optimize/contracts/preset-derivation.md` §2）。
 
 ## team 流与编排（Send）
 
@@ -208,9 +211,10 @@ planner preset 锁定的 memory 插件组
 
 ## preset 持久化与环境变量 MONGO_URI
 
-preset 数据持久化在 Mongo `game_agent_v2.presets`，agent-v2 重启不丢；team 本体
-——历史/物化配置/游戏状态——为内存态，重启后需重新物化（见「已知限制」）。
-Mongo 连接解析（`projects/game/agent_v2/src/presets.ts`）：
+preset 数据持久化在 Mongo `game_agent_v2.presets`，agent-v2 重启不丢；preset
+CRUD 只写该集合（唯一事实源），物化组合在成员创建时从记录派生（无磁盘副本需
+维护，见上节）。team 本体——历史/物化配置/游戏状态——为内存态，重启后需重新
+物化（见「已知限制」）。Mongo 连接解析（`projects/game/agent_v2/src/presets.ts`）：
 
 1. 环境变量 `MONGO_URI` 已设则直连使用（本地/测试直连形态）。
 2. 否则经 Dominion 服务发现解析 `dominion:///game/mongo:27017`，并按部署
@@ -295,10 +299,11 @@ desktop 缺席、多会话隔离）与 desktop flow 面；断连 suite `game-dis
   随重启丢失；重启后再次对话前必须重新经 UpdateTeam 物化
   （`specs/059-agent-v2-team-mode/spec.md` Edge Cases 与 Assumptions）。仅
   preset 资源数据持久化（见上节）。
-- **preset 组合副本重建语义**：组合文件副本（含插件行）是派生物，可从 Mongo
-  store 记录重建；部署无用户卷通道，`PRESET_WRITABLE_ROOT` 位于容器临时可写
-  层，Pod 重建即丢（`projects/game/deploy.yaml`），store 为 source of truth
-  （`specs/059-agent-v2-team-mode/research.md` R3 实现注意 ③）。
+- **preset 组合为使用时派生物**：物化消费的组合在成员创建时从 Mongo store
+  记录 + 池模板派生为系统临时目录下的纯临时文件（不维护、无清理承诺；任何
+  时刻删除都不影响 store 数据与后续物化——重建幂等）。磁盘上不存在需要与
+  store 对账的副本，也不存在 preset 专用可写根路径
+  （`specs/060-agent-v2-team-optimize/contracts/preset-derivation.md` §1/§2）。
 - **roster 已知限制**（`specs/059-agent-v2-team-mode/research.md` R3 实现注意 ④）：
   superseded generation 不回收（编辑-创建循环累积 watcher）、root 扫描无 watch
   （每次 list 落盘 readdir）——当前 preset 规模无感知，高频 CRUD 或大池规模需

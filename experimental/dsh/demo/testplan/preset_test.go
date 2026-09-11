@@ -10,86 +10,86 @@ import (
 	"dominion/common/gopkg/testtool"
 )
 
-// Preset module suite over the public HTTP entry, two faces
-// (specs/058-dsh-preset-roster-demo/tasks.md T017/T019):
+// Preset module suite over the public HTTP entry, two faces. The suite runs
+// on the 060 preset derivation semantics
+// (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md): the
+// store is the single source of truth, a conversation's preset MUST name a
+// store record (template ids are derivation sources, no longer directly
+// composable), and the composition is derived per session.
 //
 //   - The conversation-binding face: conversations are created EXPLICITLY
-//     through CreateConversation with a preset (or the roster default), and
-//     the model-visible composition each session runs is asserted end to end
-//     via the fake-llm `system_keywords` probe replies. Covers the US1
-//     acceptance scenarios (V1-1/V1-2/V2-3 end to end, US1-AS3
-//     shared-mount behaviour, US1-AS4 session-level stability), the
-//     idempotent/rebuild semantics (R4), and the no-lazy-creation
-//     FAILED_PRECONDITION edge (FR-002).
-//   - The resource face: the PresetService CRUD closed loop over deployment
-//     templates (C1 copy-then-patch). Covers hot creation (V3-1), the
-//     generation switch on persona update (V3-2), the full lifecycle
-//     create→bind→update→delete (V4-1), delete semantics (V4-3), and the
-//     creation rejection edges with no half-materialized residue (US2-AS4).
+//     through CreateConversation with a store preset the suite authored from
+//     a deployment template (mustCreatePreset), and the model-visible
+//     composition each session runs is asserted end to end via the fake-llm
+//     `system_keywords` probe replies. Covers the 058 US1 acceptance
+//     scenarios re-based on store presets (composition difference + guidance
+//     presence, per-session derived mounts, session-level stability), the
+//     mandatory-preset rejection, the idempotent/rebuild semantics (R4), and
+//     the no-lazy-creation FAILED_PRECONDITION edge (FR-002).
+//   - The resource face: the PresetService CRUD closed loop over store-only
+//     authoring. Covers hot creation, the generation switch on persona
+//     update, the full lifecycle create→bind→update→delete, delete
+//     semantics, and the creation rejection edges with no residue.
 //
-// V3-3 (broken-preset presentation) is NOT carried by large-test steps: the
-// materialized copies live inside the agent container's ephemeral writable
-// layer, which the test process cannot reach. R11
-// (specs/058-dsh-preset-roster-demo/research.md) assigns V3-3 to the plugin
-// unit tests over the fs seam
-// (common/js/dsh-plugins/preset-authoring/src/index.test.ts), where a broken
-// copy is written deliberately.
+// Broken-template presentation is NOT carried by large-test steps: the plugin
+// refuses a broken template at create (INVALID_ARGUMENT) and derives
+// compositions at use time, so the case lives in the plugin unit tests
+// (common/js/dsh-plugins/preset-authoring/src/{derive,index}.test.ts).
 
-// TestPresetConversationComposition verifies that two sessions bound to
-// different presets present DIFFERENT model-visible compositions, and the
-// demo-echo guidance is present exactly when the preset row is (V1-1/V2-3,
-// specs/058-dsh-preset-roster-demo/spec.md US1 acceptance scenarios 1 and
-// the guidance half of the row-level consistency). Each case creates a
-// fresh conversation bound to its preset and sends the probe keyword: the
-// fake-llm answers with the template whose system_keywords match the
-// session's persona/guidance, so the reply names the composition the model
-// actually received. A demo-standard session probed for guidance falls to
-// the deterministic farewell fallback — the guidance-absent proof.
+// TestPresetConversationComposition verifies that sessions bound to two
+// store presets derived from different templates present DIFFERENT
+// model-visible compositions, and the demo-echo guidance is present exactly
+// when the template carries its row. Each case creates a fresh conversation
+// bound to its preset and sends the probe keyword: the fake-llm answers with
+// the template whose system_keywords match the session's persona/guidance, so
+// the reply names the composition the model actually received. A
+// standard-derived session probed for guidance falls to the deterministic
+// farewell fallback — the guidance-absent proof.
 func TestPresetConversationComposition(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
+	// given: one store preset per template, carrying the template's own
+	// persona so the model-visible composition matches the template's.
+	mustCreatePreset(t, ctx, baseURL, envName, authoredToolsPresetID, "demo-tools", templatePersonaTools)
+	mustCreatePreset(t, ctx, baseURL, envName, authoredStandardPresetID, "demo-standard", templatePersonaStandard)
+
 	tests := []struct {
-		name            string
-		preset          string
-		probe           string
-		wantReply       string
-		wantBoundPreset string
+		name      string
+		preset    string
+		probe     string
+		wantReply string
 	}{
 		{
-			name:            "demo-tools session probe hits the tools persona",
-			preset:          "demo-tools",
-			probe:           "preset-probe",
-			wantReply:       personaToolsReply,
-			wantBoundPreset: "demo-tools",
+			name:      "tools-derived preset probe hits the tools persona",
+			preset:    authoredToolsPresetID,
+			probe:     "preset-probe",
+			wantReply: personaToolsReply,
 		},
 		{
-			name:            "demo-standard session probe hits the standard persona",
-			preset:          "demo-standard",
-			probe:           "preset-probe",
-			wantReply:       personaStandardReply,
-			wantBoundPreset: "demo-standard",
+			name:      "standard-derived preset probe hits the standard persona",
+			preset:    authoredStandardPresetID,
+			probe:     "preset-probe",
+			wantReply: personaStandardReply,
 		},
 		{
-			name:            "demo-tools session sees the demo_echo guidance",
-			preset:          "demo-tools",
-			probe:           "guidance-probe",
-			wantReply:       guidanceReply,
-			wantBoundPreset: "demo-tools",
+			name:      "tools-derived preset sees the demo_echo guidance",
+			preset:    authoredToolsPresetID,
+			probe:     "guidance-probe",
+			wantReply: guidanceReply,
 		},
 		{
-			name:            "demo-standard session answers the guidance probe with the fallback",
-			preset:          "demo-standard",
-			probe:           "guidance-probe",
-			wantReply:       farewellText,
-			wantBoundPreset: "demo-standard",
+			name:      "standard-derived preset answers the guidance probe with the fallback",
+			preset:    authoredStandardPresetID,
+			probe:     "guidance-probe",
+			wantReply: farewellText,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given: one conversation explicitly bound to the preset.
+			// given: one conversation explicitly bound to the store preset.
 			conversationID := "preset-composition-" + tt.preset + "-" + tt.probe
 			status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, tt.preset)
 			if status != http.StatusOK {
@@ -112,8 +112,8 @@ func TestPresetConversationComposition(t *testing.T) {
 			if err := json.Unmarshal(respBody, got); err != nil {
 				t.Fatalf("json.Unmarshal(%s) unexpected error: %v", respBody, err)
 			}
-			if created.Preset != tt.wantBoundPreset {
-				t.Errorf("resolved preset = %q, want %q", created.Preset, tt.wantBoundPreset)
+			if created.Preset != tt.preset {
+				t.Errorf("resolved preset = %q, want %q", created.Preset, tt.preset)
 			}
 			if got.Reply != tt.wantReply {
 				t.Errorf("reply = %q, want %q (model-visible composition must match the preset)", got.Reply, tt.wantReply)
@@ -122,65 +122,57 @@ func TestPresetConversationComposition(t *testing.T) {
 	}
 }
 
-// TestPresetDefaultSelection verifies that a conversation created WITHOUT a
-// preset is bound to the roster default (demo-standard, V1-2, US1
-// acceptance scenario 2): the CreateConversation view carries the RESOLVED
-// default id, and the session's probe reply matches the default preset's
-// persona.
-func TestPresetDefaultSelection(t *testing.T) {
+// TestPresetWithoutPresetRejected verifies the mandatory-preset semantics
+// (060 preset derivation; the 058 roster default is gone): CreateConversation
+// with no preset field at all reaches compose(undefined), which is rejected
+// INVALID_ARGUMENT (HTTP 400), and no conversation exists behind the failure.
+func TestPresetWithoutPresetRejected(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: a conversation created with no preset field at all.
-	const conversationID = "preset-default-selection"
-	status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, "")
+	// when: a conversation is created with no preset field.
+	const conversationID = "preset-without-preset"
+	status, respBody := createConversationWithoutPreset(t, ctx, baseURL, envName, conversationID)
 
-	// then: the view reports the resolved roster default.
-	if status != http.StatusOK {
-		t.Fatalf("createConversation status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+	// then: the mandatory-preset rejection surfaces (HTTP 400).
+	if status != http.StatusBadRequest {
+		t.Fatalf("createConversation status = %d, want %d (body: %s)", status, http.StatusBadRequest, respBody)
 	}
-	created := new(conversationResponse)
-	if err := json.Unmarshal(respBody, created); err != nil {
-		t.Fatalf("json.Unmarshal(%s) unexpected error: %v", respBody, err)
-	}
-	if created.Preset != "demo-standard" {
-		t.Errorf("resolved default preset = %q, want %q (cordis.yml agent-presets default)", created.Preset, "demo-standard")
+	if !strings.Contains(string(respBody), "preset id is required") {
+		t.Errorf("createConversation body = %s, want the mandatory-preset message", respBody)
 	}
 
-	// when: the probe turn fires.
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(conversationID), []byte(`{"message": "preset-probe"}`))
-
-	// then: the default preset's persona answered.
-	if status != http.StatusOK {
-		t.Fatalf("sendMessage status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+	// and: no conversation exists behind the failed create — a subsequent
+	// send is the not-created FAILED_PRECONDITION (its body names the
+	// CreateConversation remedy).
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(conversationID), []byte(`{"message": "hello"}`))
+	if status != http.StatusBadRequest {
+		t.Errorf("follow-up send status = %d, want %d (body: %s)", status, http.StatusBadRequest, respBody)
 	}
-	got := new(sendMessageResponse)
-	if err := json.Unmarshal(respBody, got); err != nil {
-		t.Fatalf("json.Unmarshal(%s) unexpected error: %v", respBody, err)
-	}
-	if got.Reply != personaStandardReply {
-		t.Errorf("reply = %q, want %q (the default preset's persona must be live)", got.Reply, personaStandardReply)
+	if !strings.Contains(string(respBody), "CreateConversation") {
+		t.Errorf("follow-up send body = %s, want it to name the CreateConversation remedy (FAILED_PRECONDITION message)", respBody)
 	}
 }
 
 // TestPresetSamePresetSharedBehaviour verifies that two conversations bound
-// to the SAME preset behave identically (US1-AS3, the behavioural face of
-// the shared standing mount — the mount itself exists once per process,
-// asserted by the composition unit test): both report the same resolved
-// preset and both answer the probe with the same composition.
+// to the SAME store preset behave identically: the composition is derived per
+// session (each session holds its own mount), and both report the same
+// resolved preset and answer the probe with the same composition.
 func TestPresetSamePresetSharedBehaviour(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: two conversations bound to demo-tools.
-	const preset = "demo-tools"
-	const conversationA = "preset-shared-a"
-	const conversationB = "preset-shared-b"
+	// given: two conversations bound to the tools-derived store preset.
+	mustCreatePreset(t, ctx, baseURL, envName, authoredToolsPresetID, "demo-tools", templatePersonaTools)
+	const (
+		conversationA = "preset-shared-a"
+		conversationB = "preset-shared-b"
+	)
 	resolved := map[string]string{}
 	for _, id := range []string{conversationA, conversationB} {
-		status, respBody := createConversation(t, ctx, baseURL, envName, id, preset)
+		status, respBody := createConversation(t, ctx, baseURL, envName, id, authoredToolsPresetID)
 		if status != http.StatusOK {
 			t.Fatalf("createConversation(%s) status = %d, want %d (body: %s)", id, status, http.StatusOK, respBody)
 		}
@@ -188,8 +180,8 @@ func TestPresetSamePresetSharedBehaviour(t *testing.T) {
 		if err := json.Unmarshal(respBody, created); err != nil {
 			t.Fatalf("createConversation(%s): json.Unmarshal(%s) unexpected error: %v", id, respBody, err)
 		}
-		if created.Preset != preset {
-			t.Errorf("createConversation(%s) resolved preset = %q, want %q", id, created.Preset, preset)
+		if created.Preset != authoredToolsPresetID {
+			t.Errorf("createConversation(%s) resolved preset = %q, want %q", id, created.Preset, authoredToolsPresetID)
 		}
 		resolved[id] = created.Preset
 	}
@@ -217,8 +209,8 @@ func TestPresetSamePresetSharedBehaviour(t *testing.T) {
 		t.Errorf("reply = %q, want %q", replies[conversationA], personaToolsReply)
 	}
 	for id, presetID := range resolved {
-		if presetID != preset {
-			t.Errorf("conversation %s binding = %q, want %q", id, presetID, preset)
+		if presetID != authoredToolsPresetID {
+			t.Errorf("conversation %s binding = %q, want %q", id, presetID, authoredToolsPresetID)
 		}
 	}
 }
@@ -233,9 +225,10 @@ func TestPresetSessionStability(t *testing.T) {
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: one demo-tools conversation.
+	// given: one tools-derived store preset and a conversation bound to it.
+	mustCreatePreset(t, ctx, baseURL, envName, authoredToolsPresetID, "demo-tools", templatePersonaTools)
 	const conversationID = "preset-stability"
-	status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, "demo-tools")
+	status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, authoredToolsPresetID)
 	if status != http.StatusOK {
 		t.Fatalf("createConversation status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
@@ -255,7 +248,7 @@ func TestPresetSessionStability(t *testing.T) {
 		status, respBody := postChatTurn(t, ctx, baseURL, envName, conversationName(conversationID), []byte(`{"message": "`+tt.message+`"}`))
 
 		// then: the reply matches the turn's expectation — the binding
-		// stays demo-tools across the conversation's lifetime.
+		// stays on the store preset across the conversation's lifetime.
 		if status != http.StatusOK {
 			t.Fatalf("turn %d: status = %d, want %d (body: %s)", tt.turn, status, http.StatusOK, respBody)
 		}
@@ -264,7 +257,7 @@ func TestPresetSessionStability(t *testing.T) {
 			t.Fatalf("turn %d: json.Unmarshal(%s) unexpected error: %v", tt.turn, respBody, err)
 		}
 		if got.Reply != tt.wantReply {
-			t.Errorf("turn %d reply = %q, want %q (composition must stay bound to demo-tools)", tt.turn, got.Reply, tt.wantReply)
+			t.Errorf("turn %d reply = %q, want %q (composition must stay bound to the store preset)", tt.turn, got.Reply, tt.wantReply)
 		}
 	}
 }
@@ -279,19 +272,23 @@ func TestPresetIdempotentAndRebuild(t *testing.T) {
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: a conversation bound to demo-tools.
+	// given: the two template-derived store presets.
+	mustCreatePreset(t, ctx, baseURL, envName, authoredToolsPresetID, "demo-tools", templatePersonaTools)
+	mustCreatePreset(t, ctx, baseURL, envName, authoredStandardPresetID, "demo-standard", templatePersonaStandard)
+
+	// given: a conversation bound to the tools-derived preset.
 	const conversationID = "preset-rebuild"
-	status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, "demo-tools")
+	status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, authoredToolsPresetID)
 	if status != http.StatusOK {
-		t.Fatalf("create demo-tools: status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+		t.Fatalf("create tools preset: status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
 	first := new(conversationResponse)
 	if err := json.Unmarshal(respBody, first); err != nil {
-		t.Fatalf("create demo-tools: json.Unmarshal(%s) unexpected error: %v", respBody, err)
+		t.Fatalf("create tools preset: json.Unmarshal(%s) unexpected error: %v", respBody, err)
 	}
 
 	// when/then: the same id + same preset answers idempotently.
-	status, respBody = createConversation(t, ctx, baseURL, envName, conversationID, "demo-tools")
+	status, respBody = createConversation(t, ctx, baseURL, envName, conversationID, authoredToolsPresetID)
 	if status != http.StatusOK {
 		t.Fatalf("idempotent recreate: status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
@@ -303,17 +300,17 @@ func TestPresetIdempotentAndRebuild(t *testing.T) {
 		t.Errorf("idempotent recreate view drifted: {%s %s} then {%s %s}, want the same view", first.Name, first.Preset, again.Name, again.Preset)
 	}
 
-	// when: the same id is recreated on demo-standard (rebuild).
-	status, respBody = createConversation(t, ctx, baseURL, envName, conversationID, "demo-standard")
+	// when: the same id is recreated on the standard-derived preset (rebuild).
+	status, respBody = createConversation(t, ctx, baseURL, envName, conversationID, authoredStandardPresetID)
 	if status != http.StatusOK {
-		t.Fatalf("rebuild on demo-standard: status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+		t.Fatalf("rebuild on standard preset: status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
 	rebuilt := new(conversationResponse)
 	if err := json.Unmarshal(respBody, rebuilt); err != nil {
 		t.Fatalf("rebuild: json.Unmarshal(%s) unexpected error: %v", respBody, err)
 	}
-	if rebuilt.Preset != "demo-standard" {
-		t.Fatalf("rebuild resolved preset = %q, want %q", rebuilt.Preset, "demo-standard")
+	if rebuilt.Preset != authoredStandardPresetID {
+		t.Fatalf("rebuild resolved preset = %q, want %q", rebuilt.Preset, authoredStandardPresetID)
 	}
 
 	// then: the rebuilt session runs the NEW composition — the standard
@@ -368,9 +365,9 @@ func TestPresetSendMessageWithoutCreate(t *testing.T) {
 }
 
 // TestPresetUnknownPresetRejected verifies the unknown-preset edge: a
-// conversation naming a preset no root supplies is rejected with
-// INVALID_ARGUMENT (HTTP 400) carrying the roster's available-ids message,
-// and no conversation is created behind the failure.
+// conversation naming a preset the store does not hold is rejected with
+// NOT_FOUND (HTTP 404) naming the id, and no conversation is created behind
+// the failure.
 func TestPresetUnknownPresetRejected(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
@@ -382,9 +379,12 @@ func TestPresetUnknownPresetRejected(t *testing.T) {
 	// when: the creation names the unknown preset.
 	status, respBody := createConversation(t, ctx, baseURL, envName, conversationID, "no-such-preset")
 
-	// then: the request is rejected as INVALID_ARGUMENT (HTTP 400).
-	if status != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d (body: %s)", status, http.StatusBadRequest, respBody)
+	// then: the store miss surfaces as NOT_FOUND (HTTP 404) naming the id.
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d, want %d (body: %s)", status, http.StatusNotFound, respBody)
+	}
+	if !strings.Contains(string(respBody), "no-such-preset") {
+		t.Errorf("body = %s, want it to name the unknown preset id", respBody)
 	}
 
 	// and: no conversation exists behind the failed create — a subsequent
@@ -402,14 +402,15 @@ func TestPresetUnknownPresetRejected(t *testing.T) {
 	}
 }
 
-// TestPresetAuthoringLifecycle walks the full C1 closed loop (V4-1, the
-// US2 independent test in specs/058-dsh-preset-roster-demo/spec.md):
-// create from a template → a new conversation runs the authored persona →
-// update the persona → the joined session keeps its generation while a new
-// session lands on the new one (V3-2) → delete → the joined session stays
-// servable while new binds are rejected (V4-3). Phase 1 additionally proves
-// hot creation (V3-1): the copy is bindable with no restart, because roster
-// discovery re-reads the roots on every resolve.
+// TestPresetAuthoringLifecycle walks the full store-only authoring closed
+// loop (V4-1, the US2 independent test in specs/058-dsh-preset-roster-demo/
+// spec.md, re-based on 060 derivation): create a store record from a template
+// → a new conversation runs the authored persona → update the persona → the
+// joined session keeps its derived composition while a new session lands on
+// the new one (V3-2) → delete → the joined session stays servable while new
+// binds are rejected NOT_FOUND. Phase 1 additionally proves hot creation
+// (V3-1): the record is bindable with no restart, because compose reads the
+// store per use.
 func TestPresetAuthoringLifecycle(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
@@ -439,7 +440,7 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 	}
 
 	// when: a NEW conversation binds the freshly created preset — no
-	// restart in between (hot discovery).
+	// restart in between (hot store read).
 	status, respBody = createConversation(t, ctx, baseURL, envName, oldSession, presetID)
 	if status != http.StatusOK {
 		t.Fatalf("createConversation status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
@@ -481,8 +482,8 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 		t.Errorf("updatePreset persona = %q, want %q", updated.Persona, personaAuthoredTwo)
 	}
 
-	// then: the joined session keeps its generation — the probe still
-	// answers with marker ONE.
+	// then: the joined session keeps its derived composition — the probe
+	// still answers with marker ONE.
 	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(oldSession), []byte(`{"message": "authored-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("old-session probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
@@ -492,7 +493,7 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 		t.Fatalf("old-session probe: json.Unmarshal(%s) unexpected error: %v", respBody, err)
 	}
 	if got.Reply != personaAuthoredOneReply {
-		t.Errorf("old-session reply = %q, want %q (a joined session must keep its generation)", got.Reply, personaAuthoredOneReply)
+		t.Errorf("old-session reply = %q, want %q (a joined session must keep its composition)", got.Reply, personaAuthoredOneReply)
 	}
 
 	// and: a NEW session lands on the new generation — marker TWO answers.
@@ -519,8 +520,8 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 		t.Fatalf("deletePreset status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
 
-	// then: the joined session keeps its standing mount — the probe still
-	// answers with its generation (marker ONE).
+	// then: the joined session keeps its derived composition — the probe
+	// still answers with its generation (marker ONE).
 	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName(oldSession), []byte(`{"message": "authored-probe"}`))
 	if status != http.StatusOK {
 		t.Fatalf("post-delete probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
@@ -533,18 +534,17 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 		t.Errorf("post-delete reply = %q, want %q (a joined session must survive the delete)", got.Reply, personaAuthoredOneReply)
 	}
 
-	// and: a new bind to the deleted id is rejected — the roster no longer
-	// resolves it, so this is INVALID_ARGUMENT (HTTP 400). The 400 alone is
-	// ambiguous with FAILED_PRECONDITION, so the body is pinned to the
-	// rejected preset id: the resolve-failure message carries the id, while
-	// the not-created FAILED_PRECONDITION message does not (the body-pin
-	// disambiguation pattern of TestPresetUnknownPresetRejected).
+	// and: a new bind to the deleted id is rejected — the store no longer
+	// holds the record, so this is NOT_FOUND (HTTP 404). The body is pinned
+	// to the rejected preset id: the store-miss message carries the id,
+	// while the not-created FAILED_PRECONDITION message does not (the
+	// body-pin disambiguation pattern of TestPresetUnknownPresetRejected).
 	status, respBody = createConversation(t, ctx, baseURL, envName, "preset-authored-after-delete", presetID)
-	if status != http.StatusBadRequest {
-		t.Errorf("createConversation on deleted preset status = %d, want %d (body: %s)", status, http.StatusBadRequest, respBody)
+	if status != http.StatusNotFound {
+		t.Errorf("createConversation on deleted preset status = %d, want %d (body: %s)", status, http.StatusNotFound, respBody)
 	}
 	if !strings.Contains(string(respBody), presetID) {
-		t.Errorf("createConversation on deleted preset body = %s, want it to name the rejected preset id %q (INVALID_ARGUMENT resolve failure)", respBody, presetID)
+		t.Errorf("createConversation on deleted preset body = %s, want it to name the rejected preset id %q (NOT_FOUND store miss)", respBody, presetID)
 	}
 
 	// and: the resource is gone.
@@ -557,12 +557,11 @@ func TestPresetAuthoringLifecycle(t *testing.T) {
 // TestPresetCreateRejections covers the creation rejection edges (US2-AS4,
 // specs/058-dsh-preset-roster-demo/contracts/chat-api.md §2 CreatePreset
 // row): a duplicate id → ALREADY_EXISTS (HTTP 409) with the original
-// resource intact, an unknown template / malformed id / empty persona →
-// INVALID_ARGUMENT (HTTP 400), and every rejection leaves NO
-// half-materialized state — the store never records the id (GetPreset →
-// 404), the collection size never moves, and the retry of a rejected id
-// with a VALID template succeeds (the roster copy refuses a taken id, so
-// the success proves the writable root never held the directory either).
+// resource intact, a deployment template id cannot be claimed → 409, an
+// unknown template / malformed id / empty persona → INVALID_ARGUMENT
+// (HTTP 400), and every rejection leaves NO residue — the store never
+// records the id (GetPreset → 404), the collection size never moves, and
+// the retry of a rejected id with a VALID template succeeds.
 func TestPresetCreateRejections(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
@@ -625,6 +624,16 @@ func TestPresetCreateRejections(t *testing.T) {
 			len(afterDuplicate.Presets), len(baseline.Presets))
 	}
 
+	// when: a deployment template id is claimed by a fresh create.
+	// then: ALREADY_EXISTS (HTTP 409) — the roster supplies it as system
+	// trust, so a store record can never shadow it.
+	templateIDBody := fmt.Sprintf(`{"preset_id": %q, "template": %q, "persona": %q}`,
+		"demo-tools", demoDefault, personaAuthoredOne)
+	status, respBody = presetRequest(t, ctx, baseURL, envName, http.MethodPost, "", []byte(templateIDBody))
+	if status != http.StatusConflict {
+		t.Errorf("template-id createPreset status = %d, want %d (body: %s)", status, http.StatusConflict, respBody)
+	}
+
 	// when: an unknown template is referenced by a fresh id.
 	unknownBody := fmt.Sprintf(`{"preset_id": %q, "template": "no-such-template", "persona": %q}`,
 		rejectedID, personaAuthoredOne)
@@ -652,10 +661,8 @@ func TestPresetCreateRejections(t *testing.T) {
 			len(afterUnknown.Presets), len(baseline.Presets))
 	}
 
-	// and: no half-materialized residue — the retry of the SAME id with a
-	// VALID template succeeds. The roster copy refuses an id a directory
-	// already occupies, so this success proves the rejected create left
-	// nothing in the writable root either.
+	// and: no residue — the rejected id was never recorded, so the retry of
+	// the SAME id with a VALID template succeeds.
 	retryBody := fmt.Sprintf(`{"preset_id": %q, "template": %q, "persona": %q}`,
 		rejectedID, demoDefault, personaAuthoredTwo)
 	status, respBody = presetRequest(t, ctx, baseURL, envName, http.MethodPost, "", []byte(retryBody))
@@ -670,7 +677,7 @@ func TestPresetCreateRejections(t *testing.T) {
 		t.Errorf("retried persona = %q, want %q", retried.Persona, personaAuthoredTwo)
 	}
 
-	// when/then: a malformed id is rejected before any materialization.
+	// when/then: a malformed id is rejected before any store write.
 	malformedBody := fmt.Sprintf(`{"preset_id": %q, "template": %q, "persona": %q}`,
 		"Authored_X", demoDefault, personaAuthoredOne)
 	status, respBody = presetRequest(t, ctx, baseURL, envName, http.MethodPost, "", []byte(malformedBody))
@@ -701,10 +708,10 @@ func TestPresetCreateRejections(t *testing.T) {
 
 // TestPresetTemplateDeleteRefused verifies that a deployment template is
 // not deletable (specs/058-dsh-preset-roster-demo/contracts/chat-api.md §2
-// DeletePreset row): the roster refuses to remove system-trust data and the
+// DeletePreset row): the plugin refuses to remove system-trust data and the
 // refusal surfaces as FAILED_PRECONDITION (HTTP 400). The template stays
-// fully servable afterwards — a conversation bound to it still resolves and
-// answers its persona probe.
+// fully servable as a derivation source afterwards — a store preset authored
+// from it resolves and answers its persona probe.
 func TestPresetTemplateDeleteRefused(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
@@ -713,27 +720,29 @@ func TestPresetTemplateDeleteRefused(t *testing.T) {
 	// when: the template id is deleted.
 	status, respBody := presetRequest(t, ctx, baseURL, envName, http.MethodDelete, "/demo-standard", nil)
 
-	// then: the roster's system-trust refusal surfaces (HTTP 400, the
+	// then: the system-trust refusal surfaces (HTTP 400, the
 	// FAILED_PRECONDITION mapping).
 	if status != http.StatusBadRequest {
 		t.Errorf("deletePreset(template) status = %d, want %d (body: %s)", status, http.StatusBadRequest, respBody)
 	}
 
-	// and: the template is untouched — a conversation bound to it resolves
+	// and: the template is untouched — a preset authored from it resolves
 	// and the template persona answers the probe.
-	status, respBody = createConversation(t, ctx, baseURL, envName, "preset-template-intact", "demo-standard")
+	const intactPresetID = "preset-template-intact"
+	mustCreatePreset(t, ctx, baseURL, envName, intactPresetID, "demo-standard", templatePersonaStandard)
+	status, respBody = createConversation(t, ctx, baseURL, envName, "preset-template-intact-conv", intactPresetID)
 	if status != http.StatusOK {
-		t.Fatalf("createConversation on template status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+		t.Fatalf("createConversation on template-derived preset status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
-	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName("preset-template-intact"), []byte(`{"message": "preset-probe"}`))
+	status, respBody = postChatTurn(t, ctx, baseURL, envName, conversationName("preset-template-intact-conv"), []byte(`{"message": "preset-probe"}`))
 	if status != http.StatusOK {
-		t.Fatalf("template probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
+		t.Fatalf("template-derived probe status = %d, want %d (body: %s)", status, http.StatusOK, respBody)
 	}
 	got := new(sendMessageResponse)
 	if err := json.Unmarshal(respBody, got); err != nil {
-		t.Fatalf("template probe: json.Unmarshal(%s) unexpected error: %v", respBody, err)
+		t.Fatalf("template-derived probe: json.Unmarshal(%s) unexpected error: %v", respBody, err)
 	}
 	if got.Reply != personaStandardReply {
-		t.Errorf("template probe reply = %q, want %q (the template must keep serving)", got.Reply, personaStandardReply)
+		t.Errorf("template-derived probe reply = %q, want %q (the template must keep serving as a derivation source)", got.Reply, personaStandardReply)
 	}
 }

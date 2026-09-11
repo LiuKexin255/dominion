@@ -50,8 +50,9 @@ func TestChatReply(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given: one fresh conversation — created explicitly, since
 			// sendMessage no longer creates lazily (058 FR-002) — and the
-			// user message under test. The default preset keeps the plain
-			// 047 chat flows intact.
+			// user message under test. The shared helper provisions the
+			// regression store preset (060: no roster default), keeping the
+			// plain 047 chat flows intact.
 			resourceName := "conversations/" + tt.conversationID
 			status, respBody := createConversation(t, ctx, baseURL, envName, tt.conversationID, "")
 			if status != http.StatusOK {

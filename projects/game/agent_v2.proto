@@ -436,8 +436,9 @@ message Preset {
   // Format: templates/{template}/presets/{preset}
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
   // The persona prompt (the preset's ONLY user-editable content,
-  // preset-api.md §2); empty = fall back to the role default base at
-  // materialization time. MUST NOT carry model fields.
+  // specs/059-agent-v2-team-mode/contracts/preset-api.md §2); empty = fall
+  // back to the role default base at materialization time. MUST NOT carry
+  // model fields.
   string persona = 2;
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
@@ -448,10 +449,11 @@ message Preset {
 }
 
 // CreatePresetRequest creates a Preset under a template (AIP-133:
-// https://google.aip.dev/133; caller-supplied id). The creation materializes
-// a copy of the role's pool template (copy-then-patch: the copy carries the
-// pool's plugin rows; the caller's persona is patched into the
-// persona row, empty = the template's persona stands).
+// https://google.aip.dev/133; caller-supplied id). The creation records the
+// preset in the store over the role's pool template; the member composition
+// derives at use time (specs/060-agent-v2-team-optimize/contracts/
+// preset-derivation.md §1/§2) — an empty persona keeps the template's
+// persona row.
 message CreatePresetRequest {
   // The template to create the preset in.
   // Format: templates/{template}

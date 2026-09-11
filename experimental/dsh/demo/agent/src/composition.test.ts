@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import { boot } from "@deepseek-ai/dsh-app-boot";
 import { scopeOf, scopeParentOf } from "@deepseek-ai/dsh-scope";
@@ -15,21 +14,29 @@ import type { DshContext } from "./dsh.js";
  * boots in-process (same manifest the deployed artifact carries), with the
  * roster roots pointed at the runfiles template presets and the LLM adapter
  * pointed at a local capture server. This is the single-test surface of the
- * verification matrix (specs/058-dsh-preset-roster-demo/research.md R11):
+ * verification matrix (specs/058-dsh-preset-roster-demo/research.md R11,
+ * re-based on the 060 derivation semantics —
+ * specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2):
  *
  *   - V1-1  per-session composition difference (persona / system prompt)
  *           plus the deployment-persona shadowing, asserted on the llm
  *           request surface (what the model actually receives)
- *   - V1-3  the resolved preset id lands in the session creation header
+ *   - V1-3  the resolved preset id lands in the session header, and an
+ *           id-less create is rejected INVALID_ARGUMENT (preset selection is
+ *           mandatory — the roster default is gone)
  *   - V2-1  the preset-row tool is visible only to preset members
- *           (global layer empty, standing-scope view populated)
- *   - V2-2  two sessions on one preset share ONE composition registration
- *           (same parent scope key, same tool-definition instance)
+ *           (global layer empty, member-scope view populated)
+ *   - V2-2  two sessions on one store preset each hold their OWN derived
+ *           mount (no shared standing registration) while presenting the
+ *           same persona and tool catalog
  *
- * The only seams are environmental (roots/baseURL env vars read by the
- * cordis.yml `!!js` expressions) — the composition itself is unmocked. The
- * mock LLM lives below the llm adapter boundary, mirroring the fake-llm wire
- * contract (specs/047-dsh-chat-demo/contracts/fake-llm-wire.md §3).
+ * The sessions bind STORE presets authored below through the real
+ * `ctx.presetAuthoring.create`; template ids are derivation sources, no
+ * longer directly composable. The only seams are environmental (roots/baseURL
+ * env vars read by the cordis.yml `!!js` expressions) — the composition
+ * itself is unmocked. The mock LLM lives below the llm adapter boundary,
+ * mirroring the fake-llm wire contract
+ * (specs/047-dsh-chat-demo/contracts/fake-llm-wire.md §3).
  */
 
 /** The deployment persona from cordis.yml — must be shadowed by presets (R12). */
@@ -37,6 +44,16 @@ const DEPLOYMENT_PERSONA = "You are a helpful demo chat assistant.";
 
 /** The reply text the mock LLM streams for every request. */
 const MOCK_REPLY = "composition-mock-reply";
+
+/**
+ * The store presets the sessions bind, authored once in beforeAll through the
+ * real authoring service (060 preset derivation: only store records compose;
+ * template ids are derivation sources). An empty persona keeps each template's
+ * persona row, so the model-visible compositions match the template presets
+ * exactly.
+ */
+const TOOLS_PRESET = "comp-tools-preset";
+const STANDARD_PRESET = "comp-standard-preset";
 
 /** One captured chat-completions request body. */
 interface CapturedRequest {
@@ -55,6 +72,9 @@ interface CapturedRequest {
 type ScopeContext = Parameters<typeof scopeOf>[0];
 
 interface CompositionSurface {
+  presetAuthoring: {
+    create(input: { id: string; template: string; persona: string }): Promise<{ id: string }>;
+  };
   agents: {
     get(id: string): {
       ctx: ScopeContext;
@@ -191,16 +211,14 @@ describe("composition (real direct-compose boot)", () => {
   let surface: CompositionSurface;
   let sessions: AgentSessions;
   let mock: Awaited<ReturnType<typeof startMockLlm>>;
-  let writableRoot: string;
 
   beforeAll(async () => {
     mock = await startMockLlm();
     repairRunfilesNativeBindingLinks();
     // The roster scans the runfiles copy of the deployed template presets
-    // (same files the artifact ships); the writable root stays absent — no
-    // authoring happens on this surface and the roster supplies no presets
-    // from an absent root rather than failing.
-    writableRoot = path.join(tmpdir(), `dsh-demo-composition-test-${process.pid}`);
+    // (same files the artifact ships); the sessions below bind store presets
+    // authored after boot — no writable root exists under the 060 derivation
+    // semantics.
     process.env.FAKE_LLM_API_KEY = "dummy-key";
     process.env.FAKE_LLM_BASE_URL = mock.url;
     process.env.PRESET_TEMPLATES_ROOT = path.resolve(
@@ -208,7 +226,6 @@ describe("composition (real direct-compose boot)", () => {
       "..",
       "presets-templates",
     );
-    process.env.PRESET_WRITABLE_ROOT = writableRoot;
     try {
       ctx = (await boot(
         "dsh-demo-agent",
@@ -250,6 +267,11 @@ describe("composition (real direct-compose boot)", () => {
     }
     surface = ctx as unknown as CompositionSurface;
     sessions = new AgentSessions(ctx);
+    // Author the store presets the sessions bind: only store records compose
+    // under the 060 derivation semantics. An empty persona keeps each
+    // template's persona row (the role default base).
+    await surface.presetAuthoring.create({ id: TOOLS_PRESET, template: "demo-tools", persona: "" });
+    await surface.presetAuthoring.create({ id: STANDARD_PRESET, template: "demo-standard", persona: "" });
     // Timeouts stay well inside the bazel small-size 60s wall limit, where
     // they can actually fire; the observed boot is sub-second.
   }, 30_000);
@@ -262,15 +284,14 @@ describe("composition (real direct-compose boot)", () => {
     delete process.env.FAKE_LLM_API_KEY;
     delete process.env.FAKE_LLM_BASE_URL;
     delete process.env.PRESET_TEMPLATES_ROOT;
-    delete process.env.PRESET_WRITABLE_ROOT;
   }, 15_000);
 
   it(
     "V1-1: two preset sessions present different personas and tool catalogs, " +
       "and the deployment persona is shadowed",
     async () => {
-      await sessions.create("comp-conv-tools", "demo-tools");
-      await sessions.create("comp-conv-standard", "demo-standard");
+      await sessions.create("comp-conv-tools", TOOLS_PRESET);
+      await sessions.create("comp-conv-standard", STANDARD_PRESET);
 
       const toolsRound = sessions.send("comp-conv-tools", "hello");
       await vi.waitFor(() => expect(mock.requests.length).toBeGreaterThanOrEqual(1));
@@ -300,25 +321,27 @@ describe("composition (real direct-compose boot)", () => {
     30_000,
   );
 
-  it("V1-3: the session header records the resolved preset, default included", async () => {
-    await sessions.create("comp-conv-explicit", "demo-tools");
-    await sessions.create("comp-conv-default");
+  it("V1-3: the session header records the resolved preset; an id-less create is rejected", async () => {
+    await sessions.create("comp-conv-explicit", TOOLS_PRESET);
 
     // ctx.agents.get returns the bare live agent; the header is the durable
     // creation metadata the factory folded from meta.
-    expect(surface.agents.get("comp-conv-explicit")?.session.header.agentPreset).toBe("demo-tools");
-    // An unnamed preset resolves to the roster default (cordis.yml
-    // agent-presets config: default: demo-standard).
-    expect(
-      surface.agents.get("comp-conv-default")?.session.header.agentPreset,
-    ).toBe("demo-standard");
+    expect(surface.agents.get("comp-conv-explicit")?.session.header.agentPreset).toBe(TOOLS_PRESET);
+
+    // Preset selection is mandatory under the 060 derivation semantics (the
+    // roster default is gone): an id-less create reaches compose(undefined)
+    // and is rejected INVALID_ARGUMENT before any agent is published.
+    await expect(sessions.create("comp-conv-default")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+    expect(surface.agents.get("comp-conv-default")).toBeUndefined();
   }, 30_000);
 
   it("V2-1: the preset-row tool is visible only to preset members", async () => {
     // Self-contained conversations: this test must not depend on the
     // sessions V1-1 created, so a V1-1 failure does not cascade here.
-    await sessions.create("comp-conv-member-tools", "demo-tools");
-    await sessions.create("comp-conv-member-standard", "demo-standard");
+    await sessions.create("comp-conv-member-tools", TOOLS_PRESET);
+    await sessions.create("comp-conv-member-standard", STANDARD_PRESET);
     const toolsAgent = surface.agents.get("comp-conv-member-tools");
     const standardAgent = surface.agents.get("comp-conv-member-standard");
     expect(toolsAgent).toBeDefined();
@@ -333,31 +356,45 @@ describe("composition (real direct-compose boot)", () => {
     expect(surface.tools.get("demo_echo", scopeOf(standardAgent!.ctx))).toBeUndefined();
   }, 30_000);
 
-  it("V2-2: two sessions on one preset share one composition registration", async () => {
-    await sessions.create("comp-conv-shared-a", "demo-tools");
-    await sessions.create("comp-conv-shared-b", "demo-tools");
+  it("V2-2: two sessions on one store preset each hold their own derived mount", async () => {
+    await sessions.create("comp-conv-shared-a", TOOLS_PRESET);
+    await sessions.create("comp-conv-shared-b", TOOLS_PRESET);
     const agentA = surface.agents.get("comp-conv-shared-a");
     const agentB = surface.agents.get("comp-conv-shared-b");
     expect(agentA).toBeDefined();
     expect(agentB).toBeDefined();
 
-    // Both agents' scope keys are parented to the SAME standing mount scope
-    // (the roster's single-flight mount) — object identity, not equality.
     const scopeA = scopeOf(agentA!.ctx);
     const scopeB = scopeOf(agentB!.ctx);
     expect(scopeA).toBeDefined();
     expect(scopeB).toBeDefined();
-    const parentA = scopeParentOf(scopeA!);
-    const parentB = scopeParentOf(scopeB!);
-    expect(parentA).toBeDefined();
-    expect(parentB).toBe(parentA);
 
-    // The tool both members resolve is the SAME registered definition
-    // instance — one registration serving every joined session.
+    // Per-agent derived mounts: each session's composition is a mountPreset
+    // subtree owned by that member's scope, so both sessions resolve
+    // demo_echo through DISTINCT registrations — there is no shared standing
+    // mount anymore.
     const viewA = surface.tools.get("demo_echo", scopeA!);
     const viewB = surface.tools.get("demo_echo", scopeB!);
     expect(viewA).toBeDefined();
-    expect(viewB).toBe(viewA);
-    expect(viewA).toBe(surface.tools.get("demo_echo", parentA));
+    expect(viewB).toBeDefined();
+    expect(viewB).not.toBe(viewA);
+
+    // Content equivalence: the same store preset derives the same persona
+    // and tool catalog for both sessions.
+    const before = mock.requests.length;
+    const roundA = sessions.send("comp-conv-shared-a", "hello");
+    await vi.waitFor(() => expect(mock.requests.length).toBeGreaterThan(before));
+    await expect(roundA).resolves.toBe(MOCK_REPLY);
+    const requestA = mock.requests.at(-1)!;
+    const afterA = mock.requests.length;
+    const roundB = sessions.send("comp-conv-shared-b", "hello");
+    await vi.waitFor(() => expect(mock.requests.length).toBeGreaterThan(afterA));
+    await expect(roundB).resolves.toBe(MOCK_REPLY);
+    const requestB = mock.requests.at(-1)!;
+
+    expect(requestA.systemText).toContain("You are the demo tools assistant.");
+    expect(requestB.systemText).toContain("You are the demo tools assistant.");
+    expect(requestB.toolNames).toEqual(requestA.toolNames);
+    expect(requestA.toolNames).toContain("demo_echo");
   }, 30_000);
 });

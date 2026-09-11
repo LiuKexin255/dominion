@@ -83,6 +83,7 @@
 - [ ] T011 [US2] `common/js/dsh-plugins/preset-authoring/src/index.ts` + `src/materialize.ts`：create/update/remove 改 store-only（create 保留 `templateRules` 模板行校验——`validateTemplateRows`/`PERSONA_ROW_NAME` 迁入 derive 模块或保留原位）；移除 copy-then-patch 维护路径（`materializeCopy`/`updateMaterialization`/`removeMaterialization`/`rebuildCopy` 及 roster copy/remove 调用）；`materialize.test.ts` 用例迁移/删除、`index.test.ts`/`store.test.ts` 对齐
 - [ ] T012 [US2] （与 T011 同批原子交付）`projects/game/agent_v2/cordis.yml` 删除 user root 行（`PRESET_WRITABLE_ROOT` 表达式条目）；`projects/game/deploy.yaml` 与三份 `projects/game/testplan/deploy_agent_v2*.yaml` 移除 `PRESET_WRITABLE_ROOT`（agent-v2 env 块至此仅剩 secret 绑定）；`rg` 断言全部部署清单中 `PRESET_TEMPLATES_ROOT`/`PRESET_WRITABLE_ROOT` 零残留（SC-001）
 - [ ] T013 [P] [US2] `projects/game/agent_v2/README.md`：preset 持久化章节终态化（store 唯一事实源 + 使用时派生挂载；「已知限制」中可写副本重建语义条目按派生语义改写）
+- [ ] T035 [US2] （执行期用户指令 2026-09-11：按当前设计同步修改 dsh/demo）experimental/dsh/demo 迁移至 060 preset 派生语义：单测改经 store 记录 compose（模板 id 不再直连）、V2-2 共享挂载断言改 per-agent 派生挂载、default/无 preset 语义对齐 preset 必选（INVALID_ARGUMENT）、cordis.yml 删 user root、testplan deploy.yaml 移除 PRESET_WRITABLE_ROOT、场景断言同步
 
 **Checkpoint**: preset 全生命周期仅依赖 store；磁盘副本缺席不影响任何行为。
 
@@ -203,7 +204,7 @@
 
 - [ ] T032 `projects/game/testplan/`：新增/更新断言——`agent_v2_conversation_test.go`（member_view 帧到达断言：planner 首驱消费用户输入即达；工具 tool_result 帧后即时终态的 wire 序断言）、`agent_v2_game_test.go`（GetTeam `active_member` 阶段流转断言）、`agent_v2_preset_test.go`（CRUD→物化派生链路：无副本路径断言）；`projects/game/testplan/saolei_fixtures_test.go` 夹具一致性
 - [ ] T033 `projects/game/agent_v2/README.md` 全面终态化：env 推导/preset 派生/实时性（member_view、三面 settle）/激活成员/广播新格式/提示词分层——只表述终态（constitution 原则 VII），移除被取代机制的描述
-- [ ] T034 大型测试验收：加载 testplan skill 执行 `guitar run projects/game/testplan/system_test.yaml`（三 suite：game-system / game-disconnect / game-memory-down）——完整部署→测试→清理闭环，**全部用例通过**（任何 failed/flaky 修复后重跑直至全绿；仅构建通过不构成验收）
+- [ ] T034 大型测试验收：加载 testplan skill 执行 `guitar run projects/game/testplan/system_test.yaml`（三 suite：game-system / game-disconnect / game-memory-down）——完整部署→测试→清理闭环，**全部用例通过**（任何 failed/flaky 修复后重跑直至全绿；仅构建通过不构成验收）；T035 联动：执行 `guitar run experimental/dsh/demo/testplan/interface_test.yaml`（demo 迁移后 wire 面验收，review 2026-09-11 补入，同样全量通过）
 
 ---
 

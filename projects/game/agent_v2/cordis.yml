@@ -52,9 +52,10 @@
       - id: glm-5.3-flash
         contextWindow: 1000000
 - { id: desktop-bridge,  name: '@dominion/dsh-desktop-bridge' }
-# preset roster（specs/059-agent-v2-team-mode/research.md R3）：roots = 两个
-# 模板 system root（player/planner 池各一，trust: system，不可写不可删）+
-# 一个可写 user root（copy-then-patch 创作落点，第一个且唯一 user root）。
+# preset roster（specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
+# §3）：roots = 两个模板 system root（player/planner 池各一，trust: system，
+# 不可写不可删）；不再声明 user root——用户 preset 的组合在物化时从 store
+# 记录派生（§2），没有需要维护的可写副本。
 # includeUserRoot: false 保确定性（不扫机器 <dshHome>/.agent-presets）。
 # default 必填（roster Config schema required）但指向空 id：preset 选择在本
 # 服务是必选语义（UpdateAgent/物化必须显式给 preset），空 id 使无 id 的
@@ -69,13 +70,11 @@
         trust: system
       - path: !!js process.env.PRESET_TEMPLATES_ROOT + '/planner'  # planner 池模板（同上）
         trust: system
-      - path: !!js process.env.PRESET_WRITABLE_ROOT                # 容器临时可写层（第一个且唯一 user root）；store 为 source of truth，副本可从 store 记录重建
-        trust: user
-# preset 创作/编辑面（058 产出复用）：copy-then-patch + role 池记录；生产
-# 存储切换为 Mongo（game_agent_v2.presets，preset-authoring Store seam 的
-# Mongo 实现）。连接由宿主注入：凭据/URI 解析在 agent_v2 侧（presets.ts，
-# T006"Mongo 连接/凭据"模块），经 MONGO_URI 环境变量到达行配置——与
-# GLM_BASE_URL 注入同型的宿主注入模式，部署凭据逻辑不进通用插件。
+# preset 创作/编辑面（058 产出复用）：CRUD 只写 store（唯一事实源）+ role
+# 池记录；生产存储为 Mongo（game_agent_v2.presets，preset-authoring Store
+# seam 的 Mongo 实现）。连接由宿主注入：凭据/URI 解析在 agent_v2 侧
+# （presets.ts，T006"Mongo 连接/凭据"模块），经 MONGO_URI 环境变量到达行
+# 配置——与 GLM_BASE_URL 注入同型的宿主注入模式，部署凭据逻辑不进通用插件。
 - id: preset-authoring
   name: '@dominion/dsh-preset-authoring'
   config:
@@ -86,7 +85,7 @@
     # 模板行校验（T021）：池模板必须恰含本角色的工具插件行——工具与配套
     # 守则同生共死（specs/059-agent-v2-team-mode/contracts/preset-api.md §2；
     # dsh-plugins.md §5）。规则按模板 id 声明、包名对插件为不透明字符串，
-    # 场景词表留在本宿主配置；创建时校验失败 → INVALID_ARGUMENT，不落副本。
+    # 场景词表留在本宿主配置；创建时校验失败 → INVALID_ARGUMENT，不落任何产物。
     templateRules:
       player:
         required:

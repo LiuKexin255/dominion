@@ -18,10 +18,10 @@
  *   member instance's live prompt assembly (src/system-prompt.ts).
  * - PresetService handlers are the stateless configuration face (built by
  *   {@link buildPresetHandlers} over its own deps): preset CRUD delegates
- *   to the authoring plugin's `ctx.presetAuthoring` domain service
- *   (copy-then-patch creation over the roster, role-pooled records —
- *   specs/059-agent-v2-team-mode/contracts/preset-api.md), and the model
- *   catalog shares ctx.llm.listModels with UpdateTeam's validation.
+ *   to the authoring plugin's `ctx.presetAuthoring` domain service (store-only
+ *   role-pooled records; member compositions derive at use time —
+ *   specs/060-agent-v2-team-optimize/contracts/preset-derivation.md), and the
+ *   model catalog shares ctx.llm.listModels with UpdateTeam's validation.
  * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
  *   (`ctx.desktopBridge.handlers()`).
  */
@@ -86,8 +86,8 @@ export interface ModelCatalogEntry {
 
 /**
  * The collaborators the PresetService handlers consume: the preset domain
- * service (the authoring plugin's `ctx.presetAuthoring` — copy-then-patch
- * creation over the roster plus the role-pooled record store) and the
+ * service (the authoring plugin's `ctx.presetAuthoring` — store-only
+ * role-pooled record CRUD plus use-time composition derivation) and the
  * deployment model catalog. The catalog is a single seam so UpdateTeam's
  * validation and the ListModels RPC cannot drift apart. Faces are
  * structural so tests inject `vi.fn()` doubles (style/javascript.md Mock
@@ -232,9 +232,10 @@ function isSceneRole(value: string): value is PresetRole {
 }
 
 /**
- * The pool template a role's presets materialize from (copy-then-patch,
- * preset-api.md §2): the roster root layout pins the template directory
- * names (cordis.yml roots — presets-templates/{player,planner}).
+ * The pool template a role's presets derive their composition from
+ * (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2): the
+ * roster root layout pins the template directory names (cordis.yml roots —
+ * presets-templates/{player,planner}).
  */
 const ROLE_TEMPLATE: Record<PresetRole, string> = { player: "player", planner: "planner" };
 
@@ -754,8 +755,9 @@ const MAX_PAGE_SIZE = 1000;
  * collaborators (the preset authoring service + ListModels — served by the
  * same process as the AgentService but routed by the gateway without proxy
  * owner affinity, specs/051-agent-v2-dsh-migration/contracts/agent-api.md
- * §1/§4). Creation is copy-then-patch from the role's pool template
- * (preset-api.md §2); role is REQUIRED on create and immutable afterwards.
+ * §1/§4). Creation records the preset in the store over the role's pool
+ * template (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
+ * §1/§2); role is REQUIRED on create and immutable afterwards.
  * Exported for unit tests so the gRPC status mapping is asserted without
  * binding a port.
  */
@@ -778,9 +780,11 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
-      // role is REQUIRED on create and decides the pool template the copy
-      // materializes from (preset-api.md §2). The wire value is a plain
-      // string; this scene host validates the vocabulary.
+      // role is REQUIRED on create and decides the pool template the preset
+      // derives its composition over
+      // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2).
+      // The wire value is a plain string; this scene host validates the
+      // vocabulary.
       const role = call.request.role ?? "";
       if (!isSceneRole(role)) {
         callback({
@@ -790,9 +794,9 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         return;
       }
       // create_time/update_time are server-maintained (AIP-133); a caller
-      // value in the body is ignored. An empty persona skips the
-      // persona patch, so the copy carries the pool template's persona row
-      // (the role default base).
+      // value in the body is ignored. An empty persona is stored as-is, so
+      // the derived composition keeps the pool template's persona row (the
+      // role default base).
       void deps.authoring
         .create({
           id: presetId,
@@ -923,10 +927,10 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
-      // No fan-out: an already-materialized team keeps its
-      // materialization-time composition (the standing mount outlives the
-      // copy's deletion, roster README "joined sessions keep their standing
-      // mount").
+      // No fan-out: an already-materialized team keeps its derived
+      // composition — each session's mount is owned by its agent and
+      // outlives the store record's deletion
+      // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2).
       void deps.authoring.remove(parsed.preset).then(
         () => callback(null, {}),
         (err: unknown) => callback(toServiceError(err)),
