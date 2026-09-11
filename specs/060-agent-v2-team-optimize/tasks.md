@@ -164,9 +164,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/contracts/team-api.md`（§4）；`specs/060-agent-v2-team-optimize/data-model.md`（§7）；`specs/060-agent-v2-team-optimize/research.md`（R8）；`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md`（§1 广播契约基线——本 phase 修订其格式条款）
 
-- [ ] T026 [P] [US6] `common/js/dsh-plugins/team/src/broadcast.ts`：`messageBody`/`toolResultBody` 移除 reasoning 分支（仅 text 原样 + 其余块无损 JSON）；`renderBroadcast` 改单一 XML 形态（删头行；工具单元 `context:` 移入包裹体可选行——终态格式见 data-model.md §7）；移除 `summarize`/`boundContextSummary` 引用；`broadcast.test.ts` 终态格式用例（think 缺席/正文唯一/全文保持/context 行）
-- [ ] T027 [P] [US6] `common/js/dsh-plugins/team/src/section.ts`：广播格式约定按终态格式改写（单一标签对形态；工具单元 context 行说明）+ `team.test.ts`/`section` 相关用例更新
-- [ ] T028 [US6] 夹具与断言联动：`projects/game/fake-llm/service/testdata/team_planner.yaml`、`team_player.yaml` 锚点核对（`<player-message>`/`<player-tool-call>` 标签锚不变，头行相关关键词如有则清理）；`projects/game/testplan/agent_v2_conversation_test.go` 等处广播文本断言按新格式更新；成员视角 relay 呈现断言（`user: [sender]` 前缀 + 注入原文，正文仅出现一次、不剥离 XML 标签）
+- [X] T026 [P] [US6] `common/js/dsh-plugins/team/src/broadcast.ts`：`messageBody`/`toolResultBody` 移除 reasoning 分支（仅 text 原样 + 其余块无损 JSON）；`renderBroadcast` 改单一 XML 形态（删头行；工具单元 `context:` 移入包裹体可选行——终态格式见 data-model.md §7）；移除 `summarize`/`boundContextSummary` 引用；`broadcast.test.ts` 终态格式用例（think 缺席/正文唯一/全文保持/context 行）
+- [X] T027 [P] [US6] `common/js/dsh-plugins/team/src/section.ts`：广播格式约定按终态格式改写（单一标签对形态；工具单元 context 行说明）+ `team.test.ts`/`section` 相关用例更新
+- [X] T028 [US6] 夹具与断言联动：`projects/game/fake-llm/service/testdata/team_planner.yaml`、`team_player.yaml` 锚点核对（`<player-message>`/`<player-tool-call>` 标签锚不变，头行相关关键词如有则清理）；`projects/game/testplan/agent_v2_conversation_test.go` 等处广播文本断言按新格式更新；成员视角 relay 呈现断言（`user: [sender]` 前缀 + 注入原文，正文仅出现一次、不剥离 XML 标签）
 
 **Checkpoint**: 广播注入文本无 think、无重复标注；成员视角 relay 呈现同步净化。
 
