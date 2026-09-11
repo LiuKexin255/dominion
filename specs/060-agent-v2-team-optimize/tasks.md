@@ -53,11 +53,11 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/contracts/deploy-env.md`；`specs/060-agent-v2-team-optimize/contracts/const-lib.md`；`specs/060-agent-v2-team-optimize/research.md`（R1/R3/R11）
 
-- [ ] T004 [US1] `projects/infra/deploy/runtime/k8s/builder.go`：stateful 与 stateless 两处保留变量块追加注入 `DOMINION_ARTIFACT_DIR`（值 = `/dominion/{app}/{service}` 产物目录，由 workload 的 app/service 构造；变量名引用 `common/gopkg/constants` 常量；平台值追加在用户 env 之后 last-wins，对齐 `DOMINION_SECRET_DIR` 语义）；`projects/infra/deploy/runtime/k8s/executor.go` 的 `ReservedEnvironmentVariableNames` 清单追加 `DOMINION_ARTIFACT_DIR`（FR-001 保留名校验面）；`projects/infra/deploy/runtime/k8s/builder_test.go` 更新 env 计数/顺序断言并新增用户同名覆盖用例（对齐既有 DOMINION_SECRET_DIR 覆盖用例形态，L1906-1955 同型）、`executor_test.go` 的 `want` 清单同步
-- [ ] T005 [P] [US1] `tools/release/deploy/README.md`：保留变量清单（§服务环境变量）补入 `DOMINION_ARTIFACT_DIR` + 用途说明（声明产物放置目录；用户 env 不可覆盖）
-- [ ] T006 [P] [US1] `projects/game/agent_v2/src/dsh.ts`：新增 preset 模板根解析——`PRESET_TEMPLATES_ROOT` 显式覆盖 > `${DOMINION_ARTIFACT_DIR}/preset-templates` 派生 > 皆缺 boot fail-loud（错误信息含两个变量名；boot 前写入组合 env 的既有宿主注入模式）；变量名经 `@dominion/common-js-constants` 引用；`projects/game/agent_v2/src/dsh.test.ts` 新增三分支用例（T004 先行：派生链依赖其注入语义）
-- [ ] T007 [US1] 移除 `PRESET_TEMPLATES_ROOT` 声明：`projects/game/deploy.yaml`（agent-v2 env 块）与 `projects/game/testplan/deploy_agent_v2.yaml`、`deploy_agent_v2_drop.yaml`、`deploy_agent_v2_memory_down.yaml`（`PRESET_WRITABLE_ROOT` 行保留至 US2 的 T012 原子移除；本任务后 boot 依赖 T004+T006 派生链）；`rg` 断言生产与 testplan 部署清单中 `PRESET_TEMPLATES_ROOT` 零残留（SC-001）
-- [ ] T008 [US1] `projects/game/agent_v2/README.md`：模型端点/凭据章节之外补产物根派生说明（`DOMINION_ARTIFACT_DIR` 派生 + 显式覆盖 + fail-loud；终态表述，constitution 原则 VII）
+- [X] T004 [US1] `projects/infra/deploy/runtime/k8s/builder.go`：stateful 与 stateless 两处保留变量块追加注入 `DOMINION_ARTIFACT_DIR`（值 = `/dominion/{app}/{service}` 产物目录，由 workload 的 app/service 构造；变量名引用 `common/gopkg/constants` 常量；平台值追加在用户 env 之后 last-wins，对齐 `DOMINION_SECRET_DIR` 语义）；`projects/infra/deploy/runtime/k8s/executor.go` 的 `ReservedEnvironmentVariableNames` 清单追加 `DOMINION_ARTIFACT_DIR`（FR-001 保留名校验面）；`projects/infra/deploy/runtime/k8s/builder_test.go` 更新 env 计数/顺序断言并新增用户同名覆盖用例（对齐既有 DOMINION_SECRET_DIR 覆盖用例形态，L1906-1955 同型）、`executor_test.go` 的 `want` 清单同步
+- [X] T005 [P] [US1] `tools/release/deploy/README.md`：保留变量清单（§服务环境变量）补入 `DOMINION_ARTIFACT_DIR` + 用途说明（声明产物放置目录；用户 env 不可覆盖）
+- [X] T006 [P] [US1] `projects/game/agent_v2/src/dsh.ts`：新增 preset 模板根解析——`PRESET_TEMPLATES_ROOT` 显式覆盖 > `${DOMINION_ARTIFACT_DIR}/preset-templates` 派生 > 皆缺 boot fail-loud（错误信息含两个变量名；boot 前写入组合 env 的既有宿主注入模式）；变量名经 `@dominion/common-js-constants` 引用；`projects/game/agent_v2/src/dsh.test.ts` 新增三分支用例（T004 先行：派生链依赖其注入语义）
+- [X] T007 [US1] 移除 `PRESET_TEMPLATES_ROOT` 声明：`projects/game/deploy.yaml`（agent-v2 env 块）与 `projects/game/testplan/deploy_agent_v2.yaml`、`deploy_agent_v2_drop.yaml`、`deploy_agent_v2_memory_down.yaml`（`PRESET_WRITABLE_ROOT` 行保留至 US2 的 T012 原子移除；本任务后 boot 依赖 T004+T006 派生链）；`rg` 断言生产与 testplan 部署清单中 `PRESET_TEMPLATES_ROOT` 零残留（SC-001）
+- [X] T008 [US1] `projects/game/agent_v2/README.md`：模型端点/凭据章节之外补产物根派生说明（`DOMINION_ARTIFACT_DIR` 派生 + 显式覆盖 + fail-loud；终态表述，constitution 原则 VII）
 
 **Checkpoint**: 部署清单不再声明模板根；boot 经平台变量派生（`PRESET_WRITABLE_ROOT` 仍在位，US2 收敛）。
 
