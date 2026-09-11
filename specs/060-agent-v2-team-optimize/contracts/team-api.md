@@ -30,7 +30,8 @@ MemberViewEvent {
 
 ## 3. 工具结果实时性（FR-007，前端消费契约）
 
-- 服务端帧序列不变（`block_start`〔tool-call 无 toolId〕→ `tool-call-delta` → `block_end`〔toolId/name/args 首次完整浮现〕→ `team_message`〔step 固化，toolCall 块 RUNNING〕→ `tool_result`〔toolId + 终态 + result〕；时序依据官方 loop：assistant/message 先于 tool/result，[research.md](../research.md) R6）。
+- 服务端帧序列不变（`block_start`〔tool-call 无 toolId〕→ `tool-call-delta` → `block_end`〔toolId/name/args 首次完整浮现〕→ `team_message`〔step 固化〕→ `tool_result`〔toolId + 终态 + result〕；时序依据官方 loop：assistant/message 先于 tool/result，[research.md](../research.md) R6）。
+- **fixation 状态时序**：`team_message` 帧与 `ListTeamMessages` 共享同一 entry 对象（`projects/game/agent_v2/src/history.ts` 的 `appendMerge`/`settleToolResult`），其 toolCall 块状态取决于帧序列化时刻——通常为 `RUNNING`；同步失败工具（插件进程内拒绝，无桌面/网络往返）的 `tool/result` settle 先于该帧序列化时，帧携带已 settle 的终态，且该终态 MUST 与该工具的 `tool_result` 帧一致。帧序不变量（`team_message` 先于 `tool_result`）不变。
 - **客户端义务**：`tool_result` 帧必须在一次归约内对**全部三个投影面**幂等终态化——live 草稿、归并序列条目、成员视角条目（按 toolId 匹配 RUNNING 块）——不得在任一面命中后跳过其余面。
 - 既有收敛语义（断开投影、List 回填、并发流按锚去重）不变。
 

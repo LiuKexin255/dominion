@@ -627,9 +627,20 @@ func assertTeamMemberTurnWellFormed(t *testing.T, sessionName string, turn *team
 // assertTeamToolResultWireOrder checks the server's tool-call frame order and
 // pairing contract (specs/060-agent-v2-team-optimize/contracts/team-api.md
 // §3): for every tool call the stream carries, block_end surfaces the
-// provider-issued tool id first, the step's team_message fixation (the
-// toolCall block still RUNNING, same tool id) follows, and only then does the
-// tool_result frame settle it with the terminal status/result.
+// provider-issued tool id first, the step's team_message fixation (same tool
+// id) follows, and only then does the tool_result frame settle it with the
+// terminal status/result.
+//
+// The fixation's tool-call status is normally RUNNING. When a tool fails
+// synchronously inside its plugin (no desktop/network round trip), its settle
+// can precede grpc-js serializing the fixation write: the frame and
+// ListTeamMessages share one entry object by design
+// (projects/game/agent_v2/src/history.ts appendMerge + settleToolResult), so
+// the serialized fixation may already carry the terminal status. The frame
+// order is unaffected (tool_result still follows the fixation) and clients
+// settle idempotently, so the checker accepts RUNNING or the terminal status
+// the tool's own tool_result frame reports; the two MUST agree whenever the
+// fixation carries a terminal status.
 //
 // Precondition: every member turn in the stream settled COMPLETED. A
 // CANCELED/ABORTED turn may legitimately interrupt a tool call without its
@@ -640,7 +651,9 @@ func assertTeamToolResultWireOrder(t *testing.T, sessionName string, events []*g
 
 	blockEndAt := map[string]int{}
 	fixationAt := map[string]int{}
+	fixationStatus := map[string]game.ToolStatus{}
 	settledAt := map[string]int{}
+	settledStatus := map[string]game.ToolStatus{}
 	for i, event := range events {
 		if event.GetSession() != sessionName {
 			t.Errorf("frame %d session = %q, want %q", i, event.GetSession(), sessionName)
@@ -673,10 +686,13 @@ func assertTeamToolResultWireOrder(t *testing.T, sessionName string, events []*g
 				if _, ok := blockEndAt[call.GetToolId()]; !ok {
 					t.Errorf("frame %d: team_message fixes tool %q before its block_end", i, call.GetToolId())
 				}
-				if call.GetStatus() != game.ToolStatus_TOOL_STATUS_RUNNING {
-					t.Errorf("frame %d: team_message fixation for tool %q status = %v, want RUNNING", i, call.GetToolId(), call.GetStatus())
+				if status := call.GetStatus(); status != game.ToolStatus_TOOL_STATUS_RUNNING &&
+					status != game.ToolStatus_TOOL_STATUS_SUCCEEDED &&
+					status != game.ToolStatus_TOOL_STATUS_FAILED {
+					t.Errorf("frame %d: team_message fixation for tool %q status = %v, want RUNNING or a terminal status", i, call.GetToolId(), status)
 				}
 				fixationAt[call.GetToolId()] = i
+				fixationStatus[call.GetToolId()] = call.GetStatus()
 			}
 		case event.GetToolResult() != nil:
 			result := event.GetToolResult()
@@ -691,6 +707,7 @@ func assertTeamToolResultWireOrder(t *testing.T, sessionName string, events []*g
 				t.Errorf("frame %d: tool_result for %q precedes its team_message fixation", i, result.GetToolId())
 			}
 			settledAt[result.GetToolId()] = i
+			settledStatus[result.GetToolId()] = result.GetStatus()
 		}
 	}
 	for id, endAt := range blockEndAt {
@@ -706,6 +723,9 @@ func assertTeamToolResultWireOrder(t *testing.T, sessionName string, events []*g
 		}
 		if fixation < endAt || settled < fixation {
 			t.Errorf("tool %q frame order = block_end:%d team_message:%d tool_result:%d, want block_end < team_message < tool_result", id, endAt, fixation, settled)
+		}
+		if status := fixationStatus[id]; status != game.ToolStatus_TOOL_STATUS_RUNNING && status != settledStatus[id] {
+			t.Errorf("tool %q: team_message fixation status = %v, want RUNNING or the tool_result status %v", id, status, settledStatus[id])
 		}
 	}
 	for id := range settledAt {
@@ -777,11 +797,13 @@ func assertTeamStreamWellFormed(t *testing.T, sessionName string, events []*game
 
 // teamHistoryMessagesEquivalent compares one streamed team_message payload
 // with the listed entry: role and every block's native content must agree. A
-// tool-call block may differ in its terminal settlement — the frame is
-// emitted when the entry is appended (status RUNNING) while the List read
-// observes the settled status/result backfilled by tool/result
-// (team-api.md §3.2); the terminal state travels through the tool_result
-// frames and the member view, so only id/name/args are compared here.
+// tool-call block's terminal settlement is excluded — the frame carries the
+// shared entry object (projects/game/agent_v2/src/history.ts appendMerge), so
+// its status may read RUNNING or an already-settled terminal state depending
+// on when the frame was serialized, while the List read observes the settled
+// status/result backfilled by tool/result
+// (specs/060-agent-v2-team-optimize/contracts/team-api.md §3); the comparison
+// follows the entry's stable content — only id/name/args are compared here.
 func teamHistoryMessagesEquivalent(streamed, listed *game.HistoryMessage) bool {
 	if streamed.GetRole() != listed.GetRole() {
 		return false
