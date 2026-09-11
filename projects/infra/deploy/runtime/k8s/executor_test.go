@@ -17,6 +17,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"dominion/common/gopkg/constants"
 	"dominion/projects/infra/deploy/domain"
 )
 
@@ -848,6 +849,7 @@ func TestK8sRuntime_ReservedEnvironmentVariableNames(t *testing.T) {
 		reservedEnvNameServiceApp,
 		reservedEnvNameDominionEnvironment,
 		reservedEnvNamePodNamespace,
+		constants.EnvDominionArtifactDir,
 		envTLSCertFile,
 		envTLSKeyFile,
 		envTLSCAFile,

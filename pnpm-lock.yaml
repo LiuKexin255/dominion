@@ -904,6 +904,9 @@ importers:
       '@dominion/common-js-bootstrap':
         specifier: workspace:*
         version: link:../../../common/js/bootstrap
+      '@dominion/common-js-constants':
+        specifier: workspace:*
+        version: link:../../../common/js/constants
       '@dominion/common-js-grpc-otel':
         specifier: workspace:*
         version: link:../../../common/js/grpc/otel

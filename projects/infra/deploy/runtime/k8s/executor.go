@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dominion/common/gopkg/constants"
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
@@ -462,6 +463,7 @@ func (r *K8sRuntime) ReservedEnvironmentVariableNames(_ context.Context) ([]stri
 		reservedEnvNameServiceApp,
 		reservedEnvNameDominionEnvironment,
 		reservedEnvNamePodNamespace,
+		constants.EnvDominionArtifactDir,
 		envTLSCertFile,
 		envTLSKeyFile,
 		envTLSCAFile,

@@ -8,6 +8,7 @@
     "types": ["node"],
     "paths": {
       "@dominion/common-js-bootstrap": ["../../../common/js/bootstrap/src/index.js"],
+      "@dominion/common-js-constants": ["../../../common/js/constants/src/index.js"],
       "@dominion/common-js-grpc-otel": ["../../../common/js/grpc/otel/src/index.js"],
       "@dominion/common-js-grpc-resolver": ["../../../common/js/grpc/resolver/src/index.js"],
       "@dominion/common-js-logs": ["../../../common/js/logs/src/index.js"],

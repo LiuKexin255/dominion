@@ -218,6 +218,24 @@ Mongo 连接解析（`projects/game/agent_v2/src/presets.ts`）：
    （`common/gopkg/mongo/credentials.go`）字节一致，同一实例同一
    认证（`DOMINION_ENVIRONMENT` 参与派生，缺省 `default`）。
 
+## preset 模板根与环境变量 DOMINION_ARTIFACT_DIR
+
+roster 的两个模板 system root（player/planner 池）扫描**模板根**下的
+`player`/`planner` 子目录；模板数据作为部署产物随镜像分发在
+`/dominion/game/agent-v2/preset-templates`。模板根在 boot 前由
+`projects/game/agent_v2/src/dsh.ts` 解析并写回组合 env（`cordis.yml` 的
+`process.env.PRESET_TEMPLATES_ROOT` 表达式读取解析结果）：
+
+1. `PRESET_TEMPLATES_ROOT` 已设则直用（本地/测试显式覆盖）。
+2. 否则由 deploy 平台注入的 `DOMINION_ARTIFACT_DIR`（产物放置目录，
+   `/dominion/{app}/{service}`，见 `tools/release/deploy/README.md`
+   §环境变量配置）派生 `${DOMINION_ARTIFACT_DIR}/preset-templates`。
+3. 两者皆缺时 boot fail-loud（错误信息含两个变量名，退出码 1）——模板根
+   是 roster system roots 的必需输入。
+
+部署清单不声明模板根（默认设置省略；
+`specs/060-agent-v2-team-optimize/contracts/deploy-env.md` §2/§3）。
+
 ## 模型端点与凭据配置
 
 启动时的解析顺序（`projects/game/agent_v2/src/dsh.ts`，

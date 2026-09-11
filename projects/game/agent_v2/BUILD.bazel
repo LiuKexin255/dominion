@@ -51,6 +51,7 @@ ts_project(
         # assembleContextFor + renderPrompt at runtime for GetTeamMember.
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@dominion/common-js-bootstrap",
+        ":node_modules/@dominion/common-js-constants",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
@@ -141,6 +142,7 @@ artifact_pkg_js(
     ts_project = ":server_lib",
     runtime_deps = [
         "//common/js/bootstrap:runtime_pkg",
+        "//common/js/constants:runtime_pkg",
         # The composed rows and the preset-row packages resolve by bare name
         # from this service's node_modules — the workspace packages ship
         # through runtime_deps (npm_deps is a no-op for them).
@@ -194,6 +196,7 @@ vitest_test(
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@dominion/common-js-bootstrap",
+        ":node_modules/@dominion/common-js-constants",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",

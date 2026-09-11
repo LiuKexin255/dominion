@@ -3,21 +3,23 @@
  *
  * Prepares the configuration surface the cordis.yml `!!js` expressions read
  * (GLM endpoint resolution + GLM API token injection, research
- * specs/049-agent-v2-dsh-init/research.md D9), then boots the composition
- * manifest (direct-composed dsh core plugins + the saolei plugin set,
- * specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5) in-process
- * (B1 embedding, specs/049-agent-v2-dsh-init/spec.md FR-002). Resolver and
- * boot failures are fail-loud — a half-started composition never serves
- * traffic; a missing GLM token is tolerated: the host boots WITHOUT
- * `GLM_API_KEY` and model requests then skip the Authorization header
- * (specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §3 义务 6).
- * Diagnostics never contain the token value (specs/049-agent-v2-dsh-init/
- * spec.md SC-004).
+ * specs/049-agent-v2-dsh-init/research.md D9; preset template root resolution,
+ * specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2), then boots the
+ * composition manifest (direct-composed dsh core plugins + the saolei plugin
+ * set, specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5)
+ * in-process (B1 embedding, specs/049-agent-v2-dsh-init/spec.md FR-002).
+ * Resolver, template-root, and boot failures are fail-loud — a half-started
+ * composition never serves traffic; a missing GLM token is tolerated: the
+ * host boots WITHOUT `GLM_API_KEY` and model requests then skip the
+ * Authorization header (specs/049-agent-v2-dsh-init/contracts/
+ * glm-llm-plugin.md §3 义务 6). Diagnostics never contain the token value
+ * (specs/049-agent-v2-dsh-init/spec.md SC-004).
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { boot } from "@deepseek-ai/dsh-app-boot";
+import { ENV_DOMINION_ARTIFACT_DIR } from "@dominion/common-js-constants";
 import { error, info, warn } from "@dominion/common-js-logs";
 import { createResolver } from "@dominion/common-js-resolver";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
@@ -37,6 +39,12 @@ export const GLM_SECRET_FILE = "glm-api-token";
 
 /** DOMINION_SECRET_DIR fallback, matching the deployment secret-mount convention (specs/049-agent-v2-dsh-init/spec.md FR-008). */
 const SECRET_DIR_FALLBACK = "/etc/secrets";
+
+/** Explicit template-root override env, read here and by cordis.yml (specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2). */
+const PRESET_TEMPLATES_ROOT_ENV = "PRESET_TEMPLATES_ROOT";
+
+/** Shipped pool-template directory under $DOMINION_ARTIFACT_DIR (agent_v2/BUILD.bazel artifact_pkg_js data). */
+const PRESET_TEMPLATES_DIR_NAME = "preset-templates";
 
 /** Diagnostic prefix shared by every fail-loud message below. */
 const BIN_NAME = "game-agent-v2";
@@ -68,7 +76,8 @@ export function cordisConfigPath(): string {
 }
 
 /**
- * Inject `GLM_API_KEY` and `GLM_BASE_URL`, then boot the composition.
+ * Inject `GLM_API_KEY`, `GLM_BASE_URL`, and the resolved
+ * `PRESET_TEMPLATES_ROOT`, then boot the composition.
  *
  * The endpoint resolution must precede `boot` because the cordis.yml `!!js`
  * expression is evaluated synchronously while the Loader mounts the adapter
@@ -76,6 +85,9 @@ export function cordisConfigPath(): string {
  * single host-side spot and injected as an env value — the plugin itself does
  * no file IO (the adapter cookbook convention:
  * https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-an-llm-adapter.md).
+ * The template root is resolved the same way: the roster rows read
+ * `process.env.PRESET_TEMPLATES_ROOT` when the agent-presets row mounts
+ * (specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2).
  *
  * @param deps - optional test doubles for the resolver, boot, env, and secret reader.
  * @returns the settled composition context.
@@ -89,6 +101,7 @@ export async function bootDsh(deps: DshBootDeps = {}): Promise<DshContext> {
     if (apiKey !== undefined) {
       env.GLM_API_KEY = apiKey;
     }
+    env[PRESET_TEMPLATES_ROOT_ENV] = resolvePresetTemplatesRoot(env);
 
     const configPath = cordisConfigPath();
     // boot's 5th parameter anchors bare plugin-name resolution at this
@@ -133,6 +146,30 @@ async function resolveBaseURL(deps: DshBootDeps): Promise<string> {
     return `http://${endpoints[0]}/v1`;
   }
   return GLM_DEFAULT_BASE_URL;
+}
+
+/**
+ * Resolve the roster template root
+ * (specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2): an explicit
+ * `PRESET_TEMPLATES_ROOT` wins for local/test runs, otherwise it derives
+ * `${DOMINION_ARTIFACT_DIR}/preset-templates` from the platform-injected
+ * artifact directory. With neither set the composition cannot resolve its
+ * system roots, so the resolution throws and the boot exits fail-loud; the
+ * error names both variables. Blank values count as unset, consistent with
+ * the GLM credential resolution above.
+ */
+function resolvePresetTemplatesRoot(env: Record<string, string | undefined>): string {
+  const override = env[PRESET_TEMPLATES_ROOT_ENV]?.trim();
+  if (override) {
+    return override;
+  }
+  const artifactDir = env[ENV_DOMINION_ARTIFACT_DIR]?.trim();
+  if (artifactDir) {
+    return path.join(artifactDir, PRESET_TEMPLATES_DIR_NAME);
+  }
+  throw new Error(
+    `cannot resolve preset templates root: set ${PRESET_TEMPLATES_ROOT_ENV} or provide ${ENV_DOMINION_ARTIFACT_DIR}`,
+  );
 }
 
 /**

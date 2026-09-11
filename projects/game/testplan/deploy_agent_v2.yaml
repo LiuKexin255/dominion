@@ -60,12 +60,9 @@ services:
         # bootstrap resolves it to http://{endpoint}/v1
         # (specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §4).
         GLM_LLM_TARGET: dominion:///game/fake-llm:8080
-        # preset roster roots (specs/059-agent-v2-team-mode/research.md R3):
-        # the template system roots scan the shipped preset-templates data,
-        # and the writable user root is a fixed path on the container's
-        # temporary writable layer (Pod 重建即丢 — store 为 source of truth,
-        # 副本可从 store 记录重建; roster-verification §5 对照 1 precedent).
-        PRESET_TEMPLATES_ROOT: /dominion/game/agent-v2/preset-templates
+        # The writable user root is a fixed path on the container's temporary
+        # writable layer (Pod 重建即丢 — store 为 source of truth, 副本可从
+        # store 记录重建; roster-verification §5 对照 1 precedent).
         PRESET_WRITABLE_ROOT: /var/lib/game-agent-v2/presets
   # Same-hostname path split: web serves `/`, the gateway keeps /api/v1/ and
   # /api/v2/ (Gateway API merges same-hostname routes by longest PathPrefix —

@@ -464,4 +464,5 @@ services:
 ```
 
 - key 须匹配 `^[a-zA-Z_][a-zA-Z0-9_]*$`。
-- 以下为平台保留变量名，不可使用：`SERVICE_APP`、`DOMINION_ENVIRONMENT`、`POD_NAMESPACE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_CA_FILE`、`TLS_SERVER_NAME`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`DOMINION_SECRET_DIR`、`DOMINION_CONFIG_DIR`。
+- 以下为平台保留变量名，不可使用：`SERVICE_APP`、`DOMINION_ENVIRONMENT`、`POD_NAMESPACE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_CA_FILE`、`TLS_SERVER_NAME`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`DOMINION_SECRET_DIR`、`DOMINION_CONFIG_DIR`、`DOMINION_ARTIFACT_DIR`。
+- `DOMINION_ARTIFACT_DIR` 为平台自动注入的产物放置目录（`/dominion/{app}/{service}`，见 §服务镜像构建）：服务据此定位镜像内自带数据；用户 `env` 同名声明被平台值覆盖（注入顺序在用户 env 之后，K8s last-wins）。

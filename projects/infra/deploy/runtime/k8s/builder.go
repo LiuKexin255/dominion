@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"dominion/common/gopkg/constants"
 	"dominion/projects/infra/deploy/domain"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -68,6 +69,10 @@ const (
 	configMountPath = "/mnt/dominion/config"
 	// envConfigDir 为 Config 挂载目录环境变量名（平台保留，用户 env 不可覆盖）。
 	envConfigDir = "DOMINION_CONFIG_DIR"
+
+	// artifactDirRoot 为打包工具放置服务产物的容器内根目录；产物目录即
+	// artifactDirRoot/{app}/{service}（tools/release/deploy/README.md §服务镜像构建）。
+	artifactDirRoot = "/dominion"
 
 	// healthProbe 常量为用户服务容器探针的固定约定端点与参数
 	// （specs/052-deploy-health-probe/contracts/deploy-probe.md §2）。
@@ -161,6 +166,7 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
+		corev1.EnvVar{Name: constants.EnvDominionArtifactDir, Value: artifactDirPath(workload.App, workload.ServiceName)},
 	)
 
 	// TLS 注入分为两部分：
@@ -336,6 +342,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
+		corev1.EnvVar{Name: constants.EnvDominionArtifactDir, Value: artifactDirPath(workload.App, workload.ServiceName)},
 	)
 
 	// 服务端证书仅当 TLSEnabled 时注入；客户端 CA 证书和域名始终注入。
@@ -1049,6 +1056,13 @@ func generateStablePassword(inputs ...string) string {
 	}
 
 	return string(encoded)
+}
+
+// artifactDirPath 返回服务产物在容器内的放置目录 /dominion/{app}/{service}
+// （打包布局约定见 tools/release/deploy/README.md §服务镜像构建；
+// specs/060-agent-v2-team-optimize/contracts/deploy-env.md §1）。
+func artifactDirPath(app, service string) string {
+	return filepath.Join(artifactDirRoot, app, service)
 }
 
 // buildSortedUserEnv 将用户环境变量按 key 字典序排列后返回。

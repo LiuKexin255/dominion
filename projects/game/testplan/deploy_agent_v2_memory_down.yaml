@@ -40,7 +40,6 @@ services:
       name: agent-v2-test
       env:
         GLM_LLM_TARGET: dominion:///game/fake-llm:8080
-        PRESET_TEMPLATES_ROOT: /dominion/game/agent-v2/preset-templates
         PRESET_WRITABLE_ROOT: /var/lib/game-agent-v2/presets
   - artifact:
       path: //projects/game/web/server/service.yaml
