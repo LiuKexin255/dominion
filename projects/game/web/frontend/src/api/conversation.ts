@@ -1,10 +1,11 @@
 // /api/v2 对话 API 客户端（team 面，契约
 // specs/059-agent-v2-team-mode/contracts/team-api.md）。sendStream 以 fetch +
 // ReadableStream 消费 team 流 NDJSON（EventSource 不适用——POST body）；流
-// 从发起持续至 team 静止，承载成员事件帧与 team_message 帧双帧
-// （team-api.md §3.1/§3.2）。全部类型为 protojson 投影：camelCase 字段名、
-// 枚举输出名字符串、oneof 展平为可选字段——未知 oneof 分支被消费端忽略
-// （proto3 forward-compat）。
+// 从发起持续至 team 静止，承载成员事件帧与 team_message/member_view 帧
+// （team-api.md §3.1/§3.2；member_view 增量修订见
+// specs/060-agent-v2-team-optimize/contracts/team-api.md §2）。全部类型为
+// protojson 投影：camelCase 字段名、枚举输出名字符串、oneof 展平为可选
+// 字段——未知 oneof 分支被消费端忽略（proto3 forward-compat）。
 
 // ─── 流事件（ChatEvent，team-api.md §3.2 protojson 投影） ───────────────────
 
@@ -73,6 +74,13 @@ export interface ChatEvent {
   // Team-level merged-sequence frame (team-api.md §3.2): {member, message,
   // seq} identical to a ListTeamMessages element; no outer member field.
   teamMessage?: TeamMessage
+  // Team-level member-view frame (specs/060-agent-v2-team-optimize/contracts/
+  // team-api.md §2): {member, sender, message} — a member consumed an input
+  // (user input or a broadcast relay) and it entered that member's view; no
+  // outer member field. message is the same projection ListMemberMessages
+  // serves for the entry (ROLE_USER, sender annotated by the sender field);
+  // messageId is the client-side idempotency anchor.
+  memberView?: { member?: string; sender?: string; message: HistoryMessage }
   turnStart?: Record<string, never>
   blockStart?: {
     index: number

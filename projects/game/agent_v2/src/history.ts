@@ -42,6 +42,7 @@ import type { BlockEndEvent } from "../agent_v2_types/projects/game/v2/BlockEndE
 import type { ToolResultEvent } from "../agent_v2_types/projects/game/v2/ToolResultEvent.js";
 import type { ToolStatus } from "../agent_v2_types/projects/game/v2/ToolStatus.js";
 import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/v2/TeamMessage.js";
+import type { MemberViewEvent } from "../agent_v2_types/projects/game/v2/MemberViewEvent.js";
 import type { DshContext } from "./dsh.js";
 
 /**
@@ -333,8 +334,9 @@ export function usageToProto(usage: DshTokenUsage | undefined): {
  * The session's team history projections (specs/059-agent-v2-team-mode/
  * data-model.md §2): the merged team sequence plus the two member views.
  * Every appended merge entry fans out as a `team_message` frame carrying the
- * same entry object, so the stream anchor and the List projection can never
- * diverge (same source, same seq).
+ * same entry object, and every member-view append fans out a `member_view`
+ * frame carrying the same view projection object, so the stream frames and
+ * the List projections can never diverge (same source, same value).
  *
  * The projection is session-lifetime state held by the materialized team
  * entry: a refresh builds a fresh TeamHistory, which IS the short-term memory
@@ -393,7 +395,11 @@ export class TeamHistory {
    * Append one user message recorded in a member's own log to that member's
    * view: source `user` = the user's input; a `team-broadcast` source = a
    * relayed other-member message annotated with its sender (contracts/
-   * team-api.md §5). Other source kinds have no view projection.
+   * team-api.md §5). Other source kinds have no view projection. The append
+   * fans out a `member_view` frame in the same write, so web clients see the
+   * consumption (the input entering this member's view) in real time instead
+   * of waiting for a ListMemberMessages backfill
+   * (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
    */
   appendMemberViewUser(role: MemberRole, event: UserMessageEvent): void {
     const source = event.data.source;
@@ -410,10 +416,10 @@ export class TeamHistory {
       return;
     }
     const message = this.newMessage("ROLE_USER", blocks);
-    this.views[role].push({
-      message,
-      sender: source.kind === "team-broadcast" ? broadcastSender(source.role) : "user",
-    });
+    const sender = source.kind === "team-broadcast" ? broadcastSender(source.role) : "user";
+    this.views[role].push({ message, sender });
+    const frame: MemberViewEvent = { member: role, sender, message };
+    this.sink({ session: this.sessionName, memberView: frame });
   }
 
   /**

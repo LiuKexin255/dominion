@@ -63,6 +63,7 @@ function payloadOf(event: ChatEvent): string {
   if (event.turnEnd !== undefined) return "turnEnd";
   if (event.toolResult !== undefined) return "toolResult";
   if (event.teamMessage !== undefined) return "teamMessage";
+  if (event.memberView !== undefined) return "memberView";
   return "";
 }
 
@@ -239,6 +240,53 @@ describe("TeamHistory", () => {
     expect(view[0]?.message.blocks[0]?.text?.content).toBe("[player] 已点击");
   });
 
+  it("fans out a member_view frame when a user input enters the member's view", () => {
+    const { history, frames } = createHistory();
+    const direct: UserMessageEvent = {
+      type: "user/message",
+      data: {
+        id: "m-direct",
+        content: [{ type: "text", text: "用户消息" }],
+        source: { kind: "user" },
+      },
+    };
+
+    history.appendMemberViewUser("planner", direct);
+
+    // Team-level frame (no outer member); the payload is the same view
+    // element object ListMemberMessages serves (同源同值), so the live view
+    // and the backfill agree (specs/060-agent-v2-team-optimize/contracts/
+    // team-api.md §2).
+    expect(frames.map(payloadOf)).toEqual(["memberView"]);
+    const frame = frames[0];
+    expect(frame?.member).toBeUndefined();
+    expect(frame?.memberView?.member).toBe("planner");
+    expect(frame?.memberView?.sender).toBe("user");
+    expect(frame?.memberView?.message.role).toBe("ROLE_USER");
+    expect(frame?.memberView?.message).toBe(history.listMemberMessages("planner")[0]?.message);
+  });
+
+  it("fans out a member_view frame for a broadcast relay with the sender role annotation", () => {
+    const { history, frames } = createHistory();
+    const broadcast: UserMessageEvent = {
+      type: "user/message",
+      data: {
+        id: "m-broadcast",
+        content: [{ type: "text", text: "[player] 已点击" }],
+        source: { kind: "team-broadcast", role: "player" },
+      },
+    };
+
+    history.appendMemberViewUser("planner", broadcast);
+
+    expect(frames.map(payloadOf)).toEqual(["memberView"]);
+    const frame = frames[0];
+    expect(frame?.memberView?.member).toBe("planner");
+    expect(frame?.memberView?.sender).toBe("player");
+    expect(frame?.memberView?.message.blocks[0]?.text?.content).toBe("[player] 已点击");
+    expect(frame?.memberView?.message).toBe(history.listMemberMessages("planner")[0]?.message);
+  });
+
   it("settles the tool-call block shared by the merge entry and the member view", () => {
     const { history } = createHistory();
     history.appendMemberOutput("player", [
@@ -309,7 +357,9 @@ describe("MemberCollector", () => {
     emit(listeners, "agent/status", { agent, status: "idle" });
 
     // Member event frames carry the outer member label and one turn id.
-    const memberFrames = frames.filter((frame) => frame.teamMessage === undefined);
+    const memberFrames = frames.filter(
+      (frame) => frame.teamMessage === undefined && frame.memberView === undefined,
+    );
     expect(memberFrames.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "blockEnd", "turnEnd"]);
     expect(memberFrames.every((frame) => frame.member === "player")).toBe(true);
     const turnId = memberFrames[0]?.turnId;

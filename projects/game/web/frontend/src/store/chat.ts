@@ -1,16 +1,18 @@
 // 会话对话状态 store：team 流 ChatEvent 归约 + useSyncExternalStore 绑定。
 // 归约契约见 specs/059-agent-v2-team-mode/contracts/team-api.md §3 与
-// contracts/web-views.md §2/§3/§4——双帧承载：成员事件帧按 (member, turn_id)
-// 分组增量渲染（block index/step 以成员回合为单位），`team_message` 帧按
-// seq 作归并序锚（与 ListTeamMessages 同源，保证实时归并序与回填一致）。
-// store 维护双形态：团队归并序列（history，web-views.md §3）与每成员视角
-// 序列（memberHistory，§4）——成员自身输出在固化时双写；用户输入与跨成员
-// 广播注入在被成员消费时进入其视角，消费锚只有服务端历史可见，故经
-// ListMemberMessages 回填（前端无消费事实，不伪造）。并发流重复帧按锚幂等：
-// `team_message` 同 seq / 同 messageId 忽略，成员帧按 (member, turn_id) +
-// index 幂等（team-api.md §3.4）。store 无框架依赖；React 侧经 useChatState
-// 订阅（react.dev/reference/react/useSyncExternalStore——getSnapshot 返回
-// 缓存快照，未变化时同一引用）。
+// contracts/web-views.md §2/§3/§4，增量修订见
+// specs/060-agent-v2-team-optimize/contracts/team-api.md §2/§3——双帧承载：
+// 成员事件帧按 (member, turn_id) 分组增量渲染（block index/step 以成员回合
+// 为单位），`team_message` 帧按 seq 作归并序锚（与 ListTeamMessages 同源，
+// 保证实时归并序与回填一致）。store 维护双形态：团队归并序列（history，
+// web-views.md §3）与每成员视角序列（memberHistory，§4）——成员自身输出在
+// 固化时双写；用户输入与跨成员广播注入在被成员消费时经 `member_view` 帧
+// 进入其视角（messageId 幂等），ListMemberMessages 回填作权威序列重对齐。
+// 并发流重复帧按锚幂等：`team_message` 同 seq / `member_view` 同 messageId
+// 忽略，成员帧按 (member, turn_id) + index 幂等（team-api.md §3.4）。store
+// 无框架依赖；React 侧经 useChatState 订阅
+// （react.dev/reference/react/useSyncExternalStore——getSnapshot 返回缓存
+// 快照，未变化时同一引用）。
 import { useSyncExternalStore } from 'react'
 import type {
   ChatEvent,
@@ -239,13 +241,23 @@ function mapStepBlocks(
 
 // settleHistoryEntry applies one tool_result frame to a merged-sequence
 // entry: the matching RUNNING tool-call block (by tool_id) reaches its
-// terminal status with the rendered result.
+// terminal status with the rendered result. An entry without a matching
+// RUNNING block is returned unchanged (same reference), so re-applying the
+// same frame is a no-op — the natural dedup for concurrent-stream duplicate
+// frames (team-api.md §3.4).
 function settleHistoryEntry(
   entry: TeamMessageEntry,
   toolId: string,
   status: string,
   result: string,
 ): TeamMessageEntry {
+  if (
+    !entry.message.blocks.some(
+      (b) => b.toolCall?.toolId === toolId && b.toolCall.status === 'TOOL_STATUS_RUNNING',
+    )
+  ) {
+    return entry
+  }
   return {
     ...entry,
     message: {
@@ -358,6 +370,30 @@ function projectTail(
   })
 }
 
+// appendMemberInputView appends one consumed input (a member_view frame) to
+// the consuming member's view (web-views.md §4; specs/060-agent-v2-team-
+// optimize/contracts/team-api.md §2). The idempotency anchor is messageId — a
+// duplicate frame from a concurrent stream is ignored. Only this view is
+// touched: the merged sequence, live drafts, and the queue do not carry the
+// consumption fact (consumption before the input appears stays unforced).
+function appendMemberInputView(
+  memberHistory: Record<string, MemberViewEntry[]>,
+  member: string,
+  message: HistoryMessage,
+  sender: string,
+): Record<string, MemberViewEntry[]> {
+  const view = memberHistory[member] ?? []
+  const messageId = message.messageId
+  if (
+    messageId !== undefined &&
+    messageId !== '' &&
+    view.some((entry) => entry.message.messageId === messageId)
+  ) {
+    return memberHistory
+  }
+  return { ...memberHistory, [member]: [...view, { message, sender }] }
+}
+
 // appendMemberView consolidates one member output into that member's own view
 // (web-views.md §2/§4: the team_message frame for a member output carries the
 // same message object the server writes into both projections — the merged
@@ -438,9 +474,9 @@ function consumeFixedStep(live: LiveMemberTurn[], member: string): LiveMemberTur
 }
 
 // reduceEvent is the ChatEvent reducer for one team stream. Member event
-// frames route by (member, turn_id); team-level frames (queued / team_message)
-// carry no outer member. streamId identifies the feeding Send stream for the
-// delta ownership anchors (并发流去重，team-api.md §3.4).
+// frames route by (member, turn_id); team-level frames (queued / team_message
+// / member_view) carry no outer member. streamId identifies the feeding Send
+// stream for the delta ownership anchors (并发流去重，team-api.md §3.4).
 function reduceEvent(
   state: ChatState,
   event: ChatEvent,
@@ -483,6 +519,25 @@ function reduceEvent(
       memberHistory,
       live: consumeFixedStep(state.live, member),
     }
+  }
+  if (event.memberView) {
+    // 成员消费输入的实时通知（specs/060-agent-v2-team-optimize/contracts/
+    // team-api.md §2）：追加进该成员视角；messageId 幂等（并发流重复帧按锚
+    // 忽略）。归并序列/live/queue 零改动——消费事实只属于成员视角，未被消费
+    // 成员的视角不因用户消息写入（消费前不出现语义保持）。
+    const frame = event.memberView
+    const member = frame.member ?? ''
+    // 保留值 "user" 是归并序列的用户标签、不是成员 role：畸形帧不得创建
+    // memberHistory["user"] 视角（与 team_message 分支同型守卫，
+    // team-api.md §3.2）。
+    if (member === '' || member === USER_MEMBER) return state
+    const memberHistory = appendMemberInputView(
+      state.memberHistory,
+      member,
+      frame.message,
+      frame.sender ?? '',
+    )
+    return memberHistory === state.memberHistory ? state : { ...state, memberHistory }
   }
   if (event.turnStart) {
     const member = eventMember(state, event)
@@ -576,58 +631,42 @@ function reduceEvent(
     }
   }
   if (event.toolResult) {
-    // 工具结果终态化（web-frontend.md §4）：按 tool_id 在 live 全部回合
-    // （跨成员，tool_id 为回合内唯一关联键）与 history 中最近的 RUNNING
-    // ToolCallBlock 更新终态；找不到（如重启后残留流）忽略。
+    // 工具结果终态化（specs/060-agent-v2-team-optimize/contracts/team-api.md
+    // §3）：一次归约内跨三个投影面幂等 settle——live 草稿、归并序列条目、
+    // 成员视角条目。各面按 tool_id + TOOL_STATUS_RUNNING 匹配，已终态块不
+    // 命中，天然幂等并去重并发流的重复帧（team-api.md §3.4）。059 的渲染枢
+    // 轴把已固化 step 的可见副本移到归并序列/成员视角（live 仅留 fixedSteps
+    // 草稿），故不在 live 命中后短路——已固化条目同样必须终态化
+    // （specs/060-agent-v2-team-optimize/research.md R6）。
     const { toolId, status, result } = event.toolResult
-    const preferred = eventMember(state, event)
-    const order = state.live
-      .map((t, i) => ({ t, i }))
-      .sort((a, b) => Number(a.t.member !== preferred) - Number(b.t.member !== preferred))
-    for (const { i } of order) {
-      const turn = state.live[i]
-      if (turn === undefined) continue
-      let hit = false
+    let changed = false
+    const live = state.live.map((turn) => {
+      let turnChanged = false
       const steps = turn.steps.map((s) => {
-        let stepHit = false
+        let stepChanged = false
         const blocks = s.blocks.map((b) => {
-          const next = settleDraft(b, toolId, status, result)
-          stepHit = stepHit || next !== b
-          return next
+          const settled = settleDraft(b, toolId, status, result)
+          stepChanged = stepChanged || settled !== b
+          return settled
         })
-        hit = hit || stepHit
-        return stepHit ? { ...s, blocks } : s
+        turnChanged = turnChanged || stepChanged
+        return stepChanged ? { ...s, blocks } : s
       })
-      if (hit) {
-        return { ...state, live: state.live.map((t, idx) => (idx === i ? { ...t, steps } : t)) }
-      }
+      if (!turnChanged) return turn
+      changed = true
+      return { ...turn, steps }
+    })
+    const history = state.history.map((entry) => {
+      const settled = settleHistoryEntry(entry, toolId, status, result)
+      changed = changed || settled !== entry
+      return settled
+    })
+    let memberHistory = state.memberHistory
+    for (const member of Object.keys(memberHistory)) {
+      memberHistory = settleMemberHistory(memberHistory, member, toolId, status, result)
     }
-    // live 未命中：回退到归并序列（逆序 = 最近的条目优先），仅存在匹配块
-    // 时重建数组。
-    for (let i = state.history.length - 1; i >= 0; i -= 1) {
-      const entry = state.history[i]
-      if (
-        entry !== undefined &&
-        entry.message.blocks.some(
-          (b) => b.toolCall?.toolId === toolId && b.toolCall.status === 'TOOL_STATUS_RUNNING',
-        )
-      ) {
-        const history = state.history.slice()
-        history[i] = settleHistoryEntry(entry, toolId, status, result)
-        return {
-          ...state,
-          history,
-          memberHistory: settleMemberHistory(
-            state.memberHistory,
-            entry.member,
-            toolId,
-            status,
-            result,
-          ),
-        }
-      }
-    }
-    return state
+    changed = changed || memberHistory !== state.memberHistory
+    return changed ? { ...state, live, history, memberHistory } : state
   }
   if (event.turnEnd) {
     const member = eventMember(state, event)

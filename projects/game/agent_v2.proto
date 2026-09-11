@@ -103,7 +103,9 @@ service AgentService {
   // stream carries member event frames (member-labelled turn_start/
   // block_start/delta/block_end/tool_result/turn_end) plus team-level
   // `team_message` frames (the merged-sequence entries, same seq as
-  // ListTeamMessages). It is a subscription surface, not the orchestration:
+  // ListTeamMessages) and `member_view` frames (the member-view entries
+  // appended when a member consumes an input, same projection as
+  // ListMemberMessages). It is a subscription surface, not the orchestration:
   // a client disconnect MUST NOT stop the team, and cancelling the
   // orchestration happens only through Cancel. Custom method on the session
   // resource (AIP-136: https://google.aip.dev/136); the team must already be
@@ -558,10 +560,11 @@ message ListModelsResponse {
 //   turn_end): `member` names the producing member; turn_id is minted per
 //   member turn, block index is globally monotonic and step is monotonic
 //   within that member turn (front-end groups by (member, turn_id));
-// - team-level frames (`queued`, `team_message`): no outer `member`.
+// - team-level frames (`queued`, `team_message`, `member_view`): no outer
+//   `member`.
 //
 // The payload vocabulary mirrors dsh StreamChunk one-to-one (plus the
-// queued/turn lifecycle envelopes).
+// queued/turn lifecycle envelopes and the team-level projection frames).
 message ChatEvent {
   string session = 1 [(google.api.field_behavior) = REQUIRED];
   // Server-minted member-turn identity (UUID); constant across one member
@@ -581,7 +584,31 @@ message ChatEvent {
     // One merged-sequence entry appended to the team history, carrying the
     // same seq value as the ListTeamMessages element for that entry.
     TeamMessage team_message = 17;
+    // One member-view entry appended to a member's view history (that member
+    // consumed an input); carries the same projection as the matching
+    // ListMemberMessages element.
+    MemberViewEvent member_view = 18;
   }
+}
+
+// MemberViewEvent is the real-time fact that one member consumed an input:
+// the input (a user message or a relayed broadcast) entered that member's
+// view at this moment. It is written to the view by the same projection that
+// serves ListMemberMessages, so the live view and the backfill agree; the
+// idempotency anchor is message.message_id (server-assigned), duplicate
+// frames are ignored by the client
+// (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
+message MemberViewEvent {
+  // The consuming member's role — the member whose view the input entered
+  // (scene vocabulary; saolei: "player" / "planner"). Empty = unset.
+  string member = 1;
+  // The input source: the reserved value "user" for a user input, or a
+  // member role (scene vocabulary) for a team-broadcast relay. Empty =
+  // unset.
+  string sender = 2;
+  // The message in the consuming member's view (ROLE_USER), the same
+  // projection ListMemberMessages serves for the entry.
+  HistoryMessage message = 3;
 }
 
 // The message was enqueued behind a running turn; position is the 1-based

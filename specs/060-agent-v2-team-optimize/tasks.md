@@ -101,11 +101,11 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/060-agent-v2-team-optimize/contracts/team-api.md`（§2/§3）；`specs/060-agent-v2-team-optimize/research.md`（R5/R6）；`specs/060-agent-v2-team-optimize/data-model.md`（§1/§4）；`specs/059-agent-v2-team-mode/contracts/team-api.md`（基线契约）；`specs/059-agent-v2-team-mode/contracts/web-views.md`（前端行为基线）
 
-- [ ] T014 [P] [US4] `projects/game/agent_v2.proto`：`ChatEvent` oneof 新增 `member_view` 帧（`MemberViewEvent {member, sender, message}`——字段语义见 `specs/060-agent-v2-team-optimize/contracts/team-api.md` §2）；bazel 生成代码刷新（既有 proto 生成 target）
-- [ ] T015 [US4] `projects/game/agent_v2/src/history.ts`：`appendMemberViewUser` 写入成员视角的同时扇出 `member_view` 帧（`{member, sender, message}`；sender=user 输入或广播发送 role）；`projects/game/agent_v2/src/history.test.ts` 新增消费帧用例（用户输入消费 + 广播注入消费两类；与 ListMemberMessages 投影同构）
-- [ ] T016 [P] [US4] `projects/game/web/frontend/src/store/chat.ts`：`toolResult` 归约改为**一次归约内跨三投影面幂等 settle**（live 草稿 `settleDraft` + 归并序列 `settleHistoryEntry` + 成员视角 `settleMemberHistory`；删除 live 命中 early-return）；`projects/game/web/frontend/src/store/chat.test.ts`：新增 059 真实帧序用例（`blockStart` 无 toolId → `blockEnd` 带 toolId → `team_message` 固化 → `tool_result` 断言三面终态；重复 `tool_result` 帧幂等）并修正既有 L301 用例的假帧形（blockStart 去掉 toolId、补 blockEnd/teamMessage）
-- [ ] T017 [US4] `projects/game/web/frontend/src/store/chat.ts` + `src/api/conversation.ts`：`member_view` 帧归约（`memberHistory[member]` 追加 `{message, sender}`；messageId 幂等；不触碰归并序列/live/queue）+ ChatEvent 类型；`chat.test.ts` 归约用例（追加/幂等/广播注入 sender 标注）
-- [ ] T018 [US4] 回归确认：`projects/game/web/frontend/src/store/chat.test.ts` 既有断开投影/并发流去重/回填用例零回归（本 story 不改动这些路径；若有用例失败即为修复越界，回退对齐 R6 修复边界）
+- [X] T014 [P] [US4] `projects/game/agent_v2.proto`：`ChatEvent` oneof 新增 `member_view` 帧（`MemberViewEvent {member, sender, message}`——字段语义见 `specs/060-agent-v2-team-optimize/contracts/team-api.md` §2）；bazel 生成代码刷新（既有 proto 生成 target）
+- [X] T015 [US4] `projects/game/agent_v2/src/history.ts`：`appendMemberViewUser` 写入成员视角的同时扇出 `member_view` 帧（`{member, sender, message}`；sender=user 输入或广播发送 role）；`projects/game/agent_v2/src/history.test.ts` 新增消费帧用例（用户输入消费 + 广播注入消费两类；与 ListMemberMessages 投影同构）
+- [X] T016 [P] [US4] `projects/game/web/frontend/src/store/chat.ts`：`toolResult` 归约改为**一次归约内跨三投影面幂等 settle**（live 草稿 `settleDraft` + 归并序列 `settleHistoryEntry` + 成员视角 `settleMemberHistory`；删除 live 命中 early-return）；`projects/game/web/frontend/src/store/chat.test.ts`：新增 059 真实帧序用例（`blockStart` 无 toolId → `blockEnd` 带 toolId → `team_message` 固化 → `tool_result` 断言三面终态；重复 `tool_result` 帧幂等）并修正既有 L301 用例的假帧形（blockStart 去掉 toolId、补 blockEnd/teamMessage）
+- [X] T017 [US4] `projects/game/web/frontend/src/store/chat.ts` + `src/api/conversation.ts`：`member_view` 帧归约（`memberHistory[member]` 追加 `{message, sender}`；messageId 幂等；不触碰归并序列/live/queue）+ ChatEvent 类型；`chat.test.ts` 归约用例（追加/幂等/广播注入 sender 标注）
+- [X] T018 [US4] 回归确认：`projects/game/web/frontend/src/store/chat.test.ts` 既有断开投影/并发流去重/回填用例零回归（本 story 不改动这些路径；若有用例失败即为修复越界，回退对齐 R6 修复边界）
 
 **Checkpoint**: 发送消息后成员视角实时出现该输入；工具完成后状态/结果即时更新（无需刷新）。
 

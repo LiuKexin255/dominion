@@ -73,6 +73,37 @@ function teamMessageEvent(
   return { teamMessage: { member: wireMember(member), message, seq: String(seq) } }
 }
 
+// teamMessageToolCallEvent consolidates one RUNNING tool-call step into the
+// merged sequence (the 059 shape: the visible copy pivots to the merged
+// entry; specs/060-agent-v2-team-optimize/research.md R6).
+function teamMessageToolCallEvent(
+  member: string,
+  seq: number,
+  toolId: string,
+  messageId: string,
+): ChatEvent {
+  return {
+    teamMessage: {
+      member: wireMember(member),
+      message: {
+        messageId,
+        role: 'ROLE_AGENT',
+        blocks: [
+          {
+            toolCall: {
+              toolId,
+              name: 'saolei_init',
+              argsJson: '{}',
+              status: 'TOOL_STATUS_RUNNING',
+            },
+          },
+        ],
+      },
+      seq: String(seq),
+    },
+  }
+}
+
 // oneTextStep emits the canonical block_start/deltas/block_end sequence for a
 // single TEXT step of one member turn.
 function oneTextStep(member: string, turnId: string, step: number, text: string): ChatEvent[] {
@@ -298,25 +329,77 @@ describe('ChatStore team 流归约', () => {
     expect(s.history.map((e) => e.member)).toEqual(['user', 'player', 'planner'])
   })
 
-  it('tool_result 按 tool_id 跨成员回合终态化 live 草稿，并回退到归并序列', () => {
+  it('059 真实帧序：tool_result 一次归约同时终态化 live 草稿、归并序列条目与成员视角条目', () => {
     const store = new ChatStore()
     store.applyEvent(startTurn('PLAYER', 't1'))
+    // 生产帧序：block_start 的 tool-call 不带 toolId（id 在 block_end 首次
+    // 完整浮现——specs/060-agent-v2-team-optimize/research.md R6）；step 落定
+    // 后由 team_message 帧固化，live 草稿仅留 fixedSteps 跳过的前导副本。
     store.applyEvent({
       member: wireMember('PLAYER'),
       turnId: 't1',
-      blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-1', name: 'saolei_init' },
+      blockStart: { index: 0, type: 'BLOCK_TYPE_TOOL_CALL', name: 'saolei_init', step: 1 },
     })
+    store.applyEvent({
+      member: wireMember('PLAYER'),
+      turnId: 't1',
+      blockEnd: {
+        index: 0,
+        block: {
+          toolCall: {
+            toolId: 'call-1',
+            name: 'saolei_init',
+            argsJson: '{}',
+            status: 'TOOL_STATUS_RUNNING',
+          },
+        },
+        step: 1,
+      },
+    })
+    store.applyEvent(teamMessageToolCallEvent('PLAYER', 2, 'call-1', 'm1'))
+
     store.applyEvent({
       member: wireMember('PLAYER'),
       turnId: 't1',
       toolResult: { toolId: 'call-1', status: 'TOOL_STATUS_SUCCEEDED', result: 'board' },
     })
 
-    expect(store.getSnapshot().live[0]?.steps[0]?.blocks[0]).toMatchObject({
+    const s = store.getSnapshot()
+    // 面 1：live 草稿。
+    expect(s.live[0]?.steps[0]?.blocks[0]).toMatchObject({
       type: 'TOOL_CALL',
       status: 'TOOL_STATUS_SUCCEEDED',
       result: 'board',
     })
+    // 面 2：已固化的归并序列条目（059 渲染枢轴的可见副本）。
+    expect(s.history[0]?.message.blocks[0]?.toolCall).toMatchObject({
+      status: 'TOOL_STATUS_SUCCEEDED',
+      result: 'board',
+    })
+    // 面 3：成员视角条目（前端对服务端共享消息的独立副本）。
+    expect(s.memberHistory.player?.[0]?.message.blocks[0]?.toolCall).toMatchObject({
+      status: 'TOOL_STATUS_SUCCEEDED',
+      result: 'board',
+    })
+  })
+
+  it('重复 tool_result 帧（并发流扇出）幂等：已终态块不命中，归约恒等', () => {
+    const store = new ChatStore()
+    store.applyEvent(teamMessageToolCallEvent('PLAYER', 1, 'call-1', 'm1'))
+    store.applyEvent({
+      member: wireMember('PLAYER'),
+      turnId: 't1',
+      toolResult: { toolId: 'call-1', status: 'TOOL_STATUS_SUCCEEDED', result: 'board' },
+    })
+    const settled = store.getSnapshot()
+    expect(settled.history[0]?.message.blocks[0]?.toolCall?.status).toBe('TOOL_STATUS_SUCCEEDED')
+
+    store.applyEvent({
+      member: wireMember('PLAYER'),
+      turnId: 't1',
+      toolResult: { toolId: 'call-1', status: 'TOOL_STATUS_SUCCEEDED', result: 'board' },
+    })
+    expect(store.getSnapshot()).toBe(settled)
   })
 
   it('turn_end{CANCELED} 清空 team 排队 chip 并置"已终止"；下个 turn_start 清除', () => {
@@ -713,8 +796,8 @@ describe('ChatStore team 流归约', () => {
 
 // ─── store 双形态：团队归并序列 + 每成员视角序列（web-views.md §2/§4） ─────────
 // 成员自身输出在固化时双写（team_message 帧与服务端 appendMemberOutput 的
-// 双投影同源）；用户输入与跨成员广播注入在被成员消费时进入其视角——消费锚
-// 只有服务端历史可见，经 ListMemberMessages 回填（loadMemberHistory）。
+// 双投影同源）；用户输入与跨成员广播注入在被成员消费时经 member_view 帧进入
+// 其视角，ListMemberMessages 回填（loadMemberHistory）作权威序列重对齐。
 
 describe('ChatStore 成员视角序列（双形态）', () => {
   it('team_message 成员产出双写：团队归并序列 + 该成员自身视角（同源同对象）；用户消息只进归并序列', () => {
@@ -734,10 +817,82 @@ describe('ChatStore 成员视角序列（双形态）', () => {
     expect(own).toHaveLength(1)
     expect(own[0]?.sender).toBe('planner')
     expect(own[0]?.message).toBe(s.history[1]?.message)
-    // 用户消息在 Send 固化时不进入任何成员视角（消费事实在服务端历史，
-    // 经回填呈现）。
+    // 用户消息在 Send 固化时不进入任何成员视角（消费前不出现；消费时经
+    // member_view 帧或 ListMemberMessages 回填呈现）。
     expect(s.memberHistory.player).toBeUndefined()
     expect(s.memberHistory.user).toBeUndefined()
+  })
+
+  it('member_view 帧把消费的输入追加进该成员视角（sender 标注来源），不触碰归并序列/live/queue', () => {
+    const store = new ChatStore()
+    store.applyEvent({
+      memberView: {
+        member: 'planner',
+        sender: 'user',
+        message: {
+          messageId: 'm1',
+          role: 'ROLE_USER',
+          blocks: [{ text: { content: '开始一局' } }],
+        },
+      },
+    })
+
+    const s = store.getSnapshot()
+    expect(s.memberHistory.planner?.map((e) => [e.sender, e.message.messageId])).toEqual([
+      ['user', 'm1'],
+    ])
+    expect(s.memberHistory.planner?.[0]?.message.blocks[0]?.text?.content).toBe('开始一局')
+    // 消费事实只属于成员视角：归并序列/live/queue 零改动。
+    expect(s.history).toEqual([])
+    expect(s.live).toEqual([])
+    expect(s.queue).toEqual([])
+  })
+
+  it('member_view 帧按 messageId 幂等（并发流重复扇出忽略），广播注入标注 sender role', () => {
+    const store = new ChatStore()
+    const frame: ChatEvent = {
+      memberView: {
+        member: 'planner',
+        sender: 'player',
+        message: {
+          messageId: 'm2',
+          role: 'ROLE_USER',
+          blocks: [{ text: { content: '[player] 已点击' } }],
+        },
+      },
+    }
+    store.applyEvent(frame)
+    const appended = store.getSnapshot()
+    store.applyEvent(frame)
+
+    // 重复帧（并发流扇出）按 messageId 幂等：状态引用不变，不重复追加。
+    expect(store.getSnapshot()).toBe(appended)
+    expect(appended.memberHistory.planner).toHaveLength(1)
+    expect(appended.memberHistory.planner?.[0]?.sender).toBe('player')
+    expect(appended.memberHistory.planner?.[0]?.message.blocks[0]?.text?.content).toBe(
+      '[player] 已点击',
+    )
+  })
+
+  it('member_view 帧的保留值 "user" 不是成员 role：畸形帧被忽略且不产生新 state', () => {
+    const store = new ChatStore()
+    const before = store.getSnapshot()
+    store.applyEvent({
+      memberView: {
+        member: 'user',
+        sender: 'user',
+        message: {
+          messageId: 'm1',
+          role: 'ROLE_USER',
+          blocks: [{ text: { content: '越界帧' } }],
+        },
+      },
+    })
+
+    // 保留值只用于归并序列/来源标注，不得创建 memberHistory["user"] 视角
+    // （与 team_message 分支同型守卫，team-api.md §3.2）。
+    expect(store.getSnapshot()).toBe(before)
+    expect(store.getSnapshot().memberHistory.user).toBeUndefined()
   })
 
   it('并发流重复帧按 messageId 幂等：成员视角不重复追加', () => {
