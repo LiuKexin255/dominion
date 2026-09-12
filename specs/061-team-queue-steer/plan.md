@@ -98,7 +98,9 @@ common/js/dsh-plugins/saolei-loop/src/orchestrator.ts（头注释）
 | B | 宿主：`watchQuiescence` 静止条件（`session.ts` + 单测） | `bazel test //projects/game/agent_v2` |
 | C | 前端：chip 消费消除（`chat.ts` + 组件/store 测试，既有 turn_start 用例更新） | `bazel test //projects/game/web/...` |
 | D | 文档修正：R8 清单 11 条（059×8 含契约 steer 路径同步与 research 命名点、049×2 注记、orchestrator 注释随 A 完成） | SC-004 文本检索（rg 断言） |
-| E | 大型测试：fake-llm testdata 模板组 + testplan 用例（V1–V3）+ 全量执行 | `guitar run` 部署→测试→清理闭环，V1–V5 全部通过 |
+| E | 大型测试：fake-llm testdata 模板组 + testplan 用例（V1–V3 + V6〔062 终局收束交互〕）+ 全量执行 | `guitar run` 部署→测试→清理闭环，V1–V5 全部通过（V5 = SC-004 检索，Phase D 承载） |
+
+**前置 feature**：`specs/062-team-game-end-handoff/` 先行落地——两 feature 无实现耦合（062 编排器零改动，本 feature 的编排层变更干净叠加）；唯一交互面（终局收束 × 在途 steer：pending steered 消息使终局 turn **同 turn 延展**消费、复盘交接在后——与 062 Session 2026-09-12 裁定二的优先级语义一致）由本 feature 定义并测试（spec Edge Cases、research R3a、contracts/orchestrator-input.md §6、quickstart V6/T012）；机制依据：dsh turn 循环停止条件 `turnEnds && inbox.nextStep.length === 0` 与 turnEnds kind 无关（`dsh-agent-loop lib/index.js:564-571`）。
 
 ## Complexity Tracking
 

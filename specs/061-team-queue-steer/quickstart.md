@@ -46,6 +46,14 @@
 
 文本检索（`rg`）：`specs/059-agent-v2-team-mode/` 与 `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` 中"工具调用引发的后续 turn"零残留；`rg 'team turn' specs/059-agent-v2-team-mode/` 零命中（或每条命中同行含"非 dsh turn"澄清语）；`specs/049-agent-v2-dsh-init/`（FR-012 + research）与 `specs/059-agent-v2-team-mode/spec.md` FR-011 含 supersession 注记且原文未被重写。
 
+### V6 — 终局收束 × 在途 steer（062 交互，FR-001/FR-003 补充断言）
+
+**前置**：`specs/062-team-game-end-handoff/` 已先行落地（终局链脚本步骤成为"零执行"断言面——本场景的延展步是唯一例外：它响应 steered 消息）。
+
+**步骤**：player 终局 step 的工具执行期间发送 steer 探针消息。
+
+**断言**：turn **延展同 turn 一步**——steered 消息与终局工具结果同批进入（steer 探针模板响应，**纯文本收尾**保证延展 turn 收束）；延展步之后无更多模型输出；事件序：player 延展 turn 的 `turn_end` 先于 planner 复盘 `turn_start`（输入消费先于复盘交接）；复盘输入含终局工具单元（062 SC-003 回归）。
+
 ## 2. 手工冒烟（可选补充）
 
 生产拓扑（真实 GLM）：物化 team → 开局 → player 操作期间发送纠正消息 → 观察 web 对话页：chip 即时消除、成员视角出现该输入、player 下一次操作体现纠正（模型行为，非断言面）。

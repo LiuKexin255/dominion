@@ -6,7 +6,7 @@
 
 **Tests**: 单测/组件测不单列任务（constitution 原则 IV：编译+单测是每次代码变更的一部分，随各任务执行）；大型测试独立验收任务（原则 VI：实际 `guitar run` 部署→测试→清理闭环、全量通过）。
 
-**Organization**: Tasks grouped by user story。**Setup/Foundational phase 不适用**——本 feature 零新增依赖/包/proto/组合行（plan.md：全部原地修改），直接进入 story phase。P1 顺序 US1 → US2（US2 是 US1 机制的不变量验证）；US3/US4 为 P2（US4 为纯文档修正，可在代码 phase 后随时并行插入）。
+**Organization**: Tasks grouped by user story。**Setup/Foundational phase 不适用**——本 feature 零新增依赖/包/proto/组合行（plan.md：全部原地修改），直接进入 story phase。P1 顺序 US1 → US2（US2 是 US1 机制的不变量验证）；US3/US4 为 P2（US4 为纯文档修正，可在代码 phase 后随时并行插入）。**执行顺序前置**：`specs/062-team-game-end-handoff/` 先行落地——交互语义（终局收束 × 在途 steer：pending steered 消息使终局 turn 同 turn 延展消费、复盘交接在后）见 spec.md Edge Cases、research.md R3a、contracts/orchestrator-input.md §6，测试面为 quickstart V6（T012）。
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -59,10 +59,12 @@
 - **官方文档**：
   - [@deepseek-ai/dsh-agent README（0.1.1-rc.2）](https://unpkg.com/@deepseek-ai/dsh-agent@0.1.1-rc.2/README.md)（`steer` 的 idle-开-turn 语义、`agent/status` running 覆盖 consecutive turns——自愈论证依据）
 - **技术文章/技术参考文档**：
-  - `specs/061-team-queue-steer/spec.md`（FR-002/FR-003、US2 验收场景）
-  - `specs/061-team-queue-steer/research.md`（R3——含四格竞态窗口表）
-  - `specs/061-team-queue-steer/contracts/orchestrator-input.md`（§5 不变量）
+  - `specs/061-team-queue-steer/spec.md`（FR-002/FR-003、US2 验收场景、Edge Cases"终局收束与在途 steer 并存"）
+  - `specs/061-team-queue-steer/research.md`（R3——含四格竞态窗口表〔stopping 检查点前后两窗口〕、R3a——062 交互）
+  - `specs/061-team-queue-steer/contracts/orchestrator-input.md`（§5 不变量、§6 终局收束交互）
   - `specs/061-team-queue-steer/data-model.md`（§1 回退自洽不变量）
+  - `specs/062-team-game-end-handoff/spec.md`（Session 2026-09-12 裁定二——"消化优先于复盘"的既有优先级基准）
+  - `specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md`（§3 消费语义与本 feature 的交互委托条款）
 
 ### Tasks
 
@@ -132,9 +134,9 @@
 
 ## Phase 5: 大型测试验收（Final — constitution 原则 VI）
 
-**Goal**: quickstart V1–V4 场景经 testplan 实际执行全量通过（部署→测试→清理闭环）；V5（文档检索）已由 T010 承载。
+**Goal**: quickstart V1–V4 + V6 场景经 testplan 实际执行全量通过（部署→测试→清理闭环）；V5（文档检索）已由 T010 承载。
 
-**Independent Test**: `guitar run` 全绿——V1 mid-turn 进入、V2 回退/切换、V3 取消/落地、V4 既有全量回归。
+**Independent Test**: `guitar run` 全绿——V1 mid-turn 进入、V2 回退/切换、V3 取消/落地、V4 既有全量回归、V6 终局收束 × 在途 steer（062 交互）。
 
 ### 文档清单（本 phase 必读）
 
@@ -144,18 +146,19 @@
   - [Google Go Style](https://google.github.io/styleguide/go/)（入口索引）；其中 [Style Guide](https://google.github.io/styleguide/go/guide)（规范+权威，必读）与 [Style Decisions](https://google.github.io/styleguide/go/decisions)（规范）为 `style/golang.md:309-315` 引用的外部基准
 - **官方文档**：无（fake-llm/testplan 为自研基建）
 - **技术文章/技术参考文档**：
-  - `specs/061-team-queue-steer/quickstart.md`（V1–V5 场景与断言面）
-  - `specs/061-team-queue-steer/research.md`（R7——fake-llm 匹配面论证）
+  - `specs/061-team-queue-steer/quickstart.md`（V1–V6 场景与断言面）
+  - `specs/061-team-queue-steer/research.md`（R7——fake-llm 匹配面论证、R3a——062 交互与 V6 测试义务）
   - `specs/047-dsh-chat-demo/contracts/fake-llm-templates.md`（模板 schema、`keywords`/`history_keywords` 匹配语义——testdata 作者面契约）
-  - `projects/game/fake-llm/service/testdata/team_player.yaml`（既有 team player 模板样板——T011 就地扩展目标）
+  - `specs/062-team-game-end-handoff/spec.md` 与 `specs/062-team-game-end-handoff/quickstart.md`（先行落地的终局收束语义与夹具基线——终局链规则已成为"零执行"断言面；V6 的交互前提）
+  - `projects/game/fake-llm/service/testdata/team_player.yaml`（既有 team player 模板样板——T011 就地扩展目标，经 062 注释更新后形态）
   - `projects/game/testplan/system_test.yaml`（suite 编排现状——新用例挂载点）
   - `projects/game/testplan/agent_v2_game_test.go`（既有 team 用例与 helper 复用面——T012 修改目标；按模块组织，`style/large_test.md`）
   - `.opencode/skills/testplan/SKILL.md`（testplan 执行流程——T012 运行前加载，`style/large_test.md` 末"FOR Agent"指向）
 
 ### Tasks
 
-- [ ] T011 [P] `projects/game/fake-llm/service/testdata/team_player.yaml`（就地扩展模板组，不新建文件）：新增 mid-turn 场景模板——steer 探针模板（`keywords:[steer-probe]` → 回应正文，承载 V1 step 级分叉）、收尾纯文本模板（V2 尾段场景）、落地引用模板（`keywords` 命中新消息 + `history_keywords` 命中落地消息 → V3 双引用断言）；既有多步工具循环模板复用为 step 1 产 tool call。夹具关键词与既有 persona 锚行约定不冲突（对齐 `specs/047-dsh-chat-demo/contracts/fake-llm-templates.md` §3 匹配优先级）
-- [ ] T012 依赖 T011：`projects/game/testplan/agent_v2_game_test.go`（team 用例所在 binary）新增 V1–V3 用例 + `projects/game/testplan/system_test.yaml` 挂载（对齐既有 suite 结构）：V1——多步工具回合期间发送 steer-probe 消息，断言 `member_view{sender:"user"}` 帧序（消费时点）、fake-llm 下一 step 响应命中探针模板、ListMemberMessages 回填中输入位于两 step 输出之间、归并序列位置 = 发送时刻；V2——尾段到达 → 同成员自愈新回合消费 → 消化完成后才切换（事件序断言）；V3——消费一条 + 排队一条 → Cancel → 再次 Send，断言新回合 LLM 请求历史含落地+新消息（fake 响应双引用）、Cancel 与 Send 之间无成员回合。执行 `guitar run projects/game/testplan/system_test.yaml`（部署→测试→清理闭环）V1–V4 全量通过（V4 = 既有 team 用例零回归）
+- [ ] T011 [P] `projects/game/fake-llm/service/testdata/team_player.yaml`（就地扩展模板组，不新建文件）：新增 mid-turn 场景模板——steer 探针模板（`keywords:[steer-probe]` → 回应正文，承载 V1 step 级分叉；**响应 MUST 为纯文本**〔无工具调用〕——V6 中延展步靠它收束）、收尾纯文本模板（V2 尾段场景）、落地引用模板（`keywords` 命中新消息 + `history_keywords` 命中落地消息 → V3 双引用断言）；既有多步工具循环模板复用为 step 1 产 tool call。与 062 夹具基线共存：终局链规则（`agent-v2-saolei-operate-won/lost` 等）保持 062 注释后的形态（零执行断言面），本任务不触碰；夹具关键词与既有 persona 锚行约定不冲突（对齐 `specs/047-dsh-chat-demo/contracts/fake-llm-templates.md` §3 匹配优先级）
+- [ ] T012 依赖 T011：`projects/game/testplan/agent_v2_game_test.go`（team 用例所在 binary）新增 V1–V3 与 V6 用例 + `projects/game/testplan/system_test.yaml` 挂载（对齐既有 suite 结构）：V1——多步工具回合期间发送 steer-probe 消息，断言 `member_view{sender:"user"}` 帧序（消费时点）、fake-llm 下一 step 响应命中探针模板、ListMemberMessages 回填中输入位于两 step 输出之间、归并序列位置 = 发送时刻；V2——尾段到达 → 同成员自愈新回合消费 → 消化完成后才切换（事件序断言）；V3——消费一条 + 排队一条 → Cancel → 再次 Send，断言新回合 LLM 请求历史含落地+新消息（fake 响应双引用）、Cancel 与 Send 之间无成员回合；V6（062 交互）——player 终局 step 工具执行期间发送 steer 消息，断言 turn 延展一步（消息与终局工具结果同批进入、探针模板纯文本响应后收束）、延展步后无更多模型输出、player 延展 turn 的 turn_end 先于 planner 复盘 turn_start、复盘输入含终局工具单元。执行 `guitar run projects/game/testplan/system_test.yaml`（部署→测试→清理闭环）V1–V4 + V6 全量通过（V4 = 既有 team 用例零回归）
 
 **Checkpoint / 验证门禁**: `guitar run` 全绿（全部用例 passed，无 failed/flaky——不满足则修复后重跑至全绿）；清理闭环完成。
 

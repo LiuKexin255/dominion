@@ -129,6 +129,7 @@
 - **team 静止时发送**：现状路径（直接驱动当前激活成员），无排队、无行为变化。
 - **刷新（UpdateTeam）与排队并发**：既有作废语义不变（在途回合终止、排队作废、清空重建）。
 - **relay（团队广播）不受影响**：广播消费仍在编排驱动边界（"team 只投递不驱动"不变）；mid-turn 进入仅适用于用户排队消息。
+- **终局收束（062）与在途 steer 并存**：终局 step 的 `concludesTurn` 置位时若存在 pending 的 steered 消息，dsh turn 循环不 break（停止条件为 `turnEnds && inbox.nextStep.length === 0`，与 turnEnds kind 无关，`node_modules/.pnpm/@deepseek-ai+dsh-agent-loop@0.1.1-rc.2_*/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js:564-571`）——turn **延展同 turn 一步**，消息与终局工具结果同批进入（FR-001 路径）；延展步之后 turn 自然结束 → 既有 gameEnded 评估接管复盘。优先级与 062 Session 2026-09-12 裁定二语义一致（用户消息由当前激活成员消费先于复盘交接；复盘对象为消费结束时最新的终局记录）；编排层/工具层零特判（062 FR-004 与本 feature FR-005 保持）。
 
 ## Requirements *(mandatory)*
 
@@ -137,7 +138,7 @@
 **排队消息进入语义（team）**
 
 - **FR-001**: 当前激活成员的 turn 在途时，用户发送的消息 MUST 在该成员**下一个 step 开始时**进入成员上下文：在下一个 step 的模型输入中，消息作为**独立的普通用户消息块跟随工具结果之后**（顺序：工具结果 → 用户消息；MUST NOT 并入工具结果内容）；消息在首次模型请求发生前的到达 MUST 在第一个 step 进入。进入路径 MUST NOT 预判——由当前 step 的结果自然决定（存在后续 step 即 step 进入）。
-- **FR-002**: 消息到达后当前 turn 不再产生后续 step 时（纯文本收尾 / turn 结束），消息 MUST 在 turn 结束后由当前激活成员以新回合消化（既有消化路径：enqueue 即固化、消化驱动输入含未消费团队消息与该消息）。
+- **FR-002**: 消息到达后当前 turn 不再产生后续 step 时（纯文本收尾 / 终局收束〔`specs/062-team-game-end-handoff/` 的 `concludesTurn`，消息**晚于停止判定到达**——早于停止判定的 pending 消息使 turn 延展、归 FR-001〕/ turn 结束），消息 MUST 在 turn 结束后由当前激活成员以新回合消化（既有消化路径：enqueue 即固化、消化驱动输入含未消费团队消息与该消息）。FR-002 的边界即**停止判定时刻**：早于它的 pending 输入生产出后续 step（FR-001 路径），晚于它的到达才落本条（终局 × 在途 steer 的完整交互见 Edge Cases"终局收束与在途 steer 并存"）。
 - **FR-003**: member 切换节点 MUST 保持现状：切换评估仍在全部排队消息消化完成后进行（消化优先于切换；player→planner 的"排队先消化 → gameEnded 评估 → 结构性续驱"优先级序不变）；回合内被消费的排队消息自此为普通用户消息（不再是排队消息），MUST NOT 触发额外消化回合。
 - **FR-004**: 排队指示 MUST 在消息被消费时消除（mid-turn 路径即在对应 step 边界消除，不等 turn 结束）；排队消息的特殊语义 MUST 仅存在于消费前——被消费（作为普通用户消息进入成员上下文）后即为普通用户消息，不再视作排队消息（取消时随在途回合终止呈现、不回滚，后续作为普通上下文参与）。Cancel 时尚未消费的排队消息（编排 FIFO 与已 steer 未 claim 的全部）MUST 保留为已固化历史（059 FR-017 语义保持）且 MUST NOT 触发新驱动；**下次 Send 触发的成员回合 MUST 使这些落地消息作为普通用户消息进入 LLM 上下文（不单独触发处理——054 FR-017 第三个子句的 team 形态恢复，Session 2026-09-11 裁定）**。
 
@@ -177,3 +178,4 @@
 - **视图顺序非约束**（用户澄清 2026-09-11，规范编码于 FR-005 与 Clarifications 的用户裁定记录）：spec 不为排序增设要求，测试仅以既有排序行为作回归断言（SC-003）。
 - **049/059 为已交付 feature 的历史记录**：仅增补注记/修正表述，不重写原文语义（059 FR-011 的"回合结束后消化"子句由本 feature FR-001/FR-002 supersede，其余子句——排队呈现、广播、切换延后——保持）。
 - **测试基建联动**：fake-llm 夹具与大型测试断言随进入语义变更同批更新（constitution 原则 VI：大型测试全量通过作为验收）。
+- **062 关系**（执行顺序：`specs/062-team-game-end-handoff/` 先行落地）：两 feature 无实现耦合——062 的收束标记无状态、纯内容驱动，不因排队输入特判（062 FR-001/FR-004）；本 feature 的输入机制与终局收束的交互由本文定义（Edge Cases"终局收束与在途 steer 并存"、research.md R9）：pending steered 消息经 dsh 原生 next-step 检查延展同 turn 消费（FR-001 路径），复盘交接在消费之后由既有优先级接管——与 062 对编排 FIFO 裁定的优先级（消化优先于复盘）语义一致，仅机制不同（inbox 延展 vs 消化 drive）。062 的编排器零改动声明不被本 feature 破坏（本 feature 的编排层变更属自身范围且不触碰收束语义）。

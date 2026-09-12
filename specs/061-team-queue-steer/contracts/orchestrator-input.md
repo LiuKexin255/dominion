@@ -66,6 +66,12 @@ cancel() → { dropped }
 
 ## 5. 不变量
 
-1. 任一时刻至多一个成员被驱动（现状；steer 不新增驱动路径，自愈 turn 属同一成员的 drain interval）。
+1. 任一时刻至多一个成员被驱动（现状；steer 不新增驱动路径，延展/自愈 turn 属同一成员的 drain interval）。
 2. 消息恰好消费一次：`steeredPending` 与 FIFO 互斥（在途/静止二择投递），`messageId` 唯一（dsh inbox pending 期间唯一性 + 编排 FIFO 不混入已 steer 消息）。
 3. `nextStep` 优先级序（排队消化 > pendingReview > 切换 > gameEnded > 续驱）不变——steered 消息不经 `nextStep`，其"消化优先于切换"由 drain interval 语义承载（R3）。
+
+## 6. 与 062 终局收束的交互（零特判）
+
+- 终局 step `concludesTurn` 置位时若存在 pending steered 消息：dsh turn 循环停止条件为 `turnEnds && inbox.nextStep.length === 0`（`node_modules/.pnpm/@deepseek-ai+dsh-agent-loop@0.1.1-rc.2_*/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js:564-571`，与 turnEnds kind 无关）→ turn **延展同 turn 一步**，消息与终局工具结果同批 claim（§1 义务 2 的自然覆盖，FR-001 路径）。
+- 延展步后 turn 自然结束 → 既有 `nextStep` 优先级接管（gameEnded 复盘评估）——"输入消费先于复盘交接"与 062 对编排 FIFO 的裁定（`specs/062-team-game-end-handoff/spec.md` Session 2026-09-12 裁定二）语义一致，仅机制不同（inbox 延展 vs 消化 drive）。
+- 编排层/工具层对终局收束零特判（062 FR-004 保持；本契约 §5 不变量不变）；062 契约 §3 对本交互的委托由本节与 [../research.md](../research.md) R3a 承载。

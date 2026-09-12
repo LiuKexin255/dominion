@@ -2,6 +2,44 @@
 ==============================================================================
 Sync Impact Report
 ==============================================================================
+Version change: 1.4.0 → 1.5.0
+Rationale: MINOR — new principle VIII (Diagram Format) added: diagrams in
+  documentation (flowcharts, sequence diagrams, state diagrams, etc.) MUST
+  uniformly use Mermaid (https://mermaid.js.org/) code blocks embedded in
+  Markdown; image screenshots, external drawing-tool links, and other text
+  diagram formats (ASCII art, PlantUML, Graphviz DOT, etc.) are forbidden;
+  existing non-Mermaid diagrams MUST be migrated when their containing
+  document is materially revised (aligned with principle II). Development
+  Workflow gate 4 renamed 引用与终态门禁 → 引用、图表与终态门禁 and extended
+  to enforce principle VIII. A new principle = MINOR 1.5.0.
+
+Modified principles:
+  - None renamed or renumbered (I–VII unchanged); VIII appended with category
+    label 通用.
+  - Development Workflow gate 4 renamed 引用与终态门禁 → 引用、图表与终态门禁
+    （原则 I / VII / VIII） and extended with Mermaid diagram-format
+    enforcement.
+
+Added sections:
+  - VIII. 文档图表格式 (Diagram Format) — 通用.
+
+Removed sections: none.
+
+Templates requiring updates:
+  - .specify/templates/plan-template.md / spec-template.md /
+    tasks-template.md / .specify/workflows/speckit/workflow.yml — ✅ no change
+    (they read the constitution dynamically; none references gate 4 or
+    principle numbering by name).
+
+Follow-up TODOs:
+  - Existing in-repo documents may still contain non-Mermaid diagrams;
+    migration is NOT required immediately — principle VIII mandates migration
+    only when a document is materially revised. A one-off repo-wide migration
+    MAY be scheduled separately if desired.
+  - Previous follow-ups (AGENTS.md "注释" wording alignment with principle
+    VII; tasks-template per-phase "文档清单" example; tasks-template
+    test-framing adjustment) remain open/pending manual review.
+==============================================================================
 Version change: 1.2.0 → 1.3.0
 Rationale: Principle VI (Large Test Acceptance for Services) materially expanded
   — acceptance now MUST include actual execution steps via the testplan skill
@@ -197,6 +235,16 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 
 **Rationale**：代码提交/MR 只保留最终状态，中间状态在仓库中并不存在；保留未生效内容（如被撤销的特性 C）会制造虚假信息，干扰读者理解。读者（人或 agent）需要的是当前状态的设计原因与背景，而非已消失的演进过程。
 
+### VIII. 文档图表格式 (Diagram Format) — 通用
+
+文档中用于表达流程、架构或状态转移的图表（流程图、时序图、状态图等）MUST 统一使用 Mermaid（https://mermaid.js.org/）格式：
+
+- 图表 MUST 以 Mermaid 代码块（fenced code block，语言标记为 `mermaid`）形式内嵌于 Markdown 文档；MUST NOT 使用图片截图、外部绘图工具链接，或其他图表文本格式（ASCII art、PlantUML、Graphviz DOT 等）。
+- Mermaid 图表源码 MUST 语法有效，可被标准 Mermaid 渲染器（如 GitHub/GitLab 原生渲染）正确渲染。
+- 对既有文档进行实质修订时，修订涉及的图表 MUST 同步迁移为 Mermaid 格式（对齐原则 II 的重构式变更）。
+
+**Rationale**：Mermaid 以纯文本内嵌于 Markdown，可被版本控制系统追踪 diff、由主流代码托管平台原生渲染，无需维护二进制图片或外部绘图工具链；统一图表格式使文档可审查、可演进，并保证 agent 与人使用同一套图表语义。
+
 ## 技术约束与规范 (Additional Constraints)
 
 - 本仓库采用 **SDD 架构**，以 **speckit** 作为 SDD 框架；需求规划、方案设计、计划制定与代码开发 MUST 遵守本宪章。
@@ -212,7 +260,7 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 1. **文档阅读门禁**（原则 V）：每个 phase 开始前，MUST 完整阅读 tasks.md 声明的全部文档。
 2. **实现门禁**（原则 II / III）：变更以重构式进行；服务/模块变更 MUST 先有接口设计。
 3. **编译 + 单测门禁**（原则 IV）：每次代码变更 MUST 通过 `bazel build` + `bazel test`（相关 target），作为开发任务的一部分，不单列 task。
-4. **引用与终态门禁**（原则 I / VII）：产出的代码与文档 MUST 包含引用来源，且 MUST 只表述终态、不保留迭代记录（被否决方案仅在必要时记录）。
+4. **引用、图表与终态门禁**（原则 I / VII / VIII）：产出的代码与文档 MUST 包含引用来源，MUST 只表述终态、不保留迭代记录（被否决方案仅在必要时记录），且文档中的图表 MUST 统一使用 Mermaid 格式。
 5. **大型测试验收门禁**（原则 VI）：服务型应用在功能/需求完成后，MUST 实际执行大型测试（通过 testplan skill 完成完整部署→测试→清理闭环）作为验收，且所有测试用例 MUST 全部通过；仅构建检查不构成验收；该步骤 MAY 单独分配 task。
 
 ## Governance
@@ -223,4 +271,4 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - **合规审查**：所有 PR / review MUST 校验本宪章合规性；任何复杂度 MUST 可被论证（对齐原则 II 的简化要求）。
 - 运行时开发指引见 `AGENTS.md`；本宪章文件位置：`.specify/memory/constitution.md`。
 
-**Version**: 1.4.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-08-23
+**Version**: 1.5.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-09-12

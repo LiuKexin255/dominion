@@ -25,26 +25,34 @@
 
 依据：静止路径的驱动输入必须含该成员未消费 relay（`ctx.team.drain`）——直接 `steer` 只投用户消息会绕过 relay（FR-005 relay 仅在编排驱动边界消费）。FIFO 在新设计下只承载静止路径的瞬时消息（submit → pump 立即消费），在途排队全部由成员 inbox 承担。
 
-## R3 — FR-002 回退路径由 dsh 自愈承担（关键论证）
+## R3 — FR-002 回退路径由 dsh 原生延展/自愈承担（关键论证）
 
-**Decision**：steer 后 turn 在 claim 前结束的情形**不设编排层消化逻辑**——由 dsh 的 steer-wake 语义自愈：`steer` 排 next-step + 唤醒；若 turn 已结束/正在收尾，唤醒使驱动为该输入开启**新 turn**（idle 时同步开 turn，README §steer），新 turn 首 step 的 turn 边界 claim 消费它（turn 边界 claim = 全部 next-step + 一条 next-turn）。
+**Decision**：steer 后 turn 在 claim 前结束的情形**不设编排层消化逻辑**——由 dsh turn 循环的原生语义承担。机制核心（源码复核 `node_modules/.pnpm/@deepseek-ai+dsh-agent-loop@0.1.1-rc.2_*/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js:564-571`）：turn 循环在每个 step 结束后的停止条件是 `turnEnds && this.inbox.nextStep.length === 0`——**与 turnEnds 的 kind 无关**。pending 的 steered 输入使循环不 break：要么**同 turn 延展**下一 step claim（检查点前），要么经 **wake 开新 turn** 消费（检查点后，turn/end 已落）。
 
 语义等价性论证（对照 FR-002/FR-003）：
 
-- "turn 结束后由当前激活成员以新回合消化" ✓——新 turn 属于**同一成员**（steer 目标即当前激活成员）。
-- "消化优先于切换" ✓——自愈 turn 发生在编排层 `drive()` 的 idle 等待期内（`agent/status` running 覆盖"consecutive queued turns"，dsh-agent README §status），drive 的 `waitForIdle` 直到自愈 turn 也结束才返回 → 编排层 `nextStep` 的切换评估自然排在其后。
+- "turn 结束后由当前激活成员以新回合消化" ✓——两种形态下消费均属**同一成员**（steer 目标即当前激活成员；同 turn 延展则根本未换 turn）。
+- "消化优先于切换" ✓——延展形态发生在 `drive()` 的 idle 等待期内（turn 未结束）；新 turn 形态使 `agent/status` running 持续（覆盖 consecutive turns，dsh-agent README §status），drive 的 `waitForIdle` 直到消费完成才返回 → 编排层 `nextStep` 的切换评估自然排在其后。
 - 消息被消费（claim 落 log）后即普通用户消息，不触发额外消化 ✓。
 
 竞态窗口分析（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts:810-842` `drive()`）：
 
 | 窗口 | 行为 |
 |---|---|
-| turn 在途、stopping 检查前 steer | 下一 step claim（FR-001 主路径） |
-| stopping 检查后、turn/end 前 steer | wake 保持 drain interval 活跃 → 新 turn 消费（本决策） |
+| step 结束、stopping 检查点时 next-step 已有 pending steer | 不 break → **同 turn 延展**下一 step claim（FR-001 主路径；含终局收束 step——turnEnds kind 无关，R9） |
+| break 已发生（turn/end 落日志、driver 收尾/已 idle）后 steer | wake → **新 turn**（idle 时同步开 turn，README §steer）→ 新 turn 首 step 的 turn 边界 claim 消费（FR-002 自愈形态） |
 | `drivingMember` 置 null 后（drive 已返回）submit | 走 R2 静止路径（FIFO → drive） |
 | drive 返回与 submit 之间的微任务间隙 | `drivingMember === null` 判定为静止 → R2 路径；即使成员 inbox 因极窄窗口残留 pending，静止判定的 inbox 检查（R4）兜底 |
 
-**测试义务**：大型测试必须覆盖"消息在最后一个 step 执行中到达 → turn 结束 → 同成员新回合消化 → 消化完成后才切换"（SC-002），实证自愈语义与编排切换的正确交互。
+**测试义务**：大型测试必须覆盖"消息在最后一个 step 执行中到达 → turn 结束 → 同成员新回合消化 → 消化完成后才切换"（SC-002），实证两窗口语义与编排切换的正确交互。
+
+## R3a — 与 062 终局收束的交互（062 先行落地，零特判）
+
+**结论**：语义自然一致，两 feature 均零特判。关键机制（同 R3 源码）：`concludesTurn` 聚合产生的 `turnEnds{completed}` 与纯文本自然停手同路径——终局 step 置位 `concludesTurn` 时若存在 pending 的 steered 消息，turn 循环**不 break**（`inbox.nextStep.length > 0`）→ **同 turn 延展一步**：消息与终局工具结果同批进入（FR-001 原文路径——"下一个 step 开始时随工具结果一起"）；延展步后 turn 自然结束 → 既有 gameEnded 评估接管复盘。
+
+- **优先级一致性**：与 062 Session 2026-09-12 裁定二（编排 FIFO 消化优先于复盘）语义一致——用户消息由当前激活成员消费先于复盘交接；复盘对象为消费结束时最新的终局记录（若延展步 init 新局并玩到终局，终局记录被覆盖——与 062 对消化 turn 的既有接受语义相同）。仅机制不同（inbox 延展 vs 消化 drive）。
+- **委托闭环**：062 契约 §3（`specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md`）将"next-step inbox 非空时的延展行为"委托本 feature 定义——本节即该定义；062 的标记无条件性（其 FR-001）与本 feature 的零特判（FR-005/契约不变量）互相保持。
+- **测试义务**（quickstart V6）：player 终局 step 执行中排队消息 → 延展步消费 → turn 结束 → 复盘交接事件序（player 延展 turn 的 turn_end 先于 planner 复盘 turn_start）；steer 探针模板的响应 MUST 为纯文本（无工具调用）以保证延展 turn 收束、断言确定。
 
 ## R4 — 排队指示 position 与 `snapshot.queued` 语义扩展
 
@@ -114,7 +122,8 @@ steered-unclaimed 计数实现：steer 时记录 `message.id` 进入 per-drive �
 |---|---|---|
 | R1 | turn 在途 submit 立即 `steer`（dsh 原生，消息直入成员 inbox next-step） | 原生能力优先 / FR-001 |
 | R2 | 静止路径保持编排驱动（FIFO 收缩为静止路径专用） | FR-005 relay 边界 |
-| R3 | FR-002 回退由 steer-wake 自愈承担；切换优先级经 drain interval 自然保持 | FR-002/FR-003 |
+| R3 | FR-002 回退由 dsh 原生延展/自愈承担（同 turn 延展 / wake 新 turn 两窗口）；切换优先级经 drain interval 自然保持 | FR-002/FR-003 |
+| R3a | 与 062 终局收束交互：零特判、语义一致（pending steer 使终局 turn 延展消费，复盘交接在后——与 062 FIFO 裁定优先级一致） | 062 契约 §3 委托 / FR-005 |
 | R4 | `snapshot.queued` 含 steered-unclaimed 计数；静止判定加 inbox pending 检查 | FR-004 / 竞态封堵 |
 | R5 | 取消沿用默认清 inbox（不用 keepInbox） | FR-004 / 原则 II 简化 |
 | R6 | 前端 chip 消除改挂 `member_view{sender:"user"}`（文本首匹配），turn_start 出队退役 | FR-004 消费时消除 |
