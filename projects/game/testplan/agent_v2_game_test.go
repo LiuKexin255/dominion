@@ -76,6 +76,9 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 			init.GetResult(), agentV2WonInitContains, agentV2WonStatusContains, agentV2WonBoardContains)
 	}
 	assertTerminalTurnEndsWithToolBlock(t, playerTurn)
+	// The conclusion ends the turn after the init step: a second model output
+	// (the scripted operate batch) would surface as a second step.
+	assertSingleModelStep(t, playerTurn)
 
 	// Backfill: the player's merge entry carries the settled init call whose
 	// result equals the streamed tool_result text.
@@ -103,6 +106,7 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 	if toolBlocks[0].GetToolId() == "" {
 		t.Error("history tool block lacks its provider call id")
 	}
+	assertTerminalHistoriesNoAbortTraces(t, ctx, sutHostURL, sutEnvName, sessionName)
 }
 
 // TestAgentV2TeamGameTerminalWonAndReviewContinues covers US2 场景 4 with the
@@ -191,6 +195,9 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 		t.Errorf("game 2 init result = %q, want the won board recognized at init", game2[0].GetResult())
 	}
 	assertTerminalTurnEndsWithToolBlock(t, turns[3])
+	// Same init-terminal topology as the won chain: one model step, no second
+	// output (the scripted operate batch never runs).
+	assertSingleModelStep(t, turns[3])
 
 	// No user input after the first Send: exactly one USER merge entry.
 	userEntries := teamMessagesForMember(listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName), "user")
@@ -230,6 +237,7 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	if !sawReviewRelay {
 		t.Error("player view has no relayed review message after the game-end drive")
 	}
+	assertTerminalHistoriesNoAbortTraces(t, ctx, sutHostURL, sutEnvName, sessionName)
 }
 
 // TestAgentV2TeamGameTerminalLostAndReviewStops covers US2 场景 4 with the
@@ -307,6 +315,7 @@ func TestAgentV2TeamGameTerminalLostAndReviewStops(t *testing.T) {
 	if got := len(teamTurnToolResults(turns[3])); got != 0 {
 		t.Errorf("stop-ack tool results = %d, want 0 (no second game opened)", got)
 	}
+	assertTerminalHistoriesNoAbortTraces(t, ctx, sutHostURL, sutEnvName, sessionName)
 }
 
 // TestAgentV2TeamGameDesktopAbsent covers US2 场景 8's absent half: on a

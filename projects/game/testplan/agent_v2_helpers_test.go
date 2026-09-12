@@ -465,24 +465,154 @@ func teamTurnToolResults(turn *teamMemberTurn) []*game.ToolResultEvent {
 // assertTerminalTurnEndsWithToolBlock checks the 062 terminal-turn shape
 // (specs/062-team-game-end-handoff/spec.md FR-003 /
 // specs/062-team-game-end-handoff/data-model.md §3): the turn's last announced
-// output block is a tool-call block and no text block follows it — the
-// terminal tool result concludes the turn, so the turn ends visually at that
-// block instead of a model summary.
+// output block is a tool-call block, no text block follows it, and the block
+// is settled — its provider call id carries the matching terminal tool_result.
+// The terminal tool result concludes the turn, so the turn ends visually at
+// that settled block instead of a model summary.
 func assertTerminalTurnEndsWithToolBlock(t *testing.T, turn *teamMemberTurn) {
 	t.Helper()
 
-	var last game.BlockType
+	lastIndex := int32(-1)
+	var lastType game.BlockType
 	for _, event := range turn.events {
 		if start := event.GetBlockStart(); start != nil {
-			last = start.GetType()
+			lastIndex, lastType = start.GetIndex(), start.GetType()
 		}
 	}
-	if last != game.BlockType_BLOCK_TYPE_TOOL_CALL {
-		t.Errorf("turn %s last output block = %v, want TOOL_CALL (the terminal tool result concludes the turn)", turn.turnID, last)
+	if lastType != game.BlockType_BLOCK_TYPE_TOOL_CALL {
+		t.Errorf("turn %s last output block = %v, want TOOL_CALL (the terminal tool result concludes the turn)", turn.turnID, lastType)
+		return
 	}
 	if _, text := teamTurnBlocks(turn); text != "" {
 		t.Errorf("turn %s trailing text = %q, want none after the terminal tool result", turn.turnID, text)
 	}
+	results := teamTurnToolResults(turn)
+	settled := false
+	for _, event := range turn.events {
+		end := event.GetBlockEnd()
+		if end == nil || end.GetIndex() != lastIndex {
+			continue
+		}
+		call := end.GetBlock().GetToolCall()
+		if call == nil {
+			continue
+		}
+		for _, result := range results {
+			if result.GetToolId() != call.GetToolId() {
+				continue
+			}
+			if result.GetStatus() == game.ToolStatus_TOOL_STATUS_SUCCEEDED || result.GetStatus() == game.ToolStatus_TOOL_STATUS_FAILED {
+				settled = true
+			}
+		}
+	}
+	if !settled {
+		t.Errorf("turn %s terminal tool block (index %d) has no settled terminal tool_result (missing block_end or no matching result)", turn.turnID, lastIndex)
+	}
+}
+
+// assertSingleModelStep checks that one member turn's block frames carry
+// exactly one model-output step — a real server step (>=1; 0 is only the
+// missing-field sentinel). The 062 terminal conclusion ends the turn at the
+// tool result, before any further model request, so a second model output
+// would surface as a second step number; the server step loop's sequence is
+// 1-based and stamped on every block frame
+// (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §1).
+func assertSingleModelStep(t *testing.T, turn *teamMemberTurn) {
+	t.Helper()
+
+	steps := map[int32]bool{}
+	for _, event := range turn.events {
+		switch {
+		case event.GetBlockStart() != nil:
+			steps[event.GetBlockStart().GetStep()] = true
+		case event.GetDelta() != nil:
+			steps[event.GetDelta().GetStep()] = true
+		case event.GetBlockEnd() != nil:
+			steps[event.GetBlockEnd().GetStep()] = true
+		}
+	}
+	if len(steps) != 1 {
+		t.Errorf("turn %s block frames span %d model-output steps (%v), want exactly 1 (the terminal conclusion ends the turn before a second model request)", turn.turnID, len(steps), steps)
+		return
+	}
+	for step := range steps {
+		if step < 1 {
+			t.Errorf("turn %s block frames carry step %d, want a real server step (0 is only the missing-field sentinel)", turn.turnID, step)
+		}
+	}
+}
+
+// agentV2ToolAbortedContains is the synthesized abort result dsh mints for a
+// tool call that never dispatched on the cancel path ("Error: tool call
+// aborted before dispatch", specs/062-team-game-end-handoff/spec.md
+// Clarifications). The 062 terminal conclusion settles through the real tool
+// result, so this text must never surface in a concluded turn's histories.
+const agentV2ToolAbortedContains = "tool call aborted before dispatch"
+
+// assertNoAbortTraces checks the 062 no-trace terminal contract
+// (specs/062-team-game-end-handoff/spec.md FR-003) over one history sequence:
+// no message carries the interrupted marker, and no block's display text
+// carries the synthesized abort result. The text face covers the relayed
+// `<role-tool-call>` unit body as well as the settled tool block, because an
+// abort result reaches another member's view as relay text. Either trace
+// would mean the cancel/abort route leaked into a turn that must look like a
+// natural stop.
+func assertNoAbortTraces(t *testing.T, what string, messages []*game.HistoryMessage) {
+	t.Helper()
+
+	for i, message := range messages {
+		if message.GetInterrupted() {
+			t.Errorf("%s[%d]: interrupted = true, want a settled message (FR-003)", what, i)
+		}
+		for j, block := range message.GetBlocks() {
+			var content string
+			switch {
+			case block.GetText() != nil:
+				content = block.GetText().GetContent()
+			case block.GetThink() != nil:
+				content = block.GetThink().GetContent()
+			case block.GetToolCall() != nil:
+				content = block.GetToolCall().GetResult()
+			}
+			if strings.Contains(content, agentV2ToolAbortedContains) {
+				t.Errorf("%s[%d] block %d: content = %q carries the synthesized abort text (FR-003)", what, i, j, content)
+			}
+		}
+	}
+}
+
+// assertTerminalHistoriesNoAbortTraces fetches a settled terminal session's
+// merged sequence and both member views — the List 回填 and 成员视图 faces of
+// the 062 no-trace contract (specs/062-team-game-end-handoff/spec.md SC-002 /
+// quickstart.md V3) — and checks each for abort traces (assertNoAbortTraces).
+func assertTerminalHistoriesNoAbortTraces(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string) {
+	t.Helper()
+
+	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	assertNoAbortTraces(t, "ListTeamMessages", teamMessageHistories(merged))
+	for _, member := range []string{"player", "planner"} {
+		view := listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, member)
+		assertNoAbortTraces(t, "ListMemberMessages("+member+")", memberViewHistories(view))
+	}
+}
+
+// teamMessageHistories projects a merged sequence's native messages.
+func teamMessageHistories(entries []*game.TeamMessage) []*game.HistoryMessage {
+	var messages []*game.HistoryMessage
+	for _, entry := range entries {
+		messages = append(messages, entry.GetMessage())
+	}
+	return messages
+}
+
+// memberViewHistories projects a member view's native messages.
+func memberViewHistories(entries []*game.MemberViewMessage) []*game.HistoryMessage {
+	var messages []*game.HistoryMessage
+	for _, entry := range entries {
+		messages = append(messages, entry.GetMessage())
+	}
+	return messages
 }
 
 // teamTurnsForMember filters a stream's member turns by producer role.

@@ -78,9 +78,9 @@
 - 官方文档：无
 - 技术文章/技术参考文档：`specs/062-team-game-end-handoff/spec.md`（US2 Acceptance Scenarios、SC-002）、`specs/062-team-game-end-handoff/data-model.md` §3（turn 终态三行可观测契约——断言依据）、`specs/062-team-game-end-handoff/quickstart.md` V3、`projects/game/agent_v2/src/history.ts`（只读参照：`MemberCollector.onStatus` 的 COMPLETED 导出与 `pendingOutcome` 仅 Cancel/刷新标记，:574-575/:764-805——零改动面）
 
-- [ ] T008 [US2] 重塑 `projects/game/testplan/agent_v2_game_test.go` 的 `TestAgentV2TeamGameWonChainOnExecutor`：init 即识别胜利棋盘（FR-002 ①）→ player turn 在 init 后收束：tool_result 数 2 → 1（operate 断言移除，改为"无第二次模型输出"——脚本 `agent-v2-saolei-init-operate` 已备有 operate 批步骤而零执行）；turn_end 保持 COMPLETED 断言；终局记录不新增 → 无复盘、链路静止（不出现 planner turn）；回填断言 tool block 数 2 → 1 且结果与流文本一致；`bazel build //projects/game/testplan:agent_v2_game_test` 通过（依赖 T005 常量更新）
-- [ ] T009 [US2] 更新 `projects/game/testplan/agent_v2_game_test.go` 的 `TestAgentV2TeamGameConversationStreamIndependentOfFlow`：quiescence 轮询锚点从 `agentV2WonSummaryText` 改为终局工具结果文本（player entry 含 "game status: won"）；其余断言保持；`bazel build` 通过（与 T008 同文件，串行）
-- [ ] T010 [US2] 在 `projects/game/testplan/agent_v2_game_test.go` 三个终局用例（TerminalWon/TerminalLost/WonChain）统一补无痕断言：终局 player turn 最后输出块为已 settle 的工具调用块（无后续文本块）；List 回填与成员视图无 `interrupted` 标记、无 "tool call aborted" 类合成结果文本（可加共享 helper 断言单一概念，遵守 style/golang.md 测试规范）；`bazel build //projects/game/testplan:agent_v2_game_test` 通过（与 T008/T009 同文件，串行）
+- - [X] T008 [US2] 重塑 `projects/game/testplan/agent_v2_game_test.go` 的 `TestAgentV2TeamGameWonChainOnExecutor`：init 即识别胜利棋盘（FR-002 ①）→ player turn 在 init 后收束：tool_result 数 2 → 1（operate 断言移除，改为"无第二次模型输出"——脚本 `agent-v2-saolei-init-operate` 已备有 operate 批步骤而零执行）；turn_end 保持 COMPLETED 断言；终局记录不新增 → 无复盘、链路静止（不出现 planner turn）；回填断言 tool block 数 2 → 1 且结果与流文本一致；`bazel build //projects/game/testplan:agent_v2_game_test` 通过（依赖 T005 常量更新）
+- - [X] T009 [US2] 更新 `projects/game/testplan/agent_v2_game_test.go` 的 `TestAgentV2TeamGameConversationStreamIndependentOfFlow`：quiescence 轮询锚点从 `agentV2WonSummaryText` 改为终局工具结果文本（player entry 含 "game status: won"）；其余断言保持；`bazel build` 通过（与 T008 同文件，串行）
+- - [X] T010 [US2] 在 `projects/game/testplan/agent_v2_game_test.go` 三个终局用例（TerminalWon/TerminalLost/WonChain）统一补无痕断言：终局 player turn 最后输出块为已 settle 的工具调用块（无后续文本块）；List 回填与成员视图无 `interrupted` 标记、无 "tool call aborted" 类合成结果文本（可加共享 helper 断言单一概念，遵守 style/golang.md 测试规范）；`bazel build //projects/game/testplan:agent_v2_game_test` 通过（与 T008/T009 同文件，串行）
 
 **Checkpoint**: US1+US2（两个 P1）均可独立验证。
 
