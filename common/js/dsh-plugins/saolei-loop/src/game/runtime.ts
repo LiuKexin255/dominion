@@ -86,10 +86,34 @@ export type OperateInput = CellOperation | { operations: CellOperation[] };
  * Tool-facing outcome contract shared by the three saolei tools. `isError`
  * outcomes are surfaced as model-visible tool failures; text outcomes are
  * normal results (including rejections).
+ *
+ * A successful outcome whose recognized board is terminal (`gameStatus(state)
+ * ∈ {won, lost}`) carries `concludesTurn: true` — the dsh turn-conclusion
+ * marker the saolei tool forwards through `ToolRunContext.concludeTurn()`
+ * (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md §1). The
+ * marker is pure content-driven: it reads only the recognized board and never
+ * the terminal-event/orchestration state, and the failure variant cannot carry
+ * it (type-level parity with dsh `ToolExecutionFailure.concludesTurn?: never`,
+ * node_modules/.pnpm/@deepseek-ai+dsh-tools@0.1.1-rc.2_119bc70f73f8eddebfaa6b47561adeb3/
+ * node_modules/@deepseek-ai/dsh-tools/lib/types/index.d.ts:400-409).
  */
 export type ToolOutcome =
-  | { isError: false; text: string }
+  | { isError: false; text: string; concludesTurn?: true }
   | { isError: true; error: { message: string } };
+
+/**
+ * The `concludesTurn` marker for one recognized result board: terminal
+ * (won/lost) boards conclude the turn, everything else carries no key. The
+ * single helper exists so the three marking sites (init success, empty-batch
+ * operate, normal operate) share one predicate — hand-written per-path
+ * variants would drift from the judgment matrix
+ * (specs/062-team-game-end-handoff/data-model.md §1.2). Pure function of
+ * `state`.
+ */
+function concludeMarker(state: GameState): { concludesTurn?: true } {
+  const status = gameStatus(state);
+  return status === "won" || status === "lost" ? { concludesTurn: true } : {};
+}
 
 /**
  * One game-log entry: one step of the current game. One `operate` call —
@@ -202,7 +226,7 @@ export class GameRuntimeService extends Service implements GameRuntime {
     this.operationCount = 0;
     this.gameLog.length = 0;
     this.gameLog.push({ tool: "saolei_init", state, status: "playing" });
-    return { isError: false, text: initSuccessText(state) };
+    return { isError: false, text: initSuccessText(state), ...concludeMarker(state) };
   }
 
   /**
@@ -224,6 +248,7 @@ export class GameRuntimeService extends Service implements GameRuntime {
       return {
         isError: false,
         text: operateResultText(0, 0, this.recognized, null, null),
+        ...concludeMarker(this.recognized),
       };
     }
 
@@ -287,6 +312,7 @@ export class GameRuntimeService extends Service implements GameRuntime {
     return {
       isError: false,
       text: operateResultText(executed, skipped, finalState, stoppedOp, stoppedReason),
+      ...concludeMarker(finalState),
     };
   }
 

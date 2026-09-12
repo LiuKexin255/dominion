@@ -3,8 +3,11 @@
  * global tool registrations and the `saolei:guidance` prompt section, the
  * dual-form argument validation with the verbatim v1 literals, the exec-time
  * resolution of the agent-scoped `saoleiGame` service through
- * `exec.agent.ctx`, the ToolOutcome.isError → throw mapping, and the
- * fail-loud paths (no `exec.agent`; service absent from the caller's scope).
+ * `exec.agent.ctx`, the ToolOutcome.isError → throw mapping, the
+ * ToolOutcome.concludesTurn → `exec.concludeTurn()` mapping
+ * (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md §2), and
+ * the fail-loud paths (no `exec.agent`; service absent from the caller's
+ * scope).
  * The guidance-ownership cases (tool usage only; game rules live in the
  * saolei-loop plugin's `saolei:game` section) follow
  * specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2.
@@ -46,6 +49,7 @@ function fakeExec(agent?: CallerAgent): ToolRunContext {
     ...(agent === undefined ? {} : { agent }),
     token: Symbol(),
     deferContext: vi.fn(),
+    concludeTurn: vi.fn(),
   } as unknown as ToolRunContext;
 }
 
@@ -278,5 +282,68 @@ describe("saolei plugin exec forwarding", () => {
     await expect(
       tools.get("saolei_init")!.execute({}, fakeExec(fakeAgent(undefined))),
     ).rejects.toThrow("saoleiGame");
+  });
+});
+
+describe("saolei plugin turn conclusion mapping (062 contract §2)", () => {
+  it("calls exec.concludeTurn exactly once for a marked successful outcome", async () => {
+    const { tools } = makeHarness();
+    const runtime = stubRuntime({
+      operate: {
+        isError: false,
+        text: "saolei_operate → stopped at click(1,1) (won)",
+        concludesTurn: true,
+      },
+    });
+    const exec = fakeExec(fakeAgent(runtime));
+
+    const outcome = await tools.get("saolei_operate")!.execute(
+      { type: "click", x: 1, y: 1 },
+      exec,
+    );
+
+    expect(outcome).toEqual({ result: "saolei_operate → stopped at click(1,1) (won)" });
+    expect(exec.concludeTurn).toHaveBeenCalledOnce();
+  });
+
+  it("does not call concludeTurn for an unmarked outcome", async () => {
+    const { tools } = makeHarness();
+    const runtime = stubRuntime({
+      init: { isError: false, text: "new game started\ngame status: playing" },
+    });
+    const exec = fakeExec(fakeAgent(runtime));
+
+    const outcome = await tools.get("saolei_init")!.execute({}, exec);
+
+    expect(outcome).toEqual({ result: "new game started\ngame status: playing" });
+    expect(exec.concludeTurn).not.toHaveBeenCalled();
+  });
+
+  it("throws on an isError outcome without calling concludeTurn", async () => {
+    const { tools } = makeHarness();
+    const runtime = stubRuntime({
+      operate: { isError: true, error: { message: "desktop disconnected" } },
+    });
+    const exec = fakeExec(fakeAgent(runtime));
+
+    await expect(
+      tools.get("saolei_operate")!.execute({ type: "click", x: 0, y: 0 }, exec),
+    ).rejects.toThrow("desktop disconnected");
+    expect(exec.concludeTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not call concludeTurn when the argument combination is refused before the runtime", async () => {
+    const { tools } = makeHarness();
+    const runtime = stubRuntime({});
+    const exec = fakeExec(fakeAgent(runtime));
+
+    const outcome = await tools.get("saolei_operate")!.execute(
+      { type: "click", x: 0, y: 0, operations: [{ type: "click", x: 0, y: 0 }] },
+      exec,
+    );
+
+    expect(outcome).toEqual({ result: AMBIGUOUS_ARGS_TEXT });
+    expect(runtime.operate).not.toHaveBeenCalled();
+    expect(exec.concludeTurn).not.toHaveBeenCalled();
   });
 });

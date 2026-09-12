@@ -4,10 +4,11 @@
  * saolei-plugins.md §2.2/§7.1) — three-API semantics, dual-form operate,
  * per-rule rejections, batch SKIP/STOP triage, recognition-failure
  * invalidation, signal forwarding, counter-informed win, per-game statistics,
- * and the game-history (gameLog/gameEvent) buffer — plus the agent-scoped
- * lifecycle assertions (the `saoleiGame` service is reachable only on the
- * owning agent scope and unregisters with it; the root context never sees
- * it).
+ * the game-history (gameLog/gameEvent) buffer, and the turn-conclusion marker
+ * matrix (specs/062-team-game-end-handoff/data-model.md §1.2) — plus the
+ * agent-scoped lifecycle assertions (the `saoleiGame` service is reachable
+ * only on the owning agent scope and unregisters with it; the root context
+ * never sees it).
  *
  * Pattern (style/javascript.md Mock convention): pure DI — a fake dispatch
  * double records the dispatched FlowParts and resolves canned
@@ -598,6 +599,195 @@ describe("GameRuntime: remain", () => {
     const outcome = runtime.remain();
 
     expect((outcome as { text: string }).text).toContain("game status: lost");
+  });
+});
+
+// ── turn-conclusion judgment matrix ─────────────────────────────────────────
+// specs/062-team-game-end-handoff/data-model.md §1.2 rows 1-10 (row 11 — the
+// tool-layer argument-combination rejection — is asserted in
+// saolei/src/index.test.ts). A marked outcome carries `concludesTurn: true`;
+// `not.toHaveProperty` proves unmarked paths carry no key at all.
+
+describe("GameRuntime: concludesTurn judgment matrix (062 data-model.md §1.2)", () => {
+  it("row 1: init dispatch FAILED is an error outcome with no marker", async () => {
+    const fake = makeFakeDispatch(failed("desktop disconnected"));
+    const runtime = makeRuntime(fake.dispatch);
+
+    const outcome = await runtime.init();
+
+    expect(outcome).toEqual({ isError: true, error: { message: "desktop disconnected" } });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 2: init recognition failure carries no marker (no board)", async () => {
+    const fake = makeFakeDispatch(succeeded(null));
+    const runtime = makeRuntime(fake.dispatch);
+
+    const outcome = await runtime.init();
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("unable to recognize board"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 3: init marks a terminal recognized board and leaves playing unmarked", async () => {
+    const wonRuntime = makeRuntime(
+      makeFakeDispatch().dispatch,
+      makeFakeBoardApi(board(["0 F 0", "0 0 0", "0 0 0"], COUNTER_ZERO)).api,
+    );
+    const won = await wonRuntime.init();
+    expect(won).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: won"),
+      concludesTurn: true,
+    });
+
+    const lostRuntime = makeRuntime(
+      makeFakeDispatch().dispatch,
+      makeFakeBoardApi(board(["* X *", "* * *", "* * *"])).api,
+    );
+    const lost = await lostRuntime.init();
+    expect(lost).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+      concludesTurn: true,
+    });
+
+    const playingRuntime = makeRuntime();
+    const playing = await playingRuntime.init();
+    expect(playing).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: playing"),
+    });
+    expect(playing).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 4: an empty operate list with no recognized board carries no marker", async () => {
+    const runtime = makeRuntime();
+
+    const outcome = await runtime.operate({ operations: [] });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("rejected: no_active_game"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 5: an empty operate list on a terminal recognized board carries the marker", async () => {
+    const fakeBoard = makeFakeBoardApi(board(["* X *", "* * *", "* * *"]));
+    const runtime = makeRuntime(makeFakeDispatch().dispatch, fakeBoard.api);
+    await runtime.init();
+
+    const outcome = await runtime.operate({ operations: [] });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+      concludesTurn: true,
+    });
+  });
+
+  it("row 6: a mid-batch dispatch FAILED is an error outcome with no marker", async () => {
+    const fake = makeFakeDispatch();
+    const runtime = makeRuntime(fake.dispatch);
+    await runtime.init();
+    fake.set(failed("operation timed out"));
+
+    const outcome = await runtime.operate({ type: "click", x: 0, y: 0 });
+
+    expect(outcome).toEqual({ isError: true, error: { message: "operation timed out" } });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 7: a mid-batch recognition failure carries no marker", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"]));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+    await runtime.init();
+    fakeBoard.setUpdate("throw");
+
+    const outcome = await runtime.operate({ type: "click", x: 0, y: 0 });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("unable to recognize board"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 8: the post-batch no-board defensive path carries no marker", async () => {
+    const fake = makeFakeDispatch();
+    const runtime = makeRuntime(fake.dispatch);
+
+    // Non-empty ops with no recognized board stop at no_active_game and fall
+    // through to the defensive no-board return.
+    const outcome = await runtime.operate({ type: "click", x: 0, y: 0 });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("rejected: no_active_game"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+    expect(fake.parts).toHaveLength(0);
+  });
+
+  it("row 9: terminal operate results carry the marker; a playing result does not", async () => {
+    // An op that ends the game as a loss: the result board is terminal.
+    const lossFake = makeFakeDispatch();
+    const lossBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    const loss = makeRuntime(lossFake.dispatch, lossBoard.api);
+    await loss.init();
+    lossBoard.setUpdate(board(["* * *", "* X *", "* * *"], { decoded: true, value: 9 }));
+    const ended = await loss.operate({ type: "click", x: 1, y: 1 });
+    expect(ended).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+      concludesTurn: true,
+    });
+
+    // A terminal structural stop (FR-002 ②): the stop body's board is terminal.
+    const stopFake = makeFakeDispatch();
+    const stopBoard = makeFakeBoardApi(board(["0 F 0", "0 0 0", "0 0 0"], COUNTER_ZERO));
+    const stop = makeRuntime(stopFake.dispatch, stopBoard.api);
+    await stop.init();
+    const stopped = await stop.operate({ type: "click", x: 0, y: 0 });
+    expect(stopped).toEqual({
+      isError: false,
+      text: expect.stringContaining("(game_won)"),
+      concludesTurn: true,
+    });
+
+    const playing = makeRuntime();
+    await playing.init();
+    const playingOutcome = await playing.operate({ type: "click", x: 0, y: 0 });
+    expect(playingOutcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: playing"),
+    });
+    expect(playingOutcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 10: remain never carries the marker", async () => {
+    const noBoard = makeRuntime();
+    const noBoardOutcome = noBoard.remain();
+    expect(noBoardOutcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("rejected: no_active_game"),
+    });
+    expect(noBoardOutcome).not.toHaveProperty("concludesTurn");
+
+    const fakeBoard = makeFakeBoardApi(board(["* X *", "* * *", "* * *"]));
+    const runtime = makeRuntime(makeFakeDispatch().dispatch, fakeBoard.api);
+    await runtime.init();
+    const terminal = runtime.remain();
+    expect(terminal).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+    });
+    expect(terminal).not.toHaveProperty("concludesTurn");
   });
 });
 

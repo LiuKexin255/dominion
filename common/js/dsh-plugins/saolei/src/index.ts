@@ -105,7 +105,10 @@ function resolveRuntime(exec: ToolRunContext): SaoleiGame {
 
 /** Run one runtime call and map its outcome to the canonical output. Error
  * outcomes throw (model-visible failure); text outcomes become the rendered
- * `{result}` value. */
+ * `{result}` value. A successful outcome carrying the runtime's terminal-board
+ * marker (`concludesTurn: true`) first concludes the calling turn through the
+ * dsh-tools seam — the result still commits normally afterwards
+ * (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md §2). */
 async function executeOutcome(
   exec: ToolRunContext,
   run: (runtime: SaoleiGame) => ToolOutcome | Promise<ToolOutcome>,
@@ -113,6 +116,9 @@ async function executeOutcome(
   const outcome = await run(resolveRuntime(exec));
   if (outcome.isError) {
     throw new Error(outcome.error.message);
+  }
+  if (outcome.concludesTurn === true) {
+    exec.concludeTurn();
   }
   return { result: outcome.text };
 }
