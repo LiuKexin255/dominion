@@ -177,8 +177,11 @@ func TestAgentV2TeamViewDataProjections(t *testing.T) {
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-views")
 
 	// A won game that continues into a second one on the test's own desktop
-	// half (V4): the merged sequence then carries both members' native output
-	// with two settled tool calls per player game.
+	// half (V4): the merged sequence then carries both members' native
+	// output. Game 1 settles init + operate; game 2's init already
+	// recognizes the win board, so that turn concludes at the init result
+	// (specs/062-team-game-end-handoff/spec.md FR-002 ①) and no operate
+	// follows.
 	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
@@ -226,8 +229,8 @@ func TestAgentV2TeamViewDataProjections(t *testing.T) {
 			}
 		}
 	}
-	if len(toolCalls) != 4 {
-		t.Fatalf("merge player tool-call blocks = %d, want 4 (init + operate per game)", len(toolCalls))
+	if len(toolCalls) != 3 {
+		t.Fatalf("merge player tool-call blocks = %d, want 3 (game 1 init + operate; game 2 init-terminal, no operate)", len(toolCalls))
 	}
 	for i, call := range toolCalls {
 		if call.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || call.GetResult() == "" {

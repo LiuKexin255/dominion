@@ -403,8 +403,10 @@ func TestAgentV2TeamGameMultiSessionIsolation(t *testing.T) {
 	connCtx, connName, _ := teamPrep(t, sutHostURL, sutEnvName, connectedID, "iso-conn")
 	flow, _ := dialAgentV2FlowProbed(t, connCtx, sutHostURL, sutEnvName, connectedID)
 	defer flow.Close()
-	// The win board at init: the operate batch is rejected pre-dispatch, so
-	// one F2 reply completes the chain.
+	// The win board at init: the terminal init result concludes the player
+	// turn (specs/062-team-game-end-handoff/spec.md FR-002 ①), so the
+	// scripted operate batch is never requested — one F2 reply completes the
+	// chain.
 	scriptCh := serveTeamFlowScript(flow, connectedID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardWinPNG},
 	}, wsReadTimeout)
@@ -440,8 +442,8 @@ func TestAgentV2TeamGameMultiSessionIsolation(t *testing.T) {
 	assertTeamStreamWellFormed(t, absentName, eventsAbsent)
 
 	connectedResults := teamTurnToolResults(teamTurnsForMember(eventsConnected, "player")[0])
-	if len(connectedResults) == 0 || connectedResults[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
-		t.Fatalf("connected session tool results = %+v, want a SUCCEEDED saolei_init", connectedResults)
+	if len(connectedResults) != 1 || connectedResults[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("connected session tool results = %+v, want the single SUCCEEDED saolei_init (the terminal init concludes the turn)", connectedResults)
 	}
 	absentResults := teamTurnToolResults(teamTurnsForMember(eventsAbsent, "player")[0])
 	if len(absentResults) == 0 || absentResults[0].GetStatus() != game.ToolStatus_TOOL_STATUS_FAILED {
@@ -627,6 +629,19 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 	if len(turns) != 4 || turns[2].member != "planner" {
 		t.Fatalf("chain turns = %v, want 4 with the planner review third (the active value crossed the review phase)", turns)
 	}
+	// Game 2 opened on the already-won board: the terminal init result
+	// concludes the turn (specs/062-team-game-end-handoff/spec.md FR-002 ①)
+	// before the scripted operate batch (agent-v2-saolei-init-operate), so
+	// the turn carries exactly the one init result and no second model step.
+	game2 := teamTurnToolResults(turns[3])
+	if len(game2) != 1 || game2[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("game 2 tool results = %+v, want the single SUCCEEDED init (the terminal init concludes the turn)", game2)
+	}
+	if !strings.Contains(game2[0].GetResult(), agentV2WonStatusContains) {
+		t.Errorf("game 2 init result = %q, want the win board recognized at init", game2[0].GetResult())
+	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[3])
+	assertSingleModelStep(t, turns[3])
 
 	// 静止: after the review the structural continuation handed the next
 	// input back to the player, which the merged value reflects.

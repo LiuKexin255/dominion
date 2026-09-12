@@ -123,7 +123,6 @@ const (
 	agentV2WonInitContains    = "new game started"
 	agentV2WonBoardContains   = "board size 9*9"
 	agentV2WonStatusContains  = "game status: won"
-	agentV2WonRejectContains  = "stopped at click(0,0) (game_won)"
 	agentV2LostStatusContains = "game status: lost"
 
 	agentV2ProgInitContains   = "new game started"

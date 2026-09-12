@@ -149,11 +149,14 @@ history tail the conversation suite asserts).
 `agent_v2_saolei.yaml` chains the game surface: a user
 turn matching the saolei-start keyword returns a `saolei_init` tool_call,
 `tools:` rules match the tool results (the "new game started" receipt, board
-outcomes) to drive the operate batch, and the `game status: won` result
-resolves to the final summary text. Every `agent_v2*` entry carries
-`responses_only: true` so the chat-completions no-match fallback pool never
-observes it; the expected reasoning/text pieces are pinned as the `agentV2*`
-constants in `agent_v2_helpers_test.go`.
+outcomes) to drive the operate batch, and a terminal (`game status: won/lost`)
+result would resolve to the final summary text — under the 062 turn conclusion
+such a result instead ends the player turn at the tool block, so those summary
+rules stay as the never-requested zero-execution face
+(specs/062-team-game-end-handoff/research.md D6). Every `agent_v2*` entry
+carries `responses_only: true` so the chat-completions no-match fallback pool
+never observes it; the expected reasoning/text pieces are pinned as the
+`agentV2*` constants in `agent_v2_helpers_test.go`.
 
 The team fixtures `team_planner.yaml` and `team_player.yaml` serve the
 two-role chain (specs/059-agent-v2-team-mode/tasks.md T011/T018/T023): every

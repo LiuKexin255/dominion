@@ -103,8 +103,10 @@ func TestDesktopFlowOperationDeliveryAndReceipt(t *testing.T) {
 
 	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	// The win board at init: the operate batch rejects pre-dispatch, so the
-	// single F2 reply closes the chain.
+	// The win board at init: the terminal init result concludes the player
+	// turn (specs/062-team-game-end-handoff/spec.md FR-002 ①), so the
+	// scripted operate batch is never requested — the single F2 reply closes
+	// the chain.
 	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardWinPNG},
 	}, wsReadTimeout)
@@ -119,8 +121,8 @@ func TestDesktopFlowOperationDeliveryAndReceipt(t *testing.T) {
 		t.Fatalf("player turns = %d, want 1 (the game chain)", len(playerTurns))
 	}
 	results := teamTurnToolResults(playerTurns[0])
-	if len(results) == 0 {
-		t.Fatal("the game turn produced no tool_result frames")
+	if len(results) != 1 {
+		t.Fatalf("tool_result count = %d, want 1 (saolei_init only — the terminal init result concludes the turn)", len(results))
 	}
 	init := results[0]
 	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {

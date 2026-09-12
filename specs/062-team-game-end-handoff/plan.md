@@ -86,7 +86,8 @@ projects/game/testplan/
 │                                # TerminalLostAndReviewStops / ConversationStreamIndependentOfFlow / ActiveMemberTransitions
 │                                # 断言与拓态更新 + 新增收束切面断言
 └── agent_v2_game_disconnect_test.go / agent_v2_conversation_test.go / agent_v2_preset_test.go
-                                 # nodesktop 总结文本不受影响（isError 不收束）——仅核对，预计零改动
+                                 # disconnect/preset 仅核对零改动（playing/nodesktop 拓扑）；conversation 的
+                                 # ViewDataProjections 计数 4→3 与注释同步（addendum-01 缺口 1，归 T013）
 
 # 零改动面（显式列出防误改）
 common/js/dsh-plugins/saolei-loop/src/orchestrator.ts   # FR-004：编排器零改动
