@@ -25,7 +25,7 @@
 - 官方文档：无
 - 技术文章/技术参考文档：`specs/062-team-game-end-handoff/plan.md`（Project Structure 一节——变更面/零改动面清单）
 
-- [ ] T001 基线验证：`bazel test //common/js/dsh-plugins/saolei/... //common/js/dsh-plugins/saolei-loop/...` 全绿；`bazel build //projects/game/testplan:agent_v2_game_test //projects/game/testplan:agent_v2_game_disconnect_test //projects/game/fake-llm/service/...` 通过——记录基线结果供后续 phase 对照
+- - [X] T001 基线验证：`bazel test //common/js/dsh-plugins/saolei/... //common/js/dsh-plugins/saolei-loop/...` 全绿；`bazel build //projects/game/testplan:agent_v2_game_test //projects/game/testplan:agent_v2_game_disconnect_test //projects/game/fake-llm/service/...` 通过——记录基线结果供后续 phase 对照
 
 ---
 
