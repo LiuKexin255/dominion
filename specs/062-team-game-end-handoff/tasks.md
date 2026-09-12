@@ -130,8 +130,8 @@
 - 官方文档：无
 - 技术文章/技术参考文档：`.opencode/skills/testplan/SKILL.md`（guitar 执行流程与强约束）、`projects/game/testplan/system_test.yaml`（实际计划：3 suites/cases 的权威定义）、`tools/test/guitar/README.md`、`projects/game/testplan/README.md`（suite/case 组织）、`specs/062-team-game-end-handoff/quickstart.md`（全文——V1~V5 验收 walkthrough）、`.opencode/skills/signoz/SKILL.md`（仅失败排障路径——SKILL 指引的 logs/traces 查询）
 
-- [ ] T014 格式化与构建收口：`bazel run //:go -- fmt [变更的 Go 文件]`；确认无 BUILD.bazel 变更需求（无新文件/target；如有则 `bazel run //:gazelle <目录>` 后核对）；`bazel build //common/js/dsh-plugins/saolei/... //common/js/dsh-plugins/saolei-loop/... //projects/game/testplan/... //projects/game/fake-llm/service/...` 与对应 `bazel test`（JS 包）全绿
-- [ ] T015 大型测试全量验收（宪章原则 VI，经 testplan skill 执行，**全部用例通过**为标准）：`guitar run projects/game/testplan/system_test.yaml`（全量 3 suites：game-system [testplan/memory/web/conversation/preset/game/desktop_flow 全部 case] / game-disconnect / game-memory-down；如需聚焦可加 `--suite`，验收以全量全绿为准）；失败则定位修复后重跑直至全绿；按 SKILL 输出要求汇报（计划路径/校验/部署/每 case 结果/清理；失败时配合 signoz skill 查询定位）
+- - [X] T014 格式化与构建收口：`bazel run //:go -- fmt [变更的 Go 文件]`；确认无 BUILD.bazel 变更需求（无新文件/target；如有则 `bazel run //:gazelle <目录>` 后核对）；`bazel build //common/js/dsh-plugins/saolei/... //common/js/dsh-plugins/saolei-loop/... //projects/game/testplan/... //projects/game/fake-llm/service/...` 与对应 `bazel test`（JS 包）全绿
+- - [X] T015 大型测试全量验收（宪章原则 VI，经 testplan skill 执行，**全部用例通过**为标准）：`guitar run projects/game/testplan/system_test.yaml`（全量 3 suites：game-system [testplan/memory/web/conversation/preset/game/desktop_flow 全部 case] / game-disconnect / game-memory-down；如需聚焦可加 `--suite`，验收以全量全绿为准）；失败则定位修复后重跑直至全绿；按 SKILL 输出要求汇报（计划路径/校验/部署/每 case 结果/清理；失败时配合 signoz skill 查询定位）
 
 ---
 
