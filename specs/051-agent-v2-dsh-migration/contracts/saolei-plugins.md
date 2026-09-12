@@ -40,7 +40,9 @@ export interface GameRuntime {
   /** 终局事件只读视图（统计/复盘用途预留；本 feature 无 planner 消费）。 */
   peekGameEvent(): GameEventRecord | null;
 }
-export type ToolOutcome = { isError: false; text: string } | { isError: true; error: { message: string } };
+export type ToolOutcome = { isError: false; text: string; concludesTurn?: true } | { isError: true; error: { message: string } };
+// 终局收束扩展（062）：成功结果的识别棋盘为终局（won/lost）时携带 concludesTurn: true。
+// 契约与判定矩阵见 specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md §1/§2。
 ```
 
 ### 2.1 工厂与驱动（FR-010）
@@ -83,7 +85,7 @@ export const inject = ["tools", "systemPrompt"];
   - `saolei_operate`（参数双形式：single `{type: click|flag|chord, x: int≥0, y: int≥0}` 或 `{operations: [{type,x,y}...]}`，互斥校验文本 = v1 `MISSING_ARGS_TEXT`/`AMBIGUOUS_ARGS_TEXT`/`INCOMPLETE_ARGS_TEXT` 字面量）：`runtime.operate(input, exec.signal)`；
   - `saolei_remain`（无参）：`runtime.remain()`。
   - exec 体：经 **`exec.agent.ctx`** 解析该 agent scope 内注册的 `saoleiGame` 服务（声明合并类型；`ToolExecution.agent` 携带调用者，dsh-tools `lib/types/index.d.ts:192-200`；`exec.agent` 缺失或服务不在 scope = 非 loop 驱动的调用/注册前窗口，**fail-loud 抛错**）；工具自身无状态（FR-013）。
-  - output 声明：`{result: string}` canonical JSON（render = 棋盘文本）；`ToolOutcome.isError` → 工具抛错（模型可见失败，不伪造成功）。
+  - output 声明：`{result: string}` canonical JSON（render = 棋盘文本）；`ToolOutcome.concludesTurn === true` 时先调用 `exec.concludeTurn()` 再返回（终局收束，[062 契约](../../062-team-game-end-handoff/contracts/saolei-turn-conclude.md) §2）；`ToolOutcome.isError` → 工具抛错（模型可见失败，不伪造成功）。
 - **prompt section**（FR-014）：`ctx.systemPrompt.section({name: "saolei:guidance", order: 100, text})`——内容迁移 `projects/game/agent/src/skill/saolei/SKILL.md`（识别棋盘非截图/符号表/坐标标尺/三层结果体/坐标约定/三工具用法/校验 triage 表/示例流程/禁用项），措辞适配插件工具语境；**不保留 skill 文件**。
 
 ## 4. @dominion/dsh-llm-glm 扩展（research D4/D11）
