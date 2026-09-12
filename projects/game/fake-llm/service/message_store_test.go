@@ -730,15 +730,17 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// The team entries (specs/059-agent-v2-team-mode/tasks.md T011/T018/T023)
 	// serve the deterministic two-role team chain: the planner persona anchor
 	// distinguishes them from every other family, the review entries carry
-	// the task's terminal-result history condition, the LOSS review carries
-	// the memory tool call whose result rule continues the review text
-	// (T023), the snapshot entry carries the reloaded-memory system
-	// condition, the wait entry carries the controllable in-flight window the
-	// queue/cancel/refresh cases use, the player role-lock entry carries the
-	// saolei guidance system condition, and the player entries carry the
-	// saolei_init tool call / no-new-game text the drive script consumes. The
-	// ordered block below is pinned against team_planner.yaml /
-	// team_player.yaml (README.md §6 lockstep).
+	// the terminal-result keyword condition (the raw status line in the
+	// review drive's last user message — the terminal relay itself under the
+	// 062 turn conclusion), the LOSS review carries the memory tool call
+	// whose result rule continues the review text (T023), the snapshot entry
+	// carries the reloaded-memory system condition, the wait entry carries
+	// the controllable in-flight window the queue/cancel/refresh cases use,
+	// the player role-lock entry carries the saolei guidance system
+	// condition, and the player entries carry the saolei_init tool call /
+	// no-new-game text the drive script consumes. The ordered block below is
+	// pinned against team_planner.yaml / team_player.yaml (README.md §6
+	// lockstep).
 	teamPlannerMemorySnapshot := got[18]
 	if !slices.Contains(teamPlannerMemorySnapshot.SystemKeywords, "长期记忆：") {
 		t.Errorf("team-planner-memory-snapshot system_keywords missing the snapshot header: %v", teamPlannerMemorySnapshot.SystemKeywords)
@@ -768,11 +770,11 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	teamPlannerReviewContinue := got[20]
-	if !slices.Contains(teamPlannerReviewContinue.Keywords, "<player-message>") {
-		t.Errorf("team-planner-review-continue keywords missing the player broadcast marker: %v", teamPlannerReviewContinue.Keywords)
+	if !slices.Contains(teamPlannerReviewContinue.Keywords, "game status: won") {
+		t.Errorf("team-planner-review-continue keywords missing the won terminal status line: %v", teamPlannerReviewContinue.Keywords)
 	}
-	if !slices.Contains(teamPlannerReviewContinue.HistoryKeywords, "game status: won") {
-		t.Errorf("team-planner-review-continue history_keywords missing the won terminal result: %v", teamPlannerReviewContinue.HistoryKeywords)
+	if len(teamPlannerReviewContinue.HistoryKeywords) != 0 {
+		t.Errorf("team-planner-review-continue history_keywords = %v, want none (the 062 review drive carries the terminal relay as the LAST user message, which history conditions cannot see)", teamPlannerReviewContinue.HistoryKeywords)
 	}
 	if teamPlannerReviewContinue.MinTurn != 2 {
 		t.Errorf("team-planner-review-continue min_turn = %d, want 2 (off the first drive)", teamPlannerReviewContinue.MinTurn)
@@ -782,8 +784,11 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	teamPlannerReviewStop := got[21]
-	if !slices.Contains(teamPlannerReviewStop.HistoryKeywords, "game status: lost") {
-		t.Errorf("team-planner-review-stop history_keywords missing the lost terminal result: %v", teamPlannerReviewStop.HistoryKeywords)
+	if !slices.Contains(teamPlannerReviewStop.Keywords, "game status: lost") {
+		t.Errorf("team-planner-review-stop keywords missing the lost terminal status line: %v", teamPlannerReviewStop.Keywords)
+	}
+	if len(teamPlannerReviewStop.HistoryKeywords) != 0 {
+		t.Errorf("team-planner-review-stop history_keywords = %v, want none (the 062 review drive carries the terminal relay as the LAST user message, which history conditions cannot see)", teamPlannerReviewStop.HistoryKeywords)
 	}
 	if teamPlannerReviewStop.MinTurn != 2 {
 		t.Errorf("team-planner-review-stop min_turn = %d, want 2 (off the first drive)", teamPlannerReviewStop.MinTurn)

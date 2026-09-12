@@ -118,7 +118,7 @@ player 回合在途、模型逐步调用 saolei 工具进行游戏。某次 `sao
 
 **Why this priority**: 用户裁定的交接要求；复用 059 FR-008 / 060 contracts/team-api.md §4 的既有 relay 语义，本 feature 的义务是保证终局步被该机制完整覆盖并作为验收断言固化。
 
-**Independent Test**: 大型测试断言（planner 成员视图 + fake-llm review 规则 `history_keywords` 命中）：复盘 turn 的输入含 `<player-tool-call>` 单元且 result 含终局 status 全文；复盘后 player turn 的输入含其自身终局 call+result（session log 完整性/回填断言）；player 视图含复盘 relay（既有断言回归）。
+**Independent Test**: 大型测试断言（planner 成员视图 + fake-llm review 规则 keywords 命中——终局 relay 即复盘驱动最后一条 user 消息）：复盘 turn 的输入含 `<player-tool-call>` 单元且 result 含终局 status 全文；复盘后 player turn 的输入含其自身终局 call+result（session log 完整性/回填断言）；player 视图含复盘 relay（既有断言回归）。
 
 **Acceptance Scenarios**:
 
@@ -188,7 +188,7 @@ player 回合在途、模型逐步调用 saolei 工具进行游戏。某次 `sao
 
 - **SC-001**: 大型测试断言（fake-llm player 脚本终局后仍备有后续步骤）：终局 `tool_result` 之后 player 无任何新的模型输出（后续脚本步骤零执行）；紧接 planner 复盘 turn；复盘后结构性续驱 player 开新局；4-turn 链单流覆盖、除首条用户消息外无需用户输入。
 - **SC-002**: 终态断言：终局 player turn 的 turn_end 帧 status = `TURN_STATUS_COMPLETED`；该 turn 最后输出块 = 终局工具调用块（结果已 settle）；session log/视图/List 回填无 interrupted、合成错误结果或消息缺失痕迹。
-- **SC-003**: 交接断言：planner 复盘 turn 的模型输入含 `<player-tool-call>` 终局单元且 result 含终局 status 全文（断言面：planner 成员视图 + fake-llm review 规则的 `history_keywords` 命中——命中即证明输入含该单元）；复盘后 player turn 的模型输入含其自身终局 tool call+result 与复盘 relay（session log 完整性/回填断言）。
+- **SC-003**: 交接断言：planner 复盘 turn 的模型输入含 `<player-tool-call>` 终局单元且 result 含终局 status 全文（断言面：planner 成员视图 + fake-llm review 规则的 keywords 命中——终局 relay 为复盘驱动最后一条 user 消息，命中即证明输入含该单元）；复盘后 player turn 的模型输入含其自身终局 tool call+result 与复盘 relay（session log 完整性/回填断言）。
 - **SC-004**: 单测断言：runtime→工具的终局收束标记映射正确（致终局 operate / init 即终局棋盘 / 对终局棋盘的结构性拒绝 → 收束；失败/非终局 → 不收束；`saolei_remain` → 不收束；无 runtime 调用 → 既有报错、不收束）。
 - **SC-005**: 回归：既有 team 大型测试（多局闭环、排队消化、取消、刷新重建、回填/断开收敛/多流去重）全量通过，含因移除"脚本停手"假设而更新的断言（终局总结文本不再存在——player turn 以终局工具结果收尾）。
 

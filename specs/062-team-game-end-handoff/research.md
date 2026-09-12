@@ -61,7 +61,7 @@
 
 **Decision**:
 1. **单测**（SC-004）：`runtime.test.ts` 断言收束标记矩阵（致终局 operate / init 即终局 / 终局结构性拒绝 → 置位；失败/非终局/remain/无棋盘 → 不置位）；`index.test.ts` 的 `fakeExec` 增加 `concludeTurn` spy，断言工具层映射（置位 → 调用；不置位 → 不调用）。既有终局棋盘用例的 `toEqual` 断言随可选字段出现同步更新。
-2. **fake-llm 夹具**：`agent_v2_saolei_tools.yaml` 既有终局链规则（`agent-v2-saolei-operate-won/lost`、`agent-v2-saolei-init-lost`、`agent-v2-saolei-init-operate` 的 operate 批）**保留原样**——它们正是"终局后仍备有的后续脚本步骤"（SC-001 断言面：这些规则在收束路径下永不匹配请求）；仅更新注释说明其新角色。`team_player.yaml` 头部行为脚本注释同步。`team_planner.yaml` **零改动**——review 条目锚定 `history_keywords`（"game status: won/lost"，relay 内工具结果原文）而非总结文本（`team_planner.yaml:89-99`），移除总结不破坏 planner 脚本。
+2. **fake-llm 夹具**：`agent_v2_saolei_tools.yaml` 既有终局链规则（`agent-v2-saolei-operate-won/lost`、`agent-v2-saolei-init-lost`、`agent-v2-saolei-init-operate` 的 operate 批）**保留原样**——它们正是"终局后仍备有的后续脚本步骤"（SC-001 断言面：这些规则在收束路径下永不匹配请求）；仅更新注释说明其新角色。`team_player.yaml` 头部行为脚本注释同步。`team_planner.yaml` review 条目重锚定为 keywords（执行期证伪零改动假设：062 收束下终局 relay 是复盘驱动的最后一条 user 消息，`history_keywords` 不可见最后一条消息故永不命中；证据链、覆盖审计与最终条件设计见 [plan-addendum-02-planner-review-fixture.md](plan-addendum-02-planner-review-fixture.md)，won/lost 由 keywords 状态行文本区分）。
 3. **大型测试断言更新**（SC-001/002/005）：
    - `agentV2WonSummaryText`/`agentV2LostSummaryText` 断言退役：player 终局 turn 最后输出块 = 终局工具调用块（无收尾文本）；`teamTurnBlocks` 文本断言改为"无文本块/最后块为工具块"形态断言。
    - `TestAgentV2TeamGameWonChainOnExecutor`：拓态变化——init 即识别胜利棋盘 → turn 在 init 后收束（tool_result 数 2 → 1，operate 断言移除，改为"无第二次模型输出"断言）；终局记录不新增（init 不写 gameEvent）→ 无复盘、链路静止。

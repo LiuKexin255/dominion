@@ -82,15 +82,7 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 
 	// Backfill: the player's merge entry carries the settled init call whose
 	// result equals the streamed tool_result text.
-	entries := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
-	var toolBlocks []*game.ToolCallBlock
-	for _, entry := range entries {
-		for _, block := range entry.GetMessage().GetBlocks() {
-			if call := block.GetToolCall(); call != nil {
-				toolBlocks = append(toolBlocks, call)
-			}
-		}
-	}
+	toolBlocks := teamMergedToolCallBlocks(listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName))
 	if len(toolBlocks) != 1 {
 		t.Fatalf("history tool-call blocks = %d, want 1 (the init call)", len(toolBlocks))
 	}
@@ -177,7 +169,13 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	assertTerminalTurnEndsWithToolBlock(t, turns[1])
 
 	// Review: the planner consumes the player's raw process and emits the
-	// continue strategy.
+	// continue strategy. The review entry is gated on the terminal result
+	// text: its keywords ("game status: won") must match the review drive's
+	// LAST user message — the terminal <player-tool-call> relay itself under
+	// the 062 turn conclusion (team_planner.yaml team-planner-review-continue),
+	// so this turn occurring at all proves the terminal unit reached the
+	// planner's model input (specs/062-team-game-end-handoff/spec.md SC-003).
+	// The planner view assertion below pins the relay form itself.
 	if _, text := teamTurnBlocks(turns[2]); text != teamPlannerReviewContinueText {
 		t.Errorf("review text = %q, want %q", text, teamPlannerReviewContinueText)
 	}
@@ -200,38 +198,68 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	assertSingleModelStep(t, turns[3])
 
 	// No user input after the first Send: exactly one USER merge entry.
-	userEntries := teamMessagesForMember(listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName), "user")
+	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	userEntries := teamMessagesForMember(merged, "user")
 	if len(userEntries) != 1 || agentV2MessageText(userEntries[0].GetMessage()) != teamStartMessage {
 		t.Fatalf("USER merge entries = %d, want exactly the single Send (结构性续驱无需用户触发)", len(userEntries))
 	}
 
+	// Post-review context completeness: the player turn after the review
+	// assembles its model input from the player's own session log, so the
+	// merged sequence must carry the player's terminal tool units settled —
+	// the game 1 operate receipt that concluded the reviewed turn and the
+	// game 2 init receipt. Each is matched to its streamed tool_result by
+	// provider call id (specs/062-team-game-end-handoff/spec.md SC-003:
+	// session-log completeness / List 回填).
+	mergedBlocks := teamMergedToolCallBlocks(merged)
+	assertMergedToolResultSettled(t, mergedBlocks, game1[1])
+	assertMergedToolResultSettled(t, mergedBlocks, game2[0])
+
 	// The planner view carries the player's raw process as a sender-annotated
 	// relay (specs/060-agent-v2-team-optimize/contracts/team-api.md §4:
 	// verbatim tool result inside the tag pair, no head line, no truncation),
-	// and the player view carries the review relay.
+	// and the player view carries the review relay. Matching the complete
+	// operate result text pins the terminal unit: the game 1 init relay
+	// carries the playing board, so only the operate receipt carries the won
+	// status verbatim (FR-005).
 	plannerView := listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner")
-	sawPlayerRelay := false
+	terminalUnitResult := game1[1].GetResult()
+	sawTerminalRelay := false
 	for _, entry := range plannerView {
 		if entry.GetSender() != "player" {
 			continue
 		}
 		text := agentV2MessageText(entry.GetMessage())
-		if !strings.Contains(text, agentV2WonStatusContains) || !strings.Contains(text, "<player-tool-call>") {
+		if !strings.Contains(text, "tool: saolei_operate") || !strings.Contains(text, terminalUnitResult) {
 			continue
 		}
-		sawPlayerRelay = true
+		sawTerminalRelay = true
 		if !strings.HasPrefix(text, "<player-tool-call>\n") {
 			t.Errorf("player tool relay = %q, want the tag-wrapped form with no head line", text)
 		}
+		if !strings.HasSuffix(text, "\n</player-tool-call>") {
+			t.Errorf("player tool relay = %q, want the closed tag pair (no truncation)", text)
+		}
 	}
-	if !sawPlayerRelay {
-		t.Error("planner view has no relayed player tool result carrying the terminal status (FR-008)")
+	if !sawTerminalRelay {
+		t.Errorf("planner view has no relayed <player-tool-call> unit carrying the full terminal operate result (FR-005/SC-003)")
 	}
+	// The player view carries the review relay that structurally drove the
+	// next game (turns[3] above): the tag pair wraps the verbatim review body
+	// with no head line.
 	playerView := listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player")
 	sawReviewRelay := false
 	for _, entry := range playerView {
-		if entry.GetSender() == "planner" && strings.Contains(agentV2MessageText(entry.GetMessage()), teamPlannerReviewContinueText) {
-			sawReviewRelay = true
+		if entry.GetSender() != "planner" {
+			continue
+		}
+		text := agentV2MessageText(entry.GetMessage())
+		if !strings.Contains(text, teamPlannerReviewContinueText) {
+			continue
+		}
+		sawReviewRelay = true
+		if !strings.HasPrefix(text, "<planner-message>\n") || !strings.HasSuffix(text, "\n</planner-message>") {
+			t.Errorf("review relay = %q, want the tag pair around the verbatim body with no head line", text)
 		}
 	}
 	if !sawReviewRelay {

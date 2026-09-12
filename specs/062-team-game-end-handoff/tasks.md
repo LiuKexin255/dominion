@@ -56,7 +56,7 @@
 **文档清单**：
 - 代码规范文档：`style/golang.md`（单元测试规范节——大型测试代码必须遵守）；其引用基准 [Google Go Style](https://google.github.io/styleguide/go/)（入口索引）与 [Style Guide](https://google.github.io/styleguide/go/guide)（规范+权威，必读）、`style/large_test.md`（测试组织：按模块归位，勿按 spec 编号建文件）
 - 官方文档：无（fake-llm/guitar 均为仓库自有组件）
-- 技术文章/技术参考文档：`specs/062-team-game-end-handoff/spec.md`（US1 Acceptance Scenarios、SC-001）、`specs/062-team-game-end-handoff/research.md` D6（测试基建策略——"已脚本化不执行"断言面）、`specs/062-team-game-end-handoff/quickstart.md` V2、`projects/game/fake-llm/service/testdata/team_planner.yaml`（review 条目锚定 `history_keywords` 工具结果原文——**零改动**，确认即可）
+- 技术文章/技术参考文档：`specs/062-team-game-end-handoff/spec.md`（US1 Acceptance Scenarios、SC-001）、`specs/062-team-game-end-handoff/research.md` D6（测试基建策略——"已脚本化不执行"断言面）、`specs/062-team-game-end-handoff/quickstart.md` V2、`projects/game/fake-llm/service/testdata/team_planner.yaml`（review 条目条件机制已按 addendum-02 重锚定为 keywords——T011 承载修改）
 
 - [X] T004 [US1] 更新 fake-llm 夹具注释（规则本体保留原样——它们是"终局后仍备有的后续脚本步骤"零执行断言面）：`projects/game/fake-llm/service/testdata/agent_v2_saolei_tools.yaml` 头部与 `agent-v2-saolei-operate-won`/`agent-v2-saolei-operate-lost`/`agent-v2-saolei-init-lost`/`agent-v2-saolei-init-operate` 各规则注释改为说明其新角色（终局收束路径下永不匹配请求）；`projects/game/fake-llm/service/testdata/team_player.yaml` 头部行为脚本注释同步（终局总结文本不再产生）；`projects/game/fake-llm/service/testdata/agent_v2_saolei.yaml` 头部链尾描述同步（init → operate → 终局结果收束、总结规则为零执行断言面——addendum-01 §5.2.A 增补）；`bazel test //projects/game/fake-llm/service/...` 全绿（message_store 索引 lockstep 不受注释影响）
 - [X] T005 [US1] 更新 `projects/game/testplan/agent_v2_helpers_test.go` 常量区：移除 `agentV2WonSummaryText`/`agentV2LostSummaryText` 两个常量及其全部引用（终局断言锚点统一为工具结果文本："game status: won/lost"；退役说明随 T004 落于 fake-llm 夹具注释）
@@ -95,9 +95,9 @@
 **文档清单**：
 - 代码规范文档：`style/golang.md`（单元测试规范节）；其引用基准 [Google Go Style](https://google.github.io/styleguide/go/)（入口索引）与 [Style Guide](https://google.github.io/styleguide/go/guide)（规范+权威，必读）、`style/large_test.md`
 - 官方文档：无
-- 技术文章/技术参考文档：[specs/060-agent-v2-team-optimize/contracts/team-api.md §4 广播 wire 格式](../060-agent-v2-team-optimize/contracts/team-api.md)（`<{role}-tool-call>` 标签对内 tool/args/result 全文、无头行——relay 断言的契约依据）、`specs/062-team-game-end-handoff/spec.md`（US3、SC-003、FR-005）、`specs/062-team-game-end-handoff/quickstart.md` V4
+- 技术文章/技术参考文档：[specs/060-agent-v2-team-optimize/contracts/team-api.md §4 广播 wire 格式](../060-agent-v2-team-optimize/contracts/team-api.md)（`<{role}-tool-call>` 标签对内 tool/args/result 全文、无头行——relay 断言的契约依据）、`specs/062-team-game-end-handoff/spec.md`（US3、SC-003、FR-005）、`specs/062-team-game-end-handoff/quickstart.md` V4、`specs/062-team-game-end-handoff/plan-addendum-02-planner-review-fixture.md`（review 夹具重锚定决定、覆盖审计与逐文件处方——T011 直接依据）、`projects/game/fake-llm/service/testdata/team_planner.yaml`（重锚定对象现状）、`specs/047-dsh-chat-demo/contracts/fake-llm-templates.md` §2/§3（keywords ANY-最后一条-user / history_keywords ALL-除最后一条 匹配语义——重锚定的机制依据）
 
-- [ ] T011 [US3] 校验并强化 `projects/game/testplan/agent_v2_game_test.go` 中 `TestAgentV2TeamGameTerminalWonAndReviewContinues` 的交接断言（收束后终局工具单元即 player turn 最后产出，relay 目标条目随之变化）：planner 视图 relay 断言确保命中**终局**工具单元（result 含 "game status: won" 全文、`<player-tool-call>\n` 前缀、无头行、不截断），并以 fake-llm review 规则 `history_keywords`（"game status: won"）命中佐证 planner 模型输入含该单元；复盘后 player turn 的上下文断言：其自身终局 tool call+result 在场（session log 完整性/回填）且复盘 relay 之后驱动新局；若 view 断言无法区分终局单元与前序单元则收紧匹配条件；`bazel build //projects/game/testplan:agent_v2_game_test` 通过（依赖 T006）
+- - [X] T011 [US3] fake-llm review 夹具重锚定 + 交接断言校验强化（SC-003；夹具条件机制变更依据 `specs/062-team-game-end-handoff/plan-addendum-02-planner-review-fixture.md`——062 收束下终局 relay 是复盘驱动最后一条 user 消息，history 锚定永不命中）：1. `projects/game/fake-llm/service/testdata/team_planner.yaml`：`team-planner-review-continue`/`team-planner-review-stop` 的 keywords 改为 `["game status: won"]`/`["game status: lost"]`、移除 history_keywords（system_keywords/min_turn 2/text/tool_call 不变），头部 :22-30 行为脚本注释与两条目注释按 addendum-02 §3.1 同步为终态（含 digest-first 边界记录）；2. `projects/game/fake-llm/service/message_store_test.go`：按 addendum-02 §3.2 同步 :730-741 注释与 :770-787 锚定（keywords 状态行断言 + HistoryKeywords 空断言；条目数/wantNames/索引零改动）；3. `projects/game/fake-llm/service/testdata/team_player.yaml` :27-29 注释同步（addendum-02 §3.3）；4. `projects/game/testplan/agent_v2_game_test.go` 的 `TestAgentV2TeamGameTerminalWonAndReviewContinues`：:171-178 review 机制注释同步（addendum-02 §3.4）+ 交接断言校验强化（收束后终局工具单元即 player turn 最后产出，relay 目标条目随之变化）：planner 视图 relay 断言确保命中**终局**工具单元（result 含 "game status: won" 全文、`<player-tool-call>\n` 前缀、无头行、不截断），并以 review 规则 keywords 命中佐证 planner 模型输入含该单元；复盘后 player turn 的上下文断言：其自身终局 tool call+result 在场（session log 完整性/回填）且复盘 relay 之后驱动新局；若 view 断言无法区分终局单元与前序单元则收紧匹配条件；验证：`bazel test //projects/game/fake-llm/service/...` 全绿 + `bazel build //projects/game/testplan:agent_v2_game_test` 通过（依赖 T006；与 T007-T010 已完成区域无重叠，同文件编辑注意串行）
 
 **Checkpoint**: US1+US2+US3 均可独立验证。
 
@@ -190,5 +190,5 @@ flowchart LR
 
 - 生产代码仅两文件（`runtime.ts`/`index.ts`），编排器/team/relay/webUI 为零改动面（plan.md Project Structure 显式清单）——**禁止**在本 feature 中触碰
 - fake-llm 终局链规则本体保留（零执行断言面），仅注释更新——**不要删除**这些规则
-- `team_planner.yaml` 零改动（review 锚定 history_keywords 工具结果原文）
+- `team_planner.yaml` review 条目已重锚定为 keywords 状态行（addendum-02；digest-first 复盘形态不在条目覆盖内，见该文档 §6 边界记录）
 - 大型测试验收禁止以 `bazel build` 替代 `guitar run` 实际执行（宪章原则 VI）

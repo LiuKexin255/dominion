@@ -19,17 +19,27 @@
 #     history condition and keys on that user message's startup wording. It
 #     emits the opening strategy text (which carries the player-side anchor
 #     "以下开局计划").
-#   - game-end review — the player's terminal turn is the last user batch;
-#     the review entries key on the broadcast markers (the player broadcast
-#     wrapper, contracts/dsh-plugins.md §1) and require the terminal result
-#     in the pre-last-user history, so the review fires whether the last
-#     player output is the terminal summary or a later queued-user intake
-#     reply. min_turn 2 keeps both off the first turn. The LOSS review writes
-#     one fixed cross-game observation through the memory tool first (T023
-#     persistence path) and continues with its review text through the tool
-#     rule (agent_v2_saolei_tools.yaml).
+#   - game-end review — under the 062 turn conclusion
+#     (specs/062-team-game-end-handoff/spec.md FR-001/FR-002) the terminal
+#     tool result concludes the player turn at the tool block, so the review
+#     drive's last user message is the terminal relay itself and the
+#     entries key on the raw status line ("game status: won/lost") carried
+#     verbatim inside the <player-tool-call> broadcast; the won/lost split
+#     rides the same anchor. min_turn 2 keeps both off the first turn. The
+#     LOSS review writes one fixed cross-game observation through the
+#     memory tool first (T023 persistence path) and continues with its
+#     review text through the tool rule (agent_v2_saolei_tools.yaml).
+#     Boundary (not covered by these entries): when a queued user message
+#     is digested before the gameEnded evaluation, the review drive's last
+#     user message is the player's intake ack instead — the status text
+#     sits in the history, which keywords cannot see — and such a drive
+#     lands on team-planner-user-reply. No current test drives that shape;
+#     specs/061-team-queue-steer's mid-turn steer produces the same shape
+#     and must revisit this anchor (see
+#     specs/062-team-game-end-handoff/plan-addendum-02-planner-review-fixture.md).
 #   - queued-user intake — the user message is the last user message, which
-#     misses the broadcast markers, so the reply entry answers it instead.
+#     misses the review anchors (the terminal status line), so the reply
+#     entry answers it instead.
 #   - snapshot reload — team-planner-memory-snapshot fires only after a
 #     refresh whose planner prefetched the written observation (T023).
 #
@@ -56,7 +66,7 @@ messages:
   # planner's system prompt — the section-presence regression assertion of
   # specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §5.
   #
-  # Review/opening priority: declaredResponsesConditions counts four
+  # Review/opening priority: declaredResponsesConditions counts three
   # conditions on the review entries against two here (keywords + system),
   # so game-end reviews always outrank this entry (responses.go
   # moreSpecificResponses).
@@ -79,21 +89,20 @@ messages:
   # 一局" instruction drives the player's next open (quickstart.md V4:
   # 复盘与续驱第二局).
   #
-  # The keywords are the player broadcast wrapper markers (发言
-  # <player-message> / 工具 <player-tool-call>, contracts/dsh-plugins.md §1):
-  # the last user batch is the player's latest output broadcast, which always
-  # carries one of the markers. The terminal result rides the history
-  # condition — the raw tool-result text ("game status: won") is relayed
-  # verbatim inside the player tool broadcast — so the review fires also when
-  # a queued-user intake reply is the last player output (V6).
+  # Under the 062 turn conclusion the terminal result IS the player's last
+  # output, so the review drive's last user message is the terminal
+  # <player-tool-call> relay itself: the keyword anchors on the raw status
+  # line ("game status: won") carried verbatim inside that relay
+  # (contracts/dsh-plugins.md §1). The match doubles as the SC-003
+  # assertion — this entry firing proves the terminal unit reached the
+  # planner's model input. The won/lost split rides the same anchor (a
+  # lost relay carries "game status: lost", which this entry does not
+  # match).
   - name: team-planner-review-continue
     keywords:
-      - "<player-message>"
-      - "<player-tool-call>"
+      - "game status: won"
     system_keywords:
       - 你是扫雷 planner
-    history_keywords:
-      - "game status: won"
     min_turn: 2
     text: "本局复盘：全部雷区排除，节奏正确；下一局仍从中心区域推进，数字密集处先推理再操作。@player 请按以下下一局计划开始下一局。"
     responses_only: true
@@ -104,15 +113,15 @@ messages:
   # (testdata/agent_v2_saolei_tools.yaml team-planner-review-stop-text) then
   # emits the review body only (no next-game instruction), so the structurally
   # driven player consumes the broadcast and opens no new game (quickstart.md
-  # V4: "不开局" behavior).
+  # V4: "不开局" behavior). Matching mirrors team-planner-review-continue:
+  # the keyword anchors on the terminal status line ("game status: lost")
+  # inside the review drive's last user message — the terminal relay itself
+  # under the 062 turn conclusion.
   - name: team-planner-review-stop
     keywords:
-      - "<player-message>"
-      - "<player-tool-call>"
+      - "game status: lost"
     system_keywords:
       - 你是扫雷 planner
-    history_keywords:
-      - "game status: lost"
     min_turn: 2
     tool_call:
       name: memory
@@ -122,7 +131,8 @@ messages:
     responses_only: true
   # team-planner-user-reply digests a queued user message (FR-011 消化优先于
   # 切换, V6-2): the queued message is the last user message and misses the
-  # broadcast markers, so the review entries step aside. The reply keeps the
+  # review anchors (the terminal status line), so the review entries step
+  # aside. The reply keeps the
   # review-stop wording anchors ("本局到此"/"不再安排新一局") so the
   # subsequently driven player consumes it through team-player-resume-stop
   # and opens no new game — the digest path lands in the same stopped state

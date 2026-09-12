@@ -48,7 +48,7 @@ guitar run projects/game/testplan/system_test.yaml --suite game-disconnect
 ## V4. 交接可见性（SC-003）
 
 **预期**（同批大型测试断言）:
-- planner 复盘 turn 的模型输入含 `<player-tool-call>` 终局单元，result 内终局 status 全文（"game status: won/lost"）；断言面：planner 成员视图 + fake-llm review 规则的 `history_keywords` 命中（命中即证明复盘输入含该单元）。
+- planner 复盘 turn 的模型输入含 `<player-tool-call>` 终局单元，result 内终局 status 全文（"game status: won/lost"）；断言面：planner 成员视图 + fake-llm review 规则的 keywords 命中（终局 relay 为复盘驱动最后一条 user 消息，命中即证明复盘输入含该单元）。
 - 复盘后 player turn 的模型输入含其自身终局 tool call+result 与复盘 relay。
 - planner 视图 relay 形态：标签对开头、无头行、不截断（060 contracts/team-api.md §4 既有断言回归）。
 

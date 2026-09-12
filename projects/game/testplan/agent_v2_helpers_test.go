@@ -615,6 +615,45 @@ func memberViewHistories(entries []*game.MemberViewMessage) []*game.HistoryMessa
 	return messages
 }
 
+// teamMergedToolCallBlocks collects a merged sequence's tool-call blocks in
+// order — the List 回填 face of the session log.
+func teamMergedToolCallBlocks(entries []*game.TeamMessage) []*game.ToolCallBlock {
+	var blocks []*game.ToolCallBlock
+	for _, entry := range entries {
+		for _, block := range entry.GetMessage().GetBlocks() {
+			if call := block.GetToolCall(); call != nil {
+				blocks = append(blocks, call)
+			}
+		}
+	}
+	return blocks
+}
+
+// assertMergedToolResultSettled checks the List 回填 face of one streamed
+// tool_result: the merged sequence carries the settled tool block with the
+// same provider call id, status, and result text as the streamed frame. The
+// session log is the source every later turn's model input is assembled
+// from, so a settled terminal block being present is the completeness
+// evidence of specs/062-team-game-end-handoff/spec.md SC-003 (复盘后 player
+// turn 的输入含其自身终局 tool call+result).
+func assertMergedToolResultSettled(t *testing.T, blocks []*game.ToolCallBlock, streamed *game.ToolResultEvent) {
+	t.Helper()
+
+	for _, block := range blocks {
+		if block.GetToolId() != streamed.GetToolId() {
+			continue
+		}
+		if block.GetStatus() != streamed.GetStatus() {
+			t.Errorf("merged tool block %s (id %s) status = %v, want the streamed %v", block.GetName(), block.GetToolId(), block.GetStatus(), streamed.GetStatus())
+		}
+		if block.GetResult() != streamed.GetResult() {
+			t.Errorf("merged tool block %s (id %s) result = %q, want the streamed text %q", block.GetName(), block.GetToolId(), block.GetResult(), streamed.GetResult())
+		}
+		return
+	}
+	t.Errorf("merged sequence lacks the backfilled tool block for the streamed tool_id %s", streamed.GetToolId())
+}
+
 // teamTurnsForMember filters a stream's member turns by producer role.
 func teamTurnsForMember(events []*game.ChatEvent, member string) []*teamMemberTurn {
 	var turns []*teamMemberTurn
