@@ -19,13 +19,15 @@ import (
 	game "dominion/projects/game"
 )
 
-// TestAgentV2TeamGameWonChainOnExecutor drives the full won-scenario chain on
-// the desktop-e2e-won session (the executor bound by deploy_agent_v2.yaml):
-// the user Send drives the planner opening, the structural continuation
-// drives the player, saolei_init recognizes the executor's win board, and the
-// operate batch stops pre-dispatch on game_won — the terminal-reject branch
-// proves the final state gates further cell operations before any dispatch.
-// The merged history backfills the settled chain by tool_id.
+// TestAgentV2TeamGameWonChainOnExecutor drives the won-scenario chain on the
+// desktop-e2e-won session (the executor bound by deploy_agent_v2.yaml): the
+// user Send drives the planner opening, the structural continuation drives
+// the player, and saolei_init recognizes the executor's win board. The
+// terminal init result concludes the player turn
+// (specs/062-team-game-end-handoff/spec.md FR-002 ①): the scripted operate
+// batch never runs (agent_v2_saolei_tools.yaml agent-v2-saolei-init-operate)
+// and no review follows (init writes no terminal event), so the chain rests
+// after two turns. The merged history backfills the settled init call.
 func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -38,9 +40,11 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 	events := drainTeamStream(t, stream)
 	assertTeamStreamWellFormed(t, sessionName, events)
 
+	// The chain rests after the player turn: the init-terminal conclusion
+	// writes no terminal event, so no planner review turn follows.
 	turns := groupTeamMemberTurns(events)
 	if len(turns) != 2 {
-		t.Fatalf("member turns = %d, want 2 (planner opening + player game)", len(turns))
+		t.Fatalf("member turns = %d, want 2 (planner opening + player game, no review)", len(turns))
 	}
 	if turns[0].member != "planner" {
 		t.Fatalf("first turn member = %v, want 'planner'", turns[0].member)
@@ -56,12 +60,14 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 		t.Fatalf("game turn ended %v, want COMPLETED", status)
 	}
 
-	// Chain shape: init → operate, both SUCCEEDED with the won board text.
+	// Chain shape: exactly the init result — the win board is terminal at
+	// init, so the turn concludes there and the scripted operate batch is
+	// never requested (no second model output).
 	results := teamTurnToolResults(playerTurn)
-	if len(results) != 2 {
-		t.Fatalf("tool_result count = %d, want 2 (saolei_init + saolei_operate)", len(results))
+	if len(results) != 1 {
+		t.Fatalf("tool_result count = %d, want 1 (saolei_init only — the terminal result concludes the turn)", len(results))
 	}
-	init, operate := results[0], results[1]
+	init := results[0]
 	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
 		t.Fatalf("saolei_init status = %v, want SUCCEEDED (the desktop-e2e-won executor is connected)", init.GetStatus())
 	}
@@ -69,18 +75,10 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 		t.Errorf("saolei_init result = %q, want the recognized win board (%q / %q / %q)",
 			init.GetResult(), agentV2WonInitContains, agentV2WonStatusContains, agentV2WonBoardContains)
 	}
-	if operate.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
-		t.Fatalf("saolei_operate status = %v, want SUCCEEDED (a game-rules rejection is a normal result)", operate.GetStatus())
-	}
-	if !strings.Contains(operate.GetResult(), agentV2WonRejectContains) || !strings.Contains(operate.GetResult(), agentV2WonStatusContains) {
-		t.Errorf("saolei_operate result = %q, want the game_won stop + status line", operate.GetResult())
-	}
-	if _, text := teamTurnBlocks(playerTurn); text != agentV2WonSummaryText {
-		t.Errorf("terminal text = %q, want %q", text, agentV2WonSummaryText)
-	}
+	assertTerminalTurnEndsWithToolBlock(t, playerTurn)
 
-	// Backfill: the player's merge entries carry two settled tool-call blocks
-	// whose results equal the streamed tool_result texts.
+	// Backfill: the player's merge entry carries the settled init call whose
+	// result equals the streamed tool_result text.
 	entries := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
 	var toolBlocks []*game.ToolCallBlock
 	for _, entry := range entries {
@@ -90,37 +88,36 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 			}
 		}
 	}
-	if len(toolBlocks) != 2 {
-		t.Fatalf("history tool-call blocks = %d, want 2", len(toolBlocks))
+	if len(toolBlocks) != 1 {
+		t.Fatalf("history tool-call blocks = %d, want 1 (the init call)", len(toolBlocks))
 	}
-	wantResults := []string{init.GetResult(), operate.GetResult()}
-	for i, call := range toolBlocks {
-		if call.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
-			t.Errorf("history tool block %d (%s) status = %v, want SUCCEEDED", i, call.GetName(), call.GetStatus())
-		}
-		if call.GetName() != "saolei_init" && call.GetName() != "saolei_operate" {
-			t.Errorf("history tool block %d name = %q, want a saolei tool", i, call.GetName())
-		}
-		if call.GetResult() != wantResults[i] {
-			t.Errorf("history tool block %d result = %q, want the streamed text %q", i, call.GetResult(), wantResults[i])
-		}
+	if toolBlocks[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Errorf("history tool block (%s) status = %v, want SUCCEEDED", toolBlocks[0].GetName(), toolBlocks[0].GetStatus())
 	}
-	// The provider mints a distinct call id per response (the request-derived
-	// fake identity), so the two history blocks carry distinct ids that the
-	// streamed tool_result frames settled.
-	if toolBlocks[0].GetToolId() == "" || toolBlocks[1].GetToolId() == "" || toolBlocks[0].GetToolId() == toolBlocks[1].GetToolId() {
-		t.Errorf("history tool ids = %q / %q, want two distinct non-empty call ids", toolBlocks[0].GetToolId(), toolBlocks[1].GetToolId())
+	if toolBlocks[0].GetName() != "saolei_init" {
+		t.Errorf("history tool block name = %q, want saolei_init", toolBlocks[0].GetName())
+	}
+	if toolBlocks[0].GetResult() != init.GetResult() {
+		t.Errorf("history tool block result = %q, want the streamed text %q", toolBlocks[0].GetResult(), init.GetResult())
+	}
+	if toolBlocks[0].GetToolId() == "" {
+		t.Error("history tool block lacks its provider call id")
 	}
 }
 
 // TestAgentV2TeamGameTerminalWonAndReviewContinues covers US2 场景 4 with the
 // continue behavior (quickstart.md V4): a full game terminates won on the
 // operate receipt (the test's own desktop half seeds an in-progress board and
-// answers the first cell dispatch with the win board), the gameEnded fact
-// drives the planner review, and the review's next-game instruction
-// structurally drives the player into a second game WITHOUT any further user
-// input. The single Send stream covers all four member turns until the team
-// rests; the planner view shows the player's verbatim process relay.
+// answers the first cell dispatch with the win board) — the terminal operate
+// result concludes the player turn
+// (specs/062-team-game-end-handoff/spec.md FR-001), so the scripted won
+// summary never runs — the gameEnded fact drives the planner review, and the
+// review's next-game instruction structurally drives the player into a second
+// game WITHOUT any further user input. The second game's init already
+// recognizes the win board, so that turn concludes at the init result
+// (specs/062-team-game-end-handoff/spec.md FR-002 ①). The single Send stream
+// covers all four member turns until the team rests; the planner view shows
+// the player's verbatim process relay.
 func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -156,7 +153,10 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 		}
 	}
 	// Game 1: init recognizes the in-progress board, the first cell dispatch
-	// returns the win board, and the batch stops at the terminal status.
+	// returns the win board, and the terminal operate result concludes the
+	// turn (specs/062-team-game-end-handoff/spec.md FR-001) — the scripted
+	// won summary (agent_v2_saolei_tools.yaml agent-v2-saolei-operate-won)
+	// never runs.
 	game1 := teamTurnToolResults(turns[1])
 	if len(game1) != 2 || game1[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || game1[1].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
 		t.Fatalf("game 1 tool results = %+v, want init + operate SUCCEEDED", game1)
@@ -167,9 +167,10 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	if !strings.Contains(game1[1].GetResult(), agentV2WonStatusContains) {
 		t.Errorf("game 1 operate result = %q, want the won terminal status", game1[1].GetResult())
 	}
-	if _, text := teamTurnBlocks(turns[1]); text != agentV2WonSummaryText {
-		t.Errorf("game 1 terminal text = %q, want %q", text, agentV2WonSummaryText)
+	if status := teamTurnEndStatus(turns[1]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("game 1 turn ended %v, want COMPLETED (the conclusion is invisible in the terminal status)", status)
 	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[1])
 
 	// Review: the planner consumes the player's raw process and emits the
 	// continue strategy.
@@ -177,18 +178,19 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 		t.Errorf("review text = %q, want %q", text, teamPlannerReviewContinueText)
 	}
 
-	// Game 2 opened without any user input: the second init (the win board
-	// already terminal → the operate batch rejects pre-dispatch).
+	// Game 2 opened without any user input: the second init recognizes the
+	// win board, so the terminal init result concludes the turn
+	// (specs/062-team-game-end-handoff/spec.md FR-002 ①) before the scripted
+	// operate batch (agent-v2-saolei-init-operate) — the turn carries exactly
+	// the one init result.
 	game2 := teamTurnToolResults(turns[3])
-	if len(game2) != 2 || game2[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || game2[1].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
-		t.Fatalf("game 2 tool results = %+v, want init + operate SUCCEEDED", game2)
+	if len(game2) != 1 || game2[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("game 2 tool results = %+v, want the single init SUCCEEDED (the terminal init concludes the turn)", game2)
 	}
 	if !strings.Contains(game2[0].GetResult(), agentV2WonStatusContains) {
 		t.Errorf("game 2 init result = %q, want the won board recognized at init", game2[0].GetResult())
 	}
-	if !strings.Contains(game2[1].GetResult(), agentV2WonRejectContains) {
-		t.Errorf("game 2 operate result = %q, want the pre-dispatch game_won stop %q", game2[1].GetResult(), agentV2WonRejectContains)
-	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[3])
 
 	// No user input after the first Send: exactly one USER merge entry.
 	userEntries := teamMessagesForMember(listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName), "user")
@@ -232,9 +234,12 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 
 // TestAgentV2TeamGameTerminalLostAndReviewStops covers US2 场景 4 with the
 // stop behavior (quickstart.md V4: "不开局"): the operate receipt is the loss
-// board, the gameEnded fact drives the planner review WITHOUT a next-game
-// instruction, and the structurally driven player consumes it and opens no
-// new game — the stream then ends at the static point with no other drive.
+// board — the terminal operate result concludes the player turn
+// (specs/062-team-game-end-handoff/spec.md FR-001), so the scripted lost
+// summary never runs — the gameEnded fact drives the planner review WITHOUT a
+// next-game instruction, and the structurally driven player consumes it and
+// opens no new game — the stream then ends at the static point with no other
+// drive.
 func TestAgentV2TeamGameTerminalLostAndReviewStops(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -261,7 +266,10 @@ func TestAgentV2TeamGameTerminalLostAndReviewStops(t *testing.T) {
 		t.Fatalf("member turns = %d, want 4 (planner opening, player game, planner review, player stop ack)", len(turns))
 	}
 	// Game: init sees the 16×16 in-progress board, the first cell dispatch
-	// loses the game.
+	// loses the game, and the terminal operate result concludes the turn
+	// (specs/062-team-game-end-handoff/spec.md FR-001) — the scripted lost
+	// summary (agent_v2_saolei_tools.yaml agent-v2-saolei-operate-lost) never
+	// runs.
 	gameResults := teamTurnToolResults(turns[1])
 	if len(gameResults) != 2 || gameResults[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || gameResults[1].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
 		t.Fatalf("game tool results = %+v, want init + operate SUCCEEDED", gameResults)
@@ -272,9 +280,10 @@ func TestAgentV2TeamGameTerminalLostAndReviewStops(t *testing.T) {
 	if !strings.Contains(gameResults[1].GetResult(), agentV2LostStatusContains) {
 		t.Errorf("operate result = %q, want the lost terminal status", gameResults[1].GetResult())
 	}
-	if _, text := teamTurnBlocks(turns[1]); text != agentV2LostSummaryText {
-		t.Errorf("lost terminal text = %q, want %q", text, agentV2LostSummaryText)
+	if status := teamTurnEndStatus(turns[1]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("game turn ended %v, want COMPLETED (the conclusion is invisible in the terminal status)", status)
 	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[1])
 	if turns[2].member != "planner" {
 		t.Fatalf("review turn member = %v, want 'planner' (gameEnded drive)", turns[2].member)
 	}
@@ -453,12 +462,20 @@ func TestAgentV2TeamGameConversationStreamIndependentOfFlow(t *testing.T) {
 		}
 	}
 
-	// The turn completes anyway: poll the history for the terminal summary
-	// (List 回填 is the dropped stream's recovery path).
+	// The turn completes anyway: poll the history for the settled terminal
+	// tool result (List 回填 is the dropped stream's recovery path). The 062
+	// conclusion ends the player turn at the terminal operate result
+	// (specs/062-team-game-end-handoff/spec.md FR-001), so the settled
+	// tool-call block — not a summary text — is the terminal anchor.
 	entries := waitTeamQuiescence(t, ctx, sutHostURL, sutEnvName, sessionName, func(entries []*game.TeamMessage) bool {
 		for _, entry := range entries {
-			if entry.GetMember() == "player" && strings.Contains(agentV2MessageText(entry.GetMessage()), agentV2WonSummaryText) {
-				return true
+			if entry.GetMember() != "player" {
+				continue
+			}
+			for _, block := range entry.GetMessage().GetBlocks() {
+				if call := block.GetToolCall(); call != nil && strings.Contains(call.GetResult(), agentV2WonStatusContains) {
+					return true
+				}
 			}
 		}
 		return false

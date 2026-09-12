@@ -19,11 +19,14 @@
 #     no new game;
 #   - queued user message digested (FR-011) → plain text acknowledgement.
 # The tool-result half of the game chain is NOT duplicated here: it reuses the
-# agent_v2_saolei_tools.yaml rules (init → operate batch for the won scenario,
-# init → terminal summary for the lost scenario, operate → summary) keyed by
-# the agent-v2-saolei-* names, which stay the alphabetically-first candidates
-# for those results. The terminal summaries those rules emit are the anchors
-# consumed by the planner review entries (team_planner.yaml).
+# agent_v2_saolei_tools.yaml rules keyed by the agent-v2-saolei-* names, which
+# stay the alphabetically-first candidates for those results. Under the 062
+# turn conclusion (specs/062-team-game-end-handoff/spec.md FR-001/FR-002) a
+# terminal tool result ends the player turn at that result, so the terminal
+# summary continuations in those rules are never requested (no summary text is
+# produced). The planner review entries anchor on the relayed tool-result text
+# — `game status: won/lost` in their history_keywords (team_planner.yaml), not
+# on any summary.
 #
 # Keyword-space isolation from the existing agent_v2 game fixtures
 # (response matching: responses.go matchResponses — most declared conditions

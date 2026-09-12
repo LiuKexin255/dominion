@@ -77,6 +77,7 @@ common/js/dsh-plugins/saolei/src/
 # 测试基建（夹具与断言随收束语义同批更新）
 projects/game/fake-llm/service/testdata/
 ├── agent_v2_saolei_tools.yaml   # 终局链规则注释更新（成为"已脚本化不执行"的后续步骤）
+├── agent_v2_saolei.yaml         # 头部链尾描述同步（终局结果收束、总结规则零执行——addendum-01 §5.2.A）
 ├── team_player.yaml             # 头部行为脚本注释更新
 └── team_planner.yaml            # 不变（review 锚定 history_keywords 工具结果文本，非总结文本）
 projects/game/testplan/

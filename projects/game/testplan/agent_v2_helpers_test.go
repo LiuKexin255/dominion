@@ -124,9 +124,7 @@ const (
 	agentV2WonBoardContains   = "board size 9*9"
 	agentV2WonStatusContains  = "game status: won"
 	agentV2WonRejectContains  = "stopped at click(0,0) (game_won)"
-	agentV2WonSummaryText     = "本局扫雷已完成：全部雷区排除，游戏获胜。"
 	agentV2LostStatusContains = "game status: lost"
-	agentV2LostSummaryText    = "本局扫雷已结束：触雷失败，可重新开局再试。"
 
 	agentV2ProgInitContains   = "new game started"
 	agentV2ProgBoardContains  = "board size 16*16"
@@ -462,6 +460,29 @@ func teamTurnToolResults(turn *teamMemberTurn) []*game.ToolResultEvent {
 		}
 	}
 	return results
+}
+
+// assertTerminalTurnEndsWithToolBlock checks the 062 terminal-turn shape
+// (specs/062-team-game-end-handoff/spec.md FR-003 /
+// specs/062-team-game-end-handoff/data-model.md §3): the turn's last announced
+// output block is a tool-call block and no text block follows it — the
+// terminal tool result concludes the turn, so the turn ends visually at that
+// block instead of a model summary.
+func assertTerminalTurnEndsWithToolBlock(t *testing.T, turn *teamMemberTurn) {
+	t.Helper()
+
+	var last game.BlockType
+	for _, event := range turn.events {
+		if start := event.GetBlockStart(); start != nil {
+			last = start.GetType()
+		}
+	}
+	if last != game.BlockType_BLOCK_TYPE_TOOL_CALL {
+		t.Errorf("turn %s last output block = %v, want TOOL_CALL (the terminal tool result concludes the turn)", turn.turnID, last)
+	}
+	if _, text := teamTurnBlocks(turn); text != "" {
+		t.Errorf("turn %s trailing text = %q, want none after the terminal tool result", turn.turnID, text)
+	}
 }
 
 // teamTurnsForMember filters a stream's member turns by producer role.
