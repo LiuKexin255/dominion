@@ -778,6 +778,7 @@ describe("TeamOrchestrator failure reporting", () => {
         member: null,
         phase: "planning",
         code: "UNKNOWN",
+        origin: "orchestration",
       },
     });
 
@@ -824,6 +825,7 @@ describe("TeamOrchestrator failure reporting", () => {
         member: "planner",
         phase: "planning",
         code: "SERVER",
+        origin: "member-turn",
       },
     });
     expect(logger.error).toHaveBeenCalledOnce();
@@ -877,7 +879,7 @@ describe("TeamOrchestrator failure reporting", () => {
       paused: true,
       queued: 1,
       activation: "planner",
-      lastError: { code: "TIMEOUT", member: "planner" },
+      lastError: { code: "TIMEOUT", member: "planner", origin: "member-turn" },
     });
 
     // The next send lifts the pause: the retained member digests the FIFO
@@ -959,6 +961,7 @@ describe("TeamOrchestrator failure reporting", () => {
         member: "planner",
         phase: "reviewing",
         code: "UNKNOWN",
+        origin: "orchestration",
       },
     });
 

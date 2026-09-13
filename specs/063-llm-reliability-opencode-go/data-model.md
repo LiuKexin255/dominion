@@ -83,12 +83,18 @@ interface MemberRuntime {
   lastTurnFailure: { code: string; message: string } | null;
 }
 
-/** OrchestratorSnapshot.lastError 扩展稳定失败码。 */
+/** OrchestratorSnapshot.lastError 扩展稳定失败码与失败来源判别。 */
 interface TurnFailureRecord {
   message: string;
   member: TeamRole | null;
   phase: TeamPhase;
   code: string; // §1 稳定失败码；非 LlmError 时 UNKNOWN
+  /**
+   * 失败来源：成员 turn 带内失败（drive() 结果通道，session 层流干净收束）
+   * vs 编排层异常（catch 通道，流 INTERNAL 收束）。
+   * 契约：contracts/orchestrator-turn-outcome.md §2 session 层流收束映射。
+   */
+  origin: "member-turn" | "orchestration";
 }
 ```
 
@@ -100,7 +106,7 @@ stateDiagram-v2
     Driving --> DrivingOk : idle 且 lastTurnFailure==null
     Driving --> DrivingFailed : agent/error 先行记录<br/>→ idle
     DrivingOk --> Clear : 清空 lastTurnFailure<br/>（review 步：消费 pendingReview）
-    DrivingFailed --> Retained : fail() 通道<br/>paused=true, lastError{code}<br/>current 不变
+    DrivingFailed --> Retained : fail() 通道<br/>paused=true, lastError{code, origin}<br/>current 不变
     Retained --> Driving : 下次 submit() 解除 pause<br/>重驱 current（同成员）
     Clear --> [*] : pump 继续（nextStep 评估切换）
     Retained --> [*] : pump 暂停

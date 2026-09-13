@@ -78,6 +78,7 @@ export type {
   OrchestrationFailureContext,
   OrchestrationPhase,
   OrchestratorFailure,
+  OrchestratorFailureOrigin,
   OrchestratorLogger,
   OrchestratorSnapshot,
   OrchestratorStateErrorCode,

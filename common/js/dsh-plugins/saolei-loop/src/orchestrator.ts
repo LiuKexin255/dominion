@@ -306,6 +306,15 @@ export interface CancelResult {
   readonly dropped: readonly UserMessage[];
 }
 
+/**
+ * Where a failed orchestration step originated: the driven member's turn
+ * (a band-visible LLM failure observed through `agent/error`) or the
+ * orchestration layer itself (a thrown step). The session layer maps the
+ * origin onto the stream settlement (clean end vs INTERNAL) —
+ * specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2.
+ */
+export type OrchestratorFailureOrigin = "member-turn" | "orchestration";
+
 /** The last failed orchestration step, exposed through {@link OrchestratorSnapshot}. */
 export interface OrchestratorFailure {
   /** Normalized error message of the failed step. */
@@ -319,6 +328,13 @@ export interface OrchestratorFailure {
    * `UNKNOWN` for non-LlmError failures.
    */
   readonly code: string;
+  /**
+   * Failure origin: the host session layer's stream-settlement discriminant —
+   * a failed member turn ends the streams cleanly, an orchestration-layer
+   * failure closes them with an INTERNAL error
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+   */
+  readonly origin: OrchestratorFailureOrigin;
 }
 
 /** Read-only orchestration view for the host (status/queue/failure presentation). */
@@ -800,10 +816,11 @@ export class TeamOrchestrator {
         const failure = await this.drive(step.member, step.messages);
         if (failure !== null) {
           // A failed member turn retains the activation and pauses through
-          // the same channel as a thrown step; the next submit lifts the
-          // pause and re-drives the same member (FR-009/FR-010,
+          // the same channel as a thrown step, tagged "member-turn" so the
+          // host settles the stream cleanly; the next submit lifts the pause
+          // and re-drives the same member (FR-009/FR-010,
           // specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
-          this.fail(step.member.role, failure);
+          this.fail(step.member.role, failure, "member-turn");
           return;
         }
         this.lastError = null;
@@ -813,7 +830,7 @@ export class TeamOrchestrator {
           this.pendingReview = null;
         }
       } catch (err) {
-        this.fail(member, turnFailureOf(err));
+        this.fail(member, turnFailureOf(err), "orchestration");
         return;
       }
     }
@@ -823,19 +840,26 @@ export class TeamOrchestrator {
    * Suspend auto-continuation after a failed step and surface it: the failure
    * goes to the host-injected logger (console fallback) and into
    * {@link OrchestratorSnapshot} (`failed`/`lastError`) so the host can map an
-   * INTERNAL/turn error instead of a silent stall. A failed member turn
-   * enters through this same channel; `this.current` stays untouched, so the
-   * activation is retained and the next submit re-drives the same member
-   * (FR-009/FR-012,
+   * INTERNAL/turn error instead of a silent stall. `origin` records which
+   * channel failed — the driven member's turn or the orchestration layer —
+   * the host's stream-settlement discriminant (clean end vs INTERNAL;
+   * specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+   * `this.current` stays untouched, so the activation is retained and the
+   * next submit re-drives the same member (FR-009/FR-012,
    * specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2/§3).
    * The next successful drive clears it.
    */
-  private fail(member: TeamRole | null, failure: TurnFailure): void {
+  private fail(
+    member: TeamRole | null,
+    failure: TurnFailure,
+    origin: OrchestratorFailureOrigin,
+  ): void {
     this.lastError = {
       message: failure.message,
       member,
       phase: this.phase,
       code: failure.code,
+      origin,
     };
     this.paused = true;
     this.logger().error(

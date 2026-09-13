@@ -37,7 +37,7 @@ sequenceDiagram
     D->>D: 检查 lastTurnFailure
     alt 失败
         D-->>P: 失败结果
-        P->>P: fail() 通道：lastError{code} + paused=true<br/>current 不变（成员保持）<br/>结构化 error 日志
+        P->>P: fail() 通道：lastError{code, origin="member-turn"} + paused=true<br/>current 不变（成员保持）<br/>结构化 error 日志
     else 成功
         D-->>P: 成功结果（清空 lastTurnFailure）
         P->>P: 既有评估（review 消费 / nextStep 切换）
@@ -45,6 +45,11 @@ sequenceDiagram
 ```
 
 - `drive()` 返回值（或等价结果通道）携带成败；失败时 `runPump` 走既有 `fail()` 通道（`orchestrator.ts:729-742`）：`lastError`（扩展 `code` 字段，[data-model.md §4](../data-model.md)）+ `paused = true` + 日志；**`this.current` 不变** → 激活成员保持（FR-009）。
+- `fail()` 携带 `origin` 判别字段：成员 turn 失败（`drive()` 结果通道）→ `origin = "member-turn"`；`drive()` throw（catch 通道：决策步异常、宿主注入错误、编排层不变量违反）→ `origin = "orchestration"`。`lastError.origin` 是宿主 session 层流收束映射的唯一判别依据（见下条）。
+- **session 层流收束映射**（宿主 `projects/game/agent_v2/src/session.ts` 静止点 watcher `watchQuiescence`）：失败静止点按 `lastError.origin` 选择流收束方式——
+  - `"member-turn"`：`endStreams()` **干净收束**（RPC 以干净 EOF 终止、session 可继续使用）。`turn_end{TURN_STATUS_ERROR}` 帧保证在场：成员历史收集器（`projects/game/agent_v2/src/history.ts`）与编排器订阅同一成员 ctx 的 `agent/error`/`agent/status`，idle emit 时收集器**同步** sink 失败 turn 的收尾帧，同步 sink 先于静止点评估的任何 microtask（watcher 须 `await whenQuiescent()` 待 pump return）。web 呈现 = 既有 error 帧 + turn_end ERROR（零新增 UI 状态，spec Assumption）。
+  - `"orchestration"`：既有 `failStreams()` INTERNAL 语义**不变**——编排层异常绝不伪装为干净 EOF（防停滞伪装设计；错误映射见 [team-api.md §6](../../059-agent-v2-team-mode/contracts/team-api.md)）。
+  - 排队消息在失败静止点不被消化（pump 已暂停）：流收束、队列保留（消化时机见下文 FIFO 条款，FR-010）。
 - 下一次 `submit()` 既有逻辑解除 pause 并重驱 `current`（同成员重驱动，FR-010/US2 场景 2）。
 - `pendingReview` 驱动失败：`pendingReview` 不消费（成功 settle 才清除，既有 `orchestrator.ts:710-714` 语义），复盘触发记录不丢失（spec Edge）。
 - 排队消息：pause 期间队列保留，重驱时由保持成员按既有 FIFO 消化（FR-010）。
@@ -58,15 +63,16 @@ sequenceDiagram
 
 ## 4. 快照与呈现
 
-- `OrchestratorSnapshot.lastError` 增加 `code`；`failed`/`paused` 字段语义不变（既有 fail 通道）。
+- `OrchestratorSnapshot.lastError` 增加 `code` 与 `origin`（`"member-turn" | "orchestration"`，§2 流收束映射的判别字段，[data-model.md §4](../data-model.md)）；`failed`/`paused` 字段语义不变（既有 fail 通道；`failed === (lastError !== null)`）。
 - `GetTeam` 的 `activeMember`/activation 呈现链零改动（保持的 `current` 自然呈现为激活成员——SC-002 的断言面）。
-- web UI 对失败保持状态的呈现 = 既有 error 帧 + turn_end ERROR（零新增 UI 状态，spec Assumption）。
+- web UI 对失败保持状态的呈现 = 既有 error 帧 + turn_end ERROR（零新增 UI 状态，spec Assumption）：成员 turn 失败的流干净收束使 turn_end ERROR 成为流的收尾帧——与带内失败的既有呈现一致（`projects/game/web/frontend/src/store/chat.ts` 的 `TURN_STATUS_ERROR` 既有处理），零新增前端工作。
 
 ## 5. 测试义务
 
 1. **harness 扩展**（`orchestrator.test.ts` fake member）：新增 `failCurrentTurn(code)`——emit `agent/error`（payload 带 `LlmError` 形态 error）后 emit idle，模拟失败 turn 收束。
-2. **保持语义**：planning 阶段 planner 失败 turn → `snapshot()` 断言 `activation === "planner"`、`paused === true`、`lastError.code`；再次 submit → planner 重驱（followups 断言）且不切 player。
+2. **保持语义**：planning 阶段 planner 失败 turn → `snapshot()` 断言 `activation === "planner"`、`paused === true`、`lastError.code`、`lastError.origin === "member-turn"`；再次 submit → planner 重驱（followups 断言）且不切 player。既有 throw 路径用例（drain/followup throw → catch 通道）断言补 `lastError.origin === "orchestration"`。
 3. **成功路径回归**：既有"planner settle → 切 player"用例保持通过（`orchestrator.test.ts:411-418` 语义不变）。
 4. **取消例外**：`cancel()` 路径不产生保持（无 agent/error → 无标记）。
 5. **review 失败**：pendingReview 驱动失败 → 记录保留、重驱复盘（既有用例扩展 code 断言）。
 6. **日志断言**：fail 通道 logger error 恰一条、字段完整、`error` 文本无 token。
+7. **session 层流收束**（`projects/game/agent_v2/src/session.test.ts`）：harness fake member 扩展 `agent/error` listeners + `failCurrentTurn(code)`（镜像第 1 条手法，同一 fake ctx 使成员历史收集器与编排器订阅同时可见）；成员 turn 失败 → 活跃流干净收束（`ended` 且无 `failures`）+ `turnEnd{TURN_STATUS_ERROR, error}` 帧在场 + 结构化日志恰一条 + activation 保持 + 再 Send 重驱同成员；编排级失败（followup throw）→ 既有 failStreams INTERNAL 用例保持（回归即验证，`session.test.ts` "TeamSessions orchestration failure" describe）。

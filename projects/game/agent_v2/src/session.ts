@@ -672,7 +672,11 @@ export class TeamSessions {
     };
   }
 
-  /** End every active stream at a team static point (natural / cancel). */
+  /**
+   * End every active stream at a team static point (natural quiescence,
+   * cancel, or a member-turn failure whose turn_end ERROR frame is already
+   * on the stream).
+   */
   private endStreams(entry: TeamEntry): void {
     const streams = [...entry.streams];
     entry.streams.clear();
@@ -689,10 +693,15 @@ export class TeamSessions {
   }
 
   /**
-   * Terminate every active stream at an orchestration failure: the failure
-   * is surfaced as a stream error (the gRPC adapter maps it to INTERNAL —
-   * contracts/team-api.md §6) and as a repo-logger line, never as a clean
-   * EOF that would disguise the stall.
+   * Terminate every active stream at an orchestration-layer failure
+   * (`lastError.origin === "orchestration"`): the failure is surfaced as a
+   * stream error (the gRPC adapter maps it to INTERNAL —
+   * specs/059-agent-v2-team-mode/contracts/team-api.md §6) and as a
+   * repo-logger line, never as a clean EOF that would disguise the stall.
+   * A member-turn failure settles through {@link endStreams} instead: its
+   * turn_end ERROR frame is already on the stream
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2;
+   * design: specs/063-llm-reliability-opencode-go/design-session-stream-settlement.md §1).
    */
   private failStreams(entry: TeamEntry, failure: OrchestratorFailure): void {
     error("team stream closed after an orchestration failure", {
@@ -729,8 +738,14 @@ export class TeamSessions {
    *
    * A paused orchestrator has no scheduled pump — `whenQuiescent()` resolves
    * immediately — so waiting for active/queued alone would spin the
-   * microtask queue. The pause also carries the terminal state: a failed
-   * step (surfaced as a stream error) or the Cancel static point.
+   * microtask queue. The pause also carries the terminal state, settled by
+   * the failure origin: an orchestration-layer failure closes the streams
+   * with an error ({@link failStreams}), while a member-turn failure — like
+   * a cancel — ends them cleanly ({@link endStreams}), the turn_end ERROR
+   * frame having already been sunk by the member history collector before
+   * this watcher's microtask
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2;
+   * design: specs/063-llm-reliability-opencode-go/design-session-stream-settlement.md §1/§3).
    */
   private watchQuiescence(entry: TeamEntry): void {
     if (entry.quiescenceWatch !== null || entry.disposed) {
@@ -749,7 +764,7 @@ export class TeamSessions {
       if (entry.disposed) {
         return;
       }
-      if (snapshot.failed && snapshot.lastError !== null) {
+      if (snapshot.lastError?.origin === "orchestration") {
         this.failStreams(entry, snapshot.lastError);
       } else {
         this.endStreams(entry);

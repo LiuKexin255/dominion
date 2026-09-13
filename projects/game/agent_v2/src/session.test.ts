@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AgentHandle, AgentStatus, CreateAgentOptions } from "@deepseek-ai/dsh-agent";
 import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
@@ -55,7 +55,15 @@ interface MemberFake {
   readonly injections: UserMessage[];
   readonly cancels: unknown[];
   readonly statusListeners: Array<(payload: { agent: Agent; status: AgentStatus }) => void>;
+  readonly errorListeners: Array<(payload: { agent: Agent; error: unknown }) => void>;
   settle(): void;
+  /**
+   * Settle the in-flight turn as failed: emit `agent/error` (an
+   * {@link LlmError} carrying the code) and then idle — the exact order the
+   * official loop produces
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1/§5).
+   */
+  failCurrentTurn(code: string): void;
 }
 
 interface Harness {
@@ -75,20 +83,34 @@ interface Harness {
   readonly game: { current: GameEventRecord | null };
 }
 
-function fakeMember(id: string, emitStatus: (member: MemberFake, status: AgentStatus) => void): MemberFake {
+function fakeMember(
+  id: string,
+  emitStatus: (member: MemberFake, status: AgentStatus) => void,
+  emitError: (member: MemberFake, error: unknown) => void,
+): MemberFake {
   const state = { status: "idle" as AgentStatus };
   const statusListeners: MemberFake["statusListeners"] = [];
+  const errorListeners: MemberFake["errorListeners"] = [];
   const memberCtx: {
     on: ReturnType<typeof vi.fn>;
     systemPrompt: { assemble: ReturnType<typeof vi.fn> };
     agent?: Agent;
   } = {
-    on: vi.fn((name: string, listener: (payload: { agent: Agent; status: AgentStatus }) => void) => {
-      if (name === "agent/status") {
-        statusListeners.push(listener);
+    on: vi.fn((name: string, listener: Listener) => {
+      if (name === "agent/error") {
+        const typed = listener as (payload: { agent: Agent; error: unknown }) => void;
+        errorListeners.push(typed);
+        return () => {
+          const index = errorListeners.indexOf(typed);
+          if (index >= 0) {
+            errorListeners.splice(index, 1);
+          }
+        };
       }
+      const typed = listener as (payload: { agent: Agent; status: AgentStatus }) => void;
+      statusListeners.push(typed);
       return () => {
-        const index = statusListeners.indexOf(listener);
+        const index = statusListeners.indexOf(typed);
         if (index >= 0) {
           statusListeners.splice(index, 1);
         }
@@ -138,9 +160,18 @@ function fakeMember(id: string, emitStatus: (member: MemberFake, status: AgentSt
     injections: [],
     cancels: [],
     statusListeners,
+    errorListeners,
     settle: () => {
       state.status = "idle";
       emitStatus(member, "idle");
+    },
+    failCurrentTurn: (code: string) => {
+      // The official loop reports the failure at the turn's active boundary
+      // and only then converges to idle, so both subscribers observe the
+      // failure when the drive's idle await resolves
+      // (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1/§5).
+      emitError(member, new LlmError(`injected ${code} failure`, code));
+      member.settle();
     },
   };
   return member;
@@ -174,8 +205,18 @@ function createHarness(options: HarnessOptions = {}): Harness {
       (listener as (...args: unknown[]) => void)({ agent: member.agent, status });
     }
   };
+  // Both the orchestrator (member ctx) and the history collector (host ctx)
+  // observe the failure, mirroring emitStatus's dual dispatch.
+  const emitError = (member: MemberFake, error: unknown): void => {
+    for (const listener of [...member.errorListeners]) {
+      listener({ agent: member.agent, error });
+    }
+    for (const listener of [...(listeners.get("agent/error") ?? [])]) {
+      (listener as (...args: unknown[]) => void)({ agent: member.agent, error });
+    }
+  };
   const agentsCreate = vi.fn(async (options: CreateAgentOptions): Promise<AgentHandle> => {
-    const member = fakeMember(String(options.sessionId), emitStatus);
+    const member = fakeMember(String(options.sessionId), emitStatus, emitError);
     members.set(member.id, member);
     await options.setup?.(member.ctx as never);
     return member.handle;
@@ -937,6 +978,64 @@ describe("TeamSessions orchestration failure", () => {
     await flush();
     expect(resumed.failures).toEqual([]);
     expect(resumed.ended).toBe(true);
+  });
+});
+
+describe("TeamSessions member-turn failure", () => {
+  it("ends the stream cleanly with the turn_end ERROR frame and re-drives the retained member on the next send", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const planner = member(h, PLANNER_ID);
+
+    // The first send starts the planner turn.
+    const stream = fakeStream();
+    h.sessions.send(S1, "请开始扫雷", stream);
+    await flush();
+    expect(planner.followups.map(messageText)).toEqual(["请开始扫雷"]);
+
+    // The turn fails at its active boundary (agent/error) and then idles.
+    planner.failCurrentTurn("SERVER");
+    await flush();
+
+    // A member-turn failure settles the stream cleanly — the turn_end ERROR
+    // frame is on the stream (sunk by the member history collector before
+    // the watcher's microtask) and no INTERNAL failure is raised
+    // (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+    expect(stream.failures).toEqual([]);
+    expect(stream.ended).toBe(true);
+    const ends = stream.events.filter((event) => event.turnEnd !== undefined);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]?.turnEnd).toMatchObject({
+      status: "TURN_STATUS_ERROR",
+      error: { code: "SERVER", message: "injected SERVER failure" },
+    });
+    expect(stream.events[stream.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_ERROR");
+
+    // FR-012: exactly one structured failure line with the full field set.
+    expect(h.loggerError).toHaveBeenCalledTimes(1);
+    expect(h.loggerError.mock.calls[0]?.[1]).toEqual({
+      session: S1,
+      phase: "planning",
+      member: "planner",
+      code: "SERVER",
+      error: "injected SERVER failure",
+    });
+    // FR-009: the activation is retained — planner owns the next input.
+    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
+
+    // The next send re-drives the same member; the recovered turn answers
+    // normally and the new stream ends at the team's static point.
+    const resumed = fakeStream();
+    h.sessions.send(S1, "重试", resumed);
+    await flush();
+    expect(planner.followups.map(messageText)).toEqual(["请开始扫雷", "重试"]);
+    driveTextTurn(h, planner, "规划完成");
+    await flush();
+    expect(resumed.failures).toEqual([]);
+    expect(resumed.ended).toBe(true);
+    const completed = resumed.events.filter((event) => event.turnEnd !== undefined);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
   });
 });
 
