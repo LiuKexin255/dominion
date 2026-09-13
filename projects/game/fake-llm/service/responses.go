@@ -120,6 +120,15 @@ func NewResponsesHandler(store *MessageStore, rng *rand.Rand) *ResponsesHandler 
 // object) its think/text projection; a Failure template emits
 // response.failed with the configured code/message.
 //
+// A matched template's transient injection is resolved before serving
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §1): an http_status injection answers with that status and the injected
+// error body, an empty injection answers a 200 whose stream carries no
+// content item (created → completed), and a failure injection — the bounded
+// form of the legacy top-level failure — ends the stream with
+// response.failed. When the transient budget is exhausted the template
+// answers with its normal content.
+//
 // Dispatch inspects the LAST input item: a function_call_output (the tool
 // result the adapter replays after a model call) routes into the tools
 // branch — MatchToolResult by the call's tool name (+ optional
@@ -148,7 +157,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	messages, toolCalls, toolOutput := projectResponsesInput(*req.Input)
 	var spec responseSpec
-	var failure *ResponseFailure
+	var injection *transientInjection
 	if toolOutput != nil {
 		toolName := toolCalls[toolOutput.CallID]
 		tc, _ := MatchToolResult(ToolsForEndpoint(h.store.Tools(), true), toolName, toolOutput.Output, h.rng)
@@ -156,7 +165,22 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		msg := matchResponses(h.store.Messages(), messages, strings.ToLower(req.Instructions))
 		spec = specFromMessage(msg)
-		failure = msg.Failure
+		injection = msg.takeInjection()
+	}
+
+	if injection != nil && injection.httpStatus != 0 {
+		writeInjectedHTTPFailure(w, injection)
+		return
+	}
+	var failure *ResponseFailure
+	if injection != nil {
+		failure = injection.failure
+		if injection.empty {
+			// Zero content items: the stream reduces to
+			// created → completed (contract §1), and the non-streaming
+			// body carries no output items either.
+			spec = responseSpec{}
+		}
 	}
 
 	callID, fcID := responsesWireIDs(*req.Input)
@@ -424,14 +448,15 @@ func userTurnCount(messages []responsesMessage) int {
 
 // responsesFallbackPool returns the templates eligible for the
 // deterministic no-match fallback: no tool_call (an accidental tool
-// trigger), no failure injection (an accidental failure), non-multi-turn,
+// trigger), no failure injection (an accidental failure), no transient
+// fault injection (an accidental failure/stall), non-multi-turn,
 // and non-hang-capable (an accidental stall or delay). The pool is never
 // empty for a validated store that contains at least one plain template;
 // otherwise the full set is used rather than panicking on IntN(0).
 func responsesFallbackPool(templates []*Message) []*Message {
 	var pool []*Message
 	for _, t := range templates {
-		if t.ToolCall == nil && t.Failure == nil && !t.isMultiTurnTemplate() && !isHangCapable(t) {
+		if t.ToolCall == nil && t.Failure == nil && t.Transient == nil && !t.isMultiTurnTemplate() && !isHangCapable(t) {
 			pool = append(pool, t)
 		}
 	}
@@ -574,11 +599,14 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 // only created → failed. A template declaring neither think nor text
 // emits no content items at all — the message item is the text carrier.
 //
-// The chat-completions endpoint's permanent-stall simulation (stall /
-// stall_after, specs/043-llm-stream-stall-recovery / specs/046-fake-llm-
-// think-chunking) is a chat-completions facility and is deliberately not
-// projected here: the Responses handler honors only the inter-chunk
-// chunk_delays, which is what the FR-012 queue-window scenarios need.
+// A template declaring stall / stall_after blocks after the
+// response.reasoning_summary_text.delta event for the effective 0-based
+// reasoning-chunk index: the connection stays alive (the http.Server has
+// no WriteTimeout) but no further event is written until the caller
+// cancels — the same "TCP alive, no SSE data" mode the chat wire
+// simulates (specs/063-llm-reliability-opencode-go/contracts/
+// fake-llm-fault-injection.md §2). A template with no reasoning pieces
+// never stalls, exactly like the chat wire.
 func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, failure *ResponseFailure, callID, fcID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -625,6 +653,14 @@ func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec respon
 				"output_index": 0,
 				"delta":        piece,
 			})
+			// Permanent stall after the reasoning chunk at the effective
+			// index: block — on r.Context().Done() only, no fake-llm-side
+			// timeout — until the caller cancels; no further event is
+			// written.
+			if spec.StallAfter != nil && i == *spec.StallAfter {
+				<-r.Context().Done()
+				return
+			}
 		}
 	}
 

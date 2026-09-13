@@ -2,7 +2,9 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -835,7 +837,7 @@ func TestToolChainEndpointIsolation(t *testing.T) {
 	// prove which rule fired.
 	chatHandler := NewChatHandler(responsesSaoleiStore(t), rand.New(rand.NewPCG(1, 0)))
 	wonInit := "new game started\ngame status: won\n\nboard size 9*9"
-	spec := chatHandler.dispatch([]*messageParam{
+	spec, _ := chatHandler.dispatch([]*messageParam{
 		{Role: "user", Content: jsonRaw(`"开始一局扫雷"`)},
 		{Role: "assistant", Content: jsonRaw(`""`), ToolCalls: []*toolCallParam{{
 			ID: "c1", Type: "function",
@@ -999,4 +1001,366 @@ func TestMatchResponsesTeamSnapshotPriority(t *testing.T) {
 	if opening.Name != "team-planner-opening" {
 		t.Fatalf("snapshot-less planner turn matched %q, want team-planner-opening", opening.Name)
 	}
+}
+
+// transientStore builds a one-template Responses store whose template carries
+// the given transient YAML lines and a normal think/text answer that serves
+// once the injection budget is exhausted.
+func transientStore(t *testing.T, transient []string) *MessageStore {
+	t.Helper()
+	lines := []string{
+		"name: agent-v2-transient",
+		"keywords:",
+		"  - agent-v2-transient",
+		"transient:",
+	}
+	lines = append(lines, transient...)
+	lines = append(lines,
+		"reasoning: thinking",
+		"text: recovered",
+		"",
+	)
+	return newStoreFromMap(t, fstest.MapFS{
+		"testdata/transient.yaml": &fstest.MapFile{Data: []byte(strings.Join(lines, "\n"))},
+	})
+}
+
+// transientResponsesBody builds the one-message /v1/responses request that
+// selects the transientStore template.
+func transientResponsesBody(stream bool) string {
+	return fmt.Sprintf(`{"model":"m","stream":%t,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"agent-v2-transient"}]}]}`, stream)
+}
+
+// TestResponsesHandler_TransientHTTPStatus verifies the transient http_status
+// injection (specs/063-llm-reliability-opencode-go/contracts/
+// fake-llm-fault-injection.md §1): a selecting request receives the declared
+// status, the optional Retry-After header and the injected error body, and
+// once the bounded budget is exhausted the template answers normally.
+func TestResponsesHandler_TransientHTTPStatus(t *testing.T) {
+	tests := []struct {
+		name           string
+		transient      []string
+		stream         bool
+		wantStatus     int
+		wantRetryAfter string
+		wantMessage    string
+		wantSecond     int
+	}{
+		{
+			name:           "times one injects the first request only",
+			transient:      []string{"  times: 1", "  http_status: 503", "  retry_after: 1"},
+			stream:         true,
+			wantStatus:     http.StatusServiceUnavailable,
+			wantRetryAfter: "1",
+			wantMessage:    "injected http failure",
+			wantSecond:     http.StatusOK,
+		},
+		{
+			name:           "retry_after absent omits the header",
+			transient:      []string{"  times: 1", "  http_status: 500"},
+			stream:         true,
+			wantStatus:     http.StatusInternalServerError,
+			wantRetryAfter: "",
+			wantMessage:    "injected http failure",
+			wantSecond:     http.StatusOK,
+		},
+		{
+			name:           "error_message drives the injected body",
+			transient:      []string{"  http_status: 429", "  error_message: insufficient quota"},
+			stream:         true,
+			wantStatus:     http.StatusTooManyRequests,
+			wantRetryAfter: "",
+			wantMessage:    "insufficient quota",
+			wantSecond:     http.StatusTooManyRequests,
+		},
+		{
+			name:           "stream false requests are rejected identically",
+			transient:      []string{"  times: 1", "  http_status: 401"},
+			stream:         false,
+			wantStatus:     http.StatusUnauthorized,
+			wantRetryAfter: "",
+			wantMessage:    "injected http failure",
+			wantSecond:     http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given: a store whose only template carries the transient block.
+			handler := NewResponsesHandler(transientStore(t, tt.transient), rand.New(rand.NewPCG(1, 0)))
+			body := transientResponsesBody(tt.stream)
+
+			// when
+			first := postResponses(t, handler, body)
+
+			// then: status, Retry-After (only when declared), and body.
+			if first.Code != tt.wantStatus {
+				t.Fatalf("first status = %d, want %d", first.Code, tt.wantStatus)
+			}
+			if got := first.Header().Get("Retry-After"); got != tt.wantRetryAfter {
+				t.Errorf("Retry-After = %q, want %q", got, tt.wantRetryAfter)
+			}
+			var injected injectedErrorBody
+			if err := json.Unmarshal(first.Body.Bytes(), &injected); err != nil {
+				t.Fatalf("decode injected body: %v\nbody: %s", err, first.Body.String())
+			}
+			if injected.Error.Message != tt.wantMessage || injected.Error.Type != "injected" {
+				t.Errorf("injected error = %+v, want message %q and type \"injected\"", injected.Error, tt.wantMessage)
+			}
+
+			// and: the second request sees the exhausted budget on the bounded
+			// case and the still-live injection on the unbounded case.
+			second := postResponses(t, handler, body)
+			if second.Code != tt.wantSecond {
+				t.Fatalf("second status = %d, want %d (budget handling)", second.Code, tt.wantSecond)
+			}
+		})
+	}
+}
+
+// TestResponsesHandler_TransientEmpty verifies the transient empty injection
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §1): HTTP 200 with the normal lifecycle but a zero-content stream —
+// created → completed and no output items.
+func TestResponsesHandler_TransientEmpty(t *testing.T) {
+	// given
+	handler := NewResponsesHandler(transientStore(t, []string{"  empty: true"}), rand.New(rand.NewPCG(1, 0)))
+
+	// when: a streaming request.
+	rec := postResponses(t, handler, transientResponsesBody(true))
+
+	// then: exactly created and completed, no item or delta events at all.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	events := scanResponsesEvents(t, rec.Body)
+	want := []string{"response.created", "response.completed"}
+	if len(events) != len(want) {
+		t.Fatalf("got %d events, want %d (created → completed): %v", len(events), len(want), events)
+	}
+	for i, wantName := range want {
+		if events[i][0] != wantName {
+			t.Fatalf("event[%d] = %q, want %q", i, events[i][0], wantName)
+		}
+	}
+	completed := responsesEvent(t, events[1][1])
+	resp, ok := completed["response"].(map[string]any)
+	if !ok || resp["status"] != "completed" {
+		t.Fatalf("completed response = %v, want status completed", completed["response"])
+	}
+
+	// and: the stream:false projection carries no output items either.
+	nonStreaming := postResponses(t, handler, transientResponsesBody(false))
+	var payload map[string]any
+	if err := json.Unmarshal(nonStreaming.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode non-streaming body: %v", err)
+	}
+	if payload["status"] != "completed" {
+		t.Errorf("non-streaming status = %v, want completed", payload["status"])
+	}
+	if out, ok := payload["output"].([]any); ok && len(out) != 0 {
+		t.Errorf("non-streaming output = %v, want no output items", payload["output"])
+	}
+}
+
+// TestResponsesHandler_TransientFailure verifies the bounded failure
+// injection (specs/063-llm-reliability-opencode-go/contracts/
+// fake-llm-fault-injection.md §1): the first selecting request ends with
+// response.failed carrying the configured code/message, and the next request
+// — budget exhausted — completes normally.
+func TestResponsesHandler_TransientFailure(t *testing.T) {
+	// given
+	handler := NewResponsesHandler(transientStore(t, []string{
+		"  times: 1",
+		"  failure:",
+		"    code: glm_injected_failure",
+		"    message: bounded failure",
+	}), rand.New(rand.NewPCG(1, 0)))
+	body := transientResponsesBody(true)
+
+	// when: the first selecting request.
+	first := postResponses(t, handler, body)
+
+	// then: the stream ends with response.failed and the configured error.
+	events := scanResponsesEvents(t, first.Body)
+	last := events[len(events)-1]
+	if last[0] != "response.failed" {
+		t.Fatalf("last event = %q, want response.failed", last[0])
+	}
+	failed := responsesEvent(t, last[1])
+	resp := failed["response"].(map[string]any)
+	errObj := resp["error"].(map[string]any)
+	if errObj["code"] != "glm_injected_failure" || errObj["message"] != "bounded failure" {
+		t.Errorf("error = %v, want the configured code/message", errObj)
+	}
+
+	// and: the exhausted budget serves the template's normal content.
+	second := postResponses(t, handler, body)
+	secondEvents := scanResponsesEvents(t, second.Body)
+	last = secondEvents[len(secondEvents)-1]
+	if last[0] != "response.completed" {
+		t.Fatalf("second last event = %q, want response.completed", last[0])
+	}
+}
+
+// TestResponsesFallbackExcludesTransient verifies transient templates stay
+// out of the deterministic no-match pool
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §1): an unrelated fallback turn must never fail by accident, and the
+// budget is consumed only by a request that actually selected the template.
+func TestResponsesFallbackExcludesTransient(t *testing.T) {
+	// given: one transient fault template and one plain template, none of
+	// whose keywords match the request.
+	store := newStoreFromMap(t, fstest.MapFS{
+		"testdata/mixed.yaml": &fstest.MapFile{
+			Data: []byte(strings.Join([]string{
+				"messages:",
+				"  - name: transient",
+				"    keywords:",
+				"      - never-transient",
+				"    transient:",
+				"      times: 1",
+				"      http_status: 503",
+				"    text: transient-text",
+				"  - name: plain",
+				"    keywords:",
+				"      - never-plain",
+				"    text: plain-text",
+				"",
+			}, "\n")),
+		},
+	})
+	handler := NewResponsesHandler(store, rand.New(rand.NewPCG(1, 0)))
+
+	// when: the no-match request falls back deterministically.
+	rec := postResponses(t, handler, `{"model":"m","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"nothing matches any keyword"}]}]}`)
+
+	// then: the plain template answered — never the transient one.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	output := payload["output"].([]any)
+	item := output[len(output)-1].(map[string]any)
+	content := item["content"].([]any)
+	if got := content[0].(map[string]any)["text"]; got != "plain-text" {
+		t.Fatalf("fallback text = %q, want the plain template (the transient template leaked into the pool)", got)
+	}
+}
+
+// TestResponsesHandler_StallAfter verifies the Responses stall projection
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §2): a stall_after:1 template emits its structural events and reasoning
+// deltas up to the configured chunk, then blocks with the connection alive
+// until the caller cancels.
+func TestResponsesHandler_StallAfter(t *testing.T) {
+	// given: a chunked template whose stall fires after reasoning chunk 1.
+	store := newStoreFromMap(t, fstest.MapFS{
+		"testdata/stall.yaml": &fstest.MapFile{
+			Data: []byte(strings.Join([]string{
+				"name: agent-v2-stall",
+				"keywords:",
+				"  - agent-v2-stall",
+				"reasoning_chunks:",
+				"  - \"c0\"",
+				"  - \"c1\"",
+				"  - \"c2\"",
+				"stall_after: 1",
+				"text: never arrives",
+				"",
+			}, "\n")),
+		},
+	})
+	handler := NewResponsesHandler(store, rand.New(rand.NewPCG(1, 0)))
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/responses",
+		strings.NewReader(transientResponsesBodyInline("agent-v2-stall")))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+
+	// when: served against a REAL transport so the "no further data" half
+	// of the stall is observable.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	// then (1): created → reasoning item added → delta c0 → delta c1, then
+	// nothing (stall_after: 1 blocks after the second reasoning delta).
+	wantEvents := []string{
+		"response.created",
+		"response.output_item.added",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_summary_text.delta",
+	}
+	for i, want := range wantEvents {
+		eventLine, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read event %d name: %v", i, err)
+		}
+		if got := strings.TrimSuffix(strings.TrimPrefix(eventLine, "event: "), "\n"); got != want {
+			t.Fatalf("event[%d] = %q, want %q", i, got, want)
+		}
+		if _, err := reader.ReadString('\n'); err != nil { // data line
+			t.Fatalf("read event %d data: %v", i, err)
+		}
+		if _, err := reader.ReadString('\n'); err != nil { // blank separator
+			t.Fatalf("read event %d separator: %v", i, err)
+		}
+	}
+
+	// then (2): NO further event arrives within the probe window.
+	moreData := make(chan struct{})
+	go func() {
+		_, _ = reader.ReadString('\n')
+		close(moreData)
+	}()
+	select {
+	case <-moreData:
+		t.Fatal("received data after the stalled reasoning chunk — the Responses stall did not pause the stream")
+	case <-time.After(300 * time.Millisecond):
+		// Expected: no data while stalled.
+	}
+
+	// then (3): cancelling the request context unblocks the handler.
+	cancel()
+	select {
+	case <-moreData:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled Responses stream did not unblock after the request context was cancelled")
+	}
+	unblocked := make(chan struct{})
+	go func() {
+		for {
+			if _, err := reader.ReadString('\n'); err != nil {
+				break
+			}
+		}
+		close(unblocked)
+	}()
+	select {
+	case <-unblocked:
+		// Expected: the handler returned once the context was cancelled.
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled Responses stream did not unblock after the request context was cancelled")
+	}
+}
+
+// transientResponsesBodyInline builds the one-message /v1/responses request
+// whose user text is text.
+func transientResponsesBodyInline(text string) string {
+	return `{"model":"m","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + text + `"}]}]}`
 }

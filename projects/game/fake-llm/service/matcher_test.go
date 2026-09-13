@@ -174,8 +174,9 @@ func TestMatch_FallbackExcludesHangCapable(t *testing.T) {
 // wire.md §3 — the isResponsesOnly set): a no-match request must never
 // randomly pick a template marked responses_only, declaring multi-turn
 // conditions (history_keywords / min_turn above the default), or carrying
-// a failure injection, so chat turns cannot randomly observe a template
-// authored for the agent_v2 tests. Plain keyword templates stay eligible.
+// a failure/transient injection, so chat turns cannot randomly observe a
+// template authored for the agent_v2 tests. Plain keyword templates stay
+// eligible.
 func TestMatch_FallbackExcludesResponsesOnly(t *testing.T) {
 	// given: a catalogue whose every keyword fails to match the request,
 	// so the fallback pool is the only path. Only the plain template must
@@ -204,6 +205,12 @@ func TestMatch_FallbackExcludesResponsesOnly(t *testing.T) {
 			Keywords: []string{"never-failure"},
 			Failure:  &ResponseFailure{Code: "glm_test_failure", Message: "injected"},
 			Text:     "failure-text",
+		},
+		{
+			Name:      "responses-transient",
+			Keywords:  []string{"never-transient"},
+			Transient: &Transient{Times: 1, HTTPStatus: 503},
+			Text:      "transient-text",
 		},
 		{
 			Name:     "plain-eligible",

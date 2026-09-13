@@ -23,6 +23,8 @@ go_library(
         "testdata/agent_v2_saolei_tools.yaml",
         "testdata/team_planner.yaml",
         "testdata/team_player.yaml",
+        "testdata/agent_v2_transient.yaml",
+        "testdata/opencode_go.yaml",
     ],
     importpath = "dominion/projects/game/fake-llm/service",
     visibility = ["//visibility:public"],

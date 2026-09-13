@@ -2,6 +2,7 @@ package service
 
 import (
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -132,6 +133,11 @@ func TestMessage_isResponsesOnly(t *testing.T) {
 			msg:     &Message{Name: "m", Keywords: []string{"kw"}, Failure: &ResponseFailure{Code: "c", Message: "m"}},
 			wantYes: true,
 		},
+		{
+			name:    "transient fault injection",
+			msg:     &Message{Name: "m", Keywords: []string{"kw"}, Transient: &Transient{Times: 1, HTTPStatus: 503}},
+			wantYes: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -141,5 +147,153 @@ func TestMessage_isResponsesOnly(t *testing.T) {
 				t.Fatalf("isResponsesOnly(%+v) = %v, want %v", tt.msg, got, tt.wantYes)
 			}
 		})
+	}
+}
+
+// TestMessage_takeInjection pins the per-template transient budget
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §1): Times bounds how many selecting requests receive the injection, a
+// missing/zero (or negative) Times is unbounded, and the legacy top-level
+// Failure is the unbounded shorthand whose behaviour is unchanged. A declared
+// transient block owns the injection when both are present.
+func TestMessage_takeInjection(t *testing.T) {
+	legacy := &ResponseFailure{Code: "glm_test_failure", Message: "injected"}
+	tests := []struct {
+		name      string
+		transient *Transient
+		failure   *ResponseFailure
+		calls     int
+		wantHits  int
+	}{
+		{name: "no injection declared", calls: 2, wantHits: 0},
+		{name: "legacy failure is unbounded", failure: legacy, calls: 3, wantHits: 3},
+		{
+			name:      "transient times one injects only the first selecting request",
+			transient: &Transient{Times: 1, HTTPStatus: 503},
+			calls:     2,
+			wantHits:  1,
+		},
+		{
+			name:      "transient times two injects the first two requests",
+			transient: &Transient{Times: 2, HTTPStatus: 500},
+			calls:     3,
+			wantHits:  2,
+		},
+		{
+			name:      "transient without times is unbounded",
+			transient: &Transient{HTTPStatus: 401},
+			calls:     3,
+			wantHits:  3,
+		},
+		{
+			name:      "transient times zero is unbounded",
+			transient: &Transient{Times: 0, Empty: true},
+			calls:     2,
+			wantHits:  2,
+		},
+		{
+			name:      "transient negative times is unbounded",
+			transient: &Transient{Times: -1, Empty: true},
+			calls:     2,
+			wantHits:  2,
+		},
+		{
+			name:      "declared transient block owns the injection over a legacy failure",
+			transient: &Transient{Times: 1, HTTPStatus: 429},
+			failure:   legacy,
+			calls:     2,
+			wantHits:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given: one template whose every request selects it.
+			msg := &Message{Name: "m", Keywords: []string{"kw"}, Failure: tt.failure, Transient: tt.transient}
+
+			// when: takeInjection is called once per selecting request.
+			hits := 0
+			for range tt.calls {
+				if msg.takeInjection() != nil {
+					hits++
+				}
+			}
+
+			// then
+			if hits != tt.wantHits {
+				t.Fatalf("takeInjection hits = %d, want %d after %d selecting requests", hits, tt.wantHits, tt.calls)
+			}
+		})
+	}
+}
+
+// TestMessage_takeInjection_ResolvesFields pins the resolved injection
+// payload: the declared HTTP status, Retry-After, error message and failure
+// reach the handler unchanged, so the wire body/headers are fully driven by
+// the template's transient block.
+func TestMessage_takeInjection_ResolvesFields(t *testing.T) {
+	// given
+	retryAfter := 1
+	legacy := &ResponseFailure{Code: "glm_test_failure", Message: "injected"}
+	msg := &Message{
+		Name:     "m",
+		Keywords: []string{"kw"},
+		Transient: &Transient{
+			HTTPStatus:   503,
+			RetryAfter:   &retryAfter,
+			ErrorMessage: "insufficient quota",
+			Failure:      legacy,
+		},
+	}
+
+	// when
+	got := msg.takeInjection()
+
+	// then
+	if got == nil {
+		t.Fatalf("takeInjection() = nil, want the declared injection")
+	}
+	if got.httpStatus != 503 {
+		t.Errorf("httpStatus = %d, want 503", got.httpStatus)
+	}
+	if got.retryAfter == nil || *got.retryAfter != 1 {
+		t.Errorf("retryAfter = %v, want the declared 1 second", got.retryAfter)
+	}
+	if got.errorMessage != "insufficient quota" {
+		t.Errorf("errorMessage = %q, want %q", got.errorMessage, "insufficient quota")
+	}
+	if got.failure != legacy {
+		t.Errorf("failure = %v, want the declared failure pointer", got.failure)
+	}
+}
+
+// TestMessage_takeInjection_Concurrent verifies the mutex-protected counter
+// (contract §1): many concurrent selecting requests inject exactly Times
+// times, never more or fewer.
+func TestMessage_takeInjection_Concurrent(t *testing.T) {
+	const (
+		times   = 5
+		callers = 50
+	)
+	msg := &Message{Name: "m", Keywords: []string{"kw"}, Transient: &Transient{Times: times, HTTPStatus: 503}}
+
+	// when: 50 goroutines race for the budget.
+	var wg sync.WaitGroup
+	hits := make(chan struct{}, callers)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if msg.takeInjection() != nil {
+				hits <- struct{}{}
+			}
+		}()
+	}
+	wg.Wait()
+	close(hits)
+
+	// then: exactly the declared budget was consumed.
+	if got := len(hits); got != times {
+		t.Fatalf("takeInjection concurrent hits = %d, want exactly %d", got, times)
 	}
 }
