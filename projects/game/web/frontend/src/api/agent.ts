@@ -27,7 +27,10 @@ export interface ListPresetsResponse {
   nextPageToken?: string
 }
 
-// Model per agent_v2.proto Model：只读目录项，无端点/token 信息。
+// Model per agent_v2.proto Model：只读目录项，无端点/token 信息。id 为
+// `provider/model-id` 复合标识（FR-018；跨 provider 同名模型由 provider 前缀
+// 消歧，specs/063-llm-reliability-opencode-go/contracts/model-selection.md
+// §2/§4）；页面不感知 provider 插件实现（无 endpoint/token 概念）。
 export interface Model {
   id: string
   contextWindow?: number
@@ -40,8 +43,9 @@ export interface ListModelsResponse {
 // TeamMember is one team member carrier: the caller-supplied materialization
 // configuration and the runtime snapshot share one shape (data-model.md §2).
 // Input carries role (non-empty scenario vocabulary) + preset + optional model
-// (empty = deployment default); name/system_prompt are server-filled on
-// output (system_prompt only through GetTeamMember).
+// (empty = deployment default); model is the composite `provider/model-id`
+// selector or empty (contracts/model-selection.md §3/§4); name/system_prompt
+// are server-filled on output (system_prompt only through GetTeamMember).
 export interface TeamMember {
   name?: string
   role: string
@@ -142,8 +146,9 @@ export async function deletePreset(name: string): Promise<void> {
   if (!res.ok) throw new ApiError(res.status, await res.text())
 }
 
-// listModels 返回部署级只读模型目录（与 UpdateTeam 校验同源，
-// team-api.md §2）。
+// listModels 返回部署级只读模型目录：全部已注册 provider 的联合目录，条目 id
+// 为 `provider/model-id` 复合标识（FR-018，team-api.md §2；
+// specs/063-llm-reliability-opencode-go/contracts/model-selection.md §2）。
 export async function listModels(): Promise<Model[]> {
   const res = await requestJson<ListModelsResponse>('/api/v2/models')
   return res.models ?? []
@@ -171,7 +176,8 @@ export async function getTeamMember(session: string, member: string): Promise<Te
 // output-only 字段不进 body——grpc-gateway 对 PATCH 从 Body 的 Team 派生
 // update_mask（runtime FieldMaskFromRequestBody，仅当 mask 为空时；repeated
 // 字段停在 "members"），name 进 body 会派生出服务端拒绝的 "name" mask 路径
-// （team-api.md §1/§2）。model 空 = 部署默认，body 省略该字段。
+// （team-api.md §1/§2）。model 为 `provider/model-id` 复合标识，空 = 部署默认，
+// body 省略该字段（contracts/model-selection.md §4）。
 export async function updateTeam(session: string, members: TeamMember[]): Promise<Team> {
   const body = {
     members: members.map((member) =>

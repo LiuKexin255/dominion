@@ -962,6 +962,9 @@ importers:
       '@dominion/dsh-llm-glm':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/llm-glm
+      '@dominion/dsh-llm-opencode-go':
+        specifier: workspace:*
+        version: link:../../../common/js/dsh-plugins/llm-opencode-go
       '@dominion/dsh-memory':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/memory

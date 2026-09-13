@@ -1,7 +1,7 @@
 version: "3.0"
 name: game.{{run}}
 type: test
-desc: "Game agent_v2 test deployment (dsh agent_v2 + web + game/desktop-flow suites, fake-llm /v1/responses, single fake-desktop executor (won scenario), session face gateway→proxy→agent_v2 two-hop / preset face gateway→agent_v2 direct)"
+desc: "Game agent_v2 stall-guard test deployment (specs/063-llm-reliability-opencode-go/tasks.md T019 / quickstart SC-004a): the same service list as deploy_agent_v2.yaml, but the agent-v2-test instance pins GLM_STREAM_IDLE_TIMEOUT_MS=2000 so a Responses wire stall is detected inside a 2s idle window. The main topology cannot be reused for this: its fixtures carry legitimate 3s/4s chunk gaps that the production 300s window tolerates and a 2s window would misjudge"
 services:
   - infra:
       resource: mongodb
@@ -20,12 +20,9 @@ services:
       path: //projects/game/fake-llm/service.yaml
       name: fake-llm
   # Single deterministic desktop executor (specs/051-agent-v2-dsh-migration/
-  # research.md D15) bound to the won session, so the game suites can address
-  # a known flow-connected board; sessions without a fake-desktop connection
-  # exercise the desktop-absent branch. Behavior is env-driven — the
-  # mid-game disconnect variant deploys this same service with different env
-  # in deploy_agent_v2_drop.yaml
-  # (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.3).
+  # research.md D15) bound to the won session; kept so the topology matches
+  # deploy_agent_v2.yaml apart from the watchdog env (mirrors
+  # deploy_agent_v2_memory_down.yaml's reuse pattern).
   - artifact:
       path: //projects/game/fake-desktop/service.yaml
       name: fake-desktop
@@ -46,25 +43,22 @@ services:
       name: proxy
   - artifact:
       # The zero-secret test artifact (service.yaml declares agent-v2-test
-      # with no secrets — specs/049-agent-v2-dsh-init/research.md D9): the
-      # boot tolerates the missing GLM token and model requests skip the
-      # Authorization header (specs/049-agent-v2-dsh-init/contracts/
-      # glm-llm-plugin.md §3 义务 6); fake-llm ignores credentials either
-      # way (fake-responses-wire.md §1). The test cluster needs no
-      # glm-api-token prerequisite. The artifact name carries hyphens
-      # (deploy API constraint, specs/049-agent-v2-dsh-init/research.md D13).
+      # with no secrets — specs/049-agent-v2-dsh-init/research.md D9); all
+      # LLM credentials below are synthetic (not real secrets).
       path: //projects/game/agent_v2/service.yaml
       name: agent-v2-test
       env:
         # The fake model endpoint via Dominion service discovery; the
-        # bootstrap resolves it to http://{endpoint}/v1
-        # (specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §4).
+        # bootstrap resolves it to http://{endpoint}/v1.
         GLM_LLM_TARGET: dominion:///game/fake-llm:8080
-        # The opencode-go row routes to the same fake endpoint. The synthetic
-        # credential is NOT a real secret: it exists so the end-to-end run
-        # covers conditional Authorization carrying and the zero-leakage
-        # assertion (fake-llm ignores credentials; specs/063-llm-reliability-
-        # opencode-go/data-model.md §6).
+        # SC-004a: the independent 2s idle watchdog window. The main topology
+        # fixtures have 3s/4s normal chunk gaps, so this window may only be
+        # deployed on the dedicated stall topology (specs/063-llm-reliability-
+        # opencode-go/research.md D13/D15).
+        GLM_STREAM_IDLE_TIMEOUT_MS: "2000"
+        # The opencode-go row routes to the same fake endpoint (synthetic
+        # credential, not a real secret — conditional Authorization +
+        # zero-leakage coverage; fake-llm ignores credentials).
         OPENCODE_LLM_TARGET: dominion:///game/fake-llm:8080
         OPENCODE_API_KEY: test-opencode-token
   # Same-hostname path split: web serves `/`, the gateway keeps /api/v1/ and

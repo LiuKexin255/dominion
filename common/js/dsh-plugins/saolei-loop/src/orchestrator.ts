@@ -248,7 +248,13 @@ export interface TeamOrchestratorDeps {
 export interface TeamMemberOptions {
   /** Preset reference handed to the compose seam. */
   readonly preset: string;
-  /** Model id; empty/undefined leaves the provider/adapter default in control. */
+  /**
+   * Provider route this member's model belongs to; empty/undefined falls back
+   * to the team-level provider (specs/063-llm-reliability-opencode-go/
+   * contracts/model-selection.md §3).
+   */
+  readonly provider?: string;
+  /** Bare model id; empty/undefined leaves the provider/adapter default in control. */
   readonly model?: string;
 }
 
@@ -644,7 +650,12 @@ export class TeamOrchestrator {
         agentPreset: composed.agentPreset,
       },
       agentOptions: {
-        provider: this.deps.provider ?? TEAM_PROVIDER,
+        // Per-member route: the member's own provider wins, then the team
+        // dependency default (host override), then the shipped route. The
+        // model stays the bare id — the composite selector lives on the
+        // selection surface only (specs/063-llm-reliability-opencode-go/
+        // contracts/model-selection.md §3).
+        provider: member.provider ?? this.deps.provider ?? TEAM_PROVIDER,
         ...(member.model === undefined || member.model === ""
           ? {}
           : { model: member.model }),

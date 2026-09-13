@@ -71,7 +71,7 @@ function teamView(name: string, body: Record<string, unknown> = {}): Response {
         name: `${name}/team/members/player`,
         role: 'player',
         preset: 'templates/saolei/presets/p-player',
-        model: 'glm-5.2',
+        model: 'glm-responses/glm-5.2',
       },
       {
         name: `${name}/team/members/planner`,
@@ -1225,7 +1225,7 @@ function makeApplyFetchMock(fixtures: {
       return jsonResponse({ presets: [PLANNER_PRESET] })
     }
     if (url === '/api/v2/models' && method === 'GET') {
-      return jsonResponse({ models: [{ id: 'glm-5.2' }] })
+      return jsonResponse({ models: [{ id: 'glm-responses/glm-5.2' }] })
     }
     if (url === `/api/v2/${S1}/team?allow_missing=true` && method === 'PATCH') {
       return fixtures.patchResponse?.() ?? jsonResponse(teamView(S1))
@@ -1323,7 +1323,7 @@ describe('App 重建同步（Apply 成功后对话视图即时同步）', () => 
   // （team-api.md §1/§2：PATCH allow_missing=true，body 为 Team.members 输入
   // 列表）。已物化 panel 从 members 快照预选 player 的生效 model；首次物化
   // （无快照）传 '' = 不携带 model（部署默认）。
-  async function assertPatchApplied(playerModel = 'glm-5.2'): Promise<void> {
+  async function assertPatchApplied(playerModel = 'glm-responses/glm-5.2'): Promise<void> {
     const playerMember =
       playerModel === ''
         ? { role: 'player', preset: PLAYER_PRESET.name }
@@ -1708,7 +1708,7 @@ describe('App 主界面 system prompt 入口', () => {
         })
       }
       if (url === '/api/v2/models' && method === 'GET') {
-        return jsonResponse({ models: [{ id: 'glm-5.2' }] })
+        return jsonResponse({ models: [{ id: 'glm-responses/glm-5.2' }] })
       }
       throw new Error(`unexpected fetch: ${url} ${method}`)
     })
@@ -1725,6 +1725,8 @@ describe('App 主界面 system prompt 入口', () => {
 
     const entries = await screen.findAllByTestId('team-member')
     expect(entries).toHaveLength(2)
+    // 成员 chip 原样渲染复合标识（contracts/model-selection.md §4）。
+    expect(entries[0]?.textContent).toContain('glm-responses/glm-5.2')
     // 主界面直接可见入口：无需打开设置面板。
     expect(screen.queryByTestId('team-settings-panel')).toBeNull()
 

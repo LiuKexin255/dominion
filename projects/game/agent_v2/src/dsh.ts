@@ -2,17 +2,20 @@
  * dsh.ts — composition boot for the game agent_v2 service.
  *
  * Prepares the configuration surface the cordis.yml `!!js` expressions read
- * (GLM endpoint resolution + GLM API token injection, research
- * specs/049-agent-v2-dsh-init/research.md D9; preset template root resolution,
- * specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2), then boots the
- * composition manifest (direct-composed dsh core plugins + the saolei plugin
- * set, specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5)
- * in-process (B1 embedding, specs/049-agent-v2-dsh-init/spec.md FR-002).
- * Resolver, template-root, and boot failures are fail-loud — a half-started
- * composition never serves traffic; a missing GLM token is tolerated: the
- * host boots WITHOUT `GLM_API_KEY` and model requests then skip the
- * Authorization header (specs/049-agent-v2-dsh-init/contracts/
- * glm-llm-plugin.md §3 义务 6). Diagnostics never contain the token value
+ * (GLM + opencode-go endpoint resolution and API token injection, research
+ * specs/049-agent-v2-dsh-init/research.md D9 and
+ * specs/063-llm-reliability-opencode-go/research.md D13; preset template root
+ * resolution, specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2),
+ * then boots the composition manifest (direct-composed dsh core plugins + the
+ * saolei plugin set, specs/051-agent-v2-dsh-migration/contracts/
+ * saolei-plugins.md §5) in-process (B1 embedding,
+ * specs/049-agent-v2-dsh-init/spec.md FR-002). Resolver, template-root, and
+ * boot failures are fail-loud — a half-started composition never serves
+ * traffic; a missing API token is tolerated: the host boots WITHOUT that
+ * token and model requests then skip the Authorization header
+ * (specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §3 义务 6;
+ * specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md §3).
+ * Diagnostics never contain a token value
  * (specs/049-agent-v2-dsh-init/spec.md SC-004).
  */
 
@@ -36,6 +39,12 @@ export const GLM_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/v1";
 
 /** Logical secret file name under $DOMINION_SECRET_DIR (specs/049-agent-v2-dsh-init/spec.md FR-008). */
 export const GLM_SECRET_FILE = "glm-api-token";
+
+/** Production opencode-go endpoint when neither OPENCODE_BASE_URL nor OPENCODE_LLM_TARGET is set (specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md §1). */
+export const OPENCODE_DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1";
+
+/** Logical opencode-go secret file name under $DOMINION_SECRET_DIR (specs/063-llm-reliability-opencode-go/research.md D13). */
+export const OPENCODE_SECRET_FILE = "opencode-api-token";
 
 /** DOMINION_SECRET_DIR fallback, matching the deployment secret-mount convention (specs/049-agent-v2-dsh-init/spec.md FR-008). */
 const SECRET_DIR_FALLBACK = "/etc/secrets";
@@ -76,14 +85,15 @@ export function cordisConfigPath(): string {
 }
 
 /**
- * Inject `GLM_API_KEY`, `GLM_BASE_URL`, and the resolved
- * `PRESET_TEMPLATES_ROOT`, then boot the composition.
+ * Inject `GLM_API_KEY`, `GLM_BASE_URL`, `OPENCODE_API_KEY`,
+ * `OPENCODE_BASE_URL`, and the resolved `PRESET_TEMPLATES_ROOT`, then boot
+ * the composition.
  *
  * The endpoint resolution must precede `boot` because the cordis.yml `!!js`
  * expression is evaluated synchronously while the Loader mounts the adapter
- * row (specs/049-agent-v2-dsh-init/research.md D9). The token is read in this
- * single host-side spot and injected as an env value — the plugin itself does
- * no file IO (the adapter cookbook convention:
+ * rows (specs/049-agent-v2-dsh-init/research.md D9). Each token is read in
+ * this single host-side spot and injected as an env value — the plugins
+ * themselves do no file IO (the adapter cookbook convention:
  * https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-an-llm-adapter.md).
  * The template root is resolved the same way: the roster rows read
  * `process.env.PRESET_TEMPLATES_ROOT` when the agent-presets row mounts
@@ -96,10 +106,30 @@ export async function bootDsh(deps: DshBootDeps = {}): Promise<DshContext> {
   const env = deps.env ?? process.env;
   const doBoot = deps.boot ?? boot;
   try {
-    env.GLM_BASE_URL = await resolveBaseURL(deps);
-    const apiKey = resolveGlmApiKey(deps);
-    if (apiKey !== undefined) {
-      env.GLM_API_KEY = apiKey;
+    env.GLM_BASE_URL = await resolveEndpoint(
+      deps,
+      "GLM_BASE_URL",
+      "GLM_LLM_TARGET",
+      GLM_DEFAULT_BASE_URL,
+    );
+    const glmApiKey = resolveApiKey(deps, "GLM", "GLM_API_KEY", GLM_SECRET_FILE);
+    if (glmApiKey !== undefined) {
+      env.GLM_API_KEY = glmApiKey;
+    }
+    env.OPENCODE_BASE_URL = await resolveEndpoint(
+      deps,
+      "OPENCODE_BASE_URL",
+      "OPENCODE_LLM_TARGET",
+      OPENCODE_DEFAULT_BASE_URL,
+    );
+    const opencodeApiKey = resolveApiKey(
+      deps,
+      "OpenCode",
+      "OPENCODE_API_KEY",
+      OPENCODE_SECRET_FILE,
+    );
+    if (opencodeApiKey !== undefined) {
+      env.OPENCODE_API_KEY = opencodeApiKey;
     }
     env[PRESET_TEMPLATES_ROOT_ENV] = resolvePresetTemplatesRoot(env);
 
@@ -126,17 +156,23 @@ export async function bootDsh(deps: DshBootDeps = {}): Promise<DshContext> {
 }
 
 /**
- * Endpoint precedence (specs/049-agent-v2-dsh-init/research.md D9):
- * GLM_BASE_URL as-is > GLM_LLM_TARGET resolved through Dominion service
- * discovery (+ the `/v1` version path) > the production GLM endpoint.
+ * Endpoint precedence shared by both LLM rows (specs/049-agent-v2-dsh-init/
+ * research.md D9): the explicit `*_BASE_URL` as-is > `*_LLM_TARGET` resolved
+ * through Dominion service discovery (+ the `/v1` version path) > the
+ * production endpoint.
  */
-async function resolveBaseURL(deps: DshBootDeps): Promise<string> {
+async function resolveEndpoint(
+  deps: DshBootDeps,
+  directEnv: string,
+  targetEnv: string,
+  fallback: string,
+): Promise<string> {
   const env = deps.env ?? process.env;
-  const direct = env.GLM_BASE_URL;
+  const direct = env[directEnv];
   if (direct) {
     return direct;
   }
-  const target = env.GLM_LLM_TARGET;
+  const target = env[targetEnv];
   if (target) {
     const resolver = deps.resolver ?? createResolver();
     const endpoints = await resolver.resolve(target);
@@ -145,7 +181,7 @@ async function resolveBaseURL(deps: DshBootDeps): Promise<string> {
     }
     return `http://${endpoints[0]}/v1`;
   }
-  return GLM_DEFAULT_BASE_URL;
+  return fallback;
 }
 
 /**
@@ -173,26 +209,31 @@ function resolvePresetTemplatesRoot(env: Record<string, string | undefined>): st
 }
 
 /**
- * Resolve `GLM_API_KEY` in three levels (specs/049-agent-v2-dsh-init/
- * research.md D9): a pre-set env value wins (trimmed, whitespace-only counts
- * as unset); otherwise the GLM token file is read. A missing file, a read
- * error, or empty content all count as absent — the function returns
- * `undefined` and the caller boots WITHOUT `GLM_API_KEY`: the plugin then
- * sends model requests without an Authorization header
- * (specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §3 义务 6 — the
- * fake endpoint ignores credentials; a real endpoint's 401 surfaces as the
- * first turn's `turn_end{ERROR}`). The absence warning names the env and
- * the secret file path, never any key value (specs/049-agent-v2-dsh-init/
- * spec.md SC-004).
+ * Resolve one LLM API key in three levels (specs/049-agent-v2-dsh-init/
+ * research.md D9; specs/063-llm-reliability-opencode-go/research.md D13): a
+ * pre-set env value wins (trimmed, whitespace-only counts as unset);
+ * otherwise the provider's token file is read. A missing file, a read error,
+ * or empty content all count as absent — the function returns `undefined` and
+ * the caller boots WITHOUT the env value: the plugin then sends model
+ * requests without an Authorization header (glm-llm-plugin.md §3 义务 6 /
+ * opencode-go-plugin.md §3 — the fake endpoint ignores credentials; a real
+ * endpoint's 401 surfaces as the first turn's `turn_end{ERROR}`). The absence
+ * warning names the env and the secret file path, never any key value
+ * (specs/049-agent-v2-dsh-init/spec.md SC-004).
  */
-function resolveGlmApiKey(deps: DshBootDeps): string | undefined {
+function resolveApiKey(
+  deps: DshBootDeps,
+  label: string,
+  envName: string,
+  secretFile: string,
+): string | undefined {
   const env = deps.env ?? process.env;
-  const envKey = env.GLM_API_KEY?.trim();
+  const envKey = env[envName]?.trim();
   if (envKey) {
     return envKey;
   }
   const dir = deps.secretDir ?? env[ENV_DOMINION_SECRET_DIR] ?? SECRET_DIR_FALLBACK;
-  const file = path.join(dir, GLM_SECRET_FILE);
+  const file = path.join(dir, secretFile);
   const read = deps.readSecretFile ?? readSecretFile;
 
   let reason: string;
@@ -207,8 +248,8 @@ function resolveGlmApiKey(deps: DshBootDeps): string | undefined {
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
   }
-  warn("GLM API token unavailable; booting without GLM_API_KEY", {
-    env: "GLM_API_KEY",
+  warn(`${label} API token unavailable; booting without ${envName}`, {
+    env: envName,
     secretFile: file,
     reason,
   });

@@ -23,6 +23,7 @@
         "@dominion/common-js-resolver": "workspace:*",
         "@dominion/dsh-desktop-bridge": "workspace:*",
         "@dominion/dsh-llm-glm": "workspace:*",
+        "@dominion/dsh-llm-opencode-go": "workspace:*",
         "@dominion/dsh-memory": "workspace:*",
         "@dominion/dsh-preset-authoring": "workspace:*",
         "@dominion/dsh-saolei": "workspace:*",

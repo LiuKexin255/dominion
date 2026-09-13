@@ -161,12 +161,20 @@ describe('agent api 客户端', () => {
     })
   })
 
-  it('listModels GET 部署级目录', async () => {
+  it('listModels GET 部署级联合目录（复合标识）', async () => {
     fetchMock.mockImplementation(async () =>
-      jsonResponse({ models: [{ id: 'glm-5.2', contextWindow: 128000 }] }),
+      jsonResponse({
+        models: [
+          { id: 'glm-responses/glm-5.2', contextWindow: 128000 },
+          { id: 'opencode-go/kimi-k3', contextWindow: 1048576 },
+        ],
+      }),
     )
     const models = await listModels()
-    expect(models).toEqual([{ id: 'glm-5.2', contextWindow: 128000 }])
+    expect(models).toEqual([
+      { id: 'glm-responses/glm-5.2', contextWindow: 128000 },
+      { id: 'opencode-go/kimi-k3', contextWindow: 1048576 },
+    ])
     expect(fetchMock).toHaveBeenCalledWith('/api/v2/models', undefined)
   })
 
@@ -179,7 +187,7 @@ describe('agent api 客户端', () => {
             name: 'templates/saolei/sessions/s1/team/members/player',
             role: 'player',
             preset: 'templates/saolei/presets/p1',
-            model: 'glm-5.2',
+            model: 'glm-responses/glm-5.2',
           },
           {
             name: 'templates/saolei/sessions/s1/team/members/planner',
@@ -194,6 +202,8 @@ describe('agent api 客户端', () => {
     expect(team.name).toBe('templates/saolei/sessions/s1/team')
     expect(team.members).toHaveLength(2)
     expect(team.members?.[0]?.role).toBe('player')
+    // 成员快照的 model 为复合标识原样（contracts/model-selection.md §3/§4）。
+    expect(team.members?.[0]?.model).toBe('glm-responses/glm-5.2')
     expect(team.members?.[1]?.preset).toBe('templates/saolei/presets/p2')
     expect(team.desktopConnected).toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
@@ -220,7 +230,7 @@ describe('agent api 客户端', () => {
     )
   })
 
-  it('updateTeam PATCH allow_missing=true，body 为 Team.members 输入列表（model 空省略）', async () => {
+  it('updateTeam PATCH allow_missing=true，body 为 Team.members 输入列表（model 复合标识，空省略）', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse({
         name: 'templates/saolei/sessions/s1/team',
@@ -247,7 +257,8 @@ describe('agent api 客户端', () => {
       }),
     )
 
-    // output-only 字段（name/systemPrompt）与空 model 不进 body。
+    // output-only 字段（name/systemPrompt）与空 model 不进 body；非空 model
+    // 为复合标识原样提交（contracts/model-selection.md §4）。
     fetchMock.mockImplementation(async () =>
       jsonResponse({ name: 'templates/saolei/sessions/s1/team', members: [] }),
     )
@@ -256,7 +267,7 @@ describe('agent api 客户端', () => {
         name: 'templates/saolei/sessions/s1/team/members/player',
         role: 'player',
         preset: 'templates/saolei/presets/p1',
-        model: 'glm-5.2',
+        model: 'glm-responses/glm-5.2',
         systemPrompt: 'server-filled',
       },
       { role: 'planner', preset: 'templates/saolei/presets/p2', model: '' },
@@ -267,7 +278,7 @@ describe('agent api 客户端', () => {
         method: 'PATCH',
         body: JSON.stringify({
           members: [
-            { role: 'player', preset: 'templates/saolei/presets/p1', model: 'glm-5.2' },
+            { role: 'player', preset: 'templates/saolei/presets/p1', model: 'glm-responses/glm-5.2' },
             { role: 'planner', preset: 'templates/saolei/presets/p2' },
           ],
         }),

@@ -148,6 +148,7 @@ artifact_pkg_js(
         # through runtime_deps (npm_deps is a no-op for them).
         "//common/js/dsh-plugins/desktop-bridge:runtime_pkg",
         "//common/js/dsh-plugins/llm-glm:runtime_pkg",
+        "//common/js/dsh-plugins/llm-opencode-go:runtime_pkg",
         "//common/js/dsh-plugins/memory:runtime_pkg",
         "//common/js/dsh-plugins/preset-authoring:runtime_pkg",
         "//common/js/dsh-plugins/saolei:runtime_pkg",

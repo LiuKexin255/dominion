@@ -5,25 +5,33 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 // js-yaml v5 ships a real ESM build — named imports are statically resolved.
 import { YAML11_SCHEMA, defineScalarTag, load } from "js-yaml";
-import { bootDsh, cordisConfigPath, GLM_DEFAULT_BASE_URL, GLM_SECRET_FILE } from "./dsh.js";
+import {
+  bootDsh,
+  cordisConfigPath,
+  GLM_DEFAULT_BASE_URL,
+  GLM_SECRET_FILE,
+  OPENCODE_DEFAULT_BASE_URL,
+  OPENCODE_SECRET_FILE,
+} from "./dsh.js";
 import type { DshBootDeps, DshContext } from "./dsh.js";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
 
 /**
  * Fail-loud unit tests for the composition boot path
- * (specs/049-agent-v2-dsh-init/research.md D9): endpoint precedence
- * (GLM_BASE_URL > GLM_LLM_TARGET resolved > default), secret-file token
- * injection with zero token leakage in diagnostics (SC-004), preset template
- * root resolution (explicit PRESET_TEMPLATES_ROOT > DOMINION_ARTIFACT_DIR
- * derivation > fail-loud,
+ * (specs/049-agent-v2-dsh-init/research.md D9;
+ * specs/063-llm-reliability-opencode-go/research.md D13): endpoint precedence
+ * (explicit `*_BASE_URL` > `*_LLM_TARGET` resolved > default), secret-file
+ * token injection with zero token leakage in diagnostics (SC-004), preset
+ * template root resolution (explicit PRESET_TEMPLATES_ROOT >
+ * DOMINION_ARTIFACT_DIR derivation > fail-loud,
  * specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2), and the
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
  * (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5): the
- * direct-composed 19-row set with the official agent-loop row and the
+ * direct-composed 20-row set with the official agent-loop row, the
  * preset roster (two template system roots + one writable user root), the
  * trimmed system-prompt config, the subpath invariant companion rows
- * (research.md D5), and the llm-glm model catalog.
+ * (research.md D5), and the llm-glm + llm-opencode-go model catalogs.
  *
  * `boot`, the resolver, and the secret reader are injected as `vi.fn()`
  * doubles through the DshBootDeps seam; `process.exit` is spied so the
@@ -50,6 +58,7 @@ function fakeBoot(ctx: DshContext) {
 }
 
 const TOKEN = "glmtoken-do-not-leak-9f8e7d6c";
+const OPENCODE_TOKEN = "oc-go-token-do-not-leak-1a2b3c";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -65,6 +74,8 @@ describe("bootDsh", () => {
       [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_BASE_URL: "http://fake-llm:8080/v1",
       GLM_LLM_TARGET: "dominion:///game/fake-llm:8080",
+      OPENCODE_BASE_URL: "http://opencode-fake:8080/v1",
+      OPENCODE_LLM_TARGET: "dominion:///game/fake-llm:8080",
     };
 
     const result = await bootDsh({
@@ -78,6 +89,7 @@ describe("bootDsh", () => {
     expect(result).toBe(ctx);
     expect(resolve).not.toHaveBeenCalled();
     expect(env.GLM_BASE_URL).toBe("http://fake-llm:8080/v1");
+    expect(env.OPENCODE_BASE_URL).toBe("http://opencode-fake:8080/v1");
     expect(exit).not.toHaveBeenCalled();
   });
 
@@ -99,8 +111,12 @@ describe("bootDsh", () => {
       readSecretFile: () => TOKEN,
     });
 
+    expect(resolve).toHaveBeenCalledTimes(1);
     expect(resolve).toHaveBeenCalledWith("dominion:///game/fake-llm:8080");
     expect(env.GLM_BASE_URL).toBe("http://10.0.0.9:8080/v1");
+    // No OPENCODE_LLM_TARGET set: the opencode-go row keeps its production
+    // default without contacting the resolver.
+    expect(env.OPENCODE_BASE_URL).toBe(OPENCODE_DEFAULT_BASE_URL);
   });
 
   it("falls back to the production GLM endpoint when neither env override is set", async () => {
@@ -123,6 +139,7 @@ describe("bootDsh", () => {
     });
 
     expect(env.GLM_BASE_URL).toBe(GLM_DEFAULT_BASE_URL);
+    expect(env.OPENCODE_BASE_URL).toBe(OPENCODE_DEFAULT_BASE_URL);
   });
 
   it("injects the trimmed token from the secret file as GLM_API_KEY", async () => {
@@ -137,7 +154,9 @@ describe("bootDsh", () => {
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
 
     expect(readSecretFile).toHaveBeenCalledWith(`/tmp/secret/${GLM_SECRET_FILE}`);
+    expect(readSecretFile).toHaveBeenCalledWith(`/tmp/secret/${OPENCODE_SECRET_FILE}`);
     expect(env.GLM_API_KEY).toBe(TOKEN);
+    expect(env.OPENCODE_API_KEY).toBe(TOKEN);
     expect(exit).not.toHaveBeenCalled();
   });
 
@@ -148,15 +167,17 @@ describe("bootDsh", () => {
     const env: Record<string, string | undefined> = {
       [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_API_KEY: `  ${TOKEN}  `,
+      OPENCODE_API_KEY: `  ${OPENCODE_TOKEN}  `,
     };
     const readSecretFile = vi.fn(() => {
-      throw new Error("secret file must not be read when GLM_API_KEY is set");
+      throw new Error("secret file must not be read when both API keys are set");
     });
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
 
     expect(readSecretFile).not.toHaveBeenCalled();
     expect(env.GLM_API_KEY).toBe(TOKEN);
+    expect(env.OPENCODE_API_KEY).toBe(OPENCODE_TOKEN);
     expect(exit).not.toHaveBeenCalled();
   });
 
@@ -208,6 +229,7 @@ describe("bootDsh", () => {
     const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
     const env: Record<string, string | undefined> = {
       [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
+      OPENCODE_API_KEY: OPENCODE_TOKEN,
     };
     const readSecretFile = vi.fn(() => {
       throw new Error(`ENOENT: no such file or directory, open '/mnt/dominion/secret/${GLM_SECRET_FILE}'`);
@@ -232,6 +254,7 @@ describe("bootDsh", () => {
     const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
     const env: Record<string, string | undefined> = {
       [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
+      OPENCODE_API_KEY: OPENCODE_TOKEN,
     };
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => "   " });
@@ -244,6 +267,93 @@ describe("bootDsh", () => {
     expect(message + JSON.stringify(attrs)).toContain(`/tmp/secret/${GLM_SECRET_FILE}`);
     expect(message + JSON.stringify(attrs)).toContain("absent or empty");
     expect(message + JSON.stringify(attrs)).not.toContain(TOKEN);
+  });
+
+  it("resolves OPENCODE_LLM_TARGET through Dominion discovery and appends the /v1 path", async () => {
+    const ctx = { marker: "ctx" } as unknown as DshContext;
+    const boot = fakeBoot(ctx);
+    const resolve = vi.fn(async () => ["10.0.0.9:8080"]);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const env: Record<string, string | undefined> = {
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
+      OPENCODE_LLM_TARGET: "dominion:///game/fake-llm:8080",
+    };
+
+    await bootDsh({
+      boot,
+      resolver: { resolve },
+      env,
+      secretDir: "/tmp/secret",
+      readSecretFile: () => TOKEN,
+    });
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith("dominion:///game/fake-llm:8080");
+    expect(env.OPENCODE_BASE_URL).toBe("http://10.0.0.9:8080/v1");
+    // GLM has neither override: its production default applies.
+    expect(env.GLM_BASE_URL).toBe(GLM_DEFAULT_BASE_URL);
+  });
+
+  it("injects the trimmed token from the opencode-api-token file as OPENCODE_API_KEY", async () => {
+    const ctx = { marker: "ctx" } as unknown as DshContext;
+    const boot = fakeBoot(ctx);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const env: Record<string, string | undefined> = {
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
+      GLM_API_KEY: TOKEN,
+    };
+    const readSecretFile = vi.fn(() => `  ${OPENCODE_TOKEN}\n`);
+
+    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
+
+    expect(readSecretFile).toHaveBeenCalledWith(`/tmp/secret/${OPENCODE_SECRET_FILE}`);
+    expect(env.OPENCODE_API_KEY).toBe(OPENCODE_TOKEN);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("prefers a pre-set OPENCODE_API_KEY env without reading its secret file", async () => {
+    const ctx = { marker: "ctx" } as unknown as DshContext;
+    const boot = fakeBoot(ctx);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const env: Record<string, string | undefined> = {
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
+      GLM_API_KEY: TOKEN,
+      OPENCODE_API_KEY: `  ${OPENCODE_TOKEN}  `,
+    };
+    const readSecretFile = vi.fn(() => {
+      throw new Error("secret file must not be read when both API keys are set");
+    });
+
+    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
+
+    expect(readSecretFile).not.toHaveBeenCalled();
+    expect(env.OPENCODE_API_KEY).toBe(OPENCODE_TOKEN);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("warns and boots with OPENCODE_API_KEY unset when its token file is absent", async () => {
+    const boot = fakeBoot({} as DshContext);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
+    const env: Record<string, string | undefined> = {
+      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
+      GLM_API_KEY: TOKEN,
+    };
+    const readSecretFile = vi.fn((file: string) => {
+      throw new Error(`ENOENT: no such file or directory, open '${file}'`);
+    });
+
+    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
+
+    expect(boot).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(env.OPENCODE_API_KEY).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message, attrs] = warnSpy.mock.calls[0] as [string, Record<string, string>];
+    expect(message).toContain("OPENCODE_API_KEY");
+    expect(message + JSON.stringify(attrs)).toContain(`/tmp/secret/${OPENCODE_SECRET_FILE}`);
+    expect(message + JSON.stringify(attrs)).toContain("ENOENT");
+    expect(message + JSON.stringify(attrs)).not.toContain(OPENCODE_TOKEN);
   });
 
   it("fails loud when the resolver returns no endpoints for GLM_LLM_TARGET", async () => {
@@ -440,7 +550,7 @@ describe("preset template data (T021)", () => {
 describe("cordis.yml composition manifest", () => {
   const rows = loadManifest();
 
-  it("direct-composes the 19-row plugin set in contract order", () => {
+  it("direct-composes the 20-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -455,6 +565,7 @@ describe("cordis.yml composition manifest", () => {
       "invariant-scope",
       "llm-retry",
       "llm-glm",
+      "llm-opencode-go",
       "desktop-bridge",
       "agent-presets",
       "preset-authoring",
@@ -512,6 +623,50 @@ describe("cordis.yml composition manifest", () => {
     expect(config.models[0].id).toContain("glm-5.3");
     expect(config.models[0].contextWindow).toBe(1_000_000);
     expect(config.models[1]).toEqual({ id: "glm-5.3-flash", contextWindow: 1_000_000 });
+  });
+
+  it("keeps the opencode-go adapter row with the full 16-model Chat Completions catalog", () => {
+    const row = rows.find((entry) => entry.id === "llm-opencode-go");
+    expect(row?.name).toBe("@dominion/dsh-llm-opencode-go");
+    const config = row?.config as {
+      apiKeyEnv: string;
+      baseURL: string;
+      models: Array<{ id: string; contextWindow: number }>;
+      streamIdleTimeoutMs: string;
+    };
+    expect(config.apiKeyEnv).toBe("OPENCODE_API_KEY");
+    expect(config.baseURL).toContain("OPENCODE_BASE_URL");
+    // The watchdog window env is wrapped in Number(): Config validates a
+    // number while env values are strings
+    // (specs/063-llm-reliability-opencode-go/research.md D13).
+    expect(config.streamIdleTimeoutMs).toContain(
+      "Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS)",
+    );
+    expect(config.streamIdleTimeoutMs).toContain("300000");
+    // The full FR-015 catalog must be injected: a partial `models` list would
+    // replace the plugin's default directory wholesale
+    // (specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md §2).
+    expect(config.models).toHaveLength(16);
+    expect(config.models[0].id).toContain("OPENCODE_MODEL");
+    expect(config.models[0].id).toContain("glm-5.3");
+    expect(config.models[0].contextWindow).toBe(1_000_000);
+    expect(config.models.slice(1)).toEqual([
+      { id: "glm-5.3-flash", contextWindow: 1_000_000 },
+      { id: "glm-5.2", contextWindow: 1_000_000 },
+      { id: "glm-5.1", contextWindow: 202_752 },
+      { id: "kimi-k3", contextWindow: 1_048_576 },
+      { id: "kimi-k2.7-code", contextWindow: 262_144 },
+      { id: "kimi-k2.6", contextWindow: 262_144 },
+      { id: "longcat-2.0", contextWindow: 1_000_000 },
+      { id: "deepseek-v4.1-flash", contextWindow: 1_000_000 },
+      { id: "deepseek-v4-pro", contextWindow: 1_000_000 },
+      { id: "deepseek-v4-flash", contextWindow: 1_000_000 },
+      { id: "deepseek-v4-flash-vision-exp", contextWindow: 1_000_000 },
+      { id: "mimo-v2.5", contextWindow: 1_000_000 },
+      { id: "mimo-v2.5-pro", contextWindow: 1_048_576 },
+      { id: "hy4-preview", contextWindow: 1_024_000 },
+      { id: "hy3", contextWindow: 256_000 },
+    ]);
   });
 
   it("mounts the roster with the two template system roots and no user root", () => {

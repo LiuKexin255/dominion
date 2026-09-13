@@ -54,6 +54,52 @@
       # https://docs.bigmodel.cn/cn/coding-plan/latest-model.md 调用配置）。
       - id: glm-5.3-flash
         contextWindow: 1000000
+- id: llm-opencode-go
+  name: '@dominion/dsh-llm-opencode-go'
+  config:
+    apiKeyEnv: OPENCODE_API_KEY                 # 宿主三级解析（specs/063-llm-reliability-opencode-go/research.md D13；空值不携带 Authorization）
+    baseURL: !!js process.env.OPENCODE_BASE_URL # bootstrap 解析/默认（同 GLM 行模式）
+    # 流停滞看护窗口（specs/063-llm-reliability-opencode-go/contracts/
+    # opencode-go-plugin.md §5）。env 注入为字符串而 Config 期望 number，
+    # Number() 归一；缺省 300000。
+    streamIdleTimeoutMs: !!js Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 300000
+    # FR-015 默认目录 = 官方 Chat Completions 路由全部 16 项
+    # （specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md
+    # §2 唯一来源）。models 整表覆盖插件默认目录，不得只列首项；首项 id 由
+    # OPENCODE_MODEL 覆盖（缺省 glm-5.3），其余 15 项为字面量。
+    models:
+      - id: !!js process.env.OPENCODE_MODEL || 'glm-5.3'
+        contextWindow: 1000000
+      - id: glm-5.3-flash
+        contextWindow: 1000000
+      - id: glm-5.2
+        contextWindow: 1000000
+      - id: glm-5.1
+        contextWindow: 202752
+      - id: kimi-k3
+        contextWindow: 1048576
+      - id: kimi-k2.7-code
+        contextWindow: 262144
+      - id: kimi-k2.6
+        contextWindow: 262144
+      - id: longcat-2.0
+        contextWindow: 1000000
+      - id: deepseek-v4.1-flash
+        contextWindow: 1000000
+      - id: deepseek-v4-pro
+        contextWindow: 1000000
+      - id: deepseek-v4-flash
+        contextWindow: 1000000
+      - id: deepseek-v4-flash-vision-exp
+        contextWindow: 1000000
+      - id: mimo-v2.5
+        contextWindow: 1000000
+      - id: mimo-v2.5-pro
+        contextWindow: 1048576
+      - id: hy4-preview
+        contextWindow: 1024000
+      - id: hy3
+        contextWindow: 256000
 - { id: desktop-bridge,  name: '@dominion/dsh-desktop-bridge' }
 # preset roster（specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
 # §3）：roots = 两个模板 system root（player/planner 池各一，trust: system，

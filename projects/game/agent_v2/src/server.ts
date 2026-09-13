@@ -21,7 +21,10 @@
  *   to the authoring plugin's `ctx.presetAuthoring` domain service (store-only
  *   role-pooled records; member compositions derive at use time —
  *   specs/060-agent-v2-team-optimize/contracts/preset-derivation.md), and the
- *   model catalog shares ctx.llm.listModels with UpdateTeam's validation.
+ *   model catalog serves the union of every registered provider's directory
+ *   with composite `provider/model-id` ids, sharing the same per-provider
+ *   `ctx.llm.listModels` face as UpdateTeam's validation
+ *   (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §2).
  * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
  *   (`ctx.desktopBridge.handlers()`).
  */
@@ -42,7 +45,7 @@ import type { BidiStream, DesktopBridgeServiceHandlers as PluginBridgeHandlers }
 // (instanceof discrimination in toServiceError, roster-verification §4.1).
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService, PresetView } from "@dominion/dsh-preset-authoring";
-import { TeamSessionError, TeamSessions, PROVIDER } from "./session.js";
+import { TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
@@ -95,6 +98,12 @@ export interface ModelCatalogEntry {
  */
 export interface PresetServiceDeps {
   authoring: PresetAuthoringService;
+  /**
+   * Registered provider routes in registration order — the ListModels union
+   * order (`ctx.llm.listProviders()`; contracts/model-selection.md §2).
+   */
+  listProviders(): ReadonlyArray<{ id: string }>;
+  /** One provider's deployment catalog (bare ids); UpdateTeam's validation shares this face. */
   listModels(provider: string): Promise<ModelCatalogEntry[]>;
 }
 
@@ -511,6 +520,10 @@ export function buildTeamHandlers(deps: TeamHandlersDeps): AgentServiceHandlers 
           });
           return;
         }
+        // The member model is the composite `provider/model-id` selector (or
+        // empty = deployment default); the session layer is the single
+        // parser/validator of the value domain
+        // (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
         const model = wireMember.model ?? "";
         members.push({
           role,
@@ -940,8 +953,8 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
       );
     },
 
-    ListModels: (call, callback) => {
-      void deps.listModels(PROVIDER).then(
+    ListModels: (_call, callback) => {
+      void listModelCatalog(deps).then(
         (models) => callback(null, { models }),
         (err: unknown) => callback(toServiceError(err)),
       );
@@ -964,12 +977,37 @@ export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): Deskto
 }
 
 /**
- * The deployment model catalog: the ids come from `ctx.llm.listModels`
- * (the llm-glm plugin's static config.models — research.md D4) and the
- * context windows from the same adapter's exact-model resolution, so the
- * ListModels RPC and UpdateTeam's validation share one source.
+ * The union model catalog served by ListModels: every registered provider
+ * route from `listProviders()` in registration order, each route's catalog in
+ * its adapter order, and each entry id rewritten to the composite selector
+ * `${provider}/${model.id}` (specs/063-llm-reliability-opencode-go/contracts/
+ * model-selection.md §2). A provider catalog failure rejects the whole RPC —
+ * fail-loud, never a silently truncated directory.
  */
-async function listModelCatalog(ctx: DshContext, provider: string): Promise<ModelCatalogEntry[]> {
+async function listModelCatalog(
+  deps: Pick<PresetServiceDeps, "listProviders" | "listModels">,
+): Promise<ModelCatalogEntry[]> {
+  const providers = deps.listProviders();
+  const catalogs = await Promise.all(
+    providers.map(async (provider) => {
+      const models = await deps.listModels(provider.id);
+      return models.map((model) => ({
+        id: `${provider.id}/${model.id}`,
+        contextWindow: model.contextWindow,
+      }));
+    }),
+  );
+  return catalogs.flat();
+}
+
+/**
+ * One provider's deployment catalog (bare ids): the ids come from
+ * `ctx.llm.listModels` (the plugin's static config.models — research.md D4)
+ * and the context windows from the same adapter's exact-model resolution, so
+ * ListModels and UpdateTeam's validation share one source. ListModels rewrites
+ * the ids to composite selectors through {@link listModelCatalog}.
+ */
+async function providerModelCatalog(ctx: DshContext, provider: string): Promise<ModelCatalogEntry[]> {
   const models: ReadonlyArray<LlmModelInfo> = await ctx.llm.listModels(provider);
   return Promise.all(
     models.map(async (model) => {
@@ -1003,12 +1041,13 @@ export interface BuiltAgentServer {
 export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
   const sessions = new TeamSessions(options.ctx, {
     authoring: options.ctx.presetAuthoring,
-    listModels: (provider) => listModelCatalog(options.ctx, provider),
+    listModels: (provider) => providerModelCatalog(options.ctx, provider),
   });
   const deps: TeamHandlersDeps = {
     sessions,
     authoring: options.ctx.presetAuthoring,
-    listModels: (provider) => listModelCatalog(options.ctx, provider),
+    listProviders: () => options.ctx.llm.listProviders(),
+    listModels: (provider) => providerModelCatalog(options.ctx, provider),
     // The composed context mounts the bridge plugin service (the
     // declaration merge in @dominion/dsh-desktop-bridge); GetTeam reads
     // the registry through this face.

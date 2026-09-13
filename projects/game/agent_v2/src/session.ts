@@ -9,7 +9,8 @@
  * Materialization semantics (specs/059-agent-v2-team-mode/contracts/
  * team-api.md §2): UpdateTeam materializes or refreshes the session's team
  * singleton; validation is fail-fast (both presets exist and match their
- * member role, a non-empty model is in the catalog) and runs BEFORE any
+ * member role, a non-empty composite `provider/model-id` selector resolves in
+ * the selected provider's catalog) and runs BEFORE any
  * teardown; a refresh terminates the in-flight member turn, voids the queued
  * messages, clears both members' short-term memory (a fresh orchestrator +
  * history), and rebuilds — with create_time preserved. Any materialization
@@ -62,10 +63,12 @@ export type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./
 export const PROVIDER = "glm-responses";
 
 /**
- * Default model, aligned with the cordis.yml `models[]` catalog
- * (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §5).
+ * Default model selector — the composite `${provider}/${model-id}` form
+ * (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §1).
+ * `GLM_MODEL` keeps its bare-id semantics (the GLM provider route is
+ * implied), so the deployment env contract is unchanged.
  */
-export const DEFAULT_MODEL = process.env.GLM_MODEL || "glm-5.3";
+export const DEFAULT_MODEL = `${PROVIDER}/${process.env.GLM_MODEL || "glm-5.3"}`;
 
 /** The team goal rendered into the shared team section (scene-agnostic plugin input). */
 export const TEAM_GOAL =
@@ -96,7 +99,7 @@ export interface TeamMemberView {
   readonly role: string;
   /** Full preset resource name the member materialized from. */
   readonly preset: string;
-  /** Effective model id. */
+  /** Effective model selector, in composite `${provider}/${model-id}` form. */
   readonly model: string;
   /**
    * The member instance's complete effective system prompt (persona + team
@@ -132,7 +135,11 @@ export interface TeamMemberOptions {
   readonly role: string;
   /** Full preset resource name. */
   readonly preset: string;
-  /** Model id; empty/undefined = the process default. */
+  /**
+   * Composite model selector (`provider/model-id`, e.g.
+   * `glm-responses/glm-5.3`); empty/undefined = the process default
+   * (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
+   */
   readonly model?: string;
 }
 
@@ -214,6 +221,39 @@ function parsePresetResource(name: string): { template: string; preset: string }
     return undefined;
   }
   return { template: match[1] as string, preset: match[2] as string };
+}
+
+/** A parsed composite model selector: the structured (provider, model) route. */
+export interface ParsedModelIdentifier {
+  /** Provider route owning the model (e.g. `glm-responses`). */
+  readonly provider: string;
+  /** Bare model id passed to the adapter (e.g. `glm-5.3`). */
+  readonly model: string;
+}
+
+/** Composite-form hint shared by every model-selector rejection (FR-014). */
+const COMPOSITE_MODEL_HINT =
+  'model selectors use the composite form "provider/model-id" (see ListModels)';
+
+/**
+ * Split one composite model selector at the FIRST `/` — the service's single
+ * parsing point (specs/063-llm-reliability-opencode-go/contracts/
+ * model-selection.md §1). A value without `/` or with an empty provider/model
+ * segment is INVALID_ARGUMENT: the service never guesses a provider for a
+ * legacy bare id (fail-loud migration, contract §5).
+ */
+export function parseModelIdentifier(selector: string): ParsedModelIdentifier {
+  const slash = selector.indexOf("/");
+  if (slash <= 0 || slash === selector.length - 1) {
+    throw new TeamSessionError(
+      "INVALID_ARGUMENT",
+      `model "${selector}" is not a valid selector; ${COMPOSITE_MODEL_HINT}`,
+    );
+  }
+  return {
+    provider: selector.slice(0, slash),
+    model: selector.slice(slash + 1),
+  };
 }
 
 /**
@@ -421,15 +461,19 @@ export class TeamSessions {
     this.validateSaoleiMembers(options.members);
     const player = this.memberFor(options.members, "player");
     const planner = this.memberFor(options.members, "planner");
+    // The effective member-model values stay composite (`provider/model-id`);
+    // the orchestrator receives the split (provider, model) route below
+    // (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
     const playerModel = player.model || DEFAULT_MODEL;
     const plannerModel = planner.model || DEFAULT_MODEL;
 
     // Fail-fast validation BEFORE any teardown (data-model.md §4): preset
-    // existence + role equality, then the model catalog.
+    // existence + role equality, then each selector's provider catalog. The
+    // model validators return the parsed route materialization forwards.
     await this.validateMemberPreset(player.preset, "player");
     await this.validateMemberPreset(planner.preset, "planner");
-    await this.validateModel(playerModel);
-    await this.validateModel(plannerModel);
+    const playerRoute = await this.validateModel(playerModel);
+    const plannerRoute = await this.validateModel(plannerModel);
 
     const existing = this.teams.get(session);
     if (existing !== undefined) {
@@ -468,8 +512,16 @@ export class TeamSessions {
         // prefix in the memory service parent (T023 wiring fix).
         memoryScope: { template: parsedSession.template, session: parsedSession.session },
         goal: TEAM_GOAL,
-        player: { preset: this.presetId(player.preset), model: playerModel },
-        planner: { preset: this.presetId(planner.preset), model: plannerModel },
+        player: {
+          preset: this.presetId(player.preset),
+          provider: playerRoute.provider,
+          model: playerRoute.model,
+        },
+        planner: {
+          preset: this.presetId(planner.preset),
+          provider: plannerRoute.provider,
+          model: plannerRoute.model,
+        },
       });
     } catch (err) {
       // The orchestrator rolled every created member back; no entry and no
@@ -489,6 +541,9 @@ export class TeamSessions {
       throw new Error("team materialization invariant violated: members are missing");
     }
     const members: Record<MemberRole, MemberRuntime> = {
+      // Member runtimes keep the composite selector for the projections; the
+      // orchestrator already received the split route above
+      // (contracts/model-selection.md §3).
       player: this.createMemberRuntime(orchestrator, playerHandle, "player", player.preset, playerModel, session, history, broadcast),
       planner: this.createMemberRuntime(orchestrator, plannerHandle, "planner", planner.preset, plannerModel, session, history, broadcast),
     };
@@ -888,18 +943,27 @@ export class TeamSessions {
     }
   }
 
-  /** Validate one effective model against the deployment catalog (shared with ListModels). */
-  private async validateModel(model: string): Promise<void> {
+  /**
+   * Validate one effective model selector against the selected provider's
+   * deployment catalog (shared with ListModels) and return the parsed route
+   * materialization forwards. The selector is the composite
+   * `provider/model-id` form; a legacy bare id or an empty segment is
+   * INVALID_ARGUMENT — never a silent provider guess
+   * (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
+   */
+  private async validateModel(selector: string): Promise<ParsedModelIdentifier> {
+    const route = parseModelIdentifier(selector);
     const catalog =
       this.deps.listModels ??
       ((provider: string) => this.ctx.llm.listModels(provider));
-    const models = await catalog(this.deps.provider ?? PROVIDER);
-    if (!models.some((entry) => entry.id === model)) {
+    const models = await catalog(route.provider);
+    if (!models.some((entry) => entry.id === route.model)) {
       throw new TeamSessionError(
         "INVALID_ARGUMENT",
-        `unknown model "${model}"; see ListModels for the available catalog`,
+        `unknown model "${selector}" for provider "${route.provider}"; ${COMPOSITE_MODEL_HINT}`,
       );
     }
+    return route;
   }
 
   /** Map an orchestration state error onto the request-level error surface. */

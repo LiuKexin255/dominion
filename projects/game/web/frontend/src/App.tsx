@@ -383,8 +383,10 @@ function ChatPanel({
             </span>
           )}
         {/* 成员清单（specs/059-agent-v2-team-mode/contracts/web-views.md §1
-            状态呈现：role + preset + model；role 为 wire 字符串，直接渲染）。
-            每成员即 system prompt 查看入口（FR-009，
+            状态呈现：role + preset + model；role 为 wire 字符串，model 为
+            `provider/model-id` 复合标识原样渲染——页面不感知 provider 插件，
+            specs/063-llm-reliability-opencode-go/contracts/model-selection.md
+            §4）。每成员即 system prompt 查看入口（FR-009，
             specs/060-agent-v2-team-optimize/spec.md：主界面直接可见，无需打开
             设置面板）。 */}
         <span className="team-members" data-testid="team-members">

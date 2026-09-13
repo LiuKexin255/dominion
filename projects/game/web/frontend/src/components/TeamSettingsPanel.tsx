@@ -1,7 +1,10 @@
 // team 物化面板：player/planner preset 下拉（按 role 字符串过滤，均必选）+
-// 双 model 下拉（listModels + "默认"项）+ Apply = UpdateTeam（契约
-// specs/059-agent-v2-team-mode/contracts/web-views.md §1）。model 空 = 部署
-// 默认（team-api.md §2 members[].model 空 = 部署默认）；已物化会话再次
+// 双 model 下拉（ListModels 联合目录 + "默认"项）+ Apply = UpdateTeam（契约
+// specs/059-agent-v2-team-mode/contracts/web-views.md §1；model 下拉 option
+// 值/显示均为 `provider/model-id` 复合标识原样，"默认"空值语义不变 =
+// 省略 model 字段，specs/063-llm-reliability-opencode-go/contracts/
+// model-selection.md §4）。model 空 = 部署默认（team-api.md §2
+// members[].model 空 = 部署默认）；已物化会话再次
 // Apply 即刷新（终止在途回合、清空短期记忆并按新配置重建，team-api.md §1），
 // 面板对该语义显式提示。成员清单提供每成员"查看 system prompt"入口：
 // GetTeamMember 返回该实例当前生效的完整装配结果，只读等宽全文呈现，刷新
@@ -66,7 +69,7 @@ export function TeamSettingsPanel({
   const [error, setError] = useState<string | null>(null)
   const [playerPreset, setPlayerPreset] = useState(memberOf(materialized, 'player')?.preset ?? '')
   const [plannerPreset, setPlannerPreset] = useState(memberOf(materialized, 'planner')?.preset ?? '')
-  // '' = "默认"项（部署默认模型，body 省略该字段）。
+  // '' = "默认"项（部署默认模型，body 省略该字段）；其余为复合标识原样。
   const [playerModel, setPlayerModel] = useState(memberOf(materialized, 'player')?.model ?? '')
   const [plannerModel, setPlannerModel] = useState(memberOf(materialized, 'planner')?.model ?? '')
   const [applying, setApplying] = useState(false)

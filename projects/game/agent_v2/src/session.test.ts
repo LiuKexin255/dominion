@@ -39,6 +39,9 @@ const P_PLANNER = "templates/saolei/presets/p-planner";
 const PLAYER_ID = `${S1}/player`;
 const PLANNER_ID = `${S1}/planner`;
 
+/** The bare model-id half of the default composite selector. */
+const DEFAULT_BARE_MODEL = DEFAULT_MODEL.slice(DEFAULT_MODEL.indexOf("/") + 1);
+
 interface MemberFake {
   readonly id: string;
   readonly agent: Agent;
@@ -191,7 +194,13 @@ function createHarness(options: HarnessOptions = {}): Harness {
       updateTime: new Date(0),
     })),
   };
-  const listModels = vi.fn(async () => [{ id: "glm-5.3" }, { id: "glm-5.5" }]);
+  // One catalog per provider route: validation is provider-scoped after the
+  // composite selector is split (contracts/model-selection.md §3).
+  const listModels = vi.fn(async (provider: string) =>
+    provider === "opencode-go"
+      ? [{ id: "kimi-k3" }]
+      : [{ id: "glm-5.3" }, { id: "glm-5.5" }],
+  );
   const loadPlannerMemory = vi.fn(async () => {});
   const game = { current: null as GameEventRecord | null };
   const mountPlayerRuntime = vi.fn(() => ({ peekGameEvent: () => game.current }));
@@ -365,13 +374,13 @@ describe("TeamSessions.materialize", () => {
     expect(h.agentsCreate).toHaveBeenNthCalledWith(1, {
       sessionId: PLAYER_ID,
       meta: { cwd: process.cwd(), agentPreset: "p-player" },
-      agentOptions: { provider: "glm-responses", model: DEFAULT_MODEL },
+      agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
       setup: expect.any(Function),
     });
     expect(h.agentsCreate).toHaveBeenNthCalledWith(2, {
       sessionId: PLANNER_ID,
       meta: { cwd: process.cwd(), agentPreset: "p-planner" },
-      agentOptions: { provider: "glm-responses", model: DEFAULT_MODEL },
+      agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
       setup: expect.any(Function),
     });
     expect(h.mountPlayerRuntime).toHaveBeenCalledTimes(1);
@@ -391,32 +400,93 @@ describe("TeamSessions.materialize", () => {
     expect(view.createTime).toBeInstanceOf(Date);
   });
 
-  it("honors per-member models and validates them against the catalog", async () => {
+  it("honors per-member composite models and validates them against the selected provider catalog", async () => {
     const h = createHarness();
     await h.sessions.materialize(S1, {
       members: [
-        { role: "player", preset: P_PLAYER, model: "glm-5.5" },
-        { role: "planner", preset: P_PLANNER, model: "glm-5.3" },
+        { role: "player", preset: P_PLAYER, model: "glm-responses/glm-5.5" },
+        { role: "planner", preset: P_PLANNER, model: "glm-responses/glm-5.3" },
       ],
     });
 
+    // agentOptions carries the split route: the provider from the selector's
+    // prefix and the model as a BARE id — the composite form never reaches
+    // the agent (contracts/model-selection.md §3; the system prompt
+    // `{{model}}` renders the bare id, see system-prompt.test.ts).
     expect(h.agentsCreate).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ agentOptions: { provider: "glm-responses", model: "glm-5.5" } }),
+      expect.objectContaining({
+        agentOptions: { provider: "glm-responses", model: "glm-5.5" },
+      }),
     );
     expect(h.agentsCreate).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ agentOptions: { provider: "glm-responses", model: "glm-5.3" } }),
+      expect.objectContaining({
+        agentOptions: { provider: "glm-responses", model: "glm-5.3" },
+      }),
     );
 
     await expect(
       h.sessions.materialize("templates/saolei/sessions/s2", {
         members: [
-          { role: "player", preset: P_PLAYER, model: "glm-9.9" },
+          { role: "player", preset: P_PLAYER, model: "glm-responses/glm-9.9" },
           { role: "planner", preset: P_PLANNER },
         ],
       }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("unknown model"),
+    });
+  });
+
+  it("routes a member through the provider half of its composite selector", async () => {
+    const h = createHarness();
+    const view = await h.sessions.materialize(S1, {
+      members: [
+        { role: "player", preset: P_PLAYER, model: "opencode-go/kimi-k3" },
+        { role: "planner", preset: P_PLANNER, model: DEFAULT_MODEL },
+      ],
+    });
+
+    expect(h.agentsCreate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        agentOptions: { provider: "opencode-go", model: "kimi-k3" },
+      }),
+    );
+    expect(h.agentsCreate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
+      }),
+    );
+    // The member projections keep the composite original (selection-surface
+    // contract); the provider catalogs queried are the two split routes.
+    expect(view.members.map((entry) => entry.model)).toEqual([
+      "opencode-go/kimi-k3",
+      DEFAULT_MODEL,
+    ]);
+    expect(h.listModels).toHaveBeenCalledWith("opencode-go");
+    expect(h.listModels).toHaveBeenCalledWith("glm-responses");
+  });
+
+  it("rejects malformed selectors (bare id / empty segment) before any member creation", async () => {
+    const h = createHarness();
+
+    for (const model of ["glm-5.3", "/glm-5.3", "glm-responses/"]) {
+      await expect(
+        h.sessions.materialize(S1, {
+          members: [
+            { role: "player", preset: P_PLAYER, model },
+            { role: "planner", preset: P_PLANNER },
+          ],
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining("provider/model-id"),
+      });
+    }
+    expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 
   it("rejects structure (scene-agnostic) and saolei-scene violations in the two validation layers", async () => {

@@ -35,13 +35,13 @@ const TEAM_MATERIALIZED = {
       name: `${SESSION}/team/members/player`,
       role: 'player',
       preset: PLAYER_PRESET.name,
-      model: 'glm-5.2',
+      model: 'glm-responses/glm-5.2',
     },
     {
       name: `${SESSION}/team/members/planner`,
       role: 'planner',
       preset: PLANNER_PRESET.name,
-      model: 'glm-5.1',
+      model: 'glm-responses/glm-5.1',
     },
   ],
   createTime: '2026-08-29T01:00:00Z',
@@ -73,7 +73,11 @@ describe('TeamSettingsPanel', () => {
       }
       if (url === '/api/v2/models' && method === 'GET') {
         return jsonResponse({
-          models: [{ id: 'glm-5.2', contextWindow: 128000 }, { id: 'glm-5.1' }],
+          models: [
+            { id: 'glm-responses/glm-5.2', contextWindow: 128000 },
+            { id: 'glm-responses/glm-5.1' },
+            { id: 'opencode-go/kimi-k3' },
+          ],
         })
       }
       if (url === `/api/v2/${SESSION}/team?allow_missing=true` && method === 'PATCH') {
@@ -89,7 +93,7 @@ describe('TeamSettingsPanel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('下拉数据源：双 preset 池按 role 字符串过滤 + model 列表含「默认」项', async () => {
+  it('下拉数据源：双 preset 池按 role 字符串过滤 + model 联合目录含「默认」项', async () => {
     render(
       <TeamSettingsPanel session={SESSION} materialized={null} onApplied={onApplied} onClose={onClose} />,
     )
@@ -127,12 +131,18 @@ describe('TeamSettingsPanel', () => {
     const plannerModelSelect = screen.getByTestId('team-planner-model-select')
     expect(Array.from(playerModelSelect.querySelectorAll('option')).map((o) => o.textContent)).toEqual([
       '默认',
-      'glm-5.2',
-      'glm-5.1',
+      'glm-responses/glm-5.2',
+      'glm-responses/glm-5.1',
+      'opencode-go/kimi-k3',
     ])
     expect(
       Array.from(plannerModelSelect.querySelectorAll('option')).map((o) => o.textContent),
-    ).toEqual(['默认', 'glm-5.2', 'glm-5.1'])
+    ).toEqual(['默认', 'glm-responses/glm-5.2', 'glm-responses/glm-5.1', 'opencode-go/kimi-k3'])
+    // option 值 = 复合标识原样（"默认"项为空值 = 省略 model 字段；
+    // contracts/model-selection.md §4）。
+    expect(
+      Array.from(playerModelSelect.querySelectorAll('option')).map((o) => o.value),
+    ).toEqual(['', 'glm-responses/glm-5.2', 'glm-responses/glm-5.1', 'opencode-go/kimi-k3'])
   })
 
   it('双 preset 必选校验：逐个提示且不发 PATCH', async () => {
@@ -193,10 +203,10 @@ describe('TeamSettingsPanel', () => {
 
     // 指定模型：两条成员配置各携带 model。
     fireEvent.change(screen.getByTestId('team-player-model-select'), {
-      target: { value: 'glm-5.2' },
+      target: { value: 'glm-responses/glm-5.2' },
     })
     fireEvent.change(screen.getByTestId('team-planner-model-select'), {
-      target: { value: 'glm-5.1' },
+      target: { value: 'opencode-go/kimi-k3' },
     })
     fireEvent.click(screen.getByTestId('team-apply'))
     await waitFor(() => {
@@ -206,8 +216,8 @@ describe('TeamSettingsPanel', () => {
           method: 'PATCH',
           body: JSON.stringify({
             members: [
-              { role: 'player', preset: PLAYER_PRESET.name, model: 'glm-5.2' },
-              { role: 'planner', preset: PLANNER_PRESET.name, model: 'glm-5.1' },
+              { role: 'player', preset: PLAYER_PRESET.name, model: 'glm-responses/glm-5.2' },
+              { role: 'planner', preset: PLANNER_PRESET.name, model: 'opencode-go/kimi-k3' },
             ],
           }),
         }),
@@ -235,8 +245,8 @@ describe('TeamSettingsPanel', () => {
     expect((screen.getByTestId('team-planner-preset-select') as HTMLSelectElement).value).toBe(
       PLANNER_PRESET.name,
     )
-    expect((screen.getByTestId('team-player-model-select') as HTMLSelectElement).value).toBe('glm-5.2')
-    expect((screen.getByTestId('team-planner-model-select') as HTMLSelectElement).value).toBe('glm-5.1')
+    expect((screen.getByTestId('team-player-model-select') as HTMLSelectElement).value).toBe('glm-responses/glm-5.2')
+    expect((screen.getByTestId('team-planner-model-select') as HTMLSelectElement).value).toBe('glm-responses/glm-5.1')
 
     rerender(
       <TeamSettingsPanel session={SESSION} materialized={null} onApplied={onApplied} onClose={onClose} />,
@@ -319,7 +329,7 @@ describe('App 未物化引导与 team 物化', () => {
         return jsonResponse({ presets: [PLANNER_PRESET] })
       }
       if (url === '/api/v2/models' && method === 'GET') {
-        return jsonResponse({ models: [{ id: 'glm-5.2' }] })
+        return jsonResponse({ models: [{ id: 'glm-responses/glm-5.2' }] })
       }
       if (url === `/api/v2/${SESSION}/team?allow_missing=true` && method === 'PATCH') {
         materialized = true
@@ -471,7 +481,7 @@ describe('TeamSettingsPanel system prompt 查看', () => {
         return jsonResponse({ presets: [PLANNER_PRESET] })
       }
       if (url === '/api/v2/models' && method === 'GET') {
-        return jsonResponse({ models: [{ id: 'glm-5.2' }] })
+        return jsonResponse({ models: [{ id: 'glm-responses/glm-5.2' }] })
       }
       if (url === `/api/v2/${SESSION}/team/members/player` && method === 'GET') {
         const value = promptFor('player')
@@ -480,7 +490,7 @@ describe('TeamSettingsPanel system prompt 查看', () => {
               name: `${SESSION}/team/members/player`,
               role: 'player',
               preset: PLAYER_PRESET.name,
-              model: 'glm-5.2',
+              model: 'glm-responses/glm-5.2',
               systemPrompt: value,
             })
           : value
@@ -492,7 +502,7 @@ describe('TeamSettingsPanel system prompt 查看', () => {
               name: `${SESSION}/team/members/planner`,
               role: 'planner',
               preset: PLANNER_PRESET.name,
-              model: 'glm-5.1',
+              model: 'glm-responses/glm-5.1',
               systemPrompt: value,
             })
           : value

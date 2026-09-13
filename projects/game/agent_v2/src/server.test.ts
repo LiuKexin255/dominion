@@ -67,14 +67,14 @@ function teamView(overrides: Partial<TeamView> = {}): TeamView {
         name: `${VALID_TEAM}/members/player`,
         role: "player",
         preset: VALID_PRESET,
-        model: "glm-5.3",
+        model: "glm-responses/glm-5.3",
         systemPrompt: "player prompt",
       },
       {
         name: `${VALID_TEAM}/members/planner`,
         role: "planner",
         preset: P2,
-        model: "glm-5.3",
+        model: "glm-responses/glm-5.3",
         systemPrompt: "planner prompt",
       },
     ],
@@ -133,10 +133,21 @@ function fakeDeps() {
         presetView({ persona: patch.persona ?? "" })),
       remove: vi.fn(async () => undefined),
     },
-    listModels: vi.fn(async (): Promise<ModelCatalogEntry[]> => [
-      { id: "glm-5.3", contextWindow: 1_000_000 },
-      { id: "glm-5.3-flash", contextWindow: 1_000_000 },
+    listProviders: vi.fn(() => [
+      { id: "glm-responses" },
+      { id: "opencode-go" },
     ]),
+    // One catalog per provider route; the ListModels handler prefixes the ids
+    // with the route to build the composite union directory
+    // (contracts/model-selection.md §2).
+    listModels: vi.fn(async (provider: string): Promise<ModelCatalogEntry[]> =>
+      provider === "opencode-go"
+        ? [{ id: "kimi-k3", contextWindow: 1_048_576 }]
+        : [
+            { id: "glm-5.3", contextWindow: 1_000_000 },
+            { id: "glm-5.3-flash", contextWindow: 1_000_000 },
+          ],
+    ),
   };
 }
 
@@ -378,16 +389,21 @@ describe("AgentService.UpdateTeam handler", () => {
     const callback = invokeUnary(handlers.UpdateTeam as never, updateRequest({
       team: {
         name: VALID_TEAM,
-        members: [member("player", VALID_PRESET, "glm-5.3"), member("planner", P2)],
+        members: [
+          member("player", VALID_PRESET, "glm-responses/glm-5.3"),
+          member("planner", P2, "opencode-go/kimi-k3"),
+        ],
       },
       updateMask: { paths: ["members"] },
     }));
 
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+    // The composite selectors pass through unchanged: the session registry is
+    // the single parser/validator (contracts/model-selection.md §3).
     expect(deps.sessions.materialize).toHaveBeenCalledWith(VALID, {
       members: [
-        { role: "player", preset: VALID_PRESET, model: "glm-5.3" },
-        { role: "planner", preset: P2 },
+        { role: "player", preset: VALID_PRESET, model: "glm-responses/glm-5.3" },
+        { role: "planner", preset: P2, model: "opencode-go/kimi-k3" },
       ],
     });
     const [err, response] = callback.mock.calls[0];
@@ -405,6 +421,32 @@ describe("AgentService.UpdateTeam handler", () => {
       [`${VALID_TEAM}/members/planner`, "planner", P2],
     ]);
     expect(response?.members?.[1]?.systemPrompt).toBe("planner prompt");
+  });
+
+  it("maps the registry's bare-id selector rejection onto INVALID_ARGUMENT", async () => {
+    const deps = fakeDeps();
+    // The session registry owns the single parser: a bare id surfaces as a
+    // TeamSessionError carrying the composite-form hint, and the handler maps
+    // it with the cause chain (contracts/model-selection.md §3/§5).
+    deps.sessions.materialize.mockRejectedValueOnce(
+      new TeamSessionError(
+        "INVALID_ARGUMENT",
+        'model "glm-5.3" is not a valid selector; model selectors use the composite form "provider/model-id" (see ListModels)',
+      ),
+    );
+    const handlers = buildTeamHandlers(deps);
+    const callback = invokeUnary(handlers.UpdateTeam as never, updateRequest({
+      team: {
+        name: VALID_TEAM,
+        members: [member("player", VALID_PRESET, "glm-5.3"), member("planner", P2)],
+      },
+    }));
+
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+    const error = callback.mock.calls[0][0] as grpc.ServiceError;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+    expect(error?.message).toContain("provider/model-id");
+    expect(error?.cause).toBeInstanceOf(TeamSessionError);
   });
 
   it("rejects malformed names and layer-1 structure violations with INVALID_ARGUMENT", () => {
@@ -881,26 +923,55 @@ describe("PresetService preset CRUD handlers", () => {
 });
 
 describe("PresetService.ListModels handler", () => {
-  it("serves the shared catalog and maps failures to INTERNAL", async () => {
+  it("serves the union catalog in provider-registration × catalog order with composite ids", async () => {
     const deps = fakeDeps();
     const handlers = buildPresetHandlers(deps);
 
     const callback = invokeUnary(handlers.ListModels as never, {});
     await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
-    expect(deps.listModels).toHaveBeenCalledWith("glm-responses");
+    // Every registered route is queried through the shared per-provider face;
+    // the union keeps the listProviders() order (contracts/model-selection.md §2).
+    expect(deps.listProviders).toHaveBeenCalledTimes(1);
+    expect(deps.listModels.mock.calls.map((call) => call[0])).toEqual([
+      "glm-responses",
+      "opencode-go",
+    ]);
     const [err, response] = callback.mock.calls[0];
     expect(err).toBeNull();
     expect(response).toEqual({
       models: [
-        { id: "glm-5.3", contextWindow: 1_000_000 },
-        { id: "glm-5.3-flash", contextWindow: 1_000_000 },
+        { id: "glm-responses/glm-5.3", contextWindow: 1_000_000 },
+        { id: "glm-responses/glm-5.3-flash", contextWindow: 1_000_000 },
+        { id: "opencode-go/kimi-k3", contextWindow: 1_048_576 },
       ],
     });
+  });
 
-    deps.listModels.mockRejectedValue(new Error("catalog down"));
+  it("fails the whole RPC when one provider catalog is down (fail-loud, no truncation)", async () => {
+    const deps = fakeDeps();
+    deps.listModels.mockImplementation(async (provider: string) => {
+      if (provider === "opencode-go") {
+        throw new Error("catalog down");
+      }
+      return [{ id: "glm-5.3", contextWindow: 1_000_000 }];
+    });
+    const handlers = buildPresetHandlers(deps);
+
     const failed = invokeUnary(handlers.ListModels as never, {});
     await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(1));
     expect((failed.mock.calls[0][0] as grpc.ServiceError).code).toBe(grpc.status.INTERNAL);
+    expect((failed.mock.calls[0][0] as grpc.ServiceError).message).toContain("catalog down");
+  });
+
+  it("serves the union catalog with no providers registered", async () => {
+    const deps = fakeDeps();
+    deps.listProviders.mockReturnValue([]);
+    const handlers = buildPresetHandlers(deps);
+
+    const callback = invokeUnary(handlers.ListModels as never, {});
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+    expect(deps.listModels).not.toHaveBeenCalled();
+    expect(callback.mock.calls[0][1]).toEqual({ models: [] });
   });
 });
 

@@ -451,6 +451,29 @@ describe("TeamOrchestrator.materialize", () => {
     expectRelayOrUserSources(h);
   });
 
+  it("routes each member through its own provider, falling back to the team provider", async () => {
+    const h = createHarness({ provider: "team-route" });
+
+    await h.orchestrator.materialize(
+      teamOptions({
+        player: { preset: "player-a", provider: "opencode-go", model: "kimi-k3" },
+        planner: { preset: "planner-a", model: "model-q" },
+      }),
+    );
+
+    // The member's own provider wins; a member without one falls back to the
+    // team-level provider (specs/063-llm-reliability-opencode-go/contracts/
+    // model-selection.md §3). The model stays the bare id either way.
+    expect(h.agents.calls[0]?.agentOptions).toEqual({
+      provider: "opencode-go",
+      model: "kimi-k3",
+    });
+    expect(h.agents.calls[1]?.agentOptions).toEqual({
+      provider: "team-route",
+      model: "model-q",
+    });
+  });
+
   it("rejects a second materialization and submit after disposal", async () => {
     const h = createHarness();
     expect(() => h.orchestrator.submit("x")).toThrow(OrchestratorStateError);
