@@ -1,13 +1,17 @@
 // Package testplan contains the agent_v2 team conversation large tests: the
 // team stream (member event frames + team_message frames until quiescence),
 // the merged/member-view histories, the queue/cancel/refresh orchestration
-// windows, and the per-member turn error paths — over the gateway /api/v2
-// NDJSON surface with the deterministic fake /v1/responses endpoint
+// windows, the per-member turn error paths, and the LLM reliability paths
+// (transient retry recovery, planner failure retention, non-retryable
+// visibility, and the opencode-go chat-wire session flow) — over the gateway
+// /api/v2 NDJSON surface with the deterministic fake /v1/responses endpoint
 // (specs/059-agent-v2-team-mode/contracts/team-api.md §3; quickstart.md
-// V3/V4/V6). Cases are grouped by tested concern, one test per concern —
+// V3/V4/V6; specs/063-llm-reliability-opencode-go/quickstart.md §2). Cases
+// are grouped by tested concern, one test per concern —
 // style/large_test.md §测试组织. The game chain with a real desktop lives in
 // agent_v2_game_test.go; the disconnect branch in
-// agent_v2_game_disconnect_test.go.
+// agent_v2_game_disconnect_test.go; the stream-stall watchdog branch in
+// agent_v2_stall_test.go (its 2s window needs the dedicated stall topology).
 package testplan
 
 import (
@@ -790,4 +794,328 @@ func TestAgentV2TeamConcurrentSessionIsolation(t *testing.T) {
 	if !saw1 || !saw2 {
 		t.Errorf("marker presence = %v/%v, want both histories to keep their own marker", saw1, saw2)
 	}
+}
+
+// TestAgentV2TeamTransientFailureRetriesAndRecovers covers SC-001
+// (specs/063-llm-reliability-opencode-go/spec.md SC-001; quickstart.md §2
+// SC-001): the planner's first matching request fails with the injected HTTP
+// 503 + Retry-After (agent_v2_transient.yaml agent-v2-transient-503, times:1
+// — the FR-003 server-backoff path), the single llm-retry re-attempt is
+// served the normal opening strategy, and the planning round completes — the
+// turn settles COMPLETED with the full strategy text and no failure frame,
+// then the structural continuation drives the player as usual.
+//
+// The fixture budget carries the retry count: a turn that completes despite
+// the single injected failure proves the retry ran, and the retry loop stops
+// at its first success, so the number of retries equals the consumed budget
+// (one). The durable llm/retry session events have no HTTP read surface (the
+// llm-retry plugin appends them to the in-process dsh session —
+// specs/063-llm-reliability-opencode-go/research.md D2), so the fixture
+// budget is the large-test-side evidence.
+func TestAgentV2TeamTransientFailureRetriesAndRecovers(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, "team-transient-"+uniqueSuffix(), "transient")
+
+	text := agentV2TriggerTransient503 + " plan the opening"
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, text)
+	events := drainTeamStream(t, stream)
+	assertTeamStreamWellFormed(t, sessionName, events)
+
+	turns := groupTeamMemberTurns(events)
+	if len(turns) != 2 {
+		t.Fatalf("member turns = %d, want 2 (the planner opening + the structural player continuation)", len(turns))
+	}
+	if turns[0].member != "planner" {
+		t.Fatalf("first driven member = %v, want 'planner'", turns[0].member)
+	}
+	if status := teamTurnEndStatus(turns[0]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("planner turn ended %v, want COMPLETED (the single injected failure must be absorbed)", status)
+	}
+	for i, event := range turns[0].events {
+		if end := event.GetTurnEnd(); end != nil && end.GetStatus() == game.TurnStatus_TURN_STATUS_ERROR {
+			t.Errorf("planner turn frame %d reports ERROR: %+v", i, end)
+		}
+	}
+	if _, text := teamTurnBlocks(turns[0]); text != teamPlannerOpeningText {
+		t.Errorf("planner turn text = %q, want the full opening strategy %q", text, teamPlannerOpeningText)
+	}
+	// The planning round completed: the structural continuation switched to
+	// the player.
+	if turns[1].member != "player" {
+		t.Errorf("second driven member = %v, want 'player' (planning→playing switch)", turns[1].member)
+	}
+
+	// No retry traces leaked into the user message stream: exactly the sent
+	// message is fixed.
+	userEntries := teamMessagesForMember(listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName), "user")
+	if len(userEntries) != 1 || agentV2MessageText(userEntries[0].GetMessage()) != text {
+		t.Errorf("USER merge entries = %+v, want exactly the sent message %q", userEntries, text)
+	}
+}
+
+// TestAgentV2TeamPlannerFailureRetainsActivation covers SC-002
+// (specs/063-llm-reliability-opencode-go/spec.md SC-002; quickstart.md §2
+// SC-002): six consecutive 500s (= the initial attempt + the default
+// five-retry budget) exhaust the agent-v2-transient-500 budget exactly, so
+// the planner's opening turn settles ERROR with the stable SERVER code and
+// the activation stays planner — no silent planning→player switch. A second
+// Send carries the same trigger; its first attempt is request seven, the
+// budget is exhausted, so the planner completes the planning round and the
+// structural continuation switches to the player.
+//
+// Reaching that COMPLETED turn proves the first turn made exactly six
+// attempts: had it stopped with budget left, the resume attempt would still
+// have injected failures and fail again. The durable llm/retry session events
+// have no HTTP read surface (specs/063-llm-reliability-opencode-go/research.md D2), so the budget
+// exhaustion is the large-test-side retry-count evidence.
+func TestAgentV2TeamPlannerFailureRetainsActivation(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, "team-retain-"+uniqueSuffix(), "retain")
+
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, agentV2TriggerTransient500+" plan the opening")
+	events := drainTeamStream(t, stream)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	turns := groupTeamMemberTurns(events)
+	if len(turns) != 1 || turns[0].member != "planner" {
+		t.Fatalf("failed-turn stream turns = %v, want exactly one planner turn", turns)
+	}
+	end := turns[0].events[len(turns[0].events)-1].GetTurnEnd()
+	if end.GetStatus() != game.TurnStatus_TURN_STATUS_ERROR {
+		t.Fatalf("planner turn ended %v, want ERROR after the retry budget is exhausted", end.GetStatus())
+	}
+	if code := end.GetError().GetCode(); code != agentV2FailureServer {
+		t.Errorf("turn_end.error.code = %q, want %q (the injected 500 classification)", code, agentV2FailureServer)
+	}
+
+	// The failure retains the planner activation (FR-009): no switch ran.
+	if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "planner" {
+		t.Fatalf("active_member after the failed planning turn = %q, want \"planner\"", got)
+	}
+
+	// The re-Send drives the retained planner: the exhausted budget serves
+	// the normal opening strategy, the planning round completes, and the
+	// structural continuation then drives the player.
+	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, agentV2TriggerTransient500+" retry the planning round")
+	events2 := drainTeamStream(t, stream2)
+	assertTeamStreamWellFormed(t, sessionName, events2)
+	turns2 := groupTeamMemberTurns(events2)
+	if len(turns2) != 2 || turns2[0].member != "planner" || turns2[1].member != "player" {
+		t.Fatalf("resumed stream turns = %v, want planner (re-driven) + player (switch)", turns2)
+	}
+	if status := teamTurnEndStatus(turns2[0]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("resumed planner turn ended %v, want COMPLETED", status)
+	}
+	if _, text := teamTurnBlocks(turns2[0]); text != teamPlannerOpeningText {
+		t.Errorf("resumed planner text = %q, want %q", text, teamPlannerOpeningText)
+	}
+	if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
+		t.Errorf("active_member after the completed planning round = %q, want \"player\" (the switch)", got)
+	}
+}
+
+// TestAgentV2TeamNonTransientFailureStaysVisible covers SC-005
+// (specs/063-llm-reliability-opencode-go/spec.md SC-005; quickstart.md §2
+// SC-005): the quota (HTTP 429 + the "insufficient quota" body wording →
+// QUOTA) and authentication (HTTP 401 → AUTH) classes are non-retryable, so
+// each planner turn fails once and that single visible failure is the only
+// failure presentation — exactly one ERROR turn, no follow-up drive, and the
+// planner activation retained.
+//
+// The fixtures inject on every match, so a retry storm would repeat the same
+// failure without changing the presentation count (the spec SC-005 "不增加
+// 失败呈现次数" half). The zero-retry property itself is pinned at the unit
+// layer — the adapter's classification feeds llm-retry's retryable-code set
+// (specs/063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md
+// §2) — because the durable llm/retry session events have no HTTP read
+// surface (specs/063-llm-reliability-opencode-go/research.md D2).
+func TestAgentV2TeamNonTransientFailureStaysVisible(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	tests := []struct {
+		name     string
+		marker   string
+		trigger  string
+		wantCode string
+	}{
+		{name: "quota", marker: "quota", trigger: agentV2TriggerQuota, wantCode: agentV2FailureQuota},
+		{name: "auth", marker: "auth", trigger: agentV2TriggerAuth, wantCode: agentV2FailureAuth},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, "team-notransient-"+tt.marker+"-"+uniqueSuffix(), tt.marker)
+
+			stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, tt.trigger+" plan the opening")
+			events := drainTeamStream(t, stream)
+			assertTeamStreamWellFormed(t, sessionName, events)
+			turns := groupTeamMemberTurns(events)
+			if len(turns) != 1 || turns[0].member != "planner" {
+				t.Fatalf("stream turns = %v, want exactly one planner turn (the visible failure)", turns)
+			}
+			end := turns[0].events[len(turns[0].events)-1].GetTurnEnd()
+			if end.GetStatus() != game.TurnStatus_TURN_STATUS_ERROR {
+				t.Fatalf("turn ended %v, want ERROR", end.GetStatus())
+			}
+			if code := end.GetError().GetCode(); code != tt.wantCode {
+				t.Errorf("turn_end.error.code = %q, want %q", code, tt.wantCode)
+			}
+			for i, event := range turns[0].events {
+				if event.GetBlockStart() != nil {
+					t.Errorf("frame %d starts a block — the non-retryable failure is pre-content", i)
+				}
+			}
+			// One ERROR presentation only: no second driven turn, and the
+			// activation is retained.
+			if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "planner" {
+				t.Errorf("active_member after the %s failure = %q, want \"planner\"", tt.name, got)
+			}
+		})
+	}
+}
+
+// assertAgentV2ChatGameTurn checks one chat-wire game turn's deterministic
+// chain shape (SC-003,
+// specs/063-llm-reliability-opencode-go/quickstart.md §2 SC-003): a single
+// player turn whose settled tool results are the saolei_init + saolei_operate
+// pair, the operate batch reporting two executed cell ops on a playing board,
+// and the chain's final text from saolei_tools.yaml (the turn terminates on
+// text, not a tool block).
+func assertAgentV2ChatGameTurn(t *testing.T, sessionName string, events []*game.ChatEvent) {
+	t.Helper()
+
+	turns := groupTeamMemberTurns(events)
+	if len(turns) != 1 || turns[0].member != "player" {
+		t.Fatalf("game stream turns = %v, want exactly one player turn", turns)
+	}
+	if status := teamTurnEndStatus(turns[0]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("game turn ended %v, want COMPLETED", status)
+	}
+	results := teamTurnToolResults(turns[0])
+	if len(results) != 2 {
+		t.Fatalf("game tool results = %d, want the saolei_init + saolei_operate pair", len(results))
+	}
+	init, operate := results[0], results[1]
+	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || !strings.Contains(init.GetResult(), agentV2WonInitContains) {
+		t.Errorf("saolei_init result = %v/%q, want SUCCEEDED with %q", init.GetStatus(), init.GetResult(), agentV2WonInitContains)
+	}
+	if operate.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || !strings.Contains(operate.GetResult(), agentV2ProgExecContains) || !strings.Contains(operate.GetResult(), agentV2ProgStatusContains) {
+		t.Errorf("saolei_operate result = %v/%q, want SUCCEEDED with %q and %q", operate.GetStatus(), operate.GetResult(), agentV2ProgExecContains, agentV2ProgStatusContains)
+	}
+	if _, text := teamTurnBlocks(turns[0]); text != agentV2ChatOperateFinalText {
+		t.Errorf("game turn text = %q, want the chat-chain terminator %q", text, agentV2ChatOperateFinalText)
+	}
+}
+
+// TestAgentV2TeamOpencodeGoSessionFlow covers SC-003
+// (specs/063-llm-reliability-opencode-go/spec.md SC-003; quickstart.md §2
+// SC-003): a team materialized on an `opencode-go/<model>` composite selector
+// completes a planning round and two games with tool calls over the
+// chat-completions wire the new plugin speaks, with zero occurrence of the
+// synthetic OPENCODE_API_KEY the deploy injects.
+//
+// The fixture chain: opencode_go.yaml answers the first Send's planner
+// opening deterministically on the chat matcher (the keyword tie-break's
+// lowest Name, "opencode-go-planner-opening" < "team-planner-*"), saolei.yaml
+// saolei-start drives the game opens (start saolei, then 继续 for the next
+// game), and saolei_tools.yaml chains saolei_init → saolei_operate → final
+// text. The test's own flow connection answers the dispatches with real board
+// screenshots; the all-INITIAL board is a legal no-regression successor of
+// itself, so both games stay playing and terminate on text.
+func TestAgentV2TeamOpencodeGoSessionFlow(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-opencode-" + uniqueSuffix()
+	ctx, sessionName, team := teamPrep(t, sutHostURL, sutEnvName, sessionID, "opencode")
+
+	// Both members move to the opencode-go composite selector from the union
+	// catalog (the catalog head is the pinned cross-provider same-name
+	// glm-5.3); the stored members project the composite form (FR-018).
+	catalog := listAgentV2Models(t, ctx, sutHostURL, sutEnvName).GetModels()
+	opencodeModel := ""
+	for _, entry := range catalog {
+		if strings.HasPrefix(entry.GetId(), "opencode-go/") {
+			opencodeModel = entry.GetId()
+			break
+		}
+	}
+	if opencodeModel != agentV2ModelOpencodeDefault {
+		t.Fatalf("first opencode-go catalog entry = %q, want %q", opencodeModel, agentV2ModelOpencodeDefault)
+	}
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName,
+		teamMemberPreset(team, "player"), teamMemberPreset(team, "planner"), opencodeModel, opencodeModel)
+	stored := getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName)
+	if teamMemberModel(stored, "player") != opencodeModel || teamMemberModel(stored, "planner") != opencodeModel {
+		t.Fatalf("member models = {%q %q}, want both %q", teamMemberModel(stored, "player"), teamMemberModel(stored, "planner"), opencodeModel)
+	}
+
+	// The test's own desktop half: two games, each one F2 init plus the chat
+	// batch's two cell dispatches.
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardInitPNG, saoleiBoardInitPNG},
+		stepBoards: [][]byte{saoleiBoardInitPNG, saoleiBoardInitPNG, saoleiBoardInitPNG, saoleiBoardInitPNG},
+	}, wsReadTimeout)
+
+	// First Send: the opencode-go planner opening completes the planning
+	// round; the structural continuation drives the player, whose broadcast
+	// matches the team-planner-opening keywords first on the chat wire (the
+	// wire ignores system_keywords and team-planner-* sorts before
+	// team-player-*), so it replies with the same strategy text and dispatches
+	// nothing — the explicit start saolei Send below opens the game.
+	stream1 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events1 := drainTeamStream(t, stream1)
+	assertTeamStreamWellFormed(t, sessionName, events1)
+	turns1 := groupTeamMemberTurns(events1)
+	if len(turns1) != 2 || turns1[0].member != "planner" || turns1[1].member != "player" {
+		t.Fatalf("opening stream turns = %v, want the planner opening + player continuation", turns1)
+	}
+	if _, text := teamTurnBlocks(turns1[0]); text != teamPlannerOpeningText {
+		t.Errorf("opencode-go planner opening = %q, want %q", text, teamPlannerOpeningText)
+	}
+	if status := teamTurnEndStatus(turns1[0]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Errorf("planner opening ended %v, want COMPLETED", status)
+	}
+
+	// Game 1: start saolei drives the player through the chat tool chain.
+	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, agentV2TriggerSaoleiStart)
+	events2 := drainTeamStream(t, stream2)
+	assertTeamStreamWellFormed(t, sessionName, events2)
+	assertTeamToolResultWireOrder(t, sessionName, events2)
+	assertAgentV2ChatGameTurn(t, sessionName, events2)
+
+	// Game 2: 继续 opens the next game through the same chat chain.
+	stream3 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, agentV2TriggerContinue)
+	events3 := drainTeamStream(t, stream3)
+	assertTeamStreamWellFormed(t, sessionName, events3)
+	assertTeamToolResultWireOrder(t, sessionName, events3)
+	assertAgentV2ChatGameTurn(t, sessionName, events3)
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+
+	// Multi-round evidence: the three Sends are the only USER entries, in
+	// order.
+	userEntries := teamMessagesForMember(listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName), "user")
+	if len(userEntries) != 3 {
+		t.Fatalf("USER merge entries = %d, want the three Sends", len(userEntries))
+	}
+	for i, want := range []string{teamStartMessage, agentV2TriggerSaoleiStart, agentV2TriggerContinue} {
+		if got := agentV2MessageText(userEntries[i].GetMessage()); got != want {
+			t.Errorf("USER entry[%d] = %q, want %q", i, got, want)
+		}
+	}
+
+	// The synthetic credential never surfaces and every turn completed (a
+	// failed turn's error payload could be an echo path).
+	var wireEvents []*game.ChatEvent
+	wireEvents = append(wireEvents, events1...)
+	wireEvents = append(wireEvents, events2...)
+	wireEvents = append(wireEvents, events3...)
+	for i, event := range wireEvents {
+		if end := event.GetTurnEnd(); end != nil && end.GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
+			t.Errorf("turn_end at frame %d = %v, want every turn COMPLETED", i, end.GetStatus())
+		}
+	}
+	assertAgentV2NoCredentialLeak(t, ctx, sutHostURL, sutEnvName, sessionName, agentV2OpencodeTestToken, wireEvents)
 }

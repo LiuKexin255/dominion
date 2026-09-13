@@ -146,6 +146,64 @@ const (
 	agentV2DesktopDropID       = "desktop-e2e-drop"
 )
 
+// ─── Fixture vocabulary: LLM reliability (specs/063) ────────────────────────
+//
+// The /v1/responses transient + stall triggers
+// (projects/game/fake-llm/service/testdata/agent_v2_transient.yaml), the
+// stable failure codes the injected statuses classify to
+// (specs/063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md
+// §1), the chat-wire triggers the opencode-go session flow reuses from
+// saolei.yaml/saolei_tools.yaml, and the deploy-pinned synthetic credential
+// (projects/game/testplan/deploy_agent_v2*.yaml). Keep the fixture half
+// aligned with the fixture comments and the deploy env
+// (projects/game/testplan/README.md §6 lockstep).
+
+const (
+	// agentV2TriggerTransient503 is the SC-001 trigger: the first matching
+	// planner request fails with HTTP 503 + Retry-After (times:1).
+	agentV2TriggerTransient503 = "agent-v2-transient-503"
+	// agentV2TriggerTransient500 is the SC-002 trigger: six consecutive
+	// matching planner requests fail with HTTP 500 (1 initial attempt + the
+	// default five-retry budget).
+	agentV2TriggerTransient500 = "agent-v2-transient-500"
+	// agentV2TriggerStall is the SC-004a trigger: the Responses stream emits
+	// one reasoning delta and then blocks with the connection alive.
+	agentV2TriggerStall = "agent-v2-stall"
+	// agentV2TriggerQuota is the SC-005 quota trigger: HTTP 429 with the
+	// "insufficient quota" body wording (QUOTA classification).
+	agentV2TriggerQuota = "agent-v2-quota"
+	// agentV2TriggerAuth is the SC-005 authentication trigger: HTTP 401.
+	agentV2TriggerAuth = "agent-v2-auth"
+
+	// agentV2Failure* are the turn_end.error.code values the injected
+	// failures and the stall watchdog classify to (dsh shared taxonomy).
+	agentV2FailureServer  = "SERVER"
+	agentV2FailureQuota   = "QUOTA"
+	agentV2FailureAuth    = "AUTH"
+	agentV2FailureTimeout = "TIMEOUT"
+
+	// agentV2TriggerSaoleiStart opens a game through the chat-wire
+	// saolei.yaml saolei-start tool_call; agentV2TriggerContinue asks for the
+	// next game through the same entry.
+	agentV2TriggerSaoleiStart = "start saolei"
+	agentV2TriggerContinue    = "继续"
+	// agentV2ChatOperateFinalText is saolei_tools.yaml
+	// saolei-operate-final-text: the chat chain's terminator after any
+	// saolei_operate result.
+	agentV2ChatOperateFinalText = "Minesweeper sequence complete."
+
+	// agentV2OpencodeTestToken is the synthetic OPENCODE_API_KEY the testplan
+	// deploys inject (not a real secret — fake-llm ignores credentials).
+	agentV2OpencodeTestToken = "test-opencode-token"
+
+	// agentV2ModelGlmDefault/OpencodeDefault are the deployment's composite
+	// model selectors (specs/063-llm-reliability-opencode-go/contracts/
+	// model-selection.md §1): the GLM default and the opencode-go directory
+	// head — the cross-provider same-name pair the prefix disambiguates.
+	agentV2ModelGlmDefault      = "glm-responses/glm-5.3"
+	agentV2ModelOpencodeDefault = "opencode-go/glm-5.3"
+)
+
 // ─── Resource-name helpers ──────────────────────────────────────────────────
 
 // agentV2SessionName builds the full game session resource name
@@ -603,6 +661,38 @@ func teamMessageHistories(entries []*game.TeamMessage) []*game.HistoryMessage {
 		messages = append(messages, entry.GetMessage())
 	}
 	return messages
+}
+
+// assertAgentV2NoCredentialLeak asserts a synthesized credential value never
+// surfaces on any readable wire object: every streamed frame plus the merged
+// and both member-view histories are serialized with proto.Marshal and
+// scanned byte-wise, so block texts, tool results, turn error payloads, and
+// relay wrappers are all covered without hand-enumerating accessors (SC-003
+// token zero-leakage, specs/063-llm-reliability-opencode-go/spec.md SC-003).
+func assertAgentV2NoCredentialLeak(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, credential string, events []*game.ChatEvent) {
+	t.Helper()
+
+	var wire []proto.Message
+	for _, event := range events {
+		wire = append(wire, event)
+	}
+	for _, entry := range listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName) {
+		wire = append(wire, entry.GetMessage())
+	}
+	for _, member := range []string{"player", "planner"} {
+		for _, entry := range listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, member) {
+			wire = append(wire, entry.GetMessage())
+		}
+	}
+	for i, message := range wire {
+		raw, err := proto.Marshal(message)
+		if err != nil {
+			t.Fatalf("marshal wire object %d: %v", i, err)
+		}
+		if bytes.Contains(raw, []byte(credential)) {
+			t.Errorf("wire object %d carries the synthesized credential value %q", i, credential)
+		}
+	}
 }
 
 // memberViewHistories projects a member view's native messages.

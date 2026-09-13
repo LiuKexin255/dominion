@@ -310,3 +310,39 @@ go_largetest(
         "@org_golang_google_protobuf//proto",
     ],
 )
+
+# agent_v2_stall_test is the stream-stall watchdog branch
+# (specs/063-llm-reliability-opencode-go/tasks.md T022 / quickstart SC-004a)
+# in its own binary: the case needs the stall topology
+# (deploy_agent_v2_stall.yaml pins GLM_STREAM_IDLE_TIMEOUT_MS=2000, the
+# dedicated 2s window the main topology's legitimate 3s/4s chunk gaps cannot
+# share), and guitar runs whole bazel targets as suite cases with no
+# per-suite test-function filter — sharing agent_v2_conversation_test would
+# run this case under a watchdog window that misjudges the other cases'
+# normal gaps. Shares the agent_v2 team helpers and the saolei fixtures like
+# agent_v2_conversation_test.
+#
+# size = medium: the stall convergence burns the six-attempt retry budget
+# (6 × 2s watchdog + the 0.5s→10s bounded backoff ≈ 30s) on top of the
+# materialization/turn overhead, beyond small's 60s budget
+# (style/large_test.md §测试用例: size per actual need).
+go_largetest(
+    name = "agent_v2_stall_test",
+    size = "medium",
+    srcs = [
+        "agent_v2_helpers_test.go",
+        "agent_v2_stall_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

@@ -211,11 +211,16 @@ func TestAgentV2TeamPresetRoleVocabulary(t *testing.T) {
 
 // TestAgentV2TeamMaterializationValidation covers US2 场景 2 and the
 // UpdateTeam fail-fast checks (team-api.md §2): the members list carries one
-// {role, preset, model?} per member (scene-agnostic proto), an explicit
-// catalog model is honored (an empty one resolves to the default glm-5.3),
-// the scene's role/preset/model validation rejects with INVALID_ARGUMENT
-// without replacing the standing configuration, GetTeam/GetTeamMember agree
-// with the stored configuration, and a re-Apply is idempotent.
+// {role, preset, model?} per member (scene-agnostic proto), the union model
+// catalog presents every registered provider's composite selectors (the
+// same-name glm-5.3 disambiguated by prefix), an explicit composite selector
+// is honored (an empty one resolves to the deployment default
+// glm-responses/glm-5.3), the scene's role/preset/model validation rejects
+// with INVALID_ARGUMENT without replacing the standing configuration
+// (bare ids included — the fail-loud migration of
+// specs/063-llm-reliability-opencode-go/contracts/model-selection.md §5),
+// GetTeam/GetTeamMember agree with the stored configuration, and a re-Apply
+// is idempotent.
 func TestAgentV2TeamMaterializationValidation(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -224,17 +229,53 @@ func TestAgentV2TeamMaterializationValidation(t *testing.T) {
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-mat-"+uniqueSuffix())
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-mat", "materialization")
 
-	models := listAgentV2Models(t, ctx, sutHostURL, sutEnvName)
-	if len(models.GetModels()) != 2 {
-		t.Fatalf("ListModels returned %d entries, want 2 (glm-5.3 + glm-5.3-flash)", len(models.GetModels()))
+	// The union catalog (specs/063-llm-reliability-opencode-go/contracts/
+	// model-selection.md §2): both registered providers' directories, every id
+	// the composite `provider/model-id` form, 2 glm-responses entries + the
+	// 16-model opencode-go directory. The same-name glm-5.3 appears once per
+	// provider — the prefix is the disambiguator (FR-018) — and each
+	// provider's directory head keeps its configured order.
+	catalog := listAgentV2Models(t, ctx, sutHostURL, sutEnvName).GetModels()
+	if len(catalog) != 18 {
+		t.Fatalf("ListModels returned %d entries, want 18 (2 glm-responses + 16 opencode-go)", len(catalog))
 	}
-	if models.GetModels()[0].GetId() != "glm-5.3" {
-		t.Errorf("catalog[0] = %q, want glm-5.3 (the default)", models.GetModels()[0].GetId())
+	providerCounts := map[string]int{}
+	directoryHeads := map[string]string{}
+	for _, entry := range catalog {
+		provider, _, composite := strings.Cut(entry.GetId(), "/")
+		if !composite || provider == "" {
+			t.Errorf("catalog entry = %q, want a provider/model-id composite id", entry.GetId())
+			continue
+		}
+		providerCounts[provider]++
+		if _, seen := directoryHeads[provider]; !seen {
+			directoryHeads[provider] = entry.GetId()
+		}
+	}
+	if providerCounts["glm-responses"] != 2 || providerCounts["opencode-go"] != 16 {
+		t.Errorf("catalog providers = %v, want glm-responses:2 opencode-go:16", providerCounts)
+	}
+	if directoryHeads["glm-responses"] != agentV2ModelGlmDefault {
+		t.Errorf("glm-responses directory head = %q, want %q", directoryHeads["glm-responses"], agentV2ModelGlmDefault)
+	}
+	if directoryHeads["opencode-go"] != agentV2ModelOpencodeDefault {
+		t.Errorf("opencode-go directory head = %q, want %q", directoryHeads["opencode-go"], agentV2ModelOpencodeDefault)
+	}
+	for _, want := range []string{agentV2ModelGlmDefault, agentV2ModelOpencodeDefault} {
+		found := false
+		for _, entry := range catalog {
+			if entry.GetId() == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("catalog lacks the composite selector %q", want)
+		}
 	}
 
-	// An explicit catalog id for the player member is honored; the planner
-	// resolves to the default.
-	model := models.GetModels()[1].GetId()
+	// An explicit composite selector for the player member is honored and
+	// routes by its provider prefix; the planner resolves to the default.
+	model := agentV2ModelOpencodeDefault
 	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName,
 		player.GetName(), planner.GetName(), model, "")
 	if team.GetName() != agentV2TeamName(sessionName) {
@@ -246,14 +287,15 @@ func TestAgentV2TeamMaterializationValidation(t *testing.T) {
 	if playerMember := teamMemberByRole(team, "player"); playerMember == nil || playerMember.GetModel() != model {
 		t.Errorf("player member = %+v, want model %q", playerMember, model)
 	}
-	if plannerMember := teamMemberByRole(team, "planner"); plannerMember == nil || plannerMember.GetModel() != "glm-5.3" {
-		t.Errorf("planner member = %+v, want the default glm-5.3", plannerMember)
+	if plannerMember := teamMemberByRole(team, "planner"); plannerMember == nil || plannerMember.GetModel() != agentV2ModelGlmDefault {
+		t.Errorf("planner member = %+v, want the default %q", plannerMember, agentV2ModelGlmDefault)
 	}
 	if team.GetDesktopConnected() {
 		t.Error("desktop_connected = true with no flow connection, want false")
 	}
 
-	// GetTeam / GetTeamMember agree with the stored configuration.
+	// GetTeam / GetTeamMember agree with the stored configuration (the
+	// output side backfills the member's composite selector, FR-018).
 	stored := getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName)
 	if teamMemberPreset(stored, "player") != player.GetName() || teamMemberModel(stored, "player") != model {
 		t.Errorf("GetTeam player config = {%q %q}, want {%q %q}", teamMemberPreset(stored, "player"), teamMemberModel(stored, "player"), player.GetName(), model)
@@ -268,21 +310,21 @@ func TestAgentV2TeamMaterializationValidation(t *testing.T) {
 
 	// An empty model resolves to the process default at materialization.
 	defaulted := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
-	if teamMemberModel(defaulted, "player") != "glm-5.3" || teamMemberModel(defaulted, "planner") != "glm-5.3" {
-		t.Errorf("default-materialized models = {%q %q}, want both glm-5.3", teamMemberModel(defaulted, "player"), teamMemberModel(defaulted, "planner"))
+	if teamMemberModel(defaulted, "player") != agentV2ModelGlmDefault || teamMemberModel(defaulted, "planner") != agentV2ModelGlmDefault {
+		t.Errorf("default-materialized models = {%q %q}, want both %q", teamMemberModel(defaulted, "player"), teamMemberModel(defaulted, "planner"), agentV2ModelGlmDefault)
 	}
 
 	// Re-Apply of the same configuration is idempotent.
 	again := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
-	if teamMemberPreset(again, "player") != player.GetName() || teamMemberModel(again, "player") != "glm-5.3" {
+	if teamMemberPreset(again, "player") != player.GetName() || teamMemberModel(again, "player") != agentV2ModelGlmDefault {
 		t.Errorf("re-Apply config = {%q %q}, want the unchanged configuration", teamMemberPreset(again, "player"), teamMemberModel(again, "player"))
 	}
 
-	// Fail-fast validation (Layer 1 structure + Layer 2 scene): unknown
-	// model, scene role mismatch, an empty member preset, an unknown preset
-	// id, and a non-"members" update_mask all reject with 400
-	// INVALID_ARGUMENT and leave the standing configuration untouched
-	// (team-api.md §2/§6).
+	// Fail-fast validation (Layer 1 structure + Layer 2 scene): an unknown
+	// composite model, a legacy bare id, scene role mismatch, an empty member
+	// preset, an unknown preset id, and a non-"members" update_mask all
+	// reject with 400 INVALID_ARGUMENT and leave the standing configuration
+	// untouched (team-api.md §2/§6).
 	scene := func(playerMember, plannerMember *game.TeamMember) []*game.TeamMember {
 		return []*game.TeamMember{playerMember, plannerMember}
 	}
@@ -294,8 +336,13 @@ func TestAgentV2TeamMaterializationValidation(t *testing.T) {
 	}{
 		{
 			name:       "unknown model",
-			members:    scene(teamMember("player", player.GetName(), "no-such-model"), teamMember("planner", planner.GetName(), "")),
+			members:    scene(teamMember("player", player.GetName(), "glm-responses/no-such-model"), teamMember("planner", planner.GetName(), "")),
 			wantSubstr: "unknown model",
+		},
+		{
+			name:       "bare model selector",
+			members:    scene(teamMember("player", player.GetName(), "no-such-model"), teamMember("planner", planner.GetName(), "")),
+			wantSubstr: "composite form",
 		},
 		{
 			name:       "scene role mismatch",
@@ -330,7 +377,7 @@ func TestAgentV2TeamMaterializationValidation(t *testing.T) {
 			}
 		})
 	}
-	if after := getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName); teamMemberPreset(after, "player") != player.GetName() || teamMemberModel(after, "player") != "glm-5.3" {
+	if after := getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName); teamMemberPreset(after, "player") != player.GetName() || teamMemberModel(after, "player") != agentV2ModelGlmDefault {
 		t.Errorf("standing config after the rejected updates = {%q %q}, want the untouched materialization", teamMemberPreset(after, "player"), teamMemberModel(after, "player"))
 	}
 }
@@ -501,11 +548,12 @@ func TestAgentV2TeamSendUnmaterializedRejected(t *testing.T) {
 	}
 
 	// Layer 2 — owner without a materialized team: the fail-fast unknown-model
-	// UpdateTeam allocates the owner, then rejects without materializing.
+	// composite selector makes UpdateTeam allocate the owner, then reject
+	// without materializing.
 	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-unmat-"+uniqueSuffix())
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-unmat", "unmaterialized")
 	_, failedStatus, failedBody := updateAgentV2TeamWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName,
-		player.GetName(), planner.GetName(), "no-such-model", "")
+		player.GetName(), planner.GetName(), "glm-responses/no-such-model", "")
 	if failedStatus != http.StatusBadRequest {
 		t.Fatalf("UpdateTeam with unknown model status = %d (body: %s), want 400 INVALID_ARGUMENT", failedStatus, failedBody)
 	}
