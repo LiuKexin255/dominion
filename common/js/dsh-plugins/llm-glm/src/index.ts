@@ -7,9 +7,11 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
+import { RetryPolicySchema } from "@deepseek-ai/dsh-llm";
+import { MAX_TIMER_DELAY_MS } from "@deepseek-ai/dsh-timeout";
 import z from "@deepseek-ai/schemastery";
 
-import { GlmResponsesAdapter } from "./adapter.js";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS, GlmResponsesAdapter } from "./adapter.js";
 import type { GlmConfig } from "./adapter.js";
 
 export const name = "llm-glm";
@@ -25,10 +27,19 @@ const PROVIDER_ROUTE = "glm-responses";
 // mutable arrays) is deliberately wider than the validated output type, so
 // the built schema cannot be directly assigned to z<GlmConfig>; the cast
 // mirrors the official adapters' declared `Config: z<Config>` shape.
+// retryPolicy/streamIdleTimeoutMs are optional; the watchdog window is
+// bounded by the largest delay Node schedules without clamping it to one
+// millisecond (MAX_TIMER_DELAY_MS, dsh-timeout).
 export const Config: z<GlmConfig> = z.object({
   apiKeyEnv: z.string(),
   baseURL: z.string(),
   models: z.array(z.object({ id: z.string(), contextWindow: z.number() })),
+  retryPolicy: RetryPolicySchema,
+  streamIdleTimeoutMs: z
+    .number()
+    .min(Number.MIN_VALUE)
+    .max(MAX_TIMER_DELAY_MS)
+    .default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
 }) as unknown as z<GlmConfig>;
 
 export function apply(ctx: Context, config: GlmConfig): void {

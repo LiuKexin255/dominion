@@ -412,7 +412,7 @@ describe("MemberCollector", () => {
     // The reasoning prefix streams as bare deltas (no block-end before the failure).
     emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "Thinking about " }));
     emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "the request" }));
-    emit(listeners, "agent/error", { agent, error: { message: "provider failure", code: "GLM_TRANSPORT" } });
+    emit(listeners, "agent/error", { agent, error: { message: "provider failure", code: "TRANSPORT" } });
     emit(listeners, "agent/status", { agent, status: "idle" });
 
     const entries = history.listTeamMessages();
