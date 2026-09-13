@@ -65,7 +65,7 @@ override providerRetryPolicy(_provider: string): ResolvedRetryPolicy {
 
 - **结构化失败日志**：编排器层产出（见 [orchestrator-turn-outcome.md §3](orchestrator-turn-outcome.md)），字段 `{session, phase, member, code, error}`；适配器不重复落日志。
 - **重试可见**：`llm/retry` durable session 事件（llm-retry 既有），不入用户消息流（SC-001 "无重试痕迹泄漏"）。
-- **token 零出现**：全部 message/log/cause 链不含凭据值（SC-003）。
+- **token 零出现**：用户可见面 MUST 不含凭据值——`LlmError.message`、结构化失败日志正文（字段 `{session, phase, member, code, error}`，见上一条）与用户消息流/错误呈现；端到端判据以 `specs/063-llm-reliability-opencode-go/spec.md` SC-003 的「全部消息、错误与日志 token 零出现」断言兜底。原始错误体仅存在于 `cause` 诊断链（§1 义务 1、§4 义务 2），不上报日志正文、不进入 message：即使中间代理在错误体中反射了请求头，可见面仍零泄漏。
 
 ## 4. 测试义务（vitest，随包交付）
 

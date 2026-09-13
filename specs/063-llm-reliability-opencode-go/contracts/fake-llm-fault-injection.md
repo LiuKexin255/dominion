@@ -23,7 +23,7 @@ messages:
 - **计数器语义**：每模板独立、进程内、`sync.Mutex` 保护；只对**成功匹配该模板**的请求计数；重启清零（测试拓扑每 plan 重新部署，天然隔离）。
 - **注入行为**（两 wire 一致）：
   - `http_status: N` → 直接返回 HTTP N，体为 `{"error":{"message":<error_message 或 "injected http failure">,"type":"injected"}}`；`retry_after` 存在时响应头携带 `Retry-After`。429 + quota 措辞体的用例：`error_message` 指定注入体 `error.message` 文案（如 `"insufficient quota"`），驱动适配器 `QUOTA` 分类。
-  - `empty: true` → HTTP 200 + 正常 SSE 生命周期但**零内容块**（Responses：`created → completed`；chat：role chunk + `[DONE]`）。
+  - `empty: true` → HTTP 200 + 正常 SSE 生命周期但**零内容块**（Responses：`created → completed`；chat：role chunk + finish(stop) + `[DONE]`——终帧携带可观测 `finish_reason`，供适配器按「零已开块 + stop → EMPTY_RESPONSE」分类，见 [llm-failure-taxonomy.md §1](llm-failure-taxonomy.md) 义务 3）。
   - `failure: {code, message}`（复用既有 `ResponseFailure` 形态）→ 既有带内失败语义，受 `times` 约束。
 - **向后兼容**：无 `transient` 块的模板行为不变；既有 `failure` 字段语义视为 `transient: {times: ∞, failure}` 的等价快捷形态（实现上可合并，外部行为不变）。
 

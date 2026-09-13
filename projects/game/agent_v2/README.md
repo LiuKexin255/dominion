@@ -7,7 +7,13 @@ bazel target 保留 `agent_v2`）：以 **dsh 进程内嵌入（B1 模式）**�
 0.1.1-rc.2，与 `third_party/dsh/core` 同线），通过自研 LLM 插件
 `@dominion/dsh-llm-glm`（`common/js/dsh-plugins/llm-glm`）接入 GLM codingplan
 的 OpenAI **Responses** 协议端点（`https://open.bigmodel.cn/api/v1`，
-https://docs.bigmodel.cn/cn/coding-plan/tool/others）。session 的组织模型是
+https://docs.bigmodel.cn/cn/coding-plan/tool/others），并经
+`@dominion/dsh-llm-opencode-go`（`common/js/dsh-plugins/llm-opencode-go`）接入
+opencode-go 网关的 OpenAI **Chat Completions** 协议端点
+（`https://opencode.ai/zen/go/v1`，https://opencode.ai/docs/zh-cn/go/ ）；模型
+选择面以 `provider/model-id` 复合标识联合呈现两 provider 目录
+（`specs/063-llm-reliability-opencode-go/contracts/model-selection.md`）。
+session 的组织模型是
 team：一个 session 至多物化一个 team，恰含 player 与 planner 两个成员，各持
 独立历史与 system prompt；需求与验收锚点见
 `specs/059-agent-v2-team-mode/spec.md` 与
@@ -74,8 +80,16 @@ team：一个 session 至多物化一个 team，恰含 player 与 planner 两个
   状态机（`specs/059-agent-v2-team-mode/research.md` R7）。
 - 一致性防护伴生：`dsh-session`/`dsh-agent`/`dsh-scope` 三个包的 `/invariant`
   subpath 插件（官方 loop 的 request-reconstruction 不变量）。
-- `llm-glm`（`@dominion/dsh-llm-glm`）：GLM Responses 端点接入；`models[]`
-  是部署模型目录的唯一来源（`ListModels` 与物化校验同源）。
+- `llm-glm`（`@dominion/dsh-llm-glm`）：GLM Responses 端点接入；`models[]` 是该
+  provider 的部署模型目录（`ListModels` 联合目录由各已注册 provider 的
+  `listModels` 聚合，见
+  `specs/063-llm-reliability-opencode-go/contracts/model-selection.md` §2；物化
+  校验按复合标识切分后对所选 provider 目录进行）。
+- `llm-opencode-go`（`@dominion/dsh-llm-opencode-go`）：opencode-go 网关 Chat
+  Completions 端点接入（`specs/063-llm-reliability-opencode-go/spec.md` FR-015
+  默认目录 = 官方该路由 16 项）；与 `llm-glm` 同套
+  失败分类/重试/看护义务
+  （`specs/063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md`）。
 - `agent-presets`（`@deepseek-ai/dsh-agent-presets`）：preset roster，roots =
   两个模板 system root（player/planner 池各一，镜像内
   `preset-templates/{player,planner}`）；用户 preset 的组合在物化时从 store
@@ -293,31 +307,42 @@ roster 的两个模板 system root（player/planner 池）扫描**模板根**下
 
 ## 模型端点与凭据配置
 
-启动时的解析顺序（`projects/game/agent_v2/src/dsh.ts`，
-`specs/049-agent-v2-dsh-init/research.md` D9）：
+两个 LLM 插件行（`llm-glm`/`llm-opencode-go`）共享同一宿主注入模式
+（`projects/game/agent_v2/src/dsh.ts`，`specs/049-agent-v2-dsh-init/research.md`
+D9；`specs/063-llm-reliability-opencode-go/research.md` D13）：
 
-1. 模型端点：`GLM_BASE_URL` 直用 > `GLM_LLM_TARGET` 经 Dominion 服务发现解析
-   （追加 `/v1` 路径）> 默认 `https://open.bigmodel.cn/api/v1`。
-2. API token（`GLM_API_KEY`，三级解析，`specs/049-agent-v2-dsh-init/research.md`
-   D9）：环境变量已设直用（trim 非空，空白视为未设置）→ 否则读取
-   `$DOMINION_SECRET_DIR/glm-api-token` 文件 → 皆缺失/为空则**保持未设**并记录
-   一条 warning（含 env 名与 secret 文件路径，不含任何 key 内容——
-   `specs/049-agent-v2-dsh-init/spec.md` SC-004）后继续 boot。token 缺失不阻塞
-   启动：插件对空 key 的模型请求**不携带
-   Authorization header**（`specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md`
-   §3 义务 6）——fake 端点对凭据容忍；真实端点对无 Authorization 请求返回
-   401，以首轮 `turn_end{ERROR}` 明确呈现。
+1. 模型端点（各自一对变量）：`*_BASE_URL` 直用 > `*_LLM_TARGET` 经 Dominion
+   服务发现解析（追加 `/v1` 路径）> 默认端点——GLM 默认
+   `https://open.bigmodel.cn/api/v1`，opencode-go 默认
+   `https://opencode.ai/zen/go/v1`。
+2. API token（`GLM_API_KEY`/`OPENCODE_API_KEY`，三级解析）：环境变量已设直用
+   （trim 非空，空白视为未设置）→ 否则读取
+   `$DOMINION_SECRET_DIR/{glm-api-token,opencode-api-token}` 文件 → 皆缺失/为空
+   则**保持未设**并记录一条 warning（含 env 名与 secret 文件路径，不含任何 key
+   内容——`specs/049-agent-v2-dsh-init/spec.md` SC-004）后继续 boot。token 缺失
+   不阻塞启动：插件对空 key 的模型请求**不携带 Authorization header**
+   （`specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md` §3 义务 6；
+   `specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md` §3）
+   ——fake 端点对凭据容忍；真实端点对无 Authorization 请求返回 401，以首轮
+   `turn_end{ERROR}` 明确呈现。
+3. 模型默认与看护窗口（cordis 行 env 注入）：`GLM_MODEL`/`OPENCODE_MODEL`
+   覆盖各自目录首项（缺省 `glm-5.3`）；`GLM_STREAM_IDLE_TIMEOUT_MS`/
+   `OPENCODE_STREAM_IDLE_TIMEOUT_MS` 为流停滞看护窗口（缺省 300000）。环境变量
+   总表见 `specs/063-llm-reliability-opencode-go/data-model.md` §6。
 
 ### 运维预置（k8s secret，仅生产需要）
 
 生产部署前，运维需在集群中预置 secret：**`llm-secrets` 增加 key
-`glm-codingplan`**（GLM codingplan API Key，在
-https://docs.bigmodel.cn/cn/coding-plan/quick-start 套餐页新建）。`service.yaml`
-的生产 artifact `agent-v2` 声明逻辑 secret `glm-api-token`，
-`projects/game/deploy.yaml` 将其绑定到 `llm-secrets/glm-codingplan`（deploy 工具
-的 secret 双向校验仅对所选 artifact 生效，`tools/release/deploy/README.md`
-§服务类型）；运行期经 projected volume 挂载到
-`$DOMINION_SECRET_DIR/glm-api-token`
+`glm-codingplan` 与 key `opencode-go`**——前者为 GLM codingplan API Key（在
+https://docs.bigmodel.cn/cn/coding-plan/quick-start 套餐页新建），后者为
+opencode-go 订阅 token（官方网关文档
+https://opencode.ai/docs/zh-cn/go/ ）。`service.yaml` 的生产 artifact
+`agent-v2` 声明逻辑 secret `glm-api-token` 与 `opencode-api-token`，
+`projects/game/deploy.yaml` 分别将其绑定到 `llm-secrets/glm-codingplan` 与
+`llm-secrets/opencode-go`（deploy 工具的 secret 双向校验仅对所选 artifact
+生效，`tools/release/deploy/README.md` §服务类型；
+`specs/063-llm-reliability-opencode-go/research.md` D13）；运行期经 projected
+volume 挂载到 `$DOMINION_SECRET_DIR/{glm-api-token,opencode-api-token}`
 （`specs/002-deploy-secret-config/contracts/secret-config.md`）。
 
 测试 artifact **`agent-v2-test`**（同 target/tls、无 secrets 声明）承载零 secret
@@ -326,7 +351,7 @@ agent-v2 预置任何 secret。
 
 ## 大型测试
 
-`projects/game/testplan/system_test.yaml` 以三个 suite 覆盖 agent-v2 面与
+`projects/game/testplan/system_test.yaml` 以四个 suite 覆盖 agent-v2 面与
 周边模块：主 suite `game-system`（部署
 `projects/game/testplan/deploy_agent_v2.yaml`——won 拓扑，fake-desktop
 以 won 场景绑定 `desktop-e2e-won`）按模块顺序串行执行配置面、对话面
@@ -337,7 +362,12 @@ desktop 缺席、多会话隔离）与 desktop flow 面；断连 suite `game-dis
 以 progressive 场景 + 断连故障 env 绑定 `desktop-e2e-drop`）承载 mid-game
 断连恢复三局序列；memory 故障 suite `game-memory-down`（部署
 `projects/game/testplan/deploy_agent_v2_memory_down.yaml`——无 memory
-服务的拓扑变体）承载物化 fail-loud 回滚断言。测试替换面：fake-llm
+服务的拓扑变体）承载物化 fail-loud 回滚断言；停滞看护 suite `game-stall`
+（部署 `projects/game/testplan/deploy_agent_v2_stall.yaml`——同拓扑、
+agent-v2-test 以 `GLM_STREAM_IDLE_TIMEOUT_MS=2000` 使用专用看护窗口）承载
+Responses wire 停滞模板在窗口内的有界超时收敛断言
+（`specs/063-llm-reliability-opencode-go/spec.md` SC-004a，
+`agent_v2_stall_test.go`）。测试替换面：fake-llm
 `/v1/responses` 替换真实端点、fake-desktop 替换真实桌面、零外部网络；套件-拓扑
 对照见 `projects/game/testplan/README.md` §2。060 增量断言：Send 流中 planner
 消费用户输入的 `member_view` 帧与工具 `block_end → team_message →
@@ -345,7 +375,12 @@ tool_result` 帧序（`agent_v2_conversation_test.go`）、`GetTeam.active_membe
 阶段流转（物化后 planner、回合在途为驱动成员、静止为 activation；
 `agent_v2_game_test.go`）、preset store 派生链路（创建 → 物化 persona 与记录
 一致 → 编辑记录后再物化取新值；`agent_v2_preset_test.go`）、广播单一 XML 形态
-与提示词分层锚点（fake-llm 夹具 + 对话/游戏断言）。
+与提示词分层锚点（fake-llm 夹具 + 对话/游戏断言）。063 增量断言：单次瞬时失败
+经重试恢复、planner 失败保持激活、配额/认证零重试风暴、opencode-go 复合标识
+多局会话与合成 token 零泄漏（`agent_v2_conversation_test.go`）；ListModels 联合
+目录与 UpdateTeam 复合标识三分支（`agent_v2_preset_test.go`）；停滞看护有界
+收敛（`agent_v2_stall_test.go`）。注入设施与触发词见
+`projects/game/fake-llm/README.md`。
 
 ## 已知限制
 
