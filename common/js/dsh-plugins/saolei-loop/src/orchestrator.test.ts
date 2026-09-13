@@ -25,7 +25,7 @@ import type {
   AgentStatus,
   CreateAgentOptions,
 } from "@deepseek-ai/dsh-agent";
-import { createUserMessage, MessageId } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, LlmError, MessageId } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type {
   TeamHandle,
@@ -84,6 +84,19 @@ function relay(
   });
 }
 
+/** The `agent/status` payload the official loop emits. */
+type StatusListener = (payload: { agent: Agent; status: AgentStatus }) => void;
+
+/** The `agent/error` payload the official loop emits at a failed turn's boundary. */
+interface AgentErrorPayload {
+  agent: Agent;
+  turn: number;
+  step: number;
+  error: unknown;
+}
+
+type ErrorListener = (payload: AgentErrorPayload) => void;
+
 interface FakeMember {
   readonly id: string;
   readonly agent: Agent;
@@ -92,10 +105,16 @@ interface FakeMember {
   readonly followups: UserMessage[];
   readonly injections: UserMessage[];
   readonly cancels: Array<{ cause: unknown; options: unknown }>;
-  readonly statusListeners: Array<
-    (payload: { agent: Agent; status: AgentStatus }) => void
-  >;
+  readonly statusListeners: StatusListener[];
+  readonly errorListeners: ErrorListener[];
   settle(): void;
+  /**
+   * Settle the in-flight turn as failed: emit `agent/error` (an
+   * {@link LlmError} carrying the code) and then idle — the exact order the
+   * official loop produces
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1/§5).
+   */
+  failCurrentTurn(code: string): void;
   /** Make the next followup throw (one-shot drive-failure injection). */
   failNextFollowup(): void;
 }
@@ -109,26 +128,27 @@ function createFakeMember(name: string): FakeMember {
   const followups: UserMessage[] = [];
   const injections: UserMessage[] = [];
   const cancels: Array<{ cause: unknown; options: unknown }> = [];
-  const statusListeners: Array<
-    (payload: { agent: Agent; status: AgentStatus }) => void
-  > = [];
+  const statusListeners: StatusListener[] = [];
+  const errorListeners: ErrorListener[] = [];
   const state = { status: "idle" as AgentStatus };
   let failFollowup = false;
+  const off = <T>(list: T[], listener: T): (() => void) => () => {
+    const index = list.indexOf(listener);
+    if (index >= 0) {
+      list.splice(index, 1);
+    }
+  };
   const ctx = {
-    on: vi.fn(
-      (
-        _event: string,
-        listener: (payload: { agent: Agent; status: AgentStatus }) => void,
-      ) => {
-        statusListeners.push(listener);
-        return () => {
-          const index = statusListeners.indexOf(listener);
-          if (index >= 0) {
-            statusListeners.splice(index, 1);
-          }
-        };
-      },
-    ),
+    on: vi.fn((event: string, listener: StatusListener | ErrorListener) => {
+      if (event === "agent/error") {
+        const typed = listener as ErrorListener;
+        errorListeners.push(typed);
+        return off(errorListeners, typed);
+      }
+      const typed = listener as StatusListener;
+      statusListeners.push(typed);
+      return off(statusListeners, typed);
+    }),
   } as { on: unknown; agent?: Agent };
 
   const id = name as Agent["id"];
@@ -173,7 +193,19 @@ function createFakeMember(name: string): FakeMember {
     injections,
     cancels,
     statusListeners,
+    errorListeners,
     settle: emitIdle,
+    failCurrentTurn: (code: string) => {
+      // The official loop reports the failure at the turn's active boundary
+      // and only then converges to idle, so the marker is visible when the
+      // drive's idle await resolves
+      // (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1/§5).
+      const error = new LlmError(`injected ${code} failure`, code);
+      for (const listener of [...errorListeners]) {
+        listener({ agent, turn: 1, step: 1, error });
+      }
+      emitIdle();
+    },
     failNextFollowup: () => {
       failFollowup = true;
     },
@@ -704,13 +736,15 @@ describe("TeamOrchestrator failure reporting", () => {
     h.orchestrator.submit("首条");
     await tick();
 
-    // M1: the failure is logged with its session/phase context and exposed.
+    // M1: the failure is logged with its session/phase context and exposed;
+    // a non-LlmError step failure reports the UNKNOWN code.
     expect(logger.error).toHaveBeenCalledOnce();
     expect(logger.error.mock.calls[0]?.[0]).toMatch(/orchestration step failed/);
     expect(logger.error.mock.calls[0]?.[1]).toEqual({
       session: SESSION,
       phase: "planning",
       member: null,
+      code: "UNKNOWN",
       error: "drain read failed",
     });
     expect(h.orchestrator.snapshot()).toMatchObject({
@@ -720,6 +754,7 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "drain read failed",
         member: null,
         phase: "planning",
+        code: "UNKNOWN",
       },
     });
 
@@ -736,6 +771,133 @@ describe("TeamOrchestrator failure reporting", () => {
       failed: false,
       lastError: null,
     });
+  });
+
+  it("retains the planner activation after a failed turn and redrives it on the next send", async () => {
+    const logger = { error: vi.fn() };
+    const h = createHarness({ logger });
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    // The first send drives the planner; the turn fails at its active
+    // boundary with an LlmError-coded agent/error (which precedes idle).
+    h.orchestrator.submit("请开始扫雷工作");
+    planner.failCurrentTurn("SERVER");
+    await tick();
+
+    // specs/063-llm-reliability-opencode-go/spec.md FR-009/FR-012: the
+    // activation stays on the planner, the failure is exposed with its
+    // stable code, and exactly one structured error line carries the full
+    // field set (session/phase/member/code/error).
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "planning",
+      active: null,
+      activation: "planner",
+      paused: true,
+      failed: true,
+      lastError: {
+        message: "injected SERVER failure",
+        member: "planner",
+        phase: "planning",
+        code: "SERVER",
+      },
+    });
+    expect(logger.error).toHaveBeenCalledOnce();
+    expect(logger.error.mock.calls[0]?.[0]).toMatch(/orchestration step failed/);
+    expect(logger.error.mock.calls[0]?.[1]).toEqual({
+      session: SESSION,
+      phase: "planning",
+      member: "planner",
+      code: "SERVER",
+      error: "injected SERVER failure",
+    });
+    expect(player.followups).toHaveLength(0);
+
+    // The next send lifts the pause and re-drives the same member: the
+    // planner→player switch did not happen on the failed turn.
+    expect(h.orchestrator.submit("再来").queued).toBe(false);
+    expect(planner.followups.map(messageText)).toEqual([
+      "请开始扫雷工作",
+      "再来",
+    ]);
+    expect(player.followups).toHaveLength(0);
+
+    // The recovered turn succeeds: the existing switch evaluation runs and
+    // the player becomes the activation.
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: null,
+      activation: "player",
+      failed: false,
+      lastError: null,
+    });
+    expectRelayOrUserSources(h);
+  });
+
+  it("digests messages queued during a failed turn with the retained member in FIFO order", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    // The first send drives the planner; the second queues behind the turn.
+    h.orchestrator.submit("首条");
+    expect(h.orchestrator.submit("排队").queued).toBe(true);
+
+    // The turn fails: the pause retains both the activation and the queue.
+    planner.failCurrentTurn("TIMEOUT");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      queued: 1,
+      activation: "planner",
+      lastError: { code: "TIMEOUT", member: "planner" },
+    });
+
+    // The next send lifts the pause: the retained member digests the FIFO
+    // first ("排队" before "重驱"), so the player is never driven.
+    h.orchestrator.submit("重驱");
+    expect(planner.followups.map(messageText)).toEqual(["首条", "排队"]);
+    planner.settle();
+    await tick();
+    expect(planner.followups.map(messageText)).toEqual(["首条", "排队", "重驱"]);
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(player.followups).toHaveLength(0);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: false,
+      activation: "player",
+    });
+    expectRelayOrUserSources(h);
+  });
+
+  it("does not retain after a cancel: the aborted turn emits no agent/error", async () => {
+    const logger = { error: vi.fn() };
+    const h = createHarness({ logger });
+    await h.orchestrator.materialize(teamOptions());
+    const planner = member(h, PLANNER_ID);
+
+    // Cancel terminates the in-flight planner turn through the abort path,
+    // which never emits agent/error
+    // (specs/063-llm-reliability-opencode-go/spec.md US2 scenario 6).
+    h.orchestrator.submit("首条");
+    expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
+    await h.orchestrator.whenQuiescent();
+
+    // The existing cancel semantics hold: paused by the cancel, no failure
+    // state, no fail-channel log, and the activation is unchanged.
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      failed: false,
+      lastError: null,
+      active: null,
+      activation: "planner",
+    });
+    expect(planner.followups.map(messageText)).toEqual(["首条"]);
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it("reports a failed review drive and retries the terminal record instead of losing it", async () => {
@@ -763,6 +925,7 @@ describe("TeamOrchestrator failure reporting", () => {
       session: SESSION,
       phase: "reviewing",
       member: "planner",
+      code: "UNKNOWN",
       error: "followup rejected",
     });
     expect(h.orchestrator.snapshot()).toMatchObject({
@@ -772,6 +935,7 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "followup rejected",
         member: "planner",
         phase: "reviewing",
+        code: "UNKNOWN",
       },
     });
 

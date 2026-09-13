@@ -714,6 +714,7 @@ export class TeamSessions {
             session: context.session,
             phase: context.phase,
             member: context.member ?? "",
+            code: context.code,
             error: context.error,
           }),
       },

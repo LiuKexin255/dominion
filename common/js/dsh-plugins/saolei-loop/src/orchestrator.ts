@@ -43,9 +43,13 @@
  * losing the review.
  *
  * A pump step that throws (a fail-loud relay read, an alternation-invariant
- * violation, a rejected followup/inject) suspends auto-continuation and is
- * surfaced through the injected logger and the snapshot's
- * `failed`/`lastError` fields — never silently stalled.
+ * violation, a rejected followup/inject) or whose member turn settles in
+ * failure (the member ctx `agent/error` boundary) suspends auto-continuation
+ * through the same fail() channel and is surfaced through the injected
+ * logger and the snapshot's `failed`/`lastError` fields — never silently
+ * stalled. A failed turn retains the current activation, so the next user
+ * send re-drives the same member
+ * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -54,7 +58,7 @@ import type {
   AgentHandle,
   CreateAgentOptions,
 } from "@deepseek-ai/dsh-agent";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type { TeamHandle, TeamRegistration } from "@dominion/dsh-team";
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
@@ -77,14 +81,53 @@ export type OrchestrationPhase = "planning" | "playing" | "reviewing";
 export const TEAM_PROVIDER = "glm-responses";
 
 /**
+ * The stable failure code reported for a failure that is not an
+ * {@link LlmError} (specs/063-llm-reliability-opencode-go/data-model.md §4).
+ */
+const UNKNOWN_FAILURE_CODE = "UNKNOWN";
+
+/**
+ * The failure facts of one member turn: the stable machine-routable code
+ * (specs/063-llm-reliability-opencode-go/data-model.md §1) plus the
+ * diagnostic message. Written by the member ctx `agent/error` subscription
+ * and consumed by the drive evaluation.
+ */
+interface TurnFailure {
+  readonly code: string;
+  readonly message: string;
+}
+
+/**
+ * Normalize a caught orchestration-step error or an `agent/error` payload
+ * into {@link TurnFailure}: an {@link LlmError} contributes its stable code
+ * (the same taxonomy the retry decision routes on), any other thrown value
+ * reports `UNKNOWN`.
+ */
+function turnFailureOf(error: unknown): TurnFailure {
+  if (error instanceof LlmError) {
+    return { code: error.code, message: error.message };
+  }
+  return {
+    code: UNKNOWN_FAILURE_CODE,
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
+/**
  * Failure context handed to the injected orchestration logger: the team
  * session, the phase and member of the failed step (`member` is null when
- * the decision step itself failed), and the normalized error message.
+ * the decision step itself failed), the stable failure code, and the
+ * normalized error message.
  */
 export interface OrchestrationFailureContext {
   readonly session: string;
   readonly phase: OrchestrationPhase;
   readonly member: TeamRole | null;
+  /**
+   * Stable failure code (specs/063-llm-reliability-opencode-go/data-model.md §1);
+   * `UNKNOWN` for non-LlmError failures.
+   */
+  readonly code: string;
   readonly error: string;
 }
 
@@ -265,6 +308,11 @@ export interface OrchestratorFailure {
   readonly member: TeamRole | null;
   /** The workflow phase at failure time. */
   readonly phase: OrchestrationPhase;
+  /**
+   * Stable failure code (specs/063-llm-reliability-opencode-go/data-model.md §1);
+   * `UNKNOWN` for non-LlmError failures.
+   */
+  readonly code: string;
 }
 
 /** Read-only orchestration view for the host (status/queue/failure presentation). */
@@ -319,6 +367,18 @@ interface MemberRuntime {
   /** Player-only terminal-event view captured at setup time. */
   game: GameEventSource | undefined;
   offStatus: () => void;
+  /**
+   * The member ctx `agent/error` subscription: the failed turn's active
+   * boundary, always reached before idle
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1).
+   */
+  offError: () => void;
+  /**
+   * The most recent driven turn's failure, written by the `agent/error`
+   * subscription and consumed by {@link TeamOrchestrator.drive} once idle
+   * settles; null while no driven turn is pending or the last one succeeded.
+   */
+  lastTurnFailure: TurnFailure | null;
   readonly idleWaiters: IdleWaiter[];
 }
 
@@ -527,7 +587,7 @@ export class TeamOrchestrator {
     }
     const runtimes = [members.planner, members.player];
     for (const runtime of runtimes) {
-      runtime.offStatus();
+      this.unsubscribe(runtime);
     }
     const results = await Promise.allSettled(
       runtimes.map((runtime) => runtime.handle.dispose()),
@@ -609,12 +669,26 @@ export class TeamOrchestrator {
       agent: handle.agent,
       game,
       offStatus: () => {},
+      offError: () => {},
+      lastTurnFailure: null,
       idleWaiters: [],
     };
     runtime.offStatus = handle.agent.ctx.on("agent/status", (payload) => {
       if (payload.agent === handle.agent && payload.status === "idle") {
         this.settleIdle(runtime);
       }
+    });
+    // Record the turn's failure marker at its active boundary; the drive
+    // evaluation reads it after idle and owns every consequent transition,
+    // so this subscription itself never drives
+    // (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1).
+    // An abort converges without `agent/error`, leaving the marker null
+    // (specs/063-llm-reliability-opencode-go/spec.md US2 scenario 6).
+    runtime.offError = handle.agent.ctx.on("agent/error", (payload) => {
+      if (payload.agent !== handle.agent) {
+        return;
+      }
+      runtime.lastTurnFailure = turnFailureOf(payload.error);
     });
     return runtime;
   }
@@ -668,10 +742,16 @@ export class TeamOrchestrator {
     // cannot restore a half-built team, so the caller sees the original cause.
     await Promise.allSettled(
       [...created].reverse().map((runtime) => {
-        runtime.offStatus();
+        this.unsubscribe(runtime);
         return runtime.handle.dispose();
       }),
     );
+  }
+
+  /** Drop one member's ctx subscriptions (idle + turn-failure observation). */
+  private unsubscribe(runtime: MemberRuntime): void {
+    runtime.offStatus();
+    runtime.offError();
   }
 
   /** Queue a pump run; the loop always re-reads the state after each drive. */
@@ -692,9 +772,10 @@ export class TeamOrchestrator {
    * The serialized pump: each iteration takes exactly one step (a queued
    * user message or a structural continuation) and awaits its turn's idle
    * before re-evaluating. This is the "at most one member driven at a time"
-   * invariant's enforcement point (FR-011). A failing step suspends
-   * auto-continuation and is reported through {@link fail} — never silently
-   * dropped: the loop has no other owner to notice a stalled team.
+   * invariant's enforcement point (FR-011). A failing step — thrown, or a
+   * member turn that settled in failure — suspends auto-continuation and is
+   * reported through {@link fail}, never silently dropped: the loop has no
+   * other owner to notice a stalled team.
    */
   private async runPump(): Promise<void> {
     while (!this.disposed && !this.paused) {
@@ -705,7 +786,15 @@ export class TeamOrchestrator {
           return;
         }
         member = step.member.role;
-        await this.drive(step.member, step.messages);
+        const failure = await this.drive(step.member, step.messages);
+        if (failure !== null) {
+          // A failed member turn retains the activation and pauses through
+          // the same channel as a thrown step; the next submit lifts the
+          // pause and re-drives the same member (FR-009/FR-010,
+          // specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+          this.fail(step.member.role, failure);
+          return;
+        }
         this.lastError = null;
         if (step.review !== undefined) {
           // The review drive settled: only now is the terminal record consumed.
@@ -713,7 +802,7 @@ export class TeamOrchestrator {
           this.pendingReview = null;
         }
       } catch (err) {
-        this.fail(member, err);
+        this.fail(member, turnFailureOf(err));
         return;
       }
     }
@@ -723,12 +812,20 @@ export class TeamOrchestrator {
    * Suspend auto-continuation after a failed step and surface it: the failure
    * goes to the host-injected logger (console fallback) and into
    * {@link OrchestratorSnapshot} (`failed`/`lastError`) so the host can map an
-   * INTERNAL/turn error instead of a silent stall. The next successful drive
-   * clears it.
+   * INTERNAL/turn error instead of a silent stall. A failed member turn
+   * enters through this same channel; `this.current` stays untouched, so the
+   * activation is retained and the next submit re-drives the same member
+   * (FR-009/FR-012,
+   * specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2/§3).
+   * The next successful drive clears it.
    */
-  private fail(member: TeamRole | null, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
-    this.lastError = { message, member, phase: this.phase };
+  private fail(member: TeamRole | null, failure: TurnFailure): void {
+    this.lastError = {
+      message: failure.message,
+      member,
+      phase: this.phase,
+      code: failure.code,
+    };
     this.paused = true;
     this.logger().error(
       "saolei-loop orchestration step failed; auto-continuation suspended",
@@ -736,7 +833,8 @@ export class TeamOrchestrator {
         session: this.session ?? "",
         phase: this.phase,
         member,
-        error: message,
+        code: failure.code,
+        error: failure.message,
       },
     );
   }
@@ -815,12 +913,17 @@ export class TeamOrchestrator {
   /**
    * Run one member turn: batch the whole message set into one pre-step claim
    * (`inject` all but the last, `followup` the last) and await the member's
-   * idle transition. The alternation guard rejects a second concurrent drive.
+   * idle transition, returning the turn's failure facts (null on success).
+   * The `agent/error` subscription wrote the marker before idle, so consuming
+   * it here keeps every transition decision at the single post-drive
+   * evaluation point
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+   * The alternation guard rejects a second concurrent drive.
    */
   private async drive(
     member: MemberRuntime,
     messages: readonly UserMessage[],
-  ): Promise<void> {
+  ): Promise<TurnFailure | null> {
     if (messages.length === 0) {
       throw new Error(
         "saolei-loop orchestrator: an empty message set cannot start a turn",
@@ -846,6 +949,11 @@ export class TeamOrchestrator {
         messages[messages.length - 1] as UserMessage,
       );
       await idle;
+      const failure = member.lastTurnFailure;
+      // Consume the marker: it describes this turn only, so the next drive
+      // (the retained member after a failure) starts from a clean slate.
+      member.lastTurnFailure = null;
+      return failure;
     } finally {
       this.drivingMember = null;
     }
