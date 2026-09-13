@@ -29,6 +29,7 @@ ts_project(
     deps = [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-timeout",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@types/node",
         ":node_modules/eventsource-parser",
@@ -69,6 +70,7 @@ js_runtime_library(
     npm_deps = [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-timeout",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/eventsource-parser",
     ],
@@ -89,6 +91,7 @@ vitest_test(
     ) + [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-timeout",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@types/node",
         ":node_modules/eventsource-parser",
