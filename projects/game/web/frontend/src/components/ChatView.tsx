@@ -5,10 +5,11 @@
 // 气泡 / 成员原生输出带 player/planner 标签，不显示广播包装形态）；成员
 // 视角序列按消费面呈现（ROLE_AGENT=自己的输出（agent 形态）；ROLE_USER +
 // sender="user"=用户气泡；ROLE_USER + sender=成员 role=标注来源的用户消息
-// `user: [sender] 正文`）。成员输出按模型输出步骤分段呈现
-// （specs/054-agent-v2-bugfixes/contracts/web-ui.md §2.2）：历史一条消息即
-// 一个 step、live 回合每个 step 一个分段容器，依次独立呈现；步骤内 THINK →
-// ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard 分类分列不混排。
+// `user: [sender] 正文`）。成员输出按模型输出步骤分段呈现、完成回合按三分类
+// 折叠（specs/064-memory-split-fold-remain/contracts/web-ui.md §1）：历史一条
+// 消息即一个 step、live 回合每个 step 一个分段容器，依次独立呈现；步骤内
+// THINK → ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard 分类分列
+// 不混排。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Button,
@@ -180,10 +181,10 @@ function AgentStep({
 }
 
 // isFinalAnswer 判定一个 step 是否为回合的最终答案：含非空 text 块且无
-// tool-call 块，且非 interrupted（specs/054-agent-v2-bugfixes/contracts/
-// web-ui.md §2.2 折叠规则；interrupted 消息是中断前缀、非终态答案——
-// specs/054-agent-v2-bugfixes/revisions/phase4-failed-turn-folding.md §1，
-// A1 官方 'assistant-step' interrupted 三态基线）。
+// tool-call 块，且非 interrupted。命中即以该步为折叠锚（回合三分类第一桶，
+// specs/064-memory-split-fold-remain/contracts/web-ui.md §1）；interrupted
+// 消息是中断前缀、非终态答案（specs/054-agent-v2-bugfixes/data-model.md
+// §1.5）。
 function isFinalAnswer(message: HistoryMessage): boolean {
   return (
     !message.interrupted &&
@@ -226,10 +227,12 @@ function MemberTurn({
 }
 
 // CompletedTurn renders one finished turn (a run of consecutive agent history
-// messages, one per step): the final answer step stays独立呈现，此前 steps
-// 默认折叠进"思考过程"摘要区（步骤/工具计数，点击展开；手动展开在页面会话
-// 内保持，由 ChatView 的展开状态承载）；无最终答案的回合（失败/终止/纯工具
-// 结束）保持全部过程内容可见不折叠。
+// messages, one per step) by 回合三分类（specs/064-memory-split-fold-remain/
+// contracts/web-ui.md §1）：① 存在最终答案步 → 该步可见、此前 steps 默认折叠
+// 进"思考过程"摘要区（步骤/工具计数，点击展开；手动展开在页面会话内保持，
+// 由 ChatView 的展开状态承载）；② 无最终答案步且全部步均无 interrupted 标记
+// （终局收束回合）→ 以末步为锚折叠、末步整步可见；③ 存在 interrupted 标记
+// （失败/终止回合）→ 全部过程内容可见不折叠。
 function CompletedTurn({
   messages,
   expanded,
@@ -239,17 +242,22 @@ function CompletedTurn({
   expanded: boolean
   onToggle: () => void
 }) {
-  let finalIndex = -1
+  let anchorIndex = -1
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
     if (message !== undefined && isFinalAnswer(message)) {
-      finalIndex = i
+      anchorIndex = i
       break
     }
   }
-  // 无最终答案、或最终答案即首个 step：无过程可收（同单 step 回合），全部
-  // 直接呈现、不渲染折叠控件。
-  if (finalIndex <= 0) {
+  // 未命中最终答案步：全部步均无 interrupted 标记的完成回合（终局收束形态）
+  // 以末步为锚；存在 interrupted 标记的失败/终止回合保持全展开。
+  if (anchorIndex < 0 && !messages.some((m) => m.interrupted === true)) {
+    anchorIndex = messages.length - 1
+  }
+  // 锚序 ≤ 0（单步回合、失败/终止回合）：无过程可收，全部直接呈现、不渲染
+  // 折叠控件。
+  if (anchorIndex <= 0) {
     return (
       <>
         {messages.map((m, i) => (
@@ -258,10 +266,10 @@ function CompletedTurn({
       </>
     )
   }
-  // 防御性边界：最终答案之后的 step 在正常驱动下不存在（最终答案取最后一
-  // 个匹配），若出现则一并直接呈现，不静默丢弃。
-  const process = messages.slice(0, finalIndex)
-  const trailing = messages.slice(finalIndex + 1)
+  // 防御性边界：锚步之后的 step 在正常驱动下不存在（最终答案取最后一个匹配；
+  // 终局收束锚即末步），若出现则一并直接呈现，不静默丢弃。
+  const process = messages.slice(0, anchorIndex)
+  const trailing = messages.slice(anchorIndex + 1)
   const toolCount = process.reduce(
     (n, m) => n + m.blocks.filter((b) => b.toolCall !== undefined).length,
     0,
@@ -293,9 +301,9 @@ function CompletedTurn({
           ))}
         </div>
       )}
-      <AgentStep blocks={messages[finalIndex]?.blocks ?? []} running={false} />
+      <AgentStep blocks={messages[anchorIndex]?.blocks ?? []} running={false} />
       {trailing.map((m, i) => (
-        <AgentStep key={finalIndex + 1 + i} blocks={m.blocks} running={false} />
+        <AgentStep key={anchorIndex + 1 + i} blocks={m.blocks} running={false} />
       ))}
     </>
   )

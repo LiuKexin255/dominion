@@ -501,7 +501,9 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
     expect(toggle.getAttribute('data-open')).toBeNull()
   })
 
-  it('无最终答案的回合（以纯工具调用结束）全可见不折叠，陈旧 RUNNING 工具块呈现中断终态', () => {
+  it('中断回合（无最终答案、陈旧 RUNNING 工具块）全可见不折叠，工具块呈现中断终态', () => {
+    // 尾步带 interrupted 标记 → 失败/终止桶全展开（specs/064-memory-split-
+    // fold-remain/contracts/web-ui.md §1）；陈旧 RUNNING 工具块按中断终态呈现。
     renderChatView({
       history: [
         {
@@ -513,6 +515,7 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
         },
         {
           role: 'ROLE_AGENT',
+          interrupted: true,
           blocks: [{ toolCall: { toolId: 'call-b', name: 'saolei_operate', argsJson: '{}', status: 'TOOL_STATUS_RUNNING' } }],
         },
       ],
@@ -541,8 +544,10 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
 
   it('注入失败的回合回填后全部过程内容可见、失败前已产出的 RUNNING 工具块按中断终态呈现', () => {
     // US4 场景（specs/054-agent-v2-bugfixes/spec.md US4 场景 1）：流式呈现
-    // 过的内容（思考、工具调用、部分正文）经回填再次可见，无最终答案不折叠；
-    // 服务端工具异常路径固化历史中 RUNNING 无 result 的工具块按中断呈现。
+    // 过的内容（思考、工具调用、部分正文）经回填再次可见；尾步 interrupted
+    // 标记归入失败/终止桶（specs/064-memory-split-fold-remain/contracts/
+    // web-ui.md §1）保持全展开；服务端工具异常路径固化历史中 RUNNING 无
+    // result 的工具块按中断呈现。
     renderChatView({
       history: [
         { role: 'ROLE_USER', blocks: [{ text: { content: '开始一局扫雷' } }] },
@@ -555,6 +560,7 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
         },
         {
           role: 'ROLE_AGENT',
+          interrupted: true,
           blocks: [
             {
               toolCall: { toolId: 'call-b', name: 'saolei_operate', argsJson: '{"type":"click"}', status: 'TOOL_STATUS_RUNNING' },
@@ -794,6 +800,219 @@ describe('失败回合不折叠（specs/054-agent-v2-bugfixes/revisions/phase4-f
       />,
     )
     expectFailedTurnUnfolded()
+  })
+})
+
+describe('ChatView 终局收束回合折叠（specs/064-memory-split-fold-remain/contracts/web-ui.md §1）', () => {
+  // 终局收束回合（062 派生形态）：工具调用致终局后 turn 自然收束——无最终文本
+  // 答案步、无 interrupted 标记、末步含终局工具块（THINK|TEXT|TOOL）。回填
+  // （List 消息）与实时（store COMPLETED 投影）两路径收敛到同一折叠形态。
+  const GAME_END_TURN: HistoryMessage[] = [
+    {
+      role: 'ROLE_AGENT',
+      blocks: [
+        { think: { content: '先初始化棋盘' } },
+        { toolCall: { toolId: 'call-a', name: 'saolei_init', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'ok' } },
+      ],
+    },
+    {
+      role: 'ROLE_AGENT',
+      blocks: [
+        { text: { content: '还剩 2 雷。' } },
+        { toolCall: { toolId: 'call-b', name: 'saolei_remain', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'board size 9*9' } },
+      ],
+    },
+    {
+      role: 'ROLE_AGENT',
+      blocks: [
+        { think: { content: '只剩这一格' } },
+        { text: { content: '点击 (7,10)。' } },
+        { toolCall: { toolId: 'call-c', name: 'saolei_operate', argsJson: '{"type":"click","x":7,"y":10}', status: 'TOOL_STATUS_SUCCEEDED', result: 'saolei_operate → stopped at click(7,10) (lost)' } },
+      ],
+    },
+  ]
+
+  function expectGameEndTurnFolded(): void {
+    const toggle = screen.getByTestId('turn-process-toggle')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    // 计数 = 过程步数（锚步不计入自身）/ 过程内全部 TOOL_CALL 块数。
+    expect(toggle.textContent).toContain('2 步骤')
+    expect(toggle.textContent).toContain('2 次工具调用')
+    expect(screen.queryByTestId('turn-process')).toBeNull()
+    // 过程步（含其工具卡片）折叠不可见，仅末步锚整步可见。
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(1)
+    expect(screen.getByTestId('agent-text').textContent).toBe('点击 (7,10)。')
+    const card = screen.getByTestId('tool-card')
+    expect(card.getAttribute('data-tool-id')).toBe('call-c')
+    expect(card.getAttribute('data-status')).toBe('SUCCEEDED')
+    expect(screen.getByTestId('tool-card-result').textContent).toContain('(lost)')
+  }
+
+  it('默认折叠：toggle 存在、计数正确，末步锚整步可见（含终局工具卡片）', () => {
+    renderChatView({ history: GAME_END_TURN })
+    expectGameEndTurnFolded()
+  })
+
+  it('点击展开呈现全部过程步与过程内工具卡片，再次点击收起', () => {
+    renderChatView({ history: GAME_END_TURN })
+    fireEvent.click(screen.getByTestId('turn-process-toggle'))
+    expect(screen.getByTestId('turn-process-toggle').getAttribute('aria-expanded')).toBe('true')
+    const steps = screen.getAllByTestId('agent-step')
+    expect(steps).toHaveLength(3)
+    expect(Array.from(steps[0].children).map((el) => el.getAttribute('data-testid'))).toEqual([
+      'reasoning-row',
+      'tool-card',
+    ])
+    expect(Array.from(steps[2].children).map((el) => el.getAttribute('data-testid'))).toEqual([
+      'reasoning-row',
+      'agent-text',
+      'tool-card',
+    ])
+    expect(screen.getAllByTestId('tool-card').map((c) => c.getAttribute('data-tool-id'))).toEqual([
+      'call-a',
+      'call-b',
+      'call-c',
+    ])
+
+    fireEvent.click(screen.getByTestId('turn-process-toggle'))
+    expect(screen.queryByTestId('turn-process')).toBeNull()
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(1)
+  })
+
+  it('单步终局收束回合（末步即首步）无折叠控件、直接呈现', () => {
+    renderChatView({
+      history: [
+        {
+          role: 'ROLE_AGENT',
+          blocks: [
+            { think: { content: '一步终局' } },
+            { toolCall: { toolId: 'call-a', name: 'saolei_init', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'saolei_init → won' } },
+          ],
+        },
+      ],
+    })
+    expect(screen.queryByTestId('turn-process-toggle')).toBeNull()
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(1)
+    expect(screen.getByTestId('tool-card').getAttribute('data-tool-id')).toBe('call-a')
+    expect(screen.getByTestId('tool-card-result').textContent).toContain('saolei_init → won')
+  })
+
+  it('成员视角视图同型折叠：自身终局收束回合默认折叠、末步锚可见，展开后过程可见', () => {
+    renderMemberView({
+      member: 'player',
+      entries: GAME_END_TURN.map((message) => ({ message, sender: 'player' })),
+    })
+    const toggle = screen.getByTestId('turn-process-toggle')
+    expect(toggle.textContent).toContain('2 步骤')
+    expect(toggle.textContent).toContain('2 次工具调用')
+    expect(screen.queryByTestId('turn-process')).toBeNull()
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(1)
+    expect(screen.getByTestId('tool-card').getAttribute('data-tool-id')).toBe('call-c')
+
+    fireEvent.click(screen.getByTestId('turn-process-toggle'))
+    expect(screen.getAllByTestId('agent-step')).toHaveLength(3)
+    expect(screen.getAllByTestId('tool-card')).toHaveLength(3)
+  })
+
+  it('实时路径：turn_end{COMPLETED} 收束后即折叠，与回填形态一致（FR-006）', async () => {
+    // store 真实归约：turn_start 起的 live 回合两步流式（终局工具结果经
+    // toolResult 帧 settle）→ turn_end{COMPLETED} → closeLiveTurn(…, false)
+    // 投影为无 interrupted 标记的步消息 → 与回填同型折叠。
+    const store = new ChatStore()
+    async function* concludedStream(): AsyncGenerator<ChatEvent> {
+      yield { member: 'player', turnId: 't1', turnStart: {} }
+      yield { member: 'player', turnId: 't1', blockStart: { index: 0, type: 'BLOCK_TYPE_THINK', step: 1 } }
+      yield { member: 'player', turnId: 't1', delta: { index: 0, text: '先初始化棋盘', step: 1 } }
+      yield { member: 'player', turnId: 't1', blockEnd: { index: 0, block: { think: { content: '先初始化棋盘' } }, step: 1 } }
+      yield { member: 'player', turnId: 't1', blockStart: { index: 1, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-a', name: 'saolei_init', step: 1 } }
+      yield { member: 'player', turnId: 't1', delta: { index: 1, text: '{}', step: 1 } }
+      yield {
+        member: 'player',
+        turnId: 't1',
+        blockEnd: {
+          index: 1,
+          block: { toolCall: { toolId: 'call-a', name: 'saolei_init', argsJson: '{}', status: 'TOOL_STATUS_SUCCEEDED', result: 'ok' } },
+          step: 1,
+        },
+      }
+      yield { member: 'player', turnId: 't1', blockStart: { index: 2, type: 'BLOCK_TYPE_THINK', step: 2 } }
+      yield { member: 'player', turnId: 't1', delta: { index: 2, text: '只剩这一格', step: 2 } }
+      yield { member: 'player', turnId: 't1', blockEnd: { index: 2, block: { think: { content: '只剩这一格' } }, step: 2 } }
+      yield { member: 'player', turnId: 't1', blockStart: { index: 3, type: 'BLOCK_TYPE_TEXT', step: 2 } }
+      yield { member: 'player', turnId: 't1', delta: { index: 3, text: '点击 (7,10)。', step: 2 } }
+      yield { member: 'player', turnId: 't1', blockEnd: { index: 3, block: { text: { content: '点击 (7,10)。' } }, step: 2 } }
+      yield { member: 'player', turnId: 't1', blockStart: { index: 4, type: 'BLOCK_TYPE_TOOL_CALL', toolId: 'call-b', name: 'saolei_operate', step: 2 } }
+      yield { member: 'player', turnId: 't1', delta: { index: 4, text: '{"type":"click","x":7,"y":10}', step: 2 } }
+      yield {
+        member: 'player',
+        turnId: 't1',
+        blockEnd: {
+          index: 4,
+          block: { toolCall: { toolId: 'call-b', name: 'saolei_operate', argsJson: '{"type":"click","x":7,"y":10}', status: 'TOOL_STATUS_RUNNING' } },
+          step: 2,
+        },
+      }
+      yield {
+        member: 'player',
+        turnId: 't1',
+        toolResult: { toolId: 'call-b', status: 'TOOL_STATUS_SUCCEEDED', result: 'saolei_operate → stopped at click(7,10) (lost)' },
+      }
+      yield { member: 'player', turnId: 't1', turnEnd: { status: 'TURN_STATUS_COMPLETED' } }
+    }
+    const renderWithStore = (): void => {
+      const s = store.getSnapshot()
+      cleanup()
+      render(
+        <ChatView
+          session={SESSION}
+          history={s.history}
+          live={s.live}
+          queue={s.queue}
+          error={s.error}
+          canceled={s.canceled}
+          onSend={noop}
+          onCancel={noopCancel}
+        />,
+      )
+    }
+    renderWithStore()
+    expect(screen.queryByTestId('turn-process-toggle')).toBeNull()
+
+    await store.send('开局', concludedStream())
+    const s = store.getSnapshot()
+    expect(s.live).toEqual([])
+    expect(s.history).toHaveLength(2)
+    // 实时收束投影无 interrupted 标记（closeLiveTurn(…, false)）——与回填的
+    // List 消息同型，同一分类函数收敛到同一折叠形态。
+    expect(s.history.every((e) => e.message.interrupted !== true)).toBe(true)
+
+    renderWithStore()
+    const toggle = screen.getByTestId('turn-process-toggle')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.textContent).toContain('1 步骤')
+    expect(toggle.textContent).toContain('1 次工具调用')
+    const card = screen.getByTestId('tool-card')
+    expect(card.getAttribute('data-tool-id')).toBe('call-b')
+    expect(card.getAttribute('data-status')).toBe('SUCCEEDED')
+    expect(screen.getByTestId('tool-card-result').textContent).toContain('(lost)')
+
+    // 同一投影产物以回填形态（live 空、无 error）再渲染：折叠形态一致。
+    cleanup()
+    render(
+      <ChatView
+        session={SESSION}
+        history={s.history}
+        live={[]}
+        queue={[]}
+        error={null}
+        canceled={false}
+        onSend={noop}
+        onCancel={noopCancel}
+      />,
+    )
+    expect(screen.getByTestId('turn-process-toggle').textContent).toContain('1 步骤')
+    expect(screen.queryByTestId('turn-process')).toBeNull()
+    expect(screen.getByTestId('tool-card').getAttribute('data-tool-id')).toBe('call-b')
   })
 })
 
