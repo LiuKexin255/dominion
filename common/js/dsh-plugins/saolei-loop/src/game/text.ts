@@ -3,7 +3,10 @@
  * (specs/051-agent-v2-dsh-migration/spec.md A6 / FR-013): the text contract
  * is the three-layer body — outcome line, `game status:` line, ruler board;
  * `valid range:` on rejections; rejections are NORMAL results while
- * desktop/bridge failures are error outcomes.
+ * desktop/bridge failures are error outcomes. The `saolei_remain` body
+ * extends the body with a self-describing legend line between the
+ * `board size` header and the grid
+ * (specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §1).
  */
 
 import { renderBoardText, renderGridWithRuler } from "@dominion/game-saolei-board";
@@ -23,6 +26,19 @@ export const UNRECOGNIZABLE_OUTCOME = "unable to recognize board";
 
 /** Outcome line for the read-only `saolei_remain` query. */
 export const REMAIN_OUTCOME = "saolei_remain → computed";
+
+/**
+ * Self-describing legend line for the `saolei_remain` grid — terminal text of
+ * specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §1: each
+ * value is the count of mines still unmarked around that number cell
+ * (`cell number − adjacent flags`, 0 or negative when over-flagged), NOT the
+ * count of flags; columns are x and rows are y.
+ */
+const REMAIN_LEGEND =
+  "legend: each value = mines still unmarked around that number cell = " +
+  "cell number − adjacent flags (0 or negative when over-flagged); it is " +
+  "NOT the count of flags. Columns are x and rows are y — the same (x, y) " +
+  "as saolei_operate.";
 
 /**
  * Build the `saolei_init` success body: outcome + game-status line + initial
@@ -95,14 +111,16 @@ export function unrecognizableText(): string {
 }
 
 /**
- * Build the `saolei_remain` body: outcome + game-status line + the remain
- * grid rendered with the shared coordinate ruler.
+ * Build the `saolei_remain` body: outcome + game-status line + the
+ * `board size` header + the self-describing legend line + the remain grid
+ * rendered with the shared coordinate ruler.
  */
 export function remainText(state: GameState): string {
   return (
     `${REMAIN_OUTCOME}\n` +
     `game status: ${gameStatus(state)}\n\n` +
-    `board size ${state.width}*${state.height}\n\n` +
+    `board size ${state.width}*${state.height}\n` +
+    `${REMAIN_LEGEND}\n\n` +
     renderGridWithRuler(state.width, state.height, remainTokenAt(state))
   );
 }

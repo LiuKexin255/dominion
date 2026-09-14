@@ -232,18 +232,22 @@ export function apply(ctx: Context): void {
     }),
   );
 
+  // Remain semantics wording (primary meaning: mines still unmarked per
+  // number cell; explicit flag-count exclusion) follows the terminal text
+  // contract in specs/064-memory-split-fold-remain/contracts/saolei-plugins.md
+  // §2.
   ctx.tools.register(
     defineTool({
       name: "saolei_remain",
       description:
         "Read-only deduction view. Takes NO arguments and dispatches " +
-        "NOTHING to the desktop. Reads the latest recognized board and " +
-        "returns, for every cell, the remaining unmarked mine count: for " +
-        "a revealed number cell (1–8), the value is `number − adjacent " +
-        "flags` (may be 0 or NEGATIVE when over-flagged); for every other " +
-        "cell (0, *, F, X, M, ?), the value is `-`. The grid carries the " +
-        "same coordinate ruler as the board grid. Rejects with " +
-        "`no_active_game` only when no board is recognized.",
+        "NOTHING to the desktop. For every revealed number cell (1–8) it " +
+        "returns the count of mines still unmarked around it (= cell " +
+        "number − adjacent flags; may be 0 or NEGATIVE when over-flagged). " +
+        "It is NOT the count of flags. Every other cell (0, *, F, X, M, ?) " +
+        "shows `-`. Columns are x and rows are y, the same ruler as the " +
+        "board grid. Rejects with `no_active_game` only when no board is " +
+        "recognized; a terminal board is not blocked (pure query).",
       parameters: {},
       output: resultOutput(),
       execute: (_args, exec) => executeOutcome(exec, (runtime) => runtime.remain()),
@@ -265,7 +269,10 @@ export function apply(ctx: Context): void {
  * ONLY: symbol/coordinate reading, result body shape, call forms, and
  * validation semantics; the game rules live in the saolei-loop plugin's
  * `saolei:game` section
- * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2).
+ * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2). The
+ * `saolei_remain` wording in the tool description and this guidance entry
+ * follows specs/064-memory-split-fold-remain/contracts/saolei-plugins.md
+ * §2/§4.
  */
 export const SAOLEI_GUIDANCE = `## saolei (Minesweeper tools)
 
@@ -314,7 +321,7 @@ A won/lost board is TERMINAL for cell operations: any further cell operation sto
   - \`click\` — a left-click on one cell.
   - \`flag\` — a right-click on one cell (places/removes the flag).
   - \`chord\` — ONE atomic simultaneous left+right press on a revealed number 1–8. NEVER emulate a chord with two separate click ops.
-- \`saolei_remain()\` — read-only. No dispatch, no board change. For every revealed number cell it returns \`number − adjacent flags\` (may be 0 or NEGATIVE); other cells show \`-\`. Not blocked by a terminal board.
+- \`saolei_remain()\` — read-only. No dispatch, no board change. For every revealed number cell it returns the count of mines still unmarked around it (\`cell number − adjacent flags\`; may be 0 or NEGATIVE). It is NOT the count of flags. Other cells show \`-\`. Not blocked by a terminal board.
 
 ### Validation triage (illegal moves are handled before dispatch)
 

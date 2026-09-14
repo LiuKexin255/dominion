@@ -125,7 +125,9 @@ export function apply(ctx: Context): void {
  * https://en.wikipedia.org/wiki/Microsoft_Minesweeper and
  * https://en.wikipedia.org/wiki/Minesweeper_(video_game) ; the operation set
  * is the intersection with the saolei plugin's three tools
- * (`common/js/dsh-plugins/saolei/src/index.ts`).
+ * (`common/js/dsh-plugins/saolei/src/index.ts`). The `saolei_remain` per-cell
+ * wording and the global-counter distinction follow
+ * specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §3.
  */
 export const SAOLEI_GAME_RULES = `## 扫雷玩法与可用操作
 
@@ -136,10 +138,10 @@ export const SAOLEI_GAME_RULES = `## 扫雷玩法与可用操作
 - 未揭示的格子可以标旗作为推理标记（标旗不改变格内容，可再次操作取消）。
 - 对已揭示的数字格，当其相邻旗数满足该数字时，可以 chord（左右同击）一次展开其余未标旗的邻格。
 - 踩中雷即本局失败（负局棋盘会展示全部雷位）；全部非雷格揭示即本局获胜。
-- 剩余雷数计数 = 总雷数 − 已标旗数，可以为负（表示标旗过多）。
+- 顶部计数器的剩余雷数计数 = 总雷数 − 已标旗数，可以为负（表示标旗过多）；它是全局计数，与 \`saolei_remain\` 的每格视图不同。
 
 可用操作（与 saolei 工具能力一致）：
 
 - 开局/重开一局：\`saolei_init\`（再次调用即重开并重新播种）。
 - 格子操作：\`saolei_operate\` 支持 click（揭示）、flag（标旗/取消标旗）、chord（同击），可单发或按序批量执行。
-- 只读查询：\`saolei_remain\` 返回每个已揭示数字格的“数字 − 相邻旗数”视图。`;
+- 只读查询：\`saolei_remain\` 返回每个已揭示数字格周围的剩余未标记雷数（= 数字 − 相邻已标旗数，可为 0 或负），不是旗子数量。`;

@@ -581,6 +581,15 @@ describe("GameRuntime: remain", () => {
     const text = (outcome as { text: string }).text;
     expect(text).toContain("saolei_remain → computed\ngame status: playing");
     expect(text).toContain("board size 3*3");
+    // Self-describing legend (064 contract §1): states the per-cell semantics
+    // (mines still unmarked — not flags) and the coordinate reading, placed
+    // between the board-size header and the grid.
+    expect(text).toContain("mines still unmarked");
+    expect(text).toContain("NOT the count of flags");
+    expect(text).toContain("Columns are x and rows are y");
+    const legendIndex = text.indexOf("legend:");
+    expect(legendIndex).toBeGreaterThan(text.indexOf("board size 3*3"));
+    expect(legendIndex).toBeLessThan(text.indexOf("col0"));
     // (1,1) is `1` with one adjacent flag (0,1)=F → remain 0;
     // (1,0) is `2` with one adjacent flag → remain 1.
     expect(text).toContain("0");

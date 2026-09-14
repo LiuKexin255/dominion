@@ -179,6 +179,20 @@ describe("saolei guidance ownership (prompt-sections.md §2)", () => {
       expect(SAOLEI_GUIDANCE).not.toContain(removed);
     }
   });
+
+  it("states the remain semantics unambiguously in description and guidance (064 contract §2/§4)", () => {
+    const { tools } = makeHarness();
+    const description = tools.get("saolei_remain")!.description;
+
+    for (const phrase of ["mines still unmarked", "NOT the count of flags"]) {
+      expect(description).toContain(phrase);
+      expect(SAOLEI_GUIDANCE).toContain(phrase);
+    }
+    // The existing boundaries stay stated with the new primary meaning.
+    expect(description).toContain("no_active_game");
+    expect(description).toContain("terminal board");
+    expect(SAOLEI_GUIDANCE).toContain("Not blocked by a terminal board");
+  });
 });
 
 describe("saolei plugin argument validation (v1 literals)", () => {
