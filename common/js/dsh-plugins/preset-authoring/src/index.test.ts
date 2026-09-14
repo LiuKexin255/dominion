@@ -351,7 +351,7 @@ describe("create (store-only authoring)", () => {
       templateRules: {
         "demo-tools": {
           required: ["@dominion/dsh-demo-echo"],
-          forbidden: ["@dominion/dsh-memory/preset-row"],
+          forbidden: ["@dominion/dsh-memory"],
         },
       },
     });
@@ -386,7 +386,7 @@ describe("create (store-only authoring)", () => {
         [
           { id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } },
           { id: "echo", name: "@dominion/dsh-demo-echo" },
-          { id: "memory", name: "@dominion/dsh-memory/preset-row" },
+          { id: "memory", name: "@dominion/dsh-memory" },
         ],
         { lineWidth: -1 },
       ),
@@ -545,7 +545,7 @@ describe("Config", () => {
       templateRules: {
         player: {
           required: ["@dominion/dsh-saolei"],
-          forbidden: ["@dominion/dsh-memory", "@dominion/dsh-memory/preset-row"],
+          forbidden: ["@dominion/dsh-memory"],
         },
       },
     });
@@ -553,7 +553,7 @@ describe("Config", () => {
     expect(config.templateRules).toEqual({
       player: {
         required: ["@dominion/dsh-saolei"],
-        forbidden: ["@dominion/dsh-memory", "@dominion/dsh-memory/preset-row"],
+        forbidden: ["@dominion/dsh-memory"],
       },
     });
     // Omitted rules default to an empty table: generic deployments validate
@@ -568,14 +568,14 @@ describe("Config", () => {
       storage: "memory",
       templateRules: {
         player: { required: ["@dominion/dsh-saolei"] },
-        planner: { forbidden: ["@dominion/dsh-memory/preset-row"] },
+        planner: { forbidden: ["@dominion/dsh-memory"] },
       },
     };
     const config = Config(raw as PresetAuthoringConfig);
 
     expect(config.templateRules).toEqual({
       player: { required: ["@dominion/dsh-saolei"], forbidden: [] },
-      planner: { required: [], forbidden: ["@dominion/dsh-memory/preset-row"] },
+      planner: { required: [], forbidden: ["@dominion/dsh-memory"] },
     });
   });
 });

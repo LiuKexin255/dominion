@@ -8,8 +8,8 @@
  * `templates/{template}/sessions/{session}/memories/{memory}`. All
  * hermes-style conversion (old_text location, memory_id generation) lives in
  * `operations.ts`; this client never renders a `memory_id` into model-visible
- * text (specs/059-agent-v2-team-mode/spec.md FR-007,
- * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3).
+ * text (specs/059-agent-v2-team-mode/spec.md FR-007;
+ * specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2).
  *
  * The optional `client` constructor parameter is the DI seam
  * (style/javascript.md §测试): an injected grpc client skips the dominion
@@ -133,10 +133,10 @@ export function buildChannelOptions(): grpc.ChannelOptions {
  * The directory the deployment materializes `projects/game/game.proto` and
  * its `google/api` imports under (tools/release/deploy/README.md
  * §runtime_protos). From this package's compiled `src/` the root is four
- * levels up in both layouts: `<repo>/common/js/dsh-plugins/memory/src` in the
- * development tree and
- * `<service-root>/node_modules/@dominion/dsh-memory/src` inside the service
- * tar (workspace runtime packages preserve their source layout).
+ * levels up in both layouts:
+ * `<repo>/common/js/dsh-plugins/memory-service/src` in the development tree
+ * and `<service-root>/node_modules/@dominion/dsh-memory-service/src` inside
+ * the service tar (workspace runtime packages preserve their source layout).
  */
 function serviceRoot(): string {
   return path.resolve(import.meta.dirname, "..", "..", "..", "..");

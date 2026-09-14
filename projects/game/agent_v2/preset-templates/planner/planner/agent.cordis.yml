@@ -3,4 +3,4 @@
   config:
     text: 你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。
 - id: memory
-  name: '@dominion/dsh-memory/preset-row'
+  name: '@dominion/dsh-memory'

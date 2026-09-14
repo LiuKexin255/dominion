@@ -5,15 +5,15 @@
  *
  * Pattern (style/javascript.md Mock convention): the host service and the
  * tool execution context are injected doubles (`vi.fn()`); no module
- * interception. Contract: specs/059-agent-v2-team-mode/contracts/dsh-plugins.md
- * §3 item 1.
+ * interception. Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md
+ * §2 item 1.
  */
 
 import { validateArgs } from "@deepseek-ai/dsh-tools";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
 
-import type { PlannerMemoryService } from "./service.js";
+import type { PlannerMemoryService } from "@dominion/dsh-memory-service";
 import {
   MEMORY_TOOL_DESCRIPTION,
   MEMORY_TOOL_NAME,

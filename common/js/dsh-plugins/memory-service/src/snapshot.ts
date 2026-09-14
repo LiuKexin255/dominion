@@ -10,7 +10,7 @@
  * not render), so no placeholder logic is needed.
  *
  * Section identity/order per
- * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3 item 2: the
+ * specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2 item 2: the
  * function form is evaluated on every assembly with that assembly's
  * `AssembleContext`, whose `scope` is the agent, and the order sits after the
  * tool-guidance band (100–199) as the trailing data layer; the snapshot

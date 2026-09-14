@@ -8,7 +8,7 @@
 #   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining
 #   dsh rows are service-declared npm deps (projects/game/agent_v2/
 #   package.json). Preset-composition rows (@deepseek-ai/dsh-persona,
-#   @dominion/dsh-saolei, @dominion/dsh-memory/preset-row) resolve by bare
+#   @dominion/dsh-saolei, @dominion/dsh-memory) resolve by bare
 #   package name from this host composition too, so their packages are
 #   declared in the same manifest and shipped in the same closure
 #   (specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
@@ -141,10 +141,9 @@
           - '@dominion/dsh-saolei'
         forbidden:
           - '@dominion/dsh-memory'
-          - '@dominion/dsh-memory/preset-row'
       planner:
         required:
-          - '@dominion/dsh-memory/preset-row'
+          - '@dominion/dsh-memory'
         forbidden:
           - '@dominion/dsh-saolei'
 # team 群聊原语（ctx.team；specs/059-agent-v2-team-mode/contracts/
@@ -152,7 +151,7 @@
 # 同契约 §3——memory 工具行不经 host 层，经 planner 池模板 preset 的
 # 插件行挂载）。
 - { id: team,            name: '@dominion/dsh-team' }
-- { id: memory,          name: '@dominion/dsh-memory' }
+- { id: memory,          name: '@dominion/dsh-memory-service' }
 # saolei 工具行不再挂 host 层：改经 player 池模板 preset 的插件行挂载
 # （工具可见性由挂载层隔离——host 行会对全员可见，模板行使 player 独占）。
 # saolei-loop 保留行位（语义已变为 team loop 编排层，R7）。

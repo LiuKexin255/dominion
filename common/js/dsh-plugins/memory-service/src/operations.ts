@@ -18,7 +18,7 @@
  *   specific `old_text` or retry after an outage; only infrastructure
  *   failures propagate to the caller, which maps them to `memory failed: …`.
  *
- * Contract: specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3,
+ * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2,
  * specs/059-agent-v2-team-mode/spec.md FR-007.
  */
 

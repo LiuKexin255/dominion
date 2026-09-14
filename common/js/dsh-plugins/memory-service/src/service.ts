@@ -12,7 +12,7 @@
  *   binding is registered as an effect on `agentCtx`, so it unwinds with the
  *   agent scope. A rejection propagates (fail-loud): the materialization
  *   setup that awaits it rolls the whole member creation back
- *   (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3 item 3;
+ *   (specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2 item 3;
  *   survey/deepseek-harness-memory-plugin.md decision ⑧).
  * - `applyCall(agent, args)` runs a hermes-style call against the same client
  *   with the agent's bound scope, so writes persist immediately and are never
@@ -22,7 +22,7 @@
  *   assembly; an unbound or empty snapshot reads as `undefined`/`""`, which
  *   the registry drops from the prompt.
  *
- * Contract: specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3; scope
+ * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2; scope
  * key per spec/plan decision ⑦ (survey/deepseek-harness-memory-plugin.md §9)
  * and specs/059-agent-v2-team-mode/data-model.md §3 (memory 快照缓存).
  */

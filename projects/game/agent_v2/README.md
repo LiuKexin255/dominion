@@ -159,8 +159,9 @@ preset 数据按角色分池
   `specs/059-agent-v2-team-mode/data-model.md` §2）。
 - **创作 = store-only**：Create/Update/DeletePreset 只写 Mongo store（唯一
   事实源）；创建时校验模板行（`cordis.yml` `templateRules`）：player 模板
-  恰含 `@dominion/dsh-saolei` 行、planner 模板恰含
-  `@dominion/dsh-memory/preset-row`，违者 INVALID_ARGUMENT 且不落任何产物。
+  恰含 `@dominion/dsh-saolei` 行、不得含 `@dominion/dsh-memory`，planner
+  模板恰含 `@dominion/dsh-memory` 行，违者 INVALID_ARGUMENT 且不落任何
+  产物。
   池模板（`projects/game/agent_v2/preset-templates/{player,planner}/`，镜像内
   system 信任根）不可写/不可删。
 - **角色工具锁定（行级绑定）**：player preset 绑定扫雷游戏工具插件组

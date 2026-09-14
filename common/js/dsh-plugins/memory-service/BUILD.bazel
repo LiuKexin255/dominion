@@ -28,9 +28,12 @@ ts_project(
     visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@deepseek-ai/cordis",
-        ":node_modules/@deepseek-ai/dsh-system-prompt",
-        ":node_modules/@deepseek-ai/dsh-tools",
-        ":node_modules/@dominion/dsh-memory-service",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
     ],
 )
@@ -38,9 +41,10 @@ ts_project(
 # "package.json" in srcs is REQUIRED for the npm-linker's runfiles store
 # entry of a workspace package: the entry is populated from the js_library
 # srcs, and without the manifest in it, Node cannot resolve the bare
-# specifier (no package.json to read exports/main from). The planner pool's
-# template preset mounts this package's tool row by bare name, so omitting it
-# fails with "Cannot find package @dominion/dsh-memory"
+# specifier (no package.json to read exports/main from). The agent_v2 host
+# composition imports the host row by bare name
+# (specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §3), so
+# omitting it fails with "Cannot find package @dominion/dsh-memory-service"
 # (common/js/dsh-plugins/preset-authoring/BUILD.bazel precedent).
 js_library(
     name = "pkg",
@@ -52,21 +56,24 @@ js_library(
 )
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
-# runtime_deps closure walking. npm_deps carries the plugin's runtime import:
-# the tool definition helper (dsh-tools). The memory service face this row
-# injects by name is a workspace package, so it enters through runtime_deps
-# below (npm_deps link targets carry registry packages only).
+# runtime_deps closure walking. npm_deps carries the plugin's runtime imports:
+# the memory-service gRPC client (grpc-js + proto-loader). cordis/dsh-agent/
+# dsh-scope are type-only faces and resolve from the host composition.
+# runtime_deps carries the workspace packages the client consumes (the
+# dominion resolver and the logs face).
 js_runtime_library(
     name = "runtime_pkg",
-    package_name = "@dominion/dsh-memory",
+    package_name = "@dominion/dsh-memory-service",
     lib = ":lib",
     npm_deps = [
-        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
     runtime_deps = [
-        "//common/js/dsh-plugins/memory-service:runtime_pkg",
+        "//common/js/grpc/resolver:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
     ],
 )
 
@@ -81,9 +88,12 @@ vitest_test(
         allow_empty = True,
     ) + [
         ":node_modules/@deepseek-ai/cordis",
-        ":node_modules/@deepseek-ai/dsh-system-prompt",
-        ":node_modules/@deepseek-ai/dsh-tools",
-        ":node_modules/@dominion/dsh-memory-service",
+        ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
     ],
 )

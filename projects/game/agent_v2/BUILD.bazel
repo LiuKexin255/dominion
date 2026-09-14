@@ -111,13 +111,13 @@ artifact_pkg_js(
         #
         # npm_deps carries THIRD-PARTY link targets only. The workspace
         # packages (@dominion/dsh-llm-glm, the saolei plugin set, team,
-        # memory, preset-authoring) enter exclusively through runtime_deps
-        # (…:runtime_pkg): their link targets must NOT appear here — npm_deps
-        # link targets carry real files only for registry packages, and the
-        # Phase-3 staging deleted the manifest-less linker store's
-        # package.json/.d.ts on the shared node_modules path (the runtime
-        # crash "Cannot find package … @dominion/dsh-llm-glm"; the healthy
-        # precedent is the common-js-* packages: runtime_deps only).
+        # memory, memory-service, preset-authoring) enter exclusively through
+        # runtime_deps (…:runtime_pkg): their link targets must NOT appear
+        # here — npm_deps link targets carry real files only for registry
+        # packages, and the Phase-3 staging deleted the manifest-less linker
+        # store's package.json/.d.ts on the shared node_modules path (the
+        # runtime crash "Cannot find package … @dominion/dsh-llm-glm"; the
+        # healthy precedent is the common-js-* packages: runtime_deps only).
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-agent-loop",
         ":node_modules/@deepseek-ai/dsh-agent-presets",
@@ -143,13 +143,14 @@ artifact_pkg_js(
     runtime_deps = [
         "//common/js/bootstrap:runtime_pkg",
         "//common/js/constants:runtime_pkg",
-        # The composed rows and the preset-row packages resolve by bare name
-        # from this service's node_modules — the workspace packages ship
-        # through runtime_deps (npm_deps is a no-op for them).
+        # The composed rows and the preset-mounted plugin packages resolve by
+        # bare name from this service's node_modules — the workspace packages
+        # ship through runtime_deps (npm_deps is a no-op for them).
         "//common/js/dsh-plugins/desktop-bridge:runtime_pkg",
         "//common/js/dsh-plugins/llm-glm:runtime_pkg",
         "//common/js/dsh-plugins/llm-opencode-go:runtime_pkg",
         "//common/js/dsh-plugins/memory:runtime_pkg",
+        "//common/js/dsh-plugins/memory-service:runtime_pkg",
         "//common/js/dsh-plugins/preset-authoring:runtime_pkg",
         "//common/js/dsh-plugins/saolei:runtime_pkg",
         "//common/js/dsh-plugins/saolei-loop:runtime_pkg",

@@ -176,7 +176,7 @@ describe("deriveComposition over the real filesystem", () => {
 describe("validateTemplateRows", () => {
   const rules: TemplateRowRules = {
     required: ["@dominion/dsh-saolei"],
-    forbidden: ["@dominion/dsh-memory/preset-row"],
+    forbidden: ["@dominion/dsh-memory"],
   };
 
   it("accepts a template carrying exactly the required row and none of the forbidden ones", async () => {
@@ -189,7 +189,7 @@ describe("validateTemplateRows", () => {
     const { fs } = mockFs(
       dumpRows([
         { id: "persona", name: PERSONA_ROW_NAME, config: { text: "x" } },
-        { id: "memory", name: "@dominion/dsh-memory/preset-row" },
+        { id: "memory", name: "@dominion/dsh-memory" },
       ]),
     );
 
@@ -213,7 +213,7 @@ describe("validateTemplateRows", () => {
     const forbidden = mockFs(
       dumpRows([
         { id: "saolei", name: "@dominion/dsh-saolei" },
-        { id: "memory", name: "@dominion/dsh-memory/preset-row" },
+        { id: "memory", name: "@dominion/dsh-memory" },
       ]),
     );
     await expect(validateTemplateRows(template(), rules, forbidden.fs)).rejects.toMatchObject({
@@ -228,7 +228,7 @@ describe("validateTemplateRows", () => {
     // mirrors the Config-validated output shape, hence the widening cast.
     const requiredOnly = { required: ["@dominion/dsh-saolei"] } as unknown as TemplateRowRules;
     const forbiddenOnly = {
-      forbidden: ["@dominion/dsh-memory/preset-row"],
+      forbidden: ["@dominion/dsh-memory"],
     } as unknown as TemplateRowRules;
 
     await expect(validateTemplateRows(template(), requiredOnly, fs)).resolves.toBeUndefined();

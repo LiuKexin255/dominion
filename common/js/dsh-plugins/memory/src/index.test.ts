@@ -1,5 +1,5 @@
 /**
- * Preset-row tests — the row the planner pool's template preset mounts:
+ * Memory tool-row tests — the row the planner pool's template preset mounts:
  * exactly one `memory` tool and exactly one function-form snapshot section
  * (order 200+), no guidance section. The section's text closure reads the
  * host service's cache through `ctx.plannerMemory`, keyed by the assembly's
@@ -7,15 +7,18 @@
  *
  * Pattern (style/javascript.md Mock convention): the mounting context and
  * the host service are injected doubles (`vi.fn()`); no module interception.
- * Contract: specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3 item 2.
+ * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2.
  */
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
 
-import { apply, inject, name } from "./preset-row.js";
-import { MEMORY_SNAPSHOT_SECTION_NAME, MEMORY_SNAPSHOT_SECTION_ORDER } from "./snapshot.js";
+import {
+  MEMORY_SNAPSHOT_SECTION_NAME,
+  MEMORY_SNAPSHOT_SECTION_ORDER,
+} from "@dominion/dsh-memory-service";
+import { apply, inject, name } from "./index.js";
 
 interface SectionRecord {
   readonly name: string;

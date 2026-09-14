@@ -539,10 +539,11 @@ describe("preset template data (T021)", () => {
     const playerRows = readTemplate("player").rows.map((entry) => entry.name ?? "");
     expect(playerRows.filter((name) => name === "@dominion/dsh-saolei")).toHaveLength(1);
     expect(playerRows).not.toContain("@dominion/dsh-memory");
-    expect(playerRows).not.toContain("@dominion/dsh-memory/preset-row");
+    expect(playerRows).not.toContain("@dominion/dsh-memory-service");
 
     const plannerRows = readTemplate("planner").rows.map((entry) => entry.name ?? "");
-    expect(plannerRows.filter((name) => name === "@dominion/dsh-memory/preset-row")).toHaveLength(1);
+    expect(plannerRows.filter((name) => name === "@dominion/dsh-memory")).toHaveLength(1);
+    expect(plannerRows).not.toContain("@dominion/dsh-memory-service");
     expect(plannerRows).not.toContain("@dominion/dsh-saolei");
   });
 });
@@ -708,10 +709,10 @@ describe("cordis.yml composition manifest", () => {
       templateRules: {
         player: {
           required: ["@dominion/dsh-saolei"],
-          forbidden: ["@dominion/dsh-memory", "@dominion/dsh-memory/preset-row"],
+          forbidden: ["@dominion/dsh-memory"],
         },
         planner: {
-          required: ["@dominion/dsh-memory/preset-row"],
+          required: ["@dominion/dsh-memory"],
           forbidden: ["@dominion/dsh-saolei"],
         },
       },
@@ -722,7 +723,7 @@ describe("cordis.yml composition manifest", () => {
     const byId = new Map(rows.map((row) => [row.id, row.name]));
     expect(byId.get("desktop-bridge")).toBe("@dominion/dsh-desktop-bridge");
     expect(byId.get("team")).toBe("@dominion/dsh-team");
-    expect(byId.get("memory")).toBe("@dominion/dsh-memory");
+    expect(byId.get("memory")).toBe("@dominion/dsh-memory-service");
     expect(byId.get("saolei-loop")).toBe("@dominion/dsh-saolei-loop");
   });
 

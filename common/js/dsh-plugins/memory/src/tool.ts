@@ -20,9 +20,11 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
 
-import { MEMORY_ACTIONS } from "./operations.js";
-import type { MemoryToolArgs } from "./operations.js";
-import type { PlannerMemoryService } from "./service.js";
+import { MEMORY_ACTIONS } from "@dominion/dsh-memory-service";
+import type {
+  MemoryToolArgs,
+  PlannerMemoryService,
+} from "@dominion/dsh-memory-service";
 
 /** The tool name (kept from v1: the memory service has no other tool face). */
 export const MEMORY_TOOL_NAME = "memory";

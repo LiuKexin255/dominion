@@ -6,7 +6,7 @@
  *
  * Pattern (style/javascript.md Mock convention): the storage client and the
  * agent context are injected doubles (`vi.fn()`); no module interception.
- * Contract: specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3.
+ * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2.
  */
 
 import type { Context } from "@deepseek-ai/cordis";
