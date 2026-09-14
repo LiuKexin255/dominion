@@ -5,6 +5,8 @@
 
 ## 1. `saolei:game` section（新；saolei-loop 所有，全员生效）
 
+> 本节玩法内容中的 `saolei_remain` 每格表述与全局剩余雷数计数行已被 `specs/064-memory-split-fold-remain/contracts/saolei-plugins.md` §3 修订（主语义 = 剩余未标记雷数、显式排除旗数读法；全局计数行保留并明确为顶部计数器概念，2026-09-14）；本节保留 060 基线记录形态，现行表述以该修订为准。
+
 - **注册**：`@dominion/dsh-saolei-loop` 的 `apply(ctx)` 经 `ctx.systemPrompt.section({ name: 'saolei:game', order: 50, text: SAOLEI_GAME_RULES })`——host 组合行 boot 时全局注册，对全部成员（player/planner）装配可见（静态全员事实，无需按成员注册）。
 - **order 50**：persona(0) 与 team section(1-49) 之后、工具守则(100-199) 之前。
 - **内容 = 玩法 + 可用操作**（两者对全体成员同源同文）：
@@ -13,6 +15,8 @@
 - **内容边界（MUST NOT）**：不含工具参数 schema、结果文本三层结构、坐标/符号读法（工具守则域）；不含成员身份/职责（persona 域）；不含团队协作规则（team section 域）。
 
 ## 2. `saolei:guidance` 收缩（saolei 插件，仅 player 经模板行挂载）
+
+> 本节描述的 `saolei:guidance` 中 `saolei_remain` 工具条目表述已被 `specs/064-memory-split-fold-remain/contracts/saolei-plugins.md` §2/§4 修订（主语义 = 剩余未标记雷数、显式排除旗数读法，2026-09-14）；本节保留 060 基线记录形态，现行表述以该修订为准。
 
 保留（工具用法域）：
 - 符号表（`*`/`0-8`/`F`/`X`/`M`/`?` —— 工具结果棋盘文本的读法）；

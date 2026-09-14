@@ -69,6 +69,8 @@ ctx.team.register({ goal, members, context? })
 
 ## 3. memory 插件（`@dominion/dsh-memory`，新增）
 
+> 本节 memory 插件的双面包形态已被 `specs/064-memory-split-fold-remain/contracts/dsh-plugins.md` §1/§2 修订（拆分为 `@dominion/dsh-memory-service` host 基建包与 `@dominion/dsh-memory` 纯工具面，2026-09-14）；本节保留 059 基线记录形态，现行包归属与挂载面以该修订为准。
+
 **两个功能面**（memory-plugin 决策 ①②③）+ **host 服务面**（决策 ⑥ 路径 A）：
 
 1. **工具行（preset 行挂载）**：`defineTool` 注册单一 `memory` 工具——参数 `{action: add|replace|remove, content, old_text}` 单操作形式 XOR `{operations[]}` 批量形式（互斥校验；批量原子：preflight 全过才提交）；`old_text` 大小写敏感子串定位（0 命中/多命中返回全部条目或预览的文本结果）；无 read 动作；**失败也是文本结果**（不抛错、不中断对话）；存储访问经 host 服务面——preset 行 `apply` 从本行上下文绑定 `ctx.plannerMemory`（agent scope 的 isolate 边界使 `exec.agent.ctx` 的属性走查不可达，T023 实测修订），exec 时按 agent 解析已绑定的 per-agent scope。
@@ -84,6 +86,8 @@ ctx.team.register({ goal, members, context? })
 - 工具经 `exec.agent.ctx.get("saoleiGame")` 解析 agent-scoped 游戏运行时（GameRuntime：棋盘/规则/操作执行/胜负判定 + desktop 派发绑定 sessionName）——GameRuntime 注册点从现 saolei-loop factory 迁至编排层物化 setup（§2）；缺失时 fail-loud（现状语义）。
 
 ## 5. 组合清单（agent_v2 `cordis.yml` 终态行清单）
+
+> 本节清单的 memory host 行已被 `specs/064-memory-split-fold-remain/contracts/dsh-plugins.md` §3 修订（host 行改 `@dominion/dsh-memory-service`；工具行仍为 `@dominion/dsh-memory`，2026-09-14）；本节保留 059 基线记录形态，现行终态以该修订为准。
 
 ```yaml
 # 既有基线：timer / llm / session / system-prompt / tools / agents / invariants

@@ -65,6 +65,7 @@ export type ToolOutcome = { isError: false; text: string; concludesTurn?: true }
 ### 2.2 GameRuntime 行为（FR-011，v1 契约语义迁移）
 
 - 状态/历史/状态机/操作管线/结果文本契约：[data-model.md](../data-model.md) §2.5（逐条对应 v1 源）。
+  > 索引的 `saolei_remain` 结果体与表述已被 `specs/064-memory-split-fold-remain/contracts/saolei-plugins.md` §1 修订（网格前增 legend 语义标注行、主语义改剩余未标记雷数并显式排除旗数读法，2026-09-14）；现行结果体以该修订为准。
 - 下发：`ctx.desktopBridge.dispatch(sessionName, part, signal)`——loop 即游戏控制点（工具经 runtime 间接到达桥接）。
 - 识别：`SaoleiBoard.init/updateFromScreenshot`（`@dominion/game-saolei-board`，FR-015 复用；`BoardStateIncompatibleError` 等异常 → 识别失败路径）；截图空间识别 / client 空间下发坐标常量随迁（`projects/game/agent/src/mcp/saolei/geometry.ts`）。
 - 统计：`computeGameStats`（operationCount / correctFlags / avgOpsPerMine）语义随迁（v1 `saolei-mcp.ts:396-426`）。

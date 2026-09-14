@@ -150,6 +150,7 @@ agent-scoped 服务：工厂在 agent 发布前于 `agent.ctx` 注册 `saoleiGam
 **结果文本契约**（模型可见，FR-013——逐字延续 v1）：
 - 三层体：outcome 行（`new game started` / `saolei_operate → executed N ops` / `... stopped at {type}({x},{y}) ({reason})` / `rejected: <reason>` / `unable to recognize board` / `saolei_remain → computed`）+ `game status: won|lost|playing` 行（无活动局且无状态时省略）+ 标尺棋盘（`board size <w>*<h>` + `col<N>`/`row<N>` 标尺网格，符号 `* 0-8 F X M ?`）+ 拒绝时 `valid range:` 行。
 - `saolei_remain`：每已揭示数字格 `数字 − 相邻 F 数`（可为 0/负），其余 `-`，同标尺网格。
+  > 本行表述已被 `specs/064-memory-split-fold-remain/contracts/saolei-plugins.md` §1 修订（结果体网格前增 legend 语义标注行，主语义 = 剩余未标记雷数，2026-09-14）；现行表述以该修订为准。
 - **错误结果 ≠ 拒绝**：游戏规则拒绝是**正常结果文本**（`rejected:` 行）；desktop 缺席/断连/超时是 `dispatch` 返回 FAILED 或错误 → 工具**错误结果**（`isError: true`，模型可见、回合存活，US1 场景 4/5）。
 
 **双形式 operate 入参**（工具参数校验，v1 字面量）：single `{type,x,y}` 与 batch `{operations[]}` 互斥——两者皆无 `MISSING`、两者皆有 `AMBIGUOUS`、single 残缺 `INCOMPLETE`，精确文本随迁（`projects/game/agent/src/mcp/saolei/saolei-mcp.ts:621-633`）。
