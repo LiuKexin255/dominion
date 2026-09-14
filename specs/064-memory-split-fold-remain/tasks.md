@@ -25,7 +25,7 @@
 - 官方文档：无
 - 技术文章/技术参考文档：`specs/064-memory-split-fold-remain/plan.md`（Project Structure 一节——变更面清单）
 
-- [ ] T001 基线验证：`bazel test //common/js/dsh-plugins/memory/... //common/js/dsh-plugins/saolei/... //common/js/dsh-plugins/saolei-loop/... //projects/game/agent_v2/... //projects/game/web/frontend/...` 全绿——记录基线结果供后续 phase 对照
+- [X] T001 基线验证：`bazel test //common/js/dsh-plugins/memory/... //common/js/dsh-plugins/saolei/... //common/js/dsh-plugins/saolei-loop/... //projects/game/agent_v2/... //projects/game/web/frontend/...` 全绿——记录基线结果供后续 phase 对照
 
 ---
 
