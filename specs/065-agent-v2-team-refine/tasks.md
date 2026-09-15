@@ -82,7 +82,7 @@
 
 **Tasks**:
 
-- [ ] T011 [US2] 扩展 `common/js/dsh-plugins/saolei-loop/src/orchestrator.test.ts` 排队优先序用例：①终局后队列非空 → player 先消化、不播报；②消化驱动 player 开新局且终局记录被覆盖 → 被跳过局无播报、新局交接恰播报新局；③消化后原局记录未被覆盖 → 原局照常播报（顺延）；④复盘驱动失败重试（pendingReview 持有输入集）不重播报；⑤终局后 cancel 暂停、再 send 恢复且原终局记录未被覆盖 → 统计随交接顺延播报（edge case：取消与交接竞态）；若断言暴露实现偏差，修复 `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` 直至全绿
+- [X] T011 [US2] 扩展 `common/js/dsh-plugins/saolei-loop/src/orchestrator.test.ts` 排队优先序用例：①终局后队列非空 → player 先消化、不播报；②消化驱动 player 开新局且终局记录被覆盖 → 被跳过局无播报、新局交接恰播报新局；③消化后原局记录未被覆盖 → 原局照常播报（顺延）；④复盘驱动失败重试（pendingReview 持有输入集）不重播报；⑤终局后 cancel 暂停、再 send 恢复且原终局记录未被覆盖 → 统计随交接顺延播报（edge case：取消与交接竞态）；若断言暴露实现偏差，修复 `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` 直至全绿
 
 **Checkpoint（验证门禁）**: 五场景单测全绿；既有排队/取消/刷新用例回归通过。
 
