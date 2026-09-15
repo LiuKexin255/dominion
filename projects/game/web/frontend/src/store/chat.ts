@@ -94,6 +94,13 @@ export interface TeamMessageEntry {
   // 同成员首个真实帧按到达序替换它（保持数组位置；seq 为负的本地占位值，
   // 不与服务端 seq 冲突）——真实帧到达后不重复。
   projected?: boolean
+  // live 进行中回合的客户端派生标记（specs/064-memory-split-fold-remain/
+  // contracts/web-ui.md §3 与 data-model.md §3.1）：team_message 归约时该
+  // 成员存在打开的 live 回合 → 固化条目落 true，分组层据此整组流式展开、
+  // 不进三分类。回合收束全路径（closeLiveTurn——含全部步已固化的早退路径）
+  // 清除；回填重建、投影占位与用户消息条目恒不携带。服务端 HistoryMessage
+  // 无回合状态字段，标记来源是 store 观察到的回合生命周期。
+  open?: boolean
 }
 
 // MemberViewEntry 是成员视角序列条目（web-views.md §4：与 ListMemberMessages
@@ -107,6 +114,11 @@ export interface MemberViewEntry {
   // team_message 帧未到达的尾步先行投影，后续同成员真实条目按 FIFO 原位
   // 替换；ListMemberMessages 回填以服务端序列整体取代时丢弃。
   projected?: boolean
+  // live 进行中回合的客户端派生标记（与 TeamMessageEntry.open 同源同语义，
+  // specs/064-memory-split-fold-remain/contracts/web-ui.md §3）：该成员视角
+  // 的固化条目在成员存在打开的 live 回合时落 true，成员视角分组据此整组
+  // 展开；回合收束清除；回填条目与投影占位恒不携带。
+  open?: boolean
 }
 
 export interface ChatState {
@@ -357,7 +369,8 @@ function findLiveTurn(state: ChatState, member: string | undefined, turnId: stri
 // merged sequence as local placeholders (negative seq keeps them distinct from
 // server seq anchors; array position is the render order). A later real
 // `team_message` frame for the same member replaces the first placeholder in
-// arrival order.
+// arrival order. 投影条目恒不携带 open 标记（投影只产生于回合收束之后，
+// specs/064-memory-split-fold-remain/contracts/web-ui.md §3）。
 function projectTail(
   history: TeamMessageEntry[],
   member: string,
@@ -399,11 +412,15 @@ function appendMemberInputView(
 // same message object the server writes into both projections — the merged
 // sequence and the producer's own view). Concurrent-stream duplicate frames
 // are idempotent by messageId; a projected local placeholder is replaced in
-// arrival order, mirroring the merged sequence.
+// arrival order, mirroring the merged sequence. open 透传该成员是否存在打开
+// 的 live 回合（specs/064-memory-split-fold-remain/contracts/web-ui.md §3/§4）；
+// projected 替换路径不落标记（占位条目诞生于已收束回合，该成员新回合的
+// live 不得使上一回合的迟到帧被误标 open）。
 function appendMemberView(
   memberHistory: Record<string, MemberViewEntry[]>,
   member: string,
   message: HistoryMessage,
+  open: boolean,
 ): Record<string, MemberViewEntry[]> {
   const view = memberHistory[member] ?? []
   const messageId = message.messageId
@@ -414,8 +431,12 @@ function appendMemberView(
   ) {
     return memberHistory
   }
-  const entry: MemberViewEntry = { message, sender: member }
   const projectedIndex = view.findIndex((e) => e.projected === true)
+  const entry: MemberViewEntry = {
+    message,
+    sender: member,
+    ...(open && projectedIndex < 0 ? { open: true } : {}),
+  }
   const next =
     projectedIndex >= 0
       ? view.map((e, i) => (i === projectedIndex ? entry : e))
@@ -427,6 +448,7 @@ function appendMemberView(
 // the producer's own view as local placeholders (same semantics as projectTail
 // for the merged sequence: a later real team_message frame replaces the first
 // placeholder in arrival order; a ListMemberMessages backfill drops them all).
+// 投影条目恒不携带 open 标记（同 projectTail）。
 function projectMemberTail(
   memberHistory: Record<string, MemberViewEntry[]>,
   member: string,
@@ -442,23 +464,68 @@ function projectMemberTail(
   }
 }
 
+// clearEntryOpen drops the sparse live open mark from one merged/view entry
+// (same reference when unmarked).
+function clearEntryOpen<T extends { open?: boolean }>(entry: T): T {
+  if (entry.open !== true) return entry
+  const next = { ...entry }
+  delete next.open
+  return next
+}
+
+// clearMemberOpen removes the live open mark from every entry of one member
+// (merged sequence + that member's own view) on turn close.
+function clearMemberOpen(state: ChatState, member: string): ChatState {
+  const view = state.memberHistory[member]
+  return {
+    ...state,
+    history: state.history.map((entry) =>
+      entry.member === member ? clearEntryOpen(entry) : entry,
+    ),
+    memberHistory:
+      view === undefined
+        ? state.memberHistory
+        : { ...state.memberHistory, [member]: view.map(clearEntryOpen) },
+  }
+}
+
+// clearAllMemberOpen is the loadHistory defensive reset: 归并序列重建天然无
+// 标记、live 同步复位后标记不再有清除事件来源，成员视角的残留标记必须先
+// 清除（specs/064-memory-split-fold-remain/contracts/web-ui.md §3）。
+function clearAllMemberOpen(
+  memberHistory: Record<string, MemberViewEntry[]>,
+): Record<string, MemberViewEntry[]> {
+  let changed = false
+  const next = Object.fromEntries(
+    Object.entries(memberHistory).map(([member, view]) => {
+      const cleared = view.map(clearEntryOpen)
+      if (cleared.some((entry, i) => entry !== view[i])) changed = true
+      return [member, cleared] as const
+    }),
+  )
+  return changed ? next : memberHistory
+}
+
 // closeLiveTurn closes a live turn by projecting its unconsolidated tail into
 // the merged sequence and the producer's own member view (steps already
 // consolidated through team_message frames are already there). Interrupted
 // turns mark the tail message so the folding check treats it as a prefix
-// (specs/054-agent-v2-bugfixes/data-model.md §5.2).
+// (specs/054-agent-v2-bugfixes/data-model.md §5.2). 收束即清除该成员全部条目
+// 的 open 标记——清除先于"无尾步可投影"的早退返回，全部步已固化的收束路径
+// 同样清除（specs/064-memory-split-fold-remain/contracts/web-ui.md §3）。
 function closeLiveTurn(state: ChatState, index: number, interrupted: boolean): ChatState {
   const turn = state.live[index]
   if (turn === undefined) return state
   const live = state.live.filter((_, i) => i !== index)
+  const closed = clearMemberOpen(state, turn.member)
   const pending = turn.steps.slice(turn.fixedSteps)
-  if (pending.length === 0) return { ...state, live }
+  if (pending.length === 0) return { ...closed, live }
   const messages = stepsToHistory(pending, interrupted)
   return {
-    ...state,
+    ...closed,
     live,
-    history: [...state.history, ...projectTail(state.history, turn.member, messages)],
-    memberHistory: projectMemberTail(state.memberHistory, turn.member, messages),
+    history: [...closed.history, ...projectTail(closed.history, turn.member, messages)],
+    memberHistory: projectMemberTail(closed.memberHistory, turn.member, messages),
   }
 }
 
@@ -497,14 +564,21 @@ function reduceEvent(
     // seq 归并锚幂等：并发流重复帧忽略（team-api.md §3.4）。投影占位条目
     // （负 seq）不参与该判定，由下方的替换路径消费。
     if (state.history.some((e) => e.projected !== true && e.seq === seq)) return state
+    // live 进行中回合的标记判定（specs/064-memory-split-fold-remain/
+    // contracts/web-ui.md §3）：该成员存在打开的 live 回合 → 本帧固化的条目
+    // 是进行中回合的已固化前缀，落 open: true 供分组层整组展开。保留值
+    // "user" 不是成员回合，恒不标记。
+    const open = member !== USER_MEMBER && state.live.some((t) => t.member === member)
     const entry: TeamMessageEntry = { member, message: frame.message, seq }
     const projectedIndex = state.history.findIndex(
       (e) => e.projected === true && e.member === member,
     )
     const history =
       projectedIndex >= 0
-        ? state.history.map((e, i) => (i === projectedIndex ? entry : e))
-        : insertBySeq(state.history, entry)
+        ? // projected 替换路径不落标记：占位条目由 closeLiveTurn 产生、其回合
+          // 已收束，迟到帧不得因该成员新回合的 live 被误标 open（契约 §3/§4）。
+          state.history.map((e, i) => (i === projectedIndex ? entry : e))
+        : insertBySeq(state.history, open ? { ...entry, open: true } : entry)
     // 成员自身输出双写进其视角（服务端 appendMemberOutput 的同一双投影）；
     // 用户消息与跨成员广播注入在被该成员消费时进入其视角——消费锚只有
     // 服务端历史可见，前端不伪造，经 loadMemberHistory 回填
@@ -512,7 +586,7 @@ function reduceEvent(
     const memberHistory =
       member === USER_MEMBER
         ? state.memberHistory
-        : appendMemberView(state.memberHistory, member, frame.message)
+        : appendMemberView(state.memberHistory, member, frame.message, open)
     return {
       ...state,
       history,
@@ -763,10 +837,12 @@ export class ChatStore {
     history.sort((a, b) => a.seq - b.seq)
     // 团队归并序列重建不触碰成员视角序列：同一生命周期的重对齐（流断开
     // 回填）保留成员视角已回填内容；刷新（新生命周期）由调用方经
-    // clearMemberHistory 显式复位后重新回填。
+    // clearMemberHistory 显式复位后重新回填。live 同步复位使 open 标记不再
+    // 有清除事件来源，故此处防御性清除成员视角的残留标记
+    // （specs/064-memory-split-fold-remain/contracts/web-ui.md §3）。
     this.setState({
       history,
-      memberHistory: this.state.memberHistory,
+      memberHistory: clearAllMemberOpen(this.state.memberHistory),
       live: [],
       queue: [],
       error: null,

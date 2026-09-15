@@ -1053,3 +1053,188 @@ describe('ChatStore 成员视角序列（双形态）', () => {
     expect(store.getSnapshot().memberHistory).toEqual({})
   })
 })
+
+// ─── live 进行中回合的条目级 open 标记（specs/064-memory-split-fold-remain/
+// contracts/web-ui.md §3 / data-model.md §3.1）：team_message 归约时该成员
+// 存在打开的 live 回合 → 固化条目（归并序列 + 成员视角）落 open: true；
+// 回合收束全路径清除（含全部步已固化的早退路径）；回填/投影/用户消息恒不
+// 携带。标记供分组层整组流式展开，三分类只作用于已收束分组。
+
+describe('ChatStore live open 标记', () => {
+  it('①team_message 固化落 open 标记（归并序列 + 成员视角双写），consumeFixedStep 照常推进', () => {
+    const store = new ChatStore()
+    for (const e of [
+      startTurn('PLAYER', 't1'),
+      ...oneTextStep('PLAYER', 't1', 1, '第一步'),
+      ...oneTextStep('PLAYER', 't1', 2, '第二步'),
+      teamMessageEvent('PLAYER', 1, '第一步', 'ROLE_AGENT', 'm1'),
+    ]) {
+      store.applyEvent(e)
+    }
+
+    const s = store.getSnapshot()
+    expect(s.history).toHaveLength(1)
+    expect(s.history[0]?.open).toBe(true)
+    expect(s.memberHistory.player).toHaveLength(1)
+    expect(s.memberHistory.player?.[0]?.open).toBe(true)
+    expect(s.memberHistory.player?.[0]?.message.messageId).toBe('m1')
+    // 固化锚推进不受标记影响（059 渲染枢轴语义保持）。
+    expect(s.live[0]?.fixedSteps).toBe(1)
+  })
+
+  it('②turn_end{COMPLETED} 全部步已固化（早退路径）：标记清除、live 移除', () => {
+    const store = new ChatStore()
+    for (const e of [
+      startTurn('PLAYER', 't1'),
+      ...oneTextStep('PLAYER', 't1', 1, '第一步'),
+      ...oneTextStep('PLAYER', 't1', 2, '第二步'),
+      teamMessageEvent('PLAYER', 1, '第一步'),
+      teamMessageEvent('PLAYER', 2, '第二步'),
+    ]) {
+      store.applyEvent(e)
+    }
+    // 固化期间标记在场（分组层据此整组展开）。
+    expect(store.getSnapshot().history.map((e) => e.open)).toEqual([true, true])
+    expect(store.getSnapshot().memberHistory.player?.map((e) => e.open)).toEqual([true, true])
+
+    // 全部 step 已固化：closeLiveTurn 走无尾步可投影的早退路径，标记仍须清除。
+    store.applyEvent(endTurn('PLAYER', 't1'))
+    const s = store.getSnapshot()
+    expect(s.live).toEqual([])
+    expect(s.history.map((e) => e.open)).toEqual([undefined, undefined])
+    expect(s.memberHistory.player?.map((e) => e.open)).toEqual([undefined, undefined])
+  })
+
+  it('③turn_end{COMPLETED} 带未固化尾步：已固化条目标记清除、投影尾步无标记；迟到替换帧不标记', () => {
+    const store = new ChatStore()
+    for (const e of [
+      startTurn('PLAYER', 't1'),
+      ...oneTextStep('PLAYER', 't1', 1, '第一步'),
+      teamMessageEvent('PLAYER', 1, '第一步'),
+      ...oneTextStep('PLAYER', 't1', 2, '第二步'),
+    ]) {
+      store.applyEvent(e)
+    }
+    expect(store.getSnapshot().history[0]?.open).toBe(true)
+
+    store.applyEvent(endTurn('PLAYER', 't1'))
+    const s = store.getSnapshot()
+    expect(s.history.map((e) => e.projected)).toEqual([undefined, true])
+    expect(s.history.map((e) => e.open)).toEqual([undefined, undefined])
+    expect(s.memberHistory.player?.map((e) => e.projected)).toEqual([undefined, true])
+    expect(s.memberHistory.player?.map((e) => e.open)).toEqual([undefined, undefined])
+
+    // 下一回合已打开时，上一回合的迟到固化帧按占位替换路径落位——占位条目
+    // 诞生于已收束回合，替换不落标记（contracts/web-ui.md §3/§4）。
+    store.applyEvent(startTurn('PLAYER', 't2'))
+    store.applyEvent(teamMessageEvent('PLAYER', 5, '第二步'))
+    const late = store.getSnapshot()
+    expect(late.history[1]?.projected).toBeUndefined()
+    expect(late.history[1]?.open).toBeUndefined()
+    expect(late.memberHistory.player?.[1]?.projected).toBeUndefined()
+    expect(late.memberHistory.player?.[1]?.open).toBeUndefined()
+  })
+
+  it('④turn_end{ERROR}/{CANCELED}：标记清除 + 尾步 interrupted 投影（既有语义零回归）', () => {
+    const failed = new ChatStore()
+    for (const e of [
+      startTurn('PLAYER', 't1'),
+      ...oneTextStep('PLAYER', 't1', 1, '已完成步'),
+      teamMessageEvent('PLAYER', 1, '已完成步'),
+      blockStart('PLAYER', 't1', 1, 2),
+      delta('PLAYER', 't1', 1, '半截输出', 2),
+      endTurnWithError('PLAYER', 't1', 'LLM', '流中断'),
+    ]) {
+      failed.applyEvent(e)
+    }
+    const fs = failed.getSnapshot()
+    expect(fs.error).toBe('流中断')
+    expect(fs.history.map((e) => e.open)).toEqual([undefined, undefined])
+    expect(fs.history[0]?.message.interrupted).toBeUndefined()
+    expect(fs.history[1]).toMatchObject({ projected: true, message: { interrupted: true } })
+    expect(fs.memberHistory.player?.map((e) => e.open)).toEqual([undefined, undefined])
+
+    const canceled = new ChatStore()
+    for (const e of [
+      startTurn('PLAYER', 't9'),
+      ...oneTextStep('PLAYER', 't9', 1, '已固化'),
+      teamMessageEvent('PLAYER', 2, '已固化'),
+      endTurn('PLAYER', 't9', 'TURN_STATUS_CANCELED'),
+    ]) {
+      canceled.applyEvent(e)
+    }
+    const cs = canceled.getSnapshot()
+    expect(cs.canceled).toBe(true)
+    expect(cs.live).toEqual([])
+    expect(cs.history[0]?.open).toBeUndefined()
+    expect(cs.memberHistory.player?.[0]?.open).toBeUndefined()
+  })
+
+  it('⑤流断开兜底 closePendingTurns：已固化条目标记清除（流尾与传输异常两路径）', async () => {
+    const ended = new ChatStore()
+    await ended.send(
+      '开始',
+      eventsOf([
+        teamMessageEvent('USER', 1, '开始', 'ROLE_USER'),
+        startTurn('PLAYER', 't1'),
+        ...oneTextStep('PLAYER', 't1', 1, '第一步'),
+        teamMessageEvent('PLAYER', 2, '第一步'),
+      ]),
+    )
+    expect(ended.getSnapshot().live).toEqual([])
+    expect(ended.getSnapshot().history.map((e) => e.open)).toEqual([undefined, undefined])
+    expect(ended.getSnapshot().memberHistory.player?.map((e) => e.open)).toEqual([undefined])
+
+    const dropped = new ChatStore()
+    await dropped.send(
+      '开始',
+      streamThenDrop([
+        teamMessageEvent('USER', 1, '开始', 'ROLE_USER'),
+        startTurn('PLAYER', 't1'),
+        ...oneTextStep('PLAYER', 't1', 1, '第一步'),
+        teamMessageEvent('PLAYER', 2, '第一步'),
+      ]),
+    )
+    expect(dropped.getSnapshot().error).toBe('transport dropped')
+    expect(dropped.getSnapshot().live).toEqual([])
+    expect(dropped.getSnapshot().history.map((e) => e.open)).toEqual([undefined, undefined])
+    expect(dropped.getSnapshot().memberHistory.player?.map((e) => e.open)).toEqual([undefined])
+  })
+
+  it('⑥loadHistory 防御性清除 memberHistory 残留标记（history 重建无标记、live 复位）', () => {
+    const store = new ChatStore()
+    store.applyEvent(startTurn('PLAYER', 't1'))
+    store.applyEvent(teamMessageEvent('PLAYER', 2, '第一步', 'ROLE_AGENT', 'm2'))
+    expect(store.getSnapshot().memberHistory.player?.[0]?.open).toBe(true)
+
+    store.loadHistory([
+      {
+        member: 'player',
+        message: {
+          messageId: 'm2',
+          role: 'ROLE_AGENT',
+          blocks: [{ text: { content: '第一步' } }],
+        },
+        seq: 2,
+      },
+    ])
+    const s = store.getSnapshot()
+    expect(s.live).toEqual([])
+    expect(s.history[0]?.open).toBeUndefined()
+    expect(s.memberHistory.player?.[0]?.open).toBeUndefined()
+    // 成员视角条目本身保留（重对齐不清空）；仅标记被防御性清除。
+    expect(s.memberHistory.player?.[0]?.message.messageId).toBe('m2')
+  })
+
+  it('⑦team_message{USER} 永不标记（保留值不是成员回合）', () => {
+    const store = new ChatStore()
+    for (const e of [
+      startTurn('PLAYER', 't1'),
+      teamMessageEvent('USER', 1, '用户消息', 'ROLE_USER'),
+    ]) {
+      store.applyEvent(e)
+    }
+    expect(store.getSnapshot().history[0]?.open).toBeUndefined()
+    expect(store.getSnapshot().memberHistory.user).toBeUndefined()
+  })
+})

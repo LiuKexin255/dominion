@@ -5,11 +5,12 @@
 // 气泡 / 成员原生输出带 player/planner 标签，不显示广播包装形态）；成员
 // 视角序列按消费面呈现（ROLE_AGENT=自己的输出（agent 形态）；ROLE_USER +
 // sender="user"=用户气泡；ROLE_USER + sender=成员 role=标注来源的用户消息
-// `user: [sender] 正文`）。成员输出按模型输出步骤分段呈现、完成回合按三分类
-// 折叠（specs/064-memory-split-fold-remain/contracts/web-ui.md §1）：历史一条
-// 消息即一个 step、live 回合每个 step 一个分段容器，依次独立呈现；步骤内
-// THINK → ReasoningRow、TEXT → MarkdownText、TOOL_CALL → ToolCard 分类分列
-// 不混排。
+// `user: [sender] 正文`）。成员输出按模型输出步骤分段呈现：含 live `open`
+// 标记的分组（进行中回合的已固化前缀）整组按流式语义展开、不进三分类；
+// 已收束分组按三分类折叠（specs/064-memory-split-fold-remain/contracts/
+// web-ui.md §1 适用前置 / §3）。历史一条消息即一个 step、live 回合每个 step
+// 一个分段容器，依次独立呈现；步骤内 THINK → ReasoningRow、TEXT →
+// MarkdownText、TOOL_CALL → ToolCard 分类分列不混排。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Button,
@@ -133,8 +134,11 @@ function blockToolCall(b: ContentBlock | BlockDraft, historical: boolean): ToolC
 // TEXT → MarkdownText、TOOL_CALL → ToolCard （web-frontend.md §2: 分类呈现
 // 不混排）。streaming running 只落在流式回合最后一段的尾块上——流式块按序
 // append 恒为尾块，已终结的 THINK 块（其后还有 TEXT 在流式）因此呈现完成态
-// 摘要。非 running 语境（历史回填/已 settled 分段）中陈旧 RUNNING 工具块
-// 推导中断终态（specs/054-agent-v2-bugfixes/data-model.md §2）。
+// 摘要。historical 决定工具块语境（缺省 !running：历史回填/已 settled 分段
+// 中陈旧 RUNNING 工具块推导中断终态——specs/054-agent-v2-bugfixes/
+// data-model.md §2）；live 进行中回合的已固化前缀（open 分组）显式传 false，
+// RUNNING 无 result 呈现执行中、不做中断推导（specs/064-memory-split-fold-
+// remain/contracts/web-ui.md §2）。
 //
 // TEXT 块经 MarkdownText 渲染（specs/054-agent-v2-bugfixes/contracts/
 // web-ui.md §3：GFM 正文、流式增量解析、不完整片段不崩溃）。streaming prop
@@ -147,9 +151,11 @@ function blockToolCall(b: ContentBlock | BlockDraft, historical: boolean): ToolC
 function AgentStep({
   blocks,
   running,
+  historical = !running,
 }: {
   blocks: (ContentBlock | BlockDraft)[]
   running: boolean
+  historical?: boolean
 }) {
   return (
     <div className="msg-agent" data-testid="agent-step">
@@ -164,7 +170,7 @@ function AgentStep({
             />
           )
         }
-        const tool = blockToolCall(b, !running)
+        const tool = blockToolCall(b, historical)
         if (tool !== undefined) {
           return <ToolCard key={i} {...tool} />
         }
@@ -204,24 +210,49 @@ function MemberTag({ member }: { member: string }) {
   )
 }
 
-// MemberTurn renders one member's finished turn group (consecutive
-// same-member step messages) with its member label; folding stays per member
-// (web-views.md §3). A user entry or another member breaks the group.
+// OpenSteps renders one still-open turn group's consolidated steps in full
+// streaming form: no folding control, every step an independent AgentStep in
+// streaming context（specs/064-memory-split-fold-remain/contracts/web-ui.md
+// §1 适用前置——含 open 标记的分组不进入三分类；§2——RUNNING 无 result 的
+// 工具块呈现执行中，不做历史语境的中断推导）。open 标记由 store 从 live
+// 回合生命周期派生（data-model.md §3.1）；live 尾步由下方 live 循环另行
+// 呈现。
+function OpenSteps({ messages }: { messages: HistoryMessage[] }) {
+  return (
+    <>
+      {messages.map((m, i) => (
+        <AgentStep key={i} blocks={m.blocks} running={false} historical={false} />
+      ))}
+    </>
+  )
+}
+
+// MemberTurn renders one member's turn group (consecutive same-member step
+// messages) with its member label; folding stays per member (web-views.md §3).
+// A user entry or another member breaks the group. open = 组内条目带 live
+// open 标记（进行中回合的已固化前缀）→ 整组按流式语义展开、不进
+// CompletedTurn；已收束分组进入三分类。
 function MemberTurn({
   member,
   messages,
+  open,
   expanded,
   onToggle,
 }: {
   member: string
   messages: HistoryMessage[]
+  open: boolean
   expanded: boolean
   onToggle: () => void
 }) {
   return (
     <div className="member-turn" data-testid="member-turn" data-member={member}>
       <MemberTag member={member} />
-      <CompletedTurn messages={messages} expanded={expanded} onToggle={onToggle} />
+      {open ? (
+        <OpenSteps messages={messages} />
+      ) : (
+        <CompletedTurn messages={messages} expanded={expanded} onToggle={onToggle} />
+      )}
     </div>
   )
 }
@@ -232,7 +263,9 @@ function MemberTurn({
 // 进"思考过程"摘要区（步骤/工具计数，点击展开；手动展开在页面会话内保持，
 // 由 ChatView 的展开状态承载）；② 无最终答案步且全部步均无 interrupted 标记
 // （终局收束回合）→ 以末步为锚折叠、末步整步可见；③ 存在 interrupted 标记
-// （失败/终止回合）→ 全部过程内容可见不折叠。
+// （失败/终止回合）→ 全部过程内容可见不折叠。输入契约 = 已收束分组（组内
+// 条目全部无 open 标记）；含 open 标记的分组由分组层先行路由到 OpenSteps，
+// 不进入分类（§1 适用前置 / §3）。
 function CompletedTurn({
   messages,
   expanded,
@@ -351,9 +384,10 @@ function TeamMessages({
         if (member === USER_MEMBER) {
           return <UserBubble key={i} message={message} />
         }
-        // 连续同成员 AGENT 条目构成该成员的一个已完成回合（服务端每 step
-        // 一条），由组首渲染整组并应用折叠（web-views.md §3：折叠按成员
-        // 维度）；组内其余条目跳过；USER 或另一成员条目断开分组。
+        // 连续同成员 AGENT 条目构成该成员的一个回合（服务端每 step 一条），
+        // 由组首渲染整组（web-views.md §3：折叠按成员维度）；组内其余条目
+        // 跳过；USER 或另一成员条目断开分组。含 open 标记的分组（进行中
+        // 回合的已固化前缀）整组流式展开，否则进入三分类折叠。
         if (
           i > 0 &&
           history[i - 1]?.member === member &&
@@ -369,13 +403,15 @@ function TeamMessages({
         ) {
           end += 1
         }
-        const messages = history.slice(i, end).map((e) => e.message)
+        const group = history.slice(i, end)
+        const messages = group.map((e) => e.message)
         const key = `${TEAM_VIEW}:${i}`
         return (
           <MemberTurn
             key={i}
             member={member}
             messages={messages}
+            open={group.some((e) => e.open === true)}
             expanded={expanded.has(key)}
             onToggle={() => onToggle(key)}
           />
@@ -435,8 +471,9 @@ function MemberMessages({
       {entries.map((entry, i) => {
         const { message, sender } = entry
         if (message.role === 'ROLE_AGENT') {
-          // 连续 AGENT 条目构成该成员的一个已完成回合（服务端每 step 一条），
-          // 由组首渲染整组并应用折叠。
+          // 连续 AGENT 条目构成该成员的一个回合（服务端每 step 一条），由组首
+          // 渲染整组：含 open 标记（进行中回合的已固化前缀）整组流式展开，
+          // 否则进入三分类折叠。
           if (i > 0 && entries[i - 1]?.message.role === 'ROLE_AGENT') return null
           let end = i
           while (
@@ -445,7 +482,8 @@ function MemberMessages({
           ) {
             end += 1
           }
-          const messages = entries.slice(i, end).map((e) => e.message)
+          const group = entries.slice(i, end)
+          const messages = group.map((e) => e.message)
           const key = `${member}:${i}`
           return (
             <div
@@ -454,11 +492,15 @@ function MemberMessages({
               data-testid="member-turn"
               data-member={member}
             >
-              <CompletedTurn
-                messages={messages}
-                expanded={expanded.has(key)}
-                onToggle={() => onToggle(key)}
-              />
+              {group.some((e) => e.open === true) ? (
+                <OpenSteps messages={messages} />
+              ) : (
+                <CompletedTurn
+                  messages={messages}
+                  expanded={expanded.has(key)}
+                  onToggle={() => onToggle(key)}
+                />
+              )}
             </div>
           )
         }
