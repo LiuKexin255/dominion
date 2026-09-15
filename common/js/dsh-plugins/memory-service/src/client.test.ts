@@ -173,6 +173,74 @@ describe("MemoryClient", () => {
       );
     });
 
+    it("normalizes update_time to epoch milliseconds (longs: String seconds + nanos)", async () => {
+      respond(fake.listMemories, {
+        memories: [
+          {
+            memoryId: "mem-a",
+            content: "甲",
+            updateTime: { seconds: "1757900000", nanos: 5e8 },
+          },
+        ],
+        nextPageToken: "",
+      });
+      const client = new MemoryClient(fake as never);
+
+      const entries = await client.listMemories("saolei", "sess-1");
+
+      expect(entries).toEqual([
+        { memory_id: "mem-a", content: "甲", updateTime: 1757900000500 },
+      ]);
+    });
+
+    it("keeps updateTime undefined when the entry has no update_time (proto-loader materializes it as null)", async () => {
+      respond(fake.listMemories, {
+        memories: [{ memoryId: "mem-a", content: "甲", updateTime: null }],
+        nextPageToken: "",
+      });
+      const client = new MemoryClient(fake as never);
+
+      const entries = await client.listMemories("saolei", "sess-1");
+
+      expect(entries[0].updateTime).toBeUndefined();
+    });
+
+    it("keeps updateTime undefined for unparseable seconds (degrades to oldest, never throws)", async () => {
+      respond(fake.listMemories, {
+        memories: [
+          {
+            memoryId: "mem-a",
+            content: "甲",
+            updateTime: { seconds: "not-a-number", nanos: 0 },
+          },
+        ],
+        nextPageToken: "",
+      });
+      const client = new MemoryClient(fake as never);
+
+      const entries = await client.listMemories("saolei", "sess-1");
+
+      expect(entries[0].updateTime).toBeUndefined();
+    });
+
+    it("normalizes an explicit zero timestamp to epoch 0 (a present value, not the oldest)", async () => {
+      respond(fake.listMemories, {
+        memories: [
+          {
+            memoryId: "mem-a",
+            content: "甲",
+            updateTime: { seconds: "0", nanos: 0 },
+          },
+        ],
+        nextPageToken: "",
+      });
+      const client = new MemoryClient(fake as never);
+
+      const entries = await client.listMemories("saolei", "sess-1");
+
+      expect(entries[0].updateTime).toBe(0);
+    });
+
     it("walks pages until next_page_token is empty", async () => {
       fake.listMemories.mockImplementation(
         (

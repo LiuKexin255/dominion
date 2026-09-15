@@ -29,14 +29,23 @@ export const MEMORY_SERVICE_TARGET = "dominion:///game/memory:50051";
 
 /**
  * One memory entry as returned by `listMemories`: the service's internal
- * resource id (`memory_id`) plus the entry text. The id is used only for
- * internal location (replace/remove old_text matching, snapshot rendering
- * excludes it) and MUST NOT be rendered into LLM-visible text
+ * resource id (`memory_id`), the entry text, and the normalized update time
+ * the snapshot orders entries by. The id is used only for internal location
+ * (replace/remove old_text matching, snapshot rendering excludes it) and MUST
+ * NOT be rendered into LLM-visible text
  * (specs/059-agent-v2-team-mode/spec.md FR-007).
  */
 export interface MemoryEntry {
   memory_id: string;
   content: string;
+  /**
+   * Entry update time as epoch milliseconds, normalized from the proto
+   * `Memory.update_time`. `undefined` when the service returned no timestamp
+   * or it could not be parsed; the snapshot then treats the entry as the
+   * oldest (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
+   * §1–§2).
+   */
+  updateTime?: number;
 }
 
 /**
@@ -49,6 +58,52 @@ export function memoryName(
   memoryId: string,
 ): string {
   return `templates/${template}/sessions/${session}/memories/${memoryId}`;
+}
+
+/**
+ * One decoded `ListMemoriesResponse.memories[]` wire entry (`longs: String`):
+ * a missing `update_time` is materialized as `null` by proto-loader's
+ * `defaults: true`
+ * (https://github.com/grpc/grpc-node/blob/master/packages/proto-loader/README.md).
+ */
+interface ListedMemory {
+  memoryId?: string;
+  content?: string;
+  updateTime?: {
+    seconds?: string | number | null;
+    nanos?: number | null;
+  } | null;
+}
+
+/**
+ * Normalize a proto `Memory.update_time` value to an epoch-milliseconds
+ * integer. proto-loader runs with `longs: String`, so a
+ * `google.protobuf.Timestamp` arrives as `{seconds: String, nanos: number}`,
+ * and with `defaults: true` an absent `update_time` arrives as `null` (the
+ * absent message field is materialized, not omitted). Unparseable values
+ * (missing/empty/non-numeric seconds, non-numeric nanos) normalize to
+ * `undefined` — never throw — so the snapshot degrades the entry to "oldest"
+ * (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1–§2).
+ */
+function normalizeUpdateTime(
+  timestamp:
+    | { seconds?: string | number | null; nanos?: number | null }
+    | null
+    | undefined,
+): number | undefined {
+  if (timestamp == null) {
+    return undefined;
+  }
+  const secondsText = String(timestamp.seconds ?? "").trim();
+  const seconds = Number(secondsText);
+  if (secondsText === "" || !Number.isFinite(seconds)) {
+    return undefined;
+  }
+  const nanos = Number(timestamp.nanos ?? 0);
+  if (!Number.isFinite(nanos)) {
+    return undefined;
+  }
+  return Math.round(seconds * 1000 + nanos / 1e6);
 }
 
 /**
@@ -290,7 +345,7 @@ export class MemoryClient implements MemoryStore {
     let pageToken = "";
     do {
       const response = await this.call<{
-        memories: Array<{ memoryId?: string; content?: string }>;
+        memories: ListedMemory[];
         nextPageToken?: string;
       }>((client, metadata, options, cb) =>
         (client as any).listMemories(
@@ -300,12 +355,13 @@ export class MemoryClient implements MemoryStore {
           cb,
         ),
       );
-      for (const m of (response?.memories ?? []) as Array<{
-        memoryId?: string;
-        content?: string;
-      }>) {
+      for (const m of response?.memories ?? []) {
         if (m.memoryId != null && m.content != null) {
-          entries.push({ memory_id: m.memoryId, content: m.content });
+          entries.push({
+            memory_id: m.memoryId,
+            content: m.content,
+            updateTime: normalizeUpdateTime(m.updateTime),
+          });
         }
       }
       pageToken = response?.nextPageToken ?? "";

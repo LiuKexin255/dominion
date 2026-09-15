@@ -102,8 +102,8 @@
 
 **Tasks**:
 
-- [ ] T012 [P] [US3] 在 `common/js/dsh-plugins/memory-service/src/client.ts` 为 `MemoryEntry` 增 `updateTime?: number` 并在 `listMemories` 解析归一化（`{seconds: string, nanos: number}` → `Math.round(Number(seconds)*1000 + nanos/1e6)`，缺失/不可解析保持 undefined）；扩展 `common/js/dsh-plugins/memory-service/src/client.test.ts`
-- [ ] T013 [US3] 在 `common/js/dsh-plugins/memory-service/src/snapshot.ts` 的 `renderMemorySnapshot` 实现倒排 + 截取（`updateTime` 降序、undefined 最旧、并列 `memory_id` 升序、前 10 条、空集空串）；扩展 `common/js/dsh-plugins/memory-service/src/service.test.ts`（排序/截断/并列/冻结回归，`memory_id` 不渲染）
+- [X] T012 [P] [US3] 在 `common/js/dsh-plugins/memory-service/src/client.ts` 为 `MemoryEntry` 增 `updateTime?: number` 并在 `listMemories` 解析归一化（`{seconds: string, nanos: number}` → `Math.round(Number(seconds)*1000 + nanos/1e6)`，缺失/不可解析保持 undefined）；扩展 `common/js/dsh-plugins/memory-service/src/client.test.ts`
+- [X] T013 [US3] 在 `common/js/dsh-plugins/memory-service/src/snapshot.ts` 的 `renderMemorySnapshot` 实现倒排 + 截取（`updateTime` 降序、undefined 最旧、并列 `memory_id` 升序、前 10 条、空集空串）；扩展 `common/js/dsh-plugins/memory-service/src/service.test.ts`（排序/截断/并列/冻结回归，`memory_id` 不渲染）
 
 **Checkpoint（验证门禁）**: `bazel test //common/js/dsh-plugins/memory-service/...` 全绿；写路径与冻结时机零变化（既有用例回归）。
 
