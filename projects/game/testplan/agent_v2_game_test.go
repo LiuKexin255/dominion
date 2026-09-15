@@ -3,13 +3,15 @@
 // chain and either the deployed fake-desktop executor (the won topology) or
 // the test's own flow connection. Cases are grouped by tested concern (won
 // chain on the executor, terminal won + review continuation, terminal lost +
-// review stop, desktop-absent, multi-session isolation, stream independence),
-// one test per concern — style/large_test.md §测试组织. The disconnect branch
-// needs the drop deploy topology and lives in its own binary,
-// agent_v2_game_disconnect_test.go.
+// review stop, per-handoff game-stats announcements across games, the
+// prompt-side roster/snapshot increments, desktop-absent, multi-session
+// isolation, stream independence), one test per concern —
+// style/large_test.md §测试组织. The disconnect branch needs the drop deploy
+// topology and lives in its own binary, agent_v2_game_disconnect_test.go.
 package testplan
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -169,12 +171,14 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	assertTerminalTurnEndsWithToolBlock(t, turns[1])
 
 	// Review: the planner consumes the player's raw process and emits the
-	// continue strategy. The review entry is gated on the terminal result
-	// text: its keywords ("game status: won") must match the review drive's
-	// LAST user message — the terminal <player-tool-call> relay itself under
-	// the 062 turn conclusion (team_planner.yaml team-planner-review-continue),
-	// so this turn occurring at all proves the terminal unit reached the
-	// planner's model input (specs/062-team-game-end-handoff/spec.md SC-003).
+	// continue strategy. The review entry is gated on the saolei
+	// announcement's result line — its keywords ("本局游戏结束：胜利") must
+	// match the review drive's LAST user message, the announcement the
+	// system member sends before the drain (team_planner.yaml
+	// team-planner-review-continue;
+	// specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3),
+	// so this turn occurring at all proves terminal-unit continuity AND the
+	// announcement reaching the planner's model input.
 	// The planner view assertion below pins the relay form itself.
 	if _, text := teamTurnBlocks(turns[2]); text != teamPlannerReviewContinueText {
 		t.Errorf("review text = %q, want %q", text, teamPlannerReviewContinueText)
@@ -647,5 +651,246 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 	// input back to the player, which the merged value reflects.
 	if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
 		t.Errorf("active_member after the chain settled = %q, want \"player\" (the structural continuation's activation)", got)
+	}
+}
+
+// TestAgentV2TeamGameStatsAnnouncedPerHandoff drives two terminal games in
+// one session over the test's own desktop half and asserts the US1
+// announcement face (specs/065-agent-v2-team-refine/spec.md SC-001): game 1
+// is a won game whose operate batch stops on its FIRST dispatch (the win
+// board answers the first click), game 2 is a lost game whose batch lands
+// BOTH operations (click then flag) before the losing receipt — the
+// multi-operation comparison. Each handoff contributes exactly one
+// `member="saolei"` merged entry whose body is the gameStatsText template
+// (specs/065-agent-v2-team-refine/data-model.md §3) carrying the numbers the
+// flow script actually served; the planner review fixtures are anchored on
+// the stats template key line, so the two review turns firing (continue,
+// then stop) is the "the announcement reached the planner's review input"
+// evidence; and the player's next drives consume the announcements (sender
+// "saolei" view entries + live member_view frames). The proto team face
+// still carries only the two materialized members.
+func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-stats-chain-" + uniqueSuffix()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-stats-chain")
+
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	// Game 1 (won): the compatible in-progress 9×9 board at init, the win
+	// board on the first click → one successful dispatch. Game 2 (lost): the
+	// fresh 16×16 board at init, the same playing board on the click and the
+	// loss board on the flag → both dispatches succeed before the terminal
+	// receipt.
+	counts := new(teamFlowScriptCounts)
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardInitPNG},
+		stepBoards: [][]byte{saoleiBoardWinPNG, saoleiBoardInitPNG, saoleiBoardLossPNG},
+		counts:     counts,
+	}, wsReadTimeout)
+
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
+
+	turns := groupTeamMemberTurns(events)
+	wantMembers := []string{"planner", "player", "planner", "player", "planner", "player"}
+	if len(turns) != len(wantMembers) {
+		t.Fatalf("member turns = %d, want %d (opening, won game, continue review, lost game, stop review, stop ack)", len(turns), len(wantMembers))
+	}
+	for i, want := range wantMembers {
+		if turns[i].member != want {
+			t.Fatalf("turn %d member = %v, want %v", i, turns[i].member, want)
+		}
+	}
+
+	// Game 1: init + the terminal win receipt; the batch stopped at its
+	// first dispatch, so the turn carries exactly the init and operate
+	// results.
+	game1 := teamTurnToolResults(turns[1])
+	if len(game1) != 2 || game1[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || game1[1].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("game 1 tool results = %+v, want init + operate SUCCEEDED", game1)
+	}
+	if !strings.Contains(game1[0].GetResult(), agentV2ProgStatusContains) || !strings.Contains(game1[0].GetResult(), agentV2WonBoardContains) || !strings.Contains(game1[1].GetResult(), agentV2WonStatusContains) {
+		t.Errorf("game 1 results = %q / %q, want a playing 9×9 init and the won status", game1[0].GetResult(), game1[1].GetResult())
+	}
+	if status := teamTurnEndStatus(turns[1]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("game 1 turn ended %v, want COMPLETED", status)
+	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[1])
+
+	// Review 1 (continue): the fixture keyword is the announcement's result
+	// line, so this turn firing proves the announcement rode the review's
+	// model input (specs/065-agent-v2-team-refine/contracts/
+	// game-stats-broadcast.md §5).
+	if _, text := teamTurnBlocks(turns[2]); text != teamPlannerReviewContinueText {
+		t.Errorf("review 1 text = %q, want %q (stats-anchored review fixture)", text, teamPlannerReviewContinueText)
+	}
+
+	// Game 2: init + the two-operation loss receipt.
+	game2 := teamTurnToolResults(turns[3])
+	if len(game2) != 2 || game2[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || game2[1].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("game 2 tool results = %+v, want init + operate SUCCEEDED", game2)
+	}
+	if !strings.Contains(game2[0].GetResult(), agentV2ProgStatusContains) || !strings.Contains(game2[0].GetResult(), agentV2ProgBoardContains) || !strings.Contains(game2[1].GetResult(), agentV2LostStatusContains) {
+		t.Errorf("game 2 results = %q / %q, want a playing 16×16 init and the lost status", game2[0].GetResult(), game2[1].GetResult())
+	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[3])
+
+	if _, text := teamTurnBlocks(turns[4]); text != teamPlannerReviewStopText {
+		t.Errorf("review 2 text = %q, want %q", text, teamPlannerReviewStopText)
+	}
+	reviewResults := teamTurnToolResults(turns[4])
+	if len(reviewResults) != 1 || reviewResults[0].GetResult() != teamMemoryAddedResult {
+		t.Errorf("review 2 tool results = %+v, want the single memory add", reviewResults)
+	}
+	if _, text := teamTurnBlocks(turns[5]); text != teamPlayerResumeStopText {
+		t.Errorf("stop acknowledgement = %q, want %q", text, teamPlayerResumeStopText)
+	}
+
+	// The desktop served one F2 reply per game and exactly three successful
+	// cell receipts: game 1 stopped on its first, game 2 landed both batch
+	// operations before the loss. The completed script already proves no
+	// extra dispatch was answered; the counts pair the announced totals with
+	// what the desktop actually served (SC-001).
+	if counts.initServed != 2 || counts.stepServed != 3 {
+		t.Errorf("flow receipts served = %d init / %d step, want 2 / 3", counts.initServed, counts.stepServed)
+	}
+
+	// Merged sequence: exactly one saolei announcement per handoff, in game
+	// order, each the template with the game's dispatched numbers.
+	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	saoleiEntries := teamMessagesForMember(merged, agentV2SaoleiMember)
+	wantStats := []string{
+		agentV2GameStatsText("胜利", 1, 1, 0, 0),
+		agentV2GameStatsText("失败", 2, 1, 1, 0),
+	}
+	if len(saoleiEntries) != len(wantStats) {
+		t.Fatalf("merged saolei entries = %d, want %d (one per handoff)", len(saoleiEntries), len(wantStats))
+	}
+	for i, want := range wantStats {
+		entry := saoleiEntries[i]
+		if got := agentV2MessageText(entry.GetMessage()); got != want {
+			t.Errorf("saolei entry[%d] = %q, want %q", i, got, want)
+		}
+		if role := entry.GetMessage().GetRole(); role != game.Role_ROLE_AGENT {
+			t.Errorf("saolei entry[%d] role = %v, want AGENT", i, role)
+		}
+		if blocks := entry.GetMessage().GetBlocks(); len(blocks) != 1 || blocks[0].GetText() == nil {
+			t.Errorf("saolei entry[%d] blocks = %+v, want one text block", i, blocks)
+		}
+	}
+
+	// The announcement is fanned out at the handoff: the first saolei frame
+	// precedes the first review turn's turn_start.
+	announceAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
+		frame := event.GetTeamMessage()
+		return frame != nil && frame.GetMember() == agentV2SaoleiMember
+	})
+	reviewAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
+		return event.GetTurnStart() != nil && event.GetTurnId() == turns[2].turnID
+	})
+	if announceAt < 0 || reviewAt < 0 || announceAt > reviewAt {
+		t.Errorf("announcement frame at %d, review turn_start at %d, want the announcement first", announceAt, reviewAt)
+	}
+
+	// Planner view: the review drives consumed both announcements as relay
+	// inputs, and the first one's live frame arrived with its review turn.
+	plannerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2SaoleiMember)
+	if len(plannerSaolei) != len(wantStats) {
+		t.Fatalf("planner view saolei entries = %d, want %d", len(plannerSaolei), len(wantStats))
+	}
+	for i, want := range wantStats {
+		if got := agentV2MessageText(plannerSaolei[i].GetMessage()); got != agentV2SaoleiRelayText(want) {
+			t.Errorf("planner view saolei entry[%d] = %q, want %q", i, got, agentV2SaoleiRelayText(want))
+		}
+	}
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2SaoleiMember, turns[2].turnID)
+
+	// Player view: the game-2 drive consumed game 1's announcement and the
+	// stop-ack drive consumed game 2's — the next structural drive input
+	// carrying the broadcast (FR-004).
+	playerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player"), agentV2SaoleiMember)
+	if len(playerSaolei) != len(wantStats) {
+		t.Fatalf("player view saolei entries = %d, want %d", len(playerSaolei), len(wantStats))
+	}
+	for i, want := range wantStats {
+		if got := agentV2MessageText(playerSaolei[i].GetMessage()); got != agentV2SaoleiRelayText(want) {
+			t.Errorf("player view saolei entry[%d] = %q, want %q", i, got, agentV2SaoleiRelayText(want))
+		}
+	}
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "player", agentV2SaoleiMember, turns[3].turnID)
+
+	// The proto team face excludes the system member.
+	assertTeamProtoRosterExcludesSaolei(t, getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName))
+	assertTerminalHistoriesNoAbortTraces(t, ctx, sutHostURL, sutEnvName, sessionName)
+}
+
+// TestAgentV2TeamGameStatsPromptFaces materializes a team on a session
+// seeded with 12 memories and asserts the prompt-side increments of the
+// feature: the shared team section carries the saolei system member's roster
+// line and the input-side-only caveat
+// (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3/§4 —
+// the same strings the team plugin unit tests pin), and the planner's fixed
+// memory snapshot injects the 10 most recently updated entries newest-first
+// (specs/065-agent-v2-team-refine/spec.md FR-007; data-model.md §1.5), the
+// two oldest entries truncated away.
+func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+	sessionID := "team-stats-prompt-" + uniqueSuffix()
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	playerPreset, plannerPreset := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-stats-prompt", "stats prompt")
+
+	// Seed 12 memories BEFORE materialization: the planner prefetches the
+	// snapshot at its setup, so this is what fixes the injected entry set.
+	// The creates are spaced past the service's millisecond update_time
+	// resolution so the recency order is strictly deterministic.
+	var contentsNewestFirst []string
+	for i := 1; i <= 12; i++ {
+		content := fmt.Sprintf("T015 快照夹具 %02d", i)
+		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, fmt.Sprintf("snapshot-m%02d", i), content)
+		contentsNewestFirst = append([]string{content}, contentsNewestFirst...)
+		time.Sleep(3 * time.Millisecond)
+	}
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, playerPreset.GetName(), plannerPreset.GetName(), "", "")
+
+	// The team section lands on every member: both prompts carry the saolei
+	// roster line and the input-side-only caveat.
+	for _, member := range []string{"player", "planner"} {
+		prompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, member).GetSystemPrompt()
+		for _, want := range []string{agentV2TeamSectionSaoleiRosterLine, agentV2TeamSectionInputSideLine} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s system_prompt lacks %q:\n%s", member, want, prompt)
+			}
+		}
+	}
+
+	// The planner snapshot truncates to the 10 most recent entries, newest
+	// first; the two oldest are gone.
+	plannerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt()
+	got := memorySnapshotEntries(plannerPrompt)
+	want := contentsNewestFirst[:10]
+	if len(got) != len(want) {
+		t.Fatalf("planner snapshot entries = %d, want %d (the 10 most recent of 12):\n%s", len(got), len(want), plannerPrompt)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("snapshot entry[%d] = %q, want %q (update-time descending)", i, got[i], want[i])
+		}
+	}
+	for _, truncated := range contentsNewestFirst[10:] {
+		if strings.Contains(plannerPrompt, truncated) {
+			t.Errorf("planner system_prompt carries the truncated oldest entry %q", truncated)
+		}
+	}
+
+	// The snapshot section is planner-only: the player prompt has none.
+	playerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "player").GetSystemPrompt()
+	if strings.Contains(playerPrompt, "长期记忆：") {
+		t.Errorf("player system_prompt carries a memory snapshot, want none:\n%s", playerPrompt)
 	}
 }

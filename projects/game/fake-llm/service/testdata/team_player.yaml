@@ -24,9 +24,11 @@
 # turn conclusion (specs/062-team-game-end-handoff/spec.md FR-001/FR-002) a
 # terminal tool result ends the player turn at that result, so the terminal
 # summary continuations in those rules are never requested (no summary text is
-# produced). The planner review entries anchor on the relayed terminal
-# status line — `game status: won/lost` as the LAST user message of the
-# review drive (team_planner.yaml keywords), not on any summary.
+# produced). The planner review entries anchor on the saolei system member's
+# game-stats announcement — "本局游戏结束：胜利。/失败。" as the LAST user
+# message of the review drive (team_planner.yaml keywords;
+# specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3), not on
+# any summary.
 #
 # Keyword-space isolation from the existing agent_v2 game fixtures
 # (response matching: responses.go matchResponses — most declared conditions

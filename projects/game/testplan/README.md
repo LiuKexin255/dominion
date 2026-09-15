@@ -76,7 +76,7 @@ suites of the pre-refactor plan share one deployment:
 
 | suite | deploy | binaries | focus |
 |---|---|---|---|
-| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the team conversation face (team stream, merged/member-view history projections, queue/cancel/refresh windows, the LLM reliability paths and the opencode-go chat-wire session flow) → the team configuration face (preset pools, materialization, member system-prompt reads, the union model catalog) → the team game face (won chain on the executor, terminal win/loss reviews with the review memory write, desktop-absent, multi-session isolation) → the desktop face (flow stream), cases serial in module order |
+| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the team conversation face (team stream, merged/member-view history projections, queue/cancel/refresh windows — including the queued-open skip vs immediate-announcement contrast, the LLM reliability paths and the opencode-go chat-wire session flow) → the team configuration face (preset pools, materialization, member system-prompt reads, the union model catalog) → the team game face (won chain on the executor, terminal win/loss reviews with the review memory write, per-handoff saolei stats announcements, desktop-absent, multi-session isolation) → the desktop face (flow stream), cases serial in module order |
 | game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the team mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
 | game-memory-down | deploy_agent_v2_memory_down.yaml | `agent_v2_memory_down_test` | the team materialization fail-loud branch (no memory service: the planner memory prefetch rejects, UpdateTeam 5xx + GetTeam NOT_FOUND + retryable) |
 | game-stall | deploy_agent_v2_stall.yaml | `agent_v2_stall_test` | the adapter-level stream-stall watchdog branch (specs/063-llm-reliability-opencode-go/spec.md SC-004a): the 2s idle window detects the Responses stall template and converges through the existing retry semantics to a visible timeout-class failure without an unbounded hang; its own binary because guitar runs whole targets as suite cases and the main suite runs under the production-sized window |
@@ -188,6 +188,15 @@ queue/cancel/refresh cases pivot on; queued user messages must carry one of
 `暂停/稍等/等待/继续` and the first user message one of the opening anchors
 (see the per-file comments). The expected texts are pinned as the `team*`
 constants in `agent_v2_helpers_test.go`.
+
+The review entries are anchored on the saolei system member's game-stats
+announcement, which the announce-before-drain ordering places as the review
+drive's LAST user message (specs/065-agent-v2-team-refine/contracts/
+game-stats-broadcast.md §3): `team-planner-review-continue` matches
+`本局游戏结束：胜利`, `team-planner-review-stop` matches `本局游戏结束：失败`
+(the `gameStatsText` template of specs/065-agent-v2-team-refine/data-model.md
+§3), so a review turn firing also proves the announcement reached the
+planner's model input (specs/065-agent-v2-team-refine/spec.md SC-001).
 
 The 063 reliability fixtures (`specs/063-llm-reliability-opencode-go/spec.md`
 SC-001/SC-002/SC-004a/SC-005): `agent_v2_transient.yaml` serves the Responses

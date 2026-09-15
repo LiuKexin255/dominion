@@ -1003,6 +1003,65 @@ func TestMatchResponsesTeamSnapshotPriority(t *testing.T) {
 	}
 }
 
+// TestMatchResponsesTeamReviewAnnouncementAnchor pins the specs/065 review
+// anchor: the saolei system member announces the game stats before the review
+// drain (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md
+// §3), so the review drive's LAST user message is the announcement's
+// broadcast rendering and the review entries key on the gameStatsText result
+// line (specs/065-agent-v2-team-refine/data-model.md §3). This is the
+// unit-level counterpart of the team game large tests' review turns.
+func TestMatchResponsesTeamReviewAnnouncementAnchor(t *testing.T) {
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	instructions := strings.ToLower("你是扫雷 planner。")
+
+	announcement := func(resultLine string) responsesMessage {
+		return responsesMessage{
+			Role: "user",
+			Text: "<saolei-message>\n" + resultLine + "\n本局共执行 2 个操作：click 1 次、flag 1 次、chord 0 次。\n</saolei-message>",
+		}
+	}
+	// The drive's earlier user-role message keeps the review entries' min_turn
+	// 2 satisfied.
+	playerRelay := responsesMessage{
+		Role: "user",
+		Text: "<player-tool-call>\ntool: saolei_operate\nargs: {}\nresult: game status: playing\n</player-tool-call>",
+	}
+
+	tests := []struct {
+		name string
+		last responsesMessage
+		want string
+	}{
+		{
+			name: "won announcement selects the continue review",
+			last: announcement("本局游戏结束：胜利。"),
+			want: "team-planner-review-continue",
+		},
+		{
+			name: "lost announcement selects the stop review",
+			last: announcement("本局游戏结束：失败。"),
+			want: "team-planner-review-stop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := []responsesMessage{
+				playerRelay,
+				{Role: "assistant", Text: "本局复盘：收到。"},
+				tt.last,
+			}
+			got := matchResponses(store.Messages(), messages, instructions)
+			if got.Name != tt.want {
+				t.Fatalf("matchResponses() = %q, want %q (the announcement anchors the review entry)", got.Name, tt.want)
+			}
+		})
+	}
+}
+
 // transientStore builds a one-template Responses store whose template carries
 // the given transient YAML lines and a normal think/text answer that serves
 // once the injection budget is exhausted.

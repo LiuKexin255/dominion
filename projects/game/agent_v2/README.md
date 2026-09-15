@@ -14,12 +14,15 @@ opencode-go 网关的 OpenAI **Chat Completions** 协议端点
 选择面以 `provider/model-id` 复合标识联合呈现两 provider 目录
 （`specs/063-llm-reliability-opencode-go/contracts/model-selection.md`）。
 session 的组织模型是
-team：一个 session 至多物化一个 team，恰含 player 与 planner 两个成员，各持
-独立历史与 system prompt；需求与验收锚点见
+team：一个 session 至多物化一个 team——恰含 player 与 planner 两个 LLM 成员
+（各持独立历史与 system prompt）与一个非物化的“扫雷系统”成员（role
+`saolei`：无 preset/model、不经 LLM 驱动、不进 proto 成员面；终局交接时播报
+本局统计，`specs/065-agent-v2-team-refine/spec.md`）；需求与验收锚点见
 `specs/059-agent-v2-team-mode/spec.md` 与
 `specs/060-agent-v2-team-optimize/spec.md`，接口契约见两者
 `contracts/` 下的 team-api/preset-derivation/deploy-env/prompt-sections
-（060 以增量修订方式更新团队面与提示词面的语义）。
+（060 以增量修订方式更新团队面与提示词面的语义；065 增量见
+`specs/065-agent-v2-team-refine/contracts/`）。
 
 ## 服务形态与拓扑
 
@@ -128,6 +131,19 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   侧 `ctx.plannerMemory.load` 预取记忆快照（fail-loud）；随后 `ctx.team.register`
   注册群聊服务。任一步失败**整体回滚**：不残留半物化 team（GetTeam
   NOT_FOUND），可重试。
+- **成员消息源与扫雷系统角色**：team 的成员抽象为消息源接口
+  （`TeamMemberSource`，
+  `specs/065-agent-v2-team-refine/contracts/team-member-source.md` §1）：
+  player/planner 经 `agentMemberSource` 适配器接入（语义零变化），物化同时注册
+  announce-only 的“扫雷系统”成员（role `saolei`、summary 为“扫雷系统，终局播报
+  对局结果与操作统计”，`common/js/dsh-plugins/saolei-loop/src/announcer.ts`；
+  无 preset/model、不接收广播、不进 `members`/`active_member`）。终局交接时它
+  先于 planner 复盘播报本局统计（`gameStatsText` 模板：结果 + 单个操作总数 +
+  click/flag/chord 分项，`specs/065-agent-v2-team-refine/contracts/
+  game-stats-broadcast.md` §2/§3），宿主经订阅将其投影为归并序列条目与
+  `team_message{member="saolei"}` 帧（同契约 §4），消息作为广播进入 planner
+  复盘输入与 player 下次结构性驱动输入；每局至多一条（记录恒等 guard，重试
+  不重发；排队消化优先，被跳过局不补发）。
 - **静止等待与用户首驱**：物化成功后 team 静止等待——初始激活成员 = planner、
   初始相位 = planning，**不自动驱动任何成员**；游戏首次驱动由用户第一条消息
   触发（planner 处理并产出开局策略），随后 player 被驱动开始游戏，终局后
@@ -248,6 +264,11 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
   行。
 - 成员视角渲染为 `user: [sender] 注入原文`（XML 标签对保留、正文仅呈现
   一次）；team section 的格式约定与该 wire 形态同源。
+- 成员清单（roster）由注册成员渲染，含扫雷系统行
+  `- [saolei] 扫雷系统，终局播报对局结果与操作统计`；team section 同时明确
+  这些标签格式**仅输入侧**——只用于系统向接收方呈现他人输出，成员自身输出不
+  使用 `<角色-message>`/`<角色-tool-call>` 自我包装
+  （`specs/065-agent-v2-team-refine/contracts/team-member-source.md` §3/§4）。
 
 提示词三层所有权
 （`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md`）：
@@ -258,7 +279,7 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
 | 工具守则（section `saolei:guidance`，order 100） | saolei preset 行（player 池） | 仅 player | 仅工具用法（符号表/坐标/结果三层结构/校验拒绝语义/示例/纪律） |
 | persona（order 0） | preset 模板 persona 行 | 各成员 | 身份/职责/风格；不重复玩法与操作描述 |
 
-## planner memory（快照固定与 fail-loud）
+## planner memory（快照固定、近因注入与 fail-loud）
 
 planner preset 锁定的 memory 插件组
 （`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §3）：
@@ -269,9 +290,12 @@ planner preset 锁定的 memory 插件组
   也是普通文本结果、不中断对话。修改经 memory 服务立即持久化（scope 键
   (template, session)，管理路由 `/api/v1/.../memories` 可查证），过程经 planner
   工具调用历史与团队消息流可见。
-- **快照固定**：物化时 `ctx.plannerMemory.load` 预取长期记忆快照，注入 system
-  prompt 的函数式 section（order 200+，空不渲染）；快照在成员实例生命周期内
-  固定，运行中的外部修改待下次物化（刷新 team）生效。
+- **快照固定与近因截断**：物化时 `ctx.plannerMemory.load` 预取长期记忆快照，
+  注入 system prompt 的函数式 section（order 200+，空不渲染）；快照在成员实例
+  生命周期内固定，运行中的外部修改待下次物化（刷新 team）生效。注入按条目
+  `update_time` 倒序排列（并列以 `memory_id` 升序确定）且仅取最近 10 条
+  （`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md` §2；
+  截断只影响注入面，memory 工具写路径仍面向全量存储）。
 - **fail-loud**：memory 服务不可达时预取 throw，team 物化整体回滚（无半物化），
   可重试。
 
@@ -380,7 +404,16 @@ tool_result` 帧序（`agent_v2_conversation_test.go`）、`GetTeam.active_membe
 经重试恢复、planner 失败保持激活、配额/认证零重试风暴、opencode-go 复合标识
 多局会话与合成 token 零泄漏（`agent_v2_conversation_test.go`）；ListModels 联合
 目录与 UpdateTeam 复合标识三分支（`agent_v2_preset_test.go`）；停滞看护有界
-收敛（`agent_v2_stall_test.go`）。注入设施与触发词见
+收敛（`agent_v2_stall_test.go`）。065 增量断言：每局交接后归并序列恰一条
+`member="saolei"` 统计消息（正文为 `gameStatsText` 模板、数值与该局
+fake-desktop 实际成功派发序列一致，含批量多操作对照），planner 复盘输入与
+player 成员视图消费该消息、`GetTeam`/`active_member` 不含该角色
+（`agent_v2_game_test.go`）；排队跳局（排队消息驱动 player 开新局）被跳过局
+无统计、新局交接恰一条新局统计，对照局（终局后无排队）即时播报
+（`agent_v2_conversation_test.go`）；system prompt 含 roster 扫雷系统行与
+“仅输入侧”表述、planner 快照 ≤10 条且按更新时间倒序（>10 条记忆夹具对照）——
+验收面见 `specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md` §5
+与 `specs/065-agent-v2-team-refine/quickstart.md` §3。注入设施与触发词见
 `projects/game/fake-llm/README.md`。
 
 ## 已知限制

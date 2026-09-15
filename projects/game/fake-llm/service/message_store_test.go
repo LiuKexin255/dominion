@@ -744,9 +744,10 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// The team entries (specs/059-agent-v2-team-mode/tasks.md T011/T018/T023)
 	// serve the deterministic two-role team chain: the planner persona anchor
 	// distinguishes them from every other family, the review entries carry
-	// the terminal-result keyword condition (the raw status line in the
-	// review drive's last user message — the terminal relay itself under the
-	// 062 turn conclusion), the LOSS review carries the memory tool call
+	// the saolei announcement's result-line keyword condition (the
+	// announcement is the review drive's last user message —
+	// specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3),
+	// the LOSS review carries the memory tool call
 	// whose result rule continues the review text (T023), the snapshot entry
 	// carries the reloaded-memory system condition, the wait entry carries
 	// the controllable in-flight window the queue/cancel/refresh cases use,
@@ -784,11 +785,11 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	teamPlannerReviewContinue := got[26]
-	if !slices.Contains(teamPlannerReviewContinue.Keywords, "game status: won") {
-		t.Errorf("team-planner-review-continue keywords missing the won terminal status line: %v", teamPlannerReviewContinue.Keywords)
+	if !slices.Contains(teamPlannerReviewContinue.Keywords, "本局游戏结束：胜利") {
+		t.Errorf("team-planner-review-continue keywords missing the won announcement result line: %v", teamPlannerReviewContinue.Keywords)
 	}
 	if len(teamPlannerReviewContinue.HistoryKeywords) != 0 {
-		t.Errorf("team-planner-review-continue history_keywords = %v, want none (the 062 review drive carries the terminal relay as the LAST user message, which history conditions cannot see)", teamPlannerReviewContinue.HistoryKeywords)
+		t.Errorf("team-planner-review-continue history_keywords = %v, want none (the announcement is the review drive's LAST user message, which history conditions cannot see)", teamPlannerReviewContinue.HistoryKeywords)
 	}
 	if teamPlannerReviewContinue.MinTurn != 2 {
 		t.Errorf("team-planner-review-continue min_turn = %d, want 2 (off the first drive)", teamPlannerReviewContinue.MinTurn)
@@ -798,11 +799,11 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	teamPlannerReviewStop := got[27]
-	if !slices.Contains(teamPlannerReviewStop.Keywords, "game status: lost") {
-		t.Errorf("team-planner-review-stop keywords missing the lost terminal status line: %v", teamPlannerReviewStop.Keywords)
+	if !slices.Contains(teamPlannerReviewStop.Keywords, "本局游戏结束：失败") {
+		t.Errorf("team-planner-review-stop keywords missing the lost announcement result line: %v", teamPlannerReviewStop.Keywords)
 	}
 	if len(teamPlannerReviewStop.HistoryKeywords) != 0 {
-		t.Errorf("team-planner-review-stop history_keywords = %v, want none (the 062 review drive carries the terminal relay as the LAST user message, which history conditions cannot see)", teamPlannerReviewStop.HistoryKeywords)
+		t.Errorf("team-planner-review-stop history_keywords = %v, want none (the announcement is the review drive's LAST user message, which history conditions cannot see)", teamPlannerReviewStop.HistoryKeywords)
 	}
 	if teamPlannerReviewStop.MinTurn != 2 {
 		t.Errorf("team-planner-review-stop min_turn = %d, want 2 (off the first drive)", teamPlannerReviewStop.MinTurn)

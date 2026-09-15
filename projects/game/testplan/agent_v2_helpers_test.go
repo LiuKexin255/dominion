@@ -138,6 +138,47 @@ const (
 	agentV2DisconnectSummary   = "桌面连接中断，操作未能完成。请等待桌面重连后再试。"
 )
 
+// ─── Fixture vocabulary: saolei system member (specs/065) ───────────────────
+
+const (
+	// agentV2SaoleiMember is the saolei system member's wire role — the merge
+	// `member` label, the broadcast tag stem (`<saolei-message>`), and the
+	// ListMemberMessages sender annotation
+	// (common/js/dsh-plugins/saolei-loop/src/announcer.ts SAOLEI_MEMBER_ROLE;
+	// specs/065-agent-v2-team-refine/data-model.md §1.2).
+	agentV2SaoleiMember = "saolei"
+
+	// Team section lines every member prompt carries
+	// (common/js/dsh-plugins/team/src/section.ts — the same strings the team
+	// plugin unit tests pin): the announce-only system member's roster entry
+	// (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3) and
+	// the input-side-only caveat (contracts/team-member-source.md §4).
+	agentV2TeamSectionSaoleiRosterLine = "- [saolei] 扫雷系统，终局播报对局结果与操作统计"
+	agentV2TeamSectionInputSideLine    = "- 这些标签格式只用于系统向你呈现他人的输出：你自己的输出不需要、也不应该使用 `<角色-message>`/`<角色-tool-call>` 等标签自我包装（正文直接输出，工具调用按工具协议发起）。"
+)
+
+// agentV2GameStatsText builds the announcement one terminal record produces:
+// the pure template of `gameStatsText`
+// (common/js/dsh-plugins/saolei-loop/src/game/text.ts;
+// specs/065-agent-v2-team-refine/data-model.md §3). The call site supplies
+// every count, so the expectation is readable at a glance (style/golang.md
+// §单元测试).
+func agentV2GameStatsText(result string, total, click, flag, chord int) string {
+	return fmt.Sprintf(
+		"本局游戏结束：%s。\n本局共执行 %d 个操作：click %d 次、flag %d 次、chord %d 次。",
+		result, total, click, flag, chord,
+	)
+}
+
+// agentV2SaoleiRelayText wraps one announcement body in the broadcast tag
+// pair a receiving member's view carries (renderBroadcast,
+// common/js/dsh-plugins/team/src/broadcast.ts;
+// specs/060-agent-v2-team-optimize/contracts/team-api.md §4) — the
+// `user: [saolei] …` projection body.
+func agentV2SaoleiRelayText(stats string) string {
+	return "<" + agentV2SaoleiMember + "-message>\n" + stats + "\n</" + agentV2SaoleiMember + "-message>"
+}
+
 // Fixed caller-id sessions the deployed fake-desktop executor binds: the won
 // session is bound by projects/game/testplan/deploy_agent_v2.yaml and the drop
 // session by deploy_agent_v2_drop.yaml (one executor instance per deploy).
@@ -704,6 +745,19 @@ func memberViewHistories(entries []*game.MemberViewMessage) []*game.HistoryMessa
 	return messages
 }
 
+// memberViewEntriesForSender returns a member view's entries annotated with
+// the given sender (e.g. the saolei system member's announcements as that
+// member consumed them).
+func memberViewEntriesForSender(view []*game.MemberViewMessage, sender string) []*game.MemberViewMessage {
+	var entries []*game.MemberViewMessage
+	for _, entry := range view {
+		if entry.GetSender() == sender {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
 // teamMergedToolCallBlocks collects a merged sequence's tool-call blocks in
 // order — the List 回填 face of the session log.
 func teamMergedToolCallBlocks(entries []*game.TeamMessage) []*game.ToolCallBlock {
@@ -769,6 +823,19 @@ func teamStreamMessages(events []*game.ChatEvent) []*game.TeamMessage {
 		}
 	}
 	return messages
+}
+
+// firstTeamFrameIndex returns the position of the first frame satisfying
+// match in a stream's frame sequence, or -1. Frame-order assertions build on
+// it (e.g. the saolei announcement's team_message frame before the review
+// turn's turn_start).
+func firstTeamFrameIndex(events []*game.ChatEvent, match func(*game.ChatEvent) bool) int {
+	for i, event := range events {
+		if match(event) {
+			return i
+		}
+	}
+	return -1
 }
 
 // assertTeamMemberTurnWellFormed checks one member turn's frame invariants:
@@ -1176,9 +1243,10 @@ func agentV2MessageText(m *game.HistoryMessage) string {
 // assertMemberViewPerspective checks one member view's perspective contract
 // (team-api.md §5): a user input is a USER-role message with sender "user";
 // the member's own output is an AGENT-role message with sender = the member;
-// another member's relayed output is a USER-role message with sender = that
-// role (the `user: [sender] …` shape). viewName and member only label
-// failures.
+// a relayed output — another LLM member's or the saolei system member's
+// announcement (specs/065-agent-v2-team-refine/data-model.md §1.4) — is a
+// USER-role message with sender = that role (the `user: [sender] …` shape).
+// viewName and member only label failures.
 func assertMemberViewPerspective(t *testing.T, viewName string, view []*game.MemberViewMessage, member string) {
 	t.Helper()
 
@@ -1193,7 +1261,7 @@ func assertMemberViewPerspective(t *testing.T, viewName string, view []*game.Mem
 			if message.GetRole() != game.Role_ROLE_AGENT {
 				t.Errorf("%s view[%d] own output role = %v, want AGENT", viewName, i, message.GetRole())
 			}
-		case "player", "planner":
+		case "player", "planner", agentV2SaoleiMember:
 			if message.GetRole() != game.Role_ROLE_USER {
 				t.Errorf("%s view[%d] relayed output from %q role = %v, want USER (the injected broadcast is a user-role message)", viewName, i, sender, message.GetRole())
 			}
@@ -1212,7 +1280,28 @@ func assertMemberViewPerspective(t *testing.T, viewName string, view []*game.Mem
 // the consuming turn — no later than the member's first streamed content
 // frame — so the live view never waits for the turn to settle (the fan-out
 // happens at the member-log injection, which precedes the model request).
+//
+// The no-turn form anchors on the member's first content frame anywhere in
+// the stream; for a consumption that is not the stream's first drive of the
+// member, use assertTeamMemberViewLiveAt with the consuming turn's id.
 func assertTeamMemberViewLive(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, events []*game.ChatEvent, member, sender string) *game.MemberViewEvent {
+	t.Helper()
+
+	return assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, member, sender, "")
+}
+
+// assertTeamMemberViewLiveAt is assertTeamMemberViewLive anchored on one
+// consuming member turn: when turnID is non-empty, the "no later than the
+// consuming turn's first content frame" check matches that turn's frames —
+// the consumption rides the turn whose drive injected the input.
+//
+// The frame lookup itself stays FIRST-match on (member, sender): turnID
+// anchors only the ordering check, not the lookup. The turnID form therefore
+// assumes the target turn is that pair's first consumption in the analysed
+// stream — the case at every call site, where the asserted frame is the
+// stream's first saolei announcement consumed by that member (the other
+// announcements of the session are consumed later, by later turns).
+func assertTeamMemberViewLiveAt(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, events []*game.ChatEvent, member, sender, turnID string) *game.MemberViewEvent {
 	t.Helper()
 
 	frameIndex, frame := -1, (*game.MemberViewEvent)(nil)
@@ -1240,11 +1329,14 @@ func assertTeamMemberViewLive(t *testing.T, ctx context.Context, sutHostURL, sut
 		if event.GetMember() != member {
 			continue
 		}
+		if turnID != "" && event.GetTurnId() != turnID {
+			continue
+		}
 		if event.GetBlockStart() == nil && event.GetDelta() == nil {
 			continue
 		}
 		if frameIndex > i {
-			t.Errorf("member_view{member=%q sender=%q} at frame %d arrives after the member's first content frame at frame %d", member, sender, frameIndex, i)
+			t.Errorf("member_view{member=%q sender=%q} at frame %d arrives after the consuming turn's first content frame at frame %d", member, sender, frameIndex, i)
 		}
 		break
 	}
@@ -1272,16 +1364,20 @@ func assertTeamMemberViewLive(t *testing.T, ctx context.Context, sutHostURL, sut
 // sequence is the SAME message as its entry in that member's own view — same
 // messageId and equal body. The two projections share one message object
 // (history.ts appendMemberOutput), so this pins the cross-view正文一致
-// requirement (SC-003) the List faces expose.
+// requirement (SC-003) the List faces expose. Producers without a view of
+// their own are skipped: the user input, and the saolei system member's
+// announcements (the receivers record those in THEIR views through the
+// member-view path — specs/065-agent-v2-team-refine/data-model.md §1.4).
 func assertMergeMatchesMemberViews(t *testing.T, entries []*game.TeamMessage, views map[string][]*game.MemberViewMessage) {
 	t.Helper()
 
 	for i, entry := range entries {
-		if entry.GetMember() == "user" {
+		viewEntries, hasView := views[entry.GetMember()]
+		if !hasView {
 			continue
 		}
 		found := false
-		for _, viewEntry := range views[entry.GetMember()] {
+		for _, viewEntry := range viewEntries {
 			if viewEntry.GetMessage().GetMessageId() != entry.GetMessage().GetMessageId() {
 				continue
 			}
@@ -1400,6 +1496,50 @@ func teamActiveMember(t *testing.T, ctx context.Context, sutHostURL, sutEnvName,
 	t.Helper()
 
 	return getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName).GetActiveMember()
+}
+
+// assertTeamProtoRosterExcludesSaolei checks the non-materialized saolei
+// system member stays off the proto team face
+// (specs/065-agent-v2-team-refine/spec.md FR-001 and Edge Cases): the
+// members list carries the two materialized members only and active_member
+// never names the system role.
+func assertTeamProtoRosterExcludesSaolei(t *testing.T, team *game.Team) {
+	t.Helper()
+
+	if got := len(team.GetMembers()); got != 2 {
+		t.Errorf("team members = %d, want 2 (player + planner; the saolei system member is not materialized)", got)
+	}
+	for _, member := range team.GetMembers() {
+		if member.GetRole() == agentV2SaoleiMember {
+			t.Errorf("team members carry role %q, want only the materialized members", agentV2SaoleiMember)
+		}
+	}
+	if active := team.GetActiveMember(); active == agentV2SaoleiMember {
+		t.Errorf("active_member = %q, want a materialized member", agentV2SaoleiMember)
+	}
+}
+
+// memorySnapshotEntries extracts the entry lines of the planner's memory
+// snapshot section from an assembled system prompt: the lines after the
+// `长期记忆：` header, up to the section break (a blank separator or the next
+// `## ` section). nil when the prompt carries no snapshot section (the empty
+// snapshot does not render). The rendered form is renderMemorySnapshot
+// (common/js/dsh-plugins/memory-service/src/snapshot.ts;
+// specs/065-agent-v2-team-refine/data-model.md §1.5).
+func memorySnapshotEntries(prompt string) []string {
+	const header = "长期记忆：\n"
+	start := strings.Index(prompt, header)
+	if start < 0 {
+		return nil
+	}
+	var entries []string
+	for _, line := range strings.Split(prompt[start+len(header):], "\n") {
+		if line == "" || strings.HasPrefix(line, "## ") {
+			break
+		}
+		entries = append(entries, line)
+	}
+	return entries
 }
 
 // getAgentV2TeamMemberWithStatus issues GET .../team/members/{member} and
@@ -1990,12 +2130,27 @@ func readFlowTeamFrameNoFatal(conn *websocket.Conn, timeout time.Duration) (*gam
 	return frame, nil
 }
 
+// teamFlowScriptCounts records the receipts a flow script served: the F2
+// init replies and the successful cell-operation replies. A completed script
+// (nil error) already proves the runtime dispatched exactly as many
+// operations as the script declared; the counts ride along so a case can
+// pair the announced per-game operation totals with what the desktop
+// actually served (specs/065-agent-v2-team-refine/spec.md SC-001). The
+// writer is the script goroutine; read after waitTeamFlowScript's channel
+// receive synchronizes with it.
+type teamFlowScriptCounts struct {
+	initServed int
+	stepServed int
+}
+
 // teamFlowScript is the receipt sequence the test's desktop half serves: each
 // F2 keyboard dispatch consumes the next initBoards entry, each cell dispatch
 // the next stepBoards entry. The script ends when both lists are exhausted.
 type teamFlowScript struct {
 	initBoards [][]byte
 	stepBoards [][]byte
+	// counts, when non-nil, receives the served receipt counts.
+	counts *teamFlowScriptCounts
 }
 
 // serveTeamFlowScript reads flow frames and answers every dispatch per the
@@ -2024,6 +2179,9 @@ func serveTeamFlowScript(conn *websocket.Conn, sessionID string, script teamFlow
 						return
 					}
 					initIdx++
+					if script.counts != nil {
+						script.counts.initServed++
+					}
 				case part.GetMouseMoveAndClick() != nil:
 					if stepIdx >= len(script.stepBoards) {
 						ch <- fmt.Errorf("unexpected cell dispatch after %d step replies", stepIdx)
@@ -2034,6 +2192,9 @@ func serveTeamFlowScript(conn *websocket.Conn, sessionID string, script teamFlow
 						return
 					}
 					stepIdx++
+					if script.counts != nil {
+						script.counts.stepServed++
+					}
 				}
 			}
 		}

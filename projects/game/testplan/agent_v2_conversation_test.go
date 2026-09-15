@@ -1,10 +1,12 @@
 // Package testplan contains the agent_v2 team conversation large tests: the
 // team stream (member event frames + team_message frames until quiescence),
 // the merged/member-view histories, the queue/cancel/refresh orchestration
-// windows, the per-member turn error paths, and the LLM reliability paths
-// (transient retry recovery, planner failure retention, non-retryable
-// visibility, and the opencode-go chat-wire session flow) — over the gateway
-// /api/v2 NDJSON surface with the deterministic fake /v1/responses endpoint
+// windows (including the queued-open-skip-stats and immediate-announcement
+// halves of the terminal-handoff priority), the per-member turn error paths,
+// and the LLM reliability paths (transient retry recovery, planner failure
+// retention, non-retryable visibility, and the opencode-go chat-wire session
+// flow) — over the gateway /api/v2 NDJSON surface with the deterministic fake
+// /v1/responses endpoint
 // (specs/059-agent-v2-team-mode/contracts/team-api.md §3; quickstart.md
 // V3/V4/V6; specs/063-llm-reliability-opencode-go/quickstart.md §2). Cases
 // are grouped by tested concern, one test per concern —
@@ -1118,4 +1120,191 @@ func TestAgentV2TeamOpencodeGoSessionFlow(t *testing.T) {
 		}
 	}
 	assertAgentV2NoCredentialLeak(t, ctx, sutHostURL, sutEnvName, sessionName, agentV2OpencodeTestToken, wireEvents)
+}
+
+// TestAgentV2TeamConversationQueuedOpenSkipsHandoffAnnouncement covers the
+// queued-open half of US2 (specs/065-agent-v2-team-refine/spec.md SC-002):
+// the queued user message sent while the terminal game-1 player turn is
+// still in flight is digested FIRST (the case-1 priority — no announcement
+// yet), the digest opens a NEW game in the same player turn, and the new
+// terminal record overwrites game 1's — game 1 never gets a stats message,
+// while the new handoff announces exactly one entry with the new game's
+// numbers. The two games' announced values differ (one-op win vs two-op
+// loss), so the assertion discriminates the skipped game's absence.
+func TestAgentV2TeamConversationQueuedOpenSkipsHandoffAnnouncement(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-queued-skip-" + uniqueSuffix()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-queued-skip")
+
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	// Game 1 (won, one dispatch): compatible 9×9 init, win board on the
+	// first click. Game 2 (lost, two dispatches): fresh 16×16 init, playing
+	// board on the click, loss board on the flag.
+	counts := new(teamFlowScriptCounts)
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardInitPNG},
+		stepBoards: [][]byte{saoleiBoardWinPNG, saoleiBoardInitPNG, saoleiBoardLossPNG},
+		counts:     counts,
+	}, wsReadTimeout)
+
+	streamA := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	// Queue the new-game message behind the in-flight game-1 turn: read up to
+	// the player turn's turn_start (the turn's whole init+operate chain still
+	// lies ahead), then send the second message on its own stream. The pump
+	// evaluates the queue (case 1) before the gameEnded handoff (case 4) once
+	// the turn settles.
+	var preA []*game.ChatEvent
+	for {
+		event := nextTeamEvent(t, streamA.Scanner)
+		preA = append(preA, event)
+		if event.GetTurnStart() != nil && event.GetMember() == "player" {
+			break
+		}
+	}
+	streamB := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamNextGameMessage)
+	firstB := nextTeamEvent(t, streamB.Scanner)
+	if firstB.GetQueued() == nil {
+		t.Fatalf("queued Send first frame payload = %T, want queued{position} (the terminal turn is in flight)", firstB.GetPayload())
+	}
+	eventsA := append(preA, waitTeamStream(t, drainTeamStreamAsync(streamA), "queued-skip stream")...)
+	waitTeamStream(t, drainTeamStreamAsync(streamB), "queued new-game stream")
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, eventsA)
+	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, eventsA)
+
+	turns := groupTeamMemberTurns(eventsA)
+	wantMembers := []string{"planner", "player", "player", "planner", "player"}
+	if len(turns) != len(wantMembers) {
+		t.Fatalf("member turns = %d, want %d (opening, won game, digest+new game, stop review, stop ack)", len(turns), len(wantMembers))
+	}
+	for i, want := range wantMembers {
+		if turns[i].member != want {
+			t.Fatalf("turn %d member = %v, want %v", i, turns[i].member, want)
+		}
+	}
+
+	// Game 1: terminal win on the first dispatch; no review follows it — the
+	// queue ran first.
+	game1 := teamTurnToolResults(turns[1])
+	if len(game1) != 2 || !strings.Contains(game1[0].GetResult(), agentV2ProgStatusContains) || !strings.Contains(game1[1].GetResult(), agentV2WonStatusContains) {
+		t.Fatalf("game 1 tool results = %+v, want a playing init + terminal won operate", game1)
+	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[1])
+
+	// The digest turn: the queued message drove the player directly into the
+	// new game (init + both-operations loss in the same turn).
+	game2 := teamTurnToolResults(turns[2])
+	if len(game2) != 2 || game2[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED || game2[1].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("digest+new-game tool results = %+v, want init + operate SUCCEEDED", game2)
+	}
+	if !strings.Contains(game2[0].GetResult(), agentV2ProgStatusContains) || !strings.Contains(game2[0].GetResult(), agentV2ProgBoardContains) || !strings.Contains(game2[1].GetResult(), agentV2LostStatusContains) {
+		t.Errorf("game 2 results = %q / %q, want a playing 16×16 init and the lost status", game2[0].GetResult(), game2[1].GetResult())
+	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[2])
+	if _, text := teamTurnBlocks(turns[3]); text != teamPlannerReviewStopText {
+		t.Errorf("review text = %q, want %q", text, teamPlannerReviewStopText)
+	}
+	if _, text := teamTurnBlocks(turns[4]); text != teamPlayerResumeStopText {
+		t.Errorf("stop acknowledgement = %q, want %q", text, teamPlayerResumeStopText)
+	}
+
+	// Exactly one saolei entry: the NEW game's two-op loss. The skipped
+	// game's one-op win text appears nowhere in the history.
+	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	saoleiEntries := teamMessagesForMember(merged, agentV2SaoleiMember)
+	want := agentV2GameStatsText("失败", 2, 1, 1, 0)
+	if len(saoleiEntries) != 1 || agentV2MessageText(saoleiEntries[0].GetMessage()) != want {
+		t.Fatalf("merged saolei entries = %+v, want exactly the new game's %q", saoleiEntries, want)
+	}
+	skipped := agentV2GameStatsText("胜利", 1, 1, 0, 0)
+	for _, entry := range merged {
+		if strings.Contains(agentV2MessageText(entry.GetMessage()), skipped) {
+			t.Errorf("merged entry (member %q) carries the skipped game's stats %q", entry.GetMember(), skipped)
+		}
+	}
+	if counts.initServed != 2 || counts.stepServed != 3 {
+		t.Errorf("flow receipts served = %d init / %d step, want 2 / 3", counts.initServed, counts.stepServed)
+	}
+
+	// The two Sends are the only user entries, in order (the queued message
+	// fixed at enqueue time).
+	userEntries := teamMessagesForMember(merged, "user")
+	if len(userEntries) != 2 {
+		t.Fatalf("USER entries = %d, want 2 (both Sends)", len(userEntries))
+	}
+	if agentV2MessageText(userEntries[0].GetMessage()) != teamStartMessage || agentV2MessageText(userEntries[1].GetMessage()) != teamNextGameMessage {
+		t.Errorf("USER entries = [%q %q], want the two Sends in order",
+			agentV2MessageText(userEntries[0].GetMessage()), agentV2MessageText(userEntries[1].GetMessage()))
+	}
+
+	// The new game's announcement reaches the player's stop-ack drive as a
+	// live sender-annotated consumption.
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, eventsA, "player", agentV2SaoleiMember, turns[4].turnID)
+}
+
+// TestAgentV2TeamConversationGameEndAnnouncementPrecedesReview covers the
+// no-queue control half of US2 (specs/065-agent-v2-team-refine/spec.md
+// SC-002 对照): at a terminal handoff with no queued user message the stats
+// announcement is immediate — its saolei team_message frame is fanned out
+// before the review turn starts — and the review (fixture-anchored on the
+// announcement's key line) consumes it. The game is a two-operation loss so
+// the announced numbers are non-trivial.
+func TestAgentV2TeamConversationGameEndAnnouncementPrecedesReview(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-announce-" + uniqueSuffix()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-announce")
+
+	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardInitPNG},
+		stepBoards: [][]byte{saoleiBoardInitPNG, saoleiBoardLossPNG},
+	}, wsReadTimeout)
+
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
+
+	turns := groupTeamMemberTurns(events)
+	if len(turns) != 4 || turns[2].member != "planner" || turns[3].member != "player" {
+		t.Fatalf("member turns = %v, want [planner player planner player] (game, stop review, stop ack)", turns)
+	}
+	assertTerminalTurnEndsWithToolBlock(t, turns[1])
+	if _, text := teamTurnBlocks(turns[2]); text != teamPlannerReviewStopText {
+		t.Errorf("review text = %q, want %q (the announcement anchored its input)", text, teamPlannerReviewStopText)
+	}
+	if _, text := teamTurnBlocks(turns[3]); text != teamPlayerResumeStopText {
+		t.Errorf("stop acknowledgement = %q, want %q", text, teamPlayerResumeStopText)
+	}
+
+	// 即时播报: exactly the game's stats entry, and its frame precedes the
+	// review turn's first frame.
+	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	saoleiEntries := teamMessagesForMember(merged, agentV2SaoleiMember)
+	want := agentV2GameStatsText("失败", 2, 1, 1, 0)
+	if len(saoleiEntries) != 1 || agentV2MessageText(saoleiEntries[0].GetMessage()) != want {
+		t.Fatalf("merged saolei entries = %+v, want exactly %q", saoleiEntries, want)
+	}
+	announceAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
+		frame := event.GetTeamMessage()
+		return frame != nil && frame.GetMember() == agentV2SaoleiMember
+	})
+	reviewAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
+		return event.GetTurnStart() != nil && event.GetTurnId() == turns[2].turnID
+	})
+	if announceAt < 0 || reviewAt < 0 || announceAt > reviewAt {
+		t.Errorf("announcement frame at %d, review turn_start at %d, want the announcement first", announceAt, reviewAt)
+	}
+
+	// The planner consumed it as the review's live input.
+	plannerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2SaoleiMember)
+	if len(plannerSaolei) != 1 || agentV2MessageText(plannerSaolei[0].GetMessage()) != agentV2SaoleiRelayText(want) {
+		t.Fatalf("planner view saolei entries = %+v, want the relayed %q", plannerSaolei, agentV2SaoleiRelayText(want))
+	}
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2SaoleiMember, turns[2].turnID)
 }

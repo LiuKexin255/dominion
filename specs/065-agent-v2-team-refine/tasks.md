@@ -141,10 +141,10 @@
 
 **Tasks**:
 
-- [ ] T015 [P] 扩展 `projects/game/testplan/agent_v2_game_test.go`（游戏面模块）：多局 won/lost 链路断言——每局交接后归并序列恰一条 `member="saolei"` 统计消息（正文对照 `data-model.md` §3 模板；数值与该局 fake-desktop 实际成功派发序列一致，含一次批量多操作对照局）、planner 复盘输入含播报消息（fake-llm review 规则 keywords 命中模板关键行）、player 成员视图含 `user: [saolei]` 注入条目、`GetTeam.members`/`active_member` 不含 saolei、system prompt 含 roster saolei 行与"仅输入侧"表述、planner 快照 ≤10 条且倒序（>10 条记忆夹具会话对照）；共享构造/断言复用 `projects/game/testplan/agent_v2_helpers_test.go` 既有 helper（通用 HTTP/session helper 见 `helpers_test.go`）；如需新增共享 helper，统一落入 `agent_v2_helpers_test.go` 并由 T015 先行添加、T016 复用（同文件编辑串行）
-- [ ] T016 [P] 扩展 `projects/game/testplan/agent_v2_conversation_test.go`（对话面模块）：排队跳局场景——终局 player 回合收束时注入排队用户消息 → player 消化并开新局 → 被跳过局无统计消息、新局交接恰一条新局统计；对照用例（终局后无排队）统计即时播报
-- [ ] T017 fake-llm 夹具更新（依赖 T015/T016 完成）：若 T015/T016 断言无法命中既有场景模板/keyword 机制（机制见 `projects/game/fake-llm/README.md`），则更新 `projects/game/fake-llm/service/` 相应模板/规则；否则不改动。无论何种结论，均将"夹具是否改动"记入 T019 汇报；任何改动不破坏既有场景
-- [ ] T018 [P] 更新 `projects/game/agent_v2/README.md`：team 组合清单（成员消息源接口与扫雷系统 announce-only 成员）、广播与提示词分层（roster 含 saolei 行、"仅输入侧"表述）、planner memory（快照近因注入 ≤10 条）、大型测试断言面增量
+- [X] T015 [P] 扩展 `projects/game/testplan/agent_v2_game_test.go`（游戏面模块）：多局 won/lost 链路断言——每局交接后归并序列恰一条 `member="saolei"` 统计消息（正文对照 `data-model.md` §3 模板；数值与该局 fake-desktop 实际成功派发序列一致，含一次批量多操作对照局）、planner 复盘输入含播报消息（fake-llm review 规则 keywords 命中模板关键行）、player 成员视图含 `user: [saolei]` 注入条目、`GetTeam.members`/`active_member` 不含 saolei、system prompt 含 roster saolei 行与"仅输入侧"表述、planner 快照 ≤10 条且倒序（>10 条记忆夹具会话对照）；共享构造/断言复用 `projects/game/testplan/agent_v2_helpers_test.go` 既有 helper（通用 HTTP/session helper 见 `helpers_test.go`）；如需新增共享 helper，统一落入 `agent_v2_helpers_test.go` 并由 T015 先行添加、T016 复用（同文件编辑串行）
+- [X] T016 [P] 扩展 `projects/game/testplan/agent_v2_conversation_test.go`（对话面模块）：排队跳局场景——终局 player 回合收束时注入排队用户消息 → player 消化并开新局 → 被跳过局无统计消息、新局交接恰一条新局统计；对照用例（终局后无排队）统计即时播报
+- [X] T017 fake-llm 夹具更新（依赖 T015/T016 完成）：若 T015/T016 断言无法命中既有场景模板/keyword 机制（机制见 `projects/game/fake-llm/README.md`），则更新 `projects/game/fake-llm/service/` 相应模板/规则；否则不改动。无论何种结论，均将"夹具是否改动"记入 T019 汇报；任何改动不破坏既有场景
+- [X] T018 [P] 更新 `projects/game/agent_v2/README.md`：team 组合清单（成员消息源接口与扫雷系统 announce-only 成员）、广播与提示词分层（roster 含 saolei 行、"仅输入侧"表述）、planner memory（快照近因注入 ≤10 条）、大型测试断言面增量
 - [ ] T019 大型测试执行验收：经 testplan SKILL 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环），全部用例通过；任何 failed/flaky 修复后重跑至全绿
 - [ ] T020 按 `specs/065-agent-v2-team-refine/quickstart.md` 走查验证：§2 单测命令全绿 + §3 大型测试断言项逐条对照 + §4 手动观察路径（可选）
 
