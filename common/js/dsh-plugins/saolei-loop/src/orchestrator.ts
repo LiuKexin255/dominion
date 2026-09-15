@@ -60,7 +60,12 @@ import type {
 } from "@deepseek-ai/dsh-agent";
 import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
-import type { TeamHandle, TeamRegistration } from "@dominion/dsh-team";
+import { agentMemberSource } from "@dominion/dsh-team";
+import type {
+  TeamHandle,
+  TeamMemberSource,
+  TeamRegistration,
+} from "@dominion/dsh-team";
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
 
 import { createAgentGameRuntime } from "./game/runtime.js";
@@ -213,7 +218,7 @@ export interface AgentCreationSeam {
 /** Narrow structural view of `ctx.team` (the orchestration's consumption face). */
 export interface TeamSeam {
   register(registration: TeamRegistration): TeamHandle;
-  drain(member: AgentHandle): UserMessage[];
+  drain(member: TeamMemberSource): UserMessage[];
 }
 
 /** Collaborators and host-injected seams of one {@link TeamOrchestrator}. */
@@ -385,6 +390,8 @@ interface IdleWaiter {
 interface MemberRuntime {
   readonly role: TeamRole;
   readonly handle: AgentHandle;
+  /** The member's team message source — the team seam's drain key. */
+  readonly source: TeamMemberSource;
   readonly agent: Agent;
   /** Player-only terminal-event view captured at setup time. */
   game: GameEventSource | undefined;
@@ -496,12 +503,12 @@ export class TeamOrchestrator {
         context: options.context,
         members: [
           {
-            agent: player.handle,
+            source: player.source,
             role: "player",
             summary: options.summaries?.player ?? DEFAULT_MEMBER_SUMMARIES.player,
           },
           {
-            agent: planner.handle,
+            source: planner.source,
             role: "planner",
             summary: options.summaries?.planner ?? DEFAULT_MEMBER_SUMMARIES.planner,
           },
@@ -693,6 +700,7 @@ export class TeamOrchestrator {
     const runtime: MemberRuntime = {
       role,
       handle,
+      source: agentMemberSource(handle),
       agent: handle.agent,
       game,
       offStatus: () => {},
@@ -942,7 +950,7 @@ export class TeamOrchestrator {
 
   /** Consume one member's unconsumed broadcasts (team-internal read path). */
   private drain(member: MemberRuntime): UserMessage[] {
-    return this.team().drain(member.handle);
+    return this.team().drain(member.source);
   }
 
   /**

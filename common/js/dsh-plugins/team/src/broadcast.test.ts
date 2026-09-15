@@ -3,6 +3,9 @@
  * consumption-anchor reader, and the rendered group-chat format — the wire
  * shape of specs/060-agent-v2-team-optimize/contracts/team-api.md §4 (single
  * tag pair, no head line, no think content, verbatim body, no truncation).
+ * The sender key is the member id (an agent member's dsh session id, or a
+ * system member's own id) per
+ * specs/065-agent-v2-team-refine/contracts/team-member-source.md §1/§2.
  *
  * Pattern (style/javascript.md Mock convention): pure functions over real
  * dsh message values — no interception.
@@ -283,6 +286,27 @@ describe("buildBroadcastMessage", () => {
       form: "relay",
       context: "game #3",
     });
+  });
+
+  it("accepts a non-session member id as the sender key (system member)", () => {
+    const senderMemberId = "templates/saolei/sessions/s1/saolei";
+    const message = speechMessage("本局游戏结束：胜利。");
+    const userMessage = buildBroadcastMessage(
+      "saolei",
+      { kind: "message", anchor: String(message.id), time: 0, seq: 0 },
+      senderMemberId,
+      [speechEvent(message)],
+    );
+
+    expect(userMessage.source).toMatchObject({
+      kind: "team-broadcast",
+      role: "saolei",
+      senderSessionId: senderMemberId,
+      form: "relay",
+    });
+    expect([...consumedAnchors([userMessageEvent(userMessage)])]).toEqual([
+      String(message.id),
+    ]);
   });
 });
 

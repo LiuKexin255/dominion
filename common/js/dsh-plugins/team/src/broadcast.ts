@@ -23,7 +23,7 @@ import type {
   ToolResultMessage,
   UserMessage,
 } from "@deepseek-ai/dsh-llm";
-import type { SessionEvent, SessionId } from "@deepseek-ai/dsh-session";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 /**
  * Durable provenance of an injected broadcast: `MessageSourceMap`'s merge
@@ -37,7 +37,8 @@ import type { SessionEvent, SessionId } from "@deepseek-ai/dsh-session";
 export interface TeamBroadcastSource {
   readonly kind: "team-broadcast";
   readonly role: string;
-  readonly senderSessionId: SessionId;
+  /** The sender member id (an agent member's dsh session id). */
+  readonly senderSessionId: string;
   readonly messageId: MessageId;
   readonly context?: string;
   readonly form: "relay";
@@ -267,11 +268,13 @@ export function renderBroadcast(
  * text plus the durable `team-broadcast` provenance (`form: 'relay'` — the
  * official "another agent addressed this one" form) whose `messageId` doubles
  * as the 1:1 correlation and consumption anchor (survey §5.3 layer 2).
+ * `senderSessionId` carries the sender member id (an agent member's dsh
+ * session id; specs/065-agent-v2-team-refine/contracts/team-member-source.md §1).
  */
 export function buildBroadcastMessage(
   role: string,
   unit: BroadcastUnit,
-  senderSessionId: SessionId,
+  senderSessionId: string,
   senderEvents: readonly SessionEvent[],
   context?: string,
 ): UserMessage {

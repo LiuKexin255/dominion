@@ -29,6 +29,7 @@ import { createUserMessage, LlmError, MessageId } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type {
   TeamHandle,
+  TeamMemberSource,
   TeamRegistration,
 } from "@dominion/dsh-team";
 import { describe, expect, it, vi } from "vitest";
@@ -252,8 +253,8 @@ function fakeTeam(): FakeTeam {
         registrations.push(registration);
         return { dispose: registrationDispose };
       }),
-      drain: vi.fn((member: AgentHandle): UserMessage[] => {
-        return queues.get(String(member.agent.id))?.splice(0) ?? [];
+      drain: vi.fn((member: TeamMemberSource): UserMessage[] => {
+        return queues.get(member.id)?.splice(0) ?? [];
       }),
     },
   };
@@ -402,7 +403,7 @@ describe("TeamOrchestrator.materialize", () => {
     expect(
       registration.members.map((registered) => [
         registered.role,
-        String(registered.agent.agent.id),
+        registered.source.id,
         registered.summary,
       ]),
     ).toEqual([

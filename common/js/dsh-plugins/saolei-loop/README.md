@@ -53,5 +53,6 @@ drain 为空时静止在当前激活成员等待新输入。驱动经成员 `age
 - `@deepseek-ai/dsh-llm` peer：编排层构造用户消息（`createUserMessage`）。
 - `@dominion/dsh-desktop-bridge` peer（类型面）：GameRuntime 的 desktop 派发
   绑定消费其服务面类型。
-- `@dominion/dsh-team` peer（类型面）：`ctx.team` 注册/消费面的类型引用；运行时
+- `@dominion/dsh-team` peer：`ctx.team` 注册/消费面的类型引用与
+  `agentMemberSource` 成员消息源适配器的值引用（物化时包装成员句柄）；运行时
   服务经组合上下文注入。

@@ -4,6 +4,7 @@ import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
+import type { TeamMemberSource } from "@dominion/dsh-team";
 import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TurnStream } from "./history.js";
@@ -274,7 +275,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     agents: { create: agentsCreate },
     team: {
       register: teamRegister,
-      drain: (member: AgentHandle) => teamQueues.get(String(member.agent.id))?.splice(0) ?? [],
+      drain: (member: TeamMemberSource) => teamQueues.get(member.id)?.splice(0) ?? [],
     },
     mountPlayerRuntime,
     logger: { error: loggerError },

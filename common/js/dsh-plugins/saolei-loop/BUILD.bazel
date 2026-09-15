@@ -62,9 +62,10 @@ js_library(
 # runtime_deps closure walking (common/js/dsh-plugins/llm-glm/BUILD.bazel
 # precedent). npm_deps carries the plugin's runtime imports: the cordis
 # Service base class (game/runtime.ts) and the dsh-llm message helper
-# (orchestrator.ts builds user/opening messages). The remaining faces
-# (dsh-agent, dsh-desktop-bridge, dsh-team) are type-only and resolve from
-# the host composition.
+# (orchestrator.ts builds user/opening messages). The remaining dsh faces
+# (dsh-agent, dsh-desktop-bridge) are type-only and resolve from the host
+# composition; @dominion/dsh-team is a runtime workspace import
+# (agentMemberSource in orchestrator.ts) and ships through runtime_deps.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-saolei-loop",
@@ -76,6 +77,7 @@ js_runtime_library(
     package_json = "package.json",
     visibility = ["//visibility:public"],
     runtime_deps = [
+        "//common/js/dsh-plugins/team:runtime_pkg",
         "//projects/game/pkg/saolei-board:runtime_pkg",
     ],
 )

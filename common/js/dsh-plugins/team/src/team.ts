@@ -1,26 +1,34 @@
 /**
- * Team — the `ctx.team` group-chat primitive: member registration with
- * the team section, `session/event` output collection, reference relay (anchor
- * delivery, no content copies), and drain (read-back + render + consumption).
- * The scenario-agnostic contract is
- * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1; the derived-rebuild
- * model is survey/deepseek-harness-team-mode.md §4.4a (decisions ⑦⑧⑮).
+ * Team — the `ctx.team` group-chat primitive: member (message-source)
+ * registration with the team section, output collection, reference relay
+ * (anchor delivery, no content copies), and drain (read-back + render +
+ * consumption). The scenario-agnostic contract is
+ * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1; the
+ * member-message-source interface (dependency inversion: team only knows
+ * "a member is a message source") is
+ * specs/065-agent-v2-team-refine/contracts/team-member-source.md §1; the
+ * derived-rebuild model is survey/deepseek-harness-team-mode.md §4.4a
+ * (decisions ⑦⑧⑮).
  *
- * The service is host-row state over member AgentHandles: it never drives a
- * member (no `followup`/`steer`/`inject`/`cancel`) and holds no game concept.
- * Buffer entries are anchors only — a unit is one anchor plus its sender role
- * and log order key; the content is read from the sender's live session log at
- * drain, so there is no copy to keep consistent. The per-receiver pending list
- * is a derived cache: `reconcile` recomputes it as
- * `sender log productions − receiver consumption anchors`, which makes the
- * list self-healing after a missed relay and exactly-once by construction.
+ * The service is host-row state over member {@link TeamMemberSource}s: it
+ * never drives a member (no `followup`/`steer`/`inject`/`cancel`) and holds no
+ * game concept. Agent members enter through {@link agentMemberSource}; a
+ * non-agent system member enters by implementing the interface — both are
+ * derived, rendered, and consumed by the exact same closure. Buffer entries
+ * are anchors only — a unit is one anchor plus its sender role and log order
+ * key; the content is read from the sender's log at drain, so there is no copy
+ * to keep consistent. The per-receiver pending list is a derived cache:
+ * `reconcile` recomputes it as `sender log productions − receiver consumption
+ * anchors`, which makes the list self-healing after a missed relay and
+ * exactly-once by construction. An announce-only member (`consumes: false`)
+ * is never a receiver: no relay, no pending list, not drainable.
  */
 
 import { Service } from "@deepseek-ai/cordis";
 import type { Context } from "@deepseek-ai/cordis";
-import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
+import type { AgentHandle } from "@deepseek-ai/dsh-agent";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
-import type { SessionEvent, SessionId } from "@deepseek-ai/dsh-session";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 
 import {
   buildBroadcastMessage,
@@ -41,12 +49,77 @@ export type { TeamBroadcastSource } from "./broadcast.js";
  */
 export const TEAM_SECTION_ORDER = 10;
 
-/** Section name; unique per agent scope (re-registration disposes the old one). */
+/** Section name; unique per member scope (re-registration disposes the old one). */
 export const TEAM_SECTION_NAME = "team:roster";
 
-/** One registered member: the owned member agent, its role label, its one-line roster summary. */
+/**
+ * A member's team-section injection target (the `systemPrompt.section` face
+ * of its scope). Optional on a source: a member without one gets no prompt
+ * injection.
+ */
+export interface TeamSectionTarget {
+  section(spec: { name: string; order: number; text: string }): () => void;
+}
+
+/**
+ * The member message-source face — the dependency-inversion point of the
+ * group-chat primitive (specs/065-agent-v2-team-refine/contracts/
+ * team-member-source.md §1). Team only knows "a member is a message source":
+ * an agent member (wrapped by {@link agentMemberSource}) and a non-agent
+ * system member implement the same interface and their productions travel
+ * the exact same derive/render/consume closure.
+ */
+export interface TeamMemberSource {
+  /** Stable member identity: team map key and broadcast sender key (an agent member's dsh session id). */
+  readonly id: string;
+  /** The member's output log (shared session-event vocabulary, read-only snapshot semantics). */
+  readonly events: readonly SessionEvent[];
+  /**
+   * Output notification (optional): only this member's own productions.
+   * Drain-time derivation is the read authority; the live delivery is an
+   * optimization and the projection subscription face.
+   */
+  subscribe?(onEvent: (event: SessionEvent) => void): () => void;
+  /** The team-section injection target (optional); absent = no prompt injection. */
+  readonly sectionTarget?: TeamSectionTarget;
+  /**
+   * Whether the member consumes broadcasts (default true). `false` =
+   * announce-only: not a relay receiver, no pending list, not drainable.
+   */
+  readonly consumes?: boolean;
+}
+
+/**
+ * Adapt an agent member to {@link TeamMemberSource} — the existing
+ * agent-member semantics, unchanged: id/events read the agent's own session
+ * log, the subscription filters to this member's session events, the section
+ * target delegates to the agent scope's prompt service, and the member
+ * consumes broadcasts.
+ */
+export function agentMemberSource(handle: AgentHandle): TeamMemberSource {
+  const agent = handle.agent;
+  return {
+    id: String(agent.id),
+    get events() {
+      return agent.session.events;
+    },
+    subscribe(onEvent) {
+      return agent.ctx.on("session/event", (session, event) => {
+        if (session.id === agent.id) {
+          onEvent(event);
+        }
+      });
+    },
+    sectionTarget: {
+      section: (spec) => agent.ctx.systemPrompt.section(spec),
+    },
+    consumes: true,
+  };
+}
+
+/** One registered member: the message source, its role label, its one-line roster summary. */
 export interface TeamMemberRegistration {
-  readonly agent: AgentHandle;
+  readonly source: TeamMemberSource;
   /** Open role string (saolei supplies "player" / "planner"). */
   readonly role: string;
   /** Third-person one-line duty summary rendered into the roster (R2 boundary: an index, not details). */
@@ -69,7 +142,8 @@ export interface TeamHandle {
 
 /** One pending entry: an anchor plus the sender identity needed to read it back. */
 interface PendingUnit extends BroadcastUnit {
-  readonly senderSessionId: SessionId;
+  /** The sender member id (an agent member's dsh session id). */
+  readonly senderSessionId: string;
   readonly senderRole: string;
 }
 
@@ -100,12 +174,13 @@ declare module "@deepseek-ai/cordis" {
 
 /**
  * The host-row team service. Constructed by the class-form plugin row; a
- * member's registrations go through that member's `agent.ctx`, so the team
- * section and the `session/event` subscription are agent-scope effects that
- * unwind with the member even when the team handle is never disposed.
+ * member's registration effects (team section, output subscription) are
+ * obtained through its {@link TeamMemberSource} — for an agent member they
+ * are agent-scope effects that unwind with the member's scope even when the
+ * team handle is never disposed.
  */
 export class Team extends Service {
-  /** Every registered member's team, keyed by member session id. */
+  /** Every registered member's team, keyed by member source id (an agent member's dsh session id). */
   private readonly byMember = new Map<string, TeamState>();
 
   constructor(ctx: Context) {
@@ -113,6 +188,8 @@ export class Team extends Service {
     // Member teardown drops the member's entries and buffers; the host-level
     // listener survives the member scope unwind that precedes
     // `agent/disposed` (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.1-rc.2/README.md).
+    // Only agent members have this edge (their source id is the agent session
+    // id); a non-agent source is removed by the explicit registration dispose.
     ctx.on("agent/disposed", (payload) => {
       this.dropMember(String(payload.agent.id));
     });
@@ -120,10 +197,14 @@ export class Team extends Service {
 
   /**
    * Register (or refresh) a team. Idempotent per member: a repeated
-   * registration of the same agent refreshes its role/summary and section in
-   * place without duplicating effects, and drops members absent from the new
-   * roster. Member roles are open strings; the return handle disposes exactly
-   * this team.
+   * registration of the same source id refreshes its role/summary and section
+   * in place without duplicating effects, and drops members absent from the
+   * new roster. A member's live effects (output subscription, section target)
+   * bind once, at first registration; a refresh assumes the same source object
+   * for that id (same id, unchanged identity — the stable member identity of
+   * specs/065-agent-v2-team-refine/contracts/team-member-source.md §1), so
+   * re-registering an id with a different source object is unsupported. Member
+   * roles are open strings; the return handle disposes exactly this team.
    */
   register(registration: TeamRegistration): TeamHandle {
     if (registration.members.length === 0) {
@@ -131,7 +212,7 @@ export class Team extends Service {
     }
     const ids = new Set<string>();
     for (const member of registration.members) {
-      const id = String(member.agent.agent.id);
+      const id = member.source.id;
       if (ids.has(id)) {
         throw new Error(`team register: member "${id}" is listed twice`);
       }
@@ -150,7 +231,7 @@ export class Team extends Service {
     });
 
     for (const member of registration.members) {
-      const id = String(member.agent.agent.id);
+      const id = member.source.id;
       const existing = team.members.get(id);
       if (existing === undefined) {
         team.members.set(id, this.createMember(member, sectionText));
@@ -181,14 +262,21 @@ export class Team extends Service {
    * Consumption is marked per unit and only after that unit's message was
    * built: a failing build leaves its anchor unmarked, so the next drain's
    * rebuild retries it instead of excluding it forever.
+   *
+   * Members resolve by source id. An announce-only member (`consumes: false`)
+   * is not a relay receiver, so draining it is a wiring error and fails loud.
    */
-  drain(member: AgentHandle | Agent): UserMessage[] {
-    const agent = "dispose" in member ? member.agent : member;
-    const id = String(agent.id);
+  drain(member: TeamMemberSource): UserMessage[] {
+    const id = member.id;
     const team = this.byMember.get(id);
     const state = team?.members.get(id);
     if (team === undefined || state === undefined) {
-      throw new Error(`team drain: agent "${id}" is not a registered member`);
+      throw new Error(`team drain: member "${id}" is not a registered member`);
+    }
+    if (state.registration.source.consumes === false) {
+      throw new Error(
+        `team drain: member "${id}" is announce-only and cannot consume broadcasts`,
+      );
     }
     this.reconcile(state);
     const units = state.pending;
@@ -204,18 +292,18 @@ export class Team extends Service {
 
   /**
    * Build one injection-ready message for a pending unit: look the sender up
-   * and read its live log back by the anchor, then render. A missing source
-   * event is corruption, so the read fails loud rather than fabricating
-   * content. Protected so tests can substitute a transient failing double and
-   * assert the drain loop's consume-mark ordering.
+   * and read its log back by the anchor, then render. A missing source event
+   * is corruption, so the read fails loud rather than fabricating content.
+   * Protected so tests can substitute a transient failing double and assert
+   * the drain loop's consume-mark ordering.
    */
   protected buildMessage(unit: PendingUnit, team: TeamState): UserMessage {
-    const sender = team.members.get(String(unit.senderSessionId));
+    const sender = team.members.get(unit.senderSessionId);
     return buildBroadcastMessage(
       unit.senderRole,
       unit,
       unit.senderSessionId,
-      sender?.registration.agent.agent.session.events ?? [],
+      sender?.registration.source.events ?? [],
       team.context,
     );
   }
@@ -241,7 +329,6 @@ export class Team extends Service {
     registration: TeamMemberRegistration,
     sectionText: string,
   ): MemberState {
-    const { agent } = registration.agent;
     const state: MemberState = {
       registration,
       sectionText,
@@ -252,11 +339,10 @@ export class Team extends Service {
       pendingCalls: new Map(),
     };
     state.sectionOff = this.registerSection(registration, sectionText);
-    state.eventOff = agent.ctx.on("session/event", (session, event) => {
-      if (session.id === agent.id) {
-        this.onMemberEvent(state, agent, event);
-      }
-    });
+    state.eventOff =
+      registration.source.subscribe?.((event) => {
+        this.onMemberEvent(state, registration.source, event);
+      }) ?? (() => {});
     return state;
   }
 
@@ -274,12 +360,16 @@ export class Team extends Service {
     }
   }
 
-  /** Register the section on the member's agent scope (per-member ownership). */
+  /** Register the section through the member's section target (per-member ownership); no target = no prompt injection. */
   private registerSection(
     registration: TeamMemberRegistration,
     text: string,
   ): () => void {
-    return registration.agent.agent.ctx.systemPrompt.section({
+    const target = registration.source.sectionTarget;
+    if (target === undefined) {
+      return () => {};
+    }
+    return target.section({
       name: TEAM_SECTION_NAME,
       order: TEAM_SECTION_ORDER,
       text,
@@ -312,8 +402,12 @@ export class Team extends Service {
   }
 
   /** Collect one member output event into the relay (anchors only, no copies). */
-  private onMemberEvent(state: MemberState, agent: Agent, event: SessionEvent): void {
-    const id = String(agent.id);
+  private onMemberEvent(
+    state: MemberState,
+    source: TeamMemberSource,
+    event: SessionEvent,
+  ): void {
+    const id = source.id;
     const team = this.byMember.get(id);
     if (team === undefined || team.members.get(id) !== state) {
       return;
@@ -360,10 +454,11 @@ export class Team extends Service {
   }
 
   /**
-   * Append one unit's anchor to every member's pending list except the
-   * sender's — the live event path that keeps each member's arriving order
+   * Append one unit's anchor to every consuming member's pending list except
+   * the sender's — the live event path that keeps each member's arriving order
    * (contracts/dsh-plugins.md §1 item 3: every receiver's list gets the anchor
-   * before the transient `pendingCalls` entry is dropped).
+   * before the transient `pendingCalls` entry is dropped). An announce-only
+   * receiver gets nothing (contracts/team-member-source.md §2.4).
    *
    * Read authority is the derivation, not this append: `drain` reconciles
    * against the sender logs before consuming, and the rebuilt list (derived
@@ -373,9 +468,13 @@ export class Team extends Service {
    * the read face prefers it over the live list.
    */
   private relay(team: TeamState, sender: MemberState, unit: BroadcastUnit): void {
-    const senderId = sender.registration.agent.agent.id;
+    const senderId = sender.registration.source.id;
     for (const [id, receiver] of team.members) {
-      if (id === String(senderId) || receiver.drained.has(unit.anchor)) {
+      if (
+        id === senderId ||
+        receiver.registration.source.consumes === false ||
+        receiver.drained.has(unit.anchor)
+      ) {
         continue;
       }
       receiver.pending.push({
@@ -393,14 +492,20 @@ export class Team extends Service {
    * ordered by the producing events. Consumed anchors close the drain mark, so
    * an already-logged broadcast never returns; anchors never logged return
    * only when no drain has claimed them (lost-relay self-heal).
+   *
+   * An announce-only member has no pending list to rebuild (contract
+   * §2.4 — reconcile does not build one for it).
    */
   private reconcile(member: MemberState): void {
-    const id = String(member.registration.agent.agent.id);
+    if (member.registration.source.consumes === false) {
+      return;
+    }
+    const id = member.registration.source.id;
     const team = this.byMember.get(id);
     if (team === undefined) {
       return;
     }
-    const consumed = consumedAnchors(member.registration.agent.agent.session.events);
+    const consumed = consumedAnchors(member.registration.source.events);
     for (const anchor of consumed) {
       member.drained.delete(anchor);
     }
@@ -409,13 +514,13 @@ export class Team extends Service {
       if (sender === member) {
         continue;
       }
-      for (const unit of deriveUnits(sender.registration.agent.agent.session.events)) {
+      for (const unit of deriveUnits(sender.registration.source.events)) {
         if (consumed.has(unit.anchor) || member.drained.has(unit.anchor)) {
           continue;
         }
         pending.push({
           ...unit,
-          senderSessionId: sender.registration.agent.agent.id,
+          senderSessionId: sender.registration.source.id,
           senderRole: sender.registration.role,
         });
       }

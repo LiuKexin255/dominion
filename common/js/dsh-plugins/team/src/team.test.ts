@@ -2,9 +2,13 @@
  * Team tests: section registration and refresh (order band, content,
  * no first-person identity), idempotent registration, scope/agent cleanup,
  * reference relay (anchor order, sender exclusion, transient relay removal),
- * drain rendering and consumption marks, and derived rebuild (self-heal /
- * exactly-once). Contract: specs/059-agent-v2-team-mode/contracts/dsh-plugins.md
- * §1; derived model: survey/deepseek-harness-team-mode.md §4.4a.
+ * drain rendering and consumption marks, derived rebuild (self-heal /
+ * exactly-once), the agent-member adapter equivalence, and the member-source
+ * interface semantics — announce-only (`consumes: false`) receivers and
+ * non-agent sources deriving through the same closure. Contract:
+ * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1; member-source
+ * interface: specs/065-agent-v2-team-refine/contracts/team-member-source.md
+ * §1/§2; derived model: survey/deepseek-harness-team-mode.md §4.4a.
  *
  * Pattern (style/javascript.md Mock convention): the host is a real cordis
  * Context; member agent scopes are captured doubles for `systemPrompt.section`
@@ -31,7 +35,13 @@ import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
 import { describe, expect, it, vi } from "vitest";
 
 import { renderTeamSection } from "./section.js";
-import { TEAM_SECTION_NAME, TEAM_SECTION_ORDER, Team } from "./team.js";
+import {
+  agentMemberSource,
+  TEAM_SECTION_NAME,
+  TEAM_SECTION_ORDER,
+  Team,
+} from "./team.js";
+import type { TeamMemberSource } from "./team.js";
 
 interface SectionRecord {
   readonly name: string;
@@ -46,6 +56,7 @@ interface FakeMember {
   readonly id: ReturnType<typeof SessionId>;
   readonly agent: Agent;
   readonly handle: AgentHandle;
+  readonly source: TeamMemberSource;
   readonly events: SessionEvent[];
   readonly sections: SectionRecord[];
   readonly listeners: Listener[];
@@ -81,7 +92,87 @@ function createMember(name: string): FakeMember {
   const session = { id, events };
   const agent = { id, session, ctx } as unknown as Agent;
   const handle: AgentHandle = { agent, dispose: vi.fn(async () => {}) };
-  return { id, agent, handle, events, sections, listeners, offs };
+  return {
+    id,
+    agent,
+    handle,
+    source: agentMemberSource(handle),
+    events,
+    sections,
+    listeners,
+    offs,
+  };
+}
+
+/**
+ * A non-agent member source double: a plain in-memory log plus the optional
+ * consuming/subscription faces. `sectionTarget` stays absent (a system member
+ * carries no team prompt section), so the source is announce-only when
+ * `consumes` is false and a fully consuming member otherwise.
+ */
+interface FakeSource {
+  readonly id: string;
+  readonly source: TeamMemberSource;
+  readonly events: SessionEvent[];
+  readonly listeners: Array<(event: SessionEvent) => void>;
+}
+
+function createSource(id: string, consumes = true): FakeSource {
+  const events: SessionEvent[] = [];
+  const listeners: Array<(event: SessionEvent) => void> = [];
+  const source: TeamMemberSource = {
+    id,
+    events,
+    subscribe(onEvent) {
+      listeners.push(onEvent);
+      return () => {
+        const index = listeners.indexOf(onEvent);
+        if (index >= 0) {
+          listeners.splice(index, 1);
+        }
+      };
+    },
+    consumes,
+  };
+  return { id, source, events, listeners };
+}
+
+/** Push one production event through a non-agent source's live subscribe face. */
+function emitSource(fake: FakeSource, event: SessionEvent): void {
+  fake.events.push(event);
+  for (const listener of [...fake.listeners]) {
+    listener(event);
+  }
+}
+
+/**
+ * A log-only member source double: the log is the source's only face (no
+ * `subscribe`, no `sectionTarget`). Productions appended to `events` reach
+ * receivers exclusively through drain-time derivation — the read authority
+ * when the live notification is absent.
+ */
+interface FakeLogSource {
+  readonly id: string;
+  readonly source: TeamMemberSource;
+  readonly events: SessionEvent[];
+}
+
+function createLogSource(id: string, consumes = true): FakeLogSource {
+  const events: SessionEvent[] = [];
+  const source: TeamMemberSource = { id, events, consumes };
+  return { id, source, events };
+}
+
+/** The private member-state seam: read the pending buffer of a registered source. */
+function pendingOf(team: Team, id: string): unknown[] {
+  interface StateSeam {
+    byMember: Map<string, { members: Map<string, { pending: unknown[] }> }>;
+  }
+  const state = (team as unknown as StateSeam).byMember.get(id)?.members.get(id);
+  if (state === undefined) {
+    throw new Error(`member "${id}" is not registered`);
+  }
+  return state.pending;
 }
 
 let cursor = 0;
@@ -160,9 +251,14 @@ function produceTool(member: FakeMember, callId: string, result: string): void {
   emit(member, toolResultEvent(callId, result));
 }
 
+/** A receiver log (agent or non-agent member): the events array is the durable face. */
+interface EventLog {
+  readonly events: SessionEvent[];
+}
+
 /** The consumption closure: the injected broadcast lands in the receiver log. */
-function consume(member: FakeMember, message: UserMessage): void {
-  append(member, {
+function consume(log: EventLog, message: UserMessage): void {
+  log.events.push({
     type: "user/message",
     ...order(),
     data: message,
@@ -197,8 +293,8 @@ describe("Team.register", () => {
       goal: "尽量高的胜率",
       context: "game #3",
       members: [
-        { agent: player.handle, role: "player", summary: "执行操作并独占桌面控制" },
-        { agent: planner.handle, role: "planner", summary: "复盘与制定策略，不操作" },
+        { source: player.source, role: "player", summary: "执行操作并独占桌面控制" },
+        { source: planner.source, role: "planner", summary: "复盘与制定策略，不操作" },
       ],
     });
 
@@ -230,8 +326,8 @@ describe("Team.register", () => {
     const player = createMember("templates/saolei/sessions/s1/player");
     const planner = createMember("templates/saolei/sessions/s1/planner");
     const members = [
-      { agent: player.handle, role: "player", summary: "执行操作" },
-      { agent: planner.handle, role: "planner", summary: "制定策略" },
+      { source: player.source, role: "player", summary: "执行操作" },
+      { source: planner.source, role: "planner", summary: "制定策略" },
     ];
     const first = team.register({ goal: "目标一", members });
     const second = team.register({ goal: "目标一", members });
@@ -244,14 +340,14 @@ describe("Team.register", () => {
     second.dispose();
     expect(player.sections[0]?.dispose).toHaveBeenCalledOnce();
     expect(player.offs[0]).toHaveBeenCalledOnce();
-    expect(() => team.drain(player.handle)).toThrow(/not a registered member/);
+    expect(() => team.drain(player.source)).toThrow(/not a registered member/);
     first.dispose();
   });
 
   it("re-registers the section only when the team facts changed", () => {
     const { team } = createTeam();
     const player = createMember("templates/saolei/sessions/s1/player");
-    const members = [{ agent: player.handle, role: "player", summary: "执行操作" }];
+    const members = [{ source: player.source, role: "player", summary: "执行操作" }];
     team.register({ goal: "目标一", members });
     team.register({ goal: "目标二", members });
 
@@ -268,18 +364,18 @@ describe("Team.register", () => {
     team.register({
       goal: "g",
       members: [
-        { agent: player.handle, role: "player", summary: "a" },
-        { agent: planner.handle, role: "planner", summary: "b" },
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
       ],
     });
     team.register({
       goal: "g",
-      members: [{ agent: player.handle, role: "player", summary: "a" }],
+      members: [{ source: player.source, role: "player", summary: "a" }],
     });
 
     expect(planner.sections[0]?.dispose).toHaveBeenCalledOnce();
-    expect(() => team.drain(planner.handle)).toThrow(/not a registered member/);
-    expect(team.drain(player.handle)).toEqual([]);
+    expect(() => team.drain(planner.source)).toThrow(/not a registered member/);
+    expect(team.drain(player.source)).toEqual([]);
   });
 
   it("drops the member entries and buffers on agent disposal", () => {
@@ -289,8 +385,8 @@ describe("Team.register", () => {
     team.register({
       goal: "g",
       members: [
-        { agent: player.handle, role: "player", summary: "a" },
-        { agent: planner.handle, role: "planner", summary: "b" },
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
       ],
     });
 
@@ -298,8 +394,8 @@ describe("Team.register", () => {
 
     expect(player.sections[0]?.dispose).toHaveBeenCalledOnce();
     expect(player.offs[0]).toHaveBeenCalledOnce();
-    expect(() => team.drain(player.handle)).toThrow(/not a registered member/);
-    expect(team.drain(planner.handle)).toEqual([]);
+    expect(() => team.drain(player.source)).toThrow(/not a registered member/);
+    expect(team.drain(planner.source)).toEqual([]);
   });
 
   it("unwinds the section with the member agent scope (cordis scope cleanup)", async () => {
@@ -318,7 +414,11 @@ describe("Team.register", () => {
     team.register({
       goal: "g",
       members: [
-        { agent: { agent, dispose: vi.fn(async () => {}) }, role: "player", summary: "a" },
+        {
+          source: agentMemberSource({ agent, dispose: vi.fn(async () => {}) }),
+          role: "player",
+          summary: "a",
+        },
       ],
     });
 
@@ -338,9 +438,9 @@ describe("Team.drain", () => {
       goal: "尽量高的胜率",
       context: "game #3",
       members: [
-        { agent: player.handle, role: "player", summary: "执行操作" },
-        { agent: planner.handle, role: "planner", summary: "制定策略" },
-        { agent: observer.handle, role: "observer", summary: "旁观" },
+        { source: player.source, role: "player", summary: "执行操作" },
+        { source: planner.source, role: "planner", summary: "制定策略" },
+        { source: observer.source, role: "observer", summary: "旁观" },
       ],
     });
 
@@ -348,8 +448,8 @@ describe("Team.drain", () => {
     produceTool(player, "call-1", "已揭示，周边 2 雷");
     produceSpeech(player, "继续");
 
-    expect(team.drain(player.handle)).toEqual([]);
-    const plannerView = team.drain(planner.handle);
+    expect(team.drain(player.source)).toEqual([]);
+    const plannerView = team.drain(planner.source);
     expect(plannerView).toHaveLength(3);
     expect(textOf(plannerView[0]!)).toBe(
       "<player-message>\n我将点击中心\n</player-message>",
@@ -369,7 +469,7 @@ describe("Team.drain", () => {
     expect(plannerView[1]?.source).toMatchObject({ messageId: "call-1" });
     expect(textOf(plannerView[2]!)).toContain("继续");
 
-    expect(team.drain(observer.handle)).toHaveLength(3);
+    expect(team.drain(observer.source)).toHaveLength(3);
   });
 
   it("does not relay an incomplete tool call and drops the transient entry once the result lands", () => {
@@ -379,19 +479,19 @@ describe("Team.drain", () => {
     team.register({
       goal: "g",
       members: [
-        { agent: player.handle, role: "player", summary: "a" },
-        { agent: planner.handle, role: "planner", summary: "b" },
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
       ],
     });
 
     emit(player, toolCallEvent("call-1", "saolei_operate", '{"x":1}'));
-    expect(team.drain(planner.handle)).toEqual([]);
+    expect(team.drain(planner.source)).toEqual([]);
 
     emit(player, toolResultEvent("call-1", "clicked"));
-    const units = team.drain(planner.handle);
+    const units = team.drain(planner.source);
     expect(units).toHaveLength(1);
     expect(textOf(units[0]!)).toContain("result: clicked");
-    expect(team.drain(planner.handle)).toEqual([]);
+    expect(team.drain(planner.source)).toEqual([]);
   });
 
   it("does not relay a reasoning-only assistant message (live think never broadcasts)", () => {
@@ -401,8 +501,8 @@ describe("Team.drain", () => {
     team.register({
       goal: "g",
       members: [
-        { agent: player.handle, role: "player", summary: "a" },
-        { agent: planner.handle, role: "planner", summary: "b" },
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
       ],
     });
 
@@ -416,7 +516,7 @@ describe("Team.drain", () => {
       data: { turn: 1, step: 1, message: thinkingOnly },
     } as unknown as SessionEvent);
 
-    expect(team.drain(planner.handle)).toEqual([]);
+    expect(team.drain(planner.source)).toEqual([]);
   });
 
   it("marks drained anchors consumed: a second drain before the injection lands is empty", () => {
@@ -426,14 +526,14 @@ describe("Team.drain", () => {
     team.register({
       goal: "g",
       members: [
-        { agent: player.handle, role: "player", summary: "a" },
-        { agent: planner.handle, role: "planner", summary: "b" },
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
       ],
     });
 
     produceSpeech(player, "one");
-    expect(team.drain(planner.handle)).toHaveLength(1);
-    expect(team.drain(planner.handle)).toEqual([]);
+    expect(team.drain(planner.source)).toHaveLength(1);
+    expect(team.drain(planner.source)).toEqual([]);
   });
 
   it("does not permanently exclude a unit whose message construction failed (retry on the next drain)", () => {
@@ -443,8 +543,8 @@ describe("Team.drain", () => {
     team.register({
       goal: "g",
       members: [
-        { agent: player.handle, role: "player", summary: "a" },
-        { agent: planner.handle, role: "planner", summary: "b" },
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
       ],
     });
     produceSpeech(player, "retry me");
@@ -460,11 +560,11 @@ describe("Team.drain", () => {
       throw new Error("team broadcast: transient build failure");
     });
     seam.buildMessage = failing;
-    expect(() => team.drain(planner.handle)).toThrow(/transient build failure/);
+    expect(() => team.drain(planner.source)).toThrow(/transient build failure/);
     expect(failing).toHaveBeenCalledOnce();
 
     delete (team as unknown as { buildMessage?: unknown }).buildMessage;
-    const retried = team.drain(planner.handle);
+    const retried = team.drain(planner.source);
     expect(retried).toHaveLength(1);
     expect(textOf(retried[0]!)).toContain("retry me");
   });
@@ -474,15 +574,15 @@ describe("Team.drain", () => {
     const player = createMember("templates/saolei/sessions/s1/player");
     const planner = createMember("templates/saolei/sessions/s1/planner");
     const members = [
-      { agent: player.handle, role: "player", summary: "a" },
-      { agent: planner.handle, role: "planner", summary: "b" },
+      { source: player.source, role: "player", summary: "a" },
+      { source: planner.source, role: "planner", summary: "b" },
     ];
     team.register({ goal: "g", members });
 
     // A relay the subscription never saw (log-only append) is restored.
     const missed = speechEvent("missed");
     append(player, missed.event);
-    const first = team.drain(planner.handle);
+    const first = team.drain(planner.source);
     expect(first).toHaveLength(1);
     expect(textOf(first[0]!)).toContain("missed");
 
@@ -490,13 +590,13 @@ describe("Team.drain", () => {
     // after a fresh registration rebuilds the pending list.
     consume(planner, first[0]!);
     team.register({ goal: "g", members });
-    expect(team.drain(planner.handle)).toEqual([]);
+    expect(team.drain(planner.source)).toEqual([]);
 
     // The next lost relay is still picked up (the consumed anchor did not
     // wedge the member).
     const next = speechEvent("next");
     append(player, next.event);
-    const second = team.drain(planner.handle);
+    const second = team.drain(planner.source);
     expect(second).toHaveLength(1);
     expect(textOf(second[0]!)).toContain("next");
   });
@@ -506,21 +606,207 @@ describe("Team.drain", () => {
     const player = createMember("templates/saolei/sessions/s1/player");
     const planner = createMember("templates/saolei/sessions/s1/planner");
     const members = [
-      { agent: player.handle, role: "player", summary: "a" },
-      { agent: planner.handle, role: "planner", summary: "b" },
+      { source: player.source, role: "player", summary: "a" },
+      { source: planner.source, role: "planner", summary: "b" },
     ];
     team.register({ goal: "g", members });
 
     produceSpeech(player, "one");
-    expect(team.drain(planner.handle)).toHaveLength(1);
+    expect(team.drain(planner.source)).toHaveLength(1);
     // No consumption closure yet: the drain mark must still suppress it.
     team.register({ goal: "g", members });
-    expect(team.drain(planner.handle)).toEqual([]);
+    expect(team.drain(planner.source)).toEqual([]);
   });
 
   it("rejects a member that was never registered", () => {
     const { team } = createTeam();
     const stranger = createMember("templates/saolei/sessions/s1/stranger");
-    expect(() => team.drain(stranger.handle)).toThrow(/not a registered member/);
+    expect(() => team.drain(stranger.source)).toThrow(/not a registered member/);
+  });
+});
+
+describe("agentMemberSource", () => {
+  it("maps the handle onto the member source (id, live events, section target, consuming)", () => {
+    const player = createMember("templates/saolei/sessions/s1/player");
+
+    expect(player.source.id).toBe(player.id);
+    expect(player.source.events).toBe(player.events);
+    expect(player.source.sectionTarget).toBeDefined();
+    expect(player.source.consumes).toBe(true);
+  });
+
+  it("filters the session/event subscription to this member's own session", () => {
+    const player = createMember("templates/saolei/sessions/s1/player");
+    const seen: SessionEvent[] = [];
+    const subscribe = player.source.subscribe;
+    if (subscribe === undefined) {
+      throw new Error("agentMemberSource must implement subscribe");
+    }
+    const off = subscribe((event) => {
+      seen.push(event);
+    });
+    const { event } = speechEvent("hello");
+
+    for (const listener of [...player.listeners]) {
+      listener({ id: "templates/saolei/sessions/s1/planner" }, event);
+      listener({ id: player.id }, event);
+    }
+
+    expect(seen).toEqual([event]);
+    off();
+    expect(player.listeners).toHaveLength(0);
+  });
+});
+
+describe("member-source interface", () => {
+  const SESSION = "templates/saolei/sessions/s1";
+  const SAOLEI_ID = `${SESSION}/saolei`;
+
+  it("never queues broadcasts for an announce-only member, fails loud on drain, and renders its roster line", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const saolei = createSource(SAOLEI_ID, false);
+    const members = [
+      { source: player.source, role: "player", summary: "a" },
+      { source: planner.source, role: "planner", summary: "b" },
+      {
+        source: saolei.source,
+        role: "saolei",
+        summary: "扫雷系统，终局播报对局结果与操作统计",
+      },
+    ];
+    team.register({ goal: "g", members });
+
+    produceSpeech(player, "one");
+    // The live relay path skips it …
+    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
+    // … and the derived rebuild does not construct a pending list either.
+    team.register({ goal: "g", members });
+    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
+    expect(() => team.drain(saolei.source)).toThrow(/announce-only/);
+
+    // The roster renders every member, announce-only included.
+    expect(player.sections[0]?.text).toContain(
+      "[saolei] 扫雷系统，终局播报对局结果与操作统计",
+    );
+  });
+
+  it("relays a non-agent member's speech like an agent production and closes it on consumption", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const saolei = createSource(SAOLEI_ID, false);
+    const members = [
+      { source: player.source, role: "player", summary: "a" },
+      { source: planner.source, role: "planner", summary: "b" },
+      {
+        source: saolei.source,
+        role: "saolei",
+        summary: "扫雷系统，终局播报对局结果与操作统计",
+      },
+    ];
+    team.register({ goal: "g", members });
+
+    const { event, message } = speechEvent("本局游戏结束：胜利。");
+    emitSource(saolei, event);
+
+    const view = team.drain(planner.source);
+    expect(view).toHaveLength(1);
+    expect(textOf(view[0]!)).toBe(
+      "<saolei-message>\n本局游戏结束：胜利。\n</saolei-message>",
+    );
+    expect(view[0]?.source).toMatchObject({
+      kind: "team-broadcast",
+      role: "saolei",
+      senderSessionId: SAOLEI_ID,
+      messageId: String(message.id),
+      form: "relay",
+    });
+    // The announce-only sender is not a receiver of its own broadcast.
+    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
+
+    consume(planner, view[0]!);
+    team.register({ goal: "g", members });
+    expect(team.drain(planner.source)).toEqual([]);
+  });
+
+  it("delivers a log-only source's productions through drain-time derivation (no live subscription)", () => {
+    const { team } = createTeam();
+    const planner = createMember(`${SESSION}/planner`);
+    const saolei = createLogSource(SAOLEI_ID, false);
+    expect(saolei.source.subscribe).toBeUndefined();
+    const members = [
+      { source: planner.source, role: "planner", summary: "b" },
+      {
+        source: saolei.source,
+        role: "saolei",
+        summary: "扫雷系统，终局播报对局结果与操作统计",
+      },
+    ];
+    team.register({ goal: "g", members });
+
+    // The production lands in the log silently (no live notification face).
+    const { event, message } = speechEvent("本局游戏结束：胜利。");
+    saolei.events.push(event);
+
+    const view = team.drain(planner.source);
+    expect(view).toHaveLength(1);
+    expect(textOf(view[0]!)).toBe(
+      "<saolei-message>\n本局游戏结束：胜利。\n</saolei-message>",
+    );
+    expect(view[0]?.source).toMatchObject({
+      kind: "team-broadcast",
+      role: "saolei",
+      senderSessionId: SAOLEI_ID,
+      messageId: String(message.id),
+      form: "relay",
+    });
+
+    // Consumption closure: the durable anchor excludes the delivered unit
+    // across a rebuild …
+    consume(planner, view[0]!);
+    team.register({ goal: "g", members });
+    expect(team.drain(planner.source)).toEqual([]);
+
+    // … and a later log-only production is still picked up (the absent live
+    // relay never wedges the member).
+    saolei.events.push(speechEvent("下一局统计").event);
+    const next = team.drain(planner.source);
+    expect(next).toHaveLength(1);
+    expect(textOf(next[0]!)).toBe("<saolei-message>\n下一局统计\n</saolei-message>");
+  });
+
+  it("treats a consuming non-agent source as a full receiver through the same closure", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const system = createSource(`${SESSION}/observer`, true);
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: system.source, role: "observer", summary: "旁观" },
+      ],
+    });
+
+    produceSpeech(player, "hello");
+    const view = team.drain(system.source);
+    expect(view).toHaveLength(1);
+    expect(textOf(view[0]!)).toBe("<player-message>\nhello\n</player-message>");
+    expect(view[0]?.source).toMatchObject({
+      kind: "team-broadcast",
+      role: "player",
+      senderSessionId: String(player.id),
+    });
+
+    consume(system, view[0]!);
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: system.source, role: "observer", summary: "旁观" },
+      ],
+    });
+    expect(team.drain(system.source)).toEqual([]);
   });
 });
