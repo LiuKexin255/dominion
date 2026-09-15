@@ -172,12 +172,17 @@ export function gameStatus(state: GameState): GameStatus {
 
 /**
  * Per-game quantitative statistics, computed first-hand at game end and
- * carried by the terminal game event (the spec 051 A6 stats contract).
+ * carried by the terminal game event (the spec 051 A6 stats contract; the
+ * per-type breakdown is the spec 065 game-stats entity,
+ * specs/065-agent-v2-team-refine/data-model.md §1.3).
  */
 export interface GameStats {
   /** Successful cell-operation dispatch count this game (init/remain and
    * rejected/skipped ops excluded). */
   operationCount: number;
+  /** Successful dispatches per operation type; the parts always sum to
+   * {@link operationCount}. */
+  operationsByType: Record<OperationType, number>;
   /** Correctly flagged mines; null = init mineCounter undecodable. */
   correctFlags: number | null;
   /** operationCount / correctFlags, rounded to 2 decimals; "N/A" when
@@ -186,17 +191,21 @@ export interface GameStats {
 }
 
 /**
- * Compute the per-game statistics at game end. correctFlags = totalMines −
- * terminal MINE cells − HIT_MINE cells; totalMines comes from
- * `initState.mineCounter` (flags = 0 at game start, so the counter reads the
- * mine total). An undecodable counter ⇒ correctFlags = null; correctFlags
- * = 0/null ⇒ avgOpsPerMine = "N/A" (no NaN/Infinity on an instant loss).
- * Pure function.
+ * Compute the per-game statistics at game end. `operationsByType` is the
+ * runtime's per-type counter for the finished game (same success-dispatch
+ * accounting as `operationCount`,
+ * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §1).
+ * correctFlags = totalMines − terminal MINE cells − HIT_MINE cells;
+ * totalMines comes from `initState.mineCounter` (flags = 0 at game start, so
+ * the counter reads the mine total). An undecodable counter ⇒ correctFlags =
+ * null; correctFlags = 0/null ⇒ avgOpsPerMine = "N/A" (no NaN/Infinity on an
+ * instant loss). Pure function.
  */
 export function computeGameStats(
   initState: GameState | null,
   finalState: GameState,
   operationCount: number,
+  operationsByType: Record<OperationType, number>,
 ): GameStats {
   const counter = initState?.mineCounter;
   let correctFlags: number | null;
@@ -222,7 +231,12 @@ export function computeGameStats(
     avgOpsPerMine = "N/A";
   }
 
-  return { operationCount, correctFlags, avgOpsPerMine };
+  return {
+    operationCount,
+    operationsByType: { ...operationsByType },
+    correctFlags,
+    avgOpsPerMine,
+  };
 }
 
 /** In-bounds Moore neighbors of `(x, y)`; `GameState.grid` is indexed

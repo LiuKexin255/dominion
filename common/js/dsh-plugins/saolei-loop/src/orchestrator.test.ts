@@ -45,6 +45,7 @@ import type {
   TeamMaterializeOptions,
   TeamOrchestratorDeps,
 } from "./orchestrator.js";
+import { SAOLEI_MEMBER_SUMMARY } from "./announcer.js";
 import type { GameEventRecord } from "./game/runtime.js";
 
 const SESSION = "templates/saolei/sessions/s1";
@@ -52,6 +53,14 @@ const SESSION = "templates/saolei/sessions/s1";
 const SESSION_ID = "s1";
 const PLAYER_ID = `${SESSION}/player`;
 const PLANNER_ID = `${SESSION}/planner`;
+const SAOLEI_ID = `${SESSION}/saolei`;
+
+/**
+ * The exact announcement {@link winner} produces (the gameStatsText template
+ * of specs/065-agent-v2-team-refine/data-model.md §3).
+ */
+const WINNER_STATS_TEXT =
+  "本局游戏结束：胜利。\n本局共执行 5 个操作：click 4 次、flag 1 次、chord 0 次。";
 
 /** Flush every pending microtask (one macrotask boundary). */
 function tick(): Promise<void> {
@@ -69,7 +78,7 @@ function messageText(message: UserMessage): string {
  * is the producing member's durable id.
  */
 function relay(
-  senderSessionId: Agent["id"],
+  senderSessionId: string,
   role: string,
   text: string,
 ): UserMessage {
@@ -355,9 +364,38 @@ function teamOptions(
 function winner(): GameEventRecord {
   return {
     status: "won",
-    stats: { operationCount: 5, correctFlags: 3, avgOpsPerMine: 1.67 },
+    stats: {
+      operationCount: 5,
+      operationsByType: { click: 4, flag: 1, chord: 0 },
+      correctFlags: 3,
+      avgOpsPerMine: 1.67,
+    },
     endedAt: 1_000,
   };
+}
+
+/**
+ * Mirror the team service's live relay for the announce-only saolei member:
+ * every announcer production enters the planner's pending queue as the
+ * `team-broadcast` user message the real team would render from the member
+ * log (the fake team seam drains pre-seeded queues only).
+ */
+function relayAnnouncementsToPlanner(h: Harness): void {
+  const announcer = h.orchestrator.announcer;
+  if (announcer === undefined) {
+    throw new Error("the saolei announcer is not materialized");
+  }
+  announcer.source.subscribe?.((event) => {
+    if (event.type !== "assistant/message") {
+      return;
+    }
+    const text = event.data.message.content
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("");
+    const queue = h.team.queues.get(PLANNER_ID) ?? [];
+    queue.push(relay(SAOLEI_ID, "saolei", text));
+    h.team.queues.set(PLANNER_ID, queue);
+  });
 }
 
 describe("TeamOrchestrator.materialize", () => {
@@ -409,7 +447,16 @@ describe("TeamOrchestrator.materialize", () => {
     ).toEqual([
       ["player", PLAYER_ID, DEFAULT_MEMBER_SUMMARIES.player],
       ["planner", PLANNER_ID, DEFAULT_MEMBER_SUMMARIES.planner],
+      ["saolei", SAOLEI_ID, SAOLEI_MEMBER_SUMMARY],
     ]);
+    // The third registration is the announce-only system member: no section
+    // target, no broadcast consumption, and its log starts empty.
+    const saolei = registration.members[2];
+    expect(saolei?.source.consumes).toBe(false);
+    expect(saolei?.source.sectionTarget).toBeUndefined();
+    expect(saolei?.source.events).toEqual([]);
+    // The orchestrator's announcer accessor exposes the same member.
+    expect(h.orchestrator.announcer?.source.id).toBe(SAOLEI_ID);
 
     // Materialization rests in the planning activation: nothing is driven
     // and no drive message is synthesized (FR-010).
@@ -530,6 +577,7 @@ describe("TeamOrchestrator transitions", () => {
   it("drives the planner review on an unreviewed gameEnded record and consumes it once", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
+    relayAnnouncementsToPlanner(h);
     const player = member(h, PLAYER_ID);
     const planner = member(h, PLANNER_ID);
 
@@ -540,12 +588,16 @@ describe("TeamOrchestrator transitions", () => {
     await tick();
     expect(player.followups).toHaveLength(1);
 
-    // The player's turn ends with a terminal record: review the planner.
+    // The player's turn ends with a terminal record: review the planner. The
+    // saolei announcement is the turn's last input (followup), after the
+    // injected player relay.
     h.game.current = winner();
     h.team.queues.set(PLANNER_ID, [relay(player.agent.id, "player", "本局对局记录")]);
     player.settle();
     await tick();
-    expect(planner.followups.map(messageText)).toEqual(["请开始", "本局对局记录"]);
+    expect(planner.injections.map(messageText)).toEqual(["本局对局记录"]);
+    expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "reviewing",
       active: "planner",
@@ -562,7 +614,8 @@ describe("TeamOrchestrator transitions", () => {
       activation: "player",
     });
 
-    // A later player turn still observing the same record must not re-review.
+    // A later player turn still observing the same record must not re-review
+    // and must not re-announce (record-identity guards).
     h.orchestrator.submit("继续");
     await tick();
     expect(player.followups).toHaveLength(2);
@@ -572,7 +625,9 @@ describe("TeamOrchestrator transitions", () => {
     });
     player.settle();
     await h.orchestrator.whenQuiescent();
+    expect(planner.injections).toHaveLength(1);
     expect(planner.followups).toHaveLength(2);
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
     // Evaluated after both player turns; the second evaluation saw the same
     // record and did not re-trigger a review.
     expect(h.game.peeks).toBe(2);
@@ -634,6 +689,132 @@ describe("TeamOrchestrator transitions", () => {
     for (const message of deliveredMessages(h)) {
       expect(["team-broadcast", "user"]).toContain(message.source.kind);
     }
+  });
+});
+
+describe("TeamOrchestrator game-stats announcement (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3)", () => {
+  it("puts the announcement last in the review input set", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    relayAnnouncementsToPlanner(h);
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    h.orchestrator.submit("请开始");
+    h.team.queues.set(PLAYER_ID, [relay(planner.agent.id, "planner", "开局策略")]);
+    planner.settle();
+    await tick();
+
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [relay(player.agent.id, "player", "本局对局记录")]);
+    player.settle();
+    await tick();
+
+    // The player's terminal record was drained first (the turn's injected
+    // input); the announcement rides at the tail (the followup input — its
+    // producing event is the newest).
+    expect(planner.injections.map(messageText)).toEqual(["本局对局记录"]);
+    const followups = planner.followups.map(messageText);
+    expect(followups).toEqual(["请开始", WINNER_STATS_TEXT]);
+    expect(followups.at(-1)).toBe(WINNER_STATS_TEXT);
+    expect(h.orchestrator.snapshot()).toMatchObject({ phase: "reviewing", active: "planner" });
+  });
+
+  it("does not re-announce the same terminal record", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    relayAnnouncementsToPlanner(h);
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    h.orchestrator.submit("请开始");
+    h.team.queues.set(PLAYER_ID, [relay(planner.agent.id, "planner", "开局策略")]);
+    planner.settle();
+    await tick();
+    h.game.current = winner();
+    player.settle();
+    await tick();
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
+
+    // The review settles, then a later player turn observes the same record:
+    // the identity guard skips a second announcement.
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+    h.orchestrator.submit("继续");
+    await tick();
+    player.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
+    expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
+  });
+
+  it("starts the review with the announcement alone when no relay was queued", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    relayAnnouncementsToPlanner(h);
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    h.orchestrator.submit("请开始");
+    h.team.queues.set(PLAYER_ID, [relay(planner.agent.id, "planner", "开局策略")]);
+    planner.settle();
+    await tick();
+
+    // No planner relay at all: the announcement alone makes the review input
+    // non-empty, so the review-start branch is guaranteed to fire.
+    h.game.current = winner();
+    player.settle();
+    await tick();
+    expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      active: "planner",
+      activation: "planner",
+    });
+  });
+
+  it("does not announce for an init-only game (no terminal record)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    relayAnnouncementsToPlanner(h);
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    h.orchestrator.submit("请开始");
+    h.team.queues.set(PLAYER_ID, [relay(planner.agent.id, "planner", "开局策略")]);
+    planner.settle();
+    await tick();
+
+    // The player turn quiesces without a terminal record: no announcement,
+    // no review.
+    expect(h.game.current).toBeNull();
+    player.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.announcer?.source.events).toEqual([]);
+    expect(planner.followups.map(messageText)).toEqual(["请开始"]);
+  });
+
+  it("does not announce after dispose (the pending record is voided)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    relayAnnouncementsToPlanner(h);
+    const announcer = h.orchestrator.announcer;
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    h.orchestrator.submit("请开始");
+    h.team.queues.set(PLAYER_ID, [relay(planner.agent.id, "planner", "开局策略")]);
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(1);
+
+    // Dispose terminates the in-flight player turn; the terminal record it
+    // would have announced with is voided with the materialization.
+    h.game.current = winner();
+    await h.orchestrator.dispose();
+    expect(h.orchestrator.announcer).toBeUndefined();
+    expect(announcer?.source.events).toEqual([]);
+    expect(planner.followups.map(messageText)).toEqual(["请开始"]);
   });
 });
 
@@ -930,6 +1111,7 @@ describe("TeamOrchestrator failure reporting", () => {
     const logger = { error: vi.fn() };
     const h = createHarness({ logger });
     await h.orchestrator.materialize(teamOptions());
+    relayAnnouncementsToPlanner(h);
     const player = member(h, PLAYER_ID);
     const planner = member(h, PLANNER_ID);
 
@@ -941,10 +1123,12 @@ describe("TeamOrchestrator failure reporting", () => {
     h.game.current = winner();
     h.team.queues.set(PLANNER_ID, [relay(player.agent.id, "player", "本局对局记录")]);
 
-    // The review drive fails before it starts.
+    // The review drive fails before it starts; the announcement was already
+    // sent and its unit is held with the rest of the review input set.
     planner.failNextFollowup();
     player.settle();
     await tick();
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
 
     expect(logger.error).toHaveBeenCalledOnce();
     expect(logger.error.mock.calls[0]?.[1]).toEqual({
@@ -973,11 +1157,19 @@ describe("TeamOrchestrator failure reporting", () => {
     await tick();
     planner.settle();
     await tick();
+    // The failed attempt injected the player relay once; the retry re-injects
+    // the held input set and the announcement is the followup again.
+    expect(planner.injections.map(messageText)).toEqual([
+      "本局对局记录",
+      "本局对局记录",
+    ]);
     expect(planner.followups.map(messageText)).toEqual([
       "请开始",
       "继续",
-      "本局对局记录",
+      WINNER_STATS_TEXT,
     ]);
+    // The retried review input carries the one announcement — no second send.
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
     planner.settle();
     await h.orchestrator.whenQuiescent();
     expect(h.orchestrator.snapshot()).toMatchObject({
@@ -992,6 +1184,8 @@ describe("TeamOrchestrator failure reporting", () => {
     player.settle();
     await h.orchestrator.whenQuiescent();
     expect(planner.followups).toHaveLength(3);
+    expect(planner.injections).toHaveLength(2);
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
   });
 });
 

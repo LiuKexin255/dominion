@@ -62,6 +62,13 @@ export type {
 } from "./game/runtime.js";
 
 export {
+  SAOLEI_MEMBER_ROLE,
+  SAOLEI_MEMBER_SUMMARY,
+  SaoleiSystemMember,
+} from "./announcer.js";
+export { gameStatsText } from "./game/text.js";
+
+export {
   DEFAULT_MEMBER_SUMMARIES,
   OrchestratorStateError,
   TEAM_PROVIDER,

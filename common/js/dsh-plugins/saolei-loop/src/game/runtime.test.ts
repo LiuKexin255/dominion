@@ -558,6 +558,113 @@ describe("GameRuntime: operate", () => {
   });
 });
 
+describe("GameRuntime: per-type operation counts (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §1)", () => {
+  it("counts every successful batch operation by its type and carries the table on the terminal record", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+    await runtime.init();
+
+    // One three-op batch: click, flag and chord each dispatch successfully
+    // against the recognized board (single operations, not the call).
+    fakeBoard.setUpdate(board(["1 F *", "* * *", "* * *"], COUNTER_ZERO));
+    const batch = await runtime.operate({
+      operations: [
+        { type: "click", x: 2, y: 2 },
+        { type: "flag", x: 1, y: 1 },
+        { type: "chord", x: 0, y: 0 },
+      ],
+    });
+    expect((batch as { text: string }).text).toContain("executed 3 ops");
+
+    // The ending click is a successful dispatch too.
+    fakeBoard.setUpdate(board(["1 F *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+
+    const stats = runtime.peekGameEvent()?.stats;
+    expect(stats).toMatchObject({
+      operationCount: 4,
+      operationsByType: { click: 2, flag: 1, chord: 1 },
+    });
+    // The parts always sum to the single-operation total.
+    const byType = stats?.operationsByType;
+    expect((byType?.click ?? 0) + (byType?.flag ?? 0) + (byType?.chord ?? 0)).toBe(stats?.operationCount);
+  });
+
+  it("does not count SKIP/STOP ops, dispatch failures, or init/remain", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["0 * *", "* * *", "* * *"], COUNTER_ZERO));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+    await runtime.init();
+    const dispatchesAfterInit = fake.parts.length;
+
+    // SKIP (already revealed) + STOP (out of bounds) in one batch: the batch
+    // triages both before dispatch, so neither counts.
+    await runtime.operate({
+      operations: [
+        { type: "click", x: 0, y: 0 },
+        { type: "click", x: 9, y: 9 },
+      ],
+    });
+    expect(fake.parts).toHaveLength(dispatchesAfterInit);
+
+    // A desktop dispatch failure is an error outcome and does not count.
+    fake.set(failed("desktop disconnected"));
+    await runtime.operate({ type: "click", x: 1, y: 0 });
+    expect(fake.parts).toHaveLength(dispatchesAfterInit + 1);
+
+    // remain is a pure query: no dispatch, no operation.
+    runtime.remain();
+
+    // Two successful dispatches then end the game; only they are counted.
+    fake.set(succeeded());
+    fakeBoard.setUpdate(board(["1 * *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.operate({ type: "click", x: 1, y: 0 });
+    fakeBoard.setUpdate(board(["1 * *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+
+    expect(runtime.peekGameEvent()?.stats).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 2, flag: 0, chord: 0 },
+    });
+  });
+
+  it("clears the per-type table on init so each record carries only its own game's counts", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+
+    await runtime.init();
+    fakeBoard.setUpdate(board(["1 * *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.operate({ type: "click", x: 0, y: 0 });
+    fakeBoard.setUpdate(board(["1 * *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+    const first = runtime.peekGameEvent()?.stats;
+    expect(first).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 2, flag: 0, chord: 0 },
+    });
+
+    // Restart: the previous record survives as a detached snapshot, the
+    // counter restarts from zero.
+    fakeBoard.setInit(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.init();
+    fakeBoard.setUpdate(board(["* F *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.operate({ type: "flag", x: 1, y: 0 });
+    fakeBoard.setUpdate(board(["* F *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+
+    expect(runtime.peekGameEvent()?.stats).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 1, flag: 1, chord: 0 },
+    });
+    expect(first).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 2, flag: 0, chord: 0 },
+    });
+  });
+});
+
 describe("GameRuntime: remain", () => {
   it("rejects with no_active_game when no board is recognized", () => {
     const runtime = makeRuntime();

@@ -177,14 +177,6 @@ export interface TurnOutcome {
 export type MemberRole = "player" | "planner";
 
 /**
- * The merge-sequence producer label: the reserved value `"user"` for user
- * input, or a member role (scene vocabulary). The wire form is the string
- * itself — the session face is a scene-agnostic primitive and carries no
- * role enum (2026-09-10 user ruling).
- */
-export type TeamRoleLabel = "user" | MemberRole;
-
-/**
  * The sender annotation of a relayed broadcast: the source role string
  * unchanged; a source without a role degrades to the reserved user value.
  */
@@ -194,7 +186,13 @@ export function broadcastSender(role: string | undefined): string {
 
 /** One entry of the merged team sequence (ListTeamMessages / team_message frame). */
 export interface TeamMergeEntry {
-  /** Producer role string: the reserved `"user"` value or a member role. */
+  /**
+   * Producer role string: the reserved `"user"` value for user input, a
+   * materialized member role, or a non-agent system member's role (e.g. the
+   * saolei announcer). The wire form is the string itself — the session face
+   * is a scene-agnostic primitive and carries no role enum (2026-09-10 user
+   * ruling).
+   */
   readonly member: string;
   readonly message: HistoryMessage;
   readonly seq: number;
@@ -392,6 +390,21 @@ export class TeamHistory {
   }
 
   /**
+   * Append one system-member announcement (the saolei game-stats message) to
+   * the merge sequence with its sending role label and fan out the
+   * `team_message{member=role}` frame — `ListTeamMessages` and the stream
+   * frame share this entry (same source, same value). The message is a
+   * `ROLE_AGENT` single-text-block history entry; the announcement has no
+   * member view of its own (receivers record it in THEIR view through the
+   * member-view path when the team relays it,
+   * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4).
+   */
+  appendAnnouncement(role: string, text: string): TeamMergeEntry {
+    const message = this.newMessage("ROLE_AGENT", [{ text: { content: text } }]);
+    return this.appendMerge(role, message);
+  }
+
+  /**
    * Append one user message recorded in a member's own log to that member's
    * view: source `user` = the user's input; a `team-broadcast` source = a
    * relayed other-member message annotated with its sender (contracts/
@@ -479,7 +492,7 @@ export class TeamHistory {
   }
 
   /** Append one entry and fan out its team_message frame (single source). */
-  private appendMerge(member: TeamRoleLabel, message: HistoryMessage): TeamMergeEntry {
+  private appendMerge(member: string, message: HistoryMessage): TeamMergeEntry {
     const entry: TeamMergeEntry = { member, message, seq: this.nextSeq };
     this.nextSeq += 1;
     this.merge.push(entry);

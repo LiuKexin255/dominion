@@ -27,6 +27,13 @@
  * disconnect only detaches the stream — it MUST NOT stop the orchestration;
  * cancelling the team happens only through {@link TeamSessions.cancel}.
  *
+ * The saolei system member's announcements (game-over stats) are projected
+ * into the merge history through the orchestrator's `announcer` read surface —
+ * one `assistant/message` production becomes one
+ * {@link TeamHistory.appendAnnouncement} entry and its `team_message` frame;
+ * the subscription detaches with the team entry
+ * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4).
+ *
  * The Context injected at construction plus the optional {@link
  * TeamSessionsDeps} are the dependency seams: unit tests pass doubles
  * instead of intercepting modules (style/javascript.md Mock convention).
@@ -36,6 +43,7 @@ import { error, info } from "@dominion/common-js-logs";
 import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
 import {
   OrchestratorStateError,
+  SAOLEI_MEMBER_ROLE,
   TeamOrchestrator,
 } from "@dominion/dsh-saolei-loop";
 import type {
@@ -188,6 +196,8 @@ interface TeamEntry {
   readonly orchestrator: TeamOrchestrator;
   readonly history: TeamHistory;
   readonly members: Record<MemberRole, MemberRuntime>;
+  /** Detaches the announcer projection subscription (entry teardown). */
+  readonly announceOff: () => void;
   readonly streams: Set<TurnStream>;
   readonly createTime: Date;
   updateTime: Date;
@@ -540,6 +550,26 @@ export class TeamSessions {
       await orchestrator.dispose().catch(() => undefined);
       throw new Error("team materialization invariant violated: members are missing");
     }
+    const announcer = orchestrator.announcer;
+    if (announcer === undefined) {
+      await orchestrator.dispose().catch(() => undefined);
+      throw new Error("team materialization invariant violated: the saolei announcer is missing");
+    }
+    const announceOff =
+      announcer.source.subscribe?.((event) => {
+        if (event.type !== "assistant/message") {
+          return;
+        }
+        // The speech text of the production: its text blocks in order — the
+        // same projection the team's broadcast renderer applies
+        // (common/js/dsh-plugins/team/src/broadcast.ts messageBody).
+        const text = event.data.message.content
+          .map((block) => (block.type === "text" ? block.text : ""))
+          .join("\n\n");
+        if (text !== "") {
+          history.appendAnnouncement(SAOLEI_MEMBER_ROLE, text);
+        }
+      }) ?? (() => {});
     const members: Record<MemberRole, MemberRuntime> = {
       // Member runtimes keep the composite selector for the projections; the
       // orchestrator already received the split route above
@@ -553,6 +583,7 @@ export class TeamSessions {
       orchestrator,
       history,
       members,
+      announceOff,
       streams,
       createTime,
       updateTime,
@@ -649,6 +680,9 @@ export class TeamSessions {
    */
   private async teardownEntry(entry: TeamEntry): Promise<void> {
     entry.disposed = true;
+    // Detach the announcer projection before the orchestrator teardown: the
+    // old lifecycle's subscriptions die with it (no frame after teardown).
+    entry.announceOff();
     const active = entry.orchestrator.snapshot().active;
     if (active !== null) {
       entry.members[active].collector.markOutcome({ status: "ABORTED" });

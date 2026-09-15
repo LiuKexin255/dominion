@@ -17,6 +17,7 @@
         "@deepseek-ai/cordis": "catalog:",
         "@deepseek-ai/dsh-agent": "catalog:",
         "@deepseek-ai/dsh-llm": "catalog:",
+        "@deepseek-ai/dsh-session": "catalog:",
         "@dominion/dsh-desktop-bridge": "workspace:*",
         "@dominion/dsh-team": "workspace:*"
     },

@@ -4,13 +4,13 @@ import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { TeamMemberSource } from "@dominion/dsh-team";
+import type { TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
 import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
-import type { TurnStream } from "./history.js";
+import type { TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
-import type { GameEventRecord } from "@dominion/dsh-saolei-loop";
+import type { GameEventRecord, SaoleiSystemMember } from "@dominion/dsh-saolei-loop";
 
 /** The text of a user message's first text block. */
 function messageText(message: UserMessage): string {
@@ -247,8 +247,19 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const game = { current: null as GameEventRecord | null };
   const mountPlayerRuntime = vi.fn(() => ({ peekGameEvent: () => game.current }));
   const teamQueues = new Map<string, UserMessage[]>();
-  const teamRegister = vi.fn((registration: { members: readonly unknown[] }) => {
-    expect(registration.members).toHaveLength(2);
+  const teamRegister = vi.fn((registration: TeamRegistration) => {
+    // The saolei team's three-member roster: player + planner + the
+    // announce-only system member (specs/065-agent-v2-team-refine/contracts/
+    // game-stats-broadcast.md §3).
+    expect(registration.members).toHaveLength(3);
+    const saolei = registration.members[2];
+    expect(saolei).toMatchObject({
+      role: "saolei",
+      summary: "扫雷系统，终局播报对局结果与操作统计",
+    });
+    expect(saolei?.source.id).toBe(`${S1}/saolei`);
+    expect(saolei?.source.consumes).toBe(false);
+    expect(saolei?.source.sectionTarget).toBeUndefined();
     return { dispose: vi.fn() };
   });
   const fiberDispose = vi.fn(async () => {});
@@ -374,6 +385,46 @@ function defaultMembers() {
     { role: "player", preset: P_PLAYER },
     { role: "planner", preset: P_PLANNER },
   ];
+}
+
+/** A terminal game record for the mounted player runtime double. */
+function winnerRecord(): GameEventRecord {
+  return {
+    status: "won",
+    stats: {
+      operationCount: 5,
+      operationsByType: { click: 4, flag: 1, chord: 0 },
+      correctFlags: 3,
+      avgOpsPerMine: 1.67,
+    },
+    endedAt: 1_000,
+  };
+}
+
+/**
+ * The private live-entry registry seam: the announcer subscription and the
+ * history of one materialization generation (refresh/unsubscribe assertions).
+ */
+function entrySeam(
+  h: Harness,
+  session: string,
+): { announcer: SaoleiSystemMember | undefined; history: TeamHistory } {
+  const teams = (
+    h.sessions as unknown as {
+      teams: Map<
+        string,
+        {
+          orchestrator: { announcer?: SaoleiSystemMember };
+          history: TeamHistory;
+        }
+      >;
+    }
+  ).teams;
+  const entry = teams.get(session);
+  if (entry === undefined) {
+    throw new Error(`session "${session}" has no live entry`);
+  }
+  return { announcer: entry.orchestrator.announcer, history: entry.history };
 }
 
 async function materializeDefault(h: Harness): Promise<TeamView> {
@@ -814,6 +865,59 @@ describe("TeamSessions.send", () => {
     // agent.cancel was ever issued (cancel only happens via the Cancel RPC).
     expect(stream.ended).toBe(false);
     expect(planner.cancels).toHaveLength(0);
+  });
+});
+
+describe("TeamSessions saolei announcement projection (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4)", () => {
+  /** Drive the team to the player's terminal turn (planner strategy → player). */
+  async function driveToTerminalTurn(h: Harness, stream: StreamRecorder): Promise<void> {
+    h.sessions.send(S1, "请开始", stream);
+    await flush();
+    const planner = member(h, PLANNER_ID);
+    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "开局策略")]);
+    driveTextTurn(h, planner, "开局策略");
+    await flush();
+    h.game.current = winnerRecord();
+    driveTextTurn(h, member(h, PLAYER_ID), "已点击 (0,0)");
+    await flush();
+  }
+
+  it("projects the announcement into the merge history and fans out its team_message frame", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const stream = fakeStream();
+
+    await driveToTerminalTurn(h, stream);
+
+    const statsText =
+      "本局游戏结束：胜利。\n本局共执行 5 个操作：click 4 次、flag 1 次、chord 0 次。";
+    const announcement = h.sessions
+      .listTeamMessages(S1)
+      .find((entry) => entry.member === "saolei");
+    expect(announcement?.message.role).toBe("ROLE_AGENT");
+    expect(announcement?.message.blocks).toEqual([{ text: { content: statsText } }]);
+
+    // The live team_message frame carries the same entry (seq + message
+    // object), so ListTeamMessages and the stream cannot diverge.
+    const frame = stream.events.find((event) => event.teamMessage?.member === "saolei");
+    expect(frame?.teamMessage?.seq).toBe(String(announcement?.seq));
+    expect(frame?.teamMessage?.message).toBe(announcement?.message);
+  });
+
+  it("detaches the announcer subscription with the entry teardown (refresh)", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const old = entrySeam(h, S1);
+    expect(old.announcer).toBeDefined();
+
+    // Refresh tears the old generation down; its subscription detaches with
+    // the entry, so a late announcement cannot enter that history.
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+
+    old.announcer?.announce("旧生命周期播报");
+    expect(old.history.listTeamMessages()).toEqual([]);
+    // The new generation's projections start empty.
+    expect(h.sessions.listTeamMessages(S1)).toEqual([]);
   });
 });
 

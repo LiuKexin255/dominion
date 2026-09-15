@@ -40,7 +40,11 @@
  * runtime.ts): the runtime keeps the LATEST terminal record across a
  * restart-init, and the record is consumed only after its review drive
  * settles, so a failed attempt retries with the held relays instead of
- * losing the review.
+ * losing the review. Before the review drains, an unreviewed terminal record
+ * is announced through the announce-only saolei system member (record-level
+ * `statsSentFor` guard) — the announcement is one member speech on the same
+ * relay/consume closure and rides at the tail of the review input set
+ * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3).
  *
  * A pump step that throws (a fail-loud relay read, an alternation-invariant
  * violation, a rejected followup/inject) or whose member turn settles in
@@ -68,8 +72,14 @@ import type {
 } from "@dominion/dsh-team";
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
 
+import {
+  SAOLEI_MEMBER_ROLE,
+  SAOLEI_MEMBER_SUMMARY,
+  SaoleiSystemMember,
+} from "./announcer.js";
 import { createAgentGameRuntime } from "./game/runtime.js";
 import type { GameEventRecord } from "./game/runtime.js";
+import { gameStatsText } from "./game/text.js";
 
 /** The two team roles; the orchestrator activates them in alternation. */
 export type TeamRole = "player" | "planner";
@@ -436,6 +446,8 @@ interface PendingReview {
 export class TeamOrchestrator {
   private members: Readonly<Record<TeamRole, MemberRuntime>> | null = null;
   private teamRegistration: TeamHandle | null = null;
+  /** The announce-only saolei system member; non-null exactly while materialized. */
+  private saolei: SaoleiSystemMember | null = null;
   /** The materialized team's session resource name (logging context). */
   private session: string | null = null;
   private phase: OrchestrationPhase = "planning";
@@ -448,6 +460,13 @@ export class TeamOrchestrator {
   private disposed = false;
   /** The terminal record already handed to a settled planner review. */
   private reviewedGameEvent: GameEventRecord | null = null;
+  /**
+   * The terminal record already announced through the saolei system member —
+   * record identity, mirroring {@link reviewedGameEvent}: a new terminal
+   * record (a new game's end) announces once, the same record never repeats
+   * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3 item 3).
+   */
+  private statsSentFor: GameEventRecord | null = null;
   /** The review transition awaiting its settling drive (retry-held input). */
   private pendingReview: PendingReview | null = null;
   /** The last failed pump step; cleared by the next successful drive. */
@@ -498,6 +517,12 @@ export class TeamOrchestrator {
       );
       created.push(planner);
 
+      // The announce-only system member (no preset/model, never driven, not a
+      // proto team member): it carries the terminal game summary into the
+      // group chat through the same member-message-source closure as the two
+      // agent members (specs/065-agent-v2-team-refine/contracts/
+      // game-stats-broadcast.md §3 item 1; team-member-source.md §2/§3).
+      const saolei = new SaoleiSystemMember(options.session);
       const registration: TeamRegistration = {
         goal: options.goal,
         context: options.context,
@@ -512,15 +537,22 @@ export class TeamOrchestrator {
             role: "planner",
             summary: options.summaries?.planner ?? DEFAULT_MEMBER_SUMMARIES.planner,
           },
+          {
+            source: saolei.source,
+            role: SAOLEI_MEMBER_ROLE,
+            summary: SAOLEI_MEMBER_SUMMARY,
+          },
         ],
       };
       this.teamRegistration = this.team().register(registration);
       this.members = { player, planner };
+      this.saolei = saolei;
       this.session = options.session;
       this.phase = "planning";
       this.current = "planner";
       this.pendingReview = null;
       this.reviewedGameEvent = null;
+      this.statsSentFor = null;
       this.lastError = null;
     } catch (err) {
       await this.rollback(created);
@@ -610,7 +642,9 @@ export class TeamOrchestrator {
 
     const members = this.members;
     this.members = null;
+    this.saolei = null;
     this.session = null;
+    this.statsSentFor = null;
     if (members === null) {
       return;
     }
@@ -641,6 +675,17 @@ export class TeamOrchestrator {
   /** The live member handle (the system-prompt read surface of specs/059-agent-v2-team-mode/tasks.md T032), or undefined. */
   member(role: TeamRole): AgentHandle | undefined {
     return this.members?.[role].handle;
+  }
+
+  /**
+   * The announce-only saolei system member (its log/source face) while the
+   * team is materialized; undefined before materialization and after dispose.
+   * The host projects its announcements into the merge history through this
+   * read surface (specs/065-agent-v2-team-refine/contracts/
+   * game-stats-broadcast.md §3 item 6 / §4).
+   */
+  get announcer(): SaoleiSystemMember | undefined {
+    return this.saolei ?? undefined;
   }
 
   /** The team's live state snapshot (status/queue/failure presentation). */
@@ -895,11 +940,13 @@ export class TeamOrchestrator {
    *    send after materialization is served here with an empty relay set;
    * 2. an unsettled review transition retries with its held relays;
    * 3. planner quiescent (planning/reviewing) → structurally drive player;
-   * 4. player quiescent: an unreviewed gameEnded → start the planner review
-   *    (the record is consumed only after the drive settles); otherwise
-   *    structurally continue the player with newly relayed broadcasts. An
-   *    empty delivery set cannot form a model request, so the pump rests in
-   *    the current activation until new input arrives.
+   * 4. player quiescent: an unreviewed gameEnded → announce the record's
+   *    stats through the saolei system member, then start the planner review
+   *    (the announcement guarantees the drained input set is non-empty and
+   *    rides at its tail; the record is consumed only after the drive
+   *    settles); otherwise structurally continue the player with newly
+   *    relayed broadcasts. An empty delivery set cannot form a model request,
+   *    so the pump rests in the current activation until new input arrives.
    */
   private nextStep(): PumpStep | null {
     if (this.disposed || this.paused) {
@@ -936,6 +983,7 @@ export class TeamOrchestrator {
 
     const event = members.player.game?.peekGameEvent() ?? null;
     if (event !== null && event !== this.reviewedGameEvent) {
+      this.announceStats(event);
       const relays = this.drain(members.planner);
       if (relays.length > 0) {
         this.pendingReview = { event, messages: relays };
@@ -946,6 +994,25 @@ export class TeamOrchestrator {
     }
     const relays = this.drain(members.player);
     return relays.length === 0 ? null : { member: members.player, messages: relays };
+  }
+
+  /**
+   * Send one terminal record's game-over summary through the saolei system
+   * member. Record-identity guard (`statsSentFor`, mirroring
+   * `reviewedGameEvent`): the same record announces once — a failed review
+   * retry reaches case 2 before this evaluation, and a new game's terminal
+   * record triggers the next announcement. Called before `drain(planner)`,
+   * so the announcement rides at the tail of the review input set and the
+   * review-start branch is non-empty whenever an unreviewed terminal record
+   * exists (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md
+   * §3 items 2/3/5).
+   */
+  private announceStats(event: GameEventRecord): void {
+    if (this.saolei === null || event === this.statsSentFor) {
+      return;
+    }
+    this.saolei.announce(gameStatsText(event));
+    this.statsSentFor = event;
   }
 
   /** Consume one member's unconsumed broadcasts (team-internal read path). */

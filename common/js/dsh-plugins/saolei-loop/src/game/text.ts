@@ -14,6 +14,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { gameStatus, remainTokenAt } from "./board.js";
 import type { MoveRejection, OperationType } from "./board.js";
+import type { GameEventRecord } from "./runtime.js";
 
 /** Outcome line for `saolei_init` success. */
 export const INIT_OUTCOME = "new game started";
@@ -122,5 +123,22 @@ export function remainText(state: GameState): string {
     `board size ${state.width}*${state.height}\n` +
     `${REMAIN_LEGEND}\n\n` +
     renderGridWithRuler(state.width, state.height, remainTokenAt(state))
+  );
+}
+
+/**
+ * Build the terminal game-over summary the saolei system member announces
+ * (specs/065-agent-v2-team-refine/data-model.md §3; the pure template of
+ * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §2): the
+ * result line plus the successful single-operation total and its
+ * click/flag/chord breakdown. Deterministic — no timestamp or game identity
+ * enters the text (the record's `endedAt` is never read).
+ */
+export function gameStatsText(record: GameEventRecord): string {
+  const result = record.status === "won" ? "胜利" : "失败";
+  const { operationCount, operationsByType } = record.stats;
+  return (
+    `本局游戏结束：${result}。\n` +
+    `本局共执行 ${operationCount} 个操作：click ${operationsByType.click} 次、flag ${operationsByType.flag} 次、chord ${operationsByType.chord} 次。`
   );
 }

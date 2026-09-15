@@ -136,7 +136,7 @@ export interface GameLogEntry {
 /** Terminal game record carried by `peekGameEvent` (data-model.md §2.5). */
 export interface GameEventRecord {
   status: "won" | "lost";
-  /** Per-game statistics at end (operationCount/correctFlags/avgOpsPerMine). */
+  /** Per-game statistics at end (operationCount/operationsByType/correctFlags/avgOpsPerMine). */
   stats: GameStats;
   endedAt: number;
 }
@@ -196,6 +196,14 @@ export class GameRuntimeService extends Service implements GameRuntime {
   private initState: GameState | null = null;
   /** Successful dispatch count this game. */
   private operationCount = 0;
+  /** Successful dispatch count per operation type this game (reset with the
+   * game, incremented at the same point as {@link operationCount};
+   * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §1). */
+  private operationsByType: Record<OperationType, number> = {
+    click: 0,
+    flag: 0,
+    chord: 0,
+  };
   /** This game's operation sequence (reset on init). */
   private readonly gameLog: GameLogEntry[] = [];
   /** Latest terminal record (persists across a restart-init, v1 buffer
@@ -224,6 +232,7 @@ export class GameRuntimeService extends Service implements GameRuntime {
     }
     this.initState = state;
     this.operationCount = 0;
+    this.operationsByType = { click: 0, flag: 0, chord: 0 };
     this.gameLog.length = 0;
     this.gameLog.push({ tool: "saolei_init", state, status: "playing" });
     return { isError: false, text: initSuccessText(state), ...concludeMarker(state) };
@@ -304,6 +313,7 @@ export class GameRuntimeService extends Service implements GameRuntime {
         this.initState,
         finalState,
         this.operationCount,
+        this.operationsByType,
       );
       this.gameEvent = { status: endedStatus, stats, endedAt: Date.now() };
       this.gameLog.push({ tool: "(game-end)", state: finalState, status: endedStatus });
@@ -372,8 +382,10 @@ export class GameRuntimeService extends Service implements GameRuntime {
     if (!state) {
       return { kind: "unrecognizable" };
     }
-    // Only successful dispatches count as operations.
+    // Only successful dispatches count as operations (the per-type counter
+    // moves at the same point, keeping the parts summing to the total).
     this.operationCount += 1;
+    this.operationsByType[op.type] += 1;
     return { kind: "ok", state, status: gameStatus(state) };
   }
 
