@@ -289,12 +289,18 @@ describe("Team.register", () => {
     const { team } = createTeam();
     const player = createMember("templates/saolei/sessions/s1/player");
     const planner = createMember("templates/saolei/sessions/s1/planner");
+    const saolei = createSource("templates/saolei/sessions/s1/saolei", false);
     team.register({
       goal: "尽量高的胜率",
       context: "game #3",
       members: [
         { source: player.source, role: "player", summary: "执行操作并独占桌面控制" },
         { source: planner.source, role: "planner", summary: "复盘与制定策略，不操作" },
+        {
+          source: saolei.source,
+          role: "saolei",
+          summary: "扫雷系统，终局播报对局结果与操作统计",
+        },
       ],
     });
 
@@ -303,6 +309,7 @@ describe("Team.register", () => {
       members: [
         { role: "player", summary: "执行操作并独占桌面控制" },
         { role: "planner", summary: "复盘与制定策略，不操作" },
+        { role: "saolei", summary: "扫雷系统，终局播报对局结果与操作统计" },
       ],
     });
     for (const member of [player, planner]) {
@@ -313,8 +320,17 @@ describe("Team.register", () => {
       expect(section?.order).toBeGreaterThanOrEqual(1);
       expect(section?.order).toBeLessThanOrEqual(49);
       expect(section?.text).toBe(expected);
-      expect(section?.text).toContain("[player] 执行操作并独占桌面控制");
-      expect(section?.text).toContain("[planner] 复盘与制定策略，不操作");
+      expect(section?.text).toContain("- [player] 执行操作并独占桌面控制");
+      expect(section?.text).toContain("- [planner] 复盘与制定策略，不操作");
+      // The roster renders every registered member, including the announce-only
+      // saolei system member
+      // (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3).
+      expect(section?.text).toContain("- [saolei] 扫雷系统，终局播报对局结果与操作统计");
+      // The tag pairs are input-side only: members do not wrap their own
+      // output (team-member-source.md §4 terminal wording).
+      expect(section?.text).toContain(
+        "- 这些标签格式只用于系统向你呈现他人的输出：你自己的输出不需要、也不应该使用 `<角色-message>`/`<角色-tool-call>` 等标签自我包装（正文直接输出，工具调用按工具协议发起）。",
+      );
       expect(section?.text).not.toContain("你是 player");
       expect(section?.text).not.toContain("你是 planner");
       expect(member.listeners).toHaveLength(1);

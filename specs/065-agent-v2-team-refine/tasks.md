@@ -123,7 +123,7 @@
 
 **Tasks**:
 
-- [ ] T014 [US4] 在 `common/js/dsh-plugins/team/src/section.ts` 的 `renderTeamSection` 广播格式说明段末尾追加"仅输入侧"表述行（措辞按 `contracts/team-member-source.md` §4 终态文本）；扩展 `common/js/dsh-plugins/team/src/team.test.ts` 的 section 断言（新行存在；三成员 roster 渲染含 saolei 行）
+- [X] T014 [US4] 在 `common/js/dsh-plugins/team/src/section.ts` 的 `renderTeamSection` 广播格式说明段末尾追加"仅输入侧"表述行（措辞按 `contracts/team-member-source.md` §4 终态文本）；扩展 `common/js/dsh-plugins/team/src/team.test.ts` 的 section 断言（新行存在；三成员 roster 渲染含 saolei 行）
 
 **Checkpoint（验证门禁）**: team 单测绿；宿主 `projects/game/agent_v2/src/system-prompt.test.ts` 回归通过（system prompt 组装面零破坏）。
 

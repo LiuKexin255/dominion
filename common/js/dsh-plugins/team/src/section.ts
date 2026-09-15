@@ -7,7 +7,9 @@
  * target and order band: specs/059-agent-v2-team-mode/contracts/dsh-plugins.md
  * §1 item 1 (per-member agent scope, order 1–49); the broadcast format wording
  * is the single tag-pair form of
- * specs/060-agent-v2-team-optimize/contracts/team-api.md §4 (no head line).
+ * specs/060-agent-v2-team-optimize/contracts/team-api.md §4 (no head line),
+ * and the input-side-only caveat line is the terminal wording of
+ * specs/065-agent-v2-team-refine/contracts/team-member-source.md §4.
  */
 
 /** One roster entry: the member's role label and third-person one-liner. */
@@ -41,6 +43,7 @@ export function renderTeamSection(input: TeamSectionInput): string {
     "其他成员的输出会以群聊广播消息发送给你，正文由标签对包裹、原样呈现（不截断、不摘要、不含思考）：",
     "- 发言：`<角色-message>…</角色-message>` 之间为发言原文；",
     "- 工具调用：`<角色-tool-call>…</角色-tool-call>` 之间依次为 `tool:`、`args:`、`result:`（工具名、完整参数原文、完整结果原文）；广播方提供上下文时 `context: 局 id` 行位于 `tool:` 之前。",
+    "- 这些标签格式只用于系统向你呈现他人的输出：你自己的输出不需要、也不应该使用 `<角色-message>`/`<角色-tool-call>` 等标签自我包装（正文直接输出，工具调用按工具协议发起）。",
     "消息正文中的 @角色 是发送者的表达：广播面向全体成员，系统不按 @ 定向投递。",
   ].join("\n");
 }
