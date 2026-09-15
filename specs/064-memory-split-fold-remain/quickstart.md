@@ -30,7 +30,7 @@ bazel test //projects/game/agent_v2:lib_test
 bazel test //projects/game/web/frontend:lib_test
 ```
 
-**预期**：新增用例通过——终局收束回合（末步 THINK|TEXT|TOOL、工具块 SUCCEEDED 带 result、无 interrupted）渲染 `turn-process-toggle`、标签计数 = 过程步数与过程内工具块数、末步（含工具卡片）可见；interrupted 回合与最终答案回合既有用例零回归（SC-003）。
+**预期**：新增用例通过——终局收束回合（末步 THINK|TEXT|TOOL、工具块 SUCCEEDED 带 result、无 interrupted）渲染 `turn-process-toggle`、标签计数 = 过程步数与过程内工具块数、末步（含工具卡片）可见；interrupted 回合与最终答案回合既有用例零回归（SC-003）。Phase 6 增补：team 流逐步固化路径——live 进行中回合（open 标记条目）全展开、`turn_end` 后即时折叠、回填无标记路径折叠（裁定见 contracts/web-ui.md §4）。
 
 ## 场景 3：remain 语义——文本契约
 

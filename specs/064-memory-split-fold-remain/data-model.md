@@ -63,7 +63,7 @@ flowchart LR
 
 ## 3. 回合折叠判定（web 前端派生态）
 
-`CompletedTurn`（团队视图与成员视角共用）输入 = 连续同成员 `ROLE_AGENT` 的 `HistoryMessage[]`（回合边界 = USER 或另一成员条目断开，不变）。判定为纯函数：
+`CompletedTurn`（团队视图与成员视角共用）输入 = 连续同成员 `ROLE_AGENT` 的 `HistoryMessage[]`（回合边界 = USER 或另一成员条目断开，不变），且分组不含 `open` 标记条目（含 `open` 的分组由分组层先行路由到流式展开路径，不进入分类，§3.1）。判定为纯函数（输入只是 HistoryMessage[]）：
 
 ```text
 分类(memberTurn: HistoryMessage[]):
@@ -74,9 +74,32 @@ flowchart LR
   else                       → 展开形态（单步，无过程可收）
 ```
 
-状态来源（零新信号）：live `turn_end{COMPLETED}` → `closeLiveTurn(…, false)`（无 interrupted 投影）；`ERROR`/`CANCELED` → 尾步 `interrupted: true`（`projects/game/web/frontend/src/store/chat.ts:671-695`）；回填 List 的 HistoryMessage.interrupted 同型。展开状态键（`${view}:${组首 index}`）与页面会话保持语义不变。
+### 3.1 `open` 标记（客户端派生信号，仅 live 路径）
 
-**验证规则**（FR-004..FR-006 / SC-003）：终局收束回合渲染折叠开关、`process.length` 步骤与过程内 TOOL_CALL 块计数进标签、末步锚可见；interrupted 回合与最终答案回合零回归；单步回合无控件。
+进行中回合（turn_start 已见、turn_end 未到）与已收束回合在归并序列中消息形态同形——进行中回合的已固化前缀（各步带 toolCall → 无最终答案；COMPLETED 路径无 interrupted；步数 > 1）即命中终局收束判定，故三分类需要"回合已收束"的前置信号。服务端无回合状态字段（research D2 维持不加）；live 路径由 store 从 team 流生命周期派生：
+
+- 字段：`TeamMessageEntry.open?: boolean` / `MemberViewEntry.open?: boolean`（稀疏 bool，纯前端态，proto 无此字段）。
+- 标记：`team_message` 归约时该成员存在打开的 live 回合（`live.some(t => t.member === member)`）→ 归并序列条目与成员视角条目（`appendMemberView`）均落 `open: true`；projected 尾步投影与用户消息条目恒不标记。
+- 清除：`closeLiveTurn` 全路径（`turn_end{COMPLETED}`/`ERROR`/`CANCELED` 与流断开/流尾兜底 `closePendingTurns`）清除该成员全部条目标记——含"全部步已固化、无尾步可投影"的早退路径（清除先于早退返回）；`turn_end{ABORTED}` 整态清空；`loadHistory` 重建归并序列时防御性清除 memberHistory 残留标记。
+- 消费：分组层（`TeamMessages`/`MemberMessages`）对含 `open` 条目的分组整组按流式语义展开（不进 `CompletedTurn`、无折叠控件、工具块流式语境——RUNNING 无 result 呈现执行中）；标记清除后同分组进入三分类。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open : team_message 固化时成员存在打开的 live 回合
+    [*] --> Unmarked : 回填 List / projected 投影 / 用户消息
+    Open --> Unmarked : closeLiveTurn（turn_end 或流断开兜底，含全固化早退）
+    Open --> Open : 后续 team_message 继续固化
+    note right of Open
+        分组整组流式展开（无折叠控件）
+    end note
+    note right of Unmarked
+        分组进入三分类（终局收束 → 末步锚折叠）
+    end note
+```
+
+状态来源（服务端零新信号）：live `turn_end{COMPLETED}` → `closeLiveTurn(…, false)`（无 interrupted 投影）；`ERROR`/`CANCELED` → 尾步 `interrupted: true`（`projects/game/web/frontend/src/store/chat.ts:671-695`）；回填 List 的 HistoryMessage.interrupted 同型。展开状态键（`${view}:${组首 index}`）与页面会话保持语义不变。
+
+**验证规则**（FR-004..FR-006 / SC-003）：终局收束回合渲染折叠开关、`process.length` 步骤与过程内 TOOL_CALL 块计数进标签、末步锚可见；interrupted 回合与最终答案回合零回归；单步回合无控件；live 进行中回合（`open` 标记条目）全展开、`turn_end` 后即时折叠；回填无标记路径折叠（裁定见 contracts/web-ui.md §4）。
 
 ## 4. remain 结果体文本契约（修订）
 

@@ -99,6 +99,26 @@
 
 ---
 
+## Phase 6: US2 缺陷修复增补——live 进行中回合提前折叠（T004 回归）
+
+**目的**: 修复 T004 三分类引入的回归：team 流中回合进行期间，已固化步骤经 history 分组命中终局收束判定而立即折叠。恢复 web-ui.md §2 不变量"流式进行中的回合保持全展开"——live 路径由条目级 `open` 标记承载（标记/清除/消费见 web-ui.md §3 与 data-model.md §3.1）；回填路径无进行中信号，按消息形态分类（接受折叠，裁定见 web-ui.md §4）。
+
+**Independent Test**: `bazel test //projects/game/web/frontend:lib_test`——team 流全生命周期用例（固化期间全展开 → turn_end 后折叠）通过；既有三分类/最终答案/interrupted/单步用例零回归（quickstart 场景 2 口径）。
+
+**文档清单**：
+- 代码规范文档：`style/javascript.md`；其引用基准 [Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)（冲突时以 `style/javascript.md` 优先）
+- 官方文档：`@deepseek-ai/dsh-client-ui-chat` README "Turn Process Folding" 章节（https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/README.md ；npm 面 https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-chat ）——"remain expanded while a Turn is open … At turn/end … collapse" 官方行为基线（本修复恢复的不变量）
+- 技术文章/技术参考文档：`specs/064-memory-split-fold-remain/contracts/web-ui.md`（§1 适用前置 / §3 open 标记生命周期 / §4 回填与重连裁定——实现直接依据）、`specs/064-memory-split-fold-remain/data-model.md` §3~§3.1（三分类前置 + open 标记实体/状态图）、`specs/064-memory-split-fold-remain/research.md` D7（缺陷链、信号归属论证与备选否决）、`specs/059-agent-v2-team-mode/contracts/team-api.md` §3.2/§3.4（team_message 回合内逐步固化语义、中途建流不重放 turn_start——标记判定与重连裁定依据）、`specs/059-agent-v2-team-mode/contracts/web-views.md` §2/§3（live/回填双数据源与归并渲染语义）、`specs/054-agent-v2-bugfixes/contracts/web-ui.md` §2.2（被修订基线）、`specs/064-memory-split-fold-remain/spec.md` Edge Cases（"回填侧终局判定信号"裁定边界）、`projects/game/web/frontend/src/store/chat.ts`（现状只读参照：teamMessage 分支 / closeLiveTurn 早退路径 / consumeFixedStep）、`projects/game/web/frontend/src/components/ChatView.tsx`（现状只读参照：TeamMessages/MemberMessages 分组循环与 CompletedTurn）、`projects/game/web/frontend/src/store/chat.test.ts`（既有 store 用例形态：team_message 固化与收束路径）、`projects/game/web/frontend/src/components/ChatView.test.tsx`（既有组件用例形态：064 终局收束 describe 与 store 驱动 harness）
+
+- [ ] T010 [US2] store 条目级 open 标记：修改 `projects/game/web/frontend/src/store/chat.ts`——`TeamMessageEntry`/`MemberViewEntry` 增稀疏 `open?: boolean` 字段（注释引 `specs/064-memory-split-fold-remain/data-model.md` §3.1 与 contracts/web-ui.md §3）；teamMessage 归约分支：`state.live.some((t) => t.member === member)` 为真时，归并条目与 `appendMemberView` 追加的成员视角条目均落 `open: true`（projected 替换路径与 member="user" 帧不标记；迟到帧窄边界按契约 §4 接受）；`closeLiveTurn` 重排为"先清除该成员全部条目的 open 标记、后判断 `pending.length === 0` 早退返回"（覆盖全部步已固化的收束路径），`projectTail`/`projectMemberTail` 投影条目不带标记；`loadHistory` 防御性清除 memberHistory 残留标记（history 重建天然无标记，live 同步复位）；`projects/game/web/frontend/src/store/chat.test.ts` 同批新增用例：①turn_start → step 流式 → team_message 固化：归并与成员视角条目均 `open === true`、`consumeFixedStep` 推进不回归 ②turn_end{COMPLETED} 全部步已固化（早退路径）：标记清除、live 移除 ③turn_end{COMPLETED} 带未固化尾步：已固化条目标记清除 + projected 尾步无标记 ④turn_end{ERROR}/{CANCELED}：标记清除 + 尾步 interrupted 投影（既有语义零回归）⑤流断开 `closePendingTurns`：标记清除 ⑥`loadHistory` 后 memberHistory 残留标记清除 ⑦team_message{USER} 永不标记；既有用例零改动（已核对：固化期间标记、收束清除后终态与既有 `toEqual` 断言一致）；验证 `bazel test //projects/game/web/frontend:lib_test`
+- [ ] T011 [US2]（依赖 T010 的类型面）ChatView open 分组展开路径：修改 `projects/game/web/frontend/src/components/ChatView.tsx`——`AgentStep` 增可选 `historical?: boolean` prop（缺省 `!running`，既有调用面零变化；`blockToolCall` 语境由其决定）；`TeamMessages` 分组循环与 `MemberMessages` AGENT 分组循环：组内条目存在 `open === true` → 整组按流式语义展开（member-turn 容器 + 每条目一个 `AgentStep` `historical={false}`、无折叠控件、不进 `CompletedTurn`）；文件头与 `CompletedTurn` 注释同步（三分类适用前置 = 分组无 open 标记，指向 `specs/064-memory-split-fold-remain/contracts/web-ui.md` §1/§3）；`projects/game/web/frontend/src/components/ChatView.test.tsx` 同批新增用例：①team 流全生命周期（store 驱动，参 :965-1006 既有 harness 形态补 team_message 帧）：turn_start → step1（THINK+TOOL）流式 → team_message 固化 step1 → 断言无 `turn-process-toggle`、全部步展开（含 live 尾步）→ step2 流式 + team_message 固化 → 仍全展开 → turn_end{COMPLETED} → 断言 toggle 出现、终局收束折叠形态（计数/末步锚）②成员视角同型：memberHistory 含 open 条目 → 展开；同条目去除标记 → 折叠（对照）③open 条目 RUNNING 无 result 工具卡呈现"运行中"（流式语境）、标记清除后同块经 `CompletedTurn` 呈现"已中断"（历史语境恢复）④live 期间最终答案步已固化（分组含 isFinalAnswer 步 + open 标记）→ 仍展开至 turn_end 后按第一分类折叠 ⑤回填裁定锚定：同形态 entries 无 open 标记 → 折叠（进行中回合回填裁定，契约 §4）；既有三分类/最终答案/interrupted/单步/团队流分组用例零回归；验证 `bazel test //projects/game/web/frontend:lib_test`
+
+**Checkpoint**: web-ui.md §2 不变量恢复——live 进行中回合全展开（团队视图 + 成员视角）、turn_end 后折叠即时发生、回填裁定行为有测试锚定；既有三分类零回归。
+
+**大型测试说明**: Phase 6 不重跑 guitar——T009 已完成本 feature 大型测试验收（宪法 VI）；本修复为纯前端呈现逻辑（store/组件），guitar 用例面不含 webUI 渲染断言（T009 同裁定），重跑无新增验证信号；验收面 = store/组件测试（quickstart 场景 2 口径）。
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -108,6 +128,7 @@
 - **Phase 3（US2）**: 依赖 Phase 1；与 Phase 2/4 文件面不相交，可并行。
 - **Phase 4（US3）**: 依赖 Phase 1；内部 T005 ∥ T006（不同文件），T006 自含两包措辞；与 Phase 2/3 可并行。
 - **Phase 5（收尾）**: T007 可提前并行（纯文档）；T008 依赖 T003；T009 依赖全部实现 phase。
+- **Phase 6（缺陷修复增补）**: 依赖 Phase 3（T004 已交付的三分类基线）；内部串行 T010 → T011（T011 消费 T010 的 `open` 类型面）；不重跑大型测试（见 Phase 6 说明）。
 
 ### Parallel Opportunities
 

@@ -94,3 +94,28 @@
 大型测试回归面：`projects/game/testplan/system_test.yaml` 的四个 suite（`game-system` / `game-disconnect` / `game-memory-down`（`agent_v2_memory_down_test.go` 所在的 memory 服务缺失编排）/ `game-stall`）——拆分不改服务目标，仅插件包重组，预期零影响、全量跑通即验收。
 
 **Rationale**：宪法 IV（编译+单测随变更）+ VI（大型测试验收）；三切面无相互依赖，可独立中断恢复。
+
+## D7: live 进行中回合提前折叠（T004 回归）——条目级 `open` 标记 + 回填接受折叠
+
+**缺陷链**（部署验证发现，代码实读核实）：team 流中每个 step 完成即经 `team_message` 帧固化入归并序列（history）并推进 live 回合的 `fixedSteps`（`projects/game/web/frontend/src/store/chat.ts` teamMessage 分支 + `consumeFixedStep`）；live 组件只渲染未固化尾步（`steps.slice(fixedSteps)`，全展开），已固化步骤走 history 分组（连续同成员 AGENT 条目）→ `CompletedTurn` 三分类。进行中回合的已固化前缀（各步带 toolCall → 无最终答案；COMPLETED 路径无 interrupted；步数 > 1）与已收束终局回合消息形态**同形** → 局中每固化一步、新末步成为锚、此前步骤立即折叠。旧规则（仅最终答案折叠）下该路径天然安全：最终答案步只出现在回合最后一个 step，折叠时机与收束重合——T004 的第三分类首次让"无答案形态"在回合打开期间可折叠，属 T004 引入的回归。违反 contracts/web-ui.md §2 不变量"流式进行中的回合保持全展开"（官方 "Turn Process Folding"：rows "remain expanded while a Turn is open"，https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-chat/README.md ）。
+
+**Decision**：
+
+1. **live 路径 = 条目级 `open` 标记**：store 在 `team_message` 归约时，若该成员存在打开的 live 回合（`live.some(t => t.member === member)`），则为固化的归并序列条目与成员视角条目落 `open: true`；回合收束全路径清除（`closeLiveTurn` 含全部步已固化的早退路径、`closePendingTurns` 兜底；`loadHistory` 防御清除 memberHistory 残留）。分组层（`TeamMessages`/`MemberMessages`）将含 `open` 条目的分组整组按流式语义展开（无折叠控件、不进 `CompletedTurn`、工具块流式语境）。`CompletedTurn` 输入不变（HistoryMessage[]）——三分类保持"已收束回合的消息形态纯函数"。
+2. **回填路径 = 接受折叠**：进行中回合与"终局收束后、下一成员条目到达前"genuinely 同形（序列尾部、无最终答案、无 interrupted、步数 > 1），无服务端信号可区分；接受折叠（末步锚可见、过程一键展开，信息损失有界），与 spec Edge Cases"回填侧终局判定信号：折叠判定以消息形态推导"裁定同向。局中刷新后重连（下次 Send 建流）：在途回合错过的 `turn_start` 不重放（059 team-api §3.4），其剩余步骤的 `team_message` 帧无 live 回合可标记 → 延续回填裁定（保持折叠）至该回合收束，后续回合恢复 live 展开语义。
+3. `open` 分组工具块按流式语境（RUNNING 无 result → 执行中）；标记清除后恢复历史语境中断推导——修复"展开后已固化步的执行中工具呈现已中断"的语境错位。
+
+**Rationale**：
+
+- 信号归属：回合生命周期（turn_start/turn_end）只有 store 观察得到——标记在归约时落定是唯一不依赖渲染期猜测的锚；分组层只消费标记，`CompletedTurn` 保持纯形态分类（分层：生命周期知识在 store/分组层，形态分类在 `CompletedTurn`）。
+- 条目级标记覆盖"局中用户消息插队拆分分组"：用户消息 enqueue 即固化（seq 插入回合中段）会把进行中回分组拆成多段，条目级标记天然覆盖全部分段（组件层"尾部分组"启发式覆盖不了非尾段）。
+- 迟到帧窄边界（已收合回合的 team_message 晚于该成员下一回合 turn_start 处理且以新条目插入 → 误标 open）：差异仅限临时展开、随下一回合收束自愈，可接受（contracts/web-ui.md §4）。
+
+**既有测试影响**：T004 的实时路径新用例走单用户会话流（`store.send` 成员事件帧、无 `team_message` 帧，steps 只在 turn_end 进 history）——团队流"逐步固化"路径未覆盖，为本缺陷漏测面；修复同批补齐（team 流全生命周期用例：固化期间不折叠 → turn_end 后折叠）。既有 store 用例经核对零改动：`team_message` 固化期间标记、收束时清除，终态形态与既有断言（含 `chat.test.ts` `toEqual` 整形断言）一致。
+
+**Alternatives considered**：
+
+- 分组层以 live 推断（"成员存在 live 回合 → 尾部分组展开"）：局中用户消息插队拆分后**非尾段**仍提前折叠；"该成员全部分组展开"会误展开历史已收合回合（每开新回合闪现展开旧回合）→ 否。
+- `CompletedTurn` 增 `open` 输入 prop：分类函数输入不再纯消息形态（破坏 §3 "分类是消息形态的纯函数" 契约面），且 `CompletedTurn`（名字即"已完成回合"）渲染进行中回合名实不符 → 否（分组层路由更符合分层）。
+- 服务端加回合状态字段（HistoryMessage 或 team_message 帧）：D2 已否决（契约面大、回填/实时双路径改造）；live 信号客户端可自足派生，重提无必要 → 维持否决。
+- 回填"会话尾部分组不折叠"特判 / 时间窗启发式：前者误伤"终局后、下一成员条目到达前"的合法折叠瞬间（FR-006 回填折叠一致性，终局后刷新必须折叠）；后者非确定性行为不可测 → 否。
