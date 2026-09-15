@@ -231,7 +231,7 @@ Every phase below declares its document list under three categories — **代码
   - `style/golang.md`
   - `style/large_test.md`
   - Google Go Style Guide — https://google.github.io/styleguide/go/guide ; Style Decisions — https://google.github.io/styleguide/go/decisions ; Best Practices — https://google.github.io/styleguide/go/best-practices
-- **官方文档**: 无（testplan/guitar 通过 `testplan` SKILL 加载；`design/guitar_yaml_testplan.md` 为仓库内文档，默认必读）。
+- **官方文档**: 无（testplan/guitar 通过 `testplan` SKILL 加载；`tools/test/guitar/README.md` 为仓库内文档，默认必读）。
 - **技术文章**: 无。
 
 ### Tasks
