@@ -145,8 +145,8 @@
 - [X] T016 [P] 扩展 `projects/game/testplan/agent_v2_conversation_test.go`（对话面模块）：排队跳局场景——终局 player 回合收束时注入排队用户消息 → player 消化并开新局 → 被跳过局无统计消息、新局交接恰一条新局统计；对照用例（终局后无排队）统计即时播报
 - [X] T017 fake-llm 夹具更新（依赖 T015/T016 完成）：若 T015/T016 断言无法命中既有场景模板/keyword 机制（机制见 `projects/game/fake-llm/README.md`），则更新 `projects/game/fake-llm/service/` 相应模板/规则；否则不改动。无论何种结论，均将"夹具是否改动"记入 T019 汇报；任何改动不破坏既有场景
 - [X] T018 [P] 更新 `projects/game/agent_v2/README.md`：team 组合清单（成员消息源接口与扫雷系统 announce-only 成员）、广播与提示词分层（roster 含 saolei 行、"仅输入侧"表述）、planner memory（快照近因注入 ≤10 条）、大型测试断言面增量
-- [ ] T019 大型测试执行验收：经 testplan SKILL 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环），全部用例通过；任何 failed/flaky 修复后重跑至全绿
-- [ ] T020 按 `specs/065-agent-v2-team-refine/quickstart.md` 走查验证：§2 单测命令全绿 + §3 大型测试断言项逐条对照 + §4 手动观察路径（可选）
+- [X] T019 大型测试执行验收：经 testplan SKILL 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环），全部用例通过；任何 failed/flaky 修复后重跑至全绿
+- [X] T020 按 `specs/065-agent-v2-team-refine/quickstart.md` 走查验证：§2 单测命令全绿 + §3 大型测试断言项逐条对照 + §4 手动观察路径（可选）
 
 **Checkpoint（验证门禁）**: testplan 全部用例通过（all cases passed）；quickstart 校验项逐条对照通过。
 
