@@ -292,11 +292,16 @@ planner preset 锁定的 memory 插件组
   工具调用历史与团队消息流可见。
 - **快照装载与透传渲染**：物化时 `ctx.plannerMemory.load` 以
   `order_by=update_time desc` + `page_size=10` 单页装载长期记忆——最近 10 条
-  由 memory 服务 `ListMemories` 的服务端排序承担（并列以 `memory_id` 升序
-  确定全序），客户端按服务返回序纯透传渲染；快照注入 system prompt 的函数式
-  section（order 200+，空不渲染），在成员实例生命周期内固定，运行中的外部修改
-  待下次物化（刷新 team）生效
-  （`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md` §2；
+  由 memory 服务 `ListMemories` 的服务端排序承担，客户端按服务返回序纯透传
+  渲染。`order_by` 为通用机制：AIP-132 `{field} [desc]` 逗号分隔语法（空白
+  不敏感）、白名单 `memory_id`/`update_time`、指定 tie-breaker `memory_id`
+  ——排序键不含它时自动追加 `memory_id asc`（`update_time desc` 归一化为
+  `[update_time desc, memory_id asc]`）；含 `memory_id` 于任意键位即已是全序，
+  不追加。游标编码页末条目在最终排序键上的键值序列且与续页排序键不匹配时
+  拒绝（跨序重放 INVALID_ARGUMENT）。快照注入 system prompt 的函数式 section
+  （order 200+，空不渲染），在成员实例生命周期内固定，运行中的外部修改待下次
+  物化（刷新 team）生效
+  （`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md` §1/§2；
   截断只影响注入面，memory 工具写路径仍面向全量存储）。
 - **fail-loud**：memory 服务不可达时预取 throw，team 物化整体回滚（无半物化），
   可重试。
@@ -413,8 +418,9 @@ player 成员视图消费该消息、`GetTeam`/`active_member` 不含该角色
 （`agent_v2_game_test.go`）；排队跳局（排队消息驱动 player 开新局）被跳过局
 无统计、新局交接恰一条新局统计，对照局（终局后无排队）即时播报
 （`agent_v2_conversation_test.go`）；system prompt 含 roster 扫雷系统行与
-“仅输入侧”表述、planner 快照 ≤10 条且由 memory 服务按 `update_time desc`
-服务端排序（>10 条记忆夹具对照）——
+“仅输入侧”表述、planner 快照 ≤10 条且由 memory 服务通用 `order_by`
+（`update_time desc` 归一化含指定 tie-breaker）服务端有序（>10 条记忆夹具
+对照）——
 验收面见 `specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md` §5
 与 `specs/065-agent-v2-team-refine/quickstart.md` §3。注入设施与触发词见
 `projects/game/fake-llm/README.md`。

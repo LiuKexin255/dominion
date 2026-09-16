@@ -7,7 +7,7 @@ package mongo
 import (
 	"context"
 	"errors"
-	"fmt"
+	"maps"
 
 	"dominion/projects/game/memory/domain"
 
@@ -95,14 +95,17 @@ type memoryRepository struct {
 // FR-006 / style/mongo.md). It creates the unique index on
 // (template, session_id, memory_id)
 // (specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §3) and the composite index backing the
-// (update_time desc, memory_id asc) listing
+// §3) and the composite index backing the consumed
+// [update_time desc, memory_id asc] sort key
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
-// item 5).
+// items 5-6). Adding a sortable field adds one whitelist row, one
+// memoryDocument.sortValue case and the compound index for its consumed
+// direction.
 func NewRepository(client *mongodriver.Client, dbName string) domain.MemoryRepository {
 	coll := newCollection(client, dbName, memoriesCollectionName)
 
-	// Create the unique identity index for memories.
+	// Create the unique identity index for memories: it backs the default
+	// [memory_id asc] sort key (equality prefix + final key).
 	_, _ = coll.Indexes().CreateOne(context.Background(), mongodriver.IndexModel{
 		Keys: bson.D{
 			{Key: fieldTemplate, Value: 1},
@@ -112,10 +115,13 @@ func NewRepository(client *mongodriver.Client, dbName string) domain.MemoryRepos
 		Options: options.Index().SetUnique(true),
 	})
 
-	// Create the composite index for the ordered listing: the
+	// Create the composite index for the [update_time desc, memory_id asc]
+	// sort key (the only consumed non-default direction): the
 	// (template, session_id) equality prefix is followed by the sort keys in
-	// index order, so the ordered scan needs no in-memory sort. Ignore the
-	// error for a duplicate index (e.g. from a previous service start).
+	// key order and direction (ESR:
+	// https://www.mongodb.com/docs/manual/tutorial/equality-sort-range-guideline/),
+	// so the ordered scan needs no in-memory sort. Ignore the error for a
+	// duplicate index (e.g. from a previous service start).
 	_, _ = coll.Indexes().CreateOne(context.Background(), mongodriver.IndexModel{
 		Keys: bson.D{
 			{Key: fieldTemplate, Value: 1},
@@ -190,32 +196,24 @@ func (r *memoryRepository) DeleteMemory(ctx context.Context, template, session, 
 }
 
 // ListMemories retrieves a page of Memories under a session in the requested
-// order (AIP-132: https://google.aip.dev/132).
-// ListMemoriesOrderMemoryIDAsc sorts by memory_id ascending and pages by raw
-// memory_id tokens; ListMemoriesOrderUpdateTimeDesc sorts by update_time
-// descending with memory_id ascending as the tie-break and pages by composite
-// (update_time, memory_id) tokens, returning ErrInvalidPageToken when a token
-// cannot be decoded
-// (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1).
-func (r *memoryRepository) ListMemories(ctx context.Context, template, session string, pageSize int, pageToken string, order domain.ListMemoriesOrder) ([]*domain.Memory, string, error) {
-	if order == domain.ListMemoriesOrderUpdateTimeDesc {
-		return r.listMemoriesByUpdateTimeDesc(ctx, template, session, pageSize, pageToken)
-	}
-	return r.listMemoriesByMemoryIDAsc(ctx, template, session, pageSize, pageToken)
-}
-
-// listMemoriesByMemoryIDAsc is the default listing: memory_id ascending,
-// paged by raw memory_id tokens.
-func (r *memoryRepository) listMemoriesByMemoryIDAsc(ctx context.Context, template, session string, pageSize int, pageToken string) ([]*domain.Memory, string, error) {
+// sort key order (AIP-132: https://google.aip.dev/132). The inputs are already
+// validated — sort is a ParseMemoryOrderBy product, cursor a
+// DecodeMemoryPageToken product (nil = first page, the only criterion) — so
+// this is a direct translation: the key becomes the Mongo sort document, the
+// cursor becomes the generic OR-ladder resume condition, and the page's last
+// entry becomes the next token. The repository performs no value conversion:
+// cursor entries already carry their typed values
+// (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
+// items 5/9).
+func (r *memoryRepository) ListMemories(ctx context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor, pageSize int) ([]*domain.Memory, string, error) {
 	filter := bson.M{fieldTemplate: template, fieldSessionID: session}
-	if pageToken != "" {
-		filter[fieldMemoryID] = bson.M{"$gt": pageToken}
+	if cursor != nil {
+		filter["$or"] = memorySeekClauses(sort, cursor)
 	}
 
-	limit := int64(pageSize) + 1
 	opts := options.Find().
-		SetSort(bson.D{{Key: fieldMemoryID, Value: 1}}).
-		SetLimit(limit)
+		SetSort(memorySortDocument(sort)).
+		SetLimit(int64(pageSize) + 1)
 
 	docs, err := r.find(ctx, filter, opts)
 	if err != nil {
@@ -228,58 +226,74 @@ func (r *memoryRepository) listMemoriesByMemoryIDAsc(ctx context.Context, templa
 
 	nextPageToken := ""
 	if len(docs) > pageSize {
-		nextPageToken = docs[pageSize-1].MemoryID
+		nextPageToken = memoryNextPageToken(docs[pageSize-1], sort)
 		docs = docs[:pageSize]
 	}
 
 	return memoryDocsToDomain(docs), nextPageToken, nil
 }
 
-// listMemoriesByUpdateTimeDesc lists by update_time descending with
-// memory_id ascending as the tie-break — a deterministic total order — and
-// pages by composite (update_time, memory_id) tokens.
-func (r *memoryRepository) listMemoriesByUpdateTimeDesc(ctx context.Context, template, session string, pageSize int, pageToken string) ([]*domain.Memory, string, error) {
-	filter := bson.M{fieldTemplate: template, fieldSessionID: session}
-	if pageToken != "" {
-		cursor, err := domain.DecodeMemoryPageToken(pageToken)
-		if err != nil {
-			return nil, "", fmt.Errorf("%w: %v", domain.ErrInvalidPageToken, err)
+// memorySeekClauses builds the resume-after-cursor condition for the final key
+// of ANY length as the standard OR ladder of the seek method: clause i keeps
+// the equality prefix of keys 0..i-1 and compares key i with $gt ($lt for a
+// descending key). The prefix is grown incrementally — each key's equality
+// form is written once as the loop advances, and each clause is a shallow copy
+// of the current prefix plus the current comparison, so the total work is
+// proportional to the ladder's own output (entry values are immutable
+// scalars, so sharing them across clauses is safe). A single-key final key
+// naturally degenerates to a one-clause $or: no length branching and no
+// "merge into the scope filter" special case. There is no error path — the
+// values were converted once by DecodeMemoryPageToken
+// (https://use-the-index-luke.com/sql/partial-results/fetch-next-page;
+// specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
+// item 6).
+func memorySeekClauses(sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor) bson.A {
+	clauses := bson.A{}
+	prefix := bson.M{}
+	for i, term := range sort {
+		value := cursor.Entries[i].Typed()
+		clause := maps.Clone(prefix)
+		clause[term.MongoField] = bson.M{memoryCmpOp(term.Descending): value}
+		clauses = append(clauses, clause)
+		prefix[term.MongoField] = value
+	}
+	return clauses
+}
+
+// memoryCmpOp returns the Mongo comparison operator that seeks past a key:
+// ascending keys compare with $gt, descending with $lt — the direction flips
+// with the comparison (https://use-the-index-luke.com/sql/partial-results/
+// fetch-next-page).
+func memoryCmpOp(descending bool) string {
+	if descending {
+		return "$lt"
+	}
+	return "$gt"
+}
+
+// memorySortDocument translates the final key into the Mongo sort document
+// (Mongo field × direction).
+func memorySortDocument(sort []*domain.MemorySortTerm) bson.D {
+	document := make(bson.D, 0, len(sort))
+	for _, term := range sort {
+		direction := 1
+		if term.Descending {
+			direction = -1
 		}
-		filter["$or"] = bson.A{
-			bson.M{fieldUpdateTime: bson.M{"$lt": cursor.UpdateTime}},
-			bson.M{fieldUpdateTime: cursor.UpdateTime, fieldMemoryID: bson.M{"$gt": cursor.MemoryID}},
-		}
+		document = append(document, bson.E{Key: term.MongoField, Value: direction})
 	}
+	return document
+}
 
-	limit := int64(pageSize) + 1
-	opts := options.Find().
-		SetSort(bson.D{{Key: fieldUpdateTime, Value: -1}, {Key: fieldMemoryID, Value: 1}}).
-		SetLimit(limit)
-
-	docs, err := r.find(ctx, filter, opts)
-	if err != nil {
-		return nil, "", err
+// memoryNextPageToken encodes the page's last document position on the final
+// sort key: each document value goes through its term's CursorEntry, the only
+// place a typed cursor value becomes its wire form.
+func memoryNextPageToken(doc *memoryDocument, sort []*domain.MemorySortTerm) string {
+	var entries []*domain.MemoryCursorEntry
+	for _, term := range sort {
+		entries = append(entries, term.CursorEntry(doc.sortValue(term.Field)))
 	}
-
-	if len(docs) == 0 {
-		return nil, "", nil
-	}
-
-	nextPageToken := ""
-	if len(docs) > pageSize {
-		lastDoc := docs[pageSize-1]
-		token, err := domain.EncodeMemoryPageToken(&domain.MemoryPageCursor{
-			UpdateTime: lastDoc.UpdateTime,
-			MemoryID:   lastDoc.MemoryID,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		nextPageToken = token
-		docs = docs[:pageSize]
-	}
-
-	return memoryDocsToDomain(docs), nextPageToken, nil
+	return domain.EncodeMemoryPageToken(&domain.MemoryPageCursor{Entries: entries})
 }
 
 // find runs the cursor query and decodes the matching documents.

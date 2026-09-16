@@ -8,6 +8,7 @@ go_library(
         "model.go",
         "pagination.go",
         "repository.go",
+        "sort.go",
     ],
     importpath = "dominion/projects/game/memory/domain",
     visibility = ["//visibility:public"],
@@ -15,6 +16,9 @@ go_library(
 
 go_unittest(
     name = "domain_test",
-    srcs = ["pagination_test.go"],
+    srcs = [
+        "pagination_test.go",
+        "sort_test.go",
+    ],
     embed = [":domain"],
 )

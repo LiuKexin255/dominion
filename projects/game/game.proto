@@ -645,22 +645,26 @@ message ListMemoriesRequest {
   int32 page_size = 2;
   string page_token = 3;
   // The order to sort the results by (AIP-132 ordering:
-  // https://google.aip.dev/132). Supported values:
-  //   - "" (default): memory_id ascending — the unique-key total order, paged
-  //     by raw memory_id tokens.
-  //   - "update_time desc": update_time descending, ties broken by memory_id
-  //     ascending, so the order is a deterministic total order that does not
-  //     drift across pages. Redundant whitespace is insignificant (per
-  //     AIP-132, "update_time  desc" is equivalent).
-  // Any other value (unknown field, ascending order, multiple fields) is
+  // https://google.aip.dev/132). The value is a comma-separated list of sort
+  // terms, each "{field}" or "{field} desc" — ascending is spelled by
+  // omitting the suffix, redundant whitespace is insignificant, and the
+  // "desc" suffix is lowercase. Supported fields: "memory_id" (unique) and
+  // "update_time".
+  //
+  // The sort key is completed to a total order: a key list that contains no
+  // "memory_id" (the designated unique tie-breaker) gets "memory_id asc"
+  // appended — a key list that already includes "memory_id" (at any position)
+  // is a total order because "memory_id" is unique, so nothing is appended.
+  // The empty default resolves to "memory_id asc" through the same rule.
+  // Unsupported values (unknown field, "asc" suffix, repeated field) are
   // rejected with INVALID_ARGUMENT (AIP-193:
   // https://google.aip.dev/193).
-  // The ordering is scoped to the page_token: when continuing a listing, all
-  // other parameters — order_by included — must match the call that issued
-  // the token (AIP-158: https://google.aip.dev/158). Tokens are not
-  // interchangeable across the two modes (default-mode tokens are raw
-  // memory_id values; "update_time desc" tokens are encoded composite
-  // cursors). Contract:
+  //
+  // next_page_token encodes the final sort-key values of the page's last
+  // entry (opaque, AIP-158: https://google.aip.dev/158). When continuing a
+  // listing, order_by must resolve to the same final sort key as the call
+  // that issued the token — otherwise the token is rejected with
+  // INVALID_ARGUMENT. Contract:
   // specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1.
   string order_by = 4;
 }

@@ -15,11 +15,14 @@ type MemoryRepository interface {
 	// It returns ErrNotFound if no memory with the given id exists.
 	DeleteMemory(ctx context.Context, template, session, memoryID string) error
 	// ListMemories retrieves a page of Memories under a session in the given
-	// order (AIP-132: https://google.aip.dev/132). pageSize controls the
-	// maximum number of results; pageToken is the cursor for the next page —
-	// pass empty string for the first page. ListMemoriesOrderMemoryIDAsc pages
-	// by raw memory_id tokens; ListMemoriesOrderUpdateTimeDesc pages by
-	// composite (update_time, memory_id) tokens and returns
-	// ErrInvalidPageToken when a token cannot be decoded.
-	ListMemories(ctx context.Context, template, session string, pageSize int, pageToken string, order ListMemoriesOrder) ([]*Memory, string, error)
+	// sort key order (AIP-132: https://google.aip.dev/132). sort and cursor
+	// are already validated inputs: sort is a ParseMemoryOrderBy product
+	// (whitelisted fields completed with the tie-breaker) and cursor is a
+	// DecodeMemoryPageToken product; a nil cursor is the first page (the only
+	// criterion), and a non-nil cursor always carries non-empty typed-ready
+	// entries (its product contract). pageSize controls the maximum number of
+	// results; the returned token is empty on the last page
+	// (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
+	// item 5).
+	ListMemories(ctx context.Context, template, session string, sort []*MemorySortTerm, cursor *MemoryPageCursor, pageSize int) ([]*Memory, string, error)
 }
