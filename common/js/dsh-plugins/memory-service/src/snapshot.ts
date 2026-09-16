@@ -1,20 +1,22 @@
 /**
  * The memory snapshot: the planner's long-term memory rendered as one plain
- * text block for the system prompt, plus the prompt-section identity.
+ * text block for the system prompt, plus the prompt-section identity and the
+ * injection-policy constants the loader queries with.
  *
  * Rendering semantics follow spec 039 T017: each entry contributes exactly
- * one line and the service-internal `memory_id` is NEVER rendered — the model
- * locates entries by content through the memory tool's `old_text` substring
- * matching. An empty memory renders as the empty string, which the
- * system-prompt registry drops from the prompt entirely (empty sections do
- * not render), so no placeholder logic is needed.
+ * one line in the order the loader received it, and the service-internal
+ * `memory_id` is NEVER rendered — the model locates entries by content
+ * through the memory tool's `old_text` substring matching. An empty memory
+ * renders as the empty string, which the system-prompt registry drops from
+ * the prompt entirely (empty sections do not render), so no placeholder
+ * logic is needed.
  *
- * Injection policy per
- * specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §2: the
- * entries are ordered by `updateTime` descending (an entry without a
- * timestamp counts as the oldest), ties are broken by `memory_id` ascending
- * so the order never depends on the service's response order, and only the
- * 10 most recently updated entries are injected.
+ * Sorting and truncation are the memory service's job
+ * (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §2):
+ * `service.ts` loads one page with `SNAPSHOT_ORDER_BY` and
+ * `SNAPSHOT_ENTRY_LIMIT`, so the received page already is the most recently
+ * updated ≤10 entries in order — the renderer is a pure pass-through and
+ * never sorts, truncates, or normalizes.
  *
  * Section identity/order per
  * specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2 item 2: the
@@ -34,44 +36,31 @@ export const MEMORY_SNAPSHOT_SECTION_NAME = "memory:snapshot";
 export const MEMORY_SNAPSHOT_SECTION_ORDER = 200;
 
 /**
- * How many of the most recently updated entries the snapshot injects
- * (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §2
- * item 2). The truncation only limits the prompt injection: the memory tool
- * keeps operating on the full storage.
+ * The AIP-132 `order_by` value the snapshot loader passes to `ListMemories`:
+ * update_time descending with memory_id ascending as the tie-break — a
+ * deterministic total order, newest first
+ * (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1/§2).
  */
-const SNAPSHOT_ENTRY_LIMIT = 10;
+export const SNAPSHOT_ORDER_BY = "update_time desc";
 
 /**
- * Order two entries by recency: `updateTime` descending with `undefined`
- * (no parseable timestamp) last, ties broken by `memory_id` ascending for a
- * deterministic order.
+ * The page size the snapshot loader passes to `ListMemories`, so the injected
+ * snapshot holds the most recently updated entries at most. The limit only
+ * bounds the prompt injection: the memory tool keeps operating on the full
+ * storage (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
+ * §2).
  */
-function byRecency(a: MemoryEntry, b: MemoryEntry): number {
-  if (a.updateTime !== b.updateTime) {
-    if (a.updateTime === undefined) {
-      return 1;
-    }
-    if (b.updateTime === undefined) {
-      return -1;
-    }
-    return b.updateTime - a.updateTime;
-  }
-  if (a.memory_id === b.memory_id) {
-    return 0;
-  }
-  return a.memory_id < b.memory_id ? -1 : 1;
-}
+export const SNAPSHOT_ENTRY_LIMIT = 10;
 
 /**
- * Render the snapshot text: `长期记忆：` header plus one line per entry, or
- * the empty string when there are no entries (the section then does not
- * render at all). Entries without a parseable `updateTime` sort as the
- * oldest; the snapshot injects the 10 most recent entries only.
+ * Render the snapshot text: `长期记忆：` header plus one line per entry in the
+ * given (service-sorted) order, or the empty string when there are no entries
+ * (the section then does not render at all). Pure pass-through — no sorting,
+ * truncation, or normalization happens here.
  */
 export function renderMemorySnapshot(entries: readonly MemoryEntry[]): string {
   if (entries.length === 0) {
     return "";
   }
-  const recent = [...entries].sort(byRecency).slice(0, SNAPSHOT_ENTRY_LIMIT);
-  return `长期记忆：\n${recent.map((entry) => entry.content).join("\n")}`;
+  return `长期记忆：\n${entries.map((entry) => entry.content).join("\n")}`;
 }

@@ -4,10 +4,12 @@
  * memory scope `(template, session)`, the frozen snapshot cache, and the
  * storage access shared by the memory tool's write path.
  *
- * - `load(agentCtx, scope)` reads the whole memory scope ONCE through the
- *   injected storage client and writes the rendered snapshot into the cache,
- *   keyed by the agent (the `AssembleContext.scope` the prompt assembly
- *   passes to the snapshot section — `assembleContextFor` sets `scope: agent`,
+ * - `load(agentCtx, scope)` reads the scope's most recently updated entries
+ *   (ONE server-ordered ListMemories page — `SNAPSHOT_ORDER_BY` with
+ *   `SNAPSHOT_ENTRY_LIMIT`) through the injected storage client and writes the
+ *   rendered snapshot into the cache, keyed by the agent (the
+ *   `AssembleContext.scope` the prompt assembly passes to the snapshot
+ *   section — `assembleContextFor` sets `scope: agent`,
  *   https://unpkg.com/@deepseek-ai/dsh-agent@0.1.1-rc.2/lib/index.js). The
  *   binding is registered as an effect on `agentCtx`, so it unwinds with the
  *   agent scope. A rejection propagates (fail-loud): the materialization
@@ -34,7 +36,11 @@ import type { ScopeKey } from "@deepseek-ai/dsh-scope";
 import type { MemoryStore } from "./client.js";
 import { applyMemoryCall } from "./operations.js";
 import type { MemoryToolArgs } from "./operations.js";
-import { renderMemorySnapshot } from "./snapshot.js";
+import {
+  renderMemorySnapshot,
+  SNAPSHOT_ENTRY_LIMIT,
+  SNAPSHOT_ORDER_BY,
+} from "./snapshot.js";
 
 /**
  * The memory scope key: the business session whose memories this planner
@@ -106,8 +112,15 @@ export function createPlannerMemory(
       const key = scopeKeyOf(agentCtx);
       // The read is the fail-loud point: a rejection here must leave no
       // partial binding behind, so the maps are written only after it
-      // resolves (memory-plugin decision ⑧).
-      const entries = await client.listMemories(scope.template, scope.session);
+      // resolves (memory-plugin decision ⑧). One server-ordered page holds
+      // the most recently updated entries — sorting/truncation happen in the
+      // memory service, not here
+      // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
+      // §2).
+      const entries = await client.listMemories(scope.template, scope.session, {
+        orderBy: SNAPSHOT_ORDER_BY,
+        pageSize: SNAPSHOT_ENTRY_LIMIT,
+      });
       scopes.set(key, scope);
       snapshots.set(key, renderMemorySnapshot(entries));
       agentCtx.effect(() => () => {

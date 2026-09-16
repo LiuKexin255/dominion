@@ -697,7 +697,7 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 
 	// The add is immediately persisted: the entry is visible through the
 	// memory service's public /api/v1 route (FR-007).
-	listed := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "")
+	listed := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "")
 	found := false
 	for _, entry := range listed.GetMemories() {
 		if entry.GetContent() == teamMemoryReviewContent {

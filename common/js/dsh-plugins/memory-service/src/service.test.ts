@@ -40,7 +40,13 @@ function makeFakeStore(entries: MemoryEntry[] = []) {
         state.splice(i, 1);
       }
     }),
-    listMemories: vi.fn(async () => state.map((e) => ({ ...e }))),
+    listMemories: vi.fn(
+      async (
+        _t: string,
+        _s: string,
+        _options?: { orderBy?: string; pageSize?: number },
+      ) => state.map((e) => ({ ...e })),
+    ),
   };
 }
 
@@ -83,7 +89,10 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
 
     await service.load(ctx, SCOPE);
 
-    expect(store.listMemories).toHaveBeenCalledWith("saolei", "sess-1");
+    expect(store.listMemories).toHaveBeenCalledWith("saolei", "sess-1", {
+      orderBy: "update_time desc",
+      pageSize: 10,
+    });
     const snapshot = service.snapshot(agent);
     expect(snapshot).toBe("长期记忆：\n开局先点中心更高效\nplayer 常误标边角");
     expect(snapshot).not.toContain("m1");
@@ -174,117 +183,65 @@ describe("createPlannerMemory — load (snapshot recency)", () => {
     return service.snapshot(agent) ?? "";
   }
 
-  it("injects only the 10 most recently updated entries, newest first", async () => {
-    const entries: MemoryEntry[] = Array.from({ length: 15 }, (_unused, index) => ({
-      memory_id: `m${String(index + 1).padStart(2, "0")}`,
-      content: `条目${String(index + 1).padStart(2, "0")}`,
-      updateTime: (index + 1) * 1_000,
-    }));
-
-    const snapshot = await loadSnapshot(entries);
-
-    expect(snapshot.split("\n")).toEqual([
-      "长期记忆：",
-      ...Array.from({ length: 10 }, (_unused, index) =>
-        `条目${String(15 - index).padStart(2, "0")}`,
-      ),
+  it("loads one server-ordered page: order_by=update_time desc with page_size=10", async () => {
+    const store = makeFakeStore([
+      { memory_id: "m2", content: "次新" },
+      { memory_id: "m1", content: "最新" },
     ]);
-    for (const dropped of ["条目01", "条目02", "条目03", "条目04", "条目05"]) {
-      expect(snapshot).not.toContain(dropped);
-    }
-    expect(snapshot).not.toContain("m15");
+    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const { agent, ctx } = makeAgentScope();
+
+    await service.load(ctx, SCOPE);
+
+    expect(store.listMemories).toHaveBeenCalledTimes(1);
+    expect(store.listMemories).toHaveBeenCalledWith("saolei", "sess-1", {
+      orderBy: "update_time desc",
+      pageSize: 10,
+    });
+    expect(service.snapshot(agent)).toBe("长期记忆：\n次新\n最新");
   });
 
-  it("injects all entries in recency order when fewer than 10 exist", async () => {
-    const snapshot = await loadSnapshot([
-      { memory_id: "m-b", content: "乙", updateTime: 2_000 },
-      { memory_id: "m-a", content: "甲", updateTime: 1_000 },
-      { memory_id: "m-c", content: "丙", updateTime: 3_000 },
-    ]);
-
-    expect(snapshot).toBe("长期记忆：\n丙\n乙\n甲");
-  });
-
-  it("breaks updateTime ties by memory_id ascending (deterministic across response order)", async () => {
-    const contentById: Record<string, string> = {
-      "m-a": "甲",
-      "m-b": "乙",
-      "m-c": "丙",
-    };
-    const tied = (order: string[]): MemoryEntry[] =>
-      order.map((id) => ({
-        memory_id: id,
-        content: contentById[id],
-        updateTime: 1_000,
-      }));
-
-    const first = await loadSnapshot(tied(["m-b", "m-a", "m-c"]));
-    const second = await loadSnapshot(tied(["m-c", "m-b", "m-a"]));
-
-    expect(first).toBe("长期记忆：\n甲\n乙\n丙");
-    expect(second).toBe(first);
-  });
-
-  it("injects the first 10 entries by memory_id when every updateTime is tied (bulk import)", async () => {
-    // The combined sort-then-truncate case of
-    // specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §3:
-    // a bulk import shares one updateTime, so the window is memory_id
-    // ascending. The reversed response order proves the selection comes from
-    // the sort, not from the service's order.
+  it("renders the returned page verbatim (no client-side sorting or truncation)", async () => {
+    // The fake store returns entries in a deliberately non-memory_id order.
+    // Ordering and truncation are the loader query's job, so the snapshot is
+    // exactly the returned order and content — the client adds no sorting or
+    // second truncation of its own
+    // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
+    // §2).
     const entries: MemoryEntry[] = Array.from(
       { length: 12 },
       (_unused, index) => ({
         memory_id: `m${String(index + 1).padStart(2, "0")}`,
         content: `条目${String(index + 1).padStart(2, "0")}`,
-        updateTime: 1_000,
       }),
     ).reverse();
 
     const snapshot = await loadSnapshot(entries);
 
-    expect(snapshot.split("\n")).toEqual([
-      "长期记忆：",
-      ...Array.from({ length: 10 }, (_unused, index) =>
-        `条目${String(index + 1).padStart(2, "0")}`,
-      ),
-    ]);
-    expect(snapshot).not.toContain("条目11");
-    expect(snapshot).not.toContain("条目12");
+    expect(snapshot).toBe(
+      `长期记忆：\n${entries.map((entry) => entry.content).join("\n")}`,
+    );
   });
 
-  it("sorts entries without updateTime after dated ones and breaks their ties by id", async () => {
-    const snapshot = await loadSnapshot([
-      { memory_id: "m-z", content: "无时间乙" },
-      { memory_id: "m-new", content: "最新", updateTime: 2_000 },
-      { memory_id: "m-old", content: "无时间甲" },
-      { memory_id: "m-zero", content: "零时刻", updateTime: 0 },
+  it("keeps the loaded page frozen across later writes", async () => {
+    const store = makeFakeStore([
+      { memory_id: "m2", content: "次新" },
+      { memory_id: "m1", content: "最新" },
     ]);
-
-    expect(snapshot).toBe("长期记忆：\n最新\n零时刻\n无时间甲\n无时间乙");
-  });
-
-  it("keeps the loaded recency window frozen across later writes", async () => {
-    const entries: MemoryEntry[] = Array.from({ length: 12 }, (_unused, index) => ({
-      memory_id: `m${String(index + 1).padStart(2, "0")}`,
-      content: `条目${String(index + 1).padStart(2, "0")}`,
-      updateTime: (index + 1) * 1_000,
-    }));
-    const store = makeFakeStore(entries);
     const service = createPlannerMemory({ client: store as unknown as MemoryStore });
     const { agent, ctx } = makeAgentScope();
     await service.load(ctx, SCOPE);
     const before = service.snapshot(agent);
-    // Pin the loaded window (newest first, 10 of 12) before the freeze
-    // comparison: asserting it only through `toBe(before)` below would pass
-    // vacuously if load regressed to an empty snapshot
-    // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §2).
-    expect(before).toContain("条目12");
-    expect(before).not.toContain("条目01");
-    expect(before).not.toContain("条目02");
+    // Pin the loaded text before the freeze comparison: asserting it only
+    // through `toBe(before)` below would pass vacuously if load regressed to
+    // an empty snapshot
+    // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
+    // §2).
+    expect(before).toBe("长期记忆：\n次新\n最新");
 
     await service.applyCall(agent, { action: "add", content: "新洞察" });
 
-    expect(store.state).toHaveLength(13);
+    expect(store.state).toHaveLength(3);
     expect(service.snapshot(agent)).toBe(before);
   });
 });

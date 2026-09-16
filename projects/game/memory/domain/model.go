@@ -31,3 +31,19 @@ const DefaultListMemoriesPageSize = 100
 
 // MaxListMemoriesPageSize is the maximum allowed page size when listing memories.
 const MaxListMemoriesPageSize = 1000
+
+// ListMemoriesOrder selects the ListMemories result order (AIP-132:
+// https://google.aip.dev/132;
+// specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1).
+type ListMemoriesOrder int
+
+const (
+	// ListMemoriesOrderMemoryIDAsc is the default order: memory_id ascending,
+	// a unique-key total order paged by raw memory_id tokens. It is the zero
+	// value, so callers that do not select an order get the default behavior.
+	ListMemoriesOrderMemoryIDAsc ListMemoriesOrder = iota
+	// ListMemoriesOrderUpdateTimeDesc orders by update_time descending, ties
+	// broken by memory_id ascending — a deterministic total order paged by
+	// composite (update_time, memory_id) tokens.
+	ListMemoriesOrderUpdateTimeDesc
+)

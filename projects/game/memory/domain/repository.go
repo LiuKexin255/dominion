@@ -14,8 +14,12 @@ type MemoryRepository interface {
 	// DeleteMemory removes a Memory by template, session and memory id.
 	// It returns ErrNotFound if no memory with the given id exists.
 	DeleteMemory(ctx context.Context, template, session, memoryID string) error
-	// ListMemories retrieves a page of Memories under a session.
-	// pageSize controls the maximum number of results; pageToken is the
-	// cursor for the next page. Pass empty string for the first page.
-	ListMemories(ctx context.Context, template, session string, pageSize int, pageToken string) ([]*Memory, string, error)
+	// ListMemories retrieves a page of Memories under a session in the given
+	// order (AIP-132: https://google.aip.dev/132). pageSize controls the
+	// maximum number of results; pageToken is the cursor for the next page —
+	// pass empty string for the first page. ListMemoriesOrderMemoryIDAsc pages
+	// by raw memory_id tokens; ListMemoriesOrderUpdateTimeDesc pages by
+	// composite (update_time, memory_id) tokens and returns
+	// ErrInvalidPageToken when a token cannot be decoded.
+	ListMemories(ctx context.Context, template, session string, pageSize int, pageToken string, order ListMemoriesOrder) ([]*Memory, string, error)
 }

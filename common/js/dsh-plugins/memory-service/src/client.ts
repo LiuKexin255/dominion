@@ -29,23 +29,14 @@ export const MEMORY_SERVICE_TARGET = "dominion:///game/memory:50051";
 
 /**
  * One memory entry as returned by `listMemories`: the service's internal
- * resource id (`memory_id`), the entry text, and the normalized update time
- * the snapshot orders entries by. The id is used only for internal location
- * (replace/remove old_text matching, snapshot rendering excludes it) and MUST
- * NOT be rendered into LLM-visible text
+ * resource id (`memory_id`) and the entry text. The id is used only for
+ * internal location (replace/remove old_text matching, snapshot rendering
+ * excludes it) and MUST NOT be rendered into LLM-visible text
  * (specs/059-agent-v2-team-mode/spec.md FR-007).
  */
 export interface MemoryEntry {
   memory_id: string;
   content: string;
-  /**
-   * Entry update time as epoch milliseconds, normalized from the proto
-   * `Memory.update_time`. `undefined` when the service returned no timestamp
-   * or it could not be parsed; the snapshot then treats the entry as the
-   * oldest (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
-   * §1–§2).
-   */
-  updateTime?: number;
 }
 
 /**
@@ -61,49 +52,23 @@ export function memoryName(
 }
 
 /**
- * One decoded `ListMemoriesResponse.memories[]` wire entry (`longs: String`):
- * a missing `update_time` is materialized as `null` by proto-loader's
- * `defaults: true`
- * (https://github.com/grpc/grpc-node/blob/master/packages/proto-loader/README.md).
+ * One decoded `ListMemoriesResponse.memories[]` wire entry (`longs: String`).
  */
 interface ListedMemory {
   memoryId?: string;
   content?: string;
-  updateTime?: {
-    seconds?: string | number | null;
-    nanos?: number | null;
-  } | null;
 }
 
 /**
- * Normalize a proto `Memory.update_time` value to an epoch-milliseconds
- * integer. proto-loader runs with `longs: String`, so a
- * `google.protobuf.Timestamp` arrives as `{seconds: String, nanos: number}`,
- * and with `defaults: true` an absent `update_time` arrives as `null` (the
- * absent message field is materialized, not omitted). Unparseable values
- * (missing/empty/non-numeric seconds, non-numeric nanos) normalize to
- * `undefined` — never throw — so the snapshot degrades the entry to "oldest"
- * (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1–§2).
+ * Options for {@link MemoryStore.listMemories}. `orderBy` is forwarded to the
+ * wire as the AIP-132 `order_by` value; `pageSize` switches the call to a
+ * single-page read (see {@link MemoryStore.listMemories}).
  */
-function normalizeUpdateTime(
-  timestamp:
-    | { seconds?: string | number | null; nanos?: number | null }
-    | null
-    | undefined,
-): number | undefined {
-  if (timestamp == null) {
-    return undefined;
-  }
-  const secondsText = String(timestamp.seconds ?? "").trim();
-  const seconds = Number(secondsText);
-  if (secondsText === "" || !Number.isFinite(seconds)) {
-    return undefined;
-  }
-  const nanos = Number(timestamp.nanos ?? 0);
-  if (!Number.isFinite(nanos)) {
-    return undefined;
-  }
-  return Math.round(seconds * 1000 + nanos / 1e6);
+export interface ListMemoriesOptions {
+  /** AIP-132 order_by value; an undefined value is not sent. */
+  orderBy?: string;
+  /** Page size for a single request; an undefined value is not sent. */
+  pageSize?: number;
 }
 
 /**
@@ -127,7 +92,11 @@ export interface MemoryStore {
     content: string,
   ): Promise<void>;
   deleteMemory(template: string, session: string, memoryId: string): Promise<void>;
-  listMemories(template: string, session: string): Promise<MemoryEntry[]>;
+  listMemories(
+    template: string,
+    session: string,
+    options?: ListMemoriesOptions,
+  ): Promise<MemoryEntry[]>;
 }
 
 const TLS_CA_CERT = "/etc/tls/ca.crt";
@@ -331,40 +300,56 @@ export class MemoryClient implements MemoryStore {
   }
 
   /**
-   * List all memory entries under a session, walking every page until
-   * `next_page_token` is empty.
+   * List memory entries under a session.
+   *
+   * Without `options.pageSize` the call walks every page until
+   * `next_page_token` is empty (the write path's full-collection semantics).
+   * With `options.pageSize` the call issues exactly one request carrying
+   * `pageSize`/`orderBy` (undefined fields are not sent) and returns that
+   * first page without following `next_page_token` — page_size is the page
+   * upper bound, and a single server-ordered page is all the snapshot loader
+   * needs (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
+   * §2).
    *
    * @throws {grpc.ServiceError} Propagates gRPC errors from the service.
    */
   async listMemories(
     template: string,
     session: string,
+    options?: ListMemoriesOptions,
   ): Promise<MemoryEntry[]> {
     const parent = `templates/${template}/sessions/${session}`;
+    const singlePage = options?.pageSize !== undefined;
     const entries: MemoryEntry[] = [];
     let pageToken = "";
     do {
+      const request: {
+        parent: string;
+        pageToken?: string;
+        pageSize?: number;
+        orderBy?: string;
+      } = {
+        parent,
+        pageToken: pageToken || undefined,
+      };
+      if (options?.pageSize !== undefined) {
+        request.pageSize = options.pageSize;
+      }
+      if (options?.orderBy !== undefined) {
+        request.orderBy = options.orderBy;
+      }
       const response = await this.call<{
         memories: ListedMemory[];
         nextPageToken?: string;
-      }>((client, metadata, options, cb) =>
-        (client as any).listMemories(
-          { parent, pageToken: pageToken || undefined },
-          metadata,
-          options,
-          cb,
-        ),
+      }>((client, metadata, callOptions, cb) =>
+        (client as any).listMemories(request, metadata, callOptions, cb),
       );
       for (const m of response?.memories ?? []) {
         if (m.memoryId != null && m.content != null) {
-          entries.push({
-            memory_id: m.memoryId,
-            content: m.content,
-            updateTime: normalizeUpdateTime(m.updateTime),
-          });
+          entries.push({ memory_id: m.memoryId, content: m.content });
         }
       }
-      pageToken = response?.nextPageToken ?? "";
+      pageToken = singlePage ? "" : (response?.nextPageToken ?? "");
     } while (pageToken.length > 0);
     return entries;
   }

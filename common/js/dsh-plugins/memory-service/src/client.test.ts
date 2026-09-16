@@ -148,7 +148,7 @@ describe("MemoryClient", () => {
   });
 
   describe("listMemories", () => {
-    it("returns {memory_id, content} entries from a single page", async () => {
+    it("returns {memory_id, content} entries without options (full-accumulation mode)", async () => {
       respond(fake.listMemories, {
         memories: [
           { memoryId: "mem-a", content: "甲" },
@@ -173,75 +173,34 @@ describe("MemoryClient", () => {
       );
     });
 
-    it("normalizes update_time to epoch milliseconds (longs: String seconds + nanos)", async () => {
+    it("given pageSize, issues exactly one request with pageSize/orderBy and returns the first page", async () => {
       respond(fake.listMemories, {
-        memories: [
-          {
-            memoryId: "mem-a",
-            content: "甲",
-            updateTime: { seconds: "1757900000", nanos: 5e8 },
-          },
-        ],
-        nextPageToken: "",
+        memories: [{ memoryId: "mem-a", content: "甲" }],
+        nextPageToken: "p2",
       });
       const client = new MemoryClient(fake as never);
 
-      const entries = await client.listMemories("saolei", "sess-1");
-
-      expect(entries).toEqual([
-        { memory_id: "mem-a", content: "甲", updateTime: 1757900000500 },
-      ]);
-    });
-
-    it("keeps updateTime undefined when the entry has no update_time (proto-loader materializes it as null)", async () => {
-      respond(fake.listMemories, {
-        memories: [{ memoryId: "mem-a", content: "甲", updateTime: null }],
-        nextPageToken: "",
+      const entries = await client.listMemories("saolei", "sess-1", {
+        orderBy: "update_time desc",
+        pageSize: 10,
       });
-      const client = new MemoryClient(fake as never);
 
-      const entries = await client.listMemories("saolei", "sess-1");
-
-      expect(entries[0].updateTime).toBeUndefined();
+      expect(entries).toEqual([{ memory_id: "mem-a", content: "甲" }]);
+      expect(fake.listMemories).toHaveBeenCalledTimes(1);
+      expect(fake.listMemories).toHaveBeenCalledWith(
+        {
+          parent: "templates/saolei/sessions/sess-1",
+          pageToken: undefined,
+          pageSize: 10,
+          orderBy: "update_time desc",
+        },
+        expect.any(Object),
+        expect.any(Object),
+        expect.any(Function),
+      );
     });
 
-    it("keeps updateTime undefined for unparseable seconds (degrades to oldest, never throws)", async () => {
-      respond(fake.listMemories, {
-        memories: [
-          {
-            memoryId: "mem-a",
-            content: "甲",
-            updateTime: { seconds: "not-a-number", nanos: 0 },
-          },
-        ],
-        nextPageToken: "",
-      });
-      const client = new MemoryClient(fake as never);
-
-      const entries = await client.listMemories("saolei", "sess-1");
-
-      expect(entries[0].updateTime).toBeUndefined();
-    });
-
-    it("normalizes an explicit zero timestamp to epoch 0 (a present value, not the oldest)", async () => {
-      respond(fake.listMemories, {
-        memories: [
-          {
-            memoryId: "mem-a",
-            content: "甲",
-            updateTime: { seconds: "0", nanos: 0 },
-          },
-        ],
-        nextPageToken: "",
-      });
-      const client = new MemoryClient(fake as never);
-
-      const entries = await client.listMemories("saolei", "sess-1");
-
-      expect(entries[0].updateTime).toBe(0);
-    });
-
-    it("walks pages until next_page_token is empty", async () => {
+    it("without options walks pages until next_page_token is empty", async () => {
       fake.listMemories.mockImplementation(
         (
           req: { pageToken?: string },

@@ -12,9 +12,10 @@ import (
 
 // BSON field name constants for MongoDB documents.
 const (
-	fieldMemoryID  = "memory_id"
-	fieldTemplate  = "template"
-	fieldSessionID = "session_id"
+	fieldMemoryID   = "memory_id"
+	fieldTemplate   = "template"
+	fieldSessionID  = "session_id"
+	fieldUpdateTime = "update_time"
 )
 
 // memoryDocument stores Memory documents in MongoDB. The _id is left to the

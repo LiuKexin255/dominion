@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	game "dominion/projects/game"
@@ -145,10 +146,12 @@ func (h *Handler) DeleteMemory(ctx context.Context, req *game.DeleteMemoryReques
 }
 
 // ListMemories retrieves a paginated list of Memory resources under a session
-// (AIP-132: https://google.aip.dev/132; AIP-158 pagination:
-// https://google.aip.dev/158). page_size defaults to
+// in the requested order (AIP-132: https://google.aip.dev/132; AIP-158
+// pagination: https://google.aip.dev/158). page_size defaults to
 // domain.DefaultListMemoriesPageSize and is capped at
-// domain.MaxListMemoriesPageSize.
+// domain.MaxListMemoriesPageSize. order_by is validated against the supported
+// values ("" and "update_time desc"; whitespace-insensitive per AIP-132) —
+// specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1.
 func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesRequest) (*game.ListMemoriesResponse, error) {
 	sessName, err := game.ParseSessionName(req.GetParent())
 	if err != nil {
@@ -166,7 +169,12 @@ func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesReques
 		return nil, status.Errorf(codes.InvalidArgument, "page_size exceeds maximum of %d", domain.MaxListMemoriesPageSize)
 	}
 
-	memories, nextPageToken, err := h.memoryRepo.ListMemories(ctx, sessName.TemplateID, sessName.SessionID, pageSize, req.GetPageToken())
+	order, err := parseListMemoriesOrder(req.GetOrderBy())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	memories, nextPageToken, err := h.memoryRepo.ListMemories(ctx, sessName.TemplateID, sessName.SessionID, pageSize, req.GetPageToken(), order)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -213,6 +221,37 @@ func applyMemoryMask(patch *game.Memory, mask *fieldmaskpb.FieldMask) (string, e
 	return patch.GetContent(), nil
 }
 
+// listMemoriesOrderValues enumerates the supported ListMemories order_by
+// values (AIP-132: https://google.aip.dev/132). The syntax is compared after
+// whitespace normalization because redundant space characters are
+// insignificant per AIP-132
+// (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1).
+var listMemoriesOrderValues = []struct {
+	syntax string
+	order  domain.ListMemoriesOrder
+}{
+	{syntax: "", order: domain.ListMemoriesOrderMemoryIDAsc},
+	{syntax: "update_time desc", order: domain.ListMemoriesOrderUpdateTimeDesc},
+}
+
+// parseListMemoriesOrder validates the request's order_by and maps it to the
+// domain order. Whitespace is normalized before the match, so "update_time
+// desc" with any run of whitespace is equivalent; any unsupported value
+// returns an error listing the supported values (AIP-193:
+// https://google.aip.dev/193).
+func parseListMemoriesOrder(orderBy string) (domain.ListMemoriesOrder, error) {
+	normalized := strings.Join(strings.Fields(orderBy), " ")
+	for _, value := range listMemoriesOrderValues {
+		if normalized == value.syntax {
+			return value.order, nil
+		}
+	}
+	return domain.ListMemoriesOrderMemoryIDAsc, fmt.Errorf(
+		`order_by %q is not supported; supported values: "update_time desc" (update_time descending) and "" (memory_id ascending)`,
+		orderBy,
+	)
+}
+
 // ─── Conversion helpers ───────────────────────────────────────────────────
 
 // memoryToProto converts a domain Memory to a proto Memory.
@@ -244,6 +283,8 @@ func toStatusError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, domain.ErrAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, domain.ErrInvalidPageToken):
+		return status.Error(codes.InvalidArgument, err.Error())
 	default:
 		return status.Error(codes.Internal, fmt.Sprintf("memory handler: %v", err))
 	}

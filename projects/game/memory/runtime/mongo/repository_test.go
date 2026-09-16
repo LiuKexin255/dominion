@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"sort"
 	"testing"
@@ -141,48 +142,104 @@ func (c *memoryFakeCollection) Find(_ context.Context, filter interface{}, opts 
 		limit = *findOpts.Limit
 	}
 
-	var filtered []*memoryDocument
 	filterMap, isMap := filter.(bson.M)
 
+	var filtered []*memoryDocument
 	for _, key := range c.docsOrder {
 		doc := c.docs[key]
-
-		if isMap {
-			if tmpl, hasTmpl := filterMap[fieldTemplate]; hasTmpl {
-				if doc.Template != tmpl {
-					continue
-				}
-			}
-			if sess, hasSess := filterMap[fieldSessionID]; hasSess {
-				if doc.SessionID != sess {
-					continue
-				}
-			}
-			if gtVal, hasGT := filterMap[fieldMemoryID]; hasGT {
-				if gtMap, ok := gtVal.(bson.M); ok {
-					if gt, ok2 := gtMap["$gt"]; ok2 {
-						if doc.MemoryID <= gt.(string) {
-							continue
-						}
-					}
-				}
-			}
+		if isMap && !matchesMemoryFilter(filterMap, doc) {
+			continue
 		}
-
 		filtered = append(filtered, doc)
 	}
 
-	if len(filtered) > 1 {
-		sort.Slice(filtered, func(i, j int) bool {
-			return filtered[i].MemoryID < filtered[j].MemoryID
-		})
-	}
+	sortSpec, _ := findOpts.Sort.(bson.D)
+	sortMemoryDocs(filtered, sortSpec)
 
 	if limit > 0 && int64(len(filtered)) > limit {
 		filtered = filtered[:limit]
 	}
 
 	return &memoryFakeCursor{docs: filtered}, nil
+}
+
+// matchesMemoryFilter evaluates the filter shapes the repository builds:
+// equality on template/session_id, the raw memory_id $gt cursor of the
+// default listing, and the ordered-mode $or composite cursor predicate.
+func matchesMemoryFilter(filter bson.M, doc *memoryDocument) bool {
+	if tmpl, ok := filter[fieldTemplate]; ok && doc.Template != tmpl {
+		return false
+	}
+	if sess, ok := filter[fieldSessionID]; ok && doc.SessionID != sess {
+		return false
+	}
+	if cond, ok := filter[fieldMemoryID].(bson.M); ok {
+		if gt, ok := cond["$gt"].(string); ok && doc.MemoryID <= gt {
+			return false
+		}
+	}
+	if clauses, ok := filter["$or"].(bson.A); ok {
+		matched := false
+		for _, clause := range clauses {
+			clauseMap, ok := clause.(bson.M)
+			if ok && matchesMemoryCursorClause(clauseMap, doc) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// matchesMemoryCursorClause evaluates one branch of the ordered-mode $or
+// cursor predicate: update_time $lt, or update_time equality plus memory_id
+// $gt.
+func matchesMemoryCursorClause(clause bson.M, doc *memoryDocument) bool {
+	if cond, ok := clause[fieldUpdateTime]; ok {
+		switch v := cond.(type) {
+		case time.Time:
+			if !doc.UpdateTime.Equal(v) {
+				return false
+			}
+		case bson.M:
+			lt, ok := v["$lt"].(time.Time)
+			if !ok || !doc.UpdateTime.Before(lt) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	if cond, ok := clause[fieldMemoryID].(bson.M); ok {
+		gt, ok := cond["$gt"].(string)
+		if !ok || doc.MemoryID <= gt {
+			return false
+		}
+	}
+	return true
+}
+
+// sortMemoryDocs applies the repository's sort specs: update_time descending
+// with a memory_id ascending tie-break for the ordered listing, memory_id
+// ascending otherwise.
+func sortMemoryDocs(docs []*memoryDocument, spec bson.D) {
+	updateTimeDesc := false
+	for _, elem := range spec {
+		if elem.Key == fieldUpdateTime && elem.Value == -1 {
+			updateTimeDesc = true
+			break
+		}
+	}
+
+	sort.SliceStable(docs, func(i, j int) bool {
+		if updateTimeDesc && !docs[i].UpdateTime.Equal(docs[j].UpdateTime) {
+			return docs[i].UpdateTime.After(docs[j].UpdateTime)
+		}
+		return docs[i].MemoryID < docs[j].MemoryID
+	})
 }
 
 // memoryFakeCursor implements cursorOps with in-memory results.
@@ -236,7 +293,7 @@ func TestMemoryCreateGet(t *testing.T) {
 	}
 
 	// when - list back
-	result, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", 100, "")
+	result, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", 100, "", domain.ListMemoriesOrderMemoryIDAsc)
 
 	// then
 	if err != nil {
@@ -328,7 +385,7 @@ func TestMemoryList(t *testing.T) {
 	}
 
 	// when - first page with pageSize=2
-	result, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", 2, "")
+	result, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", 2, "", domain.ListMemoriesOrderMemoryIDAsc)
 
 	// then - first page has 2 session-1 memories (ASC: alpha, bravo) with next token
 	if err != nil {
@@ -348,7 +405,7 @@ func TestMemoryList(t *testing.T) {
 	}
 
 	// when - second page using cursor from first page
-	result2, nextToken2, err := repo.ListMemories(ctx, "saolei", "session-1", 2, nextToken)
+	result2, nextToken2, err := repo.ListMemories(ctx, "saolei", "session-1", 2, nextToken, domain.ListMemoriesOrderMemoryIDAsc)
 
 	// then - second page has 1 memory (charlie), no next token; delta excluded
 	if err != nil {
@@ -372,7 +429,7 @@ func TestMemoryListEmpty(t *testing.T) {
 	repo := newTestRepo()
 
 	// when - list a session with no memories
-	result, nextToken, err := repo.ListMemories(ctx, "saolei", "session-empty", 100, "")
+	result, nextToken, err := repo.ListMemories(ctx, "saolei", "session-empty", 100, "", domain.ListMemoriesOrderMemoryIDAsc)
 
 	// then
 	if err != nil {
@@ -421,7 +478,7 @@ func TestMemoryUpdate(t *testing.T) {
 	}
 
 	// when - re-read from repository
-	result, _, err := repo.ListMemories(ctx, "saolei", "session-1", 100, "")
+	result, _, err := repo.ListMemories(ctx, "saolei", "session-1", 100, "", domain.ListMemoriesOrderMemoryIDAsc)
 
 	// then - persisted value matches
 	if err != nil {
@@ -493,7 +550,7 @@ func TestMemoryDelete(t *testing.T) {
 	}
 
 	// when - list after delete
-	result, _, err := repo.ListMemories(ctx, "saolei", "session-1", 100, "")
+	result, _, err := repo.ListMemories(ctx, "saolei", "session-1", 100, "", domain.ListMemoriesOrderMemoryIDAsc)
 
 	// then
 	if err != nil {
@@ -519,5 +576,145 @@ func TestMemoryDeleteNotFound(t *testing.T) {
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("DeleteMemory() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestMemoryListUpdateTimeDesc(t *testing.T) {
+	ctx := context.Background()
+
+	// given - distinct update times plus a same-millisecond tie group, and one
+	// entry of another session that must stay excluded
+	repo := newTestRepo()
+	base := time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
+	memories := []*domain.Memory{
+		{Template: "saolei", SessionID: "session-1", MemoryID: "m-1", Content: "最旧", UpdateTime: base},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "m-4", Content: "并列乙", UpdateTime: base.Add(2 * time.Second)},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "m-3", Content: "并列甲", UpdateTime: base.Add(2 * time.Second)},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "m-2", Content: "中间", UpdateTime: base.Add(1 * time.Second)},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "m-5", Content: "最新", UpdateTime: base.Add(3 * time.Second)},
+		{Template: "saolei", SessionID: "session-2", MemoryID: "m-9", Content: "其他会话", UpdateTime: base.Add(4 * time.Second)},
+	}
+	for _, m := range memories {
+		if err := repo.CreateMemory(ctx, m); err != nil {
+			t.Fatalf("CreateMemory() seed unexpected error: %v", err)
+		}
+	}
+
+	// when
+	result, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", 10, "", domain.ListMemoriesOrderUpdateTimeDesc)
+
+	// then - update_time descending, the tie broken by memory_id ascending
+	if err != nil {
+		t.Fatalf("ListMemories() unexpected error: %v", err)
+	}
+	if nextToken != "" {
+		t.Fatalf("ListMemories() next_token = %q, want empty", nextToken)
+	}
+	wantIDs := []string{"m-5", "m-3", "m-4", "m-2", "m-1"}
+	if len(result) != len(wantIDs) {
+		t.Fatalf("ListMemories() got %d memories, want %d", len(result), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if result[i].MemoryID != want {
+			t.Fatalf("ListMemories()[%d] memory_id = %q, want %q", i, result[i].MemoryID, want)
+		}
+	}
+}
+
+func TestMemoryListUpdateTimeDescPagination(t *testing.T) {
+	ctx := context.Background()
+
+	// given - 5 entries whose tie group (t2: a, b) spans a page boundary
+	repo := newTestRepo()
+	t0 := time.Date(2026, 9, 16, 11, 0, 0, 0, time.UTC)
+	t1 := t0.Add(time.Second)
+	t2 := t0.Add(2 * time.Second)
+	memories := []*domain.Memory{
+		{Template: "saolei", SessionID: "session-1", MemoryID: "b", Content: "并列乙", UpdateTime: t2},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "d", Content: "最旧", UpdateTime: t0},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "a", Content: "并列甲", UpdateTime: t2},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "e", Content: "中间乙", UpdateTime: t1},
+		{Template: "saolei", SessionID: "session-1", MemoryID: "c", Content: "中间甲", UpdateTime: t1},
+	}
+	for _, m := range memories {
+		if err := repo.CreateMemory(ctx, m); err != nil {
+			t.Fatalf("CreateMemory() seed unexpected error: %v", err)
+		}
+	}
+
+	// when - walk every page with page_size=2
+	var pageSizes []int
+	var gotIDs []string
+	pageToken := ""
+	for {
+		page, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", 2, pageToken, domain.ListMemoriesOrderUpdateTimeDesc)
+		if err != nil {
+			t.Fatalf("ListMemories() page unexpected error: %v", err)
+		}
+		pageSizes = append(pageSizes, len(page))
+		for _, m := range page {
+			gotIDs = append(gotIDs, m.MemoryID)
+		}
+		pageToken = nextToken
+		if pageToken == "" {
+			break
+		}
+	}
+
+	// then - 2/2/1 pages, every entry exactly once, the total order preserved
+	// across the composite cursor
+	wantPageSizes := []int{2, 2, 1}
+	if len(pageSizes) != len(wantPageSizes) {
+		t.Fatalf("ListMemories() produced %d pages, want %d", len(pageSizes), len(wantPageSizes))
+	}
+	for i, want := range wantPageSizes {
+		if pageSizes[i] != want {
+			t.Fatalf("ListMemories() page %d size = %d, want %d", i+1, pageSizes[i], want)
+		}
+	}
+	wantIDs := []string{"a", "b", "c", "e", "d"}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("ListMemories() returned %d entries in total, want %d", len(gotIDs), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if gotIDs[i] != want {
+			t.Fatalf("ListMemories() entry %d = %q, want %q", i, gotIDs[i], want)
+		}
+	}
+}
+
+func TestMemoryListUpdateTimeDescInvalidPageToken(t *testing.T) {
+	ctx := context.Background()
+
+	mustB64 := func(v string) string {
+		return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(v))
+	}
+
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{name: "non-base64 token", token: "!!!not-base64!!!"},
+		{name: "base64 JSON missing update_time", token: mustB64(`{"memory_id":"m-1"}`)},
+		{name: "base64 JSON with unparseable update_time", token: mustB64(`{"update_time":"not-a-time","memory_id":"m-1"}`)},
+		{name: "default-mode raw memory_id token", token: "m-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			repo := newTestRepo()
+
+			// when
+			_, _, err := repo.ListMemories(ctx, "saolei", "session-1", 10, tt.token, domain.ListMemoriesOrderUpdateTimeDesc)
+
+			// then
+			if err == nil {
+				t.Fatalf("ListMemories() expected error, got nil")
+			}
+			if !errors.Is(err, domain.ErrInvalidPageToken) {
+				t.Fatalf("ListMemories() error = %v, want ErrInvalidPageToken", err)
+			}
+		})
 	}
 }

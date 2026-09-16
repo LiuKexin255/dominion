@@ -19,6 +19,12 @@ import (
 type inMemoryMemoryRepo struct {
 	mu       sync.Mutex
 	memories map[string]*domain.Memory
+	// listOrder records the order of the most recent ListMemories call so the
+	// handler tests can assert the parsed order_by is passed through.
+	listOrder domain.ListMemoriesOrder
+	// listErr, when set, is returned by ListMemories instead of a result so
+	// the handler tests can assert the error mapping.
+	listErr error
 }
 
 func newInMemoryMemoryRepo() *inMemoryMemoryRepo {
@@ -65,9 +71,13 @@ func (r *inMemoryMemoryRepo) DeleteMemory(_ context.Context, template, session, 
 	return nil
 }
 
-func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, session string, _ int, _ string) ([]*domain.Memory, string, error) {
+func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, session string, _ int, _ string, order domain.ListMemoriesOrder) ([]*domain.Memory, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.listOrder = order
+	if r.listErr != nil {
+		return nil, "", r.listErr
+	}
 	result := make([]*domain.Memory, 0, len(r.memories))
 	for _, m := range r.memories {
 		if m.Template == template && m.SessionID == session {
@@ -422,6 +432,107 @@ func TestMemoryService_ListMemoriesPagination(t *testing.T) {
 	}
 }
 
+func TestMemoryService_ListMemoriesOrderBy(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		orderBy   string
+		wantOrder domain.ListMemoriesOrder
+		wantErr   bool
+	}{
+		{
+			name:      "empty order_by uses the default memory_id ascending order",
+			orderBy:   "",
+			wantOrder: domain.ListMemoriesOrderMemoryIDAsc,
+		},
+		{
+			name:      "update_time desc selects the recency order",
+			orderBy:   "update_time desc",
+			wantOrder: domain.ListMemoriesOrderUpdateTimeDesc,
+		},
+		{
+			name:      "redundant whitespace is insignificant",
+			orderBy:   "  update_time   desc  ",
+			wantOrder: domain.ListMemoriesOrderUpdateTimeDesc,
+		},
+		{
+			name:      "tabs count as redundant whitespace",
+			orderBy:   "update_time\tdesc",
+			wantOrder: domain.ListMemoriesOrderUpdateTimeDesc,
+		},
+		{
+			name:    "unknown field is rejected",
+			orderBy: "foo",
+			wantErr: true,
+		},
+		{
+			name:    "ascending order is rejected",
+			orderBy: "update_time",
+			wantErr: true,
+		},
+		{
+			name:    "explicit ascending modifier is rejected",
+			orderBy: "update_time asc",
+			wantErr: true,
+		},
+		{
+			name:    "memory_id ordering is rejected",
+			orderBy: "memory_id",
+			wantErr: true,
+		},
+		{
+			name:    "multiple fields are rejected",
+			orderBy: "update_time desc, memory_id",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			repo := newInMemoryMemoryRepo()
+			h := NewHandler(repo)
+
+			// when
+			_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{
+				Parent:  "templates/saolei/sessions/session-1",
+				OrderBy: tt.orderBy,
+			})
+
+			// then
+			if tt.wantErr {
+				assertStatusCode(t, err, codes.InvalidArgument)
+				return
+			}
+			assertStatusCode(t, err, codes.OK)
+			if repo.listOrder != tt.wantOrder {
+				t.Fatalf("ListMemories() order = %v, want %v", repo.listOrder, tt.wantOrder)
+			}
+		})
+	}
+}
+
+func TestMemoryService_ListMemoriesInvalidPageToken(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newInMemoryMemoryRepo()
+	repo.listErr = domain.ErrInvalidPageToken
+	h := NewHandler(repo)
+
+	// when - an ordered listing continues with a token the repository cannot
+	// decode
+	_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{
+		Parent:    "templates/saolei/sessions/session-1",
+		PageToken: "not-a-token",
+		OrderBy:   "update_time desc",
+	})
+
+	// then
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
 func Test_toStatusError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -437,6 +548,11 @@ func Test_toStatusError(t *testing.T) {
 			name:     "ErrAlreadyExists maps to AlreadyExists",
 			err:      domain.ErrAlreadyExists,
 			wantCode: codes.AlreadyExists,
+		},
+		{
+			name:     "ErrInvalidPageToken maps to InvalidArgument",
+			err:      domain.ErrInvalidPageToken,
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "unknown error maps to Internal",
