@@ -54,21 +54,22 @@
 - 成员视图：消费成员的 log 内为 `user/message`（`source {kind: "team-broadcast", role: "saolei", senderSessionId: "…/saolei", messageId: 发言锚}`）→ `MemberViewEntry {sender: "saolei"}` + `member_view` 帧（既有路径，非新通路）。
 - **不变量**：每个被交接的局至多一条（编排 `statsSentFor` guard + MessageId 唯一）；`GetTeam.members`/`active_member` 不含 `saolei`。
 
-### 1.5 记忆列表排序 — ListMemories `order_by`（memory 服务）+ 快照单页装载（JS 客户端）
+### 1.5 记忆列表排序 — ListMemories 通用排序机制（memory 服务）+ 快照单页装载（JS 客户端）
 
-契约：[contracts/memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §1–§2。
+契约：[contracts/memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §1–§2。排序是一套通用机制（语法 → 白名单映射 → 唯一键收尾 → 通用游标 → 单路径仓储），不为单个排序需求定制。
 
 | 实体 | 位置 | 说明 |
 |---|---|---|
-| `ListMemoriesRequest.order_by` | `projects/game/game.proto` | `string order_by = 4`（AIP-132）。缺省 = `memory_id` 升序（现行为零破坏）；`update_time desc`（空白不敏感）= `update_time` 降序 + `memory_id` 升序并列打破；其他值 INVALID_ARGUMENT |
-| `ListMemoriesOrder` | `projects/game/memory/domain` | 两值枚举（memory_id 升序 / update_time 降序）；`MemoryRepository.ListMemories` 增 order 参数 |
-| `MemoryPageCursor` | `projects/game/memory/domain` | 复合游标 `{UpdateTime time.Time, MemoryID string}`；`EncodeMemoryPageToken`/`DecodeMemoryPageToken` base64url(NoPadding)-JSON、`update_time` UTC RFC3339Nano（镜像 session 服务 `ListPageCursor` 先例 `projects/game/session/domain/pagination.go`）；解码失败 → `ErrInvalidPageToken` → handler 映射 INVALID_ARGUMENT |
-| Mongo 排序/索引 | `projects/game/memory/runtime/mongo` | ordered：sort `{update_time: -1, memory_id: 1}` + 续页 `$or [{update_time < T}, {update_time = T, memory_id > M}]` + limit+1；启动建非唯一索引 `{template: 1, session_id: 1, update_time: -1, memory_id: 1}` |
+| `ListMemoriesRequest.order_by` | `projects/game/game.proto` | `string order_by = 4`（AIP-132）：逗号分隔 `{field} [desc]` 列表、空白不敏感、升序省略后缀；缺省 = `memory_id` 升序（经收尾规则推导，非特设分支） |
+| `MemorySortTerm` | `projects/game/memory/domain/sort.go` | 最终排序键元素 `{Field string, Descending bool}`；`ListMemories` 仓储签名携带 `sort []MemorySortTerm` |
+| `MemorySortFieldSpec` + 白名单 | `projects/game/memory/domain/sort.go` | 单一事实源映射表：API 字段 → `{MongoField, Kind(string/time), Unique}`；首期 `memory_id`（唯一）、`update_time`；`ParseMemoryOrderBy` 一步产出最终排序键（语法 + 白名单 + 重复校验 + 唯一键收尾：未以唯一字段收尾自动追加 `memory_id asc`）；非法 → INVALID_ARGUMENT（错误列受支持字段） |
+| `MemoryPageCursor` | `projects/game/memory/domain/pagination.go` | 通用游标：最终排序键的字段序列 + 页末条目键值（时间 RFC3339Nano、类型按白名单声明解码）；`EncodeMemoryPageToken`/`DecodeMemoryPageToken` base64url(NoPadding)-JSON；不编码方向（方向由续页 `order_by` 推导）；解码字段序列与当前最终排序键不匹配 → `ErrInvalidPageToken` → INVALID_ARGUMENT（AIP-158 参数一致） |
+| Mongo 单路径查询 | `projects/game/memory/runtime/mongo` | 一套流程：sort spec（白名单 MongoField × 方向）→ 键匹配 → 通用 OR 阶梯（前缀相等 + 当前键 `$gt`(asc)/`$lt`(desc)）→ limit+1 → 页满编码 next token；`memoryDocument.sortValue(field)` accessor；启动建非唯一索引 `{template: 1, session_id: 1, update_time: -1, memory_id: 1}`（唯一索引 `(template, session_id, memory_id)` 支撑缺省序）；索引义务：新增字段 = 一行映射 + 一行 accessor + 按消费方向建复合索引 |
 | `listMemories` options | `common/js/dsh-plugins/memory-service/src/client.ts` | 可选 `{orderBy?, pageSize?}`；`pageSize` 给定 → 单页即止，未给定 → 全页累积（写路径现行为）。`MemoryEntry` 仅 `{memory_id, content}` |
 | 快照装载/渲染 | `common/js/dsh-plugins/memory-service/src/{service,snapshot}.ts` | `load` 以 `{orderBy: "update_time desc", pageSize: 10}` 单页取最近 10 条（`SNAPSHOT_ORDER_BY`/`SNAPSHOT_ENTRY_LIMIT` 常量归 snapshot.ts）；`renderMemorySnapshot` 纯透传渲染（`memory_id` 永不渲染、空集空串——既有语义） |
 
-- **快照序**：最近更新的 ≤10 条、最新在前、确定（同毫秒并列以 `memory_id` 升序打破）——由服务端排序保证，客户端不排序/不截断。
-- **零变化面**：memory 工具写路径（`applyMemoryCall` 的 old_text 定位面向全量存储、不传 order_by）、快照冻结时机（物化预取、实例生命周期固定）、前端。
+- **快照序**：最近更新的 ≤10 条、最新在前、确定（同毫秒并列以 `memory_id` 升序打破——收尾规则）——由服务端排序保证，客户端不排序/不截断。
+- **零变化面**：memory 工具写路径（`applyMemoryCall` 的 old_text 定位面向全量存储、不传 order_by）、快照冻结时机（物化预取、实例生命周期固定）、前端；缺省（空 `order_by`）排序结果与翻页语义同前，`next_page_token` 形态为通用编码（不透明、客户端只透传）。
 
 ## 2. 状态转移（终局交接路径增量）
 

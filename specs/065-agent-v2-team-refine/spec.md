@@ -151,6 +151,6 @@ team section（全员共享的团队提示词）补充说明：`<角色-message>
 - **消息内容仅 Input 所列 a/b/c 三项**：既有统计字段（correctFlags/avgOpsPerMine）与对局时长等不进入消息正文；消息语言与措辞由 plan 决定（面向模型与用户可读）。
 - **系统角色 wire 标签为 `saolei`**（2026-09-15 裁定，编码于 FR-001）：与既有 role 词汇同构（小写英文 token），中文"扫雷系统"由 roster 摘要与消息正文承载；经广播标签名规范化无歧义（`<saolei-message>`）。
 - **本 feature 修订 059 FR-009/FR-010 的表述边界**：驱动输入仍 = 成员未消费的团队消息 + 排队用户消息；扫雷系统的统计消息是**系统产生的团队消息**（非编排层以 LLM 成员名义合成的驱动内容），经既有广播/消费机制进入驱动输入——059 的"编排不合成驱动消息"约束在"消息的发送者是系统角色本身"意义上保持。
-- **memory List 排序归属服务端**（2026-09-16 用户裁定）：`ListMemories` 增 `order_by`（AIP-132，支持 `update_time desc`，缺省 `memory_id` 升序零破坏），快照装载以 `page_size=10 + order_by` 单页取最近 10 条——客户端不得全量拉取后自排序；契约见 `specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md` §1。
+- **memory List 排序归属服务端、机制通用**（2026-09-16 两次用户裁定）：`ListMemories` 增 `order_by`（AIP-132 `{field} [desc]` 通用语法 + 字段白名单映射 `memory_id`/`update_time` + 唯一键收尾 tie-breaker + 通用游标 + 单路径仓储——不为单个排序需求定制方法/字面量/游标），缺省 `memory_id` 升序零破坏；快照装载以 `page_size=10 + order_by` 单页取最近 10 条——客户端不得全量拉取后自排序；契约见 `specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md` §1。
 - **快照截断不标注条目总数**：注入文本不附加"共 N 条，显示最近 10 条"类元信息（保持纯条目列表的既有形态）。
 - **测试基建联动**：fake-llm 夹具与 agent_v2 大型测试断言随播报语义同批更新（constitution 原则 VI：大型测试全量通过作为验收）。

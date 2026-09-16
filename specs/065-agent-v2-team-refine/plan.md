@@ -6,7 +6,7 @@
 
 ## Summary
 
-三块优化：(1) saolei team 新增"扫雷系统"系统角色（role `saolei`，非 LLM、非物化成员），在终局交接路径（player 回合收束 → planner 复盘前）播报本局统计消息（结果 + 单个操作总数 + click/flag/chord 分项数），全体真实成员消费，排队消化优先序与"被跳过局不补发"语义继承自既有 `nextStep()` 分支结构；(2) planner 记忆快照按条目更新时间倒排、仅注入最近 10 条——排序由 memory 服务 `ListMemories` 的 `order_by`（AIP-132）承担，JS 客户端以 `page_size=10 + order_by=update_time desc` 单页装载（2026-09-16 用户裁定：List 接口提供排序，客户端不得全量拉取后自排序）；(3) team section 提示词补两处——广播标签格式仅输入侧呈现（成员自身输出不自我包装）+ roster 含 saolei 行。
+三块优化：(1) saolei team 新增"扫雷系统"系统角色（role `saolei`，非 LLM、非物化成员），在终局交接路径（player 回合收束 → planner 复盘前）播报本局统计消息（结果 + 单个操作总数 + click/flag/chord 分项数），全体真实成员消费，排队消化优先序与"被跳过局不补发"语义继承自既有 `nextStep()` 分支结构；(2) planner 记忆快照按条目更新时间倒排、仅注入最近 10 条——排序由 memory 服务 `ListMemories` 的**通用排序机制**承担（AIP-132 `{field} [desc]` 语法 + 字段白名单映射 + 唯一键收尾 + 通用游标 + 单路径仓储，2026-09-16 两次用户裁定），JS 客户端以 `page_size=10 + order_by=update_time desc` 单页装载；(3) team section 提示词补两处——广播标签格式仅输入侧呈现（成员自身输出不自我包装）+ roster 含 saolei 行。
 
 技术方案（详见 [research.md](research.md)）：**team 插件定义成员消息源接口（`TeamMemberSource`，依赖倒置）**——成员（agent 或非 agent）实现该接口提供消息（`events` 为共享事件词汇表的 log），team 的派生/渲染/消费闭包全复用、不感知成员种类；agent 经 `agentMemberSource` 适配器接入（现有语义零变化）。扫雷系统成员（`SaoleiSystemMember`，saolei-loop 实现）持**内存 log**（`assistant/message` 形态事件，随物化清零——与 agent 成员 log 实际行为对齐），以常规 announce-only 成员注册（roster 自然渲染）；统计触发落在 orchestrator `nextStep()` 终局分支（`announce` 先于 `drain(planner)`，`statsSentFor` 记录级 guard 保证 exactly-once）；宿主经 `orchestrator.announcer` 订阅其产出追加 merge/`team_message`（与 MemberCollector 订阅 agent 事件同构的投影路径）。
 
@@ -83,11 +83,13 @@ common/js/dsh-plugins/
     └── service.ts       # load 以 {orderBy, pageSize: 10} 单页装载最近 10 条
 
 projects/game/
-├── game.proto           # ListMemoriesRequest 增 string order_by = 4（AIP-132；缺省 memory_id 升序零破坏）
+├── game.proto           # ListMemoriesRequest 增 string order_by = 4（AIP-132 通用语法 + 白名单 + 唯一键收尾 + token 键匹配注释）
 └── memory/
-    ├── domain/          # ListMemoriesOrder + MemoryPageCursor + token codec（pagination.go 新）+ ErrInvalidPageToken + 仓储签名
-    ├── handler/handler.go  # order_by 解析校验 + ErrInvalidPageToken → INVALID_ARGUMENT
-    └── runtime/mongo/repository.go  # ordered 复合游标 $or + sort {update_time:-1, memory_id:1} + 启动建复合索引
+    ├── domain/          # sort.go（新）：MemorySortTerm + MemorySortFieldSpec 白名单映射表 + ParseMemoryOrderBy；
+    │                    # pagination.go：通用游标 codec（字段序列 + 类型化键值）；ErrInvalidPageToken + 仓储签名 sort []MemorySortTerm
+    ├── handler/handler.go  # order_by → domain.ParseMemoryOrderBy；解析错误/ErrInvalidPageToken → INVALID_ARGUMENT（无排序知识）
+    └── runtime/mongo/repository.go  # 单路径 ListMemories：通用 sort spec + 键匹配 + OR 阶梯 + limit+1 + 游标构造；
+                                     # 启动建复合索引（既有唯一索引不变）
 
 projects/game/agent_v2/src/
 ├── session.ts           # doMaterialize 订阅 orchestrator.announcer 产出 → appendAnnouncement（teardown 退订）
@@ -96,7 +98,7 @@ projects/game/agent_v2/src/
 projects/game/testplan/
 ├── agent_v2_game_test.go         # 终局统计播报断言（内容/条数/消费面）
 ├── agent_v2_conversation_test.go # 排队跳局场景断言（按现有用例归属扩展）
-└── memory_test.go + helpers_test.go  # 有序列表端到端断言（排序/复合游标续页/非法 order_by 400）
+└── memory_test.go + helpers_test.go  # 有序列表端到端断言（通用语法正路径/排序/复合游标续页/非法 order_by 400）
 ```
 
 **Structure Decision**: 复用既有三插件 + 宿主布局（team / saolei-loop / memory-service / agent_v2 / testplan），无新目录；`node_modules` 符号链接与 `BUILD.bazel` 由 gazelle 维护（AGENTS.md 流程）。

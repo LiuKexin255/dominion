@@ -2,7 +2,7 @@
 
 **Feature**: specs/065-agent-v2-team-refine/spec.md
 **Date**: 2026-09-16
-**方法**: 源码级调研（本地物化依赖 0.1.1-rc.2 + 本仓库插件/宿主/服务源码），无外部新依赖引入。所有行号锚点以当前 `main` 工作树为准。
+**方法**: 源码级调研（本地物化依赖 0.1.1-rc.2 + 本仓库插件/宿主/服务源码），无外部新依赖引入；排序通用化部分补充外部规范与社区实践调研（AIP-132/158/193、seek method、MongoDB keyset 实践、Firestore/Elasticsearch/Relay 先例，见 R0，引用均为完整 URL）。所有行号锚点以当前 `main` 工作树为准。
 
 ## R0. 关键机制核实（决策前提）
 
@@ -15,7 +15,14 @@
 - **跳局语义即 case 1 优先序 + 终局记录单槽覆盖**：排队消息先驱动 player（current=player）；player 开新局致终局时 runtime 的 `gameEvent` 被新记录覆盖（`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts:302-310` 仅持 LATEST）——旧局交接永不发生 → 不播报即跳过，零补发逻辑。
 - **proto 会话面零改动可行**：`TeamMessage.member` 为 string（wire 直通）；web 团队视图按 wire 角色串直接渲染（`projects/game/web/frontend/src/components/ChatView.tsx:204-210`）；成员视图注入按 `source.role` 标注（`projects/game/agent_v2/src/history.ts:404-423`）。role `saolei` 全链路透传，前端零改动（D7）。
 - **memory 排序归属服务端**（2026-09-16 用户裁定）：快照的"按 `update_time` 取最近 10 条"由 List 接口的排序能力承担，客户端不得全量拉取后自排序。proto `Memory.update_time`（OUTPUT_ONLY，`projects/game/game.proto:158`）已由 `memoryToProto` 返回（`projects/game/memory/handler/handler.go:219-234`）；`ListMemoriesRequest` 需增 `order_by`（AIP-132）。
-- **session 服务已含复合游标倒序分页先例**：`ListSessions` 按 `create_time DESC, session_id DESC` 排序，`ListPageCursor{CreateTime, SessionID}` 经 `EncodePageToken`/`DecodePageToken`（base64url NoPadding JSON、RFC3339Nano）编解码（`projects/game/session/domain/pagination.go`），仓储以 `$or` 续页过滤 + 启动建复合索引（`projects/game/session/runtime/mongo/repository.go:88-99,144-200`），handler 对坏 token 映射 INVALID_ARGUMENT（`projects/game/session/handler/handler.go:143-150`）——memory 的 ordered 模式可直接镜像该模式。
+- **session 服务已含复合游标倒序分页先例**：`ListSessions` 按 `create_time DESC, session_id DESC` 排序，`ListPageCursor{CreateTime, SessionID}` 经 `EncodePageToken`/`DecodePageToken`（base64url NoPadding JSON、RFC3339Nano）编解码（`projects/game/session/domain/pagination.go`），仓储以 `$or` 续页过滤 + 启动建复合索引（`projects/game/session/runtime/mongo/repository.go:88-99,144-200`），handler 对坏 token 映射 INVALID_ARGUMENT（`projects/game/session/handler/handler.go:143-150`）。该先例是**单一排序形态的固定复合游标**（形状 `(create_time, session_id)` 写死于 codec 与仓储）；memory 通用化后，"游标 = 最终排序键的值序列"机制是它的泛化——session 先例保持只读参考，不追溯改造（单排序服务无泛化收益，见 D4）。
+- **排序通用化社区调研（2026-09-16 第二次用户裁定："充分调研社区最佳实践"）**：
+  - **AIP-132 Ordering**（https://google.aip.dev/132）：`order_by` 为逗号分隔字段列表，每字段可选 `" desc"` 后缀，升序通过省略后缀表达；"Redundant space characters in the syntax are insignificant"（`"foo, bar desc"` ≡ `"foo,bar desc"`）；Timestamp 按时间自然序比较。
+  - **AIP-158 Pagination**（https://google.aip.dev/158）：token MUST opaque（URL-safe）；"When paginating, all other parameters provided to ListBooks must match the call that provided the page token"（不一致 SHOULD `INVALID_ARGUMENT`）；`page_size` 续页可变 MUST 尊重；无敏感数据时 MAY 以"内部 proto + base64"混淆 token。
+  - **seek method / keyset pagination**（use-the-index-luke "Paging Through Results"，https://use-the-index-luke.com/sql/partial-results/fetch-next-page）："Paging requires a deterministic sort order"——功能上只要求"按时间倒序"也 MUST 给 `order by` 追加唯一列建立确定行序；行值比较 `(a, b) < (x, y)` 的标准定义（前缀全等 + 当前键按序比较）即"X sorts before Y"；不支持行值比较的库用 **OR 阶梯** `sale_date < ? OR (sale_date = ? AND sale_id < ?)` 等价展开；换浏览方向需反转全部比较与排序（`$lt`/`$gt` 随方向翻转）。Vlad Mihalcea 的 keyset 文章（https://vladmihalcea.com/sql-seek-keyset-pagination/）同型：`ORDER BY created_on DESC, id DESC` + `(created_on, id) < (...)` + 匹配复合索引。
+  - **MongoDB keyset 社区实践**：mongo-keyset-pagination（https://github.com/Guy-Meridor/mongo-keyset-pagination）——"Your sort must define a total order. End it with a field that is unique per document... If the leading fields can tie and there is no unique tie-breaker, keyset pagination will silently skip or duplicate rows at page boundaries"；"sort keys must be backed by a compound index in the same order"。Brian Pfretzschner（https://brianp.de/posts/2024/mongodb-cursor-pagination-multiple-fields/）给出 Mongo 的复合游标 OR 阶梯标准形：`$or: [{a: {$gt: cur.a}}, {a: cur.a, b: {$gt: cur.b}}]` + `.sort({a:1, b:1})`。Guy Meridor 的实践文章（https://medium.com/@guymeridor1/how-keyset-pagination-made-our-most-used-api-over-100x-faster-for-large-datasets-on-mongodb-bdfaa03052f6）：游标取页末条目的排序字段值打包 base64；条件树 = 前缀相等 + 当前键方向比较（比较算子由排序方向×翻页方向决定）；limit+1 探测下一页；排序字段 MUST 含唯一字段。
+  - **MongoDB 官方索引规则**（https://www.mongodb.com/docs/v7.0/tutorial/sort-results-with-indexes/）：复合索引 `{a:1, b:-1}` 只支撑同序 `{a:1,b:-1}` 与逆序 `{a:-1,b:1}` 的 sort；sort 键序必须与索引键序一致；"In `$or` queries, MongoDB may use multiple indexes to support a single sort operation"（OR 阶梯的每支可各自走索引）。ESR（https://www.mongodb.com/docs/manual/tutorial/equality-sort-range-guideline/）：等值键在前、排序键随后。
+  - **工业先例**：Firestore 查询游标（https://cloud.google.com/firestore/docs/query-data/query-cursors 与 https://cloud.google.com/firestore/docs/reference/rest/v1/StructuredQuery）——`startAfter` 取 orderBy 各字段的值（"The order of the field values must match the order of the order by clauses"）；Standard edition 对 orderBy **缺省自动追加唯一键 `__name__`**（"`ORDER BY a` becomes `ORDER BY a ASC, __name__ ASC`"）——唯一键自动收尾的直接工业先例。Elasticsearch `search_after`（https://www.elastic.co/guide/en/elasticsearch/reference/8.19/paginate-search-results.html）——游标 = 上一页末条的 sort 值数组；"we recommend that you include a tiebreaker field in your sort... unique value for each document. If you don't, your paged results could miss or duplicate hits"；PIT 下自动追加 `_shard_doc` 隐式 tiebreaker。GraphQL Relay Cursor Connections（https://relay.dev/graphql/connections.htm）——cursor 为 opaque per-edge 字符串（编码该边的排序位置）、"The ordering must be consistent from page to page"。
 
 ## 决策清单
 
@@ -46,11 +53,17 @@
 - **Rationale**: `GameStats` 就是"每局定量统计"实体（`common/js/dsh-plugins/saolei-loop/src/game/board.ts:177-186`）；计数器模式与 `operationCount` 一致。
 - **Alternatives considered**: 播报时从 `gameLog` 重放推导——口径绑死日志结构；放 `GameEventRecord` 顶层——归属不如 stats 内聚。
 
-### D4: 记忆快照近因注入——ListMemories 服务端排序，客户端单页取最近 10 条（2026-09-16 用户裁定）
+### D4: 记忆快照近因注入——ListMemories 通用排序机制（白名单映射 + 唯一键收尾 + 通用游标 + 单路径仓储；2026-09-16 两次用户裁定）
 
-- **Decision**: `ListMemoriesRequest` 增 `string order_by = 4`（AIP-132: https://google.aip.dev/132）：缺省 = `memory_id` 升序 + raw `memory_id` 游标（现行为零破坏）；`update_time desc`（空白不敏感）= `update_time` 降序 + `memory_id` 升序并列打破，`next_page_token` 为复合游标 `(update_time, memory_id)` 的 base64url-JSON 编码、`$or` 续页过滤（镜像 session 服务先例，R0）；非法值与坏 token → INVALID_ARGUMENT。仓储启动建非唯一索引 `{template, session_id, update_time: -1, memory_id: 1}`。JS `listMemories` 增可选 `{orderBy, pageSize}`（`pageSize` 给定单页即止，未给定全页累积）；快照装载 `page_size=10 + order_by=update_time desc` 单页取最近 10 条；`renderMemorySnapshot` 纯透传渲染；`MemoryEntry` 收缩为 `{memory_id, content}`。写路径与快照冻结时机零改动。契约：`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md`。
-- **Rationale**: 排序/截取是集合的服务端职责（2026-09-16 用户裁定：List 接口提供排序，客户端不得全量拉取后自排序）——服务端排序使快照装载只传输需要的一页；AIP-132 `order_by` 是标准机制，`update_time desc` 单值子集即满足当前唯一消费者（快照装载），后续扩展语法子集不破坏契约；复合游标、`$or` 续页、启动建索引均有 session 服务仓库内先例，风险收敛。
-- **Alternatives considered**: 客户端全量拉取后自排序截断（2026-09-16 用户裁定否决——全量拉取浪费传输且排序属服务职责）；服务端专门"最近 N 条"非标准限制面（否决——AIP-158 `page_size` 既有机制组合 `order_by` 即得，不新增非标准参数）；受限枚举/bool 排序字段（否决——偏离 AIP-132 的 `string order_by` 惯例，扩展需改字段类型）。
+- **Decision**: `ListMemoriesRequest` 的 `string order_by = 4` 按 **AIP-132 通用语法**解析（`{field} [desc]` 逗号分隔列表、空白不敏感、升序省略后缀），对**字段白名单映射表**（API 字段 → Mongo 字段，domain 单一事实源；首期 `memory_id`/`update_time`）校验，未知字段/非法后缀/重复字段 → INVALID_ARGUMENT。**唯一键收尾规则**：排序键未以唯一字段（`memory_id`）收尾时自动追加 `memory_id asc`（确定全序）；`memory_id` 仅可处于末位；缺省（空 `order_by`）= 空键列表经收尾规则 = `memory_id` 升序——无缺省分支。**通用游标**：`next_page_token` 编码页末条目在最终排序键上的全部键值（base64url-JSON 数组 `[{field, value}]`，时间 RFC3339Nano，类型由白名单声明解释），不编码方向（token = 位置，方向由续页请求的 `order_by` 推导）；解码字段序列与当前请求最终排序键不匹配 → INVALID_ARGUMENT（AIP-158 参数一致的强制）。**单路径仓储**：`ListMemories(ctx, template, session, sort []MemorySortTerm, pageSize, pageToken)` 一套流程（sort spec → 键匹配 → 通用 OR 阶梯（前缀相等 + 方向感知比较）→ limit+1 → 游标编码），无 per-order 方法。索引义务约定：新增可排序字段 = 白名单一行 + 文档 accessor 一行 + 按消费方向建复合索引。JS `listMemories` 可选 `{orderBy, pageSize}`（单页即止/全页累积）；快照装载 `page_size=10 + order_by=update_time desc`；`renderMemorySnapshot` 纯透传；`MemoryEntry = {memory_id, content}`。写路径与快照冻结时机零改动。契约：`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md`。
+- **Rationale**: 排序/截取是集合的服务端职责（2026-09-16 第一次裁定），且排序机制 MUST 通用（2026-09-16 第二次裁定：不为单个排序需求定制方法/字面量匹配/分排序游标——固化写死是反模式）。通用机制与社区实践一一对应：`{field} [desc]` 白名单语法 = AIP-132；唯一键收尾 = seek method "deterministic sort order" 要求 + Firestore `__name__` 缺省追加 + Elasticsearch tiebreaker 建议（R0）；通用游标 = Relay/Firestore/ES 的"游标 = 排序键值位置"语义；OR 阶梯 = seek method 行值比较的标准展开（Mongo 社区标准形）；键匹配校验 = AIP-158 "must match"；索引按 ESR + 复合索引方向规则布局。"新增一个可排序字段 = 加一行映射 + 一个索引"使扩展成本与需求成正比，机制不为不存在的需求写死（白名单从实际消费出发）。
+- **Alternatives considered**:
+  - **per-order 定制方法 + 字面量等值匹配 + 分排序定制游标**（2026-09-16 第二次裁定否决，防重复踩坑记录）：为 `update_time desc` 定制 `listMemoriesByUpdateTimeDesc`、为缺省定制 `listMemoriesByMemoryIDAsc`（raw 游标），handler 以两个字面量（`""`/`"update_time desc"`）等值匹配——每个新排序需求都要加仓储方法/分支/handler 字面量/一种新游标形态，排序知识与需求形状耦合，正是本次裁定要求消除的反模式。
+  - 客户端全量拉取后自排序截断（2026-09-16 第一次裁定否决——全量拉取浪费传输且排序属服务职责）。
+  - 服务端专门"最近 N 条"非标准限制面（否决——AIP-158 `page_size` 组合 `order_by` 即得，不新增非标准参数）。
+  - 受限枚举/bool 排序字段（否决——偏离 AIP-132 的 `string order_by` 惯例，扩展需改字段类型）。
+  - 游标编码方向并拒绝方向不同的同键重放（否决——token 携带冗余状态；位置语义（Firestore `startAfter` 同型）更简：方向由请求推导，键序列不匹配已覆盖跨序重放）。
+  - 追溯改造 session 服务单排序先例为通用机制（否决——单排序形态无泛化收益，YAGNI；memory 机制作为仓库内后续新服务的参考实现）。
 
 ### D5: 扫雷系统成员以常规 announce-only 成员注册（roster 自然渲染）
 
@@ -94,10 +107,11 @@
 | saolei-loop | `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` | case 4 announce + `statsSentFor` guard + 注册第三成员 + `announcer` 访问器 |
 | saolei-loop | `common/js/dsh-plugins/saolei-loop/src/game/{runtime,board,text}.ts` | per-type 计数 + GameStats 扩展 + 消息模板 |
 | saolei-loop | `common/js/dsh-plugins/saolei-loop/src/index.ts` | 导出面更新 |
-| memory 服务 | `projects/game/game.proto` | `ListMemoriesRequest` 增 `string order_by = 4`（注释含支持值/并列规则/token 顺序作用域） |
-| memory 服务 | `projects/game/memory/domain/{model,repository,errors}.go`、`projects/game/memory/domain/pagination.go`（新） | `ListMemoriesOrder` 枚举、`MemoryPageCursor` + `EncodeMemoryPageToken`/`DecodeMemoryPageToken`、`ErrInvalidPageToken`、`ListMemories` 签名增 order |
-| memory 服务 | `projects/game/memory/handler/handler.go` | `order_by` 解析校验（归一空白 + 等值匹配）、`ErrInvalidPageToken` → INVALID_ARGUMENT |
-| memory 服务 | `projects/game/memory/runtime/mongo/repository.go` | ordered 分支（复合游标 `$or` + sort + limit+1 + token 编解码）、启动建 `{template, session_id, update_time: -1, memory_id: 1}` 索引 |
+| memory 服务 | `projects/game/game.proto` | `ListMemoriesRequest` 增 `string order_by = 4`（AIP-132 通用语法/白名单/收尾规则/token 键匹配注释） |
+| memory 服务 | `projects/game/memory/domain/sort.go`（新）+ `projects/game/memory/domain/{model,repository,errors}.go` | `MemorySortTerm`、`MemorySortFieldSpec` + 白名单映射表（单一事实源）、`ParseMemoryOrderBy`（语法+白名单+重复校验+唯一键收尾）；`ListMemories` 签名 `sort []MemorySortTerm`；`ErrInvalidPageToken` |
+| memory 服务 | `projects/game/memory/domain/pagination.go` | 通用游标：`MemoryPageCursor`（字段序列+类型化键值）+ `EncodeMemoryPageToken`/`DecodeMemoryPageToken`（base64url NoPadding JSON 数组、时间 RFC3339Nano、按白名单类型解码） |
+| memory 服务 | `projects/game/memory/handler/handler.go` | `order_by` → `domain.ParseMemoryOrderBy`；解析错误与 `ErrInvalidPageToken` → INVALID_ARGUMENT（无排序知识） |
+| memory 服务 | `projects/game/memory/runtime/mongo/repository.go` + `model.go` | 单路径 `ListMemories`（sort spec/键匹配/通用 OR 阶梯/limit+1/游标构造）；`memoryDocument.sortValue(field)` accessor；启动建 `{template, session_id, update_time: -1, memory_id: 1}` 复合索引（既有唯一索引不变） |
 | memory-service | `common/js/dsh-plugins/memory-service/src/{client,snapshot,service}.ts` | `listMemories` 可选 `{orderBy, pageSize}`（单页即止）；`renderMemorySnapshot` 纯透传 + `SNAPSHOT_ORDER_BY`/`SNAPSHOT_ENTRY_LIMIT` 常量；`load` 单页装载；`MemoryEntry` 收缩为 `{memory_id, content}` |
 | 宿主 | `projects/game/agent_v2/src/{session,history}.ts` | announcer 订阅 → `appendAnnouncement`；merge member 放宽 string |
 | 测试计划 | `projects/game/testplan/memory_test.go`、`projects/game/testplan/helpers_test.go` | 有序列表端到端断言（排序/复合游标续页/非法 order_by 400）+ listMemories helper 增 orderBy 参数 |
