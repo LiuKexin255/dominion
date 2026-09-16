@@ -6,7 +6,7 @@
 
 ## Summary
 
-三块优化：(1) saolei team 新增"扫雷系统"系统角色（role `saolei`，非 LLM、非物化成员），在终局交接路径（player 回合收束 → planner 复盘前）播报本局统计消息（结果 + 单个操作总数 + click/flag/chord 分项数），全体真实成员消费，排队消化优先序与"被跳过局不补发"语义继承自既有 `nextStep()` 分支结构；(2) planner 记忆快照按条目更新时间倒排、仅注入最近 10 条——排序由 memory 服务 `ListMemories` 的**通用排序机制**承担（AIP-132 `{field} [desc]` 语法 + 字段白名单映射 + 指定 tie-breaker 收尾 + 通用游标 + 单路径仓储直译，2026-09-16 三次用户裁定——第三次裁定实现形态以 Go 习惯为锚：全部校验收敛 domain、仓储只做已验证输入直译），JS 客户端以 `page_size=10 + order_by=update_time desc` 单页装载；(3) team section 提示词补两处——广播标签格式仅输入侧呈现（成员自身输出不自我包装）+ roster 含 saolei 行。
+三块优化：(1) saolei team 新增"扫雷系统"系统角色（role `saolei`，非 LLM、非物化成员），在终局交接路径（player 回合收束 → planner 复盘前）播报本局统计消息（结果 + 单个操作总数 + click/flag/chord 分项数），全体真实成员消费，排队消化优先序与"被跳过局不补发"语义继承自既有 `nextStep()` 分支结构；(2) planner 记忆快照按条目更新时间倒排、仅注入最近 10 条——排序由 memory 服务 `ListMemories` 的**通用排序机制**承担（AIP-132 `{field} [desc]` 语法 + 字段白名单映射 + 指定 tie-breaker 收尾 + 通用游标 + 单路径仓储直译，2026-09-16 五次用户裁定——第三、四次裁定实现形态以 Go 习惯为锚：全部校验收敛 domain、仓储只做已验证输入直译、seek 条件任意键数通用 OR 阶梯（无长度分支）、游标 struct 包装；第五次裁定修正解析填补判据（请求排序字段完全不含 `memory_id` 才追加、任意键位合法、空白早返回 + map 存在性判据）、游标全链指针化（`*MemoryPageCursor`，nil = 首页）、值转换单次化与责任收敛 domain（entry 携 typed、term 对称转换方法、仓储零转换）、seek O(n) 增量构造、契约补对象关系 classDiagram），JS 客户端以 `page_size=10 + order_by=update_time desc` 单页装载；(3) team section 提示词补两处——广播标签格式仅输入侧呈现（成员自身输出不自我包装）+ roster 含 saolei 行。
 
 技术方案（详见 [research.md](research.md)）：**team 插件定义成员消息源接口（`TeamMemberSource`，依赖倒置）**——成员（agent 或非 agent）实现该接口提供消息（`events` 为共享事件词汇表的 log），team 的派生/渲染/消费闭包全复用、不感知成员种类；agent 经 `agentMemberSource` 适配器接入（现有语义零变化）。扫雷系统成员（`SaoleiSystemMember`，saolei-loop 实现）持**内存 log**（`assistant/message` 形态事件，随物化清零——与 agent 成员 log 实际行为对齐），以常规 announce-only 成员注册（roster 自然渲染）；统计触发落在 orchestrator `nextStep()` 终局分支（`announce` 先于 `drain(planner)`，`statsSentFor` 记录级 guard 保证 exactly-once）；宿主经 `orchestrator.announcer` 订阅其产出追加 merge/`team_message`（与 MemberCollector 订阅 agent 事件同构的投影路径）。
 
@@ -83,16 +83,19 @@ common/js/dsh-plugins/
     └── service.ts       # load 以 {orderBy, pageSize: 10} 单页装载最近 10 条
 
 projects/game/
-├── game.proto           # ListMemoriesRequest 增 string order_by = 4（AIP-132 通用语法 + 白名单 + 指定 tie-breaker 收尾 + token 键匹配注释）
+├── game.proto           # ListMemoriesRequest 增 string order_by = 4（AIP-132 通用语法 + 白名单 + 指定 tie-breaker"完全不含才填补" + token 键匹配注释）
 └── memory/
-    ├── domain/          # sort.go（新）：MemorySortTerm（自包含键元素，携 MongoField/kind/CursorValue）+ 包内私有白名单映射表
-    │                    # + ParseMemoryOrderBy（先完整校验后产出）；pagination.go：通用游标（MemoryPageCursor []*MemoryCursorEntry
-    │                    # 单一结构体即 wire 形态，全函数 encode / 解码+键匹配+类型校验 decode）；ErrInvalidPageToken + 仓储签名
-    │                    # (sort []*MemorySortTerm, cursor MemoryPageCursor, pageSize)——仓储收到已验证输入
-    ├── handler/handler.go  # order_by → ParseMemoryOrderBy、token → DecodeMemoryPageToken；解析错误/ErrInvalidPageToken
-    │                      # → INVALID_ARGUMENT（无排序知识）
-    └── runtime/mongo/repository.go  # 单路径 ListMemories 直译：sort 文档 + seek 条件直白两键形态（单键并入 filter / 两键 $or
-                                     # 字面两子句）+ limit+1 + 页末 token；启动建复合索引（既有唯一索引不变）
+    ├── domain/          # sort.go（新）：MemorySortTerm（自包含键元素，携 MongoField/kind 与 CursorValue/CursorEntry 对称值转换方法）
+    │                    # + 包内私有白名单映射表；ParseMemoryOrderBy（空白早返回固定默认值、校验趟填 validated map（term 唯一存放）
+    │                    # + 排序趟再过 items 恢复请求原序——完全不含才填补）；pagination.go：通用游标（MemoryCursorEntry{Field, Value string} + 私有 typed
+    │                    # + Typed() 访问器、MemoryPageCursor struct{Entries} wire 形态 {"entries":[...]}、全函数 encode / 解码+键匹配+校验+转换单次
+    │                    # decode——成功恒非 nil）；ErrInvalidPageToken + 仓储签名 (sort []*MemorySortTerm, cursor *MemoryPageCursor, pageSize)
+    │                    # ——仓储收到已验证输入；对象关系与值转换责任总图见 contracts/memory-snapshot-recency.md §1 item 9
+    ├── handler/handler.go  # order_by → ParseMemoryOrderBy、token → DecodeMemoryPageToken（空 token → cursor 保持 nil）；
+    │                      # 解析错误/ErrInvalidPageToken → INVALID_ARGUMENT（无排序知识）
+    └── runtime/mongo/repository.go  # 单路径 ListMemories 直译（零 string↔typed 转换）：sort 文档 + memorySeekClauses 通用 OR 阶梯
+                                     # O(n) 增量构造（等值前缀逐键演进，无 error 返回，统一 filter["$or"]——单键 = 单子句，无长度分支）
+                                     # + limit+1 + 页末 term.CursorEntry(doc.sortValue(...)) typed 构造 token；启动建复合索引（既有唯一索引不变）
 
 projects/game/agent_v2/src/
 ├── session.ts           # doMaterialize 订阅 orchestrator.announcer 产出 → appendAnnouncement（teardown 退订）
