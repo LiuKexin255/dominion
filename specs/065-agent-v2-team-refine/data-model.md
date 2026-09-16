@@ -56,20 +56,20 @@
 
 ### 1.5 记忆列表排序 — ListMemories 通用排序机制（memory 服务）+ 快照单页装载（JS 客户端）
 
-契约：[contracts/memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §1–§2。排序是一套通用机制（语法 → 白名单映射 → 唯一键收尾 → 通用游标 → 单路径仓储），不为单个排序需求定制。
+契约：[contracts/memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §1–§2。排序是一套通用机制（语法 → 白名单映射 → 指定 tie-breaker 收尾 → 通用游标 → 单路径仓储直译），不为单个排序需求定制；**全部校验收敛在 domain 层，仓储收到已验证输入只做直译**（2026-09-16 第三次裁定：实现形态以 Go 习惯为锚）。
 
 | 实体 | 位置 | 说明 |
 |---|---|---|
 | `ListMemoriesRequest.order_by` | `projects/game/game.proto` | `string order_by = 4`（AIP-132）：逗号分隔 `{field} [desc]` 列表、空白不敏感、升序省略后缀；缺省 = `memory_id` 升序（经收尾规则推导，非特设分支） |
-| `MemorySortTerm` | `projects/game/memory/domain/sort.go` | 最终排序键元素 `{Field string, Descending bool}`；`ListMemories` 仓储签名携带 `sort []MemorySortTerm` |
-| `MemorySortFieldSpec` + 白名单 | `projects/game/memory/domain/sort.go` | 单一事实源映射表：API 字段 → `{MongoField, Kind(string/time), Unique}`；首期 `memory_id`（唯一）、`update_time`；`ParseMemoryOrderBy` 一步产出最终排序键（语法 + 白名单 + 重复校验 + 唯一键收尾：未以唯一字段收尾自动追加 `memory_id asc`）；非法 → INVALID_ARGUMENT（错误列受支持字段） |
-| `MemoryPageCursor` | `projects/game/memory/domain/pagination.go` | 通用游标：最终排序键的字段序列 + 页末条目键值（时间 RFC3339Nano、类型按白名单声明解码）；`EncodeMemoryPageToken`/`DecodeMemoryPageToken` base64url(NoPadding)-JSON；不编码方向（方向由续页 `order_by` 推导）；解码字段序列与当前最终排序键不匹配 → `ErrInvalidPageToken` → INVALID_ARGUMENT（AIP-158 参数一致） |
-| Mongo 单路径查询 | `projects/game/memory/runtime/mongo` | 一套流程：sort spec（白名单 MongoField × 方向）→ 键匹配 → 通用 OR 阶梯（前缀相等 + 当前键 `$gt`(asc)/`$lt`(desc)）→ limit+1 → 页满编码 next token；`memoryDocument.sortValue(field)` accessor；启动建非唯一索引 `{template: 1, session_id: 1, update_time: -1, memory_id: 1}`（唯一索引 `(template, session_id, memory_id)` 支撑缺省序）；索引义务：新增字段 = 一行映射 + 一行 accessor + 按消费方向建复合索引 |
+| `MemorySortTerm` | `projects/game/memory/domain/sort.go` | **自包含最终排序键元素** `{Field, MongoField string; Descending bool}`（另携包内私有 kind 与 `CursorValue(value string) (any, error)` 使用点值转换方法）；`ParseMemoryOrderBy(orderBy) ([]*MemorySortTerm, error)` **先完整校验（语法+白名单+重复+tie-breaker 末位）后产出**最终键；`ListMemories` 仓储签名 `(sort []*MemorySortTerm, cursor MemoryPageCursor, pageSize)` |
+| 白名单 `memorySortFieldSpec` | `projects/game/memory/domain/sort.go` | 包内私有单一事实源映射表 `[]*memorySortFieldSpec{Field, MongoField, kind}`（**无 Unique 标志**——tie-breaker 为指定字段 `memory_id`，非行属性扫描）；首期 `memory_id`（tie-breaker）+ `update_time`（业务字段恰一个——最终键 ≤2 的结构保证，由 pin 测试守护） |
+| `MemoryPageCursor` | `projects/game/memory/domain/pagination.go` | 通用游标 = **单一结构体即 wire 形态**：`type MemoryPageCursor []*MemoryCursorEntry`、`MemoryCursorEntry{Field, Value string}`（json tag 直接标注，无指针字段、无中间转换层）；`EncodeMemoryPageToken(cursor) string` **全函数**（base64url(NoPadding) JSON、时间 UTC RFC3339Nano 字符串承载、空 cursor → 空 token）；`DecodeMemoryPageToken(token, sort)` 解码 + 与最终键匹配 + 类型校验（跨序重放/坏 token → `ErrInvalidPageToken` → INVALID_ARGUMENT，AIP-158 参数一致）；不编码方向（方向由续页 `order_by` 推导） |
+| Mongo 单路径查询 | `projects/game/memory/runtime/mongo` | 已验证输入**直译**一套流程：`memorySortDocument(sort)`（MongoField × 方向）→ seek 条件**直白两键形态**（单键 `{memory_id: {$gt/$lt}}` 并入 filter；两键 `$or` 字面两子句，比较随方向翻转）→ limit+1 → 页满 `memoryDocument.sortValue(field) string` wire 形态 accessor 构造 entries 编码 next token；启动建非唯一索引 `{template: 1, session_id: 1, update_time: -1, memory_id: 1}`（唯一索引 `(template, session_id, memory_id)` 支撑缺省序）；索引义务：新增字段 = 一行映射 + 一行 accessor + 按消费方向建复合索引 |
 | `listMemories` options | `common/js/dsh-plugins/memory-service/src/client.ts` | 可选 `{orderBy?, pageSize?}`；`pageSize` 给定 → 单页即止，未给定 → 全页累积（写路径现行为）。`MemoryEntry` 仅 `{memory_id, content}` |
 | 快照装载/渲染 | `common/js/dsh-plugins/memory-service/src/{service,snapshot}.ts` | `load` 以 `{orderBy: "update_time desc", pageSize: 10}` 单页取最近 10 条（`SNAPSHOT_ORDER_BY`/`SNAPSHOT_ENTRY_LIMIT` 常量归 snapshot.ts）；`renderMemorySnapshot` 纯透传渲染（`memory_id` 永不渲染、空集空串——既有语义） |
 
 - **快照序**：最近更新的 ≤10 条、最新在前、确定（同毫秒并列以 `memory_id` 升序打破——收尾规则）——由服务端排序保证，客户端不排序/不截断。
-- **零变化面**：memory 工具写路径（`applyMemoryCall` 的 old_text 定位面向全量存储、不传 order_by）、快照冻结时机（物化预取、实例生命周期固定）、前端；缺省（空 `order_by`）排序结果与翻页语义同前，`next_page_token` 形态为通用编码（不透明、客户端只透传）。
+- **零变化面**：memory 工具写路径（`applyMemoryCall` 的 old_text 定位面向全量存储、不传 order_by）、快照冻结时机（物化预取、实例生命周期固定）、前端、JS/testplan 消费面（`order_by` 合法/非法字符串集合与 token 对外形态均不变）；缺省（空 `order_by`）排序结果与翻页语义同前，`next_page_token` 形态为通用编码（不透明、客户端只透传）。
 
 ## 2. 状态转移（终局交接路径增量）
 
