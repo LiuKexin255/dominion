@@ -6,7 +6,7 @@
 ## 1. 前置条件
 
 - 仓库 bazel 环境可用（`bazel` / `bazel run //:go`）；大型测试按 `style/large_test.md` 规范经 testplan skill（`tools/test/guitar`）执行。
-- 无新增外部依赖、无 secret 变更、无 proto/Go 服务/前端改动——既有部署拓扑（`projects/game/testplan/deploy_agent_v2.yaml`，fake-llm + fake-desktop 零外网）直接复用。
+- 无新增外部依赖、无 secret 变更、无前端改动；memory 服务有 `order_by` 排序增量（[memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §1——proto 增字段向后兼容，缺省 `memory_id` 升序零破坏）——既有部署拓扑（`projects/game/testplan/deploy_agent_v2.yaml`，fake-llm + fake-desktop 零外网）直接复用。
 
 ## 2. 单元/集成级验证（每次代码变更随行，constitution 原则 IV）
 
@@ -15,8 +15,10 @@
 bazel test //common/js/dsh-plugins/team/...
 # saolei-loop（分项计数 + 触发/guard + 消息模板）
 bazel test //common/js/dsh-plugins/saolei-loop/...
-# memory-service（updateTime 捕获 + 快照倒排截取）
+# memory-service（listMemories 单页语义 + 快照透传渲染 + load 单页装载）
 bazel test //common/js/dsh-plugins/memory-service/...
+# memory 服务（order_by 解析/复合游标 codec/ordered 仓储排序与索引）
+bazel test //projects/game/memory/...
 # 宿主（announcer 订阅 + appendAnnouncement + 历史投影）
 bazel test //projects/game/agent_v2/...
 ```
@@ -25,7 +27,7 @@ bazel test //projects/game/agent_v2/...
 
 - [team-member-source.md](contracts/team-member-source.md) §5——适配器等价（agent 成员行为回归）、announce-only 能力位（不建 pending/不被 relay/drain throw/roster 含其行）、非 agent source 派生同权（`assistant/message` 事件 → 发言单元 → `<saolei-message>` 渲染 → 注入 → 消费闭包）、section 增量措辞。
 - [game-stats-broadcast.md](contracts/game-stats-broadcast.md) §5——分项计数口径（[data-model.md §1.3](data-model.md)）、announce 先于 drain、exactly-once、跳局不补报、`GetTeam` 面不含 `saolei`。
-- [memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §4——Timestamp 归一化、倒排 + 前 10 条 + 并列确定、`memory_id` 不渲染。
+- [memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §4——`order_by` 校验（非法值 INVALID_ARGUMENT）、复合游标 codec 与 ordered 仓储排序（`update_time` 降序 + 并列 `memory_id` 升序、limit+1 续页）、client 单页即止、快照透传渲染（`memory_id` 不渲染）。
 
 ## 3. 大型测试（验收门禁，constitution 原则 VI——实际执行 deploy→test→cleanup 闭环）
 
@@ -38,8 +40,9 @@ guitar run projects/game/testplan/system_test.yaml
 
 1. **多局链路**：每局交接后团队归并序列恰有一条 `member="saolei"` 的统计消息；正文 = [data-model.md §3](data-model.md) 模板（结果行 + 总数/分项行）；数值与该局 fake-desktop 实际收到的成功派发序列一致（含一次批量多操作的对照局）；planner 复盘 turn 的模型输入含统计消息（fake-llm review 规则 keywords 命中模板关键行）；player 成员视图含 `user: [saolei]` 注入条目。
 2. **排队跳局**：终局 player 回合收束时存在排队用户消息 → player 先消化并开新局 → 被跳过局无统计消息；新局交接时恰有一条新局统计（对照：终局后无排队消息的局统计即时播报）。
-3. **提示词增量**：物化后 `GetTeamMember` 的 `system_prompt` 含 roster 的 saolei 行与"自身输出不使用广播标签"表述；planner 的记忆快照 ≤10 条且按更新时间倒序（fake-llm/夹具注入 >10 条记忆的会话对照）。
-4. **回归**：既有 agent_v2 大型测试全量通过（多局闭环、排队消化、取消、刷新重建、双视图回填）。
+3. **提示词增量**：物化后 `GetTeamMember` 的 `system_prompt` 含 roster 的 saolei 行与"自身输出不使用广播标签"表述；planner 的记忆快照 ≤10 条且按更新时间倒序（fake-llm/夹具注入 >10 条记忆的会话对照——服务端 `order_by` 排序后经单页装载注入）。
+4. **memory 有序列表**：`GET /api/v1/.../memories?order_by=update_time%20desc`（经网关）按 `update_time` 降序、并列 `memory_id` 升序；复合游标 `next_page_token` 续页全量一次；非法 `order_by` → 400 INVALID_ARGUMENT；缺省模式（无 `order_by`）分页断言回归。
+5. **回归**：既有 agent_v2 大型测试全量通过（多局闭环、排队消化、取消、刷新重建、双视图回填）。
 
 **通过标准**：所有用例全部通过（任何 failed/flaky 即验收未通过，修复后重跑至全绿）。
 

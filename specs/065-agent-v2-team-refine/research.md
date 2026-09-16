@@ -1,7 +1,7 @@
 # Research: agent-v2-team-refine
 
 **Feature**: specs/065-agent-v2-team-refine/spec.md
-**Date**: 2026-09-15
+**Date**: 2026-09-16
 **方法**: 源码级调研（本地物化依赖 0.1.1-rc.2 + 本仓库插件/宿主/服务源码），无外部新依赖引入。所有行号锚点以当前 `main` 工作树为准。
 
 ## R0. 关键机制核实（决策前提）
@@ -14,8 +14,8 @@
 - **终局交接分支结构**（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts:896-941`）：case 1 排队消化优先 → case 2 pendingReview 重试 → case 3 planning/reviewing→player → case 4 `peekGameEvent() !== reviewedGameEvent` 时 `drain(planner)` 非空才置 pendingReview 并驱动复盘，否则落入 player 续驱。**播报必须放在 case 4 内、`drain(planner)` 之前**（D2）。
 - **跳局语义即 case 1 优先序 + 终局记录单槽覆盖**：排队消息先驱动 player（current=player）；player 开新局致终局时 runtime 的 `gameEvent` 被新记录覆盖（`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts:302-310` 仅持 LATEST）——旧局交接永不发生 → 不播报即跳过，零补发逻辑。
 - **proto 会话面零改动可行**：`TeamMessage.member` 为 string（wire 直通）；web 团队视图按 wire 角色串直接渲染（`projects/game/web/frontend/src/components/ChatView.tsx:204-210`）；成员视图注入按 `source.role` 标注（`projects/game/agent_v2/src/history.ts:404-423`）。role `saolei` 全链路透传，前端零改动（D7）。
-- **memory 服务已返回 update_time**：proto `Memory.update_time`（OUTPUT_ONLY，`projects/game/game.proto:158`）；Go 服务 `memoryToProto` 映射（`projects/game/memory/handler/handler.go:219-234`）；JS 客户端当前丢弃该字段（`common/js/dsh-plugins/memory-service/src/client.ts:303-310`）——客户端捕获即可，服务零改动。
-- **proto-loader Timestamp 表示**：当前加载选项 `longs: String`（`client.ts:151-159`）下 `google.protobuf.Timestamp` 以 `{seconds: string, nanos: number}` 对象到达——归一化为 epoch ms 整数（D4）。
+- **memory 排序归属服务端**（2026-09-16 用户裁定）：快照的"按 `update_time` 取最近 10 条"由 List 接口的排序能力承担，客户端不得全量拉取后自排序。proto `Memory.update_time`（OUTPUT_ONLY，`projects/game/game.proto:158`）已由 `memoryToProto` 返回（`projects/game/memory/handler/handler.go:219-234`）；`ListMemoriesRequest` 需增 `order_by`（AIP-132）。
+- **session 服务已含复合游标倒序分页先例**：`ListSessions` 按 `create_time DESC, session_id DESC` 排序，`ListPageCursor{CreateTime, SessionID}` 经 `EncodePageToken`/`DecodePageToken`（base64url NoPadding JSON、RFC3339Nano）编解码（`projects/game/session/domain/pagination.go`），仓储以 `$or` 续页过滤 + 启动建复合索引（`projects/game/session/runtime/mongo/repository.go:88-99,144-200`），handler 对坏 token 映射 INVALID_ARGUMENT（`projects/game/session/handler/handler.go:143-150`）——memory 的 ordered 模式可直接镜像该模式。
 
 ## 决策清单
 
@@ -46,11 +46,11 @@
 - **Rationale**: `GameStats` 就是"每局定量统计"实体（`common/js/dsh-plugins/saolei-loop/src/game/board.ts:177-186`）；计数器模式与 `operationCount` 一致。
 - **Alternatives considered**: 播报时从 `gameLog` 重放推导——口径绑死日志结构；放 `GameEventRecord` 顶层——归属不如 stats 内聚。
 
-### D4: 记忆快照近因注入——客户端捕获 `update_time` 归一化 epoch ms，渲染层倒排 + 截取
+### D4: 记忆快照近因注入——ListMemories 服务端排序，客户端单页取最近 10 条（2026-09-16 用户裁定）
 
-- **Decision**: `MemoryEntry` 增 `updateTime?: number`（epoch ms 整数；`{seconds: String, nanos}` → `Math.round(Number(seconds)*1000 + nanos/1e6)`，缺失保持 undefined）；`renderMemorySnapshot(entries)` 按 `updateTime` 降序（undefined 视为最旧）、并列以 `memory_id` 升序打破，截取前 10 条；空集仍渲染空串。写路径与快照冻结时机零改动。
-- **Rationale**: 服务已返回字段（R0），客户端捕获是最小改动面；排序/截断属呈现策略。
-- **Alternatives considered**: Go 服务实现 order_by——面大且无第二消费者；快照标注条目总数——spec Assumptions 已裁定不标注。
+- **Decision**: `ListMemoriesRequest` 增 `string order_by = 4`（AIP-132: https://google.aip.dev/132）：缺省 = `memory_id` 升序 + raw `memory_id` 游标（现行为零破坏）；`update_time desc`（空白不敏感）= `update_time` 降序 + `memory_id` 升序并列打破，`next_page_token` 为复合游标 `(update_time, memory_id)` 的 base64url-JSON 编码、`$or` 续页过滤（镜像 session 服务先例，R0）；非法值与坏 token → INVALID_ARGUMENT。仓储启动建非唯一索引 `{template, session_id, update_time: -1, memory_id: 1}`。JS `listMemories` 增可选 `{orderBy, pageSize}`（`pageSize` 给定单页即止，未给定全页累积）；快照装载 `page_size=10 + order_by=update_time desc` 单页取最近 10 条；`renderMemorySnapshot` 纯透传渲染；`MemoryEntry` 收缩为 `{memory_id, content}`。写路径与快照冻结时机零改动。契约：`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md`。
+- **Rationale**: 排序/截取是集合的服务端职责（2026-09-16 用户裁定：List 接口提供排序，客户端不得全量拉取后自排序）——服务端排序使快照装载只传输需要的一页；AIP-132 `order_by` 是标准机制，`update_time desc` 单值子集即满足当前唯一消费者（快照装载），后续扩展语法子集不破坏契约；复合游标、`$or` 续页、启动建索引均有 session 服务仓库内先例，风险收敛。
+- **Alternatives considered**: 客户端全量拉取后自排序截断（2026-09-16 用户裁定否决——全量拉取浪费传输且排序属服务职责）；服务端专门"最近 N 条"非标准限制面（否决——AIP-158 `page_size` 既有机制组合 `order_by` 即得，不新增非标准参数）；受限枚举/bool 排序字段（否决——偏离 AIP-132 的 `string order_by` 惯例，扩展需改字段类型）。
 
 ### D5: 扫雷系统成员以常规 announce-only 成员注册（roster 自然渲染）
 
@@ -94,11 +94,16 @@
 | saolei-loop | `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` | case 4 announce + `statsSentFor` guard + 注册第三成员 + `announcer` 访问器 |
 | saolei-loop | `common/js/dsh-plugins/saolei-loop/src/game/{runtime,board,text}.ts` | per-type 计数 + GameStats 扩展 + 消息模板 |
 | saolei-loop | `common/js/dsh-plugins/saolei-loop/src/index.ts` | 导出面更新 |
-| memory-service | `common/js/dsh-plugins/memory-service/src/{client,snapshot}.ts` | updateTime 捕获归一 + 倒排截取 |
+| memory 服务 | `projects/game/game.proto` | `ListMemoriesRequest` 增 `string order_by = 4`（注释含支持值/并列规则/token 顺序作用域） |
+| memory 服务 | `projects/game/memory/domain/{model,repository,errors}.go`、`projects/game/memory/domain/pagination.go`（新） | `ListMemoriesOrder` 枚举、`MemoryPageCursor` + `EncodeMemoryPageToken`/`DecodeMemoryPageToken`、`ErrInvalidPageToken`、`ListMemories` 签名增 order |
+| memory 服务 | `projects/game/memory/handler/handler.go` | `order_by` 解析校验（归一空白 + 等值匹配）、`ErrInvalidPageToken` → INVALID_ARGUMENT |
+| memory 服务 | `projects/game/memory/runtime/mongo/repository.go` | ordered 分支（复合游标 `$or` + sort + limit+1 + token 编解码）、启动建 `{template, session_id, update_time: -1, memory_id: 1}` 索引 |
+| memory-service | `common/js/dsh-plugins/memory-service/src/{client,snapshot,service}.ts` | `listMemories` 可选 `{orderBy, pageSize}`（单页即止）；`renderMemorySnapshot` 纯透传 + `SNAPSHOT_ORDER_BY`/`SNAPSHOT_ENTRY_LIMIT` 常量；`load` 单页装载；`MemoryEntry` 收缩为 `{memory_id, content}` |
 | 宿主 | `projects/game/agent_v2/src/{session,history}.ts` | announcer 订阅 → `appendAnnouncement`；merge member 放宽 string |
+| 测试计划 | `projects/game/testplan/memory_test.go`、`projects/game/testplan/helpers_test.go` | 有序列表端到端断言（排序/复合游标续页/非法 order_by 400）+ listMemories helper 增 orderBy 参数 |
 | 测试计划 | `projects/game/testplan/agent_v2_{game,conversation}_test.go` | 播报/跳局断言 |
 
-proto / Go 服务 / web 前端 / preset 模板：零改动。
+web 前端 / preset 模板：零改动。
 
 ## 结论
 

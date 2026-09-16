@@ -6,13 +6,13 @@
 
 ## Summary
 
-三块优化：(1) saolei team 新增"扫雷系统"系统角色（role `saolei`，非 LLM、非物化成员），在终局交接路径（player 回合收束 → planner 复盘前）播报本局统计消息（结果 + 单个操作总数 + click/flag/chord 分项数），全体真实成员消费，排队消化优先序与"被跳过局不补发"语义继承自既有 `nextStep()` 分支结构；(2) planner 记忆快照按条目更新时间倒排、仅注入最近 10 条（JS 客户端捕获既有 proto `update_time`）；(3) team section 提示词补两处——广播标签格式仅输入侧呈现（成员自身输出不自我包装）+ roster 含 saolei 行。
+三块优化：(1) saolei team 新增"扫雷系统"系统角色（role `saolei`，非 LLM、非物化成员），在终局交接路径（player 回合收束 → planner 复盘前）播报本局统计消息（结果 + 单个操作总数 + click/flag/chord 分项数），全体真实成员消费，排队消化优先序与"被跳过局不补发"语义继承自既有 `nextStep()` 分支结构；(2) planner 记忆快照按条目更新时间倒排、仅注入最近 10 条——排序由 memory 服务 `ListMemories` 的 `order_by`（AIP-132）承担，JS 客户端以 `page_size=10 + order_by=update_time desc` 单页装载（2026-09-16 用户裁定：List 接口提供排序，客户端不得全量拉取后自排序）；(3) team section 提示词补两处——广播标签格式仅输入侧呈现（成员自身输出不自我包装）+ roster 含 saolei 行。
 
 技术方案（详见 [research.md](research.md)）：**team 插件定义成员消息源接口（`TeamMemberSource`，依赖倒置）**——成员（agent 或非 agent）实现该接口提供消息（`events` 为共享事件词汇表的 log），team 的派生/渲染/消费闭包全复用、不感知成员种类；agent 经 `agentMemberSource` 适配器接入（现有语义零变化）。扫雷系统成员（`SaoleiSystemMember`，saolei-loop 实现）持**内存 log**（`assistant/message` 形态事件，随物化清零——与 agent 成员 log 实际行为对齐），以常规 announce-only 成员注册（roster 自然渲染）；统计触发落在 orchestrator `nextStep()` 终局分支（`announce` 先于 `drain(planner)`，`statsSentFor` 记录级 guard 保证 exactly-once）；宿主经 `orchestrator.announcer` 订阅其产出追加 merge/`team_message`（与 MemberCollector 订阅 agent 事件同构的投影路径）。
 
 ## Technical Context
 
-**Language/Version**: TypeScript（ESM，strict；048-js-esm-migration 终态）；Go（仅测试计划侧断言，无 Go 生产改动）
+**Language/Version**: TypeScript（ESM，strict；048-js-esm-migration 终态）；Go（memory 服务排序增量 + 测试计划侧断言）
 
 **Primary Dependencies**: `@deepseek-ai/cordis` / `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-session`（0.1.1-rc.2 线）；`@dominion/dsh-team`、`@dominion/dsh-saolei-loop`、`@dominion/dsh-memory-service`（本仓库 common/js/dsh-plugins/）；`@grpc/grpc-js` + `@grpc/proto-loader`（memory 客户端）
 
@@ -78,8 +78,16 @@ common/js/dsh-plugins/
 │   ├── game/text.ts     # 统计消息文本模板 gameStatsText
 │   └── index.ts         # 导出面：SaoleiSystemMember / SAOLEI_MEMBER_SUMMARY / gameStatsText
 └── memory-service/src/
-    ├── client.ts        # listMemories 捕获 update_time（proto-loader Timestamp 归一化为 epoch ms）
-    └── snapshot.ts      # renderMemorySnapshot 更新时间倒排 + 截取最近 10 条 + 并列稳定次序
+    ├── client.ts        # listMemories 增可选 {orderBy, pageSize}（pageSize 给定单页即止）；MemoryEntry = {memory_id, content}
+    ├── snapshot.ts      # renderMemorySnapshot 纯透传渲染 + SNAPSHOT_ORDER_BY/SNAPSHOT_ENTRY_LIMIT 注入策略常量
+    └── service.ts       # load 以 {orderBy, pageSize: 10} 单页装载最近 10 条
+
+projects/game/
+├── game.proto           # ListMemoriesRequest 增 string order_by = 4（AIP-132；缺省 memory_id 升序零破坏）
+└── memory/
+    ├── domain/          # ListMemoriesOrder + MemoryPageCursor + token codec（pagination.go 新）+ ErrInvalidPageToken + 仓储签名
+    ├── handler/handler.go  # order_by 解析校验 + ErrInvalidPageToken → INVALID_ARGUMENT
+    └── runtime/mongo/repository.go  # ordered 复合游标 $or + sort {update_time:-1, memory_id:1} + 启动建复合索引
 
 projects/game/agent_v2/src/
 ├── session.ts           # doMaterialize 订阅 orchestrator.announcer 产出 → appendAnnouncement（teardown 退订）
@@ -87,7 +95,8 @@ projects/game/agent_v2/src/
 
 projects/game/testplan/
 ├── agent_v2_game_test.go         # 终局统计播报断言（内容/条数/消费面）
-└── agent_v2_conversation_test.go # 排队跳局场景断言（按现有用例归属扩展）
+├── agent_v2_conversation_test.go # 排队跳局场景断言（按现有用例归属扩展）
+└── memory_test.go + helpers_test.go  # 有序列表端到端断言（排序/复合游标续页/非法 order_by 400）
 ```
 
 **Structure Decision**: 复用既有三插件 + 宿主布局（team / saolei-loop / memory-service / agent_v2 / testplan），无新目录；`node_modules` 符号链接与 `BUILD.bazel` 由 gazelle 维护（AGENTS.md 流程）。

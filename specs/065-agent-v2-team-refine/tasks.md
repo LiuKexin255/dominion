@@ -92,6 +92,8 @@
 
 **Goal**: JS 客户端捕获 `update_time` 归一化 epoch ms；快照渲染按更新时间倒排、截取最近 10 条、并列确定。
 
+> 排序承担者已由 Phase 7 改为 memory 服务端（2026-09-16 用户裁定）：本 phase 交付的 `updateTime` 捕获与客户端排序/截取是 Phase 7 的改造对象，终态契约以 [contracts/memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) 为准。
+
 **Independent Test**: memory-service 单测（>10 条截断降序 / 不足全量 / 空不渲染 / 并列 memory_id 升序 / `memory_id` 不渲染 / load 冻结回归）。
 
 **文档清单**：
@@ -152,6 +154,33 @@
 
 ---
 
+## Phase 7: 修改——memory List 服务端排序（2026-09-16 用户裁定）
+
+**Purpose**: 快照的"按 `update_time` 取最近 10 条"改由 memory 服务 `ListMemories` 的排序能力承担（`order_by`，AIP-132）：客户端不再全量拉取后自排序，改为 `page_size=10 + order_by=update_time desc` 单页装载。缺省（不传 `order_by`）保持 `memory_id` 升序 + raw 游标——写路径与既有分页消费面零破坏。契约：`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md`（本 phase 的接口权威）。前置：Phase 4 已交付的 JS 实现是本 phase 的改造对象（T012/T013 勾选保留为历史，不回改）。
+
+**文档清单**：
+
+- 代码规范文档：`style/api.md`；[AIP-132 Standard methods: List](https://google.aip.dev/132)（Ordering 节——`order_by` 形态、`desc` 后缀、空白不敏感）；[AIP-158 Pagination](https://google.aip.dev/158)（page token opacity、续页参数 "must match"）；[AIP-193 Errors](https://google.aip.dev/193)（INVALID_ARGUMENT 语义）；`style/golang.md`（含单元测试规范：表驱动/given-when-then/命名）；[Google Go Style 入口](https://google.github.io/styleguide/go/) 与 [Style Guide](https://google.github.io/styleguide/go/guide)；`style/mongo.md`（库表/对象定义）；`style/javascript.md`（ESM 书写规则 + vitest DI seam 测试约定）；[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)；`style/large_test.md`（T027/T029 测试组织与反模式）
+- 官方文档：[go.mongodb.org/mongo-driver/mongo/options（pkg.go.dev）](https://pkg.go.dev/go.mongodb.org/mongo-driver/mongo/options)（`FindOptions.SetSort`/`SetLimit` 与 `IndexModel` API 权威参考）
+- 技术文章/技术参考文档：`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md`（§1–§4 接口与验收面权威）；`specs/065-agent-v2-team-refine/data-model.md` §1.5；`specs/065-agent-v2-team-refine/research.md`（R0 session 先例条目、D4）；`specs/039-planner-memory-calibration/contracts/memory-service-contract.md` §2（ListMemories RPC 契约基线）；`specs/064-memory-split-fold-remain/contracts/dsh-plugins.md` §2（快照冻结/写路径零改动基线）；session 服务复合游标先例（只读参考）——`projects/game/session/domain/pagination.go`、`projects/game/session/domain/pagination_test.go`、`projects/game/session/runtime/mongo/repository.go`（`NewSessionRepository` 建索引 + `List` 的 `$or` 游标过滤）、`projects/game/session/handler/handler.go`（`ListSessions` 的 token 解码与 INVALID_ARGUMENT 映射）；T029 执行参考——`.opencode/skills/testplan/SKILL.md`、`tools/test/guitar/README.md`、`projects/game/testplan/README.md`、`projects/game/testplan/system_test.yaml`
+
+**Tasks**:
+
+- [ ] T021 [P] [US3] 在 `projects/game/game.proto` 的 `ListMemoriesRequest` 增 `string order_by = 4`，注释按契约 §1：AIP-132 引用、支持值（空 = 缺省 `memory_id` 升序；`update_time desc`，空白不敏感）、`update_time` 并列以 `memory_id` 升序打破（确定全序）、非法值 INVALID_ARGUMENT、page_token 顺序作用域（续页参数须一致，两模式 token 形态不互通）；`bazel build //projects/game` 确认 `game_go_proto` 再生成（生成物由规则产出、不入库）
+- [ ] T022 [P] [US3] 在 `projects/game/memory/domain/model.go` 增 `ListMemoriesOrder` 类型与两常量（`ListMemoriesOrderMemoryIDAsc` 零值 = 缺省序、`ListMemoriesOrderUpdateTimeDesc`）；新增 `projects/game/memory/domain/pagination.go`：`MemoryPageCursor{UpdateTime time.Time, MemoryID string}` + `EncodeMemoryPageToken`/`DecodeMemoryPageToken`（base64url NoPadding JSON、`update_time` UTC RFC3339Nano；空 token/坏 base64/坏 JSON/缺字段/坏时间 → error——形态镜像 `projects/game/session/domain/pagination.go`）；`errors.go` 增 `ErrInvalidPageToken`；新增 `projects/game/memory/domain/pagination_test.go`（表驱动 round-trip 与坏 token 各形态，镜像 session 的 `pagination_test.go`）；`bazel run //:gazelle projects/game/memory` 更新 BUILD（本 task 不改仓储接口，独立可编译）
+- [ ] T023 [US3] 在 `projects/game/memory/domain/repository.go` 的 `ListMemories` 签名增 `order ListMemoriesOrder`；`projects/game/memory/runtime/mongo/repository.go`：ordered 分支（`pageToken != ""` 时经 `DecodeMemoryPageToken` 解码、失败返回 `domain.ErrInvalidPageToken`；过滤 `$or: [{update_time: {$lt: T}}, {update_time: T, memory_id: {$gt: M}}]`；`SetSort(bson.D{{update_time, -1}, {memory_id, 1}})`；limit+1；`next_page_token` 由页末条目经 `EncodeMemoryPageToken` 编码）；`NewRepository` 增建非唯一复合索引 `{template: 1, session_id: 1, update_time: -1, memory_id: 1}`（镜像 session 仓储启动建索引）；缺省分支行为原样；`projects/game/memory/handler/handler.go` 的调用点暂传缺省序、`handler_test.go` 的 fake 签名机械适配（编译闭环随行，原则 IV）；扩展 `repository_test.go`：fake `Find` 支持有序过滤（`$or` 求值）与双键排序，新增 ordered 用例（`update_time` 降序、同毫秒并列 `memory_id` 升序、limit+1 续页跨页全量一次、坏 token → `ErrInvalidPageToken`）与缺省模式回归
+- [ ] T024 [US3] 在 `projects/game/memory/handler/handler.go` 的 `ListMemories` 增 `order_by` 解析：空白切分归一（`strings.Fields` 连接）后与 `update_time desc` 等值比较 → ordered 序，空串 → 缺省序，其他值 → `INVALID_ARGUMENT`（错误信息列受支持值）；`toStatusError` 增 `domain.ErrInvalidPageToken → INVALID_ARGUMENT`；扩展 `handler_test.go`：合法/非法 `order_by` 表驱动（透传 order、未知字段/升序/多字段 → InvalidArgument）、仓储 `ErrInvalidPageToken` 映射
+- [ ] T025 [P] [US3] 在 `common/js/dsh-plugins/memory-service/src/client.ts`：`MemoryStore.listMemories` 增可选参数 `options?: { orderBy?: string; pageSize?: number }`；`MemoryClient.listMemories` 实现——`pageSize` 给定时单页即止（一次请求即返回，不续翻），请求 wire 携带 `pageSize`/`orderBy`（undefined 字段不发送）；`MemoryEntry` 收缩为 `{memory_id, content}`（删除 `updateTime` 字段、`normalizeUpdateTime`、`ListedMemory.updateTime`——排序知识收敛服务端）；扩展 `client.test.ts`：单页语义（给定 pageSize 时不续翻 + 请求参数断言）、全页累积回归、删除 Timestamp 归一化用例
+- [ ] T026 [US3] 在 `common/js/dsh-plugins/memory-service/src/snapshot.ts`：`renderMemorySnapshot` 改纯透传渲染（删除 `byRecency` 排序与截取；保留 `长期记忆：` 头、逐条一行、空集空串、`memory_id` 不渲染语义），新增导出 `SNAPSHOT_ORDER_BY = "update_time desc"`、保留并导出 `SNAPSHOT_ENTRY_LIMIT = 10`（注入策略常量单点所有）；在 `service.ts` 的 `load` 改为 `client.listMemories(scope.template, scope.session, {orderBy: SNAPSHOT_ORDER_BY, pageSize: SNAPSHOT_ENTRY_LIMIT})`；更新 `service.test.ts`："load (snapshot recency)" 块改为断言装载调用形态（`toHaveBeenCalledWith` 含 options）与快照按返回序透传渲染（截断由装载查询的 `pageSize` 承担、渲染不做二次截断——store 返回面即快照内容），写路径/fail-loud/冻结回归保持
+- [ ] T027 [US3] 在 `projects/game/testplan/helpers_test.go` 的 `listMemories` helper 增 `orderBy string` 参数（空串 = 不附带查询参数；`memory_test.go` 3 个既有调用点机械适配）；扩展 `projects/game/testplan/memory_test.go`：经网关 `?order_by=update_time%20desc` 的有序断言——PATCH 更新某条目后该条目浮至首位（`update_time` 降序）、同毫秒并列组内 `memory_id` 升序、`page_size=2` 复合游标续页全量一次且序保持、非法 `order_by`（如 `foo` 与 `update_time`）→ 400 INVALID_ARGUMENT；既有缺省模式分页断言（`memory_id` 升序）回归
+- [ ] T028 [P] [US3] 更新 `projects/game/agent_v2/README.md` 的 planner memory 行：快照近因注入表述为"memory 服务 `ListMemories.order_by` 服务端排序、`page_size=10` 单页装载最近 10 条"（终态描述，替换客户端排序表述），大型测试断言面同步
+- [ ] T029 大型测试执行验收：经 testplan SKILL 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环），全部用例通过；重点核对 `TestMemoryServiceHttpCrudAndPagination`（新增 ordered 断言 + 缺省回归）与 `TestAgentV2TeamGameStatsPromptFaces`（12 条夹具快照断言零改动通过——服务端排序结果与断言一致）；任何 failed/flaky 修复后重跑至全绿
+- [ ] T030 按 `specs/065-agent-v2-team-refine/quickstart.md` 走查验证：§2 单测命令全绿（含 `//projects/game/memory/...`）+ §3 大型测试断言项 1–5 逐条对照 + §4 手动观察路径（可选）
+
+**Checkpoint（验证门禁）**: `bazel test //projects/game/memory/... //common/js/dsh-plugins/memory-service/...` 全绿；缺省模式零破坏（既有 handler/仓储/testplan 断言回归通过）；testplan 实际执行全绿（all cases passed）；quickstart 校验项逐条对照通过。
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -162,6 +191,7 @@
 - **Phase 4（US3）**: 无代码依赖、不消费 Phase 1 产物——可与 Phase 2/3/5 并行
 - **Phase 5（US4）**: 依赖 Phase 1（section.ts 属 team 插件；roster 断言与 US1 注册面解耦——纯函数直测）
 - **Phase 6**: 依赖 Phase 2/3/4/5 全部完成（T015/T016/T018 可与前置 phase 部分重叠编写；T017 依赖 T015/T016 完成后收口；T019 执行验收须全量就绪）
+- **Phase 7（US3 修改）**: 依赖 Phase 4 已交付（JS 面改造对象）与 Phase 6 的大型测试基线；T021/T022 可并行先行（互不依赖文件），T023 依赖 T021+T022（proto 再生成 + domain 排序面），T024 依赖 T023（接口与调用点）；T025 依赖 T021（proto-loader 读源 proto 的 wire 字段），T026 依赖 T025；T027 依赖 T024（端到端经服务行为）；T028 随时可做；T029/T030 收口（须 T021–T028 全部完成）
 
 ### User Story Dependencies
 
@@ -181,6 +211,7 @@
 - Phase 2 内：T005/T006/T007 三者不同文件可并行（导出面收口在 T008）；T009 与 T005–T008 可并行；T008→T010 串行（访问器依赖）
 - Phase 4 与 Phase 2/3/5 全程可并行（不同包）
 - Phase 6 内：T015/T016/T018 可并行（新增共享 helper 统一写入 `agent_v2_helpers_test.go`，由 T015 先行）；T017 依赖 T015/T016，串行收口
+- Phase 7 内：T021（proto）/T022（domain）/T028（README）三者不同文件可并行；T023→T024 串行（Go 服务链）；T025→T026 串行（JS 链，与 Go 链可并行）；T027 依赖 T024 后编写；T029/T030 串行收口
 
 ---
 
@@ -217,6 +248,7 @@ Task: "T008 [US1] index.ts 导出收口 + orchestrator.ts 触发/注册/访问�
 4. + Phase 4 → US3 交付（快照近因，可随时插入）
 5. + Phase 5 → US4 交付（提示词澄清）
 6. + Phase 6 → 大型测试验收 + 文档终态
+7. + Phase 7 → US3 修改交付（memory List 服务端排序 + 客户端单页装载与收缩，重新大型测试验收）
 
 ---
 
@@ -225,5 +257,5 @@ Task: "T008 [US1] index.ts 导出收口 + orchestrator.ts 触发/注册/访问�
 - [P] tasks = different files, no dependencies
 - [Story] label maps task to specific user story for traceability
 - 每个 phase 的"文档清单"为该 phase 必读集合（constitution 原则 V 三分类格式）；编码前完整阅读
-- proto / Go 生产服务 / web 前端 / preset 模板零改动——不在任务面内
+- web 前端 / preset 模板零改动——不在任务面内；proto 与 memory Go 服务经 Phase 7 进入任务面（ListMemories `order_by`，2026-09-16 用户裁定）
 - Commit after each task or logical group; stop at any checkpoint to validate independently

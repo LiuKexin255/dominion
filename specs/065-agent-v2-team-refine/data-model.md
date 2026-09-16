@@ -54,14 +54,21 @@
 - 成员视图：消费成员的 log 内为 `user/message`（`source {kind: "team-broadcast", role: "saolei", senderSessionId: "…/saolei", messageId: 发言锚}`）→ `MemberViewEntry {sender: "saolei"}` + `member_view` 帧（既有路径，非新通路）。
 - **不变量**：每个被交接的局至多一条（编排 `statsSentFor` guard + MessageId 唯一）；`GetTeam.members`/`active_member` 不含 `saolei`。
 
-### 1.5 记忆条目更新时间 — `MemoryEntry` 扩展（JS 客户端）
+### 1.5 记忆列表排序 — ListMemories `order_by`（memory 服务）+ 快照单页装载（JS 客户端）
 
-| 字段 | 类型 | 说明 |
+契约：[contracts/memory-snapshot-recency.md](contracts/memory-snapshot-recency.md) §1–§2。
+
+| 实体 | 位置 | 说明 |
 |---|---|---|
-| `updateTime` | number（可选） | epoch ms 整数；proto `Memory.update_time`（`{seconds: String, nanos}`）归一化 `Math.round(Number(seconds)*1000 + nanos/1e6)`；缺失保持 undefined |
+| `ListMemoriesRequest.order_by` | `projects/game/game.proto` | `string order_by = 4`（AIP-132）。缺省 = `memory_id` 升序（现行为零破坏）；`update_time desc`（空白不敏感）= `update_time` 降序 + `memory_id` 升序并列打破；其他值 INVALID_ARGUMENT |
+| `ListMemoriesOrder` | `projects/game/memory/domain` | 两值枚举（memory_id 升序 / update_time 降序）；`MemoryRepository.ListMemories` 增 order 参数 |
+| `MemoryPageCursor` | `projects/game/memory/domain` | 复合游标 `{UpdateTime time.Time, MemoryID string}`；`EncodeMemoryPageToken`/`DecodeMemoryPageToken` base64url(NoPadding)-JSON、`update_time` UTC RFC3339Nano（镜像 session 服务 `ListPageCursor` 先例 `projects/game/session/domain/pagination.go`）；解码失败 → `ErrInvalidPageToken` → handler 映射 INVALID_ARGUMENT |
+| Mongo 排序/索引 | `projects/game/memory/runtime/mongo` | ordered：sort `{update_time: -1, memory_id: 1}` + 续页 `$or [{update_time < T}, {update_time = T, memory_id > M}]` + limit+1；启动建非唯一索引 `{template: 1, session_id: 1, update_time: -1, memory_id: 1}` |
+| `listMemories` options | `common/js/dsh-plugins/memory-service/src/client.ts` | 可选 `{orderBy?, pageSize?}`；`pageSize` 给定 → 单页即止，未给定 → 全页累积（写路径现行为）。`MemoryEntry` 仅 `{memory_id, content}` |
+| 快照装载/渲染 | `common/js/dsh-plugins/memory-service/src/{service,snapshot}.ts` | `load` 以 `{orderBy: "update_time desc", pageSize: 10}` 单页取最近 10 条（`SNAPSHOT_ORDER_BY`/`SNAPSHOT_ENTRY_LIMIT` 常量归 snapshot.ts）；`renderMemorySnapshot` 纯透传渲染（`memory_id` 永不渲染、空集空串——既有语义） |
 
-- **快照渲染**（`renderMemorySnapshot`）：按 `updateTime` 降序（undefined 视为最旧）→ 并列以 `memory_id` 升序 → 截取前 **10** 条 → 逐条一行渲染（`memory_id` 永不渲染，既有语义）。空集渲染空串（section 不出现）。
-- **零变化面**：memory 工具写路径（`applyMemoryCall` 的 old_text 定位面向全量存储）、快照冻结时机（物化预取、实例生命周期固定）、Go 服务。
+- **快照序**：最近更新的 ≤10 条、最新在前、确定（同毫秒并列以 `memory_id` 升序打破）——由服务端排序保证，客户端不排序/不截断。
+- **零变化面**：memory 工具写路径（`applyMemoryCall` 的 old_text 定位面向全量存储、不传 order_by）、快照冻结时机（物化预取、实例生命周期固定）、前端。
 
 ## 2. 状态转移（终局交接路径增量）
 
