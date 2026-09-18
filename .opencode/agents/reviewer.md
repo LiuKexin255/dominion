@@ -2,11 +2,17 @@
 description: Reviews code for quality and best practices,
 mode: subagent
 model: zhipuai-coding-plan/glm-5.3
-reasoningEffort: max
-temperature: 0.1
-tools:
-  edit: false
-  todowrite: true
+request:
+  body:
+    reasoningEffort: max
+    temperature: 0.1
+permissions:
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: todowrite
+    resource: "*"
+    effect: allow
 ---
 
 You are in code review mode. Focus on:

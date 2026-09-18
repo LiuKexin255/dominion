@@ -1,30 +1,51 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "zhipuai-coding-plan/glm-5.3",
-  "small_model": "zhipuai-coding-plan/glm-5.3-flash",
   "instructions": [
     ".specify/memory/constitution.md"
   ],
-  "agent": {
+  "agents": {
+    "title": {
+      "model": "zhipuai-coding-plan/glm-5.3-flash"
+    },
     "build": {
       "model": "zhipuai-coding-plan/glm-5.3",
-      "reasoningEffort": "max"
+      "request": {
+        "body": {
+          "reasoningEffort": "max"
+        }
+      }
     },
     "explore": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "reasoningEffort": "max"
+      "request": {
+        "body": {
+          "reasoningEffort": "max"
+        }
+      }
     },
     "plan": {
       "model": "zhipuai-coding-plan/glm-5.3",
-      "reasoningEffort": "max",
+      "request": {
+        "body": {
+          "reasoningEffort": "max"
+        }
+      }
     },
     "general": {
       "model": "zhipuai-coding-plan/glm-5.3",
-      "reasoningEffort": "max",
-      "tools": {
-        "todowrite": true
-      }
-    },
+      "request": {
+        "body": {
+          "reasoningEffort": "max"
+        }
+      },
+      "permissions": [
+        { "action": "todowrite", "resource": "*", "effect": "allow" }
+      ]
+    }
+  },
+  "websearch": {
+    "provider": "exa"
   },
   "lsp": {
     "bazel": {
@@ -38,9 +59,7 @@
       ]
     }
   },
-  "permission": {
-    "external_directory": {
-      "~/.cache/bazel/_bazel_liukexin/*": "allow"
-    }
-  }
+  "permissions": [
+    { "action": "external_directory", "resource": "~/.cache/bazel/_bazel_liukexin/*", "effect": "allow" }
+  ]
 }

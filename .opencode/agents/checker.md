@@ -2,10 +2,14 @@
 description: Reviews doc for consistency and spec
 mode: primary
 model: opencode-go/deepseek-v4.1-flash
-reasoningEffort: max
-temperature: 0.1
-tools:
-  todowrite: true
+request:
+  body:
+    reasoningEffort: max
+    temperature: 0.1
+permissions:
+  - action: todowrite
+    resource: "*"
+    effect: allow
 ---
 
 You are in doc review mode. Focus on:
