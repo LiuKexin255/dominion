@@ -73,7 +73,6 @@ export interface DesktopBridgeService {
 }
 
 export type {
-  BidiStream,
   BridgeTeamFrame,
   BridgeUserFrame,
   DesktopBridgeServiceHandlers,

@@ -9,9 +9,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installReporter, type Reporter } from "@dominion/common-js-logs";
 
-import { DesktopBridge, deriveSessionName } from "./bridge.js";
+import { DesktopBridge } from "./bridge.js";
 import type {
-  BidiStream,
   BridgeTeamFrame,
   BridgeUserFrame,
   SendFrameCall,
@@ -28,11 +27,9 @@ const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
  * index 0); dispatch frames follow from index 1. */
 const CONFIRM_FRAME_COUNT = 1;
 
-interface FakeCall extends BidiStream, StreamCall {
+interface FakeCall extends StreamCall {
   readonly written: BridgeTeamFrame[];
-  emit(event: "data", frame: BridgeUserFrame): void;
   emitError(err?: unknown): void;
-  emitEnd(): void;
   emitClose(): void;
   emitCancelled(): void;
   isEnded(): boolean;
@@ -64,14 +61,8 @@ function fakeStream(session?: string): FakeCall {
       ended = true;
       return stream;
     },
-    emit(event, frame) {
-      emit(event, frame);
-    },
     emitError(err?: unknown) {
       emit("error", err);
-    },
-    emitEnd() {
-      emit("end");
     },
     emitClose() {
       emit("close");
@@ -82,16 +73,6 @@ function fakeStream(session?: string): FakeCall {
     isEnded: () => ended,
   };
   return stream;
-}
-
-function probeFrame(session = "s1", template = "saolei"): BridgeUserFrame {
-  return {
-    sessionId: session,
-    templateId: template,
-    flowParts: {
-      parts: [{ status: { status: "STATUS_SIGNAL_STATUS_ACTIVE" } }],
-    },
-  };
 }
 
 function makeMovePart(): WireFlowPart {
@@ -167,69 +148,11 @@ describe("DesktopBridge", () => {
     expect(stream.written).toHaveLength(CONFIRM_FRAME_COUNT + 1);
     expect(stream.written[0]?.flowParts?.parts?.[0]?.status?.status).toBe(STATUS_ACTIVE);
 
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, "ok") }] },
-    });
+    bridge.SendFrame(sendFrameCall(receiptFrame(toolId, "ok"), SESSION), vi.fn());
 
     const result = await promise;
     expect(result.status).toBe(STATUS_SUCCEEDED);
     expect(result.message).toBe("ok");
-  });
-
-  // ------------------------------------------------------------------
-  // Connect handler 面首帧绑定（v2 Connect 路径；status 探针不再回显——
-  // 上行 part 分派只处理 flow_result/wait/warn，
-  // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.9）
-  // ------------------------------------------------------------------
-  it("handlers().Connect binds on the first frame and ignores the status probe", () => {
-    const call = fakeStream();
-    bridge.handlers().Connect(call);
-    call.emit("data", probeFrame());
-
-    // Only attach's connection confirmation was written: the legacy status
-    // probe is warn-ignored rather than echoed.
-    expect(call.written).toHaveLength(CONFIRM_FRAME_COUNT);
-    const confirm = call.written[0];
-    expect(confirm?.flowParts?.parts?.[0]?.status?.status).toBe(STATUS_ACTIVE);
-    expect(confirm?.sessionId).toBe(SESSION);
-    expect(confirm?.frameId).toBeTruthy();
-
-    // The probe frame still binds the connection: a dispatch now routes
-    // through it and its receipt resolves.
-    const promise = bridge.dispatch(SESSION, makeMovePart());
-    const toolId = writtenToolId(call);
-    expect(toolId).not.toBe("");
-    call.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, "ok") }] },
-    });
-    return expect(promise).resolves.toMatchObject({ status: STATUS_SUCCEEDED });
-  });
-
-  it("Connect frame with no session id is ignored (no binding)", () => {
-    const call = fakeStream();
-    bridge.handlers().Connect(call);
-    call.emit("data", { templateId: "saolei", flowParts: { parts: [] } });
-
-    const result = bridge.dispatch(SESSION, makeMovePart());
-    expect(call.written).toHaveLength(0);
-    return expect(result).resolves.toMatchObject({
-      status: STATUS_FAILED,
-      message: "desktop disconnected",
-    });
-  });
-
-  it("deriveSessionName tolerates a full resource-name sessionId (v1 extractSessionId)", () => {
-    expect(deriveSessionName({ sessionId: "templates/saolei/sessions/x", templateId: "saolei" })).toBe(
-      "templates/saolei/sessions/x",
-    );
-    expect(deriveSessionName({ sessionId: "x", templateId: "saolei" })).toBe(
-      "templates/saolei/sessions/x",
-    );
-    expect(deriveSessionName({ templateId: "saolei" })).toBeUndefined();
   });
 
   // ------------------------------------------------------------------
@@ -302,11 +225,7 @@ describe("DesktopBridge", () => {
     const promise = bridge.dispatch(SESSION, makeMovePart());
     expect(streamB.written).toHaveLength(CONFIRM_FRAME_COUNT + 1);
     const toolId = writtenToolId(streamB);
-    streamB.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, "ok") }] },
-    });
+    bridge.SendFrame(sendFrameCall(receiptFrame(toolId, "ok"), SESSION), vi.fn());
     const result = await promise;
     expect(result.status).toBe(STATUS_SUCCEEDED);
   });
@@ -320,13 +239,10 @@ describe("DesktopBridge", () => {
     const streamB = fakeStream();
     bridge.attach(SESSION, streamB);
 
-    // The receipt arrives on the NEW connection (bidi forwarding continues
-    // over the fresh stream) and resolves the dispatch issued on the old one.
-    streamB.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, "carried over") }] },
-    });
+    // The receipt arrives after the takeover and resolves the in-flight
+    // dispatch issued on the superseded connection: pending is keyed per
+    // session, so a new stream taking over never loses it.
+    bridge.SendFrame(sendFrameCall(receiptFrame(toolId, "carried over"), SESSION), vi.fn());
     const result = await promise;
     expect(result.status).toBe(STATUS_SUCCEEDED);
     expect(result.message).toBe("carried over");
@@ -365,11 +281,7 @@ describe("DesktopBridge", () => {
     const promise = bridge.dispatch(SESSION, makeMovePart(), controller.signal);
     const toolId = writtenToolId(stream);
 
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, "ok") }] },
-    });
+    bridge.SendFrame(sendFrameCall(receiptFrame(toolId, "ok"), SESSION), vi.fn());
     const result = await promise;
     expect(result.status).toBe(STATUS_SUCCEEDED);
 
@@ -398,11 +310,7 @@ describe("DesktopBridge", () => {
   it("receipt for an unknown tool_id is ignored; the dispatch still times out", async () => {
     attach();
     const promise = bridge.dispatch(SESSION, makeMovePart());
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult("nonexistent-id", STATUS_SUCCEEDED, "stale") }] },
-    });
+    bridge.SendFrame(sendFrameCall(receiptFrame("nonexistent-id", "stale"), SESSION), vi.fn());
 
     await vi.advanceTimersByTimeAsync(1_200_000);
     const result = await promise;
@@ -413,11 +321,13 @@ describe("DesktopBridge", () => {
   it("receipt with no tool_id is ignored", async () => {
     attach();
     const promise = bridge.dispatch(SESSION, makeMovePart());
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: { status: STATUS_SUCCEEDED, message: "" } }] },
-    });
+    bridge.SendFrame(
+      sendFrameCall(
+        { flowParts: { parts: [{ flowResult: { status: STATUS_SUCCEEDED, message: "" } }] } },
+        SESSION,
+      ),
+      vi.fn(),
+    );
 
     await vi.advanceTimersByTimeAsync(1_200_000);
     const result = await promise;
@@ -451,16 +361,14 @@ describe("DesktopBridge", () => {
     const idB = writtenToolId(stream, CONFIRM_FRAME_COUNT + 1);
     expect(idA).not.toBe(idB);
 
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(idB, STATUS_SUCCEEDED, "b-done") }] },
-    });
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(idA, STATUS_FAILED, "a-fail") }] },
-    });
+    bridge.SendFrame(sendFrameCall(receiptFrame(idB, "b-done"), SESSION), vi.fn());
+    bridge.SendFrame(
+      sendFrameCall(
+        { flowParts: { parts: [{ flowResult: makeResult(idA, STATUS_FAILED, "a-fail") }] } },
+        SESSION,
+      ),
+      vi.fn(),
+    );
 
     const [resultA, resultB] = await Promise.all([promiseA, promiseB]);
     expect(resultA.status).toBe(STATUS_FAILED);
@@ -477,11 +385,10 @@ describe("DesktopBridge", () => {
     const part = makeMovePart();
     const promise = bridge.dispatch(SESSION, part);
     const toolId = writtenToolId(stream);
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED) }] },
-    });
+    bridge.SendFrame(
+      sendFrameCall({ flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED) }] } }, SESSION),
+      vi.fn(),
+    );
     await promise;
 
     const frame = stream.written[CONFIRM_FRAME_COUNT]!;
@@ -511,25 +418,29 @@ describe("DesktopBridge", () => {
     const toolId = writtenToolId(stream);
 
     const pngBytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: {
-        parts: [
-          {
-            flowResult: {
-              ...makeResult(toolId, STATUS_SUCCEEDED, "done"),
-              screenshot: {
-                encoding: "IMAGE_ENCODING_PNG",
-                data: pngBytes,
-                widthPx: 1920,
-                heightPx: 1080,
+    bridge.SendFrame(
+      sendFrameCall(
+        {
+          flowParts: {
+            parts: [
+              {
+                flowResult: {
+                  ...makeResult(toolId, STATUS_SUCCEEDED, "done"),
+                  screenshot: {
+                    encoding: "IMAGE_ENCODING_PNG",
+                    data: pngBytes,
+                    widthPx: 1920,
+                    heightPx: 1080,
+                  },
+                },
               },
-            },
+            ],
           },
-        ],
-      },
-    });
+        },
+        SESSION,
+      ),
+      vi.fn(),
+    );
 
     const result = await promise;
     expect(result.status).toBe(STATUS_SUCCEEDED);
@@ -542,25 +453,29 @@ describe("DesktopBridge", () => {
     attach();
     const promise = bridge.dispatch(SESSION, makeMovePart());
     const toolId = writtenToolId(stream);
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: {
-        parts: [
-          {
-            flowResult: {
-              ...makeResult(toolId, STATUS_SUCCEEDED, "done"),
-              screenshot: {
-                encoding: "IMAGE_ENCODING_PNG",
-                data: "cHJlLWVuY29kZWQ=",
-                widthPx: 800,
-                heightPx: 600,
+    bridge.SendFrame(
+      sendFrameCall(
+        {
+          flowParts: {
+            parts: [
+              {
+                flowResult: {
+                  ...makeResult(toolId, STATUS_SUCCEEDED, "done"),
+                  screenshot: {
+                    encoding: "IMAGE_ENCODING_PNG",
+                    data: "cHJlLWVuY29kZWQ=",
+                    widthPx: 800,
+                    heightPx: 600,
+                  },
+                },
               },
-            },
+            ],
           },
-        ],
-      },
-    });
+        },
+        SESSION,
+      ),
+      vi.fn(),
+    );
 
     const result = await promise;
     expect(result.screenshot?.data).toBe("cHJlLWVuY29kZWQ=");
@@ -571,11 +486,7 @@ describe("DesktopBridge", () => {
     attach();
     const promise = bridge.dispatch(SESSION, makeMovePart());
     const toolId = writtenToolId(stream);
-    stream.emit("data", {
-      sessionId: "s1",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, "ok") }] },
-    });
+    bridge.SendFrame(sendFrameCall(receiptFrame(toolId, "ok"), SESSION), vi.fn());
     const result = await promise;
     expect(result.screenshot).toBeUndefined();
   });
@@ -590,11 +501,10 @@ describe("DesktopBridge", () => {
 
     const other = fakeStream();
     bridge.attach("templates/saolei/sessions/other", other);
-    other.emit("data", {
-      sessionId: "other",
-      templateId: "saolei",
-      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, "wrong session") }] },
-    });
+    bridge.SendFrame(
+      sendFrameCall(receiptFrame(toolId, "wrong session"), "templates/saolei/sessions/other"),
+      vi.fn(),
+    );
 
     await vi.advanceTimersByTimeAsync(1_200_000);
     const result = await promise;
@@ -619,11 +529,12 @@ describe("DesktopBridge", () => {
     expect(frame.createTime?.seconds).toBeGreaterThan(0);
   });
 
-  it("Stream with no session id warns and registers nothing", () => {
+  it("Stream with no session id warns, writes no frame, and ends the call", () => {
     const call = fakeStream();
     bridge.handlers().Stream(call);
 
     expect(call.written).toHaveLength(0);
+    expect(call.isEnded()).toBe(true);
     expect(bridge.isDesktopConnected(SESSION)).toBe(false);
   });
 

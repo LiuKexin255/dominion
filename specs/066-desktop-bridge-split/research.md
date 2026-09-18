@@ -47,13 +47,23 @@ message SendFrameResponse {}
 
 message StreamRequest {
   // Session resource name: templates/{template}/sessions/{session}.
-  string session = 1 [(google.api.field_behavior) = REQUIRED];
+  string session = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Session"
+    }
+  ];
 }
 
 message SendFrameRequest {
   // Session resource name; overwritten by the URL path (grpc-gateway
   // assigns path parameters after body decoding).
-  string session = 1 [(google.api.field_behavior) = REQUIRED];
+  string session = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Session"
+    }
+  ];
   // The desktop frame to deliver; body payload under octet-stream.
   projects.game.UserFrame frame = 2 [(google.api.field_behavior) = REQUIRED];
 }
@@ -61,7 +71,7 @@ message SendFrameRequest {
 
 `Connect` RPC 及其注释整体删除（干净切换，用户指令）。
 
-**Rationale**: 与 `AgentService.Send`（`post .../sessions/*}:send` body `*`）同族；`body: "*"` + octet-stream 下，desktop `proto.Marshal(SendFrameRequest{frame})` 即请求体，path 参数在 body 解码后覆盖 `session`（生成代码语义，survey §3.1.2 已源码验证）——身份绑定不可被 body 值左右。`StreamRequest` 仅承载 path 身份。响应用与 RPC 同名的空 `SendFrameResponse`（AIP-136 "response message matching the RPC name, with a Response suffix"；与 `Cancel(CancelRequest) returns (CancelResponse)` 命名族一致）——回执关联靠 `tool_id`，同步响应无信息量。
+**Rationale**: 与 `AgentService.Send`（`post .../sessions/*}:send` body `*`）同族；`body: "*"` + octet-stream 下，desktop `proto.Marshal(SendFrameRequest{frame})` 即请求体，path 参数在 body 解码后覆盖 `session`（生成代码语义，survey §3.1.2 已源码验证）——身份绑定不可被 body 值左右。`StreamRequest` 仅承载 path 身份。响应用与 RPC 同名的空 `SendFrameResponse`（AIP-136 "response message matching the RPC name, with a Response suffix"；与 `Cancel(CancelRequest) returns (CancelResponse)` 命名族一致）——回执关联靠 `tool_id`，同步响应无信息量。两个 `session` 字段的 `(google.api.resource_reference)`（type `game.liukexin.com/Session`，注解形态见 AIP-124 https://google.aip.dev/124 ）对齐同文件全部请求消息资源字段的既有惯例（直系先例 `SendRequest.session`——同资源类型、同 path 模式）；Session 类型声明于 `game.proto`、与 `agent_v2.proto` 同属 `game_go_proto` 生成单元，引用可解析；仅作用于文档/lint 工具，无 wire 与运行时影响。
 
 **Alternatives**: (a) `body: "frame"` 嵌套映射——octet-stream 下无收益且生成路径更复杂，弃；(b) SendFrame 直接以 `UserFrame` 为请求——path 参数无处落（`session` 字段与 `UserFrame.session_id` 不同名不同义），弃；(c) 保留 Connect 并标记 deprecated——违背"干净重构、不遗留旧框架"指令，弃。
 
@@ -99,7 +109,7 @@ message SendFrameRequest {
 **Decision**:
 1. `wire.ts`：`BidiStream` 替换为两个结构面——下行 `StreamCall`（grpc-js `ServerWritableStream` 的结构超集：`request: { session?: string }`、`write`/`end`、`on("error"|"close"|"cancelled")`）与上行 `SendFrameCall`（`request: { session?: string; frame?: BridgeUserFrame }` + callback）。`DesktopBridgeServiceHandlers` 改为 `Stream(call)` / `SendFrame(call, callback)` 两方法。删除 `deriveSessionName` 导出（首帧身份解析机制消失）。
 2. `bridge.ts`：
-   - `Stream(call)`：`sessionName = call.request.session`（path 注入）；`attach(sessionName, call)` = 接管（end 旧流 + 覆盖注册）→ 注册 → **立即写一帧 status（`STATUS_SIGNAL_STATUS_ACTIVE`）TeamFrame** → 启动心跳 `setInterval`（10s，写同型 status 帧）→ 挂 disconnect 事件。
+   - `Stream(call)`：`sessionName = call.request.session`（path 注入）；空值 → warn + `call.end()`——零帧 OK 结束，调用方立即得 EOF（grpc-js 的 server-streaming handler 正常返回不发送任何 status，须显式 `end()` 收口，否则 RPC 悬空至客户端超时取消；该分支生产不可达——gateway path 注入非空、proxy `parseAgentSession` 前置拦截——故 OK 收口即可，`end()` 已在 `StreamCall` 结构面内，零扩面）；`attach(sessionName, call)` = 接管（end 旧流 + 覆盖注册）→ 注册 → **立即写一帧 status（`STATUS_SIGNAL_STATUS_ACTIVE`）TeamFrame** → 启动心跳 `setInterval`（10s，写同型 status 帧）→ 挂 disconnect 事件。
    - Connection 对象 = stream face + heartbeat timer（接管/断开时 clearInterval）。
    - `SendFrame(call, callback)`：`sessionName` 取 `call.request.session`；`connections` 无该会话 → `callback({ code: FAILED_PRECONDITION, message: "desktop stream not active" })`；有则 `routeFrame`（flowResult → `handleResult`；wait/warn → 既有日志；其余 part 记 warn 忽略）后 `callback(null, {})`。
    - 删除 `respondProbe`（探针 echo 机制消失；status 帧改由服务端主动推：开流首帧 + 周期心跳，值固定 ACTIVE——desktop 前端继续展示同枚举名，行为面不变）。

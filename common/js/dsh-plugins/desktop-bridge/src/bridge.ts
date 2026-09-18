@@ -92,7 +92,7 @@ interface Connection {
 
 /**
  * Convert an ImagePart screenshot into the resolved OperationScreenshot
- * shape. Raw bytes arriving over the bidi stream are base64-encoded here; an
+ * shape. Raw bytes arriving over the uplink are base64-encoded here; an
  * already-string `data` (protojson) passes through unchanged. Missing numeric
  * dimensions coalesce to 0 so the resolved shape stays non-optional.
  */
@@ -117,23 +117,6 @@ function operationPart(
     part.mouseMoveAndClick ??
     undefined
   );
-}
-
-/**
- * Derive the session resource name `templates/{template}/sessions/{session}`
- * from a bridge user frame. The gateway injects the bare segments from the
- * connect URL path into the first frame (desktop-bridge.md §1); a full
- * resource-name form in sessionId is tolerated defensively (v1
- * extractSessionId). Returns undefined when the frame carries no session id.
- */
-export function deriveSessionName(frame: BridgeUserFrame): string | undefined {
-  const raw = frame.sessionId ?? "";
-  if (!raw) {
-    return undefined;
-  }
-  const session = /(?:^|\/)sessions\/([^/]+)$/.exec(raw)?.[1] ?? raw;
-  const template = frame.templateId ?? "";
-  return `templates/${template}/sessions/${session}`;
 }
 
 /** Build an outbound flowParts TeamFrame with the full envelope (v1 FR-013:
@@ -181,7 +164,10 @@ export class DesktopBridge {
    * data-model.md §1.1/§1.3).
    *
    * The Stream handler below derives `sessionName` from the path-bound
-   * request; `attach` owns everything after identity.
+   * request; `attach` owns everything after identity. The stream carries no
+   * inbound frames — the desktop's uplink is the separate SendFrame call — so
+   * the connection registers only the outbound write face and its lifecycle
+   * listeners.
    */
   attach(sessionName: string, stream: StreamCall): void {
     const previous = this.connections.get(sessionName);
@@ -202,9 +188,6 @@ export class DesktopBridge {
     }
     const connection: Connection = { stream };
     this.connections.set(sessionName, connection);
-    stream.on("data", (frame) => {
-      this.routeFrame(sessionName, frame);
-    });
     const onDisconnect = (reason: unknown) => {
       this.disconnect(sessionName, connection, reason);
     };
@@ -222,12 +205,16 @@ export class DesktopBridge {
    * The gRPC handler face for the session downlink: the request's
    * path-injected session resource name binds the connection and owns
    * everything after identity (confirmation frame, heartbeat, disconnect
-   * cleanup).
+   * cleanup). A call with no session ends with zero frames: a server-streaming
+   * handler that simply returns sends no status and leaves the RPC pending
+   * until the client cancels, so the handler closes the call explicitly
+   * (specs/066-desktop-bridge-split/research.md D12.2).
    */
   Stream(call: StreamCall): void {
     const sessionName = call.request.session;
     if (!sessionName) {
       warn("stream call with no session id");
+      call.end();
       return;
     }
     this.attach(sessionName, call);
@@ -389,12 +376,7 @@ export class DesktopBridge {
    * The gRPC handler face for host registration
    * (server.ts adds it as the DesktopBridgeService implementation). `Stream`
    * binds the session from the path-bound request; `SendFrame` forwards one
-   * uplink frame into the same part dispatch; `Connect` is the legacy
-   * bidi path whose first frame carries the gateway-injected identity: the
-   * handler derives the session resource name, attaches, and routes that
-   * frame (the attach listener registers during the same emit, so the first
-   * frame is routed here exactly once). Later frames route through the
-   * attach listener.
+   * uplink frame into the same part dispatch.
    */
   handlers(): DesktopBridgeServiceHandlers {
     return {
@@ -403,22 +385,6 @@ export class DesktopBridge {
       },
       SendFrame: (call, callback) => {
         this.SendFrame(call, callback);
-      },
-      Connect: (call) => {
-        let bound = false;
-        call.on("data", (frame) => {
-          if (bound) {
-            return;
-          }
-          const sessionName = deriveSessionName(frame);
-          if (sessionName === undefined) {
-            warn("connect frame with no session id");
-            return;
-          }
-          bound = true;
-          this.attach(sessionName, call);
-          this.routeFrame(sessionName, frame);
-        });
       },
     };
   }
@@ -438,10 +404,9 @@ export class DesktopBridge {
   }
 
   /**
-   * Route one inbound frame for a bound session: receipts resolve in-flight
-   * dispatches, wait/warn parts keep their existing log behavior, and every
-   * other part (including the status probe the v2 desktop does not send) is
-   * logged and ignored
+   * Route one uplink frame delivered by the SendFrame handler for a bound
+   * session: receipts resolve in-flight dispatches, wait/warn parts keep
+   * their existing log behavior, and every other part is logged and ignored
    * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.9).
    */
   private routeFrame(sessionName: string, frame: BridgeUserFrame): void {

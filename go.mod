@@ -9,7 +9,6 @@ require (
 	github.com/bep/debounce v1.2.1
 	github.com/bitfield/script v0.24.0
 	github.com/charmbracelet/glamour v0.8.0
-	github.com/coder/websocket v1.8.14
 	github.com/flytam/filenamify v1.2.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.13.2
@@ -125,8 +124,6 @@ require (
 	github.com/muesli/termenv v0.15.3-0.20240618155329-98d742f6907a // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
-	github.com/onsi/ginkgo/v2 v2.28.3 // indirect
-	github.com/onsi/gomega v1.40.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
@@ -179,7 +176,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
 	github.com/minio/minio-go/v7 v7.0.100
-	github.com/protoc-contrib/protoc-gen-go-aip v0.1.3
+	github.com/protoc-contrib/protoc-gen-go-aip v0.1.3 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	go.opentelemetry.io/contrib/bridges/otelslog v0.18.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0

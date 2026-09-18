@@ -70,11 +70,6 @@ func main() {
 	agentV2Target := solver.MustParseTarget(gameconst.AgentV2Target)
 	agentV2Manager := agentclient.NewManager(statefulResolver, agentV2Target, agentclient.DefaultRefreshInterval)
 
-	// Bidirectional stream binder for the legacy DesktopBridgeService.Connect
-	// relay, and the generic server-streaming pump shared by AgentService.Send
-	// and DesktopBridgeService.Stream.
-	binder := bind.NewBinder()
-
 	// Agent handler forwards the /api/v2 session-scoped agent RPCs
 	// (UpdateAgent/GetAgent/ListAgentMessages/Send) to the agent_v2 instance
 	// owning the (template, session) pair — owner affinity keeps the
@@ -97,15 +92,14 @@ func main() {
 		agentV2OwnerStore,
 		hashPicker,
 		agentV2Manager,
-		binder,
 		bind.NewServerStreamBinder[game.TeamFrame](),
 	)
 
 	// gRPC server with default service options (OTel tracing, TLS).
-	// The gateway's DesktopBridgeService.Connect client pings every 30s
+	// The gateway's DesktopBridgeService.Stream client pings every 30s
 	// (WithLongLivedClientKeepalive); without a relaxed enforcement policy
 	// the grpc-go server default MinTime (5min) would GOAWAY the long-lived
-	// bidi stream with "too_many_pings" during idle gaps.
+	// downlink stream with "too_many_pings" during idle gaps.
 	serverOpts := append(
 		pgrpc.ServiceDefault(),
 		grpcgo.MaxRecvMsgSize(8*1024*1024),

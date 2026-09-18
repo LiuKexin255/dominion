@@ -482,18 +482,22 @@ message QueueSignal {
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────
 
 // UserFrame is the inbound transport unit (desktop client → server) exchanged
-// over WebSocket and gRPC streams. A frame carries exactly one payload: a
-// batch of display blocks (MessageParts — user message content) OR a batch of
-// control blocks (FlowParts — operation results, connectivity probes). It
-// excludes the outbound-only envelope fields (frame_id/create_time/sender):
-// the server does not consume them on the inbound direction
+// over HTTP and gRPC streams. The desktop submits it as the raw binary proto
+// body of the DesktopBridgeService.SendFrame uplink (application/octet-stream),
+// and the gateway forwards it to agent_v2 as a gRPC frame
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1). A frame
+// carries exactly one payload: a batch of display blocks (MessageParts — user
+// message content) OR a batch of control blocks (FlowParts — operation results
+// and signals). It excludes the outbound-only envelope fields
+// (frame_id/create_time/sender): the server does not consume them on the
+// inbound direction
 // (specs/035-proto-contract-refine/contracts/frame-split.md §2).
 message UserFrame {
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
   string template_id = 2 [(google.api.field_behavior) = REQUIRED];
   // The team agent the user input targets (e.g. player/planner); empty falls
   // back to the accepts-user-input agent. Only message_parts (user message)
-  // frames need it; flow_parts (operation result/probe) may omit it.
+  // frames need it; flow_parts (operation result/signal) may omit it.
   string agent = 3;
 
   // Exactly one payload per frame: a batch of display blocks OR a batch of
@@ -505,11 +509,15 @@ message UserFrame {
 }
 
 // TeamFrame is the outbound transport unit (server → desktop client)
-// exchanged over WebSocket and gRPC streams. A frame carries exactly one
-// payload: a batch of display blocks (MessageParts — agent display content)
-// OR a batch of control blocks (FlowParts — wait/warn/status/queue signals +
-// mouse/keyboard operation requests). Every send point MUST set the envelope
-// fields session_id/template_id/frame_id/create_time (FR-013,
+// exchanged over HTTP and gRPC streams: agent_v2 emits it over gRPC, the
+// proxy relays it, and the gateway serves the session downlink as chunked
+// NDJSON — one frame per line (DesktopBridgeService.Stream)
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1). A frame
+// carries exactly one payload: a batch of display blocks (MessageParts —
+// agent display content) OR a batch of control blocks (FlowParts —
+// wait/warn/status/queue signals + mouse/keyboard operation requests). Every
+// send point MUST set the envelope fields
+// session_id/template_id/frame_id/create_time (FR-013,
 // specs/035-proto-contract-refine/contracts/frame-split.md §3.3).
 message TeamFrame {
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];

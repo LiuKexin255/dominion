@@ -14,14 +14,14 @@ import { Context } from '@deepseek-ai/cordis';
 import { describe, expect, it } from 'vitest';
 
 import { DesktopBridgePlugin } from './index.js';
-import type { BidiStream } from './wire.js';
+import type { StreamCall } from './wire.js';
 
 const SESSION = 'templates/saolei/sessions/s1';
 
 /** Minimal stream double carrying only what attach/disconnect exercise. */
 function fakeStream() {
   const listeners = new Map<string, Array<() => void>>();
-  const stream: BidiStream = {
+  const stream: StreamCall = {
     request: {},
     on(event, listener) {
       const list = listeners.get(event) ?? [];

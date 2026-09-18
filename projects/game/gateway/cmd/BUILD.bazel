@@ -11,16 +11,11 @@ go_library(
         "//common/gopkg/grpc",
         "//common/gopkg/grpc/solver",
         "//common/gopkg/http",
-        "//common/gopkg/logs",
-        "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//projects/game",
-        "//projects/game/pkg/bind",
         "//projects/game/pkg/gameconst",
-        "@com_github_coder_websocket//:websocket",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -35,10 +30,7 @@ go_unittest(
     srcs = ["main_test.go"],
     embed = [":cmd_lib"],
     deps = [
-        "//common/gopkg/grpc",
         "//projects/game",
-        "@com_github_coder_websocket//:websocket",
-        "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_protobuf//proto",

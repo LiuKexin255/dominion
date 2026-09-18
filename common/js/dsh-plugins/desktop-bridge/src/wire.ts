@@ -124,8 +124,10 @@ export interface WireFlowParts {
   parts?: WireFlowPart[] | null;
 }
 
-/** Inbound UserFrame subset: identity (gateway-injected) plus the flowParts
- * payload. messageParts frames are not produced by the v2 desktop. */
+/** Inbound UserFrame subset: the client-reported envelope fields plus the
+ * flowParts payload. The bound identity is the path-injected
+ * SendFrameRequest.session, not these envelope values. messageParts frames
+ * are not produced by the v2 desktop. */
 export interface BridgeUserFrame {
   sessionId?: string | null;
   templateId?: string | null;
@@ -146,31 +148,10 @@ export interface BridgeTeamFrame {
  * The stream call face the bridge consumes. Structural superset of the
  * grpc-js `ServerWritableStream` members this handler relies on:
  * `request` (path-injected session), the writable `write`/`end`, and the
- * lifecycle/`data` events (a Node writable's `on` accepts any event name, so
- * the server-streaming call structurally satisfies the `data` overload too).
+ * lifecycle events.
  */
 export interface StreamCall {
   request: { session?: string };
-  on(event: "data", listener: (frame: BridgeUserFrame) => void): unknown;
-  on(
-    event: "error" | "close" | "cancelled",
-    listener: (err?: unknown) => void,
-  ): unknown;
-  write(frame: BridgeTeamFrame): unknown;
-  end(): unknown;
-}
-
-/**
- * The bidirectional stream face the legacy Connect path consumes.
- * Structural superset of grpc-js
- * `ServerDuplexStream<UserFrame__Output, TeamFrame>` (EventEmitter `on`,
- * Duplex `write`/`end`), including the additional `end` event that a duplex
- * emits when the peer half-closes.
- */
-export interface BidiStream {
-  request: { session?: string };
-  on(event: "data", listener: (frame: BridgeUserFrame) => void): unknown;
-  on(event: "end", listener: (err?: unknown) => void): unknown;
   on(
     event: "error" | "close" | "cancelled",
     listener: (err?: unknown) => void,
@@ -181,10 +162,8 @@ export interface BidiStream {
 
 /** Handler face returned by the service for host gRPC registration: the
  * generated `DesktopBridgeServiceHandlers` (agent_v2.proto) declares the
- * same downlink `Stream`, uplink `SendFrame`, and legacy bidi `Connect`
- * methods. */
+ * same downlink `Stream` and uplink `SendFrame` methods. */
 export interface DesktopBridgeServiceHandlers {
-  Connect(call: BidiStream): void;
   Stream(call: StreamCall): void;
   SendFrame(call: SendFrameCall, callback: SendFrameCallback): void;
 }

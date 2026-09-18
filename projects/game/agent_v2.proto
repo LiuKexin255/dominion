@@ -198,12 +198,11 @@ service PresetService {
 
 // DesktopBridgeService carries the desktop flow control surface for one
 // session: the desktop opens a long-lived downlink stream that delivers
-// every frame the agent sends to it (operation requests, status responses,
+// every frame the agent sends to it (operation requests, status frames,
 // heartbeats) and submits each result/signal frame back as an independent
-// uplink call, while the bidirectional Connect stream is carried through
-// the gateway's WebSocket endpoint. Frames are relayed to the agent_v2
-// instance owning the session, and the frame vocabulary is reused verbatim
-// from projects/game/game.proto. Endpoint and wire format:
+// uplink call. Frames are relayed to the agent_v2 instance owning the
+// session, and the frame vocabulary is reused verbatim from
+// projects/game/game.proto. Endpoint and wire format:
 // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1;
 // connection semantics:
 // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2; frame
@@ -216,7 +215,7 @@ service DesktopBridgeService {
   // client cannot select another session's stream. The server immediately
   // pushes one status frame as the connection confirmation and then keeps
   // pushing a status heartbeat at a ~10s interval; every operation request
-  // and status response also travels over this stream. A new stream for the
+  // and status frame also travels over this stream. A new stream for the
   // same session takes over and ends the previous one; the previous stream's
   // late disconnect does not clear the new registration. Custom method on
   // the session resource (AIP-136: https://google.aip.dev/136). Endpoint:
@@ -245,18 +244,6 @@ service DesktopBridgeService {
       body: "*"
     };
   }
-
-  // Connect establishes the bidirectional flow stream the desktop reaches
-  // through the gateway's WebSocket endpoint. The first UserFrame
-  // (gateway-injected identity, StatusSignal probe) binds the connection to
-  // the session; a new connection for the same session takes over and closes
-  // the previous one. The client sends UserFrames (probes, operation
-  // results); the server sends TeamFrames (status responses, operation
-  // requests). Bidirectional streaming has no REST binding (AIP-127,
-  // https://google.aip.dev/127); the WS path is carried by a gateway custom
-  // route. Frame semantics:
-  // specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §1.
-  rpc Connect(stream projects.game.UserFrame) returns (stream projects.game.TeamFrame);
 }
 
 // StreamRequest opens the session's desktop downlink stream.
@@ -264,7 +251,12 @@ message StreamRequest {
   // The session resource name whose downlink stream to open.
   // Format: templates/{template}/sessions/{session}
   // Taken from the URL path; the request has no body.
-  string session = 1 [(google.api.field_behavior) = REQUIRED];
+  string session = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Session"
+    }
+  ];
 }
 
 // SendFrameRequest submits one desktop frame to the session's agent.
@@ -273,7 +265,12 @@ message SendFrameRequest {
   // Format: templates/{template}/sessions/{session}
   // The URL path overwrites any value carried in the request body
   // (grpc-gateway assigns path parameters after body decoding).
-  string session = 1 [(google.api.field_behavior) = REQUIRED];
+  string session = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Session"
+    }
+  ];
   // The desktop frame to deliver — an operation result or a signal.
   projects.game.UserFrame frame = 2 [(google.api.field_behavior) = REQUIRED];
 }

@@ -25,7 +25,7 @@
  *   with composite `provider/model-id` ids, sharing the same per-provider
  *   `ctx.llm.listModels` face as UpdateTeam's validation
  *   (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §2).
- * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
+ * - DesktopBridgeService is the desktop-bridge plugin's handler face
  *   (`ctx.desktopBridge.handlers()`).
  */
 
@@ -39,7 +39,6 @@ import type { LlmModelInfo } from "@deepseek-ai/dsh-llm";
 // handler-face types (the handlers are consumed at runtime through the
 // composed context, not through a direct import).
 import type {
-  BidiStream,
   DesktopBridgeServiceHandlers as PluginBridgeHandlers,
   SendFrameCall,
   SendFrameCallback,
@@ -973,16 +972,11 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
  * Build the DesktopBridgeService handlers from the desktop-bridge plugin's
  * handler face (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md
  * §4): the plugin's structural StreamCall is the grpc-js server-writable
- * stream the generated Stream handler receives, its structural SendFrameCall
- * is the unary gate the generated SendFrame handler receives, and its
- * structural BidiStream is the duplex stream the legacy Connect handler
- * receives.
+ * stream the generated Stream handler receives, and its structural
+ * SendFrameCall is the unary gate the generated SendFrame handler receives.
  */
 export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): DesktopBridgeServiceHandlers {
   return {
-    Connect: (call) => {
-      bridge.Connect(call as unknown as BidiStream);
-    },
     Stream: (call) => {
       bridge.Stream(call as unknown as StreamCall);
     },
