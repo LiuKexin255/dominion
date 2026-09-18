@@ -975,13 +975,27 @@ describe("PresetService.ListModels handler", () => {
   });
 });
 
-describe("DesktopBridgeService.Connect handler", () => {
-  it("delegates the bidi stream to the bridge plugin's handlers", () => {
+describe("DesktopBridgeService handlers", () => {
+  it("delegates the bidi stream to the bridge plugin's Connect handler", () => {
     const connect = vi.fn();
-    const handlers = buildDesktopBridgeHandlers({ Connect: connect });
+    const handlers = buildDesktopBridgeHandlers({ Connect: connect, Stream: vi.fn() });
     const call = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
     (handlers.Connect as (c: unknown) => void)(call);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(connect.mock.calls[0][0]).toBe(call);
+  });
+
+  it("delegates the server stream to the bridge plugin's Stream handler", () => {
+    const stream = vi.fn();
+    const handlers = buildDesktopBridgeHandlers({ Connect: vi.fn(), Stream: stream });
+    const call = {
+      request: { session: "templates/saolei/sessions/s1" },
+      on: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn(),
+    };
+    (handlers.Stream as (c: unknown) => void)(call);
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(stream.mock.calls[0][0]).toBe(call);
   });
 });

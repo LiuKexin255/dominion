@@ -21,6 +21,7 @@ const SESSION = 'templates/saolei/sessions/s1';
 function fakeStream() {
   const listeners = new Map<string, Array<() => void>>();
   const stream: BidiStream = {
+    request: {},
     on(event, listener) {
       const list = listeners.get(event) ?? [];
       list.push(listener as () => void);
@@ -32,8 +33,8 @@ function fakeStream() {
   };
   return {
     stream,
-    emitEnd: () => {
-      for (const listener of [...(listeners.get('end') ?? [])]) listener();
+    emitClose: () => {
+      for (const listener of [...(listeners.get('close') ?? [])]) listener();
     },
   };
 }
@@ -77,7 +78,7 @@ describe('DesktopBridgePlugin.isDesktopConnected', () => {
     plugin.attach(SESSION, second.stream);
     expect(plugin.isDesktopConnected(SESSION)).toBe(true);
 
-    first.emitEnd();
+    first.emitClose();
     expect(plugin.isDesktopConnected(SESSION)).toBe(true);
   });
 
@@ -85,7 +86,7 @@ describe('DesktopBridgePlugin.isDesktopConnected', () => {
     const { plugin } = makePlugin();
     const connection = fakeStream();
     plugin.attach(SESSION, connection.stream);
-    connection.emitEnd();
+    connection.emitClose();
     expect(plugin.isDesktopConnected(SESSION)).toBe(false);
   });
 });

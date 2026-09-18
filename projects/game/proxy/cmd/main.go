@@ -70,8 +70,9 @@ func main() {
 	agentV2Target := solver.MustParseTarget(gameconst.AgentV2Target)
 	agentV2Manager := agentclient.NewManager(statefulResolver, agentV2Target, agentclient.DefaultRefreshInterval)
 
-	// Bidirectional stream binder (DesktopBridgeService.Connect) and the
-	// generic server-streaming pump (AgentService.Send relay).
+	// Bidirectional stream binder for the legacy DesktopBridgeService.Connect
+	// relay, and the generic server-streaming pump shared by AgentService.Send
+	// and DesktopBridgeService.Stream.
 	binder := bind.NewBinder()
 
 	// Agent handler forwards the /api/v2 session-scoped agent RPCs
@@ -88,16 +89,16 @@ func main() {
 		bind.NewServerStreamBinder[game.ChatEvent](),
 	)
 
-	// Bridge handler relays the desktop flow-control WebSocket stream
-	// (gateway /api/v2 connect) to the agent_v2 instance owning the session
-	// — the owner is allocated get-or-create so the flow stream and the
-	// conversation share one instance
-	// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §4).
+	// Bridge handler relays the desktop flow-control face to the agent_v2
+	// instance owning the session — the owner is allocated get-or-create so
+	// the downlink stream and the conversation share one instance
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §4).
 	bridgeHandler := handler.NewDesktopBridgeHandler(
 		agentV2OwnerStore,
 		hashPicker,
 		agentV2Manager,
 		binder,
+		bind.NewServerStreamBinder[game.TeamFrame](),
 	)
 
 	// gRPC server with default service options (OTel tracing, TLS).

@@ -135,9 +135,10 @@ func (s *raceOwnerStore) Delete(_ context.Context, _, _ string) error {
 	return domain.ErrOwnerNotFound
 }
 
-// mockAgentStream implements the agent_v2-side client stream shape
-// (game.DesktopBridgeService_ConnectClient) for testing. It is a
-// bind.TeamFrameStream (right side): Send UserFrame / Recv TeamFrame.
+// mockAgentStream implements the agent_v2-side client stream shape for
+// testing: it satisfies game.DesktopBridgeService_ConnectClient (Send
+// UserFrame / Recv TeamFrame) and structurally satisfies the
+// game.DesktopBridgeService_StreamClient (Recv TeamFrame) upstream face.
 type mockAgentStream struct {
 	recvCh  <-chan *game.TeamFrame
 	sendCh  chan<- *game.UserFrame
@@ -167,9 +168,10 @@ func (s *mockAgentStream) Context() context.Context     { return context.Backgro
 func (s *mockAgentStream) SendMsg(m interface{}) error  { return nil }
 func (s *mockAgentStream) RecvMsg(m interface{}) error  { return nil }
 
-// mockProxyStream implements game.DesktopBridgeService_ConnectServer for
-// testing. It is a bind.UserFrameStream (left side): Recv UserFrame / Send
-// TeamFrame.
+// mockProxyStream implements the gateway/downstream side stream shape for
+// testing: it satisfies game.DesktopBridgeService_ConnectServer and
+// structurally satisfies game.DesktopBridgeService_StreamServer (Send
+// TeamFrame plus the grpc.ServerStream surface).
 type mockProxyStream struct {
 	ctx    context.Context
 	recvCh <-chan *game.UserFrame
@@ -202,5 +204,14 @@ type mockBinder struct {
 }
 
 func (b *mockBinder) Bind(_ bind.UserFrameStream, _ bind.TeamFrameStream) error {
+	return b.err
+}
+
+// mockServerStreamBinder implements bind.ServerStreamBinder for testing.
+type mockServerStreamBinder struct {
+	err error
+}
+
+func (b *mockServerStreamBinder) BindServerStream(_ bind.ServerSendStream[game.TeamFrame], _ bind.UpstreamStream[game.TeamFrame]) error {
 	return b.err
 }

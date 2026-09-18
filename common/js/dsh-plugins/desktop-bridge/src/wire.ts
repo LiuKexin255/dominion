@@ -143,15 +143,36 @@ export interface BridgeTeamFrame {
 }
 
 /**
- * The one bidirectional stream face the bridge consumes. Structural
- * superset of grpc-js `ServerDuplexStream<UserFrame__Output, TeamFrame>`:
- * the generated `Connect` handler receives that stream and satisfies this
- * interface (EventEmitter `on`, Duplex `write`/`end`).
+ * The stream call face the bridge consumes. Structural superset of the
+ * grpc-js `ServerWritableStream` members this handler relies on:
+ * `request` (path-injected session), the writable `write`/`end`, and the
+ * lifecycle/`data` events (a Node writable's `on` accepts any event name, so
+ * the server-streaming call structurally satisfies the `data` overload too).
  */
-export interface BidiStream {
+export interface StreamCall {
+  request: { session?: string };
   on(event: "data", listener: (frame: BridgeUserFrame) => void): unknown;
   on(
-    event: "error" | "end" | "close" | "cancelled",
+    event: "error" | "close" | "cancelled",
+    listener: (err?: unknown) => void,
+  ): unknown;
+  write(frame: BridgeTeamFrame): unknown;
+  end(): unknown;
+}
+
+/**
+ * The bidirectional stream face the legacy Connect path consumes.
+ * Structural superset of grpc-js
+ * `ServerDuplexStream<UserFrame__Output, TeamFrame>` (EventEmitter `on`,
+ * Duplex `write`/`end`), including the additional `end` event that a duplex
+ * emits when the peer half-closes.
+ */
+export interface BidiStream {
+  request: { session?: string };
+  on(event: "data", listener: (frame: BridgeUserFrame) => void): unknown;
+  on(event: "end", listener: (err?: unknown) => void): unknown;
+  on(
+    event: "error" | "close" | "cancelled",
     listener: (err?: unknown) => void,
   ): unknown;
   write(frame: BridgeTeamFrame): unknown;
@@ -159,8 +180,9 @@ export interface BidiStream {
 }
 
 /** Handler face returned by the service for host gRPC registration: the
- * generated `DesktopBridgeServiceHandlers` (agent_v2.proto) declares the same
- * single bidi `Connect` method. */
+ * generated `DesktopBridgeServiceHandlers` (agent_v2.proto) declares the
+ * same downlink `Stream` and legacy bidi `Connect` methods. */
 export interface DesktopBridgeServiceHandlers {
   Connect(call: BidiStream): void;
+  Stream(call: StreamCall): void;
 }

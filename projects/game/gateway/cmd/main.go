@@ -17,9 +17,13 @@
 //     direct agent_v2 connection — preset state lives in Mongo and the
 //     model catalog is static, so no proxy hop
 //     (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
-//     §3.4) — except the desktop-bridge connect path:
-//     /api/v2/templates/{template}/sessions/{session}/connect → WebSocket
-//     (DesktopBridgeService.Connect stream relayed over the proxy
+//     §3.4); the DesktopBridgeService session downlink/uplink
+//     (`:stream` chunked NDJSON / `:sendFrame` octet-stream) also rides the
+//     proxy connection
+//     (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1) —
+//     and, until the legacy framework is removed, the desktop-bridge connect
+//     path /api/v2/templates/{template}/sessions/{session}/connect →
+//     WebSocket (DesktopBridgeService.Connect stream relayed over the proxy
 //     connection; specs/051-agent-v2-dsh-migration/contracts/
 //     desktop-bridge.md §3).
 package main
@@ -74,17 +78,19 @@ func main() {
 	}
 
 	// teamConn hosts the stateful-routing services on the proxy: the proxy
-	// owns owner affinity for the stateful agent_v2 instances, so both the
+	// owns owner affinity for the stateful agent_v2 instances, so the
 	// AgentService team face (UpdateTeam/GetTeam/GetTeamMember/
 	// ListTeamMessages/ListMemberMessages/Send/Cancel) and the
-	// DesktopBridgeService bidi stream route through it
-	// (specs/051-agent-v2-dsh-migration/research.md D9). The
-	// DesktopBridgeService.Connect bidi stream and the AgentService.Send
-	// team stream are long-lived, so this conn opts into keepalive pings
-	// (paired with the proxy's WithLongLivedServerKeepalive); session/memory
-	// stay unary → default. The team* names describe the connection's
-	// payload — the /api/v2 team session surface (the Team singleton and its
-	// streams) — while the dial target itself is gameconst.ProxyTarget.
+	// DesktopBridgeService face (the `:stream` downlink, the `:sendFrame`
+	// uplink, and the legacy bidi Connect stream) route through it
+	// (specs/051-agent-v2-dsh-migration/research.md D9,
+	// specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3).
+	// The downlink/heartbeat stream and the legacy Connect bidi stream are
+	// long-lived, so this conn opts into keepalive pings (paired with the
+	// proxy's WithLongLivedServerKeepalive); session/memory stay unary →
+	// default. The team* names describe the connection's payload — the
+	// /api/v2 team session surface (the Team singleton and its streams) —
+	// while the dial target itself is gameconst.ProxyTarget.
 	teamClientOpts := append(
 		clientOpts,
 		pgrpc.WithLongLivedClientKeepalive(),
@@ -133,6 +139,15 @@ func main() {
 	// specs/059-agent-v2-team-mode/contracts/team-api.md §1).
 	if err := game.RegisterAgentServiceHandler(ctx, gwmux, teamConn); err != nil {
 		log.Fatalf("register agent_v2 team handler: %v", err)
+	}
+	// The DesktopBridgeService handler rides the same proxy connection: the
+	// session downlink (Stream) is server-streaming and grpc-gateway serves
+	// it as chunked NDJSON, while SendFrame is a unary octet-stream POST.
+	// teamConn's long-lived keepalive and 8MB hop limit are paired with the
+	// proxy's settings (specs/066-desktop-bridge-split/contracts/
+	// desktop-bridge-v2.md §3).
+	if err := game.RegisterDesktopBridgeServiceHandler(ctx, gwmux, teamConn); err != nil {
+		log.Fatalf("register desktop bridge handler: %v", err)
 	}
 	// The PresetService handler rides the direct agent_v2 connection: preset
 	// state lives in Mongo and the model catalog is static, so no proxy hop

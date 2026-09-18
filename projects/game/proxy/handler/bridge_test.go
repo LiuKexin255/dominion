@@ -16,14 +16,25 @@ import (
 )
 
 // fakeBridgeClient is the downstream DesktopBridgeServiceClient double: it
-// hands the handler the scripted bidi stream (or refuses the open).
+// hands the handler the scripted stream (or refuses the open). SendFrame is
+// not exercised by these doubles.
 type fakeBridgeClient struct {
 	connectStream game.DesktopBridgeService_ConnectClient
 	connectErr    error
+	stream        game.DesktopBridgeService_StreamClient
+	streamErr     error
 }
 
 func (c *fakeBridgeClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.DesktopBridgeService_ConnectClient, error) {
 	return c.connectStream, c.connectErr
+}
+
+func (c *fakeBridgeClient) Stream(_ context.Context, _ *game.StreamRequest, _ ...grpc.CallOption) (game.DesktopBridgeService_StreamClient, error) {
+	return c.stream, c.streamErr
+}
+
+func (c *fakeBridgeClient) SendFrame(_ context.Context, _ *game.SendFrameRequest, _ ...grpc.CallOption) (*game.SendFrameResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "SendFrame is not exercised by this double")
 }
 
 // setFakeBridgeClient replaces the bridge client constructor seam and
@@ -45,7 +56,7 @@ func newBridgeHarness(t *testing.T, fake *fakeBridgeClient) (*DesktopBridgeHandl
 	store := newMockOwnerStore()
 	manager := &mockManager{}
 	picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 2, Owner: "agent-2"}}
-	handler := NewDesktopBridgeHandler(store, picker, manager, bind.NewBinder())
+	handler := NewDesktopBridgeHandler(store, picker, manager, bind.NewBinder(), bind.NewServerStreamBinder[game.TeamFrame]())
 	return handler, store, manager
 }
 
@@ -166,7 +177,7 @@ func TestDesktopBridgeHandler_Connect_RaceReusesWinningOwner(t *testing.T) {
 	picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 2, Owner: "agent-2"}}
 	plumbing := newBridgePlumbing("saolei", "conv-1")
 	setFakeBridgeClient(t, &fakeBridgeClient{connectStream: plumbing.agent})
-	handler := NewDesktopBridgeHandler(store, picker, manager, bind.NewBinder())
+	handler := NewDesktopBridgeHandler(store, picker, manager, bind.NewBinder(), bind.NewServerStreamBinder[game.TeamFrame]())
 
 	done := make(chan error, 1)
 	go func() { done <- handler.Connect(plumbing.stream) }()
@@ -229,7 +240,7 @@ func TestDesktopBridgeHandler_Connect_NoInstancesMapsToUnavailable(t *testing.T)
 	plumbing := newBridgePlumbing("saolei", "conv-1")
 	store := newMockOwnerStore()
 	picker := &mockOwnerPicker{err: domain.ErrNoAgentInstances}
-	handler := NewDesktopBridgeHandler(store, picker, &mockManager{}, bind.NewBinder())
+	handler := NewDesktopBridgeHandler(store, picker, &mockManager{}, bind.NewBinder(), bind.NewServerStreamBinder[game.TeamFrame]())
 
 	err := handler.Connect(plumbing.stream)
 
@@ -290,7 +301,7 @@ func TestDesktopBridgeHandler_Connect_BinderErrorPropagates(t *testing.T) {
 	seedAgentOwner(store, 1)
 	plumbing := newBridgePlumbing("saolei", "conv-1")
 	setFakeBridgeClient(t, &fakeBridgeClient{connectStream: plumbing.agent})
-	handler := NewDesktopBridgeHandler(store, &mockOwnerPicker{}, &mockManager{}, &mockBinder{err: errors.New("bind failed")})
+	handler := NewDesktopBridgeHandler(store, &mockOwnerPicker{}, &mockManager{}, &mockBinder{err: errors.New("bind failed")}, bind.NewServerStreamBinder[game.TeamFrame]())
 
 	err := handler.Connect(plumbing.stream)
 
@@ -339,5 +350,202 @@ func TestDesktopBridgeHandler_Connect_RelaysBothDirections(t *testing.T) {
 	}
 	if fr := downstreamFrame.GetFlowParts().GetParts()[0].GetKeyboardPress(); fr == nil || fr.GetToolId() != "op-2" {
 		t.Fatalf("downstream frame = %+v, want the keyboard_press op-2 relayed", downstreamFrame)
+	}
+}
+
+// streamPlumbing holds the stream pair of one Stream call: upstreamCh carries
+// the response frames the agent_v2-side client emits, sent collects what the
+// handler forwards downstream.
+type streamPlumbing struct {
+	upstreamCh chan *game.TeamFrame
+	sent       chan *game.TeamFrame
+	client     *fakeBridgeClient
+	server     *mockProxyStream
+}
+
+// newStreamPlumbing wires an open agent_v2-side response stream against the
+// downstream stream the handler writes to. Close upstreamCh to end the relay
+// cleanly.
+func newStreamPlumbing() *streamPlumbing {
+	upstreamCh := make(chan *game.TeamFrame, 4)
+	sent := make(chan *game.TeamFrame, 4)
+	return &streamPlumbing{
+		upstreamCh: upstreamCh,
+		sent:       sent,
+		client: &fakeBridgeClient{
+			stream: &mockAgentStream{recvCh: upstreamCh, sendCh: make(chan *game.UserFrame, 1)},
+		},
+		server: &mockProxyStream{ctx: context.Background(), sendCh: sent},
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_AllocatesOwnerAndRelaysFrames(t *testing.T) {
+	// given: a fresh store — the desktop opens the downlink before UpdateTeam
+	plumbing := newStreamPlumbing()
+	handler, store, manager := newBridgeHarness(t, plumbing.client)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.Stream(&game.StreamRequest{Session: agentSession}, plumbing.server)
+	}()
+
+	plumbing.upstreamCh <- &game.TeamFrame{TemplateId: "saolei", SessionId: "conv-1"}
+	relayed := <-plumbing.sent
+	plumbing.upstreamCh <- &game.TeamFrame{
+		TemplateId: "saolei",
+		SessionId:  "conv-1",
+		Payload: &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+			{Kind: &game.FlowPart_KeyboardPress{KeyboardPress: &game.KeyboardPressPart{ToolId: "op-1", Key: game.KeyboardKey_KEYBOARD_KEY_F2}}},
+		}}},
+	}
+	relayedOp := <-plumbing.sent
+	close(plumbing.upstreamCh)
+
+	// then: the owner was allocated get-or-create and both frames arrived
+	if err := <-done; err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("owner Create calls = %d, want 1 (get-or-create)", store.createCalls)
+	}
+	owner := store.records[ownerKey("saolei", "conv-1")]
+	if owner == nil || owner.TemplateID != "saolei" || owner.SessionID != "conv-1" {
+		t.Fatalf("allocated owner = %+v, want the (saolei, conv-1) composite key", owner)
+	}
+	if len(manager.getCalls) != 1 || manager.getCalls[0] != owner.OwnerIndex {
+		t.Fatalf("manager Get calls = %v, want [allocated index]", manager.getCalls)
+	}
+	if relayed.GetSessionId() != "conv-1" {
+		t.Fatalf("relayed frame session_id = %q, want conv-1", relayed.GetSessionId())
+	}
+	if fr := relayedOp.GetFlowParts().GetParts()[0].GetKeyboardPress(); fr == nil || fr.GetToolId() != "op-1" {
+		t.Fatalf("relayed frame = %+v, want the keyboard_press op-1", relayedOp)
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_ExistingOwnerReusedWithoutAllocation(t *testing.T) {
+	// given: the owner already exists — the createCalls==0 assertion below
+	// proves the existing owner is reused with no new allocation, and the
+	// manager.Get call targets that owner's index
+	plumbing := newStreamPlumbing()
+	handler, store, manager := newBridgeHarness(t, plumbing.client)
+	seedAgentOwner(store, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.Stream(&game.StreamRequest{Session: agentSession}, plumbing.server)
+	}()
+
+	close(plumbing.upstreamCh)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("owner Create calls = %d, want 0 (existing owner reused)", store.createCalls)
+	}
+	if len(manager.getCalls) != 1 || manager.getCalls[0] != 1 {
+		t.Fatalf("manager Get calls = %v, want [1]", manager.getCalls)
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_InvalidSession(t *testing.T) {
+	tests := []struct {
+		name    string
+		session string
+	}{
+		{name: "missing session", session: ""},
+		{name: "malformed resource name", session: "templates/saolei/sessions"},
+		{name: "unknown template", session: "templates/other/sessions/conv-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plumbing := newStreamPlumbing()
+			handler, store, _ := newBridgeHarness(t, plumbing.client)
+
+			err := handler.Stream(&game.StreamRequest{Session: tt.session}, plumbing.server)
+
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("Stream() code = %v, want InvalidArgument", status.Code(err))
+			}
+			if store.createCalls != 0 {
+				t.Fatalf("owner Create calls = %d, want 0 (no allocation on invalid session)", store.createCalls)
+			}
+		})
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_NoInstancesMapsToUnavailable(t *testing.T) {
+	// given: no live agent_v2 instance to allocate
+	plumbing := newStreamPlumbing()
+	store := newMockOwnerStore()
+	picker := &mockOwnerPicker{err: domain.ErrNoAgentInstances}
+	handler := NewDesktopBridgeHandler(store, picker, &mockManager{}, bind.NewBinder(), bind.NewServerStreamBinder[game.TeamFrame]())
+
+	err := handler.Stream(&game.StreamRequest{Session: agentSession}, plumbing.server)
+
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("Stream() code = %v, want Unavailable", status.Code(err))
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("owner Create calls = %d, want 0", store.createCalls)
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_InstanceUnreachable(t *testing.T) {
+	plumbing := newStreamPlumbing()
+	handler, store, manager := newBridgeHarness(t, plumbing.client)
+	seedAgentOwner(store, 7)
+	manager.getErr = errors.New("no connection for owner index 7")
+
+	err := handler.Stream(&game.StreamRequest{Session: agentSession}, plumbing.server)
+
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("Stream() code = %v, want Unavailable", status.Code(err))
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_UpstreamOpenFailed(t *testing.T) {
+	// given: the upstream refuses the stream with a non-status transport
+	// failure — a proxy→agent_v2 hop break maps to UNAVAILABLE
+	plumbing := newStreamPlumbing()
+	plumbing.client.streamErr = errors.New("connection refused")
+	handler, store, _ := newBridgeHarness(t, plumbing.client)
+	seedAgentOwner(store, 1)
+
+	err := handler.Stream(&game.StreamRequest{Session: agentSession}, plumbing.server)
+
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("Stream() code = %v, want Unavailable", status.Code(err))
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_UpstreamOpenStatusPreserved(t *testing.T) {
+	// given: the upstream rejects the open with a gRPC status — the code is
+	// kept unchanged
+	plumbing := newStreamPlumbing()
+	plumbing.client.streamErr = status.Error(codes.PermissionDenied, "rejected")
+	handler, store, _ := newBridgeHarness(t, plumbing.client)
+	seedAgentOwner(store, 1)
+
+	err := handler.Stream(&game.StreamRequest{Session: agentSession}, plumbing.server)
+
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("Stream() code = %v, want PermissionDenied (original code preserved)", status.Code(err))
+	}
+}
+
+func TestDesktopBridgeHandler_Stream_BinderErrorPropagates(t *testing.T) {
+	// given: the pump reports a failure — it is returned for the gRPC layer
+	plumbing := newStreamPlumbing()
+	setFakeBridgeClient(t, plumbing.client)
+	store := newMockOwnerStore()
+	seedAgentOwner(store, 1)
+	handler := NewDesktopBridgeHandler(store, &mockOwnerPicker{}, &mockManager{}, bind.NewBinder(), &mockServerStreamBinder{err: errors.New("stream bind failed")})
+
+	err := handler.Stream(&game.StreamRequest{Session: agentSession}, plumbing.server)
+
+	if err == nil || err.Error() != "stream bind failed" {
+		t.Fatalf("Stream() error = %v, want the binder error propagated", err)
 	}
 }

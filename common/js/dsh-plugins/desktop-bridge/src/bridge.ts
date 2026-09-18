@@ -4,10 +4,11 @@
  *
  * Semantics (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2,
  * data-model.md §2.6):
- * - A connection object holds only the stream face for writes and its own
- *   cleanup handle — pending dispatches are keyed per session at bridge
- *   level, so a reconnect (new connection taking over) never loses in-flight
- *   dispatches and a late receipt can still resolve them.
+ * - A connection object holds only the stream face for writes, its heartbeat
+ *   handle, and its own cleanup handle — pending dispatches are keyed per
+ *   session at bridge level, so a reconnect (new connection taking over)
+ *   never loses in-flight dispatches and a late receipt can still resolve
+ *   them.
  * - Attaching a second connection for a session takes over: the previous
  *   stream is ended and its late disconnect is a compare-and-delete no-op
  *   that cannot clobber the fresh registration.
@@ -25,12 +26,13 @@ import { randomUUID } from "node:crypto";
 import { info, warn } from "@dominion/common-js-logs";
 
 import type {
-  BidiStream,
   BridgeTeamFrame,
   BridgeUserFrame,
   DesktopBridgeServiceHandlers,
   OperationResult,
   OperationScreenshot,
+  StatusSignalStatus,
+  StreamCall,
   ToolResultStatus,
   WireFlowPart,
   WireFlowResultPart,
@@ -48,9 +50,19 @@ import type {
  * operation-bridge.ts DISPATCH_TIMEOUT_MS rationale). */
 const DISPATCH_TIMEOUT_MS = 1_200_000;
 
+/** Downlink idle interval between status heartbeat frames. Keeps the
+ * long-lived stream alive across intermediate idle timeouts and serves as
+ * application-level liveness (~10s, specs/066-desktop-bridge-split/spec.md
+ * FR-008). */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
 const STATUS_SUCCEEDED: ToolResultStatus = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED: ToolResultStatus = "TOOL_RESULT_STATUS_FAILED";
 const STATUS_UNSPECIFIED: ToolResultStatus = "TOOL_RESULT_STATUS_UNSPECIFIED";
+
+/** Connection-confirmation and heartbeat status value
+ * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.2/§2.3). */
+const STATUS_ACTIVE: StatusSignalStatus = "STATUS_SIGNAL_STATUS_ACTIVE";
 
 /** Operation-channel id stamped onto the dispatched FlowPart. */
 type ToolId = string;
@@ -61,9 +73,10 @@ interface PendingDispatch {
   cleanup?: () => void;
 }
 
-/** One live desktop connection: the stream face plus the disconnect wiring. */
+/** One live desktop connection: the stream face plus its heartbeat handle. */
 interface Connection {
-  stream: BidiStream;
+  stream: StreamCall;
+  heartbeat?: ReturnType<typeof setInterval>;
 }
 
 /**
@@ -145,19 +158,27 @@ export class DesktopBridge {
   private readonly pending = new Map<string, Map<ToolId, PendingDispatch>>();
 
   /**
-   * Bind a bidi stream as THE connection for `sessionName`. A previously
-   * registered connection is taken over: its stream is ended and its late
-   * disconnect is a no-op against the fresh registration. Stream disconnect
-   * afterwards clears the registration and settles that session's in-flight
-   * dispatches FAILED "desktop disconnected".
+   * Bind a stream as THE downlink connection for `sessionName`. A previously
+   * registered connection is taken over: its stream is ended (and its
+   * heartbeat stopped) and its late disconnect is a no-op against the fresh
+   * registration. The fresh connection immediately writes one status
+   * confirmation frame and then a status heartbeat every
+   * {@link HEARTBEAT_INTERVAL_MS}; a disconnect of the current stream clears
+   * the registration, stops the heartbeat, and settles that session's
+   * in-flight dispatches FAILED "desktop disconnected"
+   * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2,
+   * data-model.md §1.1/§1.3).
    *
-   * The caller (the Connect handler below) derives `sessionName` from the
-   * gateway-injected first frame; `attach` owns everything after identity.
+   * The Stream handler below derives `sessionName` from the path-bound
+   * request; `attach` owns everything after identity.
    */
-  attach(sessionName: string, stream: BidiStream): void {
+  attach(sessionName: string, stream: StreamCall): void {
     const previous = this.connections.get(sessionName);
     if (previous !== undefined) {
       this.connections.delete(sessionName);
+      if (previous.heartbeat !== undefined) {
+        clearInterval(previous.heartbeat);
+      }
       info("desktop connection taken over", { session: sessionName });
       try {
         previous.stream.end();
@@ -176,11 +197,29 @@ export class DesktopBridge {
     const onDisconnect = (reason: unknown) => {
       this.disconnect(sessionName, connection, reason);
     };
-    stream.on("end", onDisconnect);
     stream.on("error", onDisconnect);
     stream.on("close", onDisconnect);
     stream.on("cancelled", onDisconnect);
+    this.writeStatus(sessionName, connection);
+    connection.heartbeat = setInterval(() => {
+      this.writeStatus(sessionName, connection);
+    }, HEARTBEAT_INTERVAL_MS);
     info("desktop connection attached", { session: sessionName });
+  }
+
+  /**
+   * The gRPC handler face for the session downlink: the request's
+   * path-injected session resource name binds the connection and owns
+   * everything after identity (confirmation frame, heartbeat, disconnect
+   * cleanup).
+   */
+  Stream(call: StreamCall): void {
+    const sessionName = call.request.session;
+    if (!sessionName) {
+      warn("stream call with no session id");
+      return;
+    }
+    this.attach(sessionName, call);
   }
 
   /**
@@ -305,14 +344,19 @@ export class DesktopBridge {
 
   /**
    * The gRPC handler face for host registration
-   * (server.ts adds it as the DesktopBridgeService implementation). The
-   * first frame carries the gateway-injected identity: the handler derives
-   * the session resource name, attaches, and routes that frame (the attach
-   * listener registers during the same emit, so the first frame is routed
-   * here exactly once). Later frames route through the attach listener.
+   * (server.ts adds it as the DesktopBridgeService implementation). `Stream`
+   * binds the session from the path-bound request; `Connect` is the legacy
+   * bidi path whose first frame carries the gateway-injected identity: the
+   * handler derives the session resource name, attaches, and routes that
+   * frame (the attach listener registers during the same emit, so the first
+   * frame is routed here exactly once). Later frames route through the
+   * attach listener.
    */
   handlers(): DesktopBridgeServiceHandlers {
     return {
+      Stream: (call) => {
+        this.Stream(call);
+      },
       Connect: (call) => {
         let bound = false;
         call.on("data", (frame) => {
@@ -330,6 +374,20 @@ export class DesktopBridge {
         });
       },
     };
+  }
+
+  /** Write one ACTIVE status frame on the connection, tolerating a stream
+   * that is already closed (the disconnect listener owns cleanup). */
+  private writeStatus(sessionName: string, connection: Connection): void {
+    const status: WireFlowPart = { status: { status: STATUS_ACTIVE } };
+    try {
+      connection.stream.write(buildFlowFrame(sessionName, [status]));
+    } catch (err) {
+      warn("desktop status write failed", {
+        session: sessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /** Route one inbound frame for a bound session (receipts + signals). */
@@ -394,6 +452,9 @@ export class DesktopBridge {
       return;
     }
     this.connections.delete(sessionName);
+    if (connection.heartbeat !== undefined) {
+      clearInterval(connection.heartbeat);
+    }
     info("desktop connection closed", {
       session: sessionName,
       reason: reason instanceof Error ? reason.message : String(reason ?? ""),

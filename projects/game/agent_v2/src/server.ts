@@ -38,7 +38,11 @@ import type { LlmModelInfo } from "@deepseek-ai/dsh-llm";
 // Type-only: the plugin's `ctx.desktopBridge` declaration merge and its
 // handler-face types (the handlers are consumed at runtime through the
 // composed context, not through a direct import).
-import type { BidiStream, DesktopBridgeServiceHandlers as PluginBridgeHandlers } from "@dominion/dsh-desktop-bridge";
+import type {
+  BidiStream,
+  DesktopBridgeServiceHandlers as PluginBridgeHandlers,
+  StreamCall,
+} from "@dominion/dsh-desktop-bridge";
 // The preset domain service face and its error surface: the PresetService
 // RPC handlers translate onto `ctx.presetAuthoring` (specs/059-agent-v2-
 // team-mode/contracts/preset-api.md); the error class is a runtime import
@@ -964,14 +968,18 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
 
 /**
  * Build the DesktopBridgeService handlers from the desktop-bridge plugin's
- * handler face (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md
- * §2): the plugin's structural BidiStream is the grpc-js duplex stream the
- * generated Connect handler receives.
+ * handler face (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md
+ * §4): the plugin's structural StreamCall is the grpc-js server-writable
+ * stream the generated Stream handler receives, and its structural
+ * BidiStream is the duplex stream the legacy Connect handler receives.
  */
 export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): DesktopBridgeServiceHandlers {
   return {
     Connect: (call) => {
       bridge.Connect(call as unknown as BidiStream);
+    },
+    Stream: (call) => {
+      bridge.Stream(call as unknown as StreamCall);
     },
   };
 }
