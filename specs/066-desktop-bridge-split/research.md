@@ -16,7 +16,7 @@
 | 插件连接注册表 | `DesktopBridge`：connections（session→stream face）+ pending（session→tool_id→waiter）；接管 = end 旧流 + 覆盖注册；晚到断开 compare-and-delete no-op；dispatch 失败路径齐备（`common/js/dsh-plugins/desktop-bridge/src/bridge.ts:141-421`）。拆分后**注册表/pending/dispatch 管线原样保留**，仅换写入面与入站来源 |
 | desktop 探针 | `App.Connect`：WS dial → 发 ACTIVE status 探针 → 10s 等 echo → 存连接 + 起 readLoop，status 枚举名返给前端（`projects/game/desktop/app.go:921-1077`）；fake-desktop 同构（`projects/game/fake-desktop/service/session.go:87-167`）。**探针发送整体消失**，"连接确认 + 首帧超时"保留为首帧等待 |
 | testplan WS 直连 | 共享 flow 客户端 helper 位于 `agent_v2_helpers_test.go`（`connectAgentV2Flow`/`sendFlowProbe`/`sendFlowReceipt*`/`readFlowTeamFrame*`/`serveTeamFlowScript` 等，被 `desktop_flow_test.go`、`agent_v2_game_test.go`、`agent_v2_conversation_test.go`、`agent_v2_preset_test.go` 复用）；`desktop_flow_test.go` 另自带 gorilla/websocket 客户端 dial `/connect`（probe echo / 接管 / 派发回执 / 在途失败四用例）——全部需整体重写为 HTTP 客户端 |
-| 错误响应编码 | grpc-gateway `DefaultHTTPErrorHandler` 用**outbound** marshaler 编码错误信封（非 proto struct）——desktop 的 sendFrame 请求**不设 `Accept: application/octet-stream`**（仅 `Content-Type`），错误以 JSON 返回可解析 |
+| 错误响应编码 | grpc-gateway v2.27.6 按请求头选 marshaler：Accept 仅对 mimeMap **精确键**命中（无通配回退；默认注册表只有 `*` 通配 JSONPb，本仓库另注册 `application/octet-stream`——故仅设 `Accept: application/json` 也无法命中），无 Accept 命中时 **outbound = inbound**（`runtime/marshaler_registry.go` `MarshalerForRequest`）。由此 `POST :sendFrame`（octet-stream、不设 Accept）的**全部错误响应**（网关解码失败——含 `MaxBytesReader` 超限、上游 gRPC 错误）由 `DefaultHTTPErrorHandler` 以 `ProtoMarshaller` 编码 `status.Convert(err).Proto()`：gRPC code 的 HTTP 映射状态码 + **二进制 `google.rpc.Status` 体**（`Content-Type: application/octet-stream`；`runtime/errors.go`，生成 handler 全部错误路径均传 outboundMarshaler）。`GET :stream`（无 body/Content-Type）inbound/outbound 均落通配 JSONPb——预流错误为 JSON 状态信封、流中异常终止为 NDJSON `{"error":...}` 尾行。D9.4 的 413 预检中间件在 gwmux 之前经 `http.Error` 返回 `text/plain`（不经 marshaler） |
 | 上行顺序依赖 | 逐帧核验：desktop 侧每个操作独立执行、回执按 `flow_result.tool_id` 关联（fake-desktop executor 逐 part 独立出回执；插件 `handleResult` 按 tool_id 查 waiter）；wait/warn 为旁路日志信号；**无任何跨帧顺序依赖**——独立 unary 上行安全（survey §5.3 遗留检查项就此关闭） |
 | env header 透传 | desktop 既有 REST 客户端已带 env header 经 gwmux→proxy→agent_v2 工作（`projects/game/desktop/internal/api/client.go:44-49`；grpc-gateway 默认 header matcher 放行非保留头）——`Stream`/`SendFrame` 走同一 gwmux 路径，透传由构造保证，无需新机制 |
 
@@ -113,11 +113,11 @@ message SendFrameRequest {
 ### D13 — desktop 桥客户端
 
 **Decision**: 删除 `internal/api/websocket.go`（WSClient），新增 `internal/api/bridgeclient.go`：
-1. `Connect(ctx, gatewayURL, template, sessionID, env)`：`GET {gw}/api/v2/templates/{t}/sessions/{s}:stream`（env header；不设 Accept → outbound JSON）。响应 200 后记录 body reader；**首帧行**（NDJSON `{"result": <TeamFrame>}`）在 10s 内读取并解析——超时/失败即关闭并报错（首帧超时判定，替代旧探针）。
+1. `Connect(ctx, gatewayURL, template, sessionID, env)`：`GET {gw}/api/v2/templates/{t}/sessions/{s}:stream`（env header；不设 Accept——无请求 Content-Type 的 GET 使 inbound/outbound 均落通配 JSONPb，见 §1）。非 2xx → 读 JSON 状态信封取 message 返回错误；响应 200 后记录 body reader；**首帧行**（NDJSON `{"result": <TeamFrame>}`）在 10s 内读取并解析——超时/失败即关闭并报错（首帧超时判定，替代旧探针）。
 2. `RecvFrame(ctx)`：`bufio.Reader.ReadBytes('\n')` 逐行（不用 Scanner——规避 token 上限；下行无截图但 MessageParts 理论可大）→ `protojson.UnmarshalOptions{DiscardUnknown: true}` 解 `{"result"}` 信封内 TeamFrame（对齐 `style/golang.md` 同仓 grpc proto 反序列化约定）；行含 `{"error": ...}` → 返回错误（流异常终止尾块）。
-3. `SendFrame(ctx, frame)`：`POST .../sessions/{s}:sendFrame`，`Content-Type: application/octet-stream`，body = `proto.Marshal(&SendFrameRequest{Frame: frame})`；**不设 Accept**（错误信封以 JSON 返回，见 §1 错误响应编码行）；非 2xx → 读 JSON 错误体返回含状态码与 message 的错误。
+3. `SendFrame(ctx, frame)`：`POST .../sessions/{s}:sendFrame`，`Content-Type: application/octet-stream`，body = `proto.Marshal(&SendFrameRequest{Frame: frame})`；**不设 Accept**——outbound 随 inbound 落 `ProtoMarshaller`（§1 错误响应编码行），错误体为二进制 `google.rpc.Status`。非 2xx → 按响应 `Content-Type` 的 media type（`mime.ParseMediaType` 去参数）分派：`application/octet-stream` → `proto.Unmarshal` 为 `google.golang.org/genproto/googleapis/rpc/status` 的 `Status`、经 `status.FromProto` 取 gRPC code 与 message（grpc-go `status` 包同源类型，无新增依赖）；其余（413 预检的 `text/plain` 等）→ body 原文作 message。返回的错误统一携带 HTTP 状态码、gRPC code（可解出时）与 message。
 4. `Close()`：取消请求 ctx（同时解除阻塞的行读取）。
-5. `app.go`：`Connect` 流程 = 既有 reconnect handover（关旧连接 + 等 recvDone）→ `bridgeclient.Connect` → 等首帧取 status 枚举名返前端 → 存客户端 + 起 readLoop（循环体不变）。探针发送代码删除。`sendOperationResult` → `bridge.SendFrame` 包一层**有界重试**（3 次、间隔 1s，覆盖 D4 接管间隙：新 Connect 在途时旧流已断、SendFrame 暂时 FAILED_PRECONDITION；最终失败仅日志，与今日写失败行为对齐）。
+5. `app.go`：`Connect` 流程 = 既有 reconnect handover（关旧连接 + 等 recvDone）→ `bridgeclient.Connect` → 等首帧取 status 枚举名返前端 → 存客户端 + 起 readLoop（循环体不变）。探针发送代码删除。`sendOperationResult` → `bridge.SendFrame` 包一层**有界重试**（3 次、间隔 1s，覆盖 D4 接管间隙：新 Connect 在途时旧流已断、SendFrame 暂时 FAILED_PRECONDITION；重试判定只认错误携带的 gRPC code（FAILED_PRECONDITION）——HTTP 400 与 INVALID_ARGUMENT 共码，不可凭 HTTP 状态判定；最终失败仅日志，与今日写失败行为对齐）。
 
 **Rationale**: HTTP 客户端无 close handshake/读锁死锁类别问题（survey B 类 CloseNow/锁外读两个 workaround 连根消失）；`ctx cancel` 即解除阻塞读。有界重试是对 D4 拒绝语义的配套（用户拍板"接管间隙由 desktop 重试"）。
 
@@ -154,7 +154,7 @@ message SendFrameRequest {
 | NDJSON 分块边界：chunked 传输不保证 1 chunk = 1 消息 | 客户端按**行**（`\n` delimiter，`ForwardResponseStream` 每消息追加）缓冲解析，不按 chunk（D13.2） |
 | 首消息前无响应头（中间层挂起） | 开流即推 status 首帧（D12），Header 立即落盘 |
 | 上行无序 | 帧自包含 + tool_id 关联已逐帧核验（§1）；无顺序依赖 |
-| `Accept: octet-stream` 导致错误信封编码失败 | sendFrame 不设 Accept（D13.3） |
+| sendFrame 错误体非单一 JSON（gwmux 错误路径为二进制 `google.rpc.Status`、413 预检为纯文本），客户端误解析 | 客户端按响应 `Content-Type` 分派解析（D13.3）；重试判定只认解出的 gRPC code（D13.5） |
 | takeover 间隙回执被拒 | FAILED_PRECONDITION + desktop 有界重试（D4/D13.5） |
 | desktop 旧版二进制对旧端点的访问（同仓同发布） | 不存在外部旧客户端；testplan 兜底（D6） |
 

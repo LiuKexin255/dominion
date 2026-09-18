@@ -202,8 +202,9 @@ export interface SendFrameCall {
 /**
  * The unary reply face the SendFrame handler answers through. Structurally
  * mirrors the grpc-js `sendUnaryData` error/response shape (no grpc-js
- * dependency); the generated host handler adapts its callback onto this
- * face.
+ * dependency; see
+ * https://github.com/grpc/grpc-node/blob/master/packages/grpc-js/src/server-call.ts);
+ * the generated host handler adapts its callback onto this face.
  */
 export type SendFrameCallback = (
   err: { code: number; message: string } | null,

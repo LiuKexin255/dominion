@@ -530,9 +530,9 @@ message Preset {
 // CreatePresetRequest creates a Preset under a template (AIP-133:
 // https://google.aip.dev/133; caller-supplied id). The creation records the
 // preset in the store over the role's pool template; the member composition
-// derives at use time (specs/060-agent-v2-team-optimize/contracts/
-// preset-derivation.md §1/§2) — an empty persona keeps the template's
-// persona row.
+// derives at use time
+// (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§2) —
+// an empty persona keeps the template's persona row.
 message CreatePresetRequest {
   // The template to create the preset in.
   // Format: templates/{template}

@@ -24,8 +24,8 @@
 //     and, until the legacy framework is removed, the desktop-bridge connect
 //     path /api/v2/templates/{template}/sessions/{session}/connect →
 //     WebSocket (DesktopBridgeService.Connect stream relayed over the proxy
-//     connection; specs/051-agent-v2-dsh-migration/contracts/
-//     desktop-bridge.md §3).
+//     connection)
+//     (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3).
 package main
 
 import (
@@ -148,8 +148,8 @@ func main() {
 	// session downlink (Stream) is server-streaming and grpc-gateway serves
 	// it as chunked NDJSON, while SendFrame is a unary octet-stream POST.
 	// teamConn's long-lived keepalive and 8MB hop limit are paired with the
-	// proxy's settings (specs/066-desktop-bridge-split/contracts/
-	// desktop-bridge-v2.md §3).
+	// proxy's settings
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3).
 	if err := game.RegisterDesktopBridgeServiceHandler(ctx, gwmux, teamConn); err != nil {
 		log.Fatalf("register desktop bridge handler: %v", err)
 	}
@@ -192,9 +192,10 @@ func main() {
 // newGatewayMux builds the grpc-gateway mux with the octet-stream proto
 // marshaler registered alongside the defaults. SendFrame's uplink body is raw
 // binary proto — no base64 inflation — while every JSON route keeps the
-// default marshaler (specs/066-desktop-bridge-split/contracts/
-// desktop-bridge-v2.md §3.1/§3.2). MIME matching is exact, so the wildcard
-// JSON marshaler still serves application/json.
+// default marshaler
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.1/§3.2).
+// MIME matching is exact, so the wildcard JSON marshaler still serves
+// application/json.
 func newGatewayMux() *runtime.ServeMux {
 	return runtime.NewServeMux(append(
 		pgrpc.GatewayDefault(),
@@ -239,9 +240,9 @@ const maxSendFrameBodyBytes = 8 * 1024 * 1024
 // otherwise has its body bounded by http.MaxBytesReader so a chunked or
 // under-declared payload surfaces as the gateway decoder's clear "request
 // body too large" error. Oversized payloads are never silently truncated and
-// the session is unaffected (specs/066-desktop-bridge-split/contracts/
-// desktop-bridge-v2.md §3.3; specs/025-desktop-image-state-refine/contracts/
-// image-transport-contract.md §4).
+// the session is unaffected
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.3;
+// specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §4).
 func sendFrameBodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isSendFrameRequest(r) {
@@ -371,8 +372,8 @@ const apiV2 = "v2"
 // handleDesktopBridgeConnect upgrades an HTTP connection to WebSocket and
 // establishes a bidirectional forwarding bridge between the WebSocket and
 // the DesktopBridgeService.Connect gRPC stream on the proxy connection —
-// the v2 desktop flow-control face (specs/051-agent-v2-dsh-migration/
-// contracts/desktop-bridge.md §3).
+// the v2 desktop flow-control face
+// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3).
 func handleDesktopBridgeConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
 	pumpWebSocketConnect(w, r, apiV2, func(ctx context.Context) (bind.TeamFrameStream, error) {
 		return game.NewDesktopBridgeServiceClient(teamConn).Connect(ctx)

@@ -19,7 +19,7 @@ bazel test //projects/game/... //common/js/dsh-plugins/...
 | 包 | 覆盖 |
 |---|---|
 | `common/js/dsh-plugins/desktop-bridge` | attach 首帧推送/心跳启停、接管 no-op、`SendFrame` FAILED_PRECONDITION、tool_id 回执 resolve、断开 settle |
-| `projects/game/desktop/internal/api` | NDJSON 行解析、首帧超时、octet-stream 编码、错误体解析 |
+| `projects/game/desktop/internal/api` | NDJSON 行解析、首帧超时、octet-stream 编码、错误体分派解析 |
 | `projects/game/proxy/handler` | Stream/SendFrame 转发、owner 策略（get-or-create vs lookup-only）、错误映射 |
 | `projects/game/gateway/cmd` | body 上限 413 与归因报错、无 WS 分支后的路由 |
 | `common/js/dsh-plugins/saolei-loop` | 统计口径回归（仅计已执行操作——本特性零改动，回归保护） |
@@ -48,8 +48,8 @@ guitar run projects/game/testplan/system_test.yaml
 ## 3. 手工冒烟（可选）
 
 1. 部署 SUT 后，用 curl 验证下行流形态：`curl -N -H 'env: <env>' https://<host>/api/v2/templates/saolei/sessions/<id>:stream` —— 立即输出一行 `{"result":{...status...}}`，随后 ~10s 一行心跳。
-2. 验证超限归因：向 `:sendFrame` POST >8MiB body —— 得到 413（预检）或含 "request body too large" 的错误响应，绝不静默截断。
-3. 验证无流拒绝：会话未开流时 POST 合法回执 —— `FAILED_PRECONDITION`（HTTP 400 + JSON 错误信封）。
+2. 验证超限归因：向 `:sendFrame` POST >8MiB body（带 Content-Length）—— 得到 413 预检（`text/plain`）；chunked/低报 Content-Length 上传则 400 + 二进制 `google.rpc.Status`（message 含 "request body too large"）。均不静默截断（错误体线格式见契约 §1.1）。
+3. 验证无流拒绝：会话未开流时 POST 合法回执 —— HTTP 400 + 二进制 `google.rpc.Status` 错误体（code=9 `FAILED_PRECONDITION`；`protoc --decode_raw` 可检视 body）。
 
 ## 4. 完成判定
 

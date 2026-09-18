@@ -46,9 +46,10 @@ import type {
   StreamCall,
 } from "@dominion/dsh-desktop-bridge";
 // The preset domain service face and its error surface: the PresetService
-// RPC handlers translate onto `ctx.presetAuthoring` (specs/059-agent-v2-
-// team-mode/contracts/preset-api.md); the error class is a runtime import
-// (instanceof discrimination in toServiceError, roster-verification §4.1).
+// RPC handlers translate onto `ctx.presetAuthoring`
+// (specs/059-agent-v2-team-mode/contracts/preset-api.md); the error class is a
+// runtime import (instanceof discrimination in toServiceError,
+// roster-verification §4.1).
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService, PresetView } from "@dominion/dsh-preset-authoring";
 import { TeamSessionError, TeamSessions } from "./session.js";
@@ -998,9 +999,10 @@ export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): Deskto
  * The union model catalog served by ListModels: every registered provider
  * route from `listProviders()` in registration order, each route's catalog in
  * its adapter order, and each entry id rewritten to the composite selector
- * `${provider}/${model.id}` (specs/063-llm-reliability-opencode-go/contracts/
- * model-selection.md §2). A provider catalog failure rejects the whole RPC —
- * fail-loud, never a silently truncated directory.
+ * `${provider}/${model.id}`
+ * (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §2). A
+ * provider catalog failure rejects the whole RPC — fail-loud, never a silently
+ * truncated directory.
  */
 async function listModelCatalog(
   deps: Pick<PresetServiceDeps, "listProviders" | "listModels">,

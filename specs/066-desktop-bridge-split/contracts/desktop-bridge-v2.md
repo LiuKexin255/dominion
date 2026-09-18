@@ -7,8 +7,8 @@
 
 | 方向 | RPC | HTTP | 请求体 | 响应 |
 |---|---|---|---|---|
-| 服务端→desktop（下行流） | `DesktopBridgeService.Stream(StreamRequest) returns (stream TeamFrame)` | `GET /api/v2/{session=templates/*/sessions/*}:stream` | 无（身份在 path） | chunked NDJSON，每行 `{"result": <TeamFrame>}\n`；异常终止尾行 `{"error": {...}}\n` |
-| desktop→服务端（上行单发） | `DesktopBridgeService.SendFrame(SendFrameRequest) returns (SendFrameResponse)` | `POST /api/v2/{session=templates/*/sessions/*}:sendFrame` | `application/octet-stream`：`proto.Marshal(SendFrameRequest)`（path 参数在 body 解码后覆盖 `session` 字段） | `200` + 空体（`SendFrameResponse` 为空消息）；错误为 gRPC→HTTP 映射的 JSON 信封 |
+| 服务端→desktop（下行流） | `DesktopBridgeService.Stream(StreamRequest) returns (stream TeamFrame)` | `GET /api/v2/{session=templates/*/sessions/*}:stream` | 无（身份在 path） | chunked NDJSON，每行 `{"result": <TeamFrame>}\n`；异常终止尾行 `{"error": {...}}\n`；预流失败为映射 HTTP 状态码 + JSON 状态信封（§1.1） |
+| desktop→服务端（上行单发） | `DesktopBridgeService.SendFrame(SendFrameRequest) returns (SendFrameResponse)` | `POST /api/v2/{session=templates/*/sessions/*}:sendFrame` | `application/octet-stream`：`proto.Marshal(SendFrameRequest)`（path 参数在 body 解码后覆盖 `session` 字段） | `200` + 空体（`SendFrameResponse` 为空消息，`Content-Type: application/octet-stream`）；错误为 gRPC code 的 HTTP 映射状态码 + 二进制 `google.rpc.Status` 体（§1.1） |
 
 ```mermaid
 sequenceDiagram
@@ -30,6 +30,17 @@ sequenceDiagram
     A-->>D: 200（空 SendFrameResponse——回执已按 tool_id resolve 在途派发）
 ```
 
+### §1.1 错误体线格式（按产生层）
+
+错误体的编码由产生层决定，消费方（desktop/fake-desktop/testplan helper）按响应 `Content-Type` 分派解析（规则见 §5.3）：
+
+| 产生层 | 触发 | HTTP | Content-Type | 体 |
+|---|---|---|---|---|
+| 网关 413 预检中间件（gwmux 之前，§3.3） | sendFrame 且 `Content-Length` > 8MiB | `413` | `text/plain; charset=utf-8` | `http.Error` 固定文案 |
+| gwmux 错误路径（outbound = `ProtoMarshaller`——sendFrame 不设 Accept、Accept 仅对 mimeMap 精确键命中，无 Accept 时 outbound 随 inbound；grpc-gateway v2.27.6 [runtime/marshaler_registry.go](https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.27.6/runtime/marshaler_registry.go) / [runtime/errors.go](https://github.com/grpc-ecosystem/grpc-gateway/blob/v2.27.6/runtime/errors.go)） | 网关解码失败（含 `MaxBytesReader` 超限 → `INVALID_ARGUMENT`、message 含 "request body too large"）与上游 gRPC 错误（`FAILED_PRECONDITION` / `NOT_FOUND` / …） | gRPC code 的 HTTP 映射（`FAILED_PRECONDITION`→400、`NOT_FOUND`→404 等） | `application/octet-stream` | 二进制 `google.rpc.Status`（proto 字段 code/message） |
+| gwmux 错误路径（outbound = 通配 JSONPb——`:stream` 无请求 Content-Type） | `:stream` 预流失败（如无 owner `NOT_FOUND`） | HTTP 映射 | `application/json` | JSON 状态信封 `{"code":…,"message":…}` |
+| gwmux 流错误路径（`ForwardResponseStream` 错误分支经 `DefaultStreamErrorHandler` 产 `errorChunk`） | `:stream` 流中异常终止 | （响应头已发出） | NDJSON 行 | `{"error": <google.rpc.Status>}\n` 尾行 |
+
 ## §2 连接与上行语义
 
 1. **绑定**：`:stream` 打开即按 path 中的 session 资源名绑定；body/客户端自报身份不作为绑定依据。template 合法性双侧校验（proxy `parseAgentSession` 同款规则）。
@@ -46,7 +57,7 @@ sequenceDiagram
 
 1. `runtime.WithMarshalerOption("application/octet-stream", &runtime.ProtoMarshaller{})` 追加进 ServeMux 选项（JSON 路由不受影响；按 MIME 精确匹配）。
 2. `game.RegisterDesktopBridgeServiceHandler(ctx, gwmux, teamConn)` 一行注册——与 AgentService 同连接（owner 亲和经 proxy；长流 keepalive 与 8MB hop 上限已配对）。
-3. **Body 上限守卫**：仅对 sendFrame POST 路径应用 `http.MaxBytesReader`（8MiB，与 gRPC hop 对齐）；`Content-Length` 预检超限直接 `413`；超限读取在 gateway 解码处报 "request body too large" 类清晰错误。超限**永不**静默截断。
+3. **Body 上限守卫**：仅对 sendFrame POST 路径应用 `http.MaxBytesReader`（8MiB，与 gRPC hop 对齐）；`Content-Length` 预检超限直接 `413`（`text/plain`，§1.1）；超限读取在 gateway 解码处报 "request body too large" 类清晰错误（`INVALID_ARGUMENT` + 二进制 `google.rpc.Status` 体，§1.1）。超限**永不**静默截断。
 4. 不存在任何 WebSocket 升级分支；`/api/v1`、`/api/v2` 全部经 gwmux 分发。
 
 ## §4 proxy 转发
@@ -56,18 +67,18 @@ sequenceDiagram
 | `Stream` | `assignAgentOwner`（get-or-create——desktop 可先于 team 物化连接） | `Stream(ctx, req)` → `bind.ServerStreamBinder[TeamFrame].BindServerStream`（复用 `AgentService.Send` 范式） |
 | `SendFrame` | `lookupAgentOwner`（lookup-only；无 owner → `NOT_FOUND`） | unary 直转（复用 `Cancel` 范式 + `propagateAgentError`） |
 
-错误映射（两 RPC 一致）：agent_v2 的 status 承载拒绝保留原码透传（前端看到映射 HTTP 码）；proxy→agent_v2 非 status 传输故障 → `UNAVAILABLE`。
+错误映射（按转发族）：agent_v2 的 status 承载拒绝一律保留原码透传（desktop 看到映射 HTTP 码）。`Stream` 为 server-streaming 族——与 `AgentService.Send` 同款显式拆分（`projects/game/proxy/handler/bridge.go` `Stream`）：开上游流的非 status 传输故障 → `UNAVAILABLE`。`SendFrame` 为 unary 族——与 `Cancel` 等全部 unary 方法同款 `propagateAgentError`（`projects/game/proxy/handler/agent.go`）：非 status 裸错误 → `INTERNAL`。grpc-go 客户端调用实际恒返回 status 承载错误（传输故障由库包装为 `UNAVAILABLE` status），非 status 分支仅为防御性兜底——两族差异无行为影响。
 
 ## §5 desktop 客户端行为（desktop / fake-desktop / 大型测试 helper 共同遵守）
 
-1. **建流**：`GET :stream`（携带 env header；不设 Accept）。读首行（10s 超时）解析 status 枚举名（前端展示语义保持）；失败关闭重连。
+1. **建流**：`GET :stream`（携带 env header；不设 Accept）。非 2xx → 读 JSON 状态信封（§1.1）取 message 报错；2xx 后读首行（10s 超时）解析 status 枚举名（前端展示语义保持）；失败关闭重连。
 2. **读循环**：按**行**缓冲解析（`\n` 为 delimiter；不假设 1 chunk = 1 消息）；`{"result"}` → `protojson.UnmarshalOptions{DiscardUnknown: true}` 解 TeamFrame（前向兼容，FR-007）；`{"error"}` → 流异常终止，关闭并按错误处理。
-3. **上行**：`POST :sendFrame`，`Content-Type: application/octet-stream`，body 为 `SendFrameRequest` 二进制；**不设 Accept**（错误信封以 JSON 返回）。回执发送有界重试（3 × 1s；最终失败记日志，不阻塞读循环）。
+3. **上行**：`POST :sendFrame`，`Content-Type: application/octet-stream`，body 为 `SendFrameRequest` 二进制；**不设 Accept**（outbound 随 inbound 落 octet-stream，错误体线格式见 §1.1）。非 2xx 按响应 `Content-Type` 的 media type 分派解析：`application/octet-stream` → 解码二进制 `google.rpc.Status` 取 gRPC code 与 message；其余（413 预检 `text/plain` 等）→ body 原文作 message；返回的错误统一携带 HTTP 状态码、gRPC code（可解出时）与 message。回执发送有界重试（3 × 1s；判定只认 gRPC code `FAILED_PRECONDITION`——HTTP 400 与 `INVALID_ARGUMENT` 共码，不可凭 HTTP 状态判定；最终失败记日志，不阻塞读循环）。
 4. **关闭**：取消请求 ctx（解除阻塞的行读取）后关闭 body。
 5. fake-desktop 断连注入：第 N 笔回执 POST **完成**后断流（unary 完成即回执已抵达 agent_v2；无需 drain pause）。
 
 ## §6 验收锚点
 
-- 单测：插件（attach 首帧推送/心跳启停、接管 no-op、SendFrame FAILED_PRECONDITION、回指 tool_id resolve、断开 settle）；desktop 桥客户端（NDJSON 行解析、首帧超时、octet-stream 编码、错误体解析）；proxy（Stream/SendFrame 转发与错误映射、owner 策略）；gateway（body 上限 413/归因、路由注册——`desktop_flow` 之外不回归）。
+- 单测：插件（attach 首帧推送/心跳启停、接管 no-op、SendFrame FAILED_PRECONDITION、回指 tool_id resolve、断开 settle）；desktop 桥客户端（NDJSON 行解析、首帧超时、octet-stream 编码、错误体 Content-Type 分派解析——二进制 `google.rpc.Status` / 413 纯文本 / `:stream` 非 2xx JSON 信封）；proxy（Stream/SendFrame 转发与错误映射、owner 策略）；gateway（body 上限 413/归因、路由注册——`desktop_flow` 之外不回归）。
 - 大型测试（[../quickstart.md](../quickstart.md)）：首帧 status、接管、派发→回执→识别闭环、在途断连失败、空闲存活（SC-004）、超限归因（SC-003）、断连恢复三局序列、既有游戏/团队链路全量回归。
 - 行为不变量：扫雷统计口径（[../../065-agent-v2-team-refine/contracts/game-stats-broadcast.md](../../065-agent-v2-team-refine/contracts/game-stats-broadcast.md) §1.2，仅计已执行操作）经既有单测与游戏大型测试回归。

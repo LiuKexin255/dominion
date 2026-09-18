@@ -20,10 +20,10 @@ import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js"
 import type { TurnStream } from "./history.js";
 
 /**
- * Handler-level unit tests for the gRPC status mapping (specs/059-agent-v2-
- * team-mode/contracts/team-api.md §1–§6): malformed resource names, missing
- * preset references and empty text are request-level INVALID_ARGUMENT
- * failures (the stream never opens), unmaterialized Sends are
+ * Handler-level unit tests for the gRPC status mapping
+ * (specs/059-agent-v2-team-mode/contracts/team-api.md §1–§6): malformed
+ * resource names, missing preset references and empty text are request-level
+ * INVALID_ARGUMENT failures (the stream never opens), unmaterialized Sends are
  * FAILED_PRECONDITION, UpdateTeam delegates fail-fast validation and
  * materialization to the team registry, the List faces project the history
  * entries, and the PresetService surface (preset CRUD + ListModels) delegates

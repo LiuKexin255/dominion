@@ -72,10 +72,11 @@ func NewDesktopBridgeHandler(
 // session and relaying every response frame until the upstream ends. The
 // session identity comes from the request path via parseAgentSession, and
 // the owner is allocated get-or-create so the stream and the conversation
-// share one instance (specs/066-desktop-bridge-split/contracts/
-// desktop-bridge-v2.md §2.1, §4). Error mapping matches Connect/Send: a
-// status-bearing rejection keeps its code; a non-status transport failure on
-// the proxy→agent_v2 hop maps to UNAVAILABLE.
+// share one instance
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.1, §4).
+// Error mapping matches Connect/Send: a status-bearing rejection keeps its
+// code; a non-status transport failure on the proxy→agent_v2 hop maps to
+// UNAVAILABLE.
 func (h *DesktopBridgeHandler) Stream(req *game.StreamRequest, stream game.DesktopBridgeService_StreamServer) error {
 	ctx := stream.Context()
 
@@ -135,10 +136,10 @@ func (h *DesktopBridgeHandler) Stream(req *game.StreamRequest, stream game.Deskt
 // allocates an owner, and no owner → NOT_FOUND (the desktop re-establishes
 // the downlink before retrying; the plugin answers the no-active-stream case
 // with FAILED_PRECONDITION once the owner is reached). The synchronous
-// response carries no information (correlation rides on
-// flow_result.tool_id), so a downstream error is passed through with its
-// code preserved (specs/066-desktop-bridge-split/contracts/
-// desktop-bridge-v2.md §2.6/§2.7/§4; the Cancel forwarding shape).
+// response carries no information (correlation rides on flow_result.tool_id),
+// so a downstream error is passed through with its code preserved
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§2.7/§4;
+// the Cancel forwarding shape).
 func (h *DesktopBridgeHandler) SendFrame(ctx context.Context, req *game.SendFrameRequest) (*game.SendFrameResponse, error) {
 	name, err := parseAgentSession(req.GetSession())
 	if err != nil {

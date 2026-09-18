@@ -225,8 +225,9 @@ func wsURL(httpURL string) string {
 
 // echoAsTeamFrame converts an inbound UserFrame into the outbound TeamFrame
 // echo, preserving the routing pair and payload. Recv returns UserFrame while
-// Send takes TeamFrame (specs/035-proto-contract-refine/contracts/
-// frame-split.md §1), so a server-side echo must translate the types.
+// Send takes TeamFrame
+// (specs/035-proto-contract-refine/contracts/frame-split.md §1), so a
+// server-side echo must translate the types.
 func echoAsTeamFrame(f *game.UserFrame) *game.TeamFrame {
 	out := &game.TeamFrame{
 		SessionId:  f.GetSessionId(),

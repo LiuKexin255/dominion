@@ -1,8 +1,8 @@
 /**
  * Tests for the desktop bridge core (attach/接管/断连结算/超时/abort/uuid
- * tool_id/stale 回执 — specs/051-agent-v2-dsh-migration/contracts/
- * saolei-plugins.md §7.2) with the v2 session-keyed registry semantics
- * (contracts/desktop-bridge.md §2, data-model.md §2.6). Streams are injected
+ * tool_id/stale 回执) with the v2 session-keyed registry semantics
+ * (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §7.2;
+ * contracts/desktop-bridge.md §2, data-model.md §2.6). Streams are injected
  * doubles — no module interception (style/javascript.md Mock convention).
  */
 
@@ -683,8 +683,8 @@ describe("DesktopBridge", () => {
 
   // ------------------------------------------------------------------
   // SendFrame handler 面：uplink 单发（无流拒绝/参数校验/回执 resolve/
-  // 日志信号/乱序回执）（specs/066-desktop-bridge-split/contracts/
-  // desktop-bridge-v2.md §2.6/§2.7/§2.9）
+  // 日志信号/乱序回执）
+  // （specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§2.7/§2.9）
   // ------------------------------------------------------------------
   function sendFrameCall(frame?: BridgeUserFrame, session?: string): SendFrameCall {
     const request: SendFrameCall["request"] = {};

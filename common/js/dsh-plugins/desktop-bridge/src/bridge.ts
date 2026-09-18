@@ -240,9 +240,8 @@ export class DesktopBridge {
    * session with no active connection is a FAILED_PRECONDITION the desktop
    * retries after re-establishing the stream. A delivered frame is routed
    * through the same part dispatch as the in-band path, and the synchronous
-   * reply carries no information — correlation rides on
-   * `flow_result.tool_id` (specs/066-desktop-bridge-split/contracts/
-   * desktop-bridge-v2.md §2.6/§2.7/§2.9).
+   * reply carries no information — correlation rides on `flow_result.tool_id`
+   * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§2.7/§2.9).
    */
   SendFrame(call: SendFrameCall, callback: SendFrameCallback): void {
     const sessionName = call.request.session;
@@ -441,8 +440,8 @@ export class DesktopBridge {
   /**
    * Route one inbound frame for a bound session: receipts resolve in-flight
    * dispatches, wait/warn parts keep their existing log behavior, and every
-   * other part (including the legacy status probe the v2 desktop no longer
-   * sends) is logged and ignored
+   * other part (including the status probe the v2 desktop does not send) is
+   * logged and ignored
    * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.9).
    */
   private routeFrame(sessionName: string, frame: BridgeUserFrame): void {
