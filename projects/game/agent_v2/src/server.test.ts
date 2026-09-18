@@ -978,7 +978,7 @@ describe("PresetService.ListModels handler", () => {
 describe("DesktopBridgeService handlers", () => {
   it("delegates the bidi stream to the bridge plugin's Connect handler", () => {
     const connect = vi.fn();
-    const handlers = buildDesktopBridgeHandlers({ Connect: connect, Stream: vi.fn() });
+    const handlers = buildDesktopBridgeHandlers({ Connect: connect, Stream: vi.fn(), SendFrame: vi.fn() });
     const call = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
     (handlers.Connect as (c: unknown) => void)(call);
     expect(connect).toHaveBeenCalledTimes(1);
@@ -987,7 +987,7 @@ describe("DesktopBridgeService handlers", () => {
 
   it("delegates the server stream to the bridge plugin's Stream handler", () => {
     const stream = vi.fn();
-    const handlers = buildDesktopBridgeHandlers({ Connect: vi.fn(), Stream: stream });
+    const handlers = buildDesktopBridgeHandlers({ Connect: vi.fn(), Stream: stream, SendFrame: vi.fn() });
     const call = {
       request: { session: "templates/saolei/sessions/s1" },
       on: vi.fn(),
@@ -997,5 +997,21 @@ describe("DesktopBridgeService handlers", () => {
     (handlers.Stream as (c: unknown) => void)(call);
     expect(stream).toHaveBeenCalledTimes(1);
     expect(stream.mock.calls[0][0]).toBe(call);
+  });
+
+  it("delegates the unary SendFrame to the bridge plugin's SendFrame handler", () => {
+    const sendFrame = vi.fn();
+    const handlers = buildDesktopBridgeHandlers({ Connect: vi.fn(), Stream: vi.fn(), SendFrame: sendFrame });
+    const call = {
+      request: {
+        session: "templates/saolei/sessions/s1",
+        frame: { flowParts: { parts: [] } },
+      },
+    };
+    const callback = vi.fn();
+    (handlers.SendFrame as (c: unknown, cb: unknown) => void)(call, callback);
+    expect(sendFrame).toHaveBeenCalledTimes(1);
+    expect(sendFrame.mock.calls[0][0]).toBe(call);
+    expect(sendFrame.mock.calls[0][1]).toBe(callback);
   });
 });

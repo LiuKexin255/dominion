@@ -21,6 +21,8 @@ import { DesktopBridge } from "./bridge.js";
 import type {
   DesktopBridgeServiceHandlers,
   OperationResult,
+  SendFrameCall,
+  SendFrameCallback,
   StreamCall,
   WireFlowPart,
 } from "./wire.js";
@@ -37,6 +39,19 @@ export interface DesktopBridgeService {
    * stopped) and disconnect cleanup.
    */
   attach(sessionName: string, stream: StreamCall): void;
+  /**
+   * Handler face for the session downlink (path-bound session identity):
+   * takes over the session's previous connection and owns the confirmation
+   * frame, heartbeat, and disconnect cleanup.
+   */
+  Stream(call: StreamCall): void;
+  /**
+   * Handler face for the uplink single-shot frame submission: a missing
+   * session/frame is INVALID_ARGUMENT, no active downlink is
+   * FAILED_PRECONDITION, and a delivered receipt resolves its in-flight
+   * dispatch.
+   */
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void;
   /**
    * Dispatch one FlowPart operation and await its result receipt. No
    * connection → FAILED "desktop disconnected"; abort → FAILED "aborted";
@@ -64,6 +79,8 @@ export type {
   DesktopBridgeServiceHandlers,
   OperationResult,
   OperationScreenshot,
+  SendFrameCall,
+  SendFrameCallback,
   StreamCall,
   ToolResultStatus,
   WireFlowPart,
@@ -86,6 +103,14 @@ export class DesktopBridgePlugin extends Service implements DesktopBridgeService
 
   attach(sessionName: string, stream: StreamCall): void {
     this.bridge.attach(sessionName, stream);
+  }
+
+  Stream(call: StreamCall): void {
+    this.bridge.Stream(call);
+  }
+
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void {
+    this.bridge.SendFrame(call, callback);
   }
 
   dispatch(

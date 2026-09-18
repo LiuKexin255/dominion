@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -253,7 +255,7 @@ func echoAsTeamFrame(f *game.UserFrame) *game.TeamFrame {
 func newRoutingTestMux(t *testing.T) *http.ServeMux {
 	t.Helper()
 
-	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
+	gwmux := newGatewayMux()
 	proxyConn, err := grpc.NewClient(
 		"unreachable-proxy.invalid:50051",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -280,6 +282,9 @@ func newRoutingTestMux(t *testing.T) *http.ServeMux {
 	}
 	if err := game.RegisterAgentServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
 		t.Fatalf("register agent handler: %v", err)
+	}
+	if err := game.RegisterDesktopBridgeServiceHandler(context.Background(), gwmux, proxyConn); err != nil {
+		t.Fatalf("register desktop bridge handler: %v", err)
 	}
 	if err := game.RegisterPresetServiceHandler(context.Background(), gwmux, presetConn); err != nil {
 		t.Fatalf("register preset handler: %v", err)
@@ -655,4 +660,153 @@ func probeUserFrame(templateID, sessionID string) *game.UserFrame {
 			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
 		}}},
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: SendFrame body limit middleware
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.3)
+// ---------------------------------------------------------------------------
+
+const sendFramePath = "/api/v2/templates/saolei/sessions/s1:sendFrame"
+
+// bodyProbeHandler reports the number of bytes it can read from the request
+// body, or the read error. It stands in for grpc-gateway's request decoder
+// (which reads the whole body before invoking the backend).
+func bodyProbeHandler(w http.ResponseWriter, r *http.Request) {
+	n, err := io.Copy(io.Discard, r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	fmt.Fprintf(w, "%d", n)
+}
+
+// zeroReader yields zeros without bound, standing in for an attacker-supplied
+// chunked upload whose length is unknown to the server.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestSendFrameBodyLimit_ContentLengthOverLimitReturns413(t *testing.T) {
+	// given: a declared length above the cap — the guard rejects before any read
+	handler := sendFrameBodyLimit(http.HandlerFunc(bodyProbeHandler))
+	req := httptest.NewRequest(http.MethodPost, sendFramePath, http.NoBody)
+	req.ContentLength = maxSendFrameBodyBytes + 1
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if !strings.Contains(rec.Body.String(), "8MiB") {
+		t.Fatalf("body = %q, want a message naming the 8MiB limit", rec.Body.String())
+	}
+}
+
+func TestSendFrameBodyLimit_OverLimitReadReportsBodyTooLarge(t *testing.T) {
+	// given: an unknown-length body (chunked upload) that runs past the cap —
+	// the read fails with a clear error instead of truncating silently
+	handler := sendFrameBodyLimit(http.HandlerFunc(bodyProbeHandler))
+	req := httptest.NewRequest(http.MethodPost, sendFramePath, io.LimitReader(zeroReader{}, maxSendFrameBodyBytes+1024))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (the read error surfaces to the decoder)", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("body = %q, want the MaxBytesReader \"request body too large\" attribution", rec.Body.String())
+	}
+}
+
+func TestSendFrameBodyLimit_WithinLimitPassesThroughUnmodified(t *testing.T) {
+	// given: a 5MiB screenshot payload well under the 8MiB cap — the guard
+	// must not interfere with normal uplinks
+	handler := sendFrameBodyLimit(http.HandlerFunc(bodyProbeHandler))
+	const bodyBytes = 5 * 1024 * 1024
+	req := httptest.NewRequest(http.MethodPost, sendFramePath, bytes.NewReader(make([]byte, bodyBytes)))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != fmt.Sprint(bodyBytes) {
+		t.Fatalf("read bytes = %s, want %d (no truncation)", got, bodyBytes)
+	}
+}
+
+func TestSendFrameBodyLimit_OtherRoutesUnaffected(t *testing.T) {
+	// given: an oversized declared length on routes that are not the
+	// sendFrame POST — the guard must leave them untouched
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "stream GET", method: http.MethodGet, path: "/api/v2/templates/saolei/sessions/s1:stream"},
+		{name: "team send POST", method: http.MethodPost, path: "/api/v2/templates/saolei/sessions/s1:send"},
+		{name: "legacy connect POST", method: http.MethodPost, path: "/api/v2/templates/saolei/sessions/s1/connect"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := sendFrameBodyLimit(http.HandlerFunc(bodyProbeHandler))
+			req := httptest.NewRequest(tt.method, tt.path, http.NoBody)
+			req.ContentLength = maxSendFrameBodyBytes + 1
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d (route not guarded)", rec.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestGatewayMuxOctetStreamAndJSONMarshalersCoexist(t *testing.T) {
+	// given: the production mux (octet-stream registered) routing to an
+	// unreachable backend — a well-formed request of either content type
+	// reaches the backend and fails with 503 (rather than a decoding 500 or a
+	// routing 404), proving per-MIME marshaler selection
+	httpSrv := httptest.NewServer(newRoutingTestMux(t))
+	defer httpSrv.Close()
+
+	t.Run("application/json still routes", func(t *testing.T) {
+		resp, err := http.Post(
+			httpSrv.URL+sendFramePath,
+			"application/json",
+			strings.NewReader(`{"frame":{"sessionId":"s1"}}`),
+		)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d (JSON marshaler unaffected by the octet-stream registration)", resp.StatusCode, http.StatusServiceUnavailable)
+		}
+	})
+
+	t.Run("application/octet-stream decodes binary proto", func(t *testing.T) {
+		payload, err := proto.Marshal(&game.SendFrameRequest{Frame: &game.UserFrame{SessionId: "s1"}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		resp, err := http.Post(httpSrv.URL+sendFramePath, "application/octet-stream", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d (binary proto decoded, then proxied to the unreachable backend)", resp.StatusCode, http.StatusServiceUnavailable)
+		}
+	})
 }

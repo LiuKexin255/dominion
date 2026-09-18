@@ -123,7 +123,11 @@ func main() {
 	}
 
 	// 2. Create grpc-gateway mux and register handlers for unary RPCs.
-	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
+	// The mux carries the octet-stream proto marshaler alongside the default
+	// JSON one: SendFrame's uplink body is raw binary proto, while every JSON
+	// route keeps the default marshaler
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.1).
+	gwmux := newGatewayMux()
 
 	ctx := context.Background()
 	if err := game.RegisterSessionServiceHandler(ctx, gwmux, sessionConn); err != nil {
@@ -185,15 +189,30 @@ func main() {
 	log.Fatal(b.Run(context.Background()))
 }
 
+// newGatewayMux builds the grpc-gateway mux with the octet-stream proto
+// marshaler registered alongside the defaults. SendFrame's uplink body is raw
+// binary proto — no base64 inflation — while every JSON route keeps the
+// default marshaler (specs/066-desktop-bridge-split/contracts/
+// desktop-bridge-v2.md §3.1/§3.2). MIME matching is exact, so the wildcard
+// JSON marshaler still serves application/json.
+func newGatewayMux() *runtime.ServeMux {
+	return runtime.NewServeMux(append(
+		pgrpc.GatewayDefault(),
+		runtime.WithMarshalerOption("application/octet-stream", &runtime.ProtoMarshaller{}),
+	)...)
+}
+
 // newRootMux builds the path-based routing mux. The /api/v2/ subtree
 // dispatches the desktop-bridge WebSocket upgrade before falling through to
 // grpc-gateway: /api/v2/templates/{template}/sessions/{session}/connect
 // (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3). The
+// /api/v2/ fallthrough is wrapped with the SendFrame body guard. The
 // /api/v1/ subtree serves grpc-gateway only (session + memory faces). Single
 // subtree patterns avoid Go's ServeMux 307 redirect when a subtree prefix
 // and a longer path would otherwise be registered separately.
 func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeMux {
 	rootMux := http.NewServeMux()
+	guarded := sendFrameBodyLimit(gwmux)
 
 	rootMux.Handle("/api/v1/", gwmux)
 
@@ -202,9 +221,48 @@ func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeM
 			handleDesktopBridgeConnect(w, r, teamConn)
 			return
 		}
-		gwmux.ServeHTTP(w, r)
+		guarded.ServeHTTP(w, r)
 	})
 	return rootMux
+}
+
+// maxSendFrameBodyBytes is the hard cap on one SendFrame request body (8MiB),
+// aligned with the gRPC hop's MaxCallRecvMsgSize/MaxCallSendMsgSize: a
+// screenshot up to ~5MiB plus the request envelope fits, and an oversized
+// upload is attributed at the HTTP edge instead of deep in the gRPC hop
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.3).
+const maxSendFrameBodyBytes = 8 * 1024 * 1024
+
+// sendFrameBodyLimit wraps the next handler with the SendFrame uplink body
+// guard: a POST carrying the :sendFrame custom method is rejected with 413
+// before reading when its declared Content-Length exceeds the cap, and
+// otherwise has its body bounded by http.MaxBytesReader so a chunked or
+// under-declared payload surfaces as the gateway decoder's clear "request
+// body too large" error. Oversized payloads are never silently truncated and
+// the session is unaffected (specs/066-desktop-bridge-split/contracts/
+// desktop-bridge-v2.md §3.3; specs/025-desktop-image-state-refine/contracts/
+// image-transport-contract.md §4).
+func sendFrameBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isSendFrameRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.ContentLength > maxSendFrameBodyBytes {
+			http.Error(w, "sendFrame request body exceeds the 8MiB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxSendFrameBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isSendFrameRequest reports whether the request is the SendFrame uplink POST
+// (custom method suffix :sendFrame, AIP-136:
+// https://google.aip.dev/136). Other POST routes (e.g. :send) and the
+// :stream GET are left untouched.
+func isSendFrameRequest(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, ":sendFrame")
 }
 
 // isWebSocketConnectPathV2 reports whether the request path matches the

@@ -41,6 +41,8 @@ import type { LlmModelInfo } from "@deepseek-ai/dsh-llm";
 import type {
   BidiStream,
   DesktopBridgeServiceHandlers as PluginBridgeHandlers,
+  SendFrameCall,
+  SendFrameCallback,
   StreamCall,
 } from "@dominion/dsh-desktop-bridge";
 // The preset domain service face and its error surface: the PresetService
@@ -970,8 +972,10 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
  * Build the DesktopBridgeService handlers from the desktop-bridge plugin's
  * handler face (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md
  * §4): the plugin's structural StreamCall is the grpc-js server-writable
- * stream the generated Stream handler receives, and its structural
- * BidiStream is the duplex stream the legacy Connect handler receives.
+ * stream the generated Stream handler receives, its structural SendFrameCall
+ * is the unary gate the generated SendFrame handler receives, and its
+ * structural BidiStream is the duplex stream the legacy Connect handler
+ * receives.
  */
 export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): DesktopBridgeServiceHandlers {
   return {
@@ -980,6 +984,12 @@ export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): Deskto
     },
     Stream: (call) => {
       bridge.Stream(call as unknown as StreamCall);
+    },
+    SendFrame: (call, callback) => {
+      bridge.SendFrame(
+        call as unknown as SendFrameCall,
+        callback as unknown as SendFrameCallback,
+      );
     },
   };
 }

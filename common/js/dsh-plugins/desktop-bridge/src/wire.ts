@@ -181,8 +181,31 @@ export interface BidiStream {
 
 /** Handler face returned by the service for host gRPC registration: the
  * generated `DesktopBridgeServiceHandlers` (agent_v2.proto) declares the
- * same downlink `Stream` and legacy bidi `Connect` methods. */
+ * same downlink `Stream`, uplink `SendFrame`, and legacy bidi `Connect`
+ * methods. */
 export interface DesktopBridgeServiceHandlers {
   Connect(call: BidiStream): void;
   Stream(call: StreamCall): void;
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void;
 }
+
+/**
+ * The unary SendFrame call face the bridge consumes: the path-injected
+ * session plus the self-contained desktop frame (correlation rides on
+ * `flow_result.tool_id`, never on call ordering —
+ * specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.7/§2.9).
+ */
+export interface SendFrameCall {
+  request: { session?: string; frame?: BridgeUserFrame };
+}
+
+/**
+ * The unary reply face the SendFrame handler answers through. Structurally
+ * mirrors the grpc-js `sendUnaryData` error/response shape (no grpc-js
+ * dependency); the generated host handler adapts its callback onto this
+ * face.
+ */
+export type SendFrameCallback = (
+  err: { code: number; message: string } | null,
+  response?: Record<string, never>,
+) => void;

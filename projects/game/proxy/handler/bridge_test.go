@@ -16,13 +16,16 @@ import (
 )
 
 // fakeBridgeClient is the downstream DesktopBridgeServiceClient double: it
-// hands the handler the scripted stream (or refuses the open). SendFrame is
-// not exercised by these doubles.
+// hands the handler the scripted stream (or refuses the open) and records the
+// forwarded SendFrame request.
 type fakeBridgeClient struct {
 	connectStream game.DesktopBridgeService_ConnectClient
 	connectErr    error
 	stream        game.DesktopBridgeService_StreamClient
 	streamErr     error
+	sendFrameResp *game.SendFrameResponse
+	sendFrameErr  error
+	sendFrameReq  *game.SendFrameRequest
 }
 
 func (c *fakeBridgeClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.DesktopBridgeService_ConnectClient, error) {
@@ -33,8 +36,9 @@ func (c *fakeBridgeClient) Stream(_ context.Context, _ *game.StreamRequest, _ ..
 	return c.stream, c.streamErr
 }
 
-func (c *fakeBridgeClient) SendFrame(_ context.Context, _ *game.SendFrameRequest, _ ...grpc.CallOption) (*game.SendFrameResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "SendFrame is not exercised by this double")
+func (c *fakeBridgeClient) SendFrame(_ context.Context, req *game.SendFrameRequest, _ ...grpc.CallOption) (*game.SendFrameResponse, error) {
+	c.sendFrameReq = req
+	return c.sendFrameResp, c.sendFrameErr
 }
 
 // setFakeBridgeClient replaces the bridge client constructor seam and
@@ -547,5 +551,140 @@ func TestDesktopBridgeHandler_Stream_BinderErrorPropagates(t *testing.T) {
 
 	if err == nil || err.Error() != "stream bind failed" {
 		t.Fatalf("Stream() error = %v, want the binder error propagated", err)
+	}
+}
+
+func TestDesktopBridgeHandler_SendFrame_ForwardsRequestForExistingOwner(t *testing.T) {
+	// given: an owner from a previous Stream/UpdateTeam
+	req := &game.SendFrameRequest{
+		Session: agentSession,
+		Frame:   &game.UserFrame{SessionId: "conv-1"},
+	}
+	fake := &fakeBridgeClient{sendFrameResp: &game.SendFrameResponse{}}
+	handler, store, manager := newBridgeHarness(t, fake)
+	seedAgentOwner(store, 3)
+
+	// when
+	resp, err := handler.SendFrame(context.Background(), req)
+
+	// then: the owner is looked up only (no allocation), the request reaches
+	// the upstream via its instance unchanged, and the response passes through
+	if err != nil {
+		t.Fatalf("SendFrame() error = %v, want nil", err)
+	}
+	if resp == nil {
+		t.Fatal("SendFrame() got nil response")
+	}
+	if fake.sendFrameReq != req {
+		t.Fatalf("downstream request = %p, want the original %p", fake.sendFrameReq, req)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("owner Create calls = %d, want 0 (SendFrame must not allocate)", store.createCalls)
+	}
+	if len(manager.getCalls) != 1 || manager.getCalls[0] != 3 {
+		t.Fatalf("manager Get calls = %v, want [3] (seeded owner index)", manager.getCalls)
+	}
+}
+
+func TestDesktopBridgeHandler_SendFrame_NoOwnerReturnsNotFoundWithoutAllocation(t *testing.T) {
+	// given: a fresh store — no Stream/UpdateTeam ever materialized the session
+	fake := &fakeBridgeClient{sendFrameResp: &game.SendFrameResponse{}}
+	handler, store, _ := newBridgeHarness(t, fake)
+
+	// when
+	_, err := handler.SendFrame(context.Background(), &game.SendFrameRequest{
+		Session: agentSession,
+		Frame:   &game.UserFrame{SessionId: "conv-1"},
+	})
+
+	// then: lookup-only — NOT_FOUND, no owner record, no downstream call
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("SendFrame() code = %v, want NotFound", status.Code(err))
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("owner Create calls = %d, want 0 (SendFrame must not allocate)", store.createCalls)
+	}
+	if fake.sendFrameReq != nil {
+		t.Fatal("downstream SendFrame was called without an owner")
+	}
+}
+
+func TestDesktopBridgeHandler_SendFrame_InvalidSessionRejectedWithoutAllocation(t *testing.T) {
+	tests := []struct {
+		name    string
+		session string
+	}{
+		{name: "missing session", session: ""},
+		{name: "malformed resource name", session: "templates/saolei/sessions"},
+		{name: "unknown template", session: "templates/other/sessions/conv-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeBridgeClient{sendFrameResp: &game.SendFrameResponse{}}
+			handler, store, _ := newBridgeHarness(t, fake)
+
+			_, err := handler.SendFrame(context.Background(), &game.SendFrameRequest{
+				Session: tt.session,
+				Frame:   &game.UserFrame{SessionId: "conv-1"},
+			})
+
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("SendFrame() code = %v, want InvalidArgument", status.Code(err))
+			}
+			if store.createCalls != 0 {
+				t.Fatalf("owner Create calls = %d, want 0 (no allocation on invalid input)", store.createCalls)
+			}
+		})
+	}
+}
+
+func TestDesktopBridgeHandler_SendFrame_InstanceUnreachable(t *testing.T) {
+	// given: the owner exists but its instance has no cached connection
+	fake := &fakeBridgeClient{sendFrameResp: &game.SendFrameResponse{}}
+	handler, store, manager := newBridgeHarness(t, fake)
+	seedAgentOwner(store, 7)
+	manager.getErr = errors.New("no connection for owner index 7")
+
+	_, err := handler.SendFrame(context.Background(), &game.SendFrameRequest{
+		Session: agentSession,
+		Frame:   &game.UserFrame{SessionId: "conv-1"},
+	})
+
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("SendFrame() code = %v, want Unavailable", status.Code(err))
+	}
+}
+
+func TestDesktopBridgeHandler_SendFrame_DownstreamStatusPreserved(t *testing.T) {
+	// given: agent_v2 rejects the uplink frame — the agent-level code must
+	// survive the hop unchanged (e.g. no active downlink stream)
+	fake := &fakeBridgeClient{sendFrameErr: status.Error(codes.FailedPrecondition, "desktop stream not active")}
+	handler, store, _ := newBridgeHarness(t, fake)
+	seedAgentOwner(store, 1)
+
+	_, err := handler.SendFrame(context.Background(), &game.SendFrameRequest{
+		Session: agentSession,
+		Frame:   &game.UserFrame{SessionId: "conv-1"},
+	})
+
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("SendFrame() code = %v, want FailedPrecondition (original code preserved)", status.Code(err))
+	}
+}
+
+func TestDesktopBridgeHandler_SendFrame_TransportErrorMapsToInternal(t *testing.T) {
+	// given: a non-status transport failure on the proxy→agent_v2 hop —
+	// propagateAgentError wraps it as Internal (Cancel forwarding shape)
+	fake := &fakeBridgeClient{sendFrameErr: errors.New("connection refused")}
+	handler, store, _ := newBridgeHarness(t, fake)
+	seedAgentOwner(store, 1)
+
+	_, err := handler.SendFrame(context.Background(), &game.SendFrameRequest{
+		Session: agentSession,
+		Frame:   &game.UserFrame{SessionId: "conv-1"},
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("SendFrame() code = %v, want Internal", status.Code(err))
 	}
 }

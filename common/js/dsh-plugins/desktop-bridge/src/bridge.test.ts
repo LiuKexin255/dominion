@@ -7,12 +7,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installReporter, type Reporter } from "@dominion/common-js-logs";
 
 import { DesktopBridge, deriveSessionName } from "./bridge.js";
 import type {
   BidiStream,
   BridgeTeamFrame,
   BridgeUserFrame,
+  SendFrameCall,
   StreamCall,
   WireFlowPart,
   WireFlowResultPart,
@@ -177,25 +179,25 @@ describe("DesktopBridge", () => {
   });
 
   // ------------------------------------------------------------------
-  // Connect handler 面首帧绑定 + probe 回应（v2 Connect 路径）
+  // Connect handler 面首帧绑定（v2 Connect 路径；status 探针不再回显——
+  // 上行 part 分派只处理 flow_result/wait/warn，
+  // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.9）
   // ------------------------------------------------------------------
-  it("handlers().Connect binds on the first frame and echoes the status probe", () => {
+  it("handlers().Connect binds on the first frame and ignores the status probe", () => {
     const call = fakeStream();
     bridge.handlers().Connect(call);
     call.emit("data", probeFrame());
 
-    // attach writes the connection confirmation status frame first; the
-    // probe echo is written next (status enum name returned per
-    // desktop-bridge.md §1).
-    const echo = call.written[CONFIRM_FRAME_COUNT];
-    expect(call.written).toHaveLength(CONFIRM_FRAME_COUNT + 1);
-    expect(echo?.flowParts?.parts?.[0]?.status?.status).toBe(
-      "STATUS_SIGNAL_STATUS_ACTIVE",
-    );
-    expect(echo?.sessionId).toBe(SESSION);
-    expect(echo?.frameId).toBeTruthy();
+    // Only attach's connection confirmation was written: the legacy status
+    // probe is warn-ignored rather than echoed.
+    expect(call.written).toHaveLength(CONFIRM_FRAME_COUNT);
+    const confirm = call.written[0];
+    expect(confirm?.flowParts?.parts?.[0]?.status?.status).toBe(STATUS_ACTIVE);
+    expect(confirm?.sessionId).toBe(SESSION);
+    expect(confirm?.frameId).toBeTruthy();
 
-    // The probe frame itself is bound: a dispatch now routes through the connection.
+    // The probe frame still binds the connection: a dispatch now routes
+    // through it and its receipt resolves.
     const promise = bridge.dispatch(SESSION, makeMovePart());
     const toolId = writtenToolId(call);
     expect(toolId).not.toBe("");
@@ -677,5 +679,165 @@ describe("DesktopBridge", () => {
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toBe("desktop disconnected");
     expect(bridge.isDesktopConnected(SESSION)).toBe(false);
+  });
+
+  // ------------------------------------------------------------------
+  // SendFrame handler 面：uplink 单发（无流拒绝/参数校验/回执 resolve/
+  // 日志信号/乱序回执）（specs/066-desktop-bridge-split/contracts/
+  // desktop-bridge-v2.md §2.6/§2.7/§2.9）
+  // ------------------------------------------------------------------
+  function sendFrameCall(frame?: BridgeUserFrame, session?: string): SendFrameCall {
+    const request: SendFrameCall["request"] = {};
+    if (session !== undefined) {
+      request.session = session;
+    }
+    if (frame !== undefined) {
+      request.frame = frame;
+    }
+    return { request };
+  }
+
+  function receiptFrame(toolId: string, message = "ok"): BridgeUserFrame {
+    return {
+      flowParts: { parts: [{ flowResult: makeResult(toolId, STATUS_SUCCEEDED, message) }] },
+    };
+  }
+
+  it("SendFrame with no active stream → FAILED_PRECONDITION", () => {
+    const callback = vi.fn();
+    bridge.SendFrame(sendFrameCall(receiptFrame("op-1"), SESSION), callback);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][0]).toMatchObject({
+      code: 9,
+      message: "desktop stream not active",
+    });
+  });
+
+  it("SendFrame with no session → INVALID_ARGUMENT", () => {
+    const callback = vi.fn();
+    bridge.SendFrame(sendFrameCall(receiptFrame("op-1")), callback);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][0]).toMatchObject({ code: 3 });
+  });
+
+  it("SendFrame with a missing frame or flowParts → INVALID_ARGUMENT", () => {
+    attach();
+    const invalidCalls: SendFrameCall[] = [
+      { request: { session: SESSION } },
+      { request: { session: SESSION, frame: { sessionId: "s1" } } },
+    ];
+
+    for (const call of invalidCalls) {
+      const callback = vi.fn();
+      bridge.SendFrame(call, callback);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback.mock.calls[0][0]).toMatchObject({ code: 3 });
+    }
+  });
+
+  it("SendFrame flow_result resolves the matching in-flight dispatch", async () => {
+    attach();
+    const promise = bridge.dispatch(SESSION, makeMovePart());
+    const toolId = writtenToolId(stream);
+
+    const callback = vi.fn();
+    bridge.SendFrame(sendFrameCall(receiptFrame(toolId, "done"), SESSION), callback);
+
+    expect(callback).toHaveBeenCalledWith(null, {});
+    await expect(promise).resolves.toMatchObject({
+      status: STATUS_SUCCEEDED,
+      message: "done",
+    });
+  });
+
+  it("SendFrame wait/warn parts keep their existing log behavior", () => {
+    attach();
+    const records: Array<{ level: string; msg: string }> = [];
+    const reporter: Reporter = {
+      write: (level, msg) => {
+        records.push({ level, msg });
+      },
+    };
+    const uninstall = installReporter(reporter);
+    try {
+      const callback = vi.fn();
+      bridge.SendFrame(
+        sendFrameCall({ flowParts: { parts: [{ wait: { reason: "busy" } }] } }, SESSION),
+        callback,
+      );
+      bridge.SendFrame(
+        sendFrameCall({ flowParts: { parts: [{ warn: { message: "careful" } }] } }, SESSION),
+        callback,
+      );
+
+      expect(records).toContainEqual({
+        level: "info",
+        msg: "wait signal received from desktop",
+      });
+      expect(records).toContainEqual({
+        level: "warn",
+        msg: "warn signal received from desktop",
+      });
+      expect(callback).toHaveBeenCalledWith(null, {});
+    } finally {
+      uninstall();
+    }
+  });
+
+  it("a late SendFrame receipt resolves the older of two in-flight dispatches", async () => {
+    attach();
+    const first = bridge.dispatch(SESSION, makeMovePart());
+    const firstId = writtenToolId(stream, CONFIRM_FRAME_COUNT);
+    const second = bridge.dispatch(SESSION, makeMovePart());
+    const secondId = writtenToolId(stream, CONFIRM_FRAME_COUNT + 1);
+    expect(firstId).not.toBe(secondId);
+
+    // The receipt for the FIRST dispatch arrives only after the second was
+    // issued — correlation rides on tool_id, never on arrival order.
+    const callback = vi.fn();
+    bridge.SendFrame(sendFrameCall(receiptFrame(firstId, "late"), SESSION), callback);
+
+    await expect(first).resolves.toMatchObject({
+      status: STATUS_SUCCEEDED,
+      message: "late",
+    });
+    expect(callback).toHaveBeenCalledWith(null, {});
+
+    await vi.advanceTimersByTimeAsync(1_200_000);
+    await expect(second).resolves.toMatchObject({
+      status: STATUS_FAILED,
+      message: "operation timed out",
+    });
+  });
+
+  it("SendFrame status part is ignored without writing a frame", () => {
+    const call = streamAttach();
+    const callback = vi.fn();
+    bridge.SendFrame(
+      sendFrameCall(
+        {
+          flowParts: {
+            parts: [{ status: { status: "STATUS_SIGNAL_STATUS_ACTIVE" } }],
+          },
+        },
+        SESSION,
+      ),
+      callback,
+    );
+
+    // The delivered frame is acked, but a status part (no longer sent by the
+    // v2 desktop) writes nothing back: only attach's confirmation frame.
+    expect(callback).toHaveBeenCalledWith(null, {});
+    expect(call.written).toHaveLength(CONFIRM_FRAME_COUNT);
+  });
+
+  it("handlers().SendFrame delegates to the bridge uplink handler", () => {
+    streamAttach();
+    const callback = vi.fn();
+    bridge.handlers().SendFrame(sendFrameCall(receiptFrame("op-1"), SESSION), callback);
+
+    expect(callback).toHaveBeenCalledWith(null, {});
   });
 });

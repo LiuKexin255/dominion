@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	game "dominion/projects/game"
@@ -27,15 +29,17 @@ var newBridgeClient = func(conn *grpc.ClientConn) game.DesktopBridgeServiceClien
 //
 // Stream is the session downlink: the request carries the session resource
 // name from the URL path, the owner is resolved get-or-create, and every
-// agent_v2 response frame is relayed downstream. Connect is the legacy
-// bidirectional relay still carried by the gateway's WebSocket endpoint;
-// its first UserFrame carries the routing pair template_id/session_id (both
-// bare segments, injected by the gateway from the connect URL path) and the
-// pre-read first frame is replayed to the upstream. Both paths resolve the
-// owner get-or-create — a desktop may connect before the conversation's
-// UpdateTeam materializes the team, and the shared owner guarantees the
-// flow stream and the conversation land on the same instance (the one
-// holding the game state).
+// agent_v2 response frame is relayed downstream. SendFrame is the uplink
+// single-shot forwarder: the owner is looked up only (a receipt never
+// allocates an owner). Connect is the legacy bidirectional relay still
+// carried by the gateway's WebSocket endpoint; its first UserFrame carries
+// the routing pair template_id/session_id (both bare segments, injected by
+// the gateway from the connect URL path) and the pre-read first frame is
+// replayed to the upstream. The stream paths resolve the owner get-or-create
+// — a desktop may connect before the conversation's UpdateTeam materializes
+// the team, and the shared owner guarantees the flow stream and the
+// conversation land on the same instance (the one holding the game state)
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §4).
 type DesktopBridgeHandler struct {
 	game.UnimplementedDesktopBridgeServiceServer
 
@@ -124,6 +128,43 @@ func (h *DesktopBridgeHandler) Stream(req *game.StreamRequest, stream game.Deskt
 		return err
 	}
 	return nil
+}
+
+// SendFrame forwards one desktop uplink frame to the agent_v2 instance
+// owning the session. The owner is looked up only — a receipt never
+// allocates an owner, and no owner → NOT_FOUND (the desktop re-establishes
+// the downlink before retrying; the plugin answers the no-active-stream case
+// with FAILED_PRECONDITION once the owner is reached). The synchronous
+// response carries no information (correlation rides on
+// flow_result.tool_id), so a downstream error is passed through with its
+// code preserved (specs/066-desktop-bridge-split/contracts/
+// desktop-bridge-v2.md §2.6/§2.7/§4; the Cancel forwarding shape).
+func (h *DesktopBridgeHandler) SendFrame(ctx context.Context, req *game.SendFrameRequest) (*game.SendFrameResponse, error) {
+	name, err := parseAgentSession(req.GetSession())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	owner, err := lookupAgentOwner(ctx, h.ownerStore, name.TemplateID, name.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	connRef, err := agentV2Conn(ctx, h.manager, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := newBridgeClient(connRef.Conn).SendFrame(ctx, req)
+	if err != nil {
+		logs.Error(ctx, "desktop bridge sendframe: downstream call failed",
+			event.String("template_id", name.TemplateID),
+			event.String("session_id", name.SessionID),
+			event.Err(err),
+		)
+		return nil, propagateAgentError(err, "send frame")
+	}
+	return resp, nil
 }
 
 // Connect establishes the bidirectional relay for one desktop flow stream.

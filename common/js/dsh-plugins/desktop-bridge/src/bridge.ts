@@ -31,6 +31,8 @@ import type {
   DesktopBridgeServiceHandlers,
   OperationResult,
   OperationScreenshot,
+  SendFrameCall,
+  SendFrameCallback,
   StatusSignalStatus,
   StreamCall,
   ToolResultStatus,
@@ -41,7 +43,6 @@ import type {
   WireMouseMovePart,
   WireMouseClickPart,
   WireKeyboardPressPart,
-  WireStatusSignal,
 } from "./wire.js";
 
 /** Maximum wait (ms) for a result before timing out. Safety-net backstop:
@@ -63,6 +64,16 @@ const STATUS_UNSPECIFIED: ToolResultStatus = "TOOL_RESULT_STATUS_UNSPECIFIED";
 /** Connection-confirmation and heartbeat status value
  * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.2/§2.3). */
 const STATUS_ACTIVE: StatusSignalStatus = "STATUS_SIGNAL_STATUS_ACTIVE";
+
+/** gRPC INVALID_ARGUMENT: a request argument is malformed regardless of the
+ * system state (https://github.com/grpc/grpc/blob/master/doc/statuscodes.md). */
+const INVALID_ARGUMENT = 3;
+
+/** gRPC FAILED_PRECONDITION: the session has no active downlink stream, so the
+ * uplink frame cannot be delivered until the desktop re-establishes it
+ * (https://github.com/grpc/grpc/blob/master/doc/statuscodes.md;
+ * specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6). */
+const FAILED_PRECONDITION = 9;
 
 /** Operation-channel id stamped onto the dispatched FlowPart. */
 type ToolId = string;
@@ -223,6 +234,39 @@ export class DesktopBridge {
   }
 
   /**
+   * The gRPC handler face for the uplink single-shot frame submission: the
+   * request's path-injected session addresses an already-active downlink;
+   * a missing session or frame is a request-level INVALID_ARGUMENT, and a
+   * session with no active connection is a FAILED_PRECONDITION the desktop
+   * retries after re-establishing the stream. A delivered frame is routed
+   * through the same part dispatch as the in-band path, and the synchronous
+   * reply carries no information — correlation rides on
+   * `flow_result.tool_id` (specs/066-desktop-bridge-split/contracts/
+   * desktop-bridge-v2.md §2.6/§2.7/§2.9).
+   */
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void {
+    const sessionName = call.request.session;
+    if (!sessionName) {
+      callback({ code: INVALID_ARGUMENT, message: "session must not be empty" });
+      return;
+    }
+    const frame = call.request.frame;
+    if (!frame || !frame.flowParts) {
+      callback({
+        code: INVALID_ARGUMENT,
+        message: "frame.flow_parts must be present",
+      });
+      return;
+    }
+    if (!this.connections.has(sessionName)) {
+      callback({ code: FAILED_PRECONDITION, message: "desktop stream not active" });
+      return;
+    }
+    this.routeFrame(sessionName, frame);
+    callback(null, {});
+  }
+
+  /**
    * Whether the session's connection registry currently holds a live
    * connection — the `desktop_connected` fact source read directly off the
    * registry (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md
@@ -345,7 +389,8 @@ export class DesktopBridge {
   /**
    * The gRPC handler face for host registration
    * (server.ts adds it as the DesktopBridgeService implementation). `Stream`
-   * binds the session from the path-bound request; `Connect` is the legacy
+   * binds the session from the path-bound request; `SendFrame` forwards one
+   * uplink frame into the same part dispatch; `Connect` is the legacy
    * bidi path whose first frame carries the gateway-injected identity: the
    * handler derives the session resource name, attaches, and routes that
    * frame (the attach listener registers during the same emit, so the first
@@ -356,6 +401,9 @@ export class DesktopBridge {
     return {
       Stream: (call) => {
         this.Stream(call);
+      },
+      SendFrame: (call, callback) => {
+        this.SendFrame(call, callback);
       },
       Connect: (call) => {
         let bound = false;
@@ -390,7 +438,13 @@ export class DesktopBridge {
     }
   }
 
-  /** Route one inbound frame for a bound session (receipts + signals). */
+  /**
+   * Route one inbound frame for a bound session: receipts resolve in-flight
+   * dispatches, wait/warn parts keep their existing log behavior, and every
+   * other part (including the legacy status probe the v2 desktop no longer
+   * sends) is logged and ignored
+   * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.9).
+   */
   private routeFrame(sessionName: string, frame: BridgeUserFrame): void {
     if (!frame.flowParts) {
       // messageParts frames are not produced by the v2 desktop
@@ -403,37 +457,18 @@ export class DesktopBridge {
         this.handleResult(sessionName, part.flowResult);
         continue;
       }
-      const status: WireStatusSignal | undefined = part.status ?? undefined;
-      if (status) {
-        this.respondProbe(sessionName, status);
-        continue;
-      }
       if (part.wait) {
         info("wait signal received from desktop", { session: sessionName });
-      } else if (part.warn) {
+        continue;
+      }
+      if (part.warn) {
         warn("warn signal received from desktop", {
           session: sessionName,
           message: part.warn.message ?? "",
         });
+        continue;
       }
-    }
-  }
-
-  /** Answer the desktop's connectivity probe by echoing the status enum name
-   * (desktop-bridge.md §1 probe-response row). */
-  private respondProbe(sessionName: string, status: WireStatusSignal): void {
-    const connection = this.connections.get(sessionName);
-    if (!connection) {
-      return;
-    }
-    const echo: WireFlowPart = { status: { status: status.status ?? "STATUS_SIGNAL_STATUS_UNSPECIFIED" } };
-    try {
-      connection.stream.write(buildFlowFrame(sessionName, [echo]));
-    } catch (err) {
-      warn("desktop probe response write failed", {
-        session: sessionName,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      warn("unsupported desktop frame part ignored", { session: sessionName });
     }
   }
 
