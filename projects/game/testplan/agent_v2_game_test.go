@@ -36,7 +36,7 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, agentV2DesktopWonSessionID, "game-won")
 	// The executor re-dials after fault cycles; wait for its connection fact
 	// before sending so the init dispatch cannot race the reconnect.
-	waitTeamDesktopConnected(t, ctx, sutHostURL, sutEnvName, sessionName, wsReadTimeout)
+	waitTeamDesktopConnected(t, ctx, sutHostURL, sutEnvName, sessionName, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
@@ -122,16 +122,16 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	sessionID := "team-won-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-won")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardWinPNG},
 		stepBoards: [][]byte{saoleiBoardWinPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
 
@@ -286,18 +286,18 @@ func TestAgentV2TeamGameTerminalLostAndReviewStops(t *testing.T) {
 	sessionID := "team-lost-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-lost")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	// One F2 init (the progressive 16×16 board) and one losing cell
 	// dispatch; the batch stops at the terminal loss.
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardLossPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
 
@@ -405,15 +405,15 @@ func TestAgentV2TeamGameMultiSessionIsolation(t *testing.T) {
 
 	connectedID := "team-iso-conn-" + uniqueSuffix()
 	connCtx, connName, _ := teamPrep(t, sutHostURL, sutEnvName, connectedID, "iso-conn")
-	flow, _ := dialAgentV2FlowProbed(t, connCtx, sutHostURL, sutEnvName, connectedID)
+	flow := openDesktopStream(t, connCtx, sutHostURL, sutEnvName, connectedID)
 	defer flow.Close()
 	// The win board at init: the terminal init result concludes the player
 	// turn (specs/062-team-game-end-handoff/spec.md FR-002 ①), so the
 	// scripted operate batch is never requested — one F2 reply completes the
 	// chain.
-	scriptCh := serveTeamFlowScript(flow, connectedID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(connCtx, flow, connectedID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardWinPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	absentCtx, absentName, _ := teamPrep(t, sutHostURL, sutEnvName, "team-iso-absent-"+uniqueSuffix(), "iso-absent")
 
@@ -437,11 +437,11 @@ func TestAgentV2TeamGameMultiSessionIsolation(t *testing.T) {
 				t.Fatalf("absent session stream: %v", r.err)
 			}
 			eventsAbsent = r.events
-		case <-time.After(wsReadTimeout):
+		case <-time.After(flowReadTimeout):
 			t.Fatal("concurrent team turns did not both quiesce within the read window")
 		}
 	}
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, connName, eventsConnected)
 	assertTeamStreamWellFormed(t, absentName, eventsAbsent)
 
@@ -488,11 +488,11 @@ func TestAgentV2TeamGameConversationStreamIndependentOfFlow(t *testing.T) {
 	sessionID := "team-independent-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "independent")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardWinPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	// Read until the player's first tool-call block starts, then drop the
@@ -523,17 +523,15 @@ func TestAgentV2TeamGameConversationStreamIndependentOfFlow(t *testing.T) {
 		}
 		return false
 	})
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	if len(entries) == 0 {
 		t.Fatal("the dropped stream's turn never reached the merged history")
 	}
 
-	// The flow stream survived the conversation-stream drop: the bridge still
-	// answers a new probe on the same connection.
-	sendFlowProbe(t, flow, sessionID)
-	if frame := readFlowTeamFrame(t, flow, 10*time.Second); len(frame.GetFlowParts().GetParts()) == 0 {
-		t.Fatalf("post-drop probe reply = %+v, want a status echo (flow stream unaffected)", frame)
-	}
+	// The flow stream survived the conversation-stream drop: it still
+	// delivers status heartbeats on the same connection
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.3).
+	readFlowHeartbeat(t, flow, flowHeartbeatTimeout)
 }
 
 // TestAgentV2TeamGameActiveMemberTransitions covers quickstart V7-1 and the
@@ -589,7 +587,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 	// player 回合在途: the next Send resumes the loop and plays the opening
 	// chain against this test's flow half. Each dispatch proves the player
 	// turn is in flight, so the read before the receipt is deterministic.
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	ch := drainTeamStreamAsync(stream2)
@@ -603,7 +601,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 	}
 	initIdx, stepIdx := 0, 0
 	for initIdx < len(script.initBoards) || stepIdx < len(script.stepBoards) {
-		frame := readFlowTeamFrame(t, flow, wsReadTimeout)
+		frame := readFlowTeamFrame(t, flow, flowReadTimeout)
 		for _, part := range frame.GetFlowParts().GetParts() {
 			switch {
 			case part.GetKeyboardPress() != nil:
@@ -613,7 +611,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 				if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
 					t.Fatalf("active_member with the player game turn in flight = %q, want \"player\"", got)
 				}
-				replyFlowReceipt(t, flow, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx])
+				replyFlowReceipt(t, ctx, flow, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx])
 				initIdx++
 			case part.GetMouseMoveAndClick() != nil:
 				if stepIdx >= len(script.stepBoards) {
@@ -622,7 +620,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 				if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
 					t.Fatalf("active_member with the player game turn in flight = %q, want \"player\"", got)
 				}
-				replyFlowReceipt(t, flow, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx])
+				replyFlowReceipt(t, ctx, flow, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx])
 				stepIdx++
 			}
 		}
@@ -675,7 +673,7 @@ func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 	sessionID := "team-stats-chain-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-stats-chain")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	// Game 1 (won): the compatible in-progress 9×9 board at init, the win
 	// board on the first click → one successful dispatch. Game 2 (lost): the
@@ -683,15 +681,15 @@ func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 	// loss board on the flag → both dispatches succeed before the terminal
 	// receipt.
 	counts := new(teamFlowScriptCounts)
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardWinPNG, saoleiBoardInitPNG, saoleiBoardLossPNG},
 		counts:     counts,
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
 

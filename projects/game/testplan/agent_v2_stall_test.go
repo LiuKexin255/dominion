@@ -34,7 +34,7 @@ const stallConvergenceBound = 60 * time.Second
 // TIMEOUT and the existing retry semantics converging it to a visible
 // failure — bounded, never an infinite hang. The drain's read window is the
 // unbounded-hang guard: a missing or oversized watchdog would leave the
-// stream open and fail the case at wsReadTimeout.
+// stream open and fail the case at flowReadTimeout.
 func TestAgentV2TeamStreamStallConverges(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()

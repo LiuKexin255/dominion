@@ -25,11 +25,11 @@ import (
 const (
 	headerEnv  = "env"
 	pathPrefix = "/api/v1/"
-	// wsReadTimeout bounds every WS/turn wait in the agent_v2 suites: a case
-	// that gives up on a frame or a streamed turn must do so well inside the
-	// binary's size timeout, while staying long enough to absorb the
+	// flowReadTimeout bounds every flow/team-stream wait in the agent_v2 suites:
+	// a case that gives up on a frame or a streamed turn must do so well inside
+	// the binary's size timeout, while staying long enough to absorb the
 	// slow-template windows the queued-turn cases deliberately wait out.
-	wsReadTimeout = 75 * time.Second
+	flowReadTimeout = 75 * time.Second
 )
 
 // saoleiTemplateID is the saolei template path segment — the only known
@@ -61,7 +61,7 @@ type listSessionsResponse struct {
 // correlation). It continues the TRACEPARENT injected by `guitar run` into
 // the test process env (tools/test/guitar/pkg/run/run.go) when present, else
 // starts a fresh trace; the trace_id is printed so an operator can correlate
-// the test's HTTP/WS traffic in signoz.
+// the test's HTTP traffic in signoz.
 func traceContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx := tracecontext.FromEnv(context.Background())
@@ -141,21 +141,6 @@ func doHTTP(t *testing.T, method, rawurl, envName string, body []byte) (*http.Re
 	}
 
 	return resp, respBody
-}
-
-// buildWSURL constructs a WebSocket URL from the HTTP endpoint by replacing
-// the scheme with ws or wss.
-func buildWSURL(sutHostURL, path string) string {
-	u, err := url.Parse(sutHostURL)
-	if err != nil {
-		panic(fmt.Sprintf("parse sutHostURL %q: %v", sutHostURL, err))
-	}
-	host := u.Host
-	scheme := "ws"
-	if u.Scheme == "https" {
-		scheme = "wss"
-	}
-	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
 
 // ─── Session Helpers (JSON-based) ───────────────────────────────────────────

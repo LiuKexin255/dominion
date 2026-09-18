@@ -20,7 +20,7 @@ import (
 // desktop-e2e-drop session: the executor's fault injection tears the flow
 // connection down once per connection lifetime and reconnects after its fixed
 // reconnectDelay (projects/game/fake-desktop/service/session.go), so the wait
-// must cover one reconnect cycle (2s delay + dial + probe).
+// must cover one reconnect cycle (2s delay + stream open + first status frame).
 const gameFlowReconnectWait = 8 * time.Second
 
 // TestAgentV2TeamGameDisconnectMidGameThenRecover covers US2 场景 8 on the

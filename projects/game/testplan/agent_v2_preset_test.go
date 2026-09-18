@@ -669,15 +669,15 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 
 	// The review-path write: a lost game ends with the planner's memory add
 	// and the review body from the tool-result continuation.
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardLossPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	turns := groupTeamMemberTurns(events)
 	if len(turns) != 4 {
@@ -816,15 +816,15 @@ func TestAgentV2TeamSystemPromptSnapshotFixationAndPersonaRefresh(t *testing.T) 
 
 	// One lost game drives the review's memory write (the T023 persistence
 	// path; here the write is the snapshot reload's prerequisite).
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardLossPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	turns := groupTeamMemberTurns(events)
 	if len(turns) != 4 {
@@ -882,7 +882,7 @@ func TestAgentV2TeamDesktopConnected(t *testing.T) {
 		t.Error("desktop_connected = true with no flow connection, want false")
 	}
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionIDFromName(t, sessionName))
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionIDFromName(t, sessionName))
 	defer flow.Close()
 	if got := getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName); !got.GetDesktopConnected() {
 		t.Error("desktop_connected = false with a live flow connection attached, want true")

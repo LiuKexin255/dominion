@@ -188,15 +188,15 @@ func TestAgentV2TeamViewDataProjections(t *testing.T) {
 	// recognizes the win board, so that turn concludes at the init result
 	// (specs/062-team-game-end-handoff/spec.md FR-002 ①) and no operate
 	// follows.
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardWinPNG},
 		stepBoards: [][]byte{saoleiBoardWinPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 
 	// ListTeamMessages: labels, seq monotonicity, native output.
@@ -1054,12 +1054,12 @@ func TestAgentV2TeamOpencodeGoSessionFlow(t *testing.T) {
 
 	// The test's own desktop half: two games, each one F2 init plus the chat
 	// batch's two cell dispatches.
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG, saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardInitPNG, saoleiBoardInitPNG, saoleiBoardInitPNG, saoleiBoardInitPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	// First Send: the opencode-go planner opening completes the planning
 	// round; the structural continuation drives the player, whose broadcast
@@ -1094,7 +1094,7 @@ func TestAgentV2TeamOpencodeGoSessionFlow(t *testing.T) {
 	assertTeamStreamWellFormed(t, sessionName, events3)
 	assertTeamToolResultWireOrder(t, sessionName, events3)
 	assertAgentV2ChatGameTurn(t, sessionName, events3)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 
 	// Multi-round evidence: the three Sends are the only USER entries, in
 	// order.
@@ -1137,17 +1137,17 @@ func TestAgentV2TeamConversationQueuedOpenSkipsHandoffAnnouncement(t *testing.T)
 	sessionID := "team-queued-skip-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-queued-skip")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	// Game 1 (won, one dispatch): compatible 9×9 init, win board on the
 	// first click. Game 2 (lost, two dispatches): fresh 16×16 init, playing
 	// board on the click, loss board on the flag.
 	counts := new(teamFlowScriptCounts)
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardWinPNG, saoleiBoardInitPNG, saoleiBoardLossPNG},
 		counts:     counts,
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	streamA := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	// Queue the new-game message behind the in-flight game-1 turn: read up to
@@ -1170,7 +1170,7 @@ func TestAgentV2TeamConversationQueuedOpenSkipsHandoffAnnouncement(t *testing.T)
 	}
 	eventsA := append(preA, waitTeamStream(t, drainTeamStreamAsync(streamA), "queued-skip stream")...)
 	waitTeamStream(t, drainTeamStreamAsync(streamB), "queued new-game stream")
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, eventsA)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, eventsA)
 
@@ -1257,16 +1257,16 @@ func TestAgentV2TeamConversationGameEndAnnouncementPrecedesReview(t *testing.T) 
 	sessionID := "team-announce-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-announce")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardInitPNG, saoleiBoardLossPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
 

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,7 +32,6 @@ import (
 	"dominion/common/gopkg/otel/tracecontext"
 	game "dominion/projects/game"
 
-	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -266,8 +266,8 @@ func agentV2MemberName(sessionName, member string) string {
 }
 
 // sessionIDFromName extracts the session id segment from a session resource
-// name (the inverse of agentV2SessionName; the flow WebSocket path addresses
-// the session by its raw id).
+// name (the inverse of agentV2SessionName; the flow stream path addresses the
+// session by its raw id).
 func sessionIDFromName(t *testing.T, sessionName string) string {
 	t.Helper()
 
@@ -468,8 +468,8 @@ func waitTeamStream(t *testing.T, ch <-chan teamStreamResult, what string) []*ga
 			t.Fatalf("%s: %v", what, r.err)
 		}
 		return r.events
-	case <-time.After(wsReadTimeout):
-		t.Fatalf("%s did not quiesce within %s", what, wsReadTimeout)
+	case <-time.After(flowReadTimeout):
+		t.Fatalf("%s did not quiesce within %s", what, flowReadTimeout)
 		return nil
 	}
 }
@@ -480,14 +480,14 @@ func waitTeamStream(t *testing.T, ch <-chan teamStreamResult, what string) []*ga
 func waitTeamQuiescence(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, cond func([]*game.TeamMessage) bool) []*game.TeamMessage {
 	t.Helper()
 
-	deadline := time.Now().Add(wsReadTimeout)
+	deadline := time.Now().Add(flowReadTimeout)
 	for {
 		entries := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
 		if cond(entries) {
 			return entries
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("team history did not reach the expected state within %s; entries = %d", wsReadTimeout, len(entries))
+			t.Fatalf("team history did not reach the expected state within %s; entries = %d", flowReadTimeout, len(entries))
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -1973,94 +1973,227 @@ func teamPlayerActivation(t *testing.T, sutHostURL, sutEnvName, sessionID, marke
 
 // ─── Flow-control stream helpers (the desktop's side) ───────────────────────
 
-// connectAgentV2Flow dials the gateway's /api/v2 flow WebSocket for one
-// session (desktop-bridge.md §3: the gateway binds the connection from the
-// URL path and injects the identity into the first frame). The dial runs on
-// ctx with the traceparent propagation of traceContext, so the flow traffic
-// joins the test trace. Calls t.Fatal on dial failures.
-func connectAgentV2Flow(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionID string) *websocket.Conn {
+// desktopStream is one open desktop downlink stream: the NDJSON line reader
+// plus the request handle that terminates it. The testplan acts as the
+// desktop client of the bridge
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1/§5).
+type desktopStream struct {
+	resp    *http.Response
+	reader  *bufio.Reader
+	cancel  context.CancelFunc
+	sendURL string
+	env     string
+}
+
+// Close cancels the stream's request context, unblocking an in-flight line
+// read, and closes the response body.
+func (s *desktopStream) Close() {
+	s.cancel()
+	s.resp.Body.Close()
+}
+
+// desktopStreamClient propagates the test's trace context on the bridge
+// requests (the same transport doHTTPTrace uses) and carries no client
+// timeout: the downlink stream is long-lived
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §5).
+var desktopStreamClient = &http.Client{Transport: tracecontext.NewHTTPTransport(http.DefaultTransport)}
+
+// flowHeartbeatTimeout bounds the wait for a status heartbeat frame (~10s
+// interval, specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md
+// §2.3) with headroom for scheduling jitter.
+const flowHeartbeatTimeout = 25 * time.Second
+
+// openDesktopStream opens the session's downlink stream
+// (GET /api/v2/{session}:stream, env header; the identity travels the URL
+// path, specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1).
+// The request returns once the gateway flushes the response headers with the
+// first status frame; a non-2xx pre-stream rejection fails the case
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §5.1).
+func openDesktopStream(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionID string) *desktopStream {
 	t.Helper()
 
-	wsPath := fmt.Sprintf("/api/v2/templates/%s/sessions/%s/connect", saoleiTemplateID, sessionID)
-	wsURL := buildWSURL(sutHostURL, wsPath)
+	streamURL := fmt.Sprintf("%s%s%s:stream", sutHostURL, agentV2PathPrefix, agentV2SessionName(sessionID))
+	reqCtx, cancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, streamURL, nil)
+	if err != nil {
+		cancel()
+		t.Fatalf("http.NewRequestWithContext %s: %v", streamURL, err)
+	}
+	req.Header.Set(headerEnv, sutEnvName)
 
-	header := http.Header{}
-	header.Set(headerEnv, sutEnvName)
-	for _, env := range tracecontext.Environ(ctx) {
-		if strings.HasPrefix(env, tracecontext.EnvKey+"=") {
-			header.Set("traceparent", strings.TrimPrefix(env, tracecontext.EnvKey+"="))
+	resp, err := desktopStreamClient.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("GET %s: %v", streamURL, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancel()
+		t.Fatalf("GET %s status=%d, body=%s", streamURL, resp.StatusCode, body)
+	}
+	return &desktopStream{
+		resp:    resp,
+		reader:  bufio.NewReader(resp.Body),
+		cancel:  cancel,
+		sendURL: fmt.Sprintf("%s%s%s:sendFrame", sutHostURL, agentV2PathPrefix, agentV2SessionName(sessionID)),
+		env:     sutEnvName,
+	}
+}
+
+// readFlowTeamFrame reads one downlink frame with a deadline. t.Fatal is only
+// safe on the test goroutine.
+func readFlowTeamFrame(t *testing.T, stream *desktopStream, timeout time.Duration) *game.TeamFrame {
+	t.Helper()
+
+	frame, err := readFlowTeamFrameNoFatal(stream, timeout)
+	if err != nil {
+		t.Fatalf("read flow TeamFrame: %v", err)
+	}
+	return frame
+}
+
+// readFlowTeamFrameNoFatal is readFlowTeamFrame for reader goroutines: it
+// returns the frame or the error instead of calling t.Fatal. Lines are read
+// with a newline delimiter, so a message split across transport chunks is
+// reassembled and several coalesced messages are returned one at a time
+// (specs/066-desktop-bridge-split/research.md §3). A read that outlives
+// timeout closes the stream (the blocking line read has no other interruption
+// point) and reports the timeout.
+func readFlowTeamFrameNoFatal(stream *desktopStream, timeout time.Duration) (*game.TeamFrame, error) {
+	type result struct {
+		frame *game.TeamFrame
+		err   error
+	}
+	readCh := make(chan result, 1)
+	go func() {
+		frame, err := readFlowLine(stream)
+		readCh <- result{frame: frame, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-readCh:
+		return r.frame, r.err
+	case <-timer.C:
+		stream.Close()
+		return nil, fmt.Errorf("read flow line: timed out after %s", timeout)
+	}
+}
+
+// readFlowLine reads one frame from the stream's buffered reader.
+func readFlowLine(stream *desktopStream) (*game.TeamFrame, error) {
+	for {
+		line, readErr := stream.reader.ReadBytes('\n')
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			if readErr != nil {
+				return nil, fmt.Errorf("read flow line: %w", readErr)
+			}
+			continue
+		}
+		return decodeFlowTeamFrame(trimmed)
+	}
+}
+
+// decodeFlowTeamFrame decodes one NDJSON envelope line: {"result": <TeamFrame>}
+// or the {"error": ...} stream-termination tail
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1/§5.2).
+func decodeFlowTeamFrame(line []byte) (*game.TeamFrame, error) {
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(line, &envelope); err != nil {
+		return nil, fmt.Errorf("decode flow line: %w", err)
+	}
+	if envelope.Error != nil {
+		message := envelope.Error.Message
+		if message == "" {
+			message = "flow stream terminated"
+		}
+		return nil, fmt.Errorf("flow stream terminated: %s", message)
+	}
+	if len(envelope.Result) == 0 {
+		return nil, errors.New("flow line lacks the grpc-gateway \"result\" wrapper")
+	}
+	frame := new(game.TeamFrame)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(envelope.Result, frame); err != nil {
+		return nil, fmt.Errorf("decode flow TeamFrame: %w", err)
+	}
+	return frame, nil
+}
+
+// readFlowHeartbeat reads downlink frames until a status heartbeat arrives or
+// timeout expires (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md
+// §2.3). Frames that are not status frames are skipped. t.Fatal is only safe
+// on the test goroutine.
+func readFlowHeartbeat(t *testing.T, stream *desktopStream, timeout time.Duration) *game.TeamFrame {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatal("no status heartbeat arrived on the flow stream")
+		}
+		frame, err := readFlowTeamFrameNoFatal(stream, remaining)
+		if err != nil {
+			t.Fatalf("read flow heartbeat: %v", err)
+		}
+		for _, part := range frame.GetFlowParts().GetParts() {
+			if part.GetStatus() != nil {
+				return frame
+			}
 		}
 	}
+}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, resp, err := dialer.DialContext(ctx, wsURL, header)
+// postUserFrame submits one desktop frame through the uplink single-shot
+// endpoint (POST {session}:sendFrame, octet-stream;
+// specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1/§5.3).
+func postUserFrame(ctx context.Context, stream *desktopStream, frame *game.UserFrame) error {
+	payload, err := proto.Marshal(&game.SendFrameRequest{Frame: frame})
 	if err != nil {
-		t.Fatalf("websocket.Dial %s: %v", wsURL, err)
+		return fmt.Errorf("marshal SendFrameRequest: %w", err)
 	}
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		conn.Close()
-		t.Fatalf("flow WS upgrade status = %d, want %d", resp.StatusCode, http.StatusSwitchingProtocols)
-	}
-	return conn
+	_, _, err = postFlowPayloadNoFatal(ctx, stream, payload)
+	return err
 }
 
-// sendFlowUserFrame writes one binary-proto UserFrame on the flow stream.
-func sendFlowUserFrame(t *testing.T, conn *websocket.Conn, frame *game.UserFrame) {
-	t.Helper()
-
-	data, err := proto.Marshal(frame)
+// postFlowPayloadNoFatal posts one already-marshaled SendFrameRequest body and
+// returns the HTTP status with the raw response body. Only transport failures
+// are errors: a non-2xx response is returned for the caller to assert (the
+// 413 body-size rejection, specs/066-desktop-bridge-split/spec.md SC-003).
+func postFlowPayloadNoFatal(ctx context.Context, stream *desktopStream, payload []byte) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, stream.sendURL, bytes.NewReader(payload))
 	if err != nil {
-		t.Fatalf("marshal UserFrame: %v", err)
+		return 0, nil, fmt.Errorf("new SendFrame request: %w", err)
 	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-		t.Fatalf("write flow UserFrame: %v", err)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(headerEnv, stream.env)
+
+	resp, err := desktopStreamClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("post flow frame: %w", err)
 	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read flow response: %w", err)
+	}
+	return resp.StatusCode, body, nil
 }
 
-// flowProbeFrame builds the connect probe: the first UserFrame carrying the
-// session identity (gateway-injected values are authoritative —
-// desktop-bridge.md §1) with the ACTIVE status signal the bridge echoes back.
-func flowProbeFrame(sessionID string) *game.UserFrame {
-	return &game.UserFrame{
-		SessionId:  sessionID,
-		TemplateId: saoleiTemplateID,
-		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{
-			Kind: &game.FlowPart_Status{Status: &game.StatusSignal{
-				Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE,
-			}},
-		}}}},
-	}
-}
-
-// dialAgentV2FlowProbed dials the flow WebSocket and runs the connect probe
-// to completion (probe frame out, status echo back). Returns the live
-// connection and the echo frame.
-func dialAgentV2FlowProbed(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionID string) (*websocket.Conn, *game.TeamFrame) {
-	t.Helper()
-
-	conn := connectAgentV2Flow(t, ctx, sutHostURL, sutEnvName, sessionID)
-	sendFlowProbe(t, conn, sessionID)
-	frame, err := readFlowTeamFrameNoFatal(conn, 10*time.Second)
-	if err != nil || len(frame.GetFlowParts().GetParts()) == 0 {
-		conn.Close()
-		t.Fatalf("flow probe for %s failed: %v", sessionID, err)
-	}
-	return conn, frame
-}
-
-// sendFlowProbe writes the connect probe first frame.
-func sendFlowProbe(t *testing.T, conn *websocket.Conn, sessionID string) {
-	t.Helper()
-
-	sendFlowUserFrame(t, conn, flowProbeFrame(sessionID))
-}
-
-// sendFlowReceiptNoFatal writes the operation receipt the desktop half owes
-// the bridge: the dispatched tool_id echoed back with the given status and,
-// on success, the screenshot the agent's recognizer consumes
-// (desktop-bridge.md §1 FlowResultPart row). The flow-script goroutine uses
-// this variant because t.Fatal must only run on the test goroutine.
-func sendFlowReceiptNoFatal(conn *websocket.Conn, sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) error {
+// flowReceiptFrame builds the receipt frame the desktop half owes the bridge:
+// the dispatched tool_id echoed back with the given status and, on success,
+// the screenshot the agent's recognizer consumes
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1
+// FlowResultPart row).
+func flowReceiptFrame(sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) *game.UserFrame {
 	result := &game.FlowResultPart{ToolId: toolID, Status: status}
 	if screenshotPNG != nil {
 		result.Screenshot = &game.ImagePart{
@@ -2068,66 +2201,29 @@ func sendFlowReceiptNoFatal(conn *websocket.Conn, sessionID, toolID string, stat
 			Data:     screenshotPNG,
 		}
 	}
-	frame := &game.UserFrame{
+	return &game.UserFrame{
 		SessionId:  sessionID,
 		TemplateId: saoleiTemplateID,
 		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{
 			Kind: &game.FlowPart_FlowResult{FlowResult: result},
 		}}}},
 	}
-	data, err := proto.Marshal(frame)
-	if err != nil {
-		return fmt.Errorf("marshal flow receipt: %w", err)
-	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-		return fmt.Errorf("write flow receipt: %w", err)
-	}
-	return nil
+}
+
+// sendFlowReceiptNoFatal posts one operation receipt. The flow-script
+// goroutine uses this variant because t.Fatal must only run on the test
+// goroutine.
+func sendFlowReceiptNoFatal(ctx context.Context, stream *desktopStream, sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) error {
+	return postUserFrame(ctx, stream, flowReceiptFrame(sessionID, toolID, status, screenshotPNG))
 }
 
 // replyFlowReceipt is sendFlowReceiptNoFatal on the test goroutine.
-func replyFlowReceipt(t *testing.T, conn *websocket.Conn, sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) {
+func replyFlowReceipt(t *testing.T, ctx context.Context, stream *desktopStream, sessionID, toolID string, status game.ToolResultStatus, screenshotPNG []byte) {
 	t.Helper()
 
-	if err := sendFlowReceiptNoFatal(conn, sessionID, toolID, status, screenshotPNG); err != nil {
+	if err := sendFlowReceiptNoFatal(ctx, stream, sessionID, toolID, status, screenshotPNG); err != nil {
 		t.Fatalf("reply flow receipt: %v", err)
 	}
-}
-
-// readFlowTeamFrame reads one binary-proto TeamFrame with a deadline.
-// t.Fatal is only safe on the test goroutine.
-func readFlowTeamFrame(t *testing.T, conn *websocket.Conn, timeout time.Duration) *game.TeamFrame {
-	t.Helper()
-
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		t.Fatalf("set flow read deadline: %v", err)
-	}
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read flow TeamFrame: %v", err)
-	}
-	frame := new(game.TeamFrame)
-	if err := proto.Unmarshal(data, frame); err != nil {
-		t.Fatalf("unmarshal flow TeamFrame: %v", err)
-	}
-	return frame
-}
-
-// readFlowTeamFrameNoFatal is readFlowTeamFrame for reader goroutines: it
-// returns the frame or the error instead of calling t.Fatal.
-func readFlowTeamFrameNoFatal(conn *websocket.Conn, timeout time.Duration) (*game.TeamFrame, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, err
-	}
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-	frame := new(game.TeamFrame)
-	if err := proto.Unmarshal(data, frame); err != nil {
-		return nil, err
-	}
-	return frame, nil
 }
 
 // teamFlowScriptCounts records the receipts a flow script served: the F2
@@ -2157,12 +2253,12 @@ type teamFlowScript struct {
 // script, then reports nil on the returned channel. It runs on its own
 // goroutine so the Send-stream drain can proceed concurrently; errors are
 // reported instead of calling t.Fatal.
-func serveTeamFlowScript(conn *websocket.Conn, sessionID string, script teamFlowScript, timeout time.Duration) <-chan error {
+func serveTeamFlowScript(ctx context.Context, stream *desktopStream, sessionID string, script teamFlowScript, timeout time.Duration) <-chan error {
 	ch := make(chan error, 1)
 	go func() {
 		initIdx, stepIdx := 0, 0
 		for initIdx < len(script.initBoards) || stepIdx < len(script.stepBoards) {
-			frame, err := readFlowTeamFrameNoFatal(conn, timeout)
+			frame, err := readFlowTeamFrameNoFatal(stream, timeout)
 			if err != nil {
 				ch <- fmt.Errorf("read flow dispatch: %w", err)
 				return
@@ -2174,7 +2270,7 @@ func serveTeamFlowScript(conn *websocket.Conn, sessionID string, script teamFlow
 						ch <- fmt.Errorf("unexpected keyboard dispatch after %d init replies", initIdx)
 						return
 					}
-					if err := sendFlowReceiptNoFatal(conn, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx]); err != nil {
+					if err := sendFlowReceiptNoFatal(ctx, stream, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx]); err != nil {
 						ch <- err
 						return
 					}
@@ -2187,7 +2283,7 @@ func serveTeamFlowScript(conn *websocket.Conn, sessionID string, script teamFlow
 						ch <- fmt.Errorf("unexpected cell dispatch after %d step replies", stepIdx)
 						return
 					}
-					if err := sendFlowReceiptNoFatal(conn, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx]); err != nil {
+					if err := sendFlowReceiptNoFatal(ctx, stream, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx]); err != nil {
 						ch <- err
 						return
 					}

@@ -2,104 +2,152 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	game "dominion/projects/game"
 
-	"github.com/coder/websocket"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
-// serveAgentSide upgrades one WebSocket connection and plays the agent side of
-// the bridge: it records the probe frame, answers with a status frame, then
-// dispatches the given operation parts and collects the receipts in order.
-func serveAgentSide(t *testing.T, ops []*game.FlowPart) (*httptest.Server, func() []*game.FlowResultPart) {
+// agentSide is the httptest double of the gateway's desktop-bridge endpoints.
+// It serves the downlink NDJSON stream (the connection-confirmation status
+// frame, then the scripted operation frames) and records every uplink receipt
+// POST (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1).
+type agentSide struct {
+	mu       sync.Mutex
+	requests []*game.SendFrameRequest
+	receipts []*game.FlowResultPart
+
+	receiptCh chan *game.FlowResultPart
+}
+
+// serveStream writes the downlink frames and waits for each operation's
+// receipt before dispatching the next one, then holds the stream open until
+// the client goes away — the long-lived server stream the executor reads.
+func (a *agentSide) serveStream(w http.ResponseWriter, r *http.Request, ops []*game.FlowPart) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	writeTeamEnvelope(w, &game.TeamFrame{Payload: &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{
+		Kind: &game.FlowPart_Status{Status: &game.StatusSignal{
+			Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE,
+		}},
+	}}}}})
+	flusher.Flush()
+
+	for _, op := range ops {
+		writeTeamEnvelope(w, &game.TeamFrame{Payload: &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{op}}}})
+		flusher.Flush()
+		select {
+		case <-a.receiptCh:
+		case <-r.Context().Done():
+			return
+		case <-time.After(5 * time.Second):
+			return
+		}
+	}
+	<-r.Context().Done()
+}
+
+// serveSendFrame decodes one octet-stream SendFrameRequest and records it.
+func (a *agentSide) serveSendFrame(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	request := new(game.SendFrameRequest)
+	if err := proto.Unmarshal(body, request); err != nil {
+		http.Error(w, "unmarshal request", http.StatusBadRequest)
+		return
+	}
+	parts := request.GetFrame().GetFlowParts().GetParts()
+	if len(parts) != 1 || parts[0].GetFlowResult() == nil {
+		http.Error(w, "request carries no flow result", http.StatusBadRequest)
+		return
+	}
+	receipt := parts[0].GetFlowResult()
+
+	a.mu.Lock()
+	a.requests = append(a.requests, request)
+	a.receipts = append(a.receipts, receipt)
+	a.mu.Unlock()
+
+	a.receiptCh <- receipt
+	w.WriteHeader(http.StatusOK)
+}
+
+// requestsOf/receiptsOf snapshot the recorded posts.
+func (a *agentSide) requestsOf() []*game.SendFrameRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]*game.SendFrameRequest(nil), a.requests...)
+}
+
+func (a *agentSide) receiptsOf() []*game.FlowResultPart {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]*game.FlowResultPart(nil), a.receipts...)
+}
+
+// agentSideSessionPath is the session resource path the double asserts: the
+// test cases serve Config{Template: "saolei", Session: "s1"}, so the desktop
+// identity must travel the URL path exactly (contract §2.1 —
+// specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md).
+const (
+	agentSideTemplate  = "saolei"
+	agentSideSession   = "s1"
+	agentSideStreamURL = "/api/v2/templates/saolei/sessions/s1:stream"
+	agentSideSendURL   = "/api/v2/templates/saolei/sessions/s1:sendFrame"
+)
+
+// serveAgentSide starts the agent-side double for the scripted operations.
+func serveAgentSide(t *testing.T, ops []*game.FlowPart) (*httptest.Server, *agentSide) {
 	t.Helper()
-	var receipts []*game.FlowResultPart
-	ready := make(chan struct{})
+	side := &agentSide{receiptCh: make(chan *game.FlowResultPart, len(ops)+1)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		// Receipts carry screenshot PNGs well past coder/websocket's 32 KiB
-		// default read limit; mirror the executor's 10 MiB limit.
-		conn.SetReadLimit(readLimit)
-		defer conn.CloseNow()
-
-		// Probe: read the first UserFrame, answer with a status frame.
-		_, data, err := conn.Read(r.Context())
-		if err != nil {
-			return
-		}
-		probe := new(game.UserFrame)
-		if err := proto.Unmarshal(data, probe); err != nil {
-			return
-		}
-		if probe.GetTemplateId() != "saolei" || probe.GetSessionId() == "" {
-			t.Errorf("probe frame identity = (%s, %s), want (saolei, non-empty)", probe.GetTemplateId(), probe.GetSessionId())
-		}
-		if n := len(probe.GetFlowParts().GetParts()); n != 1 {
-			t.Errorf("probe flow_parts = %d parts, want 1", n)
-		}
-		reply := &game.TeamFrame{Payload: &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{
-			Kind: &game.FlowPart_Status{Status: &game.StatusSignal{
-				Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE,
-			}},
-		}}}}}
-		if err := writeTeamFrame(r.Context(), conn, reply); err != nil {
-			return
-		}
-		close(ready)
-
-		// Dispatch the scripted operations and collect the receipts.
-		for _, op := range ops {
-			if err := writeTeamFrame(r.Context(), conn, &game.TeamFrame{
-				Payload: &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{op}}},
-			}); err != nil {
-				return
-			}
-			for {
-				_, data, err := conn.Read(r.Context())
-				if err != nil {
-					return
-				}
-				frame := new(game.UserFrame)
-				if err := proto.Unmarshal(data, frame); err != nil {
-					return
-				}
-				results := frame.GetFlowParts().GetParts()
-				if len(results) == 0 {
-					continue
-				}
-				receipts = append(receipts, results[0].GetFlowResult())
-				break
-			}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == agentSideStreamURL:
+			side.serveStream(w, r, ops)
+		case r.Method == http.MethodPost && r.URL.Path == agentSideSendURL:
+			side.serveSendFrame(w, r)
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv, func() []*game.FlowResultPart { return receipts }
+	return srv, side
 }
 
-// writeTeamFrame sends one binary-proto TeamFrame from the agent side.
-func writeTeamFrame(ctx context.Context, conn *websocket.Conn, frame *game.TeamFrame) error {
-	data, err := proto.Marshal(frame)
+// writeTeamEnvelope writes one grpc-gateway server-stream envelope line.
+func writeTeamEnvelope(w io.Writer, frame *game.TeamFrame) {
+	payload, err := protojson.Marshal(frame)
 	if err != nil {
-		return err
+		return
 	}
-	return conn.Write(ctx, websocket.MessageBinary, data)
+	_, _ = fmt.Fprintf(w, "{\"result\":%s}\n", payload)
 }
 
-func TestServeOnceProbeAndReceipts(t *testing.T) {
+func TestServeOnceStreamsOperationsAndPostsReceipts(t *testing.T) {
 	ops := []*game.FlowPart{
 		keyPress("op-f2", game.KeyboardKey_KEYBOARD_KEY_F2),
 		cellCenter("op-click", game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, 3, 4),
 	}
-	srv, receiptsOf := serveAgentSide(t, ops)
+	srv, side := serveAgentSide(t, ops)
 
 	scenario, err := loadScenario(scenarioProgressive)
 	if err != nil {
@@ -107,45 +155,43 @@ func TestServeOnceProbeAndReceipts(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	baseURL := srv.URL + "/api/v2/templates/" + agentSideTemplate + "/sessions/" + agentSideSession
 	done := make(chan error, 1)
 	go func() {
-		done <- serveOnce(ctx, wsURL(srv.URL), Config{
-			Template: "saolei",
-			Session:  "s1",
+		done <- serveOnce(ctx, baseURL+":stream", baseURL+":sendFrame", Config{
+			Template: agentSideTemplate,
+			Session:  agentSideSession,
 		}, scenario, slog.Default())
 	}()
 
-	// The scripted exchange completes once both receipts landed; the
-	// executor then blocks on read until the handler returns (the connection
-	// closes — serveOnce's read error may race the last receipt, so the
-	// receipt count wins over an early exit).
+	// The double's first frame is the status connection confirmation; the
+	// scripted exchange completing proves serveOnce consumed it and read on
+	// to the operations. The handler holds the stream open after the last
+	// receipt, so the poll below wins over an early exit.
 	deadline := time.After(5 * time.Second)
 receiptsLoop:
 	for {
-		if got := receiptsOf(); len(got) == 2 {
+		if got := side.receiptsOf(); len(got) == 2 {
 			break
 		}
 		select {
 		case err := <-done:
-			if len(receiptsOf()) >= 2 {
+			if len(side.receiptsOf()) >= 2 {
 				break receiptsLoop
 			}
-			t.Fatalf("serveOnce exited before both receipts: %v (receipts=%d)", err, len(receiptsOf()))
+			t.Fatalf("serveOnce exited before both receipts: %v (receipts=%d)", err, len(side.receiptsOf()))
 		case <-deadline:
-			t.Fatalf("timed out waiting for receipts, got %d", len(receiptsOf()))
+			t.Fatalf("timed out waiting for receipts, got %d", len(side.receiptsOf()))
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
 	cancel()
-	// done may already have been consumed by the poll loop above (the
-	// handler closes the connection once both receipts are out); wait only
-	// if serveOnce is still running.
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 	}
 
-	receipts := receiptsOf()
+	receipts := side.receiptsOf()
 	if receipts[0].GetMessage() != "F2 pressed, new game started" {
 		t.Errorf("receipt[0] message = %q", receipts[0].GetMessage())
 	}
@@ -157,13 +203,24 @@ receiptsLoop:
 	if receipts[1].GetToolId() != "op-click" {
 		t.Errorf("receipt[1] tool_id = %q, want op-click", receipts[1].GetToolId())
 	}
+
+	// The uplink body is the SendFrameRequest proto carrying the receipt
+	// frame and nothing else (identity travels the URL path).
+	requests := side.requestsOf()
+	if len(requests) != 2 {
+		t.Fatalf("recorded posts = %d, want 2", len(requests))
+	}
+	part := requests[1].GetFrame().GetFlowParts().GetParts()[0]
+	if part.GetFlowResult() == nil || part.GetFlowResult().GetToolId() != "op-click" {
+		t.Errorf("posted frame part = %+v, want the op-click FlowResult", part)
+	}
 }
 
 func TestServeOnceDisconnectInjection(t *testing.T) {
 	ops := []*game.FlowPart{
 		cellCenter("op-1", game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, 0, 0),
 	}
-	srv, receiptsOf := serveAgentSide(t, ops)
+	srv, side := serveAgentSide(t, ops)
 
 	scenario, err := loadScenario(scenarioWon)
 	if err != nil {
@@ -171,16 +228,17 @@ func TestServeOnceDisconnectInjection(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	baseURL := srv.URL + "/api/v2/templates/" + agentSideTemplate + "/sessions/" + agentSideSession
 	done := make(chan error, 1)
 	go func() {
-		done <- serveOnce(ctx, wsURL(srv.URL), Config{
-			Template: "saolei",
-			Session:  "s1",
+		done <- serveOnce(ctx, baseURL+":stream", baseURL+":sendFrame", Config{
+			Template: agentSideTemplate,
+			Session:  agentSideSession,
 			Fault:    Fault{DisconnectAfterOps: 1},
 		}, scenario, slog.Default())
 	}()
 
-	// The injection tears the connection down after the single receipt, so
+	// The injection tears the stream down after the single receipt, so
 	// serveOnce returns (the fault sentinel error) on its own.
 	select {
 	case err := <-done:
@@ -190,45 +248,52 @@ func TestServeOnceDisconnectInjection(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the injected disconnect")
 	}
-	if got := receiptsOf(); len(got) != 1 {
+	if got := side.receiptsOf(); len(got) != 1 {
 		t.Fatalf("receipts = %d, want 1", len(got))
 	}
 }
 
-func TestConvertToWS(t *testing.T) {
+func TestDecodeTeamFrame(t *testing.T) {
 	tests := []struct {
-		in, want string
-		wantErr  bool
+		name       string
+		line       string
+		wantStatus game.StatusSignalStatus
+		wantErr    string
 	}{
-		{in: "http://gateway:8080", want: "ws://gateway:8080"},
-		{in: "https://game.liukexin.com", want: "wss://game.liukexin.com"},
-		{in: "://bad", wantErr: true},
+		{
+			name:       "status result frame",
+			line:       `{"result":{"flowParts":{"parts":[{"status":{"status":"STATUS_SIGNAL_STATUS_ACTIVE"}}]}}}`,
+			wantStatus: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE,
+		},
+		{
+			name:    "stream termination tail",
+			line:    `{"error":{"code":13,"message":"stream terminated"}}`,
+			wantErr: "stream terminated",
+		},
+		{
+			name:    "missing result envelope",
+			line:    `{}`,
+			wantErr: "missing result frame",
+		},
 	}
 	for _, tt := range tests {
-		got, err := convertToWS(tt.in)
-		if tt.wantErr {
-			if err == nil {
-				t.Fatalf("convertToWS(%q) expected an error", tt.in)
+		t.Run(tt.name, func(t *testing.T) {
+			frame, err := decodeTeamFrame([]byte(tt.line))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("decodeTeamFrame(%s) error = %v, want %q", tt.line, err, tt.wantErr)
+				}
+				return
 			}
-			continue
-		}
-		if err != nil {
-			t.Fatalf("convertToWS(%q): %v", tt.in, err)
-		}
-		if got != tt.want {
-			t.Errorf("convertToWS(%q) = %q, want %q", tt.in, got, tt.want)
-		}
+			if err != nil {
+				t.Fatalf("decodeTeamFrame(%s): %v", tt.line, err)
+			}
+			signal := frame.GetFlowParts().GetParts()[0].GetStatus()
+			if signal.GetStatus() != tt.wantStatus {
+				t.Errorf("status = %v, want %v", signal.GetStatus(), tt.wantStatus)
+			}
+		})
 	}
-}
-
-// wsURL mirrors the test helper shape of the gateway tests: an http test
-// server URL to its ws:// form.
-func wsURL(httpURL string) string {
-	got, err := convertToWS(httpURL)
-	if err != nil {
-		return httpURL
-	}
-	return got
 }
 
 // mustFixture reads one embedded fixture, failing the test on error.
