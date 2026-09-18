@@ -2,8 +2,9 @@
 // validate the web service's static hosting surface (GET / entry HTML and
 // the built assets it references) and the page's management closed loop at
 // the HTTP layer the frontend itself drives (session CRUD over /api/v1 plus
-// the /api/v2 conversation surface) — no browser required
-// (specs/049-agent-v2-dsh-init/quickstart.md §2 用例 1/10).
+// the /api/v2 team surface) — no browser required
+// (specs/059-agent-v2-team-mode/contracts/web-views.md §1: the page guides an
+// unmaterialized session through the team panel before sending).
 package testplan
 
 import (
@@ -15,7 +16,6 @@ import (
 	"testing"
 
 	"dominion/common/gopkg/testtool"
-	game "dominion/projects/game"
 )
 
 // assetsReferenceRe matches the built asset URLs vite rewrites into the
@@ -31,10 +31,7 @@ func fetchWeb(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, path st
 
 // TestWebServesEntrypageHTML covers quickstart §2 用例 10 first half
 // (FR-013): GET / returns the built entry HTML — the #root mount node and
-// the module script referencing the hashed asset tree. The attributes are
-// asserted separately: the vite build emits
-// <script type="module" crossorigin src="/assets/index-<hash>.js"> and the
-// assertion must not depend on attribute adjacency.
+// the module script referencing the hashed asset tree.
 func TestWebServesEntrypageHTML(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -100,12 +97,12 @@ func TestWebServesStaticAssets(t *testing.T) {
 	}
 }
 
-// TestWebManagementLoopSmoke covers quickstart §2 用例 1 (US4) at the HTTP
-// layer the page drives: 新建 → 物化 agent（preset + UpdateAgent）→ 发一轮
-// 对话 → 回填可见 → 删除 闭环 (specs/051-agent-v2-dsh-migration/
-// contracts/agent-api.md §2/§5; web-frontend.md §2/§3 — the page guides the
-// unmaterialized session through the preset/model panel before sending, and
-// the delete orchestration is the bare session DELETE with no dispose hop).
+// TestWebManagementLoopSmoke covers the page's management closed loop at the
+// HTTP layer the frontend drives: 新建 → 物化 team（两个 preset + UpdateTeam）
+// → 发一轮 team 对话 → 回填可见 → 删除 (web-views.md §1/§2; team-api.md §2/§5
+// — the page guides an unmaterialized session through the team panel before
+// sending, and the delete orchestration is the bare session DELETE with no
+// dispose hop).
 func TestWebManagementLoopSmoke(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -116,10 +113,13 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 	sessionName := agentV2SessionName(sessionID)
 	t.Logf("created session %s", sessionName)
 
-	// 物化：the page's agent panel applies a preset (agent-api.md §2.1 —
-	// Send has no lazy materialization).
-	preset := createAgentV2Preset(t, ctx, sutHostURL, sutEnvName, "web-loop-"+uniqueSuffix(), "web smoke persona")
-	updateAgentV2Agent(t, ctx, sutHostURL, sutEnvName, sessionName, preset.GetName(), "")
+	// 物化：the page's team panel applies two role-pooled presets and both
+	// members (team-api.md §2 — Send has no lazy materialization).
+	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "web-loop", "web smoke")
+	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
+	if len(team.GetMembers()) != 2 {
+		t.Fatalf("materialized members = %d, want 2", len(team.GetMembers()))
+	}
 
 	// 列表可见：the new session appears in the template listing.
 	listBody := listSessions(t, sutHostURL, sutEnvName, saoleiTemplateID, 50)
@@ -137,31 +137,31 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("created session %s is absent from the listing (US4 场景 1)", sessionID)
+		t.Errorf("created session %s is absent from the listing", sessionID)
 	}
 
-	// 进入对话发一轮：a full think+text turn through /api/v2.
-	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerThink+" web loop smoke")
-	defer stream.Close()
-	events := drainAgentV2Turn(t, stream)
-	assertAgentV2TurnWellFormed(t, sessionName, events)
-	if end := events[len(events)-1].GetTurnEnd(); end.GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
-		t.Fatalf("smoke turn ended %v, want COMPLETED", end.GetStatus())
+	// 进入对话发一轮：the first Send drives the planner opening, the
+	// structural continuation drives the player (no desktop → readable
+	// failure), all within one team stream.
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	turns := groupTeamMemberTurns(events)
+	if len(turns) < 2 || turns[0].member != "planner" {
+		t.Fatalf("smoke turns = %v, want the planner opening first", turns)
 	}
-	if got := agentV2TerminalBlocksFromEvents(events).text; got != agentV2GreetText {
-		t.Errorf("smoke turn text = %q, want %q", got, agentV2GreetText)
-	}
-
-	// 回填：the materialized agent's history is queryable through the
-	// standard List method (agent-api.md §2.3) for the page refresh path.
-	hist := listAgentV2Messages(t, ctx, sutHostURL, sutEnvName, sessionName)
-	if len(hist.GetMessages()) != 2 {
-		t.Errorf("history messages = %d, want 2", len(hist.GetMessages()))
+	if _, text := teamTurnBlocks(turns[0]); text != teamPlannerOpeningText {
+		t.Errorf("smoke opening text = %q, want %q", text, teamPlannerOpeningText)
 	}
 
-	// 删除：the delete orchestration is ONLY the session DELETE — Dispose
-	// is gone and the agent is not fanned out (FR-007, web-frontend.md §5).
+	// 回填：the team history is queryable through the standard List method
+	// (team-api.md §5) for the page refresh path.
+	if got := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName); len(got) < 2 {
+		t.Errorf("backfilled team messages = %d, want the user + member entries", len(got))
+	}
+
+	// 删除：the delete orchestration is ONLY the session DELETE — no
+	// fan-out to the team (web-views.md §6).
 	delResp := deleteSession(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE session status = %d, want 200 or 204", delResp.StatusCode)
@@ -174,7 +174,7 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 	}
 	for _, s := range list.Sessions {
 		if strings.HasSuffix(s.Name, "/"+sessionID) {
-			t.Errorf("deleted session %s still present in the listing (US4 场景 2)", sessionID)
+			t.Errorf("deleted session %s still present in the listing", sessionID)
 		}
 	}
 }

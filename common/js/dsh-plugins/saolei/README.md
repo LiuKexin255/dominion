@@ -7,6 +7,14 @@
 section 注册）见 `specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §3；
 包契约形态对齐 `specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md` §1。
 
+`saolei_remain` 的三处语义表述（工具 description、`saolei:game` 玩法行、结果体
+legend 行）以 `specs/064-memory-split-fold-remain/contracts/saolei-plugins.md` 为准：
+主语义 = 每个数字格周围剩余未标记雷数（数字 − 相邻已标旗数，可为 0/负），显式排除
+旗子数量读法；结果体 legend 行位于 `board size` 行与网格之间，并锚定列 = x、行 = y
+（与 `saolei_operate` 参数一致）。`saolei:guidance` 的 remain 条目同语义改写；按 060
+所有权边界（`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md` §2）该
+条目不含 `over-flagged` 玩法解释，保留 `may be 0 or NEGATIVE` 值域表述。
+
 ## 依赖 pin 决策
 
 - dsh 家族 peer（dsh-tools/dsh-system-prompt）按精确版本 `0.1.1-rc.2` pin（无前缀）：

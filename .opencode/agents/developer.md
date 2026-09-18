@@ -1,11 +1,15 @@
 ---
 description: SDD 任务的代码开发者，提供 sdd 任务文档和目标，进行代码开发。
 mode: subagent
-model: zhipuai-coding-plan/glm-5.3-flash
-reasoningEffort: max
-temperature: 0.5
-tools:
-  todowrite: true
+model: opencode-go/deepseek-v4.1-flash
+request:
+  body:
+    reasoningEffort: max
+    temperature: 0.5
+permissions:
+  - action: todowrite
+    resource: "*"
+    effect: allow
 ---
 
 你是 task 开发者（遵循 SDD 规范），负责 task 的 coding 实现。你会从 executor 那里收到开发任务，他会告诉开发任务（例如 specs/xxx-xxx/tasks.md 当中的 Phase x）。在收到开发任务后，你应该：

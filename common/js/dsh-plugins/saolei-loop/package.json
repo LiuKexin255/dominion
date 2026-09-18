@@ -11,20 +11,18 @@
         }
     },
     "dependencies": {
-        "@deepseek-ai/schemastery": "catalog:",
         "@dominion/game-saolei-board": "workspace:*"
     },
     "peerDependencies": {
         "@deepseek-ai/cordis": "catalog:",
         "@deepseek-ai/dsh-agent": "catalog:",
         "@deepseek-ai/dsh-llm": "catalog:",
-        "@deepseek-ai/dsh-scope": "catalog:",
         "@deepseek-ai/dsh-session": "catalog:",
-        "@deepseek-ai/dsh-system-prompt": "catalog:",
-        "@deepseek-ai/dsh-tools": "catalog:",
-        "@dominion/dsh-desktop-bridge": "workspace:*"
+        "@dominion/dsh-desktop-bridge": "workspace:*",
+        "@dominion/dsh-team": "workspace:*"
     },
     "devDependencies": {
+        "@deepseek-ai/dsh-scope": "catalog:",
         "@types/node": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:"

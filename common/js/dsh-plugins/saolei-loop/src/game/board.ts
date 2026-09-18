@@ -3,10 +3,8 @@
  * (specs/051-agent-v2-dsh-migration/data-model.md §2.5): the strict
  * pre-dispatch validation table, the SKIP/STOP batch-triage reason sets, the
  * loss-first counter-informed status derivation, and the per-game statistics.
- * Semantics are migrated verbatim from v1
- * projects/game/agent/src/mcp/saolei/saolei-mcp.ts (spec A6: the
- * recognition/validation/win rules are unchanged, only their carrying module
- * moved into the saolei-loop plugin).
+ * The semantics follow spec 051 A6 (recognition/validation/win rules) with
+ * this module as their saolei-loop carrying implementation.
  */
 
 import { SaoleiBoard, isWin } from "@dominion/game-saolei-board";
@@ -58,8 +56,7 @@ export type OperationType = "click" | "flag" | "chord";
 export type MoveVerdict = { ok: true } | { ok: false; reason: MoveRejection };
 
 /**
- * Stable reason codes for a rejected move (v1 rule table,
- * projects/game/agent/src/mcp/saolei/saolei-mcp.ts `MoveRejection`).
+ * Stable reason codes for a rejected move (the spec 051 A6 rule table).
  */
 export type MoveRejection =
   | "no_active_game"
@@ -175,13 +172,17 @@ export function gameStatus(state: GameState): GameStatus {
 
 /**
  * Per-game quantitative statistics, computed first-hand at game end and
- * carried by the terminal game event (v1
- * projects/game/agent/src/mcp/saolei/saolei-mcp.ts `GameStats`).
+ * carried by the terminal game event (the spec 051 A6 stats contract; the
+ * per-type breakdown is the spec 065 game-stats entity,
+ * specs/065-agent-v2-team-refine/data-model.md §1.3).
  */
 export interface GameStats {
   /** Successful cell-operation dispatch count this game (init/remain and
    * rejected/skipped ops excluded). */
   operationCount: number;
+  /** Successful dispatches per operation type; the parts always sum to
+   * {@link operationCount}. */
+  operationsByType: Record<OperationType, number>;
   /** Correctly flagged mines; null = init mineCounter undecodable. */
   correctFlags: number | null;
   /** operationCount / correctFlags, rounded to 2 decimals; "N/A" when
@@ -190,17 +191,21 @@ export interface GameStats {
 }
 
 /**
- * Compute the per-game statistics at game end. correctFlags = totalMines −
- * terminal MINE cells − HIT_MINE cells; totalMines comes from
- * `initState.mineCounter` (flags = 0 at game start, so the counter reads the
- * mine total). An undecodable counter ⇒ correctFlags = null; correctFlags
- * = 0/null ⇒ avgOpsPerMine = "N/A" (no NaN/Infinity on an instant loss).
- * Pure function.
+ * Compute the per-game statistics at game end. `operationsByType` is the
+ * runtime's per-type counter for the finished game (same success-dispatch
+ * accounting as `operationCount`,
+ * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §1).
+ * correctFlags = totalMines − terminal MINE cells − HIT_MINE cells;
+ * totalMines comes from `initState.mineCounter` (flags = 0 at game start, so
+ * the counter reads the mine total). An undecodable counter ⇒ correctFlags =
+ * null; correctFlags = 0/null ⇒ avgOpsPerMine = "N/A" (no NaN/Infinity on an
+ * instant loss). Pure function.
  */
 export function computeGameStats(
   initState: GameState | null,
   finalState: GameState,
   operationCount: number,
+  operationsByType: Record<OperationType, number>,
 ): GameStats {
   const counter = initState?.mineCounter;
   let correctFlags: number | null;
@@ -226,7 +231,12 @@ export function computeGameStats(
     avgOpsPerMine = "N/A";
   }
 
-  return { operationCount, correctFlags, avgOpsPerMine };
+  return {
+    operationCount,
+    operationsByType: { ...operationsByType },
+    correctFlags,
+    avgOpsPerMine,
+  };
 }
 
 /** In-bounds Moore neighbors of `(x, y)`; `GameState.grid` is indexed

@@ -1,11 +1,9 @@
 /**
  * Tests for the desktop bridge core (attach/接管/断连结算/超时/abort/uuid
  * tool_id/stale 回执 — specs/051-agent-v2-dsh-migration/contracts/
- * saolei-plugins.md §7.2), migrated from the v1 baseline
- * projects/game/agent/src/operation-bridge.test.ts with the v2 session-keyed
- * registry semantics (contracts/desktop-bridge.md §2, data-model.md §2.6).
- * Streams are injected doubles — no module interception (style/javascript.md
- * Mock convention).
+ * saolei-plugins.md §7.2) with the v2 session-keyed registry semantics
+ * (contracts/desktop-bridge.md §2, data-model.md §2.6). Streams are injected
+ * doubles — no module interception (style/javascript.md Mock convention).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

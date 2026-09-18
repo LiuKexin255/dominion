@@ -1,9 +1,12 @@
 /**
- * Model-visible result-text builders for the GameRuntime, migrated verbatim
- * from v1 projects/game/agent/src/mcp/saolei/saolei-mcp.ts (spec A6/FR-013:
- * the text contract is unchanged — three-layer body: outcome line, `game
- * status:` line, ruler board; `valid range:` on rejections; rejections are
- * NORMAL results while desktop/bridge failures are error outcomes).
+ * Model-visible result-text builders for the GameRuntime
+ * (specs/051-agent-v2-dsh-migration/spec.md A6 / FR-013): the text contract
+ * is the three-layer body — outcome line, `game status:` line, ruler board;
+ * `valid range:` on rejections; rejections are NORMAL results while
+ * desktop/bridge failures are error outcomes. The `saolei_remain` body
+ * extends the body with a self-describing legend line between the
+ * `board size` header and the grid
+ * (specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §1).
  */
 
 import { renderBoardText, renderGridWithRuler } from "@dominion/game-saolei-board";
@@ -11,6 +14,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { gameStatus, remainTokenAt } from "./board.js";
 import type { MoveRejection, OperationType } from "./board.js";
+import type { GameEventRecord } from "./runtime.js";
 
 /** Outcome line for `saolei_init` success. */
 export const INIT_OUTCOME = "new game started";
@@ -23,6 +27,19 @@ export const UNRECOGNIZABLE_OUTCOME = "unable to recognize board";
 
 /** Outcome line for the read-only `saolei_remain` query. */
 export const REMAIN_OUTCOME = "saolei_remain → computed";
+
+/**
+ * Self-describing legend line for the `saolei_remain` grid — terminal text of
+ * specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §1: each
+ * value is the count of mines still unmarked around that number cell
+ * (`cell number − adjacent flags`, 0 or negative when over-flagged), NOT the
+ * count of flags; columns are x and rows are y.
+ */
+const REMAIN_LEGEND =
+  "legend: each value = mines still unmarked around that number cell = " +
+  "cell number − adjacent flags (0 or negative when over-flagged); it is " +
+  "NOT the count of flags. Columns are x and rows are y — the same (x, y) " +
+  "as saolei_operate.";
 
 /**
  * Build the `saolei_init` success body: outcome + game-status line + initial
@@ -95,14 +112,33 @@ export function unrecognizableText(): string {
 }
 
 /**
- * Build the `saolei_remain` body: outcome + game-status line + the remain
- * grid rendered with the shared coordinate ruler.
+ * Build the `saolei_remain` body: outcome + game-status line + the
+ * `board size` header + the self-describing legend line + the remain grid
+ * rendered with the shared coordinate ruler.
  */
 export function remainText(state: GameState): string {
   return (
     `${REMAIN_OUTCOME}\n` +
     `game status: ${gameStatus(state)}\n\n` +
-    `board size ${state.width}*${state.height}\n\n` +
+    `board size ${state.width}*${state.height}\n` +
+    `${REMAIN_LEGEND}\n\n` +
     renderGridWithRuler(state.width, state.height, remainTokenAt(state))
+  );
+}
+
+/**
+ * Build the terminal game-over summary the saolei system member announces
+ * (specs/065-agent-v2-team-refine/data-model.md §3; the pure template of
+ * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §2): the
+ * result line plus the successful single-operation total and its
+ * click/flag/chord breakdown. Deterministic — no timestamp or game identity
+ * enters the text (the record's `endedAt` is never read).
+ */
+export function gameStatsText(record: GameEventRecord): string {
+  const result = record.status === "won" ? "胜利" : "失败";
+  const { operationCount, operationsByType } = record.stats;
+  return (
+    `本局游戏结束：${result}。\n` +
+    `本局共执行 ${operationCount} 个操作：click ${operationsByType.click} 次、flag ${operationsByType.flag} 次、chord ${operationsByType.chord} 次。`
   );
 }

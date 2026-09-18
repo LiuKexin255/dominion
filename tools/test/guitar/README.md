@@ -48,7 +48,7 @@ guitar run <plan.yaml> --suite <suite-name>
 
 ### 测试计划格式
 
-详见 `design/guitar_yaml_testplan.md`。
+示例见 `tools/test/guitar/example.guitar.yaml`。
 
 每个 suite 支持以下字段：
 

@@ -1,10 +1,11 @@
 # 调研：dsh 官方 agent-loop 与基础插件前置条件（saolei-loop 迁移前置）
 
-> **状态**：调研完成。**已确认决策（2026-08-28，用户确认）**：① player/planner 拓扑为**单 agent 双角色**——一局游戏对应一个 dsh session，planner/player 共享同一游戏记录、在不同阶段发挥作用；当前 LangGraph 服务的双 agent 形态是框架限制的产物，不迁移该形态。② 游戏状态形态随拓扑推导为 **agent-scoped**（host 层可另留轻量跨会话统计）。③ 桥接形态因"游戏插件 → desktop 推送"方向的存在取**插件桥接**；桥接面统一与否待定（§5.4、§7.3）。
-> **日期**：2026-08-28
+> **状态**：调研完成。**决策状态（2026-09-08 更新）**：本文 2026-08-28 确认的 ①"单 agent 双角色"拓扑与②随之推导的"agent-scoped 游戏状态"**已被取代**——`survey/deepseek-harness-team-mode.md` 头部决策 ③ 拍板 **loop 持有多 agent**（player/planner 双顶层 agent + team 层群聊模型），游戏状态归属改由该文 §8 待定项 5 承接；③ 桥接形态取**插件桥接**仍然有效，桥接面统一与否待定（§5.4、§7.3）。**术语变更**：saolei-loop 的定义已从 agent loop（本文所调研的自研替换层）变为更高层次的 team loop，agent 驱动沿用传统 agent loop（官方 `dsh-agent-loop` 行保留）——见该文头部"术语变更"与 §9.3；本文中"saolei-loop"一词按其旧含义（agent loop 层）阅读，本文的机制事实（依赖面、异常处理、能力提供、message 无需专职插件）不受影响，§4.7/§4.6 的自研重写清单随驱动保留官方行而消解。§5.6（单 agent 双角色表达）与 §5.5 的 agent-scoped 形态判定按上述取代关系阅读。
+> **日期**：2026-08-28（头部决策状态 2026-09-08 更新）
 > **前置调研**：`survey/deepseek-harness-framework.md`（框架总体架构）、`survey/deepseek-harness-preset.md`（preset/系统提示词）、`survey/deepseek-harness-b1-plugin-packaging.md`（B1 嵌入）、`survey/deepseek-harness-b1-bazel-packaging.md`（B1 打包）、`specs/047-dsh-chat-demo/research.md`（B1 实证 D1–D10）
 > **范围**：官方 `dsh-agent-loop`（0.1.1-rc.2，与 `third_party/dsh/core` 同线）的依赖面与冗余性、异常处理机制（优雅终止/断点继续/工具/MCP/LLM 流）、插件间能力提供机制（自研基础插件的机制前提）、message 传递是否需要独立插件、单 agent 双角色的机制表达。**不含** saolei-loop 具体设计。
 > **说明**：本文为调研材料（源码级事实与机制结论）+ 头部所列讨论确认的决策记录；除已标注的确认项外，不含采用决策、迁移方案或未来方向设计。
+> **后续调研**：`survey/deepseek-harness-team-mode.md`（2026-09-08）验证双 agent 拓扑的机制前提并拍板 **loop 持有多 agent**（player/planner 双顶层 agent + team 层群聊模型，取代本文 §5.6 决策）——preset 池组织与角色差异承载（编辑期固定、物化零定制）、registry 之上 team 层、1:1 sender-only 广播消息格式均有结论与设计基线；该文 §6/§8 为后续 spec 输入。
 
 ---
 

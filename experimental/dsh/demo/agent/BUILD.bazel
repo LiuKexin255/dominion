@@ -48,15 +48,22 @@ ts_project(
     deps = [
         ":chat_types_lib",
         ":node_modules/@deepseek-ai/dsh-agent",
-        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-llm-deepseek",
+        # The lifecycle orchestrator behind bootstrap.ts (053 wiring): owns
+        # the k8s health endpoint (:38080/healthz) and the component
+        # start/stop sequencing.
+        ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
+        # The service face the session/server layer consumes (R10):
+        # PresetAuthoringError for the gRPC status mapping, and the
+        # PresetAuthoringService typing behind ctx.get("presetAuthoring").
+        ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
@@ -72,21 +79,35 @@ ts_project(
 artifact_pkg_js(
     name = "server_pkg",
     app = "dsh-demo",
-    data_files = [
-        "cordis.yml",
-    ],
-    entrypoint = "src/bootstrap.js",
+    data_files = ["cordis.yml"] + glob(
+        # Template presets ship with the artifact under
+        # /dominion/dsh-demo/agent/presets-templates (PRESET_TEMPLATES_ROOT,
+        # specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §2-§3).
+        ["presets-templates/**"],
+    ),
+    # The entry point is main.ts (process startup only); bootstrap.ts holds
+    # the lifecycle wiring, importable without side effects for unit tests.
+    entrypoint = "src/main.js",
     npm_deps = [
         # Service-declared dsh rows and imports (closure contract:
-        # specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §4): the
-        # spine + adapter rows must be physically present for the Loader, and
-        # boot/agent/llm are imported by src/*.ts. The remaining plugin
-        # closure materializes transitively through these link targets.
+        # specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §4):
+        # the direct composition rows must be physically present for the
+        # Loader, and dsh-persona resolves by bare package name from the host
+        # composition base when preset rows load
+        # (specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md
+        # §4). The remaining plugin closure materializes transitively through
+        # these link targets. Dominion workspace packages are NOT linked here:
+        # npm_deps link targets only carry real files for registry packages —
+        # workspace packages ship through runtime_deps (JsRuntimePackageInfo).
         ":node_modules/@deepseek-ai/dsh-agent",
-        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-agent-loop",
+        ":node_modules/@deepseek-ai/dsh-agent-presets",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-llm-deepseek",
+        ":node_modules/@deepseek-ai/dsh-persona",
+        ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],
@@ -99,11 +120,16 @@ artifact_pkg_js(
     # (//experimental/dsh/demo/testplan:closure_audit_test).
     visibility = ["//experimental/dsh/demo/testplan:__pkg__"],
     runtime_deps = [
+        # Workspace packages ship through runtime_deps (npm_deps link targets
+        # only carry real files for registry packages).
+        "//common/js/bootstrap:runtime_pkg",
+        "//common/js/dsh-plugins/preset-authoring:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
         "//common/js/otel:runtime_pkg",
         "//common/js/resolver:runtime_pkg",
+        "//experimental/dsh/demo/agent-plugins/demo-echo:runtime_pkg",
         "//third_party/dsh/core:runtime_pkg",
     ],
 )
@@ -121,23 +147,50 @@ artifact_image(
 # node_modules mirror of :server_lib's deps. :chat_types_lib is absent — the
 # sources reference the generated proto types via `import type` only, which
 # vitest erases at transform time.
+#
+# composition.test.ts additionally boots the REAL direct composition, so the
+# data also mirrors the cordis.yml row packages (services + roster + authoring
+# + demo-echo, which the Loader resolves by bare name from this package's
+# node_modules) and the template presets the roster scans (PRESET_TEMPLATES_ROOT
+# points at the runfiles copy in the test).
 vitest_test(
     name = "lib_test",
     size = "small",
     data = glob(
         ["src/**/*.ts"],
         allow_empty = True,
+    ) + glob(
+        ["presets-templates/**"],
+        allow_empty = True,
     ) + [
+        "cordis.yml",
+        # Composition-boot baseline rows outside the dependency closure of
+        # any direct dep (app-infrastructure rows shipped via
+        # //third_party/dsh/core in production): linked as devDependencies so
+        # composition.test.ts can boot the real cordis.yml verbatim — the
+        # Loader resolves every row's bare specifier from this package's
+        # node_modules.
+        ":node_modules/@deepseek-ai/cordis-plugin-timer",
         ":node_modules/@deepseek-ai/dsh-agent",
-        ":node_modules/@deepseek-ai/dsh-agent-spine-demo",
+        ":node_modules/@deepseek-ai/dsh-agent-loop",
+        ":node_modules/@deepseek-ai/dsh-agent-presets",
         ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-invariants",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-llm-deepseek",
+        ":node_modules/@deepseek-ai/dsh-persona",
+        ":node_modules/@deepseek-ai/dsh-scope",
+        ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@dominion/dsh-demo-echo",
+        ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",

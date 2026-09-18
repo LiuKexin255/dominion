@@ -13,16 +13,12 @@ messages:
   # bare F2 new-game dispatch — the prior width/height args affected only the
   # now-removed agent-side grid state).
   #
-  # The "继续" keyword additionally matches the calibration instruction
-  # contents (planner_tools.yaml planner-memory-multi-hit /
-  # planner.yaml compact-instruction — both end with "请继续游戏。"): the
-  # REVIEW instruction is APPENDED to the player channel by the planner node
-  # (spec 039 FR-017), so it becomes the last user message of the player's
-  # next model call — matching "继续" makes the player open the next game
-  # (FR-009 — 是否开下一局由 player LLM 决定; the fixture decides to continue)
-  # instead of falling into the no-match random fallback. The init instruction
-  # (planner.yaml init-instruction) is injected BEFORE the user message
-  # (pendingInstruction, FR-015) and never matches here.
+  # The "继续" keyword covers a player turn whose last user message asks to
+  # continue: matching it makes the player open the next game (FR-009 — 是否
+  # 开下一局由 player LLM 决定; the fixture decides to continue) instead of
+  # falling into the no-match random fallback. In the v2 team flow the same
+  # token is shared with team_player.yaml's team-player-user-intake (the
+  # queued user-message digest entry).
   - name: saolei-start
     keywords:
       - start saolei
@@ -63,7 +59,8 @@ messages:
   # form: ordinary type/x/y parameters == a length-1 operations batch). Used by
   # TestAgentSaoleiTextBoardFlow's second turn to prove the two forms are
   # equivalent end-to-end: the single-form click dispatches the SAME cell centre
-  # as the batch form's first op (saolei_fixtures_test.go saoleiClick1*).
+  # as the batch form's first op (the fixture is pinned in
+  # message_store_test.go's saolei-single-op case).
   #
   # This keyword is sent as a SECOND user turn, after the saolei-start
   # init→operate chain (turn 1) has seeded the per-session recognized board

@@ -12,8 +12,8 @@ import "fmt"
 //   - every message must carry a non-empty Name and a non-empty Text
 //     (both required by specs/047-dsh-chat-demo/contracts/
 //     fake-llm-templates.md §2);
-//   - no keyword / history_keyword element may be the empty string
-//     (an empty keyword can never distinguish templates);
+//   - no keyword / history_keyword / system_keyword element may be the
+//     empty string (an empty keyword can never distinguish templates);
 //   - min_turn may not be negative (the declared lower bound on user
 //     turn count; 0 is accepted and clamped to the default 1);
 //   - message Names must be unique across all merged files;
@@ -45,6 +45,11 @@ func Validate(messages []*Message) error {
 		for _, kw := range m.HistoryKeywords {
 			if kw == "" {
 				return fmt.Errorf("validate: message %q has an empty history_keyword", m.Name)
+			}
+		}
+		for _, kw := range m.SystemKeywords {
+			if kw == "" {
+				return fmt.Errorf("validate: message %q has an empty system_keyword", m.Name)
 			}
 		}
 		if m.MinTurn < 0 {

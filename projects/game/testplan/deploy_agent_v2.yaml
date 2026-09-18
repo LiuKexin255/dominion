@@ -60,6 +60,13 @@ services:
         # bootstrap resolves it to http://{endpoint}/v1
         # (specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §4).
         GLM_LLM_TARGET: dominion:///game/fake-llm:8080
+        # The opencode-go row routes to the same fake endpoint. The synthetic
+        # credential is NOT a real secret: it exists so the end-to-end run
+        # covers conditional Authorization carrying and the zero-leakage
+        # assertion (fake-llm ignores credentials; specs/063-llm-reliability-
+        # opencode-go/data-model.md §6).
+        OPENCODE_LLM_TARGET: dominion:///game/fake-llm:8080
+        OPENCODE_API_KEY: test-opencode-token
   # Same-hostname path split: web serves `/`, the gateway keeps /api/v1/ and
   # /api/v2/ (Gateway API merges same-hostname routes by longest PathPrefix —
   # specs/049-agent-v2-dsh-init/research.md D5).

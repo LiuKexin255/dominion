@@ -4,11 +4,12 @@ load("@rules_proto//proto:defs.bzl", "proto_library")
 load("//tools/dev/go:defs.bzl", "go_unittest")
 
 # Both protos of the game app live in one proto_library / go_proto_library
-# generation unit: agent_v2.proto's Go surface is merged into the v1 package
+# generation unit: agent_v2.proto's Go surface is merged into the game package
 # (go_package dominion/projects/game) because protoc-gen-go-aip v0.1.3 emits
 # the parent constructor's receiver unqualified, which only resolves when
-# the parent resources (v1 Template/Session) share the generated file's Go
-# package (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
+# the parent resources (Template/Session, declared in game.proto) share the
+# generated file's Go package
+# (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
 # §2.6). A second go_proto_library on the same importpath is not possible —
 # the Go linker rejects binaries linking both as "multiple copies of package
 # passed to linker".

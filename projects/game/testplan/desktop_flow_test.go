@@ -1,11 +1,10 @@
 // Package testplan contains the desktop-flow large tests: the /api/v2 flow
-// control stream from the desktop's side, with the test acting as the
-// desktop client wherever the deployed fake-desktop executors cannot be
-// observed directly (specs/051-agent-v2-dsh-migration/contracts/
-// desktop-bridge.md §6 验收锚点; quickstart.md §2 desktop-flow row). Cases
-// cover the connection probe, the take-over of a second connection, the
-// operation delivery → receipt → recognition loop, and the in-flight
-// failure when the desktop vanishes — one test per concern
+// control stream from the desktop's side, with the test acting as the desktop
+// client (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6
+// 验收锚点; specs/059-agent-v2-team-mode/tasks.md T018). Cases cover the
+// connection probe, the take-over of a second connection, the operation
+// delivery → receipt → recognition loop through the team chain, and the
+// in-flight failure when the desktop vanishes — one test per concern
 // (style/large_test.md §测试组织).
 package testplan
 
@@ -33,9 +32,9 @@ func containsAll(s string, subs ...string) bool {
 }
 
 // TestDesktopFlowProbeEcho covers the connect probe (desktop-bridge.md §1
-// 探测行): the first UserFrame carrying the ACTIVE status signal is
-// answered with a status echo frame — the application-layer confirmation
-// the real desktop's 10s Connect window waits for.
+// 探测行): the first UserFrame carrying the ACTIVE status signal is answered
+// with a status echo frame — the application-layer confirmation the real
+// desktop's 10s Connect window waits for.
 func TestDesktopFlowProbeEcho(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -58,7 +57,7 @@ func TestDesktopFlowProbeEcho(t *testing.T) {
 	}
 }
 
-// TestDesktopFlowSecondConnectionTakesOver covers the v1 take-over baseline
+// TestDesktopFlowSecondConnectionTakesOver covers the take-over baseline
 // (desktop-bridge.md §2: a new connection for the session ends the previous
 // one): a second flow connection on the same session closes the first, and
 // the second connection is the one that stays serviceable.
@@ -72,8 +71,6 @@ func TestDesktopFlowSecondConnectionTakesOver(t *testing.T) {
 	first, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer first.Close()
 
-	// The second connection attaches: it answers its probe and takes the
-	// session over.
 	second, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer second.Close()
 
@@ -92,44 +89,40 @@ func TestDesktopFlowSecondConnectionTakesOver(t *testing.T) {
 }
 
 // TestDesktopFlowOperationDeliveryAndReceipt drives the delivery → receipt →
-// recognition loop with the test as the desktop (desktop-bridge.md §6
-// 验收锚点 1): materialize, send the game keyword, read the F2 new-game
-// dispatch off the flow stream, answer it with the recognizable win-board
-// screenshot, and observe the agent recognize it — the conversation stream
-// carries the SUCCEEDED tool_result with the board text.
+// recognition loop with the test as the desktop (desktop-bridge.md §6 验收
+// 锚点 1) through the team chain: the user Send drives the planner opening,
+// the structural continuation drives the player, the F2 new-game dispatch
+// arrives on the flow stream, the test answers it with the recognizable
+// win-board screenshot, and the team stream carries the SUCCEEDED tool
+// results with the board text.
 func TestDesktopFlowOperationDeliveryAndReceipt(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	sessionID := "flow-receipt-" + uniqueSuffix()
-	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		sessionID, "flow-receipt-"+uniqueSuffix(), "recognize the receipt")
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "flow-receipt")
 
 	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
+	// The win board at init: the terminal init result concludes the player
+	// turn (specs/062-team-game-end-handoff/spec.md FR-002 ①), so the
+	// scripted operate batch is never requested — the single F2 reply closes
+	// the chain.
+	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardWinPNG},
+	}, wsReadTimeout)
 
-	// The turn's tool events stream while the flow dispatch is served on
-	// this goroutine — collect via the async drain.
-	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerSaoleiGame+" through the flow connection")
-	ch := drainAgentV2TurnAsync(stream)
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	events := drainTeamStream(t, stream)
+	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, events)
 
-	serveWonInitReceipt(t, flow, sessionID, wsReadTimeout)
-
-	var events []*game.ChatEvent
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			t.Fatalf("send stream: %v", r.err)
-		}
-		events = r.events
-	case <-time.After(wsReadTimeout):
-		t.Fatal("game turn did not complete after the flow receipt")
+	playerTurns := teamTurnsForMember(events, "player")
+	if len(playerTurns) != 1 {
+		t.Fatalf("player turns = %d, want 1 (the game chain)", len(playerTurns))
 	}
-	assertAgentV2TurnWellFormed(t, sessionName, events)
-
-	results := collectAgentV2GameEvents(events)
-	if len(results) == 0 {
-		t.Fatal("the game turn produced no tool_result frames")
+	results := teamTurnToolResults(playerTurns[0])
+	if len(results) != 1 {
+		t.Fatalf("tool_result count = %d, want 1 (saolei_init only — the terminal init result concludes the turn)", len(results))
 	}
 	init := results[0]
 	if init.GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
@@ -144,20 +137,18 @@ func TestDesktopFlowOperationDeliveryAndReceipt(t *testing.T) {
 // TestDesktopFlowDisconnectFailsInFlight covers the vanish path: the test
 // accepts the F2 dispatch and then closes the flow connection without
 // replying — the bridge settles the in-flight dispatch FAILED "desktop
-// disconnected", the tool result is a model-visible error, and the turn
-// completes (desktop-bridge.md §2 断连结算, data-model.md §2.6).
+// disconnected", the tool result is a model-visible error, and the member
+// turn completes (desktop-bridge.md §2 断连结算).
 func TestDesktopFlowDisconnectFailsInFlight(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	sessionID := "flow-vanish-" + uniqueSuffix()
-	ctx, sessionName, _ := agentV2GamePrep(t, sutHostURL, sutEnvName,
-		sessionID, "flow-vanish-"+uniqueSuffix(), "vanish mid-dispatch")
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "flow-vanish")
 
 	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
 
-	stream := startAgentV2Send(t, ctx, sutHostURL, sutEnvName, sessionName,
-		agentV2TriggerSaoleiGame+" and then the desktop vanishes")
-	ch := drainAgentV2TurnAsync(stream)
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
+	ch := drainTeamStreamAsync(stream)
 
 	// Accept the dispatch, then drop the connection instead of replying.
 	sawDispatch := false
@@ -176,22 +167,16 @@ func TestDesktopFlowDisconnectFailsInFlight(t *testing.T) {
 		t.Fatalf("close flow connection: %v", err)
 	}
 
-	var events []*game.ChatEvent
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			t.Fatalf("send stream: %v", r.err)
-		}
-		events = r.events
-	case <-time.After(wsReadTimeout):
-		t.Fatal("turn did not settle after the flow connection vanished")
+	events := waitTeamStream(t, ch, "vanish stream")
+	assertTeamStreamWellFormed(t, sessionName, events)
+	playerTurns := teamTurnsForMember(events, "player")
+	if len(playerTurns) != 1 {
+		t.Fatalf("player turns = %d, want 1", len(playerTurns))
 	}
-	assertAgentV2TurnWellFormed(t, sessionName, events)
-	if events[len(events)-1].GetTurnEnd().GetStatus() != game.TurnStatus_TURN_STATUS_COMPLETED {
-		t.Fatalf("vanish turn ended %v, want COMPLETED (回合存活)", events[len(events)-1].GetTurnEnd().GetStatus())
+	if status := teamTurnEndStatus(playerTurns[0]); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("vanish turn ended %v, want COMPLETED (回合存活)", status)
 	}
-
-	results := collectAgentV2GameEvents(events)
+	results := teamTurnToolResults(playerTurns[0])
 	if len(results) == 0 {
 		t.Fatal("the vanish turn produced no tool_result frames")
 	}

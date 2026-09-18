@@ -3,7 +3,10 @@
 // HTTP handler.
 package service
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Message is a single templated LLM response. It is keyed by Name for
 // uniqueness and matched by Keywords at request time (T2). Reasoning
@@ -70,6 +73,18 @@ import "time"
 // vacuous. Templates declaring either condition are also multi-turn
 // templates for isResponsesOnly purposes.
 //
+// SystemKeywords is the system-prompt condition of the same Responses
+// projection (specs/059-agent-v2-team-mode/tasks.md T008): EVERY system
+// keyword must be a case-insensitive substring of the request's
+// `instructions` text — after the preset-roster pivot the agent_v2 system
+// prompt opens with the materialized preset's persona anchor line
+// (「你是扫雷 player」/「你是扫雷 planner」, the跨-phase stable contract),
+// so anchoring a template on that line asserts end to end that the persona
+// row reached the model context. An undeclared (empty) set is vacuous.
+// Templates declaring it are multi-turn templates (priority 1, all
+// conditions) for the Responses matcher and responses-only for the
+// chat-completions fallback gate.
+//
 // Failure injects a provider failure into the Responses stream
 // (fake-responses-wire.md §2 invariant 4): a matched template carrying a
 // Failure ends its stream with response.failed (configured code/message)
@@ -86,6 +101,35 @@ type ResponseFailure struct {
 	Message string `json:"message" yaml:"message"`
 }
 
+// Transient is a template's stateful fault injection
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §1): the first Times requests that select the template are answered with the
+// declared fault, after which the template answers with its normal content.
+// Times <= 0 means unbounded (∞). The counter is per-template, in-process,
+// mutex-protected (concurrent requests inject exactly Times times), and
+// consumed only by a request that actually selected the template; a restart
+// clears it (each large-test plan redeploys the service, so plans are
+// naturally isolated).
+//
+// Exactly one of HTTPStatus / Empty / Failure is normally declared:
+// HTTPStatus answers the request with that HTTP status instead of a
+// completion (the injected body is written by writeInjectedHTTPFailure);
+// Empty answers HTTP 200 with the normal SSE lifecycle but zero content
+// blocks; Failure is the in-band Responses failure stream (the same shape as
+// the legacy top-level Message.Failure). RetryAfter (seconds) and
+// ErrorMessage apply to the HTTPStatus form.
+type Transient struct {
+	Times        int              `json:"times,omitempty" yaml:"times,omitempty"`
+	HTTPStatus   int              `json:"http_status,omitempty" yaml:"http_status,omitempty"`
+	RetryAfter   *int             `json:"retry_after,omitempty" yaml:"retry_after,omitempty"`
+	ErrorMessage string           `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+	Empty        bool             `json:"empty,omitempty" yaml:"empty,omitempty"`
+	Failure      *ResponseFailure `json:"failure,omitempty" yaml:"failure,omitempty"`
+
+	mu       sync.Mutex
+	injected int
+}
+
 type Message struct {
 	Name            string           `json:"name" yaml:"name"`
 	Keywords        []string         `json:"keywords" yaml:"keywords"`
@@ -98,8 +142,10 @@ type Message struct {
 	StallAfter      *int             `json:"stall_after,omitempty" yaml:"stall_after,omitempty"`
 	ResponsesOnly   bool             `json:"responses_only,omitempty" yaml:"responses_only,omitempty"`
 	HistoryKeywords []string         `json:"history_keywords,omitempty" yaml:"history_keywords,omitempty"`
+	SystemKeywords  []string         `json:"system_keywords,omitempty" yaml:"system_keywords,omitempty"`
 	MinTurn         int              `json:"min_turn,omitempty" yaml:"min_turn,omitempty"`
 	Failure         *ResponseFailure `json:"failure,omitempty" yaml:"failure,omitempty"`
+	Transient       *Transient       `json:"transient,omitempty" yaml:"transient,omitempty"`
 }
 
 // effectiveMinTurn returns the turn lower bound with the contract default
@@ -116,11 +162,55 @@ func (m *Message) effectiveMinTurn() int {
 
 // isResponsesOnly reports whether the template serves the /v1/responses
 // endpoint only: an explicit responses_only marker, declared multi-turn
-// conditions (history_keywords / min_turn above the default), or a failure
-// injection. Such templates MUST stay out of the chat-completions no-match
-// random fallback pool (see the ResponsesOnly field doc).
+// conditions (history_keywords / system_keywords / min_turn above the
+// default), a failure injection, or a transient fault injection. Such
+// templates MUST stay out of the chat-completions no-match random fallback
+// pool (see the ResponsesOnly field doc); keyword matching is unaffected.
 func (m *Message) isResponsesOnly() bool {
-	return m.ResponsesOnly || len(m.HistoryKeywords) > 0 || m.effectiveMinTurn() > 1 || m.Failure != nil
+	return m.ResponsesOnly || len(m.HistoryKeywords) > 0 || len(m.SystemKeywords) > 0 || m.effectiveMinTurn() > 1 || m.Failure != nil || m.Transient != nil
+}
+
+// transientInjection is the resolved effect of a template's transient block
+// (or legacy Failure) for the one request that consumed its budget slot. The
+// values are copied out of the template so callers hold no lock while writing
+// the response; a nil pointer means "no injection — answer normally".
+type transientInjection struct {
+	httpStatus   int
+	retryAfter   *int
+	errorMessage string
+	empty        bool
+	failure      *ResponseFailure
+}
+
+// takeInjection resolves the fault injection for one request that selected
+// this template and consumes one slot of a finite transient budget
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §1). A nil result means the template answers normally: no injection is
+// declared, or the transient budget is exhausted — the template then answers
+// with its normal reasoning/text. The legacy top-level Failure is the
+// unbounded shorthand for transient: {times: ∞, failure}; it applies only to
+// templates that declare no transient block, so a declared block owns the
+// injection.
+func (m *Message) takeInjection() *transientInjection {
+	if t := m.Transient; t != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.Times > 0 && t.injected >= t.Times {
+			return nil
+		}
+		t.injected++
+		return &transientInjection{
+			httpStatus:   t.HTTPStatus,
+			retryAfter:   t.RetryAfter,
+			errorMessage: t.ErrorMessage,
+			empty:        t.Empty,
+			failure:      t.Failure,
+		}
+	}
+	if m.Failure != nil {
+		return &transientInjection{failure: m.Failure}
+	}
+	return nil
 }
 
 // ToolConfig is a single templated response to a tool result message.

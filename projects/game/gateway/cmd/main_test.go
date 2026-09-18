@@ -384,7 +384,7 @@ func TestRootMuxAPIv2PresetPathsRouteToDirectHandler(t *testing.T) {
 					// body: "preset" — the HTTP body maps to the
 					// UpdatePresetRequest.preset field itself; the
 					// {preset.name} path variable fills the name.
-					strings.NewReader(`{"playerPrompt":"hi"}`),
+					strings.NewReader(`{"persona":"hi"}`),
 				)
 				if err != nil {
 					return nil, err
@@ -425,9 +425,9 @@ func TestRootMuxAPIv2PresetPathsRouteToDirectHandler(t *testing.T) {
 // routes to grpc-gateway for the services that remain on it: session and
 // memory requests reach their handler routes and fail proxying to the
 // unreachable backend with 503 (grpc code Unavailable), while the removed
-// v1 TeamService face answers a routing 404 (FR-019 — the team/prompt faces
-// are gone; memory/session stay, specs/051-agent-v2-dsh-migration/
-// spec.md FR-019).
+// v1 team face answers a routing 404 (FR-019 — the team/prompt faces are
+// gone; memory/session stay, specs/051-agent-v2-dsh-migration/spec.md
+// FR-019).
 func TestRootMuxAPIv1SessionMemoryFallback(t *testing.T) {
 	httpSrv := httptest.NewServer(newRoutingTestMux(t))
 	defer httpSrv.Close()
@@ -452,8 +452,8 @@ func TestRootMuxAPIv1SessionMemoryFallback(t *testing.T) {
 		t.Fatalf("api/v1 memory fallback status = %d, want %d (grpc-gateway proxy failure)", memResp.StatusCode, http.StatusServiceUnavailable)
 	}
 
-	// RefreshTeam rule — the v1 TeamService face is removed, so the route no
-	// longer exists and grpc-gateway answers with its own 404 JSON body.
+	// The v1 team:refresh rule no longer exists (the v1 team face is
+	// removed), so grpc-gateway answers with its own 404 JSON body.
 	teamResp, err := http.Post(httpSrv.URL+"/api/v1/templates/saolei/sessions/route-test/team:refresh", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatalf("post team:refresh: %v", err)

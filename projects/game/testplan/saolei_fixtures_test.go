@@ -1,8 +1,7 @@
 // Package testplan contains shared saolei large-test fixtures: the real
-// Minesweeper screenshots (embedded PNGs) and the saolei geometry/expectation
-// constants shared by the agent_saolei and saolei_team suites
-// (style/large_test.md §反模式3 — shared fixtures live in one file, not
-// copied per suite).
+// Minesweeper screenshots (embedded PNGs) the agent_v2 team suites answer
+// their fake-desktop receipts with (style/large_test.md §反模式3 — shared
+// fixtures live in one file, not copied per suite).
 //
 // The embedded PNGs are real Minesweeper screenshots reused from the
 // @dominion/game-saolei-board golden testdata. The deployed agent runs the
@@ -18,9 +17,6 @@ package testplan
 
 import (
 	_ "embed"
-	"fmt"
-
-	game "dominion/projects/game"
 )
 
 // saoleiBoardInitPNG is a real Minesweeper screenshot (16×16, all INITIAL)
@@ -28,18 +24,6 @@ import (
 //
 //go:embed testdata/saolei_1.png
 var saoleiBoardInitPNG []byte
-
-// saoleiBoardRevealedPNG is a real Minesweeper screenshot (9×9, partially
-// revealed — cell (3,4) is the number "1") recognized as an in-progress
-// game. Used by TestAgentSaoleiIllegalMovePreDispatchReject:
-// `saolei_init` recognizes this board, then the fixture's `saolei_operate`
-// batch ops (3,4)/(5,6) are skipped as no-ops (`cell_already_revealed` —
-// FR-002 harmless no-op skip, the 039 successor of the 025
-// `cell_already_revealed` pre-dispatch rejection) — the dispatch never
-// reaches the desktop.
-//
-//go:embed testdata/saolei_2.png
-var saoleiBoardRevealedPNG []byte
 
 // saoleiBoardWinPNG is a real Minesweeper screenshot (9×9 win board — every
 // cell is a revealed number "0".."8" or FLAG; no INITIAL/HIT_MINE/MINE/
@@ -63,71 +47,15 @@ var saoleiBoardWinPNG []byte
 //go:embed testdata/saolei_5.png
 var saoleiBoardLossPNG []byte
 
-// saoleiBoardOverFlagPNG is a real Minesweeper screenshot (9×9, grid fully
-// revealed/flagged — every cell is a revealed number "0".."8" or FLAG; 11
-// flags total) recognized as a NON-terminal in-progress game: the top-left
-// mine counter reads `-01` (over-flagged), so the counter-informed
-// `isWin(state)` returns false (specs/028-saolei-win-counter-fix) and the
-// board reports `game status: playing` (NOT `won`).
+// saoleiBoardCompatWinPNG is a real Minesweeper screenshot (9×9, almost
+// every cell INITIAL plus 6 flags — saolei_8.png) recognized as an
+// in-progress game. The team-mode terminal-win flow seeds a game with this
+// board and then answers the first operate dispatch with saoleiBoardWinPNG:
+// the two boards are cell-compatible (a same-game successor — no revealed
+// cell regresses, checkCompatible in
+// projects/game/pkg/saolei-board/src/core/validate.ts), so the operate
+// result carries `game status: won` and the GameRuntime records the terminal
+// game event that triggers the planner review.
 //
-//go:embed testdata/saolei_9.png
-var saoleiBoardOverFlagPNG []byte
-
-// saolei cell geometry constants. The fake-LLM fixture drives ONE
-// saolei_operate BATCH whose ops are click{3,4} and click{5,6}
-// (spec 039-planner-memory-calibration FR-001 — the merged dual-form tool;
-// sample_saolei_tools.yaml saolei-init-followup-operate); their WM_*
-// client-space cell centres per the formula in
-// projects/game/agent/src/mcp/saolei/geometry.ts
-// (centerX(x) = 24 + x*32 + 16, centerY(y) = 104 + y*32 + 16) are asserted on
-// the dispatched MouseMoveAndClickPart. centerY uses the client-space board
-// top BOARD_ORIGIN_Y_PX = BOARD_ORIGIN_Y_PX_SCREENSHOT(200) − CHROME_OFFSET_Y_PX(96)
-// = 104 — the screenshot→client chrome compensation applied in the agent
-// (specs/024-tool-render-coord-fix/research.md D1/D2) so the desktop's
-// WINDOW_MESSAGE path posts the coordinate verbatim (desktop-facing contract
-// unchanged — specs/018-saolei-mcp/contracts/proto-operation-contract.md §3;
-// specs/024-tool-render-coord-fix/contracts/coordinate-space-contract.md §4/§6;
-// specs/024-tool-render-coord-fix/data-model.md §3).
-const (
-	saoleiClick1X = 3
-	saoleiClick1Y = 4
-	saoleiClick2X = 5
-	saoleiClick2Y = 6
-
-	saoleiClick1CenterX = 136 // 24 + 3*32 + 16
-	saoleiClick1CenterY = 248 // 104 + 4*32 + 16
-	saoleiClick2CenterX = 200 // 24 + 5*32 + 16
-	saoleiClick2CenterY = 312 // 104 + 6*32 + 16
-)
-
-// expectedSaoleiFinalText is the terminal text fake-LLM returns once
-// the saolei_operate batch result reaches the model
-// (sample_saolei_tools.yaml saolei-operate-final-text). The test asserts
-// it to prove the whole init→operate chain completed.
-const expectedSaoleiFinalText = "Minesweeper sequence complete."
-
-// expectedSaoleiRemainFinalText is the terminal text fake-LLM returns once
-// the saolei_remain tool-result loop closes
-// (sample_saolei_tools.yaml saolei-remain-final-text). Used by
-// TestAgentSaoleiRemainToolNoDispatch to prove the remain turn ended
-// deterministically (saolei_remain dispatches nothing, so the fake-LLM
-// MUST return text — not a tool_call — after its result, otherwise the
-// no-match random fallback could dispatch an unrelated operation and
-// muddy the zero-dispatch assertion).
-const expectedSaoleiRemainFinalText = "Remaining mines computed."
-
-// assertMouseMoveAndClick verifies a MouseMoveAndClickPart carries the
-// expected centre coordinates, LEFT_CLICK action, and WINDOW_MESSAGE method
-// (the desktop-facing saolei contract — spec 023 FR-020 / spec 018 FR-004b).
-func assertMouseMoveAndClick(p *game.MouseMoveAndClickPart, wantX, wantY int32, wantClick game.MouseClickAction) error {
-	if p.GetXPx() != wantX || p.GetYPx() != wantY {
-		return fmt.Errorf("coords = (%d,%d), want (%d,%d)", p.GetXPx(), p.GetYPx(), wantX, wantY)
-	}
-	if p.GetClick() != wantClick {
-		return fmt.Errorf("click = %v, want %v", p.GetClick(), wantClick)
-	}
-	if p.GetMethod() != game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE {
-		return fmt.Errorf("method = %v, want WINDOW_MESSAGE", p.GetMethod())
-	}
-	return nil
-}
+//go:embed testdata/saolei_8.png
+var saoleiBoardCompatWinPNG []byte

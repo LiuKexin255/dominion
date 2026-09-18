@@ -1,0 +1,26 @@
+{
+    "name": "@dominion/dsh-team",
+    "private": true,
+    "type": "module",
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "default": "./src/index.js"
+        }
+    },
+    "peerDependencies": {
+        "@deepseek-ai/cordis": "catalog:",
+        "@deepseek-ai/dsh-agent": "catalog:",
+        "@deepseek-ai/dsh-llm": "catalog:",
+        "@deepseek-ai/dsh-session": "catalog:",
+        "@deepseek-ai/dsh-system-prompt": "catalog:"
+    },
+    "devDependencies": {
+        "@deepseek-ai/dsh-scope": "catalog:",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}

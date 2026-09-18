@@ -4,22 +4,23 @@
  * Two-phase entry per
  * specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md §2:
  * the static import graph carries only OTel/bootstrap wiring; @grpc/grpc-js
- * and mongodb load through the dynamic imports below, after init() has
- * registered the OTel ESM loader hook. The entry sequence (init →
- * installReporter → dynamic import → register → run → uninstall/shutdown →
- * exit) is fixed by
+ * and mongodb load through the dynamic imports below and the composition's
+ * plugin Loader, after init() has registered the OTel ESM loader hook. The
+ * entry sequence (init → installReporter → dynamic import → register → run
+ * → uninstall/shutdown → exit) is fixed by
  * specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md §8; the
  * migration sample is experimental/js/grpc_hello_world/src/bootstrap.ts.
  *
- * Component lifecycle (specs/051-agent-v2-dsh-migration/contracts/
- * saolei-plugins.md §6 invariant): the preset Mongo storage starts first and
- * stops last; the dsh composition (agent sessions + root fiber) starts
- * second and stops between the gRPC server and Mongo — the server drains
- * first, then every session disposes (in-flight turns aborted) followed by
- * the composition's root fiber, then the Mongo client closes. Stages
- * (Foundation 100 < Client 200 < Server 300) encode that order: start runs
- * stage-ascending, stop runs strictly reversed. The 38080/healthz endpoint
- * is built into Bootstrap and serves only after every component has started
+ * Component lifecycle: the dsh composition (agent sessions + root fiber)
+ * starts first and stops after the gRPC server — the server drains first,
+ * then every session disposes (in-flight turns aborted) followed by the
+ * composition's root fiber, whose unwind also closes the preset Mongo
+ * client (the preset-authoring plugin row owns the connection: it connects
+ * and indexes BEFORE its activation settles, so a storage failure fails the
+ * boot loud, and registers its close as a composition effect). Stages
+ * (Client 200 < Server 300) encode that order: start runs stage-ascending,
+ * stop runs strictly reversed. The 38080/healthz endpoint is built into
+ * Bootstrap and serves only after every component has started
  * (specs/052-deploy-health-probe/contracts/deploy-probe.md).
  */
 
@@ -37,11 +38,9 @@ import {
   installReporter,
 } from "@dominion/common-js-logs";
 import { init, shutdown } from "@dominion/common-js-otel";
-// Type-only: erased at compile time, so none of these put @grpc/grpc-js or
-// mongodb into the static import graph ahead of the OTel loader hook.
-import type { MongoClient } from "mongodb";
-import type { AgentSessions } from "./session.js";
-import type { PresetStore } from "./presets.js";
+// Type-only: erased at compile time, so none of these put @grpc/grpc-js into
+// the static import graph ahead of the OTel loader hook.
+import type { TeamSessions } from "./session.js";
 import type { DshContext } from "./dsh.js";
 
 // Binds on all interfaces, matching the deployed container port declared in
@@ -62,77 +61,56 @@ async function main(): Promise<void> {
   // which would terminate the process and every live session with it. The
   // primary guards are the Send stream's 'error' listener and safeWrite in
   // server.ts; this handler covers any future regression of the same
-  // category (v1 precedent: projects/game/agent/src/bootstrap.ts).
+  // category.
   process.on("unhandledRejection", (reason) => {
     error("unhandled promise rejection", { reason: String(reason) });
   });
 
   let exitCode = 0;
   try {
-    // 3. Dynamic imports keep @grpc/grpc-js and mongodb out of the static
-    // import graph (one uniform wiring point, the grpc_hello_world pattern).
+    // 3. Dynamic imports keep @grpc/grpc-js out of the static import graph
+    // (one uniform wiring point, the grpc_hello_world pattern). mongodb
+    // enters through the composition's preset-authoring plugin, which the
+    // Loader imports during bootDsh — after init().
     const { bootDsh } = await import("./dsh.js");
-    const { MongoClient } = await import("mongodb");
-    const {
-      MongoPresetStore,
-      PRESET_COLLECTION_NAME,
-      PRESET_DATABASE,
-      mongoPresetCollection,
-      resolveMongoUri,
-    } = await import("./presets.js");
+    const { PRESET_COLLECTION_NAME, PRESET_DATABASE, resolveMongoUri } = await import(
+      "./presets.js"
+    );
     const { buildServer } = await import("./server.js");
 
     // Cells filled by component starts: the composition stop reads the
-    // sessions created by the gRPC server start, and the gRPC server start
-    // consumes the composition and preset store from the earlier stages
-    // (start order is stage-ascending, stop strictly reversed).
-    let mongo: MongoClient | undefined;
-    let presetStore: PresetStore | undefined;
+    // sessions created by the gRPC server start (start order is
+    // stage-ascending, stop strictly reversed).
     let ctx: DshContext | undefined;
-    let sessions: AgentSessions | undefined;
+    let sessions: TeamSessions | undefined;
     let bound: Component | undefined;
-
-    const presetStoreComponent: Component = {
-      name: "preset-store",
-      stage: Stage.Foundation,
-      start: async () => {
-        // Fail-loud preset storage
-        // (specs/051-agent-v2-dsh-migration/spec.md FR-005): the service
-        // serves preset CRUD from its own Mongo database, so a
-        // connect/index failure must never half-start the surface — the
-        // failure rejects the start and Bootstrap rolls back and exits
-        // non-zero through the main catch.
-        const client = new MongoClient(await resolveMongoUri());
-        mongo = client;
-        await client.connect();
-        const store = new MongoPresetStore(
-          mongoPresetCollection(client.db(PRESET_DATABASE).collection(PRESET_COLLECTION_NAME)),
-        );
-        await store.ensureIndexes();
-        presetStore = store;
-        info("preset store connected", { database: PRESET_DATABASE, collection: PRESET_COLLECTION_NAME });
-      },
-      stop: async () => {
-        // Closed after the fiber: nothing may outlive the Mongo handle it
-        // serves from.
-        await mongo?.close();
-        mongo = undefined;
-        presetStore = undefined;
-      },
-    };
 
     const dshComponent: Component = {
       name: "dsh",
       stage: Stage.Client,
       start: async () => {
+        // The preset persistence connection is resolved host-side (T006:
+        // presets.ts is the Mongo connection/credential module the authoring
+        // store consumes) and injected through the MONGO_URI environment
+        // variable the cordis.yml preset-authoring row reads — the
+        // GLM_BASE_URL injection pattern. Resolution failure rejects the
+        // start, so a storage misconfiguration fails the boot loud.
+        process.env.MONGO_URI = await resolveMongoUri();
+        info("preset store connection resolved", {
+          database: PRESET_DATABASE,
+          collection: PRESET_COLLECTION_NAME,
+        });
         // Fail-loud composition boot: resolves only on a fully settled
-        // plugin tree.
+        // plugin tree — including the preset-authoring row's Mongo connect
+        // and index creation, so a storage failure fails the boot here.
         ctx = await bootDsh();
       },
       stop: async () => {
         // Disposes every session (in-flight turns aborted, queued messages
-        // dropped) and then the composition's root fiber. `sessions` is
-        // created by the gRPC server start, which stops before this.
+        // dropped) and then the composition's root fiber — whose unwind
+        // closes the preset Mongo client (the authoring plugin's storage
+        // effect). `sessions` is created by the gRPC server start, which
+        // stops before this.
         await sessions?.shutdown();
         sessions = undefined;
         ctx = undefined;
@@ -143,15 +121,12 @@ async function main(): Promise<void> {
       name: "grpc",
       stage: Stage.Server,
       start: async (signal) => {
-        // The server object needs the booted composition and the connected
-        // preset store — both earlier-stage component starts.
-        if (ctx === undefined || presetStore === undefined) {
-          throw new Error("bootstrap: dsh composition / preset store not started");
+        // The server object needs the booted composition from the earlier
+        // stage start.
+        if (ctx === undefined) {
+          throw new Error("bootstrap: dsh composition not started");
         }
-        const { server, credentials, sessions: live } = buildServer({
-          ctx,
-          presetStore,
-        });
+        const { server, credentials, sessions: live } = buildServer({ ctx });
         sessions = live;
         // Binding and the graceful stop (tryShutdown racing the shutdown
         // budget → forceShutdown) are the adapter's semantics
@@ -166,7 +141,6 @@ async function main(): Promise<void> {
     };
 
     const bootstrap = new Bootstrap();
-    bootstrap.register(presetStoreComponent);
     bootstrap.register(dshComponent);
     bootstrap.register(grpcComponent);
 

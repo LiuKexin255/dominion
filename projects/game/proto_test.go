@@ -17,15 +17,20 @@ import (
 // and a control channel (FlowPart — mouse/keyboard operations + wait/warn/
 // status signals). Connect frames are direction-split (spec
 // 035-proto-contract-refine): UserFrame is the inbound transport unit,
-// TeamFrame the outbound one; each payload is message_parts OR flow_parts;
-// Message.content is MessageParts (display only). See
-// specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6 and
-// specs/035-proto-contract-refine/contracts/frame-split.md §1..§5.
+// TeamFrame the outbound one; each payload is message_parts OR flow_parts.
+// See specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6
+// and specs/035-proto-contract-refine/contracts/frame-split.md §1..§5.
 //
 // The old frame types (AgentAckFrame, AgentEchoFrame/AgentTextFrame, ...),
 // the AgentFrame envelope, and the FrameSender enum are all REMOVED: the
 // generated Go types have no accessors for them. The fact that this file
 // compiles is itself the proof those symbols no longer exist.
+//
+// The 059 team-mode session face (specs/059-agent-v2-team-mode/contracts/
+// team-api.md §1) is asserted by the Team/TeamMember/TeamMessage/ChatEvent
+// tests below: the former Agent/UpdateAgent/GetAgent/ListAgentMessages
+// definitions no longer exist, and the v1 team/prompt declarations are
+// removed from this generation unit (spec 059 US1).
 
 func TestTeamFrameMessagePartsTextRoundtrip(t *testing.T) {
 	// given: an outbound TeamFrame whose payload is a MessageParts of one
@@ -791,74 +796,6 @@ func TestFlowPartKindDiscriminatorFlattening(t *testing.T) {
 	}
 }
 
-func TestMessageContentRoundtrip(t *testing.T) {
-	// given: a Message whose content is a MessageParts (display blocks only)
-	// and whose role is the MessageRole enum (replaced the FrameSender sender
-	// field — FR-020). Message.type is reserved, so the serialized JSON must
-	// contain NO `type` field. Control FlowParts can never appear here
-	// (spec 023 FR-004).
-	given := &game.Message{
-		Name:      "sessions/test/agent/messages/msg-001",
-		MessageId: "msg-001",
-		Role:      game.MessageRole_MESSAGE_ROLE_AGENT,
-		Content: &game.MessageParts{
-			Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{Content: "Analyzing screenshot..."}}},
-				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "I will click the button."}}},
-			},
-		},
-	}
-
-	// when: marshal to protojson
-	jsonBytes, err := protojson.Marshal(given)
-	if err != nil {
-		t.Fatalf("protojson.Marshal() error: %v", err)
-	}
-
-	// then: the JSON must NOT carry a `type` field (reserved & removed)
-	jsonStr := string(jsonBytes)
-	if strings.Contains(jsonStr, `"type"`) {
-		t.Errorf("Message JSON unexpectedly contains reserved `type` field, got: %s", jsonStr)
-	}
-	// then: the JSON must NOT carry the old content oneof keys
-	for _, old := range []string{`"imageData"`, `"operation"`, `"operationResult"`} {
-		if strings.Contains(jsonStr, old) {
-			t.Errorf("Message JSON unexpectedly contains old content oneof key %s, got: %s", old, jsonStr)
-		}
-	}
-
-	// when: unmarshal from protojson
-	got := new(game.Message)
-	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
-		t.Fatalf("protojson.Unmarshal() error: %v", err)
-	}
-
-	// then: verify the MessageRole round-trips
-	if got.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
-		t.Errorf("role: got %v, want %v", got.GetRole(), game.MessageRole_MESSAGE_ROLE_AGENT)
-	}
-
-	// then: verify the MessageParts content survived with both parts in order
-	content := got.GetContent()
-	if content == nil {
-		t.Fatal("GetContent() returned nil")
-	}
-	parts := content.GetParts()
-	if len(parts) != 2 {
-		t.Fatalf("parts length: got %d, want 2", len(parts))
-	}
-	if parts[0].GetThinking() == nil {
-		t.Error("part[0] is not a ThinkingPart")
-	} else if parts[0].GetThinking().GetContent() != "Analyzing screenshot..." {
-		t.Errorf("part[0].thinking.content: got %q, want %q", parts[0].GetThinking().GetContent(), "Analyzing screenshot...")
-	}
-	if parts[1].GetText() == nil {
-		t.Error("part[1] is not a TextPart")
-	} else if parts[1].GetText().GetContent() != "I will click the button." {
-		t.Errorf("part[1].text.content: got %q, want %q", parts[1].GetText().GetContent(), "I will click the button.")
-	}
-}
-
 func TestEmptyCreateSessionRequest(t *testing.T) {
 	// when: marshal empty CreateSessionRequest
 	jsonBytes, err := protojson.Marshal(new(game.CreateSessionRequest))
@@ -869,5 +806,466 @@ func TestEmptyCreateSessionRequest(t *testing.T) {
 	// then: verify output is {}
 	if string(jsonBytes) != "{}" {
 		t.Errorf("empty CreateSessionRequest: got %s, want {}", string(jsonBytes))
+	}
+}
+
+func TestPresetRoleRoundtrip(t *testing.T) {
+	// given: Preset resources of both pools (the 059 role extension,
+	// specs/059-agent-v2-team-mode/contracts/preset-api.md §2): role is a
+	// scene vocabulary string on the wire (2026-09-10 generic-primitive
+	// ruling) and persona stays the user-editable persona carrier.
+	tests := []struct {
+		name     string
+		preset   *game.Preset
+		wantRole string
+	}{
+		{
+			name: "player pool preset",
+			preset: &game.Preset{
+				Name:    "templates/saolei/presets/p1",
+				Persona: "你是扫雷 player。",
+				Role:    "player",
+			},
+			wantRole: "player",
+		},
+		{
+			name: "planner pool preset",
+			preset: &game.Preset{
+				Name:    "templates/saolei/presets/p2",
+				Persona: "你是扫雷 planner。",
+				Role:    "planner",
+			},
+			wantRole: "planner",
+		},
+		{
+			name: "scene-agnostic role string passes through",
+			preset: &game.Preset{
+				Name: "templates/saolei/presets/p3",
+				Role: "referee",
+			},
+			wantRole: "referee",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when: marshal to protojson, then unmarshal back
+			jsonBytes, err := protojson.Marshal(tt.preset)
+			if err != nil {
+				t.Fatalf("protojson.Marshal() error: %v", err)
+			}
+			jsonStr := string(jsonBytes)
+			if !strings.Contains(jsonStr, `"role"`) {
+				t.Errorf("JSON output missing role field, got: %s", jsonStr)
+			}
+			if !strings.Contains(jsonStr, tt.wantRole) {
+				t.Errorf("JSON output missing role string %q, got: %s", tt.wantRole, jsonStr)
+			}
+
+			got := new(game.Preset)
+			if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+				t.Fatalf("protojson.Unmarshal() error: %v", err)
+			}
+			if got.GetRole() != tt.wantRole {
+				t.Errorf("role: got %q, want %q", got.GetRole(), tt.wantRole)
+			}
+			if got.GetPersona() != tt.preset.GetPersona() {
+				t.Errorf("persona: got %q, want %q", got.GetPersona(), tt.preset.GetPersona())
+			}
+		})
+	}
+}
+
+func TestCreatePresetRequestCarriesRole(t *testing.T) {
+	// given: a CreatePresetRequest whose role decides the pool the preset is
+	// created into (create 必填、不可变 — preset-api.md §2); the role rides
+	// the REQUEST as a scene vocabulary string (AIP-133 user-specified fields
+	// on the request message).
+	given := &game.CreatePresetRequest{
+		Parent:   "templates/saolei",
+		PresetId: "p1",
+		Preset:   &game.Preset{Persona: "persona"},
+		Role:     "planner",
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	if !strings.Contains(string(jsonBytes), `"planner"`) {
+		t.Errorf("JSON output missing request role string, got: %s", string(jsonBytes))
+	}
+
+	// then: unmarshal carries the role back
+	got := new(game.CreatePresetRequest)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+	if got.GetRole() != "planner" {
+		t.Errorf("role: got %q, want %q", got.GetRole(), "planner")
+	}
+	if got.GetPresetId() != "p1" {
+		t.Errorf("presetId: got %q, want %q", got.GetPresetId(), "p1")
+	}
+}
+
+func TestListPresetsRequestRoleFilter(t *testing.T) {
+	// given: a ListPresetsRequest with the optional role filter set as a
+	// scene vocabulary string
+	given := &game.ListPresetsRequest{
+		Parent:   "templates/saolei",
+		PageSize: 10,
+		Role:     "player",
+	}
+
+	// when: marshal to protojson, then unmarshal back
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	if !strings.Contains(string(jsonBytes), `"player"`) {
+		t.Errorf("JSON output missing role filter string, got: %s", string(jsonBytes))
+	}
+
+	got := new(game.ListPresetsRequest)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: the filter survives the round trip; the empty value means no
+	// filtering and is omitted by protojson
+	if got.GetRole() != "player" {
+		t.Errorf("role: got %q, want %q", got.GetRole(), "player")
+	}
+	unfiltered := protojson.Format(new(game.ListPresetsRequest))
+	if strings.Contains(unfiltered, "role") {
+		t.Errorf("empty request JSON should omit the role filter, got: %s", unfiltered)
+	}
+}
+
+func TestTeamResourceRoundtrip(t *testing.T) {
+	// given: the team singleton with its AIP-156 resource name and the
+	// members list — caller-supplied member configurations and materialized
+	// snapshots share one shape ({role, preset, model}); role is a scene
+	// vocabulary string and system_prompt is output-only
+	// (specs/059-agent-v2-team-mode/data-model.md §2)
+	given := &game.Team{
+		Name:             "templates/saolei/sessions/s1/team",
+		DesktopConnected: true,
+		CreateTime:       timestamppb.New(time.Unix(1000, 0)),
+		UpdateTime:       timestamppb.New(time.Unix(2000, 0)),
+		Members: []*game.TeamMember{
+			{
+				Name:   "templates/saolei/sessions/s1/team/members/player",
+				Role:   "player",
+				Preset: "templates/saolei/presets/p1",
+				Model:  "glm-5.3",
+			},
+			{
+				Name:         "templates/saolei/sessions/s1/team/members/planner",
+				Role:         "planner",
+				Preset:       "templates/saolei/presets/p2",
+				Model:        "glm-5.5",
+				SystemPrompt: "你是扫雷 planner。",
+			},
+		},
+	}
+
+	// when: marshal to protojson, then unmarshal back
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+	for _, want := range []string{
+		`"members"`,
+		`"role"`,
+		`"player"`,
+		`"planner"`,
+		`"preset"`,
+		`"model"`,
+		`"desktopConnected"`,
+		`"systemPrompt"`,
+	} {
+		if !strings.Contains(jsonStr, want) {
+			t.Errorf("JSON output missing %s, got: %s", want, jsonStr)
+		}
+	}
+	// The removed scene-specific scalar fields must not reappear.
+	for _, absent := range []string{"playerPreset", "plannerPreset", "playerModel", "plannerModel"} {
+		if strings.Contains(jsonStr, absent) {
+			t.Errorf("JSON output unexpectedly contains removed field %s, got: %s", absent, jsonStr)
+		}
+	}
+
+	got := new(game.Team)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: the resource name, the members list, and the runtime state
+	// survive the round trip
+	if got.GetName() != given.GetName() {
+		t.Errorf("name: got %q, want %q", got.GetName(), given.GetName())
+	}
+	if !got.GetDesktopConnected() {
+		t.Error("desktopConnected: got false, want true")
+	}
+	members := got.GetMembers()
+	if len(members) != 2 {
+		t.Fatalf("members length: got %d, want 2", len(members))
+	}
+	if members[0].GetRole() != "player" || members[0].GetPreset() != "templates/saolei/presets/p1" {
+		t.Errorf("members[0]: got role=%q preset=%q", members[0].GetRole(), members[0].GetPreset())
+	}
+	if members[1].GetRole() != "planner" || members[1].GetModel() != "glm-5.5" {
+		t.Errorf("members[1]: got role=%q model=%q", members[1].GetRole(), members[1].GetModel())
+	}
+	if members[1].GetSystemPrompt() != "你是扫雷 planner。" {
+		t.Errorf("members[1].systemPrompt: got %q, want the planner prompt", members[1].GetSystemPrompt())
+	}
+}
+
+func TestTeamMemberInputShape(t *testing.T) {
+	// given: a caller-supplied member configuration — role + preset required,
+	// model optional, name/system_prompt left to the server (the same message
+	// carries both the input and the output shape)
+	given := &game.TeamMember{
+		Role:   "player",
+		Preset: "templates/saolei/presets/p1",
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, `"role"`) || !strings.Contains(jsonStr, `"preset"`) {
+		t.Errorf("member input JSON missing role/preset, got: %s", jsonStr)
+	}
+	for _, absent := range []string{"name", "systemPrompt", "model"} {
+		if strings.Contains(jsonStr, absent) {
+			t.Errorf("member input JSON unexpectedly carries unset field %s, got: %s", absent, jsonStr)
+		}
+	}
+
+	// then: the input round-trips
+	got := new(game.TeamMember)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+	if got.GetRole() != "player" || got.GetPreset() != "templates/saolei/presets/p1" {
+		t.Errorf("member: got role=%q preset=%q", got.GetRole(), got.GetPreset())
+	}
+}
+
+func TestTeamMessageRoundtrip(t *testing.T) {
+	// given: the team-level frame payload variants — a user entry and a
+	// member entry carrying the merge anchor (data-model.md §2 TeamMessage;
+	// the same shape rides the ChatEvent team_message frame); member is a
+	// scene string with the reserved "user" value
+	tests := []struct {
+		name       string
+		message    *game.TeamMessage
+		wantMember string
+		wantText   string
+	}{
+		{
+			name: "user entry",
+			message: &game.TeamMessage{
+				Member: "user",
+				Message: &game.HistoryMessage{
+					MessageId: "m1",
+					Role:      game.Role_ROLE_USER,
+					Blocks:    []*game.ContentBlock{{Kind: &game.ContentBlock_Text{Text: &game.TextBlock{Content: "开始一局"}}}},
+				},
+				Seq: 1,
+			},
+			wantMember: "user",
+			wantText:   "开始一局",
+		},
+		{
+			name: "member entry",
+			message: &game.TeamMessage{
+				Member: "planner",
+				Message: &game.HistoryMessage{
+					MessageId: "m2",
+					Role:      game.Role_ROLE_AGENT,
+					Blocks:    []*game.ContentBlock{{Kind: &game.ContentBlock_Text{Text: &game.TextBlock{Content: "开局策略"}}}},
+				},
+				Seq: 2,
+			},
+			wantMember: "planner",
+			wantText:   "开局策略",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when: marshal to protojson, then unmarshal back
+			jsonBytes, err := protojson.Marshal(tt.message)
+			if err != nil {
+				t.Fatalf("protojson.Marshal() error: %v", err)
+			}
+			if !strings.Contains(string(jsonBytes), `"seq"`) {
+				t.Errorf("JSON output missing seq anchor, got: %s", string(jsonBytes))
+			}
+
+			got := new(game.TeamMessage)
+			if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+				t.Fatalf("protojson.Unmarshal() error: %v", err)
+			}
+
+			// then: producer, native message, and anchor survive
+			if got.GetMember() != tt.wantMember {
+				t.Errorf("member: got %q, want %q", got.GetMember(), tt.wantMember)
+			}
+			if got.GetSeq() != tt.message.GetSeq() {
+				t.Errorf("seq: got %d, want %d", got.GetSeq(), tt.message.GetSeq())
+			}
+			if text := got.GetMessage().GetBlocks()[0].GetText().GetContent(); text != tt.wantText {
+				t.Errorf("message text: got %q, want %q", text, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestMemberViewMessageRoundtrip(t *testing.T) {
+	// given: a member-view entry whose message came from another member's
+	// relay (sender="player" in the planner's view; web-views.md §4 renders it
+	// as `user: [player]…`)
+	given := &game.MemberViewMessage{
+		Message: &game.HistoryMessage{
+			MessageId: "m3",
+			Role:      game.Role_ROLE_USER,
+			Blocks:    []*game.ContentBlock{{Kind: &game.ContentBlock_Text{Text: &game.TextBlock{Content: "[player] 已点击 (3,4)"}}}},
+		},
+		Sender: "player",
+	}
+
+	// when: marshal to protojson, then unmarshal back
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	if !strings.Contains(string(jsonBytes), `"sender"`) {
+		t.Errorf("JSON output missing sender field, got: %s", string(jsonBytes))
+	}
+
+	got := new(game.MemberViewMessage)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: the sender annotation and the relayed body survive
+	if got.GetSender() != "player" {
+		t.Errorf("sender: got %q, want %q", got.GetSender(), "player")
+	}
+	if text := got.GetMessage().GetBlocks()[0].GetText().GetContent(); text != "[player] 已点击 (3,4)" {
+		t.Errorf("message text: got %q, want the relayed body", text)
+	}
+}
+
+func TestChatEventTeamFrames(t *testing.T) {
+	// given: the two frame classes of the team stream (contracts/team-api.md
+	// §3.2) — a member event frame carrying the outer member label (a scene
+	// role string), and a team-level team_message frame carrying the merged
+	// entry
+	memberFrame := &game.ChatEvent{
+		Session: "templates/saolei/sessions/s1",
+		TurnId:  "turn-1",
+		Member:  "player",
+		Payload: &game.ChatEvent_Delta{Delta: &game.BlockDeltaEvent{Index: 0, Text: "hi"}},
+	}
+	teamFrame := &game.ChatEvent{
+		Session: "templates/saolei/sessions/s1",
+		Payload: &game.ChatEvent_TeamMessage{TeamMessage: &game.TeamMessage{
+			Member: "user",
+			Message: &game.HistoryMessage{
+				MessageId: "m1",
+				Role:      game.Role_ROLE_USER,
+				Blocks:    []*game.ContentBlock{{Kind: &game.ContentBlock_Text{Text: &game.TextBlock{Content: "开始"}}}},
+			},
+			Seq: 1,
+		}},
+	}
+
+	// when/then: the member frame renders the member label and the delta arm
+	memberJSON, err := protojson.Marshal(memberFrame)
+	if err != nil {
+		t.Fatalf("protojson.Marshal(member frame) error: %v", err)
+	}
+	if !strings.Contains(string(memberJSON), `"player"`) || !strings.Contains(string(memberJSON), `"delta"`) {
+		t.Errorf("member frame JSON missing member/delta, got: %s", string(memberJSON))
+	}
+
+	// when/then: the team frame renders the teamMessage arm and no outer
+	// member label (team-level frames do not set the outer member field)
+	teamJSON, err := protojson.Marshal(teamFrame)
+	if err != nil {
+		t.Fatalf("protojson.Marshal(team frame) error: %v", err)
+	}
+	if !strings.Contains(string(teamJSON), `"teamMessage"`) {
+		t.Errorf("team frame JSON missing teamMessage arm, got: %s", string(teamJSON))
+	}
+
+	// then: both frames round-trip back to their payload arms
+	var gotMember game.ChatEvent
+	if err := protojson.Unmarshal(memberJSON, &gotMember); err != nil {
+		t.Fatalf("protojson.Unmarshal(member frame) error: %v", err)
+	}
+	if gotMember.GetMember() != "player" || gotMember.GetDelta() == nil {
+		t.Errorf("member frame round trip: member=%q delta=%v", gotMember.GetMember(), gotMember.GetDelta())
+	}
+	var gotTeam game.ChatEvent
+	if err := protojson.Unmarshal(teamJSON, &gotTeam); err != nil {
+		t.Fatalf("protojson.Unmarshal(team frame) error: %v", err)
+	}
+	if gotTeam.GetMember() != "" {
+		t.Errorf("team frame outer member: got %q, want unset (team-level frame)", gotTeam.GetMember())
+	}
+	if gotTeam.GetTeamMessage().GetSeq() != 1 {
+		t.Errorf("team frame round trip: seq=%d, want 1", gotTeam.GetTeamMessage().GetSeq())
+	}
+}
+
+func TestUpdateTeamRequestCarriesMembers(t *testing.T) {
+	// given: an UpdateTeamRequest whose team body carries the members list
+	// (the identity rides the URL path; AIP-134)
+	given := &game.UpdateTeamRequest{
+		Team: &game.Team{
+			Name: "templates/saolei/sessions/s1/team",
+			Members: []*game.TeamMember{
+				{Role: "player", Preset: "templates/saolei/presets/p1"},
+				{Role: "planner", Preset: "templates/saolei/presets/p2"},
+			},
+		},
+		AllowMissing: true,
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+	for _, want := range []string{`"team"`, `"members"`, `"player"`, `"planner"`, `"allowMissing"`} {
+		if !strings.Contains(jsonStr, want) {
+			t.Errorf("JSON output missing %s, got: %s", want, jsonStr)
+		}
+	}
+
+	// then: the request round-trips
+	got := new(game.UpdateTeamRequest)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+	if members := got.GetTeam().GetMembers(); len(members) != 2 || members[1].GetPreset() != "templates/saolei/presets/p2" {
+		t.Errorf("team.members: got %+v, want the planner preset", members)
+	}
+	if !got.GetAllowMissing() {
+		t.Error("allowMissing: got false, want true")
 	}
 }

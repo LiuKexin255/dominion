@@ -6,8 +6,9 @@
  * (FR-013), resolved per call through the calling agent's scope.
  *
  * `saoleiGame` is an agent-scoped service (registered on `agent.ctx` by the
- * saolei-loop factory when an agent materializes; at plugin-load time no
- * agent exists), so it CANNOT be statically injected — the tool exec bodies
+ * host's agent-creation setup hook when an agent materializes — the
+ * saolei-loop plugin's createAgentGameRuntime; at plugin-load time no agent
+ * exists), so it CANNOT be statically injected — the tool exec bodies
  * resolve it lazily via `exec.agent.ctx` (dsh-tools `ToolExecution.agent`
  * carries the calling agent; research.md D7). `exec.agent` absent, or no
  * `saoleiGame` in the caller's scope (non-loop-driven call, or the service
@@ -80,6 +81,12 @@ function normalizeOperateArgs(args: OperateToolArgs): OperateInput | { rejection
  * `exec.agent` (non-loop-driven dispatch) or an out-of-scope `saoleiGame`
  * (the owning agent scope unloaded) throws — the pipeline turns the throw
  * into a model-visible error result, never a fabricated success.
+ *
+ * Resolution reads the `saoleiGame` context PROPERTY (the proxy's
+ * fiber-walking lookup), not `ctx.get` — the builder registers the runtime
+ * under a per-agent isolation label (`agent.ctx.isolate("saoleiGame")`,
+ * createAgentGameRuntime), which the property walk resolves from the shared
+ * agent fiber while `get`'s label-keyed store lookup would not.
  */
 function resolveRuntime(exec: ToolRunContext): SaoleiGame {
   if (exec.agent === undefined) {
@@ -87,10 +94,10 @@ function resolveRuntime(exec: ToolRunContext): SaoleiGame {
       "saolei tools require a loop-driven agent caller: no agent on the tool execution",
     );
   }
-  const runtime = exec.agent.ctx.get("saoleiGame");
+  const runtime = exec.agent.ctx.saoleiGame;
   if (runtime === undefined) {
     throw new Error(
-      `saolei tools require the agent-scoped "saoleiGame" service; agent "${exec.agent.id}" has none (the saolei-loop factory registers it on agent.ctx at materialization)`,
+      `saolei tools require the agent-scoped "saoleiGame" service; agent "${exec.agent.id}" has none (the materialization setup registers it on agent.ctx via createAgentGameRuntime)`,
     );
   }
   return runtime;
@@ -98,7 +105,10 @@ function resolveRuntime(exec: ToolRunContext): SaoleiGame {
 
 /** Run one runtime call and map its outcome to the canonical output. Error
  * outcomes throw (model-visible failure); text outcomes become the rendered
- * `{result}` value. */
+ * `{result}` value. A successful outcome carrying the runtime's terminal-board
+ * marker (`concludesTurn: true`) first concludes the calling turn through the
+ * dsh-tools seam — the result still commits normally afterwards
+ * (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md §2). */
 async function executeOutcome(
   exec: ToolRunContext,
   run: (runtime: SaoleiGame) => ToolOutcome | Promise<ToolOutcome>,
@@ -106,6 +116,9 @@ async function executeOutcome(
   const outcome = await run(resolveRuntime(exec));
   if (outcome.isError) {
     throw new Error(outcome.error.message);
+  }
+  if (outcome.concludesTurn === true) {
+    exec.concludeTurn();
   }
   return { result: outcome.text };
 }
@@ -172,15 +185,14 @@ export function apply(ctx: Context): void {
         "dispatch: a no-op rejection is SKIPPED and execution continues; a " +
         "structural rejection (out-of-bounds, no active game) or a game " +
         "end STOPS the batch — earlier successful operations take effect.",
-      // v1 (projects/game/agent/src/mcp/saolei/saolei-mcp.ts operateInputSchema)
-      // bounded x/y with z.number().int().min(0); the dsh-tools 0.1.1-rc.2
-      // enforced schema subset has no numeric-bound keyword (CONSTRAINT_KEYWORDS
-      // = type/oneOf/properties/required/additionalProperties/items/enum/const —
-      // a `minimum` node is REJECTED at registration, not ignored), and the
-      // v1 contract deliberately leaves the upper bound schema-free (board
-      // dimensions are only known after recognition). The negative-coordinate
-      // rejection therefore happens at the runtime rule table: validateMove
-      // answers out_of_bounds before any dispatch.
+      // The operation coordinates are deliberately schema-unbounded: the
+      // dsh-tools 0.1.1-rc.2 enforced schema subset has no numeric-bound
+      // keyword (CONSTRAINT_KEYWORDS = type/oneOf/properties/required/
+      // additionalProperties/items/enum/const — a `minimum` node is REJECTED
+      // at registration, not ignored), and the board dimensions are only
+      // known after recognition anyway. The negative-coordinate rejection
+      // therefore happens at the runtime rule table: validateMove answers
+      // out_of_bounds before any dispatch.
       parameters: {
         type: {
           type: "string",
@@ -220,18 +232,22 @@ export function apply(ctx: Context): void {
     }),
   );
 
+  // Remain semantics wording (primary meaning: mines still unmarked per
+  // number cell; explicit flag-count exclusion) follows the terminal text
+  // contract in specs/064-memory-split-fold-remain/contracts/saolei-plugins.md
+  // §2.
   ctx.tools.register(
     defineTool({
       name: "saolei_remain",
       description:
         "Read-only deduction view. Takes NO arguments and dispatches " +
-        "NOTHING to the desktop. Reads the latest recognized board and " +
-        "returns, for every cell, the remaining unmarked mine count: for " +
-        "a revealed number cell (1–8), the value is `number − adjacent " +
-        "flags` (may be 0 or NEGATIVE when over-flagged); for every other " +
-        "cell (0, *, F, X, M, ?), the value is `-`. The grid carries the " +
-        "same coordinate ruler as the board grid. Rejects with " +
-        "`no_active_game` only when no board is recognized.",
+        "NOTHING to the desktop. For every revealed number cell (1–8) it " +
+        "returns the count of mines still unmarked around it (= cell " +
+        "number − adjacent flags; may be 0 or NEGATIVE when over-flagged). " +
+        "It is NOT the count of flags. Every other cell (0, *, F, X, M, ?) " +
+        "shows `-`. Columns are x and rows are y, the same ruler as the " +
+        "board grid. Rejects with `no_active_game` only when no board is " +
+        "recognized; a terminal board is not blocked (pure query).",
       parameters: {},
       output: resultOutput(),
       execute: (_args, exec) => executeOutcome(exec, (runtime) => runtime.remain()),
@@ -246,11 +262,17 @@ export function apply(ctx: Context): void {
 }
 
 /**
- * The saolei tool-guidance section, migrated from v1
- * projects/game/agent/src/skill/saolei/SKILL.md (FR-014: the plugin owns its
- * tools' cross-call guidance; the skill file form is not kept) and adapted
- * to the plugin tool context (no MCP wording, no raw-mouse-tool reference —
- * the composition mounts no generic mouse tools).
+ * The saolei tool-guidance section (FR-014: the plugin owns its tools'
+ * cross-call guidance as a prompt section — no separate skill-file form)
+ * adapted to the plugin tool context (no MCP wording, no raw-mouse-tool
+ * reference — the composition mounts no generic mouse tools). Tool usage
+ * ONLY: symbol/coordinate reading, result body shape, call forms, and
+ * validation semantics; the game rules live in the saolei-loop plugin's
+ * `saolei:game` section
+ * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2). The
+ * `saolei_remain` wording in the tool description and this guidance entry
+ * follows specs/064-memory-split-fold-remain/contracts/saolei-plugins.md
+ * §2/§4.
  */
 export const SAOLEI_GUIDANCE = `## saolei (Minesweeper tools)
 
@@ -263,8 +285,8 @@ Play the desktop Minesweeper game ONLY through the three saolei tools. The agent
 | \`*\` | Unrevealed (initial) cell |
 | \`0\`–\`8\` | Revealed number |
 | \`F\` | Flag |
-| \`X\` | The triggered mine (you stepped on it — game lost) |
-| \`M\` | A mine revealed at end-game (all mines shown on a loss) |
+| \`X\` | Triggered mine |
+| \`M\` | Mine shown on the end-game board |
 | \`?\` | Recognition uncertain (treat it as possibly unrevealed) |
 
 ### Coordinate ruler
@@ -287,19 +309,19 @@ row2    *    *    1    0    0    0    0    1    *
 Every result body has three layers, in this fixed order:
 
 1. **Outcome line** — \`new game started\` (init); \`saolei_operate → executed N ops\` (with \`, skipped S no-op ops\` when any were skipped); \`saolei_operate → stopped at type(x,y) (reason)\` (mid-batch stop); \`rejected: <reason>\`; \`unable to recognize board\`; \`saolei_remain → computed\`.
-2. **Game-status line** — \`game status: won|lost|playing\`, derived from the recognized board (won = every cell revealed/flagged AND the mine counter reads 000; lost = an X/M is visible). Read it BEFORE parsing the board. It is omitted only when there is no recognized board (\`no_active_game\`, \`unable to recognize board\`) or on an illegal-argument rejection.
+2. **Game-status line** — \`game status: won|lost|playing\`, the recognized board's state. Read it BEFORE parsing the board. It is omitted only when there is no recognized board (\`no_active_game\`, \`unable to recognize board\`) or on an illegal-argument rejection.
 3. **The text board** — the \`board size <w>*<h>\` header and the symbol grid. The \`valid range: x 0..<w-1>, y 0..<h-1>\` line appears on \`rejected: <reason>\` bodies only.
 
-A win or loss is TERMINAL: any further cell operation stops before dispatch with \`game_won\`/\`game_over\`. Call \`saolei_init\` to start a new game.
+A won/lost board is TERMINAL for cell operations: any further cell operation stops before dispatch with \`game_won\`/\`game_over\`. Call \`saolei_init\` to start a new game.
 
 ### Tools
 
 - \`saolei_init()\` — no arguments. Dispatches the F2 new-game keypress, recognizes the initial board, returns it as TEXT. Call it FIRST, and again whenever the game should restart (re-calling re-dispatches F2 and re-seeds the board).
 - \`saolei_operate(type, x, y)\` / \`saolei_operate(operations: [{type, x, y}, ...])\` — execute one or more cell operations in order and return ONE result with the final board. The two forms are mutually exclusive and semantically equivalent (single = length-1 batch); all three of type/x/y must be present together. Operation types:
-  - \`click\` — left-click to reveal; blank cells cascade per Minesweeper rules.
-  - \`flag\` — right-click to toggle a flag (a marker for your reasoning only).
-  - \`chord\` — ONE atomic simultaneous left+right press on a revealed number 1–8; reveals its unflagged neighbors when the adjacent flag count satisfies the number. NEVER emulate a chord with two separate click ops.
-- \`saolei_remain()\` — read-only. No dispatch, no board change. For every revealed number cell it returns \`number − adjacent flags\` (0 = fully satisfied; NEGATIVE = over-flagged, correct the flag); other cells show \`-\`. Not blocked by a terminal board.
+  - \`click\` — a left-click on one cell.
+  - \`flag\` — a right-click on one cell (places/removes the flag).
+  - \`chord\` — ONE atomic simultaneous left+right press on a revealed number 1–8. NEVER emulate a chord with two separate click ops.
+- \`saolei_remain()\` — read-only. No dispatch, no board change. For every revealed number cell it returns the count of mines still unmarked around it (\`cell number − adjacent flags\`; may be 0 or NEGATIVE). It is NOT the count of flags. Other cells show \`-\`. Not blocked by a terminal board.
 
 ### Validation triage (illegal moves are handled before dispatch)
 
@@ -307,7 +329,7 @@ Every op is validated against the recognized board; the desktop never receives a
 
 - **Harmless no-op → SKIPPED, batch continues**: \`cell_already_revealed\` (click on 0–8), \`cell_is_flagged\` (click on F), \`cannot_flag_revealed\` (flag on 0–8), \`chord_requires_number\` (chord on non-number), \`chord_no_unrevealed_neighbor\` (chord with nothing left to reveal).
 - **Structural / terminal → batch STOPS** (\`stopped at type(x,y) (reason)\`; earlier successful ops take effect): \`out_of_bounds\`, \`no_active_game\`, \`game_over\`, \`game_won\`.
-- A rejection is a NORMAL result, not an error: read the reason and the board, then pick a legal cell. A chord with a mismatched adjacent-flag count is still LEGAL (it may simply reveal nothing). A \`?\` cell is never rejected for being uncertain.
+- A rejection is a NORMAL result, not an error: read the reason and the board, then pick a legal cell. A chord that reveals nothing is still LEGAL (not a rejection). A \`?\` cell is never rejected for being uncertain.
 - Illegal argument combinations are refused verbatim: both forms — \`provide EITHER type/x/y (single operation) OR operations (batch), not both.\`; neither — \`provide EITHER type/x/y (single operation) OR an operations array (batch).\`; partial single form — \`the single-operation form requires ALL of type, x and y together.\`
 - An empty \`operations\` list is a no-op returning the current board.
 - If recognition fails (\`unable to recognize board\`), the state is invalidated; subsequent cell ops answer \`no_active_game\` until you call \`saolei_init\` again.

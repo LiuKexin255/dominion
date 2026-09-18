@@ -1,15 +1,24 @@
 # agent_v2_saolei.yaml — the user-keyword trigger of the deterministic
 # agent_v2 game chain (specs/051-agent-v2-dsh-migration/tasks.md T021,
 # research.md D16): the game keyword yields a saolei_init call, whose result
-# the agent_v2_saolei_tools.yaml configs chain through init → operate →
-# terminal summary. responses_only keeps this template out of every
-# chat-completions fallback pool.
+# the agent_v2_saolei_tools.yaml configs chain through init → operate; a
+# terminal result concludes the turn at the tool block
+# (specs/062-team-game-end-handoff/spec.md FR-001/FR-002), so the scripted
+# terminal summaries are never requested. responses_only keeps this template
+# out of every chat-completions fallback pool.
+# system_keywords anchors the preset persona row's identity opening
+# (「你是扫雷 player」— the跨-phase stable contract, specs/059-agent-v2-
+# team-mode/tasks.md T008) so the game chain only fires for an agent whose
+# system prompt actually carries the materialized persona.
+
 messages:
   # agent-v2-saolei-start fires the game: the game keyword yields a
   # saolei_init call.
   - name: agent-v2-saolei-start
     keywords:
       - 开始一局扫雷
+    system_keywords:
+      - 你是扫雷 player
     tool_call:
       name: saolei_init
       arguments: {}
@@ -20,6 +29,8 @@ messages:
   - name: agent-v2-saolei-progressive
     keywords:
       - progressive minesweeper
+    system_keywords:
+      - 你是扫雷 player
     tool_call:
       name: saolei_init
       arguments: {}
@@ -30,6 +41,8 @@ messages:
   - name: agent-v2-saolei-nodesktop
     keywords:
       - minesweeper without desktop
+    system_keywords:
+      - 你是扫雷 player
     tool_call:
       name: saolei_init
       arguments: {}

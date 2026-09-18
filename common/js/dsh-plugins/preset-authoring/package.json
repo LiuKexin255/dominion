@@ -1,0 +1,28 @@
+{
+    "name": "@dominion/dsh-preset-authoring",
+    "private": true,
+    "type": "module",
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "default": "./src/index.js"
+        }
+    },
+    "dependencies": {
+        "@deepseek-ai/dsh-agent-presets": "catalog:",
+        "@deepseek-ai/schemastery": "catalog:",
+        "@dominion/common-js-resolver": "workspace:*",
+        "js-yaml": "catalog:",
+        "mongodb": "catalog:"
+    },
+    "peerDependencies": {
+        "@deepseek-ai/cordis": "catalog:"
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}

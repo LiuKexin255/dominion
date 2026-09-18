@@ -3,16 +3,30 @@ syntax = "proto3";
 package experimental.dsh.demo;
 
 import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "dominion/experimental/dsh/demo";
 
-// Chat service serves the dsh chat agent demo.
+// Chat service serves the dsh chat agent demo conversation face.
 // Prefix Path: /experimental/dsh-demo
 service Chat {
   // Sends one user message to a conversation and returns the assistant reply.
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse) {
     option (google.api.http) = {
       post: "/experimental/dsh-demo/{name=conversations/*}:sendMessage"
+      body: "*"
+    };
+  }
+
+  // Creates a conversation explicitly bound to a store preset (specs/
+  // 060-agent-v2-team-optimize/contracts/preset-derivation.md §2/§3; FR-002/
+  // R4 in the 058 feature's spec.md). Same id + same preset is idempotent;
+  // same id + a different preset rebuilds; no lazy creation on SendMessage.
+  rpc CreateConversation(CreateConversationRequest) returns (Conversation) {
+    option (google.api.http) = {
+      post: "/experimental/dsh-demo/conversations"
       body: "*"
     };
   }
@@ -28,4 +42,135 @@ message SendMessageResponse {
   string name = 1;
   // The assistant reply for this turn.
   string reply = 2;
+}
+
+// CreateConversationRequest creates one conversation (AIP-133:
+// https://google.aip.dev/133; caller-specified id).
+message CreateConversationRequest {
+  // The caller-specified conversation id.
+  string conversation_id = 1;
+  // The store preset id the conversation binds. Required under the 060
+  // derivation semantics (specs/060-agent-v2-team-optimize/contracts/
+  // preset-derivation.md §2/§3): an empty value is rejected
+  // INVALID_ARGUMENT — template ids are derivation sources and are not
+  // directly composable.
+  string preset = 2;
+}
+
+// Conversation is the per-session resource created by Chat.CreateConversation.
+message Conversation {
+  // The conversation resource name. Format: conversations/{id}
+  string name = 1;
+  // The RESOLVED preset id this conversation is bound to.
+  string preset = 2;
+  google.protobuf.Timestamp create_time = 3;
+}
+
+// PresetService is the stateless preset configuration face (store-only
+// authored presets; specs/060-agent-v2-team-optimize/contracts/
+// preset-derivation.md §1/§2).
+// Prefix Path: /experimental/dsh-demo
+service PresetService {
+  // Creates an authored preset record over a template (store-only; AIP-133:
+  // https://google.aip.dev/133). Duplicate id (or a deployment template id)
+  // → ALREADY_EXISTS; unknown or broken template / malformed id →
+  // INVALID_ARGUMENT.
+  rpc CreatePreset(CreatePresetRequest) returns (Preset) {
+    option (google.api.http) = {
+      post: "/experimental/dsh-demo/presets"
+      body: "*"
+    };
+  }
+
+  // Reads one authored preset (AIP-131: https://google.aip.dev/131).
+  rpc GetPreset(GetPresetRequest) returns (Preset) {
+    option (google.api.http) = {
+      get: "/experimental/dsh-demo/{name=presets/*}"
+    };
+  }
+
+  // Lists authored presets; templates are deployment data, not resources
+  // (AIP-132: https://google.aip.dev/132; demo scale: no pagination, R5).
+  rpc ListPresets(ListPresetsRequest) returns (ListPresetsResponse) {
+    option (google.api.http) = {
+      get: "/experimental/dsh-demo/presets"
+    };
+  }
+
+  // Updates an authored preset's dynamic fields (persona / display_name) via
+  // update_mask (AIP-134: https://google.aip.dev/134; empty mask →
+  // INVALID_ARGUMENT).
+  rpc UpdatePreset(UpdatePresetRequest) returns (Preset) {
+    option (google.api.http) = {
+      patch: "/experimental/dsh-demo/{name=presets/*}"
+      body: "*"
+    };
+  }
+
+  // Deletes an authored preset; joined sessions keep their derived
+  // composition (AIP-135: https://google.aip.dev/135). Templates are refused
+  // → FAILED_PRECONDITION.
+  rpc DeletePreset(DeletePresetRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/experimental/dsh-demo/{name=presets/*}"
+    };
+  }
+}
+
+// Preset is an authored preset resource (specs/058-dsh-preset-roster-demo/
+// contracts/chat-api.md §2).
+message Preset {
+  // The preset resource name. Format: presets/{id}
+  string name = 1;
+  // The template id the composition is derived over.
+  string template = 2;
+  // Persona prose carried into the derived composition's persona row.
+  string persona = 3;
+  // Display name; absent falls back to the id.
+  string display_name = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+}
+
+// CreatePresetRequest creates an authored preset (caller-specified id).
+message CreatePresetRequest {
+  // The preset id; must match [a-z0-9][a-z0-9-]*.
+  string preset_id = 1;
+  // The source template id; must be resolvable by the roster.
+  string template = 2;
+  // Required non-empty persona prose.
+  string persona = 3;
+  // Optional display name; absent falls back to the id.
+  string display_name = 4;
+}
+
+// GetPresetRequest reads one preset (AIP-131).
+message GetPresetRequest {
+  // The preset resource name. Format: presets/{id}
+  string name = 1;
+}
+
+// ListPresetsRequest lists authored presets (AIP-132; no pagination at demo
+// scale).
+message ListPresetsRequest {}
+
+// ListPresetsResponse carries every authored preset.
+message ListPresetsResponse {
+  repeated Preset presets = 1;
+}
+
+// UpdatePresetRequest updates the mutable dynamic fields (AIP-134;
+// update_mask supports persona and display_name).
+message UpdatePresetRequest {
+  // The preset resource name, surfaced in the HTTP path via {name=...}.
+  string name = 1;
+  google.protobuf.FieldMask update_mask = 2;
+  string persona = 3;
+  string display_name = 4;
+}
+
+// DeletePresetRequest deletes one preset (AIP-135).
+message DeletePresetRequest {
+  // The preset resource name. Format: presets/{id}
+  string name = 1;
 }

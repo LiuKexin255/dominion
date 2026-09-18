@@ -1,0 +1,24 @@
+# opencode_go.yaml — the chat-wire deterministic driver of the SC-003
+# opencode-go session (specs/063-llm-reliability-opencode-go/contracts/
+# fake-llm-fault-injection.md §5). The first user Send (「请开始扫雷」) yields
+# the planner opening strategy on the /v1/chat/completions wire — the wire the
+# @dominion/dsh-llm-opencode-go adapter speaks
+# (specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md §1).
+# The opening text carries the player-side anchors (「以下开局计划」/
+# 「开始本局游戏」). On this wire the structurally driven player's continuation
+# receives that text verbatim and the chat matcher evaluates keywords only, so
+# team-planner-opening (the lowest Name among the matching team fixtures)
+# answers with the same strategy text and dispatches nothing — the game opens
+# through the explicit `start saolei` Send, whose tool chain (saolei_init →
+# saolei_operate → final text) lives in the chat-scope fixtures
+# saolei.yaml / saolei_tools.yaml.
+#
+# Match precedence: the trigger contains 「扫雷」, which the team_planner.yaml
+# entries also match on this wire (the chat matcher evaluates keywords only),
+# but the lowest-Name tie-break hands the request to
+# opencode-go-planner-opening ('o' < 't').
+messages:
+  - name: opencode-go-planner-opening
+    keywords:
+      - 请开始扫雷
+    text: "开局计划：优先从棋盘中心区域开始，逐步向边缘推进；遇到数字边界时先标记周边可疑格。@player 请按以下开局计划开始本局游戏。"

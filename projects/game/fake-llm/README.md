@@ -3,9 +3,10 @@
 An OpenAI-compatible mock LLM service (`kind: stateless`, see
 `projects/game/fake-llm/service.yaml`) used as **test infrastructure** by the
 game agent's large tests. It serves `POST /v1/chat/completions` (OpenAI Chat
-Completions wire shape, streaming via SSE) from template responses embedded
-into the binary, so tests can drive the real agent pipeline against
-deterministic, scriptable model behavior without a live LLM endpoint. See
+Completions wire shape) and `POST /v1/responses` (OpenAI Responses wire
+shape), both streaming via SSE, from template responses embedded into the
+binary, so tests can drive the real agent pipeline against deterministic,
+scriptable model behavior without a live LLM endpoint. See
 `specs/046-fake-llm-think-chunking/plan.md` (Summary) and
 `specs/046-fake-llm-think-chunking/spec.md` for the feature definition, and
 `projects/game/testplan/README.md` for how the agent's large tests consume it.
@@ -27,7 +28,15 @@ deterministic, scriptable model behavior without a live LLM endpoint. See
   simulates a **think interruption**.
 - **Stall simulation**: `stall:true` (legacy shorthand) or `stall_after:K`
   permanently blocks the stream after a chosen reasoning chunk until the
-  caller cancels.
+  caller cancels — on both `/v1/chat/completions` and `/v1/responses`.
+- **Stateful fault injection**: a template's optional `transient` block
+  (`times`/`http_status`/`retry_after`/`error_message`/`empty`/`failure`)
+  answers the first N matching requests with the declared fault and then
+  resumes the template's normal content — an injected HTTP status with a
+  `Retry-After` header, a zero-content completion, or an in-band failure;
+  the per-template counter is mutex-guarded and process-local
+  (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+  §1).
 - **Embedded testdata**: templates live under
   `projects/game/fake-llm/service/testdata/`, baked into the binary via
   `//go:embed`, and load as single-message, multi-message (`messages:`), or
@@ -42,9 +51,20 @@ is the **author-facing contract**:
   template fields, file shapes, and validation rules.
 - `specs/046-fake-llm-think-chunking/contracts/streaming-sequence.md` — the SSE
   chunk sequence emitted for chunked/stall templates.
+- `specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md`
+  — the incremental `transient` block (stateful per-template injection), the
+  chat-wire HTTP-status injection, and the Responses stall projection on top
+  of that 046 baseline.
 
 Shipped templates and a runnable validation guide:
 `specs/046-fake-llm-think-chunking/quickstart.md`.
+
+The stateful-injection fixtures backing the 063 large tests are
+`service/testdata/agent_v2_transient.yaml` (Responses `transient`/`stall`
+triggers) and `service/testdata/opencode_go.yaml` (the chat-wire
+`specs/063-llm-reliability-opencode-go/spec.md` SC-003 planner-opening
+driver); their triggers are pinned as the `agentV2Trigger*` constants in
+`projects/game/testplan/agent_v2_helpers_test.go`.
 
 ## Large-test exemption (Constitution VI)
 

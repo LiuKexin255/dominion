@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "nodenext",
+    "rootDir": "src",
+    "strict": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@dominion/dsh-memory-service": ["../memory-service/src/index.js"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

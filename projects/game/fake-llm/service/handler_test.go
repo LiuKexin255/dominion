@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -348,7 +349,9 @@ func TestServeHTTP_NoMatchRandom(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
 
 	// then: 200, application/json, and a message whose text is one of
-	// the configured responses (the random fallback).
+	// the configured responses (the random fallback pool of the embedded
+	// store: the chat.yaml entries plus the opencode-go planner opening, the
+	// only plain keyword templates).
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -361,6 +364,7 @@ func TestServeHTTP_NoMatchRandom(t *testing.T) {
 		"Goodbye! Have a great day!":       true,
 		"Hello! How can I help you today?": true,
 		"Sure, let's chat!":                true,
+		"开局计划：优先从棋盘中心区域开始，逐步向边缘推进；遇到数字边界时先标记周边可疑格。@player 请按以下开局计划开始本局游戏。": true,
 	}
 	if !validTexts[got] {
 		t.Fatalf("random fallback content = %q, want one of the configured texts", got)
@@ -629,7 +633,7 @@ func (lb *lockedBuffer) String() string {
 // finish_reason "stop".
 func TestServeHTTP_ToolResultTextResponse(t *testing.T) {
 	// given: the real embedded store (which includes the tool-config
-	// files operation_tools.yaml / saolei_tools.yaml / planner_tools.yaml)
+	// files operation_tools.yaml / saolei_tools.yaml)
 	// and a tool-role request for the "mouse_move" tool. Feature 015
 	// split the single mouse tool into mouse_move / mouse_click.
 	store, err := NewMessageStore()
@@ -1893,5 +1897,217 @@ func TestTextStreamChunks_NonChunked_Unchanged(t *testing.T) {
 		if i < len(got)-1 && f.Choices[0].Delta.Content != "" {
 			t.Fatalf("unexpected content delta at index %d on the reasoning-only path", i)
 		}
+	}
+}
+
+// chatTransientStore builds a one-template chat store whose template carries
+// the given transient YAML lines and a normal think/text answer that serves
+// once the injection budget is exhausted.
+func chatTransientStore(t *testing.T, transient []string) *MessageStore {
+	t.Helper()
+	lines := []string{
+		"name: chat-transient",
+		"keywords:",
+		"  - chat-transient",
+		"transient:",
+	}
+	lines = append(lines, transient...)
+	lines = append(lines,
+		"reasoning: thinking",
+		"text: recovered",
+		"",
+	)
+	return newStoreFromMap(t, fstest.MapFS{
+		"testdata/chat_transient.yaml": &fstest.MapFile{Data: []byte(strings.Join(lines, "\n"))},
+	})
+}
+
+// chatTransientBody builds the one-message chat request that selects the
+// chatTransientStore template.
+func chatTransientBody(stream bool) string {
+	return fmt.Sprintf(`{"model":"m","stream":%t,"messages":[{"role":"user","content":"chat-transient"}]}`, stream)
+}
+
+// TestServeHTTP_TransientHTTPStatus verifies the chat-wire transient
+// http_status injection (specs/063-llm-reliability-opencode-go/contracts/
+// fake-llm-fault-injection.md §1/§3): a selecting request receives the
+// declared status, the optional Retry-After header and the injected error
+// body — the same projection as the Responses wire — and a bounded budget
+// falls back to the normal answer once exhausted.
+func TestServeHTTP_TransientHTTPStatus(t *testing.T) {
+	tests := []struct {
+		name           string
+		transient      []string
+		stream         bool
+		wantStatus     int
+		wantRetryAfter string
+		wantMessage    string
+		wantSecond     int
+	}{
+		{
+			name:           "times one injects the first request only",
+			transient:      []string{"  times: 1", "  http_status: 503", "  retry_after: 1"},
+			stream:         true,
+			wantStatus:     http.StatusServiceUnavailable,
+			wantRetryAfter: "1",
+			wantMessage:    "injected http failure",
+			wantSecond:     http.StatusOK,
+		},
+		{
+			name:           "retry_after absent omits the header",
+			transient:      []string{"  times: 1", "  http_status: 500"},
+			stream:         true,
+			wantStatus:     http.StatusInternalServerError,
+			wantRetryAfter: "",
+			wantMessage:    "injected http failure",
+			wantSecond:     http.StatusOK,
+		},
+		{
+			name:           "error_message drives the injected body",
+			transient:      []string{"  http_status: 429", "  error_message: insufficient quota"},
+			stream:         true,
+			wantStatus:     http.StatusTooManyRequests,
+			wantRetryAfter: "",
+			wantMessage:    "insufficient quota",
+			wantSecond:     http.StatusTooManyRequests,
+		},
+		{
+			name:           "stream false requests are rejected identically",
+			transient:      []string{"  times: 1", "  http_status: 401"},
+			stream:         false,
+			wantStatus:     http.StatusUnauthorized,
+			wantRetryAfter: "",
+			wantMessage:    "injected http failure",
+			wantSecond:     http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			handler := NewChatHandler(chatTransientStore(t, tt.transient), rand.New(rand.NewPCG(1, 0)))
+			body := chatTransientBody(tt.stream)
+
+			// when
+			first := httptest.NewRecorder()
+			handler.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+			// then
+			if first.Code != tt.wantStatus {
+				t.Fatalf("first status = %d, want %d", first.Code, tt.wantStatus)
+			}
+			if got := first.Header().Get("Retry-After"); got != tt.wantRetryAfter {
+				t.Errorf("Retry-After = %q, want %q", got, tt.wantRetryAfter)
+			}
+			var injected injectedErrorBody
+			if err := json.Unmarshal(first.Body.Bytes(), &injected); err != nil {
+				t.Fatalf("decode injected body: %v\nbody: %s", err, first.Body.String())
+			}
+			if injected.Error.Message != tt.wantMessage || injected.Error.Type != "injected" {
+				t.Errorf("injected error = %+v, want message %q and type \"injected\"", injected.Error, tt.wantMessage)
+			}
+
+			// and: the budget handling decides the second request's status.
+			second := httptest.NewRecorder()
+			handler.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+			if second.Code != tt.wantSecond {
+				t.Fatalf("second status = %d, want %d (budget handling)", second.Code, tt.wantSecond)
+			}
+		})
+	}
+}
+
+// TestServeHTTP_TransientEmpty verifies the chat-wire empty injection
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §1): HTTP 200 with the normal role/finish lifecycle and zero content blocks
+// on both response shapes.
+func TestServeHTTP_TransientEmpty(t *testing.T) {
+	handler := NewChatHandler(chatTransientStore(t, []string{"  empty: true"}), rand.New(rand.NewPCG(1, 0)))
+
+	t.Run("streaming keeps the lifecycle without content payload", func(t *testing.T) {
+		// when
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(chatTransientBody(true))))
+
+		// then: role frame + finish frame + [DONE], with no payload field on
+		// either frame (the consuming wire's EMPTY_RESPONSE classifier reads
+		// exactly that absence).
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		frames := scanSSEFrames(t, rec.Body)
+		if n := len(frames); n != 3 {
+			t.Fatalf("got %d SSE frames, want 3 (role + finish + DONE):\n%s", n, rec.Body.String())
+		}
+		if frames[2] != "[DONE]" {
+			t.Fatalf("last frame = %q, want [DONE]", frames[2])
+		}
+		role := decodeChunk(t, frames[0])
+		if got := role.Choices[0].Delta.Role; got != "assistant" {
+			t.Errorf("frame1 delta.role = %q, want assistant", got)
+		}
+		finish := decodeChunk(t, frames[1])
+		if got := finish.Choices[0].FinishReason; got == nil || *got != "stop" {
+			t.Errorf("frame2 finish_reason = %v, want \"stop\"", got)
+		}
+		for i, frame := range frames[:2] {
+			for _, field := range []string{`"reasoning_content"`, `"content"`, `"tool_calls"`} {
+				if strings.Contains(frame, field) {
+					t.Errorf("frame[%d] carries %s on the empty path: %s", i, field, frame)
+				}
+			}
+		}
+	})
+
+	t.Run("non-streaming carries the envelope without content", func(t *testing.T) {
+		// when
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(chatTransientBody(false))))
+
+		// then
+		var resp completionResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+		}
+		c := resp.Choices[0]
+		if c.Message == nil {
+			t.Fatalf("message is nil")
+		}
+		if c.Message.ReasoningContent != "" || c.Message.Content != "" || c.Message.ToolCalls != nil {
+			t.Errorf("message = %+v, want no content payload", c.Message)
+		}
+		if c.FinishReason == nil || *c.FinishReason != "stop" {
+			t.Errorf("finish_reason = %v, want \"stop\"", c.FinishReason)
+		}
+	})
+}
+
+// TestServeHTTP_OpencodePlannerOpening verifies the SC-003 chat-wire driver
+// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
+// §5): the embedded store answers 「请开始扫雷」 with the opencode-go planner
+// opening — its Name outranks the team-planner-* keyword matches under the
+// lowest-Name tie-break — and the text carries the player-side anchors the
+// next structural step consumes.
+func TestServeHTTP_OpencodePlannerOpening(t *testing.T) {
+	// given: the real embedded store (opencode_go.yaml included).
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+	body := `{"stream":false,"messages":[{"role":"user","content":"请开始扫雷"}]}`
+
+	// when
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: the opencode-go planner opening, not a team-planner match.
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	got := resp.Choices[0].Message.Content
+	if !strings.HasPrefix(got, "开局计划：") || !strings.Contains(got, "以下开局计划") || !strings.Contains(got, "开始本局游戏") {
+		t.Fatalf("请开始扫雷 text = %q, want the opencode-go planner opening with its player-side anchors", got)
 	}
 }

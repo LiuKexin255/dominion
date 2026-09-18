@@ -11,7 +11,7 @@ common/js/grpc/resolver/node_modules
 common/js/resolver/node_modules
 common/js/otel/node_modules
 common/js/config/node_modules
-projects/game/agent/node_modules
+common/js/constants/node_modules
 projects/game/pkg/saolei-board/node_modules
 experimental/grpc_chain/mid/node_modules
 experimental/openai_llm/client/node_modules
@@ -20,10 +20,16 @@ third_party/dsh/core/node_modules
 experimental/dsh/demo/agent/node_modules
 experimental/js/vite_react_demo/node_modules
 common/js/dsh-plugins/llm-glm/node_modules
+common/js/dsh-plugins/llm-opencode-go/node_modules
 common/js/dsh-plugins/desktop-bridge/node_modules
 common/js/dsh-plugins/saolei-loop/node_modules
 common/js/dsh-plugins/saolei/node_modules
 projects/game/agent_v2/node_modules
 projects/game/web/frontend/node_modules
+common/js/dsh-plugins/preset-authoring/node_modules
+common/js/dsh-plugins/team/node_modules
+common/js/dsh-plugins/memory/node_modules
+common/js/dsh-plugins/memory-service/node_modules
+experimental/dsh/demo/agent-plugins/demo-echo/node_modules
 
 

@@ -1,14 +1,14 @@
 /**
- * GameRuntime tests: the v1 saolei MCP contract migrated to the agent-scoped
- * runtime (specs/051-agent-v2-dsh-migration/data-model.md §2.5; contract
- * saolei-plugins.md §2.2/§7.1). Baseline: v1
- * projects/game/agent/src/mcp/saolei/saolei-mcp.test.ts — three-API
- * semantics, dual-form operate, per-rule rejections, batch SKIP/STOP triage,
- * recognition-failure invalidation, signal forwarding, counter-informed win,
- * per-game statistics, and the game-history (gameLog/gameEvent) buffer —
- * plus the agent-scoped lifecycle assertions (the `saoleiGame` service is
- * reachable only on the owning agent scope and unregisters with it; the
- * root context never sees it).
+ * GameRuntime tests: the saolei game contract on the agent-scoped runtime
+ * (specs/051-agent-v2-dsh-migration/data-model.md §2.5; contract
+ * saolei-plugins.md §2.2/§7.1) — three-API semantics, dual-form operate,
+ * per-rule rejections, batch SKIP/STOP triage, recognition-failure
+ * invalidation, signal forwarding, counter-informed win, per-game statistics,
+ * the game-history (gameLog/gameEvent) buffer, and the turn-conclusion marker
+ * matrix (specs/062-team-game-end-handoff/data-model.md §1.2) — plus the
+ * agent-scoped lifecycle assertions (the `saoleiGame` service is reachable
+ * only on the owning agent scope and unregisters with it; the root context
+ * never sees it).
  *
  * Pattern (style/javascript.md Mock convention): pure DI — a fake dispatch
  * double records the dispatched FlowParts and resolves canned
@@ -17,13 +17,13 @@
  */
 
 import { Context } from "@deepseek-ai/cordis";
-import { AgentRegistry } from "@deepseek-ai/dsh-agent";
-import { SessionId, SessionStore } from "@deepseek-ai/dsh-session";
+import type { Agent } from "@deepseek-ai/dsh-agent";
+import { createScope } from "@deepseek-ai/dsh-scope";
 import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
 import type { WireFlowPart } from "@dominion/dsh-desktop-bridge";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SaoleiLoopPlugin, DEFAULT_PLAYER_BASE } from "../index.js";
+import { createAgentGameRuntime } from "../index.js";
 import { GameRuntimeService } from "./runtime.js";
 import type { OperationResult } from "@dominion/dsh-desktop-bridge";
 import type { SaoleiBoardApi } from "./board.js";
@@ -558,6 +558,113 @@ describe("GameRuntime: operate", () => {
   });
 });
 
+describe("GameRuntime: per-type operation counts (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §1)", () => {
+  it("counts every successful batch operation by its type and carries the table on the terminal record", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+    await runtime.init();
+
+    // One three-op batch: click, flag and chord each dispatch successfully
+    // against the recognized board (single operations, not the call).
+    fakeBoard.setUpdate(board(["1 F *", "* * *", "* * *"], COUNTER_ZERO));
+    const batch = await runtime.operate({
+      operations: [
+        { type: "click", x: 2, y: 2 },
+        { type: "flag", x: 1, y: 1 },
+        { type: "chord", x: 0, y: 0 },
+      ],
+    });
+    expect((batch as { text: string }).text).toContain("executed 3 ops");
+
+    // The ending click is a successful dispatch too.
+    fakeBoard.setUpdate(board(["1 F *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+
+    const stats = runtime.peekGameEvent()?.stats;
+    expect(stats).toMatchObject({
+      operationCount: 4,
+      operationsByType: { click: 2, flag: 1, chord: 1 },
+    });
+    // The parts always sum to the single-operation total.
+    const byType = stats?.operationsByType;
+    expect((byType?.click ?? 0) + (byType?.flag ?? 0) + (byType?.chord ?? 0)).toBe(stats?.operationCount);
+  });
+
+  it("does not count SKIP/STOP ops, dispatch failures, or init/remain", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["0 * *", "* * *", "* * *"], COUNTER_ZERO));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+    await runtime.init();
+    const dispatchesAfterInit = fake.parts.length;
+
+    // SKIP (already revealed) + STOP (out of bounds) in one batch: the batch
+    // triages both before dispatch, so neither counts.
+    await runtime.operate({
+      operations: [
+        { type: "click", x: 0, y: 0 },
+        { type: "click", x: 9, y: 9 },
+      ],
+    });
+    expect(fake.parts).toHaveLength(dispatchesAfterInit);
+
+    // A desktop dispatch failure is an error outcome and does not count.
+    fake.set(failed("desktop disconnected"));
+    await runtime.operate({ type: "click", x: 1, y: 0 });
+    expect(fake.parts).toHaveLength(dispatchesAfterInit + 1);
+
+    // remain is a pure query: no dispatch, no operation.
+    runtime.remain();
+
+    // Two successful dispatches then end the game; only they are counted.
+    fake.set(succeeded());
+    fakeBoard.setUpdate(board(["1 * *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.operate({ type: "click", x: 1, y: 0 });
+    fakeBoard.setUpdate(board(["1 * *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+
+    expect(runtime.peekGameEvent()?.stats).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 2, flag: 0, chord: 0 },
+    });
+  });
+
+  it("clears the per-type table on init so each record carries only its own game's counts", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+
+    await runtime.init();
+    fakeBoard.setUpdate(board(["1 * *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.operate({ type: "click", x: 0, y: 0 });
+    fakeBoard.setUpdate(board(["1 * *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+    const first = runtime.peekGameEvent()?.stats;
+    expect(first).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 2, flag: 0, chord: 0 },
+    });
+
+    // Restart: the previous record survives as a detached snapshot, the
+    // counter restarts from zero.
+    fakeBoard.setInit(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.init();
+    fakeBoard.setUpdate(board(["* F *", "* * *", "* * *"], COUNTER_ZERO));
+    await runtime.operate({ type: "flag", x: 1, y: 0 });
+    fakeBoard.setUpdate(board(["* F *", "X * *", "* * *"], { decoded: true, value: 9 }));
+    await runtime.operate({ type: "click", x: 0, y: 1 });
+
+    expect(runtime.peekGameEvent()?.stats).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 1, flag: 1, chord: 0 },
+    });
+    expect(first).toMatchObject({
+      operationCount: 2,
+      operationsByType: { click: 2, flag: 0, chord: 0 },
+    });
+  });
+});
+
 describe("GameRuntime: remain", () => {
   it("rejects with no_active_game when no board is recognized", () => {
     const runtime = makeRuntime();
@@ -581,6 +688,15 @@ describe("GameRuntime: remain", () => {
     const text = (outcome as { text: string }).text;
     expect(text).toContain("saolei_remain → computed\ngame status: playing");
     expect(text).toContain("board size 3*3");
+    // Self-describing legend (064 contract §1): states the per-cell semantics
+    // (mines still unmarked — not flags) and the coordinate reading, placed
+    // between the board-size header and the grid.
+    expect(text).toContain("mines still unmarked");
+    expect(text).toContain("NOT the count of flags");
+    expect(text).toContain("Columns are x and rows are y");
+    const legendIndex = text.indexOf("legend:");
+    expect(legendIndex).toBeGreaterThan(text.indexOf("board size 3*3"));
+    expect(legendIndex).toBeLessThan(text.indexOf("col0"));
     // (1,1) is `1` with one adjacent flag (0,1)=F → remain 0;
     // (1,0) is `2` with one adjacent flag → remain 1.
     expect(text).toContain("0");
@@ -602,105 +718,282 @@ describe("GameRuntime: remain", () => {
   });
 });
 
+// ── turn-conclusion judgment matrix ─────────────────────────────────────────
+// specs/062-team-game-end-handoff/data-model.md §1.2 rows 1-10 (row 11 — the
+// tool-layer argument-combination rejection — is asserted in
+// saolei/src/index.test.ts). A marked outcome carries `concludesTurn: true`;
+// `not.toHaveProperty` proves unmarked paths carry no key at all.
+
+describe("GameRuntime: concludesTurn judgment matrix (062 data-model.md §1.2)", () => {
+  it("row 1: init dispatch FAILED is an error outcome with no marker", async () => {
+    const fake = makeFakeDispatch(failed("desktop disconnected"));
+    const runtime = makeRuntime(fake.dispatch);
+
+    const outcome = await runtime.init();
+
+    expect(outcome).toEqual({ isError: true, error: { message: "desktop disconnected" } });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 2: init recognition failure carries no marker (no board)", async () => {
+    const fake = makeFakeDispatch(succeeded(null));
+    const runtime = makeRuntime(fake.dispatch);
+
+    const outcome = await runtime.init();
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("unable to recognize board"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 3: init marks a terminal recognized board and leaves playing unmarked", async () => {
+    const wonRuntime = makeRuntime(
+      makeFakeDispatch().dispatch,
+      makeFakeBoardApi(board(["0 F 0", "0 0 0", "0 0 0"], COUNTER_ZERO)).api,
+    );
+    const won = await wonRuntime.init();
+    expect(won).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: won"),
+      concludesTurn: true,
+    });
+
+    const lostRuntime = makeRuntime(
+      makeFakeDispatch().dispatch,
+      makeFakeBoardApi(board(["* X *", "* * *", "* * *"])).api,
+    );
+    const lost = await lostRuntime.init();
+    expect(lost).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+      concludesTurn: true,
+    });
+
+    const playingRuntime = makeRuntime();
+    const playing = await playingRuntime.init();
+    expect(playing).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: playing"),
+    });
+    expect(playing).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 4: an empty operate list with no recognized board carries no marker", async () => {
+    const runtime = makeRuntime();
+
+    const outcome = await runtime.operate({ operations: [] });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("rejected: no_active_game"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 5: an empty operate list on a terminal recognized board carries the marker", async () => {
+    const fakeBoard = makeFakeBoardApi(board(["* X *", "* * *", "* * *"]));
+    const runtime = makeRuntime(makeFakeDispatch().dispatch, fakeBoard.api);
+    await runtime.init();
+
+    const outcome = await runtime.operate({ operations: [] });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+      concludesTurn: true,
+    });
+  });
+
+  it("row 6: a mid-batch dispatch FAILED is an error outcome with no marker", async () => {
+    const fake = makeFakeDispatch();
+    const runtime = makeRuntime(fake.dispatch);
+    await runtime.init();
+    fake.set(failed("operation timed out"));
+
+    const outcome = await runtime.operate({ type: "click", x: 0, y: 0 });
+
+    expect(outcome).toEqual({ isError: true, error: { message: "operation timed out" } });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 7: a mid-batch recognition failure carries no marker", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"]));
+    const runtime = makeRuntime(fake.dispatch, fakeBoard.api);
+    await runtime.init();
+    fakeBoard.setUpdate("throw");
+
+    const outcome = await runtime.operate({ type: "click", x: 0, y: 0 });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("unable to recognize board"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 8: the post-batch no-board defensive path carries no marker", async () => {
+    const fake = makeFakeDispatch();
+    const runtime = makeRuntime(fake.dispatch);
+
+    // Non-empty ops with no recognized board stop at no_active_game and fall
+    // through to the defensive no-board return.
+    const outcome = await runtime.operate({ type: "click", x: 0, y: 0 });
+
+    expect(outcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("rejected: no_active_game"),
+    });
+    expect(outcome).not.toHaveProperty("concludesTurn");
+    expect(fake.parts).toHaveLength(0);
+  });
+
+  it("row 9: terminal operate results carry the marker; a playing result does not", async () => {
+    // An op that ends the game as a loss: the result board is terminal.
+    const lossFake = makeFakeDispatch();
+    const lossBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    const loss = makeRuntime(lossFake.dispatch, lossBoard.api);
+    await loss.init();
+    lossBoard.setUpdate(board(["* * *", "* X *", "* * *"], { decoded: true, value: 9 }));
+    const ended = await loss.operate({ type: "click", x: 1, y: 1 });
+    expect(ended).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+      concludesTurn: true,
+    });
+
+    // A terminal structural stop (FR-002 ②): the stop body's board is terminal.
+    const stopFake = makeFakeDispatch();
+    const stopBoard = makeFakeBoardApi(board(["0 F 0", "0 0 0", "0 0 0"], COUNTER_ZERO));
+    const stop = makeRuntime(stopFake.dispatch, stopBoard.api);
+    await stop.init();
+    const stopped = await stop.operate({ type: "click", x: 0, y: 0 });
+    expect(stopped).toEqual({
+      isError: false,
+      text: expect.stringContaining("(game_won)"),
+      concludesTurn: true,
+    });
+
+    const playing = makeRuntime();
+    await playing.init();
+    const playingOutcome = await playing.operate({ type: "click", x: 0, y: 0 });
+    expect(playingOutcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: playing"),
+    });
+    expect(playingOutcome).not.toHaveProperty("concludesTurn");
+  });
+
+  it("row 10: remain never carries the marker", async () => {
+    const noBoard = makeRuntime();
+    const noBoardOutcome = noBoard.remain();
+    expect(noBoardOutcome).toEqual({
+      isError: false,
+      text: expect.stringContaining("rejected: no_active_game"),
+    });
+    expect(noBoardOutcome).not.toHaveProperty("concludesTurn");
+
+    const fakeBoard = makeFakeBoardApi(board(["* X *", "* * *", "* * *"]));
+    const runtime = makeRuntime(makeFakeDispatch().dispatch, fakeBoard.api);
+    await runtime.init();
+    const terminal = runtime.remain();
+    expect(terminal).toEqual({
+      isError: false,
+      text: expect.stringContaining("game status: lost"),
+    });
+    expect(terminal).not.toHaveProperty("concludesTurn");
+  });
+});
+
 // ── agent-scoped lifecycle (contract saolei-plugins.md §7.1) ────────────────
 
 /** The session resource name shared by the lifecycle fixtures. */
 const LIFECYCLE_SESSION = "templates/saolei/sessions/t1";
 
+/** Drain the microtask queue so a Service registration's availability settles. */
+async function flushProvide(): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+}
+
 /**
- * Plugin harness over a real cordis Context: the REAL AgentRegistry and
- * SessionStore services plus fake collaborators; the factory's createRuntime
- * seam injects a GameRuntimeService over fake dispatch/board doubles — one
- * recognition engine PER AGENT (keyed by session id), so a crosstalk
- * assertion can never be masked by a shared mutable double.
+ * Agent-scope harness: a real cordis plugin fiber stands in for the agent
+ * scope that the host's materialization setup owns
+ * (projects/game/agent_v2/src/session.ts calls createAgentGameRuntime inside
+ * `ctx.agents.create({setup})`); the runtime registers through the SAME
+ * GameRuntimeService construction the production builder performs, with fake
+ * dispatch/board doubles — one recognition engine PER AGENT (keyed by session
+ * id), so a crosstalk assertion can never be masked by a shared mutable
+ * double.
  */
-function makePluginHarness() {
+function makeScopeHarness() {
   const ctx = new Context();
-  new AgentRegistry(ctx);
-  new SessionStore(ctx);
-  const sections: Array<{ name: string; order: number; text: string }> = [];
-  ctx.provide("systemPrompt", {
-    section: vi.fn((section: { name: string; order: number; text: string }) => {
-      sections.push(section);
-      return () => {};
-    }),
-    variable: vi.fn(() => () => {}),
-    assemble: async () => ({ sections: [], tools: [], variables: {} }),
-  });
-  ctx.provide("tools", {});
-  ctx.provide("llm", {});
   const dispatched: { sessionName: string; part: WireFlowPart }[] = [];
-  ctx.provide("desktopBridge", {
-    attach: vi.fn(),
-    handlers: vi.fn(),
-    dispatch: vi.fn(async (sessionName: string, part: WireFlowPart) => {
-      dispatched.push({ sessionName, part });
-      return succeeded();
-    }),
-  });
+  const desktopBridge = {
+    dispatch: vi.fn(
+      async (sessionName: string, part: WireFlowPart, _signal?: AbortSignal) => {
+        dispatched.push({ sessionName, part });
+        return succeeded();
+      },
+    ),
+  };
   const boards = new Map<string, ReturnType<typeof makeFakeBoardApi>>();
-  const plugin = new SaoleiLoopPlugin(ctx, { maxParallelToolCalls: 10 }, {
-    createRuntime: (agent) => {
-      const fakeBoard = makeFakeBoardApi(board(["* *", "* *"]));
-      boards.set(agent.id, fakeBoard);
-      return new GameRuntimeService(agent.ctx, "saoleiGame", {
-        sessionName: agent.id,
-        dispatch: (part, signal) =>
-          (
-            ctx.desktopBridge as {
-              dispatch: (
-                sessionName: string,
-                part: WireFlowPart,
-                signal?: AbortSignal,
-              ) => Promise<OperationResult>;
-            }
-          ).dispatch(agent.id, part, signal),
-        boardApi: fakeBoard.api,
-      });
-    },
-  });
-  return { ctx, plugin, sections, dispatched, boards };
+  /** Start one agent scope: the runtime registers through the REAL scope
+   * primitive (createScope — the production agent-scope boundary) with the
+   * per-agent service label isolation the agent scope performs, and
+   * unregisters with the scope dispose (the Service contract under test). */
+  const startAgentScope = async (sessionName: string) => {
+    const fakeBoard = makeFakeBoardApi(board(["* *", "* *"]));
+    boards.set(sessionName, fakeBoard);
+    const scope = createScope(ctx, { sessionName });
+    const agentCtx = scope.ctx.isolate("saoleiGame");
+    new GameRuntimeService(agentCtx, "saoleiGame", {
+      sessionName,
+      dispatch: (part, signal) => desktopBridge.dispatch(sessionName, part, signal),
+      boardApi: fakeBoard.api,
+    });
+    await flushProvide();
+    return {
+      scope,
+      runtime: () => agentCtx.get("saoleiGame") as GameRuntimeService | undefined,
+    };
+  };
+  return { ctx, dispatched, boards, startAgentScope };
 }
 
 describe("agent-scoped saoleiGame lifecycle", () => {
   it("registers the runtime on the agent scope, unreachable from the root context", async () => {
-    const harness = makePluginHarness();
-    const handle = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
+    const harness = makeScopeHarness();
+    const { scope, runtime } = await harness.startAgentScope(LIFECYCLE_SESSION);
 
     // Reachable on the agent scope; invisible on the host/root context
     // (agent-scoped services never leak upward).
-    expect(handle.agent.ctx.get("saoleiGame")).toBeDefined();
+    expect(runtime()).toBeDefined();
     expect(harness.ctx.get("saoleiGame")).toBeUndefined();
 
-    await handle.dispose();
+    await scope.dispose();
   });
 
   it("unregisters the service when the agent scope disposes", async () => {
-    const harness = makePluginHarness();
-    const handle = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    expect(handle.agent.ctx.get("saoleiGame")).toBeDefined();
+    const harness = makeScopeHarness();
+    const { scope, runtime } = await harness.startAgentScope(LIFECYCLE_SESSION);
+    expect(runtime()).toBeDefined();
 
-    await handle.dispose();
+    await scope.dispose();
 
-    expect(handle.agent.ctx.get("saoleiGame")).toBeUndefined();
+    expect(runtime()).toBeUndefined();
   });
 
   it("routes runtime dispatches through the bridge under the agent's session name", async () => {
-    const harness = makePluginHarness();
-    const handle = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    const runtime = handle.agent.ctx.get("saoleiGame");
-    expect(runtime).toBeDefined();
+    const harness = makeScopeHarness();
+    const { scope, runtime } = await harness.startAgentScope(LIFECYCLE_SESSION);
+    const game = runtime();
+    expect(game).toBeDefined();
 
-    await runtime!.init();
+    await game!.init();
 
     expect(harness.dispatched).toHaveLength(1);
     expect(harness.dispatched[0]).toMatchObject({
@@ -708,25 +1001,19 @@ describe("agent-scoped saoleiGame lifecycle", () => {
       part: { keyboardPress: { key: "KEYBOARD_KEY_F2" } },
     });
 
-    await handle.dispose();
+    await scope.dispose();
   });
 
   it("isolates two agents: each scope resolves its own runtime and states never cross", async () => {
-    const harness = makePluginHarness();
+    const harness = makeScopeHarness();
     const sessionA = "templates/saolei/sessions/a";
     const sessionB = "templates/saolei/sessions/b";
-    const handleA = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(sessionA),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    const handleB = await harness.plugin.createAgent(harness.ctx, {
-      sessionId: SessionId(sessionB),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
+    const agentA = await harness.startAgentScope(sessionA);
+    const agentB = await harness.startAgentScope(sessionB);
 
     // Each scope resolves ITS OWN runtime instance, never the other's.
-    const runtimeA = handleA.agent.ctx.get("saoleiGame") as GameRuntimeService | undefined;
-    const runtimeB = handleB.agent.ctx.get("saoleiGame") as GameRuntimeService | undefined;
+    const runtimeA = agentA.runtime();
+    const runtimeB = agentB.runtime();
     expect(runtimeA).toBeDefined();
     expect(runtimeB).toBeDefined();
     expect(runtimeB).not.toBe(runtimeA);
@@ -752,41 +1039,56 @@ describe("agent-scoped saoleiGame lifecycle", () => {
     );
 
     // Disposing B does not touch A: A's runtime stays reachable and playable.
-    await handleB.dispose();
-    expect(handleB.agent.ctx.get("saoleiGame")).toBeUndefined();
-    expect(handleA.agent.ctx.get("saoleiGame")).toBeDefined();
+    await agentB.scope.dispose();
+    expect(agentB.runtime()).toBeUndefined();
     const after = await runtimeA!.operate({ type: "click", x: 0, y: 0 });
     expect((after as { text: string }).text).toContain(
       "saolei_operate → executed 1 ops",
     );
 
-    await handleA.dispose();
+    await agentA.scope.dispose();
   });
+});
 
-  it("registers the persona section with the DEFAULT_PLAYER_BASE fallback", async () => {
-    const fallback = makePluginHarness();
-    const fallbackHandle = await fallback.plugin.createAgent(fallback.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test" },
-    });
-    expect(fallback.sections).toContainEqual({
-      name: "deployment:persona",
-      order: 0,
-      text: DEFAULT_PLAYER_BASE,
-    });
-    await fallbackHandle.dispose();
+describe("createAgentGameRuntime wiring", () => {
+  it("binds the runtime to the explicit game session name and registers it on the agent ctx", async () => {
+    const ctx = new Context();
+    const dispatched: { sessionName: string; part: WireFlowPart }[] = [];
+    const desktopBridge = {
+      dispatch: vi.fn(
+        async (sessionName: string, part: WireFlowPart, _signal?: AbortSignal) => {
+          dispatched.push({ sessionName, part });
+          return succeeded();
+        },
+      ),
+    };
+    // The host's materialization setup call shape: the member's dsh session
+    // id is namespaced (`{game-session}/player`), while the desktop-bridge
+    // connection is keyed by the GAME session resource name the orchestrator
+    // passes explicitly.
+    const scope = createScope(ctx, { sessionName: LIFECYCLE_SESSION });
+    const agentCtx = scope.ctx.isolate("saoleiGame");
+    createAgentGameRuntime(
+      { id: `${LIFECYCLE_SESSION}/player`, ctx: agentCtx } as unknown as Agent,
+      desktopBridge as never,
+      LIFECYCLE_SESSION,
+    );
+    await flushProvide();
 
-    const custom = makePluginHarness();
-    const customHandle = await custom.plugin.createAgent(custom.ctx, {
-      sessionId: SessionId(LIFECYCLE_SESSION),
-      agentOptions: { provider: "glm-responses", model: "glm-test", persona: "自定义人设" },
-    });
-    expect(custom.sections).toContainEqual({
-      name: "deployment:persona",
-      order: 0,
-      text: "自定义人设",
-    });
-    await customHandle.dispose();
+    // Resolution reads the context PROPERTY (the proxy's fiber-walking
+    // lookup) — the exact face the saolei tools resolve through.
+    const runtime = agentCtx.saoleiGame;
+    expect(runtime).toBeDefined();
+    await runtime!.init();
+    expect(dispatched[0]?.sessionName).toBe(LIFECYCLE_SESSION);
+    expect(desktopBridge.dispatch).toHaveBeenCalledOnce();
+
+    await scope.dispose();
+    // Post-dispose the property walk fails loud (inject semantics) instead
+    // of answering a stale service.
+    expect(() => (agentCtx as { saoleiGame: unknown }).saoleiGame).toThrow(
+      /without inject/,
+    );
   });
 });
 

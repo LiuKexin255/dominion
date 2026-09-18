@@ -8,7 +8,7 @@ import (
 )
 
 // cellCenter builds a MouseMoveAndClickPart with the client-space centre of
-// cell (x, y) per projects/game/agent/src/mcp/saolei/geometry.ts
+// cell (x, y) per common/js/dsh-plugins/saolei-loop/src/game/geometry.ts
 // (center(x) = 24 + x*32 + 16, center(y) = 104 + y*32 + 16).
 func cellCenter(toolID string, action game.MouseClickAction, x, y int32) *game.FlowPart {
 	return &game.FlowPart{Kind: &game.FlowPart_MouseMoveAndClick{MouseMoveAndClick: &game.MouseMoveAndClickPart{

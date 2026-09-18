@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dominion/common/gopkg/constants"
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
@@ -459,17 +460,18 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 // ReservedEnvironmentVariableNames returns environment variable names reserved by the Kubernetes runtime.
 func (r *K8sRuntime) ReservedEnvironmentVariableNames(_ context.Context) ([]string, error) {
 	return []string{
-		reservedEnvNameServiceApp,
-		reservedEnvNameDominionEnvironment,
-		reservedEnvNamePodNamespace,
-		envTLSCertFile,
-		envTLSKeyFile,
-		envTLSCAFile,
-		envTLSDomain,
-		envS3AccessKey,
-		envS3SecretKey,
-		envSecretDir,
-		envConfigDir,
+		constants.EnvServiceApp,
+		constants.EnvDominionEnvironment,
+		constants.EnvPodNamespace,
+		constants.EnvDominionArtifactDir,
+		constants.EnvTLSCertFile,
+		constants.EnvTLSKeyFile,
+		constants.EnvTLSCAFile,
+		constants.EnvTLSServerName,
+		constants.EnvS3AccessKey,
+		constants.EnvS3SecretKey,
+		constants.EnvDominionSecretDir,
+		constants.EnvDominionConfigDir,
 	}, nil
 }
 

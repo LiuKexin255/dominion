@@ -39,7 +39,7 @@ metadata:
 
 ## 测试计划格式
 
-YAML 格式，参考 `design/guitar_yaml_testplan.md`：
+YAML 格式，参考 `tools/test/guitar/README.md` 的「测试计划格式」节（示例：`tools/test/guitar/example.guitar.yaml`）：
 
 ```yaml
 name: game-session-large-test
@@ -154,7 +154,7 @@ guitar run <plan.yaml>
 ## 仓库内可直接参考的文件
 
 - `style/large_test.md`
-- `design/guitar_yaml_testplan.md`
+- `tools/test/guitar/example.guitar.yaml`
 - `tools/test/guitar/README.md`
 - `tools/release/deploy/README.md`
-- `projects/game/testplan/interface_test.yaml`
+- `projects/game/testplan/system_test.yaml`

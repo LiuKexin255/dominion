@@ -1,21 +1,33 @@
 /**
- * history.ts — per-session conversation history and the dsh→ChatEvent turn
- * collector (specs/049-agent-v2-dsh-init/data-model.md §2.4/§2.5;
- * tool-result extension: specs/051-agent-v2-dsh-migration/data-model.md
- * §2.3/§2.4, research.md D10).
+ * history.ts — the agent_v2 team history projections and the dsh→ChatEvent
+ * member collector.
  *
- * The collector is armed once per session entry (session lifetime, not stream
- * lifetime — specs/049-agent-v2-dsh-init/research.md D10-2) and maps dsh
- * turn events to proto ChatEvents for the active turn's stream; the mapping
- * table is specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4 plus
- * the `tool_result` frame of specs/051-agent-v2-dsh-migration/data-model.md
- * §2.4. dsh chunk indexes are per-step (every model request restarts at 0),
- * so the collector remaps them onto one turn-global monotonic sequence,
- * resetting the step-local table at every step boundary. `assistant/message`
- * appends the final content blocks to the in-memory history
- * (specs/049-agent-v2-dsh-init/spec.md FR-014), which stays collected even
- * when no stream is attached; `tool/result` settles the matching
- * ToolCallBlock by tool_id in that same history.
+ * The team model has two projections derived from the same member events
+ * (specs/059-agent-v2-team-mode/data-model.md §2/§3):
+ *
+ * - the merged team sequence (`TeamMergeEntry`): user input and every
+ *   member's native output, ordered by a monotonically assigned `seq`
+ *   anchor. It is the single source shared by ListTeamMessages and the
+ *   `team_message` stream frame (same entry object → same seq value,
+ *   specs/059-agent-v2-team-mode/contracts/team-api.md §3.2);
+ * - the per-member view (`MemberViewEntry`): the message as that member saw
+ *   it, with the sender annotation (USER input, or another member's relayed
+ *   broadcast rendered as `user: [sender]…`).
+ *
+ * {@link MemberCollector} owns one materialized member's subscriptions:
+ * `session/event` (turn/step/chunk/tool events), `agent/status`, and
+ * `agent/error`. It latches a member turn on the running transition (or the
+ * first turn-scoped event), emits the member-labelled ChatEvent frames
+ * (turn_start/block_start/delta/block_end/tool_result/turn_end), and writes
+ * the history projections. Dsh chunk indexes are per-step (every model
+ * request restarts at 0), so the collector remaps them onto one turn-global
+ * monotonic sequence, resetting the step-local table at every step boundary
+ * (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4; specs/
+ * 051-agent-v2-dsh-migration/data-model.md §2.4).
+ *
+ * Event vocabulary anchors: dsh-session SessionEventMap
+ * (node_modules/.pnpm/@deepseek-ai+dsh-session@0.1.1-rc.2_a4e4bb24/lib/types/
+ * types.d.ts).
  */
 
 import { randomUUID } from "node:crypto";
@@ -29,15 +41,13 @@ import type { BlockDeltaEvent } from "../agent_v2_types/projects/game/v2/BlockDe
 import type { BlockEndEvent } from "../agent_v2_types/projects/game/v2/BlockEndEvent.js";
 import type { ToolResultEvent } from "../agent_v2_types/projects/game/v2/ToolResultEvent.js";
 import type { ToolStatus } from "../agent_v2_types/projects/game/v2/ToolStatus.js";
+import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/v2/TeamMessage.js";
+import type { MemberViewEvent } from "../agent_v2_types/projects/game/v2/MemberViewEvent.js";
 import type { DshContext } from "./dsh.js";
 
 /**
  * Structural subset of a dsh `session/event` payload read by the collector.
- * The event-type vocabulary and payload shapes anchor at the dsh-session
- * SessionEventMap (node_modules/.pnpm/@deepseek-ai+dsh-session@0.1.1-rc.2_
- * a4e4bb24a1f3580ac25e11cfa3c6b8cc/node_modules/@deepseek-ai/dsh-session/
- * lib/types/types.d.ts) — `assistant/chunk` = `{turn, step, chunk}` with
- * chunk a raw StreamChunk.
+ * `assistant/chunk` is `{turn, step, chunk}` with chunk a raw StreamChunk.
  */
 export interface DshSessionEvent {
   type: string;
@@ -79,19 +89,33 @@ export interface AssistantMessageEvent extends DshSessionEvent {
   data: {
     message: { content: ReadonlyArray<DshContentBlockView> };
     usage?: DshTokenUsage;
-    // True on the interrupted fixation the driver appends when a stream
-    // fails or is cancelled before the step settles (saolei-loop driver
-    // appendInterrupted) — recorded on the history message so List
-    // consumers can exclude the prefix from final-answer folding
-    // (specs/054-agent-v2-bugfixes/data-model.md §1.5).
+    // True on the interrupted fixation the loop appends when a stream
+    // fails or is cancelled before the step settles — recorded on the
+    // history message so List consumers can exclude the prefix from
+    // final-answer folding (specs/054-agent-v2-bugfixes/data-model.md §1.5).
     interrupted?: boolean;
   };
 }
 
 /**
+ * The `user/message` event shape the member-view history reads. The event
+ * stores the complete `UserMessage` as its data (dsh-session README: "A
+ * `user/message` stores the complete `UserMessage` directly … its typed
+ * `source` is the only channel that tells them apart"), so content/source/id
+ * live at the data top level.
+ */
+export interface UserMessageEvent extends DshSessionEvent {
+  type: "user/message";
+  data: {
+    id?: string;
+    content: ReadonlyArray<DshContentBlockView>;
+    source: { kind: string; role?: string };
+  };
+}
+
+/**
  * The `tool/call` event shape (dsh-session SessionEventMap; the loop appends
- * one per model-requested call — common/js/dsh-plugins/saolei-loop/src/
- * driver.ts appendToolCall).
+ * one per model-requested call).
  */
 export interface ToolCallEvent extends DshSessionEvent {
   type: "tool/call";
@@ -105,11 +129,9 @@ export interface ToolCallEvent extends DshSessionEvent {
 }
 
 /**
- * The `tool/result` event shape (dsh-session SessionEventMap; the loop
- * appends one per settled call — driver.ts appendToolResult). The message's
+ * The `tool/result` event shape (dsh-session SessionEventMap). The message's
  * single tool-result block carries the outcome (`toolCallId`, `isError`) and
- * the tool's rendered model-facing content (saolei tools render one text
- * block with the board text).
+ * the tool's rendered model-facing content.
  */
 export interface ToolResultMessageEvent extends DshSessionEvent {
   type: "tool/result";
@@ -136,17 +158,51 @@ export interface ToolResultMessageEvent extends DshSessionEvent {
 export interface TurnStream {
   write(event: ChatEvent): void;
   end(): void;
+  /**
+   * Terminate the stream with an orchestration-level error instead of a
+   * clean EOF (optional; the gRPC adapter maps it onto an INTERNAL status,
+   * contracts/team-api.md §6). Recorders without it observe `end()` as the
+   * fallback.
+   */
+  fail?(error: { code: string; message: string }): void;
 }
 
-/** How a turn ended: COMPLETED on idle, ERROR on failure, ABORTED on dispose, CANCELED on user cancel. */
+/** How a turn ended: COMPLETED on idle, ERROR on failure, ABORTED on refresh, CANCELED on user cancel. */
 export interface TurnOutcome {
   status: "COMPLETED" | "ERROR" | "ABORTED" | "CANCELED";
   error?: { code: string; message: string };
 }
 
-/** A settled turn outcome plus the usage folded into turn_end (§4). */
-export interface TurnSettlement extends TurnOutcome {
-  usage: DshTokenUsage | undefined;
+/** The two materialized team members; team roles are open strings upstream. */
+export type MemberRole = "player" | "planner";
+
+/**
+ * The sender annotation of a relayed broadcast: the source role string
+ * unchanged; a source without a role degrades to the reserved user value.
+ */
+export function broadcastSender(role: string | undefined): string {
+  return role === undefined || role === "" ? "user" : role;
+}
+
+/** One entry of the merged team sequence (ListTeamMessages / team_message frame). */
+export interface TeamMergeEntry {
+  /**
+   * Producer role string: the reserved `"user"` value for user input, a
+   * materialized member role, or a non-agent system member's role (e.g. the
+   * saolei announcer). The wire form is the string itself — the session face
+   * is a scene-agnostic primitive and carries no role enum (2026-09-10 user
+   * ruling).
+   */
+  readonly member: string;
+  readonly message: HistoryMessage;
+  readonly seq: number;
+}
+
+/** One entry of a member's view history (ListMemberMessages). */
+export interface MemberViewEntry {
+  readonly message: HistoryMessage;
+  /** Sender annotation: the reserved `"user"` value or a member role string. */
+  readonly sender: string;
 }
 
 /** dsh chunk vocabulary → ChatEvent BlockType (conversation-api.md §4). */
@@ -253,38 +309,70 @@ export function chunkToChatEvent(
   return undefined;
 }
 
-/**
- * Per-session in-memory conversation record (specs/049-agent-v2-dsh-init/
- * spec.md FR-014): user messages are appended at enqueue time, agent replies
- * at `assistant/message` finality; ordering and text/think/tool-call
- * classification are preserved
- * (specs/049-agent-v2-dsh-init/data-model.md §2.5).
- */
-export class SessionHistory {
-  private messages: HistoryMessage[] = [];
-  private nextSeq = 1;
+/** Map a dsh usage view onto the proto TurnUsage (int64 fields as strings). */
+export function usageToProto(usage: DshTokenUsage | undefined): {
+  inputTokens: string;
+  outputTokens: string;
+  reasoningTokens?: string;
+} | undefined {
+  if (usage === undefined) {
+    return undefined;
+  }
+  const mapped: { inputTokens: string; outputTokens: string; reasoningTokens?: string } = {
+    inputTokens: String(usage.inputTokens),
+    outputTokens: String(usage.outputTokens),
+  };
+  if (usage.reasoningTokens !== undefined) {
+    mapped.reasoningTokens = String(usage.reasoningTokens);
+  }
+  return mapped;
+}
 
-  /** Append the user turn recorded when its message is enqueued. */
-  appendUser(text: string): void {
-    this.messages.push({
-      messageId: `m${this.nextSeq}`,
-      role: "ROLE_USER",
-      createTime: nowTimestamp(),
-      blocks: [{ text: { content: text } }],
-    });
-    this.nextSeq += 1;
+/**
+ * The session's team history projections (specs/059-agent-v2-team-mode/
+ * data-model.md §2): the merged team sequence plus the two member views.
+ * Every appended merge entry fans out as a `team_message` frame carrying the
+ * same entry object, and every member-view append fans out a `member_view`
+ * frame carrying the same view projection object, so the stream frames and
+ * the List projections can never diverge (same source, same value).
+ *
+ * The projection is session-lifetime state held by the materialized team
+ * entry: a refresh builds a fresh TeamHistory, which IS the short-term memory
+ * clear (data-model.md §2 lifecycle).
+ */
+export class TeamHistory {
+  private readonly merge: TeamMergeEntry[] = [];
+  private readonly views: Record<MemberRole, MemberViewEntry[]> = { player: [], planner: [] };
+  private nextSeq = 1;
+  private nextMessageId = 1;
+
+  constructor(
+    private readonly sessionName: string,
+    private readonly sink: (event: ChatEvent) => void,
+  ) {}
+
+  /**
+   * Append the user message at Send acceptance (enqueue-time fixation, also
+   * for queued sends — contracts/team-api.md §3) and fan out its
+   * `team_message{member=USER}` frame.
+   */
+  appendUser(text: string): TeamMergeEntry {
+    const message = this.newMessage("ROLE_USER", [{ text: { content: text } }]);
+    return this.appendMerge("user", message);
   }
 
   /**
-   * Append the agent reply from the round's final assistant message. An
-   * interrupted append records the sparse flag on the history message so
-   * List consumers can exclude the prefix from final-answer folding
+   * Append one member `assistant/message` finality to the merge sequence and
+   * to that member's own view (sender = the member). Empty display content
+   * produces no entry (nothing model-visible in this projection). The
+   * interrupted flag is carried through for List folding semantics
    * (specs/054-agent-v2-bugfixes/data-model.md §1.5).
    */
-  appendAssistant(
+  appendMemberOutput(
+    role: MemberRole,
     content: ReadonlyArray<DshContentBlockView>,
     interrupted = false,
-  ): void {
+  ): TeamMergeEntry | undefined {
     const blocks: ContentBlock[] = [];
     for (const block of content) {
       const mapped = blockToContentBlock(block);
@@ -292,31 +380,75 @@ export class SessionHistory {
         blocks.push(mapped);
       }
     }
-    this.messages.push({
-      messageId: `m${this.nextSeq}`,
-      role: "ROLE_AGENT",
-      createTime: nowTimestamp(),
-      blocks,
-      ...(interrupted ? { interrupted: true } : {}),
-    });
-    this.nextSeq += 1;
-  }
-
-  /** Snapshot of the history for ListAgentMessages (defensive copy). */
-  list(): HistoryMessage[] {
-    return [...this.messages];
+    if (blocks.length === 0) {
+      return undefined;
+    }
+    const message = this.newMessage("ROLE_AGENT", blocks, interrupted);
+    const entry = this.appendMerge(role, message);
+    this.views[role].push({ message, sender: role });
+    return entry;
   }
 
   /**
-   * Settle the most recent RUNNING ToolCallBlock carrying `toolId` with the
-   * tool's terminal status and rendered result (specs/051-agent-v2-dsh-
-   * migration/data-model.md §2.3: the turn's tool ids are unique, so the
-   * newest match is the block). A result with no unsettled matching block is
-   * ignored (returns false) — never fabricated into history.
+   * Append one system-member announcement (the saolei game-stats message) to
+   * the merge sequence with its sending role label and fan out the
+   * `team_message{member=role}` frame — `ListTeamMessages` and the stream
+   * frame share this entry (same source, same value). The message is a
+   * `ROLE_AGENT` single-text-block history entry; the announcement has no
+   * member view of its own (receivers record it in THEIR view through the
+   * member-view path when the team relays it,
+   * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4).
    */
-  settleToolResult(toolId: string, status: ToolStatus, result: string): boolean {
-    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
-      const blocks = this.messages[i]?.blocks ?? [];
+  appendAnnouncement(role: string, text: string): TeamMergeEntry {
+    const message = this.newMessage("ROLE_AGENT", [{ text: { content: text } }]);
+    return this.appendMerge(role, message);
+  }
+
+  /**
+   * Append one user message recorded in a member's own log to that member's
+   * view: source `user` = the user's input; a `team-broadcast` source = a
+   * relayed other-member message annotated with its sender (contracts/
+   * team-api.md §5). Other source kinds have no view projection. The append
+   * fans out a `member_view` frame in the same write, so web clients see the
+   * consumption (the input entering this member's view) in real time instead
+   * of waiting for a ListMemberMessages backfill
+   * (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
+   */
+  appendMemberViewUser(role: MemberRole, event: UserMessageEvent): void {
+    const source = event.data.source;
+    if (source.kind !== "user" && source.kind !== "team-broadcast") {
+      return;
+    }
+    const blocks: ContentBlock[] = [];
+    for (const block of event.data.content) {
+      if (block.type === "text") {
+        blocks.push({ text: { content: block.text ?? "" } });
+      }
+    }
+    if (blocks.length === 0) {
+      return;
+    }
+    const message = this.newMessage("ROLE_USER", blocks);
+    const sender = source.kind === "team-broadcast" ? broadcastSender(source.role) : "user";
+    this.views[role].push({ message, sender });
+    const frame: MemberViewEvent = { member: role, sender, message };
+    this.sink({ session: this.sessionName, memberView: frame });
+  }
+
+  /**
+   * Settle the most recent RUNNING ToolCallBlock carrying `toolId` in the
+   * given member's merge entries with the tool's terminal status and
+   * rendered result. The message object is shared with the member view, so
+   * both projections observe the settlement. A result with no unsettled
+   * matching block is ignored (returns false) — never fabricated.
+   */
+  settleToolResult(role: MemberRole, toolId: string, status: ToolStatus, result: string): boolean {
+    for (let i = this.merge.length - 1; i >= 0; i -= 1) {
+      const entry = this.merge[i];
+      if (entry === undefined || entry.member !== role) {
+        continue;
+      }
+      const blocks = entry.message.blocks ?? [];
       for (let j = blocks.length - 1; j >= 0; j -= 1) {
         // The oneof arm is nullable in the generated projection.
         const block = blocks[j]?.toolCall ?? null;
@@ -329,11 +461,53 @@ export class SessionHistory {
     }
     return false;
   }
+
+  /** Snapshot of the merged sequence for ListTeamMessages (defensive copy). */
+  listTeamMessages(): TeamMergeEntry[] {
+    return [...this.merge];
+  }
+
+  /** Snapshot of one member's view for ListMemberMessages (defensive copy). */
+  listMemberMessages(role: MemberRole): MemberViewEntry[] {
+    return [...this.views[role]];
+  }
+
+  /** Build one projected message with its server-assigned id and timestamp. */
+  private newMessage(
+    role: "ROLE_USER" | "ROLE_AGENT",
+    blocks: ContentBlock[],
+    interrupted = false,
+  ): HistoryMessage {
+    const message: HistoryMessage = {
+      messageId: `m${this.nextMessageId}`,
+      role,
+      createTime: nowTimestamp(),
+      blocks,
+    };
+    this.nextMessageId += 1;
+    if (interrupted) {
+      message.interrupted = true;
+    }
+    return message;
+  }
+
+  /** Append one entry and fan out its team_message frame (single source). */
+  private appendMerge(member: string, message: HistoryMessage): TeamMergeEntry {
+    const entry: TeamMergeEntry = { member, message, seq: this.nextSeq };
+    this.nextSeq += 1;
+    this.merge.push(entry);
+    const frame: TeamMessageProto = {
+      member,
+      message,
+      seq: String(entry.seq),
+    };
+    this.sink({ session: this.sessionName, teamMessage: frame });
+    return entry;
+  }
 }
 
-interface ActiveTurn {
+interface ActiveMemberTurn {
   turnId: string;
-  stream: TurnStream;
   usage: DshTokenUsage | undefined;
   failure: { code: string; message: string } | undefined;
   /** The step number of the last seen event; a change resets the local table. */
@@ -342,35 +516,42 @@ interface ActiveTurn {
   localIndexes: Map<number, number>;
   /** The next turn-global block index to hand out. */
   nextIndex: number;
-  /** Tool ids with a `tool/call` and no `tool/result` yet this turn. */
-  pendingTools: Set<string>;
+  /**
+   * Streamed-but-unfinalized display blocks of the CURRENT step, in arrival
+   * order, keyed per provider block index. Reasoning chunks stream as bare
+   * deltas (their block view only materializes at `block-end`), so both
+   * deltas and block-end views accumulate here. The official loop
+   * solidifies an interrupted prefix into an `assistant/message` only when
+   * its abort signal fired (cancellation); a provider failure drops the
+   * prefix at the loop layer, so the collector carries it here and appends
+   * the interrupted history entry itself when the turn settles ERROR
+   * (specs/054-agent-v2-bugfixes semantics preserved through the loop
+   * pivot).
+   */
+  pending: Array<{ index: number; view: DshContentBlockView }>;
 }
 
 /**
- * Session-lifetime dsh event collector: owns the `session/event`,
- * `agent/status`, and `agent/error` subscriptions for one session entry and
- * forwards the active turn's mapped events to its sink.
- *
- * Turn termination follows the demo agent's collection pattern
- * (specs/047-dsh-chat-demo/research.md D3): failures are recorded from
- * `agent/error` / `turn/end{error}`, and the agent/status→idle transition
- * settles the turn — ERROR when a failure was observed, otherwise COMPLETED
- * with the usage folded in (conversation-api.md §4).
+ * Session-lifetime collector for one materialized member: owns that member's
+ * `session/event`, `agent/status`, and `agent/error` subscriptions, writes
+ * the member-labelled stream frames and the team/member history projections
+ * (shared {@link TeamHistory}), and settles member turns on the idle
+ * transition — the same quiescence anchor the orchestrator's switching logic
+ * uses.
  */
-export class TurnCollector {
-  private active: ActiveTurn | undefined;
-  private settle: ((settlement: TurnSettlement) => void) | undefined;
-  /** Settlement observed before awaitSettled registered (idle can race the await). */
-  private settlement: TurnSettlement | undefined;
-  /** Abort outcome observed before awaitSettled registered (abort can race the await). */
-  private pendingAbort: TurnOutcome | undefined;
+export class MemberCollector {
+  private active: ActiveMemberTurn | undefined;
+  /** A cancel/refresh outcome recorded while this member's turn is in flight. */
+  private pendingOutcome: TurnOutcome | undefined;
   private readonly off: Array<() => void> = [];
 
   constructor(
-    private readonly ctx: DshContext,
+    ctx: DshContext,
     private readonly agent: Agent,
+    private readonly role: MemberRole,
     private readonly sessionName: string,
-    private readonly history: SessionHistory,
+    private readonly history: TeamHistory,
+    private readonly sink: (event: ChatEvent) => void,
   ) {
     this.off.push(
       ctx.on("session/event", (session, event) => {
@@ -389,118 +570,69 @@ export class TurnCollector {
     );
   }
 
-  /** Start collecting for a turn: mapped events stream to `stream`. */
-  begin(turnId: string, stream: TurnStream): void {
-    this.active = {
-      turnId,
-      stream,
-      usage: undefined,
-      failure: undefined,
-      step: undefined,
-      localIndexes: new Map(),
-      nextIndex: 0,
-      pendingTools: new Set(),
-    };
-    this.settlement = undefined;
-    this.pendingAbort = undefined;
-  }
-
   /**
-   * Resolve when the turn settles (idle→COMPLETED/ERROR, abort→its outcome).
-   * A settlement (or abort) that raced ahead of the call resolves
-   * immediately — the dsh lifecycle can settle the turn before the runner's
-   * await registers.
+   * Record the terminal outcome for the member's in-flight turn (Cancel →
+   * CANCELED, refresh/shutdown → ABORTED). The caller only invokes this when
+   * the orchestrator reports the member active, so the outcome belongs to a
+   * turn that WILL settle.
+   *
+   * Known race window (documented, not closed here): when the tombstone
+   * lands after the orchestrator started the drive but before this collector
+   * observed the running transition, the mark attaches to a turn that has
+   * not latched yet; it is consumed by the first idle that finds an active
+   * turn. If the cancellation converges without this collector ever seeing a
+   * turn, the pending mark is simply not consumed — the CANCELED terminal
+   * frame is then delivered by whichever settle path the turn takes.
    */
-  awaitSettled(): Promise<TurnSettlement> {
-    if (this.pendingAbort !== undefined) {
-      return Promise.resolve({ ...this.pendingAbort, usage: undefined });
-    }
-    if (this.settlement !== undefined) {
-      return Promise.resolve(this.settlement);
-    }
-    return new Promise((resolve) => {
-      this.settle = resolve;
-    });
+  markOutcome(outcome: TurnOutcome): void {
+    this.pendingOutcome = outcome;
   }
 
-  /**
-   * Settle the in-flight turn with `outcome` (default ABORTED on the dispose
-   * path; the user cancel passes CANCELED) and stop forwarding. The caller
-   * owns the in-flight turn's terminal frame — it receives the stream and
-   * turn id so it can deliver turn_end — or undefined when no turn is
-   * running (an already-settled turn must not receive a spurious frame).
-   * Whatever settles here wins over the agent/status→idle transition, so
-   * callers must abort BEFORE stopping the turn at its source (teardown's
-   * dispose, cancel's Agent.cancel): the driver's cancellation converges to
-   * an idle status that would otherwise settle the slot COMPLETED.
-   */
-  abort(outcome: TurnOutcome = { status: "ABORTED" }): { stream: TurnStream; turnId: string } | undefined {
-    const inFlight = this.active;
-    if (inFlight === undefined) {
-      return undefined;
-    }
-    this.active = undefined;
-    this.pendingAbort = outcome;
-    this.resolve({ ...outcome, usage: undefined });
-    return { stream: inFlight.stream, turnId: inFlight.turnId };
-  }
-
-  /** Unsubscribe the session-lifetime listeners (process shutdown). */
+  /** Unsubscribe the session-lifetime listeners (team teardown). */
   dispose(): void {
     for (const off of this.off) {
       off();
     }
     this.off.length = 0;
-  }
-
-  private resolve(settlement: TurnSettlement): void {
-    const settle = this.settle;
-    this.settle = undefined;
-    if (settle !== undefined) {
-      settle(settlement);
-      return;
-    }
-    // No waiter yet: cache so a later awaitSettled observes the outcome.
-    this.settlement = settlement;
+    this.active = undefined;
   }
 
   private onSessionEvent(dshSessionId: string, event: DshSessionEvent): void {
     if (dshSessionId !== this.agent.session.id) {
       return;
     }
+    if (event.type === "user/message") {
+      // Member-view projection only: the user input or a relayed broadcast
+      // enters this member's view exactly when the orchestrator drives it
+      // (survey/deepseek-harness-team-mode.md §4.4).
+      this.history.appendMemberViewUser(this.role, event as UserMessageEvent);
+      return;
+    }
     if (event.type === "assistant/message") {
       // History collection is session-lifetime: the final blocks are
-      // recorded even when no stream is attached (or already detached), so
-      // refresh backfill stays consistent (research.md D10-2). The driver's
-      // interrupted fixation flag rides along onto the history message
+      // recorded even when no stream is attached, so refresh backfill stays
+      // consistent. The loop's interrupted fixation flag rides along
       // (specs/054-agent-v2-bugfixes/data-model.md §1.5).
       const assistantEvent = event as AssistantMessageEvent;
       const message = assistantEvent.data.message;
-      if (this.active !== undefined) {
-        this.active.usage = assistantEvent.data.usage ?? this.active.usage;
-      }
-      this.history.appendAssistant(
+      const active = this.ensureActive();
+      active.usage = assistantEvent.data.usage ?? active.usage;
+      active.pending = [];
+      this.history.appendMemberOutput(
+        this.role,
         message.content,
         assistantEvent.data.interrupted === true,
       );
       return;
     }
     if (event.type === "tool/call") {
-      // Wire invariant (specs/051-agent-v2-dsh-migration/data-model.md §4-2):
-      // the loop pairs every call with a result — the pending set is the
-      // collector's in-turn bookkeeping of that pairing; the call's own
-      // display frames already streamed as tool-call chunks.
-      const call = event as ToolCallEvent;
-      if (this.active !== undefined) {
-        this.active.pendingTools.add(call.data.callId);
-      }
+      // Display frames already streamed as tool-call chunks; the result
+      // settles the matching block (wire invariant: the loop pairs every
+      // call with a result).
       return;
     }
     if (event.type === "tool/result") {
       this.onToolResult(event as ToolResultMessageEvent);
-      return;
-    }
-    if (!this.active) {
       return;
     }
     if (event.type === "assistant/chunk") {
@@ -517,13 +649,11 @@ export class TurnCollector {
   }
 
   /**
-   * Map one `tool/result` session event to the `tool_result` ChatEvent frame
-   * (specs/051-agent-v2-dsh-migration/data-model.md §2.4) and settle the
-   * matching history block. The frame is keyed by tool_id — a web client
-   * finalizes its matching block on arrival — so it emits whenever the turn
-   * stream is live, while the history settlement is session-lifetime like
-   * every history projection. A result with no unsettled matching block is
-   * ignored on the history side (data-model.md §2.3), never fabricated.
+   * Map one `tool/result` session event to the `tool_result` member frame and
+   * settle the matching history block. The frame is keyed by tool_id — a web
+   * client finalizes its matching block on arrival — while the history
+   * settlement is session-lifetime. A result with no unsettled matching
+   * block is ignored on the history side, never fabricated.
    */
   private onToolResult(event: ToolResultMessageEvent): void {
     const block = event.data.message.content[0];
@@ -532,56 +662,80 @@ export class TurnCollector {
     const result = (block?.content ?? [])
       .map((candidate) => (candidate.type === "text" ? candidate.text ?? "" : ""))
       .join("");
-    this.history.settleToolResult(toolId, status, result);
-    if (this.active === undefined) {
-      return;
-    }
-    this.active.pendingTools.delete(toolId);
+    this.history.settleToolResult(this.role, toolId, status, result);
+    const active = this.ensureActive();
     const toolResult: ToolResultEvent = { toolId, status, result };
-    this.active.stream.write({ session: this.sessionName, turnId: this.active.turnId, toolResult });
+    this.sink({
+      session: this.sessionName,
+      turnId: active.turnId,
+      member: this.role,
+      toolResult,
+    });
   }
 
   private onChunk(
     data: { turn?: number; step?: number; chunk?: DshStreamChunk } | undefined,
   ): void {
     const chunk = data?.chunk;
-    if (!chunk || !this.active) {
+    if (!chunk) {
       return;
     }
+    const active = this.ensureActive();
     if (chunk.type === "usage") {
       // Folded into turn_end.usage; never a standalone frame (§4).
-      this.active.usage = chunk.usage;
+      active.usage = chunk.usage;
       return;
     }
     // Step-boundary reset (data-model.md §2.4): dsh chunk indexes restart at
     // 0 on every model request, so a new step number drops the step-local
-    // table; the turn-global counter keeps monotonic across steps.
+    // table and the pending interrupted-prefix blocks; the turn-global
+    // counter keeps monotonic across steps.
     const step = data?.step;
-    if (step !== undefined && step !== this.active.step) {
-      this.active.step = step;
-      this.active.localIndexes = new Map();
+    if (step !== undefined && step !== active.step) {
+      active.step = step;
+      active.localIndexes = new Map();
+      active.pending = [];
+    }
+    const index = chunk.index ?? 0;
+    if (chunk.type === "reasoning-delta" || chunk.type === "text-delta") {
+      const view = this.findPending(index) ?? this.createPending(index, chunk.type === "reasoning-delta" ? "reasoning" : "text");
+      view.text += chunk.text ?? "";
+    } else if (chunk.type === "block-end" && chunk.block !== undefined) {
+      const existing = this.findPending(index);
+      if (existing !== undefined) {
+        active.pending = active.pending.filter((entry) => entry.index !== index);
+      }
+      active.pending.push({ index, view: chunk.block });
     }
     const chatEvent = chunkToChatEvent(
       chunk,
       this.sessionName,
-      this.active.turnId,
-      (index) => this.remapIndex(index),
+      active.turnId,
+      (localIndex) => this.remapIndex(active, localIndex),
       // Step numbers reach clients on every block frame for the display
       // segmentation (specs/054-agent-v2-bugfixes/data-model.md §1.1); a dsh
       // event without one degrades to step 0.
       step ?? 0,
     );
     if (chatEvent !== undefined) {
-      this.active.stream.write(chatEvent);
+      chatEvent.member = this.role;
+      this.sink(chatEvent);
     }
   }
 
+  /** The pending prefix entry for a provider block index, if any. */
+  private findPending(index: number): DshContentBlockView | undefined {
+    return this.active?.pending.find((entry) => entry.index === index)?.view;
+  }
+
+  private createPending(index: number, type: "text" | "reasoning"): DshContentBlockView {
+    const view: DshContentBlockView = { type, text: "" };
+    this.active?.pending.push({ index, view });
+    return view;
+  }
+
   /** Assign the turn-global index for a step-local one, first sight wins. */
-  private remapIndex(localIndex: number): number {
-    const active = this.active;
-    if (active === undefined) {
-      return localIndex;
-    }
+  private remapIndex(active: ActiveMemberTurn, localIndex: number): number {
     const assigned = active.localIndexes.get(localIndex);
     if (assigned !== undefined) {
       return assigned;
@@ -592,31 +746,86 @@ export class TurnCollector {
     return global;
   }
 
+  /**
+   * Latch the member turn: the running transition (or the first turn-scoped
+   * event) opens a fresh turn id and emits its `turn_start` member frame
+   * before any block frame.
+   */
+  private ensureActive(): ActiveMemberTurn {
+    if (this.active !== undefined) {
+      return this.active;
+    }
+    const active: ActiveMemberTurn = {
+      turnId: mintTurnId(),
+      usage: undefined,
+      failure: undefined,
+      step: undefined,
+      localIndexes: new Map(),
+      nextIndex: 0,
+      pending: [],
+    };
+    this.active = active;
+    this.sink({
+      session: this.sessionName,
+      turnId: active.turnId,
+      member: this.role,
+      turnStart: {},
+    });
+    return active;
+  }
+
   private onStatus(payload: { agent?: Agent; status?: string }): void {
-    if (payload.agent !== this.agent || payload.status !== "idle" || !this.active) {
+    if (payload.agent !== this.agent) {
       return;
     }
-    const failure = this.active.failure;
-    const usage = this.active.usage;
-    // The turn is over: clear the active slot so a late abort() (dispose)
-    // observes nothing in flight and does not rewrite the settlement.
+    if (payload.status === "running") {
+      this.ensureActive();
+      return;
+    }
+    if (payload.status !== "idle" || this.active === undefined) {
+      return;
+    }
+    const active = this.active;
+    const outcome =
+      this.pendingOutcome ??
+      (active.failure === undefined
+        ? { status: "COMPLETED" as const }
+        : { status: "ERROR" as const, error: active.failure });
+    const pendingBlocks = active.pending.map((entry) => entry.view);
+    // The turn is over: clear the active slot so a late markOutcome (cancel
+    // racing the idle) observes nothing in flight.
     this.active = undefined;
-    this.resolve(
-      failure === undefined
-        ? { status: "COMPLETED", usage }
-        : { status: "ERROR", error: failure, usage },
-    );
+    this.pendingOutcome = undefined;
+    if (active.failure !== undefined && outcome.status === "ERROR" && pendingBlocks.length > 0) {
+      // Provider failure with a streamed prefix: the loop layer dropped it
+      // (it only solidifies interrupted prefixes on cancellation), so the
+      // collector appends the interrupted history entry here — the specs/
+      // 054 backfill semantics the large tests assert.
+      this.history.appendMemberOutput(this.role, pendingBlocks, true);
+    }
+    const usage =
+      outcome.status === "COMPLETED" ? usageToProto(active.usage) : undefined;
+    this.sink({
+      session: this.sessionName,
+      turnId: active.turnId,
+      member: this.role,
+      turnEnd: {
+        status: `TURN_STATUS_${outcome.status}`,
+        ...(outcome.error === undefined ? {} : { error: outcome.error }),
+        ...(usage === undefined ? {} : { usage }),
+      },
+    });
   }
 
   private onError(payload: { agent?: Agent; error?: unknown }): void {
-    if (payload.agent !== this.agent || !this.active) {
+    if (payload.agent !== this.agent) {
       return;
     }
     this.recordFailure(toFailure(payload.error));
   }
 
   private recordFailure(failure: DshLlmFailureView | undefined): void {
-    if (!this.active || failure === undefined) {
+    if (this.active === undefined || failure === undefined) {
       return;
     }
     // First failure wins; subsequent events (turn/end, idle) are confirmations.
@@ -641,7 +850,7 @@ function toFailure(error: unknown): DshLlmFailureView | undefined {
   return { code: "UNKNOWN", message: String(error) };
 }
 
-/** Mint a server-side turn identity (data-model.md §2.4: server-minted UUID). */
+/** Mint a server-side member-turn identity (data-model.md §2.4: server-minted UUID). */
 export function mintTurnId(): string {
   return randomUUID();
 }

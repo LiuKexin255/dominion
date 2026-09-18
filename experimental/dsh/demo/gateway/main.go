@@ -32,9 +32,17 @@ func main() {
 	}
 
 	mux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
+	// Both faces of the wire contract transcode here: the conversation face
+	// (Chat) and the stateless preset configuration face (PresetService).
+	// Direct-to-agent for PresetService — the demo is single-instance with no
+	// proxy affinity need (specs/058-dsh-preset-roster-demo/contracts/chat-api.md §3).
 	err = demo.RegisterChatHandler(context.Background(), mux, conn)
 	if err != nil {
-		log.Fatalf("failed to register handler: %v", err)
+		log.Fatalf("failed to register chat handler: %v", err)
+	}
+	err = demo.RegisterPresetServiceHandler(context.Background(), mux, conn)
+	if err != nil {
+		log.Fatalf("failed to register preset service handler: %v", err)
 	}
 
 	srv := &http.Server{

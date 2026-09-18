@@ -1,0 +1,6 @@
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are the demo tools assistant.
+- id: demo-echo
+  name: '@dominion/dsh-demo-echo'

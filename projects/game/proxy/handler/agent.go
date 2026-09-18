@@ -1,12 +1,14 @@
 // Package handler implements the proxy's gRPC forwarding surface: the
-// agent_v2 AgentService face (UpdateAgent/GetAgent/ListAgentMessages/Send/
-// Cancel) and the DesktopBridgeService flow stream. Both route to the
-// agent_v2 instance owning the (template, session) pair through the owner
-// store — owner affinity, because the agent/game state lives in the serving
+// agent_v2 AgentService team face (UpdateTeam/GetTeam/GetTeamMember/
+// ListTeamMessages/ListMemberMessages/Send/Cancel) and the
+// DesktopBridgeService flow stream. Both route to the agent_v2 instance
+// owning the (template, session) pair through the owner store — owner
+// affinity, because the team/member/queue/game state lives in the serving
 // instance's process memory and must not drift across instances
 // (specs/051-agent-v2-dsh-migration/research.md D9). The handlers own owner
 // resolution, agent-client routing, and stream binding directly; there is no
-// separate service layer.
+// separate service layer. The forwarded surface is the team model of
+// specs/059-agent-v2-team-mode/contracts/team-api.md.
 package handler
 
 import (
@@ -35,18 +37,18 @@ var newAgentClient = func(conn *grpc.ClientConn) game.AgentServiceClient {
 }
 
 // AgentHandler implements game.AgentServiceServer: the forwarding surface
-// that routes the /api/v2 agent RPCs to the agent_v2 instance owning the
-// session — owner affinity, because the agent/queue/game state lives in the
+// that routes the /api/v2 team RPCs to the agent_v2 instance owning the
+// session — owner affinity, because the team/queue/game state lives in the
 // serving instance's process memory and must not drift across instances
-// (specs/051-agent-v2-dsh-migration/research.md D9). UpdateAgent is the only
+// (specs/051-agent-v2-dsh-migration/research.md D9). UpdateTeam is the only
 // owner allocation point (get-or-create — materialization lands the owner,
 // so a desktop flow connection and the conversation that follow reach the
-// same instance); GetAgent/ListAgentMessages/Send/Cancel only look the owner
-// up and answer NOT_FOUND when absent (Send has no lazy materialization —
-// specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.4). The
-// stateless configuration face (PresetService) is not routed here: preset
-// state lives in Mongo and the model catalog is static, so the gateway dials
-// agent_v2 directly for it
+// same instance); GetTeam/GetTeamMember/ListTeamMessages/ListMemberMessages/
+// Send/Cancel only look the owner up and answer NOT_FOUND when absent (Send
+// has no lazy materialization — specs/059-agent-v2-team-mode/contracts/
+// team-api.md §3). The stateless configuration face (PresetService) is not
+// routed here: preset state lives in Mongo and the model catalog is static,
+// so the gateway dials agent_v2 directly for it
 // (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §3.4).
 type AgentHandler struct {
 	game.UnimplementedAgentServiceServer
@@ -72,15 +74,15 @@ func NewAgentHandler(
 	}
 }
 
-// UpdateAgent forwards the materialization request to the agent_v2 instance
-// owning the session and is the ONLY owner allocation point on the agent
-// surface (get-or-create; ErrOwnerAlreadyExists races re-read the winner).
-// The proxy is a routing layer: preset/model validation and the
-// create-or-update semantics (AIP-134 create-or-update,
+// UpdateTeam forwards the team materialization/refresh request to the
+// agent_v2 instance owning the session and is the ONLY owner allocation
+// point on the team surface (get-or-create; ErrOwnerAlreadyExists races
+// re-read the winner). The proxy is a routing layer: preset/model validation
+// and the create-or-update semantics (AIP-134 create-or-update,
 // https://google.aip.dev/134#create-or-update) belong to agent_v2
-// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.1).
-func (h *AgentHandler) UpdateAgent(ctx context.Context, req *game.UpdateAgentRequest) (*game.Agent, error) {
-	name, err := parseAgentResourceName(req.GetAgent().GetName())
+// (specs/059-agent-v2-team-mode/contracts/team-api.md §2).
+func (h *AgentHandler) UpdateTeam(ctx context.Context, req *game.UpdateTeamRequest) (*game.Team, error) {
+	name, err := parseTeamResourceName(req.GetTeam().GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -95,23 +97,23 @@ func (h *AgentHandler) UpdateAgent(ctx context.Context, req *game.UpdateAgentReq
 		return nil, err
 	}
 
-	agent, err := newAgentClient(connRef.Conn).UpdateAgent(ctx, req)
+	team, err := newAgentClient(connRef.Conn).UpdateTeam(ctx, req)
 	if err != nil {
-		logs.Error(ctx, "update agent: downstream call failed",
+		logs.Error(ctx, "update team: downstream call failed",
 			event.String("session_id", name.SessionID),
 			event.Err(err),
 		)
-		return nil, propagateAgentError(err, "update agent")
+		return nil, propagateAgentError(err, "update team")
 	}
-	return agent, nil
+	return team, nil
 }
 
-// GetAgent returns the materialized agent of a session. The owner must
-// already exist (UpdateAgent allocates it): no owner → NOT_FOUND — the
-// agent is not materialized for routing purposes either
-// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §2.2).
-func (h *AgentHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) (*game.Agent, error) {
-	name, err := parseAgentResourceName(req.GetName())
+// GetTeam returns the materialized team of a session. The owner must
+// already exist (UpdateTeam allocates it): no owner → NOT_FOUND — the team
+// is not materialized for routing purposes either
+// (specs/059-agent-v2-team-mode/contracts/team-api.md §3).
+func (h *AgentHandler) GetTeam(ctx context.Context, req *game.GetTeamRequest) (*game.Team, error) {
+	name, err := parseTeamResourceName(req.GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -126,23 +128,21 @@ func (h *AgentHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 		return nil, err
 	}
 
-	agent, err := newAgentClient(connRef.Conn).GetAgent(ctx, req)
+	team, err := newAgentClient(connRef.Conn).GetTeam(ctx, req)
 	if err != nil {
-		logs.Error(ctx, "get agent: downstream call failed",
+		logs.Error(ctx, "get team: downstream call failed",
 			event.String("session_id", name.SessionID),
 			event.Err(err),
 		)
-		return nil, propagateAgentError(err, "get agent")
+		return nil, propagateAgentError(err, "get team")
 	}
-	return agent, nil
+	return team, nil
 }
 
-// ListAgentMessages lists the agent's in-memory history. The owner must
-// already exist: no owner → NOT_FOUND (a never-materialized agent has no
-// history to list, specs/051-agent-v2-dsh-migration/contracts/
-// agent-api.md §2.2/§2.3).
-func (h *AgentHandler) ListAgentMessages(ctx context.Context, req *game.ListAgentMessagesRequest) (*game.ListAgentMessagesResponse, error) {
-	name, err := parseAgentResourceName(req.GetParent())
+// GetTeamMember returns one team member (including its system prompt). The
+// owner must already exist: no owner → NOT_FOUND.
+func (h *AgentHandler) GetTeamMember(ctx context.Context, req *game.GetTeamMemberRequest) (*game.TeamMember, error) {
+	name, err := parseTeamMemberResourceName(req.GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -157,26 +157,85 @@ func (h *AgentHandler) ListAgentMessages(ctx context.Context, req *game.ListAgen
 		return nil, err
 	}
 
-	resp, err := newAgentClient(connRef.Conn).ListAgentMessages(ctx, req)
+	member, err := newAgentClient(connRef.Conn).GetTeamMember(ctx, req)
 	if err != nil {
-		logs.Error(ctx, "list agent messages: downstream call failed",
+		logs.Error(ctx, "get team member: downstream call failed",
 			event.String("session_id", name.SessionID),
 			event.Err(err),
 		)
-		return nil, propagateAgentError(err, "list agent messages")
+		return nil, propagateAgentError(err, "get team member")
+	}
+	return member, nil
+}
+
+// ListTeamMessages lists the team's merged message sequence. The owner must
+// already exist: no owner → NOT_FOUND (a never-materialized team has no
+// history to list, specs/059-agent-v2-team-mode/contracts/team-api.md §5).
+func (h *AgentHandler) ListTeamMessages(ctx context.Context, req *game.ListTeamMessagesRequest) (*game.ListTeamMessagesResponse, error) {
+	name, err := parseTeamResourceName(req.GetParent())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	owner, err := lookupAgentOwner(ctx, h.ownerStore, name.TemplateID, name.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	connRef, err := agentV2Conn(ctx, h.manager, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := newAgentClient(connRef.Conn).ListTeamMessages(ctx, req)
+	if err != nil {
+		logs.Error(ctx, "list team messages: downstream call failed",
+			event.String("session_id", name.SessionID),
+			event.Err(err),
+		)
+		return nil, propagateAgentError(err, "list team messages")
 	}
 	return resp, nil
 }
 
-// Cancel forwards the cancel request to the agent_v2 instance owning the
-// session. The owner is looked up, never allocated (lookup-only family:
-// GetAgent/ListAgentMessages/Send/Cancel): no owner → NOT_FOUND — for
-// routing purposes there is no agent to cancel. All cancel semantics
-// (in-flight turn termination, queue landing, idempotent no-op) live in
-// agent_v2 (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §3);
-// the proxy is a pure routing layer.
+// ListMemberMessages lists one member's view history. Same owner lookup
+// family as ListTeamMessages.
+func (h *AgentHandler) ListMemberMessages(ctx context.Context, req *game.ListMemberMessagesRequest) (*game.ListMemberMessagesResponse, error) {
+	name, err := parseTeamMemberResourceName(req.GetParent())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	owner, err := lookupAgentOwner(ctx, h.ownerStore, name.TemplateID, name.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	connRef, err := agentV2Conn(ctx, h.manager, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := newAgentClient(connRef.Conn).ListMemberMessages(ctx, req)
+	if err != nil {
+		logs.Error(ctx, "list member messages: downstream call failed",
+			event.String("session_id", name.SessionID),
+			event.Err(err),
+		)
+		return nil, propagateAgentError(err, "list member messages")
+	}
+	return resp, nil
+}
+
+// Cancel forwards the team cancel request to the agent_v2 instance owning
+// the session. The owner is looked up, never allocated (lookup-only family):
+// no owner → NOT_FOUND — for routing purposes there is no team to cancel.
+// All cancel semantics (in-flight turn termination, queue preservation,
+// idempotent no-op) live in agent_v2
+// (specs/059-agent-v2-team-mode/contracts/team-api.md §4); the proxy is a
+// pure routing layer.
 func (h *AgentHandler) Cancel(ctx context.Context, req *game.CancelRequest) (*game.CancelResponse, error) {
-	name, err := parseAgentResourceName(req.GetName())
+	name, err := parseTeamResourceName(req.GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -193,24 +252,23 @@ func (h *AgentHandler) Cancel(ctx context.Context, req *game.CancelRequest) (*ga
 
 	resp, err := newAgentClient(connRef.Conn).Cancel(ctx, req)
 	if err != nil {
-		logs.Error(ctx, "cancel agent: downstream call failed",
+		logs.Error(ctx, "cancel team: downstream call failed",
 			event.String("session_id", name.SessionID),
 			event.Err(err),
 		)
-		return nil, propagateAgentError(err, "cancel agent")
+		return nil, propagateAgentError(err, "cancel team")
 	}
 	return resp, nil
 }
 
 // Send forwards one user message to the agent_v2 instance owning the session
-// and relays the ChatEvent stream until the turn ends. The owner is looked
+// and relays the team stream until the team quiesces. The owner is looked
 // up, never allocated: no owner → NOT_FOUND (the first layer of the
-// unmaterialized-Send rejection; the second — owner present but agent not
+// unmaterialized-Send rejection; the second — owner present but team not
 // materialized, e.g. after an agent_v2 restart — is answered by agent_v2
-// with FAILED_PRECONDITION, specs/051-agent-v2-dsh-migration/
-// contracts/agent-api.md §2.4). The routing-layer validation rejects
-// malformed resource names and empty text with INVALID_ARGUMENT before any
-// owner lookup.
+// with FAILED_PRECONDITION, specs/059-agent-v2-team-mode/contracts/
+// team-api.md §3). The routing-layer validation rejects malformed resource
+// names and empty text with INVALID_ARGUMENT before any owner lookup.
 func (h *AgentHandler) Send(req *game.SendRequest, stream game.AgentService_SendServer) error {
 	ctx := stream.Context()
 
@@ -220,8 +278,7 @@ func (h *AgentHandler) Send(req *game.SendRequest, stream game.AgentService_Send
 	}
 	if req.GetText() == "" {
 		// Same routing-layer rule as agent_v2's own handler (the proxy
-		// checks first, agent_v2 re-validates as the backstop):
-		// contracts/agent-api.md §2.4.
+		// checks first, agent_v2 re-validates as the backstop).
 		return status.Error(codes.InvalidArgument, "text must be non-empty")
 	}
 
@@ -237,7 +294,7 @@ func (h *AgentHandler) Send(req *game.SendRequest, stream game.AgentService_Send
 
 	upstream, err := newAgentClient(connRef.Conn).Send(ctx, req)
 	if err != nil {
-		logs.Error(ctx, "agent send: open upstream stream failed",
+		logs.Error(ctx, "team send: open upstream stream failed",
 			event.String("template_id", name.TemplateID),
 			event.String("session_id", name.SessionID),
 			event.Int("agent_index", owner.OwnerIndex),
@@ -246,28 +303,26 @@ func (h *AgentHandler) Send(req *game.SendRequest, stream game.AgentService_Send
 		// Request-level rejections from agent_v2 (e.g. empty-text
 		// INVALID_ARGUMENT) keep their gRPC status so the front end sees the
 		// mapped HTTP code; only a non-status transport failure (conn broken
-		// while opening) is a proxy→agent_v2 hop break → UNAVAILABLE
-		// (contracts/agent-api.md §3).
+		// while opening) is a proxy→agent_v2 hop break → UNAVAILABLE.
 		if st, ok := status.FromError(err); ok {
 			return st.Err()
 		}
-		return status.Errorf(codes.Unavailable, "open agent stream: %v", err)
+		return status.Errorf(codes.Unavailable, "open team stream: %v", err)
 	}
 
-	logs.Info(ctx, "agent stream connected",
+	logs.Info(ctx, "team stream connected",
 		event.String("session_id", name.SessionID),
 		event.Int("agent_index", owner.OwnerIndex),
 	)
 
 	if err := h.binder.BindServerStream(stream, upstream); err != nil {
-		logs.Error(ctx, "agent send: bind failed",
+		logs.Error(ctx, "team send: bind failed",
 			event.String("session_id", name.SessionID),
 			event.Int("agent_index", owner.OwnerIndex),
 			event.Err(err),
 		)
 		// Downstream/upstream stream errors keep their gRPC status: the
-		// proxy does not rewrite agent-level codes (propagateAgentError
-		// semantics — the pump returns status-bearing errors unchanged).
+		// proxy does not rewrite agent-level codes.
 		return err
 	}
 	return nil
@@ -276,8 +331,8 @@ func (h *AgentHandler) Send(req *game.SendRequest, stream game.AgentService_Send
 // parseAgentSession validates a game session resource name of the
 // form templates/{template}/sessions/{session} with a known template
 // (same rule as agent_v2's own handler — the proxy checks first, agent_v2
-// re-validates as the backstop, specs/051-agent-v2-dsh-migration/
-// data-model.md §3).
+// re-validates as the backstop,
+// specs/059-agent-v2-team-mode/contracts/team-api.md §1).
 func parseAgentSession(name string) (game.SessionName, error) {
 	parsed, err := game.ParseSessionName(name)
 	if err != nil {
@@ -289,28 +344,43 @@ func parseAgentSession(name string) (game.SessionName, error) {
 	return parsed, nil
 }
 
-// parseAgentResourceName validates an agent singleton resource name of the
-// form templates/{template}/sessions/{session}/agent and returns the parsed
+// parseTeamResourceName validates a team singleton resource name of the
+// form templates/{template}/sessions/{session}/team and returns the parsed
 // name whose fields are the owner key. The name shape (5 segments, the
-// templates/sessions/agent literals, non-empty variables) is carried by the
+// templates/sessions/team literals, non-empty variables) is carried by the
 // generated parser; the known-template check is a business rule owned by
 // gameconst — codegen does not carry it (same rule as agent_v2's own
 // handler: the proxy checks first, agent_v2 re-validates as the backstop,
 // specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §2.4).
-func parseAgentResourceName(name string) (game.AgentName, error) {
-	parsed, err := game.ParseAgentName(name)
+func parseTeamResourceName(name string) (game.TeamName, error) {
+	parsed, err := game.ParseTeamName(name)
 	if err != nil {
-		return game.AgentName{}, err
+		return game.TeamName{}, err
 	}
 	if !gameconst.IsKnownTemplateID(parsed.TemplateID) {
-		return game.AgentName{}, errors.New("unknown template " + parsed.TemplateID)
+		return game.TeamName{}, errors.New("unknown template " + parsed.TemplateID)
+	}
+	return parsed, nil
+}
+
+// parseTeamMemberResourceName validates a team member resource name of the
+// form templates/{template}/sessions/{session}/team/members/{member} and
+// returns the parsed name; the member id is an open segment (player/planner
+// is agent_v2's roster rule, not codegen's).
+func parseTeamMemberResourceName(name string) (game.TeamMemberName, error) {
+	parsed, err := game.ParseTeamMemberName(name)
+	if err != nil {
+		return game.TeamMemberName{}, err
+	}
+	if !gameconst.IsKnownTemplateID(parsed.TemplateID) {
+		return game.TeamMemberName{}, errors.New("unknown template " + parsed.TemplateID)
 	}
 	return parsed, nil
 }
 
 // lookupAgentOwner returns the existing agent_v2 owner for a
 // (templateID, sessionID) pair or a mapped status error. It does NOT create
-// an owner; only UpdateAgent (and the desktop bridge's Connect) allocate one.
+// an owner; only UpdateTeam (and the desktop bridge's Connect) allocate one.
 func lookupAgentOwner(ctx context.Context, store domain.OwnerStore, templateID, sessionID string) (*domain.AgentOwner, error) {
 	owner, err := store.Get(ctx, templateID, sessionID)
 	if err != nil {
@@ -329,7 +399,7 @@ func lookupAgentOwner(ctx context.Context, store domain.OwnerStore, templateID, 
 // owner exists yet. Under a concurrent-allocation race the persisted owner
 // wins (ErrOwnerAlreadyExists re-reads the winner) — same semantics as the
 // v1 assignOwner (specs/040-team-singleton-conformance/research.md §R10).
-// Used by UpdateAgent's materialization path and the desktop bridge's
+// Used by UpdateTeam's materialization path and the desktop bridge's
 // Connect (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §4).
 func assignAgentOwner(ctx context.Context, store domain.OwnerStore, picker domain.OwnerPicker, manager agentclient.Manager, templateID, sessionID string) (*domain.AgentOwner, error) {
 	owner, err := store.Get(ctx, templateID, sessionID)
