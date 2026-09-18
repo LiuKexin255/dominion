@@ -169,7 +169,7 @@
 
 **Tasks**:
 
-- [ ] T021 [US5] 通过 testplan SKILL 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环）：desktop_flow 六用例（首帧 status/接管/派发回执识别/在途断连/空闲存活 SC-004/超限归因 SC-003）、game won 拓扑（多局 + 终局统计播报——统计口径回归）、game_disconnect drop 拓扑（三局序列）、conversation/stall/memory 等既有回归全部通过；任何失败/flaky 用例修复后重新执行直至全部通过（原则 VI——仅构建检查不构成验收）
+- [X] T021 [US5] 通过 testplan SKILL 执行 `guitar run projects/game/testplan/system_test.yaml`（完整部署→测试→清理闭环）：desktop_flow 六用例（首帧 status/接管/派发回执识别/在途断连/空闲存活 SC-004/超限归因 SC-003）、game won 拓扑（多局 + 终局统计播报——统计口径回归）、game_disconnect drop 拓扑（三局序列）、conversation/stall/memory 等既有回归全部通过；任何失败/flaky 用例修复后重新执行直至全部通过（原则 VI——仅构建检查不构成验收）；执行前置检查：agent_v2 grpc-js server 已按 research.md D17 显式配置 8MiB 消息上限（`projects/game/agent_v2/src/server.ts` `new grpc.Server` options——grpc-js 默认收包 4MiB，未配置时 SC-003 的 ≤5MiB 腿在 agent_v2 入口即 429 `RESOURCE_EXHAUSTED`）
 
 **Checkpoint（验证门禁）**: guitar 全绿；spec SC-001..SC-006 逐条对照满足。
 

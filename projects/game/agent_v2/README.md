@@ -41,10 +41,13 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
     事件帧 + `team_message`/`member_view` team 级帧，经 gateway 以 NDJSON
     输出）、`Cancel`（team 语义取消）。
   - **PresetService**（无状态配置面）：分池 preset 标准 CRUD + `ListModels`。
-  - **DesktopBridgeService**：desktop 的 flow 控制流 WebSocket 入口
-    （`/api/v2/templates/{template}/sessions/{session}/connect`），session 单位、
-    新连接接管；桌面控制由 player 独占
-    （`specs/059-agent-v2-team-mode/spec.md` FR-012）。
+  - **DesktopBridgeService**：desktop 的 flow 控制面——`:stream` 会话下行流
+    （`GET /api/v2/templates/{template}/sessions/{session}:stream`，chunked
+    NDJSON）与 `:sendFrame` 上行单发
+    （`POST /api/v2/templates/{template}/sessions/{session}:sendFrame`，
+    octet-stream），session 单位、新流接管；桌面控制由 player 独占
+    （`specs/059-agent-v2-team-mode/spec.md` FR-012）；传输契约
+    `specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md` §1。
 - gateway 的 `/api/v2` 路由按 RPC 状态归属拆分
   （`specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md` §3）：
   会话面（AgentService + DesktopBridgeService）走

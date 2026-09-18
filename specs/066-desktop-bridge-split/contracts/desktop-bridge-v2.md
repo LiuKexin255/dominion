@@ -1,7 +1,7 @@
 # Contract: DesktopBridge v2——会话下行流 + 上行单发（拆分 DesktopBridgeService.Connect）
 
 > 本契约取代 [specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md](../../051-agent-v2-dsh-migration/contracts/desktop-bridge.md) 的传输层章节（§1 帧时序、§3 网关 WS 路由、§4 proxy bidi relay）；该文档中与传输无关的部分（桌面执行语义、§5 会话选择器）继续有效并在其自身范围内引用。帧词汇表（UserFrame/TeamFrame/FlowParts）沿用 `projects/game/game.proto`。
-> 决策溯源：调研 [survey/desktop-bridge-connect-split.md](../../../../survey/desktop-bridge-connect-split.md)（D1–D7）+ [../research.md](../research.md)（D8–D16）。
+> 决策溯源：调研 [survey/desktop-bridge-connect-split.md](../../../../survey/desktop-bridge-connect-split.md)（D1–D7）+ [../research.md](../research.md)（D8–D17）。
 
 ## §1 端点与线格式
 
@@ -59,6 +59,7 @@ sequenceDiagram
 2. `game.RegisterDesktopBridgeServiceHandler(ctx, gwmux, teamConn)` 一行注册——与 AgentService 同连接（owner 亲和经 proxy；长流 keepalive 与 8MB hop 上限已配对）。
 3. **Body 上限守卫**：仅对 sendFrame POST 路径应用 `http.MaxBytesReader`（8MiB，与 gRPC hop 对齐）；`Content-Length` 预检超限直接 `413`（`text/plain`，§1.1）；超限读取在 gateway 解码处报 "request body too large" 类清晰错误（`INVALID_ARGUMENT` + 二进制 `google.rpc.Status` 体，§1.1）。超限**永不**静默截断。
 4. 不存在任何 WebSocket 升级分支；`/api/v1`、`/api/v2` 全部经 gwmux 分发。
+5. 上行 8MiB 上限为**全段配对**：gateway HTTP 守卫（本节 3.3）与四段 gRPC hop——gateway→proxy 客户端、proxy server、proxy→agent_v2 agentclient（Go，`MaxRecv/MaxSendMsgSize` 与 `MaxCallRecv/MaxCallSendMsgSize` 8MB）以及 agent_v2 grpc-js server（`grpc.max_receive_message_length`/`grpc.max_send_message_length` 8MiB 显式配置——grpc-js 默认收包 4MiB，Go 段配置不传导到 TS 段，[../research.md](../research.md) D17）——全部 8MiB。HTTP 预检是超限的**唯一首报错点**，gRPC 各段为传输兜底。
 
 ## §4 proxy 转发
 

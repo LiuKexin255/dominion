@@ -19,6 +19,7 @@
 | 错误响应编码 | grpc-gateway v2.27.6 按请求头选 marshaler：Accept 仅对 mimeMap **精确键**命中（无通配回退；默认注册表只有 `*` 通配 JSONPb，本仓库另注册 `application/octet-stream`——故仅设 `Accept: application/json` 也无法命中），无 Accept 命中时 **outbound = inbound**（`runtime/marshaler_registry.go` `MarshalerForRequest`）。由此 `POST :sendFrame`（octet-stream、不设 Accept）的**全部错误响应**（网关解码失败——含 `MaxBytesReader` 超限、上游 gRPC 错误）由 `DefaultHTTPErrorHandler` 以 `ProtoMarshaller` 编码 `status.Convert(err).Proto()`：gRPC code 的 HTTP 映射状态码 + **二进制 `google.rpc.Status` 体**（`Content-Type: application/octet-stream`；`runtime/errors.go`，生成 handler 全部错误路径均传 outboundMarshaler）。`GET :stream`（无 body/Content-Type）inbound/outbound 均落通配 JSONPb——预流错误为 JSON 状态信封、流中异常终止为 NDJSON `{"error":...}` 尾行。D9.4 的 413 预检中间件在 gwmux 之前经 `http.Error` 返回 `text/plain`（不经 marshaler） |
 | 上行顺序依赖 | 逐帧核验：desktop 侧每个操作独立执行、回执按 `flow_result.tool_id` 关联（fake-desktop executor 逐 part 独立出回执；插件 `handleResult` 按 tool_id 查 waiter）；wait/warn 为旁路日志信号；**无任何跨帧顺序依赖**——独立 unary 上行安全（survey §5.3 遗留检查项就此关闭） |
 | env header 透传 | desktop 既有 REST 客户端已带 env header 经 gwmux→proxy→agent_v2 工作（`projects/game/desktop/internal/api/client.go:44-49`；grpc-gateway 默认 header matcher 放行非保留头）——`Stream`/`SendFrame` 走同一 gwmux 路径，透传由构造保证，无需新机制 |
+| agent_v2 grpc-js server 上限 | grpc-js server 默认收包 4MiB、发包不限（`@grpc/grpc-js` `build/src/constants.js`）——Go 段 8MB 配置不传导到 TS 段，须在 `server.ts` server 构造显式配置（D17）；上行链路五段（gateway HTTP 守卫 / gateway 客户端 / proxy server / agentclient / agent_v2 server）自此全部 8MiB |
 
 ## 2. 实现决策（D8 起）
 
@@ -83,7 +84,7 @@ message SendFrameRequest {
 3. 删除：`newRootMux`、`isWebSocketConnectPath*`、`extractConnectIdentity*`、`wsStream`、`handleDesktopBridgeConnect`、`pumpWebSocketConnect`、`streamOpener` 及 `bind`/`websocket`/`proto` 等仅为其服务的 import；`phttp.Handler(gwmux, "game-gateway")` 直接作为 handler（WS 分支消失后 rootMux 无存在必要）。
 4. body 上限中间件：包一层仅命中 sendFrame POST 路径的 `http.MaxBytesReader(w, r.Body, 8MiB)`；`Content-Length` 预检超限直接 413。8MiB 与 gRPC hop 上限对齐（5MiB 截图 + 信封余量充足）。
 
-**Rationale**: "注册一行、零自研"是本重构核心收益；8MiB guard 使 HTTP 腿超限获得清晰归因（413 或 gateway 解码失败时 message 含 "request body too large"），gRPC hop 8MB 退化为传输兜底而非首报错点（spec 025 §4 守卫意图在 HTTP 腿的落点）。
+**Rationale**: "注册一行、零自研"是本重构核心收益；8MiB guard 使 HTTP 腿超限获得清晰归因（413 或 gateway 解码失败时 message 含 "request body too large"），gRPC hop 8MB 退化为传输兜底而非首报错点（spec 025 §4 守卫意图在 HTTP 腿的落点）。gRPC hop 全段 8MiB 的完整链条（含 agent_v2 TS 段）见 D17。
 
 **Alternatives**: guard 放 gRPC hop 独扛——错误表现为 `ResourceExhausted` 且归因层级深，弃；全站 MaxBytesReader——会误伤其他端点，弃。
 
@@ -157,6 +158,14 @@ message SendFrameRequest {
 
 **Rationale**: 用户指令"如果已经是了则忽略"。
 
+### D17 — agent_v2 gRPC server 消息上限对齐 8MiB
+
+**Decision**: `projects/game/agent_v2/src/server.ts` `buildServer` 的 server 构造显式传入 `"grpc.max_receive_message_length": 8 * 1024 * 1024` 与 `"grpc.max_send_message_length": 8 * 1024 * 1024`（server 级，作用于该进程全部服务面）。上行链路五段上限自此全部 8MiB：gateway HTTP 预检/MaxBytesReader（D9.4）→ gateway→proxy gRPC 客户端（`projects/game/gateway/cmd/main.go` clientOpts）→ proxy server（`projects/game/proxy/cmd/main.go` MaxRecv/MaxSendMsgSize）→ proxy→agent_v2 agentclient（`projects/game/proxy/runtime/agentclient/manager.go` MaxCallRecv/MaxCallSendMsgSize）→ agent_v2 grpc-js server（本决策）。
+
+**Rationale**: grpc-js server 默认收包上限 4MiB、发包不限（`@grpc/grpc-js` 1.14.4 `build/src/constants.js` `DEFAULT_MAX_RECEIVE_MESSAGE_LENGTH`/`DEFAULT_MAX_SEND_MESSAGE_LENGTH`）——Go 段的 8MB 配置不传导到 TS 段。默认值下 ≤5MiB 的 SendFrame 回执在 agent_v2 入口即 `RESOURCE_EXHAUSTED`（HTTP 429 映射），FR-007「≤5MiB 必达、超限在 HTTP 边缘归因」不成立（SC-003 的 ≤5MiB 腿钉在该处）。收包 8MiB 与全段配对后，gateway 预检成为唯一首报错点、gRPC 各段退化为传输兜底（D9 rationale 的完整落地）。发包显式 8MiB 与 proxy agentclient 对端的 `MaxCallRecvMsgSize(8MB)` 成对——有效上限本就由对端存在，在发送端声明使潜在超帧在最早点归因，并保持仓库「每段 recv/send 成对配置」惯例（gateway/proxy/agentclient 三段均成对）。同进程其余服务面（对话/预设）载荷远小于 8MiB，server 级上提无副作用。
+
+**Alternatives**: 收包设 -1（无限）——拆除传输兜底、超限涌向 gRPC 解码层，违背 D9 分层归因，弃；仅设收包不设发包——发包上限隐式依赖对端配置、不满足成对惯例，弃。
+
 ## 3. 风险与缓解
 
 | 风险 | 缓解 |
@@ -167,9 +176,10 @@ message SendFrameRequest {
 | sendFrame 错误体非单一 JSON（gwmux 错误路径为二进制 `google.rpc.Status`、413 预检为纯文本），客户端误解析 | 客户端按响应 `Content-Type` 分派解析（D13.3）；重试判定只认解出的 gRPC code（D13.5） |
 | takeover 间隙回执被拒 | FAILED_PRECONDITION + desktop 有界重试（D4/D13.5） |
 | desktop 旧版二进制对旧端点的访问（同仓同发布） | 不存在外部旧客户端；testplan 兜底（D6） |
+| 各 gRPC 段消息上限错配（TS 段默认收包 4MiB < Go 段 8MB——≤5MiB 上行在 agent_v2 入口 429 RESOURCE_EXHAUSTED） | 全段显式 8MiB（D17 + D9.4）；SC-003 端到端用例（≤5MiB 必达 + >8MiB 归因）钉死 |
 
 ## 4. 迁移约束承接（survey §8 的落地映射）
 
 - **A 类保留**：octet-stream 延续 spec 025 §2 二进制直传；HTTP 显式上限（D9.4）承接 §3/§4 守卫意图；接管/no-op 清理、dispatch 故障路径、探测意图（开流首帧 + 首帧超时）、两流独立——全部落入 D12/D13。
 - **B 类消失**：URL 身份逐帧注入、CloseNow、锁外读、WS 关闭码分类、首帧身份绑定 + WithFirstFrame、7 段路径手工匹配、OriginPatterns/307 细节、WS 32KiB 读限、drain pause——随代码删除，无对应迁移物。
-- **C 类原样**：keepalive 配对、env header 透传（经 gwmux 同路径构造性保持）、gRPC hop 8MB。
+- **C 类原样**：keepalive 配对、env header 透传（经 gwmux 同路径构造性保持）、gRPC hop 8MB（Go 三段为既有配置原样；agent_v2 grpc-js server 段按 D17 显式配齐——grpc-js 默认收包 4MiB，「既有 8MB」对 TS 段不成立）。

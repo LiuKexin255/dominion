@@ -1,6 +1,6 @@
 # Data Model: DesktopBridgeService.Connect 拆分
 
-> 契约细节见 [contracts/desktop-bridge-v2.md](contracts/desktop-bridge-v2.md)；实现决策依据见 [research.md](research.md)（D8–D16）。
+> 契约细节见 [contracts/desktop-bridge-v2.md](contracts/desktop-bridge-v2.md)；实现决策依据见 [research.md](research.md)（D8–D17）。
 
 ## 1. 实体
 

@@ -1068,7 +1068,18 @@ export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
     isDesktopConnected: (sessionName) => options.ctx.desktopBridge.isDesktopConnected(sessionName),
   };
   const proto = loadProto();
-  const server = new grpc.Server();
+  // The upstream path pairs an 8MiB message limit at every hop — the gateway
+  // HTTP pre-check and its gRPC client, the proxy server, and the
+  // proxy→agent_v2 agentclient. grpc-js defaults to a 4MiB receive limit,
+  // which would reject a ≤5MiB screenshot receipt here (RESOURCE_EXHAUSTED →
+  // HTTP 429) before the gateway pre-check can be the sole first error for
+  // oversized frames. Raising both directions keeps the chain paired.
+  // See D17 in specs/066-desktop-bridge-split/research.md.
+  // See §3 item 5 in specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md.
+  const server = new grpc.Server({
+    "grpc.max_receive_message_length": 8 * 1024 * 1024,
+    "grpc.max_send_message_length": 8 * 1024 * 1024,
+  });
   // Dedicated per-service handler factories over one deps object: the
   // AgentService registration binds the team session face and the
   // PresetService registration the configuration face (agent_v2 serves both
