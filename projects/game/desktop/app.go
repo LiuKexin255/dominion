@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"google.golang.org/grpc/codes"
 )
 
 // debugHoldTimeout is the maximum wall-clock wait for a user to confirm a
@@ -25,6 +27,23 @@ import (
 // var (not const) so unit tests can override it to exercise the timeout branch
 // quickly. See specs/022-desktop-debug-mode spec.md FR-013, research.md D4.
 var debugHoldTimeout = 15 * time.Minute
+
+// firstStatusTimeout bounds the wait for the downlink stream's first status
+// frame — the connection confirmation. The desktop treats a missing first frame
+// as a failed connect
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.2/§5.1). It
+// is a package-level var (not const) so unit tests can shorten it.
+var firstStatusTimeout = 10 * time.Second
+
+// sendFrameRetryAttempts and sendFrameRetryInterval bound the uplink retry that
+// covers the takeover gap: while a new downlink stream is being established the
+// previous one is already closed, so the agent rejects sendFrame with
+// FAILED_PRECONDITION until the new stream registers
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§5.3).
+// The interval is a variable (not a const) so unit tests can shorten the wait.
+const sendFrameRetryAttempts = 3
+
+var sendFrameRetryInterval = time.Second
 
 // emitDebugEvent emits a Wails runtime event Go→frontend. It is a package-level
 // variable so unit tests can replace it with a no-op or recorder: the real
@@ -197,13 +216,13 @@ func (h *hold) confirmed() {
 type App struct {
 	logger       *applog.Logger
 	client       *api.Client
-	ws           *api.WSClient
+	bridge       *api.BridgeClient
 	cfg          api.Config
 	ctx          context.Context
 	selectedMu   sync.Mutex
 	selectedWin  uintptr       // handle of the selected window; 0 = none (spec 025 FR-006)
-	template     string        // active template path segment, set on WebSocket connect
-	sessionID    string        // active session set on WebSocket connect
+	template     string        // active template path segment, set on bridge stream connect
+	sessionID    string        // active session set on bridge stream connect
 	recvMu       sync.Mutex    // guards recvDone's capture-and-reassign in Connect (reconnect handover) and CloseAgent
 	recvDone     chan struct{} // closed when the continuous reader (readLoop) exits; nil when no reader runs
 	debugEnabled atomic.Bool
@@ -272,8 +291,8 @@ func (a *App) ConfirmToolResult(toolID string) error {
 // releaseAllHolds closes every active hold's confirmCh with the given reason
 // and clears the map. Called by SetDebugMode(false) (reason "debug-off") so no
 // turn is left blocked when debug mode is turned off. The blocked
-// handleInboundOperation callers wake, read the reason, and proceed to
-// ws.SendFrame (contract §1.1 side effects).
+// handleInboundOperation callers wake, read the reason, and proceed to the
+// uplink send (contract §1.1 side effects).
 func (a *App) releaseAllHolds(reason string) {
 	a.holdsMu.Lock()
 	for toolID, h := range a.holds {
@@ -349,7 +368,7 @@ func (a *App) ListSessions(template string, pageSize int, pageToken string) (*Li
 
 // maxScreenshotBytes is the maximum allowed screenshot payload attached to a
 // single operation result (5 MiB). Per FR-005a the desktop rejects oversized
-// screenshots before any WebSocket send.
+// screenshots before any uplink send.
 const maxScreenshotBytes = 5 * 1024 * 1024
 
 // postActionScreenshotDelay is the pause between completing a mouse action
@@ -358,14 +377,12 @@ const maxScreenshotBytes = 5 * 1024 * 1024
 // is taken.
 const postActionScreenshotDelay = 500 * time.Millisecond
 
-// readLoop is the continuous connection reader: it drains inbound WebSocket
-// frames for the whole connection lifetime. It runs in its own goroutine
-// started at Connect, after the one-shot status probe RecvFrame returns
-// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
-// Start; specs/041-realtime-init-push/research.md D5 — the probe is a
-// synchronous exchange, so there is never a second concurrent reader during
-// it). It closes recvDone when it exits; CloseAgent waits on recvDone after
-// tearing the socket down so the blocked RecvFrame unblocks instead of
+// readLoop is the continuous downlink reader: it drains inbound frames for the
+// whole connection lifetime. It runs in its own goroutine started at Connect,
+// after WaitFirstStatus has consumed the connection-confirmation status frame
+// (that first-frame read is a synchronous exchange, so there is never a second
+// concurrent reader during it). It closes recvDone when it exits; CloseAgent
+// runs after closing the stream so the blocked RecvFrame unblocks instead of
 // deadlocking (FR-010).
 //
 // A frame carries exactly one payload: a batch of display blocks (MessageParts)
@@ -375,9 +392,10 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 //     desktop-side state — the v2 desktop has no conversation UI, so the
 //     signal-forwarding consumers (typing indicator, warning bubbles) no
 //     longer exist and signals are logged for observability only
-//     (contracts/desktop-bridge.md §5).
-//   - messageParts frames are not produced on the /api/v2 flow channel
-//     (contracts/desktop-bridge.md §1) and are ignored.
+//     (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §5).
+//   - messageParts frames are not produced on the control stream
+//     (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §1) and
+//     are ignored.
 //
 // The wait FlowPart does NOT terminate the reader (FR-008,
 // specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.3):
@@ -390,7 +408,7 @@ func (a *App) readLoop(sessionID string) {
 
 	frameCount := 0
 	for {
-		resp, err := a.ws.RecvFrame(a.ctx)
+		resp, err := a.bridge.RecvFrame(a.ctx)
 		if err != nil {
 			a.logger.Error("backend", "readLoop: recv error", map[string]any{
 				"session_id":  sessionID,
@@ -451,14 +469,14 @@ func signalKind(fp *game.FlowPart) string {
 
 // handleInboundOperation executes an inbound tool-request FlowPart
 // (MouseMovePart/MouseClickPart/KeyboardPressPart/MouseMoveAndClickPart) and
-// sends the matching FlowResultPart back over the WebSocket wrapped in a
-// flowParts frame (the control channel). The result part carries the same
-// tool_id and a SUCCEEDED/FAILED status. A post-action screenshot is attached
-// when the bound window can be captured.
+// sends the matching FlowResultPart through the uplink sendFrame call wrapped
+// in a flowParts UserFrame. The result part carries the same tool_id and a
+// SUCCEEDED/FAILED status. A post-action screenshot is attached when the bound
+// window can be captured.
 //
 // Per spec 025 FR-023/FR-024 the operation outcome travels as a FlowResultPart
-// (a FlowPart kind) on the control channel — the WS is the only path the
-// result takes, resolving the agent's dispatch.
+// (a FlowPart kind) on the control channel — the uplink sendFrame call is the
+// only path the result takes, resolving the agent's dispatch.
 //
 // Debug mode reorders the result-return boundary
 // (specs/022-desktop-debug-mode spec.md FR-006/FR-007/FR-011, data-model.md
@@ -494,18 +512,9 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 		// (contracts/debug-drawer-contract.md §4) — handleInboundOperation
 		// only owns execute → hold → send, not the descriptor shape.
 		a.holdAndRelease(toolID, part)
-		if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
-			a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
-				"session_id": sessionID,
-				"tool_id":    toolID,
-				"error":      err.Error(),
-			})
-			return fmt.Errorf("send operation result: %w", err)
-		}
-		return nil
 	}
 
-	if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
+	if err := a.sendResultFrame(sessionID, toolID, resultFrame); err != nil {
 		a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
 			"session_id": sessionID,
 			"tool_id":    toolID,
@@ -516,14 +525,57 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 	return nil
 }
 
+// sendResultFrame submits one operation result through the uplink sendFrame
+// call, retrying only a FAILED_PRECONDITION rejection: that code means the
+// session has no active downlink stream yet, which is exactly the takeover gap
+// while a reconnect is being established
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§5.3).
+// HTTP 400 also maps INVALID_ARGUMENT, so the decision is on the gRPC code the
+// client decoded from the binary error body, never the HTTP status. Any other
+// error, or the last attempt, returns immediately.
+func (a *App) sendResultFrame(sessionID, toolID string, frame *game.UserFrame) error {
+	if a.bridge == nil {
+		return fmt.Errorf("send operation result: not connected")
+	}
+
+	var err error
+	for attempt := 1; attempt <= sendFrameRetryAttempts; attempt++ {
+		err = a.bridge.SendFrame(a.ctx, frame)
+		if err == nil {
+			return nil
+		}
+		if attempt == sendFrameRetryAttempts || !isRetryableSendError(err) {
+			return err
+		}
+		a.logger.Info("backend", "sendResultFrame: stream not active, retrying", map[string]any{
+			"session_id": sessionID,
+			"tool_id":    toolID,
+			"attempt":    attempt,
+			"error":      err.Error(),
+		})
+		time.Sleep(sendFrameRetryInterval)
+	}
+	return err
+}
+
+// isRetryableSendError reports whether err is the FAILED_PRECONDITION rejection
+// that a bounded retry covers
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§5.3).
+func isRetryableSendError(err error) bool {
+	var bridgeErr *api.BridgeError
+	if !errors.As(err, &bridgeErr) {
+		return false
+	}
+	return bridgeErr.GRPCCode == codes.FailedPrecondition
+}
+
 // holdAndRelease is the debug-mode hold boundary: it registers a hold for
 // toolID, emits game:debug:result-held (carrying the operation descriptor so
 // the session-top drawer can render the request content —
 // specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §2/§4),
 // blocks until the hold is released (confirm / 15-min auto-continue /
 // shutdown), emits game:debug:result-released, and returns the release reason.
-// handleInboundOperation calls it between Append and SendFrame when debug
-// mode is ON.
+// handleInboundOperation calls it before the uplink send when debug mode is ON.
 //
 // The operation descriptor for the emit payload is built INSIDE this function
 // by calling describeFlowPart(part) as an adapter that formats the raw
@@ -905,16 +957,15 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 	return img, nil
 }
 
-// Connect establishes a WebSocket connection for the session under a template
-// (Wails-bound). template is the Template path segment. The connect path is
-// /api/v2/templates/{template}/sessions/{sessionID}/connect — the v2 flow
-// channel (contracts/desktop-bridge.md §1, §5).
-// After the WebSocket handshake, it performs an application-level probe
-// (round-trip ping) to verify the full path: desktop → gateway → proxy.
-// The probe has a 10-second timeout. On failure, the WebSocket is closed
-// and no state is stored.
+// Connect opens the session's downlink stream for the session under a template
+// (Wails-bound). template is the Template path segment. The stream path is
+// /api/v2/templates/{template}/sessions/{sessionID}:stream — the v2 control
+// channel (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1).
+// After the stream opens, it waits for the first status frame (a 10-second
+// timeout) as the application-level connection confirmation, then starts the
+// continuous reader. On failure the stream is closed and no state is stored.
 //
-// On success the probe response's StatusSignalStatus enum name is returned
+// On success the first status frame's StatusSignalStatus enum name is returned
 // (e.g. "STATUS_SIGNAL_STATUS_IDLE") so the frontend can surface the agent's
 // reported working state
 // (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
@@ -936,23 +987,23 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 		corrID = "corr-" + corrID
 	}
 
-	a.logger.Info("backend", "Connecting session via WebSocket", map[string]any{
+	a.logger.Info("backend", "Connecting session via bridge stream", map[string]any{
 		"trace_id":       traceID,
 		"template":       template,
 		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
 
-	// Close any existing WS connection first. Reconnect handover
+	// Close any existing stream first. Reconnect handover
 	// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
-	// §3.1): tear the old socket down — which unblocks the old reader's
-	// RecvFrame — then wait on the prior recvDone (captured under recvMu, as
-	// CloseAgent does) so the old reader has exited before a new recvDone is
-	// created below. Without this wait, the old reader's `defer
-	// close(a.recvDone)` would close the NEW reader's channel (goroutine
-	// lifetimes, https://google.github.io/styleguide/go/decisions#goroutine-lifetimes).
-	if a.ws != nil {
-		a.ws.Close()
+	// §3.1): close the old stream — which unblocks the old reader's RecvFrame —
+	// then wait on the prior recvDone (captured under recvMu, as CloseAgent
+	// does) so the old reader has exited before a new recvDone is created
+	// below. Without this wait, the old reader's `defer close(a.recvDone)`
+	// would close the NEW reader's channel (goroutine lifetimes,
+	// https://google.github.io/styleguide/go/decisions#goroutine-lifetimes).
+	if a.bridge != nil {
+		a.bridge.Close()
 		a.recvMu.Lock()
 		priorRecvDone := a.recvDone
 		a.recvMu.Unlock()
@@ -961,8 +1012,8 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 		}
 	}
 
-	ws := &api.WSClient{}
-	if err := ws.Connect(ctx, a.cfg.GatewayURL, template, sessionID, a.cfg.Env); err != nil {
+	bridge := api.NewBridgeClient()
+	if err := bridge.Connect(ctx, a.cfg.GatewayURL, template, sessionID, a.cfg.Env); err != nil {
 		a.logger.Error("backend", "Connect session failed", map[string]any{
 			"trace_id":       traceID,
 			"template":       template,
@@ -970,88 +1021,40 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
+		bridge.Close()
 		return "", err
 	}
 
-	// Application-level probe: send a status signal and wait for any response.
-	// This verifies the full path: desktop → gateway → proxy → agent. Status is
-	// now a FlowPart kind (spec 023 C3 / FR-003).
-	probeFrameID := "connect-probe-" + corrID[len("corr-"):]
-	// The probe travels as a flowParts UserFrame (inbound control channel);
-	// UserFrame carries no frame_id/create_time (server does not consume them).
-	probeFrame := &game.UserFrame{
-		SessionId:  sessionID,
-		TemplateId: template,
-		Payload: &game.UserFrame_FlowParts{
-			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
-			}},
-		},
+	// The first status frame is the connection confirmation: the server pushes
+	// it immediately on stream open
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.2). Its
+	// status enum name is returned to the frontend so it can surface the agent's
+	// reported working state
+	// (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
+	status, err := bridge.WaitFirstStatus(ctx, firstStatusTimeout)
+	if err != nil {
+		a.logger.Error("backend", "Connect: first status frame failed", map[string]any{
+			"trace_id":       traceID,
+			"session_id":     sessionID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		bridge.Close()
+		return "", fmt.Errorf("connect session: %w", err)
 	}
-
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	a.logger.Info("backend", "Sending connect probe", map[string]any{
+	a.logger.Info("backend", "Connect: first status frame received", map[string]any{
 		"trace_id":       traceID,
 		"session_id":     sessionID,
-		"frame_id":       probeFrameID,
+		"status":         status,
 		"correlation_id": corrID,
 	})
 
-	if err := ws.SendFrame(probeCtx, probeFrame); err != nil {
-		a.logger.Error("backend", "Connect probe: send failed", map[string]any{
-			"trace_id":       traceID,
-			"session_id":     sessionID,
-			"frame_id":       probeFrameID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		ws.Close()
-		return "", fmt.Errorf("connect session: probe send failed: %w", err)
-	}
-
-	resp, err := ws.RecvFrame(probeCtx)
-	if err != nil {
-		a.logger.Error("backend", "Connect probe: receive failed", map[string]any{
-			"trace_id":       traceID,
-			"session_id":     sessionID,
-			"frame_id":       probeFrameID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		ws.Close()
-		return "", fmt.Errorf("connect session: probe receive failed: %w", err)
-	}
-
-	// Capture the probe response's StatusSignalStatus enum name so the frontend
-	// can surface the agent's reported working state. The status rides as a
-	// FlowPart kind (spec 023 C3); when the response carries no status
-	// FlowPart, the zero-value enum resolves to STATUS_SIGNAL_STATUS_UNSPECIFIED.
-	status := "STATUS_SIGNAL_STATUS_UNSPECIFIED"
-	if fp, ok := resp.GetPayload().(*game.TeamFrame_FlowParts); ok {
-		for _, p := range fp.FlowParts.GetParts() {
-			if s := p.GetStatus(); s != nil {
-				status = s.GetStatus().String()
-				break
-			}
-		}
-	}
-	a.logger.Info("backend", "Connect probe succeeded", map[string]any{
-		"trace_id":          traceID,
-		"session_id":        sessionID,
-		"frame_id":          probeFrameID,
-		"response_frame_id": resp.GetFrameId(),
-		"status":            status,
-		"correlation_id":    corrID,
-	})
-
-	a.ws = ws
+	a.bridge = bridge
 	a.template = template
 	a.sessionID = sessionID
 
-	// Start the continuous reader AFTER the probe RecvFrame returned, so the
-	// probe's synchronous exchange never overlaps a second reader
+	// Start the continuous reader AFTER WaitFirstStatus returned, so the
+	// first-frame exchange never overlaps a second reader
 	// (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
 	// §3.1 Start; specs/041-realtime-init-push/research.md D5). Exactly ONE
 	// readLoop runs per connection (FR-011, contract §3.4): it reads all
@@ -1067,7 +1070,7 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	a.recvMu.Unlock()
 	go a.readLoop(sessionID)
 
-	a.logger.Info("backend", "Session connected via WebSocket", map[string]any{
+	a.logger.Info("backend", "Session connected via bridge stream", map[string]any{
 		"trace_id":       traceID,
 		"template":       template,
 		"session_id":     sessionID,
@@ -1076,19 +1079,19 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	return status, nil
 }
 
-// CloseAgent closes the WebSocket connection.
+// CloseAgent closes the bridge stream.
 func (a *App) CloseAgent() error {
-	if a.ws == nil {
+	if a.bridge == nil {
 		return nil
 	}
-	a.logger.Info("backend", "Closing agent WebSocket")
-	if err := a.ws.Close(); err != nil {
+	a.logger.Info("backend", "Closing agent bridge stream")
+	if err := a.bridge.Close(); err != nil {
 		a.logger.Error("backend", "Close agent failed", map[string]any{"error": err.Error()})
 		return err
 	}
-	// ws.Close() tears the socket down, which unblocks any in-flight
-	// RecvFrame in readLoop; the goroutine then emits a synthesized wait
-	// frame and closes recvDone. Waiting here avoids clearing a.ws while
+	// bridge.Close() cancels the stream's request context and closes its body,
+	// which unblocks any in-flight RecvFrame in readLoop; the goroutine then
+	// exits and closes recvDone. Waiting here avoids clearing a.bridge while
 	// readLoop may still be reading it. Capture the channel under recvMu so a
 	// concurrent Connect (reconnect handover) cannot reassign recvDone
 	// mid-read.
@@ -1098,7 +1101,7 @@ func (a *App) CloseAgent() error {
 	if recvDone != nil {
 		<-recvDone
 	}
-	a.ws = nil
+	a.bridge = nil
 	return nil
 }
 
