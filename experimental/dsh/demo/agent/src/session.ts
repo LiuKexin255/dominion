@@ -1,27 +1,13 @@
 /**
- * session.ts — explicit conversation ↔ dsh agent session mapping for the
- * chat demo.
+ * session.ts — conversation ↔ dsh agent session mapping for the chat demo.
  *
- * `AgentSessions` owns the conversation registry over `ctx.agents`
- * (conversation id → live agent + resolved preset binding) and drives one
- * round per `send` via `agent.followup`, settling the reply when the agent
- * returns to idle: the concatenated text blocks of the round's LAST
+ * `AgentSessions` owns the get-or-create registry over `ctx.agents`
+ * (conversation id → live agent, host-chosen SessionId per
+ * specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §3), drives one
+ * round per `send` via `agent.followup`, and settles the reply when the
+ * agent returns to idle: the concatenated text blocks of the round's LAST
  * `assistant/message` event, or the empty string when none arrived
  * (specs/047-dsh-chat-demo/research.md D3/D5).
- *
- * Conversations exist only through `create()` (specs/058-dsh-preset-roster-demo/
- * data-model.md §3): the preset composition resolves through
- * `ctx.presetAuthoring.compose()` BEFORE the agent factory call so the resolved
- * id is snapshotted into the creation meta (`meta.agentPreset`, the official
- * composeAgent wiring shape) and the mount happens in the factory's `setup`
- * hook, where a failure rolls the whole creation back. Preset selection is
- * mandatory (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
- * §2/§3): `presetId` names a STORE preset, and an absent id is rejected
- * INVALID_ARGUMENT by `compose()`. Same id + same preset is
- * an idempotent no-op; same id + a different preset disposes the old agent and
- * rebuilds (R4 in specs/058-dsh-preset-roster-demo/research.md). `send()` on a
- * conversation that was never created throws `ConversationNotCreatedError` —
- * no lazy creation (FR-002).
  *
  * The Context injected at construction is the dependency seam: unit tests
  * pass a mock `ctx` and drive the captured event listeners instead of
@@ -34,7 +20,6 @@ import type {
   CreateAgentOptions,
 } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
 import { error, info } from "@dominion/common-js-logs";
 import type { DshContext } from "./dsh.js";
 
@@ -66,34 +51,8 @@ interface AssistantMessageEvent extends RoundEvent {
 interface SessionEntry {
   readonly agent: Agent;
   readonly handle: AgentHandle;
-  /** Resolved preset id the conversation is bound to (data-model.md §3). */
-  readonly preset: string;
-  readonly createTime: Date;
   /** Tail of the per-session round serialization; never rejects. */
   chain: Promise<unknown>;
-}
-
-/** The resource projection `create()` returns (chat-api.md §1.1). */
-export interface ConversationView {
-  name: string;
-  preset: string;
-  createTime: Date;
-}
-
-/**
- * Thrown by `send()` when the conversation was never created (or its agent
- * was disposed externally): the server maps this to gRPC
- * FAILED_PRECONDITION — "call CreateConversation first" (FR-002, chat-api.md
- * §1.2).
- */
-export class ConversationNotCreatedError extends Error {
-  readonly conversationId: string;
-
-  constructor(conversationId: string) {
-    super(`conversation ${conversationId} not created; call CreateConversation first`);
-    this.name = "ConversationNotCreatedError";
-    this.conversationId = conversationId;
-  }
 }
 
 /**
@@ -115,66 +74,26 @@ export function finalResponse(events: readonly RoundEvent[]): string {
   return "";
 }
 
-/** Owns the live conversation registry and their round serialization. */
+/** Owns the live conversation agents and their round serialization. */
 export class AgentSessions {
   private readonly sessions = new Map<string, SessionEntry>();
-  /** Serializes create/rebuild per conversation id. */
-  private readonly creations = new Map<string, Promise<ConversationView>>();
+  /** Single-flight creation per conversation id (https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/sdk/server/src/server.ts). */
+  private readonly creations = new Map<string, Promise<SessionEntry>>();
 
   constructor(private readonly ctx: DshContext) {}
 
   /**
-   * Create the conversation bound to `presetId`, a store preset id —
-   * preset selection is mandatory under the 060 derivation semantics, so an
-   * absent id reaches `compose(undefined)` and is rejected INVALID_ARGUMENT
-   * (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2/§3).
-   *
-   * Same conversation id with the same resolved preset returns the existing
-   * view without any side effect (idempotent, R4); with a different preset the
-   * old agent is disposed first — in-flight rounds fail through the
-   * `agent/disposed` round hook — and the agent is rebuilt on the new preset.
-   */
-  async create(conversationId: string, presetId?: string): Promise<ConversationView> {
-    // Serialize per conversation so a rebuild never races a pending create:
-    // the later create wins, matching the create-or-update semantics of the
-    // RPC face (chat-api.md §1.1, AIP-134 allow_missing).
-    //
-    // Known boundary: the single creations slot only chains the FIRST
-    // pending create — with 3+ concurrent creates where a middle one
-    // rebuilds, the tail creates can observe a registry already deleted by
-    // the rebuild and compose overlapping agents, and the handle the map
-    // overwrites would leak undisposed. Acceptable for this demo: one
-    // process, low conversational concurrency, and a rebuild on the same
-    // conversation id is a rare caller pattern; a full per-conversation
-    // mutex would complicate the common path for no demo-reachable gain.
-    const pending = this.creations.get(conversationId);
-    if (pending) {
-      await pending.catch(() => undefined);
-    }
-    const creation = this.doCreate(conversationId, presetId);
-    this.creations.set(conversationId, creation);
-    try {
-      return await creation;
-    } finally {
-      if (this.creations.get(conversationId) === creation) {
-        this.creations.delete(conversationId);
-      }
-    }
-  }
-
-  /**
    * Run one chat round on the conversation's agent and return its reply.
    *
-   * The conversation must have been created explicitly — there is no lazy
-   * creation (FR-002). Concurrent sends on the same conversation are
-   * serialized so each round's event collection observes exactly its own
-   * turn; sends on distinct conversations run independently. A failed round
-   * rejects but leaves the session registered — later sends on the same
-   * conversation reuse it and can succeed again (fake-llm unreachable edge
-   * case: the process stays alive and recovers).
+   * Concurrent sends on the same conversation are serialized so each round's
+   * event collection observes exactly its own turn; sends on distinct
+   * conversations run independently (US2 scenario 3). A failed round rejects
+   * but leaves the session registered — later sends on the same conversation
+   * reuse it and can succeed again (fake-llm unreachable edge case: the
+   * process stays alive and recovers).
    */
   async send(conversationId: string, text: string): Promise<string> {
-    const entry = this.liveEntry(conversationId);
+    const entry = await this.getOrCreate(conversationId);
     const round = entry.chain.then(() =>
       this.runRound(entry.agent, conversationId, text),
     );
@@ -187,7 +106,7 @@ export class AgentSessions {
 
   /**
    * Dispose every agent handle, then the composition's root fiber — the
-   * contract's shutdown order (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §1).
+    * contract's shutdown order (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §1).
    */
   async shutdown(): Promise<void> {
     await Promise.allSettled([...this.creations.values()]);
@@ -206,80 +125,37 @@ export class AgentSessions {
     }
   }
 
-  private async doCreate(
-    conversationId: string,
-    presetId?: string,
-  ): Promise<ConversationView> {
-    // Compose resolves BEFORE the factory call so the resolved id lands in
-    // the creation meta (the session boundary snapshots meta before async
-    // setup begins) and an unresolvable (no store record) preset fails before
-    // any session exists (the composeAgent wiring shape; V3-3 fail-fast).
-    const authoring = this.ctx.get("presetAuthoring") as PresetAuthoringService;
-    const composed = await authoring.compose(presetId);
-
+  private async getOrCreate(conversationId: string): Promise<SessionEntry> {
     const existing = this.sessions.get(conversationId);
-    if (existing && existing.preset === composed.agentPreset) {
-      // Staleness re-validation mirrors send(): a loop-level reload can
-      // dispose the agent while our record survives. A stale same-preset
-      // record falls through to the rebuild path below.
-      if (this.ctx.agents.get(existing.agent.id) === existing.agent) {
-        return this.viewOf(existing);
-      }
-    }
     if (existing) {
-      // Different preset (or stale record): dispose the old agent — an
-      // in-flight round rejects through its agent/disposed hook — then
-      // rebuild on the new preset (R4).
+      // Staleness re-validation: a loop-level reload can dispose agents
+      // while our record survives; a retained handle accepts followup()
+      // silently, so re-check the live registry (https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/sdk/server/src/server.ts).
+      if (this.ctx.agents.get(existing.agent.id) === existing.agent) {
+        return existing;
+      }
       this.sessions.delete(conversationId);
-      await existing.handle.dispose();
     }
+    const pending = this.creations.get(conversationId);
+    if (pending) return pending;
+    const creation = this.createSession(conversationId);
+    this.creations.set(conversationId, creation);
+    void creation.then(
+      () => this.creations.delete(conversationId),
+      () => this.creations.delete(conversationId),
+    );
+    return creation;
+  }
 
+  private async createSession(conversationId: string): Promise<SessionEntry> {
     const handle = await this.ctx.agents.create({
       sessionId: conversationId as SessionId,
-      meta: { cwd: process.cwd(), agentPreset: composed.agentPreset },
+      meta: { cwd: process.cwd() },
       agentOptions: { provider: PROVIDER, model: MODEL },
-      setup: composed.setup,
     });
-    const entry: SessionEntry = {
-      agent: handle.agent,
-      handle,
-      preset: composed.agentPreset,
-      createTime: new Date(),
-      chain: Promise.resolve(),
-    };
+    const entry: SessionEntry = { agent: handle.agent, handle, chain: Promise.resolve() };
     this.sessions.set(conversationId, entry);
-    info("agent conversation created", {
-      conversationId,
-      preset: composed.agentPreset,
-      provider: PROVIDER,
-      model: MODEL,
-    });
-    return this.viewOf(entry);
-  }
-
-  private viewOf(entry: SessionEntry): ConversationView {
-    return {
-      name: `conversations/${entry.agent.id}`,
-      preset: entry.preset,
-      createTime: entry.createTime,
-    };
-  }
-
-  /**
-   * The live entry for a conversation, or a `ConversationNotCreatedError`.
-   * A record whose agent left the live registry (loop-level reload) counts
-   * as not created: the preset binding cannot be re-derived lazily, so the
-   * caller must CreateConversation again.
-   */
-  private liveEntry(conversationId: string): SessionEntry {
-    const entry = this.sessions.get(conversationId);
-    if (!entry) {
-      throw new ConversationNotCreatedError(conversationId);
-    }
-    if (this.ctx.agents.get(entry.agent.id) !== entry.agent) {
-      this.sessions.delete(conversationId);
-      throw new ConversationNotCreatedError(conversationId);
-    }
+    info("agent session created", { conversationId, provider: PROVIDER, model: MODEL });
     return entry;
   }
 
@@ -289,9 +165,7 @@ export class AgentSessions {
    *
    * The listeners are armed BEFORE `followup` — the wake enters `running`
    * synchronously, so a later subscription could race the turn's opening
-   * events (specs/047-dsh-chat-demo/research.md D3 rationale for the collection pattern).
-   * The `agent/disposed` hook is what makes a mid-round rebuild fail the
-   * round deterministically instead of hanging on the idle await (R4).
+    * events (specs/047-dsh-chat-demo/research.md D3 rationale for the collection pattern).
    */
   private async runRound(
     agent: Agent,
@@ -317,13 +191,6 @@ export class AgentSessions {
       if (payload.agent !== agent) return;
       failure ??= { error: payload.error };
     });
-    const offDisposed = this.ctx.on("agent/disposed", (payload) => {
-      if (payload.agent !== agent) return;
-      failure ??= {
-        error: new Error(`agent for conversation ${conversationId} was disposed mid-round`),
-      };
-      settle();
-    });
 
     try {
       agent.followup(
@@ -337,7 +204,6 @@ export class AgentSessions {
       offEvent();
       offStatus();
       offError();
-      offDisposed();
     }
 
     if (failure !== undefined) {

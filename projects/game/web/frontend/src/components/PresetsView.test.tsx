@@ -16,18 +16,9 @@ afterEach(cleanup)
 
 const PRESET_P1 = {
   name: 'templates/saolei/presets/p1',
-  persona: '你是扫雷玩家',
-  role: 'player',
+  playerPrompt: '你是扫雷玩家',
   createTime: '2026-08-29T00:00:00Z',
   updateTime: '2026-08-29T01:00:00Z',
-}
-
-const PRESET_PLANNER = {
-  name: 'templates/saolei/presets/p-planner',
-  persona: '你是扫雷 planner',
-  role: 'planner',
-  createTime: '2026-08-29T00:30:00Z',
-  updateTime: '2026-08-29T00:30:00Z',
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -57,23 +48,18 @@ function makeFetchMock(route: PresetsRoute = {}) {
   const presets: typeof PRESET_P1[] = [...(route.initial ?? [PRESET_P1])]
   return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? 'GET'
-    if (url.startsWith('/api/v2/templates/saolei/presets') && method === 'GET') {
-      // ListPresets 的 role 过滤由服务端承载（preset-api.md §1）：mock 按
-      // query 参数过滤内存集合，空 = 不过滤。
-      const filter = url.includes('?role=') ? decodeURIComponent(url.split('?role=')[1] ?? '') : ''
+    if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
       const visible = route.externalDelete !== undefined ? presets.filter((p) => p.name !== route.externalDelete) : presets
-      return jsonResponse({ presets: filter === '' ? visible : visible.filter((p) => p.role === filter) })
+      return jsonResponse({ presets: visible })
     }
     if (url.startsWith('/api/v2/templates/saolei/presets?preset_id=') && method === 'POST') {
       if (route.createStatus !== undefined && route.createStatus !== 200) {
         return jsonResponse('preset already exists', route.createStatus)
       }
-      const id = decodeURIComponent((url.split('preset_id=')[1] ?? '').split('&')[0] ?? '')
-      const role = decodeURIComponent(url.split('&role=')[1] ?? '')
+      const id = decodeURIComponent(url.split('preset_id=')[1] ?? '')
       const created = {
         name: `templates/saolei/presets/${id}`,
-        persona: JSON.parse(String(init?.body)).persona as string,
-        role,
+        playerPrompt: JSON.parse(String(init?.body)).playerPrompt as string,
         createTime: '2026-08-29T02:00:00Z',
         updateTime: '2026-08-29T02:00:00Z',
       }
@@ -84,11 +70,11 @@ function makeFetchMock(route: PresetsRoute = {}) {
     // 匹配；更新同时刷新 update_time（服务端 OUTPUT_ONLY 字段语义），列表
     // 刷新后据此断言更新后的条目呈现。
     if (url.startsWith('/api/v2/templates/saolei/presets/p1?update_mask=') && method === 'PATCH') {
-      const prompt = JSON.parse(String(init?.body)).persona as string
+      const prompt = JSON.parse(String(init?.body)).playerPrompt as string
       if (route.patchStatus !== undefined && route.patchStatus !== 200) {
         return jsonResponse('preset not found', route.patchStatus)
       }
-      const updated = { ...PRESET_P1, persona: prompt, updateTime: '2026-08-29T03:00:00Z' }
+      const updated = { ...PRESET_P1, playerPrompt: prompt, updateTime: '2026-08-29T03:00:00Z' }
       const idx = presets.findIndex((p) => p.name === PRESET_P1.name)
       if (idx >= 0) presets[idx] = updated
       return jsonResponse(updated)
@@ -120,67 +106,13 @@ describe('PresetsView', () => {
     expect(screen.getByTestId('preset-time')).toBeTruthy()
   })
 
-  it('列表 role 标识：每条目呈现所属池（player/planner）', async () => {
-    fetchMock = makeFetchMock({ initial: [PRESET_P1, PRESET_PLANNER] })
-    vi.stubGlobal('fetch', fetchMock)
-    render(<PresetsView template="saolei" />)
-
-    const badges = await screen.findAllByTestId('preset-role')
-    expect(badges.map((b) => b.textContent)).toEqual(['player', 'planner'])
-    expect(badges.map((b) => b.getAttribute('data-role'))).toEqual(['player', 'planner'])
-  })
-
-  it('role 过滤：选择池经 listPresets role 参数重取列表，全部 = 无参数', async () => {
-    fetchMock = makeFetchMock({ initial: [PRESET_P1, PRESET_PLANNER] })
-    vi.stubGlobal('fetch', fetchMock)
-    render(<PresetsView template="saolei" />)
-    expect(await screen.findAllByTestId('preset-name')).toHaveLength(2)
-
-    fireEvent.change(screen.getByTestId('preset-role-filter'), { target: { value: 'player' } })
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/v2/templates/saolei/presets?role=player', undefined)
-    })
-    await waitFor(() => {
-      expect(screen.getAllByTestId('preset-name').map((n) => n.textContent)).toEqual(['p1'])
-    })
-
-    fireEvent.change(screen.getByTestId('preset-role-filter'), { target: { value: 'planner' } })
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/v2/templates/saolei/presets?role=planner', undefined)
-    })
-    await waitFor(() => {
-      expect(screen.getAllByTestId('preset-name').map((n) => n.textContent)).toEqual(['p-planner'])
-    })
-
-    // 全部 = 不过滤（preset-api.md §1 role 空字符串）。
-    fireEvent.change(screen.getByTestId('preset-role-filter'), { target: { value: '' } })
-    await waitFor(() => {
-      expect(screen.getAllByTestId('preset-name')).toHaveLength(2)
-    })
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/v2/templates/saolei/presets', undefined)
-  })
-
-  it('过滤池下无条目：呈现池专属空态，新建入口预选该池', async () => {
-    fetchMock = makeFetchMock({ initial: [PRESET_P1] })
-    vi.stubGlobal('fetch', fetchMock)
-    render(<PresetsView template="saolei" />)
-    await screen.findByTestId('preset-name')
-
-    fireEvent.change(screen.getByTestId('preset-role-filter'), { target: { value: 'planner' } })
-    const empty = await screen.findByTestId('presets-empty')
-    expect(empty.textContent).toContain('还没有 planner 角色的 preset')
-
-    fireEvent.click(screen.getByTestId('presets-empty-create'))
-    expect((screen.getByTestId('preset-role-planner') as HTMLInputElement).checked).toBe(true)
-  })
-
   it('空态呈现引导文案与新建入口', async () => {
     fetchMock = makeFetchMock({ initial: [] })
     vi.stubGlobal('fetch', fetchMock)
     render(<PresetsView template="saolei" />)
 
     const empty = await screen.findByTestId('presets-empty')
-    expect(empty.textContent).toContain('先创建 preset 才能物化 team')
+    expect(empty.textContent).toContain('先创建 preset 才能物化 agent')
 
     // 空态新建入口打开表单；独占编辑视图下空态引导不再渲染。
     fireEvent.click(screen.getByTestId('presets-empty-create'))
@@ -188,52 +120,31 @@ describe('PresetsView', () => {
     expect(screen.queryByTestId('presets-empty')).toBeNull()
   })
 
-  it('新建：POST 携带 query preset_id/role 与 body persona，成功后刷新列表并呈现 role 标识', async () => {
+  it('新建：POST 携带 query preset_id 与 body playerPrompt，成功后刷新列表', async () => {
     fetchMock = makeFetchMock({ initial: [] })
     vi.stubGlobal('fetch', fetchMock)
     render(<PresetsView template="saolei" />)
 
     fireEvent.click(await screen.findByTestId('presets-empty-create'))
     fireEvent.change(screen.getByTestId('preset-name-input'), { target: { value: 'p2' } })
-    fireEvent.click(screen.getByTestId('preset-role-player'))
     fireEvent.change(screen.getByTestId('preset-prompt-input'), { target: { value: '提示词\n第二行' } })
     fireEvent.click(screen.getByTestId('preset-save'))
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/v2/templates/saolei/presets?preset_id=p2&role=player',
+        '/api/v2/templates/saolei/presets?preset_id=p2',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ persona: '提示词\n第二行' }),
+          body: JSON.stringify({ playerPrompt: '提示词\n第二行' }),
         }),
       )
     })
-    // 保存后列表刷新（第二次 GET），新条目呈现——表单关闭、列表回归、
-    // role 标识呈现新建时选择的池。
+    // 保存后列表刷新（第二次 GET），新条目呈现——表单关闭、列表回归。
     await waitFor(() => {
       expect((screen.getByTestId('preset-name') as HTMLElement).textContent).toBe('p2')
     })
     expect(screen.getByTestId('preset-item')).toBeTruthy()
-    expect((screen.getByTestId('preset-role') as HTMLElement).textContent).toBe('player')
     expect(screen.queryByTestId('preset-form')).toBeNull()
-  })
-
-  it('新建 role 必选：未选 role 时保存禁用且不发起请求', async () => {
-    fetchMock = makeFetchMock({ initial: [] })
-    vi.stubGlobal('fetch', fetchMock)
-    render(<PresetsView template="saolei" />)
-
-    fireEvent.click(await screen.findByTestId('presets-empty-create'))
-    fireEvent.change(screen.getByTestId('preset-name-input'), { target: { value: 'p2' } })
-    // 名称已填但 role 未选：保存仍禁用、无 POST。
-    expect((screen.getByTestId('preset-save') as HTMLButtonElement).disabled).toBe(true)
-
-    // 选中 role 后解除（必选校验）。
-    fireEvent.click(screen.getByTestId('preset-role-planner'))
-    expect((screen.getByTestId('preset-save') as HTMLButtonElement).disabled).toBe(false)
-    expect(
-      fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'POST'),
-    ).toHaveLength(0)
   })
 
   it('新建名称必选：名称为空时保存禁用且不发起请求', async () => {
@@ -246,7 +157,7 @@ describe('PresetsView', () => {
     expect(fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'POST')).toHaveLength(0)
   })
 
-  it('编辑：表单预填、名称只读，保存走 PATCH update_mask=persona', async () => {
+  it('编辑：表单预填、名称只读，保存走 PATCH update_mask=player_prompt', async () => {
     render(<PresetsView template="saolei" />)
     fireEvent.click(await screen.findByTestId('preset-edit'))
 
@@ -269,10 +180,10 @@ describe('PresetsView', () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/v2/templates/saolei/presets/p1?update_mask=persona',
+        '/api/v2/templates/saolei/presets/p1?update_mask=player_prompt',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ persona: '新的提示词' }),
+          body: JSON.stringify({ playerPrompt: '新的提示词' }),
         }),
       )
     })
@@ -292,58 +203,6 @@ describe('PresetsView', () => {
     expect((screen.getByTestId('preset-time') as HTMLElement).textContent).toBe(
       new Date('2026-08-29T03:00:00Z').toLocaleString(),
     )
-  })
-
-  it('编辑仅 persona：无 role 可改（只读 role + 不可变提示），PATCH 载荷无 role', async () => {
-    render(<PresetsView template="saolei" />)
-    fireEvent.click(await screen.findByTestId('preset-edit'))
-
-    // 编辑面不出现 role 单选项（role 创建后不可变，preset-api.md §2）；
-    // role 以只读值呈现并附不可变提示。
-    expect(screen.queryByTestId('preset-role-field')).toBeNull()
-    expect(screen.queryByTestId('preset-role-player')).toBeNull()
-    expect(screen.queryByTestId('preset-role-planner')).toBeNull()
-    expect((screen.getByTestId('preset-role-value') as HTMLElement).textContent).toBe('player')
-    expect(screen.getByTestId('preset-role-readonly').textContent).toContain('创建后不可改')
-
-    fireEvent.change(screen.getByTestId('preset-prompt-input'), { target: { value: '新的提示词' } })
-    fireEvent.click(screen.getByTestId('preset-save'))
-    await waitFor(() => {
-      // 精确 body 断言：update_mask=persona，payload 仅 persona（无 role）。
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/api/v2/templates/saolei/presets/p1?update_mask=persona',
-        expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({ persona: '新的提示词' }),
-        }),
-      )
-    })
-  })
-
-  it('过滤池中新建另一池 preset：保存后过滤切到新条目所属池', async () => {
-    fetchMock = makeFetchMock({ initial: [PRESET_P1] })
-    vi.stubGlobal('fetch', fetchMock)
-    render(<PresetsView template="saolei" />)
-    await screen.findByTestId('preset-name')
-
-    fireEvent.change(screen.getByTestId('preset-role-filter'), { target: { value: 'player' } })
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/v2/templates/saolei/presets?role=player', undefined)
-    })
-
-    fireEvent.click(screen.getByTestId('create-preset'))
-    fireEvent.change(screen.getByTestId('preset-name-input'), { target: { value: 'p3' } })
-    fireEvent.click(screen.getByTestId('preset-role-planner'))
-    fireEvent.click(screen.getByTestId('preset-save'))
-
-    // roleFilter 变更经 refresh effect 重取 planner 池，新条目可见。
-    await waitFor(() => {
-      expect((screen.getByTestId('preset-role-filter') as HTMLSelectElement).value).toBe('planner')
-    })
-    await waitFor(() => {
-      expect((screen.getByTestId('preset-name') as HTMLElement).textContent).toBe('p3')
-    })
-    expect((screen.getByTestId('preset-role') as HTMLElement).textContent).toBe('planner')
   })
 
   it('删除带确认：确认后 DELETE 资源名；取消不发起请求', async () => {
@@ -381,18 +240,15 @@ describe('PresetsView', () => {
 
     fireEvent.click(await screen.findByTestId('presets-empty-create'))
     fireEvent.change(screen.getByTestId('preset-name-input'), { target: { value: 'p1' } })
-    fireEvent.click(screen.getByTestId('preset-role-player'))
     fireEvent.change(screen.getByTestId('preset-prompt-input'), { target: { value: '草稿提示词' } })
     fireEvent.click(screen.getByTestId('preset-save'))
 
     await waitFor(() => {
       expect(screen.getByTestId('presets-error')).toBeTruthy()
     })
-    // 失败停留编辑视图：表单保留、已输入内容不丢、role 选择保留，列表/空态
-    // 均不渲染。
+    // 失败停留编辑视图：表单保留、已输入内容不丢，列表/空态均不渲染。
     expect(screen.getByTestId('preset-form')).toBeTruthy()
     expect((screen.getByTestId('preset-name-input') as HTMLInputElement).value).toBe('p1')
-    expect((screen.getByTestId('preset-role-player') as HTMLInputElement).checked).toBe(true)
     expect((screen.getByTestId('preset-prompt-input') as HTMLTextAreaElement).value).toBe('草稿提示词')
     expect(screen.queryByTestId('presets-empty')).toBeNull()
 
@@ -416,8 +272,8 @@ describe('PresetsView', () => {
     // 保存请求按 update_mask 发出（正向断言 mock 被 exercise）。
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/v2/templates/saolei/presets/p1?update_mask=persona',
-        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ persona: '改了一半的提示词' }) }),
+        '/api/v2/templates/saolei/presets/p1?update_mask=player_prompt',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ playerPrompt: '改了一半的提示词' }) }),
       )
     })
     await waitFor(() => {
@@ -564,16 +420,10 @@ describe('App 视图切换', () => {
       if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
         return jsonResponse({ presets: [PRESET_P1] })
       }
-      if (url === `/api/v2/${S1}/team`) {
-        return jsonResponse({
-          name: `${S1}/team`,
-          members: [
-            { name: `${S1}/team/members/player`, role: 'player', preset: PRESET_P1.name },
-            { name: `${S1}/team/members/planner`, role: 'planner', preset: PRESET_P1.name },
-          ],
-        })
+      if (url === `/api/v2/${S1}/agent`) {
+        return jsonResponse({ name: `${S1}/agent`, preset: PRESET_P1.name })
       }
-      if (url === `/api/v2/${S1}/team/messages`) {
+      if (url === `/api/v2/${S1}/agent/messages`) {
         return jsonResponse({ messages: [] })
       }
       if (url === `/api/v2/${S1}:send` && method === 'POST') {
@@ -581,19 +431,15 @@ describe('App 视图切换', () => {
           async start(controller) {
             controller.enqueue(
               encoder.encode(
-                wireChunk(
-                  '{"teamMessage":{"member":"user","message":{"role":"ROLE_USER","blocks":[{"text":{"content":"一"}}]},"seq":"1"}}',
-                ) +
-                  wireChunk('{"member":"player","turnId":"t1","turnStart":{}}') +
-                  wireChunk('{"member":"player","turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
-                  wireChunk('{"member":"player","turnId":"t1","delta":{"index":0,"text":"部"}}'),
+                wireChunk('{"turnId":"t1","turnStart":{}}') +
+                  wireChunk('{"turnId":"t1","blockStart":{"index":0,"type":"BLOCK_TYPE_TEXT"}}') +
+                  wireChunk('{"turnId":"t1","delta":{"index":0,"text":"部"}}'),
               ),
             )
             await restReleased
-            controller.enqueue(encoder.encode(wireChunk('{"member":"player","turnId":"t1","delta":{"index":0,"text":"分"}}')))
-            controller.enqueue(encoder.encode(wireChunk('{"member":"player","turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}')))
-            controller.enqueue(encoder.encode(wireChunk('{"teamMessage":{"member":"player","message":{"role":"ROLE_AGENT","blocks":[{"text":{"content":"部分"}}]},"seq":"2"}}')))
-            controller.enqueue(encoder.encode(wireChunk('{"member":"player","turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}')))
+            controller.enqueue(encoder.encode(wireChunk('{"turnId":"t1","delta":{"index":0,"text":"分"}}')))
+            controller.enqueue(encoder.encode(wireChunk('{"turnId":"t1","blockEnd":{"index":0,"block":{"text":{"content":"部分"}}}}')))
+            controller.enqueue(encoder.encode(wireChunk('{"turnId":"t1","turnEnd":{"status":"TURN_STATUS_COMPLETED"}}')))
             controller.close()
             markDone()
           },
@@ -625,7 +471,7 @@ describe('App 视图切换', () => {
       expect((screen.getByTestId('agent-text') as HTMLElement).textContent).toBe('部分')
     })
     expect(screen.getByText('一')).toBeTruthy()
-    const listCalls = fetchMock.mock.calls.filter((c) => c[0] === `/api/v2/${S1}/team/messages`)
+    const listCalls = fetchMock.mock.calls.filter((c) => c[0] === `/api/v2/${S1}/agent/messages`)
     expect(listCalls).toHaveLength(1)
   })
 })

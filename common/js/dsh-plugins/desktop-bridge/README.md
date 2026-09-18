@@ -9,7 +9,7 @@ agent session，并向下发放操作、回收截图与操作回执。服务接�
 ## 依赖形态
 
 - `@dominion/common-js-logs`（`workspace:*`）：连接接管/断连/超时/stale 回执的结构化
-  日志面。
+  日志（v1 `projects/game/agent/src/operation-bridge.ts` 同型日志面）。
 - `@deepseek-ai/cordis`（peer `^4.0.1`）：类形式 Service 插件的框架基类。
 - 桥接的 gRPC handler 类型不消费 dsh 服务面与 agent_v2 生成类型：`src/wire.ts`
   以本地最小接口声明镜像 proto-loader 产物形状（camelCase、enums 为字符串联合、

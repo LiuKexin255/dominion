@@ -2,16 +2,11 @@
  * dsh.ts — composition boot for the demo chat agent.
  *
  * Resolves the fake-llm endpoint through Dominion service discovery, injects
- * it into the environment the cordis.yml `!!js` expressions read, then boots
- * the direct composition manifest in-process (B1 embedding,
- * specs/047-dsh-chat-demo/spec.md FR-003/FR-011). The manifest is
- * experimental/dsh/demo/agent/cordis.yml — baseline rows materialized through
- * //third_party/dsh/core:runtime_pkg, service rows through this package's
- * npm_deps, plus the agent-presets/preset-authoring rows (row-list contract:
- * specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §1).
- * Any failure is fail-loud: diagnostics are logged and the process exits
- * non-zero — a half-started composition never serves traffic
- * (specs/047-dsh-chat-demo/spec.md FR-009,
+ * it into the environment the cordis.yml `!!js` expression reads, then boots
+ * the two-row composition manifest (agent spine + DeepSeek adapter) in-process
+ * (B1 embedding, specs/047-dsh-chat-demo/spec.md FR-003/FR-011). Any failure is fail-loud: diagnostics are
+ * logged and the process exits non-zero — a half-started composition never
+ * serves traffic (specs/047-dsh-chat-demo/spec.md FR-009,
  * specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §1).
  */
 

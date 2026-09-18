@@ -55,31 +55,24 @@ func (s *fakeSendServer) Send(event *game.ChatEvent) error {
 // fakeAgentClient is the downstream agent_v2 client double. The generated
 // client writes the Send request while opening the stream (generic stream
 // shape), so that request is recorded here rather than on the stream; the
-// unary requests are recorded per method.
+// unary requests are recorded per method. Results/errors not configured for
+// a test fail with the errFakeNotImplemented sentinel.
 type fakeAgentClient struct {
 	sendStream *fakeSendStream
 	sendErr    error
 	sendReq    *game.SendRequest
 
-	updateTeamResult *game.Team
-	updateTeamErr    error
-	updateTeamReq    *game.UpdateTeamRequest
+	updateAgentResult *game.Agent
+	updateAgentErr    error
+	updateAgentReq    *game.UpdateAgentRequest
 
-	getTeamResult *game.Team
-	getTeamErr    error
-	getTeamReq    *game.GetTeamRequest
+	getAgentResult *game.Agent
+	getAgentErr    error
+	getAgentReq    *game.GetAgentRequest
 
-	getMemberResult *game.TeamMember
-	getMemberErr    error
-	getMemberReq    *game.GetTeamMemberRequest
-
-	listTeamResult *game.ListTeamMessagesResponse
-	listTeamErr    error
-	listTeamReq    *game.ListTeamMessagesRequest
-
-	listMemberResult *game.ListMemberMessagesResponse
-	listMemberErr    error
-	listMemberReq    *game.ListMemberMessagesRequest
+	listMessagesResult *game.ListAgentMessagesResponse
+	listMessagesErr    error
+	listMessagesReq    *game.ListAgentMessagesRequest
 
 	cancelErr error
 	cancelReq *game.CancelRequest
@@ -93,63 +86,41 @@ func (c *fakeAgentClient) Send(_ context.Context, req *game.SendRequest, _ ...gr
 	return c.sendStream, nil
 }
 
-func (c *fakeAgentClient) UpdateTeam(_ context.Context, req *game.UpdateTeamRequest, _ ...grpc.CallOption) (*game.Team, error) {
-	c.updateTeamReq = req
-	if c.updateTeamErr != nil {
-		return nil, c.updateTeamErr
+func (c *fakeAgentClient) UpdateAgent(_ context.Context, req *game.UpdateAgentRequest, _ ...grpc.CallOption) (*game.Agent, error) {
+	c.updateAgentReq = req
+	if c.updateAgentErr != nil {
+		return nil, c.updateAgentErr
 	}
-	if c.updateTeamResult != nil {
-		return c.updateTeamResult, nil
+	if c.updateAgentResult != nil {
+		return c.updateAgentResult, nil
 	}
-	return &game.Team{Name: req.GetTeam().GetName()}, nil
+	return &game.Agent{Name: req.GetAgent().GetName()}, nil
 }
 
-func (c *fakeAgentClient) GetTeam(_ context.Context, req *game.GetTeamRequest, _ ...grpc.CallOption) (*game.Team, error) {
-	c.getTeamReq = req
-	if c.getTeamErr != nil {
-		return nil, c.getTeamErr
+func (c *fakeAgentClient) GetAgent(_ context.Context, req *game.GetAgentRequest, _ ...grpc.CallOption) (*game.Agent, error) {
+	c.getAgentReq = req
+	if c.getAgentErr != nil {
+		return nil, c.getAgentErr
 	}
-	if c.getTeamResult != nil {
-		return c.getTeamResult, nil
+	if c.getAgentResult != nil {
+		return c.getAgentResult, nil
 	}
-	return &game.Team{Name: req.GetName()}, nil
+	return &game.Agent{Name: req.GetName()}, nil
 }
 
-func (c *fakeAgentClient) GetTeamMember(_ context.Context, req *game.GetTeamMemberRequest, _ ...grpc.CallOption) (*game.TeamMember, error) {
-	c.getMemberReq = req
-	if c.getMemberErr != nil {
-		return nil, c.getMemberErr
+func (c *fakeAgentClient) ListAgentMessages(_ context.Context, req *game.ListAgentMessagesRequest, _ ...grpc.CallOption) (*game.ListAgentMessagesResponse, error) {
+	c.listMessagesReq = req
+	if c.listMessagesErr != nil {
+		return nil, c.listMessagesErr
 	}
-	if c.getMemberResult != nil {
-		return c.getMemberResult, nil
+	if c.listMessagesResult != nil {
+		return c.listMessagesResult, nil
 	}
-	return &game.TeamMember{Name: req.GetName()}, nil
+	return &game.ListAgentMessagesResponse{}, nil
 }
 
-func (c *fakeAgentClient) ListTeamMessages(_ context.Context, req *game.ListTeamMessagesRequest, _ ...grpc.CallOption) (*game.ListTeamMessagesResponse, error) {
-	c.listTeamReq = req
-	if c.listTeamErr != nil {
-		return nil, c.listTeamErr
-	}
-	if c.listTeamResult != nil {
-		return c.listTeamResult, nil
-	}
-	return &game.ListTeamMessagesResponse{}, nil
-}
-
-func (c *fakeAgentClient) ListMemberMessages(_ context.Context, req *game.ListMemberMessagesRequest, _ ...grpc.CallOption) (*game.ListMemberMessagesResponse, error) {
-	c.listMemberReq = req
-	if c.listMemberErr != nil {
-		return nil, c.listMemberErr
-	}
-	if c.listMemberResult != nil {
-		return c.listMemberResult, nil
-	}
-	return &game.ListMemberMessagesResponse{}, nil
-}
-
-// Cancel mirrors the unary shape; the response is an empty message, so no
-// result field is configurable.
+// Cancel mirrors the ListAgentMessages unary shape; the response is an empty
+// message, so no result field is configurable.
 func (c *fakeAgentClient) Cancel(_ context.Context, req *game.CancelRequest, _ ...grpc.CallOption) (*game.CancelResponse, error) {
 	c.cancelReq = req
 	if c.cancelErr != nil {
@@ -157,6 +128,9 @@ func (c *fakeAgentClient) Cancel(_ context.Context, req *game.CancelRequest, _ .
 	}
 	return &game.CancelResponse{}, nil
 }
+
+// errFakeNotImplemented marks the double's undriven methods.
+var errFakeNotImplemented = errors.New("fakeAgentClient: not implemented")
 
 // setFakeAgentClient replaces the client constructor seam and restores it on
 // cleanup, so handler methods can be driven against the double without a
@@ -184,7 +158,7 @@ func newAgentHarness(t *testing.T, fake *fakeAgentClient) (*AgentHandler, *mockO
 }
 
 // seedAgentOwner stores an existing owner for the test session, standing in
-// for a previous UpdateTeam materialization.
+// for a previous UpdateAgent materialization.
 func seedAgentOwner(store *mockOwnerStore, ownerIndex int) {
 	store.records[ownerKey("saolei", "conv-1")] = &domain.AgentOwner{
 		TemplateID: "saolei",
@@ -195,19 +169,17 @@ func seedAgentOwner(store *mockOwnerStore, ownerIndex int) {
 }
 
 const agentSession = "templates/saolei/sessions/conv-1"
-const teamResource = agentSession + "/team"
-const playerMember = teamResource + "/members/player"
+const agentResource = agentSession + "/agent"
 
 func chatFrame(text string) *game.ChatEvent {
 	return &game.ChatEvent{
 		Session: agentSession,
-		Member:  "player",
 		Payload: &game.ChatEvent_Delta{Delta: &game.BlockDeltaEvent{Index: 0, Text: text}},
 	}
 }
 
 func TestAgentHandler_Send_NoOwnerReturnsNotFoundWithoutAllocation(t *testing.T) {
-	// given: a fresh store — no UpdateTeam ever materialized the session
+	// given: a fresh store — no UpdateAgent ever materialized the session
 	fake := &fakeAgentClient{sendStream: &fakeSendStream{recvErr: io.EOF}}
 	handler, store, _, _ := newAgentHarness(t, fake)
 
@@ -224,7 +196,7 @@ func TestAgentHandler_Send_NoOwnerReturnsNotFoundWithoutAllocation(t *testing.T)
 }
 
 func TestAgentHandler_Send_RelaysFramesForExistingOwner(t *testing.T) {
-	// given: an owner from a previous UpdateTeam and an upstream streaming
+	// given: an owner from a previous UpdateAgent and an upstream streaming
 	// two deltas then io.EOF
 	upstream := &fakeSendStream{
 		frames:  []*game.ChatEvent{chatFrame("a"), chatFrame("b")},
@@ -294,7 +266,7 @@ func TestAgentHandler_Send_InstanceUnreachable(t *testing.T) {
 	// when
 	err := handler.Send(&game.SendRequest{Session: agentSession, Text: "hi"}, &fakeSendServer{ctx: context.Background()})
 
-	// then: proxy→agent_v2 break maps to UNAVAILABLE (503)
+	// then: proxy→agent_v2 break maps to UNAVAILABLE (503, agent-api §3)
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("Send() code = %v, want Unavailable", status.Code(err))
 	}
@@ -317,8 +289,8 @@ func TestAgentHandler_Send_UpstreamOpenFailed(t *testing.T) {
 func TestAgentHandler_Send_UpstreamRejectsRequestWithOriginalCode(t *testing.T) {
 	// given: agent_v2 rejects the request at stream open with a gRPC status
 	// — the proxy must preserve the agent-level code so the front end sees
-	// the mapped HTTP 400, not a 503 hop failure.
-	fake := &fakeAgentClient{sendErr: status.Error(codes.FailedPrecondition, "team not materialized; send UpdateTeam first")}
+	// the mapped HTTP 400, not a 503 hop failure (contracts/agent-api.md §3).
+	fake := &fakeAgentClient{sendErr: status.Error(codes.FailedPrecondition, "agent not materialized; send UpdateAgent first")}
 	handler, store, _, _ := newAgentHarness(t, fake)
 	seedAgentOwner(store, 1)
 
@@ -367,28 +339,22 @@ func TestAgentHandler_Send_UpstreamStatusPassthrough(t *testing.T) {
 	}
 }
 
-func TestAgentHandler_UpdateTeam_AllocatesOwnerAndForwards(t *testing.T) {
+func TestAgentHandler_UpdateAgent_AllocatesOwnerAndForwards(t *testing.T) {
 	// given: a fresh store — the first materialization of the session
 	fake := &fakeAgentClient{}
 	handler, store, manager, _ := newAgentHarness(t, fake)
-	req := &game.UpdateTeamRequest{Team: &game.Team{
-		Name: teamResource,
-		Members: []*game.TeamMember{
-			{Role: "player", Preset: "templates/saolei/presets/player"},
-			{Role: "planner", Preset: "templates/saolei/presets/planner"},
-		},
-	}}
+	req := &game.UpdateAgentRequest{Agent: &game.Agent{Name: agentResource, Preset: "templates/saolei/presets/base"}}
 
 	// when
-	team, err := handler.UpdateTeam(context.Background(), req)
+	agent, err := handler.UpdateAgent(context.Background(), req)
 
 	// then: the owner is allocated once and the request reaches the
 	// upstream unchanged
 	if err != nil {
-		t.Fatalf("UpdateTeam() error = %v, want nil", err)
+		t.Fatalf("UpdateAgent() error = %v, want nil", err)
 	}
 	if store.createCalls != 1 {
-		t.Fatalf("owner Create calls = %d, want 1 (UpdateTeam is the allocation point)", store.createCalls)
+		t.Fatalf("owner Create calls = %d, want 1 (UpdateAgent is the allocation point)", store.createCalls)
 	}
 	owner := store.records[ownerKey("saolei", "conv-1")]
 	if owner == nil || owner.TemplateID != "saolei" || owner.SessionID != "conv-1" {
@@ -397,25 +363,25 @@ func TestAgentHandler_UpdateTeam_AllocatesOwnerAndForwards(t *testing.T) {
 	if len(manager.getCalls) != 1 || manager.getCalls[0] != owner.OwnerIndex {
 		t.Fatalf("manager Get calls = %v, want [allocated index]", manager.getCalls)
 	}
-	if fake.updateTeamReq != req {
-		t.Fatal("downstream UpdateTeam did not receive the caller's request")
+	if fake.updateAgentReq != req {
+		t.Fatal("downstream UpdateAgent did not receive the caller's request")
 	}
-	if team.GetName() != teamResource {
-		t.Fatalf("team name = %q, want %q", team.GetName(), teamResource)
+	if agent.GetName() != agentResource {
+		t.Fatalf("agent name = %q, want %q", agent.GetName(), agentResource)
 	}
 }
 
-func TestAgentHandler_UpdateTeam_ReusesExistingOwnerWithoutAllocation(t *testing.T) {
+func TestAgentHandler_UpdateAgent_ReusesExistingOwnerWithoutAllocation(t *testing.T) {
 	// given: the owner already exists (refresh case) and no instances are
 	// listed — a re-pick would fail, proving the existing owner is reused
 	fake := &fakeAgentClient{}
 	handler, store, manager, _ := newAgentHarness(t, fake)
 	seedAgentOwner(store, 1)
 
-	team, err := handler.UpdateTeam(context.Background(), &game.UpdateTeamRequest{Team: &game.Team{Name: teamResource}})
+	agent, err := handler.UpdateAgent(context.Background(), &game.UpdateAgentRequest{Agent: &game.Agent{Name: agentResource}})
 
 	if err != nil {
-		t.Fatalf("UpdateTeam() error = %v, want nil", err)
+		t.Fatalf("UpdateAgent() error = %v, want nil", err)
 	}
 	if store.createCalls != 0 {
 		t.Fatalf("owner Create calls = %d, want 0 (existing owner reused)", store.createCalls)
@@ -423,12 +389,12 @@ func TestAgentHandler_UpdateTeam_ReusesExistingOwnerWithoutAllocation(t *testing
 	if len(manager.getCalls) != 1 || manager.getCalls[0] != 1 {
 		t.Fatalf("manager Get calls = %v, want [1]", manager.getCalls)
 	}
-	if team.GetName() != teamResource {
-		t.Fatalf("team name = %q, want %q", team.GetName(), teamResource)
+	if agent.GetName() != agentResource {
+		t.Fatalf("agent name = %q, want %q", agent.GetName(), agentResource)
 	}
 }
 
-func TestAgentHandler_UpdateTeam_RaceReusesWinningOwner(t *testing.T) {
+func TestAgentHandler_UpdateAgent_RaceReusesWinningOwner(t *testing.T) {
 	// given: a concurrent request already persisted the owner (Create loses)
 	winner := &domain.AgentOwner{TemplateID: "saolei", SessionID: "conv-1", OwnerIndex: 1, Owner: "agent-1"}
 	store := &raceOwnerStore{winner: winner}
@@ -438,36 +404,36 @@ func TestAgentHandler_UpdateTeam_RaceReusesWinningOwner(t *testing.T) {
 	setFakeAgentClient(t, fake)
 	handler := NewAgentHandler(store, picker, manager, bind.NewServerStreamBinder[game.ChatEvent]())
 
-	_, err := handler.UpdateTeam(context.Background(), &game.UpdateTeamRequest{Team: &game.Team{Name: teamResource}})
+	_, err := handler.UpdateAgent(context.Background(), &game.UpdateAgentRequest{Agent: &game.Agent{Name: agentResource}})
 
 	// then: the winner's owner is reused, not re-picked
 	if err != nil {
-		t.Fatalf("UpdateTeam() error = %v, want nil", err)
+		t.Fatalf("UpdateAgent() error = %v, want nil", err)
 	}
 	if len(manager.getCalls) != 1 || manager.getCalls[0] != 1 {
 		t.Fatalf("manager Get calls = %v, want [1] (winner re-read)", manager.getCalls)
 	}
 }
 
-func TestAgentHandler_UpdateTeam_InvalidNameRejectedWithoutAllocation(t *testing.T) {
+func TestAgentHandler_UpdateAgent_InvalidNameRejectedWithoutAllocation(t *testing.T) {
 	tests := []struct {
 		name string
-		req  *game.UpdateTeamRequest
+		req  *game.UpdateAgentRequest
 	}{
-		{name: "missing team body", req: &game.UpdateTeamRequest{}},
-		{name: "malformed resource name", req: &game.UpdateTeamRequest{Team: &game.Team{Name: "projects/p1"}}},
-		{name: "missing team segment", req: &game.UpdateTeamRequest{Team: &game.Team{Name: agentSession}}},
-		{name: "unknown template", req: &game.UpdateTeamRequest{Team: &game.Team{Name: "templates/unknown/sessions/s1/team"}}},
+		{name: "missing agent body", req: &game.UpdateAgentRequest{}},
+		{name: "malformed resource name", req: &game.UpdateAgentRequest{Agent: &game.Agent{Name: "projects/p1"}}},
+		{name: "missing agent segment", req: &game.UpdateAgentRequest{Agent: &game.Agent{Name: agentSession}}},
+		{name: "unknown template", req: &game.UpdateAgentRequest{Agent: &game.Agent{Name: "templates/unknown/sessions/s1/agent"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := &fakeAgentClient{}
 			handler, store, _, _ := newAgentHarness(t, fake)
 
-			_, err := handler.UpdateTeam(context.Background(), tt.req)
+			_, err := handler.UpdateAgent(context.Background(), tt.req)
 
 			if status.Code(err) != codes.InvalidArgument {
-				t.Fatalf("UpdateTeam() code = %v, want InvalidArgument", status.Code(err))
+				t.Fatalf("UpdateAgent() code = %v, want InvalidArgument", status.Code(err))
 			}
 			if store.createCalls != 0 {
 				t.Fatalf("owner Create calls = %d, want 0 (no allocation on invalid input)", store.createCalls)
@@ -476,186 +442,120 @@ func TestAgentHandler_UpdateTeam_InvalidNameRejectedWithoutAllocation(t *testing
 	}
 }
 
-func TestAgentHandler_UpdateTeam_NoInstancesMapsToUnavailable(t *testing.T) {
+func TestAgentHandler_UpdateAgent_NoInstancesMapsToUnavailable(t *testing.T) {
 	// given: no live agent_v2 instance to allocate
 	fake := &fakeAgentClient{}
 	handler, store, _, picker := newAgentHarness(t, fake)
 	picker.err = domain.ErrNoAgentInstances
 
-	_, err := handler.UpdateTeam(context.Background(), &game.UpdateTeamRequest{Team: &game.Team{Name: teamResource}})
+	_, err := handler.UpdateAgent(context.Background(), &game.UpdateAgentRequest{Agent: &game.Agent{Name: agentResource}})
 
 	if status.Code(err) != codes.Unavailable {
-		t.Fatalf("UpdateTeam() code = %v, want Unavailable", status.Code(err))
+		t.Fatalf("UpdateAgent() code = %v, want Unavailable", status.Code(err))
 	}
 	if store.createCalls != 0 {
 		t.Fatalf("owner Create calls = %d, want 0", store.createCalls)
 	}
 }
 
-func TestAgentHandler_UpdateTeam_DownstreamErrorPropagates(t *testing.T) {
-	// given: agent_v2 rejects the materialization (e.g. preset role mismatch)
-	// — the agent-level code must survive the hop
-	fake := &fakeAgentClient{updateTeamErr: status.Error(codes.InvalidArgument, "preset role mismatch")}
+func TestAgentHandler_UpdateAgent_DownstreamErrorPropagates(t *testing.T) {
+	// given: agent_v2 rejects the materialization (e.g. preset missing) —
+	// the agent-level code must survive the hop
+	fake := &fakeAgentClient{updateAgentErr: status.Error(codes.NotFound, "preset not found")}
 	handler, store, _, _ := newAgentHarness(t, fake)
 	seedAgentOwner(store, 1)
 
-	_, err := handler.UpdateTeam(context.Background(), &game.UpdateTeamRequest{Team: &game.Team{Name: teamResource}})
+	_, err := handler.UpdateAgent(context.Background(), &game.UpdateAgentRequest{Agent: &game.Agent{Name: agentResource}})
 
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("UpdateTeam() code = %v, want InvalidArgument (original code preserved)", status.Code(err))
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("UpdateAgent() code = %v, want NotFound (original code preserved)", status.Code(err))
 	}
 }
 
-func TestAgentHandler_GetTeam_SuccessForwardsName(t *testing.T) {
+func TestAgentHandler_GetAgent_SuccessForwardsName(t *testing.T) {
 	fake := &fakeAgentClient{}
 	handler, store, manager, _ := newAgentHarness(t, fake)
 	seedAgentOwner(store, 3)
 
-	team, err := handler.GetTeam(context.Background(), &game.GetTeamRequest{Name: teamResource})
+	agent, err := handler.GetAgent(context.Background(), &game.GetAgentRequest{Name: agentResource})
 
 	if err != nil {
-		t.Fatalf("GetTeam() error = %v, want nil", err)
+		t.Fatalf("GetAgent() error = %v, want nil", err)
 	}
 	if len(manager.getCalls) != 1 || manager.getCalls[0] != 3 {
 		t.Fatalf("manager Get calls = %v, want [3]", manager.getCalls)
 	}
-	if fake.getTeamReq.GetName() != teamResource {
-		t.Fatalf("downstream name = %q, want %q", fake.getTeamReq.GetName(), teamResource)
+	if fake.getAgentReq.GetName() != agentResource {
+		t.Fatalf("downstream name = %q, want %q", fake.getAgentReq.GetName(), agentResource)
 	}
-	if team.GetName() != teamResource {
-		t.Fatalf("team name = %q, want %q", team.GetName(), teamResource)
+	if agent.GetName() != agentResource {
+		t.Fatalf("agent name = %q, want %q", agent.GetName(), agentResource)
 	}
 }
 
-func TestAgentHandler_GetTeam_NoOwnerReturnsNotFoundWithoutAllocation(t *testing.T) {
+func TestAgentHandler_GetAgent_NoOwnerReturnsNotFoundWithoutAllocation(t *testing.T) {
 	fake := &fakeAgentClient{}
 	handler, store, _, _ := newAgentHarness(t, fake)
 
-	_, err := handler.GetTeam(context.Background(), &game.GetTeamRequest{Name: teamResource})
+	_, err := handler.GetAgent(context.Background(), &game.GetAgentRequest{Name: agentResource})
 
 	if status.Code(err) != codes.NotFound {
-		t.Fatalf("GetTeam() code = %v, want NotFound", status.Code(err))
+		t.Fatalf("GetAgent() code = %v, want NotFound", status.Code(err))
 	}
 	if store.createCalls != 0 {
-		t.Fatalf("owner Create calls = %d, want 0 (GetTeam must not allocate)", store.createCalls)
+		t.Fatalf("owner Create calls = %d, want 0 (GetAgent must not allocate)", store.createCalls)
 	}
 }
 
-func TestAgentHandler_GetTeam_InvalidNameReturnsInvalidArgument(t *testing.T) {
+func TestAgentHandler_GetAgent_InvalidNameReturnsInvalidArgument(t *testing.T) {
 	handler, _, _, _ := newAgentHarness(t, &fakeAgentClient{})
 
-	_, err := handler.GetTeam(context.Background(), &game.GetTeamRequest{Name: agentSession})
+	_, err := handler.GetAgent(context.Background(), &game.GetAgentRequest{Name: "templates/saolei/sessions/s1"})
 
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("GetTeam() code = %v, want InvalidArgument", status.Code(err))
+		t.Fatalf("GetAgent() code = %v, want InvalidArgument", status.Code(err))
 	}
 }
 
-func TestAgentHandler_GetTeamMember_SuccessForwardsName(t *testing.T) {
+func TestAgentHandler_ListAgentMessages_SuccessForwardsParent(t *testing.T) {
 	fake := &fakeAgentClient{}
 	handler, store, _, _ := newAgentHarness(t, fake)
 	seedAgentOwner(store, 1)
 
-	member, err := handler.GetTeamMember(context.Background(), &game.GetTeamMemberRequest{Name: playerMember})
+	resp, err := handler.ListAgentMessages(context.Background(), &game.ListAgentMessagesRequest{Parent: agentResource})
 
 	if err != nil {
-		t.Fatalf("GetTeamMember() error = %v, want nil", err)
+		t.Fatalf("ListAgentMessages() error = %v, want nil", err)
 	}
-	if fake.getMemberReq.GetName() != playerMember {
-		t.Fatalf("downstream name = %q, want %q", fake.getMemberReq.GetName(), playerMember)
-	}
-	if member.GetName() != playerMember {
-		t.Fatalf("member name = %q, want %q", member.GetName(), playerMember)
-	}
-}
-
-func TestAgentHandler_GetTeamMember_InvalidNameAndNoOwner(t *testing.T) {
-	fake := &fakeAgentClient{}
-	handler, store, _, _ := newAgentHarness(t, fake)
-
-	_, err := handler.GetTeamMember(context.Background(), &game.GetTeamMemberRequest{Name: teamResource})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("GetTeamMember() code = %v, want InvalidArgument", status.Code(err))
-	}
-
-	_, err = handler.GetTeamMember(context.Background(), &game.GetTeamMemberRequest{Name: playerMember})
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("GetTeamMember() code = %v, want NotFound", status.Code(err))
-	}
-	if store.createCalls != 0 {
-		t.Fatalf("owner Create calls = %d, want 0 (lookup-only family)", store.createCalls)
-	}
-}
-
-func TestAgentHandler_ListTeamMessages_SuccessForwardsParent(t *testing.T) {
-	fake := &fakeAgentClient{}
-	handler, store, _, _ := newAgentHarness(t, fake)
-	seedAgentOwner(store, 1)
-
-	resp, err := handler.ListTeamMessages(context.Background(), &game.ListTeamMessagesRequest{Parent: teamResource})
-
-	if err != nil {
-		t.Fatalf("ListTeamMessages() error = %v, want nil", err)
-	}
-	if fake.listTeamReq.GetParent() != teamResource {
-		t.Fatalf("downstream parent = %q, want %q", fake.listTeamReq.GetParent(), teamResource)
+	if fake.listMessagesReq.GetParent() != agentResource {
+		t.Fatalf("downstream parent = %q, want %q", fake.listMessagesReq.GetParent(), agentResource)
 	}
 	if resp == nil {
-		t.Fatal("ListTeamMessages() got nil response")
+		t.Fatal("ListAgentMessages() got nil response")
 	}
 }
 
-func TestAgentHandler_ListTeamMessages_InvalidParentAndNoOwner(t *testing.T) {
+func TestAgentHandler_ListAgentMessages_NoOwnerReturnsNotFound(t *testing.T) {
 	fake := &fakeAgentClient{}
 	handler, store, _, _ := newAgentHarness(t, fake)
 
-	_, err := handler.ListTeamMessages(context.Background(), &game.ListTeamMessagesRequest{Parent: agentSession})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("ListTeamMessages() code = %v, want InvalidArgument", status.Code(err))
-	}
+	_, err := handler.ListAgentMessages(context.Background(), &game.ListAgentMessagesRequest{Parent: agentResource})
 
-	_, err = handler.ListTeamMessages(context.Background(), &game.ListTeamMessagesRequest{Parent: teamResource})
 	if status.Code(err) != codes.NotFound {
-		t.Fatalf("ListTeamMessages() code = %v, want NotFound", status.Code(err))
+		t.Fatalf("ListAgentMessages() code = %v, want NotFound", status.Code(err))
 	}
 	if store.createCalls != 0 {
 		t.Fatalf("owner Create calls = %d, want 0", store.createCalls)
 	}
 }
 
-func TestAgentHandler_ListMemberMessages_SuccessForwardsParent(t *testing.T) {
-	fake := &fakeAgentClient{}
-	handler, store, _, _ := newAgentHarness(t, fake)
-	seedAgentOwner(store, 1)
+func TestAgentHandler_ListAgentMessages_InvalidParentReturnsInvalidArgument(t *testing.T) {
+	handler, _, _, _ := newAgentHarness(t, &fakeAgentClient{})
 
-	resp, err := handler.ListMemberMessages(context.Background(), &game.ListMemberMessagesRequest{Parent: playerMember})
+	_, err := handler.ListAgentMessages(context.Background(), &game.ListAgentMessagesRequest{Parent: "templates/saolei/sessions/s1/team"})
 
-	if err != nil {
-		t.Fatalf("ListMemberMessages() error = %v, want nil", err)
-	}
-	if fake.listMemberReq.GetParent() != playerMember {
-		t.Fatalf("downstream parent = %q, want %q", fake.listMemberReq.GetParent(), playerMember)
-	}
-	if resp == nil {
-		t.Fatal("ListMemberMessages() got nil response")
-	}
-}
-
-func TestAgentHandler_ListMemberMessages_InvalidParentAndNoOwner(t *testing.T) {
-	fake := &fakeAgentClient{}
-	handler, store, _, _ := newAgentHarness(t, fake)
-
-	_, err := handler.ListMemberMessages(context.Background(), &game.ListMemberMessagesRequest{Parent: teamResource})
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("ListMemberMessages() code = %v, want InvalidArgument", status.Code(err))
-	}
-
-	_, err = handler.ListMemberMessages(context.Background(), &game.ListMemberMessagesRequest{Parent: playerMember})
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("ListMemberMessages() code = %v, want NotFound", status.Code(err))
-	}
-	if store.createCalls != 0 {
-		t.Fatalf("owner Create calls = %d, want 0", store.createCalls)
+		t.Fatalf("ListAgentMessages() code = %v, want InvalidArgument", status.Code(err))
 	}
 }
 
@@ -664,7 +564,7 @@ func TestAgentHandler_Cancel_SuccessForwardsName(t *testing.T) {
 	handler, store, manager, _ := newAgentHarness(t, fake)
 	seedAgentOwner(store, 3)
 
-	resp, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: teamResource})
+	resp, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
 
 	if err != nil {
 		t.Fatalf("Cancel() error = %v, want nil", err)
@@ -675,8 +575,8 @@ func TestAgentHandler_Cancel_SuccessForwardsName(t *testing.T) {
 	if len(manager.getCalls) != 1 || manager.getCalls[0] != 3 {
 		t.Fatalf("manager Get calls = %v, want [3]", manager.getCalls)
 	}
-	if fake.cancelReq.GetName() != teamResource {
-		t.Fatalf("downstream name = %q, want %q", fake.cancelReq.GetName(), teamResource)
+	if fake.cancelReq.GetName() != agentResource {
+		t.Fatalf("downstream name = %q, want %q", fake.cancelReq.GetName(), agentResource)
 	}
 	if store.createCalls != 0 {
 		t.Fatalf("owner Create calls = %d, want 0 (cancel must not allocate)", store.createCalls)
@@ -689,8 +589,8 @@ func TestAgentHandler_Cancel_InvalidNameReturnsInvalidArgument(t *testing.T) {
 		req  *game.CancelRequest
 	}{
 		{name: "malformed resource name", req: &game.CancelRequest{Name: "projects/p1"}},
-		{name: "missing team segment", req: &game.CancelRequest{Name: agentSession}},
-		{name: "unknown template", req: &game.CancelRequest{Name: "templates/unknown/sessions/s1/team"}},
+		{name: "missing agent segment", req: &game.CancelRequest{Name: agentSession}},
+		{name: "unknown template", req: &game.CancelRequest{Name: "templates/unknown/sessions/s1/agent"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -710,14 +610,14 @@ func TestAgentHandler_Cancel_InvalidNameReturnsInvalidArgument(t *testing.T) {
 }
 
 func TestAgentHandler_Cancel_NoOwnerReturnsNotFoundWithoutAllocation(t *testing.T) {
-	// given: a fresh store — no UpdateTeam ever materialized the session
+	// given: a fresh store — no UpdateAgent ever materialized the session
 	fake := &fakeAgentClient{}
 	handler, store, _, _ := newAgentHarness(t, fake)
 
 	// when
-	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: teamResource})
+	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
 
-	// then: for routing purposes there is no team to cancel — NOT_FOUND,
+	// then: for routing purposes there is no agent to cancel — NOT_FOUND,
 	// and Cancel is not a materialization entry point
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("Cancel() code = %v, want NotFound", status.Code(err))
@@ -735,23 +635,24 @@ func TestAgentHandler_Cancel_InstanceUnreachable(t *testing.T) {
 	manager.getErr = errors.New("no connection for owner index 7")
 
 	// when
-	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: teamResource})
+	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
 
-	// then: proxy→agent_v2 break maps to UNAVAILABLE (503)
+	// then: proxy→agent_v2 break maps to UNAVAILABLE (503, agent-api §3)
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("Cancel() code = %v, want Unavailable", status.Code(err))
 	}
 }
 
 func TestAgentHandler_Cancel_DownstreamErrorPropagates(t *testing.T) {
-	// given: agent_v2 rejects the cancel (unmaterialized team — the owner
-	// was found but the team is gone, e.g. after an agent_v2 restart); the
-	// agent-level code must survive the hop.
-	fake := &fakeAgentClient{cancelErr: status.Error(codes.FailedPrecondition, "team not materialized; send UpdateTeam first")}
+	// given: agent_v2 rejects the cancel (unmaterialized agent — the owner
+	// was found but the agent is gone, e.g. after an agent_v2 restart); the
+	// agent-level code must survive the hop so the front end sees the mapped
+	// HTTP 400 rather than a 5xx hop failure (agent-api §3).
+	fake := &fakeAgentClient{cancelErr: status.Error(codes.FailedPrecondition, "agent not materialized; send UpdateAgent first")}
 	handler, store, _, _ := newAgentHarness(t, fake)
 	seedAgentOwner(store, 1)
 
-	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: teamResource})
+	_, err := handler.Cancel(context.Background(), &game.CancelRequest{Name: agentResource})
 
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("Cancel() code = %v, want FailedPrecondition (original code preserved)", status.Code(err))
@@ -770,7 +671,7 @@ func TestMapDomainError(t *testing.T) {
 		{name: "owner already exists", err: domain.ErrOwnerAlreadyExists, wantCode: codes.AlreadyExists},
 		{name: "no agent instances", err: domain.ErrNoAgentInstances, wantCode: codes.Unavailable},
 		// Unexpected store failures (e.g. Mongo unreachable) map to Internal,
-		// not grpc-go's Unknown fallback for a bare error.
+		// not grpc-go's Unknown fallback for a bare error (agent-api §3).
 		{name: "unknown error", err: errors.New("something else"), wantCode: codes.Internal},
 	}
 

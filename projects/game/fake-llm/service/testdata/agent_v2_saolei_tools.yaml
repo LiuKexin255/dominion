@@ -7,39 +7,21 @@
 # v1 can emit byte-identical board texts without either chain intercepting
 # the other.
 #
-# Rule set per fake-desktop scenario (research.md D15), with the 062 turn
-# conclusion (specs/062-team-game-end-handoff/spec.md FR-001/FR-002) reshaping
-# where the chains end: a terminal (won/lost) tool result concludes the player
-# turn at that result, so every continuation scripted after a terminal result
-# below is NEVER REQUESTED. The continuations stay in place as the
-# zero-execution assertion face
-# (specs/062-team-game-end-handoff/research.md D6): a request would have been
-# answered here deterministically, so "rule not matched" proves the model was
-# not called again — exactly the production defect scenario, where a real LLM
-# happily keeps playing after the terminal result.
+# Rule set per fake-desktop scenario (research.md D15):
 #   won (default, saolei_10 9×9):  init → operate batch → `game_won`
-#         pre-dispatch reject → won summary; the terminal init result
-#         concludes the turn before the batch, the terminal operate result
-#         before the summary
+#         pre-dispatch reject → won summary
 #   progressive (saolei_1 16×16):  init → operate batch [click(3,4),
 #         flag(4,8)] — both land on the board model (INITIAL cells in
 #         saolei_1/saolei_3, the latter flagged in saolei_4) — then the
-#         playing board text terminates the chain (non-terminal: plain text,
-#         no conclusion)
+#         playing board text terminates the chain
 #   lost (saolei_5 16×16):         init result already carries `game status:
-#         lost` → lost summary; the terminal init result concludes the turn
-#         before the summary
+#         lost` → lost summary, no dispatch
 # Every operate result resolves to exactly one rule (the status line plus the
 # board-size token are jointly exhaustive for the scenarios above), so the
-# chain always reaches a deterministic terminal — a tool result under 062, a
-# plain-text reply otherwise.
+# chain always reaches a plain-text terminal deterministically.
 tools:
-  # 9×9 init continuation: a playing 9×9 init opens the operate batch whose
-  # cell ops drive the game-1 chain. An init that already recognizes a
-  # terminal board would conclude the turn at the init result
-  # (specs/062-team-game-end-handoff/spec.md FR-002 ①), leaving this batch
-  # step unrequested — the zero-execution assertion face (e.g. the continue
-  # scenario's second game).
+  # Won-scenario init: the 9×9 win board opens the operate batch whose ops
+  # the agent rejects pre-dispatch (`game_won` — the terminal-reject branch).
   - name: agent-v2-saolei-init-operate
     tool_name: saolei_init
     responses_only: true
@@ -77,10 +59,8 @@ tools:
             - type: flag
               x: 4
               y: 8
-  # Terminal-at-init continuation: an init result already carrying `game
-  # status: lost` concludes the turn under 062
-  # (specs/062-team-game-end-handoff/spec.md FR-002 ①), so this summary step is
-  # never requested — the zero-execution assertion face.
+  # Lost-scenario init: the loss board is terminal from the first result —
+  # summarize directly.
   - name: agent-v2-saolei-init-lost
     tool_name: saolei_init
     responses_only: true
@@ -107,10 +87,8 @@ tools:
       - desktop disconnected
     respond_with:
       text: 桌面连接中断，操作未能完成。请等待桌面重连后再试。
-  # Terminal win on an operate result: the result itself concludes the turn
-  # under 062 (specs/062-team-game-end-handoff/spec.md FR-001), so this summary
-  # step is never requested — the zero-execution assertion face (the chain
-  # ends at the operate tool block).
+  # Terminal win on an operate result — a plain text response ends the tool
+  # loop deterministically.
   - name: agent-v2-saolei-operate-won
     tool_name: saolei_operate
     responses_only: true
@@ -118,10 +96,7 @@ tools:
       - "game status: won"
     respond_with:
       text: 本局扫雷已完成：全部雷区排除，游戏获胜。
-  # Terminal loss on an operate result: the result concludes the turn under
-  # 062 (specs/062-team-game-end-handoff/spec.md FR-001), so this summary step
-  # is never requested — the zero-execution assertion face (the chain ends at
-  # the operate tool block).
+  # Terminal loss on an operate result.
   - name: agent-v2-saolei-operate-lost
     tool_name: saolei_operate
     responses_only: true
@@ -139,17 +114,3 @@ tools:
       - board size 16*16
     respond_with:
       text: 已完成一轮扫雷操作：点击揭示与标记旗子均已执行，棋盘已刷新。
-  # team-planner-review-stop-text continues the lost-game review after its
-  # memory add lands (T023): the team_planner.yaml review entry carries the
-  # `memory` tool_call and the SUT's memory tool answers the successful add
-  # with "memory added", so this rule supplies the review body (the constant
-  # pinned as teamPlannerReviewStopText). It lives with the agent_v2 chains
-  # because it continues the same team scenario; the review entry itself
-  # carries no text.
-  - name: team-planner-review-stop-text
-    tool_name: memory
-    responses_only: true
-    match_result_contains:
-      - memory added
-    respond_with:
-      text: 本局复盘：触雷失败，边角判断有偏差。本局到此为止，不再安排新一局。@player 请保持待命。

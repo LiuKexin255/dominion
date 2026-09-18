@@ -2,8 +2,8 @@
  * spike.test.ts — Empirical verification of the LangGraph API assumptions in
  * specs/031-team-template-mode/research.md D14 (hypotheses A1-A6).
  *
- * Mirrors the fakeModel-driven style of the agent's spike tests. Each
- * `describe` block maps to one hypothesis
+ * Mirrors the fakeModel-driven style of projects/game/agent/src/spike.test.ts
+ * and spike.checkpoint.test.ts. Each `describe` block maps to one hypothesis
  * and is the sharpest deterministic proof of the API behaviour under
  * `@langchain/langgraph` ^1.4.8 / `langchain` ^1.5.4 / `@langchain/core` ^1.2.3
  * (pnpm-workspace.yaml catalog).

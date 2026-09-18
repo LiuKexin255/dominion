@@ -270,19 +270,14 @@ func createMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, tem
 
 // listMemories sends a GET to list the memories of a session (AIP-132 +
 // AIP-158 pagination: page_size/page_token/next_page_token) and returns the
-// parsed ListMemoriesResponse. orderBy is forwarded as the AIP-132 order_by
-// query parameter; an empty string omits it (the default memory_id ascending
-// listing). Calls t.Fatal on non-200 responses.
-func listMemories(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID string, pageSize int, pageToken string, orderBy string) *game.ListMemoriesResponse {
+// parsed ListMemoriesResponse. Calls t.Fatal on non-200 responses.
+func listMemories(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID string, pageSize int, pageToken string) *game.ListMemoriesResponse {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?page_size=%d",
 		sutHostURL, pathPrefix, template, sessionID, pageSize)
 	if pageToken != "" {
 		reqURL += "&page_token=" + pageToken
-	}
-	if orderBy != "" {
-		reqURL += "&order_by=" + url.QueryEscape(orderBy)
 	}
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet, reqURL, sutEnvName, nil)
 

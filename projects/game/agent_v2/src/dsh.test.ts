@@ -1,37 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ENV_DOMINION_ARTIFACT_DIR, ENV_DOMINION_SECRET_DIR } from "@dominion/common-js-constants";
 import { defaultLogger } from "@dominion/common-js-logs";
 import * as fs from "node:fs";
-import * as path from "node:path";
 // js-yaml v5 ships a real ESM build — named imports are statically resolved.
 import { YAML11_SCHEMA, defineScalarTag, load } from "js-yaml";
-import {
-  bootDsh,
-  cordisConfigPath,
-  GLM_DEFAULT_BASE_URL,
-  GLM_SECRET_FILE,
-  OPENCODE_DEFAULT_BASE_URL,
-  OPENCODE_SECRET_FILE,
-} from "./dsh.js";
+import { bootDsh, cordisConfigPath, GLM_DEFAULT_BASE_URL, GLM_SECRET_FILE } from "./dsh.js";
 import type { DshBootDeps, DshContext } from "./dsh.js";
 import type { EndpointResolver } from "@dominion/common-js-resolver";
 
 /**
  * Fail-loud unit tests for the composition boot path
- * (specs/049-agent-v2-dsh-init/research.md D9;
- * specs/063-llm-reliability-opencode-go/research.md D13): endpoint precedence
- * (explicit `*_BASE_URL` > `*_LLM_TARGET` resolved > default), secret-file
- * token injection with zero token leakage in diagnostics (SC-004), preset
- * template root resolution (explicit PRESET_TEMPLATES_ROOT >
- * DOMINION_ARTIFACT_DIR derivation > fail-loud,
- * specs/060-agent-v2-team-optimize/contracts/deploy-env.md §2), and the
+ * (specs/049-agent-v2-dsh-init/research.md D9): endpoint precedence
+ * (GLM_BASE_URL > GLM_LLM_TARGET resolved > default), secret-file token
+ * injection with zero token leakage in diagnostics (SC-004), and the
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
- * (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5): the
- * direct-composed 20-row set with the official agent-loop row, the
- * preset roster (two template system roots + one writable user root), the
- * trimmed system-prompt config, the subpath invariant companion rows
- * (research.md D5), and the llm-glm + llm-opencode-go model catalogs.
+ * (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5): the
+ * direct-composed 15-row set, no spine row and no official agent-loop row
+ * (FR-012), the trimmed system-prompt config, the subpath invariant
+ * companion rows (research.md D5), and the llm-glm model catalog.
  *
  * `boot`, the resolver, and the secret reader are injected as `vi.fn()`
  * doubles through the DshBootDeps seam; `process.exit` is spied so the
@@ -58,7 +44,6 @@ function fakeBoot(ctx: DshContext) {
 }
 
 const TOKEN = "glmtoken-do-not-leak-9f8e7d6c";
-const OPENCODE_TOKEN = "oc-go-token-do-not-leak-1a2b3c";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -71,11 +56,8 @@ describe("bootDsh", () => {
     const resolve = vi.fn(async () => ["10.0.0.9:8080"]);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_BASE_URL: "http://fake-llm:8080/v1",
       GLM_LLM_TARGET: "dominion:///game/fake-llm:8080",
-      OPENCODE_BASE_URL: "http://opencode-fake:8080/v1",
-      OPENCODE_LLM_TARGET: "dominion:///game/fake-llm:8080",
     };
 
     const result = await bootDsh({
@@ -89,7 +71,6 @@ describe("bootDsh", () => {
     expect(result).toBe(ctx);
     expect(resolve).not.toHaveBeenCalled();
     expect(env.GLM_BASE_URL).toBe("http://fake-llm:8080/v1");
-    expect(env.OPENCODE_BASE_URL).toBe("http://opencode-fake:8080/v1");
     expect(exit).not.toHaveBeenCalled();
   });
 
@@ -99,7 +80,6 @@ describe("bootDsh", () => {
     const resolve = vi.fn(async () => ["10.0.0.9:8080"]);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
       GLM_LLM_TARGET: "dominion:///game/fake-llm:8080",
     };
 
@@ -111,12 +91,8 @@ describe("bootDsh", () => {
       readSecretFile: () => TOKEN,
     });
 
-    expect(resolve).toHaveBeenCalledTimes(1);
     expect(resolve).toHaveBeenCalledWith("dominion:///game/fake-llm:8080");
     expect(env.GLM_BASE_URL).toBe("http://10.0.0.9:8080/v1");
-    // No OPENCODE_LLM_TARGET set: the opencode-go row keeps its production
-    // default without contacting the resolver.
-    expect(env.OPENCODE_BASE_URL).toBe(OPENCODE_DEFAULT_BASE_URL);
   });
 
   it("falls back to the production GLM endpoint when neither env override is set", async () => {
@@ -126,9 +102,7 @@ describe("bootDsh", () => {
       throw new Error("resolver must not be contacted without GLM_LLM_TARGET");
     });
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-    };
+    const env: Record<string, string | undefined> = {};
 
     await bootDsh({
       boot,
@@ -139,24 +113,19 @@ describe("bootDsh", () => {
     });
 
     expect(env.GLM_BASE_URL).toBe(GLM_DEFAULT_BASE_URL);
-    expect(env.OPENCODE_BASE_URL).toBe(OPENCODE_DEFAULT_BASE_URL);
   });
 
   it("injects the trimmed token from the secret file as GLM_API_KEY", async () => {
     const ctx = { marker: "ctx" } as unknown as DshContext;
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-    };
+    const env: Record<string, string | undefined> = {};
     const readSecretFile = vi.fn(() => `  ${TOKEN}\n`);
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
 
     expect(readSecretFile).toHaveBeenCalledWith(`/tmp/secret/${GLM_SECRET_FILE}`);
-    expect(readSecretFile).toHaveBeenCalledWith(`/tmp/secret/${OPENCODE_SECRET_FILE}`);
     expect(env.GLM_API_KEY).toBe(TOKEN);
-    expect(env.OPENCODE_API_KEY).toBe(TOKEN);
     expect(exit).not.toHaveBeenCalled();
   });
 
@@ -164,20 +133,15 @@ describe("bootDsh", () => {
     const ctx = { marker: "ctx" } as unknown as DshContext;
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      GLM_API_KEY: `  ${TOKEN}  `,
-      OPENCODE_API_KEY: `  ${OPENCODE_TOKEN}  `,
-    };
+    const env: Record<string, string | undefined> = { GLM_API_KEY: `  ${TOKEN}  ` };
     const readSecretFile = vi.fn(() => {
-      throw new Error("secret file must not be read when both API keys are set");
+      throw new Error("secret file must not be read when GLM_API_KEY is set");
     });
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
 
     expect(readSecretFile).not.toHaveBeenCalled();
     expect(env.GLM_API_KEY).toBe(TOKEN);
-    expect(env.OPENCODE_API_KEY).toBe(OPENCODE_TOKEN);
     expect(exit).not.toHaveBeenCalled();
   });
 
@@ -187,10 +151,7 @@ describe("bootDsh", () => {
     const ctx = { marker: "ctx" } as unknown as DshContext;
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      GLM_API_KEY: "   ",
-    };
+    const env: Record<string, string | undefined> = { GLM_API_KEY: "   " };
     const readSecretFile = vi.fn(() => TOKEN);
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
@@ -208,10 +169,7 @@ describe("bootDsh", () => {
 
     await bootDsh({
       boot,
-      env: {
-        [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-        [ENV_DOMINION_SECRET_DIR]: "/mnt/dominion/secret",
-      },
+      env: { DOMINION_SECRET_DIR: "/mnt/dominion/secret" },
       readSecretFile,
     });
 
@@ -227,10 +185,7 @@ describe("bootDsh", () => {
     const boot = fakeBoot({} as DshContext);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      OPENCODE_API_KEY: OPENCODE_TOKEN,
-    };
+    const env: Record<string, string | undefined> = {};
     const readSecretFile = vi.fn(() => {
       throw new Error(`ENOENT: no such file or directory, open '/mnt/dominion/secret/${GLM_SECRET_FILE}'`);
     });
@@ -252,10 +207,7 @@ describe("bootDsh", () => {
     const boot = fakeBoot({} as DshContext);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      OPENCODE_API_KEY: OPENCODE_TOKEN,
-    };
+    const env: Record<string, string | undefined> = {};
 
     await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => "   " });
 
@@ -269,93 +221,6 @@ describe("bootDsh", () => {
     expect(message + JSON.stringify(attrs)).not.toContain(TOKEN);
   });
 
-  it("resolves OPENCODE_LLM_TARGET through Dominion discovery and appends the /v1 path", async () => {
-    const ctx = { marker: "ctx" } as unknown as DshContext;
-    const boot = fakeBoot(ctx);
-    const resolve = vi.fn(async () => ["10.0.0.9:8080"]);
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      OPENCODE_LLM_TARGET: "dominion:///game/fake-llm:8080",
-    };
-
-    await bootDsh({
-      boot,
-      resolver: { resolve },
-      env,
-      secretDir: "/tmp/secret",
-      readSecretFile: () => TOKEN,
-    });
-
-    expect(resolve).toHaveBeenCalledTimes(1);
-    expect(resolve).toHaveBeenCalledWith("dominion:///game/fake-llm:8080");
-    expect(env.OPENCODE_BASE_URL).toBe("http://10.0.0.9:8080/v1");
-    // GLM has neither override: its production default applies.
-    expect(env.GLM_BASE_URL).toBe(GLM_DEFAULT_BASE_URL);
-  });
-
-  it("injects the trimmed token from the opencode-api-token file as OPENCODE_API_KEY", async () => {
-    const ctx = { marker: "ctx" } as unknown as DshContext;
-    const boot = fakeBoot(ctx);
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      GLM_API_KEY: TOKEN,
-    };
-    const readSecretFile = vi.fn(() => `  ${OPENCODE_TOKEN}\n`);
-
-    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
-
-    expect(readSecretFile).toHaveBeenCalledWith(`/tmp/secret/${OPENCODE_SECRET_FILE}`);
-    expect(env.OPENCODE_API_KEY).toBe(OPENCODE_TOKEN);
-    expect(exit).not.toHaveBeenCalled();
-  });
-
-  it("prefers a pre-set OPENCODE_API_KEY env without reading its secret file", async () => {
-    const ctx = { marker: "ctx" } as unknown as DshContext;
-    const boot = fakeBoot(ctx);
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      GLM_API_KEY: TOKEN,
-      OPENCODE_API_KEY: `  ${OPENCODE_TOKEN}  `,
-    };
-    const readSecretFile = vi.fn(() => {
-      throw new Error("secret file must not be read when both API keys are set");
-    });
-
-    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
-
-    expect(readSecretFile).not.toHaveBeenCalled();
-    expect(env.OPENCODE_API_KEY).toBe(OPENCODE_TOKEN);
-    expect(exit).not.toHaveBeenCalled();
-  });
-
-  it("warns and boots with OPENCODE_API_KEY unset when its token file is absent", async () => {
-    const boot = fakeBoot({} as DshContext);
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const warnSpy = vi.spyOn(defaultLogger(), "warn").mockImplementation(() => {});
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-      GLM_API_KEY: TOKEN,
-    };
-    const readSecretFile = vi.fn((file: string) => {
-      throw new Error(`ENOENT: no such file or directory, open '${file}'`);
-    });
-
-    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile });
-
-    expect(boot).toHaveBeenCalledTimes(1);
-    expect(exit).not.toHaveBeenCalled();
-    expect(env.OPENCODE_API_KEY).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    const [message, attrs] = warnSpy.mock.calls[0] as [string, Record<string, string>];
-    expect(message).toContain("OPENCODE_API_KEY");
-    expect(message + JSON.stringify(attrs)).toContain(`/tmp/secret/${OPENCODE_SECRET_FILE}`);
-    expect(message + JSON.stringify(attrs)).toContain("ENOENT");
-    expect(message + JSON.stringify(attrs)).not.toContain(OPENCODE_TOKEN);
-  });
-
   it("fails loud when the resolver returns no endpoints for GLM_LLM_TARGET", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const boot = fakeBoot({} as DshContext);
@@ -364,10 +229,7 @@ describe("bootDsh", () => {
     await bootDsh({
       boot,
       resolver: fakeResolver([]),
-      env: {
-        [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-        GLM_LLM_TARGET: "dominion:///game/fake-llm:8080",
-      },
+      env: { GLM_LLM_TARGET: "dominion:///game/fake-llm:8080" },
       secretDir: "/tmp/secret",
       readSecretFile: () => TOKEN,
     });
@@ -384,12 +246,7 @@ describe("bootDsh", () => {
     }) as unknown as DshBootDeps["boot"];
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
 
-    await bootDsh({
-      boot,
-      env: { [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2" },
-      secretDir: "/tmp/secret",
-      readSecretFile: () => TOKEN,
-    });
+    await bootDsh({ boot, env: {}, secretDir: "/tmp/secret", readSecretFile: () => TOKEN });
 
     expect(boot).toHaveBeenCalledTimes(1);
     expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("boot failed (fail-loud)"));
@@ -402,12 +259,7 @@ describe("bootDsh", () => {
     const boot = fakeBoot(ctx);
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
 
-    await bootDsh({
-      boot,
-      env: { [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2" },
-      secretDir: "/tmp/secret",
-      readSecretFile: () => TOKEN,
-    });
+    await bootDsh({ boot, env: {}, secretDir: "/tmp/secret", readSecretFile: () => TOKEN });
 
     expect(boot).toHaveBeenCalledTimes(1);
     const args = boot.mock.calls[0] as unknown[];
@@ -417,52 +269,6 @@ describe("bootDsh", () => {
     expect(args[3]).toBeUndefined();
     // The bare-module anchor pins plugin resolution at this module.
     expect(String(args[4])).toContain("dsh.ts");
-  });
-
-  it("prefers an explicit PRESET_TEMPLATES_ROOT over DOMINION_ARTIFACT_DIR derivation", async () => {
-    const ctx = { marker: "ctx" } as unknown as DshContext;
-    const boot = fakeBoot(ctx);
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      PRESET_TEMPLATES_ROOT: "/custom/preset-templates",
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-    };
-
-    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => TOKEN });
-
-    expect(env.PRESET_TEMPLATES_ROOT).toBe("/custom/preset-templates");
-    expect(boot).toHaveBeenCalledTimes(1);
-    expect(exit).not.toHaveBeenCalled();
-  });
-
-  it("derives PRESET_TEMPLATES_ROOT from DOMINION_ARTIFACT_DIR when no override is set", async () => {
-    const ctx = { marker: "ctx" } as unknown as DshContext;
-    const boot = fakeBoot(ctx);
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {
-      [ENV_DOMINION_ARTIFACT_DIR]: "/dominion/game/agent-v2",
-    };
-
-    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => TOKEN });
-
-    expect(env.PRESET_TEMPLATES_ROOT).toBe("/dominion/game/agent-v2/preset-templates");
-    expect(boot).toHaveBeenCalledTimes(1);
-    expect(exit).not.toHaveBeenCalled();
-  });
-
-  it("fails loud when neither PRESET_TEMPLATES_ROOT nor DOMINION_ARTIFACT_DIR is set", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    const boot = fakeBoot({} as DshContext);
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const env: Record<string, string | undefined> = {};
-
-    await bootDsh({ boot, env, secretDir: "/tmp/secret", readSecretFile: () => TOKEN });
-
-    expect(boot).not.toHaveBeenCalled();
-    expect(env.PRESET_TEMPLATES_ROOT).toBeUndefined();
-    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("PRESET_TEMPLATES_ROOT"));
-    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(ENV_DOMINION_ARTIFACT_DIR));
-    expect(exit).toHaveBeenCalledWith(1);
   });
 });
 
@@ -490,68 +296,10 @@ function loadManifest(): ManifestRow[] {
   return load(text, { schema }) as ManifestRow[];
 }
 
-/**
- * The pool template data (T021): the default persona bases and the role
- * tool rows. The fake-llm team fixtures anchor on the persona identity
- * prefixes (system_keywords「你是扫雷 player」/「你是扫雷 planner」,
- * projects/game/fake-llm/service/testdata/team_{player,planner}.yaml) and the
- * authoring row rules above must match the shipped rows.
- */
-describe("preset template data (T021)", () => {
-  const templateRoot = path.resolve(import.meta.dirname, "..", "preset-templates");
-
-  interface TemplateCompositionRow {
-    name?: string;
-    config?: { text?: string };
-  }
-
-  function readTemplate(role: string): {
-    rows: TemplateCompositionRow[];
-    persona: string;
-  } {
-    const file = path.join(templateRoot, role, role, "agent.cordis.yml");
-    const rows = load(fs.readFileSync(file, "utf8")) as TemplateCompositionRow[];
-    const personaRows = rows.filter((entry) => entry.name === "@deepseek-ai/dsh-persona");
-    expect(personaRows).toHaveLength(1);
-    return { rows, persona: personaRows[0]?.config?.text ?? "" };
-  }
-
-  it("keeps the cross-phase identity anchors and the role duties in the default bases", () => {
-    const player = readTemplate("player");
-    // T004/T008/T011 lockstep: the fake-llm system_keywords match this exact
-    // prefix by containment, so the anchor must stay verbatim.
-    expect(player.persona.startsWith("你是扫雷 player")).toBe(true);
-    expect(player.persona).toContain("saolei");
-    expect(player.persona).not.toContain("memory");
-    // R2 boundary: no team-level facts (broadcast wrappers/roster).
-    expect(player.persona).not.toContain("-message>");
-    expect(player.persona).not.toContain("名册");
-
-    const planner = readTemplate("planner");
-    expect(planner.persona.startsWith("你是扫雷 planner")).toBe(true);
-    expect(planner.persona).toContain("复盘");
-    expect(planner.persona).toContain("memory");
-    expect(planner.persona).not.toContain("-message>");
-    expect(planner.persona).not.toContain("名册");
-  });
-
-  it("ships the role's tool-plugin row and no other role's row (authoring rule lockstep)", () => {
-    const playerRows = readTemplate("player").rows.map((entry) => entry.name ?? "");
-    expect(playerRows.filter((name) => name === "@dominion/dsh-saolei")).toHaveLength(1);
-    expect(playerRows).not.toContain("@dominion/dsh-memory");
-    expect(playerRows).not.toContain("@dominion/dsh-memory-service");
-
-    const plannerRows = readTemplate("planner").rows.map((entry) => entry.name ?? "");
-    expect(plannerRows.filter((name) => name === "@dominion/dsh-memory")).toHaveLength(1);
-    expect(plannerRows).not.toContain("@dominion/dsh-memory-service");
-    expect(plannerRows).not.toContain("@dominion/dsh-saolei");
-  });
-});
-
 describe("cordis.yml composition manifest", () => {
   const rows = loadManifest();
 
-  it("direct-composes the 20-row plugin set in contract order", () => {
+  it("direct-composes the 15-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -559,29 +307,22 @@ describe("cordis.yml composition manifest", () => {
       "system-prompt",
       "tools",
       "agents",
-      "agent-loop",
       "invariants",
       "invariant-session",
       "invariant-agent",
       "invariant-scope",
       "llm-retry",
       "llm-glm",
-      "llm-opencode-go",
       "desktop-bridge",
-      "agent-presets",
-      "preset-authoring",
-      "team",
-      "memory",
       "saolei-loop",
+      "saolei",
     ]);
   });
 
-  it("mounts the official agent loop and no spine row (R1/R7)", () => {
+  it("mounts no spine row and no official agent-loop row (FR-012)", () => {
     const names = rows.map((row) => row.name);
-    // 官方驱动回归：the agent-loop row owns the factory (Config.agents[]
-    // left empty — agents materialize dynamically through ctx.agents.create).
-    expect(names).toContain("@deepseek-ai/dsh-agent-loop");
     expect(names).not.toContain("@deepseek-ai/dsh-agent-spine-demo");
+    expect(names).not.toContain("@deepseek-ai/dsh-agent-loop");
     expect(names.filter((name) => name.includes("spine"))).toEqual([]);
   });
 
@@ -626,110 +367,11 @@ describe("cordis.yml composition manifest", () => {
     expect(config.models[1]).toEqual({ id: "glm-5.3-flash", contextWindow: 1_000_000 });
   });
 
-  it("keeps the opencode-go adapter row with the full 16-model Chat Completions catalog", () => {
-    const row = rows.find((entry) => entry.id === "llm-opencode-go");
-    expect(row?.name).toBe("@dominion/dsh-llm-opencode-go");
-    const config = row?.config as {
-      apiKeyEnv: string;
-      baseURL: string;
-      models: Array<{ id: string; contextWindow: number }>;
-      streamIdleTimeoutMs: string;
-    };
-    expect(config.apiKeyEnv).toBe("OPENCODE_API_KEY");
-    expect(config.baseURL).toContain("OPENCODE_BASE_URL");
-    // The watchdog window env is wrapped in Number(): Config validates a
-    // number while env values are strings
-    // (specs/063-llm-reliability-opencode-go/research.md D13).
-    expect(config.streamIdleTimeoutMs).toContain(
-      "Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS)",
-    );
-    expect(config.streamIdleTimeoutMs).toContain("300000");
-    // The full FR-015 catalog must be injected: a partial `models` list would
-    // replace the plugin's default directory wholesale
-    // (specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md §2).
-    expect(config.models).toHaveLength(16);
-    expect(config.models[0].id).toContain("OPENCODE_MODEL");
-    expect(config.models[0].id).toContain("glm-5.3");
-    expect(config.models[0].contextWindow).toBe(1_000_000);
-    expect(config.models.slice(1)).toEqual([
-      { id: "glm-5.3-flash", contextWindow: 1_000_000 },
-      { id: "glm-5.2", contextWindow: 1_000_000 },
-      { id: "glm-5.1", contextWindow: 202_752 },
-      { id: "kimi-k3", contextWindow: 1_048_576 },
-      { id: "kimi-k2.7-code", contextWindow: 262_144 },
-      { id: "kimi-k2.6", contextWindow: 262_144 },
-      { id: "longcat-2.0", contextWindow: 1_000_000 },
-      { id: "deepseek-v4.1-flash", contextWindow: 1_000_000 },
-      { id: "deepseek-v4-pro", contextWindow: 1_000_000 },
-      { id: "deepseek-v4-flash", contextWindow: 1_000_000 },
-      { id: "deepseek-v4-flash-vision-exp", contextWindow: 1_000_000 },
-      { id: "mimo-v2.5", contextWindow: 1_000_000 },
-      { id: "mimo-v2.5-pro", contextWindow: 1_048_576 },
-      { id: "hy4-preview", contextWindow: 1_024_000 },
-      { id: "hy3", contextWindow: 256_000 },
-    ]);
-  });
-
-  it("mounts the roster with the two template system roots and no user root", () => {
-    const row = rows.find((entry) => entry.id === "agent-presets");
-    expect(row?.name).toBe("@deepseek-ai/dsh-agent-presets");
-    const config = row?.config as {
-      default: string;
-      includeUserRoot: boolean;
-      roots: Array<{ path: string; trust: string }>;
-    };
-    // Preset selection is mandatory in this service: the schema-required
-    // default points at no preset, so an id-less resolve fails loud.
-    expect(config.default).toBe("");
-    expect(config.includeUserRoot).toBe(false);
-    // User presets are store-only: compositions are derived at use time, so
-    // no writable user root is declared
-    // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §3).
-    expect(config.roots).toHaveLength(2);
-    expect(config.roots[0]).toMatchObject({ path: expect.stringContaining("PRESET_TEMPLATES_ROOT"), trust: "system" });
-    expect(config.roots[0].path).toContain("player");
-    expect(config.roots[1]).toMatchObject({ path: expect.stringContaining("PRESET_TEMPLATES_ROOT"), trust: "system" });
-    expect(config.roots[1].path).toContain("planner");
-    expect(config.roots.filter((root) => root.trust === "user")).toHaveLength(0);
-  });
-
-  it("mounts the authoring plugin with the host-injected Mongo connection", () => {
-    const row = rows.find((entry) => entry.id === "preset-authoring");
-    expect(row?.name).toBe("@dominion/dsh-preset-authoring");
-    // The credential/URI resolution is the host's (presets.ts, T006) —
-    // injected via the MONGO_URI environment variable, the GLM_BASE_URL
-    // injection pattern; the plugin carries no Dominion deployment logic.
-    expect(row?.config).toEqual({
-      storage: "mongo",
-      mongoUri: expect.stringContaining("MONGO_URI"),
-      mongoDatabase: "game_agent_v2",
-      mongoCollection: "presets",
-      // The scene row lock: each pool template must carry exactly its role's
-      // tool-plugin row (T021; preset-api.md §2, dsh-plugins.md §5).
-      templateRules: {
-        player: {
-          required: ["@dominion/dsh-saolei"],
-          forbidden: ["@dominion/dsh-memory"],
-        },
-        planner: {
-          required: ["@dominion/dsh-memory"],
-          forbidden: ["@dominion/dsh-saolei"],
-        },
-      },
-    });
-  });
-
-  it("mounts the team and memory host rows and the team-loop row", () => {
+  it("mounts the three Dominion plugins (bridge, loop, tools)", () => {
     const byId = new Map(rows.map((row) => [row.id, row.name]));
     expect(byId.get("desktop-bridge")).toBe("@dominion/dsh-desktop-bridge");
-    expect(byId.get("team")).toBe("@dominion/dsh-team");
-    expect(byId.get("memory")).toBe("@dominion/dsh-memory-service");
     expect(byId.get("saolei-loop")).toBe("@dominion/dsh-saolei-loop");
-  });
-
-  it("mounts no host-level saolei tool row (it rides the player template preset)", () => {
-    expect(rows.find((row) => row.id === "saolei")).toBeUndefined();
-    expect(rows.map((row) => row.name)).not.toContain("@dominion/dsh-saolei");
+    expect(byId.get("saolei")).toBe("@dominion/dsh-saolei");
   });
 
   it("mounts no persistence and no settings row (research.md §3.1)", () => {

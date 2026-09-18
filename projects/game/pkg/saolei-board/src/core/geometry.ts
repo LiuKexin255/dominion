@@ -1,13 +1,12 @@
 /**
  * geometry.ts — Screenshot-space board layout constants and helpers.
  *
- * These constants are the SCREENSHOT-space counterparts of the dispatch-side
- * `common/js/dsh-plugins/saolei-loop/src/game/geometry.ts` values. The
- * dispatch side uses CLIENT space (Y=104 after a 96 px chrome offset) for
- * posting `WM_*` messages; recognition reads the captured screenshot (full
- * window incl. non-client chrome), so it uses the SCREENSHOT-space board top
- * Y=200. Both share X=24 and cell size 32
- * (`specs/018-saolei-mcp/research.md` D6).
+ * These constants are the SCREENSHOT-space counterparts of the agent's
+ * `projects/game/agent/src/mcp/saolei/geometry.ts` values. The agent uses
+ * CLIENT space (Y=104 after a 96 px chrome offset) for posting `WM_*`
+ * messages; recognition reads the captured screenshot (full window incl.
+ * non-client chrome), so it uses the SCREENSHOT-space board top Y=200.
+ * Both share X=24 and cell size 32 (`specs/018-saolei-mcp/research.md` D6).
  */
 
 import type { BoardGeometry } from "./types.js";

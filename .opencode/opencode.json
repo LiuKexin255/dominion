@@ -1,51 +1,30 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "zhipuai-coding-plan/glm-5.3",
+  "small_model": "zhipuai-coding-plan/glm-5.3-flash",
   "instructions": [
     ".specify/memory/constitution.md"
   ],
-  "agents": {
-    "title": {
-      "model": "zhipuai-coding-plan/glm-5.3-flash"
-    },
+  "agent": {
     "build": {
       "model": "zhipuai-coding-plan/glm-5.3",
-      "request": {
-        "body": {
-          "reasoningEffort": "max"
-        }
-      }
+      "reasoningEffort": "max"
     },
     "explore": {
-      "model": "opencode-go/deepseek-v4.1-flash",
-      "request": {
-        "body": {
-          "reasoningEffort": "max"
-        }
-      }
+      "model": "zhipuai-coding-plan/glm-5.3-flash",
+      "reasoningEffort": "max"
     },
     "plan": {
       "model": "zhipuai-coding-plan/glm-5.3",
-      "request": {
-        "body": {
-          "reasoningEffort": "max"
-        }
-      }
+      "reasoningEffort": "max",
     },
     "general": {
       "model": "zhipuai-coding-plan/glm-5.3",
-      "request": {
-        "body": {
-          "reasoningEffort": "max"
-        }
-      },
-      "permissions": [
-        { "action": "todowrite", "resource": "*", "effect": "allow" }
-      ]
-    }
-  },
-  "websearch": {
-    "provider": "exa"
+      "reasoningEffort": "max",
+      "tools": {
+        "todowrite": true
+      }
+    },
   },
   "lsp": {
     "bazel": {
@@ -59,7 +38,9 @@
       ]
     }
   },
-  "permissions": [
-    { "action": "external_directory", "resource": "~/.cache/bazel/_bazel_liukexin/*", "effect": "allow" }
-  ]
+  "permission": {
+    "external_directory": {
+      "~/.cache/bazel/_bazel_liukexin/*": "allow"
+    }
+  }
 }

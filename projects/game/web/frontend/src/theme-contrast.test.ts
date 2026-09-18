@@ -168,7 +168,7 @@ const BANNERS = [
   { selector: '.chat-error', bgVar: '--app-banner-error-bg', fgVar: '--app-banner-error-fg' },
   { selector: '.presets-error', bgVar: '--app-banner-error-bg', fgVar: '--app-banner-error-fg' },
   {
-    selector: '.team-panel-error',
+    selector: '.agent-panel-error',
     bgVar: '--app-banner-error-bg',
     fgVar: '--app-banner-error-fg',
   },

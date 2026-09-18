@@ -16,29 +16,10 @@ https://docs.bigmodel.cn/cn/coding-plan/tool/others ）。插件契约（包声�
 - dsh 家族 peer `@deepseek-ai/dsh-llm` 按精确版本 `0.1.1-rc.2` pin（无前缀）：dsh
   家族按 0.1.1-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），依据
   `specs/049-agent-v2-dsh-init/research.md` D1。
-- deps 取官方适配器 `dsh-llm-deepseek` 的最小集：`eventsource-parser`（SSE 解析，
-  catalog 统一管理，版本对齐官方声明 `^3.1.0`）、`@deepseek-ai/schemastery`
-  （Config schema，`^3.18.1`），并把官方以 peer 声明的 `@deepseek-ai/dsh-timeout`
-  列为直接依赖（流停滞看护 `idleWatchdog` 的实现载体，0.1.1-rc.2 线）；peer 裁剪
-  至 `@deepseek-ai/dsh-llm` + `@deepseek-ai/cordis`（不消费 credentials/settings
-  等宿主设施）。
-
-## 失败分类与看护
-
-适配器抛出的 `LlmError` 全部使用 dsh 共享失败码分类学
-（`TRANSPORT`/`TIMEOUT`/`RATE_LIMIT`/`SERVER`/`EMPTY_RESPONSE`/`AUTH`/`QUOTA`/
-`CONTEXT_WINDOW_EXCEEDED`/`INVALID_REQUEST`/`HTTP_<status>`/`STREAM_CLOSED`/
-`MALFORMED_RESPONSE`）；带内失败保持 provider 原码（缺失时 `UNKNOWN` 兜底，非
-共享码集合成员）——两者同受 `llm-retry` 按码路由，组合中既有默认策略因此生效
-（可重试集合 `[EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT]`）。
-完整判定表与适配器义务（错误体仅分类不回显、Retry-After、空补全、idle 看护、
-传输清理、abort 语义）见
-`specs/063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md`。
-
-- `retryPolicy`（可选，dsh `RetryPolicySchema` 透传）经 `providerRetryPolicy()`
-  声明；缺省回退 dsh 默认（normal、5 次、500ms→10s）。
-- `streamIdleTimeoutMs`（可选，默认 300000）为流停滞看护窗口：SSE comment 帧
-  作为活动 pulse 重置窗口，超时转为可重试 `TIMEOUT`。
+- deps 对齐官方适配器 `dsh-llm-deepseek` 的最小集：`eventsource-parser`（SSE 解析，
+  catalog 统一管理，版本对齐官方声明 `^3.1.0`）+ `@deepseek-ai/schemastery`
+  （Config schema，`^3.18.1`）；peer 裁剪至 `@deepseek-ai/dsh-llm` +
+  `@deepseek-ai/cordis`（不消费 credentials/settings/timeout 等宿主设施）。
 
 ## 参照源码
 

@@ -31,12 +31,6 @@ services:
         glm-api-token:
           secret: llm-secrets
           key: glm-codingplan
-        # opencode-go 订阅 token（specs/063-llm-reliability-opencode-go/
-        # research.md D13：llm-secrets 家族新增 key，挂载为
-        # $DOMINION_SECRET_DIR/opencode-api-token）。
-        opencode-api-token:
-          secret: llm-secrets
-          key: opencode-go
   # Same-hostname path split (specs/049-agent-v2-dsh-init/research.md D5):
   # web serves `/`, the gateway serves /api/v1/ and /api/v2/ — Gateway API
   # merges same-hostname routes by longest PathPrefix.

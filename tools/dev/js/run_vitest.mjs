@@ -1,6 +1,7 @@
 // Canonical shared vitest test-runner shim for all Bazel `js_test` targets.
-// Single source of truth: replaces the former per-package runner copies,
-// several of which carried the bug where `if (!result)` never fired because
+// Single source of truth: replaces the six drifting per-package copies
+// (`projects/game/agent/run_vitest.mjs` + five under `common/js/...`), five of
+// which still carry the original bug where `if (!result)` never fired because
 // `startVitest` always returns a truthy `Vitest` instance.
 //
 // Exit-code contract:

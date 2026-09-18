@@ -6,9 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"dominion/common/gopkg/constants"
-	"dominion/projects/infra/deploy/domain"
-
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +16,8 @@ import (
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"dominion/projects/infra/deploy/domain"
 )
 
 func TestK8sRuntimeApplyCreatesResources(t *testing.T) {
@@ -846,18 +845,17 @@ func TestK8sRuntime_ReservedEnvironmentVariableNames(t *testing.T) {
 	}
 
 	want := []string{
-		constants.EnvServiceApp,
-		constants.EnvDominionEnvironment,
-		constants.EnvPodNamespace,
-		constants.EnvDominionArtifactDir,
-		constants.EnvTLSCertFile,
-		constants.EnvTLSKeyFile,
-		constants.EnvTLSCAFile,
-		constants.EnvTLSServerName,
-		constants.EnvS3AccessKey,
-		constants.EnvS3SecretKey,
-		constants.EnvDominionSecretDir,
-		constants.EnvDominionConfigDir,
+		reservedEnvNameServiceApp,
+		reservedEnvNameDominionEnvironment,
+		reservedEnvNamePodNamespace,
+		envTLSCertFile,
+		envTLSKeyFile,
+		envTLSCAFile,
+		envTLSDomain,
+		envS3AccessKey,
+		envS3SecretKey,
+		envSecretDir,
+		envConfigDir,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("names count = %d, want %d", len(names), len(want))

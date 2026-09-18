@@ -7,12 +7,10 @@ import (
 )
 
 // Client-space geometry of the saolei board grid, mirroring the dispatch-side
-// formula (common/js/dsh-plugins/saolei-loop/src/game/geometry.ts —
-// center(x) = 24 + x*32 + 16, center(y) = 104 + y*32 + 16; the client-space
-// origin carries the 96 px chrome offset from the screenshot-space board top
-// Y=200, specs/024-tool-render-coord-fix/research.md D1/D2). The executor
-// inverse-maps a dispatched cell-centre back to grid coordinates purely for
-// the receipt message; execution itself never depends on the coordinates.
+// formula (projects/game/agent/src/mcp/saolei/geometry.ts — center(x) =
+// 24 + x*32 + 16, center(y) = 104 + y*32 + 16). The executor inverse-maps a
+// dispatched cell-centre back to grid coordinates purely for the receipt
+// message; execution itself never depends on the coordinates.
 const (
 	gridOriginXPx = 24
 	gridOriginYPx = 104

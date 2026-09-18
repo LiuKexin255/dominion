@@ -1,13 +1,11 @@
-// /api/v2 对话 API 客户端（team 面，契约
-// specs/059-agent-v2-team-mode/contracts/team-api.md）。sendStream 以 fetch +
-// ReadableStream 消费 team 流 NDJSON（EventSource 不适用——POST body）；流
-// 从发起持续至 team 静止，承载成员事件帧与 team_message/member_view 帧
-// （team-api.md §3.1/§3.2；member_view 增量修订见
-// specs/060-agent-v2-team-optimize/contracts/team-api.md §2）。全部类型为
-// protojson 投影：camelCase 字段名、枚举输出名字符串、oneof 展平为可选
-// 字段——未知 oneof 分支被消费端忽略（proto3 forward-compat）。
+// /api/v2 对话 API 客户端（AgentService，契约
+// specs/051-agent-v2-dsh-migration/contracts/agent-api.md）。sendStream 以
+// fetch + ReadableStream 消费 NDJSON 事件流（EventSource 不适用——POST body）；
+// listHistory 为 agent 单例（AIP-156）消息子资源的标准 List（AIP-132）。
+// 全部类型为 protojson 投影：camelCase 字段名、枚举输出名字符串、oneof 展平
+// 为可选字段——未知 oneof 分支被消费端忽略（proto3 forward-compat）。
 
-// ─── 流事件（ChatEvent，team-api.md §3.2 protojson 投影） ───────────────────
+// ─── 流事件（ChatEvent，conversation-api.md §1 protojson 投影） ──────────────
 
 export type BlockType =
   | 'BLOCK_TYPE_UNSPECIFIED'
@@ -38,49 +36,10 @@ export interface ContentBlock {
   }
 }
 
-// USER_MEMBER is the reserved member value naming user input in the merged
-// team sequence and in member-view sender annotations (team-api.md §3.2/§5:
-// member/sender are plain wire strings — "user" for user input, the member
-// role string for member output; no enum prefix normalization).
-export const USER_MEMBER = 'user'
-
-// TeamMessage is one merged-sequence element: the ListTeamMessages response
-// item and the team_message frame payload are the same shape with the same
-// seq source (team-api.md §3.2, data-model.md §2). member is the producer
-// string (USER_MEMBER for user input, the member role string otherwise).
-// seq (int64) is emitted by protojson as a JSON string — normalize with seqOf
-// before ordering/comparing.
-export interface TeamMessage {
-  member?: string
-  message: HistoryMessage
-  seq: number | string
-}
-
-// seqOf normalizes a protojson int64 (JSON string) to a number for ordering
-// and dedup anchors.
-export function seqOf(seq: number | string | undefined): number {
-  return typeof seq === 'number' ? seq : Number(seq ?? 0)
-}
-
 export interface ChatEvent {
   session?: string
   turnId?: string
   queued?: { position: number }
-  // Member annotation of a member event frame: the producing member's role
-  // string (scenario vocabulary, saolei: "player"/"planner"; absent/empty on
-  // team-level frames). Member event frames group by (member, turnId), block
-  // index/step scoped to the member turn (team-api.md §3.2).
-  member?: string
-  // Team-level merged-sequence frame (team-api.md §3.2): {member, message,
-  // seq} identical to a ListTeamMessages element; no outer member field.
-  teamMessage?: TeamMessage
-  // Team-level member-view frame (specs/060-agent-v2-team-optimize/contracts/
-  // team-api.md §2): {member, sender, message} — a member consumed an input
-  // (user input or a broadcast relay) and it entered that member's view; no
-  // outer member field. message is the same projection ListMemberMessages
-  // serves for the entry (ROLE_USER, sender annotated by the sender field);
-  // messageId is the client-side idempotency anchor.
-  memberView?: { member?: string; sender?: string; message: HistoryMessage }
   turnStart?: Record<string, never>
   blockStart?: {
     index: number
@@ -104,7 +63,7 @@ export interface ChatEvent {
   toolResult?: { toolId: string; status: string; result: string }
 }
 
-// ─── 历史（HistoryMessage，team-api.md §5） ──────────────────────────────────
+// ─── 历史（HistoryMessage，agent-api.md §1 ListAgentMessages） ───────────────
 
 export type Role = 'ROLE_UNSPECIFIED' | 'ROLE_USER' | 'ROLE_AGENT'
 
@@ -120,6 +79,11 @@ export interface HistoryMessage {
   // (specs/054-agent-v2-bugfixes/data-model.md §1.5). Absent for settled
   // steps and user messages (proto3 default-omitted).
   interrupted?: boolean
+}
+
+export interface ListAgentMessagesResponse {
+  messages?: HistoryMessage[]
+  nextPageToken?: string
 }
 
 // ─── 错误与请求设施 ──────────────────────────────────────────────────────────
@@ -167,12 +131,9 @@ export async function* ndjsonLines(
   }
 }
 
-// sendStream posts one user message and opens the team stream: the NDJSON
-// stream carries every member event frame and team_message frame from the
-// subscription point until the team goes quiescent (team-api.md §3.1) —
-// framing per the grpc-gateway v2 streaming envelope, one {"result": …} JSON
-// object per line (runtime/handler.go handleForwardResponseServerStream at
-// the repo-pinned v2.27.6).
+// sendStream posts one user message and yields the turn's ChatEvents until
+// its turn ends (including queued waiting, FR-012). Framing per
+// specs/049-agent-v2-dsh-init/contracts/conversation-api.md §6.
 export async function* sendStream(
   session: string,
   text: string,
@@ -184,6 +145,20 @@ export async function* sendStream(
   })
   if (!res.ok || !res.body) throw new ApiError(res.status, await res.text())
   for await (const line of ndjsonLines(res.body)) {
+    // grpc-gateway v2's default streaming marshaler wraps every message in a
+    // "result" key — one {"result": <ChatEvent>} JSON object per line
+    // (conversation-api.md §2; runtime/handler.go
+    // handleForwardResponseServerStream at the repo-pinned v2.27.6).
     yield (JSON.parse(line) as { result: ChatEvent }).result
   }
+}
+
+// listHistory backfills the agent singleton's messages via the standard
+// List method (AIP-132): parent is the agent resource name
+// templates/{template}/sessions/{session}/agent.
+export async function listHistory(session: string): Promise<HistoryMessage[]> {
+  const res = await requestJson<ListAgentMessagesResponse>(
+    `/api/v2/${session}/agent/messages`,
+  )
+  return res.messages ?? []
 }

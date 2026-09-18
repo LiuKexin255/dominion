@@ -5,7 +5,6 @@
 package mongo
 
 import (
-	"fmt"
 	"time"
 
 	"dominion/projects/game/memory/domain"
@@ -13,10 +12,9 @@ import (
 
 // BSON field name constants for MongoDB documents.
 const (
-	fieldMemoryID   = "memory_id"
-	fieldTemplate   = "template"
-	fieldSessionID  = "session_id"
-	fieldUpdateTime = "update_time"
+	fieldMemoryID  = "memory_id"
+	fieldTemplate  = "template"
+	fieldSessionID = "session_id"
 )
 
 // memoryDocument stores Memory documents in MongoDB. The _id is left to the
@@ -60,24 +58,6 @@ func memoryDocumentFromDomain(m *domain.Memory) *memoryDocument {
 		Content:    m.Content,
 		CreateTime: m.CreateTime,
 		UpdateTime: m.UpdateTime,
-	}
-}
-
-// sortValue returns the document's typed value for a whitelisted API sort
-// field: the value a page token carries for that key, with no formatting
-// (times stay time.Time — the wire form belongs to
-// MemorySortTerm.CursorEntry). Unknown fields fail fast so a whitelist row
-// without a matching case surfaces immediately
-// (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
-// item 9).
-func (d *memoryDocument) sortValue(field string) any {
-	switch field {
-	case domain.MemorySortFieldMemoryID:
-		return d.MemoryID
-	case domain.MemorySortFieldUpdateTime:
-		return d.UpdateTime
-	default:
-		panic(fmt.Sprintf("memoryDocument.sortValue: field %q is not a whitelisted sort field", field))
 	}
 }
 

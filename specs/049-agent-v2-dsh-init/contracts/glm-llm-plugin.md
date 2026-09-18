@@ -21,13 +21,12 @@
     }
   },
   "dependencies": {
-    "eventsource-parser": "catalog:",          // SSE 解析（对齐官方 dsh-llm-deepseek deps）
-    "@deepseek-ai/schemastery": "catalog:",    // cordis Config schema
-    "@deepseek-ai/dsh-timeout": "catalog:"     // 流停滞看护（idleWatchdog）
+    "eventsource-parser": "catalog:",  // SSE 解析（对齐官方 dsh-llm-deepseek deps）
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": "catalog:",
-    "@deepseek-ai/cordis": "catalog:"
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+    "@deepseek-ai/cordis": "^4.0.1"
   }
 }
 ```
@@ -52,10 +51,6 @@ export interface GlmConfig {
   baseURL: string;
   /** 显式模型目录（resolveModel 依据；catalog advisory 不做请求校验）。 */
   models: ReadonlyArray<{ id: string; contextWindow: number }>;
-  /** dsh RetryPolicySchema 透传；缺省回退 dsh 默认（normal/5 次/500ms→10s；llm-failure-taxonomy.md §2）。 */
-  retryPolicy?: RetryPolicyConfig;
-  /** 流停滞看护窗口（ms），缺省 300000（llm-failure-taxonomy.md §1 义务 4）。 */
-  streamIdleTimeoutMs?: number;
 }
 
 export const Config: z<z.infer<typeof configSchema>> = /* schemastery object */;
@@ -72,29 +67,23 @@ export function apply(ctx: Context, config: GlmConfig): void {
 
 ```ts
 export class GlmResponsesAdapter extends LlmAdapter {
-  constructor(config: GlmConfig, fetchImpl?: typeof fetch);  // fetchImpl 为测试注入缝（DI，style/javascript.md Mock 约定）
+  constructor(config: GlmConfig);
   override providerInfo(provider: string): LlmProviderInfo;   // id=provider, name="GLM (OpenAI Responses)"
-  override providerRetryPolicy(provider: string): ResolvedRetryPolicy;  // config.retryPolicy 经 resolveRetryPolicy 透传
   override async resolveModel(provider, model, signal?): Promise<LlmResolvedModelInfo>;
   // contextWindow 取自 config.models 命中项；未命中返回最小元数据（advisory）
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
 }
 ```
 
-**协议义务**（[docs/cookbook/adding-an-llm-adapter.md](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-an-llm-adapter.md)，逐条落实；失败分类、重试声明、看护与清理的判定表以 [llm-failure-taxonomy.md](../../063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md) §1-§2 为准）：
+**协议义务**（[docs/cookbook/adding-an-llm-adapter.md](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-an-llm-adapter.md)，逐条落实）：
 
 1. `usage` 先于 `finish`、`finish` 后零输出——实现方式：缓冲至 `response.completed`/`response.incomplete`/`response.failed` 终局事件再 flush。
 2. block `index` 按流中首现顺序分配、同块增量复用同 index。
-3. 错误两条路径：传输/协议失败 → 从 `stream()` **throw** `LlmError`（dsh 共享失败码：`TRANSPORT`/`TIMEOUT`/`AUTH`/`RATE_LIMIT`/`QUOTA`/`SERVER`/`INVALID_REQUEST`/`CONTEXT_WINDOW_EXCEEDED`/`HTTP_<status>`/`EMPTY_RESPONSE`/`STREAM_CLOSED`/`MALFORMED_RESPONSE`）；provider 带内失败（`response.failed`/`error` 事件）→ 终局 `finish{kind:'error', failure}`（保持 provider 原码）。
-4. 尊重 `options.signal`（传入 fetch；caller abort 时终局 `finish{kind:'aborted'}`，不抛错、不触发重试面）。
+3. 错误两条路径：传输/协议失败 → 从 `stream()` **throw** `LlmError`（稳定 code，如 `GLM_HTTP_500`/`GLM_PROTOCOL`）；provider 带内失败（`response.failed`/`error` 事件）→ 终局 `finish{kind:'error', failure}`。
+4. 尊重 `options.signal`（传入 fetch；abort 时终局 `finish{kind:'aborted'}` 或 throw）。
 5. 无法满足的 `GenerateOptions` 字段（如 `stop` 序列、`reasoningEffort` 未支持值）→ throw `LlmError(..., 'UNSUPPORTED')`，不静默丢弃。
 6. Authorization **条件携带**（宿主 token 解析容忍缺失的对应端，[research.md](../research.md) D9）：key 非空 → 请求头必含 `Authorization: Bearer <env(apiKeyEnv)>`（非空值经 `assertUsableApiKey` 校验，含 header 安全字符校验）；key 为空（未设/空白）→ 请求**不携带** Authorization header、照常发出。attribution headers（`attributionHeaders()`，dsh-llm 导出）任何情形必含。
 7. **不**发送 `replayState`（Responses 端点按 input 全量重建；无服务端 response id 复用需求——`store:false` 语义）。
-8. **错误体零回显**：非 2xx 的响应体仅作 `isQuotaExceededError`/`isContextWindowExceededError` 分类与 `cause` 链输入；`LlmError.message` 保持 `GLM endpoint returned HTTP <status>` 稳定文本，不含体文本（llm-failure-taxonomy.md §1 义务 1）。
-9. **Retry-After**：非 2xx 的 `Retry-After` 头（秒数或 HTTP 日期）解析为 `LlmError` options `providerRetryAfterMs`，由 llm-retry 的退避消费（llm-failure-taxonomy.md §1 义务 2）。
-10. **流停滞看护**：`idleWatchdog`（`@deepseek-ai/dsh-timeout`）包裹 fetch 与全部 body 读取迭代；SSE comment 帧经 `createResponsesWire(onComment)` 触发 pulse；停滞超窗 → throw `LlmError(..., 'TIMEOUT')`（llm-failure-taxonomy.md §1 义务 4）。
-11. **空补全**：终局事件到达但零内容块 → 终局 `finish{kind:'error', failure{code:'EMPTY_RESPONSE'}}`，不产出成功的空回合（llm-failure-taxonomy.md §1 义务 3）。
-12. **传输清理**：独立 `AbortController` 贯穿请求生命周期；生成器 `finally` 中 `abort()` + `reader.cancel()` + `releaseLock()`，消费方 `return()`/异常/正常耗尽均覆盖（llm-failure-taxonomy.md §1 义务 5）。
 
 ## 4. 请求序列化（`src/serialize.ts`：`GenerateOptions` → Responses 请求体）
 
@@ -137,9 +126,9 @@ input item 与 tools 格式依据 OpenAI Responses 官方规范（[openai-openap
 | `response.output_item.added`（item.type=`function_call`） | `block-start{index, 'tool-call', id:call_id, name}` | 后续工具 step 启用路径 |
 | `response.function_call_arguments.delta` | `tool-call-delta{index, id, argumentsDelta}` | 同上 |
 | `response.output_item.done` / `response.content_part.done` | `block-end{index, block}` | 终态块（text 拼接/reasoning 拼接/完整 args） |
-| `response.completed` | `usage{...}` → `finish{kind:'stop'\|'tool-calls'}`；零内容块 → `finish{kind:'error', failure{code:'EMPTY_RESPONSE'}}` | 有 function_call → `tool-calls`；usage 映射：input_tokens→inputTokens、output_tokens→outputTokens、output_tokens_details.reasoning_tokens→reasoningTokens |
-| `response.incomplete` | `usage` → `finish{kind:'max-tokens'}`；零内容块 → 同上 `EMPTY_RESPONSE` 错误终局 | |
-| `response.failed` / `error` | `finish{kind:'error', failure{message, code}}` | 带内失败路径（provider 原码；缺失时为 `UNKNOWN`） |
+| `response.completed` | `usage{...}` → `finish{kind:'stop'\|'tool-calls'}` | 有 function_call → `tool-calls`；usage 映射：input_tokens→inputTokens、output_tokens→outputTokens、output_tokens_details.reasoning_tokens→reasoningTokens |
+| `response.incomplete` | `usage` → `finish{kind:'max-tokens'}` | |
+| `response.failed` / `error` | `finish{kind:'error', failure{message, code}}` | 带内失败路径 |
 | 其他未知 `type` | 忽略 | forward-compat |
 
 **映射依据**: OpenAI Responses streaming events 官方定义（[openai-openapi](https://github.com/openai/openai-openapi) streaming events 节：事件序 `output_item.added → content_part.added → output_text.delta → …done → response.completed` 与 usage 载荷）；GLM 端点为该协议的 Codex 兼容实现（[GLM codingplan 文档](https://docs.bigmodel.cn/cn/coding-plan/tool/others) §编程端点）。真实端点的词汇偏差（如 reasoning 事件名）在手工冒烟（SC-003）中确认；适配器对未知事件忽略、对两种 reasoning delta 词汇均接受，偏差吸收面已预留。

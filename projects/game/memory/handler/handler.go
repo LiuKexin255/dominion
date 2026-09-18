@@ -145,15 +145,10 @@ func (h *Handler) DeleteMemory(ctx context.Context, req *game.DeleteMemoryReques
 }
 
 // ListMemories retrieves a paginated list of Memory resources under a session
-// in the requested sort key order (AIP-132: https://google.aip.dev/132;
-// AIP-158 pagination: https://google.aip.dev/158). page_size defaults to
+// (AIP-132: https://google.aip.dev/132; AIP-158 pagination:
+// https://google.aip.dev/158). page_size defaults to
 // domain.DefaultListMemoriesPageSize and is capped at
-// domain.MaxListMemoriesPageSize. order_by is parsed and validated by
-// domain.ParseMemoryOrderBy (generic AIP-132 syntax + field whitelist +
-// designated tie-breaker) and a non-empty page token is decoded and matched
-// against that final key by domain.DecodeMemoryPageToken; both failures map
-// to INVALID_ARGUMENT (specs/065-agent-v2-team-refine/contracts/
-// memory-snapshot-recency.md §1).
+// domain.MaxListMemoriesPageSize.
 func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesRequest) (*game.ListMemoriesResponse, error) {
 	sessName, err := game.ParseSessionName(req.GetParent())
 	if err != nil {
@@ -171,20 +166,7 @@ func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesReques
 		return nil, status.Errorf(codes.InvalidArgument, "page_size exceeds maximum of %d", domain.MaxListMemoriesPageSize)
 	}
 
-	sort, err := domain.ParseMemoryOrderBy(req.GetOrderBy())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	var cursor *domain.MemoryPageCursor
-	if token := req.GetPageToken(); token != "" {
-		cursor, err = domain.DecodeMemoryPageToken(token, sort)
-		if err != nil {
-			return nil, toStatusError(err)
-		}
-	}
-
-	memories, nextPageToken, err := h.memoryRepo.ListMemories(ctx, sessName.TemplateID, sessName.SessionID, sort, cursor, pageSize)
+	memories, nextPageToken, err := h.memoryRepo.ListMemories(ctx, sessName.TemplateID, sessName.SessionID, pageSize, req.GetPageToken())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -262,8 +244,6 @@ func toStatusError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, domain.ErrAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.Is(err, domain.ErrInvalidPageToken):
-		return status.Error(codes.InvalidArgument, err.Error())
 	default:
 		return status.Error(codes.Internal, fmt.Sprintf("memory handler: %v", err))
 	}

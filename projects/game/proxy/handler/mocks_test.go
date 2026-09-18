@@ -135,9 +135,8 @@ func (s *raceOwnerStore) Delete(_ context.Context, _, _ string) error {
 	return domain.ErrOwnerNotFound
 }
 
-// mockAgentStream implements the agent_v2-side client stream shape
-// (game.DesktopBridgeService_ConnectClient) for testing. It is a
-// bind.TeamFrameStream (right side): Send UserFrame / Recv TeamFrame.
+// mockAgentStream implements game.TeamService_ConnectClient for testing.
+// It is a bind.TeamFrameStream (right side): Send UserFrame / Recv TeamFrame.
 type mockAgentStream struct {
 	recvCh  <-chan *game.TeamFrame
 	sendCh  chan<- *game.UserFrame

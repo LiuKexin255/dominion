@@ -19,14 +19,12 @@ type chatMessage struct {
 // a fully stateless way, at the three priorities of
 // specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §3:
 //
-//  1. Multi-turn condition templates (history_keywords non-empty,
-//     system_keywords non-empty, or min_turn > 1) whose every condition
-//     holds — the keyword condition (vacuous when the template declares
-//     no keywords), ALL history keywords each hitting some message
-//     before the last user message, ALL system keywords each hitting
-//     the request's system-message text, and the user-message count
-//     reaching min_turn. Conflicts resolve to the most declared
-//     conditions first, then the lowest Name.
+//  1. Multi-turn condition templates (history_keywords non-empty or
+//     min_turn > 1) whose every condition holds — the keyword condition
+//     (vacuous when the template declares no keywords), ALL history
+//     keywords each hitting some message before the last user message,
+//     and the user-message count reaching min_turn. Conflicts resolve
+//     to the most declared conditions first, then the lowest Name.
 //  2. Pure keyword templates (non-multi-turn, non-empty Keywords) whose
 //     ANY keyword is a case-insensitive substring of the LAST user
 //     message — ties broken by lowest Name for determinism.
@@ -41,7 +39,7 @@ type chatMessage struct {
 func match(templates []*Message, messages []*chatMessage) (*Message, bool) {
 	lowered := strings.ToLower(lastUserText(messages))
 
-	if best := matchMultiTurn(templates, lowered, loweredHistoryTexts(messages), loweredSystemText(messages), userTurnCount(messages)); best != nil {
+	if best := matchMultiTurn(templates, lowered, loweredHistoryTexts(messages), userTurnCount(messages)); best != nil {
 		return best, true
 	}
 
@@ -68,11 +66,10 @@ func match(templates []*Message, messages []*chatMessage) (*Message, bool) {
 // the most specific — more declared conditions first, then the lowest
 // Name as the stable tie-break. The keyword condition is vacuous for a
 // multi-turn template declaring no keywords (§2: 恒通过); each history
-// keyword must hit SOME message of the history set, each system keyword
-// must hit the lowered system text, and turn counts user messages only.
-// Returns nil when no multi-turn template fully matches, deferring to
-// the next priorities.
-func matchMultiTurn(templates []*Message, loweredLast string, loweredHistory []string, loweredSystem string, turn int) *Message {
+// keyword must hit SOME message of the history set; turn counts user
+// messages only. Returns nil when no multi-turn template fully matches,
+// deferring to the next priorities.
+func matchMultiTurn(templates []*Message, loweredLast string, loweredHistory []string, turn int) *Message {
 	var best *Message
 	for _, t := range templates {
 		if !t.isMultiTurn() {
@@ -82,9 +79,6 @@ func matchMultiTurn(templates []*Message, loweredLast string, loweredHistory []s
 			continue
 		}
 		if !allHistoryKeywordsHit(t.HistoryKeywords, loweredHistory) {
-			continue
-		}
-		if !allSystemKeywordsHit(t.SystemKeywords, loweredSystem) {
 			continue
 		}
 		if turn < t.effectiveMinTurn() {
@@ -108,20 +102,17 @@ func moreSpecificMultiTurn(a, b *Message) bool {
 }
 
 // declaredConditions counts the template's non-vacuous declared matching
-// conditions — a non-empty keyword set, a non-empty history keyword set, a
-// non-empty system keyword set, and an above-default min_turn each count
-// once. Vacuous declarations (an empty keyword list, 恒通过 per §2; a
-// min_turn at or below the default 1) never constrain matching, so they do
-// not count toward specificity.
+// conditions — a non-empty keyword set, a non-empty history keyword set,
+// and an above-default min_turn each count once. Vacuous declarations
+// (an empty keyword list, 恒通过 per §2; a min_turn at or below the
+// default 1) never constrain matching, so they do not count toward
+// specificity.
 func (m *Message) declaredConditions() int {
 	n := 0
 	if len(m.Keywords) > 0 {
 		n++
 	}
 	if len(m.HistoryKeywords) > 0 {
-		n++
-	}
-	if len(m.SystemKeywords) > 0 {
 		n++
 	}
 	if m.effectiveMinTurn() > 1 {
@@ -149,36 +140,6 @@ func allHistoryKeywordsHit(historyKeywords, loweredHistory []string) bool {
 		}
 	}
 	return true
-}
-
-// allSystemKeywordsHit reports whether EVERY system keyword is a
-// case-insensitive substring of the lowered system text — the
-// newline-joined concatenation of the request's system-role messages
-// (§3, system condition). An undeclared (empty) keyword set is vacuous
-// and always passes; a declared keyword over an empty text never hits.
-func allSystemKeywordsHit(systemKeywords []string, loweredSystem string) bool {
-	for _, kw := range systemKeywords {
-		if !strings.Contains(loweredSystem, strings.ToLower(kw)) {
-			return false
-		}
-	}
-	return true
-}
-
-// loweredSystemText concatenates the content of every system-role
-// message (compared case-insensitively) with newline separators, then
-// lower-cases the join — the contract's `S` (system condition input).
-// The newline separator keeps a keyword from falsely spanning two
-// adjacent messages. No system message yields the empty string, so any
-// declared system keyword misses.
-func loweredSystemText(messages []*chatMessage) string {
-	var texts []string
-	for _, m := range messages {
-		if strings.EqualFold(m.Role, "system") {
-			texts = append(texts, m.Content)
-		}
-	}
-	return strings.ToLower(strings.Join(texts, "\n"))
 }
 
 // loweredHistoryTexts lower-cases the content of every message EXCEPT

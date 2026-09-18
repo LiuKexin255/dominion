@@ -1,0 +1,78 @@
+# planner_tools.yaml — the follow-up tool-result responses for the
+# planner agent's `memory` + `instruct_player` tools (spec 039
+# -planner-memory-calibration US2/US3 — FR-008/FR-014/FR-017).
+#
+# After the planner's LLM returns the memory tool_call
+# (planner.yaml planner-memory-add), the tool executes and the LangChain tool loop
+# sends the resulting role:"tool" message back to fake-LLM. Each config
+# matches by tool_name + match_result_contains substrings of the result text
+# (ALL substrings required), and either terminates the loop with text or
+# chains the next tool_call. The chain per game end:
+#
+#   memory(batch add E1,E2)      result "memory: applied N operation(s)"
+#     → memory(replace, old_text "无此内容")     [0-hit error path]
+#       → memory(replace, old_text "player 常犯") [multi-hit error path]
+#         → instruct_player(content)            [review instruction, FR-014]
+#           → final text                        [loop terminates]
+#
+# The review instruction content ends with "请继续游戏。" — its "继续"
+# substring matches the saolei-start keyword (saolei.yaml), so
+# the player's next model call (whose LAST user message is the appended
+# instruction, FR-017) opens the next game instead of falling into the
+# no-match random fallback (FR-009 — the fixture decides the player
+# continues).
+#
+# The three memory configs are mutually exclusive on the result texts
+# (verified against applyMemoryCall/applyBatch bodies in
+# projects/game/agent/src/mcp/memory/memory-mcp.ts): "applied N
+# operation(s)" contains "operation(s)" but neither "no entry matched" nor
+# "multiple entries matched"; the 0-hit error body contains "no entry
+# matched"; the multi-hit error body contains "multiple entries matched". The
+# batch add dedupes on later games ("applied 0 operation(s)") — the same
+# config still matches, so the chain is deterministic across games. The
+# instruct_player tool (team/instruction-tool.ts) stages its content into the
+# per-turn R1 buffer and returns {ok:true}; the planner node delivers the
+# instruction into playerMessages (FR-017). The former update_strategy
+# follow-up (sample_update_strategy_tools.yaml) is gone (FR-013 — Phase 6).
+tools:
+  - name: planner-memory-applied
+    tool_name: memory
+    match_result_contains:
+      - "operation(s)"
+    respond_with:
+      tool_call:
+        name: memory
+        arguments:
+          action: replace
+          old_text: "无此内容"
+          content: "player 应避免无谓点击。"
+  - name: planner-memory-0-hit
+    tool_name: memory
+    match_result_contains:
+      - "no entry matched"
+    respond_with:
+      tool_call:
+        name: memory
+        arguments:
+          action: replace
+          old_text: "player 常犯"
+          content: "player 常犯：先 deduce 再 flag。"
+  - name: planner-memory-multi-hit
+    tool_name: memory
+    match_result_contains:
+      - "multiple entries matched"
+    respond_with:
+      tool_call:
+        name: instruct_player
+        arguments:
+          content: "复盘指令：开局先点中心区域，命中数字后再展开。请继续游戏。"
+  # instruct-player-final-text terminates ANY instruct_player tool loop with
+  # a plain text response (review, init and compact scenarios share it).
+  # tool_name=instruct_player is unique to this config, so it is the only
+  # MatchToolResult candidate for an instruct_player result — deterministic,
+  # no random fallback.
+  - name: instruct-player-final-text
+    tool_name: instruct_player
+    match_result_contains: []
+    respond_with:
+      text: "指令已发送。"

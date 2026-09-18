@@ -18,35 +18,18 @@ import (
 	"time"
 )
 
-// Deterministic wire identities: the same request always observes the same
-// ids and usage numbers (fake-responses-wire.md §2 invariant 3). The
-// function_call identity is derived from the request input instead of being
-// a constant: a real provider mints a unique call id per call, and the team
-// broadcast reference model anchors a member's tool units on that id — two
-// tool calls sharing one id inside a member log would render/consume as the
-// same unit (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1).
+// Deterministic wire identities: the same request always observes the
+// same ids and usage numbers (fake-responses-wire.md §2 invariant 3).
 const (
 	responsesRespID = "resp_fake_1"
 	responsesRsnID  = "rs_fake_1"
 	responsesMsgID  = "msg_fake_1"
+	// The function_call wire identity of a tool-call response — fixed like
+	// the other ids so the same request always observes the same wire
+	// (fake-responses-wire.md §2 invariant 3).
+	responsesCallID = "call_fake_1"
+	responsesFcID   = "fc_fake_1"
 )
-
-// responsesWireIDs derives the function_call identities from the request
-// input: deterministic for the same request (repeatable assertions) and
-// distinct across a tool chain's steps (each step's input differs by the
-// replayed call and its result).
-func responsesWireIDs(input []*responsesInputItem) (callID, fcID string) {
-	h := fnv.New64a()
-	for _, item := range input {
-		if item == nil {
-			continue
-		}
-		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00",
-			item.Type, item.Role, string(item.Content), item.CallID, item.Name, item.Arguments, item.Output)
-	}
-	sum := h.Sum64()
-	return fmt.Sprintf("call_fake_%x", sum), fmt.Sprintf("fc_fake_%x", sum)
-}
 
 // responsesRequest is the subset of the OpenAI /v1/responses request
 // schema the handler consumes. Model and instructions are decoded but
@@ -120,15 +103,6 @@ func NewResponsesHandler(store *MessageStore, rng *rand.Rand) *ResponsesHandler 
 // object) its think/text projection; a Failure template emits
 // response.failed with the configured code/message.
 //
-// A matched template's transient injection is resolved before serving
-// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-// §1): an http_status injection answers with that status and the injected
-// error body, an empty injection answers a 200 whose stream carries no
-// content item (created → completed), and a failure injection — the bounded
-// form of the legacy top-level failure — ends the stream with
-// response.failed. When the transient budget is exhausted the template
-// answers with its normal content.
-//
 // Dispatch inspects the LAST input item: a function_call_output (the tool
 // result the adapter replays after a model call) routes into the tools
 // branch — MatchToolResult by the call's tool name (+ optional
@@ -157,38 +131,22 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	messages, toolCalls, toolOutput := projectResponsesInput(*req.Input)
 	var spec responseSpec
-	var injection *transientInjection
+	var failure *ResponseFailure
 	if toolOutput != nil {
 		toolName := toolCalls[toolOutput.CallID]
 		tc, _ := MatchToolResult(ToolsForEndpoint(h.store.Tools(), true), toolName, toolOutput.Output, h.rng)
 		spec = specFromTool(tc)
 	} else {
-		msg := matchResponses(h.store.Messages(), messages, strings.ToLower(req.Instructions))
+		msg := matchResponses(h.store.Messages(), messages)
 		spec = specFromMessage(msg)
-		injection = msg.takeInjection()
+		failure = msg.Failure
 	}
 
-	if injection != nil && injection.httpStatus != 0 {
-		writeInjectedHTTPFailure(w, injection)
-		return
-	}
-	var failure *ResponseFailure
-	if injection != nil {
-		failure = injection.failure
-		if injection.empty {
-			// Zero content items: the stream reduces to
-			// created → completed (contract §1), and the non-streaming
-			// body carries no output items either.
-			spec = responseSpec{}
-		}
-	}
-
-	callID, fcID := responsesWireIDs(*req.Input)
 	if req.Stream {
-		serveResponsesStreaming(w, r, spec, failure, callID, fcID)
+		serveResponsesStreaming(w, r, spec, failure)
 		return
 	}
-	serveResponsesNonStreaming(w, spec, failure, callID, fcID)
+	serveResponsesNonStreaming(w, spec, failure)
 }
 
 // projectResponsesInput flattens the input items into (messages, toolCalls,
@@ -253,14 +211,12 @@ func decodeResponsesContent(raw json.RawMessage) string {
 // projected by specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md
 // §3):
 //
-//  1. Multi-turn templates (history_keywords non-empty, system_keywords
-//     non-empty, or min_turn > 1) whose every condition holds — the
-//     keyword condition (vacuous when the template declares no keywords),
-//     ALL history keywords each hitting some message before the last user
-//     message, ALL system keywords each hitting the request's
-//     instructions text, and the user-message count reaching min_turn.
-//     Conflicts resolve to the most declared conditions first, then the
-//     lowest Name.
+//  1. Multi-turn templates (history_keywords non-empty or min_turn > 1)
+//     whose every condition holds — the keyword condition (vacuous when
+//     the template declares no keywords), ALL history keywords each
+//     hitting some message before the last user message, and the
+//     user-message count reaching min_turn. Conflicts resolve to the most
+//     declared conditions first, then the lowest Name.
 //  2. Pure keyword templates (non-multi-turn, non-empty Keywords) whose
 //     ANY keyword is a case-insensitive substring of the last user
 //     message — ties broken by the lowest Name.
@@ -271,10 +227,10 @@ func decodeResponsesContent(raw json.RawMessage) string {
 //
 // The store cannot be empty (startup validation), so the third priority
 // always returns a template for a validated store.
-func matchResponses(templates []*Message, messages []responsesMessage, loweredSystem string) *Message {
+func matchResponses(templates []*Message, messages []responsesMessage) *Message {
 	loweredLast := strings.ToLower(lastResponsesUserText(messages))
 
-	if best := matchResponsesMultiTurn(templates, loweredLast, loweredResponsesHistory(messages), loweredSystem, userTurnCount(messages)); best != nil {
+	if best := matchResponsesMultiTurn(templates, loweredLast, loweredResponsesHistory(messages), userTurnCount(messages)); best != nil {
 		return best
 	}
 
@@ -305,7 +261,7 @@ func matchResponses(templates []*Message, messages []responsesMessage, loweredSy
 
 // matchResponsesMultiTurn resolves matching priority 1; the pick is the
 // most specific (more declared conditions first, then the lowest Name).
-func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHistory []string, loweredSystem string, turn int) *Message {
+func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHistory []string, turn int) *Message {
 	var best *Message
 	for _, t := range templates {
 		if !t.isMultiTurnTemplate() {
@@ -315,9 +271,6 @@ func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHi
 			continue
 		}
 		if !allHistoryKeywordsHit(t.HistoryKeywords, loweredHistory) {
-			continue
-		}
-		if !allSystemKeywordsHit(t.SystemKeywords, loweredSystem) {
 			continue
 		}
 		if turn < t.effectiveMinTurn() {
@@ -331,10 +284,10 @@ func matchResponsesMultiTurn(templates []*Message, loweredLast string, loweredHi
 }
 
 // isMultiTurnTemplate reports whether the template declares multi-turn
-// conditions (fake-responses-wire.md §3 多轮条件): history_keywords or
-// system_keywords non-empty, or min_turn above the default 1.
+// conditions (fake-responses-wire.md §3 多轮条件): history_keywords
+// non-empty or min_turn above the default 1.
 func (m *Message) isMultiTurnTemplate() bool {
-	return len(m.HistoryKeywords) > 0 || len(m.SystemKeywords) > 0 || m.effectiveMinTurn() > 1
+	return len(m.HistoryKeywords) > 0 || m.effectiveMinTurn() > 1
 }
 
 // moreSpecificResponses orders two fully-matched multi-turn templates:
@@ -357,27 +310,10 @@ func declaredResponsesConditions(m *Message) int {
 	if len(m.HistoryKeywords) > 0 {
 		n++
 	}
-	if len(m.SystemKeywords) > 0 {
-		n++
-	}
 	if m.effectiveMinTurn() > 1 {
 		n++
 	}
 	return n
-}
-
-// allSystemKeywordsHit reports whether EVERY system keyword is a
-// case-insensitive substring of the lowered `instructions` text — the
-// request's system prompt (the persona anchor carrier after the roster
-// pivot). An undeclared (empty) keyword set is vacuous and always passes;
-// a declared keyword over an empty text never hits.
-func allSystemKeywordsHit(systemKeywords []string, loweredSystem string) bool {
-	for _, kw := range systemKeywords {
-		if !strings.Contains(loweredSystem, strings.ToLower(kw)) {
-			return false
-		}
-	}
-	return true
 }
 
 // allHistoryKeywordsHit reports whether EVERY history keyword is a
@@ -448,15 +384,14 @@ func userTurnCount(messages []responsesMessage) int {
 
 // responsesFallbackPool returns the templates eligible for the
 // deterministic no-match fallback: no tool_call (an accidental tool
-// trigger), no failure injection (an accidental failure), no transient
-// fault injection (an accidental failure/stall), non-multi-turn,
+// trigger), no failure injection (an accidental failure), non-multi-turn,
 // and non-hang-capable (an accidental stall or delay). The pool is never
 // empty for a validated store that contains at least one plain template;
 // otherwise the full set is used rather than panicking on IntN(0).
 func responsesFallbackPool(templates []*Message) []*Message {
 	var pool []*Message
 	for _, t := range templates {
-		if t.ToolCall == nil && t.Failure == nil && t.Transient == nil && !t.isMultiTurnTemplate() && !isHangCapable(t) {
+		if t.ToolCall == nil && t.Failure == nil && !t.isMultiTurnTemplate() && !isHangCapable(t) {
 			pool = append(pool, t)
 		}
 	}
@@ -513,7 +448,7 @@ func usageFromSpec(spec responseSpec) responsesUsage {
 // message items for the content the template declares, plus the derived
 // usage. A Failure template returns the failed status with the configured
 // error (no output, no usage).
-func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failure *ResponseFailure, callID, fcID string) {
+func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failure *ResponseFailure) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -542,7 +477,7 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 	if spec.isToolCall() {
 		// A tool-call response is only the function_call item — no
 		// message content follows (the agent executes the call next).
-		output = append(output, functionCallItem(spec.ToolCall, callID, fcID))
+		output = append(output, functionCallItem(spec.ToolCall))
 	} else {
 		if think := strings.Join(spec.Reasoning, ""); think != "" {
 			output = append(output, map[string]any{
@@ -599,15 +534,12 @@ func serveResponsesNonStreaming(w http.ResponseWriter, spec responseSpec, failur
 // only created → failed. A template declaring neither think nor text
 // emits no content items at all — the message item is the text carrier.
 //
-// A template declaring stall / stall_after blocks after the
-// response.reasoning_summary_text.delta event for the effective 0-based
-// reasoning-chunk index: the connection stays alive (the http.Server has
-// no WriteTimeout) but no further event is written until the caller
-// cancels — the same "TCP alive, no SSE data" mode the chat wire
-// simulates (specs/063-llm-reliability-opencode-go/contracts/
-// fake-llm-fault-injection.md §2). A template with no reasoning pieces
-// never stalls, exactly like the chat wire.
-func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, failure *ResponseFailure, callID, fcID string) {
+// The chat-completions endpoint's permanent-stall simulation (stall /
+// stall_after, specs/043-llm-stream-stall-recovery / specs/046-fake-llm-
+// think-chunking) is a chat-completions facility and is deliberately not
+// projected here: the Responses handler honors only the inter-chunk
+// chunk_delays, which is what the FR-012 queue-window scenarios need.
+func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, failure *ResponseFailure) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -625,7 +557,7 @@ func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec respon
 	})
 
 	if spec.isToolCall() {
-		serveResponsesToolCall(w, flusher, spec, callID, fcID)
+		serveResponsesToolCall(w, flusher, spec)
 		return
 	}
 
@@ -653,14 +585,6 @@ func serveResponsesStreaming(w http.ResponseWriter, r *http.Request, spec respon
 				"output_index": 0,
 				"delta":        piece,
 			})
-			// Permanent stall after the reasoning chunk at the effective
-			// index: block — on r.Context().Done() only, no fake-llm-side
-			// timeout — until the caller cancels; no further event is
-			// written.
-			if spec.StallAfter != nil && i == *spec.StallAfter {
-				<-r.Context().Done()
-				return
-			}
 		}
 	}
 
@@ -736,7 +660,7 @@ func writeEvent(w http.ResponseWriter, flusher http.Flusher, event string, paylo
 // The full arguments arrive in the single delta and again in the done item,
 // matching how a real provider streams a small argument payload while keeping
 // the assembled item authoritative.
-func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec responseSpec, callID, fcID string) {
+func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec responseSpec) {
 	args := "{}"
 	if spec.ToolCall != nil && len(spec.ToolCall.Arguments) > 0 {
 		if b, err := json.Marshal(spec.ToolCall.Arguments); err == nil {
@@ -749,20 +673,20 @@ func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec re
 		"output_index": 0,
 		"item": map[string]any{
 			"type":    "function_call",
-			"call_id": callID,
+			"call_id": responsesCallID,
 			"name":    spec.ToolCall.Name,
 		},
 	})
 	writeEvent(w, flusher, "response.function_call_arguments.delta", map[string]any{
 		"type":         "response.function_call_arguments.delta",
-		"item_id":      fcID,
+		"item_id":      responsesFcID,
 		"output_index": 0,
 		"delta":        args,
 	})
 	writeEvent(w, flusher, "response.output_item.done", map[string]any{
 		"type":         "response.output_item.done",
 		"output_index": 0,
-		"item":         functionCallItem(spec.ToolCall, callID, fcID),
+		"item":         functionCallItem(spec.ToolCall),
 	})
 	writeEvent(w, flusher, "response.completed", map[string]any{
 		"type": "response.completed",
@@ -776,7 +700,7 @@ func serveResponsesToolCall(w http.ResponseWriter, flusher http.Flusher, spec re
 
 // functionCallItem builds the complete function_call output item for a
 // config ToolCall (non-streaming body and the streaming done event).
-func functionCallItem(tc *ToolCall, callID, fcID string) map[string]any {
+func functionCallItem(tc *ToolCall) map[string]any {
 	args := "{}"
 	if tc != nil && len(tc.Arguments) > 0 {
 		if b, err := json.Marshal(tc.Arguments); err == nil {
@@ -789,8 +713,8 @@ func functionCallItem(tc *ToolCall, callID, fcID string) map[string]any {
 	}
 	return map[string]any{
 		"type":      "function_call",
-		"id":        fcID,
-		"call_id":   callID,
+		"id":        responsesFcID,
+		"call_id":   responsesCallID,
 		"name":      name,
 		"arguments": args,
 	}

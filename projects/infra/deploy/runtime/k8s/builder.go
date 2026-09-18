@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 
-	"dominion/common/gopkg/constants"
 	"dominion/projects/infra/deploy/domain"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -21,9 +20,14 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-// 平台保留环境变量名统一定义于 common/gopkg/constants，不在此重复
-// （specs/060-agent-v2-team-optimize/contracts/const-lib.md §3）。
 const (
+	// reservedEnvNameServiceApp 为 service app 注入环境变量名。
+	reservedEnvNameServiceApp = "SERVICE_APP"
+	// reservedEnvNameDominionEnvironment 为 Dominion 环境注入环境变量名。
+	reservedEnvNameDominionEnvironment = "DOMINION_ENVIRONMENT"
+	// reservedEnvNamePodNamespace 为 Pod 命名空间注入环境变量名。
+	reservedEnvNamePodNamespace = "POD_NAMESPACE"
+
 	// tlsVolumeName 为 TLS projected volume 固定名称。
 	tlsVolumeName = "tls"
 	// tlsMountPath 为 TLS 文件固定挂载目录。
@@ -34,23 +38,36 @@ const (
 	tlsCertFileName = "tls.crt"
 	// tlsKeyFileName 为容器内固定的私钥文件名。
 	tlsKeyFileName = "tls.key"
+	// envTLSCertFile 为 TLS 证书文件环境变量名。
+	envTLSCertFile = "TLS_CERT_FILE"
+	// envTLSKeyFile 为 TLS 私钥文件环境变量名。
+	envTLSKeyFile = "TLS_KEY_FILE"
+	// envTLSCAFile 为 TLS CA 文件环境变量名。
+	envTLSCAFile = "TLS_CA_FILE"
+	// envTLSDomain 为 TLS 服务名环境变量名。
+	envTLSDomain = "TLS_SERVER_NAME"
 
 	// envLogLevel 为默认日志级别环境变量名。
 	envLogLevel = "LOG_LEVEL"
+
+	// envS3AccessKey 为 S3 Access Key 环境变量名。
+	envS3AccessKey = "S3_ACCESS_KEY"
+	// envS3SecretKey 为 S3 Secret Key 环境变量名。
+	envS3SecretKey = "S3_SECRET_KEY"
 
 	// secretVolumeName 为 Secret projected volume 固定名称。
 	secretVolumeName = "dominion-secrets"
 	// secretMountPath 为 Secret 文件固定挂载目录。
 	secretMountPath = "/mnt/dominion/secret"
+	// envSecretDir 为 Secret 挂载目录环境变量名。
+	envSecretDir = "DOMINION_SECRET_DIR"
 
 	// configVolumeName 为 Config projected volume 固定名称。
 	configVolumeName = "dominion-config"
 	// configMountPath 为 Config 文件固定挂载目录。
 	configMountPath = "/mnt/dominion/config"
-
-	// artifactDirRoot 为打包工具放置服务产物的容器内根目录；产物目录即
-	// artifactDirRoot/{app}/{service}（tools/release/deploy/README.md §服务镜像构建）。
-	artifactDirRoot = "/dominion"
+	// envConfigDir 为 Config 挂载目录环境变量名（平台保留，用户 env 不可覆盖）。
+	envConfigDir = "DOMINION_CONFIG_DIR"
 
 	// healthProbe 常量为用户服务容器探针的固定约定端点与参数
 	// （specs/052-deploy-health-probe/contracts/deploy-probe.md §2）。
@@ -141,10 +158,9 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		containerEnv = append(containerEnv, corev1.EnvVar{Name: envLogLevel, Value: defaultLogLevel(workload.EnvType)})
 	}
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: constants.EnvServiceApp, Value: workload.App},
-		corev1.EnvVar{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
-		corev1.EnvVar{Name: constants.EnvPodNamespace, Value: cfg.Namespace},
-		corev1.EnvVar{Name: constants.EnvDominionArtifactDir, Value: artifactDirPath(workload.App, workload.ServiceName)},
+		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
+		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
 	)
 
 	// TLS 注入分为两部分：
@@ -156,8 +172,8 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
 		)
 		containerEnv = append(containerEnv,
-			corev1.EnvVar{Name: constants.EnvTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
-			corev1.EnvVar{Name: constants.EnvTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
+			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
+			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
 		)
 	}
 	projectedSources = append(projectedSources,
@@ -170,8 +186,8 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		}},
 	)
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: constants.EnvTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-		corev1.EnvVar{Name: constants.EnvTLSServerName, Value: cfg.TLS.Domain},
+		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
 	)
 	volumes := []corev1.Volume{{
 		Name: tlsVolumeName,
@@ -188,7 +204,7 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
-				Name: constants.EnvS3AccessKey,
+				Name: envS3AccessKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -197,7 +213,7 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 				},
 			},
 			corev1.EnvVar{
-				Name: constants.EnvS3SecretKey,
+				Name: envS3SecretKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -233,7 +249,7 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 			ReadOnly:  true,
 		})
 		containerEnv = append(containerEnv, corev1.EnvVar{
-			Name:  constants.EnvDominionSecretDir,
+			Name:  envSecretDir,
 			Value: secretMountPath,
 		})
 	}
@@ -317,10 +333,9 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		containerEnv = append(containerEnv, corev1.EnvVar{Name: envLogLevel, Value: defaultLogLevel(workload.EnvType)})
 	}
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: constants.EnvServiceApp, Value: workload.App},
-		corev1.EnvVar{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
-		corev1.EnvVar{Name: constants.EnvPodNamespace, Value: cfg.Namespace},
-		corev1.EnvVar{Name: constants.EnvDominionArtifactDir, Value: artifactDirPath(workload.App, workload.ServiceName)},
+		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
+		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
 	)
 
 	// 服务端证书仅当 TLSEnabled 时注入；客户端 CA 证书和域名始终注入。
@@ -330,8 +345,8 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
 		)
 		containerEnv = append(containerEnv,
-			corev1.EnvVar{Name: constants.EnvTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
-			corev1.EnvVar{Name: constants.EnvTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
+			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
+			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
 		)
 	}
 	projectedSources = append(projectedSources,
@@ -344,8 +359,8 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		}},
 	)
 	containerEnv = append(containerEnv,
-		corev1.EnvVar{Name: constants.EnvTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-		corev1.EnvVar{Name: constants.EnvTLSServerName, Value: cfg.TLS.Domain},
+		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
 	)
 	volumes := []corev1.Volume{{
 		Name: tlsVolumeName,
@@ -362,7 +377,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
-				Name: constants.EnvS3AccessKey,
+				Name: envS3AccessKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -371,7 +386,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 				},
 			},
 			corev1.EnvVar{
-				Name: constants.EnvS3SecretKey,
+				Name: envS3SecretKey,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
@@ -407,7 +422,7 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 			ReadOnly:  true,
 		})
 		containerEnv = append(containerEnv, corev1.EnvVar{
-			Name:  constants.EnvDominionSecretDir,
+			Name:  envSecretDir,
 			Value: secretMountPath,
 		})
 	}
@@ -499,7 +514,7 @@ func buildConfigProjection(workload configMapWorkload) (corev1.Volume, corev1.Vo
 		},
 	}
 	mount := corev1.VolumeMount{Name: configVolumeName, MountPath: configMountPath, ReadOnly: true}
-	env := corev1.EnvVar{Name: constants.EnvDominionConfigDir, Value: configMountPath}
+	env := corev1.EnvVar{Name: envConfigDir, Value: configMountPath}
 
 	return volume, mount, env
 }
@@ -1036,13 +1051,6 @@ func generateStablePassword(inputs ...string) string {
 	return string(encoded)
 }
 
-// artifactDirPath 返回服务产物在容器内的放置目录 /dominion/{app}/{service}
-// （打包布局约定见 tools/release/deploy/README.md §服务镜像构建；
-// specs/060-agent-v2-team-optimize/contracts/deploy-env.md §1）。
-func artifactDirPath(app, service string) string {
-	return filepath.Join(artifactDirRoot, app, service)
-}
-
 // buildSortedUserEnv 将用户环境变量按 key 字典序排列后返回。
 func buildSortedUserEnv(env map[string]string) []corev1.EnvVar {
 	if len(env) == 0 {
@@ -1148,10 +1156,10 @@ func buildServicePorts(ports []*DeploymentPort) ([]corev1.ServicePort, error) {
 
 func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string) []corev1.EnvVar {
 	return []corev1.EnvVar{
-		{Name: constants.EnvServiceApp, Value: workload.App},
-		{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
+		{Name: reservedEnvNameServiceApp, Value: workload.App},
+		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		{
-			Name: constants.EnvPodNamespace,
+			Name: reservedEnvNamePodNamespace,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: mongoPodFieldPathNS},
 			},

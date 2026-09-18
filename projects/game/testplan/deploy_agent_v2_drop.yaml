@@ -47,11 +47,6 @@ services:
       name: agent-v2-test
       env:
         GLM_LLM_TARGET: dominion:///game/fake-llm:8080
-        # opencode-go row (synthetic credential, not a real secret — covers
-        # conditional Authorization + zero-leakage; specs/063-llm-reliability-
-        # opencode-go/data-model.md §6).
-        OPENCODE_LLM_TARGET: dominion:///game/fake-llm:8080
-        OPENCODE_API_KEY: test-opencode-token
   - artifact:
       path: //projects/game/web/server/service.yaml
       name: web

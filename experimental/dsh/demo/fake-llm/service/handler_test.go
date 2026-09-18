@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -476,87 +475,6 @@ func TestServeHTTP_ArrayContentDecode(t *testing.T) {
 	if resp.Choices[0].Message.Content == nil || *resp.Choices[0].Message.Content != "Hello! How can I help you today?" {
 		t.Fatalf("content = %v, want the greeting text", resp.Choices[0].Message.Content)
 	}
-}
-
-// TestServeHTTP_SystemKeywords drives the system-keywords condition end to
-// end through the HTTP handler with an inline store
-// (specs/058-dsh-preset-roster-demo/contracts/fake-llm-system-keywords.md):
-// a system prompt carrying the persona plus a deliberate probe keyword
-// takes the priority-1 persona template, the guidance probe falls to the
-// deterministic fallback when the guidance heading is absent, and plain
-// 047 flows (no probe keyword) keep their pure keyword replies even when
-// the request carries a system prompt.
-func TestServeHTTP_SystemKeywords(t *testing.T) {
-	// given: an inline store mirroring the shipped preset scenario
-	// catalogue (testdata/preset.yaml) plus the 047 greeting/fallback
-	// anchors.
-	store := &MessageStore{messages: []*Message{
-		{Name: "farewell", Text: "I'm sorry, I didn't catch that."},
-		{Name: "greeting", Keywords: []string{"hello"}, Text: "Hello! How can I help you today?"},
-		{Name: "preset-persona-standard", Keywords: []string{"preset-probe"}, SystemKeywords: []string{"demo standard assistant"}, Text: "persona-standard-hit"},
-		{Name: "tool-guidance-present", Keywords: []string{"guidance-probe"}, SystemKeywords: []string{"demo_echo"}, Text: "tool-guidance-hit"},
-	}}
-	sortByNames(store.messages)
-	handler := NewChatHandler(store)
-
-	tests := []struct {
-		name     string
-		messages string
-		want     string
-	}{
-		{
-			name: "persona plus probe hit the standard persona template",
-			messages: `[{"role":"system","content":"You are the demo standard assistant."},` +
-				`{"role":"user","content":"preset-probe"}]`,
-			want: "persona-standard-hit",
-		},
-		{
-			name: "guidance probe without the guidance heading falls to the fallback",
-			messages: `[{"role":"system","content":"You are the demo standard assistant."},` +
-				`{"role":"user","content":"guidance-probe"}]`,
-			want: "I'm sorry, I didn't catch that.",
-		},
-		{
-			name: "guidance probe with the guidance heading hits the guidance template",
-			messages: `[{"role":"system","content":"You are the demo tools assistant.\n## demo_echo\n\ndemo_echo echoes text back verbatim."},` +
-				`{"role":"user","content":"guidance-probe"}]`,
-			want: "tool-guidance-hit",
-		},
-		{
-			name: "plain hello with a system prompt keeps the greeting reply",
-			messages: `[{"role":"system","content":"You are the demo standard assistant."},` +
-				`{"role":"user","content":"hello"}]`,
-			want: "Hello! How can I help you today?",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// when
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-				strings.NewReader(`{"stream":false,"messages":`+tt.messages+`}`)))
-
-			// then
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
-			}
-			var resp completionResponse
-			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
-			}
-			if resp.Choices[0].Message.Content == nil || *resp.Choices[0].Message.Content != tt.want {
-				t.Fatalf("content = %v, want %q", resp.Choices[0].Message.Content, tt.want)
-			}
-		})
-	}
-}
-
-// sortByNames sorts templates alphabetically by Name — the store loader's
-// canonical order, which NewMessageStore applies to embedded files and
-// which the fallback pool's behaviour assumes.
-func sortByNames(messages []*Message) {
-	sort.Slice(messages, func(i, j int) bool { return messages[i].Name < messages[j].Name })
 }
 
 // Test_decodeContent covers the content decoder directly: string form,

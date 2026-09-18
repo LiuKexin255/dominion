@@ -438,7 +438,7 @@ describe("Responses wire mapping", () => {
     ]);
   });
 
-  it("throws a MALFORMED_RESPONSE LlmError on malformed event payloads", () => {
+  it("throws a GLM_PROTOCOL LlmError on malformed event payloads", () => {
     const wire = createResponsesWire();
     expect(() => wire.feed("event: response.output_text.delta\ndata: not-json\n\n")).toThrow(
       LlmError,
@@ -447,92 +447,8 @@ describe("Responses wire mapping", () => {
       wire.feed("event: response.output_text.delta\ndata: not-json\n\n");
       expect.unreachable();
     } catch (err) {
-      expect((err as LlmError).code).toBe("MALFORMED_RESPONSE");
+      expect((err as LlmError).code).toBe("GLM_PROTOCOL");
     }
-  });
-
-  it("maps a terminal event with zero content blocks to an EMPTY_RESPONSE error finish", () => {
-    // Degenerate completion (fake-llm `empty` injection: created →
-    // completed with no output items) must not become a successful empty
-    // turn (FR-007, llm-failure-taxonomy.md §1 义务 3).
-    const completed = feedAll([
-      frame("response.created", {
-        type: "response.created",
-        response: { id: "resp_fake_1", status: "in_progress" },
-      }),
-      frame("response.completed", {
-        type: "response.completed",
-        response: { status: "completed", usage: { input_tokens: 4, output_tokens: 0 } },
-      }),
-    ]);
-    expect(completed).toEqual([
-      { type: "usage", usage: { inputTokens: 4, outputTokens: 0 } },
-      {
-        type: "finish",
-        reason: {
-          kind: "error",
-          failure: {
-            message: "GLM Responses stream finished without any content blocks",
-            code: "EMPTY_RESPONSE",
-          },
-        },
-      },
-    ]);
-
-    const incomplete = feedAll([
-      frame("response.incomplete", {
-        type: "response.incomplete",
-        response: { status: "incomplete" },
-      }),
-    ]);
-    expect(incomplete).toEqual([
-      {
-        type: "finish",
-        reason: {
-          kind: "error",
-          failure: {
-            message: "GLM Responses stream finished without any content blocks",
-            code: "EMPTY_RESPONSE",
-          },
-        },
-      },
-    ]);
-  });
-
-  it("surfaces SSE comment frames to the onComment pulse callback", () => {
-    let pulses = 0;
-    const wire = createResponsesWire(() => {
-      pulses += 1;
-    });
-    // A comment frame yields no StreamChunks but is transport activity.
-    expect(wire.feed(": keep-alive\n\n")).toEqual([]);
-    expect(pulses).toBe(1);
-    // Comments do not disturb the event translation around them.
-    expect(
-      wire.feed(
-        frame("response.completed", {
-          type: "response.completed",
-          response: { status: "completed" },
-        }),
-      ),
-    ).toEqual([
-      {
-        type: "finish",
-        reason: {
-          kind: "error",
-          failure: {
-            message: "GLM Responses stream finished without any content blocks",
-            code: "EMPTY_RESPONSE",
-          },
-        },
-      },
-    ]);
-    expect(pulses).toBe(1);
-  });
-
-  it("ignores comment frames without an onComment callback", () => {
-    const wire = createResponsesWire();
-    expect(wire.feed(": keep-alive\n\n")).toEqual([]);
   });
 
   it("treats null usage/error fields as absent (OpenAPI examples carry nulls)", () => {
@@ -563,19 +479,10 @@ describe("Responses wire mapping", () => {
   it("skips keep-alive frames with an empty data line instead of failing", () => {
     const chunks = feedAll([
       "event: response.output_text.delta\ndata: \n\n",
-      frame("response.output_text.delta", {
-        type: "response.output_text.delta",
-        output_index: 0,
-        delta: "ok",
-      }),
       frame("response.completed", { type: "response.completed", response: { status: "completed" } }),
     ]);
 
-    expect(chunks).toEqual([
-      { type: "block-start", index: 0, blockType: "text" },
-      { type: "text-delta", index: 0, text: "ok" },
-      { type: "finish", reason: { kind: "stop" } },
-    ]);
+    expect(chunks).toEqual([{ type: "finish", reason: { kind: "stop" } }]);
   });
 
   it("ignores content_part/reasoning_summary_part forms whose part.type is out of scope", () => {

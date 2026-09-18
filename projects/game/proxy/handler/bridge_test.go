@@ -100,7 +100,7 @@ func (p *bridgePlumbing) close() {
 }
 
 func TestDesktopBridgeHandler_Connect_AllocatesOwnerAndReplaysFirstFrame(t *testing.T) {
-	// given: a fresh store — the desktop connects before UpdateTeam
+	// given: a fresh store — the desktop connects before UpdateAgent
 	plumbing := newBridgePlumbing("saolei", "conv-1")
 	handler, store, manager := newBridgeHarness(t, &fakeBridgeClient{connectStream: plumbing.agent})
 

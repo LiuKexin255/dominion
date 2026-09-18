@@ -188,12 +188,9 @@ func TestTarDshClosureIsDeclared(t *testing.T) {
 
 	// then (⊇): the enabled composition rows and every declared dsh-family
 	// root must be physically present — 启用行 ⊆ 物化 node_modules
-	// (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §2). Rows are
-	// checked against the full materialized set, not the dsh-family subset:
-	// Dominion plugin rows (e.g. @dominion/dsh-preset-authoring) ship outside
-	// the @deepseek-ai scope but are equally declared composition rows.
+	// (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §2).
 	for _, row := range content.cordisRows {
-		if _, present := content.depEdges[row]; !present {
+		if _, present := audited[row]; !present {
 			t.Errorf("cordis.yml row %s not materialized in the tar", row)
 		}
 	}
@@ -276,11 +273,7 @@ func readAgentTar(t *testing.T) *agentTar {
 			if err != nil {
 				t.Fatalf("read %s in %s: %v", hdr.Name, agentTarRel, err)
 			}
-			rows, err := cordisRowNames(string(body))
-			if err != nil {
-				t.Fatalf("parse %s in %s: %v", tarCordisYML, agentTarRel, err)
-			}
-			content.cordisRows = rows
+			content.cordisRows = cordisRowNames(string(body))
 		case strings.HasPrefix(hdr.Name, tarNodeModulesPrefix):
 			rest := strings.TrimPrefix(hdr.Name, tarNodeModulesPrefix)
 			if path.Base(rest) != "package.json" {
@@ -330,22 +323,15 @@ func readAgentTar(t *testing.T) *agentTar {
 }
 
 // cordisRowNames extracts the package names of the enabled composition rows
-// from a cordis.yml manifest — a top-level list of maps whose rows come in two
-// spellings, both parsed:
-//
-//	inline: - { id: timer, name: '@deepseek-ai/cordis-plugin-timer' }
-//	block:  - id: system-prompt
-//	          name: '@deepseek-ai/dsh-system-prompt'
-//
-// Within a block item the shallowest `name:` key is the row package; deeper
-// `name:` keys belong to row config and are ignored. Comment lines and
-// trailing comments are tolerated. The parser is fail-closed: every `- ` item
-// must yield exactly one row, so an unrecognized spelling surfaces as an error
-// naming the unparsed item instead of silently shrinking the audited row set
-// (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §2).
-func cordisRowNames(manifest string) ([]string, error) {
+// from a cordis.yml manifest — a top-level list of maps whose row keys sit
+// one indent level under the `- ` item markers
+// (specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §2). Within each
+// item the shallowest `name:` key is the row package; deeper `name:` keys
+// belong to row config and are ignored. Comment lines and trailing comments
+// are tolerated, and a manifest whose structure yields no rows fails the
+// caller's zero-row fail-loud check.
+func cordisRowNames(manifest string) []string {
 	itemMarker := regexp.MustCompile(`^-\s`)
-	inlineRowName := regexp.MustCompile(`^-\s*\{.*?\bname:\s*'([^']+)'`)
 	nameKey := regexp.MustCompile(`^(\s+)name:\s*'([^']+)'(?:\s*#.*)?$`)
 
 	type candidate struct {
@@ -355,7 +341,6 @@ func cordisRowNames(manifest string) ([]string, error) {
 	var (
 		rows       []string
 		candidates []candidate
-		items      int
 	)
 	shallowest := func() {
 		if len(candidates) == 0 {
@@ -371,90 +356,16 @@ func cordisRowNames(manifest string) ([]string, error) {
 		candidates = nil
 	}
 	for _, line := range strings.Split(manifest, "\n") {
-		if !itemMarker.MatchString(line) {
-			if m := nameKey.FindStringSubmatch(line); m != nil {
-				candidates = append(candidates, candidate{indent: len(m[1]), name: m[2]})
-			}
+		if itemMarker.MatchString(line) {
+			shallowest()
 			continue
 		}
-		shallowest()
-		items++
-		if m := inlineRowName.FindStringSubmatch(line); m != nil {
-			rows = append(rows, m[1])
+		if m := nameKey.FindStringSubmatch(line); m != nil {
+			candidates = append(candidates, candidate{indent: len(m[1]), name: m[2]})
 		}
 	}
 	shallowest()
-	if len(rows) != items {
-		return nil, fmt.Errorf("parsed %d rows from %d `- ` items — an item spelling is unrecognized; every item must yield exactly one row", len(rows), items)
-	}
-	return rows, nil
-}
-
-// Test_cordisRowNames pins the parser contract behind assertion ②: both row
-// spellings of the shipped composition manifest yield their row package, and
-// an unrecognized spelling fails closed instead of shrinking the audited row
-// set (the failure mode that would let an enabled row escape the
-// materialization check).
-func Test_cordisRowNames(t *testing.T) {
-	tests := []struct {
-		name     string
-		manifest string
-		want     []string
-		wantErr  bool
-	}{
-		{
-			name:     "inline rows",
-			manifest: "- { id: timer,          name: '@deepseek-ai/cordis-plugin-timer' }\n- { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }\n",
-			want:     []string{"@deepseek-ai/cordis-plugin-timer", "@dominion/dsh-preset-authoring"},
-		},
-		{
-			name:     "block rows take the shallowest name, deeper names are row config",
-			manifest: "- id: system-prompt\n  name: '@deepseek-ai/dsh-system-prompt'\n  config:\n    persona: 'x'\n    rows:\n      - name: '@deepseek-ai/dsh-invariants'\n",
-			want:     []string{"@deepseek-ai/dsh-system-prompt"},
-		},
-		{
-			name:     "block row with trailing comment",
-			manifest: "- id: llm-deepseek\n  name: '@deepseek-ai/dsh-llm-deepseek'   # adapter row\n",
-			want:     []string{"@deepseek-ai/dsh-llm-deepseek"},
-		},
-		{
-			name:     "mixed spelling composition manifest",
-			manifest: "# header comment\n- { id: timer, name: '@deepseek-ai/cordis-plugin-timer' }\n- id: agent-presets\n  name: '@deepseek-ai/dsh-agent-presets'\n  config:\n    default: demo-standard\n- { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }\n",
-			want:     []string{"@deepseek-ai/cordis-plugin-timer", "@deepseek-ai/dsh-agent-presets", "@dominion/dsh-preset-authoring"},
-		},
-		{
-			name:     "inline row keeps its first name when config nests names",
-			manifest: "- { id: x, name: '@deepseek-ai/dsh-first', config: { name: '@deepseek-ai/dsh-nested' } }\n",
-			want:     []string{"@deepseek-ai/dsh-first"},
-		},
-		{
-			name:     "item without a recognizable name fails closed",
-			manifest: "- { id: timer, name: '@deepseek-ai/cordis-plugin-timer' }\n- id: mystery\n",
-			wantErr:  true,
-		},
-		{
-			name:     "inline item without a name key fails closed",
-			manifest: "- { id: timer }\n",
-			wantErr:  true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// when: parse the manifest.
-			got, err := cordisRowNames(tt.manifest)
-
-			// then: parse is/ isn't successful and rows match.
-			if tt.wantErr && err == nil {
-				t.Fatalf("cordisRowNames(%q) expected error, got rows %v", tt.manifest, got)
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("cordisRowNames(%q) unexpected error: %v", tt.manifest, err)
-			}
-			if !tt.wantErr && strings.Join(got, ",") != strings.Join(tt.want, ",") {
-				t.Errorf("cordisRowNames(%q) = %v, want %v", tt.manifest, got, tt.want)
-			}
-		})
-	}
+	return rows
 }
 
 // declaredClosure expands roots to a fixed point over the dependency edges

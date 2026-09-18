@@ -223,25 +223,6 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* role 过滤（preset-api.md §1 ListPresets role 参数）：列表顶部单选下拉，
- * 选项与创建表单的 role 池同源。 */
-.presets-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.presets-filter select {
-  padding: 4px 8px;
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
-  background: var(--app-bg);
-  color: inherit;
-  font: inherit;
-}
-
 .presets-error {
   padding: 8px 12px;
   border-radius: 8px;
@@ -296,30 +277,11 @@ body {
   gap: 2px;
 }
 
-.preset-item-title {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .preset-item-name {
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 列表 role 标识（池归属徽标）：样式对齐成员标签惯例（.member-tag）。 */
-.preset-role-badge {
-  flex: none;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--app-border);
-  background: var(--app-bg);
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 1.4;
 }
 
 .preset-item-time {
@@ -355,28 +317,6 @@ body {
   gap: 4px;
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
-}
-
-/* 创建表单的 role 单选（player/planner）与编辑表单的 role 只读值：role
- * 创建必选、创建后不可改（preset-api.md §2）。 */
-.preset-role-options {
-  display: flex;
-  gap: 12px;
-}
-
-.preset-role-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-
-.preset-role-option input {
-  margin: 0;
-}
-
-.preset-role-value {
-  color: var(--dsw-alias-label-primary);
 }
 
 .preset-prompt-input {
@@ -432,9 +372,9 @@ body {
   flex-direction: column;
 }
 
-/* ── team 物化面板与引导态（web-views.md §1） ────────────────────────── */
+/* ── agent 物化面板与引导态（web-frontend.md §3） ────────────────────── */
 
-.team-toolbar {
+.agent-toolbar {
   flex: none;
   display: flex;
   align-items: center;
@@ -443,54 +383,9 @@ body {
   padding: 8px 24px 0;
 }
 
-/* 对话页顶部视图切换器（web-views.md §2：团队 | player | planner，恰 3
- * 视图）：左对齐置首（margin-right: auto），状态与设置维持右对齐。 */
-.chat-view-switch {
-  display: flex;
-  gap: 4px;
-  margin-right: auto;
-}
-
-.team-status {
+.agent-status {
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
-}
-
-/* 激活成员徽标（specs/060-agent-v2-team-optimize/contracts/team-api.md §5）：
- * 呈现当前激活成员（在途驱动成员 / 静止时的下一条输入归属成员）。 */
-.active-member {
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-/* 成员清单（web-views.md §1 状态呈现：role + preset + model）：
- * 各成员一项，弱化着色不抢对话主区视觉。 */
-.team-members {
-  display: flex;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-/* 成员项即 system prompt 查看入口（FR-009）：按钮语义但保持清单文本形态。 */
-.team-member {
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-
-.team-member:hover {
-  text-decoration: underline;
-}
-
-/* 主界面 system prompt 浮层（web-views.md §5）：置于工具条与对话区之间，
- * 不随对话区收缩。 */
-.system-prompt-overlay {
-  flex: none;
-  margin: 8px 24px 0;
 }
 
 /* 桌面连接状态指示（specs/054-agent-v2-bugfixes/contracts/web-ui.md §5）：
@@ -512,7 +407,7 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
-.team-guide {
+.agent-guide {
   flex: none;
   display: flex;
   align-items: center;
@@ -525,19 +420,7 @@ body {
   color: var(--dsw-alias-state-warn-primary);
 }
 
-/* 物化后静止等待提示（用户首驱裁定：首次驱动由用户第一条消息触发）：
- * 非警示语义，成功色系单行提示。 */
-.team-ready-guide {
-  flex: none;
-  margin: 8px 24px 0;
-  padding: 10px 14px;
-  border: 1px dashed var(--dsw-alias-state-success-primary);
-  border-radius: 8px;
-  color: var(--dsw-alias-state-success-primary);
-  font-size: 12px;
-}
-
-.team-settings-panel {
+.agent-settings-panel {
   flex: none;
   display: flex;
   flex-direction: column;
@@ -549,19 +432,19 @@ body {
   background: var(--app-panel);
 }
 
-.team-panel-header {
+.agent-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
-.team-refresh-hint {
+.agent-refresh-hint {
   margin: 0;
   font-size: 12px;
   color: var(--dsw-alias-state-warn-primary);
 }
 
-.team-panel-field {
+.agent-panel-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -569,7 +452,7 @@ body {
   color: var(--dsw-alias-label-tertiary);
 }
 
-.team-panel-field select {
+.agent-panel-field select {
   padding: 6px 8px;
   border: 1px solid var(--app-border);
   border-radius: 8px;
@@ -578,7 +461,7 @@ body {
   font: inherit;
 }
 
-.team-panel-error {
+.agent-panel-error {
   padding: 6px 10px;
   border-radius: 8px;
   background: var(--app-banner-error-bg);
@@ -587,87 +470,9 @@ body {
   white-space: pre-wrap;
 }
 
-.team-panel-actions {
+.agent-panel-actions {
   display: flex;
   gap: 4px;
-}
-
-/* 成员清单（web-views.md §1 状态呈现 + §5 system prompt 入口）：每成员一行
- * （role · preset · model + 查看入口）。 */
-.team-panel-members {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.team-panel-members-title {
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.team-panel-member {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.team-panel-member-info {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* system prompt 只读全文（web-views.md §5）：等宽原文，长内容限高滚动、
- * 保留换行与空白。 */
-.system-prompt {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
-  background: var(--app-bg);
-}
-
-.system-prompt-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.system-prompt-note {
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.system-prompt-error {
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--app-banner-error-bg);
-  color: var(--app-banner-error-fg);
-  font-size: 12px;
-  white-space: pre-wrap;
-}
-
-.system-prompt-text {
-  margin: 0;
-  max-height: 360px;
-  overflow: auto;
-  font-family:
-    ui-monospace,
-    'Cascadia Mono',
-    'Segoe UI Mono',
-    Menlo,
-    Consolas,
-    monospace;
-  font-size: 12px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 /* position: relative 使滚动容器成为其内部所有绝对定位后代的 containing
@@ -700,25 +505,6 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* 成员视角的广播注入条目（web-views.md §4：role=USER + sender=成员 role 的
- * 标注来源用户消息，渲染 `user: [sender] 正文`）：保持 user 气泡形态，
- * 来源标注弱化呈现，正文为该成员消费到的注入原文（保留换行）。 */
-.msg-relay {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.relay-source {
-  font-size: 11px;
-  opacity: 0.8;
-}
-
-.relay-body {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .msg-agent {
   align-self: flex-start;
   max-width: 80%;
@@ -730,31 +516,6 @@ body {
   border: 1px solid var(--app-border);
   background: var(--app-panel);
   overflow-wrap: anywhere;
-}
-
-/* 团队视图成员分组（web-views.md §3）：成员产出归属到所属成员名下，成员
- * 标签区分 player/planner；分组容器保持既有 .msg-agent 的宽度约束。 */
-.member-turn {
-  align-self: flex-start;
-  max-width: 80%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.member-turn .msg-agent {
-  max-width: 100%;
-}
-
-.member-tag {
-  align-self: flex-start;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--app-border);
-  background: var(--app-bg);
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 1.4;
 }
 
 /* markdown code 块贴合内容宽度（用户裁定：代码块不强行与卡片同宽）：

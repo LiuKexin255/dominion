@@ -1,17 +1,18 @@
 /**
  * The per-agent game runtime: init/operate/remain with recognized text-board
- * state and strict pre-dispatch validation (specs/051-agent-v2-dsh-migration/
- * research.md D6; contracts/saolei-plugins.md §2.2; data-model.md §2.5).
+ * state and strict pre-dispatch validation, migrated from v1
+ * projects/game/agent/src/mcp/saolei/saolei-mcp.ts (research.md D6; contract
+ * specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §2.2,
+ * data-model.md §2.5).
  *
  * Registration form: a cordis Service class constructed with
- * `(agent.ctx, "saoleiGame", deps)` by the agent-creation setup hook (the
- * host's materialization path — projects/game/agent_v2/src/session.ts —
- * calls {@link createAgentGameRuntime} inside `ctx.agents.create({setup})`),
- * so the instance registers as the agent-scoped `saoleiGame` service and
- * cordis unregisters it automatically when the agent scope unloads — there
- * is no host-level registry and no manual cleanup path. Tests inject a
- * builder wired to fake dispatch/board doubles (style/javascript.md Mock
- * convention).
+ * `(agent.ctx, "saoleiGame")` by the saolei-loop factory's prepare phase, so
+ * the instance registers as the agent-scoped `saoleiGame` service and cordis
+ * unregisters it automatically when the agent scope unloads — there is no
+ * host-level registry and no manual cleanup path. The production builder
+ * (`createAgentGameRuntime`) is the factory's default
+ * `SaoleiLoopPluginOptions.createRuntime`; tests inject a builder wired to
+ * fake dispatch/board doubles (style/javascript.md Mock convention).
  *
  * Error-result discipline (data-model.md §2.5): a game-rule rejection is a
  * NORMAL result text (`rejected: <reason>`), while a desktop-side failure
@@ -86,41 +87,17 @@ export type OperateInput = CellOperation | { operations: CellOperation[] };
  * Tool-facing outcome contract shared by the three saolei tools. `isError`
  * outcomes are surfaced as model-visible tool failures; text outcomes are
  * normal results (including rejections).
- *
- * A successful outcome whose recognized board is terminal (`gameStatus(state)
- * ∈ {won, lost}`) carries `concludesTurn: true` — the dsh turn-conclusion
- * marker the saolei tool forwards through `ToolRunContext.concludeTurn()`
- * (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md §1). The
- * marker is pure content-driven: it reads only the recognized board and never
- * the terminal-event/orchestration state, and the failure variant cannot carry
- * it (type-level parity with dsh `ToolExecutionFailure.concludesTurn?: never`,
- * node_modules/.pnpm/@deepseek-ai+dsh-tools@0.1.1-rc.2_119bc70f73f8eddebfaa6b47561adeb3/
- * node_modules/@deepseek-ai/dsh-tools/lib/types/index.d.ts:400-409).
  */
 export type ToolOutcome =
-  | { isError: false; text: string; concludesTurn?: true }
+  | { isError: false; text: string }
   | { isError: true; error: { message: string } };
-
-/**
- * The `concludesTurn` marker for one recognized result board: terminal
- * (won/lost) boards conclude the turn, everything else carries no key. The
- * single helper exists so the three marking sites (init success, empty-batch
- * operate, normal operate) share one predicate — hand-written per-path
- * variants would drift from the judgment matrix
- * (specs/062-team-game-end-handoff/data-model.md §1.2). Pure function of
- * `state`.
- */
-function concludeMarker(state: GameState): { concludesTurn?: true } {
-  const status = gameStatus(state);
-  return status === "won" || status === "lost" ? { concludesTurn: true } : {};
-}
 
 /**
  * One game-log entry: one step of the current game. One `operate` call —
  * single or batch — is ONE entry carrying its full operations list; init
  * resets the log with an `saolei_init` entry; a terminal game appends a
- * `(game-end)` entry. The log is ephemeral: it covers only the current game
- * (reset by init) and is never persisted across games.
+ * `(game-end)` entry (v1 projects/game/agent/src/team/team-sink.ts
+ * `EphemeralGameBuffer` semantics).
  */
 export interface GameLogEntry {
   /** The step trigger: "saolei_init", "saolei_operate", or "(game-end)". */
@@ -136,7 +113,7 @@ export interface GameLogEntry {
 /** Terminal game record carried by `peekGameEvent` (data-model.md §2.5). */
 export interface GameEventRecord {
   status: "won" | "lost";
-  /** Per-game statistics at end (operationCount/operationsByType/correctFlags/avgOpsPerMine). */
+  /** Per-game statistics at end (operationCount/correctFlags/avgOpsPerMine). */
   stats: GameStats;
   endedAt: number;
 }
@@ -196,14 +173,6 @@ export class GameRuntimeService extends Service implements GameRuntime {
   private initState: GameState | null = null;
   /** Successful dispatch count this game. */
   private operationCount = 0;
-  /** Successful dispatch count per operation type this game (reset with the
-   * game, incremented at the same point as {@link operationCount};
-   * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §1). */
-  private operationsByType: Record<OperationType, number> = {
-    click: 0,
-    flag: 0,
-    chord: 0,
-  };
   /** This game's operation sequence (reset on init). */
   private readonly gameLog: GameLogEntry[] = [];
   /** Latest terminal record (persists across a restart-init, v1 buffer
@@ -232,10 +201,9 @@ export class GameRuntimeService extends Service implements GameRuntime {
     }
     this.initState = state;
     this.operationCount = 0;
-    this.operationsByType = { click: 0, flag: 0, chord: 0 };
     this.gameLog.length = 0;
     this.gameLog.push({ tool: "saolei_init", state, status: "playing" });
-    return { isError: false, text: initSuccessText(state), ...concludeMarker(state) };
+    return { isError: false, text: initSuccessText(state) };
   }
 
   /**
@@ -257,7 +225,6 @@ export class GameRuntimeService extends Service implements GameRuntime {
       return {
         isError: false,
         text: operateResultText(0, 0, this.recognized, null, null),
-        ...concludeMarker(this.recognized),
       };
     }
 
@@ -313,7 +280,6 @@ export class GameRuntimeService extends Service implements GameRuntime {
         this.initState,
         finalState,
         this.operationCount,
-        this.operationsByType,
       );
       this.gameEvent = { status: endedStatus, stats, endedAt: Date.now() };
       this.gameLog.push({ tool: "(game-end)", state: finalState, status: endedStatus });
@@ -322,7 +288,6 @@ export class GameRuntimeService extends Service implements GameRuntime {
     return {
       isError: false,
       text: operateResultText(executed, skipped, finalState, stoppedOp, stoppedReason),
-      ...concludeMarker(finalState),
     };
   }
 
@@ -382,10 +347,8 @@ export class GameRuntimeService extends Service implements GameRuntime {
     if (!state) {
       return { kind: "unrecognizable" };
     }
-    // Only successful dispatches count as operations (the per-type counter
-    // moves at the same point, keeping the parts summing to the total).
+    // Only successful dispatches count as operations.
     this.operationCount += 1;
-    this.operationsByType[op.type] += 1;
     return { kind: "ok", state, status: gameStatus(state) };
   }
 
@@ -414,26 +377,17 @@ export class GameRuntimeService extends Service implements GameRuntime {
 }
 
 /**
- * Production builder: the materialization setup's registration call. Wires
- * the runtime to the game session's desktop-bridge connection and the real
- * recognition engine. `sessionName` is the GAME session resource name
- * (templates/{template}/sessions/{session}) the bridge connection is
- * registered under — the member's dsh session id is namespaced
- * (`{session}/player`) and is NOT the dispatch key, so the caller passes the
- * game session explicitly; the default keeps the single-agent tests working.
- * The instance registers on an `isolate("saoleiGame")` child of the agent
- * context — a per-agent isolation label keeps the underlying registration
- * slot unique per agent (re-materializations and concurrent members never
- * collide), and the isolated child shares the agent scope's fiber, so the
- * service stays resolvable from `agent.ctx` (and from `exec.agent.ctx` in the
- * saolei tools) and unregisters with the agent scope.
+ * Production builder: the factory's default `createRuntime`. Wires the
+ * runtime to the session's desktop-bridge connection (`agent.id` is the
+ * session resource name) and the real recognition engine; the constructor
+ * call registers the instance as the agent scope's `saoleiGame` service.
  */
 export function createAgentGameRuntime(
   agent: Agent,
   desktopBridge: DesktopBridgeService,
-  sessionName: string = agent.id,
 ): SaoleiGame {
-  return new GameRuntimeService(agent.ctx.isolate("saoleiGame"), "saoleiGame", {
+  const sessionName = agent.id;
+  return new GameRuntimeService(agent.ctx, "saoleiGame", {
     sessionName,
     dispatch: (part, signal) => desktopBridge.dispatch(sessionName, part, signal),
     boardApi: createDefaultBoardApi(),

@@ -12,7 +12,6 @@ artifacts:
     tls: true
     secrets:
       - glm-api-token
-      - opencode-api-token
   # The test artifact declares NO secrets: the zero-secret test deployment
   # (projects/game/testplan/deploy_agent_v2.yaml) selects it by
   # artifact.name, so the deploy-time secret double validation

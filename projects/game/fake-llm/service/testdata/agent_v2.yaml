@@ -4,13 +4,6 @@
 # carries responses_only:true so the chat-completions no-match fallback
 # pool never observes them; keywords are agent_v2-specific and never sent
 # by existing chat tests.
-# Every entry also anchors the system prompt on the preset persona row's
-# identity opening (「你是扫雷 player」— the跨-phase stable contract from
-# preset-templates/player): the pivot to the official agent loop + preset
-# roster made the persona row the system-prompt source, so a missing
-# persona fails the fixture match instead of silently passing
-# (specs/059-agent-v2-team-mode/tasks.md T008).
-
 messages:
   # agent-v2-greet is the turn-1 think+text main path (US1/US2): two
   # reasoning deltas then the text delta, think and text on separate
@@ -18,8 +11,6 @@ messages:
   - name: agent-v2-greet
     keywords:
       - agent-v2-think
-    system_keywords:
-      - 你是扫雷 player
     reasoning_chunks:
       - "Analyzing the user's request."
       - "Drafting a friendly reply."
@@ -32,8 +23,6 @@ messages:
   - name: agent-v2-followup
     keywords:
       - agent-v2-think
-    system_keywords:
-      - 你是扫雷 player
     history_keywords:
       - "manage your game sessions"
     text: "As I said when we started, I help you play and manage your game sessions."
@@ -44,8 +33,6 @@ messages:
   - name: agent-v2-plain
     keywords:
       - agent-v2-plain
-    system_keywords:
-      - 你是扫雷 player
     text: "Plain answer with no thinking this time."
     responses_only: true
   # agent-v2-slow is the long-delay template (FR-012 queue window): the
@@ -54,8 +41,6 @@ messages:
   - name: agent-v2-slow
     keywords:
       - agent-v2-slow
-    system_keywords:
-      - 你是扫雷 player
     reasoning_chunks:
       - "Thinking slowly."
       - "Still thinking."
@@ -68,8 +53,6 @@ messages:
   - name: agent-v2-fail
     keywords:
       - agent-v2-fail
-    system_keywords:
-      - 你是扫雷 player
     failure:
       code: "glm_test_failure"
       message: "Injected fake-llm failure for recovery testing"
@@ -85,8 +68,6 @@ messages:
   - name: agent-v2-fail-mid
     keywords:
       - agent-v2-midfail
-    system_keywords:
-      - 你是扫雷 player
     reasoning_chunks:
       - "Thinking about the request before it breaks."
     text: "Partial answer streamed before the failure."

@@ -15,8 +15,7 @@ import (
 )
 
 // UserFrameStream is the client-facing stream interface (Bind's left side:
-// the gateway WebSocket adapter or the proxy's
-// DesktopBridgeService_ConnectServer).
+// the gateway WebSocket adapter or the proxy's TeamService_ConnectServer).
 // Its inbound direction is UserFrame (Recv from the client) and its outbound
 // direction is TeamFrame (Send to the client)
 // (specs/035-proto-contract-refine/contracts/frame-split.md §6.1).
@@ -29,8 +28,7 @@ type UserFrameStream interface {
 }
 
 // TeamFrameStream is the server-facing stream interface (Bind's right side:
-// the proxy's DesktopBridgeService_ConnectClient, i.e. the dialed agent_v2
-// stream). Its outbound direction is UserFrame
+// the agent's TeamService_ConnectClient). Its outbound direction is UserFrame
 // (Send to the server) and its inbound direction is TeamFrame (Recv from the
 // server). The split prevents mixing directions: a client-shaped stream cannot
 // be passed as left and vice versa

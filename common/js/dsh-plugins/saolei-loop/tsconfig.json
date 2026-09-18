@@ -9,8 +9,7 @@
     "types": ["node"],
     "paths": {
       "@dominion/game-saolei-board": ["../../../../projects/game/pkg/saolei-board/src/core/index.js"],
-      "@dominion/dsh-desktop-bridge": ["../../dsh-plugins/desktop-bridge/src/index.js"],
-      "@dominion/dsh-team": ["../../dsh-plugins/team/src/index.js"]
+      "@dominion/dsh-desktop-bridge": ["../../dsh-plugins/desktop-bridge/src/index.js"]
     }
   },
   "include": ["src/**/*.ts"]

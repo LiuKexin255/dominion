@@ -11,7 +11,6 @@
         }
     },
     "dependencies": {
-        "@deepseek-ai/dsh-timeout": "catalog:",
         "@deepseek-ai/schemastery": "catalog:",
         "eventsource-parser": "catalog:"
     },

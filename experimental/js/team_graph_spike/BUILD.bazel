@@ -78,7 +78,7 @@ vitest_test(
     name = "lib_test",
     size = "small",
     # style/javascript.md §js_test: test against raw .ts source (NOT :lib),
-    # matching the other ESM package test targets. data mirrors :lib deps so
+    # mirroring projects/game/agent/BUILD.bazel. data mirrors :lib deps so
     # external npm packages are present in runfiles.
     data = glob(
         ["src/**/*.ts"],

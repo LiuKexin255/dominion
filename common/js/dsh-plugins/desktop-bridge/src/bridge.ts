@@ -7,17 +7,19 @@
  * - A connection object holds only the stream face for writes and its own
  *   cleanup handle — pending dispatches are keyed per session at bridge
  *   level, so a reconnect (new connection taking over) never loses in-flight
- *   dispatches and a late receipt can still resolve them.
+ *   dispatches and a late receipt can still resolve them (v1
+ *   projects/game/agent/src/operation-bridge.ts:10-12 semantics).
  * - Attaching a second connection for a session takes over: the previous
  *   stream is ended and its late disconnect is a compare-and-delete no-op
  *   that cannot clobber the fresh registration.
  * - Dispatch mints a fresh UUID tool_id, decoupled from any conversation
- *   tool_call.id (the bridge owns the operation channel's correlation ids).
+ *   tool_call.id (v1 operation-bridge.ts:232-233).
  * - Failure paths resolve FAILED in-band (never throw): no connection →
  *   "desktop disconnected"; abort → "aborted"; 20-minute timeout backstop →
  *   "operation timed out"; a disconnect settles in-flight dispatches →
  *   "desktop disconnected" (data-model.md §2.6 状态迁移).
- * - Stale receipts (unknown/expired tool_id) are logged and ignored.
+ * - Stale receipts (unknown/expired tool_id) are logged and ignored (v1
+ *   handleResult semantics).
  */
 
 import { randomUUID } from "node:crypto";

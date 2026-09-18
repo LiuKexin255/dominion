@@ -9,15 +9,12 @@
  * https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-an-llm-adapter.md
  *
  * Event vocabulary and the mapping table are contractual:
- * specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §5; failure
- * classification follows
- * specs/063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md
- * §1 (empty-completion and malformed-payload codes); the wire shapes come
- * from the official Responses streaming events
+ * specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md §5; the wire
+ * shapes come from the official Responses streaming events
  * (https://github.com/openai/openai-openapi/blob/main/openapi.yaml).
  */
 
-import { CallId, EMPTY_RESPONSE_CODE, LlmError } from "@deepseek-ai/dsh-llm";
+import { CallId, LlmError } from "@deepseek-ai/dsh-llm";
 import type { ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { createParser } from "eventsource-parser";
 import type { EventSourceMessage } from "eventsource-parser";
@@ -184,11 +181,9 @@ export interface ResponsesWire {
 /**
  * Create a translator for one response stream. One instance per stream:
  * the underlying SSE parser and block registry must not be shared across
- * responses. `onComment` receives every SSE comment frame (keep-alives) so
- * the adapter's idle watchdog can treat them as transport activity
- * (llm-failure-taxonomy.md §1 义务 4).
+ * responses.
  */
-export function createResponsesWire(onComment?: () => void): ResponsesWire {
+export function createResponsesWire(): ResponsesWire {
   const blocks = new Map<number, WireBlock>();
   const pending: EventSourceMessage[] = [];
   const pendingChunks: StreamChunk[] = [];
@@ -200,9 +195,6 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
   const parser = createParser({
     onEvent: (message) => {
       pending.push(message);
-    },
-    onComment: () => {
-      onComment?.();
     },
   });
 
@@ -348,9 +340,6 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
     finished = true;
   }
 
-  // In-band provider failures keep the provider's own code (data-model.md
-  // §1); `UNKNOWN` is the shared fallback the dsh failure normalizer uses
-  // for unclassifiable failures, and is not retryable by default.
   function failureOf(response: ResponsesResponse | undefined, fallback: ErrorEvent | undefined): {
     message: string;
     code: string;
@@ -360,33 +349,16 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
     if (response?.error != null) {
       return {
         message: response.error.message ?? "GLM Responses stream failed",
-        code: typeof response.error.code === "string" ? response.error.code : "UNKNOWN",
+        code: typeof response.error.code === "string" ? response.error.code : "GLM_PROVIDER_ERROR",
       };
     }
     if (fallback != null) {
       return {
         message: fallback.message ?? "GLM Responses stream failed",
-        code: typeof fallback.code === "string" ? fallback.code : "UNKNOWN",
+        code: typeof fallback.code === "string" ? fallback.code : "GLM_PROVIDER_ERROR",
       };
     }
-    return { message: "GLM Responses stream failed", code: "UNKNOWN" };
-  }
-
-  // A terminal completion with zero opened blocks is a degenerate provider
-  // response, not a successful empty turn: no durable output was produced,
-  // so EMPTY_RESPONSE classifies it for the retry decision (FR-007,
-  // llm-failure-taxonomy.md §1 义务 3).
-  function emptyCompletionFinish(): Extract<StreamChunk, { type: "finish" }> {
-    return {
-      type: "finish",
-      reason: {
-        kind: "error",
-        failure: {
-          message: "GLM Responses stream finished without any content blocks",
-          code: EMPTY_RESPONSE_CODE,
-        },
-      },
-    };
+    return { message: "GLM Responses stream failed", code: "GLM_PROVIDER_ERROR" };
   }
 
   function mapEvent(evt: ResponsesStreamEvent): void {
@@ -449,18 +421,10 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
         return;
       case "response.completed":
         usage = extractUsage(evt.response);
-        if (blocks.size === 0) {
-          flushFinish(emptyCompletionFinish());
-          return;
-        }
         flushFinish({ type: "finish", reason: { kind: sawToolCall ? "tool-calls" : "stop" } });
         return;
       case "response.incomplete":
         usage = extractUsage(evt.response);
-        if (blocks.size === 0) {
-          flushFinish(emptyCompletionFinish());
-          return;
-        }
         flushFinish({ type: "finish", reason: { kind: "max-tokens" } });
         return;
       case "response.failed":
@@ -500,7 +464,7 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
         } catch {
           throw new LlmError(
             "GLM Responses stream carried a malformed event payload",
-            "MALFORMED_RESPONSE",
+            "GLM_PROTOCOL",
           );
         }
         const record = parsed as { type?: unknown };

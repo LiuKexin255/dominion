@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -238,51 +237,6 @@ func NewChatHandler(store *MessageStore, rng *rand.Rand) *ChatHandler {
 	return &ChatHandler{store: store, rng: rng}
 }
 
-// defaultInjectedErrorMessage is the injected-body message when a transient
-// http_status declares no error_message
-// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-// §1).
-const defaultInjectedErrorMessage = "injected http failure"
-
-// injectedErrorBody is the JSON body of an injected HTTP failure
-// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-// §1): the error object carries the configured (or default) message and the
-// fixed "injected" type marker.
-type injectedErrorBody struct {
-	Error injectedError `json:"error"`
-}
-
-// injectedError is the error object of injectedErrorBody.
-type injectedError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-}
-
-// writeInjectedHTTPFailure writes a transient http_status injection: the
-// declared HTTP status instead of a completion, the optional Retry-After
-// header (seconds, present only when the template declares retry_after), and
-// the injected error body. Both wires share this projection so their
-// injection behaviour is identical
-// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-// §1).
-func writeInjectedHTTPFailure(w http.ResponseWriter, injection *transientInjection) {
-	if injection.retryAfter != nil {
-		w.Header().Set("Retry-After", strconv.Itoa(*injection.retryAfter))
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(injection.httpStatus)
-	message := injection.errorMessage
-	if message == "" {
-		message = defaultInjectedErrorMessage
-	}
-	if err := json.NewEncoder(w).Encode(injectedErrorBody{
-		Error: injectedError{Message: message, Type: "injected"},
-	}); err != nil {
-		slog.Error("failed to encode injected http failure body",
-			slog.String("error", err.Error()))
-	}
-}
-
 // ServeHTTP implements http.Handler. It accepts any Authorization
 // bearer (no validation), decodes the request body, and dispatches by
 // the role of the LAST message:
@@ -314,25 +268,14 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spec, injection := h.dispatch(req.Messages)
-	if injection != nil && injection.httpStatus != 0 {
-		writeInjectedHTTPFailure(w, injection)
-		return
-	}
-	if injection != nil && injection.empty {
-		// Zero content blocks: the stream keeps its lifecycle frames but
-		// carries no reasoning/content/tool_call payload
-		// (specs/063-llm-reliability-opencode-go/contracts/
-		// fake-llm-fault-injection.md §1).
-		spec = responseSpec{}
-	}
+	spec := h.dispatch(req.Messages)
 
 	respID := generateResponseID()
 	if req.Stream {
-		serveStreaming(w, r, spec, injection, respID)
+		serveStreaming(w, r, spec, respID)
 		return
 	}
-	serveNonStreaming(w, spec, injection, respID)
+	serveNonStreaming(w, spec, respID)
 }
 
 // logSystemPrompts logs every role:"system" message of a request at INFO.
@@ -355,24 +298,22 @@ func logSystemPrompts(messages []*messageParam) {
 // prompt cannot blow up the log (a full planner prompt is well under this).
 const maxSystemPromptSnippetRunes = 4000
 
-// dispatch inspects the last message role and returns the responseSpec and
-// (for the messages branch) the matched template's resolved transient
-// injection; it is split out of ServeHTTP so tests can exercise the dispatch
-// logic without going through the HTTP layer. The tools branch never injects:
-// ToolConfig entries carry no transient block.
-func (h *ChatHandler) dispatch(messages []*messageParam) (responseSpec, *transientInjection) {
+// dispatch inspects the last message role and returns the responseSpec
+// for the appropriate branch. It is split out of ServeHTTP so tests can
+// exercise the dispatch logic without going through the HTTP layer.
+func (h *ChatHandler) dispatch(messages []*messageParam) responseSpec {
 	logSystemPrompts(messages)
 
 	if lastMessageRole(messages) == "tool" {
 		toolName := extractToolName(messages)
 		resultText := decodeContent(lastMessageContent(messages))
 		tc, _ := MatchToolResult(ToolsForEndpoint(h.store.Tools(), false), toolName, resultText, h.rng)
-		return specFromTool(tc), nil
+		return specFromTool(tc)
 	}
 
 	userText := lastUserText(messages)
 	msg, _ := Match(h.store.Messages(), userText, h.rng)
-	return specFromMessage(msg), msg.takeInjection()
+	return specFromMessage(msg)
 }
 
 // lastUserText extracts the text of the LAST message whose role equals
@@ -478,12 +419,8 @@ func decodeContent(raw json.RawMessage) string {
 // For a text response it carries BOTH reasoning_content and content in
 // the assistant message with finish_reason "stop". For a tool-call
 // response it carries tool_calls (and optional content) with
-// finish_reason "tool_calls". An injected empty completion keeps the
-// envelope but carries no payload at all — the chat-wire counterpart of the
-// Responses created → completed projection
-// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-// §1).
-func serveNonStreaming(w http.ResponseWriter, spec responseSpec, injection *transientInjection, respID string) {
+// finish_reason "tool_calls".
+func serveNonStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -493,10 +430,7 @@ func serveNonStreaming(w http.ResponseWriter, spec responseSpec, injection *tran
 		ReasoningContent: strings.Join(spec.Reasoning, ""),
 		Content:          spec.Text,
 	}
-	switch {
-	case injection != nil && injection.empty:
-		msg = &assistantMessage{Role: "assistant"}
-	case spec.isToolCall():
+	if spec.isToolCall() {
 		finish = finishToolCalls
 		msg.ToolCalls = []*toolCallResp{buildToolCallResp(spec.ToolCall)}
 	}
@@ -586,13 +520,7 @@ func buildToolCallResp(tc *ToolCall) *toolCallResp {
 // abort is what unblocks it). The legacy stall:true maps to position 0
 // (specs/046-fake-llm-think-chunking/research.md D3), so existing
 // templates behave exactly as before.
-//
-// An injected empty completion keeps the role opening frame and the finish
-// frame but carries no reasoning/content/tool_call payload
-// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-// §1), so a consuming wire classifies the terminal event as an empty
-// response.
-func serveStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, injection *transientInjection, respID string) {
+func serveStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, respID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -606,12 +534,9 @@ func serveStreaming(w http.ResponseWriter, r *http.Request, spec responseSpec, i
 
 	now := time.Now().Unix()
 	var frames []*completionResponse
-	switch {
-	case injection != nil && injection.empty:
-		frames = emptyStreamChunks(respID, now)
-	case spec.isToolCall():
+	if spec.isToolCall() {
 		frames = toolCallStreamChunks(respID, now, spec.ToolCall)
-	default:
+	} else {
 		frames = buildTextChunks(respID, now, spec)
 	}
 
@@ -734,35 +659,6 @@ func buildTextChunks(respID string, now int64, spec responseSpec) []*completionR
 		}},
 	})
 	return frames
-}
-
-// emptyStreamChunks builds the zero-content SSE sequence of an injected empty
-// completion: the opening role delta and the terminal stop delta, with no
-// reasoning/content/tool_call payload in between
-// (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-// §1). Keeping the terminal frame makes the empty stream distinguishable from
-// a connection that simply closed early.
-func emptyStreamChunks(respID string, now int64) []*completionResponse {
-	return []*completionResponse{
-		{
-			ID: respID, Object: "chat.completion.chunk",
-			Created: now, Model: FakeModel,
-			Choices: []*choice{{
-				Index:        0,
-				Delta:        &assistantMessage{Role: "assistant"},
-				FinishReason: nil,
-			}},
-		},
-		{
-			ID: respID, Object: "chat.completion.chunk",
-			Created: now, Model: FakeModel,
-			Choices: []*choice{{
-				Index:        0,
-				Delta:        new(assistantMessage),
-				FinishReason: strPtr(finishStop),
-			}},
-		},
-	}
 }
 
 // logStreamFrame emits the FR-018 structured log entry for one

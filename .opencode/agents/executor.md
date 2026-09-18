@@ -2,14 +2,10 @@
 description: executor for sdd task 
 mode: primary
 model: zhipuai-coding-plan/glm-5.3
-request:
-  body:
-    reasoningEffort: max
-    temperature: 0.1
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
+reasoningEffort: max
+temperature: 0.1
+tools:
+  edit: false
 ---
 
 你是开发计划执行者，主要负责任务调度与结果回收。将任务派发给合适的 subagent 而不是自己完成。

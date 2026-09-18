@@ -29,7 +29,6 @@ ts_project(
     deps = [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-llm",
-        ":node_modules/@deepseek-ai/dsh-timeout",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@types/node",
         ":node_modules/eventsource-parser",
@@ -37,22 +36,13 @@ ts_project(
 )
 
 # Workspace package target required by npm_link_all_packages for workspace:*
-# deps. The manifest is deliberately NOT a js_library src — valid HERE
-# because llm-glm has no bare-name resolution consumer: the tar's manifest
-# is staged by artifact_pkg_js Phase 4 from js_runtime_library's
-# package_json (packaging face), and nothing resolves this package by bare
-# name against the runfiles store (resolution face).
-#
-# Precision (aspect_rules_js v3.0.3 linker): the pnpm workspace scan
-# carries only name/version metadata — a workspace package's
-# npm_package_store entry is a symlink to the `:pkg` js_library output — so
-# on the RESOLUTION face the manifest file must come from srcs. That is why
-# common/js/dsh-plugins/preset-authoring and
-# experimental/dsh/demo/agent-plugins/demo-echo (whose rows the composition
-# boot test imports by bare name) DO declare package.json. The Phase-1
-# disproof of "the linker needs it in srcs" concerned the packaging face
-# and stands: the runtime crash back then was the service BUILD's npm_deps
-# duplication, not this declaration.
+# deps. The manifest is deliberately NOT a js_library src (the linker carries
+# the workspace package manifest from the pnpm workspace scan — the Phase-1
+# "linker needs it in srcs" assumption was disproved: aligning to the
+# common/js/otel/BUILD.bazel precedent changed nothing, the packaged
+# manifest is staged by artifact_pkg_js Phase 4 from js_runtime_library's
+# package_json, and the runtime crash was the service BUILD's npm_deps
+# duplication, not this declaration).
 js_library(
     name = "pkg",
     srcs = [":lib"],
@@ -70,7 +60,6 @@ js_runtime_library(
     npm_deps = [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-llm",
-        ":node_modules/@deepseek-ai/dsh-timeout",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/eventsource-parser",
     ],
@@ -91,7 +80,6 @@ vitest_test(
     ) + [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-llm",
-        ":node_modules/@deepseek-ai/dsh-timeout",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@types/node",
         ":node_modules/eventsource-parser",

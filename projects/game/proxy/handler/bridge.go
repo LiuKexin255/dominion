@@ -29,7 +29,7 @@ var newBridgeClient = func(conn *grpc.ClientConn) game.DesktopBridgeServiceClien
 // The first UserFrame carries the routing pair template_id/session_id
 // (both bare segments, injected by the gateway from the connect URL path).
 // The owner is resolved get-or-create — a desktop may connect before the
-// conversation's UpdateTeam materializes the team, and the shared owner
+// conversation's UpdateAgent materializes the agent, and the shared owner
 // guarantees the flow stream and the conversation land on the same instance
 // (the one holding the game state). Frames are relayed verbatim in both
 // directions; the pre-read first frame is replayed to the upstream so the

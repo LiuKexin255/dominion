@@ -5,54 +5,28 @@ game system end-to-end (gateway → proxy → agent-v2, plus the session and
 memory faces) via the HTTP + WebSocket surface. The plan is orchestrated by
 `guitar` through `system_test.yaml`.
 
-The agent_v2 session face is the **team model**
-(`specs/059-agent-v2-team-mode/contracts/team-api.md`, revised by
-`specs/060-agent-v2-team-optimize/contracts/team-api.md`): each session
-carries a team singleton with a player and a planner member, the Send stream
-carries member-labelled frames plus the merged `team_message` sequence and the
-`member_view` live-consumption frames, and the orchestration drives the
-members in alternation (planner opening → player game → planner review →
-structurally driven next game) with no synthesized drive messages.
-
-The team proto is a **scene-agnostic primitive**: `UpdateTeam` takes a
-`members` list (one `{role, preset, model?}` per member) and the role/sender
-labels are plain strings (reserved `"user"` for user input; scene vocabulary
-`"player"`/`"planner"` for saolei members) — no enums on the wire. The saolei
-scene host enforces the scene in two validation layers (structure, then
-roster size + role set + preset existence/role equality + model catalog); the
-configuration-face preset role is a string with the same vocabulary and the
-list role filter validates it.
-
 ## 1. Deployment under test
 
-The suites use four deployments sharing one service list —
-`deploy_agent_v2.yaml` (the won topology), `deploy_agent_v2_drop.yaml` (the
-progressive + disconnect fault topology for the disconnect suite),
-`deploy_agent_v2_memory_down.yaml` (no memory service, for the
-materialization fail-loud branch), and `deploy_agent_v2_stall.yaml` (a
-dedicated 2s `GLM_STREAM_IDLE_TIMEOUT_MS` watchdog window for the stall
-suite) — differing in service presence and env:
+The suites use two test deployments with the same service list —
+`deploy_agent_v2.yaml` (the won topology) and `deploy_agent_v2_drop.yaml`
+(the progressive + disconnect fault topology for the disconnect suite) —
+whose fake-desktop env is the only difference:
 
 - `mongodb`, `session`, `memory` — the persistence and the /api/v1 faces
   (session CRUD + memory CRUD through the gateway).
 - `fake-llm` — a deterministic OpenAI-compatible LLM stand-in. The agent_v2
   artifact points `GLM_LLM_TARGET` at it (`dominion:///game/fake-llm:8080`,
   resolved by the bootstrap to `http://{endpoint}/v1`,
-  specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §4) and
-  `OPENCODE_LLM_TARGET` at the same endpoint for the opencode-go row, plus a
-  synthetic `OPENCODE_API_KEY` (`test-opencode-token`, not a real secret) so
-  the chat-wire session flow covers conditional Authorization and the token
-  zero-leakage assertion
-  (specs/063-llm-reliability-opencode-go/research.md D13); fake-llm ignores
-  credentials either way, so the zero-secret `agent-v2-test` artifact needs
-  no token prerequisite.
+  specs/049-agent-v2-dsh-init/contracts/fake-responses-wire.md §4); fake-llm
+  ignores credentials either way, so the zero-secret `agent-v2-test` artifact
+  needs no token prerequisite.
 - `fake-desktop` — the deterministic desktop executor
   (specs/051-agent-v2-dsh-migration/research.md D15): it connects to the
   gateway's /api/v2 flow WebSocket for its configured session and answers
   FlowPart operations with recognizable board screenshots + SUCCEEDED
-  receipts. Only the drop topology differs in this service's env — the
-  progressive scenario with the disconnect fault on `desktop-e2e-drop`
-  versus the won scenario on `desktop-e2e-won` — so each topology gets one
+  receipts. The two deployments differ only in this service's env — the
+  won scenario on `desktop-e2e-won` vs the progressive scenario with the
+  disconnect fault on `desktop-e2e-drop` — so each topology gets one
   dedicated executor under the same `fake-desktop` service name.
 - `proxy`, `agent-v2-test`, `web`, `gateway` — the session face routes
   gateway → proxy (owner affinity) → agent_v2; the preset face and the web
@@ -68,51 +42,22 @@ every request (`helpers_test.go` `doHTTPTrace`).
 
 ## 2. Suites
 
-Four suites over four deployment topologies
-(specs/054-agent-v2-bugfixes/contracts/testplan.md §2;
-specs/059-agent-v2-team-mode/tasks.md T023;
-specs/063-llm-reliability-opencode-go/tasks.md T022) — the six won-topology
-suites of the pre-refactor plan share one deployment:
+Two suites over the two deployment topologies
+(specs/054-agent-v2-bugfixes/contracts/testplan.md §2) — the six
+won-topology suites of the pre-refactor plan share one deployment, so the
+plan pays two deploys instead of seven:
 
 | suite | deploy | binaries | focus |
 |---|---|---|---|
-| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the team conversation face (team stream, merged/member-view history projections, queue/cancel/refresh windows — including the queued-open skip vs immediate-announcement contrast, the LLM reliability paths and the opencode-go chat-wire session flow) → the team configuration face (preset pools, materialization, member system-prompt reads, the union model catalog) → the team game face (won chain on the executor, terminal win/loss reviews with the review memory write, per-handoff saolei stats announcements, desktop-absent, multi-session isolation) → the desktop face (flow stream), cases serial in module order |
-| game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the team mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
-| game-memory-down | deploy_agent_v2_memory_down.yaml | `agent_v2_memory_down_test` | the team materialization fail-loud branch (no memory service: the planner memory prefetch rejects, UpdateTeam 5xx + GetTeam NOT_FOUND + retryable) |
-| game-stall | deploy_agent_v2_stall.yaml | `agent_v2_stall_test` | the adapter-level stream-stall watchdog branch (specs/063-llm-reliability-opencode-go/spec.md SC-004a): the 2s idle window detects the Responses stall template and converges through the existing retry semantics to a visible timeout-class failure without an unbounded hang; its own binary because guitar runs whole targets as suite cases and the main suite runs under the production-sized window |
+| game-system | deploy_agent_v2.yaml | `testplan_test`, `memory_test`, `web_test`, `agent_v2_conversation_test`, `agent_v2_preset_test`, `agent_v2_game_test`, `desktop_flow_test` | the configuration face (session / memory / web hosting) → the conversation face (/api/v2 NDJSON + preset) → the game face (won topology) → the desktop face (flow stream), cases serial in module order |
+| game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
 
 `guitar run` executes suites and cases serially in YAML order and stops on
 the first failure — the main suite runs first so a trunk regression surfaces
-before the narrow branches. `guitar run` executes whole bazel targets as
+before the disconnect branch. `guitar run` executes whole bazel targets as
 suite cases without per-suite test-function filtering, which is why the
-disconnect, memory-down, and stall branches have their own binaries
+disconnect branch has its own binary
 (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §1.4).
-
-The web 3-view switcher (团队 | player | planner) is a frontend-only state
-(specs/059-agent-v2-team-mode/contracts/web-views.md §2), so the large tests
-assert the two List projections and the per-member perspective semantics at
-the API layer and rely on the committed frontend unit tests for the DOM
-surface (`App.test.tsx` "App 双视图切换" pins exactly 3 views and the
-switch-without-refetch behavior). The system-prompt read face
-(GetTeamMember.system_prompt) is asserted in `agent_v2_preset_test.go`
-(specs/059-agent-v2-team-mode/tasks.md T034: complete + role split, snapshot
-fixation and reload, persona edit + refresh).
-
-One quickstart scenario is deliberately carried outside the large tests: the
-**preset persistence across a service restart (V2-2)**. `guitar`'s suite
-lifecycle is deploy → test → cleanup with no per-service restart, so a second
-process generation is not observable in this topology — the same limitation
-the memory-down case documents for its retry-success half
-(`agent_v2_memory_down_test.go`). The persistence claim is carried by
-construction plus unit tests instead: the preset record state lives only in
-Mongo (`game_agent_v2.presets`), never in the agent-v2 process;
-`common/js/dsh-plugins/preset-authoring/src/store.mongo.test.ts` pins the Mongo
-document CRUD (create/get/list/update/remove plus the duplicate-key and index
-behavior); and `common/js/dsh-plugins/preset-authoring/src/derive.test.ts` +
-`src/index.test.ts` pin the use-time derivation from the stored record (compose
-reads the record, derives the temporary composition and mounts it; no
-composition copy or roster authoring path exists —
-specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§2).
 
 ## 3. fake-llm data file format
 
@@ -139,24 +84,8 @@ Fields:
   a substring of another template's trigger text: the former 2-char "hi"
   matched "t(hi)nk", so `greeting` hijacked every `think-*` trigger via the
   alphabetical tie-break (specs/044-llm-stall-recovery-fix/tasks.md T021).
-- `system_keywords` — Responses-endpoint system-prompt condition: EVERY
-  declared keyword must be a case-insensitive substring of the request's
-  `instructions` text (the GLM adapter sends the assembled system prompt
-  there). Declaring it makes the template multi-turn (priority 1, all
-  conditions) and responses-only for the chat fallback gate. Mechanism:
-  `fake-llm/service/responses.go` `matchResponsesMultiTurn` /
-  `allSystemKeywordsHit` (specs/059-agent-v2-team-mode/tasks.md T008).
 - `reasoning` — the thinking-frame content returned to the agent.
 - `text` — the response content returned to the agent.
-- `transient` — OPTIONAL stateful fault injection
-  (`times`/`http_status`/`retry_after`/`error_message`/`empty`/`failure`).
-  The first `times` matching requests get the declared fault — an injected
-  HTTP status with an optional `Retry-After` header and `error_message`
-  body, a zero-content completion, or the in-band `failure` shape — after
-  which the template answers with its normal content; `times` absent/0 is
-  unbounded. The counter is per-template, mutex-guarded, and process-local.
-  Schema and scenario wiring:
-  specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md.
 
 `agent_v2.yaml` serves the `/v1/responses` Responses endpoint consumed by the
 agent-v2 conversation suite: `agent-v2-think` (think+text main path),
@@ -168,97 +97,17 @@ history tail the conversation suite asserts).
 `agent_v2_saolei.yaml` chains the game surface: a user
 turn matching the saolei-start keyword returns a `saolei_init` tool_call,
 `tools:` rules match the tool results (the "new game started" receipt, board
-outcomes) to drive the operate batch, and a terminal (`game status: won/lost`)
-result would resolve to the final summary text — under the 062 turn conclusion
-such a result instead ends the player turn at the tool block, so those summary
-rules stay as the never-requested zero-execution face
-(specs/062-team-game-end-handoff/research.md D6). Every `agent_v2*` entry
-carries `responses_only: true` so the chat-completions no-match fallback pool
-never observes it; the expected reasoning/text pieces are pinned as the
-`agentV2*` constants in `agent_v2_helpers_test.go`.
-
-The team fixtures `team_planner.yaml` and `team_player.yaml` serve the
-two-role chain (specs/059-agent-v2-team-mode/tasks.md T011/T018/T023): every
-entry anchors on the member persona's identity opening (`system_keywords`),
-the planner side emits the opening strategy / game-end review / queued-message
-digest, and the player side opens the game when a strategy broadcast arrives,
-optionally opens the next game, or stops. `team-planner-wait` is the
-controllable long-running planner turn (4s inter-chunk delay) the
-queue/cancel/refresh cases pivot on; queued user messages must carry one of
-`暂停/稍等/等待/继续` and the first user message one of the opening anchors
-(see the per-file comments). The expected texts are pinned as the `team*`
+outcomes) to drive the operate batch, and the `game status: won` result
+resolves to the final summary text. Every `agent_v2*` entry carries
+`responses_only: true` so the chat-completions no-match fallback pool never
+observes it; the expected reasoning/text pieces are pinned as the `agentV2*`
 constants in `agent_v2_helpers_test.go`.
 
-The review entries are anchored on the saolei system member's game-stats
-announcement, which the announce-before-drain ordering places as the review
-drive's LAST user message (specs/065-agent-v2-team-refine/contracts/
-game-stats-broadcast.md §3): `team-planner-review-continue` matches
-`本局游戏结束：胜利`, `team-planner-review-stop` matches `本局游戏结束：失败`
-(the `gameStatsText` template of specs/065-agent-v2-team-refine/data-model.md
-§3), so a review turn firing also proves the announcement reached the
-planner's model input (specs/065-agent-v2-team-refine/spec.md SC-001).
-
-The 063 reliability fixtures (`specs/063-llm-reliability-opencode-go/spec.md`
-SC-001/SC-002/SC-004a/SC-005): `agent_v2_transient.yaml` serves the Responses
-`transient`/`stall` triggers — `agent-v2-transient-503` (one injected HTTP
-503 + `Retry-After`), `agent-v2-transient-500` (six injected 500s = the
-initial attempt + the default five-retry budget), `agent-v2-stall` (the
-Responses stall projection), `agent-v2-quota` (HTTP 429 +
-`insufficient quota`) and `agent-v2-auth` (HTTP 401) — all anchored on the
-planner persona (`system_keywords`) so an injection only fires on a
-planner-driven turn. The triggers and the expected error codes are pinned as the
-`agentV2Trigger*` / `agentV2Failure*` constants in `agent_v2_helpers_test.go`;
-the suites send one trigger per turn and keep the triggers out of unrelated
-texts (specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-§5).
-
-`opencode_go.yaml` drives the `specs/063-llm-reliability-opencode-go/spec.md`
-SC-003 opencode-go session on the chat wire:
-`opencode-go-planner-opening` matches 「请开始扫雷」 and returns the same
-opening strategy `team_planner.yaml` emits, so the first Send completes the
-planning round. Match note: the chat matcher evaluates `keywords` only, and
-the lowest-Name tie-break hands that first request to
-`opencode-go-planner-opening` ('o' < 't' of the team entries); the player's
-structural continuation (which receives the strategy text verbatim) is
-answered by `team-planner-opening`, so the game opens through the explicit
-`start saolei` Send whose tool chain lives in `saolei.yaml` /
-`saolei_tools.yaml` (specs/063-llm-reliability-opencode-go/tasks.md T020).
-
-The specs/059-agent-v2-team-mode/tasks.md T023 additions:
-
-- `team-planner-review-stop` (the LOSS review) carries a `memory` tool_call
-  with a fixed observation content; the `team-planner-review-stop-text` tool
-  rule in `agent_v2_saolei_tools.yaml` matches the SUT's `memory added`
-  result and continues with the review body. The team memory large test
-  asserts the tool result and the entry persisted through
-  `/api/v1/.../memories`.
-- `team-planner-memory-snapshot` fires only when the planner's assembled
-  system prompt carries the reloaded snapshot (header + the fixed
-  observation): the memory test refreshes the team after the review and
-  asserts the snapshot reply — the fresh planner's setup prefetch must have
-  reached the model context.
-- `team-player-role-lock` requires BOTH the player persona anchor and the
-  saolei guidance heading in `system_keywords`, asserting the mounted player
-  composition (preset persona + `saolei:guidance` section) end to end. The
-  reverse absence assertions (no memory traces in the player prompt, no
-  saolei guidance in the planner prompt) are the
-  specs/059-agent-v2-team-mode/tasks.md T034 system-prompt cases
-  (`agent_v2_preset_test.go`), which read the live assembly through
-  `GetTeamMember.system_prompt`.
-
-The Responses endpoint derives each tool-call's wire identity from the request
-input (`responsesWireIDs` in `responses.go`): deterministic for the same
-request, distinct across a chain's steps. A constant call id would make two
-tool calls in one member log indistinguishable to the team broadcast's
-callId-anchored reference model (real providers mint unique call ids).
-
-The chat-completions fixtures (`chat.yaml`, `saolei.yaml`, and the `tools:`
-configs in `saolei_tools.yaml`) serve `POST /v1/chat/completions` requests;
-each `tools:` entry matches a tool-result message by `tool_name` with an
-optional `match_result_contains` constraint — the deterministic
-tool-call→result→follow-up mechanism the game templates build on (the
-`specs/063-llm-reliability-opencode-go/spec.md` SC-003 chain above reuses
-`saolei.yaml` / `saolei_tools.yaml` directly).
+The chat-completions fixtures (`sample_*.yaml`/`sample_*.json`) match
+`POST /v1/chat/completions` requests; they remain loaded as fallback
+candidates, and the tool-result configs in `sample_saolei_tools.yaml`
+(`match_result_contains` chaining) document the deterministic
+tool-call→result→follow-up mechanism the game templates build on.
 
 ## 4. Stateless matching model
 
@@ -274,12 +123,6 @@ tool-call→result→follow-up mechanism the game templates build on (the
    `WARN` log line is emitted (`user_snippet`, `random_name`). The HTTP
    status is still `200`; the handler never surfaces a match failure as an
    error.
-
-The one piece of process state is the per-template `transient` counter
-(§3): it counts matches, not sessions, and a restart resets it — each
-large-test plan redeploys the service, so runs stay naturally isolated
-(specs/063-llm-reliability-opencode-go/contracts/fake-llm-fault-injection.md
-§1).
 
 Because matching is stateless and keyword-driven, the large tests send prompts
 that contain a **single** template's keyword to get a deterministic response,
@@ -298,11 +141,12 @@ guitar validate projects/game/testplan/system_test.yaml
 # Run the plan end-to-end: deploy the SUT, run every suite's cases, then
 # tear the deployment down. --suite <name> runs a single suite.
 #
-# --timeout is the OVERALL budget for the whole run (default 10m). The four
-# suites run serially and each pays deploy + a fixed 60s settle wait + tests
-# + cleanup, so budget for the whole chain and leave deploy-jitter margin.
-# An undersized budget surfaces as "wait after deploy: context deadline
-# exceeded" on a later suite.
+# --timeout is the OVERALL budget for the whole run (default 10m). Each
+# suite pays deploy + a fixed 60s settle wait + tests + cleanup; the
+# two-suite plan measures ~6-7 minutes end-to-end, so --timeout=15m
+# leaves a conservative margin for deploy jitter. An undersized budget
+# surfaces as "wait after deploy: context deadline exceeded" on a later
+# suite.
 guitar run projects/game/testplan/system_test.yaml --timeout=15m
 ```
 
@@ -318,7 +162,7 @@ guitar run projects/game/testplan/system_test.yaml --timeout=15m
    or similar). `fake-llm` itself ignores the model field; only the
    agent-side routing cares.
 3. **Update the large-test assertions.** The expected reasoning/text pieces
-   consumed by the suites are pinned as the `agentV2*` / `team*` constants in
+   consumed by the suites are pinned as the `agentV2*` constants in
    `agent_v2_helpers_test.go`. Update those constants whenever the testdata
    changes, and adjust any `strings.Contains` assertions that depend on them.
 4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`

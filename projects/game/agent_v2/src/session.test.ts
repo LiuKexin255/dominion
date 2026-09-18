@@ -1,191 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, AgentHandle, AgentStatus, CreateAgentOptions } from "@deepseek-ai/dsh-agent";
-import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
-import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
-import type { UserMessage } from "@deepseek-ai/dsh-llm";
-import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
-import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
-import type { TeamView } from "./session.js";
-import type { TeamHistory, TurnStream } from "./history.js";
+import { AgentSessionError, AgentSessions } from "./session.js";
+import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
+import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
 import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
-import type { GameEventRecord, SaoleiSystemMember } from "@dominion/dsh-saolei-loop";
-
-/** The text of a user message's first text block. */
-function messageText(message: UserMessage): string {
-  const block = message.content[0];
-  return block !== undefined && block.type === "text" ? block.text : "";
-}
 
 /**
- * Unit tests for the team registry (specs/059-agent-v2-team-mode/contracts/
- * team-api.md §2–§4): per-session materialization/refresh with fail-fast
- * validation and full rollback (no half-materialized team), create_time
- * preservation, the team FIFO/cancel semantics through the orchestrator, the
- * team stream lifecycle (fan-out, queued-first on the accepting stream,
- * quiescence end, disconnect detach), and the GetTeam/List projections.
- *
- * The cordis Context is a hand-rolled fake whose `on` captures listeners;
- * tests drive the dsh event sequence (running → session events → idle) by
- * emitting into the captured listeners — no module interception
- * (style/javascript.md Mock convention).
+ * Unit tests for the materialization registry, per-session FIFO queue, and
+ * the UpdateAgent semantics (specs/051-agent-v2-dsh-migration/data-model.md
+ * §2.2/§2.3; contracts/conversation-api.md §3 event-order invariants).
+ * Materialization is explicit — Send has no lazy creation and fails
+ * FAILED_PRECONDITION before any frame. The cordis Context is a hand-rolled
+ * fake whose `on` captures listeners; tests drive the dsh event sequence
+ * (running → turn/start → assistant/chunk → assistant/message → turn/end →
+ * idle, https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/
+ * agent-lifecycle.md) by emitting into the captured listeners — no module
+ * interception (style/javascript.md Mock convention).
  */
 
 type Listener = (...args: never[]) => void;
 
-const S1 = "templates/saolei/sessions/s1";
-const P_PLAYER = "templates/saolei/presets/p-player";
-const P_PLANNER = "templates/saolei/presets/p-planner";
-const PLAYER_ID = `${S1}/player`;
-const PLANNER_ID = `${S1}/planner`;
-
-/** The bare model-id half of the default composite selector. */
-const DEFAULT_BARE_MODEL = DEFAULT_MODEL.slice(DEFAULT_MODEL.indexOf("/") + 1);
-
-interface MemberFake {
-  readonly id: string;
-  readonly agent: Agent;
-  readonly ctx: {
-    on: ReturnType<typeof vi.fn>;
-    /** The member prompt assembly surface GetTeamMember reads (specs/059-agent-v2-team-mode/tasks.md T032). */
-    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
-  };
-  readonly handle: AgentHandle;
-  readonly followups: UserMessage[];
-  readonly injections: UserMessage[];
-  readonly cancels: unknown[];
-  readonly statusListeners: Array<(payload: { agent: Agent; status: AgentStatus }) => void>;
-  readonly errorListeners: Array<(payload: { agent: Agent; error: unknown }) => void>;
-  settle(): void;
-  /**
-   * Settle the in-flight turn as failed: emit `agent/error` (an
-   * {@link LlmError} carrying the code) and then idle — the exact order the
-   * official loop produces
-   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1/§5).
-   */
-  failCurrentTurn(code: string): void;
-}
-
 interface Harness {
-  readonly ctx: DshContext;
-  readonly sessions: TeamSessions;
-  readonly agentsCreate: ReturnType<typeof vi.fn>;
-  readonly members: Map<string, MemberFake>;
-  readonly listeners: Map<string, Listener[]>;
-  readonly authoring: { compose: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
-  readonly listModels: ReturnType<typeof vi.fn>;
-  readonly loadPlannerMemory: ReturnType<typeof vi.fn>;
-  readonly mountPlayerRuntime: ReturnType<typeof vi.fn>;
-  readonly teamQueues: Map<string, UserMessage[]>;
-  readonly teamRegister: ReturnType<typeof vi.fn>;
-  readonly fiberDispose: ReturnType<typeof vi.fn>;
-  readonly loggerError: ReturnType<typeof vi.fn>;
-  readonly game: { current: GameEventRecord | null };
+  ctx: DshContext;
+  sessions: AgentSessions;
+  agentsGet: ReturnType<typeof vi.fn>;
+  agentsCreate: ReturnType<typeof vi.fn>;
+  fiberDispose: ReturnType<typeof vi.fn>;
+  listeners: Map<string, Listener[]>;
 }
 
-function fakeMember(
-  id: string,
-  emitStatus: (member: MemberFake, status: AgentStatus) => void,
-  emitError: (member: MemberFake, error: unknown) => void,
-): MemberFake {
-  const state = { status: "idle" as AgentStatus };
-  const statusListeners: MemberFake["statusListeners"] = [];
-  const errorListeners: MemberFake["errorListeners"] = [];
-  const memberCtx: {
-    on: ReturnType<typeof vi.fn>;
-    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
-    agent?: Agent;
-  } = {
-    on: vi.fn((name: string, listener: Listener) => {
-      if (name === "agent/error") {
-        const typed = listener as (payload: { agent: Agent; error: unknown }) => void;
-        errorListeners.push(typed);
-        return () => {
-          const index = errorListeners.indexOf(typed);
-          if (index >= 0) {
-            errorListeners.splice(index, 1);
-          }
-        };
-      }
-      const typed = listener as (payload: { agent: Agent; status: AgentStatus }) => void;
-      statusListeners.push(typed);
-      return () => {
-        const index = statusListeners.indexOf(typed);
-        if (index >= 0) {
-          statusListeners.splice(index, 1);
-        }
-      };
-    }),
-    // The per-member prompt assembly double GetTeamMember reads: an injected
-    // section carrying the member identity, rendered by the real renderPrompt
-    // (the read face itself is covered by system-prompt.test.ts).
-    systemPrompt: {
-      assemble: vi.fn(async () => ({
-        sections: [{ name: "test:member", text: `system prompt of ${id}` }],
-        contexts: [],
-        tools: [],
-        variables: {},
-      })),
-    },
-  };
-  const agent = {
+const S1 = "templates/saolei/sessions/s1";
+const P1 = "templates/saolei/presets/p1";
+
+function fakeAgent(id: string) {
+  return {
     id,
-    session: { id, events: [] },
-    get status(): AgentStatus {
-      return state.status;
-    },
-    ctx: memberCtx,
-    inject: vi.fn((message: UserMessage) => {
-      member.injections.push(message);
-    }),
-    followup: vi.fn((message: UserMessage) => {
-      member.followups.push(message);
-      state.status = "running";
-      emitStatus(member, "running");
-    }),
-    cancel: vi.fn((cause: unknown) => {
-      member.cancels.push(cause);
-      state.status = "idle";
-      emitStatus(member, "idle");
-    }),
+    session: { id },
+    followup: vi.fn(),
     whenIdle: vi.fn(async () => {}),
+    cancel: vi.fn(),
   } as unknown as Agent;
-  memberCtx.agent = agent;
-  const member: MemberFake = {
-    id,
-    agent,
-    ctx: memberCtx as MemberFake["ctx"],
-    handle: { agent, dispose: vi.fn(async () => {}) },
-    followups: [],
-    injections: [],
-    cancels: [],
-    statusListeners,
-    errorListeners,
-    settle: () => {
-      state.status = "idle";
-      emitStatus(member, "idle");
-    },
-    failCurrentTurn: (code: string) => {
-      // The official loop reports the failure at the turn's active boundary
-      // and only then converges to idle, so both subscribers observe the
-      // failure when the drive's idle await resolves
-      // (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1/§5).
-      emitError(member, new LlmError(`injected ${code} failure`, code));
-      member.settle();
-    },
-  };
-  return member;
 }
 
-interface HarnessOptions {
-  /** A composed `ctx.plannerMemory` face to resolve instead of the deps seam. */
-  readonly composedPlannerMemory?: { load: ReturnType<typeof vi.fn> };
-  /** Omit both the composed service and the deps seam (composition-error test). */
-  readonly omitPlannerMemory?: boolean;
+function fakeHandle(agent: Agent): AgentHandle {
+  return { agent, dispose: vi.fn(async () => {}) };
 }
 
-function createHarness(options: HarnessOptions = {}): Harness {
+function createHarness(): Harness {
   const listeners = new Map<string, Listener[]>();
   const on = vi.fn((name: string, listener: Listener) => {
     const list = listeners.get(name) ?? [];
@@ -197,126 +58,20 @@ function createHarness(options: HarnessOptions = {}): Harness {
       if (index >= 0) current.splice(index, 1);
     };
   });
-  const members = new Map<string, MemberFake>();
-  const emitStatus = (member: MemberFake, status: AgentStatus): void => {
-    for (const listener of [...member.statusListeners]) {
-      listener({ agent: member.agent, status });
-    }
-    for (const listener of [...(listeners.get("agent/status") ?? [])]) {
-      (listener as (...args: unknown[]) => void)({ agent: member.agent, status });
-    }
-  };
-  // Both the orchestrator (member ctx) and the history collector (host ctx)
-  // observe the failure, mirroring emitStatus's dual dispatch.
-  const emitError = (member: MemberFake, error: unknown): void => {
-    for (const listener of [...member.errorListeners]) {
-      listener({ agent: member.agent, error });
-    }
-    for (const listener of [...(listeners.get("agent/error") ?? [])]) {
-      (listener as (...args: unknown[]) => void)({ agent: member.agent, error });
-    }
-  };
-  const agentsCreate = vi.fn(async (options: CreateAgentOptions): Promise<AgentHandle> => {
-    const member = fakeMember(String(options.sessionId), emitStatus, emitError);
-    members.set(member.id, member);
-    await options.setup?.(member.ctx as never);
-    return member.handle;
-  });
-  const authoring = {
-    compose: vi.fn(async (presetId?: string) => ({
-      agentPreset: presetId ?? "",
-      setup: vi.fn(async () => {}),
-    })),
-    get: vi.fn(async (id: string) => ({
-      id,
-      template: id.endsWith("planner") ? "planner" : "player",
-      role: id.endsWith("planner") ? "planner" : "player",
-      persona: "",
-      createTime: new Date(0),
-      updateTime: new Date(0),
-    })),
-  };
-  // One catalog per provider route: validation is provider-scoped after the
-  // composite selector is split (contracts/model-selection.md §3).
-  const listModels = vi.fn(async (provider: string) =>
-    provider === "opencode-go"
-      ? [{ id: "kimi-k3" }]
-      : [{ id: "glm-5.3" }, { id: "glm-5.5" }],
-  );
-  const loadPlannerMemory = vi.fn(async () => {});
-  const game = { current: null as GameEventRecord | null };
-  const mountPlayerRuntime = vi.fn(() => ({ peekGameEvent: () => game.current }));
-  const teamQueues = new Map<string, UserMessage[]>();
-  const teamRegister = vi.fn((registration: TeamRegistration) => {
-    // The saolei team's three-member roster: player + planner + the
-    // announce-only system member (specs/065-agent-v2-team-refine/contracts/
-    // game-stats-broadcast.md §3).
-    expect(registration.members).toHaveLength(3);
-    const saolei = registration.members[2];
-    expect(saolei).toMatchObject({
-      role: "saolei",
-      summary: "扫雷系统，终局播报对局结果与操作统计",
-    });
-    expect(saolei?.source.id).toBe(`${S1}/saolei`);
-    expect(saolei?.source.consumes).toBe(false);
-    expect(saolei?.source.sectionTarget).toBeUndefined();
-    return { dispose: vi.fn() };
-  });
+  const agentsGet = vi.fn();
+  const agentsCreate = vi.fn();
   const fiberDispose = vi.fn(async () => {});
-  const loggerError = vi.fn();
   const ctx = {
     on,
-    agents: { create: agentsCreate, get: vi.fn() },
-    get: vi.fn((name: string) => {
-      if (name === "presetAuthoring") {
-        return authoring;
-      }
-      if (name === "plannerMemory") {
-        return options.composedPlannerMemory;
-      }
-      return undefined;
-    }),
-    desktopBridge: {},
+    agents: { get: agentsGet, create: agentsCreate },
     fiber: { dispose: fiberDispose },
-    llm: { listModels: vi.fn(async () => [{ id: "glm-5.3" }]) },
   } as unknown as DshContext;
-  const sessions = new TeamSessions(ctx, {
-    authoring,
-    listModels,
-    agents: { create: agentsCreate },
-    team: {
-      register: teamRegister,
-      drain: (member: TeamMemberSource) => teamQueues.get(member.id)?.splice(0) ?? [],
-    },
-    mountPlayerRuntime,
-    logger: { error: loggerError },
-    provider: "glm-responses",
-    // The default harness binds the explicit test seam; the composed-service
-    // cases leave it unset so the production resolution path runs.
-    ...(options.omitPlannerMemory || options.composedPlannerMemory !== undefined
-      ? {}
-      : { loadPlannerMemory }),
-  });
-  return {
-    ctx,
-    sessions,
-    agentsCreate,
-    members,
-    listeners,
-    authoring,
-    listModels,
-    loadPlannerMemory,
-    mountPlayerRuntime,
-    teamQueues,
-    teamRegister,
-    fiberDispose,
-    loggerError,
-    game,
-  };
+  const sessions = new AgentSessions(ctx);
+  return { ctx, sessions, agentsGet, agentsCreate, fiberDispose, listeners };
 }
 
-function emit(h: Harness, name: string, ...args: unknown[]): void {
-  for (const listener of [...(h.listeners.get(name) ?? [])]) {
+function emit(harness: Harness, name: string, ...args: unknown[]): void {
+  for (const listener of [...(harness.listeners.get(name) ?? [])]) {
     (listener as (...emitArgs: unknown[]) => void)(...args);
   }
 }
@@ -324,27 +79,38 @@ function emit(h: Harness, name: string, ...args: unknown[]): void {
 interface StreamRecorder extends TurnStream {
   events: ChatEvent[];
   ended: boolean;
-  failures: Array<{ code: string; message: string }>;
 }
 
 function fakeStream(): StreamRecorder {
-  const recorder: StreamRecorder = {
-    events: [],
+  const recorder = {
+    events: [] as ChatEvent[],
     ended: false,
-    failures: [],
-    write: (event) => {
+    write: (event: ChatEvent) => {
       recorder.events.push(event);
     },
     end: () => {
       recorder.ended = true;
     },
-    fail: (error) => {
-      recorder.failures.push(error);
-    },
   };
   return recorder;
 }
 
+function chunk(chunkData: Record<string, unknown>) {
+  return { type: "assistant/chunk", data: { turn: 1, step: 1, chunk: chunkData } };
+}
+
+function assistantMessage(blocks: Array<Record<string, unknown>>, usage?: Record<string, number>) {
+  return {
+    type: "assistant/message",
+    data: { turn: 1, step: 1, message: { content: blocks }, ...(usage ? { usage } : {}) },
+  };
+}
+
+/**
+ * Payload discriminator (the proto-loader virtual oneof field only exists on
+ * runtime-decoded messages; handlers construct plain objects, so detect the
+ * populated oneof arm by field presence).
+ */
 function payloadOf(event: ChatEvent): string {
   if (event.queued !== undefined) return "queued";
   if (event.turnStart !== undefined) return "turnStart";
@@ -353,987 +119,702 @@ function payloadOf(event: ChatEvent): string {
   if (event.blockEnd !== undefined) return "blockEnd";
   if (event.turnEnd !== undefined) return "turnEnd";
   if (event.toolResult !== undefined) return "toolResult";
-  if (event.teamMessage !== undefined) return "teamMessage";
   return "";
 }
 
-/** Drain the microtask queue so the pump and the quiescence watcher settle. */
-async function flush(times = 40): Promise<void> {
+/** Drain the microtask queue so pending creations and turn chains settle. */
+async function flush(times = 20): Promise<void> {
   for (let i = 0; i < times; i++) {
     await Promise.resolve();
   }
 }
 
-function member(h: Harness, id: string): MemberFake {
-  const found = h.members.get(id);
-  if (found === undefined) {
-    throw new Error(`member "${id}" is not materialized`);
-  }
-  return found;
-}
-
-function relay(sender: Agent, role: string, text: string): UserMessage {
-  return createUserMessage({
-    content: [{ type: "text", text }],
-    source: { kind: "team-broadcast", role, senderSessionId: sender.session.id, form: "relay", messageId: `${text}-id` as never },
-  });
-}
-
-/** The saolei scene's fixed two-member roster (one player + one planner). */
-function defaultMembers() {
-  return [
-    { role: "player", preset: P_PLAYER },
-    { role: "planner", preset: P_PLANNER },
-  ];
-}
-
-/** A terminal game record for the mounted player runtime double. */
-function winnerRecord(): GameEventRecord {
-  return {
-    status: "won",
-    stats: {
-      operationCount: 5,
-      operationsByType: { click: 4, flag: 1, chord: 0 },
-      correctFlags: 3,
-      avgOpsPerMine: 1.67,
-    },
-    endedAt: 1_000,
-  };
+/**
+ * Drive one full successful turn (text block with two deltas) for `agent`
+ * and settle it via the idle transition.
+ */
+async function driveTurn(harness: Harness, agent: Agent, text: string): Promise<void> {
+  await flush();
+  emit(harness, "agent/status", { agent, status: "running" });
+  emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+  emit(harness, "session/event", agent.session, chunk({ type: "block-start", index: 0, blockType: "text" }));
+  emit(harness, "session/event", agent.session, chunk({ type: "text-delta", index: 0, text }));
+  emit(harness, "session/event", agent.session, chunk({ type: "block-end", index: 0, block: { type: "text", text } }));
+  emit(harness, "session/event", agent.session, chunk({ type: "usage", usage: { inputTokens: 3, outputTokens: 5 } }));
+  emit(harness, "session/event", agent.session, assistantMessage([{ type: "text", text }]));
+  emit(harness, "session/event", agent.session, { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+  emit(harness, "agent/status", { agent, status: "idle" });
 }
 
 /**
- * The private live-entry registry seam: the announcer subscription and the
- * history of one materialization generation (refresh/unsubscribe assertions).
+ * Materialize a session on the harness and leave the registry lookup
+ * pointing at the created agent (live-entry re-validation).
  */
-function entrySeam(
-  h: Harness,
+async function materializeSession(
+  harness: Harness,
   session: string,
-): { announcer: SaoleiSystemMember | undefined; history: TeamHistory } {
-  const teams = (
-    h.sessions as unknown as {
-      teams: Map<
-        string,
-        {
-          orchestrator: { announcer?: SaoleiSystemMember };
-          history: TeamHistory;
-        }
-      >;
-    }
-  ).teams;
-  const entry = teams.get(session);
-  if (entry === undefined) {
-    throw new Error(`session "${session}" has no live entry`);
-  }
-  return { announcer: entry.orchestrator.announcer, history: entry.history };
-}
-
-async function materializeDefault(h: Harness): Promise<TeamView> {
-  return h.sessions.materialize(S1, { members: defaultMembers() });
-}
-
-/** Emit one member text turn's dsh event sequence and settle it via idle. */
-function driveTextTurn(h: Harness, target: MemberFake, text: string): void {
-  emit(h, "session/event", target.agent.session, { type: "turn/start", data: { turn: 1 } });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } },
+  agent: Agent,
+  options: { preset?: string; model?: string; persona?: string } = {},
+): Promise<unknown> {
+  harness.agentsGet.mockReturnValue(agent);
+  const handle = fakeHandle(agent);
+  harness.agentsCreate.mockResolvedValueOnce(handle);
+  const view = await harness.sessions.materialize(session, {
+    preset: options.preset ?? P1,
+    ...(options.model === undefined ? {} : { model: options.model }),
+    persona: options.persona ?? "player persona",
   });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text } },
-  });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "block-end", index: 0, block: { type: "text", text } } },
-  });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/message",
-    data: { turn: 1, step: 1, message: { content: [{ type: "text", text }] } },
-  });
-  target.settle();
+  await flush();
+  return view;
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("TeamSessions.materialize", () => {
-  it("creates both members through the compose/setup chain and serves the team view", async () => {
-    const h = createHarness();
+describe("AgentSessions.materialize", () => {
+  it("creates the dsh agent with the provider, model, and persona snapshot", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    harness.agentsGet.mockReturnValue(agent);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
-    const view = await materializeDefault(h);
+    const view = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      model: "glm-5.5",
+      persona: "careful player",
+    })) as { name: string; preset: string; model: string; createTime: Date; updateTime: Date };
 
-    expect(h.agentsCreate).toHaveBeenCalledTimes(2);
-    expect(h.agentsCreate).toHaveBeenNthCalledWith(1, {
-      sessionId: PLAYER_ID,
-      meta: { cwd: process.cwd(), agentPreset: "p-player" },
-      agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
-      setup: expect.any(Function),
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+    expect(harness.agentsCreate).toHaveBeenCalledWith({
+      sessionId: S1,
+      agentOptions: { provider: "glm-responses", model: "glm-5.5", persona: "careful player" },
     });
-    expect(h.agentsCreate).toHaveBeenNthCalledWith(2, {
-      sessionId: PLANNER_ID,
-      meta: { cwd: process.cwd(), agentPreset: "p-planner" },
-      agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
-      setup: expect.any(Function),
-    });
-    expect(h.mountPlayerRuntime).toHaveBeenCalledTimes(1);
-    expect(h.loadPlannerMemory).toHaveBeenCalledTimes(1);
-    expect(h.teamRegister).toHaveBeenCalledTimes(1);
-
-    expect(view.name).toBe(`${S1}/team`);
-    // The initial activation after materialization is planner (FR-008: the
-    // single merged active-member value at rest).
-    expect(view.activeMember).toBe("planner");
-    expect(
-      view.members.map((entry) => [entry.name, entry.role, entry.preset, entry.model]),
-    ).toEqual([
-      [`${S1}/team/members/player`, "player", P_PLAYER, DEFAULT_MODEL],
-      [`${S1}/team/members/planner`, "planner", P_PLANNER, DEFAULT_MODEL],
-    ]);
+    expect(view.name).toBe(`${S1}/agent`);
+    expect(view.preset).toBe(P1);
+    expect(view.model).toBe("glm-5.5");
     expect(view.createTime).toBeInstanceOf(Date);
+    expect(view.updateTime).toBeInstanceOf(Date);
   });
 
-  it("honors per-member composite models and validates them against the selected provider catalog", async () => {
-    const h = createHarness();
-    await h.sessions.materialize(S1, {
-      members: [
-        { role: "player", preset: P_PLAYER, model: "glm-responses/glm-5.5" },
-        { role: "planner", preset: P_PLANNER, model: "glm-responses/glm-5.3" },
-      ],
-    });
+  it("falls back to the process default model when none is given", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    harness.agentsGet.mockReturnValue(agent);
+    harness.agentsCreate.mockResolvedValue(fakeHandle(agent));
 
-    // agentOptions carries the split route: the provider from the selector's
-    // prefix and the model as a BARE id — the composite form never reaches
-    // the agent (contracts/model-selection.md §3; the system prompt
-    // `{{model}}` renders the bare id, see system-prompt.test.ts).
-    expect(h.agentsCreate).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        agentOptions: { provider: "glm-responses", model: "glm-5.5" },
-      }),
-    );
-    expect(h.agentsCreate).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        agentOptions: { provider: "glm-responses", model: "glm-5.3" },
-      }),
-    );
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
 
-    await expect(
-      h.sessions.materialize("templates/saolei/sessions/s2", {
-        members: [
-          { role: "player", preset: P_PLAYER, model: "glm-responses/glm-9.9" },
-          { role: "planner", preset: P_PLANNER },
-        ],
-      }),
-    ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("unknown model"),
+    expect(harness.agentsCreate).toHaveBeenCalledWith({
+      sessionId: S1,
+      agentOptions: { provider: "glm-responses", model: "glm-5.3", persona: "p" },
     });
   });
 
-  it("routes a member through the provider half of its composite selector", async () => {
-    const h = createHarness();
-    const view = await h.sessions.materialize(S1, {
-      members: [
-        { role: "player", preset: P_PLAYER, model: "opencode-go/kimi-k3" },
-        { role: "planner", preset: P_PLANNER, model: DEFAULT_MODEL },
-      ],
-    });
+  it("re-materializing tears down the old agent and yields a clean one (refresh folded in)", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    const secondHandle = fakeHandle(second);
+    harness.agentsCreate.mockResolvedValueOnce(firstHandle).mockResolvedValueOnce(secondHandle);
+    harness.agentsGet.mockReturnValue(first);
 
-    expect(h.agentsCreate).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        agentOptions: { provider: "opencode-go", model: "kimi-k3" },
-      }),
-    );
-    expect(h.agentsCreate).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
-      }),
-    );
-    // The member projections keep the composite original (selection-surface
-    // contract); the provider catalogs queried are the two split routes.
-    expect(view.members.map((entry) => entry.model)).toEqual([
-      "opencode-go/kimi-k3",
-      DEFAULT_MODEL,
-    ]);
-    expect(h.listModels).toHaveBeenCalledWith("opencode-go");
-    expect(h.listModels).toHaveBeenCalledWith("glm-responses");
-  });
-
-  it("rejects malformed selectors (bare id / empty segment) before any member creation", async () => {
-    const h = createHarness();
-
-    for (const model of ["glm-5.3", "/glm-5.3", "glm-responses/"]) {
-      await expect(
-        h.sessions.materialize(S1, {
-          members: [
-            { role: "player", preset: P_PLAYER, model },
-            { role: "planner", preset: P_PLANNER },
-          ],
-        }),
-      ).rejects.toMatchObject({
-        code: "INVALID_ARGUMENT",
-        message: expect.stringContaining("provider/model-id"),
-      });
-    }
-    expect(h.agentsCreate).not.toHaveBeenCalled();
-  });
-
-  it("rejects structure (scene-agnostic) and saolei-scene violations in the two validation layers", async () => {
-    const h = createHarness();
-
-    // Layer 1 — structure: members non-empty, role non-empty, preset a
-    // resource name under the session template.
-    await expect(h.sessions.materialize(S1, { members: [] })).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-    });
-    await expect(
-      h.sessions.materialize(S1, { members: [{ role: "", preset: P_PLAYER }] }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    await expect(
-      h.sessions.materialize(S1, { members: [{ role: "player", preset: "nope" }] }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    await expect(
-      h.sessions.materialize(S1, {
-        members: [{ role: "player", preset: "templates/other/presets/p" }],
-      }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-
-    // Layer 2 — saolei scene: exactly two members with the {player, planner}
-    // role set.
-    await expect(
-      h.sessions.materialize(S1, { members: [{ role: "player", preset: P_PLAYER }] }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    await expect(
-      h.sessions.materialize(S1, {
-        members: [
-          { role: "player", preset: P_PLAYER },
-          { role: "player", preset: P_PLAYER },
-        ],
-      }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    await expect(
-      h.sessions.materialize(S1, {
-        members: [
-          { role: "player", preset: P_PLAYER },
-          { role: "planner", preset: P_PLANNER },
-          { role: "referee", preset: P_PLAYER },
-        ],
-      }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    expect(h.agentsCreate).not.toHaveBeenCalled();
-  });
-
-  it("rejects a preset role mismatch and an unknown preset before any member creation", async () => {
-    const h = createHarness();
-    h.authoring.get.mockResolvedValueOnce({
-      id: "p-player",
-      template: "planner",
-      role: "planner",
-      persona: "",
-      createTime: new Date(0),
-      updateTime: new Date(0),
-    });
-
-    await expect(materializeDefault(h)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    expect(h.agentsCreate).not.toHaveBeenCalled();
-
-    const missing = createHarness();
-    missing.authoring.get.mockRejectedValueOnce(
-      new PresetAuthoringError("NOT_FOUND", 'preset "p-player" not found'),
-    );
-    await expect(materializeDefault(missing)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    expect(missing.agentsCreate).not.toHaveBeenCalled();
-  });
-
-  it("propagates a preset store failure instead of rewriting it to unknown-preset", async () => {
-    const h = createHarness();
-    h.authoring.get.mockRejectedValueOnce(
-      new PresetAuthoringError("INTERNAL", "preset store operation failed: mongo unreachable"),
-    );
-
-    const err = await materializeDefault(h).then(
-      () => undefined,
-      (failure: unknown) => failure,
-    );
-
-    // The store outage keeps its own code and cause chain; only a NOT_FOUND
-    // lookup is the unknown-preset INVALID_ARGUMENT case.
-    expect(err).toBeInstanceOf(PresetAuthoringError);
-    expect((err as PresetAuthoringError).code).toBe("INTERNAL");
-    expect(h.agentsCreate).not.toHaveBeenCalled();
-  });
-
-  it("rolls the whole materialization back when a member setup fails, then retries cleanly (no half-materialized team)", async () => {
-    const h = createHarness();
-    h.loadPlannerMemory.mockRejectedValueOnce(new Error("memory unavailable"));
-
-    await expect(materializeDefault(h)).rejects.toThrow("memory unavailable");
-    const player = member(h, PLAYER_ID);
-    expect(player.handle.dispose).toHaveBeenCalledTimes(1);
-    expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
-    try {
-      h.sessions.getTeam(S1);
-    } catch (err) {
-      expect((err as TeamSessionError).code).toBe("NOT_FOUND");
-    }
-
-    // Retry with the seam repaired materializes from scratch and rests.
-    await materializeDefault(h);
-    expect(h.sessions.getTeam(S1).name).toBe(`${S1}/team`);
-    expect(member(h, PLANNER_ID).followups).toHaveLength(0);
-  });
-
-  it("refreshes in place: old members released, history cleared, create_time preserved", async () => {
-    const h = createHarness();
-    const first = await materializeDefault(h);
-    const oldPlanner = member(h, PLANNER_ID);
+    await harness.sessions.materialize(S1, { preset: P1, persona: "old persona" });
     const stream = fakeStream();
-    h.sessions.send(S1, "first", stream);
+    harness.sessions.send(S1, "first message", stream);
     await flush();
-    expect(oldPlanner.followups).toHaveLength(1);
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
+    expect(stream.ended).toBe(false);
 
-    const second = await h.sessions.materialize(S1, { members: defaultMembers() });
+    // Re-materialize with an unchanged configuration: the in-flight turn is
+    // aborted and the agent is disposed and rebuilt regardless (refresh).
+    const view = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      persona: "old persona",
+    })) as { preset: string };
+    expect(view.preset).toBe(P1);
+    expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    expect(harness.agentsCreate).toHaveBeenLastCalledWith({
+      sessionId: S1,
+      agentOptions: { provider: "glm-responses", model: "glm-5.3", persona: "old persona" },
+    });
 
-    expect(oldPlanner.handle.dispose).toHaveBeenCalledTimes(1);
-    expect(second.createTime).toBe(first.createTime);
-    expect(second.updateTime.getTime()).toBeGreaterThanOrEqual(first.updateTime.getTime());
-    // The old lifecycle's stream learned the ABORTED terminal frame and ended.
-    expect(stream.events.some((event) => event.turnEnd?.status === "TURN_STATUS_ABORTED")).toBe(true);
+    // The in-flight stream received exactly one terminal ABORTED frame.
     expect(stream.ended).toBe(true);
-    // Fresh lifecycle: projections restart empty.
-    expect(h.sessions.listTeamMessages(S1)).toEqual([]);
-  });
-});
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "turnEnd"]);
+    expect(stream.events[stream.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
 
-describe("TeamSessions planner memory wiring (T021)", () => {
-  it("prefetches the planner snapshot through the composed ctx.plannerMemory.load", async () => {
-    const composedLoad = vi.fn(async () => {});
-    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
-
-    await materializeDefault(h);
-
-    // Only the planner member prefetches; the binding passes the planner's
-    // agent-scoped context and the (template, session ID) scope key — the ID
-    // half, NOT the full session resource name (the memory client builds
-    // `templates/{template}/sessions/{session}` from these halves; T023 memoryScope wiring (specs/059-agent-v2-team-mode/tasks.md)
-    // caught the doubled-prefix wiring).
-    expect(composedLoad).toHaveBeenCalledTimes(1);
-    const planner = member(h, PLANNER_ID);
-    expect(composedLoad.mock.calls[0]?.[0]).toBe(planner.ctx);
-    expect(composedLoad.mock.calls[0]?.[1]).toEqual({
-      template: "saolei",
-      session: "s1",
-    });
+    // The new entry is clean: history restarts empty.
+    harness.agentsGet.mockReturnValue(second);
+    expect(await harness.sessions.listMessages(S1)).toEqual([]);
   });
 
-  it("rolls the whole materialization back when the composed load rejects (no half-materialized team)", async () => {
-    const composedLoad = vi.fn(async () => {
-      throw new Error("memory service unreachable");
-    });
-    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+  it("aborts queued messages when re-materializing mid-queue", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    harness.agentsCreate
+      .mockResolvedValueOnce(firstHandle)
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
 
-    await expect(materializeDefault(h)).rejects.toThrow("memory service unreachable");
-    const player = member(h, PLAYER_ID);
-    expect(player.handle.dispose).toHaveBeenCalledTimes(1);
-    expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
-    // The team never registered: the rollback is complete.
-    expect(h.teamRegister).not.toHaveBeenCalled();
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    const inFlight = fakeStream();
+    harness.sessions.send(S1, "in flight", inFlight);
+    await flush();
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
 
-    // Retry with the storage reachable materializes from scratch.
-    composedLoad.mockImplementation(async () => {});
-    await materializeDefault(h);
-    expect(h.sessions.getTeam(S1).name).toBe(`${S1}/team`);
-    expect(composedLoad).toHaveBeenCalledTimes(2);
+    const queued = fakeStream();
+    harness.sessions.send(S1, "queued", queued);
+    await flush();
+    expect(queued.events.map(payloadOf)).toEqual(["queued"]);
+
+    harness.agentsGet.mockReturnValue(second);
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+
+    expect(queued.ended).toBe(true);
+    expect(queued.events[queued.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
+    expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it("fails loud when neither the composed service nor the test override is present", async () => {
-    const h = createHarness({ omitPlannerMemory: true });
+  it("preserves create_time across re-materialization and refreshes update_time", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    harness.agentsCreate
+      .mockResolvedValueOnce(fakeHandle(first))
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
 
-    await expect(materializeDefault(h)).rejects.toThrow(/ctx\.plannerMemory/);
-    expect(h.agentsCreate).not.toHaveBeenCalled();
+    const firstView = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      persona: "p",
+    })) as { createTime: Date; updateTime: Date };
+    harness.agentsGet.mockReturnValue(second);
+    const secondView = (await harness.sessions.materialize(S1, {
+      preset: P1,
+      persona: "p",
+    })) as { createTime: Date; updateTime: Date };
+
+    expect(secondView.createTime).toBe(firstView.createTime);
+    expect(secondView.updateTime.getTime()).toBeGreaterThanOrEqual(firstView.updateTime.getTime());
   });
-});
 
-describe("TeamSessions.send", () => {
-  it("rejects an unmaterialized session with FAILED_PRECONDITION before any frame", () => {
-    const h = createHarness();
+  it("keeps the settled stream's terminal frame and EOF across a re-materialization", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    harness.agentsCreate
+      .mockResolvedValueOnce(fakeHandle(first))
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
+
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
     const stream = fakeStream();
+    harness.sessions.send(S1, "hello", stream);
+    await flush();
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
+    emit(harness, "session/event", first.session, assistantMessage([{ type: "text", text: "reply" }]));
+    emit(harness, "session/event", first.session, { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    emit(harness, "agent/status", { agent: first, status: "idle" });
+    // Behavioral assertion: once the idle transition has settled the turn, a
+    // re-materialization must leave the client stream with its terminal
+    // turn_end{COMPLETED} frame AND the EOF. The narrower interleaving that
+    // motivated the unconditional end() in runTurn's finally (teardown
+    // landing between the terminal frame and the finally) is not
+    // constructible in this harness — the runner always drains before the
+    // teardown's microtasks here — and stays a known test blind spot; the
+    // unconditional end() itself is the guard.
+    harness.agentsGet.mockReturnValue(second);
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    await flush();
 
-    expect(() => h.sessions.send(S1, "hello", stream)).toThrow(TeamSessionError);
+    const payloads = stream.events.map(payloadOf);
+    expect(payloads).toEqual(["turnStart", "turnEnd"]);
+    expect(stream.events[payloads.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
+    expect(stream.ended).toBe(true);
+  });
+
+  it("serializes concurrent materializations of one session", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    const secondHandle = fakeHandle(second);
+    let resolveCreate: ((handle: AgentHandle) => void) | undefined;
+    harness.agentsCreate.mockImplementation(
+      () =>
+        new Promise<AgentHandle>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    const jobOne = harness.sessions.materialize(S1, { preset: P1, persona: "one" });
+    await flush();
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+
+    // The second materialization joins the per-session chain: no second
+    // create fires while the first one is still in flight.
+    const jobTwo = harness.sessions.materialize(S1, { preset: P1, persona: "two" });
+    await flush();
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+
+    resolveCreate?.(firstHandle);
+    await flush();
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    resolveCreate?.(secondHandle);
+    await Promise.all([jobOne, jobTwo]);
+
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
+    expect(secondHandle.dispose).not.toHaveBeenCalled();
+  });
+});
+
+describe("AgentSessions.send", () => {
+  it("streams mapped block events and closes with turn_end{COMPLETED} carrying usage", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    const stream = fakeStream();
+    harness.sessions.send(S1, "hello", stream);
+    await driveTurn(harness, agent, "Hi there!");
+
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+    const payloads = stream.events.map(payloadOf);
+    // The turn's first frame is turn_start (contract §3-2), then the mapped
+    // block frames, then the single terminal turn_end.
+    expect(payloads).toEqual(["turnStart", "blockStart", "delta", "blockEnd", "turnEnd"]);
+    expect(payloads[0]).toBe("turnStart");
+    expect(stream.events[0]?.turnId).toBe(stream.events[4]?.turnId);
+    expect(stream.events[2]?.delta?.text).toBe("Hi there!");
+    expect(stream.events[4]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
+    expect(stream.events[4]?.turnEnd?.usage?.inputTokens).toBe("3");
+    expect(stream.ended).toBe(true);
+
+    const followup = (agent.followup as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(followup.content).toEqual([{ type: "text", text: "hello" }]);
+    expect(followup.source).toEqual({ kind: "user" });
+  });
+
+  it("rejects an unmaterialized session with FAILED_PRECONDITION before any frame", () => {
+    const harness = createHarness();
+
+    const stream = fakeStream();
+    expect(() => harness.sessions.send(S1, "hello", stream)).toThrow(AgentSessionError);
     try {
-      h.sessions.send(S1, "hello", stream);
+      harness.sessions.send(S1, "hello", stream);
     } catch (err) {
-      expect((err as TeamSessionError).code).toBe("FAILED_PRECONDITION");
+      expect((err as AgentSessionError).code).toBe("FAILED_PRECONDITION");
+      expect((err as Error).message).toContain("UpdateAgent");
     }
     expect(stream.events).toEqual([]);
-    expect(h.agentsCreate).not.toHaveBeenCalled();
-  });
-
-  it("fixes the user message into the merged sequence, drives planner first, and ends the stream at team quiescence", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
-    const player = member(h, PLAYER_ID);
-
-    const stream = fakeStream();
-    h.sessions.send(S1, "请开始扫雷", stream);
-    await flush();
-
-    // Initial activation = planner; the user message is the drive input.
-    expect(planner.followups.map(messageText)).toEqual(["请开始扫雷"]);
-    // Acceptance frame: team_message{member=USER} with seq 1.
-    const userFrame = stream.events.find((event) => event.teamMessage !== undefined);
-    expect(userFrame?.teamMessage?.member).toBe("user");
-    expect(userFrame?.teamMessage?.seq).toBe("1");
     expect(stream.ended).toBe(false);
-
-    // Planner produces output and quiesces; the pump switches to the player,
-    // whose relay set is empty — the team reaches its static point and the
-    // stream ends (no synthesized input).
-    driveTextTurn(h, planner, "开局策略：先点中心");
-    await flush();
-
-    expect(player.followups).toHaveLength(0);
-    expect(stream.ended).toBe(true);
-    const entries = h.sessions.listTeamMessages(S1);
-    expect(entries.map((entry) => entry.member)).toEqual(["user", "planner"]);
-    expect(entries[1]?.message.blocks[0]?.text?.content).toBe("开局策略：先点中心");
-    // Every member event frame is member-labelled.
-    for (const event of stream.events) {
-      if (event.teamMessage === undefined && event.queued === undefined) {
-        expect(event.member).toBe("planner");
-      }
-    }
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
   });
 
-  it("queues a mid-turn send as this stream's first frame and fans the rest out to every active stream", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
+  it("treats a stale entry (agent gone from the registry) as unmaterialized", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    // The loop-level reload disposed the agent behind our record.
+    harness.agentsGet.mockReturnValue(undefined);
+    expect(() => harness.sessions.send(S1, "hello", fakeStream())).toThrow(AgentSessionError);
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the live agent for the same session without re-creating", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
     const first = fakeStream();
-    h.sessions.send(S1, "first", first);
-    await flush();
-    expect(planner.followups).toHaveLength(1);
+    harness.sessions.send(S1, "one", first);
+    await driveTurn(harness, agent, "first reply");
 
     const second = fakeStream();
-    h.sessions.send(S1, "second", second);
+    harness.sessions.send(S1, "two", second);
+    await driveTurn(harness, agent, "second reply");
+
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
+    expect(agent.followup).toHaveBeenCalledTimes(2);
+    expect(first.events).toHaveLength(5);
+    expect(second.events).toHaveLength(5);
+  });
+
+  it("queues a mid-turn send with queued{position} and auto-runs it at turn end", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    const first = fakeStream();
+    harness.sessions.send(S1, "first", first);
+
+    // Turn one is mid-flight (no idle yet): the second send must enqueue.
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+
+    const second = fakeStream();
+    harness.sessions.send(S1, "second", second);
     await flush();
 
-    expect(second.events.map(payloadOf)[0]).toBe("queued");
+    expect(second.events.map(payloadOf)).toEqual(["queued"]);
     expect(second.events[0]?.queued?.position).toBe(1);
-    // The user entry frame reaches both streams.
-    expect(first.events.some((event) => event.teamMessage?.seq === "2")).toBe(true);
-    expect(second.events.some((event) => event.teamMessage?.seq === "2")).toBe(true);
+    expect(second.ended).toBe(false);
+    expect(agent.followup).toHaveBeenCalledTimes(1);
 
-    // Settling both turns drains the queue (queue digestion) and quiesces.
-    driveTextTurn(h, planner, "reply one");
-    await flush();
-    driveTextTurn(h, planner, "reply two");
+    // Settling turn one auto-runs the queued message on the same stream.
+    emit(harness, "session/event", agent.session, assistantMessage([{ type: "text", text: "reply one" }]));
+    emit(harness, "session/event", agent.session, { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    emit(harness, "agent/status", { agent, status: "idle" });
     await flush();
 
-    expect(planner.followups).toHaveLength(2);
+    expect(agent.followup).toHaveBeenCalledTimes(2);
+    const secondFollowup = (agent.followup as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    expect(secondFollowup.content).toEqual([{ type: "text", text: "second" }]);
+    expect(first.events.map(payloadOf)).toEqual(["turnStart", "turnEnd"]);
     expect(first.ended).toBe(true);
+
+    await driveTurn(harness, agent, "reply two");
+    const secondPayloads = second.events.map(payloadOf);
+    // The queued stream: queued → (takeover) turn_start first → block frames
+    // → turn_end; the queued frame and the turn share one minted turn id.
+    expect(secondPayloads).toEqual(["queued", "turnStart", "blockStart", "delta", "blockEnd", "turnEnd"]);
+    expect(secondPayloads[1]).toBe("turnStart");
+    expect(second.events.every((event) => event.turnId === second.events[0]?.turnId)).toBe(true);
     expect(second.ended).toBe(true);
-    expect(h.sessions.listTeamMessages(S1).map((entry) => entry.member)).toEqual([
-      "user",
-      "user",
-      "planner",
-      "planner",
-    ]);
   });
 
-  it("detaching a stream on client disconnect does not cancel the orchestration", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
-    const stream = fakeStream();
+  it("keeps distinct sessions independent: concurrent turns do not block each other", async () => {
+    const harness = createHarness();
+    const agentA = fakeAgent("templates/saolei/sessions/a");
+    const agentB = fakeAgent("templates/saolei/sessions/b");
+    await materializeSession(harness, "templates/saolei/sessions/a", agentA);
+    await materializeSession(harness, "templates/saolei/sessions/b", agentB);
+    // live-entry re-validation resolves each session to its own agent.
+    harness.agentsGet.mockImplementation((id: unknown) =>
+      id === "templates/saolei/sessions/a" ? agentA : agentB,
+    );
 
-    const detach = h.sessions.send(S1, "hello", stream);
-    await flush();
-    expect(planner.followups).toHaveLength(1);
+    const streamA = fakeStream();
+    const streamB = fakeStream();
+    harness.sessions.send("templates/saolei/sessions/a", "to a", streamA);
+    harness.sessions.send("templates/saolei/sessions/b", "to b", streamB);
 
-    detach();
-    await driveTextTurn(h, planner, "reply");
-    await flush();
+    await driveTurn(harness, agentA, "reply a");
+    expect(streamA.events.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "blockEnd", "turnEnd"]);
+    // B's stream holds only the host-emitted turn_start: its turn is open
+    // but no dsh event has arrived yet — the sessions are independent.
+    expect(streamB.events.map(payloadOf)).toEqual(["turnStart"]);
 
-    // The disconnecting subscriber saw no frames after detach, and no
-    // agent.cancel was ever issued (cancel only happens via the Cancel RPC).
-    expect(stream.ended).toBe(false);
-    expect(planner.cancels).toHaveLength(0);
-  });
-});
-
-describe("TeamSessions saolei announcement projection (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4)", () => {
-  /** Drive the team to the player's terminal turn (planner strategy → player). */
-  async function driveToTerminalTurn(h: Harness, stream: StreamRecorder): Promise<void> {
-    h.sessions.send(S1, "请开始", stream);
-    await flush();
-    const planner = member(h, PLANNER_ID);
-    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "开局策略")]);
-    driveTextTurn(h, planner, "开局策略");
-    await flush();
-    h.game.current = winnerRecord();
-    driveTextTurn(h, member(h, PLAYER_ID), "已点击 (0,0)");
-    await flush();
-  }
-
-  it("projects the announcement into the merge history and fans out its team_message frame", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const stream = fakeStream();
-
-    await driveToTerminalTurn(h, stream);
-
-    const statsText =
-      "本局游戏结束：胜利。\n本局共执行 5 个操作：click 4 次、flag 1 次、chord 0 次。";
-    const announcement = h.sessions
-      .listTeamMessages(S1)
-      .find((entry) => entry.member === "saolei");
-    expect(announcement?.message.role).toBe("ROLE_AGENT");
-    expect(announcement?.message.blocks).toEqual([{ text: { content: statsText } }]);
-
-    // The live team_message frame carries the same entry (seq + message
-    // object), so ListTeamMessages and the stream cannot diverge.
-    const frame = stream.events.find((event) => event.teamMessage?.member === "saolei");
-    expect(frame?.teamMessage?.seq).toBe(String(announcement?.seq));
-    expect(frame?.teamMessage?.message).toBe(announcement?.message);
+    await driveTurn(harness, agentB, "reply b");
+    expect(streamB.events.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "blockEnd", "turnEnd"]);
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(2);
   });
 
-  it("detaches the announcer subscription with the entry teardown (refresh)", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const old = entrySeam(h, S1);
-    expect(old.announcer).toBeDefined();
+  it("maps a model failure to turn_end{ERROR} and keeps the session reusable", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    // Refresh tears the old generation down; its subscription detaches with
-    // the entry, so a late announcement cannot enter that history.
-    await h.sessions.materialize(S1, { members: defaultMembers() });
-
-    old.announcer?.announce("旧生命周期播报");
-    expect(old.history.listTeamMessages()).toEqual([]);
-    // The new generation's projections start empty.
-    expect(h.sessions.listTeamMessages(S1)).toEqual([]);
-  });
-});
-
-describe("TeamSessions.cancel", () => {
-  it("terminates the in-flight turn with CANCELED, preserves history, and ends streams at the static point", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
-
-    const stream = fakeStream();
-    h.sessions.send(S1, "first", stream);
+    const failed = fakeStream();
+    harness.sessions.send(S1, "hello", failed);
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    const boom = { message: "fake-llm unreachable", code: "GLM_TRANSPORT" };
+    emit(harness, "agent/error", { agent, turn: 1, step: 1, error: boom });
+    emit(harness, "session/event", agent.session, {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "error", error: boom } },
+    });
+    emit(harness, "agent/status", { agent, status: "idle" });
     await flush();
 
-    h.sessions.cancel(S1);
-    await flush();
+    expect(failed.events.map(payloadOf)).toEqual(["turnStart", "turnEnd"]);
+    const end = failed.events[failed.events.length - 1]?.turnEnd;
+    expect(end?.status).toBe("TURN_STATUS_ERROR");
+    expect(end?.error?.code).toBe("GLM_TRANSPORT");
+    expect(end?.error?.message).toBe("fake-llm unreachable");
+    expect(failed.ended).toBe(true);
 
-    expect(planner.cancels).toEqual([{ kind: "user" }]);
-    const end = stream.events.find((event) => event.turnEnd !== undefined);
-    expect(end?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
-    expect(stream.ended).toBe(true);
-    // The message stays fixed in the merged sequence (enqueue-time fixation).
-    expect(h.sessions.listTeamMessages(S1).map((entry) => entry.member)).toEqual(["user"]);
-
-    // Idempotent no-op while paused.
-    expect(() => h.sessions.cancel(S1)).not.toThrow();
-    // A new send resumes the loop with the current activation.
-    const resumed = fakeStream();
-    h.sessions.send(S1, "resume", resumed);
-    await flush();
-    expect(planner.followups).toHaveLength(2);
-    await driveTextTurn(h, planner, "reply");
-    await flush();
-    expect(resumed.ended).toBe(true);
+    // Edge case recovery: the next turn on the same session succeeds.
+    const recovered = fakeStream();
+    harness.sessions.send(S1, "hello again", recovered);
+    await driveTurn(harness, agent, "back online");
+    expect(recovered.events[recovered.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects an unmaterialized session with FAILED_PRECONDITION", () => {
-    const h = createHarness();
-    expect(() => h.sessions.cancel(S1)).toThrow(TeamSessionError);
-    expect(h.agentsCreate).not.toHaveBeenCalled();
-  });
-});
+  it("appends user messages to history at enqueue time (also for queued ones)", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-describe("TeamSessions active member projection (FR-008)", () => {
-  it("serves planner at rest, the in-flight driving member, and the next input's owner", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
-    const player = member(h, PLAYER_ID);
-
-    // Materialized and quiescent: the initial activation is planner.
-    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
-
-    // The first send drives the planner: the merged value is the driving
-    // member (the activation equals it while a turn is in flight).
-    const stream = fakeStream();
-    h.sessions.send(S1, "请开始", stream);
+    const first = fakeStream();
+    harness.sessions.send(S1, "first", first);
     await flush();
-    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
-
-    // The planner relays a strategy; its quiescence structurally drives the
-    // player and both the driving member and the activation follow.
-    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "开局策略")]);
-    driveTextTurn(h, planner, "开局策略");
-    await flush();
-    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
-
-    // The player quiesces without a terminal record: at rest the next input
-    // still belongs to the player.
-    driveTextTurn(h, player, "已点击 (0,0)");
-    await flush();
-    expect(stream.ended).toBe(true);
-    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
-  });
-
-  it("keeps the activation when the in-flight turn is canceled", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
-    const player = member(h, PLAYER_ID);
-
-    // Cancel mid-planner-turn: the planner stays the next input's owner.
-    h.sessions.send(S1, "first", fakeStream());
-    await flush();
-    h.sessions.cancel(S1);
-    await flush();
-    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
-
-    // A resumed send drives the planner again; its relay moves the team to
-    // the player, then a mid-player-turn cancel keeps the player activation.
-    const resumed = fakeStream();
-    h.sessions.send(S1, "resume", resumed);
-    await flush();
-    expect(planner.followups.map(messageText)).toEqual(["first", "resume"]);
-    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "策略")]);
-    driveTextTurn(h, planner, "策略");
-    await flush();
-    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
-
-    h.sessions.cancel(S1);
-    await flush();
-    expect(h.sessions.getTeam(S1).activeMember).toBe("player");
-
-    // The resumed send is handled by the kept activation.
-    h.sessions.send(S1, "继续", fakeStream());
-    await flush();
-    expect(player.followups.map(messageText)).toEqual(["策略", "继续"]);
-  });
-});
-
-describe("TeamSessions orchestration failure", () => {
-  it("breaks out of a paused, failed orchestration with a stream error instead of spinning or ending cleanly", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
-
-    // The first send starts a planner turn; two more sends queue behind it.
-    const stream = fakeStream();
-    h.sessions.send(S1, "first", stream);
-    await flush();
-    expect(planner.followups).toHaveLength(1);
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
 
     const second = fakeStream();
-    h.sessions.send(S1, "second", second);
-    const third = fakeStream();
-    h.sessions.send(S1, "third", third);
-    await flush();
-    expect(second.events.map(payloadOf)[0]).toBe("queued");
-
-    // The second drive fails while a third message still waits in the queue:
-    // the orchestrator pauses with a non-empty queue, so the old watcher's
-    // `whenQuiescent()` resolved immediately and spun the microtask queue.
-    (planner.agent.followup as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
-      throw new Error("drive exploded");
-    });
-    planner.settle();
+    harness.sessions.send(S1, "second", second);
     await flush();
 
-    // The failure is surfaced, not disguised as a natural stop: every active
-    // stream receives the INTERNAL failure and the injected logger records it.
-    expect(stream.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
-    expect(second.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
-    expect(third.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
-    expect(stream.ended).toBe(false);
-    expect(h.loggerError).toHaveBeenCalledTimes(1);
-    expect(h.loggerError.mock.calls[0]?.[1]).toMatchObject({
-      session: S1,
-      member: "planner",
-      error: "drive exploded",
-    });
-
-    // A later send lifts the pause and drains the held queue (orchestrator
-    // retry semantics), then the team quiesces and the new stream ends.
-    const resumed = fakeStream();
-    h.sessions.send(S1, "resume", resumed);
-    await flush();
-    // The held "third" message retries first (the failed attempt consumed
-    // nothing from the FIFO beyond its own shift).
-    expect(planner.followups).toHaveLength(2);
-    planner.settle();
-    await flush();
-    expect(planner.followups).toHaveLength(3);
-    planner.settle();
-    await flush();
-    expect(resumed.failures).toEqual([]);
-    expect(resumed.ended).toBe(true);
+    const history = await harness.sessions.listMessages(S1);
+    expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_USER"]);
+    expect(history[0]?.blocks[0]?.text?.content).toBe("first");
+    expect(history[1]?.blocks[0]?.text?.content).toBe("second");
   });
-});
 
-describe("TeamSessions member-turn failure", () => {
-  it("ends the stream cleanly with the turn_end ERROR frame and re-drives the retained member on the next send", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
+  it("returns agent replies in history from assistant/message finality", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    // The first send starts the planner turn.
     const stream = fakeStream();
-    h.sessions.send(S1, "请开始扫雷", stream);
+    harness.sessions.send(S1, "hello", stream);
     await flush();
-    expect(planner.followups.map(messageText)).toEqual(["请开始扫雷"]);
-
-    // The turn fails at its active boundary (agent/error) and then idles.
-    planner.failCurrentTurn("SERVER");
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+    emit(harness, "session/event", agent.session, assistantMessage([
+      { type: "reasoning", text: "thinking" },
+      { type: "text", text: "answer" },
+    ], { inputTokens: 1, outputTokens: 2 }));
+    emit(harness, "session/event", agent.session, { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    emit(harness, "agent/status", { agent, status: "idle" });
     await flush();
 
-    // A member-turn failure settles the stream cleanly — the turn_end ERROR
-    // frame is on the stream (sunk by the member history collector before
-    // the watcher's microtask) and no INTERNAL failure is raised
-    // (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
-    expect(stream.failures).toEqual([]);
-    expect(stream.ended).toBe(true);
-    const ends = stream.events.filter((event) => event.turnEnd !== undefined);
-    expect(ends).toHaveLength(1);
-    expect(ends[0]?.turnEnd).toMatchObject({
-      status: "TURN_STATUS_ERROR",
-      error: { code: "SERVER", message: "injected SERVER failure" },
-    });
-    expect(stream.events[stream.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_ERROR");
-
-    // FR-012: exactly one structured failure line with the full field set.
-    expect(h.loggerError).toHaveBeenCalledTimes(1);
-    expect(h.loggerError.mock.calls[0]?.[1]).toEqual({
-      session: S1,
-      phase: "planning",
-      member: "planner",
-      code: "SERVER",
-      error: "injected SERVER failure",
-    });
-    // FR-009: the activation is retained — planner owns the next input.
-    expect(h.sessions.getTeam(S1).activeMember).toBe("planner");
-
-    // The next send re-drives the same member; the recovered turn answers
-    // normally and the new stream ends at the team's static point.
-    const resumed = fakeStream();
-    h.sessions.send(S1, "重试", resumed);
-    await flush();
-    expect(planner.followups.map(messageText)).toEqual(["请开始扫雷", "重试"]);
-    driveTextTurn(h, planner, "规划完成");
-    await flush();
-    expect(resumed.failures).toEqual([]);
-    expect(resumed.ended).toBe(true);
-    const completed = resumed.events.filter((event) => event.turnEnd !== undefined);
-    expect(completed).toHaveLength(1);
-    expect(completed[0]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
+    const history = await harness.sessions.listMessages(S1);
+    expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_AGENT"]);
+    const agentBlocks = history[1]?.blocks ?? [];
+    expect(agentBlocks[0]?.think?.content).toBe("thinking");
+    expect(agentBlocks[1]?.text?.content).toBe("answer");
+    expect(history[0]?.messageId).toBeDefined();
+    expect(history[1]?.messageId).not.toBe(history[0]?.messageId);
   });
 });
 
-describe("TeamSessions projections", () => {
-  it("projects the member view with sender annotations and the team view with member states", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const planner = member(h, PLANNER_ID);
+describe("AgentSessions.getAgent / listMessages on unmaterialized sessions", () => {
+  it("answers NOT_FOUND for GetAgent and ListAgentMessages and never creates", async () => {
+    const harness = createHarness();
 
-    // The planner's log records a relayed player broadcast and its own reply.
-    // A `user/message` event stores the complete UserMessage as its data.
-    emit(h, "session/event", planner.agent.session, {
-      type: "user/message",
-      data: {
-        id: "m-relay",
-        content: [{ type: "text", text: "[player] 已点击 (0,0)" }],
-        source: { kind: "team-broadcast", role: "player" },
-      },
-    });
-    driveTextTurn(h, planner, "复盘完成");
+    expect(() => harness.sessions.getAgent(S1)).toThrow(AgentSessionError);
+    try {
+      harness.sessions.getAgent(S1);
+    } catch (err) {
+      expect((err as AgentSessionError).code).toBe("NOT_FOUND");
+    }
+    await expect(harness.sessions.listMessages(S1)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns the materialized configuration from getAgent", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent, { preset: P1, model: "glm-5.5" });
+
+    const view = harness.sessions.getAgent(S1) as { name: string; preset: string; model: string };
+    expect(view.name).toBe(`${S1}/agent`);
+    expect(view.preset).toBe(P1);
+    expect(view.model).toBe("glm-5.5");
+  });
+});
+
+describe("AgentSessions.cancel", () => {
+  it("cancels the in-flight turn: turn_end{CANCELED} lands synchronously (SC-004 ≤5s) and late dsh events are not forwarded", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    const stream = fakeStream();
+    harness.sessions.send(S1, "hello", stream);
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+    emit(harness, "session/event", agent.session, chunk({ type: "block-start", index: 0, blockType: "text" }));
+    emit(harness, "session/event", agent.session, chunk({ type: "text-delta", index: 0, text: "partial" }));
+
+    // SC-004 (终止后回合停止 ≤5 秒): the CANCELED terminal frame is written
+    // synchronously by the cancel call itself — no wait, let alone five
+    // seconds, passes before the stream holds its terminal frame.
+    harness.sessions.cancel(S1);
+    expect(stream.ended).toBe(true);
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "turnEnd"]);
+    expect(stream.events[stream.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
+    // Cancellation propagates to the dsh driver (LLM stream + in-flight tools).
+    expect(agent.cancel).toHaveBeenCalledWith({ kind: "user" });
+
+    // The collector settled before Agent.cancel: the driver's cancellation
+    // converges to an idle status and late chunks must not re-open the slot.
+    await flush();
+    emit(harness, "session/event", agent.session, chunk({ type: "text-delta", index: 0, text: "late" }));
+    emit(harness, "agent/status", { agent, status: "idle" });
+    await flush();
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "blockStart", "delta", "turnEnd"]);
+  });
+
+  it("lands queued messages on cancel: queue cleared without a turn, history keeps the user messages", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
+
+    const inFlight = fakeStream();
+    harness.sessions.send(S1, "in flight", inFlight);
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
+
+    const queued = fakeStream();
+    harness.sessions.send(S1, "queued", queued);
+    await flush();
+    expect(queued.events.map(payloadOf)).toEqual(["queued"]);
+
+    harness.sessions.cancel(S1);
     await flush();
 
-    const view = h.sessions.listMemberMessages(S1, "planner");
-    expect(view.map((entry) => entry.sender)).toEqual(["player", "planner"]);
-    expect(view[0]?.message.role).toBe("ROLE_USER");
-    expect(view[1]?.message.role).toBe("ROLE_AGENT");
+    // The queued stream learns its message will not run through the existing
+    // turn_end vocabulary and closes; no followup fires for it.
+    expect(queued.ended).toBe(true);
+    expect(queued.events.map(payloadOf)).toEqual(["queued", "turnEnd"]);
+    expect(queued.events[queued.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
+    expect(agent.followup).toHaveBeenCalledTimes(1);
 
-    const teamMember = await h.sessions.getTeamMember(S1, "player");
-    expect(teamMember.role).toBe("player");
-    expect(teamMember.model).toBe(DEFAULT_MODEL);
-    expect(teamMember.preset).toBe(P_PLAYER);
-    expect(teamMember.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
-    // The team snapshot member projection keeps system_prompt empty (the
-    // field is served only by GetTeamMember).
-    expect(h.sessions.getTeam(S1).members.every((entry) => entry.systemPrompt === "")).toBe(true);
-    await expect(h.sessions.getTeamMember(S1, "robot")).rejects.toMatchObject({
-      code: "NOT_FOUND",
-    });
+    // Landing: the user messages (in-flight + queued) stay in history —
+    // enqueue-time appendUser already fixed them (data-model.md §3).
+    const history = await harness.sessions.listMessages(S1);
+    expect(history.map((message) => message.role)).toEqual(["ROLE_USER", "ROLE_USER"]);
+    expect(history[1]?.blocks[0]?.text?.content).toBe("queued");
   });
 
-  it("reads system_prompt off each member instance's assembly surface and follows a refresh", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const oldPlayer = member(h, PLAYER_ID);
+  it("is a no-op success with no in-flight turn and an empty queue", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    const player = await h.sessions.getTeamMember(S1, "player");
-    const planner = await h.sessions.getTeamMember(S1, "planner");
-    expect(player.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
-    expect(planner.systemPrompt).toContain(`system prompt of ${PLANNER_ID}`);
-    expect(oldPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
-
-    // A refresh builds fresh member instances: the read goes through the new
-    // instance's assembly surface (the old handle is never consulted), so the
-    // served content follows the new configuration.
-    await h.sessions.materialize(S1, { members: defaultMembers() });
-    const newPlayer = member(h, PLAYER_ID);
-    expect(newPlayer).not.toBe(oldPlayer);
-    newPlayer.ctx.systemPrompt.assemble.mockResolvedValueOnce({
-      sections: [{ name: "deployment:persona", text: "刷新后的 player persona" }],
-      contexts: [],
-      tools: [],
-      variables: {},
-    });
-
-    const refreshed = await h.sessions.getTeamMember(S1, "player");
-    expect(refreshed.systemPrompt).toContain("刷新后的 player persona");
-    expect(oldPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
-    expect(newPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+    expect(() => harness.sessions.cancel(S1)).not.toThrow();
+    expect(agent.cancel).not.toHaveBeenCalled();
+    expect(agent.followup).not.toHaveBeenCalled();
+    expect((await harness.sessions.listMessages(S1)).map((m) => m.role)).toEqual([]);
   });
 
-  it("propagates a member assembly failure (mapped to INTERNAL at the RPC layer)", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    member(h, PLAYER_ID).ctx.systemPrompt.assemble.mockRejectedValueOnce(
-      new Error("assembly exploded"),
-    );
+  it("accepts a new Send immediately after a cancel (no cooldown, direct turn start)", async () => {
+    const harness = createHarness();
+    const agent = fakeAgent(S1);
+    await materializeSession(harness, S1, agent);
 
-    await expect(h.sessions.getTeamMember(S1, "player")).rejects.toThrow("assembly exploded");
-  });
+    const first = fakeStream();
+    harness.sessions.send(S1, "first", first);
+    await flush();
+    emit(harness, "agent/status", { agent, status: "running" });
+    emit(harness, "session/event", agent.session, { type: "turn/start", data: { turn: 1 } });
 
-  it("re-reads the new generation when a refresh lands mid-read (never a partial prompt)", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const oldPlayer = member(h, PLAYER_ID);
-
-    // Hold the old instance's assembly in flight.
-    let release!: (assembly: PromptAssembly) => void;
-    oldPlayer.ctx.systemPrompt.assemble.mockReturnValueOnce(
-      new Promise<PromptAssembly>((resolve) => {
-        release = resolve;
-      }),
-    );
-    const read = h.sessions.getTeamMember(S1, "player");
+    harness.sessions.cancel(S1);
     await flush();
 
-    // The refresh tears the old entry down and materializes the new instance
-    // while the read is still awaiting the old assembly.
-    await h.sessions.materialize(S1, { members: defaultMembers() });
-    const newPlayer = member(h, PLAYER_ID);
-    expect(newPlayer).not.toBe(oldPlayer);
-
-    // The superseded instance resolves with a global-layers-only prompt: the
-    // disposed scope dropped persona/team/guidance, so serving it would be a
-    // partial result (neither the old nor the new content).
-    release({
-      sections: [{ name: "harness:identity", text: "GLOBAL LAYER ONLY" }],
-      contexts: [],
-      tools: [],
-      variables: {},
-    });
-
-    const result = await read;
-    expect(result.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
-    expect(result.systemPrompt).not.toContain("GLOBAL LAYER ONLY");
-    // The served state also belongs to the new generation.
-    expect(result.model).toBe(DEFAULT_MODEL);
-    expect(oldPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
-    expect(newPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
-  });
-
-  it("retries onto the current generation when the superseded instance's assembly rejects", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const oldPlayer = member(h, PLAYER_ID);
-
-    // The old assembly rejects while a refresh replaces the entry: the
-    // teardown failure belongs to the superseded generation.
-    let rejectAssembly!: (err: Error) => void;
-    oldPlayer.ctx.systemPrompt.assemble.mockReturnValueOnce(
-      new Promise<PromptAssembly>((_resolve, reject) => {
-        rejectAssembly = reject;
-      }),
-    );
-    const read = h.sessions.getTeamMember(S1, "player");
+    // busy was reset: the next send starts a turn directly instead of
+    // receiving a queued frame.
+    const next = fakeStream();
+    harness.sessions.send(S1, "next", next);
     await flush();
-    await h.sessions.materialize(S1, { members: defaultMembers() });
-    const newPlayer = member(h, PLAYER_ID);
+    expect(next.events.map(payloadOf)).toEqual(["turnStart"]);
+    expect(agent.followup).toHaveBeenCalledTimes(2);
 
-    rejectAssembly(new Error("scope unwound mid-assembly"));
-    const result = await read;
-
-    expect(result.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
-    expect(newPlayer.ctx.systemPrompt.assemble).toHaveBeenCalledTimes(1);
+    await driveTurn(harness, agent, "recovered");
+    const payloads = next.events.map(payloadOf);
+    expect(payloads[payloads.length - 1]).toBe("turnEnd");
+    expect(next.events[next.events.length - 1]?.turnEnd?.status).toBe("TURN_STATUS_COMPLETED");
+    expect(harness.agentsCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("maps a mid-read teardown without replacement to NOT_FOUND", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const player = member(h, PLAYER_ID);
+  it("cancel racing a re-materialization leaves no half-cleaned state", async () => {
+    const harness = createHarness();
+    const first = fakeAgent(S1);
+    const second = fakeAgent(S1);
+    const firstHandle = fakeHandle(first);
+    harness.agentsCreate
+      .mockResolvedValueOnce(firstHandle)
+      .mockResolvedValueOnce(fakeHandle(second));
+    harness.agentsGet.mockReturnValue(first);
 
-    let release!: (assembly: PromptAssembly) => void;
-    player.ctx.systemPrompt.assemble.mockReturnValueOnce(
-      new Promise<PromptAssembly>((resolve) => {
-        release = resolve;
-      }),
-    );
-    const read = h.sessions.getTeamMember(S1, "player");
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
+    const stream = fakeStream();
+    harness.sessions.send(S1, "in flight", stream);
+    await flush();
+    emit(harness, "agent/status", { agent: first, status: "running" });
+    emit(harness, "session/event", first.session, { type: "turn/start", data: { turn: 1 } });
+
+    // Cancel first, then re-materialize: the cancel already settled the
+    // in-flight turn, so the teardown finds nothing in flight and adds no
+    // second terminal frame.
+    harness.sessions.cancel(S1);
+    harness.agentsGet.mockReturnValue(second);
+    await harness.sessions.materialize(S1, { preset: P1, persona: "p" });
     await flush();
 
-    // The team is torn down with no replacement; the in-flight read must not
-    // serve the (partial) superseded result.
-    await h.sessions.shutdown();
-    release({
-      sections: [{ name: "harness:identity", text: "GLOBAL LAYER ONLY" }],
-      contexts: [],
-      tools: [],
-      variables: {},
-    });
+    expect(stream.ended).toBe(true);
+    expect(stream.events.map(payloadOf)).toEqual(["turnStart", "turnEnd"]);
+    expect(stream.events[1]?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
+    expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
 
-    await expect(read).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // The new entry is clean; cancel resolves against it as a no-op.
+    harness.sessions.cancel(S1);
+    expect(await harness.sessions.listMessages(S1)).toEqual([]);
   });
 
-  it("shutdown disposes every member and the composition fiber last", async () => {
-    const h = createHarness();
-    await materializeDefault(h);
-    const player = member(h, PLAYER_ID);
-    const planner = member(h, PLANNER_ID);
+  it("fails FAILED_PRECONDITION on an unmaterialized session and never creates", () => {
+    const harness = createHarness();
+
+    expect(() => harness.sessions.cancel(S1)).toThrow(AgentSessionError);
+    try {
+      harness.sessions.cancel(S1);
+    } catch (err) {
+      expect((err as AgentSessionError).code).toBe("FAILED_PRECONDITION");
+    }
+    expect(harness.agentsCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("AgentSessions.shutdown", () => {
+  it("aborts in-flight turns during shutdown and disposes the fiber last", async () => {
+    const harness = createHarness();
+    const agentA = fakeAgent("templates/saolei/sessions/a");
+    const agentB = fakeAgent("templates/saolei/sessions/b");
+    const handleA = fakeHandle(agentA);
+    const handleB = fakeHandle(agentB);
+    harness.agentsCreate.mockResolvedValueOnce(handleA).mockResolvedValueOnce(handleB);
+    await harness.sessions.materialize("templates/saolei/sessions/a", { preset: P1, persona: "p" });
+    await harness.sessions.materialize("templates/saolei/sessions/b", { preset: P1, persona: "p" });
+    harness.agentsGet.mockImplementation((id: unknown) =>
+      id === "templates/saolei/sessions/a" ? agentA : agentB,
+    );
+
+    const streamA = fakeStream();
+    const streamB = fakeStream();
+    harness.sessions.send("templates/saolei/sessions/a", "a", streamA);
+    harness.sessions.send("templates/saolei/sessions/b", "b", streamB);
+    await flush();
+
     const order: string[] = [];
-    (player.handle.dispose as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      order.push("player");
+    (handleA.dispose as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      order.push("dispose a");
     });
-    (planner.handle.dispose as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      order.push("planner");
+    (handleB.dispose as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      order.push("dispose b");
     });
-    h.fiberDispose.mockImplementation(async () => {
+    harness.fiberDispose.mockImplementation(async () => {
       order.push("fiber");
     });
 
-    await h.sessions.shutdown();
-
-    expect(order).toContain("player");
-    expect(order).toContain("planner");
-    expect(order[order.length - 1]).toBe("fiber");
-    expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
+    await harness.sessions.shutdown();
+    expect(order).toEqual(["dispose a", "dispose b", "fiber"]);
+    expect(streamA.ended && streamB.ended).toBe(true);
   });
 });

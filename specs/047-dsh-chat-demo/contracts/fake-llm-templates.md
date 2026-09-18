@@ -32,31 +32,27 @@ messages:
 | `name` | string | 是 | 唯一标识（同文件内唯一；日志/测试引用锚点） |
 | `keywords` | string[] | 是 | 关键词集：**任一**命中（大小写不敏感子串）**最后一条 user 消息**即通过该条件；空数组 = 该模板为**纯兜底模板**（仅限非多轮条件模板声明：不参与关键词优先级匹配，只作为 §3.3 兜底候选）；多轮条件模板声明空数组 = 关键词条件恒通过 |
 | `history_keywords` | string[] | 否 | 历史关键词集：**全部**须命中（大小写不敏感子串）**除最后一条 user 消息外**的任意历史消息（user 或 assistant 均可） |
-| `system_keywords` | string[] | 否 | system 关键词集：设 `S` = 请求 `messages[]` 中 `role == "system"` 的消息全文拼接（换行分隔，无 system 消息时为空串）；**全部**须命中（大小写不敏感子串）`S`。未声明（或为空）= 不参与 system 维度判定 |
 | `min_turn` | int | 否（默认 1） | 请求中 user 消息总数 ≥ min_turn 才通过 |
 | `text` | string | 是 | 确定性回复全文（SSE content deltas 的拼接目标） |
 | `reasoning` | string | 否 | 保留字段（chat-completions 路径不发送；schema 与母本兼容，便于未来演进） |
 
 ## 3. 匹配语义
 
-输入：请求 `messages[]`。设 `U = user 角色消息按序集合`，`last = U 的末条`，`history = messages 中除 last 外的全部消息`，`S = system 角色消息全文的换行拼接`，`turn = len(U)`。
+输入：请求 `messages[]`。设 `U = user 角色消息按序集合`，`last = U 的末条`，`history = messages 中除 last 外的全部消息`，`turn = len(U)`。
 
 模板 T 命中当且仅当：
 
 1. `keywords(T)` 非空时 ∃ k ∈ keywords(T): k ⊆ last.content（不区分大小写）；`keywords(T)` 为空的多轮条件模板 = 关键词条件恒通过；`keywords(T)` 为空的非多轮条件模板不参与本优先级，仅作 §3.3 兜底候选；
 2. `history_keywords(T)` 未声明 **或** ∀ h ∈ history_keywords(T): h ⊆ history 中某条消息的 content（不区分大小写）；
-3. `system_keywords(T)` 未声明 **或** ∀ k ∈ system_keywords(T): k ⊆ S（不区分大小写）；
-4. `turn ≥ min_turn(T)`（未声明时默认 1）。
-
-声明了任一多轮条件（`history_keywords`/`system_keywords` 非空，或 `min_turn > 1`）的模板即**多轮条件模板**；未声明 system 条件的模板对 `S` 不敏感（纯关键词/仅 history 条件模板行为与无 system 维度时完全一致）。
+3. `turn ≥ min_turn(T)`（未声明时默认 1）。
 
 **优先级（择一返回）**:
 
-1. **多轮条件模板**：声明了 history/system/min_turn 任一条件，且条件全满足——多轮条件模板之间冲突时取**声明条件数多者**（更具体优先；keywords、history_keywords、system_keywords 各计一，min_turn > 1 计一），仍并列则按 name 字典序稳定选择；
+1. **多轮条件模板**：声明了 `history_keywords` 或 `min_turn > 1`，且条件全满足——多轮条件模板之间冲突时取**声明条件数多者**（更具体优先），仍并列则按 name 字典序稳定选择；
 2. **纯关键词模板**：未声明多轮条件、`keywords` **非空**且关键词命中；
 3. **兜底模板**：以上皆未命中——`keywords` 为空的非多轮条件模板（纯兜底模板）若**唯一**则直接返回；多个或不存在时从全部非多轮条件模板中以稳定 seed（请求 messages 全文哈希）确定性选择，保证同请求同回复（US1-2 的确定性要求覆盖兜底路径）。
 
-**默认语义兼容**：未声明 `history_keywords`/`system_keywords`/`min_turn` 的模板，匹配行为与 `projects/game/fake-llm/` 的关键词匹配一致（仅最后一条 user 消息参与）。
+**默认语义兼容**：未声明 `history_keywords`/`min_turn` 的模板，匹配行为与 `projects/game/fake-llm/` 的关键词匹配一致（仅最后一条 user 消息参与）。
 
 ## 4. 验收场景 ↔ 模板映射（US1/US2 断言锚点）
 
@@ -68,4 +64,4 @@ messages:
 | US2-2 会话隔离 | 同 US2-1 模板 | 新 session 首轮（"hello"）→ greeting.text（history 条件不满足） |
 | US2-3 并发交错 | 同上 | 两 session 各自正确分支 |
 
-**测试设计要点**: US2 的第二轮消息可与首轮**相同**（"hello"）——分支切换完全由 `history_keywords`/`min_turn` 承载，这是"最小扩展"选择的直接验证方式。preset 场景（persona/guidance 差异断言）的模板组见 `experimental/dsh/demo/fake-llm/service/testdata/preset.yaml`，其 system 条件与探针关键词的设计约定见 `specs/058-dsh-preset-roster-demo/contracts/fake-llm-system-keywords.md` §3。
+**测试设计要点**: US2 的第二轮消息可与首轮**相同**（"hello"）——分支切换完全由 `history_keywords`/`min_turn` 承载，这是"最小扩展"选择的直接验证方式。

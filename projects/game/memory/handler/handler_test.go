@@ -19,11 +19,6 @@ import (
 type inMemoryMemoryRepo struct {
 	mu       sync.Mutex
 	memories map[string]*domain.Memory
-	// listSort and listCursor record the inputs of the most recent
-	// ListMemories call so the handler tests can assert the normalized
-	// order_by and the decoded cursor are passed straight through.
-	listSort   []*domain.MemorySortTerm
-	listCursor *domain.MemoryPageCursor
 }
 
 func newInMemoryMemoryRepo() *inMemoryMemoryRepo {
@@ -70,11 +65,9 @@ func (r *inMemoryMemoryRepo) DeleteMemory(_ context.Context, template, session, 
 	return nil
 }
 
-func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor, _ int) ([]*domain.Memory, string, error) {
+func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, session string, _ int, _ string) ([]*domain.Memory, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.listSort = sort
-	r.listCursor = cursor
 	result := make([]*domain.Memory, 0, len(r.memories))
 	for _, m := range r.memories {
 		if m.Template == template && m.SessionID == session {
@@ -429,228 +422,6 @@ func TestMemoryService_ListMemoriesPagination(t *testing.T) {
 	}
 }
 
-func TestMemoryService_ListMemoriesOrderBy(t *testing.T) {
-	ctx := context.Background()
-
-	tests := []struct {
-		name     string
-		orderBy  string
-		wantSort []domain.MemorySortTerm
-		wantErr  bool
-	}{
-		{
-			name:     "empty order_by normalizes to the default memory_id ascending key",
-			orderBy:  "",
-			wantSort: []domain.MemorySortTerm{{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id"}},
-		},
-		{
-			name:    "update_time desc appends the designated tie-breaker",
-			orderBy: "update_time desc",
-			wantSort: []domain.MemorySortTerm{
-				{Field: domain.MemorySortFieldUpdateTime, MongoField: "update_time", Descending: true},
-				{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id"},
-			},
-		},
-		{
-			name:    "redundant whitespace is insignificant",
-			orderBy: "  update_time   desc  ",
-			wantSort: []domain.MemorySortTerm{
-				{Field: domain.MemorySortFieldUpdateTime, MongoField: "update_time", Descending: true},
-				{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id"},
-			},
-		},
-		{
-			name:    "tabs count as redundant whitespace",
-			orderBy: "update_time\tdesc",
-			wantSort: []domain.MemorySortTerm{
-				{Field: domain.MemorySortFieldUpdateTime, MongoField: "update_time", Descending: true},
-				{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id"},
-			},
-		},
-		{
-			name:    "bare field is ascending and appends the tie-breaker",
-			orderBy: "update_time",
-			wantSort: []domain.MemorySortTerm{
-				{Field: domain.MemorySortFieldUpdateTime, MongoField: "update_time"},
-				{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id"},
-			},
-		},
-		{
-			name:    "explicit tie-breaker is accepted without appending",
-			orderBy: "update_time desc, memory_id",
-			wantSort: []domain.MemorySortTerm{
-				{Field: domain.MemorySortFieldUpdateTime, MongoField: "update_time", Descending: true},
-				{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id"},
-			},
-		},
-		{
-			name:     "tie-breaker descending terminates the key",
-			orderBy:  "memory_id desc",
-			wantSort: []domain.MemorySortTerm{{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id", Descending: true}},
-		},
-		{
-			name:    "unknown field is rejected",
-			orderBy: "foo",
-			wantErr: true,
-		},
-		{
-			name:    "asc suffix is rejected",
-			orderBy: "update_time asc",
-			wantErr: true,
-		},
-		{
-			name:    "non-sortable resource field is rejected",
-			orderBy: "content",
-			wantErr: true,
-		},
-		{
-			name:    "tie-breaker in the middle is legal and keeps the requested order",
-			orderBy: "memory_id, update_time desc",
-			wantSort: []domain.MemorySortTerm{
-				{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id"},
-				{Field: domain.MemorySortFieldUpdateTime, MongoField: "update_time", Descending: true},
-			},
-		},
-		{
-			name:    "descending tie-breaker in the middle is legal and keeps the requested order",
-			orderBy: "memory_id desc, update_time",
-			wantSort: []domain.MemorySortTerm{
-				{Field: domain.MemorySortFieldMemoryID, MongoField: "memory_id", Descending: true},
-				{Field: domain.MemorySortFieldUpdateTime, MongoField: "update_time"},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			repo := newInMemoryMemoryRepo()
-			h := NewHandler(repo)
-
-			// when
-			_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{
-				Parent:  "templates/saolei/sessions/session-1",
-				OrderBy: tt.orderBy,
-			})
-
-			// then
-			if tt.wantErr {
-				assertStatusCode(t, err, codes.InvalidArgument)
-				return
-			}
-			assertStatusCode(t, err, codes.OK)
-			assertSortTerms(t, repo.listSort, tt.wantSort)
-		})
-	}
-}
-
-func TestMemoryService_ListMemoriesPageToken(t *testing.T) {
-	ctx := context.Background()
-
-	// given - a valid token for the update_time desc final key
-	descToken := domain.EncodeMemoryPageToken(&domain.MemoryPageCursor{
-		Entries: []*domain.MemoryCursorEntry{
-			{Field: domain.MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
-			{Field: domain.MemorySortFieldMemoryID, Value: "m-1"},
-		},
-	})
-
-	tests := []struct {
-		name        string
-		orderBy     string
-		token       string
-		wantEntries []*domain.MemoryCursorEntry
-		wantErr     bool
-	}{
-		{
-			name:    "valid token is decoded and passed through",
-			orderBy: "update_time desc",
-			token:   descToken,
-			wantEntries: []*domain.MemoryCursorEntry{
-				{Field: domain.MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
-				{Field: domain.MemorySortFieldMemoryID, Value: "m-1"},
-			},
-		},
-		{
-			name:    "empty token passes a nil cursor (first page)",
-			orderBy: "update_time desc",
-		},
-		{
-			name:    "malformed token is rejected",
-			orderBy: "update_time desc",
-			token:   "not-a-token",
-			wantErr: true,
-		},
-		{
-			name:    "cross-order token is rejected",
-			orderBy: "",
-			token:   descToken,
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			repo := newInMemoryMemoryRepo()
-			h := NewHandler(repo)
-
-			// when
-			_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{
-				Parent:    "templates/saolei/sessions/session-1",
-				OrderBy:   tt.orderBy,
-				PageToken: tt.token,
-			})
-
-			// then
-			if tt.wantErr {
-				assertStatusCode(t, err, codes.InvalidArgument)
-				return
-			}
-			assertStatusCode(t, err, codes.OK)
-			assertMemoryCursor(t, repo.listCursor, tt.wantEntries)
-		})
-	}
-}
-
-// assertSortTerms asserts the recorded key equals want on the exported fields
-// (kind is package-private derivation knowledge).
-func assertSortTerms(t *testing.T, got []*domain.MemorySortTerm, want []domain.MemorySortTerm) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("ListMemories() sort = %+v, want %+v", got, want)
-	}
-	for i := range want {
-		if got[i].Field != want[i].Field || got[i].MongoField != want[i].MongoField || got[i].Descending != want[i].Descending {
-			t.Fatalf("ListMemories() sort[%d] = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-}
-
-// assertMemoryCursor asserts the recorded cursor equals want: nil means the
-// first page (empty token), otherwise the entries match on the exported
-// {Field, Value} pair (typed is private).
-func assertMemoryCursor(t *testing.T, got *domain.MemoryPageCursor, want []*domain.MemoryCursorEntry) {
-	t.Helper()
-	if want == nil {
-		if got != nil {
-			t.Fatalf("ListMemories() cursor = %+v, want nil (first page)", got)
-		}
-		return
-	}
-	if got == nil {
-		t.Fatalf("ListMemories() cursor = nil, want %+v", want)
-	}
-	if len(got.Entries) != len(want) {
-		t.Fatalf("ListMemories() cursor = %+v, want %+v", got, want)
-	}
-	for i := range want {
-		if got.Entries[i] == nil || got.Entries[i].Field != want[i].Field || got.Entries[i].Value != want[i].Value {
-			t.Fatalf("ListMemories() cursor[%d] = %+v, want %+v", i, got.Entries[i], want[i])
-		}
-	}
-}
-
 func Test_toStatusError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -666,11 +437,6 @@ func Test_toStatusError(t *testing.T) {
 			name:     "ErrAlreadyExists maps to AlreadyExists",
 			err:      domain.ErrAlreadyExists,
 			wantCode: codes.AlreadyExists,
-		},
-		{
-			name:     "ErrInvalidPageToken maps to InvalidArgument",
-			err:      domain.ErrInvalidPageToken,
-			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "unknown error maps to Internal",

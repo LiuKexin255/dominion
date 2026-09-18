@@ -1,11 +1,9 @@
 name: game-system-test
 description: |
-  Game system integration test — four suites over four deployment
-  topologies (specs/054-agent-v2-bugfixes/contracts/testplan.md §2;
-  specs/059-agent-v2-team-mode/tasks.md T023;
-  specs/063-llm-reliability-opencode-go/tasks.md T022). Six formerly separate
-  suites share one deployment, so the trunk regression pays one deploy instead
-  of several 60s settle waits.
+  Game system integration test — two suites over two deployment topologies
+  (specs/054-agent-v2-bugfixes/contracts/testplan.md §2). Six formerly
+  separate suites share one deployment, so the plan pays two deploys
+  instead of seven (five deployments and their 60s settle waits saved).
 
   Suite 1 (game-system): the full system on deploy_agent_v2.yaml — the
     won topology whose fake-desktop executor plays the won board on the
@@ -20,15 +18,6 @@ description: |
     executor running the progressive scenario plus the disconnect fault
     env. Placed after the main suite: guitar runs suites serially and
     stops on the first failure, so the trunk regression surfaces first.
-  Suite 3 (game-memory-down): the team materialization fail-loud branch
-    (T023 / quickstart V7-2) on deploy_agent_v2_memory_down.yaml — the
-    same service list WITHOUT the memory service, so the planner's
-    memory prefetch rejects. The narrowest branch.
-  Suite 4 (game-stall): the adapter-level stream-stall watchdog branch
-    (specs/063-llm-reliability-opencode-go SC-004a) on
-    deploy_agent_v2_stall.yaml — the same service list with the 2s
-    GLM_STREAM_IDLE_TIMEOUT_MS window the main topology's legitimate
-    3s/4s chunk gaps cannot share. Last: the isolated watchdog topology.
 
   Cases isolate through unique session/preset resource names, so the
   shared deployment needs no per-case redeployment.
@@ -56,19 +45,3 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_v2_game_disconnect_test  # mid-game disconnect three-game sequence
-  - name: game-memory-down
-    description: "The team materialization fail-loud branch (specs/059-agent-v2-team-mode/tasks.md T023 / quickstart V7-2) on the memory-down topology (deploy_agent_v2_memory_down.yaml): the same service list as deploy_agent_v2.yaml without the memory service, so the planner member's materialization-time `plannerMemory.load` prefetch cannot resolve its dominion endpoint. agent_v2_memory_down_test asserts UpdateTeam fails with a 5xx, GetTeam stays NOT_FOUND (no half-materialized team), the failure is cleanly retryable, and the Mongo-backed configuration face keeps serving. The binary is separate from agent_v2_preset_test because guitar runs whole bazel targets as suite cases without per-suite test-function filtering and that suite needs memory present"
-    deploy: //projects/game/testplan/deploy_agent_v2_memory_down.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_v2_memory_down_test  # memory-prefetch fail-loud rollback
-  - name: game-stall
-    description: "The adapter-level stream-stall watchdog branch (specs/063-llm-reliability-opencode-go/tasks.md T022 / quickstart SC-004a) on the stall topology (deploy_agent_v2_stall.yaml): the same service list as deploy_agent_v2.yaml with GLM_STREAM_IDLE_TIMEOUT_MS=2000, the dedicated 2s window the main topology's legitimate 3s/4s chunk gaps cannot share. agent_v2_stall_test drives the planner into the responses stall template (the connection stays alive with no further SSE data) and asserts the stall is detected inside the window and converges through the existing retry semantics to a visible timeout-class failure without an unbounded hang. The binary is separate from agent_v2_conversation_test because guitar runs whole bazel targets as suite cases without per-suite test-function filtering and that suite runs under the production-sized watchdog window"
-    deploy: //projects/game/testplan/deploy_agent_v2_stall.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_v2_stall_test  # stream-stall watchdog convergence

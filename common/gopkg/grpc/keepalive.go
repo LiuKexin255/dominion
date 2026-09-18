@@ -9,8 +9,7 @@ import (
 
 const (
 	// longLivedClientPingTime is the keepalive ping interval for long-lived
-	// streaming connections (e.g. the game DesktopBridgeService.Connect bidi
-	// stream and the /api/v2 AgentService.Send team stream).
+	// streaming connections (e.g. the game TeamService.Connect bidi stream).
 	// MUST stay below the peer server's EnforcementPolicy.MinTime, or the
 	// server sends GOAWAY with ENHANCE_YOUR_CALM/"too_many_pings" (grpc-go
 	// server default MinTime is 5 minutes). Paired with

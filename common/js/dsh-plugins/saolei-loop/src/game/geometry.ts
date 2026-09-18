@@ -1,7 +1,8 @@
 /**
  * Fixed board-layout constants and the grid→WM_* client-pixel formula for the
- * GameRuntime's cell-operation dispatch (specs/051-agent-v2-dsh-migration/
- * research.md D6; data-model.md §2.5).
+ * GameRuntime's cell-operation dispatch, migrated from v1
+ * projects/game/agent/src/mcp/saolei/geometry.ts (spec
+ * specs/051-agent-v2-dsh-migration/research.md D6; data-model.md §2.5).
  *
  * Coordinate space: the constants and `center()` are in **WM_* client
  * coordinates** — the `lParam` space consumed by the desktop's
@@ -16,8 +17,8 @@
  * Chrome compensation: the desktop captures the FULL window
  * (`DWMWA_EXTENDED_FRAME_BOUNDS`), so the board top is 200 px in screenshot
  * space; the non-client chrome of the target Microsoft Minesweeper is 96 px
- * (operator-measured), giving the client-space board top 200 − 96 = 104 px.
- * The compensation is
+ * (operator-measured, v1 projects/game/agent/src/mcp/saolei/geometry.ts),
+ * giving the client-space board top 200 − 96 = 104 px. The compensation is
  * applied here (the operation originator) so the desktop receives a correct
  * client coordinate.
  *

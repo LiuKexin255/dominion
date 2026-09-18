@@ -31,8 +31,6 @@
 
 ### 2.2 渲染（`ChatView.tsx`）
 
-> 本表"无最终答案（ERROR/CANCELED/纯工具结束）"行已被 `specs/064-memory-split-fold-remain/contracts/web-ui.md` §1 修订（新增终局收束回合分类：无最终答案步、回合内无 `interrupted` 标记且步数 > 1 的完成回合以末步为锚折叠；失败/终止回合保持全展开，2026-09-14）；表内其余条款不变。
-
 | 状态 | 呈现 |
 |---|---|
 | 流式中（turn 打开） | 各 step 分段依次独立呈现，全部展开；步骤内 think→ReasoningRow（折叠块）、toolCall→ToolCard、text→正文气泡（分类分列，官方折叠规则"while a Turn is open … remain expanded"） |

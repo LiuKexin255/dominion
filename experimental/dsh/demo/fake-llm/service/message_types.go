@@ -15,13 +15,11 @@ package service
 //     the LAST user message passes the condition. An empty Keywords
 //     marks a pure fallback template (§3.3) — it never participates in
 //     keyword matching and only serves the deterministic no-match path.
-//   - HistoryKeywords / SystemKeywords / MinTurn are the optional
-//     multi-turn conditions (§3 priority 1): EVERY history keyword must
-//     hit some message before the last user message, EVERY system
-//     keyword must hit the concatenation of the request's system-role
-//     messages, and the request's user-message count must reach MinTurn
-//     (default 1). For a multi-turn template an empty Keywords leaves
-//     the keyword condition vacuous (恒通过).
+//   - HistoryKeywords / MinTurn are the optional multi-turn conditions
+//     (§3 priority 1): EVERY history keyword must hit some message
+//     before the last user message, and the request's user-message
+//     count must reach MinTurn (default 1). For a multi-turn template
+//     an empty Keywords leaves the keyword condition vacuous (恒通过).
 //   - Text is the deterministic reply全文 (SSE content deltas
 //     concatenate back to it exactly).
 //   - Reasoning is a reserved schema-compatibility field; the
@@ -30,7 +28,6 @@ type Message struct {
 	Name            string   `json:"name" yaml:"name"`
 	Keywords        []string `json:"keywords" yaml:"keywords"`
 	HistoryKeywords []string `json:"history_keywords,omitempty" yaml:"history_keywords,omitempty"`
-	SystemKeywords  []string `json:"system_keywords,omitempty" yaml:"system_keywords,omitempty"`
 	MinTurn         int      `json:"min_turn,omitempty" yaml:"min_turn,omitempty"`
 	Text            string   `json:"text" yaml:"text"`
 	Reasoning       string   `json:"reasoning,omitempty" yaml:"reasoning,omitempty"`
@@ -48,11 +45,11 @@ func (m *Message) effectiveMinTurn() int {
 }
 
 // isMultiTurn reports whether the template declares multi-turn
-// conditions (history_keywords non-empty, system_keywords non-empty, or
-// min_turn > 1 — the contract's definition of a 多轮条件模板,
+// conditions (history_keywords non-empty or min_turn > 1 — the
+// contract's definition of a 多轮条件模板,
 // specs/047-dsh-chat-demo/contracts/fake-llm-templates.md §3). Such
 // templates match at priority 1 and are excluded from the fallback
 // pool so the deterministic no-match path always stays servable (§3.3).
 func (m *Message) isMultiTurn() bool {
-	return len(m.HistoryKeywords) > 0 || len(m.SystemKeywords) > 0 || m.effectiveMinTurn() > 1
+	return len(m.HistoryKeywords) > 0 || m.effectiveMinTurn() > 1
 }

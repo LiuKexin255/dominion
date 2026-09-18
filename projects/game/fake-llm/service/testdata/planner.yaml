@@ -1,0 +1,159 @@
+# planner.yaml — the team-graph planner fixtures grouped by scenario
+# (specs/046-fake-llm-think-chunking/data-model.md §7): the planner
+# agent's review / instruction node / compress-node templates; the
+# follow-up tool-result chain lives in planner_tools.yaml.
+messages:
+  # planner-memory-add drives the team graph PLANNER agent's `memory`
+  # tool_call (spec 039-planner-memory-calibration US2 — FR-008/FR-012;
+  # contracts/memory-mcp-contract.md §1).
+  #
+  # The planner node (projects/game/agent/src/team/planner.ts) is triggered by
+  # the conditional edge exactly once per game end (won/lost). Its model input
+  # ends with the review HumanMessage rendered from the buffer's gameLog whose
+  # text always starts with the FIXED prefix "本局游戏过程：" (planner.ts
+  # buildReviewInput — specs/036-team-mode-bugfix/contracts/team-graph-fix-
+  # contract.md §2.2; the gameLog now renders saolei_operate entries with their
+  # full operations per FR-004), so keyword-matching that prefix makes fake-LLM
+  # return a `memory` tool_call deterministically.
+  #
+  # The tool_call uses the hermes-style BATCH form (`operations: [add, add]`,
+  # FR-008 — no memory_id/target parameters): it exercises the `operations`
+  # parameter AND seeds the two entries whose shared substring "player 常犯"
+  # drives the follow-up 0-hit / multi-hit replace chain in
+  # planner_tools.yaml (0-hit old_text "无此内容", multi-hit old_text
+  # "player 常犯"). The former shared-strategy write path (update_strategy) is
+  # GONE (FR-013 — Phase 6 removed StrategyStore).
+  #
+  # The keyword is the planner review prefix verbatim and does not appear in any
+  # user-turn text the large tests send, so no other suite can match it
+  # (matcher.go Match keys on the LAST user message of a request).
+  - name: planner-memory-add
+    keywords:
+      - 本局游戏过程
+    reasoning: "复盘完成，本局经验值得写入长期记忆。"
+    tool_call:
+      name: memory
+      arguments:
+        operations:
+          - action: add
+            content: "player 常犯边角误标，应强调先 deduce 再 flag。"
+          - action: add
+            content: "player 常犯节奏过快，应提醒先看操作次数与正确标记比。"
+  # init-instruction drives the team-INIT scenario's
+  # instruct_player tool_call (spec 039-planner-memory-calibration US3 —
+  # FR-015/FR-019; contracts/team-graph-contract.md §2.3/§6).
+  #
+  # The one-shot async initInstruction turn (triggered once after
+  # UpdateTeam(allow_missing=true) materializes the graph — session-team.ts
+  # runInitTurn, R2) runs the shared instruction node with scenario="init".
+  # Its model input ends with the request HumanMessage whose text always starts
+  # with "团队初始化：" (instruction-node.ts buildInstructionRequest), so
+  # keyword-matching that prefix makes fake-LLM return an instruct_player
+  # tool_call deterministically. The instruction content lands in
+  # TeamState.pendingInstruction (no player invoke — FR-015) and is delivered
+  # with the player's first activation.
+  #
+  # The keyword appears in NO user-turn text the large tests send, so no other
+  # suite can match it. The follow-up response after the tool executes lives in
+  # planner_tools.yaml (instruct-player-final-text).
+  - name: init-instruction
+    keywords:
+      - 团队初始化
+    tool_call:
+      name: instruct_player
+      arguments:
+        content: "初始指令：先点中心区域，再按数字展开。"
+  # compact-instruction drives the post-COMPRESSION scenario's
+  # instruct_player tool_call (spec 039-planner-memory-calibration US3 —
+  # FR-016/FR-019; contracts/team-graph-contract.md §2.3).
+  #
+  # The postCompactInstruction node (runs after the compress node cleared the
+  # channels and refreshed the frozen memory snapshot, before END) uses the
+  # shared instruction node function with scenario="compact". Its model input
+  # ends with the request HumanMessage whose text always starts with "上下文刚被
+  # 压缩：" (instruction-node.ts buildInstructionRequest), so keyword-matching
+  # that prefix makes fake-LLM return an instruct_player tool_call
+  # deterministically. The instruction content lands in
+  # TeamState.pendingInstruction and is delivered with the player's NEXT
+  # activation (the turn ends — player stops, FR-016/037 压缩后自动停下).
+  #
+  # The keyword appears in NO user-turn text the large tests send, so no other
+  # suite can match it. The follow-up response after the tool executes lives in
+  # planner_tools.yaml (instruct-player-final-text).
+  - name: compact-instruction
+    keywords:
+      - 上下文刚被压缩
+    tool_call:
+      name: instruct_player
+      arguments:
+        content: "压缩后指令：保持节奏，先 deduce 再 flag。请继续游戏。"
+  # compress-planner-summary is the compress node's PLANNER-channel
+  # summary response (specs/037-saolei-team-optimize US2 / FR-008/FR-012).
+  #
+  # The compress node (projects/game/agent/src/team/compress.ts
+  # summarizeChannel) invokes the planner model DIRECTLY (model.invoke, not
+  # createAgent) with PLANNER_SUMMARY_PROMPT + the serialized planner channel +
+  # "请输出摘要：". The fake-LLM matches the LAST user message text
+  # (matcher.go Match), so the keyword below is a substring of that prompt's
+  # instruction line ("请概括关键信息，包括：已复盘局数、策略更新历史、...")
+  # — it appears in NO other request the large tests send, and in no tool-result
+  # text.
+  #
+  # The serialized planner channel ALSO contains other configs' keywords (the
+  # review input "本局游戏过程" matches planner-memory-add). This config's
+  # name sorts alphabetically BEFORE planner-memory-add ("compress-..." <
+  # "planner-..."), so the summary call resolves deterministically to a
+  # plain-text summary instead of a tool_call response (a tool_call response
+  # carries empty content → compress.ts rejects it as a blank summary → FR-013
+  # abort). README.md §4 — the alphabetically-lowest matching name wins.
+  #
+  # The response text is pinned as the expected post-compression
+  # planner-channel content and live summary frame in helpers_test.go
+  # (expectedPlannerCompressionSummary) and in
+  # TestNewMessageStore_LoadsEmbeddedSamples — keep all three in sync. The
+  # wording reflects the 039 memory architecture (spec 039 FR-013 — the shared
+  # StrategyStore/update_strategy flow is gone; the planner's long-term memory
+  # lives in the memory service and its frozen snapshot).
+  - name: compress-planner-summary
+    keywords:
+      - 已复盘局数
+    # NO `reasoning:` field — see compress-player-summary: the compress
+    # node's direct model.invoke requires a plain-string content, and a
+    # reasoning_content response becomes content BLOCKS (rejected as
+    # "non-string content", FR-012 abort).
+    text: "已复盘 5 局，长期记忆更新正常。"
+  # compress-player-summary is the compress node's PLAYER-channel
+  # summary response (specs/037-saolei-team-optimize US2 / FR-008/FR-012).
+  #
+  # The compress node (projects/game/agent/src/team/compress.ts
+  # summarizeChannel) invokes the player model DIRECTLY (model.invoke, not
+  # createAgent) with PLAYER_SUMMARY_PROMPT + the serialized player channel +
+  # "请输出摘要：". The fake-LLM matches the LAST user message text
+  # (matcher.go Match), so the keyword below is a substring of that prompt's
+  # instruction line ("请概括关键信息，包括：已玩局数、胜负记录、...") — it
+  # appears in NO other request the large tests send, and in no tool-result
+  # text.
+  #
+  # The serialized player channel ALSO contains other configs' keywords (the
+  # user text "please start saolei game" matches saolei-start). This config's
+  # name sorts alphabetically BEFORE saolei-start ("compress-..." <
+  # "saolei-..."), so the summary call resolves deterministically to a
+  # plain-text summary instead of a tool_call response (a tool_call response
+  # carries empty content → compress.ts rejects it as a blank summary → FR-013
+  # abort). README.md §4 — the alphabetically-lowest matching name wins.
+  #
+  # The response text is pinned as the expected post-compression player-channel
+  # content and live summary frame in helpers_test.go
+  # (expectedPlayerCompressionSummary) and in
+  # TestNewMessageStore_LoadsEmbeddedSamples — keep all three in sync.
+  - name: compress-player-summary
+    keywords:
+      - 已玩局数、胜负记录
+    # NO `reasoning:` field on purpose: the compress node (team/compress.ts
+    # summarizeChannel) calls model.invoke DIRECTLY and requires a plain-string
+    # content. A reasoning_content-bearing response is parsed by the LangChain
+    # OpenAI adapter into content BLOCKS ({type:"reasoning",...} + {type:"text",
+    # ...}), which compress.ts rejects as "non-string content" (FR-012 abort) —
+    # see the deployment failure this comment documents. Text-only responses
+    # yield a plain string.
+    text: "已玩 5 局，其中 4 局失败。下一局按复盘指令调整打法。"

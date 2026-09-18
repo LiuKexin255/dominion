@@ -1,4 +1,0 @@
-- id: persona
-  name: '@deepseek-ai/dsh-persona'
-  config:
-    text: You are the demo standard assistant.
