@@ -97,6 +97,82 @@ service MemoryService {
   }
 }
 
+// WikiService manages Wiki resources — the planner's knowledge-base entries
+// scoped to a Session (spec 068 FR-001; contract:
+// specs/068-wiki-round-pause/contracts/wiki-service.md §2). Wiki is a child of
+// a Session (AIP-122: https://google.aip.dev/122), resource pattern
+// templates/{template}/sessions/{session}/wikis/{wiki}; the {wiki} name
+// segment carries the wiki id (FR-017 — the resource message has no separate
+// id field). SearchWikis is the fuzzy-title search face.
+//
+// Prefix Path: /api/v1/templates/{template}/sessions/{session}/wikis
+service WikiService {
+  // CreateWiki creates a new Wiki under a session. wiki_id is the
+  // agent-generated id that becomes the final segment of the name (AIP-133
+  // user-specified id: https://google.aip.dev/133); a title that normalizes
+  // to an existing title in the session scope is rejected with ALREADY_EXISTS
+  // (spec 068 FR-002).
+  rpc CreateWiki(CreateWikiRequest) returns (Wiki) {
+    option (google.api.http) = {
+      post: "/api/v1/{parent=templates/*/sessions/*}/wikis"
+      body: "wiki"
+    };
+    option (google.api.method_signature) = "parent,wiki,wiki_id";
+  }
+
+  // GetWiki gets a Wiki (the standard read path that returns content).
+  // AIP-131: https://google.aip.dev/131
+  rpc GetWiki(GetWikiRequest) returns (Wiki) {
+    option (google.api.http) = {
+      get: "/api/v1/{name=templates/*/sessions/*/wikis/*}"
+    };
+    option (google.api.method_signature) = "name";
+  }
+
+  // UpdateWiki updates a Wiki's title and/or content. AIP-134:
+  // https://google.aip.dev/134
+  rpc UpdateWiki(UpdateWikiRequest) returns (Wiki) {
+    option (google.api.http) = {
+      patch: "/api/v1/{wiki.name=templates/*/sessions/*/wikis/*}"
+      body: "wiki"
+    };
+    option (google.api.method_signature) = "wiki,update_mask";
+  }
+
+  // DeleteWiki deletes a Wiki. AIP-135: https://google.aip.dev/135
+  rpc DeleteWiki(DeleteWikiRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/{name=templates/*/sessions/*/wikis/*}"
+    };
+    option (google.api.method_signature) = "name";
+  }
+
+  // ListWikis lists Wikis under a session, returning full resources (content
+  // included). There is no order_by: results are fixed to wiki_id ascending,
+  // paginated per AIP-158 (AIP-132: https://google.aip.dev/132;
+  // https://google.aip.dev/158).
+  rpc ListWikis(ListWikisRequest) returns (ListWikisResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/{parent=templates/*/sessions/*}/wikis"
+    };
+    option (google.api.method_signature) = "parent";
+  }
+
+  // SearchWikis searches Wikis by normalized title substring: both the query
+  // and the stored title are normalized (NFKC + lower-case), so matching is
+  // case- and full-width-insensitive, at any position, and works for CJK
+  // input. Results are ordered exact match > prefix match > substring match,
+  // then by normalized title ascending (UTF-8 code point order); the response
+  // entries are lightweight ({name, title}, content never returned). Custom
+  // method, AIP-136: https://google.aip.dev/136
+  rpc SearchWikis(SearchWikisRequest) returns (SearchWikisResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/{parent=templates/*/sessions/*}/wikis:search"
+    };
+    option (google.api.method_signature) = "parent,query";
+  }
+}
+
 // ─── Shared Resources ──────────────────────────────────────────────────────
 
 // Template is the top-level resource-hierarchy path segment. It is a resource
@@ -152,7 +228,38 @@ message Memory {
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  string memory_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The memory id is carried by the {memory} segment of the name pattern
+  // (AIP-122: https://google.aip.dev/122); the resource message carries no
+  // separate id field (FR-017,
+  // specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
+  reserved 2;
+  reserved "memory_id";
+
+  string content = 3;
+  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// Wiki is one planner knowledge-base entry of a Session, stored by the memory
+// service (spec 068 FR-001; data model:
+// specs/068-wiki-round-pause/data-model.md §1). The {wiki} pattern segment
+// carries the wiki id — the resource message has no separate id field (FR-017,
+// specs/068-wiki-round-pause/contracts/wiki-service.md §1).
+message Wiki {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Wiki"
+    pattern: "templates/{template}/sessions/{session}/wikis/{wiki}"
+    plural: "wikis"
+    singular: "wiki"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  // The model-facing address of the entry. Required and non-empty; at most 128
+  // runes. A title that normalizes to an existing title within the
+  // (template, session) scope is rejected with ALREADY_EXISTS (spec 068 FR-002).
+  string title = 2;
+  // The bulk knowledge body. Required and non-empty; at most 64KB (spec 068
+  // FR-005).
   string content = 3;
   google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
@@ -657,7 +764,10 @@ message ListMemoriesRequest {
   // terms, each "{field}" or "{field} desc" — ascending is spelled by
   // omitting the suffix, redundant whitespace is insignificant, and the
   // "desc" suffix is lowercase. Supported fields: "memory_id" (unique) and
-  // "update_time".
+  // "update_time". "memory_id" addresses the {memory} terminal segment of the
+  // resource name — the Memory message itself carries no separate id field
+  // (FR-017,
+  // specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
   //
   // The sort key is completed to a total order: a key list that contains no
   // "memory_id" (the designated unique tie-breaker) gets "memory_id asc"
@@ -681,4 +791,137 @@ message ListMemoriesRequest {
 message ListMemoriesResponse {
   repeated Memory memories = 1;
   string next_page_token = 2;
+}
+
+// CreateWikiRequest creates a Wiki under a session. AIP-133:
+// https://google.aip.dev/133. The wiki is embedded in the request — its title
+// and content are carried by wiki.title / wiki.content. wiki_id is generated
+// by the agent (a digest of the normalized title) and is never chosen by the
+// model.
+message CreateWikiRequest {
+  // The session to create the wiki in.
+  // Format: templates/{template}/sessions/{session}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Wiki"
+    }
+  ];
+  // The ID to use for the wiki, which will become the final segment of the
+  // wiki's resource name. Must match [a-z0-9_-]+; values that do not are
+  // rejected with INVALID_ARGUMENT.
+  string wiki_id = 2 [(google.api.field_behavior) = REQUIRED];
+  // The wiki to create (AIP-133: the resource field maps to the POST body).
+  Wiki wiki = 3 [(google.api.field_behavior) = REQUIRED];
+}
+
+// GetWikiRequest gets a Wiki. AIP-131: https://google.aip.dev/131
+message GetWikiRequest {
+  // The name of the wiki to retrieve.
+  // Format: templates/{template}/sessions/{session}/wikis/{wiki}
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Wiki"
+    }
+  ];
+}
+
+// UpdateWikiRequest updates a Wiki. AIP-134: https://google.aip.dev/134. The
+// resource's name field (pattern
+// templates/{template}/sessions/{session}/wikis/{wiki}) is the target
+// identity, surfaced in the HTTP path via {wiki.name=...}; title and content
+// are the mutable fields and update_mask supports either. A title change
+// rebuilds the search index while keeping the scope uniqueness (spec 068
+// FR-002); an absent resource errors with NOT_FOUND.
+message UpdateWikiRequest {
+  Wiki wiki = 1 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+// DeleteWikiRequest deletes a Wiki. AIP-135: https://google.aip.dev/135
+message DeleteWikiRequest {
+  // The name of the wiki to delete.
+  // Format: templates/{template}/sessions/{session}/wikis/{wiki}
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Wiki"
+    }
+  ];
+}
+
+// ListWikisRequest lists Wikis under a session. AIP-132:
+// https://google.aip.dev/132; AIP-158 (pagination): https://google.aip.dev/158.
+// There is no order_by: the collection is fixed to wiki_id ascending (the
+// wiki_id is the name's {wiki} terminal segment).
+message ListWikisRequest {
+  // The session to list wikis from.
+  // Format: templates/{template}/sessions/{session}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Wiki"
+    }
+  ];
+  // The maximum number of wikis to return. The service may return fewer than
+  // this value. If unspecified, at most 20 wikis will be returned. The maximum
+  // value is 100; values above 100 will be coerced to 100.
+  int32 page_size = 2;
+  // A page token, received from a previous ListWikis call. Provide this to
+  // retrieve the subsequent page. The cursor is a single-key seek over the
+  // fixed wiki_id ascending order; when paginating, all other parameters must
+  // match the call that provided the page token.
+  string page_token = 3;
+}
+
+// ListWikisResponse is the response for listing Wikis.
+message ListWikisResponse {
+  repeated Wiki wikis = 1;
+  string next_page_token = 2;
+}
+
+// SearchWikisRequest searches Wikis by normalized title substring. AIP-136
+// custom method: https://google.aip.dev/136. The query is required and must be
+// non-empty; the page token encodes the normalized query and an offset, and a
+// continuation whose query does not normalize to the token's query is rejected
+// with INVALID_ARGUMENT (AIP-158: https://google.aip.dev/158; contract
+// specs/068-wiki-round-pause/contracts/wiki-service.md §4).
+message SearchWikisRequest {
+  // The session to search wikis in.
+  // Format: templates/{template}/sessions/{session}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Wiki"
+    }
+  ];
+  // The substring to match against normalized titles (NFKC + lower-case);
+  // matching is case- and full-width-insensitive, at any position, and
+  // supports CJK input. Required and must be non-empty.
+  string query = 2 [(google.api.field_behavior) = REQUIRED];
+  // The maximum number of entries to return. The service may return fewer than
+  // this value. If unspecified, at most 20 entries will be returned. The
+  // maximum value is 100; values above 100 will be coerced to 100.
+  int32 page_size = 3;
+  // A page token, received from a previous SearchWikis call. Provide this to
+  // retrieve the subsequent page; the query must normalize to the same query
+  // as the call that issued the token.
+  string page_token = 4;
+}
+
+// SearchWikisResponse is the response for SearchWikis. Entries are lightweight
+// summaries — name and title only, never content (contract
+// specs/068-wiki-round-pause/contracts/wiki-service.md §4.3).
+message SearchWikisResponse {
+  repeated WikiSummary wikis = 1;
+  string next_page_token = 2;
+}
+
+// WikiSummary is one SearchWikis hit: the wiki's resource name (the {wiki} id
+// is carried by its final segment, spec 068 FR-017) and its title.
+message WikiSummary {
+  // Format: templates/{template}/sessions/{session}/wikis/{wiki}
+  string name = 1;
+  string title = 2;
 }

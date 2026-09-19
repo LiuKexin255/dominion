@@ -110,9 +110,6 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 	if created.GetName() != "templates/saolei/sessions/session-1/memories/mem-1" {
 		t.Fatalf("CreateMemory() name = %q, want %q", created.GetName(), "templates/saolei/sessions/session-1/memories/mem-1")
 	}
-	if created.GetMemoryId() != "mem-1" {
-		t.Fatalf("CreateMemory() memory_id = %q, want %q", created.GetMemoryId(), "mem-1")
-	}
 	if created.GetContent() != "player repeats the same mistake" {
 		t.Fatalf("CreateMemory() content = %q, want %q", created.GetContent(), "player repeats the same mistake")
 	}
@@ -133,9 +130,6 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 	}
 	if listResp.GetMemories()[0].GetName() != created.GetName() {
 		t.Fatalf("ListMemories()[0] name = %q, want %q", listResp.GetMemories()[0].GetName(), created.GetName())
-	}
-	if listResp.GetMemories()[0].GetMemoryId() != "mem-1" {
-		t.Fatalf("ListMemories()[0] memory_id = %q, want %q", listResp.GetMemories()[0].GetMemoryId(), "mem-1")
 	}
 	if listResp.GetMemories()[0].GetContent() != created.GetContent() {
 		t.Fatalf("ListMemories()[0] content = %q, want %q", listResp.GetMemories()[0].GetContent(), created.GetContent())
@@ -816,9 +810,6 @@ func Test_memoryToProto(t *testing.T) {
 			}
 			if got.GetName() != tt.wantName {
 				t.Fatalf("memoryToProto() name = %q, want %q", got.GetName(), tt.wantName)
-			}
-			if got.GetMemoryId() != tt.memory.MemoryID {
-				t.Fatalf("memoryToProto() memory_id = %q, want %q", got.GetMemoryId(), tt.memory.MemoryID)
 			}
 			if got.GetContent() != tt.memory.Content {
 				t.Fatalf("memoryToProto() content = %q, want %q", got.GetContent(), tt.memory.Content)

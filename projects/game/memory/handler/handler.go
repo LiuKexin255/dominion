@@ -240,9 +240,8 @@ func memoryToProto(m *domain.Memory) *game.Memory {
 	}
 
 	pb := &game.Memory{
-		Name:     game.MemoryName{TemplateID: m.Template, SessionID: m.SessionID, MemoryID: m.MemoryID}.String(),
-		MemoryId: m.MemoryID,
-		Content:  m.Content,
+		Name:    game.MemoryName{TemplateID: m.Template, SessionID: m.SessionID, MemoryID: m.MemoryID}.String(),
+		Content: m.Content,
 	}
 	if !m.CreateTime.IsZero() {
 		pb.CreateTime = timestamppb.New(m.CreateTime)
