@@ -1,0 +1,17 @@
+{
+    "name": "@dominion/redis_demo_js_service",
+    "private": true,
+    "type": "module",
+    "dependencies": {
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:",
+        "@dominion/common-js-grpc-otel": "workspace:*",
+        "@dominion/common-js-logs": "workspace:*",
+        "@dominion/common-js-otel": "workspace:*",
+        "@dominion/common-js-redis": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:"
+    }
+}

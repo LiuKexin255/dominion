@@ -1,0 +1,12 @@
+version: "3.0"
+name: go-service
+app: redis-demo
+kind: stateless
+desc: redis-demo Go gRPC service (common/gopkg/redis)
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: go-service
+    target: :cmd_image
+    tls: true

@@ -1,0 +1,44 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+
+go_library(
+    name = "go_service_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/experimental/redis_demo/go_service",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//common/gopkg/otel",
+        "//common/gopkg/redis",
+        "//experimental/redis_demo",
+        "@com_github_redis_go_redis_v9//:go-redis",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//reflection",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
+    ],
+)
+
+go_binary(
+    name = "go_service",
+    embed = [":go_service_lib"],
+    visibility = ["//visibility:public"],
+)
+
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "redis-demo",
+    binary = ":go_service",
+    service = "go-service",
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "redis-demo",
+    pkg = ":service_pkg",
+    service = "go-service",
+)

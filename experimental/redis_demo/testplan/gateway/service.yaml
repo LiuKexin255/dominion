@@ -1,0 +1,12 @@
+version: "3.0"
+name: gateway
+app: redis-demo
+kind: stateless
+desc: redis-demo gateway (HTTP to gRPC adapter for go-service and js-service)
+ports:
+  - name: http
+    port: 80
+artifacts:
+  - name: gateway
+    target: //experimental/redis_demo/testplan:cmd_image
+    tls: true

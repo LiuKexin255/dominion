@@ -1,0 +1,33 @@
+load("//tools/dev/go:defs.bzl", "go_largetest")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+
+# The gateway adapter image lives here (its Go binary is in ./gateway) so the
+# gateway service.yaml can target :cmd_image, mirroring the grpc_chain testplan
+# layout.
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "redis-demo",
+    binary = "//experimental/redis_demo/testplan/gateway:gateway",
+    service = "gateway",
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "redis-demo",
+    pkg = ":service_pkg",
+    service = "gateway",
+)
+
+# Interface suite for both KvService implementations over one redis instance
+# (specs/067-redis-infra-support/contracts/redis-demo.md §4). The target name is
+# the gazelle default so gazelle does not also generate a go_unittest for this
+# package (style/large_test.md §测试用例).
+go_largetest(
+    name = "testplan_test",
+    size = "small",
+    srcs = ["interface_test.go"],
+    deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//common/gopkg/testtool",
+    ],
+)

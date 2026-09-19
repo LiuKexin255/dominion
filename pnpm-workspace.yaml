@@ -4,6 +4,7 @@ packages:
   - experimental/dsh/demo/agent
   - experimental/dsh/demo/agent-plugins/*
   - experimental/openai_llm/client
+  - experimental/redis_demo/js_service
   - common/js/**
   - projects/game/desktop/frontend
   - projects/game/agent_v2

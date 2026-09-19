@@ -1,0 +1,12 @@
+version: "3.0"
+name: js-service
+app: redis-demo
+kind: stateless
+desc: redis-demo TypeScript grpc-js service (@dominion/common-js-redis)
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: js-service
+    target: :cmd_image
+    tls: true

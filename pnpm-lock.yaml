@@ -969,6 +969,34 @@ importers:
         specifier: 'catalog:'
         version: 6.0.3
 
+  experimental/redis_demo/js_service:
+    dependencies:
+      '@dominion/common-js-grpc-otel':
+        specifier: workspace:*
+        version: link:../../../common/js/grpc/otel
+      '@dominion/common-js-logs':
+        specifier: workspace:*
+        version: link:../../../common/js/logs
+      '@dominion/common-js-otel':
+        specifier: workspace:*
+        version: link:../../../common/js/otel
+      '@dominion/common-js-redis':
+        specifier: workspace:*
+        version: link:../../../common/js/redis
+      '@grpc/grpc-js':
+        specifier: 'catalog:'
+        version: 1.14.4
+      '@grpc/proto-loader':
+        specifier: 'catalog:'
+        version: 0.8.1
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
   projects/game/agent_v2:
     dependencies:
       '@deepseek-ai/dsh-agent':

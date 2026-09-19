@@ -1,0 +1,80 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
+
+npm_link_all_packages(name = "node_modules")
+
+# tsc type-checks the bin-tree copies of srcs; the nearest package.json for
+# format detection must therefore also be a bin-tree input declaring
+# "type": "module" (NodeNext per-file ESM detection), hence the deps entry.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["package.json"],
+)
+
+ts_proto_library(
+    name = "redis_demo_types",
+    proto = "//experimental/redis_demo:redis_demo_proto",
+    visibility = ["//visibility:public"],
+)
+
+ts_project(
+    name = "server",
+    srcs = [
+        "src/bootstrap.ts",
+        "src/server.ts",
+    ],
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig",
+    deps = [
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-redis",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@types/node",
+        ":redis_demo_types_lib",
+    ],
+)
+
+js_library(
+    name = "redis_demo_types_lib",
+    srcs = [":redis_demo_types"],
+)
+
+# Package JS service files into a tar layer
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "redis-demo",
+    entrypoint = "src/bootstrap.js",
+    npm_deps = [
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
+    runtime_protos = [
+        "//experimental/redis_demo:redis_demo_proto",
+    ],
+    service = "js-service",
+    ts_project = ":server",
+    runtime_deps = [
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+        "//common/js/redis:runtime_pkg",
+    ],
+)
+
+# OCI image for the TypeScript redis-demo service
+artifact_image(
+    name = "cmd_image",
+    app = "redis-demo",
+    pkg = ":server_pkg",
+    service = "js-service",
+    visibility = ["//visibility:public"],
+)
