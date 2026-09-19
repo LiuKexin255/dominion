@@ -46,6 +46,14 @@
  * relay/consume closure and rides at the tail of the review input set
  * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3).
  *
+ * The loop counts completed game rounds (a terminal game plus its settled
+ * planner review) and rests every {@link ROUND_STOP_INTERVAL} rounds. The stop
+ * point sits after queue digestion — a queued user message is still consumed
+ * by the current planner activation first — and performs the normal switch to
+ * the player without producing a drive, so the player's unconsumed relays
+ * stay queued for the next input and the counter resets
+ * (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2/§3).
+ *
  * A pump step that throws (a fail-loud relay read, an alternation-invariant
  * violation, a rejected followup/inject) or whose member turn settles in
  * failure (the member ctx `agent/error` boundary) suspends auto-continuation
@@ -94,6 +102,14 @@ export type OrchestrationPhase = "planning" | "playing" | "reviewing";
 
 /** Default provider route; the host composition's GLM Responses adapter. */
 export const TEAM_PROVIDER = "glm-responses";
+
+/**
+ * Completed game rounds after which the loop rests instead of structurally
+ * continuing: the review turn of the interval-th round settles, the queue is
+ * digested, and the activation switches to the player without a drive
+ * (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2).
+ */
+const ROUND_STOP_INTERVAL = 5;
 
 /**
  * The stable failure code reported for a failure that is not an
@@ -467,6 +483,13 @@ export class TeamOrchestrator {
    * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3 item 3).
    */
   private statsSentFor: GameEventRecord | null = null;
+  /**
+   * Completed game rounds since the last natural stop (or materialization):
+   * one increment per successful planner review settle; a restart without a
+   * terminal record never reaches a review and therefore never counts
+   * (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §1/§2).
+   */
+  private completedRounds = 0;
   /** The review transition awaiting its settling drive (retry-held input). */
   private pendingReview: PendingReview | null = null;
   /** The last failed pump step; cleared by the next successful drive. */
@@ -553,6 +576,7 @@ export class TeamOrchestrator {
       this.pendingReview = null;
       this.reviewedGameEvent = null;
       this.statsSentFor = null;
+      this.completedRounds = 0;
       this.lastError = null;
     } catch (err) {
       await this.rollback(created);
@@ -878,9 +902,12 @@ export class TeamOrchestrator {
         }
         this.lastError = null;
         if (step.review !== undefined) {
-          // The review drive settled: only now is the terminal record consumed.
+          // The review drive settled: the round completes and only now is the
+          // terminal record consumed
+          // (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2).
           this.reviewedGameEvent = step.review;
           this.pendingReview = null;
+          this.completedRounds += 1;
         }
       } catch (err) {
         this.fail(member, turnFailureOf(err), "orchestration");
@@ -940,6 +967,9 @@ export class TeamOrchestrator {
    *    send after materialization is served here with an empty relay set;
    * 2. an unsettled review transition retries with its held relays;
    * 3. planner quiescent (planning/reviewing) → structurally drive player;
+   *    a spent round budget (`completedRounds >= ROUND_STOP_INTERVAL`)
+   *    switches to the player and rests without a drive — the natural stop
+   *    (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2);
    * 4. player quiescent: an unreviewed gameEnded → announce the record's
    *    stats through the saolei system member, then start the planner review
    *    (the announcement guarantees the drained input set is non-empty and
@@ -977,6 +1007,15 @@ export class TeamOrchestrator {
     if (this.phase === "planning" || this.phase === "reviewing") {
       this.phase = "playing";
       this.current = "player";
+      // The round budget is spent: the activation has already switched, but
+      // the loop rests without producing a drive. The player's unconsumed
+      // relays stay queued (the next input delivers them), and the counter
+      // resets for the rounds after the stop
+      // (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2/§3).
+      if (this.completedRounds >= ROUND_STOP_INTERVAL) {
+        this.completedRounds = 0;
+        return null;
+      }
       const relays = this.drain(members.player);
       return relays.length === 0 ? null : { member: members.player, messages: relays };
     }

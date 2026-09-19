@@ -7,9 +7,12 @@
  * materialization rollback, disposal, failure reporting (logger + snapshot
  * failure state, review retry after a failed drive), the saolei
  * announcement's queue-priority invariance (US2 of
- * specs/065-agent-v2-team-refine/spec.md), and the no-synthesized-input rule
- * (every drive carries only team relays and user messages). The state graph
- * under test is
+ * specs/065-agent-v2-team-refine/spec.md), the no-synthesized-input rule
+ * (every drive carries only team relays and user messages), and the natural
+ * round stop (every fifth settled planner review rests the loop instead of
+ * auto-driving the player;
+ * specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §5). The
+ * state graph under test is
  * specs/059-agent-v2-team-mode/data-model.md §5; the behavior contract is
  * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2.
  *
@@ -1543,5 +1546,380 @@ describe("TeamOrchestrator materialization rollback", () => {
     expect(members.get(PLAYER_ID)?.handle.dispose).toHaveBeenCalledOnce();
     expect(team.seam.register).not.toHaveBeenCalled();
     expect(orchestrator.snapshot().materialized).toBe(false);
+  });
+});
+
+/** The player's terminal-report relay text (the review turn's input). */
+const PLAYER_RECORD_RELAY = "本局对局记录";
+
+/** The planner's review-broadcast relay text (the next player turn's input). */
+const ROUND_REVIEW_RELAY = "复盘结论";
+
+/**
+ * Play one completed round from an in-flight player turn: the player's game
+ * reaches a fresh terminal record (the review input relay is seeded) and the
+ * settled planner review completes the round. The review broadcast relay is
+ * seeded before the review settles, so the post-review evaluation starts the
+ * next player turn — the loop's structural continuation.
+ */
+async function completeRound(
+  h: Harness,
+  player: FakeMember,
+  planner: FakeMember,
+): Promise<void> {
+  h.game.current = winner();
+  h.team.queues.set(PLANNER_ID, [
+    relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+  ]);
+  player.settle();
+  await tick();
+  h.team.queues.set(PLAYER_ID, [
+    relay(planner.agent.id, "planner", ROUND_REVIEW_RELAY),
+  ]);
+  planner.settle();
+  await tick();
+}
+
+/**
+ * Complete four consecutive rounds after the first player turn: each settled
+ * review auto-drives the next player turn, so the fifth round's player turn
+ * is left in flight (below the {@link ROUND_STOP_INTERVAL} boundary).
+ */
+async function playFourRounds(h: Harness): Promise<{
+  player: FakeMember;
+  planner: FakeMember;
+}> {
+  const { player, planner } = await beginPlayerTurn(h);
+  for (let round = 0; round < 4; round += 1) {
+    await completeRound(h, player, planner);
+  }
+  return { player, planner };
+}
+
+/** The natural stop's full snapshot (no failure state, activation on player). */
+const STOPPED_SNAPSHOT = {
+  materialized: true,
+  phase: "playing",
+  active: null,
+  activation: "player",
+  paused: false,
+  queued: 0,
+  failed: false,
+  lastError: null,
+};
+
+describe("TeamOrchestrator natural round stop (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §5)", () => {
+  it("auto-drives the player after rounds 1-4 with the review relays (case 1)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    await beginPlayerTurn(h);
+
+    for (let round = 1; round <= 4; round += 1) {
+      const drives = player.followups.length;
+      await completeRound(h, player, planner);
+      // Below the interval the victory switch structurally continues: the
+      // player is driven with the review broadcast relay.
+      expect(h.orchestrator.snapshot()).toMatchObject({
+        phase: "playing",
+        active: "player",
+        activation: "player",
+        paused: false,
+        failed: false,
+        lastError: null,
+      });
+      expect(player.followups.length).toBeGreaterThan(drives);
+      expect(player.followups.map(messageText).at(-1)).toBe(ROUND_REVIEW_RELAY);
+    }
+    expectRelayOrUserSources(h);
+  });
+
+  it("rests at the fifth settled review: no player drive, activation player, no failure (case 2)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    const drives = player.followups.length;
+    await completeRound(h, player, planner);
+
+    // The spent budget switched the activation but produced no drive; the
+    // stop is neither a failure nor a cancel.
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("digests a user message queued during the fifth review before stopping (case 3)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game ends; its review turn starts.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    expect(planner.followups.map(messageText).at(-1)).toBe(PLAYER_RECORD_RELAY);
+
+    // A user message lands while the review turn is in flight.
+    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
+    const playerDrives = player.followups.length;
+    planner.settle();
+    await tick();
+
+    // The queue is digested by the current planner activation first; the stop
+    // is not evaluated while a queued message remains.
+    expect(planner.followups.map(messageText).at(-1)).toBe("排队消息");
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      active: "planner",
+      activation: "planner",
+      queued: 0,
+    });
+    expect(player.followups).toHaveLength(playerDrives);
+
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(playerDrives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("drives the player with the unconsumed review broadcast on the next submit (case 4)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+    await completeRound(h, player, planner);
+
+    // The stop left the review broadcast queued; the next user message
+    // delivers it together with the user message (relay injected, user
+    // message last) and drives the player.
+    expect(h.orchestrator.submit("继续").queued).toBe(false);
+    await tick();
+    expect(player.injections.map(messageText).at(-1)).toBe(ROUND_REVIEW_RELAY);
+    expect(player.followups.map(messageText).at(-1)).toBe("继续");
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: "player",
+      activation: "player",
+      paused: false,
+      failed: false,
+      lastError: null,
+    });
+  });
+
+  it("does not count a restarted game without a terminal record (case 5)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game is restarted mid-way: no terminal record, so no review
+    // (and neither an increment nor a reset).
+    const plannerDrives = planner.followups.length;
+    h.game.current = null;
+    player.settle();
+    await tick();
+    expect(planner.followups).toHaveLength(plannerDrives);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: null,
+      activation: "player",
+    });
+
+    // The restart's real terminal record completes the fifth round and stops:
+    // the retained four counts prove the restart did not reset the counter.
+    h.orchestrator.submit("继续");
+    await tick();
+    const drives = player.followups.length;
+    await completeRound(h, player, planner);
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("does not count a failed review; the retried review counts at the interval boundary (case 6)", async () => {
+    const h = createHarness({ logger: { error: vi.fn() } });
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+    await beginPlayerTurn(h);
+    for (let round = 0; round < 3; round += 1) {
+      await completeRound(h, player, planner);
+    }
+
+    // Round 4's review drive fails at the active boundary: the round is not
+    // counted and the pump pauses.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const drives = player.followups.length;
+    planner.failCurrentTurn("SERVER");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      failed: true,
+      activation: "planner",
+      lastError: { code: "SERVER", member: "planner", origin: "member-turn" },
+    });
+    expect(player.followups).toHaveLength(drives);
+
+    // Resume: the queued message is digested, then the held review retries and
+    // settles. The retry counts round 4 — below the interval — so the player
+    // is auto-driven into round 5 (a counted failure would already have
+    // stopped here).
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(planner.followups.map(messageText).at(-1)).toBe("继续");
+    planner.settle();
+    await tick();
+    h.team.queues.set(PLAYER_ID, [
+      relay(planner.agent.id, "planner", ROUND_REVIEW_RELAY),
+    ]);
+    planner.settle();
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: "player",
+      activation: "player",
+      paused: false,
+      failed: false,
+      lastError: null,
+    });
+
+    // Round 5 completes and stops: only the retried count (4) plus this round
+    // reaches the interval.
+    const round5Drives = player.followups.length;
+    await completeRound(h, player, planner);
+    expect(player.followups).toHaveLength(round5Drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("retries the fifth round's failed review and stops on success (case 6, spec US4 scenario 7)", async () => {
+    const h = createHarness({ logger: { error: vi.fn() } });
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game's review drive fails before it settles.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const drives = player.followups.length;
+    planner.failCurrentTurn("SERVER");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      failed: true,
+      lastError: { code: "SERVER", member: "planner", origin: "member-turn" },
+    });
+    expect(player.followups).toHaveLength(drives);
+
+    // Resume: the queue is digested, the held review retries and settles, and
+    // the spent budget reaches the stop.
+    h.orchestrator.submit("继续");
+    await tick();
+    planner.settle();
+    await tick();
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("recounts from 1 after the stop: no stop until the tenth round (case 7)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+    await completeRound(h, player, planner);
+
+    // Resume: the user message drives the player into the first round after
+    // the stop (round 6).
+    h.orchestrator.submit("继续");
+    await tick();
+
+    for (let round = 6; round <= 9; round += 1) {
+      await completeRound(h, player, planner);
+      expect(h.orchestrator.snapshot()).toMatchObject({
+        phase: "playing",
+        active: "player",
+        activation: "player",
+      });
+    }
+
+    const drives = player.followups.length;
+    await completeRound(h, player, planner);
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("keeps the player relays unconsumed at the stop (the next drive retrieves them) (case 8)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game ends and its review starts; the review broadcast is
+    // seeded for the player.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const reviewBroadcast = relay(planner.agent.id, "planner", ROUND_REVIEW_RELAY);
+    h.team.queues.set(PLAYER_ID, [reviewBroadcast]);
+    const drives = player.followups.length;
+    planner.settle();
+    await tick();
+
+    // The stop did not drain the player relays.
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+    expect(player.followups).toHaveLength(drives);
+    expect(h.team.queues.get(PLAYER_ID)).toEqual([reviewBroadcast]);
+
+    // The next drive retrieves the preserved relay.
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(h.team.queues.get(PLAYER_ID)).toEqual([]);
+    expect(player.injections).toContain(reviewBroadcast);
+  });
+
+  it("still stops after a cancel during the fifth review once the queue is digested (contract §4)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game ends; the review turn is in flight when the cancel lands.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const drives = player.followups.length;
+    h.orchestrator.cancel();
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      paused: true,
+      active: null,
+      activation: "planner",
+      lastError: null,
+    });
+
+    // Resume: the planner digests the queued message, then the spent budget
+    // reaches the stop without driving the player.
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(planner.followups.map(messageText).at(-1)).toBe("继续");
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
   });
 });
