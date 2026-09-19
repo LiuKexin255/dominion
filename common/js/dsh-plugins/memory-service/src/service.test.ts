@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MemoryEntry, MemoryStore } from "./client.js";
 import { createPlannerMemory } from "./service.js";
+import type { WikiStore } from "./wiki-client.js";
 
 /** Fake MemoryStore with in-memory state (DI seam). */
 function makeFakeStore(entries: MemoryEntry[] = []) {
@@ -56,6 +57,31 @@ interface AgentScope {
   readonly cleanups: Array<() => void>;
 }
 
+/** Minimal WikiStore double for the tests that do not exercise the wiki face. */
+function makeFakeWikiStore() {
+  return {
+    searchWikis: vi.fn(
+      async (): Promise<{
+        wikis: { name: string; title: string }[];
+        nextPageToken: string;
+      }> => ({ wikis: [], nextPageToken: "" }),
+    ),
+    getWiki: vi.fn(),
+    createWiki: vi.fn(),
+    updateWiki: vi.fn(),
+  };
+}
+
+function createService(
+  store: ReturnType<typeof makeFakeStore>,
+  wikiStore = makeFakeWikiStore(),
+) {
+  return createPlannerMemory({
+    client: store as unknown as MemoryStore,
+    wikiStore: wikiStore as unknown as WikiStore,
+  });
+}
+
 /** A fake agent scope: identity-keyed agent plus a controllable effect. */
 function makeAgentScope(id = "planner"): AgentScope {
   const cleanups: Array<() => void> = [];
@@ -84,7 +110,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
       { memory_id: "m1", content: "开局先点中心更高效" },
       { memory_id: "m2", content: "player 常误标边角" },
     ]);
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const { agent, ctx } = makeAgentScope();
 
     await service.load(ctx, SCOPE);
@@ -100,7 +126,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
   });
 
   it("renders an empty snapshot when the scope has no entries (section drops)", async () => {
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const { agent, ctx } = makeAgentScope();
 
     await service.load(ctx, SCOPE);
@@ -112,7 +138,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
     store.listMemories.mockRejectedValueOnce(
       Object.assign(new Error("memory service unavailable"), { code: 14 }),
     );
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const { agent, ctx } = makeAgentScope();
 
     await expect(service.load(ctx, SCOPE)).rejects.toThrow(
@@ -127,7 +153,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
   });
 
   it("throws for an unscoped context (no agent) before any read", async () => {
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const ctx = { effect: vi.fn() } as unknown as Context;
 
     await expect(service.load(ctx, SCOPE)).rejects.toThrow(
@@ -137,7 +163,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
   });
 
   it("keys the snapshot per agent (two planners never share one)", async () => {
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const first = makeAgentScope("planner-1");
     const second = makeAgentScope("planner-2");
 
@@ -151,12 +177,12 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
   });
 
   it("snapshot(undefined) is undefined (scope-less assembly)", () => {
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     expect(service.snapshot(undefined)).toBeUndefined();
   });
 
   it("removes the snapshot and binding when the agent scope unwinds", async () => {
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const { agent, ctx, cleanups } = makeAgentScope();
     await service.load(ctx, SCOPE);
     expect(service.snapshot(agent)).toBeDefined();
@@ -175,9 +201,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
 describe("createPlannerMemory — load (snapshot recency)", () => {
   /** Load a fresh service over `entries` and return the rendered snapshot. */
   async function loadSnapshot(entries: MemoryEntry[]): Promise<string> {
-    const service = createPlannerMemory({
-      client: makeFakeStore(entries) as unknown as MemoryStore,
-    });
+    const service = createService(makeFakeStore(entries));
     const { agent, ctx } = makeAgentScope();
     await service.load(ctx, SCOPE);
     return service.snapshot(agent) ?? "";
@@ -188,7 +212,7 @@ describe("createPlannerMemory — load (snapshot recency)", () => {
       { memory_id: "m2", content: "次新" },
       { memory_id: "m1", content: "最新" },
     ]);
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const { agent, ctx } = makeAgentScope();
 
     await service.load(ctx, SCOPE);
@@ -228,7 +252,7 @@ describe("createPlannerMemory — load (snapshot recency)", () => {
       { memory_id: "m2", content: "次新" },
       { memory_id: "m1", content: "最新" },
     ]);
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const { agent, ctx } = makeAgentScope();
     await service.load(ctx, SCOPE);
     const before = service.snapshot(agent);
@@ -255,7 +279,7 @@ describe("createPlannerMemory — applyCall (write path)", () => {
 
   async function loaded(entries: MemoryEntry[] = []) {
     store = makeFakeStore(entries);
-    const service = createPlannerMemory({ client: store as unknown as MemoryStore });
+    const service = createService(store);
     const scope = makeAgentScope();
     await service.load(scope.ctx, SCOPE);
     return { service, ...scope };
@@ -327,5 +351,99 @@ describe("createPlannerMemory — applyCall (write path)", () => {
   it("returns domain text for a bad argument combination (never throws)", async () => {
     const { service, agent } = await loaded();
     await expect(service.applyCall(agent, {})).resolves.toContain("provide EITHER");
+  });
+});
+
+describe("createPlannerMemory — wiki face", () => {
+  /** A loaded service plus the fakes and agent it bound. */
+  async function loaded() {
+    const store = makeFakeStore();
+    const wikiStore = makeFakeWikiStore();
+    const service = createService(store, wikiStore);
+    const scope = makeAgentScope();
+    await service.load(scope.ctx, SCOPE);
+    return { service, wikiStore, ...scope };
+  }
+
+  it("routes wikiSearch through the bound (template, session) scope", async () => {
+    const { service, agent, wikiStore } = await loaded();
+    wikiStore.searchWikis.mockResolvedValue({
+      wikis: [
+        {
+          name: "templates/saolei/sessions/sess-1/wikis/w1",
+          title: "开局策略",
+        },
+      ],
+      nextPageToken: "",
+    });
+
+    const result = await service.wikiSearch(agent, "开局");
+
+    expect(result).toContain("开局策略");
+    expect(wikiStore.searchWikis).toHaveBeenCalledWith(
+      "saolei",
+      "sess-1",
+      "开局",
+      { pageSize: 100, pageToken: undefined },
+    );
+  });
+
+  it("routes wikiGet and wikiWrite through the same bound scope", async () => {
+    const { service, agent, wikiStore } = await loaded();
+    wikiStore.searchWikis.mockResolvedValue({
+      wikis: [
+        {
+          name: "templates/saolei/sessions/sess-1/wikis/w1",
+          title: "开局策略",
+        },
+      ],
+      nextPageToken: "",
+    });
+    wikiStore.getWiki.mockResolvedValue({
+      name: "templates/saolei/sessions/sess-1/wikis/w1",
+      title: "开局策略",
+      content: "正文",
+    });
+
+    await expect(service.wikiGet(agent, ["开局策略"])).resolves.toContain("正文");
+    expect(wikiStore.getWiki).toHaveBeenCalledWith("saolei", "sess-1", "w1");
+
+    wikiStore.searchWikis.mockResolvedValue({ wikis: [], nextPageToken: "" });
+    await expect(
+      service.wikiWrite(agent, { title: "新条目", content: "正文" }),
+    ).resolves.toContain("created: '新条目'");
+    expect(wikiStore.createWiki).toHaveBeenCalledWith(
+      "saolei",
+      "sess-1",
+      expect.any(String),
+      "新条目",
+      "正文",
+    );
+  });
+
+  it("throws for an agent with no loaded scope (fail-loud, like applyCall)", async () => {
+    const service = createService(makeFakeStore());
+    const { agent } = makeAgentScope();
+
+    await expect(service.wikiSearch(agent, "开局")).rejects.toThrow(
+      "has no loaded memory scope",
+    );
+    await expect(service.wikiGet(agent, ["开局策略"])).rejects.toThrow(
+      "has no loaded memory scope",
+    );
+    await expect(
+      service.wikiWrite(agent, { title: "条目", content: "正文" }),
+    ).rejects.toThrow("has no loaded memory scope");
+  });
+
+  it("propagates an infrastructure failure (the tool surface renders text)", async () => {
+    const { service, agent, wikiStore } = await loaded();
+    wikiStore.searchWikis.mockRejectedValue(
+      Object.assign(new Error("memory service unavailable"), { code: 14 }),
+    );
+
+    await expect(service.wikiSearch(agent, "开局")).rejects.toThrow(
+      "memory service unavailable",
+    );
   });
 });

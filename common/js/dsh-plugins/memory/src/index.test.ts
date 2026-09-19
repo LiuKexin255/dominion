@@ -1,13 +1,15 @@
 /**
  * Memory tool-row tests — the row the planner pool's template preset mounts:
- * exactly one `memory` tool and exactly one function-form snapshot section
- * (order 200+), no guidance section. The section's text closure reads the
- * host service's cache through `ctx.plannerMemory`, keyed by the assembly's
- * `context.scope`.
+ * the `memory` tool plus the three wiki tools (`wiki_search`/`wiki_get`/
+ * `wiki_write`) and exactly one function-form snapshot section (order 200+).
+ * The section's text closure reads the host service's cache through
+ * `ctx.plannerMemory`, keyed by the assembly's `context.scope`; the wiki tools
+ * inject nothing into the system prompt.
  *
  * Pattern (style/javascript.md Mock convention): the mounting context and
  * the host service are injected doubles (`vi.fn()`); no module interception.
- * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2.
+ * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2;
+ * specs/068-wiki-round-pause/contracts/dsh-plugins.md §2-3.
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -26,7 +28,7 @@ interface SectionRecord {
   readonly text: string | ((context: { scope?: object }) => string);
 }
 
-/** A mounting context capturing the registered tool and prompt sections. */
+/** A mounting context capturing the registered tools and prompt sections. */
 function makeMount() {
   const tools: ToolDefinition[] = [];
   const sections: SectionRecord[] = [];
@@ -35,6 +37,9 @@ function makeMount() {
     scope === firstScope ? "长期记忆：\n开局先点中心更高效" : undefined,
   );
   const applyCall = vi.fn(async () => "memory added");
+  const wikiSearch = vi.fn(async () => "wiki: 1 title(s) matched 'x':\n- 标题");
+  const wikiGet = vi.fn(async () => "wiki: 1 entry(ies) retrieved.");
+  const wikiWrite = vi.fn(async () => "wiki: 1 entry(ies) applied");
   const ctx = {
     tools: {
       register: vi.fn((definition: ToolDefinition) => {
@@ -48,9 +53,27 @@ function makeMount() {
         return vi.fn();
       }),
     },
-    plannerMemory: { snapshot, applyCall },
+    plannerMemory: { snapshot, applyCall, wikiSearch, wikiGet, wikiWrite },
   } as unknown as Context;
-  return { ctx, tools, sections, snapshot, applyCall, firstScope };
+  return {
+    ctx,
+    tools,
+    sections,
+    snapshot,
+    applyCall,
+    wikiSearch,
+    wikiGet,
+    wikiWrite,
+    firstScope,
+  };
+}
+
+function toolNamed(tools: readonly ToolDefinition[], toolName: string): ToolDefinition {
+  const found = tools.find((tool) => tool.name === toolName);
+  if (found === undefined) {
+    throw new Error(`tool ${toolName} was not registered`);
+  }
+  return found;
 }
 
 describe("memory preset row apply", () => {
@@ -59,16 +82,20 @@ describe("memory preset row apply", () => {
     expect([...inject].sort()).toEqual(["plannerMemory", "systemPrompt", "tools"]);
   });
 
-  it("registers exactly one tool: the `memory` tool", () => {
+  it("registers the memory tool plus the three wiki tools", () => {
     const { ctx, tools } = makeMount();
 
     apply(ctx);
 
-    expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe("memory");
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "memory",
+      "wiki_get",
+      "wiki_search",
+      "wiki_write",
+    ]);
   });
 
-  it("binds the host service into the tool from the row context (not agent.ctx)", async () => {
+  it("binds the host service into the memory tool from the row context (not agent.ctx)", async () => {
     const { ctx, tools, applyCall } = makeMount();
     apply(ctx);
 
@@ -79,9 +106,10 @@ describe("memory preset row apply", () => {
     const exec = {
       agent: { id: "planner", ctx: {} },
     } as unknown as Parameters<NonNullable<ToolDefinition["execute"]>>[1];
-    const result = (await tools[0].execute({ action: "add", content: "一条记忆" }, exec)) as {
-      result: string;
-    };
+    const result = (await toolNamed(tools, "memory").execute(
+      { action: "add", content: "一条记忆" },
+      exec,
+    )) as { result: string };
 
     expect(result).toEqual({ result: "memory added" });
     expect(applyCall).toHaveBeenCalledWith(exec.agent, {
@@ -90,7 +118,50 @@ describe("memory preset row apply", () => {
     });
   });
 
-  it("registers exactly one section: the function-form snapshot (order 200, no guidance)", () => {
+  it("binds the host service into the wiki tools from the row context", async () => {
+    const { ctx, tools, wikiSearch, wikiGet, wikiWrite } = makeMount();
+    apply(ctx);
+    const exec = {
+      agent: { id: "planner", ctx: {} },
+    } as unknown as Parameters<NonNullable<ToolDefinition["execute"]>>[1];
+
+    expect(await toolNamed(tools, "wiki_search").execute({ query: "开局" }, exec)).toEqual(
+      { result: "wiki: 1 title(s) matched 'x':\n- 标题" },
+    );
+    expect(wikiSearch).toHaveBeenCalledWith(exec.agent, "开局");
+
+    expect(
+      await toolNamed(tools, "wiki_get").execute({ titles: ["标题"] }, exec),
+    ).toEqual({ result: "wiki: 1 entry(ies) retrieved." });
+    expect(wikiGet).toHaveBeenCalledWith(exec.agent, ["标题"]);
+
+    expect(
+      await toolNamed(tools, "wiki_write").execute(
+        { title: "标题", content: "正文" },
+        exec,
+      ),
+    ).toEqual({ result: "wiki: 1 entry(ies) applied" });
+    expect(wikiWrite).toHaveBeenCalledWith(exec.agent, {
+      title: "标题",
+      content: "正文",
+      entries: undefined,
+    });
+  });
+
+  it("an unbound wiki call renders the failure as text (no throw)", async () => {
+    const { ctx, tools, wikiSearch } = makeMount();
+    wikiSearch.mockRejectedValue(new Error("no loaded memory scope"));
+    apply(ctx);
+    const exec = {
+      agent: { id: "planner", ctx: {} },
+    } as unknown as Parameters<NonNullable<ToolDefinition["execute"]>>[1];
+
+    const result = await toolNamed(tools, "wiki_search").execute({ query: "x" }, exec);
+
+    expect(result).toEqual({ result: "wiki failed: no loaded memory scope" });
+  });
+
+  it("registers exactly one section: the function-form snapshot (order 200)", () => {
     const { ctx, sections } = makeMount();
 
     apply(ctx);
@@ -101,6 +172,9 @@ describe("memory preset row apply", () => {
     expect(sections[0].order).toBe(MEMORY_SNAPSHOT_SECTION_ORDER);
     expect(sections[0].order).toBeGreaterThanOrEqual(200);
     expect(typeof sections[0].text).toBe("function");
+    // The wiki tools inject nothing into the system prompt
+    // (specs/068-wiki-round-pause/spec.md Edge Cases「wiki 不注入快照」).
+    expect(sections.some((s) => s.name.includes("wiki"))).toBe(false);
     expect(sections.some((s) => s.name.includes("guidance"))).toBe(false);
   });
 

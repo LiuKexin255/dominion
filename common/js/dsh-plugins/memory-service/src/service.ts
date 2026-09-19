@@ -20,6 +20,11 @@
  *   with the agent's bound scope, so writes persist immediately and are never
  *   scoped to a stale session. Domain outcomes are text results; only
  *   infrastructure failures reject, and the tool surface maps them to text.
+ * - `wikiSearch(agent, query)` / `wikiGet(agent, titles)` /
+ *   `wikiWrite(agent, input)` are the wiki face over the same bound scope: the
+ *   wiki store's own client, the same "unbound agent throws, infrastructure
+ *   failure rejects, domain outcome is text" contract as `applyCall`
+ *   (specs/068-wiki-round-pause/contracts/dsh-plugins.md §4).
  * - `snapshot(scope)` is the read face the snapshot section evaluates on each
  *   assembly; an unbound or empty snapshot reads as `undefined`/`""`, which
  *   the registry drops from the prompt.
@@ -41,6 +46,9 @@ import {
   SNAPSHOT_ENTRY_LIMIT,
   SNAPSHOT_ORDER_BY,
 } from "./snapshot.js";
+import type { WikiStore } from "./wiki-client.js";
+import { wikiGet, wikiSearch, wikiWrite } from "./wiki-operations.js";
+import type { WikiWriteArgs } from "./wiki-operations.js";
 
 /**
  * The memory scope key: the business session whose memories this planner
@@ -67,6 +75,21 @@ export interface PlannerMemoryService {
    * outcomes return text; infrastructure failures reject.
    */
   applyCall(agent: Agent, args: MemoryToolArgs): Promise<string>;
+  /**
+   * Search the scope's wiki titles for `query` (all matching titles, no
+   * content). Domain outcomes return text; infrastructure failures reject.
+   */
+  wikiSearch(agent: Agent, query: string): Promise<string>;
+  /**
+   * Retrieve the scope's wiki entries by exact title (content included).
+   * Domain outcomes return text; infrastructure failures reject.
+   */
+  wikiGet(agent: Agent, titles: string[]): Promise<string>;
+  /**
+   * Upsert the scope's wiki entries by title (single XOR batch form, batch
+   * atomic). Domain outcomes return text; infrastructure failures reject.
+   */
+  wikiWrite(agent: Agent, input: WikiWriteArgs): Promise<string>;
   /** The snapshot text bound to a scope key (agent), or undefined. */
   snapshot(scope: ScopeKey | undefined): string | undefined;
 }
@@ -81,6 +104,8 @@ declare module "@deepseek-ai/cordis" {
 export interface PlannerMemoryDeps {
   /** Storage access (production: a {@link import("./client.js").MemoryClient}). */
   readonly client: MemoryStore;
+  /** Wiki storage access (production: a {@link import("./wiki-client.js").WikiClient}). */
+  readonly wikiStore: WikiStore;
 }
 
 /**
@@ -93,7 +118,7 @@ export interface PlannerMemoryDeps {
 export function createPlannerMemory(
   deps: PlannerMemoryDeps,
 ): PlannerMemoryService {
-  const { client } = deps;
+  const { client, wikiStore } = deps;
   const snapshots = new Map<ScopeKey, string>();
   const scopes = new Map<ScopeKey, PlannerMemoryScope>();
 
@@ -105,6 +130,21 @@ export function createPlannerMemory(
       );
     }
     return agent;
+  };
+
+  // The wiki face shares the memory binding: `load` owns the single
+  // (template, session) registration, and every call — memory or wiki —
+  // resolves it here, so an unbound agent fails loud rather than writing to a
+  // stale or guessed scope (specs/068-wiki-round-pause/contracts/dsh-plugins.md
+  // §4).
+  const scopeOf = (agent: Agent): PlannerMemoryScope => {
+    const scope = scopes.get(agent);
+    if (scope === undefined) {
+      throw new Error(
+        `planner memory: agent "${agent.id}" has no loaded memory scope (the materialization setup must await load() first)`,
+      );
+    }
+    return scope;
   };
 
   return {
@@ -130,13 +170,23 @@ export function createPlannerMemory(
     },
 
     async applyCall(agent: Agent, args: MemoryToolArgs): Promise<string> {
-      const scope = scopes.get(agent);
-      if (scope === undefined) {
-        throw new Error(
-          `planner memory: agent "${agent.id}" has no loaded memory scope (the materialization setup must await load() first)`,
-        );
-      }
+      const scope = scopeOf(agent);
       return applyMemoryCall(client, scope.template, scope.session, args);
+    },
+
+    async wikiSearch(agent: Agent, query: string): Promise<string> {
+      const scope = scopeOf(agent);
+      return wikiSearch(wikiStore, scope.template, scope.session, query);
+    },
+
+    async wikiGet(agent: Agent, titles: string[]): Promise<string> {
+      const scope = scopeOf(agent);
+      return wikiGet(wikiStore, scope.template, scope.session, titles);
+    },
+
+    async wikiWrite(agent: Agent, input: WikiWriteArgs): Promise<string> {
+      const scope = scopeOf(agent);
+      return wikiWrite(wikiStore, scope.template, scope.session, input);
     },
 
     snapshot(scope: ScopeKey | undefined): string | undefined {

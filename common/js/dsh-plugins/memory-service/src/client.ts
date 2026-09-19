@@ -187,8 +187,14 @@ export function resolveProtoPath(): string {
   return path.join(serviceRoot(), "projects", "game", "game.proto");
 }
 
-/** proto-loader options matching the ts_proto_library generation options. */
-function protoOptions(): protoLoader.Options {
+/**
+ * proto-loader options matching the ts_proto_library generation options.
+ * Exported because {@link ./wiki-client.js WikiClient} loads the same
+ * `game.proto` closure and MUST keep the loader settings in lockstep
+ * (`longs: String` decodes int64 page sizes; `includeDirs` resolves the
+ * `google/api` imports).
+ */
+export function protoOptions(): protoLoader.Options {
   return {
     longs: String,
     enums: String,
@@ -196,6 +202,48 @@ function protoOptions(): protoLoader.Options {
     oneofs: true,
     includeDirs: [serviceRoot()],
   };
+}
+
+/**
+ * Shared callback-style unary RPC invocation (request + Metadata({waitForReady})
+ * + deadline). A channel that dropped is probed first so the call does not
+ * queue forever in "Waiting for LB pick"; a failure is logged with the
+ * post-failure channel state. {@link MemoryClient} and
+ * {@link ./wiki-client.js WikiClient} share this one policy through the
+ * `label` (they hit the same dominion target).
+ */
+export function callUnary<T>(
+  client: grpc.Client,
+  label: string,
+  invoke: (
+    client: grpc.Client,
+    metadata: grpc.Metadata,
+    options: { deadline: Date },
+    callback: (err: grpc.ServiceError | null, response?: T) => void,
+  ) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const deadline = new Date();
+    deadline.setSeconds(deadline.getSeconds() + 10);
+    probeChannel(client, label);
+    invoke(
+      client,
+      new grpc.Metadata({ waitForReady: true }),
+      { deadline },
+      (err: grpc.ServiceError | null, response?: T) => {
+        if (err) {
+          error(`${label} failed`, {
+            error: err.message,
+            code: String(err.code),
+            channelState: probeChannel(client, `${label} (after failure)`),
+          });
+          reject(err);
+          return;
+        }
+        resolve(response as T);
+      },
+    );
+  });
 }
 
 /**
@@ -379,9 +427,8 @@ export class MemoryClient implements MemoryStore {
   }
 
   /**
-   * Shared callback-style RPC invocation (request + Metadata({waitForReady})
-   * + deadline). A channel that dropped is probed first so the call does not
-   * queue forever in "Waiting for LB pick".
+   * Shared unary invocation over this client's channel (see
+   * {@link callUnary}; the `label` keeps the memory-specific log wording).
    */
   private call<T>(
     invoke: (
@@ -391,31 +438,7 @@ export class MemoryClient implements MemoryStore {
       callback: (err: grpc.ServiceError | null, response?: T) => void,
     ) => void,
   ): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const deadline = new Date();
-      deadline.setSeconds(deadline.getSeconds() + 10);
-      probeChannel(this.client, "memory client call");
-      invoke(
-        this.client,
-        new grpc.Metadata({ waitForReady: true }),
-        { deadline },
-        (err: grpc.ServiceError | null, response?: T) => {
-          if (err) {
-            error("memory client call failed", {
-              error: err.message,
-              code: String(err.code),
-              channelState: probeChannel(
-                this.client,
-                "memory client call (after failure)",
-              ),
-            });
-            reject(err);
-            return;
-          }
-          resolve(response as T);
-        },
-      );
-    });
+    return callUnary(this.client, "memory client call", invoke);
   }
 }
 

@@ -540,6 +540,11 @@ describe("preset template data (T021)", () => {
     expect(playerRows.filter((name) => name === "@dominion/dsh-saolei")).toHaveLength(1);
     expect(playerRows).not.toContain("@dominion/dsh-memory");
     expect(playerRows).not.toContain("@dominion/dsh-memory-service");
+    // The three wiki tools (wiki_search/wiki_get/wiki_write) ride
+    // @dominion/dsh-memory, so the player pool mounting no memory row is
+    // exactly its mounting no wiki tool (spec 068 US2 acceptance scenario 1;
+    // specs/068-wiki-round-pause/spec.md US2, contracts/dsh-plugins.md §1).
+    expect(playerRows.join(" ")).not.toContain("wiki");
 
     const plannerRows = readTemplate("planner").rows.map((entry) => entry.name ?? "");
     expect(plannerRows.filter((name) => name === "@dominion/dsh-memory")).toHaveLength(1);
