@@ -2332,7 +2332,7 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 	}
 
 	// Verify env vars: mongo 凭证以直接值注入（用户名取 profile，密码为确定性
-	// 派生），不再经 SecretKeyRef 引用（specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.1）。
+	// 派生，设计依据 specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.1）。
 	envMap := envVarsToMap(container.Env)
 	if envMap[constants.EnvServiceApp] != w.App {
 		t.Fatalf("Env[%q] = %q, want %q", constants.EnvServiceApp, envMap[constants.EnvServiceApp], w.App)

@@ -159,7 +159,7 @@ description: "Task list for feature 067-redis-infra-support"
 - 官方文档：无
 - 技术文章/技术参考文档：`specs/067-redis-infra-support/quickstart.md`（场景 1–5）、`specs/067-redis-infra-support/spec.md`（Success Criteria）
 
-- [ ] T023 复核 `specs/067-redis-infra-support/quickstart.md` 场景 1–5 全部通过；对照 `specs/067-redis-infra-support/spec.md` Success Criteria（SC-001–SC-005）逐项核对；终态检查：无中间产物残留、无被否决方案痕迹、文档引用完整（`.specify/memory/constitution.md` 原则 I/VII）、图表均为 Mermaid（原则 VIII）
+- [X] T023 复核 `specs/067-redis-infra-support/quickstart.md` 场景 1–5 全部通过；对照 `specs/067-redis-infra-support/spec.md` Success Criteria（SC-001–SC-005）逐项核对；终态检查：无中间产物残留、无被否决方案痕迹、文档引用完整（`.specify/memory/constitution.md` 原则 I/VII）、图表均为 Mermaid（原则 VIII）
 
 ---
 
