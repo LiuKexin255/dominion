@@ -55,14 +55,14 @@ import { TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
-import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
-import type { PresetServiceHandlers } from "../agent_v2_types/projects/game/v2/PresetService.js";
-import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/v2/DesktopBridgeService.js";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
-import type { Preset } from "../agent_v2_types/projects/game/v2/Preset.js";
-import type { Team as TeamProto } from "../agent_v2_types/projects/game/v2/Team.js";
-import type { TeamMember as TeamMemberProto } from "../agent_v2_types/projects/game/v2/TeamMember.js";
-import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/v2/TeamMessage.js";
+import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/AgentService.js";
+import type { PresetServiceHandlers } from "../agent_v2_types/projects/game/PresetService.js";
+import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/DesktopBridgeService.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
+import type { Preset } from "../agent_v2_types/projects/game/Preset.js";
+import type { Team as TeamProto } from "../agent_v2_types/projects/game/Team.js";
+import type { TeamMember as TeamMemberProto } from "../agent_v2_types/projects/game/TeamMember.js";
+import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/TeamMessage.js";
 import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
 import type { ProtoGrpcType } from "../agent_v2_types/agent_v2.js";
 
@@ -1087,19 +1087,19 @@ export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
   // and specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
   // §3.7).
   server.addService(
-    (proto.projects.game.v2.AgentService as unknown as {
+    (proto.projects.game.AgentService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
     buildTeamHandlers(deps),
   );
   server.addService(
-    (proto.projects.game.v2.PresetService as unknown as {
+    (proto.projects.game.PresetService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
     buildPresetHandlers(deps),
   );
   server.addService(
-    (proto.projects.game.v2.DesktopBridgeService as unknown as {
+    (proto.projects.game.DesktopBridgeService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
     buildDesktopBridgeHandlers(options.ctx.desktopBridge.handlers()),

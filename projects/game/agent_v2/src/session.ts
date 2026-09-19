@@ -57,7 +57,7 @@ import type {
 } from "@dominion/dsh-saolei-loop";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { DshContext } from "./dsh.js";
 import { MemberCollector, TeamHistory } from "./history.js";
 import type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package projects.game.v2;
+package projects.game;
 
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
@@ -10,14 +10,16 @@ import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "projects/game/game.proto";
 
-// go_package: the v2 Go generated surface is merged into the game package
+// go_package: this file's Go generated surface shares the game package
 // dominion/projects/game — protoc-gen-go-aip v0.1.3 emits the parent
 // constructor's receiver type unqualified, which only resolves when the
 // parent resources (Template/Session, declared in game.proto) share the
 // generated file's Go package
 // (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §2.6).
-// The proto package stays projects.game.v2: wire, REST, and TS are
-// unaffected.
+// The proto package is projects.game, the same as game.proto in this
+// directory: gazelle's proto mode assumes one proto package per directory,
+// and the shared package keeps the app's two protos in one generation unit
+// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §1).
 option go_package = "dominion/projects/game";
 
 // AgentService is the session-scoped stateful surface of agent_v2: the
@@ -222,7 +224,7 @@ service DesktopBridgeService {
   // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1;
   // connection semantics:
   // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.
-  rpc Stream(StreamRequest) returns (stream projects.game.TeamFrame) {
+  rpc Stream(StreamRequest) returns (stream TeamFrame) {
     option (google.api.http) = {
       get: "/api/v2/{session=templates/*/sessions/*}:stream"
     };
@@ -272,7 +274,7 @@ message SendFrameRequest {
     }
   ];
   // The desktop frame to deliver — an operation result or a signal.
-  projects.game.UserFrame frame = 2 [(google.api.field_behavior) = REQUIRED];
+  UserFrame frame = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
 // SendFrameResponse is intentionally empty: receipt correlation rides on

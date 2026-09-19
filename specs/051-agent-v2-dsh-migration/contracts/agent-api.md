@@ -2,7 +2,9 @@
 
 **Feature**: [spec.md](spec.md) FR-005/006/007/008 | **决策**: [research.md](../research.md) D1/D2/D3/D4/D9/D10 | **数据模型**: [data-model.md](../data-model.md) §2.1–2.4/§3
 
-契约即 proto：§1 为 `projects/game/agent_v2.proto` 全文（逐字一致）。面 = **`AgentService`**（会话作用域有状态面）+ **`PresetService`**（无状态配置面）+ **`DesktopBridgeService`**（flow 桥接，见 [desktop-bridge.md](desktop-bridge.md)）。proto package `projects.game.v2` 不变；Go 生成面并入 `dominion/projects/game` 包（protoc-gen-go-aip v0.1.3 跨 Go 包父构造器缺陷的规避裁定，[revisions/directive-2026-09-01.md](../revisions/directive-2026-09-01.md) §2.6）；proto 文件在 app 根（049 D12 惯例）。049 的 [conversation-api.md](../../049-agent-v2-dsh-init/contracts/conversation-api.md) 事件序/映射/两跳错误表除本文显式修改外全部延续。
+契约即 proto：§1 为 `projects/game/agent_v2.proto` 全文（逐字一致）。面 = **`AgentService`**（会话作用域有状态面）+ **`PresetService`**（无状态配置面）+ **`DesktopBridgeService`**（flow 桥接，见 [desktop-bridge.md](desktop-bridge.md)）。proto package `projects.game`（与仓库 `projects/game/game.proto` 同包）；Go 生成面并入 `dominion/projects/game` 包（protoc-gen-go-aip v0.1.3 跨 Go 包父构造器缺陷的规避裁定，[revisions/directive-2026-09-01.md](../revisions/directive-2026-09-01.md) §2.6）；proto 文件在 app 根（049 D12 惯例）。049 的 [conversation-api.md](../../049-agent-v2-dsh-init/contracts/conversation-api.md) 事件序/映射/两跳错误表除本文显式修改外全部延续。
+
+> **2026-09-19 用户裁定**：统一 proto package 为 `projects.game`（clean break，supersedes 原 `projects.game.v2` 表述）；gRPC 服务全名随之为 `projects.game.AgentService` / `projects.game.PresetService` / `projects.game.DesktopBridgeService`，仓库内消费方随生成物再生闭环。
 
 ## 1. Proto 面
 
@@ -11,7 +13,7 @@
 ```proto
 syntax = "proto3";
 
-package projects.game.v2;
+package projects.game;
 
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
@@ -26,8 +28,8 @@ import "projects/game/game.proto";
 // constructor's receiver type unqualified, which only resolves when the
 // parent resources (v1 Template/Session) share the generated file's Go
 // package (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
-// §2.6). The proto package stays projects.game.v2: wire, REST, and TS are
-// unaffected.
+// §2.6). The proto package is projects.game, matching game.proto in this
+// directory (gazelle's proto mode requires one proto package per directory).
 option go_package = "dominion/projects/game";
 
 // AgentService is the session-scoped stateful surface of agent_v2: the

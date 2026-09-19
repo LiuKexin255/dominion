@@ -9,7 +9,7 @@ import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { GameEventRecord, SaoleiSystemMember } from "@dominion/dsh-saolei-loop";
 
 /** The text of a user message's first text block. */

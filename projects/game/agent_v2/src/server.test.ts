@@ -15,8 +15,8 @@ import type { ModelCatalogEntry } from "./server.js";
 import { TeamSessionError } from "./session.js";
 import type { TeamView } from "./session.js";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/AgentService.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { TurnStream } from "./history.js";
 
 /**

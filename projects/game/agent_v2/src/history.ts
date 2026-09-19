@@ -32,17 +32,17 @@
 
 import { randomUUID } from "node:crypto";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
-import type { ContentBlock } from "../agent_v2_types/projects/game/v2/ContentBlock.js";
-import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
+import type { ContentBlock } from "../agent_v2_types/projects/game/ContentBlock.js";
+import type { HistoryMessage } from "../agent_v2_types/projects/game/HistoryMessage.js";
 import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
-import type { BlockStartEvent } from "../agent_v2_types/projects/game/v2/BlockStartEvent.js";
-import type { BlockDeltaEvent } from "../agent_v2_types/projects/game/v2/BlockDeltaEvent.js";
-import type { BlockEndEvent } from "../agent_v2_types/projects/game/v2/BlockEndEvent.js";
-import type { ToolResultEvent } from "../agent_v2_types/projects/game/v2/ToolResultEvent.js";
-import type { ToolStatus } from "../agent_v2_types/projects/game/v2/ToolStatus.js";
-import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/v2/TeamMessage.js";
-import type { MemberViewEvent } from "../agent_v2_types/projects/game/v2/MemberViewEvent.js";
+import type { BlockStartEvent } from "../agent_v2_types/projects/game/BlockStartEvent.js";
+import type { BlockDeltaEvent } from "../agent_v2_types/projects/game/BlockDeltaEvent.js";
+import type { BlockEndEvent } from "../agent_v2_types/projects/game/BlockEndEvent.js";
+import type { ToolResultEvent } from "../agent_v2_types/projects/game/ToolResultEvent.js";
+import type { ToolStatus } from "../agent_v2_types/projects/game/ToolStatus.js";
+import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/TeamMessage.js";
+import type { MemberViewEvent } from "../agent_v2_types/projects/game/MemberViewEvent.js";
 import type { DshContext } from "./dsh.js";
 
 /**
