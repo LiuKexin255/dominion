@@ -88,7 +88,7 @@ describe("WIKI_GUIDANCE: cross-tool workflow only", () => {
   });
 });
 
-describe("guidance sections: shared constraints (FR-013)", () => {
+describe("guidance sections: shared constraints (specs/068-wiki-round-pause/spec.md FR-013)", () => {
   it("uses no third-party memory-framework terminology", () => {
     for (const text of [MEMORY_GUIDANCE, WIKI_GUIDANCE]) {
       const lower = text.toLowerCase();

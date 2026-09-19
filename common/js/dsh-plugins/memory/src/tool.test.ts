@@ -99,13 +99,13 @@ describe("createMemoryToolDefinition", () => {
     expect(definition.description.length).toBeGreaterThan(0);
   });
 
-  it("describes the snapshot top-10 recency bound and the full-storage writes (FR-012)", () => {
+  it("describes the snapshot top-10 recency bound and the full-storage writes (specs/068-wiki-round-pause/spec.md FR-012)", () => {
     expect(MEMORY_TOOL_DESCRIPTION).toContain("10 most recently updated");
     expect(MEMORY_TOOL_DESCRIPTION).toContain("not refreshed by writes");
     expect(MEMORY_TOOL_DESCRIPTION).toContain("full stored memory");
   });
 
-  it("stays generic: no scenario nouns, no third-party terms, no other tools (FR-012)", () => {
+  it("stays generic: no scenario nouns, no third-party terms, no other tools (specs/068-wiki-round-pause/spec.md FR-012)", () => {
     for (const scenarioNoun of ["planner", "hermes", "review", "player", "game"]) {
       expect(MEMORY_TOOL_DESCRIPTION.toLowerCase()).not.toContain(scenarioNoun);
     }

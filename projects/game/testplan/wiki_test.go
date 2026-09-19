@@ -48,7 +48,7 @@ func TestWikiServiceHttpCrud(t *testing.T) {
 	created, createdBody := createWiki(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "wiki-1", "Alpha 策略", "正文一")
 
 	// then: the resource name's {wiki} segment carries the id, and the
-	// response has no separate id field (FR-017)
+	// response has no separate id field (spec 068 FR-017)
 	wantName := fmt.Sprintf("templates/%s/sessions/%s/wikis/wiki-1", saoleiTemplateID, sessionID)
 	if created.GetName() != wantName {
 		t.Errorf("created Name = %q, want %q", created.GetName(), wantName)
@@ -60,7 +60,7 @@ func TestWikiServiceHttpCrud(t *testing.T) {
 		t.Error("created create_time/update_time are nil — the server must manage the timestamps (OUTPUT_ONLY)")
 	}
 	if strings.Contains(string(createdBody), "wikiId") {
-		t.Errorf("created body = %s, must not carry a wikiId field (FR-017)", createdBody)
+		t.Errorf("created body = %s, must not carry a wikiId field (spec 068 FR-017)", createdBody)
 	}
 
 	// then: a full-width, upper-case spelling of the existing title is
@@ -384,8 +384,8 @@ func createWikiRaw(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, te
 }
 
 // createWiki posts a Wiki via createWikiRaw and returns the parsed resource
-// plus the raw body (the body lets callers assert the FR-017 response shape).
-// Calls t.Fatal on non-200 responses.
+// plus the raw body (the body lets callers assert the spec 068 FR-017
+// response shape). Calls t.Fatal on non-200 responses.
 func createWiki(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID, wikiID, title, content string) (*game.Wiki, []byte) {
 	t.Helper()
 

@@ -26,7 +26,10 @@
 /** Section name for the memory-vs-wiki division of labour. */
 export const MEMORY_GUIDANCE_SECTION_NAME = "memory:guidance";
 
-/** Order for the division section: first slot of the tool-guidance band. */
+/**
+ * Order for the division section: the first guidance slot this plugin
+ * contributes, after `saolei:guidance` (100).
+ */
 export const MEMORY_GUIDANCE_SECTION_ORDER = 110;
 
 /** Section name for the knowledge-base cross-tool workflow. */

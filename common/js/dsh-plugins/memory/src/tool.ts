@@ -18,7 +18,7 @@
  * `(template, session)` scope the service resolves; the tool itself never
  * closes over a scope. Walking `exec.agent.ctx.plannerMemory` is not viable —
  * the agent scope's isolate boundary rejects the property walk, so the row
- * ctx is the composition point that declares the dependency (T023).
+ * ctx is the composition point that declares the dependency.
  */
 
 import { defineTool } from "@deepseek-ai/dsh-tools";

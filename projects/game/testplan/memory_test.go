@@ -320,7 +320,8 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1):
 // update_time is non-increasing for a descending key and non-decreasing for
 // an ascending one, and entries that share an update_time ascend on the
-// {memory} segment of the resource name (the unique tie-breaker, FR-017).
+// {memory} segment of the resource name (the unique tie-breaker, spec 068
+// FR-017).
 func assertMemoryUpdateTimeOrder(t *testing.T, memories []*game.Memory, descending bool) {
 	t.Helper()
 	for i := 1; i < len(memories); i++ {

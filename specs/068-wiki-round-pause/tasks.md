@@ -114,7 +114,7 @@
 - **技术文章/技术参考文档**：`specs/048-js-esm-migration/contracts/esm-package-conventions.md`、`specs/048-js-esm-migration/research.md`（§R5 CJS 第三方依赖互操作普查）、`specs/019-js-test-reliability/research.md`（js_test 执行模型与 mock 根因）、`specs/019-js-test-reliability/contracts/run-vitest-shim.md`（js_test 退出码契约）、`specs/068-wiki-round-pause/spec.md`（FR-012/013）、`specs/068-wiki-round-pause/contracts/dsh-plugins.md`（§3）、`survey/game-wiki-knowledge-base.md`（§3.1/§3.2 记忆分层实践——分工段内容取材）、`specs/064-memory-split-fold-remain/contracts/dsh-plugins.md`（修订基线）
 
 - [X] T018 [P] [US3] 修改 `common/js/dsh-plugins/memory/src/tool.ts`：重写 `MEMORY_TOOL_DESCRIPTION`——通用表述（去 `planner`/`hermes-style` 等场景与外部措辞）、新增"快照仅保留最近更新的 10 条、写操作作用于全量存储且不刷新快照"说明、仅述自身功能、英文（措辞要点见 `contracts/dsh-plugins.md` §3）；更新 `tool.test.ts` 断言（无场景名词、含 top-10 说明）
-- [X] T019 [P] [US3] 新增 `common/js/dsh-plugins/memory/src/guidance.ts`（两个 section 常量与文本）并修改 `common/js/dsh-plugins/memory/src/index.ts` 注册：`memory:guidance`（order 110——memory vs wiki 分工差异：常驻少量近期工作记忆 vs 按需检索海量知识库；不含用法/参数、无 memGPT/Letta 术语）与 `wiki:guidance`（order 120——`wiki_search` 发现 → `wiki_get` 取回 → `wiki_write` 沉淀/更新的配合用法；不重复分工）；文本风格参照 `common/js/dsh-plugins/saolei/src/index.ts` 的 `SAOLEI_GUIDANCE`（英文、markdown 小节）；新增/更新单测断言（section 名称/order/文本边界：分工段无用法、用法段无分工、均无第三方术语）
+- [X] T019 [P] [US3] 新增 `common/js/dsh-plugins/memory/src/guidance.ts`（两个 section 常量与文本）并修改 `common/js/dsh-plugins/memory/src/index.ts` 注册：`memory:guidance`（order 110——memory vs wiki 分工差异：常驻少量近期工作记忆 vs 按需检索海量知识库；不含用法/参数、无 memGPT/Letta 术语）与 `wiki:guidance`（order 120——`wiki_search` 发现 → `wiki_get` 取回 → `wiki_write` 沉淀/更新的配合用法；不重复分工）；文本风格参照 `common/js/dsh-plugins/saolei/src/index.ts` 的 `SAOLEI_GUIDANCE`（markdown 小节形态；语言以契约 `contracts/dsh-plugins.md` §3 英文为准）；新增/更新单测断言（section 名称/order/文本边界：分工段无用法、用法段无分工、均无第三方术语）
 
 **Checkpoint**: 模型面文本（描述 × 4 + section × 2）全部就位且断言全绿。
 
@@ -162,9 +162,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`.specify/memory/constitution.md`（门禁 4/5 复核依据）、`specs/068-wiki-round-pause/quickstart.md`、`specs/068-wiki-round-pause/checklists/requirements.md`、`projects/game/agent_v2/README.md`（§大型测试豁免记录面）
 
-- [ ] T022 全量构建与测试：`bazel build //...` 与 `bazel test //...`（至少覆盖 `//projects/game/...` 与 `//common/js/dsh-plugins/...`）全绿
-- [ ] T023 按 `specs/068-wiki-round-pause/quickstart.md` 逐场景核对验收状态（场景 1/3 已由 T011 执行——复核结果记录；场景 2/4 单测面确认；缺口补齐）
-- [ ] T024 终态门禁复核（宪法 I/VII/VIII）：全部新增/修改代码与文档的引用可追溯（仓库相对路径/URL）、注释与文档只表述终态、图表为 Mermaid；`checklists/requirements.md` 全项复核更新
+- [X] T022 全量构建与测试：`bazel build //...` 与 `bazel test //...`（至少覆盖 `//projects/game/...` 与 `//common/js/dsh-plugins/...`）全绿
+- [X] T023 按 `specs/068-wiki-round-pause/quickstart.md` 逐场景核对验收状态（场景 1/3 已由 T011 执行——复核结果记录；场景 2/4 单测面确认；缺口补齐）
+- [X] T024 终态门禁复核（宪法 I/VII/VIII）：全部新增/修改代码与文档的引用可追溯（仓库相对路径/URL）、注释与文档只表述终态、图表为 Mermaid；`checklists/requirements.md` 全项复核更新
 
 ---
 

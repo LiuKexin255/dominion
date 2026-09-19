@@ -39,13 +39,18 @@ import type { WikiStore, WikiSummary } from "./wiki-client.js";
  */
 export const WIKI_SEARCH_PAGE_SIZE = 100;
 
-/** Title upper bound in runes (service `ValidateWikiTitle`, FR-005). */
+/**
+ * Title upper bound in runes (service `ValidateWikiTitle`,
+ * specs/068-wiki-round-pause/spec.md FR-005).
+ */
 export const WIKI_TITLE_MAX_RUNES = 128;
 
 /**
- * Content upper bound in bytes (service `ValidateWikiContent`, FR-005). The
- * tool preflight enforces it locally so an over-limit batch entry aborts the
- * whole batch before any write (US2 scenario 4) instead of failing mid-commit.
+ * Content upper bound in bytes (service `ValidateWikiContent`,
+ * specs/068-wiki-round-pause/spec.md FR-005). The tool preflight enforces it
+ * locally so an over-limit batch entry aborts the whole batch before any write
+ * (specs/068-wiki-round-pause/spec.md US2 scenario 4) instead of failing
+ * mid-commit.
  */
 export const WIKI_CONTENT_MAX_BYTES = 64 * 1024;
 

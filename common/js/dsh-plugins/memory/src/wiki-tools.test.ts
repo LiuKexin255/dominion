@@ -228,7 +228,7 @@ describe("executeWiki*Tool (text results, never throws)", () => {
     expect(batch.result).toBe(WIKI_WRITE_EMPTY_ENTRIES_TEXT);
   });
 
-  it("does NOT resolve the service through agent.ctx (the T023 regression)", async () => {
+  it("does NOT resolve the service through agent.ctx (the binding stays in the preset row)", async () => {
     const wikiSearch = vi.fn(async () => "ok");
     const exec = { agent: { id: "planner", ctx: {} } } as unknown as ToolRunContext;
 
