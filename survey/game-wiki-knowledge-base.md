@@ -36,7 +36,7 @@
 | D2 | 资源命名 | 资源类型 `Wiki`，pattern `templates/{template}/sessions/{session}/wikis/{wiki}`，服务 `WikiService` |
 | D3 | title 唯一性 | 规范化后的 title 在 `(template, session)` 内**强制唯一**（唯一复合索引兜底，重复返回 ALREADY_EXISTS） |
 | D4 | 交付范围 | 服务端（Go）+ agent JS 工具（dsh-plugins）端到端 |
-| D5 | List 与 Search 的分工 | **List = 全量获取**：AIP-132 标准语义，返回完整资源（含 content，分页限制单页成本）；**Search = 检索**：AIP-136 自定义方法，轻量响应（title + wiki_id，不含 content）。仅 Search 裁剪字段，List 不做字段裁剪 |
+| D5 | List 与 Search 的分工 | **List = 全量获取**：AIP-132 标准语义，返回完整资源（含 content，分页限制单页成本）；**Search = 检索**：AIP-136 自定义方法，轻量响应（`{name, title}`，id 由 `name` 末段承载，不含 content）。仅 Search 裁剪字段，List 不做字段裁剪 |
 | D6 | agent 工具面的动作集 | 工具仅提供 search/get/write 动作，**不提供 list**——game memory 工具当前不需要全量获取功能；服务端 ListWikis 保留为标准 API 面（gateway/外部调用方），工具发现一律走 search |
 | D7 | Search 分页 | **query 限定的 offset 分页**：`page_token` 编码 `{q: 规范化query, offset}`（不透明 base64url），续页 query 不匹配 → INVALID_ARGUMENT；与 List 的 token 形态独立。实现采用 **redis 结果快照缓存**（按可用假设设计，§5.1.1）：按 query 缓存有序结果 + TTL + 写代际失效，缓存 miss / redis 不可用时降级为逐页重执行——API 契约对缓存/重执行两种实现不变 |
 | D8 | List 排序 | **不提供 order_by**，固定 `wiki_id asc`（wiki_id 才是 memory_id 的对标，title 不是排序字段）——排序/游标机制大幅简化（无白名单/无方向解析，固定单键 seek）；仓库先例：`ListSessionsRequest` 亦无 order_by（`projects/game/game.proto`） |
@@ -196,7 +196,7 @@ n-gram 方案的业界验证来源：
 2. **query ≥ 2 rune**：切 bigram → mongo `Find({template, session_id, title_grams: {$all: grams}}, 投影不含 content)` —— `(template, session_id, title_grams)` multikey 复合索引支撑，等值前缀 + gram 交集，无集合扫描；
 3. **query < 2 rune**（含中文单字查询——单字在中文是有意义的查询单元）：回退 `{template, session_id, title_norm: {$regex: QuoteMeta(query)}}`，成本以会话内条目数为上界（保守方案可接受，文档化即可）；
 4. Go 侧验证与评分：`strings.Contains(title_norm, query_norm)` 过滤假阳性；评分建议：精确相等 > 前缀匹配 > 子串匹配，同分按 `title_norm` 升序——确定性排序，结果可复现；
-5. 返回当页切片（title + wiki_id，**不含 content**）；分页为 query 限定 offset（D7）——首检有序结果按 §5.1.1 缓存（redis 按可用假设），续页从缓存切片，miss 时重执行。
+5. 返回当页切片（`{name, title}` 轻量条目，**不含 content**；id 由 `name` 末段承载、资源消息无独立 id 字段——终态契约见 `specs/068-wiki-round-pause/contracts/wiki-service.md` §1/§4）；分页为 query 限定 offset（D7）——首检有序结果按 §5.1.1 缓存（redis 按可用假设），续页从缓存切片，miss 时重执行。
 
 **索引清单**（`game_memory.wikis`，启动时创建）：
 
@@ -208,7 +208,7 @@ n-gram 方案的业界验证来源：
 
 （List 固定 `wiki_id asc`（D8）由唯一身份索引直接支撑，无需额外排序索引。）
 
-**内容索引**（需求中"内容的索引"的实现面）：content 不参与模糊检索（Search 投影排除 content，仅返回 title + wiki_id）；Get by `(template, session_id, wiki_id)` 唯一索引点查返回完整 content；List 按 AIP-132 完整资源返回（分页限制单页成本，见 §5.1）。
+**内容索引**（需求中"内容的索引"的实现面）：content 不参与模糊检索（Search 投影排除 content，仅返回 `{name, title}` 轻量条目——id 由 `name` 末段承载）；Get by `(template, session_id, wiki_id)` 唯一索引点查返回完整 content；List 按 AIP-132 完整资源返回（分页限制单页成本，见 §5.1）。
 
 ### 4.4 与本仓库实现的契合点
 
@@ -230,7 +230,7 @@ n-gram 方案的业界验证来源：
 | `UpdateWiki`（AIP-134，PATCH） | [google.aip.dev/134](https://google.aip.dev/134) | title/content 可变（title 变更需重生成 grams 并保持唯一） |
 | `DeleteWiki`（AIP-135，DELETE） | [google.aip.dev/135](https://google.aip.dev/135) | — |
 | `ListWikis`（AIP-132，GET） | [google.aip.dev/132](https://google.aip.dev/132) | **全量获取**：标准 List 语义，返回完整资源（含 content）；**不提供 order_by，固定 `wiki_id asc`**（D8——wiki_id 是 memory_id 的对标；仓库先例：`ListSessionsRequest` 亦无 order_by）+ AIP-158 分页（[google.aip.dev/158](https://google.aip.dev/158)），固定单键 seek 游标；分页限制单页成本 |
-| `SearchWikis`（AIP-136 自定义方法，GET `.../wikis:search`） | [google.aip.dev/136](https://google.aip.dev/136) | **检索**：`query` 参数，轻量响应（title + wiki_id，**不含 content**），query 限定 offset 分页 + redis 结果快照缓存（D7，详见 §5.1.1）；AIP-136 明确示例"consider a `SearchBooks` with an author field as a search dimension"——带打分/排序的模糊检索正是自定义方法的适用场景，响应形态自定义无 AIP 冲突 |
+| `SearchWikis`（AIP-136 自定义方法，GET `.../wikis:search`） | [google.aip.dev/136](https://google.aip.dev/136) | **检索**：`query` 参数，轻量响应（`{name, title}`，**不含 content**；id 由 `name` 末段承载），query 限定 offset 分页 + redis 结果快照缓存（D7，详见 §5.1.1）；AIP-136 明确示例"consider a `SearchBooks` with an author field as a search dimension"——带打分/排序的模糊检索正是自定义方法的适用场景，响应形态自定义无 AIP 冲突 |
 
 不采用的两条路线及原因：
 
@@ -266,17 +266,18 @@ n-gram 方案的业界验证来源：
   - **写失效采用代际计数器**：`wiki:searchgen:{template}:{session}`，任何 wiki 写操作 INCR；cache key 含 gen，写后新查询自然落到新代，旧代 key 等 TTL 回收——避免写时按 pattern 枚举删除缓存 key 的复杂度；
   - 降级路径即"逐页重执行"形态：功能无损，仅翻页一致性回到 offset 语义（写入期间可能漂移，与无缓存方案一致）。
 - **多副本与演进**：redis 外置缓存在多副本下行为一致（memory 服务当前单副本，进程内 TTL cache 本可零依赖等价；选 redis 是为多副本扩展与"假设可用"前提）。`{q, offset}` 契约对"无缓存重执行 / 进程内缓存 / redis 缓存"三种实现完全不变——是否缓存、用什么缓存是部署与性能决策，不影响 API，可随时增减。
-- **落地前提注记**：基建当前无 redis——部署运行时仅实现 mongodb infra（`projects/infra/deploy/runtime/k8s/converter.go` 的 `infraResourceMongoDB` 唯一 case），domain 层 API 模型虽接受 `resource: redis` 字符串但无运行时实现；落地需先补齐部署运行时资源类型 + Go client + bootstrap 接线。
+- **落地前提注记**：redis 基建已由 067 交付（部署资源、Go/JS 公共库 `common/gopkg/redis`、`common/js/redis`），缓存可直接接入；缓存是纯优化，miss/不可用一律降级为逐页重执行（现状与实现注记见 `specs/068-wiki-round-pause/research.md` §5）。
 
 ### 5.2 agent 工具面（dsh-plugin）
 
-参照 `common/js/dsh-plugins/memory/`（hermes 式单工具）与 preset 挂载模式（`projects/game/agent_v2/preset-templates/planner/planner/agent.cordis.yml`）：
+工具面终态 = **三个独立工具**（`wiki_search`/`wiki_get`/`wiki_write`，对应 D6 动作集 search/get/write），随 planner preset 的 memory 行（`@dominion/dsh-memory`）注册；工具与 prompt 文本终态见 `specs/068-wiki-round-pause/contracts/dsh-plugins.md`：
 
-- **单工具 `wiki` + `action` 枚举**（search/get/create/update/delete...），与 memory 工具形态一致，降低模型学习成本；Claude memory tool 的"少工具、命令式"实践（§3.2）与此一致；
-- **两级检索映射**：`search(query)` → SearchWikis（轻量 title 列表）；`get(title)` → 工具层先精确解析 title（D3 唯一性保证无歧义）再 GetWiki 返回 content；**工具面不提供 list 动作**（D6）——发现一律走 search，ListWikis 仅作为服务端/gateway 的标准 API 面保留（全量获取场景的潜在调用方是外部/运维面，不是 agent 工具）；
+- **`wiki_search`**：唯一参数 `query`，映射 SearchWikis，返回轻量 title 列表（无 content）；
+- **`wiki_get`**：参数 `titles: string[]`，工具层先按 title 精确解析（D3 唯一性保证无歧义）再 GetWiki，批量返回 content；未命中标题列出并引导先 `wiki_search`；
+- **`wiki_write`**：单条 `{title, content}` XOR 批量 `{entries[]}`，按规范化 title upsert（存在 → UpdateWiki，不存在 → CreateWiki，`wiki_id` 由 title 摘要确定性生成），批量预检全过才提交；**工具面不提供 list**（D6）——发现一律走 `wiki_search`，ListWikis 仅作为服务端/gateway 的标准 API 面保留（全量获取场景的潜在调用方是外部/运维面，不是 agent 工具）；
 - **wiki_id 对 LLM 不可见**：与 memory_id 同策略（`specs/039-planner-memory-calibration/spec.md` FR-008——agent 内部生成，LLM 不感知）；title 即 LLM 侧的自然地址（D3 唯一性是前提）；
 - **不做快照注入**：与 memory 的冻结快照（`common/js/dsh-plugins/memory-service/src/snapshot.ts`）相反，wiki 不注入 system prompt——"随用随取"靠工具检索；如需"路标"可后续考虑注入标题摘要（Letta MemFS 式文件树），本次保守不做；
-- 写路径引导：重复 title 创建报错时，工具结果引导"先 search 再决定 create/update"（类似 hermes memory 的 old_text 匹配失败引导）。
+- 写路径引导：批量预检失败/精确解析未命中时，工具结果给出失败条目与原因并引导"先 `wiki_search` 再决定写入"（类似 hermes memory 的 old_text 匹配失败引导）。
 
 ---
 
@@ -286,12 +287,12 @@ n-gram 方案的业界验证来源：
 
 ## 7. 对后续方案设计的建议（草案级）
 
-1. 资源 proto：`Wiki { name, wiki_id, title, content, create_time, update_time }`，pattern `templates/{template}/sessions/{session}/wikis/{wiki}`，`wiki_id` 沿用 `[a-z0-9_-]+` 字符集（与 memory 一致，`projects/game/memory/handler/handler.go` 的 `memoryIDPattern`）；title ≤ 128 rune、content ≤ 64KB 校验（D9）；
+1. 资源 proto：`Wiki { name, title, content, create_time, update_time }`（无独立 id 字段，id 由 `name` 末段承载），pattern `templates/{template}/sessions/{session}/wikis/{wiki}`，`CreateWikiRequest.wiki_id` 沿用 `[a-z0-9_-]+` 字符集（agent 侧生成，与 memory 一致，`projects/game/memory/handler/handler.go` 的 `memoryIDPattern`）；title ≤ 128 rune、content ≤ 64KB 校验（D9）；
 2. 存储文档：`{ _id, template, session_id, wiki_id, title, title_norm, title_grams, content, create_time, update_time }`（`_id` 数据库生成不覆盖，`style/mongo.md`；集合名 `wikis`，mongo 库沿用 `game_memory`——同服务同库、服务内集合隔离）；
 3. domain 层：**无需 order_by 白名单/解析**（D8）——List 游标为固定 `wiki_id` 单键 seek 的极简实现；Search token 为 `{q, offset}` 编解码 + query 匹配校验（D7）；新增纯函数 `NormalizeTitle`/`TitleBigrams`；
 4. handler 层：CRUD/List 仿 memory handler（List 完整资源返回、固定 `wiki_id asc`、无 order_by，AIP-132 标准语义）；`SearchWikis` 新增（query 规范化 + 预过滤委托仓储 + Go 侧验证评分 + offset 分页，响应不含 content）；
 5. 检索实现位置：**评分验证在 handler/domain 侧（Go），仓储只做 `$all` 候选查询**——保持 `collectionOps` seam 与 fake 单测模式（§4.4）；Search 结果缓存（redis 快照 + 代际失效 + miss 降级，§5.1.1）作为独立可拆分的实现模块；
-6. agent 侧：新 dsh-plugin（wiki 工具 + gRPC client，工具动作 search/get/write、无 list——D6），preset 仅挂 planner（D10）；
+6. agent 侧：memory 插件行（`@dominion/dsh-memory`）新增三个 wiki 工具（`wiki_search`/`wiki_get`/`wiki_write`，D6 动作集 search/get/write、无 list），经 memory-service 包扩展的 `plannerMemory` 面访问 WikiService；preset 仅挂 planner（D10）；
 7. 验证面：Go 单测（fake collection + 纯函数 case 表 + token 编解码与 query 匹配校验 + 缓存命中/失效/降级路径）+ testplan 大型测试（gateway HTTP：CRUD、List 固定序分页、Search offset 分页与 query 匹配校验，覆盖中文、大小写、子串、短查询回退路径）。
 
 ## 8. 参考文献

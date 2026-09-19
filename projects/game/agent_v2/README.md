@@ -428,6 +428,15 @@ player 成员视图消费该消息、`GetTeam`/`active_member` 不含该角色
 与 `specs/065-agent-v2-team-refine/quickstart.md` §3。注入设施与触发词见
 `projects/game/fake-llm/README.md`。
 
+068（planner wiki 与 saolei-loop 五轮自然停）增量：wiki 服务端面经
+`projects/game/testplan/wiki_test.go` 的 gateway HTTP 大型测试验收（部署→测试→
+清理闭环，含 `memory_test.go` name 断言零回归）；`saolei-loop` 的**每五轮自然停**
+（`specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md`）**不单设大型
+测试**——真实驱动 5 局完整游戏的成本与波动不可控，按宪法 VI 在此记录豁免：以
+`common/js/dsh-plugins/saolei-loop/src/orchestrator.test.ts` 覆盖契约 §5 全部 8 条
+状态机用例为验收，本文件所述既有各 suite 作零回归（裁断与理由见
+`specs/068-wiki-round-pause/research.md` §7）。
+
 ## 已知限制
 
 - **compact 明确排除**（`specs/059-agent-v2-team-mode/spec.md` FR-018）：成员
