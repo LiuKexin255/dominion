@@ -41,7 +41,7 @@
 | 门禁（宪法原则） | 状态 | 说明 |
 |---|---|---|
 | 1. 文档阅读门禁（V） | ✅ 计划于 tasks.md 落实 | 每 phase 三分类文档清单（style/、官方文档 URL、survey+research+contracts），规划时逐一阅读 |
-| 2. 实现门禁（II/III） | ✅ | 接口先行：`contracts/wiki-service.md`、`contracts/memory-resource-identity.md`、`contracts/dsh-plugins.md`、`contracts/saolei-loop-round-stop.md` 先于实现；重构式：memory_id 移除与 064 契约 §2 item 4 修订随功能同批交付，不留过渡态 |
+| 2. 实现门禁（II/III） | ✅ | 接口先行：`contracts/wiki-service.md`、`contracts/memory-resource-identity.md`、`contracts/memory-page-token-context.md`、`contracts/dsh-plugins.md`、`contracts/saolei-loop-round-stop.md` 先于实现；重构式：memory_id 移除与 064 契约 §2 item 4 修订、065 契约 §1 item 4 token 一致性修订随功能同批交付，不留过渡态 |
 | 3. 编译 + 单测门禁（IV） | ✅ | 每次 `bazel build`/`bazel test`（相关 target）为开发任务一部分，不单列 task |
 | 4. 引用、图表与终态门禁（I/VII/VIII） | ✅ | 所有产出带仓库相对路径/URL 引用；需求正文与 Clarifications 均只表述终态决策（不保留被否决方案的演进过程）；图表统一 Mermaid |
 | 5. 大型测试验收门禁（VI） | ✅ | wiki 服务端走 testplan 实际执行（部署→测试→清理闭环、全用例通过）；自然停以编排层单测验收的裁断与理由记录于 research.md §7，豁免说明落于 `projects/game/agent_v2/README.md` §大型测试（宪法 VI 豁免记录） |
@@ -63,6 +63,7 @@ specs/068-wiki-round-pause/
 ├── contracts/
 │   ├── wiki-service.md            # WikiService RPC 契约（含标识形态、检索、分页）
 │   ├── memory-resource-identity.md# Memory.memory_id 移除（clean break 改造清单）
+│   ├── memory-page-token-context.md# ListMemories token 显式 order_by 上下文（修订 065 §1 item 4）
 │   ├── dsh-plugins.md             # memory 插件修订（三工具/prompt/服务面，修订 064）
 │   └── saolei-loop-round-stop.md  # 自然停状态机契约
 └── tasks.md                       # Phase 2 输出（/speckit.tasks，本命令不创建）

@@ -233,7 +233,12 @@ func applyMemoryMask(patch *game.Memory, mask *fieldmaskpb.FieldMask) (string, e
 
 // ─── Conversion helpers ───────────────────────────────────────────────────
 
-// memoryToProto converts a domain Memory to a proto Memory.
+// memoryToProto converts a domain Memory to a proto Memory. The resource
+// carries no separate id field: the memory id is the {memory} terminal segment
+// of the resource name, derived here from the domain fields
+// (specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1;
+// AIP-133 user-specified id lives on CreateMemoryRequest, not the resource:
+// https://google.aip.dev/133).
 func memoryToProto(m *domain.Memory) *game.Memory {
 	if m == nil {
 		return nil
@@ -264,6 +269,6 @@ func toStatusError(err error) error {
 	case errors.Is(err, domain.ErrInvalidPageToken):
 		return status.Error(codes.InvalidArgument, err.Error())
 	default:
-		return status.Error(codes.Internal, fmt.Sprintf("memory handler: %v", err))
+		return status.Error(codes.Internal, fmt.Sprintf("memory service: %v", err))
 	}
 }

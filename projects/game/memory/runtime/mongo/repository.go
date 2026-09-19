@@ -285,15 +285,18 @@ func memorySortDocument(sort []*domain.MemorySortTerm) bson.D {
 	return document
 }
 
-// memoryNextPageToken encodes the page's last document position on the final
-// sort key: each document value goes through its term's CursorEntry, the only
-// place a typed cursor value becomes its wire form.
+// memoryNextPageToken encodes the page's last document position together with
+// the order_by context: each document value goes through its term's
+// CursorEntry (the only place a typed cursor value becomes its wire form) and
+// the context is filled from the same key by NewMemoryPageCursor, so the
+// token's context and entries always agree
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
 func memoryNextPageToken(doc *memoryDocument, sort []*domain.MemorySortTerm) string {
-	var entries []*domain.MemoryCursorEntry
+	values := make([]any, 0, len(sort))
 	for _, term := range sort {
-		entries = append(entries, term.CursorEntry(doc.sortValue(term.Field)))
+		values = append(values, doc.sortValue(term.Field))
 	}
-	return domain.EncodeMemoryPageToken(&domain.MemoryPageCursor{Entries: entries})
+	return domain.EncodeMemoryPageToken(domain.NewMemoryPageCursor(sort, values))
 }
 
 // find runs the cursor query and decodes the matching documents.

@@ -6,6 +6,8 @@ go_library(
     srcs = [
         "model.go",
         "repository.go",
+        "wiki_model.go",
+        "wiki_repository.go",
     ],
     importpath = "dominion/projects/game/memory/runtime/mongo",
     visibility = ["//visibility:public"],
@@ -19,7 +21,10 @@ go_library(
 
 go_unittest(
     name = "mongo_test",
-    srcs = ["repository_test.go"],
+    srcs = [
+        "repository_test.go",
+        "wiki_repository_test.go",
+    ],
     embed = [":mongo"],
     deps = [
         "//projects/game/memory/domain",

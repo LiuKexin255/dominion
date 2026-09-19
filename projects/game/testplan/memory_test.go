@@ -1,7 +1,7 @@
 // Package testplan contains the MEMORY module large-test suite.
 //
 // memory_test.go validates the MemoryService storage API end-to-end through
-// the gateway's public HTTP entry: Create/Update/Delete/List (memory_id-based
+// the gateway's public HTTP entry: Create/Update/Delete/List (name-addressed
 // resources, resource pattern
 // templates/{template}/sessions/{session}/memories/{memory}), AIP-158
 // pagination (page_size/page_token/next_page_token), the AIP-193 error codes
@@ -37,11 +37,14 @@ import (
 // TestMemoryServiceHttpCrudAndPagination verifies the MemoryService storage
 // API + AIP-158 pagination through the gateway public entry
 // (specs/039-planner-memory-calibration contracts/memory-service-contract.md
-// §2/§6): create/get/list/update/delete of memory_id-based resources, the
+// §2/§6): create/get/list/update/delete of name-addressed resources, the
 // unique-identity ALREADY_EXISTS rejection, NOT_FOUND on missing
 // update/delete, INVALID_ARGUMENT on a memory_id outside [a-z0-9_-], and
 // cursor pagination (page_size/page_token/next_page_token — the repository
-// sorts by memory_id ascending and pages with limit=pageSize+1).
+// sorts by memory_id ascending and pages with limit=pageSize+1). The resource
+// name's {memory} terminal segment carries the memory id; the response has no
+// separate id field (FR-017,
+// specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
 func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -55,15 +58,13 @@ func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 	// embedded {content} body (AIP-133).
 	created := createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "mem-1", "player 常犯边角误标")
 
-	// then: the resource carries the full AIP-122 name, the memory_id
-	// segment and the content (contract §1).
+	// then: the resource carries the full AIP-122 name (whose {memory}
+	// segment is the memory id) and the content (contract §1).
 	wantName := fmt.Sprintf("templates/%s/sessions/%s/memories/mem-1", saoleiTemplateID, sessionID)
 	if created.GetName() != wantName {
 		t.Errorf("created Name = %q, want %q", created.GetName(), wantName)
 	}
-	if created.GetMemoryId() != "mem-1" {
-		t.Errorf("created memory_id = %q, want mem-1", created.GetMemoryId())
-	}
+	assertMemoryNameID(t, created, "mem-1")
 	if created.GetContent() != "player 常犯边角误标" {
 		t.Errorf("created content = %q, want the posted content", created.GetContent())
 	}
@@ -201,8 +202,8 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 	if got := len(ordered.GetMemories()); got != 5 {
 		t.Fatalf("ListMemories(order_by=update_time desc) returned %d entries, want 5", got)
 	}
-	if got := ordered.GetMemories()[0].GetMemoryId(); got != "mem-2" {
-		t.Errorf("ordered first entry = %q, want mem-2 (the patched entry)", got)
+	if got := ordered.GetMemories()[0].GetName(); got != fmt.Sprintf("templates/%s/sessions/%s/memories/mem-2", saoleiTemplateID, sessionID) {
+		t.Errorf("ordered first entry = %q, want the mem-2 resource name (the patched entry)", got)
 	}
 	assertMemoryUpdateTimeOrder(t, ordered.GetMemories(), true)
 
@@ -219,17 +220,15 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 		t.Fatalf("ListMemories(order_by=update_time) returned %d entries, want %d", got, len(wantAscending))
 	}
 	for i, want := range wantAscending {
-		if got := ascending.GetMemories()[i].GetMemoryId(); got != want {
-			t.Errorf("ascending entry[%d] = %q, want %q", i, got, want)
-		}
+		assertMemoryNameID(t, ascending.GetMemories()[i], want)
 	}
 	assertMemoryUpdateTimeOrder(t, ascending.GetMemories(), false)
 	if got := len(explicit.GetMemories()); got != len(ordered.GetMemories()) {
 		t.Fatalf("ListMemories(order_by=update_time desc, memory_id) returned %d entries, want %d", got, len(ordered.GetMemories()))
 	}
 	for i, m := range explicit.GetMemories() {
-		if want := ordered.GetMemories()[i].GetMemoryId(); m.GetMemoryId() != want {
-			t.Errorf("explicit tie-breaker entry[%d] = %q, want %q (same total order)", i, m.GetMemoryId(), want)
+		if want := ordered.GetMemories()[i].GetName(); m.GetName() != want {
+			t.Errorf("explicit tie-breaker entry[%d] = %q, want %q (same total order)", i, m.GetName(), want)
 		}
 	}
 
@@ -256,9 +255,52 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 		t.Fatalf("ordered pagination returned %d entries in total, want 5", len(paged))
 	}
 	for i, m := range paged {
-		if want := ordered.GetMemories()[i].GetMemoryId(); m.GetMemoryId() != want {
-			t.Errorf("ordered pagination entry %d = %q, want %q (order preserved across pages)", i, m.GetMemoryId(), want)
+		if want := ordered.GetMemories()[i].GetName(); m.GetName() != want {
+			t.Errorf("ordered pagination entry %d = %q, want %q (order preserved across pages)", i, m.GetName(), want)
 		}
+	}
+
+	// then: the page token carries its order_by context, so a continuation
+	// that flips the direction is rejected with 400 INVALID_ARGUMENT while an
+	// equivalent spelling of the same final key is accepted, and a default-key
+	// token accepts the explicit memory_id spelling
+	// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §5).
+	descFirst := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 2, "", "update_time desc")
+	descToken := descFirst.GetNextPageToken()
+	if descToken == "" {
+		t.Fatal("ListMemories(order_by=update_time desc) page 1 next_page_token is empty, want non-empty")
+	}
+
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet,
+		fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?page_size=2&page_token=%s&order_by=%s",
+			sutHostURL, pathPrefix, saoleiTemplateID, sessionID, url.QueryEscape(descToken), url.QueryEscape("update_time")),
+		sutEnvName, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("direction-flip continuation status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+	}
+
+	equivalent := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 2, descToken, "update_time desc, memory_id")
+	if got := len(equivalent.GetMemories()); got != 2 {
+		t.Fatalf("equivalent-spelling continuation returned %d entries, want 2", got)
+	}
+	for i, m := range equivalent.GetMemories() {
+		if want := ordered.GetMemories()[i+2].GetName(); m.GetName() != want {
+			t.Errorf("equivalent-spelling continuation entry %d = %q, want %q (order preserved)", i, m.GetName(), want)
+		}
+	}
+
+	defaultFirst := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 2, "", "")
+	defaultToken := defaultFirst.GetNextPageToken()
+	if defaultToken == "" {
+		t.Fatal("ListMemories(default) page 1 next_page_token is empty, want non-empty")
+	}
+	wantDefaultContinuation := []string{"mem-3", "mem-4"}
+	explicitDefault := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 2, defaultToken, "memory_id")
+	if got := len(explicitDefault.GetMemories()); got != len(wantDefaultContinuation) {
+		t.Fatalf("explicit memory_id continuation returned %d entries, want %d", got, len(wantDefaultContinuation))
+	}
+	for i, want := range wantDefaultContinuation {
+		assertMemoryNameID(t, explicitDefault.GetMemories()[i], want)
 	}
 
 	// then: unsupported order_by values are rejected with 400 INVALID_ARGUMENT
@@ -277,25 +319,49 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 // assertMemoryUpdateTimeOrder asserts the ListMemories update_time total order
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1):
 // update_time is non-increasing for a descending key and non-decreasing for
-// an ascending one, and entries that share an update_time ascend on memory_id
-// (the unique tie-breaker).
+// an ascending one, and entries that share an update_time ascend on the
+// {memory} segment of the resource name (the unique tie-breaker, FR-017).
 func assertMemoryUpdateTimeOrder(t *testing.T, memories []*game.Memory, descending bool) {
 	t.Helper()
 	for i := 1; i < len(memories); i++ {
 		prev, cur := memories[i-1], memories[i]
+		prevID := memoryIDSegment(t, prev)
+		curID := memoryIDSegment(t, cur)
 		prevTime := prev.GetUpdateTime().AsTime()
 		curTime := cur.GetUpdateTime().AsTime()
 		if descending && prevTime.Before(curTime) {
 			t.Fatalf("entry %d (%s, update_time %v) is before entry %d (%s, update_time %v), want update_time descending",
-				i-1, prev.GetMemoryId(), prevTime, i, cur.GetMemoryId(), curTime)
+				i-1, prevID, prevTime, i, curID, curTime)
 		}
 		if !descending && prevTime.After(curTime) {
 			t.Fatalf("entry %d (%s, update_time %v) is after entry %d (%s, update_time %v), want update_time ascending",
-				i-1, prev.GetMemoryId(), prevTime, i, cur.GetMemoryId(), curTime)
+				i-1, prevID, prevTime, i, curID, curTime)
 		}
-		if prevTime.Equal(curTime) && prev.GetMemoryId() >= cur.GetMemoryId() {
+		if prevTime.Equal(curTime) && prevID >= curID {
 			t.Fatalf("tied entries at update_time %v are out of memory_id order: %q before %q, want ascending",
-				prevTime, prev.GetMemoryId(), cur.GetMemoryId())
+				prevTime, prevID, curID)
 		}
+	}
+}
+
+// memoryIDSegment returns the {memory} terminal segment of a Memory resource
+// name: the response carries no separate id field, so the name is the only
+// identity carrier (FR-017,
+// specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
+func memoryIDSegment(t *testing.T, m *game.Memory) string {
+	t.Helper()
+	name, err := game.ParseMemoryName(m.GetName())
+	if err != nil {
+		t.Fatalf("ParseMemoryName(%q): %v", m.GetName(), err)
+	}
+	return name.MemoryID
+}
+
+// assertMemoryNameID asserts a Memory's name carries wantID as its {memory}
+// terminal segment.
+func assertMemoryNameID(t *testing.T, m *game.Memory, wantID string) {
+	t.Helper()
+	if got := memoryIDSegment(t, m); got != wantID {
+		t.Fatalf("memory name %q has id segment %q, want %q", m.GetName(), got, wantID)
 	}
 }

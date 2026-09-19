@@ -78,6 +78,29 @@ go_largetest(
     ],
 )
 
+# wiki_test is the WIKI module large-test suite: the WikiService storage and
+# search API (Create/Get/Update/Delete + scope-unique normalized title + fixed
+# wiki_id ascending List with AIP-158 pagination + SearchWikis substring
+# matching/ranking/offset pagination) exercised through the gateway's public
+# /api/v1 wikis routes. It reuses the shared helpers (helpers_test.go — the
+# session + memory HTTP helpers; wiki_test.go adds the wiki helpers).
+# size = small: direct CRUD/search round trips only, well within the budget.
+go_largetest(
+    name = "wiki_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "wiki_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
 # agent_v2_conversation_test is the team conversation suite
 # (specs/059-agent-v2-team-mode — quickstart V3/V6): the static wait and first
 # user drive, the member-labelled team stream with the team_message seq

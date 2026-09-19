@@ -3,8 +3,8 @@
 // from the generated HTTP annotations.
 //
 // Routes:
-//   - /api/v1/* → grpc-gateway (SessionService + MemoryService unary RPCs per
-//     projects/game/game.proto HTTP annotations, AIP-127)
+//   - /api/v1/* → grpc-gateway (SessionService + MemoryService + WikiService
+//     unary RPCs per projects/game/game.proto HTTP annotations, AIP-127)
 //   - /api/v2/* → grpc-gateway, split by where the RPC's state lives
 //     (specs/059-agent-v2-team-mode/contracts/team-api.md §1): the
 //     session-scoped AgentService team face (UpdateTeam/GetTeam/
@@ -88,10 +88,14 @@ func main() {
 		log.Fatalf("team dial: %v", err)
 	}
 
-	// memoryConn hosts the MemoryService — the planner's long-term memory
-	// (spec 039-planner-memory-calibration FR-006). Registered on the gateway
-	// so the /api/v1/templates/{template}/sessions/{session}/memories surface
-	// is reachable through the public HTTP entry.
+	// memoryConn hosts the MemoryService and WikiService — the planner's
+	// long-term memory and wiki knowledge base (spec 039-planner-memory-
+	// calibration FR-006; spec 068 FR-001). Both services are hosted by the
+	// same memory binary and database, so they share the connection.
+	// Registered on the gateway so the /api/v1/templates/{template}/
+	// sessions/{session}/memories and .../wikis surfaces are reachable
+	// through the public HTTP entry
+	// (specs/068-wiki-round-pause/contracts/wiki-service.md §6).
 	memoryConn, err := grpc.NewClient(solver.URI(gameconst.MemoryTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("memory dial: %v", err)
@@ -123,6 +127,12 @@ func main() {
 	}
 	if err := game.RegisterMemoryServiceHandler(ctx, gwmux, memoryConn); err != nil {
 		log.Fatalf("register memory handler: %v", err)
+	}
+	// WikiService rides the same memory connection: the memory binary hosts
+	// both services over the same database
+	// (specs/068-wiki-round-pause/contracts/wiki-service.md §6).
+	if err := game.RegisterWikiServiceHandler(ctx, gwmux, memoryConn); err != nil {
+		log.Fatalf("register wiki handler: %v", err)
 	}
 	// The AgentService handler rides the proxy connection: the proxy
 	// forwards the session-scoped team RPCs to the agent_v2 stateful

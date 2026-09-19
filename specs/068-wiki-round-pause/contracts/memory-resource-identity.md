@@ -20,7 +20,7 @@
 - 资源寻址语义不变：Get/Update/Delete 按 name；Create 按请求 memory_id 生成 name。
 - 存储层继续持有 id（mongo 文档 `_id` 之外的 `memory_id` 字段、排序键）——仅 proto 响应面收敛。
 - `MemoryEntry.memory_id`（JS 派生）继续**不出现**在任何模型可见文本（specs/059 FR-008 既有约定）。
-- 065 排序分页契约（`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md`）的行为面零变化。
+- 065 排序分页契约（`specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md`）的排序行为面（白名单、tie-break 收尾、缺省序、seek 语义、错误码）不变；其 §1 item 4 的 token 一致性语义由 [memory-page-token-context.md](memory-page-token-context.md) 修订——token 显式携带 order_by 最终排序键上下文（含方向）并独立校验，游标载荷校验归属游标领域内部逻辑，不再作为 token 契约条文。
 
 ## 3. 消费方与验证
 

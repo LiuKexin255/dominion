@@ -171,6 +171,29 @@ func (t *MemorySortTerm) CursorEntry(value any) *MemoryCursorEntry {
 	}
 }
 
+// memorySortTermWire renders one final-key term in its canonical AIP-132
+// spelling: "{field}" for ascending (the suffix is omitted) or "{field} desc"
+// for descending (AIP-132 Ordering: https://google.aip.dev/132). It is the
+// single spelling source shared by cursor construction and the page token's
+// order_by context comparison, so the two can never disagree
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
+func memorySortTermWire(term *MemorySortTerm) string {
+	if term.Descending {
+		return term.Field + " desc"
+	}
+	return term.Field
+}
+
+// memorySortWire renders a final sort key as its canonical spelling array (the
+// order_by context a page token carries).
+func memorySortWire(sort []*MemorySortTerm) []string {
+	var wire []string
+	for _, term := range sort {
+		wire = append(wire, memorySortTermWire(term))
+	}
+	return wire
+}
+
 // ParseMemoryOrderBy parses and validates an AIP-132 order_by value into the
 // final ListMemories sort key: comma-separated "{field}" / "{field} desc"
 // terms over the whitelist, completed with the designated memory_id

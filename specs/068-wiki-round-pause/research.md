@@ -16,6 +16,7 @@
 | R6 | 检索缓存：redis 快照缓存（067 基建已落地），纯优化、可整体降级 | 沿用调研 D7 + §5 现状注记 |
 | R7 | 自然停实现锚点：orchestrator 内 `完成轮数` 计数 + reviewing 分支停点判定 | 本文 §6 |
 | R8 | 验证面：wiki → testplan 大型测试（gateway HTTP）；自然停 → orchestrator 单测为主 | 本文 §7 |
+| R9 | ListMemories page token 显式携带 order_by 最终排序键上下文（含方向）独立校验；游标载荷校验归属游标领域内部逻辑；实现任务并入 Phase 3 主任务流；page_size/parent 不纳入 token | 用户裁定（2026-09-19 执行期） |
 
 ---
 
@@ -108,7 +109,24 @@
 | 自然停 | orchestrator 单测（注入 fake 成员/终态记录，覆盖：计数递增、第 5 轮停、队列消化后停、cancel 交叠、失败重试后计数、重开后清零、user submit 恢复驱动 player） | spec FR-014~016 |
 | 自然停 E2E | 不设独立 testplan：真实驱动 5 局完整游戏成本与波动不可控；既有 agent_v2 testplan（game/conversation/stall 等）作零回归保障。编排层单测已覆盖状态机全部分支 | 宪法 VI 的验收由 wiki 大型测试承担；自然停以单测验收的裁断记录于此 |
 
-## 8. 参考文献
+## 8. R9：ListMemories page token 显式 order_by 上下文（2026-09-19 执行期裁定）
+
+### 8.1 问题与三点裁定
+
+065 交付的 `DecodeMemoryPageToken`（`projects/game/memory/domain/pagination.go`）以「游标 entries 字段序列恰好等于请求最终排序键」作为 order_by 一致性校验——隐式实现耦合：游标如何生成、如何编码是实现细节而非强制性质，游标实现一旦变化该校验静默失效；且比对只及字段名不及方向（`update_time desc` 的 token 配 `update_time` 请求可通过解码并产生错误 seek）。三点裁定：
+
+1. **所有权分层**：page token 契约层唯一负责 order_by 上下文一致性——token 显式携带解析后最终排序键的规范化拼写数组，解码时与续页请求最终排序键逐项比对（长度/字段/方向）；entries 载荷的结构/对齐/值解析校验归属游标领域内部逻辑——游标消费 token 携带内容时自行校验其与当前游标实现一致。两层各自校验自己拥有的内容，互不寄生。
+2. **任务归属**：实现任务并入 Phase 3 主任务流（与 search pagetoken 任务 T005 同 phase），不设独立增量小节。
+3. **不纳入项定案**：page_size（AIP-158 明文允许续页变更）与 parent（memory List / wiki List / wiki Search 三者一致的既有边界）不作为 token 携带内容。
+
+### 8.2 形态依据
+
+- AIP-158（https://google.aip.dev/158）：续页参数一致性条款（"all other arguments ... must match"）+ Opacity（内部结构化消息 + base64 为认可的不透明编码）。
+- AIP-132（https://google.aip.dev/132）Ordering：等价拼写空白不敏感——上下文存最终键规范形（含隐式追加的 tie-breaker），非原始 order_by 串。
+- 仓库先例：SearchWikis token 显式携带规范化 query `q` 并于续页比对（specs/068-wiki-round-pause/contracts/wiki-service.md §4.4）——本裁定将同一形态推广到 ListMemories order_by 面。
+- 契约：specs/068-wiki-round-pause/contracts/memory-page-token-context.md（修订 specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1 item 4）。
+
+## 9. 参考文献
 
 - 调研：`survey/game-wiki-knowledge-base.md`（D1–D10、n-gram 论证、分页社区实践、两级检索业界验证）
 - [AIP-122 Resource names](https://google.aip.dev/122) / [AIP-133 Standard methods: Create](https://google.aip.dev/133) / [AIP-131](https://google.aip.dev/131) / [AIP-132](https://google.aip.dev/132) / [AIP-134](https://google.aip.dev/134) / [AIP-135](https://google.aip.dev/135) / [AIP-136](https://google.aip.dev/136) / [AIP-158](https://google.aip.dev/158) / [AIP-193](https://google.aip.dev/193)

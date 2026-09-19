@@ -778,12 +778,20 @@ message ListMemoriesRequest {
   // rejected with INVALID_ARGUMENT (AIP-193:
   // https://google.aip.dev/193).
   //
-  // next_page_token encodes the final sort-key values of the page's last
-  // entry (opaque, AIP-158: https://google.aip.dev/158). When continuing a
-  // listing, order_by must resolve to the same final sort key as the call
-  // that issued the token — otherwise the token is rejected with
-  // INVALID_ARGUMENT. Contract:
-  // specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1.
+  // next_page_token encodes the page's resume position together with the
+  // order_by context it was issued under — the resolved final sort key
+  // (opaque, AIP-158: https://google.aip.dev/158). When continuing a
+  // listing, order_by must resolve to the same final sort key — same fields,
+  // same directions, same order — as the call that issued the token: the
+  // request's resolved key is compared element for element against the
+  // token's carried context, and a mismatch (including a direction flip,
+  // e.g. "update_time" vs "update_time desc") is rejected with
+  // INVALID_ARGUMENT (AIP-193: https://google.aip.dev/193). Beyond that
+  // context the token carries only the opaque resume position, whose
+  // handling is the service's cursor-internal concern. Contract:
+  // specs/068-wiki-round-pause/contracts/memory-page-token-context.md
+  // (revising specs/065-agent-v2-team-refine/contracts/
+  // memory-snapshot-recency.md §1 item 4).
   string order_by = 4;
 }
 

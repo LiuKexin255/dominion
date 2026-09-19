@@ -882,10 +882,10 @@ func TestMemoryListSeekValuesAreTyped(t *testing.T) {
 
 	// given - a decoded cursor for the update_time desc key
 	sortKey := mustSortKey(t, "update_time desc")
-	token := domain.EncodeMemoryPageToken(&domain.MemoryPageCursor{Entries: []*domain.MemoryCursorEntry{
-		{Field: domain.MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
-		{Field: domain.MemorySortFieldMemoryID, Value: "m-1"},
-	}})
+	token := domain.EncodeMemoryPageToken(domain.NewMemoryPageCursor(sortKey, []any{
+		time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC),
+		"m-1",
+	}))
 	cursor, err := domain.DecodeMemoryPageToken(token, sortKey)
 	if err != nil {
 		t.Fatalf("DecodeMemoryPageToken() setup error: %v", err)

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,7 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 	if created.GetName() != "templates/saolei/sessions/session-1/memories/mem-1" {
 		t.Fatalf("CreateMemory() name = %q, want %q", created.GetName(), "templates/saolei/sessions/session-1/memories/mem-1")
 	}
+	assertMemoryName(t, created, "mem-1")
 	if created.GetContent() != "player repeats the same mistake" {
 		t.Fatalf("CreateMemory() content = %q, want %q", created.GetContent(), "player repeats the same mistake")
 	}
@@ -131,6 +133,7 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 	if listResp.GetMemories()[0].GetName() != created.GetName() {
 		t.Fatalf("ListMemories()[0] name = %q, want %q", listResp.GetMemories()[0].GetName(), created.GetName())
 	}
+	assertMemoryName(t, listResp.GetMemories()[0], "mem-1")
 	if listResp.GetMemories()[0].GetContent() != created.GetContent() {
 		t.Fatalf("ListMemories()[0] content = %q, want %q", listResp.GetMemories()[0].GetContent(), created.GetContent())
 	}
@@ -271,6 +274,7 @@ func TestMemoryService_UpdateMemory(t *testing.T) {
 
 	// then — content updated, create_time preserved
 	assertStatusCode(t, err, codes.OK)
+	assertMemoryName(t, updated, "mem-1")
 	if updated.GetContent() != "new content" {
 		t.Fatalf("UpdateMemory() content = %q, want %q", updated.GetContent(), "new content")
 	}
@@ -541,13 +545,15 @@ func TestMemoryService_ListMemoriesOrderBy(t *testing.T) {
 func TestMemoryService_ListMemoriesPageToken(t *testing.T) {
 	ctx := context.Background()
 
-	// given - a valid token for the update_time desc final key
-	descToken := domain.EncodeMemoryPageToken(&domain.MemoryPageCursor{
-		Entries: []*domain.MemoryCursorEntry{
-			{Field: domain.MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
-			{Field: domain.MemorySortFieldMemoryID, Value: "m-1"},
-		},
-	})
+	// given - a valid token minted for the update_time desc final key
+	descSort, err := domain.ParseMemoryOrderBy("update_time desc")
+	if err != nil {
+		t.Fatalf("ParseMemoryOrderBy() setup error: %v", err)
+	}
+	descToken := domain.EncodeMemoryPageToken(domain.NewMemoryPageCursor(descSort, []any{
+		time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC),
+		"m-1",
+	}))
 
 	tests := []struct {
 		name        string
@@ -559,6 +565,15 @@ func TestMemoryService_ListMemoriesPageToken(t *testing.T) {
 		{
 			name:    "valid token is decoded and passed through",
 			orderBy: "update_time desc",
+			token:   descToken,
+			wantEntries: []*domain.MemoryCursorEntry{
+				{Field: domain.MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
+				{Field: domain.MemorySortFieldMemoryID, Value: "m-1"},
+			},
+		},
+		{
+			name:    "equivalent spelling with the explicit tie-breaker accepts the same token",
+			orderBy: "update_time desc, memory_id",
 			token:   descToken,
 			wantEntries: []*domain.MemoryCursorEntry{
 				{Field: domain.MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
@@ -578,6 +593,12 @@ func TestMemoryService_ListMemoriesPageToken(t *testing.T) {
 		{
 			name:    "cross-order token is rejected",
 			orderBy: "",
+			token:   descToken,
+			wantErr: true,
+		},
+		{
+			name:    "direction flip is rejected",
+			orderBy: "update_time",
 			token:   descToken,
 			wantErr: true,
 		},
@@ -811,6 +832,7 @@ func Test_memoryToProto(t *testing.T) {
 			if got.GetName() != tt.wantName {
 				t.Fatalf("memoryToProto() name = %q, want %q", got.GetName(), tt.wantName)
 			}
+			assertMemoryName(t, got, tt.memory.MemoryID)
 			if got.GetContent() != tt.memory.Content {
 				t.Fatalf("memoryToProto() content = %q, want %q", got.GetContent(), tt.memory.Content)
 			}
@@ -821,6 +843,18 @@ func Test_memoryToProto(t *testing.T) {
 				t.Fatal("memoryToProto() update_time is nil, want set")
 			}
 		})
+	}
+}
+
+// assertMemoryName asserts a proto Memory's name carries the given id as its
+// {memory} terminal segment: the resource has no separate id field, so the
+// name is the only identity carrier
+// (specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
+func assertMemoryName(t *testing.T, got *game.Memory, wantID string) {
+	t.Helper()
+	wantSuffix := "/memories/" + wantID
+	if !strings.HasSuffix(got.GetName(), wantSuffix) {
+		t.Fatalf("memory name = %q, want suffix %q", got.GetName(), wantSuffix)
 	}
 }
 
