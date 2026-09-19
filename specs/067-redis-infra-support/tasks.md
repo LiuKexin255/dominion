@@ -143,8 +143,8 @@ description: "Task list for feature 067-redis-infra-support"
 - 官方文档：无
 - 技术文章/技术参考文档：`specs/067-redis-infra-support/quickstart.md`（场景 2/3）、`specs/067-redis-infra-support/contracts/redis-demo.md`（§4/§5）、`specs/067-redis-infra-support/research.md`（风险清单 1）
 
-- [ ] T021 [US5] ⛔ **停止点（MANDATORY PAUSE）**：全部代码构建+单测通过后**停止执行**，向用户报告"待手动部署项"：① 使用本分支产物部署新版 deploy service（`projects/infra/deploy`，static_config 含 `redis.dev-single`、converter 支持 redis、凭证注入已改造）；② 执行 `bazel run //:deploy_install` 更新本机 deploy CLI。**在用户明确确认部署完成前，禁止执行任何 `deploy apply`/`deploy describe`/`guitar run`**。收到确认后在 tasks.md 勾选本条并继续
-- [ ] T022 [US5] 大型测试闭环验收：通过 testplan skill 执行 `guitar run //experimental/redis_demo/testplan/interface_test.yaml`（部署→测试→清理闭环），5 个用例全部通过；同时按 `specs/067-redis-infra-support/quickstart.md` 场景 2 抽查：`deploy describe` 显示 `[infra: redis]` 就绪、集群无实例 Secret、存量 mongo 环境重新 apply 后旧 Secret 被自动删除。任何失败/flaky 用例须修复后完整重跑直至全绿（宪章 VI；禁止以构建检查替代）
+- [X] T021 [US5] ⛔ **停止点（MANDATORY PAUSE）**：全部代码构建+单测通过后**停止执行**，向用户报告"待手动部署项"：① 使用本分支产物部署新版 deploy service（`projects/infra/deploy`，static_config 含 `redis.dev-single`、converter 支持 redis、凭证注入已改造）；② 执行 `bazel run //:deploy_install` 更新本机 deploy CLI。**在用户明确确认部署完成前，禁止执行任何 `deploy apply`/`deploy describe`/`guitar run`**。收到确认后在 tasks.md 勾选本条并继续
+- [X] T022 [US5] 大型测试闭环验收：通过 testplan skill 执行 `guitar run //experimental/redis_demo/testplan/interface_test.yaml`（部署→测试→清理闭环），5 个用例全部通过；同时按 `specs/067-redis-infra-support/quickstart.md` 场景 2 抽查：`deploy describe` 显示 `[infra: redis]` 就绪、集群无实例 Secret、存量 mongo 环境重新 apply 后旧 Secret 被自动删除。任何失败/flaky 用例须修复后完整重跑直至全绿（宪章 VI；禁止以构建检查替代）
 
 **Checkpoint**：guitar 全绿 + 场景 2 抽查通过 → spec SC-001/SC-002/SC-003 达成。
 
