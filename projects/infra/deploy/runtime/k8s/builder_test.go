@@ -2331,13 +2331,21 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 		t.Fatalf("InitContainer Image = %q, want %q", initContainer.Image, wantImage)
 	}
 
-	// Verify env vars reference the secret.
+	// Verify env vars: mongo 凭证以直接值注入（用户名取 profile，密码为确定性
+	// 派生），不再经 SecretKeyRef 引用（specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.1）。
 	envMap := envVarsToMap(container.Env)
 	if envMap[constants.EnvServiceApp] != w.App {
 		t.Fatalf("Env[%q] = %q, want %q", constants.EnvServiceApp, envMap[constants.EnvServiceApp], w.App)
 	}
 	if envMap[constants.EnvDominionEnvironment] != w.EnvironmentName {
 		t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionEnvironment, envMap[constants.EnvDominionEnvironment], w.EnvironmentName)
+	}
+	if envMap[mongoEnvRootUsername] != profile.AdminUsername {
+		t.Fatalf("Env[%q] = %q, want %q", mongoEnvRootUsername, envMap[mongoEnvRootUsername], profile.AdminUsername)
+	}
+	wantPassword := generateStablePassword(mongoPasswordHMACKey, w.App, w.EnvironmentName, w.ServiceName)
+	if envMap[mongoEnvRootPassword] != wantPassword {
+		t.Fatalf("Env[%q] = %q, want %q", mongoEnvRootPassword, envMap[mongoEnvRootPassword], wantPassword)
 	}
 	if _, ok := envMap[constants.EnvDominionArtifactDir]; ok {
 		t.Fatalf("Env[%q] should not be injected for infra workloads", constants.EnvDominionArtifactDir)
@@ -2573,60 +2581,6 @@ func TestBuildMongoDBPVC_ProfileFallbackCapacity(t *testing.T) {
 	wantCapacity := resource.MustParse(profile.Storage.Capacity)
 	if capacity.Cmp(wantCapacity) != 0 {
 		t.Fatalf("Capacity = %s, want %s (profile default)", capacity.String(), wantCapacity.String())
-	}
-}
-
-// --- BuildMongoDBSecret ---
-
-func TestBuildMongoDBSecret(t *testing.T) {
-	cfg := testK8sConfig()
-	w := testMongoDBWorkload()
-
-	secret, err := BuildMongoDBSecret(w, cfg)
-	if err != nil {
-		t.Fatalf("BuildMongoDBSecret() error: %v", err)
-	}
-
-	// Verify object meta.
-	if secret.Namespace != cfg.Namespace {
-		t.Fatalf("Namespace = %q, want %q", secret.Namespace, cfg.Namespace)
-	}
-	if secret.Name != w.SecretResourceName() {
-		t.Fatalf("Name = %q, want %q", secret.Name, w.SecretResourceName())
-	}
-
-	// Verify labels.
-	if secret.Labels[appLabelKey] != w.App {
-		t.Fatalf("Label[%q] = %q, want %q", appLabelKey, secret.Labels[appLabelKey], w.App)
-	}
-
-	// Verify type.
-	if secret.Type != corev1.SecretTypeOpaque {
-		t.Fatalf("Type = %q, want %q", secret.Type, corev1.SecretTypeOpaque)
-	}
-
-	// Verify data.
-	profile := cfg.MongoDB["dev-single"]
-	if string(secret.Data[mongoSecretUsernameKey]) != profile.AdminUsername {
-		t.Fatalf("Username = %q, want %q", string(secret.Data[mongoSecretUsernameKey]), profile.AdminUsername)
-	}
-	password := string(secret.Data[mongoSecretPasswordKey])
-	if len(password) < stablePasswordMinLen {
-		t.Fatalf("Password length = %d, want >= %d", len(password), stablePasswordMinLen)
-	}
-
-	// Verify deterministic password.
-	secret2, _ := BuildMongoDBSecret(w, cfg)
-	if string(secret.Data[mongoSecretPasswordKey]) != string(secret2.Data[mongoSecretPasswordKey]) {
-		t.Fatalf("Password should be deterministic")
-	}
-}
-
-func TestBuildMongoDBSecret_NilWorkload(t *testing.T) {
-	cfg := testK8sConfig()
-	_, err := BuildMongoDBSecret(nil, cfg)
-	if err == nil {
-		t.Fatalf("BuildMongoDBSecret(nil) expected error")
 	}
 }
 
@@ -3189,7 +3143,6 @@ func assertHTTPRouteEnvHeader(t *testing.T, route *gatewayv1.HTTPRoute, wantLabe
 var _ *appsv1.Deployment = (*appsv1.Deployment)(nil)
 var _ *corev1.Service = (*corev1.Service)(nil)
 var _ *corev1.PersistentVolumeClaim = (*corev1.PersistentVolumeClaim)(nil)
-var _ *corev1.Secret = (*corev1.Secret)(nil)
 
 // Ensure namespace from cfg is consistently used.
 func TestBuildMongoDBResources_UseConfigNamespace(t *testing.T) {
@@ -3200,9 +3153,8 @@ func TestBuildMongoDBResources_UseConfigNamespace(t *testing.T) {
 	deploy, _ := BuildMongoDBDeployment(w, cfg)
 	svc, _ := BuildMongoDBService(w, cfg)
 	pvc, _ := BuildMongoDBPVC(w, cfg)
-	secret, _ := BuildMongoDBSecret(w, cfg)
 
-	for _, obj := range []metav1.Object{deploy, svc, pvc, secret} {
+	for _, obj := range []metav1.Object{deploy, svc, pvc} {
 		if obj.GetNamespace() != "custom-namespace" {
 			t.Fatalf("%s Namespace = %q, want %q", obj.GetName(), obj.GetNamespace(), "custom-namespace")
 		}

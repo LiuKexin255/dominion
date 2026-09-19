@@ -106,8 +106,8 @@ description: "Task list for feature 067-redis-infra-support"
 - 官方文档：[mongo 官方镜像（MONGO_INITDB_ROOT_USERNAME/PASSWORD 语义）](https://hub.docker.com/_/mongo)
 - 技术文章/技术参考文档：`specs/067-redis-infra-support/research.md`（D5）、`specs/067-redis-infra-support/contracts/deploy-redis-infra.md`（§3.1/§6）、`specs/067-redis-infra-support/data-model.md`（§2.2/§4）
 
-- [ ] T014 [US4] 在 `projects/infra/deploy/runtime/k8s/builder.go` 将 `buildMongoDBContainerEnv` 改为直接值（`MONGO_INITDB_ROOT_USERNAME`=profile `admin_username`、`MONGO_INITDB_ROOT_PASSWORD`=`generateStablePassword(app, env, service)`；函数不再接收 secretName）；删除 `BuildMongoDBSecret` 与 mongo secret 常量/键名（`mongoSecretUsernameKey` 等）；`builder_test.go` 断言更新（env 直接值、无 Secret）
-- [ ] T015 [US4] 在 `projects/infra/deploy/runtime/k8s/model.go` 删除 `SecretResourceName()`；`executor.go` 删除 mongo `applySecret` 调用与 `expectedApplyResources` 中 mongo secrets 登记（保留 `pruneSecrets`/`deleteSecrets` 本身——存量自动清理依赖 prune）；`model_test.go`/`executor_test.go` 更新，新增"已存在旧 Secret 的环境下 apply 后该 Secret 被删除"用例
+- [X] T014 [US4] 在 `projects/infra/deploy/runtime/k8s/builder.go` 将 `buildMongoDBContainerEnv` 改为直接值（`MONGO_INITDB_ROOT_USERNAME`=profile `admin_username`、`MONGO_INITDB_ROOT_PASSWORD`=`generateStablePassword(app, env, service)`；函数不再接收 secretName）；删除 `BuildMongoDBSecret` 与 mongo secret 常量/键名（`mongoSecretUsernameKey` 等）；`builder_test.go` 断言更新（env 直接值、无 Secret）
+- [X] T015 [US4] 在 `projects/infra/deploy/runtime/k8s/model.go` 删除 `SecretResourceName()`；`executor.go` 删除 mongo `applySecret` 调用与 `expectedApplyResources` 中 mongo secrets 登记（保留 `pruneSecrets`/`deleteSecrets` 本身——存量自动清理依赖 prune）；`model_test.go`/`executor_test.go` 更新，新增"已存在旧 Secret 的环境下 apply 后该 Secret 被删除"用例
 
 **Checkpoint**：`bazel test //projects/infra/deploy/...` 全绿；仓库内检索无 `BuildMongoDBSecret` 残留。
 

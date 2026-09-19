@@ -154,9 +154,6 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 				return err
 			}
 		}
-		if err := r.applySecret(ctx, workload); err != nil {
-			return err
-		}
 		if err := r.applyMongoDBDeployment(ctx, workload); err != nil {
 			return err
 		}
@@ -262,7 +259,6 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.deployments[workload.ResourceName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
-		resources.secrets[workload.SecretResourceName()] = struct{}{}
 	}
 	// redis 实例不创建 Secret，仅登记 Deployment/Service
 	// （specs/067-redis-infra-support/contracts/deploy-redis-infra.md §2）。
@@ -699,20 +695,6 @@ func (r *K8sRuntime) applyMongoDBPVC(ctx context.Context, workload *MongoDBWorkl
 	return nil
 }
 
-func (r *K8sRuntime) applySecret(ctx context.Context, workload *MongoDBWorkload) error {
-	if workload == nil {
-		return fmt.Errorf("failed to build %s <nil>: mongo workload 为空", resourceKindSecret)
-	}
-
-	desired, err := BuildMongoDBSecret(workload, r.client.K8sConfig)
-	if err != nil {
-		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindSecret, workload.SecretResourceName(), err)
-	}
-
-	return applyTypedSecret(ctx, desired.Name,
-		r.client.TypedClient.CoreV1().Secrets(desired.Namespace), desired)
-}
-
 func (r *K8sRuntime) applyMongoDBDeployment(ctx context.Context, workload *MongoDBWorkload) error {
 	if workload == nil {
 		return fmt.Errorf("failed to build %s <nil>: mongo workload 为空", resourceKindDeployment)
@@ -1112,27 +1094,6 @@ func applyTypedService(ctx context.Context, name string, client coretypedv1.Serv
 	desired.Spec.AllocateLoadBalancerNodePorts = current.Spec.AllocateLoadBalancerNodePorts
 	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindService, name, err)
-	}
-
-	return nil
-}
-
-func applyTypedSecret(ctx context.Context, name string, client coretypedv1.SecretInterface, desired *corev1.Secret) error {
-	current, err := client.Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("创建 %s %s 失败: %w", resourceKindSecret, name, err)
-			}
-			return nil
-		}
-
-		return fmt.Errorf("获取 %s %s 失败: %w", resourceKindSecret, name, err)
-	}
-
-	desired.ResourceVersion = current.ResourceVersion
-	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindSecret, name, err)
 	}
 
 	return nil

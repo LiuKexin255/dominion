@@ -203,6 +203,22 @@ func TestRedisWorkload_NilReceiver(t *testing.T) {
 	}
 }
 
+func TestMongoDBWorkload_NilReceiver(t *testing.T) {
+	var w *MongoDBWorkload
+	if got := w.ResourceName(); got != "" {
+		t.Fatalf("nil ResourceName() = %q, want empty", got)
+	}
+	if got := w.ServiceResourceName(); got != "" {
+		t.Fatalf("nil ServiceResourceName() = %q, want empty", got)
+	}
+	if got := w.PVCResourceName(); got != "" {
+		t.Fatalf("nil PVCResourceName() = %q, want empty", got)
+	}
+	if err := w.Validate(); err == nil {
+		t.Fatalf("nil Validate() expected error")
+	}
+}
+
 func TestWorkloadNameMethods(t *testing.T) {
 	if got := (&DeploymentWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).WorkloadName(); got == "" {
 		t.Fatalf("WorkloadName() = empty")

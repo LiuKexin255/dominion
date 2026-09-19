@@ -82,8 +82,6 @@ const (
 	// MongoDB 相关常量。
 	mongoPasswordHMACKey   = "dominion-mongo-stable-password"
 	mongoPortName          = "mongo"
-	mongoSecretUsernameKey = "username"
-	mongoSecretPasswordKey = "password"
 	mongoDataVolumeName    = "mongo-data"
 	mongoDataMountPath     = "/data/db"
 	mongoInitContainerName = "mongo-init"
@@ -778,7 +776,7 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		withDominionEnvironment(workload.EnvironmentName),
 	)
 	containerImage := strings.TrimSpace(profile.Image) + imageTagJoiner + strings.TrimSpace(profile.Version)
-	containerEnv := buildMongoDBContainerEnv(workload, workload.SecretResourceName())
+	containerEnv := buildMongoDBContainerEnv(workload, profile.AdminUsername)
 	volumes := []corev1.Volume{{
 		Name:         mongoDataVolumeName,
 		VolumeSource: buildDataVolumeSource(workload.PVCResourceName(), workload.Persistence.Enabled),
@@ -1145,40 +1143,6 @@ func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Persist
 	}, nil
 }
 
-// BuildMongoDBSecret 将 MongoDB Secret workload 构造成可直接下发的 Secret 对象。
-func BuildMongoDBSecret(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Secret, error) {
-	if workload == nil {
-		return nil, fmt.Errorf("mongo workload 为空")
-	}
-
-	profile := cfg.MongoProfile(workload.ProfileName)
-	if profile == nil {
-		return nil, fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(workload.ProfileName))
-	}
-
-	secretName := workload.SecretResourceName()
-	objectLabels := buildLabels(
-		withApp(workload.App),
-		withService(workload.ServiceName),
-		withDominionEnvironment(workload.EnvironmentName),
-		withManagedBy(cfg.ManagedBy),
-	)
-	password := generateStablePassword(mongoPasswordHMACKey, workload.App, workload.EnvironmentName, workload.ServiceName)
-
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: cfg.Namespace,
-			Labels:    map[string]string(objectLabels),
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			mongoSecretUsernameKey: []byte(profile.AdminUsername),
-			mongoSecretPasswordKey: []byte(password),
-		},
-	}, nil
-}
-
 // CheckPVCCompatibility 校验现有 PVC 是否与期望的 MongoDB PVC workload 兼容。
 func CheckPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *MongoDBWorkload, cfg *K8sConfig) error {
 	if existing == nil {
@@ -1405,7 +1369,10 @@ func buildServicePorts(ports []*DeploymentPort) ([]corev1.ServicePort, error) {
 	return servicePorts, nil
 }
 
-func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string) []corev1.EnvVar {
+// buildMongoDBContainerEnv 构造 mongo 实例容器环境变量：用户名取 profile
+// admin_username，密码为确定性派生直接值；实例不创建 Secret，变量名为 mongo
+// 镜像原生约定（specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.1）。
+func buildMongoDBContainerEnv(workload *MongoDBWorkload, adminUsername string) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: constants.EnvServiceApp, Value: workload.App},
 		{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
@@ -1415,24 +1382,8 @@ func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string) []co
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: podNamespaceFieldPath},
 			},
 		},
-		{
-			Name: mongoEnvRootUsername,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  mongoSecretUsernameKey,
-				},
-			},
-		},
-		{
-			Name: mongoEnvRootPassword,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  mongoSecretPasswordKey,
-				},
-			},
-		},
+		{Name: mongoEnvRootUsername, Value: adminUsername},
+		{Name: mongoEnvRootPassword, Value: generateStablePassword(mongoPasswordHMACKey, workload.App, workload.EnvironmentName, workload.ServiceName)},
 	}
 }
 

@@ -63,8 +63,11 @@ func TestK8sRuntimeApplyCreatesResources(t *testing.T) {
 	if _, err := runtime.client.TypedClient.CoreV1().PersistentVolumeClaims(runtime.client.K8sConfig.Namespace).Get(ctx, mongo.PVCResourceName(), metav1.GetOptions{}); err != nil {
 		t.Fatalf("pvc not created: %v", err)
 	}
-	if _, err := runtime.client.TypedClient.CoreV1().Secrets(runtime.client.K8sConfig.Namespace).Get(ctx, mongo.SecretResourceName(), metav1.GetOptions{}); err != nil {
-		t.Fatalf("secret not created: %v", err)
+	// mongo 实例凭证以环境变量直注，不创建 Secret（存量 Secret 由 prune 清理，
+	// specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.1）。
+	legacySecretName := newObjectName(WorkloadKindSecret, executorTestEnvName(), mongo.ServiceName)
+	if _, err := runtime.client.TypedClient.CoreV1().Secrets(runtime.client.K8sConfig.Namespace).Get(ctx, legacySecretName, metav1.GetOptions{}); err == nil {
+		t.Fatalf("mongo instance secret should not be created")
 	}
 	if _, err := runtime.client.TypedClient.AppsV1().Deployments(runtime.client.K8sConfig.Namespace).Get(ctx, mongo.ResourceName(), metav1.GetOptions{}); err != nil {
 		t.Fatalf("mongodb deployment not created: %v", err)
@@ -119,18 +122,15 @@ func TestK8sRuntimeApplyUsesCreateOrUpdate(t *testing.T) {
 	dep, _ := BuildDeployment(objects.Deployments[0], runtime.client.K8sConfig)
 	svc, _ := BuildService(objects.Deployments[0], runtime.client.K8sConfig)
 	route, _ := BuildHTTPRoute(objects.HTTPRoutes[0], runtime.client.K8sConfig)
-	secret, _ := BuildMongoDBSecret(objects.MongoDBWorkloads[0], runtime.client.K8sConfig)
 
 	dep.ResourceVersion = "11"
 	svc.ResourceVersion = "12"
 	svc.Spec.ClusterIP = "10.0.0.8"
 	route.SetResourceVersion("13")
-	secret.ResourceVersion = "14"
 
 	seedTypedObject(t, runtime, dep)
 	seedTypedObject(t, runtime, svc)
 	seedDynamicObject(t, runtime, route)
-	seedTypedObject(t, runtime, secret)
 
 	gotRV := map[string]string{}
 	runtime.client.TypedClient.(*kubernetesfake.Clientset).PrependReactor("update", "*", func(action k8stesting.Action) (bool, apiRuntime.Object, error) {
@@ -143,8 +143,6 @@ func TestK8sRuntimeApplyUsesCreateOrUpdate(t *testing.T) {
 		case *appsv1.Deployment:
 			gotRV[typed.Name] = typed.ResourceVersion
 		case *corev1.Service:
-			gotRV[typed.Name] = typed.ResourceVersion
-		case *corev1.Secret:
 			gotRV[typed.Name] = typed.ResourceVersion
 		}
 		return false, nil, nil
@@ -174,9 +172,6 @@ func TestK8sRuntimeApplyUsesCreateOrUpdate(t *testing.T) {
 	if gotRV[route.GetName()] != "13" {
 		t.Fatalf("httproute resourceVersion = %q, want %q", gotRV[route.GetName()], "13")
 	}
-	if gotRV[secret.Name] != "14" {
-		t.Fatalf("secret resourceVersion = %q, want %q", gotRV[secret.Name], "14")
-	}
 }
 
 func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
@@ -186,8 +181,11 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 		name         string
 		seedState    *domain.DesiredState
 		desiredState *domain.DesiredState
-		wantPresent  pruneResourcePresence
-		wantAbsent   pruneResourcePresence
+		// seedLegacyMongoSecret 在种子 apply 之后注入改造前的 mongo 实例 Secret，
+		// 使存量 Secret 清理断言非 vacuous（specs/067-redis-infra-support/research.md D5）。
+		seedLegacyMongoSecret bool
+		wantPresent           pruneResourcePresence
+		wantAbsent            pruneResourcePresence
 	}{
 		{
 			name: "remove service prunes deployment and service only",
@@ -212,7 +210,7 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 			},
 		},
 		{
-			name: "remove infra prunes deployment service secret but preserves pvc",
+			name: "remove infra prunes deployment and service but preserves pvc",
 			seedState: &domain.DesiredState{
 				Infras: []*domain.InfraSpec{
 					newExecutorTestMongoInfraSpec("mongo", "demo"),
@@ -227,13 +225,11 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 			wantPresent: pruneResourcePresence{
 				Deployments: []string{newObjectName(WorkloadKindMongoDB, executorTestEnvName(), "mongo-keep")},
 				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "mongo-keep")},
-				Secrets:     []string{newObjectName(WorkloadKindSecret, executorTestEnvName(), "mongo-keep")},
 				PVCs:        []string{newObjectName(WorkloadKindPVC, executorTestEnvName(), "mongo"), newObjectName(WorkloadKindPVC, executorTestEnvName(), "mongo-keep")},
 			},
 			wantAbsent: pruneResourcePresence{
 				Deployments: []string{newObjectName(WorkloadKindMongoDB, executorTestEnvName(), "mongo")},
 				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "mongo")},
-				Secrets:     []string{newObjectName(WorkloadKindSecret, executorTestEnvName(), "mongo")},
 			},
 		},
 		{
@@ -289,7 +285,8 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 			},
 		},
 		{
-			name: "empty desired state prunes all running resources except pvc",
+			name:                  "empty desired state prunes all running resources except pvc",
+			seedLegacyMongoSecret: true,
 			seedState: &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
 					newExecutorTestArtifactSpec("api", "demo", 8080, &domain.ArtifactHTTPSpec{
@@ -354,6 +351,9 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 			if err := runtime.ApplyResources(ctx, seedEnv); err != nil {
 				t.Fatalf("seed Apply() failed: %v", err)
 			}
+			if tt.seedLegacyMongoSecret {
+				seedTypedObject(t, runtime, newLegacyMongoSecret(runtime.client.K8sConfig, executorTestEnvName(), "demo", "mongo"))
+			}
 
 			desiredEnv := newExecutorTestEnvironmentWithState(t, tt.desiredState)
 			if err := runtime.ApplyResources(ctx, desiredEnv); err != nil {
@@ -363,6 +363,42 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 			assertPruneResourcePresence(t, runtime, tt.wantPresent)
 			assertPruneResourceAbsence(t, runtime, tt.wantAbsent)
 		})
+	}
+}
+
+// TestK8sRuntimeApplyPrunesLegacyMongoSecret 覆盖 US4 存量迁移：改造前由旧版
+// deploy service 创建的 mongo 实例 Secret 在下次 apply 时被 prune 删除，且不带
+// managed-by 标签的用户业务 Secret 不受影响（specs/067-redis-infra-support/research.md D5）。
+func TestK8sRuntimeApplyPrunesLegacyMongoSecret(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironment(t)
+
+	legacy := newLegacyMongoSecret(runtime.client.K8sConfig, executorTestEnvName(), "demo", "mongo")
+	seedTypedObject(t, runtime, legacy)
+	if _, err := runtime.client.TypedClient.CoreV1().Secrets(legacy.Namespace).Get(ctx, legacy.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("legacy secret should be seeded: %v", err)
+	}
+
+	business := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "user-business-secret",
+			Namespace: runtime.client.K8sConfig.Namespace,
+			Labels: map[string]string{
+				dominionEnvironmentLabelKey: executorTestEnvName(),
+			},
+		},
+	}
+	seedTypedObject(t, runtime, business)
+
+	if err := runtime.ApplyResources(ctx, env); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	_, err := runtime.client.TypedClient.CoreV1().Secrets(legacy.Namespace).Get(ctx, legacy.Name, metav1.GetOptions{})
+	assertNotFound(t, err)
+	if _, err := runtime.client.TypedClient.CoreV1().Secrets(business.Namespace).Get(ctx, business.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("business secret without managed-by label should be preserved: %v", err)
 	}
 }
 
@@ -379,7 +415,7 @@ func TestK8sRuntimeDeleteDeletesOwnedResourcesInFixedOrder(t *testing.T) {
 	route, _ := BuildHTTPRoute(objects.HTTPRoutes[0], runtime.client.K8sConfig)
 	svc, _ := BuildService(objects.Deployments[0], runtime.client.K8sConfig)
 	dep, _ := BuildDeployment(objects.Deployments[0], runtime.client.K8sConfig)
-	secret, _ := BuildMongoDBSecret(objects.MongoDBWorkloads[0], runtime.client.K8sConfig)
+	secret := newLegacyMongoSecret(runtime.client.K8sConfig, executorTestEnvName(), objects.MongoDBWorkloads[0].App, objects.MongoDBWorkloads[0].ServiceName)
 	pvc, _ := BuildMongoDBPVC(objects.MongoDBWorkloads[0], runtime.client.K8sConfig)
 
 	seedDynamicObject(t, runtime, route)
@@ -608,6 +644,29 @@ func Test_buildExpectedApplyResources_includesRedisResources(t *testing.T) {
 	}
 }
 
+func Test_buildExpectedApplyResources_mongoDoesNotRegisterSecrets(t *testing.T) {
+	objects := &DeployObjects{
+		MongoDBWorkloads: []*MongoDBWorkload{
+			{ServiceName: "mongo", EnvironmentName: "demo", App: "demo", ProfileName: "dev-single"},
+		},
+	}
+
+	resources := buildExpectedApplyResources(objects)
+
+	depName := newObjectName(WorkloadKindMongoDB, "demo", "mongo")
+	if _, ok := resources.deployments[depName]; !ok {
+		t.Fatalf("expected deployment %q in expected resources", depName)
+	}
+	svcName := newObjectName(WorkloadKindService, "demo", "mongo")
+	if _, ok := resources.services[svcName]; !ok {
+		t.Fatalf("expected service %q in expected resources", svcName)
+	}
+	// mongo 凭证以环境变量直注，不登记实例 Secret。
+	if len(resources.secrets) != 0 {
+		t.Fatalf("mongo should not register secrets, got %v", resources.secrets)
+	}
+}
+
 func TestK8sRuntimeApplyPrunesStatefulResources(t *testing.T) {
 	ctx := context.Background()
 
@@ -742,6 +801,24 @@ func newExecutorTestRedisInfraSpec(name string, app string) *domain.InfraSpec {
 		App:      app,
 		Persistence: domain.InfraPersistenceSpec{
 			Enabled: true,
+		},
+	}
+}
+
+// newLegacyMongoSecret 构造改造前的 mongo 实例 Secret（命名与标签对齐旧版本
+// deploy service 创建的实例 Secret），用于验证存量 Secret 在 apply 后被 prune 清理
+// （specs/067-redis-infra-support/research.md D5）。
+func newLegacyMongoSecret(cfg *K8sConfig, envName string, app string, service string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      newObjectName(WorkloadKindSecret, envName, service),
+			Namespace: cfg.Namespace,
+			Labels: map[string]string{
+				appLabelKey:                 app,
+				serviceLabelKey:             service,
+				dominionEnvironmentLabelKey: envName,
+				managedByLabelKey:           cfg.ManagedBy,
+			},
 		},
 	}
 }
@@ -1147,7 +1224,7 @@ func TestK8sRuntimeApplyNoConfigBlocksCreatesNoConfigMap(t *testing.T) {
 }
 
 // TestK8sRuntimeApplyConfigMapUsesCreateOrUpdate 覆盖 ConfigMap 的
-// Get→Create-if-NotFound→Update 路径（模式同 applyTypedSecret）。
+// Get→Create-if-NotFound→Update 路径（模式同 applyTypedService）。
 func TestK8sRuntimeApplyConfigMapUsesCreateOrUpdate(t *testing.T) {
 	ctx := context.Background()
 	runtime := newTestK8sRuntime(t)

@@ -307,15 +307,6 @@ func (w *MongoDBWorkload) ServiceResourceName() string {
 	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
 }
 
-// SecretResourceName 返回 MongoDB Secret 对应的资源名。
-func (w *MongoDBWorkload) SecretResourceName() string {
-	if w == nil {
-		return ""
-	}
-
-	return newObjectName(WorkloadKindSecret, w.EnvironmentName, w.ServiceName)
-}
-
 // PVCResourceName 返回 MongoDB PVC 对应的资源名。
 func (w *MongoDBWorkload) PVCResourceName() string {
 	if w == nil {
