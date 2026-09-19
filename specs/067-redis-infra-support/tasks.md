@@ -29,8 +29,8 @@ description: "Task list for feature 067-redis-infra-support"
 - 官方文档：无
 - 技术文章/技术参考文档：`specs/067-redis-infra-support/research.md`（D1/D2 选型与版本依据）
 
-- [ ] T001 [P] 在 `go.mod` 增加 `github.com/redis/go-redis/v9`（当前 v9 最新补丁），按 `AGENTS.md` Golang 依赖更新步骤执行（`bazel run //:go -- get` → `mod tidy -v` → 目标目录 `gazelle` → `bazel mod tidy`）
-- [ ] T002 [P] 在 `pnpm-workspace.yaml` catalog 增加 `redis: "^5"`（node-redis v5，见 `specs/067-redis-infra-support/research.md` D2）
+- [X] T001 [P] 在 `go.mod` 增加 `github.com/redis/go-redis/v9`（当前 v9 最新补丁），按 `AGENTS.md` Golang 依赖更新步骤执行（`bazel run //:go -- get` → `mod tidy -v` → 目标目录 `gazelle` → `bazel mod tidy`）
+- [X] T002 [P] 在 `pnpm-workspace.yaml` catalog 增加 `redis: "^5"`（node-redis v5，见 `specs/067-redis-infra-support/research.md` D2）
 
 **验证门禁**：`bazel build //...` 通过；`bazel mod tidy` 无 diff 残留。
 

@@ -70,6 +70,7 @@ catalog:
   pngjs: "^7.0.0"
   react: "^18.3.1"
   react-dom: "^18.3.1"
+  redis: "^5"
   svelte: "^5.33.0"
   svelte-check: "^4.6.0"
   typescript: "^6.0.3"
