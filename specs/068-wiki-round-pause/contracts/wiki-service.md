@@ -18,7 +18,7 @@
 | `CreateWiki` | [133](https://google.aip.dev/133) | `POST /api/v1/{parent=templates/*/sessions/*}/wikis`，body=wiki | 请求 `{parent, wiki_id(REQUIRED), wiki}`；`wiki_id` 由 agent 侧生成（sha256(title_norm)[:32]，见 data-model §5）；title 规范化重复 → ALREADY_EXISTS；返回完整 Wiki |
 | `GetWiki` | [131](https://google.aip.dev/131) | `GET /api/v1/{name=templates/*/sessions/*/wikis/*}` | 返回完整资源（唯一返回 content 的标准读路径） |
 | `UpdateWiki` | [134](https://google.aip.dev/134) | `PATCH /api/v1/{name=...}`，body=wiki | title/content 可变（`update_mask` 支持两者）；title 变更重生成 grams 并保持唯一；不存在 → NOT_FOUND |
-| `DeleteWiki` | [135](https://google.aip.dev/135) | `DELETE /api/v1/{name=...}` | 幂等删除 |
+| `DeleteWiki` | [135](https://google.aip.dev/135) | `DELETE /api/v1/{name=...}` | 按 name 删除；目标不存在 → NOT_FOUND（AIP-135 默认语义，无 `allow_missing`） |
 | `ListWikis` | [132](https://google.aip.dev/132) | `GET /api/v1/{parent=...}/wikis` | **全量获取语义**：返回完整资源（含 content）；**无 order_by**，固定 `wiki_id asc`（唯一身份索引支撑）；AIP-158 游标分页（固定单键 seek），`page_size` 默认 20、上限 100 |
 | `SearchWikis` | [136](https://google.aip.dev/136) 自定义方法 | `GET /api/v1/{parent=...}/wikis:search` | **检索**：`query` 参数；轻量响应（条目 `{name, title}`，无 content）；§4 分页 |
 
