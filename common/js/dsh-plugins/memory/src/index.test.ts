@@ -1,10 +1,12 @@
 /**
  * Memory tool-row tests — the row the planner pool's template preset mounts:
  * the `memory` tool plus the three wiki tools (`wiki_search`/`wiki_get`/
- * `wiki_write`) and exactly one function-form snapshot section (order 200+).
- * The section's text closure reads the host service's cache through
- * `ctx.plannerMemory`, keyed by the assembly's `context.scope`; the wiki tools
- * inject nothing into the system prompt.
+ * `wiki_write`), the two guidance sections (`memory:guidance` order 110,
+ * `wiki:guidance` order 120) and the function-form snapshot section (order
+ * 200). The section's text closure reads the host service's cache through
+ * `ctx.plannerMemory`, keyed by the assembly's `context.scope`; the wiki
+ * tools and the wiki guidance section inject no entry content into the
+ * system prompt.
  *
  * Pattern (style/javascript.md Mock convention): the mounting context and
  * the host service are injected doubles (`vi.fn()`); no module interception.
@@ -20,6 +22,14 @@ import {
   MEMORY_SNAPSHOT_SECTION_NAME,
   MEMORY_SNAPSHOT_SECTION_ORDER,
 } from "@dominion/dsh-memory-service";
+import {
+  MEMORY_GUIDANCE,
+  MEMORY_GUIDANCE_SECTION_NAME,
+  MEMORY_GUIDANCE_SECTION_ORDER,
+  WIKI_GUIDANCE,
+  WIKI_GUIDANCE_SECTION_NAME,
+  WIKI_GUIDANCE_SECTION_ORDER,
+} from "./guidance.js";
 import { apply, inject, name } from "./index.js";
 
 interface SectionRecord {
@@ -72,6 +82,17 @@ function toolNamed(tools: readonly ToolDefinition[], toolName: string): ToolDefi
   const found = tools.find((tool) => tool.name === toolName);
   if (found === undefined) {
     throw new Error(`tool ${toolName} was not registered`);
+  }
+  return found;
+}
+
+function sectionNamed(
+  sections: readonly SectionRecord[],
+  sectionName: string,
+): SectionRecord {
+  const found = sections.find((section) => section.name === sectionName);
+  if (found === undefined) {
+    throw new Error(`section ${sectionName} was not registered`);
   }
   return found;
 }
@@ -161,27 +182,41 @@ describe("memory preset row apply", () => {
     expect(result).toEqual({ result: "wiki failed: no loaded memory scope" });
   });
 
-  it("registers exactly one section: the function-form snapshot (order 200)", () => {
+  it("registers the two guidance sections and the snapshot section in order", () => {
     const { ctx, sections } = makeMount();
 
     apply(ctx);
 
-    expect(sections).toHaveLength(1);
-    expect(sections[0].name).toBe(MEMORY_SNAPSHOT_SECTION_NAME);
-    expect(sections[0].name).toBe("memory:snapshot");
-    expect(sections[0].order).toBe(MEMORY_SNAPSHOT_SECTION_ORDER);
-    expect(sections[0].order).toBeGreaterThanOrEqual(200);
-    expect(typeof sections[0].text).toBe("function");
-    // The wiki tools inject nothing into the system prompt
+    expect(sections.map((section) => section.name)).toEqual([
+      MEMORY_GUIDANCE_SECTION_NAME,
+      WIKI_GUIDANCE_SECTION_NAME,
+      MEMORY_SNAPSHOT_SECTION_NAME,
+    ]);
+    expect(sections.map((section) => section.order)).toEqual([
+      MEMORY_GUIDANCE_SECTION_ORDER,
+      WIKI_GUIDANCE_SECTION_ORDER,
+      MEMORY_SNAPSHOT_SECTION_ORDER,
+    ]);
+    expect(sections[0].order).toBe(110);
+    expect(sections[1].order).toBe(120);
+    expect(sections[2].order).toBe(200);
+    // Both guidance sections carry static text; only the snapshot section is
+    // a closure over the host service.
+    expect(sections[0].text).toBe(MEMORY_GUIDANCE);
+    expect(sections[1].text).toBe(WIKI_GUIDANCE);
+    expect(typeof sections[2].text).toBe("function");
+    // Wiki entries inject no content into the system prompt: `wiki:guidance`
+    // is static workflow text, never a snapshot closure
     // (specs/068-wiki-round-pause/spec.md Edge Cases「wiki 不注入快照」).
-    expect(sections.some((s) => s.name.includes("wiki"))).toBe(false);
-    expect(sections.some((s) => s.name.includes("guidance"))).toBe(false);
+    expect(typeof sectionNamed(sections, "wiki:guidance").text).toBe("string");
   });
 
-  it("the section reads the bound snapshot for the assembly scope", () => {
+  it("the snapshot section reads the bound snapshot for the assembly scope", () => {
     const { ctx, sections, snapshot, firstScope } = makeMount();
     apply(ctx);
-    const text = sections[0].text as (context: { scope?: object }) => string;
+    const text = sectionNamed(sections, MEMORY_SNAPSHOT_SECTION_NAME).text as (
+      context: { scope?: object },
+    ) => string;
 
     expect(text({ scope: firstScope })).toBe("长期记忆：\n开局先点中心更高效");
     expect(snapshot).toHaveBeenCalledWith(firstScope);
@@ -190,7 +225,9 @@ describe("memory preset row apply", () => {
   it("an unbound or scope-less assembly renders the empty string (no section)", () => {
     const { ctx, sections } = makeMount();
     apply(ctx);
-    const text = sections[0].text as (context: { scope?: object }) => string;
+    const text = sectionNamed(sections, MEMORY_SNAPSHOT_SECTION_NAME).text as (
+      context: { scope?: object },
+    ) => string;
 
     expect(text({ scope: { other: "agent" } })).toBe("");
     expect(text({})).toBe("");

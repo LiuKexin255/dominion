@@ -91,15 +91,30 @@ describe("MEMORY_TOOL_PARAMETERS (v1 schema parity)", () => {
 describe("createMemoryToolDefinition", () => {
   const service = makeService(async () => "memory added");
 
-  it("registers exactly the `memory` tool with a non-empty description", () => {
+  it("registers exactly the `memory` tool with a generic top-10 description", () => {
     const definition = createMemoryToolDefinition(service);
     expect(definition.name).toBe(MEMORY_TOOL_NAME);
     expect(definition.name).toBe("memory");
     expect(definition.description).toBe(MEMORY_TOOL_DESCRIPTION);
     expect(definition.description.length).toBeGreaterThan(0);
-    expect(MEMORY_TOOL_DESCRIPTION).toContain("fixed at agent start");
+  });
+
+  it("describes the snapshot top-10 recency bound and the full-storage writes (FR-012)", () => {
+    expect(MEMORY_TOOL_DESCRIPTION).toContain("10 most recently updated");
+    expect(MEMORY_TOOL_DESCRIPTION).toContain("not refreshed by writes");
+    expect(MEMORY_TOOL_DESCRIPTION).toContain("full stored memory");
+  });
+
+  it("stays generic: no scenario nouns, no third-party terms, no other tools (FR-012)", () => {
+    for (const scenarioNoun of ["planner", "hermes", "review", "player", "game"]) {
+      expect(MEMORY_TOOL_DESCRIPTION.toLowerCase()).not.toContain(scenarioNoun);
+    }
     expect(MEMORY_TOOL_DESCRIPTION).not.toContain("skill");
     expect(MEMORY_TOOL_DESCRIPTION).not.toContain("compression");
+    // Only this tool's own function — the cross-tool workflow lives in the
+    // plugin's prompt sections (specs/068-wiki-round-pause/spec.md FR-013).
+    expect(MEMORY_TOOL_DESCRIPTION).not.toContain("wiki");
+    expect(MEMORY_TOOL_DESCRIPTION).not.toContain("knowledge base");
   });
 
   it("renders a successful canonical value as one text block", () => {

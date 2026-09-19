@@ -6,15 +6,19 @@
  * batch form is validated in the operation core and answered with TEXT, no
  * read action exists, and every failure is a text result (never a thrown
  * tool error — 031 C15 neutral status; specs/059-agent-v2-team-mode/spec.md
- * FR-007). The description is rewritten for the v2 snapshot semantics: the
- * system-prompt snapshot is fixed at agent start and is NOT refreshed by
- * writes (survey/deepseek-harness-memory-plugin.md §4.1/decision ③).
+ * FR-007). The description is a generic, scenario-free statement of the
+ * tool's own function (specs/068-wiki-round-pause/spec.md FR-012): writes
+ * persist to the full stored memory, while the system-prompt snapshot holds
+ * only the 10 most recently updated entries and is not refreshed by writes.
  *
- * Storage access goes through the host service face at execution time
- * (`exec.agent.ctx.plannerMemory`, the fiber/ctx property walk used by the
- * saolei tools' `saoleiGame` resolution — dsh-tools `ToolExecution.agent`
- * carries the calling agent), which carries the agent's bound
- * `(template, session)` scope; the tool never closes over a scope.
+ * Storage access goes through the host service face bound at registration:
+ * the preset row's `apply` captures `ctx.plannerMemory` from its own context
+ * and passes it into {@link createMemoryToolDefinition}. At execution time
+ * `exec.agent` only identifies the calling agent, whose bound
+ * `(template, session)` scope the service resolves; the tool itself never
+ * closes over a scope. Walking `exec.agent.ctx.plannerMemory` is not viable —
+ * the agent scope's isolate boundary rejects the property walk, so the row
+ * ctx is the composition point that declares the dependency (T023).
  */
 
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -30,18 +34,23 @@ import type {
 export const MEMORY_TOOL_NAME = "memory";
 
 /**
- * Model-facing description: v1's wording with the two stale references
- * removed — the compression-boundary refresh (v2 has no compression) and the
- * memory skill (not migrated); replaced by the v2 snapshot semantics.
+ * Model-facing description: a generic statement of the tool's own function
+ * (no deployment-specific scenario nouns, no third-party framework terms)
+ * plus the snapshot recency semantics (specs/068-wiki-round-pause/spec.md
+ * FR-012). The top-10 bound and the full-storage write semantics mirror the
+ * snapshot loader in
+ * specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §2.
  */
 export const MEMORY_TOOL_DESCRIPTION =
-  "Manage the planner's long-term review memory (hermes-style single tool). " +
+  "Manage long-term memory entries. " +
   "action=add records a new entry (content); action=replace/remove locate an " +
   "existing entry by a SHORT old_text substring and update (content) or " +
   "delete it; operations applies a batch atomically (all-or-nothing). " +
   "Substring matching is case-sensitive; a 0/multiple match returns the " +
-  "current entries to pick a more specific old_text. Changes persist " +
-  "immediately; the snapshot in your system prompt is fixed at agent start.";
+  "current entries to pick a more specific old_text. Writes persist " +
+  "immediately and act on the full stored memory. The memory snapshot in " +
+  "your system prompt contains only the 10 most recently updated entries " +
+  "and is not refreshed by writes.";
 
 /**
  * The parameter schema (v1 `memory-mcp.ts:427-471`): all fields optional at
@@ -141,11 +150,12 @@ export async function executeMemoryTool(
   }
 }
 
-/** Build the registry-ready `memory` tool definition (no guidance section:
- * a single tool has no cross-call coordination need —
- * survey/deepseek-harness-memory-plugin.md §4.2). The host service is bound
- * by the caller (the preset row's `apply`) so the tool never has to cross the
- * agent scope's isolate boundary. */
+/** Build the registry-ready `memory` tool definition. The cross-tool
+ * coordination guidance is a separate prompt section owned by the plugin row
+ * (`common/js/dsh-plugins/memory/src/index.ts`) and never part of this tool's
+ * own description (specs/068-wiki-round-pause/contracts/dsh-plugins.md §3).
+ * The host service is bound by the caller (the preset row's `apply`) so the
+ * tool never has to cross the agent scope's isolate boundary. */
 export function createMemoryToolDefinition(service: MemoryToolService): ToolDefinition {
   return defineTool({
     name: MEMORY_TOOL_NAME,

@@ -4,19 +4,22 @@
  * (`projects/game/agent_v2/preset-templates/planner/planner/agent.cordis.yml`).
  * Applying it registers the `memory` tool, the three wiki tools
  * (`wiki_search`/`wiki_get`/`wiki_write` —
- * specs/068-wiki-round-pause/spec.md FR-006) and the function-form snapshot
- * section in the SAME apply, so the row's tool face is all-or-nothing
- * (line-level selection — specs/064-memory-split-fold-remain/contracts/dsh-plugins.md
- * §1/§2). The wiki tools ride this row, so they mount only where the row does
- * (planner; specs/068-wiki-round-pause/spec.md FR-010).
+ * specs/068-wiki-round-pause/spec.md FR-006), the two guidance sections and
+ * the function-form snapshot section in the SAME apply, so the row's model
+ * face is all-or-nothing (line-level selection —
+ * specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §1/§2;
+ * specs/068-wiki-round-pause/contracts/dsh-plugins.md §2 items 5-7). The wiki
+ * tools ride this row, so they mount only where the row does (planner;
+ * specs/068-wiki-round-pause/spec.md FR-010).
  *
- * The section reads the snapshot through the host service face, keyed by the
- * assembly's `context.scope` (the agent — dsh-agent's `assembleContextFor`
- * sets `scope: agent`); the host row's `load` fills that cache during the
- * materialization setup, before the first assembly. An unbound/empty snapshot
- * renders as the empty string, which the registry drops from the prompt. The
- * wiki tools inject NOTHING into the prompt — a wiki entry never enters the
- * system prompt (specs/068-wiki-round-pause/spec.md Edge Cases「wiki 不注入快照」).
+ * The snapshot section reads the snapshot through the host service face,
+ * keyed by the assembly's `context.scope` (the agent — dsh-agent's
+ * `assembleContextFor` sets `scope: agent`); the host row's `load` fills that
+ * cache during the materialization setup, before the first assembly. An
+ * unbound/empty snapshot renders as the empty string, which the registry
+ * drops from the prompt. The `wiki:guidance` section carries static workflow
+ * text only — no wiki entry content ever enters the system prompt
+ * (specs/068-wiki-round-pause/spec.md Edge Cases「wiki 不注入快照」).
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -25,6 +28,14 @@ import {
   MEMORY_SNAPSHOT_SECTION_NAME,
   MEMORY_SNAPSHOT_SECTION_ORDER,
 } from "@dominion/dsh-memory-service";
+import {
+  MEMORY_GUIDANCE,
+  MEMORY_GUIDANCE_SECTION_NAME,
+  MEMORY_GUIDANCE_SECTION_ORDER,
+  WIKI_GUIDANCE,
+  WIKI_GUIDANCE_SECTION_NAME,
+  WIKI_GUIDANCE_SECTION_ORDER,
+} from "./guidance.js";
 import { createMemoryToolDefinition } from "./tool.js";
 import {
   createWikiGetToolDefinition,
@@ -45,6 +56,17 @@ export function apply(ctx: Context): void {
   ctx.tools.register(createWikiSearchToolDefinition(ctx.plannerMemory));
   ctx.tools.register(createWikiGetToolDefinition(ctx.plannerMemory));
   ctx.tools.register(createWikiWriteToolDefinition(ctx.plannerMemory));
+
+  ctx.systemPrompt.section({
+    name: MEMORY_GUIDANCE_SECTION_NAME,
+    order: MEMORY_GUIDANCE_SECTION_ORDER,
+    text: MEMORY_GUIDANCE,
+  });
+  ctx.systemPrompt.section({
+    name: WIKI_GUIDANCE_SECTION_NAME,
+    order: WIKI_GUIDANCE_SECTION_ORDER,
+    text: WIKI_GUIDANCE,
+  });
 
   ctx.systemPrompt.section({
     name: MEMORY_SNAPSHOT_SECTION_NAME,
