@@ -26,6 +26,8 @@ func TestLoadK8sConfig(t *testing.T) {
 		{name: "mongodb.dev-single.image", want: "mongo", got: LoadK8sConfig().MongoDB["dev-single"].Image},
 		{name: "mongodb.dev-single.version", want: "7.0", got: LoadK8sConfig().MongoDB["dev-single"].Version},
 		{name: "mongodb.dev-single.admin_username", want: "admin", got: LoadK8sConfig().MongoDB["dev-single"].AdminUsername},
+		{name: "redis.dev-single.image", want: "redis", got: LoadK8sConfig().Redis["dev-single"].Image},
+		{name: "redis.dev-single.version", want: "8.4", got: LoadK8sConfig().Redis["dev-single"].Version},
 	}
 
 	for _, tt := range tests {
@@ -47,6 +49,19 @@ func TestLoadK8sConfigMongoProfile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(profile.Storage.AccessModes, []string{"ReadWriteOncePod"}) {
 		t.Fatalf("LoadK8sConfig().MongoDB[\"dev-single\"].Storage.AccessModes = %#v, want %#v", profile.Storage.AccessModes, []string{"ReadWriteOncePod"})
+	}
+}
+
+func TestLoadK8sConfigRedisProfile(t *testing.T) {
+	profile := LoadK8sConfig().Redis["dev-single"]
+	if profile == nil {
+		t.Fatal("LoadK8sConfig().Redis[\"dev-single\"] is nil")
+	}
+	if profile.Port != 6379 {
+		t.Fatalf("LoadK8sConfig().Redis[\"dev-single\"].Port = %d, want %d", profile.Port, 6379)
+	}
+	if !reflect.DeepEqual(profile.Storage.AccessModes, []string{"ReadWriteOncePod"}) {
+		t.Fatalf("LoadK8sConfig().Redis[\"dev-single\"].Storage.AccessModes = %#v, want %#v", profile.Storage.AccessModes, []string{"ReadWriteOncePod"})
 	}
 }
 
@@ -116,7 +131,7 @@ func Test_parseK8sConfig(t *testing.T) {
 						Version:       "7.0",
 						Port:          27017,
 						AdminUsername: "admin",
-						Storage: MongoStorageConfig{
+						Storage: StorageConfig{
 							StorageClassName: "local-path",
 							Capacity:         "1Gi",
 							AccessModes:      []string{"ReadWriteOncePod"},
@@ -130,6 +145,47 @@ func Test_parseK8sConfig(t *testing.T) {
 			name: "invalid mongo config",
 			raw: func(t *testing.T) []byte {
 				return mustReadStaticConfigTestdata(t, "static_config.mongodb.invalid.yaml")
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid redis config",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.redis.valid.yaml")
+			},
+			want: &K8sConfig{
+				Namespace: "default",
+				ManagedBy: "dominion.io",
+				Gateway: GatewayConfig{
+					Name:      "traefik-gateway",
+					Namespace: "ingress",
+				},
+				Redis: map[string]*RedisProfileConfig{
+					"dev-single": {
+						Image:   "redis",
+						Version: "8.4",
+						Port:    6379,
+						Storage: StorageConfig{
+							StorageClassName: "local-path",
+							Capacity:         "1Gi",
+							AccessModes:      []string{"ReadWriteOncePod"},
+							VolumeMode:       "Filesystem",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "invalid redis config missing storage",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.redis.invalid.yaml")
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid redis config port out of range",
+			raw: func(t *testing.T) []byte {
+				return []byte("namespace: default\nmanaged_by: dominion.io\ngateway:\n  name: traefik-gateway\n  namespace: ingress\nredis:\n  dev-single:\n    image: redis\n    version: \"8.4\"\n    port: 70000\n    storage:\n      storage_class_name: local-path\n      capacity: 1Gi\n      access_modes:\n        - ReadWriteOncePod\n      volume_mode: Filesystem\n")
 			},
 			wantErr: true,
 		},
@@ -261,6 +317,53 @@ func TestK8sConfig_MongoProfile(t *testing.T) {
 			got := tt.cfg.MongoProfile(tt.profile)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("(*K8sConfig).MongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestK8sConfig_RedisProfile(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *K8sConfig
+		profile string
+		want    *RedisProfileConfig
+	}{
+		{
+			name: "found",
+			cfg: &K8sConfig{Redis: map[string]*RedisProfileConfig{
+				"dev-single": {
+					Image:   "redis",
+					Version: "8.4",
+					Port:    6379,
+				},
+			}},
+			profile: "dev-single",
+			want: &RedisProfileConfig{
+				Image:   "redis",
+				Version: "8.4",
+				Port:    6379,
+			},
+		},
+		{
+			name: "not found",
+			cfg: &K8sConfig{Redis: map[string]*RedisProfileConfig{
+				"dev-single": {
+					Image:   "redis",
+					Version: "8.4",
+					Port:    6379,
+				},
+			}},
+			profile: "nonexistent",
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cfg.RedisProfile(tt.profile)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("(*K8sConfig).RedisProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
 			}
 		})
 	}

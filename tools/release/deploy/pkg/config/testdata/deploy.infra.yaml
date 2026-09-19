@@ -9,3 +9,8 @@ services:
       app: grpc-hello-world
       persistence:
         enabled: true
+  - infra:
+      resource: redis
+      profile: development
+      name: grpc-hello-world-redis
+      app: grpc-hello-world

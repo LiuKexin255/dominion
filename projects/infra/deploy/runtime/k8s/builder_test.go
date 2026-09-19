@@ -3,6 +3,7 @@ package k8s
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -45,7 +46,20 @@ func testK8sConfig() *K8sConfig {
 				Version:       "7.0",
 				Port:          27017,
 				AdminUsername: "admin",
-				Storage: MongoStorageConfig{
+				Storage: StorageConfig{
+					StorageClassName: "local-path",
+					Capacity:         "1Gi",
+					AccessModes:      []string{"ReadWriteOncePod"},
+					VolumeMode:       "Filesystem",
+				},
+			},
+		},
+		Redis: map[string]*RedisProfileConfig{
+			"dev-single": {
+				Image:   "redis",
+				Version: "8.4",
+				Port:    6379,
+				Storage: StorageConfig{
 					StorageClassName: "local-path",
 					Capacity:         "1Gi",
 					AccessModes:      []string{"ReadWriteOncePod"},
@@ -105,6 +119,16 @@ func testHTTPRouteWorkload(envType domain.EnvironmentType, envLabel string) *HTT
 func testMongoDBWorkload() *MongoDBWorkload {
 	return &MongoDBWorkload{
 		ServiceName:     "mymongo",
+		EnvironmentName: "dev",
+		App:             "myapp",
+		ProfileName:     "dev-single",
+		Persistence:     PersistenceConfig{Enabled: true},
+	}
+}
+
+func testRedisWorkload() *RedisWorkload {
+	return &RedisWorkload{
+		ServiceName:     "myredis",
 		EnvironmentName: "dev",
 		App:             "myapp",
 		ProfileName:     "dev-single",
@@ -2587,8 +2611,8 @@ func TestBuildMongoDBSecret(t *testing.T) {
 		t.Fatalf("Username = %q, want %q", string(secret.Data[mongoSecretUsernameKey]), profile.AdminUsername)
 	}
 	password := string(secret.Data[mongoSecretPasswordKey])
-	if len(password) < mongoPasswordMinLen {
-		t.Fatalf("Password length = %d, want >= %d", len(password), mongoPasswordMinLen)
+	if len(password) < stablePasswordMinLen {
+		t.Fatalf("Password length = %d, want >= %d", len(password), stablePasswordMinLen)
 	}
 
 	// Verify deterministic password.
@@ -2724,32 +2748,387 @@ func TestCheckPVCCompatibility_InstanceCapacity(t *testing.T) {
 	}
 }
 
+// --- BuildRedisDeployment ---
+
+func TestBuildRedisDeployment(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+
+	deploy, err := BuildRedisDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildRedisDeployment() error: %v", err)
+	}
+
+	if deploy.Namespace != cfg.Namespace {
+		t.Fatalf("Namespace = %q, want %q", deploy.Namespace, cfg.Namespace)
+	}
+	if deploy.Name != w.ResourceName() {
+		t.Fatalf("Name = %q, want %q", deploy.Name, w.ResourceName())
+	}
+	if deploy.Labels[appLabelKey] != w.App {
+		t.Fatalf("Label[%q] = %q, want %q", appLabelKey, deploy.Labels[appLabelKey], w.App)
+	}
+	if deploy.Labels[managedByLabelKey] != cfg.ManagedBy {
+		t.Fatalf("Label[%q] = %q, want %q", managedByLabelKey, deploy.Labels[managedByLabelKey], cfg.ManagedBy)
+	}
+	if deploy.Spec.Selector.MatchLabels[managedByLabelKey] != "" {
+		t.Fatalf("Selector should not contain managed-by label")
+	}
+	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 1 {
+		t.Fatalf("Replicas = %v, want 1", deploy.Spec.Replicas)
+	}
+	if deploy.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Fatalf("Strategy.Type = %q, want %q", deploy.Spec.Strategy.Type, appsv1.RecreateDeploymentStrategyType)
+	}
+
+	// Redis 无 init 容器（--requirepass 即完成认证初始化）。
+	if len(deploy.Spec.Template.Spec.InitContainers) != 0 {
+		t.Fatalf("InitContainers count = %d, want 0", len(deploy.Spec.Template.Spec.InitContainers))
+	}
+	if len(deploy.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("Containers count = %d, want 1", len(deploy.Spec.Template.Spec.Containers))
+	}
+	container := deploy.Spec.Template.Spec.Containers[0]
+	profile := cfg.Redis["dev-single"]
+	if container.Image != profile.Image+":"+profile.Version {
+		t.Fatalf("Image = %q, want %q", container.Image, profile.Image+":"+profile.Version)
+	}
+	if container.Name != w.ResourceName() {
+		t.Fatalf("Container Name = %q, want %q", container.Name, w.ResourceName())
+	}
+
+	// 持久化启用时命令追加 --appendonly yes。
+	wantCommand := []string{"/bin/sh", "-ec", `exec redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes`}
+	if !reflect.DeepEqual(container.Command, wantCommand) {
+		t.Fatalf("Command = %#v, want %#v", container.Command, wantCommand)
+	}
+
+	if len(container.Ports) != 1 || container.Ports[0].Name != redisPortName || container.Ports[0].ContainerPort != int32(profile.Port) {
+		t.Fatalf("Port = %#v, want {Name: %q, ContainerPort: %d}", container.Ports, redisPortName, profile.Port)
+	}
+
+	// Env：REDIS_PASSWORD 为密码派生直接值（向量固定，跨语言一致）。
+	envMap := envVarsToMap(container.Env)
+	if envMap[constants.EnvServiceApp] != w.App {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvServiceApp, envMap[constants.EnvServiceApp], w.App)
+	}
+	if envMap[constants.EnvDominionEnvironment] != w.EnvironmentName {
+		t.Fatalf("Env[%q] = %q, want %q", constants.EnvDominionEnvironment, envMap[constants.EnvDominionEnvironment], w.EnvironmentName)
+	}
+	wantPassword := "k1OTVRTOdkt9XeuhOVEk5yR82ZZqnjxt"
+	if envMap[redisEnvPassword] != wantPassword {
+		t.Fatalf("Env[%q] = %q, want %q", redisEnvPassword, envMap[redisEnvPassword], wantPassword)
+	}
+	assertEnvFieldRef(t, container.Env, constants.EnvPodNamespace, podNamespaceFieldPath)
+	if _, ok := envMap[constants.EnvDominionArtifactDir]; ok {
+		t.Fatalf("Env[%q] should not be injected for infra workloads", constants.EnvDominionArtifactDir)
+	}
+
+	// 持久化启用时数据卷引用 PVC。
+	if len(deploy.Spec.Template.Spec.Volumes) != 1 {
+		t.Fatalf("Volumes count = %d, want 1", len(deploy.Spec.Template.Spec.Volumes))
+	}
+	vol := deploy.Spec.Template.Spec.Volumes[0]
+	if vol.Name != redisDataVolumeName {
+		t.Fatalf("Volume Name = %q, want %q", vol.Name, redisDataVolumeName)
+	}
+	if vol.PersistentVolumeClaim == nil || vol.PersistentVolumeClaim.ClaimName != w.PVCResourceName() {
+		t.Fatalf("Volume should reference PVC %q", w.PVCResourceName())
+	}
+	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != redisDataMountPath {
+		t.Fatalf("VolumeMounts = %#v, want mount at %q", container.VolumeMounts, redisDataMountPath)
+	}
+
+	// 探针为 TCP 探针，端口名 redis。
+	assertRedisProbes(t, container)
+}
+
+func TestBuildRedisDeployment_WithoutPersistenceUsesEmptyDir(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+	w.Persistence.Enabled = false
+
+	deploy, err := BuildRedisDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildRedisDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	wantCommand := []string{"/bin/sh", "-ec", `exec redis-server --requirepass "$REDIS_PASSWORD"`}
+	if !reflect.DeepEqual(container.Command, wantCommand) {
+		t.Fatalf("Command = %#v, want %#v", container.Command, wantCommand)
+	}
+
+	vol := deploy.Spec.Template.Spec.Volumes[0]
+	if vol.EmptyDir == nil {
+		t.Fatalf("Volume should use emptyDir when persistence is disabled")
+	}
+	if vol.PersistentVolumeClaim != nil {
+		t.Fatalf("Volume should not reference PVC when persistence is disabled")
+	}
+}
+
+func TestBuildRedisDeployment_NilWorkload(t *testing.T) {
+	if _, err := BuildRedisDeployment(nil, testK8sConfig()); err == nil {
+		t.Fatalf("BuildRedisDeployment(nil) expected error")
+	}
+}
+
+func TestBuildRedisDeployment_UnknownProfile(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+	w.ProfileName = "nonexistent"
+
+	_, err := BuildRedisDeployment(w, cfg)
+	if err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("BuildRedisDeployment() expected profile not found error, got: %v", err)
+	}
+}
+
+// --- BuildRedisService ---
+
+func TestBuildRedisService(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+
+	svc, err := BuildRedisService(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildRedisService() error: %v", err)
+	}
+
+	if svc.Namespace != cfg.Namespace {
+		t.Fatalf("Namespace = %q, want %q", svc.Namespace, cfg.Namespace)
+	}
+	if svc.Name != w.ServiceResourceName() {
+		t.Fatalf("Name = %q, want %q", svc.Name, w.ServiceResourceName())
+	}
+	if svc.Labels[appLabelKey] != w.App {
+		t.Fatalf("Label[%q] = %q, want %q", appLabelKey, svc.Labels[appLabelKey], w.App)
+	}
+	if svc.Spec.Selector[appLabelKey] != w.App || svc.Spec.Selector[serviceLabelKey] != w.ServiceName {
+		t.Fatalf("Selector = %#v, want app/service labels", svc.Spec.Selector)
+	}
+
+	profile := cfg.Redis["dev-single"]
+	if len(svc.Spec.Ports) != 1 {
+		t.Fatalf("Ports count = %d, want 1", len(svc.Spec.Ports))
+	}
+	port := svc.Spec.Ports[0]
+	if port.Name != redisPortName || port.Port != int32(profile.Port) || port.TargetPort.StrVal != redisPortName {
+		t.Fatalf("Port = %#v, want {Name: %q, Port: %d, TargetPort: %q}", port, redisPortName, profile.Port, redisPortName)
+	}
+}
+
+func TestBuildRedisService_UnknownProfile(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+	w.ProfileName = "nonexistent"
+
+	if _, err := BuildRedisService(w, cfg); err == nil {
+		t.Fatalf("BuildRedisService() expected error for unknown profile")
+	}
+}
+
+// --- BuildRedisPVC ---
+
+func TestBuildRedisPVC(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+
+	pvc, err := BuildRedisPVC(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildRedisPVC() error: %v", err)
+	}
+
+	if pvc.Namespace != cfg.Namespace {
+		t.Fatalf("Namespace = %q, want %q", pvc.Namespace, cfg.Namespace)
+	}
+	if pvc.Name != w.PVCResourceName() {
+		t.Fatalf("Name = %q, want %q", pvc.Name, w.PVCResourceName())
+	}
+	if pvc.Labels[appLabelKey] != w.App {
+		t.Fatalf("Label[%q] = %q, want %q", appLabelKey, pvc.Labels[appLabelKey], w.App)
+	}
+
+	profile := cfg.Redis["dev-single"]
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != profile.Storage.StorageClassName {
+		t.Fatalf("StorageClassName = %v, want %q", pvc.Spec.StorageClassName, profile.Storage.StorageClassName)
+	}
+	if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.PersistentVolumeAccessMode(profile.Storage.AccessModes[0]) {
+		t.Fatalf("AccessModes = %v, want [%v]", pvc.Spec.AccessModes, profile.Storage.AccessModes[0])
+	}
+	if pvc.Spec.VolumeMode == nil || *pvc.Spec.VolumeMode != corev1.PersistentVolumeMode(profile.Storage.VolumeMode) {
+		t.Fatalf("VolumeMode = %v, want %q", pvc.Spec.VolumeMode, profile.Storage.VolumeMode)
+	}
+	capacity := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if capacity.Cmp(resource.MustParse(profile.Storage.Capacity)) != 0 {
+		t.Fatalf("Capacity = %s, want %s", capacity.String(), profile.Storage.Capacity)
+	}
+}
+
+func TestBuildRedisPVC_NilWorkload(t *testing.T) {
+	if _, err := BuildRedisPVC(nil, testK8sConfig()); err == nil {
+		t.Fatalf("BuildRedisPVC(nil) expected error")
+	}
+}
+
+func TestBuildRedisPVC_UnknownProfile(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+	w.ProfileName = "nonexistent"
+
+	if _, err := BuildRedisPVC(w, cfg); err == nil {
+		t.Fatalf("BuildRedisPVC() expected error for unknown profile")
+	}
+}
+
+func TestBuildRedisPVC_PersistenceDisabled(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+	w.Persistence.Enabled = false
+
+	_, err := BuildRedisPVC(w, cfg)
+	if err == nil || !strings.Contains(err.Error(), "未启用持久化") {
+		t.Fatalf("BuildRedisPVC() expected persistence disabled error, got: %v", err)
+	}
+}
+
+func TestBuildRedisPVC_InstanceCapacity(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+	w.Persistence.Capacity = resource.MustParse("20Gi")
+
+	pvc, err := BuildRedisPVC(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildRedisPVC() error: %v", err)
+	}
+
+	capacity := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if capacity.Cmp(resource.MustParse("20Gi")) != 0 {
+		t.Fatalf("Capacity = %s, want 20Gi", capacity.String())
+	}
+}
+
+func TestCheckRedisPVCCompatibility(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testRedisWorkload()
+
+	pvc, err := BuildRedisPVC(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildRedisPVC() error: %v", err)
+	}
+
+	if err := CheckRedisPVCCompatibility(pvc, w, cfg); err != nil {
+		t.Fatalf("CheckRedisPVCCompatibility() unexpected error: %v", err)
+	}
+}
+
+func TestBuildRedisResources_UseConfigNamespace(t *testing.T) {
+	cfg := testK8sConfig()
+	cfg.Namespace = "custom-namespace"
+	w := testRedisWorkload()
+
+	deploy, _ := BuildRedisDeployment(w, cfg)
+	svc, _ := BuildRedisService(w, cfg)
+	pvc, _ := BuildRedisPVC(w, cfg)
+
+	for _, obj := range []metav1.Object{deploy, svc, pvc} {
+		if obj.GetNamespace() != "custom-namespace" {
+			t.Fatalf("%s Namespace = %q, want %q", obj.GetName(), obj.GetNamespace(), "custom-namespace")
+		}
+	}
+}
+
+// assertRedisProbes 断言 redis 实例容器携带 TCP liveness/readiness 探针且端口名为 redis。
+func assertRedisProbes(t *testing.T, container corev1.Container) {
+	t.Helper()
+
+	for name, probe := range map[string]*corev1.Probe{"liveness": container.LivenessProbe, "readiness": container.ReadinessProbe} {
+		if probe == nil || probe.TCPSocket == nil {
+			t.Fatalf("%s probe should use TCP socket", name)
+		}
+		if probe.TCPSocket.Port.StrVal != redisPortName {
+			t.Fatalf("%s probe port = %q, want %q", name, probe.TCPSocket.Port.StrVal, redisPortName)
+		}
+	}
+}
+
+// assertEnvFieldRef 断言指定 env 通过 downward API fieldRef 取值。
+func assertEnvFieldRef(t *testing.T, envs []corev1.EnvVar, name, fieldPath string) {
+	t.Helper()
+
+	for _, env := range envs {
+		if env.Name != name {
+			continue
+		}
+		if env.ValueFrom == nil || env.ValueFrom.FieldRef == nil || env.ValueFrom.FieldRef.FieldPath != fieldPath {
+			t.Fatalf("Env[%q] fieldRef = %#v, want %q", name, env.ValueFrom, fieldPath)
+		}
+		return
+	}
+
+	t.Fatalf("Env[%q] not found", name)
+}
+
 // --- generateStablePassword ---
 
 func Test_generateStablePassword(t *testing.T) {
 	// Deterministic.
-	p1 := generateStablePassword("app", "env", "svc")
-	p2 := generateStablePassword("app", "env", "svc")
+	p1 := generateStablePassword(mongoPasswordHMACKey, "app", "env", "svc")
+	p2 := generateStablePassword(mongoPasswordHMACKey, "app", "env", "svc")
 	if p1 != p2 {
 		t.Fatalf("generateStablePassword() should be deterministic: %q != %q", p1, p2)
 	}
 
 	// Different inputs produce different passwords.
-	p3 := generateStablePassword("other", "env", "svc")
+	p3 := generateStablePassword(mongoPasswordHMACKey, "other", "env", "svc")
 	if p1 == p3 {
 		t.Fatalf("generateStablePassword() should differ for different inputs")
 	}
 
 	// Minimum length.
-	if len(p1) < mongoPasswordMinLen {
-		t.Fatalf("generateStablePassword() length = %d, want >= %d", len(p1), mongoPasswordMinLen)
+	if len(p1) < stablePasswordMinLen {
+		t.Fatalf("generateStablePassword() length = %d, want >= %d", len(p1), stablePasswordMinLen)
 	}
 
 	// Only valid characters.
 	for _, c := range p1 {
-		if !strings.ContainsRune(mongoPasswordAlphabet, c) {
+		if !strings.ContainsRune(stablePasswordAlphabet, c) {
 			t.Fatalf("generateStablePassword() contains invalid character: %c", c)
 		}
+	}
+}
+
+// Test_generateStablePassword_Vectors 固定 mongo/redis 密码派生向量：算法与 key
+// 材料的三处实现（deploy service / gopkg / common-js）必须逐字节一致
+// （specs/067-redis-infra-support/research.md D4、data-model.md §4）。
+func Test_generateStablePassword_Vectors(t *testing.T) {
+	tests := []struct {
+		name   string
+		key    string
+		inputs []string
+		want   string
+	}{
+		{
+			name:   "mongo app env svc",
+			key:    mongoPasswordHMACKey,
+			inputs: []string{"app", "env", "svc"},
+			want:   "LqDkCZvBx7iJeqJAAl88PshBsDqTJZUc",
+		},
+		{
+			name:   "redis myapp dev myredis",
+			key:    redisPasswordHMACKey,
+			inputs: []string{"myapp", "dev", "myredis"},
+			want:   "k1OTVRTOdkt9XeuhOVEk5yR82ZZqnjxt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := generateStablePassword(tt.key, tt.inputs...); got != tt.want {
+				t.Fatalf("generateStablePassword(%q, %v) = %q, want %q", tt.key, tt.inputs, got, tt.want)
+			}
+		})
 	}
 }
 

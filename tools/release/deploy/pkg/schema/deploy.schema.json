@@ -109,7 +109,8 @@
               "resource": {
                 "type": "string",
                 "enum": [
-                  "mongodb"
+                  "mongodb",
+                  "redis"
                 ]
               },
               "profile": {

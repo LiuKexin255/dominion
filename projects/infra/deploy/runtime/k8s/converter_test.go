@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"dominion/projects/infra/deploy/domain"
@@ -197,6 +198,7 @@ func TestConvertToWorkloads(t *testing.T) {
 			wantErrMessage: "infra mongo3 persistence: capacity 超过上限 1Ti: 2Ti",
 		},
 		{
+			name: "redis infra",
 			env: newTestEnv(t, &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
 					{
@@ -210,13 +212,109 @@ func TestConvertToWorkloads(t *testing.T) {
 				Infras: []*domain.InfraSpec{
 					{
 						Resource: "redis",
+						Profile:  "dev-single",
+						Name:     "cache",
+						App:      "myapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled: true,
+						},
+					},
+				},
+			}),
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithRedisInfra(),
+		},
+		{
+			name: "redis without persistence",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "svc1",
+						App:      "app1",
+						Image:    "app1:v1",
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+						Replicas: 1,
+					},
+				},
+				Infras: []*domain.InfraSpec{
+					{
+						Resource: "redis",
+						Profile:  "dev-single",
+						Name:     "cache",
+						App:      "myapp",
+					},
+				},
+			}),
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithRedisWithoutPersistence(),
+		},
+		{
+			name: "redis infra with invalid capacity",
+			env: newTestEnv(t, &domain.DesiredState{
+				Infras: []*domain.InfraSpec{
+					{
+						Resource: "redis",
+						Name:     "redis-cache",
+						App:      "myapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled:  true,
+							Capacity: "2Ti",
+						},
+					},
+				},
+			}),
+			cfg:            newTestConfig(),
+			wantErrMessage: "infra redis-cache persistence: capacity 超过上限 1Ti: 2Ti",
+		},
+		{
+			name: "mongodb and redis infra in same environment",
+			env: newTestEnv(t, &domain.DesiredState{
+				Infras: []*domain.InfraSpec{
+					{
+						Resource: "mongodb",
+						Profile:  "dev-single",
+						Name:     "mongo",
+						App:      "myapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled: true,
+						},
+					},
+					{
+						Resource: "redis",
+						Profile:  "dev-single",
+						Name:     "cache",
+						App:      "myapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled: true,
+						},
+					},
+				},
+			}),
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithMongoAndRedisInfra(),
+		},
+		{
+			name: "unsupported infra resource",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "svc1",
+						App:      "app1",
+						Image:    "app1:v1",
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+						Replicas: 1,
+					},
+				},
+				Infras: []*domain.InfraSpec{
+					{
+						Resource: "mysql",
 						Name:     "cache",
 						App:      "myapp",
 					},
 				},
 			}),
 			cfg:            newTestConfig(),
-			wantErrMessage: "不支持的 infra resource 类型: redis",
+			wantErrMessage: "不支持的 infra resource 类型: mysql",
 		},
 		{
 			name: "http route with single rule",
@@ -370,6 +468,47 @@ func TestConvertToWorkloads(t *testing.T) {
 			}
 			assertDeployObjectsEqual(t, got, tt.want)
 		})
+	}
+}
+
+func TestConvertToWorkloads_RedisProfileMissing(t *testing.T) {
+	env := newTestEnv(t, &domain.DesiredState{
+		Infras: []*domain.InfraSpec{
+			{Resource: "redis", Profile: "nonexistent", Name: "cache", App: "myapp"},
+		},
+	})
+
+	// 局部 config 含一个 redis profile，确保断言命中"在非空 profile 表中查表未命中"。
+	cfg := &K8sConfig{
+		Namespace: "test-ns",
+		ManagedBy: "deploy",
+		Redis: map[string]*RedisProfileConfig{
+			"dev-single": {
+				Image:   "redis",
+				Version: "8.4",
+				Port:    6379,
+				Storage: StorageConfig{
+					StorageClassName: "local-path",
+					Capacity:         "1Gi",
+					AccessModes:      []string{"ReadWriteOncePod"},
+					VolumeMode:       "Filesystem",
+				},
+			},
+		},
+	}
+
+	objects, err := ConvertToWorkloads(env, cfg)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+	}
+	if len(objects.RedisWorkloads) != 1 {
+		t.Fatalf("RedisWorkloads count = %d, want 1", len(objects.RedisWorkloads))
+	}
+
+	// profile 存在性校验位于 builder（与 mongodb 既有行为一致）：
+	// converter 只做按 resource 的结构映射。
+	if _, err := BuildRedisDeployment(objects.RedisWorkloads[0], cfg); err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("BuildRedisDeployment() expected profile not found error, got: %v", err)
 	}
 }
 
@@ -652,6 +791,56 @@ func wantDeployObjectsWithMongoDBWithoutPersistence() *DeployObjects {
 			App:             "myapp",
 			ProfileName:     "dev-single",
 			Persistence:     PersistenceConfig{Enabled: false},
+		}},
+	}
+}
+
+func wantDeployObjectsWithRedisInfra() *DeployObjects {
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{{
+			ServiceName:     "svc1",
+			EnvironmentName: "tstscope.dev",
+			App:             "app1",
+			Image:           "app1:v1",
+			Replicas:        1,
+			EnvType:         domain.EnvironmentTypeProd,
+			Ports: []*DeploymentPort{{
+				Name: "http",
+				Port: 8080,
+			}},
+		}},
+		RedisWorkloads: []*RedisWorkload{{
+			ServiceName:     "cache",
+			EnvironmentName: "tstscope.dev",
+			App:             "myapp",
+			ProfileName:     "dev-single",
+			Persistence:     PersistenceConfig{Enabled: true},
+		}},
+	}
+}
+
+func wantDeployObjectsWithRedisWithoutPersistence() *DeployObjects {
+	objects := wantDeployObjectsWithRedisInfra()
+	objects.RedisWorkloads[0].Persistence = PersistenceConfig{Enabled: false}
+
+	return objects
+}
+
+func wantDeployObjectsWithMongoAndRedisInfra() *DeployObjects {
+	return &DeployObjects{
+		MongoDBWorkloads: []*MongoDBWorkload{{
+			ServiceName:     "mongo",
+			EnvironmentName: "tstscope.dev",
+			App:             "myapp",
+			ProfileName:     "dev-single",
+			Persistence:     PersistenceConfig{Enabled: true},
+		}},
+		RedisWorkloads: []*RedisWorkload{{
+			ServiceName:     "cache",
+			EnvironmentName: "tstscope.dev",
+			App:             "myapp",
+			ProfileName:     "dev-single",
+			Persistence:     PersistenceConfig{Enabled: true},
 		}},
 	}
 }

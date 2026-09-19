@@ -74,6 +74,39 @@ func TestK8sRuntimeApplyCreatesResources(t *testing.T) {
 	}
 }
 
+func TestK8sRuntimeApplyCreatesRedisResources(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
+		Infras: []*domain.InfraSpec{newExecutorTestRedisInfraSpec("redis", "demo")},
+	})
+
+	if err := runtime.ApplyResources(ctx, env); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	objects, err := ConvertToWorkloads(env, runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+	redis := objects.RedisWorkloads[0]
+
+	if _, err := runtime.client.TypedClient.CoreV1().PersistentVolumeClaims(runtime.client.K8sConfig.Namespace).Get(ctx, redis.PVCResourceName(), metav1.GetOptions{}); err != nil {
+		t.Fatalf("redis pvc not created: %v", err)
+	}
+	if _, err := runtime.client.TypedClient.AppsV1().Deployments(runtime.client.K8sConfig.Namespace).Get(ctx, redis.ResourceName(), metav1.GetOptions{}); err != nil {
+		t.Fatalf("redis deployment not created: %v", err)
+	}
+	if _, err := runtime.client.TypedClient.CoreV1().Services(runtime.client.K8sConfig.Namespace).Get(ctx, redis.ServiceResourceName(), metav1.GetOptions{}); err != nil {
+		t.Fatalf("redis service not created: %v", err)
+	}
+	// redis 实例不创建 Secret（凭证以环境变量直注，
+	// specs/067-redis-infra-support/contracts/deploy-redis-infra.md §2）。
+	if _, err := runtime.client.TypedClient.CoreV1().Secrets(runtime.client.K8sConfig.Namespace).Get(ctx, newObjectName(WorkloadKindSecret, executorTestEnvName(), "redis"), metav1.GetOptions{}); err == nil {
+		t.Fatalf("redis secret should not be created")
+	}
+}
+
 func TestK8sRuntimeApplyUsesCreateOrUpdate(t *testing.T) {
 	ctx := context.Background()
 	runtime := newTestK8sRuntime(t)
@@ -201,6 +234,29 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 				Deployments: []string{newObjectName(WorkloadKindMongoDB, executorTestEnvName(), "mongo")},
 				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "mongo")},
 				Secrets:     []string{newObjectName(WorkloadKindSecret, executorTestEnvName(), "mongo")},
+			},
+		},
+		{
+			name: "remove redis infra prunes deployment and service but preserves pvc",
+			seedState: &domain.DesiredState{
+				Infras: []*domain.InfraSpec{
+					newExecutorTestRedisInfraSpec("redis", "demo"),
+					newExecutorTestRedisInfraSpec("redis-keep", "demo"),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Infras: []*domain.InfraSpec{
+					newExecutorTestRedisInfraSpec("redis-keep", "demo"),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindRedis, executorTestEnvName(), "redis-keep")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "redis-keep")},
+				PVCs:        []string{newObjectName(WorkloadKindPVC, executorTestEnvName(), "redis"), newObjectName(WorkloadKindPVC, executorTestEnvName(), "redis-keep")},
+			},
+			wantAbsent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindRedis, executorTestEnvName(), "redis")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "redis")},
 			},
 		},
 		{
@@ -527,6 +583,31 @@ func Test_buildExpectedApplyResources_includesStatefulResources(t *testing.T) {
 	}
 }
 
+func Test_buildExpectedApplyResources_includesRedisResources(t *testing.T) {
+	envName := "demo"
+
+	objects := &DeployObjects{
+		RedisWorkloads: []*RedisWorkload{
+			{ServiceName: "cache", EnvironmentName: envName, App: "demo", ProfileName: "dev-single"},
+		},
+	}
+
+	resources := buildExpectedApplyResources(objects)
+
+	depName := newObjectName(WorkloadKindRedis, envName, "cache")
+	if _, ok := resources.deployments[depName]; !ok {
+		t.Fatalf("expected deployment %q in expected resources", depName)
+	}
+	svcName := newObjectName(WorkloadKindService, envName, "cache")
+	if _, ok := resources.services[svcName]; !ok {
+		t.Fatalf("expected service %q in expected resources", svcName)
+	}
+	// redis 不登记 Secret（不创建实例 Secret 对象）。
+	if len(resources.secrets) != 0 {
+		t.Fatalf("redis should not register secrets, got %v", resources.secrets)
+	}
+}
+
 func TestK8sRuntimeApplyPrunesStatefulResources(t *testing.T) {
 	ctx := context.Background()
 
@@ -644,6 +725,18 @@ func newExecutorTestStatefulBasicArtifactSpec(name string, app string, port int3
 func newExecutorTestMongoInfraSpec(name string, app string) *domain.InfraSpec {
 	return &domain.InfraSpec{
 		Resource: infraResourceMongoDB,
+		Profile:  "dev-single",
+		Name:     name,
+		App:      app,
+		Persistence: domain.InfraPersistenceSpec{
+			Enabled: true,
+		},
+	}
+}
+
+func newExecutorTestRedisInfraSpec(name string, app string) *domain.InfraSpec {
+	return &domain.InfraSpec{
+		Resource: infraResourceRedis,
 		Profile:  "dev-single",
 		Name:     name,
 		App:      app,
@@ -800,7 +893,20 @@ func newExecutorTestConfig() *K8sConfig {
 				Version:       "7.0",
 				Port:          27017,
 				AdminUsername: "admin",
-				Storage: MongoStorageConfig{
+				Storage: StorageConfig{
+					StorageClassName: "local-path",
+					Capacity:         "1Gi",
+					AccessModes:      []string{"ReadWriteOncePod"},
+					VolumeMode:       "Filesystem",
+				},
+			},
+		},
+		Redis: map[string]*RedisProfileConfig{
+			"dev-single": {
+				Image:   "redis",
+				Version: "8.4",
+				Port:    6379,
+				Storage: StorageConfig{
 					StorageClassName: "local-path",
 					Capacity:         "1Gi",
 					AccessModes:      []string{"ReadWriteOncePod"},

@@ -1,0 +1,10 @@
+namespace: default
+managed_by: dominion.io
+gateway:
+  name: traefik-gateway
+  namespace: ingress
+redis:
+  dev-single:
+    image: redis
+    version: "8.4"
+    port: 6379
