@@ -123,7 +123,7 @@ func convertInfraToMongoWorkload(infra *domain.InfraSpec, envName string) (*Mong
 		EnvironmentName: envName,
 		App:             infra.App,
 		ProfileName:     infra.Profile,
-		Persistence:     persistence,
+		Persistence:     *persistence,
 	}, nil
 }
 
@@ -138,18 +138,18 @@ func convertInfraToRedisWorkload(infra *domain.InfraSpec, envName string) (*Redi
 		EnvironmentName: envName,
 		App:             infra.App,
 		ProfileName:     infra.Profile,
-		Persistence:     persistence,
+		Persistence:     *persistence,
 	}, nil
 }
 
 // convertInfraPersistence 校验并转换 infra 持久化配置；mongo/redis 共用同一语义。
-func convertInfraPersistence(infra *domain.InfraSpec) (PersistenceConfig, error) {
+func convertInfraPersistence(infra *domain.InfraSpec) (*PersistenceConfig, error) {
 	cap, err := validateAndParseCapacity(infra.Persistence.Enabled, infra.Persistence.Capacity)
 	if err != nil {
-		return PersistenceConfig{}, fmt.Errorf("infra %s persistence: %w", infra.Name, err)
+		return nil, fmt.Errorf("infra %s persistence: %w", infra.Name, err)
 	}
 
-	return PersistenceConfig{Enabled: infra.Persistence.Enabled, Capacity: cap}, nil
+	return &PersistenceConfig{Enabled: infra.Persistence.Enabled, Capacity: cap}, nil
 }
 
 func convertArtifactHTTPToRoute(
