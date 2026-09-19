@@ -19,6 +19,7 @@
         "@dominion/common-js-grpc-otel": "workspace:*",
         "@dominion/common-js-grpc-resolver": "workspace:*",
         "@dominion/common-js-logs": "workspace:*",
+        "@dominion/common-js-mongo": "workspace:*",
         "@dominion/common-js-otel": "workspace:*",
         "@dominion/common-js-resolver": "workspace:*",
         "@dominion/dsh-desktop-bridge": "workspace:*",

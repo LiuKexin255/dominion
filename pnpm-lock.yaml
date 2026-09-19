@@ -593,6 +593,28 @@ importers:
         specifier: 'catalog:'
         version: 3.2.6(@types/debug@4.1.13)(@types/node@22.19.19)(jsdom@26.1.0)(yaml@2.9.0)
 
+  common/js/mongo:
+    dependencies:
+      '@dominion/common-js-constants':
+        specifier: workspace:*
+        version: link:../constants
+      '@dominion/common-js-resolver':
+        specifier: workspace:*
+        version: link:../resolver
+      mongodb:
+        specifier: 'catalog:'
+        version: 7.5.0
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(yaml@2.9.0)
+
   common/js/otel:
     dependencies:
       '@opentelemetry/api':
@@ -997,6 +1019,9 @@ importers:
       '@dominion/common-js-logs':
         specifier: workspace:*
         version: link:../../../common/js/logs
+      '@dominion/common-js-mongo':
+        specifier: workspace:*
+        version: link:../../../common/js/mongo
       '@dominion/common-js-otel':
         specifier: workspace:*
         version: link:../../../common/js/otel

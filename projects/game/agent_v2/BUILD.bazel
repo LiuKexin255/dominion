@@ -55,6 +55,7 @@ ts_project(
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-mongo",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
         # The preset domain face the server/session layers consume:
@@ -158,6 +159,7 @@ artifact_pkg_js(
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
+        "//common/js/mongo:runtime_pkg",
         "//common/js/otel:runtime_pkg",
         "//common/js/resolver:runtime_pkg",
         "//third_party/dsh/core:runtime_pkg",
@@ -202,6 +204,7 @@ vitest_test(
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-mongo",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@dominion/dsh-llm-glm",

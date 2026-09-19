@@ -81,7 +81,7 @@ export function resolveMongoUri(
 
 行为契约：
 
-* **target 语法**：接受 `app/name`（默认端口 27017）与 `dominion:///app/service:port`（显式端口）两种形式；统一归一化为 `app/service:port` 后交由 `@dominion/common-js-resolver`（JS resolver 要求 target 带端口；`dominion:///` 是既有 JS 调用方惯例，见 `projects/game/agent_v2/src/presets.ts`）。归一化后的 app/service/端口/default-env 语义与 Go `common/gopkg/mongo` 一致——Go 端只接受 `app/name` 并在 solver 内补默认端口，故此处为**输入语法的超集**，端点解析与凭证结果无差异。
+* **target 语法**：接受 `app/name`（默认端口 27017）与 `dominion:///app/service:port`（显式端口）两种形式；统一归一化为 `app/service:port` 后交由 `@dominion/common-js-resolver`（JS resolver 要求 target 带端口；`dominion:///` 是既有 JS 调用方惯例，见 `projects/game/agent_v2/src/presets.ts`）。`dominion:///` 前缀与显式端口为两个独立可选维度，其任意组合（另含 `dominion:///app/service` 与 `app/service:port`）均为合法输入，且按同一规则归一化（去前缀、缺端口补 27017），归一化结果无歧义。归一化后的 app/service/端口/default-env 语义与 Go `common/gopkg/mongo` 一致——Go 端只接受 `app/name` 并在 solver 内补默认端口，故此处为**输入语法的超集**，端点解析与凭证结果无差异。
 * 与 Go `common/gopkg/mongo` 行为对齐：默认端口 27017、用户名 `admin`、`authSource=admin`、环境名取 `DOMINION_ENVIRONMENT`（缺失回退 `default`）、端点取解析结果首个。
 * 密码派生算法与 `common/gopkg/mongo/credentials.go` 逐字节一致（key `dominion-mongo-stable-password`）。
 * `createMongoClient` 成功返回前已完成驱动 `connect()`；关闭由调用方负责（`client.close()`）。
