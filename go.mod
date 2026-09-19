@@ -201,7 +201,4 @@ require (
 	k8s.io/client-go v0.35.3
 )
 
-tool (
-	github.com/protoc-contrib/protoc-gen-go-aip
-	github.com/protoc-contrib/protoc-gen-go-aip/cmd/protoc-gen-go-aip
-)
+tool github.com/protoc-contrib/protoc-gen-go-aip/cmd/protoc-gen-go-aip
