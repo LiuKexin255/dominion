@@ -72,7 +72,7 @@
 - [X] T008 [P] [US1] 在 `projects/game/memory/handler/handler.go` 完成资源标识收敛语义改造：确认响应构造不再设置 `MemoryId`、相关注释终态化（引用 `contracts/memory-resource-identity.md`），更新 `handler_test.go` 中 memory_id 断言为 name 断言
 - [X] T009 [US1] 服务注册：`projects/game/memory/cmd/main.go` 注册 `WikiServiceServer`（同 mongo client/db）；`projects/game/gateway/cmd/main.go` 在 `gameconst.MemoryTarget` 同 target 注册 WikiService grpc-gateway REST 面（依赖 T007）
 - [X] T010 [US1] 大型测试编写：新增 `projects/game/testplan/wiki_test.go`（gateway HTTP：Create/Get/Update/Delete、title 唯一冲突 409、List 固定序 + 分页续页、Search 中文子串/大小写/全半角/短查询/续页 query 不一致 400、空 title/content/query 400、超限 400；helper 复用 `helpers_test.go` 既有构造器，遵 `style/large_test.md` 测试组织——按模块归位不按场景编号）；改造 `projects/game/testplan/memory_test.go` 全部 `GetMemoryId()` 断言（18 处）及 `memory_id` 字面量（order_by token / 路径参数）为 `GetName()`/name 形态；`bazel run //:gazelle projects/game/testplan` 更新生成，在既有测试计划 `projects/game/testplan/system_test.yaml`（`game-system` suite）加入 case（不新建平行计划）；增列 token order_by 上下文一致性用例（`update_time desc` 首页 token 配 `order_by=update_time` 翻转方向 → 400；desc token 配等价拼写 `update_time desc, memory_id` 续页 → 200 序保持；缺省 token 配显式 `order_by=memory_id` 续页 → 200——`specs/068-wiki-round-pause/contracts/memory-page-token-context.md` §5）
-- [ ] T011 [US1] 大型测试验收（宪法 VI）：通过 testplan skill 实际执行（`guitar run projects/game/testplan/system_test.yaml`，部署→测试→清理闭环），全部用例通过（含 memory 零回归）；任何失败修复后重跑至全绿（依赖 T010）
+- [X] T011 [US1] 大型测试验收（宪法 VI）：通过 testplan skill 实际执行（`guitar run projects/game/testplan/system_test.yaml`，部署→测试→清理闭环），全部用例通过（含 memory 零回归）；任何失败修复后重跑至全绿（依赖 T010）
 
 **Checkpoint**: wiki 服务端经 gateway HTTP 全链路可用且大型测试全绿 = **MVP 交付**。
 

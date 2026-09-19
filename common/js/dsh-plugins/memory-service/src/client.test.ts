@@ -13,6 +13,7 @@ import {
   MemoryClient,
   buildChannelOptions,
   memoryName,
+  parseMemoryName,
 } from "./client.js";
 
 /**
@@ -62,10 +63,19 @@ describe("MemoryClient", () => {
     fake = makeFakeClient();
   });
 
-  describe("memoryName (resource name construction)", () => {
+  describe("memoryName/parseMemoryName (construction and parsing)", () => {
     it("builds templates/{template}/sessions/{session}/memories/{memoryId}", () => {
       expect(memoryName("saolei", "sess-1", "mem-abc")).toBe(
         "templates/saolei/sessions/sess-1/memories/mem-abc",
+      );
+    });
+
+    it("parseMemoryName inverts memoryName (round trip)", () => {
+      expect(
+        parseMemoryName("templates/saolei/sessions/sess-1/memories/mem-abc"),
+      ).toBe("mem-abc");
+      expect(parseMemoryName(memoryName("saolei", "sess-1", "mem-abc"))).toBe(
+        "mem-abc",
       );
     });
   });
@@ -151,8 +161,14 @@ describe("MemoryClient", () => {
     it("returns {memory_id, content} entries without options (full-accumulation mode)", async () => {
       respond(fake.listMemories, {
         memories: [
-          { memoryId: "mem-a", content: "甲" },
-          { memoryId: "mem-b", content: "乙" },
+          {
+            name: "templates/saolei/sessions/sess-1/memories/mem-a",
+            content: "甲",
+          },
+          {
+            name: "templates/saolei/sessions/sess-1/memories/mem-b",
+            content: "乙",
+          },
         ],
         nextPageToken: "",
       });
@@ -173,9 +189,33 @@ describe("MemoryClient", () => {
       );
     });
 
+    it("drops entries missing name or content (wire-shape guard)", async () => {
+      respond(fake.listMemories, {
+        memories: [
+          {
+            name: "templates/saolei/sessions/sess-1/memories/mem-a",
+            content: "甲",
+          },
+          { content: "无name" },
+          { name: "templates/saolei/sessions/sess-1/memories/mem-b" },
+        ],
+        nextPageToken: "",
+      });
+      const client = new MemoryClient(fake as never);
+
+      const entries = await client.listMemories("saolei", "sess-1");
+
+      expect(entries).toEqual([{ memory_id: "mem-a", content: "甲" }]);
+    });
+
     it("given pageSize, issues exactly one request with pageSize/orderBy and returns the first page", async () => {
       respond(fake.listMemories, {
-        memories: [{ memoryId: "mem-a", content: "甲" }],
+        memories: [
+          {
+            name: "templates/saolei/sessions/sess-1/memories/mem-a",
+            content: "甲",
+          },
+        ],
         nextPageToken: "p2",
       });
       const client = new MemoryClient(fake as never);
@@ -210,12 +250,22 @@ describe("MemoryClient", () => {
         ) => {
           if (!req.pageToken) {
             cb(null, {
-              memories: [{ memoryId: "mem-a", content: "甲" }],
+              memories: [
+                {
+                  name: "templates/saolei/sessions/sess-1/memories/mem-a",
+                  content: "甲",
+                },
+              ],
               nextPageToken: "p2",
             });
           } else {
             cb(null, {
-              memories: [{ memoryId: "mem-b", content: "乙" }],
+              memories: [
+                {
+                  name: "templates/saolei/sessions/sess-1/memories/mem-b",
+                  content: "乙",
+                },
+              ],
               nextPageToken: "",
             });
           }

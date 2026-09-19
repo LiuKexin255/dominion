@@ -32,7 +32,9 @@ export const MEMORY_SERVICE_TARGET = "dominion:///game/memory:50051";
  * resource id (`memory_id`) and the entry text. The id is used only for
  * internal location (replace/remove old_text matching, snapshot rendering
  * excludes it) and MUST NOT be rendered into LLM-visible text
- * (specs/059-agent-v2-team-mode/spec.md FR-007).
+ * (specs/059-agent-v2-team-mode/spec.md FR-007). It is derived JS-side from
+ * the resource name through {@link parseMemoryName}: the Memory resource
+ * carries no id field (specs/068-wiki-round-pause/spec.md FR-017).
  */
 export interface MemoryEntry {
   memory_id: string;
@@ -52,10 +54,24 @@ export function memoryName(
 }
 
 /**
+ * Extract the `{memory}` terminal segment of a Memory resource name
+ * (`templates/{template}/sessions/{session}/memories/{memory}`) — the
+ * symmetric inverse of {@link memoryName}. The resource message carries no
+ * separate id field, so the id is derived from the name here (FR-017,
+ * specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
+ */
+export function parseMemoryName(name: string): string {
+  return name.slice(name.lastIndexOf("/") + 1);
+}
+
+/**
  * One decoded `ListMemoriesResponse.memories[]` wire entry (`longs: String`).
+ * The Memory resource has no `memory_id` field
+ * (specs/068-wiki-round-pause/spec.md FR-017): the id is derived from `name`
+ * through {@link parseMemoryName}.
  */
 interface ListedMemory {
-  memoryId?: string;
+  name?: string;
   content?: string;
 }
 
@@ -345,8 +361,11 @@ export class MemoryClient implements MemoryStore {
         (client as any).listMemories(request, metadata, callOptions, cb),
       );
       for (const m of response?.memories ?? []) {
-        if (m.memoryId != null && m.content != null) {
-          entries.push({ memory_id: m.memoryId, content: m.content });
+        if (m.name != null && m.content != null) {
+          entries.push({
+            memory_id: parseMemoryName(m.name),
+            content: m.content,
+          });
         }
       }
       pageToken = singlePage ? "" : (response?.nextPageToken ?? "");
