@@ -31,19 +31,19 @@ export const WIKI_WRITE_TOOL_NAME = "wiki_write";
 
 /** Model-facing description: search titles only, matching semantics. */
 export const WIKI_SEARCH_TOOL_DESCRIPTION =
-  "Search the knowledge base by title and return the matching titles only (no " +
+  "Search the wiki by title and return the matching titles only (no " +
   "content). Matching is case-insensitive and full-width/half-width " +
   "insensitive, at any position within a title, and supports CJK input.";
 
 /** Model-facing description: batch retrieve content by exact title. */
 export const WIKI_GET_TOOL_DESCRIPTION =
-  "Retrieve the full content of knowledge-base entries by exact title. Accepts " +
+  "Retrieve the full content of wiki entries by exact title. Accepts " +
   "one or more titles; titles that do not resolve to an entry are reported in " +
   "the result together with the entries that did.";
 
 /** Model-facing description: upsert by title, single XOR batch. */
 export const WIKI_WRITE_TOOL_DESCRIPTION =
-  "Create or update knowledge-base entries addressed by title: an entry whose " +
+  "Create or update wiki entries addressed by title: an entry whose " +
   "normalized title already exists has its content overwritten, otherwise it " +
   "is created. Accepts a single title/content pair OR an entries batch.";
 

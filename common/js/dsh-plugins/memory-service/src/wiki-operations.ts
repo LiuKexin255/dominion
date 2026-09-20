@@ -1,5 +1,5 @@
 /**
- * Wiki tool operations — the knowledge-base core behind the three wiki tools
+ * Wiki tool operations — the core behind the three wiki tools
  * (`wiki_search`/`wiki_get`/`wiki_write`). Semantics:
  *
  * - Title addressing only: both the stored title and the request title are

@@ -1,15 +1,15 @@
 /**
  * The two prompt sections the memory plugin row contributes alongside its
  * tools: `memory:guidance` (the division of labour between the memory tool
- * and the knowledge base) and `wiki:guidance` (the cross-tool workflow of the
- * three knowledge-base tools). Both are English, markdown-sectioned static
+ * and wiki) and `wiki:guidance` (the cross-tool workflow of the three wiki
+ * tools). Both are English, markdown-sectioned static
  * text and each owns exactly one concern — the division section never
  * describes tool usage/parameters, the workflow section never restates the
  * division (specs/068-wiki-round-pause/spec.md FR-013;
  * specs/068-wiki-round-pause/contracts/dsh-plugins.md §2 items 6-7, §3).
  *
  * Neither section introduces third-party memory-framework terminology, and
- * neither injects knowledge-base entry content into the prompt — the wiki
+ * neither injects wiki entry content into the prompt — the wiki
  * store stays out-of-context by design
  * (specs/068-wiki-round-pause/spec.md Edge Cases「wiki 不注入快照」).
  *
@@ -32,7 +32,7 @@ export const MEMORY_GUIDANCE_SECTION_NAME = "memory:guidance";
  */
 export const MEMORY_GUIDANCE_SECTION_ORDER = 110;
 
-/** Section name for the knowledge-base cross-tool workflow. */
+/** Section name for the wiki cross-tool workflow. */
 export const WIKI_GUIDANCE_SECTION_NAME = "wiki:guidance";
 
 /** Order for the workflow section: after the division section. */
@@ -44,24 +44,24 @@ export const WIKI_GUIDANCE_SECTION_ORDER = 120;
  * belongs to the tool descriptions and {@link WIKI_GUIDANCE}
  * (specs/068-wiki-round-pause/spec.md FR-013).
  */
-export const MEMORY_GUIDANCE = `## Memory and the knowledge base
+export const MEMORY_GUIDANCE = `## Memory and wiki
 
 Two stores hold information across turns, and they serve different roles:
 
 - **Memory** is a small set of recent working notes. It is always visible in your system prompt, but only as a recency-bounded snapshot: the 10 most recently updated entries. It is the place for short, immediately relevant facts.
-- **The knowledge base** holds large, detailed knowledge. It never enters your system prompt on its own and is read only on demand, so it can grow without crowding your context. It is the place for knowledge worth keeping beyond the current moment.
+- **Wiki** is a large knowledge base. It never enters your system prompt on its own and is read only on demand, so it can grow without crowding your context. It is the place for knowledge worth keeping beyond the current moment.
 
-Prefer memory for what you need on every turn; prefer the knowledge base for what you need only occasionally and in depth.`;
+Prefer memory for what you need on every turn; prefer the wiki for what you need only occasionally and in depth.`;
 
 /**
- * The knowledge-base cross-tool workflow: how `wiki_search`, `wiki_get` and
+ * The wiki cross-tool workflow: how `wiki_search`, `wiki_get` and
  * `wiki_write` cooperate. Deliberately silent on the memory-vs-wiki division,
  * which {@link MEMORY_GUIDANCE} owns
  * (specs/068-wiki-round-pause/spec.md FR-013).
  */
-export const WIKI_GUIDANCE = `## Knowledge-base workflow
+export const WIKI_GUIDANCE = `## Wiki workflow
 
-The knowledge-base tools form one discover → retrieve → persist flow:
+The three wiki tools form one discover → retrieve → persist flow:
 
 - \`wiki_search\` — find out what exists: it matches titles and returns the matching titles, so start here when you are unsure whether relevant knowledge is already stored.
 - \`wiki_get\` — retrieve entries by exact title and return their full content.

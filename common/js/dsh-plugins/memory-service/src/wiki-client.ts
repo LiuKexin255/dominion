@@ -1,7 +1,7 @@
 /**
  * WikiClient — gRPC client for the game memory service's WikiService.
  *
- * The knowledge-base sibling of {@link ./client.js MemoryClient}: the same
+ * The wiki sibling of {@link ./client.js MemoryClient}: the same
  * dominion-resolved target (`dominion:///game/memory:50051`), the same
  * proto-loader/credentials/round_robin channel construction and the same
  * injected-client DI seam (style/javascript.md §测试 — an injected grpc client

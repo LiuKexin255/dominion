@@ -93,6 +93,19 @@ describe("wiki tool descriptions (only the tool's own function)", () => {
     }
   });
 
+  it("names the store wiki in every description (specs/068-wiki-round-pause/contracts/dsh-plugins.md §3)", () => {
+    for (const description of [
+      WIKI_SEARCH_TOOL_DESCRIPTION,
+      WIKI_GET_TOOL_DESCRIPTION,
+      WIKI_WRITE_TOOL_DESCRIPTION,
+    ]) {
+      expect(description).toContain("wiki");
+      const lower = description.toLowerCase();
+      expect(lower).not.toContain("knowledge base");
+      expect(lower).not.toContain("knowledge-base");
+    }
+  });
+
   it("promises no batch transactionality in any description (specs/068-wiki-round-pause/spec.md Edge Cases「批量 write 的原子性」)", () => {
     // The descriptions state each tool's shape, never a batch transaction:
     // the commit phase has no rollback (spec.md Edge Cases「批量 write 的原子性」).

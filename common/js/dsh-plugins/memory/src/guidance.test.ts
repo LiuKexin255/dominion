@@ -1,7 +1,7 @@
 /**
  * Guidance-section tests: the two prompt sections the memory plugin row owns
  * (`memory:guidance` — memory-vs-wiki division of labour; `wiki:guidance` —
- * the knowledge-base cross-tool workflow) and the ownership boundaries
+ * the wiki cross-tool workflow) and the ownership boundaries
  * between them.
  *
  * The section texts are static English markdown; the assertions here pin the
@@ -43,7 +43,7 @@ describe("MEMORY_GUIDANCE: division of labour only", () => {
     expect(MEMORY_GUIDANCE).toContain("10 most recently updated");
     expect(MEMORY_GUIDANCE).toContain("system prompt");
     expect(MEMORY_GUIDANCE).toMatch(/on demand/i);
-    expect(MEMORY_GUIDANCE).toContain("knowledge base");
+    expect(MEMORY_GUIDANCE).toContain("**Wiki** is a large knowledge base");
   });
 
   it("does not describe any tool usage or parameters", () => {
@@ -91,6 +91,19 @@ describe("WIKI_GUIDANCE: cross-tool workflow only", () => {
 });
 
 describe("guidance sections: shared constraints (specs/068-wiki-round-pause/spec.md FR-013)", () => {
+  it("names the store wiki: `knowledge base` is only the one-time description (specs/068-wiki-round-pause/contracts/dsh-plugins.md §3)", () => {
+    // The division section permits exactly one `knowledge base` — wiki's
+    // description; any additional occurrence (whatever its article) would be a
+    // referential use. The workflow section forbids the term entirely.
+    expect((MEMORY_GUIDANCE.match(/knowledge base/gi) ?? []).length).toBe(1);
+    expect(MEMORY_GUIDANCE).toMatch(/large knowledge base/);
+    expect((WIKI_GUIDANCE.match(/knowledge base/gi) ?? []).length).toBe(0);
+    // The hyphenated form is never allowed.
+    for (const text of [MEMORY_GUIDANCE, WIKI_GUIDANCE]) {
+      expect(text.toLowerCase()).not.toContain("knowledge-base");
+    }
+  });
+
   it("uses no third-party memory-framework terminology", () => {
     for (const text of [MEMORY_GUIDANCE, WIKI_GUIDANCE]) {
       const lower = text.toLowerCase();

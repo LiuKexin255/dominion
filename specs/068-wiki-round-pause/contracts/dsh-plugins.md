@@ -27,6 +27,8 @@
 
 ## 3. prompt 文本（全部英文，FR-012/013）
 
+**指称名词**：本节模型可见文本统一以 wiki 指称存储；`knowledge base` 仅可作描述词、不作指称（与 `wiki_search`/`wiki_get`/`wiki_write` 及 `wiki:guidance` 的命名对齐）。
+
 - **memory 工具描述（修订）**：通用表述（无 `planner` 等场景名词、无 hermes 等外部措辞）；说明快照仅保留最近更新的 10 条、写操作作用于全量存储且不刷新快照；仅描述自身功能。
 - **`memory:guidance`（分工差异段）**：仅描述两工具分工——memory 是常驻系统提示的少量近期工作记忆（快照按近期性截断 top-10），wiki 是不自动进入上下文的海量知识库（按需检索取回）；不重复任一工具用法/参数；不引入 memGPT/Letta 等第三方框架术语。
 - **`wiki:guidance`（整体用法段）**：三工具配合流程——`wiki_search` 发现有什么 → `wiki_get` 取回所需内容 → `wiki_write` 沉淀/更新知识（upsert 语义）；不重复分工差异段内容。
