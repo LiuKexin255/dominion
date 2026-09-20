@@ -48,6 +48,27 @@ type memoryFakeCollection struct {
 	// filters records the filter of every Find call so tests can assert the
 	// seek-condition shape (e.g. its absence on the first page).
 	filters []bson.M
+	// indexView records index management calls (unused by the memory
+	// repository, present to satisfy collectionOps).
+	indexView fakeIndexView
+}
+
+// fakeIndexView implements indexViewOps by recording the index operations the
+// repositories issue, so unit tests can assert the startup index/cleanup
+// contract without a live mongo.
+type fakeIndexView struct {
+	created []mongodriver.IndexModel
+	dropped []string
+}
+
+func (v *fakeIndexView) CreateOne(_ context.Context, model mongodriver.IndexModel, _ ...*options.CreateIndexesOptions) (string, error) {
+	v.created = append(v.created, model)
+	return "", nil
+}
+
+func (v *fakeIndexView) DropOne(_ context.Context, name string, _ ...*options.DropIndexesOptions) (bson.Raw, error) {
+	v.dropped = append(v.dropped, name)
+	return nil, nil
 }
 
 func newMemoryFakeCollection() *memoryFakeCollection {
@@ -129,8 +150,12 @@ func (c *memoryFakeCollection) ReplaceOne(_ context.Context, filter interface{},
 	return &mongodriver.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
 }
 
-func (c *memoryFakeCollection) Indexes() mongodriver.IndexView {
-	return mongodriver.IndexView{}
+func (c *memoryFakeCollection) Indexes() indexViewOps {
+	return &c.indexView
+}
+
+func (c *memoryFakeCollection) DeleteMany(_ context.Context, _ interface{}, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
+	return &mongodriver.DeleteResult{}, nil
 }
 
 func (c *memoryFakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {

@@ -1,9 +1,10 @@
 // The memory command is the MemoryService + WikiService gRPC server (spec
-// 039-planner-memory-calibration FR-006; spec 068 FR-001), hosting planner
+// 039-planner-memory-calibration FR-006;
+// specs/069-wiki-template-web/contracts/wiki-service.md §1), hosting planner
 // long-term memory entries and wiki knowledge-base entries in the dedicated
 // "game_memory" database (style/mongo.md;
 // specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §4; specs/068-wiki-round-pause/contracts/wiki-service.md §6).
+// §4; specs/069-wiki-template-web/contracts/wiki-service.md §6).
 package main
 
 import (
@@ -41,7 +42,10 @@ func main() {
 	}
 
 	repo := mongort.NewRepository(mongoClient, "game_memory")
-	wikiRepo := mongort.NewWikiRepository(mongoClient, "game_memory")
+	wikiRepo, err := mongort.NewWikiRepository(mongoClient, "game_memory")
+	if err != nil {
+		log.Fatalf("failed to create wiki repository: %v", err)
+	}
 
 	h := handler.NewHandler(repo)
 	wikiHandler := handler.NewWikiHandler(wikiRepo)

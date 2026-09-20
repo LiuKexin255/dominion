@@ -20,8 +20,8 @@ import (
 )
 
 // WikiHandler implements WikiServiceServer for Wiki CRUD, listing and search
-// (spec 068 FR-001~005;
-// specs/068-wiki-round-pause/contracts/wiki-service.md §2-4). It shares the
+// (specs/069-wiki-template-web/spec.md FR-001~002;
+// specs/069-wiki-template-web/contracts/wiki-service.md §2-4). It shares the
 // memory service's error mapping (toStatusError).
 type WikiHandler struct {
 	game.UnimplementedWikiServiceServer
@@ -38,17 +38,18 @@ func NewWikiHandler(wikiRepo domain.WikiRepository) *WikiHandler {
 
 // ─── Wiki RPCs ────────────────────────────────────────────────────────────
 
-// CreateWiki creates a Wiki under a session (AIP-133:
+// CreateWiki creates a Wiki under a template (AIP-133:
 // https://google.aip.dev/133). The resource is embedded in the request
 // (req.wiki.title / req.wiki.content) and the caller supplies wiki_id
 // (REQUIRED, agent-generated per the proto contract). A title that normalizes
-// to an existing title in the scope returns ALREADY_EXISTS (spec 068 FR-002).
+// to an existing title in the template scope returns ALREADY_EXISTS
+// (specs/069-wiki-template-web/contracts/wiki-service.md §2-3).
 func (h *WikiHandler) CreateWiki(ctx context.Context, req *game.CreateWikiRequest) (*game.Wiki, error) {
-	sessName, err := game.ParseSessionName(req.GetParent())
+	tplName, err := game.ParseTemplateName(req.GetParent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(sessName.Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(tplName); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -70,8 +71,7 @@ func (h *WikiHandler) CreateWiki(ctx context.Context, req *game.CreateWikiReques
 
 	now := time.Now()
 	wiki := &domain.Wiki{
-		Template:   sessName.TemplateID,
-		SessionID:  sessName.SessionID,
+		Template:   tplName.TemplateID,
 		WikiID:     wikiID,
 		Title:      body.GetTitle(),
 		Content:    body.GetContent(),
@@ -97,7 +97,7 @@ func (h *WikiHandler) GetWiki(ctx context.Context, req *game.GetWikiRequest) (*g
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	wiki, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, "", name.WikiID)
+	wiki, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, name.WikiID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -109,7 +109,8 @@ func (h *WikiHandler) GetWiki(ctx context.Context, req *game.GetWikiRequest) (*g
 // Wiki (AIP-134: https://google.aip.dev/134). Identity is carried on the
 // resource itself (req.wiki.name). update_mask supports title and content; an
 // omitted mask updates both populated fields. A title change rebuilds the
-// search index while keeping scope uniqueness (spec 068 FR-002); a missing
+// search index while keeping template-scope uniqueness
+// (specs/069-wiki-template-web/contracts/wiki-service.md §2-3); a missing
 // resource errors with NOT_FOUND and an unknown mask path with
 // INVALID_ARGUMENT.
 func (h *WikiHandler) UpdateWiki(ctx context.Context, req *game.UpdateWikiRequest) (*game.Wiki, error) {
@@ -143,7 +144,7 @@ func (h *WikiHandler) UpdateWiki(ctx context.Context, req *game.UpdateWikiReques
 		}
 	}
 
-	existing, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, "", name.WikiID)
+	existing, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, name.WikiID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -176,23 +177,24 @@ func (h *WikiHandler) DeleteWiki(ctx context.Context, req *game.DeleteWikiReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	if err := h.wikiRepo.DeleteWiki(ctx, name.TemplateID, "", name.WikiID); err != nil {
+	if err := h.wikiRepo.DeleteWiki(ctx, name.TemplateID, name.WikiID); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
 }
 
-// ListWikis retrieves a paginated list of full Wiki resources under a session
-// in the fixed wiki_id ascending order (spec 068 FR-003; AIP-132:
+// ListWikis retrieves a paginated list of full Wiki resources under a
+// template in the fixed wiki_id ascending order
+// (specs/069-wiki-template-web/contracts/wiki-service.md §2; AIP-132:
 // https://google.aip.dev/132; AIP-158: https://google.aip.dev/158). There is
 // no order_by; page_size defaults to domain.DefaultWikiPageSize and values
 // above domain.MaxWikiPageSize are coerced down to it.
 func (h *WikiHandler) ListWikis(ctx context.Context, req *game.ListWikisRequest) (*game.ListWikisResponse, error) {
-	sessName, err := game.ParseSessionName(req.GetParent())
+	tplName, err := game.ParseTemplateName(req.GetParent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(sessName.Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(tplName); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -209,7 +211,7 @@ func (h *WikiHandler) ListWikis(ctx context.Context, req *game.ListWikisRequest)
 		}
 	}
 
-	wikis, nextPageToken, err := h.wikiRepo.ListWikis(ctx, sessName.TemplateID, sessName.SessionID, cursor, pageSize)
+	wikis, nextPageToken, err := h.wikiRepo.ListWikis(ctx, tplName.TemplateID, cursor, pageSize)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -225,19 +227,20 @@ func (h *WikiHandler) ListWikis(ctx context.Context, req *game.ListWikisRequest)
 	}, nil
 }
 
-// SearchWikis searches Wikis by normalized title substring (spec 068 FR-004;
-// AIP-136 custom method: https://google.aip.dev/136). The query is normalized
-// (NFKC + lower-case) and must be non-empty; the repository returns the bigram
+// SearchWikis searches Wikis by normalized title substring
+// (specs/069-wiki-template-web/contracts/wiki-service.md §4; AIP-136 custom
+// method: https://google.aip.dev/136). The query is normalized (NFKC +
+// lower-case) and must be non-empty; the repository returns the bigram
 // prefilter candidates, which this handler verifies with an exact substring
 // test, ranks (exact > prefix > substring, then normalized title ascending)
 // and slices by the page token's offset. Entries are lightweight
 // ({name, title}, never content).
 func (h *WikiHandler) SearchWikis(ctx context.Context, req *game.SearchWikisRequest) (*game.SearchWikisResponse, error) {
-	sessName, err := game.ParseSessionName(req.GetParent())
+	tplName, err := game.ParseTemplateName(req.GetParent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(sessName.Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(tplName); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -260,7 +263,7 @@ func (h *WikiHandler) SearchWikis(ctx context.Context, req *game.SearchWikisRequ
 		offset = cursor.Offset
 	}
 
-	hits, err := h.wikiRepo.SearchWikis(ctx, sessName.TemplateID, sessName.SessionID, query)
+	hits, err := h.wikiRepo.SearchWikis(ctx, tplName.TemplateID, query)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -296,7 +299,7 @@ func (h *WikiHandler) SearchWikis(ctx context.Context, req *game.SearchWikisRequ
 
 	summaries := make([]*game.WikiSummary, 0, len(page))
 	for _, match := range page {
-		summaries = append(summaries, wikiSummaryToProto(sessName.TemplateID, match.hit))
+		summaries = append(summaries, wikiSummaryToProto(tplName.TemplateID, match.hit))
 	}
 
 	return &game.SearchWikisResponse{
@@ -309,7 +312,7 @@ func (h *WikiHandler) SearchWikis(ctx context.Context, req *game.SearchWikisRequ
 
 // wikiMaskFields enumerates the writable Wiki fields addressable via
 // update_mask (AIP-161: https://google.aip.dev/161): title and content
-// (specs/068-wiki-round-pause/contracts/wiki-service.md §2).
+// (specs/069-wiki-template-web/contracts/wiki-service.md §2).
 var wikiMaskFields = []string{"title", "content"}
 
 // applyWikiMask validates update_mask against the writable Wiki fields and
@@ -358,8 +361,7 @@ type wikiSearchMatch struct {
 
 // wikiToProto converts a domain Wiki to a proto Wiki. The resource carries no
 // separate id field: the wiki id is the {wiki} terminal segment of the
-// resource name (spec 068 FR-017;
-// specs/068-wiki-round-pause/contracts/wiki-service.md §1).
+// resource name (specs/069-wiki-template-web/contracts/wiki-service.md §1).
 func wikiToProto(w *domain.Wiki) *game.Wiki {
 	if w == nil {
 		return nil

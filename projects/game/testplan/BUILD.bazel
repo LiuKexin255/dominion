@@ -79,11 +79,13 @@ go_largetest(
 )
 
 # wiki_test is the WIKI module large-test suite: the WikiService storage and
-# search API (Create/Get/Update/Delete + scope-unique normalized title + fixed
-# wiki_id ascending List with AIP-158 pagination + SearchWikis substring
+# search API (Create/Get/Update/Delete + template-unique normalized title +
+# fixed wiki_id ascending List with AIP-158 pagination + SearchWikis substring
 # matching/ranking/offset pagination) exercised through the gateway's public
-# /api/v1 wikis routes. It reuses the shared helpers (helpers_test.go — the
-# session + memory HTTP helpers; wiki_test.go adds the wiki helpers).
+# /api/v1 templates/{template}/wikis routes. Wiki scope is the template, so
+# the suite resets the template wiki scope per case (the template-level
+# equivalent of the removed per-session isolation). It reuses the shared HTTP
+# helpers (helpers_test.go); wiki_test.go adds the wiki helpers.
 # size = small: direct CRUD/search round trips only, well within the budget.
 go_largetest(
     name = "wiki_test",

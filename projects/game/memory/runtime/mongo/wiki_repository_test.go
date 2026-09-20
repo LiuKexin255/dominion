@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"errors"
+	"reflect"
 	"regexp"
 	"sort"
 	"testing"
@@ -36,14 +37,21 @@ func (r *wikiFakeSingleResult) Decode(v interface{}) error {
 }
 
 // wikiFakeCollection implements collectionOps with in-memory storage for
-// wikis. It emulates both unique indexes: an existing (template, session_id,
-// wiki_id) identity and an existing scope-normalized title both surface as a
+// wikis. It emulates both unique indexes: an existing (template, wiki_id)
+// identity and an existing template-normalized title both surface as a
 // duplicate-key write error.
 type wikiFakeCollection struct {
 	docs     map[string]*wikiDocument
 	order    []string
 	filters  []bson.M
 	findOpts []*options.FindOptions
+	// deleteManyFilters records the filter of every DeleteMany call so the
+	// startup migration test can assert the legacy-document purge.
+	deleteManyFilters []bson.M
+	// deleteManyErr, when set, is returned by DeleteMany so the startup
+	// failure path can be exercised.
+	deleteManyErr error
+	indexView     fakeIndexView
 }
 
 func newWikiFakeCollection() *wikiFakeCollection {
@@ -53,8 +61,8 @@ func newWikiFakeCollection() *wikiFakeCollection {
 }
 
 // wikiDocKey returns the map key for a wiki document identity.
-func wikiDocKey(template, session, wikiID string) string {
-	return template + "\x00" + session + "\x00" + wikiID
+func wikiDocKey(template, wikiID string) string {
+	return template + "\x00" + wikiID
 }
 
 func (c *wikiFakeCollection) InsertOne(_ context.Context, document interface{}, _ ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error) {
@@ -62,16 +70,16 @@ func (c *wikiFakeCollection) InsertOne(_ context.Context, document interface{}, 
 	if !ok {
 		return nil, errors.New("invalid document type")
 	}
-	if _, exists := c.docs[wikiDocKey(doc.Template, doc.SessionID, doc.WikiID)]; exists {
+	if _, exists := c.docs[wikiDocKey(doc.Template, doc.WikiID)]; exists {
 		return nil, duplicateWriteError()
 	}
 	for _, existing := range c.docs {
-		if existing.Template == doc.Template && existing.SessionID == doc.SessionID && existing.TitleNorm == doc.TitleNorm {
+		if existing.Template == doc.Template && existing.TitleNorm == doc.TitleNorm {
 			return nil, duplicateWriteError()
 		}
 	}
-	c.docs[wikiDocKey(doc.Template, doc.SessionID, doc.WikiID)] = doc
-	c.order = append(c.order, wikiDocKey(doc.Template, doc.SessionID, doc.WikiID))
+	c.docs[wikiDocKey(doc.Template, doc.WikiID)] = doc
+	c.order = append(c.order, wikiDocKey(doc.Template, doc.WikiID))
 	return &mongodriver.InsertOneResult{}, nil
 }
 
@@ -80,7 +88,7 @@ func (c *wikiFakeCollection) FindOne(_ context.Context, filter interface{}, _ ..
 	if !ok {
 		return &wikiFakeSingleResult{err: errors.New("invalid filter type")}
 	}
-	doc, exists := c.docs[wikiDocKey(f.Template, f.SessionID, f.WikiID)]
+	doc, exists := c.docs[wikiDocKey(f.Template, f.WikiID)]
 	if !exists {
 		return &wikiFakeSingleResult{err: mongodriver.ErrNoDocuments}
 	}
@@ -92,7 +100,7 @@ func (c *wikiFakeCollection) DeleteOne(_ context.Context, filter interface{}, _ 
 	if !ok {
 		return nil, errors.New("invalid filter type")
 	}
-	key := wikiDocKey(f.Template, f.SessionID, f.WikiID)
+	key := wikiDocKey(f.Template, f.WikiID)
 	if _, exists := c.docs[key]; !exists {
 		return &mongodriver.DeleteResult{DeletedCount: 0}, nil
 	}
@@ -106,6 +114,18 @@ func (c *wikiFakeCollection) DeleteOne(_ context.Context, filter interface{}, _ 
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
 }
 
+func (c *wikiFakeCollection) DeleteMany(_ context.Context, filter interface{}, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
+	if c.deleteManyErr != nil {
+		return nil, c.deleteManyErr
+	}
+	f, ok := filter.(bson.M)
+	if !ok {
+		return nil, errors.New("invalid filter type")
+	}
+	c.deleteManyFilters = append(c.deleteManyFilters, f)
+	return &mongodriver.DeleteResult{}, nil
+}
+
 func (c *wikiFakeCollection) ReplaceOne(_ context.Context, filter interface{}, replacement interface{}, _ ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
 	f, ok := filter.(wikiFilter)
 	if !ok {
@@ -115,7 +135,7 @@ func (c *wikiFakeCollection) ReplaceOne(_ context.Context, filter interface{}, r
 	if !ok {
 		return nil, errors.New("invalid replacement type")
 	}
-	key := wikiDocKey(f.Template, f.SessionID, f.WikiID)
+	key := wikiDocKey(f.Template, f.WikiID)
 	existing, exists := c.docs[key]
 	if !exists {
 		return &mongodriver.UpdateResult{MatchedCount: 0, ModifiedCount: 0}, nil
@@ -124,7 +144,7 @@ func (c *wikiFakeCollection) ReplaceOne(_ context.Context, filter interface{}, r
 		if otherKey == key {
 			continue
 		}
-		if other.Template == doc.Template && other.SessionID == doc.SessionID && other.TitleNorm == doc.TitleNorm {
+		if other.Template == doc.Template && other.TitleNorm == doc.TitleNorm {
 			return nil, duplicateWriteError()
 		}
 	}
@@ -133,8 +153,8 @@ func (c *wikiFakeCollection) ReplaceOne(_ context.Context, filter interface{}, r
 	return &mongodriver.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
 }
 
-func (c *wikiFakeCollection) Indexes() mongodriver.IndexView {
-	return mongodriver.IndexView{}
+func (c *wikiFakeCollection) Indexes() indexViewOps {
+	return &c.indexView
 }
 
 func (c *wikiFakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
@@ -186,7 +206,7 @@ func duplicateWriteError() error {
 }
 
 // matchesWikiFilter evaluates the filters the wiki repository builds:
-// equality on template/session_id/wiki_id, a direction-aware wiki_id seek, a
+// equality on template/wiki_id, a direction-aware wiki_id seek, a
 // title_grams $all prefilter and a title_norm $regex fallback.
 func matchesWikiFilter(filter bson.M, doc *wikiDocument) bool {
 	for field, condition := range filter {
@@ -231,8 +251,6 @@ func wikiDocFieldValue(doc *wikiDocument, field string) string {
 	switch field {
 	case fieldTemplate:
 		return doc.Template
-	case fieldSessionID:
-		return doc.SessionID
 	case fieldWikiID:
 		return doc.WikiID
 	case fieldTitle:
@@ -310,6 +328,99 @@ func newTestWikiRepo() *wikiRepository {
 	}
 }
 
+// --- Startup migration tests ---
+
+func TestNewWikiRepositoryMigratesToTemplateScope(t *testing.T) {
+	// given
+	fake := newWikiFakeCollection()
+
+	// when
+	repo, err := newWikiRepository(fake)
+
+	// then - the repository is constructed
+	if err != nil {
+		t.Fatalf("newWikiRepository() unexpected error: %v", err)
+	}
+	if repo == nil {
+		t.Fatal("newWikiRepository() returned a nil repository")
+	}
+
+	// then - the three legacy session-scoped indexes are dropped
+	assertStringsEqual(t, fake.indexView.dropped, []string{
+		"template_1_session_id_1_wiki_id_1",
+		"template_1_session_id_1_title_norm_1",
+		"template_1_session_id_1_title_grams_1",
+	})
+
+	// then - the legacy session-scoped documents are purged
+	if len(fake.deleteManyFilters) != 1 {
+		t.Fatalf("DeleteMany calls = %d, want 1", len(fake.deleteManyFilters))
+	}
+	wantPurge := bson.M{fieldSessionID: bson.M{"$exists": true}}
+	if !reflect.DeepEqual(fake.deleteManyFilters[0], wantPurge) {
+		t.Fatalf("DeleteMany filter = %v, want %v", fake.deleteManyFilters[0], wantPurge)
+	}
+
+	// then - the three template-scoped indexes are created
+	tests := []struct {
+		name   string
+		keys   bson.D
+		unique bool
+	}{
+		{
+			name:   "identity index",
+			keys:   bson.D{{Key: fieldTemplate, Value: 1}, {Key: fieldWikiID, Value: 1}},
+			unique: true,
+		},
+		{
+			name:   "title uniqueness index",
+			keys:   bson.D{{Key: fieldTemplate, Value: 1}, {Key: fieldTitleNorm, Value: 1}},
+			unique: true,
+		},
+		{
+			name:   "title grams index",
+			keys:   bson.D{{Key: fieldTemplate, Value: 1}, {Key: fieldTitleGrams, Value: 1}},
+			unique: false,
+		},
+	}
+	if len(fake.indexView.created) != len(tests) {
+		t.Fatalf("CreateOne calls = %d, want %d", len(fake.indexView.created), len(tests))
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := fake.indexView.created[i]
+			gotKeys, ok := model.Keys.(bson.D)
+			if !ok {
+				t.Fatalf("index keys = %T, want bson.D", model.Keys)
+			}
+			if !reflect.DeepEqual(gotKeys, tt.keys) {
+				t.Fatalf("index keys = %v, want %v", gotKeys, tt.keys)
+			}
+			gotUnique := model.Options != nil && model.Options.Unique != nil && *model.Options.Unique
+			if gotUnique != tt.unique {
+				t.Fatalf("index unique = %v, want %v", gotUnique, tt.unique)
+			}
+		})
+	}
+}
+
+func TestNewWikiRepositoryFailsOnLegacyCleanupError(t *testing.T) {
+	// given
+	fake := newWikiFakeCollection()
+	fake.deleteManyErr = errors.New("mongo unavailable")
+
+	// when
+	_, err := newWikiRepository(fake)
+
+	// then - the cleanup error fails repository startup and no index is created
+	if err == nil {
+		t.Fatal("newWikiRepository() expected error, got nil")
+	}
+	if len(fake.indexView.created) != 0 {
+		t.Fatalf("CreateOne calls = %d, want 0 after a cleanup failure", len(fake.indexView.created))
+	}
+}
+
 // --- Tests ---
 
 func TestWikiCreateGet(t *testing.T) {
@@ -320,7 +431,6 @@ func TestWikiCreateGet(t *testing.T) {
 	now := time.Date(2026, 9, 19, 10, 30, 0, 0, time.UTC)
 	wiki := &domain.Wiki{
 		Template:   "saolei",
-		SessionID:  "session-1",
 		WikiID:     "wiki-1",
 		Title:      "策略复盘",
 		Content:    "知识正文",
@@ -335,7 +445,7 @@ func TestWikiCreateGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWiki() unexpected error: %v", err)
 	}
-	stored := repo.collection.(*wikiFakeCollection).docs[wikiDocKey("saolei", "session-1", "wiki-1")]
+	stored := repo.collection.(*wikiFakeCollection).docs[wikiDocKey("saolei", "wiki-1")]
 	if stored == nil {
 		t.Fatal("CreateWiki() did not store the document")
 	}
@@ -345,7 +455,7 @@ func TestWikiCreateGet(t *testing.T) {
 	assertWikiGramsEqual(t, stored.TitleGrams, []string{"策略", "略复", "复盘"})
 
 	// when - get
-	got, err := repo.GetWiki(ctx, "saolei", "session-1", "wiki-1")
+	got, err := repo.GetWiki(ctx, "saolei", "wiki-1")
 
 	// then
 	if err != nil {
@@ -364,13 +474,13 @@ func TestWikiCreateDuplicate(t *testing.T) {
 
 	// given - a seeded wiki, and full-width upper-case spelling of its title
 	repo := newTestWikiRepo()
-	seed := &domain.Wiki{Template: "saolei", SessionID: "session-1", WikiID: "wiki-1", Title: "ＡＢＣ"}
+	seed := &domain.Wiki{Template: "saolei", WikiID: "wiki-1", Title: "ＡＢＣ"}
 	if err := repo.CreateWiki(ctx, seed); err != nil {
 		t.Fatalf("CreateWiki() seed unexpected error: %v", err)
 	}
 
 	// when - duplicate wiki id
-	err := repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", SessionID: "session-1", WikiID: "wiki-1", Title: "other"})
+	err := repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", WikiID: "wiki-1", Title: "other"})
 
 	// then
 	if !errors.Is(err, domain.ErrAlreadyExists) {
@@ -378,19 +488,19 @@ func TestWikiCreateDuplicate(t *testing.T) {
 	}
 
 	// when - different id but the same normalized title
-	err = repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", SessionID: "session-1", WikiID: "wiki-2", Title: "abc"})
+	err = repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", WikiID: "wiki-2", Title: "abc"})
 
 	// then
 	if !errors.Is(err, domain.ErrAlreadyExists) {
 		t.Fatalf("CreateWiki() duplicate title error = %v, want ErrAlreadyExists", err)
 	}
 
-	// when - the same title under another session
-	err = repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", SessionID: "session-2", WikiID: "wiki-1", Title: "abc"})
+	// when - the same title under another template
+	err = repo.CreateWiki(ctx, &domain.Wiki{Template: "other", WikiID: "wiki-1", Title: "abc"})
 
-	// then - allowed: title uniqueness is scoped to (template, session)
+	// then - allowed: title uniqueness is scoped to the template
 	if err != nil {
-		t.Fatalf("CreateWiki() under other session unexpected error: %v", err)
+		t.Fatalf("CreateWiki() under other template unexpected error: %v", err)
 	}
 }
 
@@ -401,7 +511,7 @@ func TestWikiGetNotFound(t *testing.T) {
 	repo := newTestWikiRepo()
 
 	// when
-	_, err := repo.GetWiki(ctx, "saolei", "session-1", "missing")
+	_, err := repo.GetWiki(ctx, "saolei", "missing")
 
 	// then
 	if !errors.Is(err, domain.ErrNotFound) {
@@ -417,7 +527,6 @@ func TestWikiUpdate(t *testing.T) {
 	createTime := time.Date(2026, 9, 19, 9, 0, 0, 0, time.UTC)
 	seed := &domain.Wiki{
 		Template:   "saolei",
-		SessionID:  "session-1",
 		WikiID:     "wiki-1",
 		Title:      "旧标题",
 		Content:    "旧内容",
@@ -432,7 +541,6 @@ func TestWikiUpdate(t *testing.T) {
 	updateTime := createTime.Add(time.Hour)
 	persisted, err := repo.UpdateWiki(ctx, &domain.Wiki{
 		Template:   "saolei",
-		SessionID:  "session-1",
 		WikiID:     "wiki-1",
 		Title:      "新标题",
 		Content:    "新内容",
@@ -449,7 +557,7 @@ func TestWikiUpdate(t *testing.T) {
 	if !persisted.CreateTime.Equal(createTime) {
 		t.Fatalf("UpdateWiki() create_time = %v, want %v", persisted.CreateTime, createTime)
 	}
-	stored := repo.collection.(*wikiFakeCollection).docs[wikiDocKey("saolei", "session-1", "wiki-1")]
+	stored := repo.collection.(*wikiFakeCollection).docs[wikiDocKey("saolei", "wiki-1")]
 	if stored.TitleNorm != "新标题" {
 		t.Fatalf("UpdateWiki() title_norm = %q, want %q", stored.TitleNorm, "新标题")
 	}
@@ -463,7 +571,7 @@ func TestWikiUpdateNotFound(t *testing.T) {
 	repo := newTestWikiRepo()
 
 	// when
-	_, err := repo.UpdateWiki(ctx, &domain.Wiki{Template: "saolei", SessionID: "session-1", WikiID: "missing", Title: "x", Content: "y"})
+	_, err := repo.UpdateWiki(ctx, &domain.Wiki{Template: "saolei", WikiID: "missing", Title: "x", Content: "y"})
 
 	// then
 	if !errors.Is(err, domain.ErrNotFound) {
@@ -474,11 +582,11 @@ func TestWikiUpdateNotFound(t *testing.T) {
 func TestWikiUpdateTitleCollision(t *testing.T) {
 	ctx := context.Background()
 
-	// given - two wikis in one scope
+	// given - two wikis in one template scope
 	repo := newTestWikiRepo()
 	for _, wiki := range []*domain.Wiki{
-		{Template: "saolei", SessionID: "session-1", WikiID: "wiki-1", Title: "策略"},
-		{Template: "saolei", SessionID: "session-1", WikiID: "wiki-2", Title: "开局"},
+		{Template: "saolei", WikiID: "wiki-1", Title: "策略"},
+		{Template: "saolei", WikiID: "wiki-2", Title: "开局"},
 	} {
 		if err := repo.CreateWiki(ctx, wiki); err != nil {
 			t.Fatalf("CreateWiki() seed unexpected error: %v", err)
@@ -486,7 +594,7 @@ func TestWikiUpdateTitleCollision(t *testing.T) {
 	}
 
 	// when - rename wiki-2 to a full-width spelling of wiki-1's title
-	_, err := repo.UpdateWiki(ctx, &domain.Wiki{Template: "saolei", SessionID: "session-1", WikiID: "wiki-2", Title: "策略", Content: "x"})
+	_, err := repo.UpdateWiki(ctx, &domain.Wiki{Template: "saolei", WikiID: "wiki-2", Title: "策略", Content: "x"})
 
 	// then
 	if !errors.Is(err, domain.ErrAlreadyExists) {
@@ -499,20 +607,20 @@ func TestWikiDelete(t *testing.T) {
 
 	// given
 	repo := newTestWikiRepo()
-	if err := repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", SessionID: "session-1", WikiID: "wiki-1", Title: "t"}); err != nil {
+	if err := repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", WikiID: "wiki-1", Title: "t"}); err != nil {
 		t.Fatalf("CreateWiki() seed unexpected error: %v", err)
 	}
 
-	// when - delete with a mismatched session
-	err := repo.DeleteWiki(ctx, "saolei", "session-other", "wiki-1")
+	// when - delete with a mismatched template
+	err := repo.DeleteWiki(ctx, "other", "wiki-1")
 
 	// then - not found
 	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("DeleteWiki() mismatched session error = %v, want ErrNotFound", err)
+		t.Fatalf("DeleteWiki() mismatched template error = %v, want ErrNotFound", err)
 	}
 
 	// when
-	err = repo.DeleteWiki(ctx, "saolei", "session-1", "wiki-1")
+	err = repo.DeleteWiki(ctx, "saolei", "wiki-1")
 
 	// then
 	if err != nil {
@@ -530,7 +638,7 @@ func TestWikiDeleteNotFound(t *testing.T) {
 	repo := newTestWikiRepo()
 
 	// when
-	err := repo.DeleteWiki(ctx, "saolei", "session-1", "missing")
+	err := repo.DeleteWiki(ctx, "saolei", "missing")
 
 	// then
 	if !errors.Is(err, domain.ErrNotFound) {
@@ -541,27 +649,29 @@ func TestWikiDeleteNotFound(t *testing.T) {
 func TestWikiList(t *testing.T) {
 	ctx := context.Background()
 
-	// given - three wikis in one scope and one in another
+	// given - three wikis under one template and one under another
 	repo := newTestWikiRepo()
 	seeds := []*domain.Wiki{
-		{Template: "saolei", SessionID: "session-1", WikiID: "bravo", Title: "b", Content: "c2"},
-		{Template: "saolei", SessionID: "session-1", WikiID: "alpha", Title: "a", Content: "c1"},
-		{Template: "saolei", SessionID: "session-1", WikiID: "charlie", Title: "c", Content: "c3"},
-		{Template: "saolei", SessionID: "session-2", WikiID: "delta", Title: "d", Content: "c4"},
+		{Template: "saolei", WikiID: "bravo", Title: "b", Content: "c2"},
+		{Template: "saolei", WikiID: "alpha", Title: "a", Content: "c1"},
+		{Template: "saolei", WikiID: "charlie", Title: "c", Content: "c3"},
+		{Template: "other", WikiID: "delta", Title: "d", Content: "c4"},
 	}
 	for _, wiki := range seeds {
 		if err := repo.CreateWiki(ctx, wiki); err != nil {
 			t.Fatalf("CreateWiki() seed unexpected error: %v", err)
 		}
 	}
+	fake := repo.collection.(*wikiFakeCollection)
 
 	// when - first page with pageSize=2
-	page, nextPageToken, err := repo.ListWikis(ctx, "saolei", "session-1", nil, 2)
+	page, nextPageToken, err := repo.ListWikis(ctx, "saolei", nil, 2)
 
-	// then - wiki_id ascending, second session excluded
+	// then - wiki_id ascending, the other template excluded, no session dimension
 	if err != nil {
 		t.Fatalf("ListWikis() unexpected error: %v", err)
 	}
+	assertFilterHasNoSession(t, fake.filters[len(fake.filters)-1])
 	assertWikiIDs(t, page, []string{"alpha", "bravo"})
 	if nextPageToken == "" {
 		t.Fatal("ListWikis() first page next_token is empty, want non-empty")
@@ -572,7 +682,7 @@ func TestWikiList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeWikiListPageToken() setup error: %v", err)
 	}
-	second, secondToken, err := repo.ListWikis(ctx, "saolei", "session-1", cursor, 2)
+	second, secondToken, err := repo.ListWikis(ctx, "saolei", cursor, 2)
 
 	// then
 	if err != nil {
@@ -591,7 +701,7 @@ func TestWikiListEmpty(t *testing.T) {
 	repo := newTestWikiRepo()
 
 	// when
-	page, nextPageToken, err := repo.ListWikis(ctx, "saolei", "session-empty", nil, 20)
+	page, nextPageToken, err := repo.ListWikis(ctx, "saolei", nil, 20)
 
 	// then
 	if err != nil {
@@ -605,12 +715,12 @@ func TestWikiListEmpty(t *testing.T) {
 func TestWikiSearchBigramPrefilter(t *testing.T) {
 	ctx := context.Background()
 
-	// given - two titles sharing the query bigram and one unrelated
+	// given - two titles sharing the query bigram, one under another template
 	repo := newTestWikiRepo()
 	seeds := []*domain.Wiki{
-		{Template: "saolei", SessionID: "session-1", WikiID: "wiki-1", Title: "策略复盘", Content: "c1"},
-		{Template: "saolei", SessionID: "session-1", WikiID: "wiki-2", Title: "开局策略", Content: "c2"},
-		{Template: "saolei", SessionID: "session-1", WikiID: "wiki-3", Title: "无关条目", Content: "c3"},
+		{Template: "saolei", WikiID: "wiki-1", Title: "策略复盘", Content: "c1"},
+		{Template: "saolei", WikiID: "wiki-2", Title: "开局策略", Content: "c2"},
+		{Template: "other", WikiID: "wiki-9", Title: "策略笔记", Content: "c9"},
 	}
 	for _, wiki := range seeds {
 		if err := repo.CreateWiki(ctx, wiki); err != nil {
@@ -620,13 +730,14 @@ func TestWikiSearchBigramPrefilter(t *testing.T) {
 	fake := repo.collection.(*wikiFakeCollection)
 
 	// when - query with two runes goes through the bigram prefilter
-	hits, err := repo.SearchWikis(ctx, "saolei", "session-1", domain.NormalizeTitle("策略"))
+	hits, err := repo.SearchWikis(ctx, "saolei", domain.NormalizeTitle("策略"))
 
-	// then - the $all filter was built over the query bigrams
+	// then - the $all filter was built over the query bigrams, with no session
 	if err != nil {
 		t.Fatalf("SearchWikis() unexpected error: %v", err)
 	}
 	filter := fake.filters[len(fake.filters)-1]
+	assertFilterHasNoSession(t, filter)
 	if _, ok := filter[fieldTitleNorm]; ok {
 		t.Fatalf("SearchWikis() bigram filter = %v, want no title_norm regex", filter)
 	}
@@ -636,7 +747,8 @@ func TestWikiSearchBigramPrefilter(t *testing.T) {
 	}
 	assertWikiGramsEqual(t, all, []string{"策略"})
 
-	// then - both sharing titles are candidates, the unrelated one is not
+	// then - both sharing titles in the template are candidates, the other
+	// template is not
 	assertWikiHitIDs(t, hits, []string{"wiki-1", "wiki-2"})
 	for _, hit := range hits {
 		if hit.TitleNorm == "" {
@@ -651,8 +763,8 @@ func TestWikiSearchShortQueryFallback(t *testing.T) {
 	// given - a one-rune query (single Chinese character)
 	repo := newTestWikiRepo()
 	seeds := []*domain.Wiki{
-		{Template: "saolei", SessionID: "session-1", WikiID: "wiki-1", Title: "策略复盘", Content: "c1"},
-		{Template: "saolei", SessionID: "session-1", WikiID: "wiki-2", Title: "开局", Content: "c2"},
+		{Template: "saolei", WikiID: "wiki-1", Title: "策略复盘", Content: "c1"},
+		{Template: "saolei", WikiID: "wiki-2", Title: "开局", Content: "c2"},
 	}
 	for _, wiki := range seeds {
 		if err := repo.CreateWiki(ctx, wiki); err != nil {
@@ -662,13 +774,14 @@ func TestWikiSearchShortQueryFallback(t *testing.T) {
 	fake := repo.collection.(*wikiFakeCollection)
 
 	// when
-	hits, err := repo.SearchWikis(ctx, "saolei", "session-1", domain.NormalizeTitle("策"))
+	hits, err := repo.SearchWikis(ctx, "saolei", domain.NormalizeTitle("策"))
 
 	// then - the regex fallback is used and the single-rune query still matches
 	if err != nil {
 		t.Fatalf("SearchWikis() unexpected error: %v", err)
 	}
 	filter := fake.filters[len(fake.filters)-1]
+	assertFilterHasNoSession(t, filter)
 	if _, ok := filter[fieldTitleGrams]; ok {
 		t.Fatalf("SearchWikis() short-query filter = %v, want no title_grams", filter)
 	}
@@ -687,13 +800,13 @@ func TestWikiSearchProjectionExcludesContent(t *testing.T) {
 
 	// given
 	repo := newTestWikiRepo()
-	if err := repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", SessionID: "session-1", WikiID: "wiki-1", Title: "策略复盘", Content: "c1"}); err != nil {
+	if err := repo.CreateWiki(ctx, &domain.Wiki{Template: "saolei", WikiID: "wiki-1", Title: "策略复盘", Content: "c1"}); err != nil {
 		t.Fatalf("CreateWiki() seed unexpected error: %v", err)
 	}
 	fake := repo.collection.(*wikiFakeCollection)
 
 	// when
-	if _, err := repo.SearchWikis(ctx, "saolei", "session-1", domain.NormalizeTitle("策略")); err != nil {
+	if _, err := repo.SearchWikis(ctx, "saolei", domain.NormalizeTitle("策略")); err != nil {
 		t.Fatalf("SearchWikis() unexpected error: %v", err)
 	}
 
@@ -751,5 +864,20 @@ func assertWikiGramsEqual(t *testing.T, got, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("got[%d] = %q, want %q (full: %v, want %v)", i, got[i], want[i], got, want)
 		}
+	}
+}
+
+// assertStringsEqual asserts got equals want element for element.
+func assertStringsEqual(t *testing.T, got, want []string) {
+	t.Helper()
+	assertWikiGramsEqual(t, got, want)
+}
+
+// assertFilterHasNoSession asserts a wiki query filter carries no session
+// dimension (the scope is the template alone).
+func assertFilterHasNoSession(t *testing.T, filter bson.M) {
+	t.Helper()
+	if _, ok := filter[fieldSessionID]; ok {
+		t.Fatalf("wiki filter = %v, must not carry a session dimension", filter)
 	}
 }

@@ -16,8 +16,8 @@ import (
 )
 
 // inMemoryWikiRepo implements domain.WikiRepository for testing. The identity
-// is the (template, session_id, wiki_id) tuple; a normalized title is unique
-// within a scope, like the storage unique indexes.
+// is the (template, wiki_id) tuple; a normalized title is unique within a
+// template scope, like the storage unique indexes.
 type inMemoryWikiRepo struct {
 	mu    sync.Mutex
 	wikis map[string]*domain.Wiki
@@ -35,30 +35,30 @@ func newInMemoryWikiRepo() *inMemoryWikiRepo {
 	return &inMemoryWikiRepo{wikis: make(map[string]*domain.Wiki)}
 }
 
-func wikiKey(template, session, wikiID string) string {
-	return template + "\x00" + session + "\x00" + wikiID
+func wikiKey(template, wikiID string) string {
+	return template + "\x00" + wikiID
 }
 
 func (r *inMemoryWikiRepo) CreateWiki(_ context.Context, wiki *domain.Wiki) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.wikis[wikiKey(wiki.Template, wiki.SessionID, wiki.WikiID)]; exists {
+	if _, exists := r.wikis[wikiKey(wiki.Template, wiki.WikiID)]; exists {
 		return domain.ErrAlreadyExists
 	}
 	titleNorm := domain.NormalizeTitle(wiki.Title)
 	for _, existing := range r.wikis {
-		if existing.Template == wiki.Template && existing.SessionID == wiki.SessionID && domain.NormalizeTitle(existing.Title) == titleNorm {
+		if existing.Template == wiki.Template && domain.NormalizeTitle(existing.Title) == titleNorm {
 			return domain.ErrAlreadyExists
 		}
 	}
-	r.wikis[wikiKey(wiki.Template, wiki.SessionID, wiki.WikiID)] = wiki
+	r.wikis[wikiKey(wiki.Template, wiki.WikiID)] = wiki
 	return nil
 }
 
-func (r *inMemoryWikiRepo) GetWiki(_ context.Context, template, session, wikiID string) (*domain.Wiki, error) {
+func (r *inMemoryWikiRepo) GetWiki(_ context.Context, template, wikiID string) (*domain.Wiki, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	wiki, ok := r.wikis[wikiKey(template, session, wikiID)]
+	wiki, ok := r.wikis[wikiKey(template, wikiID)]
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
@@ -68,7 +68,7 @@ func (r *inMemoryWikiRepo) GetWiki(_ context.Context, template, session, wikiID 
 func (r *inMemoryWikiRepo) UpdateWiki(_ context.Context, wiki *domain.Wiki) (*domain.Wiki, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := wikiKey(wiki.Template, wiki.SessionID, wiki.WikiID)
+	key := wikiKey(wiki.Template, wiki.WikiID)
 	existing, ok := r.wikis[key]
 	if !ok {
 		return nil, domain.ErrNotFound
@@ -78,7 +78,7 @@ func (r *inMemoryWikiRepo) UpdateWiki(_ context.Context, wiki *domain.Wiki) (*do
 		if otherKey == key {
 			continue
 		}
-		if other.Template == wiki.Template && other.SessionID == wiki.SessionID && domain.NormalizeTitle(other.Title) == titleNorm {
+		if other.Template == wiki.Template && domain.NormalizeTitle(other.Title) == titleNorm {
 			return nil, domain.ErrAlreadyExists
 		}
 	}
@@ -88,10 +88,10 @@ func (r *inMemoryWikiRepo) UpdateWiki(_ context.Context, wiki *domain.Wiki) (*do
 	return &clone, nil
 }
 
-func (r *inMemoryWikiRepo) DeleteWiki(_ context.Context, template, session, wikiID string) error {
+func (r *inMemoryWikiRepo) DeleteWiki(_ context.Context, template, wikiID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := wikiKey(template, session, wikiID)
+	key := wikiKey(template, wikiID)
 	if _, ok := r.wikis[key]; !ok {
 		return domain.ErrNotFound
 	}
@@ -99,7 +99,7 @@ func (r *inMemoryWikiRepo) DeleteWiki(_ context.Context, template, session, wiki
 	return nil
 }
 
-func (r *inMemoryWikiRepo) ListWikis(_ context.Context, template, session string, cursor *domain.WikiListPageToken, pageSize int) ([]*domain.Wiki, string, error) {
+func (r *inMemoryWikiRepo) ListWikis(_ context.Context, template string, cursor *domain.WikiListPageToken, pageSize int) ([]*domain.Wiki, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastListCursor = cursor
@@ -107,7 +107,7 @@ func (r *inMemoryWikiRepo) ListWikis(_ context.Context, template, session string
 
 	var scoped []*domain.Wiki
 	for _, wiki := range r.wikis {
-		if wiki.Template == template && wiki.SessionID == session {
+		if wiki.Template == template {
 			scoped = append(scoped, wiki)
 		}
 	}
@@ -125,14 +125,14 @@ func (r *inMemoryWikiRepo) ListWikis(_ context.Context, template, session string
 	return scoped, "", nil
 }
 
-func (r *inMemoryWikiRepo) SearchWikis(_ context.Context, template, session, q string) ([]*domain.WikiSearchHit, error) {
+func (r *inMemoryWikiRepo) SearchWikis(_ context.Context, template, q string) ([]*domain.WikiSearchHit, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastSearchQuery = q
 
 	var hits []*domain.WikiSearchHit
 	for _, wiki := range r.wikis {
-		if wiki.Template != template || wiki.SessionID != session {
+		if wiki.Template != template {
 			continue
 		}
 		hits = append(hits, &domain.WikiSearchHit{
@@ -158,14 +158,14 @@ func TestWikiService_CreateGetList(t *testing.T) {
 
 	// when - create
 	created, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-		Parent: "templates/saolei/sessions/session-1",
+		Parent: "templates/saolei",
 		WikiId: "wiki-1",
 		Wiki:   wikiBody("策略复盘", "知识正文"),
 	})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
-	if created.GetName() != "templates/saolei/sessions/session-1/wikis/wiki-1" {
+	if created.GetName() != "templates/saolei/wikis/wiki-1" {
 		t.Fatalf("CreateWiki() name = %q, want the resource name", created.GetName())
 	}
 	if created.GetTitle() != "策略复盘" || created.GetContent() != "知识正文" {
@@ -185,7 +185,7 @@ func TestWikiService_CreateGetList(t *testing.T) {
 	}
 
 	// when - list
-	list, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei/sessions/session-1"})
+	list, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei"})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -210,39 +210,39 @@ func TestWikiService_CreateValidation(t *testing.T) {
 		},
 		{
 			name: "unknown template",
-			req:  &game.CreateWikiRequest{Parent: "templates/unknown/sessions/session-1", WikiId: "wiki-1", Wiki: wikiBody("t", "c")},
+			req:  &game.CreateWikiRequest{Parent: "templates/unknown", WikiId: "wiki-1", Wiki: wikiBody("t", "c")},
 		},
 		{
 			name: "upper-case wiki_id",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", WikiId: "Wiki-1", Wiki: wikiBody("t", "c")},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", WikiId: "Wiki-1", Wiki: wikiBody("t", "c")},
 		},
 		{
 			name: "wiki_id with slash",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", WikiId: "wiki/1", Wiki: wikiBody("t", "c")},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", WikiId: "wiki/1", Wiki: wikiBody("t", "c")},
 		},
 		{
 			name: "empty wiki_id",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", Wiki: wikiBody("t", "c")},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", Wiki: wikiBody("t", "c")},
 		},
 		{
 			name: "missing wiki body",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", WikiId: "wiki-1"},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", WikiId: "wiki-1"},
 		},
 		{
 			name: "empty title",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", WikiId: "wiki-1", Wiki: wikiBody("", "c")},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", WikiId: "wiki-1", Wiki: wikiBody("", "c")},
 		},
 		{
 			name: "title over the rune limit",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", WikiId: "wiki-1", Wiki: wikiBody(strings.Repeat("中", domain.MaxWikiTitleRunes+1), "c")},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", WikiId: "wiki-1", Wiki: wikiBody(strings.Repeat("中", domain.MaxWikiTitleRunes+1), "c")},
 		},
 		{
 			name: "empty content",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", WikiId: "wiki-1", Wiki: wikiBody("t", "")},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", WikiId: "wiki-1", Wiki: wikiBody("t", "")},
 		},
 		{
 			name: "content over the byte limit",
-			req:  &game.CreateWikiRequest{Parent: "templates/saolei/sessions/session-1", WikiId: "wiki-1", Wiki: wikiBody("t", strings.Repeat("x", domain.MaxWikiContentBytes+1))},
+			req:  &game.CreateWikiRequest{Parent: "templates/saolei", WikiId: "wiki-1", Wiki: wikiBody("t", strings.Repeat("x", domain.MaxWikiContentBytes+1))},
 		},
 	}
 
@@ -266,7 +266,7 @@ func TestWikiService_CreateAlreadyExists(t *testing.T) {
 	// given
 	h := NewWikiHandler(newInMemoryWikiRepo())
 	_, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-		Parent: "templates/saolei/sessions/session-1",
+		Parent: "templates/saolei",
 		WikiId: "wiki-1",
 		Wiki:   wikiBody("ＡＢＣ", "c"),
 	})
@@ -274,7 +274,7 @@ func TestWikiService_CreateAlreadyExists(t *testing.T) {
 
 	// when - duplicate wiki id
 	_, err = h.CreateWiki(ctx, &game.CreateWikiRequest{
-		Parent: "templates/saolei/sessions/session-1",
+		Parent: "templates/saolei",
 		WikiId: "wiki-1",
 		Wiki:   wikiBody("other", "c"),
 	})
@@ -284,12 +284,12 @@ func TestWikiService_CreateAlreadyExists(t *testing.T) {
 
 	// when - a full-width spelling normalizing to the existing title
 	_, err = h.CreateWiki(ctx, &game.CreateWikiRequest{
-		Parent: "templates/saolei/sessions/session-1",
+		Parent: "templates/saolei",
 		WikiId: "wiki-2",
 		Wiki:   wikiBody("abc", "c"),
 	})
 
-	// then
+	// then - title uniqueness is enforced across the whole template scope
 	assertStatusCode(t, err, codes.AlreadyExists)
 }
 
@@ -300,7 +300,7 @@ func TestWikiService_Update(t *testing.T) {
 	repo := newInMemoryWikiRepo()
 	h := NewWikiHandler(repo)
 	created, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-		Parent: "templates/saolei/sessions/session-1",
+		Parent: "templates/saolei",
 		WikiId: "wiki-1",
 		Wiki:   wikiBody("旧标题", "旧内容"),
 	})
@@ -364,7 +364,7 @@ func TestWikiService_UpdateValidation(t *testing.T) {
 		{
 			name: "malformed name",
 			req: &game.UpdateWikiRequest{
-				Wiki:       &game.Wiki{Name: "templates/saolei/sessions/session-1", Title: "t"},
+				Wiki:       &game.Wiki{Name: "templates/saolei", Title: "t"},
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"title"}},
 			},
 			wantCode: codes.InvalidArgument,
@@ -372,7 +372,7 @@ func TestWikiService_UpdateValidation(t *testing.T) {
 		{
 			name: "unknown template",
 			req: &game.UpdateWikiRequest{
-				Wiki:       &game.Wiki{Name: "templates/unknown/sessions/session-1/wikis/wiki-1", Title: "t"},
+				Wiki:       &game.Wiki{Name: "templates/unknown/wikis/wiki-1", Title: "t"},
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"title"}},
 			},
 			wantCode: codes.InvalidArgument,
@@ -380,7 +380,7 @@ func TestWikiService_UpdateValidation(t *testing.T) {
 		{
 			name: "unknown mask path",
 			req: &game.UpdateWikiRequest{
-				Wiki:       &game.Wiki{Name: "templates/saolei/sessions/session-1/wikis/missing", Title: "t"},
+				Wiki:       &game.Wiki{Name: "templates/saolei/wikis/missing", Title: "t"},
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"bogus"}},
 			},
 			wantCode: codes.InvalidArgument,
@@ -388,7 +388,7 @@ func TestWikiService_UpdateValidation(t *testing.T) {
 		{
 			name: "empty title when title is updated",
 			req: &game.UpdateWikiRequest{
-				Wiki:       &game.Wiki{Name: "templates/saolei/sessions/session-1/wikis/missing", Title: ""},
+				Wiki:       &game.Wiki{Name: "templates/saolei/wikis/missing", Title: ""},
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"title"}},
 			},
 			wantCode: codes.InvalidArgument,
@@ -396,7 +396,7 @@ func TestWikiService_UpdateValidation(t *testing.T) {
 		{
 			name: "empty content when content is updated",
 			req: &game.UpdateWikiRequest{
-				Wiki:       &game.Wiki{Name: "templates/saolei/sessions/session-1/wikis/missing", Content: ""},
+				Wiki:       &game.Wiki{Name: "templates/saolei/wikis/missing", Content: ""},
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
 			},
 			wantCode: codes.InvalidArgument,
@@ -404,7 +404,7 @@ func TestWikiService_UpdateValidation(t *testing.T) {
 		{
 			name: "missing resource",
 			req: &game.UpdateWikiRequest{
-				Wiki:       &game.Wiki{Name: "templates/saolei/sessions/session-1/wikis/missing", Content: "c"},
+				Wiki:       &game.Wiki{Name: "templates/saolei/wikis/missing", Content: "c"},
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
 			},
 			wantCode: codes.NotFound,
@@ -428,11 +428,11 @@ func TestWikiService_UpdateValidation(t *testing.T) {
 func TestWikiService_UpdateTitleCollision(t *testing.T) {
 	ctx := context.Background()
 
-	// given - two wikis in one scope
+	// given - two wikis in one template scope
 	h := NewWikiHandler(newInMemoryWikiRepo())
 	for _, seed := range []struct{ id, title string }{{"wiki-1", "策略"}, {"wiki-2", "开局"}} {
 		_, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-			Parent: "templates/saolei/sessions/session-1",
+			Parent: "templates/saolei",
 			WikiId: seed.id,
 			Wiki:   wikiBody(seed.title, "c"),
 		})
@@ -441,7 +441,7 @@ func TestWikiService_UpdateTitleCollision(t *testing.T) {
 
 	// when - rename wiki-2 to wiki-1's title
 	_, err := h.UpdateWiki(ctx, &game.UpdateWikiRequest{
-		Wiki:       &game.Wiki{Name: "templates/saolei/sessions/session-1/wikis/wiki-2", Title: "策略"},
+		Wiki:       &game.Wiki{Name: "templates/saolei/wikis/wiki-2", Title: "策略"},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"title"}},
 	})
 
@@ -455,7 +455,7 @@ func TestWikiService_Delete(t *testing.T) {
 	// given
 	h := NewWikiHandler(newInMemoryWikiRepo())
 	created, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-		Parent: "templates/saolei/sessions/session-1",
+		Parent: "templates/saolei",
 		WikiId: "to-delete",
 		Wiki:   wikiBody("t", "c"),
 	})
@@ -482,7 +482,7 @@ func TestWikiService_ListPagination(t *testing.T) {
 	h := NewWikiHandler(repo)
 	for _, id := range []string{"alpha", "bravo", "charlie"} {
 		_, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-			Parent: "templates/saolei/sessions/session-1",
+			Parent: "templates/saolei",
 			WikiId: id,
 			Wiki:   wikiBody(id, "content-"+id),
 		})
@@ -490,7 +490,7 @@ func TestWikiService_ListPagination(t *testing.T) {
 	}
 
 	// when - first page with page_size=2
-	page, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei/sessions/session-1", PageSize: 2})
+	page, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei", PageSize: 2})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -502,7 +502,7 @@ func TestWikiService_ListPagination(t *testing.T) {
 	}
 
 	// when - second page with the token
-	second, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei/sessions/session-1", PageSize: 2, PageToken: page.GetNextPageToken()})
+	second, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei", PageSize: 2, PageToken: page.GetNextPageToken()})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -534,7 +534,7 @@ func TestWikiService_ListPageSize(t *testing.T) {
 			h := NewWikiHandler(repo)
 
 			// when
-			_, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei/sessions/session-1", PageSize: tt.pageSize})
+			_, err := h.ListWikis(ctx, &game.ListWikisRequest{Parent: "templates/saolei", PageSize: tt.pageSize})
 
 			// then
 			assertStatusCode(t, err, codes.OK)
@@ -553,9 +553,9 @@ func TestWikiService_ListValidation(t *testing.T) {
 		req  *game.ListWikisRequest
 	}{
 		{name: "invalid parent", req: &game.ListWikisRequest{Parent: "sessions/session-1"}},
-		{name: "unknown template", req: &game.ListWikisRequest{Parent: "templates/unknown/sessions/session-1"}},
-		{name: "negative page size", req: &game.ListWikisRequest{Parent: "templates/saolei/sessions/session-1", PageSize: -1}},
-		{name: "malformed page token", req: &game.ListWikisRequest{Parent: "templates/saolei/sessions/session-1", PageToken: "not-a-token"}},
+		{name: "unknown template", req: &game.ListWikisRequest{Parent: "templates/unknown"}},
+		{name: "negative page size", req: &game.ListWikisRequest{Parent: "templates/saolei", PageSize: -1}},
+		{name: "malformed page token", req: &game.ListWikisRequest{Parent: "templates/saolei", PageToken: "not-a-token"}},
 	}
 
 	for _, tt := range tests {
@@ -585,7 +585,7 @@ func TestWikiService_Search(t *testing.T) {
 		{"wiki-4", "无关条目"},
 	} {
 		_, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-			Parent: "templates/saolei/sessions/session-1",
+			Parent: "templates/saolei",
 			WikiId: seed.id,
 			Wiki:   wikiBody(seed.title, "content-"+seed.id),
 		})
@@ -593,7 +593,7 @@ func TestWikiService_Search(t *testing.T) {
 	}
 
 	// when - full-width query normalizes and matches
-	resp, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1", Query: "策略"})
+	resp, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei", Query: "策略"})
 
 	// then - exact > prefix > substring; content never returned
 	assertStatusCode(t, err, codes.OK)
@@ -611,7 +611,7 @@ func TestWikiService_Search(t *testing.T) {
 	}
 
 	// when - a full-width spelling normalizes before reaching the repository
-	_, err = h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1", Query: "ＡＢＣ"})
+	_, err = h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei", Query: "ＡＢＣ"})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -632,7 +632,7 @@ func TestWikiService_SearchShortQuery(t *testing.T) {
 		{"wiki-3", "无关"},
 	} {
 		_, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-			Parent: "templates/saolei/sessions/session-1",
+			Parent: "templates/saolei",
 			WikiId: seed.id,
 			Wiki:   wikiBody(seed.title, "c"),
 		})
@@ -640,7 +640,7 @@ func TestWikiService_SearchShortQuery(t *testing.T) {
 	}
 
 	// when
-	resp, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1", Query: "策"})
+	resp, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei", Query: "策"})
 
 	// then - prefix matches first (shorter normalized title first), substring next
 	assertStatusCode(t, err, codes.OK)
@@ -666,7 +666,7 @@ func TestWikiService_SearchPagination(t *testing.T) {
 		{"wiki-3", "中期策略复盘"},
 	} {
 		_, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-			Parent: "templates/saolei/sessions/session-1",
+			Parent: "templates/saolei",
 			WikiId: seed.id,
 			Wiki:   wikiBody(seed.title, "c"),
 		})
@@ -674,7 +674,7 @@ func TestWikiService_SearchPagination(t *testing.T) {
 	}
 
 	// when - first page with page_size=1
-	page, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1", Query: "策略", PageSize: 1})
+	page, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei", Query: "策略", PageSize: 1})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -687,7 +687,7 @@ func TestWikiService_SearchPagination(t *testing.T) {
 
 	// when - second page with the token and the same query
 	second, err := h.SearchWikis(ctx, &game.SearchWikisRequest{
-		Parent:    "templates/saolei/sessions/session-1",
+		Parent:    "templates/saolei",
 		Query:     "策略",
 		PageSize:  1,
 		PageToken: page.GetNextPageToken(),
@@ -701,7 +701,7 @@ func TestWikiService_SearchPagination(t *testing.T) {
 
 	// when - a continuation with a different query
 	_, err = h.SearchWikis(ctx, &game.SearchWikisRequest{
-		Parent:    "templates/saolei/sessions/session-1",
+		Parent:    "templates/saolei",
 		Query:     "开局",
 		PageToken: page.GetNextPageToken(),
 	})
@@ -718,10 +718,10 @@ func TestWikiService_SearchValidation(t *testing.T) {
 		req  *game.SearchWikisRequest
 	}{
 		{name: "invalid parent", req: &game.SearchWikisRequest{Parent: "sessions/session-1", Query: "x"}},
-		{name: "unknown template", req: &game.SearchWikisRequest{Parent: "templates/unknown/sessions/session-1", Query: "x"}},
-		{name: "empty query", req: &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1"}},
-		{name: "negative page size", req: &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1", Query: "x", PageSize: -1}},
-		{name: "malformed page token", req: &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1", Query: "x", PageToken: "not-a-token"}},
+		{name: "unknown template", req: &game.SearchWikisRequest{Parent: "templates/unknown", Query: "x"}},
+		{name: "empty query", req: &game.SearchWikisRequest{Parent: "templates/saolei"}},
+		{name: "negative page size", req: &game.SearchWikisRequest{Parent: "templates/saolei", Query: "x", PageSize: -1}},
+		{name: "malformed page token", req: &game.SearchWikisRequest{Parent: "templates/saolei", Query: "x", PageToken: "not-a-token"}},
 	}
 
 	for _, tt := range tests {
@@ -744,14 +744,14 @@ func TestWikiService_SearchResponseShape(t *testing.T) {
 	// given
 	h := NewWikiHandler(newInMemoryWikiRepo())
 	_, err := h.CreateWiki(ctx, &game.CreateWikiRequest{
-		Parent: "templates/saolei/sessions/session-1",
+		Parent: "templates/saolei",
 		WikiId: "wiki-1",
 		Wiki:   wikiBody("策略复盘", "secret"),
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when
-	resp, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei/sessions/session-1", Query: "策略"})
+	resp, err := h.SearchWikis(ctx, &game.SearchWikisRequest{Parent: "templates/saolei", Query: "策略"})
 
 	// then - the lightweight entry carries name and title only
 	assertStatusCode(t, err, codes.OK)
@@ -759,7 +759,7 @@ func TestWikiService_SearchResponseShape(t *testing.T) {
 		t.Fatalf("SearchWikis() returned %d entries, want 1", len(resp.GetWikis()))
 	}
 	got := resp.GetWikis()[0]
-	if got.GetName() != "templates/saolei/sessions/session-1/wikis/wiki-1" {
+	if got.GetName() != "templates/saolei/wikis/wiki-1" {
 		t.Fatalf("SearchWikis() name = %q, want the resource name", got.GetName())
 	}
 	if got.GetTitle() != "策略复盘" {
@@ -821,23 +821,21 @@ func Test_wikiToProto(t *testing.T) {
 			name: "wiki with fields",
 			wiki: &domain.Wiki{
 				Template:   "saolei",
-				SessionID:  "session-1",
 				WikiID:     "wiki-1",
 				Title:      "策略复盘",
 				Content:    "知识正文",
 				CreateTime: now,
 				UpdateTime: now,
 			},
-			wantName: "templates/saolei/sessions/session-1/wikis/wiki-1",
+			wantName: "templates/saolei/wikis/wiki-1",
 		},
 		{
 			name: "wiki with zero times has no timestamps",
 			wiki: &domain.Wiki{
-				Template:  "saolei",
-				SessionID: "session-1",
-				WikiID:    "notime",
+				Template: "saolei",
+				WikiID:   "notime",
 			},
-			wantName: "templates/saolei/sessions/session-1/wikis/notime",
+			wantName: "templates/saolei/wikis/notime",
 		},
 	}
 

@@ -18,15 +18,15 @@ const (
 
 // wikiDocument stores Wiki documents in MongoDB. The _id is left to the
 // database to generate and is never overwritten by the repository
-// (style/mongo.md). The unique identities are the
-// (template, session_id, wiki_id) compound index and the
-// (template, session_id, title_norm) unique index; title_grams backs the
+// (style/mongo.md). The unique identities are the (template, wiki_id) compound
+// index and the (template, title_norm) unique index; title_grams backs the
 // search prefilter with a multikey index. Both derived fields are computed
-// from Title on write (specs/068-wiki-round-pause/data-model.md §2).
+// from Title on write (specs/069-wiki-template-web/data-model.md §2.1). There
+// is no session field: the wiki scope is the template alone
+// (specs/069-wiki-template-web/data-model.md §1.1).
 type wikiDocument struct {
 	ID         interface{} `bson:"_id,omitempty"`
 	Template   string      `bson:"template"`
-	SessionID  string      `bson:"session_id"`
 	WikiID     string      `bson:"wiki_id"`
 	Title      string      `bson:"title"`
 	TitleNorm  string      `bson:"title_norm"`
@@ -43,7 +43,6 @@ func (d *wikiDocument) toDomain() *domain.Wiki {
 	}
 	return &domain.Wiki{
 		Template:   d.Template,
-		SessionID:  d.SessionID,
 		WikiID:     d.WikiID,
 		Title:      d.Title,
 		Content:    d.Content,
@@ -55,7 +54,7 @@ func (d *wikiDocument) toDomain() *domain.Wiki {
 // toSearchHit converts a search-projected document into a lightweight hit.
 // The projection carries title and wiki_id only, so the normalized form is
 // derived from the returned title with the same domain function the prefilter
-// indexed with (specs/068-wiki-round-pause/data-model.md §3.1).
+// indexed with (specs/069-wiki-template-web/contracts/wiki-service.md §4).
 func (d *wikiDocument) toSearchHit() *domain.WikiSearchHit {
 	if d == nil {
 		return nil
@@ -69,7 +68,7 @@ func (d *wikiDocument) toSearchHit() *domain.WikiSearchHit {
 
 // wikiDocumentFromDomain converts a domain Wiki into its MongoDB
 // representation, deriving the normalized title and its search bigrams from
-// the title (specs/068-wiki-round-pause/data-model.md §2.1-2.2).
+// the title (specs/069-wiki-template-web/data-model.md §2.1).
 func wikiDocumentFromDomain(w *domain.Wiki) *wikiDocument {
 	if w == nil {
 		return nil
@@ -77,7 +76,6 @@ func wikiDocumentFromDomain(w *domain.Wiki) *wikiDocument {
 	titleNorm := domain.NormalizeTitle(w.Title)
 	return &wikiDocument{
 		Template:   w.Template,
-		SessionID:  w.SessionID,
 		WikiID:     w.WikiID,
 		Title:      w.Title,
 		TitleNorm:  titleNorm,
@@ -89,9 +87,8 @@ func wikiDocumentFromDomain(w *domain.Wiki) *wikiDocument {
 }
 
 // wikiFilter is a concrete BSON filter struct for querying a wiki by its
-// (template, session_id, wiki_id) identity.
+// (template, wiki_id) identity.
 type wikiFilter struct {
-	Template  string `bson:"template"`
-	SessionID string `bson:"session_id"`
-	WikiID    string `bson:"wiki_id"`
+	Template string `bson:"template"`
+	WikiID   string `bson:"wiki_id"`
 }

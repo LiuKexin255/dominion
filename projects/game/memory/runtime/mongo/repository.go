@@ -32,14 +32,23 @@ type cursorOps interface {
 	Close(ctx context.Context) error
 }
 
+// indexViewOps wraps the MongoDB index management operations used by the
+// repositories. The driver's IndexView is a concrete struct, so naming the
+// used subset as an interface lets unit tests substitute a recording double.
+type indexViewOps interface {
+	CreateOne(ctx context.Context, model mongodriver.IndexModel, opts ...*options.CreateIndexesOptions) (string, error)
+	DropOne(ctx context.Context, name string, opts ...*options.DropIndexesOptions) (bson.Raw, error)
+}
+
 // collectionOps defines the MongoDB collection operations used by the repository.
 type collectionOps interface {
 	InsertOne(ctx context.Context, document interface{}, opts ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error)
 	FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) singleResult
 	ReplaceOne(ctx context.Context, filter interface{}, replacement interface{}, opts ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error)
 	DeleteOne(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error)
+	DeleteMany(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error)
 	Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error)
-	Indexes() mongodriver.IndexView
+	Indexes() indexViewOps
 }
 
 // mongoCollection wraps a MongoDB Collection to implement collectionOps.
@@ -63,6 +72,10 @@ func (c *mongoCollection) DeleteOne(ctx context.Context, filter interface{}, opt
 	return c.Collection.DeleteOne(ctx, filter, opts...)
 }
 
+func (c *mongoCollection) DeleteMany(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
+	return c.Collection.DeleteMany(ctx, filter, opts...)
+}
+
 func (c *mongoCollection) Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
 	cur, err := c.Collection.Find(ctx, filter, opts...)
 	if err != nil {
@@ -71,7 +84,7 @@ func (c *mongoCollection) Find(ctx context.Context, filter interface{}, opts ...
 	return &mongoCursor{Cursor: cur}, nil
 }
 
-func (c *mongoCollection) Indexes() mongodriver.IndexView {
+func (c *mongoCollection) Indexes() indexViewOps {
 	return c.Collection.Indexes()
 }
 

@@ -10,8 +10,8 @@ import (
 // the token was issued under and the number of leading hits already returned
 // (the offset of the next page). Search results are ordered deterministically
 // (exact > prefix > substring, then normalized title ascending), so the offset
-// identifies the next page within that fixed result sequence (spec 068 FR-004;
-// specs/068-wiki-round-pause/contracts/wiki-service.md §4.4).
+// identifies the next page within that fixed result sequence
+// (specs/069-wiki-template-web/contracts/wiki-service.md §4).
 type WikiSearchPageToken struct {
 	Query  string `json:"q"`
 	Offset int    `json:"offset"`
@@ -36,8 +36,8 @@ func EncodeWikiSearchPageToken(cursor *WikiSearchPageToken) string {
 // against the request's query: the query is normalized with NormalizeTitle and
 // must equal the token's carried q, so continuing a search with a different
 // query rejects with ErrInvalidPageToken → INVALID_ARGUMENT. Empty tokens and
-// empty queries are rejected the same way (spec 068 FR-004;
-// specs/068-wiki-round-pause/contracts/wiki-service.md §4.4).
+// empty queries are rejected the same way
+// (specs/069-wiki-template-web/contracts/wiki-service.md §4).
 func DecodeWikiSearchPageToken(token, query string) (*WikiSearchPageToken, error) {
 	if token == "" {
 		return nil, fmt.Errorf("%w: empty token", ErrInvalidPageToken)
@@ -66,8 +66,8 @@ func DecodeWikiSearchPageToken(token, query string) (*WikiSearchPageToken, error
 // WikiListPageToken is the decoded ListWikis page token: the wiki id to resume
 // after (exclusive) in the fixed wiki_id ascending order. ListWikis has no
 // order_by, so the token carries no request context — its shape is independent
-// of the search token (spec 068 FR-003;
-// specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
+// of the search token
+// (specs/069-wiki-template-web/contracts/wiki-service.md §2).
 type WikiListPageToken struct {
 	WikiID string `json:"wiki_id"`
 }
