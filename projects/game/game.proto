@@ -98,23 +98,25 @@ service MemoryService {
 }
 
 // WikiService manages Wiki resources — the planner's knowledge-base entries
-// scoped to a Session (spec 068 FR-001; contract:
-// specs/068-wiki-round-pause/contracts/wiki-service.md §2). Wiki is a child of
-// a Session (AIP-122: https://google.aip.dev/122), resource pattern
-// templates/{template}/sessions/{session}/wikis/{wiki}; the {wiki} name
-// segment carries the wiki id (FR-017 — the resource message has no separate
-// id field). SearchWikis is the fuzzy-title search face.
+// scoped to a Template (specs/069-wiki-template-web/spec.md FR-001; contract:
+// specs/069-wiki-template-web/contracts/wiki-service.md §1-2). Wiki is a child
+// of a Template (AIP-122: https://google.aip.dev/122), resource pattern
+// templates/{template}/wikis/{wiki}; the {wiki} name segment carries the wiki
+// id (specs/069-wiki-template-web/contracts/wiki-service.md §1 — the resource
+// message has no separate id field). SearchWikis is the fuzzy-title search
+// face. Every session of a template shares one wiki collection
+// (specs/069-wiki-template-web/spec.md FR-001).
 //
-// Prefix Path: /api/v1/templates/{template}/sessions/{session}/wikis
+// Prefix Path: /api/v1/templates/{template}/wikis
 service WikiService {
-  // CreateWiki creates a new Wiki under a session. wiki_id is the
+  // CreateWiki creates a new Wiki under a template. wiki_id is the
   // agent-generated id that becomes the final segment of the name (AIP-133
   // user-specified id: https://google.aip.dev/133); a title that normalizes
-  // to an existing title in the session scope is rejected with ALREADY_EXISTS
-  // (spec 068 FR-002).
+  // to an existing title in the template scope is rejected with ALREADY_EXISTS
+  // (specs/069-wiki-template-web/spec.md FR-002).
   rpc CreateWiki(CreateWikiRequest) returns (Wiki) {
     option (google.api.http) = {
-      post: "/api/v1/{parent=templates/*/sessions/*}/wikis"
+      post: "/api/v1/{parent=templates/*}/wikis"
       body: "wiki"
     };
     option (google.api.method_signature) = "parent,wiki,wiki_id";
@@ -124,7 +126,7 @@ service WikiService {
   // AIP-131: https://google.aip.dev/131
   rpc GetWiki(GetWikiRequest) returns (Wiki) {
     option (google.api.http) = {
-      get: "/api/v1/{name=templates/*/sessions/*/wikis/*}"
+      get: "/api/v1/{name=templates/*/wikis/*}"
     };
     option (google.api.method_signature) = "name";
   }
@@ -133,7 +135,7 @@ service WikiService {
   // https://google.aip.dev/134
   rpc UpdateWiki(UpdateWikiRequest) returns (Wiki) {
     option (google.api.http) = {
-      patch: "/api/v1/{wiki.name=templates/*/sessions/*/wikis/*}"
+      patch: "/api/v1/{wiki.name=templates/*/wikis/*}"
       body: "wiki"
     };
     option (google.api.method_signature) = "wiki,update_mask";
@@ -142,18 +144,18 @@ service WikiService {
   // DeleteWiki deletes a Wiki. AIP-135: https://google.aip.dev/135
   rpc DeleteWiki(DeleteWikiRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/api/v1/{name=templates/*/sessions/*/wikis/*}"
+      delete: "/api/v1/{name=templates/*/wikis/*}"
     };
     option (google.api.method_signature) = "name";
   }
 
-  // ListWikis lists Wikis under a session, returning full resources (content
+  // ListWikis lists Wikis under a template, returning full resources (content
   // included). There is no order_by: results are fixed to wiki_id ascending,
   // paginated per AIP-158 (AIP-132: https://google.aip.dev/132;
   // https://google.aip.dev/158).
   rpc ListWikis(ListWikisRequest) returns (ListWikisResponse) {
     option (google.api.http) = {
-      get: "/api/v1/{parent=templates/*/sessions/*}/wikis"
+      get: "/api/v1/{parent=templates/*}/wikis"
     };
     option (google.api.method_signature) = "parent";
   }
@@ -167,7 +169,7 @@ service WikiService {
   // method, AIP-136: https://google.aip.dev/136
   rpc SearchWikis(SearchWikisRequest) returns (SearchWikisResponse) {
     option (google.api.http) = {
-      get: "/api/v1/{parent=templates/*/sessions/*}/wikis:search"
+      get: "/api/v1/{parent=templates/*}/wikis:search"
     };
     option (google.api.method_signature) = "parent,query";
   }
@@ -235,31 +237,35 @@ message Memory {
   reserved 2;
   reserved "memory_id";
 
+  // The memory text. At most 1024 runes; a longer value is rejected with
+  // INVALID_ARGUMENT (specs/069-wiki-template-web/contracts/
+  // memory-content-limit.md §1-2). Longer knowledge belongs in a Wiki.
   string content = 3;
   google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
-// Wiki is one planner knowledge-base entry of a Session, stored by the memory
-// service (spec 068 FR-001; data model:
-// specs/068-wiki-round-pause/data-model.md §1). The {wiki} pattern segment
-// carries the wiki id — the resource message has no separate id field (FR-017,
-// specs/068-wiki-round-pause/contracts/wiki-service.md §1).
+// Wiki is one planner knowledge-base entry of a Template, stored by the memory
+// service (specs/069-wiki-template-web/spec.md FR-001; data model:
+// specs/069-wiki-template-web/data-model.md §1.1). The {wiki} pattern segment
+// carries the wiki id — the resource message has no separate id field
+// (specs/069-wiki-template-web/contracts/wiki-service.md §1).
 message Wiki {
   option (google.api.resource) = {
     type: "game.liukexin.com/Wiki"
-    pattern: "templates/{template}/sessions/{session}/wikis/{wiki}"
+    pattern: "templates/{template}/wikis/{wiki}"
     plural: "wikis"
     singular: "wiki"
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
   // The model-facing address of the entry. Required and non-empty; at most 128
-  // runes. A title that normalizes to an existing title within the
-  // (template, session) scope is rejected with ALREADY_EXISTS (spec 068 FR-002).
+  // runes. A title that normalizes to an existing title within the template
+  // scope is rejected with ALREADY_EXISTS (specs/069-wiki-template-web/spec.md
+  // FR-002).
   string title = 2;
-  // The bulk knowledge body. Required and non-empty; at most 64KB (spec 068
-  // FR-005).
+  // The bulk knowledge body. Required and non-empty; at most 64KB
+  // (specs/069-wiki-template-web/contracts/wiki-service.md §3).
   string content = 3;
   google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
@@ -711,6 +717,8 @@ message DeleteSessionRequest {
 // memory text is carried by memory.content, not a top-level field. memory_id
 // is the memory service's internal resource id, generated by the agent on add
 // and never provided by the LLM (spec 039 Session 2026-08-08 / FR-008).
+// memory.content is capped at 1024 runes (specs/069-wiki-template-web/
+// contracts/memory-content-limit.md §1-2).
 message CreateMemoryRequest {
   // The session to create the memory in.
   // Format: templates/{template}/sessions/{session}
@@ -730,7 +738,9 @@ message CreateMemoryRequest {
 // templates/{template}/sessions/{session}/memories/{memory}) is the target
 // identity, surfaced in the HTTP path via {memory.name=...}. update_mask
 // supports partial updates (the only mutable Memory field is content; no
-// create-or-update — an absent resource errors with NOT_FOUND).
+// create-or-update — an absent resource errors with NOT_FOUND). The updated
+// memory.content is capped at 1024 runes (specs/069-wiki-template-web/
+// contracts/memory-content-limit.md §1-2).
 message UpdateMemoryRequest {
   Memory memory = 1 [(google.api.field_behavior) = REQUIRED];
   google.protobuf.FieldMask update_mask = 2;
@@ -802,14 +812,14 @@ message ListMemoriesResponse {
   string next_page_token = 2;
 }
 
-// CreateWikiRequest creates a Wiki under a session. AIP-133:
+// CreateWikiRequest creates a Wiki under a template. AIP-133:
 // https://google.aip.dev/133. The wiki is embedded in the request — its title
 // and content are carried by wiki.title / wiki.content. wiki_id is generated
 // by the agent (a digest of the normalized title) and is never chosen by the
 // model.
 message CreateWikiRequest {
-  // The session to create the wiki in.
-  // Format: templates/{template}/sessions/{session}
+  // The template to create the wiki in.
+  // Format: templates/{template}
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -827,7 +837,7 @@ message CreateWikiRequest {
 // GetWikiRequest gets a Wiki. AIP-131: https://google.aip.dev/131
 message GetWikiRequest {
   // The name of the wiki to retrieve.
-  // Format: templates/{template}/sessions/{session}/wikis/{wiki}
+  // Format: templates/{template}/wikis/{wiki}
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -837,12 +847,12 @@ message GetWikiRequest {
 }
 
 // UpdateWikiRequest updates a Wiki. AIP-134: https://google.aip.dev/134. The
-// resource's name field (pattern
-// templates/{template}/sessions/{session}/wikis/{wiki}) is the target
-// identity, surfaced in the HTTP path via {wiki.name=...}; title and content
-// are the mutable fields and update_mask supports either. A title change
-// rebuilds the search index while keeping the scope uniqueness (spec 068
-// FR-002); an absent resource errors with NOT_FOUND.
+// resource's name field (pattern templates/{template}/wikis/{wiki}) is the
+// target identity, surfaced in the HTTP path via {wiki.name=...}; title and
+// content are the mutable fields and update_mask supports either. A title
+// change rebuilds the search index while keeping the template-scope uniqueness
+// (specs/069-wiki-template-web/spec.md FR-002); an absent resource errors with
+// NOT_FOUND.
 message UpdateWikiRequest {
   Wiki wiki = 1 [(google.api.field_behavior) = REQUIRED];
   google.protobuf.FieldMask update_mask = 2;
@@ -851,7 +861,7 @@ message UpdateWikiRequest {
 // DeleteWikiRequest deletes a Wiki. AIP-135: https://google.aip.dev/135
 message DeleteWikiRequest {
   // The name of the wiki to delete.
-  // Format: templates/{template}/sessions/{session}/wikis/{wiki}
+  // Format: templates/{template}/wikis/{wiki}
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -860,13 +870,13 @@ message DeleteWikiRequest {
   ];
 }
 
-// ListWikisRequest lists Wikis under a session. AIP-132:
+// ListWikisRequest lists Wikis under a template. AIP-132:
 // https://google.aip.dev/132; AIP-158 (pagination): https://google.aip.dev/158.
 // There is no order_by: the collection is fixed to wiki_id ascending (the
 // wiki_id is the name's {wiki} terminal segment).
 message ListWikisRequest {
-  // The session to list wikis from.
-  // Format: templates/{template}/sessions/{session}
+  // The template to list wikis from.
+  // Format: templates/{template}
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -895,10 +905,10 @@ message ListWikisResponse {
 // non-empty; the page token encodes the normalized query and an offset, and a
 // continuation whose query does not normalize to the token's query is rejected
 // with INVALID_ARGUMENT (AIP-158: https://google.aip.dev/158; contract
-// specs/068-wiki-round-pause/contracts/wiki-service.md §4).
+// specs/069-wiki-template-web/contracts/wiki-service.md §4).
 message SearchWikisRequest {
-  // The session to search wikis in.
-  // Format: templates/{template}/sessions/{session}
+  // The template to search wikis in.
+  // Format: templates/{template}
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -921,16 +931,17 @@ message SearchWikisRequest {
 
 // SearchWikisResponse is the response for SearchWikis. Entries are lightweight
 // summaries — name and title only, never content (contract
-// specs/068-wiki-round-pause/contracts/wiki-service.md §4.3).
+// specs/069-wiki-template-web/contracts/wiki-service.md §4.3).
 message SearchWikisResponse {
   repeated WikiSummary wikis = 1;
   string next_page_token = 2;
 }
 
 // WikiSummary is one SearchWikis hit: the wiki's resource name (the {wiki} id
-// is carried by its final segment, spec 068 FR-017) and its title.
+// is carried by its final segment,
+// specs/069-wiki-template-web/contracts/wiki-service.md §1) and its title.
 message WikiSummary {
-  // Format: templates/{template}/sessions/{session}/wikis/{wiki}
+  // Format: templates/{template}/wikis/{wiki}
   string name = 1;
   string title = 2;
 }

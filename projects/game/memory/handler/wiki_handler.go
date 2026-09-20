@@ -93,11 +93,11 @@ func (h *WikiHandler) GetWiki(ctx context.Context, req *game.GetWikiRequest) (*g
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(name.Parent().Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	wiki, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, name.SessionID, name.WikiID)
+	wiki, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, "", name.WikiID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -121,7 +121,7 @@ func (h *WikiHandler) UpdateWiki(ctx context.Context, req *game.UpdateWikiReques
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(name.Parent().Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -143,7 +143,7 @@ func (h *WikiHandler) UpdateWiki(ctx context.Context, req *game.UpdateWikiReques
 		}
 	}
 
-	existing, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, name.SessionID, name.WikiID)
+	existing, err := h.wikiRepo.GetWiki(ctx, name.TemplateID, "", name.WikiID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -172,11 +172,11 @@ func (h *WikiHandler) DeleteWiki(ctx context.Context, req *game.DeleteWikiReques
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(name.Parent().Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	if err := h.wikiRepo.DeleteWiki(ctx, name.TemplateID, name.SessionID, name.WikiID); err != nil {
+	if err := h.wikiRepo.DeleteWiki(ctx, name.TemplateID, "", name.WikiID); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
@@ -296,7 +296,7 @@ func (h *WikiHandler) SearchWikis(ctx context.Context, req *game.SearchWikisRequ
 
 	summaries := make([]*game.WikiSummary, 0, len(page))
 	for _, match := range page {
-		summaries = append(summaries, wikiSummaryToProto(sessName.TemplateID, sessName.SessionID, match.hit))
+		summaries = append(summaries, wikiSummaryToProto(sessName.TemplateID, match.hit))
 	}
 
 	return &game.SearchWikisResponse{
@@ -366,7 +366,7 @@ func wikiToProto(w *domain.Wiki) *game.Wiki {
 	}
 
 	pb := &game.Wiki{
-		Name:    game.WikiName{TemplateID: w.Template, SessionID: w.SessionID, WikiID: w.WikiID}.String(),
+		Name:    game.WikiName{TemplateID: w.Template, WikiID: w.WikiID}.String(),
 		Title:   w.Title,
 		Content: w.Content,
 	}
@@ -382,12 +382,12 @@ func wikiToProto(w *domain.Wiki) *game.Wiki {
 
 // wikiSummaryToProto converts a search hit into the lightweight {name, title}
 // entry (content is never returned by search; contract §4.3).
-func wikiSummaryToProto(template, session string, hit *domain.WikiSearchHit) *game.WikiSummary {
+func wikiSummaryToProto(template string, hit *domain.WikiSearchHit) *game.WikiSummary {
 	if hit == nil {
 		return nil
 	}
 	return &game.WikiSummary{
-		Name:  game.WikiName{TemplateID: template, SessionID: session, WikiID: hit.WikiID}.String(),
+		Name:  game.WikiName{TemplateID: template, WikiID: hit.WikiID}.String(),
 		Title: hit.Title,
 	}
 }
