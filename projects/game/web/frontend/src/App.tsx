@@ -1,9 +1,10 @@
-// 应用装配：侧栏（session 列表 + 视图切换）+ 主区（对话 / preset 管理）。
-// 无路由库——会话视图由选中 session 状态驱动，presets 视图为单页 state 切换
-// （specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2）。每
+// 应用装配：侧栏（session 列表 + 视图切换）+ 主区（对话 / preset / wiki
+// 管理）。无路由库——会话视图由选中 session 状态驱动，presets 与 wiki 视图
+// 为单页 state 切换（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
+// §2、specs/069-wiki-template-web/contracts/web-wiki-view.md §1）。每
 // session 的 ChatStore 以资源名为键存于 App 级 Map：切换/返回列表不丢各自
 // 进度（发送中的 team 流由 store 持有、在后台继续归约，fetch 不中断——
-// FR-014/FR-017 前端侧）。会话面板在两种视图下都常驻挂载：视图切换仅以
+// FR-014/FR-017 前端侧）。会话面板在所有视图下都常驻挂载：视图切换仅以
 // CSS 隐藏会话面板（unmount 会让 ChatPanel 的回填 effect 重跑，回填响应
 // 落地时覆盖在途回合——web-views.md §2），未选中会话的面板保持挂载仅
 // 不渲染，再次进入直接呈现既有状态。
@@ -30,6 +31,7 @@ import {
 import { ChatView, TEAM_VIEW } from './components/ChatView.js'
 import { PresetsView } from './components/PresetsView.js'
 import { SessionList } from './components/SessionList.js'
+import { WikiView } from './components/WikiView.js'
 import {
   SystemPromptOverlay,
   useSystemPrompt,
@@ -44,8 +46,10 @@ const TEMPLATE_SAOLEI = 'saolei'
 // 数量 = 成员数，saolei 恰 player/planner——切换器恰 3 视图：团队 + 2 成员）。
 const MEMBER_VIEWS = ['player', 'planner'] as const
 
-// 侧栏底部视图切换的两个视图（web-frontend.md §2：sessions | presets）。
-type AppView = 'sessions' | 'presets'
+// 侧栏底部视图切换的三个视图（sessions | presets | wiki；preset 视图见
+// specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2，wiki 视图见
+// specs/069-wiki-template-web/contracts/web-wiki-view.md §1）。
+type AppView = 'sessions' | 'presets' | 'wiki'
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -575,6 +579,13 @@ export function App() {
           >
             Presets
           </Button>
+          <Button
+            variant={view === 'wiki' ? 'primary' : 'ghost'}
+            data-testid="view-wiki"
+            onClick={() => setView('wiki')}
+          >
+            Wiki
+          </Button>
         </div>
       </aside>
       <main className="main">
@@ -600,6 +611,7 @@ export function App() {
           })}
         </div>
         {view === 'presets' ? <PresetsView template={TEMPLATE_SAOLEI} /> : null}
+        {view === 'wiki' ? <WikiView template={TEMPLATE_SAOLEI} /> : null}
       </main>
     </div>
   )

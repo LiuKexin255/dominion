@@ -1890,3 +1890,62 @@ describe('App 双视图切换', () => {
     expect(memberCalls).toHaveLength(2)
   })
 })
+
+// ─── App 侧栏三视图切换（sessions | presets | wiki；wiki 视图接入见
+// ─── specs/069-wiki-template-web/contracts/web-wiki-view.md §1 与 §5 验收锚点） ──
+
+describe('App 侧栏三视图切换', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? 'GET'
+      if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+        return jsonResponse({ sessions: [] })
+      }
+      if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
+        return jsonResponse({ presets: [] })
+      }
+      if (url === '/api/v1/templates/saolei/wikis?page_size=20' && method === 'GET') {
+        return jsonResponse({
+          wikis: [
+            {
+              name: 'templates/saolei/wikis/w1',
+              title: '开局-左上角',
+              content: '先点角落',
+            },
+          ],
+        })
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('三视图互斥渲染：wiki 呈现管理列表，切 presets/sessions 恢复各自视图', async () => {
+    render(<App />)
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+
+    // 侧栏第三视图 wiki：主区渲染 WikiView（固定 saolei template），会话空态
+    // 与 presets 视图均不渲染。
+    fireEvent.click(screen.getByTestId('view-wiki'))
+    expect(await screen.findByTestId('wiki-view')).toBeTruthy()
+    expect((await screen.findByTestId('wiki-title')).textContent).toBe('开局-左上角')
+    expect(screen.queryByTestId('empty-hint')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/templates/saolei/wikis?page_size=20', undefined)
+
+    fireEvent.click(screen.getByTestId('view-presets'))
+    expect(await screen.findByTestId('presets-view')).toBeTruthy()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('view-sessions'))
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
+  })
+})
