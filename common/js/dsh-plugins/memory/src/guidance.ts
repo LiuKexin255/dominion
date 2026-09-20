@@ -6,7 +6,7 @@
  * text and each owns exactly one concern — the division section never
  * describes tool usage/parameters, the workflow section never restates the
  * division (specs/068-wiki-round-pause/spec.md FR-013;
- * specs/068-wiki-round-pause/contracts/dsh-plugins.md §2 items 6-7, §3).
+ * specs/069-wiki-template-web/contracts/dsh-plugins.md §5).
  *
  * Neither section introduces third-party memory-framework terminology, and
  * neither injects wiki entry content into the prompt — the wiki
@@ -40,16 +40,19 @@ export const WIKI_GUIDANCE_SECTION_ORDER = 120;
 
 /**
  * The memory-vs-wiki division of labour: what each store is for and how it
- * reaches the context. Deliberately silent on how to call either tool — that
- * belongs to the tool descriptions and {@link WIKI_GUIDANCE}
- * (specs/068-wiki-round-pause/spec.md FR-013).
+ * reaches the context. The division also carries the entry size expectation
+ * for memory and the wiki's cross-session persistence — both are properties
+ * of the boundary, not of any single tool. Deliberately silent on how to call
+ * either tool — that belongs to the tool descriptions and
+ * {@link WIKI_GUIDANCE} (specs/068-wiki-round-pause/spec.md FR-013;
+ * specs/069-wiki-template-web/contracts/dsh-plugins.md §5).
  */
 export const MEMORY_GUIDANCE = `## Memory and wiki
 
 Two stores hold information across turns, and they serve different roles:
 
-- **Memory** is a small set of recent working notes. It is always visible in your system prompt, but only as a recency-bounded snapshot: the 10 most recently updated entries. It is the place for short, immediately relevant facts.
-- **Wiki** is a large knowledge base. It never enters your system prompt on its own and is read only on demand, so it can grow without crowding your context. It is the place for knowledge worth keeping beyond the current moment.
+- **Memory** is a small set of recent working notes. It is always visible in your system prompt, but only as a recency-bounded snapshot: the 10 most recently updated entries. It is the place for short, immediately relevant facts: keep each entry to roughly 1000 characters or fewer, since longer knowledge belongs in the wiki.
+- **Wiki** is a large knowledge base. It never enters your system prompt on its own and is read only on demand, so it can grow without crowding your context. It is the place for knowledge that persists across sessions and is worth keeping in depth.
 
 Prefer memory for what you need on every turn; prefer the wiki for what you need only occasionally and in depth.`;
 

@@ -227,6 +227,66 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 	}
 }
 
+func TestMemoryService_CreateMemoryContentLimit(t *testing.T) {
+	ctx := context.Background()
+
+	// The multibyte cases pin the rune measure: 1024 CJK characters are 3072
+	// bytes, so a byte-based bound would reject the boundary case
+	// (specs/069-wiki-template-web/contracts/memory-content-limit.md §1-2).
+	tests := []struct {
+		name      string
+		content   string
+		wantCode  codes.Code
+		wantInMsg []string
+	}{
+		{
+			name:     "empty content keeps the existing service semantics",
+			content:  "",
+			wantCode: codes.OK,
+		},
+		{
+			name:     "1024 ASCII runes at the boundary",
+			content:  strings.Repeat("a", domain.MaxMemoryContentRunes),
+			wantCode: codes.OK,
+		},
+		{
+			name:      "1025 ASCII runes is rejected",
+			content:   strings.Repeat("a", domain.MaxMemoryContentRunes+1),
+			wantCode:  codes.InvalidArgument,
+			wantInMsg: []string{"1024", "1025"},
+		},
+		{
+			name:     "1024 multibyte runes at the boundary",
+			content:  strings.Repeat("中", domain.MaxMemoryContentRunes),
+			wantCode: codes.OK,
+		},
+		{
+			name:      "1025 multibyte runes is rejected",
+			content:   strings.Repeat("中", domain.MaxMemoryContentRunes+1),
+			wantCode:  codes.InvalidArgument,
+			wantInMsg: []string{"1024", "1025"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			h := NewHandler(newInMemoryMemoryRepo())
+
+			// when
+			_, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
+				Parent:   "templates/saolei/sessions/session-1",
+				MemoryId: "mem-1",
+				Memory:   memoryBody(tt.content),
+			})
+
+			// then
+			assertStatusCode(t, err, tt.wantCode)
+			assertStatusMessageContains(t, err, tt.wantInMsg)
+		})
+	}
+}
+
 func TestMemoryService_CreateMemoryAlreadyExists(t *testing.T) {
 	ctx := context.Background()
 
@@ -338,6 +398,70 @@ func TestMemoryService_UpdateMemoryValidation(t *testing.T) {
 
 	// then — returns InvalidArgument
 	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestMemoryService_UpdateMemoryContentLimit(t *testing.T) {
+	ctx := context.Background()
+
+	// The multibyte cases pin the rune measure (see
+	// TestMemoryService_CreateMemoryContentLimit);
+	// specs/069-wiki-template-web/contracts/memory-content-limit.md §1-2
+	// applies the same bound to the Update write path.
+	tests := []struct {
+		name      string
+		content   string
+		wantCode  codes.Code
+		wantInMsg []string
+	}{
+		{
+			name:     "1024 ASCII runes at the boundary",
+			content:  strings.Repeat("a", domain.MaxMemoryContentRunes),
+			wantCode: codes.OK,
+		},
+		{
+			name:      "1025 ASCII runes is rejected",
+			content:   strings.Repeat("a", domain.MaxMemoryContentRunes+1),
+			wantCode:  codes.InvalidArgument,
+			wantInMsg: []string{"1024", "1025"},
+		},
+		{
+			name:     "1024 multibyte runes at the boundary",
+			content:  strings.Repeat("中", domain.MaxMemoryContentRunes),
+			wantCode: codes.OK,
+		},
+		{
+			name:      "1025 multibyte runes is rejected",
+			content:   strings.Repeat("中", domain.MaxMemoryContentRunes+1),
+			wantCode:  codes.InvalidArgument,
+			wantInMsg: []string{"1024", "1025"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given — a seeded memory to update
+			h := NewHandler(newInMemoryMemoryRepo())
+			_, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
+				Parent:   "templates/saolei/sessions/session-1",
+				MemoryId: "mem-1",
+				Memory:   memoryBody("content"),
+			})
+			assertStatusCode(t, err, codes.OK)
+
+			// when
+			_, err = h.UpdateMemory(ctx, &game.UpdateMemoryRequest{
+				Memory: &game.Memory{
+					Name:    "templates/saolei/sessions/session-1/memories/mem-1",
+					Content: tt.content,
+				},
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
+			})
+
+			// then
+			assertStatusCode(t, err, tt.wantCode)
+			assertStatusMessageContains(t, err, tt.wantInMsg)
+		})
+	}
 }
 
 func TestMemoryService_UpdateMemoryNotFound(t *testing.T) {
@@ -873,6 +997,25 @@ func assertStatusCode(t *testing.T, err error, want codes.Code) {
 	got := status.Code(err)
 	if got != want {
 		t.Fatalf("status code = %v, want %v (error: %v)", got, want, err)
+	}
+}
+
+// assertStatusMessageContains checks that the status message of err contains
+// every want substring. An empty want list asserts nothing (success cases pass
+// a nil slice); a non-nil slice on a nil error is a test bug.
+func assertStatusMessageContains(t *testing.T, err error, want []string) {
+	t.Helper()
+	if len(want) == 0 {
+		return
+	}
+	if err == nil {
+		t.Fatalf("expected error message containing %q, got nil error", want)
+	}
+	msg := status.Convert(err).Message()
+	for _, substring := range want {
+		if !strings.Contains(msg, substring) {
+			t.Errorf("status message = %q, want it to contain %q", msg, substring)
+		}
 	}
 }
 

@@ -44,7 +44,9 @@ func NewHandler(memoryRepo domain.MemoryRepository) *Handler {
 // (specs/039-planner-memory-calibration/contracts/memory-service-contract.md
 // §2), not a top-level request field. The template
 // and session are derived from the request parent; the caller supplies the
-// memory_id (REQUIRED per the proto contract, agent-generated on add).
+// memory_id (REQUIRED per the proto contract, agent-generated on add). The
+// content is bounded by domain.MaxMemoryContentRunes (the write limit:
+// specs/069-wiki-template-web/contracts/memory-content-limit.md §2).
 func (h *Handler) CreateMemory(ctx context.Context, req *game.CreateMemoryRequest) (*game.Memory, error) {
 	sessName, err := game.ParseSessionName(req.GetParent())
 	if err != nil {
@@ -62,6 +64,9 @@ func (h *Handler) CreateMemory(ctx context.Context, req *game.CreateMemoryReques
 	body := req.GetMemory()
 	if body == nil {
 		return nil, status.Error(codes.InvalidArgument, "memory is required")
+	}
+	if err := domain.ValidateMemoryContent(body.GetContent()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	now := time.Now()
@@ -88,6 +93,8 @@ func (h *Handler) CreateMemory(ctx context.Context, req *game.CreateMemoryReques
 // (specs/039-planner-memory-calibration/contracts/memory-service-contract.md
 // §2); unknown mask paths return
 // INVALID_ARGUMENT, missing memories return NOT_FOUND (no create-or-update).
+// The masked content is bounded by domain.MaxMemoryContentRunes (the write
+// limit: specs/069-wiki-template-web/contracts/memory-content-limit.md §2).
 // The server-managed create_time is preserved by the repository.
 func (h *Handler) UpdateMemory(ctx context.Context, req *game.UpdateMemoryRequest) (*game.Memory, error) {
 	name, err := game.ParseMemoryName(req.GetMemory().GetName())
@@ -100,6 +107,9 @@ func (h *Handler) UpdateMemory(ctx context.Context, req *game.UpdateMemoryReques
 
 	content, err := applyMemoryMask(req.GetMemory(), req.GetUpdateMask())
 	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 

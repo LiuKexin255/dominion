@@ -27,11 +27,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // TestMemoryServiceHttpCrudAndPagination verifies the MemoryService storage
@@ -161,6 +164,63 @@ func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 		[]byte(`{"content":"x"}`))
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("CreateMemory(bad memory_id) status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+	}
+}
+
+// TestMemoryServiceHttpContentLimit verifies the memory content write limit
+// through the gateway public entry
+// (specs/069-wiki-template-web/contracts/memory-content-limit.md §1-2): a
+// Create whose content exceeds 1024 runes is rejected with 400
+// INVALID_ARGUMENT — nothing is persisted — while the 1024-rune boundary is
+// accepted. The payload is multibyte (中文, 3 bytes per rune), so the case
+// also pins the rune measure: a byte-length bound would reject the boundary
+// payload too.
+func TestMemoryServiceHttpContentLimit(t *testing.T) {
+	const (
+		maxRunes      = 1024
+		overLimitText = "中"
+	)
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a session as the memory parent.
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
+
+	// when: create a memory with 1025 multibyte runes (3075 bytes) of content.
+	overLimit := strings.Repeat(overLimitText, maxRunes+1)
+	body, err := protojson.Marshal(&game.Memory{Content: overLimit})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Memory: %v", err)
+	}
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?memory_id=over-limit",
+		sutHostURL, pathPrefix, saoleiTemplateID, sessionID)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
+
+	// then: 400 INVALID_ARGUMENT with a message naming the limit and the
+	// actual rune count (contract §2/§5).
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("CreateMemory(over limit) status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+	}
+	for _, want := range []string{fmt.Sprintf("%d", maxRunes), fmt.Sprintf("%d", maxRunes+1)} {
+		if !strings.Contains(string(respBody), want) {
+			t.Errorf("CreateMemory(over limit) body = %s, want it to contain %q", respBody, want)
+		}
+	}
+
+	// then: the rejected write left nothing behind.
+	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "")
+	if got := len(page.GetMemories()); got != 0 {
+		t.Errorf("ListMemories after rejected Create = %d entries, want 0", got)
+	}
+
+	// when: create at the boundary (1024 multibyte runes).
+	boundary := strings.Repeat(overLimitText, maxRunes)
+	created := createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "at-limit", boundary)
+
+	// then: accepted with the content intact.
+	if created.GetContent() != boundary {
+		t.Errorf("CreateMemory(at limit) content = %q, want the %d-rune payload", created.GetContent(), maxRunes)
 	}
 }
 

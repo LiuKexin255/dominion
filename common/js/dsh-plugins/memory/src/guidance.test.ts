@@ -8,7 +8,10 @@
  * boundaries from specs/068-wiki-round-pause/spec.md FR-013 and
  * specs/068-wiki-round-pause/contracts/dsh-plugins.md §3: the division
  * section carries no tool usage/parameters, the workflow section restates no
- * division, and neither uses third-party memory-framework terminology.
+ * division, and neither uses third-party memory-framework terminology. The
+ * division section additionally carries the memory entry size limit and the
+ * wiki's cross-session persistence
+ * (specs/069-wiki-template-web/contracts/dsh-plugins.md §5).
  */
 
 import { describe, expect, it } from "vitest";
@@ -62,6 +65,15 @@ describe("MEMORY_GUIDANCE: division of labour only", () => {
       expect(text).not.toContain(usageToken);
     }
   });
+
+  it("states the memory entry size limit and routes longer knowledge to the wiki", () => {
+    expect(MEMORY_GUIDANCE).toContain("1000 characters");
+    expect(MEMORY_GUIDANCE).toMatch(/longer knowledge/i);
+  });
+
+  it("states that the wiki persists across sessions", () => {
+    expect(MEMORY_GUIDANCE).toMatch(/persists across sessions/i);
+  });
 });
 
 describe("WIKI_GUIDANCE: cross-tool workflow only", () => {
@@ -87,6 +99,13 @@ describe("WIKI_GUIDANCE: cross-tool workflow only", () => {
     ]) {
       expect(text).not.toContain(divisionToken);
     }
+  });
+
+  it("carries no memory entry size limit (the division section owns it)", () => {
+    const text = WIKI_GUIDANCE.toLowerCase();
+    expect(text).not.toContain("1000");
+    expect(text).not.toContain("character");
+    expect(text).not.toContain("limit");
   });
 });
 

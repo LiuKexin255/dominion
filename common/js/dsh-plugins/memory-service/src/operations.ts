@@ -21,7 +21,9 @@
  *   failures propagate to the caller, which maps them to `memory failed: …`.
  *
  * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2,
- * specs/059-agent-v2-team-mode/spec.md FR-007.
+ * specs/059-agent-v2-team-mode/spec.md FR-007,
+ * specs/069-wiki-template-web/contracts/memory-content-limit.md §3 (the
+ * content rune limit preflight, single and batch paths).
  */
 
 import { createHash } from "node:crypto";
@@ -32,6 +34,15 @@ import { describeErr } from "./errors.js";
 /** The hermes memory tool's actions. */
 export const MEMORY_ACTIONS = ["add", "replace", "remove"] as const;
 export type MemoryAction = (typeof MEMORY_ACTIONS)[number];
+
+/**
+ * The maximum rune count of a single memory entry's content, aligned with the
+ * memory service's `domain.MaxMemoryContentRunes`
+ * (specs/069-wiki-template-web/contracts/memory-content-limit.md §1/§3). The
+ * tool preflight is the primary defence: it keeps an over-limit entry from
+ * failing mid-commit in a batch (which would leave part of the batch applied).
+ */
+export const MEMORY_CONTENT_MAX_RUNES = 1024;
 
 /** One batch operation (`operations` array item). */
 export interface MemoryOp {
@@ -141,6 +152,41 @@ const EMPTY_CONTENT_TEXT = "memory: content cannot be empty";
 const EMPTY_BATCH_TEXT = "memory: operations list is empty";
 
 /**
+ * Count Unicode code points, the rune measure the service bound uses
+ * (`utf8.RuneCountInString`; specs/069-wiki-template-web/contracts/
+ * memory-content-limit.md §1). A UTF-16 `.length` would double-count
+ * surrogate pairs and diverge from the service.
+ */
+function countRunes(value: string): number {
+  return [...value].length;
+}
+
+/**
+ * The over-limit domain sentence body, without its closing period. The
+ * single-entry result appends the sentence period itself
+ * ({@link contentLimitText}); the batch preflight passes this body to the
+ * batch error formatter, which appends the period as it does for every
+ * reason — so the composed text stays single-period in both shapes
+ * (specs/069-wiki-template-web/contracts/memory-content-limit.md §3).
+ */
+function contentLimitSentence(count: number): string {
+  return (
+    `memory: content exceeds ${MEMORY_CONTENT_MAX_RUNES} characters ` +
+    `(got ${count}). Keep entries short; store longer knowledge with wiki_write`
+  );
+}
+
+/**
+ * The domain result text for an over-limit entry: names the limit, the actual
+ * rune count, and where longer knowledge belongs. Never a tool error — the
+ * model is expected to shorten the entry or switch to the wiki
+ * (specs/069-wiki-template-web/contracts/memory-content-limit.md §3).
+ */
+function contentLimitText(count: number): string {
+  return `${contentLimitSentence(count)}.`;
+}
+
+/**
  * Apply a single `add`: generate the internal memory_id and CreateMemory; an
  * equivalent existing content is a SUCCESS, not an error (dedupe — hermes
  * "no duplicate added").
@@ -154,6 +200,10 @@ async function applyAdd(
   const text = content.trim();
   if (!text) {
     return EMPTY_CONTENT_TEXT;
+  }
+  const runes = countRunes(text);
+  if (runes > MEMORY_CONTENT_MAX_RUNES) {
+    return contentLimitText(runes);
   }
   const entries = await store.listMemories(template, session);
   if (entries.some((e) => e.content === text)) {
@@ -188,6 +238,10 @@ async function applyReplace(
   const text = content.trim();
   if (!text) {
     return EMPTY_CONTENT_TEXT + " (use action=remove to delete entries)";
+  }
+  const runes = countRunes(text);
+  if (runes > MEMORY_CONTENT_MAX_RUNES) {
+    return contentLimitText(runes);
   }
   const entries = await store.listMemories(template, session);
   const match = matchBySubstring(entries, oldText);
@@ -280,6 +334,10 @@ async function applyBatch(
       if (!content) {
         return batchError(pos, "content is required");
       }
+      const runes = countRunes(content);
+      if (runes > MEMORY_CONTENT_MAX_RUNES) {
+        return batchError(pos, contentLimitSentence(runes));
+      }
       // Idempotent dedupe: an identical entry already in the batch's view is
       // skipped, not failed (hermes apply_batch).
       if (working.some((e) => e.content === content)) {
@@ -299,6 +357,10 @@ async function applyBatch(
           pos,
           "content is required (use action=remove to delete)",
         );
+      }
+      const runes = countRunes(content);
+      if (runes > MEMORY_CONTENT_MAX_RUNES) {
+        return batchError(pos, contentLimitSentence(runes));
       }
       const match = matchBySubstring(working, oldText);
       if ("error" in match) {

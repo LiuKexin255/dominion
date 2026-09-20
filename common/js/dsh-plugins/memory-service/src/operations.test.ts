@@ -5,7 +5,9 @@
  * 0/multiple/all-identical hits, empty locator), deterministic memory_id
  * generation, and `applyMemoryCall` conversion (add dedupe + ALREADY_EXISTS
  * race, replace/remove location, single-vs-batch argument forms, two-phase
- * preflight/commit, commit-phase infrastructure failure).
+ * preflight/commit, commit-phase infrastructure failure), and the
+ * `MEMORY_CONTENT_MAX_RUNES` content preflight on the single and batch write
+ * paths (specs/069-wiki-template-web/contracts/memory-content-limit.md §3).
  *
  * DI pattern (style/javascript.md §测试): the storage client is a
  * `vi.fn()`-backed double — no module-level `vi.mock`.
@@ -16,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemoryEntry, MemoryStore } from "./client.js";
 import {
   MEMORY_ACTIONS,
+  MEMORY_CONTENT_MAX_RUNES,
   applyMemoryCall,
   generateMemoryId,
   matchBySubstring,
@@ -490,6 +493,131 @@ describe("applyMemoryCall — hermes conversion", () => {
         "applied before the failure",
       );
     });
+  });
+});
+
+describe("MEMORY_CONTENT_MAX_RUNES preflight (specs/069-wiki-template-web/contracts/memory-content-limit.md §3)", () => {
+  const OVER_LIMIT_TEXT =
+    `memory: content exceeds ${MEMORY_CONTENT_MAX_RUNES} characters ` +
+    `(got ${MEMORY_CONTENT_MAX_RUNES + 1}). Keep entries short; store longer ` +
+    "knowledge with wiki_write.";
+
+  let fake: ReturnType<typeof makeFakeStore>;
+
+  beforeEach(() => {
+    fake = makeFakeStore();
+  });
+
+  it("aligns the preflight bound with the service's rune limit", () => {
+    expect(MEMORY_CONTENT_MAX_RUNES).toBe(1024);
+  });
+
+  it("rejects an over-limit add with the domain text, before any store call", async () => {
+    const result = await call(fake, {
+      action: "add",
+      content: "a".repeat(MEMORY_CONTENT_MAX_RUNES + 1),
+    });
+
+    expect(result).toBe(OVER_LIMIT_TEXT);
+    expect(fake.listMemories).not.toHaveBeenCalled();
+    expect(fake.createMemory).not.toHaveBeenCalled();
+  });
+
+  it("accepts an add exactly at the 1024-rune boundary", async () => {
+    const content = "a".repeat(MEMORY_CONTENT_MAX_RUNES);
+    const result = await call(fake, { action: "add", content });
+
+    expect(result).toBe("memory added");
+    expect(fake.createMemory).toHaveBeenCalledWith(
+      TEMPLATE,
+      SESSION,
+      generateMemoryId(content),
+      content,
+    );
+  });
+
+  it("counts code points, not UTF-16 units (1024 astral runes pass)", async () => {
+    const content = "🙂".repeat(MEMORY_CONTENT_MAX_RUNES);
+    expect(content.length).toBe(MEMORY_CONTENT_MAX_RUNES * 2);
+
+    const result = await call(fake, { action: "add", content });
+
+    expect(result).toBe("memory added");
+    expect(fake.createMemory).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an over-limit replace with the domain text, before any store call", async () => {
+    fake = makeFakeStore([{ memory_id: "m1", content: "唯一条目" }]);
+    const result = await call(fake, {
+      action: "replace",
+      old_text: "唯一条目",
+      content: "中".repeat(MEMORY_CONTENT_MAX_RUNES + 1),
+    });
+
+    expect(result).toBe(
+      `memory: content exceeds ${MEMORY_CONTENT_MAX_RUNES} characters ` +
+        `(got ${MEMORY_CONTENT_MAX_RUNES + 1}). Keep entries short; store ` +
+        "longer knowledge with wiki_write.",
+    );
+    expect(fake.listMemories).not.toHaveBeenCalled();
+    expect(fake.updateMemory).not.toHaveBeenCalled();
+  });
+
+  it("accepts a replace exactly at the 1024-rune boundary", async () => {
+    fake = makeFakeStore([{ memory_id: "m1", content: "唯一条目" }]);
+    const content = "中".repeat(MEMORY_CONTENT_MAX_RUNES);
+    const result = await call(fake, {
+      action: "replace",
+      old_text: "唯一条目",
+      content,
+    });
+
+    expect(result).toBe("memory replaced");
+    expect(fake.updateMemory).toHaveBeenCalledWith(
+      TEMPLATE,
+      SESSION,
+      "m1",
+      content,
+    );
+  });
+
+  it("aborts the WHOLE batch on an over-limit entry — nothing is written", async () => {
+    fake = makeFakeStore([{ memory_id: "m1", content: "唯一条目" }]);
+    const result = await call(fake, {
+      operations: [
+        { action: "add", content: "合规条目" },
+        { action: "add", content: "a".repeat(MEMORY_CONTENT_MAX_RUNES + 1) },
+      ],
+    });
+
+    expect(result).toContain("operation 2 failed");
+    expect(result).toContain(OVER_LIMIT_TEXT);
+    expect(result).toContain("No operations were applied.");
+    expect(result).toContain("wiki_write. No operations were applied.");
+    expect(result).toContain("唯一条目");
+    expect(fake.createMemory).not.toHaveBeenCalled();
+    expect(fake.updateMemory).not.toHaveBeenCalled();
+    expect(fake.deleteMemory).not.toHaveBeenCalled();
+  });
+
+  it("aborts the batch on an over-limit replace too (rune count)", async () => {
+    fake = makeFakeStore([{ memory_id: "m1", content: "唯一条目" }]);
+    const result = await call(fake, {
+      operations: [
+        {
+          action: "replace",
+          old_text: "唯一条目",
+          content: "中".repeat(MEMORY_CONTENT_MAX_RUNES + 1),
+        },
+      ],
+    });
+
+    expect(result).toContain("operation 1 failed");
+    expect(result).toContain(
+      `content exceeds ${MEMORY_CONTENT_MAX_RUNES} characters ` +
+        `(got ${MEMORY_CONTENT_MAX_RUNES + 1})`,
+    );
+    expect(fake.updateMemory).not.toHaveBeenCalled();
   });
 });
 

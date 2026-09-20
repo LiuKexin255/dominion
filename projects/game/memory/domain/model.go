@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+	"unicode/utf8"
 )
 
 // Memory is one planner long-term memory entry of a session (spec
@@ -36,6 +37,12 @@ const DefaultListMemoriesPageSize = 100
 // MaxListMemoriesPageSize is the maximum allowed page size when listing memories.
 const MaxListMemoriesPageSize = 1000
 
+// MaxMemoryContentRunes is the maximum memory content length in runes
+// (specs/069-wiki-template-web/contracts/memory-content-limit.md §1). The rune
+// measure matches the wiki title bound, so the limit is fair across CJK and
+// Latin text.
+const MaxMemoryContentRunes = 1024
+
 // memoryIDPattern is the allowed character set for the memory resource id (the
 // {memory} name segment,
 // specs/039-planner-memory-calibration/contracts/memory-service-contract.md
@@ -51,6 +58,19 @@ var memoryIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 func ValidateMemoryID(id string) error {
 	if !memoryIDPattern.MatchString(id) {
 		return fmt.Errorf("memory_id %q must match %s", id, memoryIDPattern.String())
+	}
+	return nil
+}
+
+// ValidateMemoryContent reports whether content is at most
+// MaxMemoryContentRunes runes (specs/069-wiki-template-web/contracts/
+// memory-content-limit.md §2). The error names both the limit and the actual
+// rune count, so a direct REST/gRPC writer sees how much to trim. Empty
+// content is not a length violation: its semantics belong to the tool surface
+// (specs/069-wiki-template-web/contracts/memory-content-limit.md §1).
+func ValidateMemoryContent(content string) error {
+	if count := utf8.RuneCountInString(content); count > MaxMemoryContentRunes {
+		return fmt.Errorf("content exceeds maximum of %d runes (got %d)", MaxMemoryContentRunes, count)
 	}
 	return nil
 }
