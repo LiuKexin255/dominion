@@ -81,7 +81,7 @@ projects/game/
 │   ├── domain/model.go               # MaxMemoryContentRunes + ValidateMemoryContent
 │   ├── domain/wiki_repository.go     # 仓储接口签名去 session 维度
 │   └── runtime/mongo/wiki_repository.go  # 三个 template 维度索引 + 启动幂等清理（旧索引/旧文档）
-├── gateway/cmd/main.go               # 零改动（注册不变，路由随 proto 注解变更）
+├── gateway/cmd/main.go               # 仅注释终态化（T017）；注册不变，路由随 proto 注解变更
 ├── web/frontend/src/
 │   ├── api/wiki.ts                   # 新增：template 级 wiki REST 客户端
 │   ├── components/WikiView.tsx       # 新增：wiki 管理视图（PresetsView 模式）
