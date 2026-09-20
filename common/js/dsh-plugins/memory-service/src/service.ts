@@ -24,7 +24,10 @@
  *   `wikiWrite(agent, input)` are the wiki face over the same bound scope: the
  *   wiki store's own client, the same "unbound agent throws, infrastructure
  *   failure rejects, domain outcome is text" contract as `applyCall`
- *   (specs/068-wiki-round-pause/contracts/dsh-plugins.md §4).
+ *   (specs/069-wiki-template-web/contracts/dsh-plugins.md §2). The binding
+ *   carries `(template, session)` for memory, but every wiki call forwards only
+ *   `scope.template` — one wiki collection is shared by all sessions of a
+ *   template (specs/069-wiki-template-web/contracts/wiki-service.md §1).
  * - `snapshot(scope)` is the read face the snapshot section evaluates on each
  *   assembly; an unbound or empty snapshot reads as `undefined`/`""`, which
  *   the registry drops from the prompt.
@@ -76,19 +79,19 @@ export interface PlannerMemoryService {
    */
   applyCall(agent: Agent, args: MemoryToolArgs): Promise<string>;
   /**
-   * Search the scope's wiki titles for `query` (all matching titles, no
+   * Search the template's wiki titles for `query` (all matching titles, no
    * content). Domain outcomes return text; infrastructure failures reject.
    */
   wikiSearch(agent: Agent, query: string): Promise<string>;
   /**
-   * Retrieve the scope's wiki entries by exact title (content included).
+   * Retrieve the template's wiki entries by exact title (content included).
    * Domain outcomes return text; infrastructure failures reject.
    */
   wikiGet(agent: Agent, titles: string[]): Promise<string>;
   /**
-   * Upsert the scope's wiki entries by title (single XOR batch form; the batch
-   * is validated in a preflight and committed entry by entry). Domain outcomes
-   * return text; infrastructure failures reject.
+   * Upsert the template's wiki entries by title (single XOR batch form; the
+   * batch is validated in a preflight and committed entry by entry). Domain
+   * outcomes return text; infrastructure failures reject.
    */
   wikiWrite(agent: Agent, input: WikiWriteArgs): Promise<string>;
   /** The snapshot text bound to a scope key (agent), or undefined. */
@@ -136,8 +139,8 @@ export function createPlannerMemory(
   // The wiki face shares the memory binding: `load` owns the single
   // (template, session) registration, and every call — memory or wiki —
   // resolves it here, so an unbound agent fails loud rather than writing to a
-  // stale or guessed scope (specs/068-wiki-round-pause/contracts/dsh-plugins.md
-  // §4).
+  // stale or guessed scope (specs/069-wiki-template-web/contracts/dsh-plugins.md
+  // §2).
   const scopeOf = (agent: Agent): PlannerMemoryScope => {
     const scope = scopes.get(agent);
     if (scope === undefined) {
@@ -177,17 +180,17 @@ export function createPlannerMemory(
 
     async wikiSearch(agent: Agent, query: string): Promise<string> {
       const scope = scopeOf(agent);
-      return wikiSearch(wikiStore, scope.template, scope.session, query);
+      return wikiSearch(wikiStore, scope.template, query);
     },
 
     async wikiGet(agent: Agent, titles: string[]): Promise<string> {
       const scope = scopeOf(agent);
-      return wikiGet(wikiStore, scope.template, scope.session, titles);
+      return wikiGet(wikiStore, scope.template, titles);
     },
 
     async wikiWrite(agent: Agent, input: WikiWriteArgs): Promise<string> {
       const scope = scopeOf(agent);
-      return wikiWrite(wikiStore, scope.template, scope.session, input);
+      return wikiWrite(wikiStore, scope.template, input);
     },
 
     snapshot(scope: ScopeKey | undefined): string | undefined {

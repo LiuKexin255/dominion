@@ -313,22 +313,21 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
       searchWikis: vi.fn(
         async (
           _t: string,
-          _s: string,
           _query: string,
           options?: { pageSize?: number; pageToken?: string },
         ) => {
           if (!options?.pageToken) {
             return {
               wikis: [
-                { name: "templates/saolei/sessions/sess-1/wikis/w1", title: "开局-中心优先" },
-                { name: "templates/saolei/sessions/sess-1/wikis/w2", title: "开局-边角注意" },
+                { name: "templates/saolei/wikis/w1", title: "开局-中心优先" },
+                { name: "templates/saolei/wikis/w2", title: "开局-边角注意" },
               ],
               nextPageToken: "p2",
             };
           }
           return {
             wikis: [
-              { name: "templates/saolei/sessions/sess-1/wikis/w3", title: "开局-复盘要点" },
+              { name: "templates/saolei/wikis/w3", title: "开局-复盘要点" },
             ],
             nextPageToken: "",
           };
@@ -336,7 +335,7 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
       ),
       getWiki: vi.fn(),
       createWiki: vi.fn(
-        async (_t: string, _s: string, id: string, title: string, content: string) => {
+        async (_t: string, id: string, title: string, content: string) => {
           wikis.set(id, { title, content });
         },
       ),
@@ -347,10 +346,9 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
   function coreService(store: ReturnType<typeof makeFakeWikiStore>): WikiToolService {
     const wiki = store as unknown as WikiStore;
     return {
-      wikiSearch: (_agent, query) =>
-        coreWikiSearch(wiki, "saolei", "sess-1", query),
+      wikiSearch: (_agent, query) => coreWikiSearch(wiki, "saolei", query),
       wikiGet: async () => "wiki: 0 entry(ies) retrieved.",
-      wikiWrite: (_agent, input) => coreWikiWrite(wiki, "saolei", "sess-1", input),
+      wikiWrite: (_agent, input) => coreWikiWrite(wiki, "saolei", input),
     };
   }
 
@@ -367,14 +365,12 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
     expect(store.searchWikis).toHaveBeenNthCalledWith(
       1,
       "saolei",
-      "sess-1",
       "开局",
       { pageSize: 100, pageToken: undefined },
     );
     expect(store.searchWikis).toHaveBeenNthCalledWith(
       2,
       "saolei",
-      "sess-1",
       "开局",
       { pageSize: 100, pageToken: "p2" },
     );
@@ -408,13 +404,17 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
     expect(result.result).toContain("created: '新策略'");
     expect(store.createWiki).toHaveBeenCalledWith(
       "saolei",
-      "sess-1",
       expect.stringMatching(/^[a-f0-9]{32}$/),
       "新策略",
       "正文",
     );
     // The digest is derived from the normalized title (not sent to the model).
-    const [, , id] = store.createWiki.mock.calls[0] as [string, string, string];
+    const [, id] = store.createWiki.mock.calls[0] as [
+      string,
+      string,
+      string,
+      string,
+    ];
     expect(store.wikis.has(id)).toBe(true);
     expect(normalizeWikiTitle("新策略")).toBe("新策略");
   });
@@ -425,10 +425,10 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
     // default updateWiki), entry 2 is new (a create): only the second RPC
     // fails, so the first entry is already written when the error is raised.
     store.searchWikis.mockImplementation(
-      async (t: string, s: string, query: string) => ({
+      async (t: string, query: string) => ({
         wikis:
           normalizeWikiTitle(query) === normalizeWikiTitle("甲")
-            ? [{ name: wikiName(t, s, "w-existing"), title: "甲" }]
+            ? [{ name: wikiName(t, "w-existing"), title: "甲" }]
             : [],
         nextPageToken: "",
       }),

@@ -11,7 +11,7 @@
  *
  * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §1
  * (package and mount faces) / §2 (host service semantics);
- * specs/068-wiki-round-pause/contracts/dsh-plugins.md §4 (wiki face); the
+ * specs/069-wiki-template-web/contracts/dsh-plugins.md §2 (wiki face); the
  * storage follows the existing memory service (survey/
  * deepseek-harness-memory-plugin.md decision ⑤/§7 option A).
  */
@@ -62,11 +62,14 @@ export {
   wikiName,
 } from "./wiki-client.js";
 export type {
+  ListWikisOptions,
+  ListWikisPage,
   SearchWikisOptions,
   SearchWikisPage,
   Wiki,
   WikiStore,
   WikiSummary,
+  WikiUpdate,
 } from "./wiki-client.js";
 export {
   WIKI_CONTENT_MAX_BYTES,

@@ -2,7 +2,9 @@
  * PlannerMemoryService tests — the host service face: snapshot prefetch
  * (render + cache binding), fail-loud rejection, per-agent isolation, scope
  * cleanup on agent disposal, and the write path routing through the bound
- * `(template, session)` scope.
+ * `(template, session)` memory scope. The wiki face shares the binding but
+ * forwards only `scope.template`
+ * (specs/069-wiki-template-web/contracts/dsh-plugins.md §2).
  *
  * Pattern (style/javascript.md Mock convention): the storage client and the
  * agent context are injected doubles (`vi.fn()`); no module interception.
@@ -69,6 +71,8 @@ function makeFakeWikiStore() {
     getWiki: vi.fn(),
     createWiki: vi.fn(),
     updateWiki: vi.fn(),
+    deleteWiki: vi.fn(),
+    listWikis: vi.fn(),
   };
 }
 
@@ -365,12 +369,12 @@ describe("createPlannerMemory — wiki face", () => {
     return { service, wikiStore, ...scope };
   }
 
-  it("routes wikiSearch through the bound (template, session) scope", async () => {
+  it("routes wikiSearch through the bound template (no session dimension)", async () => {
     const { service, agent, wikiStore } = await loaded();
     wikiStore.searchWikis.mockResolvedValue({
       wikis: [
         {
-          name: "templates/saolei/sessions/sess-1/wikis/w1",
+          name: "templates/saolei/wikis/w1",
           title: "开局策略",
         },
       ],
@@ -382,31 +386,30 @@ describe("createPlannerMemory — wiki face", () => {
     expect(result).toContain("开局策略");
     expect(wikiStore.searchWikis).toHaveBeenCalledWith(
       "saolei",
-      "sess-1",
       "开局",
       { pageSize: 100, pageToken: undefined },
     );
   });
 
-  it("routes wikiGet and wikiWrite through the same bound scope", async () => {
+  it("routes wikiGet and wikiWrite through the same bound template", async () => {
     const { service, agent, wikiStore } = await loaded();
     wikiStore.searchWikis.mockResolvedValue({
       wikis: [
         {
-          name: "templates/saolei/sessions/sess-1/wikis/w1",
+          name: "templates/saolei/wikis/w1",
           title: "开局策略",
         },
       ],
       nextPageToken: "",
     });
     wikiStore.getWiki.mockResolvedValue({
-      name: "templates/saolei/sessions/sess-1/wikis/w1",
+      name: "templates/saolei/wikis/w1",
       title: "开局策略",
       content: "正文",
     });
 
     await expect(service.wikiGet(agent, ["开局策略"])).resolves.toContain("正文");
-    expect(wikiStore.getWiki).toHaveBeenCalledWith("saolei", "sess-1", "w1");
+    expect(wikiStore.getWiki).toHaveBeenCalledWith("saolei", "w1");
 
     wikiStore.searchWikis.mockResolvedValue({ wikis: [], nextPageToken: "" });
     await expect(
@@ -414,10 +417,41 @@ describe("createPlannerMemory — wiki face", () => {
     ).resolves.toContain("created: '新条目'");
     expect(wikiStore.createWiki).toHaveBeenCalledWith(
       "saolei",
-      "sess-1",
       expect.any(String),
       "新条目",
       "正文",
+    );
+  });
+
+  it("shares one wiki collection across sessions of the same template", async () => {
+    const store = makeFakeStore();
+    const wikiStore = makeFakeWikiStore();
+    const service = createService(store, wikiStore);
+    const sessionA = makeAgentScope("planner-a");
+    const sessionB = makeAgentScope("planner-b");
+    await service.load(sessionA.ctx, { template: "saolei", session: "sess-a" });
+    await service.load(sessionB.ctx, { template: "saolei", session: "sess-b" });
+    wikiStore.searchWikis.mockResolvedValue({ wikis: [], nextPageToken: "" });
+
+    await service.wikiWrite(sessionA.agent, {
+      title: "跨会话条目",
+      content: "正文",
+    });
+    await service.wikiSearch(sessionB.agent, "跨会话");
+
+    // Both sessions address the template alone: the session each planner is
+    // bound to never appears in a wiki store call
+    // (specs/069-wiki-template-web/contracts/dsh-plugins.md §2/§6).
+    expect(wikiStore.createWiki).toHaveBeenCalledWith(
+      "saolei",
+      expect.any(String),
+      "跨会话条目",
+      "正文",
+    );
+    expect(wikiStore.searchWikis).toHaveBeenCalledWith(
+      "saolei",
+      "跨会话",
+      { pageSize: 100, pageToken: undefined },
     );
   });
 

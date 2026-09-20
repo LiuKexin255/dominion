@@ -8,15 +8,12 @@
  * skips the resolver registration and the proto/fs read, so unit tests need no
  * module interception). All wiki orchestration (title normalization, exact
  * resolution, upsert, two-phase preflight/commit) lives in
- * `./wiki-operations.ts`; this
- * client is a pass-through for the four WikiService RPCs the plugin consumes
- * (specs/068-wiki-round-pause/contracts/dsh-plugins.md §4). Delete/List are
- * service API surface the agent tools never call — YAGNI
- * (specs/068-wiki-round-pause/data-model.md §7).
+ * `./wiki-operations.ts`; this client is a pass-through for the WikiService
+ * RPCs (specs/069-wiki-template-web/contracts/dsh-plugins.md §3).
  *
  * A wiki's `name`/`wiki_id` never reaches model-visible text
  * (specs/068-wiki-round-pause/spec.md FR-009); the name is used here only to
- * address GetWiki/UpdateWiki.
+ * address GetWiki/UpdateWiki/DeleteWiki.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -34,21 +31,18 @@ import {
 
 /**
  * Build a Wiki resource name per AIP-122:
- * `templates/{template}/sessions/{session}/wikis/{wikiId}`.
+ * `templates/{template}/wikis/{wikiId}`
+ * (specs/069-wiki-template-web/contracts/wiki-service.md §1).
  */
-export function wikiName(
-  template: string,
-  session: string,
-  wikiId: string,
-): string {
-  return `templates/${template}/sessions/${session}/wikis/${wikiId}`;
+export function wikiName(template: string, wikiId: string): string {
+  return `templates/${template}/wikis/${wikiId}`;
 }
 
 /**
  * Extract the `{wiki}` terminal segment of a Wiki resource name
- * (`templates/{template}/sessions/{session}/wikis/{wiki}`) — the symmetric
- * inverse of {@link wikiName}. The resource message carries no separate id
- * field, so the id is derived from the name here
+ * (`templates/{template}/wikis/{wiki}`) — the symmetric inverse of
+ * {@link wikiName}. The resource message carries no separate id field, so the
+ * id is derived from the name here
  * (specs/068-wiki-round-pause/spec.md FR-017).
  */
 export function parseWikiName(name: string): string {
@@ -64,7 +58,7 @@ export interface WikiSummary {
   readonly title: string;
 }
 
-/** One wiki entry with the full body, as returned by GetWiki. */
+/** One wiki entry with the full body, as returned by GetWiki/ListWikis. */
 export interface Wiki {
   readonly name: string;
   readonly title: string;
@@ -85,34 +79,61 @@ export interface SearchWikisPage {
   readonly nextPageToken: string;
 }
 
+/** Options for {@link WikiStore.listWikis}; undefined fields are not sent. */
+export interface ListWikisOptions {
+  /** AIP-158 page size; an undefined value is not sent. */
+  pageSize?: number;
+  /** AIP-158 page token from a previous call; an undefined value is not sent. */
+  pageToken?: string;
+}
+
+/** One ListWikis page: the full resources plus the continuation token. */
+export interface ListWikisPage {
+  readonly wikis: Wiki[];
+  readonly nextPageToken: string;
+}
+
 /**
- * The storage seam the wiki operations consume: exactly the four WikiService
- * RPCs the agent tools need (specs/068-wiki-round-pause/contracts/dsh-plugins.md
- * §4; Delete/List are service API surface — YAGNI). Implemented by
+ * The fields {@link WikiStore.updateWiki} can change. Only `content` is
+ * mutable through this seam: the wiki tool upserts by title and never
+ * re-addresses an existing entry
+ * (specs/068-wiki-round-pause/spec.md Assumptions).
+ */
+export interface WikiUpdate {
+  readonly content: string;
+}
+
+/**
+ * The storage seam the wiki operations consume
+ * (specs/069-wiki-template-web/contracts/dsh-plugins.md §3). Every method
+ * takes the template as its single scope parameter: a wiki collection is
+ * shared by every session working with that template. Implemented by
  * {@link WikiClient}; tests inject a `vi.fn()`-backed double instead of a live
  * gRPC client.
  */
 export interface WikiStore {
   searchWikis(
     template: string,
-    session: string,
     query: string,
     options?: SearchWikisOptions,
   ): Promise<SearchWikisPage>;
-  getWiki(template: string, session: string, wikiId: string): Promise<Wiki>;
+  getWiki(template: string, wikiId: string): Promise<Wiki>;
   createWiki(
     template: string,
-    session: string,
     wikiId: string,
     title: string,
     content: string,
   ): Promise<void>;
   updateWiki(
     template: string,
-    session: string,
     wikiId: string,
-    content: string,
+    wiki: WikiUpdate,
   ): Promise<void>;
+  deleteWiki(template: string, wikiId: string): Promise<void>;
+  listWikis(
+    template: string,
+    options?: ListWikisOptions,
+  ): Promise<ListWikisPage>;
 }
 
 /** One decoded `SearchWikisResponse.wikis[]` wire entry. */
@@ -169,15 +190,14 @@ export class WikiClient implements WikiStore {
   }
 
   /**
-   * Search wikis by normalized title substring (AIP-136 custom method). The
-   * query is sent as given — the service normalizes both sides (NFKC +
-   * lower-case); page_size/page_token are forwarded when present.
+   * Search the template's wikis by normalized title substring (AIP-136 custom
+   * method). The query is sent as given — the service normalizes both sides
+   * (NFKC + lower-case); page_size/page_token are forwarded when present.
    *
    * @throws {grpc.ServiceError} Propagates gRPC errors from the service.
    */
   async searchWikis(
     template: string,
-    session: string,
     query: string,
     options?: SearchWikisOptions,
   ): Promise<SearchWikisPage> {
@@ -187,7 +207,7 @@ export class WikiClient implements WikiStore {
       pageToken?: string;
       pageSize?: number;
     } = {
-      parent: `templates/${template}/sessions/${session}`,
+      parent: `templates/${template}`,
       query,
       pageToken: options?.pageToken || undefined,
     };
@@ -214,12 +234,8 @@ export class WikiClient implements WikiStore {
    *
    * @throws {grpc.ServiceError} NOT_FOUND when the wiki does not exist.
    */
-  async getWiki(
-    template: string,
-    session: string,
-    wikiId: string,
-  ): Promise<Wiki> {
-    const name = wikiName(template, session, wikiId);
+  async getWiki(template: string, wikiId: string): Promise<Wiki> {
+    const name = wikiName(template, wikiId);
     const response = await this.call<ListedWiki>(
       (client, metadata, options, cb) =>
         (client as any).getWiki({ name }, metadata, options, cb),
@@ -232,16 +248,15 @@ export class WikiClient implements WikiStore {
   }
 
   /**
-   * Create a wiki under a session (AIP-133). The request carries the resource
+   * Create a wiki under a template (AIP-133). The request carries the resource
    * EMBEDDED (`wiki.title`/`wiki.content`) plus the agent-generated
    * `wiki_id`; the name is derived from the parent and that id.
    *
-   * @throws {grpc.ServiceError} ALREADY_EXISTS when the scope already has a
+   * @throws {grpc.ServiceError} ALREADY_EXISTS when the template already has a
    *   title normalizing to this one.
    */
   async createWiki(
     template: string,
-    session: string,
     wikiId: string,
     title: string,
     content: string,
@@ -249,9 +264,9 @@ export class WikiClient implements WikiStore {
     await this.call<void>((client, metadata, options, cb) =>
       (client as any).createWiki(
         {
-          parent: `templates/${template}/sessions/${session}`,
+          parent: `templates/${template}`,
           wikiId,
-          wiki: { name: wikiName(template, session, wikiId), title, content },
+          wiki: { name: wikiName(template, wikiId), title, content },
         },
         metadata,
         options,
@@ -269,14 +284,13 @@ export class WikiClient implements WikiStore {
    */
   async updateWiki(
     template: string,
-    session: string,
     wikiId: string,
-    content: string,
+    wiki: WikiUpdate,
   ): Promise<void> {
     await this.call<void>((client, metadata, options, cb) =>
       (client as any).updateWiki(
         {
-          wiki: { name: wikiName(template, session, wikiId), content },
+          wiki: { name: wikiName(template, wikiId), content: wiki.content },
           updateMask: { paths: ["content"] },
         },
         metadata,
@@ -284,6 +298,63 @@ export class WikiClient implements WikiStore {
         cb,
       ),
     );
+  }
+
+  /**
+   * Delete a wiki by name (AIP-135).
+   *
+   * @throws {grpc.ServiceError} NOT_FOUND when the wiki does not exist.
+   */
+  async deleteWiki(template: string, wikiId: string): Promise<void> {
+    await this.call<void>((client, metadata, options, cb) =>
+      (client as any).deleteWiki(
+        { name: wikiName(template, wikiId) },
+        metadata,
+        options,
+        cb,
+      ),
+    );
+  }
+
+  /**
+   * List the template's wikis (AIP-132; full resources, content included).
+   * page_size/page_token are forwarded when present; the caller owns page
+   * walking.
+   *
+   * @throws {grpc.ServiceError} Propagates gRPC errors from the service.
+   */
+  async listWikis(
+    template: string,
+    options?: ListWikisOptions,
+  ): Promise<ListWikisPage> {
+    const request: {
+      parent: string;
+      pageToken?: string;
+      pageSize?: number;
+    } = {
+      parent: `templates/${template}`,
+      pageToken: options?.pageToken || undefined,
+    };
+    if (options?.pageSize !== undefined) {
+      request.pageSize = options.pageSize;
+    }
+    const response = await this.call<{
+      wikis: ListedWiki[];
+      nextPageToken?: string;
+    }>((client, metadata, callOptions, cb) =>
+      (client as any).listWikis(request, metadata, callOptions, cb),
+    );
+    const wikis: Wiki[] = [];
+    for (const wiki of response?.wikis ?? []) {
+      if (wiki.name != null && wiki.title != null) {
+        wikis.push({
+          name: wiki.name,
+          title: wiki.title,
+          content: wiki.content ?? "",
+        });
+      }
+    }
+    return { wikis, nextPageToken: response?.nextPageToken ?? "" };
   }
 
   /** Close the underlying gRPC client connection. */

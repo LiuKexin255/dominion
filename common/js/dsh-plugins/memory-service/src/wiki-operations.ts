@@ -8,6 +8,11 @@
  *   `wiki_get`/`wiki_write` resolve an entry by exact normalized title through
  *   SearchWikis. A wiki's resource `name`/`wiki_id` never reaches the result
  *   text (specs/068-wiki-round-pause/spec.md FR-009).
+ * - Every operation addresses one template's wiki collection — the template is
+ *   the single scope parameter
+ *   (specs/069-wiki-template-web/contracts/dsh-plugins.md §3), so knowledge
+ *   written from one session is visible to every other session of that
+ *   template.
  * - `wiki_search` folds `next_page_token` with `page_size` 100 to return every
  *   matching title; content never enters its result
  *   (specs/068-wiki-round-pause/contracts/dsh-plugins.md §2 item 2).
@@ -38,7 +43,7 @@ import type { WikiStore, WikiSummary } from "./wiki-client.js";
  * The `page_size` the search folding uses: the service maximum
  * (`projects/game/memory/handler/wiki_handler.go` `wikiPageSize` caps at the
  * domain maximum of 100, `specs/068-wiki-round-pause/contracts/wiki-service.md`
- * §4). A session's wiki set is bounded, so this reaches the end of the result
+ * §4). A template's wiki set is bounded, so this reaches the end of the result
  * in one or two round trips.
  */
 export const WIKI_SEARCH_PAGE_SIZE = 100;
@@ -119,14 +124,13 @@ export function generateWikiId(titleNorm: string): string {
 async function searchAll(
   store: WikiStore,
   template: string,
-  session: string,
   query: string,
 ): Promise<WikiSummary[]> {
   const hits: WikiSummary[] = [];
   const seen = new Set<string>();
   let pageToken: string | undefined;
   do {
-    const page = await store.searchWikis(template, session, query, {
+    const page = await store.searchWikis(template, query, {
       pageSize: WIKI_SEARCH_PAGE_SIZE,
       pageToken,
     });
@@ -151,11 +155,10 @@ async function searchAll(
 async function resolveWiki(
   store: WikiStore,
   template: string,
-  session: string,
   title: string,
 ): Promise<WikiSummary | undefined> {
   const norm = normalizeWikiTitle(title);
-  const hits = await searchAll(store, template, session, norm);
+  const hits = await searchAll(store, template, norm);
   return hits.find((hit) => normalizeWikiTitle(hit.title) === norm);
 }
 
@@ -167,14 +170,13 @@ async function resolveWiki(
 export async function wikiSearch(
   store: WikiStore,
   template: string,
-  session: string,
   query: string,
 ): Promise<string> {
   const trimmed = query.trim();
   if (trimmed.length === 0) {
     return WIKI_SEARCH_EMPTY_QUERY_TEXT;
   }
-  const hits = await searchAll(store, template, session, trimmed);
+  const hits = await searchAll(store, template, trimmed);
   if (hits.length === 0) {
     return (
       `wiki: no titles matched '${trimmed}'. ` +
@@ -196,7 +198,6 @@ export async function wikiSearch(
 export async function wikiGet(
   store: WikiStore,
   template: string,
-  session: string,
   titles: readonly string[],
 ): Promise<string> {
   if (titles.length === 0) {
@@ -212,12 +213,12 @@ export async function wikiGet(
       missing.push(title);
       continue;
     }
-    const hit = await resolveWiki(store, template, session, title);
+    const hit = await resolveWiki(store, template, title);
     if (hit === undefined) {
       missing.push(title);
       continue;
     }
-    const wiki = await store.getWiki(template, session, parseWikiName(hit.name));
+    const wiki = await store.getWiki(template, parseWikiName(hit.name));
     found.push(`## ${wiki.title}\n${wiki.content}`);
   }
 
@@ -266,7 +267,6 @@ function normalizeWriteEntries(args: WikiWriteArgs): WikiWriteEntry[] {
 export async function wikiWrite(
   store: WikiStore,
   template: string,
-  session: string,
   args: WikiWriteArgs,
 ): Promise<string> {
   const hasSingle = args.title != null || args.content != null;
@@ -327,7 +327,7 @@ export async function wikiWrite(
       writes.push({ kind: "update", id: plannedId, title, content });
       continue;
     }
-    const hit = await resolveWiki(store, template, session, title);
+    const hit = await resolveWiki(store, template, title);
     let id: string;
     let kind: "create" | "update";
     if (hit === undefined) {
@@ -351,13 +351,14 @@ export async function wikiWrite(
       if (write.kind === "create") {
         await store.createWiki(
           template,
-          session,
           write.id,
           write.title,
           write.content,
         );
       } else {
-        await store.updateWiki(template, session, write.id, write.content);
+        await store.updateWiki(template, write.id, {
+          content: write.content,
+        });
       }
     } catch (err) {
       if (written.length === 0) {

@@ -3,10 +3,10 @@
  * injected gRPC client, so every RPC test passes a `vi.fn()`-backed fake and
  * needs no module-level `vi.mock` (style/javascript.md §测试).
  *
- * Coverage: name construction/parsing, the four request shapes against the
- * WikiService contract (specs/068-wiki-round-pause/contracts/dsh-plugins.md §4,
- * specs/068-wiki-round-pause/contracts/wiki-service.md §2), the lightweight
- * `{name, title}` search decoding, and error propagation.
+ * Coverage: name construction/parsing, the request shapes against the
+ * WikiService contract (specs/069-wiki-template-web/contracts/dsh-plugins.md §3,
+ * specs/069-wiki-template-web/contracts/wiki-service.md §2), the lightweight
+ * `{name, title}` search decoding, list decoding, and error propagation.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,8 @@ interface FakeRpc {
   getWiki: ReturnType<typeof vi.fn>;
   createWiki: ReturnType<typeof vi.fn>;
   updateWiki: ReturnType<typeof vi.fn>;
+  deleteWiki: ReturnType<typeof vi.fn>;
+  listWikis: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
 }
 
@@ -31,6 +33,8 @@ function makeFakeClient(): FakeRpc {
     getWiki: vi.fn(),
     createWiki: vi.fn(),
     updateWiki: vi.fn(),
+    deleteWiki: vi.fn(),
+    listWikis: vi.fn(),
     close: vi.fn(),
   };
 }
@@ -61,19 +65,17 @@ describe("WikiClient", () => {
   });
 
   describe("wikiName/parseWikiName (construction and parsing)", () => {
-    it("builds templates/{template}/sessions/{session}/wikis/{wikiId}", () => {
-      expect(wikiName("saolei", "sess-1", "wiki-abc")).toBe(
-        "templates/saolei/sessions/sess-1/wikis/wiki-abc",
+    it("builds templates/{template}/wikis/{wikiId}", () => {
+      expect(wikiName("saolei", "wiki-abc")).toBe(
+        "templates/saolei/wikis/wiki-abc",
       );
     });
 
     it("parseWikiName inverts wikiName (round trip)", () => {
-      expect(
-        parseWikiName("templates/saolei/sessions/sess-1/wikis/wiki-abc"),
-      ).toBe("wiki-abc");
-      expect(parseWikiName(wikiName("saolei", "sess-1", "wiki-abc"))).toBe(
+      expect(parseWikiName("templates/saolei/wikis/wiki-abc")).toBe(
         "wiki-abc",
       );
+      expect(parseWikiName(wikiName("saolei", "wiki-abc"))).toBe("wiki-abc");
     });
   });
 
@@ -82,7 +84,7 @@ describe("WikiClient", () => {
       respond(fake.searchWikis, {
         wikis: [
           {
-            name: "templates/saolei/sessions/sess-1/wikis/w1",
+            name: "templates/saolei/wikis/w1",
             title: "开局策略",
           },
         ],
@@ -90,7 +92,7 @@ describe("WikiClient", () => {
       });
       const client = new WikiClient(fake as never);
 
-      const page = await client.searchWikis("saolei", "sess-1", "开局", {
+      const page = await client.searchWikis("saolei", "开局", {
         pageSize: 100,
         pageToken: "p1",
       });
@@ -98,7 +100,7 @@ describe("WikiClient", () => {
       expect(page).toEqual({
         wikis: [
           {
-            name: "templates/saolei/sessions/sess-1/wikis/w1",
+            name: "templates/saolei/wikis/w1",
             title: "开局策略",
           },
         ],
@@ -107,7 +109,7 @@ describe("WikiClient", () => {
       expect(fake.searchWikis).toHaveBeenCalledTimes(1);
       expect(fake.searchWikis).toHaveBeenCalledWith(
         {
-          parent: "templates/saolei/sessions/sess-1",
+          parent: "templates/saolei",
           query: "开局",
           pageToken: "p1",
           pageSize: 100,
@@ -122,12 +124,12 @@ describe("WikiClient", () => {
       respond(fake.searchWikis, { wikis: [], nextPageToken: "" });
       const client = new WikiClient(fake as never);
 
-      const page = await client.searchWikis("saolei", "sess-1", "x");
+      const page = await client.searchWikis("saolei", "x");
 
       expect(page).toEqual({ wikis: [], nextPageToken: "" });
       expect(fake.searchWikis).toHaveBeenCalledWith(
         {
-          parent: "templates/saolei/sessions/sess-1",
+          parent: "templates/saolei",
           query: "x",
           pageToken: undefined,
         },
@@ -140,18 +142,18 @@ describe("WikiClient", () => {
     it("drops entries missing name or title (wire-shape guard)", async () => {
       respond(fake.searchWikis, {
         wikis: [
-          { name: "templates/saolei/sessions/sess-1/wikis/w1", title: "甲" },
+          { name: "templates/saolei/wikis/w1", title: "甲" },
           { title: "无name" },
-          { name: "templates/saolei/sessions/sess-1/wikis/w2" },
+          { name: "templates/saolei/wikis/w2" },
         ],
         nextPageToken: "",
       });
       const client = new WikiClient(fake as never);
 
-      const page = await client.searchWikis("saolei", "sess-1", "x");
+      const page = await client.searchWikis("saolei", "x");
 
       expect(page.wikis).toEqual([
-        { name: "templates/saolei/sessions/sess-1/wikis/w1", title: "甲" },
+        { name: "templates/saolei/wikis/w1", title: "甲" },
       ]);
     });
 
@@ -163,30 +165,30 @@ describe("WikiClient", () => {
       );
       const client = new WikiClient(fake as never);
 
-      await expect(
-        client.searchWikis("saolei", "sess-1", "x"),
-      ).rejects.toThrow("memory service unavailable");
+      await expect(client.searchWikis("saolei", "x")).rejects.toThrow(
+        "memory service unavailable",
+      );
     });
   });
 
   describe("getWiki", () => {
     it("calls GetWiki by name and returns the content", async () => {
       respond(fake.getWiki, {
-        name: "templates/saolei/sessions/sess-1/wikis/w1",
+        name: "templates/saolei/wikis/w1",
         title: "开局策略",
         content: "正文",
       });
       const client = new WikiClient(fake as never);
 
-      const wiki = await client.getWiki("saolei", "sess-1", "w1");
+      const wiki = await client.getWiki("saolei", "w1");
 
       expect(wiki).toEqual({
-        name: "templates/saolei/sessions/sess-1/wikis/w1",
+        name: "templates/saolei/wikis/w1",
         title: "开局策略",
         content: "正文",
       });
       expect(fake.getWiki).toHaveBeenCalledWith(
-        { name: "templates/saolei/sessions/sess-1/wikis/w1" },
+        { name: "templates/saolei/wikis/w1" },
         expect.any(Object),
         expect.any(Object),
         expect.any(Function),
@@ -201,7 +203,7 @@ describe("WikiClient", () => {
       );
       const client = new WikiClient(fake as never);
 
-      await expect(client.getWiki("saolei", "sess-1", "w1")).rejects.toThrow(
+      await expect(client.getWiki("saolei", "w1")).rejects.toThrow(
         "wiki not found",
       );
     });
@@ -212,15 +214,15 @@ describe("WikiClient", () => {
       respond(fake.createWiki, {});
       const client = new WikiClient(fake as never);
 
-      await client.createWiki("saolei", "sess-1", "w1", "开局策略", "正文");
+      await client.createWiki("saolei", "w1", "开局策略", "正文");
 
       expect(fake.createWiki).toHaveBeenCalledTimes(1);
       expect(fake.createWiki).toHaveBeenCalledWith(
         {
-          parent: "templates/saolei/sessions/sess-1",
+          parent: "templates/saolei",
           wikiId: "w1",
           wiki: {
-            name: "templates/saolei/sessions/sess-1/wikis/w1",
+            name: "templates/saolei/wikis/w1",
             title: "开局策略",
             content: "正文",
           },
@@ -240,7 +242,7 @@ describe("WikiClient", () => {
       const client = new WikiClient(fake as never);
 
       await expect(
-        client.createWiki("saolei", "sess-1", "w1", "标题", "正文"),
+        client.createWiki("saolei", "w1", "标题", "正文"),
       ).rejects.toThrow("wiki already exists");
     });
   });
@@ -250,12 +252,12 @@ describe("WikiClient", () => {
       respond(fake.updateWiki, {});
       const client = new WikiClient(fake as never);
 
-      await client.updateWiki("saolei", "sess-1", "w1", "新正文");
+      await client.updateWiki("saolei", "w1", { content: "新正文" });
 
       expect(fake.updateWiki).toHaveBeenCalledWith(
         {
           wiki: {
-            name: "templates/saolei/sessions/sess-1/wikis/w1",
+            name: "templates/saolei/wikis/w1",
             content: "新正文",
           },
           updateMask: { paths: ["content"] },
@@ -263,6 +265,139 @@ describe("WikiClient", () => {
         expect.any(Object),
         expect.any(Object),
         expect.any(Function),
+      );
+    });
+
+    it("rejects with the gRPC error (NOT_FOUND)", async () => {
+      respond(
+        fake.updateWiki,
+        null,
+        Object.assign(new Error("wiki not found"), { code: 5 }),
+      );
+      const client = new WikiClient(fake as never);
+
+      await expect(
+        client.updateWiki("saolei", "w1", { content: "新正文" }),
+      ).rejects.toThrow("wiki not found");
+    });
+  });
+
+  describe("deleteWiki", () => {
+    it("calls DeleteWiki by name (AIP-135 shape)", async () => {
+      respond(fake.deleteWiki, {});
+      const client = new WikiClient(fake as never);
+
+      await client.deleteWiki("saolei", "w1");
+
+      expect(fake.deleteWiki).toHaveBeenCalledWith(
+        { name: "templates/saolei/wikis/w1" },
+        expect.any(Object),
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
+    it("rejects with the gRPC error (NOT_FOUND)", async () => {
+      respond(
+        fake.deleteWiki,
+        null,
+        Object.assign(new Error("wiki not found"), { code: 5 }),
+      );
+      const client = new WikiClient(fake as never);
+
+      await expect(client.deleteWiki("saolei", "w1")).rejects.toThrow(
+        "wiki not found",
+      );
+    });
+  });
+
+  describe("listWikis", () => {
+    it("returns full resources and forwards pageSize/pageToken", async () => {
+      respond(fake.listWikis, {
+        wikis: [
+          {
+            name: "templates/saolei/wikis/w1",
+            title: "开局策略",
+            content: "正文",
+          },
+        ],
+        nextPageToken: "p2",
+      });
+      const client = new WikiClient(fake as never);
+
+      const page = await client.listWikis("saolei", {
+        pageSize: 20,
+        pageToken: "p1",
+      });
+
+      expect(page).toEqual({
+        wikis: [
+          {
+            name: "templates/saolei/wikis/w1",
+            title: "开局策略",
+            content: "正文",
+          },
+        ],
+        nextPageToken: "p2",
+      });
+      expect(fake.listWikis).toHaveBeenCalledWith(
+        {
+          parent: "templates/saolei",
+          pageToken: "p1",
+          pageSize: 20,
+        },
+        expect.any(Object),
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
+    it("omits pageSize/pageToken when they are not supplied", async () => {
+      respond(fake.listWikis, { wikis: [], nextPageToken: "" });
+      const client = new WikiClient(fake as never);
+
+      const page = await client.listWikis("saolei");
+
+      expect(page).toEqual({ wikis: [], nextPageToken: "" });
+      expect(fake.listWikis).toHaveBeenCalledWith(
+        {
+          parent: "templates/saolei",
+          pageToken: undefined,
+        },
+        expect.any(Object),
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
+    it("drops entries missing name or title and defaults missing content", async () => {
+      respond(fake.listWikis, {
+        wikis: [
+          { name: "templates/saolei/wikis/w1", title: "甲" },
+          { title: "无name" },
+          { name: "templates/saolei/wikis/w2", content: "只有正文" },
+        ],
+        nextPageToken: "",
+      });
+      const client = new WikiClient(fake as never);
+
+      const page = await client.listWikis("saolei");
+
+      expect(page.wikis).toEqual([
+        { name: "templates/saolei/wikis/w1", title: "甲", content: "" },
+      ]);
+    });
+
+    it("rejects with the gRPC error", async () => {
+      respond(
+        fake.listWikis,
+        null,
+        Object.assign(new Error("memory service unavailable"), { code: 14 }),
+      );
+      const client = new WikiClient(fake as never);
+
+      await expect(client.listWikis("saolei")).rejects.toThrow(
+        "memory service unavailable",
       );
     });
   });

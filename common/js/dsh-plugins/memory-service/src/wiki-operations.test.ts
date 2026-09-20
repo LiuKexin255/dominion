@@ -5,7 +5,7 @@
  * text-guidance outcomes. The storage is a `vi.fn()`-backed in-memory fake (DI
  * seam — style/javascript.md §测试); no module interception.
  *
- * Contract: specs/068-wiki-round-pause/contracts/dsh-plugins.md §2;
+ * Contract: specs/069-wiki-template-web/contracts/dsh-plugins.md §3;
  * specs/068-wiki-round-pause/data-model.md §5-7.
  */
 
@@ -30,7 +30,6 @@ import {
 } from "./wiki-operations.js";
 
 const TEMPLATE = "saolei";
-const SESSION = "sess-1";
 
 /** In-memory WikiStore double with the service's normalized-substring search. */
 function makeFakeWikiStore() {
@@ -38,33 +37,37 @@ function makeFakeWikiStore() {
   return {
     wikis,
     createWiki: vi.fn(
-      async (_t: string, _s: string, id: string, title: string, content: string) => {
+      async (_t: string, id: string, title: string, content: string) => {
         wikis.set(id, { title, content });
       },
     ),
     updateWiki: vi.fn(
-      async (_t: string, _s: string, id: string, content: string) => {
-        const wiki = wikis.get(id);
-        if (wiki === undefined) {
+      async (_t: string, id: string, wiki: { content: string }) => {
+        const entry = wikis.get(id);
+        if (entry === undefined) {
           throw Object.assign(new Error(`wiki not found: ${id}`), { code: 5 });
         }
-        wiki.content = content;
+        entry.content = wiki.content;
       },
     ),
-    getWiki: vi.fn(async (t: string, s: string, id: string) => {
+    getWiki: vi.fn(async (t: string, id: string) => {
       const wiki = wikis.get(id);
       if (wiki === undefined) {
         throw Object.assign(new Error(`wiki not found: ${id}`), { code: 5 });
       }
-      return { name: wikiName(t, s, id), title: wiki.title, content: wiki.content };
+      return { name: wikiName(t, id), title: wiki.title, content: wiki.content };
     }),
-    searchWikis: vi.fn(async (t: string, s: string, query: string) => {
+    searchWikis: vi.fn(async (t: string, query: string) => {
       const q = normalizeWikiTitle(query);
       const hits = [...wikis.entries()]
         .filter(([, wiki]) => normalizeWikiTitle(wiki.title).includes(q))
-        .map(([id, wiki]) => ({ name: wikiName(t, s, id), title: wiki.title }));
+        .map(([id, wiki]) => ({ name: wikiName(t, id), title: wiki.title }));
       return { wikis: hits, nextPageToken: "" };
     }),
+    deleteWiki: vi.fn(async (_t: string, id: string) => {
+      wikis.delete(id);
+    }),
+    listWikis: vi.fn(async () => ({ wikis: [], nextPageToken: "" })),
   };
 }
 
@@ -76,22 +79,19 @@ function seed(store: FakeStore, title: string, content: string): string {
   return id;
 }
 
-function search(
-  store: FakeStore,
-  query: string,
-): Promise<string> {
-  return wikiSearch(store as unknown as WikiStore, TEMPLATE, SESSION, query);
+function search(store: FakeStore, query: string): Promise<string> {
+  return wikiSearch(store as unknown as WikiStore, TEMPLATE, query);
 }
 
 function get(store: FakeStore, titles: string[]): Promise<string> {
-  return wikiGet(store as unknown as WikiStore, TEMPLATE, SESSION, titles);
+  return wikiGet(store as unknown as WikiStore, TEMPLATE, titles);
 }
 
 function write(
   store: FakeStore,
-  args: Parameters<typeof wikiWrite>[3],
+  args: Parameters<typeof wikiWrite>[2],
 ): Promise<string> {
-  return wikiWrite(store as unknown as WikiStore, TEMPLATE, SESSION, args);
+  return wikiWrite(store as unknown as WikiStore, TEMPLATE, args);
 }
 
 describe("normalizeWikiTitle / generateWikiId", () => {
@@ -123,21 +123,20 @@ describe("wikiSearch", () => {
     store.searchWikis.mockImplementation(
       async (
         t: string,
-        s: string,
         _query: string,
         options?: { pageSize?: number; pageToken?: string },
       ) => {
         if (!options?.pageToken) {
           return {
             wikis: [
-              { name: wikiName(t, s, "w1"), title: "开局-中心优先" },
-              { name: wikiName(t, s, "w2"), title: "开局-边角注意" },
+              { name: wikiName(t, "w1"), title: "开局-中心优先" },
+              { name: wikiName(t, "w2"), title: "开局-边角注意" },
             ],
             nextPageToken: "p2",
           };
         }
         return {
-          wikis: [{ name: wikiName(t, s, "w3"), title: "开局-复盘要点" }],
+          wikis: [{ name: wikiName(t, "w3"), title: "开局-复盘要点" }],
           nextPageToken: "",
         };
       },
@@ -149,14 +148,12 @@ describe("wikiSearch", () => {
     expect(store.searchWikis).toHaveBeenNthCalledWith(
       1,
       TEMPLATE,
-      SESSION,
       "开局",
       { pageSize: WIKI_SEARCH_PAGE_SIZE, pageToken: undefined },
     );
     expect(store.searchWikis).toHaveBeenNthCalledWith(
       2,
       TEMPLATE,
-      SESSION,
       "开局",
       { pageSize: WIKI_SEARCH_PAGE_SIZE, pageToken: "p2" },
     );
@@ -167,7 +164,7 @@ describe("wikiSearch", () => {
   });
 
   it("deduplicates a title re-surfaced across pages by resource name", async () => {
-    const hit = { name: wikiName(TEMPLATE, SESSION, "w1"), title: "重复标题" };
+    const hit = { name: wikiName(TEMPLATE, "w1"), title: "重复标题" };
     store.searchWikis
       .mockResolvedValueOnce({ wikis: [hit], nextPageToken: "p2" })
       .mockResolvedValueOnce({ wikis: [hit], nextPageToken: "" });
@@ -264,7 +261,6 @@ describe("wikiWrite", () => {
 
     expect(store.createWiki).toHaveBeenCalledWith(
       TEMPLATE,
-      SESSION,
       generateWikiId(normalizeWikiTitle("新策略")),
       "新策略",
       "正文",
@@ -282,9 +278,8 @@ describe("wikiWrite", () => {
     expect(store.createWiki).not.toHaveBeenCalled();
     expect(store.updateWiki).toHaveBeenCalledWith(
       TEMPLATE,
-      SESSION,
       generateWikiId(normalizeWikiTitle("策略Ａ")),
-      "新正文",
+      { content: "新正文" },
     );
     expect(store.wikis.size).toBe(1);
     expect(result).toContain("updated: '策略a'");
@@ -447,5 +442,59 @@ describe("wikiWrite", () => {
 
     expect(error).toBe(failure);
     expect((error as Error).message).not.toContain("entries written");
+  });
+});
+
+describe("cross-session template scope", () => {
+  // Two planners of the same template working in different sessions. The
+  // service forwards only `scope.template` to the operation core
+  // (specs/069-wiki-template-web/contracts/dsh-plugins.md §2), so both drive
+  // the one template-addressed collection — the cross-session semantics of
+  // specs/069-wiki-template-web/quickstart.md 场景 3.
+  const sessionA = { template: "saolei", session: "sess-a" };
+  const sessionB = { template: "saolei", session: "sess-b" };
+
+  it("shares one collection across sessions of the same template", async () => {
+    const store = makeFakeWikiStore();
+    const wiki = store as unknown as WikiStore;
+
+    await wikiWrite(wiki, sessionA.template, {
+      title: "跨会话知识",
+      content: "正文",
+    });
+    const result = await wikiSearch(wiki, sessionB.template, "跨会话");
+
+    expect(result).toContain("跨会话知识");
+    expect(store.createWiki).toHaveBeenCalledWith(
+      sessionA.template,
+      generateWikiId(normalizeWikiTitle("跨会话知识")),
+      "跨会话知识",
+      "正文",
+    );
+    expect(store.searchWikis).toHaveBeenCalledWith(
+      sessionB.template,
+      "跨会话",
+      { pageSize: WIKI_SEARCH_PAGE_SIZE, pageToken: undefined },
+    );
+  });
+
+  it("never addresses a session: both callers pass the template alone", async () => {
+    const store = makeFakeWikiStore();
+    const wiki = store as unknown as WikiStore;
+
+    await wikiWrite(wiki, sessionA.template, {
+      title: "甲",
+      content: "正文甲",
+    });
+    await wikiSearch(wiki, sessionB.template, "甲");
+
+    const addressedTemplates = [
+      ...store.createWiki.mock.calls.map((call) => call[0]),
+      ...store.searchWikis.mock.calls.map((call) => call[0]),
+    ];
+    expect(addressedTemplates.length).toBeGreaterThan(0);
+    for (const template of addressedTemplates) {
+      expect(template).toBe(sessionA.template);
+    }
   });
 });
