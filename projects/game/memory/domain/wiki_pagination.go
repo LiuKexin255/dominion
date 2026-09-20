@@ -6,13 +6,13 @@ import (
 	"fmt"
 )
 
-// WikiSearchCursor is the decoded SearchWikis page token: the normalized query
+// WikiSearchPageToken is the decoded SearchWikis page token: the normalized query
 // the token was issued under and the number of leading hits already returned
 // (the offset of the next page). Search results are ordered deterministically
 // (exact > prefix > substring, then normalized title ascending), so the offset
 // identifies the next page within that fixed result sequence (spec 068 FR-004;
 // specs/068-wiki-round-pause/contracts/wiki-service.md §4.4).
-type WikiSearchCursor struct {
+type WikiSearchPageToken struct {
 	Query  string `json:"q"`
 	Offset int    `json:"offset"`
 }
@@ -22,7 +22,7 @@ type WikiSearchCursor struct {
 // nil cursor, an empty query or a non-positive offset yields an empty token —
 // a hand-built half cursor fails closed instead of minting a token that can
 // never decode (AIP-158 opacity: https://google.aip.dev/158).
-func EncodeWikiSearchPageToken(cursor *WikiSearchCursor) string {
+func EncodeWikiSearchPageToken(cursor *WikiSearchPageToken) string {
 	if cursor == nil || cursor.Query == "" || cursor.Offset <= 0 {
 		return ""
 	}
@@ -38,7 +38,7 @@ func EncodeWikiSearchPageToken(cursor *WikiSearchCursor) string {
 // query rejects with ErrInvalidPageToken → INVALID_ARGUMENT. Empty tokens and
 // empty queries are rejected the same way (spec 068 FR-004;
 // specs/068-wiki-round-pause/contracts/wiki-service.md §4.4).
-func DecodeWikiSearchPageToken(token, query string) (*WikiSearchCursor, error) {
+func DecodeWikiSearchPageToken(token, query string) (*WikiSearchPageToken, error) {
 	if token == "" {
 		return nil, fmt.Errorf("%w: empty token", ErrInvalidPageToken)
 	}
@@ -46,7 +46,7 @@ func DecodeWikiSearchPageToken(token, query string) (*WikiSearchCursor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid base64: %v", ErrInvalidPageToken, err)
 	}
-	var cursor WikiSearchCursor
+	var cursor WikiSearchPageToken
 	if err := json.Unmarshal(b, &cursor); err != nil {
 		return nil, fmt.Errorf("%w: invalid json: %v", ErrInvalidPageToken, err)
 	}
@@ -63,19 +63,19 @@ func DecodeWikiSearchPageToken(token, query string) (*WikiSearchCursor, error) {
 	return &cursor, nil
 }
 
-// WikiListCursor is the decoded ListWikis page token: the wiki id to resume
+// WikiListPageToken is the decoded ListWikis page token: the wiki id to resume
 // after (exclusive) in the fixed wiki_id ascending order. ListWikis has no
 // order_by, so the token carries no request context — its shape is independent
 // of the search token (spec 068 FR-003;
 // specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
-type WikiListCursor struct {
+type WikiListPageToken struct {
 	WikiID string `json:"wiki_id"`
 }
 
 // EncodeWikiListPageToken serializes a list cursor into a base64url
 // (NoPadding) JSON object {"wiki_id":...}. A nil cursor or an empty wiki id
 // yields an empty token (fail closed, like EncodeWikiSearchPageToken).
-func EncodeWikiListPageToken(cursor *WikiListCursor) string {
+func EncodeWikiListPageToken(cursor *WikiListPageToken) string {
 	if cursor == nil || cursor.WikiID == "" {
 		return ""
 	}
@@ -85,7 +85,7 @@ func EncodeWikiListPageToken(cursor *WikiListCursor) string {
 
 // DecodeWikiListPageToken decodes a ListWikis page token; every failure wraps
 // ErrInvalidPageToken → INVALID_ARGUMENT (AIP-158: https://google.aip.dev/158).
-func DecodeWikiListPageToken(token string) (*WikiListCursor, error) {
+func DecodeWikiListPageToken(token string) (*WikiListPageToken, error) {
 	if token == "" {
 		return nil, fmt.Errorf("%w: empty token", ErrInvalidPageToken)
 	}
@@ -93,7 +93,7 @@ func DecodeWikiListPageToken(token string) (*WikiListCursor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid base64: %v", ErrInvalidPageToken, err)
 	}
-	var cursor WikiListCursor
+	var cursor WikiListPageToken
 	if err := json.Unmarshal(b, &cursor); err != nil {
 		return nil, fmt.Errorf("%w: invalid json: %v", ErrInvalidPageToken, err)
 	}

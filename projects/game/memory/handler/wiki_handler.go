@@ -201,7 +201,7 @@ func (h *WikiHandler) ListWikis(ctx context.Context, req *game.ListWikisRequest)
 		return nil, err
 	}
 
-	var cursor *domain.WikiListCursor
+	var cursor *domain.WikiListPageToken
 	if token := req.GetPageToken(); token != "" {
 		cursor, err = domain.DecodeWikiListPageToken(token)
 		if err != nil {
@@ -291,7 +291,7 @@ func (h *WikiHandler) SearchWikis(ctx context.Context, req *game.SearchWikisRequ
 
 	nextPageToken := ""
 	if end < len(matches) {
-		nextPageToken = domain.EncodeWikiSearchPageToken(&domain.WikiSearchCursor{Query: query, Offset: end})
+		nextPageToken = domain.EncodeWikiSearchPageToken(&domain.WikiSearchPageToken{Query: query, Offset: end})
 	}
 
 	summaries := make([]*game.WikiSummary, 0, len(page))

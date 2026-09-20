@@ -16,13 +16,13 @@ func wikiTokenPayload(raw string) string {
 func TestEncodeWikiSearchPageToken(t *testing.T) {
 	tests := []struct {
 		name   string
-		cursor *WikiSearchCursor
+		cursor *WikiSearchPageToken
 		want   string
 	}{
 		{name: "nil cursor fails closed", cursor: nil, want: ""},
-		{name: "empty query fails closed", cursor: &WikiSearchCursor{Query: "", Offset: 5}, want: ""},
-		{name: "zero offset fails closed", cursor: &WikiSearchCursor{Query: "abc", Offset: 0}, want: ""},
-		{name: "negative offset fails closed", cursor: &WikiSearchCursor{Query: "abc", Offset: -1}, want: ""},
+		{name: "empty query fails closed", cursor: &WikiSearchPageToken{Query: "", Offset: 5}, want: ""},
+		{name: "zero offset fails closed", cursor: &WikiSearchPageToken{Query: "abc", Offset: 0}, want: ""},
+		{name: "negative offset fails closed", cursor: &WikiSearchPageToken{Query: "abc", Offset: -1}, want: ""},
 	}
 
 	for _, tt := range tests {
@@ -40,7 +40,7 @@ func TestEncodeWikiSearchPageToken(t *testing.T) {
 
 func TestWikiSearchPageTokenWireShape(t *testing.T) {
 	// given
-	cursor := &WikiSearchCursor{Query: "策略", Offset: 20}
+	cursor := &WikiSearchPageToken{Query: "策略", Offset: 20}
 
 	// when
 	token := EncodeWikiSearchPageToken(cursor)
@@ -104,7 +104,7 @@ func TestDecodeWikiSearchPageToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			token := EncodeWikiSearchPageToken(&WikiSearchCursor{Query: tt.tokenQuery, Offset: tt.offset})
+			token := EncodeWikiSearchPageToken(&WikiSearchPageToken{Query: tt.tokenQuery, Offset: tt.offset})
 
 			// when
 			cursor, err := DecodeWikiSearchPageToken(token, tt.decodeQuery)
@@ -152,11 +152,11 @@ func TestDecodeWikiSearchPageTokenMalformed(t *testing.T) {
 func TestEncodeWikiListPageToken(t *testing.T) {
 	tests := []struct {
 		name   string
-		cursor *WikiListCursor
+		cursor *WikiListPageToken
 		want   string
 	}{
 		{name: "nil cursor fails closed", cursor: nil, want: ""},
-		{name: "empty wiki id fails closed", cursor: &WikiListCursor{WikiID: ""}, want: ""},
+		{name: "empty wiki id fails closed", cursor: &WikiListPageToken{WikiID: ""}, want: ""},
 	}
 
 	for _, tt := range tests {
@@ -174,7 +174,7 @@ func TestEncodeWikiListPageToken(t *testing.T) {
 
 func TestWikiListPageTokenRoundTrip(t *testing.T) {
 	// given
-	token := EncodeWikiListPageToken(&WikiListCursor{WikiID: "wiki-42"})
+	token := EncodeWikiListPageToken(&WikiListPageToken{WikiID: "wiki-42"})
 
 	// when
 	cursor, err := DecodeWikiListPageToken(token)

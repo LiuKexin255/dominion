@@ -70,7 +70,9 @@ describe("WIKI_GUIDANCE: cross-tool workflow only", () => {
       expect(WIKI_GUIDANCE).toContain(toolName);
     }
     expect(WIKI_GUIDANCE).toMatch(/upsert/i);
-    expect(WIKI_GUIDANCE).toContain("all-or-nothing");
+    const lower = WIKI_GUIDANCE.toLowerCase();
+    expect(lower).not.toContain("all-or-nothing");
+    expect(lower).not.toContain("atomic");
   });
 
   it("does not restate the memory-vs-wiki division", () => {

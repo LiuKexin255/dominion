@@ -44,7 +44,7 @@ type WikiRepository interface {
 	// product; a nil cursor is the first page (the only criterion). pageSize
 	// is the page upper bound; the returned token is empty on the last page
 	// (AIP-158: https://google.aip.dev/158).
-	ListWikis(ctx context.Context, template, session string, cursor *WikiListCursor, pageSize int) ([]*Wiki, string, error)
+	ListWikis(ctx context.Context, template, session string, cursor *WikiListPageToken, pageSize int) ([]*Wiki, string, error)
 	// SearchWikis returns the candidates whose indexed bigrams contain every
 	// bigram of the already-normalized query q, or — for a query shorter than
 	// two runes — whose normalized title matches q as a regex literal

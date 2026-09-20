@@ -7,7 +7,8 @@
  * injected-client DI seam (style/javascript.md §测试 — an injected grpc client
  * skips the resolver registration and the proto/fs read, so unit tests need no
  * module interception). All wiki orchestration (title normalization, exact
- * resolution, upsert, batch atomicity) lives in `./wiki-operations.ts`; this
+ * resolution, upsert, two-phase preflight/commit) lives in
+ * `./wiki-operations.ts`; this
  * client is a pass-through for the four WikiService RPCs the plugin consumes
  * (specs/068-wiki-round-pause/contracts/dsh-plugins.md §4). Delete/List are
  * service API surface the agent tools never call — YAGNI

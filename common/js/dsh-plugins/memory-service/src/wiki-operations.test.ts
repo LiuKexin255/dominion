@@ -1,9 +1,9 @@
 /**
  * Wiki operation-core tests — the semantics behind the three wiki tools:
  * title search folding, exact-title resolution (normalization alignment with
- * the service), upsert-by-title, batch atomicity, and the text-guidance
- * outcomes. The storage is a `vi.fn()`-backed in-memory fake (DI seam —
- * style/javascript.md §测试); no module interception.
+ * the service), upsert-by-title, two-phase preflight/commit, and the
+ * text-guidance outcomes. The storage is a `vi.fn()`-backed in-memory fake (DI
+ * seam — style/javascript.md §测试); no module interception.
  *
  * Contract: specs/068-wiki-round-pause/contracts/dsh-plugins.md §2;
  * specs/068-wiki-round-pause/data-model.md §5-7.
@@ -314,7 +314,8 @@ describe("wikiWrite", () => {
     });
 
     expect(result).toContain("entry 2 failed: title is required");
-    expect(result).toContain("all-or-nothing");
+    expect(result).toContain("No entries were written.");
+    expect(result).not.toContain("all-or-nothing");
     expect(store.createWiki).not.toHaveBeenCalled();
     expect(store.updateWiki).not.toHaveBeenCalled();
   });
@@ -405,5 +406,46 @@ describe("wikiWrite", () => {
     await expect(
       write(store, { title: "条目", content: "正文" }),
     ).rejects.toThrow("memory service unavailable");
+  });
+
+  it("reports the entries written before a mid-commit failure (no transaction)", async () => {
+    const firstId = seed(store, "甲", "旧正文甲");
+    const secondId = seed(store, "乙", "旧正文乙");
+    store.createWiki.mockRejectedValueOnce(
+      Object.assign(new Error("memory service unavailable"), { code: 14 }),
+    );
+
+    await expect(
+      write(store, {
+        entries: [
+          { title: "甲", content: "新正文甲" },
+          { title: "乙", content: "新正文乙" },
+          { title: "丙", content: "正文丙" },
+        ],
+      }),
+    ).rejects.toThrow(
+      "memory service unavailable; entries written before the failure: '甲', '乙'",
+    );
+
+    // The partial write is real: the first two entries hold the new content,
+    // the third was never created.
+    expect(store.wikis.size).toBe(2);
+    expect(store.wikis.get(firstId)?.content).toBe("新正文甲");
+    expect(store.wikis.get(secondId)?.content).toBe("新正文乙");
+  });
+
+  it("rethrows the original failure unchanged when no entry was written", async () => {
+    const failure = Object.assign(new Error("memory service unavailable"), {
+      code: 14,
+    });
+    store.createWiki.mockRejectedValue(failure);
+
+    const error = await write(store, { title: "条目", content: "正文" }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+
+    expect(error).toBe(failure);
+    expect((error as Error).message).not.toContain("entries written");
   });
 });

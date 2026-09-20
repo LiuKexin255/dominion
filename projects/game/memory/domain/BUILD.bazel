@@ -21,6 +21,7 @@ go_library(
 go_unittest(
     name = "domain_test",
     srcs = [
+        "model_test.go",
         "pagination_test.go",
         "sort_test.go",
         "wiki_pagination_test.go",

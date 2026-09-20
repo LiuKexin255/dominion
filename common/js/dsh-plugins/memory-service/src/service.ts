@@ -86,8 +86,9 @@ export interface PlannerMemoryService {
    */
   wikiGet(agent: Agent, titles: string[]): Promise<string>;
   /**
-   * Upsert the scope's wiki entries by title (single XOR batch form, batch
-   * atomic). Domain outcomes return text; infrastructure failures reject.
+   * Upsert the scope's wiki entries by title (single XOR batch form; the batch
+   * is validated in a preflight and committed entry by entry). Domain outcomes
+   * return text; infrastructure failures reject.
    */
   wikiWrite(agent: Agent, input: WikiWriteArgs): Promise<string>;
   /** The snapshot text bound to a scope key (agent), or undefined. */

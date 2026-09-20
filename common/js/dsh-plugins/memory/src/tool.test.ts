@@ -117,6 +117,17 @@ describe("createMemoryToolDefinition", () => {
     expect(MEMORY_TOOL_DESCRIPTION).not.toContain("knowledge base");
   });
 
+  it("describes the batch form without promising transactionality (specs/068-wiki-round-pause/spec.md Edge Cases「批量 write 的原子性」)", () => {
+    // The batch is described as a shape (one call), not as an atomic
+    // transaction: the commit phase has no rollback (spec.md Edge Cases
+    // 「批量 write 的原子性」).
+    expect(MEMORY_TOOL_DESCRIPTION).toContain("operations applies a batch");
+    const lower = MEMORY_TOOL_DESCRIPTION.toLowerCase();
+    for (const promise of ["all-or-nothing", "atomic", "transaction"]) {
+      expect(lower).not.toContain(promise);
+    }
+  });
+
   it("renders a successful canonical value as one text block", () => {
     const definition = createMemoryToolDefinition(service);
     const content = definition.output.render({}, { result: "memory added" });

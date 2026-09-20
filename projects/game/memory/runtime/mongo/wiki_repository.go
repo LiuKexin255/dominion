@@ -146,7 +146,7 @@ func (r *wikiRepository) DeleteWiki(ctx context.Context, template, session, wiki
 // non-nil cursor resumes with a single-key seek (wiki_id > cursor.WikiID). The
 // page's last wiki id becomes the next token (AIP-158:
 // https://google.aip.dev/158).
-func (r *wikiRepository) ListWikis(ctx context.Context, template, session string, cursor *domain.WikiListCursor, pageSize int) ([]*domain.Wiki, string, error) {
+func (r *wikiRepository) ListWikis(ctx context.Context, template, session string, cursor *domain.WikiListPageToken, pageSize int) ([]*domain.Wiki, string, error) {
 	filter := bson.M{fieldTemplate: template, fieldSessionID: session}
 	if cursor != nil {
 		filter[fieldWikiID] = bson.M{"$gt": cursor.WikiID}
@@ -166,7 +166,7 @@ func (r *wikiRepository) ListWikis(ctx context.Context, template, session string
 
 	nextPageToken := ""
 	if len(docs) > pageSize {
-		nextPageToken = domain.EncodeWikiListPageToken(&domain.WikiListCursor{WikiID: docs[pageSize-1].WikiID})
+		nextPageToken = domain.EncodeWikiListPageToken(&domain.WikiListPageToken{WikiID: docs[pageSize-1].WikiID})
 		docs = docs[:pageSize]
 	}
 

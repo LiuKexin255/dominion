@@ -25,7 +25,7 @@ type inMemoryWikiRepo struct {
 	// lastListCursor / lastListPageSize record the most recent ListWikis
 	// inputs so the handler tests can assert token decoding and the resolved
 	// page size.
-	lastListCursor   *domain.WikiListCursor
+	lastListCursor   *domain.WikiListPageToken
 	lastListPageSize int
 	// lastSearchQuery records the normalized query the handler passed through.
 	lastSearchQuery string
@@ -99,7 +99,7 @@ func (r *inMemoryWikiRepo) DeleteWiki(_ context.Context, template, session, wiki
 	return nil
 }
 
-func (r *inMemoryWikiRepo) ListWikis(_ context.Context, template, session string, cursor *domain.WikiListCursor, pageSize int) ([]*domain.Wiki, string, error) {
+func (r *inMemoryWikiRepo) ListWikis(_ context.Context, template, session string, cursor *domain.WikiListPageToken, pageSize int) ([]*domain.Wiki, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastListCursor = cursor
@@ -119,7 +119,7 @@ func (r *inMemoryWikiRepo) ListWikis(_ context.Context, template, session string
 	}
 
 	if len(scoped) > pageSize {
-		next := domain.EncodeWikiListPageToken(&domain.WikiListCursor{WikiID: scoped[pageSize-1].WikiID})
+		next := domain.EncodeWikiListPageToken(&domain.WikiListPageToken{WikiID: scoped[pageSize-1].WikiID})
 		return scoped[:pageSize], next, nil
 	}
 	return scoped, "", nil

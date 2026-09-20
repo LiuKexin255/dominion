@@ -65,6 +65,6 @@ The knowledge-base tools form one discover → retrieve → persist flow:
 
 - \`wiki_search\` — find out what exists: it matches titles and returns the matching titles, so start here when you are unsure whether relevant knowledge is already stored.
 - \`wiki_get\` — retrieve entries by exact title and return their full content.
-- \`wiki_write\` — persist knowledge by title. Writing is an upsert: a new title is created, an existing title has its content overwritten, so you never need to choose between "create" and "update". A batch write is all-or-nothing: if any entry is invalid, none is written.
+- \`wiki_write\` — persist knowledge by title. Writing is an upsert: a new title is created, an existing title has its content overwritten, so you never need to choose between "create" and "update".
 
 Search first, retrieve only what you need, and write back knowledge that is worth reusing.`;

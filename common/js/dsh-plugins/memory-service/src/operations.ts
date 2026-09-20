@@ -9,11 +9,13 @@
  *   (hermes `tools/memory_tool.py`): 0 hits → error text + the current
  *   entries; multiple DISTINCT hits → error text + hit previews; multiple
  *   identical hits → the first (dedupe);
- * - batch atomicity: the preflight validates EVERY op against one snapshot
- *   of the current entries (working copy) and a failing op aborts the whole
- *   batch with ZERO writes; only when all ops pass does the commit phase run
- *   the RPCs in order (v1 documented partial application on an infrastructure
- *   failure mid-commit — no service transaction API exists);
+ * - two-phase batch: the preflight validates EVERY op against one snapshot of
+ *   the current entries (working copy) and a failing op aborts the whole batch
+ *   with ZERO writes; only when all ops pass does the commit phase run the
+ *   RPCs in order, one by one with no transaction, so an infrastructure
+ *   failure mid-commit can leave earlier ops applied and the propagated error
+ *   names their positions (specs/068-wiki-round-pause/spec.md Edge
+ *   Cases「批量 write 的原子性」);
  * - errors are TEXT results, never thrown, so the model can re-pick a more
  *   specific `old_text` or retry after an outage; only infrastructure
  *   failures propagate to the caller, which maps them to `memory failed: …`.
@@ -25,6 +27,7 @@
 import { createHash } from "node:crypto";
 
 import type { MemoryEntry, MemoryStore } from "./client.js";
+import { describeErr } from "./errors.js";
 
 /** The hermes memory tool's actions. */
 export const MEMORY_ACTIONS = ["add", "replace", "remove"] as const;
@@ -212,15 +215,37 @@ async function applyRemove(
 }
 
 /**
+ * Render the 1-based positions of the operations applied before a mid-commit
+ * failure, compressing consecutive runs (`[1, 2, 4]` → `1-2, 4`).
+ */
+function formatAppliedPositions(positions: readonly number[]): string {
+  const parts: string[] = [];
+  let start = positions[0];
+  let end = start;
+  for (const position of positions.slice(1)) {
+    if (position === end + 1) {
+      end = position;
+      continue;
+    }
+    parts.push(start === end ? `${start}` : `${start}-${end}`);
+    start = position;
+    end = position;
+  }
+  parts.push(start === end ? `${start}` : `${start}-${end}`);
+  return parts.join(", ");
+}
+
+/**
  * Apply a batch of operations: the preflight validates ALL ops against ONE
  * snapshot of the current entries (working copy, hermes `apply_batch`
  * semantics); any failing op aborts the whole batch with an error + the
  * current entries, with ZERO writes. Only when all ops preflight cleanly does
- * the commit phase execute the RPCs, in order. True all-or-nothing across
- * the commit phase is not achievable over plain gRPC (no service transaction
- * API): an infrastructure failure mid-commit may leave earlier writes
- * applied — such a failure propagates to the tool handler, which surfaces it
- * as `memory failed: …` text.
+ * the commit phase execute the RPCs, in order, one by one. No transaction
+ * spans the commit phase (plain gRPC offers none): an infrastructure failure
+ * mid-commit may leave earlier writes applied, so the propagated error names
+ * the applied operations' 1-based positions and the tool handler surfaces it
+ * as `memory failed: …` text
+ * (specs/068-wiki-round-pause/spec.md Edge Cases「批量 write 的原子性」).
  */
 async function applyBatch(
   store: MemoryStore,
@@ -235,17 +260,17 @@ async function applyBatch(
   const working: MemoryEntry[] = entries.map((e) => ({ ...e }));
 
   const batchError = (pos: string, reason: string): string =>
-    `memory: ${pos} failed: ${reason}. No operations were applied ` +
-    "(batch is all-or-nothing). Current entries:\n" +
+    `memory: ${pos} failed: ${reason}. No operations were applied. ` +
+    "Current entries:\n" +
     renderEntries(entries);
 
   // Preflight against the working copy. Resolved writes are queued; the
   // working copy is mutated in lockstep so later ops see earlier ops'
   // effects (e.g. a remove then an add of a different entry).
   const writes: Array<
-    | { kind: "create"; id: string; content: string }
-    | { kind: "update"; id: string; content: string }
-    | { kind: "delete"; id: string }
+    | { kind: "create"; id: string; content: string; opIndex: number }
+    | { kind: "update"; id: string; content: string; opIndex: number }
+    | { kind: "delete"; id: string; opIndex: number }
   > = [];
   for (let i = 0; i < operations.length; i += 1) {
     const op = operations[i];
@@ -262,7 +287,7 @@ async function applyBatch(
       }
       const id = generateMemoryId(content);
       working.push({ memory_id: id, content });
-      writes.push({ kind: "create", id, content });
+      writes.push({ kind: "create", id, content, opIndex: i });
     } else if (op.action === "replace") {
       const oldText = op.old_text ?? "";
       const content = op.content?.trim() ?? "";
@@ -283,7 +308,12 @@ async function applyBatch(
         (e) => e.memory_id === match.entry.memory_id,
       );
       working[index] = { ...match.entry, content };
-      writes.push({ kind: "update", id: match.entry.memory_id, content });
+      writes.push({
+        kind: "update",
+        id: match.entry.memory_id,
+        content,
+        opIndex: i,
+      });
     } else if (op.action === "remove") {
       const oldText = op.old_text ?? "";
       if (!oldText.trim()) {
@@ -297,7 +327,7 @@ async function applyBatch(
         working.findIndex((e) => e.memory_id === match.entry.memory_id),
         1,
       );
-      writes.push({ kind: "delete", id: match.entry.memory_id });
+      writes.push({ kind: "delete", id: match.entry.memory_id, opIndex: i });
     } else {
       return batchError(
         pos,
@@ -307,15 +337,34 @@ async function applyBatch(
     }
   }
 
-  // Commit — all preflight checks passed, executed in order.
+  // Commit — all preflight checks passed, executed in order. No transaction
+  // spans these RPCs, so a failure mid-commit leaves the operations already
+  // applied in place; the error names their 1-based positions (positions in
+  // the submitted batch), which the tool surface renders as
+  // `memory failed: …` (specs/068-wiki-round-pause/spec.md Edge
+  // Cases「批量 write 的原子性」).
+  const applied: number[] = [];
   for (const write of writes) {
-    if (write.kind === "create") {
-      await store.createMemory(template, session, write.id, write.content);
-    } else if (write.kind === "update") {
-      await store.updateMemory(template, session, write.id, write.content);
-    } else {
-      await store.deleteMemory(template, session, write.id);
+    try {
+      if (write.kind === "create") {
+        await store.createMemory(template, session, write.id, write.content);
+      } else if (write.kind === "update") {
+        await store.updateMemory(template, session, write.id, write.content);
+      } else {
+        await store.deleteMemory(template, session, write.id);
+      }
+    } catch (err) {
+      if (applied.length === 0) {
+        throw err;
+      }
+      const noun = applied.length === 1 ? "operation" : "operations";
+      const verb = applied.length === 1 ? "was" : "were";
+      throw new Error(
+        `${describeErr(err)}; ${noun} ` +
+          `${formatAppliedPositions(applied)} ${verb} applied before the failure`,
+      );
     }
+    applied.push(write.opIndex + 1);
   }
   return `memory: applied ${writes.length} operation(s)`;
 }

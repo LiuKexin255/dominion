@@ -45,7 +45,7 @@ export const MEMORY_TOOL_DESCRIPTION =
   "Manage long-term memory entries. " +
   "action=add records a new entry (content); action=replace/remove locate an " +
   "existing entry by a SHORT old_text substring and update (content) or " +
-  "delete it; operations applies a batch atomically (all-or-nothing). " +
+  "delete it; operations applies a batch of actions in one call. " +
   "Substring matching is case-sensitive; a 0/multiple match returns the " +
   "current entries to pick a more specific old_text. Writes persist " +
   "immediately and act on the full stored memory. The memory snapshot in " +

@@ -18,7 +18,7 @@ Wiki {
 ```
 
 - 资源注解：`type: "game.liukexin.com/Wiki"`，`pattern: "templates/{template}/sessions/{session}/wikis/{wiki}"`，`singular: "wiki"`，`plural: "wikis"`。
-- 校验（domain 层，违反 → INVALID_ARGUMENT）：`wiki_id` 匹配 `[a-z0-9_-]+`（对齐 handler 的 memoryIDPattern）；title 非空且 ≤ 128 rune；content 非空且 ≤ 64KB（空 content 拒绝）；Search query 非空。
+- 校验（domain 层，违反 → INVALID_ARGUMENT）：`wiki_id` 匹配 `[a-z0-9_-]+`（对齐 domain 的 `ValidateMemoryID`，与 `ValidateWiki*` 同层）；title 非空且 ≤ 128 rune；content 非空且 ≤ 64KB（空 content 拒绝）；Search query 非空。
 - 唯一性：`title_norm`（§2.1）在 `(template, session_id)` 内唯一，违反 → ALREADY_EXISTS（title 变更的 Update 同样受约束）。
 
 ## 2. 存储文档（mongo `game_memory.wikis`）
@@ -92,7 +92,7 @@ redis 快照缓存（067 基建）：key `wiki:search:{template}:{session}:{gen}
 
 - 三工具均为 `{result: string}` 输出 schema、文本渲染（对齐 memory 工具形态）。
 - 参数根级全可选（单条 XOR 批量为运行时契约，文本应答——对齐 memory 工具的 schema 策略）；`titles`/`entries` 项内 `additionalProperties: false`。
-- 失败面：基础设施故障 → `wiki failed: …` 文本（不抛错）；领域结果（未命中/超限/非法）→ 引导文本。
+- 失败面：基础设施故障 → `wiki failed: …` 文本（不抛错；提交中断时含已写入条目列表）；领域结果（未命中/超限/非法）→ 引导文本。
 - `name`/`wiki_id` 不出现在任何模型可见文本（FR-009；`wiki_get`/`wiki_write` 的精确解析在工具层内部完成）。
 
 ## 7. 服务面扩展（`PlannerMemoryService`）
@@ -104,7 +104,7 @@ interface PlannerMemoryService {
   snapshot(scope)                             // 既有
   wikiSearch(agent, query) -> string          // 新增：SearchWikis（按 page_size 折叠 next_page_token 取全）+ 渲染标题列表
   wikiGet(agent, titles[]) -> string          // 新增：每标题精确解析 + GetWiki + 渲染
-  wikiWrite(agent, entries[] | {title, content}) -> string  // 新增：upsert + 批量原子 + 渲染
+  wikiWrite(agent, entries[] | {title, content}) -> string  // 新增：upsert + 批量预检 + 渲染
 }
 ```
 

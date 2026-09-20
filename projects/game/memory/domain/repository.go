@@ -24,5 +24,5 @@ type MemoryRepository interface {
 	// results; the returned token is empty on the last page
 	// (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
 	// item 5).
-	ListMemories(ctx context.Context, template, session string, sort []*MemorySortTerm, cursor *MemoryPageCursor, pageSize int) ([]*Memory, string, error)
+	ListMemories(ctx context.Context, template, session string, sort []*MemorySortTerm, cursor *MemoryPageToken, pageSize int) ([]*Memory, string, error)
 }

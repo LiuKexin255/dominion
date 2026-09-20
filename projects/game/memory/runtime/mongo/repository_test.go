@@ -378,7 +378,7 @@ func mustSortKey(t *testing.T, orderBy string) []*domain.MemorySortTerm {
 
 // resumeCursor decodes a returned page token into the cursor for the next
 // call, failing the test on error.
-func resumeCursor(t *testing.T, token string, sort []*domain.MemorySortTerm) *domain.MemoryPageCursor {
+func resumeCursor(t *testing.T, token string, sort []*domain.MemorySortTerm) *domain.MemoryPageToken {
 	t.Helper()
 	cursor, err := domain.DecodeMemoryPageToken(token, sort)
 	if err != nil {
@@ -580,7 +580,7 @@ func TestMemoryListMemoryIDDesc(t *testing.T) {
 	// when - walk every page with page_size=2
 	var pageSizes []int
 	var ids []string
-	var cursor *domain.MemoryPageCursor
+	var cursor *domain.MemoryPageToken
 	for {
 		page, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", sortKey, cursor, 2)
 		if err != nil {
@@ -669,7 +669,7 @@ func TestMemoryListUpdateTimeDescPagination(t *testing.T) {
 	// when - walk every page with page_size=2
 	var pageSizes []int
 	var gotIDs []string
-	var cursor *domain.MemoryPageCursor
+	var cursor *domain.MemoryPageToken
 	for {
 		page, nextToken, err := repo.ListMemories(ctx, "saolei", "session-1", sortKey, cursor, 2)
 		if err != nil {
@@ -769,19 +769,19 @@ func TestMemorySeekClauses(t *testing.T) {
 	tests := []struct {
 		name   string
 		sort   []*domain.MemorySortTerm
-		cursor *domain.MemoryPageCursor
+		cursor *domain.MemoryPageToken
 		want   bson.A
 	}{
 		{
 			name:   "single key yields one clause",
 			sort:   singleKey,
-			cursor: &domain.MemoryPageCursor{Entries: []*domain.MemoryCursorEntry{singleKey[0].CursorEntry("m-1")}},
+			cursor: &domain.MemoryPageToken{Entries: []*domain.MemoryCursorEntry{singleKey[0].CursorEntry("m-1")}},
 			want:   bson.A{bson.M{"memory_id": bson.M{"$gt": "m-1"}}},
 		},
 		{
 			name: "two keys yield the prefix equality and both directions",
 			sort: doubleKey,
-			cursor: &domain.MemoryPageCursor{Entries: []*domain.MemoryCursorEntry{
+			cursor: &domain.MemoryPageToken{Entries: []*domain.MemoryCursorEntry{
 				doubleKey[0].CursorEntry(now),
 				doubleKey[1].CursorEntry("m-1"),
 			}},
@@ -793,7 +793,7 @@ func TestMemorySeekClauses(t *testing.T) {
 		{
 			name: "seek reads the entries' typed values, not their wire strings",
 			sort: doubleKey,
-			cursor: &domain.MemoryPageCursor{Entries: []*domain.MemoryCursorEntry{
+			cursor: &domain.MemoryPageToken{Entries: []*domain.MemoryCursorEntry{
 				corruptWire(doubleKey[0].CursorEntry(now)),
 				doubleKey[1].CursorEntry("m-1"),
 			}},
@@ -805,7 +805,7 @@ func TestMemorySeekClauses(t *testing.T) {
 		{
 			name: "three hand-built keys yield exactly three clauses",
 			sort: tripleKey,
-			cursor: &domain.MemoryPageCursor{Entries: []*domain.MemoryCursorEntry{
+			cursor: &domain.MemoryPageToken{Entries: []*domain.MemoryCursorEntry{
 				tripleKey[0].CursorEntry("v0"),
 				tripleKey[1].CursorEntry("v1"),
 				tripleKey[2].CursorEntry("v2"),
@@ -882,7 +882,7 @@ func TestMemoryListSeekValuesAreTyped(t *testing.T) {
 
 	// given - a decoded cursor for the update_time desc key
 	sortKey := mustSortKey(t, "update_time desc")
-	token := domain.EncodeMemoryPageToken(domain.NewMemoryPageCursor(sortKey, []any{
+	token := domain.EncodeMemoryPageToken(domain.NewMemoryPageToken(sortKey, []any{
 		time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC),
 		"m-1",
 	}))

@@ -1,7 +1,11 @@
 // Package domain defines the memory domain model and repository contract.
 package domain
 
-import "time"
+import (
+	"fmt"
+	"regexp"
+	"time"
+)
 
 // Memory is one planner long-term memory entry of a session (spec
 // 039-planner-memory-calibration FR-006;
@@ -31,3 +35,22 @@ const DefaultListMemoriesPageSize = 100
 
 // MaxListMemoriesPageSize is the maximum allowed page size when listing memories.
 const MaxListMemoriesPageSize = 1000
+
+// memoryIDPattern is the allowed character set for the memory resource id (the
+// {memory} name segment,
+// specs/039-planner-memory-calibration/contracts/memory-service-contract.md
+// §2/§6). The agent generates memory_id internally on add (spec 039 Session
+// 2026-08-08 / FR-008); the service rejects anything outside [a-z0-9_-].
+var memoryIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+// ValidateMemoryID reports whether id is a valid memory resource id. Like the
+// wiki validators, it owns the resource validation invariant, so the handler
+// only maps its error to a status
+// (specs/039-planner-memory-calibration/contracts/memory-service-contract.md
+// §2/§6).
+func ValidateMemoryID(id string) error {
+	if !memoryIDPattern.MatchString(id) {
+		return fmt.Errorf("memory_id %q must match %s", id, memoryIDPattern.String())
+	}
+	return nil
+}

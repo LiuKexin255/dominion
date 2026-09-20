@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -11,13 +12,13 @@ import (
 func TestEncodeMemoryPageToken(t *testing.T) {
 	tests := []struct {
 		name      string
-		cursor    *MemoryPageCursor
+		cursor    *MemoryPageToken
 		wantEmpty bool
 	}{
 		{
-			name: "a full cursor yields a token",
-			cursor: &MemoryPageCursor{
-				Sort: []string{"update_time desc", "memory_id"},
+			name: "a full token yields a token",
+			cursor: &MemoryPageToken{
+				Sort: "update_time desc,memory_id",
 				Entries: []*MemoryCursorEntry{
 					{Field: MemorySortFieldUpdateTime, Value: "2026-05-29T12:34:56.789123456Z"},
 					{Field: MemorySortFieldMemoryID, Value: "abc123"},
@@ -25,18 +26,18 @@ func TestEncodeMemoryPageToken(t *testing.T) {
 			},
 		},
 		{
-			name:      "nil cursor yields an empty token",
+			name:      "nil token yields an empty token",
 			cursor:    nil,
 			wantEmpty: true,
 		},
 		{
 			name:      "empty entries yield an empty token",
-			cursor:    &MemoryPageCursor{Sort: []string{"memory_id"}},
+			cursor:    &MemoryPageToken{Sort: "memory_id"},
 			wantEmpty: true,
 		},
 		{
 			name:      "empty sort context yields an empty token",
-			cursor:    &MemoryPageCursor{Entries: []*MemoryCursorEntry{{Field: MemorySortFieldMemoryID, Value: "m-1"}}},
+			cursor:    &MemoryPageToken{Entries: []*MemoryCursorEntry{{Field: MemorySortFieldMemoryID, Value: "m-1"}}},
 			wantEmpty: true,
 		},
 	}
@@ -61,23 +62,23 @@ func TestEncodeMemoryPageToken(t *testing.T) {
 }
 
 // TestEncodeMemoryPageToken_jsonShape pins the token's wire shape: a JSON
-// object with exactly the two keys {"sort":[...],"entries":[...]}, sort as the
-// canonical key spellings, entry values as their string form and no serialized
-// `typed` field (specs/068-wiki-round-pause/contracts/
-// memory-page-token-context.md §1).
+// object with exactly the two keys {"sort":"...","entries":[...]}, sort as the
+// canonical comma-joined serialization of the final key, entry values as their
+// string form and no serialized `typed` field
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
 func TestEncodeMemoryPageToken_jsonShape(t *testing.T) {
 	// given
 	sort := mustParseMemoryOrderBy(t, "update_time desc")
-	cursor := NewMemoryPageCursor(sort, []any{
+	token := NewMemoryPageToken(sort, []any{
 		time.Date(2026, 5, 29, 12, 34, 56, 789123456, time.UTC),
 		"m-1",
 	})
 
 	// when
-	token := EncodeMemoryPageToken(cursor)
+	encoded := EncodeMemoryPageToken(token)
 
 	// then
-	b, err := base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(token)
+	b, err := base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(encoded)
 	if err != nil {
 		t.Fatalf("base64 decode error: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestEncodeMemoryPageToken_jsonShape(t *testing.T) {
 		}
 	}
 	var wire struct {
-		Sort    []string `json:"sort"`
+		Sort    string `json:"sort"`
 		Entries []struct {
 			Field string `json:"field"`
 			Value string `json:"value"`
@@ -103,14 +104,8 @@ func TestEncodeMemoryPageToken_jsonShape(t *testing.T) {
 	if err := json.Unmarshal(b, &wire); err != nil {
 		t.Fatalf("json unmarshal error: %v", err)
 	}
-	wantSort := []string{"update_time desc", "memory_id"}
-	if len(wire.Sort) != len(wantSort) {
-		t.Fatalf("token sort = %v, want %v", wire.Sort, wantSort)
-	}
-	for i, want := range wantSort {
-		if wire.Sort[i] != want {
-			t.Fatalf("token sort[%d] = %q, want %q", i, wire.Sort[i], want)
-		}
+	if wantSort := "update_time desc,memory_id"; wire.Sort != wantSort {
+		t.Fatalf("token sort = %q, want %q", wire.Sort, wantSort)
 	}
 	if len(wire.Entries) != 2 {
 		t.Fatalf("token entries = %v, want 2", wire.Entries)
@@ -134,7 +129,7 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 		return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(v))
 	}
 	descSort := mustParseMemoryOrderBy(t, "update_time desc")
-	descCursor := NewMemoryPageCursor(descSort, []any{
+	descToken := NewMemoryPageToken(descSort, []any{
 		time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC),
 		"m-1",
 	})
@@ -148,7 +143,7 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 	}{
 		{
 			name:   "round-trip: mixed time and string keys, nanoseconds preserved",
-			token:  EncodeMemoryPageToken(descCursor),
+			token:  EncodeMemoryPageToken(descToken),
 			sortBy: "update_time desc",
 			want: []*MemoryCursorEntry{
 				{Field: MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
@@ -157,13 +152,13 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 		},
 		{
 			name:   "round-trip: single memory_id key",
-			token:  EncodeMemoryPageToken(NewMemoryPageCursor(mustParseMemoryOrderBy(t, ""), []any{"xyz789"})),
+			token:  EncodeMemoryPageToken(NewMemoryPageToken(mustParseMemoryOrderBy(t, ""), []any{"xyz789"})),
 			sortBy: "",
 			want:   []*MemoryCursorEntry{{Field: MemorySortFieldMemoryID, Value: "xyz789"}},
 		},
 		{
 			name: "round-trip: ascending business key",
-			token: EncodeMemoryPageToken(NewMemoryPageCursor(mustParseMemoryOrderBy(t, "update_time"), []any{
+			token: EncodeMemoryPageToken(NewMemoryPageToken(mustParseMemoryOrderBy(t, "update_time"), []any{
 				time.Date(2026, 5, 29, 12, 35, 0, 1, time.UTC),
 				"m-2",
 			})),
@@ -199,19 +194,19 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 		},
 		{
 			name:    "entries key is missing",
-			token:   mustB64(`{"sort":["memory_id"]}`),
+			token:   mustB64(`{"sort":"memory_id"}`),
 			sortBy:  "",
 			wantErr: true,
 		},
 		{
 			name:    "entries is not an array",
-			token:   mustB64(`{"sort":["memory_id"],"entries":{}}`),
+			token:   mustB64(`{"sort":"memory_id","entries":{}}`),
 			sortBy:  "",
 			wantErr: true,
 		},
 		{
 			name:    "entries is null",
-			token:   mustB64(`{"sort":["memory_id"],"entries":null}`),
+			token:   mustB64(`{"sort":"memory_id","entries":null}`),
 			sortBy:  "",
 			wantErr: true,
 		},
@@ -222,14 +217,20 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "legacy array-form sort context fails closed on the type",
+			token:   mustB64(`{"sort":["memory_id"],"entries":[{"field":"memory_id","value":"m-1"}]}`),
+			sortBy:  "",
+			wantErr: true,
+		},
+		{
 			name:    "direction flip: desc context against an ascending request",
-			token:   EncodeMemoryPageToken(descCursor),
+			token:   EncodeMemoryPageToken(descToken),
 			sortBy:  "update_time",
 			wantErr: true,
 		},
 		{
 			name: "direction flip: ascending context against a desc request",
-			token: EncodeMemoryPageToken(NewMemoryPageCursor(mustParseMemoryOrderBy(t, "update_time"), []any{
+			token: EncodeMemoryPageToken(NewMemoryPageToken(mustParseMemoryOrderBy(t, "update_time"), []any{
 				time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC),
 				"m-1",
 			})),
@@ -238,8 +239,8 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 		},
 		{
 			name: "forged context: one spelling changed",
-			token: EncodeMemoryPageToken(&MemoryPageCursor{
-				Sort: []string{"update_time", "memory_id"},
+			token: EncodeMemoryPageToken(&MemoryPageToken{
+				Sort: "update_time,memory_id",
 				Entries: []*MemoryCursorEntry{
 					{Field: MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
 					{Field: MemorySortFieldMemoryID, Value: "m-1"},
@@ -249,15 +250,15 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "context length mismatch: two-key context against the default key",
-			token:   EncodeMemoryPageToken(descCursor),
+			name:    "context mismatch: two-key context against the default key",
+			token:   EncodeMemoryPageToken(descToken),
 			sortBy:  "",
 			wantErr: true,
 		},
 		{
-			name: "context length mismatch: single-key context against a two-key order",
-			token: EncodeMemoryPageToken(&MemoryPageCursor{
-				Sort:    []string{"update_time desc"},
+			name: "context mismatch: single-key context against a two-key order",
+			token: EncodeMemoryPageToken(&MemoryPageToken{
+				Sort:    "update_time desc",
 				Entries: []*MemoryCursorEntry{{Field: MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00Z"}},
 			}),
 			sortBy:  "update_time desc",
@@ -265,7 +266,7 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 		},
 		{
 			name: "cross-order replay: update_time context against a memory_id order",
-			token: EncodeMemoryPageToken(NewMemoryPageCursor(mustParseMemoryOrderBy(t, "update_time desc"), []any{
+			token: EncodeMemoryPageToken(NewMemoryPageToken(mustParseMemoryOrderBy(t, "update_time desc"), []any{
 				time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC),
 				"m-1",
 			})),
@@ -298,8 +299,34 @@ func TestDecodeMemoryPageToken(t *testing.T) {
 			if got == nil {
 				t.Fatal("DecodeMemoryPageToken() returned nil cursor on success")
 			}
-			assertMemoryPageCursor(t, got, tt.want)
+			assertMemoryPageToken(t, got, tt.want)
 		})
+	}
+}
+
+// TestDecodeMemoryPageToken_contextMismatchMessage pins the context-mismatch
+// error: a single explicit message naming both the token's carried context and
+// the request's canonical context, so a mismatch is diagnosable from the
+// error alone (specs/068-wiki-round-pause/contracts/
+// memory-page-token-context.md §2).
+func TestDecodeMemoryPageToken_contextMismatchMessage(t *testing.T) {
+	// given - a token whose context is a prefix of the request's final key
+	token := EncodeMemoryPageToken(&MemoryPageToken{
+		Sort:    "update_time",
+		Entries: []*MemoryCursorEntry{{Field: MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00Z"}},
+	})
+
+	// when
+	_, err := DecodeMemoryPageToken(token, mustParseMemoryOrderBy(t, "update_time desc"))
+
+	// then
+	if err == nil {
+		t.Fatal("DecodeMemoryPageToken() expected a context mismatch error")
+	}
+	for _, want := range []string{`"update_time"`, `"update_time desc,memory_id"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("DecodeMemoryPageToken() error = %q, want it to contain %s", err, want)
+		}
 	}
 }
 
@@ -367,7 +394,7 @@ func TestDecodeMemoryPageToken_cursorPayload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given - the context is the request's own key, so only the payload
 			// can fail
-			token := EncodeMemoryPageToken(&MemoryPageCursor{Sort: memorySortWire(tt.sort), Entries: tt.entries})
+			token := EncodeMemoryPageToken(&MemoryPageToken{Sort: memorySortContext(tt.sort), Entries: tt.entries})
 
 			// when
 			got, err := DecodeMemoryPageToken(token, tt.sort)
@@ -391,7 +418,7 @@ func TestDecodeMemoryPageToken_typedValues(t *testing.T) {
 	// given
 	sort := mustParseMemoryOrderBy(t, "update_time desc")
 	now := time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC)
-	token := EncodeMemoryPageToken(NewMemoryPageCursor(sort, []any{now, "m-1"}))
+	token := EncodeMemoryPageToken(NewMemoryPageToken(sort, []any{now, "m-1"}))
 
 	// when
 	cursor, err := DecodeMemoryPageToken(token, sort)
@@ -421,7 +448,7 @@ func TestDecodeMemoryPageToken_equivalentSpellings(t *testing.T) {
 		{Field: MemorySortFieldUpdateTime, Value: "2026-09-16T10:00:00.000000001Z"},
 		{Field: MemorySortFieldMemoryID, Value: "m-1"},
 	}
-	token := EncodeMemoryPageToken(NewMemoryPageCursor(implicit, []any{now, "m-1"}))
+	token := EncodeMemoryPageToken(NewMemoryPageToken(implicit, []any{now, "m-1"}))
 
 	// when
 	fromImplicit, err := DecodeMemoryPageToken(token, implicit)
@@ -434,45 +461,39 @@ func TestDecodeMemoryPageToken_equivalentSpellings(t *testing.T) {
 	}
 
 	// then
-	assertMemoryPageCursor(t, fromImplicit, want)
-	assertMemoryPageCursor(t, fromExplicit, want)
+	assertMemoryPageToken(t, fromImplicit, want)
+	assertMemoryPageToken(t, fromExplicit, want)
 }
 
-// TestNewMemoryPageCursor pins the single construction entry point: the
-// order_by context is the canonical spelling of the key and the entries carry
-// their typed values ready for the storage layer
+// TestNewMemoryPageToken pins the single construction entry point: the
+// order_by context is the canonical serialization of the key and the entries
+// carry their typed values ready for the storage layer
 // (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
-func TestNewMemoryPageCursor(t *testing.T) {
+func TestNewMemoryPageToken(t *testing.T) {
 	// given
 	sort := mustParseMemoryOrderBy(t, "update_time desc")
 	now := time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC)
 
 	// when
-	cursor := NewMemoryPageCursor(sort, []any{now, "m-1"})
+	token := NewMemoryPageToken(sort, []any{now, "m-1"})
 
-	// then - the context is the canonical spelling of the resolved key
-	wantSort := []string{"update_time desc", "memory_id"}
-	if len(cursor.Sort) != len(wantSort) {
-		t.Fatalf("cursor sort = %v, want %v", cursor.Sort, wantSort)
-	}
-	for i, want := range wantSort {
-		if cursor.Sort[i] != want {
-			t.Fatalf("cursor sort[%d] = %q, want %q", i, cursor.Sort[i], want)
-		}
+	// then - the context is the canonical serialization of the resolved key
+	if wantSort := "update_time desc,memory_id"; token.Sort != wantSort {
+		t.Fatalf("token sort = %q, want %q", token.Sort, wantSort)
 	}
 	// then - the entries carry their typed values
-	if got, ok := cursor.Entries[0].Typed().(time.Time); !ok || !got.Equal(now) {
-		t.Fatalf("entry 0 typed = %v (%T), want %v", cursor.Entries[0].Typed(), cursor.Entries[0].Typed(), now)
+	if got, ok := token.Entries[0].Typed().(time.Time); !ok || !got.Equal(now) {
+		t.Fatalf("entry 0 typed = %v (%T), want %v", token.Entries[0].Typed(), token.Entries[0].Typed(), now)
 	}
-	if got := cursor.Entries[1].Typed(); got != "m-1" {
+	if got := token.Entries[1].Typed(); got != "m-1" {
 		t.Fatalf("entry 1 typed = %v (%T), want %q", got, got, "m-1")
 	}
 }
 
-// TestNewMemoryPageCursor_valueCountMismatch verifies the fail-fast panic for a
+// TestNewMemoryPageToken_valueCountMismatch verifies the fail-fast panic for a
 // value count that does not match the key length
 // (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
-func TestNewMemoryPageCursor_valueCountMismatch(t *testing.T) {
+func TestNewMemoryPageToken_valueCountMismatch(t *testing.T) {
 	// given
 	sort := mustParseMemoryOrderBy(t, "update_time desc")
 
@@ -480,10 +501,10 @@ func TestNewMemoryPageCursor_valueCountMismatch(t *testing.T) {
 	defer func() {
 		// then
 		if recover() == nil {
-			t.Fatal("NewMemoryPageCursor() did not panic for a value count that does not match the key length")
+			t.Fatal("NewMemoryPageToken() did not panic for a value count that does not match the key length")
 		}
 	}()
-	_ = NewMemoryPageCursor(sort, []any{"m-1"})
+	_ = NewMemoryPageToken(sort, []any{"m-1"})
 }
 
 // mustParseMemoryOrderBy parses order_by into the final sort key, failing the
@@ -497,16 +518,15 @@ func mustParseMemoryOrderBy(t *testing.T, orderBy string) []*MemorySortTerm {
 	return sort
 }
 
-// assertMemoryPageCursor asserts the decoded cursor equals want entry by
-// entry.
-func assertMemoryPageCursor(t *testing.T, got *MemoryPageCursor, want []*MemoryCursorEntry) {
+// assertMemoryPageToken asserts the decoded token equals want entry by entry.
+func assertMemoryPageToken(t *testing.T, got *MemoryPageToken, want []*MemoryCursorEntry) {
 	t.Helper()
 	if len(got.Entries) != len(want) {
-		t.Fatalf("cursor = %+v, want %+v", got, want)
+		t.Fatalf("token = %+v, want %+v", got, want)
 	}
 	for i := range want {
 		if got.Entries[i] == nil || got.Entries[i].Field != want[i].Field || got.Entries[i].Value != want[i].Value {
-			t.Fatalf("cursor[%d] = %+v, want %+v", i, got.Entries[i], want[i])
+			t.Fatalf("token[%d] = %+v, want %+v", i, got.Entries[i], want[i])
 		}
 	}
 }

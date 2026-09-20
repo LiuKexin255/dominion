@@ -288,7 +288,7 @@ planner preset 锁定的 memory 插件组
 （`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §3）：
 
 - **memory 单工具**：`{action: add|replace|remove, ...}` 单操作 XOR
-  `{operations[]}` 批量（互斥校验、批量原子——preflight 全过才提交）；
+  `{operations[]}` 批量（互斥校验、批量预检——preflight 全过才提交）；
   `old_text` 大小写敏感子串定位（0/多命中返回条目文本）；无 read 动作；失败
   也是普通文本结果、不中断对话。修改经 memory 服务立即持久化（scope 键
   (template, session)，管理路由 `/api/v1/.../memories` 可查证），过程经 planner

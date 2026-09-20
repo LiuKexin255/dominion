@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"time"
 
@@ -22,13 +21,6 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-// memoryIDPattern is the allowed character set for the memory resource id
-// ({memory} pattern segment,
-// specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §2/§6). The agent generates memory_id internally on add (spec 039 Session
-// 2026-08-08 / FR-008); the service rejects anything outside [a-z0-9_-].
-var memoryIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // Handler implements MemoryServiceServer for Memory CRUD operations.
 type Handler struct {
@@ -63,8 +55,8 @@ func (h *Handler) CreateMemory(ctx context.Context, req *game.CreateMemoryReques
 	}
 
 	memoryID := req.GetMemoryId()
-	if !memoryIDPattern.MatchString(memoryID) {
-		return nil, status.Errorf(codes.InvalidArgument, "memory_id %q must match %s", memoryID, memoryIDPattern.String())
+	if err := domain.ValidateMemoryID(memoryID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	body := req.GetMemory()
@@ -176,7 +168,7 @@ func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	var cursor *domain.MemoryPageCursor
+	var cursor *domain.MemoryPageToken
 	if token := req.GetPageToken(); token != "" {
 		cursor, err = domain.DecodeMemoryPageToken(token, sort)
 		if err != nil {

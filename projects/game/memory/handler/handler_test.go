@@ -24,7 +24,7 @@ type inMemoryMemoryRepo struct {
 	// ListMemories call so the handler tests can assert the normalized
 	// order_by and the decoded cursor are passed straight through.
 	listSort   []*domain.MemorySortTerm
-	listCursor *domain.MemoryPageCursor
+	listCursor *domain.MemoryPageToken
 }
 
 func newInMemoryMemoryRepo() *inMemoryMemoryRepo {
@@ -71,7 +71,7 @@ func (r *inMemoryMemoryRepo) DeleteMemory(_ context.Context, template, session, 
 	return nil
 }
 
-func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor, _ int) ([]*domain.Memory, string, error) {
+func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageToken, _ int) ([]*domain.Memory, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.listSort = sort
@@ -550,7 +550,7 @@ func TestMemoryService_ListMemoriesPageToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseMemoryOrderBy() setup error: %v", err)
 	}
-	descToken := domain.EncodeMemoryPageToken(domain.NewMemoryPageCursor(descSort, []any{
+	descToken := domain.EncodeMemoryPageToken(domain.NewMemoryPageToken(descSort, []any{
 		time.Date(2026, 9, 16, 10, 0, 0, 1, time.UTC),
 		"m-1",
 	}))
@@ -623,7 +623,7 @@ func TestMemoryService_ListMemoriesPageToken(t *testing.T) {
 				return
 			}
 			assertStatusCode(t, err, codes.OK)
-			assertMemoryCursor(t, repo.listCursor, tt.wantEntries)
+			assertMemoryToken(t, repo.listCursor, tt.wantEntries)
 		})
 	}
 }
@@ -642,26 +642,26 @@ func assertSortTerms(t *testing.T, got []*domain.MemorySortTerm, want []domain.M
 	}
 }
 
-// assertMemoryCursor asserts the recorded cursor equals want: nil means the
-// first page (empty token), otherwise the entries match on the exported
-// {Field, Value} pair (typed is private).
-func assertMemoryCursor(t *testing.T, got *domain.MemoryPageCursor, want []*domain.MemoryCursorEntry) {
+// assertMemoryToken asserts the recorded token equals want: nil means the
+// first page (empty request token), otherwise the entries match on the
+// exported {Field, Value} pair (typed is private).
+func assertMemoryToken(t *testing.T, got *domain.MemoryPageToken, want []*domain.MemoryCursorEntry) {
 	t.Helper()
 	if want == nil {
 		if got != nil {
-			t.Fatalf("ListMemories() cursor = %+v, want nil (first page)", got)
+			t.Fatalf("ListMemories() token = %+v, want nil (first page)", got)
 		}
 		return
 	}
 	if got == nil {
-		t.Fatalf("ListMemories() cursor = nil, want %+v", want)
+		t.Fatalf("ListMemories() token = nil, want %+v", want)
 	}
 	if len(got.Entries) != len(want) {
-		t.Fatalf("ListMemories() cursor = %+v, want %+v", got, want)
+		t.Fatalf("ListMemories() token = %+v, want %+v", got, want)
 	}
 	for i := range want {
 		if got.Entries[i] == nil || got.Entries[i].Field != want[i].Field || got.Entries[i].Value != want[i].Value {
-			t.Fatalf("ListMemories() cursor[%d] = %+v, want %+v", i, got.Entries[i], want[i])
+			t.Fatalf("ListMemories() token[%d] = %+v, want %+v", i, got.Entries[i], want[i])
 		}
 	}
 }

@@ -17,6 +17,7 @@
 | R7 | 自然停实现锚点：orchestrator 内 `完成轮数` 计数 + reviewing 分支停点判定 | 本文 §6 |
 | R8 | 验证面：wiki → testplan 大型测试（gateway HTTP）；自然停 → orchestrator 单测为主 | 本文 §7 |
 | R9 | ListMemories page token 显式携带 order_by 最终排序键上下文（含方向）独立校验；游标载荷校验归属游标领域内部逻辑；实现任务并入 Phase 3 主任务流；page_size/parent 不纳入 token | 用户裁定（2026-09-19 执行期） |
+| R10 | 2026-09-20 执行期三项裁定：`*PageCursor` → `*PageToken` 重命名（与 API 术语/编解码函数名一致，cursor 词汇保留给 entries 载荷层）；token 的 sort 上下文由拼写数组改为**解析后最终排序键的规范序列化单串**（`memorySortTermWire` 逐项拼写 `,` join，单次字符串相等比较）；memory_id 校验自 handler 内联迁移至 `domain.ValidateMemoryID`（对齐 wiki 风格） | 用户裁定（2026-09-20 执行期） |
 
 ---
 
@@ -126,7 +127,21 @@
 - 仓库先例：SearchWikis token 显式携带规范化 query `q` 并于续页比对（specs/068-wiki-round-pause/contracts/wiki-service.md §4.4）——本裁定将同一形态推广到 ListMemories order_by 面。
 - 契约：specs/068-wiki-round-pause/contracts/memory-page-token-context.md（修订 specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1 item 4）。
 
-## 9. 参考文献
+## 9. R10：类型口径、token 上下文单串与 memory_id 校验归属（2026-09-20 执行期裁定）
+
+### 9.1 三点裁定
+
+1. **`*PageCursor` → `*PageToken` 重命名**：`MemoryPageCursor`/`WikiSearchCursor`/`WikiListCursor` 及其 `New*`/私有铸造函数 → `MemoryPageToken`/`WikiSearchPageToken`/`WikiListPageToken`。理由：解码产物与 API 术语 `page_token`、既有编解码函数名（`Encode/Decode*PageToken`）一致；「cursor（游标）」词汇保留给 entries 载荷层（R9 两层所有权模型的「token 契约层 / 游标领域内部逻辑」注释语言不变）。`MemoryCursorEntry` 与既有 Token 命名不动。
+2. **token 的 sort 上下文改为单一规范串**：wire 形态 `{"sort":"...","entries":[...]}`，`sort` 为**解析后最终排序键的规范序列化**——`memorySortTermWire` 逐项拼写以 `,` join（如 `"update_time desc,memory_id"`），比较即一次字符串相等（缺 `sort` 键、旧数组形态均 fail-closed）。**语义前提**：存/比的串是「请求经 `ParseMemoryOrderBy` 解析后的最终排序键」的规范序列化，**不是** order_by 原始参数串——等价拼写互通、空白不敏感、缺省 tie-breaker 均由「先解析再序列化」保证。R9 的两层所有权模型不变。
+3. **memory_id 校验迁移至 domain**：handler 内联的 `memoryIDPattern` 迁入 `domain.ValidateMemoryID`（校验 `[a-z0-9_-]+`，错误文本逐字不变），handler 只做 InvalidArgument 映射——对齐 wiki 的 `domain.ValidateWiki*` 风格（domain 拥有资源校验不变量）。
+
+### 9.2 落地与验证面
+
+- 契约：`specs/068-wiki-round-pause/contracts/memory-page-token-context.md` §1/§2/§4/§5 同步为单串形态。
+- proto 注释：`projects/game/game.proto` `ListMemoriesRequest.order_by` 第三段改为规范序列化单串比对表述。
+- 单测：`projects/game/memory/domain/pagination_test.go`（单串模型全适配 + 不匹配错误消息含两侧串值）、`domain/sort_test.go`（`memorySortContext` 真值表）、`domain/model_test.go`（`TestValidateMemoryID`）；`handler`/`runtime/mongo` 测试经重命名适配。
+
+## 10. 参考文献
 
 - 调研：`survey/game-wiki-knowledge-base.md`（D1–D10、n-gram 论证、分页社区实践、两级检索业界验证）
 - [AIP-122 Resource names](https://google.aip.dev/122) / [AIP-133 Standard methods: Create](https://google.aip.dev/133) / [AIP-131](https://google.aip.dev/131) / [AIP-132](https://google.aip.dev/132) / [AIP-134](https://google.aip.dev/134) / [AIP-135](https://google.aip.dev/135) / [AIP-136](https://google.aip.dev/136) / [AIP-158](https://google.aip.dev/158) / [AIP-193](https://google.aip.dev/193)

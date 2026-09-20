@@ -205,7 +205,7 @@ func (r *memoryRepository) DeleteMemory(ctx context.Context, template, session, 
 // cursor entries already carry their typed values
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
 // items 5/9).
-func (r *memoryRepository) ListMemories(ctx context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor, pageSize int) ([]*domain.Memory, string, error) {
+func (r *memoryRepository) ListMemories(ctx context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageToken, pageSize int) ([]*domain.Memory, string, error) {
 	filter := bson.M{fieldTemplate: template, fieldSessionID: session}
 	if cursor != nil {
 		filter["$or"] = memorySeekClauses(sort, cursor)
@@ -247,7 +247,7 @@ func (r *memoryRepository) ListMemories(ctx context.Context, template, session s
 // (https://use-the-index-luke.com/sql/partial-results/fetch-next-page;
 // specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
 // item 6).
-func memorySeekClauses(sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor) bson.A {
+func memorySeekClauses(sort []*domain.MemorySortTerm, cursor *domain.MemoryPageToken) bson.A {
 	clauses := bson.A{}
 	prefix := bson.M{}
 	for i, term := range sort {
@@ -288,7 +288,7 @@ func memorySortDocument(sort []*domain.MemorySortTerm) bson.D {
 // memoryNextPageToken encodes the page's last document position together with
 // the order_by context: each document value goes through its term's
 // CursorEntry (the only place a typed cursor value becomes its wire form) and
-// the context is filled from the same key by NewMemoryPageCursor, so the
+// the context is filled from the same key by NewMemoryPageToken, so the
 // token's context and entries always agree
 // (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
 func memoryNextPageToken(doc *memoryDocument, sort []*domain.MemorySortTerm) string {
@@ -296,7 +296,7 @@ func memoryNextPageToken(doc *memoryDocument, sort []*domain.MemorySortTerm) str
 	for _, term := range sort {
 		values = append(values, doc.sortValue(term.Field))
 	}
-	return domain.EncodeMemoryPageToken(domain.NewMemoryPageCursor(sort, values))
+	return domain.EncodeMemoryPageToken(domain.NewMemoryPageToken(sort, values))
 }
 
 // find runs the cursor query and decodes the matching documents.

@@ -4,8 +4,8 @@
  * spec 059 US1). Coverage: old_text substring matching (case sensitivity,
  * 0/multiple/all-identical hits, empty locator), deterministic memory_id
  * generation, and `applyMemoryCall` conversion (add dedupe + ALREADY_EXISTS
- * race, replace/remove location, single-vs-batch argument forms, batch
- * preflight atomicity, commit-phase infrastructure failure).
+ * race, replace/remove location, single-vs-batch argument forms, two-phase
+ * preflight/commit, commit-phase infrastructure failure).
  *
  * DI pattern (style/javascript.md §测试): the storage client is a
  * `vi.fn()`-backed double — no module-level `vi.mock`.
@@ -343,7 +343,7 @@ describe("applyMemoryCall — hermes conversion", () => {
     });
   });
 
-  describe("operations batch (atomic all-or-nothing preflight)", () => {
+  describe("operations batch (two-phase preflight/commit)", () => {
     it("applies a mixed batch in order (add + replace + remove)", async () => {
       fake = makeFakeStore([
         { memory_id: "m1", content: "旧条目A" },
@@ -402,8 +402,9 @@ describe("applyMemoryCall — hermes conversion", () => {
       });
 
       expect(result).toContain("operation 2 failed");
-      expect(result).toContain("No operations were applied");
+      expect(result).toContain("No operations were applied.");
       expect(result).toContain("唯一条目");
+      expect(result).not.toContain("all-or-nothing");
       expect(fake.createMemory).not.toHaveBeenCalled();
       expect(fake.deleteMemory).not.toHaveBeenCalled();
     });
@@ -429,7 +430,7 @@ describe("applyMemoryCall — hermes conversion", () => {
       expect(fake.createMemory).not.toHaveBeenCalled();
     });
 
-    it("commit-phase infrastructure failure propagates (earlier writes stay applied)", async () => {
+    it("commit-phase infrastructure failure reports the operation applied before it (specs/068-wiki-round-pause/spec.md Edge Cases)", async () => {
       fake = makeFakeStore([{ memory_id: "m1", content: "旧条目A" }]);
       fake.updateMemory.mockRejectedValueOnce(
         Object.assign(new Error("memory service unavailable"), { code: 14 }),
@@ -442,11 +443,52 @@ describe("applyMemoryCall — hermes conversion", () => {
             { action: "replace", old_text: "旧条目A", content: "更新后的A" },
           ],
         }),
-      ).rejects.toThrow("memory service unavailable");
+      ).rejects.toThrow(
+        "memory service unavailable; operation 1 was applied before the failure",
+      );
 
       expect(fake.createMemory).toHaveBeenCalledTimes(1);
       expect(fake.state.some((e) => e.content === "新条目")).toBe(true);
       expect(fake.state.some((e) => e.content === "更新后的A")).toBe(false);
+    });
+
+    it("commit-phase failure compresses consecutive applied positions into a range", async () => {
+      fake = makeFakeStore([{ memory_id: "m0", content: "待删条目" }]);
+      fake.deleteMemory.mockRejectedValueOnce(
+        Object.assign(new Error("memory service unavailable"), { code: 14 }),
+      );
+
+      await expect(
+        call(fake, {
+          operations: [
+            { action: "add", content: "甲" },
+            { action: "add", content: "乙" },
+            { action: "remove", old_text: "待删" },
+          ],
+        }),
+      ).rejects.toThrow(
+        "memory service unavailable; operations 1-2 were applied before the failure",
+      );
+    });
+
+    it("rethrows the original failure unchanged when no operation was applied", async () => {
+      fake = makeFakeStore();
+      const failure = Object.assign(new Error("memory service unavailable"), {
+        code: 14,
+      });
+      fake.createMemory.mockRejectedValue(failure);
+
+      const error = await call(fake, {
+        operations: [{ action: "add", content: "新条目" }],
+      }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBe(failure);
+      expect((error as Error).message).not.toContain(
+        "applied before the failure",
+      );
     });
   });
 });

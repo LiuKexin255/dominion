@@ -175,7 +175,7 @@ func (t *MemorySortTerm) CursorEntry(value any) *MemoryCursorEntry {
 // spelling: "{field}" for ascending (the suffix is omitted) or "{field} desc"
 // for descending (AIP-132 Ordering: https://google.aip.dev/132). It is the
 // single spelling source shared by cursor construction and the page token's
-// order_by context comparison, so the two can never disagree
+// order_by context serialization, so the two can never disagree
 // (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
 func memorySortTermWire(term *MemorySortTerm) string {
 	if term.Descending {
@@ -184,14 +184,20 @@ func memorySortTermWire(term *MemorySortTerm) string {
 	return term.Field
 }
 
-// memorySortWire renders a final sort key as its canonical spelling array (the
-// order_by context a page token carries).
-func memorySortWire(sort []*MemorySortTerm) []string {
-	var wire []string
+// memorySortContext renders a final sort key as the canonical serialization a
+// page token carries: the comma-joined canonical spelling of each term in key
+// order (e.g. "update_time desc,memory_id"). The token layer compares this
+// value with the token's carried context as a single string, so direction
+// changes and cross-order replays are ordinary mismatches. Serializing the
+// ParseMemoryOrderBy product — never the raw order_by argument — makes
+// equivalent request spellings resolve to the same value
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1/§3).
+func memorySortContext(sort []*MemorySortTerm) string {
+	var terms []string
 	for _, term := range sort {
-		wire = append(wire, memorySortTermWire(term))
+		terms = append(terms, memorySortTermWire(term))
 	}
-	return wire
+	return strings.Join(terms, ",")
 }
 
 // ParseMemoryOrderBy parses and validates an AIP-132 order_by value into the

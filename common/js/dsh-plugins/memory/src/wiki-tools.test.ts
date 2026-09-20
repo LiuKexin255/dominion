@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   WIKI_WRITE_EMPTY_ENTRIES_TEXT,
   normalizeWikiTitle,
+  wikiName,
   wikiSearch as coreWikiSearch,
   wikiWrite as coreWikiWrite,
 } from "@dominion/dsh-memory-service";
@@ -88,6 +89,21 @@ describe("wiki tool descriptions (only the tool's own function)", () => {
         if (other !== name) {
           expect(description).not.toContain(other);
         }
+      }
+    }
+  });
+
+  it("promises no batch transactionality in any description (specs/068-wiki-round-pause/spec.md Edge Cases「批量 write 的原子性」)", () => {
+    // The descriptions state each tool's shape, never a batch transaction:
+    // the commit phase has no rollback (spec.md Edge Cases「批量 write 的原子性」).
+    for (const description of [
+      WIKI_SEARCH_TOOL_DESCRIPTION,
+      WIKI_GET_TOOL_DESCRIPTION,
+      WIKI_WRITE_TOOL_DESCRIPTION,
+    ]) {
+      const lower = description.toLowerCase();
+      for (const promise of ["all-or-nothing", "atomic", "transaction"]) {
+        expect(lower).not.toContain(promise);
       }
     }
   });
@@ -388,5 +404,41 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
     const [, , id] = store.createWiki.mock.calls[0] as [string, string, string];
     expect(store.wikis.has(id)).toBe(true);
     expect(normalizeWikiTitle("新策略")).toBe("新策略");
+  });
+
+  it("wiki_write reports `wiki failed:` with the entries written before a mid-commit failure", async () => {
+    const store = makeFakeWikiStore();
+    // Entry 1 resolves to an existing entry (an update through the fake's
+    // default updateWiki), entry 2 is new (a create): only the second RPC
+    // fails, so the first entry is already written when the error is raised.
+    store.searchWikis.mockImplementation(
+      async (t: string, s: string, query: string) => ({
+        wikis:
+          normalizeWikiTitle(query) === normalizeWikiTitle("甲")
+            ? [{ name: wikiName(t, s, "w-existing"), title: "甲" }]
+            : [],
+        nextPageToken: "",
+      }),
+    );
+    store.createWiki.mockRejectedValueOnce(
+      Object.assign(new Error("memory service unavailable"), { code: 14 }),
+    );
+
+    const result = await executeWikiWriteTool(
+      coreService(store),
+      {
+        entries: [
+          { title: "甲", content: "正文甲" },
+          { title: "乙", content: "正文乙" },
+        ],
+      },
+      makeExec(),
+    );
+
+    // The model-visible text names the partial write instead of implying the
+    // batch was all-or-nothing (specs/068-wiki-round-pause/spec.md Edge
+    // Cases「批量 write 的原子性」).
+    expect(result.result).toContain("wiki failed: memory service unavailable");
+    expect(result.result).toContain("entries written before the failure: '甲'");
   });
 });

@@ -13,12 +13,15 @@
  *   (specs/068-wiki-round-pause/contracts/dsh-plugins.md §2 item 2).
  * - `wiki_write` is an upsert by normalized title (existing entry → UpdateWiki;
  *   absent → CreateWiki with `wiki_id = sha256(title_norm)[:32]` —
- *   specs/068-wiki-round-pause/data-model.md §5) and is batch-atomic: the
- *   preflight validates every entry (non-empty title/content, title ≤ 128
- *   runes, content ≤ 64KB) and resolves every update target BEFORE the commit
- *   phase runs, so one invalid entry writes nothing (the two-phase shape of
- *   `operations.ts` `applyBatch`;
- *   specs/068-wiki-round-pause/spec.md US2 scenario 4).
+ *   specs/068-wiki-round-pause/data-model.md §5) and uses a two-phase
+ *   preflight/commit: the preflight validates every entry (non-empty
+ *   title/content, title ≤ 128 runes, content ≤ 64KB) and resolves every
+ *   update target BEFORE the commit phase runs, so one invalid entry writes
+ *   nothing (specs/068-wiki-round-pause/spec.md US2 scenario 4); the commit
+ *   phase writes entries one by one with no transaction, so an infrastructure
+ *   failure mid-commit leaves earlier entries written and the failure message
+ *   names exactly which (specs/068-wiki-round-pause/spec.md Edge
+ *   Cases「批量 write 的原子性」).
  * - Domain outcomes (empty query, no hit, missing titles, invalid batch) are
  *   TEXT results; only infrastructure failures propagate to the tool surface,
  *   which maps them to `wiki failed: …`
@@ -27,6 +30,7 @@
 
 import { createHash } from "node:crypto";
 
+import { describeErr } from "./errors.js";
 import { parseWikiName } from "./wiki-client.js";
 import type { WikiStore, WikiSummary } from "./wiki-client.js";
 
@@ -249,15 +253,15 @@ function normalizeWriteEntries(args: WikiWriteArgs): WikiWriteEntry[] {
 }
 
 /**
- * Run `wiki_write`: upsert every entry by normalized title, atomically. The
- * preflight validates every entry and resolves every update target against the
- * store first; only when all entries are clean does the commit phase run the
- * RPCs in order (the two-phase shape of `operations.ts` `applyBatch`). A
- * failing entry aborts the batch with an explanatory text and ZERO writes
- * (specs/068-wiki-round-pause/spec.md FR-007/US2 scenario 4); an
- * infrastructure failure mid-commit propagates to the tool surface as
- * `wiki failed: …`, with earlier writes possibly applied (no service
- * transaction API — the same limitation as the memory batch).
+ * Run `wiki_write`: upsert every entry by normalized title through a two-phase
+ * preflight/commit (the shape of `operations.ts` `applyBatch`). The preflight
+ * validates every entry and resolves every update target against the store
+ * first, so a failing entry aborts the batch with an explanatory text and ZERO
+ * writes (specs/068-wiki-round-pause/spec.md US2 scenario 4). The commit phase
+ * then writes the entries in order with no transaction (the store offers
+ * none), so an infrastructure failure mid-commit propagates to the tool
+ * surface as `wiki failed: …` with the entries already written named in the
+ * message (specs/068-wiki-round-pause/spec.md Edge Cases「批量 write 的原子性」).
  */
 export async function wikiWrite(
   store: WikiStore,
@@ -278,13 +282,13 @@ export async function wikiWrite(
   }
 
   const entries = normalizeWriteEntries(args);
-  // A batch failure names the failing entry and states the all-or-nothing
-  // rule; the single form has no batch to abort, so it reports only the
-  // reason (the neutral style of the memory tool's single-form texts).
+  // A batch failure names the failing entry and states that nothing was
+  // written (a preflight failure commits nothing); the single form has no
+  // batch to abort, so it reports only the reason (the neutral style of the
+  // memory tool's single-form texts).
   const failureText = (pos: string, reason: string): string =>
     hasBatch
-      ? `wiki: ${pos} failed: ${reason}. No entries were written ` +
-        "(a batch is all-or-nothing)."
+      ? `wiki: ${pos} failed: ${reason}. No entries were written.`
       : `wiki: ${reason}. Nothing was written.`;
 
   // Preflight: validate each entry and resolve its target. `planned` tracks
@@ -337,19 +341,34 @@ export async function wikiWrite(
     writes.push({ kind, id, title, content });
   }
 
-  // Commit — every preflight check passed.
+  // Commit — every preflight check passed. The store offers no transaction, so
+  // a failure mid-commit leaves the entries already written in place; the
+  // error names them, and the tool surface renders that as `wiki failed: …`
+  // (specs/068-wiki-round-pause/spec.md Edge Cases「批量 write 的原子性」).
+  const written: string[] = [];
   for (const write of writes) {
-    if (write.kind === "create") {
-      await store.createWiki(
-        template,
-        session,
-        write.id,
-        write.title,
-        write.content,
+    try {
+      if (write.kind === "create") {
+        await store.createWiki(
+          template,
+          session,
+          write.id,
+          write.title,
+          write.content,
+        );
+      } else {
+        await store.updateWiki(template, session, write.id, write.content);
+      }
+    } catch (err) {
+      if (written.length === 0) {
+        throw err;
+      }
+      throw new Error(
+        `${describeErr(err)}; entries written before the failure: ` +
+          written.map((title) => `'${title}'`).join(", "),
       );
-    } else {
-      await store.updateWiki(template, session, write.id, write.content);
     }
+    written.push(write.title);
   }
 
   const lines = writes.map(

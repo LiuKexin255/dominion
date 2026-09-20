@@ -41,12 +41,11 @@ export const WIKI_GET_TOOL_DESCRIPTION =
   "one or more titles; titles that do not resolve to an entry are reported in " +
   "the result together with the entries that did.";
 
-/** Model-facing description: upsert by title, single XOR batch, atomic. */
+/** Model-facing description: upsert by title, single XOR batch. */
 export const WIKI_WRITE_TOOL_DESCRIPTION =
   "Create or update knowledge-base entries addressed by title: an entry whose " +
   "normalized title already exists has its content overwritten, otherwise it " +
-  "is created. Accepts a single title/content pair OR an entries batch; a " +
-  "batch is all-or-nothing, so any invalid entry writes nothing.";
+  "is created. Accepts a single title/content pair OR an entries batch.";
 
 /**
  * `wiki_search` parameters: `query` is the only parameter. The root stays open
@@ -182,7 +181,7 @@ export async function executeWikiGetTool(
   }
 }
 
-/** Execute one `wiki_write` (upsert; single XOR batch, batch atomic). */
+/** Execute one `wiki_write` (upsert; single XOR batch). */
 export async function executeWikiWriteTool(
   service: WikiToolService,
   args: WikiWriteToolArgs,
