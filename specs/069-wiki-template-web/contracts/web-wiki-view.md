@@ -14,7 +14,7 @@
 
 - 全部相对路径（`/api/v1/...`）经 `requestJson`/`ApiError`——同源 gateway，零 CORS（web README 拓扑）。
 - 方法：`createWiki(template, wikiId, title, content)`、`listWikis(template, {pageSize, pageToken})`、`searchWikis(template, query, {pageSize, pageToken})`、`getWiki(name)`、`updateWiki(name, {title?, content?})`、`deleteWiki(name)`。
-- `wiki_id` 生成：`sha256(title_norm)[:32]`（JS 侧 NormalizeTitle 孪生，与服务端/工具面同源——data-model §4）。
+- `wiki_id` 生成：`sha256(title_norm)[:32]`（JS 侧 NormalizeTitle 孪生，与服务端/工具面同源——data-model §4）。派生依赖 `crypto.subtle`（Web Crypto `SubtleCrypto.digest`）——该 API 仅 secure context（HTTPS 或 localhost）可用；部署面由 gateway 终止 TLS、入口 `https://game.liukexin.com` 满足该前提（`projects/game/web/frontend/src/api/wiki.ts` 的 `wikiIdForTitle`；https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest）。
 - protojson 投影：`Wiki { name, title, content, createTime?, updateTime? }`；Search 轻量条目 `{ name, title }`。
 
 ## 3. 视图行为（`WikiView.tsx`，PresetsView 模式）

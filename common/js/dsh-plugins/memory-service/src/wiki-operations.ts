@@ -7,7 +7,7 @@
  *   `NormalizeTitle` — specs/068-wiki-round-pause/data-model.md §2.1), so
  *   `wiki_get`/`wiki_write` resolve an entry by exact normalized title through
  *   SearchWikis. A wiki's resource `name`/`wiki_id` never reaches the result
- *   text (specs/068-wiki-round-pause/spec.md FR-009).
+ *   text (specs/069-wiki-template-web/contracts/dsh-plugins.md §3).
  * - Every operation addresses one template's wiki collection — the template is
  *   the single scope parameter
  *   (specs/069-wiki-template-web/contracts/dsh-plugins.md §3), so knowledge
@@ -42,7 +42,7 @@ import type { WikiStore, WikiSummary } from "./wiki-client.js";
 /**
  * The `page_size` the search folding uses: the service maximum
  * (`projects/game/memory/handler/wiki_handler.go` `wikiPageSize` caps at the
- * domain maximum of 100, `specs/068-wiki-round-pause/contracts/wiki-service.md`
+ * domain maximum of 100, `specs/069-wiki-template-web/contracts/wiki-service.md`
  * §4). A template's wiki set is bounded, so this reaches the end of the result
  * in one or two round trips.
  */

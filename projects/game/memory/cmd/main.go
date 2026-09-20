@@ -1,5 +1,5 @@
-// The memory command is the MemoryService + WikiService gRPC server (spec
-// 039-planner-memory-calibration FR-006;
+// The memory command is the MemoryService + WikiService gRPC server
+// (specs/039-planner-memory-calibration/spec.md FR-006;
 // specs/069-wiki-template-web/contracts/wiki-service.md §1), hosting planner
 // long-term memory entries and wiki knowledge-base entries in the dedicated
 // "game_memory" database (style/mongo.md;

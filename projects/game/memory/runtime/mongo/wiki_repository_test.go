@@ -346,7 +346,7 @@ func TestNewWikiRepositoryMigratesToTemplateScope(t *testing.T) {
 	}
 
 	// then - the three legacy session-scoped indexes are dropped
-	assertStringsEqual(t, fake.indexView.dropped, []string{
+	assertStringSliceEqual(t, "dropped indexes", fake.indexView.dropped, []string{
 		"template_1_session_id_1_wiki_id_1",
 		"template_1_session_id_1_title_norm_1",
 		"template_1_session_id_1_title_grams_1",
@@ -452,7 +452,7 @@ func TestWikiCreateGet(t *testing.T) {
 	if stored.TitleNorm != "策略复盘" {
 		t.Fatalf("stored title_norm = %q, want %q", stored.TitleNorm, "策略复盘")
 	}
-	assertWikiGramsEqual(t, stored.TitleGrams, []string{"策略", "略复", "复盘"})
+	assertStringSliceEqual(t, "stored title_grams", stored.TitleGrams, []string{"策略", "略复", "复盘"})
 
 	// when - get
 	got, err := repo.GetWiki(ctx, "saolei", "wiki-1")
@@ -561,7 +561,7 @@ func TestWikiUpdate(t *testing.T) {
 	if stored.TitleNorm != "新标题" {
 		t.Fatalf("UpdateWiki() title_norm = %q, want %q", stored.TitleNorm, "新标题")
 	}
-	assertWikiGramsEqual(t, stored.TitleGrams, []string{"新标", "标题"})
+	assertStringSliceEqual(t, "updated title_grams", stored.TitleGrams, []string{"新标", "标题"})
 }
 
 func TestWikiUpdateNotFound(t *testing.T) {
@@ -745,7 +745,7 @@ func TestWikiSearchBigramPrefilter(t *testing.T) {
 	if !ok {
 		t.Fatalf("SearchWikis() filter = %v, want a title_grams $all", filter)
 	}
-	assertWikiGramsEqual(t, all, []string{"策略"})
+	assertStringSliceEqual(t, "query grams", all, []string{"策略"})
 
 	// then - both sharing titles in the template are candidates, the other
 	// template is not
@@ -854,23 +854,18 @@ func assertWikiHitIDs(t *testing.T, hits []*domain.WikiSearchHit, want []string)
 	}
 }
 
-// assertWikiGramsEqual asserts got equals want element for element.
-func assertWikiGramsEqual(t *testing.T, got, want []string) {
+// assertStringSliceEqual asserts got equals want element for element, naming
+// the asserted object (`what`) in the failure message.
+func assertStringSliceEqual(t *testing.T, what string, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
+		t.Fatalf("%s = %v, want %v", what, got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("got[%d] = %q, want %q (full: %v, want %v)", i, got[i], want[i], got, want)
+			t.Fatalf("%s[%d] = %q, want %q (full: %v, want %v)", what, i, got[i], want[i], got, want)
 		}
 	}
-}
-
-// assertStringsEqual asserts got equals want element for element.
-func assertStringsEqual(t *testing.T, got, want []string) {
-	t.Helper()
-	assertWikiGramsEqual(t, got, want)
 }
 
 // assertFilterHasNoSession asserts a wiki query filter carries no session

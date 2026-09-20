@@ -89,13 +89,15 @@ func main() {
 	}
 
 	// memoryConn hosts the MemoryService and WikiService — the planner's
-	// long-term memory and wiki knowledge base (spec 039-planner-memory-
-	// calibration FR-006; spec 068 FR-001). Both services are hosted by the
-	// same memory binary and database, so they share the connection.
-	// Registered on the gateway so the /api/v1/templates/{template}/
-	// sessions/{session}/memories and .../wikis surfaces are reachable
-	// through the public HTTP entry
-	// (specs/068-wiki-round-pause/contracts/wiki-service.md §6).
+	// long-term memory and wiki knowledge base
+	// (specs/039-planner-memory-calibration/spec.md FR-006;
+	// specs/069-wiki-template-web/spec.md FR-001). Both services are hosted
+	// by the same memory binary and database, so they share the connection.
+	// Registered on the gateway so the
+	// /api/v1/templates/{template}/sessions/{session}/memories and
+	// /api/v1/templates/{template}/wikis surfaces are reachable through the
+	// public HTTP entry
+	// (specs/069-wiki-template-web/contracts/wiki-service.md §2/§6).
 	memoryConn, err := grpc.NewClient(solver.URI(gameconst.MemoryTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("memory dial: %v", err)
@@ -130,7 +132,7 @@ func main() {
 	}
 	// WikiService rides the same memory connection: the memory binary hosts
 	// both services over the same database
-	// (specs/068-wiki-round-pause/contracts/wiki-service.md §6).
+	// (specs/069-wiki-template-web/contracts/wiki-service.md §6).
 	if err := game.RegisterWikiServiceHandler(ctx, gwmux, memoryConn); err != nil {
 		log.Fatalf("register wiki handler: %v", err)
 	}

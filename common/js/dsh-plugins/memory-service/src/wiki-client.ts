@@ -12,8 +12,8 @@
  * RPCs (specs/069-wiki-template-web/contracts/dsh-plugins.md §3).
  *
  * A wiki's `name`/`wiki_id` never reaches model-visible text
- * (specs/068-wiki-round-pause/spec.md FR-009); the name is used here only to
- * address GetWiki/UpdateWiki/DeleteWiki.
+ * (specs/069-wiki-template-web/contracts/dsh-plugins.md §3); the name is used
+ * here only to address GetWiki/UpdateWiki/DeleteWiki.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -51,7 +51,8 @@ export function parseWikiName(name: string): string {
 
 /**
  * One SearchWikis hit: the lightweight `{name, title}` pair. `content` is
- * never returned by search (specs/068-wiki-round-pause/spec.md FR-004).
+ * never returned by search
+ * (specs/069-wiki-template-web/contracts/wiki-service.md §2).
  */
 export interface WikiSummary {
   readonly name: string;
