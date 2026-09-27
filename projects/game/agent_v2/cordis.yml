@@ -17,6 +17,11 @@
 - { id: timer,           name: '@deepseek-ai/cordis-plugin-timer' }
 - { id: llm,             name: '@deepseek-ai/dsh-llm' }
 - { id: session,         name: '@deepseek-ai/dsh-session' }
+# 会话投影注册表（ctx.sessionProjections）：官方 agent-loop 的 static inject
+# 与 preset registry 的 inject 都要求该服务在场
+# （specs/070-dsh-upgrade/research.md D6；上游源码
+# https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/src/index.ts）。
+- { id: session-projection, name: '@deepseek-ai/dsh-session-projection' }
 - id: system-prompt
   name: '@deepseek-ai/dsh-system-prompt'
   config:
@@ -31,7 +36,8 @@
 - { id: agent-loop,      name: '@deepseek-ai/dsh-agent-loop' }
 - { id: invariants,      name: '@deepseek-ai/dsh-invariants' }
 # 一致性防护伴生（官方 loop + session/agent/scope 的 request-reconstruction
-# 不变量；research.md D5）：三个包的 ./invariant subpath 导出为普通插件模块
+# 不变量；specs/051-agent-v2-dsh-migration/research.md D5）：三个包的
+# ./invariant subpath 导出为普通插件模块
 # （name/inject/apply），Loader 按裸说明符动态 import，Node ESM exports map
 # 直接解析 subpath 行名。
 - { id: invariant-session, name: '@deepseek-ai/dsh-session/invariant' }
@@ -39,12 +45,14 @@
 - { id: invariant-scope,   name: '@deepseek-ai/dsh-scope/invariant' }
 - { id: llm-retry,       name: '@deepseek-ai/dsh-llm-retry' }
 # Preset registry + declarative pool templates (specs/070-dsh-upgrade/contracts/
-# composition-manifest.md §2; research.md D2/D4/D5): the declaration rows ARE
+# composition-manifest.md §2; specs/070-dsh-upgrade/research.md D2/D4/D5): the
+# declaration rows ARE
 # the preset definitions, so hosting them in this manifest is what makes the
 # player/planner pool templates system-trusted — no user-facing path can write
 # or delete them. `default: ''` keeps preset selection mandatory: the empty id
 # matches no declaration, so an id-less resolve reports not-found instead of
-# silently falling back to a default template (research.md D5).
+# silently falling back to a default template
+# (specs/070-dsh-upgrade/research.md D5).
 - id: agent-preset-registry
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:

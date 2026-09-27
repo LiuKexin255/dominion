@@ -26,8 +26,9 @@
  * 051-agent-v2-dsh-migration/data-model.md §2.4).
  *
  * Event vocabulary anchors: dsh-session SessionEventMap
- * (node_modules/.pnpm/@deepseek-ai+dsh-session@0.1.1-rc.2_a4e4bb24/lib/types/
- * types.d.ts).
+ * (node_modules/@deepseek-ai/dsh-session/lib/types/types.d.ts) and the
+ * dsh-llm message/block definitions
+ * (node_modules/@deepseek-ai/dsh-llm/lib/types/{types,message}.d.ts).
  */
 
 import { randomUUID } from "node:crypto";
@@ -129,9 +130,11 @@ export interface ToolCallEvent extends DshSessionEvent {
 }
 
 /**
- * The `tool/result` event shape (dsh-session SessionEventMap). The message's
- * single tool-result block carries the outcome (`toolCallId`, `isError`) and
- * the tool's rendered model-facing content.
+ * The `tool/result` event shape (dsh-session SessionEventMap). In 0.1.7 the
+ * result is a first-class `ToolResultMessage` (role `tool`): `toolCallId` and
+ * `isError` sit at the message top level and `content` IS the result blocks —
+ * the old nested `tool-result` content arm is gone
+ * (specs/070-dsh-upgrade/research.md D7).
  */
 export interface ToolResultMessageEvent extends DshSessionEvent {
   type: "tool/result";
@@ -139,12 +142,12 @@ export interface ToolResultMessageEvent extends DshSessionEvent {
     turn: number;
     step: number;
     message: {
-      content: ReadonlyArray<{
-        type: "tool-result";
-        toolCallId?: string;
-        isError?: boolean;
-        content?: ReadonlyArray<DshContentBlockView>;
-      }>;
+      /** Provider-issued call id of the tool call this message answers. */
+      toolCallId?: string;
+      /** Whether the tool invocation failed. */
+      isError?: boolean;
+      /** The result blocks (text/image/…); no nested tool-result wrapper. */
+      content: ReadonlyArray<DshContentBlockView>;
     };
     error?: { name: string; code: string };
     meta?: unknown;
@@ -656,10 +659,10 @@ export class MemberCollector {
    * block is ignored on the history side, never fabricated.
    */
   private onToolResult(event: ToolResultMessageEvent): void {
-    const block = event.data.message.content[0];
-    const toolId = block?.toolCallId ?? "";
-    const status: ToolStatus = block?.isError ? "TOOL_STATUS_FAILED" : "TOOL_STATUS_SUCCEEDED";
-    const result = (block?.content ?? [])
+    const message = event.data.message;
+    const toolId = message.toolCallId ?? "";
+    const status: ToolStatus = message.isError ? "TOOL_STATUS_FAILED" : "TOOL_STATUS_SUCCEEDED";
+    const result = (message.content ?? [])
       .map((candidate) => (candidate.type === "text" ? candidate.text ?? "" : ""))
       .join("");
     this.history.settleToolResult(this.role, toolId, status, result);

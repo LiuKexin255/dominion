@@ -414,8 +414,14 @@ describe("MemberCollector", () => {
       data: {
         turn: 1,
         step: 1,
+        // 0.1.7 first-class ToolResultMessage: toolCallId/isError at the
+        // message top level, content IS the result blocks
+        // (specs/070-dsh-upgrade/research.md D7).
         message: {
-          content: [{ type: "tool-result", toolCallId: "call-1", content: [{ type: "text", text: "new game started" }] }],
+          role: "tool",
+          toolCallId: "call-1",
+          isError: false,
+          content: [{ type: "text", text: "new game started" }],
         },
       },
     });

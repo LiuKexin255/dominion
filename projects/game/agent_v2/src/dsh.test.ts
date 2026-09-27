@@ -23,11 +23,13 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * token injection with zero token leakage in diagnostics (SC-004), and the
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
- * (specs/070-dsh-upgrade/contracts/composition-manifest.md §2): the row set
- * with the official agent-loop row, the agent-preset registry and the
- * declarative pool template rows, the fail-loud selection default, the
- * trimmed system-prompt config, the subpath invariant companion rows
- * (research.md D5), and the llm-glm + llm-opencode-go model catalogs.
+ * (specs/070-dsh-upgrade/contracts/composition-manifest.md §2): the exact
+ * row set with the session-projection row, the official agent-loop row, the
+ * agent-preset registry and the declarative pool template rows, the
+ * fail-loud selection default, the trimmed system-prompt config, the subpath
+ * invariant companion rows
+ * (specs/051-agent-v2-dsh-migration/research.md D5), and the llm-glm +
+ * llm-opencode-go model catalogs.
  *
  * `boot`, the resolver, and the secret reader are injected as `vi.fn()`
  * doubles through the DshBootDeps seam; `process.exit` is spied so the
@@ -440,8 +442,74 @@ function loadManifest(): ManifestRow[] {
   return load(text, { schema }) as ManifestRow[];
 }
 
+/**
+ * One declared pool-template `@deepseek-ai/dsh-agent-preset` row's sub-plugin
+ * entry; a persona entry carries its `prefix` (the 0.1.7 persona Config).
+ */
+interface PresetPluginRow {
+  name: string;
+  config?: Record<string, unknown>;
+}
+
+/**
+ * One template's declared definition (`PresetDefinition` minus the row
+ * identity): the `preset-player`/`preset-planner` rows and the
+ * preset-authoring `templates` snapshot carry the SAME object — the rows ARE
+ * the preset definitions, so the authoring plugin derives store records
+ * without reading any template filesystem
+ * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.3).
+ */
+interface TemplateDeclaration {
+  name: string;
+  description: string;
+  plugins: PresetPluginRow[];
+}
+
+/**
+ * Player pool persona prefix. The fake-llm team fixture's `system_keywords`
+ * match the opening `你是扫雷 player` by containment, so the identity anchor
+ * MUST stay verbatim (specs/070-dsh-upgrade/contracts/composition-manifest.md
+ * §2; projects/game/fake-llm/service/testdata/team_{player,planner}.yaml).
+ */
+const PLAYER_PERSONA_PREFIX =
+  "你是扫雷 player，负责操作桌面扫雷窗口完成对局，并依据 saolei 工具返回的棋盘文本持续推理落子，直到对局结束。你独占桌面控制；一律以工具返回的棋盘事实为准，任何与棋盘不符的说法都先核对再行动；每局结束后是否开启新局由你自行判断。保持冷静、精确，落子前先核对已揭示信息与剩余雷数，不做无依据的猜测。";
+
+/** Planner pool persona prefix — the verbatim identity anchor for planner. */
+const PLANNER_PERSONA_PREFIX =
+  "你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。";
+
+/** The declared player template: persona prefix + the saolei tool row. */
+const PLAYER_TEMPLATE: TemplateDeclaration = {
+  name: "player",
+  description: "扫雷 player 池模板：persona + saolei 工具插件行",
+  plugins: [
+    { name: "@deepseek-ai/dsh-persona", config: { prefix: PLAYER_PERSONA_PREFIX } },
+    { name: "@dominion/dsh-saolei" },
+  ],
+};
+
+/** The declared planner template: persona prefix + the memory tool row. */
+const PLANNER_TEMPLATE: TemplateDeclaration = {
+  name: "planner",
+  description: "扫雷 planner 池模板：persona + memory 工具插件行",
+  plugins: [
+    { name: "@deepseek-ai/dsh-persona", config: { prefix: PLANNER_PERSONA_PREFIX } },
+    { name: "@dominion/dsh-memory" },
+  ],
+};
+
 describe("cordis.yml composition manifest", () => {
   const rows = loadManifest();
+  /**
+   * The declared pool-template rows, in manifest order, with their
+   * PresetDefinition config (`id` + the shared template object).
+   */
+  const declarations = rows
+    .filter((row) => row.name === "@deepseek-ai/dsh-agent-preset")
+    .map((row) => ({
+      rowId: row.id,
+      config: row.config as unknown as TemplateDeclaration & { id: string },
+    }));
 
   it("keeps preset selection fail-loud: the registry default points at no preset", () => {
     const registry = rows.find((row) => row.id === "agent-preset-registry");
@@ -449,23 +517,73 @@ describe("cordis.yml composition manifest", () => {
     // Preset selection is mandatory in this service. The empty id is accepted
     // by the registry Config — `z.string()` accepts "", the "defined"
     // requirement only rejects an absent value (measured against
-    // @deepseek-ai/dsh-agent-preset-registry@0.1.7-rc.2, research.md D5) — and
-    // no declared preset claims it, so an id-less resolve matches no
-    // definition and reports agent-preset/not-found instead of silently
-    // falling back to a template.
+    // @deepseek-ai/dsh-agent-preset-registry@0.1.7-rc.2,
+    // specs/070-dsh-upgrade/research.md D5) — and no declared preset claims
+    // it, so an id-less resolve matches no definition and reports
+    // agent-preset/not-found instead of silently falling back to a template.
     expect(registry?.config).toEqual({ default: "" });
-    const declaredIds = rows
-      .filter((row) => row.name === "@deepseek-ai/dsh-agent-preset")
-      .map((row) => (row.config as { id?: string } | undefined)?.id);
-    expect(declaredIds).toHaveLength(2);
-    expect(declaredIds).not.toContain("");
+    expect(declarations.map((declaration) => declaration.config.id)).toEqual([
+      "player",
+      "planner",
+    ]);
   });
 
-  it("direct-composes the 20-row plugin set in contract order", () => {
+  it("declares the two pool template rows with their exact definition config", () => {
+    expect(declarations.map((declaration) => declaration.rowId)).toEqual([
+      "preset-player",
+      "preset-planner",
+    ]);
+    // Each declaration row IS the preset definition: identity in `config.id`
+    // (the session-persisted preset id) plus the exact template object the
+    // authoring snapshot repeats below
+    // (specs/070-dsh-upgrade/contracts/composition-manifest.md §2).
+    expect(declarations[0]?.config).toEqual({ id: "player", ...PLAYER_TEMPLATE });
+    expect(declarations[1]?.config).toEqual({ id: "planner", ...PLANNER_TEMPLATE });
+  });
+
+  it("keeps the cross-phase persona identity anchors in the declared prefixes", () => {
+    const playerPrefix = declarations[0]?.config.plugins[0]?.config?.prefix as string;
+    // The fake-llm team fixture matches this opening by containment, so the
+    // anchor must stay verbatim
+    // (projects/game/fake-llm/service/testdata/team_player.yaml).
+    expect(playerPrefix.startsWith("你是扫雷 player")).toBe(true);
+    expect(playerPrefix).toContain("saolei");
+    expect(playerPrefix).not.toContain("memory");
+    // R2 boundary: no team-level facts (broadcast wrappers/roster).
+    expect(playerPrefix).not.toContain("-message>");
+    expect(playerPrefix).not.toContain("名册");
+
+    const plannerPrefix = declarations[1]?.config.plugins[0]?.config?.prefix as string;
+    expect(plannerPrefix.startsWith("你是扫雷 planner")).toBe(true);
+    expect(plannerPrefix).toContain("复盘");
+    expect(plannerPrefix).toContain("memory");
+    expect(plannerPrefix).not.toContain("-message>");
+    expect(plannerPrefix).not.toContain("名册");
+  });
+
+  it("declares the role's tool-plugin row and no other role's row (authoring rule lockstep)", () => {
+    const playerRows = declarations[0]?.config.plugins.map((plugin) => plugin.name) ?? [];
+    expect(playerRows.filter((name) => name === "@dominion/dsh-saolei")).toHaveLength(1);
+    expect(playerRows).not.toContain("@dominion/dsh-memory");
+    expect(playerRows).not.toContain("@dominion/dsh-memory-service");
+    // The three wiki tools (wiki_search/wiki_get/wiki_write) ride
+    // @dominion/dsh-memory, so the player pool mounting no memory row is
+    // exactly its mounting no wiki tool (specs/068-wiki-round-pause/spec.md
+    // US2; contracts/dsh-plugins.md §1).
+    expect(playerRows.join(" ")).not.toContain("wiki");
+
+    const plannerRows = declarations[1]?.config.plugins.map((plugin) => plugin.name) ?? [];
+    expect(plannerRows.filter((name) => name === "@dominion/dsh-memory")).toHaveLength(1);
+    expect(plannerRows).not.toContain("@dominion/dsh-memory-service");
+    expect(plannerRows).not.toContain("@dominion/dsh-saolei");
+  });
+
+  it("direct-composes the 23-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
       "session",
+      "session-projection",
       "system-prompt",
       "tools",
       "agents",
@@ -475,14 +593,43 @@ describe("cordis.yml composition manifest", () => {
       "invariant-agent",
       "invariant-scope",
       "llm-retry",
+      "agent-preset-registry",
+      "preset-player",
+      "preset-planner",
       "llm-glm",
       "llm-opencode-go",
       "desktop-bridge",
-      "agent-presets",
       "preset-authoring",
       "team",
       "memory",
       "saolei-loop",
+    ]);
+    // The row names are pinned alongside the ids so the set is absolutely
+    // explicit (no runtime baseline, no subset matching).
+    expect(rows.map((row) => row.name)).toEqual([
+      "@deepseek-ai/cordis-plugin-timer",
+      "@deepseek-ai/dsh-llm",
+      "@deepseek-ai/dsh-session",
+      "@deepseek-ai/dsh-session-projection",
+      "@deepseek-ai/dsh-system-prompt",
+      "@deepseek-ai/dsh-tools",
+      "@deepseek-ai/dsh-agent",
+      "@deepseek-ai/dsh-agent-loop",
+      "@deepseek-ai/dsh-invariants",
+      "@deepseek-ai/dsh-session/invariant",
+      "@deepseek-ai/dsh-agent/invariant",
+      "@deepseek-ai/dsh-scope/invariant",
+      "@deepseek-ai/dsh-llm-retry",
+      "@deepseek-ai/dsh-agent-preset-registry",
+      "@deepseek-ai/dsh-agent-preset",
+      "@deepseek-ai/dsh-agent-preset",
+      "@dominion/dsh-llm-glm",
+      "@dominion/dsh-llm-opencode-go",
+      "@dominion/dsh-desktop-bridge",
+      "@dominion/dsh-preset-authoring",
+      "@dominion/dsh-team",
+      "@dominion/dsh-memory-service",
+      "@dominion/dsh-saolei-loop",
     ]);
   });
 
@@ -491,6 +638,10 @@ describe("cordis.yml composition manifest", () => {
     // 官方驱动回归：the agent-loop row owns the factory (Config.agents[]
     // left empty — agents materialize dynamically through ctx.agents.create).
     expect(names).toContain("@deepseek-ai/dsh-agent-loop");
+    // The loop and the preset registry both inject `sessionProjections`, so
+    // the registry service row must be composed (specs/070-dsh-upgrade/
+    // research.md D6).
+    expect(names).toContain("@deepseek-ai/dsh-session-projection");
     expect(names).not.toContain("@deepseek-ai/dsh-agent-spine-demo");
     expect(names.filter((name) => name.includes("spine"))).toEqual([]);
   });
@@ -503,7 +654,7 @@ describe("cordis.yml composition manifest", () => {
     });
   });
 
-  it("mounts the invariant companions as subpath rows (research.md D5 case A)", () => {
+  it("mounts the invariant companions as subpath rows (specs/051-agent-v2-dsh-migration/research.md D5 case A)", () => {
     expect(rows.find((row) => row.id === "invariant-session")?.name).toBe(
       "@deepseek-ai/dsh-session/invariant",
     );
@@ -580,7 +731,7 @@ describe("cordis.yml composition manifest", () => {
     ]);
   });
 
-  it("mounts the authoring plugin with the host-injected Mongo connection", () => {
+  it("mounts the authoring plugin with the host-injected Mongo connection and the template snapshot", () => {
     const row = rows.find((entry) => entry.id === "preset-authoring");
     expect(row?.name).toBe("@dominion/dsh-preset-authoring");
     // The credential/URI resolution is the host's (presets.ts, T006) —
@@ -591,6 +742,14 @@ describe("cordis.yml composition manifest", () => {
       mongoUri: expect.stringContaining("MONGO_URI"),
       mongoDatabase: "game_agent_v2",
       mongoCollection: "presets",
+      // The template snapshot repeats the declaration rows above verbatim
+      // (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.3): the
+      // authoring plugin derives store records into registry declarations
+      // from this in-manifest data, reading no template filesystem.
+      templates: {
+        player: PLAYER_TEMPLATE,
+        planner: PLANNER_TEMPLATE,
+      },
       // The scene row lock: each pool template must carry exactly its role's
       // tool-plugin row (T021; preset-api.md §2, dsh-plugins.md §5).
       templateRules: {
@@ -619,9 +778,14 @@ describe("cordis.yml composition manifest", () => {
     expect(rows.map((row) => row.name)).not.toContain("@dominion/dsh-saolei");
   });
 
-  it("mounts no persistence and no settings row (research.md §3.1)", () => {
-    const names = rows.map((row) => row.name).join(" ");
-    expect(names).not.toContain("session-persistence");
-    expect(names).not.toContain("dsh-settings");
+  it("composes no session-persistence and no settings row (install-level peers only)", () => {
+    // The exact 23-row set is pinned by the order test above; this makes the
+    // declaration-level distinction explicit: settings and
+    // session-persistence are 0.1.7 peers declared for install (package.json
+    // + BUILD closure) without a composed row
+    // (specs/070-dsh-upgrade/research.md D6).
+    const names = rows.map((row) => row.name);
+    expect(names).not.toContain("@deepseek-ai/dsh-session-persistence");
+    expect(names).not.toContain("@deepseek-ai/dsh-settings");
   });
 });
