@@ -2,8 +2,8 @@
 # set (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5;
 # specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5): the dsh core
 # plugins composed directly plus the Dominion plugins and the official
-# agent-loop / preset-roster rows. Rows are order-insensitive (cordis awaits
-# by inject); the ordering below is dependency-layered for reading.
+# agent-loop / preset registry + declaration rows. Rows are order-insensitive
+# (cordis awaits by inject); the ordering below is dependency-layered for reading.
 # - timer/invariants/system-prompt enter through the framework-core baseline
 #   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining
 #   dsh rows are service-declared npm deps (projects/game/agent_v2/
@@ -38,6 +38,39 @@
 - { id: invariant-agent,   name: '@deepseek-ai/dsh-agent/invariant' }
 - { id: invariant-scope,   name: '@deepseek-ai/dsh-scope/invariant' }
 - { id: llm-retry,       name: '@deepseek-ai/dsh-llm-retry' }
+# Preset registry + declarative pool templates (specs/070-dsh-upgrade/contracts/
+# composition-manifest.md §2; research.md D2/D4/D5): the declaration rows ARE
+# the preset definitions, so hosting them in this manifest is what makes the
+# player/planner pool templates system-trusted — no user-facing path can write
+# or delete them. `default: ''` keeps preset selection mandatory: the empty id
+# matches no declaration, so an id-less resolve reports not-found instead of
+# silently falling back to a default template (research.md D5).
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: ''
+- id: preset-player
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: player
+    name: player
+    description: 扫雷 player 池模板：persona + saolei 工具插件行
+    plugins:
+      - name: '@deepseek-ai/dsh-persona'
+        config:
+          prefix: 你是扫雷 player，负责操作桌面扫雷窗口完成对局，并依据 saolei 工具返回的棋盘文本持续推理落子，直到对局结束。你独占桌面控制；一律以工具返回的棋盘事实为准，任何与棋盘不符的说法都先核对再行动；每局结束后是否开启新局由你自行判断。保持冷静、精确，落子前先核对已揭示信息与剩余雷数，不做无依据的猜测。
+      - name: '@dominion/dsh-saolei'
+- id: preset-planner
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: planner
+    name: planner
+    description: 扫雷 planner 池模板：persona + memory 工具插件行
+    plugins:
+      - name: '@deepseek-ai/dsh-persona'
+        config:
+          prefix: 你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。
+      - name: '@dominion/dsh-memory'
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:
@@ -101,24 +134,6 @@
       - id: hy3
         contextWindow: 256000
 - { id: desktop-bridge,  name: '@dominion/dsh-desktop-bridge' }
-# preset roster（specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
-# §3）：roots = 两个模板 system root（player/planner 池各一，trust: system，
-# 不可写不可删）；不再声明 user root——用户 preset 的组合在物化时从 store
-# 记录派生（§2），没有需要维护的可写副本。
-# includeUserRoot: false 保确定性（不扫机器 <dshHome>/.agent-presets）。
-# default 必填（roster Config schema required）但指向空 id：preset 选择在本
-# 服务是必选语义（UpdateAgent/物化必须显式给 preset），空 id 使无 id 的
-# resolve 走 UnknownPresetError fail-loud，而不是静默落某个默认模板。
-- id: agent-presets
-  name: '@deepseek-ai/dsh-agent-presets'
-  config:
-    default: ''
-    includeUserRoot: false
-    roots:
-      - path: !!js process.env.PRESET_TEMPLATES_ROOT + '/player'   # player 池模板（镜像内数据，system 信任）
-        trust: system
-      - path: !!js process.env.PRESET_TEMPLATES_ROOT + '/planner'  # planner 池模板（同上）
-        trust: system
 # preset 创作/编辑面（058 产出复用）：CRUD 只写 store（唯一事实源）+ role
 # 池记录；生产存储为 Mongo（game_agent_v2.presets，preset-authoring Store
 # seam 的 Mongo 实现）。连接由宿主注入：凭据/URI 解析在 agent_v2 侧
@@ -131,6 +146,26 @@
     mongoUri: !!js process.env.MONGO_URI
     mongoDatabase: game_agent_v2
     mongoCollection: presets
+    # 模板声明快照（specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.3）：
+    # 与上方 preset-player/preset-planner 声明行同构；authoring 据此把 store 记录
+    # 派生为 registry 声明，不再读模板文件系统。
+    templates:
+      player:
+        name: player
+        description: 扫雷 player 池模板：persona + saolei 工具插件行
+        plugins:
+          - name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你是扫雷 player，负责操作桌面扫雷窗口完成对局，并依据 saolei 工具返回的棋盘文本持续推理落子，直到对局结束。你独占桌面控制；一律以工具返回的棋盘事实为准，任何与棋盘不符的说法都先核对再行动；每局结束后是否开启新局由你自行判断。保持冷静、精确，落子前先核对已揭示信息与剩余雷数，不做无依据的猜测。
+          - name: '@dominion/dsh-saolei'
+      planner:
+        name: planner
+        description: 扫雷 planner 池模板：persona + memory 工具插件行
+        plugins:
+          - name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。
+          - name: '@dominion/dsh-memory'
     # 模板行校验（T021）：池模板必须恰含本角色的工具插件行——工具与配套
     # 守则同生共死（specs/059-agent-v2-team-mode/contracts/preset-api.md §2；
     # dsh-plugins.md §5）。规则按模板 id 声明、包名对插件为不透明字符串，

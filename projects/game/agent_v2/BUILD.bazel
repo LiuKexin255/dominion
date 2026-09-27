@@ -87,14 +87,7 @@ artifact_pkg_js(
     app = "game",
     data_files = [
         "cordis.yml",
-    ] + glob(
-        # Template presets ship with the artifact under
-        # /dominion/game/agent_v2/preset-templates (PRESET_TEMPLATES_ROOT —
-        # the roster's system roots scan presets-templates/{player,planner},
-        # specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5; demo
-        # precedent: experimental/dsh/demo/agent/BUILD.bazel data_files).
-        ["preset-templates/**"],
-    ),
+    ],
     entrypoint = "src/bootstrap.js",
     npm_deps = [
         # Service-declared dsh rows and imports (closure contract: the
@@ -181,16 +174,13 @@ artifact_image(
 # the session-test scope harness), and the test-only imports (js-yaml for the
 # manifest assertions). :agent_v2_types_lib is absent — the sources reference
 # the generated proto types via `import type` only, which vitest erases at
-# transform time. cordis.yml and the preset template data travel as data: the
-# manifest tests assert the composition contract against the shipped file.
+# transform time. cordis.yml travels as data: the manifest tests assert the
+# composition contract against the shipped file.
 vitest_test(
     name = "lib_test",
     size = "small",
     data = glob(
         ["src/**/*.ts"],
-        allow_empty = True,
-    ) + glob(
-        ["preset-templates/**"],
         allow_empty = True,
     ) + [
         "cordis.yml",

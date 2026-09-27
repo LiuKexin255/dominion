@@ -96,11 +96,12 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   默认目录 = 官方该路由 16 项）；与 `llm-glm` 同套
   失败分类/重试/看护义务
   （`specs/063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md`）。
-- `agent-presets`（`@deepseek-ai/dsh-agent-presets`）：preset roster，roots =
-  两个模板 system root（player/planner 池各一，镜像内
-  `preset-templates/{player,planner}`）；用户 preset 的组合在物化时从 store
-  记录派生，无 user root；`default` 指向空 id，preset 选择是必选语义（无 id
-  的 resolve fail-loud）。
+- `agent-preset-registry`（`@deepseek-ai/dsh-agent-preset-registry`）：preset
+  注册表，负责选择与运行时修订保留；`default` 指向空 id，preset 选择是必选
+  语义（无 id 的 resolve fail-loud）。池模板
+  （`preset-player`/`preset-planner`，`@deepseek-ai/dsh-agent-preset` 声明行）
+  是本组合清单的宿主行——部署所有权即系统信任，用户面不可写删；用户 preset
+  的组合在物化时从 store 记录派生。
 - `preset-authoring`（`@dominion/dsh-preset-authoring`）：创作/编辑面（Store
   Mongo 实现，`game_agent_v2.presets`）+ 模板行校验（`templateRules`）。
 - `team`（`ctx.team`）与 `memory`（`ctx.plannerMemory` host 服务面）：
@@ -129,8 +130,8 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   层——members 恰 2 且 role 集合恰为 `{"player", "planner"}`、每成员 preset
   存在且 `preset.role` 与成员 role 字符串相等、model 非空时在 ListModels 目录。
   失败均为 `INVALID_ARGUMENT`（`projects/game/agent_v2/src/session.ts`）。
-- **物化编排**：逐成员 `ctx.agents.create`（官方 agent-loop 驱动）挂载 roster
-  preset 组合，player 侧注册 agent-scoped `saoleiGame`（GameRuntime），planner
+- **物化编排**：逐成员 `ctx.agents.create`（官方 agent-loop 驱动）经 registry
+  绑定所选 preset 声明，player 侧注册 agent-scoped `saoleiGame`（GameRuntime），planner
   侧 `ctx.plannerMemory.load` 预取记忆快照（fail-loud）；随后 `ctx.team.register`
   注册群聊服务。任一步失败**整体回滚**：不残留半物化 team（GetTeam
   NOT_FOUND），可重试。
@@ -181,19 +182,20 @@ preset 数据按角色分池
   恰含 `@dominion/dsh-saolei` 行、不得含 `@dominion/dsh-memory`，planner
   模板恰含 `@dominion/dsh-memory` 行，违者 INVALID_ARGUMENT 且不落任何
   产物。
-  池模板（`projects/game/agent_v2/preset-templates/{player,planner}/`，镜像内
-  system 信任根）不可写/不可删。
+  池模板（`cordis.yml` 的 `preset-player`/`preset-planner` 声明行）不可写
+  /不可删。
 - **角色工具锁定（行级绑定）**：player preset 绑定扫雷游戏工具插件组
   （`saolei_init`/`saolei_operate`/`saolei_remain` 工具 + `saolei:guidance`
   守则），planner preset 绑定 memory 插件组（memory 工具 + 快照 section）——
   工具与其配套守则作为整体生效或缺席，物化零定制。删除 preset 无 fan-out：
   已物化成员保持其物化时组合，再次物化引用被拒
   （`specs/059-agent-v2-team-mode/spec.md` FR-006）。
-- **物化 = 使用时派生**：成员物化消费的组合在使用时从 store 记录派生——读池
-  模板组合、以记录 persona 替换 persona 行（空值回退模板默认 base，记录
-  persona 即用户可编辑内容），写入系统临时目录的纯临时文件，经官方
-  `mountPreset` 直接挂载；磁盘上不存在需要与 store 对账的副本
-  （`specs/060-agent-v2-team-optimize/contracts/preset-derivation.md` §2）。
+- **物化 = 使用时派生**：成员物化消费的组合在使用时从 store 记录派生——以宿主
+  注入的模板声明快照（`cordis.yml` `templates` 键）为基础，用记录 persona 替换
+  persona 子行的 `prefix`（空值回退模板默认 base，记录 persona 即用户可编辑
+  内容），经 `ctx.agentPresets.register` 物化为 registry 声明；磁盘上不存在
+  需要与 store 对账的副本
+  （`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §2）。
 
 ## team 流与编排（Send）
 
@@ -322,23 +324,15 @@ CRUD 只写该集合（唯一事实源），物化组合在成员创建时从记
    （`common/gopkg/mongo/credentials.go`）字节一致，同一实例同一
    认证（`DOMINION_ENVIRONMENT` 参与派生，缺省 `default`）。
 
-## preset 模板根与环境变量 DOMINION_ARTIFACT_DIR
+## preset 声明与模板快照
 
-roster 的两个模板 system root（player/planner 池）扫描**模板根**下的
-`player`/`planner` 子目录；模板数据作为部署产物随镜像分发在
-`/dominion/game/agent-v2/preset-templates`。模板根在 boot 前由
-`projects/game/agent_v2/src/dsh.ts` 解析并写回组合 env（`cordis.yml` 的
-`process.env.PRESET_TEMPLATES_ROOT` 表达式读取解析结果）：
-
-1. `PRESET_TEMPLATES_ROOT` 已设则直用（本地/测试显式覆盖）。
-2. 否则由 deploy 平台注入的 `DOMINION_ARTIFACT_DIR`（产物放置目录，
-   `/dominion/{app}/{service}`，见 `tools/release/deploy/README.md`
-   §环境变量配置）派生 `${DOMINION_ARTIFACT_DIR}/preset-templates`。
-3. 两者皆缺时 boot fail-loud（错误信息含两个变量名，退出码 1）——模板根
-   是 roster system roots 的必需输入。
-
-部署清单不声明模板根（默认设置省略；
-`specs/060-agent-v2-team-optimize/contracts/deploy-env.md` §2/§3）。
+池模板不再是独立目录：`cordis.yml` 的 `preset-player` / `preset-planner`
+（`@deepseek-ai/dsh-agent-preset`）声明行即模板定义，persona 子行以 `prefix`
+承载身份文案，角色工具行（player 为 `@dominion/dsh-saolei`、planner 为
+`@dominion/dsh-memory`）随声明挂载。`preset-authoring` 行的 `templates` 键
+镜像同一组声明（name/description/plugins），作为派生物化用户 preset 组合的
+快照来源（`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2、
+`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §2.3）。
 
 ## 模型端点与凭据配置
 
@@ -447,14 +441,14 @@ player 成员视图消费该消息、`GetTeam`/`active_member` 不含该角色
   （`specs/059-agent-v2-team-mode/spec.md` Edge Cases 与 Assumptions）。仅
   preset 资源数据持久化（见上节）。
 - **preset 组合为使用时派生物**：物化消费的组合在成员创建时从 Mongo store
-  记录 + 池模板派生为系统临时目录下的纯临时文件（不维护、无清理承诺；任何
-  时刻删除都不影响 store 数据与后续物化——重建幂等）。磁盘上不存在需要与
-  store 对账的副本，也不存在 preset 专用可写根路径
-  （`specs/060-agent-v2-team-optimize/contracts/preset-derivation.md` §1/§2）。
-- **模板发现无 watch**：roster 的模板发现（resolve/list）每次调用落盘
-  readdir，未注册 watch；两个 system 模板根为镜像内静态数据（用户 preset
-  CRUD 只写 store，无运行时创作面），开销固定且有界
-  （`specs/059-agent-v2-team-mode/research.md` R3 实现注意 ④）。
+  记录派生（模板声明快照 + 记录 persona），经 `ctx.agentPresets.register`
+  物化为 registry 声明（任何时刻注销都不影响 store 数据与后续物化——重建
+  幂等）。磁盘上不存在需要与 store 对账的副本，也不存在 preset 专用可写根
+  路径（`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §2）。
+- **preset 定义为宿主声明**：池模板（`cordis.yml` 的 `preset-player`/
+  `preset-planner` 声明行）是部署数据；用户 preset CRUD 只写 store 并经
+  registry 物化，无运行时文件创作面
+  （`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2）。
 - **多标签页无实时推送**：team 流只覆盖已建立流（Send）的页面；未发送消息的
   标签页看不到其他页面的回合进展，可刷新经 `ListTeamMessages`/
   `ListMemberMessages` 回填查询。

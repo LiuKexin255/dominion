@@ -78,6 +78,8 @@
 
 **Decision**: registry `Config.default` 虽为 required，但取空字符串 `''`：无名解析走 `''` → not-found `RemoteError` = fail-loud（与现 `projects/game/agent_v2/cordis.yml` agent-presets 行 `default: ''` 语义一致）；宿主代码路径全部显式传 `meta.agentPreset`。**实现门禁**：若 schemastery `z.string().required()` 在运行时拒绝空串（schema 层面语义需实测），回退方案为 sentinel id + 断言宿主全显式（并在 dsh.test.ts 加"无名解析必失败"用例锁定）。
 
+**终态结论（实测，2026-09-27）**: **`''` 通过 registry Config schema，采用 `''`，不启用 sentinel 回退**。实测证据：以 `@deepseek-ai/dsh-agent-preset-registry@0.1.7-rc.2` 导出的 `AgentPresetRegistry.Config` 校验 `{ default: '' }` → 接受；`{ default: '__none__' }` 亦接受；`{}` 被拒（`ValidationError: $.default missing required value`）——即 `"defined"` 注解只要求键在场，空串是合法 `z.string()`。锁定断言：`projects/game/agent_v2/src/dsh.test.ts` 的 “keeps preset selection fail-loud: the registry default points at no preset”（registry 行 config 恰为 `{ default: '' }`，且无 `@deepseek-ai/dsh-agent-preset` 声明以 `config.id === ''`；空 id 解析不匹配任何声明 → `agent-preset/not-found`）。
+
 **Rationale**: 保持"preset 选择必选、未知 id fail-loud"产品语义（US3 语义 4）；`selectedDefault` 为 volatile 用户默认（本服务不使用用户默认选择，不设置）。
 
 **Alternatives considered**: default 指向 player 模板——静默回落，违反语义。
