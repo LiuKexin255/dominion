@@ -1,39 +1,40 @@
 /**
  * cordis plugin entry for the preset-authoring plugin: preset CRUD over the
- * store (the single source of truth) and use-time composition derivation over
- * the official roster. Create/Update/Remove write the store only; `compose`
- * reads the record, derives the composition rows from the pool template into
- * a throwaway file and mounts them through the official `mountPreset`.
+ * store (the single source of truth) and materialization of each record into
+ * the official agent-preset registry. Create/Update/Remove write the store and
+ * keep the registry projection in step (register on create/boot,
+ * unregister+register on update, unregister on remove); `compose` reads the
+ * record and binds a new agent to its registered revision.
  * Export shape follows the function-form plugin contract (name / inject /
  * Config / apply, common/js/dsh-plugins/llm-glm/src/index.ts precedent);
  * registration is effect-based and disposed with the fiber.
  *
- * `ctx.presetAuthoring` is the ONLY face the service layer consumes —
- * zero roster API and zero filesystem access outside this plugin
+ * `ctx.presetAuthoring` is the ONLY face the service layer consumes — zero
+ * registry API and zero template filesystem access outside this plugin
  * (FR-005 in specs/058-dsh-preset-roster-demo/spec.md; the plugin itself
  * carries no RPC/transport concepts).
- * Contract: specs/060-agent-v2-team-optimize/contracts/preset-derivation.md;
- * specs/058-dsh-preset-roster-demo/contracts/preset-authoring-plugin.md.
+ * Contract: specs/070-dsh-upgrade/contracts/preset-model-mapping.md.
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { mountPreset } from "@deepseek-ai/dsh-agent-presets";
-import type { AgentPreset } from "@deepseek-ai/dsh-agent-presets";
+import type {
+  AgentPreset,
+  PresetDefinition,
+} from "@deepseek-ai/dsh-agent-preset-registry";
 import z from "@deepseek-ai/schemastery";
 
 import {
   deriveComposition,
-  nodeDeriveFs,
   PresetAuthoringError,
   validateTemplateRows,
 } from "./derive.js";
-import type { DeriveFs, RosterSeam, TemplateRowRules } from "./derive.js";
+import type { TemplateDeclaration, TemplateRowRules } from "./derive.js";
 import { MemoryPresetStore, PresetStoreError } from "./store.js";
 import type { PresetRecord, PresetStore } from "./store.js";
 import { createMongoPresetStore } from "./store.mongo.js";
 
 export { PERSONA_ROW_NAME, PresetAuthoringError, validateTemplateRows } from "./derive.js";
-export type { PresetAuthoringErrorCode, TemplateRowRules } from "./derive.js";
+export type { PresetAuthoringErrorCode, TemplateDeclaration, TemplateRowRules, CompositionRow } from "./derive.js";
 export { MemoryPresetStore, PresetStoreError } from "./store.js";
 export type { PresetRecord, PresetStore, PresetStoreErrorCode } from "./store.js";
 export { createMongoPresetStore, mongoPresetCollection, MongoPresetStore } from "./store.mongo.js";
@@ -41,16 +42,15 @@ export type { MongoPresetConnection } from "./store.mongo.js";
 
 export const name = "preset-authoring";
 
-/** Hard dependency on the official roster being composed. */
+/** Hard dependency on the official agent-preset registry being composed. */
 export const inject = ["agentPresets"];
 
 /**
  * The preset id grammar (specs/059-agent-v2-team-mode/contracts/preset-api.md
- * §2 caller-supplied ids; the official roster's own PRESET_ID is not
- * re-exported from the package root, so the same containment grammar is
- * pinned here). The id is the store key and the preset resource id, and stays
- * interchangeable with the roster's shipped template ids; malformed ids are
- * rejected at the create edge.
+ * §2 caller-supplied ids; the registry's own PRESET_ID is not re-exported from
+ * the package root, so the same containment grammar is pinned here). The id is
+ * the store key and the preset resource id, and stays interchangeable with the
+ * declared template ids; malformed ids are rejected at the create edge.
  */
 const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -67,6 +67,14 @@ export interface PresetAuthoringConfig {
    * template ids skip validation — generic consumers stay scene-agnostic.
    */
   templateRules?: Record<string, TemplateRowRules>;
+  /**
+   * Template declaration snapshots keyed by template id, mirrored from the
+   * hosting composition's `@deepseek-ai/dsh-agent-preset` rows: the rows a
+   * record derives over (persona prefix + role tool rows) plus display
+   * metadata (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.3).
+   * The plugin never reads a template directory.
+   */
+  templates?: Record<string, TemplateDeclaration>;
   /**
    * storage=mongo connection inputs, injected through the row config. The
    * credentialed URI is resolved HOST-side (deployment credential logic
@@ -95,9 +103,16 @@ export const Config: z<PresetAuthoringConfig> = z.object({
       forbidden: z.array(z.string()).default([]),
     }),
   ),
+  templates: z.dict(
+    z.object({
+      name: z.string(),
+      description: z.string(),
+      plugins: z.array(z.any()).required(),
+    }),
+  ),
 }) as unknown as z<PresetAuthoringConfig>;
 
-/** The preset resource projection served to the service layer (contract §2). */
+/** The preset resource projection served to the service layer (contract §1). */
 export interface PresetView {
   id: string;
   template: string;
@@ -116,10 +131,10 @@ export interface ComposeResult {
   /** Resolved preset id; the service records it in the creation meta. */
   agentPreset: string;
   /**
-   * Agent-factory setup hook: mounts the record's DERIVED composition (the
-   * throwaway file `deriveComposition` wrote for this call). Called from
-   * `ctx.agents.create({meta, setup})`; a rejection there rolls the whole
-   * agent creation back, so no half-composed session can exist.
+   * Agent-factory setup hook: binds the new agent to the record's registered
+   * registry revision. Called from `ctx.agents.create({meta, setup})`; a
+   * rejection there rolls the whole agent creation back, so no half-composed
+   * session can exist.
    */
   setup(agentCtx: Context): Promise<void>;
 }
@@ -135,7 +150,7 @@ export interface CreatePresetInput {
   displayName?: string;
 }
 
-/** The service face mounted as `ctx.presetAuthoring` (contract §2, R10). */
+/** The service face mounted as `ctx.presetAuthoring` (contract §1). */
 export interface PresetAuthoringService {
   compose(presetId?: string): Promise<ComposeResult>;
   create(input: CreatePresetInput): Promise<PresetView>;
@@ -152,16 +167,43 @@ declare module "@deepseek-ai/cordis" {
   }
 }
 
-/** Injectable collaborators (contract §5 seam convention). */
+/**
+ * The agent-preset registry subset the plugin consumes
+ * (`@deepseek-ai/dsh-agent-preset-registry`, `ctx.agentPresets`):
+ * `register` owns eager activation and returns the declaring plugin's
+ * unregister disposer; `resolve` reports the current activation diagnostic;
+ * `mount` binds a new agent to the registered revision. The subset stays
+ * structural so tests inject `vi.fn()` doubles (style/javascript.md Mock
+ * convention).
+ */
+export interface AgentPresetsSeam {
+  register(definition: PresetDefinition): Promise<() => Promise<void>>;
+  resolve(id: string): Promise<AgentPreset>;
+  mount(agentCtx: Context, id: string): Promise<AgentPreset>;
+}
+
+/** Injectable collaborators (contract §2 seam convention). */
 export interface PresetAuthoringDeps {
-  /** Roster discovery (pool templates) plus template-id protection. */
-  roster?: RosterSeam;
+  /** Agent-preset registry lifecycle; defaults to `ctx.agentPresets`. */
+  registry?: AgentPresetsSeam;
   store?: PresetStore;
-  fs?: DeriveFs;
-  /** Mounts the derived composition; defaults to the official `mountPreset`. */
-  mount?: (agentCtx: Context, preset: AgentPreset) => Promise<void>;
+  /** Per-template declaration snapshots (see {@link PresetAuthoringConfig.templates}). */
+  templates?: Record<string, TemplateDeclaration>;
   /** Per-template composition row rules (see {@link PresetAuthoringConfig.templateRules}). */
   templateRules?: Record<string, TemplateRowRules>;
+}
+
+/**
+ * The plugin-owned engine: the frozen service face plus the registry lifecycle
+ * the hosting fiber drives. `restore` materializes the store into the registry
+ * at boot; `dispose` releases every registration this plugin owns at unload.
+ */
+export interface PresetAuthoringEngine {
+  service: PresetAuthoringService;
+  /** Materialize every stored record into the registry (process-local projection recovery). */
+  restore(): Promise<void>;
+  /** Release every registration this plugin owns (plugin unload). */
+  dispose(): Promise<void>;
 }
 
 function toView(record: PresetRecord): PresetView {
@@ -176,7 +218,7 @@ function toView(record: PresetRecord): PresetView {
   };
 }
 
-/** Map store rejections onto the service error surface (contract §6). */
+/** Map store rejections onto the service error surface. */
 function mapStoreError(err: unknown): PresetAuthoringError {
   if (err instanceof PresetStoreError) {
     return new PresetAuthoringError(err.code, err.message, err);
@@ -188,71 +230,37 @@ function mapStoreError(err: unknown): PresetAuthoringError {
   );
 }
 
-/**
- * Read the roster's current presets, mapping an unexpected discovery failure
- * onto the service surface (INTERNAL, cause preserved) — the same mapping the
- * retired `resolve`-based path produced. Discovery is a live root scan, so a
- * failure here is a real deployment error, not a miss.
- */
-async function listRosterPresets(roster: RosterSeam): Promise<AgentPreset[]> {
-  try {
-    return await roster.list();
-  } catch (err) {
-    throw new PresetAuthoringError(
-      "INTERNAL",
-      `roster operation failed: ${err instanceof Error ? err.message : String(err)}`,
-      err,
-    );
+/** Map registry rejections onto the service error surface. */
+function mapRegistryError(err: unknown): PresetAuthoringError {
+  if (err instanceof PresetAuthoringError) {
+    return err;
   }
+  return new PresetAuthoringError(
+    "INTERNAL",
+    `agent preset registry operation failed: ${err instanceof Error ? err.message : String(err)}`,
+    err,
+  );
 }
 
 /**
- * Resolve a pool template by scanning the roster's current presets. A miss is
- * the caller's INVALID_ARGUMENT (the same message shape the roster's own
- * unknown-preset error produced), and a broken composition is refused up
- * front; neither path depends on roster error-class identity, so the check
- * holds when the host composes a different package instance of the roster.
- */
-async function resolveTemplate(roster: RosterSeam, templateId: string): Promise<AgentPreset> {
-  const presets = await listRosterPresets(roster);
-  const template = presets.find((preset) => preset.id === templateId);
-  if (template === undefined) {
-    throw new PresetAuthoringError(
-      "INVALID_ARGUMENT",
-      `unknown preset "${templateId}"; available: ${presets.map((preset) => preset.id).join(", ")}`,
-    );
-  }
-  if (template.broken !== undefined) {
-    throw new PresetAuthoringError(
-      "INVALID_ARGUMENT",
-      `template "${template.id}" is broken: ${template.broken}`,
-    );
-  }
-  return template;
-}
-
-/**
- * The roster preset an id resolves to, or `undefined` when no root supplies
- * it. The pool templates are system trust; both the create collision check
- * and the remove protection read this (a list scan, not exception control
- * flow — the roster instance may come from a different package link).
- */
-async function rosterPresetFor(roster: RosterSeam, id: string): Promise<AgentPreset | undefined> {
-  const presets = await listRosterPresets(roster);
-  return presets.find((preset) => preset.id === id);
-}
-
-/**
- * Assemble the preset-authoring service. Production resolves every
+ * Assemble the preset-authoring engine. Production resolves every
  * collaborator from the composition context; tests inject `vi.fn()` doubles
  * (style/javascript.md Mock convention — no module interception).
  */
-export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = {}): PresetAuthoringService {
-  const roster = deps.roster ?? (ctx.agentPresets as RosterSeam);
+export function createPresetAuthoring(
+  ctx: Context,
+  deps: PresetAuthoringDeps = {},
+): PresetAuthoringEngine {
+  const registry = deps.registry ?? (ctx.agentPresets as AgentPresetsSeam);
   const store = deps.store ?? new MemoryPresetStore();
-  const fs = deps.fs ?? nodeDeriveFs();
-  const mount = deps.mount ?? mountPreset;
+  const templates = deps.templates ?? {};
   const templateRules = deps.templateRules;
+  /** Live registrations this plugin owns: record id → registry unregister disposer. */
+  const disposers = new Map<string, () => Promise<void>>();
+
+  const warn = (message: string): void => {
+    ctx.logger?.warn?.(message);
+  };
 
   const storeGet = async (id: string): Promise<PresetRecord> => {
     try {
@@ -262,9 +270,53 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
     }
   };
 
-  return {
+  /** Resolve a template declaration; an unknown id is the caller's INVALID_ARGUMENT. */
+  const templateFor = (templateId: string): TemplateDeclaration => {
+    const template = templates[templateId];
+    if (template === undefined) {
+      throw new PresetAuthoringError(
+        "INVALID_ARGUMENT",
+        `unknown template "${templateId}"; available: ${Object.keys(templates).join(", ")}`,
+      );
+    }
+    return template;
+  };
+
+  /**
+   * Register one store record and retain its unregister disposer. Returns the
+   * registry's activation diagnostic after eager activation — undefined when
+   * the definition is usable, the reason when it stayed in the roster broken
+   * (the registry never rejects for an activation failure).
+   */
+  const registerRecord = async (
+    record: PresetRecord,
+    template: TemplateDeclaration,
+  ): Promise<string | undefined> => {
+    let disposer: () => Promise<void>;
+    try {
+      disposer = await registry.register(deriveComposition(record, template));
+    } catch (err) {
+      throw mapRegistryError(err);
+    }
+    disposers.set(record.id, disposer);
+    let state: AgentPreset;
+    try {
+      state = await registry.resolve(record.id);
+    } catch (err) {
+      // Release the just-landed registration before surfacing the failure so
+      // the registry projection stays consistent with the store: the caller's
+      // catch paths roll the store back, and a retained disposer would leave
+      // an orphan registry definition behind until plugin dispose.
+      disposers.delete(record.id);
+      await disposer().catch(() => undefined);
+      throw mapRegistryError(err);
+    }
+    return state.broken;
+  };
+
+  const service: PresetAuthoringService = {
     async compose(presetId?: string): Promise<ComposeResult> {
-      // Preset selection is mandatory in this deployment (the roster default
+      // Preset selection is mandatory in this deployment (the registry default
       // points at no preset): an id-less compose fails INVALID_ARGUMENT
       // before anything resolves.
       if (presetId === undefined) {
@@ -274,35 +326,18 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
         );
       }
       // Store first: the record is the single source of truth, so a missing
-      // record fails NOT_FOUND before any template read or member creation
-      // (fail-fast semantics unchanged). The composition is then derived for
-      // this use — there is no maintained copy and no rebuild path to
-      // reconcile
-      // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2).
-      // Template problems surface here too, still before setup can create any
-      // session.
+      // record fails NOT_FOUND before any template lookup or member creation
+      // (fail-fast semantics unchanged). The template declaration is then
+      // checked so a deployment gap surfaces here too, still before setup can
+      // create any session.
       const record = await storeGet(presetId);
-      const template = await resolveTemplate(roster, record.template);
-      let derived: AgentPreset;
-      try {
-        derived = await deriveComposition(record, template, fs);
-      } catch (err) {
-        if (err instanceof PresetAuthoringError) {
-          throw err;
-        }
-        throw new PresetAuthoringError(
-          "INTERNAL",
-          `deriving preset "${record.id}" failed: ${err instanceof Error ? err.message : String(err)}`,
-          err,
-        );
-      }
+      templateFor(record.template);
       return {
         agentPreset: record.id,
         setup: async (agentCtx: Context) => {
-          // Official direct mount: the derived file is the composition, so no
-          // roster root discovery is involved; the subtree is owned by
-          // agentCtx's fiber and unwinds with the member agent.
-          await mount(agentCtx, derived);
+          // Registry semantics pass through: an unregistered or broken
+          // definition fails the agent's binding and rolls creation back.
+          await registry.mount(agentCtx, record.id);
         },
       };
     },
@@ -332,26 +367,47 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
 
       // Template validation before any store write: a role-broken or missing
       // template must never produce a record (INVALID_ARGUMENT, no residue).
-      const template = await resolveTemplate(roster, input.template);
-      const rules = templateRules?.[input.template];
-      if (rules !== undefined) {
-        await validateTemplateRows(template, rules, fs);
-      }
-      // A roster root already supplying this id keeps it: the shipped pool
-      // templates are system trust, cannot be shadowed, and a record claiming
-      // one could never be deleted.
-      if ((await rosterPresetFor(roster, input.id)) !== undefined) {
+      const template = templateFor(input.template);
+      // Template ids and user preset ids share the registry's global roster
+      // namespace: claiming a declared template id is the caller's
+      // ALREADY_EXISTS (contract §3).
+      if (Object.prototype.hasOwnProperty.call(templates, input.id)) {
         throw new PresetAuthoringError(
           "ALREADY_EXISTS",
-          `preset "${input.id}" is already supplied by a roster root`,
+          `preset "${input.id}" is already supplied by the deployment`,
         );
+      }
+      const rules = templateRules?.[input.template];
+      if (rules !== undefined) {
+        validateTemplateRows(input.template, template.plugins, rules);
       }
 
       const now = new Date();
+      const record: PresetRecord = { ...input, createTime: now, updateTime: now };
       try {
-        await store.create({ ...input, createTime: now, updateTime: now });
+        await store.create(record);
       } catch (err) {
         throw mapStoreError(err);
+      }
+
+      let broken: string | undefined;
+      try {
+        broken = await registerRecord(record, template);
+      } catch (err) {
+        // Registration itself failed (no roster entry landed): roll the store
+        // back so the record never diverges from the roster projection.
+        await store.remove(input.id).catch(() => undefined);
+        throw err;
+      }
+      // Creation validation and activation audit are separate: templateRules
+      // reject before persistence, an activation failure leaves the definition
+      // (and its record) in the roster but reports INVALID_ARGUMENT
+      // (contract §2.2).
+      if (broken !== undefined) {
+        throw new PresetAuthoringError(
+          "INVALID_ARGUMENT",
+          `preset "${input.id}" activation failed: ${broken}`,
+        );
       }
       return toView(await storeGet(input.id));
     },
@@ -361,7 +417,7 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
     },
 
     async list(role?: string): Promise<PresetView[]> {
-      // Authored records only — templates are deployment data, not resources (R5).
+      // Authored records only — templates are deployment data, not resources.
       const records = await store.list();
       return records
         .filter((record) => role === undefined || record.role === role)
@@ -373,9 +429,7 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
       if (patch.persona === undefined && patch.displayName === undefined) {
         return toView(record);
       }
-      // Store-only: the record IS the composition source, so the next
-      // materialization derives the new persona with no other write
-      // (already-materialized members keep their composition — unchanged).
+      const template = templateFor(record.template);
       const updated: PresetRecord = {
         ...record,
         persona: patch.persona ?? record.persona,
@@ -387,24 +441,96 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
       } catch (err) {
         throw mapStoreError(err);
       }
+
+      // Store commit then registration swap: the registry retires the former
+      // revision, and running agents keep their reference until release
+      // (contract §2.2).
+      const previous = disposers.get(id);
+      if (previous !== undefined) {
+        disposers.delete(id);
+        try {
+          await previous();
+        } catch (err) {
+          throw mapRegistryError(err);
+        }
+      }
+      const broken = await registerRecord(updated, template);
+      if (broken !== undefined) {
+        throw new PresetAuthoringError(
+          "INVALID_ARGUMENT",
+          `preset "${id}" activation failed: ${broken}`,
+        );
+      }
       return toView(updated);
     },
 
     async remove(id): Promise<void> {
-      // Template protection: an id a roster root supplies is system trust
-      // and can never be deleted (FAILED_PRECONDITION), not a store lookup
-      // miss. A non-roster id is the normal authored case — the store record
-      // goes away and nothing else does (no copy, no fan-out).
-      if ((await rosterPresetFor(roster, id)) !== undefined) {
-        throw new PresetAuthoringError(
-          "FAILED_PRECONDITION",
-          `preset "${id}" is not writable: it ships with the deployment`,
-        );
-      }
+      // Store is the fact source: the record goes away first, then the
+      // registry releases the revision (contract §2.2). An id with no record
+      // is NOT_FOUND; templates carry no store record, so they are never
+      // deletable through this face.
       try {
         await store.remove(id);
       } catch (err) {
         throw mapStoreError(err);
+      }
+      const disposer = disposers.get(id);
+      if (disposer !== undefined) {
+        disposers.delete(id);
+        try {
+          await disposer();
+        } catch (err) {
+          throw mapRegistryError(err);
+        }
+      }
+    },
+  };
+
+  return {
+    service,
+
+    async restore(): Promise<void> {
+      // Mongo is the single source of truth: materialize every stored record
+      // into the process-local registry projection at boot. A record whose
+      // template is undeclared, or whose registration rejects, is logged and
+      // skipped rather than failing application startup (US3 场景 5).
+      let records: PresetRecord[];
+      try {
+        records = await store.list();
+      } catch (err) {
+        throw mapStoreError(err);
+      }
+      for (const record of records) {
+        const template = templates[record.template];
+        if (template === undefined) {
+          warn(
+            `preset-authoring: stored preset "${record.id}" references undeclared template ` +
+              `"${record.template}"; leaving it out of the roster`,
+          );
+          continue;
+        }
+        try {
+          await registerRecord(record, template);
+        } catch (err) {
+          warn(
+            `preset-authoring: stored preset "${record.id}" failed to register: ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    },
+
+    async dispose(): Promise<void> {
+      const pending = [...disposers.values()];
+      disposers.clear();
+      for (const disposer of pending) {
+        try {
+          await disposer();
+        } catch (err) {
+          warn(
+            `preset-authoring: unregister failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     },
   };
@@ -415,25 +541,35 @@ export function createPresetAuthoring(ctx: Context, deps: PresetAuthoringDeps = 
  * With `storage: "mongo"` the Mongo store connects and indexes BEFORE the
  * plugin's activation settles — the composition boot fails loud on a
  * storage failure — and the client closes when the plugin's fiber unwinds.
+ * Stored user presets are materialized into the registry before the service
+ * is provided, so a session created right after boot sees the full roster.
  */
 export async function apply(ctx: Context, config: PresetAuthoringConfig): Promise<void> {
+  let store: PresetStore;
   if (config.storage === "mongo") {
-    const { store, client } = await createMongoPresetStore({
+    const created = await createMongoPresetStore({
       uri: config.mongoUri ?? process.env.MONGO_URI ?? "",
       database: config.mongoDatabase,
       collection: config.mongoCollection,
     });
     ctx.effect(
-      () => () => client.close(),
+      () => () => created.client.close(),
       "preset-authoring.storage()",
     );
-    ctx.provide("presetAuthoring", createPresetAuthoring(ctx, {
-      store,
-      templateRules: config.templateRules,
-    }));
-    return;
+    store = created.store;
+  } else {
+    store = new MemoryPresetStore();
   }
-  ctx.provide("presetAuthoring", createPresetAuthoring(ctx, {
+
+  const engine = createPresetAuthoring(ctx, {
+    store,
+    templates: config.templates,
     templateRules: config.templateRules,
-  }));
+  });
+  ctx.effect(
+    () => () => engine.dispose(),
+    "preset-authoring.registry",
+  );
+  await engine.restore();
+  ctx.provide("presetAuthoring", engine.service);
 }

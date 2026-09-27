@@ -28,7 +28,7 @@ ts_project(
     visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@deepseek-ai/cordis",
-        ":node_modules/@deepseek-ai/dsh-agent-presets",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@types/node",
@@ -67,17 +67,18 @@ js_library(
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
 # runtime_deps closure walking. npm_deps carries the plugin's runtime
-# imports: the roster seam types/values (dsh-agent-presets), the Config
-# schema (schemastery), the composition-file patcher (js-yaml), the preset
-# persistence driver (mongodb), and the deployment endpoint resolver the
-# Mongo URI derivation consumes (workspace — resolved from the host
-# composition; specs/059-agent-v2-team-mode/contracts/preset-api.md §3).
+# dependency closure: the agent-preset registry definitions
+# (dsh-agent-preset-registry), the Config schema (schemastery), the preset
+# persistence driver (mongodb), the declared YAML dependency (js-yaml), and
+# the deployment endpoint resolver the Mongo URI derivation consumes
+# (workspace — resolved from the host composition;
+# specs/059-agent-v2-team-mode/contracts/preset-api.md §3).
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-preset-authoring",
     lib = ":lib",
     npm_deps = [
-        ":node_modules/@deepseek-ai/dsh-agent-presets",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/js-yaml",
         ":node_modules/mongodb",
@@ -100,7 +101,7 @@ vitest_test(
         allow_empty = True,
     ) + [
         ":node_modules/@deepseek-ai/cordis",
-        ":node_modules/@deepseek-ai/dsh-agent-presets",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@types/node",
