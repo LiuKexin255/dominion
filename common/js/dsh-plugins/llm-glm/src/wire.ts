@@ -17,7 +17,7 @@
  * (https://github.com/openai/openai-openapi/blob/main/openapi.yaml).
  */
 
-import { CallId, EMPTY_RESPONSE_CODE, LlmError } from "@deepseek-ai/dsh-llm";
+import { EMPTY_RESPONSE_CODE, LlmError, ToolCallId } from "@deepseek-ai/dsh-llm";
 import type { ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { createParser } from "eventsource-parser";
 import type { EventSourceMessage } from "eventsource-parser";
@@ -160,7 +160,7 @@ export type ResponsesStreamEvent =
 interface WireBlock {
   index: number;
   kind: "reasoning" | "text" | "tool-call";
-  callId?: ReturnType<typeof CallId>;
+  callId?: ReturnType<typeof ToolCallId>;
   name?: string;
   /** Accumulated text or raw JSON argument fragments. */
   text: string;
@@ -220,7 +220,7 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
     const block: WireBlock = {
       index: nextIndex++,
       kind,
-      callId: item?.call_id === undefined ? undefined : CallId(item.call_id),
+      callId: item?.call_id === undefined ? undefined : ToolCallId(item.call_id),
       name: item?.name,
       text: "",
       ended: false,
@@ -271,7 +271,7 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
         pendingChunks.push({
           type: "tool-call-delta",
           index: block.index,
-          id: block.callId ?? CallId(""),
+          id: block.callId ?? ToolCallId(""),
           argumentsDelta: fragment,
         });
         return;
@@ -293,7 +293,7 @@ export function createResponsesWire(onComment?: () => void): ResponsesWire {
       case "tool-call":
         return {
           type: "tool-call",
-          id: block.callId ?? CallId(item?.call_id ?? ""),
+          id: block.callId ?? ToolCallId(item?.call_id ?? ""),
           name: block.name ?? item?.name ?? "",
           arguments: block.text.length > 0 ? block.text : (item?.arguments ?? ""),
         };

@@ -7,10 +7,11 @@
  * - `load(agentCtx, scope)` reads the scope's most recently updated entries
  *   (ONE server-ordered ListMemories page — `SNAPSHOT_ORDER_BY` with
  *   `SNAPSHOT_ENTRY_LIMIT`) through the injected storage client and writes the
- *   rendered snapshot into the cache, keyed by the agent (the
+ *   rendered snapshot into the cache, keyed by the agent's scope key (the
  *   `AssembleContext.scope` the prompt assembly passes to the snapshot
- *   section — `assembleContextFor` sets `scope: agent`,
- *   https://unpkg.com/@deepseek-ai/dsh-agent@0.1.1-rc.2/lib/index.js). The
+ *   section — `assembleContextFor` sets `scope: agent`, and `scopeOf(agentCtx)`
+ *   reads that same key back from the agent-scoped context,
+ *   https://unpkg.com/@deepseek-ai/dsh-agent@0.1.7-rc.2/lib/index.js). The
  *   binding is registered as an effect on `agentCtx`, so it unwinds with the
  *   agent scope. A rejection propagates (fail-loud): the materialization
  *   setup that awaits it rolls the whole member creation back
@@ -39,6 +40,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import { scopeOf } from "@deepseek-ai/dsh-scope";
 import type { ScopeKey } from "@deepseek-ai/dsh-scope";
 
 import type { MemoryStore } from "./client.js";
@@ -127,13 +129,13 @@ export function createPlannerMemory(
   const scopes = new Map<ScopeKey, PlannerMemoryScope>();
 
   const scopeKeyOf = (agentCtx: Context): ScopeKey => {
-    const agent = agentCtx.agent;
-    if (agent === undefined) {
+    const key = scopeOf(agentCtx);
+    if (key === undefined) {
       throw new Error(
-        "planner memory: load requires an agent-scoped context (agentCtx.agent is unset)",
+        "planner memory: load requires an agent-scoped context (no scope bound to the context)",
       );
     }
-    return agent;
+    return key;
   };
 
   // The wiki face shares the memory binding: `load` owns the single
@@ -141,7 +143,7 @@ export function createPlannerMemory(
   // resolves it here, so an unbound agent fails loud rather than writing to a
   // stale or guessed scope (specs/069-wiki-template-web/contracts/dsh-plugins.md
   // §2).
-  const scopeOf = (agent: Agent): PlannerMemoryScope => {
+  const scopeForAgent = (agent: Agent): PlannerMemoryScope => {
     const scope = scopes.get(agent);
     if (scope === undefined) {
       throw new Error(
@@ -174,22 +176,22 @@ export function createPlannerMemory(
     },
 
     async applyCall(agent: Agent, args: MemoryToolArgs): Promise<string> {
-      const scope = scopeOf(agent);
+      const scope = scopeForAgent(agent);
       return applyMemoryCall(client, scope.template, scope.session, args);
     },
 
     async wikiSearch(agent: Agent, query: string): Promise<string> {
-      const scope = scopeOf(agent);
+      const scope = scopeForAgent(agent);
       return wikiSearch(wikiStore, scope.template, query);
     },
 
     async wikiGet(agent: Agent, titles: string[]): Promise<string> {
-      const scope = scopeOf(agent);
+      const scope = scopeForAgent(agent);
       return wikiGet(wikiStore, scope.template, titles);
     },
 
     async wikiWrite(agent: Agent, input: WikiWriteArgs): Promise<string> {
-      const scope = scopeOf(agent);
+      const scope = scopeForAgent(agent);
       return wikiWrite(wikiStore, scope.template, input);
     },
 

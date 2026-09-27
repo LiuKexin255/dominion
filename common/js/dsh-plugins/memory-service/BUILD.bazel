@@ -57,8 +57,9 @@ js_library(
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
 # runtime_deps closure walking. npm_deps carries the plugin's runtime imports:
-# the memory-service gRPC client (grpc-js + proto-loader). cordis/dsh-agent/
-# dsh-scope are type-only faces and resolve from the host composition.
+# the memory-service gRPC client (grpc-js + proto-loader) and the scope read
+# that resolves the agent-scoped context's key (dsh-scope `scopeOf`).
+# cordis/dsh-agent are type-only faces and resolve from the host composition.
 # runtime_deps carries the workspace packages the client consumes (the
 # dominion resolver and the logs face).
 js_runtime_library(
@@ -66,6 +67,7 @@ js_runtime_library(
     package_name = "@dominion/dsh-memory-service",
     lib = ":lib",
     npm_deps = [
+        ":node_modules/@deepseek-ai/dsh-scope",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],

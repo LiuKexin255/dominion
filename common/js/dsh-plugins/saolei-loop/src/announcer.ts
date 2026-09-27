@@ -13,10 +13,11 @@
  * team materialization's lifetime (a refresh disposes it — the same
  * short-term memory semantics agent logs have,
  * specs/065-agent-v2-team-refine/research.md D9). The constructed `turn`/`step`
- * are fixed placeholders: the derive/render path reads only the message
- * id/content and the event time/seq.
+ * and empty `stream` are fixed placeholders: the derive/render path reads only
+ * the message id/content and the event time/seq.
  */
 
+import { SessionSeq } from "@deepseek-ai/dsh-session";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { createAssistantMessage } from "@deepseek-ai/dsh-llm";
 import type { TeamMemberSource } from "@dominion/dsh-team";
@@ -95,9 +96,14 @@ export class SaoleiSystemMember {
     });
     const event: SessionEvent<"assistant/message"> = {
       type: "assistant/message",
-      seq: this.seq,
+      seq: SessionSeq(this.seq),
       time: this.lastTime,
-      data: { turn: 1, step: 1, message },
+      // The 0.1.7 envelope requires the exact timed model stream and a
+      // surface op; an announcement has no model stream, so it records an
+      // empty one and appends like any assistant message. The derive/render
+      // path reads only the message id/content and the event time/seq.
+      data: { turn: 1, step: 1, message, stream: [] },
+      surfaceOp: "append",
     };
     this.log = [...this.log, event];
     for (const listener of [...this.listeners]) {

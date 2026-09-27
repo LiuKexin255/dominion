@@ -128,6 +128,20 @@
 
 **Rationale/方法**: 逐符号在 unpkg `lib/types/*.d.ts` 实测；适配热点集中在组合清单/断言/模板数据/preset-authoring，而非源码 API。
 
+**终态结论（实测，2026-09-27）**: 上表"全部存活 / 极薄"的结论在 workspace 插件消费面**多处被实测证伪**；以 `node_modules` 内安装包的 `lib/types/*.d.ts` 为唯一权威（unpkg `0.1.7-rc.2/lib/types/` 交叉验证），实测差异与适配落点：
+
+| 消费符号/模型面 | D7 预期 | 0.1.7-rc.2 实测 | 适配落点 |
+|---|---|---|---|
+| `CallId` 值导入 | 存活 | 更名为 `ToolCallId`（`dsh-llm` `lib/types/brand.d.ts`；`CallId` 不再导出） | `common/js/dsh-plugins/llm-glm/src/wire.ts`、`llm-opencode-go/src/wire.ts` 改 `ToolCallId` |
+| ContentBlock `"tool-result"` 变体 | 生效 | 移除；工具结果为一等 `ToolResultMessage`（`role:'tool'`，顶层 `toolCallId`/`isError`，`content` 即结果块） | `llm-glm/src/serialize.ts`、`llm-opencode-go/src/serialize.ts` 新增 `case "tool"`；`team/src/broadcast.ts` 与 `team/src/team.ts` 改读 `message.toolCallId` |
+| `GenerateOptions.messages` 系统提示位置 | `options.system` | loop-built 请求以**首个 system-role 消息**承载渲染后 prompt（`assembleContextFor`/`deriveMessages`；`GenerateOptions.messages` JSDoc 明示） | 两适配器新增 `case "system"`（GLM → 顶层 `instructions`；opencode-go → `role:'system'` wire 消息）；`options.system` 保留为 one-shot 面 |
+| `Context.agent`（agent 作用域身份） | 存活 | 移除（`Context.agents` 为 registry）；作用域键经 `dsh-scope.scopeOf(ctx)` 读取（`assembleContextFor` 设 `scope: agent`，二者同一对象） | `memory-service/src/service.ts` `scopeKeyOf` 改 `scopeOf(agentCtx)`；`runtime_pkg` 增 `dsh-scope` 运行时依赖 |
+| `Session.events` | 存活 | 移除；同步历史读仅余 `eventAt`/`snapshotEvents`/`ownEvents`（均 `@deprecated`） | `team/src/team.ts` `agentMemberSource.events` 改 `agent.session.snapshotEvents()`（既有同步原语的过渡读；投影化重构 defer，依据 https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-09-09-deprecate-synchronous-session-event-reads.md） |
+| `AgentSetup` 回调 | `(agentCtx)` / `agentCtx.agent` | `(agentCtx, agent)`；`agentCtx.agent` 不存在 | `saolei-loop/src/orchestrator.ts` 用第二参数（player runtime 挂载）；测试同步 |
+| `assistant/message` data 形状 | `{turn,step,message}` | 增必填 `stream: AssistantStreamRecord[]`；`seq` 为 branded `SessionSeq`；surface 事件必填 `surfaceOp` | `saolei-loop/src/announcer.ts` 合成事件补 `stream: []`、`SessionSeq(seq)`、`surfaceOp: 'append'` |
+
+**实测证据**: 适配前 `bazel test //common/js/dsh-plugins/...` 中 llm-glm/llm-opencode-go/team/memory-service 的 `lib`（tsc）失败，且 llm-glm/llm-opencode-go/team 的 vitest 用例运行时失败（`TypeError: (0, CallId) is not a function`、`agent.session.snapshotEvents is not a function` 等）；适配后 18 个 target（9 包 × `lib_test`/`lib_typecheck_test`）在 `--nocache_test_results` 下全绿。saolei/saolei-loop 的编译错误并非"仅来自传递的 team 源"——`announcer.ts`/`orchestrator.ts` 有自身 0.1.7 差异（见上表末两行），修 team 不覆盖。
+
 **Alternatives considered**: 无——事实性验证。
 
 ---

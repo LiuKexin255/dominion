@@ -32,6 +32,7 @@ import type {
 } from "@deepseek-ai/dsh-agent";
 import { createUserMessage, LlmError, MessageId } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type {
   TeamHandle,
   TeamMemberSource,
@@ -153,6 +154,7 @@ function createFakeMember(name: string): FakeMember {
   const statusListeners: StatusListener[] = [];
   const errorListeners: ErrorListener[] = [];
   const state = { status: "idle" as AgentStatus };
+  const events: SessionEvent[] = [];
   let failFollowup = false;
   const off = <T>(list: T[], listener: T): (() => void) => () => {
     const index = list.indexOf(listener);
@@ -171,7 +173,7 @@ function createFakeMember(name: string): FakeMember {
       statusListeners.push(typed);
       return off(statusListeners, typed);
     }),
-  } as { on: unknown; agent?: Agent };
+  } as { on: unknown };
 
   const id = name as Agent["id"];
   const emitIdle = (): void => {
@@ -182,7 +184,7 @@ function createFakeMember(name: string): FakeMember {
   };
   const agent = {
     id,
-    session: { id, events: [] },
+    session: { id, events, snapshotEvents: () => events },
     get status(): AgentStatus {
       return state.status;
     },
@@ -204,7 +206,6 @@ function createFakeMember(name: string): FakeMember {
     }),
     whenIdle: vi.fn(async () => {}),
   } as unknown as Agent;
-  ctx.agent = agent;
 
   return {
     id: name,
@@ -245,7 +246,7 @@ function fakeAgents(registry: Map<string, FakeMember>): {
       calls.push(options);
       const member = createFakeMember(String(options.sessionId));
       registry.set(member.id, member);
-      await options.setup?.(member.ctx);
+      await options.setup?.(member.ctx, member.agent);
       return member.handle;
     }),
   };

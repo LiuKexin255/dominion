@@ -33,7 +33,7 @@
  * anchor's quiescence ("turn ended and no further turn is triggered"):
  * `running` covers consecutive queued turns and the turn-close checkpoint,
  * so idle means the whole drain interval settled
- * (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.1-rc.2/README.md).
+ * (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.7-rc.2/README.md).
  *
  * gameEnded is read from the player's agent-scoped game runtime after each
  * player turn (`peekGameEvent`, common/js/dsh-plugins/saolei-loop/src/game/
@@ -752,14 +752,14 @@ export class TeamOrchestrator {
           ? {}
           : { model: member.model }),
       },
-      setup: async (agentCtx) => {
+      setup: async (agentCtx, agent) => {
         await composed.setup(agentCtx);
         if (role === "player") {
           // The game runtime dispatches through the desktop-bridge connection
           // registered for the GAME session resource name; the member's dsh
           // session id is namespaced (`{session}/player`) and is not the
           // bridge key (specs/059-agent-v2-team-mode/data-model.md §3).
-          game = this.mountPlayerRuntime()(agentCtx.agent as Agent, options.session);
+          game = this.mountPlayerRuntime()(agent, options.session);
           return;
         }
         await this.loadPlannerMemory(agentCtx, options.memoryScope);

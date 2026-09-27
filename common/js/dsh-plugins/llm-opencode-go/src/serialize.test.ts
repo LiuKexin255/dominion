@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CallId,
   createAssistantMessage,
+  createSystemMessage,
   createToolResultMessage,
   createUserMessage,
   LlmError,
+  ToolCallId,
 } from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions } from "@deepseek-ai/dsh-llm";
 
@@ -120,6 +121,27 @@ describe("Chat Completions request serialization", () => {
     });
   });
 
+  it("maps a leading system-role message to a system wire message", () => {
+    // The 0.1.7 loop-built request carries the rendered prompt as a leading
+    // system-role message instead of the one-shot `system` option.
+    const request = serializeRequest(
+      baseOptions({
+        messages: [
+          createSystemMessage("You are a game table assistant."),
+          createUserMessage({
+            content: [{ type: "text", text: "hi" }],
+            source: { kind: "user" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.messages).toEqual([
+      { role: "system", content: "You are a game table assistant." },
+      { role: "user", content: "hi" },
+    ]);
+  });
+
   it("never replays assistant reasoning content", () => {
     const request = serializeRequest(
       baseOptions({
@@ -151,12 +173,12 @@ describe("Chat Completions request serialization", () => {
           createAssistantMessage({
             content: [
               { type: "text", text: "Opening the board." },
-              { type: "tool-call", id: CallId("call_1"), name: "saolei_init", arguments: "{}" },
+              { type: "tool-call", id: ToolCallId("call_1"), name: "saolei_init", arguments: "{}" },
             ],
             source: { provider: "opencode-go", model: "glm-5.3" },
           }),
           createToolResultMessage({
-            callId: CallId("call_1"),
+            callId: ToolCallId("call_1"),
             content: [{ type: "text", text: "new game started\nboard size 9*9" }],
             isError: false,
           }),
@@ -190,7 +212,7 @@ describe("Chat Completions request serialization", () => {
       baseOptions({
         messages: [
           createToolResultMessage({
-            callId: CallId("call_9"),
+            callId: ToolCallId("call_9"),
             content: [],
             isError: false,
           }),
@@ -307,7 +329,7 @@ describe("Chat Completions request serialization", () => {
     const options = baseOptions({
       messages: [
         createToolResultMessage({
-          callId: CallId("call_1"),
+          callId: ToolCallId("call_1"),
           content: [{ type: "image", attachment: {} } as never],
           isError: false,
         }),

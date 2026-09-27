@@ -20,9 +20,9 @@
 import { Context } from "@deepseek-ai/cordis";
 import { createScope } from "@deepseek-ai/dsh-scope";
 import {
-  CallId,
   createAssistantMessage,
   createToolResultMessage,
+  ToolCallId,
 } from "@deepseek-ai/dsh-llm";
 import type {
   AssistantMessage,
@@ -89,7 +89,7 @@ function createMember(name: string): FakeMember {
       return off;
     }),
   };
-  const session = { id, events };
+  const session = { id, events, snapshotEvents: () => events };
   const agent = { id, session, ctx } as unknown as Agent;
   const handle: AgentHandle = { agent, dispose: vi.fn(async () => {}) };
   return {
@@ -205,7 +205,7 @@ function toolCallEvent(callId: string, name: string, args: string): SessionEvent
   return {
     type: "tool/call",
     ...order(),
-    data: { turn: 1, step: 1, callId: CallId(callId), name, arguments: args },
+    data: { turn: 1, step: 1, callId: ToolCallId(callId), name, arguments: args },
   } as unknown as SessionEvent;
 }
 
@@ -217,7 +217,7 @@ function toolResultEvent(callId: string, result: string): SessionEvent {
       turn: 1,
       step: 1,
       message: createToolResultMessage({
-        callId: CallId(callId),
+        callId: ToolCallId(callId),
         content: [{ type: "text", text: result }],
         isError: false,
       }),
@@ -423,7 +423,7 @@ describe("Team.register", () => {
     const id = SessionId("templates/saolei/sessions/s1/player");
     const agent = {
       id,
-      session: { id, events: [] },
+      session: { id, events: [], snapshotEvents: () => [] },
       ctx: scope.ctx,
     } as unknown as Agent;
     const team = new Team(ctx);

@@ -10,11 +10,13 @@
  *
  * Payload vocabulary and the mapping table are contractual:
  * specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md §4;
- * the shapes come from the OpenAI Chat Completions streaming objects and the
- * official chat-completions adapter (node_modules/.pnpm/@deepseek-ai+dsh-llm-deepseek@0.1.1-rc.2_*).
+ * the shapes come from the OpenAI Chat Completions streaming objects
+ * (https://github.com/openai/openai-openapi/blob/main/openapi.yaml). The
+ * official `@deepseek-ai/dsh-llm-deepseek` package is a DeepSeek Messages
+ * adapter, not a chat-completions precedent.
  */
 
-import { CallId, EMPTY_RESPONSE_CODE, LlmError } from "@deepseek-ai/dsh-llm";
+import { EMPTY_RESPONSE_CODE, LlmError, ToolCallId } from "@deepseek-ai/dsh-llm";
 import type { ContentBlock, FinishReason, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { createParser } from "eventsource-parser";
 import type { EventSourceMessage } from "eventsource-parser";
@@ -172,7 +174,7 @@ export function createChatCompletionsWire(onComment?: () => void): ChatCompletio
       case "tool-call":
         return {
           type: "tool-call",
-          id: CallId(block.callId ?? ""),
+          id: ToolCallId(block.callId ?? ""),
           name: block.name ?? "",
           arguments: block.text,
         };
@@ -273,7 +275,7 @@ export function createChatCompletionsWire(onComment?: () => void): ChatCompletio
       pendingChunks.push({
         type: "tool-call-delta",
         index: block.index,
-        id: CallId(block.callId ?? ""),
+        id: ToolCallId(block.callId ?? ""),
         ...(block.name !== undefined ? { name: block.name } : {}),
         argumentsDelta: fragment,
       });

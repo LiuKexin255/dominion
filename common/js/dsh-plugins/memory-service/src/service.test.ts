@@ -6,13 +6,17 @@
  * forwards only `scope.template`
  * (specs/069-wiki-template-web/contracts/dsh-plugins.md §2).
  *
- * Pattern (style/javascript.md Mock convention): the storage client and the
- * agent context are injected doubles (`vi.fn()`); no module interception.
+ * Pattern (style/javascript.md Mock convention): the storage client is an
+ * injected double (`vi.fn()`) and the agent context is a real `createScope`
+ * scope (the official scope tag the service reads through `scopeOf`); no
+ * module interception.
  * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2.
  */
 
-import type { Context } from "@deepseek-ai/cordis";
+import { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
+import { createScope } from "@deepseek-ai/dsh-scope";
+import type { Scope } from "@deepseek-ai/dsh-scope";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MemoryEntry, MemoryStore } from "./client.js";
@@ -56,7 +60,7 @@ function makeFakeStore(entries: MemoryEntry[] = []) {
 interface AgentScope {
   readonly agent: Agent;
   readonly ctx: Context;
-  readonly cleanups: Array<() => void>;
+  readonly scope: Scope;
 }
 
 /** Minimal WikiStore double for the tests that do not exercise the wiki face. */
@@ -86,18 +90,16 @@ function createService(
   });
 }
 
-/** A fake agent scope: identity-keyed agent plus a controllable effect. */
+/**
+ * A real agent scope: `createScope` tags the context with the agent object as
+ * its scope key, matching the production agent scope (`assembleContextFor`
+ * passes the same agent as `AssembleContext.scope`, and the service reads it
+ * back through `scopeOf`).
+ */
 function makeAgentScope(id = "planner"): AgentScope {
-  const cleanups: Array<() => void> = [];
   const agent = { id } as unknown as Agent;
-  const ctx = {
-    agent,
-    effect: vi.fn((register: () => () => void) => {
-      cleanups.push(register());
-      return vi.fn();
-    }),
-  } as unknown as Context;
-  return { agent, ctx, cleanups };
+  const scope = createScope(new Context(), agent);
+  return { agent, ctx: scope.ctx, scope };
 }
 
 const SCOPE = { template: "saolei", session: "sess-1" };
@@ -156,7 +158,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
     expect(store.createMemory).not.toHaveBeenCalled();
   });
 
-  it("throws for an unscoped context (no agent) before any read", async () => {
+  it("throws before any read for a context without an agent scope (unscoped context)", async () => {
     const service = createService(store);
     const ctx = { effect: vi.fn() } as unknown as Context;
 
@@ -187,13 +189,11 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
 
   it("removes the snapshot and binding when the agent scope unwinds", async () => {
     const service = createService(store);
-    const { agent, ctx, cleanups } = makeAgentScope();
+    const { agent, ctx, scope } = makeAgentScope();
     await service.load(ctx, SCOPE);
     expect(service.snapshot(agent)).toBeDefined();
 
-    for (const cleanup of cleanups) {
-      cleanup();
-    }
+    await scope.dispose();
 
     expect(service.snapshot(agent)).toBeUndefined();
     await expect(

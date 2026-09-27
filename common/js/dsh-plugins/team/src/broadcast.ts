@@ -13,7 +13,7 @@
  * session log (survey §4.4a reference model).
  *
  * dsh-llm message/message-source shapes:
- * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.1-rc.2/lib/types/message.d.ts
+ * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.7-rc.2/lib/types/message.d.ts
  */
 
 import { createUserMessage, MessageId } from "@deepseek-ai/dsh-llm";
@@ -28,11 +28,11 @@ import type { SessionEvent } from "@deepseek-ai/dsh-session";
 /**
  * Durable provenance of an injected broadcast: `MessageSourceMap`'s merge
  * extension (declaration merge, official `subagent-settled` precedent —
- * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.1-rc.2/lib/types/message.d.ts).
+ * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.7-rc.2/lib/types/message.d.ts).
  * The `form: 'relay'` reuses the official "a message another agent addressed
  * to this one" form; `messageId` doubles as the 1:1 correlation and
  * consumption anchor — the original speech's MessageId, or the tool call's
- * CallId for a tool unit (contracts/dsh-plugins.md §1 item 6; survey §5.3).
+ * ToolCallId for a tool unit (contracts/dsh-plugins.md §1 item 6; survey §5.3).
  */
 export interface TeamBroadcastSource {
   readonly kind: "team-broadcast";
@@ -57,7 +57,7 @@ declare module "@deepseek-ai/dsh-llm" {
 export interface BroadcastUnit {
   /** Which logged production the anchor names. */
   readonly kind: "message" | "tool";
-  /** Stable anchor string (MessageId for a speech, CallId for a tool unit). */
+  /** Stable anchor string (MessageId for a speech, ToolCallId for a tool unit). */
   readonly anchor: string;
   /** Sender-log event time of the producing event (cross-member order key). */
   readonly time: number;
@@ -98,13 +98,13 @@ export function messageBody(message: AssistantMessage): string {
 }
 
 /**
- * The result text of one tool-result message: its nested result blocks in
+ * The result text of one tool-result message: its result blocks in
  * order — text verbatim; any other block type keeps its lossless JSON form so
  * the render never silently drops content
  * (specs/060-agent-v2-team-optimize/contracts/team-api.md §4: 全文，不截断、不摘要).
  */
 export function toolResultBody(message: ToolResultMessage): string {
-  return (message.content[0]?.content ?? [])
+  return message.content
     .map((block: ContentBlock) =>
       block.type === "text" ? block.text : JSON.stringify(block),
     )
@@ -140,10 +140,7 @@ export function deriveUnits(events: readonly SessionEvent[]): BroadcastUnit[] {
       continue;
     }
     if (event.type === "tool/result") {
-      const callId = event.data.message.content[0]?.toolCallId;
-      if (callId === undefined) {
-        continue;
-      }
+      const callId = event.data.message.toolCallId;
       const call = calls.get(String(callId));
       if (call === undefined) {
         continue;
@@ -211,7 +208,7 @@ function findToolResult(
   for (const event of events) {
     if (
       event.type === "tool/result" &&
-      String(event.data.message.content[0]?.toolCallId) === anchor
+      String(event.data.message.toolCallId) === anchor
     ) {
       return event.data.message;
     }

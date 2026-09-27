@@ -101,7 +101,11 @@ export function agentMemberSource(handle: AgentHandle): TeamMemberSource {
   return {
     id: String(agent.id),
     get events() {
-      return agent.session.events;
+      // Synchronous historical read: the team primitive derives from sender
+      // logs at drain, so it takes a full snapshot. `snapshotEvents` is the
+      // deprecated transitional reader while the projection-based redesign
+      // is deferred (https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-09-09-deprecate-synchronous-session-event-reads.md).
+      return agent.session.snapshotEvents();
     },
     subscribe(onEvent) {
       return agent.ctx.on("session/event", (session, event) => {
@@ -187,7 +191,7 @@ export class Team extends Service {
     super(ctx, "team");
     // Member teardown drops the member's entries and buffers; the host-level
     // listener survives the member scope unwind that precedes
-    // `agent/disposed` (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.1-rc.2/README.md).
+    // `agent/disposed` (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.7-rc.2/README.md).
     // Only agent members have this edge (their source id is the agent session
     // id); a non-agent source is removed by the explicit registration dispose.
     ctx.on("agent/disposed", (payload) => {
@@ -432,10 +436,7 @@ export class Team extends Service {
       return;
     }
     if (event.type === "tool/result") {
-      const callId = event.data.message.content[0]?.toolCallId;
-      if (callId === undefined) {
-        return;
-      }
+      const callId = event.data.message.toolCallId;
       const call = state.pendingCalls.get(String(callId));
       if (call === undefined) {
         return;
