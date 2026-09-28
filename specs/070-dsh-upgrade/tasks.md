@@ -159,7 +159,7 @@
 
 - [X] T025 大型测试验收（game）：经 testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`——四拓扑全部用例通过（game-system：对话/preset CRUD+物化/team 群聊与工具隔离/planner memory；game-disconnect：desktop 断开恢复；game-memory-down：team 物化 fail-loud；game-stall：LLM 路由流停滞看护）（部署→测试→清理闭环；失败则修复相关代码/用例后重跑直至全绿，禁止跳过；用例修复遵守 `style/golang.md`，不新建测试计划 YAML）；执行证据记入 PR
 - [X] T026 大型测试验收（demo）：`guitar run experimental/dsh/demo/testplan/interface_test.yaml`——`testplan_test`/`multiturn_test`/`preset_test` 全部通过；同 T025 修复闭环要求；执行证据记入 PR
-- [ ] T027 Mongo preset 迁移（**最后执行**，前置=T025/T026 全绿）：按 `specs/070-dsh-upgrade/contracts/mongo-preset-migration.md` 执行——旧版本 `ListPresets` 导出存档（API：`projects/game/agent_v2.proto` PresetService）→ 新版本部署 → 试插探测 → 回灌（4a）或删后重建（4b，服务端校验拒绝旧形态时）→ `ListPresets` 全量 diff + team 物化冒烟（player/planner 各一）；存档与校验和保留至发布窗口关闭；执行证据记入 PR
+- [X] T027 Mongo preset 迁移（**最后执行**，前置=T025/T026 全绿）（2026-09-28 用户裁定跳过迁移动作：实测存量记录已是新模型形态——template=player/planner、schema 冻结、wire 面不变，无数据改写必要；导出存档落盘保留至发布窗口；0-diff + 物化冒烟随发布部署复核）：按 `specs/070-dsh-upgrade/contracts/mongo-preset-migration.md` 执行——旧版本 `ListPresets` 导出存档（API：`projects/game/agent_v2.proto` PresetService）→ 新版本部署 → 试插探测 → 回灌（4a）或删后重建（4b，服务端校验拒绝旧形态时）→ `ListPresets` 全量 diff + team 物化冒烟（player/planner 各一）；存档与校验和保留至发布窗口关闭；执行证据记入 PR
 - [ ] T028 收尾检查（SC-005/SC-006 + FR-011）：按 SC-006 界定范围 grep 旧线残留（`0.1.1-rc.2`、`dsh-agent-presets`、`PRESET_TEMPLATES_ROOT`、`preset-templates`/`presets-templates` 目录名——范围 = catalog/package.json/BUILD 声明面、源码、注释、版本快照标识、模板目录配置；豁免版本控制引用、fake-llm testdata 中已确认项，以及 research/data-model/mongo runbook 中迁移所必需的旧→新映射记录）零残留；`specs/070-dsh-upgrade/` 交付文档终态复核（引用链接有效且来源可追溯——FR-011、Mermaid 渲染、无演进叙述）；quickstart.md 六场景全部复核通过；汇总各 phase 证据完成 PR
 
 ---
@@ -249,3 +249,16 @@ Task: "T012 [US1] 更新 third_party/dsh/core/BUILD.bazel 注释 ..."
 - D5（default 空串）与前端符号契约（D9）为实现期门禁：实测结论如与 research 预设不符，按回退方案执行并回写 research.md
 - 任何 task 中发现的 API 事实与 research D7 表不符：以 unpkg 0.1.7 类型面实测为准，并在 PR 记录差异
 - **Phase 编号口径**：本文件 Phase 1–8 为唯一权威编号（plan.md/research.md 引用时以本文件为准）；与用户故事非一一对应（Phase 4 = US3、Phase 5 = US2），顺序由文件依赖（`cordis.yml`/`dsh.test.ts` 串行）决定，非优先级；`specs/070-dsh-upgrade/research.md` D14 的分组为建议顺序，其 P1–P7 与本文 Phase 的对应关系见该节映射说明
+
+---
+
+## Phase 9: 模板声明行移除修订（2026-09-28 用户裁定）
+
+**Purpose**: 移除 agent_v2/demo 组合清单中的 `preset-*` 声明行（`@deepseek-ai/dsh-agent-preset` 行），模板定义单一事实源 = preset-authoring `templates` 快照；`@deepseek-ai/dsh-agent-preset` 包从全部声明面移除（`specs/070-dsh-upgrade/research.md` D4 终态结论）。文档清单继承 Phase 1–8 已声明项与 `specs/070-dsh-upgrade/research.md`（D4 终态结论）、`contracts/composition-manifest.md`、`contracts/preset-model-mapping.md`、`data-model.md`。
+
+- [X] R1 specs 文档终态：composition-manifest/preset-model-mapping/data-model/research D4/spec/plan/quickstart/checklists 订正为"`templates` 快照为模板定义单一事实源、`preset-*` 声明行移除"终态。门禁：specs 内零 `preset-player|preset-planner|preset-demo-` 残留（豁免 research D4 决策记录与 tasks.md 既有历史任务）、无"声明行即模板定义"表述。
+- [X] R2 agent_v2 组合面：`projects/game/agent_v2/cordis.yml` 删 `preset-player`/`preset-planner` 声明行块并改写注释；`projects/game/agent_v2/src/dsh.test.ts` 断言语义守恒重写（21 行精确断言、T016 fail-loud 新形态、`templates` 快照与 persona 锚定）。门禁：`bazel test //projects/game/agent_v2/... --nocache_test_results` 全绿。
+- [X] R3 demo 组合面：`experimental/dsh/demo/agent/cordis.yml` 删 `preset-demo-standard`/`preset-demo-tools` 声明行块、`default: ''`、注释改写；`src/composition.test.ts` 仅注释改（断言零改动）。门禁：`bazel test //experimental/dsh/demo/agent/... --nocache_test_results` 全绿。
+- [X] R4 声明面收缩（须在 R2/R3 之后）：catalog/agent_v2/demo package.json 删 `@deepseek-ai/dsh-agent-preset`；`pnpm up` → gazelle → `bazel mod tidy`（lockfile 不得手改）。门禁：相关 build 通过、lockfile 精确包名零残留、`closure_audit_test` 通过。
+- [X] R5 插件注释/单测/README/Go 注释：preset-authoring index/derive/单测（新增空串 id 用例）、memory 注释、agent_v2/demo README、preset_test.go 3 处注释。门禁：`bazel test //common/js/dsh-plugins/... //experimental/dsh/demo/... --nocache_test_results` 全绿。
+- [X] R6 总门禁与残留清查：全量 test 绿 + 全仓 grep 残留清查（含豁免清单）+ closure audit ①②③ 通过。
