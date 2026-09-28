@@ -138,7 +138,7 @@
 **Independent Test**: `bazel build //projects/game/web/frontend/... && bazel test //projects/game/web/frontend/...` 全绿。
 
 **文档清单（必读）**:
-- 代码规范文档: `style/javascript.md`；https://google.github.io/styleguide/tsguide.html （Google TypeScript Style——`style/javascript.md` 引用的仓库基准；注意前端包为 bundler 体系，`specs/048.../esm-package-conventions.md` 的 Node ESM 审计范围不含 `*/frontend` 包，其 `.js` 扩展名导入等规则以前端既有书写为准）；`specs/019-js-test-reliability/spec.md`（测试执行模型与 mock 根因背景——`style/javascript.md` §测试 的间接引用）；`specs/019-js-test-reliability/contracts/run-vitest-shim.md`（vitest shim 退出码契约——`style/javascript.md` §声明测试 target 的间接引用）
+- 代码规范文档: `style/javascript.md`；https://google.github.io/styleguide/tsguide.html （Google TypeScript Style——`style/javascript.md` 引用的仓库基准；注意前端包为 bundler 体系，`specs/048-js-esm-migration/contracts/esm-package-conventions.md` 的 Node ESM 审计范围不含 `*/frontend` 包，其 `.js` 扩展名导入等规则以前端既有书写为准）；`specs/019-js-test-reliability/spec.md`（测试执行模型与 mock 根因背景——`style/javascript.md` §测试 的间接引用）；`specs/019-js-test-reliability/contracts/run-vitest-shim.md`（vitest shim 退出码契约——`style/javascript.md` §声明测试 target 的间接引用）
 - 官方文档: https://unpkg.com/@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.2/lib/types/index.d.ts （0.1.7 组件类型面——Button/Menu/MarkdownText/JsonBlock/StateDot/DisclosureRow/Input 等已确认在场；适配时以此为准）；https://unpkg.com/@deepseek-ai/dsh-client-ui-theme@0.1.7-rc.2/ （vendored theme 包文件面：`src/dsh-theme/` 逐文件比对基准）
 - 技术文章/技术参考文档: `specs/070-dsh-upgrade/research.md`（D9）；`specs/070-dsh-upgrade/quickstart.md`（场景 5）
 
@@ -160,7 +160,7 @@
 - [X] T025 大型测试验收（game）：经 testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`——四拓扑全部用例通过（game-system：对话/preset CRUD+物化/team 群聊与工具隔离/planner memory；game-disconnect：desktop 断开恢复；game-memory-down：team 物化 fail-loud；game-stall：LLM 路由流停滞看护）（部署→测试→清理闭环；失败则修复相关代码/用例后重跑直至全绿，禁止跳过；用例修复遵守 `style/golang.md`，不新建测试计划 YAML）；执行证据记入 PR
 - [X] T026 大型测试验收（demo）：`guitar run experimental/dsh/demo/testplan/interface_test.yaml`——`testplan_test`/`multiturn_test`/`preset_test` 全部通过；同 T025 修复闭环要求；执行证据记入 PR
 - [X] T027 Mongo preset 迁移（**最后执行**，前置=T025/T026 全绿）（2026-09-28 用户裁定跳过迁移动作：实测存量记录已是新模型形态——template=player/planner、schema 冻结、wire 面不变，无数据改写必要；导出存档落盘保留至发布窗口；0-diff + 物化冒烟随发布部署复核）：按 `specs/070-dsh-upgrade/contracts/mongo-preset-migration.md` 执行——旧版本 `ListPresets` 导出存档（API：`projects/game/agent_v2.proto` PresetService）→ 新版本部署 → 试插探测 → 回灌（4a）或删后重建（4b，服务端校验拒绝旧形态时）→ `ListPresets` 全量 diff + team 物化冒烟（player/planner 各一）；存档与校验和保留至发布窗口关闭；执行证据记入 PR
-- [ ] T028 收尾检查（SC-005/SC-006 + FR-011）：按 SC-006 界定范围 grep 旧线残留（`0.1.1-rc.2`、`dsh-agent-presets`、`PRESET_TEMPLATES_ROOT`、`preset-templates`/`presets-templates` 目录名——范围 = catalog/package.json/BUILD 声明面、源码、注释、版本快照标识、模板目录配置；豁免版本控制引用、fake-llm testdata 中已确认项，以及 research/data-model/mongo runbook 中迁移所必需的旧→新映射记录）零残留；`specs/070-dsh-upgrade/` 交付文档终态复核（引用链接有效且来源可追溯——FR-011、Mermaid 渲染、无演进叙述）；quickstart.md 六场景全部复核通过；汇总各 phase 证据完成 PR
+- [X] T028 收尾检查（SC-005/SC-006 + FR-011）：按 SC-006 界定范围 grep 旧线残留（`0.1.1-rc.2`、`dsh-agent-presets`、`PRESET_TEMPLATES_ROOT`、`preset-templates`/`presets-templates` 目录名——范围 = catalog/package.json/BUILD 声明面、源码、注释、版本快照标识、模板目录配置；豁免版本控制引用、fake-llm testdata 中已确认项，以及 research/data-model/mongo runbook 中迁移所必需的旧→新映射记录）零残留；`specs/070-dsh-upgrade/` 交付文档终态复核（引用链接有效且来源可追溯——FR-011、Mermaid 渲染、无演进叙述）；quickstart.md 六场景全部复核通过；汇总各 phase 证据完成 PR
 
 ---
 
