@@ -142,7 +142,7 @@
 - 官方文档: https://unpkg.com/@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.2/lib/types/index.d.ts （0.1.7 组件类型面——Button/Menu/MarkdownText/JsonBlock/StateDot/DisclosureRow/Input 等已确认在场；适配时以此为准）；https://unpkg.com/@deepseek-ai/dsh-client-ui-theme@0.1.7-rc.2/ （vendored theme 包文件面：`src/dsh-theme/` 逐文件比对基准）
 - 技术文章/技术参考文档: `specs/070-dsh-upgrade/research.md`（D9）；`specs/070-dsh-upgrade/quickstart.md`（场景 5）
 
-- [ ] T024 [US5] 前端升级适配：`projects/game/web/frontend` 对 `@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.2` 编译修复（消费文件清单见 `src/App.tsx`、`src/components/{ChatView,SessionList,ReasoningRow,ToolCard,WikiView,PresetsView,SystemPromptOverlay,TeamSettingsPanel}.tsx`；如组件 API 变更按类型面适配）；`src/dsh-theme/` 从 `@deepseek-ai/dsh-client-ui-theme@0.1.7-rc.2` 重新 vendoring（theme 非 catalog 依赖，按 registry/unpkg 0.1.7-rc.2 包文件重取，保留 vendored 形态）；`src/theme.css` 的 `lib/markdown/CodeBlock.module.css` 引用路径/类名契约重验。内置门禁：`bazel test //projects/game/web/frontend/...` 全绿（含 `dsh-theme.test.ts`/`ChatView.test.tsx`；无用例删除，SC-002）
+- [X] T024 [US5] 前端升级适配：`projects/game/web/frontend` 对 `@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.2` 编译修复（消费文件清单见 `src/App.tsx`、`src/components/{ChatView,SessionList,ReasoningRow,ToolCard,WikiView,PresetsView,SystemPromptOverlay,TeamSettingsPanel}.tsx`；如组件 API 变更按类型面适配）；`src/dsh-theme/` 从 `@deepseek-ai/dsh-client-ui-theme@0.1.7-rc.2` 重新 vendoring（theme 非 catalog 依赖，按 registry/unpkg 0.1.7-rc.2 包文件重取，保留 vendored 形态）；`src/theme.css` 的 `lib/markdown/CodeBlock.module.css` 引用路径/类名契约重验。内置门禁：`bazel test //projects/game/web/frontend/...` 全绿（含 `dsh-theme.test.ts`/`ChatView.test.tsx`；无用例删除，SC-002）
 
 **Checkpoint**: 全部用户故事完成；进入验收与迁移。
 
