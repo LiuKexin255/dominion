@@ -234,7 +234,22 @@ describe("create", () => {
     expect(registry.register).not.toHaveBeenCalled();
   });
 
-  it("refuses an id a declared template already owns (shared roster namespace)", async () => {
+  it("rejects the empty preset id with INVALID_ARGUMENT and leaves no residue", async () => {
+    const { service, store, registry } = harness();
+
+    // The id grammar rejects "", so no roster entry can ever claim the
+    // registry's empty selection default — the plugin side of the fail-loud
+    // chain locked by agent_v2's dsh.test.ts registry-default assertion
+    // (specs/070-dsh-upgrade/contracts/composition-manifest.md §2;
+    // specs/070-dsh-upgrade/research.md D4 终态结论).
+    await expect(
+      service.create({ id: "", template: "demo-tools", role: "planner", persona: "" }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(await store.list()).toEqual([]);
+    expect(registry.register).not.toHaveBeenCalled();
+  });
+
+  it("refuses an id a snapshot template already owns (shared deployment id space)", async () => {
     const { service, store, registry } = harness();
 
     await expect(

@@ -78,8 +78,8 @@ ts_project(
 artifact_pkg_js(
     name = "server_pkg",
     app = "dsh-demo",
-    # cordis.yml is the only non-TS resource: the preset templates are
-    # declarative rows inside it, not a shipped data directory
+    # cordis.yml is the only non-TS resource: the pool templates ride inside
+    # the preset-authoring row config, not a shipped data directory
     # (specs/070-dsh-upgrade/contracts/composition-manifest.md §3).
     data_files = ["cordis.yml"],
     # The entry point is main.ts (process startup only); bootstrap.ts holds
@@ -92,7 +92,7 @@ artifact_pkg_js(
         # every dsh package the service package.json declares must be
         # physically present so the Loader can resolve each row and the
         # closure audit can trace every shipped package to a declaration.
-        # dsh-persona and the preset declaration rows resolve by bare package
+        # dsh-persona and the pool-template child rows resolve by bare package
         # name from the host composition; the 0.1.7 install-level peers
         # (brand/ptc-runtime/sandbox/settings/etc.) are declared for the
         # same traceability (specs/070-dsh-upgrade/research.md D6). The
@@ -103,7 +103,6 @@ artifact_pkg_js(
         # workspace packages ship through runtime_deps (JsRuntimePackageInfo).
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-agent-loop",
-        ":node_modules/@deepseek-ai/dsh-agent-preset",
         ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-brand",
@@ -164,8 +163,8 @@ artifact_image(
 #
 # composition.test.ts additionally boots the REAL direct composition, so the
 # data also mirrors the cordis.yml row packages (services + preset registry +
-# declaration rows + authoring + demo-echo, which the Loader resolves by bare
-# name from this package's node_modules).
+# authoring + demo-echo + the pool-template child packages, which the Loader
+# resolves by bare name from this package's node_modules).
 vitest_test(
     name = "lib_test",
     size = "small",
@@ -183,7 +182,6 @@ vitest_test(
         ":node_modules/@deepseek-ai/cordis-plugin-timer",
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-agent-loop",
-        ":node_modules/@deepseek-ai/dsh-agent-preset",
         ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-invariants",

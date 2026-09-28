@@ -51,7 +51,7 @@
 
 ### User Story 3 - game preset 部分按 0.1.7 新模型重构 (Priority: P1)
 
-0.1.7 以声明式 preset 模型取代旧的目录式 `@deepseek-ai/dsh-agent-presets`：新包 `@deepseek-ai/dsh-agent-preset-registry`（`ctx.agentPresets`，负责选择、运行时修订保留与 profile 编辑）与 `@deepseek-ai/dsh-agent-preset`（以普通 Cordis 声明定义 preset：身份、展示元数据、子插件清单），preset 定义不再有独立目录/roots 概念（https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-09-18-declarative-agent-presets.md ；https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/preset ）。game 的 preset 能力面在该新模型下重构并保持既有产品语义。
+0.1.7 以声明式 preset 模型取代旧的目录式 `@deepseek-ai/dsh-agent-presets`：新包 `@deepseek-ai/dsh-agent-preset-registry`（`ctx.agentPresets`，负责选择、运行时修订保留与 profile 编辑）管理运行时 roster，模板定义由 preset-authoring 的 `templates` 快照（宿主 Config 注入）表达，preset 定义不再有独立目录/roots 概念（https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-09-18-declarative-agent-presets.md ；https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/preset ）。game 的 preset 能力面在该新模型下重构并保持既有产品语义。
 
 **必须保持的 preset 产品语义**（来自 `projects/game/agent_v2/cordis.yml` agent-presets 行、`common/js/dsh-plugins/preset-authoring`、specs/058/059/060 契约面）：
 
@@ -67,7 +67,7 @@
 
 **Acceptance Scenarios**:
 
-1. **Given** 新模型（registry + 声明式 preset），**When** 定义 player/planner 模板 preset，**Then** 模板以普通 Cordis 声明表达（子插件清单 + 元数据），且具备系统级信任（普通用户不可写删）。
+1. **Given** 新模型（registry + 声明式 preset），**When** 定义 player/planner 模板 preset，**Then** 模板经 preset-authoring Config 的 `templates` 快照表达（子插件清单 + 元数据），且具备系统级信任（普通用户不可写删）。
 2. **Given** 用户请求创建 preset，**When** 其插件行违反角色模板规则（required/forbidden），**Then** 请求被拒绝（`INVALID_ARGUMENT`）且无产物；**When** 合法，**Then** 用户 preset 可创建、编辑、删除，并在 agent 物化时生效。
 3. **Given** 物化/更新 agent 时给出未知 preset id，**When** 解析，**Then** fail-loud 报错，不静默回落任何默认。
 4. **Given** team 会话中不同角色 agent，**When** 各自按池模板 preset 挂载工具，**Then** 工具可见性按角色隔离（player 不可见 memory 工具，planner 不可见 saolei 工具）。
@@ -109,7 +109,7 @@
 ### Edge Cases
 
 - **peer 版本互锁冲突**：0.1.7-rc.2 线各包 peer 以 tilde 互锁（cordis `~4.0.4`、loader `~1.0.5`、include `~1.0.9`、group `~1.0.4`、dsh 家族互相精确 `0.1.7-rc.2`）。catalog 解析必须落在线内值（cordis 4.0.4、loader 1.0.5、include 1.0.9、group 1.0.4、timer 1.1.6、node-addon-require-builtin 0.1.6）；若解析漂移到线外（如 cordis 4.0.5+），同仓库可能物化两份 cordis，DI 框架双实例导致插件注册/类型识别运行时故障。
-- **旧 presets 包不可同线混装**：`@deepseek-ai/dsh-agent-presets` 最高仅 0.1.5-rc.3，其精确 peer（cordis 4.0.2）与 0.1.7 线（~4.0.4）互斥；升级后该包 MUST 从 catalog 与全部 package.json/BUILD 声明面彻底移除，替换为新模型包（`dsh-agent-preset-registry` + `dsh-agent-preset`）。
+- **旧 presets 包不可同线混装**：`@deepseek-ai/dsh-agent-presets` 最高仅 0.1.5-rc.3，其精确 peer（cordis 4.0.2）与 0.1.7 线（~4.0.4）互斥；升级后该包 MUST 从 catalog 与全部 package.json/BUILD 声明面彻底移除，替换为新模型面（`dsh-agent-preset-registry` + preset-authoring `templates` 快照）。
 - **preset 模型迁移语义差**：目录 roots/trust/`includeUserRoot`/`default` 配置面在新模型中不存在，改为声明式定义 + registry 的选择/修订保留；新语义包括 eager activation（激活失败留在 roster、拒绝新绑定、不阻止启动）、revision 保留（编辑时旧修订对运行中 agent 保持可用直至释放）、`selectedDefault`（无名新会话的解析目标）、会话数据记录 preset 身份且重启时按当前配置解析（缺失定义则拒绝）。既有"空 default + 显式必选"的产品语义（fail-loud）需在新模型上重新表达。存量数据不做运行时兼容：agent_v2 会话无持久化（无旧会话身份解析场景），Mongo 既有 preset 记录以一次性迁移承载（记录 schema 不变，`template`/persona 映射对齐声明式模型；FR-012）。
 - **用户 preset 持久化映射**：事实源保持 preset-authoring 的 Mongo store（2026-09-27 澄清决策）；store 记录映射/物化为 0.1.7 新模型声明的机制（激活时机、声明形态、registry revision 生命周期与 store 记录的一致性）是 plan 阶段设计决策，spec 约束 US3 产品语义不变。新模型原生用户编辑走"活动 profile 的 user patch"（见架构注记），本服务不采用该面承载用户 preset。
 - **新增 peer/依赖包**：0.1.7 线引入的新 peer 包（US4 场景 2 所列）与新 runtime 依赖（dsh-atomic-write、dsh-package-manifest、schemastery `^3.18.4` 等）必须纳入声明面与审计预期集，否则 closure audit 失败或产物缺包（完整清单以 `specs/070-dsh-upgrade/contracts/composition-manifest.md` §1/§4 为唯一权威）。
@@ -128,7 +128,7 @@
 - **FR-005**: 0.1.7 线要求的全部 peer 包 MUST 在消费服务的 package.json 与 catalog 中显式声明（pnpm 隐式 auto-install 不构成声明面；closure audit 断言②要求每个随行包可追溯）。完整新增清单以 `specs/070-dsh-upgrade/contracts/composition-manifest.md` §1/§4 为唯一权威（US4 场景 2、Edge Cases 与 `research.md` D6 均为其投影）。
 - **FR-006**: `projects/game/agent_v2` 源码与 `cordis.yml` 组合清单 MUST 完成 0.1.7-rc.2 线的 API 适配，既有单元测试全部通过，不得删除或跳过用例来达成通过。
 - **FR-007**: 升级后 agent_v2 对外服务行为 MUST 与升级前一致（对话流程、team 群聊、planner memory、LLM 路由与流停滞看护等既有行为面），以既有大型测试计划实际执行全部通过为验收。
-- **FR-008**: game preset 部分 MUST 按 0.1.7 新模型重构：以 `@deepseek-ai/dsh-agent-preset-registry` + `@deepseek-ai/dsh-agent-preset`（+ 既有 `dsh-persona`）表达，`@deepseek-ai/dsh-agent-presets` 从全部声明面移除；US3 所列五项产品语义（双角色池/CRUD 服务面/用户派生/显式 fail-loud 选择/team 工具隔离）MUST 在新模型下保持。用户 preset 事实源 MUST 保持 Mongo store（preset-authoring 服务面契约不变），0.1.7 新模型声明在物化/激活时由 store 记录映射生成。
+- **FR-008**: game preset 部分 MUST 按 0.1.7 新模型重构：以 `@deepseek-ai/dsh-agent-preset-registry`（+ 既有 `dsh-persona`、preset-authoring `templates` 快照）表达；`@deepseek-ai/dsh-agent-presets` 与 `@deepseek-ai/dsh-agent-preset` 均从全部声明面移除（2026-09-28 裁定，research.md D4 终态结论）；US3 所列五项产品语义（双角色池/CRUD 服务面/用户派生/显式 fail-loud 选择/team 工具隔离）MUST 在新模型下保持。用户 preset 事实源 MUST 保持 Mongo store（preset-authoring 服务面契约不变），0.1.7 新模型声明在物化/激活时由 store 记录映射生成。
 - **FR-009**: `experimental/dsh/demo`（含其 preset 演示迁移到新模型）与 `common/js/dsh-plugins/*`（含 preset-authoring 重构）MUST 在 0.1.7-rc.2 线完成适配，demo 大型测试计划与 closure audit 全部通过。
 - **FR-010**: lockfile MUST 经 pnpm 官方流程刷新（不得手改 `pnpm-lock.yaml`），且刷新后 lockfile 内全部 `@deepseek-ai/*` 同 0.1.7-rc.2 线、`node-addon-require-builtin` 平台 optionalDep 在场。
 - **FR-011**: 升级涉及的行为面决策（选线依据、peer 互锁 pin、preset 模型映射设计）MUST 在交付文档（plan/research/contracts）中记录来源与依据（版本事实以 registry 实测为准，preset 语义以上游架构注记为准）。
@@ -161,7 +161,7 @@
 - cordis 家族在 0.1.7 线采用线内精确值 pin（cordis `4.0.4`、loader `1.0.5`、include `1.0.9`、group `1.0.4`、timer `1.1.6`；node-addon-require-builtin `0.1.6`），保证"一个版本单元"的确定性；survey 的"cordis 保持 range"惯例（`survey/deepseek-harness-b1-bazel-packaging.md` §141）在线内精确 pin 前提下按线内值收敛。
 - `@deepseek-ai/schemastery` 统一为 `^3.18.4`（新 preset 包依赖 `~3.18.4`，与仓库既有 range 兼容；已由 `specs/070-dsh-upgrade/plan.md` 与 `research.md` D1 定案）。
 - 用户 preset 持久化事实源保持 Mongo store（preset-authoring 服务面契约不变），新模型声明在物化时映射生成；store 记录到新模型声明的映射机制（激活时机、revision 生命周期一致性）见 `specs/070-dsh-upgrade/contracts/preset-model-mapping.md`（宪法原则 III），spec 约束产品语义不变（FR-008）。
-- `projects/game/agent_v2/preset-templates/` 模板数据（player/planner）迁移为组合清单 `@deepseek-ai/dsh-agent-preset` 声明式定义，原目录与 `PRESET_TEMPLATES_ROOT` env 移除（`specs/070-dsh-upgrade/research.md` D4）；系统信任与不可写删语义由"宿主组合行 = 部署所有权"保留。
+- `projects/game/agent_v2/preset-templates/` 模板数据（player/planner）迁移为 preset-authoring 行的 `templates` 快照（宿主 Config 注入），原目录与 `PRESET_TEMPLATES_ROOT` env 移除（`specs/070-dsh-upgrade/research.md` D4 终态结论）；系统信任与不可写删语义由"宿主部署数据 = 部署所有权"保留。
 - agent_v2 会话无持久化（内存态），升级不涉及旧会话数据的 preset 身份解析兼容；Mongo 既有 preset 记录按 FR-012 以一次性迁移处理。
 - 桌面前端（desktop）与 Go 侧（fake-llm、gateway、testplan Go 用例）不依赖 dsh 包，不在迁移面内。
 - 升级不引入新业务功能；所有变更为版本线迁移、API 适配、preset 模型重构与声明面维护。

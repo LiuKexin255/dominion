@@ -72,6 +72,13 @@
 
 **Alternatives considered**: 保留文件目录由引导代码读入后 register()——重新引入目录式双事实源，违背上游模型；模板行放独立 profile 文件——组合面分裂，无收益。
 
+**终态结论（用户裁定，2026-09-28）— 模板声明行移除，templates 快照为唯一事实源**: 经用户裁定，agent_v2 与 demo 组合清单中的 `preset-*` 声明行（`@deepseek-ai/dsh-agent-preset` 行）整体移除：声明行与 preset-authoring `templates` 快照维护两份相同数据，成本高于收益（单测锁定的漂移防护不改变维护双份的事实）。模板定义单一事实源 = preset-authoring 的 `templates` 快照（经插件 Config 注入，宿主 cordis.yml 内）。`PresetDefinition` schema（id 必填）无法表达"id+name 纯声明行"（官方 schema 实测：`{ id(必填), name?, description?, order?, plugins(必填) }`，node_modules/@deepseek-ai/dsh-agent-preset-registry/lib/types/definition.d.ts），故选择整体移除而非保留元数据行。随裁定接受的代价与订正：
+- registry roster 不再含模板条目（list/read Remote 面失去模板；现有消费方——agent_v2 PresetService、demo PresetService、web PresetsView——均为 store-only，零影响）。模板 id 与用户 preset id 的撞名保护由 create 的快照 hasOwnProperty 检查承担，不再依赖 roster 全局唯一；信任边界从 registry seam 移至 authoring seam（当前唯一 register 调用方）。
+- 零存量记录的模板失去 boot 期子行 eager 激活校验（有记录模板经 boot list() → derive → register 仍激活子行）：子行损坏暴露时点从 boot 后移至首次 create/派生（服务面 INVALID_ARGUMENT fail-loud，无静默退化）——接受并记录。
+- demo registry `default` 由 `demo-standard` 订正为 `''`：原值指向声明行的"默认回落"能力随声明行移除而不存在；服务面会话创建本就必须显式 store preset（compose 前置 INVALID_ARGUMENT），registry default 恒为惰性，空值即"无默认"的诚实表达。契约 §3"demo 允许默认回落"表述随之订正。
+- D5 门禁锁定断言随本裁定重述（更强形态）：registry 行 config 恰为 `{ default: '' }` 且清单零 `@deepseek-ai/dsh-agent-preset` 行；roster 条目仅经 preset-authoring 物化进入（id 语法拒绝空串，preset-authoring 单测含空串 id 显式用例）。
+- `@deepseek-ai/dsh-agent-preset` 包从全部声明面移除（agent_v2/demo package.json + BUILD、catalog 条目）；零源码 import，闭包内无 deps/peers 边可达（registry 仅 devDependencies 引用），closure audit ② expected set 数据驱动收缩、测试代码零改动。
+
 ---
 
 ## D5 — fail-loud 选择语义在新模型的表达（`default: ''`）

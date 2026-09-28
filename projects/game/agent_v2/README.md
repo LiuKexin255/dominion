@@ -98,10 +98,10 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   （`specs/063-llm-reliability-opencode-go/contracts/llm-failure-taxonomy.md`）。
 - `agent-preset-registry`（`@deepseek-ai/dsh-agent-preset-registry`）：preset
   注册表，负责选择与运行时修订保留；`default` 指向空 id，preset 选择是必选
-  语义（无 id 的 resolve fail-loud）。池模板
-  （`preset-player`/`preset-planner`，`@deepseek-ai/dsh-agent-preset` 声明行）
-  是本组合清单的宿主行——部署所有权即系统信任，用户面不可写删；用户 preset
-  的组合在物化时从 store 记录派生。
+  语义（无 id 的 resolve fail-loud）。池模板（player/planner）定义在本组合
+  清单 `preset-authoring` 行 Config 的 `templates` 快照——部署所有权即系统
+  信任，用户面不可写删；用户 preset 的组合在物化时从 store 记录派生
+  （`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §3）。
 - `preset-authoring`（`@dominion/dsh-preset-authoring`）：创作/编辑面（Store
   Mongo 实现，`game_agent_v2.presets`）+ 模板行校验（`templateRules`）。
 - `team`（`ctx.team`）与 `memory`（`ctx.plannerMemory` host 服务面）：
@@ -182,8 +182,7 @@ preset 数据按角色分池
   恰含 `@dominion/dsh-saolei` 行、不得含 `@dominion/dsh-memory`，planner
   模板恰含 `@dominion/dsh-memory` 行，违者 INVALID_ARGUMENT 且不落任何
   产物。
-  池模板（`cordis.yml` 的 `preset-player`/`preset-planner` 声明行）不可写
-  /不可删。
+  池模板（`cordis.yml` 的 preset-authoring `templates` 快照）不可写/不可删。
 - **角色工具锁定（行级绑定）**：player preset 绑定扫雷游戏工具插件组
   （`saolei_init`/`saolei_operate`/`saolei_remain` 工具 + `saolei:guidance`
   守则），planner preset 绑定 memory 插件组（memory 工具 + 快照 section）——
@@ -324,15 +323,15 @@ CRUD 只写该集合（唯一事实源），物化组合在成员创建时从记
    （`common/gopkg/mongo/credentials.go`）字节一致，同一实例同一
    认证（`DOMINION_ENVIRONMENT` 参与派生，缺省 `default`）。
 
-## preset 声明与模板快照
+## preset 模板快照
 
-池模板不再是独立目录：`cordis.yml` 的 `preset-player` / `preset-planner`
-（`@deepseek-ai/dsh-agent-preset`）声明行即模板定义，persona 子行以 `prefix`
-承载身份文案，角色工具行（player 为 `@dominion/dsh-saolei`、planner 为
-`@dominion/dsh-memory`）随声明挂载。`preset-authoring` 行的 `templates` 键
-镜像同一组声明（name/description/plugins），作为派生物化用户 preset 组合的
-快照来源（`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2、
-`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §2.3）。
+池模板（player/planner）定义在 `cordis.yml` 的 `preset-authoring` 行 Config
+`templates` 快照（键 = 模板 id，值 = name/description/plugins）——模板定义的
+单一事实源，不经行面表达。persona 子行以 `prefix` 承载身份文案，角色工具行
+（player 为 `@dominion/dsh-saolei`、planner 为 `@dominion/dsh-memory`）随快照
+派生物化：authoring 据此把 store 记录派生为 registry 声明
+（`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2、
+`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §3）。
 
 ## 模型端点与凭据配置
 
@@ -445,10 +444,11 @@ player 成员视图消费该消息、`GetTeam`/`active_member` 不含该角色
   物化为 registry 声明（任何时刻注销都不影响 store 数据与后续物化——重建
   幂等）。磁盘上不存在需要与 store 对账的副本，也不存在 preset 专用可写根
   路径（`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §2）。
-- **preset 定义为宿主声明**：池模板（`cordis.yml` 的 `preset-player`/
-  `preset-planner` 声明行）是部署数据；用户 preset CRUD 只写 store 并经
-  registry 物化，无运行时文件创作面
-  （`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2）。
+- **preset 模板为宿主部署数据**：池模板（`cordis.yml` 的 preset-authoring
+  `templates` 快照）是部署数据；用户 preset CRUD 只写 store 并经 registry
+  物化，无运行时文件创作面
+  （`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2、
+  `specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §3）。
 - **多标签页无实时推送**：team 流只覆盖已建立流（Send）的页面；未发送消息的
   标签页看不到其他页面的回合进展，可刷新经 `ListTeamMessages`/
   `ListMemberMessages` 回填查询。

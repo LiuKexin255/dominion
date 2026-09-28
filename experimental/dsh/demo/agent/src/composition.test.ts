@@ -12,7 +12,8 @@ import type { DshContext } from "./dsh.js";
 /**
  * Integration tests over the REAL direct composition: the shipped cordis.yml
  * boots in-process (same manifest the deployed artifact carries), with the
- * preset registry + declaration rows the manifest itself carries and the LLM
+ * preset registry and the preset-authoring template snapshot the manifest
+ * carries and the LLM
  * adapter pointed at a local capture server. This is the single-test surface
  * of the verification matrix (specs/058-dsh-preset-roster-demo/research.md
  * R11, re-based on the 060 derivation semantics —
@@ -221,8 +222,9 @@ describe("composition (real direct-compose boot)", () => {
   beforeAll(async () => {
     mock = await startMockLlm();
     repairRunfilesNativeBindingLinks();
-    // The manifest itself carries the preset registry + declaration rows; the
-    // sessions below bind store presets authored after boot — a store record
+    // The manifest itself carries the preset registry + the preset-authoring
+    // template snapshot; the sessions below bind store presets authored after
+    // boot — a store record
     // is the only composable preset under the 060 derivation semantics.
     process.env.FAKE_LLM_API_KEY = "dummy-key";
     process.env.FAKE_LLM_BASE_URL = mock.url;

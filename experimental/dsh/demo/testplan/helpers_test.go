@@ -65,8 +65,8 @@ const (
 // (060 preset derivation: a conversation's preset MUST name a store record —
 // declared templates are derivation sources, no longer directly composable),
 // plus the template persona prefixes the records carry so the model-visible
-// composition matches the fake-llm system_keywords fixtures (declared by the
-// preset-demo-* rows in experimental/dsh/demo/agent/cordis.yml).
+// composition matches the fake-llm system_keywords fixtures (defined by the
+// preset-authoring `templates` snapshot in experimental/dsh/demo/agent/cordis.yml).
 const (
 	authoredToolsPresetID    = "preset-suite-tools"
 	authoredStandardPresetID = "preset-suite-standard"

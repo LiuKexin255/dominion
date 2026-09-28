@@ -13,7 +13,7 @@ import type {
 } from "./derive.js";
 import type { PresetRecord } from "./store.js";
 
-/** A two-row template declaration mirroring a hosting composition's preset row. */
+/** A two-row template snapshot mirroring a hosting composition's `templates` entry. */
 const TEMPLATE: TemplateDeclaration = {
   name: "Demo Tools",
   description: "persona + demo_echo 工具行模板",

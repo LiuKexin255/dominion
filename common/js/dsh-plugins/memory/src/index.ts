@@ -1,7 +1,8 @@
 /**
  * cordis plugin entry for the memory plugin's model-facing face — the row the
  * planner pool template's composition mounts
- * (`projects/game/agent_v2/cordis.yml` `preset-planner` declaration row).
+ * (`projects/game/agent_v2/cordis.yml` preset-authoring `templates.planner`
+ * 快照).
  * Applying it registers the `memory` tool, the three wiki tools
  * (`wiki_search`/`wiki_get`/`wiki_write` —
  * specs/068-wiki-round-pause/spec.md FR-006), the two guidance sections and

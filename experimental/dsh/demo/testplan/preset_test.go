@@ -16,7 +16,7 @@ import (
 // store is the single source of truth, a conversation's preset MUST name a
 // store record (declared templates are derivation sources, no longer directly
 // composable), and the composition is derived in-process from the store record
-// into an `@deepseek-ai/dsh-agent-preset` declaration registered with the
+// into a registry PresetDefinition registered with the
 // preset registry (specs/070-dsh-upgrade/contracts/preset-model-mapping.md).
 //
 //   - The conversation-binding face: conversations are created EXPLICITLY
@@ -628,8 +628,9 @@ func TestPresetCreateRejections(t *testing.T) {
 	}
 
 	// when: a deployment template id is claimed by a fresh create.
-	// then: ALREADY_EXISTS (HTTP 409) — the deployment declares it as a
-	// host composition row, so a store record can never shadow it.
+	// then: ALREADY_EXISTS (HTTP 409) — the deployment's template snapshot
+	// declares it (preset-authoring Config `templates`), so a store record
+	// can never shadow it.
 	templateIDBody := fmt.Sprintf(`{"preset_id": %q, "template": %q, "persona": %q}`,
 		"demo-tools", demoDefault, personaAuthoredOne)
 	status, respBody = presetRequest(t, ctx, baseURL, envName, http.MethodPost, "", []byte(templateIDBody))
@@ -711,8 +712,8 @@ func TestPresetCreateRejections(t *testing.T) {
 
 // TestPresetTemplateDeleteRejected verifies that a deployment template is
 // not deletable through the resource face
-// (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §1): the declared
-// templates are composition rows, not store records, so removing one is a
+// (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §1): the templates
+// are snapshot data, not store records, so removing one is a
 // NOT_FOUND store miss (HTTP 404) and can never drop the template. The
 // template stays fully servable as a derivation source afterwards — a store
 // preset authored from it resolves and answers its persona probe.

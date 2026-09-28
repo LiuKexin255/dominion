@@ -2,7 +2,7 @@
 # set (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5;
 # specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5): the dsh core
 # plugins composed directly plus the Dominion plugins and the official
-# agent-loop / preset registry + declaration rows. Rows are order-insensitive
+# agent-loop / preset registry. Rows are order-insensitive
 # (cordis awaits by inject); the ordering below is dependency-layered for reading.
 # - timer/invariants/system-prompt enter through the framework-core baseline
 #   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining
@@ -44,41 +44,20 @@
 - { id: invariant-agent,   name: '@deepseek-ai/dsh-agent/invariant' }
 - { id: invariant-scope,   name: '@deepseek-ai/dsh-scope/invariant' }
 - { id: llm-retry,       name: '@deepseek-ai/dsh-llm-retry' }
-# Preset registry + declarative pool templates (specs/070-dsh-upgrade/contracts/
-# composition-manifest.md §2; specs/070-dsh-upgrade/research.md D2/D4/D5): the
-# declaration rows ARE
-# the preset definitions, so hosting them in this manifest is what makes the
-# player/planner pool templates system-trusted — no user-facing path can write
-# or delete them. `default: ''` keeps preset selection mandatory: the empty id
-# matches no declaration, so an id-less resolve reports not-found instead of
-# silently falling back to a default template
-# (specs/070-dsh-upgrade/research.md D5).
+# Preset registry (specs/070-dsh-upgrade/contracts/composition-manifest.md §2;
+# specs/070-dsh-upgrade/research.md D2/D5). `default: ''` keeps preset
+# selection mandatory: the empty id matches no roster entry, so an id-less
+# resolve reports not-found instead of silently falling back to a default
+# template (specs/070-dsh-upgrade/research.md D5). The player/planner pool
+# templates are NOT declared here: their single source of truth is the
+# `templates` snapshot in the `preset-authoring` row config below
+# (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
+# specs/070-dsh-upgrade/research.md D4 终态结论——2026-09-28 用户裁定移除
+# `preset-*` 声明行)。
 - id: agent-preset-registry
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: ''
-- id: preset-player
-  name: '@deepseek-ai/dsh-agent-preset'
-  config:
-    id: player
-    name: player
-    description: 扫雷 player 池模板：persona + saolei 工具插件行
-    plugins:
-      - name: '@deepseek-ai/dsh-persona'
-        config:
-          prefix: 你是扫雷 player，负责操作桌面扫雷窗口完成对局，并依据 saolei 工具返回的棋盘文本持续推理落子，直到对局结束。你独占桌面控制；一律以工具返回的棋盘事实为准，任何与棋盘不符的说法都先核对再行动；每局结束后是否开启新局由你自行判断。保持冷静、精确，落子前先核对已揭示信息与剩余雷数，不做无依据的猜测。
-      - name: '@dominion/dsh-saolei'
-- id: preset-planner
-  name: '@deepseek-ai/dsh-agent-preset'
-  config:
-    id: planner
-    name: planner
-    description: 扫雷 planner 池模板：persona + memory 工具插件行
-    plugins:
-      - name: '@deepseek-ai/dsh-persona'
-        config:
-          prefix: 你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。
-      - name: '@dominion/dsh-memory'
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:
@@ -154,9 +133,9 @@
     mongoUri: !!js process.env.MONGO_URI
     mongoDatabase: game_agent_v2
     mongoCollection: presets
-    # 模板声明快照（specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.3）：
-    # 与上方 preset-player/preset-planner 声明行同构；authoring 据此把 store 记录
-    # 派生为 registry 声明，不再读模板文件系统。
+    # 模板声明快照（specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3）：
+    # 唯一事实源（键 = 模板 id，值 = name/description/plugins）；authoring 据此把
+    # store 记录派生为 registry 声明，不再读模板文件系统（2026-09-28 用户裁定）。
     templates:
       player:
         name: player

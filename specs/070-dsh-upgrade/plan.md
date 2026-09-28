@@ -6,13 +6,13 @@
 
 ## Summary
 
-全仓库 dsh 闭包从 `0.1.1-rc.2` 线升级到 `0.1.7-rc.2` 线（catalog 一个版本单元：cordis 4.0.4/loader 1.0.5/include 1.0.9/group 1.0.4/timer 1.1.6/node-addon 0.1.6 互锁），`third_party/dsh/core` 底座声明面同线升级（核心 11 包清单不变），agent_v2/demo/workspace 插件适配。核心适配工作为 **preset 模型重构**：目录式 `dsh-agent-presets`（roots/trust/includeUserRoot、mountPreset）→ 声明式 `dsh-agent-preset-registry`（`ctx.agentPresets.register`，eager 激活 + 修订保留）+ `dsh-agent-preset` 声明行；`preset-authoring` 服务面冻结、内部改走 register 物化，Mongo 保持唯一事实源；模板从目录数据内联为组合清单声明行。逐符号 API diff 结论：全部源码消费符号在 0.1.7 存活（[research.md](research.md) D7），适配集中在组合清单、模板数据、preset-authoring 与断言重写。Mongo 旧 preset 数据迁移按用户要求置于**最后一个 phase**（API 导出→升级→回灌/删后重建）。可选新能力（compaction/skill/subagent/session-query/goal/workspace）全部 defer；dsh agent team 与 Dominion team 模式独立（用户已调研，D10）。
+全仓库 dsh 闭包从 `0.1.1-rc.2` 线升级到 `0.1.7-rc.2` 线（catalog 一个版本单元：cordis 4.0.4/loader 1.0.5/include 1.0.9/group 1.0.4/timer 1.1.6/node-addon 0.1.6 互锁），`third_party/dsh/core` 底座声明面同线升级（核心 11 包清单不变），agent_v2/demo/workspace 插件适配。核心适配工作为 **preset 模型重构**：目录式 `dsh-agent-presets`（roots/trust/includeUserRoot、mountPreset）→ 声明式 `dsh-agent-preset-registry`（`ctx.agentPresets.register`，eager 激活 + 修订保留）；`preset-authoring` 服务面冻结、内部改走 register 物化，Mongo 保持唯一事实源；模板内联为 preset-authoring `templates` 快照。逐符号 API diff 结论：全部源码消费符号在 0.1.7 存活（[research.md](research.md) D7），适配集中在组合清单、模板数据、preset-authoring 与断言重写。Mongo 旧 preset 数据迁移按用户要求置于**最后一个 phase**（API 导出→升级→回灌/删后重建）。可选新能力（compaction/skill/subagent/session-query/goal/workspace）全部 defer；dsh agent team 与 Dominion team 模式独立（用户已调研，D10）。
 
 ## Technical Context
 
 **Language/Version**: TypeScript（Node ESM，NodeNext）；Go（仅 testplan 用例，不涉 dsh）
 
-**Primary Dependencies**: `@deepseek-ai/dsh-*@0.1.7-rc.2`（lockstep 精确 pin）、`@deepseek-ai/cordis@~4.0.4`、cordis-plugin-loader@1.0.5 / include@1.0.9 / group@1.0.4 / timer@1.1.6、node-addon-require-builtin@0.1.6、`@deepseek-ai/schemastery@^3.18.4`；新增 preset 面包 `dsh-agent-preset-registry` + `dsh-agent-preset`；安装级 seam 包（settings/typert-protocol/util-values/brand/session-persistence/sandbox/sandbox-policy/ptc-runtime/user-approval）；前端 `dsh-client-ui-primitives@0.1.7-rc.2` + 重取 `dsh-client-ui-theme@0.1.7-rc.2`（theme 为 vendored 源、非 catalog 依赖，按 registry/unpkg 包文件重取）
+**Primary Dependencies**: `@deepseek-ai/dsh-*@0.1.7-rc.2`（lockstep 精确 pin）、`@deepseek-ai/cordis@~4.0.4`、cordis-plugin-loader@1.0.5 / include@1.0.9 / group@1.0.4 / timer@1.1.6、node-addon-require-builtin@0.1.6、`@deepseek-ai/schemastery@^3.18.4`；新增 preset 面包 `dsh-agent-preset-registry`；安装级 seam 包（settings/typert-protocol/util-values/brand/session-persistence/sandbox/sandbox-policy/ptc-runtime/user-approval）；前端 `dsh-client-ui-primitives@0.1.7-rc.2` + 重取 `dsh-client-ui-theme@0.1.7-rc.2`（theme 为 vendored 源、非 catalog 依赖，按 registry/unpkg 包文件重取）
 
 **Storage**: Mongo `game_agent_v2.presets`（preset-authoring store，唯一事实源；迁移范围仅此 collection）
 
@@ -63,9 +63,9 @@ specs/070-dsh-upgrade/
 third_party/dsh/core/                  # 底座：package.json/BUILD.bazel/version.ts 升线（11 包清单不变）
 pnpm-workspace.yaml                    # catalog 切线 + 新包条目 - agent-presets
 projects/game/agent_v2/
-├── cordis.yml                         # 新行集合（+session-projection/registry/2×agent-preset −agent-presets）
+├── cordis.yml                         # 新行集合（+session-projection/registry −agent-presets；模板经 preset-authoring templates 快照）
 ├── package.json / BUILD.bazel         # 声明面扩展
-├── preset-templates/                  # 移除（模板内联为组合清单声明行）
+├── preset-templates/                  # 移除（模板内联为 preset-authoring templates 快照）
 └── src/                               # dsh.test.ts 断言重写；其余源码符号面不变（D7）
 experimental/dsh/demo/agent/           # 同构迁移（cordis.yml/package.json/BUILD/测试 + presets-templates 移除）
 common/js/dsh-plugins/

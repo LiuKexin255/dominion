@@ -12,7 +12,7 @@
 - `ctx.presetAuthoring: PresetAuthoringService`：
   - `compose(presetId?): ComposeResult`——`ComposeResult.agentPreset` 为可直接传入 `CreateAgentOptions.meta.agentPreset` 的 preset id；未知 id 报错（fail-loud）。
   - `create(input): PresetView` / `get(id)` / `list(role?)` / `update(id, patch)` / `remove(id)`。
-- Store seam（`PresetStore`/`PresetRecord`/Mongo 实现）与 Config（storage/mongo\*/templateRules）不变。
+- Store seam（`PresetStore`/`PresetRecord`/Mongo 实现）与 Config（storage/mongo\*/templateRules/templates）不变。
   - `PresetRecord` 字段 schema **冻结**（`specs/070-dsh-upgrade/data-model.md` §3.4）；Mongo 一次性迁移（FR-012）不改字段形态，只确认 `template` 值对应声明式模板 id、persona `prefix` 物化可用。
 - `templateRules` 语义不变：`required`（恰出现一次）/`forbidden`（不得出现）按模板 id 校验派生行集合；失败 `INVALID_ARGUMENT`（`PresetAuthoringError`），不落产物。
 
@@ -24,7 +24,7 @@
 
 | 旧（0.1.1） | 新（0.1.7） |
 |---|---|
-| 读模板目录 `agent.cordis.yml`（fs） | 读组合清单内模板声明行的 `plugins`（宿主侧注入声明快照） |
+| 读模板目录 `agent.cordis.yml`（fs） | 读宿主注入的 `templates` 快照 `plugins`（preset-authoring 行 Config） |
 | persona 行 `config.text` 替换为 `record.persona` | persona 子行 `config.prefix = record.persona` |
 | `dump YAML → mkdtemp → mountPreset(dir)` | 内存构造 rows → `ctx.agentPresets.register({ id, plugins, name?, description? })` |
 | 返回 `AgentPreset {trust:"user"}` | 返回 register disposer（插件持有） |
@@ -46,13 +46,13 @@
 
 ### 2.3 模板声明注入
 
-模板 plugins 行来源：宿主（agent_v2/demo）经 Config 注入模板声明快照（新 Config 键 `templates: { player: { name?, description?, plugins }, planner: {...} }`，来自组合清单同构数据）；preset-authoring 不再读模板文件系统。templateRules 校验以该快照 + 用户派生行为输入。
+模板定义的单一事实源 = 宿主（agent_v2/demo）经 Config 注入的 `templates` 快照，不经 `@deepseek-ai/dsh-agent-preset` 声明行表达（2026-09-28 用户裁定，research.md D4 终态结论）。快照键 = 模板 id，值 = `{ name?, description?, plugins }`（`templates: { player: { name?, description?, plugins }, planner: {...} }`）；preset-authoring 不再读模板文件系统。templateRules 校验以该快照 + 用户派生行为输入。
 
-## 3. 模板契约（声明行）
+## 3. 模板契约（`templates` 快照）
 
-- 模板 = 宿主组合清单 `@deepseek-ai/dsh-agent-preset` 声明行：`id: player|planner`、plugins（persona prefix + 角色专属工具行）、name/description。
-- 系统信任：宿主行部署所有；用户面（PresetService API）无模板写删路径（US3 语义 1）。
-- 身份空间：模板 id 与用户 preset id 同一 roster 命名空间（registry 全局唯一）——用户 create 若撞模板 id → `ALREADY_EXISTS`（fail-loud）。
+- **定义**：模板 = 宿主组合清单内 `preset-authoring` 行 Config 的 `templates` 快照键（agent_v2：`player`/`planner`；demo：`demo-standard`/`demo-tools`），值 = `{ name?, description?, plugins }`——plugins 为 persona 子行（`prefix`）+ 角色专属工具行。该快照即模板定义的单一事实源，不经任何 `@deepseek-ai/dsh-agent-preset` 声明行表达（2026-09-28 用户裁定，research.md D4 终态结论）。
+- **系统信任**：快照是宿主部署数据；用户面（PresetService API）无模板写删路径——`remove` 对模板 id 是 store NOT_FOUND，用户不可写删（US3 语义 1）。
+- **身份空间**：模板 id 与用户 preset id 共享部署的 id 空间；模板不进 roster（roster 条目只经 preset-authoring 由 store 记录物化进入），撞名保护由 create 的快照 `hasOwnProperty` 检查承担（`common/js/dsh-plugins/preset-authoring/src/index.ts`）——用户 create 若撞模板 id → `ALREADY_EXISTS`（fail-loud）。
 
 ## 4. fail-loud 选择
 

@@ -1,15 +1,15 @@
 /**
  * Composition derivation for the preset-authoring plugin: the store record is
  * the single source of truth, and the registry definition a record materializes
- * into is DERIVED in memory — the hosting composition's template declaration
+ * into is DERIVED in memory — the hosting composition's template snapshot
  * rows with the record's persona patched into the persona row — and handed to
  * `ctx.agentPresets.register`.
- * Contract: specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.1/§2.3;
+ * Contract: specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.1/§3;
  * specs/070-dsh-upgrade/data-model.md §3.5.
  *
  * The patch is a structural copy (locate the persona row → set
  * `config.prefix`), never a mutation of the injected template snapshot: the
- * same declaration object backs every record derived from that template, so an
+ * same snapshot object backs every record derived from that template, so an
  * in-place patch would leak one record's persona into the next derivation. An
  * EMPTY record persona leaves the template's persona prefix untouched — the
  * role's default base.
@@ -58,12 +58,12 @@ export const PERSONA_ROW_NAME = "@deepseek-ai/dsh-persona";
 export type CompositionRow = PresetDefinition["plugins"][number];
 
 /**
- * A hosting composition's template declaration snapshot, injected through
+ * A hosting composition's template definition snapshot, injected through
  * Config (`templates`,
- * specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.3): the rows the
- * host's `@deepseek-ai/dsh-agent-preset` row declares plus its display
- * metadata. preset-authoring never reads the template filesystem; the host
- * composition is the template's single source.
+ * specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3): the pool
+ * template's rows plus its display metadata, and the single source of truth
+ * for that template (specs/070-dsh-upgrade/research.md D4 终态结论).
+ * preset-authoring never reads the template filesystem.
  */
 export interface TemplateDeclaration {
   readonly name?: string;

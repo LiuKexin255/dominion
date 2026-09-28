@@ -50,7 +50,7 @@ export const inject = ["agentPresets"];
  * §2 caller-supplied ids; the registry's own PRESET_ID is not re-exported from
  * the package root, so the same containment grammar is pinned here). The id is
  * the store key and the preset resource id, and stays interchangeable with the
- * declared template ids; malformed ids are rejected at the create edge.
+ * template snapshot ids; malformed ids are rejected at the create edge.
  */
 const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -68,11 +68,12 @@ export interface PresetAuthoringConfig {
    */
   templateRules?: Record<string, TemplateRowRules>;
   /**
-   * Template declaration snapshots keyed by template id, mirrored from the
-   * hosting composition's `@deepseek-ai/dsh-agent-preset` rows: the rows a
-   * record derives over (persona prefix + role tool rows) plus display
-   * metadata (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §2.3).
-   * The plugin never reads a template directory.
+   * Template declaration snapshots keyed by template id — the SINGLE source
+   * of truth for the pool templates: the rows a record derives over (persona
+   * prefix + role tool rows) plus display metadata
+   * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
+   * specs/070-dsh-upgrade/research.md D4 终态结论). The plugin never reads a
+   * template directory.
    */
   templates?: Record<string, TemplateDeclaration>;
   /**
@@ -368,9 +369,11 @@ export function createPresetAuthoring(
       // Template validation before any store write: a role-broken or missing
       // template must never produce a record (INVALID_ARGUMENT, no residue).
       const template = templateFor(input.template);
-      // Template ids and user preset ids share the registry's global roster
-      // namespace: claiming a declared template id is the caller's
-      // ALREADY_EXISTS (contract §3).
+      // Template ids and user preset ids share the deployment's preset id
+      // space: claiming a snapshot template id is the caller's ALREADY_EXISTS.
+      // The snapshot collision check is the guard here — templates never enter
+      // the registry roster (contract §3;
+      // specs/070-dsh-upgrade/research.md D4 终态结论).
       if (Object.prototype.hasOwnProperty.call(templates, input.id)) {
         throw new PresetAuthoringError(
           "ALREADY_EXISTS",

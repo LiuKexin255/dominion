@@ -34,9 +34,9 @@
 
 ### 1.3 随行新包（agent_v2 侧，全部 `0.1.7-rc.2`）
 
-- **成行**：`dsh-session-projection`、`dsh-agent-preset-registry`、`dsh-agent-preset`（模板声明行 ×2）
+- **成行**：`dsh-session-projection`、`dsh-agent-preset-registry`
 - **仅安装级**：`dsh-settings`、`dsh-typert-protocol`、`dsh-util-values`、`dsh-brand`、`dsh-session-persistence`、`dsh-sandbox`、`dsh-sandbox-policy`、`dsh-ptc-runtime`、`dsh-user-approval`
-- **移除**：`dsh-agent-presets`
+- **移除**：`dsh-agent-presets`、`dsh-agent-preset`（2026-09-28 用户裁定，模板经 preset-authoring `templates` 快照表达——research.md D4 终态结论）
 - demo 侧另含 llm-deepseek peer 面（`dsh-fs`、`dsh-credentials`、`dsh-attachment`、`dsh-anonymous-user-id`、`dsh-deepseek-llm-api-extensions`、`dsh-settings`、`dsh-timeout`）
 
 ---
@@ -45,7 +45,7 @@
 
 ### 2.1 agent_v2 行集合（目标态）
 
-`projects/game/agent_v2/cordis.yml` 行（顺序按依赖分层；行集合 = 现清单 − `agent-presets` + 4 个新行）：
+`projects/game/agent_v2/cordis.yml` 行（顺序按依赖分层；行集合 = 现清单 − `agent-presets` + 2 个新行）：
 
 | id | name | 变化 |
 |---|---|---|
@@ -53,9 +53,9 @@
 | system-prompt | `@deepseek-ai/dsh-system-prompt` | config 不变（`includeHarnessIdentity/includeRuntimeContext: false`） |
 | **session-projection** | `@deepseek-ai/dsh-session-projection` | **新增行**（agent-loop/registry 服务注入要求） |
 | **agent-preset-registry** | `@deepseek-ai/dsh-agent-preset-registry` | **新增行**，config `default: ''`（fail-loud，research D5） |
-| **preset-player** | `@deepseek-ai/dsh-agent-preset` | **新增声明**：`id: player`，plugins = [persona(prefix=player 模板文案), `@dominion/dsh-saolei`]，name/description 来自原 `preset.yml` |
-| **preset-planner** | `@deepseek-ai/dsh-agent-preset` | **新增声明**：`id: planner`，plugins = [persona(prefix=planner 模板文案), `@dominion/dsh-memory`] |
-| llm-glm / llm-opencode-go / desktop-bridge / preset-authoring / team / memory / saolei-loop | `@dominion/*` | 行不变（preset-authoring 内部重构） |
+| llm-glm / llm-opencode-go / desktop-bridge / preset-authoring / team / memory / saolei-loop | `@dominion/*` | 行不变（preset-authoring 内部重构，其 Config 携池模板快照） |
+
+**池模板**：player/planner 定义在 `preset-authoring` 行 Config 的 `templates` 快照（键 = 模板 id，值 = `{ name, description, plugins }`：persona `prefix` + 角色专属工具行）与 `templateRules`（required/forbidden）；模板不经行面表达（2026-09-28 用户裁定，research.md D4 终态结论）。
 
 **移除数据面**：`preset-templates/` 目录、`PRESET_TEMPLATES_ROOT` env（research D4）。
 
@@ -72,13 +72,13 @@
 
 ### 3.1 实体对照
 
-| 旧（dsh-agent-presets 0.1.1） | 新（registry + dsh-agent-preset 0.1.7） |
+| 旧（dsh-agent-presets 0.1.1） | 新（registry + `templates` 快照） |
 |---|---|
-| Roster roots：`{path, trust}` 目录扫描 | 宿主组合清单声明行（部署所有权 = 系统信任） |
+| Roster roots：`{path, trust}` 目录扫描 | 宿主组合清单 `preset-authoring` 行 Config 的 `templates` 快照（部署所有权 = 系统信任） |
 | `Config { default, includeUserRoot, roots }` | `Config { default, selectedDefault? }`；无目录概念 |
 | `mountPreset(dir)` → `AgentPreset {trust}` | `ctx.agentPresets.register({id, plugins})` → disposer |
-| preset 身份 = 目录内 `preset.yml` | 身份 = 行 `config.id`（重复 id 声明加载失败） |
-| 用户 preset = `<dshHome>/.agent-presets` 可写副本 | 用户 preset = 宿主服务 register（本服务：preset-authoring 物化） |
+| preset 身份 = 目录内 `preset.yml` | 模板身份 = `templates` 快照键；用户 preset 身份 = store id |
+| 用户 preset = `<dshHome>/.agent-presets` 可写副本 | 用户 preset = preset-authoring 从 store 记录物化（经 `ctx.agentPresets.register`） |
 | 选择解析失败 | `RemoteError('agent-preset/not-found')` fail-loud |
 
 ### 3.2 PresetDefinition（新，物化输入）
@@ -119,7 +119,7 @@ flowchart LR
     U[update/remove API] --> REG2["unregister(+re-register)<br/>旧修订 retire，运行中 agent 安全"]
 ```
 
-**templateRules 校验**（不变）：create 时按 `templateRules[template].{required, forbidden}` 校验派生行集合（player 必含 `@dominion/dsh-saolei` 禁 `@dominion/dsh-memory`；planner 反之）→ 失败 `INVALID_ARGUMENT`，不落产物；校验输入从"模板目录文件"改为"组合清单内模板声明行"。
+**templateRules 校验**（不变）：create 时按 `templateRules[template].{required, forbidden}` 校验派生行集合（player 必含 `@dominion/dsh-saolei` 禁 `@dominion/dsh-memory`；planner 反之）→ 失败 `INVALID_ARGUMENT`，不落产物；校验输入为宿主注入的 `templates` 快照。
 
 ---
 
@@ -161,6 +161,6 @@ stateDiagram-v2
 
 **验证规则**（来源 FR-008/US3）：
 1. 未知 preset id 绑定 → `agent-preset/not-found`（fail-loud，SC-005）。
-2. 模板行 = 宿主组合行 → 用户面无写删路径（系统信任）。
-3. 用户 preset 全部经 preset-authoring CRUD → register（声明面无第二事实源）。
-4. `dsh.test.ts` 断言新行集合与 `default: ''`（或 sentinel 回退，D5 门禁）。
+2. 模板定义 = 宿主注入的 `templates` 快照 → 用户面无写删路径（系统信任）。
+3. 用户 preset 全部经 preset-authoring CRUD → register（无第二事实源）。
+4. `dsh.test.ts` 断言 21 行行集合与 registry 行 `default: ''`（D5 终态结论：`''` 通过 schema，无 sentinel 回退）。

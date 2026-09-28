@@ -40,42 +40,20 @@
     models:
       - id: fake-chat-v1
         contextWindow: 100000
-# ── preset registry 与声明式模板（specs/070-dsh-upgrade/contracts/
-# composition-manifest.md §3）。声明行即 preset 定义，宿主组合行 = 部署所有权
-# = 系统信任：用户面无写删模板的路径（US3 语义 1）。demo 允许默认回落——无名
-# 解析走 `default: demo-standard`（demo 无必选语义，异于 agent_v2 的
-# fail-loud 空 default）；CreateConversation 仍必须显式给 store preset
-# （session.ts compose 的 INVALID_ARGUMENT fail-loud，specs/060-agent-v2-team-optimize/
-# contracts/preset-derivation.md §2）。
+# ── preset registry（specs/070-dsh-upgrade/contracts/composition-manifest.md §3）。
+# 模板不经行面表达：单一事实源 = 下方 preset-authoring 行 Config 的 `templates`
+# 快照（2026-09-28 用户裁定，specs/070-dsh-upgrade/research.md D4 终态结论）。
+# 会话创建必须显式给 store preset（session.ts compose 的 INVALID_ARGUMENT
+# fail-loud，specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2），
+# registry default 对服务面恒为惰性，`''` 是"无默认"的诚实表达。
 - id: agent-preset-registry
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
-    default: demo-standard
-- id: preset-demo-standard
-  name: '@deepseek-ai/dsh-agent-preset'
-  config:
-    id: demo-standard
-    name: demo-standard
-    description: 仅 persona 行的标准模板
-    plugins:
-      - name: '@deepseek-ai/dsh-persona'
-        config:
-          prefix: 'You are the demo standard assistant.'
-- id: preset-demo-tools
-  name: '@deepseek-ai/dsh-agent-preset'
-  config:
-    id: demo-tools
-    name: demo-tools
-    description: persona + demo_echo 工具行模板
-    plugins:
-      - name: '@deepseek-ai/dsh-persona'
-        config:
-          prefix: 'You are the demo tools assistant.'
-      - name: '@dominion/dsh-demo-echo'
-# preset 创作/编辑面（058 产出复用）：CRUD 只写内存 store（唯一事实源）；模板
-# 声明快照与上方 preset-demo-* 行同构，authoring 据此把 store 记录派生为
-# registry 声明，不再读模板文件系统（specs/070-dsh-upgrade/contracts/
-# preset-model-mapping.md §2.3）。
+    default: ''
+# preset 创作/编辑面（058 产出复用）：CRUD 只写内存 store（唯一事实源）；下方
+# `templates` 快照是模板定义的唯一事实源（键 = 模板 id，值 = name/description/
+# plugins），authoring 据此把 store 记录派生为 registry 声明，不再读模板文件系统
+# （specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3；D4 终态结论）。
 - id: preset-authoring
   name: '@dominion/dsh-preset-authoring'
   config:

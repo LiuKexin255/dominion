@@ -36,7 +36,7 @@ bazel test //experimental/dsh/demo/testplan:closure_audit_test
 bazel test //projects/game/agent_v2/... //common/js/dsh-plugins/...
 ```
 
-**预期**：单测全绿——含重写后的 `dsh.test.ts` 组合清单断言（registry `default: ''`、模板声明行、persona `prefix`）、preset-authoring register/unregister 序列断言、新增"激活失败留 roster 拒新绑定"与"update 修订保留"用例（[preset-model-mapping.md](contracts/preset-model-mapping.md) §5）。
+**预期**：单测全绿——含重写后的 `dsh.test.ts` 组合清单断言（registry `default: ''`、`templates` 快照断言、persona `prefix`）、preset-authoring register/unregister 序列断言、新增"激活失败留 roster 拒新绑定"与"update 修订保留"用例（[preset-model-mapping.md](contracts/preset-model-mapping.md) §5）。
 
 ## 场景 3：game 四拓扑系统测试（宪法 VI，SC-003）
 
@@ -53,7 +53,7 @@ guitar run projects/game/testplan/system_test.yaml
 guitar run experimental/dsh/demo/testplan/interface_test.yaml
 ```
 
-**预期**：`testplan_test`/`multiturn_test`/`preset_test`（16 用例，含 preset 组合/创作生命周期）全绿；preset 演示在新模型（registry + 声明）下语义等价。
+**预期**：`testplan_test`/`multiturn_test`/`preset_test`（16 用例，含 preset 组合/创作生命周期）全绿；preset 演示在新模型（registry + `templates` 快照）下语义等价。
 
 ## 场景 5：web 前端（SC-002）
 

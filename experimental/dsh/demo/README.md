@@ -37,10 +37,10 @@ fake-llm — Go，http :8080，OpenAI chat-completions 兼容的确定性模板�
   未创建会话的 SendMessage 以 `FAILED_PRECONDITION` 拒绝，无懒创建。
 - **PresetService**：`CreatePreset`/`GetPreset`/`ListPresets`/`UpdatePreset`/`DeletePreset` 五个
   AIP 风格资源 CRUD RPC——创作 preset 指定模板与动态字段（persona 文本、可选展示名），CRUD 只写
-  内存 store（唯一事实源）；成员组合在会话创建时从 store 记录进程内派生为
-  `@deepseek-ai/dsh-agent-preset` 声明并注册（无可写副本、无临时文件），registry 修订保留使
-  persona 更新后已加入会话保持旧组合、新会话生效新组合；删除不影响已加入会话；模板为部署声明数据，
-  用户面不可写删。
+  内存 store（唯一事实源）；成员组合在会话创建时从 store 记录进程内派生为 registry 声明并注册
+  （无可写副本、无临时文件），registry 修订保留使
+  persona 更新后已加入会话保持旧组合、新会话生效新组合；删除不影响已加入会话；模板为部署数据
+  （宿主组合清单 `preset-authoring` 行 `templates` 快照），用户面不可写删。
 
 ## agent 组合清单
 
@@ -54,12 +54,12 @@ fake-llm — Go，http :8080，OpenAI chat-completions 兼容的确定性模板�
   `llm-opencode-go`）：经 demo agent package.json 依赖与 BUILD `npm_deps`（registry 包）/
   `runtime_deps`（workspace 包）显式声明。其中 `session-projection` 提供 `ctx.sessionProjections`
   （agent-loop 与 preset registry 的注入要求）；
-- **preset 行**：`agent-preset-registry`——官方 registry（`default` 指向 `demo-standard`，demo
-  允许默认回落）；`preset-demo-standard`/`preset-demo-tools`——`@deepseek-ai/dsh-agent-preset`
-  声明行（声明行即模板定义，宿主组合行 = 部署所有权 = 系统信任、用户面不可写删）；
+- **preset 行**：`agent-preset-registry`——官方 registry（`default: ''`——会话创建必须显式给
+  store preset，registry default 恒惰性，空值是"无默认"的诚实表达）；
   `preset-authoring`——自研 authoring 插件，承载 store-only preset CRUD 与进程内派生注册，经
-  `ctx.presetAuthoring` 服务暴露（service 层零 registry/文件系统引用），其 `templates` 配置与
-  声明行同构。
+  `ctx.presetAuthoring` 服务暴露（service 层零 registry/文件系统引用）；模板（`demo-standard`/
+  `demo-tools`）定义在其 Config 的 `templates` 快照——模板定义的单一事实源，宿主部署数据 = 系统
+  信任、用户面不可写删（不经行面表达）。
 
 **LLM 适配因 0.1.7 拆包改线**：0.1.7 的 `@deepseek-ai/dsh-llm-deepseek` 只提供 Anthropic
 Messages transport 库，provider 由 `dsh-llm-deepseek-api-key` 注册——wire 不再是 OpenAI Chat
@@ -69,10 +69,11 @@ demo 因此改走仓库内 OpenAI Chat Completions 适配器 `@dominion/dsh-llm-
 README/lib 实测为准）。demo 声明面不再声明 DeepSeek peer 面（`dsh-llm-deepseek`/`dsh-fs`/
 `dsh-credentials`/`dsh-attachment`/`dsh-anonymous-user-id`/`dsh-deepseek-llm-api-extensions`）。
 
-模板是组合清单内的声明行（`preset-demo-standard`/`preset-demo-tools`），不依赖任何镜像内数据
-目录或部署 env 装配。用户 preset 的 CRUD 只写内存 store，成员组合在会话创建时从 store 记录进程内
-派生为 `@deepseek-ai/dsh-agent-preset` 声明并交给 registry 注册；registry 按 preset id 保留唯一
-修订，运行中的会话持有其绑定修订直到释放（更新/删除不打断已加入会话，新会话生效新修订）。
+模板定义在组合清单 `preset-authoring` 行 Config 的 `templates` 快照（`demo-standard`/
+`demo-tools`）——模板定义的单一事实源，不依赖任何镜像内数据目录或部署 env 装配。用户 preset 的
+CRUD 只写内存 store，成员组合在会话创建时从 store 记录进程内派生为 registry 声明并交给 registry
+注册；registry 按 preset id 保留唯一修订，运行中的会话持有其绑定修订直到释放（更新/删除不打断已
+加入会话，新会话生效新修订）。
 
 ## 服务与底座 target 一览
 

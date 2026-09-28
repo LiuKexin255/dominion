@@ -32,5 +32,6 @@
 ## Notes
 
 - 2026-09-27 用户决策：Q1 = B（0.1.7-rc.2 线；preset 按 0.1.7 新模型重构——`dsh-agent-preset-registry` + `dsh-agent-preset`，旧 `dsh-agent-presets` 移除）；Q2 = A（全仓库同线迁移）。已回填 spec。
+- 2026-09-28 用户裁定：移除 `preset-*` 声明行，`templates` 快照为唯一事实源；demo default 订正为 `''`（research.md D4 终态结论）。
 - 调研事实依据（registry + 上游仓库实测，2026-09-27）：0.1.7-rc.2 线 peer 互锁 cordis ~4.0.4 / loader ~1.0.5 / include ~1.0.9 / group ~1.0.4 / timer 1.1.6 / node-addon-require-builtin 0.1.6；新 preset 包 0.1.7-rc.2 已发布；旧 presets 包最高 0.1.5-rc.3 且 peer 与 0.1.7 线互斥；preset 新模型语义见上游架构注记（declarative-agent-presets，2026-09-18）。
 - Spec ready for `/speckit.clarify` 或 `/speckit.plan`。
