@@ -350,8 +350,35 @@ describe("TeamHistory", () => {
 describe("MemberCollector", () => {
   const PLAYER_ID = `${SESSION}/player`;
 
-  function chunkEvent(chunk: DshStreamChunk, step = 1) {
-    return { type: "assistant/chunk", data: { turn: 1, step, chunk } };
+  /**
+   * Drive one live model attempt: the `start` frame opens the attempt with
+   * its step, then each `chunk` frame carries one raw StreamChunk — the 0.1.7
+   * replacement for the removed `assistant/chunk` session event
+   * (specs/070-dsh-upgrade/research.md D7).
+   */
+  function emitStart(
+    listeners: Map<string, Listener[]>,
+    agent: Agent,
+    step = 1,
+    attemptId = "attempt-1",
+  ): void {
+    emit(listeners, "agent/assistant-stream", {
+      agent,
+      frame: { type: "start", attemptId, revision: 1, turn: 1, step },
+    });
+  }
+
+  function emitChunk(
+    listeners: Map<string, Listener[]>,
+    agent: Agent,
+    chunk: DshStreamChunk,
+    attemptId = "attempt-1",
+    index = 0,
+  ): void {
+    emit(listeners, "agent/assistant-stream", {
+      agent,
+      frame: { type: "chunk", attemptId, revision: index + 1, index, time: 0, chunk },
+    });
   }
 
   function assistantMessageEvent(blocks: Array<Record<string, unknown>>, step = 1, usage?: Record<string, number>) {
@@ -376,11 +403,16 @@ describe("MemberCollector", () => {
     const { listeners, agent, collector, frames, history } = createCollector();
 
     emit(listeners, "agent/status", { agent, status: "running" });
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "hello" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "hello" } }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "usage", usage: { inputTokens: 7, outputTokens: 9 } }));
+    emitStart(listeners, agent);
+    emitChunk(listeners, agent, { type: "block-start", index: 0, blockType: "text" }, "attempt-1", 0);
+    emitChunk(listeners, agent, { type: "text-delta", index: 0, text: "hello" }, "attempt-1", 1);
+    emitChunk(listeners, agent, { type: "block-end", index: 0, block: { type: "text", text: "hello" } }, "attempt-1", 2);
+    emitChunk(listeners, agent, { type: "usage", usage: { inputTokens: 7, outputTokens: 9 } }, "attempt-1", 3);
     emit(listeners, "session/event", agent.session, assistantMessageEvent([{ type: "text", text: "hello" }], 1, { inputTokens: 7, outputTokens: 9 }));
+    emit(listeners, "agent/assistant-stream", {
+      agent,
+      frame: { type: "end", attemptId: "attempt-1", index: 4, outcome: { kind: "committed", eventType: "assistant/message", seq: 1 } },
+    });
     emit(listeners, "agent/status", { agent, status: "idle" });
 
     // Member event frames carry the outer member label and one turn id.
@@ -442,9 +474,10 @@ describe("MemberCollector", () => {
     const { listeners, agent, collector, history } = createCollector();
 
     emit(listeners, "agent/status", { agent, status: "running" });
+    emitStart(listeners, agent);
     // The reasoning prefix streams as bare deltas (no block-end before the failure).
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "Thinking about " }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "the request" }));
+    emitChunk(listeners, agent, { type: "reasoning-delta", index: 0, text: "Thinking about " }, "attempt-1", 0);
+    emitChunk(listeners, agent, { type: "reasoning-delta", index: 0, text: "the request" }, "attempt-1", 1);
     emit(listeners, "agent/error", { agent, error: { message: "provider failure", code: "TRANSPORT" } });
     emit(listeners, "agent/status", { agent, status: "idle" });
 
@@ -476,12 +509,14 @@ describe("MemberCollector", () => {
     const { listeners, agent, collector, frames } = createCollector();
 
     emit(listeners, "agent/status", { agent, status: "running" });
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "calling" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "calling" } }));
+    emitStart(listeners, agent, 1, "attempt-1");
+    emitChunk(listeners, agent, { type: "block-start", index: 0, blockType: "text" }, "attempt-1", 0);
+    emitChunk(listeners, agent, { type: "text-delta", index: 0, text: "calling" }, "attempt-1", 1);
+    emitChunk(listeners, agent, { type: "block-end", index: 0, block: { type: "text", text: "calling" } }, "attempt-1", 2);
     // Step 2 restarts the provider index at 0 — it must not collide.
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }, 2));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "board" }, 2));
+    emitStart(listeners, agent, 2, "attempt-2");
+    emitChunk(listeners, agent, { type: "block-start", index: 0, blockType: "text" }, "attempt-2", 0);
+    emitChunk(listeners, agent, { type: "text-delta", index: 0, text: "board" }, "attempt-2", 1);
 
     const blockFrames = frames.filter(
       (frame) => frame.blockStart !== undefined || frame.blockEnd !== undefined || frame.delta !== undefined,
@@ -494,12 +529,42 @@ describe("MemberCollector", () => {
     collector.dispose();
   });
 
+  it("keeps the step-local table on a same-step retry: the retry reuses the turn-global index and keeps the pending prefix", () => {
+    const { listeners, agent, collector, frames, history } = createCollector();
+
+    emit(listeners, "agent/status", { agent, status: "running" });
+    emitStart(listeners, agent, 1, "attempt-1");
+    emitChunk(listeners, agent, { type: "text-delta", index: 0, text: "first " }, "attempt-1", 0);
+    // The provider retries the SAME step: its provider index restarts at 0,
+    // but only a step-number change resets the step-local table, so the
+    // retry reuses the failed attempt's assignment and its pending prefix.
+    emitStart(listeners, agent, 1, "attempt-2");
+    emitChunk(listeners, agent, { type: "text-delta", index: 0, text: "retry" }, "attempt-2", 0);
+
+    // A reset would have handed the retry's provider index 0 the next
+    // turn-global index (1); the shared assignment keeps it at 0.
+    const deltas = frames.filter((frame) => frame.delta !== undefined);
+    expect(deltas.map((frame) => frame.delta?.index)).toEqual([0, 0]);
+
+    // The failed attempt's prefix is still pending and the retry's delta
+    // appended to the shared index-0 view, so the interrupted fixation below
+    // carries the merged prefix rather than just the retry's tail.
+    emit(listeners, "agent/error", { agent, error: { message: "retry exhausted", code: "TRANSPORT" } });
+    emit(listeners, "agent/status", { agent, status: "idle" });
+
+    const entries = history.listTeamMessages();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.message.interrupted).toBe(true);
+    expect(entries[0]?.message.blocks[0]?.text?.content).toBe("first retry");
+    collector.dispose();
+  });
+
   it("ignores events of other members and detaches on dispose", () => {
     const { listeners, agent, collector, frames } = createCollector();
 
-    const other = { id: `${SESSION}/planner` };
     const otherAgent = fakeAgent(`${SESSION}/planner`);
-    emit(listeners, "session/event", other, chunkEvent({ type: "text-delta", index: 0, text: "foreign" }));
+    emitStart(listeners, otherAgent, 1, "other-attempt");
+    emitChunk(listeners, otherAgent, { type: "text-delta", index: 0, text: "foreign" }, "other-attempt", 0);
     emit(listeners, "agent/status", { agent: otherAgent, status: "idle" });
     emit(listeners, "agent/error", { agent: otherAgent, error: { message: "foreign", code: "X" } });
     expect(frames).toEqual([]);

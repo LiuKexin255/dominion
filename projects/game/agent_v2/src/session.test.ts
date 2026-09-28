@@ -433,22 +433,47 @@ async function materializeDefault(h: Harness): Promise<TeamView> {
 
 /** Emit one member text turn's dsh event sequence and settle it via idle. */
 function driveTextTurn(h: Harness, target: MemberFake, text: string): void {
+  const attemptId = `${target.id}/attempt-1`;
   emit(h, "session/event", target.agent.session, { type: "turn/start", data: { turn: 1 } });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } },
+  // Live model chunks ride `agent/assistant-stream`; 0.1.7 removed the
+  // `assistant/chunk` session event (specs/070-dsh-upgrade/research.md D7).
+  emit(h, "agent/assistant-stream", {
+    agent: target.agent,
+    frame: { type: "start", attemptId, revision: 1, turn: 1, step: 1 },
   });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text } },
+  emit(h, "agent/assistant-stream", {
+    agent: target.agent,
+    frame: {
+      type: "chunk",
+      attemptId,
+      revision: 2,
+      index: 0,
+      time: 0,
+      chunk: { type: "block-start", index: 0, blockType: "text" },
+    },
   });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "block-end", index: 0, block: { type: "text", text } } },
+  emit(h, "agent/assistant-stream", {
+    agent: target.agent,
+    frame: { type: "chunk", attemptId, revision: 3, index: 1, time: 0, chunk: { type: "text-delta", index: 0, text } },
+  });
+  emit(h, "agent/assistant-stream", {
+    agent: target.agent,
+    frame: {
+      type: "chunk",
+      attemptId,
+      revision: 4,
+      index: 2,
+      time: 0,
+      chunk: { type: "block-end", index: 0, block: { type: "text", text } },
+    },
   });
   emit(h, "session/event", target.agent.session, {
     type: "assistant/message",
     data: { turn: 1, step: 1, message: { content: [{ type: "text", text }] } },
+  });
+  emit(h, "agent/assistant-stream", {
+    agent: target.agent,
+    frame: { type: "end", attemptId, index: 3, outcome: { kind: "committed", eventType: "assistant/message", seq: 1 } },
   });
   target.settle();
 }

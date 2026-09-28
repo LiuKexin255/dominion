@@ -15,18 +15,26 @@
  *   broadcast rendered as `user: [sender]…`).
  *
  * {@link MemberCollector} owns one materialized member's subscriptions:
- * `session/event` (turn/step/chunk/tool events), `agent/status`, and
- * `agent/error`. It latches a member turn on the running transition (or the
- * first turn-scoped event), emits the member-labelled ChatEvent frames
+ * `session/event` (turn/step/tool events), `agent/assistant-stream` (the live
+ * model chunk publications), `agent/status`, and `agent/error`. It latches a
+ * member turn on the running transition (or the first turn-scoped event),
+ * emits the member-labelled ChatEvent frames
  * (turn_start/block_start/delta/block_end/tool_result/turn_end), and writes
- * the history projections. Dsh chunk indexes are per-step (every model
- * request restarts at 0), so the collector remaps them onto one turn-global
- * monotonic sequence, resetting the step-local table at every step boundary
- * (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4; specs/
- * 051-agent-v2-dsh-migration/data-model.md §2.4).
+ * the history projections. Live display frames come from the process-local
+ * `agent/assistant-stream` surface: 0.1.7 removed the `assistant/chunk`
+ * session event, and the durable `assistant/message` carries the same chunks
+ * compacted as `stream` at step settlement — the live surface is the
+ * per-chunk publication that preserves the original streaming timing
+ * (specs/070-dsh-upgrade/research.md D7). Dsh chunk indexes are per-step
+ * (every model request restarts at 0), so the collector remaps them onto one
+ * turn-global monotonic sequence, resetting the step-local table at every
+ * step boundary (specs/049-agent-v2-dsh-init/contracts/conversation-api.md
+ * §4; specs/051-agent-v2-dsh-migration/data-model.md §2.4).
  *
  * Event vocabulary anchors: dsh-session SessionEventMap
- * (node_modules/@deepseek-ai/dsh-session/lib/types/types.d.ts) and the
+ * (node_modules/@deepseek-ai/dsh-session/lib/types/types.d.ts), the dsh-agent
+ * live-stream frame types (AssistantStreamFrame,
+ * node_modules/@deepseek-ai/dsh-agent/lib/types/runtime-types.d.ts), and the
  * dsh-llm message/block definitions
  * (node_modules/@deepseek-ai/dsh-llm/lib/types/{types,message}.d.ts).
  */
@@ -48,7 +56,6 @@ import type { DshContext } from "./dsh.js";
 
 /**
  * Structural subset of a dsh `session/event` payload read by the collector.
- * `assistant/chunk` is `{turn, step, chunk}` with chunk a raw StreamChunk.
  */
 export interface DshSessionEvent {
   type: string;
@@ -82,6 +89,22 @@ export interface DshTokenUsage {
   inputTokens: number;
   outputTokens: number;
   reasoningTokens?: number;
+}
+
+/**
+ * Structural subset of one `agent/assistant-stream` live publication
+ * (dsh-agent `AssistantStreamFrame`). The opening `start` frame carries the
+ * durable turn/step owning the attempt; every `chunk` frame then publishes
+ * the raw StreamChunk with its dense attempt-local position (the provider
+ * block index inside `chunk` is the per-step display key), and the closing
+ * `end` frame settles the attempt.
+ */
+export interface DshAssistantStreamFrame {
+  type: string;
+  attemptId?: string;
+  turn?: number;
+  step?: number;
+  chunk?: DshStreamChunk;
 }
 
 /** The `assistant/message` event shape the history is appended from. */
@@ -536,16 +559,22 @@ interface ActiveMemberTurn {
 
 /**
  * Session-lifetime collector for one materialized member: owns that member's
- * `session/event`, `agent/status`, and `agent/error` subscriptions, writes
- * the member-labelled stream frames and the team/member history projections
- * (shared {@link TeamHistory}), and settles member turns on the idle
- * transition — the same quiescence anchor the orchestrator's switching logic
- * uses.
+ * `session/event`, `agent/assistant-stream`, `agent/status`, and `agent/error`
+ * subscriptions, writes the member-labelled stream frames and the team/member
+ * history projections (shared {@link TeamHistory}), and settles member turns
+ * on the idle transition — the same quiescence anchor the orchestrator's
+ * switching logic uses.
  */
 export class MemberCollector {
   private active: ActiveMemberTurn | undefined;
   /** A cancel/refresh outcome recorded while this member's turn is in flight. */
   private pendingOutcome: TurnOutcome | undefined;
+  /**
+   * Live attempt identity → the step its opening `start` frame declared.
+   * Chunk frames carry no step of their own, so this map is how a chunk finds
+   * its step; entries drop on the closing `end` frame.
+   */
+  private readonly attempts = new Map<string, number>();
   private readonly off: Array<() => void> = [];
 
   constructor(
@@ -559,6 +588,11 @@ export class MemberCollector {
     this.off.push(
       ctx.on("session/event", (session, event) => {
         this.onSessionEvent(session.id, event as unknown as DshSessionEvent);
+      }),
+    );
+    this.off.push(
+      ctx.on("agent/assistant-stream", (payload) => {
+        this.onAssistantStream(payload.agent, payload.frame);
       }),
     );
     this.off.push(
@@ -598,6 +632,7 @@ export class MemberCollector {
     }
     this.off.length = 0;
     this.active = undefined;
+    this.attempts.clear();
   }
 
   private onSessionEvent(dshSessionId: string, event: DshSessionEvent): void {
@@ -629,17 +664,14 @@ export class MemberCollector {
       return;
     }
     if (event.type === "tool/call") {
-      // Display frames already streamed as tool-call chunks; the result
-      // settles the matching block (wire invariant: the loop pairs every
-      // call with a result).
+      // Display frames already streamed through the live
+      // `agent/assistant-stream` tool-call chunks; the result settles the
+      // matching block (wire invariant: the loop pairs every call with a
+      // result).
       return;
     }
     if (event.type === "tool/result") {
       this.onToolResult(event as ToolResultMessageEvent);
-      return;
-    }
-    if (event.type === "assistant/chunk") {
-      this.onChunk(event.data as { turn?: number; step?: number; chunk?: DshStreamChunk } | undefined);
       return;
     }
     if (event.type === "turn/end") {
@@ -676,28 +708,64 @@ export class MemberCollector {
     });
   }
 
-  private onChunk(
-    data: { turn?: number; step?: number; chunk?: DshStreamChunk } | undefined,
+  /**
+   * Handle one live `agent/assistant-stream` publication for this member.
+   * The opening `start` frame declares the attempt's step and resets the
+   * step-local table at a step boundary; each `chunk` frame then drives the
+   * existing chunk→ChatEvent mapping with that step. Other members'
+   * publications are ignored (the collector subscribes at the root context
+   * and filters by agent identity, the same contract as `agent/status`).
+   */
+  private onAssistantStream(
+    agent: Agent | undefined,
+    frame: DshAssistantStreamFrame | undefined,
   ): void {
-    const chunk = data?.chunk;
-    if (!chunk) {
+    if (agent !== this.agent || frame?.attemptId === undefined) {
       return;
     }
+    if (frame.type === "start") {
+      if (frame.step === undefined) {
+        return;
+      }
+      this.attempts.set(frame.attemptId, frame.step);
+      this.enterStep(frame.step);
+      return;
+    }
+    if (frame.type === "chunk") {
+      const step = this.attempts.get(frame.attemptId);
+      if (step === undefined || frame.chunk === undefined) {
+        return;
+      }
+      this.onChunk(frame.chunk, step);
+      return;
+    }
+    // end: the attempt settled (durably or abandoned); drop its step binding.
+    this.attempts.delete(frame.attemptId);
+  }
+
+  /**
+   * Start (or continue) one model-output step: a step-number change drops the
+   * step-local index table and the pending interrupted-prefix blocks
+   * (specs/051-agent-v2-dsh-migration/data-model.md §2.4 — provider chunk
+   * indexes restart at 0 on every model request, while the turn-global
+   * counter stays monotonic across steps). A same-step retry keeps the table.
+   */
+  private enterStep(step: number): void {
+    const active = this.ensureActive();
+    if (step === active.step) {
+      return;
+    }
+    active.step = step;
+    active.localIndexes = new Map();
+    active.pending = [];
+  }
+
+  private onChunk(chunk: DshStreamChunk, step: number): void {
     const active = this.ensureActive();
     if (chunk.type === "usage") {
       // Folded into turn_end.usage; never a standalone frame (§4).
       active.usage = chunk.usage;
       return;
-    }
-    // Step-boundary reset (data-model.md §2.4): dsh chunk indexes restart at
-    // 0 on every model request, so a new step number drops the step-local
-    // table and the pending interrupted-prefix blocks; the turn-global
-    // counter keeps monotonic across steps.
-    const step = data?.step;
-    if (step !== undefined && step !== active.step) {
-      active.step = step;
-      active.localIndexes = new Map();
-      active.pending = [];
     }
     const index = chunk.index ?? 0;
     if (chunk.type === "reasoning-delta" || chunk.type === "text-delta") {
@@ -715,10 +783,11 @@ export class MemberCollector {
       this.sessionName,
       active.turnId,
       (localIndex) => this.remapIndex(active, localIndex),
-      // Step numbers reach clients on every block frame for the display
-      // segmentation (specs/054-agent-v2-bugfixes/data-model.md §1.1); a dsh
-      // event without one degrades to step 0.
-      step ?? 0,
+      // The attempt's declared step reaches clients on every block frame for
+      // the display segmentation (specs/054-agent-v2-bugfixes/data-model.md
+      // §1.1). A `start` frame without a step never registers its attempt, so
+      // every chunk that reaches here carries a concrete step.
+      step,
     );
     if (chatEvent !== undefined) {
       chatEvent.member = this.role;
