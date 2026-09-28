@@ -14,7 +14,7 @@ bazel_dep(name = "googleapis-go", version = "1.0.0")
 bazel_dep(name = "protobuf", version = "33.4", repo_name = "com_google_protobuf")
 bazel_dep(name = "grpc_ecosystem_grpc_gateway", version = "2.27.6")
 bazel_dep(name = "aspect_rules_js", version = "3.0.3")
-bazel_dep(name = "aspect_rules_ts", version = "3.8.8")
+bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
 bazel_dep(name = "rules_nodejs", version = "6.7.4")
 bazel_dep(name = "aspect_rules_swc", version = "2.7.1")
 bazel_dep(name = "platforms", version = "1.0.0")
@@ -136,11 +136,15 @@ use_repo(npm, "npm")
 pnpm = use_extension("@aspect_rules_js//npm:extensions.bzl", "pnpm", dev_dependency = True)
 use_repo(pnpm, "pnpm")
 
-rules_ts_ext = use_extension("@aspect_rules_ts//ts:extensions.bzl", "ext", dev_dependency = True)
-rules_ts_ext.deps(
-    ts_version_from = "//:package.json",
+# version_from reads the literal version string from //:package.json; Bazel
+# cannot resolve pnpm's "catalog:" protocol, so the root "typescript"
+# dependency must stay a literal "x.y.z" (changing it to "catalog:" breaks
+# rules_ts toolchain resolution).
+typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript", dev_dependency = True)
+typescript.deps(
+    version_from = "//:package.json",
 )
-use_repo(rules_ts_ext, "npm_typescript")
+use_repo(typescript, "npm_typescript")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.defaults(

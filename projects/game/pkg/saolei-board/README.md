@@ -12,7 +12,7 @@ cell 32×32px）。识别基于固定几何 + 单格颜色分析，不依赖 OCR
 ```
 src/
 ├── core/   # 核心库（可被其他包引用，即 @dominion/game-saolei-board）
-└── cli/    # CLI 外壳（saolei-recognize），依赖核心库
+└── cli/    # CLI 外壳（bazel run //projects/game/pkg/saolei-board:cli），依赖核心库
 ```
 
 两者拆分为独立 Bazel target，便于其他代码只引用核心库而不引入 CLI。

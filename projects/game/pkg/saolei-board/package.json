@@ -10,9 +10,6 @@
             "default": "./src/core/index.js"
         }
     },
-    "bin": {
-        "saolei-recognize": "./src/cli/cli.js"
-    },
     "dependencies": {
         "pngjs": "catalog:"
     },
