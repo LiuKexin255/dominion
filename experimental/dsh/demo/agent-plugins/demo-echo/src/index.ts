@@ -6,11 +6,12 @@
  * specs/058-dsh-preset-roster-demo/spec.md).
  * Contract: specs/058-dsh-preset-roster-demo/contracts/demo-echo-plugin.md.
  *
- * This is a PRESET-row plugin, not a host composition row: the roster sends
- * bare specifiers of preset rows to the host composition base, so
- * `@deepseek-ai/dsh-tools` and `@deepseek-ai/dsh-system-prompt` resolve from
- * the demo agent's node_modules
- * (specs/058-dsh-preset-roster-demo/research.md R8).
+ * This is a PRESET-row plugin, not a host composition row: the preset
+ * registry resolves the declaration row's bare specifiers against the host
+ * composition base, so `@deepseek-ai/dsh-tools` and
+ * `@deepseek-ai/dsh-system-prompt` resolve from the demo agent's node_modules
+ * (specs/058-dsh-preset-roster-demo/research.md R8;
+ * specs/070-dsh-upgrade/contracts/composition-manifest.md §3).
  */
 
 import type { Context } from "@deepseek-ai/cordis";

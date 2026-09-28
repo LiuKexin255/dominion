@@ -37,35 +37,42 @@ fake-llm — Go，http :8080，OpenAI chat-completions 兼容的确定性模板�
   未创建会话的 SendMessage 以 `FAILED_PRECONDITION` 拒绝，无懒创建。
 - **PresetService**：`CreatePreset`/`GetPreset`/`ListPresets`/`UpdatePreset`/`DeletePreset` 五个
   AIP 风格资源 CRUD RPC——创作 preset 指定模板与动态字段（persona 文本、可选展示名），CRUD 只写
-  store（唯一事实源）；成员组合在会话创建时从 store 记录派生为纯临时文件并挂载，磁盘上不存在需要
-  维护的副本。persona 更新后已加入会话保持旧组合、新会话生效新组合；删除不影响已加入会话；模板为
-  部署数据不可删。
+  内存 store（唯一事实源）；成员组合在会话创建时从 store 记录进程内派生为
+  `@deepseek-ai/dsh-agent-preset` 声明并注册（无可写副本、无临时文件），registry 修订保留使
+  persona 更新后已加入会话保持旧组合、新会话生效新组合；删除不影响已加入会话；模板为部署声明数据，
+  用户面不可写删。
 
 ## agent 组合清单
 
 组合清单 `experimental/dsh/demo/agent/cordis.yml` 为直组形态，行清单契约见
-`specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md` §1，按行来源分三层：
+`specs/070-dsh-upgrade/contracts/composition-manifest.md` §3，按行来源分三层：
 
 - **基线行**（`timer`/`invariants`/`system-prompt`）：经 `//third_party/dsh/core:runtime_pkg` 随
   agent 镜像 `runtime_deps` 物化，不进运行时 dependencies（package.json devDependencies 仅供
   `composition.test.ts` 真直组 boot）；
-- **服务声明行**（`llm`/`session`/`tools`/`agents`/`agent-loop`/`llm-deepseek`）：经 demo agent
-  package.json 依赖与 BUILD `npm_deps` 显式声明；
-- **preset 扩展行**：`agent-presets`——官方 roster 插件，只扫描模板 system root、`default` 为空 id
-  （preset 必选语义）、禁用机器用户目录根（确定性）；`preset-authoring`——自研 authoring 插件，
-  承载 store-only preset CRUD 与使用时派生挂载，经 `ctx.presetAuthoring` 服务暴露（service 层零
-  roster/文件系统引用）。
+- **服务声明行**（`llm`/`session`/`session-projection`/`tools`/`agents`/`agent-loop`/
+  `llm-opencode-go`）：经 demo agent package.json 依赖与 BUILD `npm_deps`（registry 包）/
+  `runtime_deps`（workspace 包）显式声明。其中 `session-projection` 提供 `ctx.sessionProjections`
+  （agent-loop 与 preset registry 的注入要求）；
+- **preset 行**：`agent-preset-registry`——官方 registry（`default` 指向 `demo-standard`，demo
+  允许默认回落）；`preset-demo-standard`/`preset-demo-tools`——`@deepseek-ai/dsh-agent-preset`
+  声明行（声明行即模板定义，宿主组合行 = 部署所有权 = 系统信任、用户面不可写删）；
+  `preset-authoring`——自研 authoring 插件，承载 store-only preset CRUD 与进程内派生注册，经
+  `ctx.presetAuthoring` 服务暴露（service 层零 registry/文件系统引用），其 `templates` 配置与
+  声明行同构。
 
-**roster roots 与环境变量**（契约：`specs/060-agent-v2-team-optimize/contracts/preset-derivation.md`
-§2/§3；由 `experimental/dsh/demo/testplan/deploy.yaml` 注入）：
+**LLM 适配因 0.1.7 拆包改线**：0.1.7 的 `@deepseek-ai/dsh-llm-deepseek` 只提供 Anthropic
+Messages transport 库，provider 由 `dsh-llm-deepseek-api-key` 注册——wire 不再是 OpenAI Chat
+Completions，与本 demo 的 fake-llm（`specs/047-dsh-chat-demo/contracts/fake-llm-wire.md`）不兼容。
+demo 因此改走仓库内 OpenAI Chat Completions 适配器 `@dominion/dsh-llm-opencode-go`（specs/063
+产出），保持 fake-llm 与部署面不变（`specs/070-dsh-upgrade/research.md` D7 未覆盖该拆包，以安装包
+README/lib 实测为准）。demo 声明面不再声明 DeepSeek peer 面（`dsh-llm-deepseek`/`dsh-fs`/
+`dsh-credentials`/`dsh-attachment`/`dsh-anonymous-user-id`/`dsh-deepseek-llm-api-extensions`）。
 
-| env | 值 | 语义 |
-|---|---|---|
-| `PRESET_TEMPLATES_ROOT` | `/dominion/dsh-demo/agent/presets-templates` | 镜像内模板数据目录（artifact data 随包分发，system 信任根、派生来源） |
-
-roster 不再声明可写 root：用户 preset 的 CRUD 只写内存 store，成员组合在会话创建时从 store 记录派生
-为系统临时目录下的纯临时文件（不维护、删除无副作用、重建幂等）。模板 root 为镜像内部署数据，不受
-进程/容器生命周期影响。
+模板是组合清单内的声明行（`preset-demo-standard`/`preset-demo-tools`），不依赖任何镜像内数据
+目录或部署 env 装配。用户 preset 的 CRUD 只写内存 store，成员组合在会话创建时从 store 记录进程内
+派生为 `@deepseek-ai/dsh-agent-preset` 声明并交给 registry 注册；registry 按 preset id 保留唯一
+修订，运行中的会话持有其绑定修订直到释放（更新/删除不打断已加入会话，新会话生效新修订）。
 
 ## 服务与底座 target 一览
 
@@ -108,9 +115,9 @@ guitar run experimental/dsh/demo/testplan/interface_test.yaml
 
 - **无上下文压缩**：chat 组合无 compaction 行，长会话上下文单调增长，demo 范围内接受此限制。
 - **无会话与创作 preset 持久化**：会话为 agent 进程内内存态，随进程销毁；创作 preset 同为进程态——
-  store 记录在内存，成员组合在使用时派生为系统临时文件，进程重启或 Pod 重建后一并丢失，使用前需
-  重新创作；模板 preset 为镜像部署数据，不受影响。
-- **dsh 0.x-rc 漂移成本**：dsh 全家桶按 0.1.1-rc 线同线精确 pin（dist-tag 不可信），升级以
+  store 记录在内存，成员组合在使用时进程内派生并注册，进程重启或 Pod 重建后一并丢失，使用前需
+  重新创作；模板 preset 为组合清单元数据，不受影响。
+- **dsh 0.x-rc 漂移成本**：dsh 全家桶按 0.1.7-rc.2 线同线精确 pin（dist-tag 不可信），升级以
   lockfile PR 方式整体进行；0.x-rc 的破坏性变更风险由实验性 demo 接受。
 - **非流式 v1 / 实验性质量线**：聊天入口为非流式请求/响应，SSE/流式输出不在范围；demo 无
   auth/secrets/生产化运维。

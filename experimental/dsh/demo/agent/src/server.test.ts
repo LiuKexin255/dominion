@@ -181,7 +181,7 @@ describe("Chat.CreateConversation handler", () => {
   it("maps a preset-authoring rejection onto its error code with the message passed through", async () => {
     // The codes map one-to-one onto gRPC statuses
     // (preset-authoring-plugin.md §6): an unknown preset surfaces as
-    // INVALID_ARGUMENT carrying the roster's available-ids message.
+    // INVALID_ARGUMENT carrying the authoring service's available-ids message.
     const tests = [
       {
         name: "missing preset",
@@ -204,7 +204,7 @@ describe("Chat.CreateConversation handler", () => {
       {
         name: "internal failure",
         code: "INTERNAL",
-        message: "roster operation failed: disk gone",
+        message: "preset store operation failed: disk gone",
         want: grpc.status.INTERNAL,
       },
     ];
@@ -442,9 +442,9 @@ describe("PresetService.CreatePreset handler", () => {
   });
 
   it("maps an unresolvable template onto INVALID_ARGUMENT carrying the available ids", async () => {
-    // The roster resolve rejection surfaces verbatim
+    // The template-snapshot lookup rejection surfaces verbatim
     // (preset-authoring-plugin.md §6; R5 — the available-ids message comes
-    // from the roster, no ListTemplates RPC).
+    // from the plugin's configured template declarations, no ListTemplates RPC).
     const authoring = fakeAuthoring();
     authoring.create = vi.fn(async () => {
       throw new PresetAuthoringError(
@@ -663,10 +663,12 @@ describe("PresetService.DeletePreset handler", () => {
     expect(error?.code).toBe(grpc.status.NOT_FOUND);
   });
 
-  it("passes a template delete refusal through as FAILED_PRECONDITION", async () => {
-    // A template id is system-trust deployment data: the roster refuses the
-    // removal and the plugin surfaces that refusal verbatim
-    // (preset-authoring-plugin.md §6; chat-api.md §2 DeletePreset row).
+  it("maps a FAILED_PRECONDITION authoring rejection onto gRPC FAILED_PRECONDITION", async () => {
+    // The handler maps every preset-authoring code one-to-one onto its gRPC
+    // status (preset-authoring-plugin.md §6); FAILED_PRECONDITION is the
+    // authoring service's non-writable refusal surface. A template id has no
+    // store record, so the real plugin rejects its delete as NOT_FOUND — this
+    // case pins the generic mapping, not a template-specific producer.
     const authoring = fakeAuthoring();
     authoring.remove = vi.fn(async () => {
       throw new PresetAuthoringError(

@@ -37,13 +37,22 @@ ts_project(
 )
 
 # Workspace package target required by npm_link_all_packages for workspace:*
-# deps. The manifest is deliberately NOT a js_library src (packaging face):
-# the tar's manifest is staged by artifact_pkg_js from js_runtime_library's
-# package_json; nothing resolves this package by bare name against the
-# runfiles store (resolution face), mirroring llm-glm.
+# deps (common/js/dsh-plugins/preset-authoring/BUILD.bazel precedent).
+#
+# "package.json" in srcs is REQUIRED for the npm-linker's runfiles store
+# entry of a workspace package: the entry is populated from the js_library
+# srcs, and without the manifest in it, Node cannot resolve the bare
+# specifier (no package.json to read exports/main from). The demo
+# composition-boot test loads this row by bare name through exactly that
+# surface. This does NOT change what ships: the artifact tar's manifest is
+# staged by artifact_pkg_js from js_runtime_library's package_json
+# regardless of this srcs entry.
 js_library(
     name = "pkg",
-    srcs = [":lib"],
+    srcs = [
+        "package.json",
+        ":lib",
+    ],
     visibility = ["//visibility:public"],
 )
 

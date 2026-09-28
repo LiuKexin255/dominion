@@ -1,8 +1,8 @@
 // Package service holds the dsh-demo fake-llm: scripted response
 // templates embedded into the binary, the deterministic matcher, and the
-// OpenAI chat-completions compatible HTTP handler consumed by the
-// official dsh-llm-deepseek adapter (specs/047-dsh-chat-demo/contracts/
-// fake-llm-wire.md).
+// OpenAI chat-completions compatible HTTP handler consumed by the demo's
+// OpenAI Chat Completions adapter (@dominion/dsh-llm-opencode-go)
+// (specs/047-dsh-chat-demo/contracts/fake-llm-wire.md).
 package service
 
 // Message is one scripted model-response template. The field set and

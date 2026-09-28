@@ -144,6 +144,10 @@
 
 **Alternatives considered**: 无——事实性验证。
 
+**终态结论（实测，2026-09-28）— demo LLM 行换线**: `@deepseek-ai/dsh-llm-deepseek@0.1.7-rc.2` 不再是 OpenAI Chat Completions cordis 插件行，而是 "DeepSeek Messages adapter" transport 库——package `description` 与其 `lib/types/index.d.ts` 导出面（`DeepSeekAdapter`、`registerDeepSeekProvider`、`DeepSeekFilesClient`、`resolveAdapterOptions` 等，实测 `node_modules/@deepseek-ai/dsh-llm-deepseek/lib/types/index.d.ts`；https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm-deepseek/README.md）。provider 路由注册由伴生包承担：`@deepseek-ai/dsh-llm-deepseek-api-key`（API-key）或 `@deepseek-ai/dsh-llm-deepseek-account`（account），wire 为 Anthropic Messages（`/v1/messages`；实测 `https://unpkg.com/@deepseek-ai/dsh-llm-deepseek-api-key@0.1.7-rc.2/lib/index.js`，该包 `inject = ["llm"]`、注册 `deepseek-official`）。
+
+demo 的 `fake-llm` 是 OpenAI Chat Completions wire（`specs/047-dsh-chat-demo/contracts/fake-llm-wire.md`；Go 侧不在本 spec 迁移面），而 0.1.7 官方 llm 家族无 OpenAI 兼容的适配器插件行。经用户 2026-09-28 裁定，demo LLM 行换为仓库内 OpenAI Chat Completions 适配器 `@dominion/dsh-llm-opencode-go`（route `opencode-go`，`common/js/dsh-plugins/llm-opencode-go`）并写入 `experimental/dsh/demo/agent/cordis.yml`，`fake-llm` 与部署面零改动；`specs/047-dsh-chat-demo/research.md` D1 "官方 `dsh-llm-deepseek` 胜出、零自研插件" 的前提由此不再成立。demo 声明面随之不再声明 DeepSeek peer 面（`dsh-llm-deepseek`、`dsh-fs`、`dsh-credentials`、`dsh-attachment`、`dsh-anonymous-user-id`、`dsh-deepseek-llm-api-extensions`）。
+
 ---
 
 ## D8 — 单测断言面重写范围

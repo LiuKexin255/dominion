@@ -42,9 +42,9 @@ ts_project(
 # srcs, and without the manifest in it, Node cannot resolve the bare
 # specifier (no package.json to read exports/main from). This row is a
 # PRESET composition row — resolved by bare name from the host base when
-# the roster mounts it — and the composition integration test exercises
-# that exact path, so omitting it fails the test with "Cannot find package
-# @dominion/dsh-demo-echo" (common/js/bootstrap/BUILD.bazel precedent).
+# the registry mounts the preset — and the composition integration test
+# exercises that exact path, so omitting it fails the test with "Cannot find
+# package @dominion/dsh-demo-echo" (common/js/bootstrap/BUILD.bazel precedent).
 #
 # This does NOT revive the assumption llm-glm's comment disproved: that
 # disproof concerns the PACKAGING face — the manifest shipped in the

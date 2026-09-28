@@ -7,8 +7,8 @@
  * specs/047-dsh-chat-demo/spec.md FR-003/FR-011). The manifest is
  * experimental/dsh/demo/agent/cordis.yml — baseline rows materialized through
  * //third_party/dsh/core:runtime_pkg, service rows through this package's
- * npm_deps, plus the agent-presets/preset-authoring rows (row-list contract:
- * specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §1).
+ * npm_deps, plus the agent-preset-registry/preset-authoring rows (row-list
+ * contract: specs/070-dsh-upgrade/contracts/composition-manifest.md §3).
  * Any failure is fail-loud: diagnostics are logged and the process exits
  * non-zero — a half-started composition never serves traffic
  * (specs/047-dsh-chat-demo/spec.md FR-009,

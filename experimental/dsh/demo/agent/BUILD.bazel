@@ -50,7 +50,6 @@ ts_project(
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-llm",
-        ":node_modules/@deepseek-ai/dsh-llm-deepseek",
         # The lifecycle orchestrator behind bootstrap.ts (053 wiring): owns
         # the k8s health endpoint (:38080/healthz) and the component
         # start/stop sequencing.
@@ -79,35 +78,49 @@ ts_project(
 artifact_pkg_js(
     name = "server_pkg",
     app = "dsh-demo",
-    data_files = ["cordis.yml"] + glob(
-        # Template presets ship with the artifact under
-        # /dominion/dsh-demo/agent/presets-templates (PRESET_TEMPLATES_ROOT,
-        # specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §2-§3).
-        ["presets-templates/**"],
-    ),
+    # cordis.yml is the only non-TS resource: the preset templates are
+    # declarative rows inside it, not a shipped data directory
+    # (specs/070-dsh-upgrade/contracts/composition-manifest.md §3).
+    data_files = ["cordis.yml"],
     # The entry point is main.ts (process startup only); bootstrap.ts holds
     # the lifecycle wiring, importable without side effects for unit tests.
     entrypoint = "src/main.js",
     npm_deps = [
         # Service-declared dsh rows and imports (closure contract:
-        # specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §4):
-        # the direct composition rows must be physically present for the
-        # Loader, and dsh-persona resolves by bare package name from the host
-        # composition base when preset rows load
-        # (specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md
-        # §4). The remaining plugin closure materializes transitively through
-        # these link targets. Dominion workspace packages are NOT linked here:
+        # specs/047-dsh-chat-demo/contracts/dsh-agent-service.md §4;
+        # specs/070-dsh-upgrade/contracts/composition-manifest.md §4):
+        # every dsh package the service package.json declares must be
+        # physically present so the Loader can resolve each row and the
+        # closure audit can trace every shipped package to a declaration.
+        # dsh-persona and the preset declaration rows resolve by bare package
+        # name from the host composition; the 0.1.7 install-level peers
+        # (brand/ptc-runtime/sandbox/settings/etc.) are declared for the
+        # same traceability (specs/070-dsh-upgrade/research.md D6). The
+        # framework-core rows (timer/invariants/system-prompt + the cordis
+        # loader stack) enter through //third_party/dsh/core:runtime_pkg in
+        # runtime_deps. Dominion workspace packages are NOT linked here:
         # npm_deps link targets only carry real files for registry packages —
         # workspace packages ship through runtime_deps (JsRuntimePackageInfo).
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-agent-loop",
-        ":node_modules/@deepseek-ai/dsh-agent-presets",
+        ":node_modules/@deepseek-ai/dsh-agent-preset",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-brand",
         ":node_modules/@deepseek-ai/dsh-llm",
-        ":node_modules/@deepseek-ai/dsh-llm-deepseek",
         ":node_modules/@deepseek-ai/dsh-persona",
+        ":node_modules/@deepseek-ai/dsh-ptc-runtime",
+        ":node_modules/@deepseek-ai/dsh-sandbox",
+        ":node_modules/@deepseek-ai/dsh-sandbox-policy",
         ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-session-persistence",
+        ":node_modules/@deepseek-ai/dsh-session-projection",
+        ":node_modules/@deepseek-ai/dsh-settings",
+        ":node_modules/@deepseek-ai/dsh-timeout",
         ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@deepseek-ai/dsh-typert-protocol",
+        ":node_modules/@deepseek-ai/dsh-user-approval",
+        ":node_modules/@deepseek-ai/dsh-util-values",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],
@@ -123,6 +136,7 @@ artifact_pkg_js(
         # Workspace packages ship through runtime_deps (npm_deps link targets
         # only carry real files for registry packages).
         "//common/js/bootstrap:runtime_pkg",
+        "//common/js/dsh-plugins/llm-opencode-go:runtime_pkg",
         "//common/js/dsh-plugins/preset-authoring:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
@@ -149,18 +163,14 @@ artifact_image(
 # vitest erases at transform time.
 #
 # composition.test.ts additionally boots the REAL direct composition, so the
-# data also mirrors the cordis.yml row packages (services + roster + authoring
-# + demo-echo, which the Loader resolves by bare name from this package's
-# node_modules) and the template presets the roster scans (PRESET_TEMPLATES_ROOT
-# points at the runfiles copy in the test).
+# data also mirrors the cordis.yml row packages (services + preset registry +
+# declaration rows + authoring + demo-echo, which the Loader resolves by bare
+# name from this package's node_modules).
 vitest_test(
     name = "lib_test",
     size = "small",
     data = glob(
         ["src/**/*.ts"],
-        allow_empty = True,
-    ) + glob(
-        ["presets-templates/**"],
         allow_empty = True,
     ) + [
         "cordis.yml",
@@ -173,14 +183,15 @@ vitest_test(
         ":node_modules/@deepseek-ai/cordis-plugin-timer",
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-agent-loop",
-        ":node_modules/@deepseek-ai/dsh-agent-presets",
+        ":node_modules/@deepseek-ai/dsh-agent-preset",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/dsh-app-boot",
         ":node_modules/@deepseek-ai/dsh-invariants",
         ":node_modules/@deepseek-ai/dsh-llm",
-        ":node_modules/@deepseek-ai/dsh-llm-deepseek",
         ":node_modules/@deepseek-ai/dsh-persona",
         ":node_modules/@deepseek-ai/dsh-scope",
         ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-session-projection",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@dominion/common-js-bootstrap",
@@ -190,6 +201,7 @@ vitest_test(
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@dominion/dsh-demo-echo",
+        ":node_modules/@dominion/dsh-llm-opencode-go",
         ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",

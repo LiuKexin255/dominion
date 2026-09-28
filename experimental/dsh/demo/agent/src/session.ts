@@ -45,8 +45,8 @@ import type { DshContext } from "./dsh.js";
  */
 type SessionId = CreateAgentOptions["sessionId"];
 
-/** Official adapter route registered by `@deepseek-ai/dsh-llm-deepseek`. */
-const PROVIDER = "deepseek-official";
+/** Adapter route registered by the composed `@dominion/dsh-llm-opencode-go` row. */
+const PROVIDER = "opencode-go";
 
 /** Fake model id, aligned with the cordis.yml `models[]` catalog. */
 const MODEL = "fake-chat-v1";

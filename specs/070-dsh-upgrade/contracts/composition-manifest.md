@@ -59,17 +59,19 @@
 
 ## 3. demo 组合清单（`experimental/dsh/demo/agent/cordis.yml`）
 
-同构迁移：`agent-presets` 行 + `presets-templates/` 目录 → `agent-preset-registry` 行（`default` 指向 demo-standard，demo 允许默认回落——demo 无必选语义）+ `preset-demo-standard` / `preset-demo-tools` 声明行（persona `prefix` + demo-echo 子行）。`system-prompt` 行 config（`persona` 键）按 0.1.7 Config 校验（`persona` 全局键语义变化在编译/boot 验证，必要时迁移为 persona-prefix 形态）。
+同构迁移：`agent-presets` 行 + `presets-templates/` 目录 → `agent-preset-registry` 行（`default` 指向 demo-standard，demo 允许默认回落——demo 无必选语义）+ `preset-demo-standard` / `preset-demo-tools` 声明行（persona `prefix` + demo-echo 子行）。`system-prompt` 行的 deployment persona 以 0.1.7 Config 的 `personaPrefix` 键表达（`persona` 键已不存在）。LLM 行为 `llm-opencode-go`（`@dominion/dsh-llm-opencode-go`，route `opencode-go`）：0.1.7 官方 DeepSeek 面拆为 Messages transport 库 + 伴生 provider 插件，与本 demo 的 OpenAI Chat Completions fake-llm 不兼容，demo 改用仓库内 OpenAI 适配器（依据 `specs/070-dsh-upgrade/research.md` D7 终态结论）。
 
 ## 4. 声明面扩展（package.json + BUILD.bazel）
 
 | 消费方 | 增（安装级） | 增（成行，同步进 npm_deps/data） | 删 |
 |---|---|---|---|
 | `projects/game/agent_v2` | settings、typert-protocol、util-values、brand、session-persistence、sandbox、sandbox-policy、ptc-runtime、user-approval | session-projection、agent-preset-registry、agent-preset | agent-presets |
-| `experimental/dsh/demo/agent` | 上行 + llm-deepseek peer 面（fs/credentials/attachment/anonymous-user-id/deepseek-llm-api-extensions/settings/timeout） | session-projection、agent-preset-registry、agent-preset | agent-presets |
+| `experimental/dsh/demo/agent` | 上行 + settings、timeout | session-projection、agent-preset-registry、agent-preset、llm-opencode-go（row；workspace 包走 runtime_deps） | agent-presets |
 | `third_party/dsh/core` | （11 包清单不变，版本升线） | — | — |
 | `common/js/dsh-plugins/preset-authoring` | — | （deps）agent-preset-registry | agent-presets |
 | 其余 plugins | 版本随 catalog 升线，依赖集合不变 | — | — |
+
+> demo 的 LLM 行终态为 `llm-opencode-go`，不再声明 DeepSeek peer 面（`dsh-llm-deepseek`/`dsh-fs`/`dsh-credentials`/`dsh-attachment`/`dsh-anonymous-user-id`/`dsh-deepseek-llm-api-extensions`）；依据 `specs/070-dsh-upgrade/research.md` D7 终态结论（2026-09-28）。
 
 ## 5. closure audit 契约（`experimental/dsh/demo/testplan/closure_audit_test.go`）
 
