@@ -249,8 +249,10 @@ function isSceneRole(value: string): value is PresetRole {
 /**
  * The pool template a role's presets derive their composition from
  * (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2): the
- * roster root layout pins the template directory names (cordis.yml roots —
- * presets-templates/{player,planner}).
+ * template id is a key of the `preset-authoring` row Config `templates`
+ * snapshot, the single source of template definitions
+ * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3); the saolei
+ * scene vocabulary maps each role to the like-named template.
  */
 const ROLE_TEMPLATE: Record<PresetRole, string> = { player: "player", planner: "planner" };
 

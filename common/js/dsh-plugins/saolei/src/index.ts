@@ -186,7 +186,7 @@ export function apply(ctx: Context): void {
         "structural rejection (out-of-bounds, no active game) or a game " +
         "end STOPS the batch — earlier successful operations take effect.",
       // The operation coordinates are deliberately schema-unbounded: the
-      // dsh-tools 0.1.1-rc.2 enforced schema subset has no numeric-bound
+      // dsh-tools' enforced schema subset has no numeric-bound
       // keyword (CONSTRAINT_KEYWORDS = type/oneOf/properties/required/
       // additionalProperties/items/enum/const — a `minimum` node is REJECTED
       // at registration, not ignored), and the board dimensions are only

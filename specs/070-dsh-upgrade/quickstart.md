@@ -65,6 +65,9 @@ bazel test //projects/game/web/frontend/...
 
 ## 场景 6：Mongo preset 迁移演练（SC-005/FR-012，最后执行）
 
+> 裁定注记（2026-09-28）：存量记录实测已为新模型形态，数据改写经裁定跳过；导出
+> 存档保留至发布窗口，0-diff + 物化冒烟随发布部署复核（[tasks.md](tasks.md) T027 注记）。
+
 前置：场景 1–5 全部通过。按 [mongo-preset-migration.md](contracts/mongo-preset-migration.md) 执行：
 
 1. 旧版本 `ListPresets` 导出存档；

@@ -45,7 +45,7 @@
 
 ### 2.1 agent_v2 行集合（目标态）
 
-`projects/game/agent_v2/cordis.yml` 行（顺序按依赖分层；行集合 = 现清单 − `agent-presets` + 2 个新行）：
+`projects/game/agent_v2/cordis.yml` 行（顺序按依赖分层；行集合 = 旧清单（0.1.1）− `agent-presets` + 2 个新行）：
 
 | id | name | 变化 |
 |---|---|---|

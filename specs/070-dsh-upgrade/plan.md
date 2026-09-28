@@ -6,7 +6,7 @@
 
 ## Summary
 
-全仓库 dsh 闭包从 `0.1.1-rc.2` 线升级到 `0.1.7-rc.2` 线（catalog 一个版本单元：cordis 4.0.4/loader 1.0.5/include 1.0.9/group 1.0.4/timer 1.1.6/node-addon 0.1.6 互锁），`third_party/dsh/core` 底座声明面同线升级（核心 11 包清单不变），agent_v2/demo/workspace 插件适配。核心适配工作为 **preset 模型重构**：目录式 `dsh-agent-presets`（roots/trust/includeUserRoot、mountPreset）→ 声明式 `dsh-agent-preset-registry`（`ctx.agentPresets.register`，eager 激活 + 修订保留）；`preset-authoring` 服务面冻结、内部改走 register 物化，Mongo 保持唯一事实源；模板内联为 preset-authoring `templates` 快照。逐符号 API diff 结论：全部源码消费符号在 0.1.7 存活（[research.md](research.md) D7），适配集中在组合清单、模板数据、preset-authoring 与断言重写。Mongo 旧 preset 数据迁移按用户要求置于**最后一个 phase**（API 导出→升级→回灌/删后重建）。可选新能力（compaction/skill/subagent/session-query/goal/workspace）全部 defer；dsh agent team 与 Dominion team 模式独立（用户已调研，D10）。
+全仓库 dsh 闭包从 `0.1.1-rc.2` 线升级到 `0.1.7-rc.2` 线（catalog 一个版本单元：cordis 4.0.4/loader 1.0.5/include 1.0.9/group 1.0.4/timer 1.1.6/node-addon 0.1.6 互锁），`third_party/dsh/core` 底座声明面同线升级（核心 11 包清单不变），agent_v2/demo/workspace 插件适配。核心适配工作为 **preset 模型重构**：目录式 `dsh-agent-presets`（roots/trust/includeUserRoot、mountPreset）→ 声明式 `dsh-agent-preset-registry`（`ctx.agentPresets.register`，eager 激活 + 修订保留）；`preset-authoring` 服务面冻结、内部改走 register 物化，Mongo 保持唯一事实源；模板内联为 preset-authoring `templates` 快照。逐符号 API diff 的实施结论见 [research.md](research.md) D7 终态结论——适配面涵盖组合清单、模板数据、preset-authoring、断言重写与若干源码级差异（wire/serialize/team/service/orchestrator/announcer 等）。Mongo 旧 preset 数据迁移按用户要求置于**最后一个 phase**（API 导出→升级→回灌/删后重建）。可选新能力（compaction/skill/subagent/session-query/goal/workspace）全部 defer；dsh agent team 与 Dominion team 模式独立（用户已调研，D10）。
 
 ## Technical Context
 

@@ -4,7 +4,7 @@ agent-v2 是 game 域的 **team agent 服务**（服务发现名 `agent-v2`，de
 命名约束要求连字符——`specs/049-agent-v2-dsh-init/research.md` D13；项目目录与
 bazel target 保留 `agent_v2`）：以 **dsh 进程内嵌入（B1 模式）**宿主
 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（版本线
-0.1.1-rc.2，与 `third_party/dsh/core` 同线），通过自研 LLM 插件
+0.1.7-rc.2，与 `third_party/dsh/core` 同线），通过自研 LLM 插件
 `@dominion/dsh-llm-glm`（`common/js/dsh-plugins/llm-glm`）接入 GLM codingplan
 的 OpenAI **Responses** 协议端点（`https://open.bigmodel.cn/api/v1`，
 https://docs.bigmodel.cn/cn/coding-plan/tool/others），并经

@@ -17,9 +17,10 @@ legend 行）以 `specs/064-memory-split-fold-remain/contracts/saolei-plugins.md
 
 ## 依赖 pin 决策
 
-- dsh 家族 peer（dsh-tools/dsh-system-prompt）按精确版本 `0.1.1-rc.2` pin（无前缀）：
-  dsh 家族按 0.1.1-rc.2 线锁定是仓库既定决策
-  （`specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md`，A8）。
-- `@deepseek-ai/cordis` peer `^4.0.1`（插件框架，与 dsh 版本线解耦）。
+- dsh 家族 peer（dsh-tools/dsh-system-prompt）经 catalog 解析到精确版本
+  `0.1.7-rc.2`：dsh 家族按 0.1.7-rc.2 线锁定是仓库既定决策
+  （`third_party/dsh/core` 同线），依据 `specs/070-dsh-upgrade/research.md` D1。
+- `@deepseek-ai/cordis` peer 经 catalog 解析到 `~4.0.4`（0.1.7 线内互锁：解析必须
+  落线内值，否则可能物化两份 cordis；依据 `specs/070-dsh-upgrade/research.md` D1）。
 - `@dominion/dsh-saolei-loop` 经 `workspace:*` 依赖：消费 `saoleiGame` 服务类型
   （`SaoleiGameService`/`GameRuntime`，`contracts/saolei-plugins.md` §2 服务面）。

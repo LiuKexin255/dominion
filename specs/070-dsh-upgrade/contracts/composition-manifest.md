@@ -44,7 +44,7 @@
 
 ## 3. demo 组合清单（`experimental/dsh/demo/agent/cordis.yml`）
 
-同构迁移：`agent-presets` 行 + `presets-templates/` 目录 → `agent-preset-registry` 行 + `preset-authoring` 行 Config 的 `templates` 快照（键 = 模板 id：`demo-standard`（仅 persona 行）/`demo-tools`（persona + `@dominion/dsh-demo-echo` 工具行）；模板不经行面表达，2026-09-28 用户裁定，research.md D4 终态结论）。registry `default: ''`——会话创建本就必须显式 store preset（`session.ts` compose 前置 `INVALID_ARGUMENT`），registry default 恒惰性，空值是"无默认"的诚实表达；原 `demo-standard`"允许默认回落"能力随声明行移除而不存在，表述订正。`system-prompt` 行的 deployment persona 以 0.1.7 Config 的 `personaPrefix` 键表达（`persona` 键已不存在）。LLM 行为 `llm-opencode-go`（`@dominion/dsh-llm-opencode-go`，route `opencode-go`）：0.1.7 官方 DeepSeek 面拆为 Messages transport 库 + 伴生 provider 插件，与本 demo 的 OpenAI Chat Completions fake-llm 不兼容，demo 改用仓库内 OpenAI 适配器（依据 `specs/070-dsh-upgrade/research.md` D7 终态结论）。
+同构迁移：`agent-presets` 行 + `presets-templates/` 目录 → `agent-preset-registry` 行 + `preset-authoring` 行 Config 的 `templates` 快照（键 = 模板 id：`demo-standard`（仅 persona 行）/`demo-tools`（persona + `@dominion/dsh-demo-echo` 工具行）；模板不经行面表达，2026-09-28 用户裁定，research.md D4 终态结论）。registry `default: ''`——会话创建本就必须显式 store preset（`session.ts` compose 前置 `INVALID_ARGUMENT`），registry default 恒惰性，空值是"无默认"的诚实表达；原 `demo-standard`"允许默认回落"能力随声明行移除而不存在。`system-prompt` 行的 deployment persona 以 0.1.7 Config 的 `personaPrefix` 键表达（`persona` 键已不存在）。LLM 行为 `llm-opencode-go`（`@dominion/dsh-llm-opencode-go`，route `opencode-go`）：0.1.7 官方 DeepSeek 面拆为 Messages transport 库 + 伴生 provider 插件，与本 demo 的 OpenAI Chat Completions fake-llm 不兼容，demo 改用仓库内 OpenAI 适配器（依据 `specs/070-dsh-upgrade/research.md` D7 终态结论）。
 
 ## 4. 声明面扩展（package.json + BUILD.bazel）
 

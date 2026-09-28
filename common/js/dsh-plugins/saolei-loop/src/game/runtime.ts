@@ -94,8 +94,7 @@ export type OperateInput = CellOperation | { operations: CellOperation[] };
  * marker is pure content-driven: it reads only the recognized board and never
  * the terminal-event/orchestration state, and the failure variant cannot carry
  * it (type-level parity with dsh `ToolExecutionFailure.concludesTurn?: never`,
- * node_modules/.pnpm/@deepseek-ai+dsh-tools@0.1.1-rc.2_119bc70f73f8eddebfaa6b47561adeb3/
- * node_modules/@deepseek-ai/dsh-tools/lib/types/index.d.ts:400-409).
+ * `@deepseek-ai/dsh-tools` `lib/types/index.d.ts` `ToolExecutionFailure`).
  */
 export type ToolOutcome =
   | { isError: false; text: string; concludesTurn?: true }
