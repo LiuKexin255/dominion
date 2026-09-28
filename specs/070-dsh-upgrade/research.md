@@ -166,6 +166,21 @@ demo 的 `fake-llm` 是 OpenAI Chat Completions wire（`specs/047-dsh-chat-demo/
 
 **Alternatives considered**: 前端留在 0.1.1 线——catalog 单一版本单元不可拆（除非命名 catalog，Q2 决策已排除）。
 
+**终态结论（实测，2026-09-28）**: 前端消费面的 0.1.7 差异实测如下（以 `node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types` 与 unpkg `0.1.7-rc.2` 双重核对；theme 以 npm tarball `lib/client.js` 的 `\0dsh-inline-css:` region 为唯一权威）：
+
+| 消费面 | D9 预期 | 0.1.7-rc.2 实测 | 适配落点 |
+|---|---|---|---|
+| 图标导出名 | `Icon*` 存活 | 尺寸后缀名（`IconPlusOutline16`/`IconEllipsisOutline16`/`IconRefreshOutline14`/`IconChevronDownOutline14`/`IconThinkOutline14`）**移除**，改为尺寸无关的 `Icon<Name>Outline{Regular,Medium}` 两档（默认 16px，`size` prop 仍可覆盖） | `SessionList.tsx`→`IconPlusOutlineRegular`/`IconEllipsisOutlineRegular`、`IconRefreshOutlineRegular size={14}`（保留原 14px 视觉尺寸）；`ChatView.tsx`→`IconChevronDownOutlineRegular`（原 14 档默认即 14px，无需 size）；`ReasoningRow.tsx`→`IconThinkOutlineRegular size={14}`（保留原视觉尺寸） |
+| `MarkdownText` 必填 props | `text`/`streaming` | 新增**必填** `labels: MarkdownLabels`（`code.copyLabel`/`code.copiedLabel`/`footnotes`；0.1.1 的 `codeLabels` 可选面被取代），缺省即在渲染代码围栏时抛 `TypeError` | `ChatView.tsx`/`ReasoningRow.tsx` 共用 `src/markdown-labels.ts` 的模块级 `MARKDOWN_LABELS`（引用稳定性：新建对象会丢弃流式渲染缓存） |
+| `JsonBlock` | 存活 | 存活但 `truncatedLabel` 由可选转**必填**（`(total: number) => string`；`payload` 序列化超 20000 字符时拼接于尾部）；本仓 `ToolCard.tsx` 虽未触发截断路径，仍为类型面必填 | `ToolCard.tsx` 补 `truncatedLabel={(total) => \`已截断，共 ${total} 字符\`}` |
+| `Button`/`Input`/`Menu`/`MenuEntry`/`StateDot`/`StateDotState`/`DisclosureRow` | 存活 | 全存活且签名兼容（`Button` 已改 `ForwardRefExoticComponent`/`forwardRef`，锚点 ref 机制可用） | 无源码改动 |
+| `lib/markdown/CodeBlock.module.css` 契约 | 需重验 | 路径不变；全局类仍为 `md-code-block`（`className: clsx(css.block, "md-code-block", ...)`），`.block` 仍在 | `theme.css:762` 注释补全为 `.block`（文件名 + 段选择器），`theme-fence.test.ts` 断言不变 |
+| primitives 依赖闭包 | 安装级 | `@deepseek-ai/dsh-client-ui-primitives` 与伴生 `@deepseek-ai/dsh-client-store` 把运行时导入发布在 `devDependencies` 并声明"由独立消费方提供"（上游 README "Use this package"）；pnpm 默认**不**为 workspace 消费方链接这些依赖 | `pnpm-workspace.yaml` 新增 `packageExtensions` 两条（primitives + client-store），依赖闭包挂在包自身，Vite 构建与沙箱 vitest inline 均可解析 |
+| theme vendored sheet 面 | 重取 | 0.1.1 的 5 sheet → 0.1.7 的 8 sheet：新增 `corner-shape.css`/`focus.css`/`onboarding.css`；`base.css`/`design-platform.css`/`gradient-shadow-text.css`/`scrollbar.css` 字节变化；`shiki.css` 不变（逐字节相同） | `src/dsh-theme/` 逐文件重取（8 sheet + 新 `index.css` `@import` 顺序） |
+| FR-022 消费覆盖 | 升级信号 | primitives 0.1.7 的 `settings-form/*` 新纳入消费面，引用 `--dsw-alias-bg-layer-4`/`--dsw-alias-label-error`；二者仅由本应用未渲染的 `SettingsForm` 面消费、且不在 vendored ui-theme sheets 内定义，与既有 `--dsw-hovercard-bg` 同性质 | `dsh-theme.test.ts` 豁免集合从 1 项扩为 3 项（语义类守恒：仍为"本应用未消费其承载面"） |
+
+**门禁证据**: 前端 vitest 15 文件 255 用例全绿（改动前 79 passed / 1 failed）；`bazel build //projects/game/web/frontend/...`（含 `:dist` Vite 生产构建）通过；全仓 `//common/js/dsh-plugins/...`、`//experimental/dsh/demo/...`、`//projects/game/agent_v2/...`（含 closure audit）在 `--nocache_test_results` 下 26 target 全绿。**类型面核验**: 前端 bazel 门禁（`vite_build` + `vitest_test`）不含 `tsc` 类型检查，0.1.7 类型面差异（如 `JsonBlock.truncatedLabel` 转必填）不会被 bazel 拦截；故以手动核验全量类型：`cd projects/game/web/frontend && ./node_modules/.bin/tsc --noEmit`（前端包内 tsc 6.0.3，零错误；已用临时还原 `truncatedLabel` 反向验证该核验确实覆盖 `src/components/ToolCard.tsx`）。
+
 ---
 
 ## D10 — 新能力复用调研（用户输入 1）
@@ -265,3 +280,5 @@ flowchart LR
 2. D9：ui-primitives 0.1.7 符号/类名契约（编译 + 组件测试覆盖）。
 3. `preset-authoring` 对 `mountPreset`/`AgentPreset` 旧类型的替换编译验证（`common/js/dsh-plugins/preset-authoring/src/index.ts:1` 等 5 处 import）。
 4. boot 行为变化实测：0.1.7 startup policy（optional 行失败 warn、required 行失败 StartupError）对 agent_v2/demo 组合的实际影响（组合清单内行是否全部 required——Loader 默认行为确认）。
+
+（D5/D9 的实现期门禁结论已在上文各 Decision 的"终态结论"小节落档。）

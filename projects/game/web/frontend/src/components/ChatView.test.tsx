@@ -480,13 +480,13 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
   })
 
   it('折叠开关 chevron 化：图标 svg 存在、data-open 随展开态切换（F5，对齐上游 TurnProcessNodeView，FR-009）', () => {
-    // 上游形态：按钮 data-open={open || undefined} + IconChevronDownOutline14
+    // 上游形态：按钮 data-open={open || undefined} + IconChevronDownOutlineRegular
     // （https://github.com/deepseek-ai/deepseek-harness/blob/master/
     // packages/client/ui-chat/src/client/chat/TurnProcessNodeView.tsx ）。
     renderChatView({ history: COMPLETED_TURN })
     const toggle = screen.getByTestId('turn-process-toggle')
     // 折叠态：chevron 图标存在、data-open 不存在；文字箭头不再使用。
-    // 断言 class 落点而非裸 svg：className 由包 IconChevronDownOutline14
+    // 断言 class 落点而非裸 svg：className 由包 IconChevronDownOutlineRegular
     // 透传，jsdom 可断言；CSS transform 旋转无法在 jsdom 断言，class 落点
     // 是可测的最近端点。
     expect(toggle.querySelector('svg.turn-process-chevron')).not.toBeNull()
@@ -1568,7 +1568,7 @@ describe('ChatView markdown 渲染（specs/054-agent-v2-bugfixes/contracts/web-u
     })
     // 增量到达第三块后首块进入冻结区：再次增量，首块元素保持同一节点
     // （MarkdownText 冻结块缓存跨 chunk reconcile、不重挂载——包 README
-    // "Markdown rendering"，https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives ）。
+    // "Streaming markdown"，https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives ）。
     const heading = screen.getByTestId('agent-text').querySelector('h1')
     expect(heading?.textContent).toBe('开局')
     rerenderChatView(result, {

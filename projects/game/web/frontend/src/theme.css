@@ -760,7 +760,7 @@ body {
 /* markdown code 块贴合内容宽度（用户裁定：代码块不强行与卡片同宽）：
  * 包内 CodeBlock 包装是块级盒子（全局类 .md-code-block，
  * @deepseek-ai/dsh-client-ui-primitives lib/markdown/CodeBlock.module.css
- * .block），在 fit-content 卡片内自动填满剩余宽度——短代码也绘制满宽背
+ * 的 .block），在 fit-content 卡片内自动填满剩余宽度——短代码也绘制满宽背
  * 景块。width: fit-content 使其贴合自身内容宽，max-width: 100% 受卡片
  * 内容宽约束（长代码由包内 pre 的 pre-wrap + break-all 换行）。断点数据
  * 见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md。

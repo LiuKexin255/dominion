@@ -61,10 +61,17 @@ describe('dsh-theme FR-022 消费覆盖', () => {
     )) {
       consumed.add(m[1])
     }
-    // 豁免 --dsw-hovercard-bg：仅 HoverCard.module.css 消费，本应用未使用
-    // HoverCard，官方该 token 由 ui-layout 侧定义、不在 ui-theme sheets 内
-    // （revision §1.3）。
-    const exempt = new Set(['--dsw-hovercard-bg'])
+    // 豁免 3 个 token：均为本应用未消费其承载面的消费项，且不由 vendored
+    // ui-theme sheets 定义：
+    // - --dsw-hovercard-bg：仅 HoverCard.module.css 消费，本应用未使用
+    //   HoverCard（revision §1.3）；
+    // - --dsw-alias-bg-layer-4 / --dsw-alias-label-error：仅
+    //   lib/settings-form/* 的 SettingsForm 消费，本应用未渲染该组件。
+    const exempt = new Set([
+      '--dsw-hovercard-bg',
+      '--dsw-alias-bg-layer-4',
+      '--dsw-alias-label-error',
+    ])
     const missing = [...consumed].filter((t) => !defined.has(t) && !exempt.has(t))
     expect([...missing].sort(), UPGRADE_HINT).toEqual([])
   })

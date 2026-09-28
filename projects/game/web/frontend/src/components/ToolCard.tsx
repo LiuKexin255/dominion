@@ -71,7 +71,11 @@ export function ToolCard({ toolId, name, argsJson, status, result }: ToolCardPro
         <span className="tool-card-id">{toolId}</span>
       </div>
       <div data-testid="tool-card-args">
-        <JsonBlock label="参数" payload={parseJson(argsJson)} />
+        <JsonBlock
+          label="参数"
+          payload={parseJson(argsJson)}
+          truncatedLabel={(total) => `已截断，共 ${total} 字符`}
+        />
       </div>
       {result !== undefined && (
         <div data-testid="tool-card-result">

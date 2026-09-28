@@ -90,3 +90,53 @@ catalog:
   zod: "^3.25.76"
 ignoredBuiltDependencies: []
 onlyBuiltDependencies: []
+
+# @deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.2 publishes its runtime
+# imports (react, clsx, shiki, the micromark/mdast stack, ...) under
+# devDependencies and states that "independent consumers supply its development
+# dependencies"
+# (https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-primitives/README.md
+# — "Use this package", line on Web-shell build input). The frontend is such a
+# consumer. Injecting them here (instead of into the frontend manifest) keeps
+# the dependency closure attached to the package itself, so pnpm links them
+# into the package's node_modules and the Bazel aspect_rules_js store — the
+# Vite build and the sandboxed vitest inline both resolve them. Transitive-only
+# packages are intentionally not direct frontend deps. Version ranges align with
+# the package's declared devDependencies, except the react family which is
+# tightened to the catalog line value (^18.3.1) so a single physical instance
+# is shared with @types/react@18.3.31 and the rest of the workspace; the
+# @deepseek-ai/* entries likewise stay on the catalog's 0.1.7-rc.2 line (see
+# pnpm-workspace.yaml catalog above).
+packageExtensions:
+  "@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.2":
+    dependencies:
+      "@deepseek-ai/dsh-client-store": "0.1.7-rc.2"
+      "@deepseek-ai/dsh-util-code-language": "0.1.7-rc.2"
+      "@deepseek-ai/dsh-util-workspace-path": "0.1.7-rc.2"
+      "@shikijs/langs": "^4.3.1"
+      anser: "^2.3.5"
+      clsx: "^2.0.0"
+      diff: "^9.0.0"
+      katex: "^0.16.47"
+      mdast-util-from-markdown: "^2.0.3"
+      mdast-util-gfm: "^3.1.0"
+      mdast-util-math: "^3.0.0"
+      micromark-core-commonmark: "^2.0.3"
+      micromark-extension-gfm: "^3.0.0"
+      micromark-extension-math: "^3.1.0"
+      micromark-factory-space: "^2.0.1"
+      micromark-util-character: "^2.1.1"
+      micromark-util-classify-character: "^2.0.1"
+      micromark-util-sanitize-uri: "^2.0.1"
+      micromark-util-symbol: "^2.0.1"
+      react: "^18.3.1"
+      react-dom: "^18.3.1"
+      shiki: "^4.3.1"
+      simple-icons: "16.31.0"
+  # @deepseek-ai/dsh-client-store follows the same publishing pattern (runtime
+  # imports under devDependencies); its index module imports zustand/* and
+  # immer, which the consuming closure must therefore supply.
+  "@deepseek-ai/dsh-client-store@0.1.7-rc.2":
+    dependencies:
+      immer: "^10.1.1"
+      zustand: "~4.4.7"

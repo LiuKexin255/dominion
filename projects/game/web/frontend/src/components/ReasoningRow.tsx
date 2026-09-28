@@ -1,5 +1,5 @@
 // 思考过程折叠行（props 契约 specs/049-agent-v2-dsh-init/contracts/
-// web-frontend.md §3.2 ReasoningRow）：DisclosureRow 外壳 + IconThinkOutline14，
+// web-frontend.md §3.2 ReasoningRow）：DisclosureRow 外壳 + IconThinkOutlineRegular，
 // 默认折叠；折叠摘要 running 时以纯 CSS follow-end 右对齐露出最新行末尾
 // （specs/055-agent-v2-ui-fixes/contracts/ui-interactions.md §2，对齐上游
 // 双层 summary > summaryText 结构，无程序化滚动），完成态显示首行 + ellipsis；
@@ -18,9 +18,10 @@
 import { useState } from 'react'
 import {
   DisclosureRow,
-  IconThinkOutline14,
+  IconThinkOutlineRegular,
   MarkdownText,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { MARKDOWN_LABELS } from '../markdown-labels.js'
 
 export interface ReasoningRowProps {
   text: string
@@ -55,7 +56,7 @@ export function ReasoningRow({ text, running }: ReasoningRowProps) {
       {running && <span className="visually-hidden">正在生成</span>}
       <DisclosureRow
         rowClassName="reasoning-row-line"
-        icon={<IconThinkOutline14 size={14} />}
+        icon={<IconThinkOutlineRegular size={14} />}
         title="思考过程"
         open={expanded}
         expandable
@@ -73,7 +74,7 @@ export function ReasoningRow({ text, running }: ReasoningRowProps) {
         }
       >
         <div className="reasoning-body" data-testid="reasoning-body">
-          <MarkdownText text={text} streaming={running} />
+          <MarkdownText text={text} streaming={running} labels={MARKDOWN_LABELS} />
         </div>
       </DisclosureRow>
     </div>

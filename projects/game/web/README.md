@@ -9,7 +9,7 @@ web 是 game 域的网页服务：为 React 前端（`projects/game/web/frontend
 ## 结构
 
 - **frontend**（`frontend/`）：vite + React workspace 包，组件级复用
-  `@deepseek-ai/dsh-client-ui-primitives`（0.1.1-rc.2 精确 pin，attribution 见
+  `@deepseek-ai/dsh-client-ui-primitives`（0.1.7-rc.2 精确 pin，attribution 见
   `frontend/README.md`）；`src/api/`（session CRUD + NDJSON 流客户端 + agent
   preset/team 客户端 `agent.ts` + wiki REST 客户端 `wiki.ts`）、
   `src/components/`（SessionList/ChatView/ReasoningRow/ToolCard/PresetsView/
