@@ -1895,6 +1895,13 @@ describe('App 双视图切换', () => {
 // ─── §5 验收锚点 1/2/3：一级仅 2 直达 + 1 入口、浮层开关/外点关闭/选中态保持、
 // ─── 管理视图互斥、既有直达零回归） ─────────────────────────────────────────
 
+// memory 管理视图用例的 preset 与集合 route：preset 选择器取
+// listPresets(template)（全角色），集合按默认序取该 preset 首页
+// （specs/071-memory-preset-scope/contracts/web-memory-view.md §2/§3）。
+const MEMORY_PRESET = 'templates/saolei/presets/p-memory'
+const MEMORY_LIST_URL =
+  '/api/v1/templates/saolei/presets/p-memory/memories?page_size=20&order_by=update_time+desc'
+
 describe('App 侧栏两级视图导航', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
@@ -1905,7 +1912,18 @@ describe('App 侧栏两级视图导航', () => {
         return jsonResponse({ sessions: [] })
       }
       if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
-        return jsonResponse({ presets: [] })
+        return jsonResponse({ presets: [{ name: MEMORY_PRESET, role: 'planner' }] })
+      }
+      if (url === MEMORY_LIST_URL && method === 'GET') {
+        return jsonResponse({
+          memories: [
+            {
+              name: `${MEMORY_PRESET}/memories/m1`,
+              content: '一条记忆',
+              updateTime: '2026-09-20T01:00:00Z',
+            },
+          ],
+        })
       }
       if (url === '/api/v1/templates/saolei/wikis?page_size=20' && method === 'GET') {
         return jsonResponse({
@@ -1942,6 +1960,7 @@ describe('App 侧栏两级视图导航', () => {
     expect(entry.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByTestId('knowledge-menu')).toBeNull()
     expect(screen.queryByTestId('view-wiki')).toBeNull()
+    expect(screen.queryByTestId('view-memory')).toBeNull()
 
     // 点入口 → 弹浮层（toggle）；wiki 项在浮层内、侧栏一级子元素数不变。
     fireEvent.click(entry)
@@ -2015,5 +2034,51 @@ describe('App 侧栏两级视图导航', () => {
     // 直达选中态与入口互斥：sessions 选中时入口不呈现二级视图标识。
     expect(screen.getByTestId('view-sessions').getAttribute('data-active')).toBe('true')
     expect(screen.getByTestId('view-knowledge').getAttribute('data-active')).toBeNull()
+  })
+
+  it('浮层 memory 项：切入 MemoryView（固定 saolei template），四视图互斥且选中态保持', async () => {
+    render(<App />)
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+
+    const entry = screen.getByTestId('view-knowledge')
+    // 浮层承载 wiki 与 memory 两个二级项（结构断言：二级项渲染于浮层内，
+    // 一级子元素数不随二级项增加——web-nav.md §5 锚点 3）。
+    fireEvent.click(entry)
+    const menu = await screen.findByTestId('knowledge-menu')
+    expect(within(menu).getByTestId('view-wiki')).toBeTruthy()
+    fireEvent.click(within(menu).getByTestId('view-memory'))
+
+    // 主区渲染 MemoryView；点击后浮层关闭，其余管理视图与会话空态均不渲染。
+    expect(await screen.findByTestId('memory-view')).toBeTruthy()
+    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.queryByTestId('empty-hint')).toBeNull()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
+    // 入口呈现当前选中视图标识（浮层关闭后选中态保持）。
+    expect(entry.getAttribute('data-active')).toBe('true')
+    expect(entry.textContent).toContain('Memory')
+
+    // 选择 preset 后按视图默认序取该 preset 的集合。
+    fireEvent.change(screen.getByTestId('memory-preset-select'), {
+      target: { value: 'p-memory' },
+    })
+    expect((await screen.findByTestId('memory-content')).textContent).toBe('一条记忆')
+    expect(fetchMock).toHaveBeenCalledWith(MEMORY_LIST_URL, undefined)
+
+    // 四视图互斥补全：依次切到 wiki/presets/sessions，任一时刻仅一个管理视图渲染。
+    fireEvent.click(entry)
+    fireEvent.click(within(screen.getByTestId('knowledge-menu')).getByTestId('view-wiki'))
+    expect(await screen.findByTestId('wiki-view')).toBeTruthy()
+    expect(screen.queryByTestId('memory-view')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('view-presets'))
+    expect(await screen.findByTestId('presets-view')).toBeTruthy()
+    expect(screen.queryByTestId('memory-view')).toBeNull()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('view-sessions'))
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+    expect(screen.queryByTestId('memory-view')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
   })
 })

@@ -1,6 +1,6 @@
-// 应用装配：侧栏（session 列表 + 两级视图导航）+ 主区（对话 / preset / wiki
-// 管理）。无路由库——会话视图由选中 session 状态驱动，其余视图为单页 state
-// 切换（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2、
+// 应用装配：侧栏（session 列表 + 两级视图导航）+ 主区（对话 / preset / wiki /
+// memory 管理）。无路由库——会话视图由选中 session 状态驱动，其余视图为单页
+// state 切换（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2、
 // specs/069-wiki-template-web/contracts/web-wiki-view.md §1）；侧栏一级仅
 // sessions/presets 直达，wiki/memory 经固定「知识」入口的浮出菜单到达
 // （specs/071-memory-preset-scope/contracts/web-nav.md §1-3）。每
@@ -31,6 +31,7 @@ import {
   TeamSettingsPanel,
 } from './components/TeamSettingsPanel.js'
 import { ChatView, TEAM_VIEW } from './components/ChatView.js'
+import { MemoryView } from './components/MemoryView.js'
 import { PresetsView } from './components/PresetsView.js'
 import { SessionList } from './components/SessionList.js'
 import { WikiView } from './components/WikiView.js'
@@ -635,7 +636,7 @@ export function App() {
             {VIEW_LABELS.presets}
           </Button>
           {/* 一级「知识」入口 + 浮出二级菜单（web-nav.md §1/§2）：入口 toggle
-              浮层，浮层内挂二级知识视图项（wiki）。 */}
+              浮层，浮层内挂二级知识视图项（wiki/memory）。 */}
           <div className="view-menu" ref={menuRef}>
             <Button
               variant={knowledgeView ? 'primary' : 'ghost'}
@@ -658,6 +659,16 @@ export function App() {
                   onClick={() => selectView('wiki')}
                 >
                   {VIEW_LABELS.wiki}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="knowledge-menu-item"
+                  data-testid="view-memory"
+                  data-active={view === 'memory' || undefined}
+                  onClick={() => selectView('memory')}
+                >
+                  {VIEW_LABELS.memory}
                 </button>
               </div>
             )}
@@ -688,6 +699,7 @@ export function App() {
         </div>
         {view === 'presets' ? <PresetsView template={TEMPLATE_SAOLEI} /> : null}
         {view === 'wiki' ? <WikiView template={TEMPLATE_SAOLEI} /> : null}
+        {view === 'memory' ? <MemoryView template={TEMPLATE_SAOLEI} /> : null}
       </main>
     </div>
   )

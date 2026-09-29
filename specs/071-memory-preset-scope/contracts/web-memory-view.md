@@ -20,7 +20,7 @@ listMemories(template, preset, {pageSize?, pageToken?, orderBy?}): Promise<Memor
 
 createMemory(template, preset, content): Promise<Memory>
 // id 前端派生：sha256(utf8(content)).hex[:32]（WebCrypto crypto.subtle，与工具路径 generateMemoryId 同值域）
-// POST /api/v1/templates/{t}/presets/{p}/memories?memory_id=<digest>；body {"memory":{"content"}}
+// POST /api/v1/templates/{t}/presets/{p}/memories?memory_id=<digest>；body 为扁平 Memory JSON {"content"}（game.proto body:"memory" 绑定，见 memory-service.md §2.1）
 
 updateMemory(name, content): Promise<Memory>
 // PATCH /api/v1/{name}?update_mask=content

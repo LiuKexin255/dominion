@@ -14,9 +14,10 @@
 
 ```text
 POST /api/v1/{parent=templates/*/presets/*}/memories?memory_id=<id>
-body: {"memory": {"content": "..."}}
+body: {"content": "..."}
 ```
 
+- body 绑定：`projects/game/game.proto` `body: "memory"`——HTTP body 即 `CreateMemoryRequest.memory` 字段值的序列化（**扁平 Memory JSON，非请求消息整体包装**；先例 `api/wiki.ts` 对 `body: "wiki"` 同构）。
 - `parent` REQUIRED（preset 资源名）；`memory_id` REQUIRED，匹配 `[a-z0-9_-]+`（否则 INVALID_ARGUMENT）；`memory.content` ≤ 1024 rune（否则 INVALID_ARGUMENT，错误信息含上限与实际 rune 数）。
 - 冲突：同 `(template, preset_id, memory_id)` 已存在 → `ALREADY_EXISTS`（HTTP 409）。
 - 返回创建后的 Memory（name 含 preset 段）。
@@ -25,10 +26,10 @@ body: {"memory": {"content": "..."}}
 
 ```text
 PATCH /api/v1/{memory.name=templates/*/presets/*/memories/*}?update_mask=content
-body: {"memory": {"name": "...", "content": "..."}}
+body: {"name": "...", "content": "..."}
 ```
 
-- 目标身份 = `memory.name`；唯一可变字段 `content`（mask 仅支持 `content`）；content 上限校验同 2.1。
+- 目标身份 = `memory.name`；唯一可变字段 `content`（mask 仅支持 `content`）；content 上限校验同 2.1；body 绑定同 2.1（`body: "memory"`——扁平 Memory JSON，`name` 经 `memory.name` 路径模板从 body 读取）。
 - 不存在 → `NOT_FOUND`；无 create-or-update。
 
 ### 2.3 DeleteMemory

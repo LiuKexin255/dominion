@@ -363,6 +363,14 @@ body {
   white-space: nowrap;
 }
 
+/* memory 条目正文（specs/071-memory-preset-scope/contracts/web-memory-view.md
+ * §3 列表行 = content + updateTime）：条目无 title 字段，正文即列表主内容，
+ * 需多行换行呈现——不复用 .preset-item-name 的单行省略（那是 wiki 标题形态）。 */
+.preset-item-content {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 /* 列表 role 标识（池归属徽标）：样式对齐成员标签惯例（.member-tag）。 */
 .preset-role-badge {
   flex: none;
