@@ -11,7 +11,7 @@
  *   `AssembleContext.scope` the prompt assembly passes to the snapshot
  *   section — `assembleContextFor` sets `scope: agent`, and `scopeOf(agentCtx)`
  *   reads that same key back from the agent-scoped context,
- *   https://unpkg.com/@deepseek-ai/dsh-agent@0.1.7-rc.2/lib/index.js). The
+ *   https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/lib/index.js). The
  *   binding is registered as an effect on `agentCtx`, so it unwinds with the
  *   agent scope. A rejection propagates (fail-loud): the materialization
  *   setup that awaits it rolls the whole member creation back

@@ -21,11 +21,11 @@
  * emits the member-labelled ChatEvent frames
  * (turn_start/block_start/delta/block_end/tool_result/turn_end), and writes
  * the history projections. Live display frames come from the process-local
- * `agent/assistant-stream` surface: 0.1.7 removed the `assistant/chunk`
- * session event, and the durable `assistant/message` carries the same chunks
+ * `agent/assistant-stream` surface: there is no `assistant/chunk` session
+ * event, and the durable `assistant/message` carries the same chunks
  * compacted as `stream` at step settlement — the live surface is the
  * per-chunk publication that preserves the original streaming timing
- * (specs/070-dsh-upgrade/research.md D7). Dsh chunk indexes are per-step
+ * (specs/070-dsh-upgrade/research.md D7 终态结论). Dsh chunk indexes are per-step
  * (every model request restarts at 0), so the collector remaps them onto one
  * turn-global monotonic sequence, resetting the step-local table at every
  * step boundary (specs/049-agent-v2-dsh-init/contracts/conversation-api.md
@@ -153,11 +153,11 @@ export interface ToolCallEvent extends DshSessionEvent {
 }
 
 /**
- * The `tool/result` event shape (dsh-session SessionEventMap). In 0.1.7 the
- * result is a first-class `ToolResultMessage` (role `tool`): `toolCallId` and
- * `isError` sit at the message top level and `content` IS the result blocks —
- * the old nested `tool-result` content arm is gone
- * (specs/070-dsh-upgrade/research.md D7).
+ * The `tool/result` event shape (dsh-session SessionEventMap): the result is
+ * a first-class `ToolResultMessage` (role `tool`) — `toolCallId` and
+ * `isError` sit at the message top level and `content` IS the result blocks;
+ * there is no nested `tool-result` content arm
+ * (specs/070-dsh-upgrade/research.md D7 终态结论).
  */
 export interface ToolResultMessageEvent extends DshSessionEvent {
   type: "tool/result";

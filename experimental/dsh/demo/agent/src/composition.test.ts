@@ -180,8 +180,8 @@ function repairRunfilesNativeBindingLinks(): void {
     .find((e) => e.startsWith("node-addon-require-builtin-linux-x64-gnu@"));
   if (!bindingEntry) return;
   // The adjacency the loader needs lives in the native-custom-loader store
-  // entry; the version suffix moves with the 0.1.7 line, so locate it rather
-  // than pinning a version that would silently stop matching.
+  // entry; the version suffix moves with the dsh version line, so locate it
+  // rather than pinning a version that would silently stop matching.
   const loaderEntry = fs
     .readdirSync(store)
     .find((e) => e.startsWith("node-addon-native-custom-loader@"));
@@ -373,7 +373,7 @@ describe("composition (real direct-compose boot)", () => {
 
     // Revision sharing: the registry owns one revision per preset id and every
     // agent bound to that id joins the same revision scope, so both sessions
-    // resolve demo_echo through the SAME scoped registration (the 0.1.7 model
+    // resolve demo_echo through the SAME scoped registration (the registry
     // keeps one retained revision per definition, not a per-agent mount).
     // Identity is compared as a boolean: the tool views are cordis proxies
     // whose property reads are inject-guarded, so vitest's matcher machinery

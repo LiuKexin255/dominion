@@ -33,7 +33,7 @@
  * anchor's quiescence ("turn ended and no further turn is triggered"):
  * `running` covers consecutive queued turns and the turn-close checkpoint,
  * so idle means the whole drain interval settled
- * (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.7-rc.2/README.md).
+ * (https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md).
  *
  * gameEnded is read from the player's agent-scoped game runtime after each
  * player turn (`peekGameEvent`, common/js/dsh-plugins/saolei-loop/src/game/

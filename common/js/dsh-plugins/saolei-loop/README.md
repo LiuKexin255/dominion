@@ -44,11 +44,11 @@ drain 为空时静止在当前激活成员等待新输入。驱动经成员 `age
 
 ## 依赖 pin 决策
 
-- dsh 家族 peer（dsh-agent）经 catalog 解析到精确版本 `0.1.7-rc.2`：dsh 家族
-  按 0.1.7-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），依据
-  `specs/070-dsh-upgrade/research.md` D1。
-- `@deepseek-ai/cordis` peer 经 catalog 解析到 `~4.0.4`（0.1.7 线内互锁：解析必须
-  落线内值，否则可能物化两份 cordis；依据 `specs/070-dsh-upgrade/research.md` D1）。
+- dsh 家族 peer（dsh-agent）经 catalog 解析到精确版本 `0.2.0-rc.2`：dsh 家族
+  按 0.2.0-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），依据
+  `specs/073-dsh-0.2-upgrade/research.md` D1。
+- `@deepseek-ai/cordis` peer 经 catalog 解析到 `~4.0.4`（线内互锁：解析必须
+  落线内值，否则可能物化两份 cordis；依据 `specs/073-dsh-0.2-upgrade/research.md` D1）。
 - `@dominion/game-saolei-board` 经 `workspace:*` 依赖：棋盘识别
   （`SaoleiBoard.init/updateFromScreenshot`）与坐标几何复用（FR-015）。
 - `@deepseek-ai/dsh-llm` peer：编排层构造用户消息（`createUserMessage`）。

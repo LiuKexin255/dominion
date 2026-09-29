@@ -116,7 +116,7 @@ function renderSystemText(content: ReadonlyArray<ContentBlock>): string {
 /**
  * Serialize one fully-assembled model call into the Responses request
  * body. A system-role message maps to the top-level `instructions` text
- * (the 0.1.7 loop-built request carries the rendered prompt as a leading
+ * (the loop-built request carries the rendered prompt as a leading
  * system message). Assistant reasoning blocks are intentionally not
  * replayed (GLM regenerates reasoning each turn; contract §4). Tool calls
  * replay as `function_call` items and a tool-role result message replays

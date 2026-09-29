@@ -98,9 +98,9 @@ export class SaoleiSystemMember {
       type: "assistant/message",
       seq: SessionSeq(this.seq),
       time: this.lastTime,
-      // The 0.1.7 envelope requires the exact timed model stream and a
-      // surface op; an announcement has no model stream, so it records an
-      // empty one and appends like any assistant message. The derive/render
+      // The assistant/message envelope requires the exact timed model stream
+      // and a surface op; an announcement has no model stream, so it records
+      // an empty one and appends like any assistant message. The derive/render
       // path reads only the message id/content and the event time/seq.
       data: { turn: 1, step: 1, message, stream: [] },
       surfaceOp: "append",

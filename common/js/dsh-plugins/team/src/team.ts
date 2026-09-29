@@ -191,7 +191,7 @@ export class Team extends Service {
     super(ctx, "team");
     // Member teardown drops the member's entries and buffers; the host-level
     // listener survives the member scope unwind that precedes
-    // `agent/disposed` (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.7-rc.2/README.md).
+    // `agent/disposed` (https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md).
     // Only agent members have this edge (their source id is the agent session
     // id); a non-agent source is removed by the explicit registration dispose.
     ctx.on("agent/disposed", (payload) => {

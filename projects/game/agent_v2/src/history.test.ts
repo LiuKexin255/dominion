@@ -352,9 +352,9 @@ describe("MemberCollector", () => {
 
   /**
    * Drive one live model attempt: the `start` frame opens the attempt with
-   * its step, then each `chunk` frame carries one raw StreamChunk — the 0.1.7
-   * replacement for the removed `assistant/chunk` session event
-   * (specs/070-dsh-upgrade/research.md D7).
+   * its step, then each `chunk` frame carries one raw StreamChunk — the live
+   * replacement for a session-event chunk feed
+   * (specs/070-dsh-upgrade/research.md D7 终态结论).
    */
   function emitStart(
     listeners: Map<string, Listener[]>,
@@ -446,9 +446,9 @@ describe("MemberCollector", () => {
       data: {
         turn: 1,
         step: 1,
-        // 0.1.7 first-class ToolResultMessage: toolCallId/isError at the
+        // first-class ToolResultMessage: toolCallId/isError at the
         // message top level, content IS the result blocks
-        // (specs/070-dsh-upgrade/research.md D7).
+        // (specs/070-dsh-upgrade/research.md D7 终态结论).
         message: {
           role: "tool",
           toolCallId: "call-1",

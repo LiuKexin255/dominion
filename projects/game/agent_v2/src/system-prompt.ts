@@ -17,12 +17,12 @@
  * Assembly pipeline references:
  * - the loop's pre-step assembles with `assembleContextFor(agent, signal)`
  *   and its step renders with `renderPrompt`
- *   (https://unpkg.com/@deepseek-ai/dsh-agent-loop@0.1.7-rc.2/lib/index.js);
+ *   (https://unpkg.com/@deepseek-ai/dsh-agent-loop@0.2.0-rc.2/lib/index.js);
  * - `assembleContextFor` couples the agent subject with its scope so
  *   agent-scoped sections cannot be omitted
- *   (https://unpkg.com/@deepseek-ai/dsh-agent@0.1.7-rc.2/lib/types/dispatch.d.ts);
+ *   (https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/lib/types/dispatch.d.ts);
  * - `SystemPrompt.assemble` / `renderPrompt` semantics
- *   (https://unpkg.com/@deepseek-ai/dsh-system-prompt@0.1.7-rc.2/lib/types/index.d.ts).
+ *   (https://unpkg.com/@deepseek-ai/dsh-system-prompt@0.2.0-rc.2/lib/types/index.d.ts).
  */
 
 import { assembleContextFor } from "@deepseek-ai/dsh-agent";

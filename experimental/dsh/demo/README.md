@@ -61,13 +61,14 @@ fake-llm — Go，http :8080，OpenAI chat-completions 兼容的确定性模板�
   `demo-tools`）定义在其 Config 的 `templates` 快照——模板定义的单一事实源，宿主部署数据 = 系统
   信任、用户面不可写删（不经行面表达）。
 
-**LLM 适配因 0.1.7 拆包改线**：0.1.7 的 `@deepseek-ai/dsh-llm-deepseek` 只提供 Anthropic
-Messages transport 库，provider 由 `dsh-llm-deepseek-api-key` 注册——wire 不再是 OpenAI Chat
-Completions，与本 demo 的 fake-llm（`specs/047-dsh-chat-demo/contracts/fake-llm-wire.md`）不兼容。
-demo 因此改走仓库内 OpenAI Chat Completions 适配器 `@dominion/dsh-llm-opencode-go`（specs/063
-产出），保持 fake-llm 与部署面不变（`specs/070-dsh-upgrade/research.md` D7 未覆盖该拆包，以安装包
-README/lib 实测为准）。demo 声明面不再声明 DeepSeek peer 面（`dsh-llm-deepseek`/`dsh-fs`/
-`dsh-credentials`/`dsh-attachment`/`dsh-anonymous-user-id`/`dsh-deepseek-llm-api-extensions`）。
+**LLM 适配：官方 llm 家族无 OpenAI Chat Completions 行**：`@deepseek-ai/dsh-llm-deepseek` 只提供
+Anthropic Messages transport 库，provider 由 `dsh-llm-deepseek-api-key` 注册——wire 不是 OpenAI
+Chat Completions，与本 demo 的 fake-llm（`specs/047-dsh-chat-demo/contracts/fake-llm-wire.md`）
+不兼容。demo 因此改走仓库内 OpenAI Chat Completions 适配器
+`@dominion/dsh-llm-opencode-go`（specs/063 产出），保持 fake-llm 与部署面不变（拆包事实与实测见
+`specs/070-dsh-upgrade/research.md` D7「demo LLM 行换线」终态结论）。demo 声明面
+不含 DeepSeek peer 面（`dsh-llm-deepseek`/`dsh-fs`/`dsh-credentials`/`dsh-attachment`/
+`dsh-anonymous-user-id`/`dsh-deepseek-llm-api-extensions`）。
 
 模板定义在组合清单 `preset-authoring` 行 Config 的 `templates` 快照（`demo-standard`/
 `demo-tools`）——模板定义的单一事实源，不依赖任何镜像内数据目录或部署 env 装配。用户 preset 的
@@ -118,7 +119,7 @@ guitar run experimental/dsh/demo/testplan/interface_test.yaml
 - **无会话与创作 preset 持久化**：会话为 agent 进程内内存态，随进程销毁；创作 preset 同为进程态——
   store 记录在内存，成员组合在使用时进程内派生并注册，进程重启或 Pod 重建后一并丢失，使用前需
   重新创作；模板 preset 为组合清单元数据，不受影响。
-- **dsh 0.x-rc 漂移成本**：dsh 全家桶按 0.1.7-rc.2 线同线精确 pin（dist-tag 不可信），升级以
+- **dsh 0.x-rc 漂移成本**：dsh 全家桶按 0.2.0-rc.2 线同线精确 pin（dist-tag 不可信），升级以
   lockfile PR 方式整体进行；0.x-rc 的破坏性变更风险由实验性 demo 接受。
 - **非流式 v1 / 实验性质量线**：聊天入口为非流式请求/响应，SSE/流式输出不在范围；demo 无
   auth/secrets/生产化运维。

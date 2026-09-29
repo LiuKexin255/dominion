@@ -9,14 +9,14 @@ https://docs.bigmodel.cn/cn/coding-plan/tool/others ）。插件契约（包声�
 `specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md`。
 
 自研 Responses 适配器的原因：官方 llm 家族无 OpenAI **Responses** 协议的适配器行
-（0.1.7 线 `dsh-llm-deepseek` 为 DeepSeek Messages 传输库、Anthropic Messages
+（`dsh-llm-deepseek` 为 DeepSeek Messages 传输库、Anthropic Messages
 wire；`specs/070-dsh-upgrade/research.md` D7「demo LLM 行换线」终态结论）。
 
 ## 依赖 pin 决策
 
-- dsh 家族 peer `@deepseek-ai/dsh-llm` 经 catalog 解析到精确版本 `0.1.7-rc.2`：
-  dsh 家族按 0.1.7-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），
-  依据 `specs/070-dsh-upgrade/research.md` D1。
+- dsh 家族 peer `@deepseek-ai/dsh-llm` 经 catalog 解析到精确版本 `0.2.0-rc.2`：
+  dsh 家族按 0.2.0-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），
+  依据 `specs/073-dsh-0.2-upgrade/research.md` D1。
 - deps 取官方适配器 `dsh-llm-deepseek` 的最小集：`eventsource-parser`（SSE 解析，
   catalog 统一管理，版本对齐官方声明 `^3.1.0`）、`@deepseek-ai/schemastery`
   （Config schema，catalog `^3.18.4`），并把官方以 peer 声明的

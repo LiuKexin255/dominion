@@ -115,11 +115,11 @@ artifact_pkg_js(
         # (specs/070-dsh-upgrade/contracts/composition-manifest.md §2;
         # specs/070-dsh-upgrade/research.md D4 终态结论).
         #
-        # The 0.1.7 line's install-level peers (brand, ptc-runtime, sandbox,
+        # The install-level peers (brand, ptc-runtime, sandbox,
         # sandbox-policy, session-persistence, settings, typert-protocol,
         # user-approval, util-values) are declared so every package in the tar
         # closure is traceable to an explicit declaration; they are not
-        # composed rows (specs/070-dsh-upgrade/research.md D6).
+        # composed rows (specs/070-dsh-upgrade/contracts/composition-manifest.md §4).
         #
         # npm_deps carries THIRD-PARTY link targets only. The workspace
         # packages (@dominion/dsh-llm-glm, the saolei plugin set, team,
@@ -197,7 +197,7 @@ artifact_image(
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
 # (style/javascript.md data rules): production + test sources only, plus the
-# node_modules mirror of :server_lib's deps (including the 0.1.7 declaration-
+# node_modules mirror of :server_lib's deps (including the declaration-
 # surface dsh packages), the runtime imports the tests exercise (the authoring
 # error class, the game-runtime builder, cordis for the session-test scope
 # harness), and the test-only imports (js-yaml for the manifest assertions).

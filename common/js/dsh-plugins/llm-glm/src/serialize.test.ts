@@ -114,7 +114,7 @@ describe("Responses request serialization", () => {
   });
 
   it("maps a leading system-role message to the instructions field", () => {
-    // The 0.1.7 loop-built request carries the rendered prompt as a leading
+    // The loop-built request carries the rendered prompt as a leading
     // system-role message instead of the one-shot `system` option.
     const request = serializeRequest(
       baseOptions({
@@ -340,7 +340,7 @@ describe("Responses request serialization", () => {
   });
 
   it("maps a tool-result message to a function_call_output input item", () => {
-    // A 0.1.7 tool-role message carries the provider call id and its result
+    // A tool-role message carries the provider call id and its result
     // blocks directly; the rendered text becomes `output`, joined to the
     // call by call_id (OpenAI Responses input item shape).
     const request = serializeRequest(

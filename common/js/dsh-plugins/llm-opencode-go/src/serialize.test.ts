@@ -122,7 +122,7 @@ describe("Chat Completions request serialization", () => {
   });
 
   it("maps a leading system-role message to a system wire message", () => {
-    // The 0.1.7 loop-built request carries the rendered prompt as a leading
+    // The loop-built request carries the rendered prompt as a leading
     // system-role message instead of the one-shot `system` option.
     const request = serializeRequest(
       baseOptions({

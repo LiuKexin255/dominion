@@ -444,7 +444,7 @@ function loadManifest(): ManifestRow[] {
 
 /**
  * One sub-plugin entry of a pool template's `plugins` list; a persona entry
- * carries its `prefix` (the 0.1.7 persona Config).
+ * carries its `prefix` (the `@deepseek-ai/dsh-persona` Config's prefix field).
  */
 interface PresetPluginRow {
   name: string;
@@ -515,9 +515,10 @@ describe("cordis.yml composition manifest", () => {
     expect(registry?.name).toBe("@deepseek-ai/dsh-agent-preset-registry");
     // Preset selection is mandatory in this service. The empty id is accepted
     // by the registry Config — `z.string()` accepts "", the "defined"
-    // requirement only rejects an absent value (measured against
-    // @deepseek-ai/dsh-agent-preset-registry@0.1.7-rc.2,
-    // specs/070-dsh-upgrade/research.md D5) — and no roster entry claims it,
+    // requirement only rejects an absent value (the registry package's 0.2.0
+    // diff touches only its typert protocol snapshot, so this Config surface
+    // holds; specs/073-dsh-0.2-upgrade/research.md D2) — and no roster entry
+    // claims it,
     // so an id-less resolve matches no definition and reports
     // agent-preset/not-found instead of silently falling back to a template.
     expect(registry?.config).toEqual({ default: "" });
@@ -781,9 +782,9 @@ describe("cordis.yml composition manifest", () => {
   it("composes no session-persistence and no settings row (install-level peers only)", () => {
     // The exact 21-row set is pinned by the order test above; this makes the
     // declaration-level distinction explicit: settings and
-    // session-persistence are 0.1.7 peers declared for install (package.json
-    // + BUILD closure) without a composed row
-    // (specs/070-dsh-upgrade/research.md D6).
+    // session-persistence are install-level peers (package.json + BUILD
+    // closure) without a composed row
+    // (specs/070-dsh-upgrade/contracts/composition-manifest.md §4).
     const names = rows.map((row) => row.name);
     expect(names).not.toContain("@deepseek-ai/dsh-session-persistence");
     expect(names).not.toContain("@deepseek-ai/dsh-settings");

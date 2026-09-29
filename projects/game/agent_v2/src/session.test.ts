@@ -437,8 +437,8 @@ async function materializeDefault(h: Harness): Promise<TeamView> {
 function driveTextTurn(h: Harness, target: MemberFake, text: string): void {
   const attemptId = `${target.id}/attempt-1`;
   emit(h, "session/event", target.agent.session, { type: "turn/start", data: { turn: 1 } });
-  // Live model chunks ride `agent/assistant-stream`; 0.1.7 removed the
-  // `assistant/chunk` session event (specs/070-dsh-upgrade/research.md D7).
+  // Live model chunks ride `agent/assistant-stream`; there is no
+  // `assistant/chunk` session event (specs/070-dsh-upgrade/research.md D7 终态结论).
   emit(h, "agent/assistant-stream", {
     agent: target.agent,
     frame: { type: "start", attemptId, revision: 1, turn: 1, step: 1 },

@@ -116,7 +116,7 @@ function renderToolResultContent(content: ReadonlyArray<ContentBlock>): string {
 /**
  * Serialize one fully-assembled model call into the chat-completions
  * request body. A system-role message maps to a `role:'system'` wire
- * message (the 0.1.7 loop-built request carries the rendered prompt as a
+ * message (the loop-built request carries the rendered prompt as a
  * leading system message). Assistant reasoning blocks are intentionally not
  * replayed (the contract's §3 decision: reasoning regenerates each turn).
  * Tool calls replay as assistant `tool_calls`, and each tool result becomes
@@ -144,9 +144,9 @@ export function serializeRequest(options: GenerateOptions): ChatCompletionsReque
         continue;
       }
       case "user": {
-        // A user message carries no tool results in the 0.1.7 model (results
-        // are tool-role messages), so its text maps straight through; any
-        // non-text block fails loudly rather than being silently dropped.
+        // A user message carries no tool results in the dsh message model
+        // (results are tool-role messages), so its text maps straight through;
+        // any non-text block fails loudly rather than being silently dropped.
         const parts: string[] = [];
         for (const block of message.content) {
           if (block.type === "text") {

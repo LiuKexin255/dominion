@@ -16,19 +16,19 @@ Bazel target（按 `specs/050-vite-react-bazel/contracts/vite-build-target.md` �
 
 ## 依赖
 
-全部依赖（含 `@deepseek-ai/dsh-client-ui-primitives`，dsh 0.1.7-rc.2 线——
+全部依赖（含 `@deepseek-ai/dsh-client-ui-primitives`，dsh 0.2.0-rc.2 线——
 `third_party/dsh/core` 同线，dist-tag 不可信，依据 `specs/049-agent-v2-dsh-init/research.md` D8）
 统一经根 `pnpm-workspace.yaml` catalog 管理。`@deepseek-ai/dsh-client-ui-theme`
 不作为依赖引入——其 token sheets 以源码形态 vendored 于 `src/dsh-theme/`
 （见 Attribution 与 `src/dsh-theme/README.md`）。
 
-primitives 0.1.7-rc.2 把其运行时导入（react/clsx/shiki/micromark 栈等）发布在
+primitives 把其运行时导入（react/clsx/shiki/micromark 栈等）发布在
 `devDependencies` 并声明由消费方提供（
 [上游 README](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-primitives/README.md)
 "Use this package"）；本包是消费方，故这些依赖经 `pnpm-workspace.yaml` 的
 `packageExtensions` 注入到包自身（而非写入本 manifest），使 Vite 构建与
 沙箱内 vitest inline 均能解析其依赖闭包，且 `@deepseek-ai/*` 项保持 catalog
-的 0.1.7-rc.2 线。
+的 0.2.0-rc.2 线。
 
 ## Attribution
 
@@ -42,7 +42,7 @@ primitives 0.1.7-rc.2 把其运行时导入（react/clsx/shiki/micromark 栈等�
   卡内布局另参照
   [packages/client/ui-tool/src/client/tool/toolviews/GenericToolCard.tsx](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-tool/src/client/tool/toolviews/GenericToolCard.tsx)
 - markdown/代码块等渲染组件直接复用 npm 包
-  [@deepseek-ai/dsh-client-ui-primitives](https://cdn.jsdelivr.net/npm/@deepseek-ai/dsh-client-ui-primitives@0.1.7-rc.2/README.md)
+  [@deepseek-ai/dsh-client-ui-primitives](https://cdn.jsdelivr.net/npm/@deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2/README.md)
 - `src/dsh-theme/`（官方 token sheets，以源码形态 vendored）来自 npm 包
   [@deepseek-ai/dsh-client-ui-theme](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-theme)（MIT，
   上游

@@ -93,9 +93,9 @@ artifact_pkg_js(
         # physically present so the Loader can resolve each row and the
         # closure audit can trace every shipped package to a declaration.
         # dsh-persona and the pool-template child rows resolve by bare package
-        # name from the host composition; the 0.1.7 install-level peers
+        # name from the host composition; the install-level peers
         # (brand/ptc-runtime/sandbox/settings/etc.) are declared for the
-        # same traceability (specs/070-dsh-upgrade/research.md D6). The
+        # same traceability (specs/070-dsh-upgrade/contracts/composition-manifest.md §4). The
         # framework-core rows (timer/invariants/system-prompt + the cordis
         # loader stack) enter through //third_party/dsh/core:runtime_pkg in
         # runtime_deps. Dominion workspace packages are NOT linked here:

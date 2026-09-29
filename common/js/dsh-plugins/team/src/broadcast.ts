@@ -13,7 +13,7 @@
  * session log (survey §4.4a reference model).
  *
  * dsh-llm message/message-source shapes:
- * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.7-rc.2/lib/types/message.d.ts
+ * https://unpkg.com/@deepseek-ai/dsh-llm@0.2.0-rc.2/lib/types/message.d.ts
  */
 
 import { createUserMessage, MessageId } from "@deepseek-ai/dsh-llm";
@@ -28,7 +28,7 @@ import type { SessionEvent } from "@deepseek-ai/dsh-session";
 /**
  * Durable provenance of an injected broadcast: `MessageSourceMap`'s merge
  * extension (declaration merge, official `subagent-settled` precedent —
- * https://unpkg.com/@deepseek-ai/dsh-llm@0.1.7-rc.2/lib/types/message.d.ts).
+ * https://unpkg.com/@deepseek-ai/dsh-llm@0.2.0-rc.2/lib/types/message.d.ts).
  * The `form: 'relay'` reuses the official "a message another agent addressed
  * to this one" form; `messageId` doubles as the 1:1 correlation and
  * consumption anchor — the original speech's MessageId, or the tool call's
