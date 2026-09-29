@@ -222,6 +222,13 @@ vitest_test(
         ":node_modules/@deepseek-ai/dsh-ptc-runtime",
         ":node_modules/@deepseek-ai/dsh-sandbox",
         ":node_modules/@deepseek-ai/dsh-sandbox-policy",
+        # The live-step recovery contract (ToolCallRecovery + the
+        # TOOL_OUTCOME_UNKNOWN/TOOL_NOT_STARTED codes) is imported directly by
+        # src/tool-recovery.test.ts: the 0.2.0 loop driver builds its
+        # conservative recovery results with this component, so the test drives
+        # it over a committed failure prefix
+        # (specs/073-dsh-0.2-upgrade/spec.md FR-007).
+        ":node_modules/@deepseek-ai/dsh-session",
         ":node_modules/@deepseek-ai/dsh-session-persistence",
         ":node_modules/@deepseek-ai/dsh-session-projection",
         ":node_modules/@deepseek-ai/dsh-settings",
