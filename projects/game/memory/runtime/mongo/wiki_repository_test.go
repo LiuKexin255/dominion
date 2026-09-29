@@ -45,13 +45,6 @@ type wikiFakeCollection struct {
 	order    []string
 	filters  []bson.M
 	findOpts []*options.FindOptions
-	// deleteManyFilters records the filter of every DeleteMany call so the
-	// startup migration test can assert the legacy-document purge.
-	deleteManyFilters []bson.M
-	// deleteManyErr, when set, is returned by DeleteMany so the startup
-	// failure path can be exercised.
-	deleteManyErr error
-	indexView     fakeIndexView
 }
 
 func newWikiFakeCollection() *wikiFakeCollection {
@@ -114,18 +107,6 @@ func (c *wikiFakeCollection) DeleteOne(_ context.Context, filter interface{}, _ 
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
 }
 
-func (c *wikiFakeCollection) DeleteMany(_ context.Context, filter interface{}, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
-	if c.deleteManyErr != nil {
-		return nil, c.deleteManyErr
-	}
-	f, ok := filter.(bson.M)
-	if !ok {
-		return nil, errors.New("invalid filter type")
-	}
-	c.deleteManyFilters = append(c.deleteManyFilters, f)
-	return &mongodriver.DeleteResult{}, nil
-}
-
 func (c *wikiFakeCollection) ReplaceOne(_ context.Context, filter interface{}, replacement interface{}, _ ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
 	f, ok := filter.(wikiFilter)
 	if !ok {
@@ -154,7 +135,7 @@ func (c *wikiFakeCollection) ReplaceOne(_ context.Context, filter interface{}, r
 }
 
 func (c *wikiFakeCollection) Indexes() indexViewOps {
-	return &c.indexView
+	return new(fakeIndexView)
 }
 
 func (c *wikiFakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
@@ -328,40 +309,15 @@ func newTestWikiRepo() *wikiRepository {
 	}
 }
 
-// --- Startup migration tests ---
+// --- Index model tests ---
 
-func TestNewWikiRepositoryMigratesToTemplateScope(t *testing.T) {
-	// given
-	fake := newWikiFakeCollection()
-
+// TestWikiIndexModels pins the startup index definitions to the template scope
+// (specs/069-wiki-template-web/data-model.md §2.2).
+func TestWikiIndexModels(t *testing.T) {
 	// when
-	repo, err := newWikiRepository(fake)
+	models := wikiIndexModels()
 
-	// then - the repository is constructed
-	if err != nil {
-		t.Fatalf("newWikiRepository() unexpected error: %v", err)
-	}
-	if repo == nil {
-		t.Fatal("newWikiRepository() returned a nil repository")
-	}
-
-	// then - the three legacy session-scoped indexes are dropped
-	assertStringSliceEqual(t, "dropped indexes", fake.indexView.dropped, []string{
-		"template_1_session_id_1_wiki_id_1",
-		"template_1_session_id_1_title_norm_1",
-		"template_1_session_id_1_title_grams_1",
-	})
-
-	// then - the legacy session-scoped documents are purged
-	if len(fake.deleteManyFilters) != 1 {
-		t.Fatalf("DeleteMany calls = %d, want 1", len(fake.deleteManyFilters))
-	}
-	wantPurge := bson.M{fieldSessionID: bson.M{"$exists": true}}
-	if !reflect.DeepEqual(fake.deleteManyFilters[0], wantPurge) {
-		t.Fatalf("DeleteMany filter = %v, want %v", fake.deleteManyFilters[0], wantPurge)
-	}
-
-	// then - the three template-scoped indexes are created
+	// then
 	tests := []struct {
 		name   string
 		keys   bson.D
@@ -383,12 +339,12 @@ func TestNewWikiRepositoryMigratesToTemplateScope(t *testing.T) {
 			unique: false,
 		},
 	}
-	if len(fake.indexView.created) != len(tests) {
-		t.Fatalf("CreateOne calls = %d, want %d", len(fake.indexView.created), len(tests))
+	if len(models) != len(tests) {
+		t.Fatalf("wikiIndexModels() returned %d models, want %d", len(models), len(tests))
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			model := fake.indexView.created[i]
+			model := models[i]
 			gotKeys, ok := model.Keys.(bson.D)
 			if !ok {
 				t.Fatalf("index keys = %T, want bson.D", model.Keys)
@@ -401,23 +357,6 @@ func TestNewWikiRepositoryMigratesToTemplateScope(t *testing.T) {
 				t.Fatalf("index unique = %v, want %v", gotUnique, tt.unique)
 			}
 		})
-	}
-}
-
-func TestNewWikiRepositoryFailsOnLegacyCleanupError(t *testing.T) {
-	// given
-	fake := newWikiFakeCollection()
-	fake.deleteManyErr = errors.New("mongo unavailable")
-
-	// when
-	_, err := newWikiRepository(fake)
-
-	// then - the cleanup error fails repository startup and no index is created
-	if err == nil {
-		t.Fatal("newWikiRepository() expected error, got nil")
-	}
-	if len(fake.indexView.created) != 0 {
-		t.Fatalf("CreateOne calls = %d, want 0 after a cleanup failure", len(fake.indexView.created))
 	}
 }
 
@@ -667,11 +606,11 @@ func TestWikiList(t *testing.T) {
 	// when - first page with pageSize=2
 	page, nextPageToken, err := repo.ListWikis(ctx, "saolei", nil, 2)
 
-	// then - wiki_id ascending, the other template excluded, no session dimension
+	// then - wiki_id ascending, the other template excluded, template-scoped only
 	if err != nil {
 		t.Fatalf("ListWikis() unexpected error: %v", err)
 	}
-	assertFilterHasNoSession(t, fake.filters[len(fake.filters)-1])
+	assertTemplateScopedFilter(t, fake.filters[len(fake.filters)-1])
 	assertWikiIDs(t, page, []string{"alpha", "bravo"})
 	if nextPageToken == "" {
 		t.Fatal("ListWikis() first page next_token is empty, want non-empty")
@@ -732,12 +671,12 @@ func TestWikiSearchBigramPrefilter(t *testing.T) {
 	// when - query with two runes goes through the bigram prefilter
 	hits, err := repo.SearchWikis(ctx, "saolei", domain.NormalizeTitle("策略"))
 
-	// then - the $all filter was built over the query bigrams, with no session
+	// then - the $all filter was built over the query bigrams, template-scoped
 	if err != nil {
 		t.Fatalf("SearchWikis() unexpected error: %v", err)
 	}
 	filter := fake.filters[len(fake.filters)-1]
-	assertFilterHasNoSession(t, filter)
+	assertTemplateScopedFilter(t, filter)
 	if _, ok := filter[fieldTitleNorm]; ok {
 		t.Fatalf("SearchWikis() bigram filter = %v, want no title_norm regex", filter)
 	}
@@ -781,7 +720,7 @@ func TestWikiSearchShortQueryFallback(t *testing.T) {
 		t.Fatalf("SearchWikis() unexpected error: %v", err)
 	}
 	filter := fake.filters[len(fake.filters)-1]
-	assertFilterHasNoSession(t, filter)
+	assertTemplateScopedFilter(t, filter)
 	if _, ok := filter[fieldTitleGrams]; ok {
 		t.Fatalf("SearchWikis() short-query filter = %v, want no title_grams", filter)
 	}
@@ -868,11 +807,17 @@ func assertStringSliceEqual(t *testing.T, what string, got, want []string) {
 	}
 }
 
-// assertFilterHasNoSession asserts a wiki query filter carries no session
-// dimension (the scope is the template alone).
-func assertFilterHasNoSession(t *testing.T, filter bson.M) {
+// assertTemplateScopedFilter asserts every key of a wiki query filter belongs
+// to the template-scope vocabulary: the wiki scope is the template alone
+// (specs/069-wiki-template-web/data-model.md §1.1), so no other dimension may
+// enter a query.
+func assertTemplateScopedFilter(t *testing.T, filter bson.M) {
 	t.Helper()
-	if _, ok := filter[fieldSessionID]; ok {
-		t.Fatalf("wiki filter = %v, must not carry a session dimension", filter)
+	for key := range filter {
+		switch key {
+		case fieldTemplate, fieldWikiID, fieldTitleNorm, fieldTitleGrams:
+		default:
+			t.Fatalf("wiki filter = %v, key %q is outside the template scope", filter, key)
+		}
 	}
 }

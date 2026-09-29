@@ -3,7 +3,6 @@ package mongo
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 
 	"dominion/projects/game/memory/domain"
@@ -19,60 +18,27 @@ import (
 // (specs/069-wiki-template-web/contracts/wiki-service.md §1; style/mongo.md).
 const wikisCollectionName = "wikis"
 
-// legacyWikiIndexNames are the index names of the superseded session-scoped
-// scope, dropped at startup so the collection's storage state matches the
-// template scope (specs/069-wiki-template-web/data-model.md §2.3). MongoDB
-// names a compound index by joining its key fields with their direction, e.g.
-// {template: 1, session_id: 1, wiki_id: 1} becomes
-// "template_1_session_id_1_wiki_id_1"
-// (https://www.mongodb.com/docs/manual/reference/method/db.collection.dropIndex/).
-var legacyWikiIndexNames = []string{
-	"template_1_session_id_1_wiki_id_1",
-	"template_1_session_id_1_title_norm_1",
-	"template_1_session_id_1_title_grams_1",
-}
-
 // wikiRepository stores Wiki entities in MongoDB.
 type wikiRepository struct {
 	collection collectionOps
 }
 
 // NewWikiRepository creates a MongoDB-backed WikiRepository in the given
-// database, migrating the collection to the template scope and creating the
-// wiki indexes at startup
-// (specs/069-wiki-template-web/data-model.md §2.2-2.3).
-func NewWikiRepository(client *mongodriver.Client, dbName string) (domain.WikiRepository, error) {
-	return newWikiRepository(newCollection(client, dbName, wikisCollectionName))
-}
-
-// newWikiRepository migrates coll to the template scope and creates the wiki
-// indexes. The migration is the clean break mandated by
-// specs/069-wiki-template-web/data-model.md §2.3: drop the three legacy
-// (template, session_id, ...) indexes, delete the documents still carrying
-// session_id (new documents have no such field, so once migrated this delete
-// matches nothing), then create the template-scoped indexes. Dropping a
-// missing legacy index is the normal fresh-install case and is ignored;
-// deleting the legacy documents must succeed, because leftover
-// session-scoped documents would still match template-scoped queries and
-// pollute the shared collection.
-func newWikiRepository(coll collectionOps) (domain.WikiRepository, error) {
+// database. It creates the wiki indexes at startup
+// (specs/069-wiki-template-web/data-model.md §2.2); a duplicate-index error
+// from a previous service start is the normal case and is ignored, because
+// the stored indexes already match the template scope.
+func NewWikiRepository(client *mongodriver.Client, dbName string) domain.WikiRepository {
+	coll := newCollection(client, dbName, wikisCollectionName)
 	ctx := context.Background()
 	indexes := coll.Indexes()
 
-	for _, name := range legacyWikiIndexNames {
-		_, _ = indexes.DropOne(ctx, name)
-	}
-
-	if _, err := coll.DeleteMany(ctx, bson.M{fieldSessionID: bson.M{"$exists": true}}); err != nil {
-		return nil, fmt.Errorf("delete legacy session-scoped wikis: %w", err)
-	}
-
 	for _, model := range wikiIndexModels() {
-		// Ignore the duplicate-index error of a previous service start.
+		// A duplicate index (previous service start) is fine.
 		_, _ = indexes.CreateOne(ctx, model)
 	}
 
-	return &wikiRepository{collection: coll}, nil
+	return &wikiRepository{collection: coll}
 }
 
 // wikiIndexModels returns the wiki indexes created at startup

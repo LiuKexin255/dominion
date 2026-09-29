@@ -1,7 +1,7 @@
 /**
  * PlannerMemoryService — the host service face `ctx.plannerMemory` of the
  * memory plugin. It owns the per-agent binding between the agent and the
- * memory scope `(template, session)`, the frozen snapshot cache, and the
+ * memory scope `(template, preset)`, the frozen snapshot cache, and the
  * storage access shared by the memory tool's write path.
  *
  * - `load(agentCtx, scope)` reads the scope's most recently updated entries
@@ -18,22 +18,25 @@
  *   (specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2 item 3;
  *   survey/deepseek-harness-memory-plugin.md decision ⑧).
  * - `applyCall(agent, args)` runs a hermes-style call against the same client
- *   with the agent's bound scope, so writes persist immediately and are never
- *   scoped to a stale session. Domain outcomes are text results; only
- *   infrastructure failures reject, and the tool surface maps them to text.
+ *   with the agent's bound scope, so writes persist immediately into the
+ *   materialization source preset's collection. Domain outcomes are text
+ *   results; only infrastructure failures reject, and the tool surface maps
+ *   them to text.
  * - `wikiSearch(agent, query)` / `wikiGet(agent, titles)` /
  *   `wikiWrite(agent, input)` are the wiki face over the same bound scope: the
  *   wiki store's own client, the same "unbound agent throws, infrastructure
  *   failure rejects, domain outcome is text" contract as `applyCall`
  *   (specs/069-wiki-template-web/contracts/dsh-plugins.md §2). The binding
- *   carries `(template, session)` for memory, but every wiki call forwards only
- *   `scope.template` — one wiki collection is shared by all sessions of a
+ *   carries `(template, preset)` for memory, but every wiki call forwards only
+ *   `scope.template` — one wiki collection is shared by every preset of a
  *   template (specs/069-wiki-template-web/contracts/wiki-service.md §1).
  * - `snapshot(scope)` is the read face the snapshot section evaluates on each
  *   assembly; an unbound or empty snapshot reads as `undefined`/`""`, which
  *   the registry drops from the prompt.
  *
- * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2; scope
+ * Contract: specs/071-memory-preset-scope/contracts/dsh-plugins.md §1/§3
+ * (preset scope; binding/freeze/dedupe semantics unchanged);
+ * specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2; scope
  * key per spec/plan decision ⑦ (survey/deepseek-harness-memory-plugin.md §9)
  * and specs/059-agent-v2-team-mode/data-model.md §3 (memory 快照缓存).
  */
@@ -56,16 +59,17 @@ import { wikiGet, wikiSearch, wikiWrite } from "./wiki-operations.js";
 import type { WikiWriteArgs } from "./wiki-operations.js";
 
 /**
- * The memory scope key: the business session whose memories this planner
- * works with (the memory service resource pattern
- * `templates/{template}/sessions/{session}/memories/{memory}`). Structurally
- * identical to the orchestration layer's `PlannerMemoryScope`
+ * The memory scope key: the business template and the materialization source
+ * preset whose memories this planner works with (the memory service resource
+ * pattern `templates/{template}/presets/{preset}/memories/{memory}`).
+ * Structurally identical to the orchestration layer's `PlannerMemoryScope`
  * (common/js/dsh-plugins/saolei-loop/src/orchestrator.ts), so the
- * materialization setup passes the same object without a shared dependency.
+ * materialization setup passes the same object without a shared dependency
+ * (specs/071-memory-preset-scope/contracts/dsh-plugins.md §1).
  */
 export interface PlannerMemoryScope {
   readonly template: string;
-  readonly session: string;
+  readonly preset: string;
 }
 
 /** The `ctx.plannerMemory` face. */
@@ -139,7 +143,7 @@ export function createPlannerMemory(
   };
 
   // The wiki face shares the memory binding: `load` owns the single
-  // (template, session) registration, and every call — memory or wiki —
+  // (template, preset) registration, and every call — memory or wiki —
   // resolves it here, so an unbound agent fails loud rather than writing to a
   // stale or guessed scope (specs/069-wiki-template-web/contracts/dsh-plugins.md
   // §2).
@@ -163,7 +167,7 @@ export function createPlannerMemory(
       // memory service, not here
       // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md
       // §2).
-      const entries = await client.listMemories(scope.template, scope.session, {
+      const entries = await client.listMemories(scope.template, scope.preset, {
         orderBy: SNAPSHOT_ORDER_BY,
         pageSize: SNAPSHOT_ENTRY_LIMIT,
       });
@@ -177,7 +181,7 @@ export function createPlannerMemory(
 
     async applyCall(agent: Agent, args: MemoryToolArgs): Promise<string> {
       const scope = scopeForAgent(agent);
-      return applyMemoryCall(client, scope.template, scope.session, args);
+      return applyMemoryCall(client, scope.template, scope.preset, args);
     },
 
     async wikiSearch(agent: Agent, query: string): Promise<string> {

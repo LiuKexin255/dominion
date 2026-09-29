@@ -3,13 +3,15 @@
  * the agent_v2 host layer that provides `ctx.plannerMemory`. The service owns
  * the storage clients (gRPC to the memory service,
  * `dominion:///game/memory:50051`: MemoryService and WikiService), the
- * per-agent snapshot cache and the `(template, session)` bindings. The
+ * per-agent snapshot cache and the `(template, preset)` bindings. The
  * model-facing tools + snapshot section live in `@dominion/dsh-memory` and
  * reach this service by name through their row's inject, so the connection
  * infrastructure never appears as an agent-dimension plugin row
  * (specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §1).
  *
- * Contract: specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §1
+ * Contract: specs/071-memory-preset-scope/contracts/dsh-plugins.md §1/§4
+ * (preset scope + materialization wiring);
+ * specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §1
  * (package and mount faces) / §2 (host service semantics);
  * specs/069-wiki-template-web/contracts/dsh-plugins.md §2 (wiki face); the
  * storage follows the existing memory service (survey/

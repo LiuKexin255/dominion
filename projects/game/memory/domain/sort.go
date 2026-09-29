@@ -11,7 +11,7 @@ import (
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1).
 const (
 	// MemorySortFieldMemoryID is the memory identity field, unique within a
-	// (template, session) scope.
+	// (template, preset) scope.
 	MemorySortFieldMemoryID = "memory_id"
 	// MemorySortFieldUpdateTime is the last-update timestamp field.
 	MemorySortFieldUpdateTime = "update_time"

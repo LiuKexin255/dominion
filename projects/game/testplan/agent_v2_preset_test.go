@@ -696,8 +696,14 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 	}
 
 	// The add is immediately persisted: the entry is visible through the
-	// memory service's public /api/v1 route (FR-007).
-	listed := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "")
+	// memory service's public /api/v1 route (FR-007), in the planner member's
+	// materialization source preset collection
+	// (specs/071-memory-preset-scope/contracts/dsh-plugins.md §3-4).
+	plannerPresetName, err := game.ParsePresetName(teamMemberPreset(team, "planner"))
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", teamMemberPreset(team, "planner"), err)
+	}
+	listed := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, plannerPresetName.PresetID, 100, "", "")
 	found := false
 	for _, entry := range listed.GetMemories() {
 		if entry.GetContent() == teamMemoryReviewContent {

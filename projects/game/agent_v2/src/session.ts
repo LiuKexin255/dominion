@@ -518,9 +518,11 @@ export class TeamSessions {
       await orchestrator.materialize({
         session,
         // The memory scope key halves are the business template and the
-        // session ID — the full session resource name would double the
-        // prefix in the memory service parent (T023 wiring fix).
-        memoryScope: { template: parsedSession.template, session: parsedSession.session },
+        // materialization source planner preset id: the planner's long-term
+        // memory is mounted on the preset it was materialized from, so the
+        // scope stays a bare pair of ids rather than a full resource name
+        // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
+        memoryScope: { template: parsedSession.template, preset: this.presetId(planner.preset) },
         goal: TEAM_GOAL,
         player: {
           preset: this.presetId(player.preset),

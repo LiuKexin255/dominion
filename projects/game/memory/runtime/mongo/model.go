@@ -1,7 +1,3 @@
-// Package mongo provides the MongoDB-backed repository implementation for
-// Memory entities (spec 039-planner-memory-calibration FR-006;
-// specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §3).
 package mongo
 
 import (
@@ -15,18 +11,21 @@ import (
 const (
 	fieldMemoryID   = "memory_id"
 	fieldTemplate   = "template"
-	fieldSessionID  = "session_id"
+	fieldPresetID   = "preset_id"
 	fieldUpdateTime = "update_time"
 )
 
 // memoryDocument stores Memory documents in MongoDB. The _id is left to the
 // database to generate (omitempty on insert) and is never overwritten by the
 // repository (style/mongo.md); the unique identity is the
-// (template, session_id, memory_id) compound index.
+// (template, preset_id, memory_id) compound index
+// (specs/071-memory-preset-scope/data-model.md §2.1-2.2). There is no session
+// field: the memory scope is (template, preset), so a preset's entries persist
+// across the sessions it is materialized into.
 type memoryDocument struct {
 	ID         interface{} `bson:"_id,omitempty"`
 	Template   string      `bson:"template"`
-	SessionID  string      `bson:"session_id"`
+	PresetID   string      `bson:"preset_id"`
 	MemoryID   string      `bson:"memory_id"`
 	Content    string      `bson:"content"`
 	CreateTime time.Time   `bson:"create_time"`
@@ -40,7 +39,7 @@ func (d *memoryDocument) toDomain() *domain.Memory {
 	}
 	return &domain.Memory{
 		Template:   d.Template,
-		SessionID:  d.SessionID,
+		PresetID:   d.PresetID,
 		MemoryID:   d.MemoryID,
 		Content:    d.Content,
 		CreateTime: d.CreateTime,
@@ -55,7 +54,7 @@ func memoryDocumentFromDomain(m *domain.Memory) *memoryDocument {
 	}
 	return &memoryDocument{
 		Template:   m.Template,
-		SessionID:  m.SessionID,
+		PresetID:   m.PresetID,
 		MemoryID:   m.MemoryID,
 		Content:    m.Content,
 		CreateTime: m.CreateTime,
@@ -82,9 +81,9 @@ func (d *memoryDocument) sortValue(field string) any {
 }
 
 // memoryFilter is a concrete BSON filter struct for querying by memory_id
-// under a (template, session_id) scope.
+// under a (template, preset_id) scope.
 type memoryFilter struct {
-	Template  string `bson:"template"`
-	SessionID string `bson:"session_id"`
-	MemoryID  string `bson:"memory_id"`
+	Template string `bson:"template"`
+	PresetID string `bson:"preset_id"`
+	MemoryID string `bson:"memory_id"`
 }

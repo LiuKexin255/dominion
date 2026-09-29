@@ -2,7 +2,7 @@
  * PlannerMemoryService tests — the host service face: snapshot prefetch
  * (render + cache binding), fail-loud rejection, per-agent isolation, scope
  * cleanup on agent disposal, and the write path routing through the bound
- * `(template, session)` memory scope. The wiki face shares the binding but
+ * `(template, preset)` memory scope. The wiki face shares the binding but
  * forwards only `scope.template`
  * (specs/069-wiki-template-web/contracts/dsh-plugins.md §2).
  *
@@ -29,19 +29,19 @@ function makeFakeStore(entries: MemoryEntry[] = []) {
   return {
     state,
     createMemory: vi.fn(
-      async (_t: string, _s: string, id: string, content: string) => {
+      async (_t: string, _p: string, id: string, content: string) => {
         state.push({ memory_id: id, content });
       },
     ),
     updateMemory: vi.fn(
-      async (_t: string, _s: string, id: string, content: string) => {
+      async (_t: string, _p: string, id: string, content: string) => {
         const e = state.find((x) => x.memory_id === id);
         if (e) {
           e.content = content;
         }
       },
     ),
-    deleteMemory: vi.fn(async (_t: string, _s: string, id: string) => {
+    deleteMemory: vi.fn(async (_t: string, _p: string, id: string) => {
       const i = state.findIndex((x) => x.memory_id === id);
       if (i >= 0) {
         state.splice(i, 1);
@@ -50,7 +50,7 @@ function makeFakeStore(entries: MemoryEntry[] = []) {
     listMemories: vi.fn(
       async (
         _t: string,
-        _s: string,
+        _p: string,
         _options?: { orderBy?: string; pageSize?: number },
       ) => state.map((e) => ({ ...e })),
     ),
@@ -102,7 +102,7 @@ function makeAgentScope(id = "planner"): AgentScope {
   return { agent, ctx: scope.ctx, scope };
 }
 
-const SCOPE = { template: "saolei", session: "sess-1" };
+const SCOPE = { template: "saolei", preset: "preset-1" };
 
 describe("createPlannerMemory — load (snapshot prefetch)", () => {
   let store: ReturnType<typeof makeFakeStore>;
@@ -121,7 +121,7 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
 
     await service.load(ctx, SCOPE);
 
-    expect(store.listMemories).toHaveBeenCalledWith("saolei", "sess-1", {
+    expect(store.listMemories).toHaveBeenCalledWith("saolei", "preset-1", {
       orderBy: "update_time desc",
       pageSize: 10,
     });
@@ -174,9 +174,9 @@ describe("createPlannerMemory — load (snapshot prefetch)", () => {
     const second = makeAgentScope("planner-2");
 
     store.listMemories.mockResolvedValueOnce([{ memory_id: "m1", content: "第一条" }]);
-    await service.load(first.ctx, { template: "saolei", session: "sess-1" });
+    await service.load(first.ctx, { template: "saolei", preset: "preset-1" });
     store.listMemories.mockResolvedValueOnce([{ memory_id: "m2", content: "第二条" }]);
-    await service.load(second.ctx, { template: "saolei", session: "sess-2" });
+    await service.load(second.ctx, { template: "saolei", preset: "preset-2" });
 
     expect(service.snapshot(first.agent)).toBe("长期记忆：\n第一条");
     expect(service.snapshot(second.agent)).toBe("长期记忆：\n第二条");
@@ -222,7 +222,7 @@ describe("createPlannerMemory — load (snapshot recency)", () => {
     await service.load(ctx, SCOPE);
 
     expect(store.listMemories).toHaveBeenCalledTimes(1);
-    expect(store.listMemories).toHaveBeenCalledWith("saolei", "sess-1", {
+    expect(store.listMemories).toHaveBeenCalledWith("saolei", "preset-1", {
       orderBy: "update_time desc",
       pageSize: 10,
     });
@@ -289,7 +289,7 @@ describe("createPlannerMemory — applyCall (write path)", () => {
     return { service, ...scope };
   }
 
-  it("routes add through the bound (template, session) with immediate persistence", async () => {
+  it("routes add through the bound (template, preset) with immediate persistence", async () => {
     const { service, agent } = await loaded();
 
     const result = await service.applyCall(agent, { action: "add", content: "新洞察" });
@@ -297,7 +297,7 @@ describe("createPlannerMemory — applyCall (write path)", () => {
     expect(result).toBe("memory added");
     expect(store.createMemory).toHaveBeenCalledWith(
       "saolei",
-      "sess-1",
+      "preset-1",
       expect.any(String),
       "新洞察",
     );
@@ -329,12 +329,12 @@ describe("createPlannerMemory — applyCall (write path)", () => {
         content: "新条目",
       }),
     ).toBe("memory replaced");
-    expect(store.updateMemory).toHaveBeenCalledWith("saolei", "sess-1", "m1", "新条目");
+    expect(store.updateMemory).toHaveBeenCalledWith("saolei", "preset-1", "m1", "新条目");
 
     expect(
       await service.applyCall(agent, { action: "remove", old_text: "新条目" }),
     ).toBe("memory removed");
-    expect(store.deleteMemory).toHaveBeenCalledWith("saolei", "sess-1", "m1");
+    expect(store.deleteMemory).toHaveBeenCalledWith("saolei", "preset-1", "m1");
   });
 
   it("routes a batch through the same scope; preflight failure commits nothing", async () => {
@@ -423,23 +423,23 @@ describe("createPlannerMemory — wiki face", () => {
     );
   });
 
-  it("shares one wiki collection across sessions of the same template", async () => {
+  it("shares one wiki collection across preset bindings of the same template", async () => {
     const store = makeFakeStore();
     const wikiStore = makeFakeWikiStore();
     const service = createService(store, wikiStore);
-    const sessionA = makeAgentScope("planner-a");
-    const sessionB = makeAgentScope("planner-b");
-    await service.load(sessionA.ctx, { template: "saolei", session: "sess-a" });
-    await service.load(sessionB.ctx, { template: "saolei", session: "sess-b" });
+    const plannerA = makeAgentScope("planner-a");
+    const plannerB = makeAgentScope("planner-b");
+    await service.load(plannerA.ctx, { template: "saolei", preset: "preset-a" });
+    await service.load(plannerB.ctx, { template: "saolei", preset: "preset-b" });
     wikiStore.searchWikis.mockResolvedValue({ wikis: [], nextPageToken: "" });
 
-    await service.wikiWrite(sessionA.agent, {
+    await service.wikiWrite(plannerA.agent, {
       title: "跨会话条目",
       content: "正文",
     });
-    await service.wikiSearch(sessionB.agent, "跨会话");
+    await service.wikiSearch(plannerB.agent, "跨会话");
 
-    // Both sessions address the template alone: the session each planner is
+    // Both planners address the template alone: the preset each planner is
     // bound to never appears in a wiki store call
     // (specs/069-wiki-template-web/contracts/dsh-plugins.md §2/§6).
     expect(wikiStore.createWiki).toHaveBeenCalledWith(

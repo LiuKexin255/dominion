@@ -20,13 +20,13 @@
 
 **Alternatives considered**: ① 迁到 agent_v2.proto / v2 路径——rejected：引入服务归属与版本面双改动，且 agent_v2.proto 无法反向被 game.proto 引用（循环）；② 保持 v1 路径但自写 parent 解析——rejected：仓库规范为 codegen 驱动解析（`specs/035-proto-contract-refine/data-model.md` §1.1），无手写解析先例。
 
-## 3. 决策 R2：存储终态与 clean break——镜像 wiki_repository 机制
+## 3. 决策 R2：存储终态与一次性清理——旧索引/旧文档清除不进服务代码
 
-**Decision**: `memories` 文档以 `preset_id` 替换 `session_id`；索引重建为 unique `(template, preset_id, memory_id)` + `(template, preset_id, update_time desc, memory_id asc)`；启动时幂等清理：drop 两个 legacy session 维度索引 + `DeleteMany({session_id: {$exists: true}})`——机制与 `runtime/mongo/wiki_repository.go`（069）同款，落到 `runtime/mongo/repository.go`。
+**Decision**: `memories` 文档以 `preset_id` 替换 `session_id`；索引重建为 unique `(template, preset_id, memory_id)` + `(template, preset_id, update_time desc, memory_id asc)`，由服务启动创建（`runtime/mongo/repository.go`）；legacy session 维度索引与含 `session_id` 旧文档的清除是新服务首次启动前单独执行的一次性运维清理（mongosh，步骤与顺序约束见 `specs/071-memory-preset-scope/quickstart.md` 场景 7 / `specs/071-memory-preset-scope/data-model.md` §2.3），服务代码不承载清理逻辑——`runtime/mongo/wiki_repository.go`（069）既有的启动清理代码同批移除（用户裁定：一次性清理项不放到代码里，等部署完单独清理）。
 
-**Rationale**: spec FR-004 裁定 clean break（session→preset 无可靠归属映射，迁移不可定义）；069 已验证该机制的幂等性与 fresh-install 容错（索引不存在属正常）。
+**Rationale**: spec FR-004 裁定 clean break 弃用（session→preset 无可靠归属映射，迁移不可定义）——弃用语义不变；清理本身是一次性事项，驻留服务代码即把一次性动作永久化进每次启动路径。清理须先于新服务首次启动执行：unique `(template, preset_id, memory_id)` 索引于启动时创建，legacy 文档缺 `preset_id` 按 null 参与唯一性，旧数据尚存会使索引构建失败（E11000）且被启动代码按已存在忽略（顺序约束见 `specs/071-memory-preset-scope/quickstart.md` 场景 7）。
 
-**Alternatives considered**: 保留旧文档不清理——rejected：残文档携带已废除的 `session_id` 字段，违反终态原则 VII 且污染集合；字段重命名 + 数据搬运——rejected：映射不可定义（见 spec Assumptions）。
+**Alternatives considered**: 服务启动幂等清理（drop legacy 索引 + `DeleteMany({session_id: {$exists: true}})`，镜像 wiki_repository 机制）——rejected（用户裁定：一次性清理项不进代码）；保留旧文档不清理——rejected：残文档携带已废除的 `session_id` 字段，违反终态原则 VII 且污染集合；字段重命名 + 数据搬运——rejected：映射不可定义（见 spec Assumptions）。
 
 ## 4. 决策 R3：服务端不做 preset 存在性校验
 
@@ -78,7 +78,7 @@
 
 ## 10. 决策 R9：测试策略分层
 
-**Decision**: ① Go 单测：handler（preset 父解析/校验/错误映射）、domain（PresetID 模型）、mongo（preset 维度过滤/索引/游标、clean break 幂等）；② JS 单测：client（preset 寻址/parent 构造）、service（scope 绑定 {template,preset}、wiki 转发不变）、operations（preset 签名、digest 不变）、guidance（跨局持久措辞）、orchestrator/session（装配传递）；③ vitest：`api/memory.ts`（路由/摘要派生/mask）、`MemoryView`（选择器/列表序/表单/删除/场景词扫描）、`WikiView`（文案修正断言/场景词扫描）、`App`（两级导航/浮层行为/互斥渲染）；④ testplan：`memory_test.go` 路径改 preset parent（用合法形态 preset 名即可——无存在性校验）；`agent_v2_preset_test.go` 新增跨 session 共享用例（同 planner preset 两 session：A 写入 → B 物化快照命中，SC-001/SC-004）+ 既有 memory 用例随迁；`gateway/cmd/main_test.go` 路由断言路径更新。
+**Decision**: ① Go 单测：handler（preset 父解析/校验/错误映射）、domain（PresetID 模型）、mongo（preset 维度过滤/索引/游标）；② JS 单测：client（preset 寻址/parent 构造）、service（scope 绑定 {template,preset}、wiki 转发不变）、operations（preset 签名、digest 不变）、guidance（跨局持久措辞）、orchestrator/session（装配传递）；③ vitest：`api/memory.ts`（路由/摘要派生/mask）、`MemoryView`（选择器/列表序/表单/删除/场景词扫描）、`WikiView`（文案修正断言/场景词扫描）、`App`（两级导航/浮层行为/互斥渲染）；④ testplan：`memory_test.go` 路径改 preset parent（用合法形态 preset 名即可——无存在性校验）；`agent_v2_preset_test.go` 新增跨 session 共享用例（同 planner preset 两 session：A 写入 → B 物化快照命中，SC-001/SC-004）+ 既有 memory 用例随迁；`gateway/cmd/main_test.go` 路由断言路径更新。
 
 **Rationale**: 分层对齐宪法 IV（小颗粒高频、大型低频验收）；跨 session 回路必须经大型测试（真实部署多服务拓扑），单测只能验证装配逻辑。
 

@@ -61,10 +61,12 @@ Session（`templates/{template}/sessions/{session}`）不再出现在任何 memo
 | unique `(template, preset_id, memory_id)` | 身份；Create 冲突 → ALREADY_EXISTS |
 | `(template, preset_id, update_time desc, memory_id asc)` | List 排序（`update_time`/`memory_id` 双字段 order_by 与游标 seek）；快照 `update_time desc` 前缀复用 |
 
-### 2.3 clean break（启动幂等清理，机制同 `runtime/mongo/wiki_repository.go`）
+### 2.3 旧作用域数据处置（一次性运维清理，新服务首次启动前执行）
 
-- drop 两个 legacy 索引：`(template, session_id, memory_id)` unique、`(template, session_id, update_time desc, memory_id asc)`（索引不存在 = fresh install，忽略）。
-- `DeleteMany({session_id: {$exists: true}})` 清除全部旧作用域文档（删除失败为硬错误——残留会以无索引字段污染集合）。
+- 存储终态：`memories` 集合仅含 `preset_id` 维度的文档与索引（§2.1/§2.2）；服务启动仅创建新索引，**不含**旧索引/旧文档清理代码（一次性清理项不进代码）。
+- 清理时机（顺序约束）：旧 memory 服务停止后、新 memory 服务**首次启动前**经 mongosh 单独执行一次；若新服务已先启动，清理后须重启一次（索引仅启动时创建，清理不触发补建）。顺序不可倒置：unique `(template, preset_id, memory_id)` 索引于启动时创建，legacy 文档缺 `preset_id`（按 null 参与唯一性），同 template 下相同 `memory_id` 的旧文档尚存会使该索引构建失败（E11000）且被启动代码按已存在忽略——服务将运行在无唯一索引状态。
+- 清理对象：drop 两个 legacy 索引 `(template, session_id, memory_id)` unique 与 `(template, session_id, update_time desc, memory_id asc)`（默认命名 `template_1_session_id_1_memory_id_1`、`template_1_session_id_1_update_time_-1_memory_id_1`，以 `db.memories.getIndexes()` 实名为准）；`deleteMany({session_id: {$exists: true}})` 清除全部旧作用域文档。
+- 清后核验：无 `session_id` 残留，且两个 preset 维度新索引存在（默认命名 `template_1_preset_id_1_memory_id_1`、`template_1_preset_id_1_update_time_-1_memory_id_1`）——缺失即 unique 索引静默构建失败（步骤见 `specs/071-memory-preset-scope/quickstart.md` 场景 7）。
 - `game_agent_v2.presets`（preset 存储）零变更。
 
 ## 3. 作用域与绑定模型（JS）

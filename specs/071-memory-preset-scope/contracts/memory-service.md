@@ -58,7 +58,7 @@ GET /api/v1/{parent=templates/*/presets/*}/memories
 
 ## 4. 存储（引用 data-model.md §2）
 
-文档字段 `preset_id`（替换 `session_id`）；索引 unique `(template, preset_id, memory_id)` + `(template, preset_id, update_time desc, memory_id asc)`；启动幂等 clean break（drop legacy session 维度索引 + 清 `session_id` 存在的旧文档）。
+文档字段 `preset_id`（替换 `session_id`）；索引 unique `(template, preset_id, memory_id)` + `(template, preset_id, update_time desc, memory_id asc)` 由服务启动创建；legacy session 维度索引与含 `session_id` 旧文档的清除为一次性运维清理（新服务首次启动前执行；`specs/071-memory-preset-scope/data-model.md` §2.3、`specs/071-memory-preset-scope/quickstart.md` 场景 7），服务代码不承载清理逻辑。
 
 ## 5. 验收锚点
 

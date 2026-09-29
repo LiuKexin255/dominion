@@ -64,17 +64,17 @@ describe("MemoryClient", () => {
   });
 
   describe("memoryName/parseMemoryName (construction and parsing)", () => {
-    it("builds templates/{template}/sessions/{session}/memories/{memoryId}", () => {
-      expect(memoryName("saolei", "sess-1", "mem-abc")).toBe(
-        "templates/saolei/sessions/sess-1/memories/mem-abc",
+    it("builds templates/{template}/presets/{preset}/memories/{memoryId}", () => {
+      expect(memoryName("saolei", "preset-1", "mem-abc")).toBe(
+        "templates/saolei/presets/preset-1/memories/mem-abc",
       );
     });
 
     it("parseMemoryName inverts memoryName (round trip)", () => {
       expect(
-        parseMemoryName("templates/saolei/sessions/sess-1/memories/mem-abc"),
+        parseMemoryName("templates/saolei/presets/preset-1/memories/mem-abc"),
       ).toBe("mem-abc");
-      expect(parseMemoryName(memoryName("saolei", "sess-1", "mem-abc"))).toBe(
+      expect(parseMemoryName(memoryName("saolei", "preset-1", "mem-abc"))).toBe(
         "mem-abc",
       );
     });
@@ -85,15 +85,15 @@ describe("MemoryClient", () => {
       respond(fake.createMemory, {});
       const client = new MemoryClient(fake as never);
 
-      await client.createMemory("saolei", "sess-1", "mem-abc", "内容一");
+      await client.createMemory("saolei", "preset-1", "mem-abc", "内容一");
 
       expect(fake.createMemory).toHaveBeenCalledTimes(1);
       expect(fake.createMemory).toHaveBeenCalledWith(
         {
-          parent: "templates/saolei/sessions/sess-1",
+          parent: "templates/saolei/presets/preset-1",
           memoryId: "mem-abc",
           memory: {
-            name: "templates/saolei/sessions/sess-1/memories/mem-abc",
+            name: "templates/saolei/presets/preset-1/memories/mem-abc",
             content: "内容一",
           },
         },
@@ -112,7 +112,7 @@ describe("MemoryClient", () => {
       const client = new MemoryClient(fake as never);
 
       await expect(
-        client.createMemory("saolei", "sess-1", "mem-abc", "内容"),
+        client.createMemory("saolei", "preset-1", "mem-abc", "内容"),
       ).rejects.toThrow("memory already exists");
     });
   });
@@ -122,13 +122,13 @@ describe("MemoryClient", () => {
       respond(fake.updateMemory, {});
       const client = new MemoryClient(fake as never);
 
-      await client.updateMemory("saolei", "sess-1", "mem-abc", "新内容");
+      await client.updateMemory("saolei", "preset-1", "mem-abc", "新内容");
 
       expect(fake.updateMemory).toHaveBeenCalledTimes(1);
       expect(fake.updateMemory).toHaveBeenCalledWith(
         {
           memory: {
-            name: "templates/saolei/sessions/sess-1/memories/mem-abc",
+            name: "templates/saolei/presets/preset-1/memories/mem-abc",
             content: "新内容",
           },
           updateMask: { paths: ["content"] },
@@ -145,11 +145,11 @@ describe("MemoryClient", () => {
       respond(fake.deleteMemory, {});
       const client = new MemoryClient(fake as never);
 
-      await client.deleteMemory("saolei", "sess-1", "mem-abc");
+      await client.deleteMemory("saolei", "preset-1", "mem-abc");
 
       expect(fake.deleteMemory).toHaveBeenCalledTimes(1);
       expect(fake.deleteMemory).toHaveBeenCalledWith(
-        { name: "templates/saolei/sessions/sess-1/memories/mem-abc" },
+        { name: "templates/saolei/presets/preset-1/memories/mem-abc" },
         expect.any(Object),
         expect.any(Object),
         expect.any(Function),
@@ -162,11 +162,11 @@ describe("MemoryClient", () => {
       respond(fake.listMemories, {
         memories: [
           {
-            name: "templates/saolei/sessions/sess-1/memories/mem-a",
+            name: "templates/saolei/presets/preset-1/memories/mem-a",
             content: "甲",
           },
           {
-            name: "templates/saolei/sessions/sess-1/memories/mem-b",
+            name: "templates/saolei/presets/preset-1/memories/mem-b",
             content: "乙",
           },
         ],
@@ -174,7 +174,7 @@ describe("MemoryClient", () => {
       });
       const client = new MemoryClient(fake as never);
 
-      const entries = await client.listMemories("saolei", "sess-1");
+      const entries = await client.listMemories("saolei", "preset-1");
 
       expect(entries).toEqual([
         { memory_id: "mem-a", content: "甲" },
@@ -182,7 +182,7 @@ describe("MemoryClient", () => {
       ]);
       expect(fake.listMemories).toHaveBeenCalledTimes(1);
       expect(fake.listMemories).toHaveBeenCalledWith(
-        { parent: "templates/saolei/sessions/sess-1", pageToken: undefined },
+        { parent: "templates/saolei/presets/preset-1", pageToken: undefined },
         expect.any(Object),
         expect.any(Object),
         expect.any(Function),
@@ -193,17 +193,17 @@ describe("MemoryClient", () => {
       respond(fake.listMemories, {
         memories: [
           {
-            name: "templates/saolei/sessions/sess-1/memories/mem-a",
+            name: "templates/saolei/presets/preset-1/memories/mem-a",
             content: "甲",
           },
           { content: "无name" },
-          { name: "templates/saolei/sessions/sess-1/memories/mem-b" },
+          { name: "templates/saolei/presets/preset-1/memories/mem-b" },
         ],
         nextPageToken: "",
       });
       const client = new MemoryClient(fake as never);
 
-      const entries = await client.listMemories("saolei", "sess-1");
+      const entries = await client.listMemories("saolei", "preset-1");
 
       expect(entries).toEqual([{ memory_id: "mem-a", content: "甲" }]);
     });
@@ -212,7 +212,7 @@ describe("MemoryClient", () => {
       respond(fake.listMemories, {
         memories: [
           {
-            name: "templates/saolei/sessions/sess-1/memories/mem-a",
+            name: "templates/saolei/presets/preset-1/memories/mem-a",
             content: "甲",
           },
         ],
@@ -220,7 +220,7 @@ describe("MemoryClient", () => {
       });
       const client = new MemoryClient(fake as never);
 
-      const entries = await client.listMemories("saolei", "sess-1", {
+      const entries = await client.listMemories("saolei", "preset-1", {
         orderBy: "update_time desc",
         pageSize: 10,
       });
@@ -229,7 +229,7 @@ describe("MemoryClient", () => {
       expect(fake.listMemories).toHaveBeenCalledTimes(1);
       expect(fake.listMemories).toHaveBeenCalledWith(
         {
-          parent: "templates/saolei/sessions/sess-1",
+          parent: "templates/saolei/presets/preset-1",
           pageToken: undefined,
           pageSize: 10,
           orderBy: "update_time desc",
@@ -252,7 +252,7 @@ describe("MemoryClient", () => {
             cb(null, {
               memories: [
                 {
-                  name: "templates/saolei/sessions/sess-1/memories/mem-a",
+                  name: "templates/saolei/presets/preset-1/memories/mem-a",
                   content: "甲",
                 },
               ],
@@ -262,7 +262,7 @@ describe("MemoryClient", () => {
             cb(null, {
               memories: [
                 {
-                  name: "templates/saolei/sessions/sess-1/memories/mem-b",
+                  name: "templates/saolei/presets/preset-1/memories/mem-b",
                   content: "乙",
                 },
               ],
@@ -273,7 +273,7 @@ describe("MemoryClient", () => {
       );
       const client = new MemoryClient(fake as never);
 
-      const entries = await client.listMemories("saolei", "sess-1");
+      const entries = await client.listMemories("saolei", "preset-1");
 
       expect(entries).toEqual([
         { memory_id: "mem-a", content: "甲" },
@@ -282,7 +282,7 @@ describe("MemoryClient", () => {
       expect(fake.listMemories).toHaveBeenCalledTimes(2);
       expect(fake.listMemories).toHaveBeenNthCalledWith(
         2,
-        { parent: "templates/saolei/sessions/sess-1", pageToken: "p2" },
+        { parent: "templates/saolei/presets/preset-1", pageToken: "p2" },
         expect.any(Object),
         expect.any(Object),
         expect.any(Function),
@@ -297,7 +297,7 @@ describe("MemoryClient", () => {
       );
       const client = new MemoryClient(fake as never);
 
-      await expect(client.listMemories("saolei", "sess-1")).rejects.toThrow(
+      await expect(client.listMemories("saolei", "preset-1")).rejects.toThrow(
         "memory service unavailable",
       );
     });

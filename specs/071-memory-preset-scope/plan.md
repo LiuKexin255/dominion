@@ -8,7 +8,7 @@
 
 四部分交付：
 
-1. **memory 作用域迁移**（服务端 + 工具面）：Memory 资源 pattern 由 `templates/{template}/sessions/{session}/memories/{memory}` 迁移为 `templates/{template}/presets/{preset}/memories/{memory}`——proto 注解与注释、handler 父解析（`ParsePresetName`）、domain 作用域键（`SessionID`→`PresetID`）、mongo 文档 `preset_id` 字段与两个 preset 维度索引、启动幂等 clean break（清旧索引 + 清旧文档，`wiki_repository.go` 同款机制）；JS `PlannerMemoryScope` 收敛为 `{template, preset}`、client 寻址与 operations 签名随迁；四 RPC 语义（校验、order_by、page token 上下文、分页）零变化，同一 planner preset 的记忆跨 session 持久共享。
+1. **memory 作用域迁移**（服务端 + 工具面）：Memory 资源 pattern 由 `templates/{template}/sessions/{session}/memories/{memory}` 迁移为 `templates/{template}/presets/{preset}/memories/{memory}`——proto 注解与注释、handler 父解析（`ParsePresetName`）、domain 作用域键（`SessionID`→`PresetID`）、mongo 文档 `preset_id` 字段与两个 preset 维度索引（启动时创建）；旧索引与旧文档的清除为新服务首启前的一次性运维清理（不进服务代码，`wiki_repository.go` 既有启动清理代码同批移除）；JS `PlannerMemoryScope` 收敛为 `{template, preset}`、client 寻址与 operations 签名随迁；四 RPC 语义（校验、order_by、page token 上下文、分页）零变化，同一 planner preset 的记忆跨 session 持久共享。
 2. **物化装配迁移**：`agent_v2` `doMaterialize` 的 `memoryScope` 改从 planner member 的 preset 资源名构建（`presetId()` 已有解析）；快照加载（10 条近因、冻结）、memory 工具写路径、终局回顾落库全部落到物化来源 preset 的集合。
 3. **web memory 管理视图 + 侧栏二级导航**：`api/memory.ts` REST 客户端（preset 级路由、默认 `order_by=update_time desc`、创建 id 前端 `sha256(content)[:32]` 派生——与工具路径同值域）+ `MemoryView` 组件（preset 选择器 + 分页列表/查看/创建/编辑/二步删除，PresetsView/WikiView 模式）+ `App` 侧栏两级导航（一级 sessions/presets + 固定入口按钮（文案定为**「知识」**，见 `contracts/web-nav.md`）弹出浮层承载 wiki/memory，侧栏底部行数恒定）。
 4. **场景无关文案清理**：`WikiView` 两处场景化文案（空态 planner、扫雷示例占位）修正为中性措辞；`MemoryView` 全部文案中性化；组件测试做场景词扫描断言。
@@ -21,7 +21,7 @@
 
 **Primary Dependencies**: protoc-gen-go-aip（`//:go_gen_aip`，preset 级父解析先例：Preset 之于 template，`projects/game/BUILD.bazel` 单 codegen 单元两 proto 同包）；`@deepseek-ai/dsh-client-ui-primitives`（Button/Input，原生 `<textarea>` 先例见 PresetsView persona）；WebCrypto `crypto.subtle`（web 端摘要 id 派生，与 node `createHash` 同算法同值域）。
 
-**Storage**: mongo 7.0 社区版（`game_memory.memories`：文档 `session_id`→`preset_id`、索引 unique `(template, preset_id, memory_id)` + `(template, preset_id, update_time desc, memory_id asc)`、启动幂等清理旧索引与旧文档；`game_agent_v2.presets` 零变更）。
+**Storage**: mongo 7.0 社区版（`game_memory.memories`：文档 `session_id`→`preset_id`、索引 unique `(template, preset_id, memory_id)` + `(template, preset_id, update_time desc, memory_id asc)`；旧索引与旧文档的清除为新服务首启前的一次性运维清理（服务启动仅创建新索引）；`game_agent_v2.presets` 零变更）。
 
 **Testing**: `bazel test`（Go 单测：fake collection；JS 单测：vi.fn DI doubles）；vitest（web 组件 + api 客户端）；testplan skill（`guitar run`，gateway HTTP 大型测试，宪法 VI）。
 
@@ -75,7 +75,7 @@ projects/game/
 ├── memory/
 │   ├── handler/handler.go        # parent 解析 ParseSessionName→ParsePresetName（+测试）
 │   ├── domain/model.go           # Memory.SessionID→PresetID（+测试）
-│   └── runtime/mongo/            # 文档字段/索引/clean break（repository.go、model.go，+测试）
+│   └── runtime/mongo/            # 文档字段/索引 preset 维度（repository.go、model.go，+测试；移除 legacy 启动清理代码——含 wiki_repository.go）
 ├── gateway/cmd/main_test.go      # /api/v1 路由断言路径更新（注册代码零改动）
 ├── agent_v2/src/session.ts       # memoryScope 从 planner preset 构建（+测试）
 └── web/frontend/src/

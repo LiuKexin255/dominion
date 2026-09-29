@@ -742,16 +742,16 @@ describe("TeamSessions planner memory wiring (T021)", () => {
     await materializeDefault(h);
 
     // Only the planner member prefetches; the binding passes the planner's
-    // agent-scoped context and the (template, session ID) scope key — the ID
-    // half, NOT the full session resource name (the memory client builds
-    // `templates/{template}/sessions/{session}` from these halves; T023 memoryScope wiring (specs/059-agent-v2-team-mode/tasks.md)
-    // caught the doubled-prefix wiring).
+    // agent-scoped context and the (template, materialization source preset)
+    // scope key — the id halves, NOT full resource names (the memory client
+    // builds `templates/{template}/presets/{preset}` from these halves;
+    // specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
     expect(composedLoad).toHaveBeenCalledTimes(1);
     const planner = member(h, PLANNER_ID);
     expect(composedLoad.mock.calls[0]?.[0]).toBe(planner.ctx);
     expect(composedLoad.mock.calls[0]?.[1]).toEqual({
       template: "saolei",
-      session: "s1",
+      preset: "p-planner",
     });
   });
 

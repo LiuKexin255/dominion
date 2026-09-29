@@ -194,7 +194,7 @@ function contentLimitText(count: number): string {
 async function applyAdd(
   store: MemoryStore,
   template: string,
-  session: string,
+  preset: string,
   content: string,
 ): Promise<string> {
   const text = content.trim();
@@ -205,12 +205,12 @@ async function applyAdd(
   if (runes > MEMORY_CONTENT_MAX_RUNES) {
     return contentLimitText(runes);
   }
-  const entries = await store.listMemories(template, session);
+  const entries = await store.listMemories(template, preset);
   if (entries.some((e) => e.content === text)) {
     return DEDUPE_TEXT;
   }
   try {
-    await store.createMemory(template, session, generateMemoryId(text), text);
+    await store.createMemory(template, preset, generateMemoryId(text), text);
   } catch (err) {
     // ALREADY_EXISTS (code 6, AIP-193): a concurrent writer created an
     // equivalent entry between the dedupe check above and this RPC. Because
@@ -231,7 +231,7 @@ async function applyAdd(
 async function applyReplace(
   store: MemoryStore,
   template: string,
-  session: string,
+  preset: string,
   oldText: string,
   content: string,
 ): Promise<string> {
@@ -243,12 +243,12 @@ async function applyReplace(
   if (runes > MEMORY_CONTENT_MAX_RUNES) {
     return contentLimitText(runes);
   }
-  const entries = await store.listMemories(template, session);
+  const entries = await store.listMemories(template, preset);
   const match = matchBySubstring(entries, oldText);
   if ("error" in match) {
     return match.error;
   }
-  await store.updateMemory(template, session, match.entry.memory_id, text);
+  await store.updateMemory(template, preset, match.entry.memory_id, text);
   return REPLACED_TEXT;
 }
 
@@ -256,15 +256,15 @@ async function applyReplace(
 async function applyRemove(
   store: MemoryStore,
   template: string,
-  session: string,
+  preset: string,
   oldText: string,
 ): Promise<string> {
-  const entries = await store.listMemories(template, session);
+  const entries = await store.listMemories(template, preset);
   const match = matchBySubstring(entries, oldText);
   if ("error" in match) {
     return match.error;
   }
-  await store.deleteMemory(template, session, match.entry.memory_id);
+  await store.deleteMemory(template, preset, match.entry.memory_id);
   return REMOVED_TEXT;
 }
 
@@ -304,13 +304,13 @@ function formatAppliedPositions(positions: readonly number[]): string {
 async function applyBatch(
   store: MemoryStore,
   template: string,
-  session: string,
+  preset: string,
   operations: readonly MemoryOp[],
 ): Promise<string> {
   if (operations.length === 0) {
     return EMPTY_BATCH_TEXT;
   }
-  const entries = await store.listMemories(template, session);
+  const entries = await store.listMemories(template, preset);
   const working: MemoryEntry[] = entries.map((e) => ({ ...e }));
 
   const batchError = (pos: string, reason: string): string =>
@@ -409,11 +409,11 @@ async function applyBatch(
   for (const write of writes) {
     try {
       if (write.kind === "create") {
-        await store.createMemory(template, session, write.id, write.content);
+        await store.createMemory(template, preset, write.id, write.content);
       } else if (write.kind === "update") {
-        await store.updateMemory(template, session, write.id, write.content);
+        await store.updateMemory(template, preset, write.id, write.content);
       } else {
-        await store.deleteMemory(template, session, write.id);
+        await store.deleteMemory(template, preset, write.id);
       }
     } catch (err) {
       if (applied.length === 0) {
@@ -440,7 +440,7 @@ async function applyBatch(
 export async function applyMemoryCall(
   store: MemoryStore,
   template: string,
-  session: string,
+  preset: string,
   args: MemoryToolArgs,
 ): Promise<string> {
   const hasSingle = args.action != null;
@@ -455,24 +455,24 @@ export async function applyMemoryCall(
     return applyBatch(
       store,
       template,
-      session,
+      preset,
       args.operations as MemoryOp[],
     );
   }
   if (args.action === "add") {
-    return applyAdd(store, template, session, args.content ?? "");
+    return applyAdd(store, template, preset, args.content ?? "");
   }
   if (args.action === "replace") {
     return applyReplace(
       store,
       template,
-      session,
+      preset,
       args.old_text ?? "",
       args.content ?? "",
     );
   }
   if (args.action === "remove") {
-    return applyRemove(store, template, session, args.old_text ?? "");
+    return applyRemove(store, template, preset, args.old_text ?? "");
   }
   return INVALID_CALL_TEXT;
 }

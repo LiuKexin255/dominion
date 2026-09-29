@@ -94,10 +94,11 @@ func main() {
 	// specs/069-wiki-template-web/spec.md FR-001). Both services are hosted
 	// by the same memory binary and database, so they share the connection.
 	// Registered on the gateway so the
-	// /api/v1/templates/{template}/sessions/{session}/memories and
+	// /api/v1/templates/{template}/presets/{preset}/memories and
 	// /api/v1/templates/{template}/wikis surfaces are reachable through the
 	// public HTTP entry
-	// (specs/069-wiki-template-web/contracts/wiki-service.md §2/§6).
+	// (specs/069-wiki-template-web/contracts/wiki-service.md §2/§6;
+	// specs/071-memory-preset-scope/contracts/memory-service.md §2).
 	memoryConn, err := grpc.NewClient(solver.URI(gameconst.MemoryTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("memory dial: %v", err)

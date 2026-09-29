@@ -203,14 +203,16 @@ func TestRootMuxAPIv2PresetPathsRouteToDirectHandler(t *testing.T) {
 	}
 }
 
-// TestRootMuxAPIv1SessionMemoryFallback verifies the /api/v1/ subtree still
-// routes to grpc-gateway for the services that remain on it: session and
-// memory requests reach their handler routes and fail proxying to the
-// unreachable backend with 503 (grpc code Unavailable), while the removed
-// v1 team face answers a routing 404 (FR-019 — the team/prompt faces are
-// gone; memory/session stay, specs/051-agent-v2-dsh-migration/spec.md
-// FR-019).
-func TestRootMuxAPIv1SessionMemoryFallback(t *testing.T) {
+// TestRootMuxAPIv1SessionAndPresetMemoryFallback verifies the /api/v1/
+// subtree still routes to grpc-gateway for the services that remain on it:
+// session and preset-scoped memory requests reach their handler routes and
+// fail proxying to the unreachable backend with 503 (grpc code Unavailable),
+// while the removed v1 team face and the superseded session-scoped memory
+// path answer a routing 404 (FR-019 — the team/prompt faces are gone;
+// memory/session stay, specs/051-agent-v2-dsh-migration/spec.md FR-019;
+// memory is preset-scoped since specs/071-memory-preset-scope/contracts/
+// memory-service.md §5).
+func TestRootMuxAPIv1SessionAndPresetMemoryFallback(t *testing.T) {
 	httpSrv := httptest.NewServer(newRoutingTestMux(t))
 	defer httpSrv.Close()
 
@@ -224,14 +226,26 @@ func TestRootMuxAPIv1SessionMemoryFallback(t *testing.T) {
 		t.Fatalf("api/v1 session fallback status = %d, want %d (grpc-gateway proxy failure)", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 
-	// ListMemories rule (game.proto: get /api/v1/{parent=templates/*/sessions/*}/memories).
-	memResp, err := http.Get(httpSrv.URL + "/api/v1/templates/saolei/sessions/route-test/memories")
+	// ListMemories rule (game.proto: get /api/v1/{parent=templates/*/presets/*}/memories).
+	memResp, err := http.Get(httpSrv.URL + "/api/v1/templates/saolei/presets/route-test/memories")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	defer memResp.Body.Close()
 	if memResp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("api/v1 memory fallback status = %d, want %d (grpc-gateway proxy failure)", memResp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	// The superseded session-scoped memory path has no registered rule
+	// (specs/071-memory-preset-scope/contracts/memory-service.md §5), so
+	// grpc-gateway answers with its own 404 JSON body.
+	sessionMemResp, err := http.Get(httpSrv.URL + "/api/v1/templates/saolei/sessions/route-test/memories")
+	if err != nil {
+		t.Fatalf("get session-scoped memory: %v", err)
+	}
+	defer sessionMemResp.Body.Close()
+	if sessionMemResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("api/v1 session-scoped memory status = %d, want %d (superseded route)", sessionMemResp.StatusCode, http.StatusNotFound)
 	}
 
 	// The v1 team:refresh rule no longer exists (the v1 team face is

@@ -16,7 +16,7 @@ import (
 )
 
 // inMemoryMemoryRepo implements domain.MemoryRepository for testing. The
-// identity is the (template, session_id, memory_id) tuple.
+// identity is the (template, preset_id, memory_id) tuple.
 type inMemoryMemoryRepo struct {
 	mu       sync.Mutex
 	memories map[string]*domain.Memory
@@ -31,14 +31,14 @@ func newInMemoryMemoryRepo() *inMemoryMemoryRepo {
 	return &inMemoryMemoryRepo{memories: make(map[string]*domain.Memory)}
 }
 
-func memoryKey(template, session, memoryID string) string {
-	return template + "\x00" + session + "\x00" + memoryID
+func memoryKey(template, preset, memoryID string) string {
+	return template + "\x00" + preset + "\x00" + memoryID
 }
 
 func (r *inMemoryMemoryRepo) CreateMemory(_ context.Context, memory *domain.Memory) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := memoryKey(memory.Template, memory.SessionID, memory.MemoryID)
+	key := memoryKey(memory.Template, memory.PresetID, memory.MemoryID)
 	if _, exists := r.memories[key]; exists {
 		return domain.ErrAlreadyExists
 	}
@@ -49,7 +49,7 @@ func (r *inMemoryMemoryRepo) CreateMemory(_ context.Context, memory *domain.Memo
 func (r *inMemoryMemoryRepo) UpdateMemory(_ context.Context, memory *domain.Memory) (*domain.Memory, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := memoryKey(memory.Template, memory.SessionID, memory.MemoryID)
+	key := memoryKey(memory.Template, memory.PresetID, memory.MemoryID)
 	existing, ok := r.memories[key]
 	if !ok {
 		return nil, domain.ErrNotFound
@@ -60,10 +60,10 @@ func (r *inMemoryMemoryRepo) UpdateMemory(_ context.Context, memory *domain.Memo
 	return &clone, nil
 }
 
-func (r *inMemoryMemoryRepo) DeleteMemory(_ context.Context, template, session, memoryID string) error {
+func (r *inMemoryMemoryRepo) DeleteMemory(_ context.Context, template, preset, memoryID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := memoryKey(template, session, memoryID)
+	key := memoryKey(template, preset, memoryID)
 	if _, ok := r.memories[key]; !ok {
 		return domain.ErrNotFound
 	}
@@ -71,14 +71,14 @@ func (r *inMemoryMemoryRepo) DeleteMemory(_ context.Context, template, session, 
 	return nil
 }
 
-func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageToken, _ int) ([]*domain.Memory, string, error) {
+func (r *inMemoryMemoryRepo) ListMemories(_ context.Context, template, preset string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageToken, _ int) ([]*domain.Memory, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.listSort = sort
 	r.listCursor = cursor
 	result := make([]*domain.Memory, 0, len(r.memories))
 	for _, m := range r.memories {
-		if m.Template == template && m.SessionID == session {
+		if m.Template == template && m.PresetID == preset {
 			result = append(result, m)
 		}
 	}
@@ -98,7 +98,7 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 	h := NewHandler(repo)
 
 	createReq := &game.CreateMemoryRequest{
-		Parent:   "templates/saolei/sessions/session-1",
+		Parent:   "templates/saolei/presets/preset-1",
 		MemoryId: "mem-1",
 		Memory:   memoryBody("player repeats the same mistake"),
 	}
@@ -108,8 +108,8 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 
 	// then — create succeeds
 	assertStatusCode(t, err, codes.OK)
-	if created.GetName() != "templates/saolei/sessions/session-1/memories/mem-1" {
-		t.Fatalf("CreateMemory() name = %q, want %q", created.GetName(), "templates/saolei/sessions/session-1/memories/mem-1")
+	if created.GetName() != "templates/saolei/presets/preset-1/memories/mem-1" {
+		t.Fatalf("CreateMemory() name = %q, want %q", created.GetName(), "templates/saolei/presets/preset-1/memories/mem-1")
 	}
 	assertMemoryName(t, created, "mem-1")
 	if created.GetContent() != "player repeats the same mistake" {
@@ -123,7 +123,7 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 	}
 
 	// when — list
-	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/sessions/session-1"})
+	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/presets/preset-1"})
 
 	// then — list returns the created memory
 	assertStatusCode(t, err, codes.OK)
@@ -150,7 +150,7 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 		{
 			name: "invalid parent - no templates prefix",
 			req: &game.CreateMemoryRequest{
-				Parent:   "sessions/session-1",
+				Parent:   "presets/preset-1",
 				MemoryId: "mem-1",
 				Memory:   memoryBody("content"),
 			},
@@ -159,7 +159,7 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 		{
 			name: "invalid parent - unknown template",
 			req: &game.CreateMemoryRequest{
-				Parent:   "templates/unknown-template/sessions/session-1",
+				Parent:   "templates/unknown-template/presets/preset-1",
 				MemoryId: "mem-1",
 				Memory:   memoryBody("content"),
 			},
@@ -168,7 +168,7 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 		{
 			name: "memory_id with uppercase is rejected",
 			req: &game.CreateMemoryRequest{
-				Parent:   "templates/saolei/sessions/session-1",
+				Parent:   "templates/saolei/presets/preset-1",
 				MemoryId: "Mem-1",
 				Memory:   memoryBody("content"),
 			},
@@ -177,7 +177,7 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 		{
 			name: "memory_id with slash is rejected",
 			req: &game.CreateMemoryRequest{
-				Parent:   "templates/saolei/sessions/session-1",
+				Parent:   "templates/saolei/presets/preset-1",
 				MemoryId: "bad/id",
 				Memory:   memoryBody("content"),
 			},
@@ -186,7 +186,7 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 		{
 			name: "memory_id with dot is rejected",
 			req: &game.CreateMemoryRequest{
-				Parent:   "templates/saolei/sessions/session-1",
+				Parent:   "templates/saolei/presets/preset-1",
 				MemoryId: "mem.1",
 				Memory:   memoryBody("content"),
 			},
@@ -195,7 +195,7 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 		{
 			name: "empty memory_id is rejected",
 			req: &game.CreateMemoryRequest{
-				Parent: "templates/saolei/sessions/session-1",
+				Parent: "templates/saolei/presets/preset-1",
 				Memory: memoryBody("content"),
 			},
 			wantErr: true,
@@ -203,7 +203,7 @@ func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 		{
 			name: "missing memory body is rejected",
 			req: &game.CreateMemoryRequest{
-				Parent:   "templates/saolei/sessions/session-1",
+				Parent:   "templates/saolei/presets/preset-1",
 				MemoryId: "mem-1",
 			},
 			wantErr: true,
@@ -275,7 +275,7 @@ func TestMemoryService_CreateMemoryContentLimit(t *testing.T) {
 
 			// when
 			_, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
-				Parent:   "templates/saolei/sessions/session-1",
+				Parent:   "templates/saolei/presets/preset-1",
 				MemoryId: "mem-1",
 				Memory:   memoryBody(tt.content),
 			})
@@ -295,18 +295,32 @@ func TestMemoryService_CreateMemoryAlreadyExists(t *testing.T) {
 	h := NewHandler(repo)
 
 	req := &game.CreateMemoryRequest{
-		Parent:   "templates/saolei/sessions/session-1",
+		Parent:   "templates/saolei/presets/preset-1",
 		MemoryId: "mem-1",
 		Memory:   memoryBody("content"),
 	}
 	_, err := h.CreateMemory(ctx, req)
 	assertStatusCode(t, err, codes.OK)
 
-	// when — create duplicate
+	// when — create duplicate under the same preset
 	_, err = h.CreateMemory(ctx, req)
 
 	// then — returns AlreadyExists
 	assertStatusCode(t, err, codes.AlreadyExists)
+
+	// when — create the same id under another preset
+	otherPreset := &game.CreateMemoryRequest{
+		Parent:   "templates/saolei/presets/preset-2",
+		MemoryId: "mem-1",
+		Memory:   memoryBody("content"),
+	}
+	created, err := h.CreateMemory(ctx, otherPreset)
+
+	// then — allowed: the identity is (template, preset_id, memory_id)
+	assertStatusCode(t, err, codes.OK)
+	if got, want := created.GetName(), "templates/saolei/presets/preset-2/memories/mem-1"; got != want {
+		t.Fatalf("CreateMemory() under other preset name = %q, want %q", got, want)
+	}
 }
 
 func TestMemoryService_UpdateMemory(t *testing.T) {
@@ -317,7 +331,7 @@ func TestMemoryService_UpdateMemory(t *testing.T) {
 	h := NewHandler(repo)
 
 	created, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
-		Parent:   "templates/saolei/sessions/session-1",
+		Parent:   "templates/saolei/presets/preset-1",
 		MemoryId: "mem-1",
 		Memory:   memoryBody("old content"),
 	})
@@ -326,7 +340,7 @@ func TestMemoryService_UpdateMemory(t *testing.T) {
 	// when — update content via FieldMask
 	updated, err := h.UpdateMemory(ctx, &game.UpdateMemoryRequest{
 		Memory: &game.Memory{
-			Name:    "templates/saolei/sessions/session-1/memories/mem-1",
+			Name:    "templates/saolei/presets/preset-1/memories/mem-1",
 			Content: "new content",
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
@@ -349,7 +363,7 @@ func TestMemoryService_UpdateMemory(t *testing.T) {
 	}
 
 	// when — re-list
-	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/sessions/session-1"})
+	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/presets/preset-1"})
 
 	// then — persisted
 	assertStatusCode(t, err, codes.OK)
@@ -369,7 +383,7 @@ func TestMemoryService_UpdateMemoryValidation(t *testing.T) {
 	h := NewHandler(repo)
 
 	_, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
-		Parent:   "templates/saolei/sessions/session-1",
+		Parent:   "templates/saolei/presets/preset-1",
 		MemoryId: "mem-1",
 		Memory:   memoryBody("content"),
 	})
@@ -378,7 +392,7 @@ func TestMemoryService_UpdateMemoryValidation(t *testing.T) {
 	// when — update with an unknown FieldMask path
 	_, err = h.UpdateMemory(ctx, &game.UpdateMemoryRequest{
 		Memory: &game.Memory{
-			Name:    "templates/saolei/sessions/session-1/memories/mem-1",
+			Name:    "templates/saolei/presets/preset-1/memories/mem-1",
 			Content: "x",
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nonexistent_field"}},
@@ -390,7 +404,7 @@ func TestMemoryService_UpdateMemoryValidation(t *testing.T) {
 	// when — update with a malformed resource name
 	_, err = h.UpdateMemory(ctx, &game.UpdateMemoryRequest{
 		Memory: &game.Memory{
-			Name:    "templates/saolei/sessions/session-1",
+			Name:    "templates/saolei/presets/preset-1",
 			Content: "x",
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
@@ -442,7 +456,7 @@ func TestMemoryService_UpdateMemoryContentLimit(t *testing.T) {
 			// given — a seeded memory to update
 			h := NewHandler(newInMemoryMemoryRepo())
 			_, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
-				Parent:   "templates/saolei/sessions/session-1",
+				Parent:   "templates/saolei/presets/preset-1",
 				MemoryId: "mem-1",
 				Memory:   memoryBody("content"),
 			})
@@ -451,7 +465,7 @@ func TestMemoryService_UpdateMemoryContentLimit(t *testing.T) {
 			// when
 			_, err = h.UpdateMemory(ctx, &game.UpdateMemoryRequest{
 				Memory: &game.Memory{
-					Name:    "templates/saolei/sessions/session-1/memories/mem-1",
+					Name:    "templates/saolei/presets/preset-1/memories/mem-1",
 					Content: tt.content,
 				},
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
@@ -473,7 +487,7 @@ func TestMemoryService_UpdateMemoryNotFound(t *testing.T) {
 	// when — update missing memory
 	_, err := h.UpdateMemory(ctx, &game.UpdateMemoryRequest{
 		Memory: &game.Memory{
-			Name:    "templates/saolei/sessions/session-1/memories/ghost",
+			Name:    "templates/saolei/presets/preset-1/memories/ghost",
 			Content: "x",
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
@@ -491,20 +505,20 @@ func TestMemoryService_DeleteMemory(t *testing.T) {
 	h := NewHandler(repo)
 
 	_, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
-		Parent:   "templates/saolei/sessions/session-1",
+		Parent:   "templates/saolei/presets/preset-1",
 		MemoryId: "to-delete",
 		Memory:   memoryBody("content"),
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — delete
-	_, err = h.DeleteMemory(ctx, &game.DeleteMemoryRequest{Name: "templates/saolei/sessions/session-1/memories/to-delete"})
+	_, err = h.DeleteMemory(ctx, &game.DeleteMemoryRequest{Name: "templates/saolei/presets/preset-1/memories/to-delete"})
 
 	// then — delete succeeds
 	assertStatusCode(t, err, codes.OK)
 
 	// when — list after delete
-	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/sessions/session-1"})
+	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/presets/preset-1"})
 
 	// then — empty
 	assertStatusCode(t, err, codes.OK)
@@ -513,7 +527,7 @@ func TestMemoryService_DeleteMemory(t *testing.T) {
 	}
 
 	// when — delete again
-	_, err = h.DeleteMemory(ctx, &game.DeleteMemoryRequest{Name: "templates/saolei/sessions/session-1/memories/to-delete"})
+	_, err = h.DeleteMemory(ctx, &game.DeleteMemoryRequest{Name: "templates/saolei/presets/preset-1/memories/to-delete"})
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)
@@ -527,19 +541,19 @@ func TestMemoryService_ListMemoriesPagination(t *testing.T) {
 	h := NewHandler(repo)
 
 	// when — list with page_size above the maximum
-	_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/sessions/session-1", PageSize: 1001})
+	_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/presets/preset-1", PageSize: 1001})
 
 	// then — returns InvalidArgument
 	assertStatusCode(t, err, codes.InvalidArgument)
 
 	// when — list with an invalid parent
-	_, err = h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "sessions/session-1"})
+	_, err = h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "presets/preset-1"})
 
 	// then — returns InvalidArgument
 	assertStatusCode(t, err, codes.InvalidArgument)
 
-	// when — list an empty session
-	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/sessions/session-1"})
+	// when — list an empty preset
+	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/presets/preset-1"})
 
 	// then — empty page, no next token
 	assertStatusCode(t, err, codes.OK)
@@ -651,7 +665,7 @@ func TestMemoryService_ListMemoriesOrderBy(t *testing.T) {
 
 			// when
 			_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{
-				Parent:  "templates/saolei/sessions/session-1",
+				Parent:  "templates/saolei/presets/preset-1",
 				OrderBy: tt.orderBy,
 			})
 
@@ -736,7 +750,7 @@ func TestMemoryService_ListMemoriesPageToken(t *testing.T) {
 
 			// when
 			_, err := h.ListMemories(ctx, &game.ListMemoriesRequest{
-				Parent:    "templates/saolei/sessions/session-1",
+				Parent:    "templates/saolei/presets/preset-1",
 				OrderBy:   tt.orderBy,
 				PageToken: tt.token,
 			})
@@ -920,24 +934,24 @@ func Test_memoryToProto(t *testing.T) {
 			name: "memory with fields",
 			memory: &domain.Memory{
 				Template:   "saolei",
-				SessionID:  "session-1",
+				PresetID:   "preset-1",
 				MemoryID:   "mem-1",
 				Content:    "content",
 				CreateTime: now,
 				UpdateTime: now,
 			},
 			wantNil:  false,
-			wantName: "templates/saolei/sessions/session-1/memories/mem-1",
+			wantName: "templates/saolei/presets/preset-1/memories/mem-1",
 		},
 		{
 			name: "memory with zero times has no timestamps",
 			memory: &domain.Memory{
-				Template:  "saolei",
-				SessionID: "session-1",
-				MemoryID:  "notime",
+				Template: "saolei",
+				PresetID: "preset-1",
+				MemoryID: "notime",
 			},
 			wantNil:  false,
-			wantName: "templates/saolei/sessions/session-1/memories/notime",
+			wantName: "templates/saolei/presets/preset-1/memories/notime",
 		},
 	}
 

@@ -57,11 +57,11 @@ function call(
   store: ReturnType<typeof makeFakeStore>,
   args: MemoryToolArgs,
 ): Promise<string> {
-  return applyMemoryCall(store as unknown as MemoryStore, TEMPLATE, SESSION, args);
+  return applyMemoryCall(store as unknown as MemoryStore, TEMPLATE, PRESET, args);
 }
 
 const TEMPLATE = "saolei";
-const SESSION = "sess-1";
+const PRESET = "preset-1";
 
 describe("matchBySubstring (hermes old_text semantics)", () => {
   const entries: MemoryEntry[] = [
@@ -167,7 +167,7 @@ describe("applyMemoryCall — hermes conversion", () => {
       expect(fake.createMemory).toHaveBeenCalledTimes(1);
       expect(fake.createMemory).toHaveBeenCalledWith(
         TEMPLATE,
-        SESSION,
+        PRESET,
         generateMemoryId(text),
         text,
       );
@@ -229,7 +229,7 @@ describe("applyMemoryCall — hermes conversion", () => {
       expect(fake.updateMemory).toHaveBeenCalledTimes(1);
       expect(fake.updateMemory).toHaveBeenCalledWith(
         TEMPLATE,
-        SESSION,
+        PRESET,
         "m1",
         "player 已改掉误标习惯",
       );
@@ -280,7 +280,7 @@ describe("applyMemoryCall — hermes conversion", () => {
       expect(result).toBe("memory replaced");
       expect(fake.updateMemory).toHaveBeenCalledWith(
         TEMPLATE,
-        SESSION,
+        PRESET,
         "m1",
         "合并后的条目",
       );
@@ -308,7 +308,7 @@ describe("applyMemoryCall — hermes conversion", () => {
 
       expect(result).toBe("memory removed");
       expect(fake.deleteMemory).toHaveBeenCalledTimes(1);
-      expect(fake.deleteMemory).toHaveBeenCalledWith(TEMPLATE, SESSION, "m1");
+      expect(fake.deleteMemory).toHaveBeenCalledWith(TEMPLATE, PRESET, "m1");
       expect(fake.updateMemory).not.toHaveBeenCalled();
     });
 
@@ -363,17 +363,17 @@ describe("applyMemoryCall — hermes conversion", () => {
       expect(result).toBe("memory: applied 3 operation(s)");
       expect(fake.createMemory).toHaveBeenCalledWith(
         TEMPLATE,
-        SESSION,
+        PRESET,
         generateMemoryId("新条目"),
         "新条目",
       );
       expect(fake.updateMemory).toHaveBeenCalledWith(
         TEMPLATE,
-        SESSION,
+        PRESET,
         "m1",
         "更新后的A",
       );
-      expect(fake.deleteMemory).toHaveBeenCalledWith(TEMPLATE, SESSION, "m2");
+      expect(fake.deleteMemory).toHaveBeenCalledWith(TEMPLATE, PRESET, "m2");
     });
 
     it("skips duplicate adds inside the batch (idempotent, hermes)", async () => {
@@ -389,7 +389,7 @@ describe("applyMemoryCall — hermes conversion", () => {
       expect(fake.createMemory).toHaveBeenCalledTimes(1);
       expect(fake.createMemory).toHaveBeenCalledWith(
         TEMPLATE,
-        SESSION,
+        PRESET,
         generateMemoryId("全新"),
         "全新",
       );
@@ -530,7 +530,7 @@ describe("MEMORY_CONTENT_MAX_RUNES preflight (specs/069-wiki-template-web/contra
     expect(result).toBe("memory added");
     expect(fake.createMemory).toHaveBeenCalledWith(
       TEMPLATE,
-      SESSION,
+      PRESET,
       generateMemoryId(content),
       content,
     );
@@ -575,7 +575,7 @@ describe("MEMORY_CONTENT_MAX_RUNES preflight (specs/069-wiki-template-web/contra
     expect(result).toBe("memory replaced");
     expect(fake.updateMemory).toHaveBeenCalledWith(
       TEMPLATE,
-      SESSION,
+      PRESET,
       "m1",
       content,
     );

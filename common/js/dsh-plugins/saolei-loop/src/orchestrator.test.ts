@@ -55,8 +55,8 @@ import { SAOLEI_MEMBER_SUMMARY } from "./announcer.js";
 import type { GameEventRecord } from "./game/runtime.js";
 
 const SESSION = "templates/saolei/sessions/s1";
-/** The business session ID half of the memory scope key (NOT the full name). */
-const SESSION_ID = "s1";
+/** The materialization source preset id half of the memory scope key. */
+const PRESET_ID = "planner-p";
 const PLAYER_ID = `${SESSION}/player`;
 const PLANNER_ID = `${SESSION}/planner`;
 const SAOLEI_ID = `${SESSION}/saolei`;
@@ -366,7 +366,7 @@ function teamOptions(
 ): TeamMaterializeOptions {
   return {
     session: SESSION,
-    memoryScope: { template: "saolei", session: SESSION_ID },
+    memoryScope: { template: "saolei", preset: PRESET_ID },
     goal: "协作提高扫雷胜率",
     player: { preset: "player-a", model: "model-p" },
     planner: { preset: "planner-a", model: "model-q" },
@@ -482,17 +482,17 @@ describe("TeamOrchestrator.materialize", () => {
     // Setup chain: roster mount for both; player mounts the game runtime
     // (bound to the GAME session resource name — the desktop-bridge key, not
     // the namespaced member session id), planner prefetches the memory
-    // snapshot with the (template, session) key.
+    // snapshot with the (template, preset) key.
     expect(h.setups[0]).toHaveBeenCalledWith(player.ctx);
     expect(h.setups[1]).toHaveBeenCalledWith(planner.ctx);
     expect(h.mountPlayerRuntime).toHaveBeenCalledWith(player.agent, SESSION);
     expect(h.mountPlayerRuntime).not.toHaveBeenCalledWith(planner.agent, SESSION);
     expect(h.loadPlannerMemory).toHaveBeenCalledWith(planner.ctx, {
       template: "saolei",
-      // The ID half, not the full session resource name: the memory plugin
-      // builds `templates/{template}/sessions/{session}` from these halves
-      // (T023 wiring fix).
-      session: SESSION_ID,
+      // The id half, not a full resource name: the memory plugin builds
+      // `templates/{template}/presets/{preset}` from these halves
+      // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §1/§4).
+      preset: PRESET_ID,
     });
     // Team registration: goal + the two-member roster with defaults.
     expect(h.team.registrations).toHaveLength(1);

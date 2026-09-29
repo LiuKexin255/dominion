@@ -15,7 +15,7 @@
  * the preset row's `apply` captures `ctx.plannerMemory` from its own context
  * and passes it into {@link createMemoryToolDefinition}. At execution time
  * `exec.agent` only identifies the calling agent, whose bound
- * `(template, session)` scope the service resolves; the tool itself never
+ * `(template, preset)` scope the service resolves; the tool itself never
  * closes over a scope. Walking `exec.agent.ctx.plannerMemory` is not viable —
  * the agent scope's isolate boundary rejects the property walk, so the row
  * ctx is the composition point that declares the dependency.

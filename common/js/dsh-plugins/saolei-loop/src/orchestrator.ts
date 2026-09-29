@@ -218,10 +218,10 @@ export type MountPlayerRuntime = (
   sessionName: string,
 ) => GameEventSource | undefined;
 
-/** The planner memory snapshot prefetch scope key (template, session). */
+/** The planner memory snapshot prefetch scope key (template, preset). */
 export interface PlannerMemoryScope {
   readonly template: string;
-  readonly session: string;
+  readonly preset: string;
 }
 
 /**
@@ -295,10 +295,11 @@ export interface TeamMaterializeOptions {
   readonly session: string;
   /**
    * The planner memory prefetch scope key halves: the business template and
-   * the session ID (`templates/{template}/sessions/{session}/memories/{memory}`).
-   * This is NOT the full session resource name — the memory plugin builds the
-   * parent resource from these halves (the memory service resource model),
-   * so passing `session` here doubles the prefix (T023 wiring, specs/059-agent-v2-team-mode/tasks.md).
+   * the materialization source planner preset id
+   * (`templates/{template}/presets/{preset}/memories/{memory}`). The memory
+   * plugin builds the parent resource from these halves, so they stay bare
+   * ids rather than full resource names
+   * (specs/071-memory-preset-scope/contracts/dsh-plugins.md §1/§4).
    */
   readonly memoryScope: PlannerMemoryScope;
   /** Team goal rendered into the team section. */

@@ -8,19 +8,20 @@ import (
 	"unicode/utf8"
 )
 
-// Memory is one planner long-term memory entry of a session (spec
-// 039-planner-memory-calibration FR-006;
-// specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §1). It is scoped to (template, session); memory_id is the resource id
-// segment {memory} of the resource pattern
-// templates/{template}/sessions/{session}/memories/{memory} (FR-012) — the
-// agent generates it internally on add, the LLM never sees it (Session
-// 2026-08-08 / FR-008).
+// Memory is one planner long-term memory entry scoped to a preset (spec
+// 071-memory-preset-scope FR-001;
+// specs/071-memory-preset-scope/contracts/memory-service.md §1). The scope key
+// is (template, preset), so the same preset shares one collection across
+// sessions; memory_id is the resource id segment {memory} of the resource
+// pattern templates/{template}/presets/{preset}/memories/{memory}
+// (specs/071-memory-preset-scope/data-model.md §1.1) — the agent generates it
+// internally on add, the LLM never sees it (spec 039 Session 2026-08-08 /
+// FR-008).
 type Memory struct {
 	// Template is the template path segment this memory belongs to.
 	Template string
-	// SessionID is the session path segment this memory belongs to.
-	SessionID string
+	// PresetID is the preset path segment this memory belongs to.
+	PresetID string
 	// MemoryID is the business identifier for this memory entry.
 	MemoryID string
 	// Content is the memory entry text.

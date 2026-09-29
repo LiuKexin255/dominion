@@ -847,10 +847,19 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 	// snapshot at its setup, so this is what fixes the injected entry set.
 	// The creates are spaced past the service's millisecond update_time
 	// resolution so the recency order is strictly deterministic.
+	//
+	// The seeded collection is the planner member's materialization source
+	// preset (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4):
+	// the planner snapshot reloads that preset's memories, so the pre-write
+	// must address the preset the team materializes from.
+	plannerPresetName, err := game.ParsePresetName(plannerPreset.GetName())
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", plannerPreset.GetName(), err)
+	}
 	var contentsNewestFirst []string
 	for i := 1; i <= 12; i++ {
 		content := fmt.Sprintf("T015 快照夹具 %02d", i)
-		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, fmt.Sprintf("snapshot-m%02d", i), content)
+		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, plannerPresetName.PresetID, fmt.Sprintf("snapshot-m%02d", i), content)
 		contentsNewestFirst = append([]string{content}, contentsNewestFirst...)
 		time.Sleep(3 * time.Millisecond)
 	}

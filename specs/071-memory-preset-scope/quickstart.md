@@ -29,7 +29,7 @@ guitar run projects/game/testplan/system_test.yaml
 ## 场景 3：单测回归（bazel，宪法 IV）
 
 ```bash
-# Go：handler preset 父解析 / domain PresetID / mongo preset 维度索引与游标 / clean break 幂等
+# Go：handler preset 父解析 / domain PresetID / mongo preset 维度索引与游标
 bazel test //projects/game/memory/... //projects/game/gateway/... //projects/game:game_test
 # JS：scope 形态、client preset 寻址、operations 签名、guidance 跨局持久措辞、装配传递
 bazel test //common/js/dsh-plugins/memory-service/... //common/js/dsh-plugins/memory/... \
@@ -64,9 +64,23 @@ bazel test //projects/game/web/frontend:lib_test
 
 手工抽查：wiki 视图空态与创建表单占位为中性措辞（无 planner、无扫雷示例）。
 
-## 场景 7：启动 clean break（存储）
+## 场景 7：旧作用域数据一次性清理（新 memory 服务首次启动前的运维动作）
 
-部署新 memory 服务后，`game_memory.memories` 集合：两个 legacy session 维度索引被删除、含 `session_id` 字段的旧文档被清除（data-model §2.3 幂等清理）；`mongosh` 抽查确认无 `session_id` 字段文档残留、新文档仅含 `preset_id`。
+在旧 memory 服务停止后、新 memory 服务**首次启动前**，对 `game_memory.memories` 集合执行一次性清理（data-model §2.3；服务启动仅创建 preset 维度新索引，清理不由服务代码承载；legacy 索引/旧文档不存在 = fresh 环境，无需清理）。顺序约束：unique `(template, preset_id, memory_id)` 索引在服务启动时创建，legacy 文档缺 `preset_id` 字段（MongoDB 唯一索引对缺失字段按 null 参与唯一性），同 template 下相同 `memory_id` 的旧文档（`generateMemoryId = sha256(content)[:32]` 确定性派生，跨 session 同内容高发）尚存会使该索引构建失败（E11000）且错误被启动代码按已存在忽略——必须**先清理、后首启**。
+
+```js
+// mongosh：删除两个 legacy session 维度索引（默认命名如下，以 db.memories.getIndexes() 实名为准）
+db.memories.dropIndex("template_1_session_id_1_memory_id_1")
+db.memories.dropIndex("template_1_session_id_1_update_time_-1_memory_id_1")
+// 清除全部旧作用域文档
+db.memories.deleteMany({session_id: {$exists: true}})
+```
+
+若新服务已在旧数据尚存时启动过：完成上述清理后**重启一次**新服务（索引仅启动时创建，清理不触发补建）。
+
+核验：
+- `db.memories.getIndexes()` 无 session 维度索引，且**包含两个 preset 维度新索引**（默认命名 `template_1_preset_id_1_memory_id_1`、`template_1_preset_id_1_update_time_-1_memory_id_1`）——unique 索引缺失即构建失败被静默忽略，服务运行在无唯一索引状态（duplicate-key → ALREADY_EXISTS 映射失效），须查 mongod 日志（E11000）排查后重启补建；
+- `db.memories.countDocuments({session_id: {$exists: true}})` 为 0，新文档仅含 `preset_id`。
 
 ## 回归
 

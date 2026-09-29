@@ -42,10 +42,7 @@ func main() {
 	}
 
 	repo := mongort.NewRepository(mongoClient, "game_memory")
-	wikiRepo, err := mongort.NewWikiRepository(mongoClient, "game_memory")
-	if err != nil {
-		log.Fatalf("failed to create wiki repository: %v", err)
-	}
+	wikiRepo := mongort.NewWikiRepository(mongoClient, "game_memory")
 
 	h := handler.NewHandler(repo)
 	wikiHandler := handler.NewWikiHandler(wikiRepo)

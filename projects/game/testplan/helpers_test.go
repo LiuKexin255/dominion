@@ -217,19 +217,20 @@ func deleteSession(t *testing.T, sutHostURL, sutEnvName, template, sessionID str
 
 // ─── Memory Helpers (proto-based, via the gateway public entry) ────────────
 //
-// The MemoryService (spec 039-planner-memory-calibration FR-006) is exposed
-// through the gateway's public HTTP entry (gateway/cmd/main.go registers
-// RegisterMemoryServiceHandler), so the large tests verify memory
-// persistence/pagination through it exactly like the other services — no
-// direct mongo access. The resource pattern is
-// templates/{template}/sessions/{session}/memories/{memory} (FR-012).
+// The MemoryService (specs/071-memory-preset-scope/contracts/
+// memory-service.md §2) is exposed through the gateway's public HTTP entry
+// (gateway/cmd/main.go registers RegisterMemoryServiceHandler), so the large
+// tests verify memory persistence/pagination through it exactly like the
+// other services — no direct mongo access. The resource pattern is
+// templates/{template}/presets/{preset}/memories/{memory}; the parent preset's
+// existence is not checked (contract §1).
 
-// createMemory sends a POST to /api/v1/templates/{template}/sessions/{session}/
-// memories?memory_id={memoryID} with the embedded Memory body {content}
-// (AIP-133 — body "memory", memory_id from the query string). Calls t.Fatal
-// on non-200 responses. ctx carries the test's W3C trace context
-// (traceContext).
-func createMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID, memoryID, content string) *game.Memory {
+// createMemory sends a POST to
+// /api/v1/templates/{template}/presets/{preset}/memories?memory_id={memoryID}
+// with the embedded Memory body {content} (AIP-133 — body "memory", memory_id
+// from the query string). Calls t.Fatal on non-200 responses. ctx carries the
+// test's W3C trace context (traceContext).
+func createMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, preset, memoryID, content string) *game.Memory {
 	t.Helper()
 
 	body, err := protojson.Marshal(&game.Memory{Content: content})
@@ -237,8 +238,8 @@ func createMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, tem
 		t.Fatalf("protojson.Marshal Memory: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?memory_id=%s",
-		sutHostURL, pathPrefix, template, sessionID, memoryID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets/%s/memories?memory_id=%s",
+		sutHostURL, pathPrefix, template, preset, memoryID)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -253,16 +254,16 @@ func createMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, tem
 	return created
 }
 
-// listMemories sends a GET to list the memories of a session (AIP-132 +
+// listMemories sends a GET to list the memories of a preset (AIP-132 +
 // AIP-158 pagination: page_size/page_token/next_page_token) and returns the
 // parsed ListMemoriesResponse. orderBy is forwarded as the AIP-132 order_by
 // query parameter; an empty string omits it (the default memory_id ascending
 // listing). Calls t.Fatal on non-200 responses.
-func listMemories(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID string, pageSize int, pageToken string, orderBy string) *game.ListMemoriesResponse {
+func listMemories(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, preset string, pageSize int, pageToken string, orderBy string) *game.ListMemoriesResponse {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?page_size=%d",
-		sutHostURL, pathPrefix, template, sessionID, pageSize)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets/%s/memories?page_size=%d",
+		sutHostURL, pathPrefix, template, preset, pageSize)
 	if pageToken != "" {
 		reqURL += "&page_token=" + pageToken
 	}
@@ -283,16 +284,16 @@ func listMemories(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, tem
 	return lmr
 }
 
-// updateMemory sends a PATCH to /api/v1/templates/{template}/sessions/{session}/
-// memories/{memory} with the Memory body {name, content} and update_mask
-// (AIP-134 — the only mutable Memory field is content). Returns the HTTP
-// status code and response body; does NOT fail on non-200 (used to assert
-// the NOT_FOUND contract).
-func updateMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID, memoryID, content, updateMask string) (int, []byte) {
+// updateMemory sends a PATCH to
+// /api/v1/templates/{template}/presets/{preset}/memories/{memory} with the
+// Memory body {name, content} and update_mask (AIP-134 — the only mutable
+// Memory field is content). Returns the HTTP status code and response body;
+// does NOT fail on non-200 (used to assert the NOT_FOUND contract).
+func updateMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, preset, memoryID, content, updateMask string) (int, []byte) {
 	t.Helper()
 
 	patch := &game.Memory{
-		Name:    game.MemoryName{TemplateID: template, SessionID: sessionID, MemoryID: memoryID}.String(),
+		Name:    game.MemoryName{TemplateID: template, PresetID: preset, MemoryID: memoryID}.String(),
 		Content: content,
 	}
 	body, err := protojson.Marshal(patch)
@@ -300,8 +301,8 @@ func updateMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, tem
 		t.Fatalf("protojson.Marshal patch Memory: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories/%s?update_mask=%s",
-		sutHostURL, pathPrefix, template, sessionID, memoryID, updateMask)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets/%s/memories/%s?update_mask=%s",
+		sutHostURL, pathPrefix, template, preset, memoryID, updateMask)
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPatch, reqURL, sutEnvName, body)
 	return resp.StatusCode, respBody
 }
@@ -309,11 +310,11 @@ func updateMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, tem
 // deleteMemory sends a DELETE for a Memory resource (AIP-135). Returns the
 // HTTP status code; does NOT fail on non-200 (used to assert the NOT_FOUND
 // contract).
-func deleteMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, sessionID, memoryID string) int {
+func deleteMemory(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, template, preset, memoryID string) int {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories/%s",
-		sutHostURL, pathPrefix, template, sessionID, memoryID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets/%s/memories/%s",
+		sutHostURL, pathPrefix, template, preset, memoryID)
 	resp, _ := doHTTPTrace(t, ctx, http.MethodDelete, reqURL, sutEnvName, nil)
 	return resp.StatusCode
 }
