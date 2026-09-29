@@ -164,7 +164,7 @@
 - **官方文档**：[Vitest](https://vitest.dev/)、[Testing Library: React Testing Library](https://testing-library.com/docs/react-testing-library/intro/)
 - **技术文章/技术参考文档**：`specs/071-memory-preset-scope/spec.md`（FR-016/FR-017、US6 验收场景 1-3）、`specs/071-memory-preset-scope/contracts/web-memory-view.md`（§4 文案约束）；既有代码参考：`projects/game/web/frontend/src/components/WikiView.tsx`（L404 空态 "…planner 也能检索到"、L311 占位 "如 开局-左上角" 两处修正点）、`projects/game/web/frontend/src/components/WikiView.test.tsx`（断言落点）；`specs/048-js-esm-migration/contracts/esm-package-conventions.md`、`specs/019-js-test-reliability/contracts/run-vitest-shim.md`
 
-- [ ] T021 [US6] 在 `projects/game/web/frontend/src/components/WikiView.tsx` 修正两处场景化文案：空态句改为中性表述（消费方以"agent/助手"指代，如"新建一条把知识沉淀下来，agent 也能检索到"）、创建表单 title 占位示例改为中性内容（去扫雷局面示例）；`WikiView.test.tsx` 增加断言——两处文案中性化 + **场景词扫描断言**（复用 T019 产出的共享 helper `projects/game/web/frontend/src/scene-words.ts`，覆盖 WikiView 全部用户可见文案）；确认 `PresetsView`/对话页场景词汇数据呈现零改动（FR-017，不触碰）
+- [X] T021 [US6] 在 `projects/game/web/frontend/src/components/WikiView.tsx` 修正两处场景化文案：空态句改为中性表述（消费方以"agent/助手"指代，如"新建一条把知识沉淀下来，agent 也能检索到"）、创建表单 title 占位示例改为中性内容（去扫雷局面示例）；`WikiView.test.tsx` 增加断言——两处文案中性化 + **场景词扫描断言**（复用 T019 产出的共享 helper `projects/game/web/frontend/src/scene-words.ts`，覆盖 WikiView 全部用户可见文案）；确认 `PresetsView`/对话页场景词汇数据呈现零改动（FR-017，不触碰）
 
 **Checkpoint**: 基础能力呈现零场景污染（SC-007）。
 

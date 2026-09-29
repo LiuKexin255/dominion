@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 // WikiView 组件测试（契约 specs/069-wiki-template-web/contracts/web-wiki-view.md
 // §3-4 与 §5 验收锚点：搜索/空关键词 List、创建成功入列、重名错误呈现、编辑
-// 保存、二步删除、空态/错误态、查看全文、404 并发删除）。Mock 约定照
-// style/javascript.md：vi.fn() test-double + 对被拦截调用做正向断言。
+// 保存、二步删除、空态/错误态、查看全文、404 并发删除）。文案场景无关断言
+// （specs/071-memory-preset-scope/spec.md FR-016、US6）复用共享扫描 helper
+// projects/game/web/frontend/src/scene-words.ts。Mock 约定照 style/javascript.md：
+// vi.fn() test-double + 对被拦截调用做正向断言。
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WikiView } from './WikiView.js'
+import { findSceneWordsIn } from '../scene-words.js'
 
 // vitest does not expose a global afterEach here (no `globals: true`), so RTL's
 // auto-cleanup never registers — clean up explicitly to keep test DOM isolated.
@@ -219,6 +222,11 @@ describe('WikiView', () => {
     expect(screen.getByTestId('wiki-form')).toBeTruthy()
     // 独占表单：编辑期间列表不渲染。
     expect(screen.queryByTestId('wiki-item')).toBeNull()
+    // 标题占位为中性示例（specs/071-memory-preset-scope/spec.md FR-016），
+    // 不使用场景局面示例。
+    expect((screen.getByTestId('wiki-title-input') as HTMLInputElement).placeholder).toBe(
+      '如 常见问题',
+    )
 
     fireEvent.change(screen.getByTestId('wiki-title-input'), { target: { value: '新条目' } })
     fireEvent.change(screen.getByTestId('wiki-content-input'), {
@@ -399,6 +407,10 @@ describe('WikiView', () => {
 
     const empty = await screen.findByTestId('wiki-empty')
     expect(empty.textContent).toContain('还没有 wiki 条目')
+    // 消费方以中性词指代（specs/071-memory-preset-scope/spec.md FR-016）：
+    // 空态不出现场景角色词。
+    expect(empty.textContent).toContain('agent')
+    expect(empty.textContent).not.toContain('planner')
     fireEvent.click(screen.getByTestId('wiki-empty-create'))
     expect(screen.getByTestId('wiki-form')).toBeTruthy()
     expect(screen.queryByTestId('wiki-empty')).toBeNull()
@@ -435,5 +447,44 @@ describe('WikiView', () => {
       expect(fetchMock).toHaveBeenLastCalledWith(`${LIST_BASE}?page_size=20`, undefined)
     })
     expect((await screen.findByTestId('wiki-title')).textContent).toBe('开局-左上角')
+  })
+
+  it('场景词扫描：空态/创建表单/搜索空态/列表渲染输出均无场景词', async () => {
+    // 扫描范围 = WikiView 渲染子树的全部用户可见文案（文本节点 +
+    // placeholder/aria-label/title 属性面——契约
+    // specs/071-memory-preset-scope/contracts/web-memory-view.md §5 锚点 2）。
+    // 错误文案为服务端消息透传（非视图自作文案），不在扫描面。
+    const scan = (): void => {
+      expect(findSceneWordsIn(screen.getByTestId('wiki-view'))).toEqual([])
+    }
+
+    // 空态 → 创建表单（标题占位示例面）→ 搜索空态。
+    fetchMock = makeFetchMock({ initial: [] })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<WikiView template="saolei" />)
+
+    await screen.findByTestId('wiki-empty')
+    scan()
+
+    fireEvent.click(screen.getByTestId('wiki-empty-create'))
+    expect(screen.getByTestId('wiki-form')).toBeTruthy()
+    scan()
+
+    fireEvent.click(screen.getByTestId('wiki-cancel'))
+    await screen.findByTestId('wiki-search-input')
+    fireEvent.change(screen.getByTestId('wiki-search-input'), { target: { value: '无匹配关键词' } })
+    fireEvent.click(screen.getByTestId('wiki-search-submit'))
+    await waitFor(() => {
+      expect(screen.getByTestId('wiki-empty').textContent).toContain('没有匹配')
+    })
+    scan()
+
+    // 列表态（默认 fixture：标题、更新时间与行内操作）。
+    cleanup()
+    fetchMock = makeFetchMock()
+    vi.stubGlobal('fetch', fetchMock)
+    render(<WikiView template="saolei" />)
+    await screen.findByTestId('wiki-item')
+    scan()
   })
 })

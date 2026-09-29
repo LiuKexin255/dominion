@@ -6,7 +6,9 @@
 // 纯前端 state（搜索词、分页 token、表单模式、删除确认），与 session/preset
 // 视图互斥渲染。布局与表单样式复用 theme.css 的 presets-* 类（同一管理视图
 // 形态的既有样式），标题用 Input、正文用原生 <textarea>——primitives 无专用
-// Textarea，persona 编辑先例见 components/PresetsView.tsx。
+// Textarea，persona 编辑先例见 components/PresetsView.tsx。用户可见文案场景
+// 无关（specs/071-memory-preset-scope/spec.md FR-016）：消费方以「agent」指代，
+// 表单示例用中性内容，不出现场景角色词与场景局面示例。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ApiError } from '../api/conversation.js'
@@ -308,7 +310,7 @@ export function WikiView({ template }: WikiViewProps) {
               aria-label="wiki 标题"
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
-              placeholder="如 开局-左上角"
+              placeholder="如 常见问题"
             />
           </label>
           <label className="preset-form-field" htmlFor="wiki-content-input">
@@ -401,7 +403,7 @@ export function WikiView({ template }: WikiViewProps) {
           {!loading && items.length === 0 && error === null ? (
             <div className="presets-empty" data-testid="wiki-empty">
               {query === ''
-                ? '还没有 wiki 条目。新建一条把知识沉淀下来，planner 也能检索到。'
+                ? '还没有 wiki 条目。新建一条把知识沉淀下来，agent 也能检索到。'
                 : `没有匹配「${query}」的条目，换个关键词或浏览全部。`}
               <div className="presets-empty-actions">
                 <Button
