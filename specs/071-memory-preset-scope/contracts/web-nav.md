@@ -1,5 +1,7 @@
 # Contract: 侧栏两级导航（浮出菜单）
 
+> **[SUPERSEDED — see Feature 072]**: [`specs/072-web-nav-redesign/contracts/web-nav.md`](../../072-web-nav-redesign/contracts/web-nav.md) supersedes 本文——入口由「知识」文本按钮改为 ☰ 图标菜单（primitives `Menu`，分组可扩展）、选中态呈现与左栏 session 条目跨视图交互按 072 终态为准；两级结构与"浮层关闭不改当前视图"语义延续。
+
 **Feature**: specs/071-memory-preset-scope/spec.md（US5/FR-015；Clarifications Session 2026-09-28 Q2 裁定 popover）| **改动面**: `src/App.tsx` 侧栏 `view-switch` 区 + `src/theme.css`
 
 ## 1. 结构（两级）

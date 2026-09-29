@@ -1891,9 +1891,9 @@ describe('App 双视图切换', () => {
   })
 })
 
-// ─── App 侧栏两级视图导航（specs/071-memory-preset-scope/contracts/web-nav.md
-// ─── §5 验收锚点 1/2/3：一级仅 2 直达 + 1 入口、浮层开关/外点关闭/选中态保持、
-// ─── 管理视图互斥、既有直达零回归） ─────────────────────────────────────────
+// ─── App 侧栏两级视图导航（specs/072-web-nav-redesign/contracts/web-nav.md
+// ─── §5 验收锚点 1/3/4：一级仅 2 直达 + 1 图标入口、菜单开关/外点-Esc 关闭/
+// ─── 选中态保持、管理视图互斥、既有直达零回归） ────────────────────────────
 
 // memory 管理视图用例的 preset 与集合 route：preset 选择器取
 // listPresets(template)（全角色），集合按默认序取该 preset 首页
@@ -1945,59 +1945,79 @@ describe('App 侧栏两级视图导航', () => {
     vi.unstubAllGlobals()
   })
 
-  it('一级仅 2 直达 + 1 入口；入口 toggle 浮层、点选切换并关闭、外点/Esc 仅关闭、选中态保持', async () => {
+  it('一级仅 2 直达 + 1 图标入口；入口 toggle 菜单、点选切换并关闭、外点/Esc 仅关闭、选中态保持', async () => {
     render(<App />)
     expect(await screen.findByTestId('empty-hint')).toBeTruthy()
 
-    // 锚点 1/3：一级恰 3 个直接子元素（sessions/presets 直达 + 知识入口容器）；
-    // wiki 不再平铺一级，二级项渲染于浮层内而非侧栏流内。
+    // 锚点 1/4：一级恰 3 个直接子元素（sessions/presets 直达 + ☰ 入口的 Menu
+    // 锚定 wrapper）；wiki/memory 渲染于 Menu 列表内而非侧栏流内。
     const switcher = screen.getByTestId('view-switch')
     expect(switcher.children).toHaveLength(3)
     expect(screen.getByTestId('view-sessions')).toBeTruthy()
     expect(screen.getByTestId('view-presets')).toBeTruthy()
-    const entry = screen.getByTestId('view-knowledge')
+    const entry = screen.getByTestId('view-more')
+    // 图标-only（SC-001 不换行防护）：有可访问名、无文本子节点
+    // （WAI-ARIA APG menu-button 的按钮语义，specs/072-web-nav-redesign/
+    // contracts/web-nav.md §4）。
+    expect(entry.getAttribute('aria-label')).toBe('更多视图')
+    expect(entry.getAttribute('title')).toBe('更多视图')
+    expect(entry.textContent).toBe('')
     expect(entry.getAttribute('aria-haspopup')).toBe('menu')
     expect(entry.getAttribute('aria-expanded')).toBe('false')
-    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
-    expect(screen.queryByTestId('view-wiki')).toBeNull()
-    expect(screen.queryByTestId('view-memory')).toBeNull()
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Wiki' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Memory' })).toBeNull()
 
-    // 点入口 → 弹浮层（toggle）；wiki 项在浮层内、侧栏一级子元素数不变。
+    // 点入口 → 展开菜单（toggle）；分组标签「知识」与两个二级项经 role 查询
+    // 可达，侧栏一级子元素数不变（结构断言：二级项在 Menu 列表内）。
     fireEvent.click(entry)
-    const menu = await screen.findByTestId('knowledge-menu')
+    const menu = await screen.findByRole('menu')
     expect(entry.getAttribute('aria-expanded')).toBe('true')
-    expect(within(menu).getByTestId('view-wiki')).toBeTruthy()
+    expect(within(menu).getByText('知识')).toBeTruthy()
+    expect(within(menu).getByRole('menuitem', { name: 'Wiki' })).toBeTruthy()
+    expect(within(menu).getByRole('menuitem', { name: 'Memory' })).toBeTruthy()
     expect(switcher.children).toHaveLength(3)
-    // 结构断言：浮层挂在入口容器内（二级项不进侧栏一级流，底部行数恒定）。
-    expect(menu.parentElement?.className).toBe('view-menu')
+    expect(entry.parentElement?.contains(menu)).toBe(true)
 
     // 再点入口 → 关闭（toggle），当前视图不变。
     fireEvent.click(entry)
-    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(screen.getByTestId('empty-hint')).toBeTruthy()
 
-    // 点浮层内 wiki → 切视图且浮层关闭；入口呈现当前选中视图标识（选中态保持）。
+    // 点菜单内 wiki → 切视图且菜单关闭；入口呈 data-active 激活态且仍无文本；
+    // 再次打开菜单时当前二级项带选中标记（Menu selectedId 默认 selection=
+    // 'check'：选中行尾随勾图标，未选中行无）。
     fireEvent.click(entry)
-    fireEvent.click(within(screen.getByTestId('knowledge-menu')).getByTestId('view-wiki'))
+    fireEvent.click(
+      within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Wiki' }),
+    )
     expect(await screen.findByTestId('wiki-view')).toBeTruthy()
-    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(entry.getAttribute('aria-expanded')).toBe('false')
     expect(entry.getAttribute('data-active')).toBe('true')
-    expect(entry.textContent).toContain('Wiki')
+    expect(entry.textContent).toBe('')
 
-    // 浮层开启时点浮层外部：仅关闭浮层，视图与选中态保持（不回退默认视图）。
     fireEvent.click(entry)
-    expect(await screen.findByTestId('knowledge-menu')).toBeTruthy()
-    fireEvent.mouseDown(document.body)
-    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    const wikiMenu = await screen.findByRole('menu')
+    expect(
+      within(wikiMenu).getByRole('menuitem', { name: 'Wiki' }).querySelector('svg'),
+    ).not.toBeNull()
+    expect(
+      within(wikiMenu).getByRole('menuitem', { name: 'Memory' }).querySelector('svg'),
+    ).toBeNull()
+
+    // 菜单开启时点菜单外部（Menu 监听 document 的 pointerdown）：仅关闭菜单，
+    // 视图与选中态保持（不回退默认视图）。
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(screen.getByTestId('wiki-view')).toBeTruthy()
     expect(entry.getAttribute('data-active')).toBe('true')
 
-    // Esc：同样仅关闭浮层、不改当前视图。
+    // Esc（Menu 监听 document 的 keydown）：同样仅关闭菜单、不改当前视图。
     fireEvent.click(entry)
-    expect(await screen.findByTestId('knowledge-menu')).toBeTruthy()
+    expect(await screen.findByRole('menu')).toBeTruthy()
     fireEvent.keyDown(document.body, { key: 'Escape' })
-    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(screen.getByTestId('wiki-view')).toBeTruthy()
     expect(entry.getAttribute('data-active')).toBe('true')
   })
@@ -2008,21 +2028,23 @@ describe('App 侧栏两级视图导航', () => {
 
     // 二级菜单进入 wiki：主区渲染 WikiView（固定 saolei template），会话空态
     // 与 presets 视图均不渲染。
-    fireEvent.click(screen.getByTestId('view-knowledge'))
-    fireEvent.click(within(screen.getByTestId('knowledge-menu')).getByTestId('view-wiki'))
+    fireEvent.click(screen.getByTestId('view-more'))
+    fireEvent.click(
+      within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Wiki' }),
+    )
     expect(await screen.findByTestId('wiki-view')).toBeTruthy()
     expect((await screen.findByTestId('wiki-title')).textContent).toBe('开局-左上角')
     expect(screen.queryByTestId('empty-hint')).toBeNull()
     expect(screen.queryByTestId('presets-view')).toBeNull()
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/templates/saolei/wikis?page_size=20', undefined)
 
-    // presets 直达：wiki 不再渲染。浮层开启时点一级直达按钮同样切换视图并
-    // 关闭浮层（web-nav.md §2 行为表）。
-    fireEvent.click(screen.getByTestId('view-knowledge'))
-    expect(await screen.findByTestId('knowledge-menu')).toBeTruthy()
+    // presets 直达：wiki 不再渲染。菜单开启时点一级直达按钮同样切换视图并
+    // 关闭菜单（specs/072-web-nav-redesign/contracts/web-nav.md §2 行为表）。
+    fireEvent.click(screen.getByTestId('view-more'))
+    expect(await screen.findByRole('menu')).toBeTruthy()
     fireEvent.click(screen.getByTestId('view-presets'))
     expect(await screen.findByTestId('presets-view')).toBeTruthy()
-    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(screen.queryByTestId('wiki-view')).toBeNull()
 
     // sessions 直达：回到会话空态，其余管理视图不渲染。
@@ -2031,32 +2053,32 @@ describe('App 侧栏两级视图导航', () => {
     expect(screen.queryByTestId('wiki-view')).toBeNull()
     expect(screen.queryByTestId('presets-view')).toBeNull()
 
-    // 直达选中态与入口互斥：sessions 选中时入口不呈现二级视图标识。
+    // 直达选中态与入口互斥：sessions 选中时 ☰ 入口不呈激活态。
     expect(screen.getByTestId('view-sessions').getAttribute('data-active')).toBe('true')
-    expect(screen.getByTestId('view-knowledge').getAttribute('data-active')).toBeNull()
+    expect(screen.getByTestId('view-more').getAttribute('data-active')).toBeNull()
   })
 
-  it('浮层 memory 项：切入 MemoryView（固定 saolei template），四视图互斥且选中态保持', async () => {
+  it('菜单 memory 项：切入 MemoryView（固定 saolei template），四视图互斥且选中态保持', async () => {
     render(<App />)
     expect(await screen.findByTestId('empty-hint')).toBeTruthy()
 
-    const entry = screen.getByTestId('view-knowledge')
-    // 浮层承载 wiki 与 memory 两个二级项（结构断言：二级项渲染于浮层内，
-    // 一级子元素数不随二级项增加——web-nav.md §5 锚点 3）。
+    const entry = screen.getByTestId('view-more')
+    // 菜单承载 wiki 与 memory 两个二级项（结构断言：二级项渲染于 Menu 列表内，
+    // 一级子元素数不随二级项增加——contracts/web-nav.md §5 锚点 4）。
     fireEvent.click(entry)
-    const menu = await screen.findByTestId('knowledge-menu')
-    expect(within(menu).getByTestId('view-wiki')).toBeTruthy()
-    fireEvent.click(within(menu).getByTestId('view-memory'))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Wiki' })).toBeTruthy()
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Memory' }))
 
-    // 主区渲染 MemoryView；点击后浮层关闭，其余管理视图与会话空态均不渲染。
+    // 主区渲染 MemoryView；点击后菜单关闭，其余管理视图与会话空态均不渲染。
     expect(await screen.findByTestId('memory-view')).toBeTruthy()
-    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(screen.queryByTestId('empty-hint')).toBeNull()
     expect(screen.queryByTestId('wiki-view')).toBeNull()
     expect(screen.queryByTestId('presets-view')).toBeNull()
-    // 入口呈现当前选中视图标识（浮层关闭后选中态保持）。
+    // 入口呈激活态且无视图名文本（菜单关闭后激活态保持，两行问题根除）。
     expect(entry.getAttribute('data-active')).toBe('true')
-    expect(entry.textContent).toContain('Memory')
+    expect(entry.textContent).toBe('')
 
     // 选择 preset 后按视图默认序取该 preset 的集合。
     fireEvent.change(screen.getByTestId('memory-preset-select'), {
@@ -2067,7 +2089,9 @@ describe('App 侧栏两级视图导航', () => {
 
     // 四视图互斥补全：依次切到 wiki/presets/sessions，任一时刻仅一个管理视图渲染。
     fireEvent.click(entry)
-    fireEvent.click(within(screen.getByTestId('knowledge-menu')).getByTestId('view-wiki'))
+    fireEvent.click(
+      within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Wiki' }),
+    )
     expect(await screen.findByTestId('wiki-view')).toBeTruthy()
     expect(screen.queryByTestId('memory-view')).toBeNull()
 

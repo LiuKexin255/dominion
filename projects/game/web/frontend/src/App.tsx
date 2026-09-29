@@ -2,8 +2,8 @@
 // memory 管理）。无路由库——会话视图由选中 session 状态驱动，其余视图为单页
 // state 切换（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2、
 // specs/069-wiki-template-web/contracts/web-wiki-view.md §1）；侧栏一级仅
-// sessions/presets 直达，wiki/memory 经固定「知识」入口的浮出菜单到达
-// （specs/071-memory-preset-scope/contracts/web-nav.md §1-3）。每
+// sessions/presets 直达，wiki/memory 经 ☰ 图标菜单入口的分组二级菜单到达
+// （specs/072-web-nav-redesign/contracts/web-nav.md §1-3）。每
 // session 的 ChatStore 以资源名为键存于 App 级 Map：切换/返回列表不丢各自
 // 进度（发送中的 team 流由 store 持有、在后台继续归约，fetch 不中断——
 // FR-014/FR-017 前端侧）。会话面板在所有视图下都常驻挂载：视图切换仅以
@@ -13,7 +13,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './dsh-theme/index.css'
 import './theme.css'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ApiError, sendStream } from './api/conversation.js'
 import type { ChatEvent } from './api/conversation.js'
 import {
@@ -49,21 +50,59 @@ const TEMPLATE_SAOLEI = 'saolei'
 // 数量 = 成员数，saolei 恰 player/planner——切换器恰 3 视图：团队 + 2 成员）。
 const MEMBER_VIEWS = ['player', 'planner'] as const
 
-// 侧栏视图导航的四个视图（specs/071-memory-preset-scope/contracts/web-nav.md
-// §3）：sessions/presets 为一级直达，wiki/memory 经「知识」入口的浮层二级
+// 侧栏视图导航的四个视图（specs/072-web-nav-redesign/contracts/web-nav.md §3）：
+// sessions/presets 为一级直达，wiki/memory 经 ☰ 入口的 primitives Menu 二级
 // 菜单到达（preset 视图见
 // specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2，wiki 视图见
 // specs/069-wiki-template-web/contracts/web-wiki-view.md §1，memory 视图见
 // specs/071-memory-preset-scope/contracts/web-memory-view.md）。
 type AppView = 'sessions' | 'presets' | 'wiki' | 'memory'
 
-// VIEW_LABELS 提供视图显示名：直达按钮文案与「知识」入口的选中视图标识
-// （web-nav.md §3）同源。
+// VIEW_LABELS 提供视图显示名：一级直达按钮文案与二级菜单项文案
+// （specs/072-web-nav-redesign/contracts/web-nav.md §3）同源。
 const VIEW_LABELS: Record<AppView, string> = {
   sessions: 'Sessions',
   presets: 'Presets',
   wiki: 'Wiki',
   memory: 'Memory',
+}
+
+// 二级菜单视图的 id 域（specs/072-web-nav-redesign/contracts/web-nav.md §1）：
+// 菜单条目 id 与 onSelect 的收窄断言同源于此——新增二级类别时 id 必须属于
+// AppView，否则类型检查失败，避免静默放入非法视图 id。
+const SECONDARY_VIEWS = ['wiki', 'memory'] as const satisfies readonly AppView[]
+
+// ☰ 入口菜单的条目（specs/072-web-nav-redesign/contracts/web-nav.md §1）：
+// `{type:'label'}` 为分组标题行，其后为该组视图项（id 取自 SECONDARY_VIEWS）；
+// 新增二级类别只需追加分组段与 id，入口按钮与侧栏底部行数不变（MenuEntry 数据
+// 行类型见
+// projects/game/web/frontend/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/Menu.d.ts）。
+const KNOWLEDGE_MENU_ITEMS: MenuEntry[] = [
+  { type: 'label', id: 'g-knowledge', text: '知识' },
+  ...SECONDARY_VIEWS.map((id) => ({ id, label: VIEW_LABELS[id] })),
+]
+
+// ☰ 入口图标：primitives 图标集无汉堡 glyph
+// （projects/game/web/frontend/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/icons/index.d.ts），
+// 内联 SVG 为 specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §1 允许的
+// 图标按钮载体；viewBox（0 0 16 16）、currentColor 描边与 aria-hidden 的属性形态
+// 对齐 primitives 图标实现，而 strokeLinecap="round" 是本入口的显式设计要求
+// （primitives 图标默认 butt cap）。仅此一处使用故随 App 定义。
+function HamburgerIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
+    </svg>
+  )
 }
 
 function errorMessage(err: unknown): string {
@@ -476,8 +515,8 @@ function ChatPanel({
 
 export function App() {
   const [view, setView] = useState<AppView>('sessions')
-  // 「知识」浮层的开闭瞬态（web-nav.md §3：不承载视图状态——关闭时当前视图
-  // 与选中态保持）。
+  // ☰ 菜单的开闭瞬态（specs/072-web-nav-redesign/contracts/web-nav.md §3：不
+  // 承载视图状态——关闭时当前视图与选中态保持）。
   const [knowledgeMenuOpen, setKnowledgeMenuOpen] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
@@ -496,34 +535,8 @@ export function App() {
     selectedRef.current = selected
   }, [selected])
 
-  // 一级「知识」入口与浮层共用的包裹节点：浮层外点判定以"事件目标是否落在
-  // 该节点内"为界——入口按钮同属节点内，点击它是 toggle 而非"浮层外部"
-  // （web-nav.md §2 行为表）。
-  const menuRef = useRef<HTMLDivElement | null>(null)
-
-  // 浮层开启期间挂载外点关闭与 Esc 关闭（web-nav.md §2 行为表）：两者都只关
-  // 浮层、不改当前视图。mousedown 先于 click 触发，外点关闭先于外部元素自身
-  // 的点击行为落地。
-  useEffect(() => {
-    if (!knowledgeMenuOpen) return
-    function closeOnOutsideMouseDown(event: MouseEvent) {
-      if (menuRef.current === null) return
-      if (menuRef.current.contains(event.target as Node)) return
-      setKnowledgeMenuOpen(false)
-    }
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setKnowledgeMenuOpen(false)
-    }
-    document.addEventListener('mousedown', closeOnOutsideMouseDown)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutsideMouseDown)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [knowledgeMenuOpen])
-
-  // 视图切换统一入口：一级直达与二级菜单项共用——切换视图的同时关闭浮层
-  // （web-nav.md §2 行为表）。
+  // 视图切换统一入口：一级直达与二级菜单项共用——切换视图的同时关闭菜单
+  // （specs/072-web-nav-redesign/contracts/web-nav.md §2 行为表）。
   const selectView = useCallback((next: AppView) => {
     setView(next)
     setKnowledgeMenuOpen(false)
@@ -596,7 +609,9 @@ export function App() {
     [],
   )
 
-  // wiki/memory 属二级菜单视图：「知识」入口呈现它们的选中态（web-nav.md §3）。
+  // wiki/memory 属二级菜单视图：☰ 入口以激活态示意"菜单内有激活项"
+  // （specs/072-web-nav-redesign/contracts/web-nav.md §3）；当前具体视图在
+  // 菜单打开时经 selectedId 选中标记可见，入口本身不拼接视图名文本。
   const knowledgeView = view === 'wiki' || view === 'memory'
 
   return (
@@ -635,44 +650,32 @@ export function App() {
           >
             {VIEW_LABELS.presets}
           </Button>
-          {/* 一级「知识」入口 + 浮出二级菜单（web-nav.md §1/§2）：入口 toggle
-              浮层，浮层内挂二级知识视图项（wiki/memory）。 */}
-          <div className="view-menu" ref={menuRef}>
-            <Button
-              variant={knowledgeView ? 'primary' : 'ghost'}
-              data-testid="view-knowledge"
-              data-active={knowledgeView || undefined}
-              aria-haspopup="menu"
-              aria-expanded={knowledgeMenuOpen}
-              onClick={() => setKnowledgeMenuOpen((open) => !open)}
-            >
-              知识{knowledgeView ? ` · ${VIEW_LABELS[view]}` : ''}
-            </Button>
-            {knowledgeMenuOpen && (
-              <div className="knowledge-menu" role="menu" data-testid="knowledge-menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="knowledge-menu-item"
-                  data-testid="view-wiki"
-                  data-active={view === 'wiki' || undefined}
-                  onClick={() => selectView('wiki')}
-                >
-                  {VIEW_LABELS.wiki}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="knowledge-menu-item"
-                  data-testid="view-memory"
-                  data-active={view === 'memory' || undefined}
-                  onClick={() => selectView('memory')}
-                >
-                  {VIEW_LABELS.memory}
-                </button>
-              </div>
-            )}
-          </div>
+          {/* 一级 ☰ 图标菜单入口 + primitives Menu 二级菜单
+              （specs/072-web-nav-redesign/contracts/web-nav.md §1/§2）：入口
+              toggle 菜单；菜单以「知识」分组承载 wiki/memory，键盘漫游与外点/
+              Esc 关闭由 Menu 内建（App 不自维护关闭监听——§2 行为表）。 */}
+          <Menu
+            open={knowledgeMenuOpen}
+            side="top"
+            anchor={
+              <Button
+                size="sm"
+                variant={knowledgeView ? 'primary' : 'ghost'}
+                icon={<HamburgerIcon />}
+                title="更多视图"
+                aria-label="更多视图"
+                aria-haspopup="menu"
+                aria-expanded={knowledgeMenuOpen}
+                data-testid="view-more"
+                data-active={knowledgeView || undefined}
+                onClick={() => setKnowledgeMenuOpen((open) => !open)}
+              />
+            }
+            items={KNOWLEDGE_MENU_ITEMS}
+            selectedId={knowledgeView ? view : undefined}
+            onSelect={(id) => selectView(id as (typeof SECONDARY_VIEWS)[number])}
+            onClose={() => setKnowledgeMenuOpen(false)}
+          />
         </div>
       </aside>
       <main className="main">
