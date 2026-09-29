@@ -84,7 +84,7 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/072-web-nav-redesign/spec.md`（Success Criteria SC-001..SC-004 逐项核对）、`specs/072-web-nav-redesign/contracts/web-nav.md`（§5 验收锚点 1-4 逐项核对）
 
-- [ ] T004 全量回归：`bazel test //projects/game/web/...` 全绿 + `bazel build //projects/game/...` 通过；按 SC-001..SC-004 与 contracts/web-nav.md §5 锚点逐项核对；显式确认零改动面（`SessionList.tsx`/`SessionList.test.tsx`、`PresetsView`/`WikiView`/`MemoryView` 及其测试、`theme.css` 除 T001 删除段外、服务端全部面）未受影响
+- [X] T004 全量回归：`bazel test //projects/game/web/...` 全绿 + `bazel build //projects/game/...` 通过；按 SC-001..SC-004 与 contracts/web-nav.md §5 锚点逐项核对；显式确认零改动面（`SessionList.tsx`/`SessionList.test.tsx`、`PresetsView`/`WikiView`/`MemoryView` 及其测试、`theme.css` 除 T001 删除段外、服务端全部面）未受影响
 
 ---
 
