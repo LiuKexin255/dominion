@@ -1,7 +1,9 @@
-// 应用装配：侧栏（session 列表 + 视图切换）+ 主区（对话 / preset / wiki
-// 管理）。无路由库——会话视图由选中 session 状态驱动，presets 与 wiki 视图
-// 为单页 state 切换（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md
-// §2、specs/069-wiki-template-web/contracts/web-wiki-view.md §1）。每
+// 应用装配：侧栏（session 列表 + 两级视图导航）+ 主区（对话 / preset / wiki
+// 管理）。无路由库——会话视图由选中 session 状态驱动，其余视图为单页 state
+// 切换（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2、
+// specs/069-wiki-template-web/contracts/web-wiki-view.md §1）；侧栏一级仅
+// sessions/presets 直达，wiki/memory 经固定「知识」入口的浮出菜单到达
+// （specs/071-memory-preset-scope/contracts/web-nav.md §1-3）。每
 // session 的 ChatStore 以资源名为键存于 App 级 Map：切换/返回列表不丢各自
 // 进度（发送中的 team 流由 store 持有、在后台继续归约，fetch 不中断——
 // FR-014/FR-017 前端侧）。会话面板在所有视图下都常驻挂载：视图切换仅以
@@ -46,10 +48,22 @@ const TEMPLATE_SAOLEI = 'saolei'
 // 数量 = 成员数，saolei 恰 player/planner——切换器恰 3 视图：团队 + 2 成员）。
 const MEMBER_VIEWS = ['player', 'planner'] as const
 
-// 侧栏底部视图切换的三个视图（sessions | presets | wiki；preset 视图见
+// 侧栏视图导航的四个视图（specs/071-memory-preset-scope/contracts/web-nav.md
+// §3）：sessions/presets 为一级直达，wiki/memory 经「知识」入口的浮层二级
+// 菜单到达（preset 视图见
 // specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2，wiki 视图见
-// specs/069-wiki-template-web/contracts/web-wiki-view.md §1）。
-type AppView = 'sessions' | 'presets' | 'wiki'
+// specs/069-wiki-template-web/contracts/web-wiki-view.md §1，memory 视图见
+// specs/071-memory-preset-scope/contracts/web-memory-view.md）。
+type AppView = 'sessions' | 'presets' | 'wiki' | 'memory'
+
+// VIEW_LABELS 提供视图显示名：直达按钮文案与「知识」入口的选中视图标识
+// （web-nav.md §3）同源。
+const VIEW_LABELS: Record<AppView, string> = {
+  sessions: 'Sessions',
+  presets: 'Presets',
+  wiki: 'Wiki',
+  memory: 'Memory',
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -461,6 +475,9 @@ function ChatPanel({
 
 export function App() {
   const [view, setView] = useState<AppView>('sessions')
+  // 「知识」浮层的开闭瞬态（web-nav.md §3：不承载视图状态——关闭时当前视图
+  // 与选中态保持）。
+  const [knowledgeMenuOpen, setKnowledgeMenuOpen] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -477,6 +494,39 @@ export function App() {
   useEffect(() => {
     selectedRef.current = selected
   }, [selected])
+
+  // 一级「知识」入口与浮层共用的包裹节点：浮层外点判定以"事件目标是否落在
+  // 该节点内"为界——入口按钮同属节点内，点击它是 toggle 而非"浮层外部"
+  // （web-nav.md §2 行为表）。
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  // 浮层开启期间挂载外点关闭与 Esc 关闭（web-nav.md §2 行为表）：两者都只关
+  // 浮层、不改当前视图。mousedown 先于 click 触发，外点关闭先于外部元素自身
+  // 的点击行为落地。
+  useEffect(() => {
+    if (!knowledgeMenuOpen) return
+    function closeOnOutsideMouseDown(event: MouseEvent) {
+      if (menuRef.current === null) return
+      if (menuRef.current.contains(event.target as Node)) return
+      setKnowledgeMenuOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setKnowledgeMenuOpen(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsideMouseDown)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideMouseDown)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [knowledgeMenuOpen])
+
+  // 视图切换统一入口：一级直达与二级菜单项共用——切换视图的同时关闭浮层
+  // （web-nav.md §2 行为表）。
+  const selectView = useCallback((next: AppView) => {
+    setView(next)
+    setKnowledgeMenuOpen(false)
+  }, [])
 
   const openSession = useCallback((name: string) => {
     const stores = storesRef.current
@@ -545,6 +595,9 @@ export function App() {
     [],
   )
 
+  // wiki/memory 属二级菜单视图：「知识」入口呈现它们的选中态（web-nav.md §3）。
+  const knowledgeView = view === 'wiki' || view === 'memory'
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -568,24 +621,47 @@ export function App() {
           <Button
             variant={view === 'sessions' ? 'primary' : 'ghost'}
             data-testid="view-sessions"
-            onClick={() => setView('sessions')}
+            data-active={view === 'sessions' || undefined}
+            onClick={() => selectView('sessions')}
           >
-            Sessions
+            {VIEW_LABELS.sessions}
           </Button>
           <Button
             variant={view === 'presets' ? 'primary' : 'ghost'}
             data-testid="view-presets"
-            onClick={() => setView('presets')}
+            data-active={view === 'presets' || undefined}
+            onClick={() => selectView('presets')}
           >
-            Presets
+            {VIEW_LABELS.presets}
           </Button>
-          <Button
-            variant={view === 'wiki' ? 'primary' : 'ghost'}
-            data-testid="view-wiki"
-            onClick={() => setView('wiki')}
-          >
-            Wiki
-          </Button>
+          {/* 一级「知识」入口 + 浮出二级菜单（web-nav.md §1/§2）：入口 toggle
+              浮层，浮层内挂二级知识视图项（wiki）。 */}
+          <div className="view-menu" ref={menuRef}>
+            <Button
+              variant={knowledgeView ? 'primary' : 'ghost'}
+              data-testid="view-knowledge"
+              data-active={knowledgeView || undefined}
+              aria-haspopup="menu"
+              aria-expanded={knowledgeMenuOpen}
+              onClick={() => setKnowledgeMenuOpen((open) => !open)}
+            >
+              知识{knowledgeView ? ` · ${VIEW_LABELS[view]}` : ''}
+            </Button>
+            {knowledgeMenuOpen && (
+              <div className="knowledge-menu" role="menu" data-testid="knowledge-menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="knowledge-menu-item"
+                  data-testid="view-wiki"
+                  data-active={view === 'wiki' || undefined}
+                  onClick={() => selectView('wiki')}
+                >
+                  {VIEW_LABELS.wiki}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </aside>
       <main className="main">

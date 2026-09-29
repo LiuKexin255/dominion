@@ -181,11 +181,64 @@ body {
   color: var(--dsw-alias-state-error-primary);
 }
 
-/* 侧栏底部视图切换（sessions | presets，web-frontend.md §2）。 */
+/* 侧栏底部视图切换（一级：sessions/presets 直达 + 「知识」二级入口，
+ * specs/071-memory-preset-scope/contracts/web-nav.md §1）：一级行数恒定，
+ * wiki/memory 收纳于浮层而非平铺（§1 结构、§4 样式）。 */
 .view-switch {
   margin-top: auto;
   display: flex;
   gap: 4px;
+}
+
+/* 二级入口与浮层的定位容器：浮层以自身为 containing block 绝对定位，不占
+ * 侧栏流内空间——二级项数量增长不改变侧栏底部行数（web-nav.md §1）。 */
+.view-menu {
+  position: relative;
+  display: flex;
+}
+
+/* 二级浮出菜单（popover，web-nav.md §1/§2）：自入口向上展开（侧栏底部无
+ * 向下空间），z-index 高于侧栏其余内容；卡片形态沿用管理视图
+ * （--app-panel/--app-border，对齐 .preset-form/.team-settings-panel）。 */
+.knowledge-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 4px);
+  z-index: 10;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* 浮层菜单项形态对齐侧栏条目（.session-item 的 hover/selected 语汇）。 */
+.knowledge-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.knowledge-menu-item:hover {
+  background: rgba(93, 141, 234, 0.12);
+}
+
+/* 当前选中视图的二级项高亮（web-nav.md §3：浮层关闭后选中态保持）。 */
+.knowledge-menu-item[data-active='true'] {
+  border-color: var(--dsw-static-blue-400);
+  background: rgba(93, 141, 234, 0.18);
 }
 
 /* ── preset 管理视图（web-frontend.md §2） ──────────────────────────── */

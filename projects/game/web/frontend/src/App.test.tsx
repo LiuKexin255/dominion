@@ -1891,10 +1891,11 @@ describe('App 双视图切换', () => {
   })
 })
 
-// ─── App 侧栏三视图切换（sessions | presets | wiki；wiki 视图接入见
-// ─── specs/069-wiki-template-web/contracts/web-wiki-view.md §1 与 §5 验收锚点） ──
+// ─── App 侧栏两级视图导航（specs/071-memory-preset-scope/contracts/web-nav.md
+// ─── §5 验收锚点 1/2/3：一级仅 2 直达 + 1 入口、浮层开关/外点关闭/选中态保持、
+// ─── 管理视图互斥、既有直达零回归） ─────────────────────────────────────────
 
-describe('App 侧栏三视图切换', () => {
+describe('App 侧栏两级视图导航', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -1926,26 +1927,93 @@ describe('App 侧栏三视图切换', () => {
     vi.unstubAllGlobals()
   })
 
-  it('三视图互斥渲染：wiki 呈现管理列表，切 presets/sessions 恢复各自视图', async () => {
+  it('一级仅 2 直达 + 1 入口；入口 toggle 浮层、点选切换并关闭、外点/Esc 仅关闭、选中态保持', async () => {
     render(<App />)
     expect(await screen.findByTestId('empty-hint')).toBeTruthy()
 
-    // 侧栏第三视图 wiki：主区渲染 WikiView（固定 saolei template），会话空态
+    // 锚点 1/3：一级恰 3 个直接子元素（sessions/presets 直达 + 知识入口容器）；
+    // wiki 不再平铺一级，二级项渲染于浮层内而非侧栏流内。
+    const switcher = screen.getByTestId('view-switch')
+    expect(switcher.children).toHaveLength(3)
+    expect(screen.getByTestId('view-sessions')).toBeTruthy()
+    expect(screen.getByTestId('view-presets')).toBeTruthy()
+    const entry = screen.getByTestId('view-knowledge')
+    expect(entry.getAttribute('aria-haspopup')).toBe('menu')
+    expect(entry.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.queryByTestId('view-wiki')).toBeNull()
+
+    // 点入口 → 弹浮层（toggle）；wiki 项在浮层内、侧栏一级子元素数不变。
+    fireEvent.click(entry)
+    const menu = await screen.findByTestId('knowledge-menu')
+    expect(entry.getAttribute('aria-expanded')).toBe('true')
+    expect(within(menu).getByTestId('view-wiki')).toBeTruthy()
+    expect(switcher.children).toHaveLength(3)
+    // 结构断言：浮层挂在入口容器内（二级项不进侧栏一级流，底部行数恒定）。
+    expect(menu.parentElement?.className).toBe('view-menu')
+
+    // 再点入口 → 关闭（toggle），当前视图不变。
+    fireEvent.click(entry)
+    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.getByTestId('empty-hint')).toBeTruthy()
+
+    // 点浮层内 wiki → 切视图且浮层关闭；入口呈现当前选中视图标识（选中态保持）。
+    fireEvent.click(entry)
+    fireEvent.click(within(screen.getByTestId('knowledge-menu')).getByTestId('view-wiki'))
+    expect(await screen.findByTestId('wiki-view')).toBeTruthy()
+    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(entry.getAttribute('aria-expanded')).toBe('false')
+    expect(entry.getAttribute('data-active')).toBe('true')
+    expect(entry.textContent).toContain('Wiki')
+
+    // 浮层开启时点浮层外部：仅关闭浮层，视图与选中态保持（不回退默认视图）。
+    fireEvent.click(entry)
+    expect(await screen.findByTestId('knowledge-menu')).toBeTruthy()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.getByTestId('wiki-view')).toBeTruthy()
+    expect(entry.getAttribute('data-active')).toBe('true')
+
+    // Esc：同样仅关闭浮层、不改当前视图。
+    fireEvent.click(entry)
+    expect(await screen.findByTestId('knowledge-menu')).toBeTruthy()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
+    expect(screen.getByTestId('wiki-view')).toBeTruthy()
+    expect(entry.getAttribute('data-active')).toBe('true')
+  })
+
+  it('管理视图互斥渲染；既有 sessions/presets 直达行为零回归', async () => {
+    render(<App />)
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+
+    // 二级菜单进入 wiki：主区渲染 WikiView（固定 saolei template），会话空态
     // 与 presets 视图均不渲染。
-    fireEvent.click(screen.getByTestId('view-wiki'))
+    fireEvent.click(screen.getByTestId('view-knowledge'))
+    fireEvent.click(within(screen.getByTestId('knowledge-menu')).getByTestId('view-wiki'))
     expect(await screen.findByTestId('wiki-view')).toBeTruthy()
     expect((await screen.findByTestId('wiki-title')).textContent).toBe('开局-左上角')
     expect(screen.queryByTestId('empty-hint')).toBeNull()
     expect(screen.queryByTestId('presets-view')).toBeNull()
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/templates/saolei/wikis?page_size=20', undefined)
 
+    // presets 直达：wiki 不再渲染。浮层开启时点一级直达按钮同样切换视图并
+    // 关闭浮层（web-nav.md §2 行为表）。
+    fireEvent.click(screen.getByTestId('view-knowledge'))
+    expect(await screen.findByTestId('knowledge-menu')).toBeTruthy()
     fireEvent.click(screen.getByTestId('view-presets'))
     expect(await screen.findByTestId('presets-view')).toBeTruthy()
+    expect(screen.queryByTestId('knowledge-menu')).toBeNull()
     expect(screen.queryByTestId('wiki-view')).toBeNull()
 
+    // sessions 直达：回到会话空态，其余管理视图不渲染。
     fireEvent.click(screen.getByTestId('view-sessions'))
     expect(await screen.findByTestId('empty-hint')).toBeTruthy()
     expect(screen.queryByTestId('wiki-view')).toBeNull()
     expect(screen.queryByTestId('presets-view')).toBeNull()
+
+    // 直达选中态与入口互斥：sessions 选中时入口不呈现二级视图标识。
+    expect(screen.getByTestId('view-sessions').getAttribute('data-active')).toBe('true')
+    expect(screen.getByTestId('view-knowledge').getAttribute('data-active')).toBeNull()
   })
 })

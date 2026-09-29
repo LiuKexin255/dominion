@@ -125,8 +125,8 @@
 - **官方文档**：[React 官方文档](https://react.dev/learn)（组件/state）；[Vitest](https://vitest.dev/)、[Testing Library: React Testing Library](https://testing-library.com/docs/react-testing-library/intro/)
 - **技术文章/技术参考文档**：`specs/071-memory-preset-scope/contracts/web-nav.md`（全文——结构/行为/状态/样式/验收锚点）、`specs/071-memory-preset-scope/data-model.md`（§4 App 导航状态）、`specs/071-memory-preset-scope/spec.md`（US5 验收场景 1-5）；`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md`（§2 侧栏视图切换基线）；既有代码参考：`projects/game/web/frontend/src/App.tsx`（view-switch 现状）、`projects/game/web/frontend/src/App.test.tsx`（视图切换断言基线）、`projects/game/web/frontend/src/theme.css`（presets-* 管理视图样式形态）；`specs/048-js-esm-migration/contracts/esm-package-conventions.md`、`specs/019-js-test-reliability/contracts/run-vitest-shim.md`
 
-- [ ] T016 [P] [US5] 在 `projects/game/web/frontend/src/theme.css` 补充浮出菜单样式（浮层定位/层级/菜单项形态，沿用 dsh-theme 变量与管理视图形态；`data-testid` 命名按 `contracts/web-nav.md` §4）
-- [ ] T017 [US5] 在 `projects/game/web/frontend/src/App.tsx` 改造侧栏视图导航为两级（依赖 T016；严格按 `specs/071-memory-preset-scope/contracts/web-nav.md` §1-3）：一级 = sessions/presets 直达按钮 + 固定知识入口按钮（wiki/memory 收纳、**本 task 仅挂 wiki 项**，memory 项由 US4 接入）；浮层 `knowledgeMenuOpen` 瞬态（toggle 开关、点选切换视图并关闭、点浮层外部仅关闭不改视图、Esc 关闭）；入口按钮呈现当前选中视图；`AppView` 保持既有 `'wiki'` 值、新增 `'memory'`；主区互斥渲染与会话面板常驻挂载语义不变；`App.test.tsx` 更新（一级仅 2 直达 + 1 入口、浮层开关/外点关闭/选中态保持、互斥渲染、既有直达零回归——`contracts/web-nav.md` §5 锚点 1/2/3）
+- [X] T016 [P] [US5] 在 `projects/game/web/frontend/src/theme.css` 补充浮出菜单样式（浮层定位/层级/菜单项形态，沿用 dsh-theme 变量与管理视图形态；`data-testid` 命名按 `contracts/web-nav.md` §4）
+- [X] T017 [US5] 在 `projects/game/web/frontend/src/App.tsx` 改造侧栏视图导航为两级（依赖 T016；严格按 `specs/071-memory-preset-scope/contracts/web-nav.md` §1-3）：一级 = sessions/presets 直达按钮 + 固定知识入口按钮（wiki/memory 收纳、**本 task 仅挂 wiki 项**，memory 项由 US4 接入）；浮层 `knowledgeMenuOpen` 瞬态（toggle 开关、点选切换视图并关闭、点浮层外部仅关闭不改视图、Esc 关闭）；入口按钮呈现当前选中视图；`AppView` 保持既有 `'wiki'` 值、新增 `'memory'`；主区互斥渲染与会话面板常驻挂载语义不变；`App.test.tsx` 更新（一级仅 2 直达 + 1 入口、浮层开关/外点关闭/选中态保持、互斥渲染、既有直达零回归——`contracts/web-nav.md` §5 锚点 1/2/3）
 
 **Checkpoint**: 导航两级化（wiki 入口迁移完成），侧栏底部行数恒定。
 
