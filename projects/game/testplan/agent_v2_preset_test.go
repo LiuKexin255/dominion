@@ -1,15 +1,17 @@
 // Package testplan contains the agent_v2 team configuration large tests: the
 // preset CRUD closed loop over the stateless configuration face, the team
 // materialization/refresh semantics over the team singleton, the
-// unmaterialized rejection family, the store-derivation chain, and the
-// empty-persona fallback — the US2 configuration concerns
+// unmaterialized rejection family, the store-derivation chain, the
+// empty-persona fallback, and the preset-scoped planner memory snapshot —
+// the US2 configuration concerns
 // (specs/059-agent-v2-team-mode/contracts/team-api.md §2/§6, preset-api.md;
 // the 060 revision of the authoring/compose semantics:
-// specs/060-agent-v2-team-optimize/contracts/preset-derivation.md). Cases
-// are one per concern — style/large_test.md §测试组织. Preset state lives in
-// the agent_v2 Mongo store, so every assertion round-trips through the
-// gateway's direct PresetService routes; the team singleton routes ride the
-// proxy owner affinity.
+// specs/060-agent-v2-team-optimize/contracts/preset-derivation.md; the 071
+// memory scope: specs/071-memory-preset-scope/contracts/dsh-plugins.md §3-4).
+// Cases are one per concern — style/large_test.md §测试组织. Preset state
+// lives in the agent_v2 Mongo store, so every assertion round-trips through
+// the gateway's direct PresetService routes; the team singleton routes ride
+// the proxy owner affinity.
 package testplan
 
 import (
@@ -729,6 +731,70 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 	}
 	if _, text := teamTurnBlocks(turns2[0]); text != teamMemorySnapshotText {
 		t.Errorf("post-refresh planner reply = %q, want %q (the persisted observation must reach the fresh system prompt)", text, teamMemorySnapshotText)
+	}
+}
+
+// TestAgentV2TeamMemorySharedAcrossSessions covers
+// specs/071-memory-preset-scope/spec.md US2 场景 1/2 and
+// specs/071-memory-preset-scope/quickstart.md 场景 2 (FR-007/FR-008, SC-001):
+// the planner's long-term memory is mounted on the preset it was materialized
+// from, so an entry in that preset's collection reaches a DIFFERENT session's
+// planner as soon as that session materializes a planner from the SAME
+// preset, while a planner materialized from another preset never sees it
+// (isolation control). The entry is written through the memory service's
+// public REST face with the planner preset as its parent — the pre-write
+// quickstart.md 场景 2 allows; the agent-side write path (memory tool → the
+// same collection) is already pinned end to end by
+// TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads.
+func TestAgentV2TeamMemorySharedAcrossSessions(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionA := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-a-"+uniqueSuffix())
+	sessionB := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-b-"+uniqueSuffix())
+	control := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-c-"+uniqueSuffix())
+	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-share", "shared")
+	controlPlayer, controlPlanner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-share-control", "isolated")
+	entry := "跨对局共享观察：" + uniqueSuffix()
+
+	// Session A materializes first; the write then lands in its planner
+	// preset's collection.
+	teamA := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionA, player.GetName(), planner.GetName(), "", "")
+	plannerPreset, err := game.ParsePresetName(teamMemberPreset(teamA, "planner"))
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", teamMemberPreset(teamA, "planner"), err)
+	}
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, plannerPreset.PresetID, "shared-"+uniqueSuffix(), entry)
+
+	// A's running planner keeps its materialization-time snapshot: the write
+	// landed after its prefetch, so the entry must not appear there — the
+	// freeze-at-materialization semantics stay intact (FR-005).
+	if entries := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionA, "planner").GetSystemPrompt()); len(entries) != 0 {
+		t.Errorf("session A planner snapshot = %v, want none (the write landed after its prefetch)", entries)
+	}
+
+	// Session B materializes a planner from the SAME preset: the fresh
+	// prefetch reads the collection, so the entry is in the injected snapshot.
+	teamB := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionB, player.GetName(), planner.GetName(), "", "")
+	if got := teamMemberPreset(teamB, "planner"); got != planner.GetName() {
+		t.Fatalf("session B planner preset = %q, want the shared %q", got, planner.GetName())
+	}
+	shared := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionB, "planner").GetSystemPrompt())
+	if len(shared) != 1 || shared[0] != entry {
+		t.Errorf("session B planner snapshot = %v, want exactly the shared entry %q", shared, entry)
+	}
+
+	// Control: the other planner preset's collection stays empty and the
+	// planner materialized from it renders no snapshot section at all
+	// (FR-008 zero leakage).
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, control, controlPlayer.GetName(), controlPlanner.GetName(), "", "")
+	controlPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, control, "planner").GetSystemPrompt()
+	if entries := memorySnapshotEntries(controlPrompt); len(entries) != 0 {
+		t.Errorf("control planner snapshot = %v, want none (a different preset shares nothing)", entries)
+	}
+	if strings.Contains(controlPrompt, "长期记忆：") {
+		t.Errorf("control planner system_prompt carries a snapshot section:\n%s", controlPrompt)
 	}
 }
 

@@ -1,17 +1,20 @@
 /**
  * Guidance-section tests: the two prompt sections the memory plugin row owns
  * (`memory:guidance` — memory-vs-wiki division of labour; `wiki:guidance` —
- * the wiki cross-tool workflow) and the ownership boundaries
- * between them.
+ * the wiki cross-tool workflow), the ownership boundaries between them, and
+ * the division of the model-facing text against the `memory` tool's own
+ * description.
  *
  * The section texts are static English markdown; the assertions here pin the
  * boundaries from specs/068-wiki-round-pause/spec.md FR-013 and
  * specs/068-wiki-round-pause/contracts/dsh-plugins.md §3: the division
  * section carries no tool usage/parameters, the workflow section restates no
  * division, and neither uses third-party memory-framework terminology. The
- * division section additionally carries the memory entry size limit and the
- * wiki's cross-session persistence
- * (specs/069-wiki-template-web/contracts/dsh-plugins.md §5).
+ * division section additionally carries the memory entry size limit, memory's
+ * cross-game persistence for one persona, and the wiki's cross-session
+ * persistence (specs/069-wiki-template-web/contracts/dsh-plugins.md §5;
+ * specs/071-memory-preset-scope/contracts/dsh-plugins.md §5), while the tool
+ * description stays byte-identical and scope-agnostic.
  */
 
 import { describe, expect, it } from "vitest";
@@ -24,8 +27,26 @@ import {
   WIKI_GUIDANCE_SECTION_NAME,
   WIKI_GUIDANCE_SECTION_ORDER,
 } from "./guidance.js";
+import { MEMORY_TOOL_DESCRIPTION } from "./tool.js";
 
 const WIKI_TOOL_NAMES = ["wiki_search", "wiki_get", "wiki_write"];
+
+/**
+ * The `memory` tool description, pinned verbatim: the preset scope migration
+ * changes how the service addresses the collection, never what the model is
+ * told about the tool (specs/071-memory-preset-scope/contracts/dsh-plugins.md
+ * §5 — the description is scope-agnostic).
+ */
+const PINNED_MEMORY_TOOL_DESCRIPTION =
+  "Manage long-term memory entries. " +
+  "action=add records a new entry (content); action=replace/remove locate an " +
+  "existing entry by a SHORT old_text substring and update (content) or " +
+  "delete it; operations applies a batch of actions in one call. " +
+  "Substring matching is case-sensitive; a 0/multiple match returns the " +
+  "current entries to pick a more specific old_text. Writes persist " +
+  "immediately and act on the full stored memory. The memory snapshot in " +
+  "your system prompt contains only the 10 most recently updated entries " +
+  "and is not refreshed by writes.";
 
 /** True when the text contains a CJK character (the sections are English). */
 function hasCjk(text: string): boolean {
@@ -73,6 +94,29 @@ describe("MEMORY_GUIDANCE: division of labour only", () => {
 
   it("states that the wiki persists across sessions", () => {
     expect(MEMORY_GUIDANCE).toMatch(/persists across sessions/i);
+  });
+
+  it("states that memory persists across games for the same persona (specs/071-memory-preset-scope/contracts/dsh-plugins.md §5)", () => {
+    expect(MEMORY_GUIDANCE).toMatch(/persists across games for the same persona/i);
+    // The persistence is consequential: a wrong entry keeps affecting the
+    // persona's later games
+    // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §5).
+    expect(MEMORY_GUIDANCE).toMatch(/influencing every later game/i);
+  });
+
+  it("carries no session-scoped wording on the memory side (specs/071-memory-preset-scope/spec.md FR-007)", () => {
+    // Memory is mounted on the materialization source preset, not on a game
+    // session; the memory half of the division must not reintroduce the
+    // retired scope vocabulary. The wiki half keeps its own cross-session
+    // wording (specs/069-wiki-template-web/contracts/dsh-plugins.md §5).
+    const memoryHalf = MEMORY_GUIDANCE.slice(0, MEMORY_GUIDANCE.indexOf("- **Wiki**"));
+    expect(memoryHalf.toLowerCase()).not.toContain("session");
+  });
+});
+
+describe("MEMORY_TOOL_DESCRIPTION: scope-agnostic and byte-identical (specs/071-memory-preset-scope/contracts/dsh-plugins.md §5)", () => {
+  it("keeps the description verbatim while the division section gains the cross-game persistence", () => {
+    expect(MEMORY_TOOL_DESCRIPTION).toBe(PINNED_MEMORY_TOOL_DESCRIPTION);
   });
 });
 
