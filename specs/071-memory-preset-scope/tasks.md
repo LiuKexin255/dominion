@@ -180,9 +180,9 @@
 - **官方文档**：无
 - **技术文章/技术参考文档**：`specs/071-memory-preset-scope/quickstart.md`（全文——回归核对清单）、`projects/game/agent_v2/README.md`（L58-61 `/api/v1/` 路由描述 + L295 `scope 键 (template, session)`——两处 session 作用域表述现状）
 
-- [ ] T022 [P] 在 `projects/game/agent_v2/README.md` 将 memory 服务描述终态化（preset 级路由 `/api/v1/.../presets/.../memories`、planner 长期记忆挂载于物化来源 preset 的表述）：覆盖 L58-61 的 `/api/v1/` 路由描述**与 L295 的 `scope 键 (template, session)`**；全文扫描并清除 session 作用域旧表述（终态原则 VII）
-- [ ] T023 全仓回归：`bazel test //projects/game/... //common/js/dsh-plugins/...`（含未直接改动面的零回归验证——session 服务、wiki 面、preset 面、team 对话面；并显式核对 FR-013：player 角色仍禁挂 `@dominion/dsh-memory`（agent_v2 templateRules 未变）、wiki 工具保持 template 级作用域——由既有 templateRules/scope 测试覆盖并通过）
-- [ ] T024 最终全量大型测试验收（宪法 VI）：testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`（含 game-system/game-disconnect/game-memory-down/game-stall 全 suite），全部用例通过；按 `specs/071-memory-preset-scope/quickstart.md` 逐场景核对。场景 4/5 的浏览器手工 walkthrough 为**人工抽查项**、不纳入自动验收（web 无浏览器执行面；UI 逻辑由 vitest 组件测试覆盖、REST 闭环由本 suite 的 `memory_test.go` 覆盖——豁免口径见 plan.md Constitution Check 门禁 5，对齐 `specs/069-wiki-template-web/research.md` R8 裁断）；任何失败修复后重跑至全绿
+- [X] T022 [P] 在 `projects/game/agent_v2/README.md` 将 memory 服务描述终态化（preset 级路由 `/api/v1/.../presets/.../memories`、planner 长期记忆挂载于物化来源 preset 的表述）：覆盖 L58-61 的 `/api/v1/` 路由描述**与 L295 的 `scope 键 (template, session)`**；全文扫描并清除 session 作用域旧表述（终态原则 VII）
+- [X] T023 全仓回归：`bazel test //projects/game/... //common/js/dsh-plugins/...`（含未直接改动面的零回归验证——session 服务、wiki 面、preset 面、team 对话面；并显式核对 FR-013：player 角色仍禁挂 `@dominion/dsh-memory`（agent_v2 templateRules 未变）、wiki 工具保持 template 级作用域——由既有 templateRules/scope 测试覆盖并通过）
+- [X] T024 最终全量大型测试验收（宪法 VI）：testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`（含 game-system/game-disconnect/game-memory-down/game-stall 全 suite），全部用例通过；按 `specs/071-memory-preset-scope/quickstart.md` 逐场景核对。场景 4/5 的浏览器手工 walkthrough 为**人工抽查项**、不纳入自动验收（web 无浏览器执行面；UI 逻辑由 vitest 组件测试覆盖、REST 闭环由本 suite 的 `memory_test.go` 覆盖——豁免口径见 plan.md Constitution Check 门禁 5，对齐 `specs/069-wiki-template-web/research.md` R8 裁断）；任何失败修复后重跑至全绿
 
 ---
 

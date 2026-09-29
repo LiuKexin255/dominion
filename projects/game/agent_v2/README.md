@@ -55,11 +55,13 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   `game_proxy.agent_v2_owners` 做 owner 亲和路由；配置面（PresetService：状态在
   Mongo、模型目录静态）由 gateway 直连任一实例。web（`projects/game/web/`）由
   同 hostname 的 `/` PathPrefix
-  服务，`/api/v1/`（session 与 memory 管理路由）和 `/api/v2/` 由 gateway 服务
-  （`specs/049-agent-v2-dsh-init/research.md` D5）。
+  服务，`/api/v1/`（session/wiki/memory 管理路由）和 `/api/v2/` 由
+  gateway 服务（`specs/049-agent-v2-dsh-init/research.md` D5）。
 - 周边服务：session 服务（`/api/v1` sessions CRUD）、memory 服务（planner 长期
-  记忆存储 + `/api/v1/.../memories` 管理路由）、Mongo（preset 持久化与 proxy
-  owner 记录）。
+  记忆存储，集合挂载于 preset 之下——管理路由
+  `/api/v1/templates/{template}/presets/{preset}/memories`；
+  `specs/071-memory-preset-scope/contracts/memory-service.md` §1-2）、Mongo
+  （preset 持久化与 proxy owner 记录）。
 - 进程内组件生命周期（启停序列
   `specs/053-js-bootstrap-migration/contracts/bootstrap-js-api.md` §3.1、health
   端点 §4；agent_v2 的特定顺序见 `projects/game/agent_v2/src/bootstrap.ts`
@@ -131,10 +133,10 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   存在且 `preset.role` 与成员 role 字符串相等、model 非空时在 ListModels 目录。
   失败均为 `INVALID_ARGUMENT`（`projects/game/agent_v2/src/session.ts`）。
 - **物化编排**：逐成员 `ctx.agents.create`（官方 agent-loop 驱动）经 registry
-  绑定所选 preset 声明，player 侧注册 agent-scoped `saoleiGame`（GameRuntime），planner
-  侧 `ctx.plannerMemory.load` 预取记忆快照（fail-loud）；随后 `ctx.team.register`
-  注册群聊服务。任一步失败**整体回滚**：不残留半物化 team（GetTeam
-  NOT_FOUND），可重试。
+  绑定所选 preset 声明，player 侧注册 agent-scoped `saoleiGame`（GameRuntime），
+  planner 侧 `ctx.plannerMemory.load` 以物化来源 preset 预取记忆快照
+  （fail-loud）；随后 `ctx.team.register` 注册群聊服务。任一步失败**整体回滚**：
+  不残留半物化 team（GetTeam NOT_FOUND），可重试。
 - **成员消息源与扫雷系统角色**：team 的成员抽象为消息源接口
   （`TeamMemberSource`，
   `specs/065-agent-v2-team-refine/contracts/team-member-source.md` §1）：
@@ -283,17 +285,24 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
 | 工具守则（section `saolei:guidance`，order 100） | saolei preset 行（player 池） | 仅 player | 仅工具用法（符号表/坐标/结果三层结构/校验拒绝语义/示例/纪律） |
 | persona（order 0） | preset 模板 persona 行 | 各成员 | 身份/职责/风格；不重复玩法与操作描述 |
 
-## planner memory（快照固定、近因注入与 fail-loud）
+## planner memory（物化来源 preset 作用域、快照固定、近因注入与 fail-loud）
 
 planner preset 锁定的 memory 插件组
-（`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §3）：
+（`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §3）：长期记忆集合挂载于
+**物化来源 preset** 之下——planner member 物化自哪个 preset，其 memory 工具读写
+与快照装载就作用于该 preset 的集合（资源名
+`templates/{template}/presets/{preset}/memories/{memory}`；装配语义见
+`specs/071-memory-preset-scope/contracts/dsh-plugins.md` §4），同一 planner preset
+在任意 session 物化的 planner 共享同一份记忆（跨 session 持久；
+`specs/071-memory-preset-scope/contracts/memory-service.md` §1/§3）。
 
 - **memory 单工具**：`{action: add|replace|remove, ...}` 单操作 XOR
   `{operations[]}` 批量（互斥校验、批量预检——preflight 全过才提交）；
   `old_text` 大小写敏感子串定位（0/多命中返回条目文本）；无 read 动作；失败
   也是普通文本结果、不中断对话。修改经 memory 服务立即持久化（scope 键
-  (template, session)，管理路由 `/api/v1/.../memories` 可查证），过程经 planner
-  工具调用历史与团队消息流可见。
+  (template, preset)，管理路由
+  `/api/v1/templates/{template}/presets/{preset}/memories` 可查证），过程经
+  planner 工具调用历史与团队消息流可见。
 - **快照装载与透传渲染**：物化时 `ctx.plannerMemory.load` 以
   `order_by=update_time desc` + `page_size=10` 单页装载长期记忆——最近 10 条
   由 memory 服务 `ListMemories` 的服务端排序承担，客户端按服务返回序纯透传
