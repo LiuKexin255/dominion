@@ -8,7 +8,7 @@
 ## 来源与版本
 
 - 来源包：[`@deepseek-ai/dsh-client-ui-theme`](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-theme)，
-  vendored 版本 **0.1.7-rc.2**（与 `pnpm-workspace.yaml` catalog 的
+  vendored 版本 **0.2.0-rc.2**（与 `pnpm-workspace.yaml` catalog 的
   `@deepseek-ai/dsh-client-ui-primitives` 条目同线）；
 - 许可证：MIT；上游仓库
   <https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/client/ui-theme>。
@@ -23,7 +23,7 @@ npm tarball **不含独立的 css 文件**：sheet 以字符串常量内嵌于
 var <ident> = "<json-escaped css>"
 ```
 
-引入顺序由包内 `STYLES` 数组（`[[name, ident], ...]`）声明，0.1.7-rc.2 的
+引入顺序由包内 `STYLES` 数组（`[[name, ident], ...]`）声明，0.2.0-rc.2 的
 官方顺序为：base → corner-shape → design-platform → focus → onboarding →
 scrollbar → gradient-shadow-text → shiki。GitHub master 分支的 css 已漂移
 （字节不一致），**不可替代 npm tarball 作为获取源**。

@@ -48,6 +48,17 @@ function teamLive(live: LiveTurn | null, member = 'player'): LiveMemberTurn[] {
   return [{ member, turnId: live.turnId, steps: live.steps, fixedSteps: 0, owners: {} }]
 }
 
+// running 态 ReasoningRow 的 DisclosureRow 以 TextShimmer 装饰层重渲染折叠内容
+// （aria-hidden + inert），真实摘要须排除装饰层定位
+// （specs/073-dsh-0.2-upgrade/contracts/shimmer-adoption.md §2）。
+function liveReasoningSummaries(): HTMLElement[] {
+  const live = screen
+    .getAllByTestId('reasoning-summary')
+    .filter((el) => el.closest('[inert]') === null)
+  if (live.length === 0) throw new Error('live reasoning-summary not rendered')
+  return live
+}
+
 // ChatView 集成测试：构造 store 层 BlockDraft / protojson ContentBlock 两种块
 // 形态直接驱动渲染（不经过 fetch 流），断言 THINK/TEXT/TOOL_CALL 三分类保序
 // 呈现与 ReasoningRow / ToolCard 状态语义（US2/US3 场景，
@@ -114,14 +125,14 @@ describe('ChatView THINK 渲染分支', () => {
 
     // 折叠态 + running：摘要 = 最新行，完整思考文本不可见。
     expect(screen.getByTestId('reasoning-row').getAttribute('data-state')).toBe('running')
-    expect(screen.getByTestId('reasoning-summary').textContent).toBe('再给出步骤')
+    expect(liveReasoningSummaries()[0]?.textContent).toBe('再给出步骤')
     expect(screen.queryByTestId('reasoning-body')).toBeNull()
 
     // 流式渐进：delta 追加后摘要跟随最新行。
     rerenderChatView(result, {
       live: liveOf([{ index: 0, type: 'THINK', text: '先拆解问题\n再给出步骤\n开始作答' }]),
     })
-    expect(screen.getByTestId('reasoning-summary').textContent).toBe('开始作答')
+    expect(liveReasoningSummaries()[0]?.textContent).toBe('开始作答')
 
     // 正文块与思考块分类呈现：正文独立渲染，思考保持折叠区域。
     rerenderChatView(result, {
@@ -363,9 +374,9 @@ describe('ChatView step 分段呈现（specs/054-agent-v2-bugfixes/contracts/web
 
     const rows = screen.getAllByTestId('reasoning-row')
     expect(rows[0]?.getAttribute('data-state')).toBe('ok')
-    expect(screen.getAllByTestId('reasoning-summary')[0]?.textContent).toBe('第一段第一行')
+    expect(liveReasoningSummaries()[0]?.textContent).toBe('第一段第一行')
     expect(rows[1]?.getAttribute('data-state')).toBe('running')
-    expect(screen.getAllByTestId('reasoning-summary')[1]?.textContent).toBe('第二段最新行')
+    expect(liveReasoningSummaries()[1]?.textContent).toBe('第二段最新行')
   })
 
   it('历史回填多 step 回合默认折叠，展开后每条 agent 消息即一个 step 分段', () => {

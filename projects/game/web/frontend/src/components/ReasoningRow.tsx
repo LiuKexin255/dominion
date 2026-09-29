@@ -9,6 +9,11 @@
 // contracts/web-ui.md §3：思考展开体与正文同能力，GFM、流式增量、不完整
 // 片段不崩溃——running 即流式增长中，传给 MarkdownText 的 streaming prop）；
 // 折叠摘要保持纯文本首行/最新行切片（原文切片语义，不经 markdown）；
+// running 态摘要经 TextShimmer active 表达共享高光（specs/073-dsh-0.2-upgrade/
+// contracts/shimmer-adoption.md §1.1：文字节点保留可选中，装饰层 inert/clipped
+// 不改变布局；图标与 .reasoning-separator 留在 TextShimmer 外，对齐组件契约
+// "Keep icons outside"），DisclosureRow running prop 启用头部动画（§1.2），
+// 进行中语义仍由 visually-hidden 文本承担（动画仅为装饰，§2 状态契约）；
 // data-state="running|ok" 供样式区分；无思考文本不渲染（web-frontend.md §6
 // 测试义务 2「无思考不渲染（上游组件级）」）。交互与摘要语义参照 dsh-web
 // ReasoningRow 改造，剥离 locale/slot 依赖（attribution 与来源链接见包
@@ -20,6 +25,7 @@ import {
   DisclosureRow,
   IconThinkOutlineRegular,
   MarkdownText,
+  TextShimmer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { MARKDOWN_LABELS } from '../markdown-labels.js'
 
@@ -60,6 +66,7 @@ export function ReasoningRow({ text, running }: ReasoningRowProps) {
         title="思考过程"
         open={expanded}
         expandable
+        running={running}
         expandOnRowClick
         onToggle={() => {
           setExpanded((value) => !value)
@@ -68,7 +75,9 @@ export function ReasoningRow({ text, running }: ReasoningRowProps) {
           <>
             <span className="reasoning-separator" aria-hidden />
             <span className="reasoning-summary" data-testid="reasoning-summary" data-follow-end={running || undefined}>
-              <span className="reasoning-summary-text">{summary}</span>
+              <span className="reasoning-summary-text">
+                <TextShimmer active={running}>{summary}</TextShimmer>
+              </span>
             </span>
           </>
         }
