@@ -115,7 +115,7 @@ func (h *Handler) UpdateMemory(ctx context.Context, req *game.UpdateMemoryReques
 
 	memory := &domain.Memory{
 		Template:   name.TemplateID,
-		SessionID:  name.SessionID,
+		SessionID:  name.PresetID,
 		MemoryID:   name.MemoryID,
 		Content:    content,
 		UpdateTime: time.Now(),
@@ -140,7 +140,7 @@ func (h *Handler) DeleteMemory(ctx context.Context, req *game.DeleteMemoryReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	if err := h.memoryRepo.DeleteMemory(ctx, name.TemplateID, name.SessionID, name.MemoryID); err != nil {
+	if err := h.memoryRepo.DeleteMemory(ctx, name.TemplateID, name.PresetID, name.MemoryID); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
@@ -247,7 +247,7 @@ func memoryToProto(m *domain.Memory) *game.Memory {
 	}
 
 	pb := &game.Memory{
-		Name:    game.MemoryName{TemplateID: m.Template, SessionID: m.SessionID, MemoryID: m.MemoryID}.String(),
+		Name:    game.MemoryName{TemplateID: m.Template, PresetID: m.SessionID, MemoryID: m.MemoryID}.String(),
 		Content: m.Content,
 	}
 	if !m.CreateTime.IsZero() {
