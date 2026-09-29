@@ -798,6 +798,61 @@ func TestAgentV2TeamMemorySharedAcrossSessions(t *testing.T) {
 	}
 }
 
+// TestAgentV2TeamMemoryRefreshSwitchesPlannerPreset covers
+// specs/071-memory-preset-scope/spec.md US3 场景 2 (FR-009; SC-002): a
+// materialized team's planner is bound to its materialization source preset's
+// collection, so a refresh (UpdateTeam) that swaps the planner preset loads
+// the NEW preset's snapshot while the replaced preset's collection keeps its
+// data untouched. Both collections are seeded through the memory service's
+// public /api/v1 face with one contrasting entry each — the v1 pre-write path
+// of specs/071-memory-preset-scope/quickstart.md 场景 2.
+func TestAgentV2TeamMemoryRefreshSwitchesPlannerPreset(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-switch-"+uniqueSuffix())
+	player, plannerFirst := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-switch", "first")
+	plannerNext := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName,
+		"team-switch-next-planner-"+uniqueSuffix(), "你是扫雷 planner，switched", "planner")
+
+	firstPreset, err := game.ParsePresetName(plannerFirst.GetName())
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", plannerFirst.GetName(), err)
+	}
+	nextPreset, err := game.ParsePresetName(plannerNext.GetName())
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", plannerNext.GetName(), err)
+	}
+	firstEntry := "P1 集合条目：" + uniqueSuffix()
+	nextEntry := "P2 集合条目：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, firstPreset.PresetID, "entry-p1", firstEntry)
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, nextPreset.PresetID, "entry-p2", nextEntry)
+
+	// Materialized with the first planner: the snapshot is prefetched from its
+	// preset's collection and carries nothing from the other.
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), plannerFirst.GetName(), "", "")
+	firstSnapshot := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt())
+	if len(firstSnapshot) != 1 || firstSnapshot[0] != firstEntry {
+		t.Errorf("planner snapshot off P1 = %v, want exactly %q", firstSnapshot, firstEntry)
+	}
+
+	// Refresh swapping the planner preset: the fresh planner loads P2's
+	// snapshot, and the replaced preset's entry is gone (the new instance binds
+	// the new preset).
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), plannerNext.GetName(), "", "")
+	nextSnapshot := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt())
+	if len(nextSnapshot) != 1 || nextSnapshot[0] != nextEntry {
+		t.Errorf("planner snapshot off P2 after refresh = %v, want exactly %q", nextSnapshot, nextEntry)
+	}
+
+	// P1's collection is unaffected by the swap: it still lists its entry.
+	firstPage := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, firstPreset.PresetID, 100, "", "")
+	if got := len(firstPage.GetMemories()); got != 1 || firstPage.GetMemories()[0].GetContent() != firstEntry {
+		t.Errorf("P1 collection after the refresh = %v, want the untouched %q", firstPage.GetMemories(), firstEntry)
+	}
+}
+
 // TestAgentV2TeamMemberSystemPromptCompleteAndSplit covers US5 场景 1/2
 // (quickstart V5-4, SC-005): GetTeamMember returns each member instance's
 // complete effective system prompt — non-empty, carrying the preset persona

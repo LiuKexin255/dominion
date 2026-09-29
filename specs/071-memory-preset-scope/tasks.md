@@ -105,9 +105,9 @@
 - **官方文档**：[Vitest](https://vitest.dev/)（T014 `session.test.ts` 的 `vi.fn` 装配断言）
 - **技术文章/技术参考文档**：`specs/071-memory-preset-scope/contracts/memory-service.md`（§3 生命周期与边界）、`specs/071-memory-preset-scope/contracts/dsh-plugins.md`（§4 物化装配——T014 refresh 装配）、`specs/071-memory-preset-scope/spec.md`（US3 验收场景 1-4）、`specs/071-memory-preset-scope/quickstart.md`（场景 1/2）；`projects/game/testplan/memory_test.go`（T008 改造后形态——本 phase 增例落点）、`projects/game/testplan/agent_v2_preset_test.go`（refresh 用例现状）；`specs/048-js-esm-migration/contracts/esm-package-conventions.md`（TS 源码书写规则）、`specs/019-js-test-reliability/contracts/run-vitest-shim.md`（`vitest_test` shim 退出码契约）
 
-- [ ] T013 [US3] 在 `projects/game/testplan/memory_test.go` 增加隔离与生命周期用例：跨 preset 零泄漏（P1 建条目后 P2 List 不含）；session 删除不影响集合（建 session → 以 preset 写入 → DeleteSession（v1）→ List 仍在）；preset 删除不级联（v2 `DELETE /api/v2/templates/{t}/presets/{p}` → v1 List memories 仍在）；无容量上限（FR-018）：写入超过单页 `page_size` 的条数后 List 分页可完整取回，无淘汰、无超限拒绝；每页大小/断言风格沿用既有 helpers
-- [ ] T014 [US3] 刷新换 preset 用例：`projects/game/testplan/agent_v2_preset_test.go` 增例——已物化 team（planner=P1）经 UpdateTeam 刷新换 planner=P2 → planner `system_prompt` 快照来自 P2 集合、P1 集合数据不受影响（可用 v1 REST 前置写入两集合各一条对照断言）；`projects/game/agent_v2/src/session.test.ts` 补刷新装配断言（依赖 T007）
-- [ ] T015 [US3] 大型测试验收（宪法 VI）：testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`，本 phase 用例与全部既有用例通过（依赖 T013、T014）
+- [X] T013 [US3] 在 `projects/game/testplan/memory_test.go` 增加隔离与生命周期用例：跨 preset 零泄漏（P1 建条目后 P2 List 不含）；session 删除不影响集合（建 session → 以 preset 写入 → DeleteSession（v1）→ List 仍在）；preset 删除不级联（v2 `DELETE /api/v2/templates/{t}/presets/{p}` → v1 List memories 仍在）；无容量上限（FR-018）：写入超过单页 `page_size` 的条数后 List 分页可完整取回，无淘汰、无超限拒绝；每页大小/断言风格沿用既有 helpers
+- [X] T014 [US3] 刷新换 preset 用例：`projects/game/testplan/agent_v2_preset_test.go` 增例——已物化 team（planner=P1）经 UpdateTeam 刷新换 planner=P2 → planner `system_prompt` 快照来自 P2 集合、P1 集合数据不受影响（可用 v1 REST 前置写入两集合各一条对照断言）；`projects/game/agent_v2/src/session.test.ts` 补刷新装配断言（依赖 T007）
+- [X] T015 [US3] 大型测试验收（宪法 VI）：testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`，本 phase 用例与全部既有用例通过（依赖 T013、T014）
 
 **Checkpoint**: 边界语义全部锁定（SC-002）。
 

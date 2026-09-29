@@ -37,6 +37,8 @@ type Listener = (...args: never[]) => void;
 const S1 = "templates/saolei/sessions/s1";
 const P_PLAYER = "templates/saolei/presets/p-player";
 const P_PLANNER = "templates/saolei/presets/p-planner";
+/** A second planner preset for refresh-swap cases; its id half ends in "planner". */
+const P_PLANNER_ALT = "templates/saolei/presets/p-alt-planner";
 const PLAYER_ID = `${S1}/player`;
 const PLANNER_ID = `${S1}/planner`;
 
@@ -752,6 +754,42 @@ describe("TeamSessions planner memory wiring (T021)", () => {
     expect(composedLoad.mock.calls[0]?.[1]).toEqual({
       template: "saolei",
       preset: "p-planner",
+    });
+  });
+
+  it("re-derives the scope halves on refresh, following a swapped planner preset", async () => {
+    const composedLoad = vi.fn(async () => {});
+    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+
+    await materializeDefault(h);
+    expect(composedLoad.mock.calls[0]?.[1]).toEqual({
+      template: "saolei",
+      preset: "p-planner",
+    });
+
+    // Refresh with the same configuration: the scope stays the two id halves
+    // built from the unchanged materialization source preset
+    // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+    expect(composedLoad).toHaveBeenCalledTimes(2);
+    expect(composedLoad.mock.calls[1]?.[1]).toEqual({
+      template: "saolei",
+      preset: "p-planner",
+    });
+
+    // Refresh swapping the planner preset: the fresh planner prefetches the
+    // NEW preset's collection, so the scope follows the swapped member
+    // (specs/071-memory-preset-scope/spec.md FR-009).
+    await h.sessions.materialize(S1, {
+      members: [
+        { role: "player", preset: P_PLAYER },
+        { role: "planner", preset: P_PLANNER_ALT },
+      ],
+    });
+    expect(composedLoad).toHaveBeenCalledTimes(3);
+    expect(composedLoad.mock.calls[2]?.[1]).toEqual({
+      template: "saolei",
+      preset: "p-alt-planner",
     });
   });
 

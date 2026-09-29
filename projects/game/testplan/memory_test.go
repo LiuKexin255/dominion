@@ -18,6 +18,10 @@
 // durable behaviour (entries survive across requests) through the
 // public entry, never touching mongo directly. The parent preset's existence
 // is not checked (contract §1), so cases use legal literal preset names.
+// Alongside the CRUD face the suite pins the preset-scope boundary semantics
+// (specs/071-memory-preset-scope/spec.md US3): cross-preset zero leakage
+// (FR-008), session/preset deletion leaving the collection untouched (FR-010),
+// and the unbounded collection (FR-018).
 //
 // Organised by MODULE per style/large_test.md (not by spec/scenario id);
 // it reuses the shared HTTP helpers in helpers_test.go. Trace context: the
@@ -381,6 +385,185 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryServiceHttpPresetIsolation covers the zero-leak isolation between
+// preset-scoped collections (specs/071-memory-preset-scope/spec.md US3 场景 1,
+// FR-008; specs/071-memory-preset-scope/contracts/memory-service.md §5 验收锚点 2):
+// an entry written under preset P1 is absent from P2's List result while P1's
+// own listing carries it — no read path crosses the (template, preset)
+// collection key (specs/071-memory-preset-scope/spec.md SC-002).
+func TestMemoryServiceHttpPresetIsolation(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: two sibling presets under the same template; only P1 holds an
+	// entry (the service addresses collections by name and does not check the
+	// preset's existence — contract §1).
+	p1 := "lt-mem-iso-p1-" + uniqueSuffix()
+	p2 := "lt-mem-iso-p2-" + uniqueSuffix()
+	entry := "P1 独有条目：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, p1, "mem-p1", entry)
+
+	// then: P2's listing is empty — P1's entry never leaks across the key.
+	if got := len(listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, p2, 100, "", "").GetMemories()); got != 0 {
+		t.Errorf("P2 ListMemories = %d entries, want 0 (P1's entries must not leak)", got)
+	}
+
+	// then: P1's own listing returns exactly its entry.
+	p1Page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, p1, 100, "", "")
+	if got := len(p1Page.GetMemories()); got != 1 || p1Page.GetMemories()[0].GetContent() != entry {
+		t.Errorf("P1 ListMemories = %v, want exactly the entry %q", p1Page.GetMemories(), entry)
+	}
+}
+
+// TestMemoryServiceHttpSessionDeleteDecoupled covers the session lifecycle
+// boundary (specs/071-memory-preset-scope/spec.md US3 场景 3, FR-010;
+// specs/071-memory-preset-scope/contracts/memory-service.md §3): deleting a
+// session through the v1 route leaves the preset's collection untouched — the
+// memory scope carries no session segment, so session teardown has no path to
+// the collection.
+func TestMemoryServiceHttpSessionDeleteDecoupled(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a session and a preset-scoped entry; the session is then deleted.
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
+	presetID := "lt-mem-session-" + uniqueSuffix()
+	entry := "session 删除后仍在：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-session", entry)
+	resp := deleteSession(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DeleteSession status=%d, want 200 or 204", resp.StatusCode)
+	}
+	if status, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID); status != http.StatusNotFound {
+		t.Fatalf("GetSession after delete status=%d, want 404 (the session must be gone)", status)
+	}
+
+	// then: the collection still lists the entry.
+	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "")
+	if got := len(page.GetMemories()); got != 1 || page.GetMemories()[0].GetContent() != entry {
+		t.Errorf("ListMemories after DeleteSession = %v, want the retained %q", page.GetMemories(), entry)
+	}
+}
+
+// TestMemoryServiceHttpPresetDeleteNonCascade covers the preset lifecycle
+// boundary (specs/071-memory-preset-scope/spec.md US3 场景 4, FR-010;
+// specs/071-memory-preset-scope/contracts/memory-service.md §3): deleting a
+// preset through the agent_v2 configuration face leaves its memory collection
+// in place — there is no cascade, so the entries stay addressable by the same
+// preset name.
+func TestMemoryServiceHttpPresetDeleteNonCascade(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a real preset (created through the agent_v2 configuration face so
+	// the delete removes an existing resource) with one scoped entry.
+	presetID := "lt-mem-preset-" + uniqueSuffix()
+	presetBody, err := protojson.Marshal(&game.Preset{Persona: "你是扫雷 planner（lifecycle）"})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Preset: %v", err)
+	}
+	createResp, createBody := doHTTPTrace(t, ctx, http.MethodPost,
+		fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s&role=planner",
+			sutHostURL, memoryModuleV2Prefix, saoleiTemplateID, presetID),
+		sutEnvName, presetBody)
+	if createResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create preset status=%d, body=%s", createResp.StatusCode, createBody)
+	}
+	entry := "preset 删除后仍在：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-preset", entry)
+
+	// when: the preset is deleted through the v2 configuration route.
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodDelete,
+		fmt.Sprintf("%s%stemplates/%s/presets/%s", sutHostURL, memoryModuleV2Prefix, saoleiTemplateID, presetID),
+		sutEnvName, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE preset status=%d, body=%s, want 200", resp.StatusCode, respBody)
+	}
+	getResp, getBody := doHTTPTrace(t, ctx, http.MethodGet,
+		fmt.Sprintf("%s%stemplates/%s/presets/%s", sutHostURL, memoryModuleV2Prefix, saoleiTemplateID, presetID),
+		sutEnvName, nil)
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET deleted preset status=%d, body=%s, want 404 (the delete must have taken effect)", getResp.StatusCode, getBody)
+	}
+
+	// then: the collection survives; the entry is still listed under the same
+	// preset name.
+	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "")
+	if got := len(page.GetMemories()); got != 1 || page.GetMemories()[0].GetContent() != entry {
+		t.Errorf("ListMemories after DELETE preset = %v, want the retained %q", page.GetMemories(), entry)
+	}
+}
+
+// TestMemoryServiceHttpCollectionUnbounded covers the no-capacity-governance
+// contract (specs/071-memory-preset-scope/spec.md FR-018; Edge Cases 集合容量;
+// specs/071-memory-preset-scope/contracts/memory-service.md §3): a preset's
+// collection accepts more entries than one page returns and pages them back
+// completely — every write succeeds (no over-limit rejection) and every entry
+// stays listed (no eviction).
+func TestMemoryServiceHttpCollectionUnbounded(t *testing.T) {
+	const (
+		pageSize = 10
+		total    = 25
+	)
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a preset holding more entries than a single page returns. Each
+	// createMemory call fails the case on a non-200, so completing the loop is
+	// itself the no-rejection assertion.
+	presetID := "lt-mem-unbounded-" + uniqueSuffix()
+	var wantIDs []string
+	for i := 1; i <= total; i++ {
+		id := fmt.Sprintf("mem-%02d", i)
+		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, id, fmt.Sprintf("entry %d", i))
+		wantIDs = append(wantIDs, id)
+	}
+
+	// when: walk the listing with page_size=10.
+	var gotIDs []string
+	pageToken := ""
+	pages := 0
+	for {
+		page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, pageSize, pageToken, "")
+		for _, m := range page.GetMemories() {
+			gotIDs = append(gotIDs, memoryIDSegment(t, m))
+		}
+		pages++
+		pageToken = page.GetNextPageToken()
+		if pageToken == "" {
+			break
+		}
+	}
+
+	// then: every entry is retrieved exactly once in the fixed memory_id
+	// ascending order — nothing was dropped or duplicated.
+	if pages != 3 {
+		t.Errorf("unbounded listing produced %d pages, want 3 (page_size=10 over %d entries)", pages, total)
+	}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("unbounded listing returned %d entries, want %d", len(gotIDs), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if gotIDs[i] != want {
+			t.Errorf("unbounded listing entry %d = %q, want %q (memory_id ascending, no eviction)", i, gotIDs[i], want)
+		}
+	}
+}
+
+// memoryModuleV2Prefix is the /api/v2 gateway prefix (specs/059-agent-v2-team-mode/
+// contracts/team-api.md §1). The memory face itself is /api/v1 (helpers_test.go
+// pathPrefix); this module reaches /api/v2 only to delete a preset as the
+// preset-lifecycle stimulus, and the request is written here rather than
+// reusing agent_v2_helpers_test.go's preset helpers because the memory_test
+// target does not carry that helper closure (projects/game/testplan/BUILD.bazel
+// memory_test — the agent_v2 helper set stages the board fixtures,
+// style/large_test.md §测试组织).
+const memoryModuleV2Prefix = "/api/v2/"
 
 // assertMemoryUpdateTimeOrder asserts the ListMemories update_time total order
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1):
