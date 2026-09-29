@@ -542,12 +542,19 @@ export function App() {
     setKnowledgeMenuOpen(false)
   }, [])
 
+  // 会话打开统一入口（左栏条目与「新建会话」共用，
+  // specs/072-web-nav-redesign/contracts/web-nav.md §2 行为表/§5 锚点 2）：任何
+  // 视图下打开会话都切回 sessions 视图（对齐官方 `openSession` 语义，
+  // specs/072-web-nav-redesign/research.md §2.2）——非 session 视图下不存在无
+  // 可见响应的点击；面板常驻挂载使切回直接呈现既有状态（契约 §3）。
+  // setOpened/setSelected/setNotice 的既有语义与顺序不变。
   const openSession = useCallback((name: string) => {
     const stores = storesRef.current
     if (stores !== null && !stores.has(name)) stores.set(name, new ChatStore())
     setOpened((prev) => (prev.includes(name) ? prev : [...prev, name]))
     setSelected(name)
     setNotice(null)
+    setView('sessions')
   }, [])
 
   const refresh = useCallback(async () => {

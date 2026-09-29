@@ -2106,3 +2106,155 @@ describe('App 侧栏两级视图导航', () => {
     expect(screen.queryByTestId('presets-view')).toBeNull()
   })
 })
+
+// ─── App 左栏 session 条目任意视图可达（specs/072-web-nav-redesign/
+// ─── contracts/web-nav.md §2 行为表/§5 锚点 2：openSession 跨视图切回 sessions；
+// ─── FR-006/D6 非 session 视图下选中高亮保留） ──────────────────────────────
+
+// makeUs2NavFetchMock 组合会话面（makeUs4FetchMock：list/team/team messages/
+// 成员视角/send）与管理视图数据面（PresetsView/MemoryView 的 presets 列表、
+// WikiView 的 wiki 列表）——用例先在管理视图下点左栏 session 条目，再断言切回
+// sessions。用例不选 preset，故 MemoryView 不发集合（memories）请求。
+function makeUs2NavFetchMock() {
+  const sessionFaces = makeUs4FetchMock([{ name: S1 }, { name: S2 }])
+  return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET'
+    if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
+      return jsonResponse({ presets: [{ name: MEMORY_PRESET, role: 'planner' }] })
+    }
+    if (url === '/api/v1/templates/saolei/wikis?page_size=20' && method === 'GET') {
+      return jsonResponse({
+        wikis: [
+          { name: 'templates/saolei/wikis/w1', title: '开局-左上角', content: '先点角落' },
+        ],
+      })
+    }
+    return sessionFaces(url, init)
+  })
+}
+
+// makeUs2CreateFetchMock：空会话列表 + POST 新建返回 s2 + s2 的会话面——验证
+// 「新建会话」经 openSession 获得与左栏条目相同的跨视图切回语义（US2 场景 4）。
+function makeUs2CreateFetchMock() {
+  const sessionFaces = makeUs4FetchMock([{ name: S2 }])
+  return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET'
+    if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+      return jsonResponse({ sessions: [] })
+    }
+    if (url === '/api/v1/templates/saolei/sessions' && method === 'POST') {
+      return jsonResponse({ name: S2, createTime: '2026-08-29T00:00:00Z' })
+    }
+    if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
+      return jsonResponse({ presets: [] })
+    }
+    return sessionFaces(url, init)
+  })
+}
+
+// openManagementView 进入一个管理视图（presets 走一级直达、wiki/memory 走 ☰
+// 菜单），供三个视图的切回用例共用。
+async function openManagementView(kind: 'presets' | 'wiki' | 'memory'): Promise<void> {
+  if (kind === 'presets') {
+    fireEvent.click(screen.getByTestId('view-presets'))
+    await screen.findByTestId('presets-view')
+    return
+  }
+  fireEvent.click(screen.getByTestId('view-more'))
+  const label = kind === 'wiki' ? 'Wiki' : 'Memory'
+  fireEvent.click(
+    within(await screen.findByRole('menu')).getByRole('menuitem', { name: label }),
+  )
+  await screen.findByTestId(kind === 'wiki' ? 'wiki-view' : 'memory-view')
+}
+
+// sessionItem 取某会话的侧栏条目按钮（左栏恒为会话导航；双会话 fixture 下
+// `session-item` testid 非唯一，故经名称定位）。
+function sessionItem(name: string): HTMLElement {
+  const item = screen.getByText(name).closest('button')
+  if (item === null) throw new Error(`session item not found: ${name}`)
+  return item
+}
+
+// expectReturnedToSession 断言 openSession 的跨视图切换面（契约 §2 行为表/
+// §5 锚点 2）：sessions 直达激活、目标会话面板（team-toolbar 面）呈现、原管理
+// 视图不再渲染、目标条目选中（未选中的面板不渲染，故 chat-input 唯一）。
+async function expectReturnedToSession(session: string, leftView: string): Promise<void> {
+  expect(await screen.findByTestId('chat-input')).toBeTruthy()
+  expect(screen.getByTestId('chat-input').getAttribute('aria-label')).toContain(session)
+  expect(screen.getByTestId('team-status')).toBeTruthy()
+  expect(screen.getByTestId('view-sessions').getAttribute('data-active')).toBe('true')
+  expect(screen.queryByTestId(leftView)).toBeNull()
+  expect(sessionItem(session).className).toContain('selected')
+}
+
+describe('App 左栏 session 条目任意视图可达（US2）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('presets 视图下点击另一条 session 条目（US2 场景 3）：选中迁移并切回；回填不重跑（FR-005/FR-006/FR-008）', async () => {
+    const fetchMock = makeUs2NavFetchMock()
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await screen.findByText('s1')
+
+    // 先在 sessions 视图选中 s1：面板挂载、team/messages 回填一次。
+    fireEvent.click(sessionItem('s1'))
+    expect((await screen.findByTestId('chat-input')).getAttribute('aria-label')).toContain('s1')
+
+    // 切到 presets 管理视图：左栏恒为会话导航（契约 §1），s1 高亮保留（§3）。
+    await openManagementView('presets')
+    expect(screen.getAllByTestId('session-item')).toHaveLength(2)
+    expect(sessionItem('s1').className).toContain('selected')
+
+    // US2 场景 3：点另一条会话 s2 → 切回 sessions、s2 面板呈现、选中迁移。
+    fireEvent.click(sessionItem('s2'))
+    await expectReturnedToSession('s2', 'presets-view')
+    expect(sessionItem('s1').className).not.toContain('selected')
+
+    // FR-008：管理视图往返后返回 s1，其 team 回填不重跑（面板常驻挂载、仅 CSS
+    // 隐藏——条件挂载会让该计数 > 1，specs/051-agent-v2-dsh-migration/contracts/
+    // web-frontend.md §2）。
+    await openManagementView('presets')
+    fireEvent.click(sessionItem('s1'))
+    await expectReturnedToSession('s1', 'presets-view')
+    expect(
+      fetchMock.mock.calls.filter((call) => call[0] === `/api/v2/${S1}/team/messages`),
+    ).toHaveLength(1)
+  })
+
+  it('wiki 视图下点击 session 条目：切回 sessions 视图并打开该会话（FR-005）', async () => {
+    vi.stubGlobal('fetch', makeUs2NavFetchMock())
+    render(<App />)
+    await screen.findByText('s1')
+
+    await openManagementView('wiki')
+    fireEvent.click(sessionItem('s1'))
+    await expectReturnedToSession('s1', 'wiki-view')
+  })
+
+  it('memory 视图下点击 session 条目：切回 sessions 视图并打开该会话（FR-005）', async () => {
+    vi.stubGlobal('fetch', makeUs2NavFetchMock())
+    render(<App />)
+    await screen.findByText('s1')
+
+    await openManagementView('memory')
+    fireEvent.click(sessionItem('s1'))
+    await expectReturnedToSession('s1', 'memory-view')
+  })
+
+  it('非 session 视图下「新建会话」：切回 sessions 视图并打开新建会话（US2 场景 4）', async () => {
+    vi.stubGlobal('fetch', makeUs2CreateFetchMock())
+    render(<App />)
+    // 列表加载完成后「新建会话」才可用（loading 门控禁用态）。
+    await waitFor(() => {
+      expect(screen.getByTestId('create-session').getAttribute('disabled')).toBeNull()
+    })
+
+    await openManagementView('presets')
+    fireEvent.click(screen.getByTestId('create-session'))
+
+    await expectReturnedToSession('s2', 'presets-view')
+  })
+})
