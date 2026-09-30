@@ -666,7 +666,7 @@ export function App() {
             side="top"
             anchor={
               <Button
-                size="sm"
+                className="view-more-entry"
                 variant={knowledgeView ? 'primary' : 'ghost'}
                 icon={<HamburgerIcon />}
                 title="更多视图"

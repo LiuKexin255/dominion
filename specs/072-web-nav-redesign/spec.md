@@ -80,7 +80,7 @@ flowchart TD
 
 ### Functional Requirements
 
-- **FR-001**: 侧栏底部二级入口 MUST 为图标-only 按钮（`Button size="sm"` + 内联三横杠 SVG，无 children）——任意侧栏宽度下 MUST NOT 换行；MUST 提供 `title` + `aria-label` 可访问名（「更多视图」）与 `aria-haspopup="menu"`、`aria-expanded` 状态（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
+- **FR-001**: 侧栏底部二级入口 MUST 为图标-only 按钮（`Button` 默认尺寸 md，与一级直达按钮同高 + 内联三横杠 SVG，无 children）——任意侧栏宽度下 MUST NOT 换行；MUST 提供 `title` + `aria-label` 可访问名（「更多视图」）与 `aria-haspopup="menu"`、`aria-expanded` 状态（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
 - **FR-002**: 二级菜单 MUST 以 primitives `Menu`（`@deepseek-ai/dsh-client-ui-primitives`）承载：in-place 模式、`side="top"` 自底向上展开；条目经 `MenuEntry` 分组（`{type:'label'}` 类别标题，首组「知识」含 wiki/memory）。新增二级类别 MUST 仅追加分组段与条目，侧栏底部子元素数 MUST 恒定。
 - **FR-003**: 入口选中态：任一二级视图激活时入口呈 `variant="primary"` + `data-active="true"`；MUST NOT 拼接视图名文本。菜单内当前二级视图项 MUST 经 `selectedId` 呈现选中标记。
 - **FR-004**: 菜单键盘漫游（↑/↓/Home/End）与外点/Esc 关闭 MUST 由 primitives `Menu` 内建承载（owner 经 `open`/`onClose` 控制）；App MUST NOT 自维护外点/Esc 监听（071 手写浮层 JSX 与关闭 effect 删除）；菜单关闭（含点选后自动关闭与外点/Esc）MUST NOT 改变当前视图。

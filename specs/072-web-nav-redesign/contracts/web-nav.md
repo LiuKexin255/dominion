@@ -5,7 +5,7 @@
 
 ## 1. 结构（两级）
 
-- **一级（侧栏底部，行数恒定）**：`sessions`、`presets` 两个**文本**直达按钮 + 一个 **☰ 图标菜单入口按钮**。一级不平铺 wiki/memory；入口按钮为图标-only（primitives `Button size="sm"` + 内联三横杠 SVG，无 children——任意侧栏宽度下不换行）。
+- **一级（侧栏底部，行数恒定）**：`sessions`、`presets` 两个**文本**直达按钮 + 一个 **☰ 图标菜单入口按钮**。一级不平铺 wiki/memory；入口按钮为图标-only（primitives `Button` 默认尺寸 md，与直达按钮同高 + 内联三横杠 SVG，无 children——任意侧栏宽度下不换行）。三个一级入口分摊侧栏横向空间（`theme.css`：`.view-switch > *` `flex: 1`），图标入口不右侧留白。
 - **二级（primitives `Menu`，`side="top"` 自底向上展开）**：入口点击弹出，条目经 `MenuEntry` 分组承载：
 
 ```ts
@@ -46,6 +46,7 @@
 ## 4. 样式与可访问性
 
 - 删除 071 手写浮层样式（`.view-menu`/`.knowledge-menu`/`.knowledge-menu-item`）；卡片、层级、键盘焦点样式由 primitives `Menu.module.css` 提供。`theme.css` 仅保留 `--app-*` 与布局样式（该文件既有职责）。
+- 一级行三个入口分摊侧栏横向空间：`.view-switch > * { flex: 1 }`，入口按钮 `className="view-more-entry"` + `width: 100%` 撑满 `Menu` 的锚定 wrapper（primitives `.root` inline-flex）——图标-only 入口与 sessions/presets 直达按钮同高、同排布，无右侧留白。
 - 入口按钮可访问名：`title="更多视图"` + `aria-label="更多视图"`（图标-only 必须有可访问名，SessionList `IconButton` 先例）；`aria-haspopup="menu"` + `aria-expanded={knowledgeMenuOpen}`（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
 - 内联三横杠 SVG：viewBox `0 0 16 16`、`stroke="currentColor"`、`aria-hidden`（形态对齐 primitives 图标实现，`lib/index.js` IconArtwork 同款 svg 属性）；primitives 图标集无汉堡 glyph（`lib/types/icons/index.d.ts`），内联 SVG 为 `specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §1 允许的载体。
 - `data-testid`：入口 `view-more`；菜单条目无 testid 通道（`MenuItem` 数据行），测试经 `getByRole('menuitem', { name })` 定位（`SessionList.test.tsx:127` 先例）；`view-switch`/`view-sessions`/`view-presets` 与各视图容器 testid（`presets-view`/`wiki-view`/`memory-view`）不变。

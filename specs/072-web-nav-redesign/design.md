@@ -31,7 +31,7 @@
 
 **按钮**（替换 `App.tsx` 现「知识」入口按钮，`App.tsx:640-675`）：
 
-- `Button size="sm"`，`icon` = 三横杠内联 SVG（viewBox `0 0 16 16`、三等长线、`stroke="currentColor"`、`aria-hidden`，svg 属性形态对齐 primitives 图标实现），**无 children**——纯图标按钮，任意侧栏宽度下不换行，两行问题根除。
+- `Button`（默认尺寸 md，与一级直达按钮同高），`icon` = 三横杠内联 SVG（viewBox `0 0 16 16`、三等长线、`stroke="currentColor"`、`aria-hidden`，svg 属性形态对齐 primitives 图标实现），**无 children**——纯图标按钮，任意侧栏宽度下不换行，两行问题根除；三个一级入口分摊侧栏横向空间（`theme.css` `.view-switch > * { flex: 1 }`，入口 `width: 100%` 撑满 Menu wrapper）。
 - 可访问名：`title="更多视图"` + `aria-label="更多视图"`；`aria-haspopup="menu"` + `aria-expanded={knowledgeMenuOpen}` 延续（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
 - 选中态：wiki/memory（或未来二级项）激活时 `variant="primary"` + `data-active="true"`；入口不承载视图名文本（`知识 · Wiki` 拼接删除）。
 
