@@ -34,9 +34,9 @@
 
 ## Phase 2: User Story 1 - ☰ 图标菜单入口 + primitives Menu 迁移 (Priority: P1) 🎯
 
-**Goal**: 入口图标化（两行问题根除）+ 菜单迁移 primitives `Menu`（分组可扩展、键盘漫游/外点/Esc 内建、`selectedId` 选中呈现）；手写浮层与自维护 effect 删除。
+**Goal**: 入口图标化（两行问题根除）+ 菜单迁移 primitives `Menu`（条目可扩展、不为域定制、键盘漫游/外点/Esc 内建、`selectedId` 选中呈现）；手写浮层与自维护 effect 删除。
 
-**Independent Test**: spec.md US1 验收场景 1-6——`App.test.tsx` 入口图标化/菜单分组/切换与关闭行为/结构恒定断言全绿（无服务端依赖）。
+**Independent Test**: spec.md US1 验收场景 1-6——`App.test.tsx` 入口图标化/菜单条目结构/切换与关闭行为/结构恒定断言全绿（无服务端依赖）。
 
 **文档清单**（编码前必读，宪法原则 V）：
 
@@ -46,13 +46,13 @@
 
 - [X] T001 [P] [US1] 在 `projects/game/web/frontend/src/theme.css` 删除 071 手写浮层样式段（FR-010，终态）：`.view-menu`（L195-198）、`.knowledge-menu`（L203-217）、`.knowledge-menu-item` 及其 `:hover`/`[data-active='true']` 变体（L220-242）与相关注释一并清除——菜单卡片/层级/键盘焦点样式由 primitives `Menu.module.css` 提供；若 `view-switch` flex 行内的 Menu 锚定 wrapper（`.root` inline-flex）需要对齐微调，做最小补充（`--app-*` token 体系内），MUST NOT 保留任何手写浮层/菜单项样式
 - [X] T002 [US1] 在 `projects/game/web/frontend/src/App.tsx` 完成入口与菜单迁移并同步改造 `App.test.tsx`（依赖 T001；严格按 `specs/072-web-nav-redesign/contracts/web-nav.md` §1-§4；`App.tsx` 与 `App.test.tsx` 在本 task 内先实现后改断言，一体验收）：
-  - **入口按钮**：替换 L640-650 的「知识」文本按钮为图标-only 按钮——`Button`（默认尺寸 md，与直达按钮同高）+ `className="view-more-entry"`（`theme.css` 中 `width: 100%` 撑满 Menu wrapper；`.view-switch > *` `flex: 1` 使三入口分摊侧栏横向空间）、`icon` = 内联三横杠 SVG（App.tsx 内模块级小组件，仅此一处使用不新建文件；viewBox `0 0 16 16`、三等长线、`fill="none"`、`stroke="currentColor"`、`strokeLinecap="round"`、`aria-hidden="true"`，svg 属性形态对齐 primitives 图标实现）、无 children、`title="更多视图"` + `aria-label="更多视图"`、`aria-haspopup="menu"`、`aria-expanded={knowledgeMenuOpen}`、`data-testid="view-more"`（testid 更名，自 `view-knowledge`）、`variant={knowledgeView ? 'primary' : 'ghost'}` + `data-active`（语义同现状，去掉视图名文本拼接）
-  - **菜单**：替换 L651-674 手写浮层为 primitives `Menu`——`open={knowledgeMenuOpen}`、`anchor` = 入口按钮、`items` = `MenuEntry[]`（`{ type: 'label', id: 'g-knowledge', text: '知识' }` + `{ id: 'wiki', label: VIEW_LABELS.wiki }` + `{ id: 'memory', label: VIEW_LABELS.memory }`）、`selectedId={knowledgeView ? view : undefined}`、`onSelect={(id) => selectView(id as AppView)}`、`onClose={() => setKnowledgeMenuOpen(false)}`、`side="top"`（in-place，无 `portal`——`view-switch` 不处滚动容器内）
-  - **删除面**：`menuRef` 与外点/Esc 关闭 effect（L499-523，Menu `onClose` 内建承载）；`knowledge-menu` 浮层 JSX；头注释中「知识」入口表述更新为 ☰ 图标菜单（引用 `specs/072-web-nav-redesign/contracts/web-nav.md`）
-  - **App.test.tsx 改造**（L1948-2083 三个用例，按 contracts/web-nav.md §5 锚点 1/4）：入口断言 `view-knowledge`→`view-more`、新增 `aria-label` 与"无文本子节点"断言（SC-001 不换行防护）、保留 `aria-haspopup`/`aria-expanded`/`data-active` 断言；删除 `entry.textContent` 含 `Wiki`/`Memory` 断言（L1986/L2059）；菜单断言改 `getByRole('menuitem', { name: 'Wiki' / 'Memory' })` + 分组标签「知识」文本查询；`selectedId` 选中呈现断言按 Menu `selection` 实现落地；外点/Esc 关闭断言按 Menu 关闭触发机制模拟（`fireEvent.keyDown(document.body, { key: 'Escape' })` 起步，外点按其监听面模拟——实现时以 primitives Menu 行为为准）；结构断言：`view-switch` 子元素数恒为 3、二级项在 Menu 列表内（锚点 4）；四视图互斥渲染与直达零回归断言语义保留
+  - **入口按钮**：替换 L640-650 的「知识」文本按钮为图标-only 按钮——`Button`（默认尺寸 md，与直达按钮同高）+ `className="view-more-entry"`（`theme.css` 中 `width: 100%` 撑满 Menu wrapper；`.view-switch > *` `flex: 1` 使三入口分摊侧栏横向空间）、`icon` = 内联三横杠 SVG（App.tsx 内模块级小组件，仅此一处使用不新建文件；viewBox `0 0 16 16`、三等长线、`fill="none"`、`stroke="currentColor"`、`strokeLinecap="round"`、`aria-hidden="true"`，svg 属性形态对齐 primitives 图标实现）、无 children、`title="更多视图"` + `aria-label="更多视图"`、`aria-haspopup="menu"`、`aria-expanded={secondaryMenuOpen}`、`data-testid="view-more"`（testid 更名，自 `view-knowledge`）、`variant={secondaryView ? 'primary' : 'ghost'}` + `data-active`（语义同现状，去掉视图名文本拼接）
+  - **菜单**：替换 L651-674 手写浮层为 primitives `Menu`——`open={secondaryMenuOpen}`、`anchor` = 入口按钮、`items` = `SECONDARY_MENU_ITEMS`（模块级常量：`SECONDARY_VIEWS`（`['wiki', 'memory']`，`satisfies readonly AppView[]`）映射的**扁平** `{ id, label: VIEW_LABELS[id] }` 两项——无分组标题、不为域定制；`{type:'label'}` 分组能力可用未用）、`selectedId={secondaryView ? view : undefined}`、`onSelect={(id) => selectView(id as (typeof SECONDARY_VIEWS)[number])}`、`onClose={() => setSecondaryMenuOpen(false)}`、`side="top"`（in-place，无 `portal`——`view-switch` 不处滚动容器内）；菜单开闭瞬态与二级视图判定命名为 `secondaryMenuOpen`/`secondaryView`（中性命名，D7 裁定）
+  - **删除面**：`menuRef` 与外点/Esc 关闭 effect（L499-523，Menu `onClose` 内建承载）；`knowledge-menu` 浮层 JSX；头注释中「知识」入口表述更新为 ☰ 图标菜单（引用 `specs/072-web-nav-redesign/contracts/web-nav.md`，菜单描述不带域名）
+  - **App.test.tsx 改造**（L1948-2083 三个用例，按 contracts/web-nav.md §5 锚点 1/4）：入口断言 `view-knowledge`→`view-more`、新增 `aria-label` 与"无文本子节点"断言（SC-001 不换行防护）、保留 `aria-haspopup`/`aria-expanded`/`data-active` 断言；删除 `entry.textContent` 含 `Wiki`/`Memory` 断言（L1986/L2059）；菜单断言改 `getByRole('menuitem', { name: 'Wiki' / 'Memory' })`（扁平条目、无分组标题——无 `{type:'label'}` 渲染行）；`selectedId` 选中呈现断言按 Menu `selection` 实现落地；外点/Esc 关闭断言按 Menu 关闭触发机制模拟（`fireEvent.keyDown(document.body, { key: 'Escape' })` 起步，外点按其监听面模拟——实现时以 primitives Menu 行为为准）；结构断言：`view-switch` 子元素数恒为 3、二级项在 Menu 列表内（锚点 4）；四视图互斥渲染与直达零回归断言语义保留
   - 编译 + 单测：`bazel build` + `bazel test`（web 前端相关 target）通过
 
-**Checkpoint**: 入口图标化 + 分组菜单可用，两行问题根除，既有导航语义零回归（SC-001/SC-002）。
+**Checkpoint**: 入口图标化 + 二级视图菜单可用（扁平条目、不为域定制），两行问题根除，既有导航语义零回归（SC-001/SC-002）。
 
 ---
 

@@ -73,14 +73,14 @@ const VIEW_LABELS: Record<AppView, string> = {
 const SECONDARY_VIEWS = ['wiki', 'memory'] as const satisfies readonly AppView[]
 
 // ☰ 入口菜单的条目（specs/072-web-nav-redesign/contracts/web-nav.md §1）：
-// `{type:'label'}` 为分组标题行，其后为该组视图项（id 取自 SECONDARY_VIEWS）；
-// 新增二级类别只需追加分组段与 id，入口按钮与侧栏底部行数不变（MenuEntry 数据
-// 行类型见
+// 菜单承载全部二级视图条目（id 取自 SECONDARY_VIEWS），不为某一域定制——新增
+// 二级视图只需向 SECONDARY_VIEWS 追加 id，入口按钮与侧栏底部行数不变；
+// `MenuEntry` 的分组（`{type:'label'}`）/分隔线能力当前未使用（数据行类型见
 // projects/game/web/frontend/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/Menu.d.ts）。
-const KNOWLEDGE_MENU_ITEMS: MenuEntry[] = [
-  { type: 'label', id: 'g-knowledge', text: '知识' },
-  ...SECONDARY_VIEWS.map((id) => ({ id, label: VIEW_LABELS[id] })),
-]
+const SECONDARY_MENU_ITEMS: MenuEntry[] = SECONDARY_VIEWS.map((id) => ({
+  id,
+  label: VIEW_LABELS[id],
+}))
 
 // ☰ 入口图标：primitives 图标集无汉堡 glyph
 // （projects/game/web/frontend/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/icons/index.d.ts），
@@ -517,7 +517,7 @@ export function App() {
   const [view, setView] = useState<AppView>('sessions')
   // ☰ 菜单的开闭瞬态（specs/072-web-nav-redesign/contracts/web-nav.md §3：不
   // 承载视图状态——关闭时当前视图与选中态保持）。
-  const [knowledgeMenuOpen, setKnowledgeMenuOpen] = useState(false)
+  const [secondaryMenuOpen, setSecondaryMenuOpen] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -539,7 +539,7 @@ export function App() {
   // （specs/072-web-nav-redesign/contracts/web-nav.md §2 行为表）。
   const selectView = useCallback((next: AppView) => {
     setView(next)
-    setKnowledgeMenuOpen(false)
+    setSecondaryMenuOpen(false)
   }, [])
 
   // 会话打开统一入口（左栏条目与「新建会话」共用，
@@ -619,7 +619,7 @@ export function App() {
   // wiki/memory 属二级菜单视图：☰ 入口以激活态示意"菜单内有激活项"
   // （specs/072-web-nav-redesign/contracts/web-nav.md §3）；当前具体视图在
   // 菜单打开时经 selectedId 选中标记可见，入口本身不拼接视图名文本。
-  const knowledgeView = view === 'wiki' || view === 'memory'
+  const secondaryView = view === 'wiki' || view === 'memory'
 
   return (
     <div className="app">
@@ -659,29 +659,30 @@ export function App() {
           </Button>
           {/* 一级 ☰ 图标菜单入口 + primitives Menu 二级菜单
               （specs/072-web-nav-redesign/contracts/web-nav.md §1/§2）：入口
-              toggle 菜单；菜单以「知识」分组承载 wiki/memory，键盘漫游与外点/
-              Esc 关闭由 Menu 内建（App 不自维护关闭监听——§2 行为表）。 */}
+              toggle 菜单；菜单承载二级视图条目（当前 wiki/memory，不为某一域
+              定制），键盘漫游与外点/Esc 关闭由 Menu 内建（App 不自维护关闭
+              监听——§2 行为表）。 */}
           <Menu
-            open={knowledgeMenuOpen}
+            open={secondaryMenuOpen}
             side="top"
             anchor={
               <Button
                 className="view-more-entry"
-                variant={knowledgeView ? 'primary' : 'ghost'}
+                variant={secondaryView ? 'primary' : 'ghost'}
                 icon={<HamburgerIcon />}
                 title="更多视图"
                 aria-label="更多视图"
                 aria-haspopup="menu"
-                aria-expanded={knowledgeMenuOpen}
+                aria-expanded={secondaryMenuOpen}
                 data-testid="view-more"
-                data-active={knowledgeView || undefined}
-                onClick={() => setKnowledgeMenuOpen((open) => !open)}
+                data-active={secondaryView || undefined}
+                onClick={() => setSecondaryMenuOpen((open) => !open)}
               />
             }
-            items={KNOWLEDGE_MENU_ITEMS}
-            selectedId={knowledgeView ? view : undefined}
+            items={SECONDARY_MENU_ITEMS}
+            selectedId={secondaryView ? view : undefined}
             onSelect={(id) => selectView(id as (typeof SECONDARY_VIEWS)[number])}
-            onClose={() => setKnowledgeMenuOpen(false)}
+            onClose={() => setSecondaryMenuOpen(false)}
           />
         </div>
       </aside>

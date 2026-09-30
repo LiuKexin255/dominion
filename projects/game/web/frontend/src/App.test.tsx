@@ -1968,12 +1968,17 @@ describe('App 侧栏两级视图导航', () => {
     expect(screen.queryByRole('menuitem', { name: 'Wiki' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: 'Memory' })).toBeNull()
 
-    // 点入口 → 展开菜单（toggle）；分组标签「知识」与两个二级项经 role 查询
-    // 可达，侧栏一级子元素数不变（结构断言：二级项在 Menu 列表内）。
+    // 点入口 → 展开菜单（toggle）；两个二级项经 role 查询可达且无分组标题行
+    // （菜单不为某一域定制），侧栏一级子元素数不变（结构断言：二级项在 Menu
+    // 列表内）。
     fireEvent.click(entry)
     const menu = await screen.findByRole('menu')
     expect(entry.getAttribute('aria-expanded')).toBe('true')
-    expect(within(menu).getByText('知识')).toBeTruthy()
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(2)
+    // 分组标题行非 menuitem role（结构断言捕获不到），以文本负向断言钉死菜单
+    // 不出现「知识」域标题；queryByText 默认全串精确匹配，含"知识"字样的视图名
+    // 不会误报。
+    expect(within(menu).queryByText('知识')).toBeNull()
     expect(within(menu).getByRole('menuitem', { name: 'Wiki' })).toBeTruthy()
     expect(within(menu).getByRole('menuitem', { name: 'Memory' })).toBeTruthy()
     expect(switcher.children).toHaveLength(3)

@@ -1,20 +1,19 @@
 # Contract: 侧栏两级导航（☰ 图标菜单 + 左栏会话直达）
 
-**Feature**: specs/072-web-nav-redesign/spec.md（US1/US2；裁定 Session 2026-09-29：D1=方案 A 官方对齐、D2/D3/D6 按建议、方案 B rejected——`design.md` §8）| **改动面**: `src/App.tsx` 侧栏 `view-switch` 区 + `src/theme.css`
+**Feature**: specs/072-web-nav-redesign/spec.md（US1/US2；裁定 Session 2026-09-29：D1=方案 A 官方对齐、D2/D3/D6 按建议、方案 B rejected；Session 2026-09-30：D7=二级菜单去知识域耦合——均见 `design.md` §8）| **改动面**: `src/App.tsx` 侧栏 `view-switch` 区 + `src/theme.css`
 **取代声明**: 本文取代 [`specs/071-memory-preset-scope/contracts/web-nav.md`](../../071-memory-preset-scope/contracts/web-nav.md)（071 版的两级结构与行为语义在本文延续，入口形态/实现载体/选中态呈现/左栏交互按 072 终态为准）。
 
 ## 1. 结构（两级）
 
 - **一级（侧栏底部，行数恒定）**：`sessions`、`presets` 两个**文本**直达按钮 + 一个 **☰ 图标菜单入口按钮**。一级不平铺 wiki/memory；入口按钮为图标-only（primitives `Button` 默认尺寸 md，与直达按钮同高 + 内联三横杠 SVG，无 children——任意侧栏宽度下不换行）。三个一级入口分摊侧栏横向空间（`theme.css`：`.view-switch > *` `flex: 1`），图标入口不右侧留白。
-- **二级（primitives `Menu`，`side="top"` 自底向上展开）**：入口点击弹出，条目经 `MenuEntry` 分组承载：
+- **二级（primitives `Menu`，`side="top"` 自底向上展开）**：入口点击弹出，菜单承载**全部二级视图条目**（wiki/memory），**不为某一域定制**——无分组标题、无域命名：
 
 ```ts
-// 新类别 = 追加一个 {type:'label'} 段 + 若干 item；入口与侧栏底部行数不变。
-[
-  { type: 'label', id: 'g-knowledge', text: '知识' },
-  { id: 'wiki', label: 'Wiki' },
-  { id: 'memory', label: 'Memory' },
-]
+// 条目 = SECONDARY_VIEWS 域（['wiki', 'memory']）的扁平映射；
+// 新增二级视图 = 向 SECONDARY_VIEWS 追加 id，入口与侧栏底部行数不变。
+// MenuEntry 的分组（{type:'label'}）/分隔线能力可用但当前未使用
+// （lib/types/Menu.d.ts），将来域类条目增多时按需启用。
+const SECONDARY_MENU_ITEMS = SECONDARY_VIEWS.map((id) => ({ id, label: VIEW_LABELS[id] }))
 ```
 
 - 菜单为 in-place 模式（非 portal）：`view-switch` 不处滚动容器内，无 overflow 裁剪；定位与卡片样式由 primitives `Menu`（`.root` relative + `.sideTop` 向上展开）提供，侧栏流内仅 Menu 的锚定 wrapper 占位——底部行数不随二级项数量增长。
@@ -34,11 +33,11 @@
 
 ## 3. 状态与选中态
 
-- `App` 保留瞬态 `knowledgeMenuOpen: boolean`（菜单开闭）；**不**承载视图状态。
+- `App` 保留瞬态 `secondaryMenuOpen: boolean`（菜单开闭）；**不**承载视图状态。
 - `view: 'sessions' | 'presets' | 'wiki' | 'memory'` 语义不变。选中态呈现：
   - 直达按钮：当前视图高亮（不变）。
   - ☰ 入口：wiki/memory（或未来二级项）激活时 `variant="primary"` + `data-active="true"`；**不拼接视图名文本**（图标-only，无两行问题）。
-  - 菜单内当前二级视图项经 `Menu` 的 `selectedId={knowledgeView ? view : undefined}` 呈现选中标记（非二级视图激活时不设选中项）——"当前在哪个二级视图"在打开菜单时可见。
+  - 菜单内当前二级视图项经 `Menu` 的 `selectedId={secondaryView ? view : undefined}` 呈现选中标记（非二级视图激活时不设选中项）——"当前在哪个二级视图"在打开菜单时可见。
 - 菜单关闭后当前视图与选中态保持，不回退默认视图。
 - **SessionList 选中高亮在非 session 视图下保留**（D6 裁定）：点击条目即切回会话视图，高亮是"当前会话"指示，不存在高亮与主区不一致的停留态。
 - 主区互斥渲染语义不变；会话面板常驻挂载、CSS 隐藏的既有行为不变（`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §2）——`openSession` 切回 sessions 视图后 `.view-pane` 取消隐藏、既有状态直接呈现。
@@ -47,13 +46,13 @@
 
 - 删除 071 手写浮层样式（`.view-menu`/`.knowledge-menu`/`.knowledge-menu-item`）；卡片、层级、键盘焦点样式由 primitives `Menu.module.css` 提供。`theme.css` 仅保留 `--app-*` 与布局样式（该文件既有职责）。
 - 一级行三个入口分摊侧栏横向空间：`.view-switch > * { flex: 1 }`，入口按钮 `className="view-more-entry"` + `width: 100%` 撑满 `Menu` 的锚定 wrapper（primitives `.root` inline-flex）——图标-only 入口与 sessions/presets 直达按钮同高、同排布，无右侧留白。
-- 入口按钮可访问名：`title="更多视图"` + `aria-label="更多视图"`（图标-only 必须有可访问名，SessionList `IconButton` 先例）；`aria-haspopup="menu"` + `aria-expanded={knowledgeMenuOpen}`（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
+- 入口按钮可访问名：`title="更多视图"` + `aria-label="更多视图"`（图标-only 必须有可访问名，SessionList `IconButton` 先例）；`aria-haspopup="menu"` + `aria-expanded={secondaryMenuOpen}`（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
 - 内联三横杠 SVG：viewBox `0 0 16 16`、`stroke="currentColor"`、`aria-hidden`（形态对齐 primitives 图标实现，`lib/index.js` IconArtwork 同款 svg 属性）；primitives 图标集无汉堡 glyph（`lib/types/icons/index.d.ts`），内联 SVG 为 `specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §1 允许的载体。
 - `data-testid`：入口 `view-more`；菜单条目无 testid 通道（`MenuItem` 数据行），测试经 `getByRole('menuitem', { name })` 定位（`SessionList.test.tsx:127` 先例）；`view-switch`/`view-sessions`/`view-presets` 与各视图容器 testid（`presets-view`/`wiki-view`/`memory-view`）不变。
 
 ## 5. 验收锚点
 
-1. vitest：一级 = 2 文本直达 + 1 图标入口；入口有 `aria-label`/`aria-haspopup`/`aria-expanded` 且**无文本子节点**（不换行回归防护）；点入口弹菜单（分组 label「知识」+ wiki/memory 项经 role 查询可达）；点 wiki/memory 切视图且菜单关闭；外点/Esc 仅关闭不改视图；关闭后入口 `data-active` 与当前视图保持。
+1. vitest：一级 = 2 文本直达 + 1 图标入口；入口有 `aria-label`/`aria-haspopup`/`aria-expanded` 且**无文本子节点**（不换行回归防护）；点入口弹菜单（wiki/memory 项经 role 查询可达——扁平条目、无分组标题）；点 wiki/memory 切视图且菜单关闭；外点/Esc 仅关闭不改视图；关闭后入口 `data-active` 与当前视图保持。
 2. vitest：presets/wiki/memory 视图下点击 `session-item` → `view-sessions` 激活、目标会话面板呈现、原管理视图不渲染（`openSession` 跨视图切换，三个视图各一断言路径）。
 3. vitest：四视图互斥渲染、会话面板常驻挂载（切换返回不丢在途状态）、既有 sessions/presets 直达行为零回归。
 4. 结构断言：`view-switch` 子元素数恒定（3）；二级项渲染于 Menu 列表内而非侧栏流内。

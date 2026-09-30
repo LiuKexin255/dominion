@@ -13,7 +13,7 @@
 2. **左栏与主区不协调**：底部 tab 切换只改主区，左侧恒为 session 列表；非 session tab 下点击 session 条目无任何可见响应（"死点击"机理见 [research.md](research.md) §1.2：`openSession` 只设 `selected` 不设 `view`）。
 3. **重新设计左栏内容与交互逻辑**：调研官方 dsh webUI 与社区常见设计后落地。
 
-**裁定结果**（详见 §8）：左栏模式采用**官方对齐**（左栏恒为 SessionList、点击穿透回会话）；☰ 入口图标化并迁移 primitives `Menu` 分组菜单；方案 B（左栏随域切换 master 列表）rejected。
+**裁定结果**（详见 §8）：左栏模式采用**官方对齐**（左栏恒为 SessionList、点击穿透回会话）；☰ 入口图标化并迁移 primitives `Menu` 二级视图菜单（不为域定制）；方案 B（左栏随域切换 master 列表）rejected。
 
 **不变约束**：会话面板常驻挂载、CSS 隐藏（`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §2）；主区管理视图互斥渲染；无路由库、单页 state 切换；无新增第三方依赖（primitives + theme.css + 内联 SVG）。
 
@@ -32,14 +32,14 @@
 **按钮**（替换 `App.tsx` 现「知识」入口按钮，`App.tsx:640-675`）：
 
 - `Button`（默认尺寸 md，与一级直达按钮同高），`icon` = 三横杠内联 SVG（viewBox `0 0 16 16`、三等长线、`stroke="currentColor"`、`aria-hidden`，svg 属性形态对齐 primitives 图标实现），**无 children**——纯图标按钮，任意侧栏宽度下不换行，两行问题根除；三个一级入口分摊侧栏横向空间（`theme.css` `.view-switch > * { flex: 1 }`，入口 `width: 100%` 撑满 Menu wrapper）。
-- 可访问名：`title="更多视图"` + `aria-label="更多视图"`；`aria-haspopup="menu"` + `aria-expanded={knowledgeMenuOpen}` 延续（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
+- 可访问名：`title="更多视图"` + `aria-label="更多视图"`；`aria-haspopup="menu"` + `aria-expanded={secondaryMenuOpen}` 延续（WAI-ARIA APG menu-button，https://www.w3.org/WAI/ARIA/apg/patterns/menu-button/ ）。
 - 选中态：wiki/memory（或未来二级项）激活时 `variant="primary"` + `data-active="true"`；入口不承载视图名文本（`知识 · Wiki` 拼接删除）。
 
 **菜单**（替换手写 `div.knowledge-menu` popover，改用 primitives `Menu`；`SessionList.tsx:274-301` 同组件先例，`SessionList.test.tsx:127` 的 `getByRole('menuitem', { name })` 断言先例）：
 
 - **in-place 模式 + `side="top"`**：`view-switch` 不处滚动容器内，无 overflow 裁剪（SessionList 用 portal 是因其列表在 `overflow-y:auto` 容器内——场景不同）；定位与卡片样式由 Menu 自带（`.root` relative + `.sideTop` 自底向上），侧栏流内仅锚定 wrapper 占位，底部行数恒定。
-- owner-controlled：`open={knowledgeMenuOpen}` + `onClose={() => setKnowledgeMenuOpen(false)}`；Esc/外点关闭由 Menu 内建——**删除 App 手写外点/Esc effect**（`App.tsx:499-523`）与 `menuRef`（宪法 II 简化）。
-- 条目以 `MenuEntry` 分组（分组即"以后不只有知识这一类"的扩展形态——新类别 = 追加 `{type:'label'}` 段，入口与底部行数不变）；当前二级视图经 `selectedId={knowledgeView ? view : undefined}` 呈现选中标记。
+- owner-controlled：`open={secondaryMenuOpen}` + `onClose={() => setSecondaryMenuOpen(false)}`；Esc/外点关闭由 Menu 内建——**删除 App 手写外点/Esc effect**（`App.tsx:499-523`）与 `menuRef`（宪法 II 简化）。
+- 条目 = `SECONDARY_MENU_ITEMS`（`SECONDARY_VIEWS` 域 `['wiki', 'memory']` 的扁平映射——菜单承载二级视图条目、**不为某一域定制**：无分组标题、无域命名；新增二级视图只需向 `SECONDARY_VIEWS` 追加 id）。`MenuEntry` 的分组（`{type:'label'}`）/分隔线能力**可用未用**，将来域类条目增多时按需启用；当前二级视图经 `selectedId={secondaryView ? view : undefined}` 呈现选中标记。
 - 行为语义不变（[contracts/web-nav.md](contracts/web-nav.md) §2 行为表）：点直达切视图并关菜单；点菜单项切视图并关菜单；外点/Esc 仅关菜单不改视图；关闭后视图与选中态保持。
 
 **一级直达按钮**（Sessions/Presets）：保留文本形态（D2 裁定；短词无换行问题、语义直观）。
@@ -69,7 +69,7 @@
 ```mermaid
 flowchart TD
     U[用户点击 ☰ 入口按钮] --> T{菜单已开?}
-    T -- 否 --> O["primitives Menu side=top 展开<br/>分组标签 + 视图项"]
+    T -- 否 --> O["primitives Menu side=top 展开<br/>二级视图项（扁平无分组）"]
     T -- 是 --> C[关闭菜单]
     O --> P{用户操作}
     P -- 点击菜单项<br/>wiki/memory/未来项 --> S[切换主区视图 + 关闭菜单<br/>入口保持 primary 高亮]
@@ -109,29 +109,30 @@ stateDiagram-v2
 `projects/game/web/frontend/src/App.test.tsx:1948-2083` 三个导航用例改造 + 新增用例（[contracts/web-nav.md](contracts/web-nav.md) §5）：
 
 - **入口断言**：`view-knowledge` → `view-more`；`aria-haspopup`/`aria-expanded` 保留；新增 `aria-label` 断言；`entry.textContent` 含 `Wiki`/`Memory` 断言删除（无文本），新增"无文本子节点"断言（不换行回归防护）；`data-active` 断言保留。
-- **菜单断言**：`knowledge-menu` 手写浮层 DOM 断言（含 `menu.parentElement.className === 'view-menu'`，`App.test.tsx:1972`）改为 primitives Menu 渲染断言——条目经 `getByRole('menuitem', { name: 'Wiki' / 'Memory' })`（`MenuItem` 数据行无 testid 通道，`SessionList.test.tsx:127` 先例）；分组 label「知识」经文本查询断言；`selectedId` 选中呈现断言按 Menu selection 实现落地。
+- **菜单断言**：`knowledge-menu` 手写浮层 DOM 断言（含 `menu.parentElement.className === 'view-menu'`，`App.test.tsx:1972`）改为 primitives Menu 渲染断言——条目经 `getByRole('menuitem', { name: 'Wiki' / 'Memory' })`（`MenuItem` 数据行无 testid 通道，`SessionList.test.tsx:127` 先例）；菜单为扁平条目、无分组标题（无 `{type:'label'}` 渲染行）；`selectedId` 选中呈现断言按 Menu selection 实现落地。
 - **新增跨视图用例（US2）**：presets/wiki/memory 视图下点击 `session-item` → `view-sessions` 激活、目标会话面板呈现、原管理视图不渲染。
 - **零回归**：四视图互斥渲染、会话面板常驻挂载、直达按钮行为、菜单关闭不改视图等既有断言语义保留（载体更新）。
 - `SessionList.test.tsx`/各 View 测试零改动（SessionList 与管理视图均不动）。
 
 ## 7. 分期交付
 
-1. **Phase 1（US1）**：☰ 图标入口 + primitives Menu 迁移（theme.css 样式收敛 + App.tsx 入口/菜单改造 + App.test.tsx 断言改造）——独立可交付，消除两行问题并建立分组可扩展菜单。
+1. **Phase 1（US1）**：☰ 图标入口 + primitives Menu 迁移（theme.css 样式收敛 + App.tsx 入口/菜单改造 + App.test.tsx 断言改造）——独立可交付，消除两行问题并建立可扩展的二级视图菜单（不为域定制）。
 2. **Phase 2（US2）**：`openSession` 跨视图切换 + 新用例——依赖 Phase 1（同文件串行）。
 3. **Polish**：前端全量回归（`bazel test` 前端相关 target 全绿）；无大型测试新增面（纯前端导航变更、零服务端行为变更，豁免口径对齐 `specs/069-wiki-template-web/research.md` R8：UI 逻辑由 vitest 组件测试覆盖）。
 
 ## 8. 裁定记录与 Rejected Alternatives
 
-### 裁定（Session 2026-09-29）
+### 裁定（Session 2026-09-29；D7 为 2026-09-30 追加）
 
 | # | 分叉点 | 裁定 |
 |---|---|---|
 | D1 | 左栏模式 | **A 官方对齐**：左栏恒 SessionList，点击穿透回会话；管理视图零改动 |
 | D2 | 一级直达按钮形态 | **保留文本** |
-| D3 | 菜单载体 | **迁移 primitives `Menu`**（`side="top"`、`MenuEntry` 分组、`selectedId`、键盘漫游/外点内建），删手写浮层与外点/Esc effect |
+| D3 | 菜单载体 | **迁移 primitives `Menu`**（`side="top"`、条目数据行、`selectedId`、键盘漫游/外点内建），删手写浮层与外点/Esc effect |
 | D4 | （随 B）memory preset 选择器上移 | **作废**（B rejected） |
 | D5 | （随 B）wiki 搜索/分页上移 | **作废**（B rejected） |
 | D6 | 非 session 视图下 session 高亮 | **保留高亮**（点击即切回，无不一致停留态） |
+| D7 | 二级菜单与「知识」域的耦合 | **去耦合（2026-09-30 用户裁定）**：菜单是通用二级视图入口，不为某一域定制——移除「知识」分组标题（条目扁平：wiki/memory，`SECONDARY_VIEWS`/`SECONDARY_MENU_ITEMS`），实现命名中性化（`secondaryMenuOpen`/`secondaryView`）；`MenuEntry` 分组能力保留为可用未用，将来新域加入时按需添加条目（或分组）。修正 D3 落定时的"分组承载"形态（2026-09-29 裁定原文含 `{type:'label'}` 分组，本行取代之） |
 
 ### Rejected：方案 B（activity-rail 式左栏随域切换、master-detail 上移）
 

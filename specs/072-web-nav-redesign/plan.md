@@ -8,7 +8,7 @@
 
 两点交付（均为纯前端，无服务端变更）：
 
-1. **☰ 图标菜单入口（US1）**：侧栏底部「知识」文本入口替换为图标-only 按钮（内联三横杠 SVG——primitives 图标集无汉堡 glyph，[research.md](research.md) §2.4；`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §1 允许内联载体），根除「知识 · Wiki」两行问题；手写浮层（`div.knowledge-menu` + 外点/Esc effect）整体替换为 primitives `Menu`（in-place + `side="top"`，`MenuEntry` 分组：`{type:'label'}`「知识」组 + wiki/memory 项，`selectedId` 呈现当前二级视图，键盘漫游/外点/Esc 内建）——分组结构即"以后不只有知识这一类"的扩展形态，新类别只加 label 段，侧栏底部行数恒定；`theme.css` 删除手写浮层样式。
+1. **☰ 图标菜单入口（US1）**：侧栏底部「知识」文本入口替换为图标-only 按钮（内联三横杠 SVG——primitives 图标集无汉堡 glyph，[research.md](research.md) §2.4；`specs/051-agent-v2-dsh-migration/contracts/web-frontend.md` §1 允许内联载体），根除「知识 · Wiki」两行问题；手写浮层（`div.knowledge-menu` + 外点/Esc effect）整体替换为 primitives `Menu`（in-place + `side="top"`，`SECONDARY_MENU_ITEMS` 扁平承载 wiki/memory 条目——**不为某一域定制**，`selectedId` 呈现当前二级视图，键盘漫游/外点/Esc 内建）——扩展形态 = 向 `SECONDARY_VIEWS` 追加条目 id，入口与侧栏底部行数恒定（`{type:'label'}` 分组能力可用未用，将来域类条目增多时按需启用）；`theme.css` 删除手写浮层样式。
 2. **左栏 session 条目任意视图可达（US2）**：`openSession` 语义对齐官方 dsh webUI（任何视图下点击 session 条目 → 切回 sessions 视图并打开该会话），消解"死点击"；会话面板常驻挂载/主区互斥渲染/SessionList 选中高亮保留等基线零变化；管理视图与 SessionList 组件零改动。
 
 ## Technical Context
