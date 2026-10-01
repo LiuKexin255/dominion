@@ -1,21 +1,27 @@
 /**
- * saolei tools plugin tests (contract saolei-plugins.md §3/§7.3): the three
- * global tool registrations and the `saolei:guidance` prompt section, the
- * dual-form argument validation with the verbatim v1 literals, the exec-time
- * resolution of the agent-scoped `saoleiGame` service through
- * `exec.agent.ctx`, the ToolOutcome.isError → throw mapping, the
- * ToolOutcome.concludesTurn → `exec.concludeTurn()` mapping
- * (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md §2), and
- * the fail-loud paths (no `exec.agent`; service absent from the caller's
- * scope).
- * The guidance-ownership cases (tool usage only; game rules live in the
- * saolei-loop plugin's `saolei:game` section) follow
+ * saolei tools capability unit tests (specs/074-dsh-grpc-runtime/spec.md
+ * FR-020; contracts/team-assembly.md §3.1/§6): `apply` exposes the static
+ * unit through `ctx.provide("saoleiTools", ...)` — the three tool definitions
+ * and the `saolei:guidance`/`saolei:game` sections — and registers NOTHING on
+ * the composition scope (no `ctx.tools.register` / `ctx.systemPrompt.section`
+ * side effect). The unit content is unchanged from the pre-migration plugin
+ * row: tool descriptions/schemas/outputs and the section name/order/text are
+ * asserted verbatim.
+ *
+ * The behavior cases stay: dual-form `saolei_operate` validation with the
+ * verbatim literals, the exec-time resolution of the agent-scoped
+ * `saoleiGame` service through `exec.agent.ctx`, the ToolOutcome.isError →
+ * throw mapping, the ToolOutcome.concludesTurn → `exec.concludeTurn()`
+ * mapping (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md
+ * §2), and the fail-loud paths (no `exec.agent`; service absent from the
+ * caller's scope). Ownership boundary of the sections follows
  * specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2.
  *
  * Pattern (style/javascript.md Mock convention): `apply` runs against a real
  * cordis Context whose `tools`/`systemPrompt` services are `vi.fn()`-based
- * doubles capturing registrations; tools execute directly against their
- * captured definitions with a fake ToolRunContext — no module interception.
+ * doubles capturing registrations (so an accidental global registration is
+ * observable); tools execute directly against the unit's captured definitions
+ * with a fake ToolRunContext — no module interception.
  */
 
 import { Context } from "@deepseek-ai/cordis";
@@ -23,13 +29,15 @@ import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
 
-import { apply } from "./index.js";
+import { apply, inject, SAOLEI_TOOLS_SERVICE } from "./index.js";
 import {
   AMBIGUOUS_ARGS_TEXT,
   INCOMPLETE_ARGS_TEXT,
   MISSING_ARGS_TEXT,
+  SAOLEI_GAME_RULES,
   SAOLEI_GUIDANCE,
 } from "./index.js";
+import type { SaoleiToolsUnit } from "./index.js";
 import type { SaoleiGame } from "@dominion/dsh-saolei-loop";
 
 /** Structural caller-agent face the plugin consumes (id + ctx). */
@@ -73,38 +81,52 @@ function stubRuntime(outcomes: Partial<Record<"init" | "operate" | "remain", unk
   } as unknown as SaoleiGame;
 }
 
-/** Run `apply` against a harness context and capture registrations. */
-function makeHarness() {
-  const ctx = new Context();
-  const tools = new Map<string, ToolDefinition>();
-  ctx.provide("tools", {
-    register: vi.fn((definition: ToolDefinition) => {
-      tools.set(definition.name, definition);
-      return () => {};
-    }),
-  });
-  const sections: Array<{ name: string; order: number; text: string }> = [];
-  ctx.provide("systemPrompt", {
-    section: vi.fn((section: { name: string; order: number; text: string }) => {
-      sections.push(section);
-      return () => {};
-    }),
-  });
-  apply(ctx);
-  return { ctx, tools, sections };
+interface Harness {
+  readonly ctx: Context;
+  readonly unit: SaoleiToolsUnit;
+  readonly tools: Map<string, ToolDefinition>;
+  readonly toolsRegister: ReturnType<typeof vi.fn>;
+  readonly sectionRegister: ReturnType<typeof vi.fn>;
 }
 
-describe("saolei plugin registration", () => {
-  it("registers exactly the three tools and the guidance section", () => {
-    const { tools, sections } = makeHarness();
+/** Run `apply` against a harness context and capture the provided unit. */
+function makeHarness(): Harness {
+  const ctx = new Context();
+  // Real registration seams (vi.fn doubles): an accidental global registration
+  // by apply would be captured here instead of silently tolerated.
+  const toolsRegister = vi.fn();
+  const sectionRegister = vi.fn();
+  ctx.provide("tools", { register: toolsRegister });
+  ctx.provide("systemPrompt", { section: sectionRegister });
+  apply(ctx);
+  const unit = (ctx as unknown as Record<string, SaoleiToolsUnit>)[
+    SAOLEI_TOOLS_SERVICE
+  ];
+  const tools = new Map(
+    unit.tools.map((definition) => [definition.name, definition]),
+  );
+  return { ctx, unit, tools, toolsRegister, sectionRegister };
+}
 
-    expect([...tools.keys()].sort()).toEqual(["saolei_init", "saolei_operate", "saolei_remain"]);
-    expect(sections).toHaveLength(1);
-    expect(sections[0]).toMatchObject({ name: "saolei:guidance", order: 100 });
-    // The section carries the migrated guidance substance.
-    expect(SAOLEI_GUIDANCE).toContain("saolei_operate");
-    expect(SAOLEI_GUIDANCE).toContain("game status:");
-    expect(SAOLEI_GUIDANCE).toContain("saolei_remain");
+describe("saolei capability unit provision", () => {
+  it("provides the unit and registers nothing on the composition scope", () => {
+    const { unit, toolsRegister, sectionRegister } = makeHarness();
+
+    expect([...unit.tools].map((definition) => definition.name).sort()).toEqual(
+      ["saolei_init", "saolei_operate", "saolei_remain"],
+    );
+    expect(unit.sections).toEqual([
+      { name: "saolei:guidance", order: 100, text: SAOLEI_GUIDANCE },
+      { name: "saolei:game", order: 50, text: SAOLEI_GAME_RULES },
+    ]);
+    // Composition-level global registration is exactly what FR-020 forbids
+    // (it would leak the tools/sections to every member).
+    expect(toolsRegister).not.toHaveBeenCalled();
+    expect(sectionRegister).not.toHaveBeenCalled();
+  });
+
+  it("declares itself as a pure provider", () => {
+    expect(inject).toEqual([]);
   });
 
   it("declares the dual-form operate parameters and empty schemas for the no-arg tools", () => {
@@ -128,7 +150,7 @@ describe("saolei plugin registration", () => {
     expect(schema.required).toBeUndefined();
   });
 
-  it("declares the canonical {result: string} output with a text render", async () => {
+  it("declares the canonical {result: string} output with a text render", () => {
     const { tools } = makeHarness();
     const definition = tools.get("saolei_init");
     expect(definition?.output).toBeDefined();
@@ -192,6 +214,61 @@ describe("saolei guidance ownership (prompt-sections.md §2)", () => {
     expect(description).toContain("no_active_game");
     expect(description).toContain("terminal board");
     expect(SAOLEI_GUIDANCE).toContain("Not blocked by a terminal board");
+  });
+});
+
+describe("SAOLEI_GAME_RULES content (prompt-sections.md §1)", () => {
+  it("states the authoritative classic game rules", () => {
+    for (const rule of [
+      "揭示全部非雷格",
+      "不踩雷",
+      "1–8",
+      "八邻格",
+      "级联展开",
+      "标旗",
+      "chord",
+      "左右同击",
+      "踩中雷",
+      "获胜",
+      "剩余雷数计数",
+      "顶部计数器",
+      "剩余未标记雷数",
+      "不是旗子数量",
+      "总雷数",
+      "已标旗数",
+      "可以为负",
+    ]) {
+      expect(SAOLEI_GAME_RULES).toContain(rule);
+    }
+  });
+
+  it("declares the operation set as the saolei tools expose it", () => {
+    for (const op of ["saolei_init", "saolei_operate", "saolei_remain"]) {
+      expect(SAOLEI_GAME_RULES).toContain(op);
+    }
+    expect(SAOLEI_GAME_RULES).toContain("click（揭示）");
+    expect(SAOLEI_GAME_RULES).toContain("flag（标旗/取消标旗）");
+    expect(SAOLEI_GAME_RULES).toContain("chord（同击）");
+  });
+
+  it("stays out of the tool-guidance domain (call shapes and result formats)", () => {
+    for (const guidanceOnly of [
+      "type/x/y",
+      "operations: [{",
+      "game status:",
+      "outcome",
+      "col0",
+      "row0",
+      "no_active_game",
+    ]) {
+      expect(SAOLEI_GAME_RULES).not.toContain(guidanceOnly);
+    }
+  });
+
+  it("stays out of the persona and team domains", () => {
+    for (const foreign of ["你是扫雷", "## 团队", "<player-message>"]) {
+      expect(SAOLEI_GAME_RULES).not.toContain(foreign);
+    }
   });
 });
 

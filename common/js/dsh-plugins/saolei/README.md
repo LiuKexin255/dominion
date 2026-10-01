@@ -1,10 +1,16 @@
 # @dominion/dsh-saolei (`common/js/dsh-plugins/saolei`)
 
-扫雷工具 dsh 插件（cordis 插件名 `saolei`，`inject = ['tools', 'systemPrompt',
-'saoleiGame']`）：全局注册 `saolei_init`/`saolei_operate`/`saolei_remain` 三工具与
-`saolei:guidance` prompt section，执行经 `saoleiGame` 服务（由 saolei-loop 插件提供）
-转发到调用者 agent 的 GameRuntime。插件全契约（工具 schema、参数互斥校验文本、
-section 注册）见 `specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §3；
+扫雷工具 cordis 插件（cordis 插件名 `saolei`，`inject = []`）：作为 saolei-loop
+组合的静态能力单元提供方挂载（`config.plugins` 子插件），`apply` 内
+`ctx.provide("saoleiTools", { tools, sections })` 暴露
+`saolei_init`/`saolei_operate`/`saolei_remain` 三工具定义与
+`saolei:guidance`/`saolei:game` 两个 prompt section，由 saolei-loop 编排在
+player 成员 setup 内整单元注册到成员上下文（不在组合作用域全局注册——那会把
+工具与 section 泄漏给全员）。工具执行经 `saoleiGame` 服务（由 saolei-loop 插件
+提供）转发到调用者 agent 的 GameRuntime。插件全契约（工具 schema、参数互斥校验
+文本、section 名/order/文本）见
+`specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §3.1/§6；工具面契约见
+`specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §3；
 包契约形态对齐 `specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md` §1。
 
 `saolei_remain` 的三处语义表述（工具 description、`saolei:game` 玩法行、结果体

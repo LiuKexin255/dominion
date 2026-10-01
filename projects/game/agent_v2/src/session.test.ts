@@ -51,7 +51,14 @@ interface MemberFake {
   readonly ctx: {
     on: ReturnType<typeof vi.fn>;
     /** The member prompt assembly surface GetTeamMember reads (specs/059-agent-v2-team-mode/tasks.md T032). */
-    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
+    systemPrompt: {
+      assemble: ReturnType<typeof vi.fn>;
+      section: ReturnType<typeof vi.fn>;
+    };
+    /** The member-scope tool registration surface the orchestrator writes. */
+    tools: { register: ReturnType<typeof vi.fn> };
+    /** The agent-scoped face registration surface (isolate → provide). */
+    isolate: ReturnType<typeof vi.fn>;
   };
   readonly handle: AgentHandle;
   readonly followups: UserMessage[];
@@ -77,7 +84,10 @@ interface Harness {
   readonly listeners: Map<string, Listener[]>;
   readonly authoring: { compose: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
   readonly listModels: ReturnType<typeof vi.fn>;
-  readonly loadPlannerMemory: ReturnType<typeof vi.fn>;
+  /** The `memoryMount.build` spy (the planner capability factory). */
+  readonly memoryMount: ReturnType<typeof vi.fn>;
+  /** The built unit's fail-loud prefetch spy. */
+  readonly memoryReady: ReturnType<typeof vi.fn>;
   readonly mountPlayerRuntime: ReturnType<typeof vi.fn>;
   readonly teamQueues: Map<string, UserMessage[]>;
   readonly teamRegister: ReturnType<typeof vi.fn>;
@@ -96,7 +106,12 @@ function fakeMember(
   const errorListeners: MemberFake["errorListeners"] = [];
   const memberCtx: {
     on: ReturnType<typeof vi.fn>;
-    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
+    systemPrompt: {
+      assemble: ReturnType<typeof vi.fn>;
+      section: ReturnType<typeof vi.fn>;
+    };
+    tools: { register: ReturnType<typeof vi.fn> };
+    isolate: ReturnType<typeof vi.fn>;
     agent?: Agent;
   } = {
     on: vi.fn((name: string, listener: Listener) => {
@@ -129,7 +144,12 @@ function fakeMember(
         tools: [],
         variables: {},
       })),
+      section: vi.fn(() => () => {}),
     },
+    // The member-scope registration surfaces the orchestrator writes
+    // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
+    tools: { register: vi.fn(() => () => {}) },
+    isolate: vi.fn(() => ({ provide: vi.fn(() => () => {}) })),
   };
   const agent = {
     id,
@@ -181,10 +201,8 @@ function fakeMember(
 }
 
 interface HarnessOptions {
-  /** A composed `ctx.plannerMemory` face to resolve instead of the deps seam. */
-  readonly composedPlannerMemory?: { load: ReturnType<typeof vi.fn> };
-  /** Omit both the composed service and the deps seam (composition-error test). */
-  readonly omitPlannerMemory?: boolean;
+  /** Omit the `memoryMount` provide face (composition-error test). */
+  readonly omitMemoryMount?: boolean;
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
@@ -245,7 +263,38 @@ function createHarness(options: HarnessOptions = {}): Harness {
       ? [{ id: "kimi-k3" }]
       : [{ id: "glm-5.3" }, { id: "glm-5.5" }],
   );
-  const loadPlannerMemory = vi.fn(async () => {});
+  // The two capability provide faces the saolei-loop apply would have mounted
+  // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3): the
+  // orchestrator reads them off the host context when it assembles a member.
+  const saoleiTools = {
+    tools: [
+      { name: "saolei_init" },
+      { name: "saolei_operate" },
+      { name: "saolei_remain" },
+    ],
+    sections: [
+      { name: "saolei:guidance", order: 100, text: "" },
+      { name: "saolei:game", order: 50, text: "" },
+    ],
+  };
+  const memoryReady = vi.fn(async () => {});
+  const memoryCapabilities = {
+    faces: [{ key: "memory", value: { kind: "memory-face" } }],
+    tools: [
+      { name: "memory" },
+      { name: "wiki_search" },
+      { name: "wiki_get" },
+      { name: "wiki_write" },
+    ],
+    sections: [
+      { name: "memory:guidance", order: 110, text: "" },
+      { name: "wiki:guidance", order: 120, text: "" },
+      { name: "memory:snapshot", order: 200, text: "" },
+    ],
+    ready: memoryReady,
+  };
+  const memoryBuild = vi.fn(() => memoryCapabilities);
+  const memoryMount = { build: memoryBuild };
   const game = { current: null as GameEventRecord | null };
   const mountPlayerRuntime = vi.fn(() => ({ peekGameEvent: () => game.current }));
   const teamQueues = new Map<string, UserMessage[]>();
@@ -273,8 +322,11 @@ function createHarness(options: HarnessOptions = {}): Harness {
       if (name === "presetAuthoring") {
         return authoring;
       }
-      if (name === "plannerMemory") {
-        return options.composedPlannerMemory;
+      if (name === "saoleiTools") {
+        return saoleiTools;
+      }
+      if (name === "memoryMount") {
+        return options.omitMemoryMount === true ? undefined : memoryMount;
       }
       return undefined;
     }),
@@ -293,11 +345,6 @@ function createHarness(options: HarnessOptions = {}): Harness {
     mountPlayerRuntime,
     logger: { error: loggerError },
     provider: "glm-responses",
-    // The default harness binds the explicit test seam; the composed-service
-    // cases leave it unset so the production resolution path runs.
-    ...(options.omitPlannerMemory || options.composedPlannerMemory !== undefined
-      ? {}
-      : { loadPlannerMemory }),
   });
   return {
     ctx,
@@ -307,7 +354,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
     listeners,
     authoring,
     listModels,
-    loadPlannerMemory,
+    memoryMount: memoryBuild,
+    memoryReady,
     mountPlayerRuntime,
     teamQueues,
     teamRegister,
@@ -504,7 +552,7 @@ describe("TeamSessions.materialize", () => {
       setup: expect.any(Function),
     });
     expect(h.mountPlayerRuntime).toHaveBeenCalledTimes(1);
-    expect(h.loadPlannerMemory).toHaveBeenCalledTimes(1);
+    expect(h.memoryMount).toHaveBeenCalledTimes(1);
     expect(h.teamRegister).toHaveBeenCalledTimes(1);
 
     expect(view.name).toBe(`${S1}/team`);
@@ -696,7 +744,7 @@ describe("TeamSessions.materialize", () => {
 
   it("rolls the whole materialization back when a member setup fails, then retries cleanly (no half-materialized team)", async () => {
     const h = createHarness();
-    h.loadPlannerMemory.mockRejectedValueOnce(new Error("memory unavailable"));
+    h.memoryReady.mockRejectedValueOnce(new Error("memory unavailable"));
 
     await expect(materializeDefault(h)).rejects.toThrow("memory unavailable");
     const player = member(h, PLAYER_ID);
@@ -736,33 +784,91 @@ describe("TeamSessions.materialize", () => {
   });
 });
 
-describe("TeamSessions planner memory wiring (T021)", () => {
-  it("prefetches the planner snapshot through the composed ctx.plannerMemory.load", async () => {
-    const composedLoad = vi.fn(async () => {});
-    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+type Spy = ReturnType<typeof vi.fn>;
 
-    await materializeDefault(h);
+/** The first invocation index of a spy (`mock.invocationCallOrder[0]`). */
+function firstCall(spy: Spy): number {
+  return spy.mock.invocationCallOrder[0] as number;
+}
 
-    // Only the planner member prefetches; the binding passes the planner's
-    // agent-scoped context and the (template, materialization source preset)
-    // scope key — the id halves, NOT full resource names (the memory client
-    // builds `templates/{template}/presets/{preset}` from these halves;
-    // specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
-    expect(composedLoad).toHaveBeenCalledTimes(1);
-    const planner = member(h, PLANNER_ID);
-    expect(composedLoad.mock.calls[0]?.[0]).toBe(planner.ctx);
-    expect(composedLoad.mock.calls[0]?.[1]).toEqual({
-      template: "saolei",
-      preset: "p-planner",
-    });
-  });
+/** The last invocation index of a spy. */
+function lastCall(spy: Spy): number {
+  return spy.mock.invocationCallOrder[
+    spy.mock.calls.length - 1
+  ] as number;
+}
+
+/** The provide spy of a member's first agent-scoped face registration. */
+function faceProvide(member: MemberFake): Spy {
+  const first = member.ctx.isolate.mock.results[0] as
+    | { value: { provide: Spy } }
+    | undefined;
+  if (first === undefined) {
+    throw new Error("the member registered no agent-scoped face");
+  }
+  return first.value.provide;
+}
+
+/**
+ * Assert the contract's fixed memory registration order
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4):
+ * faces → tools(×4) → sections(×3) → ready. The seams of one member setup
+ * are compared through `mock.invocationCallOrder`, so an out-of-order
+ * implementation fails this assertion.
+ */
+function expectMemoryRegistrationOrder(h: Harness, planner: MemberFake): void {
+  const provide = faceProvide(planner);
+  expect(provide).toHaveBeenCalledTimes(1);
+  expect(planner.ctx.tools.register).toHaveBeenCalledTimes(4);
+  expect(planner.ctx.systemPrompt.section).toHaveBeenCalledTimes(3);
+  expect(h.memoryReady).toHaveBeenCalledTimes(1);
+  expect(lastCall(provide)).toBeLessThan(
+    firstCall(planner.ctx.tools.register),
+  );
+  expect(lastCall(planner.ctx.tools.register)).toBeLessThan(
+    firstCall(planner.ctx.systemPrompt.section),
+  );
+  expect(lastCall(planner.ctx.systemPrompt.section)).toBeLessThan(
+    firstCall(h.memoryReady),
+  );
+}
+
+describe("TeamSessions planner memory wiring (074 team-assembly.md §4)", () => {
+  it(
+    "builds the planner memory unit with the materialization-source scope " +
+      "and prefetches once",
+    async () => {
+      const h = createHarness();
+
+      await materializeDefault(h);
+
+      // Only the planner member builds + prefetches; the factory receives the
+      // (template, materialization source preset) scope halves — the id
+      // halves, NOT full resource names (the memory client builds
+      // `templates/{template}/presets/{preset}` from these halves;
+      // specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
+      expect(h.memoryMount).toHaveBeenCalledTimes(1);
+      expect(h.memoryMount.mock.calls[0]?.[0]).toEqual({
+        template: "saolei",
+        preset: "p-planner",
+      });
+      expect(h.memoryReady).toHaveBeenCalledTimes(1);
+      // The fixed cross-face order on the planner member:
+      // faces → tools ×4 → sections ×3 → ready
+      // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
+      const planner = member(h, PLANNER_ID);
+      expectMemoryRegistrationOrder(h, planner);
+      // The player branch consumed no memory capability.
+      const player = member(h, PLAYER_ID);
+      expect(player.ctx.isolate).not.toHaveBeenCalled();
+    },
+  );
 
   it("re-derives the scope halves on refresh, following a swapped planner preset", async () => {
-    const composedLoad = vi.fn(async () => {});
-    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+    const h = createHarness();
 
     await materializeDefault(h);
-    expect(composedLoad.mock.calls[0]?.[1]).toEqual({
+    expect(h.memoryMount.mock.calls[0]?.[0]).toEqual({
       template: "saolei",
       preset: "p-planner",
     });
@@ -771,14 +877,14 @@ describe("TeamSessions planner memory wiring (T021)", () => {
     // built from the unchanged materialization source preset
     // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
     await h.sessions.materialize(S1, { members: defaultMembers() });
-    expect(composedLoad).toHaveBeenCalledTimes(2);
-    expect(composedLoad.mock.calls[1]?.[1]).toEqual({
+    expect(h.memoryMount).toHaveBeenCalledTimes(2);
+    expect(h.memoryMount.mock.calls[1]?.[0]).toEqual({
       template: "saolei",
       preset: "p-planner",
     });
 
-    // Refresh swapping the planner preset: the fresh planner prefetches the
-    // NEW preset's collection, so the scope follows the swapped member
+    // Refresh swapping the planner preset: the fresh planner reads the NEW
+    // preset's collection, so the scope follows the swapped member
     // (specs/071-memory-preset-scope/spec.md FR-009).
     await h.sessions.materialize(S1, {
       members: [
@@ -786,38 +892,49 @@ describe("TeamSessions planner memory wiring (T021)", () => {
         { role: "planner", preset: P_PLANNER_ALT },
       ],
     });
-    expect(composedLoad).toHaveBeenCalledTimes(3);
-    expect(composedLoad.mock.calls[2]?.[1]).toEqual({
+    expect(h.memoryMount).toHaveBeenCalledTimes(3);
+    expect(h.memoryMount.mock.calls[2]?.[0]).toEqual({
       template: "saolei",
       preset: "p-alt-planner",
     });
   });
 
-  it("rolls the whole materialization back when the composed load rejects (no half-materialized team)", async () => {
-    const composedLoad = vi.fn(async () => {
-      throw new Error("memory service unreachable");
-    });
-    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+  it(
+    "rolls the whole materialization back when the prefetch rejects " +
+      "(no half-materialized team)",
+    async () => {
+      const h = createHarness();
+      h.memoryReady.mockRejectedValueOnce(
+        new Error("memory service unreachable"),
+      );
 
-    await expect(materializeDefault(h)).rejects.toThrow("memory service unreachable");
-    const player = member(h, PLAYER_ID);
-    expect(player.handle.dispose).toHaveBeenCalledTimes(1);
-    expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
-    // The team never registered: the rollback is complete.
+      await expect(materializeDefault(h)).rejects.toThrow(
+        "memory service unreachable",
+      );
+      const player = member(h, PLAYER_ID);
+      expect(player.handle.dispose).toHaveBeenCalledTimes(1);
+      expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
+      // The team never registered: the rollback is complete.
+      expect(h.teamRegister).not.toHaveBeenCalled();
+
+      // Retry with the storage reachable materializes from scratch.
+      h.memoryReady.mockImplementation(async () => {});
+      await materializeDefault(h);
+      expect(h.sessions.getTeam(S1).name).toBe(`${S1}/team`);
+      expect(h.memoryReady).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("fails loud when the memoryMount capability is not composed", async () => {
+    const h = createHarness({ omitMemoryMount: true });
+
+    await expect(materializeDefault(h)).rejects.toThrow(
+      /"memoryMount" capability is not mounted/,
+    );
+    // The failure lands in the planner setup, after both member creations
+    // were invoked and the player was rolled back (no half-materialized team).
+    expect(h.agentsCreate).toHaveBeenCalledTimes(2);
     expect(h.teamRegister).not.toHaveBeenCalled();
-
-    // Retry with the storage reachable materializes from scratch.
-    composedLoad.mockImplementation(async () => {});
-    await materializeDefault(h);
-    expect(h.sessions.getTeam(S1).name).toBe(`${S1}/team`);
-    expect(composedLoad).toHaveBeenCalledTimes(2);
-  });
-
-  it("fails loud when neither the composed service nor the test override is present", async () => {
-    const h = createHarness({ omitPlannerMemory: true });
-
-    await expect(materializeDefault(h)).rejects.toThrow(/ctx\.plannerMemory/);
-    expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 });
 

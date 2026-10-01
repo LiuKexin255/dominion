@@ -149,7 +149,7 @@ memory tools require the agent-scoped "memory" service; agent "${exec.agent.id}"
 | 位置 | 内容 |
 |---|---|
 | `preset-authoring/src/index.ts:69` | Config 类型 `templateRules?` 字段 |
-| `preset-authoring/src/index.ts:99-106` | Config zod schema `templateRules` 项 |
+| `preset-authoring/src/index.ts:99-106` | Config schemastery schema `templateRules` 项 |
 | `preset-authoring/src/index.ts:26-31,36-37` | `validateTemplateRows` 的 import 与再导出、`TemplateRowRules` 类型的 import 与再导出 |
 | `preset-authoring/src/index.ts:194,258` | deps 注入与捕获 |
 | `preset-authoring/src/index.ts:383-386` | create 时校验调用 |

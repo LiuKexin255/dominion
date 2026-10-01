@@ -19,7 +19,8 @@ GameRuntime 行为契约见
 double，无模块拦截）。公开面：
 
 - `materialize(options)`：逐成员 compose + `ctx.agents.create`（roster mount、
-  player 侧 `createAgentGameRuntime` 注册、planner 侧 memory load DI seam），
+  player 侧 `createAgentGameRuntime` 注册 + saoleiTools 静态单元注册、planner 侧
+  `memoryMount.build(scope)` 单元注册与 fail-loud 预取），
   `ctx.team.register`，随后静止等待（初始激活 = planner，不发起任何驱动）；任一
   步失败回滚全部已建成员，无半物化。
 - `submit(text)`：用户消息入口——当前成员回合中入 team FIFO（返回

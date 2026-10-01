@@ -49,7 +49,6 @@ import {
 import type {
   AgentCreationSeam,
   ComposePreset,
-  LoadPlannerMemory,
   MountPlayerRuntime,
   OrchestratorFailure,
   OrchestratorLogger,
@@ -171,11 +170,6 @@ export interface TeamSessionsDeps {
   readonly team?: TeamSeam;
   /** Player game-runtime mount; defaults to the desktop-bridge builder. */
   readonly mountPlayerRuntime?: MountPlayerRuntime;
-  /**
-   * Planner memory prefetch override (unit tests); production binds the real
-   * `ctx.plannerMemory.load` host-row service face (T021).
-   */
-  readonly loadPlannerMemory?: LoadPlannerMemory;
   /** Orchestration failure reporter; defaults to the repo logger face. */
   readonly logger?: OrchestratorLogger;
   /** Provider route for both members; defaults to {@link PROVIDER}. */
@@ -813,7 +807,6 @@ export class TeamSessions {
   private createOrchestrator(): TeamOrchestrator {
     return new TeamOrchestrator(this.ctx, {
       compose: this.composeSeam(),
-      loadPlannerMemory: this.loadPlannerMemoryBinding(),
       logger: this.deps.logger ?? {
         error: (message, context) =>
           error(message, {
@@ -845,32 +838,6 @@ export class TeamSessions {
       throw new Error("team sessions: ctx.presetAuthoring is not composed");
     }
     return (preset) => authoring.compose(preset);
-  }
-
-  /**
-   * Bind the planner memory prefetch (T021): the explicit test override
-   * first, else the composed `ctx.plannerMemory` host-row service face
-   * (common/js/dsh-plugins/memory/src/index.ts; the `memory` row in
-   * cordis.yml provides it). The method is a closure, so the extracted
-   * `load` needs no receiver. A missing service is a composition error —
-   * fail-loud rather than silently materializing a planner without its
-   * memory snapshot (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md
-   * §2/§3).
-   */
-  private loadPlannerMemoryBinding(): LoadPlannerMemory {
-    if (this.deps.loadPlannerMemory !== undefined) {
-      return this.deps.loadPlannerMemory;
-    }
-    const memory = this.ctx.get("plannerMemory") as
-      | { load?: LoadPlannerMemory }
-      | undefined;
-    const load = memory?.load;
-    if (load === undefined) {
-      throw new Error(
-        "team sessions: ctx.plannerMemory is not composed; the memory host row is required to materialize a team",
-      );
-    }
-    return load;
   }
 
   /**

@@ -21,9 +21,14 @@
  * (projects/game/agent_v2/src/session.ts): members are created once through
  * `ctx.agents.create`, registered through `ctx.team.register`, and every
  * collaborator (preset compose, agent registry, team service, desktop
- * bridge, planner memory prefetch, game-runtime mount) enters through
- * {@link TeamOrchestratorDeps} so unit tests inject doubles instead of
- * intercepting modules (style/javascript.md Mock convention).
+ * bridge, game-runtime mount) enters through {@link TeamOrchestratorDeps} so
+ * unit tests inject doubles instead of intercepting modules
+ * (style/javascript.md Mock convention). The two capability providers
+ * (`saoleiTools`, `memoryMount`) are NOT constructor seams: the saolei-loop
+ * apply has already mounted them as `config.plugins` sub-plugins, so the
+ * orchestrator reads their provide faces from `this.ctx` when it assembles a
+ * member and fails loud when one is missing
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
  *
  * Driving consumes the official agent inbox: a drive batches its message set
  * into ONE turn (`inject` all but the last, `followup` the last — the
@@ -65,6 +70,8 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
+import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
+import type { PromptSection } from "@deepseek-ai/dsh-system-prompt";
 import type {
   Agent,
   AgentHandle,
@@ -218,23 +225,59 @@ export type MountPlayerRuntime = (
   sessionName: string,
 ) => GameEventSource | undefined;
 
-/** The planner memory snapshot prefetch scope key (template, preset). */
+/**
+ * Planner memory scope key (template, preset): the business template and the
+ * materialization source planner preset id. The orchestration derives it and
+ * passes it EXPLICITLY to `memoryMount.build(scope)` — the capability library
+ * has no scenario knowledge and never self-derives a scope
+ * (specs/074-dsh-grpc-runtime/spec.md FR-019). The type is structurally
+ * compatible with the memory library's `MemoryScope`, so no cross-package
+ * compile dependency is needed.
+ */
 export interface PlannerMemoryScope {
   readonly template: string;
   readonly preset: string;
 }
 
 /**
- * Planner memory prefetch seam — mandatory. The orchestration layer has no
- * compile or runtime dependency on the memory plugin: the host injects the
- * real `ctx.plannerMemory.load` (common/js/dsh-plugins/memory/src/) and a
- * rejection fails the whole materialization rollback — fail-loud
- * (contracts/dsh-plugins.md §2/§3).
+ * The static capability unit a provider exposes under the `saoleiTools`
+ * provide face (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1):
+ * the provider's tool definitions and prompt sections, registered into the
+ * member scope together. Declared structurally so the orchestration has no
+ * compile dependency on the provider package.
  */
-export type LoadPlannerMemory = (
-  agentCtx: Context,
-  scope: PlannerMemoryScope,
-) => Promise<void>;
+export interface SaoleiToolsUnit {
+  readonly tools: readonly ToolDefinition[];
+  readonly sections: readonly PromptSection[];
+}
+
+/** One agent-scoped face registration: the isolate label and the face value. */
+export interface MemoryFaceRegistration {
+  readonly key: string;
+  readonly value: unknown;
+}
+
+/**
+ * The atomic memory capability unit a `memoryMount.build(scope)` produces
+ * (specs/074-dsh-grpc-runtime/contracts/memory-library.md §1): faces, tools,
+ * sections and the fail-loud prefetch are mounted together.
+ */
+export interface MemoryCapabilities {
+  readonly faces: readonly MemoryFaceRegistration[];
+  readonly tools: readonly ToolDefinition[];
+  readonly sections: readonly PromptSection[];
+  /** Fail-loud prefetch: awaited in the member setup, rejects on failure. */
+  readonly ready: () => Promise<void>;
+}
+
+/**
+ * The per-member factory a provider exposes under the `memoryMount` provide
+ * face. `build` receives the scope the orchestration derived; the provider
+ * holds the deployment connection and the domain library.
+ */
+export interface MemoryMount {
+  build(scope: PlannerMemoryScope): MemoryCapabilities;
+}
 
 /** Narrow structural view of `ctx.agents` (registry creation face). */
 export interface AgentCreationSeam {
@@ -259,14 +302,6 @@ export interface TeamOrchestratorDeps {
   readonly desktopBridge?: DesktopBridgeService;
   /** Player game-runtime mount; defaults to `createAgentGameRuntime(agent, desktopBridge)`. */
   readonly mountPlayerRuntime?: MountPlayerRuntime;
-  /**
-   * Planner memory prefetch — REQUIRED. The host binds the real
-   * `ctx.plannerMemory.load` (the memory plugin's host-row service face),
-   * so a planner member is never materialized without its snapshot
-   * prefetch; the seam stays injectable for unit tests
-   * (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2/§3).
-   */
-  readonly loadPlannerMemory: LoadPlannerMemory;
   /** Failure reporter; defaults to a console-backed reporter. */
   readonly logger?: OrchestratorLogger;
   /** Provider route; defaults to {@link TEAM_PROVIDER}. */
@@ -294,12 +329,14 @@ export interface TeamMaterializeOptions {
   /** Team session resource name (`templates/{template}/sessions/{session}`). */
   readonly session: string;
   /**
-   * The planner memory prefetch scope key halves: the business template and
-   * the materialization source planner preset id
+   * The planner memory scope key halves: the business template and the
+   * materialization source planner preset id
    * (`templates/{template}/presets/{preset}/memories/{memory}`). The memory
-   * plugin builds the parent resource from these halves, so they stay bare
-   * ids rather than full resource names
-   * (specs/071-memory-preset-scope/contracts/dsh-plugins.md §1/§4).
+   * capability library builds the parent resource from these halves, so they
+   * stay bare ids rather than full resource names
+   * (specs/071-memory-preset-scope/contracts/dsh-plugins.md §1/§4). The
+   * orchestration passes this scope explicitly to `memoryMount.build(scope)`
+   * (specs/074-dsh-grpc-runtime/spec.md FR-019).
    */
   readonly memoryScope: PlannerMemoryScope;
   /** Team goal rendered into the team section. */
@@ -756,14 +793,16 @@ export class TeamOrchestrator {
       setup: async (agentCtx, agent) => {
         await composed.setup(agentCtx);
         if (role === "player") {
-          // The game runtime dispatches through the desktop-bridge connection
-          // registered for the GAME session resource name; the member's dsh
-          // session id is namespaced (`{session}/player`) and is not the
-          // bridge key (specs/059-agent-v2-team-mode/data-model.md §3).
+          // The player consumes only the saolei static unit — the game runtime
+          // dispatches through the desktop-bridge connection registered for
+          // the GAME session resource name; the member's dsh session id is
+          // namespaced (`{session}/player`) and is not the bridge key
+          // (specs/059-agent-v2-team-mode/data-model.md §3).
+          this.registerSaoleiTools(agentCtx);
           game = this.mountPlayerRuntime()(agent, options.session);
           return;
         }
-        await this.loadPlannerMemory(agentCtx, options.memoryScope);
+        await this.registerMemory(agentCtx, options.memoryScope);
       },
     });
 
@@ -826,16 +865,84 @@ export class TeamOrchestrator {
   }
 
   /**
-   * Planner memory prefetch (fail-loud): the host-injected
-   * `ctx.plannerMemory.load`. A rejection propagates out of the member
-   * setup, which rolls the whole materialization back
-   * (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §3 item 3).
+   * Register the saolei static unit into the player member's scope: the
+   * three tool definitions then the two sections, one indivisible consumer
+   * call (specs/074-dsh-grpc-runtime/spec.md FR-015/FR-017). The unit is read
+   * from the `saoleiTools` provide face the saolei-loop apply mounted.
    */
-  private async loadPlannerMemory(
+  private registerSaoleiTools(agentCtx: Context): void {
+    const unit = this.saoleiTools();
+    for (const definition of unit.tools) {
+      agentCtx.tools.register(definition);
+    }
+    for (const section of unit.sections) {
+      agentCtx.systemPrompt.section(section);
+    }
+  }
+
+  /**
+   * Register the planner member's memory capability unit, then await its
+   * fail-loud prefetch: faces → tools → sections → ready
+   * (specs/074-dsh-grpc-runtime/spec.md FR-016; contracts/team-assembly.md
+   * §4). A rejection from `ready()` propagates out of the member setup, so
+   * the whole materialization rolls back — no half-assembled member
+   * (contracts/team-assembly.md §6).
+   */
+  private async registerMemory(
     agentCtx: Context,
     scope: PlannerMemoryScope,
   ): Promise<void> {
-    await this.deps.loadPlannerMemory(agentCtx, scope);
+    const unit = this.memoryMountProvider().build(scope);
+    for (const face of unit.faces) {
+      // The agent-scoped registration: an isolate child of the agent context
+      // shares the agent fiber, so `exec.agent.ctx.<key>` resolves the face
+      // from the tool path (the saolei `saoleiGame` pattern;
+      // contracts/memory-library.md §5).
+      agentCtx.isolate(face.key).provide(face.key, face.value);
+    }
+    for (const definition of unit.tools) {
+      agentCtx.tools.register(definition);
+    }
+    for (const section of unit.sections) {
+      agentCtx.systemPrompt.section(section);
+    }
+    await unit.ready();
+  }
+
+  /**
+   * Read the `saoleiTools` provide face. Absent = the saolei-loop apply
+   * mounted no saolei unit provider (a `config.plugins` omission) →
+   * fail-loud; the orchestration never materializes a player without its
+   * tools (contracts/team-assembly.md §4/§6).
+   */
+  private saoleiTools(): SaoleiToolsUnit {
+    const unit = this.ctx.get("saoleiTools") as SaoleiToolsUnit | undefined;
+    if (unit === undefined) {
+      throw new Error(
+        'saolei-loop orchestrator: the "saoleiTools" capability is not ' +
+          "mounted; the saolei-loop row's config.plugins must list the " +
+          "saolei unit provider",
+      );
+    }
+    return unit;
+  }
+
+  /**
+   * Read the `memoryMount` provide face. Absent = the saolei-loop apply
+   * mounted no memory provider (a `config.plugins` omission) → fail-loud; a
+   * planner is never materialized without its memory capability
+   * (contracts/team-assembly.md §4/§6).
+   */
+  private memoryMountProvider(): MemoryMount {
+    const mount = this.ctx.get("memoryMount") as MemoryMount | undefined;
+    if (mount === undefined) {
+      throw new Error(
+        'saolei-loop orchestrator: the "memoryMount" capability is not ' +
+          "mounted; the saolei-loop row's config.plugins must list the " +
+          "memory provider",
+      );
+    }
+    return mount;
   }
 
   /** Roll a failed materialization back: drop created members, no residue. */

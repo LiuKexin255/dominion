@@ -25,7 +25,7 @@
 
 ## 3. templateRules 移除（修订）
 
-机制整体删除（Config 字段、zod schema、`validateTemplateRows`、`TemplateRowRules` 类型、`cordis.yml` 规则数据、测试 fixture——research.md D8 清单）。preset 创建不再有模板行校验拒绝路径。原"player 禁 memory / planner 恰含 memory"的场景保证由编排代码结构性承接（player 分支只消费 saoleiTools，team-assembly §6）。
+机制整体删除（Config 字段、schemastery schema、`validateTemplateRows`、`TemplateRowRules` 类型、`cordis.yml` 规则数据、测试 fixture——research.md D8 清单）。preset 创建不再有模板行校验拒绝路径。原"player 禁 memory / planner 恰含 memory"的场景保证由编排代码结构性承接（player 分支只消费 saoleiTools，team-assembly §6）。
 
 层序修正（survey 决策 ⑭）：场景 wiring 归场景代码（saolei-loop 编排）与场景依赖声明（config.plugins 扁平列表），部署数据只承载部署决策。
 

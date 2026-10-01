@@ -1,10 +1,17 @@
 /**
  * cordis plugin entry for the saolei team loop: the orchestration layer of
  * the saolei team (驱动权唯一归属——游戏阶段机、成员驱动时机与 buffer 消费
- * 策略、物化编排). The plugin is the composition row `saolei-loop`; its
- * `apply` carries no host-level service of its own — the host constructs one
- * {@link TeamOrchestrator} per team
- * (projects/game/agent_v2/src/session.ts), so per-team state and its
+ * 策略、物化编排) and the composition row `saolei-loop`.
+ *
+ * `apply` is the dependency-assembly step of the team-layer assembly
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2/§4): its
+ * `config.plugins` is the FLAT capability-dependency list (no role grouping,
+ * no whitelist, no validation), each row is mounted as a child plugin by its
+ * bare package name (`Loader`-style dynamic import, resolved by the Node ESM
+ * host closure) with the row's config, and the two provide faces the
+ * orchestration consumes (`saoleiTools`, `memoryMount`) are read back and
+ * fail loud when absent. The orchestrator itself is constructed per team by
+ * the host (projects/game/agent_v2/src/session.ts), so per-team state and its
  * `ctx.team`/`ctx.agents` consumption never become composition singletons.
  * Agent DRIVING itself is owned by the official `dsh-agent-loop` row
  * (specs/059-agent-v2-team-mode/research.md R1/R7: the previous self-built
@@ -21,14 +28,10 @@
  * registers as the agent scope's `saoleiGame` service on the agent context
  * (cordis Service contract — unregistered automatically when the owning
  * agent scope unloads, saolei-plugins.md §2.1).
- *
- * `apply` also registers the `saolei:game` prompt section (game rules + the
- * operations the saolei tools expose; host scope, visible to every member) —
- * the game domain's single owner. Prompt ownership:
- * specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1.
  */
 
-import type { Context } from "@deepseek-ai/cordis";
+import type { Context, Plugin } from "@deepseek-ai/cordis";
+import z from "@deepseek-ai/schemastery";
 
 import { createAgentGameRuntime, GameRuntimeService } from "./game/runtime.js";
 import type {
@@ -80,7 +83,9 @@ export type {
   ComposePreset,
   ComposedPreset,
   GameEventSource,
-  LoadPlannerMemory,
+  MemoryCapabilities,
+  MemoryFaceRegistration,
+  MemoryMount,
   MountPlayerRuntime,
   OrchestrationFailureContext,
   OrchestrationPhase,
@@ -90,6 +95,7 @@ export type {
   OrchestratorSnapshot,
   OrchestratorStateErrorCode,
   PlannerMemoryScope,
+  SaoleiToolsUnit,
   SubmitResult,
   TeamMaterializeOptions,
   TeamMemberOptions,
@@ -100,8 +106,79 @@ export type {
 
 export const name = "saolei-loop";
 
-/** Host-row plugin: registers the game-rules section on the host scope. */
-export const inject = ["systemPrompt"];
+/**
+ * Pure assembly host: the dependency rows and provide faces are read
+ * opportunistically through `ctx`/`reflect`, so no service is injected here.
+ */
+export const inject: string[] = [];
+
+/** One flat capability-dependency row (`config.plugins` item). */
+export interface SaoleiLoopPluginRow {
+  /** Bare package name resolved by the host ESM closure. */
+  readonly name: string;
+  /** Plugin config, validated by the mounted plugin's own Config schema. */
+  readonly config?: unknown;
+}
+
+/** The saolei-loop row config: the flat capability-dependency list. */
+export interface SaoleiLoopConfig {
+  readonly plugins: readonly SaoleiLoopPluginRow[];
+}
+
+// Schemastery's ObjectS input shape is wider than the validated output type;
+// the cast mirrors the official adapters' declared `Config: z<Config>` shape
+// (common/js/dsh-plugins/llm-glm/src/index.ts precedent).
+export const Config: z<SaoleiLoopConfig> = z.object({
+  plugins: z
+    .array(
+      z.object({
+        name: z.string().required(),
+        config: z.any(),
+      }),
+    )
+    .default([]),
+}) as unknown as z<SaoleiLoopConfig>;
+
+/**
+ * Injection seams for {@link apply} (DI; tests pass stub plugin importers so
+ * the assembly is exercised without real packages, style/javascript.md §测试).
+ */
+export interface SaoleiLoopPluginDeps {
+  /** Bare-name plugin resolver; defaults to the Node ESM dynamic import. */
+  readonly importPlugin?: (name: string) => Promise<Plugin>;
+}
+
+/**
+ * Apply the plugin: mount every `config.plugins` row as a child plugin (the
+ * plugin's own Config schema validates the row config; a rejection fails the
+ * composition load) and read back both capability provide faces, failing loud
+ * when a row is missing (specs/074-dsh-grpc-runtime/contracts/
+ * team-assembly.md §2/§4).
+ */
+export async function apply(
+  ctx: Context,
+  config: SaoleiLoopConfig,
+  deps: SaoleiLoopPluginDeps = {},
+): Promise<void> {
+  const importPlugin =
+    deps.importPlugin ?? ((name: string): Promise<Plugin> => import(name));
+  for (const row of config.plugins) {
+    const entry = await importPlugin(row.name);
+    await ctx.plugin(entry, row.config as never);
+  }
+  if (ctx.get("saoleiTools") === undefined) {
+    throw new Error(
+      'saolei-loop: the "saoleiTools" capability is not mounted; add the ' +
+        "saolei unit provider to the saolei-loop row's config.plugins",
+    );
+  }
+  if (ctx.get("memoryMount") === undefined) {
+    throw new Error(
+      'saolei-loop: the "memoryMount" capability is not mounted; add the ' +
+        "memory provider to the saolei-loop row's config.plugins",
+    );
+  }
+}
 
 declare module "@deepseek-ai/cordis" {
   interface Context {
@@ -113,42 +190,3 @@ declare module "@deepseek-ai/cordis" {
     saoleiGame?: SaoleiGame;
   }
 }
-
-export function apply(ctx: Context): void {
-  ctx.systemPrompt.section({
-    name: "saolei:game",
-    order: 50,
-    text: SAOLEI_GAME_RULES,
-  });
-}
-
-/**
- * The `saolei:game` section text: the classic Minesweeper rules plus the
- * operations the saolei tools actually expose. Ownership boundary
- * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1): game
- * facts only — no tool call shapes or result formats (saolei:guidance), no
- * member identity (persona), no team facts (team section). The rules follow
- * the classic (Win98-era Microsoft Minesweeper) form described at
- * https://en.wikipedia.org/wiki/Microsoft_Minesweeper and
- * https://en.wikipedia.org/wiki/Minesweeper_(video_game) ; the operation set
- * is the intersection with the saolei plugin's three tools
- * (`common/js/dsh-plugins/saolei/src/index.ts`). The `saolei_remain` per-cell
- * wording and the global-counter distinction follow
- * specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §3.
- */
-export const SAOLEI_GAME_RULES = `## 扫雷玩法与可用操作
-
-对局为经典扫雷（旧版 Windows / Win98 时代形态）：
-
-- 棋盘是一张隐藏的雷区网格；目标是揭示全部非雷格且不踩雷。
-- 揭示一个非雷格后：数字 1–8 表示该格八邻格中的雷数；空白（0）表示相邻无雷，并会级联展开相邻的非雷区域。
-- 未揭示的格子可以标旗作为推理标记（标旗不改变格内容，可再次操作取消）。
-- 对已揭示的数字格，当其相邻旗数满足该数字时，可以 chord（左右同击）一次展开其余未标旗的邻格。
-- 踩中雷即本局失败（负局棋盘会展示全部雷位）；全部非雷格揭示即本局获胜。
-- 顶部计数器的剩余雷数计数 = 总雷数 − 已标旗数，可以为负（表示标旗过多）；它是全局计数，与 \`saolei_remain\` 的每格视图不同。
-
-可用操作（与 saolei 工具能力一致）：
-
-- 开局/重开一局：\`saolei_init\`（再次调用即重开并重新播种）。
-- 格子操作：\`saolei_operate\` 支持 click（揭示）、flag（标旗/取消标旗）、chord（同击），可单发或按序批量执行。
-- 只读查询：\`saolei_remain\` 返回每个已揭示数字格周围的剩余未标记雷数（= 数字 − 相邻已标旗数，可为 0 或负），不是旗子数量。`;

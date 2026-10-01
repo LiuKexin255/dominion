@@ -31,6 +31,9 @@ ts_project(
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-team",
         ":node_modules/@dominion/game-saolei-board",
@@ -64,11 +67,13 @@ js_library(
 # precedent). npm_deps carries the plugin's runtime imports: the cordis
 # Service base class (game/runtime.ts), the dsh-llm message helpers
 # (orchestrator.ts builds user messages; announcer.ts builds the announcement
-# assistant message), and the dsh-session SessionSeq brand constructor
-# (announcer.ts stamps the announcement event's seq). The remaining dsh faces
-# (dsh-agent, dsh-desktop-bridge) are type-only and resolve from the host
-# composition; @dominion/dsh-team is a runtime workspace import
-# (agentMemberSource in orchestrator.ts) and ships through runtime_deps.
+# assistant message), the dsh-session SessionSeq brand constructor
+# (announcer.ts stamps the announcement event's seq), and schemastery (the
+# Config validator backing the plugin's config.plugins schema). The remaining
+# dsh faces (dsh-agent, dsh-desktop-bridge, dsh-tools, dsh-system-prompt) are
+# type-only and resolve from the host composition; @dominion/dsh-team is a
+# runtime workspace import (agentMemberSource in orchestrator.ts) and ships
+# through runtime_deps.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-saolei-loop",
@@ -77,6 +82,7 @@ js_runtime_library(
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/schemastery",
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
@@ -102,6 +108,9 @@ vitest_test(
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-scope",
         ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-team",
         ":node_modules/@dominion/game-saolei-board",

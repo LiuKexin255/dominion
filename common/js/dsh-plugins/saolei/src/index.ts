@@ -1,31 +1,55 @@
 /**
- * cordis plugin entry for the saolei tools plugin: registers the
- * saolei_init/saolei_operate/saolei_remain tools and the `saolei:guidance`
- * prompt section. The tools are stateless model-facing entry points — all
- * game state and execution live in the saolei-loop plugin's GameRuntime
- * (FR-013), resolved per call through the calling agent's scope.
+ * cordis plugin entry for the saolei tools capability: the static unit
+ * provider the saolei-loop composition mounts as a `config.plugins` sub-plugin
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1). `apply`
+ * exposes the unit through `ctx.provide("saoleiTools", ...)` — the three
+ * saolei_init/saolei_operate/saolei_remain tool definitions plus the
+ * `saolei:guidance`/`saolei:game` prompt sections — and registers NOTHING on
+ * the composition scope: a composition-level apply that called
+ * `ctx.tools.register`/`ctx.systemPrompt.section` would leak the tools and
+ * sections to every member, so the orchestration registers the unit into each
+ * player member's own scope instead
+ * (specs/074-dsh-grpc-runtime/spec.md FR-020; contracts/team-assembly.md §6).
  *
- * `saoleiGame` is an agent-scoped service (registered on `agent.ctx` by the
- * host's agent-creation setup hook when an agent materializes — the
- * saolei-loop plugin's createAgentGameRuntime; at plugin-load time no agent
- * exists), so it CANNOT be statically injected — the tool exec bodies
- * resolve it lazily via `exec.agent.ctx` (dsh-tools `ToolExecution.agent`
- * carries the calling agent; research.md D7). `exec.agent` absent, or no
- * `saoleiGame` in the caller's scope (non-loop-driven call, or the service
- * already unregistered with the agent scope), fails loud — never a silent
- * success. Contract: specs/051-agent-v2-dsh-migration/contracts/
- * saolei-plugins.md §3.
+ * The tools are stateless model-facing entry points — all game state and
+ * execution live in the saolei-loop plugin's GameRuntime (FR-013), resolved
+ * per call through the calling agent's scope. `saoleiGame` is an agent-scoped
+ * service (registered on `agent.ctx` by createAgentGameRuntime when an agent
+ * materializes; at unit-provider load time no agent exists), so it CANNOT be
+ * statically injected — the tool exec bodies resolve it lazily via
+ * `exec.agent.ctx` (dsh-tools `ToolExecution.agent` carries the calling
+ * agent; research.md D7). `exec.agent` absent, or no `saoleiGame` in the
+ * caller's scope (non-loop-driven call, or the service already unregistered
+ * with the agent scope), fails loud — never a silent success. Contract:
+ * specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §3.
  */
 
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
+import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
+import type { PromptSection } from "@deepseek-ai/dsh-system-prompt";
 import type { Context } from "@deepseek-ai/cordis";
 
 import type { OperateInput, SaoleiGame, ToolOutcome } from "@dominion/dsh-saolei-loop";
 
 export const name = "saolei";
 
-export const inject = ["tools", "systemPrompt"];
+/** Pure provider: the unit is exposed at plugin load, nothing is required. */
+export const inject: string[] = [];
+
+/** The provide name the saolei-loop orchestration reads the unit from. */
+export const SAOLEI_TOOLS_SERVICE = "saoleiTools";
+
+/**
+ * The saolei static capability unit: the three tool definitions and the two
+ * prompt sections, provided together and consumed together
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §6). `saoleiGame`
+ * runtime instances are NOT part of this unit — the orchestration mounts them
+ * separately in the player setup through `createAgentGameRuntime`.
+ */
+export interface SaoleiToolsUnit {
+  readonly tools: readonly ToolDefinition[];
+  readonly sections: readonly PromptSection[];
+}
 
 // ── v1 argument-combination rejection literals (verbatim, data-model.md
 // §2.5 双形式 operate 入参 — refuse ambiguity over silent precedence) ────────
@@ -147,13 +171,21 @@ function resultOutput() {
 }
 
 /**
- * Apply the plugin: three global tool registrations (one registry, every
- * agent sees them; per-agent routing happens at resolution time) plus the
- * tool-guidance prompt section (order 100 — the official tool-guidance
- * band 100–199).
+ * Apply the plugin: expose the static capability unit through
+ * `ctx.provide("saoleiTools", ...)`. The unit is deliberately NOT registered
+ * on the composition scope — the saolei-loop orchestration registers it into
+ * each player member's scope (specs/074-dsh-grpc-runtime/contracts/
+ * team-assembly.md §3.1/§6).
  */
 export function apply(ctx: Context): void {
-  ctx.tools.register(
+  ctx.provide(SAOLEI_TOOLS_SERVICE, buildSaoleiToolsUnit());
+}
+
+/** Build the static unit: the three tool definitions and the two sections. */
+function buildSaoleiToolsUnit(): SaoleiToolsUnit {
+  const tools: ToolDefinition[] = [];
+
+  tools.push(
     defineTool({
       name: "saolei_init",
       description:
@@ -169,7 +201,7 @@ export function apply(ctx: Context): void {
     }),
   );
 
-  ctx.tools.register(
+  tools.push(
     defineTool({
       name: "saolei_operate",
       description:
@@ -236,7 +268,7 @@ export function apply(ctx: Context): void {
   // number cell; explicit flag-count exclusion) follows the terminal text
   // contract in specs/064-memory-split-fold-remain/contracts/saolei-plugins.md
   // §2.
-  ctx.tools.register(
+  tools.push(
     defineTool({
       name: "saolei_remain",
       description:
@@ -254,11 +286,13 @@ export function apply(ctx: Context): void {
     }),
   );
 
-  ctx.systemPrompt.section({
-    name: "saolei:guidance",
-    order: 100,
-    text: SAOLEI_GUIDANCE,
-  });
+  return {
+    tools,
+    sections: [
+      { name: "saolei:guidance", order: 100, text: SAOLEI_GUIDANCE },
+      { name: "saolei:game", order: 50, text: SAOLEI_GAME_RULES },
+    ],
+  };
 }
 
 /**
@@ -352,3 +386,35 @@ Every op is validated against the recognized board; the desktop never receives a
 - Do NOT read pixels or expect a screenshot — tool results are text boards only.
 - Do NOT emulate a chord with two clicks — use one \`chord\` op.
 - There is no status-reporting tool: the agent recognizes the board itself after every operation.`;
+
+/**
+ * The `saolei:game` section text: the classic Minesweeper rules plus the
+ * operations the saolei tools actually expose. Ownership boundary
+ * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1): game
+ * facts only — no tool call shapes or result formats (saolei:guidance), no
+ * member identity (persona), no team facts (team section). The rules follow
+ * the classic (Win98-era Microsoft Minesweeper) form described at
+ * https://en.wikipedia.org/wiki/Microsoft_Minesweeper and
+ * https://en.wikipedia.org/wiki/Minesweeper_(video_game) ; the operation set
+ * is the intersection with the three tools this unit provides. The
+ * `saolei_remain` per-cell wording and the global-counter distinction follow
+ * specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §3.
+ * Section name/order/text are unchanged from the pre-migration plugin row
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §5 ②).
+ */
+export const SAOLEI_GAME_RULES = `## 扫雷玩法与可用操作
+
+对局为经典扫雷（旧版 Windows / Win98 时代形态）：
+
+- 棋盘是一张隐藏的雷区网格；目标是揭示全部非雷格且不踩雷。
+- 揭示一个非雷格后：数字 1–8 表示该格八邻格中的雷数；空白（0）表示相邻无雷，并会级联展开相邻的非雷区域。
+- 未揭示的格子可以标旗作为推理标记（标旗不改变格内容，可再次操作取消）。
+- 对已揭示的数字格，当其相邻旗数满足该数字时，可以 chord（左右同击）一次展开其余未标旗的邻格。
+- 踩中雷即本局失败（负局棋盘会展示全部雷位）；全部非雷格揭示即本局获胜。
+- 顶部计数器的剩余雷数计数 = 总雷数 − 已标旗数，可以为负（表示标旗过多）；它是全局计数，与 \`saolei_remain\` 的每格视图不同。
+
+可用操作（与 saolei 工具能力一致）：
+
+- 开局/重开一局：\`saolei_init\`（再次调用即重开并重新播种）。
+- 格子操作：\`saolei_operate\` 支持 click（揭示）、flag（标旗/取消标旗）、chord（同击），可单发或按序批量执行。
+- 只读查询：\`saolei_remain\` 返回每个已揭示数字格周围的剩余未标记雷数（= 数字 − 相邻已标旗数，可为 0 或负），不是旗子数量。`;
