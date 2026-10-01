@@ -26,6 +26,7 @@ common/js/dsh-plugins/llm-opencode-go/node_modules
 common/js/dsh-plugins/desktop-bridge/node_modules
 common/js/dsh-plugins/saolei-loop/node_modules
 common/js/dsh-plugins/saolei/node_modules
+common/js/dsh-plugins/saolei-tools/node_modules
 projects/game/agent_v2/node_modules
 projects/game/web/frontend/node_modules
 common/js/dsh-plugins/preset-authoring/node_modules
