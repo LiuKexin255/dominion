@@ -15,61 +15,28 @@
  * `ctx.team`/`ctx.agents` consumption never become composition singletons.
  * Agent DRIVING itself is owned by the official `dsh-agent-loop` row; this
  * plugin holds the orchestration state machine only, no turn/step driving
- * (specs/059-agent-v2-team-mode/research.md R1/R7). GameRuntime registration
- * lives in the caller's agent-creation setup hook — {@link
- * createAgentGameRuntime} is the production builder, called from the
- * orchestration's player setup.
+ * (specs/059-agent-v2-team-mode/research.md R1/R7).
+ *
+ * The game domain is an upstream service of this plugin: `inject: ["saolei"]`
+ * declares the composition's top-level game-foundation row as a load-time
+ * requirement, and the orchestrator consumes `ctx.saolei` — the game-runtime
+ * factory it constructs and owns plus the gameplay section it registers per
+ * member (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md
+ * §1/§2/§3).
  *
  * The orchestration state machine and its contracts:
  * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2;
  * specs/059-agent-v2-team-mode/data-model.md §5.
- *
- * Per-agent game state is NOT a host-level service: the GameRuntime
- * registers as the agent scope's `saoleiGame` service on the agent context
- * (cordis Service contract — unregistered automatically when the owning
- * agent scope unloads, saolei-plugins.md §2.1).
  */
 
 import type { Context, Plugin } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
-
-import { createAgentGameRuntime, GameRuntimeService } from "./game/runtime.js";
-import type {
-  CellOperation,
-  GameEventRecord,
-  GameLogEntry,
-  GameRuntime,
-  GameRuntimeDeps,
-  GameStats,
-  OperationType,
-  OperateInput,
-  SaoleiGame,
-  ToolOutcome,
-} from "./game/runtime.js";
-
-export {
-  createAgentGameRuntime,
-  GameRuntimeService,
-} from "./game/runtime.js";
-export type {
-  CellOperation,
-  GameEventRecord,
-  GameLogEntry,
-  GameRuntime,
-  GameRuntimeDeps,
-  GameStats,
-  OperationType,
-  OperateInput,
-  SaoleiGame,
-  ToolOutcome,
-} from "./game/runtime.js";
 
 export {
   SAOLEI_MEMBER_ROLE,
   SAOLEI_MEMBER_SUMMARY,
   SaoleiSystemMember,
 } from "./announcer.js";
-export { gameStatsText } from "./game/text.js";
 
 export {
   DEFAULT_MEMBER_SUMMARIES,
@@ -82,11 +49,9 @@ export type {
   CancelResult,
   ComposePreset,
   ComposedPreset,
-  GameEventSource,
   MemoryCapabilities,
   MemoryFaceRegistration,
   MemoryMount,
-  MountPlayerRuntime,
   OrchestrationFailureContext,
   OrchestrationPhase,
   OrchestratorFailure,
@@ -107,10 +72,12 @@ export type {
 export const name = "saolei-loop";
 
 /**
- * Pure assembly host: the dependency rows and provide faces are read
- * opportunistically through `ctx`/`reflect`, so no service is injected here.
+ * The game foundation face this plugin consumes. The composition's top-level
+ * `saolei` row provides it, so a missing row fails the composition load at the
+ * inject resolution rather than degrading to a team without a game runtime
+ * (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §1).
  */
-export const inject: string[] = [];
+export const inject: string[] = ["saolei"];
 
 /** One flat capability-dependency row (`config.plugins` item). */
 export interface SaoleiLoopPluginRow {
@@ -177,16 +144,5 @@ export async function apply(
       'saolei-loop: the "memoryMount" capability is not mounted; add the ' +
         "memory provider to the saolei-loop row's config.plugins",
     );
-  }
-}
-
-declare module "@deepseek-ai/cordis" {
-  interface Context {
-    /**
-     * The calling agent's game runtime — agent-scoped only: visible on
-     * `agent.ctx` and its derived scopes (undefined on the host/root
-     * context), unregistered when the agent scope unloads.
-     */
-    saoleiGame?: SaoleiGame;
   }
 }

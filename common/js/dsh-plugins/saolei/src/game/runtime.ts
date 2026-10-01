@@ -144,10 +144,9 @@ export interface GameEventRecord {
  * private (model visibility flows only through the returned text).
  *
  * Kept structural and free of the implementation class's private members so
- * the agent-scoped handle type stays usable as a DI seam — the
- * `declare module "@deepseek-ai/cordis"` augmentation in `../index.js` merges
- * with the same-named augmentation the orchestration package still carries in
- * the dual-face period, which requires the exact same shape.
+ * the agent-scoped handle type stays usable as a DI seam: this package's
+ * `declare module "@deepseek-ai/cordis"` augmentation (`Context.saoleiGame`)
+ * and the orchestration's handle registration both reference this shape.
  */
 export interface SaoleiGame {
   init(signal?: AbortSignal): Promise<ToolOutcome>;

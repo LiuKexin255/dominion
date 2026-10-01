@@ -21,8 +21,8 @@
  * (projects/game/agent_v2/src/session.ts): members are created once through
  * `ctx.agents.create`, registered through `ctx.team.register`, and every
  * collaborator (preset compose, agent registry, team service, desktop
- * bridge, game-runtime mount) enters through {@link TeamOrchestratorDeps} so
- * unit tests inject doubles instead of intercepting modules
+ * bridge, game-runtime construction) enters through {@link TeamOrchestratorDeps}
+ * so unit tests inject doubles instead of intercepting modules
  * (style/javascript.md Mock convention). The two capability providers
  * (`saoleiTools`, `memoryMount`) are NOT constructor seams: the saolei-loop
  * apply has already mounted them as `config.plugins` sub-plugins, so the
@@ -40,12 +40,14 @@
  * so idle means the whole drain interval settled
  * (https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md).
  *
- * gameEnded is read from the player's agent-scoped game runtime after each
- * player turn (`peekGameEvent`, common/js/dsh-plugins/saolei-loop/src/game/
- * runtime.ts): the runtime keeps the LATEST terminal record across a
- * restart-init, and the record is consumed only after its review drive
- * settles, so a failed attempt retries with the held relays instead of
- * losing the review. Before the review drains, an unreviewed terminal record
+ * gameEnded is read from the orchestrator-owned game runtime after each
+ * player turn (`peekGameEvent`, the instance built at materialization through
+ * the foundation face and registered as the player's agent-scoped handle;
+ * specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §2): the
+ * runtime keeps the LATEST terminal record across a restart-init, and the
+ * record is consumed only after its review drive settles, so a failed attempt
+ * retries with the held relays instead of losing the review. Before the
+ * review drains, an unreviewed terminal record
  * is announced through the announce-only saolei system member (record-level
  * `statsSentFor` guard) — the announcement is one member speech on the same
  * relay/consume closure and rides at the tail of the review input set
@@ -86,15 +88,18 @@ import type {
   TeamRegistration,
 } from "@dominion/dsh-team";
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
+import { gameStatsText } from "@dominion/dsh-saolei";
+import type {
+  GameEventRecord,
+  GameRuntime,
+  SaoleiFoundation,
+} from "@dominion/dsh-saolei";
 
 import {
   SAOLEI_MEMBER_ROLE,
   SAOLEI_MEMBER_SUMMARY,
   SaoleiSystemMember,
 } from "./announcer.js";
-import { createAgentGameRuntime } from "./game/runtime.js";
-import type { GameEventRecord } from "./game/runtime.js";
-import { gameStatsText } from "./game/text.js";
 
 /** The two team roles; the orchestrator activates them in alternation. */
 export type TeamRole = "player" | "planner";
@@ -211,21 +216,6 @@ export interface ComposedPreset {
 export type ComposePreset = (preset: string) => Promise<ComposedPreset>;
 
 /**
- * The player-side terminal-event view (production:
- * `createAgentGameRuntime`'s `SaoleiGame`); the review trigger reads
- * `peekGameEvent()` after each player turn.
- */
-export interface GameEventSource {
-  peekGameEvent(): GameEventRecord | null;
-}
-
-/** Player-only game-runtime mount, run inside the member's setup. */
-export type MountPlayerRuntime = (
-  agent: Agent,
-  sessionName: string,
-) => GameEventSource | undefined;
-
-/**
  * Planner memory scope key (template, preset): the business template and the
  * materialization source planner preset id. The orchestration derives it and
  * passes it EXPLICITLY to `memoryMount.build(scope)` — the capability library
@@ -298,10 +288,9 @@ export interface TeamOrchestratorDeps {
   readonly agents?: AgentCreationSeam;
   /** Team service seam; defaults to `ctx.team`. */
   readonly team?: TeamSeam;
-  /** Desktop bridge backing the default player-runtime mount; defaults to `ctx.desktopBridge`. */
+  /** Desktop bridge backing the game-runtime construction; defaults to
+   * `ctx.desktopBridge`. */
   readonly desktopBridge?: DesktopBridgeService;
-  /** Player game-runtime mount; defaults to `createAgentGameRuntime(agent, desktopBridge)`. */
-  readonly mountPlayerRuntime?: MountPlayerRuntime;
   /** Failure reporter; defaults to a console-backed reporter. */
   readonly logger?: OrchestratorLogger;
   /** Provider route; defaults to {@link TEAM_PROVIDER}. */
@@ -457,8 +446,6 @@ interface MemberRuntime {
   /** The member's team message source — the team seam's drain key. */
   readonly source: TeamMemberSource;
   readonly agent: Agent;
-  /** Player-only terminal-event view captured at setup time. */
-  game: GameEventSource | undefined;
   offStatus: () => void;
   /**
    * The member ctx `agent/error` subscription: the failed turn's active
@@ -500,6 +487,13 @@ interface PendingReview {
 export class TeamOrchestrator {
   private members: Readonly<Record<TeamRole, MemberRuntime>> | null = null;
   private teamRegistration: TeamHandle | null = null;
+  /**
+   * The team's game runtime: built at materialization through the foundation
+   * face and owned by this orchestrator (lifecycle = the materialization
+   * lifetime; specs/075-saolei-game-foundation/contracts/team-loop-assembly.md
+   * §2). The player member only receives it as an agent-scoped handle.
+   */
+  private game: GameRuntime | null = null;
   /** The announce-only saolei system member; non-null exactly while materialized. */
   private saolei: SaoleiSystemMember | null = null;
   /** The materialized team's session resource name (logging context). */
@@ -617,6 +611,10 @@ export class TeamOrchestrator {
       this.completedRounds = 0;
       this.lastError = null;
     } catch (err) {
+      // Rollback drops the game runtime built during this attempt (its
+      // lifecycle is the materialization,
+      // specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §2).
+      this.game = null;
       await this.rollback(created);
       throw err;
     }
@@ -704,6 +702,7 @@ export class TeamOrchestrator {
 
     const members = this.members;
     this.members = null;
+    this.game = null;
     this.saolei = null;
     this.session = null;
     this.statsSentFor = null;
@@ -772,7 +771,7 @@ export class TeamOrchestrator {
     sessionId: string,
   ): Promise<MemberRuntime> {
     const composed = await this.deps.compose(member.preset);
-    let game: GameEventSource | undefined;
+    const foundation = this.saoleiFoundation();
     const handle = await this.agents().create({
       sessionId: sessionId as CreateAgentOptions["sessionId"],
       meta: {
@@ -790,18 +789,32 @@ export class TeamOrchestrator {
           ? {}
           : { model: member.model }),
       },
-      setup: async (agentCtx, agent) => {
+      setup: async (agentCtx) => {
         await composed.setup(agentCtx);
         if (role === "player") {
           // The player consumes only the saolei static unit — the game runtime
           // dispatches through the desktop-bridge connection registered for
           // the GAME session resource name; the member's dsh session id is
           // namespaced (`{session}/player`) and is not the bridge key
-          // (specs/059-agent-v2-team-mode/data-model.md §3).
+          // (specs/059-agent-v2-team-mode/data-model.md §3). The orchestrator
+          // builds the runtime here (materialization-time desktop-bridge
+          // resolution) and holds it; the member scope receives only the
+          // handle (specs/075-saolei-game-foundation/contracts/
+          // team-loop-assembly.md §2/§3).
           this.registerSaoleiTools(agentCtx);
-          game = this.mountPlayerRuntime()(agent, options.session);
+          agentCtx.systemPrompt.section(foundation.gameSection);
+          this.game = foundation.createGameRuntime(
+            options.session,
+            this.desktopBridge(),
+          );
+          agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game);
           return;
         }
+        // The planner sees the gameplay section too (074 legacy fix); the
+        // static registration precedes the fail-loud memory prefetch so a
+        // rejected prefetch remains the setup's last rollback boundary
+        // (research.md D3).
+        agentCtx.systemPrompt.section(foundation.gameSection);
         await this.registerMemory(agentCtx, options.memoryScope);
       },
     });
@@ -811,7 +824,6 @@ export class TeamOrchestrator {
       handle,
       source: agentMemberSource(handle),
       agent: handle.agent,
-      game,
       offStatus: () => {},
       offError: () => {},
       lastTurnFailure: null,
@@ -847,21 +859,39 @@ export class TeamOrchestrator {
     return this.deps.team ?? this.ctx.team;
   }
 
-  /** The player game-runtime mount (host override, else the desktop bridge). */
-  private mountPlayerRuntime(): MountPlayerRuntime {
-    if (this.deps.mountPlayerRuntime !== undefined) {
-      return this.deps.mountPlayerRuntime;
+  /**
+   * The game foundation face (`ctx.saolei`), provided by the top-level
+   * `saolei` composition row. The plugin's `inject: ["saolei"]` already makes
+   * the face a load-time requirement; the undefined guard narrows the type
+   * for direct construction (unit tests) and would fail loud rather than
+   * materialize a team without a game runtime
+   * (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §1/§2).
+   */
+  private saoleiFoundation(): SaoleiFoundation {
+    const foundation = this.ctx.saolei;
+    if (foundation === undefined) {
+      throw new Error(
+        'saolei-loop orchestrator: the "saolei" game foundation is not ' +
+          "composed; the top-level saolei row must provide it",
+      );
     }
-    return (agent, sessionName) => {
-      const desktopBridge =
-        this.deps.desktopBridge ?? this.ctx.get("desktopBridge");
-      if (desktopBridge === undefined) {
-        throw new Error(
-          "saolei-loop orchestrator: player game runtime needs the desktop-bridge service",
-        );
-      }
-      return createAgentGameRuntime(agent, desktopBridge, sessionName);
-    };
+    return foundation;
+  }
+
+  /**
+   * The desktop-bridge dispatch service backing the game runtime, resolved at
+   * materialization time: the host dep first, else the composition's
+   * `ctx.desktopBridge`. Missing = fail-loud (the runtime cannot dispatch).
+   */
+  private desktopBridge(): DesktopBridgeService {
+    const desktopBridge =
+      this.deps.desktopBridge ?? this.ctx.get("desktopBridge");
+    if (desktopBridge === undefined) {
+      throw new Error(
+        "saolei-loop orchestrator: player game runtime needs the desktop-bridge service",
+      );
+    }
+    return desktopBridge;
   }
 
   /**
@@ -1128,7 +1158,7 @@ export class TeamOrchestrator {
       return relays.length === 0 ? null : { member: members.player, messages: relays };
     }
 
-    const event = members.player.game?.peekGameEvent() ?? null;
+    const event = this.game?.peekGameEvent() ?? null;
     if (event !== null && event !== this.reviewedGameEvent) {
       this.announceStats(event);
       const relays = this.drain(members.planner);

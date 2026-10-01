@@ -10,7 +10,8 @@ import type { TeamView } from "./session.js";
 import type { TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
-import type { GameEventRecord, SaoleiSystemMember } from "@dominion/dsh-saolei-loop";
+import type { SaoleiSystemMember } from "@dominion/dsh-saolei-loop";
+import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
 
 /** The text of a user message's first text block. */
 function messageText(message: UserMessage): string {
@@ -88,7 +89,7 @@ interface Harness {
   readonly memoryMount: ReturnType<typeof vi.fn>;
   /** The built unit's fail-loud prefetch spy. */
   readonly memoryReady: ReturnType<typeof vi.fn>;
-  readonly mountPlayerRuntime: ReturnType<typeof vi.fn>;
+  readonly createGameRuntime: ReturnType<typeof vi.fn>;
   readonly teamQueues: Map<string, UserMessage[]>;
   readonly teamRegister: ReturnType<typeof vi.fn>;
   readonly fiberDispose: ReturnType<typeof vi.fn>;
@@ -272,10 +273,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
       { name: "saolei_operate" },
       { name: "saolei_remain" },
     ],
-    sections: [
-      { name: "saolei:guidance", order: 100, text: "" },
-      { name: "saolei:game", order: 50, text: "" },
-    ],
+    sections: [{ name: "saolei:guidance", order: 100, text: "" }],
   };
   const memoryReady = vi.fn(async () => {});
   const memoryCapabilities = {
@@ -296,7 +294,13 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const memoryBuild = vi.fn(() => memoryCapabilities);
   const memoryMount = { build: memoryBuild };
   const game = { current: null as GameEventRecord | null };
-  const mountPlayerRuntime = vi.fn(() => ({ peekGameEvent: () => game.current }));
+  const gameRuntime = {
+    init: vi.fn(async () => ({ isError: false as const, text: "" })),
+    operate: vi.fn(async () => ({ isError: false as const, text: "" })),
+    remain: vi.fn(() => ({ isError: false as const, text: "" })),
+    peekGameEvent: () => game.current,
+  } as unknown as GameRuntime;
+  const createGameRuntime = vi.fn(() => gameRuntime);
   const teamQueues = new Map<string, UserMessage[]>();
   const teamRegister = vi.fn((registration: TeamRegistration) => {
     // The saolei team's three-member roster: player + planner + the
@@ -315,6 +319,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   });
   const fiberDispose = vi.fn(async () => {});
   const loggerError = vi.fn();
+  const desktopBridge = {};
   const ctx = {
     on,
     agents: { create: agentsCreate, get: vi.fn() },
@@ -328,9 +333,18 @@ function createHarness(options: HarnessOptions = {}): Harness {
       if (name === "memoryMount") {
         return options.omitMemoryMount === true ? undefined : memoryMount;
       }
+      if (name === "desktopBridge") {
+        return desktopBridge;
+      }
       return undefined;
     }),
-    desktopBridge: {},
+    // The composition-level game foundation face (the top-level saolei row
+    // provides it; contracts/team-loop-assembly.md §2).
+    saolei: {
+      createGameRuntime,
+      gameSection: { name: "saolei:game", order: 50, text: "" },
+    },
+    desktopBridge,
     fiber: { dispose: fiberDispose },
     llm: { listModels: vi.fn(async () => [{ id: "glm-5.3" }]) },
   } as unknown as DshContext;
@@ -342,7 +356,6 @@ function createHarness(options: HarnessOptions = {}): Harness {
       register: teamRegister,
       drain: (member: TeamMemberSource) => teamQueues.get(member.id)?.splice(0) ?? [],
     },
-    mountPlayerRuntime,
     logger: { error: loggerError },
     provider: "glm-responses",
   });
@@ -356,7 +369,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     listModels,
     memoryMount: memoryBuild,
     memoryReady,
-    mountPlayerRuntime,
+    createGameRuntime,
     teamQueues,
     teamRegister,
     fiberDispose,
@@ -551,7 +564,7 @@ describe("TeamSessions.materialize", () => {
       agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
       setup: expect.any(Function),
     });
-    expect(h.mountPlayerRuntime).toHaveBeenCalledTimes(1);
+    expect(h.createGameRuntime).toHaveBeenCalledTimes(1);
     expect(h.memoryMount).toHaveBeenCalledTimes(1);
     expect(h.teamRegister).toHaveBeenCalledTimes(1);
 
@@ -812,25 +825,31 @@ function faceProvide(member: MemberFake): Spy {
 /**
  * Assert the contract's fixed memory registration order
  * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4):
- * faces → tools(×4) → sections(×3) → ready. The seams of one member setup
- * are compared through `mock.invocationCallOrder`, so an out-of-order
- * implementation fails this assertion.
+ * faces → tools(×4) → sections(×3) → ready. The planner's first section is the
+ * gameplay section registered before the memory unit
+ * (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §3), so the
+ * memory sections are the section calls after the first. The seams of one
+ * member setup are compared through `mock.invocationCallOrder`, so an
+ * out-of-order implementation fails this assertion.
  */
 function expectMemoryRegistrationOrder(h: Harness, planner: MemberFake): void {
   const provide = faceProvide(planner);
+  const sectionOrders =
+    planner.ctx.systemPrompt.section.mock.invocationCallOrder;
   expect(provide).toHaveBeenCalledTimes(1);
   expect(planner.ctx.tools.register).toHaveBeenCalledTimes(4);
-  expect(planner.ctx.systemPrompt.section).toHaveBeenCalledTimes(3);
+  expect(planner.ctx.systemPrompt.section).toHaveBeenCalledTimes(4);
   expect(h.memoryReady).toHaveBeenCalledTimes(1);
+  // The gameplay section precedes the memory faces; the three memory sections
+  // follow the memory tools.
+  expect(sectionOrders[0] as number).toBeLessThan(firstCall(provide));
   expect(lastCall(provide)).toBeLessThan(
     firstCall(planner.ctx.tools.register),
   );
   expect(lastCall(planner.ctx.tools.register)).toBeLessThan(
-    firstCall(planner.ctx.systemPrompt.section),
+    sectionOrders[1] as number,
   );
-  expect(lastCall(planner.ctx.systemPrompt.section)).toBeLessThan(
-    firstCall(h.memoryReady),
-  );
+  expect(sectionOrders[3] as number).toBeLessThan(firstCall(h.memoryReady));
 }
 
 describe("TeamSessions planner memory wiring (074 team-assembly.md §4)", () => {
@@ -858,9 +877,12 @@ describe("TeamSessions planner memory wiring (074 team-assembly.md §4)", () => 
       // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
       const planner = member(h, PLANNER_ID);
       expectMemoryRegistrationOrder(h, planner);
-      // The player branch consumed no memory capability.
+      // The player branch consumed no memory capability; it registered the
+      // game handle instead (the orchestrator-owned instance).
       const player = member(h, PLAYER_ID);
-      expect(player.ctx.isolate).not.toHaveBeenCalled();
+      expect(h.memoryMount).toHaveBeenCalledTimes(1);
+      expect(player.ctx.isolate).toHaveBeenCalledTimes(1);
+      expect(player.ctx.isolate).toHaveBeenCalledWith("saoleiGame");
     },
   );
 

@@ -24,7 +24,8 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
  * (specs/070-dsh-upgrade/contracts/composition-manifest.md §2): the exact
- * 21-row set with the grpc-runtime infrastructure row, the session-projection
+ * 22-row set with the grpc-runtime infrastructure row, the saolei game
+ * foundation row, the session-projection
  * row, the official agent-loop row,
  * the agent-preset registry and the pool-template snapshot injected through
  * the authoring row config, the saolei-loop flat capability-dependency list
@@ -513,7 +514,7 @@ interface CapabilityPluginRow {
 }
 
 const SAOLEI_LOOP_PLUGINS: CapabilityPluginRow[] = [
-  { name: "@dominion/dsh-saolei" },
+  { name: "@dominion/dsh-saolei-tools" },
   {
     name: "@dominion/dsh-saolei-memory",
     config: {
@@ -599,7 +600,7 @@ describe("cordis.yml composition manifest", () => {
     expect(plannerRows).toEqual(["@deepseek-ai/dsh-persona"]);
   });
 
-  it("direct-composes the 21-row plugin set in contract order", () => {
+  it("direct-composes the 22-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -616,6 +617,7 @@ describe("cordis.yml composition manifest", () => {
       "llm-retry",
       "agent-preset-registry",
       "grpc-runtime",
+      "saolei",
       "llm-glm",
       "llm-opencode-go",
       "desktop-bridge",
@@ -644,6 +646,7 @@ describe("cordis.yml composition manifest", () => {
       "@deepseek-ai/dsh-llm-retry",
       "@deepseek-ai/dsh-agent-preset-registry",
       "@dominion/dsh-grpc-runtime",
+      "@dominion/dsh-saolei",
       "@dominion/dsh-llm-glm",
       "@dominion/dsh-llm-opencode-go",
       "@dominion/dsh-desktop-bridge",
@@ -784,6 +787,7 @@ describe("cordis.yml composition manifest", () => {
     expect(byId.get("grpc-runtime")).toBe("@dominion/dsh-grpc-runtime");
     expect(byId.get("team")).toBe("@dominion/dsh-team");
     expect(byId.get("memory")).toBeUndefined();
+    expect(byId.get("saolei")).toBe("@dominion/dsh-saolei");
     expect(byId.get("saolei-loop")).toBe("@dominion/dsh-saolei-loop");
     // The capability dependencies are declared FLAT on the saolei-loop row:
     // no role grouping, the memory adapter carrying the connection config
@@ -793,13 +797,19 @@ describe("cordis.yml composition manifest", () => {
     expect(saoleiLoop?.config).toEqual({ plugins: SAOLEI_LOOP_PLUGINS });
   });
 
-  it("mounts no host-level saolei tool row (capability wiring rides the saolei-loop list)", () => {
-    expect(rows.find((row) => row.id === "saolei")).toBeUndefined();
-    expect(rows.map((row) => row.name)).not.toContain("@dominion/dsh-saolei");
+  it("mounts the top-level saolei foundation row without config", () => {
+    // The game foundation is a composition-level service row (the top-level
+    // `saolei` id), not a saolei-loop config.plugins sub-plugin; the tools
+    // capability rides the saolei-loop list instead
+    // (specs/075-saolei-game-foundation/contracts/cutover-contracts.md §2;
+    // contracts/saolei-foundation.md §1).
+    const saolei = rows.find((row) => row.id === "saolei");
+    expect(saolei?.name).toBe("@dominion/dsh-saolei");
+    expect(saolei?.config).toBeUndefined();
   });
 
   it("composes no session-persistence and no settings row (install-level peers only)", () => {
-    // The exact 21-row set is pinned by the order test above; this makes the
+    // The exact 22-row set is pinned by the order test above; this makes the
     // declaration-level distinction explicit: settings and
     // session-persistence are install-level peers (package.json + BUILD
     // closure) without a composed row

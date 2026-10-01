@@ -12,7 +12,7 @@
     },
     "dependencies": {
         "@deepseek-ai/schemastery": "catalog:",
-        "@dominion/game-saolei-board": "workspace:*"
+        "@dominion/dsh-saolei": "workspace:*"
     },
     "peerDependencies": {
         "@deepseek-ai/cordis": "catalog:",

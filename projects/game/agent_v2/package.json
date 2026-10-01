@@ -40,6 +40,7 @@
         "@dominion/dsh-saolei": "workspace:*",
         "@dominion/dsh-saolei-loop": "workspace:*",
         "@dominion/dsh-saolei-memory": "workspace:*",
+        "@dominion/dsh-saolei-tools": "workspace:*",
         "@dominion/dsh-team": "workspace:*",
         "@grpc/grpc-js": "catalog:",
         "@grpc/proto-loader": "catalog:"

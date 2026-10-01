@@ -879,6 +879,16 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 	// The planner snapshot truncates to the 10 most recent entries, newest
 	// first; the two oldest are gone.
 	plannerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt()
+	// The planner prompt carries the gameplay section (the 074 legacy fix:
+	// specs/075-saolei-game-foundation/spec.md M11,
+	// specs/075-saolei-game-foundation/research.md D8) and no tool-guidance
+	// section (specs/075-saolei-game-foundation/spec.md FR-018 assertion 1/3).
+	if !strings.Contains(plannerPrompt, agentV2SaoleiGameTitle) {
+		t.Errorf("planner system_prompt lacks the gameplay section title %q:\n%s", agentV2SaoleiGameTitle, plannerPrompt)
+	}
+	if strings.Contains(plannerPrompt, agentV2SaoleiGuidanceTitle) {
+		t.Errorf("planner system_prompt carries the tool-guidance section title %q, want none:\n%s", agentV2SaoleiGuidanceTitle, plannerPrompt)
+	}
 	got := memorySnapshotEntries(plannerPrompt)
 	want := contentsNewestFirst[:10]
 	if len(got) != len(want) {
@@ -897,6 +907,14 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 
 	// The snapshot section is planner-only: the player prompt has none.
 	playerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "player").GetSystemPrompt()
+	// The player prompt carries both the gameplay and the tool-guidance
+	// section (specs/075-saolei-game-foundation/spec.md FR-018 assertion 2).
+	if !strings.Contains(playerPrompt, agentV2SaoleiGameTitle) {
+		t.Errorf("player system_prompt lacks the gameplay section title %q:\n%s", agentV2SaoleiGameTitle, playerPrompt)
+	}
+	if !strings.Contains(playerPrompt, agentV2SaoleiGuidanceTitle) {
+		t.Errorf("player system_prompt lacks the tool-guidance section title %q:\n%s", agentV2SaoleiGuidanceTitle, playerPrompt)
+	}
 	if strings.Contains(playerPrompt, "长期记忆：") {
 		t.Errorf("player system_prompt carries a memory snapshot, want none:\n%s", playerPrompt)
 	}

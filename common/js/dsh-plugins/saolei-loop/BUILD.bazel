@@ -35,8 +35,8 @@ ts_project(
         ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@dominion/dsh-desktop-bridge",
+        ":node_modules/@dominion/dsh-saolei",
         ":node_modules/@dominion/dsh-team",
-        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],
 )
@@ -48,7 +48,7 @@ ts_project(
 # entry of a workspace package: the entry is populated from the js_library
 # srcs, and without the manifest in it, Node cannot resolve the bare
 # specifier. agent_v2's vitest runfiles runtime-import this package's
-# createAgentGameRuntime (session.ts), so omitting it fails with
+# TeamOrchestrator (session.ts), so omitting it fails with
 # "Cannot find package @dominion/dsh-saolei-loop"
 # (common/js/dsh-plugins/preset-authoring/BUILD.bazel precedent). This does
 # NOT change the packaging face: the shipped manifest is staged by
@@ -64,16 +64,16 @@ js_library(
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
 # runtime_deps closure walking (common/js/dsh-plugins/llm-glm/BUILD.bazel
-# precedent). npm_deps carries the plugin's runtime imports: the cordis
-# Service base class (game/runtime.ts), the dsh-llm message helpers
-# (orchestrator.ts builds user messages; announcer.ts builds the announcement
-# assistant message), the dsh-session SessionSeq brand constructor
-# (announcer.ts stamps the announcement event's seq), and schemastery (the
-# Config validator backing the plugin's config.plugins schema). The remaining
-# dsh faces (dsh-agent, dsh-desktop-bridge, dsh-tools, dsh-system-prompt) are
-# type-only and resolve from the host composition; @dominion/dsh-team is a
-# runtime workspace import (agentMemberSource in orchestrator.ts) and ships
-# through runtime_deps.
+# precedent). npm_deps carries the plugin's runtime imports: the dsh-llm
+# message helpers (orchestrator.ts builds user messages; announcer.ts builds
+# the announcement assistant message), the dsh-session SessionSeq brand
+# constructor (announcer.ts stamps the announcement event's seq), schemastery
+# (the Config validator backing the plugin's config.plugins schema), and
+# cordis (the plugin runtime context). The remaining dsh faces (dsh-agent,
+# dsh-desktop-bridge, dsh-tools, dsh-system-prompt) are type-only and resolve
+# from the host composition; @dominion/dsh-team (agentMemberSource in
+# orchestrator.ts) and @dominion/dsh-saolei (gameStatsText in orchestrator.ts)
+# are runtime workspace imports and ship through runtime_deps.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-saolei-loop",
@@ -87,8 +87,8 @@ js_runtime_library(
     package_json = "package.json",
     visibility = ["//visibility:public"],
     runtime_deps = [
+        "//common/js/dsh-plugins/saolei:runtime_pkg",
         "//common/js/dsh-plugins/team:runtime_pkg",
-        "//projects/game/pkg/saolei-board:runtime_pkg",
     ],
 )
 
@@ -112,8 +112,8 @@ vitest_test(
         ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@deepseek-ai/schemastery",
         ":node_modules/@dominion/dsh-desktop-bridge",
+        ":node_modules/@dominion/dsh-saolei",
         ":node_modules/@dominion/dsh-team",
-        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],
 )

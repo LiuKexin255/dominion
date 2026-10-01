@@ -47,7 +47,6 @@ import {
 } from "./orchestrator.js";
 import type {
   ComposedPreset,
-  GameEventSource,
   MemoryCapabilities,
   MemoryMount,
   PlannerMemoryScope,
@@ -56,7 +55,8 @@ import type {
   TeamOrchestratorDeps,
 } from "./orchestrator.js";
 import { SAOLEI_MEMBER_SUMMARY } from "./announcer.js";
-import type { GameEventRecord } from "./game/runtime.js";
+import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
+import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
 
 const SESSION = "templates/saolei/sessions/s1";
 /** The materialization source preset id half of the memory scope key. */
@@ -333,7 +333,12 @@ interface Harness {
   readonly team: FakeTeam;
   readonly compose: ReturnType<typeof vi.fn>;
   readonly setups: Array<ReturnType<typeof vi.fn>>;
-  readonly mountPlayerRuntime: ReturnType<typeof vi.fn>;
+  /** The `saolei` foundation face's `createGameRuntime` spy. */
+  readonly createGameRuntime: ReturnType<typeof vi.fn>;
+  /** The desktop-bridge double the foundation factory receives. */
+  readonly desktopBridge: DesktopBridgeService;
+  /** The stable runtime instance the fake factory returns. */
+  readonly gameRuntime: GameRuntime;
   /** The `saoleiTools` provide face the orchestration reads. */
   readonly saoleiTools: SaoleiToolsUnit;
   /** The `memoryMount` provide face the orchestration reads. */
@@ -353,6 +358,16 @@ function fakeSection(name: string, order: number) {
   return { name, order, text: `section:${name}` };
 }
 
+/** A no-op game runtime double (rollback/capability contexts). */
+function nullGameRuntime(): GameRuntime {
+  return {
+    init: async () => ({ isError: false as const, text: "" }),
+    operate: async () => ({ isError: false as const, text: "" }),
+    remain: () => ({ isError: false as const, text: "" }),
+    peekGameEvent: () => null,
+  };
+}
+
 type Spy = ReturnType<typeof vi.fn>;
 
 /** The first invocation index of a spy (`mock.invocationCallOrder[0]`). */
@@ -370,39 +385,46 @@ function lastCall(spy: Spy): number {
 /**
  * Assert the contract's fixed memory registration order
  * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4):
- * faces → tools(×4) → sections(×3) → ready. Cross-seam comparison uses
- * `mock.invocationCallOrder`, so an out-of-order implementation fails here.
+ * faces → tools(×4) → sections(×3) → ready. `sectionsBefore` accounts for the
+ * gameplay section the orchestration registers before the memory unit
+ * (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §3).
+ * Cross-seam comparison uses `mock.invocationCallOrder`, so an out-of-order
+ * implementation fails here.
  */
 function expectMemoryRegistrationOrder(seams: {
   readonly faces: Spy;
   readonly tools: Spy;
   readonly sections: Spy;
   readonly ready: Spy;
+  readonly sectionsBefore?: number;
 }): void {
+  const before = seams.sectionsBefore ?? 0;
+  const sectionCallOrder = seams.sections.mock.invocationCallOrder;
   expect(seams.faces).toHaveBeenCalledTimes(1);
   expect(seams.tools).toHaveBeenCalledTimes(4);
-  expect(seams.sections).toHaveBeenCalledTimes(3);
+  expect(seams.sections).toHaveBeenCalledTimes(before + 3);
   expect(seams.ready).toHaveBeenCalledTimes(1);
   expect(lastCall(seams.faces)).toBeLessThan(firstCall(seams.tools));
-  expect(lastCall(seams.tools)).toBeLessThan(firstCall(seams.sections));
-  expect(lastCall(seams.sections)).toBeLessThan(firstCall(seams.ready));
+  expect(lastCall(seams.tools)).toBeLessThan(sectionCallOrder[before] as number);
+  expect(sectionCallOrder[before + 2] as number).toBeLessThan(firstCall(seams.ready));
 }
 
 /**
- * Assert the player registration order: tools(×3) → sections(×2) →
- * game-runtime mount (specs/074-dsh-grpc-runtime/contracts/team-assembly.md
- * §4).
+ * Assert the player registration order: tools(×3) → sections(×2:
+ * saoleiTools guidance + the foundation gameplay section) → game-handle
+ * registration (specs/075-saolei-game-foundation/contracts/
+ * team-loop-assembly.md §3).
  */
 function expectPlayerRegistrationOrder(seams: {
   readonly tools: Spy;
   readonly sections: Spy;
-  readonly mount: Spy;
+  readonly handle: Spy;
 }): void {
   expect(seams.tools).toHaveBeenCalledTimes(3);
   expect(seams.sections).toHaveBeenCalledTimes(2);
-  expect(seams.mount).toHaveBeenCalledTimes(1);
+  expect(seams.handle).toHaveBeenCalledTimes(1);
   expect(lastCall(seams.tools)).toBeLessThan(firstCall(seams.sections));
-  expect(lastCall(seams.sections)).toBeLessThan(firstCall(seams.mount));
+  expect(lastCall(seams.sections)).toBeLessThan(firstCall(seams.handle));
 }
 
 function createHarness(
@@ -418,14 +440,26 @@ function createHarness(
     return { agentPreset: `${preset}-resolved`, setup };
   });
   const game = { current: null as GameEventRecord | null, peeks: 0 };
-  const mountPlayerRuntime = vi.fn(
-    (): GameEventSource => ({
-      peekGameEvent: () => {
-        game.peeks += 1;
-        return game.current;
-      },
-    }),
+  const gameRuntime: GameRuntime = {
+    init: vi.fn(async () => ({ isError: false as const, text: "" })),
+    operate: vi.fn(async () => ({ isError: false as const, text: "" })),
+    remain: vi.fn(() => ({ isError: false as const, text: "" })),
+    peekGameEvent: () => {
+      game.peeks += 1;
+      return game.current;
+    },
+  };
+  // The composition-level game-foundation face (the top-level saolei row
+  // provides it; contracts/team-loop-assembly.md §2): the orchestrator builds
+  // and owns the runtime through the factory and registers the section.
+  const createGameRuntime = vi.fn(
+    (_sessionName: string, _desktopBridge: DesktopBridgeService) => gameRuntime,
   );
+  const foundation = {
+    createGameRuntime,
+    gameSection: fakeSection("saolei:game", 50),
+  };
+  const desktopBridge = { dispatch: vi.fn() } as unknown as DesktopBridgeService;
   // The two capability provide faces the saolei-loop apply would have mounted
   // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3): the
   // orchestrator reads them off the context when it assembles a member.
@@ -435,10 +469,7 @@ function createHarness(
       fakeTool("saolei_operate"),
       fakeTool("saolei_remain"),
     ],
-    sections: [
-      fakeSection("saolei:guidance", 100),
-      fakeSection("saolei:game", 50),
-    ],
+    sections: [fakeSection("saolei:guidance", 100)],
   };
   const memoryCapabilities: MemoryCapabilities = {
     faces: [{ key: "memory", value: { kind: "memory-face" } }],
@@ -465,11 +496,12 @@ function createHarness(
   const ctx = new Context();
   ctx.provide("saoleiTools", saoleiTools);
   ctx.provide("memoryMount", memoryMount);
+  ctx.provide("saolei", foundation);
   const orchestrator = new TeamOrchestrator(ctx, {
     compose,
     agents,
     team: team.seam,
-    mountPlayerRuntime,
+    desktopBridge,
     ...overrides,
   });
   return {
@@ -479,7 +511,9 @@ function createHarness(
     team,
     compose,
     setups,
-    mountPlayerRuntime,
+    createGameRuntime,
+    desktopBridge,
+    gameRuntime,
     saoleiTools,
     memoryMount,
     buildScopes,
@@ -631,16 +665,21 @@ describe("TeamOrchestrator.materialize", () => {
       model: "model-q",
     });
     // Setup chain: roster mount for both; player registers the saolei static
-    // unit (three tools + two sections, no memory trace) and mounts the game
-    // runtime (bound to the GAME session resource name — the desktop-bridge
-    // key, not the namespaced member session id); planner builds the memory
-    // unit with the explicit (template, preset) scope, registers faces →
-    // tools → sections, and awaits the fail-loud prefetch.
+    // unit (three tools + the guidance section, no memory trace), registers
+    // the foundation gameplay section, and wires the orchestrator-owned game
+    // runtime as the member's agent-scoped handle (bound to the GAME session
+    // resource name — the desktop-bridge key, not the namespaced member
+    // session id); planner registers the gameplay section then builds the
+    // memory unit with the explicit (template, preset) scope, registering
+    // faces → tools → sections and awaiting the fail-loud prefetch.
     expect(h.setups[0]).toHaveBeenCalledWith(player.ctx);
     expect(h.setups[1]).toHaveBeenCalledWith(planner.ctx);
-    expect(h.mountPlayerRuntime).toHaveBeenCalledWith(player.agent, SESSION);
-    expect(h.mountPlayerRuntime).not.toHaveBeenCalledWith(planner.agent, SESSION);
-    // Player: three saolei tools and two saolei sections, no memory face.
+    // The orchestrator built its game runtime through the foundation face
+    // exactly once, bound to the GAME session name and the desktop bridge.
+    expect(h.createGameRuntime).toHaveBeenCalledTimes(1);
+    expect(h.createGameRuntime).toHaveBeenCalledWith(SESSION, h.desktopBridge);
+    // Player: three saolei tools and two saolei sections (unit guidance +
+    // foundation gameplay), the game handle, no memory face.
     expect([...player.tools.keys()].sort()).toEqual([
       "saolei_init",
       "saolei_operate",
@@ -650,10 +689,15 @@ describe("TeamOrchestrator.materialize", () => {
       "saolei:guidance",
       "saolei:game",
     ]);
-    expect(player.faces.size).toBe(0);
-    // Planner: the explicit scope, the memory face, four tools, three sections.
+    // The handle is the very instance the foundation factory returned.
+    expect(player.faces.get("saoleiGame")).toBe(h.gameRuntime);
+    expect(player.faces.size).toBe(1);
+    // Planner: the explicit scope, the memory face, four tools, the gameplay
+    // section plus three memory sections — no saolei tool/guidance/handle.
     expect(h.buildScopes).toEqual([{ template: "saolei", preset: PRESET_ID }]);
     expect(planner.faces.get("memory")).toEqual({ kind: "memory-face" });
+    expect(planner.faces.size).toBe(1);
+    expect(planner.faces.has("saoleiGame")).toBe(false);
     expect([...planner.tools.keys()].sort()).toEqual([
       "memory",
       "wiki_get",
@@ -661,24 +705,28 @@ describe("TeamOrchestrator.materialize", () => {
       "wiki_write",
     ]);
     expect(planner.sections.map((section) => section.name)).toEqual([
+      "saolei:game",
       "memory:guidance",
       "wiki:guidance",
       "memory:snapshot",
     ]);
     expect(h.memoryCapabilities.ready).toHaveBeenCalledTimes(1);
-    // The fixed cross-face order: player tools → sections → mount; planner
-    // faces → tools → sections → ready
-    // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
+    // The fixed cross-face order: player tools → sections (guidance then
+    // gameplay) → handle; planner gameplay section → faces → tools → sections
+    // → ready (specs/075-saolei-game-foundation/contracts/
+    // team-loop-assembly.md §3; specs/074-dsh-grpc-runtime/contracts/
+    // team-assembly.md §4).
     expectPlayerRegistrationOrder({
       tools: player.toolsRegister,
       sections: player.sectionRegister,
-      mount: h.mountPlayerRuntime,
+      handle: player.provideFace,
     });
     expectMemoryRegistrationOrder({
       faces: planner.provideFace,
       tools: planner.toolsRegister,
       sections: planner.sectionRegister,
       ready: h.memoryCapabilities.ready as Spy,
+      sectionsBefore: 1,
     });
     // Team registration: goal + the two-member roster with defaults.
     expect(h.team.registrations).toHaveLength(1);
@@ -1662,13 +1710,20 @@ describe("TeamOrchestrator failure reporting", () => {
   });
 });
 
-/** A capability context: the two provide faces with an overridable ready. */
+/** A capability context: the game-foundation face plus the two provide faces
+ * with an overridable memory ready. */
 function capabilityContext(options: {
   readonly ready?: () => Promise<void>;
   readonly omitSaoleiTools?: boolean;
   readonly omitMemoryMount?: boolean;
+  readonly createGameRuntime?: () => GameRuntime;
 } = {}): Context {
   const ctx = new Context();
+  ctx.provide("desktopBridge", { dispatch: () => {} });
+  ctx.provide("saolei", {
+    createGameRuntime: options.createGameRuntime ?? (() => nullGameRuntime()),
+    gameSection: { name: "saolei:game", order: 50, text: "" },
+  });
   if (options.omitSaoleiTools !== true) {
     ctx.provide("saoleiTools", { tools: [], sections: [] });
   }
@@ -1699,14 +1754,15 @@ describe("TeamOrchestrator materialization rollback", () => {
       agentPreset: `${preset}-resolved`,
       setup: vi.fn(async () => {}),
     }));
-    const orchestrator = new TeamOrchestrator(capabilityContext({ ready }), {
-      compose,
-      agents: fakeAgents(members),
-      team: team.seam,
-      mountPlayerRuntime: (): GameEventSource => ({
-        peekGameEvent: () => null,
-      }),
-    });
+    const createGameRuntime = vi.fn(() => nullGameRuntime());
+    const orchestrator = new TeamOrchestrator(
+      capabilityContext({ ready, createGameRuntime }),
+      {
+        compose,
+        agents: fakeAgents(members),
+        team: team.seam,
+      },
+    );
 
     await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
       "memory unavailable",
@@ -1720,11 +1776,16 @@ describe("TeamOrchestrator materialization rollback", () => {
       phase: null,
       active: null,
     });
+    // The failed attempt had already built a game runtime; the rollback drops
+    // it (contracts/team-loop-assembly.md §2/§6).
+    expect(createGameRuntime).toHaveBeenCalledTimes(1);
 
-    // A retry with the prefetch repaired materializes from scratch and rests
-    // without driving.
+    // A retry with the prefetch repaired materializes from scratch — a fresh
+    // runtime is built through the foundation factory — and rests without
+    // driving.
     ready.mockImplementation(async () => {});
     await orchestrator.materialize(teamOptions());
+    expect(createGameRuntime).toHaveBeenCalledTimes(2);
     expect(orchestrator.snapshot()).toMatchObject({
       materialized: true,
       phase: "planning",
@@ -1750,9 +1811,6 @@ describe("TeamOrchestrator materialization rollback", () => {
       compose,
       agents: fakeAgents(members),
       team: team.seam,
-      mountPlayerRuntime: (): GameEventSource => ({
-        peekGameEvent: () => null,
-      }),
     });
 
     await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
@@ -1778,9 +1836,6 @@ describe("TeamOrchestrator materialization rollback", () => {
         })),
         agents: fakeAgents(members),
         team: team.seam,
-        mountPlayerRuntime: (): GameEventSource => ({
-          peekGameEvent: () => null,
-        }),
       },
     );
 
@@ -1803,14 +1858,37 @@ describe("TeamOrchestrator materialization rollback", () => {
         })),
         agents: fakeAgents(members),
         team: fakeTeam().seam,
-        mountPlayerRuntime: (): GameEventSource => ({
-          peekGameEvent: () => null,
-        }),
       },
     );
 
     await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
       /"saoleiTools" capability is not mounted/,
+    );
+    expect(orchestrator.snapshot().materialized).toBe(false);
+  });
+
+  it("fails loud when the game foundation face is not composed", async () => {
+    const ctx = new Context();
+    ctx.provide("saoleiTools", { tools: [], sections: [] });
+    ctx.provide("memoryMount", {
+      build: () => ({
+        faces: [],
+        tools: [],
+        sections: [],
+        ready: async () => {},
+      }),
+    });
+    const orchestrator = new TeamOrchestrator(ctx, {
+      compose: vi.fn(async (preset: string): Promise<ComposedPreset> => ({
+        agentPreset: `${preset}-resolved`,
+        setup: vi.fn(async () => {}),
+      })),
+      agents: fakeAgents(new Map()),
+      team: fakeTeam().seam,
+    });
+
+    await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
+      /"saolei" game foundation is not composed/,
     );
     expect(orchestrator.snapshot().materialized).toBe(false);
   });

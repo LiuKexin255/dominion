@@ -434,15 +434,9 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: 'catalog:'
         version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-llm@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-scope@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)))
-      '@deepseek-ai/dsh-tools':
-        specifier: 'catalog:'
-        version: 0.2.0-rc.2(c6e351a6a6cfd1c2a664558bffcd410d)
       '@dominion/dsh-desktop-bridge':
         specifier: workspace:*
         version: link:../desktop-bridge
-      '@dominion/dsh-saolei-loop':
-        specifier: workspace:*
-        version: link:../saolei-loop
       '@dominion/game-saolei-board':
         specifier: workspace:*
         version: link:../../../../projects/game/pkg/saolei-board
@@ -483,12 +477,12 @@ importers:
       '@dominion/dsh-desktop-bridge':
         specifier: workspace:*
         version: link:../desktop-bridge
+      '@dominion/dsh-saolei':
+        specifier: workspace:*
+        version: link:../saolei
       '@dominion/dsh-team':
         specifier: workspace:*
         version: link:../team
-      '@dominion/game-saolei-board':
-        specifier: workspace:*
-        version: link:../../../../projects/game/pkg/saolei-board
     devDependencies:
       '@deepseek-ai/dsh-scope':
         specifier: 'catalog:'
@@ -1231,6 +1225,9 @@ importers:
       '@dominion/dsh-saolei-memory':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/saolei-memory
+      '@dominion/dsh-saolei-tools':
+        specifier: workspace:*
+        version: link:../../../common/js/dsh-plugins/saolei-tools
       '@dominion/dsh-team':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/team

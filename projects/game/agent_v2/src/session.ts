@@ -49,7 +49,6 @@ import {
 import type {
   AgentCreationSeam,
   ComposePreset,
-  MountPlayerRuntime,
   OrchestratorFailure,
   OrchestratorLogger,
   TeamSeam,
@@ -168,8 +167,6 @@ export interface TeamSessionsDeps {
   readonly agents?: AgentCreationSeam;
   /** Team service seam; defaults to `ctx.team`. */
   readonly team?: TeamSeam;
-  /** Player game-runtime mount; defaults to the desktop-bridge builder. */
-  readonly mountPlayerRuntime?: MountPlayerRuntime;
   /** Orchestration failure reporter; defaults to the repo logger face. */
   readonly logger?: OrchestratorLogger;
   /** Provider route for both members; defaults to {@link PROVIDER}. */
@@ -819,9 +816,6 @@ export class TeamSessions {
       },
       ...(this.deps.agents === undefined ? {} : { agents: this.deps.agents }),
       ...(this.deps.team === undefined ? {} : { team: this.deps.team }),
-      ...(this.deps.mountPlayerRuntime === undefined
-        ? {}
-        : { mountPlayerRuntime: this.deps.mountPlayerRuntime }),
       ...(this.deps.provider === undefined ? {} : { provider: this.deps.provider }),
     });
   }

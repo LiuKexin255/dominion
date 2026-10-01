@@ -8,7 +8,7 @@
 #   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining
 #   dsh rows are service-declared npm deps (projects/game/agent_v2/
 #   package.json). The preset persona row (@deepseek-ai/dsh-persona) and the
-#   saolei-loop capability-dependency rows (@dominion/dsh-saolei,
+#   saolei-loop capability-dependency rows (@dominion/dsh-saolei-tools,
 #   @dominion/dsh-saolei-memory, mounted through the saolei-loop config) all
 #   resolve by bare package name from this host composition, so their packages
 #   are declared in the same manifest and shipped in the same closure
@@ -65,6 +65,12 @@
 # 依赖型能力经 inject 消费本行，不再各自内嵌连接基建；channel 按 target
 # 缓存并跨 service client 共享。
 - { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }
+# saolei 游戏基础领域行（specs/075-saolei-game-foundation/contracts/
+# saolei-foundation.md §1）：组合级服务面 `ctx.saolei`——纯领域工厂
+# `createGameRuntime(sessionName, desktopBridge)` + `saolei:game` 玩法
+# section spec；saolei-loop 经 `inject: ["saolei"]` 消费（装载期 fail-loud），
+# 工具/守则由独立的 @dominion/dsh-saolei-tools 能力单元提供。
+- { id: saolei, name: '@dominion/dsh-saolei' }
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:
@@ -165,15 +171,18 @@
 # saolei-loop 是 team loop 编排层（specs/059-agent-v2-team-mode/
 # research.md R7）。`config.plugins` 是其能力依赖声明（扁平列表，无角色语义）：
 # 列表项挂载为子插件并以 provide 暴露能力面，成员 setup 按角色消费——
-# @dominion/dsh-saolei 提供 saoleiTools 静态单元，@dominion/dsh-saolei-memory
-# 提供 memoryMount 工厂（携带连接 config，组合级共享 channel）。工具能力不再
-# 经预设模板行挂载（specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2；
+# @dominion/dsh-saolei-tools 提供 saoleiTools 静态单元，
+# @dominion/dsh-saolei-memory 提供 memoryMount 工厂（携带连接 config，组合级
+# 共享 channel）。游戏基础服务 `ctx.saolei` 由组合清单顶级 saolei 行提供
+# （本行 inject 声明；specs/075-saolei-game-foundation/contracts/
+# team-loop-assembly.md §1）；工具能力不再经预设模板行挂载
+# （specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2；
 # preset-templates.md §3）。
 - id: saolei-loop
   name: '@dominion/dsh-saolei-loop'
   config:
     plugins:
-      - name: '@dominion/dsh-saolei'
+      - name: '@dominion/dsh-saolei-tools'
       - name: '@dominion/dsh-saolei-memory'
         config:
           target: 'dominion:///game/memory:50051'

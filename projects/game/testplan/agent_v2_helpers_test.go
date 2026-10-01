@@ -155,6 +155,17 @@ const (
 	// the input-side-only caveat (contracts/team-member-source.md §4).
 	agentV2TeamSectionSaoleiRosterLine = "- [saolei] 扫雷系统，终局播报对局结果与操作统计"
 	agentV2TeamSectionInputSideLine    = "- 这些标签格式只用于系统向你呈现他人的输出：你自己的输出不需要、也不应该使用 `<角色-message>`/`<角色-tool-call>` 等标签自我包装（正文直接输出，工具调用按工具协议发起）。"
+
+	// Explicit prompt-face anchors (specs/075-saolei-game-foundation/spec.md
+	// FR-018): the `saolei:game` gameplay section title (first line of
+	// SAOLEI_GAME_RULES, common/js/dsh-plugins/saolei/src/index.ts) and the
+	// `saolei:guidance` tool-usage section title (first line of SAOLEI_GUIDANCE,
+	// common/js/dsh-plugins/saolei-tools/src/index.ts). The orchestration
+	// registers the gameplay section for both roles and the guidance section
+	// for the player only
+	// (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §3).
+	agentV2SaoleiGameTitle     = "## 扫雷玩法与可用操作"
+	agentV2SaoleiGuidanceTitle = "## saolei (Minesweeper tools)"
 )
 
 // agentV2GameStatsText builds the announcement one terminal record produces:

@@ -146,10 +146,11 @@ describe("saolei-loop plugin dependency assembly", () => {
     ).rejects.toThrow(/"saoleiTools" capability is not mounted/);
   });
 
-  it(
-    "defaults the flat dependency list to empty and declares no inject",
-    () => {
+  it("defaults the flat dependency list to empty and injects the game foundation", () => {
     expect(Config({ plugins: undefined })).toEqual({ plugins: [] });
-    expect(inject).toEqual([]);
+    // The game foundation face is an upstream service: the top-level saolei row
+    // must be composed or the plugin fails to load (cordis inject resolution;
+    // specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §1).
+    expect(inject).toEqual(["saolei"]);
   });
 });
