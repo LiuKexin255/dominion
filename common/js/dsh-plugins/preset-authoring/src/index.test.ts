@@ -259,85 +259,6 @@ describe("create", () => {
     expect(registry.register).not.toHaveBeenCalled();
   });
 
-  it("enforces the caller-declared template row rules before the store write", async () => {
-    const rules = {
-      "demo-tools": { required: ["@dominion/dsh-demo-echo"], forbidden: ["@dominion/dsh-memory"] },
-    };
-
-    // A declaration missing the required row is rejected before persistence.
-    const missingRequired = harness({
-      templates: {
-        "demo-tools": { plugins: [{ name: PERSONA_ROW_NAME, config: { prefix: "x" } }] },
-      },
-      templateRules: rules,
-    });
-    await expect(
-      missingRequired.service.create({ id: "broken", template: "demo-tools", role: "player", persona: "P1" }),
-    ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("@dominion/dsh-demo-echo"),
-    });
-    expect(await missingRequired.store.list()).toEqual([]);
-    expect(missingRequired.registry.register).not.toHaveBeenCalled();
-
-    // A forbidden row is rejected the same way.
-    const forbidden = harness({
-      templates: {
-        "demo-tools": {
-          plugins: [
-            { name: PERSONA_ROW_NAME, config: { prefix: "x" } },
-            { name: "@dominion/dsh-demo-echo" },
-            { name: "@dominion/dsh-memory" },
-          ],
-        },
-      },
-      templateRules: rules,
-    });
-    await expect(
-      forbidden.service.create({ id: "broken2", template: "demo-tools", role: "planner", persona: "P1" }),
-    ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("must not contain"),
-    });
-
-    // A duplicated required row violates the exactly-one semantics.
-    const duplicated = harness({
-      templates: {
-        "demo-tools": {
-          plugins: [
-            { name: PERSONA_ROW_NAME, config: { prefix: "x" } },
-            { name: "@dominion/dsh-demo-echo" },
-            { name: "@dominion/dsh-demo-echo" },
-          ],
-        },
-      },
-      templateRules: rules,
-    });
-    await expect(
-      duplicated.service.create({ id: "broken3", template: "demo-tools", role: "player", persona: "P1" }),
-    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: expect.stringContaining("exactly one") });
-
-    // The rule-compliant declaration lands normally.
-    const accepted = harness({ templateRules: rules });
-    const view = await accepted.service.create({
-      id: "mine",
-      template: "demo-tools",
-      role: "player",
-      persona: "P1",
-    });
-    expect(view.id).toBe("mine");
-    expect(await accepted.store.list()).toHaveLength(1);
-  });
-
-  it("leaves templates without a configured rule table unvalidated (generic consumers)", async () => {
-    const { service, store } = harness();
-
-    const view = await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
-
-    expect(view.id).toBe("mine");
-    expect(await store.list()).toHaveLength(1);
-  });
-
   it("surfaces a store write failure without registering", async () => {
     const failingStore = new MemoryPresetStore();
     vi.spyOn(failingStore, "create").mockRejectedValue(new Error("store down"));
@@ -558,7 +479,7 @@ describe("engine restore/dispose", () => {
 });
 
 describe("Config", () => {
-  it("validates template declarations and caller-declared row rules, defaulting omitted maps empty", () => {
+  it("validates template declarations and defaults an omitted map to empty", () => {
     const raw: unknown = {
       storage: "memory",
       templates: {
@@ -566,12 +487,6 @@ describe("Config", () => {
           name: "Demo",
           description: "persona + demo_echo 工具行模板",
           plugins: [{ name: PERSONA_ROW_NAME, config: { prefix: "x" } }],
-        },
-      },
-      templateRules: {
-        player: {
-          required: ["@dominion/dsh-saolei"],
-          forbidden: ["@dominion/dsh-memory"],
         },
       },
     };
@@ -584,28 +499,8 @@ describe("Config", () => {
         plugins: [{ name: PERSONA_ROW_NAME, config: { prefix: "x" } }],
       },
     });
-    expect(config.templateRules).toEqual({
-      player: { required: ["@dominion/dsh-saolei"], forbidden: ["@dominion/dsh-memory"] },
-    });
-    // Omitted maps default to empty: generic deployments declare neither.
+    // Omitted maps default to empty: generic deployments declare none.
     expect(Config({ storage: "memory" }).templates).toEqual({});
-    expect(Config({ storage: "memory" }).templateRules).toEqual({});
-  });
-
-  it("defaults a one-sided rule table's omitted half to an empty list", () => {
-    const raw: unknown = {
-      storage: "memory",
-      templateRules: {
-        player: { required: ["@dominion/dsh-saolei"] },
-        planner: { forbidden: ["@dominion/dsh-memory"] },
-      },
-    };
-    const config = Config(raw as PresetAuthoringConfig);
-
-    expect(config.templateRules).toEqual({
-      player: { required: ["@dominion/dsh-saolei"], forbidden: [] },
-      planner: { required: [], forbidden: ["@dominion/dsh-memory"] },
-    });
   });
 });
 

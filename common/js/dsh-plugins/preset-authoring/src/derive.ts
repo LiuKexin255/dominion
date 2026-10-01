@@ -72,21 +72,6 @@ export interface TemplateDeclaration {
 }
 
 /**
- * Composition row rules for one template (the caller's scene lock, e.g.
- * "the player pool template carries exactly the saolei tool row and no
- * memory row"). The rule table is CALLER data: the plugin validates package
- * names as opaque strings, so no scene vocabulary enters this package
- * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2; the rules are
- * declared by the hosting composition — agent_v2's cordis.yml).
- */
-export interface TemplateRowRules {
-  /** Package names the template must contain EXACTLY ONCE each. */
-  readonly required: readonly string[];
-  /** Package names the template must NOT contain. */
-  readonly forbidden: readonly string[];
-}
-
-/**
  * Clone one template row (and its object config) so derivation never mutates
  * the injected snapshot. Non-object configs are impossible for the persona
  * row but copied as-is for non-persona rows.
@@ -143,40 +128,6 @@ function deriveRows(
     config: { ...(config !== null && typeof config === "object" ? config : {}), prefix: persona },
   };
   return copy;
-}
-
-/**
- * Validate a template declaration's composition rows against the caller's
- * rules. Runs BEFORE the store write so a role-broken template can never
- * produce a preset record (fail-fast, INVALID_ARGUMENT —
- * specs/059-agent-v2-team-mode/contracts/preset-api.md §2 "模板与创作": each
- * pool template ships its role's plugin rows). `?? []` keeps the validator
- * total for callers that bypass Config and pass a one-sided rule table (the
- * schema fills the omitted half).
- */
-export function validateTemplateRows(
-  templateId: string,
-  rows: readonly CompositionRow[],
-  rules: TemplateRowRules,
-): void {
-  const names = rows.map((row) => (typeof row.name === "string" ? row.name : ""));
-  for (const required of rules.required ?? []) {
-    const count = names.filter((name) => name === required).length;
-    if (count !== 1) {
-      throw new PresetAuthoringError(
-        "INVALID_ARGUMENT",
-        `template "${templateId}" must contain exactly one "${required}" row, found ${count}`,
-      );
-    }
-  }
-  for (const forbidden of rules.forbidden ?? []) {
-    if (names.includes(forbidden)) {
-      throw new PresetAuthoringError(
-        "INVALID_ARGUMENT",
-        `template "${templateId}" must not contain the "${forbidden}" row`,
-      );
-    }
-  }
 }
 
 /**

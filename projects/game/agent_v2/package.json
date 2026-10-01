@@ -36,11 +36,10 @@
         "@dominion/dsh-grpc-runtime": "workspace:*",
         "@dominion/dsh-llm-glm": "workspace:*",
         "@dominion/dsh-llm-opencode-go": "workspace:*",
-        "@dominion/dsh-memory": "workspace:*",
-        "@dominion/dsh-memory-service": "workspace:*",
         "@dominion/dsh-preset-authoring": "workspace:*",
         "@dominion/dsh-saolei": "workspace:*",
         "@dominion/dsh-saolei-loop": "workspace:*",
+        "@dominion/dsh-saolei-memory": "workspace:*",
         "@dominion/dsh-team": "workspace:*",
         "@grpc/grpc-js": "catalog:",
         "@grpc/proto-loader": "catalog:"

@@ -175,7 +175,7 @@ export async function deleteWiki(name: string): Promise<void> {
 // normalizeWikiTitle is the JS twin of the service's NormalizeTitle: NFKC
 // Unicode normalization then lower-casing
 // (specs/069-wiki-template-web/data-model.md §4; same rule as
-// common/js/dsh-plugins/memory-service/src/wiki-operations.ts).
+// common/js/memory/src/wiki-operations.ts).
 export function normalizeWikiTitle(title: string): string {
   return title.normalize('NFKC').toLowerCase()
 }

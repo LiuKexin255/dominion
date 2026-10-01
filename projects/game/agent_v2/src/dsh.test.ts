@@ -24,13 +24,14 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
  * (specs/070-dsh-upgrade/contracts/composition-manifest.md §2): the exact
- * 22-row set with the grpc-runtime infrastructure row, the session-projection
+ * 21-row set with the grpc-runtime infrastructure row, the session-projection
  * row, the official agent-loop row,
  * the agent-preset registry and the pool-template snapshot injected through
- * the authoring row config, the fail-loud selection default, the trimmed
- * system-prompt config, the subpath invariant companion rows
- * (specs/051-agent-v2-dsh-migration/research.md D5), and the llm-glm +
- * llm-opencode-go model catalogs.
+ * the authoring row config, the saolei-loop flat capability-dependency list
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2), the fail-loud
+ * selection default, the trimmed system-prompt config, the subpath invariant
+ * companion rows (specs/051-agent-v2-dsh-migration/research.md D5), and the
+ * llm-glm + llm-opencode-go model catalogs.
  *
  * `boot`, the resolver, and the secret reader are injected as `vi.fn()`
  * doubles through the DshBootDeps seam; `process.exit` is spied so the
@@ -479,25 +480,48 @@ const PLAYER_PERSONA_PREFIX =
 const PLANNER_PERSONA_PREFIX =
   "你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。";
 
-/** The declared player template: persona prefix + the saolei tool row. */
+/**
+ * The declared player template: the persona row plus the plug-and-play
+ * self-contained plugin list (persona-only in the current composition).
+ * Capability wiring (saolei) rides the saolei-loop capability-dependency list,
+ * not the template
+ * (specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1/§3).
+ */
 const PLAYER_TEMPLATE: TemplateDeclaration = {
   name: "player",
-  description: "扫雷 player 池模板：persona + saolei 工具插件行",
-  plugins: [
-    { name: "@deepseek-ai/dsh-persona", config: { prefix: PLAYER_PERSONA_PREFIX } },
-    { name: "@dominion/dsh-saolei" },
-  ],
+  description:
+    "扫雷 player 池模板：persona 行与即插即用自包含插件列表；saolei 能力经 saolei-loop 依赖列表组装",
+  plugins: [{ name: "@deepseek-ai/dsh-persona", config: { prefix: PLAYER_PERSONA_PREFIX } }],
 };
 
-/** The declared planner template: persona prefix + the memory tool row. */
+/** The declared planner template: persona-only; memory rides the saolei-loop list. */
 const PLANNER_TEMPLATE: TemplateDeclaration = {
   name: "planner",
-  description: "扫雷 planner 池模板：persona + memory 工具插件行",
-  plugins: [
-    { name: "@deepseek-ai/dsh-persona", config: { prefix: PLANNER_PERSONA_PREFIX } },
-    { name: "@dominion/dsh-memory" },
-  ],
+  description:
+    "扫雷 planner 池模板：persona 行与即插即用自包含插件列表；memory 能力经 saolei-loop 依赖列表组装",
+  plugins: [{ name: "@deepseek-ai/dsh-persona", config: { prefix: PLANNER_PERSONA_PREFIX } }],
 };
+
+/**
+ * One flat capability-dependency row on the saolei-loop row config
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2): no role group,
+ * the memory adapter carrying the scenario connection config.
+ */
+interface CapabilityPluginRow {
+  name: string;
+  config?: Record<string, unknown>;
+}
+
+const SAOLEI_LOOP_PLUGINS: CapabilityPluginRow[] = [
+  { name: "@dominion/dsh-saolei" },
+  {
+    name: "@dominion/dsh-saolei-memory",
+    config: {
+      target: "dominion:///game/memory:50051",
+      protoPath: "projects/game/game.proto",
+    },
+  },
+];
 
 describe("cordis.yml composition manifest", () => {
   const rows = loadManifest();
@@ -563,24 +587,19 @@ describe("cordis.yml composition manifest", () => {
     expect(plannerPrefix).not.toContain("名册");
   });
 
-  it("declares the role's tool-plugin row and no other role's row (authoring rule lockstep)", () => {
+  it("keeps the pool templates persona-only (capability wiring rides the saolei-loop list)", () => {
+    // Plug-and-play list = self-contained plugins only; the persona row is the
+    // current content. Tool capabilities (saolei/memory) need team-layer
+    // assembly and are declared on the saolei-loop row's config.plugins instead
+    // (specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1/§2/§5).
     const playerRows = templates?.player.plugins.map((plugin) => plugin.name) ?? [];
-    expect(playerRows.filter((name) => name === "@dominion/dsh-saolei")).toHaveLength(1);
-    expect(playerRows).not.toContain("@dominion/dsh-memory");
-    expect(playerRows).not.toContain("@dominion/dsh-memory-service");
-    // The three wiki tools (wiki_search/wiki_get/wiki_write) ride
-    // @dominion/dsh-memory, so the player pool mounting no memory row is
-    // exactly its mounting no wiki tool (specs/068-wiki-round-pause/spec.md
-    // US2; contracts/dsh-plugins.md §1).
-    expect(playerRows.join(" ")).not.toContain("wiki");
+    expect(playerRows).toEqual(["@deepseek-ai/dsh-persona"]);
 
     const plannerRows = templates?.planner.plugins.map((plugin) => plugin.name) ?? [];
-    expect(plannerRows.filter((name) => name === "@dominion/dsh-memory")).toHaveLength(1);
-    expect(plannerRows).not.toContain("@dominion/dsh-memory-service");
-    expect(plannerRows).not.toContain("@dominion/dsh-saolei");
+    expect(plannerRows).toEqual(["@deepseek-ai/dsh-persona"]);
   });
 
-  it("direct-composes the 22-row plugin set in contract order", () => {
+  it("direct-composes the 21-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -602,7 +621,6 @@ describe("cordis.yml composition manifest", () => {
       "desktop-bridge",
       "preset-authoring",
       "team",
-      "memory",
       "saolei-loop",
     ]);
     // The row names are pinned alongside the ids so the set is absolutely
@@ -631,7 +649,6 @@ describe("cordis.yml composition manifest", () => {
       "@dominion/dsh-desktop-bridge",
       "@dominion/dsh-preset-authoring",
       "@dominion/dsh-team",
-      "@dominion/dsh-memory-service",
       "@dominion/dsh-saolei-loop",
     ]);
   });
@@ -746,45 +763,43 @@ describe("cordis.yml composition manifest", () => {
       mongoDatabase: "game_agent_v2",
       mongoCollection: "presets",
       // The template snapshot is the single source of truth for the pool
-      // templates (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
-      // specs/070-dsh-upgrade/research.md D4 终态结论): the authoring plugin
-      // derives store records into registry declarations from this
-      // in-manifest data, reading no template filesystem.
+      // templates (specs/074-dsh-grpc-runtime/contracts/preset-templates.md
+      // §1): the authoring plugin derives store records into registry
+      // declarations from this in-manifest data, reading no template
+      // filesystem. Its `plugins` list is the persona-only plug-and-play list.
       templates: {
         player: PLAYER_TEMPLATE,
         planner: PLANNER_TEMPLATE,
       },
-      // The scene row lock: each pool template must carry exactly its role's
-      // tool-plugin row (T021; preset-api.md §2, dsh-plugins.md §5).
-      templateRules: {
-        player: {
-          required: ["@dominion/dsh-saolei"],
-          forbidden: ["@dominion/dsh-memory"],
-        },
-        planner: {
-          required: ["@dominion/dsh-memory"],
-          forbidden: ["@dominion/dsh-saolei"],
-        },
-      },
     });
+    // The exact toEqual above also pins the REMOVED template-row rule key: the
+    // authoring config carries no rejection-path table, so preset creation has
+    // no template-row validation
+    // (specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3).
   });
 
-  it("mounts the team and memory host rows and the team-loop row", () => {
+  it("mounts the team row and the team-loop row with the flat capability-dependency list", () => {
     const byId = new Map(rows.map((row) => [row.id, row.name]));
     expect(byId.get("desktop-bridge")).toBe("@dominion/dsh-desktop-bridge");
     expect(byId.get("grpc-runtime")).toBe("@dominion/dsh-grpc-runtime");
     expect(byId.get("team")).toBe("@dominion/dsh-team");
-    expect(byId.get("memory")).toBe("@dominion/dsh-memory-service");
+    expect(byId.get("memory")).toBeUndefined();
     expect(byId.get("saolei-loop")).toBe("@dominion/dsh-saolei-loop");
+    // The capability dependencies are declared FLAT on the saolei-loop row:
+    // no role grouping, the memory adapter carrying the connection config
+    // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2;
+    // specs/070-dsh-upgrade/contracts/composition-manifest.md §2).
+    const saoleiLoop = rows.find((row) => row.id === "saolei-loop");
+    expect(saoleiLoop?.config).toEqual({ plugins: SAOLEI_LOOP_PLUGINS });
   });
 
-  it("mounts no host-level saolei tool row (it rides the player template preset)", () => {
+  it("mounts no host-level saolei tool row (capability wiring rides the saolei-loop list)", () => {
     expect(rows.find((row) => row.id === "saolei")).toBeUndefined();
     expect(rows.map((row) => row.name)).not.toContain("@dominion/dsh-saolei");
   });
 
   it("composes no session-persistence and no settings row (install-level peers only)", () => {
-    // The exact 22-row set is pinned by the order test above; this makes the
+    // The exact 21-row set is pinned by the order test above; this makes the
     // declaration-level distinction explicit: settings and
     // session-persistence are install-level peers (package.json + BUILD
     // closure) without a composed row

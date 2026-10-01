@@ -1,16 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  deriveComposition,
-  PERSONA_ROW_NAME,
-  validateTemplateRows,
-} from "./derive.js";
+import { deriveComposition, PERSONA_ROW_NAME } from "./derive.js";
 
-import type {
-  CompositionRow,
-  TemplateDeclaration,
-  TemplateRowRules,
-} from "./derive.js";
+import type { CompositionRow, TemplateDeclaration } from "./derive.js";
 import type { PresetRecord } from "./store.js";
 
 /** A two-row template snapshot mirroring a hosting composition's `templates` entry. */
@@ -103,57 +95,5 @@ describe("deriveComposition", () => {
         message: expect.stringContaining(PERSONA_ROW_NAME),
       }),
     );
-  });
-});
-
-describe("validateTemplateRows", () => {
-  const rules: TemplateRowRules = {
-    required: ["@dominion/dsh-demo-echo"],
-    forbidden: ["@dominion/dsh-memory"],
-  };
-
-  it("accepts a template carrying exactly the required row and none of the forbidden ones", () => {
-    expect(() => validateTemplateRows("demo-tools", TEMPLATE.plugins, rules)).not.toThrow();
-  });
-
-  it("rejects a missing required row with INVALID_ARGUMENT", () => {
-    const rows: CompositionRow[] = [
-      { name: PERSONA_ROW_NAME, config: { prefix: "x" } },
-      { name: "@dominion/dsh-memory" },
-    ];
-
-    expect(() => validateTemplateRows("demo-tools", rows, rules)).toThrowError(
-      expect.objectContaining({ code: "INVALID_ARGUMENT", message: expect.stringContaining("exactly one") }),
-    );
-  });
-
-  it("rejects a duplicated required row and a forbidden row", () => {
-    expect(() =>
-      validateTemplateRows(
-        "demo-tools",
-        [{ name: "@dominion/dsh-demo-echo" }, { name: "@dominion/dsh-demo-echo" }],
-        rules,
-      ),
-    ).toThrowError(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
-
-    expect(() =>
-      validateTemplateRows(
-        "demo-tools",
-        [{ name: "@dominion/dsh-demo-echo" }, { name: "@dominion/dsh-memory" }],
-        rules,
-      ),
-    ).toThrowError(
-      expect.objectContaining({ code: "INVALID_ARGUMENT", message: expect.stringContaining("must not contain") }),
-    );
-  });
-
-  it("treats an omitted rule half as an empty list (one-sided rule tables)", () => {
-    // A host YAML value reaches the validator untyped; the declared rule type
-    // mirrors the Config-validated output shape, hence the widening cast.
-    const requiredOnly = { required: ["@dominion/dsh-demo-echo"] } as unknown as TemplateRowRules;
-    const forbiddenOnly = { forbidden: ["@dominion/dsh-memory"] } as unknown as TemplateRowRules;
-
-    expect(() => validateTemplateRows("demo-tools", TEMPLATE.plugins, requiredOnly)).not.toThrow();
-    expect(() => validateTemplateRows("demo-tools", TEMPLATE.plugins, forbiddenOnly)).not.toThrow();
   });
 });

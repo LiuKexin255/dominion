@@ -207,7 +207,7 @@ describe('wiki api 客户端', () => {
 })
 
 // normalizeWikiTitle / wikiIdForTitle 是服务端 NormalizeTitle 与 id 派生规则的
-// JS 孪生，须与 common/js/dsh-plugins/memory-service/src/wiki-operations.ts 同
+// JS 孪生，须与 common/js/memory/src/wiki-operations.ts 同
 // 结果（specs/069-wiki-template-web/data-model.md §4）。断言用硬编码的 sha256
 // 前缀（'abc' 的 SHA-256 为已知向量），避免以同实现对照同实现。
 describe('wiki id 派生（NormalizeTitle 孪生）', () => {

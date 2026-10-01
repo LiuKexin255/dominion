@@ -7,10 +7,9 @@
  * gRPC runtime (specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md); this
  * module keeps only the client adaptation: resource-name construction, the
  * AIP request shapes, the call-local unary invocation (`waitForReady` +
- * deadline + pre-call probe, the memory-service policy carried verbatim), and
- * page walking. The constructor takes the injected client, so unit tests pass
- * a `vi.fn()`-backed double with no module interception
- * (style/javascript.md §测试).
+ * deadline + pre-call probe), and page walking. The constructor takes the
+ * injected client, so unit tests pass a `vi.fn()`-backed double with no
+ * module interception (style/javascript.md §测试).
  *
  * The two service clients are consumed through the structural call surfaces
  * {@link MemoryServiceCalls}/{@link WikiServiceCalls}: the caller builds them

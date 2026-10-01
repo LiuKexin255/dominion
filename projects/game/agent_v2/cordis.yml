@@ -7,11 +7,13 @@
 # - timer/invariants/system-prompt enter through the framework-core baseline
 #   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining
 #   dsh rows are service-declared npm deps (projects/game/agent_v2/
-#   package.json). Preset-composition rows (@deepseek-ai/dsh-persona,
-#   @dominion/dsh-saolei, @dominion/dsh-memory) resolve by bare
-#   package name from this host composition too, so their packages are
-#   declared in the same manifest and shipped in the same closure
-#   (specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
+#   package.json). The preset persona row (@deepseek-ai/dsh-persona) and the
+#   saolei-loop capability-dependency rows (@dominion/dsh-saolei,
+#   @dominion/dsh-saolei-memory, mounted through the saolei-loop config) all
+#   resolve by bare package name from this host composition, so their packages
+#   are declared in the same manifest and shipped in the same closure
+#   (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2;
+#   specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
 # - GLM endpoint/token injection happens host-side before boot
 #   (projects/game/agent_v2/src/dsh.ts, specs/049-agent-v2-dsh-init/research.md D9).
 - { id: timer,           name: '@deepseek-ai/cordis-plugin-timer' }
@@ -138,48 +140,41 @@
     mongoUri: !!js process.env.MONGO_URI
     mongoDatabase: game_agent_v2
     mongoCollection: presets
-    # 模板声明快照（specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3）：
-    # 唯一事实源（键 = 模板 id，值 = name/description/plugins）；authoring 据此把
-    # store 记录派生为 registry 声明，不再读模板文件系统（2026-09-28 用户裁定）。
+    # 模板声明快照（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1）：
+    # 唯一事实源（键 = 模板 id，值 = name/description/plugins）；plugins 为即插即用
+    # 自包含插件列表（当前仅 persona 行，无校验、无组装职责），authoring 据此把
+    # store 记录派生为 registry 声明，不读模板文件系统。
     templates:
       player:
         name: player
-        description: 扫雷 player 池模板：persona + saolei 工具插件行
+        description: 扫雷 player 池模板：persona 行与即插即用自包含插件列表；saolei 能力经 saolei-loop 依赖列表组装
         plugins:
           - name: '@deepseek-ai/dsh-persona'
             config:
               prefix: 你是扫雷 player，负责操作桌面扫雷窗口完成对局，并依据 saolei 工具返回的棋盘文本持续推理落子，直到对局结束。你独占桌面控制；一律以工具返回的棋盘事实为准，任何与棋盘不符的说法都先核对再行动；每局结束后是否开启新局由你自行判断。保持冷静、精确，落子前先核对已揭示信息与剩余雷数，不做无依据的猜测。
-          - name: '@dominion/dsh-saolei'
       planner:
         name: planner
-        description: 扫雷 planner 池模板：persona + memory 工具插件行
+        description: 扫雷 planner 池模板：persona 行与即插即用自包含插件列表；memory 能力经 saolei-loop 依赖列表组装
         plugins:
           - name: '@deepseek-ai/dsh-persona'
             config:
               prefix: 你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。
-          - name: '@dominion/dsh-memory'
-    # 模板行校验（T021）：池模板必须恰含本角色的工具插件行——工具与配套
-    # 守则同生共死（specs/059-agent-v2-team-mode/contracts/preset-api.md §2；
-    # dsh-plugins.md §5）。规则按模板 id 声明、包名对插件为不透明字符串，
-    # 场景词表留在本宿主配置；创建时校验失败 → INVALID_ARGUMENT，不落任何产物。
-    templateRules:
-      player:
-        required:
-          - '@dominion/dsh-saolei'
-        forbidden:
-          - '@dominion/dsh-memory'
-      planner:
-        required:
-          - '@dominion/dsh-memory'
-        forbidden:
-          - '@dominion/dsh-saolei'
 # team 群聊原语（ctx.team；specs/059-agent-v2-team-mode/contracts/
-# dsh-plugins.md §1）与 planner memory host 服务面（ctx.plannerMemory；
-# 同契约 §3——memory 工具行不经 host 层，经 planner 池模板 preset 的
-# 插件行挂载）。
+# dsh-plugins.md §1）。
 - { id: team,            name: '@dominion/dsh-team' }
-- { id: memory,          name: '@dominion/dsh-memory-service' }
-# saolei 工具行不再挂 host 层：改经 player 池模板 preset 的插件行挂载
-# （工具可见性由挂载层隔离——host 行会对全员可见，模板行使 player 独占）。
-# saolei-loop 保留行位（语义已变为 team loop 编排层，R7）。
-- { id: saolei-loop,     name: '@dominion/dsh-saolei-loop' }
+# saolei-loop 是 team loop 编排层（specs/059-agent-v2-team-mode/
+# research.md R7）。`config.plugins` 是其能力依赖声明（扁平列表，无角色语义）：
+# 列表项挂载为子插件并以 provide 暴露能力面，成员 setup 按角色消费——
+# @dominion/dsh-saolei 提供 saoleiTools 静态单元，@dominion/dsh-saolei-memory
+# 提供 memoryMount 工厂（携带连接 config，组合级共享 channel）。工具能力不再
+# 经预设模板行挂载（specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2；
+# preset-templates.md §3）。
+- id: saolei-loop
+  name: '@dominion/dsh-saolei-loop'
+  config:
+    plugins:
+      - name: '@dominion/dsh-saolei'
+      - name: '@dominion/dsh-saolei-memory'
+        config:
+          target: 'dominion:///game/memory:50051'
+          protoPath: 'projects/game/game.proto'

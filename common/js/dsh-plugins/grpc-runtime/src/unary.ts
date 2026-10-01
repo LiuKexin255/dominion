@@ -1,8 +1,8 @@
 /**
  * Unary invocation helper for the composition-level gRPC runtime.
  *
- * Strategy: field-for-field with the memory-service client policy
- * (`common/js/dsh-plugins/memory-service/src/client.ts:210-249` + `:458-473`),
+ * Strategy: the shared unary policy (Metadata waitForReady, a 10s default
+ * deadline, a pre-call connection probe, a post-failure channel-state log),
  * plus the optional `deadlineMs` parameter (contracts/grpc-runtime.md §2 O3).
  * The runtime is domain-agnostic and label-driven: the caller supplies the
  * label (typically its own service name), so no service-specific wording lives
@@ -32,7 +32,7 @@ export type UnaryInvoke<T> = (
  * dominion target).
  *
  * @param deadlineMs Deadline budget in milliseconds; defaults to 10_000 (the
- *   production value carried over from the memory-service clients).
+ *   deployment-wide unary budget).
  */
 export function callUnary<T>(
   client: grpc.Client,

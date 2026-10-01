@@ -23,18 +23,14 @@ import type {
 } from "@deepseek-ai/dsh-agent-preset-registry";
 import z from "@deepseek-ai/schemastery";
 
-import {
-  deriveComposition,
-  PresetAuthoringError,
-  validateTemplateRows,
-} from "./derive.js";
-import type { TemplateDeclaration, TemplateRowRules } from "./derive.js";
+import { deriveComposition, PresetAuthoringError } from "./derive.js";
+import type { TemplateDeclaration } from "./derive.js";
 import { MemoryPresetStore, PresetStoreError } from "./store.js";
 import type { PresetRecord, PresetStore } from "./store.js";
 import { createMongoPresetStore } from "./store.mongo.js";
 
-export { PERSONA_ROW_NAME, PresetAuthoringError, validateTemplateRows } from "./derive.js";
-export type { PresetAuthoringErrorCode, TemplateDeclaration, TemplateRowRules, CompositionRow } from "./derive.js";
+export { PERSONA_ROW_NAME, PresetAuthoringError } from "./derive.js";
+export type { PresetAuthoringErrorCode, TemplateDeclaration, CompositionRow } from "./derive.js";
 export { MemoryPresetStore, PresetStoreError } from "./store.js";
 export type { PresetRecord, PresetStore, PresetStoreErrorCode } from "./store.js";
 export { createMongoPresetStore, mongoPresetCollection, MongoPresetStore } from "./store.mongo.js";
@@ -59,21 +55,11 @@ export interface PresetAuthoringConfig {
   /** The preset record storage: in-memory (demo) or Mongo (agent_v2). */
   storage: "memory" | "mongo";
   /**
-   * Caller-declared composition row rules, keyed by template id: the
-   * hosting composition pins each pool template's role plugin rows (e.g.
-   * "player" → exactly the saolei row, never a memory row) and every create
-   * validates against them before the record lands
-   * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). Omitted
-   * template ids skip validation — generic consumers stay scene-agnostic.
-   */
-  templateRules?: Record<string, TemplateRowRules>;
-  /**
    * Template declaration snapshots keyed by template id — the SINGLE source
    * of truth for the pool templates: the rows a record derives over (persona
-   * prefix + role tool rows) plus display metadata
-   * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
-   * specs/070-dsh-upgrade/research.md D4 终态结论). The plugin never reads a
-   * template directory.
+   * prefix + plug-and-play plugin rows) plus display metadata
+   * (specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1). The plugin
+   * never reads a template directory.
    */
   templates?: Record<string, TemplateDeclaration>;
   /**
@@ -96,14 +82,6 @@ export const Config: z<PresetAuthoringConfig> = z.object({
   mongoUri: z.string(),
   mongoDatabase: z.string(),
   mongoCollection: z.string(),
-  templateRules: z.dict(
-    z.object({
-      // Explicit defaults: a host rule table may declare only one half, and
-      // the validator must then iterate an empty list instead of undefined.
-      required: z.array(z.string()).default([]),
-      forbidden: z.array(z.string()).default([]),
-    }),
-  ),
   templates: z.dict(
     z.object({
       name: z.string(),
@@ -190,8 +168,6 @@ export interface PresetAuthoringDeps {
   store?: PresetStore;
   /** Per-template declaration snapshots (see {@link PresetAuthoringConfig.templates}). */
   templates?: Record<string, TemplateDeclaration>;
-  /** Per-template composition row rules (see {@link PresetAuthoringConfig.templateRules}). */
-  templateRules?: Record<string, TemplateRowRules>;
 }
 
 /**
@@ -255,7 +231,6 @@ export function createPresetAuthoring(
   const registry = deps.registry ?? (ctx.agentPresets as AgentPresetsSeam);
   const store = deps.store ?? new MemoryPresetStore();
   const templates = deps.templates ?? {};
-  const templateRules = deps.templateRules;
   /** Live registrations this plugin owns: record id → registry unregister disposer. */
   const disposers = new Map<string, () => Promise<void>>();
 
@@ -380,10 +355,6 @@ export function createPresetAuthoring(
           `preset "${input.id}" is already supplied by the deployment`,
         );
       }
-      const rules = templateRules?.[input.template];
-      if (rules !== undefined) {
-        validateTemplateRows(input.template, template.plugins, rules);
-      }
 
       const now = new Date();
       const record: PresetRecord = { ...input, createTime: now, updateTime: now };
@@ -402,10 +373,8 @@ export function createPresetAuthoring(
         await store.remove(input.id).catch(() => undefined);
         throw err;
       }
-      // Creation validation and activation audit are separate: templateRules
-      // reject before persistence, an activation failure leaves the definition
-      // (and its record) in the roster but reports INVALID_ARGUMENT
-      // (contract §2.2).
+      // An activation failure leaves the definition (and its record) in the
+      // roster but reports INVALID_ARGUMENT (contract §2.2).
       if (broken !== undefined) {
         throw new PresetAuthoringError(
           "INVALID_ARGUMENT",
@@ -567,7 +536,6 @@ export async function apply(ctx: Context, config: PresetAuthoringConfig): Promis
   const engine = createPresetAuthoring(ctx, {
     store,
     templates: config.templates,
-    templateRules: config.templateRules,
   });
   ctx.effect(
     () => () => engine.dispose(),

@@ -79,7 +79,7 @@ export async function listMemories(
 // memoryIdForContent derives the create request's memory_id: the first 32 hex
 // characters of sha256(content) over the UTF-8 bytes. This is the same rule as
 // the memory tool's generateMemoryId (node createHash('sha256').digest('hex')
-// .slice(0, 32) — common/js/dsh-plugins/memory-service/src/operations.ts), so
+// .slice(0, 32) — common/js/memory/src/operations.ts), so
 // web-created and agent-created entries share one deterministic id and
 // same-content creates collide into the service's ALREADY_EXISTS dedupe
 // (specs/071-memory-preset-scope/data-model.md §1.1/§2). The digest character

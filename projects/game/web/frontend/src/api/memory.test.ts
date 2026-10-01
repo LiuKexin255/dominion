@@ -1,6 +1,6 @@
 // api/memory.js 的 fetch mock 单测：断言每个方法的 URL/method/body/query 请求
-// 形状与响应投影（契约 specs/071-memory-preset-scope/contracts/
-// web-memory-view.md §2、contracts/memory-service.md §2、data-model.md §4）。
+// 形状与响应投影（契约 specs/071-memory-preset-scope/contracts/web-memory-view.md §2、
+// specs/071-memory-preset-scope/contracts/memory-service.md §2、data-model.md §4）。
 // Mock 约定照 style/javascript.md：vi.fn() test-double + 对被拦截调用做正向
 // 断言。
 import { createHash } from 'node:crypto'
@@ -172,7 +172,7 @@ describe('memory api 客户端', () => {
 })
 
 // memoryIdForContent 是工具路径 generateMemoryId 的 web 孪生
-// （common/js/dsh-plugins/memory-service/src/operations.ts），须同算法同值域
+// （common/js/memory/src/operations.ts），须同算法同值域
 // （specs/071-memory-preset-scope/data-model.md §1.1）。断言既用已知向量
 // （sha256 标准测试向量），也逐输入对照 node createHash 的 node 路径结果——
 // 两侧为独立实现，避免以同实现对照同实现。

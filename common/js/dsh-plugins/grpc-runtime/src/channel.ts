@@ -2,13 +2,11 @@
  * Connection policy for the composition-level gRPC runtime: credentials,
  * channel options, and the per-target channel cache.
  *
- * The policy is migrated verbatim from
- * `common/js/dsh-plugins/memory-service/src/client.ts:120-172` (specs/
- * 074-dsh-grpc-runtime/research.md D3 "必须随代码迁移的策略" table): the
- * deployment-scoped constants are identical for every consumer of the
- * runtime, so they live here once instead of per host row. Why-comments ride
- * with the code (constitution principle I; specs/
- * 074-dsh-grpc-runtime/contracts/grpc-runtime.md §3).
+ * The policy is the deployment-scoped strategy specified by the runtime
+ * contract (specs/074-dsh-grpc-runtime/research.md D3 "必须随代码迁移的策略"
+ * table): identical for every consumer of the runtime, so it lives here once
+ * instead of per host row. Why-comments ride with the code (constitution
+ * principle I; specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §3).
  */
 
 import * as fs from "node:fs";

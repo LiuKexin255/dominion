@@ -40,7 +40,7 @@ ts_project(
 # deps. "package.json" in srcs populates the npm-linker's runfiles store entry
 # with the manifest — without it a bare-specifier resolution at runtime fails
 # ("Cannot find package @dominion/dsh-grpc-runtime"; common/js/dsh-plugins/
-# memory-service/BUILD.bazel precedent).
+# preset-authoring/BUILD.bazel precedent).
 js_library(
     name = "pkg",
     srcs = [
