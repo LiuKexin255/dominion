@@ -169,6 +169,7 @@ artifact_pkg_js(
         # bare name from this service's node_modules — the workspace packages
         # ship through runtime_deps (npm_deps is a no-op for them).
         "//common/js/dsh-plugins/desktop-bridge:runtime_pkg",
+        "//common/js/dsh-plugins/grpc-runtime:runtime_pkg",
         "//common/js/dsh-plugins/llm-glm:runtime_pkg",
         "//common/js/dsh-plugins/llm-opencode-go:runtime_pkg",
         "//common/js/dsh-plugins/memory:runtime_pkg",

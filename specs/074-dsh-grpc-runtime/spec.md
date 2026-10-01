@@ -163,7 +163,7 @@ memory-service 插件（`common/js/dsh-plugins/memory-service/`，2,080 行/8 �
 - **FR-002**: 基建服务面 MUST 提供：按 (target, proto, serviceName) 构造 client 的能力与 unary 调用辅助；unary 辅助 MUST 等价保留既有策略雏形语义（deadline、waitForReady、调用前连接探测、失败后连接状态日志）。API 签名在 plan 阶段定稿。
 - **FR-003**: channel MUST 按 target 缓存并跨服务 client 共享（凭据/channel 策略为基建统一常量，故键退化为 target——策略分化时 MUST 扩键；经官方 channel 共享机制，survey R1）；packageDefinition MUST 按 (protoPath + includeDirs) 缓存；MemoryService 与 WikiService 的 client MUST 共享一条底层连接。
 - **FR-004**: 连接策略 MUST 等价迁移且带 why 注释：round_robin 覆盖默认 pick_first（滚动升级路由）、MUST NOT 引入 app 级 keepalive（对齐 grpc-go ClientDefault，unary server enforcement 会 GOAWAY 多余 ping）、重连退避 1s/15s、TLS `/etc/tls/ca.crt` + TLS_SERVER_NAME override（survey"必须随代码迁移的策略"清单）。
-- **FR-005**: 基建行 MUST 内部组合既有 `@dominion/common-js-grpc-resolver` 与 `@dominion/common-js-grpc-otel`（不拆独立 common lib，survey §6.1）；otel 先于 grpc-js 模块加载的顺序约束 MUST 保持；基建 MUST NOT 存在模块顶层副作用初始化。
+- **FR-005**: 基建行 MUST 组合既有 `@dominion/common-js-grpc-resolver`（源码依赖）与 `@dominion/common-js-grpc-otel`（部署闭包依赖，源码不 import；不拆独立 common lib，survey §6.1）；gRPC 插桩注册 MUST 归服务 bootstrap 两段式入口（specs/048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md §2），基建插件 MUST NOT 自行注册插桩；otel 先于 grpc-js 模块加载的顺序约束 MUST 保持（插件 channel 惰性创建，创建必然后于 bootstrap 插桩注册）；基建 MUST NOT 存在模块顶层副作用初始化。
 - **FR-006**: protoPath MUST 以 canonical import path 形态（如 `projects/game/game.proto`——构建系统无关的逻辑身份）由插件 config 携带；基建 MUST 按仓库 runtime_protos 部署标准（`tools/release/deploy/README.md` §runtime_protos，与 TLS 常量同级的仓库统一约定）解析为运行时绝对路径（service root 经模块相对深溯，与现状 memory-service `serviceRoot()` 生产布局同型），绝对路径作为逃逸出口（Clarifications 2026-09-30）。
 - **FR-007**: 本基建 MUST 仅覆盖 gRPC client 侧；gRPC server 配置与 HTTP/Mongo 等其他协议 MUST NOT 纳入（组合清单留同构扩展位，survey 决策 ⑤）。
 

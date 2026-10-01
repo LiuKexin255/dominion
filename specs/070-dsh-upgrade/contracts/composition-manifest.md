@@ -11,7 +11,7 @@
 
 ## 2. agent_v2 组合清单（`projects/game/agent_v2/cordis.yml`）
 
-**行集合（完整目标态，顺序分层，共 21 行）**。模板不经行面表达：单一事实源 = `preset-authoring` 行 Config 的 `templates` 快照（contracts/preset-model-mapping.md §2.3/§3；research.md D4 终态结论——2026-09-28 用户裁定移除 `preset-*` 声明行，`@deepseek-ai/dsh-agent-preset` 包不进入本组合与声明面）：
+**行集合（顺序分层；迁移期为 22 行）**。迁移期 = grpc-runtime 行已新增、memory host 行仍在使用旧通路（Phase 6 删除后回落到终态 21 行，收口见 specs/074-dsh-grpc-runtime/tasks.md T019）。模板不经行面表达：单一事实源 = `preset-authoring` 行 Config 的 `templates` 快照（contracts/preset-model-mapping.md §2.3/§3；research.md D4 终态结论——2026-09-28 用户裁定移除 `preset-*` 声明行，`@deepseek-ai/dsh-agent-preset` 包不进入本组合与声明面）：
 
 ```yaml
 - { id: timer,              name: '@deepseek-ai/cordis-plugin-timer' }
@@ -32,7 +32,8 @@
 - id: agent-preset-registry                                                   # 新增
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config: { default: '' }                                                     # fail-loud（D5 门禁验证）
-- id: llm-glm / llm-opencode-go / desktop-bridge / preset-authoring / team / memory / saolei-loop   # @dominion/* 行不变（preset-authoring 行 Config 携 `templates`/`templateRules` 快照）
+- { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }                    # 迁移期新增（specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §1）
+- id: llm-glm / llm-opencode-go / desktop-bridge / preset-authoring / team / memory / saolei-loop   # @dominion/* 行（saolei-loop 在 Phase 6 增 config.plugins；memory host 行在 Phase 6 删除）
 ```
 
 - **池模板（player/planner）**定义在 `preset-authoring` 行 Config：`templates`（键 = 模板 id，值 = `{ name, description, plugins }`，persona 子行 `prefix` + 角色专属工具行）与 `templateRules`（required/forbidden，校验输入为 `templates` 快照）。
@@ -40,7 +41,7 @@
 
 **移除**：`agent-presets` 行（及其 `default/includeUserRoot/roots` config）、`preset-templates/` 目录、`PRESET_TEMPLATES_ROOT` env；`preset-*` 声明行方案不采用（D4 终态结论）。
 
-**断言契约**：`projects/game/agent_v2/src/dsh.test.ts` 以 21 行精确断言（行 id 顺序、registry 行 `default: ''`、`templates` 快照键与定义、persona 子行 `prefix`、templateRules）；fail-loud 门禁 = registry 行 config 恰为 `{ default: '' }` 且清单内**零** `@deepseek-ai/dsh-agent-preset` 行——roster 条目只能经 preset-authoring 物化进入，其 id 语法（`/^[a-z0-9][a-z0-9-]*$/`）拒绝空串，空 default 无匹配；保持"断言精确性"不放松（SC-002）。
+**断言契约**：`projects/game/agent_v2/src/dsh.test.ts` 以迁移期 22 行精确断言（行 id 顺序、grpc-runtime 行名、registry 行 `default: ''`、`templates` 快照键与定义、persona 子行 `prefix`、templateRules）；Phase 6 删除 memory host 行后由 T019 收口为终态 21 行断言。fail-loud 门禁 = registry 行 config 恰为 `{ default: '' }` 且清单内**零** `@deepseek-ai/dsh-agent-preset` 行——roster 条目只能经 preset-authoring 物化进入，其 id 语法（`/^[a-z0-9][a-z0-9-]*$/`）拒绝空串，空 default 无匹配；保持"断言精确性"不放松（SC-002）。
 
 ## 3. demo 组合清单（`experimental/dsh/demo/agent/cordis.yml`）
 

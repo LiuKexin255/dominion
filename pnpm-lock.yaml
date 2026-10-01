@@ -308,6 +308,37 @@ importers:
         specifier: 'catalog:'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(jsdom@26.1.0)(yaml@2.9.1)
 
+  common/js/dsh-plugins/grpc-runtime:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: 'catalog:'
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@dominion/common-js-grpc-otel':
+        specifier: workspace:*
+        version: link:../../grpc/otel
+      '@dominion/common-js-grpc-resolver':
+        specifier: workspace:*
+        version: link:../../grpc/resolver
+      '@dominion/common-js-logs':
+        specifier: workspace:*
+        version: link:../../logs
+      '@grpc/grpc-js':
+        specifier: 'catalog:'
+        version: 1.14.4
+      '@grpc/proto-loader':
+        specifier: 'catalog:'
+        version: 0.8.1
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(yaml@2.9.1)
+
   common/js/dsh-plugins/llm-glm:
     dependencies:
       '@deepseek-ai/cordis':
@@ -1151,6 +1182,9 @@ importers:
       '@dominion/dsh-desktop-bridge':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/desktop-bridge
+      '@dominion/dsh-grpc-runtime':
+        specifier: workspace:*
+        version: link:../../../common/js/dsh-plugins/grpc-runtime
       '@dominion/dsh-llm-glm':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/llm-glm

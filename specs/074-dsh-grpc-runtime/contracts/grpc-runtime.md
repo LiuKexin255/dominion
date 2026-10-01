@@ -10,7 +10,7 @@
 | cordis 行 id | `grpc-runtime` |
 | 组合位置 | `projects/game/agent_v2/cordis.yml`，与 `@dominion/dsh-core` 基线行同级；无 Config |
 | inject / provide | inject 无；provide `grpc`（`ctx.grpc`） |
-| 内部依赖 | `@dominion/common-js-grpc-resolver`、`@dominion/common-js-grpc-otel`、`@grpc/grpc-js`、`@grpc/proto-loader`（不拆独立 common lib） |
+| 内部依赖 | 源码依赖 `@dominion/common-js-grpc-resolver`、`@grpc/grpc-js`、`@grpc/proto-loader`；部署闭包依赖 `@dominion/common-js-grpc-otel`（runtime_pkg 闭包物化插桩装配，供服务 bootstrap 注册，源码不 import——时序见 §4）；不拆独立 common lib |
 
 ## 2. 服务面 API
 
@@ -58,8 +58,9 @@ interface GrpcRuntime {
 
 ## 4. 初始化顺序约束
 
-- grpc-otel 须**先于** grpc-js 模块加载（`common/js/grpc/otel` 既有约束）：apply 内先注册 otel 与 resolver（均幂等），再允许任何 channel 创建。
-- 基建 MUST NOT 模块顶层副作用初始化（import 顺序不可控）。
+- gRPC 插桩注册归**服务 bootstrap 两段式入口**（[048 otel 契约](../../048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md) §2）：bootstrap 静态图仅含 OTel 装配，`await init({ instrumentations: [createGrpcInstrumentation()] })` 先于组合动态 import；本插件经组合 Loader 动态进图，其静态 `@grpc/grpc-js` import 必然落在插桩 hook 生效之后。消费本插件的服务入口 MUST 遵循该两段式形态（`projects/game/agent_v2/src/bootstrap.ts` 为先例）。
+- 本插件 MUST NOT 自行注册插桩：`common/js/grpc/otel` 仅导出插桩工厂（注册唯一经 `common/js/otel` 的 `init()`，归 bootstrap）；bootstrap 已完成注册，插件内再注册会双重 patch / 双 span。
+- apply 仅幂等注册 dominion resolver（`registerDominionResolver`）→ 建立惰性 runtime（channel 缓存不预建）→ `ctx.provide` → 注册 teardown effect；本插件 MUST NOT 模块顶层副作用初始化、MUST NOT 在 apply 期创建 channel（import 顺序与进图时机不可控）。channel 唯一创建点是 `ctx.grpc.client()`（§2 O1/O2 的消费路径），必然后于 apply、亦必然后于 bootstrap 插桩注册。
 
 ## 5. 非目标与扩展位
 

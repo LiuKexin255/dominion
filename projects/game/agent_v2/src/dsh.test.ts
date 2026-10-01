@@ -24,7 +24,8 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
  * (specs/070-dsh-upgrade/contracts/composition-manifest.md §2): the exact
- * 21-row set with the session-projection row, the official agent-loop row,
+ * 22-row set with the grpc-runtime infrastructure row, the session-projection
+ * row, the official agent-loop row,
  * the agent-preset registry and the pool-template snapshot injected through
  * the authoring row config, the fail-loud selection default, the trimmed
  * system-prompt config, the subpath invariant companion rows
@@ -579,7 +580,7 @@ describe("cordis.yml composition manifest", () => {
     expect(plannerRows).not.toContain("@dominion/dsh-saolei");
   });
 
-  it("direct-composes the 21-row plugin set in contract order", () => {
+  it("direct-composes the 22-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -595,6 +596,7 @@ describe("cordis.yml composition manifest", () => {
       "invariant-scope",
       "llm-retry",
       "agent-preset-registry",
+      "grpc-runtime",
       "llm-glm",
       "llm-opencode-go",
       "desktop-bridge",
@@ -623,6 +625,7 @@ describe("cordis.yml composition manifest", () => {
       "@deepseek-ai/dsh-scope/invariant",
       "@deepseek-ai/dsh-llm-retry",
       "@deepseek-ai/dsh-agent-preset-registry",
+      "@dominion/dsh-grpc-runtime",
       "@dominion/dsh-llm-glm",
       "@dominion/dsh-llm-opencode-go",
       "@dominion/dsh-desktop-bridge",
@@ -769,6 +772,7 @@ describe("cordis.yml composition manifest", () => {
   it("mounts the team and memory host rows and the team-loop row", () => {
     const byId = new Map(rows.map((row) => [row.id, row.name]));
     expect(byId.get("desktop-bridge")).toBe("@dominion/dsh-desktop-bridge");
+    expect(byId.get("grpc-runtime")).toBe("@dominion/dsh-grpc-runtime");
     expect(byId.get("team")).toBe("@dominion/dsh-team");
     expect(byId.get("memory")).toBe("@dominion/dsh-memory-service");
     expect(byId.get("saolei-loop")).toBe("@dominion/dsh-saolei-loop");
@@ -780,7 +784,7 @@ describe("cordis.yml composition manifest", () => {
   });
 
   it("composes no session-persistence and no settings row (install-level peers only)", () => {
-    // The exact 21-row set is pinned by the order test above; this makes the
+    // The exact 22-row set is pinned by the order test above; this makes the
     // declaration-level distinction explicit: settings and
     // session-persistence are install-level peers (package.json + BUILD
     // closure) without a composed row

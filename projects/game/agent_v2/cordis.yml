@@ -58,6 +58,11 @@
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: ''
+# 组合级 gRPC client 基建（ctx.grpc；specs/074-dsh-grpc-runtime/contracts/
+# grpc-runtime.md §1）：与框架基线行同级、领域无关、生命周期随组合。RPC
+# 依赖型能力经 inject 消费本行，不再各自内嵌连接基建；channel 按 target
+# 缓存并跨 service client 共享。
+- { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:

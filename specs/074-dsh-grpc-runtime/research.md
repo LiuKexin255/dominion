@@ -8,9 +8,9 @@
 
 ## D1. grpc-runtime 基建插件形态与包名
 
-**Decision**: 新建包 `common/js/dsh-plugins/grpc-runtime/`，包名 `@dominion/dsh-grpc-runtime`，cordis 行 id `grpc-runtime`，服务面 `ctx.grpc`。组合清单一件、与 `@dominion/dsh-core` 基线行同级（`projects/game/agent_v2/cordis.yml`）；`inject = []`（纯提供方）；内部直接依赖组合 `@dominion/common-js-grpc-resolver` / `@dominion/common-js-grpc-otel` / `@grpc/grpc-js` / `@grpc/proto-loader`，**不拆独立 common lib**（survey 决策 ④、§6.1）。
+**Decision**: 新建包 `common/js/dsh-plugins/grpc-runtime/`，包名 `@dominion/dsh-grpc-runtime`，cordis 行 id `grpc-runtime`，服务面 `ctx.grpc`。组合清单一件、与 `@dominion/dsh-core` 基线行同级（`projects/game/agent_v2/cordis.yml`）；`inject = []`（纯提供方）；内部组合 `@dominion/common-js-grpc-resolver` / `@grpc/grpc-js` / `@grpc/proto-loader`（源码依赖）与 `@dominion/common-js-grpc-otel`（部署闭包依赖，源码不 import），**不拆独立 common lib**（survey 决策 ④、§6.1）。
 
-**Rationale**: `@dominion/dsh-*` 是本仓库 dsh 插件包既有命名约定；`ctx.grpc` 与 survey §6.1 签名示意一致，且与 `ctx.tools` / `ctx.systemPrompt` 框架面命名同构。基建行生命周期随组合：apply 时 otel/resolver 注册（幂等）+ 缓存初始化，`ctx.effect` teardown 关闭全部缓存 channel。
+**Rationale**: `@dominion/dsh-*` 是本仓库 dsh 插件包既有命名约定；`ctx.grpc` 与 survey §6.1 签名示意一致，且与 `ctx.tools` / `ctx.systemPrompt` 框架面命名同构。基建行生命周期随组合：apply 时幂等注册 resolver + 建立惰性 runtime（channel 缓存不预建，唯一创建点 `ctx.grpc.client()`），`ctx.effect` teardown 关闭全部缓存 channel；gRPC 插桩注册归服务 bootstrap 两段式入口（[048 otel 契约](../048-js-esm-migration/contracts/otel-instrumentation-esm-contract.md) §2），插件以 channel 惰性创建保持 otel 先于 grpc-js 的顺序约束。
 
 **Alternatives considered**: (a) 迁入 `third_party/dsh/core` 框架基线——推迟至第二个 agent 服务出现（survey R4）；(b) 独立 `common/js/grpc/runtime` 库——被 survey §6.1 否决；(c) 服务面名 `ctx.grpcClient`——冗长，弃。
 
