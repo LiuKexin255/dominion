@@ -11,7 +11,7 @@ research.md D5 表为权威（P1 基础双面期 → P2 工具包 → P3 原子�
 - **P1 基础双面期**：dsh-saolei 增量改造（game/ 副本迁入含形态改造 + 游戏类型单一出口导出 + 基础面 + 玩法 section + 依赖增补），**保留旧 saoleiTools provide**；saolei-loop/cordis.yml 零改动；saolei-loop 本地 game/ 不动（两份并存，行为用本地版）。
 - **P2 工具包并行**：新建 `dsh-saolei-tools`（无消费方；类型从 `@dominion/dsh-saolei` 导入——P1 已就绪；组合行为零变化）。
 - **P3 原子切换（单一合入单元，不得部分合入）**：① saolei-loop 消费与所有权切换（inject/面/编排持有游戏实例/注册序/句柄注册/终局直读/announcer import/删 `src/game/`/类型切换/`MountPlayerRuntime` seam 与 session.ts 透传删除）；② dsh-saolei 移除 saoleiTools 双面与工具残留、移除 dsh-saolei-loop 依赖；③ cordis.yml 终态（+顶级 saolei 行、config.plugins 换单、22 行）；④ agent_v2 package.json/BUILD +dsh-saolei-tools；⑤ dsh.test.ts 断言终态化（与 070 契约 §2 锁步）；⑥ testplan 三显式断言；⑦ 四 suite 大型测试执行。**中断恢复判据**：`bazel build //... && bazel test //...` 全绿 + 组合清单处于旧态（无顶级 saolei 行、config.plugins 含 dsh-saolei）或新态（无混合态）。
-- **P4 终态文档**：契约修订八份（含 059 路径引用终态化）+ README/注释终态化 + 引用清零复查（纯文档，不重跑四 suite）。
+- **P4 终态文档**：活文档修订十一份（D7 清单——契约十份 + 包 README 一份，含 059 路径引用终态化）+ README/注释终态化 + 引用清零复查（纯文档，不重跑四 suite）。
 
 ## 2. 组合清单终态（projects/game/agent_v2/cordis.yml）
 
@@ -34,9 +34,31 @@ research.md D5 表为权威（P1 基础双面期 → P2 工具包 → P3 原子�
 - 头部注释终态化：saolei-loop 能力依赖行注释改述（`@dominion/dsh-saolei-tools` 提供 saoleiTools、`@dominion/dsh-saolei-memory` 提供 memoryMount）；顶级 saolei 行注释（游戏基础服务，`ctx.saolei` 面）。
 - **契约/代码锁步**：`projects/game/agent_v2/src/dsh.test.ts` 的 manifest 断言（22 行集合 + saolei-loop config.plugins 内容 + 顶级 saolei 行无 config）与 `specs/070-dsh-upgrade/contracts/composition-manifest.md` §2 同批修订（074 T005 先例）。
 
-## 3. 契约修订清单（P4）
+## 3. 活文档修订清单与终态化边界（P4）
 
-research.md D7 表为权威（060/074/070/051/064/062/065/059 八份——含 059 的路径引用终态化）。原则：**归属与通路表述改终态；行为条款逐字保留**。
+research.md D7 表为唯一权威与完整清单（十一份：受影响契约十份 + 包 README 一份；spec.md FR-015 与 plan.md 所记「八份」为其中契约枚举的计数，完整范围以 D7 表为准）。原则：**归属与通路表述改终态；行为条款逐字保留**。
+
+### 活文档 vs 历史记录边界（FR-016/SC-007 的机械核验口径）
+
+FR-016（README 与注释只表述终态）与 SC-007（契约/README 无旧形态表述）的适用对象按文档类别裁定：
+
+- **活文档（FR-016 适用，须终态化）**：
+  1. 各特性的 `contracts/` 契约（无特性例外——含 specs/074 全部契约）；
+  2. 包/项目 `README.md`（含库包 README，如 `projects/game/pkg/saolei-board/README.md`）；
+  3. `style/` 规范文档；
+  4. 当前特性（075）自身的 specs 文档（本特性交付物，随实现表达终态——其迁移来源叙述属变更说明，不是死引用）；
+  5. 被活文档引用为「现行权威」的文档（按引用语境判定：引作现行归属/通路/清单权威者随引用者进入活文档面；引作先例或机制依据——如 074 research.md D13 的 cordis 机制核验——不改变对象的历史记录属性）。
+- **历史记录（不适用，不改写）**：各特性除 `contracts/` 外的规划过程产物——`spec.md`/`research.md`/`tasks.md`/`data-model.md`/`quickstart.md`/`research-notes`/`survey` 等。它们是该特性立项时点的仓库状态记录（时点记录），其中的旧路径/旧符号（如 `specs/074-dsh-grpc-runtime/research.md`/`tasks.md`/`data-model.md` 内的 `saolei-loop/src/game/`、`createAgentGameRuntime`）属历史事实，MUST NOT 改写。
+- **与既有引用关系核对（裁定无矛盾）**：`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2 与 `specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §5 均引用 `specs/074-dsh-grpc-runtime/contracts/preset-templates.md` §3/§5 作为**现行权威**（能力依赖列表语义与组合清单终态 diff 的来源）——按本裁定 contracts/ 属活文档，故 preset-templates.md 属须修订项（D7 收录其 §2/§5），裁定与该引用关系一致。
+
+**机械核验命令**（活文档域旧路径清零；历史记录域不在检索路径）：
+
+```bash
+grep -rn "saolei-loop/src/game\|createAgentGameRuntime" specs/*/contracts/ style/ \
+  common/js/dsh-plugins/*/README.md projects/game/agent_v2/README.md projects/game/pkg/saolei-board/README.md
+```
+
+预期：仅 specs/075 本特性契约内的自引命中（本节边界裁定文本与命令字符串、§5 静态复查命令及冻结文案判定引述），其余零命中——memory-library.md §6 与 saolei-board README :179 的现行命中均为 D7 修订对象，修订后清零（memory-library §5 的 `saolei/src/index.ts` 死路径不含本命令模式，由 D7 该行单列覆盖）。
 
 ## 4. 测试验收
 

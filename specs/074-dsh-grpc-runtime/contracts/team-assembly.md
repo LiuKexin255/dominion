@@ -9,7 +9,7 @@
 | 层 | 承载 | 内容 |
 |---|---|---|
 | **依赖声明**（cordis.yml，saolei-loop config.plugins） | 部署数据 | **扁平插件列表**（包名 + config）——纯依赖声明，**无角色语义、无白名单、无校验**；"这些能力分给谁"不是配置的职责 |
-| **提供方插件**（列表项，挂载为 saolei-loop 子插件） | 能力实现 | apply 内 `ctx.provide` 暴露能力面；dsh-saolei 提供静态单元，dsh-saolei-memory 提供 per-member 工厂；部署连接参数在插件 config |
+| **提供方插件**（列表项，挂载为 saolei-loop 子插件） | 能力实现 | apply 内 `ctx.provide` 暴露能力面；dsh-saolei-tools 提供工具静态单元，dsh-saolei-memory 提供 per-member 工厂；部署连接参数在插件 config |
 | **编排**（saolei-loop 代码） | team 语义 + **权威** | apply 挂载列表行 → 消费提供面（缺 = fail-loud）；成员 setup 按角色消费能力单元并注册到成员上下文——"player 用 saolei、planner 用 memory"的权威说明在此代码 |
 
 三段循环：① 声明依赖（config.plugins 扁平列表）→ ② 提供方挂载实现（ctx.plugin → ctx.provide）→ ③ 编排消费（saolei-loop 读 faces → 成员组装）。
@@ -21,7 +21,7 @@
   name: '@dominion/dsh-saolei-loop'
   config:
     plugins:                        # 扁平列表：saolei-loop 的能力依赖声明（无角色分组）
-      - name: '@dominion/dsh-saolei'
+      - name: '@dominion/dsh-saolei-tools'
       - name: '@dominion/dsh-saolei-memory'
         config:
           target: 'dominion:///game/memory:50051'
@@ -36,13 +36,13 @@
 
 ## 3. 提供方插件契约
 
-### 3.1 `@dominion/dsh-saolei`（静态单元提供方，轻度改造）
+### 3.1 `@dominion/dsh-saolei-tools`（静态单元提供方）
 
 | 项 | 值 |
 |---|---|
 | 形态 | cordis 插件；`inject: []`；挂载于 saolei-loop 之下（组合级） |
-| apply | `ctx.provide("saoleiTools", { tools: [saolei_init, saolei_operate, saolei_remain], sections: [saolei:guidance, saolei:game] })` —— 工具定义/schema/文案与 sections 名/order/文本**零变化**，仅导出形态从"apply 内全局注册"改为 provide（组合级挂载下全局注册会泄漏给全员，故必须改） |
-| 不变项 | 工具 execute 的 `exec.agent.ctx.saoleiGame` 解析不变；`saoleiGame` 运行时挂载仍属 `createAgentGameRuntime`（`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts:430-440`） |
+| apply | `ctx.provide("saoleiTools", { tools: [saolei_init, saolei_operate, saolei_remain], sections: [saolei:guidance] })` —— 工具定义/schema/文案与 guidance section 名/order/文本**零变化**；sections 收窄为仅 `saolei:guidance`（`saolei:game` 拆归游戏基础 `@dominion/dsh-saolei`，由编排对 player/planner 双角色注册）；单元经 provide 暴露，组合级挂载下不做全局注册（会泄漏给全员） |
+| 不变项 | 工具 execute 的 `exec.agent.ctx.saoleiGame` 解析不变；`saoleiGame` 运行时为编排持有的 `@dominion/dsh-saolei` `GameRuntime` 实例（`common/js/dsh-plugins/saolei/src/game/runtime.ts` 的 `createGameRuntime` 工厂）经 player setup 注册的 agent-scoped 句柄，**不计入静态单元**（specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §2/§3） |
 
 ### 3.2 `@dominion/dsh-saolei-memory`（per-member 工厂提供方，新包）
 
@@ -69,9 +69,12 @@ memoryMount  = ctx.get("memoryMount")     # 同上
 ```text
 setup(agentCtx, agent):
   1. await composed.setup(agentCtx)                     # persona（不变）
-  2a. player:  register saoleiTools 单元（tools + sections → agentCtx）
-               game = mountPlayerRuntime()(agent, session)   # 既有
-  2b. planner: unit = memoryMount.build(scope)          # scope 显式传参（编排层既有 memoryScope 流）
+  2a. player:  register saoleiTools 单元（tools×3 + sections[saolei:guidance] → agentCtx）
+               agentCtx.systemPrompt.section(foundation.gameSection)              # saolei:game
+               this.game = foundation.createGameRuntime(session, desktopBridge)   # 编排持有实例
+               agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)     # agent-scoped 句柄
+  2b. planner: agentCtx.systemPrompt.section(foundation.gameSection)          # saolei:game（074 遗留修复）
+               unit = memoryMount.build(scope)          # scope 显式传参（编排层既有 memoryScope 流）
                register unit（faces("memory") → tools×4 → sections×3 → agentCtx）
                await unit.ready()                       # fail-loud 预取 → throw → 回滚
   3. （既有 idle/error 订阅等不变）
@@ -84,7 +87,7 @@ setup(agentCtx, agent):
 | # | 差异 | 终态 |
 |---|---|---|
 | ① | 缺面错误文案 | memory/wiki 四工具缺面文案见 [memory-library.md](memory-library.md) §5（`plannerMemory` 措辞清零，isolate label 改 `memory`） |
-| ② | section 注册点 | memory:guidance/wiki:guidance/memory:snapshot 从 preset 行挂载迁移为编排注册（planner setup）；saolei:guidance/saolei:game 迁移为编排注册（player setup）；名/order/文本零变化 |
+| ② | section 注册点 | memory:guidance/wiki:guidance/memory:snapshot 从 preset 行挂载迁移为编排注册（planner setup）；saolei:guidance 归 saoleiTools 单元、由编排 player setup 注册，saolei:game 归游戏基础 `@dominion/dsh-saolei`（来源非单元）、由编排对 player 与 planner 双角色注册；名/order/文本零变化 |
 | ③ | session.ts planner memory seam | `loadPlannerMemoryBinding()` 与 orchestrator `loadPlannerMemory` dep 消失，代之 saolei-loop 依赖装配 + 编排消费；`ctx.plannerMemory` 面名清零；session.ts 无组装代码 |
 
 ## 6. 不变量
@@ -92,7 +95,7 @@ setup(agentCtx, agent):
 - **依赖声明纯度**：config.plugins 无角色语义/白名单/校验——角色编排逻辑 MUST NOT 下放进配置。
 - **fail-loud 三点**：插件挂载失败（config 校验/inject 不满足）→ 组合启动失败；所需提供缺失 → saolei-loop apply throw；预取失败 → 成员物化回滚（`CreateAgentOptions` 既有 rollback；specs/059；memory-plugin survey 决策 ⑧）。
 - **插件单元**：能力单元（tools + prompt + 其他能力）整单元注册，无拆分调用面（spec FR-015）。
-- **能力单元边界**：saolei 静态单元仅含三工具 + `saolei:guidance`/`saolei:game` 两 sections；`saoleiGame` 运行时实例由既有 `createAgentGameRuntime`（`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts:430-440`）在 player setup 另行挂载，**不计入静态单元**——spec FR-015 的「其他能力」指单元内 tools/sections 的整体产出，不含运行时实例。
+- **能力单元边界**：saoleiTools 静态单元仅含三工具 + `saolei:guidance` 单一 section（`saolei:game` 归游戏基础 `@dominion/dsh-saolei`，由编排对双角色注册，不在单元内）；`saoleiGame` 运行时实例为编排持有的 `@dominion/dsh-saolei` `GameRuntime`（`common/js/dsh-plugins/saolei/src/game/runtime.ts` 的 `createGameRuntime` 工厂）经 player setup 注册的 agent-scoped 句柄，**不计入静态单元**——spec FR-015 的「其他能力」指单元内 tools/sections 的整体产出，不含运行时实例。
 - **player 隔离**：player 分支只消费 saoleiTools → player 工具面与 prompt 无 memory/wiki 痕迹（spec FR-017；取代 templateRules forbidden 的结构性保证）。
 - **依赖方向**：saolei-loop 以包名消费提供方（无能力实现编译依赖）；公共库无场景/部署知识；adapter 不依赖 saolei-loop。
 - **成员生效面**：persona 经 composed.setup、身份经 `meta.agentPreset`、provider/model 经 `agentOptions`——三通路不变（specs/070 preset-model-mapping §3 继续有效）。

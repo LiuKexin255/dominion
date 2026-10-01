@@ -176,7 +176,7 @@ BUILD 加 `:node_modules/@dominion/game-saolei-board` 到 deps。
 ## 坐标空间注意
 
 本库的几何常量（`originYPx = 200`）是**截图空间**（含非客户区 chrome），
-用于读像素。dispatch 侧的 `common/js/dsh-plugins/saolei-loop/src/game/geometry.ts`
+用于读像素。dispatch 侧的 `common/js/dsh-plugins/saolei/src/game/geometry.ts`
 用的是**客户端空间**（Y=104，减去 96px chrome 偏移），用于 `WM_*` 点击。两者
 X=24、cell=32 相同，但 Y 不同，勿混用。
 

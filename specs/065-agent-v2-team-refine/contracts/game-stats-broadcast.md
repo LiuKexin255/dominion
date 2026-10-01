@@ -1,19 +1,19 @@
 # Contract: 扫雷系统终局统计播报（运行时计数 → 编排触发 → 宿主落地）
 
 **Feature**: specs/065-agent-v2-team-refine/spec.md（FR-001/FR-002/FR-003/FR-005，US1/US2）
-**实现锚点**: `common/js/dsh-plugins/saolei-loop/src/{announcer.ts,orchestrator.ts,game/{runtime,board,text}.ts}`、`projects/game/agent_v2/src/{session,history}.ts`
+**实现锚点**: `common/js/dsh-plugins/saolei-loop/src/{announcer.ts,orchestrator.ts}`、`common/js/dsh-plugins/saolei/src/game/{runtime,board,text}.ts`、`projects/game/agent_v2/src/{session,history}.ts`
 **依赖契约**: [team-member-source.md](team-member-source.md)（成员消息源接口——扫雷系统成员是该接口的非 agent 实现者）；`specs/062-team-game-end-handoff/spec.md`（终局收束与交接优先序——零改动基线）
 
 ## §1 每局分项计数（GameRuntime）
 
-1. `GameRuntimeService` 维护 `operationsByType: Record<OperationType, number>`（`click`/`flag`/`chord` 三键，初始 0）。
+1. `GameRuntime` 维护 `operationsByType: Record<OperationType, number>`（`click`/`flag`/`chord` 三键，初始 0）。
 2. 递增点：`executeOperation` 返回 `kind === "ok"` 时按 `op.type` 递增——与 `operationCount` **同点同口径**：SKIP（无害 no-op）、STOP（结构性拒绝）、桌面派发失败（isError）、init/remain 一律不计；批量调用按其中实际成功执行的单个操作计。**不变量：分项之和 === operationCount**。
 3. 清零点：`init` 成功识别新局时（与 `initState`/`operationCount`/`gameLog` 同点）。
 4. 携带：`computeGameStats(initState, finalState, operationCount, operationsByType)`——`GameStats` 增 `operationsByType` 字段；随 `GameEventRecord.stats` 终局携带。`GameEventRecord` 顶层形状不变（`status`/`stats`/`endedAt`）。
 
 ## §2 统计消息文本（`gameStatsText`）
 
-`common/js/dsh-plugins/saolei-loop/src/game/text.ts` 新增纯函数：
+`@dominion/dsh-saolei` 导出 `gameStatsText`（`common/js/dsh-plugins/saolei/src/game/text.ts`）：
 
 ```ts
 function gameStatsText(record: GameEventRecord): string;
@@ -22,7 +22,7 @@ function gameStatsText(record: GameEventRecord): string;
 // 本局共执行 {operationCount} 个操作：click {c} 次、flag {f} 次、chord {h} 次。
 ```
 
-`won` → `胜利`，`lost` → `失败`；计数取 `record.stats`。
+`won` → `胜利`，`lost` → `失败`；计数取 `record.stats`。编排层 `announceStats()`（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`）经包导出 import 消费本纯函数，渲染文本传入 announcer 的 `announce(text)`（播报协议条款不变）。
 
 ## §3 扫雷系统成员（SaoleiSystemMember）与编排触发
 

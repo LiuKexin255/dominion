@@ -18,11 +18,11 @@ legend: each value = mines still unmarked around that number cell = cell number 
 - 前缀两行（outcome/状态）与网格本体格式不变；既有前缀断言零破坏。
 - legend 为结果体的一部分：模型与人类读者不依赖外部文档即可解读（自描述）。
 
-## 2. 工具 description（`common/js/dsh-plugins/saolei/src/index.ts`）
+## 2. 工具 description（`common/js/dsh-plugins/saolei-tools/src/index.ts`）
 
 主语义前置：对每个已揭示数字格返回其周围**剩余未标记雷数**（= 数字 − 相邻已标旗数，可为 0 或负）；显式声明不是旗子数量；保留公式派生说明与既有边界（`-` 哨兵、`no_active_game` 拒绝、终局棋盘不被阻断）。
 
-## 3. prompt 表述（`common/js/dsh-plugins/saolei-loop/src/index.ts` SAOLEI_GAME_RULES）
+## 3. prompt 表述（`@dominion/dsh-saolei` 导出 `SAOLEI_GAME_RULES`；`common/js/dsh-plugins/saolei/src/index.ts`）
 
 - remain 行：同向改写为"剩余未标记雷数"主语义 + 旗数排除（中文，随所在文本语言）。
 - 全局剩余雷数计数行（总雷数 − 已标旗数）：保留，明确其为顶部计数器概念，与 per-cell remain 区分表述。

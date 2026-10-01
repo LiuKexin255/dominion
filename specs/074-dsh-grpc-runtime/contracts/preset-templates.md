@@ -18,7 +18,7 @@
 | 物化期动作 | 无 | 有（fail-loud 预取、runtime 挂载序） |
 | 挂载方式与时机 | 声明式，preset compose 期（registry.mount 经 composed.setup） | 声明式，saolei-loop apply 期（ctx.plugin 子插件 + provide；编排消费于成员 setup） |
 | 角色语义 | 无 | **无**（扁平纯依赖声明；能力分配归编排代码） |
-| 能力形态 | 自包含插件（dsh-saolei 型 provide 静态单元） | 库 + 薄 adapter（common-js-memory + dsh-saolei-memory 型工厂）或静态单元 |
+| 能力形态 | 自包含插件（dsh-saolei-tools 型 provide 静态单元） | 库 + 薄 adapter（common-js-memory + dsh-saolei-memory 型工厂）或静态单元 |
 | 连接参数 | 经插件自身 config（可 `inject: ["grpc"]` + config target/protoPath） | adapter config（team-assembly §3.2） |
 
 误挂兜底：配置无角色槽位可错填（扁平纯依赖声明）；非插件包或自身依赖不满足的插件列入任一列表 → 挂载失败 fail-loud（saolei-loop 列表为组合启动失败）；所需提供缺失 → saolei-loop apply fail-loud。无静默降级。
@@ -45,13 +45,14 @@ registry 对成员生效面的贡献收缩为：**persona 挂载**（composed.se
 ## 5. 组合清单终态（`projects/game/agent_v2/cordis.yml`）
 
 ```diff
-+ - { id: grpc-runtime,   name: '@dominion/dsh-grpc-runtime' }    # 唯一新增组合行
++ - { id: grpc-runtime,   name: '@dominion/dsh-grpc-runtime' }    # 组合级 gRPC 基建行
++ - { id: saolei,         name: '@dominion/dsh-saolei' }          # 游戏基础领域行（ctx.saolei；无 config）
 - - { id: memory,          name: '@dominion/dsh-memory-service' } # 行移除
   - id: saolei-loop
     name: '@dominion/dsh-saolei-loop'
 +   config:
 +     plugins:                                     # 能力依赖声明（扁平，无角色语义；新增）
-+       - name: '@dominion/dsh-saolei'             # 静态单元提供方（自模板行时代迁入，改造为 provide）
++       - name: '@dominion/dsh-saolei-tools'       # 静态单元提供方（自模板行时代迁入，改造为 provide）
 +       - name: '@dominion/dsh-saolei-memory'      # 薄 adapter（新包）
 +         config:
 +           target: 'dominion:///game/memory:50051'

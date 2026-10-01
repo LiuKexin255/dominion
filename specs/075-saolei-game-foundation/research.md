@@ -89,7 +89,7 @@ planner: composed.setup(persona)
 | **P1 基础双面期** | dsh-saolei 增量改造：`game/` 副本迁入（含形态改造：Service 继承移除 → `GameRuntime` 普通类、`createAgentGameRuntime` → `createGameRuntime(sessionName, desktopBridge)` 纯领域工厂——D10；saolei-loop 本地版不动，两份并存）+ 游戏类型/值导出（单一出口就绪）+ 基础面（`ctx.provide("saolei")`：createGameRuntime + gameSection）+ `SAOLEI_GAME_RULES`/`gameSection` + game 测试随迁（构造形态适配）+ 依赖增补（game-saolei-board/desktop-bridge）——**保留旧 saoleiTools provide（双面兼容）**；saolei-loop/cordis.yml 不动 | build + dsh-saolei 单测（game 迁移等价 + 面断言）+ 全仓测试 |
 | **P2 工具包并行** | 新建 `dsh-saolei-tools`（工具/校验/guidance 自 dsh-saolei 复制改造 + 单测迁移改写；类型从 `@dominion/dsh-saolei` 导入——P1 已就绪）——无消费方，组合行为零变化 | build + 新包单测 |
 | **P3 原子切换** ⚠️ 单一合入单元 | ① saolei-loop：`inject: ["saolei"]`、编排持有游戏实例字段（materialize 构造/回滚与 dispose 丢弃）、基础面消费（工厂/section）、player/planner setup 注册 saolei:game、player 句柄注册、终局直读自身字段（删 `MemberRuntime.game`/`MountPlayerRuntime` seam）、gameStatsText import 切换（orchestrator `announceStats()`）、**删 `src/game/`**、类型 import 切换、apply 双能力面检查保留；② dsh-saolei：移除 saoleiTools 双面与工具残留、移除 dsh-saolei-loop 依赖；③ session.ts 透传清理；④ cordis.yml：+顶级 saolei 行、config.plugins → [dsh-saolei-tools, dsh-saolei-memory]（22 行）；⑤ agent_v2 package.json/BUILD +dsh-saolei-tools；⑥ dsh.test.ts 断言终态化（与 070 契约 §2 锁步修订，074 T005 先例）；⑦ testplan 三显式断言；⑧ 大型测试四 suite 执行验收 | build + 全量单测 + **四 suite 全绿**（宪章 VI） |
-| **P4 终态文档** | 契约修订八份（D7 清单）+ README/注释终态化 + 引用清零复查（含 `@dominion/dsh-saolei-loop` 游戏导出引用清零、依赖方向静态检查） | review + 静态检索零命中 |
+| **P4 终态文档** | 活文档修订十一份（D7 清单——契约十份 + 包 README 一份）+ README/注释终态化 + 引用清零复查（含 `@dominion/dsh-saolei-loop` 游戏导出引用清零、依赖方向静态检查） | review + 静态检索零命中 |
 
 **原子性依据（P3 不可拆分）**: dsh-saolei 移除 saoleiTools 面 ↔ saolei-loop 必须已改读 tools 包（否则 apply fail-loud，组合不可用）；saolei-loop 删 `src/game/` ↔ 必须已消费基础面；config.plugins 换 tools 行 ↔ tools 包必须就绪且 dsh-saolei 移出列表（同列表两处 provide "saoleiTools" = 双挂载冲突）。P2 双面期使 dsh-saolei 的改造（大头：game/ 迁移）先行独立 review，P3 收敛为纯切换逻辑。
 
@@ -110,11 +110,11 @@ planner: composed.setup(persona)
 
 **Rationale**: "语义用例等价迁移、形态用例按新形态重写"（074 D11 既有惯例）；逐字断言是"零漂移"约束（SC-006）的机械化验证。
 
-## D7. 契约修订清单（P4，精确到文件）
+## D7. 活文档修订清单（P4，精确到文件）
 
-**Decision**（spec FR-015 展开；引用点已逐一核实）:
+**Decision**（spec FR-015/FR-016 展开；范围 = 受影响契约十份 + 包 README 一份，FR-015 枚举的八份契约含于本表——完整清单以本表为准；活文档 vs 历史记录边界与机械核验口径见 [contracts/cutover-contracts.md](contracts/cutover-contracts.md) §3）:
 
-| 契约 | 修订点 |
+| 活文档 | 修订点 |
 |---|---|
 | `specs/060-agent-v2-team-optimize/contracts/prompt-sections.md` | §1：注册表述"saolei-loop 的 apply 全局注册全员生效"→"内容归 @dominion/dsh-saolei（游戏基础），saolei-loop 编排在 player 与 planner 成员 setup 注册"（074 遗留挂起项收口）；§4 组装顺序表注记注册点；§5 断言语义改述为显式 prompt 断言（Clarifications Option B）+ 夹具锚点核实 |
 | `specs/074-dsh-grpc-runtime/contracts/team-assembly.md` | §3.1 saoleiTools 提供方行：sections 收窄为 [saolei:guidance]、提供方改 @dominion/dsh-saolei-tools；§5 行为差异②补正（saolei:game 注册路径：player 单元内 → 编排对双角色注册，源自基础面）；§6 单元边界注记同步（`saoleiGame` 运行时挂载引用路径改 dsh-saolei） |
@@ -124,8 +124,11 @@ planner: composed.setup(persona)
 | `specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md` | `concludesTurn` 工具侧实现归属引用路径（dsh-saolei-tools）；语义条款零改动 |
 | `specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md` | `gameStatsText` 归属表述（saolei-loop 内 → @dominion/dsh-saolei 导出，编排 `announceStats()` 消费——announcer 播报）；播报协议条款零改动 |
 | `specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` | `createAgentGameRuntime`（→ `createGameRuntime`）等 game 路径引用终态化（编排行为条款零改动） |
+| `specs/074-dsh-grpc-runtime/contracts/preset-templates.md` | §2 分界判据表「能力形态」行的静态单元形态示例（`dsh-saolei 型 provide 静态单元` → `dsh-saolei-tools 型`）；§5 组合清单终态 diff：saolei-loop `config.plugins` 静态单元提供方行（`@dominion/dsh-saolei` → `@dominion/dsh-saolei-tools`）并对齐 22 行终态（顶级 `saolei` 行语境——070 §2 与 059 §5 引本文 §3/§5 为现行权威，锁步）；即插即用判据、registry 边界与误挂兜底条款零改动 |
+| `specs/074-dsh-grpc-runtime/contracts/memory-library.md` | §6 dsh-saolei 对照段终态化：挂载位置表述改组合清单顶级基础行（游戏基础服务面）、工具单元提供方改 `@dominion/dsh-saolei-tools`（config.plugins 静态单元）；`saoleiGame` 挂载引用改编排持有句柄（dsh-saolei `GameRuntime` 实例，player setup `isolate("saoleiGame")` 注册）——路径改 `common/js/dsh-plugins/saolei/src/game/runtime.ts`，缺面 fail-loud 文案路径改 `common/js/dsh-plugins/saolei-tools/src/index.ts` 的 `resolveRuntime`（与 062 §5 冻结边界一致）；§5 「saolei 同型」引用路径（`saolei/src/index.ts:91-104`）同步改 dsh-saolei-tools；memory 库行为条款零改动 |
+| `projects/game/pkg/saolei-board/README.md` | 「坐标空间注意」段（:179）：dispatch 侧 geometry.ts 路径改 `common/js/dsh-plugins/saolei/src/game/geometry.ts`；截图空间 vs 客户端空间坐标语义条款零改动（识别库本体零改动，仅文档路径修订） |
 
-**Rationale**: 引用溯源（宪章 I）要求契约指向真实归属；行为条款（工具/玩法/播报/编排语义）逐字保留——本特性只改归属与通路表述。
+**Rationale**: 引用溯源（宪章 I）要求活文档指向真实归属；行为条款（工具/玩法/播报/编排语义）逐字保留——本特性只改归属与通路表述。清单完整性经静态检索逐点核对（`saolei-loop/src/game`、`createAgentGameRuntime`、`'@dominion/dsh-saolei'` 作 config.plugins 提供方等旧符号在活文档域内的命中即上表；核验命令与活文档边界见 cutover-contracts.md §3）。
 
 ## D8. 大型测试显式断言与夹具核实
 
@@ -179,5 +182,5 @@ flowchart TB
 
 ## 参考文档索引（供 tasks.md 引用）
 
-- 仓库内：`specs/075-saolei-game-foundation/spec.md`（M1–M14 移动清单与四项裁定）、`specs/074-dsh-grpc-runtime/contracts/team-assembly.md`（§2/§3/§4/§6 组装契约——本特性修订对象与延续基线）、`specs/074-dsh-grpc-runtime/research.md`（D11 迁移分步先例、D13 机制依据、D14 依赖方式判据）、`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md`（三层所有权与 §5 断言语义）、`specs/051-agent-v2-dsh-migration/data-model.md` §2.5（游戏运行时行为契约）、`specs/048-js-esm-migration/contracts/esm-package-conventions.md`（新包契约）、`specs/048-js-esm-migration/research.md` R5（CJS 依赖导入方式）、`specs/019-js-test-reliability/contracts/run-vitest-shim.md`（测试 shim 契约）、迁移源现状：`common/js/dsh-plugins/saolei/src/index.ts`（420 行）、`common/js/dsh-plugins/saolei-loop/src/{index,orchestrator,announcer}.ts`、`common/js/dsh-plugins/saolei-loop/src/game/*`、`common/js/dsh-plugins/saolei/src/index.test.ts`（441 行）、`common/js/dsh-plugins/saolei-loop/src/{orchestrator,index}.test.ts`、`projects/game/agent_v2/cordis.yml`、`projects/game/agent_v2/src/dsh.test.ts`、`projects/game/testplan/agent_v2_game_test.go`（:829-903）、`projects/game/fake-llm/service/testdata/team_planner.yaml`。
+- 仓库内：`specs/075-saolei-game-foundation/spec.md`（M1–M14 移动清单与四项裁定）、`specs/074-dsh-grpc-runtime/contracts/team-assembly.md`（§2/§3/§4/§6 组装契约——本特性修订对象与延续基线）、`specs/074-dsh-grpc-runtime/contracts/preset-templates.md` 与 `specs/074-dsh-grpc-runtime/contracts/memory-library.md`（D7 修订对象）、`projects/game/pkg/saolei-board/README.md`（D7 修订对象——坐标空间注意段）、`specs/074-dsh-grpc-runtime/research.md`（D11 迁移分步先例、D13 机制依据、D14 依赖方式判据）、`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md`（三层所有权与 §5 断言语义）、`specs/051-agent-v2-dsh-migration/data-model.md` §2.5（游戏运行时行为契约）、`specs/048-js-esm-migration/contracts/esm-package-conventions.md`（新包契约）、`specs/048-js-esm-migration/research.md` R5（CJS 依赖导入方式）、`specs/019-js-test-reliability/contracts/run-vitest-shim.md`（测试 shim 契约）、迁移源现状：`common/js/dsh-plugins/saolei/src/index.ts`（420 行）、`common/js/dsh-plugins/saolei-loop/src/{index,orchestrator,announcer}.ts`、`common/js/dsh-plugins/saolei-loop/src/game/*`、`common/js/dsh-plugins/saolei/src/index.test.ts`（441 行）、`common/js/dsh-plugins/saolei-loop/src/{orchestrator,index}.test.ts`、`projects/game/agent_v2/cordis.yml`、`projects/game/agent_v2/src/dsh.test.ts`、`projects/game/testplan/agent_v2_game_test.go`（:829-903）、`projects/game/fake-llm/service/testdata/team_planner.yaml`。
 - 仓库外：[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)、[Vitest `vi` API](https://vitest.dev/api/vi.html)、dsh-system-prompt README（node_modules 内：section/order 频带与 agent-scoped shadow 语义）。

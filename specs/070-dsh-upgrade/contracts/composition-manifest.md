@@ -55,13 +55,13 @@
 
 | 消费方 | 增（安装级） | 增（成行，同步进 npm_deps/data） | 删 |
 |---|---|---|---|
-| `projects/game/agent_v2` | settings、typert-protocol、util-values、brand、session-persistence、sandbox、sandbox-policy、ptc-runtime、user-approval | session-projection、agent-preset-registry、grpc-runtime、saolei-memory（rows；workspace 包走 runtime_deps） | agent-presets、agent-preset、dsh-memory、dsh-memory-service |
+| `projects/game/agent_v2` | settings、typert-protocol、util-values、brand、session-persistence、sandbox、sandbox-policy、ptc-runtime、user-approval | session-projection、agent-preset-registry、grpc-runtime、saolei、saolei-tools、saolei-memory（rows；workspace 包走 runtime_deps） | agent-presets、agent-preset、dsh-memory、dsh-memory-service |
 | `experimental/dsh/demo/agent` | 上行 + settings、timeout | session-projection、agent-preset-registry、llm-opencode-go（row；workspace 包走 runtime_deps） | agent-presets、agent-preset |
 | `third_party/dsh/core` | （11 包清单不变，版本升线） | — | — |
 | `common/js/dsh-plugins/preset-authoring` | — | （deps）agent-preset-registry | agent-presets |
 | 其余 plugins | 版本随 catalog 升线，依赖集合不变 | — | — |
 
-> agent_v2 的能力依赖声明面（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §5）：成行新增 `@dominion/dsh-grpc-runtime`（grpc-runtime 基建行）与 `@dominion/dsh-saolei-memory`（saolei-loop `config.plugins` 子插件，携带 target/protoPath config）；两者为 workspace 包——package.json `workspace:*`、BUILD 经 `runtime_pkg` 进 runtime_deps（不进 npm_deps）。`@dominion/dsh-saolei` 声明保留（同为 config.plugins 子插件）；`@dominion/dsh-memory`/`@dominion/dsh-memory-service` 声明移除——memory 能力归公共库 `@dominion/common-js-memory`（`common/js/memory/`，经 adapter 间接消费，宿主不直接声明）。
+> agent_v2 的能力依赖声明面（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §5）：成行新增 `@dominion/dsh-grpc-runtime`（grpc-runtime 基建行）、`@dominion/dsh-saolei`（顶级领域基础行，无 config；specs/075-saolei-game-foundation/contracts/saolei-foundation.md §1）与 saolei-loop `config.plugins` 子插件 `@dominion/dsh-saolei-tools`/`@dominion/dsh-saolei-memory`（memory 携带 target/protoPath config）；均为 workspace 包——package.json `workspace:*`、BUILD 经 `runtime_pkg` 进 runtime_deps（不进 npm_deps）。`@dominion/dsh-memory`/`@dominion/dsh-memory-service` 声明移除——memory 能力归公共库 `@dominion/common-js-memory`（`common/js/memory/`，经 adapter 间接消费，宿主不直接声明）。
 
 > demo 的 LLM 行终态为 `llm-opencode-go`，不再声明 DeepSeek peer 面（`dsh-llm-deepseek`/`dsh-fs`/`dsh-credentials`/`dsh-attachment`/`dsh-anonymous-user-id`/`dsh-deepseek-llm-api-extensions`）；依据 `specs/070-dsh-upgrade/research.md` D7 终态结论（2026-09-28）。
 

@@ -58,9 +58,12 @@ for each (role, presetId, model) in {player, planner}:
     setup: async (agentCtx, agent) => {
       await mountFromRoster(agentCtx, presetId)          # compose() 返回的 setup（resolve 提前已做）
       if (role === player):
-        registerSaoleiTools(agentCtx)                    # saoleiTools 单元：三工具 + 两 sections → 成员域
-        mountPlayerRuntime(agent, session)               # agent-scoped ctx.saoleiGame（GameRuntime）
+        registerSaoleiTools(agentCtx)                    # saoleiTools 单元：三工具 + saolei:guidance section → 成员域
+        agentCtx.systemPrompt.section(gameSection)       # saolei:game（基础面 gameSection）
+        句柄注册：agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)
+                                                         # 实例由编排持有（materialize 经 createGameRuntime 构造）
       if (role === planner):
+        agentCtx.systemPrompt.section(gameSection)       # saolei:game（074 遗留修复）
         unit = memoryMount.build(memoryScope)            # scope = {template, preset}（specs/071-memory-preset-scope/contracts/dsh-plugins.md §1）显式传参
         register unit                                    # faces("memory") → tools×4 → sections×3 → agentCtx
         await unit.ready()                               # fail-loud 预取；reject → setup throw → 物化回滚
@@ -76,7 +79,7 @@ ctx.team.register({ goal, members, context? })
 - 驱动成员 = `ctx.team.drain(member)` → 构造 UserMessage（source: `team-broadcast`/用户消息）→ `agent.followup()` → 等待 `agent/status` idle。一切驱动（用户首驱、结构性续驱、gameEnded 复盘驱动、排队消化）的输入皆为群聊消息（drain 返回的未消费团队消息 + 排队用户消息），编排层不合成任何驱动消息；无未消费团队消息且无排队消息时，编排层保持静止在当前激活成员（不合成消息、不空转）。
 - 结构性续驱：planner 回合结束 → 若有排队用户消息先由 planner 消化（消化优先于切换）→ 消化完成且 planner 静止后续驱 player——静止 = turn 结束并且不会再触发新的 turn（工具调用引发的后续 turn、待消化排队消息两种触发源都不存在；机械信号即上面的 `agent/status` idle）——续驱仅在 player 存在未消费团队消息（planner 产出广播）时发生（驱动输入 = drain(player)，无合成消息；无输入则编排层静止在当前激活成员）；player 侧 gameEnded 事实确立于 saolei 工具返回游戏终局结果（won/lost，即 `saolei_operate` 终局结果——终局记录由 GameRuntime 在该次工具执行内写入，编排层经 `peekGameEvent` 读取）→ 驱动 planner 复盘（驱动输入 = drain(planner)——player 游戏过程的广播，无合成消息）。
 - 取消：编排层暂停续驱标志（配合成员 `cancel()`）；用户再次 Send 恢复。
-- 游戏事实（局开始/结束、胜负）由 GameRuntime 的游戏事件流承载（game 模块位于 saolei-loop：`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts`，经 agent-scoped `saoleiGame` 暴露给 player 侧；gameEnded 事实随 saolei 工具返回终局结果一并确立），与 team 消息流解耦（决策 ⑨）；**不经 team 广播游戏事件**（buffer 派生前提，team-mode §4.4a 边界）。
+- 游戏事实（局开始/结束、胜负）由 GameRuntime 的游戏事件流承载（game 模块位于 `@dominion/dsh-saolei`：`common/js/dsh-plugins/saolei/src/game/runtime.ts` 的 `createGameRuntime` 工厂产出，编排持有实例、player 侧经 agent-scoped `saoleiGame` 句柄暴露；gameEnded 事实随 saolei 工具返回终局结果一并确立），与 team 消息流解耦（决策 ⑨）；**不经 team 广播游戏事件**（buffer 派生前提，team-mode §4.4a 边界）。
 
 ## 3. memory 能力（公共库 `@dominion/common-js-memory` + 薄 adapter `@dominion/dsh-saolei-memory`）
 
@@ -98,11 +101,12 @@ ctx.team.register({ goal, members, context? })
 
 写路径（add/replace/remove/批量）以绑定 scope 的 preset 寻址落 memory 服务，立即持久化；同内容去重（ALREADY_EXISTS → dedupe 文本）不变（specs/071-memory-preset-scope/contracts/dsh-plugins.md §3）。
 
-## 4. saolei 插件（`@dominion/dsh-saolei`，saoleiTools 静态单元提供方）
+## 4. saolei 游戏基础与工具插件（`@dominion/dsh-saolei` / `@dominion/dsh-saolei-tools`）
 
-- 三工具（`saolei_init`/`saolei_operate`/`saolei_remain`）与 sections（`saolei:game` order 50、`saolei:guidance` order 100）定义零变化；插件经 saolei-loop `config.plugins` 挂载为子插件（组合级），apply 以 `ctx.provide("saoleiTools", { tools, sections })` 暴露静态单元——组合级挂载下不做 `ctx.tools.register`/`ctx.systemPrompt.section` 全局注册（会泄漏给全员），单元由编排 player setup 注册进成员域（§2；specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1）。
-- player 隔离为结构性保证：编排 player 分支只消费 saoleiTools、planner 分支只消费 memoryMount（§3）——planner 工具面与 prompt 无 saolei 痕迹，不依赖模板行校验（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3）。
-- 工具经 `exec.agent.ctx.get("saoleiGame")` 解析 agent-scoped 游戏运行时（GameRuntime：棋盘/规则/操作执行/胜负判定 + desktop 派发绑定 sessionName）——GameRuntime 由编排 player setup 的 `createAgentGameRuntime` 挂载（§2）；缺失时 fail-loud（现状语义）。
+- `@dominion/dsh-saolei`（游戏基础）：组合清单**顶级领域基础行**，apply 提供组合级服务面 `ctx.saolei`（`{ createGameRuntime, gameSection }`）；游戏运行时（`GameRuntime` 普通类，构造器仅收 deps）归本包（游戏类型单一出口）——MUST NOT 持有工具或全局注册（specs/075-saolei-game-foundation/contracts/saolei-foundation.md §1/§2/§5）。
+- `@dominion/dsh-saolei-tools`（工具插件）：saolei-loop `config.plugins` 子插件（组合级）；三工具（`saolei_init`/`saolei_operate`/`saolei_remain`）与 `saolei:guidance` section 定义零变化，apply 以 `ctx.provide("saoleiTools", { tools, sections })` 暴露静态单元（sections 仅 `saolei:guidance`）——单元由编排 player setup 注册进成员域，不做全局注册（§2；specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1）。`saolei:game` section 归游戏基础面，由编排对 player/planner 注册。
+- player 隔离为结构性保证：编排 player 分支只消费 saoleiTools、planner 分支只消费 memoryMount（§3）——planner 工具面与 prompt 无 saolei 工具与 guidance 痕迹，不依赖模板行校验（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3）。
+- 工具经 `exec.agent.ctx.saoleiGame` 属性穿越解析 agent-scoped 游戏运行时句柄（`GameRuntime`：棋盘/规则/操作执行/胜负判定 + desktop 派发绑定 sessionName）——实例由编排持有并经 player setup 注册句柄（§2）；缺失时 fail-loud（现状语义）。
 
 ## 5. 组合清单（agent_v2 `cordis.yml` 终态行清单）
 
@@ -115,14 +119,15 @@ ctx.team.register({ goal, members, context? })
 - { id: agent-loop, name: '@deepseek-ai/dsh-agent-loop' }                       # 官方驱动回归（Config.agents[] 留空，动态物化）
 - { id: agent-preset-registry, name: '@deepseek-ai/dsh-agent-preset-registry' } # roster registry（default: ''，fail-loud）
 - { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }                      # ctx.grpc 组合级 gRPC client 基建（§3 adapter 依赖）
+- { id: saolei, name: '@dominion/dsh-saolei' }                                   # ctx.saolei 游戏基础服务面（§4）
 - { id: team, name: '@dominion/dsh-team' }                                      # ctx.team
-- id: saolei-loop                                                               # team loop 编排层
+- id: saolei-loop                                                               # team loop 编排层（inject 'saolei'）
   name: '@dominion/dsh-saolei-loop'
   config:
     plugins:                                                                   # 能力依赖声明（扁平，无角色语义）
-      - name: '@dominion/dsh-saolei'                                           # saoleiTools 静态单元提供方（§4）
+      - name: '@dominion/dsh-saolei-tools'                                     # saoleiTools 静态单元提供方（§4）
       - name: '@dominion/dsh-saolei-memory'                                    # memoryMount 工厂提供方（§3）
         config: { target: 'dominion:///game/memory:50051', protoPath: 'projects/game/game.proto' }
 ```
 
-preset persona 子行（`@deepseek-ai/dsh-persona`）与能力依赖子行（`@dominion/dsh-saolei`、`@dominion/dsh-saolei-memory`）均按裸包名经宿主闭包解析：包声明于本宿主 package.json 并随闭包交付（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4 同型）。模板 plugins 仅 persona 行——工具能力不经模板行挂载（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1）；组合三面（package.json ⟷ cordis.yml ⟷ tar 物化）原子变更（闭包审计）。
+preset persona 子行（`@deepseek-ai/dsh-persona`）与能力依赖子行（`@dominion/dsh-saolei-tools`、`@dominion/dsh-saolei-memory`）均按裸包名经宿主闭包解析：包声明于本宿主 package.json 并随闭包交付（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4 同型）。模板 plugins 仅 persona 行——工具能力不经模板行挂载（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1）；组合三面（package.json ⟷ cordis.yml ⟷ tar 物化）原子变更（闭包审计）。

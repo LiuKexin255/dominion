@@ -113,16 +113,24 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   unary 辅助 + channel/packageDefinition 缓存共享 + canonical protoPath 解析；
   `specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md`）。组合内 RPC 能力经
   `inject: ["grpc"]` 消费，连接基建统一由本行承载。
-- `desktop-bridge`（`@dominion/dsh-desktop-bridge`）与 `saolei-loop`
-  （`@dominion/dsh-saolei-loop`）：后者是 team loop 编排层（驱动时机 + 游戏
+- `desktop-bridge`（`@dominion/dsh-desktop-bridge`）：desktop flow 控制面基建。
+- `saolei`（`@dominion/dsh-saolei`）：**顶级游戏基础行**（无 config，置于
+  `@dominion/*` 分区）——提供 `ctx.saolei` 游戏基础面（纯领域游戏运行时工厂
+  `createGameRuntime` + `saolei:game` 玩法 section）；saolei-loop 以
+  `inject: ["saolei"]` 正向依赖它
+  （`specs/075-saolei-game-foundation/contracts/saolei-foundation.md` §1/§2）。
+- `saolei-loop`（`@dominion/dsh-saolei-loop`）：team loop 编排层（驱动时机 + 游戏
   阶段机）。其 `config.plugins` 是**扁平能力依赖声明**（无角色语义）——
-  `@dominion/dsh-saolei` 提供 `saoleiTools` 静态单元、`@dominion/dsh-saolei-memory`
-  提供 `memoryMount` 工厂（memory 公共库 `@dominion/common-js-memory` + adapter
-  config 的 target/protoPath，跨 service client 共享 channel）。boot 时经
-  `ctx.plugin` 挂载提供方，成员 setup 按角色消费——player 注册 saolei 三工具与
-  `saolei:guidance`/`saolei:game` section，planner 注册 memory 四工具与
-  `memory:guidance`/`wiki:guidance`/`memory:snapshot` section（角色分配归编排
-  代码；`specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §1-§4）。
+  `@dominion/dsh-saolei-tools` 提供 `saoleiTools` 静态单元（三工具 + 仅
+  `saolei:guidance` section）、`@dominion/dsh-saolei-memory` 提供 `memoryMount`
+  工厂（memory 公共库 `@dominion/common-js-memory` + adapter config 的
+  target/protoPath，跨 service client 共享 channel）。boot 时经 `ctx.plugin` 挂载
+  提供方，成员 setup 按角色消费——player 注册 saolei 三工具与 `saolei:guidance`
+  section，编排对 player 与 planner 注册 `saolei:game` 玩法 section（源自基础面），
+  planner 注册 memory 四工具与 `memory:guidance`/`wiki:guidance`/`memory:snapshot`
+  section（角色分配归编排代码；
+  `specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §1-§4、
+  `specs/075-saolei-game-foundation/contracts/team-loop-assembly.md` §3）。
 
 ## team 物化与刷新（UpdateTeam）
 
@@ -142,8 +150,9 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   存在且 `preset.role` 与成员 role 字符串相等、model 非空时在 ListModels 目录。
   失败均为 `INVALID_ARGUMENT`（`projects/game/agent_v2/src/session.ts`）。
 - **物化编排**：逐成员 `ctx.agents.create`（官方 agent-loop 驱动）经 registry
-  绑定所选 preset 声明，player 侧注册 saoleiTools 单元与 agent-scoped
-  `saoleiGame`（GameRuntime），planner 侧经 `memoryMount.build(scope)` 组装
+  绑定所选 preset 声明，player 侧注册 saoleiTools 单元、编排经基础面工厂构造并
+  持有的 GameRuntime 实例句柄（agent-scoped `saoleiGame`）与 `saolei:game` 玩法
+  section，planner 侧注册 `saolei:game` 后经 `memoryMount.build(scope)` 组装
   memory 单元并以 `unit.ready()` 预取记忆快照（fail-loud）；随后
   `ctx.team.register` 注册群聊服务。任一步失败**整体回滚**：
   不残留半物化 team（GetTeam NOT_FOUND），可重试。
@@ -195,11 +204,13 @@ preset 数据按角色分池
 - **角色能力组装（编排代码承载）**：role 不决定工具插件行——player/planner
   对应的能力由 saolei-loop 编排在成员 setup 消费 `config.plugins` 提供面：
   player 取 `saoleiTools`（`saolei_init`/`saolei_operate`/`saolei_remain`
-  工具 + `saolei:guidance`/`saolei:game` section），planner 取
+  工具 + `saolei:guidance` section），planner 取
   `memoryMount.build(scope)`（memory/wiki 四工具 + `memory:guidance`/
-  `wiki:guidance`/`memory:snapshot` section）——能力单元与其配套 section 作为
-  整体生效或缺席，物化零定制。删除 preset 无 fan-out：已物化成员保持其物化
-  时组合，再次物化引用被拒（`specs/059-agent-v2-team-mode/spec.md` FR-006；
+  `wiki:guidance`/`memory:snapshot` section）；`saolei:game` 玩法 section 源自
+  游戏基础面，由编排对 player 与 planner 两角色注册（不属于任一能力单元）——
+  能力单元与其配套 section 作为整体生效或缺席，物化零定制。删除 preset 无
+  fan-out：已物化成员保持其物化时组合，再次物化引用被拒
+  （`specs/059-agent-v2-team-mode/spec.md` FR-006；
   `specs/074-dsh-grpc-runtime/contracts/preset-templates.md` §2-§3）。
 - **物化 = 使用时派生**：成员物化消费的组合在使用时从 store 记录派生——以宿主
   注入的模板声明快照（`cordis.yml` `templates` 键）为基础，用记录 persona 替换
@@ -263,8 +274,8 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
 - **system prompt 查看**：对话页 team 工具条的成员清单区为每成员提供入口
   （点击经 `GetTeamMember` 读取并以只读浮层展示 `system_prompt` 全文），设置
   面板内入口保留。内容从成员实例的 system prompt 装配面读取（persona + team
-  section + player 的 `saolei:game` 玩法 section 与工具守则 + planner 的
-  memory 工具守则与长期记忆快照），
+  section + player 与 planner 的 `saolei:game` 玩法 section + player 的工具守则
+  + planner 的 memory 工具守则与长期记忆快照），
   与该实例实际发给模型的一致，非另行拼装；刷新 team 后随新配置更新
   （`specs/059-agent-v2-team-mode/spec.md` FR-016）。
 
@@ -288,15 +299,16 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
   （`specs/065-agent-v2-team-refine/contracts/team-member-source.md` §3/§4）。
 
 提示词三层所有权：section 的注册点与生效范围以
-`specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §5②/§6 为现行管辖契约
-（saolei:game/saolei:guidance 由编排在 player setup 注册、仅 player 生效）；
+`specs/075-saolei-game-foundation/contracts/team-loop-assembly.md` §3 为现行管辖
+契约（`saolei:game` 内容归游戏基础面、编排对 player 与 planner 注册；
+`saolei:guidance` 随 saoleiTools 单元在 player setup 注册、仅 player 生效）；
 玩法/守则内容切分与 persona 去重基线见
 `specs/060-agent-v2-team-optimize/contracts/prompt-sections.md` §1-§3：
 
 | 层 | 所有者 | 生效范围 | 内容边界 |
 |---|---|---|---|
-| 玩法 + 可用操作（section `saolei:game`，order 50） | saolei-loop 编排（player setup 经 saoleiTools 单元） | 仅 player | 经典扫雷规则 + 与三工具对齐的可用操作；不含调用形态/结果格式 |
-| 工具守则（section `saolei:guidance`，order 100） | saolei-loop 编排（player setup 经 saoleiTools 单元） | 仅 player | 仅工具用法（符号表/坐标/结果三层结构/校验拒绝语义/示例/纪律） |
+| 玩法 + 可用操作（section `saolei:game`，order 50） | 游戏基础 `@dominion/dsh-saolei`（基础面 `gameSection`，编排注册） | player 与 planner | 经典扫雷规则 + 与三工具对齐的可用操作；不含调用形态/结果格式 |
+| 工具守则（section `saolei:guidance`，order 100） | 编排 setup 经 `@dominion/dsh-saolei-tools` 的 saoleiTools 单元 | 仅 player | 仅工具用法（符号表/坐标/结果三层结构/校验拒绝语义/示例/纪律） |
 | persona（order 0） | preset 模板 persona 行 | 各成员 | 身份/职责/风格；不重复玩法与操作描述 |
 
 ## planner memory（物化来源 preset 作用域、快照固定、近因注入与 fail-loud）

@@ -810,10 +810,10 @@ export class TeamOrchestrator {
           agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game);
           return;
         }
-        // The planner sees the gameplay section too (074 legacy fix); the
-        // static registration precedes the fail-loud memory prefetch so a
-        // rejected prefetch remains the setup's last rollback boundary
-        // (research.md D3).
+        // The planner registers the gameplay section too; the static
+        // registration precedes the fail-loud memory prefetch so a rejected
+        // prefetch remains the setup's last rollback boundary
+        // (specs/075-saolei-game-foundation/research.md D3).
         agentCtx.systemPrompt.section(foundation.gameSection);
         await this.registerMemory(agentCtx, options.memoryScope);
       },

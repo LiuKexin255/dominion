@@ -2,13 +2,15 @@
 
 扫雷 team loop dsh 插件（cordis 插件名 `saolei-loop`）：saolei team 的编排层
 （驱动权唯一归属——游戏阶段机、成员驱动时机、物化编排）。agent 驱动回归官方
-`dsh-agent-loop` 行（本插件不 `setFactory`、不含 turn/step 驱动状态机）；
-GameRuntime 以 agent-scoped `saoleiGame` 服务注册，注册点在宿主
-（`projects/game/agent_v2/src/session.ts`）经 `ctx.presetAuthoring.compose()`
-返回的 agent 创建 setup hook 内（`createAgentGameRuntime` 为生产构造器）。
-编排契约见 `specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §2；
-GameRuntime 行为契约见
-`specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §2.2。
+`dsh-agent-loop` 行（本插件不 `setFactory`、不含 turn/step 驱动状态机）。游戏
+领域是其**正向依赖**（`inject: ["saolei"]`）：编排在物化期经基础面工厂
+`createGameRuntime` 构造并**持有**游戏实例，player 成员 ctx 上只注册 agent-scoped
+句柄 `saoleiGame`（工具经 `exec.agent.ctx` 解析到同一实例）；游戏运行时实现
+（`src/game/`）不驻留本包，归游戏基础 `@dominion/dsh-saolei`，`gameStatsText`
+亦自该包导入用于播报。编排契约见
+`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §2；游戏基础接入契约见
+`specs/075-saolei-game-foundation/contracts/team-loop-assembly.md`；游戏运行时
+行为契约见 `specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §2.2。
 
 ## 编排服务（TeamOrchestrator）
 
@@ -19,10 +21,11 @@ GameRuntime 行为契约见
 double，无模块拦截）。公开面：
 
 - `materialize(options)`：逐成员 compose + `ctx.agents.create`（roster mount、
-  player 侧 `createAgentGameRuntime` 注册 + saoleiTools 静态单元注册、planner 侧
-  `memoryMount.build(scope)` 单元注册与 fail-loud 预取），
+  player 侧 saoleiTools 静态单元（三工具 + `saolei:guidance`）注册 + `saolei:game`
+  玩法 section 注册 + 编排持有的游戏实例构造与句柄注册，planner 侧
+  `saolei:game` 注册 + `memoryMount.build(scope)` 单元注册与 fail-loud 预取），
   `ctx.team.register`，随后静止等待（初始激活 = planner，不发起任何驱动）；任一
-  步失败回滚全部已建成员，无半物化。
+  步失败回滚全部已建成员（含丢弃持有的游戏实例引用），无半物化。
 - `submit(text)`：用户消息入口——当前成员回合中入 team FIFO（返回
   `queued`/`position`），空闲时立即由当前激活成员处理（物化后的首条 Send 即首驱，
   由 planner 处理）；取消暂停后再次 Send 恢复。
@@ -50,11 +53,13 @@ drain 为空时静止在当前激活成员等待新输入。驱动经成员 `age
   `specs/073-dsh-0.2-upgrade/research.md` D1。
 - `@deepseek-ai/cordis` peer 经 catalog 解析到 `~4.0.4`（线内互锁：解析必须
   落线内值，否则可能物化两份 cordis；依据 `specs/073-dsh-0.2-upgrade/research.md` D1）。
-- `@dominion/game-saolei-board` 经 `workspace:*` 依赖：棋盘识别
-  （`SaoleiBoard.init/updateFromScreenshot`）与坐标几何复用（FR-015）。
+- `@dominion/dsh-saolei` 经 `workspace:*` 依赖：游戏基础面消费
+  （`inject: ["saolei"]`）与游戏类型（`GameRuntime`/`GameEventRecord`/
+  `SaoleiFoundation`）、`gameStatsText` 导入（`specs/075-saolei-game-foundation/
+  contracts/team-loop-assembly.md` §1/§2）。
 - `@deepseek-ai/dsh-llm` peer：编排层构造用户消息（`createUserMessage`）。
-- `@dominion/dsh-desktop-bridge` peer（类型面）：GameRuntime 的 desktop 派发
-  绑定消费其服务面类型。
+- `@dominion/dsh-desktop-bridge` peer（类型面）：编排在物化期解析 desktopBridge，
+  经基础面工厂构造游戏实例。
 - `@dominion/dsh-team` peer：`ctx.team` 注册/消费面的类型引用与
   `agentMemberSource` 成员消息源适配器的值引用（物化时包装成员句柄）；运行时
   服务经组合上下文注入。

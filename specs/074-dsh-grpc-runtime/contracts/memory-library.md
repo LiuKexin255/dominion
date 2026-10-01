@@ -50,13 +50,15 @@ memory 操作（content ≤1024 rune、batch 两阶段预检/提交、id=sha256[
 
 ## 5. 工具 execute 面解析与缺面语义
 
-execute 经 `exec.agent.ctx.memory` 属性穿越解析（isolate 注册面；saolei 同型，`common/js/dsh-plugins/saolei/src/index.ts:91-104`）。缺面 fail-loud（四工具同型文案）：
+execute 经 `exec.agent.ctx.memory` 属性穿越解析（isolate 注册面；saolei 同型，`common/js/dsh-plugins/saolei-tools/src/index.ts` 的 `resolveRuntime`）。缺面 fail-loud（四工具同型文案）：
 
 ```
 memory tools require the agent-scoped "memory" service; agent "${exec.agent.id}" has none
 (the team-layer materialization setup registers it from the memory capability mount)
 ```
 
-## 6. dsh-saolei（对照：自包含能力保持插件形态，改造为静态单元提供方）
+## 6. dsh-saolei 游戏基础与 dsh-saolei-tools 工具插件（对照）
 
-`@dominion/dsh-saolei` 保持 cordis 插件形态，**轻度改造**：挂载位置从 agent scope（模板行）变为组合级（saolei-loop config.plugins 子插件，[team-assembly.md](team-assembly.md) §3.1）——组合级 apply 内 `ctx.tools.register` 会全局注册（全员泄漏），故改为 `ctx.provide("saoleiTools", { tools: [...], sections: [...] })`；工具定义/schema/文案与 sections 名/order/文本零变化。工具 execute 的 `exec.agent.ctx.saoleiGame` 解析不变；`saoleiGame` 运行时挂载仍属 createAgentGameRuntime（`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts:430-440`）；缺面文案沿用现状（`saolei/src/index.ts:100`）。
+- `@dominion/dsh-saolei`（游戏基础）：组合清单**顶级基础行**（无 config），apply 提供组合级服务面 `ctx.saolei`（`{ createGameRuntime, gameSection }`）；不持有工具、不全局注册（specs/075-saolei-game-foundation/contracts/saolei-foundation.md §1/§2）。
+- `@dominion/dsh-saolei-tools`（工具插件）：saolei-loop `config.plugins` 静态单元提供方（[team-assembly.md](team-assembly.md) §3.1）——apply 以 `ctx.provide("saoleiTools", { tools: [...], sections: [saolei:guidance] })` 暴露单元（`saolei:game` 归游戏基础面、由编排对双角色注册）；工具定义/schema/文案与 guidance 名/order/文本零变化。
+- 工具 execute 的 `exec.agent.ctx.saoleiGame` 属性解析不变；`saoleiGame` 运行时为编排持有的 `@dominion/dsh-saolei` `GameRuntime` 实例，经 player setup `agent.ctx.isolate("saoleiGame")` 注册句柄（`common/js/dsh-plugins/saolei/src/game/runtime.ts`）；缺面 fail-loud 文案路径 `common/js/dsh-plugins/saolei-tools/src/index.ts` 的 `resolveRuntime`（冻结文案本身零改动，判定见 specs/075-saolei-game-foundation/contracts/cutover-contracts.md §5）。
