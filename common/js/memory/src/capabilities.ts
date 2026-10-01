@@ -66,10 +66,10 @@ export interface MemoryCapabilitiesDeps {
 }
 
 /**
- * Build the atomic capability unit for one member scope. Section names,
- * orders and text are unchanged from the pre-migration plugin row, so the
- * assembled system prompt is byte-identical (specs/074-dsh-grpc-runtime/
- * contracts/memory-library.md §1).
+ * Build the atomic capability unit for one member scope. The section names,
+ * orders and text are the frozen contract, so the assembled system prompt is
+ * stable across mounts (specs/074-dsh-grpc-runtime/contracts/memory-library.md
+ * §1).
  */
 export function buildMemoryCapabilities(
   deps: MemoryCapabilitiesDeps,

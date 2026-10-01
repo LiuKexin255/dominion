@@ -4,9 +4,10 @@
  * unit through `ctx.provide("saoleiTools", ...)` — the three tool definitions
  * and the `saolei:guidance`/`saolei:game` sections — and registers NOTHING on
  * the composition scope (no `ctx.tools.register` / `ctx.systemPrompt.section`
- * side effect). The unit content is unchanged from the pre-migration plugin
- * row: tool descriptions/schemas/outputs and the section name/order/text are
- * asserted verbatim.
+ * side effect). The unit content is the frozen saolei contract
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1): tool
+ * descriptions/schemas/outputs and the section name/order/text are asserted
+ * verbatim.
  *
  * The behavior cases stay: dual-form `saolei_operate` validation with the
  * verbatim literals, the exec-time resolution of the agent-scoped

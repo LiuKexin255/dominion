@@ -13,12 +13,12 @@
  * fail loud when absent. The orchestrator itself is constructed per team by
  * the host (projects/game/agent_v2/src/session.ts), so per-team state and its
  * `ctx.team`/`ctx.agents` consumption never become composition singletons.
- * Agent DRIVING itself is owned by the official `dsh-agent-loop` row
- * (specs/059-agent-v2-team-mode/research.md R1/R7: the previous self-built
- * AgentFactory/driver was removed with the loop pivot, and GameRuntime
- * registration moved from the factory's prepare phase into the caller's
- * agent-creation setup hook — {@link createAgentGameRuntime} is the
- * production builder, called from the orchestration's player setup).
+ * Agent DRIVING itself is owned by the official `dsh-agent-loop` row; this
+ * plugin holds the orchestration state machine only, no turn/step driving
+ * (specs/059-agent-v2-team-mode/research.md R1/R7). GameRuntime registration
+ * lives in the caller's agent-creation setup hook — {@link
+ * createAgentGameRuntime} is the production builder, called from the
+ * orchestration's player setup.
  *
  * The orchestration state machine and its contracts:
  * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2;

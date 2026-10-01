@@ -14,8 +14,8 @@ services:
       path: //projects/game/session/service.yaml
       name: session
   # The memory service is DELIBERATELY absent (T023 V7-2): the planner's
-  # `ctx.plannerMemory.load` prefetch rejects, which must roll the whole
-  # team materialization back.
+  # materialization-time `unit.ready()` prefetch (memoryMount.build(scope))
+  # rejects, which must roll the whole team materialization back.
   - artifact:
       path: //projects/game/fake-llm/service.yaml
       name: fake-llm

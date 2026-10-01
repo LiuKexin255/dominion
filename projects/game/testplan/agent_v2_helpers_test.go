@@ -1524,7 +1524,7 @@ func assertTeamProtoRosterExcludesSaolei(t *testing.T, team *game.Team) {
 // `长期记忆：` header, up to the section break (a blank separator or the next
 // `## ` section). nil when the prompt carries no snapshot section (the empty
 // snapshot does not render). The rendered form is renderMemorySnapshot
-// (common/js/dsh-plugins/memory-service/src/snapshot.ts;
+// (common/js/memory/src/snapshot.ts;
 // specs/065-agent-v2-team-refine/data-model.md §1.5).
 func memorySnapshotEntries(prompt string) []string {
 	const header = "长期记忆：\n"

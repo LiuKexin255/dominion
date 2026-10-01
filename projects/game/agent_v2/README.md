@@ -105,15 +105,24 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   信任，用户面不可写删；用户 preset 的组合在物化时从 store 记录派生
   （`specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §3）。
 - `preset-authoring`（`@dominion/dsh-preset-authoring`）：创作/编辑面（Store
-  Mongo 实现，`game_agent_v2.presets`）+ 模板行校验（`templateRules`）。
-- `team`（`ctx.team`）与 `memory`（`ctx.plannerMemory` host 服务面）：
-  自研群聊原语（含全员广播的单一 XML 标注格式与 team section 格式约定）与
-  planner 记忆服务面；工具行不经 host 层——`saolei` 经 player 池模板 preset
-  挂载、`memory` 经 planner 池模板 preset 挂载（工具可见性由挂载层隔离）。
+  Mongo 实现，`game_agent_v2.presets`）与池模板快照声明源（`templates` 的
+  即插即用 persona 行）。
+- `team`（`ctx.team`）：自研群聊原语（含全员广播的单一 XML 标注格式与 team
+  section 格式约定）。
+- `grpc-runtime`（`ctx.grpc`）：组合级 gRPC client 基建（类型化 client 构造 +
+  unary 辅助 + channel/packageDefinition 缓存共享 + canonical protoPath 解析；
+  `specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md`）。组合内 RPC 能力经
+  `inject: ["grpc"]` 消费，连接基建统一由本行承载。
 - `desktop-bridge`（`@dominion/dsh-desktop-bridge`）与 `saolei-loop`
-  （`@dominion/dsh-saolei-loop`）：后者 boot 时经 `apply(ctx)` 全局注册
-  `saolei:game` prompt section（玩法 + 可用操作，全员可见——见「广播与提示词
-  分层」）。
+  （`@dominion/dsh-saolei-loop`）：后者是 team loop 编排层（驱动时机 + 游戏
+  阶段机）。其 `config.plugins` 是**扁平能力依赖声明**（无角色语义）——
+  `@dominion/dsh-saolei` 提供 `saoleiTools` 静态单元、`@dominion/dsh-saolei-memory`
+  提供 `memoryMount` 工厂（memory 公共库 `@dominion/common-js-memory` + adapter
+  config 的 target/protoPath，跨 service client 共享 channel）。boot 时经
+  `ctx.plugin` 挂载提供方，成员 setup 按角色消费——player 注册 saolei 三工具与
+  `saolei:guidance`/`saolei:game` section，planner 注册 memory 四工具与
+  `memory:guidance`/`wiki:guidance`/`memory:snapshot` section（角色分配归编排
+  代码；`specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §1-§4）。
 
 ## team 物化与刷新（UpdateTeam）
 
@@ -133,9 +142,10 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   存在且 `preset.role` 与成员 role 字符串相等、model 非空时在 ListModels 目录。
   失败均为 `INVALID_ARGUMENT`（`projects/game/agent_v2/src/session.ts`）。
 - **物化编排**：逐成员 `ctx.agents.create`（官方 agent-loop 驱动）经 registry
-  绑定所选 preset 声明，player 侧注册 agent-scoped `saoleiGame`（GameRuntime），
-  planner 侧 `ctx.plannerMemory.load` 以物化来源 preset 预取记忆快照
-  （fail-loud）；随后 `ctx.team.register` 注册群聊服务。任一步失败**整体回滚**：
+  绑定所选 preset 声明，player 侧注册 saoleiTools 单元与 agent-scoped
+  `saoleiGame`（GameRuntime），planner 侧经 `memoryMount.build(scope)` 组装
+  memory 单元并以 `unit.ready()` 预取记忆快照（fail-loud）；随后
+  `ctx.team.register` 注册群聊服务。任一步失败**整体回滚**：
   不残留半物化 team（GetTeam NOT_FOUND），可重试。
 - **成员消息源与扫雷系统角色**：team 的成员抽象为消息源接口
   （`TeamMemberSource`，
@@ -168,7 +178,7 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
 - 未物化 session 的 `Send` 以明确错误拒绝（FAILED_PRECONDITION，提示先物化）；
   `GetTeam`/`GetTeamMember`/List 面为 NOT_FOUND。
 
-## preset 分池与角色工具锁定
+## preset 分池与角色能力组装
 
 preset 数据按角色分池
 （`specs/059-agent-v2-team-mode/contracts/preset-api.md`）：
@@ -180,17 +190,17 @@ preset 数据按角色分池
   回退该角色默认 base（第一人称身份声明开头，
   `specs/059-agent-v2-team-mode/data-model.md` §2）。
 - **创作 = store-only**：Create/Update/DeletePreset 只写 Mongo store（唯一
-  事实源）；创建时校验模板行（`cordis.yml` `templateRules`）：player 模板
-  恰含 `@dominion/dsh-saolei` 行、不得含 `@dominion/dsh-memory`，planner
-  模板恰含 `@dominion/dsh-memory` 行，违者 INVALID_ARGUMENT 且不落任何
-  产物。
-  池模板（`cordis.yml` 的 preset-authoring `templates` 快照）不可写/不可删。
-- **角色工具锁定（行级绑定）**：player preset 绑定扫雷游戏工具插件组
-  （`saolei_init`/`saolei_operate`/`saolei_remain` 工具 + `saolei:guidance`
-  守则），planner preset 绑定 memory 插件组（memory 工具 + 快照 section）——
-  工具与其配套守则作为整体生效或缺席，物化零定制。删除 preset 无 fan-out：
-  已物化成员保持其物化时组合，再次物化引用被拒
-  （`specs/059-agent-v2-team-mode/spec.md` FR-006）。
+  事实源），无模板行校验路径。池模板（`cordis.yml` 的 preset-authoring
+  `templates` 快照）为即插即用 persona 行，不可写/不可删。
+- **角色能力组装（编排代码承载）**：role 不决定工具插件行——player/planner
+  对应的能力由 saolei-loop 编排在成员 setup 消费 `config.plugins` 提供面：
+  player 取 `saoleiTools`（`saolei_init`/`saolei_operate`/`saolei_remain`
+  工具 + `saolei:guidance`/`saolei:game` section），planner 取
+  `memoryMount.build(scope)`（memory/wiki 四工具 + `memory:guidance`/
+  `wiki:guidance`/`memory:snapshot` section）——能力单元与其配套 section 作为
+  整体生效或缺席，物化零定制。删除 preset 无 fan-out：已物化成员保持其物化
+  时组合，再次物化引用被拒（`specs/059-agent-v2-team-mode/spec.md` FR-006；
+  `specs/074-dsh-grpc-runtime/contracts/preset-templates.md` §2-§3）。
 - **物化 = 使用时派生**：成员物化消费的组合在使用时从 store 记录派生——以宿主
   注入的模板声明快照（`cordis.yml` `templates` 键）为基础，用记录 persona 替换
   persona 子行的 `prefix`（空值回退模板默认 base，记录 persona 即用户可编辑
@@ -253,7 +263,8 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
 - **system prompt 查看**：对话页 team 工具条的成员清单区为每成员提供入口
   （点击经 `GetTeamMember` 读取并以只读浮层展示 `system_prompt` 全文），设置
   面板内入口保留。内容从成员实例的 system prompt 装配面读取（persona + team
-  section + saolei:game 玩法 section + 工具守则 + planner 的长期记忆快照），
+  section + player 的 `saolei:game` 玩法 section 与工具守则 + planner 的
+  memory 工具守则与长期记忆快照），
   与该实例实际发给模型的一致，非另行拼装；刷新 team 后随新配置更新
   （`specs/059-agent-v2-team-mode/spec.md` FR-016）。
 
@@ -276,19 +287,23 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
   使用 `<角色-message>`/`<角色-tool-call>` 自我包装
   （`specs/065-agent-v2-team-refine/contracts/team-member-source.md` §3/§4）。
 
-提示词三层所有权
-（`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md`）：
+提示词三层所有权：section 的注册点与生效范围以
+`specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §5②/§6 为现行管辖契约
+（saolei:game/saolei:guidance 由编排在 player setup 注册、仅 player 生效）；
+玩法/守则内容切分与 persona 去重基线见
+`specs/060-agent-v2-team-optimize/contracts/prompt-sections.md` §1-§3：
 
 | 层 | 所有者 | 生效范围 | 内容边界 |
 |---|---|---|---|
-| 玩法 + 可用操作（section `saolei:game`，order 50） | saolei-loop（host 行 boot 注册） | 全员（player/planner 同源同文） | 经典扫雷规则 + 与三工具对齐的可用操作；不含调用形态/结果格式 |
-| 工具守则（section `saolei:guidance`，order 100） | saolei preset 行（player 池） | 仅 player | 仅工具用法（符号表/坐标/结果三层结构/校验拒绝语义/示例/纪律） |
+| 玩法 + 可用操作（section `saolei:game`，order 50） | saolei-loop 编排（player setup 经 saoleiTools 单元） | 仅 player | 经典扫雷规则 + 与三工具对齐的可用操作；不含调用形态/结果格式 |
+| 工具守则（section `saolei:guidance`，order 100） | saolei-loop 编排（player setup 经 saoleiTools 单元） | 仅 player | 仅工具用法（符号表/坐标/结果三层结构/校验拒绝语义/示例/纪律） |
 | persona（order 0） | preset 模板 persona 行 | 各成员 | 身份/职责/风格；不重复玩法与操作描述 |
 
 ## planner memory（物化来源 preset 作用域、快照固定、近因注入与 fail-loud）
 
-planner preset 锁定的 memory 插件组
-（`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §3）：长期记忆集合挂载于
+planner 成员经 saolei-loop 依赖列表装配的 memory 能力
+（`config.plugins` 的 `@dominion/dsh-saolei-memory` 提供 `memoryMount` 工厂；
+`specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §3.2）：长期记忆集合挂载于
 **物化来源 preset** 之下——planner member 物化自哪个 preset，其 memory 工具读写
 与快照装载就作用于该 preset 的集合（资源名
 `templates/{template}/presets/{preset}/memories/{memory}`；装配语义见
@@ -303,7 +318,8 @@ planner preset 锁定的 memory 插件组
   (template, preset)，管理路由
   `/api/v1/templates/{template}/presets/{preset}/memories` 可查证），过程经
   planner 工具调用历史与团队消息流可见。
-- **快照装载与透传渲染**：物化时 `ctx.plannerMemory.load` 以
+- **快照装载与透传渲染**：物化时编排经 `memoryMount.build(scope)` 组装单元、
+  `await unit.ready()` 预取，并以
   `order_by=update_time desc` + `page_size=10` 单页装载长期记忆——最近 10 条
   由 memory 服务 `ListMemories` 的服务端排序承担，客户端按服务返回序纯透传
   渲染。`order_by` 为通用机制：AIP-132 `{field} [desc]` 逗号分隔语法（空白
@@ -336,10 +352,10 @@ CRUD 只写该集合（唯一事实源），物化组合在成员创建时从记
 
 池模板（player/planner）定义在 `cordis.yml` 的 `preset-authoring` 行 Config
 `templates` 快照（键 = 模板 id，值 = name/description/plugins）——模板定义的
-单一事实源，不经行面表达。persona 子行以 `prefix` 承载身份文案，角色工具行
-（player 为 `@dominion/dsh-saolei`、planner 为 `@dominion/dsh-memory`）随快照
-派生物化：authoring 据此把 store 记录派生为 registry 声明
-（`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2、
+单一事实源，不经行面表达。plugins 为即插即用自包含插件列表（当前仅 persona
+行；角色能力经 saolei-loop `config.plugins` 组装，不入模板）。persona 子行以
+`prefix` 承载身份文案，随快照派生物化：authoring 据此把 store 记录派生为
+registry 声明（`specs/074-dsh-grpc-runtime/contracts/preset-templates.md` §1；
 `specs/070-dsh-upgrade/contracts/preset-model-mapping.md` §3）。
 
 ## 模型端点与凭据配置

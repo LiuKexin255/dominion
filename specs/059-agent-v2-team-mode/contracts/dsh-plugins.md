@@ -40,19 +40,30 @@ ctx.team.drain(member): UserMessage[]   // 注入就绪的广播消息（team �
 
 **职责**：驱动权唯一归属（游戏阶段机 + 驱动时机 + buffer 消费策略）、物化编排、游戏事件流持有。**不再** `setFactory`、不含 turn/step 驱动状态机（官方 `dsh-agent-loop` 行回归承担）。
 
-**物化编排契约**（由宿主 `UpdateTeam` 触发）：
+**物化编排契约**（apply 期依赖装配 + 由宿主 `UpdateTeam` 触发的成员物化）：
 
 ```text
+apply 期依赖装配（specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4）：
+  for row in config.plugins:
+    entry = await dynamicImport(row.name)   # 按裸包名动态解析（宿主闭包，见 §5 末注）
+    await ctx.plugin(entry, row.config)     # 能力提供方子插件（fail-loud）
+  saoleiTools / memoryMount = ctx.get(...)  # reflect 注册面的 Context 便捷读取（与 reflect.get 等价）；提供面缺失 → throw（组合启动失败）
+
 validate(presets, models)                       # fail-fast：preset 存在 + role 匹配 + model 在目录
 for each (role, presetId, model) in {player, planner}:
   ctx.agents.create({
     sessionId: <成员 sessionId 命名（挂 session 命名空间）>,
     agentOptions: { provider: "glm-responses", model },
     meta: { agentPreset: presetId },
-    setup: async (agentCtx) => {
+    setup: async (agentCtx, agent) => {
       await mountFromRoster(agentCtx, presetId)          # compose() 返回的 setup（resolve 提前已做）
-      if (role === player)  registerGameRuntime(agentCtx) # agent-scoped ctx.saoleiGame（GameRuntime）
-      if (role === planner) await ctx.plannerMemory.load(agentCtx, {template, session})  # fail-loud
+      if (role === player):
+        registerSaoleiTools(agentCtx)                    # saoleiTools 单元：三工具 + 两 sections → 成员域
+        mountPlayerRuntime(agent, session)               # agent-scoped ctx.saoleiGame（GameRuntime）
+      if (role === planner):
+        unit = memoryMount.build(memoryScope)            # scope = {template, preset}（specs/071-memory-preset-scope/contracts/dsh-plugins.md §1）显式传参
+        register unit                                    # faces("memory") → tools×4 → sections×3 → agentCtx
+        await unit.ready()                               # fail-loud 预取；reject → setup throw → 物化回滚
     },
   })
 ctx.team.register({ goal, members, context? })
@@ -67,36 +78,51 @@ ctx.team.register({ goal, members, context? })
 - 取消：编排层暂停续驱标志（配合成员 `cancel()`）；用户再次 Send 恢复。
 - 游戏事实（局开始/结束、胜负）由 GameRuntime 的游戏事件流承载（game 模块位于 saolei-loop：`common/js/dsh-plugins/saolei-loop/src/game/runtime.ts`，经 agent-scoped `saoleiGame` 暴露给 player 侧；gameEnded 事实随 saolei 工具返回终局结果一并确立），与 team 消息流解耦（决策 ⑨）；**不经 team 广播游戏事件**（buffer 派生前提，team-mode §4.4a 边界）。
 
-## 3. memory 插件（`@dominion/dsh-memory`，新增）
+## 3. memory 能力（公共库 `@dominion/common-js-memory` + 薄 adapter `@dominion/dsh-saolei-memory`）
 
-> 本节 memory 插件的双面包形态已被 `specs/064-memory-split-fold-remain/contracts/dsh-plugins.md` §1/§2 修订（拆分为 `@dominion/dsh-memory-service` host 基建包与 `@dominion/dsh-memory` 纯工具面，2026-09-14）；本节保留 059 基线记录形态，现行包归属与挂载面以该修订为准。
+> 契约全文见 specs/074-dsh-grpc-runtime/contracts/memory-library.md（库导出面与能力单元）与 specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.2（adapter 提供方）；本节为 agent_v2 组合视角摘要。能力语义基线（memory-plugin 决策 ①②③⑧）不变。
 
-**两个功能面**（memory-plugin 决策 ①②③）+ **host 服务面**（决策 ⑥ 路径 A）：
+**形态**（组合清单无 memory host 行、模板无 memory 工具行——§5）：
 
-1. **工具行（preset 行挂载）**：`defineTool` 注册单一 `memory` 工具——参数 `{action: add|replace|remove, content, old_text}` 单操作形式 XOR `{operations[]}` 批量形式（互斥校验；批量原子：preflight 全过才提交）；`old_text` 大小写敏感子串定位（0 命中/多命中返回全部条目或预览的文本结果）；无 read 动作；**失败也是文本结果**（不抛错、不中断对话）；存储访问经 host 服务面——preset 行 `apply` 从本行上下文绑定 `ctx.plannerMemory`（agent scope 的 isolate 边界使 `exec.agent.ctx` 的属性走查不可达，T023 实测修订），exec 时按 agent 解析已绑定的 per-agent scope。
-2. **快照 section（preset 行挂载）**：函数式 `text: (context) => snapshotCache.get(context.scope) ?? ""`，order 200+，空自动不渲染；快照由物化 setup 的 `load` 预取填充（先于首次装配，无竞态）；实例生命周期固定。
-3. **host 服务面（host 行，`ctx.plannerMemory`）**：`load(agentCtx, {template, session})`——异步读 memory 服务（gRPC client，迁移自 v1 `projects/game/agent/src/memory-client.ts`，`dominion:///game/memory:50051`）→ 渲染纯文本快照（每行一条、不含 id）→ 写入快照缓存并经 `agentCtx` 绑定 scope；**失败 throw**（= 物化回滚，fail-loud，决策 ⑧）；写路径（add/replace/remove/批量）同经此服务面落 memory 服务，立即持久化。
-- **不注册 guidance section**（单工具无跨调用协调需求）；工具 description 改写为 v2 快照语义（"快照固定于 agent 启动"）。
-- **guidance/工具一致性**：无 guidance 即无一致性问题；行级挂载保证不挂行则工具与 section 同时缺席。
+| 层 | 包 | 形态与挂载 |
+|---|---|---|
+| 领域公共库 | `@dominion/common-js-memory`（`common/js/memory/`） | 纯库（无 `name`/`inject`/`apply` 导出，永不作为组合行挂载）；原子能力单元工厂 `buildMemoryCapabilities({scope, memoryClient, wikiClient})` + 原语（store/face/快照渲染） |
+| 薄 adapter | `@dominion/dsh-saolei-memory`（`common/js/dsh-plugins/saolei-memory/`） | cordis 插件，经 saolei-loop `config.plugins` 挂载为子插件；`inject: ["grpc"]`；config `{ target, protoPath, label? }`——部署连接参数在此，两个 service client 经组合级 `ctx.grpc` 基建构造（同 target 共享 channel）；apply `ctx.provide("memoryMount", { build(scope) })`——per-member 工厂，scope 由编排显式传参 |
 
-## 4. saolei 插件（`@dominion/dsh-saolei`，演进为 preset 层挂载）
+**能力单元**（`build(scope)` 产出——faces/tools/sections/ready 原子不可拆，编排整单元注册进 planner 成员域，注册序 faces → tools → sections → ready）：
 
-- 三工具（`saolei_init`/`saolei_operate`/`saolei_remain`）+ `saolei:guidance` section（order 100）结构不变（工具 + 配套守则同 `apply()` 注册，行级一致，V2-3 同型）。
-- 挂载位置变化：从 host 组合层移入 **player 池模板 preset 的插件行**（planner 池不含此行——工具可见性由挂载层隔离，不用 per-agent restriction，team-mode §3.6）。
-- 工具经 `exec.agent.ctx.get("saoleiGame")` 解析 agent-scoped 游戏运行时（GameRuntime：棋盘/规则/操作执行/胜负判定 + desktop 派发绑定 sessionName）——GameRuntime 注册点从现 saolei-loop factory 迁至编排层物化 setup（§2）；缺失时 fail-loud（现状语义）。
+1. **faces**：`memory` agent-scoped isolate 面；face 创建即绑定 `{template, preset}` scope（specs/071-memory-preset-scope/contracts/dsh-plugins.md §1；wiki 面仅转发 `scope.template`——specs/069 template 级契约）。
+2. **tools ×4**：`memory` 工具——参数 `{action: add|replace|remove, content, old_text}` 单操作形式 XOR `{operations[]}` 批量形式（互斥校验；批量原子：preflight 全过才提交）；`old_text` 大小写敏感子串定位（0 命中/多命中返回全部条目或预览的文本结果）；无 read 动作；**失败也是文本结果**（不抛错、不中断对话）；加 `wiki_search`/`wiki_get`/`wiki_write`（specs/069-wiki-template-web/contracts/dsh-plugins.md）。execute 经 `exec.agent.ctx.memory` 属性穿越解析（缺面 fail-loud 文案见 specs/074-dsh-grpc-runtime/contracts/memory-library.md §5）。
+3. **sections ×3**：`memory:guidance`(110)、`wiki:guidance`(120)、`memory:snapshot`(200，函数式 `text` 闭包——空快照自动不渲染)；由编排注册（saolei-loop planner setup，specs/074-dsh-grpc-runtime/contracts/team-assembly.md §5②）。
+4. **ready**：`() => face.prefetch()`——fail-loud 预取：一次 `listMemories(template, preset, {orderBy: "update_time desc", pageSize: 10})` → 渲染纯文本快照（每行一条、不含 id），冻结于预取时点；reject → setup throw → 物化整体回滚（决策 ⑧）。
+
+写路径（add/replace/remove/批量）以绑定 scope 的 preset 寻址落 memory 服务，立即持久化；同内容去重（ALREADY_EXISTS → dedupe 文本）不变（specs/071-memory-preset-scope/contracts/dsh-plugins.md §3）。
+
+## 4. saolei 插件（`@dominion/dsh-saolei`，saoleiTools 静态单元提供方）
+
+- 三工具（`saolei_init`/`saolei_operate`/`saolei_remain`）与 sections（`saolei:game` order 50、`saolei:guidance` order 100）定义零变化；插件经 saolei-loop `config.plugins` 挂载为子插件（组合级），apply 以 `ctx.provide("saoleiTools", { tools, sections })` 暴露静态单元——组合级挂载下不做 `ctx.tools.register`/`ctx.systemPrompt.section` 全局注册（会泄漏给全员），单元由编排 player setup 注册进成员域（§2；specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1）。
+- player 隔离为结构性保证：编排 player 分支只消费 saoleiTools、planner 分支只消费 memoryMount（§3）——planner 工具面与 prompt 无 saolei 痕迹，不依赖模板行校验（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3）。
+- 工具经 `exec.agent.ctx.get("saoleiGame")` 解析 agent-scoped 游戏运行时（GameRuntime：棋盘/规则/操作执行/胜负判定 + desktop 派发绑定 sessionName）——GameRuntime 由编排 player setup 的 `createAgentGameRuntime` 挂载（§2）；缺失时 fail-loud（现状语义）。
 
 ## 5. 组合清单（agent_v2 `cordis.yml` 终态行清单）
 
-> 本节清单的 memory host 行已被 `specs/064-memory-split-fold-remain/contracts/dsh-plugins.md` §3 修订（host 行改 `@dominion/dsh-memory-service`；工具行仍为 `@dominion/dsh-memory`，2026-09-14）；本节保留 059 基线记录形态，现行终态以该修订为准。
+> 全量行集合与断言契约见 specs/070-dsh-upgrade/contracts/composition-manifest.md §2；模板与能力依赖的分界判据及终态 diff 见 specs/074-dsh-grpc-runtime/contracts/preset-templates.md §5。team 模式相关行：
 
 ```yaml
-# 既有基线：timer / llm / session / system-prompt / tools / agents / invariants
-#           + invariant-session / invariant-agent / invariant-scope / llm-retry
-#           + llm-glm / desktop-bridge / saolei-loop（语义已变为 team loop）/ saolei（若 host 层保留则移除——见下）
-dsh-agent-loop        # 新增：官方驱动回归（setFactory；Config.agents[] 留空，动态创建）
-dsh-agent-presets     # 新增：roster（roots: [player 池, planner 池]，不设 default）
-@dominion/dsh-team    # 新增：ctx.team
-@dominion/dsh-memory  # 新增：ctx.plannerMemory（host 服务面；工具行经 planner 模板 preset 挂载）
+# 既有基线：timer / llm / session / session-projection / system-prompt / tools / agents
+#           + invariants / invariant-session / invariant-agent / invariant-scope / llm-retry
+#           + llm-glm / llm-opencode-go / desktop-bridge / preset-authoring
+- { id: agent-loop, name: '@deepseek-ai/dsh-agent-loop' }                       # 官方驱动回归（Config.agents[] 留空，动态物化）
+- { id: agent-preset-registry, name: '@deepseek-ai/dsh-agent-preset-registry' } # roster registry（default: ''，fail-loud）
+- { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }                      # ctx.grpc 组合级 gRPC client 基建（§3 adapter 依赖）
+- { id: team, name: '@dominion/dsh-team' }                                      # ctx.team
+- id: saolei-loop                                                               # team loop 编排层
+  name: '@dominion/dsh-saolei-loop'
+  config:
+    plugins:                                                                   # 能力依赖声明（扁平，无角色语义）
+      - name: '@dominion/dsh-saolei'                                           # saoleiTools 静态单元提供方（§4）
+      - name: '@dominion/dsh-saolei-memory'                                    # memoryMount 工厂提供方（§3）
+        config: { target: 'dominion:///game/memory:50051', protoPath: 'projects/game/game.proto' }
 ```
 
-saolei 工具行从 host 层移入 player 模板 preset（host 层不再挂，避免全员可见）；组合三面（package.json ⟷ cordis.yml ⟷ tar 物化）原子变更（闭包审计）。
+preset persona 子行（`@deepseek-ai/dsh-persona`）与能力依赖子行（`@dominion/dsh-saolei`、`@dominion/dsh-saolei-memory`）均按裸包名经宿主闭包解析：包声明于本宿主 package.json 并随闭包交付（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4 同型）。模板 plugins 仅 persona 行——工具能力不经模板行挂载（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1）；组合三面（package.json ⟷ cordis.yml ⟷ tar 物化）原子变更（闭包审计）。

@@ -60,8 +60,8 @@
 
 ```text
 for row in config.plugins: await ctx.plugin(dynamicImport(row.name), row.config)
-saoleiTools = reflect.get("saoleiTools")   # 缺 → throw（组合启动失败）
-memoryMount  = reflect.get("memoryMount")  # 同上
+saoleiTools = ctx.get("saoleiTools")      # reflect 注册面的 Context 便捷读取；缺 → throw（组合启动失败）
+memoryMount  = ctx.get("memoryMount")     # 同上
 ```
 
 **createMember setup**（成员组装，`orchestrator.ts:756-766` 改造；注册序 faces → tools → sections → ready）：

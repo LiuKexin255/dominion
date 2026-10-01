@@ -399,8 +399,8 @@ Every op is validated against the recognized board; the desktop never receives a
  * is the intersection with the three tools this unit provides. The
  * `saolei_remain` per-cell wording and the global-counter distinction follow
  * specs/064-memory-split-fold-remain/contracts/saolei-plugins.md §3.
- * Section name/order/text are unchanged from the pre-migration plugin row
- * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §5 ②).
+ * Section name/order/text are the frozen saolei contract values
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1).
  */
 export const SAOLEI_GAME_RULES = `## 扫雷玩法与可用操作
 

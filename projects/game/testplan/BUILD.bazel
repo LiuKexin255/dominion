@@ -308,7 +308,8 @@ go_largetest(
 # (specs/059-agent-v2-team-mode/tasks.md T023 / quickstart V7-2) in its own
 # binary: the case needs the memory-down topology
 # (deploy_agent_v2_memory_down.yaml deploys the same service list minus the
-# memory service, so the planner's `plannerMemory.load` prefetch rejects), and
+# memory service, so the planner's materialization-time `unit.ready()`
+# prefetch rejects), and
 # guitar runs whole bazel targets as suite cases with no per-suite
 # test-function filter — sharing agent_v2_preset_test would run this case
 # against a topology where memory IS present. Shares the agent_v2 team

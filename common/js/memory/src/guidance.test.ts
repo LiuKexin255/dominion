@@ -33,10 +33,9 @@ import { MEMORY_TOOL_DESCRIPTION } from "./tool.js";
 const WIKI_TOOL_NAMES = ["wiki_search", "wiki_get", "wiki_write"];
 
 /**
- * The `memory` tool description, pinned verbatim: the preset scope migration
- * changes how the service addresses the collection, never what the model is
- * told about the tool (specs/071-memory-preset-scope/contracts/dsh-plugins.md
- * §5 — the description is scope-agnostic).
+ * The `memory` tool description, pinned verbatim: it is scope-agnostic — it
+ * never says how the service addresses the collection
+ * (specs/071-memory-preset-scope/contracts/dsh-plugins.md §5).
  */
 const PINNED_MEMORY_TOOL_DESCRIPTION =
   "Manage long-term memory entries. " +

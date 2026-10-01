@@ -12,9 +12,8 @@
 - `ctx.presetAuthoring: PresetAuthoringService`：
   - `compose(presetId?): ComposeResult`——`ComposeResult.agentPreset` 为可直接传入 `CreateAgentOptions.meta.agentPreset` 的 preset id；未知 id 报错（fail-loud）。
   - `create(input): PresetView` / `get(id)` / `list(role?)` / `update(id, patch)` / `remove(id)`。
-- Store seam（`PresetStore`/`PresetRecord`/Mongo 实现）与 Config（storage/mongo\*/templateRules/templates）不变。
+- Store seam（`PresetStore`/`PresetRecord`/Mongo 实现）与 Config（storage/mongo\*/templates）不变。
   - `PresetRecord` 字段 schema **冻结**（`specs/070-dsh-upgrade/data-model.md` §3.4）；Mongo 一次性迁移（FR-012）不改字段形态，只确认 `template` 值对应声明式模板 id、persona `prefix` 物化可用。
-- `templateRules` 语义不变：`required`（恰出现一次）/`forbidden`（不得出现）按模板 id 校验派生行集合；失败 `INVALID_ARGUMENT`（`PresetAuthoringError`），不落产物。
 
 **消费方不动**：`projects/game/agent_v2`（server.ts/presets.ts）、`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`（compose → `meta.agentPreset`）、demo。
 
@@ -36,7 +35,7 @@
 
 | CRUD 操作 | registry 动作 | 语义 |
 |---|---|---|
-| create | validate → store.create → register | 注册即激活；激活失败（如子行损坏）→ store 回滚（不落产物）或按 US3 场景 5 留 roster 拒绑定——**取后者语义但对 create 返回 INVALID_ARGUMENT**（创建校验与激活审计分离：templateRules 拒绝则不落；激活失败落 roster 且 create 报错） |
+| create | validate → store.create → register | 注册即激活；激活失败（如子行损坏）→ store 回滚（不落产物）或按 US3 场景 5 留 roster 拒绑定——**取后者语义但对 create 返回 INVALID_ARGUMENT**（创建校验与激活审计分离：校验拒绝（模板未知/撞部署模板 id/id 非法）不落；激活失败落 roster 且 create 报错） |
 | update | store.update → unregister + register | 旧修订 retire；运行中 agent 保留（SC-005 增强点） |
 | remove | store.remove → unregister | 引用释放后 tree 销毁 |
 | boot 恢复 | `list()` 全量 register | Mongo 为唯一事实源，进程内物化 |
@@ -46,11 +45,11 @@
 
 ### 2.3 模板声明注入
 
-模板定义的单一事实源 = 宿主（agent_v2/demo）经 Config 注入的 `templates` 快照，不经 `@deepseek-ai/dsh-agent-preset` 声明行表达（2026-09-28 用户裁定，research.md D4 终态结论）。快照键 = 模板 id，值 = `{ name?, description?, plugins }`（`templates: { player: { name?, description?, plugins }, planner: {...} }`）；preset-authoring 不再读模板文件系统。templateRules 校验以该快照 + 用户派生行为输入。
+模板定义的单一事实源 = 宿主（agent_v2/demo）经 Config 注入的 `templates` 快照，不经 `@deepseek-ai/dsh-agent-preset` 声明行表达（2026-09-28 用户裁定，research.md D4 终态结论）。快照键 = 模板 id，值 = `{ name?, description?, plugins }`（`templates: { player: { name?, description?, plugins }, planner: {...} }`）；preset-authoring 不再读模板文件系统。`plugins` 为即插即用自包含插件列表（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1）——需要上层组装的能力（saolei、memory 类）不入列表，其依赖声明归 saolei-loop `config.plugins`（specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2）。
 
 ## 3. 模板契约（`templates` 快照）
 
-- **定义**：模板 = 宿主组合清单内 `preset-authoring` 行 Config 的 `templates` 快照键（agent_v2：`player`/`planner`；demo：`demo-standard`/`demo-tools`），值 = `{ name?, description?, plugins }`——plugins 为 persona 子行（`prefix`）+ 角色专属工具行。该快照即模板定义的单一事实源，不经任何 `@deepseek-ai/dsh-agent-preset` 声明行表达（2026-09-28 用户裁定，research.md D4 终态结论）。
+- **定义**：模板 = 宿主组合清单内 `preset-authoring` 行 Config 的 `templates` 快照键（agent_v2：`player`/`planner`；demo：`demo-standard`/`demo-tools`），值 = `{ name?, description?, plugins }`——plugins 为即插即用自包含插件列表（无 per-agent 状态、无 scope、无物化期动作；分界判据 specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1/§2）：agent_v2 两池当前仅 persona 子行（`prefix`），demo 的 `demo-tools` 另含自包含 `@dominion/dsh-demo-echo` 工具行。该快照即模板定义的单一事实源，不经任何 `@deepseek-ai/dsh-agent-preset` 声明行表达（2026-09-28 用户裁定，research.md D4 终态结论）。
 - **系统信任**：快照是宿主部署数据；用户面（PresetService API）无模板写删路径——`remove` 对模板 id 是 store NOT_FOUND，用户不可写删（US3 语义 1）。
 - **身份空间**：模板 id 与用户 preset id 共享部署的 id 空间；模板不进 roster（roster 条目只经 preset-authoring 由 store 记录物化进入），撞名保护由 create 的快照 `hasOwnProperty` 检查承担（`common/js/dsh-plugins/preset-authoring/src/index.ts`）——用户 create 若撞模板 id → `ALREADY_EXISTS`（fail-loud）。
 
@@ -61,8 +60,8 @@
 
 ## 5. 测试契约
 
-- `common/js/dsh-plugins/preset-authoring/src/index.test.ts`：create/update/remove → register/unregister 调用序列断言（fake registry）；templateRules 拒绝路径；store 回滚。
-- `derive.test.ts`：rows 构造断言（persona `prefix`、角色工具行）；fs seam 删除后用例改内存断言。
+- `common/js/dsh-plugins/preset-authoring/src/index.test.ts`：create/update/remove → register/unregister 调用序列断言（fake registry）；模板未知拒绝路径；store 回滚。
+- `derive.test.ts`：rows 构造断言（persona `prefix` patch 与 sibling 行保留）；fs seam 删除后用例改内存断言。
 - `projects/game/agent_v2/src/session.test.ts`：`meta.agentPreset` 物化路径不变（现用例保留）。
 - 新增：激活失败 preset 留 roster 拒新绑定、update 修订保留（运行中 agent 不掉工具）两条单测（US3 场景 5 / SC-005）。
 

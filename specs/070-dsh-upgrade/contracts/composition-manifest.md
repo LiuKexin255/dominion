@@ -11,7 +11,7 @@
 
 ## 2. agent_v2 组合清单（`projects/game/agent_v2/cordis.yml`）
 
-**行集合（顺序分层；迁移期为 22 行）**。迁移期 = grpc-runtime 行已新增、memory host 行仍在使用旧通路（Phase 6 删除后回落到终态 21 行，收口见 specs/074-dsh-grpc-runtime/tasks.md T019）。模板不经行面表达：单一事实源 = `preset-authoring` 行 Config 的 `templates` 快照（contracts/preset-model-mapping.md §2.3/§3；research.md D4 终态结论——2026-09-28 用户裁定移除 `preset-*` 声明行，`@deepseek-ai/dsh-agent-preset` 包不进入本组合与声明面）：
+**行集合（顺序分层；终态 21 行）**。模板不经行面表达：单一事实源 = `preset-authoring` 行 Config 的 `templates` 快照（contracts/preset-model-mapping.md §2.3/§3；research.md D4 终态结论——2026-09-28 用户裁定移除 `preset-*` 声明行，`@deepseek-ai/dsh-agent-preset` 包不进入本组合与声明面）；工具能力插件（saolei/memory 类）亦不经行面——其依赖声明为 saolei-loop 行 `config.plugins` 扁平子插件列表（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3/§5、specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2）：
 
 ```yaml
 - { id: timer,              name: '@deepseek-ai/cordis-plugin-timer' }
@@ -32,16 +32,19 @@
 - id: agent-preset-registry                                                   # 新增
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config: { default: '' }                                                     # fail-loud（D5 门禁验证）
-- { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }                    # 迁移期新增（specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §1）
-- id: llm-glm / llm-opencode-go / desktop-bridge / preset-authoring / team / memory / saolei-loop   # @dominion/* 行（saolei-loop 在 Phase 6 增 config.plugins；memory host 行在 Phase 6 删除）
+- { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }                    # 组合级 gRPC client 基建（specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §1）
+- id: llm-glm / llm-opencode-go / desktop-bridge / preset-authoring / team    # 其余 @dominion/* 行
+- id: saolei-loop                                                              # team loop 编排层；config.plugins = 扁平能力依赖列表
+  name: '@dominion/dsh-saolei-loop'                                            # （@dominion/dsh-saolei + @dominion/dsh-saolei-memory(+target/protoPath)
+                                                                               #   子插件；specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2）
 ```
 
-- **池模板（player/planner）**定义在 `preset-authoring` 行 Config：`templates`（键 = 模板 id，值 = `{ name, description, plugins }`，persona 子行 `prefix` + 角色专属工具行）与 `templateRules`（required/forbidden，校验输入为 `templates` 快照）。
-- **派生子行**（`@deepseek-ai/dsh-persona`、`@dominion/dsh-saolei`、`@dominion/dsh-memory`）经宿主 node_modules 按裸包名解析，相关包仍声明于本宿主 package.json 并随闭包交付（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4 同型）。
+- **池模板（player/planner）**定义在 `preset-authoring` 行 Config：`templates`（键 = 模板 id，值 = `{ name, description, plugins }`——即插即用自包含插件列表，两池当前仅 persona 子行 `prefix`；specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1）。能力分配不经模板行校验——player/planner 的能力组装由 saolei-loop 编排代码结构性承载（player 分支只消费 saoleiTools，specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3）。
+- **裸包名解析子行**：preset persona 子行（`@deepseek-ai/dsh-persona`）与 saolei-loop 能力依赖子行（`@dominion/dsh-saolei`、`@dominion/dsh-saolei-memory`）均非本清单独立行，按裸包名经宿主闭包解析；相关包仍声明于本宿主 package.json 并随闭包交付（specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4 同型）。
 
 **移除**：`agent-presets` 行（及其 `default/includeUserRoot/roots` config）、`preset-templates/` 目录、`PRESET_TEMPLATES_ROOT` env；`preset-*` 声明行方案不采用（D4 终态结论）。
 
-**断言契约**：`projects/game/agent_v2/src/dsh.test.ts` 以迁移期 22 行精确断言（行 id 顺序、grpc-runtime 行名、registry 行 `default: ''`、`templates` 快照键与定义、persona 子行 `prefix`、templateRules）；Phase 6 删除 memory host 行后由 T019 收口为终态 21 行断言。fail-loud 门禁 = registry 行 config 恰为 `{ default: '' }` 且清单内**零** `@deepseek-ai/dsh-agent-preset` 行——roster 条目只能经 preset-authoring 物化进入，其 id 语法（`/^[a-z0-9][a-z0-9-]*$/`）拒绝空串，空 default 无匹配；保持"断言精确性"不放松（SC-002）。
+**断言契约**：`projects/game/agent_v2/src/dsh.test.ts` 以终态 21 行精确断言（行 id 与行名顺序、registry 行 `default: ''`、`templates` 快照键与 persona-only 定义、persona 子行 `prefix`、saolei-loop 行 `config.plugins` 扁平列表及内容）。fail-loud 门禁 = registry 行 config 恰为 `{ default: '' }` 且清单内**零** `@deepseek-ai/dsh-agent-preset` 行——roster 条目只能经 preset-authoring 物化进入，其 id 语法（`/^[a-z0-9][a-z0-9-]*$/`）拒绝空串，空 default 无匹配；保持"断言精确性"不放松（SC-002）。
 
 ## 3. demo 组合清单（`experimental/dsh/demo/agent/cordis.yml`）
 
@@ -51,11 +54,13 @@
 
 | 消费方 | 增（安装级） | 增（成行，同步进 npm_deps/data） | 删 |
 |---|---|---|---|
-| `projects/game/agent_v2` | settings、typert-protocol、util-values、brand、session-persistence、sandbox、sandbox-policy、ptc-runtime、user-approval | session-projection、agent-preset-registry | agent-presets、agent-preset |
+| `projects/game/agent_v2` | settings、typert-protocol、util-values、brand、session-persistence、sandbox、sandbox-policy、ptc-runtime、user-approval | session-projection、agent-preset-registry、grpc-runtime、saolei-memory（rows；workspace 包走 runtime_deps） | agent-presets、agent-preset、dsh-memory、dsh-memory-service |
 | `experimental/dsh/demo/agent` | 上行 + settings、timeout | session-projection、agent-preset-registry、llm-opencode-go（row；workspace 包走 runtime_deps） | agent-presets、agent-preset |
 | `third_party/dsh/core` | （11 包清单不变，版本升线） | — | — |
 | `common/js/dsh-plugins/preset-authoring` | — | （deps）agent-preset-registry | agent-presets |
 | 其余 plugins | 版本随 catalog 升线，依赖集合不变 | — | — |
+
+> agent_v2 的能力依赖声明面（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §5）：成行新增 `@dominion/dsh-grpc-runtime`（grpc-runtime 基建行）与 `@dominion/dsh-saolei-memory`（saolei-loop `config.plugins` 子插件，携带 target/protoPath config）；两者为 workspace 包——package.json `workspace:*`、BUILD 经 `runtime_pkg` 进 runtime_deps（不进 npm_deps）。`@dominion/dsh-saolei` 声明保留（同为 config.plugins 子插件）；`@dominion/dsh-memory`/`@dominion/dsh-memory-service` 声明移除——memory 能力归公共库 `@dominion/common-js-memory`（`common/js/memory/`，经 adapter 间接消费，宿主不直接声明）。
 
 > demo 的 LLM 行终态为 `llm-opencode-go`，不再声明 DeepSeek peer 面（`dsh-llm-deepseek`/`dsh-fs`/`dsh-credentials`/`dsh-attachment`/`dsh-anonymous-user-id`/`dsh-deepseek-llm-api-extensions`）；依据 `specs/070-dsh-upgrade/research.md` D7 终态结论（2026-09-28）。
 

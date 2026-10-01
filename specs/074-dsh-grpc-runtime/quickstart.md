@@ -32,8 +32,9 @@ bazel test //common/js/dsh-plugins/grpc-runtime/... \
 
 ```bash
 # memory-service 零残留（代码+文档）；旧 dsh-memory 插件包名清零（已退化迁址为 common-js-memory）
+# 检索范围 common/ 与 projects/（testplan 已含于 projects/，即 projects/game/testplan/）
 grep -rn "dsh-memory-service\|memory-service" --include="*.ts" --include="*.md" \
-  common/ projects/ testplan/ | grep -v "specs/"
+  common/ projects/ | grep -v "specs/"
 grep -rn "plannerMemory\|@dominion/dsh-memory'" common/ projects/ --include="*.ts" --include="*.md" --include="*.yml" | grep -v "specs/"
 # templateRules 零残留
 grep -rn "templateRules\|validateTemplateRows\|TemplateRowRules" common/ projects/ --include="*.ts" --include="*.yml" | grep -v "specs/"

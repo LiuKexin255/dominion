@@ -1,9 +1,8 @@
 /**
- * MemoryClient tests — migrated from the v1 agent's memory-client.test.ts
- * (spec 039 T014; removed with agent v1 in spec 059 US1). The DI seam is the
- * injected gRPC client, so every RPC test passes a `vi.fn()`-backed fake and
- * needs no module-level `vi.mock`. The connection policy (channel options,
- * target) lives in the gRPC runtime and is covered by its own tests
+ * MemoryClient tests: the DI seam is the injected gRPC client, so every RPC
+ * test passes a `vi.fn()`-backed fake and needs no module-level `vi.mock`.
+ * The connection policy (channel options, target) lives in the gRPC runtime
+ * and is covered by its own tests
  * (specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §3).
  */
 

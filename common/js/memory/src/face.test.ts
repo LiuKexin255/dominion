@@ -1,9 +1,8 @@
 /**
- * Memory face and capability-unit tests — the primitive layer that replaced
- * the host service face: scope binding at face creation (no agent-keyed
- * resolution), frozen snapshot prefetch (fail-loud rejection), the write/wiki
- * forwarding through the bound scope, and the atomic capability unit
- * (faces/tools/sections/ready produced together).
+ * Memory face and capability-unit tests: scope binding at face creation (no
+ * agent-keyed resolution), frozen snapshot prefetch (fail-loud rejection), the
+ * write/wiki forwarding through the bound scope, and the atomic capability
+ * unit (faces/tools/sections/ready produced together).
  *
  * Pattern (style/javascript.md Mock convention): the store/clients are
  * injected doubles (`vi.fn()`); no module interception.

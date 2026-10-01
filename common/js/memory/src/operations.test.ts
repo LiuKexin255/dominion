@@ -1,13 +1,12 @@
 /**
- * Memory operation-core tests — the hermes-style semantics migrated from the
- * v1 agent's `memory-mcp.test.ts` (spec 039 T015; removed with agent v1 in
- * spec 059 US1). Coverage: old_text substring matching (case sensitivity,
- * 0/multiple/all-identical hits, empty locator), deterministic memory_id
- * generation, and `applyMemoryCall` conversion (add dedupe + ALREADY_EXISTS
- * race, replace/remove location, single-vs-batch argument forms, two-phase
- * preflight/commit, commit-phase infrastructure failure), and the
- * `MEMORY_CONTENT_MAX_RUNES` content preflight on the single and batch write
- * paths (specs/069-wiki-template-web/contracts/memory-content-limit.md §3).
+ * Memory operation-core tests: coverage of old_text substring matching (case
+ * sensitivity, 0/multiple/all-identical hits, empty locator), deterministic
+ * memory_id generation, and `applyMemoryCall` conversion (add dedupe +
+ * ALREADY_EXISTS race, replace/remove location, single-vs-batch argument
+ * forms, two-phase preflight/commit, commit-phase infrastructure failure), and
+ * the `MEMORY_CONTENT_MAX_RUNES` content preflight on the single and batch
+ * write paths (specs/069-wiki-template-web/contracts/memory-content-limit.md
+ * §3).
  *
  * DI pattern (style/javascript.md §测试): the storage client is a
  * `vi.fn()`-backed double — no module-level `vi.mock`.
