@@ -1,20 +1,25 @@
 /**
- * saolei tools capability unit tests (specs/074-dsh-grpc-runtime/spec.md
- * FR-020; contracts/team-assembly.md §3.1/§6): `apply` exposes the static
- * unit through `ctx.provide("saoleiTools", ...)` — the three tool definitions
- * and the `saolei:guidance`/`saolei:game` sections — and registers NOTHING on
- * the composition scope (no `ctx.tools.register` / `ctx.systemPrompt.section`
- * side effect). The unit content is the frozen saolei contract
- * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1): tool
- * descriptions/schemas/outputs and the section name/order/text are asserted
- * verbatim.
+ * saolei plugin tests. The dual-face period has two provided faces:
+ *
+ * 1. The game foundation face (`ctx.provide("saolei", ...)`,
+ *    specs/075-saolei-game-foundation/contracts/saolei-foundation.md): the
+ *    pure `createGameRuntime` factory plus the frozen `saolei:game` section
+ *    spec. Pure provide — no global registration side effect.
+ * 2. The dual-face-period saoleiTools capability unit
+ *    (`ctx.provide("saoleiTools", ...)`, specs/074-dsh-grpc-runtime/spec.md
+ *    FR-020; contracts/team-assembly.md §3.1/§6): the three tool definitions
+ *    and the `saolei:guidance`/`saolei:game` sections, provided together and
+ *    registering NOTHING on the composition scope (no `ctx.tools.register` /
+ *    `ctx.systemPrompt.section` side effect). The unit content is the frozen
+ *    saolei contract: tool descriptions/schemas/outputs and the section
+ *    name/order/text are asserted verbatim.
  *
  * The behavior cases stay: dual-form `saolei_operate` validation with the
  * verbatim literals, the exec-time resolution of the agent-scoped
- * `saoleiGame` service through `exec.agent.ctx`, the ToolOutcome.isError →
+ * `saoleiGame` handle through `exec.agent.ctx`, the ToolOutcome.isError →
  * throw mapping, the ToolOutcome.concludesTurn → `exec.concludeTurn()`
  * mapping (specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md
- * §2), and the fail-loud paths (no `exec.agent`; service absent from the
+ * §2), and the fail-loud paths (no `exec.agent`; handle absent from the
  * caller's scope). Ownership boundary of the sections follows
  * specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §2.
  *
@@ -30,7 +35,13 @@ import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
 
-import { apply, inject, SAOLEI_TOOLS_SERVICE } from "./index.js";
+import {
+  apply,
+  inject,
+  SAOLEI_FOUNDATION_SERVICE,
+  SAOLEI_GAME_SECTION,
+  SAOLEI_TOOLS_SERVICE,
+} from "./index.js";
 import {
   AMBIGUOUS_ARGS_TEXT,
   INCOMPLETE_ARGS_TEXT,
@@ -38,8 +49,8 @@ import {
   SAOLEI_GAME_RULES,
   SAOLEI_GUIDANCE,
 } from "./index.js";
-import type { SaoleiToolsUnit } from "./index.js";
-import type { SaoleiGame } from "@dominion/dsh-saolei-loop";
+import type { SaoleiFoundation, SaoleiToolsUnit } from "./index.js";
+import type { SaoleiGame } from "./game/runtime.js";
 
 /** Structural caller-agent face the plugin consumes (id + ctx). */
 interface CallerAgent {
@@ -84,13 +95,14 @@ function stubRuntime(outcomes: Partial<Record<"init" | "operate" | "remain", unk
 
 interface Harness {
   readonly ctx: Context;
+  readonly foundation: SaoleiFoundation;
   readonly unit: SaoleiToolsUnit;
   readonly tools: Map<string, ToolDefinition>;
   readonly toolsRegister: ReturnType<typeof vi.fn>;
   readonly sectionRegister: ReturnType<typeof vi.fn>;
 }
 
-/** Run `apply` against a harness context and capture the provided unit. */
+/** Run `apply` against a harness context and capture both provided faces. */
 function makeHarness(): Harness {
   const ctx = new Context();
   // Real registration seams (vi.fn doubles): an accidental global registration
@@ -100,14 +112,43 @@ function makeHarness(): Harness {
   ctx.provide("tools", { register: toolsRegister });
   ctx.provide("systemPrompt", { section: sectionRegister });
   apply(ctx);
-  const unit = (ctx as unknown as Record<string, SaoleiToolsUnit>)[
-    SAOLEI_TOOLS_SERVICE
-  ];
+  const provided = ctx as unknown as Record<string, unknown>;
+  const foundation = provided[SAOLEI_FOUNDATION_SERVICE] as SaoleiFoundation;
+  const unit = provided[SAOLEI_TOOLS_SERVICE] as SaoleiToolsUnit;
   const tools = new Map(
     unit.tools.map((definition) => [definition.name, definition]),
   );
-  return { ctx, unit, tools, toolsRegister, sectionRegister };
+  return { ctx, foundation, unit, tools, toolsRegister, sectionRegister };
 }
+
+describe("saolei game foundation face", () => {
+  it("provides the foundation face with the factory and the frozen game section", () => {
+    const { foundation } = makeHarness();
+
+    expect(typeof foundation.createGameRuntime).toBe("function");
+    expect(foundation.gameSection).toEqual(SAOLEI_GAME_SECTION);
+    expect(foundation.gameSection.name).toBe("saolei:game");
+    expect(foundation.gameSection.order).toBe(50);
+    expect(foundation.gameSection.text).toBe(SAOLEI_GAME_RULES);
+  });
+
+  it("opens the game section with the gameplay title", () => {
+    const { foundation } = makeHarness();
+
+    expect(foundation.gameSection.text.split("\n")[0]).toBe(
+      "## 扫雷玩法与可用操作",
+    );
+  });
+
+  it("is a pure provide: the foundation face registers nothing globally", () => {
+    const { toolsRegister, sectionRegister } = makeHarness();
+
+    // The gameplay section is registered by the orchestration per member, not
+    // by this composition-level apply (contracts/saolei-foundation.md §5).
+    expect(toolsRegister).not.toHaveBeenCalled();
+    expect(sectionRegister).not.toHaveBeenCalled();
+  });
+});
 
 describe("saolei capability unit provision", () => {
   it("provides the unit and registers nothing on the composition scope", () => {

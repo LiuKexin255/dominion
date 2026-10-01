@@ -11,12 +11,14 @@
         }
     },
     "dependencies": {
-        "@dominion/dsh-saolei-loop": "workspace:*"
+        "@dominion/dsh-saolei-loop": "workspace:*",
+        "@dominion/game-saolei-board": "workspace:*"
     },
     "peerDependencies": {
         "@deepseek-ai/cordis": "catalog:",
         "@deepseek-ai/dsh-system-prompt": "catalog:",
-        "@deepseek-ai/dsh-tools": "catalog:"
+        "@deepseek-ai/dsh-tools": "catalog:",
+        "@dominion/dsh-desktop-bridge": "workspace:*"
     },
     "devDependencies": {
         "@types/node": "catalog:",

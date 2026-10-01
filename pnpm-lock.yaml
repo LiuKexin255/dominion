@@ -437,9 +437,15 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: 'catalog:'
         version: 0.2.0-rc.2(c6e351a6a6cfd1c2a664558bffcd410d)
+      '@dominion/dsh-desktop-bridge':
+        specifier: workspace:*
+        version: link:../desktop-bridge
       '@dominion/dsh-saolei-loop':
         specifier: workspace:*
         version: link:../saolei-loop
+      '@dominion/game-saolei-board':
+        specifier: workspace:*
+        version: link:../../../../projects/game/pkg/saolei-board
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1047,10 +1053,10 @@ importers:
         version: link:../../../common/js/resolver
       '@langchain/core':
         specifier: 'catalog:'
-        version: 1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.6.5))(ws@8.21.3)
+        version: 1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.4.3))(ws@8.21.3)
       '@langchain/openai':
         specifier: 'catalog:'
-        version: 1.5.5(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.6.5))(ws@8.21.3))(ws@8.21.3)
+        version: 1.5.5(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.4.3))(ws@8.21.3))(ws@8.21.3)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -5205,12 +5211,12 @@ snapshots:
       - openai
       - ws
 
-  '@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.6.5))(ws@8.21.3)':
+  '@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.4.3))(ws@8.21.3)':
     dependencies:
       '@cfworker/json-schema': 4.1.1
       '@standard-schema/spec': 1.1.0
       js-tiktoken: 1.0.21
-      langsmith: 0.8.7(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.6.5))(ws@8.21.3)
+      langsmith: 0.8.7(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.4.3))(ws@8.21.3)
       mustache: 4.2.0
       p-queue: 6.6.2
       zod: 4.4.3
@@ -5277,9 +5283,9 @@ snapshots:
       - '@smithy/signature-v4'
       - ws
 
-  '@langchain/openai@1.5.5(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.6.5))(ws@8.21.3))(ws@8.21.3)':
+  '@langchain/openai@1.5.5(@langchain/core@1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.4.3))(ws@8.21.3))(ws@8.21.3)':
     dependencies:
-      '@langchain/core': 1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.6.5))(ws@8.21.3)
+      '@langchain/core': 1.2.3(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.4.3))(ws@8.21.3)
       js-tiktoken: 1.0.21
       openai: 6.49.0(ws@8.21.3)(zod@4.4.3)
       zod: 4.4.3
@@ -6403,13 +6409,13 @@ snapshots:
       openai: 6.49.0(ws@8.21.3)(zod@3.25.76)
       ws: 8.21.3
 
-  langsmith@0.8.7(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.6.5))(ws@8.21.3):
+  langsmith@0.8.7(@opentelemetry/api@1.9.1)(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.49.0(ws@8.21.3)(zod@4.4.3))(ws@8.21.3):
     dependencies:
       p-queue: 6.6.2
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/sdk-trace-base': 2.7.1(@opentelemetry/api@1.9.1)
-      openai: 6.49.0(ws@8.21.3)(zod@4.6.5)
+      openai: 6.49.0(ws@8.21.3)(zod@4.4.3)
       ws: 8.21.3
 
   locate-character@3.0.0: {}
@@ -6871,12 +6877,6 @@ snapshots:
     optionalDependencies:
       ws: 8.21.3
       zod: 4.4.3
-
-  openai@6.49.0(ws@8.21.3)(zod@4.6.5):
-    optionalDependencies:
-      ws: 8.21.3
-      zod: 4.6.5
-    optional: true
 
   p-finally@1.0.0: {}
 

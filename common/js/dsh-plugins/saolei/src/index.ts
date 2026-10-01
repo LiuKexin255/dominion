@@ -1,26 +1,33 @@
 /**
- * cordis plugin entry for the saolei tools capability: the static unit
- * provider the saolei-loop composition mounts as a `config.plugins` sub-plugin
- * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1). `apply`
- * exposes the unit through `ctx.provide("saoleiTools", ...)` — the three
- * saolei_init/saolei_operate/saolei_remain tool definitions plus the
- * `saolei:guidance`/`saolei:game` prompt sections — and registers NOTHING on
- * the composition scope: a composition-level apply that called
- * `ctx.tools.register`/`ctx.systemPrompt.section` would leak the tools and
- * sections to every member, so the orchestration registers the unit into each
- * player member's own scope instead
- * (specs/074-dsh-grpc-runtime/spec.md FR-020; contracts/team-assembly.md §6).
+ * cordis plugin entry for the saolei game foundation
+ * (`@dominion/dsh-saolei`, contracts/saolei-foundation.md): the composition's
+ * top-level domain foundation row. `apply` provides the foundation service
+ * face `ctx.provide("saolei", { createGameRuntime, gameSection })` — the pure
+ * domain game-runtime factory (the orchestration constructs and owns the
+ * instance; specs/075-saolei-game-foundation/research.md D10) plus the
+ * `saolei:game` gameplay section the orchestration registers per member
+ * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1).
  *
- * The tools are stateless model-facing entry points — all game state and
- * execution live in the saolei-loop plugin's GameRuntime (FR-013), resolved
+ * DUAL-FACE PERIOD: alongside the foundation face this entry still provides
+ * the legacy `ctx.provide("saoleiTools", ...)` capability unit (the three
+ * saolei_init/saolei_operate/saolei_remain tools and the
+ * `saolei:guidance`/`saolei:game` sections) that the saolei-loop
+ * `config.plugins` mounts today. The tools belong to
+ * `@dominion/dsh-saolei-tools` and are removed from this package by the
+ * tool-plugin cutover (specs/075-saolei-game-foundation/tasks.md Phase 5);
+ * the foundation face and the game type exports below are this package's
+ * terminal face.
+ *
+ * The tools in this dual-face period are stateless model-facing entry points
+ * — all game state and execution live in the game runtime (FR-013), resolved
  * per call through the calling agent's scope. `saoleiGame` is an agent-scoped
- * service (registered on `agent.ctx` by createAgentGameRuntime when an agent
- * materializes; at unit-provider load time no agent exists), so it CANNOT be
- * statically injected — the tool exec bodies resolve it lazily via
- * `exec.agent.ctx` (dsh-tools `ToolExecution.agent` carries the calling
- * agent; research.md D7). `exec.agent` absent, or no `saoleiGame` in the
- * caller's scope (non-loop-driven call, or the service already unregistered
- * with the agent scope), fails loud — never a silent success. Contract:
+ * handle (registered on `agent.ctx` by the orchestration's player setup; at
+ * plugin load time no agent exists), so it CANNOT be statically injected —
+ * the tool exec bodies resolve it lazily via `exec.agent.ctx` (dsh-tools
+ * `ToolExecution.agent` carries the calling agent; research.md D7).
+ * `exec.agent` absent, or no `saoleiGame` in the caller's scope
+ * (non-loop-driven call, or the handle already unregistered with the agent
+ * scope), fails loud — never a silent success. Contract:
  * specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §3.
  */
 
@@ -29,12 +36,31 @@ import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { PromptSection } from "@deepseek-ai/dsh-system-prompt";
 import type { Context } from "@deepseek-ai/cordis";
 
-import type { OperateInput, SaoleiGame, ToolOutcome } from "@dominion/dsh-saolei-loop";
+import { createGameRuntime } from "./game/runtime.js";
+import type { OperateInput, SaoleiGame, ToolOutcome } from "./game/runtime.js";
 
 export const name = "saolei";
 
 /** Pure provider: the unit is exposed at plugin load, nothing is required. */
 export const inject: string[] = [];
+
+/** The provide name of the game foundation face (contracts/saolei-foundation.md §1). */
+export const SAOLEI_FOUNDATION_SERVICE = "saolei";
+
+/**
+ * The game foundation face: the game domain's service boundary for the
+ * orchestration layer (contracts/saolei-foundation.md §2). Only the two
+ * runtime values the orchestration consumes travel in the face; game types
+ * and pure functions (`gameStatsText`, the entity types) are library exports.
+ */
+export interface SaoleiFoundation {
+  /** Pure domain game-runtime factory — the orchestration constructs and
+   * owns the instance (research.md D10). */
+  readonly createGameRuntime: typeof createGameRuntime;
+  /** The gameplay section spec the orchestration registers for player and
+   * planner. */
+  readonly gameSection: PromptSection;
+}
 
 /** The provide name the saolei-loop orchestration reads the unit from. */
 export const SAOLEI_TOOLS_SERVICE = "saoleiTools";
@@ -43,12 +69,42 @@ export const SAOLEI_TOOLS_SERVICE = "saoleiTools";
  * The saolei static capability unit: the three tool definitions and the two
  * prompt sections, provided together and consumed together
  * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §6). `saoleiGame`
- * runtime instances are NOT part of this unit — the orchestration mounts them
- * separately in the player setup through `createAgentGameRuntime`.
+ * runtime instances are NOT part of this unit — the orchestration holds them
+ * per team and registers the handle separately in the player setup.
  */
 export interface SaoleiToolsUnit {
   readonly tools: readonly ToolDefinition[];
   readonly sections: readonly PromptSection[];
+}
+
+// ── game domain single export face (contracts/saolei-foundation.md §3) ──────
+// The pure factory, the terminal stats text and every game type are exported
+// from this package alone; the orchestration and the tool plugin consume them
+// here (spec M8). SAOLEI_GAME_RULES / SAOLEI_GAME_SECTION stay in this file.
+export { createGameRuntime };
+export { gameStatsText } from "./game/text.js";
+export type {
+  CellOperation,
+  GameEventRecord,
+  GameLogEntry,
+  GameRuntime,
+  GameRuntimeDeps,
+  GameStats,
+  OperateInput,
+  OperationType,
+  SaoleiGame,
+  ToolOutcome,
+} from "./game/runtime.js";
+
+declare module "@deepseek-ai/cordis" {
+  interface Context {
+    /** Composition-level game foundation face (the top-level saolei row
+     * provides it; resolvable from any agent-derived scope). */
+    saolei?: SaoleiFoundation;
+    /** The player member's agent-scoped game handle: the orchestration
+     * registers the runtime it holds on `agent.ctx` for tool resolution. */
+    saoleiGame?: SaoleiGame;
+  }
 }
 
 // ── v1 argument-combination rejection literals (verbatim, data-model.md
@@ -107,10 +163,10 @@ function normalizeOperateArgs(args: OperateToolArgs): OperateInput | { rejection
  * into a model-visible error result, never a fabricated success.
  *
  * Resolution reads the `saoleiGame` context PROPERTY (the proxy's
- * fiber-walking lookup), not `ctx.get` — the builder registers the runtime
- * under a per-agent isolation label (`agent.ctx.isolate("saoleiGame")`,
- * createAgentGameRuntime), which the property walk resolves from the shared
- * agent fiber while `get`'s label-keyed store lookup would not.
+ * fiber-walking lookup), not `ctx.get` — the orchestration registers the
+ * runtime it holds under a per-agent isolation label
+ * (`agent.ctx.isolate("saoleiGame")`), which the property walk resolves from
+ * the shared agent fiber while `get`'s label-keyed store lookup would not.
  */
 function resolveRuntime(exec: ToolRunContext): SaoleiGame {
   if (exec.agent === undefined) {
@@ -171,13 +227,21 @@ function resultOutput() {
 }
 
 /**
- * Apply the plugin: expose the static capability unit through
- * `ctx.provide("saoleiTools", ...)`. The unit is deliberately NOT registered
- * on the composition scope — the saolei-loop orchestration registers it into
- * each player member's scope (specs/074-dsh-grpc-runtime/contracts/
- * team-assembly.md §3.1/§6).
+ * Apply the plugin: provide the game foundation face through
+ * `ctx.provide("saolei", ...)` (the game-runtime factory plus the
+ * `saolei:game` section) and — during the dual-face period — still expose the
+ * static saoleiTools capability unit through `ctx.provide("saoleiTools", ...)`.
+ * Neither face is registered on the composition scope: the saolei-loop
+ * orchestration registers the unit into each player member's scope
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.1/§6), and
+ * registers the gameplay section per member itself
+ * (contracts/team-loop-assembly.md §3).
  */
 export function apply(ctx: Context): void {
+  ctx.provide(SAOLEI_FOUNDATION_SERVICE, {
+    createGameRuntime,
+    gameSection: SAOLEI_GAME_SECTION,
+  });
   ctx.provide(SAOLEI_TOOLS_SERVICE, buildSaoleiToolsUnit());
 }
 
@@ -418,3 +482,17 @@ export const SAOLEI_GAME_RULES = `## 扫雷玩法与可用操作
 - 开局/重开一局：\`saolei_init\`（再次调用即重开并重新播种）。
 - 格子操作：\`saolei_operate\` 支持 click（揭示）、flag（标旗/取消标旗）、chord（同击），可单发或按序批量执行。
 - 只读查询：\`saolei_remain\` 返回每个已揭示数字格周围的剩余未标记雷数（= 数字 − 相邻已标旗数，可为 0 或负），不是旗子数量。`;
+
+/**
+ * The `saolei:game` section spec carried by the foundation face: name, order
+ * and text are the frozen saolei contract values
+ * (specs/075-saolei-game-foundation/contracts/saolei-foundation.md §2). The
+ * orchestration registers it for both player and planner
+ * (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §3); the
+ * text constant above stays in this file unchanged.
+ */
+export const SAOLEI_GAME_SECTION: PromptSection = {
+  name: "saolei:game",
+  order: 50,
+  text: SAOLEI_GAME_RULES,
+};

@@ -30,7 +30,9 @@ ts_project(
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-saolei-loop",
+        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],
 )
@@ -69,6 +71,7 @@ js_runtime_library(
     visibility = ["//visibility:public"],
     runtime_deps = [
         "//common/js/dsh-plugins/saolei-loop:runtime_pkg",
+        "//projects/game/pkg/saolei-board:runtime_pkg",
     ],
 )
 
@@ -85,7 +88,9 @@ vitest_test(
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-saolei-loop",
+        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],
 )
