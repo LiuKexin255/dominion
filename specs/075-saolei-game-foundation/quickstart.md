@@ -39,15 +39,23 @@ grep -rn "dsh-saolei-loop\|dsh-saolei-tools\|dsh-saolei-memory" \
 # （agent_v2 对 saolei-loop 的非游戏类型 import——TeamOrchestrator 等——是正常依赖，故按游戏符号过滤）
 grep -rnE "GameEventRecord|OperateInput|ToolOutcome|SaoleiGame|GameRuntimeDeps|gameStatsText|createAgentGameRuntime" \
   common/js/dsh-plugins/saolei-tools/ projects/game/agent_v2/src/ --include="*.ts" | grep "dsh-saolei-loop"
-grep -rn "gameStatsText\|createAgentGameRuntime" \
-  common/js/dsh-plugins/saolei-loop/src/ --include="*.ts" | grep "import"
+# saolei-loop 内 game 符号本地 import 清零（T019 ②）：gameStatsText/game 工厂只能经 @dominion/dsh-saolei 导入
+# （本地 ./game/ 导入即命中；旧符号 createAgentGameRuntime 的任何代码引用由下组全仓清零兜底）
+grep -rn "gameStatsText\|createGameRuntime" \
+  common/js/dsh-plugins/saolei-loop/src/ --include="*.ts" | grep 'from "\./game/'
+# 旧符号代码引用清零（T019 ④）：import/类型位置/标识符使用清零——冻结文案例外：saolei-tools resolveRuntime
+# 的 fail-loud 文案逐字含 via createAgentGameRuntime 字样（T007 逐字迁入的运行时行为值、非代码引用），按行排除；
+# 机械判据与判定说明见 contracts/cutover-contracts.md §5
+grep -rnE "createAgentGameRuntime|GameRuntimeService|MountPlayerRuntime" \
+  common/ projects/ --include="*.ts" \
+  | grep -vF "(the materialization setup registers it on agent.ctx via createAgentGameRuntime)"
 # 目录终态
 ls common/js/dsh-plugins/saolei-loop/src/ | grep game   # 应无输出
 ls common/js/dsh-plugins/saolei-tools/src/              # 应存在
 ls common/js/dsh-plugins/saolei/src/game/               # 应存在
 ```
 
-**预期结果**：检索零命中（游戏类型消费经 `@dominion/dsh-saolei`）；目录形态符合终态。
+**预期结果**：检索零命中（游戏类型消费经 `@dominion/dsh-saolei`、saolei-loop 无本地 game import；旧符号代码引用清零——冻结文案行按 `grep -vF` 豁免，判定说明见 [contracts/cutover-contracts.md](contracts/cutover-contracts.md) §5）；目录形态符合终态。
 
 组合清单终态核对（对照 [contracts/cutover-contracts.md](contracts/cutover-contracts.md) §2）：含顶级 `saolei` 行（无 config）；saolei-loop `config.plugins` = `[@dominion/dsh-saolei-tools, @dominion/dsh-saolei-memory(+连接 config)]`；清单 22 行；`templates.{}.plugins` 仍为 persona-only。
 

@@ -28,7 +28,7 @@
 
 **Constraints**: 全部移动等价迁移（工具 schema/文案、guidance/玩法 section 名/order/文本、游戏运行时行为契约零变化）；迁移每步 `bazel build //...` + `bazel test //...` 可通过；切换批次原子合入（双重注册风险）；依赖方向单向（基础不依赖上层）。
 
-**Scale/Scope**: game/ 迁移约 1,000 行 + 测试 1,161 行（含 `GameRuntimeService` Service 形态移除与工厂签名改造）；dsh-saolei 工具部分迁出约 300 行（index.ts 420 行主体）；saolei-loop 消费与所有权切换（orchestrator/index/announcer/session.ts 透传清理 + 测试）；cordis.yml 22 行终态；契约修订八份（060/074/070/051/064/062/065 + 059 路径引用终态化）。
+**Scale/Scope**: game/ 迁移约 1,000 行 + 测试 1,161 行（含 `GameRuntimeService` Service 形态移除与工厂签名改造）；dsh-saolei 工具部分迁出约 300 行（index.ts 420 行主体）；saolei-loop 消费与所有权切换（orchestrator/index/session.ts 透传清理 + 测试；announcer 零改动）；cordis.yml 22 行终态；契约修订八份（060/074/070/051/064/062/065 + 059 路径引用终态化）。
 
 ## Constitution Check
 
@@ -86,8 +86,8 @@ common/js/dsh-plugins/
 └── saolei-loop/           # 消费与所有权切换：编排层（inject "saolei"，删 src/game/，持有游戏实例字段）
     └── src/
         ├── index.ts       # inject "saolei"（装载期 fail-loud）+ apply 双能力面检查（saoleiTools/memoryMount）；移除 game/ 再导出、MountPlayerRuntime 类型与 saoleiGame declare module
-        ├── orchestrator.ts # 基础面消费（工厂/section/游戏实例持有）、player/planner setup 注册、终局直读自身字段
-        ├── announcer.ts   # gameStatsText 改从 @dominion/dsh-saolei 导入
+        ├── orchestrator.ts # 基础面消费（工厂/section/游戏实例持有）、player/planner setup 注册、终局直读自身字段、gameStatsText import 改从 @dominion/dsh-saolei（announceStats 播报路径）
+        ├── announcer.ts   # 零改动（仅 announce(text) 播报出口；gameStatsText 消费在 orchestrator）
         └── orchestrator.test.ts / index.test.ts  # harness + 断言更新
 projects/game/agent_v2/
 ├── cordis.yml             # +顶级 saolei 行；saolei-loop config.plugins → [dsh-saolei-tools, dsh-saolei-memory]（22 行）

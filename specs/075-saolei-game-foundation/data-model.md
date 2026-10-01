@@ -16,10 +16,10 @@
 | `OperateInput` / `CellOperation` / `OperationType` | 操作类型 | 同上 | 同上 | dsh-saolei-tools |
 | `ToolOutcome` | 工具结果契约（isError/text/concludesTurn） | 同上 | 同上 | dsh-saolei-tools（executeOutcome） |
 | `GameEventRecord` | 终局记录（status/stats/endedAt） | 同上 | 同上 | 编排（review 触发/播报——**直读自身持有实例**）、testplan 语境 |
-| `GameLogEntry` / `GameStats` | 游戏日志条目 / 终局统计 | 同上 | 同上 | dsh-saolei 内部、announcer |
-| `gameStatsText` | 纯函数（GameEventRecord → 播报文案） | 同上 | 同上 | saolei-loop announcer（import 消费） |
+| `GameLogEntry` / `GameStats` | 游戏日志条目 / 终局统计 | 同上 | 同上 | dsh-saolei 内部（runtime 与 `gameStatsText` 渲染） |
+| `gameStatsText` | 纯函数（GameEventRecord → 播报文案） | 同上 | 同上 | saolei-loop orchestrator（import 消费——`announceStats()` 播报路径；announcer 仅 `announce(text)`） |
 | `board.ts`（`SaoleiBoardApi`/`validateMove`/`gameStatus`/`computeGameStats` 等） | 棋盘 API（依赖 `@dominion/game-saolei-board`） | saolei-loop `src/game/board.ts` | dsh-saolei `src/game/board.ts` | dsh-saolei 内部（runtime） |
-| `geometry.ts` / `text.ts` | 窗口几何 / 结果文本渲染 | 同上 | 同上 | dsh-saolei 内部（runtime）+ announcer（gameStatsText） |
+| `geometry.ts` / `text.ts` | 窗口几何 / 结果文本渲染 | 同上 | 同上 | dsh-saolei 内部（runtime）+ orchestrator（`gameStatsText` 经包导出） |
 
 **生命周期变化（M12）**：实例由 TeamOrchestrator 持有——materialize 构造、dispose/物化回滚丢弃、refresh 重建（与"随 player agent scope"的现状行为等价：游戏局从不跨 refresh 存留）；player agent ctx 上仅注册**句柄**（`isolate("saoleiGame").provide("saoleiGame", runtime)`，memory face 同型，M13）。**消失的 seam**：`MemberRuntime.game` 字段、`MountPlayerRuntime` 类型与 deps、session.ts 透传（M14）。**迁移后 saolei-loop 不再导出上述任何实体（单一出口，M8）**。
 
@@ -91,7 +91,7 @@ flowchart LR
         direction TB
         O["orchestrator 状态机<br/>（行为零变化）"]
         GH["game: GameRuntime 实例<br/>（编排持有，生命周期 = 物化周期，M12）"]
-        A["announcer（gameStatsText 改 import）"]
+        A["announcer（播报出口 announce(text)；gameStatsText import 在 orchestrator）"]
         I["index.ts（inject 'saolei' + 双面检查）"]
     end
     subgraph saolei["dsh-saolei（游戏基础）"]

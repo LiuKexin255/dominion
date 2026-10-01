@@ -33,7 +33,7 @@ declare module "@deepseek-ai/cordis" {
 }
 ```
 
-类型与纯函数（`SaoleiGame`/`OperateInput`/`ToolOutcome`/`GameEventRecord` 等类型、`gameStatsText`）经包导出面直接 import（announcer/编排类型语境/工具包）；面只携带编排运行时消费的两个**值**（工厂 + section spec）——面 = 服务边界（可 stub/替换），库导出 = 编译期类型与纯函数。
+类型与纯函数（`SaoleiGame`/`OperateInput`/`ToolOutcome`/`GameEventRecord` 等类型、`gameStatsText`）经包导出面直接 import（编排——`gameStatsText`（`announceStats()` 播报路径）与类型语境；工具包）；面只携带编排运行时消费的两个**值**（工厂 + section spec）——面 = 服务边界（可 stub/替换），库导出 = 编译期类型与纯函数。
 
 **Rationale**: 面名 `saolei` 与插件名/包名一致（grpc 先例：插件 `grpc-runtime` → 面 `ctx.grpc` 用领域短名；desktopBridge 同型）；`declare module` 属性增强使消费方经 `ctx.saolei` 静态类型访问（cordis Context 属性代理到 provide 面——现状 `ctx.desktopBridge`/`ctx.saoleiGame` 均此机制）。`gameSection` 入面而非仅常量导出：编排消费的"玩法注册"是一个服务动作的输入，保持基础面 = 游戏领域对编排的完整服务边界（内聚），测试可对面断言全部内容。
 
@@ -73,7 +73,7 @@ planner: composed.setup(persona)
 
 - **dsh-saolei**（原地改造）：`src/index.ts`（插件入口 name=`"saolei"`、`inject: []`、apply provide 面、`SAOLEI_GAME_RULES` 常量与 `gameSection` spec、`SaoleiFoundation` 类型、declare module 增强）+ `src/game/{runtime,board,geometry,text}.ts`（文件级随迁，保持子目录；**runtime.ts 迁移内含改造**：`GameRuntimeService` 的 cordis `Service` 继承移除——类改名为 `GameRuntime` 的普通实现类（构造器仅收 `GameRuntimeDeps`）；`createAgentGameRuntime(agent, bridge, sessionName)` 改造为 `createGameRuntime(sessionName, desktopBridge): GameRuntime` 纯领域工厂（无 agent、无 scope 注册副作用），desktop-bridge 预绑定 dispatch 的组装逻辑等价保留）。导出面：既有 saolei-loop 游戏导出**全部移交**——`createGameRuntime`、`GameRuntime`（原 GameRuntimeService）、类型（`SaoleiGame`/`GameRuntime` 接口/`GameEventRecord`/`GameLogEntry`/`GameStats`/`OperationType`/`OperateInput`/`CellOperation`/`ToolOutcome`/`GameRuntimeDeps`）、`gameStatsText`。依赖：+`@dominion/game-saolei-board`（workspace）、+peer `@dominion/dsh-desktop-bridge`（随 game/runtime.ts 迁移；`@deepseek-ai/dsh-agent` 迁移后无 `Agent` 引用，**不声明**）；**移除** `@dominion/dsh-saolei-loop` 依赖（P3，工具迁走后无剩余引用）。
 - **dsh-saolei-tools**（新包 `common/js/dsh-plugins/saolei-tools/`，包契约对齐 048 esm-package-conventions）：`src/index.ts`（name=`"saolei-tools"`、`inject: []`、apply `ctx.provide(SAOLEI_TOOLS_SERVICE, ...)`——074 既有面名 `saoleiTools` 与 `SaoleiToolsUnit` 类型随迁；三工具 + `normalizeOperateArgs` + v1 拒绝字面量 + `resultOutput` + `SAOLEI_GUIDANCE`）。依赖：`@dominion/dsh-saolei`（workspace，类型与运行时解析的类型面）+ peer cordis/dsh-tools/dsh-system-prompt。
-- **saolei-loop**：`src/game/` 删除；index.ts 移除全部 game 再导出与 `MountPlayerRuntime` 类型（**单一出口原则**：游戏类型只从 dsh-saolei 导出，宪章 VII 终态——无兼容期双出口）；orchestrator.ts 增编排持有字段 `private game: GameRuntime | null`（materialize 构造/回滚与 dispose 丢弃）、`nextStep` 终局判定改 `this.game?.peekGameEvent()`、删除 `MemberRuntime.game` 与 `MountPlayerRuntime` seam/默认实现（desktopBridge 获取移入实例构造处）；announcer.ts 的 `gameStatsText` 改 `from "@dominion/dsh-saolei"`。依赖：+`@dominion/dsh-saolei`（workspace）。
+- **saolei-loop**：`src/game/` 删除；index.ts 移除全部 game 再导出与 `MountPlayerRuntime` 类型（**单一出口原则**：游戏类型只从 dsh-saolei 导出，宪章 VII 终态——无兼容期双出口）；orchestrator.ts 增编排持有字段 `private game: GameRuntime | null`（materialize 构造/回滚与 dispose 丢弃）、`nextStep` 终局判定改 `this.game?.peekGameEvent()`、删除 `MemberRuntime.game` 与 `MountPlayerRuntime` seam/默认实现（desktopBridge 获取移入实例构造处）；orchestrator.ts 的 `gameStatsText` import（:97 唯一 import 点、`announceStats()` 消费）改 `from "@dominion/dsh-saolei"`——announcer.ts 仅提供 `announce(text)`，播报文本由编排渲染后传入。依赖：+`@dominion/dsh-saolei`（workspace）。
 - **宿主 session.ts**：删除 `mountPlayerRuntime` deps 透传与 `MountPlayerRuntime` 类型导入（编排类型导入面收缩；其余零改动——已核实 session.ts 不直接消费任何游戏类型）。
 
 **Rationale**: `game/` 子目录保持 = 文件级迁移最小 diff（074 T007 领域语义文件级迁入先例）；面名/单元类型名沿用（074 契约连续性，仅单元 sections 收窄）；宿主 session.ts 仅透传 `mountPlayerRuntime` deps（已核实 `session.ts:48-56` 无直接游戏类型消费）——seam 删除后宿主改动收敛为透传清理。
@@ -88,7 +88,7 @@ planner: composed.setup(persona)
 |---|---|---|
 | **P1 基础双面期** | dsh-saolei 增量改造：`game/` 副本迁入（含形态改造：Service 继承移除 → `GameRuntime` 普通类、`createAgentGameRuntime` → `createGameRuntime(sessionName, desktopBridge)` 纯领域工厂——D10；saolei-loop 本地版不动，两份并存）+ 游戏类型/值导出（单一出口就绪）+ 基础面（`ctx.provide("saolei")`：createGameRuntime + gameSection）+ `SAOLEI_GAME_RULES`/`gameSection` + game 测试随迁（构造形态适配）+ 依赖增补（game-saolei-board/desktop-bridge）——**保留旧 saoleiTools provide（双面兼容）**；saolei-loop/cordis.yml 不动 | build + dsh-saolei 单测（game 迁移等价 + 面断言）+ 全仓测试 |
 | **P2 工具包并行** | 新建 `dsh-saolei-tools`（工具/校验/guidance 自 dsh-saolei 复制改造 + 单测迁移改写；类型从 `@dominion/dsh-saolei` 导入——P1 已就绪）——无消费方，组合行为零变化 | build + 新包单测 |
-| **P3 原子切换** ⚠️ 单一合入单元 | ① saolei-loop：`inject: ["saolei"]`、编排持有游戏实例字段（materialize 构造/回滚与 dispose 丢弃）、基础面消费（工厂/section）、player/planner setup 注册 saolei:game、player 句柄注册、终局直读自身字段（删 `MemberRuntime.game`/`MountPlayerRuntime` seam）、announcer import 切换、**删 `src/game/`**、类型 import 切换、apply 双能力面检查保留；② dsh-saolei：移除 saoleiTools 双面与工具残留、移除 dsh-saolei-loop 依赖；③ session.ts 透传清理；④ cordis.yml：+顶级 saolei 行、config.plugins → [dsh-saolei-tools, dsh-saolei-memory]（22 行）；⑤ agent_v2 package.json/BUILD +dsh-saolei-tools；⑥ dsh.test.ts 断言终态化（与 070 契约 §2 锁步修订，074 T005 先例）；⑦ testplan 三显式断言；⑧ 大型测试四 suite 执行验收 | build + 全量单测 + **四 suite 全绿**（宪章 VI） |
+| **P3 原子切换** ⚠️ 单一合入单元 | ① saolei-loop：`inject: ["saolei"]`、编排持有游戏实例字段（materialize 构造/回滚与 dispose 丢弃）、基础面消费（工厂/section）、player/planner setup 注册 saolei:game、player 句柄注册、终局直读自身字段（删 `MemberRuntime.game`/`MountPlayerRuntime` seam）、gameStatsText import 切换（orchestrator `announceStats()`）、**删 `src/game/`**、类型 import 切换、apply 双能力面检查保留；② dsh-saolei：移除 saoleiTools 双面与工具残留、移除 dsh-saolei-loop 依赖；③ session.ts 透传清理；④ cordis.yml：+顶级 saolei 行、config.plugins → [dsh-saolei-tools, dsh-saolei-memory]（22 行）；⑤ agent_v2 package.json/BUILD +dsh-saolei-tools；⑥ dsh.test.ts 断言终态化（与 070 契约 §2 锁步修订，074 T005 先例）；⑦ testplan 三显式断言；⑧ 大型测试四 suite 执行验收 | build + 全量单测 + **四 suite 全绿**（宪章 VI） |
 | **P4 终态文档** | 契约修订八份（D7 清单）+ README/注释终态化 + 引用清零复查（含 `@dominion/dsh-saolei-loop` 游戏导出引用清零、依赖方向静态检查） | review + 静态检索零命中 |
 
 **原子性依据（P3 不可拆分）**: dsh-saolei 移除 saoleiTools 面 ↔ saolei-loop 必须已改读 tools 包（否则 apply fail-loud，组合不可用）；saolei-loop 删 `src/game/` ↔ 必须已消费基础面；config.plugins 换 tools 行 ↔ tools 包必须就绪且 dsh-saolei 移出列表（同列表两处 provide "saoleiTools" = 双挂载冲突）。P2 双面期使 dsh-saolei 的改造（大头：game/ 迁移）先行独立 review，P3 收敛为纯切换逻辑。
@@ -122,7 +122,7 @@ planner: composed.setup(persona)
 | `specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` | §2/§3 包边界终态化：dsh-saolei = 游戏基础（面导出）、dsh-saolei-tools = 工具插件（074 后该契约 §3"全局注册"表述已过时未修，本批一并终态化）；游戏行为条款零改动 |
 | `specs/064-memory-split-fold-remain/contracts/saolei-plugins.md` | 工具/玩法条款的包归属表述改 dsh-saolei-tools / dsh-saolei（remain 语义与文案条款零改动） |
 | `specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md` | `concludesTurn` 工具侧实现归属引用路径（dsh-saolei-tools）；语义条款零改动 |
-| `specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md` | `gameStatsText` 归属表述（saolei-loop 内 → @dominion/dsh-saolei 导出，announcer 消费）；播报协议条款零改动 |
+| `specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md` | `gameStatsText` 归属表述（saolei-loop 内 → @dominion/dsh-saolei 导出，编排 `announceStats()` 消费——announcer 播报）；播报协议条款零改动 |
 | `specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` | `createAgentGameRuntime`（→ `createGameRuntime`）等 game 路径引用终态化（编排行为条款零改动） |
 
 **Rationale**: 引用溯源（宪章 I）要求契约指向真实归属；行为条款（工具/玩法/播报/编排语义）逐字保留——本特性只改归属与通路表述。

@@ -21,7 +21,7 @@ export const inject = ["saolei"];   // 游戏基础面（顶级 saolei 行提供
 - **句柄注册（M13）**：player setup 将编排持有的实例注册进 player agent ctx——`agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)`（memory face 同型，074 registerMemory 模式）；工具 execute 的 `exec.agent.ctx.saoleiGame` 属性解析与 fail-loud 文案**零变化**。
 - **终局读取（M14）**：`nextStep` 的 gameEnded 判定直读 `this.game?.peekGameEvent()`（同一实例、同一读取时点——player turn settle 后）；`MemberRuntime.game` 字段与 `MountPlayerRuntime` seam（orchestrator deps + 默认实现 + session.ts 透传）删除——编排测试的运行时注入改经基础面 stub（`ctx.provide("saolei", { createGameRuntime: fake })`）。
 - **类型**：`GameRuntime`/`GameEventRecord` 等自 `@dominion/dsh-saolei` 导入（saolei-loop 已编译依赖 dsh-saolei——gameStatsText import——直接 import 即可，无需结构重复声明）。
-- **announcer**：`gameStatsText` 自 `@dominion/dsh-saolei` 导入（播报协议零变化，specs/065 contracts/game-stats-broadcast.md）。
+- **播报路径（orchestrator `announceStats()`）**：`gameStatsText` import（orchestrator.ts 唯一 import 点）自 `"./game/text.js"` 改 `@dominion/dsh-saolei`；announcer 仅提供 `announce(text)`、播报文本由编排渲染后传入（播报协议零变化，specs/065 contracts/game-stats-broadcast.md）。
 
 ## 3. 成员 setup 注册序（终态）
 

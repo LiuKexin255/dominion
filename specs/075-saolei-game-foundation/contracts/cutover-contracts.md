@@ -63,8 +63,16 @@ grep -rn "dsh-saolei-loop\|dsh-saolei-tools\|dsh-saolei-memory" common/js/dsh-pl
 # 旧导出路径引用清零（SC-004）：saolei-loop 游戏导出消费清零
 grep -rn "createAgentGameRuntime\|gameStatsText\|GameEventRecord\|ToolOutcome\|OperateInput" \
   common/js/ projects/game/ --include="*.ts" | grep "dsh-saolei-loop"
+# 旧符号清零（SC-004，T019 ④）：迁移中消失的符号在代码引用（import/类型位置/标识符使用）中清零
+# 冻结文案豁免（按行排除，依据见下方判定说明）：saolei-tools resolveRuntime 的 fail-loud 文案
+# 逐字含 "(the materialization setup registers it on agent.ctx via createAgentGameRuntime)"
+grep -rnE "createAgentGameRuntime|GameRuntimeService|MountPlayerRuntime" \
+  common/ projects/ --include="*.ts" \
+  | grep -vF "(the materialization setup registers it on agent.ctx via createAgentGameRuntime)"
 # 目录终态（SC-004）：旧实现消失
 ls common/js/dsh-plugins/saolei-loop/src/game/   # 应不存在
 ```
 
-预期：三组检索零命中（specs/ 内本特性文档除外）；`common/js/dsh-plugins/saolei-tools/` 与 `common/js/dsh-plugins/saolei/src/game/` 存在。
+预期：四组检索零命中（specs/ 内本特性文档除外）；`common/js/dsh-plugins/saolei-tools/` 与 `common/js/dsh-plugins/saolei/src/game/` 存在。
+
+**冻结文案例外判定（T019 ④，2026-10-01 裁定）**：`@dominion/dsh-saolei-tools` `resolveRuntime` 的"无 saoleiGame 服务"fail-loud 文案（`common/js/dsh-plugins/saolei-tools/src/index.ts:127`）逐字含 `via createAgentGameRuntime` 字样——该文案是 T007 自旧 dsh-saolei saoleiTools 面**逐字不变迁入的冻结运行时行为值**（模型可见错误输出，Phase 4 已验收合入），其中符号名属字符串字面量引述、不构成 import/类型/标识符使用，故豁免于"代码引用清零"，机械判据即上述 `grep -vF` 行排除（该字样在 common/ projects/ 的 *.ts 中终态仅此一行——旧 dsh-saolei 双面副本 `saolei/src/index.ts:180` 随 T012 删除）。保留不改的依据：① 改写即重开 T007 已 review 的等价迁移冻结，并使 Phase 5 原子批次（T009–T016，不含 saolei-tools src 编辑）扩面；② `specs/062-team-game-end-handoff/contracts/saolei-turn-conclude.md` §5 冻结的是该 fail-loud 的**边界行为**（planner 误调 → 模型可见错误、不收束），文案保留即零影响（064 §2 三拒绝文本冻结对象是 AMBIGUOUS/MISSING/INCOMPLETE 文案，与本文案无关）；③ 宪章 VII 的清零对象是死引用与过时表述（注释/契约/README 等交付物），冻结诊断文案内的符号名引述不在其列。若未来需改写该括注（终态注册路径已改编排 isolate 句柄注册），属模型可见行为面变更，须重开 T007 冻结与 062 §5 评审，不随本特性批次。另：第二组命令以 `| grep "dsh-saolei-loop"` 收窄匹配行，天然不命中该冻结文案行，无需豁免。
