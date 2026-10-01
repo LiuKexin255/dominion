@@ -31,16 +31,18 @@ section 名与 order 不变 → system prompt 组装输出零变化。
 createMemoryStore(memoryClient: MemoryServiceCalls, wikiClient: WikiServiceCalls): MemoryStore;
 createMemoryFace(store: MemoryStore, scope: MemoryScope): MemoryFace;
 renderMemorySnapshot(entries: MemoryEntry[]): string;   // 10 条、update_time 降序、冻结语义（specs/071 FR-005）
-memorySnapshotSection(text: string): PromptSection;
+memorySnapshotSection(text: string | (() => string)): PromptSection;   // text：静态文本或零参闭包（§1 的 () => face.snapshotText()）
 ```
 
-`PromptSection`（`name` / `order` / `text`，见 `@deepseek-ai/dsh-system-prompt` — `common/js/dsh-plugins/memory/node_modules/@deepseek-ai/dsh-system-prompt/lib/types/index.d.ts:47`）为 system prompt section 的注册规格类型；库产出规格（type-only 依赖），由编排经 `agentCtx.systemPrompt.section(...)` 注册。库据此声明 `@deepseek-ai/dsh-system-prompt`（type-only，peerDependency）。
+`PromptSection`（`name` / `order` / `text`，见 `@deepseek-ai/dsh-system-prompt` — `common/js/dsh-plugins/memory/node_modules/@deepseek-ai/dsh-system-prompt/lib/types/index.d.ts:47`）为 system prompt section 的注册规格类型；其 `text` 为 `string | ((context: AssembleContext) => string)`（同文件 `:60`），静态文本与 provider 闭包均为合法取值——零参闭包（如 §1 的 `() => face.snapshotText()`）按少参可赋值多参签名的结构兼容规则成立。库产出规格（type-only 依赖），由编排经 `agentCtx.systemPrompt.section(...)` 注册。库据此声明 `@deepseek-ai/dsh-system-prompt`（type-only，peerDependency）。
 
 `MemoryFace`：`prefetch()` / `applyCall(args)` / `wikiSearch(query)` / `wikiGet(titles)` / `wikiWrite(input)` / `snapshotText()`。face 创建时绑定 scope（取代现状 `PlannerMemoryService` 的按 agent 解析 scope Maps——`memory-service/src/service.ts:132-158`）。
 
 ## 3. 结构化调用面类型
 
-`MemoryServiceCalls` / `WikiServiceCalls`：库内声明的 8 个 RPC 方法结构类型（复用既有手写消息类型）。消费方以 `ctx.grpc.client<MemoryServiceCalls>(...)` 构造后传入；TS 结构兼容在消费方调用点编译期校验；生成接口（agent_v2_types）为可选的兼容性校验参照。库 MUST NOT import projects/game 生成代码或 saolei-loop。
+`MemoryServiceCalls` / `WikiServiceCalls`：库内声明的 10 个 RPC 方法（memory 4 + wiki 6）结构类型（复用既有手写消息类型）。消费方以 `ctx.grpc.client<MemoryServiceCalls>(...)` 构造后传入；TS 结构兼容在消费方调用点编译期校验；生成接口（agent_v2_types）为可选的兼容性校验参照。库 MUST NOT import projects/game 生成代码或 saolei-loop。
+
+client 适配器运行期所需的调用局部 unary 策略（`waitForReady` + 缺省 10s deadline + pre-call 通道探测 + 失败后 channel 状态日志）由库内私有自持——与基建面 unary 策略（[grpc-runtime.md](grpc-runtime.md) §2 O3）同源的等价迁移副本。库的组装 seam 只收注入 client（无 ctx 访问），且纯库 MUST NOT 依赖插件包（`@dominion/dsh-grpc-runtime` 为 cordis 插件形态），适配器无法消费 `ctx.grpc.callUnary`，故两处各持一份是依赖方向的必然，非待收敛的重复。
 
 ## 4. 领域语义（等价迁入，契约不变）
 

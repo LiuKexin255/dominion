@@ -39,7 +39,7 @@
 | `MemoryStore` | memory 四 RPC 域语义 + wiki 三工具域语义（页游走、batch 两阶段、校验、分页——**等价迁入**） | 无状态（纯 client 适配） |
 | `MemoryFace` | `prefetch()` / `applyCall` / `wikiSearch` / `wikiGet` / `wikiWrite` / `snapshotText()` | per agent；创建时绑定 scope；prefetch 冻结快照文本（specs/071 FR-005） |
 | `MemoryCapabilities` | `{ faces:[{key:"memory",value:face}], tools×4, sections×3, ready }` | 原子单元（buildMemoryCapabilities 纯函数产出；不可部分消费） |
-| `MemoryServiceCalls` / `WikiServiceCalls` | 8 个 RPC 方法结构类型 | 库内声明；adapter 构造 client 的泛型 T |
+| `MemoryServiceCalls` / `WikiServiceCalls` | 10 个 RPC 方法（memory 4 + wiki 6）结构类型 | 库内声明；adapter 构造 client 的泛型 T |
 
 关系：`buildMemoryCapabilities` 内部 `createMemoryStore(clients)` → `createMemoryFace(store, scope)`；faces/tools/sections/ready 随单元产出，由 adapter 整单元注册。
 
