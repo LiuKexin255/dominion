@@ -21,13 +21,33 @@
 import { SessionSeq } from "@deepseek-ai/dsh-session";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { createAssistantMessage } from "@deepseek-ai/dsh-llm";
+import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type { TeamMemberSource } from "@dominion/dsh-team";
+import { gameStatsText } from "@dominion/dsh-saolei";
+import type { GameEventRecord } from "@dominion/dsh-saolei";
+
+import type {
+  Member,
+  MemberExecution,
+  MemberId,
+  Outcome,
+} from "./member.js";
 
 /** The announcer member's wire role — roster registration and merge sender label (specs/076-agent-v2-optimize/contracts/announcer-member.md §1). */
 export const ANNOUNCER_MEMBER_ROLE = "announcer";
 
 /** Roster summary of the announcer member (the team section's announcer line). */
 export const ANNOUNCER_MEMBER_SUMMARY = "终局播报对局结果与操作统计";
+
+/**
+ * The announce member's collaborators: the latest terminal record read. The
+ * execution layer owns the game runtime, so it passes the record provider in
+ * rather than the member reaching into the game foundation.
+ */
+export interface AnnouncerMemberDeps {
+  /** Read the game runtime's LATEST terminal record, or null while playing. */
+  readonly peekTerminal?: () => GameEventRecord | null;
+}
 
 /**
  * Synthetic model provenance of an announcement. `createAssistantMessage`
@@ -47,19 +67,35 @@ const ANNOUNCE_MODEL = "system";
  * and synchronously notifies subscribers; `source` exposes that log to the
  * team with the announce-only capability bits (`consumes: false`, no
  * `sectionTarget`).
+ *
+ * As a flow member (specs/076-agent-v2-optimize/contracts/flow-orchestration.md
+ * §2.2) its `drive()` renders and announces the latest terminal record
+ * synchronously and reports `settled`; the record-identity guard
+ * ({@link statsSentFor}, the announce activity's counterpart of the flow
+ * facts' `reviewed`) announces each record once. `deliver` carries no meaning
+ * for it (`consumes = false`).
  */
-export class AnnouncerMember {
+export class AnnouncerMember implements Member, MemberExecution {
   /** The team-facing message source (`id = ${session}/announcer`). */
   readonly source: TeamMemberSource;
+
+  /** The loop-layer member identity. */
+  readonly id: MemberId = "announcer";
+  /** Announce-only: it never consumes delivered user messages. */
+  readonly consumes = false;
 
   /** The immutable log snapshots; replaced (not mutated) on every announce. */
   private log: readonly SessionEvent[] = [];
   private readonly listeners = new Set<(event: SessionEvent) => void>();
+  private readonly peekTerminal: () => GameEventRecord | null;
+  /** The terminal record already announced — record identity, not a flag. */
+  private statsSentFor: GameEventRecord | null = null;
   private seq = 0;
   private lastTime = 0;
 
-  constructor(session: string) {
+  constructor(session: string, deps: AnnouncerMemberDeps = {}) {
     const member = this;
+    this.peekTerminal = deps.peekTerminal ?? (() => null);
     this.source = {
       id: `${session}/announcer`,
       get events() {
@@ -74,6 +110,54 @@ export class AnnouncerMember {
       consumes: false,
     };
   }
+
+  /**
+   * Run the announce activity's execution: render the latest terminal record
+   * and speak it. The record-identity guard makes a re-driven announce a
+   * no-op; a rendering/announce failure is an implementation error and reports
+   * `failed{INTERNAL}` (specs/076-agent-v2-optimize/contracts/
+   * flow-orchestration.md §2.2).
+   */
+  async drive(): Promise<Outcome> {
+    const event = this.peekTerminal();
+    if (event === null || event === this.statsSentFor) {
+      return { kind: "settled" };
+    }
+    try {
+      this.announce(gameStatsText(event));
+      this.statsSentFor = event;
+      return { kind: "settled" };
+    } catch (err) {
+      return {
+        kind: "failed",
+        code: "INTERNAL",
+        detail: {
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  }
+
+  /** No-op: an announce-only member receives no input. */
+  deliver(_message: UserMessage): void {}
+
+  get busy(): boolean {
+    return false;
+  }
+
+  get pendingInput(): number {
+    return 0;
+  }
+
+  whenSettled(): Promise<Outcome> {
+    return Promise.resolve({ kind: "resting" });
+  }
+
+  /** No-op: the announce execution is synchronous and never interrupted. */
+  abort(): void {}
+
+  /** No-op: the announce member owns no subscription. */
+  dispose(): void {}
 
   /**
    * Append one announcement to the log and notify subscribers synchronously.

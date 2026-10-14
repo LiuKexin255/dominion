@@ -49,6 +49,7 @@ import {
 import type {
   AgentCreationSeam,
   ComposePreset,
+  LoopErrorCode,
   OrchestratorFailure,
   OrchestratorLogger,
   TeamSeam,
@@ -101,6 +102,36 @@ export class TeamSessionError extends Error {
     this.name = "TeamSessionError";
     this.code = code;
   }
+}
+
+/**
+ * The host's user-action guidance for each loop failure code — the
+ * presentation half of the error contract
+ * (specs/076-agent-v2-optimize/spec.md FR-107; the wording is
+ * survey/saolei-member-switch-flow.md §8.1's 呈现指导 column). The loop layer
+ * classifies; the host owns the text.
+ *
+ * Today the text rides only the orchestration-origin failure frame
+ * ({@link failStreams}); a member-turn failure settles through
+ * {@link endStreams} cleanly, carrying the engine's own message in its
+ * turn_end ERROR frame, and the failure code is still transported to the
+ * snapshot side. Evolution slot: land the per-code user-action text on the
+ * member-turn frame too — doing so means touching the history collector's
+ * frame surface, not just this session layer
+ * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+ */
+export const LOOP_ERROR_TEXT: Readonly<Record<LoopErrorCode, string>> = {
+  TRANSIENT: "服务暂不可用，稍后重试",
+  QUOTA: "配额耗尽",
+  CREDENTIAL: "检查 API 凭证",
+  CONFIG: "模型配置错误",
+  INPUT_TOO_LARGE: "上下文超限",
+  INTERNAL: "内部错误",
+};
+
+/** The host's user-action guidance for one loop failure code. */
+export function loopErrorText(code: LoopErrorCode): string {
+  return LOOP_ERROR_TEXT[code];
 }
 
 /** One member's configuration and runtime state (View projection). */
@@ -755,7 +786,10 @@ export class TeamSessions {
     for (const stream of streams) {
       try {
         if (stream.fail !== undefined) {
-          stream.fail({ code: "INTERNAL", message: failure.message });
+          stream.fail({
+            code: "INTERNAL",
+            message: `${failure.message} — ${loopErrorText(failure.code)}`,
+          });
         } else {
           stream.end();
         }
@@ -771,19 +805,22 @@ export class TeamSessions {
   /**
    * Arm the per-entry quiescence watcher: resolve the Send-established team
    * stream lifecycle at the orchestrator's static point (no in-flight turn
-   * and no pending digestible input — contracts/team-api.md §3.1). New
-   * activity started while the watcher settles re-arms through the
+   * and no pending digestible input — contracts/team-api.md §3.1). The
+   * snapshot fields carry the new semantics: `paused` is the flow's frozen
+   * state (a failed or aborted activity), and `queued` is the active member's
+   * delivered-but-unconsumed input — the steered-in-flight count plus the
+   * member inbox pending state (specs/061-team-queue-steer/research.md R4).
+   * New activity started while the watcher settles re-arms through the
    * snapshot re-check; a Send always arms a watcher, so an already-ended
    * epoch cannot swallow a later stream.
    *
-   * A paused orchestrator has no scheduled pump — `whenQuiescent()` resolves
-   * immediately — so waiting for active/queued alone would spin the
-   * microtask queue. The pause also carries the terminal state, settled by
-   * the failure origin: an orchestration-layer failure closes the streams
-   * with an error ({@link failStreams}), while a member-turn failure — like
-   * a cancel — ends them cleanly ({@link endStreams}), the turn_end ERROR
-   * frame having already been sunk by the member history collector before
-   * this watcher's microtask
+   * A frozen orchestrator has no scheduled pump — `whenQuiescent()` resolves
+   * immediately — so waiting for active/queued alone would spin the microtask
+   * queue. The freeze also carries the terminal state, settled by the failure
+   * origin: an orchestration-layer failure closes the streams with an error
+   * ({@link failStreams}), while a member-turn failure — like a cancel — ends
+   * them cleanly ({@link endStreams}), the turn_end ERROR frame having already
+   * been sunk by the member history collector before this watcher's microtask
    * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2;
    * design: specs/063-llm-reliability-opencode-go/design-session-stream-settlement.md §1/§3).
    */

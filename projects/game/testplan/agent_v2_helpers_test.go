@@ -59,6 +59,12 @@ const (
 	// teamQueueMessage carries the queued-digest tokens (暂停/稍等/等待/继续)
 	// shared by team-planner-user-reply and team-player-user-intake.
 	teamQueueMessage = "稍等，继续按计划观察"
+	// teamMidTurnMessage is the second in-flight message of the mid-turn
+	// entry case: it carries the same intake tokens (its being the step's LAST
+	// user message selects team-planner-user-reply) while staying
+	// text-distinct from teamQueueMessage for the per-message member_view
+	// assertion.
+	teamMidTurnMessage = "暂停，等待下一步推进"
 	// teamWaitMessage selects team-planner-wait — the long-running planner
 	// turn (4s inter-chunk delay) the queue/cancel/refresh cases pivot on.
 	teamWaitMessage = "planner-wait"
@@ -2314,6 +2320,81 @@ func serveTeamFlowScript(ctx context.Context, stream *desktopStream, sessionID s
 		ch <- nil
 	}()
 	return ch
+}
+
+// waitFlowScriptOK reports whether the flow script served every scheduled
+// receipt within the window (a non-blocking analogue of waitTeamFlowScript for
+// call sites that want to report their own diagnostics).
+func waitFlowScriptOK(ch <-chan error, timeout time.Duration) bool {
+	select {
+	case err := <-ch:
+		return err == nil
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// teamTurnSummary renders one member turn per line for failure diagnostics:
+// member, turn id, and its tool-result count/statuses.
+func teamTurnSummary(turns []*teamMemberTurn) string {
+	var out strings.Builder
+	for i, turn := range turns {
+		fmt.Fprintf(&out, "\n  [%d] %s/%s", i, turn.member, turn.turnID)
+		for j, call := range teamTurnToolCalls(turn) {
+			fmt.Fprintf(&out, " call[%d]=%s", j, call)
+		}
+		for j, result := range teamTurnToolResults(turn) {
+			text := result.GetResult()
+			if len(text) > 90 {
+				text = text[:90]
+			}
+			fmt.Fprintf(&out, " result[%d]=%v %q", j, result.GetStatus(), text)
+		}
+	}
+	return out.String()
+}
+
+// teamTurnFrames dumps one member turn's frames in arrival order for failure
+// diagnostics (tool-call starts, results, text deltas).
+func teamTurnFrames(turn *teamMemberTurn) string {
+	var out strings.Builder
+	for _, event := range turn.events {
+		switch {
+		case event.GetTurnStart() != nil:
+			out.WriteString("\n      TURN_START")
+		case event.GetBlockStart() != nil:
+			fmt.Fprintf(&out, "\n      BLOCK_START %v", event.GetBlockStart().GetType())
+		case event.GetDelta() != nil:
+			text := event.GetDelta().GetText()
+			if len(text) > 40 {
+				text = text[:40]
+			}
+			fmt.Fprintf(&out, "\n      DELTA %q", text)
+		case event.GetBlockEnd() != nil:
+			block := event.GetBlockEnd().GetBlock()
+			fmt.Fprintf(&out, "\n      BLOCK_END tool=%s text=%q", block.GetToolCall().GetName(), block.GetText().GetContent())
+		case event.GetToolResult() != nil:
+			text := event.GetToolResult().GetResult()
+			if len(text) > 40 {
+				text = text[:40]
+			}
+			fmt.Fprintf(&out, "\n      TOOL_RESULT %v %q", event.GetToolResult().GetStatus(), text)
+		case event.GetTurnEnd() != nil:
+			fmt.Fprintf(&out, "\n      TURN_END %v", event.GetTurnEnd().GetStatus())
+		}
+	}
+	return out.String()
+}
+
+// teamTurnToolCalls returns one member turn's tool-call names in order.
+func teamTurnToolCalls(turn *teamMemberTurn) []string {
+	var names []string
+	for _, event := range turn.events {
+		if block := event.GetBlockEnd(); block != nil && block.GetBlock().GetToolCall() != nil {
+			names = append(names, block.GetBlock().GetToolCall().GetName())
+		}
+	}
+	return names
 }
 
 // waitTeamFlowScript waits for the flow script to serve every scheduled

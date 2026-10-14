@@ -1,21 +1,29 @@
 /**
- * TeamOrchestrator — the saolei team loop's orchestration state machine:
- * materialization, alternating activation (at most one member is driven),
- * queue-first digestion, structural continuation, game-end review triggers,
- * and cancel/resume. The behavior contract is
- * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2; the state graph
- * and the player→planner / planner→player switching anchors are
- * specs/059-agent-v2-team-mode/data-model.md §5; the group-chat drive model
- * is survey/deepseek-harness-team-mode.md §4.4/§9.4.
+ * TeamOrchestrator — the saolei team loop's execution layer over the flow
+ * layer (flow.ts): materialization, activation landing, the serialized pump
+ * that consumes `start(activity)` directives, member-domain delivery, error
+ * freezing, and cancel/dispose. The contracts are
+ * specs/076-agent-v2-optimize/contracts/flow-orchestration.md（分层与指令 /
+ * 投递 / outcome 与冻结 / 错误契约 / 操作路径 / 宿主联动）and
+ * specs/076-agent-v2-optimize/data-model.md §2/§5; the design semantics are
+ * survey/saolei-member-switch-flow.md §5/§6/§8 (rulings 12–22). The baseline
+ * behavior contracts it keeps are
+ * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2 (drive timing and
+ * input: at most one member driven, no synthesized drive input),
+ * specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md
+ * §2 (the failure origin binary), specs/068-wiki-round-pause/contracts/
+ * saolei-loop-round-stop.md (the natural stop), and
+ * specs/061-team-queue-steer/contracts/orchestrator-input.md §1 (mid-turn
+ * delivery, landed flush).
  *
- * The orchestration layer synthesizes no drive input (FR-010): every drive
- * carries only the member's unconsumed team relays (`ctx.team.drain`) plus
- * the queued user messages. Materialization therefore does NOT drive: after
- * creating the members and registering the team the loop rests in the
- * initial planning activation, and the first turn starts from the first
- * user send handled by that activation (planner). The same input rule
- * covers structural continuation, the game-end review, queue digestion, and
- * cancel-resume.
+ * The orchestrator holds no workflow decision: every transition is the flow
+ * layer's edge judgment over the facts. It owns only execution concerns —
+ * activation landing (presented through {@link OrchestratorSnapshot}),
+ * driving (delegated to the member adapters), inbox-landed collection for
+ * cancel, and the failure facts the host presents. There is no orchestration
+ * FIFO and no queue gate: a user message either steers into the active
+ * member's inbox or opens a turn immediately, both inside the member domain
+ * (contracts/flow-orchestration.md §3).
  *
  * The host constructs one instance per team
  * (projects/game/agent_v2/src/session.ts): members are created once through
@@ -23,63 +31,17 @@
  * collaborator (preset compose, agent registry, team service, desktop
  * bridge, game-runtime construction) enters through {@link TeamOrchestratorDeps}
  * so unit tests inject doubles instead of intercepting modules
- * (style/javascript.md Mock convention). The two capability providers
- * (`saoleiTools`, `memoryMount`) are NOT constructor seams: the saolei-loop
- * apply has already mounted them as `config.plugins` sub-plugins, so the
- * orchestrator reads their provide faces from `this.ctx` when it assembles a
- * member and fails loud when one is missing
- * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
- *
- * Driving consumes the official agent inbox: a drive batches its message set
- * into ONE turn (`inject` all but the last, `followup` the last — the
- * pre-step claim consumes next-step input plus one queued turn,
- * survey/deepseek-harness-team-mode.md §4.4 note 3), then awaits the
- * member's `agent/status` idle transition. Idle is exactly the switching
- * anchor's quiescence ("turn ended and no further turn is triggered"):
- * `running` covers consecutive queued turns and the turn-close checkpoint,
- * so idle means the whole drain interval settled
- * (https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md).
- *
- * gameEnded is read from the orchestrator-owned game runtime after each
- * player turn (`peekGameEvent`, the instance built at materialization through
- * the foundation face and registered as the player's agent-scoped handle;
- * specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §2): the
- * runtime keeps the LATEST terminal record across a restart-init, and the
- * record is consumed only after its review drive settles, so a failed attempt
- * retries with the held relays instead of losing the review. Before the
- * review drains, an unreviewed terminal record
- * is announced through the announce-only announcer member (record-level
- * `statsSentFor` guard) — the announcement is one member speech on the same
- * relay/consume closure and rides at the tail of the review input set
- * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3).
- *
- * The loop counts completed game rounds (a terminal game plus its settled
- * planner review) and rests every {@link ROUND_STOP_INTERVAL} rounds. The stop
- * point sits after queue digestion — a queued user message is still consumed
- * by the current planner activation first — and performs the normal switch to
- * the player without producing a drive, so the player's unconsumed relays
- * stay queued for the next input and the counter resets
- * (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2/§3).
- *
- * A pump step that throws (a fail-loud relay read, an alternation-invariant
- * violation, a rejected followup/inject) or whose member turn settles in
- * failure (the member ctx `agent/error` boundary) suspends auto-continuation
- * through the same fail() channel and is surfaced through the injected
- * logger and the snapshot's `failed`/`lastError` fields — never silently
- * stalled. A failed turn retains the current activation, so the next user
- * send re-drives the same member
- * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+ * (style/javascript.md Mock convention).
  */
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import type { PromptSection } from "@deepseek-ai/dsh-system-prompt";
 import type {
-  Agent,
   AgentHandle,
   CreateAgentOptions,
 } from "@deepseek-ai/dsh-agent";
-import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { agentMemberSource } from "@dominion/dsh-team";
 import type {
@@ -88,40 +50,49 @@ import type {
   TeamRegistration,
 } from "@dominion/dsh-team";
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
-import { gameStatsText } from "@dominion/dsh-saolei";
 import type {
   GameEventRecord,
   GameRuntime,
   SaoleiFoundation,
 } from "@dominion/dsh-saolei";
 
+import { AgentMember } from "./agent-member.js";
 import {
   ANNOUNCER_MEMBER_ROLE,
   ANNOUNCER_MEMBER_SUMMARY,
   AnnouncerMember,
 } from "./announcer.js";
+import { createSaoleiFlow } from "./flow.js";
+import type { Flow, SaoleiActivityId, SaoleiMemberId } from "./flow.js";
+import type {
+  FailureDetail,
+  LoopErrorCode,
+  Member,
+  MemberExecution,
+  MemberId,
+  Outcome,
+} from "./member.js";
 
 /**
- * The member roles the orchestration presents — the snapshot `member`/`active`/
- * `activation` values and the roster roles. The announce-only announcer is a
- * presented member (roster + activation presentation) without an agent
- * runtime (specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
+ * The member roles the orchestration presents — the snapshot `member`/
+ * `active`/`activation` values and the roster roles. The announce-only
+ * announcer is a presented member (roster + activation presentation) without
+ * an agent runtime (specs/076-agent-v2-optimize/contracts/announcer-member.md
+ * §3).
  */
 export type TeamRole = "player" | "planner" | "announcer";
 
 /**
  * The agent-backed member roles: the members that own an `AgentHandle`/`Agent`
- * and therefore a {@link MemberRuntime}. The announcer is announce-only and
- * carries no runtime (specs/076-agent-v2-optimize/contracts/announcer-member.md
- * §3 item 5).
+ * (specs/076-agent-v2-optimize/contracts/announcer-member.md §3 item 5).
  */
 export type AgentTeamRole = "player" | "planner";
 
 /**
- * Which side of the workflow the orchestrator is working with:
- * `planning` = the initial planner activation (its first turn starts from
- * the first user send); `playing` = a player turn (or the player waiting for
- * input); `reviewing` = the game-end planner review. data-model.md §5.
+ * Which side of the workflow the orchestrator is working with: `planning` =
+ * the initial planner activation; `playing` = a player turn or the resting
+ * player; `reviewing` = the game-end planner review
+ * (specs/076-agent-v2-optimize/data-model.md §5).
  */
 export type OrchestrationPhase = "planning" | "playing" | "reviewing";
 
@@ -129,61 +100,18 @@ export type OrchestrationPhase = "planning" | "playing" | "reviewing";
 export const TEAM_PROVIDER = "glm-responses";
 
 /**
- * Completed game rounds after which the loop rests instead of structurally
- * continuing: the review turn of the interval-th round settles, the queue is
- * digested, and the activation switches to the player without a drive
- * (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2).
- */
-const ROUND_STOP_INTERVAL = 5;
-
-/**
- * The stable failure code reported for a failure that is not an
- * {@link LlmError} (specs/063-llm-reliability-opencode-go/data-model.md §4).
- */
-const UNKNOWN_FAILURE_CODE = "UNKNOWN";
-
-/**
- * The failure facts of one member turn: the stable machine-routable code
- * (specs/063-llm-reliability-opencode-go/data-model.md §1) plus the
- * diagnostic message. Written by the member ctx `agent/error` subscription
- * and consumed by the drive evaluation.
- */
-interface TurnFailure {
-  readonly code: string;
-  readonly message: string;
-}
-
-/**
- * Normalize a caught orchestration-step error or an `agent/error` payload
- * into {@link TurnFailure}: an {@link LlmError} contributes its stable code
- * (the same taxonomy the retry decision routes on), any other thrown value
- * reports `UNKNOWN`.
- */
-function turnFailureOf(error: unknown): TurnFailure {
-  if (error instanceof LlmError) {
-    return { code: error.code, message: error.message };
-  }
-  return {
-    code: UNKNOWN_FAILURE_CODE,
-    message: error instanceof Error ? error.message : String(error),
-  };
-}
-
-/**
  * Failure context handed to the injected orchestration logger: the team
  * session, the phase and member of the failed step (`member` is null when
- * the decision step itself failed), the stable failure code, and the
+ * the decision step itself failed), the loop failure code
+ * (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §5), and the
  * normalized error message.
  */
 export interface OrchestrationFailureContext {
   readonly session: string;
   readonly phase: OrchestrationPhase;
   readonly member: TeamRole | null;
-  /**
-   * Stable failure code (specs/063-llm-reliability-opencode-go/data-model.md §1);
-   * `UNKNOWN` for non-LlmError failures.
-   */
-  readonly code: string;
+  /** Loop failure code (specs/076-agent-v2-optimize/data-model.md §3.3). */
+  readonly code: LoopErrorCode;
   readonly error: string;
 }
 
@@ -359,20 +287,21 @@ export interface TeamMaterializeOptions {
   };
 }
 
-/** One accepted user message: queued when a member turn is in flight. */
+/** One accepted user message: steered when a member turn is in flight. */
 export interface SubmitResult {
-  /** True when the current member's turn is in flight and the message waits. */
+  /** True when the active member's turn is in flight and the message steers. */
   readonly queued: boolean;
-  /** 1-based FIFO position; present only when `queued`. */
+  /** 1-based inbox position; present only when `queued`. */
   readonly position?: number;
   /** The stable identity of the created user message (host stream bookkeeping). */
   readonly messageId: string;
 }
 
 /**
- * The user-message entry result: `dropped` are the messages that were waiting
- * in the FIFO when the cancel landed. They are not driven (FR-017: 排队消息
- * 落地为历史且不触发新驱动); the host lands them as history.
+ * The user-message entry result: `dropped` are the messages that were
+ * unclaimed in the member inbox when the cancel landed. They are not driven
+ * (FR-108: 未消费输入落地为历史且不触发新驱动); the host lands them as
+ * history.
  */
 export interface CancelResult {
   readonly dropped: readonly UserMessage[];
@@ -395,11 +324,8 @@ export interface OrchestratorFailure {
   readonly member: TeamRole | null;
   /** The workflow phase at failure time. */
   readonly phase: OrchestrationPhase;
-  /**
-   * Stable failure code (specs/063-llm-reliability-opencode-go/data-model.md §1);
-   * `UNKNOWN` for non-LlmError failures.
-   */
-  readonly code: string;
+  /** Loop failure code (specs/076-agent-v2-optimize/data-model.md §3.3). */
+  readonly code: LoopErrorCode;
   /**
    * Failure origin: the host session layer's stream-settlement discriminant —
    * a failed member turn ends the streams cleanly, an orchestration-layer
@@ -407,6 +333,8 @@ export interface OrchestratorFailure {
    * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
    */
   readonly origin: OrchestratorFailureOrigin;
+  /** The engine code (when any) plus the message, transported for presentation. */
+  readonly detail: FailureDetail;
 }
 
 /** Read-only orchestration view for the host (status/queue/failure presentation). */
@@ -416,20 +344,22 @@ export interface OrchestratorSnapshot {
   /** The member whose turn is in flight, or null. */
   readonly active: TeamRole | null;
   /**
-   * The member the next structural/queued input belongs to (activation): the
-   * current member while a turn is in flight, and the next input's owner
-   * while quiescent. Materialization rests in the initial planning
-   * activation (planner); cancel/pause does not change it. The host's team
-   * view merges it with {@link active} into one active-member value
+   * The member the current activity's activation belongs to. Materialization
+   * rests in the initial `plan` activity (planner); cancel does not change it
    * (specs/060-agent-v2-team-optimize/contracts/team-api.md §1).
    */
   readonly activation: TeamRole;
-  /** Auto-continuation suspended by a cancel until the next user message. */
+  /** Whether the flow is frozen (a failed or aborted activity). */
   readonly paused: boolean;
+  /**
+   * The active member's delivered-but-unconsumed input: the steered-in-flight
+   * count plus the inbox pending state
+   * (specs/061-team-queue-steer/research.md R4; landed is not counted, R5).
+   */
   readonly queued: number;
-  /** True while the last pump step failed (auto-continuation suspended). */
+  /** True while the last drive failed (auto-continuation suspended). */
   readonly failed: boolean;
-  /** The last pump failure; cleared by the next successful drive. */
+  /** The last drive failure; cleared by the next successful drive. */
   readonly lastError: OrchestratorFailure | null;
 }
 
@@ -450,56 +380,44 @@ export class OrchestratorStateError extends Error {
   }
 }
 
-interface IdleWaiter {
-  readonly resolve: () => void;
-}
-
-interface MemberRuntime {
-  readonly role: AgentTeamRole;
-  readonly handle: AgentHandle;
-  /** The member's team message source — the team seam's drain key. */
-  readonly source: TeamMemberSource;
-  readonly agent: Agent;
-  offStatus: () => void;
-  /**
-   * The member ctx `agent/error` subscription: the failed turn's active
-   * boundary, always reached before idle
-   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1).
-   */
-  offError: () => void;
-  /**
-   * The most recent driven turn's failure, written by the `agent/error`
-   * subscription and consumed by {@link TeamOrchestrator.drive} once idle
-   * settles; null while no driven turn is pending or the last one succeeded.
-   */
-  lastTurnFailure: TurnFailure | null;
-  readonly idleWaiters: IdleWaiter[];
-}
-
-interface PumpStep {
-  readonly member: MemberRuntime;
-  readonly messages: readonly UserMessage[];
-  /** The terminal record this step reviews; consumed after the drive settles. */
-  readonly review?: GameEventRecord;
-}
-
 /**
- * A review transition whose drive has not settled. The drained relays are
- * held here so a failed attempt can retry: the team drain already consumed
- * the anchors, so re-reading `ctx.team.drain` would find nothing.
+ * One registered member: the flow member, its execution seam, and — for
+ * agent-backed members only — the agent handle and team source. The
+ * announce-only announcer carries neither (specs/076-agent-v2-optimize/
+ * contracts/announcer-member.md §3 item 3).
  */
-interface PendingReview {
-  readonly event: GameEventRecord;
-  readonly messages: readonly UserMessage[];
+interface MemberBinding {
+  readonly id: MemberId;
+  readonly member: Member;
+  readonly execution: MemberExecution;
+  readonly handle?: AgentHandle;
+  readonly source?: TeamMemberSource;
+}
+
+/** The member ids in presentation order (the busy-member scan). */
+const MEMBER_IDS: readonly MemberId[] = ["player", "planner", "announcer"];
+
+/** The workflow phase one activity maps onto (data-model.md §5). */
+export function phaseOfActivity(position: SaoleiActivityId): OrchestrationPhase {
+  switch (position) {
+    case "plan":
+      return "planning";
+    case "review":
+      return "reviewing";
+    case "play":
+    case "rest":
+    case "announce":
+      return "playing";
+  }
 }
 
 /**
- * The per-team orchestration state machine. See the file header for the
- * contract references; member ownership (create → dispose) also lives here,
- * so the host's refresh/destroy path is a single {@link dispose}.
+ * The per-team execution layer. See the file header for the contract
+ * references; member ownership (create → dispose) also lives here, so the
+ * host's refresh/destroy path is a single {@link dispose}.
  */
 export class TeamOrchestrator {
-  private members: Readonly<Record<AgentTeamRole, MemberRuntime>> | null = null;
+  private members: Readonly<Record<MemberId, MemberBinding>> | null = null;
   private teamRegistration: TeamHandle | null = null;
   /**
    * The team's game runtime: built at materialization through the foundation
@@ -510,38 +428,21 @@ export class TeamOrchestrator {
   private game: GameRuntime | null = null;
   /** The announce-only announcer member; non-null exactly while materialized. */
   private announcerMember: AnnouncerMember | null = null;
+  /** The flow layer's state object; null when unmaterialized. */
+  private flow: Flow<SaoleiActivityId, SaoleiMemberId> | null = null;
   /** The materialized team's session resource name (logging context). */
   private session: string | null = null;
-  private phase: OrchestrationPhase = "planning";
-  /** The member the next structural/queued input belongs to (activation). */
-  private current: AgentTeamRole = "planner";
-  private readonly queue: UserMessage[] = [];
-  /** The member whose turn is in flight; null when quiescent. */
-  private drivingMember: MemberRuntime | null = null;
-  private paused = false;
-  private disposed = false;
-  /** The terminal record already handed to a settled planner review. */
-  private reviewedGameEvent: GameEventRecord | null = null;
-  /**
-   * The terminal record already announced through the announcer member —
-   * record identity, mirroring {@link reviewedGameEvent}: a new terminal
-   * record (a new game's end) announces once, the same record never repeats
-   * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3 item 3).
-   */
-  private statsSentFor: GameEventRecord | null = null;
-  /**
-   * Completed game rounds since the last natural stop (or materialization):
-   * one increment per successful planner review settle; a restart without a
-   * terminal record never reaches a review and therefore never counts
-   * (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §1/§2).
-   */
-  private completedRounds = 0;
-  /** The review transition awaiting its settling drive (retry-held input). */
-  private pendingReview: PendingReview | null = null;
-  /** The last failed pump step; cleared by the next successful drive. */
+  /** Cancel-landed messages awaiting the next turn start's flush (061 R5). */
+  private readonly landed: UserMessage[] = [];
+  /** The last drive failure; cleared by the next successful drive. */
   private lastError: OrchestratorFailure | null = null;
-  /** The serialized pump run; null when idle. */
+  /** The serialized pump run; null when no pump is scheduled. */
   private pump: Promise<void> | null = null;
+  /** A delivery-started turn's outcome is awaited at the pump's next iteration. */
+  private externalPending = false;
+  /** The outcome of the last flow-issued drive, fed to the decision entry. */
+  private pendingOutcome: Outcome | null = null;
+  private disposed = false;
 
   constructor(
     private readonly ctx: Context,
@@ -550,13 +451,13 @@ export class TeamOrchestrator {
 
   /**
    * Materialize the team: create both members (compose mount + player game
-   * runtime + planner memory prefetch) and register with `ctx.team`. The
-   * orchestrator then rests in the initial planning activation — it does NOT
-   * drive: the first turn starts from the first user send (FR-010: the loop
-   * synthesizes no drive message). Any failure — compose, a member setup, or
-   * the team registration — rolls every created member back and leaves the
-   * orchestrator unmaterialized, so the caller can retry (no half-materialized
-   * team; contracts/dsh-plugins.md §2).
+   * runtime + planner memory prefetch), build the member adapters and the
+   * flow, and register with `ctx.team`. The orchestrator then rests in the
+   * initial `plan` activity — it does NOT drive: the first turn starts from
+   * the first user send (FR-010: the loop synthesizes no drive message). Any
+   * failure — compose, a member setup, or the team registration — rolls every
+   * created member back and leaves the orchestrator unmaterialized, so the
+   * caller can retry (no half-materialized team; contracts/dsh-plugins.md §2).
    */
   async materialize(options: TeamMaterializeOptions): Promise<void> {
     if (this.disposed) {
@@ -569,7 +470,7 @@ export class TeamOrchestrator {
       );
     }
 
-    const created: MemberRuntime[] = [];
+    const created: MemberBinding[] = [];
     try {
       const player = await this.createMember(
         "player",
@@ -586,23 +487,24 @@ export class TeamOrchestrator {
       );
       created.push(planner);
 
-      // The announce-only announcer member (no preset/model, never driven, not
-      // an LLM member): it carries the terminal game summary into the
-      // group chat through the same member-message-source closure as the two
-      // agent members (specs/065-agent-v2-team-refine/contracts/
-      // game-stats-broadcast.md §3 item 1; team-member-source.md §2/§3).
-      const announcer = new AnnouncerMember(options.session);
+      // The announce-only announcer member: it carries the terminal game
+      // summary into the group chat through the same member-message-source
+      // closure as the two agent members (specs/065-agent-v2-team-refine/
+      // contracts/game-stats-broadcast.md §3 item 1).
+      const announcer = new AnnouncerMember(options.session, {
+        peekTerminal: () => this.peekTerminal(),
+      });
       const registration: TeamRegistration = {
         goal: options.goal,
         context: options.context,
         members: [
           {
-            source: player.source,
+            source: player.source as TeamMemberSource,
             role: "player",
             summary: options.summaries?.player ?? DEFAULT_MEMBER_SUMMARIES.player,
           },
           {
-            source: planner.source,
+            source: planner.source as TeamMemberSource,
             role: "planner",
             summary: options.summaries?.planner ?? DEFAULT_MEMBER_SUMMARIES.planner,
           },
@@ -614,36 +516,45 @@ export class TeamOrchestrator {
         ],
       };
       this.teamRegistration = this.team().register(registration);
-      this.members = { player, planner };
       this.announcerMember = announcer;
+      this.members = {
+        player,
+        planner,
+        announcer: {
+          id: "announcer",
+          member: announcer,
+          execution: announcer,
+        },
+      };
+      this.flow = createSaoleiFlow(() => this.peekTerminal());
       this.session = options.session;
-      this.phase = "planning";
-      this.current = "planner";
-      this.pendingReview = null;
-      this.reviewedGameEvent = null;
-      this.statsSentFor = null;
-      this.completedRounds = 0;
+      this.landed.length = 0;
       this.lastError = null;
     } catch (err) {
       // Rollback drops the game runtime built during this attempt (its
       // lifecycle is the materialization,
       // specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §2).
       this.game = null;
+      this.announcerMember = null;
+      this.flow = null;
+      this.members = null;
       await this.rollback(created);
       throw err;
     }
   }
 
   /**
-   * Accept one user message (FR-011): queued at the team FIFO when the
-   * current member's turn is in flight, otherwise handed to the current
-   * activation immediately. A send also lifts a cancel pause (FR-017).
+   * Accept one user message (FR-011): delivered to the current activity's
+   * member. While that member's turn is in flight the message steers into its
+   * inbox (consumed at the next step boundary); while quiescent it assembles
+   * and opens a turn. Delivery never passes through a flow decision.
    */
   submit(text: string): SubmitResult {
     if (this.disposed) {
       throw new OrchestratorStateError("DISPOSED", "orchestrator is disposed");
     }
-    if (this.members === null) {
+    const members = this.members;
+    if (members === null || this.flow === null) {
       throw new OrchestratorStateError(
         "UNMATERIALIZED",
         "team is not materialized; materialize before sending",
@@ -653,60 +564,100 @@ export class TeamOrchestrator {
       content: [{ type: "text", text }],
       source: { kind: "user" },
     });
-    this.queue.push(message);
-    this.paused = false;
-    const queued = this.drivingMember !== null;
-    const position = queued ? this.queue.length : undefined;
+    const binding = members[this.flow.activeMemberId];
+    const queued = binding.execution.busy;
+    // Known boundary: delivery reaches the activation member only. A frozen
+    // flow whose activity member is announce-only (`consumes = false`) cannot
+    // be resumed by user delivery — `deliver` is a no-op — because its
+    // recovery drive is the delivery itself
+    // (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §3/§4). The
+    // trigger face is an announce-activity INTERNAL failure, i.e.
+    // `gameStatsText` throwing on a malformed record — vanishingly rare.
+    // Evolution slot: fall back to delivering to the previous consuming member
+    // when the activation member does not consume.
+    try {
+      binding.member.deliver(message);
+    } catch (err) {
+      // A delivery assembly failure joins the freeze channel (the caller was
+      // not at fault; only the state guards throw synchronously) —
+      // specs/076-agent-v2-optimize/contracts/flow-orchestration.md §5/§8.2.
+      const failure = this.orchestrationFailure(err);
+      this.recordFailure(null, failure, "orchestration");
+      this.flow.decide(failureOutcome(failure));
+      // No position: 0 is not a valid 1-based inbox position and the delivery
+      // never reached the inbox (contracts/flow-orchestration.md §5).
+      return {
+        queued,
+        messageId: String(message.id),
+      };
+    }
+    if (queued) {
+      return {
+        queued: true,
+        position: binding.execution.pendingInput,
+        messageId: String(message.id),
+      };
+    }
+    this.externalPending = true;
     this.requestPump();
     return {
-      queued,
-      ...(position === undefined ? {} : { position }),
+      queued: false,
       messageId: String(message.id),
     };
   }
 
   /**
-   * Cancel (FR-017, idempotent): terminate the in-flight member turn,
-   * suspend auto-continuation, and drain the waiting FIFO so those messages
-   * land as history without triggering a turn. A later {@link submit}
-   * resumes the loop with the current activation.
+   * Cancel (FR-108, idempotent): terminate the in-flight member turn, freeze
+   * the flow position (facts unconsumed), land the unclaimed inbox as history,
+   * and wait for delivery to resume. A frozen flow is a no-op; the cancel
+   * produces no failure presentation (caller intent is not a fault).
    */
   cancel(): CancelResult {
     if (this.disposed) {
       return { dropped: [] };
     }
-    if (this.members === null) {
+    const members = this.members;
+    const flow = this.flow;
+    if (members === null || flow === null) {
       throw new OrchestratorStateError(
         "UNMATERIALIZED",
         "team is not materialized; there is nothing to cancel",
       );
     }
-    const dropped = this.queue.splice(0);
-    this.paused = true;
-    const active = this.drivingMember;
-    if (active !== null) {
-      active.agent.cancel({ kind: "user" });
+    if (flow.paused) {
+      return { dropped: [] };
+    }
+    const binding = members[flow.activeMemberId];
+    const dropped = this.landUnclaimed(binding);
+    binding.execution.abort();
+    const agent = binding.handle?.agent;
+    if (binding.execution.busy && agent !== undefined) {
+      agent.cancel({ kind: "user" });
+    } else {
+      // Quiescent cancel: freeze the flow position directly (there is no
+      // in-flight drive whose aborted outcome would freeze it).
+      flow.freezeAborted();
     }
     return { dropped };
   }
 
   /**
-   * Terminate the in-flight turn, void the queue, and release every member.
-   * The orchestrator owns the member handles it created, so the host's
-   * refresh/destroy path is exactly this call (idempotent).
+   * Terminate the in-flight turn, void the landed set, and release every
+   * member. The orchestrator owns the member handles it created, so the host's
+   * refresh/destroy path is exactly this call (idempotent, allSettled release).
    */
   async dispose(): Promise<void> {
     if (this.disposed) {
       return;
     }
     this.disposed = true;
-    this.paused = true;
-    this.queue.length = 0;
-    this.pendingReview = null;
-    this.lastError = null;
-    const active = this.drivingMember;
-    if (active !== null) {
-      active.agent.cancel({ kind: "disposed" });
+    this.landed.length = 0;
+    const members = this.members;
+    const agentBindings = members === null ? [] : [members.player, members.planner];
+    const inFlight = agentBindings.find((binding) => binding.execution.busy);
+    if (inFlight !== undefined) {
+      inFlight.execution.abort();
+      inFlight.handle?.agent.cancel({ kind: "disposed" });
     }
     await this.whenQuiescent();
 
@@ -714,21 +665,20 @@ export class TeamOrchestrator {
     this.teamRegistration = null;
     registration?.dispose();
 
-    const members = this.members;
     this.members = null;
     this.game = null;
     this.announcerMember = null;
+    this.flow = null;
     this.session = null;
-    this.statsSentFor = null;
-    if (members === null) {
-      return;
-    }
-    const runtimes = [members.planner, members.player];
-    for (const runtime of runtimes) {
-      this.unsubscribe(runtime);
+    this.lastError = null;
+
+    for (const binding of agentBindings) {
+      binding.execution.dispose();
     }
     const results = await Promise.allSettled(
-      runtimes.map((runtime) => runtime.handle.dispose()),
+      agentBindings.map(
+        (binding) => binding.handle?.dispose() ?? Promise.resolve(),
+      ),
     );
     const failure = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",
@@ -742,7 +692,7 @@ export class TeamOrchestrator {
   async whenQuiescent(): Promise<void> {
     let pump = this.pump;
     while (pump !== null) {
-      await pump;
+      await pump.catch(() => undefined);
       pump = this.pump;
     }
   }
@@ -766,13 +716,16 @@ export class TeamOrchestrator {
 
   /** The team's live state snapshot (status/queue/failure presentation). */
   snapshot(): OrchestratorSnapshot {
+    const flow = this.flow;
+    const busy = this.busyMember();
     return {
       materialized: this.members !== null,
-      phase: this.members === null ? null : this.phase,
-      active: this.drivingMember?.role ?? null,
-      activation: this.current,
-      paused: this.paused,
-      queued: this.queue.length,
+      phase: flow === null ? null : phaseOfActivity(flow.position),
+      active: busy,
+      activation: flow?.activeMemberId ?? "planner",
+      paused: flow?.paused ?? false,
+      queued:
+        busy === null ? 0 : (this.members?.[busy].execution.pendingInput ?? 0),
       failed: this.lastError !== null,
       lastError: this.lastError,
     };
@@ -784,7 +737,7 @@ export class TeamOrchestrator {
     member: TeamMemberOptions,
     options: TeamMaterializeOptions,
     sessionId: string,
-  ): Promise<MemberRuntime> {
+  ): Promise<MemberBinding> {
     const composed = await this.deps.compose(member.preset);
     const foundation = this.saoleiFoundation();
     const handle = await this.agents().create({
@@ -834,34 +787,48 @@ export class TeamOrchestrator {
       },
     });
 
-    const runtime: MemberRuntime = {
-      role,
-      handle,
-      source: agentMemberSource(handle),
+    const source = agentMemberSource(handle);
+    const adapter = new AgentMember({
+      id: role,
       agent: handle.agent,
-      offStatus: () => {},
-      offError: () => {},
-      lastTurnFailure: null,
-      idleWaiters: [],
+      drain: () => this.team().drain(source),
+      flushLanded: () => this.takeLanded(),
+    });
+    return {
+      id: role,
+      member: adapter,
+      execution: adapter,
+      handle,
+      source,
     };
-    runtime.offStatus = handle.agent.ctx.on("agent/status", (payload) => {
-      if (payload.agent === handle.agent && payload.status === "idle") {
-        this.settleIdle(runtime);
-      }
-    });
-    // Record the turn's failure marker at its active boundary; the drive
-    // evaluation reads it after idle and owns every consequent transition,
-    // so this subscription itself never drives
-    // (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §1).
-    // An abort converges without `agent/error`, leaving the marker null
-    // (specs/063-llm-reliability-opencode-go/spec.md US2 scenario 6).
-    runtime.offError = handle.agent.ctx.on("agent/error", (payload) => {
-      if (payload.agent !== handle.agent) {
-        return;
-      }
-      runtime.lastTurnFailure = turnFailureOf(payload.error);
-    });
-    return runtime;
+  }
+
+  /** Read and clear the cancel-landed messages (the assembly-point flush). */
+  private takeLanded(): UserMessage[] {
+    return this.landed.splice(0);
+  }
+
+  /**
+   * Collect the active member's unclaimed inbox into the landed set
+   * (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §6 cancel):
+   * messages delivered but not consumed by a turn. The durable cancel that
+   * follows clears the inbox itself.
+   */
+  private landUnclaimed(binding: MemberBinding): UserMessage[] {
+    const agent = binding.handle?.agent;
+    const inbox = agent?.inbox as
+      | { readonly nextStep?: readonly UserMessage[]; readonly nextTurn?: readonly UserMessage[] }
+      | undefined;
+    if (inbox === undefined) {
+      return [];
+    }
+    const pending = [...(inbox.nextStep ?? []), ...(inbox.nextTurn ?? [])];
+    this.landed.push(...pending);
+    return pending;
+  }
+
+  private peekTerminal(): GameEventRecord | null {
+    return this.game?.peekGameEvent() ?? null;
   }
 
   /** The agent-creation seam (host override, else the composition's registry). */
@@ -899,8 +866,7 @@ export class TeamOrchestrator {
    * `ctx.desktopBridge`. Missing = fail-loud (the runtime cannot dispatch).
    */
   private desktopBridge(): DesktopBridgeService {
-    const desktopBridge =
-      this.deps.desktopBridge ?? this.ctx.get("desktopBridge");
+    const desktopBridge = this.deps.desktopBridge ?? this.ctx.get("desktopBridge");
     if (desktopBridge === undefined) {
       throw new Error(
         "saolei-loop orchestrator: player game runtime needs the desktop-bridge service",
@@ -911,7 +877,7 @@ export class TeamOrchestrator {
 
   /**
    * Register the saolei static unit into the player member's scope: the
-   * three tool definitions then the two sections, one indivisible consumer
+   * three tool definitions then the sections, one indivisible consumer
    * call (specs/074-dsh-grpc-runtime/spec.md FR-015/FR-017). The unit is read
    * from the `saoleiTools` provide face the saolei-loop apply mounted.
    */
@@ -991,24 +957,18 @@ export class TeamOrchestrator {
   }
 
   /** Roll a failed materialization back: drop created members, no residue. */
-  private async rollback(created: readonly MemberRuntime[]): Promise<void> {
+  private async rollback(created: readonly MemberBinding[]): Promise<void> {
     const registration = this.teamRegistration;
     this.teamRegistration = null;
     registration?.dispose();
     // A teardown failure must not mask the original materialization error and
     // cannot restore a half-built team, so the caller sees the original cause.
     await Promise.allSettled(
-      [...created].reverse().map((runtime) => {
-        this.unsubscribe(runtime);
-        return runtime.handle.dispose();
+      [...created].reverse().map((binding) => {
+        binding.execution.dispose();
+        return binding.handle?.dispose() ?? Promise.resolve();
       }),
     );
-  }
-
-  /** Drop one member's ctx subscriptions (idle + turn-failure observation). */
-  private unsubscribe(runtime: MemberRuntime): void {
-    runtime.offStatus();
-    runtime.offError();
   }
 
   /** Queue a pump run; the loop always re-reads the state after each drive. */
@@ -1018,93 +978,171 @@ export class TeamOrchestrator {
     }
     const pump = this.runPump();
     this.pump = pump;
-    void pump.then(() => {
-      if (this.pump === pump) {
-        this.pump = null;
-      }
-    });
+    void pump.then(
+      () => {
+        if (this.pump === pump) {
+          this.pump = null;
+        }
+      },
+      () => {
+        if (this.pump === pump) {
+          this.pump = null;
+        }
+      },
+    );
   }
 
   /**
-   * The serialized pump: each iteration takes exactly one step (a queued
-   * user message or a structural continuation) and awaits its turn's idle
-   * before re-evaluating. This is the "at most one member driven at a time"
-   * invariant's enforcement point (FR-011). A failing step — thrown, or a
-   * member turn that settled in failure — suspends auto-continuation and is
-   * reported through {@link fail}, never silently dropped: the loop has no
-   * other owner to notice a stalled team.
+   * The serialized pump: each iteration consumes exactly one wake — the
+   * outcome of the flow's last `start`, or a delivery-started turn's
+   * settlement — asks the flow's decision entry, and either runs the returned
+   * `start(activity)` to its outcome or rests (resting / frozen). This is the
+   * "at most one member driven at a time" invariant's enforcement point.
    */
   private async runPump(): Promise<void> {
-    while (!this.disposed && !this.paused) {
-      let member: TeamRole | null = null;
-      try {
-        const step = this.nextStep();
-        if (step === null) {
-          return;
-        }
-        member = step.member.role;
-        const failure = await this.drive(step.member, step.messages);
-        if (failure !== null) {
-          // A failed member turn retains the activation and pauses through
-          // the same channel as a thrown step, tagged "member-turn" so the
-          // host settles the stream cleanly; the next submit lifts the pause
-          // and re-drives the same member (FR-009/FR-010,
-          // specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
-          this.fail(step.member.role, failure, "member-turn");
-          return;
-        }
-        this.lastError = null;
-        if (step.review !== undefined) {
-          // The review drive settled: the round completes and only now is the
-          // terminal record consumed
-          // (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2).
-          this.reviewedGameEvent = step.review;
-          this.pendingReview = null;
-          this.completedRounds += 1;
-        }
-      } catch (err) {
-        this.fail(member, turnFailureOf(err), "orchestration");
+    for (;;) {
+      if (this.disposed) {
         return;
       }
+      const flow = this.flow;
+      const members = this.members;
+      if (flow === null || members === null) {
+        return;
+      }
+
+      let wake: Outcome | null;
+      if (this.externalPending) {
+        this.externalPending = false;
+        const binding = members[flow.activeMemberId];
+        let outcome: Outcome;
+        try {
+          outcome = await binding.execution.whenSettled();
+        } catch (err) {
+          // A technical throw from a delivery-started turn: the same
+          // orchestration-at-the-start-site translation as a flow drive
+          // (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §5).
+          const failure = this.orchestrationFailure(err);
+          this.recordFailure(binding.id, failure, "orchestration");
+          this.flow?.decide(failureOutcome(failure));
+          return;
+        }
+        if (this.disposed) {
+          return;
+        }
+        this.settleError(outcome);
+        if (outcome.kind === "failed") {
+          this.recordFailure(binding.id, outcome, "member-turn");
+        }
+        // A delivery-started turn is invisible to the flow (no onSettle); a
+        // settled delivery is an external wake, a failure joins the freeze
+        // channel (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §3).
+        wake = outcome.kind === "settled" ? null : outcome;
+      } else {
+        wake = this.pendingOutcome;
+        this.pendingOutcome = null;
+      }
+
+      const decision = flow.decide(wake);
+      if (decision.kind !== "start") {
+        return;
+      }
+      const outcome = await this.execute();
+      if (this.disposed) {
+        return;
+      }
+      this.pendingOutcome = outcome;
     }
   }
 
   /**
-   * Suspend auto-continuation after a failed step and surface it: the failure
-   * goes to the host-injected logger (console fallback) and into
-   * {@link OrchestratorSnapshot} (`failed`/`lastError`) so the host can map an
-   * INTERNAL/turn error instead of a silent stall. `origin` records which
-   * channel failed — the driven member's turn or the orchestration layer —
-   * the host's stream-settlement discriminant (clean end vs INTERNAL;
-   * specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
-   * `this.current` stays untouched, so the activation is retained and the
-   * next submit re-drives the same member (FR-009/FR-012,
-   * specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2/§3).
-   * The next successful drive clears it.
+   * Run the flow's current activity to its outcome: land the activation (the
+   * flow position already fixed it), then drive the bound member — a rest
+   * activity has no execution and reports `resting`. A technical throw at the
+   * start call site is translated into `failed{INTERNAL}` with origin
+   * orchestration (specs/076-agent-v2-optimize/contracts/flow-orchestration.md
+   * §5).
    */
-  private fail(
-    member: TeamRole | null,
-    failure: TurnFailure,
+  private async execute(): Promise<Outcome> {
+    const flow = this.flow;
+    const members = this.members;
+    if (flow === null || members === null) {
+      return { kind: "resting" };
+    }
+    const activity = flow.activity;
+    if (activity.driverless === true) {
+      return { kind: "resting" };
+    }
+    const binding = members[activity.member];
+    try {
+      const outcome = await binding.member.drive();
+      this.settleError(outcome);
+      if (outcome.kind === "failed") {
+        this.recordFailure(binding.id, outcome, "member-turn");
+      }
+      return outcome;
+    } catch (err) {
+      const failure = this.orchestrationFailure(err);
+      this.recordFailure(binding.id, failure, "orchestration");
+      return failureOutcome(failure);
+    }
+  }
+
+  /** Clear the failure fact after a successful or aborted drive. */
+  private settleError(outcome: Outcome): void {
+    if (outcome.kind === "settled" || outcome.kind === "resting" || outcome.kind === "aborted") {
+      this.lastError = null;
+    }
+  }
+
+  /**
+   * Record a failed drive: the fact goes to the host-injected logger (console
+   * fallback) and into {@link OrchestratorSnapshot} (`failed`/`lastError`) so
+   * the host can map an INTERNAL/turn error instead of a silent stall.
+   * `origin` records which channel failed — the driven member's turn or the
+   * orchestration layer — the host's stream-settlement discriminant
+   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+   */
+  private recordFailure(
+    member: MemberId | null,
+    failure: { readonly code: LoopErrorCode; readonly detail: FailureDetail },
     origin: OrchestratorFailureOrigin,
   ): void {
+    const phase = this.phase();
+    const loggerMember: TeamRole | null = member;
     this.lastError = {
-      message: failure.message,
+      message: failure.detail.message,
       member,
-      phase: this.phase,
+      phase,
       code: failure.code,
       origin,
+      detail: failure.detail,
     };
-    this.paused = true;
     this.logger().error(
       "saolei-loop orchestration step failed; auto-continuation suspended",
       {
         session: this.session ?? "",
-        phase: this.phase,
+        phase,
         member,
         code: failure.code,
-        error: failure.message,
+        error: failure.detail.message,
       },
     );
+  }
+
+  /** Translate a technical throw into the orchestration-interior failure shape. */
+  private orchestrationFailure(err: unknown): {
+    readonly code: LoopErrorCode;
+    readonly detail: FailureDetail;
+  } {
+    return {
+      code: "INTERNAL",
+      detail: { message: err instanceof Error ? err.message : String(err) },
+    };
+  }
+
+  /** The current workflow phase, derived from the flow position. */
+  private phase(): OrchestrationPhase {
+    return this.flow === null ? "planning" : phaseOfActivity(this.flow.position);
   }
 
   /** The host's failure reporter, or the console fallback. */
@@ -1112,167 +1150,25 @@ export class TeamOrchestrator {
     return this.deps.logger ?? DEFAULT_ORCHESTRATOR_LOGGER;
   }
 
-  /**
-   * The state-machine transition decision (data-model.md §5 切换锚点):
-   *
-   * 1. queued user messages first, consumed by the current activation
-   *    together with its unconsumed relays (消化优先于切换); the first user
-   *    send after materialization is served here with an empty relay set;
-   * 2. an unsettled review transition retries with its held relays;
-   * 3. planner quiescent (planning/reviewing) → structurally drive player;
-   *    a spent round budget (`completedRounds >= ROUND_STOP_INTERVAL`)
-   *    switches to the player and rests without a drive — the natural stop
-   *    (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2);
-   * 4. player quiescent: an unreviewed gameEnded → announce the record's
-   *    stats through the announcer member, then start the planner review
-   *    (the announcement guarantees the drained input set is non-empty and
-   *    rides at its tail; the record is consumed only after the drive
-   *    settles); otherwise structurally continue the player with newly
-   *    relayed broadcasts. An empty delivery set cannot form a model request,
-   *    so the pump rests in the current activation until new input arrives.
-   */
-  private nextStep(): PumpStep | null {
-    if (this.disposed || this.paused) {
-      return null;
-    }
+  /** The busy member id (at most one member is driven at a time). */
+  private busyMember(): MemberId | null {
     const members = this.members;
     if (members === null) {
       return null;
     }
-
-    if (this.queue.length > 0) {
-      const relays = this.drain(members[this.current]);
-      const message = this.queue.shift() as UserMessage;
-      return {
-        member: members[this.current],
-        messages: [...relays, message],
-      };
-    }
-
-    if (this.pendingReview !== null) {
-      return {
-        member: members.planner,
-        messages: this.pendingReview.messages,
-        review: this.pendingReview.event,
-      };
-    }
-
-    if (this.phase === "planning" || this.phase === "reviewing") {
-      this.phase = "playing";
-      this.current = "player";
-      // The round budget is spent: the activation has already switched, but
-      // the loop rests without producing a drive. The player's unconsumed
-      // relays stay queued (the next input delivers them), and the counter
-      // resets for the rounds after the stop
-      // (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2/§3).
-      if (this.completedRounds >= ROUND_STOP_INTERVAL) {
-        this.completedRounds = 0;
-        return null;
-      }
-      const relays = this.drain(members.player);
-      return relays.length === 0 ? null : { member: members.player, messages: relays };
-    }
-
-    const event = this.game?.peekGameEvent() ?? null;
-    if (event !== null && event !== this.reviewedGameEvent) {
-      this.announceStats(event);
-      const relays = this.drain(members.planner);
-      if (relays.length > 0) {
-        this.pendingReview = { event, messages: relays };
-        this.phase = "reviewing";
-        this.current = "planner";
-        return { member: members.planner, messages: relays, review: event };
+    for (const id of MEMBER_IDS) {
+      if (members[id].execution.busy) {
+        return id;
       }
     }
-    const relays = this.drain(members.player);
-    return relays.length === 0 ? null : { member: members.player, messages: relays };
+    return null;
   }
+}
 
-  /**
-   * Send one terminal record's game-over summary through the announcer member.
-   * Record-identity guard (`statsSentFor`, mirroring
-   * `reviewedGameEvent`): the same record announces once — a failed review
-   * retry reaches case 2 before this evaluation, and a new game's terminal
-   * record triggers the next announcement. Called before `drain(planner)`,
-   * so the announcement rides at the tail of the review input set and the
-   * review-start branch is non-empty whenever an unreviewed terminal record
-   * exists (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md
-   * §3 items 2/3/5).
-   */
-  private announceStats(event: GameEventRecord): void {
-    if (this.announcerMember === null || event === this.statsSentFor) {
-      return;
-    }
-    this.announcerMember.announce(gameStatsText(event));
-    this.statsSentFor = event;
-  }
-
-  /** Consume one member's unconsumed broadcasts (team-internal read path). */
-  private drain(member: MemberRuntime): UserMessage[] {
-    return this.team().drain(member.source);
-  }
-
-  /**
-   * Run one member turn: batch the whole message set into one pre-step claim
-   * (`inject` all but the last, `followup` the last) and await the member's
-   * idle transition, returning the turn's failure facts (null on success).
-   * The `agent/error` subscription wrote the marker before idle, so consuming
-   * it here keeps every transition decision at the single post-drive
-   * evaluation point
-   * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
-   * The alternation guard rejects a second concurrent drive.
-   */
-  private async drive(
-    member: MemberRuntime,
-    messages: readonly UserMessage[],
-  ): Promise<TurnFailure | null> {
-    if (messages.length === 0) {
-      throw new Error(
-        "saolei-loop orchestrator: an empty message set cannot start a turn",
-      );
-    }
-    if (this.drivingMember !== null) {
-      throw new Error(
-        "saolei-loop orchestrator invariant violated: a member turn is already in flight",
-      );
-    }
-    if (member.agent.status !== "idle") {
-      throw new Error(
-        `saolei-loop orchestrator invariant violated: ${member.role} is not quiescent`,
-      );
-    }
-    this.drivingMember = member;
-    try {
-      const idle = this.waitForIdle(member);
-      for (const message of messages.slice(0, -1)) {
-        member.agent.inject(message);
-      }
-      member.agent.followup(
-        messages[messages.length - 1] as UserMessage,
-      );
-      await idle;
-      const failure = member.lastTurnFailure;
-      // Consume the marker: it describes this turn only, so the next drive
-      // (the retained member after a failure) starts from a clean slate.
-      member.lastTurnFailure = null;
-      return failure;
-    } finally {
-      this.drivingMember = null;
-    }
-  }
-
-  /** Register an idle waiter BEFORE the waking followup (no lost transition). */
-  private waitForIdle(member: MemberRuntime): Promise<void> {
-    return new Promise<void>((resolve) => {
-      member.idleWaiters.push({ resolve });
-    });
-  }
-
-  /** Resolve every waiter on the member's idle transition. */
-  private settleIdle(member: MemberRuntime): void {
-    const waiters = member.idleWaiters.splice(0);
-    for (const waiter of waiters) {
-      waiter.resolve();
-    }
-  }
+/** The outcome shape one orchestration-interior failure feeds the flow. */
+function failureOutcome(failure: {
+  readonly code: LoopErrorCode;
+  readonly detail: FailureDetail;
+}): Outcome {
+  return { kind: "failed", code: failure.code, detail: failure.detail };
 }

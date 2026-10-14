@@ -1,7 +1,7 @@
 /**
  * cordis plugin entry for the saolei team loop: the orchestration layer of
- * the saolei team (驱动权唯一归属——游戏阶段机、成员驱动时机与 buffer 消费
- * 策略、物化编排) and the composition row `saolei-loop`.
+ * the saolei team (flow 流程控制 + 执行层 + 成员适配器、物化编排) and the
+ * composition row `saolei-loop`.
  *
  * `apply` is the dependency-assembly step of the team-layer assembly
  * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2/§4): its
@@ -13,9 +13,12 @@
  * fail loud when absent. The orchestrator itself is constructed per team by
  * the host (projects/game/agent_v2/src/session.ts), so per-team state and its
  * `ctx.team`/`ctx.agents` consumption never become composition singletons.
- * Agent DRIVING itself is owned by the official `dsh-agent-loop` row; this
- * plugin holds the orchestration state machine only, no turn/step driving
- * (specs/059-agent-v2-team-mode/research.md R1/R7).
+ * Agent DRIVING is split between the official `dsh-agent-loop` row (turn/step
+ * execution) and this plugin's member adapters (completion judgement,
+ * delivery split, held-input replay); the workflow decision lives in the
+ * package's pure flow layer (flow.ts) and the orchestrator only consumes its
+ * `start(activity)` directives
+ * (specs/076-agent-v2-optimize/contracts/flow-orchestration.md).
  *
  * The game domain is an upstream service of this plugin: `inject: ["saolei"]`
  * declares the composition's top-level game-foundation row as a load-time
@@ -24,9 +27,10 @@
  * member (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md
  * §1/§2/§3).
  *
- * The orchestration state machine and its contracts:
- * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2;
- * specs/059-agent-v2-team-mode/data-model.md §5.
+ * The orchestration contracts:
+ * specs/076-agent-v2-optimize/contracts/flow-orchestration.md;
+ * specs/076-agent-v2-optimize/data-model.md §2/§5;
+ * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2.
  */
 
 import type { Context, Plugin } from "@deepseek-ai/cordis";
@@ -43,7 +47,9 @@ export {
   OrchestratorStateError,
   TEAM_PROVIDER,
   TeamOrchestrator,
+  phaseOfActivity,
 } from "./orchestrator.js";
+export type { LoopErrorCode, FailureDetail } from "./member.js";
 export type {
   AgentCreationSeam,
   AgentTeamRole,

@@ -5,7 +5,7 @@ import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
-import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
+import { DEFAULT_MODEL, LOOP_ERROR_TEXT, TeamSessionError, TeamSessions, loopErrorText } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
@@ -64,6 +64,7 @@ interface MemberFake {
   readonly handle: AgentHandle;
   readonly followups: UserMessage[];
   readonly injections: UserMessage[];
+  readonly steers: UserMessage[];
   readonly cancels: unknown[];
   readonly statusListeners: Array<(payload: { agent: Agent; status: AgentStatus }) => void>;
   readonly errorListeners: Array<(payload: { agent: Agent; error: unknown }) => void>;
@@ -105,6 +106,15 @@ function fakeMember(
   const state = { status: "idle" as AgentStatus };
   const statusListeners: MemberFake["statusListeners"] = [];
   const errorListeners: MemberFake["errorListeners"] = [];
+  const idleWaiters: Array<() => void> = [];
+  const steers: UserMessage[] = [];
+  const nextStep: UserMessage[] = [];
+  const nextTurn: UserMessage[] = [];
+  const resolveIdle = (): void => {
+    for (const resolve of idleWaiters.splice(0)) {
+      resolve();
+    }
+  };
   const memberCtx: {
     on: ReturnType<typeof vi.fn>;
     systemPrompt: {
@@ -159,8 +169,26 @@ function fakeMember(
       return state.status;
     },
     ctx: memberCtx,
+    inbox: {
+      get nextStep() {
+        return nextStep;
+      },
+      get nextTurn() {
+        return nextTurn;
+      },
+      get hasPending() {
+        return nextStep.length > 0 || nextTurn.length > 0;
+      },
+    },
     inject: vi.fn((message: UserMessage) => {
       member.injections.push(message);
+      nextStep.push(message);
+    }),
+    steer: vi.fn((message: UserMessage) => {
+      steers.push(message);
+      nextStep.push(message);
+      state.status = "running";
+      emitStatus(member, "running");
     }),
     followup: vi.fn((message: UserMessage) => {
       member.followups.push(message);
@@ -169,10 +197,15 @@ function fakeMember(
     }),
     cancel: vi.fn((cause: unknown) => {
       member.cancels.push(cause);
+      nextStep.length = 0;
+      nextTurn.length = 0;
       state.status = "idle";
       emitStatus(member, "idle");
+      resolveIdle();
     }),
-    whenIdle: vi.fn(async () => {}),
+    whenIdle: vi.fn(
+      () => new Promise<void>((resolve) => idleWaiters.push(resolve)),
+    ),
   } as unknown as Agent;
   memberCtx.agent = agent;
   const member: MemberFake = {
@@ -182,12 +215,14 @@ function fakeMember(
     handle: { agent, dispose: vi.fn(async () => {}) },
     followups: [],
     injections: [],
+    steers,
     cancels: [],
     statusListeners,
     errorListeners,
     settle: () => {
       state.status = "idle";
       emitStatus(member, "idle");
+      resolveIdle();
     },
     failCurrentTurn: (code: string) => {
       // The official loop reports the failure at the turn's active boundary
@@ -1057,19 +1092,21 @@ describe("TeamSessions.send", () => {
     expect(first.events.some((event) => event.teamMessage?.seq === "2")).toBe(true);
     expect(second.events.some((event) => event.teamMessage?.seq === "2")).toBe(true);
 
-    // Settling both turns drains the queue (queue digestion) and quiesces.
+    // The second send steered into the in-flight planner turn (mid-turn
+    // delivery, specs/061-team-queue-steer/spec.md).
+    expect(planner.steers.map(messageText)).toEqual(["second"]);
+
+    // Settling the planner turn advances plan → play; the empty player drain
+    // rests the loop, so both streams end at the team's static point.
     driveTextTurn(h, planner, "reply one");
     await flush();
-    driveTextTurn(h, planner, "reply two");
-    await flush();
 
-    expect(planner.followups).toHaveLength(2);
+    expect(planner.followups).toHaveLength(1);
     expect(first.ended).toBe(true);
     expect(second.ended).toBe(true);
     expect(h.sessions.listTeamMessages(S1).map((entry) => entry.member)).toEqual([
       "user",
       "user",
-      "planner",
       "planner",
     ]);
   });
@@ -1255,12 +1292,13 @@ describe("TeamSessions active member projection (FR-008)", () => {
 });
 
 describe("TeamSessions orchestration failure", () => {
-  it("breaks out of a paused, failed orchestration with a stream error instead of spinning or ending cleanly", async () => {
+  it("breaks out of a frozen, failed orchestration with a stream error instead of spinning or ending cleanly", async () => {
     const h = createHarness();
     await materializeDefault(h);
     const planner = member(h, PLANNER_ID);
+    const player = member(h, PLAYER_ID);
 
-    // The first send starts a planner turn; two more sends queue behind it.
+    // The first send starts a planner turn; two more sends steer into it.
     const stream = fakeStream();
     h.sessions.send(S1, "first", stream);
     await flush();
@@ -1273,40 +1311,46 @@ describe("TeamSessions orchestration failure", () => {
     await flush();
     expect(second.events.map(payloadOf)[0]).toBe("queued");
 
-    // The second drive fails while a third message still waits in the queue:
-    // the orchestrator pauses with a non-empty queue, so the old watcher's
-    // `whenQuiescent()` resolved immediately and spun the microtask queue.
-    (planner.agent.followup as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+    // The planner's output relays a strategy; the flow's next drive (the
+    // player) throws at the start site, surfacing the orchestration-layer
+    // failure.
+    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "策略")]);
+    (player.agent.followup as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
       throw new Error("drive exploded");
     });
     planner.settle();
     await flush();
 
     // The failure is surfaced, not disguised as a natural stop: every active
-    // stream receives the INTERNAL failure and the injected logger records it.
-    expect(stream.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
-    expect(second.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
-    expect(third.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
+    // stream receives the INTERNAL failure (with the host's user-action text)
+    // and the injected logger records it.
+    expect(stream.failures).toEqual([
+      { code: "INTERNAL", message: "drive exploded — 内部错误" },
+    ]);
+    expect(second.failures).toEqual([
+      { code: "INTERNAL", message: "drive exploded — 内部错误" },
+    ]);
+    expect(third.failures).toEqual([
+      { code: "INTERNAL", message: "drive exploded — 内部错误" },
+    ]);
     expect(stream.ended).toBe(false);
     expect(h.loggerError).toHaveBeenCalledTimes(1);
     expect(h.loggerError.mock.calls[0]?.[1]).toMatchObject({
       session: S1,
-      member: "planner",
+      member: "player",
+      code: "INTERNAL",
       error: "drive exploded",
     });
 
-    // A later send lifts the pause and drains the held queue (orchestrator
-    // retry semantics), then the team quiesces and the new stream ends.
+    // A later send lifts the freeze: the delivery turn, then the flow's
+    // restart of the current activity (the held replay); the team then
+    // quiesces and the new stream ends.
     const resumed = fakeStream();
     h.sessions.send(S1, "resume", resumed);
     await flush();
-    // The held "third" message retries first (the failed attempt consumed
-    // nothing from the FIFO beyond its own shift).
-    expect(planner.followups).toHaveLength(2);
-    planner.settle();
+    player.settle();
     await flush();
-    expect(planner.followups).toHaveLength(3);
-    planner.settle();
+    player.settle();
     await flush();
     expect(resumed.failures).toEqual([]);
     expect(resumed.ended).toBe(true);
@@ -1349,7 +1393,7 @@ describe("TeamSessions member-turn failure", () => {
       session: S1,
       phase: "planning",
       member: "planner",
-      code: "SERVER",
+      code: "TRANSIENT",
       error: "injected SERVER failure",
     });
     // FR-009: the activation is retained — planner owns the next input.
@@ -1573,5 +1617,44 @@ describe("TeamSessions projections", () => {
     expect(order).toContain("planner");
     expect(order[order.length - 1]).toBe("fiber");
     expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
+  });
+});
+
+describe("TeamSessions loop error presentation (specs/076-agent-v2-optimize/spec.md FR-107)", () => {
+  it("maps every loop failure code onto a non-empty user-action text", () => {
+    const codes = [
+      "TRANSIENT",
+      "QUOTA",
+      "CREDENTIAL",
+      "CONFIG",
+      "INPUT_TOO_LARGE",
+      "INTERNAL",
+    ] as const;
+
+    // The host owns the six-code table; the loop layer only classifies.
+    expect(Object.keys(LOOP_ERROR_TEXT).sort()).toEqual([...codes].sort());
+    for (const code of codes) {
+      expect(loopErrorText(code)).not.toBe("");
+      expect(Object.values(LOOP_ERROR_TEXT)).toContain(loopErrorText(code));
+    }
+  });
+
+  it("carries the loop code's text on the orchestration failure frame", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const planner = member(h, PLANNER_ID);
+
+    const stream = fakeStream();
+    // A delivery assembly failure is an orchestration-interior failure
+    // (INTERNAL): the frame carries the host's user-action text.
+    (planner.agent.followup as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    h.sessions.send(S1, "first", stream);
+    await flush();
+
+    expect(stream.failures).toEqual([
+      { code: "INTERNAL", message: `boom — ${LOOP_ERROR_TEXT.INTERNAL}` },
+    ]);
   });
 });

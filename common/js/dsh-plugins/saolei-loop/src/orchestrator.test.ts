@@ -141,6 +141,7 @@ interface FakeMember {
   readonly provideFace: ReturnType<typeof vi.fn>;
   readonly followups: UserMessage[];
   readonly injections: UserMessage[];
+  readonly steers: UserMessage[];
   readonly cancels: Array<{ cause: unknown; options: unknown }>;
   readonly statusListeners: StatusListener[];
   readonly errorListeners: ErrorListener[];
@@ -157,13 +158,18 @@ interface FakeMember {
 }
 
 /**
- * One agent double: `followup` records + flips running, `inject` records,
- * `cancel` records + (like the real loop's converging abort) emits idle, and
- * `settle()` completes a turn.
+ * One agent double: `followup` records + flips running (its message is claimed
+ * by the turn, so it never lingers in the inbox), `inject`/`steer` record into
+ * the next-step inbox (pending until cancelled — the landed source),
+ * `cancel` records + clears the inbox + (like the real loop's converging
+ * abort) emits idle, and `settle()` completes a turn. `whenIdle()` resolves on
+ * the next idle transition, modelling the official loop's whole-agent
+ * quiescence wait.
  */
 function createFakeMember(name: string): FakeMember {
   const followups: UserMessage[] = [];
   const injections: UserMessage[] = [];
+  const steers: UserMessage[] = [];
   const cancels: Array<{ cause: unknown; options: unknown }> = [];
   const statusListeners: StatusListener[] = [];
   const errorListeners: ErrorListener[] = [];
@@ -172,6 +178,9 @@ function createFakeMember(name: string): FakeMember {
   const tools = new Map<string, { name: string }>();
   const sections: Array<{ name: string; order: number; text: unknown }> = [];
   const faces = new Map<string, unknown>();
+  const nextStep: UserMessage[] = [];
+  const nextTurn: UserMessage[] = [];
+  const idleWaiters: Array<() => void> = [];
   let failFollowup = false;
   const off = <T>(list: T[], listener: T): (() => void) => () => {
     const index = list.indexOf(listener);
@@ -219,6 +228,9 @@ function createFakeMember(name: string): FakeMember {
     for (const listener of [...statusListeners]) {
       listener({ agent, status: "idle" });
     }
+    for (const resolve of idleWaiters.splice(0)) {
+      resolve();
+    }
   };
   const agent = {
     id,
@@ -227,8 +239,25 @@ function createFakeMember(name: string): FakeMember {
       return state.status;
     },
     ctx,
+    inbox: {
+      get nextStep() {
+        return nextStep;
+      },
+      get nextTurn() {
+        return nextTurn;
+      },
+      get hasPending() {
+        return nextStep.length > 0 || nextTurn.length > 0;
+      },
+    },
     inject: vi.fn((message: UserMessage) => {
       injections.push(message);
+      nextStep.push(message);
+    }),
+    steer: vi.fn((message: UserMessage) => {
+      steers.push(message);
+      nextStep.push(message);
+      state.status = "running";
     }),
     followup: vi.fn((message: UserMessage) => {
       if (failFollowup) {
@@ -240,9 +269,13 @@ function createFakeMember(name: string): FakeMember {
     }),
     cancel: vi.fn((cause: unknown, options?: unknown) => {
       cancels.push({ cause, options });
+      nextStep.length = 0;
+      nextTurn.length = 0;
       emitIdle();
     }),
-    whenIdle: vi.fn(async () => {}),
+    whenIdle: vi.fn(
+      () => new Promise<void>((resolve) => idleWaiters.push(resolve)),
+    ),
   } as unknown as Agent;
 
   return {
@@ -258,6 +291,7 @@ function createFakeMember(name: string): FakeMember {
     provideFace,
     followups,
     injections,
+    steers,
     cancels,
     statusListeners,
     errorListeners,
@@ -922,9 +956,6 @@ describe("TeamOrchestrator transitions", () => {
     expect(planner.injections).toHaveLength(1);
     expect(planner.followups).toHaveLength(2);
     expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
-    // Evaluated after both player turns; the second evaluation saw the same
-    // record and did not re-trigger a review.
-    expect(h.game.peeks).toBe(2);
     expectRelayOrUserSources(h);
   });
 
@@ -934,7 +965,9 @@ describe("TeamOrchestrator transitions", () => {
     const player = member(h, PLAYER_ID);
     const planner = member(h, PLANNER_ID);
 
-    // The first user send drives the planner; a second one queues behind it.
+    // The first user send drives the planner; a second one steers into the
+    // in-flight turn (061 direction — mid-turn delivery, not an orchestration
+    // FIFO).
     h.orchestrator.submit("首条");
     const submitted = h.orchestrator.submit("先消化这条");
     expect(submitted.queued).toBe(true);
@@ -943,16 +976,19 @@ describe("TeamOrchestrator transitions", () => {
 
     planner.settle();
     await tick();
-    // The planner consumed the queue first; the player drive is deferred.
-    expect(planner.followups.map(messageText)).toEqual(["首条", "先消化这条"]);
-    expect(planner.followups[1]?.source).toMatchObject({ kind: "user" });
-    expect(player.followups).toHaveLength(0);
-
-    planner.settle();
-    await tick();
+    // The steered message was consumed inside the planner turn; the planner
+    // turn's settlement advances the flow to the player.
+    expect(planner.followups.map(messageText)).toEqual(["首条"]);
+    expect(planner.steers.map(messageText)).toEqual(["先消化这条"]);
+    expect(planner.steers[0]?.source).toMatchObject({ kind: "user" });
     expect(player.followups).toHaveLength(1);
+
     player.settle();
     await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
     expectRelayOrUserSources(h);
   });
 
@@ -1042,51 +1078,51 @@ describe("TeamOrchestrator game-stats announcement (specs/065-agent-v2-team-refi
     expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
   });
 
-  it("does not re-announce when the review never formed (statsSentFor guard)", async () => {
+  it("does not re-announce the same record when the review never formed (statsSentFor guard)", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
-    // Deliberately no relayAnnouncementsToPlanner(h): the bridge mirrors the
-    // production invariant that an announcement makes the planner drain
-    // non-empty (specs/065-agent-v2-team-refine/contracts/
-    // game-stats-broadcast.md §3 item 5), which forms the review and hands
-    // the record over to `reviewedGameEvent`. The guard's unique window is
-    // the opposite: the announcement was sent, the planner drain was empty
-    // (no review formed), and the same still-unreviewed record is evaluated
-    // again.
+    // No relayAnnouncementsToPlanner: the announcement cannot form the review
+    // (the planner drain stays empty), so the record keeps `reviewed` null and
+    // only the announce member's record-identity guard protects it.
     const { player, planner } = await beginPlayerTurn(h);
 
     h.game.current = winner();
     player.settle();
     await tick();
 
-    // Case 4 announced A, found the planner drain empty, and rested:
-    // `reviewedGameEvent` stays null, so only `statsSentFor` protects the
-    // record against a second announcement.
+    // The play activity settled: A was announced, then the review activity's
+    // planner drive found no input (resting) — the flow rests at review with
+    // A still unreviewed.
     expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
     expect(planner.followups.map(messageText)).toEqual(["请开始"]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      active: null,
+      activation: "planner",
+    });
+
+    // Resume: the planner delivers, then review → play returns the flow to the
+    // player; the player's next settlement re-evaluates play → announce with
+    // the same record, and the guard skips the second announcement.
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(planner.followups.map(messageText)).toEqual(["请开始", "继续"]);
+    planner.settle();
+    await tick();
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "playing",
       active: null,
       activation: "player",
     });
 
-    // Re-drive the pump: the queued message is digested by the player first,
-    // then the next evaluation sees the same record A again. The
-    // record-identity guard must skip the second announcement.
-    h.orchestrator.submit("继续");
+    h.orchestrator.submit("再来");
     await tick();
-    expect(player.followups.map(messageText)).toEqual(["开局策略", "继续"]);
+    expect(player.followups.map(messageText)).toEqual(["开局策略", "再来"]);
     player.settle();
     await tick();
 
     expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
-    expect(planner.followups.map(messageText)).toEqual(["请开始"]);
-    expect(planner.injections).toEqual([]);
-    expect(h.orchestrator.snapshot()).toMatchObject({
-      phase: "playing",
-      active: null,
-      activation: "player",
-    });
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
   });
 
   it("starts the review with the announcement alone when no relay was queued", async () => {
@@ -1159,48 +1195,42 @@ describe("TeamOrchestrator game-stats announcement (specs/065-agent-v2-team-refi
   });
 });
 
-describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-refine/spec.md US2 / contracts/game-stats-broadcast.md §3 item 4)", () => {
-  it("digests a queued user message before announcing the terminal record", async () => {
+describe("TeamOrchestrator mid-turn delivery and the terminal handoff (specs/061-team-queue-steer/spec.md; specs/076-agent-v2-optimize/spec.md FR-105/FR-113)", () => {
+  it("consumes a mid-turn message inside the player turn, then hands off to the announcement", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
     relayAnnouncementsToPlanner(h);
     const { player, planner } = await beginPlayerTurn(h);
 
-    // The game ends while the player turn is in flight; a user message lands
-    // in the FIFO behind it (the 062 case 1 priority).
+    // The game ends while the player turn is in flight; a user message steers
+    // into that turn (no orchestration FIFO).
     h.game.current = winner();
-    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
+    expect(h.orchestrator.submit("在途消息").queued).toBe(true);
 
     player.settle();
     await tick();
 
-    // The terminal turn quiesces: the queued message drives the player's next
-    // turn first; the terminal record's handoff (announce + review) is not
-    // evaluated before the queue is empty.
-    expect(player.followups.map(messageText)).toEqual(["开局策略", "排队消息"]);
-    expect(announcedTexts(h)).toEqual([]);
-    expect(planner.followups.map(messageText)).toEqual(["请开始"]);
-    expect(h.orchestrator.snapshot()).toMatchObject({
-      phase: "playing",
-      active: "player",
-      activation: "player",
-      queued: 0,
-    });
+    // The steered message was consumed inside the player turn; the terminal
+    // turn's handoff (announce + review) then runs — the mid-turn consumption
+    // did not wait for a separate digestion turn.
+    expect(player.followups.map(messageText)).toEqual(["开局策略"]);
+    expect(player.steers.map(messageText)).toEqual(["在途消息"]);
+    expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
+    expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
   });
 
-  it("skips the swallowed game's announcement and announces the new terminal record instead", async () => {
+  it("announces only the latest terminal record at handoff time (swallowed game not re-announced)", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
     relayAnnouncementsToPlanner(h);
     const { player, planner } = await beginPlayerTurn(h);
 
-    // Terminal record A waits behind a queued user message; the digestion
-    // turn opens a new game and terminal record B overwrites A in the
+    // Terminal record A exists when the user message steers in; the in-flight
+    // turn opens a new game whose terminal record B overwrites A in the
     // runtime's single record slot.
     h.game.current = winner();
-    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
-    player.settle();
-    await tick();
+    expect(h.orchestrator.submit("在途消息").queued).toBe(true);
     h.game.current = loser();
     h.team.queues.set(PLANNER_ID, [relay(player.agent.id, "player", "新局终局记录")]);
     expect(announcedTexts(h)).toEqual([]);
@@ -1208,40 +1238,12 @@ describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-re
     player.settle();
     await tick();
 
-    // Only B is announced — A's handoff condition is never reached again —
-    // and B's announcement rides at the tail of the new review input set.
+    // Only B is announced — A's guard is never satisfiable again — and B's
+    // announcement rides at the tail of the new review input set.
     expect(announcedTexts(h)).toEqual([LOSER_STATS_TEXT]);
     expect(planner.injections.map(messageText)).toEqual(["新局终局记录"]);
     expect(planner.followups.map(messageText)).toEqual(["请开始", LOSER_STATS_TEXT]);
     expect(planner.followups.map(messageText)).not.toContain(WINNER_STATS_TEXT);
-    expect(h.orchestrator.snapshot()).toMatchObject({
-      phase: "reviewing",
-      active: "planner",
-      activation: "planner",
-    });
-  });
-
-  it("announces the untouched terminal record after the queued digestion (deferred, not dropped)", async () => {
-    const h = createHarness();
-    await h.orchestrator.materialize(teamOptions());
-    relayAnnouncementsToPlanner(h);
-    const { player, planner } = await beginPlayerTurn(h);
-
-    // Terminal record A waits behind a queued user message; the digestion
-    // turn does not overwrite it (the runtime still returns the same object).
-    h.game.current = winner();
-    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
-    player.settle();
-    await tick();
-    expect(announcedTexts(h)).toEqual([]);
-
-    player.settle();
-    await tick();
-
-    // The digestion left the record unreviewed: the handoff announces A
-    // (deferred by the queue, not dropped) and starts the review.
-    expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
-    expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "reviewing",
       active: "planner",
@@ -1268,12 +1270,13 @@ describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-re
     expect(h.orchestrator.snapshot()).toMatchObject({
       paused: true,
       failed: true,
-      lastError: { code: "SERVER", member: "planner", origin: "member-turn" },
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
     });
 
-    // Resume: the queued message is digested first, then the held review
-    // input set is replayed — the announcement is not sent again; the retry
-    // re-delivers the held message.
+    // Resume: the delivered message is handled first, then the flow restarts
+    // the review activity, whose member adapter replays the held input set —
+    // the announcement is not sent again; the retry re-delivers the held
+    // messages (the same objects).
     h.orchestrator.submit("继续");
     await tick();
     planner.settle();
@@ -1326,6 +1329,17 @@ describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-re
     await tick();
     expect(player.followups.map(messageText)).toEqual(["开局策略", "继续"]);
     expect(announcedTexts(h)).toEqual([]);
+
+    player.settle();
+    await tick();
+    // The delivery-started turn settled, then the recovery chain restarted
+    // the play activity and the member adapter replayed its held input set.
+    expect(announcedTexts(h)).toEqual([]);
+    expect(player.followups.map(messageText)).toEqual([
+      "开局策略",
+      "继续",
+      "开局策略",
+    ]);
 
     player.settle();
     await tick();
@@ -1419,8 +1433,19 @@ describe("TeamOrchestrator cancel and dispose", () => {
       active: "player",
       activation: "player",
     });
+
+    // The delivery turn settled, then the recovery chain restarted the play
+    // activity with the held input set (the aborted drive's relays).
+    player.settle();
+    await tick();
+    expect(player.followups.map(messageText)).toEqual(["策略", "新消息", "策略"]);
+
     player.settle();
     await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
     expectRelayOrUserSources(h);
   });
 
@@ -1455,22 +1480,24 @@ describe("TeamOrchestrator failure reporting", () => {
     await h.orchestrator.materialize(teamOptions());
     const planner = member(h, PLANNER_ID);
 
-    // A fail-loud relay read fails the decision step before any drive.
+    // A fail-loud relay read fails the delivery assembly before any drive.
     h.team.seam.drain.mockImplementationOnce(() => {
       throw new Error("drain read failed");
     });
     h.orchestrator.submit("首条");
     await tick();
 
-    // M1: the failure is logged with its session/phase context and exposed;
-    // a non-LlmError step failure reports the UNKNOWN code.
+    // The delivery assembly failure joins the freeze channel: it is logged
+    // with its session/phase context and exposed with the INTERNAL code and
+    // the orchestration origin (specs/076-agent-v2-optimize/contracts/
+    // flow-orchestration.md §5).
     expect(logger.error).toHaveBeenCalledOnce();
     expect(logger.error.mock.calls[0]?.[0]).toMatch(/orchestration step failed/);
     expect(logger.error.mock.calls[0]?.[1]).toEqual({
       session: SESSION,
       phase: "planning",
       member: null,
-      code: "UNKNOWN",
+      code: "INTERNAL",
       error: "drain read failed",
     });
     expect(h.orchestrator.snapshot()).toMatchObject({
@@ -1480,23 +1507,21 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "drain read failed",
         member: null,
         phase: "planning",
-        code: "UNKNOWN",
+        code: "INTERNAL",
         origin: "orchestration",
       },
     });
 
-    // Recovery: the failed send is still queued and the next pump drains it.
+    // Recovery: the failed assembly consumed nothing, so the next send opens
+    // the planner turn; its settlement re-judges the edge (plan → play).
     h.orchestrator.submit("再来");
-    await tick();
-    expect(planner.followups.map(messageText)).toEqual(["首条"]);
-    planner.settle();
-    await tick();
-    expect(planner.followups.map(messageText)).toEqual(["首条", "再来"]);
+    expect(planner.followups.map(messageText)).toEqual(["再来"]);
     planner.settle();
     await h.orchestrator.whenQuiescent();
     expect(h.orchestrator.snapshot()).toMatchObject({
       failed: false,
       lastError: null,
+      activation: "player",
     });
   });
 
@@ -1527,7 +1552,7 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "injected SERVER failure",
         member: "planner",
         phase: "planning",
-        code: "SERVER",
+        code: "TRANSIENT",
         origin: "member-turn",
       },
     });
@@ -1537,7 +1562,7 @@ describe("TeamOrchestrator failure reporting", () => {
       session: SESSION,
       phase: "planning",
       member: "planner",
-      code: "SERVER",
+      code: "TRANSIENT",
       error: "injected SERVER failure",
     });
     expect(player.followups).toHaveLength(0);
@@ -1565,33 +1590,31 @@ describe("TeamOrchestrator failure reporting", () => {
     expectRelayOrUserSources(h);
   });
 
-  it("digests messages queued during a failed turn with the retained member in FIFO order", async () => {
+  it("keeps a mid-turn message in the inbox across a failed turn and claims it in the next turn", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
     const player = member(h, PLAYER_ID);
     const planner = member(h, PLANNER_ID);
 
-    // The first send drives the planner; the second queues behind the turn.
+    // The first send drives the planner; the second steers into the turn.
     h.orchestrator.submit("首条");
     expect(h.orchestrator.submit("排队").queued).toBe(true);
 
-    // The turn fails: the pause retains both the activation and the queue.
+    // The turn fails: the freeze retains the activation; the steered message
+    // was not lost (it stays pending in the member inbox).
     planner.failCurrentTurn("TIMEOUT");
     await tick();
     expect(h.orchestrator.snapshot()).toMatchObject({
       paused: true,
-      queued: 1,
       activation: "planner",
-      lastError: { code: "TIMEOUT", member: "planner", origin: "member-turn" },
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
     });
 
-    // The next send lifts the pause: the retained member digests the FIFO
-    // first ("排队" before "重驱"), so the player is never driven.
+    // The next send opens the retained member's turn; the settlement re-judges
+    // the edge and the player becomes the activation.
     h.orchestrator.submit("重驱");
-    expect(planner.followups.map(messageText)).toEqual(["首条", "排队"]);
-    planner.settle();
-    await tick();
-    expect(planner.followups.map(messageText)).toEqual(["首条", "排队", "重驱"]);
+    expect(planner.followups.map(messageText)).toEqual(["首条", "重驱"]);
+    expect(planner.steers.map(messageText)).toEqual(["排队"]);
     planner.settle();
     await h.orchestrator.whenQuiescent();
     expect(player.followups).toHaveLength(0);
@@ -1656,7 +1679,7 @@ describe("TeamOrchestrator failure reporting", () => {
       session: SESSION,
       phase: "reviewing",
       member: "planner",
-      code: "UNKNOWN",
+      code: "INTERNAL",
       error: "followup rejected",
     });
     expect(h.orchestrator.snapshot()).toMatchObject({
@@ -1666,14 +1689,15 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "followup rejected",
         member: "planner",
         phase: "reviewing",
-        code: "UNKNOWN",
+        code: "INTERNAL",
         origin: "orchestration",
       },
     });
 
-    // MINOR1: the terminal record was not consumed. The resumed loop digests
-    // the user message, then retries the held review and consumes the record
-    // only once the review drive settles.
+    // The terminal record was not consumed. The resumed loop handles the
+    // delivered message, then the flow restarts the review activity, whose
+    // adapter replays the held input set and consumes the record only once
+    // the review drive settles.
     h.orchestrator.submit("继续");
     await tick();
     planner.settle();
@@ -2050,25 +2074,16 @@ describe("TeamOrchestrator natural round stop (specs/068-wiki-round-pause/contra
     await tick();
     expect(planner.followups.map(messageText).at(-1)).toBe(PLAYER_RECORD_RELAY);
 
-    // A user message lands while the review turn is in flight.
+    // A user message steers into the in-flight review turn (mid-turn).
     expect(h.orchestrator.submit("排队消息").queued).toBe(true);
     const playerDrives = player.followups.length;
     planner.settle();
     await tick();
 
-    // The queue is digested by the current planner activation first; the stop
-    // is not evaluated while a queued message remains.
-    expect(planner.followups.map(messageText).at(-1)).toBe("排队消息");
-    expect(h.orchestrator.snapshot()).toMatchObject({
-      phase: "reviewing",
-      active: "planner",
-      activation: "planner",
-      queued: 0,
-    });
-    expect(player.followups).toHaveLength(playerDrives);
-
-    planner.settle();
-    await tick();
+    // The review settled: its onSettle counts the fifth round and the edge
+    // sends the flow to rest (no player drive). The steered message was
+    // consumed inside the review turn.
+    expect(planner.steers.map(messageText)).toEqual(["排队消息"]);
     expect(player.followups).toHaveLength(playerDrives);
     expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
   });
@@ -2149,7 +2164,7 @@ describe("TeamOrchestrator natural round stop (specs/068-wiki-round-pause/contra
       paused: true,
       failed: true,
       activation: "planner",
-      lastError: { code: "SERVER", member: "planner", origin: "member-turn" },
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
     });
     expect(player.followups).toHaveLength(drives);
 
@@ -2202,7 +2217,7 @@ describe("TeamOrchestrator natural round stop (specs/068-wiki-round-pause/contra
     expect(h.orchestrator.snapshot()).toMatchObject({
       paused: true,
       failed: true,
-      lastError: { code: "SERVER", member: "planner", origin: "member-turn" },
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
     });
     expect(player.followups).toHaveLength(drives);
 
@@ -2298,14 +2313,144 @@ describe("TeamOrchestrator natural round stop (specs/068-wiki-round-pause/contra
       lastError: null,
     });
 
-    // Resume: the planner digests the queued message, then the spent budget
-    // reaches the stop without driving the player.
+    // Resume: the delivered message is handled first, then the flow restarts
+    // the review activity (replaying the held record input set); the settled
+    // review counts the fifth round and the spent budget reaches the stop
+    // without driving the player.
     h.orchestrator.submit("继续");
     await tick();
     expect(planner.followups.map(messageText).at(-1)).toBe("继续");
     planner.settle();
     await tick();
     expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      active: "planner",
+      activation: "planner",
+    });
+
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(drives);
     expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+});
+
+describe("TeamOrchestrator delivery split and error contract (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §3/§5)", () => {
+  it("delivers in-flight (steer) and quiescent (assembly) to the active member", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const planner = member(h, PLANNER_ID);
+    const player = member(h, PLAYER_ID);
+
+    // Quiescent: the message assembles a turn (followup).
+    expect(h.orchestrator.submit("首条").queued).toBe(false);
+    expect(planner.followups.map(messageText)).toEqual(["首条"]);
+    expect(planner.injections).toEqual([]);
+
+    // In flight: the message steers into the turn.
+    expect(h.orchestrator.submit("在途").queued).toBe(true);
+    expect(planner.steers.map(messageText)).toEqual(["在途"]);
+    expect(planner.followups.map(messageText)).toEqual(["首条"]);
+
+    planner.settle();
+    await tick();
+    // plan → play, whose empty drain rests the loop at the player.
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: null,
+      activation: "player",
+    });
+
+    // The next quiescent delivery belongs to the new active member.
+    h.orchestrator.submit("给 player");
+    expect(player.followups.map(messageText)).toEqual(["给 player"]);
+    player.settle();
+    await h.orchestrator.whenQuiescent();
+  });
+
+  const codes: ReadonlyArray<[string, string]> = [
+    ["RATE_LIMIT", "TRANSIENT"],
+    ["QUOTA", "QUOTA"],
+    ["INVALID_CREDENTIAL", "CREDENTIAL"],
+    ["NO_ADAPTER", "CONFIG"],
+    ["CONTEXT_WINDOW_EXCEEDED", "INPUT_TOO_LARGE"],
+    ["INVARIANT", "INTERNAL"],
+  ];
+
+  for (const [engineCode, loopCode] of codes) {
+    it(`reports the loop code ${loopCode} for the engine failure ${engineCode}`, async () => {
+      const logger = { error: vi.fn() };
+      const h = createHarness({ logger });
+      await h.orchestrator.materialize(teamOptions());
+      const planner = member(h, PLANNER_ID);
+
+      h.orchestrator.submit("首条");
+      planner.failCurrentTurn(engineCode);
+      await tick();
+
+      expect(h.orchestrator.snapshot()).toMatchObject({
+        paused: true,
+        failed: true,
+        lastError: {
+          code: loopCode,
+          origin: "member-turn",
+          member: "planner",
+          detail: { engineCode, message: `injected ${engineCode} failure` },
+        },
+      });
+      expect(logger.error.mock.calls[0]?.[1]).toMatchObject({ code: loopCode });
+    });
+  }
+
+  it("freezes on a member failure and restarts the current activity on recovery", async () => {
+    const logger = { error: vi.fn() };
+    const h = createHarness({ logger });
+    await h.orchestrator.materialize(teamOptions());
+    const planner = member(h, PLANNER_ID);
+
+    // plan freezes on failure; nothing is driven while frozen.
+    h.orchestrator.submit("首条");
+    planner.failCurrentTurn("SERVER");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      active: null,
+      activation: "planner",
+    });
+
+    // Recovery: the delivery drive, then the flow restarts plan (whose replay
+    // is empty here) and judges the edge.
+    h.orchestrator.submit("恢复");
+    expect(planner.followups.map(messageText)).toEqual(["首条", "恢复"]);
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: false,
+      failed: false,
+      lastError: null,
+      activation: "player",
+    });
+  });
+
+  it("freezes on abort without writing a failure fact (the aborted channel)", async () => {
+    const logger = { error: vi.fn() };
+    const h = createHarness({ logger });
+    await h.orchestrator.materialize(teamOptions());
+    const planner = member(h, PLANNER_ID);
+
+    h.orchestrator.submit("首条");
+    expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
+    await h.orchestrator.whenQuiescent();
+
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      failed: false,
+      lastError: null,
+      active: null,
+      activation: "planner",
+    });
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
   });
 });

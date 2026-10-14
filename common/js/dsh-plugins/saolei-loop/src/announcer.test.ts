@@ -9,6 +9,8 @@
  */
 
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import type { GameEventRecord } from "@dominion/dsh-saolei";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -125,6 +127,78 @@ describe("AnnouncerMember.announce", () => {
     expect(member.source.events).toEqual([]);
     expect(listener).not.toHaveBeenCalled();
   });
+});
+
+describe("AnnouncerMember.drive (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §2.2)", () => {
+  const record: GameEventRecord = {
+    status: "won",
+    stats: {
+      operationCount: 5,
+      operationsByType: { click: 4, flag: 1, chord: 0 },
+      correctFlags: 3,
+      avgOpsPerMine: 1.67,
+    },
+    endedAt: 1_000,
+  };
+  const statsText =
+    "本局游戏结束：胜利。\n本局共执行 5 个操作：click 4 次、flag 1 次、chord 0 次。";
+
+  it("announces the latest terminal record once and settles", async () => {
+    const member = new AnnouncerMember(SESSION, { peekTerminal: () => record });
+
+    expect(await member.drive()).toEqual({ kind: "settled" });
+    expect(announcedText(member)).toBe(statsText);
+    expect(member.consumes).toBe(false);
+    expect(member.busy).toBe(false);
+    expect(member.pendingInput).toBe(0);
+
+    // The record-identity guard makes a re-driven announce a no-op.
+    expect(await member.drive()).toEqual({ kind: "settled" });
+    expect(member.source.events).toHaveLength(1);
+  });
+
+  it("settles without announcing while no terminal record exists", async () => {
+    const member = new AnnouncerMember(SESSION, { peekTerminal: () => null });
+
+    expect(await member.drive()).toEqual({ kind: "settled" });
+    expect(member.source.events).toEqual([]);
+  });
+
+  it("reports failed{INTERNAL} for a render/announce error", async () => {
+    const broken = { status: "won", endedAt: 0 } as unknown as GameEventRecord;
+    const member = new AnnouncerMember(SESSION, { peekTerminal: () => broken });
+
+    const outcome = await member.drive();
+    expect(outcome).toMatchObject({ kind: "failed", code: "INTERNAL" });
+  });
+
+  it("has no delivery semantics and reports resting when awaited", async () => {
+    const member = new AnnouncerMember(SESSION, { peekTerminal: () => null });
+
+    expect(() => member.deliver(announcementMessage())).not.toThrow();
+    expect(await member.whenSettled()).toEqual({ kind: "resting" });
+    expect(() => member.abort()).not.toThrow();
+    expect(() => member.dispose()).not.toThrow();
+  });
+
+  function announcedText(member: AnnouncerMember): string {
+    return member.source.events
+      .map((event) =>
+        event.type === "assistant/message"
+          ? event.data.message.content
+              .map((block) => (block.type === "text" ? block.text : ""))
+              .join("")
+          : "",
+      )
+      .join("");
+  }
+
+  function announcementMessage() {
+    return createUserMessage({
+      content: [{ type: "text", text: "ignore" }],
+      source: { kind: "user" },
+    });
+  }
 });
 
 describe("ANNOUNCER_MEMBER_ROLE / ANNOUNCER_MEMBER_SUMMARY", () => {
