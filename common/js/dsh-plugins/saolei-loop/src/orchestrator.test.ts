@@ -5,7 +5,7 @@
  * quiescence → player; gameEnded → planner review; reviewing → player),
  * queue-first digestion before a switch, cancel / pause / resume,
  * materialization rollback, disposal, failure reporting (logger + snapshot
- * failure state, review retry after a failed drive), the saolei
+ * failure state, review retry after a failed drive), the announcer
  * announcement's queue-priority invariance (US2 of
  * specs/065-agent-v2-team-refine/spec.md), the no-synthesized-input rule
  * (every drive carries only team relays and user messages), and the natural
@@ -54,7 +54,7 @@ import type {
   TeamMaterializeOptions,
   TeamOrchestratorDeps,
 } from "./orchestrator.js";
-import { SAOLEI_MEMBER_SUMMARY } from "./announcer.js";
+import { ANNOUNCER_MEMBER_SUMMARY } from "./announcer.js";
 import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
 
@@ -63,7 +63,7 @@ const SESSION = "templates/saolei/sessions/s1";
 const PRESET_ID = "planner-p";
 const PLAYER_ID = `${SESSION}/player`;
 const PLANNER_ID = `${SESSION}/planner`;
-const SAOLEI_ID = `${SESSION}/saolei`;
+const ANNOUNCER_ID = `${SESSION}/announcer`;
 
 /**
  * The exact announcement {@link winner} produces (the gameStatsText template
@@ -590,7 +590,7 @@ function loser(): GameEventRecord {
 }
 
 /**
- * Mirror the team service's live relay for the announce-only saolei member:
+ * Mirror the team service's live relay for the announce-only announcer member:
  * every announcer production enters the planner's pending queue as the
  * `team-broadcast` user message the real team would render from the member
  * log (the fake team seam drains pre-seeded queues only).
@@ -598,7 +598,7 @@ function loser(): GameEventRecord {
 function relayAnnouncementsToPlanner(h: Harness): void {
   const announcer = h.orchestrator.announcer;
   if (announcer === undefined) {
-    throw new Error("the saolei announcer is not materialized");
+    throw new Error("the announcer member is not materialized");
   }
   announcer.source.subscribe?.((event) => {
     if (event.type !== "assistant/message") {
@@ -608,12 +608,12 @@ function relayAnnouncementsToPlanner(h: Harness): void {
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("");
     const queue = h.team.queues.get(PLANNER_ID) ?? [];
-    queue.push(relay(SAOLEI_ID, "saolei", text));
+    queue.push(relay(ANNOUNCER_ID, "announcer", text));
     h.team.queues.set(PLANNER_ID, queue);
   });
 }
 
-/** The texts the saolei system member has announced, in order. */
+/** The texts the announcer member has announced, in order. */
 function announcedTexts(h: Harness): string[] {
   return (h.orchestrator.announcer?.source.events ?? []).map((event) => {
     if (event.type !== "assistant/message") {
@@ -741,16 +741,16 @@ describe("TeamOrchestrator.materialize", () => {
     ).toEqual([
       ["player", PLAYER_ID, DEFAULT_MEMBER_SUMMARIES.player],
       ["planner", PLANNER_ID, DEFAULT_MEMBER_SUMMARIES.planner],
-      ["saolei", SAOLEI_ID, SAOLEI_MEMBER_SUMMARY],
+      ["announcer", ANNOUNCER_ID, ANNOUNCER_MEMBER_SUMMARY],
     ]);
-    // The third registration is the announce-only system member: no section
+    // The third registration is the announce-only announcer member: no section
     // target, no broadcast consumption, and its log starts empty.
-    const saolei = registration.members[2];
-    expect(saolei?.source.consumes).toBe(false);
-    expect(saolei?.source.sectionTarget).toBeUndefined();
-    expect(saolei?.source.events).toEqual([]);
+    const announcer = registration.members[2];
+    expect(announcer?.source.consumes).toBe(false);
+    expect(announcer?.source.sectionTarget).toBeUndefined();
+    expect(announcer?.source.events).toEqual([]);
     // The orchestrator's announcer accessor exposes the same member.
-    expect(h.orchestrator.announcer?.source.id).toBe(SAOLEI_ID);
+    expect(h.orchestrator.announcer?.source.id).toBe(ANNOUNCER_ID);
 
     // Materialization rests in the planning activation: nothing is driven
     // and no drive message is synthesized (FR-010).
@@ -883,7 +883,7 @@ describe("TeamOrchestrator transitions", () => {
     expect(player.followups).toHaveLength(1);
 
     // The player's turn ends with a terminal record: review the planner. The
-    // saolei announcement is the turn's last input (followup), after the
+    // announcement is the turn's last input (followup), after the
     // injected player relay.
     h.game.current = winner();
     h.team.queues.set(PLANNER_ID, [relay(player.agent.id, "player", "本局对局记录")]);

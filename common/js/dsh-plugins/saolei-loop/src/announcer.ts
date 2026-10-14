@@ -1,10 +1,11 @@
 /**
- * SaoleiSystemMember — the saolei team's non-agent system member: an
- * announce-only {@link TeamMemberSource} that carries the game-over summary
- * into the group chat. Its contract is
+ * AnnouncerMember — the team's announce-only member: it carries the game-over
+ * summary into the group chat. Its contract is
  * specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3 plus
  * the member-message-source interface of
- * specs/065-agent-v2-team-refine/contracts/team-member-source.md §1/§2.
+ * specs/065-agent-v2-team-refine/contracts/team-member-source.md §1/§2; the
+ * role name and the member's roster presence are
+ * specs/076-agent-v2-optimize/contracts/announcer-member.md §1.
  *
  * The output log is a process-memory, structurally session-event-compatible
  * `assistant/message` list: team derivation/rendering/consumption treats it
@@ -22,30 +23,33 @@ import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { createAssistantMessage } from "@deepseek-ai/dsh-llm";
 import type { TeamMemberSource } from "@dominion/dsh-team";
 
-/** The saolei system member's wire role — roster registration and merge sender label (specs/065-agent-v2-team-refine/data-model.md §1.2). */
-export const SAOLEI_MEMBER_ROLE = "saolei";
+/** The announcer member's wire role — roster registration and merge sender label (specs/076-agent-v2-optimize/contracts/announcer-member.md §1). */
+export const ANNOUNCER_MEMBER_ROLE = "announcer";
 
-/** Roster summary of the saolei system member (the team section's saolei line). */
-export const SAOLEI_MEMBER_SUMMARY = "扫雷系统，终局播报对局结果与操作统计";
+/** Roster summary of the announcer member (the team section's announcer line). */
+export const ANNOUNCER_MEMBER_SUMMARY = "终局播报对局结果与操作统计";
 
 /**
- * Synthetic model provenance of an announcement. The source shape is required
- * by `createAssistantMessage` (an assistant message always records a routed
- * model), but the value is never routed or rendered; it only keeps the event
- * structurally compatible with the shared session-event vocabulary.
+ * Synthetic model provenance of an announcement. `createAssistantMessage`
+ * requires the source shape (an assistant message always records a routed
+ * model), but these values are opaque stand-ins: nothing routes on them, no
+ * consumer renders them, and their spelling carries no scene or role meaning
+ * (the member's role identifier is {@link ANNOUNCER_MEMBER_ROLE}). They only
+ * keep the announcement structurally compatible with the shared
+ * session-event vocabulary.
  */
 const ANNOUNCE_PROVIDER = "saolei";
 const ANNOUNCE_MODEL = "system";
 
 /**
- * The system member's message log and source face. `announce(text)` appends
- * one `assistant/message` event (unique MessageId, single text block) and
- * synchronously notifies subscribers; `source` exposes that log to the team
- * with the announce-only capability bits (`consumes: false`, no
+ * The announce-only member's message log and source face. `announce(text)`
+ * appends one `assistant/message` event (unique MessageId, single text block)
+ * and synchronously notifies subscribers; `source` exposes that log to the
+ * team with the announce-only capability bits (`consumes: false`, no
  * `sectionTarget`).
  */
-export class SaoleiSystemMember {
-  /** The team-facing message source (`id = ${session}/saolei`). */
+export class AnnouncerMember {
+  /** The team-facing message source (`id = ${session}/announcer`). */
   readonly source: TeamMemberSource;
 
   /** The immutable log snapshots; replaced (not mutated) on every announce. */
@@ -57,7 +61,7 @@ export class SaoleiSystemMember {
   constructor(session: string) {
     const member = this;
     this.source = {
-      id: `${session}/saolei`,
+      id: `${session}/announcer`,
       get events() {
         return member.log;
       },
@@ -86,7 +90,7 @@ export class SaoleiSystemMember {
    */
   announce(text: string): void {
     if (text === "") {
-      throw new Error("saolei announcer: announcement text must not be empty");
+      throw new Error("announcer: announcement text must not be empty");
     }
     this.seq += 1;
     this.lastTime = Math.max(this.lastTime + 1, Date.now() + 1);

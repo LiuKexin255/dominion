@@ -10,7 +10,7 @@ import type { TeamView } from "./session.js";
 import type { TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
-import type { SaoleiSystemMember } from "@dominion/dsh-saolei-loop";
+import type { AnnouncerMember } from "@dominion/dsh-saolei-loop";
 import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
 
 /** The text of a user message's first text block. */
@@ -304,17 +304,17 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const teamQueues = new Map<string, UserMessage[]>();
   const teamRegister = vi.fn((registration: TeamRegistration) => {
     // The saolei team's three-member roster: player + planner + the
-    // announce-only system member (specs/065-agent-v2-team-refine/contracts/
-    // game-stats-broadcast.md §3).
+    // announce-only announcer (specs/076-agent-v2-optimize/contracts/
+    // announcer-member.md §1/§3).
     expect(registration.members).toHaveLength(3);
-    const saolei = registration.members[2];
-    expect(saolei).toMatchObject({
-      role: "saolei",
-      summary: "扫雷系统，终局播报对局结果与操作统计",
+    const announcer = registration.members[2];
+    expect(announcer).toMatchObject({
+      role: "announcer",
+      summary: "终局播报对局结果与操作统计",
     });
-    expect(saolei?.source.id).toBe(`${S1}/saolei`);
-    expect(saolei?.source.consumes).toBe(false);
-    expect(saolei?.source.sectionTarget).toBeUndefined();
+    expect(announcer?.source.id).toBe(`${S1}/announcer`);
+    expect(announcer?.source.consumes).toBe(false);
+    expect(announcer?.source.sectionTarget).toBeUndefined();
     return { dispose: vi.fn() };
   });
   const fiberDispose = vi.fn(async () => {});
@@ -471,13 +471,13 @@ function winnerRecord(): GameEventRecord {
 function entrySeam(
   h: Harness,
   session: string,
-): { announcer: SaoleiSystemMember | undefined; history: TeamHistory } {
+): { announcer: AnnouncerMember | undefined; history: TeamHistory } {
   const teams = (
     h.sessions as unknown as {
       teams: Map<
         string,
         {
-          orchestrator: { announcer?: SaoleiSystemMember };
+          orchestrator: { announcer?: AnnouncerMember };
           history: TeamHistory;
         }
       >;
@@ -577,6 +577,9 @@ describe("TeamSessions.materialize", () => {
     ).toEqual([
       [`${S1}/team/members/player`, "player", P_PLAYER, DEFAULT_MODEL],
       [`${S1}/team/members/planner`, "planner", P_PLANNER, DEFAULT_MODEL],
+      // The announce-only announcer closes the roster: no preset/model
+      // (specs/076-agent-v2-optimize/data-model.md §4).
+      [`${S1}/team/members/announcer`, "announcer", "", ""],
     ]);
     expect(view.createTime).toBeInstanceOf(Date);
   });
@@ -642,10 +645,12 @@ describe("TeamSessions.materialize", () => {
       }),
     );
     // The member projections keep the composite original (selection-surface
-    // contract); the provider catalogs queried are the two split routes.
+    // contract); the provider catalogs queried are the two split routes. The
+    // announcer closes the roster with no model.
     expect(view.members.map((entry) => entry.model)).toEqual([
       "opencode-go/kimi-k3",
       DEFAULT_MODEL,
+      "",
     ]);
     expect(h.listModels).toHaveBeenCalledWith("opencode-go");
     expect(h.listModels).toHaveBeenCalledWith("glm-responses");
@@ -709,6 +714,26 @@ describe("TeamSessions.materialize", () => {
           { role: "player", preset: P_PLAYER },
           { role: "planner", preset: P_PLANNER },
           { role: "referee", preset: P_PLAYER },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    // The announcer enters the roster server-side and is never
+    // caller-configurable: a request carrying it stays INVALID_ARGUMENT
+    // (specs/076-agent-v2-optimize/contracts/announcer-member.md §3 item 4).
+    await expect(
+      h.sessions.materialize(S1, {
+        members: [
+          { role: "player", preset: P_PLAYER },
+          { role: "planner", preset: P_PLANNER },
+          { role: "announcer", preset: P_PLANNER },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    await expect(
+      h.sessions.materialize(S1, {
+        members: [
+          { role: "player", preset: P_PLAYER },
+          { role: "announcer", preset: P_PLANNER },
         ],
       }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
@@ -1070,7 +1095,7 @@ describe("TeamSessions.send", () => {
   });
 });
 
-describe("TeamSessions saolei announcement projection (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4)", () => {
+describe("TeamSessions announcer announcement projection (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4)", () => {
   /** Drive the team to the player's terminal turn (planner strategy → player). */
   async function driveToTerminalTurn(h: Harness, stream: StreamRecorder): Promise<void> {
     h.sessions.send(S1, "请开始", stream);
@@ -1095,13 +1120,13 @@ describe("TeamSessions saolei announcement projection (specs/065-agent-v2-team-r
       "本局游戏结束：胜利。\n本局共执行 5 个操作：click 4 次、flag 1 次、chord 0 次。";
     const announcement = h.sessions
       .listTeamMessages(S1)
-      .find((entry) => entry.member === "saolei");
+      .find((entry) => entry.member === "announcer");
     expect(announcement?.message.role).toBe("ROLE_AGENT");
     expect(announcement?.message.blocks).toEqual([{ text: { content: statsText } }]);
 
     // The live team_message frame carries the same entry (seq + message
     // object), so ListTeamMessages and the stream cannot diverge.
-    const frame = stream.events.find((event) => event.teamMessage?.member === "saolei");
+    const frame = stream.events.find((event) => event.teamMessage?.member === "announcer");
     expect(frame?.teamMessage?.seq).toBe(String(announcement?.seq));
     expect(frame?.teamMessage?.message).toBe(announcement?.message);
   });
@@ -1375,6 +1400,17 @@ describe("TeamSessions projections", () => {
     expect(teamMember.model).toBe(DEFAULT_MODEL);
     expect(teamMember.preset).toBe(P_PLAYER);
     expect(teamMember.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
+    // The announcer is served by the same member read: the announce-only
+    // member has no preset/model and its output-only system_prompt is empty
+    // (specs/076-agent-v2-optimize/contracts/announcer-member.md §3 item 3).
+    const announcer = await h.sessions.getTeamMember(S1, "announcer");
+    expect(announcer).toEqual({
+      name: `${S1}/team/members/announcer`,
+      role: "announcer",
+      preset: "",
+      model: "",
+      systemPrompt: "",
+    });
     // The team snapshot member projection keeps system_prompt empty (the
     // field is served only by GetTeamMember).
     expect(h.sessions.getTeam(S1).members.every((entry) => entry.systemPrompt === "")).toBe(true);

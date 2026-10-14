@@ -24,7 +24,8 @@ option go_package = "dominion/projects/game";
 
 // AgentService is the session-scoped stateful surface of agent_v2: the
 // session's team singleton (AIP-156 singletons,
-// https://google.aip.dev/156) with its player/planner members, the merged
+// https://google.aip.dev/156) with its three-member roster (player/planner
+// LLM members plus the announce-only announcer), the merged
 // team message sequence, the member-view projections, and the Send team
 // stream. Team/member/queue/game state lives in the serving instance's
 // process memory, so every RPC requires proxy owner affinity — the gateway
@@ -66,10 +67,11 @@ service AgentService {
     };
   }
 
-  // GetTeamMember returns one fixed member (members/player or
-  // members/planner) including its output-only system_prompt — the complete
-  // assembly result the member instance actually uses. AIP-131:
-  // https://google.aip.dev/131
+  // GetTeamMember returns one fixed member (members/player,
+  // members/planner, or members/announcer) including its output-only
+  // system_prompt — the complete assembly result the member instance actually
+  // uses (empty for the announce-only announcer, which assembles no prompt).
+  // AIP-131: https://google.aip.dev/131
   rpc GetTeamMember(GetTeamMemberRequest) returns (TeamMember) {
     option (google.api.http) = {
       get: "/api/v2/{name=templates/*/sessions/*/team/members/*}"
@@ -299,12 +301,13 @@ message TeamMember {
   // Format: templates/{template}/sessions/{session}/team/members/{member}
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
   // The member role — a scene vocabulary string (saolei: "player" /
-  // "planner"); required in the materialization input and echoed back
-  // unchanged on the output side.
+  // "planner" / "announcer"); required in the materialization input (the
+  // caller configures the two LLM members only) and echoed back unchanged on
+  // the output side, where the roster also carries the server-side announcer.
   string role = 2;
   // The full preset resource name the member materializes from; required in
   // the materialization input and served as the materialization-time
-  // snapshot on the output side.
+  // snapshot on the output side (empty for the announcer, a non-LLM member).
   string preset = 3 [
     (google.api.resource_reference) = {
       type: "game.liukexin.com/Preset"
@@ -335,9 +338,11 @@ message Team {
   // Format: templates/{template}/sessions/{session}/team
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
   // The member configurations: caller-supplied on the materialization input
-  // (one {role, preset, model?} per member) and the materialized member
+  // (one {role, preset, model?} per LLM member) and the materialized member
   // snapshots on the output side — the same shape, so the field is not
-  // output-only. The proto imposes no member count or role vocabulary
+  // output-only. The output roster additionally carries the server-side
+  // announce-only "announcer" member (empty preset/model). The proto imposes
+  // no member count or role vocabulary
   // (scene-agnostic primitive); the hosting service validates the scene.
   repeated TeamMember members = 2;
   // The session's desktop bridge connection fact, read from the agent-side
@@ -403,8 +408,8 @@ message GetTeamMemberRequest {
 // same shape in its `team_message` frame with the same seq value.
 message TeamMessage {
   // The message producer: the reserved value "user" for user input, or a
-  // member role (scene vocabulary; saolei: "player" / "planner") for member
-  // output. Empty = unset.
+  // member role (scene vocabulary; saolei: "player" / "planner" /
+  // "announcer") for member output. Empty = unset.
   string member = 1;
   // The native message (user input, or the member's own output blocks).
   HistoryMessage message = 2;
@@ -421,8 +426,8 @@ message MemberViewMessage {
   // The message in this member's view (role USER or AGENT).
   HistoryMessage message = 1;
   // The message source: the reserved value "user" for user input, or a
-  // member role (scene vocabulary; saolei: "player" / "planner") for a
-  // team-broadcast relay. Empty = unset.
+  // member role (scene vocabulary; saolei: "player" / "planner" /
+  // "announcer") for a team-broadcast relay. Empty = unset.
   string sender = 2;
 }
 
@@ -647,7 +652,9 @@ message ChatEvent {
   // turn's events. Empty on team-level frames.
   string turn_id = 2;
   // The producing member of a member event frame — a scene vocabulary role
-  // string (saolei: "player" / "planner"); unset on team-level frames.
+  // string; only turn-running members produce member frames (saolei:
+  // "player" / "planner" — the announce-only "announcer" runs no turn and
+  // emits only its team_message frame); unset on team-level frames.
   string member = 3;
   oneof payload {
     QueuedEvent queued = 10;
@@ -676,11 +683,12 @@ message ChatEvent {
 // (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
 message MemberViewEvent {
   // The consuming member's role — the member whose view the input entered
-  // (scene vocabulary; saolei: "player" / "planner"). Empty = unset.
+  // (scene vocabulary; saolei: "player" / "planner", the members that consume
+  // inputs — the announce-only "announcer" receives no relay). Empty = unset.
   string member = 1;
   // The input source: the reserved value "user" for a user input, or a
-  // member role (scene vocabulary) for a team-broadcast relay. Empty =
-  // unset.
+  // member role (scene vocabulary; saolei: "player" / "planner" /
+  // "announcer") for a team-broadcast relay. Empty = unset.
   string sender = 2;
   // The message in the consuming member's view (ROLE_USER), the same
   // projection ListMemberMessages serves for the entry.

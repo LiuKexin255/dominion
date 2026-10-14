@@ -33,9 +33,9 @@ import type { Context, Plugin } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 
 export {
-  SAOLEI_MEMBER_ROLE,
-  SAOLEI_MEMBER_SUMMARY,
-  SaoleiSystemMember,
+  ANNOUNCER_MEMBER_ROLE,
+  ANNOUNCER_MEMBER_SUMMARY,
+  AnnouncerMember,
 } from "./announcer.js";
 
 export {
@@ -46,6 +46,7 @@ export {
 } from "./orchestrator.js";
 export type {
   AgentCreationSeam,
+  AgentTeamRole,
   CancelResult,
   ComposePreset,
   ComposedPreset,

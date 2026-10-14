@@ -48,7 +48,7 @@
  * record is consumed only after its review drive settles, so a failed attempt
  * retries with the held relays instead of losing the review. Before the
  * review drains, an unreviewed terminal record
- * is announced through the announce-only saolei system member (record-level
+ * is announced through the announce-only announcer member (record-level
  * `statsSentFor` guard) — the announcement is one member speech on the same
  * relay/consume closure and rides at the tail of the review input set
  * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3).
@@ -96,13 +96,26 @@ import type {
 } from "@dominion/dsh-saolei";
 
 import {
-  SAOLEI_MEMBER_ROLE,
-  SAOLEI_MEMBER_SUMMARY,
-  SaoleiSystemMember,
+  ANNOUNCER_MEMBER_ROLE,
+  ANNOUNCER_MEMBER_SUMMARY,
+  AnnouncerMember,
 } from "./announcer.js";
 
-/** The two team roles; the orchestrator activates them in alternation. */
-export type TeamRole = "player" | "planner";
+/**
+ * The member roles the orchestration presents — the snapshot `member`/`active`/
+ * `activation` values and the roster roles. The announce-only announcer is a
+ * presented member (roster + activation presentation) without an agent
+ * runtime (specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
+ */
+export type TeamRole = "player" | "planner" | "announcer";
+
+/**
+ * The agent-backed member roles: the members that own an `AgentHandle`/`Agent`
+ * and therefore a {@link MemberRuntime}. The announcer is announce-only and
+ * carries no runtime (specs/076-agent-v2-optimize/contracts/announcer-member.md
+ * §3 item 5).
+ */
+export type AgentTeamRole = "player" | "planner";
 
 /**
  * Which side of the workflow the orchestrator is working with:
@@ -187,6 +200,7 @@ export interface OrchestratorLogger {
 export const DEFAULT_MEMBER_SUMMARIES: Readonly<Record<TeamRole, string>> = {
   player: "执行扫雷操作，独占桌面控制",
   planner: "复盘对局与制定策略，不操作",
+  announcer: ANNOUNCER_MEMBER_SUMMARY,
 };
 
 /**
@@ -441,7 +455,7 @@ interface IdleWaiter {
 }
 
 interface MemberRuntime {
-  readonly role: TeamRole;
+  readonly role: AgentTeamRole;
   readonly handle: AgentHandle;
   /** The member's team message source — the team seam's drain key. */
   readonly source: TeamMemberSource;
@@ -485,7 +499,7 @@ interface PendingReview {
  * so the host's refresh/destroy path is a single {@link dispose}.
  */
 export class TeamOrchestrator {
-  private members: Readonly<Record<TeamRole, MemberRuntime>> | null = null;
+  private members: Readonly<Record<AgentTeamRole, MemberRuntime>> | null = null;
   private teamRegistration: TeamHandle | null = null;
   /**
    * The team's game runtime: built at materialization through the foundation
@@ -494,13 +508,13 @@ export class TeamOrchestrator {
    * §2). The player member only receives it as an agent-scoped handle.
    */
   private game: GameRuntime | null = null;
-  /** The announce-only saolei system member; non-null exactly while materialized. */
-  private saolei: SaoleiSystemMember | null = null;
+  /** The announce-only announcer member; non-null exactly while materialized. */
+  private announcerMember: AnnouncerMember | null = null;
   /** The materialized team's session resource name (logging context). */
   private session: string | null = null;
   private phase: OrchestrationPhase = "planning";
   /** The member the next structural/queued input belongs to (activation). */
-  private current: TeamRole = "planner";
+  private current: AgentTeamRole = "planner";
   private readonly queue: UserMessage[] = [];
   /** The member whose turn is in flight; null when quiescent. */
   private drivingMember: MemberRuntime | null = null;
@@ -509,7 +523,7 @@ export class TeamOrchestrator {
   /** The terminal record already handed to a settled planner review. */
   private reviewedGameEvent: GameEventRecord | null = null;
   /**
-   * The terminal record already announced through the saolei system member —
+   * The terminal record already announced through the announcer member —
    * record identity, mirroring {@link reviewedGameEvent}: a new terminal
    * record (a new game's end) announces once, the same record never repeats
    * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3 item 3).
@@ -572,12 +586,12 @@ export class TeamOrchestrator {
       );
       created.push(planner);
 
-      // The announce-only system member (no preset/model, never driven, not a
-      // proto team member): it carries the terminal game summary into the
+      // The announce-only announcer member (no preset/model, never driven, not
+      // an LLM member): it carries the terminal game summary into the
       // group chat through the same member-message-source closure as the two
       // agent members (specs/065-agent-v2-team-refine/contracts/
       // game-stats-broadcast.md §3 item 1; team-member-source.md §2/§3).
-      const saolei = new SaoleiSystemMember(options.session);
+      const announcer = new AnnouncerMember(options.session);
       const registration: TeamRegistration = {
         goal: options.goal,
         context: options.context,
@@ -593,15 +607,15 @@ export class TeamOrchestrator {
             summary: options.summaries?.planner ?? DEFAULT_MEMBER_SUMMARIES.planner,
           },
           {
-            source: saolei.source,
-            role: SAOLEI_MEMBER_ROLE,
-            summary: SAOLEI_MEMBER_SUMMARY,
+            source: announcer.source,
+            role: ANNOUNCER_MEMBER_ROLE,
+            summary: DEFAULT_MEMBER_SUMMARIES.announcer,
           },
         ],
       };
       this.teamRegistration = this.team().register(registration);
       this.members = { player, planner };
-      this.saolei = saolei;
+      this.announcerMember = announcer;
       this.session = options.session;
       this.phase = "planning";
       this.current = "planner";
@@ -703,7 +717,7 @@ export class TeamOrchestrator {
     const members = this.members;
     this.members = null;
     this.game = null;
-    this.saolei = null;
+    this.announcerMember = null;
     this.session = null;
     this.statsSentFor = null;
     if (members === null) {
@@ -734,19 +748,20 @@ export class TeamOrchestrator {
   }
 
   /** The live member handle (the system-prompt read surface of specs/059-agent-v2-team-mode/tasks.md T032), or undefined. */
-  member(role: TeamRole): AgentHandle | undefined {
+  member(role: AgentTeamRole): AgentHandle | undefined {
     return this.members?.[role].handle;
   }
 
   /**
-   * The announce-only saolei system member (its log/source face) while the
-   * team is materialized; undefined before materialization and after dispose.
-   * The host projects its announcements into the merge history through this
-   * read surface (specs/065-agent-v2-team-refine/contracts/
-   * game-stats-broadcast.md §3 item 6 / §4).
+   * The announce-only announcer member (its log/source face) while the team is
+   * materialized; undefined before materialization and after dispose. The host
+   * projects its announcements into the merge history through this read
+   * surface (specs/065-agent-v2-team-refine/contracts/
+   * game-stats-broadcast.md §3 item 6 / §4; the roster presence is
+   * specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
    */
-  get announcer(): SaoleiSystemMember | undefined {
-    return this.saolei ?? undefined;
+  get announcer(): AnnouncerMember | undefined {
+    return this.announcerMember ?? undefined;
   }
 
   /** The team's live state snapshot (status/queue/failure presentation). */
@@ -765,7 +780,7 @@ export class TeamOrchestrator {
 
   /** Create one member with the full setup chain (compose → role extras). */
   private async createMember(
-    role: TeamRole,
+    role: AgentTeamRole,
     member: TeamMemberOptions,
     options: TeamMaterializeOptions,
     sessionId: string,
@@ -1109,7 +1124,7 @@ export class TeamOrchestrator {
    *    switches to the player and rests without a drive — the natural stop
    *    (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §2);
    * 4. player quiescent: an unreviewed gameEnded → announce the record's
-   *    stats through the saolei system member, then start the planner review
+   *    stats through the announcer member, then start the planner review
    *    (the announcement guarantees the drained input set is non-empty and
    *    rides at its tail; the record is consumed only after the drive
    *    settles); otherwise structurally continue the player with newly
@@ -1174,8 +1189,8 @@ export class TeamOrchestrator {
   }
 
   /**
-   * Send one terminal record's game-over summary through the saolei system
-   * member. Record-identity guard (`statsSentFor`, mirroring
+   * Send one terminal record's game-over summary through the announcer member.
+   * Record-identity guard (`statsSentFor`, mirroring
    * `reviewedGameEvent`): the same record announces once — a failed review
    * retry reaches case 2 before this evaluation, and a new game's terminal
    * record triggers the next announcement. Called before `drain(planner)`,
@@ -1185,10 +1200,10 @@ export class TeamOrchestrator {
    * §3 items 2/3/5).
    */
   private announceStats(event: GameEventRecord): void {
-    if (this.saolei === null || event === this.statsSentFor) {
+    if (this.announcerMember === null || event === this.statsSentFor) {
       return;
     }
-    this.saolei.announce(gameStatsText(event));
+    this.announcerMember.announce(gameStatsText(event));
     this.statsSentFor = event;
   }
 

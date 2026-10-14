@@ -289,7 +289,7 @@ describe("Team.register", () => {
     const { team } = createTeam();
     const player = createMember("templates/saolei/sessions/s1/player");
     const planner = createMember("templates/saolei/sessions/s1/planner");
-    const saolei = createSource("templates/saolei/sessions/s1/saolei", false);
+    const announcer = createSource("templates/saolei/sessions/s1/announcer", false);
     team.register({
       goal: "尽量高的胜率",
       context: "game #3",
@@ -297,9 +297,9 @@ describe("Team.register", () => {
         { source: player.source, role: "player", summary: "执行操作并独占桌面控制" },
         { source: planner.source, role: "planner", summary: "复盘与制定策略，不操作" },
         {
-          source: saolei.source,
-          role: "saolei",
-          summary: "扫雷系统，终局播报对局结果与操作统计",
+          source: announcer.source,
+          role: "announcer",
+          summary: "终局播报对局结果与操作统计",
         },
       ],
     });
@@ -309,7 +309,7 @@ describe("Team.register", () => {
       members: [
         { role: "player", summary: "执行操作并独占桌面控制" },
         { role: "planner", summary: "复盘与制定策略，不操作" },
-        { role: "saolei", summary: "扫雷系统，终局播报对局结果与操作统计" },
+        { role: "announcer", summary: "终局播报对局结果与操作统计" },
       ],
     });
     for (const member of [player, planner]) {
@@ -323,9 +323,9 @@ describe("Team.register", () => {
       expect(section?.text).toContain("- [player] 执行操作并独占桌面控制");
       expect(section?.text).toContain("- [planner] 复盘与制定策略，不操作");
       // The roster renders every registered member, including the announce-only
-      // saolei system member
+      // announcer member
       // (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3).
-      expect(section?.text).toContain("- [saolei] 扫雷系统，终局播报对局结果与操作统计");
+      expect(section?.text).toContain("- [announcer] 终局播报对局结果与操作统计");
       // The tag pairs are input-side only: members do not wrap their own
       // output (team-member-source.md §4 terminal wording).
       expect(section?.text).toContain(
@@ -676,35 +676,35 @@ describe("agentMemberSource", () => {
 
 describe("member-source interface", () => {
   const SESSION = "templates/saolei/sessions/s1";
-  const SAOLEI_ID = `${SESSION}/saolei`;
+  const ANNOUNCER_ID = `${SESSION}/announcer`;
 
   it("never queues broadcasts for an announce-only member, fails loud on drain, and renders its roster line", () => {
     const { team } = createTeam();
     const player = createMember(`${SESSION}/player`);
     const planner = createMember(`${SESSION}/planner`);
-    const saolei = createSource(SAOLEI_ID, false);
+    const announcer = createSource(ANNOUNCER_ID, false);
     const members = [
       { source: player.source, role: "player", summary: "a" },
       { source: planner.source, role: "planner", summary: "b" },
       {
-        source: saolei.source,
-        role: "saolei",
-        summary: "扫雷系统，终局播报对局结果与操作统计",
+        source: announcer.source,
+        role: "announcer",
+        summary: "终局播报对局结果与操作统计",
       },
     ];
     team.register({ goal: "g", members });
 
     produceSpeech(player, "one");
     // The live relay path skips it …
-    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
+    expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
     // … and the derived rebuild does not construct a pending list either.
     team.register({ goal: "g", members });
-    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
-    expect(() => team.drain(saolei.source)).toThrow(/announce-only/);
+    expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
+    expect(() => team.drain(announcer.source)).toThrow(/announce-only/);
 
     // The roster renders every member, announce-only included.
     expect(player.sections[0]?.text).toContain(
-      "[saolei] 扫雷系统，终局播报对局结果与操作统计",
+      "[announcer] 终局播报对局结果与操作统计",
     );
   });
 
@@ -712,35 +712,35 @@ describe("member-source interface", () => {
     const { team } = createTeam();
     const player = createMember(`${SESSION}/player`);
     const planner = createMember(`${SESSION}/planner`);
-    const saolei = createSource(SAOLEI_ID, false);
+    const announcer = createSource(ANNOUNCER_ID, false);
     const members = [
       { source: player.source, role: "player", summary: "a" },
       { source: planner.source, role: "planner", summary: "b" },
       {
-        source: saolei.source,
-        role: "saolei",
-        summary: "扫雷系统，终局播报对局结果与操作统计",
+        source: announcer.source,
+        role: "announcer",
+        summary: "终局播报对局结果与操作统计",
       },
     ];
     team.register({ goal: "g", members });
 
     const { event, message } = speechEvent("本局游戏结束：胜利。");
-    emitSource(saolei, event);
+    emitSource(announcer, event);
 
     const view = team.drain(planner.source);
     expect(view).toHaveLength(1);
     expect(textOf(view[0]!)).toBe(
-      "<saolei-message>\n本局游戏结束：胜利。\n</saolei-message>",
+      "<announcer-message>\n本局游戏结束：胜利。\n</announcer-message>",
     );
     expect(view[0]?.source).toMatchObject({
       kind: "team-broadcast",
-      role: "saolei",
-      senderSessionId: SAOLEI_ID,
+      role: "announcer",
+      senderSessionId: ANNOUNCER_ID,
       messageId: String(message.id),
       form: "relay",
     });
     // The announce-only sender is not a receiver of its own broadcast.
-    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
+    expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
 
     consume(planner, view[0]!);
     team.register({ goal: "g", members });
@@ -750,31 +750,31 @@ describe("member-source interface", () => {
   it("delivers a log-only source's productions through drain-time derivation (no live subscription)", () => {
     const { team } = createTeam();
     const planner = createMember(`${SESSION}/planner`);
-    const saolei = createLogSource(SAOLEI_ID, false);
-    expect(saolei.source.subscribe).toBeUndefined();
+    const announcer = createLogSource(ANNOUNCER_ID, false);
+    expect(announcer.source.subscribe).toBeUndefined();
     const members = [
       { source: planner.source, role: "planner", summary: "b" },
       {
-        source: saolei.source,
-        role: "saolei",
-        summary: "扫雷系统，终局播报对局结果与操作统计",
+        source: announcer.source,
+        role: "announcer",
+        summary: "终局播报对局结果与操作统计",
       },
     ];
     team.register({ goal: "g", members });
 
     // The production lands in the log silently (no live notification face).
     const { event, message } = speechEvent("本局游戏结束：胜利。");
-    saolei.events.push(event);
+    announcer.events.push(event);
 
     const view = team.drain(planner.source);
     expect(view).toHaveLength(1);
     expect(textOf(view[0]!)).toBe(
-      "<saolei-message>\n本局游戏结束：胜利。\n</saolei-message>",
+      "<announcer-message>\n本局游戏结束：胜利。\n</announcer-message>",
     );
     expect(view[0]?.source).toMatchObject({
       kind: "team-broadcast",
-      role: "saolei",
-      senderSessionId: SAOLEI_ID,
+      role: "announcer",
+      senderSessionId: ANNOUNCER_ID,
       messageId: String(message.id),
       form: "relay",
     });
@@ -787,10 +787,10 @@ describe("member-source interface", () => {
 
     // … and a later log-only production is still picked up (the absent live
     // relay never wedges the member).
-    saolei.events.push(speechEvent("下一局统计").event);
+    announcer.events.push(speechEvent("下一局统计").event);
     const next = team.drain(planner.source);
     expect(next).toHaveLength(1);
-    expect(textOf(next[0]!)).toBe("<saolei-message>\n下一局统计\n</saolei-message>");
+    expect(textOf(next[0]!)).toBe("<announcer-message>\n下一局统计\n</announcer-message>");
   });
 
   it("treats a consuming non-agent source as a full receiver through the same closure", () => {

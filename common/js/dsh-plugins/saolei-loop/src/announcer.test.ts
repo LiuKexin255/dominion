@@ -1,5 +1,5 @@
 /**
- * Unit tests for {@link SaoleiSystemMember}
+ * Unit tests for {@link AnnouncerMember}
  * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3,
  * contracts/team-member-source.md §1/§2): the announce-only source capability
  * bits, the `assistant/message` log entry shape (unique MessageId, single
@@ -12,13 +12,13 @@ import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  SAOLEI_MEMBER_ROLE,
-  SAOLEI_MEMBER_SUMMARY,
-  SaoleiSystemMember,
+  ANNOUNCER_MEMBER_ROLE,
+  ANNOUNCER_MEMBER_SUMMARY,
+  AnnouncerMember,
 } from "./announcer.js";
 
 const SESSION = "templates/saolei/sessions/s1";
-const ANNOUNCER_ID = `${SESSION}/saolei`;
+const ANNOUNCER_ID = `${SESSION}/announcer`;
 
 /** The assistant/message event at `index`, narrowed for field access. */
 function announcedEvent(
@@ -32,9 +32,9 @@ function announcedEvent(
   return event;
 }
 
-describe("SaoleiSystemMember.source", () => {
+describe("AnnouncerMember.source", () => {
   it("is a TeamMemberSource with the announce-only capability bits", () => {
-    const member = new SaoleiSystemMember(SESSION);
+    const member = new AnnouncerMember(SESSION);
 
     expect(member.source.id).toBe(ANNOUNCER_ID);
     expect(member.source.consumes).toBe(false);
@@ -44,7 +44,7 @@ describe("SaoleiSystemMember.source", () => {
   });
 
   it("exposes the log as snapshots: an announce does not mutate the previously read array", () => {
-    const member = new SaoleiSystemMember(SESSION);
+    const member = new AnnouncerMember(SESSION);
     const before = member.source.events;
 
     member.announce("第一局");
@@ -54,9 +54,9 @@ describe("SaoleiSystemMember.source", () => {
   });
 });
 
-describe("SaoleiSystemMember.announce", () => {
+describe("AnnouncerMember.announce", () => {
   it("appends one assistant/message event with a unique id, single text block and synthetic provenance", () => {
-    const member = new SaoleiSystemMember(SESSION);
+    const member = new AnnouncerMember(SESSION);
 
     member.announce("本局游戏结束：胜利。");
     member.announce("本局游戏结束：失败。");
@@ -71,6 +71,8 @@ describe("SaoleiSystemMember.announce", () => {
     expect(first.data.message.content).toEqual([
       { type: "text", text: "本局游戏结束：胜利。" },
     ]);
+    // The provenance values are opaque structural stand-ins, never routed or
+    // rendered (specs/076-agent-v2-optimize/contracts/announcer-member.md §1).
     expect(first.data.message.source).toMatchObject({
       kind: "model",
       provider: "saolei",
@@ -81,7 +83,7 @@ describe("SaoleiSystemMember.announce", () => {
   });
 
   it("keeps seq and time monotonic across synchronous announcements", () => {
-    const member = new SaoleiSystemMember(SESSION);
+    const member = new AnnouncerMember(SESSION);
 
     const before = Date.now();
     member.announce("第一局");
@@ -98,7 +100,7 @@ describe("SaoleiSystemMember.announce", () => {
   });
 
   it("notifies subscribers synchronously and stops after unsubscribe", () => {
-    const member = new SaoleiSystemMember(SESSION);
+    const member = new AnnouncerMember(SESSION);
     const listener = vi.fn();
     const unsubscribe = member.source.subscribe?.(listener);
 
@@ -114,7 +116,7 @@ describe("SaoleiSystemMember.announce", () => {
   });
 
   it("fails loud on empty text without appending or notifying", () => {
-    const member = new SaoleiSystemMember(SESSION);
+    const member = new AnnouncerMember(SESSION);
     const listener = vi.fn();
     member.source.subscribe?.(listener);
 
@@ -125,9 +127,9 @@ describe("SaoleiSystemMember.announce", () => {
   });
 });
 
-describe("SAOLEI_MEMBER_ROLE / SAOLEI_MEMBER_SUMMARY", () => {
-  it("carries the wire role and roster duty line of the saolei system member", () => {
-    expect(SAOLEI_MEMBER_ROLE).toBe("saolei");
-    expect(SAOLEI_MEMBER_SUMMARY).toBe("扫雷系统，终局播报对局结果与操作统计");
+describe("ANNOUNCER_MEMBER_ROLE / ANNOUNCER_MEMBER_SUMMARY", () => {
+  it("carries the wire role and roster duty line of the announcer member", () => {
+    expect(ANNOUNCER_MEMBER_ROLE).toBe("announcer");
+    expect(ANNOUNCER_MEMBER_SUMMARY).toBe("终局播报对局结果与操作统计");
   });
 });

@@ -171,10 +171,10 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	assertTerminalTurnEndsWithToolBlock(t, turns[1])
 
 	// Review: the planner consumes the player's raw process and emits the
-	// continue strategy. The review entry is gated on the saolei
+	// continue strategy. The review entry is gated on the announcer
 	// announcement's result line — its keywords ("本局游戏结束：胜利") must
 	// match the review drive's LAST user message, the announcement the
-	// system member sends before the drain (team_planner.yaml
+	// announcer member sends before the drain (team_planner.yaml
 	// team-planner-review-continue;
 	// specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3),
 	// so this turn occurring at all proves terminal-unit continuity AND the
@@ -659,14 +659,14 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 // board answers the first click), game 2 is a lost game whose batch lands
 // BOTH operations (click then flag) before the losing receipt — the
 // multi-operation comparison. Each handoff contributes exactly one
-// `member="saolei"` merged entry whose body is the gameStatsText template
+// `member="announcer"` merged entry whose body is the gameStatsText template
 // (specs/065-agent-v2-team-refine/data-model.md §3) carrying the numbers the
 // flow script actually served; the planner review fixtures are anchored on
 // the stats template key line, so the two review turns firing (continue,
 // then stop) is the "the announcement reached the planner's review input"
 // evidence; and the player's next drives consume the announcements (sender
-// "saolei" view entries + live member_view frames). The proto team face
-// still carries only the two materialized members.
+// "announcer" view entries + live member_view frames). The proto team face
+// carries the three-member roster (assertTeamProtoRosterIncludesAnnouncer).
 func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -757,35 +757,35 @@ func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 		t.Errorf("flow receipts served = %d init / %d step, want 2 / 3", counts.initServed, counts.stepServed)
 	}
 
-	// Merged sequence: exactly one saolei announcement per handoff, in game
+	// Merged sequence: exactly one announcer announcement per handoff, in game
 	// order, each the template with the game's dispatched numbers.
 	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
-	saoleiEntries := teamMessagesForMember(merged, agentV2SaoleiMember)
+	announcerEntries := teamMessagesForMember(merged, agentV2AnnouncerMember)
 	wantStats := []string{
 		agentV2GameStatsText("胜利", 1, 1, 0, 0),
 		agentV2GameStatsText("失败", 2, 1, 1, 0),
 	}
-	if len(saoleiEntries) != len(wantStats) {
-		t.Fatalf("merged saolei entries = %d, want %d (one per handoff)", len(saoleiEntries), len(wantStats))
+	if len(announcerEntries) != len(wantStats) {
+		t.Fatalf("merged announcer entries = %d, want %d (one per handoff)", len(announcerEntries), len(wantStats))
 	}
 	for i, want := range wantStats {
-		entry := saoleiEntries[i]
+		entry := announcerEntries[i]
 		if got := agentV2MessageText(entry.GetMessage()); got != want {
-			t.Errorf("saolei entry[%d] = %q, want %q", i, got, want)
+			t.Errorf("announcer entry[%d] = %q, want %q", i, got, want)
 		}
 		if role := entry.GetMessage().GetRole(); role != game.Role_ROLE_AGENT {
-			t.Errorf("saolei entry[%d] role = %v, want AGENT", i, role)
+			t.Errorf("announcer entry[%d] role = %v, want AGENT", i, role)
 		}
 		if blocks := entry.GetMessage().GetBlocks(); len(blocks) != 1 || blocks[0].GetText() == nil {
-			t.Errorf("saolei entry[%d] blocks = %+v, want one text block", i, blocks)
+			t.Errorf("announcer entry[%d] blocks = %+v, want one text block", i, blocks)
 		}
 	}
 
-	// The announcement is fanned out at the handoff: the first saolei frame
+	// The announcement is fanned out at the handoff: the first announcer frame
 	// precedes the first review turn's turn_start.
 	announceAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
 		frame := event.GetTeamMessage()
-		return frame != nil && frame.GetMember() == agentV2SaoleiMember
+		return frame != nil && frame.GetMember() == agentV2AnnouncerMember
 	})
 	reviewAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
 		return event.GetTurnStart() != nil && event.GetTurnId() == turns[2].turnID
@@ -796,39 +796,39 @@ func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 
 	// Planner view: the review drives consumed both announcements as relay
 	// inputs, and the first one's live frame arrived with its review turn.
-	plannerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2SaoleiMember)
-	if len(plannerSaolei) != len(wantStats) {
-		t.Fatalf("planner view saolei entries = %d, want %d", len(plannerSaolei), len(wantStats))
+	plannerAnnouncer := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2AnnouncerMember)
+	if len(plannerAnnouncer) != len(wantStats) {
+		t.Fatalf("planner view announcer entries = %d, want %d", len(plannerAnnouncer), len(wantStats))
 	}
 	for i, want := range wantStats {
-		if got := agentV2MessageText(plannerSaolei[i].GetMessage()); got != agentV2SaoleiRelayText(want) {
-			t.Errorf("planner view saolei entry[%d] = %q, want %q", i, got, agentV2SaoleiRelayText(want))
+		if got := agentV2MessageText(plannerAnnouncer[i].GetMessage()); got != agentV2AnnouncerRelayText(want) {
+			t.Errorf("planner view announcer entry[%d] = %q, want %q", i, got, agentV2AnnouncerRelayText(want))
 		}
 	}
-	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2SaoleiMember, turns[2].turnID)
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2AnnouncerMember, turns[2].turnID)
 
 	// Player view: the game-2 drive consumed game 1's announcement and the
 	// stop-ack drive consumed game 2's — the next structural drive input
 	// carrying the broadcast (FR-004).
-	playerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player"), agentV2SaoleiMember)
-	if len(playerSaolei) != len(wantStats) {
-		t.Fatalf("player view saolei entries = %d, want %d", len(playerSaolei), len(wantStats))
+	playerAnnouncer := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player"), agentV2AnnouncerMember)
+	if len(playerAnnouncer) != len(wantStats) {
+		t.Fatalf("player view announcer entries = %d, want %d", len(playerAnnouncer), len(wantStats))
 	}
 	for i, want := range wantStats {
-		if got := agentV2MessageText(playerSaolei[i].GetMessage()); got != agentV2SaoleiRelayText(want) {
-			t.Errorf("player view saolei entry[%d] = %q, want %q", i, got, agentV2SaoleiRelayText(want))
+		if got := agentV2MessageText(playerAnnouncer[i].GetMessage()); got != agentV2AnnouncerRelayText(want) {
+			t.Errorf("player view announcer entry[%d] = %q, want %q", i, got, agentV2AnnouncerRelayText(want))
 		}
 	}
-	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "player", agentV2SaoleiMember, turns[3].turnID)
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "player", agentV2AnnouncerMember, turns[3].turnID)
 
 	// The proto team face excludes the system member.
-	assertTeamProtoRosterExcludesSaolei(t, getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName))
+	assertTeamProtoRosterIncludesAnnouncer(t, getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName))
 	assertTerminalHistoriesNoAbortTraces(t, ctx, sutHostURL, sutEnvName, sessionName)
 }
 
 // TestAgentV2TeamGameStatsPromptFaces materializes a team on a session
 // seeded with 12 memories and asserts the prompt-side increments of the
-// feature: the shared team section carries the saolei system member's roster
+// feature: the shared team section carries the announcer member's roster
 // line and the input-side-only caveat
 // (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3/§4 —
 // the same strings the team plugin unit tests pin), and the planner's fixed
@@ -865,11 +865,11 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 	}
 	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, playerPreset.GetName(), plannerPreset.GetName(), "", "")
 
-	// The team section lands on every member: both prompts carry the saolei
+	// The team section lands on every member: both prompts carry the announcer
 	// roster line and the input-side-only caveat.
 	for _, member := range []string{"player", "planner"} {
 		prompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, member).GetSystemPrompt()
-		for _, want := range []string{agentV2TeamSectionSaoleiRosterLine, agentV2TeamSectionInputSideLine} {
+		for _, want := range []string{agentV2TeamSectionAnnouncerRosterLine, agentV2TeamSectionInputSideLine} {
 			if !strings.Contains(prompt, want) {
 				t.Errorf("%s system_prompt lacks %q:\n%s", member, want, prompt)
 			}

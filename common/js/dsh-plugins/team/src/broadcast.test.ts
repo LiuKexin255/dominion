@@ -289,10 +289,10 @@ describe("buildBroadcastMessage", () => {
   });
 
   it("accepts a non-session member id as the sender key (system member)", () => {
-    const senderMemberId = "templates/saolei/sessions/s1/saolei";
+    const senderMemberId = "templates/saolei/sessions/s1/announcer";
     const message = speechMessage("本局游戏结束：胜利。");
     const userMessage = buildBroadcastMessage(
-      "saolei",
+      "announcer",
       { kind: "message", anchor: String(message.id), time: 0, seq: 0 },
       senderMemberId,
       [speechEvent(message)],
@@ -300,7 +300,7 @@ describe("buildBroadcastMessage", () => {
 
     expect(userMessage.source).toMatchObject({
       kind: "team-broadcast",
-      role: "saolei",
+      role: "announcer",
       senderSessionId: senderMemberId,
       form: "relay",
     });

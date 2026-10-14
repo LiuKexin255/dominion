@@ -199,8 +199,21 @@ export interface TurnOutcome {
   error?: { code: string; message: string };
 }
 
-/** The two materialized team members; team roles are open strings upstream. */
-export type MemberRole = "player" | "planner";
+/**
+ * The host's team member roles: the two LLM agent members plus the
+ * announce-only announcer (specs/076-agent-v2-optimize/contracts/
+ * announcer-member.md §1/§3). Team roles are open strings upstream — this is
+ * the scene vocabulary the host validates member names against.
+ */
+export type MemberRole = "player" | "planner" | "announcer";
+
+/**
+ * The agent-backed member roles: the members that own an `AgentHandle`/`Agent`
+ * and therefore a member view and collector. The announcer is announce-only —
+ * its output goes to the merge sequence only, so it never owns a view
+ * (specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
+ */
+export type AgentMemberRole = "player" | "planner";
 
 /**
  * The sender annotation of a relayed broadcast: the source role string
@@ -214,8 +227,8 @@ export function broadcastSender(role: string | undefined): string {
 export interface TeamMergeEntry {
   /**
    * Producer role string: the reserved `"user"` value for user input, a
-   * materialized member role, or a non-agent system member's role (e.g. the
-   * saolei announcer). The wire form is the string itself — the session face
+   * materialized member role, or a non-agent member's role (the announcer).
+   * The wire form is the string itself — the session face
    * is a scene-agnostic primitive and carries no role enum (2026-09-10 user
    * ruling).
    */
@@ -368,7 +381,7 @@ export function usageToProto(usage: DshTokenUsage | undefined): {
  */
 export class TeamHistory {
   private readonly merge: TeamMergeEntry[] = [];
-  private readonly views: Record<MemberRole, MemberViewEntry[]> = { player: [], planner: [] };
+  private readonly views: Record<AgentMemberRole, MemberViewEntry[]> = { player: [], planner: [] };
   private nextSeq = 1;
   private nextMessageId = 1;
 
@@ -395,7 +408,7 @@ export class TeamHistory {
    * (specs/054-agent-v2-bugfixes/data-model.md §1.5).
    */
   appendMemberOutput(
-    role: MemberRole,
+    role: AgentMemberRole,
     content: ReadonlyArray<DshContentBlockView>,
     interrupted = false,
   ): TeamMergeEntry | undefined {
@@ -416,8 +429,8 @@ export class TeamHistory {
   }
 
   /**
-   * Append one system-member announcement (the saolei game-stats message) to
-   * the merge sequence with its sending role label and fan out the
+   * Append one announce-only member's announcement (the announcer's game-stats
+   * message) to the merge sequence with its sending role label and fan out the
    * `team_message{member=role}` frame — `ListTeamMessages` and the stream
    * frame share this entry (same source, same value). The message is a
    * `ROLE_AGENT` single-text-block history entry; the announcement has no
@@ -440,7 +453,7 @@ export class TeamHistory {
    * of waiting for a ListMemberMessages backfill
    * (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
    */
-  appendMemberViewUser(role: MemberRole, event: UserMessageEvent): void {
+  appendMemberViewUser(role: AgentMemberRole, event: UserMessageEvent): void {
     const source = event.data.source;
     if (source.kind !== "user" && source.kind !== "team-broadcast") {
       return;
@@ -468,7 +481,7 @@ export class TeamHistory {
    * both projections observe the settlement. A result with no unsettled
    * matching block is ignored (returns false) — never fabricated.
    */
-  settleToolResult(role: MemberRole, toolId: string, status: ToolStatus, result: string): boolean {
+  settleToolResult(role: AgentMemberRole, toolId: string, status: ToolStatus, result: string): boolean {
     for (let i = this.merge.length - 1; i >= 0; i -= 1) {
       const entry = this.merge[i];
       if (entry === undefined || entry.member !== role) {
@@ -494,7 +507,7 @@ export class TeamHistory {
   }
 
   /** Snapshot of one member's view for ListMemberMessages (defensive copy). */
-  listMemberMessages(role: MemberRole): MemberViewEntry[] {
+  listMemberMessages(role: AgentMemberRole): MemberViewEntry[] {
     return [...this.views[role]];
   }
 
@@ -580,7 +593,7 @@ export class MemberCollector {
   constructor(
     ctx: DshContext,
     private readonly agent: Agent,
-    private readonly role: MemberRole,
+    private readonly role: AgentMemberRole,
     private readonly sessionName: string,
     private readonly history: TeamHistory,
     private readonly sink: (event: ChatEvent) => void,

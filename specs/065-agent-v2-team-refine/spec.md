@@ -1,4 +1,4 @@
-# Feature Specification: agent_v2 team 优化——扫雷系统终局播报、记忆快照近因注入与广播格式提示词澄清
+# Feature Specification: agent_v2 team 优化——announcer 终局统计播报、记忆快照近因注入与广播格式提示词澄清
 
 **Feature Branch**: `065-agent-v2-team-refine`
 
@@ -14,11 +14,11 @@ agent_v2 team 模式（059 建立、060/062 增量优化）当前的三块差距
 
 | 维度 | 现状 | 目标 |
 |---|---|---|
-| 终局信息呈现 | planner 复盘输入只有 player 的终局工具单元广播（`<player-tool-call>` 全文）——原始棋盘文本，无结构化对局概述；用户在团队视图也看不到一局的汇总 | 终局交接时由"扫雷系统"角色成员发送一条本局统计消息（结果 + 操作总数 + 分项数），作为 planner 复盘与用户概览的共同锚点 |
+| 终局信息呈现 | planner 复盘输入只有 player 的终局工具单元广播（`<player-tool-call>` 全文）——原始棋盘文本，无结构化对局概述；用户在团队视图也看不到一局的汇总 | 终局交接时由 announcer 成员发送一条本局统计消息（结果 + 操作总数 + 分项数），作为 planner 复盘与用户概览的共同锚点 |
 | 长期记忆注入 | planner 记忆快照全量注入 system prompt（`renderMemorySnapshot` 渲染全部条目、服务序即 memory_id 升序，`common/js/dsh-plugins/memory-service/src/snapshot.ts`）；条目增多后 token 无界增长且旧条目稀释近因 | 按条目更新时间倒排，仅注入最近更新的 10 条 |
 | 广播格式提示词 | team section 解释了收到的广播如何被包装（`<角色-message>`/`<角色-tool-call>`），但未说明这是**仅输入侧**的呈现形态；实际观察到 agent 在自己的输出中模仿这些标签格式 | team section 明确成员自身输出不使用（不需要）这些标签格式 |
 
-现状锚点：终局交接路径由 062 建立（终局工具结果收束 player 回合 → idle 锚点 → `nextStep()` 评估：排队消化优先 → gameEnded 复盘 → 结构性续驱，`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`）；本 feature 在该路径的复盘交接处插入扫雷系统的统计播报，不改变收束与优先序机制。
+现状锚点：终局交接路径由 062 建立（终局工具结果收束 player 回合 → idle 锚点 → `nextStep()` 评估：排队消化优先 → gameEnded 复盘 → 结构性续驱，`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`）；本 feature 在该路径的复盘交接处插入 announcer 的统计播报，不改变收束与优先序机制。
 
 ## Clarifications
 
@@ -26,24 +26,24 @@ agent_v2 team 模式（059 建立、060/062 增量优化）当前的三块差距
 
 - Q: 游戏结束时扫雷系统发出的统计消息，应该由哪些成员作为群聊输入消费——只有 planner，还是 player 和 planner 都消费？ → A: 全体真实成员消费（Option A）：planner 复盘输入含该消息；player 下次结构性驱动输入同批含该消息，其成员视图记录该广播。
 - Q: 在 webUI 团队视图中，扫雷系统的统计消息应该按普通成员消息样式渲染，还是要有独立的系统公告样式？ → A: 普通成员消息样式（Option A）：复用既有成员消息渲染与发送者标签，前端零/最小改动，无独立系统公告样式。
-- Q: 扫雷系统角色在团队消息流中使用的稳定 role 标签应该是什么？ → A: `saolei`（Option A）：广播标签 `<saolei-message>`，roster 摘要以中文"扫雷系统"职责描述。
+- Q: 扫雷系统角色在团队消息流中使用的稳定 role 标签应该是什么？ → A: 初裁为 `saolei`（广播标签 `<saolei-message>`，roster 摘要以中文"扫雷系统"职责描述）；该 role 标签后续由 [076](../../076-agent-v2-optimize/spec.md) FR-201 更名 **`announcer`**（广播标签 `<announcer-message>`、summary「终局播报对局结果与操作统计」），终态以 076 为准。
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - 扫雷系统成员在终局交接时播报本局统计 (Priority: P1) 🎯 MVP
+### User Story 1 - announcer 成员在终局交接时播报本局统计 (Priority: P1) 🎯 MVP
 
-saolei team 增加"扫雷系统"角色成员——一个不持有 preset/model、不由 LLM 驱动的系统角色。一局游戏终局（胜利或失败）、player 回合收束后、planner 复盘驱动前，该角色发送一条团队消息作为本局游戏的概述，内容至少包含：a) 游戏结果（胜/负）；b) 本局执行的单个操作总数（按成功执行的格子操作计，不是 `saolei_operate` 调用次数——一次批量调用按其中实际执行的单个操作数计入）；c) 每种操作类型（click/flag/chord）的执行数量。循环变为：player →（游戏终局、player 回合收束）→ 扫雷系统发送本局统计 → planner 复盘。统计消息进入团队归并序列（webUI 团队视图以"扫雷系统"角色标注可见），并经既有团队广播机制进入 planner 的复盘驱动输入。
+saolei team 增加 announcer 成员——一个不持有 preset/model、不由 LLM 驱动的 announce-only 成员。一局游戏终局（胜利或失败）、player 回合收束后、planner 复盘驱动前，该成员发送一条团队消息作为本局游戏的概述，内容至少包含：a) 游戏结果（胜/负）；b) 本局执行的单个操作总数（按成功执行的格子操作计，不是 `saolei_operate` 调用次数——一次批量调用按其中实际执行的单个操作数计入）；c) 每种操作类型（click/flag/chord）的执行数量。循环变为：player →（游戏终局、player 回合收束）→ announcer 发送本局统计 → planner 复盘。统计消息进入团队归并序列（webUI 团队视图以 announcer 标注可见），并经既有团队广播机制进入 planner 的复盘驱动输入。
 
-**Why this priority**: 本 feature 的核心增量——结构化的对局概述同时服务 planner 复盘质量（结构化统计 vs 原始棋盘文本）与用户可读性（团队视图一局一报），并建立"扫雷系统"这一系统角色的位置。
+**Why this priority**: 本 feature 的核心增量——结构化的对局概述同时服务 planner 复盘质量（结构化统计 vs 原始棋盘文本）与用户可读性（团队视图一局一报），并建立 announcer 这一 announce-only 成员的位置。
 
-**Independent Test**: 大型测试（fake-llm + fake-desktop，多局 won/lost 链路）：每局交接后，团队归并序列中恰有一条以扫雷系统角色为发送者的统计消息，正文含游戏结果、与该局实际派发一致的操作总数与 click/flag/chord 分项数（对照 fake-desktop 收到的派发序列）；planner 复盘 turn 的模型输入含该消息。
+**Independent Test**: 大型测试（fake-llm + fake-desktop，多局 won/lost 链路）：每局交接后，团队归并序列中恰有一条以 announcer 为发送者的统计消息，正文含游戏结果、与该局实际派发一致的操作总数与 click/flag/chord 分项数（对照 fake-desktop 收到的派发序列）；planner 复盘 turn 的模型输入含该消息。
 
 **Acceptance Scenarios**:
 
-1. **Given** player 回合内某次 operate 致终局（won/lost）、回合收束且无排队消息，**When** 终局交接评估触发 planner 复盘，**Then** 交接中扫雷系统角色发送一条本局统计消息（含结果/总数/分项数），planner 复盘 turn 的输入包含该消息（与其未消费的 player 广播同批进入）。
+1. **Given** player 回合内某次 operate 致终局（won/lost）、回合收束且无排队消息，**When** 终局交接评估触发 planner 复盘，**Then** 交接中 announcer 发送一条本局统计消息（含结果/总数/分项数），planner 复盘 turn 的输入包含该消息（与其未消费的 player 广播同批进入）。
 2. **Given** 一次批量 operate 内多个操作成功执行，**When** 终局统计播报，**Then** 操作总数与分项数按实际成功执行的单个操作计（批量调用不按 1 计）。
-3. **Given** 统计消息发送，**When** webUI 团队视图消费，**Then** 该消息按既有成员消息样式渲染、以扫雷系统角色标注呈现（与 user/player/planner 并存的发送者标签，无独立系统公告样式），ListTeamMessages 回填与 team_message 实时帧同源同值。
-4. **Given** 复盘驱动失败后重试（既有 pendingReview 保持语义），**When** 重试驱动发生，**Then** 扫雷系统统计消息不重复发送、不重复进入历史（每局至多一条）。
+3. **Given** 统计消息发送，**When** webUI 团队视图消费，**Then** 该消息按既有成员消息样式渲染、以 announcer 标注呈现（与 user/player/planner 并存的发送者标签，无独立系统公告样式），ListTeamMessages 回填与 team_message 实时帧同源同值。
+4. **Given** 复盘驱动失败后重试（既有 pendingReview 保持语义），**When** 重试驱动发生，**Then** announcer 统计消息不重复发送、不重复进入历史（每局至多一条）。
 
 ---
 
@@ -103,20 +103,21 @@ team section（全员共享的团队提示词）补充说明：`<角色-message>
 - **统计口径边界**：被跳过的无害 no-op（SKIP 集）与结构性拒绝（STOP 集）操作不计入执行数；桌面派发失败（isError）的操作不计入；init（F2 重开）与 remain 查询不是格子操作、不计入。
 - **快照更新时间并列**：以稳定次序键打破并列（确定性排序，具体键由 plan 决定）。
 - **快照截断与 memory 工具并存**：截断只影响 system prompt 注入面，memory 工具的写路径与 `old_text` 定位语义零变化（工具始终面向全量存储操作）。
-- **系统角色不出现在 proto 成员面**：`UpdateTeam` 校验（members 恰 2、role 集合恰为 {player, planner}）、`GetTeam.members`、`active_member` 均不包含扫雷系统角色——它是团队消息流中的发送者，不是物化成员。
+- **announcer 的成员面**（2026-10-14 修订，原"系统角色不出现在 proto 成员面"条款由 [076](../../076-agent-v2-optimize/spec.md) FR-202/FR-203 取代）：`UpdateTeam` **请求侧**校验保持（members 恰 2、role 集合恰为 {player, planner}，announcer 不可由调用方配置）；`GetTeam.members` 名册含 announcer（三成员、空 preset/model），`active_member` 可为 `announcer`（无呈现投影特例）。
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-**扫雷系统终局播报（核心）**
+**announcer 终局播报（核心）**
 
-- **FR-001**: saolei team MUST 增加一个"扫雷系统"系统角色成员：不持有 preset/model、不经 LLM 驱动、不进入 proto `TeamMember` 成员列表与 `active_member`（saolei 场景的 UpdateTeam 两成员校验零变化）。其唯一行为是按 FR-002/FR-003 在终局交接时发送本局统计消息，消息以稳定 role 标签 **`saolei`**（区别于 `player`/`planner`，不与 `user` 保留值冲突；广播标签形态 `<saolei-message>`）为发送者落地团队消息流。
+- **FR-001**: saolei team MUST 增加一个 announce-only 成员（role 标签 **`announcer`**，区别于 `player`/`planner`，不与 `user` 保留值冲突；广播标签形态 `<announcer-message>`）：不持有 preset/model、不经 LLM 驱动，由服务端进入名册、不可由调用方配置（saolei 场景的 `UpdateTeam` **请求侧**两成员校验零变化）。其唯一行为是按 FR-002/FR-003 在终局交接时发送本局统计消息，以该 role 为发送者落地团队消息流。
+  > **supersession（076，2026-10-14）**：本条款的 role 标签与成员面按 [076](../../076-agent-v2-optimize/spec.md) 取终态——role 由 `saolei` 更名 `announcer`（FR-201）；原"不进入 proto `TeamMember` 成员列表与 `active_member`"部分由 FR-202/FR-203 取代（announcer 作为正式成员进入三成员名册、`active_member` 可为 `announcer`，无呈现投影特例）。契约见 `specs/076-agent-v2-optimize/contracts/announcer-member.md`。
 - **FR-002**: 统计消息正文 MUST 呈现：a) 游戏结果（胜/负）；b) 本局成功执行的**单个**格子操作总数（不是 `saolei_operate` 调用次数——批量调用按其中实际成功执行的操作数计入）；c) click/flag/chord 各自的成功执行数量（分项之和 = 总数）。统计口径沿用游戏运行时既有"成功派发"定义：SKIP（无害 no-op）与 STOP（结构性拒绝）操作、桌面派发失败的操作、init 与 remain 调用一律不计入。
-- **FR-003**: 统计消息的触发时机 MUST 绑定终局交接路径：player 回合收束后、planner 复盘驱动前发送，循环为 player →（终局、回合收束）→ 扫雷系统播报 → planner 复盘。排队消息优先序 MUST 零变化：终局后 FIFO 有排队消息时先由 player 消化（播报随交接顺延）；排队消化驱动 player 开新局致本局交接被跳过（终局记录被覆盖）时，该局 MUST NOT 补发统计，下一次播报在下一局终局交接时输出。统计消息使 planner 的复盘输入必非空——存在未复盘终局记录时复盘驱动 MUST 启动（不落入"无输入则续驱 player"的分支）。
-- **FR-004**: 统计消息 MUST 以团队消息形态落地：进入团队归并序列（`ListTeamMessages` 可见、`team_message` 帧实时扇出、webUI 团队视图以发送者角色标注渲染），并经既有团队广播/消费机制进入**全体真实成员**的驱动输入——planner 的复盘驱动输入（与其未消费的 player 广播同批）与 player 的下一次结构性驱动输入（其成员视图记录该广播，呈现为来源扫雷系统角色的注入消息）；每个被交接的局至多一条，复盘驱动失败重试 MUST NOT 重复发送或重复入历史。
-- **FR-005**: 游戏运行时 MUST 按局维护各操作类型（click/flag/chord）的成功执行计数：init 重开时随局面清零、随终局记录携带——统计消息的唯一数据源（运行时不渲染消息正文，消息由扫雷系统角色侧生成）。
-- **FR-006**: 成员提示词 MUST 使成员知晓扫雷系统角色（如 team section roster 增加该角色的一行说明），使 planner/player 能理解其消息的来源与含义。
+- **FR-003**: 统计消息的触发时机 MUST 绑定终局交接路径：player 回合收束后、planner 复盘驱动前发送，循环为 player →（终局、回合收束）→ announcer 播报 → planner 复盘。排队消息优先序 MUST 零变化：终局后 FIFO 有排队消息时先由 player 消化（播报随交接顺延）；排队消化驱动 player 开新局致本局交接被跳过（终局记录被覆盖）时，该局 MUST NOT 补发统计，下一次播报在下一局终局交接时输出。统计消息使 planner 的复盘输入必非空——存在未复盘终局记录时复盘驱动 MUST 启动（不落入"无输入则续驱 player"的分支）。
+- **FR-004**: 统计消息 MUST 以团队消息形态落地：进入团队归并序列（`ListTeamMessages` 可见、`team_message` 帧实时扇出、webUI 团队视图以发送者角色标注渲染），并经既有团队广播/消费机制进入**全体真实成员**的驱动输入——planner 的复盘驱动输入（与其未消费的 player 广播同批）与 player 的下一次结构性驱动输入（其成员视图记录该广播，呈现为来源 announcer 的注入消息）；每个被交接的局至多一条，复盘驱动失败重试 MUST NOT 重复发送或重复入历史。
+- **FR-005**: 游戏运行时 MUST 按局维护各操作类型（click/flag/chord）的成功执行计数：init 重开时随局面清零、随终局记录携带——统计消息的唯一数据源（运行时不渲染消息正文，消息由 announcer 侧生成）。
+- **FR-006**: 成员提示词 MUST 使成员知晓 announcer 成员（如 team section roster 增加该成员的一行说明），使 planner/player 能理解其消息的来源与含义。
 
 **长期记忆快照近因注入**
 
@@ -128,8 +129,8 @@ team section（全员共享的团队提示词）补充说明：`<角色-message>
 
 ### Key Entities
 
-- **扫雷系统角色成员（saolei system member）**：新增的非 LLM 系统角色——团队消息流中的合法发送者（稳定 role 标签），非物化成员（无 preset/model/session log）；唯一行为是终局统计播报。
-- **终局统计消息（game stats message）**：以扫雷系统角色为发送者的团队消息：结果（won/lost）+ 单个操作总数 + click/flag/chord 分项数。
+- **announcer 成员（announcer member）**：新增的非 LLM 成员——团队消息流中的合法发送者（稳定 role 标签 `announcer`），身份 = 名册内的 announce-only 成员（无 preset/model/session log）；唯一行为是终局统计播报。成员面（名册/`active_member`）以 [076](../../076-agent-v2-optimize/spec.md) FR-202/FR-203 为准。
+- **终局统计消息（game stats message）**：以 announcer 为发送者的团队消息：结果（won/lost）+ 单个操作总数 + click/flag/chord 分项数。
 - **每局操作分项统计（per-type operation counts）**：游戏运行时按局维护的 click/flag/chord 成功执行计数（init 清零、随终局记录携带）。
 - **终局交接（game-end handoff）**：既有实体（062：终局工具结果收束 player 回合 → idle 评估 → planner 复盘）——统计播报插入的路径锚点，优先序不变。
 - **长期记忆快照（memory snapshot）**：既有实体（planner system prompt 的 `memory:snapshot` section）——注入策略变更为更新时间倒排 + 最近 10 条截断。
@@ -139,18 +140,18 @@ team section（全员共享的团队提示词）补充说明：`<角色-message>
 
 ### Measurable Outcomes
 
-- **SC-001**: 大型测试（多局 won/lost 链路）：每个被交接的局在团队归并序列中恰有一条扫雷系统角色的统计消息，正文含游戏结果、操作总数与分项数，数值与该局 fake-desktop 实际收到的成功派发序列一致（含批量调用按单个操作计的对照）；planner 复盘 turn 的模型输入含该消息，player 成员视图含该广播（下次结构性驱动输入同批）；`GetTeam.members`/`active_member` 不含该角色。
+- **SC-001**: 大型测试（多局 won/lost 链路）：每个被交接的局在团队归并序列中恰有一条 announcer 的统计消息，正文含游戏结果、操作总数与分项数，数值与该局 fake-desktop 实际收到的成功派发序列一致（含批量调用按单个操作计的对照）；planner 复盘 turn 的模型输入含该消息，player 成员视图含该广播（下次结构性驱动输入同批）；`GetTeam.members` 名册含 announcer（三成员）、`active_member` 可为 `announcer`（2026-10-14 起，原"不含该角色"子句由 [076](../../076-agent-v2-optimize/spec.md) FR-202/FR-203 取代）。
 - **SC-002**: 大型测试（排队跳局场景）：终局后有排队消息驱动 player 开新局时，被跳过的局无统计消息；新局交接时恰有一条新局统计；对照用例（终局后无排队）统计即时播报——排队消化优先序与 062 既有断言回归通过。
 - **SC-003**: 单测：快照注入按更新时间倒序且截取最近 10 条（>10 条截断、不足 10 条全量、空不渲染、并列确定）；快照冻结与写路径回归通过。
-- **SC-004**: 单测：team section 文本含"成员自身输出不使用广播标签格式"的明确表述，且含扫雷系统角色的 roster/介绍；广播渲染语义回归通过。
+- **SC-004**: 单测：team section 文本含"成员自身输出不使用广播标签格式"的明确表述，且含 announcer 的 roster/介绍；广播渲染语义回归通过。
 - **SC-005**: 回归：既有 agent_v2 大型测试全量通过（多局闭环、排队消化、取消、刷新重建、双视图回填、断开收敛）。
 
 ## Assumptions
 
 - **统计消息受众为全体真实成员**（2026-09-15 裁定，编码于 FR-004）：planner 复盘消费 + player 下次结构性驱动同批收到——结构性续驱本就发生，不新增 player turn。
 - **消息内容仅 Input 所列 a/b/c 三项**：既有统计字段（correctFlags/avgOpsPerMine）与对局时长等不进入消息正文；消息语言与措辞由 plan 决定（面向模型与用户可读）。
-- **系统角色 wire 标签为 `saolei`**（2026-09-15 裁定，编码于 FR-001）：与既有 role 词汇同构（小写英文 token），中文"扫雷系统"由 roster 摘要与消息正文承载；经广播标签名规范化无歧义（`<saolei-message>`）。
-- **本 feature 修订 059 FR-009/FR-010 的表述边界**：驱动输入仍 = 成员未消费的团队消息 + 排队用户消息；扫雷系统的统计消息是**系统产生的团队消息**（非编排层以 LLM 成员名义合成的驱动内容），经既有广播/消费机制进入驱动输入——059 的"编排不合成驱动消息"约束在"消息的发送者是系统角色本身"意义上保持。
+- **成员 wire 标签为 `announcer`**（2026-09-15 初裁 `saolei`，2026-10-14 由 [076](../../076-agent-v2-optimize/spec.md) FR-201 更名，编码于 FR-001）：与既有 role 词汇同构（小写英文 token）；roster 摘要为「终局播报对局结果与操作统计」；经广播标签名规范化无歧义（`<announcer-message>`）。
+- **本 feature 修订 059 FR-009/FR-010 的表述边界**：驱动输入仍 = 成员未消费的团队消息 + 排队用户消息；announcer 的统计消息是**该成员自身产生的团队消息**（非编排层以 LLM 成员名义合成的驱动内容），经既有广播/消费机制进入驱动输入——059 的"编排不合成驱动消息"约束在"消息的发送者是该成员本身"意义上保持。
 - **memory List 排序归属服务端、机制通用、实现以 Go 习惯为准**（2026-09-16 五次用户裁定）：`ListMemories` 增 `order_by`（AIP-132 `{field} [desc]` 通用语法 + 字段白名单映射 `memory_id`/`update_time` + 指定 tie-breaker `memory_id` 收尾 + 通用游标 + 单路径仓储——不为单个排序需求定制方法/字面量/游标，也不按排序键数量分支），缺省 `memory_id` 升序零破坏；快照装载以 `page_size=10 + order_by` 单页取最近 10 条——客户端不得全量拉取后自排序；第三、四次裁定约束实现形态：全部校验（语法/白名单/重复/游标键匹配）收敛 domain 层，仓储只做已验证输入直译，类型与签名遵守 `style/golang.md`（结构体容器 `[]*T`、查找返回 `*T`、字段无 `*string`），seek 条件对任意键数以单一 OR 阶梯循环统一生成（单键退化为一个子句的 `$or`，无长度分支），游标为 struct 包装 wire 形态（JSON 对象 `{"entries":[...]}`，未来加参数 = struct 加字段）；第五次裁定修正实现终态：空白 `order_by` 早返回固定默认值、解析以 `map[string]*MemorySortTerm` 为唯一已验证存储（兼做重复检查、`memory_id` 存在性查找与 term 存放，排序趟再过 items 恢复请求原序）、**填补判据 = 请求排序字段完全不含 `memory_id`**（白名单字段任意键位合法——含唯一键的复合键即全序），游标跨函数边界一律指针（`*MemoryPageCursor`，nil = 首页唯一判据），值转换单次发生且责任收敛 domain（term 携对称转换方法、entry 携 typed 双形态，仓储零转换），seek 为 O(n) 增量构造（前缀逐键演进）；对外语义面唯一变化 = 曾因"`memory_id` 非末位"被拒绝的键列表转为合法（消费面无依赖），排序结果、翻页行为与 JS 消费面零变化（token 对外 opaque、全消费面只透传）。契约见 `specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md` §1（对象关系与值转换责任总图见其 item 9）。
 - **快照截断不标注条目总数**：注入文本不附加"共 N 条，显示最近 10 条"类元信息（保持纯条目列表的既有形态）。
 - **测试基建联动**：fake-llm 夹具与 agent_v2 大型测试断言随播报语义同批更新（constitution 原则 VI：大型测试全量通过作为验收）。

@@ -46,14 +46,14 @@ func TestAgentV2TeamStaticWaitAndFirstDrive(t *testing.T) {
 	ctx, sessionName, team := teamPrep(t, sutHostURL, sutEnvName, "team-static-"+uniqueSuffix(), "static")
 	teamName := agentV2TeamName(sessionName)
 
-	// The materialized singleton carries the fixed roster and the effective
-	// member configuration (team-api.md §2).
+	// The materialized singleton carries the three-member roster and the
+	// effective member configuration (team-api.md §2; the announcer closes the
+	// roster with the non-LLM empty form,
+	// specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
 	if team.GetName() != teamName {
 		t.Fatalf("materialized team name = %q, want %q", team.GetName(), teamName)
 	}
-	if len(team.GetMembers()) != 2 {
-		t.Fatalf("team members = %d, want 2 (player + planner)", len(team.GetMembers()))
-	}
+	assertTeamProtoRosterIncludesAnnouncer(t, team)
 	if player := teamMemberByRole(team, "player"); player == nil || player.GetPreset() == "" {
 		t.Fatalf("player member = %+v, want a configured player member", player)
 	}
@@ -1210,13 +1210,13 @@ func TestAgentV2TeamConversationQueuedOpenSkipsHandoffAnnouncement(t *testing.T)
 		t.Errorf("stop acknowledgement = %q, want %q", text, teamPlayerResumeStopText)
 	}
 
-	// Exactly one saolei entry: the NEW game's two-op loss. The skipped
+	// Exactly one announcer entry: the NEW game's two-op loss. The skipped
 	// game's one-op win text appears nowhere in the history.
 	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
-	saoleiEntries := teamMessagesForMember(merged, agentV2SaoleiMember)
+	announcerEntries := teamMessagesForMember(merged, agentV2AnnouncerMember)
 	want := agentV2GameStatsText("失败", 2, 1, 1, 0)
-	if len(saoleiEntries) != 1 || agentV2MessageText(saoleiEntries[0].GetMessage()) != want {
-		t.Fatalf("merged saolei entries = %+v, want exactly the new game's %q", saoleiEntries, want)
+	if len(announcerEntries) != 1 || agentV2MessageText(announcerEntries[0].GetMessage()) != want {
+		t.Fatalf("merged announcer entries = %+v, want exactly the new game's %q", announcerEntries, want)
 	}
 	skipped := agentV2GameStatsText("胜利", 1, 1, 0, 0)
 	for _, entry := range merged {
@@ -1241,13 +1241,13 @@ func TestAgentV2TeamConversationQueuedOpenSkipsHandoffAnnouncement(t *testing.T)
 
 	// The new game's announcement reaches the player's stop-ack drive as a
 	// live sender-annotated consumption.
-	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, eventsA, "player", agentV2SaoleiMember, turns[4].turnID)
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, eventsA, "player", agentV2AnnouncerMember, turns[4].turnID)
 }
 
 // TestAgentV2TeamConversationGameEndAnnouncementPrecedesReview covers the
 // no-queue control half of US2 (specs/065-agent-v2-team-refine/spec.md
 // SC-002 对照): at a terminal handoff with no queued user message the stats
-// announcement is immediate — its saolei team_message frame is fanned out
+// announcement is immediate — its announcer team_message frame is fanned out
 // before the review turn starts — and the review (fixture-anchored on the
 // announcement's key line) consumes it. The game is a two-operation loss so
 // the announced numbers are non-trivial.
@@ -1285,14 +1285,14 @@ func TestAgentV2TeamConversationGameEndAnnouncementPrecedesReview(t *testing.T) 
 	// 即时播报: exactly the game's stats entry, and its frame precedes the
 	// review turn's first frame.
 	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
-	saoleiEntries := teamMessagesForMember(merged, agentV2SaoleiMember)
+	announcerEntries := teamMessagesForMember(merged, agentV2AnnouncerMember)
 	want := agentV2GameStatsText("失败", 2, 1, 1, 0)
-	if len(saoleiEntries) != 1 || agentV2MessageText(saoleiEntries[0].GetMessage()) != want {
-		t.Fatalf("merged saolei entries = %+v, want exactly %q", saoleiEntries, want)
+	if len(announcerEntries) != 1 || agentV2MessageText(announcerEntries[0].GetMessage()) != want {
+		t.Fatalf("merged announcer entries = %+v, want exactly %q", announcerEntries, want)
 	}
 	announceAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
 		frame := event.GetTeamMessage()
-		return frame != nil && frame.GetMember() == agentV2SaoleiMember
+		return frame != nil && frame.GetMember() == agentV2AnnouncerMember
 	})
 	reviewAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
 		return event.GetTurnStart() != nil && event.GetTurnId() == turns[2].turnID
@@ -1302,9 +1302,9 @@ func TestAgentV2TeamConversationGameEndAnnouncementPrecedesReview(t *testing.T) 
 	}
 
 	// The planner consumed it as the review's live input.
-	plannerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2SaoleiMember)
-	if len(plannerSaolei) != 1 || agentV2MessageText(plannerSaolei[0].GetMessage()) != agentV2SaoleiRelayText(want) {
-		t.Fatalf("planner view saolei entries = %+v, want the relayed %q", plannerSaolei, agentV2SaoleiRelayText(want))
+	plannerAnnouncer := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2AnnouncerMember)
+	if len(plannerAnnouncer) != 1 || agentV2MessageText(plannerAnnouncer[0].GetMessage()) != agentV2AnnouncerRelayText(want) {
+		t.Fatalf("planner view announcer entries = %+v, want the relayed %q", plannerAnnouncer, agentV2AnnouncerRelayText(want))
 	}
-	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2SaoleiMember, turns[2].turnID)
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2AnnouncerMember, turns[2].turnID)
 }

@@ -138,23 +138,23 @@ const (
 	agentV2DisconnectSummary   = "桌面连接中断，操作未能完成。请等待桌面重连后再试。"
 )
 
-// ─── Fixture vocabulary: saolei system member (specs/065) ───────────────────
+// ─── Fixture vocabulary: announcer member (specs/065 + specs/076) ───────────
 
 const (
-	// agentV2SaoleiMember is the saolei system member's wire role — the merge
-	// `member` label, the broadcast tag stem (`<saolei-message>`), and the
+	// agentV2AnnouncerMember is the announcer member's wire role — the merge
+	// `member` label, the broadcast tag stem (`<announcer-message>`), and the
 	// ListMemberMessages sender annotation
-	// (common/js/dsh-plugins/saolei-loop/src/announcer.ts SAOLEI_MEMBER_ROLE;
-	// specs/065-agent-v2-team-refine/data-model.md §1.2).
-	agentV2SaoleiMember = "saolei"
+	// (common/js/dsh-plugins/saolei-loop/src/announcer.ts ANNOUNCER_MEMBER_ROLE;
+	// specs/076-agent-v2-optimize/contracts/announcer-member.md §1).
+	agentV2AnnouncerMember = "announcer"
 
 	// Team section lines every member prompt carries
 	// (common/js/dsh-plugins/team/src/section.ts — the same strings the team
-	// plugin unit tests pin): the announce-only system member's roster entry
+	// plugin unit tests pin): the announce-only announcer member's roster entry
 	// (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3) and
 	// the input-side-only caveat (contracts/team-member-source.md §4).
-	agentV2TeamSectionSaoleiRosterLine = "- [saolei] 扫雷系统，终局播报对局结果与操作统计"
-	agentV2TeamSectionInputSideLine    = "- 这些标签格式只用于系统向你呈现他人的输出：你自己的输出不需要、也不应该使用 `<角色-message>`/`<角色-tool-call>` 等标签自我包装（正文直接输出，工具调用按工具协议发起）。"
+	agentV2TeamSectionAnnouncerRosterLine = "- [announcer] 终局播报对局结果与操作统计"
+	agentV2TeamSectionInputSideLine       = "- 这些标签格式只用于系统向你呈现他人的输出：你自己的输出不需要、也不应该使用 `<角色-message>`/`<角色-tool-call>` 等标签自我包装（正文直接输出，工具调用按工具协议发起）。"
 
 	// Explicit prompt-face anchors (specs/075-saolei-game-foundation/spec.md
 	// FR-018): the `saolei:game` gameplay section title (first line of
@@ -181,13 +181,13 @@ func agentV2GameStatsText(result string, total, click, flag, chord int) string {
 	)
 }
 
-// agentV2SaoleiRelayText wraps one announcement body in the broadcast tag
+// agentV2AnnouncerRelayText wraps one announcement body in the broadcast tag
 // pair a receiving member's view carries (renderBroadcast,
 // common/js/dsh-plugins/team/src/broadcast.ts;
 // specs/060-agent-v2-team-optimize/contracts/team-api.md §4) — the
-// `user: [saolei] …` projection body.
-func agentV2SaoleiRelayText(stats string) string {
-	return "<" + agentV2SaoleiMember + "-message>\n" + stats + "\n</" + agentV2SaoleiMember + "-message>"
+// `user: [announcer] …` projection body.
+func agentV2AnnouncerRelayText(stats string) string {
+	return "<" + agentV2AnnouncerMember + "-message>\n" + stats + "\n</" + agentV2AnnouncerMember + "-message>"
 }
 
 // Fixed caller-id sessions the deployed fake-desktop executor binds: the won
@@ -757,7 +757,7 @@ func memberViewHistories(entries []*game.MemberViewMessage) []*game.HistoryMessa
 }
 
 // memberViewEntriesForSender returns a member view's entries annotated with
-// the given sender (e.g. the saolei system member's announcements as that
+// the given sender (e.g. the announcer member's announcements as that
 // member consumed them).
 func memberViewEntriesForSender(view []*game.MemberViewMessage, sender string) []*game.MemberViewMessage {
 	var entries []*game.MemberViewMessage
@@ -838,7 +838,7 @@ func teamStreamMessages(events []*game.ChatEvent) []*game.TeamMessage {
 
 // firstTeamFrameIndex returns the position of the first frame satisfying
 // match in a stream's frame sequence, or -1. Frame-order assertions build on
-// it (e.g. the saolei announcement's team_message frame before the review
+// it (e.g. the announcer announcement's team_message frame before the review
 // turn's turn_start).
 func firstTeamFrameIndex(events []*game.ChatEvent, match func(*game.ChatEvent) bool) int {
 	for i, event := range events {
@@ -1254,7 +1254,7 @@ func agentV2MessageText(m *game.HistoryMessage) string {
 // assertMemberViewPerspective checks one member view's perspective contract
 // (team-api.md §5): a user input is a USER-role message with sender "user";
 // the member's own output is an AGENT-role message with sender = the member;
-// a relayed output — another LLM member's or the saolei system member's
+// a relayed output — another LLM member's or the announcer member's
 // announcement (specs/065-agent-v2-team-refine/data-model.md §1.4) — is a
 // USER-role message with sender = that role (the `user: [sender] …` shape).
 // viewName and member only label failures.
@@ -1272,7 +1272,7 @@ func assertMemberViewPerspective(t *testing.T, viewName string, view []*game.Mem
 			if message.GetRole() != game.Role_ROLE_AGENT {
 				t.Errorf("%s view[%d] own output role = %v, want AGENT", viewName, i, message.GetRole())
 			}
-		case "player", "planner", agentV2SaoleiMember:
+		case "player", "planner", agentV2AnnouncerMember:
 			if message.GetRole() != game.Role_ROLE_USER {
 				t.Errorf("%s view[%d] relayed output from %q role = %v, want USER (the injected broadcast is a user-role message)", viewName, i, sender, message.GetRole())
 			}
@@ -1310,7 +1310,7 @@ func assertTeamMemberViewLive(t *testing.T, ctx context.Context, sutHostURL, sut
 // anchors only the ordering check, not the lookup. The turnID form therefore
 // assumes the target turn is that pair's first consumption in the analysed
 // stream — the case at every call site, where the asserted frame is the
-// stream's first saolei announcement consumed by that member (the other
+// stream's first announcer announcement consumed by that member (the other
 // announcements of the session are consumed later, by later turns).
 func assertTeamMemberViewLiveAt(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName string, events []*game.ChatEvent, member, sender, turnID string) *game.MemberViewEvent {
 	t.Helper()
@@ -1376,7 +1376,7 @@ func assertTeamMemberViewLiveAt(t *testing.T, ctx context.Context, sutHostURL, s
 // messageId and equal body. The two projections share one message object
 // (history.ts appendMemberOutput), so this pins the cross-view正文一致
 // requirement (SC-003) the List faces expose. Producers without a view of
-// their own are skipped: the user input, and the saolei system member's
+// their own are skipped: the user input, and the announcer member's
 // announcements (the receivers record those in THEIR views through the
 // member-view path — specs/065-agent-v2-team-refine/data-model.md §1.4).
 func assertMergeMatchesMemberViews(t *testing.T, entries []*game.TeamMessage, views map[string][]*game.MemberViewMessage) {
@@ -1509,24 +1509,30 @@ func teamActiveMember(t *testing.T, ctx context.Context, sutHostURL, sutEnvName,
 	return getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName).GetActiveMember()
 }
 
-// assertTeamProtoRosterExcludesSaolei checks the non-materialized saolei
-// system member stays off the proto team face
-// (specs/065-agent-v2-team-refine/spec.md FR-001 and Edge Cases): the
-// members list carries the two materialized members only and active_member
-// never names the system role.
-func assertTeamProtoRosterExcludesSaolei(t *testing.T, team *game.Team) {
+// assertTeamProtoRosterIncludesAnnouncer checks the announcer enters the proto
+// team face as a regular fixed member (specs/076-agent-v2-optimize/spec.md
+// FR-202/FR-203, superseding specs/065-agent-v2-team-refine/spec.md FR-001):
+// the members list carries the full three-member roster — the two configured
+// LLM members plus the server-side announce-only announcer (empty preset/model)
+// — and active_member names one of them.
+func assertTeamProtoRosterIncludesAnnouncer(t *testing.T, team *game.Team) {
 	t.Helper()
 
-	if got := len(team.GetMembers()); got != 2 {
-		t.Errorf("team members = %d, want 2 (player + planner; the saolei system member is not materialized)", got)
+	if got := len(team.GetMembers()); got != 3 {
+		t.Errorf("team members = %d, want 3 (player + planner + announcer)", got)
 	}
-	for _, member := range team.GetMembers() {
-		if member.GetRole() == agentV2SaoleiMember {
-			t.Errorf("team members carry role %q, want only the materialized members", agentV2SaoleiMember)
-		}
+	announcer := teamMemberByRole(team, agentV2AnnouncerMember)
+	if announcer == nil {
+		t.Fatalf("team roster lacks the %q member", agentV2AnnouncerMember)
 	}
-	if active := team.GetActiveMember(); active == agentV2SaoleiMember {
-		t.Errorf("active_member = %q, want a materialized member", agentV2SaoleiMember)
+	if announcer.GetPreset() != "" || announcer.GetModel() != "" {
+		t.Errorf("announcer member = {preset:%q model:%q}, want the non-LLM empty form",
+			announcer.GetPreset(), announcer.GetModel())
+	}
+	switch active := team.GetActiveMember(); active {
+	case "player", "planner", agentV2AnnouncerMember:
+	default:
+		t.Errorf("active_member = %q, want one of the three roster roles", active)
 	}
 }
 

@@ -441,20 +441,27 @@ func TestAgentV2TeamMembersListRejections(t *testing.T) {
 	}
 
 	// A valid members list materializes the same session and echoes the
-	// roster with the server-constructed member names.
+	// roster with the server-constructed member names: the two configured LLM
+	// members plus the server-side announcer (empty preset/model).
 	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
-	if got := team.GetMembers(); len(got) != 2 {
-		t.Fatalf("materialized members = %d, want 2", len(got))
+	announcer := teamMemberByRole(team, agentV2AnnouncerMember)
+	if announcer == nil {
+		t.Fatalf("materialized roster lacks the %q member", agentV2AnnouncerMember)
 	}
-	for _, member := range team.GetMembers() {
-		if member.GetRole() != "player" && member.GetRole() != "planner" {
-			t.Errorf("materialized member role = %q, want a scene role string", member.GetRole())
+	if announcer.GetPreset() != "" || announcer.GetModel() != "" {
+		t.Errorf("announcer member = {preset:%q model:%q}, want the non-LLM empty form",
+			announcer.GetPreset(), announcer.GetModel())
+	}
+	for _, role := range []string{"player", "planner"} {
+		member := teamMemberByRole(team, role)
+		if member == nil {
+			t.Fatalf("materialized roster lacks the %q member", role)
 		}
-		if member.GetName() != agentV2MemberName(sessionName, member.GetRole()) {
-			t.Errorf("materialized member name = %q, want %q", member.GetName(), agentV2MemberName(sessionName, member.GetRole()))
+		if member.GetName() != agentV2MemberName(sessionName, role) {
+			t.Errorf("materialized member name = %q, want %q", member.GetName(), agentV2MemberName(sessionName, role))
 		}
 		if member.GetPreset() == "" {
-			t.Errorf("materialized member %q carries an empty preset", member.GetRole())
+			t.Errorf("materialized member %q carries an empty preset", role)
 		}
 	}
 }
@@ -590,9 +597,8 @@ func TestAgentV2TeamEmptyPersonaFallback(t *testing.T) {
 		t.Fatalf("created personas = {%q %q}, want empty", player.GetPersona(), planner.GetPersona())
 	}
 	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
-	if len(team.GetMembers()) != 2 {
-		t.Fatalf("materialized members = %d, want 2 (empty personas must fall back, not fail)", len(team.GetMembers()))
-	}
+	// The three-member roster (player + planner + the server-side announcer).
+	assertTeamProtoRosterIncludesAnnouncer(t, team)
 
 	// The fallback personas ride the model context end to end: the planner
 	// opening entry (system_keyword 你是扫雷 planner) matches, and the

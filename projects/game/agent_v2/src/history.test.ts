@@ -210,29 +210,30 @@ describe("TeamHistory", () => {
     expect(history.listTeamMessages()).toEqual([]);
   });
 
-  it("appends a system announcement to the merge sequence and fans out its team_message frame", () => {
+  it("appends an announcer announcement to the merge sequence and fans out its team_message frame", () => {
     const { history, frames } = createHistory();
 
     const user = history.appendUser("开始一局");
-    const announcement = history.appendAnnouncement("saolei", "本局游戏结束：胜利。");
+    const announcement = history.appendAnnouncement("announcer", "本局游戏结束：胜利。");
 
-    expect(announcement.member).toBe("saolei");
+    expect(announcement.member).toBe("announcer");
     expect(announcement.seq).toBe(2);
     expect(user.seq).toBe(1);
     expect(announcement.message.role).toBe("ROLE_AGENT");
     expect(announcement.message.blocks).toEqual([{ text: { content: "本局游戏结束：胜利。" } }]);
     expect(history.listTeamMessages().map((entry) => [entry.member, entry.seq])).toEqual([
       ["user", 1],
-      ["saolei", 2],
+      ["announcer", 2],
     ]);
     // The frame payload IS the projection entry (same message object, same
     // seq value) — ListTeamMessages and the live stream agree.
     const frame = frames[1];
-    expect(frame?.teamMessage?.member).toBe("saolei");
+    expect(frame?.teamMessage?.member).toBe("announcer");
     expect(frame?.teamMessage?.seq).toBe("2");
     expect(frame?.teamMessage?.message).toBe(announcement.message);
-    // The announcement belongs to no member's own view: the system role has
-    // no view, and receivers record the relay through the member-view path.
+    // The announcement belongs to no member's own view: the announce-only
+    // member has no view, and receivers record the relay through the
+    // member-view path.
     expect(history.listMemberMessages("player")).toEqual([]);
     expect(history.listMemberMessages("planner")).toEqual([]);
   });

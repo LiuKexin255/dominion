@@ -1664,18 +1664,22 @@ describe('App 重建同步（Apply 成功后对话视图即时同步）', () => 
 
 describe('App 主界面 system prompt 入口', () => {
   let fetchMock: ReturnType<typeof vi.fn>
+  // teamResponse 供单个用例替换 GetTeam 投影（默认两成员；announcer 名册用例
+  // 换成三成员）。
+  let teamResponse: () => Response
 
   const PLAYER_PROMPT = 'player 完整 system prompt\n第二行'
   const PLANNER_PROMPT = 'planner 完整 system prompt'
 
   beforeEach(() => {
+    teamResponse = () => teamView(S1, { activeMember: 'planner' })
     fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
       const method = init?.method ?? 'GET'
       if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
         return jsonResponse({ sessions: [{ name: S1, createTime: '2026-08-29T00:00:00Z' }] })
       }
       if (url === `/api/v2/${S1}/team` && method === 'GET') {
-        return teamView(S1, { activeMember: 'planner' })
+        return teamResponse()
       }
       if (url === `/api/v2/${S1}/team/messages`) {
         return jsonResponse({ messages: [] })
@@ -1691,6 +1695,18 @@ describe('App 主界面 system prompt 入口', () => {
       }
       if (url === `/api/v2/${S1}/team/members/planner` && method === 'GET') {
         return jsonResponse({ role: 'planner', systemPrompt: PLANNER_PROMPT })
+      }
+      // The announcer is served by the same member read with an empty
+      // output-only system_prompt (specs/076-agent-v2-optimize/contracts/
+      // announcer-member.md §3 item 3)。
+      if (url === `/api/v2/${S1}/team/members/announcer` && method === 'GET') {
+        return jsonResponse({
+          name: `${S1}/team/members/announcer`,
+          role: 'announcer',
+          preset: '',
+          model: '',
+          systemPrompt: '',
+        })
       }
       // 设置面板数据面（互斥用例打开面板时消费）。
       if (url === '/api/v2/templates/saolei/presets?role=player' && method === 'GET') {
@@ -1788,6 +1804,49 @@ describe('App 主界面 system prompt 入口', () => {
     await waitFor(() => {
       expect(screen.getByTestId('system-prompt-text').textContent).toBe(PLAYER_PROMPT)
     })
+  })
+
+  it('工具条成员清单含 announcer 空形态项：只呈现 role，读取其空 system_prompt', async () => {
+    // 三成员名册（specs/076-agent-v2-optimize/contracts/announcer-member.md
+    // §4）：announcer 项无 preset/model，名册只呈现 role；激活指示为 wire 角色
+    // 串直渲染（播报窗口内 active_member 可为 announcer，同契约 §3 item 2）。
+    teamResponse = () =>
+      teamView(S1, {
+        activeMember: 'announcer',
+        members: [
+          {
+            name: `${S1}/team/members/player`,
+            role: 'player',
+            preset: 'templates/saolei/presets/p-player',
+            model: 'glm-responses/glm-5.2',
+          },
+          {
+            name: `${S1}/team/members/planner`,
+            role: 'planner',
+            preset: 'templates/saolei/presets/p-planner',
+          },
+          { name: `${S1}/team/members/announcer`, role: 'announcer', preset: '', model: '' },
+        ],
+      })
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+
+    const entries = await screen.findAllByTestId('team-member')
+    expect(entries).toHaveLength(3)
+    expect(entries[2]?.getAttribute('data-role')).toBe('announcer')
+    // 不显示 preset 占位与"默认模型"：非 LLM 成员只有 role。
+    expect(entries[2]?.textContent).toBe('announcer')
+    // 激活指示渲染 announcer（无呈现投影特例）。
+    expect(screen.getByTestId('active-member').getAttribute('data-member')).toBe('announcer')
+    expect(screen.getByTestId('active-member').textContent).toContain('announcer')
+
+    // 入口仍可用：GetTeamMember 服务 announcer，浮层呈现其空全文。
+    fireEvent.click(entries[2] as HTMLElement)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(`/api/v2/${S1}/team/members/announcer`, undefined)
+    })
+    const pre = await screen.findByTestId('system-prompt-text')
+    expect(pre.textContent).toBe('')
   })
 })
 

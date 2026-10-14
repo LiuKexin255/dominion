@@ -1020,7 +1020,7 @@ func TestMatchResponsesTeamReviewAnnouncementAnchor(t *testing.T) {
 	announcement := func(resultLine string) responsesMessage {
 		return responsesMessage{
 			Role: "user",
-			Text: "<saolei-message>\n" + resultLine + "\n本局共执行 2 个操作：click 1 次、flag 1 次、chord 0 次。\n</saolei-message>",
+			Text: "<announcer-message>\n" + resultLine + "\n本局共执行 2 个操作：click 1 次、flag 1 次、chord 0 次。\n</announcer-message>",
 		}
 	}
 	// The drive's earlier user-role message keeps the review entries' min_turn

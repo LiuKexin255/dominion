@@ -23,7 +23,7 @@ import {
   listMemberMessages,
   listTeamMessages,
 } from './api/agent.js'
-import type { Team } from './api/agent.js'
+import type { Team, TeamMember } from './api/agent.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
 import {
@@ -124,6 +124,17 @@ type DesktopConn = 'connected' | 'disconnected' | 'unknown'
 function presetTitle(name: string | undefined): string {
   if (name === undefined || name === '') return '—'
   return name.split('/').pop() ?? name
+}
+
+// memberLabel renders one roster entry: the wire role string plus the LLM
+// member's preset/model (model 空 = 部署默认，contracts/model-selection.md §4)。
+// 非 LLM 成员（preset/model 均空，如 announcer）只呈现 role——它没有
+// preset/model，不以"默认模型"示意
+// （specs/076-agent-v2-optimize/contracts/announcer-member.md §4）。
+function memberLabel(member: TeamMember): string {
+  if (member.preset === '') return member.role
+  const model = member.model !== undefined && member.model !== '' ? member.model : '默认模型'
+  return `${member.role} · ${presetTitle(member.preset)} · ${model}`
 }
 
 // ChatPanel hosts one session's store-backed team view. The store outlives the
@@ -444,7 +455,8 @@ function ChatPanel({
             状态呈现：role + preset + model；role 为 wire 字符串，model 为
             `provider/model-id` 复合标识原样渲染——页面不感知 provider 插件，
             specs/063-llm-reliability-opencode-go/contracts/model-selection.md
-            §4）。每成员即 system prompt 查看入口（FR-009，
+            §4；非 LLM 成员只呈现 role，specs/076-agent-v2-optimize/contracts/
+            announcer-member.md §4）。每成员即 system prompt 查看入口（FR-009，
             specs/060-agent-v2-team-optimize/spec.md：主界面直接可见，无需打开
             设置面板）。 */}
         <span className="team-members" data-testid="team-members">
@@ -457,8 +469,7 @@ function ChatPanel({
               data-role={member.role}
               onClick={() => void systemPrompt.open(member.role)}
             >
-              {member.role} · {presetTitle(member.preset)} ·{' '}
-              {member.model !== undefined && member.model !== '' ? member.model : '默认模型'}
+              {memberLabel(member)}
             </button>
           ))}
         </span>

@@ -15,9 +15,10 @@ opencode-go 网关的 OpenAI **Chat Completions** 协议端点
 （`specs/063-llm-reliability-opencode-go/contracts/model-selection.md`）。
 session 的组织模型是
 team：一个 session 至多物化一个 team——恰含 player 与 planner 两个 LLM 成员
-（各持独立历史与 system prompt）与一个非物化的“扫雷系统”成员（role
-`saolei`：无 preset/model、不经 LLM 驱动、不进 proto 成员面；终局交接时播报
-本局统计，`specs/065-agent-v2-team-refine/spec.md`）；需求与验收锚点见
+（各持独立历史与 system prompt）与一个 announce-only 的 announcer 成员
+（role `announcer`：无 preset/model、不经 LLM 驱动，作为正式成员进入三成员
+名册与 active_member 呈现，但不可由调用方配置；终局交接时播报本局统计，
+`specs/076-agent-v2-optimize/contracts/announcer-member.md`）；需求与验收锚点见
 `specs/059-agent-v2-team-mode/spec.md` 与
 `specs/060-agent-v2-team-optimize/spec.md`，接口契约见两者
 `contracts/` 下的 team-api/preset-derivation/deploy-env/prompt-sections
@@ -156,17 +157,20 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   memory 单元并以 `unit.ready()` 预取记忆快照（fail-loud）；随后
   `ctx.team.register` 注册群聊服务。任一步失败**整体回滚**：
   不残留半物化 team（GetTeam NOT_FOUND），可重试。
-- **成员消息源与扫雷系统角色**：team 的成员抽象为消息源接口
+- **成员消息源与 announcer 成员**：team 的成员抽象为消息源接口
   （`TeamMemberSource`，
   `specs/065-agent-v2-team-refine/contracts/team-member-source.md` §1）：
   player/planner 经 `agentMemberSource` 适配器接入（语义零变化），物化同时注册
-  announce-only 的“扫雷系统”成员（role `saolei`、summary 为“扫雷系统，终局播报
+  announce-only 的 announcer 成员（role `announcer`、summary 为“终局播报
   对局结果与操作统计”，`common/js/dsh-plugins/saolei-loop/src/announcer.ts`；
-  无 preset/model、不接收广播、不进 `members`/`active_member`）。终局交接时它
+  无 preset/model、不接收广播；作为正式成员进入 `GetTeam.members` 名册
+  （三成员）与 `active_member` 呈现，但 `UpdateTeam` 请求侧仍只配置两个 LLM
+  成员——announcer 由服务端进入名册，`specs/076-agent-v2-optimize/contracts/
+  announcer-member.md` §3）。终局交接时它
   先于 planner 复盘播报本局统计（`gameStatsText` 模板：结果 + 单个操作总数 +
   click/flag/chord 分项，`specs/065-agent-v2-team-refine/contracts/
   game-stats-broadcast.md` §2/§3），宿主经订阅将其投影为归并序列条目与
-  `team_message{member="saolei"}` 帧（同契约 §4），消息作为广播进入 planner
+  `team_message{member="announcer"}` 帧（同契约 §4），消息作为广播进入 planner
   复盘输入与 player 下次结构性驱动输入；每局至多一条（记录恒等 guard，重试
   不重发；排队消化优先，被跳过局不补发）。
 - **静止等待与用户首驱**：物化成功后 team 静止等待——初始激活成员 = planner、
@@ -292,8 +296,8 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
   行。
 - 成员视角渲染为 `user: [sender] 注入原文`（XML 标签对保留、正文仅呈现
   一次）；team section 的格式约定与该 wire 形态同源。
-- 成员清单（roster）由注册成员渲染，含扫雷系统行
-  `- [saolei] 扫雷系统，终局播报对局结果与操作统计`；team section 同时明确
+- 成员清单（roster）由注册成员渲染，含 announcer 行
+  `- [announcer] 终局播报对局结果与操作统计`；team section 同时明确
   这些标签格式**仅输入侧**——只用于系统向接收方呈现他人输出，成员自身输出不
   使用 `<角色-message>`/`<角色-tool-call>` 自我包装
   （`specs/065-agent-v2-team-refine/contracts/team-member-source.md` §3/§4）。
@@ -445,12 +449,12 @@ tool_result` 帧序（`agent_v2_conversation_test.go`）、`GetTeam.active_membe
 多局会话与合成 token 零泄漏（`agent_v2_conversation_test.go`）；ListModels 联合
 目录与 UpdateTeam 复合标识三分支（`agent_v2_preset_test.go`）；停滞看护有界
 收敛（`agent_v2_stall_test.go`）。065 增量断言：每局交接后归并序列恰一条
-`member="saolei"` 统计消息（正文为 `gameStatsText` 模板、数值与该局
+`member="announcer"` 统计消息（正文为 `gameStatsText` 模板、数值与该局
 fake-desktop 实际成功派发序列一致，含批量多操作对照），planner 复盘输入与
-player 成员视图消费该消息、`GetTeam`/`active_member` 不含该角色
+player 成员视图消费该消息、`GetTeam` 名册含 announcer（三成员、空 preset/model）
 （`agent_v2_game_test.go`）；排队跳局（排队消息驱动 player 开新局）被跳过局
 无统计、新局交接恰一条新局统计，对照局（终局后无排队）即时播报
-（`agent_v2_conversation_test.go`）；system prompt 含 roster 扫雷系统行与
+（`agent_v2_conversation_test.go`）；system prompt 含 roster 的 announcer 行与
 “仅输入侧”表述、planner 快照 ≤10 条且由 memory 服务通用 `order_by`
 （`update_time desc` 归一化含指定 tie-breaker）服务端有序（>10 条记忆夹具
 对照）——

@@ -52,7 +52,7 @@ function agentMemberSource(handle: AgentHandle): TeamMemberSource;
 ```text
 { source: agentMemberSource(playerHandle), role: "player",  summary: "执行扫雷操作，独占桌面控制" }
 { source: agentMemberSource(plannerHandle), role: "planner", summary: "复盘对局与制定策略，不操作" }
-{ source: saolei 成员 source（saolei-loop 实现）, role: "saolei",  summary: "扫雷系统，终局播报对局结果与操作统计" }
+{ source: announcer 成员 source（saolei-loop 实现）, role: "announcer",  summary: "终局播报对局结果与操作统计" }
 ```
 
 roster 渲染全部成员（含 announce-only）的 role + 一行摘要；无独立 announcer 声明面。
