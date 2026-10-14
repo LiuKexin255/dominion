@@ -27,9 +27,10 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
 
 ## 服务形态与拓扑
 
-- **`kind: stateful`**：team 注册表、每 session FIFO 排队、成员对话历史、编排
-  状态与游戏状态都驻留进程内存，因此会话面**必须**经 proxy 的 owner 亲和路由
-  定向到同一实例（`specs/049-agent-v2-dsh-init/research.md` D4）。
+- **`kind: stateful`**：team 注册表、成员未消费输入（用户消息经成员域投递——在途
+  steer 的 inbox pending 与取消落地的 landed）、成员对话历史、flow 编排状态与游戏
+  状态都驻留进程内存，因此会话面**必须**经 proxy 的 owner 亲和路由定向到同一实例
+  （`specs/049-agent-v2-dsh-init/research.md` D4）。
 - gRPC 监听 `0.0.0.0:50051`，三个服务（`projects/game/agent_v2.proto`）：
   - **AgentService**（team 会话面，
     `specs/059-agent-v2-team-mode/contracts/team-api.md`，060 增量见
@@ -85,8 +86,9 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   `@dominion/dsh-core` 进入。
 - **官方 `dsh-agent-loop` 行**：成员 agent 的驱动权归属官方 loop
   （`Config.agents[]` 留空，成员全部经 `ctx.agents.create` 动态物化）；自研
-  `saolei-loop` 升为 team loop 编排层（驱动时机 + 游戏阶段机），不含 turn/step
-  状态机（`specs/059-agent-v2-team-mode/research.md` R7）。
+  `saolei-loop` 是 team loop 编排层（flow 流程控制 + 成员驱动/投递适配），不含
+  turn/step 状态机（`specs/076-agent-v2-optimize/contracts/flow-orchestration.md`；
+  `specs/059-agent-v2-team-mode/research.md` R7）。
 - 一致性防护伴生：`dsh-session`/`dsh-agent`/`dsh-scope` 三个包的 `/invariant`
   subpath 插件（官方 loop 的 request-reconstruction 不变量）。
 - `llm-glm`（`@dominion/dsh-llm-glm`）：GLM Responses 端点接入；`models[]` 是该
@@ -120,16 +122,16 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   `createGameRuntime` + `saolei:game` 玩法 section）；saolei-loop 以
   `inject: ["saolei"]` 正向依赖它
   （`specs/075-saolei-game-foundation/contracts/saolei-foundation.md` §1/§2）。
-- `saolei-loop`（`@dominion/dsh-saolei-loop`）：team loop 编排层（驱动时机 + 游戏
-  阶段机）。其 `config.plugins` 是**扁平能力依赖声明**（无角色语义）——
+- `saolei-loop`（`@dominion/dsh-saolei-loop`）：team loop 编排层（flow 流程控制 +
+  成员驱动/投递适配）。其 `config.plugins` 是**扁平能力依赖声明**（无角色语义）——
   `@dominion/dsh-saolei-tools` 提供 `saoleiTools` 静态单元（三工具 + 仅
   `saolei:guidance` section）、`@dominion/dsh-saolei-memory` 提供 `memoryMount`
   工厂（memory 公共库 `@dominion/common-js-memory` + adapter config 的
   target/protoPath，跨 service client 共享 channel）。boot 时经 `ctx.plugin` 挂载
   提供方，成员 setup 按角色消费——player 注册 saolei 三工具与 `saolei:guidance`
   section，编排对 player 与 planner 注册 `saolei:game` 玩法 section（源自基础面），
-  planner 注册 memory 四工具与 `memory:guidance`/`wiki:guidance`/`memory:snapshot`
-  section（角色分配归编排代码；
+  planner 注册 memory 单元（单工具 `memory` + `memory:snapshot` section；无 wiki
+  工具与 guidance section）（角色分配归编排代码；
   `specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §1-§4、
   `specs/075-saolei-game-foundation/contracts/team-loop-assembly.md` §3）。
 
@@ -142,8 +144,10 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
 - **物化输入 = `members` 列表**：每成员 `{role, preset, model?}`——proto 会话面
   是场景无关 team 原语（无 role 枚举、无场景字段）。role 为场景词汇字符串
   （saolei 下 `"player"`/`"planner"`）；preset 为完整 preset 资源名；model 可空
-  = 部署默认。输出 members 与输入同形（生效 model、服务端按 role 构造的成员
-  资源名），`desktop_connected`、`active_member` 与时间戳为 output-only；
+  = 部署默认。输出 members 为三成员——输入的两个 LLM 成员（生效 model、服务端按
+  role 构造的成员资源名）加服务端加入的 announce-only announcer
+  （`specs/076-agent-v2-optimize/contracts/announcer-member.md` §3）；
+  `desktop_connected`、`active_member` 与时间戳为 output-only；
   `system_prompt` 仅 GetTeamMember 返回。
 - **两层 fail-fast 校验（先于任何 teardown，无半物化）**：结构层（场景无关）
   ——members 非空、每成员 role 非空、preset 为合法 preset 资源名；saolei 场景
@@ -172,24 +176,76 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   game-stats-broadcast.md` §2/§3），宿主经订阅将其投影为归并序列条目与
   `team_message{member="announcer"}` 帧（同契约 §4），消息作为广播进入 planner
   复盘输入与 player 下次结构性驱动输入；每局至多一条（记录恒等 guard，重试
-  不重发；排队消化优先，被跳过局不补发）。
+  不重发；被跳过局不补发——guard 对最新终局记录求值）。
 - **静止等待与用户首驱**：物化成功后 team 静止等待——初始激活成员 = planner、
   初始相位 = planning，**不自动驱动任何成员**；游戏首次驱动由用户第一条消息
   触发（planner 处理并产出开局策略），随后 player 被驱动开始游戏，终局后
   planner 复盘，planner 完成静止后编排层结构性续驱 player 进入下一轮。一切
-  驱动输入 = 成员未消费的团队消息 + 排队用户消息，编排层不合成任何驱动消息
+  驱动输入 = 成员未消费的团队广播（驱动装配时 drain）+ 成员域投递的用户消息
+  （在途 steer / 静止装配），编排层不合成任何驱动消息
   （`specs/059-agent-v2-team-mode/spec.md` FR-009/FR-010；
-  `specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §2）。
+  `specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §2/§3）。
 - **当前激活成员（`active_member`，单一合并值）**：成员回合在途时 = 该回合的
   驱动成员（任一时刻至多一个）；静止时 = 下一条输入的归属成员（activation，
-  物化后初始 planner，取消/暂停不改变归属）。team 物化后恒非空；web 对话页
+  物化后初始 planner，取消/冻结不改变归属）。team 物化后恒非空；web 对话页
   由该值叠加流式 `turn_start` 帧推导呈现
   （`specs/060-agent-v2-team-optimize/contracts/team-api.md` §1/§5）。
 - **刷新**：已物化 team 再次 UpdateTeam 即刷新——终止在途成员回合
-  （`turn_end{ABORTED}`）、排队作废、清空两个成员的短期记忆（历史/游戏状态）、
-  按新配置重建；`create_time` 保留、`update_time` 更新；重复 Update 幂等。
+  （`turn_end{ABORTED}`）、未消费输入作废、清空两个 LLM 成员的短期记忆（历史/
+  游戏状态）、按新配置重建；`create_time` 保留、`update_time` 更新；重复 Update
+  幂等。
 - 未物化 session 的 `Send` 以明确错误拒绝（FAILED_PRECONDITION，提示先物化）；
   `GetTeam`/`GetTeamMember`/List 面为 NOT_FOUND。
+
+## flow 编排与成员适配（成员切换标准化）
+
+成员切换由 saolei-loop 的 **flow 流程控制**承载（自研 minimal runtime，
+`specs/076-agent-v2-optimize/contracts/flow-orchestration.md`）：F-Moore 活动图
+（5 活动 + 8 边纯条件 guard）是唯一创作结构，flow 层状态 = position +
+lastOutcome + facts + frozenError；唯一指令 `start(activity)` 与图节点一一对应
+（成员切换即 start 不同 member 的活动），执行层只消费指令并回报活动终态，flow
+层不触碰成员驱动等执行细节。
+
+```mermaid
+flowchart LR
+    PLAN["plan<br/>member: planner"]
+    PLAY["play<br/>member: player"]
+    ANNOUNCE["announce<br/>member: announcer"]
+    REVIEW["review<br/>member: planner<br/>onSettle: reviewed=terminal, rounds+1"]
+    REST["rest<br/>member: player（无执行）"]
+
+    PLAN -->|"planner settle"| PLAY
+    PLAY -->|"有未复盘终局记录"| ANNOUNCE
+    PLAY -->|"无新记录"| PLAY
+    ANNOUNCE -->|"announcer settle"| REVIEW
+    REVIEW -->|"rounds < 5"| PLAY
+    REVIEW -->|"rounds ≥ 5"| REST
+    REST -.->|"驱动 settle 后 + 新记录"| ANNOUNCE
+    REST -.->|"驱动 settle 后 + 无新记录"| PLAY
+```
+
+- **活动终态四态**：`settled`（成功完成——写 `onSettle` 流程事实后边判定）、
+  `resting`（无可执行内容，泵静止）、`failed`（穷尽自愈后上报 `{code, detail}`）、
+  `aborted`（取消/释放打断，非故障）；`failed`/`aborted` 产生**冻结**（位置保持、
+  不消费流程事实、不边判定），冻结期间唯一驱动源是用户投递——投递即恢复，恢复链
+  为「投递驱动 → flow 重启当前活动重放持有输入集」。
+- **成员适配器**（实现类型差异下沉）：LLM agent 成员（player/planner 共用单一
+  实现）经 `drive()` 闭环（输入构造 drain → `inject`/`followup` 驱动 →
+  `agent.whenIdle()` 完成判定 → 引擎错误码映射 loop 六码）与 `deliver()` 分流
+  （在途 `steer` 入 inbox、静止装配 `[drain, landed flush, message]` 开 turn）；
+  announce-only 成员（announcer）同步执行即 settled。
+- **用户消息成员域化**：编排侧不经 FIFO/queue gate——消息经当前激活成员的
+  `deliver` 即时处理，完成定义自包含（inbox 空 + 无在途回合）；快照 `queued` =
+  成员 inbox pending + steered-unclaimed。团队广播仍由驱动装配时 `drain` 拉动
+  （exactly-once 锚点边界不变），编排层不合成任何驱动消息。
+- **错误契约**：`failed { code, detail }`，code ∈ {TRANSIENT, QUOTA, CREDENTIAL,
+  CONFIG, INPUT_TOO_LARGE, INTERNAL}；loop 层只分类，宿主按码产出用户动作文案
+  （`projects/game/agent_v2/src/session.ts` 的 `LOOP_ERROR_TEXT`）。
+
+宿主联动（`specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §7）：
+快照 `phase` 由活动派生（plan→planning、review→reviewing、play/rest→playing）、
+`paused` ← flow 冻结态、`activeMember` = `active ?? activation`（播报窗口内可为
+`announcer`）；静止判定 = `frozen || (active === null && inbox pending === 0)`。
 
 ## preset 分池与角色能力组装
 
@@ -209,8 +265,8 @@ preset 数据按角色分池
   对应的能力由 saolei-loop 编排在成员 setup 消费 `config.plugins` 提供面：
   player 取 `saoleiTools`（`saolei_init`/`saolei_operate`/`saolei_remain`
   工具 + `saolei:guidance` section），planner 取
-  `memoryMount.build(scope)`（memory/wiki 四工具 + `memory:guidance`/
-  `wiki:guidance`/`memory:snapshot` section）；`saolei:game` 玩法 section 源自
+  `memoryMount.build(scope)`（memory 单元单工具 `memory` +
+  `memory:snapshot` section）；`saolei:game` 玩法 section 源自
   游戏基础面，由编排对 player 与 planner 两角色注册（不属于任一能力单元）——
   能力单元与其配套 section 作为整体生效或缺席，物化零定制。删除 preset 无
   fan-out：已物化成员保持其物化时组合，再次物化引用被拒
@@ -229,9 +285,9 @@ preset 数据按角色分池
 （`specs/059-agent-v2-team-mode/contracts/team-api.md` §3；060 增量见
 `specs/060-agent-v2-team-optimize/contracts/team-api.md` §2/§3）：
 
-- 当前成员回合中到达的用户消息入 team FIFO，本流首帧回
-  `queued{position}`；用户消息在 Send 被接受时即固化入归并序列（enqueue 即
-  固化），并以 `team_message{member="user"}` 帧扇出。
+- 当前成员回合在途时到达的用户消息投递入该成员 inbox（下一 step 边界消费、
+  turn 收束自愈），本流首帧回 `queued{position}`；用户消息在 Send 被接受时即
+  固化入归并序列（enqueue 即固化），并以 `team_message{member="user"}` 帧扇出。
 - **帧三类**：成员事件帧（`turn_start`/`block_start`/`delta`/`block_end`/
   `tool_result`/`turn_end`）外层 `member` 标注产出成员（block index/step 以成员
   回合为一个 index 空间，前端按 `(member, turn_id)` 分组增量渲染）；team 级帧
@@ -247,14 +303,14 @@ preset 数据按角色分池
   条目三个投影面按 `toolId` 幂等终态化，工具块在结果帧到达时即时转为终态并
   显示结果文本（`specs/060-agent-v2-team-optimize/contracts/team-api.md` §3）。
 - **静止终点**：流从发起持续输出，覆盖其间全部成员回合——含编排自动驱动的
-  结构性续驱、gameEnded 复盘、排队消化与多局循环——直到 team 静止（无在途
-  回合且无待消化输入）才结束；自然收敛与 Cancel 后的暂停静止都属静止点。
+  结构性续驱、gameEnded 复盘与多局循环——直到 team 静止（无在途回合且无待消化
+  输入）才结束；自然收敛与 Cancel 后的冻结静止都属静止点。
 - **流与编排解耦**：服务端向该 session 全部活跃流扇出（`queued` 仅回执其所响应
   的流）；客户端断开不终止编排，取消编排仅经 `Cancel`；多流重复帧由前端按
   seq / `(member, turn_id)` 锚去重，断开经 List 面回填补齐。
-- **`Cancel`**：终止在途回合（`turn_end{CANCELED}`）+ 暂停自动续驱 + 排队消息
-  保留为已固化历史且不触发新驱动；幂等；再次 Send 即恢复（消息由当前激活成员
-  处理，建立新 team 流）。
+- **`Cancel`**：终止在途回合（`turn_end{CANCELED}`）+ flow 位置冻结（不消费
+  流程事实）+ 未消费输入落地为已固化历史（不触发新驱动）；幂等（已冻结时
+  no-op）；再次 Send（投递）即恢复（消息由当前激活成员处理，建立新 team 流）。
 
 ## 双视图、激活成员与 system prompt 查看
 
@@ -279,7 +335,8 @@ web（`projects/game/web/frontend/src/`）以 session → team 模型组织
   （点击经 `GetTeamMember` 读取并以只读浮层展示 `system_prompt` 全文），设置
   面板内入口保留。内容从成员实例的 system prompt 装配面读取（persona + team
   section + player 与 planner 的 `saolei:game` 玩法 section + player 的工具守则
-  + planner 的 memory 工具守则与长期记忆快照），
+  （`saolei:guidance`）+ planner 的长期记忆快照（`memory:snapshot`；memory 单元
+  无 guidance section）），
   与该实例实际发给模型的一致，非另行拼装；刷新 team 后随新配置更新
   （`specs/059-agent-v2-team-mode/spec.md` FR-016）。
 
@@ -462,7 +519,7 @@ player 成员视图消费该消息、`GetTeam` 名册含 announcer（三成员�
 与 `specs/065-agent-v2-team-refine/quickstart.md` §3。注入设施与触发词见
 `projects/game/fake-llm/README.md`。
 
-068（planner wiki 与 saolei-loop 五轮自然停）增量：wiki 服务端面经
+068（wiki 服务端面与 saolei-loop 五轮自然停）增量：wiki 服务端面经
 `projects/game/testplan/wiki_test.go` 的 gateway HTTP 大型测试验收（部署→测试→
 清理闭环，含 `memory_test.go` name 断言零回归）；`saolei-loop` 的**每五轮自然停**
 （`specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md`）**不单设大型

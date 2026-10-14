@@ -60,7 +60,7 @@ guitar run projects/game/testplan/system_test.yaml --suite game-system   # conve
 **单测（行为保持基准 + 新增结构测试）**：
 
 ```bash
-bazel test //common/js/dsh-plugins/saolei-loop/... //common/js/dsh-plugins/team/... //projects/game/agent_v2/...
+bazel test //common/js/dsh-plugins/saolei-loop/... //common/js/dsh-plugins/team/... //projects/game/agent_v2/... //projects/game/web/...
 ```
 
 预期（契约 [flow-orchestration.md](contracts/flow-orchestration.md) §8）：
@@ -74,6 +74,7 @@ bazel test //common/js/dsh-plugins/saolei-loop/... //common/js/dsh-plugins/team/
 guitar run projects/game/testplan/system_test.yaml --suite game-system        # conversation（含在途消息 mid-turn 进入断言）
 guitar run projects/game/testplan/system_test.yaml --suite game-stall         # 流停滞恢复
 guitar run projects/game/testplan/system_test.yaml --suite game-memory-down   # memory 服务不可达（物化回滚/fail-loud）
+guitar run projects/game/testplan/system_test.yaml --suite game-disconnect    # 桌面驱动链路中途断连/恢复（flow 与 cancel 语义回归面）
 ```
 
 预期：全部用例通过；用户在成员回合在途发送的消息于下一个 step 边界进入成员上下文（不再等待整个回合收束）；错误呈现按码携带用户动作文案。
