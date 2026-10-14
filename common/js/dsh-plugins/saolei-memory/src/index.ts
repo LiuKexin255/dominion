@@ -3,15 +3,23 @@
  * provider the saolei-loop composition mounts as a `config.plugins`
  * sub-plugin; specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3.2).
  *
- * The adapter owns the scenario's deployment knowledge: it constructs the
- * two gRPC service clients once at plugin load — driven by its config
- * (`target`, canonical `protoPath`, optional `label`) and the shared
- * `ctx.grpc` runtime, so MemoryService and WikiService reuse one underlying
- * channel — and exposes the per-member `memoryMount` factory through
- * `ctx.provide`. `build(scope)` calls the domain-agnostic memory library's
- * atomic capability-unit factory with the scope the orchestration passes
- * explicitly; the adapter never derives the scope and never registers
- * anything (the orchestration registers the unit into the member scope).
+ * The adapter owns the scenario's deployment knowledge and injects the
+ * **memory capability only**: it constructs the MemoryService client once at
+ * plugin load — driven by its config (`target`, canonical `protoPath`,
+ * optional `label`) and the shared `ctx.grpc` runtime — and hands the
+ * composition-level unary policy (`ctx.grpc.callUnary`) to the domain-agnostic
+ * library, so client construction and invocation policy both stay owned by the
+ * runtime (specs/076-agent-v2-optimize/contracts/memory-library-layering.md
+ * §1 义务 2/§3). The per-member `memoryMount` factory is exposed through
+ * `ctx.provide`; `build(scope)` calls the library's memory-unit factory with
+ * the scope the orchestration passes explicitly, and the adapter never derives
+ * the scope and never registers anything (the orchestration registers the unit
+ * into the member scope).
+ *
+ * The mount's product therefore carries no wiki face, no wiki tool and no wiki
+ * prompt section: the materialized planner is free of wiki traces
+ * (specs/076-agent-v2-optimize/spec.md FR-001/SC-002). The wiki capability
+ * itself stays intact in the library's wiki unit for consumers that mount it.
  *
  * Dependency direction (contracts/team-assembly.md §6): adapter →
  * memory library (`@dominion/common-js-memory`) + the `grpc` service face.
@@ -25,12 +33,12 @@
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 
-import { buildMemoryCapabilities } from "@dominion/common-js-memory";
+import { buildMemoryUnit } from "@dominion/common-js-memory";
 import type {
-  MemoryCapabilities,
+  CapabilityUnit,
   MemoryScope,
   MemoryServiceCalls,
-  WikiServiceCalls,
+  UnaryPolicy,
 } from "@dominion/common-js-memory";
 
 /** The plugin identifier the composition manifest references. */
@@ -44,9 +52,6 @@ export const MEMORY_MOUNT_SERVICE = "memoryMount";
 
 /** The fully-qualified MemoryService name of the game proto. */
 export const MEMORY_SERVICE_NAME = "projects.game.MemoryService";
-
-/** The fully-qualified WikiService name of the game proto. */
-export const WIKI_SERVICE_NAME = "projects.game.WikiService";
 
 /** Config: the scenario's deployment connection inputs. */
 export interface SaoleiMemoryConfig {
@@ -87,19 +92,21 @@ export interface GrpcClientOptions {
 /** The `ctx.grpc` service face the adapter consumes. */
 export interface GrpcClientSeam {
   client<T>(options: GrpcClientOptions): T;
+  /** The shared unary policy passed through to the library's unit factory. */
+  callUnary: UnaryPolicy;
 }
 
 /** The per-member capability factory the orchestration consumes. */
 export interface MemoryMount {
-  /** Build one member's atomic unit with the scope passed explicitly. */
-  build(scope: MemoryScope): MemoryCapabilities;
+  /** Build one member's memory unit with the scope passed explicitly. */
+  build(scope: MemoryScope): CapabilityUnit;
 }
 
 /**
- * Apply the plugin: construct the two service clients once over the shared
+ * Apply the plugin: construct the memory service client once over the shared
  * `ctx.grpc` channel cache and provide the `memoryMount` factory. `build` is a
- * pure delegation into {@link buildMemoryCapabilities} — no I/O happens until
- * the orchestration awaits `unit.ready()`.
+ * pure delegation into {@link buildMemoryUnit} — no I/O happens until the
+ * orchestration awaits `unit.ready()`.
  */
 export function apply(ctx: Context, config: SaoleiMemoryConfig): void {
   const grpc = ctx.get("grpc") as GrpcClientSeam | undefined;
@@ -118,16 +125,10 @@ export function apply(ctx: Context, config: SaoleiMemoryConfig): void {
     serviceName: MEMORY_SERVICE_NAME,
     ...label,
   });
-  const wikiClient = grpc.client<WikiServiceCalls>({
-    target: config.target,
-    protoPath: config.protoPath,
-    serviceName: WIKI_SERVICE_NAME,
-    ...label,
-  });
 
   ctx.provide(MEMORY_MOUNT_SERVICE, {
-    build(scope: MemoryScope): MemoryCapabilities {
-      return buildMemoryCapabilities({ scope, memoryClient, wikiClient });
+    build(scope: MemoryScope): CapabilityUnit {
+      return buildMemoryUnit({ scope, memoryClient, callUnary: grpc.callUnary });
     },
   } satisfies MemoryMount);
 }

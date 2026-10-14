@@ -51,8 +51,7 @@ js_library(
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
 # runtime_deps closure walking. The schemastery Config validator is a runtime
-# npm import; the memory library is a runtime workspace import (it carries the
-# logs face its client adapters report through).
+# npm import; the memory library is a runtime workspace import.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-saolei-memory",

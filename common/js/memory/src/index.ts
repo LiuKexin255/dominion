@@ -3,14 +3,17 @@
  * plugin form: the package exports no `name`/`inject`/`apply` and is never
  * mounted as a composition row).
  *
- * Export surface (specs/074-dsh-grpc-runtime/contracts/memory-library.md):
+ * Export surface (specs/076-agent-v2-optimize/contracts/
+ * memory-library-layering.md):
  *
- * - the atomic capability unit factory ({@link buildMemoryCapabilities}) and
- *   its types;
- * - the primitives: {@link createMemoryStore}, {@link createMemoryFace}, the
+ * - the functional-unit layer ({@link buildMemoryUnit}, {@link buildWikiUnit})
+ *   and the composition layer ({@link buildMemoryWikiComposition}), plus the
+ *   `CapabilityUnit` they both produce;
+ * - the primitives: {@link createMemoryFace}, {@link createWikiFace}, the
  *   snapshot renderer/section, and the structured call surfaces consumed by
- *   the adapter-provided clients;
- * - the four tool definitions, the two guidance sections and the domain
+ *   the adapter-provided clients (including the injected {@link UnaryPolicy}
+ *   seam);
+ * - the four tool definitions, the two guidance texts and the domain
  *   operation cores.
  *
  * The library is domain-agnostic: no scenario vocabulary, no scope
@@ -18,16 +21,21 @@
  */
 
 export {
-  buildMemoryCapabilities,
-} from "./capabilities.js";
+  buildMemoryUnit,
+  buildWikiUnit,
+} from "./units.js";
 export type {
-  MemoryCapabilities,
-  MemoryCapabilitiesDeps,
-  MemoryFaceRegistration,
-} from "./capabilities.js";
+  CapabilityUnit,
+  FaceRegistration,
+  MemoryUnitDeps,
+  WikiUnitDeps,
+} from "./units.js";
 
-export { createMemoryFace, createMemoryStore } from "./face.js";
-export type { MemoryFace, MemoryScope } from "./face.js";
+export { buildMemoryWikiComposition } from "./capabilities.js";
+export type { MemoryWikiCompositionDeps } from "./capabilities.js";
+
+export { createMemoryFace, createWikiFace } from "./face.js";
+export type { MemoryFace, MemoryScope, WikiFace } from "./face.js";
 
 export {
   MEMORY_SNAPSHOT_SECTION_NAME,
@@ -57,6 +65,9 @@ export type {
   SearchWikisOptions,
   SearchWikisPage,
   UnaryCall,
+  UnaryClient,
+  UnaryInvoke,
+  UnaryPolicy,
   Wiki,
   WikiServiceCalls,
   WikiStore,
@@ -124,6 +135,7 @@ export {
   executeWikiGetTool,
   executeWikiSearchTool,
   executeWikiWriteTool,
+  resolveWikiFace,
 } from "./wiki-tools.js";
 
 export { describeErr } from "./errors.js";

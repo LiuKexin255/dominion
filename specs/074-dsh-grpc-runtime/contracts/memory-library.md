@@ -1,48 +1,45 @@
 # Contract: memory 公共库导出面（@dominion/common-js-memory）
 
-**Feature**: [spec.md](../spec.md) | **契约层级**: 能力（领域无关公共库——无插件形态、无组装职责、无部署知识）
+**Feature**: [spec.md](../spec.md) | **契约层级**: 能力（领域无关公共库——无插件形态、无部署知识）
+**导出面修订**: [specs/076-agent-v2-optimize/contracts/memory-library-layering.md](../../076-agent-v2-optimize/contracts/memory-library-layering.md)——两层导出面（功能单元层/组合层）、独立挂载义务与 unary 策略注入 seam 的终态定义；本文 §1/§2/§3/§5 按其改述，细则该文为准。
 
 `common/js/memory/`（`@dominion/common-js-memory`，原 `@dominion/dsh-memory` 退化迁址）。无 name/inject/apply 导出（纯库）；包内 MUST NOT 出现场景词汇（player/planner）、scope 自足派生、组装流程、部署布局知识（target/绝对 protoPath）。
 
-## 1. 原子能力单元工厂（唯一组装入口形态）
+## 1. 两层导出面
 
-```ts
-buildMemoryCapabilities(deps: {
-  scope: MemoryScope;                 // {template, preset}
-  memoryClient: MemoryServiceCalls;   // 结构化调用面（§3）
-  wikiClient: WikiServiceCalls;
-}): MemoryCapabilities;               // 纯函数：无 I/O、无上下文副作用
-```
+库分两层（细则见 [memory-library-layering.md](../../076-agent-v2-optimize/contracts/memory-library-layering.md) §1/§2）：
 
-`MemoryCapabilities`（原子单元——消费方整单元挂载，库不提供部分导出面）：
+- **功能单元层**：`buildMemoryUnit({ scope, memoryClient, callUnary })` 与 `buildWikiUnit({ template, wikiClient, callUnary })`，各自产出原子能力单元 `CapabilityUnit`（`faces`/`tools`/`sections`/`ready` 四件套）——可独立构造、独立挂载、独立测试；任一单元单独挂载时其工具全部可用（memory 工具经 `exec.agent.ctx.memory` 解析、wiki 工具经 `exec.agent.ctx.wiki` 解析，§5），单元间互不依赖对方在场。
+- **组合层**：`buildMemoryWikiComposition({ scope, memoryClient, wikiClient, callUnary })` 将两单元合并为单一可整体挂载的能力面，并注入组合层自有的跨存储分工 section；其产物与拆分前 `buildMemoryCapabilities` 输出**等价**（工具集、section 名与 order、组装文本逐项一致——组合等价锚点）。
 
-| 字段 | 内容 |
-|---|---|
-| `faces` | `[{ key: "memory", value: MemoryFace }]` —— `createMemoryFace(createMemoryStore(...), scope)` 产出 |
-| `tools` | `memory` / `wiki_search` / `wiki_get` / `wiki_write` ×4（schema、文案、结果文本化、守则文本全部不变；execute 经 `exec.agent.ctx.memory` 解析，不闭包绑定服务） |
-| `sections` | `memory:guidance`(110)、`wiki:guidance`(120)、`memory:snapshot`(200, `text: () => face.snapshotText()`) |
-| `ready` | `() => face.prefetch()` —— **fail-loud 预取**：由编排在成员 setup 内 `await unit.ready()`，reject → setup throw → 物化回滚（`CreateAgentOptions` 既有 rollback；specs/071 与 memory-plugin survey 决策 ⑧ 语义不变。adapter 只提供 `build`，不调用 `ready`；机制见 [team-assembly.md](team-assembly.md) §4/§6） |
+| 单元 | faces | tools | sections | ready |
+|---|---|---|---|---|
+| memory | `[{ key: "memory", value: MemoryFace }]` | `memory` ×1 | `memory:snapshot`(200)——**无 guidance section**（单工具的使用说明由 `MEMORY_TOOL_DESCRIPTION` 承载） | fail-loud prefetch（reject → 物化回滚语义保持） |
+| wiki | `[{ key: "wiki", value: WikiFace }]` | `wiki_search`/`wiki_get`/`wiki_write` ×3 | `wiki:guidance`(120)（三工具协作工作流） | no-op（wiki 无预取义务） |
+| 组合（memory+wiki） | 两单元 faces 合并 | ×4 | `memory:guidance`(110, **跨存储分工文本**——组合层自有)/`wiki:guidance`(120)/`memory:snapshot`(200) | memory prefetch |
 
-section 名与 order 不变 → system prompt 组装输出零变化。
+工厂均为纯函数：无 I/O、无上下文副作用。section 名与 order 为冻结契约 → 组合面的 system prompt 组装输出零变化。工具 schema、文案、结果文本化与守则文本全部不变；工具 execute 不闭包绑定服务（§5）。
 
 ## 2. 能力原语
 
 ```ts
-createMemoryStore(memoryClient: MemoryServiceCalls, wikiClient: WikiServiceCalls): MemoryStore;
-createMemoryFace(store: MemoryStore, scope: MemoryScope): MemoryFace;
+createMemoryFace(memoryStore: MemoryStoreRpcs, scope: MemoryScope): MemoryFace;
+createWikiFace(wikiStore: WikiStore, template: string): WikiFace;
 renderMemorySnapshot(entries: MemoryEntry[]): string;   // 10 条、update_time 降序、冻结语义（specs/071 FR-005）
-memorySnapshotSection(text: string | (() => string)): PromptSection;   // text：静态文本或零参闭包（§1 的 () => face.snapshotText()）
+memorySnapshotSection(text: string | (() => string)): PromptSection;   // text：静态文本或零参闭包（单元工厂的 () => face.snapshotText()）
 ```
 
-`PromptSection`（`name` / `order` / `text`，见 `@deepseek-ai/dsh-system-prompt` — `common/js/dsh-plugins/memory/node_modules/@deepseek-ai/dsh-system-prompt/lib/types/index.d.ts:47`）为 system prompt section 的注册规格类型；其 `text` 为 `string | ((context: AssembleContext) => string)`（同文件 `:60`），静态文本与 provider 闭包均为合法取值——零参闭包（如 §1 的 `() => face.snapshotText()`）按少参可赋值多参签名的结构兼容规则成立。库产出规格（type-only 依赖），由编排经 `agentCtx.systemPrompt.section(...)` 注册。库据此声明 `@deepseek-ai/dsh-system-prompt`（type-only，peerDependency）。
+存储 seam 按服务分离：`MemoryStoreRpcs` 只持 memoryClient 的四 RPC，`WikiStore` 只持 wikiClient 的模板寻址面（`MemoryStore extends MemoryStoreRpcs, WikiStore` 合并类型保留）；其 client 适配器 `MemoryClient`/`WikiClient` 由单元工厂构造并同时注入 client 与 unary 策略（§3）。
 
-`MemoryFace`：`prefetch()` / `applyCall(args)` / `wikiSearch(query)` / `wikiGet(titles)` / `wikiWrite(input)` / `snapshotText()`。face 创建时绑定 scope（取代现状 `PlannerMemoryService` 的按 agent 解析 scope Maps——`memory-service/src/service.ts:132-158`）。
+`PromptSection`（`name` / `order` / `text`，见 `@deepseek-ai/dsh-system-prompt` — `common/js/dsh-plugins/memory/node_modules/@deepseek-ai/dsh-system-prompt/lib/types/index.d.ts:47`）为 system prompt section 的注册规格类型；其 `text` 为 `string | ((context: AssembleContext) => string)`（同文件 `:60`），静态文本与 provider 闭包均为合法取值——零参闭包（如单元工厂的 `() => face.snapshotText()`）按少参可赋值多参签名的结构兼容规则成立。库产出规格（type-only 依赖），由编排经 `agentCtx.systemPrompt.section(...)` 注册。库据此声明 `@deepseek-ai/dsh-system-prompt`（type-only，peerDependency）。
 
-## 3. 结构化调用面类型
+`MemoryFace`：`prefetch()` / `applyCall(args)` / `snapshotText()`——face 创建时绑定 `(template, preset)` scope（取代现状 `PlannerMemoryService` 的按 agent 解析 scope Maps——`memory-service/src/service.ts:132-158`）。`WikiFace`：`wikiSearch(query)` / `wikiGet(titles)` / `wikiWrite(input)`——face 创建时绑定 `template` 单键（wiki 集合为模板级共享，`specs/069-wiki-template-web/contracts/wiki-service.md` §1）。
+
+## 3. 结构化调用面类型与 unary 策略注入
 
 `MemoryServiceCalls` / `WikiServiceCalls`：库内声明的 10 个 RPC 方法（memory 4 + wiki 6）结构类型（复用既有手写消息类型）。消费方以 `ctx.grpc.client<MemoryServiceCalls>(...)` 构造后传入；TS 结构兼容在消费方调用点编译期校验；生成接口（agent_v2_types）为可选的兼容性校验参照。库 MUST NOT import projects/game 生成代码或 saolei-loop。
 
-client 适配器运行期所需的调用局部 unary 策略（`waitForReady` + 缺省 10s deadline + pre-call 通道探测 + 失败后 channel 状态日志）由库内私有自持——与基建面 unary 策略（[grpc-runtime.md](grpc-runtime.md) §2 O3）同源的等价迁移副本。库的组装 seam 只收注入 client（无 ctx 访问），且纯库 MUST NOT 依赖插件包（`@dominion/dsh-grpc-runtime` 为 cordis 插件形态），适配器无法消费 `ctx.grpc.callUnary`，故两处各持一份是依赖方向的必然，非待收敛的重复。
+client 适配器运行期所需的调用局部 unary 策略（`waitForReady` + 缺省 10s deadline + pre-call 通道探测 + 失败后 channel 状态日志）**不由库自持**：它以结构类型 `UnaryPolicy`（与 `ctx.grpc.callUnary` 结构兼容；[grpc-runtime.md](grpc-runtime.md) §2 O3）随 client 一起经单元/组合工厂的 `callUnary` 参数注入，策略实现唯一归属 `common/js/dsh-plugins/grpc-runtime/src/unary.ts`（依据 [specs/076-agent-v2-optimize/research.md](../../076-agent-v2-optimize/research.md) D10）。库的组装 seam 只收注入值（无 ctx 访问）；纯库 MUST NOT 依赖插件包（`@dominion/dsh-grpc-runtime` 为 cordis 插件形态），故策略以结构类型注入而非 import——依赖方向规则不破，且不存在第二份策略副本。
 
 ## 4. 领域语义（等价迁入，契约不变）
 
@@ -50,11 +47,16 @@ memory 操作（content ≤1024 rune、batch 两阶段预检/提交、id=sha256[
 
 ## 5. 工具 execute 面解析与缺面语义
 
-execute 经 `exec.agent.ctx.memory` 属性穿越解析（isolate 注册面；saolei 同型，`common/js/dsh-plugins/saolei-tools/src/index.ts` 的 `resolveRuntime`）。缺面 fail-loud（四工具同型文案）：
+execute 经属性穿越解析（isolate 注册面；saolei 同型，`common/js/dsh-plugins/saolei-tools/src/index.ts` 的 `resolveRuntime`）：memory 工具经 `exec.agent.ctx.memory`；三个 wiki 工具经 `exec.agent.ctx.wiki`（单元独立挂载时的自洽解析，§1）。缺面 fail-loud，两侧同型文案指名对应的 face 键与注册方：
 
 ```
 memory tools require the agent-scoped "memory" service; agent "${exec.agent.id}" has none
 (the team-layer materialization setup registers it from the memory capability mount)
+```
+
+```
+wiki tools require the agent-scoped "wiki" service; agent "${exec.agent.id}" has none
+(the team-layer materialization setup registers it from the wiki capability mount)
 ```
 
 ## 6. dsh-saolei 游戏基础与 dsh-saolei-tools 工具插件（对照）

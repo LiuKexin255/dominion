@@ -658,9 +658,6 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: 'catalog:'
         version: 0.2.0-rc.2(c6e351a6a6cfd1c2a664558bffcd410d)
-      '@dominion/common-js-logs':
-        specifier: workspace:*
-        version: link:../logs
       '@grpc/grpc-js':
         specifier: 'catalog:'
         version: 1.14.4

@@ -1,11 +1,14 @@
 /**
- * MemoryClient tests: the DI seam is the injected gRPC client, so every RPC
- * test passes a `vi.fn()`-backed fake and needs no module-level `vi.mock`.
- * The connection policy (channel options, target) lives in the gRPC runtime
- * and is covered by its own tests
- * (specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §3).
+ * MemoryClient tests: the DI seams are the injected gRPC client and the
+ * injected unary policy, so every RPC test passes `vi.fn()`-backed doubles and
+ * needs no module-level `vi.mock`. The connection and invocation policies
+ * (channel options, target, `waitForReady`/deadline/probe) live in the gRPC
+ * runtime and are covered by its own tests
+ * (specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §2-§3;
+ * specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 2).
  */
 
+import { Metadata } from "@grpc/grpc-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -13,6 +16,7 @@ import {
   memoryName,
   parseMemoryName,
 } from "./store.js";
+import type { UnaryClient, UnaryInvoke, UnaryPolicy } from "./store.js";
 
 /**
  * The real gRPC stub contract is `rpc(request, metadata, options, callback)`;
@@ -32,6 +36,33 @@ function makeFakeClient(): FakeRpc {
     deleteMemory: vi.fn(),
     listMemories: vi.fn(),
   };
+}
+
+/**
+ * A `UnaryPolicy` double: a spy that forwards the callback semantics of the
+ * real policy (the adapter's invocation must be exercised through it).
+ */
+function policyDouble(): {
+  readonly policy: UnaryPolicy;
+  readonly spy: ReturnType<typeof vi.fn>;
+} {
+  const spy = vi.fn(
+    <T>(
+      client: UnaryClient,
+      _label: string,
+      invoke: UnaryInvoke<T>,
+    ): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        invoke(client, new Metadata(), { deadline: new Date() }, (err, res) => {
+          if (err !== null) {
+            reject(err);
+            return;
+          }
+          resolve(res as T);
+        });
+      }),
+  );
+  return { policy: spy as unknown as UnaryPolicy, spy };
 }
 
 /** Resolve a fake RPC successfully (or reject with `err` when given). */
@@ -54,9 +85,12 @@ function respond(
 
 describe("MemoryClient", () => {
   let fake: FakeRpc;
+  let policy: UnaryPolicy;
+  let policySpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     fake = makeFakeClient();
+    ({ policy, spy: policySpy } = policyDouble());
   });
 
   describe("memoryName/parseMemoryName (construction and parsing)", () => {
@@ -79,7 +113,7 @@ describe("MemoryClient", () => {
   describe("createMemory", () => {
     it("calls CreateMemory with the embedded Memory body (AIP-133 request shape)", async () => {
       respond(fake.createMemory, {});
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       await client.createMemory("saolei", "preset-1", "mem-abc", "内容一");
 
@@ -105,18 +139,31 @@ describe("MemoryClient", () => {
         null,
         Object.assign(new Error("memory already exists"), { code: 6 }),
       );
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       await expect(
         client.createMemory("saolei", "preset-1", "mem-abc", "内容"),
       ).rejects.toThrow("memory already exists");
+    });
+
+    it("delegates the call to the injected unary policy (memory label)", async () => {
+      respond(fake.createMemory, {});
+      const client = new MemoryClient(fake as never, policy);
+
+      await client.createMemory("saolei", "preset-1", "mem-abc", "内容");
+
+      expect(policySpy).toHaveBeenCalledWith(
+        fake,
+        "memory client call",
+        expect.any(Function),
+      );
     });
   });
 
   describe("updateMemory", () => {
     it("calls UpdateMemory with Memory{name, content} + FieldMask content path", async () => {
       respond(fake.updateMemory, {});
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       await client.updateMemory("saolei", "preset-1", "mem-abc", "新内容");
 
@@ -139,7 +186,7 @@ describe("MemoryClient", () => {
   describe("deleteMemory", () => {
     it("calls DeleteMemory with the resource name", async () => {
       respond(fake.deleteMemory, {});
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       await client.deleteMemory("saolei", "preset-1", "mem-abc");
 
@@ -168,7 +215,7 @@ describe("MemoryClient", () => {
         ],
         nextPageToken: "",
       });
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       const entries = await client.listMemories("saolei", "preset-1");
 
@@ -197,7 +244,7 @@ describe("MemoryClient", () => {
         ],
         nextPageToken: "",
       });
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       const entries = await client.listMemories("saolei", "preset-1");
 
@@ -214,7 +261,7 @@ describe("MemoryClient", () => {
         ],
         nextPageToken: "p2",
       });
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       const entries = await client.listMemories("saolei", "preset-1", {
         orderBy: "update_time desc",
@@ -267,7 +314,7 @@ describe("MemoryClient", () => {
           }
         },
       );
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       const entries = await client.listMemories("saolei", "preset-1");
 
@@ -291,7 +338,7 @@ describe("MemoryClient", () => {
         null,
         Object.assign(new Error("memory service unavailable"), { code: 14 }),
       );
-      const client = new MemoryClient(fake as never);
+      const client = new MemoryClient(fake as never, policy);
 
       await expect(client.listMemories("saolei", "preset-1")).rejects.toThrow(
         "memory service unavailable",

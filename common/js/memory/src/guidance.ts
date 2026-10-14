@@ -1,12 +1,14 @@
 /**
- * The two static guidance sections the memory capability unit contributes
- * alongside its tools: `memory:guidance` (the division of labour between the
- * memory tool and wiki) and `wiki:guidance` (the cross-tool workflow of the
- * three wiki tools). Both are English, markdown-sectioned static
- * text and each owns exactly one concern — the division section never
- * describes tool usage/parameters, the workflow section never restates the
- * division (specs/068-wiki-round-pause/spec.md FR-013;
- * specs/069-wiki-template-web/contracts/dsh-plugins.md §5).
+ * The two static guidance texts of the two-layer capability library:
+ * `memory:guidance` (the division of labour between the memory tool and the
+ * wiki, owned by the composition layer — the division only exists while both
+ * stores are mounted) and `wiki:guidance` (the cross-tool workflow of the
+ * three wiki tools, owned by the wiki unit). Both are English,
+ * markdown-sectioned static text and each owns exactly one concern — the
+ * division section never describes tool usage/parameters, the workflow section
+ * never restates the division (specs/068-wiki-round-pause/spec.md FR-013;
+ * specs/069-wiki-template-web/contracts/dsh-plugins.md §5;
+ * specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 3).
  *
  * Neither section introduces third-party memory-framework terminology, and
  * neither injects wiki entry content into the prompt — the wiki
@@ -19,7 +21,7 @@
  * (specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1). Within
  * the guidance band `saolei:guidance` owns 100, these two take 110/120, and
  * 130–199 stays free for later guidance sections. `memory:snapshot` itself is
- * owned by the same capability unit (`./snapshot.js`).
+ * owned by the memory unit (`./snapshot.js`).
  */
 
 /** Section name for the memory-vs-wiki division of labour. */

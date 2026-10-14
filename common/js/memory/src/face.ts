@@ -1,23 +1,28 @@
 /**
- * The capability primitives: build the domain store over the injected
- * clients, bind a scope into a per-member face, and render the frozen
- * snapshot. No I/O and no context side effects happen at construction — the
- * orchestration drives the one I/O (the fail-loud prefetch).
+ * The capability primitives: bind one storage domain's scope into a
+ * per-member face and render the frozen memory snapshot. No I/O and no context
+ * side effects happen at construction — the orchestration drives the one I/O
+ * (the fail-loud memory prefetch).
  *
- * The face binds `(template, preset)` at creation: the scope travels with
- * the face and needs no agent-keyed lookup. A rejection from
- * {@link MemoryFace.prefetch} propagates (fail-loud): the orchestration
- * that awaits it rolls the whole member creation back
+ * There is one face per functional unit: the memory face binds
+ * `(template, preset)` and the wiki face binds `template` alone — a wiki
+ * collection is shared by every preset of a template
+ * (specs/069-wiki-template-web/contracts/wiki-service.md §1), so a face that
+ * carried the other half of the scope would claim a binding the wiki store
+ * does not have. Each face serves exactly its own unit's tools, which is what
+ * lets either unit be mounted on its own
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 1).
+ *
+ * The memory scope travels with the face and needs no agent-keyed lookup. A
+ * rejection from {@link MemoryFace.prefetch} propagates (fail-loud): the
+ * orchestration that awaits it rolls the whole member creation back
  * (specs/074-dsh-grpc-runtime/contracts/memory-library.md §1;
  * specs/064-memory-split-fold-remain/contracts/dsh-plugins.md §2 item 3;
  * survey/deepseek-harness-memory-plugin.md decision ⑧).
  *
- * `applyCall` runs a hermes-style call against the bound scope's collection.
- * Domain outcomes are text results; only infrastructure failures reject, and
- * the tool surface maps them to text. The wiki face shares the binding but
- * forwards only `scope.template` — one wiki collection is shared by every
- * preset of a template (specs/069-wiki-template-web/contracts/wiki-service.md
- * §1).
+ * `applyCall` runs a hermes-style call against the bound scope's memory
+ * collection. Domain outcomes are text results; only infrastructure failures
+ * reject, and the tool surface maps them to text.
  */
 
 import { applyMemoryCall } from "./operations.js";
@@ -27,12 +32,7 @@ import {
   SNAPSHOT_ENTRY_LIMIT,
   SNAPSHOT_ORDER_BY,
 } from "./snapshot.js";
-import { MemoryClient, WikiClient } from "./store.js";
-import type {
-  MemoryServiceCalls,
-  MemoryStore,
-  WikiServiceCalls,
-} from "./store.js";
+import type { MemoryStoreRpcs, WikiStore } from "./store.js";
 import { wikiGet, wikiSearch, wikiWrite } from "./wiki-operations.js";
 import type { WikiWriteArgs } from "./wiki-operations.js";
 
@@ -51,7 +51,7 @@ export interface MemoryScope {
 }
 
 /**
- * The per-member capability face. The scope is bound at creation; the frozen
+ * The per-member memory face. The scope is bound at creation; the frozen
  * snapshot is filled by {@link MemoryFace.prefetch} before the first prompt
  * assembly and never refreshed by writes
  * (specs/071-memory-preset-scope/spec.md FR-005;
@@ -68,6 +68,16 @@ export interface MemoryFace {
    * text; infrastructure failures reject.
    */
   applyCall(args: MemoryToolArgs): Promise<string>;
+  /** The frozen snapshot text (the empty string before/without a prefetch). */
+  snapshotText(): string;
+}
+
+/**
+ * The per-member wiki face. The template is bound at creation (the wiki
+ * collection's single scope half); domain outcomes return text and only
+ * infrastructure failures reject, exactly like the memory face's calls.
+ */
+export interface WikiFace {
   /**
    * Search the template's wiki titles for `query` (all matching titles, no
    * content). Domain outcomes return text; infrastructure failures reject.
@@ -84,48 +94,14 @@ export interface MemoryFace {
    * outcomes return text; infrastructure failures reject.
    */
   wikiWrite(input: WikiWriteArgs): Promise<string>;
-  /** The frozen snapshot text (the empty string before/without a prefetch). */
-  snapshotText(): string;
 }
 
 /**
- * Build the domain store over the injected service clients: the memory
- * client's AIP four RPCs plus the wiki client's template-addressed seam, as
- * one object the face can call for both domains.
- */
-export function createMemoryStore(
-  memoryClient: MemoryServiceCalls,
-  wikiClient: WikiServiceCalls,
-): MemoryStore {
-  const memory = new MemoryClient(memoryClient);
-  const wiki = new WikiClient(wikiClient);
-  return {
-    createMemory: (template, preset, memoryId, content) =>
-      memory.createMemory(template, preset, memoryId, content),
-    updateMemory: (template, preset, memoryId, content) =>
-      memory.updateMemory(template, preset, memoryId, content),
-    deleteMemory: (template, preset, memoryId) =>
-      memory.deleteMemory(template, preset, memoryId),
-    listMemories: (template, preset, options) =>
-      memory.listMemories(template, preset, options),
-    searchWikis: (template, query, options) =>
-      wiki.searchWikis(template, query, options),
-    getWiki: (template, wikiId) => wiki.getWiki(template, wikiId),
-    createWiki: (template, wikiId, title, content) =>
-      wiki.createWiki(template, wikiId, title, content),
-    updateWiki: (template, wikiId, input) =>
-      wiki.updateWiki(template, wikiId, input),
-    deleteWiki: (template, wikiId) => wiki.deleteWiki(template, wikiId),
-    listWikis: (template, options) => wiki.listWikis(template, options),
-  };
-}
-
-/**
- * Bind a scope into a per-member face over the store. Each call carries the
- * bound scope, so no agent-keyed resolution is needed.
+ * Bind a memory scope into a per-member face over the memory store. Each call
+ * carries the bound scope, so no agent-keyed resolution is needed.
  */
 export function createMemoryFace(
-  store: MemoryStore,
+  store: MemoryStoreRpcs,
   scope: MemoryScope,
 ): MemoryFace {
   let snapshot = "";
@@ -149,22 +125,30 @@ export function createMemoryFace(
       return applyMemoryCall(store, scope.template, scope.preset, args);
     },
 
+    snapshotText(): string {
+      return snapshot;
+    },
+  };
+}
+
+/**
+ * Bind a wiki template into a per-member face over the wiki store. Every
+ * operation addresses that template's collection alone.
+ */
+export function createWikiFace(store: WikiStore, template: string): WikiFace {
+  return {
     wikiSearch(query: string): Promise<string> {
-      return wikiSearch(store, scope.template, query);
+      return wikiSearch(store, template, query);
     },
 
     wikiGet(titles: readonly string[]): Promise<string> {
       // The operation core accepts a readonly titles array, so the caller's
       // array is passed through without a defensive copy.
-      return wikiGet(store, scope.template, titles);
+      return wikiGet(store, template, titles);
     },
 
     wikiWrite(input: WikiWriteArgs): Promise<string> {
-      return wikiWrite(store, scope.template, input);
-    },
-
-    snapshotText(): string {
-      return snapshot;
+      return wikiWrite(store, template, input);
     },
   };
 }

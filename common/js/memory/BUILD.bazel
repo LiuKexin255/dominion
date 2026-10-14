@@ -29,7 +29,6 @@ ts_project(
     deps = [
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
-        ":node_modules/@dominion/common-js-logs",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
     ],
@@ -54,8 +53,7 @@ js_library(
 # definition helper (dsh-tools) and the grpc-js call surface (Metadata /
 # connectivity state). @deepseek-ai/dsh-system-prompt is type-only (the
 # PromptSection registration spec is erased at build), so it stays out of the
-# runtime closure. The logs face is the workspace package the unary helper
-# reports through.
+# runtime closure.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/common-js-memory",
@@ -66,9 +64,6 @@ js_runtime_library(
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
-    runtime_deps = [
-        "//common/js/logs:runtime_pkg",
-    ],
 )
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
@@ -83,7 +78,6 @@ vitest_test(
     ) + [
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
-        ":node_modules/@dominion/common-js-logs",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
     ],

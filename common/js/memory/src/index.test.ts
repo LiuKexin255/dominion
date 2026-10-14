@@ -1,8 +1,8 @@
 /**
  * Library export-surface tests: the package is a pure library — no cordis
- * plugin form (`name`/`inject`/`apply`) — and exposes the capability unit
- * factory, the primitives and the tool/section constants
- * (specs/074-dsh-grpc-runtime/contracts/memory-library.md §1-§3).
+ * plugin form (`name`/`inject`/`apply`) — and exposes the functional-unit and
+ * composition factories, the primitives and the tool/section constants
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1/§2).
  */
 
 import { describe, expect, it } from "vitest";
@@ -16,10 +16,20 @@ describe("@dominion/common-js-memory export surface", () => {
     expect("apply" in library).toBe(false);
   });
 
-  it("exposes the atomic unit factory and the primitives", () => {
-    expect(typeof library.buildMemoryCapabilities).toBe("function");
-    expect(typeof library.createMemoryStore).toBe("function");
+  it("exposes the functional-unit and composition factories", () => {
+    expect(typeof library.buildMemoryUnit).toBe("function");
+    expect(typeof library.buildWikiUnit).toBe("function");
+    expect(typeof library.buildMemoryWikiComposition).toBe("function");
+  });
+
+  it("keeps no combined-surface factory exports (final state, constitution VII)", () => {
+    expect("buildMemoryCapabilities" in library).toBe(false);
+    expect("createMemoryStore" in library).toBe(false);
+  });
+
+  it("exposes the primitives", () => {
     expect(typeof library.createMemoryFace).toBe("function");
+    expect(typeof library.createWikiFace).toBe("function");
     expect(typeof library.renderMemorySnapshot).toBe("function");
     expect(typeof library.memorySnapshotSection).toBe("function");
   });

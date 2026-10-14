@@ -122,7 +122,8 @@ const MEMORY_RESULT_OUTPUT_SCHEMA = {
  * lookup would not (saolei `saoleiGame` precedent).
  *
  * @param toolName The calling tool's name, so the missing-agent text names
- *   the tool that actually ran (`memory`/`wiki_search`/`wiki_get`/`wiki_write`).
+ *   the tool that actually ran (the wiki tools resolve their own `wiki` face
+ *   in `./wiki-tools.js`).
  */
 export function resolveMemoryFace(
   exec: ToolRunContext,
@@ -166,11 +167,13 @@ function describeErr(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Build the registry-ready `memory` tool definition. The cross-tool
- * coordination guidance is a separate prompt section owned by the capability
- * unit (`./capabilities.js`) and never part of this tool's own description
- * (specs/068-wiki-round-pause/contracts/dsh-plugins.md §3). Storage access is
- * resolved per call through `exec.agent.ctx.memory`. */
+/** Build the registry-ready `memory` tool definition. The description carries
+ * the tool's own usage and snapshot semantics in full; the memory-vs-wiki
+ * division of labour is a composition-layer prompt section
+ * (`./capabilities.js`) and never part of this description
+ * (specs/068-wiki-round-pause/contracts/dsh-plugins.md §3;
+ * specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 3).
+ * Storage access is resolved per call through `exec.agent.ctx.memory`. */
 export function createMemoryToolDefinition(): ToolDefinition {
   return defineTool({
     name: MEMORY_TOOL_NAME,

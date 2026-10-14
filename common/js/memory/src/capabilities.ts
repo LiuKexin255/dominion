@@ -1,102 +1,79 @@
 /**
- * The atomic capability unit factory. `buildMemoryCapabilities` produces the
- * four fields together — the agent-scoped face, the four tool definitions,
- * the three prompt sections, and the fail-loud prefetch — as one indivisible
- * unit: the orchestration mounts all of it or none of it
- * (specs/074-dsh-grpc-runtime/contracts/memory-library.md §1; user constraint:
- * a capability unit is registered whole).
+ * The composition layer: merge functionally independent units into one
+ * capability surface a member mounts whole
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §2).
  *
- * The factory is a pure function over the injected clients and scope: it
- * performs no I/O and registers nothing. The orchestration registers
- * `faces` → `tools` → `sections` into the member context, then awaits
- * `ready()` (the fail-loud prefetch that rolls the member back on rejection).
+ * The composition is the frozen capability surface the equivalence anchor
+ * defines (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §2):
+ * the four tools, the section names and orders `memory:guidance`(110) /
+ * `wiki:guidance`(120) / `memory:snapshot`(200), the assembled prompt text and
+ * the memory prefetch (spec FR-004/SC-003).
+ *
+ * The `memory:guidance` section (the memory-vs-wiki division of labour) is
+ * owned here, not by either unit: the division only means anything while both
+ * stores are mounted, so no unit-bound prompt ever references a tool that is
+ * not part of that mount
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 3).
  */
 
-import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import type { PromptSection } from "@deepseek-ai/dsh-system-prompt";
 
-import { createMemoryFace, createMemoryStore } from "./face.js";
-import type { MemoryFace, MemoryScope } from "./face.js";
+import type { MemoryScope } from "./face.js";
 import {
   MEMORY_GUIDANCE,
   MEMORY_GUIDANCE_SECTION_NAME,
   MEMORY_GUIDANCE_SECTION_ORDER,
-  WIKI_GUIDANCE,
-  WIKI_GUIDANCE_SECTION_NAME,
-  WIKI_GUIDANCE_SECTION_ORDER,
 } from "./guidance.js";
-import { memorySnapshotSection } from "./snapshot.js";
-import type { MemoryServiceCalls, WikiServiceCalls } from "./store.js";
-import { createMemoryToolDefinition } from "./tool.js";
-import {
-  createWikiGetToolDefinition,
-  createWikiSearchToolDefinition,
-  createWikiWriteToolDefinition,
-} from "./wiki-tools.js";
+import type {
+  MemoryServiceCalls,
+  UnaryPolicy,
+  WikiServiceCalls,
+} from "./store.js";
+import { buildMemoryUnit, buildWikiUnit } from "./units.js";
+import type { CapabilityUnit } from "./units.js";
 
-/** One agent-scoped registration: the isolate label plus the face value. */
-export interface MemoryFaceRegistration {
-  readonly key: string;
-  readonly value: MemoryFace;
-}
-
-/**
- * The atomic capability unit: faces/tools/sections/ready are produced
- * together and consumed together.
- */
-export interface MemoryCapabilities {
-  /** The agent-scoped face registrations (`[{key: "memory", value: face}]`). */
-  readonly faces: readonly MemoryFaceRegistration[];
-  /** The four tool definitions (`memory` + the three wiki tools). */
-  readonly tools: readonly ToolDefinition[];
-  /**
-   * The three prompt sections (`memory:guidance`, `wiki:guidance`,
-   * `memory:snapshot`).
-   */
-  readonly sections: readonly PromptSection[];
-  /** Fail-loud prefetch: await before publishing the member. */
-  readonly ready: () => Promise<void>;
-}
-
-/** The factory dependencies. */
-export interface MemoryCapabilitiesDeps {
+/** Collaborators of {@link buildMemoryWikiComposition}. */
+export interface MemoryWikiCompositionDeps {
+  /** The memory scope: `{template, preset}`; its template also scopes the wiki. */
   readonly scope: MemoryScope;
+  /** The MemoryService call surface built by `ctx.grpc.client<...>`. */
   readonly memoryClient: MemoryServiceCalls;
+  /** The WikiService call surface built by `ctx.grpc.client<...>`. */
   readonly wikiClient: WikiServiceCalls;
+  /** The composition-level unary policy every RPC goes through. */
+  readonly callUnary: UnaryPolicy;
 }
 
 /**
- * Build the atomic capability unit for one member scope. The section names,
- * orders and text are the frozen contract, so the assembled system prompt is
- * stable across mounts (specs/074-dsh-grpc-runtime/contracts/memory-library.md
- * §1).
+ * Compose the memory and wiki units into one mountable unit, adding the
+ * composition-owned division-of-labour section. The memory unit's prefetch is
+ * the composition's readiness hook (wiki has none).
  */
-export function buildMemoryCapabilities(
-  deps: MemoryCapabilitiesDeps,
-): MemoryCapabilities {
-  const store = createMemoryStore(deps.memoryClient, deps.wikiClient);
-  const face = createMemoryFace(store, deps.scope);
+export function buildMemoryWikiComposition(
+  deps: MemoryWikiCompositionDeps,
+): CapabilityUnit {
+  const memory = buildMemoryUnit({
+    scope: deps.scope,
+    memoryClient: deps.memoryClient,
+    callUnary: deps.callUnary,
+  });
+  const wiki = buildWikiUnit({
+    template: deps.scope.template,
+    wikiClient: deps.wikiClient,
+    callUnary: deps.callUnary,
+  });
+  // The division section leads the guidance band it shares with the wiki
+  // workflow, so the section order is 110/120/200
+  // (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §2).
+  const division: PromptSection = {
+    name: MEMORY_GUIDANCE_SECTION_NAME,
+    order: MEMORY_GUIDANCE_SECTION_ORDER,
+    text: MEMORY_GUIDANCE,
+  };
   return {
-    faces: [{ key: "memory", value: face }],
-    tools: [
-      createMemoryToolDefinition(),
-      createWikiSearchToolDefinition(),
-      createWikiGetToolDefinition(),
-      createWikiWriteToolDefinition(),
-    ],
-    sections: [
-      {
-        name: MEMORY_GUIDANCE_SECTION_NAME,
-        order: MEMORY_GUIDANCE_SECTION_ORDER,
-        text: MEMORY_GUIDANCE,
-      },
-      {
-        name: WIKI_GUIDANCE_SECTION_NAME,
-        order: WIKI_GUIDANCE_SECTION_ORDER,
-        text: WIKI_GUIDANCE,
-      },
-      memorySnapshotSection(() => face.snapshotText()),
-    ],
-    ready: () => face.prefetch(),
+    faces: [...memory.faces, ...wiki.faces],
+    tools: [...memory.tools, ...wiki.tools],
+    sections: [division, ...wiki.sections, ...memory.sections],
+    ready: memory.ready,
   };
 }

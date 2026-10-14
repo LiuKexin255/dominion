@@ -5,10 +5,7 @@
     "strict": true,
     "declaration": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "paths": {
-      "@dominion/common-js-logs": ["../../logs/src/index.js"]
-    }
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }

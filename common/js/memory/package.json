@@ -12,7 +12,6 @@
     },
     "dependencies": {
         "@deepseek-ai/dsh-tools": "catalog:",
-        "@dominion/common-js-logs": "workspace:*",
         "@grpc/grpc-js": "catalog:"
     },
     "peerDependencies": {

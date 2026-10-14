@@ -1,7 +1,7 @@
 /**
- * The three wiki tools of the capability unit: `wiki_search`, `wiki_get`,
+ * The three wiki tools of the functional wiki unit: `wiki_search`, `wiki_get`,
  * `wiki_write`. Each is a thin, stateless model-facing entry point over the
- * agent-scoped memory face. The invocation never throws: every
+ * agent-scoped wiki face. The invocation never throws: every
  * failure (domain or infrastructure) is a TEXT result
  * (specs/068-wiki-round-pause/spec.md FR-011), and no model-visible text ever
  * carries a wiki resource `name`/`wiki_id` — titles are the only address the
@@ -14,15 +14,16 @@
  * recoverable text answer, not a schema failure) and `entries` items reject
  * unknown keys (`additionalProperties: false`).
  *
- * The face is resolved per call through `exec.agent.ctx.memory` (the saolei
- * pattern; see `./tool.js` `resolveMemoryFace`), so a missing face fails loud
- * with the same wording as the memory tool.
+ * The face is resolved per call through `exec.agent.ctx.wiki` — the key the
+ * wiki unit's mount registers — so the wiki tools work with the wiki unit
+ * mounted alone, and a missing face fails loud with the memory tool's wording
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 1).
  */
 
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolDefinition, ToolRunContext } from "@deepseek-ai/dsh-tools";
 
-import { resolveMemoryFace } from "./tool.js";
+import type { WikiFace } from "./face.js";
 
 /** The tool names (one per wiki operation; there is no list tool). */
 export const WIKI_SEARCH_TOOL_NAME = "wiki_search";
@@ -131,6 +132,41 @@ function describeErr(err: unknown): string {
 }
 
 /**
+ * Resolve the calling agent's wiki face. Failure is fail-loud and mirrors
+ * {@link resolveMemoryFace} (`./tool.js`): a missing `exec.agent`
+ * (non-loop-driven dispatch) or an unregistered `wiki` face (the orchestration
+ * did not mount the wiki unit) throws, and the pipeline turns the throw into a
+ * model-visible error result — never a fabricated success.
+ *
+ * Resolution reads the `wiki` context PROPERTY (the proxy's fiber-walking
+ * lookup), not `ctx.get`: the orchestration registers the face under an
+ * isolation label (`agentCtx.isolate("wiki", face)`), which the property walk
+ * resolves from the shared agent fiber while `get`'s label-keyed store lookup
+ * would not (saolei `saoleiGame` precedent).
+ *
+ * @param toolName The calling tool's name, so the missing-agent text names the
+ *   tool that actually ran.
+ */
+export function resolveWikiFace(
+  exec: ToolRunContext,
+  toolName = WIKI_SEARCH_TOOL_NAME,
+): WikiFace {
+  if (exec.agent === undefined) {
+    throw new Error(
+      `${toolName} tool requires an agent caller: no agent on the tool execution`,
+    );
+  }
+  const face = (exec.agent.ctx as { wiki?: WikiFace }).wiki;
+  if (face === undefined) {
+    throw new Error(
+      `wiki tools require the agent-scoped "wiki" service; agent "${exec.agent.id}" has none\n` +
+        "(the team-layer materialization setup registers it from the wiki capability mount)",
+    );
+  }
+  return face;
+}
+
+/**
  * Execute one `wiki_search`. Any failure — missing agent caller, unregistered
  * face, storage outage — becomes a `wiki failed: …` TEXT result, so the
  * conversation is never interrupted (specs/068-wiki-round-pause/spec.md
@@ -142,7 +178,7 @@ export async function executeWikiSearchTool(
 ): Promise<{ result: string }> {
   try {
     return {
-      result: await resolveMemoryFace(exec, WIKI_SEARCH_TOOL_NAME).wikiSearch(
+      result: await resolveWikiFace(exec, WIKI_SEARCH_TOOL_NAME).wikiSearch(
         args.query ?? "",
       ),
     };
@@ -158,7 +194,7 @@ export async function executeWikiGetTool(
 ): Promise<{ result: string }> {
   try {
     return {
-      result: await resolveMemoryFace(exec, WIKI_GET_TOOL_NAME).wikiGet(
+      result: await resolveWikiFace(exec, WIKI_GET_TOOL_NAME).wikiGet(
         args.titles ?? [],
       ),
     };
@@ -174,7 +210,7 @@ export async function executeWikiWriteTool(
 ): Promise<{ result: string }> {
   try {
     return {
-      result: await resolveMemoryFace(exec, WIKI_WRITE_TOOL_NAME).wikiWrite({
+      result: await resolveWikiFace(exec, WIKI_WRITE_TOOL_NAME).wikiWrite({
         title: args.title,
         content: args.content,
         entries: args.entries,

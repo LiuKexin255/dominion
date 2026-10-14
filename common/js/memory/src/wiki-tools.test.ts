@@ -1,19 +1,20 @@
 /**
  * Wiki tool tests — the three model-facing definitions' parameter schemas,
- * execution-time face resolution through `exec.agent.ctx.memory`, text-result
+ * execution-time face resolution through `exec.agent.ctx.wiki`, text-result
  * failure semantics, and the tool→face→operation-core chain (search paging
  * aggregation and the empty-entries guidance) over a fake WikiStore.
  *
  * DI pattern (style/javascript.md §测试): the agent-scoped face and the tool
  * execution context are injected doubles (`vi.fn()`); no module interception.
- * Contract: specs/074-dsh-grpc-runtime/contracts/memory-library.md §5.
+ * Contracts: specs/074-dsh-grpc-runtime/contracts/memory-library.md §5;
+ * specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 1.
  */
 
 import { validateArgs } from "@deepseek-ai/dsh-tools";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
 
-import type { MemoryFace } from "./face.js";
+import type { WikiFace } from "./face.js";
 import type { WikiStore } from "./store.js";
 import { wikiName } from "./store.js";
 import {
@@ -40,23 +41,23 @@ import {
   executeWikiWriteTool,
 } from "./wiki-tools.js";
 
-/** A tool execution carrying an agent whose scope holds the given face. */
-function makeExec(face?: Partial<MemoryFace>, agentId = "planner"): ToolRunContext {
+/** A tool execution carrying an agent whose scope holds the given wiki face. */
+function makeExec(face?: Partial<WikiFace>, agentId = "planner"): ToolRunContext {
   return {
-    agent: { id: agentId, ctx: face === undefined ? {} : { memory: face } },
+    agent: { id: agentId, ctx: face === undefined ? {} : { wiki: face } },
   } as unknown as ToolRunContext;
 }
 
-/** The agent-scoped face double, with the three wiki methods overridable. */
+/** The agent-scoped wiki face double, with the three methods overridable. */
 function makeFace(
-  overrides: Partial<Pick<MemoryFace, "wikiSearch" | "wikiGet" | "wikiWrite">> = {},
-): MemoryFace {
+  overrides: Partial<Pick<WikiFace, "wikiSearch" | "wikiGet" | "wikiWrite">> = {},
+): WikiFace {
   return {
     wikiSearch: vi.fn(async () => "wiki: 0 title(s) matched 'x':"),
     wikiGet: vi.fn(async () => "wiki: 0 entry(ies) retrieved."),
     wikiWrite: vi.fn(async () => "wiki: 0 entry(ies) applied"),
     ...overrides,
-  } as unknown as MemoryFace;
+  } as unknown as WikiFace;
 }
 
 describe("wiki tool descriptions (only the tool's own function)", () => {
@@ -204,7 +205,7 @@ describe("executeWiki*Tool (text results, never throws)", () => {
       "- 开局-边角注意",
     ].join("\n");
     const wikiSearch = vi.fn(async () => aggregated);
-    const exec = makeExec({ wikiSearch } as Partial<MemoryFace>);
+    const exec = makeExec({ wikiSearch } as Partial<WikiFace>);
 
     const result = await executeWikiSearchTool({ query: "开局" }, exec);
 
@@ -214,7 +215,7 @@ describe("executeWiki*Tool (text results, never throws)", () => {
 
   it("wiki_get passes the titles through and returns the face text", async () => {
     const wikiGet = vi.fn(async () => "content body");
-    const exec = makeExec({ wikiGet } as Partial<MemoryFace>);
+    const exec = makeExec({ wikiGet } as Partial<WikiFace>);
 
     const result = await executeWikiGetTool({ titles: ["甲", "乙"] }, exec);
 
@@ -224,7 +225,7 @@ describe("executeWiki*Tool (text results, never throws)", () => {
 
   it("wiki_write passes both forms through and forwards the empty-entries guidance", async () => {
     const wikiWrite = vi.fn(async () => WIKI_WRITE_EMPTY_ENTRIES_TEXT);
-    const exec = makeExec({ wikiWrite } as Partial<MemoryFace>);
+    const exec = makeExec({ wikiWrite } as Partial<WikiFace>);
 
     const single = await executeWikiWriteTool(
       { title: "甲", content: "正文" },
@@ -244,9 +245,9 @@ describe("executeWiki*Tool (text results, never throws)", () => {
     expect(batch.result).toBe(WIKI_WRITE_EMPTY_ENTRIES_TEXT);
   });
 
-  it("resolves the face through exec.agent.ctx.memory", async () => {
+  it("resolves the face through exec.agent.ctx.wiki", async () => {
     const wikiSearch = vi.fn(async () => "ok");
-    const exec = makeExec({ wikiSearch } as Partial<MemoryFace>);
+    const exec = makeExec({ wikiSearch } as Partial<WikiFace>);
 
     const result = await executeWikiSearchTool({ query: "x" }, exec);
 
@@ -261,7 +262,7 @@ describe("executeWiki*Tool (text results, never throws)", () => {
 
     const result = await executeWikiSearchTool(
       { query: "x" },
-      makeExec({ wikiSearch } as Partial<MemoryFace>),
+      makeExec({ wikiSearch } as Partial<WikiFace>),
     );
 
     expect(result).toEqual({
@@ -269,12 +270,12 @@ describe("executeWiki*Tool (text results, never throws)", () => {
     });
   });
 
-  it("a missing face becomes TEXT with the shared wording (no throw)", async () => {
+  it("a missing face becomes TEXT naming the wiki face key (no throw)", async () => {
     const result = await executeWikiSearchTool({ query: "x" }, makeExec());
 
     expect(result.result).toContain("wiki failed:");
     expect(result.result).toContain(
-      'memory tools require the agent-scoped "memory" service',
+      'wiki tools require the agent-scoped "wiki" service',
     );
   });
 
@@ -339,7 +340,7 @@ describe("wiki tools over the real operation core (fake WikiStore)", () => {
   /** A face whose wiki methods delegate to the real operation core. */
   function coreFace(
     store: ReturnType<typeof makeFakeWikiStore>,
-  ): Partial<MemoryFace> {
+  ): Partial<WikiFace> {
     const wiki = store as unknown as WikiStore;
     return {
       wikiSearch: (query) => coreWikiSearch(wiki, "saolei", query),

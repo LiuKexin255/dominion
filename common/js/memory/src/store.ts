@@ -4,11 +4,15 @@
  *
  * Connection infrastructure (resolver, proto loading, credentials, channel
  * construction and the channel policy) is owned by the composition-level
- * gRPC runtime (specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md); this
- * module keeps only the client adaptation: resource-name construction, the
- * AIP request shapes, the call-local unary invocation (`waitForReady` +
- * deadline + pre-call probe), and page walking. The constructor takes the
- * injected client, so unit tests pass a `vi.fn()`-backed double with no
+ * gRPC runtime (specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md), and so
+ * is the call-local unary policy (`waitForReady` + deadline + pre-call probe +
+ * failure logging): it reaches these adapters as the injected
+ * {@link UnaryPolicy}, whose only implementation lives in
+ * `common/js/dsh-plugins/grpc-runtime/src/unary.ts`
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 2).
+ * This module keeps only the client adaptation: resource-name construction,
+ * the AIP request shapes and page walking. The constructor takes the injected
+ * client and policy, so unit tests pass `vi.fn()`-backed doubles with no
  * module interception (style/javascript.md §测试).
  *
  * The two service clients are consumed through the structural call surfaces
@@ -33,7 +37,6 @@
  */
 
 import * as grpc from "@grpc/grpc-js";
-import { error, info } from "@dominion/common-js-logs";
 
 // ── MemoryService call surface ────────────────────────────────────────────
 
@@ -354,81 +357,52 @@ export interface WikiServiceCalls {
 /** The composed domain seam: memory storage plus the wiki store. */
 export interface MemoryStore extends MemoryStoreRpcs, WikiStore {}
 
-// ── Unary invocation (client-level adaptation) ────────────────────────────
+// ── Injected unary invocation policy ─────────────────────────────────────
 
 /**
- * A call-local unary invocation: the injected client is captured by the
- * caller's closure, so this type carries only the arguments the shared
- * strategy owns.
+ * The minimal structural view of an injected gRPC service client as far as the
+ * invocation policy is concerned: the policy only forwards the client it was
+ * given (the adapters address their RPCs through the closure they already
+ * hold), so the seam deliberately names no client member and imports no
+ * `grpc.Client`. Declared as `object` rather than `unknown` so call sites stay
+ * type-checked, and it accepts every grpc-js service client as prepared by
+ * `ctx.grpc.client<...>`
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 2).
  */
-type UnaryInvoke<T> = (
+export type UnaryClient = object;
+
+/**
+ * Callback-style unary invocation shape shared with the composition-level
+ * runtime (`common/js/dsh-plugins/grpc-runtime/src/unary.ts`): the policy hands
+ * its client to the invoke callback, and an adapter's callback ignores it
+ * because it already holds the same client.
+ */
+export type UnaryInvoke<T> = (
+  client: UnaryClient,
   metadata: grpc.Metadata,
   options: { deadline: Date },
   callback: (err: grpc.ServiceError | null, response?: T) => void,
 ) => void;
 
 /**
- * Shared callback-style unary RPC invocation (request + Metadata({waitForReady})
- * + deadline). A channel that dropped is probed first so the call does not
- * queue forever in "Waiting for LB pick"; a failure is logged with the
- * post-failure channel state. Both clients share this one policy through the
- * `label` (they hit the same dominion target).
+ * The call-local unary invocation policy, structurally compatible with
+ * `ctx.grpc.callUnary`
+ * (`common/js/dsh-plugins/grpc-runtime/src/client.ts`;
+ * specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §2 O3). The strategy —
+ * `waitForReady`, a 10s default deadline, a pre-call channel probe and the
+ * post-failure channel-state log — has a single owner in the composition-level
+ * runtime and reaches these adapters only through this injected seam; the
+ * library never keeps a copy of it
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 2;
+ * specs/076-agent-v2-optimize/research.md D10). Tests inject a `vi.fn()`-backed
+ * double of the same shape.
  */
-function callUnary<T>(
-  client: unknown,
+export type UnaryPolicy = <T>(
+  client: UnaryClient,
   label: string,
   invoke: UnaryInvoke<T>,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const deadline = new Date();
-    deadline.setSeconds(deadline.getSeconds() + 10);
-    probeChannel(client, label);
-    invoke(
-      new grpc.Metadata({ waitForReady: true }),
-      { deadline },
-      (err: grpc.ServiceError | null, response?: T) => {
-        if (err) {
-          error(`${label} failed`, {
-            error: err.message,
-            code: String(err.code),
-            channelState: probeChannel(client, `${label} (after failure)`),
-          });
-          reject(err);
-          return;
-        }
-        resolve(response as T);
-      },
-    );
-  });
-}
-
-/**
- * Probe a grpc-js channel's connectivity state and nudge it to connect
- * (`getConnectivityState(true)` forces IDLE→CONNECTING): a call on an idle
- * channel then actively tries to reconnect instead of silently queueing until
- * the deadline. Logs the state for diagnosis and returns the state name.
- *
- * @param client The gRPC client whose channel to probe.
- * @param label  Log label identifying the call site.
- * @returns The connectivity state name, or a descriptive string when the
- *   channel is unavailable (injected test client without a channel).
- */
-function probeChannel(client: unknown, label: string): string {
-  let state = "no-channel";
-  try {
-    const channel = (
-      client as { getChannel?: () => grpc.Channel }
-    ).getChannel?.();
-    if (channel) {
-      const value = channel.getConnectivityState(true);
-      state = grpc.connectivityState[value] ?? String(value);
-    }
-  } catch (err) {
-    state = `error:${err instanceof Error ? err.message : String(err)}`;
-  }
-  info(`${label}: channel state`, { state });
-  return state;
-}
+  deadlineMs?: number,
+) => Promise<T>;
 
 // ── Client adapters ───────────────────────────────────────────────────────
 
@@ -438,9 +412,14 @@ function probeChannel(client: unknown, label: string): string {
  * @param client The service client built by `ctx.grpc.client<MemoryServiceCalls>`
  *   (or a `vi.fn()`-backed double in tests). The connection is owned by the
  *   composition-level runtime, so this adapter never constructs one.
+ * @param callUnary The injected unary policy every RPC goes through
+ *   ({@link UnaryPolicy}; see the module header).
  */
 export class MemoryClient implements MemoryStoreRpcs {
-  constructor(private readonly client: MemoryServiceCalls) {}
+  constructor(
+    private readonly client: MemoryServiceCalls,
+    private readonly callUnary: UnaryPolicy,
+  ) {}
 
   /**
    * Create a memory entry under a preset (AIP-133). The request carries the
@@ -457,7 +436,7 @@ export class MemoryClient implements MemoryStoreRpcs {
     content: string,
   ): Promise<void> {
     const name = memoryName(template, preset, memoryId);
-    await this.call<void>((metadata, options, cb) =>
+    await this.call<void>((_client, metadata, options, cb) =>
       this.client.createMemory(
         {
           parent: `templates/${template}/presets/${preset}`,
@@ -484,7 +463,7 @@ export class MemoryClient implements MemoryStoreRpcs {
     memoryId: string,
     content: string,
   ): Promise<void> {
-    await this.call<void>((metadata, options, cb) =>
+    await this.call<void>((_client, metadata, options, cb) =>
       this.client.updateMemory(
         {
           memory: {
@@ -510,7 +489,7 @@ export class MemoryClient implements MemoryStoreRpcs {
     preset: string,
     memoryId: string,
   ): Promise<void> {
-    await this.call<void>((metadata, options, cb) =>
+    await this.call<void>((_client, metadata, options, cb) =>
       this.client.deleteMemory(
         { name: memoryName(template, preset, memoryId) },
         metadata,
@@ -555,7 +534,7 @@ export class MemoryClient implements MemoryStoreRpcs {
         request.orderBy = options.orderBy;
       }
       const response = await this.call<ListMemoriesResponse | undefined>(
-        (metadata, callOptions, cb) =>
+        (_client, metadata, callOptions, cb) =>
           this.client.listMemories(request, metadata, callOptions, cb),
       );
       for (const m of response?.memories ?? []) {
@@ -572,11 +551,11 @@ export class MemoryClient implements MemoryStoreRpcs {
   }
 
   /**
-   * Shared unary invocation over this client's channel (see {@link callUnary};
-   * the `label` keeps the memory-specific log wording).
+   * Shared unary invocation through the injected policy (see
+   * {@link UnaryPolicy}; the `label` keeps the memory-specific log wording).
    */
   private call<T>(invoke: UnaryInvoke<T>): Promise<T> {
-    return callUnary(this.client, "memory client call", invoke);
+    return this.callUnary(this.client, "memory client call", invoke);
   }
 }
 
@@ -586,9 +565,14 @@ export class MemoryClient implements MemoryStoreRpcs {
  * @param client The service client built by `ctx.grpc.client<WikiServiceCalls>`
  *   (or a `vi.fn()`-backed double in tests). The connection is owned by the
  *   composition-level runtime, so this adapter never constructs one.
+ * @param callUnary The injected unary policy every RPC goes through
+ *   ({@link UnaryPolicy}; see the module header).
  */
 export class WikiClient implements WikiStore {
-  constructor(private readonly client: WikiServiceCalls) {}
+  constructor(
+    private readonly client: WikiServiceCalls,
+    private readonly callUnary: UnaryPolicy,
+  ) {}
 
   /**
    * Search the template's wikis by normalized title substring (AIP-136 custom
@@ -611,7 +595,7 @@ export class WikiClient implements WikiStore {
       request.pageSize = options.pageSize;
     }
     const response = await this.call<SearchWikisResponse | undefined>(
-      (metadata, callOptions, cb) =>
+      (_client, metadata, callOptions, cb) =>
         this.client.searchWikis(request, metadata, callOptions, cb),
     );
     const wikis: WikiSummary[] = [];
@@ -631,7 +615,7 @@ export class WikiClient implements WikiStore {
   async getWiki(template: string, wikiId: string): Promise<Wiki> {
     const name = wikiName(template, wikiId);
     const response = await this.call<ListedWiki | undefined>(
-      (metadata, options, cb) =>
+      (_client, metadata, options, cb) =>
         this.client.getWiki({ name }, metadata, options, cb),
     );
     return {
@@ -655,7 +639,7 @@ export class WikiClient implements WikiStore {
     title: string,
     content: string,
   ): Promise<void> {
-    await this.call<void>((metadata, options, cb) =>
+    await this.call<void>((_client, metadata, options, cb) =>
       this.client.createWiki(
         {
           parent: `templates/${template}`,
@@ -681,7 +665,7 @@ export class WikiClient implements WikiStore {
     wikiId: string,
     wiki: WikiUpdate,
   ): Promise<void> {
-    await this.call<void>((metadata, options, cb) =>
+    await this.call<void>((_client, metadata, options, cb) =>
       this.client.updateWiki(
         {
           wiki: { name: wikiName(template, wikiId), content: wiki.content },
@@ -700,7 +684,7 @@ export class WikiClient implements WikiStore {
    * @throws {grpc.ServiceError} NOT_FOUND when the wiki does not exist.
    */
   async deleteWiki(template: string, wikiId: string): Promise<void> {
-    await this.call<void>((metadata, options, cb) =>
+    await this.call<void>((_client, metadata, options, cb) =>
       this.client.deleteWiki(
         { name: wikiName(template, wikiId) },
         metadata,
@@ -729,7 +713,7 @@ export class WikiClient implements WikiStore {
       request.pageSize = options.pageSize;
     }
     const response = await this.call<ListWikisResponse | undefined>(
-      (metadata, callOptions, cb) =>
+      (_client, metadata, callOptions, cb) =>
         this.client.listWikis(request, metadata, callOptions, cb),
     );
     const wikis: Wiki[] = [];
@@ -745,8 +729,11 @@ export class WikiClient implements WikiStore {
     return { wikis, nextPageToken: response?.nextPageToken ?? "" };
   }
 
-  /** Shared unary invocation over this client's channel (see {@link callUnary}). */
+  /**
+   * Shared unary invocation through the injected policy (see
+   * {@link UnaryPolicy}).
+   */
   private call<T>(invoke: UnaryInvoke<T>): Promise<T> {
-    return callUnary(this.client, "wiki client call", invoke);
+    return this.callUnary(this.client, "wiki client call", invoke);
   }
 }

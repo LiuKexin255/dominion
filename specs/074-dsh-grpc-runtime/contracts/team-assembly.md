@@ -50,8 +50,8 @@
 |---|---|
 | 形态 | cordis 插件（`common/js/dsh-plugins/saolei-memory/`）；`inject: ["grpc"]`；挂载于 saolei-loop 之下 |
 | config schema | `{ target: string, protoPath: string (canonical), label?: string }` |
-| apply | apply 内一次性构造 client：`ctx.grpc.client<MemoryServiceCalls>` / `<WikiServiceCalls>`（config 驱动；组合级共享 channel）→ `ctx.provide("memoryMount", { build(scope) })` |
-| `memoryMount.build(scope: MemoryScope): MemoryCapabilities` | `buildMemoryCapabilities({ scope, memoryClient, wikiClient })`（公共库原子单元：faces/tools/sections/ready）——**scope 由编排显式传参**（无属性穿越约定） |
+| apply | apply 内一次性构造 memory client：`ctx.grpc.client<MemoryServiceCalls>`（config 驱动；组合级共享 channel）→ `ctx.provide("memoryMount", { build(scope) })`；WikiService client 不构造（specs/076-agent-v2-optimize/contracts/memory-library-layering.md §3） |
+| `memoryMount.build(scope: MemoryScope): MemoryCapabilities` | `buildMemoryUnit({ scope, memoryClient, callUnary: ctx.grpc.callUnary })`（公共库 memory 单元：faces/tools/sections/ready；unary 策略经组装 seam 注入——specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 2/§3）——**scope 由编排显式传参**（无属性穿越约定）；返回类型名 `MemoryCapabilities` 实指 saolei-loop 侧自有结构类型（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` 定义，faces value 为 `unknown`），与库产物 `CapabilityUnit` 结构兼容、二者非同一编译器类型 |
 | 依赖方向 | adapter → 公共库（common-js-memory）+ grpc 面；**不依赖 saolei-loop 任何约定**（比属性穿越更纯） |
 
 ## 4. 编排消费（saolei-loop）
@@ -75,19 +75,21 @@ setup(agentCtx, agent):
                agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)     # agent-scoped 句柄
   2b. planner: agentCtx.systemPrompt.section(foundation.gameSection)          # saolei:game（074 遗留修复）
                unit = memoryMount.build(scope)          # scope 显式传参（编排层既有 memoryScope 流）
-               register unit（faces("memory") → tools×4 → sections×3 → agentCtx）
+               register unit（memory 单元：faces("memory")×1 → tools×1
+                             → sections[memory:snapshot]×1 → agentCtx）
+                             # registerMemory 对单元产物逐项泛化迭代（faces/tools/sections 各自循环），不感知维度数量
                await unit.ready()                       # fail-loud 预取 → throw → 回滚
   3. （既有 idle/error 订阅等不变）
 ```
 
-**编排权威**：player/planner 的能力分配、"planner 需要 memory"（tools + system prompt 记忆组装——guidance 与快照 section 的注入）全部由本代码承载；system prompt 的**内容语义**（section 规格/文本/快照渲染与冻结）归公共库，**注入动作**归编排。
+**编排权威**：player/planner 的能力分配、"planner 需要 memory"（tools + system prompt 记忆组装——memory 单元 section `memory:snapshot` 的注入）全部由本代码承载；system prompt 的**内容语义**（section 规格/文本/快照渲染与冻结）归公共库，**注入动作**归编排。
 
 ## 5. 行为差异契约（相对 specs/059/070/071 既有契约的三处修订）
 
 | # | 差异 | 终态 |
 |---|---|---|
 | ① | 缺面错误文案 | memory/wiki 四工具缺面文案见 [memory-library.md](memory-library.md) §5（`plannerMemory` 措辞清零，isolate label 改 `memory`） |
-| ② | section 注册点 | memory:guidance/wiki:guidance/memory:snapshot 从 preset 行挂载迁移为编排注册（planner setup）；saolei:guidance 归 saoleiTools 单元、由编排 player setup 注册，saolei:game 归游戏基础 `@dominion/dsh-saolei`（来源非单元）、由编排对 player 与 planner 双角色注册；名/order/文本零变化 |
+| ② | section 注册点 | planner setup 仅注册 `memory:snapshot`（memory 单元自带 section，名/order/文本不变）；wiki sections 无 saolei planner 消费方——wiki 能力（含 `wiki:guidance`）保留在库单元层供独立挂载/组合复用（specs/076-agent-v2-optimize/contracts/memory-library-layering.md）；saolei:guidance 归 saoleiTools 单元、由编排 player setup 注册，saolei:game 归游戏基础 `@dominion/dsh-saolei`（来源非单元）、由编排对 player 与 planner 双角色注册 |
 | ③ | session.ts planner memory seam | `loadPlannerMemoryBinding()` 与 orchestrator `loadPlannerMemory` dep 消失，代之 saolei-loop 依赖装配 + 编排消费；`ctx.plannerMemory` 面名清零；session.ts 无组装代码 |
 
 ## 6. 不变量

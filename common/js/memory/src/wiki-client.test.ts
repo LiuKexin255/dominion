@@ -1,17 +1,22 @@
 /**
- * WikiClient tests — the WikiStore gRPC pass-through. The DI seam is the
- * injected gRPC client, so every RPC test passes a `vi.fn()`-backed fake and
- * needs no module-level `vi.mock` (style/javascript.md §测试).
+ * WikiClient tests — the WikiStore gRPC pass-through. The DI seams are the
+ * injected gRPC client and the injected unary policy, so every RPC test passes
+ * `vi.fn()`-backed doubles and needs no module-level `vi.mock`
+ * (style/javascript.md §测试).
  *
  * Coverage: name construction/parsing, the request shapes against the
  * WikiService contract (specs/069-wiki-template-web/contracts/dsh-plugins.md §3,
  * specs/069-wiki-template-web/contracts/wiki-service.md §2), the lightweight
- * `{name, title}` search decoding, list decoding, and error propagation.
+ * `{name, title}` search decoding, list decoding, error propagation, and the
+ * delegation to the injected policy
+ * (specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 2).
  */
 
+import { Metadata } from "@grpc/grpc-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WikiClient, parseWikiName, wikiName } from "./store.js";
+import type { UnaryClient, UnaryInvoke, UnaryPolicy } from "./store.js";
 
 /**
  * The real gRPC stub contract is `rpc(request, metadata, options, callback)`;
@@ -37,6 +42,33 @@ function makeFakeClient(): FakeRpc {
   };
 }
 
+/**
+ * A `UnaryPolicy` double: a spy that forwards the callback semantics of the
+ * real policy (the adapter's invocation must be exercised through it).
+ */
+function policyDouble(): {
+  readonly policy: UnaryPolicy;
+  readonly spy: ReturnType<typeof vi.fn>;
+} {
+  const spy = vi.fn(
+    <T>(
+      client: UnaryClient,
+      _label: string,
+      invoke: UnaryInvoke<T>,
+    ): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        invoke(client, new Metadata(), { deadline: new Date() }, (err, res) => {
+          if (err !== null) {
+            reject(err);
+            return;
+          }
+          resolve(res as T);
+        });
+      }),
+  );
+  return { policy: spy as unknown as UnaryPolicy, spy };
+}
+
 /** Resolve a fake RPC successfully (or reject with `err` when given). */
 function respond(
   fn: ReturnType<typeof vi.fn>,
@@ -57,9 +89,12 @@ function respond(
 
 describe("WikiClient", () => {
   let fake: FakeRpc;
+  let policy: UnaryPolicy;
+  let policySpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     fake = makeFakeClient();
+    ({ policy, spy: policySpy } = policyDouble());
   });
 
   describe("wikiName/parseWikiName (construction and parsing)", () => {
@@ -88,7 +123,7 @@ describe("WikiClient", () => {
         ],
         nextPageToken: "p2",
       });
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       const page = await client.searchWikis("saolei", "开局", {
         pageSize: 100,
@@ -120,7 +155,7 @@ describe("WikiClient", () => {
 
     it("omits pageSize/pageToken when they are not supplied", async () => {
       respond(fake.searchWikis, { wikis: [], nextPageToken: "" });
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       const page = await client.searchWikis("saolei", "x");
 
@@ -146,7 +181,7 @@ describe("WikiClient", () => {
         ],
         nextPageToken: "",
       });
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       const page = await client.searchWikis("saolei", "x");
 
@@ -161,10 +196,23 @@ describe("WikiClient", () => {
         null,
         Object.assign(new Error("memory service unavailable"), { code: 14 }),
       );
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await expect(client.searchWikis("saolei", "x")).rejects.toThrow(
         "memory service unavailable",
+      );
+    });
+
+    it("delegates the call to the injected unary policy (wiki label)", async () => {
+      respond(fake.searchWikis, { wikis: [], nextPageToken: "" });
+      const client = new WikiClient(fake as never, policy);
+
+      await client.searchWikis("saolei", "x");
+
+      expect(policySpy).toHaveBeenCalledWith(
+        fake,
+        "wiki client call",
+        expect.any(Function),
       );
     });
   });
@@ -176,7 +224,7 @@ describe("WikiClient", () => {
         title: "开局策略",
         content: "正文",
       });
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       const wiki = await client.getWiki("saolei", "w1");
 
@@ -199,7 +247,7 @@ describe("WikiClient", () => {
         null,
         Object.assign(new Error("wiki not found"), { code: 5 }),
       );
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await expect(client.getWiki("saolei", "w1")).rejects.toThrow(
         "wiki not found",
@@ -210,7 +258,7 @@ describe("WikiClient", () => {
   describe("createWiki", () => {
     it("calls CreateWiki with the embedded Wiki body + wiki_id (AIP-133 shape)", async () => {
       respond(fake.createWiki, {});
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await client.createWiki("saolei", "w1", "开局策略", "正文");
 
@@ -237,7 +285,7 @@ describe("WikiClient", () => {
         null,
         Object.assign(new Error("wiki already exists"), { code: 6 }),
       );
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await expect(
         client.createWiki("saolei", "w1", "标题", "正文"),
@@ -248,7 +296,7 @@ describe("WikiClient", () => {
   describe("updateWiki", () => {
     it("calls UpdateWiki with Wiki{name, content} + a content-only FieldMask", async () => {
       respond(fake.updateWiki, {});
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await client.updateWiki("saolei", "w1", { content: "新正文" });
 
@@ -272,7 +320,7 @@ describe("WikiClient", () => {
         null,
         Object.assign(new Error("wiki not found"), { code: 5 }),
       );
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await expect(
         client.updateWiki("saolei", "w1", { content: "新正文" }),
@@ -283,7 +331,7 @@ describe("WikiClient", () => {
   describe("deleteWiki", () => {
     it("calls DeleteWiki by name (AIP-135 shape)", async () => {
       respond(fake.deleteWiki, {});
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await client.deleteWiki("saolei", "w1");
 
@@ -301,7 +349,7 @@ describe("WikiClient", () => {
         null,
         Object.assign(new Error("wiki not found"), { code: 5 }),
       );
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await expect(client.deleteWiki("saolei", "w1")).rejects.toThrow(
         "wiki not found",
@@ -321,7 +369,7 @@ describe("WikiClient", () => {
         ],
         nextPageToken: "p2",
       });
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       const page = await client.listWikis("saolei", {
         pageSize: 20,
@@ -352,7 +400,7 @@ describe("WikiClient", () => {
 
     it("omits pageSize/pageToken when they are not supplied", async () => {
       respond(fake.listWikis, { wikis: [], nextPageToken: "" });
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       const page = await client.listWikis("saolei");
 
@@ -377,7 +425,7 @@ describe("WikiClient", () => {
         ],
         nextPageToken: "",
       });
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       const page = await client.listWikis("saolei");
 
@@ -392,7 +440,7 @@ describe("WikiClient", () => {
         null,
         Object.assign(new Error("memory service unavailable"), { code: 14 }),
       );
-      const client = new WikiClient(fake as never);
+      const client = new WikiClient(fake as never, policy);
 
       await expect(client.listWikis("saolei")).rejects.toThrow(
         "memory service unavailable",
