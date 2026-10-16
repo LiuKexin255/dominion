@@ -95,6 +95,12 @@ interface Harness {
   readonly createGameRuntime: ReturnType<typeof vi.fn>;
   readonly teamQueues: Map<string, UserMessage[]>;
   readonly teamRegister: ReturnType<typeof vi.fn>;
+  /**
+   * The unified-stream subscribe/detach accounting of the team double: one
+   * subscribe per materialized entry, one detach at its teardown
+   * (specs/077-announcer-member-unification/contracts/host-member-parity.md §1).
+   */
+  readonly teamStreamSubscriptions: { subscribes: number; detaches: number };
   readonly fiberDispose: ReturnType<typeof vi.fn>;
   readonly loggerError: ReturnType<typeof vi.fn>;
   readonly game: { current: GameEventRecord | null };
@@ -317,6 +323,11 @@ function createHarness(options: HarnessOptions = {}): Harness {
   } as unknown as GameRuntime;
   const createGameRuntime = vi.fn(() => gameRuntime);
   const teamQueues = new Map<string, UserMessage[]>();
+  // The host takes exactly one unified-stream subscription per entry, and
+  // releases it exactly once at teardown — the accounting the single-path
+  // assertion reads (the real team plugin's stream is its own unit-tested
+  // surface).
+  const teamStreamSubscriptions = { subscribes: 0, detaches: 0 };
   const teamRegister = vi.fn((registration: TeamRegistration): TeamHandle => {
     // The saolei team's three-member roster: player + planner + the
     // announce-only announcer (specs/076-agent-v2-optimize/contracts/
@@ -356,8 +367,15 @@ function createHarness(options: HarnessOptions = {}): Harness {
     const stream: TeamEventStream = {
       subscribe: (consumer) => {
         consumers.add(consumer);
+        teamStreamSubscriptions.subscribes += 1;
+        let attached = true;
         return () => {
+          if (!attached) {
+            return;
+          }
+          attached = false;
           consumers.delete(consumer);
+          teamStreamSubscriptions.detaches += 1;
         };
       },
     };
@@ -428,6 +446,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     createGameRuntime,
     teamQueues,
     teamRegister,
+    teamStreamSubscriptions,
     fiberDispose,
     loggerError,
     game,
@@ -515,13 +534,29 @@ function winnerRecord(): GameEventRecord {
 }
 
 /**
- * The private live-entry registry seam: the announcer subscription and the
- * history of one materialization generation (refresh/unsubscribe assertions).
+ * One entry member as the private registry holds it: the discriminated union
+ * narrowed to the fields the disappearance assertions read
+ * (specs/077-announcer-member-unification/contracts/host-member-parity.md §1).
+ */
+interface EntryMemberSeam {
+  readonly kind: "agent" | "announce-only";
+  readonly role: string;
+  readonly preset?: string;
+}
+
+/**
+ * The private live-entry registry seam: the entry's unified member collection,
+ * the announcer member and the history of one materialization generation
+ * (refresh/unsubscribe and roster-derivation assertions).
  */
 function entrySeam(
   h: Harness,
   session: string,
-): { announcer: AnnouncerMember | undefined; history: TeamHistory } {
+): {
+  announcer: AnnouncerMember | undefined;
+  history: TeamHistory;
+  members: ReadonlyArray<EntryMemberSeam>;
+} {
   const teams = (
     h.sessions as unknown as {
       teams: Map<
@@ -529,6 +564,7 @@ function entrySeam(
         {
           orchestrator: { announcer?: AnnouncerMember };
           history: TeamHistory;
+          members: ReadonlyArray<EntryMemberSeam>;
         }
       >;
     }
@@ -537,7 +573,11 @@ function entrySeam(
   if (entry === undefined) {
     throw new Error(`session "${session}" has no live entry`);
   }
-  return { announcer: entry.orchestrator.announcer, history: entry.history };
+  return {
+    announcer: entry.orchestrator.announcer,
+    history: entry.history,
+    members: entry.members,
+  };
 }
 
 async function materializeDefault(h: Harness): Promise<TeamView> {
@@ -1197,6 +1237,46 @@ describe("TeamSessions announcer announcement projection (specs/065-agent-v2-tea
     expect(old.history.listTeamMessages()).toEqual([]);
     // The new generation's projections start empty.
     expect(h.sessions.listTeamMessages(S1)).toEqual([]);
+  });
+});
+
+describe("TeamSessions unified member holding (specs/077-announcer-member-unification/contracts/host-member-parity.md §1/§2)", () => {
+  it("holds the three members uniformly, derives the roster from them, and takes one unified-stream subscription per entry", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+
+    // The entry's single member-event consumption path: one unified-stream
+    // subscription, with no parallel announce-only subscription.
+    expect(h.teamStreamSubscriptions).toEqual({ subscribes: 1, detaches: 0 });
+
+    const entry = entrySeam(h, S1);
+    expect(entry.members.map((member) => [member.role, member.kind])).toEqual([
+      ["player", "agent"],
+      ["planner", "agent"],
+      ["announcer", "announce-only"],
+    ]);
+    // The agent members own a handle + collector; the announce-only member
+    // holds no runtime at all — the empty object pins that absence.
+    expect(entry.members[0]).toMatchObject({ kind: "agent", role: "player", preset: P_PLAYER });
+    expect(entry.members[1]).toMatchObject({ kind: "agent", role: "planner", preset: P_PLANNER });
+    expect(entry.members[2]).toEqual({ kind: "announce-only", role: "announcer" });
+
+    // The roster is the projection of that unified collection: same members,
+    // the announce-only one in its empty preset/model form.
+    const view = h.sessions.getTeam(S1);
+    expect(view.members.map((member) => member.role)).toEqual(
+      entry.members.map((member) => member.role),
+    );
+    expect(view.members.map((member) => [member.preset, member.model])).toEqual([
+      [P_PLAYER, DEFAULT_MODEL],
+      [P_PLANNER, DEFAULT_MODEL],
+      ["", ""],
+    ]);
+
+    // Refresh releases the old entry through its single detach and takes
+    // exactly one new subscription.
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+    expect(h.teamStreamSubscriptions).toEqual({ subscribes: 2, detaches: 1 });
   });
 });
 

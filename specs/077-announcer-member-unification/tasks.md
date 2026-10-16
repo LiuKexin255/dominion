@@ -62,9 +62,9 @@
 
 ### Implementation
 
-- [ ] T005 [US2] 统一成员持有：`projects/game/agent_v2/src/session.ts`——`MemberRuntime` 改判别联合 `{ kind: "agent"; role; preset; model; handle; collector } | { kind: "announce-only"; role }`（`specs/077-announcer-member-unification/data-model.md` §3.1）；`TeamEntry.members` 容纳三成员；`createMemberRuntime` 与物化装配适配（announcer 项无 runtime 构造）；`teardownEntry` 按统一成员列表释放，在途成员 `markOutcome` 经成员 kind 过滤（取代 `activeAgentMember` 角色串判定）
-- [ ] T006 [US2] 视图属性派生：`projects/game/agent_v2/src/session.ts`——`toTeamView` 遍历统一成员集合派生名册（announce-only ⇒ 空 preset/model 项；**删除 `announcerMemberView` 函数与三成员拼装特判**）；`getTeamMember` 按 kind 分派（announce-only ⇒ 同步空形态视图、无 assembly/重试；**删除 `member === ANNOUNCER_MEMBER_ROLE` 提前 return 分支**；agent 路径不变）；`listMemberMessages` 按 kind 判定 NOT_FOUND（取代 player/planner 角色硬编码）；**删除 `isAgentMemberRole`/`activeAgentMember` 辅助**（`isMemberRole` 保留仅作 wire 资源名合法性校验，不得用于成员类别分派）
-- [ ] T007 [US2] 回归与消失断言：`projects/game/agent_v2/src/session.test.ts`——076 announcer 契约验收面回归全绿（三成员名册、`GetTeamMember("announcer")` 空形态、请求侧校验拒绝 caller-supplied announcer、刷新后旧生命周期播报不进新投影）；新增特例消失断言（roster 由统一集合派生、teardown 单路）
+- [X] T005 [US2] 统一成员持有：`projects/game/agent_v2/src/session.ts`——`MemberRuntime` 改判别联合 `{ kind: "agent"; role; preset; model; handle; collector } | { kind: "announce-only"; role }`（`specs/077-announcer-member-unification/data-model.md` §3.1）；`TeamEntry.members` 容纳三成员；`createMemberRuntime` 与物化装配适配（announcer 项无 runtime 构造）；`teardownEntry` 按统一成员列表释放，在途成员 `markOutcome` 经成员 kind 过滤（取代 `activeAgentMember` 角色串判定）
+- [X] T006 [US2] 视图属性派生：`projects/game/agent_v2/src/session.ts`——`toTeamView` 遍历统一成员集合派生名册（announce-only ⇒ 空 preset/model 项；**删除 `announcerMemberView` 函数与三成员拼装特判**）；`getTeamMember` 按 kind 分派（announce-only ⇒ 同步空形态视图、无 assembly/重试；**删除 `member === ANNOUNCER_MEMBER_ROLE` 提前 return 分支**；agent 路径不变）；`listMemberMessages` 按 kind 判定 NOT_FOUND（取代 player/planner 角色硬编码）；**删除 `isAgentMemberRole`/`activeAgentMember` 辅助**（`isMemberRole` 保留仅作 wire 资源名合法性校验，不得用于成员类别分派）
+- [X] T007 [US2] 回归与消失断言：`projects/game/agent_v2/src/session.test.ts`——076 announcer 契约验收面回归全绿（三成员名册、`GetTeamMember("announcer")` 空形态、请求侧校验拒绝 caller-supplied announcer、刷新后旧生命周期播报不进新投影）；新增特例消失断言（roster 由统一集合派生、teardown 单路）
 
 **Checkpoint / 验证门禁**：`bazel test //projects/game/agent_v2/...` 全绿；[quickstart.md](quickstart.md) §3 两条 grep 零匹配（`announcerMemberView|announceOff`、`isAgentMemberRole|activeAgentMember`）。
 
