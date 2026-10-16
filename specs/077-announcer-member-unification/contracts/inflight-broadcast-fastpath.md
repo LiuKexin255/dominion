@@ -91,7 +91,7 @@ sequenceDiagram
 
 - **turn 收束边缘（`concludesTurn`/模型停止）**：announce 在收束前发生 → 在途成员仍是接收方、快路成立；turn 随即收束 → 循环停止条件 `turnEnds && inbox.nextStep.length === 0`（`@deepseek-ai/dsh-agent-loop` 0.2.0-rc.2 `lib/index.js:998-1005`）使收束 turn 延展一步认领 next-step 残留——锚点消费、闭包成立，时序等价 drain。
 - **turn 失败残留（非 cancel）**：失败 turn 不清 inbox（dsh-agent-loop 仅 cancel 清 pending work），快路副本残留 next-step；该成员下一次 turn 起点的 inbox 清扫（§2.1）移除残留，新批经 drain 重投恰一份——同批双认领结构性不存在。
-- **cancel**：`orchestrator.cancel()` 既有顺序 `landUnclaimed` 先于 `agent.cancel`（默认清 inbox）保持；`landUnclaimed`（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`）只收编**用户**未消费消息为 landed，`team-broadcast` 残留不落地、放行给 inbox 清除——锚点未消费 → pending 重建自愈重投恰一份（§3 单一载体；不丢失、不重复）。landed 因此只承载用户输入；`specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §6 cancel ②「未消费输入落地」的范围据此收窄为用户消息（修订随 tasks.md T011 落盘）。
+- **cancel**：`orchestrator.cancel()` 既有顺序 `landUnclaimed` 先于 `agent.cancel`（默认清 inbox）保持；`landUnclaimed`（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`）只收编**用户**未消费消息为 landed，`team-broadcast` 残留不落地、放行给 inbox 清除——锚点未消费 → pending 重建自愈重投恰一份（§3 单一载体；不丢失、不重复）。landed 因此只承载用户输入；`specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §6 cancel ②「未消费输入落地」的范围据此收窄为用户消息。
 - **刷新 teardown**：registration dispose 清空 pending；在途快路残留随 inbox 清理——无跨生命周期重投（旧团队已不存在）。
 - **announce-only 接收方**：`consumes: false` 非 relay 接收方且无投递面——announcer 的播报不回流给自己。
 

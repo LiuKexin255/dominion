@@ -731,11 +731,12 @@ export class TeamOrchestrator {
 
   /**
    * The announce-only announcer member (its log/source face) while the team is
-   * materialized; undefined before materialization and after dispose. The host
-   * projects its announcements into the merge history through this read
-   * surface (specs/065-agent-v2-team-refine/contracts/
-   * game-stats-broadcast.md §3 item 6 / §4; the roster presence is
-   * specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
+   * materialized; undefined before materialization and after dispose. Retained
+   * for materialization checks and loop tests — the host does not subscribe
+   * here: it consumes the announcer's log productions over the team's unified
+   * member event stream into the merge history
+   * (specs/077-announcer-member-unification/contracts/member-event-stream.md §5;
+   * roster presence per specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
    */
   get announcer(): AnnouncerMember | undefined {
     return this.announcerMember ?? undefined;

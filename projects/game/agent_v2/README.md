@@ -173,10 +173,23 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   announcer-member.md` §3）。终局交接时它
   先于 planner 复盘播报本局统计（`gameStatsText` 模板：结果 + 单个操作总数 +
   click/flag/chord 分项，`specs/065-agent-v2-team-refine/contracts/
-  game-stats-broadcast.md` §2/§3），宿主经订阅将其投影为归并序列条目与
+  game-stats-broadcast.md` §2/§3），宿主经 team 统一成员事件流单路消费，将其投影
+  为归并序列条目与
   `team_message{member="announcer"}` 帧（同契约 §4），消息作为广播进入 planner
   复盘输入与 player 下次结构性驱动输入；每局至多一条（记录恒等 guard，重试
   不重发；被跳过局不补发——guard 对最新终局记录求值）。
+- **成员事件单路消费与 announcer 同权派生**：宿主的全部成员投影（web ChatEvent
+  帧、归并历史、成员视角、turn 收束）从 team 统一成员事件流单路消费——team 经
+  `register()` 返回的 `TeamHandle.events()` 提供团队作用域流，编排层零形状传递
+  （`TeamOrchestrator.teamEvents()`），宿主物化时单路订阅、按信封 `role` 分发
+  （agent 成员 → `MemberCollector.applyEvent`；announcer 的 log `assistant/message`
+  → 归并历史）——不再逐成员下探 dsh 根事件，announcer 的独立订阅旁路消失
+  （`specs/077-announcer-member-unification/contracts/member-event-stream.md` §5）。
+  宿主 entry 的成员集合统一持有三成员（`MemberRuntime` 判别联合：agent 成员含
+  handle/collector，announce-only 成员仅 role），名册/成员读取/成员视角/teardown
+  按成员 kind 派生——`announcerMemberView` 特例构造、`GetTeamMember` 提前 return
+  分支、`announceOff` 旁路字段、角色串判定辅助消失，announcer 与 LLM 成员同权
+  （`specs/077-announcer-member-unification/contracts/host-member-parity.md`）。
 - **静止等待与用户首驱**：物化成功后 team 静止等待——初始激活成员 = planner、
   初始相位 = planning，**不自动驱动任何成员**；游戏首次驱动由用户第一条消息
   触发（planner 处理并产出开局策略），随后 player 被驱动开始游戏，终局后
@@ -238,6 +251,16 @@ flowchart LR
   `deliver` 即时处理，完成定义自包含（inbox 空 + 无在途回合）；快照 `queued` =
   成员 inbox pending + steered-unclaimed。团队广播仍由驱动装配时 `drain` 拉动
   （exactly-once 锚点边界不变），编排层不合成任何驱动消息。
+- **在途广播快路**：team relay 一条成员广播产出（message 单元）时，pending 锚点
+  照常追加（拉动式 drain 基线不变），同时对带投递面的 consuming 接收方经成员
+  适配器的投递面（`AgentMember.deliverInFlight`）以**与 drain 完全相同的构造
+  路径**提前投递一份——不唤醒驱动（在途 `agent.inject` 落下一 step，静止 no-op），
+  当前在途成员下一 step 边界认领；静止成员照旧 pending drain；exactly-once 由
+  既有锚点闭包保证（认领去重 / 丢弃重投双向自愈），驱动与 flow 决策零影响
+  （`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md`）。
+  hook 落地前唯一插入式生产者（announcer）只在成员收束后播报终局统计、彼时无在途
+  成员，快路在生产行为上**惰性**、以单测验证；首个真实受益者是后续 hook feature
+  （`specs/077-announcer-member-unification/spec.md` FR-007–FR-012 与 Assumptions）。
 - **错误契约**：`failed { code, detail }`，code ∈ {TRANSIENT, QUOTA, CREDENTIAL,
   CONFIG, INPUT_TOO_LARGE, INTERNAL}；loop 层只分类，宿主按码产出用户动作文案
   （`projects/game/agent_v2/src/session.ts` 的 `LOOP_ERROR_TEXT`）。
@@ -309,8 +332,11 @@ preset 数据按角色分池
   的流）；客户端断开不终止编排，取消编排仅经 `Cancel`；多流重复帧由前端按
   seq / `(member, turn_id)` 锚去重，断开经 List 面回填补齐。
 - **`Cancel`**：终止在途回合（`turn_end{CANCELED}`）+ flow 位置冻结（不消费
-  流程事实）+ 未消费输入落地为已固化历史（不触发新驱动）；幂等（已冻结时
-  no-op）；再次 Send（投递）即恢复（消息由当前激活成员处理，建立新 team 流）。
+  流程事实）+ 未消费**用户**输入落地为已固化历史（不触发新驱动）；团队广播
+  （`team-broadcast`）inbox 残留不落地、由 pending 基线自愈重投
+  （`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md`
+  §6）；幂等（已冻结时 no-op）；再次 Send（投递）即恢复（消息由当前激活成员
+  处理，建立新 team 流）。
 
 ## 双视图、激活成员与 system prompt 查看
 

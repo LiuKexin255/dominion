@@ -23,7 +23,7 @@
 
 1. **名册**：`toTeamView` 返回三成员——`[player, planner, announcer]`；announcer 项 = `name: .../team/members/announcer`、`role: "announcer"`、`preset: ""`、`model: ""`、`systemPrompt: ""`（非 LLM 成员名册形态；数据模型 §4）。
 2. **active_member**：单一合并值语义保持（`active ?? activation`，060 §1）；announcer 播报期间激活权归属 announcer，`active_member` 可为 `"announcer"`——无呈现投影特例（不跳过 consumes=false 成员）。呈现可达性受同步执行窗口影响（微任务级激活窗口），是成员自身特性，不作框架保证。
-3. **成员读取**（GetTeamMember 路径）：以与 LLM 成员一致的资源名访问方式服务 `members/announcer`——放宽现状硬编码 `player`/`planner` 的 roster guard 后返回 announcer 成员项（output-only `system_prompt` 为空值）；announcer 无 `AgentHandle`/`Agent`，不经 `orchestrator.member(role)` 与 `readMemberSystemPrompt`（LLM 成员的 generation 校验/重读语义保持）。
+3. **成员读取**（GetTeamMember 路径）：以与 LLM 成员一致的资源名访问方式服务 `members/announcer`——成员读取按成员 kind 属性派生（announce-only ⇒ 同步返回空形态视图、无 agent assembly）；announcer 无 `AgentHandle`/`Agent`，不经 `orchestrator.member(role)` 与 `readMemberSystemPrompt`（LLM 成员的 generation 校验/重读语义保持），`system_prompt` 为空值（`specs/077-announcer-member-unification/contracts/host-member-parity.md` §2）。
 4. **校验边界**：`validateSaoleiMembers` 的**请求侧**校验保持（UpdateTeam 请求必须恰含 player/planner 两个 LLM 成员配置，preset 必填规则不变）——announcer 不可由调用方配置，由服务端进入名册；名册/读取面不因 announcer 项的存在判为非法（放宽点在视图构造与成员查找，不在请求校验）。裁定口径：`survey/saolei-member-switch-flow.md` §12.2 表述为「`validateSaoleiMembers` 两成员校验放宽」，本契约按 spec FR-203 收窄——放宽只落在名册构造与成员查找面，请求侧校验保持严格。
 5. **类型**：宿主 `MemberRole` 与 saolei-loop `TeamRole` 纳入 `"announcer"`。
 

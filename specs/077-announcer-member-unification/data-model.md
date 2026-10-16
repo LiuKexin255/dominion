@@ -126,7 +126,7 @@ TeamEntry:
 | collector/turn 记账 | 有 | 无 |
 | teardown | collector.dispose + 释放 | 随统一流退订与成员列表释放 |
 
-在途成员判定：`snapshot().active`（MemberId）经成员 kind 过滤——取代 `isAgentMemberRole`/`activeAgentMember` 角色串判定（`projects/game/agent_v2/src/session.ts:1041-1058`）。
+在途成员判定：`snapshot().active`（MemberId）经成员 kind 过滤——取代 077 前基线的 `isAgentMemberRole`/`activeAgentMember` 角色串判定（现状实现：`projects/game/agent_v2/src/session.ts` 的 `agentMemberInFlight`）。
 
 ### 3.3 投影输入分发（单路）
 

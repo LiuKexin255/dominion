@@ -58,7 +58,7 @@ const relays = this.drain(members.planner);      // 必含播报单元（排在 
 3. **exactly-once（记录恒等，非布尔标记）**：`statsSentFor`（`GameEventRecord | null`）与 `reviewedGameEvent`（既有）同为**对象恒等**判据——`peekGameEvent()` 返回的当前最新终局记录 === 对应标记（最后已播报/已复盘记录）时跳过该动作，新记录（新局终态覆盖）则触发。置位时机：`statsSentFor` 在 announce 时、`reviewedGameEvent` 在复盘驱动成功 settle 后——中间窗口（播报已发、复盘在途或失败）由 case 2 `pendingReview` 短路 + `statsSentFor` guard 双重保证不重发；两标记随物化重置。`reviewedGameEvent` 命中跳过复盘后落入 player 续驱分支（drain 非空才续驱，否则静止）。
 4. **排队优先序（FR-003 / US2）**：case 1 排队消化优先保持——队列非空时 player 先消化、播报随交接顺延；消化驱动 player 开新局且终局记录被覆盖 → 旧记录播报条件永不再满足（跳局不补发），新局交接时对新记录播报。取消（paused 短路 pump）与刷新（dispose 清态）语义零改动。
 5. **行为增强**：播报后 planner drain 必非空 → 存在未复盘终局记录时复盘保证启动（原 `relays.length === 0` 落入 player 续驱的分支对该场景不再可达）。
-6. **访问器**：`orchestrator.announcer: AnnouncerMember | undefined`（物化后有值）——宿主订阅其产出的读取面（镜像 `orchestrator.member(role)` 模式）。
+6. **访问器**：`orchestrator.announcer: AnnouncerMember | undefined`（物化后有值）——loop 侧读取面（镜像 `orchestrator.member(role)` 模式），供物化校验与 loop 测试使用，**非宿主订阅路径**：宿主经 team 统一成员事件流单路消费 announcer 产出（`specs/077-announcer-member-unification/contracts/member-event-stream.md` §5）。
 7. **不变量保持**：编排不合成 LLM 成员驱动消息（059 FR-009/010 在"系统角色经成员消息源接口提供消息"意义上保持）；驱动输入仍 = drain 结果 + 排队用户消息。
 
 **交接流程图**（线性主干 + 幂等跳过；正常流程与恢复流程同构——恢复即灌回持有的状态〔`pendingReview` 输入集与已置位标记〕后重新执行，已完成步骤被 guard 跳过）：
@@ -83,7 +83,7 @@ flowchart TD
 
 ## §4 宿主落地（session/history）
 
-1. `TeamSessions.doMaterialize` 在 orchestrator 物化成功后经 `orchestrator.announcer` 订阅其产出事件，逐条调用 `TeamHistory.appendAnnouncement(role, text)`——从事件 message content 提取 text block；退订随 entry teardown。
+1. `TeamSessions.doMaterialize` 在 orchestrator 物化成功后经 team 统一成员事件流单路消费：announcer 的 log 通道 `assistant/message` 产出逐条调用 `TeamHistory.appendAnnouncement(role, text)`——从事件 message content 提取 text block；统一流订阅退订随 entry teardown（`specs/077-announcer-member-unification/contracts/member-event-stream.md` §5）。
 2. `TeamHistory.appendAnnouncement(role: string, text: string): TeamMergeEntry`：`ROLE_AGENT` + 单 text block + `appendMerge(member=role)`——merge 入列（`ListTeamMessages` 可见）+ `team_message{member, message, seq}` 帧扇出（与既有条目同源同值）。`appendMerge` 的 member 参数类型放宽为 `string`（`TeamMergeEntry.member` 本为 string）。
 3. 成员视图：消费成员经既有 `member_view` 路径记 `user: [announcer] …`（无新通路）。
 4. **proto 消息形状零改动**：`TeamMessage.member` 为 string；`TeamMessage`/`Team`/`TeamMember` 的消息字段与注解全部不变。名册面按统一呈现修订——announcer 进入 `GetTeam.members`（三成员、空 preset/model）、`active_member` 可为 `announcer`，`UpdateTeam` 的**请求侧**两成员校验不变（announcer 由服务端进入名册、不可由调用方配置）；web 前端沿 wire 角色串直接渲染（announcer 项以空 preset/model 形态呈现）。条款依据：[../../076-agent-v2-optimize/contracts/announcer-member.md](../../076-agent-v2-optimize/contracts/announcer-member.md) §2/§3（取代本节"GetTeam 不含 saolei"原表述）。
@@ -95,7 +95,7 @@ flowchart TD
 - runtime：分项计数（批量多操作、SKIP/STOP/派发失败不计、init 清零、分项和=总数）；`gameStatsText` 模板（won/lost、计数字段）。
 - announcer：announce 追加 log 事件 + 通知订阅者；source 能力位（announce-only、无 sectionTarget）；text 空校验。
 - orchestrator：case 4 announce 先于 drain（复盘输入集末位为播报消息）；同记录不重复 announce；队列非空先消化不播报；跳局（记录覆盖）后只对新记录播报；dispose 后不播报；注册第三成员（role/summary/适配器）。
-- 宿主：appendAnnouncement 落 merge + 帧；订阅在物化后建立、teardown 退订。
+- 宿主：appendAnnouncement 落 merge + 帧；统一流订阅在物化后建立、teardown 退订。
 
 大型测试（fake-llm + fake-desktop，`projects/game/testplan/`）：
 

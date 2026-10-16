@@ -19,13 +19,15 @@ MemberRuntime =
 
 ## 2. 派生规则（属性取代特判）
 
-| 投影面 | 派生规则（取代的现状特例） |
+表中每行的「现状实现：…」与「取代 077 前基线的…」两段分别指向当前代码的派生位置（符号锚点）与被取代的旧代码位置（历史对照）——被取代的符号已在当前代码中消失（消失清单见 §3 item 3），不得据其判断代码仍存在。表内 `session.ts` 为 `projects/game/agent_v2/src/session.ts` 的简写。
+
+| 投影面 | 派生规则（现状实现 / 取代的 077 前基线特例） |
 |---|---|
-| 名册（toTeamView） | 遍历统一成员集合构造；`announce-only` ⇒ 空 preset/model 项（取代 `announcerMemberView` 特例构造 + 三成员拼装特判，`session.ts:1086-1111`） |
-| GetTeamMember | 按成员 kind 分派：`announce-only` ⇒ 同步空形态视图（`system_prompt` 空值、无 assembly、无 generation 重试需求——同步构造无竞态）；`agent` ⇒ 既有 assembly 读取路径（generation 重试）不变（取代 `member === ANNOUNCER_MEMBER_ROLE` 提前 return，`session.ts:409-411`） |
-| 成员视图（listMemberMessages） | `announce-only` ⇒ NOT_FOUND——属性派生（announce-only ⇒ 无成员视角投影）；错误语义保持（`session.ts:453-462` 的角色硬编码收敛为 kind 判定） |
-| 在途成员判定 | `snapshot().active`（MemberId）经成员 kind 过滤（取代 `isMemberRole`/`isAgentMemberRole`/`activeAgentMember` 角色串辅助，`session.ts:1041-1058`；快照消费/teardown markOutcome 行为不变） |
-| teardown | 按统一成员列表释放（agent 成员 collector.dispose + 编排释放；announcer 随统一流退订与列表释放），取代 `entry.announceOff()` 单独调用（`session.ts:718-731`） |
+| 名册（toTeamView） | 遍历统一成员集合构造；`announce-only` ⇒ 空 preset/model 项（现状实现：`session.ts` 的 `toTeamView` + `memberStateView`；取代 077 前基线的 `announcerMemberView` 特例构造 + 三成员拼装特判——已消失，§3 item 3） |
+| GetTeamMember | 按成员 kind 分派：`announce-only` ⇒ 同步空形态视图（`system_prompt` 空值、无 assembly、无 generation 重试需求——同步构造无竞态）；`agent` ⇒ 既有 assembly 读取路径（generation 重试）不变（现状实现：`session.ts` 的 `getTeamMember`；取代 077 前基线的 `member === ANNOUNCER_MEMBER_ROLE` 提前 return——已消失，§3 item 3） |
+| 成员视图（listMemberMessages） | `announce-only` ⇒ NOT_FOUND——属性派生（announce-only ⇒ 无成员视角投影）；错误语义保持（现状实现：`session.ts` 的 `listMemberMessages` 按成员 kind 判定；取代 077 前基线的角色串硬编码——已消失，§3 item 3） |
+| 在途成员判定 | `snapshot().active`（MemberId）经成员 kind 过滤（现状实现：`session.ts` 的 `agentMemberInFlight`；取代 077 前基线的 `isAgentMemberRole`/`activeAgentMember` 角色串辅助——已消失，§3 item 3；`isMemberRole` 保留为 wire 资源名合法性校验，不作成员类别分派；快照消费/teardown markOutcome 行为不变） |
+| teardown | 按统一成员列表释放（agent 成员 `collector.dispose` + 编排释放；announcer 随统一流退订与列表释放）（现状实现：`session.ts` 的 `teardownEntry`；取代 077 前基线的 `entry.announceOff()` 单独调用——已消失，§3 item 3） |
 
 ## 3. 行为保持（验收基准）
 

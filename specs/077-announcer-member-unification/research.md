@@ -15,7 +15,7 @@
 2. **loop 零形状传递**：`TeamOrchestrator` 新增只读读取面（如 `teamEvents()`），**直接返回 team 拥有的流对象**——无场景词汇、无自有形状（返回类型即 team 插件类型）。未来场景的 loop 同样一行传递。
 3. **宿主只面向 team 类型编程**：单路订阅 team 作用域流、按信封成员标注分发；投影层不知道、也不需要知道成员来自哪个 loop。
 
-**Rationale**: 用户追问"假设以后会增加 saolei 以外的场景怎么设计"后的裁定。若读取面是各 loop 自有形状，宿主投影层与每个 loop 逐一耦合（每新增场景适配一次）——这正是分层要避免的；若宿主直连 team 并自持 source id 键规则（`String(agent.id)` 是 `agentMemberSource` 的内部细节，`common/js/dsh-plugins/team/src/team.ts:99-122`），键规则泄漏到宿主，且未来非 agent 成员可能没有等价 id 语义。
+**Rationale**: 用户追问"假设以后会增加 saolei 以外的场景怎么设计"后的裁定。若读取面是各 loop 自有形状，宿主投影层与每个 loop 逐一耦合（每新增场景适配一次）——这正是分层要避免的；若宿主直连 team 并自持 source id 键规则（`String(agent.id)` 是 `agentMemberSource` 的内部细节，`common/js/dsh-plugins/team/src/team.ts` 的 `agentMemberSource`），键规则泄漏到宿主，且未来非 agent 成员可能没有等价 id 语义。
 
 **Alternatives**:
 - 宿主直连 `ctx.team`（按成员 source id 解析 team）：少一层传递被否决——键规则泄漏（见上）。
@@ -24,11 +24,11 @@
 
 ## D2 agent-only 事件的搬运：source 可选 live 面
 
-**Decision**: `TeamMemberSource` 增加可选 `live` 订阅面：`live?: { subscribe(onEvent: (event: TeamLiveEvent) => void): () => void }`。`agentMemberSource` 实现它——订阅 dsh 根事件 `agent/assistant-stream`/`agent/status`/`agent/error`，按 agent 身份过滤后转发（与既有 `subscribe` 对 `session/event` 的过滤模式同构，`team.ts:110-116`）；announcer（announce-only）结构性无此面。
+**Decision**: `TeamMemberSource` 增加可选 `live` 订阅面：`live?: { subscribe(onEvent: (event: TeamLiveEvent) => void): () => void }`。`agentMemberSource` 实现它——订阅 dsh 根事件 `agent/assistant-stream`/`agent/status`/`agent/error`，按 agent 身份过滤后转发（与既有 `subscribe` 对 `session/event` 的过滤模式同构，`team.ts` 的 `agentMemberSource` 过滤实现）；announcer（announce-only）结构性无此面。
 
 `TeamLiveEvent` 是 agent 适配层的类型联合（assistant-stream 帧 / status 迁移 / error），定义在 team 插件的 agent 适配器旁——team 的**成员抽象**（`TeamMemberSource` 接口语义）保持不感知"成员是 agent 还是系统角色"（065 §1 依赖倒置）；live 面对 team 是"成员活动通知"，team 只标注转发、不解释。
 
-**Rationale**: 宿主现有三类投影输入中两类是 agent 独有事件（`projects/game/agent_v2/src/history.ts:601-620` 的四类根事件订阅）；搬运放 source 适配层使 team 服务对事件词汇保持中立，依赖倒置不破坏（survey §2.4 目标方向 1）。
+**Rationale**: 宿主现有三类投影输入中两类是 agent 独有事件（`projects/game/agent_v2/src/history.ts` 的 `MemberCollector` 构造——077 前基线的四类根事件订阅）；搬运放 source 适配层使 team 服务对事件词汇保持中立，依赖倒置不破坏（survey §2.4 目标方向 1）。
 
 **Alternatives**:
 - team 服务直接订阅 dsh 根事件：被否决——team 感知 agent 词汇，破坏 065 §1 依赖倒置。
@@ -36,22 +36,31 @@
 
 ## D3 事件流面形态：`TeamHandle.events()` 与信封
 
-**Decision**: `TeamHandle`（`register()` 返回值，`team.ts:143-145`）增加 `events(): TeamEventStream`；`TeamEventStream = { subscribe(consumer: (e: TeamMemberEvent) => void): () => void }`。信封：
+**Decision**: `TeamHandle`（`register()` 返回值，`team.ts` 的 `TeamHandle` 接口）增加 `events(): TeamEventStream`；`TeamEventStream = { subscribe(consumer: (e: TeamMemberEvent) => void): () => void }`。信封：
 
 ```ts
-interface TeamMemberEvent {
-  readonly role: string;      // 注册角色（开放字符串：player/planner/announcer/未来场景角色）
-  readonly memberId: string;  // source id（agent 成员 = dsh session id）
-  readonly channel: "log" | "live";
-  readonly event: SessionEvent | TeamLiveEvent;  // log = 成员 log 产出事件；live = 成员活动事件
-}
+type TeamMemberEvent =
+  | {
+      readonly role: string;      // 注册角色（开放字符串：player/planner/announcer/未来场景角色）
+      readonly memberId: string;  // source id（agent 成员 = dsh session id）
+      readonly channel: "log";    // log = 成员 log 产出事件
+      readonly event: SessionEvent;
+    }
+  | {
+      readonly role: string;
+      readonly memberId: string;
+      readonly channel: "live";   // live = 成员活动事件
+      readonly event: TeamLiveEvent;
+    };
 ```
+
+终态类型形状见 [contracts/member-event-stream.md](contracts/member-event-stream.md) §2.2。
 
 - "log" 通道：team 既有 `state.eventOff` 订阅（`source.subscribe`，relay 的输入）**同源复用**——fan-out 给 relay 之外再扇出给流订阅者，两类消费者看到同一事件、同一序。
 - "live" 通道：source 的 live 面事件（D2），team 标注转发。
 - 生命周期：流随 registration 存续——成员移除/团队 dispose 后不再有事件；订阅 detach 由消费者负责（宿主 entry teardown 单路退订）。
 
-**Rationale**: TeamHandle 天然 team 作用域（register 幂等刷新语义不变）；orchestrator 持有 handle（`orchestrator.ts:518` `this.teamRegistration = ...register(...)`），读取面传递零成本。
+**Rationale**: TeamHandle 天然 team 作用域（register 幂等刷新语义不变）；orchestrator 持有 handle（`orchestrator.ts` 的 `teamRegistration` 赋值 `this.teamRegistration = ...register(...)`），读取面传递零成本。
 
 **Alternatives**:
 - `Team` 服务新增 id 解析面（`ctx.team.events(memberId)`）：被否决——要求消费者持键（D1 已否决泄漏路径）。
@@ -59,7 +68,7 @@ interface TeamMemberEvent {
 
 ## D4 成员投递面（快路的机械 seam）
 
-**Decision**: `TeamMemberSource` 增加可选 `deliverInFlight?: (message: UserMessage) => void`——与 `consumes` 同级的**结构性属性**（类型可缺省、语义非配置项）。供给点：orchestrator 的 `createMember`（`orchestrator.ts:790-796`，source 与 AgentMember 适配器同域）组合装配——agent 成员的投递面闭包捕获适配器：
+**Decision**: `TeamMemberSource` 增加可选 `deliverInFlight?: (message: UserMessage) => void`——与 `consumes` 同级的**结构性属性**（类型可缺省、语义非配置项）。供给点：orchestrator 的 `createMember`（`orchestrator.ts` 的 `createMember`，source 与 AgentMember 适配器同域）组合装配——agent 成员的投递面闭包捕获适配器：
 
 ```text
 策略（agent 成员统一实现，一处）：
@@ -78,13 +87,13 @@ interface TeamMemberEvent {
 
 ## D5 快路触发点与消息构造
 
-**Decision**: team 的 `relay()`（`team.ts:471+`）在处理 **message 单元**（`kind: "message"`，即插入式产出——发送方为非在途成员的发言；tool 单元不触发——survey §2.2.5② 发送方视角定义）时，对每个带投递面的 consuming 接收方：
+**Decision**: team 的 `relay()`（`team.ts` 的 `relay`）在处理 **message 单元**（`kind: "message"`，即插入式产出——发送方为非在途成员的发言；tool 单元不触发——survey §2.2.5② 发送方视角定义）时，对每个带投递面的 consuming 接收方：
 
 1. pending 锚点追加**照常发生**（基线不动——叠加关系）；
-2. 经**与 drain 完全相同的构造路径** `buildMessage(unit, team)`（`team.ts:304-313` → `buildBroadcastMessage`：同锚点、同 `team-broadcast` source、同渲染）构建消息；
+2. 经**与 drain 完全相同的构造路径** `buildMessage(unit, team)`（`team.ts` 的 `buildMessage` → `buildBroadcastMessage`：同锚点、同 `team-broadcast` source、同渲染）构建消息；
 3. 调用接收方投递面（D4 策略过滤后实际生效的只有当前在途成员）。
 
-构造时读取 sender log 的**回读语义**不变——relay 时事件已在 sender log 中（announcer 先追加后通知，`announcer.ts:196-199`；agent session/event 语义同理），锚点可回读；读取失败（corruption）按既有 fail-loud（`renderBroadcast` throw）向上传播——与 drain 同一错误面，不新增错误种类。
+构造时读取 sender log 的**回读语义**不变——relay 时事件已在 sender log 中（announcer 先追加后通知，`announcer.ts` 的 `announce`；agent session/event 语义同理），锚点可回读；读取失败（corruption）按既有 fail-loud（`renderBroadcast` throw）向上传播——与 drain 同一错误面，不新增错误种类。
 
 **Rationale**: 单一构造路径保证"无快路特制消息形态"（spec FR-007）；exactly-once 不靠快路自身任何记账，完全复用锚点闭包（`consumedAnchors`/reconcile，`broadcast.ts:160-173`、`team.ts` drain 的 reconcile 前置）。
 
@@ -110,7 +119,7 @@ MemberRuntime =
   | { kind: "announce-only"; role }                              // announcer（无 runtime 字段）
 ```
 
-派生规则（取代角色字符串特判，`session.ts:1041-1111` 的特例点全部消解）：
+派生规则（取代角色字符串特判——相关特判点已消失）：
 
 | 投影面 | 派生规则 |
 |---|---|
@@ -126,7 +135,7 @@ MemberRuntime =
 
 ## D8 MemberCollector 演化与测试适配
 
-**Decision**: `MemberCollector`（`history.ts:581+`）的**记账机械保留**（turn 簿记、流式块、工具 settle、idle 收束、markOutcome），**输入源切换**：构造不再订阅四类根事件，改为暴露信封分发入口 `applyEvent(envelope: TeamMemberEvent): void`（log 通道 → session 事件处理、live 通道 → stream/status/error 处理）；宿主 entry 持有**单路** team 流订阅，按信封 `role` 分发到对应成员记账对象；announcer 的 log 产出（`assistant/message`）→ 既有 `appendAnnouncement` 投影（触发源收敛，方法保留）。
+**Decision**: `MemberCollector`（`history.ts` 的 `MemberCollector`）的**记账机械保留**（turn 簿记、流式块、工具 settle、idle 收束、markOutcome），**输入源切换**：构造不再订阅四类根事件，改为暴露信封分发入口 `applyEvent(envelope: TeamMemberEvent): void`（log 通道 → session 事件处理、live 通道 → stream/status/error 处理）；宿主 entry 持有**单路** team 流订阅，按信封 `role` 分发到对应成员记账对象；announcer 的 log 产出（`assistant/message`）→ 既有 `appendAnnouncement` 投影（触发源收敛，方法保留）。
 
 测试适配：`session.test.ts` 的 `emit(h, name, ...args)` helper（root 事件驱动）改为经统一流驱动——测试构造真实 `Team` 服务（纯类，`new Team(ctx)`）或经成员 source 注入事件；**行为断言不变**（帧序/历史/视角对外等价，FR-003 基准）。
 

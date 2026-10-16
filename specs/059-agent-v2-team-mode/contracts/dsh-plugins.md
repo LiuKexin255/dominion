@@ -17,6 +17,10 @@ interface TeamRegistration {
   members: TeamMemberRegistration[];
   context?: string;        // 泛化关联键（saolei 侧填局 id；team 不理解语义）
 }
+interface TeamHandle {
+  dispose(): void;
+  events(): TeamEventStream;   // team 作用域统一成员事件流（specs/077-announcer-member-unification/contracts/member-event-stream.md §2.2）
+}
 ctx.team.register(registration): TeamHandle
 ctx.team.drain(member): UserMessage[]   // 注入就绪的广播消息（team 内部按锚点读取实际内容并构造；
                                         //   索引与读取是 team 内部逻辑，不对外暴露索引）
@@ -26,7 +30,7 @@ ctx.team.drain(member): UserMessage[]   // 注入就绪的广播消息（team �
 
 1. **register**：幂等注册（同 agent 重复注册刷新条目）；对每个成员经 `agent.ctx` 注册 team section（order 1–49；内容 = goal + 名册（每成员 `[role] summary` 第三人称）+ 广播格式约定；**不含成员第一人称身份**，R2）；订阅成员 `session/event` 收集产出；成员 dispose 时注册与 buffer 自动清理（scope unwind）。
 2. **收集**：成员 log 的 `assistant/message`（发言）与 `tool/call`+`tool/result`（按 callId 配对为一条广播单元）——"team-visible means logged"，广播面严格限于成员 log 产出（team-mode 决策 ⑧）。
-3. **广播（引用投递）**：成员产出事件 → 将锚点（messageId / callId 对）按事件到达序追加进**除发送者外每个成员的待消费列表**（不写 agent log——决策 ⑦；不复制消息内容）。team 不维护全局消息副本队列；若实现存在中转列表，锚点进入全部接收方列表后即移除，不滞留已完成广播的消息。
+3. **广播（引用投递）**：成员产出事件 → 将锚点（messageId / callId 对）按事件到达序追加进**除发送者外每个成员的待消费列表**（不写 agent log——决策 ⑦；不复制消息内容）。team 不维护全局消息副本队列；若实现存在中转列表，锚点进入全部接收方列表后即移除，不滞留已完成广播的消息。**投递时机**：锚点追加 pending 为可靠基线（拉动式，驱动装配时 drain）；在途广播快路在追加 pending 的同时经接收方投递面 `deliverInFlight` 提前投递一份——该消息经与 drain 完全相同的构造路径构建，是叠加的提前投递、不改变基线（specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §2）。
 4. **drain（构造注入）**：编排层调用 `drain(member)` → team 按锚点从成员 session log（既有读取面）读取实际内容 → 渲染广播格式 → 返回注入就绪的 UserMessage 序列（drain 同时标记消费——注入落 log 后由消费锚点闭环，见 5）。广播格式：
    - 发言：`[sender] 摘要` + `<sender-message>…正文…</sender-message>`；
    - 工具：`[sender] 工具调用 <tool> (context)` + `<sender-tool-call>tool/args/result</sender-tool-call>`（result 原样全文，wire 序列化差异不算；不摘要不聚合）。
@@ -34,7 +38,7 @@ ctx.team.drain(member): UserMessage[]   // 注入就绪的广播消息（team �
    - 标签词汇（`<*-message>`/`<*-tool-call>`）在 team section 中声明，不与 dsh 自身标签冲突。
 5. **待消费列表派生重建**（决策 ⑮ + 引用模型）：待消费列表非事实源（仅锚点、无内容副本），可在重建时由「sender log 产出 − receiver 消费锚点（receiver log 中 `source.kind === 'team-broadcast'` 的 `user/message` 的 `messageId` 集合）」推导；重建即一致、exactly-once 天然成立（丢失自愈、已消费不重复）；顺序：串行驱动下按驱动轮次归并（锚点插入序即事件到达序）。
 6. **MessageSource 扩展**（merge，declaration-merge）：`"team-broadcast": { kind: "team-broadcast"; role: string; senderSessionId: SessionId; messageId: MessageId; context?: string } & ContextFormed`（`form: 'relay'`）。
-7. **team 只投递不驱动**：不调用成员的 `followup/inject/cancel`；不持有游戏概念；索引细节与读取路径不对外部（编排层/宿主）暴露。
+7. **team 只投递不驱动**：不调用成员的 `followup/inject/cancel`；不持有游戏概念；索引细节与读取路径不对外部（编排层/宿主）暴露。**投递面归属**：在途广播快路下 team 只调用成员供给的 `deliverInFlight` 闭包，**不直接调用** `agent.inject`——实际 `inject` 发生在成员适配器（loop 侧）内，本条目不变量保持成立（specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §2.1）。
 
 ## 2. saolei-loop 插件（`@dominion/dsh-saolei-loop`，重构为 team loop）
 

@@ -80,7 +80,7 @@ flowchart LR
 1. 编排 FIFO 与 queue gate **不存在**：消息要么进成员 inbox（在途）、要么立即装配驱动（静止）。
 2. 投递静止路径开的 turn 对 flow 不可见（不触发 onSettle、不消费流程事实）；该 turn 完成后泵唤醒决策入口——判定依据始终是事实（新广播/新终局记录），不是投递动作。
 3. 在途 steer 的消息形态/进入点/同边界多条/relay 边界：沿用 `specs/061-team-queue-steer/contracts/orchestrator-input.md` §1 义务 1–4（其静止分支的装配位置移入成员适配器，语义不变）。
-4. 两类输入分层：用户消息 = 推进式（deliver）；团队广播 = 拉动式（驱动装配时 drain）。
+4. 两类输入分层：用户消息 = 推进式（deliver）；团队广播 = 拉动式（驱动装配时 drain），并叠加在途广播快路（relay message 单元时经接收方投递面提前投递同一消息、pending 锚点照常追加为可靠基线）（`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md` §2/§5）。
 5. 完成定义自包含：inbox 空 + 无在途回合统一涵盖一切用户消息消费；外壳与 flow 层均不查询队列状态做完成判断。
 
 ## 4. outcome 四态与冻结
@@ -115,8 +115,8 @@ flowchart LR
 
 ## 6. 操作路径（自顶向下：目标 → 实现）
 
-**cancel**：目标 = 可恢复的静止——① 终止在途回合（已生成内容保留历史）；② 未消费输入落地为消息历史（landed，不静默丢弃）；③ 流程位置冻结（事实不消费）；④ 等待 deliver 恢复；幂等；已 frozen 时 no-op；不产生失败呈现（宿主 markOutcome CANCELED、干净收束）。
-实现：执行层 `agent.cancel({kind:"user"})` → 在途 drive 闭环返回 aborted → flow 冻结（不 onSettle——现状 cancel 打断 review 在途时记录被错误消费的竞态据此消除）；inbox 未消费收编 landed；取消收敛窗口内 deliver 到达由统一 flush 规则以不变应万变。
+**cancel**：目标 = 可恢复的静止——① 终止在途回合（已生成内容保留历史）；② 未消费**用户**输入落地为消息历史（landed，不静默丢弃）——团队广播（`team-broadcast`）inbox 残留**不落地**，其可靠性由 pending 基线单一承载（`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md` §3/§6）；③ 流程位置冻结（事实不消费）；④ 等待 deliver 恢复；幂等；已 frozen 时 no-op；不产生失败呈现（宿主 markOutcome CANCELED、干净收束）。
+实现：执行层 `agent.cancel({kind:"user"})` → 在途 drive 闭环返回 aborted → flow 冻结（不 onSettle——现状 cancel 打断 review 在途时记录被错误消费的竞态据此消除）；inbox 未消费**用户**消息收编 landed（`team-broadcast` 残留放行给 `agent.cancel` 默认清 inbox）；取消收敛窗口内 deliver 到达由统一 flush 规则以不变应万变。
 
 **dispose/refresh**：目标 = 彻底释放进入终态——① 在途回合 aborted **不转交**；② 释放成员句柄/退订信号/撤销团队注册（allSettled，部分失败不阻塞，首个失败上报）；③ 流程状态全清（flow 无生命周期：纯状态对象随引用消失；refresh 不保留 reviewed/rounds）；④ 幂等；宿主先 markOutcome ABORTED；dispose 期间 submit 同步 throw DISPOSED（保持）。materialize 原子性保持（全就绪或全回滚）。
 
@@ -128,7 +128,7 @@ flowchart LR
 | 静止判定（watchQuiescence） | `frozen \|\| (active === null && inboxPending === 0)`——冻结短路取代 paused 短路；流收束按 lastError.origin 二分（063 §2） |
 | Send 接入 | submit → deliver（快照先行判断排队帧的逻辑按 061 `web-queue-ui.md` 的帧语义沿用） |
 | 错误呈现 | code → 用户动作文案映射归宿主（快照/失败帧携带；web 沿既有错误渲染路径显示文本） |
-| announcer 订阅投影 | `orchestrator.announcer` 读取面保持（announcer 更名见 [announcer-member.md](announcer-member.md)） |
+| 成员事件消费 | 宿主（`projects/game/agent_v2/src/session.ts`）经 team 统一成员事件流单路消费（`specs/077-announcer-member-unification/contracts/member-event-stream.md` §5）；loop 侧 `orchestrator.announcer` 读取面保留（仍供成员读取与 loop 测试使用，非宿主订阅路径）。announcer 更名见 [announcer-member.md](announcer-member.md) |
 
 ## 8. 验收基准
 
