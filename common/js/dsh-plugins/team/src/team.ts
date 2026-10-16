@@ -31,6 +31,13 @@
  * envelope ({@link TeamMemberEvent}). The team never interprets the events, so
  * the member abstraction's dependency inversion is unchanged. Contract:
  * specs/077-announcer-member-unification/contracts/member-event-stream.md.
+ *
+ * A `message` unit additionally takes the in-flight fast path of the optional
+ * {@link TeamMemberSource.deliverInFlight} face: the pending append stays the
+ * reliability baseline (unconditional), and the very message drain would build
+ * is handed to every receiver carrying that face — the member-side policy
+ * decides who is really in flight. Contract:
+ * specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md.
  */
 
 import { Service } from "@deepseek-ai/cordis";
@@ -117,6 +124,16 @@ export interface TeamMemberSource {
   readonly live?: {
     subscribe(onEvent: (event: TeamLiveEvent) => void): () => void;
   };
+  /**
+   * In-flight delivery face (optional): a structural property of the member
+   * kind, peer of `consumes` — the agent member adapter supplies one for every
+   * LLM member, an announce-only member has none. `relay` hands it the very
+   * broadcast message `drain` would build for a `message` unit; the
+   * member-side policy decides (in flight → non-waking injection into the
+   * next-step inbox, quiescent → no-op). Contract:
+   * specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §2.1.
+   */
+  readonly deliverInFlight?: (message: UserMessage) => void;
   /** The team-section injection target (optional); absent = no prompt injection. */
   readonly sectionTarget?: TeamSectionTarget;
   /**
@@ -627,6 +644,13 @@ export class Team extends Service {
    * before the transient `pendingCalls` entry is dropped). An announce-only
    * receiver gets nothing (contracts/team-member-source.md §2.4).
    *
+   * A `message` unit then takes the in-flight fast path to the receiver's
+   * delivery face, if it has one: the anchor append above is the unconditional
+   * reliability baseline, and the fast path is the concurrent early delivery of
+   * the same unit (contracts/inflight-broadcast-fastpath.md §2.2). Tool units
+   * never enter it — their sender is the in-flight member itself, which relay
+   * excludes, so the fast path has no trigger there by construction.
+   *
    * Read authority is the derivation, not this append: `drain` reconciles
    * against the sender logs before consuming, and the rebuilt list (derived
    * order) is what callers see. The two paths converge on the same set in
@@ -644,12 +668,57 @@ export class Team extends Service {
       ) {
         continue;
       }
-      receiver.pending.push({
+      const pending: PendingUnit = {
         ...unit,
         senderSessionId: senderId,
         senderRole: sender.registration.role,
-      });
+      };
+      receiver.pending.push(pending);
+      if (unit.kind === "message") {
+        this.deliverInFlight(team, receiver, pending);
+      }
     }
+  }
+
+  /**
+   * Hand one message unit to a receiver's in-flight delivery face, built
+   * through the exact path drain uses ({@link buildMessage}: same anchor, same
+   * `team-broadcast` source, same rendering — there is no fast-path-specific
+   * message shape). A receiver without the face is not an in-flight receiver
+   * at all (the announcer and any future announce-only member).
+   *
+   * The construction itself keeps drain's error face — a corrupt read (the
+   * anchor names a logged fact) fails loud in both paths, so no new error kind
+   * is introduced (contract §2.3). Only the delivery call is guarded: the
+   * member-side policy may fail, and the announce path feeding this relay must
+   * never be broken by it — the failure is reported and swallowed, leaving the
+   * pending baseline to deliver the broadcast on the next drive (contract
+   * §2.1/§5).
+   */
+  private deliverInFlight(
+    team: TeamState,
+    receiver: MemberState,
+    unit: PendingUnit,
+  ): void {
+    const deliver = receiver.registration.source.deliverInFlight;
+    if (deliver === undefined) {
+      return;
+    }
+    const message = this.buildMessage(unit, team);
+    try {
+      deliver(message);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.warn(
+        `team relay: in-flight delivery to member "${receiver.registration.source.id}" failed; ` +
+          `the pending baseline still holds the anchor: ${reason}`,
+      );
+    }
+  }
+
+  /** Report a fast-path failure without disturbing the announce path (contract §2.1). */
+  private warn(message: string): void {
+    this.ctx.logger?.warn?.(message);
   }
 
   /**

@@ -907,6 +907,78 @@ describe("TeamOrchestrator.teamEvents", () => {
   });
 });
 
+describe("TeamOrchestrator member delivery face (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §2.1)", () => {
+  /** The registered member entry of one role. */
+  function registeredMember(h: Harness, role: string) {
+    const registration = h.team.registrations[0] as TeamRegistration;
+    const found = registration.members.find((member) => member.role === role);
+    if (found === undefined) {
+      throw new Error(`the "${role}" member is not registered`);
+    }
+    return found;
+  }
+
+  it("supplies the face on the agent members' sources and not on the announcer's", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+
+    // The agent member kind supplies the face structurally …
+    expect(typeof registeredMember(h, "player").source.deliverInFlight).toBe(
+      "function",
+    );
+    expect(typeof registeredMember(h, "planner").source.deliverInFlight).toBe(
+      "function",
+    );
+    // … and the announce-only registration carries none (structural absence,
+    // not a disabled registration option).
+    expect(
+      registeredMember(h, "announcer").source.deliverInFlight,
+    ).toBeUndefined();
+  });
+
+  it("delegates to the adapter's policy: quiescent no-op, in-flight non-waking inject", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const deliver = registeredMember(h, "planner").source.deliverInFlight;
+    if (deliver === undefined) {
+      throw new Error("the planner registration must carry the delivery face");
+    }
+    const planner = member(h, PLANNER_ID);
+
+    // Quiescent: "not a receiver" — no inject, no turn, no bookkeeping.
+    deliver(relay(ANNOUNCER_ID, "announcer", "本局游戏结束：胜利。"));
+    expect(planner.injections).toEqual([]);
+    expect(planner.followups).toEqual([]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "planning",
+      active: null,
+      queued: 0,
+    });
+
+    // In flight: the broadcast joins the next-step inbox without waking the
+    // driver — the drive's own turn stays the only turn and the fast-path
+    // message never enters the queued/steered accounting.
+    h.orchestrator.submit("请开始");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: "planner",
+      queued: 0,
+    });
+    const followupsBefore = planner.followups.length;
+    deliver(relay(ANNOUNCER_ID, "announcer", "hook 播报"));
+    expect(planner.injections.map(messageText)).toEqual(["hook 播报"]);
+    expect(planner.followups).toHaveLength(followupsBefore);
+    expect(planner.steers).toEqual([]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: "planner",
+      queued: 0,
+    });
+
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+  });
+});
+
 describe("TeamOrchestrator transitions", () => {
   it("drives the player with the whole drained relay set in one turn after the first planner turn quiesces", async () => {
     const h = createHarness();

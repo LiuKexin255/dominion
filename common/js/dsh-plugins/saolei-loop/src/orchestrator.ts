@@ -818,6 +818,20 @@ export class TeamOrchestrator {
       drain: () => this.team().drain(source),
       flushLanded: () => this.takeLanded(),
     });
+    // The member-kind delivery face
+    // (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
+    // §2.1): source and adapter meet here, so the registered source carries a
+    // closure delegating to the adapter's policy while keeping its own identity
+    // (the live `events` getter must stay live for drain-time derivation).
+    // team only calls what the member supplies — the actual `inject` happens in
+    // the adapter, so team stays blind to agent details and
+    // specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §1 第 7 条
+    // ("team 只投递不驱动") keeps holding.
+    // The announce-only announcer registration carries no face: the property
+    // belongs to the member kind, not to a registration option.
+    Object.assign(source, {
+      deliverInFlight: (message: UserMessage) => adapter.deliverInFlight(message),
+    });
     return {
       id: role,
       member: adapter,

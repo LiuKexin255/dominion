@@ -5,8 +5,9 @@
  * drain + landed flush), the `inject(*)+followup(last)` pre-step batch, the
  * `agent.whenIdle()` completion wait, the failure marker read (the
  * `agent/error` boundary, always before idle), the engine-code → loop-code
- * mapping, the delivery split (steer / assembly), and the held-input replay
- * after a failed or aborted drive. The contracts are
+ * mapping, the delivery split (steer / assembly), the in-flight broadcast
+ * delivery face ({@link AgentMember.deliverInFlight}), and the held-input
+ * replay after a failed or aborted drive. The contracts are
  * specs/076-agent-v2-optimize/contracts/flow-orchestration.md §2.1/§3/§5 and
  * specs/076-agent-v2-optimize/data-model.md §3; the base APIs are
  * @deepseek-ai/dsh-agent 0.2.0-rc.2's `steer`/`whenIdle`/`inject`/`followup`
@@ -232,6 +233,34 @@ export class AgentMember implements Member, MemberExecution {
     return this.activeTurn ?? Promise.resolve({ kind: "resting" });
   }
 
+  /**
+   * The in-flight broadcast fast path — the one policy every LLM member shares
+   * (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
+   * §2.1). While a turn is in flight the broadcast joins the next-step inbox
+   * without waking the driver: `inject` "adds model-facing context without
+   * waking the driver, so it lands in the next admitted step"
+   * (https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md), which
+   * neither opens nor extends a turn and leaves the completion judgement
+   * untouched. While quiescent the member is not a receiver at all — the
+   * pending baseline delivers the broadcast through the next drive's assembly.
+   * An injection failure is reported and swallowed: the announce path that
+   * drove this call must never break on it (contract §2.1/§5).
+   */
+  deliverInFlight(message: UserMessage): void {
+    if (!this.busy) {
+      return;
+    }
+    try {
+      this.agent.inject(message);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.warn(
+        `saolei-loop agent member "${this.id}": in-flight broadcast delivery failed; ` +
+          `the pending baseline still holds it: ${reason}`,
+      );
+    }
+  }
+
   abort(): void {
     if (this.activeTurn !== null) {
       this.abortRequested = true;
@@ -241,6 +270,11 @@ export class AgentMember implements Member, MemberExecution {
   /** Unsubscribe the failure observation (the handle already unwinds the scope). */
   dispose(): void {
     this.offError();
+  }
+
+  /** Report a fast-path failure without disturbing the announce path (contract §2.1). */
+  private warn(message: string): void {
+    this.agent.ctx.logger?.warn?.(message);
   }
 
   /**

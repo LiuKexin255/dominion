@@ -12,7 +12,7 @@
 import { LlmError } from "@deepseek-ai/dsh-llm";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AgentMember, mapEngineCode } from "./agent-member.js";
 import type { LoopErrorCode } from "./member.js";
@@ -46,10 +46,13 @@ function createFakeAgent() {
   const injections: UserMessage[] = [];
   const followups: UserMessage[] = [];
   const steers: UserMessage[] = [];
+  const warn = vi.fn();
+
   const agent = {
     id: "planner",
     status: "idle",
     ctx: {
+      logger: { warn },
       on: (name: string, listener: (payload: { agent: unknown; error: unknown }) => void) => {
         if (name === "agent/error") {
           errorListeners.push(listener);
@@ -78,6 +81,7 @@ function createFakeAgent() {
     injections,
     followups,
     steers,
+    warn,
     settle(): void {
       for (const resolve of waiters.splice(0)) {
         resolve();
@@ -304,5 +308,61 @@ describe("AgentMember.deliver", () => {
     const settled = member.whenSettled();
     fake.settle();
     expect(await settled).toEqual({ kind: "settled" });
+  });
+});
+
+describe("AgentMember.deliverInFlight", () => {
+  it("injects into the in-flight turn's next step without waking the driver", async () => {
+    const { fake, member } = createMember({
+      drain: [message("策略一"), message("策略二")],
+    });
+    const turn = member.drive();
+    expect(member.busy).toBe(true);
+
+    member.deliverInFlight(message("hook 播报"));
+
+    // Non-waking injection: the broadcast joins the next-step inbox while the
+    // same turn keeps running — no new turn, no steer, and the delivery
+    // bookkeeping does not count it
+    // (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §5).
+    expect(fake.injections.map(textOf)).toEqual(["策略一", "hook 播报"]);
+    expect(fake.followups.map(textOf)).toEqual(["策略二"]);
+    expect(fake.steers).toEqual([]);
+    expect(member.pendingInput).toBe(0);
+    expect(member.busy).toBe(true);
+
+    const settled = member.whenSettled();
+    fake.settle();
+    expect(await turn).toEqual({ kind: "settled" });
+    expect(await settled).toEqual({ kind: "settled" });
+  });
+
+  it("is a no-op while quiescent (the pending baseline owns the delivery)", () => {
+    const { fake, member } = createMember({});
+    expect(member.busy).toBe(false);
+
+    member.deliverInFlight(message("hook 播报"));
+
+    expect(fake.injections).toEqual([]);
+    expect(fake.followups).toEqual([]);
+    expect(member.busy).toBe(false);
+    expect(member.pendingInput).toBe(0);
+  });
+
+  it("swallows an inject failure with a warning (the announce path is never broken)", async () => {
+    const { fake, member } = createMember({ drain: [message("策略")] });
+    const turn = member.drive();
+    fake.agent.inject = vi.fn(() => {
+      throw new Error("inbox closed");
+    });
+
+    expect(() => member.deliverInFlight(message("hook 播报"))).not.toThrow();
+    expect(fake.warn).toHaveBeenCalledOnce();
+    expect(String(fake.warn.mock.calls[0]?.[0])).toContain(
+      "in-flight broadcast delivery failed",
+    );
+
+    fake.settle();
+    expect(await turn).toEqual({ kind: "settled" });
   });
 });
