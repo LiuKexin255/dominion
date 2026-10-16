@@ -94,21 +94,24 @@
 
 ## Phase 5: Polish & Cross-Cutting Concerns
 
-**Purpose**: 契约终态修订、README 同步、最终验收（宪法 VI 大型测试门禁）。
+**Purpose**: 快路同锚点双投收口（research.md D10：cancel 双向自愈 + turn 失败残留清扫 + 场景 6 断言）、契约终态修订、README 同步、最终验收（宪法 VI 大型测试门禁）。
 
 ### 文档清单（编码前必读；宪法 V 三分类）
 
-- **代码规范文档**：`style/large_test.md`（testplan 执行约定；"FOR Agent: 使用 testplan SKILL"）
-- **官方文档**：无
-- **技术文章/技术参考文档**：`specs/077-announcer-member-unification/quickstart.md`（全部——验证清单）；`projects/game/testplan/system_test.yaml`（T013 执行对象——四套件与部署拓扑）；`specs/077-announcer-member-unification/spec.md`（FR-013/SC-006/SC-007）；本 feature 三份契约（修订语义来源）——`specs/077-announcer-member-unification/contracts/member-event-stream.md`、`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md`、`specs/077-announcer-member-unification/contracts/host-member-parity.md`；被修订契约原文——`specs/065-agent-v2-team-refine/contracts/team-member-source.md`、`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md`、`specs/076-agent-v2-optimize/contracts/flow-orchestration.md`、`specs/076-agent-v2-optimize/contracts/announcer-member.md`
+- **代码规范文档**：`style/javascript.md`（T014–T016 编码任务——ESM/测试书写规则：相对导入带 `.js`、`export type` 显式、DI/`vi.fn()` seam）；[Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)（`style/javascript.md` 引用的规范基准）；`style/large_test.md`（T013 testplan 执行约定；"FOR Agent: 使用 testplan SKILL"）
+- **官方文档**：[dsh-agent 0.2.0-rc.2 README](https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md)（T014–T015——`cancel` 默认清 inbox、结构面 `Inbox` 的 `nextStep`/`nextTurn`/`remove`、`inject` 落 next admitted step；本地同源副本 `common/js/dsh-plugins/team/node_modules/@deepseek-ai/dsh-agent/README.md`）；[dsh-agent-loop 0.2.0-rc.2 README](https://unpkg.com/@deepseek-ai/dsh-agent-loop@0.2.0-rc.2/README.md)（T015——turn 开启"atomically claims pending next-step input plus one queued prompt"、失败 turn 不清 inbox 仅 cancel 清 pending work；本地同源副本 `projects/game/agent_v2/node_modules/@deepseek-ai/dsh-agent-loop/README.md`）；[Vitest Mocking Modules — Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)（`style/javascript.md` 的 DI/`vi.fn()` 优先、禁新增 `vi.mock` 模块拦截约定之依据——T014–T016 单测书写）
+- **技术文章/技术参考文档**：`specs/077-announcer-member-unification/research.md` D10（T014–T016 裁定：两窗口缺陷机械核实、单一可靠性载体、被否决备选）；`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md`（§2.1 inbox 卫生/§3 单一载体/§6 边缘路径/§7 验收面——T014–T016 的契约终态）；`specs/077-announcer-member-unification/data-model.md` §2（状态转移与不变量）；`specs/061-team-queue-steer/contracts/orchestrator-input.md` §1/§4（steer 残留随 turn 边界认领、landed flush 统一规则——用户消息面不变、T014/T015 清扫范围边界）；`specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §6（cancel ② landed 范围收窄的修订基线，T011）；`specs/077-announcer-member-unification/quickstart.md`（全部——验证清单）；`projects/game/testplan/system_test.yaml`（T013 执行对象——四套件与部署拓扑）；`specs/077-announcer-member-unification/spec.md`（FR-013/SC-003/SC-006/SC-007）；本 feature 三份契约（修订语义来源）——`specs/077-announcer-member-unification/contracts/member-event-stream.md`、`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md`、`specs/077-announcer-member-unification/contracts/host-member-parity.md`；被修订契约原文——`specs/065-agent-v2-team-refine/contracts/team-member-source.md`、`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md`、`specs/076-agent-v2-optimize/contracts/flow-orchestration.md`、`specs/076-agent-v2-optimize/contracts/announcer-member.md`
 
 ### Implementation
 
-- [ ] T011 [P] 契约终态修订（宪法 VII：直接修订原文，不留增量痕迹；修订处引用 `specs/077-announcer-member-unification/spec.md` 与本 feature `contracts/`）：①`specs/065-agent-v2-team-refine/contracts/team-member-source.md`——§1 接口增 `live`/`deliverInFlight` 可选面、§2 传输语义增统一流同源扇出与快路投递规则；②`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §1——服务面增 `TeamHandle.events()`、行为规范第 3 条增投递时机（快路叠加 pending）、**第 7 条「team 只投递不驱动」增投递面归属说明**（team 只调用成员供给的 `deliverInFlight` 闭包，不直接调用 `agent.inject`——inject 由成员适配器执行，该条不变量保持成立）；③`specs/076-agent-v2-optimize/contracts/flow-orchestration.md`——§3 item 4 两类输入分层注记（广播投递时机：拉动式 drain + 快路提前投递）与 §7 末行「announcer 订阅投影」改为终态表述（宿主成员事件消费经 team 统一流；**loop 侧 `orchestrator.announcer` 读取面保留**——仍供成员读取与测试）；④`specs/076-agent-v2-optimize/contracts/announcer-member.md` §3 item 3 实现侧表述按成员 kind 属性派生更新（必做：现表述的「放宽硬编码 `player`/`planner` roster guard」由判别联合派生取代）
+- [ ] T011 [P] 契约终态修订（宪法 VII：直接修订原文，不留增量痕迹；修订处引用 `specs/077-announcer-member-unification/spec.md` 与本 feature `contracts/`）：①`specs/065-agent-v2-team-refine/contracts/team-member-source.md`——§1 接口增 `live`/`deliverInFlight` 可选面、§2 传输语义增统一流同源扇出与快路投递规则；②`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §1——服务面增 `TeamHandle.events()`、行为规范第 3 条增投递时机（快路叠加 pending）、**第 7 条「team 只投递不驱动」增投递面归属说明**（team 只调用成员供给的 `deliverInFlight` 闭包，不直接调用 `agent.inject`——inject 由成员适配器执行，该条不变量保持成立）；③`specs/076-agent-v2-optimize/contracts/flow-orchestration.md`——§3 item 4 两类输入分层注记（广播投递时机：拉动式 drain + 快路提前投递）、§6 cancel ②「未消费输入落地为消息历史」范围收窄为**用户消息**（`team-broadcast` inbox 残留不落地——pending 基线承担其可靠性，`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md` §3/§6）与 §7 末行「announcer 订阅投影」改为终态表述（宿主成员事件消费经 team 统一流；**loop 侧 `orchestrator.announcer` 读取面保留**——仍供成员读取与测试）；④`specs/076-agent-v2-optimize/contracts/announcer-member.md` §3 item 3 实现侧表述按成员 kind 属性派生更新（必做：现表述的「放宽硬编码 `player`/`planner` roster guard」由判别联合派生取代）
 - [ ] T012 [P] `projects/game/agent_v2/README.md` 更新：成员投影单路消费（team 统一流）、announcer 同权属性派生、快路机制与生产行为惰性说明（引用 `specs/077-announcer-member-unification/`）
-- [ ] T013 最终验收：按 `specs/077-announcer-member-unification/quickstart.md` 执行——§2 三包 `bazel build`/`bazel test` 全绿；§3 特例消失 grep 零匹配；§4 经 **testplan SKILL** 实际执行 `guitar run projects/game/testplan/system_test.yaml` 全套件（部署→测试→清理闭环），**全部用例通过**（宪法 VI：仅构建检查不构成验收；任何 failed/flaky 即验收未通过）
+- [ ] T014 [US3] cancel 双向自愈收口（W1，research.md D10①；契约 §6/§7）：`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` `landUnclaimed` 只收编 `source.kind === "user"` 的未认领 inbox 消息——`team-broadcast` 残留不进 landed（放行给随后 `agent.cancel` 默认清 inbox），锚点未消费由 pending 基线自愈重投（landed 语义收窄为用户未消费输入，076 §6 ② 表述由 T011 同步）。扩展 `common/js/dsh-plugins/saolei-loop/src/orchestrator.test.ts`（US3 场景 5 / spec SC-003 第⑤项）：在途成员经投递面注入广播副本（`deliverInFlight`，复用既有 `relay(...)` 构造）+ fake team queue 预置同锚点 pending 副本 → `cancel()` 断言 `dropped` 与 landed 不含广播副本 → 恢复 `submit` 后该锚点在 followup/injection 批中**恰出现一次**（drain 副本、位于用户消息之前）
+- [ ] T015 [US3] turn 失败残留清扫（W2，research.md D10②；契约 §2.1/§7）：`common/js/dsh-plugins/saolei-loop/src/agent-member.ts` `startTurn` 守卫通过后、装配批注入前，将 `agent.inbox`（`nextStep`/`nextTurn`）中 `source.kind === "team-broadcast"` 的未认领消息经 `inbox.remove` 清除（未认领 ⇒ 锚点未消费 ⇒ pending 派生重投恰一份；用户消息残留不清扫——061 §1 义务 2 语义）。`common/js/dsh-plugins/saolei-loop/src/agent-member.test.ts` fake agent 增 inbox double（`inject` 落 `nextStep`、`remove` 按 message id 移除）；新增断言：drive 在途 → `deliverInFlight` 注入 → `failTurn`（残留存活 inbox）→ 恢复 drive（drain 含同锚点副本）→ 残留被清除、新批恰一份；同窗口用户消息（steer）残留不被清除。`common/js/dsh-plugins/saolei-loop/src/orchestrator.test.ts` `createFakeMember` 的 inbox double 同步补 `remove`（既有测试 drive 批中的 relay 副本留存 fake inbox，清扫调用需要该结构面；移除不影响 injections/followups 断言面）
+- [ ] T016 [US3] [P] 同 step 窗口多条断言（US3 场景 6 / spec SC-003 第⑥项；契约 §7⑦）：`common/js/dsh-plugins/team/src/team.test.ts`——同一 step 窗口两条播报连续生产：带投递面的接收方按生产序 FIFO 收到两条（`source.messageId` 各异、与 drain 构造逐字段等价）；其一被认领（接收方 log 出现该锚点的 `user/message` 注入）后 drain/reconcile 剔除该锚点、其余锚点 pending 独立存活——各锚点独立闭包、无重排与重复
+- [ ] T013 最终验收：按 `specs/077-announcer-member-unification/quickstart.md` 执行——§2 三包 `bazel build`/`bazel test` 全绿（含 T014–T016 新增断言）；§3 特例消失 grep 零匹配；§4 经 **testplan SKILL** 实际执行 `guitar run projects/game/testplan/system_test.yaml` 全套件（部署→测试→清理闭环），**全部用例通过**（宪法 VI：仅构建检查不构成验收；任何 failed/flaky 即验收未通过）
 
-**Checkpoint / 验证门禁**：T011–T012 文档修订落盘（引用可追溯）；T013 全绿后 feature 达到 spec SC-001–SC-007。
+**Checkpoint / 验证门禁**：T014–T016 完成后 `bazel test //common/js/dsh-plugins/team/... //common/js/dsh-plugins/saolei-loop/...` 全绿（新增：cancel 双向自愈恰一份、失败残留清扫恰一份且用户残留不动、同 step 窗口 FIFO/独立闭包）；T011–T012 文档修订落盘（引用可追溯）；T013 全绿后 feature 达到 spec SC-001–SC-007。
 
 ---
 
@@ -120,7 +123,7 @@
 - **Phase 2（US1, P1）**: 起点；T001 → T002（T002 与 T003 不同文件可并行）→ **T003+T004 原子变更组 A**（T004 依赖 T002；组内两任务的代码与测试改动完成后统一跑门禁，不单任务提交——`history.test.ts`/`session.test.ts` 的驱动面切换分属两任务，缺一即单测不通过）。
 - **Phase 3（US2, P2）**: 依赖 Phase 2 完成（`streamOff`/统一流消费落地后，entry 形态重整才不冲突——session.ts 同文件串行）。
 - **Phase 4（US3, P3）**: 依赖 T001（source 类型扩展）；与 Phase 3 无文件冲突（team/loop 侧），但按优先级在 Phase 3 后执行；T008 → T009 → T010。
-- **Phase 5（Polish）**: 依赖 Phase 2–4 全部完成（契约修订反映终态；大型测试为全量验收）。
+- **Phase 5（Polish）**: 依赖 Phase 2–4 全部完成（契约修订反映终态；大型测试为全量验收）。Phase 5 内部：T014 → T015 串行（均落 `orchestrator.test.ts`，T015 依赖 T014 后的 fake inbox 终态）；T011/T012/T016 与 T014–T015 无文件冲突可并行；T013 最后（最终验收含 T014–T016 新增单测）。
 
 ### User Story Dependencies
 
@@ -131,7 +134,8 @@
 ### Parallel Opportunities
 
 - T002（saolei-loop/orchestrator.ts）与 T003（agent_v2/history.ts）可并行（不同包不同文件，仅共同依赖 T001 类型；T003 的代码改动以**原子变更组 A**交付，见 Phase Dependencies）。
-- T011 与 T012 可并行（不同文件）。
+- T011 与 T012 可并行（不同文件）；T016（team.test.ts）与 Phase 5 其余任务无文件冲突可并行。
+- T014 与 T015 串行（同落 `orchestrator.test.ts`）。
 - 三包单测互不阻塞：team / saolei-loop / agent_v2 的 `bazel test` 可独立执行。
 
 ---

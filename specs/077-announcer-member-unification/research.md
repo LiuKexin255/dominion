@@ -3,7 +3,7 @@
 **性质**: plan 阶段设计决策记录 | **Date**: 2026-10-16
 **Spec**: [spec.md](spec.md) | **调研基线**: `survey/saolei-hook-scripts.md`（K4/§2.2.4/§2.2.5 裁定）
 
-本文件记录 plan 阶段裁定的技术决策（D1–D9）。每项含决策、理由与被否决备选。用户裁定项标注日期。
+本文件记录 plan 阶段裁定的技术决策（D1–D10）。每项含决策、理由与被否决备选。用户裁定项标注日期。
 
 ## D1 统一成员事件流的接入路径（用户裁定 2026-10-16，扩展性视角）
 
@@ -143,3 +143,35 @@ MemberRuntime =
 - [contracts/host-member-parity.md](contracts/host-member-parity.md)——宿主成员同权（D7–D8）
 
 **Alternatives**: 在旧契约追加"增量勘误"段落：被否决——违背终态表述原则，读者需拼接多文档还原现状。
+
+## D10 cancel/turn 失败窗口的同锚点双投：机制修复（2026-10-16，Phase 4 后执行者与评审者双重机械核实的方案收口）
+
+**Decision**: 修复机制，两个窗口同闭（spec US3 场景 5 终态化、Edge Cases 与 [contracts/inflight-broadcast-fastpath.md](contracts/inflight-broadcast-fastpath.md) §2.1/§3/§6 同步终态化）：
+
+1. **cancel 窗口（W1）**：`landUnclaimed`（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`）只收编 `source.kind === "user"` 的未认领 inbox 消息为 landed；`team-broadcast` 残留不落地、放行给随后的 `agent.cancel`（默认清 inbox）清除——锚点未消费由 pending 基线自愈重投。
+2. **turn 失败窗口（W2）**：`AgentMember`（`common/js/dsh-plugins/saolei-loop/src/agent-member.ts`）开启新 turn 前将 pending inbox 中 `team-broadcast` 残留 `inbox.remove` 清除（dsh 结构面 `Inbox.remove`，durable cancel）——未认领 ⇒ 锚点未消费 ⇒ pending 派生必含该锚点，新批经 drain 重投恰一份；用户消息（steer）残留不在清扫范围。
+
+**缺陷机械核实**（两窗口均使同一锚点双份落接收方 log）：
+
+- **W1**：cancel 的 `landUnclaimed` 先序把快路 inbox 副本收编 landed；锚点未落 log，pending 副本在下次 drain 前置 reconcile 后存活；恢复装配 `[...drainSource(), ...takeLanded(), ...]`（`agent-member.ts` deliver 静止分支与 `defaultInput`）两源无锚点去重 → 同批 inject/followup → turn 边界一并认领双双落 log。
+- **W2**：turn 失败（非 cancel）不清 inbox（dsh-agent-loop 仅 cancel 清 pending work，失败路径不经 `turnEnds && inbox.nextStep.length === 0` 停止条件检查——`@deepseek-ai/dsh-agent-loop` 0.2.0-rc.2 `lib/index.js:998-1015`）；快路副本残留 inbox；恢复 drive 的 drain 返回 pending 副本，turn 开启原子认领 "pending next-step input plus one queued prompt"（`lib/index.js:104`）把残留与新批一并认领 → 双份。
+
+**根因**：锚点闭包（`consumedAnchors`，`common/js/dsh-plugins/team/src/broadcast.ts:160-173`）是 **log 观测式去重**——只能跨认领批次去重（重投侧），无法拦截"同一批内双源喂入"。`specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §4 恢复链"fresh drain 与 landed 不共存"不变量此前成立的前提是 inbox 内容只能来自已消费的 drain/steer（用户消息无第二副本、不参与锚点派生）；快路引入了新的 inbox 注入源（team-broadcast，可被 pending 从 sender log 派生重投），该前提不再总成立。正常收束窗口不受影响（停止条件强制延展认领，锚点消费闭包成立）。
+
+**Rationale**:
+
+- **FR-009 语义完整性**：修复使"同一锚点每成员恰好一次（MUST）"机械成立——承诺保持而非削弱，无需用户重新裁定；US3 场景 5 的机制描述按终态收窄为"pending 自愈重投单一路径"（可观测承诺"不丢失、不重复"不变，landed 收编分支移除）。
+- **076 §4 不变量**：修复不是绕过而是恢复其前提——team-broadcast 不再回流 landed/inbox 残留这两个恢复载送面，恢复装配两源（drain + landed）对任一锚点至多其一持有；landed 语义收窄为"用户未消费输入"（076 §6 cancel ② 随 T011 修订表述）。
+- **改动面与风险**：两处小改动（各一处判定 + 一处清扫）+ 三组单测；零新记账、零新消息形态、零 team 插件改动；三条不变量（pending 恒为基线 / 单一构造路径 / team 只投递不驱动）全部保持。不触碰任何今日可达生产行为——快路惰性使生产不存在 team-broadcast inbox 残留，既有测试的批次行为不变（fake inbox 的 relay 副本被清扫不影响 injections/followups 断言面，仅需 fake inbox 补 `remove` 结构面）。
+- **hook feature 前置条件**：hook 的主场景（player turn 内高频播报 × 用户 cancel 常见操作）恰是 W1 触发器；披露不修会把已知重复留给 hook feature 在更大改动面下重修，违背本 feature"hook 无需触碰投递机制"的定位。
+- **测试承载**：两窗口生产不可达（与快路机制本身同一先例），以单测承载——orchestrator.test.ts（cancel 双向自愈）、agent-member.test.ts（失败残留清扫）、team.test.ts（同 step 窗口多条 FIFO/独立闭包，US3 场景 6 一并补齐）。
+- **边界说明**：W2 恢复 drive 的 fresh drain 非空与 held 并存时 held 延后（`defaultInput` 既有 fresh 优先语义，非本裁定引入）——批已提交的场景延后即正确（内容已在 log，重放反而重复），未提交场景 held 保持 armed 由后续空 fresh drive 重放，不丢失；不在本次收口范围。
+
+**Alternatives**:
+
+- **修契约披露为有界一次性重复**（比照 D6 先例，留待 hook feature 解决）：被否决——D6 先例是**顺序**有界偏差（发言级不受影响），此处是**基数**违反 FR-009 的 MUST（同锚点每成员恰好一次）；且 hook 主场景（mid-turn 播报 × cancel）恰是触发器，披露等于转移已知缺陷；MUST 削弱还需用户裁定（超出方案权限）。
+- **装配处按锚点对 drain/landed 去重**：被否决——只见 landed（W1），看不见 W2 的 inbox 残留（不在装配数组中），仍需 inbox 清扫才能闭合；且需在 2–3 个装配点加锚点匹配条件逻辑，比"源头不落地"单规则复杂（宪法 II）。
+- **drain 侧对 inbox/landed 内容排除**（team 插件读接收方 inbox）：被否决——层级违反（team 不感知 agent 细节，`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §1 第 7 条 / `specs/065-agent-v2-team-refine/contracts/team-member-source.md` §2.6）。
+- **turn 失败时点清扫**（而非 turn 起点清扫）：被否决——失败分支与 deliver 恢复驱动两条路径都要覆盖；turn 起点（`startTurn`）是 drive/deliver/持有重放全部经过的单一收束点。
+- **cancel 改用 `keepInbox` 保留残留**：被否决——残留留 inbox，恢复 turn 开启与新批一并认领，双投仍在（W2 形态）。
+- **relay 对投递成功者不追加 pending**（快路自负其责）：被否决——违反"pending 恒为基线"叠加关系（FR-009）。

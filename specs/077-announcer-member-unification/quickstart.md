@@ -21,7 +21,7 @@ bazel test //common/js/dsh-plugins/team/... //common/js/dsh-plugins/saolei-loop/
 | 验证点 | 位置 | 预期 |
 |---|---|---|
 | 统一流信封/同源扇出/live 通道 | team 插件单测 | role/memberId/channel 标注正确；log 通道与 relay 同事件同序；announce-only 成员无 live 事件；dispose 后无事件（[member-event-stream.md](contracts/member-event-stream.md) §6） |
-| 快路行为（SC-003 四项） | team + saolei-loop 单测 | 在途接收下一 step 携带（同锚点同构造）；恰好一次（pending 自愈剔除）；静止照旧 pending；终局播报无快路（[inflight-broadcast-fastpath.md](contracts/inflight-broadcast-fastpath.md) §7） |
+| 快路行为（SC-003 六项） | team + saolei-loop 单测 | 在途接收下一 step 携带（同锚点同构造）；恰好一次（pending 自愈剔除）；静止照旧 pending；终局播报无快路；cancel/turn 失败后恢复装配对同锚点恰一份（双向自愈：副本不落地 landed、inbox 残留被下一 turn 起点清扫）；同 step 窗口多条 FIFO 投递序、各锚点独立闭包（[inflight-broadcast-fastpath.md](contracts/inflight-broadcast-fastpath.md) §7） |
 | 顺序一致性 | team 单测 | 发言级序 = 生产序；工具单元级偏差仅限单 step 窗口（§4 披露形态） |
 | 驱动零影响 | saolei-loop 单测 | inject 不唤醒（无新 turn/whenIdle 不变）；steered/queued 计数不含快路消息 |
 | 投影行为等价 | `projects/game/agent_v2/src/session.test.ts` | 全量断言经统一流驱动通过（驱动面切换、断言不变） |

@@ -77,7 +77,7 @@
 2. **Given** planner 静止，**When** 同一播报发生，**Then** planner 照旧 pending → 下次驱动装配时 drain 消费（既有语义不变）。
 3. **Given** 终局统计播报（flow announce 活动，player 已收束非在途），**When** 播报执行，**Then** 无在途接收方、无快路，走 pending drain，现状行为完全不变。
 4. **Given** 在途成员的 next-step 边界同时有待消费的用户 steer 消息与快路广播，**When** step 认领，**Then** 两者按插入序 FIFO 认领，投影分离（steer 渲染 `user`；快路广播渲染 `user: [announcer] ...`，均为既有投影种类，零新增投影规则）。
-5. **Given** cancel 打断在途成员且快路消息残留 inbox，**When** cancel 执行，**Then** 消息要么被 landUnclaimed 先序收编为 landed（下次 turn 开启时 flush），要么锚点未消费由 pending 重建自愈重投——不丢失、不重复（双向自愈）。
+5. **Given** cancel 打断在途成员且快路消息残留 inbox，**When** cancel 执行，**Then** 快路副本不进入 landed（landUnclaimed 只收编用户消息，`team-broadcast` 残留放行给 `agent.cancel` 清 inbox）；锚点未消费 → pending 基线在该成员下次驱动装配时经 drain 重投恰一份——不丢失、不重复（自愈重投单一路径，research.md D10）。
 6. **Given** 多条插入式播报在同一 step 窗口内连续发生，**When** 在途成员推进 step，**Then** 各锚点独立闭包、FIFO 认领，无重排与重复。
 
 ---
@@ -85,8 +85,9 @@
 ### Edge Cases
 
 - **终局统计播报（无在途成员）**：发送方为非激活产出但接收方不存在 → 无快路、pending drain，现状不变（快路启用条件 = 存在当前在途成员，非"发送方身份"）。
-- **turn 收束边缘（`concludesTurn` / 模型停止）**：announce 在 turn 收束前发生 → 在途成员仍是接收方、快路成立；turn 随即收束 → 消息留存 inbox、下一 turn 边界认领（时序等价 drain，锚点闭包防重）。
-- **cancel 边缘**：`orchestrator.cancel()` 的 landUnclaimed 先序（收编 inbox 为 landed）与锚点自愈（inbox 清除 → pending 重建重投）兜底——见 US3 场景 5。
+- **turn 收束边缘（`concludesTurn` / 模型停止）**：announce 在 turn 收束前发生 → 在途成员仍是接收方、快路成立；turn 随即收束 → 消息留存 inbox、由收束 turn 的延展步认领（循环停止条件 `turnEnds && inbox.nextStep.length === 0` 强制消化 next-step 残留）——时序等价 drain，锚点闭包防重。
+- **turn 失败残留边缘**：turn 失败（非 cancel）不清 inbox（dsh-agent-loop 仅 cancel 清 pending work），快路副本残留 next-step；该成员下一次 turn 起点先把 inbox 中 `team-broadcast` 残留清扫（未认领 ⇒ 锚点未消费 ⇒ pending 派生重投恰一份），再装配新批——用户消息残留不在清扫范围（随 turn 边界照常认领，061 既有语义）。
+- **cancel 边缘**：`orchestrator.cancel()` 的 landUnclaimed 先序只收编**用户**未消费消息为 landed；快路的 `team-broadcast` 残留不落地（放行给 `agent.cancel` 清 inbox），锚点未消费由 pending 重建自愈重投恰一份——见 US3 场景 5（landed 因此只承载用户输入，可靠性单一载体是 pending）。
 - **快路注入异常**：投递面执行异常时回落 pending 基线（错误不破坏游戏流程；错误吞噬策略细节留 plan）。
 - **刷新 teardown 中的在途快路**：entry teardown 终止在途回合（aborted），快路残留随 inbox 清理，锚点未消费不产生跨生命周期重投（旧团队 pending 已随 registration dispose 清空）。
 - **announce-only 成员不是接收方**：`consumes: false` 非 relay 接收方，结构性无投递面（announcer 自己的播报不会回流给自己）。
@@ -136,7 +137,7 @@
 
 - **SC-001**: 宿主投影单路化达成且行为等价：`projects/game/agent_v2/src/` 中不再存在逐成员的 dsh 根事件订阅与 announcer 独立订阅（成员事件消费只有 team 统一面一个入口）；`projects/game/agent_v2/src/session.test.ts` 与 `projects/game/agent_v2/src/history.test.ts` 全量投影/记账断言（驱动面切换为统一流、断言不变）通过。
 - **SC-002**: announcer 特例代码消失且呈现契约保持：`announcerMemberView` 特例构造、`GetTeamMember` announcer 提前 return 分支、`announceOff` 旁路字段在代码中不存在；076 announcer 契约验收面（三成员名册、成员读取、请求侧校验、web 渲染）回归通过。
-- **SC-003**: 快路行为单测四项全过：①在途成员的下一 step 模型输入包含插入式广播（既有 `<announcer-message>` 广播格式渲染、零新增投影规则）；②同锚点恰好一次（快路认领后 pending 重建剔除）；③静止成员 pending drain 行为不变；④终局统计播报无快路、现状行为不变。
+- **SC-003**: 快路行为单测六项全过：①在途成员的下一 step 模型输入包含插入式广播（既有 `<announcer-message>` 广播格式渲染、零新增投影规则）；②同锚点恰好一次（快路认领后 pending 重建剔除）；③静止成员 pending drain 行为不变；④终局统计播报无快路、现状行为不变；⑤cancel 与 turn 失败后的恢复装配对同锚点恰一份（快路副本不落地 landed、inbox 残留被下一 turn 起点清扫——US3 场景 5）；⑥同 step 窗口多条播报 FIFO 投递序、各锚点独立闭包（US3 场景 6）。
 - **SC-004**: 跨成员顺序一致性断言通过：快路接收方 log 中共享消息相对顺序与其他成员 drain 序一致（发言级 = 生产顺序）；工具单元级偏差断言有界于单 step 窗口。
 - **SC-005**: 驱动零影响断言通过：快路注入不改变 turn 开闭与 `whenIdle` 完成判定、不计入 queued/steered 记账、不触发 flow 决策。
 - **SC-006**: agent_v2 既有大型测试全套件（`projects/game/testplan/system_test.yaml`：game-system（含 conversation/game/wiki/web 各 module）、game-stall、game-memory-down、game-disconnect，经 testplan skill 实际执行部署→测试→清理闭环）全部用例通过。

@@ -1,6 +1,6 @@
 # Data Model: 077 成员统一性补缺
 
-**Spec**: [spec.md](spec.md) | **决策依据**: [research.md](research.md) D1–D9
+**Spec**: [spec.md](spec.md) | **决策依据**: [research.md](research.md) D1–D10
 **实现锚点**: `common/js/dsh-plugins/team/src/{team,broadcast}.ts`、`common/js/dsh-plugins/saolei-loop/src/{orchestrator,agent-member,announcer}.ts`、`projects/game/agent_v2/src/{session,history}.ts`
 
 会话状态保持进程内存态（stateful + owner 亲和），本 feature 无持久化存储变更。
@@ -90,12 +90,14 @@ stateDiagram-v2
     Claimed --> Consumed: 注入落接收方 log<br/>source.messageId = 锚点（消费闭包）
     Drained --> Consumed
     Consumed --> [*]: reconcile 剔除 pending 副本<br/>（exactly-once 闭包）
-    FastDelivered --> PendingOnly: cancel 清 inbox / 注入异常<br/>（锚点未消费 → pending 自愈重投）
+    FastDelivered --> PendingOnly: cancel 清 inbox（不落地 landed）/ 注入异常<br/>（锚点未消费 → pending 自愈重投）
+    FastDelivered --> PendingOnly: turn 失败残留 → 下一 turn 起点清扫<br/>（锚点未消费 → pending 自愈重投）
 ```
 
 不变量：
 
 - **每锚点每成员恰好一次**：接收方 log 出现 `source.messageId === 锚点` 的 `user/message` 即闭包（`common/js/dsh-plugins/team/src/broadcast.ts` `consumedAnchors`）；`drained` 集合保护"已弹出未落 log"窗口（drain 路径）。
+- **单一可靠性载体（D10）**：同一 `team-broadcast` 锚点任一时刻至多存在于一个可认领位置——pending 列表是唯一可靠性载体；inbox 残留由成员 turn 起点清扫（`common/js/dsh-plugins/saolei-loop/src/agent-member.ts` `startTurn` 前置 inbox 卫生）、cancel 的 `landUnclaimed` 不收编广播（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`）——log 观测式闭包只去重跨批次重投，同批唯一性由此机械保证。
 - **pending 恒为基线**：relay 锚点追加无条件发生；快路是叠加的提前投递，任何失败自动回落基线（注入异常捕获 + warn 日志，D4）。
 - **顺序**：drain 序 = `compareUnits` 生产坐标序；快路消息落点在其生产时刻所属 step 窗口内——发言级跨成员一致；工具单元级偏差有界于单 step 窗口（D6 披露，不消除）。
 
