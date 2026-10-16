@@ -27,11 +27,13 @@
  * disconnect only detaches the stream — it MUST NOT stop the orchestration;
  * cancelling the team happens only through {@link TeamSessions.cancel}.
  *
- * The announcer member's announcements (game-over stats) are projected
- * into the merge history through the orchestrator's `announcer` read surface —
- * one `assistant/message` production becomes one
- * {@link TeamHistory.appendAnnouncement} entry and its `team_message` frame;
- * the subscription detaches with the team entry
+ * The member projections consume the team's unified member event stream — a
+ * single subscription per entry, dispatched by envelope role
+ * (specs/077-announcer-member-unification/contracts/member-event-stream.md
+ * §5): the announcer member's announcements (game-over stats) become
+ * {@link TeamHistory.appendAnnouncement} merge entries plus their
+ * `team_message` frames, and the agent members' events feed their collectors.
+ * The subscription detaches with the team entry
  * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4).
  *
  * The Context injected at construction plus the optional {@link
@@ -40,7 +42,8 @@
  */
 
 import { error, info } from "@dominion/common-js-logs";
-import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
+import type { AgentHandle } from "@deepseek-ai/dsh-agent";
+import type { TeamMemberEvent } from "@dominion/dsh-team";
 import {
   ANNOUNCER_MEMBER_ROLE,
   OrchestratorStateError,
@@ -225,8 +228,8 @@ interface TeamEntry {
   readonly history: TeamHistory;
   /** The agent-backed member runtimes (the announcer has no runtime). */
   readonly members: Readonly<Record<AgentMemberRole, MemberRuntime>>;
-  /** Detaches the announcer projection subscription (entry teardown). */
-  readonly announceOff: () => void;
+  /** Detaches the entry's single unified-stream subscription (entry teardown). */
+  readonly streamOff: () => void;
   readonly streams: Set<TurnStream>;
   readonly createTime: Date;
   updateTime: Date;
@@ -587,26 +590,10 @@ export class TeamSessions {
       await orchestrator.dispose().catch(() => undefined);
       throw new Error("team materialization invariant violated: members are missing");
     }
-    const announcer = orchestrator.announcer;
-    if (announcer === undefined) {
+    if (orchestrator.announcer === undefined) {
       await orchestrator.dispose().catch(() => undefined);
       throw new Error("team materialization invariant violated: the announcer member is missing");
     }
-    const announceOff =
-      announcer.source.subscribe?.((event) => {
-        if (event.type !== "assistant/message") {
-          return;
-        }
-        // The speech text of the production: its text blocks in order — the
-        // same projection the team's broadcast renderer applies
-        // (common/js/dsh-plugins/team/src/broadcast.ts messageBody).
-        const text = event.data.message.content
-          .map((block) => (block.type === "text" ? block.text : ""))
-          .join("\n\n");
-        if (text !== "") {
-          history.appendAnnouncement(ANNOUNCER_MEMBER_ROLE, text);
-        }
-      }) ?? (() => {});
     const members: Record<AgentMemberRole, MemberRuntime> = {
       // Member runtimes keep the composite selector for the projections; the
       // orchestrator already received the split route above
@@ -614,13 +601,27 @@ export class TeamSessions {
       player: this.createMemberRuntime(orchestrator, playerHandle, "player", player.preset, playerModel, session, history, broadcast),
       planner: this.createMemberRuntime(orchestrator, plannerHandle, "planner", planner.preset, plannerModel, session, history, broadcast),
     };
+    // The single member-event consumption path (spec FR-002): subscribe once to
+    // the orchestrator's zero-shape pass-through of the team's unified stream
+    // and dispatch by envelope role — an agent member's envelopes go to its
+    // collector, the announcer's log productions to the merge history
+    // (specs/077-announcer-member-unification/contracts/member-event-stream.md
+    // §5).
+    const byRole = members as Readonly<Record<string, MemberRuntime | undefined>>;
+    const streamOff = orchestrator.teamEvents().subscribe((envelope) => {
+      if (envelope.role === ANNOUNCER_MEMBER_ROLE) {
+        projectAnnouncement(history, envelope);
+        return;
+      }
+      byRole[envelope.role]?.collector.applyEvent(envelope);
+    });
     const entry: TeamEntry = {
       sessionName: session,
       template: parsedSession.template,
       orchestrator,
       history,
       members,
-      announceOff,
+      streamOff,
       streams,
       createTime,
       updateTime,
@@ -660,8 +661,7 @@ export class TeamSessions {
       throw new Error(`team materialization invariant violated: ${role} handle mismatch`);
     }
     const collector = new MemberCollector(
-      this.ctx,
-      handle.agent as Agent,
+      String(handle.agent.id),
       role,
       session,
       history,
@@ -712,19 +712,25 @@ export class TeamSessions {
    * Refresh teardown: settle the in-flight member turn as ABORTED (the
    * orchestrator's dispose cancellation converges to idle, and the collector
    * maps it to the terminal frame), release both members through the
-   * orchestrator (its rollback/ownership contract), then end every active
-   * stream — the old lifecycle's subscriptions die with it.
+   * orchestrator (its rollback/ownership contract), then detach the entry's
+   * single stream subscription and end every active stream — the old
+   * lifecycle's subscriptions die with it.
+   *
+   * The stream detach follows the orchestrator release, not precedes it: the
+   * ABORTED terminal frame is itself a member event of that stream, so the
+   * collector must still be subscribed while dispose converges. No old
+   * lifecycle production can reach the old projection afterwards — the team
+   * registration's member subscriptions drop inside dispose (the announcer's
+   * included), and the entry is no longer live.
    */
   private async teardownEntry(entry: TeamEntry): Promise<void> {
     entry.disposed = true;
-    // Detach the announcer projection before the orchestrator teardown: the
-    // old lifecycle's subscriptions die with it (no frame after teardown).
-    entry.announceOff();
     const active = activeAgentMember(entry);
     if (active !== null) {
       entry.members[active].collector.markOutcome({ status: "ABORTED" });
     }
     await entry.orchestrator.dispose();
+    entry.streamOff();
     entry.members.player.collector.dispose();
     entry.members.planner.collector.dispose();
     this.endStreams(entry);
@@ -1091,6 +1097,27 @@ function announcerMemberView(entry: TeamEntry): TeamMemberView {
     model: "",
     systemPrompt: "",
   };
+}
+
+/**
+ * Project one announcer member event into the merge history: the announce-only
+ * member's log-channel `assistant/message` productions become announcement
+ * entries. Its speech text is the text blocks in order — the same projection
+ * the team's broadcast renderer applies
+ * (common/js/dsh-plugins/team/src/broadcast.ts messageBody). Other channels and
+ * event types carry no announcement (specs/077-announcer-member-unification/
+ * spec.md FR-002).
+ */
+function projectAnnouncement(history: TeamHistory, envelope: TeamMemberEvent): void {
+  if (envelope.channel !== "log" || envelope.event.type !== "assistant/message") {
+    return;
+  }
+  const text = envelope.event.data.message.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("\n\n");
+  if (text !== "") {
+    history.appendAnnouncement(ANNOUNCER_MEMBER_ROLE, text);
+  }
 }
 
 function toTeamView(entry: TeamEntry): TeamView {

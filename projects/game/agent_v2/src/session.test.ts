@@ -4,7 +4,7 @@ import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
+import type { TeamEventStream, TeamHandle, TeamMemberEvent, TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
 import { DEFAULT_MODEL, LOOP_ERROR_TEXT, TeamSessionError, TeamSessions, loopErrorText } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TeamHistory, TurnStream } from "./history.js";
@@ -27,10 +27,13 @@ function messageText(message: UserMessage): string {
  * team stream lifecycle (fan-out, queued-first on the accepting stream,
  * quiescence end, disconnect detach), and the GetTeam/List projections.
  *
- * The cordis Context is a hand-rolled fake whose `on` captures listeners;
- * tests drive the dsh event sequence (running → session events → idle) by
- * emitting into the captured listeners — no module interception
- * (style/javascript.md Mock convention).
+ * The team service is a hand-rolled double (the harness's established seam —
+ * the real plugin's fan-out semantics are covered by its own unit tests):
+ * `register` asserts the scene roster and returns a handle whose stream fans
+ * every member source's productions out under the member envelope, and the
+ * member agent scopes are fake contexts the tests emit into — no module
+ * interception (style/javascript.md Mock convention;
+ * specs/077-announcer-member-unification/contracts/member-event-stream.md §5).
  */
 
 type Listener = (...args: never[]) => void;
@@ -66,8 +69,8 @@ interface MemberFake {
   readonly injections: UserMessage[];
   readonly steers: UserMessage[];
   readonly cancels: unknown[];
-  readonly statusListeners: Array<(payload: { agent: Agent; status: AgentStatus }) => void>;
-  readonly errorListeners: Array<(payload: { agent: Agent; error: unknown }) => void>;
+  /** Emit one event into this member's agent scope (the member source faces' input). */
+  emitEvent(name: string, ...args: unknown[]): void;
   settle(): void;
   /**
    * Settle the in-flight turn as failed: emit `agent/error` (an
@@ -83,7 +86,6 @@ interface Harness {
   readonly sessions: TeamSessions;
   readonly agentsCreate: ReturnType<typeof vi.fn>;
   readonly members: Map<string, MemberFake>;
-  readonly listeners: Map<string, Listener[]>;
   readonly authoring: { compose: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
   readonly listModels: ReturnType<typeof vi.fn>;
   /** The `memoryMount.build` spy (the planner capability factory). */
@@ -104,8 +106,7 @@ function fakeMember(
   emitError: (member: MemberFake, error: unknown) => void,
 ): MemberFake {
   const state = { status: "idle" as AgentStatus };
-  const statusListeners: MemberFake["statusListeners"] = [];
-  const errorListeners: MemberFake["errorListeners"] = [];
+  const listenersByEvent = new Map<string, Listener[]>();
   const idleWaiters: Array<() => void> = [];
   const steers: UserMessage[] = [];
   const nextStep: UserMessage[] = [];
@@ -126,22 +127,14 @@ function fakeMember(
     agent?: Agent;
   } = {
     on: vi.fn((name: string, listener: Listener) => {
-      if (name === "agent/error") {
-        const typed = listener as (payload: { agent: Agent; error: unknown }) => void;
-        errorListeners.push(typed);
-        return () => {
-          const index = errorListeners.indexOf(typed);
-          if (index >= 0) {
-            errorListeners.splice(index, 1);
-          }
-        };
-      }
-      const typed = listener as (payload: { agent: Agent; status: AgentStatus }) => void;
-      statusListeners.push(typed);
+      const list = listenersByEvent.get(name) ?? [];
+      list.push(listener);
+      listenersByEvent.set(name, list);
       return () => {
-        const index = statusListeners.indexOf(typed);
+        const current = listenersByEvent.get(name) ?? [];
+        const index = current.indexOf(listener);
         if (index >= 0) {
-          statusListeners.splice(index, 1);
+          current.splice(index, 1);
         }
       };
     }),
@@ -217,8 +210,11 @@ function fakeMember(
     injections: [],
     steers,
     cancels: [],
-    statusListeners,
-    errorListeners,
+    emitEvent: (name: string, ...args: unknown[]) => {
+      for (const listener of [...(listenersByEvent.get(name) ?? [])]) {
+        (listener as (...emitArgs: unknown[]) => void)(...args);
+      }
+    },
     settle: () => {
       state.status = "idle";
       emitStatus(member, "idle");
@@ -242,35 +238,19 @@ interface HarnessOptions {
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
-  const listeners = new Map<string, Listener[]>();
-  const on = vi.fn((name: string, listener: Listener) => {
-    const list = listeners.get(name) ?? [];
-    list.push(listener);
-    listeners.set(name, list);
-    return () => {
-      const current = listeners.get(name) ?? [];
-      const index = current.indexOf(listener);
-      if (index >= 0) current.splice(index, 1);
-    };
-  });
+  // The host context is a plain fake: nothing subscribes at the root — the
+  // entry consumes the team's unified stream — so `on` only satisfies the
+  // DshContext shape.
+  const on = vi.fn(() => () => {});
   const members = new Map<string, MemberFake>();
+  // The members' own scopes carry every registration (the member sources'
+  // log/live faces), so one emit dispatches to the member's listeners exactly
+  // like the dsh root event would.
   const emitStatus = (member: MemberFake, status: AgentStatus): void => {
-    for (const listener of [...member.statusListeners]) {
-      listener({ agent: member.agent, status });
-    }
-    for (const listener of [...(listeners.get("agent/status") ?? [])]) {
-      (listener as (...args: unknown[]) => void)({ agent: member.agent, status });
-    }
+    member.emitEvent("agent/status", { agent: member.agent, status });
   };
-  // Both the orchestrator (member ctx) and the history collector (host ctx)
-  // observe the failure, mirroring emitStatus's dual dispatch.
   const emitError = (member: MemberFake, error: unknown): void => {
-    for (const listener of [...member.errorListeners]) {
-      listener({ agent: member.agent, error });
-    }
-    for (const listener of [...(listeners.get("agent/error") ?? [])]) {
-      (listener as (...args: unknown[]) => void)({ agent: member.agent, error });
-    }
+    member.emitEvent("agent/error", { agent: member.agent, error });
   };
   const agentsCreate = vi.fn(async (options: CreateAgentOptions): Promise<AgentHandle> => {
     const member = fakeMember(String(options.sessionId), emitStatus, emitError);
@@ -337,7 +317,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   } as unknown as GameRuntime;
   const createGameRuntime = vi.fn(() => gameRuntime);
   const teamQueues = new Map<string, UserMessage[]>();
-  const teamRegister = vi.fn((registration: TeamRegistration) => {
+  const teamRegister = vi.fn((registration: TeamRegistration): TeamHandle => {
     // The saolei team's three-member roster: player + planner + the
     // announce-only announcer (specs/076-agent-v2-optimize/contracts/
     // announcer-member.md §1/§3).
@@ -350,7 +330,49 @@ function createHarness(options: HarnessOptions = {}): Harness {
     expect(announcer?.source.id).toBe(`${S1}/announcer`);
     expect(announcer?.source.consumes).toBe(false);
     expect(announcer?.source.sectionTarget).toBeUndefined();
-    return { dispose: vi.fn() };
+
+    // The registration's unified member event stream, fanning each member
+    // source's productions out under the member envelope — the shape the real
+    // team plugin produces
+    // (specs/077-announcer-member-unification/contracts/member-event-stream.md
+    // §2.2/§3).
+    const consumers = new Set<(event: TeamMemberEvent) => void>();
+    const sourceOffs: Array<(() => void) | undefined> = [];
+    const fanOut = (event: TeamMemberEvent): void => {
+      for (const consumer of [...consumers]) {
+        consumer(event);
+      }
+    };
+    for (const member of registration.members) {
+      sourceOffs.push(
+        member.source.subscribe?.((event) => {
+          fanOut({ role: member.role, memberId: member.source.id, channel: "log", event });
+        }),
+        member.source.live?.subscribe((event) => {
+          fanOut({ role: member.role, memberId: member.source.id, channel: "live", event });
+        }),
+      );
+    }
+    const stream: TeamEventStream = {
+      subscribe: (consumer) => {
+        consumers.add(consumer);
+        return () => {
+          consumers.delete(consumer);
+        };
+      },
+    };
+    return {
+      // Disposal drops the member subscriptions with the registration (the
+      // real team service's member teardown), so an old lifecycle's late
+      // production reaches no consumer.
+      dispose: () => {
+        for (const off of sourceOffs.splice(0)) {
+          off?.();
+        }
+        consumers.clear();
+      },
+      events: () => stream,
+    };
   });
   const fiberDispose = vi.fn(async () => {});
   const loggerError = vi.fn();
@@ -399,7 +421,6 @@ function createHarness(options: HarnessOptions = {}): Harness {
     sessions,
     agentsCreate,
     members,
-    listeners,
     authoring,
     listModels,
     memoryMount: memoryBuild,
@@ -411,12 +432,6 @@ function createHarness(options: HarnessOptions = {}): Harness {
     loggerError,
     game,
   };
-}
-
-function emit(h: Harness, name: string, ...args: unknown[]): void {
-  for (const listener of [...(h.listeners.get(name) ?? [])]) {
-    (listener as (...emitArgs: unknown[]) => void)(...args);
-  }
 }
 
 interface StreamRecorder extends TurnStream {
@@ -532,14 +547,14 @@ async function materializeDefault(h: Harness): Promise<TeamView> {
 /** Emit one member text turn's dsh event sequence and settle it via idle. */
 function driveTextTurn(h: Harness, target: MemberFake, text: string): void {
   const attemptId = `${target.id}/attempt-1`;
-  emit(h, "session/event", target.agent.session, { type: "turn/start", data: { turn: 1 } });
+  target.emitEvent("session/event", target.agent.session, { type: "turn/start", data: { turn: 1 } });
   // Live model chunks ride `agent/assistant-stream`; there is no
   // `assistant/chunk` session event (specs/070-dsh-upgrade/research.md D7 终态结论).
-  emit(h, "agent/assistant-stream", {
+  target.emitEvent("agent/assistant-stream", {
     agent: target.agent,
     frame: { type: "start", attemptId, revision: 1, turn: 1, step: 1 },
   });
-  emit(h, "agent/assistant-stream", {
+  target.emitEvent("agent/assistant-stream", {
     agent: target.agent,
     frame: {
       type: "chunk",
@@ -550,11 +565,11 @@ function driveTextTurn(h: Harness, target: MemberFake, text: string): void {
       chunk: { type: "block-start", index: 0, blockType: "text" },
     },
   });
-  emit(h, "agent/assistant-stream", {
+  target.emitEvent("agent/assistant-stream", {
     agent: target.agent,
     frame: { type: "chunk", attemptId, revision: 3, index: 1, time: 0, chunk: { type: "text-delta", index: 0, text } },
   });
-  emit(h, "agent/assistant-stream", {
+  target.emitEvent("agent/assistant-stream", {
     agent: target.agent,
     frame: {
       type: "chunk",
@@ -565,11 +580,11 @@ function driveTextTurn(h: Harness, target: MemberFake, text: string): void {
       chunk: { type: "block-end", index: 0, block: { type: "text", text } },
     },
   });
-  emit(h, "session/event", target.agent.session, {
+  target.emitEvent("session/event", target.agent.session, {
     type: "assistant/message",
     data: { turn: 1, step: 1, message: { content: [{ type: "text", text }] } },
   });
-  emit(h, "agent/assistant-stream", {
+  target.emitEvent("agent/assistant-stream", {
     agent: target.agent,
     frame: { type: "end", attemptId, index: 3, outcome: { kind: "committed", eventType: "assistant/message", seq: 1 } },
   });
@@ -1423,7 +1438,7 @@ describe("TeamSessions projections", () => {
 
     // The planner's log records a relayed player broadcast and its own reply.
     // A `user/message` event stores the complete UserMessage as its data.
-    emit(h, "session/event", planner.agent.session, {
+    planner.emitEvent("session/event", planner.agent.session, {
       type: "user/message",
       data: {
         id: "m-relay",

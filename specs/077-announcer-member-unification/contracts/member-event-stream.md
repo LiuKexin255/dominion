@@ -54,13 +54,22 @@ interface TeamEventStream {
   subscribe(consumer: (event: TeamMemberEvent) => void): () => void;
 }
 
-interface TeamMemberEvent {
-  readonly role: string;                    // 注册角色（开放字符串）
-  readonly memberId: string;                // source id
-  readonly channel: "log" | "live";         // log = 成员 log 产出；live = 成员活动事件
-  readonly event: SessionEvent | TeamLiveEvent;
-}
+type TeamMemberEvent =
+  | {
+      readonly role: string;                 // 注册角色（开放字符串）
+      readonly memberId: string;             // source id
+      readonly channel: "log";               // log = 成员 log 产出
+      readonly event: SessionEvent;
+    }
+  | {
+      readonly role: string;
+      readonly memberId: string;
+      readonly channel: "live";              // live = 成员活动事件
+      readonly event: TeamLiveEvent;
+    };
 ```
+
+信封按 `channel` 判别：两个分支字段同名同义（role/memberId/channel/event），判别联合只把 `event` 的载荷类型与通道绑定——消费者据 `channel` 收窄后无需断言即可读 `SessionEvent` 或 `TeamLiveEvent`。
 
 ## 3. 传输语义
 
@@ -76,7 +85,7 @@ interface TeamMemberEvent {
 
 ## 5. 宿主消费（agent_v2）
 
-1. **单路订阅**：entry 物化时经 `orchestrator.teamEvents()` 订阅一次，detach 存入 entry（取代 `announceOff`）；teardown 先退订再释放编排。
+1. **单路订阅**：entry 物化时经 `orchestrator.teamEvents()` 订阅一次，detach 存入 entry（取代 `announceOff`）；teardown 在编排释放**收敛之后**退订——ABORTED 终态帧本身经该统一流到达 `MemberCollector`，先退订会丢帧、违反 spec FR-003 行为等价基准（实现顺序见 `projects/game/agent_v2/src/session.ts` 的 `teardownEntry`）；编排 `dispose()` 内部丢弃团队注册的全部成员订阅（含 announcer），故旧生命周期此后没有任何产出到达旧投影。
 2. **信封分发**：按 `role` 分发到成员记账结构——agent 成员的唯一入口是 `MemberCollector.applyEvent(envelope: TeamMemberEvent): void`（log 通道 → 会话事件处理、live 通道 → 流式/状态/错误处理；既有记账机械保留，构造不再订阅根事件）；announcer 的 log 通道 `assistant/message` → `history.appendAnnouncement`（方法保留，触发源收敛）。
 3. **投影对外行为零变化**：web ChatEvent 帧序与内容、`ListTeamMessages`/`ListMemberMessages` 同源同值、成员视角消费时点、turn 收束帧、刷新/关闭 teardown 无帧泄漏（spec FR-003 行为等价基准，非逐字实现保持）。
 

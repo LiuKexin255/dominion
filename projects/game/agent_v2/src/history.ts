@@ -40,7 +40,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { Agent } from "@deepseek-ai/dsh-agent";
+import type { TeamLiveEvent, TeamMemberEvent } from "@dominion/dsh-team";
 import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { ContentBlock } from "../agent_v2_types/projects/game/ContentBlock.js";
 import type { HistoryMessage } from "../agent_v2_types/projects/game/HistoryMessage.js";
@@ -52,7 +52,6 @@ import type { ToolResultEvent } from "../agent_v2_types/projects/game/ToolResult
 import type { ToolStatus } from "../agent_v2_types/projects/game/ToolStatus.js";
 import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/TeamMessage.js";
 import type { MemberViewEvent } from "../agent_v2_types/projects/game/MemberViewEvent.js";
-import type { DshContext } from "./dsh.js";
 
 /**
  * Structural subset of a dsh `session/event` payload read by the collector.
@@ -571,12 +570,16 @@ interface ActiveMemberTurn {
 }
 
 /**
- * Session-lifetime collector for one materialized member: owns that member's
- * `session/event`, `agent/assistant-stream`, `agent/status`, and `agent/error`
- * subscriptions, writes the member-labelled stream frames and the team/member
- * history projections (shared {@link TeamHistory}), and settles member turns
- * on the idle transition — the same quiescence anchor the orchestrator's
- * switching logic uses.
+ * Session-lifetime collector for one materialized member: it consumes that
+ * member's unified-stream envelopes ({@link MemberCollector.applyEvent}) — the
+ * `log` channel (session events) and the `live` channel (agent-only activity:
+ * assistant-stream frames, status transitions, errors) — writes the
+ * member-labelled stream frames and the team/member history projections
+ * (shared {@link TeamHistory}), and settles member turns on the idle
+ * transition — the same quiescence anchor the orchestrator's switching logic
+ * uses. The host entry owns the single team-stream subscription and dispatches
+ * by envelope role (specs/077-announcer-member-unification/contracts/
+ * member-event-stream.md §5).
  */
 export class MemberCollector {
   private active: ActiveMemberTurn | undefined;
@@ -588,36 +591,45 @@ export class MemberCollector {
    * its step; entries drop on the closing `end` frame.
    */
   private readonly attempts = new Map<string, number>();
-  private readonly off: Array<() => void> = [];
 
   constructor(
-    ctx: DshContext,
-    private readonly agent: Agent,
+    /** The member's source id (an agent member's dsh session id) — the envelope's member identity. */
+    private readonly memberId: string,
     private readonly role: AgentMemberRole,
     private readonly sessionName: string,
     private readonly history: TeamHistory,
     private readonly sink: (event: ChatEvent) => void,
-  ) {
-    this.off.push(
-      ctx.on("session/event", (session, event) => {
-        this.onSessionEvent(session.id, event as unknown as DshSessionEvent);
-      }),
-    );
-    this.off.push(
-      ctx.on("agent/assistant-stream", (payload) => {
-        this.onAssistantStream(payload.agent, payload.frame);
-      }),
-    );
-    this.off.push(
-      ctx.on("agent/status", (payload) => {
-        this.onStatus(payload);
-      }),
-    );
-    this.off.push(
-      ctx.on("agent/error", (payload) => {
-        this.onError(payload);
-      }),
-    );
+  ) {}
+
+  /**
+   * The member's only production entry: one envelope of the team's unified
+   * member event stream (specs/077-announcer-member-unification/contracts/
+   * member-event-stream.md §2.2/§5). The host entry dispatches by role; this
+   * entry ignores an envelope naming another member (a wiring error, not this
+   * member's production) and dispatches by channel.
+   */
+  applyEvent(envelope: TeamMemberEvent): void {
+    if (envelope.memberId !== this.memberId) {
+      return;
+    }
+    if (envelope.channel === "log") {
+      this.onSessionEvent(envelope.event as unknown as DshSessionEvent);
+      return;
+    }
+    this.onLiveEvent(envelope.event);
+  }
+
+  /** One live-channel event: the agent-only activity the member reports. */
+  private onLiveEvent(event: TeamLiveEvent): void {
+    if (event.kind === "assistant-stream") {
+      this.onAssistantStream(event.frame);
+      return;
+    }
+    if (event.kind === "status") {
+      this.onStatus(event.status);
+      return;
+    }
+    this.onError(event.error);
   }
 
   /**
@@ -638,20 +650,14 @@ export class MemberCollector {
     this.pendingOutcome = outcome;
   }
 
-  /** Unsubscribe the session-lifetime listeners (team teardown). */
+  /** Release the member's turn state (team teardown). */
   dispose(): void {
-    for (const off of this.off) {
-      off();
-    }
-    this.off.length = 0;
     this.active = undefined;
+    this.pendingOutcome = undefined;
     this.attempts.clear();
   }
 
-  private onSessionEvent(dshSessionId: string, event: DshSessionEvent): void {
-    if (dshSessionId !== this.agent.session.id) {
-      return;
-    }
+  private onSessionEvent(event: DshSessionEvent): void {
     if (event.type === "user/message") {
       // Member-view projection only: the user input or a relayed broadcast
       // enters this member's view exactly when the orchestrator drives it
@@ -722,18 +728,14 @@ export class MemberCollector {
   }
 
   /**
-   * Handle one live `agent/assistant-stream` publication for this member.
-   * The opening `start` frame declares the attempt's step and resets the
+   * Handle one live `agent/assistant-stream` publication for this member. The
+   * opening `start` frame declares the attempt's step and resets the
    * step-local table at a step boundary; each `chunk` frame then drives the
-   * existing chunk→ChatEvent mapping with that step. Other members'
-   * publications are ignored (the collector subscribes at the root context
-   * and filters by agent identity, the same contract as `agent/status`).
+   * existing chunk→ChatEvent mapping with that step. The envelope names this
+   * member, so no identity filter is needed here.
    */
-  private onAssistantStream(
-    agent: Agent | undefined,
-    frame: DshAssistantStreamFrame | undefined,
-  ): void {
-    if (agent !== this.agent || frame?.attemptId === undefined) {
+  private onAssistantStream(frame: DshAssistantStreamFrame | undefined): void {
+    if (frame?.attemptId === undefined) {
       return;
     }
     if (frame.type === "start") {
@@ -859,15 +861,12 @@ export class MemberCollector {
     return active;
   }
 
-  private onStatus(payload: { agent?: Agent; status?: string }): void {
-    if (payload.agent !== this.agent) {
-      return;
-    }
-    if (payload.status === "running") {
+  private onStatus(status: string): void {
+    if (status === "running") {
       this.ensureActive();
       return;
     }
-    if (payload.status !== "idle" || this.active === undefined) {
+    if (status !== "idle" || this.active === undefined) {
       return;
     }
     const active = this.active;
@@ -902,11 +901,8 @@ export class MemberCollector {
     });
   }
 
-  private onError(payload: { agent?: Agent; error?: unknown }): void {
-    if (payload.agent !== this.agent) {
-      return;
-    }
-    this.recordFailure(toFailure(payload.error));
+  private onError(error: unknown): void {
+    this.recordFailure(toFailure(error));
   }
 
   private recordFailure(failure: DshLlmFailureView | undefined): void {

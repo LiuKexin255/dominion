@@ -41,7 +41,11 @@ import {
   TEAM_SECTION_ORDER,
   Team,
 } from "./team.js";
-import type { TeamMemberSource } from "./team.js";
+import type {
+  TeamHandle,
+  TeamMemberEvent,
+  TeamMemberSource,
+} from "./team.js";
 
 interface SectionRecord {
   readonly name: string;
@@ -52,6 +56,9 @@ interface SectionRecord {
 
 type Listener = (session: { id: unknown }, event: SessionEvent) => void;
 
+/** One live-event listener the agent adapter registered (`agent/*` events). */
+type LiveListener = (payload: unknown) => void;
+
 interface FakeMember {
   readonly id: ReturnType<typeof SessionId>;
   readonly agent: Agent;
@@ -60,6 +67,8 @@ interface FakeMember {
   readonly events: SessionEvent[];
   readonly sections: SectionRecord[];
   readonly listeners: Listener[];
+  /** The live-face listeners by event name (agent/assistant-stream | agent/status | agent/error). */
+  readonly live: Map<string, LiveListener[]>;
   readonly offs: Array<ReturnType<typeof vi.fn>>;
 }
 
@@ -68,6 +77,7 @@ function createMember(name: string): FakeMember {
   const events: SessionEvent[] = [];
   const sections: SectionRecord[] = [];
   const listeners: Listener[] = [];
+  const live = new Map<string, LiveListener[]>();
   const offs: Array<ReturnType<typeof vi.fn>> = [];
   const ctx = {
     systemPrompt: {
@@ -77,12 +87,28 @@ function createMember(name: string): FakeMember {
         return dispose;
       }),
     },
-    on: vi.fn((_name: string, listener: Listener) => {
-      listeners.push(listener);
+    on: vi.fn((event: string, listener: Listener | LiveListener) => {
+      if (event === "session/event") {
+        const typed = listener as Listener;
+        listeners.push(typed);
+        const off = vi.fn(() => {
+          const index = listeners.indexOf(typed);
+          if (index >= 0) {
+            listeners.splice(index, 1);
+          }
+        });
+        offs.push(off);
+        return off;
+      }
+      const typed = listener as LiveListener;
+      const list = live.get(event) ?? [];
+      list.push(typed);
+      live.set(event, list);
       const off = vi.fn(() => {
-        const index = listeners.indexOf(listener);
+        const current = live.get(event) ?? [];
+        const index = current.indexOf(typed);
         if (index >= 0) {
-          listeners.splice(index, 1);
+          current.splice(index, 1);
         }
       });
       offs.push(off);
@@ -100,6 +126,7 @@ function createMember(name: string): FakeMember {
     events,
     sections,
     listeners,
+    live,
     offs,
   };
 }
@@ -236,6 +263,28 @@ function emit(member: FakeMember, event: SessionEvent): void {
 /** Push into the log only (a relay the subscription never saw). */
 function append(member: FakeMember, event: SessionEvent): void {
   member.events.push(event);
+}
+
+/**
+ * Push one live activity event through the member's agent-scope live face, as
+ * the dsh root event would reach the agent member's adapter.
+ */
+function emitLive(member: FakeMember, name: string, payload: unknown): void {
+  for (const listener of [...(member.live.get(name) ?? [])]) {
+    listener(payload);
+  }
+}
+
+/**
+ * Capture the envelopes one registration's unified member event stream
+ * delivers (contracts/member-event-stream.md §6 acceptance face).
+ */
+function captureStream(handle: TeamHandle): TeamMemberEvent[] {
+  const seen: TeamMemberEvent[] = [];
+  handle.events().subscribe((event) => {
+    seen.push(event);
+  });
+  return seen;
 }
 
 /** A speech production event plus its log-only append. */
@@ -824,5 +873,182 @@ describe("member-source interface", () => {
       ],
     });
     expect(team.drain(system.source)).toEqual([]);
+  });
+});
+
+describe("TeamHandle.events (unified member event stream)", () => {
+  const SESSION = "templates/saolei/sessions/s1";
+  const ANNOUNCER_ID = `${SESSION}/announcer`;
+
+  it("annotates every production with its registration role, member id and channel", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: announcer.source, role: "announcer", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    const speech = speechEvent("hello");
+    emit(player, speech.event);
+    emitSource(announcer, speechEvent("本局游戏结束").event);
+    const frame = { type: "chunk", attemptId: "attempt-1", index: 0 };
+    emitLive(player, "agent/status", { agent: player.agent, status: "running" });
+    emitLive(player, "agent/assistant-stream", { agent: player.agent, frame });
+    emitLive(player, "agent/error", { agent: player.agent, error: "boom" });
+
+    expect(
+      seen.map((envelope) => [envelope.role, envelope.memberId, envelope.channel]),
+    ).toEqual([
+      ["player", String(player.id), "log"],
+      ["announcer", ANNOUNCER_ID, "log"],
+      ["player", String(player.id), "live"],
+      ["player", String(player.id), "live"],
+      ["player", String(player.id), "live"],
+    ]);
+    // The log channel carries the very session event; the live channel the
+    // agent activity event with the agent identity stripped (member ownership
+    // rides the envelope — contracts/member-event-stream.md §2.1).
+    expect(seen[0]?.event).toBe(speech.event);
+    expect(seen[2]?.event).toEqual({ kind: "status", status: "running" });
+    expect(seen[3]?.event).toEqual({ kind: "assistant-stream", frame });
+    expect(seen[4]?.event).toEqual({ kind: "error", error: "boom" });
+  });
+
+  it("feeds the log channel from the relay's own subscription: same events, same order", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    const first = speechEvent("one");
+    const call = toolCallEvent("call-1", "saolei_operate", '{"x":1}');
+    const result = toolResultEvent("call-1", "clicked");
+    const second = speechEvent("two");
+    emit(player, first.event);
+    emit(player, call);
+    emit(player, result);
+    emit(player, second.event);
+
+    // One production source, two consumers: the stream saw the very events the
+    // relay consumed, in the same order — including the tool call, which the
+    // relay only pairs transiently (contract §3.1).
+    expect(seen.map((envelope) => envelope.event)).toEqual([
+      first.event,
+      call,
+      result,
+      second.event,
+    ]);
+
+    // The relay's consumer renders the same productions in the same order.
+    const view = team.drain(planner.source);
+    expect(
+      view.map((message) => (message.source as { messageId: string }).messageId),
+    ).toEqual([String(first.message.id), "call-1", String(second.message.id)]);
+  });
+
+  it("produces only log-channel events for a member without a live face", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    expect(announcer.source.live).toBeUndefined();
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: announcer.source, role: "announcer", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    emitSource(announcer, speechEvent("本局游戏结束").event);
+    emitSource(announcer, speechEvent("下一局统计").event);
+
+    expect(seen.map((envelope) => envelope.channel)).toEqual(["log", "log"]);
+    expect(seen.every((envelope) => envelope.role === "announcer")).toBe(true);
+  });
+
+  it("ends with the registration: nothing after member removal or team dispose", () => {
+    const { ctx, team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    emit(player, speechEvent("one").event);
+    expect(seen).toHaveLength(1);
+
+    // Member removal (agent disposal) ends that member's stream.
+    ctx.emit("agent/disposed", { agent: player.agent });
+    emit(player, speechEvent("two").event);
+    emitLive(player, "agent/status", { agent: player.agent, status: "running" });
+    expect(seen).toHaveLength(1);
+
+    // The registration dispose ends the remaining member's stream too.
+    handle.dispose();
+    emit(planner, speechEvent("three").event);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("keeps the stream across an idempotent re-registration of the same members", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const members = [{ source: player.source, role: "player", summary: "a" }];
+    const first = team.register({ goal: "g", members });
+    const seen = captureStream(first);
+
+    emit(player, speechEvent("one").event);
+    const second = team.register({ goal: "g", members });
+    emit(player, speechEvent("two").event);
+
+    expect(seen.map((envelope) => envelope.channel)).toEqual(["log", "log"]);
+    second.dispose();
+  });
+
+  it("forwards only this agent's activity events and unwinds the live subscriptions", () => {
+    const player = createMember(`${SESSION}/player`);
+    const other = createMember(`${SESSION}/planner`);
+    const live = player.source.live;
+    if (live === undefined) {
+      throw new Error("agentMemberSource must implement the live face");
+    }
+    const seen: unknown[] = [];
+    const off = live.subscribe((event) => {
+      seen.push(event);
+    });
+
+    const frame = { type: "end", attemptId: "attempt-1", index: 2 };
+    emitLive(player, "agent/status", { agent: player.agent, status: "running" });
+    emitLive(player, "agent/status", { agent: other.agent, status: "idle" });
+    emitLive(player, "agent/assistant-stream", { agent: player.agent, frame });
+    emitLive(player, "agent/error", { agent: player.agent, error: "boom" });
+
+    expect(seen).toEqual([
+      { kind: "status", status: "running" },
+      { kind: "assistant-stream", frame },
+      { kind: "error", error: "boom" },
+    ]);
+
+    off();
+    expect(player.live.get("agent/status")).toHaveLength(0);
+    expect(player.live.get("agent/assistant-stream")).toHaveLength(0);
+    expect(player.live.get("agent/error")).toHaveLength(0);
   });
 });

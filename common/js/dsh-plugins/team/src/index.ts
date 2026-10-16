@@ -14,7 +14,10 @@ export { agentMemberSource, Team as default, Team } from "./team.js";
 export { TEAM_SECTION_NAME, TEAM_SECTION_ORDER } from "./team.js";
 export type {
   TeamBroadcastSource,
+  TeamEventStream,
   TeamHandle,
+  TeamLiveEvent,
+  TeamMemberEvent,
   TeamMemberRegistration,
   TeamMemberSource,
   TeamRegistration,

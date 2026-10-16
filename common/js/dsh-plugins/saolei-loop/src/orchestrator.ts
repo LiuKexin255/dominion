@@ -45,6 +45,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { agentMemberSource } from "@dominion/dsh-team";
 import type {
+  TeamEventStream,
   TeamHandle,
   TeamMemberSource,
   TeamRegistration,
@@ -700,6 +701,29 @@ export class TeamOrchestrator {
   /** The live member handle (the system-prompt read surface of specs/059-agent-v2-team-mode/tasks.md T032), or undefined. */
   member(role: AgentTeamRole): AgentHandle | undefined {
     return this.members?.[role].handle;
+  }
+
+  /**
+   * The team-scoped unified member event stream (a zero-shape pass-through:
+   * the orchestration returns the team plugin's own stream object, so a
+   * consumer never depends on a per-scenario event shape and a future loop
+   * passes its stream through the same one-line read face). Contract:
+   * specs/077-announcer-member-unification/contracts/member-event-stream.md §4.
+   * Before materialization and after disposal the existing state-error
+   * semantics apply.
+   */
+  teamEvents(): TeamEventStream {
+    if (this.disposed) {
+      throw new OrchestratorStateError("DISPOSED", "orchestrator is disposed");
+    }
+    const registration = this.teamRegistration;
+    if (registration === null) {
+      throw new OrchestratorStateError(
+        "UNMATERIALIZED",
+        "team is not materialized",
+      );
+    }
+    return registration.events();
   }
 
   /**

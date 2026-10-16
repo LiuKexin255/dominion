@@ -34,6 +34,7 @@ import { createUserMessage, LlmError, MessageId } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type {
+  TeamEventStream,
   TeamHandle,
   TeamMemberSource,
   TeamRegistration,
@@ -338,20 +339,24 @@ interface FakeTeam {
   readonly queues: Map<string, UserMessage[]>;
   readonly registrations: TeamRegistration[];
   readonly registrationDispose: ReturnType<typeof vi.fn>;
+  /** The stable stream object every registration handle returns (pass-through assertion). */
+  readonly stream: TeamEventStream;
 }
 
 function fakeTeam(): FakeTeam {
   const queues = new Map<string, UserMessage[]>();
   const registrations: TeamRegistration[] = [];
   const registrationDispose = vi.fn();
+  const stream: TeamEventStream = { subscribe: vi.fn(() => () => {}) };
   return {
     queues,
     registrations,
     registrationDispose,
+    stream,
     seam: {
       register: vi.fn((registration: TeamRegistration): TeamHandle => {
         registrations.push(registration);
-        return { dispose: registrationDispose };
+        return { dispose: registrationDispose, events: () => stream };
       }),
       drain: vi.fn((member: TeamMemberSource): UserMessage[] => {
         return queues.get(member.id)?.splice(0) ?? [];
@@ -863,6 +868,42 @@ describe("TeamOrchestrator.materialize", () => {
     await h.orchestrator.dispose();
     expect(() => h.orchestrator.submit("x")).toThrow(/disposed/);
     expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
+  });
+});
+
+describe("TeamOrchestrator.teamEvents", () => {
+  it("passes the team registration's stream through unchanged and keeps the state-error semantics", async () => {
+    const h = createHarness();
+
+    const before = (() => {
+      try {
+        h.orchestrator.teamEvents();
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    })();
+    expect(before).toBeInstanceOf(OrchestratorStateError);
+    expect((before as OrchestratorStateError).code).toBe("UNMATERIALIZED");
+
+    await h.orchestrator.materialize(teamOptions());
+    // Zero-shape pass-through: the read face returns the team plugin's own
+    // stream object, not a scenario-shaped copy
+    // (specs/077-announcer-member-unification/contracts/member-event-stream.md
+    // §4).
+    expect(h.orchestrator.teamEvents()).toBe(h.team.stream);
+
+    await h.orchestrator.dispose();
+    const after = (() => {
+      try {
+        h.orchestrator.teamEvents();
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    })();
+    expect(after).toBeInstanceOf(OrchestratorStateError);
+    expect((after as OrchestratorStateError).code).toBe("DISPOSED");
   });
 });
 

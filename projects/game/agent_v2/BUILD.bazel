@@ -81,6 +81,12 @@ ts_project(
         ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-llm-glm",
         ":node_modules/@dominion/dsh-saolei-loop",
+        # The team plugin's unified member event stream types (TeamMemberEvent /
+        # TeamLiveEvent) the history collector and the session layer consume
+        # (specs/077-announcer-member-unification/contracts/
+        # member-event-stream.md §2/§5). Type-only: the plugin row is linked at
+        # runtime by the composition.
+        ":node_modules/@dominion/dsh-team",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
@@ -248,6 +254,7 @@ vitest_test(
         ":node_modules/@dominion/dsh-llm-glm",
         ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@dominion/dsh-saolei-loop",
+        ":node_modules/@dominion/dsh-team",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",

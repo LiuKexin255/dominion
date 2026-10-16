@@ -43,17 +43,26 @@ agent 身份由适配器过滤剥离——成员归属由信封（1.3）承载�
 ### 1.3 TeamMemberEvent（统一流信封）与 TeamEventStream
 
 ```ts
-interface TeamMemberEvent {
-  readonly role: string;     // 注册角色（开放字符串：player/planner/announcer/未来场景角色）
-  readonly memberId: string; // source id
-  readonly channel: "log" | "live";
-  readonly event: SessionEvent | TeamLiveEvent;
-}
+type TeamMemberEvent =
+  | {
+      readonly role: string;     // 注册角色（开放字符串：player/planner/announcer/未来场景角色）
+      readonly memberId: string; // source id
+      readonly channel: "log";
+      readonly event: SessionEvent;
+    }
+  | {
+      readonly role: string;
+      readonly memberId: string;
+      readonly channel: "live";
+      readonly event: TeamLiveEvent;
+    };
 
 interface TeamEventStream {
   subscribe(consumer: (event: TeamMemberEvent) => void): () => void;
 }
 ```
+
+信封按 `channel` 判别：两分支字段同名同义（role/memberId/channel/event），判别联合把 `event` 的载荷类型与通道绑定——消费者据 `channel` 收窄后无需断言即可读 `SessionEvent` 或 `TeamLiveEvent`。
 
 - "log" 通道与 relay **同源**：team 既有 source 订阅扇出两路消费者（relay + 流），同一事件、同一序。
 - "live" 通道：source live 面事件标注转发；无 live 面的成员（announcer）只产生 log 通道事件。

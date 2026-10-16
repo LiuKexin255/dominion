@@ -22,11 +22,24 @@
  * anchors`, which makes the list self-healing after a missed relay and
  * exactly-once by construction. An announce-only member (`consumes: false`)
  * is never a receiver: no relay, no pending list, not drainable.
+ *
+ * The registration also exposes the team-scoped unified member event stream
+ * ({@link TeamHandle.events}): the member's `subscribe` face — the very
+ * subscription the relay consumes — is the single production source of the
+ * `log` channel, and the optional `live` face carries the agent-only activity
+ * events; every production reaches the stream consumers under its member
+ * envelope ({@link TeamMemberEvent}). The team never interprets the events, so
+ * the member abstraction's dependency inversion is unchanged. Contract:
+ * specs/077-announcer-member-unification/contracts/member-event-stream.md.
  */
 
 import { Service } from "@deepseek-ai/cordis";
 import type { Context } from "@deepseek-ai/cordis";
-import type { AgentHandle } from "@deepseek-ai/dsh-agent";
+import type {
+  AgentHandle,
+  AgentStatus,
+  AssistantStreamFrame,
+} from "@deepseek-ai/dsh-agent";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 
@@ -62,6 +75,22 @@ export interface TeamSectionTarget {
 }
 
 /**
+ * The member's live activity event — the `live` channel's payload
+ * (specs/077-announcer-member-unification/contracts/member-event-stream.md
+ * §2.1). It belongs to the agent adapter layer beside {@link agentMemberSource}:
+ * the team member abstraction neither produces nor interprets it (the events
+ * are dsh agent vocabulary), it only labels and forwards them. A member
+ * without a `live` face produces log-channel events only.
+ */
+export type TeamLiveEvent =
+  | {
+      readonly kind: "assistant-stream";
+      readonly frame: AssistantStreamFrame;
+    }
+  | { readonly kind: "status"; readonly status: AgentStatus }
+  | { readonly kind: "error"; readonly error: unknown };
+
+/**
  * The member message-source face — the dependency-inversion point of the
  * group-chat primitive (specs/065-agent-v2-team-refine/contracts/
  * team-member-source.md §1). Team only knows "a member is a message source":
@@ -80,6 +109,14 @@ export interface TeamMemberSource {
    * optimization and the projection subscription face.
    */
   subscribe?(onEvent: (event: SessionEvent) => void): () => void;
+  /**
+   * Activity notification (optional): the member's agent-only live events,
+   * implemented by the agent adapter. Absent on an announce-only member, whose
+   * productions are all log events (contract §2.1).
+   */
+  readonly live?: {
+    subscribe(onEvent: (event: TeamLiveEvent) => void): () => void;
+  };
   /** The team-section injection target (optional); absent = no prompt injection. */
   readonly sectionTarget?: TeamSectionTarget;
   /**
@@ -90,11 +127,39 @@ export interface TeamMemberSource {
 }
 
 /**
+ * One unified-stream envelope (specs/077-announcer-member-unification/
+ * contracts/member-event-stream.md §2.2): the member's registration role, its
+ * stable source id, the production channel and the event itself. Member
+ * ownership lives on the envelope, never on the event payload (the agent
+ * adapter strips the agent identity); the role is an open string, so future
+ * scene roles flow through unchanged.
+ */
+export type TeamMemberEvent =
+  | {
+      readonly role: string;
+      readonly memberId: string;
+      readonly channel: "log";
+      readonly event: SessionEvent;
+    }
+  | {
+      readonly role: string;
+      readonly memberId: string;
+      readonly channel: "live";
+      readonly event: TeamLiveEvent;
+    };
+
+/** The team-scoped unified member event stream (the {@link TeamHandle.events} face). */
+export interface TeamEventStream {
+  subscribe(consumer: (event: TeamMemberEvent) => void): () => void;
+}
+
+/**
  * Adapt an agent member to {@link TeamMemberSource} — the existing
  * agent-member semantics, unchanged: id/events read the agent's own session
- * log, the subscription filters to this member's session events, the section
- * target delegates to the agent scope's prompt service, and the member
- * consumes broadcasts.
+ * log, the subscription filters to this member's session events, the live
+ * face forwards this agent's activity events (identity stripped — the member
+ * ownership rides the stream envelope), the section target delegates to the
+ * agent scope's prompt service, and the member consumes broadcasts.
  */
 export function agentMemberSource(handle: AgentHandle): TeamMemberSource {
   const agent = handle.agent;
@@ -113,6 +178,33 @@ export function agentMemberSource(handle: AgentHandle): TeamMemberSource {
           onEvent(event);
         }
       });
+    },
+    live: {
+      subscribe(onEvent) {
+        // Scope-filtered dispatch already narrows to this agent; the identity
+        // guard matches the session/event subscription's filter and keeps the
+        // adapter's declared contract ("filtered to this member") explicit.
+        const offStream = agent.ctx.on("agent/assistant-stream", (payload) => {
+          if (payload.agent === agent) {
+            onEvent({ kind: "assistant-stream", frame: payload.frame });
+          }
+        });
+        const offStatus = agent.ctx.on("agent/status", (payload) => {
+          if (payload.agent === agent) {
+            onEvent({ kind: "status", status: payload.status });
+          }
+        });
+        const offError = agent.ctx.on("agent/error", (payload) => {
+          if (payload.agent === agent) {
+            onEvent({ kind: "error", error: payload.error });
+          }
+        });
+        return () => {
+          offStream();
+          offStatus();
+          offError();
+        };
+      },
     },
     sectionTarget: {
       section: (spec) => agent.ctx.systemPrompt.section(spec),
@@ -142,6 +234,14 @@ export interface TeamRegistration {
 /** The registration's teardown capability (idempotent). */
 export interface TeamHandle {
   dispose(): void;
+  /**
+   * This registration's unified member event stream (contract §2.2): every
+   * registered member's productions, labelled with the member envelope. The
+   * stream survives an idempotent re-registration of the same members and ends
+   * with the registration — subscribers detach themselves (the host entry's
+   * teardown).
+   */
+  events(): TeamEventStream;
 }
 
 /** One pending entry: an anchor plus the sender identity needed to read it back. */
@@ -157,6 +257,7 @@ interface MemberState {
   sectionText: string;
   sectionOff: () => void;
   eventOff: () => void;
+  liveOff: () => void;
   pending: PendingUnit[];
   /** Anchors popped by drain but not yet observed in this member's log. */
   drained: Set<string>;
@@ -168,6 +269,8 @@ interface TeamState {
   goal: string;
   context?: string;
   members: Map<string, MemberState>;
+  /** The unified-stream consumers of this member set (shared by every handle of the same team). */
+  consumers: Set<(event: TeamMemberEvent) => void>;
 }
 
 declare module "@deepseek-ai/cordis" {
@@ -252,7 +355,10 @@ export class Team extends Service {
     for (const member of team.members.values()) {
       this.reconcile(member);
     }
-    return { dispose: () => this.disposeTeam(team) };
+    return {
+      dispose: () => this.disposeTeam(team),
+      events: () => this.streamOf(team),
+    };
   }
 
   /**
@@ -325,7 +431,7 @@ export class Team extends Service {
       }
       found = team;
     }
-    return found ?? { goal: "", members: new Map() };
+    return found ?? { goal: "", members: new Map(), consumers: new Set() };
   }
 
   /** Create a member's effects and buffer; the section is the shared team text. */
@@ -338,6 +444,7 @@ export class Team extends Service {
       sectionText,
       sectionOff: () => {},
       eventOff: () => {},
+      liveOff: () => {},
       pending: [],
       drained: new Set(),
       pendingCalls: new Map(),
@@ -346,6 +453,17 @@ export class Team extends Service {
     state.eventOff =
       registration.source.subscribe?.((event) => {
         this.onMemberEvent(state, registration.source, event);
+        this.notifyStream(state, registration.source, {
+          channel: "log",
+          event,
+        });
+      }) ?? (() => {});
+    state.liveOff =
+      registration.source.live?.subscribe((event) => {
+        this.notifyStream(state, registration.source, {
+          channel: "live",
+          event,
+        });
       }) ?? (() => {});
     return state;
   }
@@ -394,6 +512,7 @@ export class Team extends Service {
     team.members.delete(id);
     state.sectionOff();
     state.eventOff();
+    state.liveOff();
     state.pending = [];
     state.drained.clear();
     state.pendingCalls.clear();
@@ -402,6 +521,53 @@ export class Team extends Service {
   private disposeTeam(team: TeamState): void {
     for (const id of [...team.members.keys()]) {
       this.dropMember(id);
+    }
+    // The stream ends with the registration: no member remains to produce
+    // (contract §3.4), and the consumers release through their own detach.
+    team.consumers.clear();
+  }
+
+  /**
+   * The unified-stream subscription face of one team: consumers join this
+   * member set's consumer set, so a repeated `register` of the same members
+   * (a refresh) does not interrupt an existing subscriber.
+   */
+  private streamOf(team: TeamState): TeamEventStream {
+    return {
+      subscribe: (consumer) => {
+        team.consumers.add(consumer);
+        return () => {
+          team.consumers.delete(consumer);
+        };
+      },
+    };
+  }
+
+  /**
+   * Deliver one member production to the stream consumers under its envelope.
+   * The production's member must still be registered (removal/dispose ends the
+   * member's stream); the consumers are notified from a snapshot, so a
+   * subscriber detaching inside a notification does not disturb the pass.
+   */
+  private notifyStream(
+    state: MemberState,
+    source: TeamMemberSource,
+    production:
+      | { readonly channel: "log"; readonly event: SessionEvent }
+      | { readonly channel: "live"; readonly event: TeamLiveEvent },
+  ): void {
+    const id = source.id;
+    const team = this.byMember.get(id);
+    if (team === undefined || team.members.get(id) !== state) {
+      return;
+    }
+    const role = state.registration.role;
+    const envelope: TeamMemberEvent =
+      production.channel === "log"
+        ? { role, memberId: id, channel: "log", event: production.event }
+        : { role, memberId: id, channel: "live", event: production.event };
+    for (const consumer of [...team.consumers]) {
+      consumer(envelope);
     }
   }
 
