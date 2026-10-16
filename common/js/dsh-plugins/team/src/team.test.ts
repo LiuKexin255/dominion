@@ -1300,6 +1300,64 @@ describe("Team relay in-flight fast path (specs/077-announcer-member-unification
     expect(team.drain(player.source)).toHaveLength(1);
     expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
   });
+
+  it("delivers same-step insertions in production order and closes each anchor independently", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const observer = createMember(`${SESSION}/observer`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    const delivered: UserMessage[] = [];
+    attachDelivery(planner.source, (message) => {
+      delivered.push(message);
+    });
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+        { source: observer.source, role: "observer", summary: "c" },
+        {
+          source: announcer.source,
+          role: "announcer",
+          summary: "终局播报对局结果与操作统计",
+        },
+      ],
+    });
+
+    // Two insertions produced back to back inside one step window of the
+    // receiver's in-flight turn (US3 scenario 6).
+    const first = speechEvent("hook 播报一");
+    const second = speechEvent("hook 播报二");
+    emitSource(announcer, first.event);
+    emitSource(announcer, second.event);
+
+    // FIFO in production order, with distinct anchors.
+    expect(delivered).toHaveLength(2);
+    expect(anchorOf(delivered[0]!)).toBe(String(first.message.id));
+    expect(anchorOf(delivered[1]!)).toBe(String(second.message.id));
+    expect(anchorOf(delivered[0]!)).not.toBe(anchorOf(delivered[1]!));
+
+    // Field-for-field equal to the drain construction (the face-less observer
+    // owns the single construction path), and both anchors stay pending on the
+    // baseline.
+    const drained = team.drain(observer.source);
+    expect(drained).toHaveLength(2);
+    expect(comparable(delivered[0]!)).toEqual(comparable(drained[0]!));
+    expect(comparable(delivered[1]!)).toEqual(comparable(drained[1]!));
+    expect(pendingOf(team, String(planner.id))).toHaveLength(2);
+
+    // The receiver claims the first anchor (it lands in its log), so the next
+    // drain's reconcile drops exactly that anchor while the other survives on
+    // its own — each anchor closes independently, no reorder and no duplicate.
+    consume(planner, delivered[0]!);
+    const view = team.drain(planner.source);
+    expect(view.map(anchorOf)).toEqual([String(second.message.id)]);
+    expect(sharedAnchors(planner)).toEqual([String(first.message.id)]);
+    expect(pendingOf(team, String(planner.id))).toEqual([]);
+    // The claimed anchor never returns on a later drain.
+    expect(team.drain(planner.source)).toEqual([]);
+  });
 });
 
 describe("in-flight fast-path order consistency (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §4)", () => {

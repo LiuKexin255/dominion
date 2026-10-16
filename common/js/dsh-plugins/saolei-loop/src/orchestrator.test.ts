@@ -161,7 +161,8 @@ interface FakeMember {
 /**
  * One agent double: `followup` records + flips running (its message is claimed
  * by the turn, so it never lingers in the inbox), `inject`/`steer` record into
- * the next-step inbox (pending until cancelled — the landed source),
+ * the next-step inbox (pending until cancelled/removed — the landed source and
+ * the broadcast residue), `remove` is the structural `Inbox.remove` face,
  * `cancel` records + clears the inbox + (like the real loop's converging
  * abort) emits idle, and `settle()` completes a turn. `whenIdle()` resolves on
  * the next idle transition, modelling the official loop's whole-agent
@@ -249,6 +250,21 @@ function createFakeMember(name: string): FakeMember {
       },
       get hasPending() {
         return nextStep.length > 0 || nextTurn.length > 0;
+      },
+      // The structural `Inbox.remove` face the member adapter's turn-start
+      // hygiene calls (an ordinary removal = a durable cancellation,
+      // https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md).
+      remove: (messageId: MessageId) => {
+        for (const list of [nextStep, nextTurn]) {
+          const index = list.findIndex(
+            (message) => String(message.id) === String(messageId),
+          );
+          if (index >= 0) {
+            list.splice(index, 1);
+            return true;
+          }
+        }
+        return false;
       },
     },
     inject: vi.fn((message: UserMessage) => {
@@ -566,6 +582,18 @@ function member(h: Harness, id: string): FakeMember {
   const found = h.members.get(id);
   if (found === undefined) {
     throw new Error(`fake member "${id}" is not materialized`);
+  }
+  return found;
+}
+
+/** The registered member entry of one role (materialization has run). */
+function registeredMember(h: Harness, role: string) {
+  const registration = h.team.registrations[0] as TeamRegistration;
+  const found = registration.members.find(
+    (candidate) => candidate.role === role,
+  );
+  if (found === undefined) {
+    throw new Error(`the "${role}" member is not registered`);
   }
   return found;
 }
@@ -908,16 +936,6 @@ describe("TeamOrchestrator.teamEvents", () => {
 });
 
 describe("TeamOrchestrator member delivery face (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §2.1)", () => {
-  /** The registered member entry of one role. */
-  function registeredMember(h: Harness, role: string) {
-    const registration = h.team.registrations[0] as TeamRegistration;
-    const found = registration.members.find((member) => member.role === role);
-    if (found === undefined) {
-      throw new Error(`the "${role}" member is not registered`);
-    }
-    return found;
-  }
-
   it("supplies the face on the agent members' sources and not on the announcer's", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
@@ -976,6 +994,69 @@ describe("TeamOrchestrator member delivery face (specs/077-announcer-member-unif
 
     planner.settle();
     await h.orchestrator.whenQuiescent();
+  });
+});
+
+describe("TeamOrchestrator cancel self-heal for an in-flight broadcast (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §3/§6; US3 scenario 5)", () => {
+  it("leaves the broadcast residue to the inbox clear and recovers the anchor exactly once from the pending baseline", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    // The planner's turn is in flight …
+    h.orchestrator.submit("首条");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({ active: "planner" });
+
+    // … the fast path injects a broadcast copy into its next-step inbox while
+    // the team pending baseline holds the same anchor for re-delivery (the
+    // pre-seeded queue carries a separate object with the same anchor).
+    const deliver = registeredMember(h, "planner").source.deliverInFlight;
+    if (deliver === undefined) {
+      throw new Error("the planner registration must carry the delivery face");
+    }
+    const fastPathCopy = relay(ANNOUNCER_ID, "announcer", "hook 播报");
+    deliver(fastPathCopy);
+    const pendingCopy = relay(ANNOUNCER_ID, "announcer", "hook 播报");
+    h.team.queues.set(PLANNER_ID, [pendingCopy]);
+    expect(planner.injections).toEqual([fastPathCopy]);
+
+    // Cancel: the unclaimed inbox holds the broadcast copy alone, so nothing
+    // lands (a broadcast is carried by the pending baseline, never by landed)
+    // and the default `agent.cancel` clears the inbox.
+    const result = h.orchestrator.cancel();
+    expect(result.dropped).toEqual([]);
+    expect(planner.cancels[0]?.cause).toEqual({ kind: "user" });
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      active: null,
+      activation: "planner",
+    });
+
+    // Resume: the recovery assembly takes the anchor from the pending baseline
+    // — the exact queued copy, once, injected ahead of the user message (the
+    // next-step position versus the turn-opening followup).
+    const injectionsBefore = planner.injections.length;
+    const followupsBefore = planner.followups.length;
+    expect(h.orchestrator.submit("继续").queued).toBe(false);
+    expect(planner.injections.slice(injectionsBefore)).toEqual([pendingCopy]);
+    expect(
+      planner.injections.slice(injectionsBefore).map(messageText),
+    ).toEqual(["hook 播报"]);
+    expect(planner.followups.slice(followupsBefore).map(messageText)).toEqual([
+      "继续",
+    ]);
+
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(player.followups).toHaveLength(0);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
+    expectRelayOrUserSources(h);
   });
 });
 

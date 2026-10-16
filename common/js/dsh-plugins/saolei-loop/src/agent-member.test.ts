@@ -2,11 +2,13 @@
  * AgentMember tests (specs/076-agent-v2-optimize/contracts/flow-orchestration.md
  * §2.1/§5): the closed-loop drive (input construction, pre-step batch,
  * completion wait, failure read), the delivery split (in-flight steer vs
- * quiescent assembly with the landed flush), the held-input replay after a
- * failed or aborted drive, the abort channel, and the engine-code → loop-code
- * mapping table. The agent seam is a DI double (`style/javascript.md` Mock
- * convention: no module interception), driven by hand so the assertions read
- * as the exact official-loop event order.
+ * quiescent assembly with the landed flush), the turn-start inbox hygiene for
+ * broadcast residue
+ * (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
+ * §2.1), the held-input replay after a failed or aborted drive, the abort
+ * channel, and the engine-code → loop-code mapping table. The agent seam is a
+ * DI double (`style/javascript.md` Mock convention: no module interception),
+ * driven by hand so the assertions read as the exact official-loop event order.
  */
 
 import { LlmError } from "@deepseek-ai/dsh-llm";
@@ -46,6 +48,8 @@ function createFakeAgent() {
   const injections: UserMessage[] = [];
   const followups: UserMessage[] = [];
   const steers: UserMessage[] = [];
+  const nextStep: UserMessage[] = [];
+  const nextTurn: UserMessage[] = [];
   const warn = vi.fn();
 
   const agent = {
@@ -65,15 +69,40 @@ function createFakeAgent() {
         };
       },
     },
+    // The structural inbox face: `inject`/`steer` land next-step input and
+    // `remove` is the durable-cancellation seam the turn-start hygiene calls
+    // (https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md).
+    inbox: {
+      get nextStep() {
+        return nextStep;
+      },
+      get nextTurn() {
+        return nextTurn;
+      },
+      remove: (messageId: UserMessage["id"]) => {
+        for (const list of [nextStep, nextTurn]) {
+          const index = list.findIndex(
+            (message) => String(message.id) === String(messageId),
+          );
+          if (index >= 0) {
+            list.splice(index, 1);
+            return true;
+          }
+        }
+        return false;
+      },
+    },
     whenIdle: () => new Promise<void>((resolve) => waiters.push(resolve)),
     inject: (m: UserMessage) => {
       injections.push(m);
+      nextStep.push(m);
     },
     followup: (m: UserMessage) => {
       followups.push(m);
     },
     steer: (m: UserMessage) => {
       steers.push(m);
+      nextStep.push(m);
     },
   };
   return {
@@ -81,6 +110,8 @@ function createFakeAgent() {
     injections,
     followups,
     steers,
+    nextStep,
+    nextTurn,
     warn,
     settle(): void {
       for (const resolve of waiters.splice(0)) {
@@ -364,5 +395,47 @@ describe("AgentMember.deliverInFlight", () => {
 
     fake.settle();
     expect(await turn).toEqual({ kind: "settled" });
+  });
+});
+
+describe("AgentMember turn-start inbox hygiene (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §2.1)", () => {
+  it("sweeps a failed turn's broadcast residue at the next turn start and keeps a steered user message", async () => {
+    const drain: UserMessage[] = [message("策略")];
+    const { fake, member } = createMember({ drain });
+
+    const failed = member.drive();
+    expect(fake.followups.map(textOf)).toEqual(["策略"]);
+
+    // The fast path injects a broadcast copy into the in-flight turn's
+    // next-step inbox; a user steer shares that inbox window.
+    const residue = message("hook 播报");
+    member.deliverInFlight(residue);
+    member.deliver(message("在途用户", "user"));
+    expect(fake.nextStep.map(textOf)).toEqual(["hook 播报", "在途用户"]);
+
+    // The turn fails: the loop does not clear the inbox on failure (only
+    // cancel does), so the residue survives into the next turn boundary.
+    fake.failTurn("SERVER");
+    expect((await failed).kind).toBe("failed");
+    expect(fake.nextStep.map(textOf)).toEqual(["hook 播报", "在途用户"]);
+
+    // Recovery: the fresh drain carries a same-anchor copy of the broadcast.
+    const pendingCopy = message("hook 播报");
+    drain.push(pendingCopy);
+    const injectionsBefore = fake.injections.length;
+    const followupsBefore = fake.followups.length;
+    const retry = member.drive();
+
+    // The sweep cancelled the residue — the anchor stayed unconsumed, so the
+    // pending list alone carries it — and the new batch is exactly the drain
+    // copy, once. The steered user message is untouched.
+    expect(fake.nextStep.map(textOf)).toEqual(["在途用户"]);
+    expect(fake.nextStep).not.toContain(residue);
+    expect(fake.followups.map(textOf)).toEqual(["策略", "hook 播报"]);
+    expect(fake.followups.slice(followupsBefore)).toEqual([pendingCopy]);
+    expect(fake.injections.slice(injectionsBefore)).toEqual([]);
+
+    fake.settle();
+    expect(await retry).toEqual({ kind: "settled" });
   });
 });

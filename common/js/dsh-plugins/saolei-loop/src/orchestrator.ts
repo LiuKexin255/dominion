@@ -299,10 +299,13 @@ export interface SubmitResult {
 }
 
 /**
- * The user-message entry result: `dropped` are the messages that were
+ * The user-message entry result: `dropped` are the **user** messages that were
  * unclaimed in the member inbox when the cancel landed. They are not driven
- * (FR-108: 未消费输入落地为历史且不触发新驱动); the host lands them as
- * history.
+ * (`specs/076-agent-v2-optimize/spec.md` FR-108: 未消费输入落地为历史且不触发新驱动);
+ * the host lands them as history. A `team-broadcast` inbox residue is never
+ * landed: its unconsumed anchor stays carried by the team pending baseline,
+ * which re-delivers it on the member's next drive
+ * (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §3/§6).
  */
 export interface CancelResult {
   readonly dropped: readonly UserMessage[];
@@ -847,10 +850,20 @@ export class TeamOrchestrator {
   }
 
   /**
-   * Collect the active member's unclaimed inbox into the landed set
+   * Collect the active member's unclaimed **user** inbox messages into the
+   * landed set
    * (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §6 cancel):
    * messages delivered but not consumed by a turn. The durable cancel that
    * follows clears the inbox itself.
+   *
+   * A `team-broadcast` residue is deliberately left out of the landed set:
+   * landing it would let the recovery assembly feed the same anchor twice (the
+   * landed copy plus the pending baseline's re-delivery), breaking the anchor's
+   * exactly-once guarantee. Leaving it unclaimed keeps the pending list as the
+   * anchor's only reliability carrier while the `agent.cancel` inbox clear
+   * discards the residue
+   * (specs/077-announcer-member-unification/research.md D10;
+   * specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §3/§6).
    */
   private landUnclaimed(binding: MemberBinding): UserMessage[] {
     const agent = binding.handle?.agent;
@@ -860,7 +873,9 @@ export class TeamOrchestrator {
     if (inbox === undefined) {
       return [];
     }
-    const pending = [...(inbox.nextStep ?? []), ...(inbox.nextTurn ?? [])];
+    const pending = [...(inbox.nextStep ?? []), ...(inbox.nextTurn ?? [])].filter(
+      (message) => message.source.kind === "user",
+    );
     this.landed.push(...pending);
     return pending;
   }

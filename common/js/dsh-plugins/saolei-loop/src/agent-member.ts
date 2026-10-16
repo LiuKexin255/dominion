@@ -6,8 +6,10 @@
  * `agent.whenIdle()` completion wait, the failure marker read (the
  * `agent/error` boundary, always before idle), the engine-code → loop-code
  * mapping, the delivery split (steer / assembly), the in-flight broadcast
- * delivery face ({@link AgentMember.deliverInFlight}), and the held-input
- * replay after a failed or aborted drive. The contracts are
+ * delivery face ({@link AgentMember.deliverInFlight}), the turn-start inbox
+ * hygiene for a failed turn's unclaimed fast-path broadcasts (the sweep that
+ * precedes every batch injection), and the held-input replay after a failed or
+ * aborted drive. The contracts are
  * specs/076-agent-v2-optimize/contracts/flow-orchestration.md §2.1/§3/§5 and
  * specs/076-agent-v2-optimize/data-model.md §3; the base APIs are
  * @deepseek-ai/dsh-agent 0.2.0-rc.2's `steer`/`whenIdle`/`inject`/`followup`
@@ -312,6 +314,42 @@ export class AgentMember implements Member, MemberExecution {
   }
 
   /**
+   * The turn-start inbox hygiene — the fast path's receiving-side obligation
+   * (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
+   * §2.1). A failed turn (not a cancel: dsh-agent-loop clears pending work only
+   * on cancel) leaves its next-step broadcasts in the inbox, and the next turn
+   * boundary claims "pending next-step input plus one queued prompt" in one
+   * atomic step
+   * (https://unpkg.com/@deepseek-ai/dsh-agent-loop@0.2.0-rc.2/README.md) — the
+   * residue and the pending baseline's re-delivery of the same anchor would
+   * both be granted. For every residue outside the drain's popped window — the
+   * fast path's injected copy and the ordinary failure paths — the anchor is
+   * unconsumed and the pending list still derives it, so removing the residue
+   * here (an ordinary `Inbox.remove`, i.e. a durable cancellation,
+   * https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md) keeps the
+   * pending list the anchor's only claimable location. A residue inside that
+   * window (`drained`, `common/js/dsh-plugins/team/src/team.ts`) comes from a
+   * batch that failed technically after its assembly had popped the anchor but
+   * before the turn claimed it: there the sweep loses the anchor with no
+   * pending re-derivation — an INTERNAL-class reliability boundary owned by
+   * the developer, outside this mechanism's guarantee
+   * (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
+   * §2.1; specs/076-agent-v2-optimize/contracts/flow-orchestration.md §5).
+   * User messages are left untouched: their turn-boundary claim is the 061
+   * semantics
+   * (specs/061-team-queue-steer/contracts/orchestrator-input.md §1 obligation 2).
+   */
+  private sweepBroadcastResidue(): void {
+    const inbox = this.agent.inbox;
+    const residue = [...inbox.nextStep, ...inbox.nextTurn].filter(
+      (message) => message.source.kind === "team-broadcast",
+    );
+    for (const message of residue) {
+      inbox.remove(message.id);
+    }
+  }
+
+  /**
    * Start one turn: register the idle await before waking (no lost
    * transition), declare the whole batch as one pre-step claim (inject all
    * but the last, followup the last), and record the held set so a failure or
@@ -343,6 +381,7 @@ export class AgentMember implements Member, MemberExecution {
         `saolei-loop agent member invariant violated: ${this.id} is not quiescent`,
       );
     }
+    this.sweepBroadcastResidue();
     const run = this.runTurn(messages, hold);
     this.activeTurn = run;
     void run.then(

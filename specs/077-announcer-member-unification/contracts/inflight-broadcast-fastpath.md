@@ -37,7 +37,7 @@ AgentMember.deliverInFlight(message: UserMessage): void   // loop 侧成员适�
 
 **投递面归属**（`specs/059-agent-v2-team-mode/contracts/dsh-plugins.md` §1 行为规范第 7 条「team 只投递不驱动」保持成立）：team 只调用成员供给的 `deliverInFlight` 闭包，**不直接调用** `agent.inject`——实际 inject 发生在成员适配器（loop 侧）内，team 对 agent 细节保持不感知。
 
-**接收侧 inbox 卫生（同一适配器的结构性义务，D10）**：成员每次开启新 turn（`startTurn` 守卫通过后、装配批注入前）将 pending inbox（`nextStep`/`nextTurn`）中 `source.kind === "team-broadcast"` 的未认领消息清除（`agent.inbox.remove`，dsh 结构面 `Inbox`——普通移除即 durable cancel）。依据不变量：**未认领 ⇒ 锚点未消费 ⇒ pending 派生必含该锚点**、新批经 drain 重投（registration 存续期间恒成立；registration dispose 后不存在后续 turn）——清扫使 pending 成为 team-broadcast 的唯一可靠性载体，杜绝「inbox 残留 + 新批」在 turn 边界被原子地一并认领（dsh-agent-loop turn 开启认领 "pending next-step input plus one queued prompt"）。用户消息（steer 残留）不在清扫范围——随 turn 边界照常认领（`specs/061-team-queue-steer/contracts/orchestrator-input.md` §1 义务 2 既有语义）。
+**接收侧 inbox 卫生（同一适配器的结构性义务，D10）**：成员每次开启新 turn（`startTurn` 守卫通过后、装配批注入前）将 pending inbox（`nextStep`/`nextTurn`）中 `source.kind === "team-broadcast"` 的未认领消息清除（`agent.inbox.remove`，dsh 结构面 `Inbox`——普通移除即 durable cancel）。依据不变量：**未认领 ⇒ 锚点未消费 ⇒ pending 派生必含该锚点**、新批经 drain 重投——对**未进 `drained` 窗口**的残留成立（快路注入的 inbox 副本与常规失败路径残留均属此列；registration dispose 后不存在后续 turn）。`drained` 窗口内（`common/js/dsh-plugins/team/src/team.ts` `drain` 已弹出锚点、该批次在认领前技术性失败——如同步 `followup` throw）的残留属 INTERNAL 可靠性保证面之外，需开发者介入（`specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §5）。清扫使 pending 成为 team-broadcast 的唯一可靠性载体，杜绝「inbox 残留 + 新批」在 turn 边界被原子地一并认领（dsh-agent-loop turn 开启认领 "pending next-step input plus one queued prompt"）。用户消息（steer 残留）不在清扫范围——随 turn 边界照常认领（`specs/061-team-queue-steer/contracts/orchestrator-input.md` §1 义务 2 既有语义）。
 
 ### 2.2 relay 的快路扩展（叠加，不改基线）
 
