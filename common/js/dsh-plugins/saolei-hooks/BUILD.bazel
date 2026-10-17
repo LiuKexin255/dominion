@@ -27,6 +27,7 @@ ts_project(
     tsconfig = ":tsconfig",
     visibility = ["//visibility:public"],
     deps = [
+        ":node_modules/@dominion/dsh-saolei",
         ":node_modules/@types/node",
     ],
 )
@@ -79,6 +80,7 @@ vitest_test(
         ["src/**/*.ts"],
         allow_empty = True,
     ) + [
+        ":node_modules/@dominion/dsh-saolei",
         ":node_modules/@types/node",
     ],
 )
