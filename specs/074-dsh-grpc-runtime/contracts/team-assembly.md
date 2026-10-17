@@ -54,6 +54,17 @@
 | `memoryMount.build(scope: MemoryScope): MemoryCapabilities` | `buildMemoryUnit({ scope, memoryClient, callUnary: ctx.grpc.callUnary })`（公共库 memory 单元：faces/tools/sections/ready；unary 策略经组装 seam 注入——specs/076-agent-v2-optimize/contracts/memory-library-layering.md §1 义务 2/§3）——**scope 由编排显式传参**（无属性穿越约定）；返回类型名 `MemoryCapabilities` 实指 saolei-loop 侧自有结构类型（`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` 定义，faces value 为 `unknown`），与库产物 `CapabilityUnit` 结构兼容、二者非同一编译器类型 |
 | 依赖方向 | adapter → 公共库（common-js-memory）+ grpc 面；**不依赖 saolei-loop 任何约定**（比属性穿越更纯） |
 
+### 3.3 `@dominion/dsh-saolei-hooks`（纯 provider + team 级工厂，可选能力行）
+
+| 项 | 值 |
+|---|---|
+| 形态 | cordis 插件（`common/js/dsh-plugins/saolei-hooks/`）；`inject: []`（**纯 provider**——无 cordis 服务依赖）；挂载于 saolei-loop 之下（组合级） |
+| apply | `ctx.provide("saoleiHooks", mount)`——提供面是 **team 级工厂** `mount.buildHooksUnit({ announce })`：按 team 物化产出一个单元（planner 侧工具面 `saolei_hook` + player 侧事件处理器 `onBoardChange` + 两者共享的进程内存态注册表 + 播报 seam），`sections` 恒为空数组（零 prompt section，`specs/078-saolei-js-hooks/spec.md` FR-006）；与 `saoleiTools` 的静态单元不同，单元在物化时才构建；组合级挂载下不做全局注册 |
+| 可选语义（条件 fail-loud） | 本行是 `config.plugins` 中**唯一可省略**的能力行：**行缺席 = 可选能力缺席**（编排读取面 undefined、零 hook 装配、现状行为不变）；**行在而装载后 `saoleiHooks` 面缺失 → 组合装载失败**（apply 期条件校验，与 `saoleiTools`/`memoryMount` 同型的装载期校验语义，`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5） |
+| 依赖方向 | 只依赖游戏基础上游 `@dominion/dsh-saolei`（`GameState`/`GameLogEntry` 类型与棋盘变动事件 seam）与框架面；**不依赖 saolei-tools、saolei-loop、team、announcer**，也不被 saolei-tools 依赖（零耦合，`specs/078-saolei-js-hooks/spec.md` FR-016） |
+
+需求来源 `specs/078-saolei-js-hooks/spec.md` FR-015/FR-016/FR-017；插件契约 `specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md`。
+
 ## 4. 编排消费（saolei-loop）
 
 **apply 期**（依赖装配，fail-loud）：
@@ -62,18 +73,30 @@
 for row in config.plugins: await ctx.plugin(dynamicImport(row.name), row.config)
 saoleiTools = ctx.get("saoleiTools")      # reflect 注册面的 Context 便捷读取；缺 → throw（组合启动失败）
 memoryMount  = ctx.get("memoryMount")     # 同上
+saoleiHooks  = ctx.get("saoleiHooks")     # 可选能力行——行缺席得 undefined（零 hook 装配），行在而面缺 → throw（apply 期条件校验，§3.3）
 ```
 
 **createMember setup**（成员组装，`orchestrator.ts:756-766` 改造；注册序 faces → tools → sections → ready）：
 
 ```text
+物化早期（createMember("player") 之前——player setup 需要 onBoardChange）：
+  hooks = saoleiHooks === undefined
+    ? null                                                     # 无 hooks 行 → 零 hook 装配
+    : saoleiHooks.buildHooksUnit({ announce: (text) => this.announceHookResult(text) })
+          # announce 为惰性闭包：调用时读编排持有的 announcer（物化后创建），缺席则 warn 跳过
+
 setup(agentCtx, agent):
   1. await composed.setup(agentCtx)                     # persona（不变）
   2a. player:  register saoleiTools 单元（tools×3 + sections[saolei:guidance] → agentCtx）
                agentCtx.systemPrompt.section(foundation.gameSection)              # saolei:game
-               this.game = foundation.createGameRuntime(session, desktopBridge)   # 编排持有实例
+               this.game = hooks === null
+                 ? foundation.createGameRuntime(session, desktopBridge)            # 编排持有实例（无 hooks 行）
+                 : foundation.createGameRuntime(session, desktopBridge,
+                     { onBoardChange: hooks.onBoardChange })                       # hooks 单元接线棋盘变动事件
                agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)     # agent-scoped 句柄
   2b. planner: agentCtx.systemPrompt.section(foundation.gameSection)          # saolei:game（074 遗留修复）
+               register hooks 单元：hooks.tools（saolei_hook → agentCtx.tools）
+                                    → hooks.sections（恒空数组——零 prompt section）
                unit = memoryMount.build(scope)          # scope 显式传参（编排层既有 memoryScope 流）
                register unit（memory 单元：faces("memory")×1 → tools×1
                              → sections[memory:snapshot]×1 → agentCtx）
@@ -81,6 +104,8 @@ setup(agentCtx, agent):
                await unit.ready()                       # fail-loud 预取 → throw → 回滚
   3. （既有 idle/error 订阅等不变）
 ```
+
+**双角色装配点（hooks 能力面在场时）**：hooks 是首个"一次产出、双角色共同消费"的 team 级能力单元——planner setup 注册其工具面（`saolei_hook`，零 section）、player setup 把其事件处理器经 `createGameRuntime` 第三参接入游戏运行时、播报 seam 在物化时绑定到编排持有的 announcer（惰性闭包）。hooks 行缺席时三处装配点全部不生效（`hooks = null`），player 为两参构造、planner 不注册 `saolei_hook`，现状行为不变（`specs/078-saolei-js-hooks/spec.md` FR-015/FR-017；`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5）。
 
 **编排权威**：player/planner 的能力分配、"planner 需要 memory"（tools + system prompt 记忆组装——memory 单元 section `memory:snapshot` 的注入）全部由本代码承载；system prompt 的**内容语义**（section 规格/文本/快照渲染与冻结）归公共库，**注入动作**归编排。
 
