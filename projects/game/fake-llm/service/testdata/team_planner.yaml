@@ -84,6 +84,99 @@ messages:
       - 扫雷玩法
     text: "开局计划：优先从棋盘中心区域开始，逐步向边缘推进；遇到数字边界时先标记周边可疑格。@player 请按以下开局计划开始本局游戏。"
     responses_only: true
+  # team-planner-hook-set is the hook-large-test entry
+  # (specs/078-saolei-js-hooks/tasks.md T018; scenario script
+  # specs/078-saolei-js-hooks/quickstart.md §3 step 1): the first user message
+  # asks the planner to freeze the strategy into a hook, and the entry answers
+  # with the `saolei_hook` set tool_call that registers the safe-cells script.
+  #
+  # 「固化」is the scenario's control keyword — no other entry declares it, so a
+  # first message carrying it (and none of team-planner-opening's startup
+  # tokens) selects this entry. The driving session's user message is
+  # pinned as the teamHookMessage constant in projects/game/testplan/
+  # agent_v2_helpers_test.go.
+  #
+  # The tool result continues through the tools rule team-planner-hook-set-text
+  # (agent_v2_saolei_tools.yaml): its confirmation text carries the player-side
+  # opening anchors, so the same Send that freezes the script also starts the
+  # game (the player's first drive consumes the confirmation through
+  # team-player-opening).
+  #
+  # The script body is the deterministic safe-cell scan the hook runs on every
+  # board-changing batch (specs/078-saolei-js-hooks/contracts/
+  # saolei-hooks-plugin.md §4): it counts the revealed/flagged/unrevealed
+  # cells and lists the cells the classic single-number rule proves safe (a
+  # number whose adjacent flag count equals its value makes its remaining
+  # unrevealed neighbours safe). It stays inside the sandbox contract — the
+  # banned-pattern list of specs/078-saolei-js-hooks/data-model.md §2.4 is
+  # respected — and the expected broadcast for the scenario's board is pinned
+  # as teamHookBroadcastText in agent_v2_helpers_test.go.
+  - name: team-planner-hook-set
+    keywords:
+      - 固化
+    system_keywords:
+      - 你是扫雷 planner
+    tool_call:
+      name: saolei_hook
+      arguments:
+        action: set
+        name: safe-cells
+        script: |-
+          const isNumber = (cell) => cell.length === 1 && cell >= "0" && cell <= "8";
+          let revealed = 0;
+          let flagged = 0;
+          let unrevealed = 0;
+          for (let y = 0; y < board.height; y += 1) {
+            for (let x = 0; x < board.width; x += 1) {
+              const cell = board.grid[y][x];
+              if (cell === "FLAG") {
+                flagged += 1;
+              } else if (isNumber(cell)) {
+                revealed += 1;
+              } else {
+                unrevealed += 1;
+              }
+            }
+          }
+          const safe = {};
+          for (let y = 0; y < board.height; y += 1) {
+            for (let x = 0; x < board.width; x += 1) {
+              if (!isNumber(board.grid[y][x])) {
+                continue;
+              }
+              let adjacentFlags = 0;
+              const hidden = [];
+              for (let dy = -1; dy <= 1; dy += 1) {
+                for (let dx = -1; dx <= 1; dx += 1) {
+                  const ny = y + dy;
+                  const nx = x + dx;
+                  if (ny < 0 || nx < 0 || ny >= board.height || nx >= board.width) {
+                    continue;
+                  }
+                  const neighbour = board.grid[ny][nx];
+                  if (neighbour === "FLAG") {
+                    adjacentFlags += 1;
+                  } else if (neighbour === "INITIAL" || neighbour === "UNKNOWN") {
+                    hidden.push([nx, ny]);
+                  }
+                }
+              }
+              if (adjacentFlags !== Number(board.grid[y][x])) {
+                continue;
+              }
+              for (let i = 0; i < hidden.length; i += 1) {
+                safe[hidden[i][0] + "," + hidden[i][1]] = hidden[i];
+              }
+            }
+          }
+          const cells = [];
+          for (const key in safe) {
+            cells.push(safe[key]);
+          }
+          cells.sort((a, b) => (a[1] === b[1] ? a[0] - b[0] : a[1] - b[1]));
+          const list = cells.length === 0 ? "none" : cells.map((cell) => cell[0] + "," + cell[1]).join(" ");
+          return "safe cells: " + list + " (" + revealed + " revealed / " + flagged + " flagged / " + unrevealed + " unrevealed)";
+    responses_only: true
   # team-planner-review-continue is the game-end review of a won game: it
   # emits the review body plus the next-game strategy whose "@player … 开始下
   # 一局" instruction drives the player's next open (quickstart.md V4:
@@ -129,6 +222,35 @@ messages:
       arguments:
         action: add
         content: 本局复盘观察：中心区域开局稳定，边角标记需谨慎。
+    responses_only: true
+  # team-planner-hook-review is the planner drive of the hook large test
+  # (specs/078-saolei-js-hooks/tasks.md T018; assertion
+  # specs/078-saolei-js-hooks/quickstart.md §3 c): it fires only when the
+  # review drive's drained input carries BOTH the lost-game stats announcement
+  # (the drive's LAST user message — the announce-before-drain ordering of
+  # specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3) AND
+  # the hook broadcast in the drive's history, which the planner only sees
+  # through its pending-list drain
+  # (specs/078-saolei-js-hooks/contracts/hook-announcement.md §3: a resting
+  # member consumes the broadcast at its next drive). Firing this entry is
+  # therefore the "the planner's next drive drained the hook broadcast"
+  # evidence — a missing drain would hand the drive to the three-condition
+  # team-planner-review-stop entry and the scenario assertion fails.
+  #
+  # Four declared conditions outrank team-planner-review-stop's three, so this
+  # entry is the most specific match on the session whose planner drain holds
+  # the hook broadcast; the review text keeps the stop wording so the
+  # structurally driven player consumes it through team-player-resume-stop and
+  # opens no new game.
+  - name: team-planner-hook-review
+    keywords:
+      - "本局游戏结束：失败"
+    history_keywords:
+      - "[hook safe-cells]"
+    system_keywords:
+      - 你是扫雷 planner
+    min_turn: 2
+    text: "本局复盘：棋盘变动后的 hook 播报已收到。本局到此为止，不再安排新一局。@player 请保持待命。"
     responses_only: true
   # team-planner-user-reply digests a queued user message (FR-011 消化优先于
   # 切换, V6-2): the queued message is the last user message and misses the

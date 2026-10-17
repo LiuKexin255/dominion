@@ -72,6 +72,12 @@ const (
 	// require the saolei guidance heading in the player's assembled prompt
 	// (T023 role-lock positive assertion).
 	teamRoleLockMessage = "player-role-lock"
+	// teamHookMessage carries the hook-set control keyword (固化) of the hook
+	// large-test scenario (specs/078-saolei-js-hooks/tasks.md T018). It holds
+	// none of team-planner-opening's startup tokens (请/开始/工作/就绪/团队/
+	// 扫雷/开局), so the first Send selects team-planner-hook-set instead of the
+	// opening strategy.
+	teamHookMessage = "把安全格策略固化成 hook"
 )
 
 // ─── Fixture vocabulary: pinned expected contents ───────────────────────────
@@ -89,6 +95,26 @@ const (
 	teamPlannerWaitText           = "延迟排查完成，暂无新计划。"
 	teamPlayerResumeStopText      = "收到复盘。本局到此为止，暂不开新局，保持待命。"
 	teamPlayerUserIntakeText      = "收到你的消息，我这边情况正常，会继续关注棋盘。"
+	// Hook scenario (specs/078-saolei-js-hooks/tasks.md T018):
+	// teamPlannerHookSetText is the confirmation the
+	// team-planner-hook-set-text tools rule answers the saolei_hook result
+	// with (it carries the player-side opening anchors, so the same Send opens
+	// the game); teamPlannerHookReviewText is the review body the planner's
+	// review drive produces when its drain carries the hook broadcast
+	// (team-planner-hook-review); teamHookBroadcastText is the hook
+	// announcement itself — the announcer member's render of the safe-cells
+	// script run against the saoleiBoardHookStepPNG board.
+	teamPlannerHookSetText    = "策略已固化为 hook safe-cells。@player 请按以下开局计划开始本局游戏。"
+	teamPlannerHookReviewText = "本局复盘：棋盘变动后的 hook 播报已收到。本局到此为止，不再安排新一局。@player 请保持待命。"
+	teamHookBroadcastText     = "[hook safe-cells] safe cells: none (27 revealed / 0 flagged / 229 unrevealed)"
+	// teamHookOperateResultPrefix / teamHookLossResultPrefix are the verbatim
+	// heads of the scenario's two saolei_operate results (the pure domain body
+	// of common/js/dsh-plugins/saolei/src/game/text.ts operateResultText): the
+	// batch that changed the board while still playing, and the terminal single
+	// click that ends the game (specs/078-saolei-js-hooks/spec.md FR-010 — no
+	// hook analysis ever enters these texts).
+	teamHookOperateResultPrefix = "saolei_operate → executed 2 ops\ngame status: playing\n\nboard size 16*16"
+	teamHookLossResultPrefix    = "saolei_operate → stopped at click(10,15) (lost)\ngame status: lost\n\nboard size 16*16"
 	// T023 role-lock / memory fixtures:
 	teamPlayerRoleLockText  = "player 角色锁定：扫雷工具守则已加载。"
 	teamMemoryReviewContent = "本局复盘观察：中心区域开局稳定，边角标记需谨慎。"

@@ -47,6 +47,23 @@ var saoleiBoardWinPNG []byte
 //go:embed testdata/saolei_5.png
 var saoleiBoardLossPNG []byte
 
+// saoleiBoardHookStepPNG is a real Minesweeper screenshot (16×16, the
+// partially revealed in-progress board of
+// projects/game/pkg/saolei-board/testdata/saolei_3.golden.txt: revealed
+// numbers clustered in rows 5–9 plus two isolated cells, no HIT_MINE/MINE, no
+// FLAG) recognized as a playing game.
+// It is the step answer of the hook scenario's own desktop half
+// (projects/game/testplan/agent_v2_game_test.go
+// TestAgentV2TeamGameHookAnnouncement): the same-named sibling of the
+// fake-desktop progressive scenario's second board, so both cell dispatches of
+// the scripted `saolei_operate` batch land a same-game successor (a partial
+// board is compatible with itself — no revealed cell regresses,
+// projects/game/pkg/saolei-board/src/core/validate.ts) and the batch result
+// carries `game status: playing`.
+//
+//go:embed testdata/saolei_3.png
+var saoleiBoardHookStepPNG []byte
+
 // saoleiBoardCompatWinPNG is a real Minesweeper screenshot (9×9, almost
 // every cell INITIAL plus 6 flags — saolei_8.png) recognized as an
 // in-progress game. The team-mode terminal-win flow seeds a game with this

@@ -511,8 +511,8 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 38 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 38 (agent-v2-auth + agent-v2-fail + agent-v2-fail-mid + agent-v2-followup + agent-v2-greet + agent-v2-plain + agent-v2-quota + agent-v2-saolei-nodesktop + agent-v2-saolei-progressive + agent-v2-saolei-start + agent-v2-slow + agent-v2-stall + agent-v2-transient-500 + agent-v2-transient-503 + chat-only + farewell + greeting + mouse-trigger + opencode-go-planner-opening + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + team-planner-memory-snapshot + team-planner-opening + team-planner-review-continue + team-planner-review-stop + team-planner-user-reply + team-planner-wait + team-player-opening + team-player-resume-start + team-player-resume-stop + team-player-role-lock + team-player-user-intake + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
+	if len(got) != 41 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 41 (agent-v2-auth + agent-v2-fail + agent-v2-fail-mid + agent-v2-followup + agent-v2-greet + agent-v2-plain + agent-v2-quota + agent-v2-saolei-nodesktop + agent-v2-saolei-progressive + agent-v2-saolei-start + agent-v2-slow + agent-v2-stall + agent-v2-transient-500 + agent-v2-transient-503 + chat-only + farewell + greeting + mouse-trigger + opencode-go-planner-opening + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + team-planner-hook-review + team-planner-hook-set + team-planner-memory-snapshot + team-planner-opening + team-planner-review-continue + team-planner-review-stop + team-planner-user-reply + team-planner-wait + team-player-hook-followup + team-player-opening + team-player-resume-start + team-player-resume-stop + team-player-role-lock + team-player-user-intake + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
 	}
 
 	// Sorted alphabetically: agent-v2-fail before agent-v2-fail-mid before
@@ -539,14 +539,18 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// "saolei-single-op" < "saolei-start" because 'i' < 't'; "saolei-start"
 	// < "saolei-structural-stop" because 'a' < 'r';
 	// "saolei-structural-stop" < "stall-mid-reasoning" because 'o' < 't';
-	// "stall-mid-reasoning" < "team-planner-memory-snapshot" because 's' < 't';
+	// "stall-mid-reasoning" < "team-planner-hook-review" because 's' < 't';
+	// "team-planner-hook-review" < "team-planner-hook-set" because the trailing
+	// tokens are 'r' < 's', and "team-planner-hook-set" <
+	// "team-planner-memory-snapshot" because 'h' < 'm';
 	// "team-planner-memory-snapshot" < "team-planner-opening" because 'm' <
 	// 'o' (the snapshot entry shadows the opening entry by Name on the
 	// specificity tie — see team_planner.yaml); "team-planner-*" <
 	// "team-player-*" because 'n' < 'y' at the first
 	// differing rune of the middle token; "team-planner-user-reply" <
 	// "team-planner-wait" because 'u' < 'w', and "team-planner-wait" <
-	// "team-player-opening" by the same middle-token rule;
+	// "team-player-hook-followup" by the same middle-token rule
+	// ("team-player-hook-followup" < "team-player-opening" because 'h' < 'o');
 	// "team-player-resume-stop" < "team-player-role-lock" because 'e' < 'o'
 	// at the second rune of the trailing token, and "team-player-role-lock" <
 	// "team-player-user-intake" because 'r' < 'u'; "team-player-*" <
@@ -588,12 +592,15 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		"saolei-start",
 		"saolei-structural-stop",
 		"stall-mid-reasoning",
+		"team-planner-hook-review",
+		"team-planner-hook-set",
 		"team-planner-memory-snapshot",
 		"team-planner-opening",
 		"team-planner-review-continue",
 		"team-planner-review-stop",
 		"team-planner-user-reply",
 		"team-planner-wait",
+		"team-player-hook-followup",
 		"team-player-opening",
 		"team-player-resume-start",
 		"team-player-resume-stop",
@@ -756,7 +763,40 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// no-new-game text the drive script consumes. The ordered block below is
 	// pinned against team_planner.yaml / team_player.yaml (README.md §6
 	// lockstep).
-	teamPlannerMemorySnapshot := got[24]
+	//
+	// specs/078-saolei-js-hooks/tasks.md T018 additions: team-planner-hook-set
+	// carries the scenario's hook-set tool_call (the SUT's saolei_hook answers
+	// its result through the team-planner-hook-set-text rule in
+	// agent_v2_saolei_tools.yaml), and team-planner-hook-review is the
+	// planner's review drive of the same scenario — its history condition
+	// anchors on the drained hook broadcast, which is the drain-visible
+	// evidence of specs/078-saolei-js-hooks/contracts/hook-announcement.md §3.
+	teamPlannerHookReview := got[24]
+	if !slices.Contains(teamPlannerHookReview.HistoryKeywords, "[hook safe-cells]") {
+		t.Errorf("team-planner-hook-review history_keywords missing the hook broadcast anchor: %v", teamPlannerHookReview.HistoryKeywords)
+	}
+	if teamPlannerHookReview.ToolCall != nil {
+		t.Errorf("team-planner-hook-review must carry a plain text response (the drain-visible review body)")
+	}
+	if !strings.Contains(teamPlannerHookReview.Text, "不再安排新一局") {
+		t.Errorf("team-planner-hook-review text = %q, want the stop wording the player consumes", teamPlannerHookReview.Text)
+	}
+
+	teamPlannerHookSet := got[25]
+	if !slices.Contains(teamPlannerHookSet.Keywords, "固化") {
+		t.Errorf("team-planner-hook-set keywords missing the scenario control token: %v", teamPlannerHookSet.Keywords)
+	}
+	if teamPlannerHookSet.ToolCall == nil || teamPlannerHookSet.ToolCall.Name != "saolei_hook" {
+		t.Fatalf("team-planner-hook-set tool_call = %+v, want the saolei_hook set", teamPlannerHookSet.ToolCall)
+	} else if action, _ := teamPlannerHookSet.ToolCall.Arguments["action"].(string); action != "set" {
+		t.Errorf("team-planner-hook-set tool_call action = %q, want %q", action, "set")
+	} else if name, _ := teamPlannerHookSet.ToolCall.Arguments["name"].(string); name != "safe-cells" {
+		t.Errorf("team-planner-hook-set tool_call name = %q, want %q", name, "safe-cells")
+	} else if script, _ := teamPlannerHookSet.ToolCall.Arguments["script"].(string); !strings.Contains(script, `"safe cells: "`) {
+		t.Errorf("team-planner-hook-set tool_call script = %q, want the safe-cell scan body", script)
+	}
+
+	teamPlannerMemorySnapshot := got[26]
 	if !slices.Contains(teamPlannerMemorySnapshot.SystemKeywords, "长期记忆：") {
 		t.Errorf("team-planner-memory-snapshot system_keywords missing the snapshot header: %v", teamPlannerMemorySnapshot.SystemKeywords)
 	}
@@ -767,7 +807,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-memory-snapshot must carry a plain text response (the reload assertion body)")
 	}
 
-	teamPlannerOpening := got[25]
+	teamPlannerOpening := got[27]
 	if teamPlannerOpening.Name != "team-planner-opening" {
 		t.Errorf("messages[19] name = %q, want team-planner-opening", teamPlannerOpening.Name)
 	}
@@ -784,7 +824,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-opening text = %q, want the player-side opening anchor", teamPlannerOpening.Text)
 	}
 
-	teamPlannerReviewContinue := got[26]
+	teamPlannerReviewContinue := got[28]
 	if !slices.Contains(teamPlannerReviewContinue.Keywords, "本局游戏结束：胜利") {
 		t.Errorf("team-planner-review-continue keywords missing the won announcement result line: %v", teamPlannerReviewContinue.Keywords)
 	}
@@ -798,7 +838,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-review-continue text = %q, want the continue-next-game instruction", teamPlannerReviewContinue.Text)
 	}
 
-	teamPlannerReviewStop := got[27]
+	teamPlannerReviewStop := got[29]
 	if !slices.Contains(teamPlannerReviewStop.Keywords, "本局游戏结束：失败") {
 		t.Errorf("team-planner-review-stop keywords missing the lost announcement result line: %v", teamPlannerReviewStop.Keywords)
 	}
@@ -820,7 +860,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-review-stop text = %q, must not carry the next-game instruction", teamPlannerReviewStop.Text)
 	}
 
-	teamPlannerUserReply := got[28]
+	teamPlannerUserReply := got[30]
 	if !slices.Contains(teamPlannerUserReply.Keywords, "暂停") {
 		t.Errorf("team-planner-user-reply keywords missing the queued-user anchor: %v", teamPlannerUserReply.Keywords)
 	}
@@ -828,7 +868,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-user-reply min_turn = %d, want 2 (off the first drive)", teamPlannerUserReply.MinTurn)
 	}
 
-	teamPlannerWait := got[29]
+	teamPlannerWait := got[31]
 	if !slices.Contains(teamPlannerWait.Keywords, "planner-wait") {
 		t.Errorf("team-planner-wait keywords missing the controllable-window anchor: %v", teamPlannerWait.Keywords)
 	}
@@ -842,7 +882,23 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-wait must carry a plain text response (the long-running planner turn)")
 	}
 
-	teamPlayerOpening := got[30]
+	// team-player-hook-followup is the player's hook-next-step entry
+	// (specs/078-saolei-js-hooks/tasks.md T018): its keyword is the hook
+	// announcement's prefix, which reaches the player only through the
+	// in-flight broadcast fast path, and its tool_call is the single terminal
+	// op that ends the scenario's game.
+	teamPlayerHookFollowup := got[32]
+	if !slices.Contains(teamPlayerHookFollowup.Keywords, "[hook safe-cells]") {
+		t.Errorf("team-player-hook-followup keywords missing the hook broadcast anchor: %v", teamPlayerHookFollowup.Keywords)
+	}
+	if teamPlayerHookFollowup.MinTurn != 2 {
+		t.Errorf("team-player-hook-followup min_turn = %d, want 2 (off the first drive)", teamPlayerHookFollowup.MinTurn)
+	}
+	if teamPlayerHookFollowup.ToolCall == nil || teamPlayerHookFollowup.ToolCall.Name != "saolei_operate" {
+		t.Fatalf("team-player-hook-followup tool_call = %+v, want the saolei_operate batch", teamPlayerHookFollowup.ToolCall)
+	}
+
+	teamPlayerOpening := got[33]
 	if !slices.Contains(teamPlayerOpening.SystemKeywords, "你是扫雷 player") {
 		t.Errorf("team-player-opening system_keywords missing the player persona anchor: %v", teamPlayerOpening.SystemKeywords)
 	}
@@ -850,7 +906,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-opening tool_call = %+v, want saolei_init", teamPlayerOpening.ToolCall)
 	}
 
-	teamPlayerResumeStart := got[31]
+	teamPlayerResumeStart := got[34]
 	if teamPlayerResumeStart.ToolCall == nil || teamPlayerResumeStart.ToolCall.Name != "saolei_init" {
 		t.Errorf("team-player-resume-start tool_call = %+v, want saolei_init", teamPlayerResumeStart.ToolCall)
 	}
@@ -858,7 +914,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-resume-start min_turn = %d, want 2 (off the first drive)", teamPlayerResumeStart.MinTurn)
 	}
 
-	teamPlayerResumeStop := got[32]
+	teamPlayerResumeStop := got[35]
 	if teamPlayerResumeStop.ToolCall != nil {
 		t.Errorf("team-player-resume-stop must carry a plain text response (no new game opened)")
 	}
@@ -869,7 +925,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-resume-stop min_turn = %d, want 2 (off the first drive)", teamPlayerResumeStop.MinTurn)
 	}
 
-	teamPlayerRoleLock := got[33]
+	teamPlayerRoleLock := got[36]
 	if !slices.Contains(teamPlayerRoleLock.SystemKeywords, "## saolei (Minesweeper tools)") {
 		t.Errorf("team-player-role-lock system_keywords missing the saolei guidance heading: %v", teamPlayerRoleLock.SystemKeywords)
 	}
@@ -877,7 +933,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-role-lock must carry a plain text response (the guidance assertion body)")
 	}
 
-	teamPlayerUserIntake := got[34]
+	teamPlayerUserIntake := got[37]
 	if teamPlayerUserIntake.ToolCall != nil {
 		t.Errorf("team-player-user-intake must carry a plain text response (the queued-message digest)")
 	}
@@ -894,7 +950,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// chunked-reasoning / chunk_delays / stall_after fields end-to-end in the
 	// embedded store, and each is excluded from the no-match random fallback
 	// pool by isHangCapable (FR-011).
-	thinkHealthy := got[35]
+	thinkHealthy := got[38]
 	if len(thinkHealthy.ReasoningChunks) != 3 {
 		t.Errorf("think-healthy-cadence reasoning_chunks = %v, want 3 chunks", thinkHealthy.ReasoningChunks)
 	}
@@ -911,7 +967,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-healthy-cadence text = %q, want 'Done.'", thinkHealthy.Text)
 	}
 
-	thinkGap := got[36]
+	thinkGap := got[39]
 	if len(thinkGap.ReasoningChunks) != 3 {
 		t.Errorf("think-interrupt-gap reasoning_chunks = %v, want 3 chunks", thinkGap.ReasoningChunks)
 	}
@@ -928,7 +984,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-interrupt-gap text = %q, want 'Placing the flag at (3,4).'", thinkGap.Text)
 	}
 
-	thinkStall := got[37]
+	thinkStall := got[40]
 	if len(thinkStall.ReasoningChunks) != 2 {
 		t.Errorf("think-interrupt-stall reasoning_chunks = %v, want 2 chunks", thinkStall.ReasoningChunks)
 	}
@@ -1019,8 +1075,8 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 
 	tools := store.Tools()
-	if len(tools) != 18 {
-		t.Fatalf("NewMessageStore loaded %d tools, want 18 (agent-v2-saolei-init-lost, agent-v2-saolei-init-nodesktop, agent-v2-saolei-init-operate, agent-v2-saolei-init-operate-progressive, agent-v2-saolei-operate-final, agent-v2-saolei-operate-lost, agent-v2-saolei-operate-nodesktop, agent-v2-saolei-operate-won, keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-init-followup-operate, saolei-operate-final-text, saolei-remain-final-text, team-planner-review-stop-text)", len(tools))
+	if len(tools) != 19 {
+		t.Fatalf("NewMessageStore loaded %d tools, want 19 (agent-v2-saolei-init-lost, agent-v2-saolei-init-nodesktop, agent-v2-saolei-init-operate, agent-v2-saolei-init-operate-progressive, agent-v2-saolei-operate-final, agent-v2-saolei-operate-lost, agent-v2-saolei-operate-nodesktop, agent-v2-saolei-operate-won, keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-init-followup-operate, saolei-operate-final-text, saolei-remain-final-text, team-planner-hook-set-text, team-planner-review-stop-text)", len(tools))
 	}
 
 	// Sorted alphabetically by Name.
@@ -1042,6 +1098,7 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 		"saolei-init-followup-operate",
 		"saolei-operate-final-text",
 		"saolei-remain-final-text",
+		"team-planner-hook-set-text",
 		"team-planner-review-stop-text",
 	}
 	for i, want := range wantNames {
@@ -1181,13 +1238,35 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 		t.Errorf("saolei-remain-final-text respond_with.tool_call should be nil")
 	}
 
+	// team-planner-hook-set-text continues the planner's hook registration
+	// after the saolei_hook set lands (specs/078-saolei-js-hooks/tasks.md
+	// T018): tool_name=saolei_hook matches the SUT's "registered hook" result
+	// and supplies the confirmation text that carries the player-side opening
+	// anchors.
+	teamPlannerHookSetText := tools[17]
+	if teamPlannerHookSetText.Name != "team-planner-hook-set-text" {
+		t.Errorf("tools[17] name = %q, want team-planner-hook-set-text", teamPlannerHookSetText.Name)
+	}
+	if teamPlannerHookSetText.ToolName != "saolei_hook" {
+		t.Errorf("team-planner-hook-set-text tool_name = %q, want saolei_hook", teamPlannerHookSetText.ToolName)
+	}
+	if !slices.Contains(teamPlannerHookSetText.MatchResultContains, "registered hook") {
+		t.Errorf("team-planner-hook-set-text match_result_contains missing 'registered hook': %v", teamPlannerHookSetText.MatchResultContains)
+	}
+	if !strings.Contains(teamPlannerHookSetText.RespondWith.Text, "以下开局计划") {
+		t.Errorf("team-planner-hook-set-text respond_with.text = %q, want the player-side opening anchor", teamPlannerHookSetText.RespondWith.Text)
+	}
+	if teamPlannerHookSetText.RespondWith.ToolCall != nil {
+		t.Errorf("team-planner-hook-set-text respond_with.tool_call should be nil")
+	}
+
 	// team-planner-review-stop-text continues the lost-game review after its
 	// memory add lands (T023): tool_name=memory matches the SUT's memory tool
 	// result ("memory added") and supplies the review body the team memory
 	// large test asserts.
-	teamPlannerReviewStopText := tools[17]
+	teamPlannerReviewStopText := tools[18]
 	if teamPlannerReviewStopText.Name != "team-planner-review-stop-text" {
-		t.Errorf("tools[17] name = %q, want team-planner-review-stop-text", teamPlannerReviewStopText.Name)
+		t.Errorf("tools[18] name = %q, want team-planner-review-stop-text", teamPlannerReviewStopText.Name)
 	}
 	if teamPlannerReviewStopText.ToolName != "memory" {
 		t.Errorf("team-planner-review-stop-text tool_name = %q, want memory", teamPlannerReviewStopText.ToolName)

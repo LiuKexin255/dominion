@@ -139,6 +139,21 @@ tools:
       - board size 16*16
     respond_with:
       text: 已完成一轮扫雷操作：点击揭示与标记旗子均已执行，棋盘已刷新。
+  # team-planner-hook-set-text continues the planner's hook registration after
+  # the saolei_hook tool result lands (specs/078-saolei-js-hooks/tasks.md
+  # T018): team-planner-hook-set (team_planner.yaml) carries the set tool_call
+  # and the SUT's saolei_hook answers a successful set with
+  # `registered hook "safe-cells"`, so this rule supplies the confirmation
+  # text. The confirmation carries the player-side opening anchors
+  # (以下开局计划 / 开始本局游戏), so the same Send that freezes the script also
+  # opens the game through team-player-opening.
+  - name: team-planner-hook-set-text
+    tool_name: saolei_hook
+    responses_only: true
+    match_result_contains:
+      - registered hook
+    respond_with:
+      text: 策略已固化为 hook safe-cells。@player 请按以下开局计划开始本局游戏。
   # team-planner-review-stop-text continues the lost-game review after its
   # memory add lands (T023): the team_planner.yaml review entry carries the
   # `memory` tool_call and the SUT's memory tool answers the successful add
