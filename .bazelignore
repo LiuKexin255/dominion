@@ -36,5 +36,6 @@ common/js/dsh-plugins/saolei-memory/node_modules
 common/js/memory/node_modules
 experimental/dsh/demo/agent-plugins/demo-echo/node_modules
 experimental/redis_demo/js_service/node_modules
+common/js/dsh-plugins/saolei-hooks/node_modules
 
 
