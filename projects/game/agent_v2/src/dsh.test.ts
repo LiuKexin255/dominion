@@ -522,6 +522,10 @@ const SAOLEI_LOOP_PLUGINS: CapabilityPluginRow[] = [
       protoPath: "projects/game/game.proto",
     },
   },
+  // The optional hooks capability row (specs/078-saolei-js-hooks/contracts/
+  // saolei-hooks-plugin.md §5): listed, so a missing `saoleiHooks` face fails
+  // the composition load.
+  { name: "@dominion/dsh-saolei-hooks" },
 ];
 
 describe("cordis.yml composition manifest", () => {

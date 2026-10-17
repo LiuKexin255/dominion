@@ -1241,6 +1241,9 @@ importers:
       '@dominion/dsh-saolei':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/saolei
+      '@dominion/dsh-saolei-hooks':
+        specifier: workspace:*
+        version: link:../../../common/js/dsh-plugins/saolei-hooks
       '@dominion/dsh-saolei-loop':
         specifier: workspace:*
         version: link:../../../common/js/dsh-plugins/saolei-loop

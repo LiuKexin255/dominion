@@ -27,6 +27,8 @@ ts_project(
     tsconfig = ":tsconfig",
     visibility = ["//visibility:public"],
     deps = [
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@dominion/dsh-saolei",
         ":node_modules/@types/node",
@@ -56,8 +58,8 @@ js_library(
 # context, dsh-system-prompt section types). The workspace dependency
 # @dominion/dsh-saolei is type-only here (GameState/GameLogEntry resolve to
 # erased `import type`), so it does not enter this package's runtime closure —
-# the game runtime is provided by the orchestration through the agent-scoped
-# `saoleiGame` handle.
+# the board payload reaches the engine as data through the injected
+# onBoardChange seam.
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/dsh-saolei-hooks",
@@ -73,7 +75,10 @@ js_runtime_library(
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
 # (style/javascript.md data rules): production + test sources only, plus the
-# node_modules mirror of :lib's deps.
+# node_modules mirror of :lib's deps. package.json travels as data: the
+# dependency-edge test asserts the declared dependency/peer closure against the
+# shipped manifest (projects/game/agent_v2/BUILD.bazel ships cordis.yml the same
+# way).
 vitest_test(
     name = "lib_test",
     size = "small",
@@ -81,6 +86,9 @@ vitest_test(
         ["src/**/*.ts"],
         allow_empty = True,
     ) + [
+        "package.json",
+        ":node_modules/@deepseek-ai/cordis",
+        ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
         ":node_modules/@dominion/dsh-saolei",
         ":node_modules/@types/node",
