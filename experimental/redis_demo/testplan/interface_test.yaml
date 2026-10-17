@@ -1,0 +1,24 @@
+name: redis-demo-interface-test
+description: |
+  redis-demo integration test — verifies both language implementations of
+  KvService against the same redis instance:
+
+    go-service (Go, common/gopkg/redis) ─┐
+                                         ├─ redis infra (redis-demo/redis)
+    js-service (TS, @dominion/common-js-redis) ─┘
+
+  Test cases:
+    1. TestKvEntryRoundTrip/go write go read — self loop through the Go service
+    2. TestKvEntryRoundTrip/js write js read — self loop through the TS service
+    3. TestKvEntryRoundTrip/go write js read — cross-language read-back
+    4. TestKvEntryRoundTrip/js write go read — cross-language read-back
+    5. TestKvEntryDeleteRemovesEntry — delete then GET is NOT_FOUND
+
+suites:
+  - name: default
+    deploy: //experimental/redis_demo/testplan/deploy.yaml
+    endpoint:
+      http:
+        public: https://apitest.liukexin.com
+    cases:
+      - //experimental/redis_demo/testplan:testplan_test

@@ -11,7 +11,7 @@
         }
     },
     "dependencies": {
-        "@deepseek-ai/dsh-agent-presets": "catalog:",
+        "@deepseek-ai/dsh-agent-preset-registry": "catalog:",
         "@deepseek-ai/schemastery": "catalog:",
         "@dominion/common-js-resolver": "workspace:*",
         "js-yaml": "catalog:",

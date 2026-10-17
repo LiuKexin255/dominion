@@ -540,6 +540,22 @@ function consumeFixedStep(live: LiveMemberTurn[], member: string): LiveMemberTur
   )
 }
 
+// consumeQueueText removes the first queued chip whose text matches the
+// consumed user message's first text block (specs/061-team-queue-steer/
+// contracts/web-queue-ui.md §2 文本首匹配). Consumption signals arrive in
+// admit order, so first-match removal is order-equivalent; duplicate texts
+// remove the earliest chip each time.
+function consumeQueueText(
+  queue: QueuedMsg[],
+  message: HistoryMessage,
+): QueuedMsg[] {
+  const block = message.blocks.find((b) => b.text !== undefined)
+  const text = block?.text?.content ?? ''
+  const index = queue.findIndex((q) => q.text === text)
+  if (index < 0) return queue
+  return queue.filter((_, i) => i !== index)
+}
+
 // reduceEvent is the ChatEvent reducer for one team stream. Member event
 // frames route by (member, turn_id); team-level frames (queued / team_message
 // / member_view) carry no outer member. streamId identifies the feeding Send
@@ -597,8 +613,7 @@ function reduceEvent(
   if (event.memberView) {
     // 成员消费输入的实时通知（specs/060-agent-v2-team-optimize/contracts/
     // team-api.md §2）：追加进该成员视角；messageId 幂等（并发流重复帧按锚
-    // 忽略）。归并序列/live/queue 零改动——消费事实只属于成员视角，未被消费
-    // 成员的视角不因用户消息写入（消费前不出现语义保持）。
+    // 忽略）。归并序列/live 零改动。
     const frame = event.memberView
     const member = frame.member ?? ''
     // 保留值 "user" 是归并序列的用户标签、不是成员 role：畸形帧不得创建
@@ -611,7 +626,16 @@ function reduceEvent(
       frame.message,
       frame.sender ?? '',
     )
-    return memberHistory === state.memberHistory ? state : { ...state, memberHistory }
+    // 排队 chip 的消费信号：`member_view{sender:"user"}` 按文本首匹配移除
+    // （specs/061-team-queue-steer/contracts/web-queue-ui.md §1/§2——消费时
+    // 消除，mid-turn 路径在 step 边界、回合开始路径在 drive claim 时；旧的
+    // turn_start 队首出队已退役）。relay 进入成员视角不触碰 queue。
+    const queue =
+      frame.sender === 'user'
+        ? consumeQueueText(state.queue, frame.message)
+        : state.queue
+    if (memberHistory === state.memberHistory && queue === state.queue) return state
+    return { ...state, memberHistory, queue }
   }
   if (event.turnStart) {
     const member = eventMember(state, event)
@@ -619,12 +643,11 @@ function reduceEvent(
     const turnId = event.turnId ?? ''
     // 重复 turn_start（并发流扇出）幂等：不清空已累积的草稿。
     if (findLiveTurn(state, member, turnId) >= 0) return state
-    // 本消息 queue 项转为 live（排队指示消除）：队首即下一回合被驱动时消
-    // 化（FR-011 排队消息由当前激活成员处理，team 流覆盖其消化回合）。
-    const [, ...rest] = state.queue
+    // 回合开始不再触碰 queue（specs/061-team-queue-steer/contracts/
+    // web-queue-ui.md §1：mid-turn 消费没有属于自己的 turn_start，且与
+    // member_view 双信号并存会 double-remove）。
     return {
       ...state,
-      queue: rest,
       live: [...state.live, { member, turnId, steps: [], fixedSteps: 0, owners: {} }],
       error: null,
       canceled: false,

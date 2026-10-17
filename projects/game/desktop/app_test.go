@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,59 +17,77 @@ import (
 	"dominion/projects/game/desktop/internal/applog"
 	"dominion/projects/game/desktop/internal/capture"
 
-	"github.com/coder/websocket"
+	statuspb "google.golang.org/genproto/googleapis/rpc/status"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// mockWSServer creates an httptest server that upgrades to WebSocket and calls handler.
-func mockWSServer(t *testing.T, handler func(*websocket.Conn)) *httptest.Server {
+// mockBridgeServer starts an HTTP double for the desktop-bridge v2 endpoints.
+// GET :stream delegates to stream; every POST :sendFrame request is decoded and
+// its UserFrame delivered on the returned channel (buffered, dropping extras).
+func mockBridgeServer(t *testing.T, stream func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, chan *game.UserFrame) {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-			OriginPatterns: []string{"*"},
-		})
-		if err != nil {
-			t.Logf("websocket accept failed: %v", err)
+	frames := make(chan *game.UserFrame, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ":sendFrame") {
+			body, _ := io.ReadAll(r.Body)
+			req := new(game.SendFrameRequest)
+			if err := proto.Unmarshal(body, req); err != nil {
+				t.Errorf("decode SendFrameRequest: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			select {
+			case frames <- req.GetFrame():
+			default:
+			}
+			w.WriteHeader(http.StatusOK)
 			return
 		}
-		defer conn.Close(websocket.StatusNormalClosure, "")
-		handler(conn)
+		stream(w, r)
 	}))
+	t.Cleanup(srv.Close)
+	return srv, frames
 }
 
-// TestConnect_ProbeSuccess verifies that Connect stores a.ws
-// when the probe round-trip succeeds.
-func TestConnect_ProbeSuccess(t *testing.T) {
-	// given: mock WS server that responds to the probe status signal with any frame
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		// read the probe frame
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return
-		}
-		frame := new(game.UserFrame)
-		if err := proto.Unmarshal(data, frame); err != nil {
-			return
-		}
-		// respond with a status signal (any response proves the round-trip).
-		// Status rides as a FlowPart kind (spec 023 C3 / FR-003).
-		respFrame := &game.TeamFrame{
-			SessionId:  frame.GetSessionId(),
-			TemplateId: frame.GetTemplateId(),
-			FrameId:    "test-status-frame",
-			CreateTime: timestamppb.Now(),
-			Payload: &game.TeamFrame_FlowParts{
-				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
-				}},
-			},
-		}
-		resp, _ := proto.Marshal(respFrame)
-		conn.Write(ctx, websocket.MessageBinary, resp)
+// writeBridgeLine writes one NDJSON downlink line carrying frame.
+func writeBridgeLine(t *testing.T, w http.ResponseWriter, frame *game.TeamFrame) {
+	t.Helper()
+	data, err := protojson.Marshal(frame)
+	if err != nil {
+		t.Errorf("protojson.Marshal(TeamFrame): %v", err)
+		return
+	}
+	if _, err := w.Write(append(append([]byte(`{"result":`), data...), '}', '\n')); err != nil {
+		return
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// writeBridgeStatus writes one NDJSON downlink line carrying a status FlowPart.
+func writeBridgeStatus(t *testing.T, w http.ResponseWriter, status game.StatusSignalStatus, sessionID string) {
+	t.Helper()
+	writeBridgeLine(t, w, &game.TeamFrame{
+		SessionId:  sessionID,
+		TemplateId: "saolei",
+		Payload: &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: status}}},
+		}}},
 	})
-	defer srv.Close()
+}
+
+// TestConnect_FirstStatusSuccess verifies that Connect stores the bridge and
+// session state once the server's first status frame arrives, and returns its
+// status enum name.
+func TestConnect_FirstStatusSuccess(t *testing.T) {
+	// given: a server that pushes the connection-confirmation status frame
+	srv, _ := mockBridgeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeBridgeStatus(t, w, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE, "test-session")
+		<-r.Context().Done()
+	})
 
 	// when: Connect with a valid template + session ID
 	logger := applog.NewLogger()
@@ -76,13 +96,14 @@ func TestConnect_ProbeSuccess(t *testing.T) {
 	app.cfg = api.Config{GatewayURL: srv.URL}
 
 	status, err := app.Connect("saolei", "test-session")
+	t.Cleanup(func() { app.CloseAgent() })
 
-	// then: probe succeeds, ws and sessionID are stored, status returned
+	// then: bridge and session state are stored, status returned
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
-	if app.ws == nil {
-		t.Fatal("expected app.ws to be non-nil after successful Connect")
+	if app.bridge == nil {
+		t.Fatal("expected app.bridge to be non-nil after successful Connect")
 	}
 	if app.sessionID != "test-session" {
 		t.Fatalf("expected sessionID %q, got %q", "test-session", app.sessionID)
@@ -93,25 +114,23 @@ func TestConnect_ProbeSuccess(t *testing.T) {
 	if status != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE.String() {
 		t.Fatalf("expected status %q, got %q", game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE.String(), status)
 	}
-
-	// clean up
-	app.CloseAgent()
 }
 
-// TestConnect_ProbeFailure verifies that Connect closes WS
-// and does NOT store state when the probe times out (no response).
-func TestConnect_ProbeFailure(t *testing.T) {
-	// given: mock WS server that reads the probe but never responds
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		_, _, err := conn.Read(ctx)
-		if err != nil {
-			return
+// TestConnect_FirstStatusFailure verifies that Connect stores no state when the
+// server never pushes the first status frame (connection confirmation fails).
+func TestConnect_FirstStatusFailure(t *testing.T) {
+	// given: a short confirmation timeout and a server that sends only headers
+	orig := firstStatusTimeout
+	firstStatusTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { firstStatusTimeout = orig })
+
+	srv, _ := mockBridgeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
 		}
-		// Block forever — simulating an unreachable agent.
-		select {}
+		<-r.Context().Done()
 	})
-	defer srv.Close()
 
 	// when: Connect with a valid session ID
 	logger := applog.NewLogger()
@@ -121,21 +140,18 @@ func TestConnect_ProbeFailure(t *testing.T) {
 
 	_, err := app.Connect("saolei", "test-session")
 
-	// then: probe fails, ws is nil, error returned
+	// then: no state stored, error from the first-status wait
 	if err == nil {
 		t.Fatal("Connect() expected error, got nil")
 	}
-	if app.ws != nil {
-		t.Fatal("expected app.ws to be nil after failed Connect")
+	if app.bridge != nil {
+		t.Fatal("expected app.bridge to be nil after failed Connect")
 	}
 	if app.sessionID != "" {
 		t.Fatalf("expected sessionID to be empty, got %q", app.sessionID)
 	}
-
-	// the error should mention probe or receive
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "probe") && !strings.Contains(errMsg, "receive") {
-		t.Errorf("error message should mention probe/receive, got: %s", errMsg)
+	if !strings.Contains(err.Error(), "first status") {
+		t.Errorf("error message should mention first status, got: %s", err.Error())
 	}
 }
 
@@ -161,58 +177,18 @@ func TestConnect_EmptyTemplateOrSessionID(t *testing.T) {
 			// when: Connect with invalid params
 			_, err := app.Connect(tt.template, tt.session)
 
-			// then: immediate error, no ws state change
+			// then: immediate error, no bridge state change
 			if err == nil {
 				t.Fatal("Connect() expected error, got nil")
 			}
-			if app.ws != nil {
-				t.Fatal("expected app.ws to be nil")
+			if app.bridge != nil {
+				t.Fatal("expected app.bridge to be nil")
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error should mention %q, got: %s", tt.wantErr, err.Error())
 			}
 		})
 	}
-}
-
-// TestConnect_ProbeTimeout verifies 10-second timeout triggers properly.
-func TestConnect_ProbeTimeout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping timeout test in short mode")
-	}
-	// given: mock WS server that never responds
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		_, _, err := conn.Read(ctx)
-		if err != nil {
-			return
-		}
-		select {} // block forever
-	})
-	defer srv.Close()
-
-	logger := applog.NewLogger()
-	app := NewApp(logger)
-	app.SetContext(context.Background())
-	app.cfg = api.Config{GatewayURL: srv.URL}
-
-	// when: Connect should time out after 10 seconds
-	start := time.Now()
-	_, err := app.Connect("saolei", "test-session")
-	elapsed := time.Since(start)
-
-	// then: probe times out
-	if err == nil {
-		t.Fatal("Connect() expected error from timeout, got nil")
-	}
-	if app.ws != nil {
-		t.Fatal("expected app.ws to be nil after timeout")
-	}
-	// Timeout should be around 10 seconds (allow some tolerance)
-	if elapsed > 15*time.Second {
-		t.Errorf("timeout took too long: %v, expected ~10s", elapsed)
-	}
-	t.Logf("timeout occurred after: %v", elapsed)
 }
 
 // Test_executeAgentOperation_NoWindowSelected verifies spec 025 FR-005: when no
@@ -321,29 +297,27 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 }
 
 // TestReadLoop_ExitsOnRecvError verifies the reader error path: when
-// RecvFrame errors (connection closed by the peer), readLoop logs the failure,
-// returns, and closes recvDone so CloseAgent and the reconnect handover
-// unblock (FR-010, specs/041-realtime-init-push/contracts/
-// realtime-channel-contract.md §3.1 Exit).
+// RecvFrame errors (stream closed by the peer), readLoop logs the failure,
+// returns, and closes recvDone so CloseAgent and the reconnect handover unblock
+// (FR-010, specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1 Exit).
 func TestReadLoop_ExitsOnRecvError(t *testing.T) {
-	// given: mock WS server that closes the connection immediately, causing
-	// the first RecvFrame to error.
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		conn.Close(websocket.StatusNormalClosure, "")
+	// given: a server whose :stream response ends immediately, causing the
+	// first RecvFrame to error.
+	srv, _ := mockBridgeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
 	})
-	defer srv.Close()
 
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 
-	// connect a WS client directly (bypassing Connect's probe)
-	ws := &api.WSClient{}
-	if err := ws.Connect(context.Background(), srv.URL, "saolei", "sess-recv", "test"); err != nil {
+	// connect a bridge directly (bypassing Connect's first-status wait)
+	bridge := api.NewBridgeClient()
+	if err := bridge.Connect(context.Background(), srv.URL, "saolei", "sess-recv", "test"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer ws.Close()
-	app.ws = ws
+	t.Cleanup(func() { bridge.Close() })
+	app.bridge = bridge
 
 	// when: run readLoop synchronously — it errors on the first RecvFrame,
 	// logs, and returns.
@@ -371,12 +345,11 @@ func TestReadLoop_ExitsOnRecvError(t *testing.T) {
 // behavior (spec 025 FR-023/FR-024; FR-009 in
 // specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.2/§3.3):
 // an inbound operation FlowPart is executed and its FlowResultPart is sent
-// back over the WebSocket to the agent on the control channel, and the
-// trailing wait signal does NOT terminate the continuous reader (FR-008).
+// through the uplink sendFrame call to the agent, and the trailing wait signal
+// does NOT terminate the continuous reader (FR-008).
 func TestReadLoop_ExecutesOperationAndSurvivesWait(t *testing.T) {
-	// given: mock WS server sends a flowParts frame with a MouseClickPart, then
-	// a wait signal. It captures client-sent frames (the tool result) so the
-	// test can assert the result was returned to the agent over the WS.
+	// given: a server that pushes the confirmation status, a click operation,
+	// then a wait signal; it captures uplink sendFrame frames.
 	clickFrame := &game.TeamFrame{
 		SessionId:  "op-session",
 		TemplateId: "saolei",
@@ -396,55 +369,28 @@ func TestReadLoop_ExecutesOperationAndSurvivesWait(t *testing.T) {
 		FrameId:    "srv-wait-1",
 		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
-	sentFrames := make(chan *game.TeamFrame, 4)
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		go func() {
-			for {
-				_, data, err := conn.Read(ctx)
-				if err != nil {
-					return
-				}
-				var f game.TeamFrame
-				if err := proto.Unmarshal(data, &f); err == nil {
-					select {
-					case sentFrames <- &f:
-					default:
-					}
-				}
-			}
-		}()
-		for _, f := range []*game.TeamFrame{clickFrame, waitFrame} {
-			data, _ := proto.Marshal(f)
-			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-				return
-			}
-		}
-		select {} // keep the connection open until teardown
+	srv, sentFrames := mockBridgeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeBridgeStatus(t, w, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE, "op-session")
+		writeBridgeLine(t, w, clickFrame)
+		writeBridgeLine(t, w, waitFrame)
+		<-r.Context().Done()
 	})
-	defer srv.Close()
 
-	// given: an App with a connected WSClient. No window is selected, so
-	// executeAgentOperation fails fast with "no window selected" — the result
-	// frame is still produced and sent over the WS.
+	// given: an App whose Connect starts the continuous reader. No window is
+	// selected, so executeAgentOperation fails fast with "no window selected" —
+	// the result frame is still produced and sent.
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
 
-	app.ws = &api.WSClient{}
-	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "op-session", "test-env"); err != nil {
+	if _, err := app.Connect("saolei", "op-session"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-
-	// when: run the continuous reader (the wait signal does NOT terminate it —
-	// FR-008)
-	app.recvDone = make(chan struct{})
-	go app.readLoop("op-session")
 	t.Cleanup(func() { app.CloseAgent() })
 
-	// then: the operation was executed and its result sent to the agent over
-	// the WS as a flowParts frame carrying a flowResult (FAILED: no window).
+	// then: the operation was executed and its result sent as a flowResult
+	// (FAILED: no window).
 	var resultPart *game.FlowResultPart
 	deadline := time.After(2 * time.Second)
 	for resultPart == nil {
@@ -455,7 +401,7 @@ func TestReadLoop_ExecutesOperationAndSurvivesWait(t *testing.T) {
 				resultPart = fp.GetParts()[0].GetFlowResult()
 			}
 		case <-deadline:
-			t.Fatal("no flow-result frame sent over WS within 2s")
+			t.Fatal("no flow-result frame sent within 2s")
 		}
 	}
 	if resultPart.GetToolId() != "click-1" {
@@ -517,15 +463,15 @@ func TestReadLoop_ExecutesNewPartKinds(t *testing.T) {
 
 // runReadLoopFilterAdmissionTest verifies op passes the readLoop filter and
 // reaches executeAgentOperation by asserting a FlowResultPart with toolID is
-// sent back over the WS. The setup mirrors
+// sent through the uplink sendFrame call. The setup mirrors
 // TestReadLoop_ExecutesOperationAndSurvivesWait but is intentionally minimal —
 // this is a regression guard for filter admission.
 func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID string) {
 	t.Helper()
 
-	// given: a flowParts frame carrying the op, followed by a wait signal. The
-	// wait does NOT terminate the continuous reader (FR-008); the server
-	// captures client-sent frames.
+	// given: a server that pushes the confirmation status, then a flowParts
+	// frame carrying the op, followed by a wait signal. The wait does NOT
+	// terminate the continuous reader (FR-008); sendFrame frames are captured.
 	contentFrame := &game.TeamFrame{
 		SessionId:  "filter-session",
 		TemplateId: "saolei",
@@ -540,55 +486,28 @@ func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 		FrameId:    "srv-wait-1",
 		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
-	sentFrames := make(chan *game.TeamFrame, 4)
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		go func() {
-			for {
-				_, data, err := conn.Read(ctx)
-				if err != nil {
-					return
-				}
-				var f game.TeamFrame
-				if err := proto.Unmarshal(data, &f); err == nil {
-					select {
-					case sentFrames <- &f:
-					default:
-					}
-				}
-			}
-		}()
-		for _, f := range []*game.TeamFrame{contentFrame, waitFrame} {
-			data, _ := proto.Marshal(f)
-			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-				return
-			}
-		}
-		select {}
+	srv, sentFrames := mockBridgeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeBridgeStatus(t, w, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE, "filter-session")
+		writeBridgeLine(t, w, contentFrame)
+		writeBridgeLine(t, w, waitFrame)
+		<-r.Context().Done()
 	})
-	defer srv.Close()
 
-	// given: an App with a connected WSClient. No window is selected, so
-	// executeAgentOperation fails fast — but the FlowResultPart must still be
-	// produced and sent (proving the filter admitted op).
+	// given: an App whose Connect starts the continuous reader. No window is
+	// selected, so executeAgentOperation fails fast — but the FlowResultPart
+	// must still be produced and sent (proving the filter admitted op).
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
 
-	app.ws = &api.WSClient{}
-	if err := app.ws.Connect(context.Background(), srv.URL, "saolei", "filter-session", "test-env"); err != nil {
+	if _, err := app.Connect("saolei", "filter-session"); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-
-	// when: run the continuous reader (the wait signal does NOT terminate it —
-	// FR-008)
-	app.recvDone = make(chan struct{})
-	go app.readLoop("filter-session")
 	t.Cleanup(func() { app.CloseAgent() })
 
-	// then: a FlowResultPart with toolID was sent over the WS as a flowParts
-	// frame. If the filter dropped op, no result is sent (regression).
+	// then: a FlowResultPart with toolID was sent. If the filter dropped op, no
+	// result is sent (regression).
 	var resultPart *game.FlowResultPart
 	deadline := time.After(2 * time.Second)
 	for resultPart == nil {
@@ -599,7 +518,7 @@ func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 				resultPart = fp.GetParts()[0].GetFlowResult()
 			}
 		case <-deadline:
-			t.Fatalf("no flow-result frame sent over WS within 2s (filter may have dropped the Part)")
+			t.Fatalf("no flow-result frame sent within 2s (filter may have dropped the Part)")
 		}
 	}
 	if resultPart.GetToolId() != toolID {
@@ -614,35 +533,15 @@ func runReadLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 // TestConnect_ReconnectHandoverWaitsForPriorReader verifies the reconnect
 // handover (specs/041-realtime-init-push/contracts/realtime-channel-contract.md
 // §3.1; specs/041-realtime-init-push/research.md D4): a second Connect closes
-// the prior WS and waits on
-// the prior recvDone before starting a new reader, so the old reader has
-// exited and cannot close the new recvDone.
+// the prior stream and waits on the prior recvDone before starting a new
+// reader, so the old reader has exited and cannot close the new recvDone.
 func TestConnect_ReconnectHandoverWaitsForPriorReader(t *testing.T) {
-	// given: a mock WS server serving two connections — each answers the
-	// probe; both stay open so their readers keep running until torn down
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		if _, _, err := conn.Read(ctx); err != nil {
-			return
-		}
-		probeResp := &game.TeamFrame{
-			SessionId:  "reconnect-session",
-			TemplateId: "saolei",
-			FrameId:    "probe-resp",
-			Payload: &game.TeamFrame_FlowParts{
-				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
-				}},
-			},
-		}
-		data, _ := proto.Marshal(probeResp)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		// both connections stay open; the test tears them down via CloseAgent
-		select {}
+	// given: a server that confirms each stream and keeps it open so the
+	// readers keep running until torn down
+	srv, _ := mockBridgeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeBridgeStatus(t, w, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE, "reconnect-session")
+		<-r.Context().Done()
 	})
-	defer srv.Close()
 
 	logger := applog.NewLogger()
 	app := NewApp(logger)
@@ -689,32 +588,14 @@ func TestConnect_ReconnectHandoverWaitsForPriorReader(t *testing.T) {
 
 // TestCloseAgent_CleanClose verifies FR-010 /
 // specs/041-realtime-init-push/contracts/realtime-channel-contract.md §3.1
-// Close: CloseAgent tears the socket down (unblocking the reader's
-// RecvFrame), waits on recvDone, and clears a.ws.
+// Close: CloseAgent closes the stream (unblocking the reader's RecvFrame),
+// waits on recvDone, and clears a.bridge.
 func TestCloseAgent_CleanClose(t *testing.T) {
-	// given: mock WS server answering the probe, then staying open
-	srv := mockWSServer(t, func(conn *websocket.Conn) {
-		ctx := context.Background()
-		if _, _, err := conn.Read(ctx); err != nil {
-			return
-		}
-		probeResp := &game.TeamFrame{
-			SessionId:  "close-session",
-			TemplateId: "saolei",
-			FrameId:    "probe-resp",
-			Payload: &game.TeamFrame_FlowParts{
-				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
-				}},
-			},
-		}
-		data, _ := proto.Marshal(probeResp)
-		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
-			return
-		}
-		select {} // keep the connection open until CloseAgent tears it down
+	// given: a server that confirms the stream, then stays open
+	srv, _ := mockBridgeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeBridgeStatus(t, w, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE, "close-session")
+		<-r.Context().Done()
 	})
-	defer srv.Close()
 
 	logger := applog.NewLogger()
 	app := NewApp(logger)
@@ -725,20 +606,130 @@ func TestCloseAgent_CleanClose(t *testing.T) {
 	if _, err := app.Connect("saolei", "close-session"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
+	t.Cleanup(func() { app.CloseAgent() })
 
-	// when: CloseAgent tears the socket down
+	// when: CloseAgent closes the stream
 	if err := app.CloseAgent(); err != nil {
 		t.Fatalf("CloseAgent() unexpected error: %v", err)
 	}
 
-	// then: the reader exited (recvDone closed) and a.ws was cleared
+	// then: the reader exited (recvDone closed) and a.bridge was cleared
 	select {
 	case <-app.recvDone:
 	default:
 		t.Fatal("recvDone not closed after CloseAgent; reader still running")
 	}
-	if app.ws != nil {
-		t.Fatal("expected a.ws to be nil after CloseAgent")
+	if app.bridge != nil {
+		t.Fatal("expected a.bridge to be nil after CloseAgent")
+	}
+}
+
+// TestSendResultFrame_RetriesOnFailedPrecondition verifies the bounded uplink
+// retry: a FAILED_PRECONDITION rejection (the takeover gap) is retried and the
+// next attempt succeeds
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§5.3).
+func TestSendResultFrame_RetriesOnFailedPrecondition(t *testing.T) {
+	// given: a short retry interval and a server that rejects the first
+	// sendFrame with FAILED_PRECONDITION, then accepts
+	origInterval := sendFrameRetryInterval
+	sendFrameRetryInterval = time.Millisecond
+	t.Cleanup(func() { sendFrameRetryInterval = origInterval })
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ":stream") {
+			writeBridgeStatus(t, w, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE, "retry-session")
+			<-r.Context().Done()
+			return
+		}
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			body, err := proto.Marshal(&statuspb.Status{Code: int32(codes.FailedPrecondition), Message: "desktop stream not active"})
+			if err != nil {
+				t.Errorf("proto.Marshal(status): %v", err)
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write(body)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+	if _, err := app.Connect("saolei", "retry-session"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { app.CloseAgent() })
+
+	// when: sending an operation result
+	frame := &game.UserFrame{
+		SessionId: "retry-session",
+		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+			{Kind: &game.FlowPart_FlowResult{FlowResult: &game.FlowResultPart{ToolId: "tool-retry"}}},
+		}}},
+	}
+	err := app.sendResultFrame("retry-session", "tool-retry", frame)
+
+	// then: the retry recovered and exactly two attempts were made
+	if err != nil {
+		t.Fatalf("sendResultFrame() unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Errorf("sendFrame attempts = %d, want 2", got)
+	}
+}
+
+// TestSendResultFrame_NoRetryOnOtherCode verifies a non-FAILED_PRECONDITION
+// rejection is not retried: HTTP 400 also maps INVALID_ARGUMENT, so only the
+// decoded gRPC code decides
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §5.3).
+func TestSendResultFrame_NoRetryOnOtherCode(t *testing.T) {
+	// given: a short retry interval and a server that always rejects with
+	// NOT_FOUND
+	origInterval := sendFrameRetryInterval
+	sendFrameRetryInterval = time.Millisecond
+	t.Cleanup(func() { sendFrameRetryInterval = origInterval })
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ":stream") {
+			writeBridgeStatus(t, w, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE, "noretry-session")
+			<-r.Context().Done()
+			return
+		}
+		atomic.AddInt32(&attempts, 1)
+		body, err := proto.Marshal(&statuspb.Status{Code: int32(codes.NotFound), Message: "no owner for session"})
+		if err != nil {
+			t.Errorf("proto.Marshal(status): %v", err)
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+	if _, err := app.Connect("saolei", "noretry-session"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { app.CloseAgent() })
+
+	// when: sending an operation result
+	err := app.sendResultFrame("noretry-session", "tool-noretry", &game.UserFrame{SessionId: "noretry-session"})
+
+	// then: the error is returned after a single attempt
+	if err == nil {
+		t.Fatal("sendResultFrame() expected error, got nil")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("sendFrame attempts = %d, want 1", got)
 	}
 }
 
@@ -1064,8 +1055,9 @@ type emitRecord struct {
 
 // recorderEmitPayload replaces emitDebugEvent with a recorder that captures
 // the event name and its payload map. Used by tests that assert on the
-// EXTENDED result-held payload (specs/023-saolei-mcp-refine/contracts/
-// debug-drawer-contract.md §2). Returns the slice (shared) and a cleanup.
+// EXTENDED result-held payload
+// (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §2). Returns
+// the slice (shared) and a cleanup.
 func recorderEmitPayload(t *testing.T) (*[]emitRecord, *sync.Mutex) {
 	t.Helper()
 	orig := emitDebugEvent

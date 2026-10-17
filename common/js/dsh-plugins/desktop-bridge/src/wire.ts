@@ -124,8 +124,10 @@ export interface WireFlowParts {
   parts?: WireFlowPart[] | null;
 }
 
-/** Inbound UserFrame subset: identity (gateway-injected) plus the flowParts
- * payload. messageParts frames are not produced by the v2 desktop. */
+/** Inbound UserFrame subset: the client-reported envelope fields plus the
+ * flowParts payload. The bound identity is the path-injected
+ * SendFrameRequest.session, not these envelope values. messageParts frames
+ * are not produced by the v2 desktop. */
 export interface BridgeUserFrame {
   sessionId?: string | null;
   templateId?: string | null;
@@ -143,15 +145,15 @@ export interface BridgeTeamFrame {
 }
 
 /**
- * The one bidirectional stream face the bridge consumes. Structural
- * superset of grpc-js `ServerDuplexStream<UserFrame__Output, TeamFrame>`:
- * the generated `Connect` handler receives that stream and satisfies this
- * interface (EventEmitter `on`, Duplex `write`/`end`).
+ * The stream call face the bridge consumes. Structural superset of the
+ * grpc-js `ServerWritableStream` members this handler relies on:
+ * `request` (path-injected session), the writable `write`/`end`, and the
+ * lifecycle events.
  */
-export interface BidiStream {
-  on(event: "data", listener: (frame: BridgeUserFrame) => void): unknown;
+export interface StreamCall {
+  request: { session?: string };
   on(
-    event: "error" | "end" | "close" | "cancelled",
+    event: "error" | "close" | "cancelled",
     listener: (err?: unknown) => void,
   ): unknown;
   write(frame: BridgeTeamFrame): unknown;
@@ -159,8 +161,31 @@ export interface BidiStream {
 }
 
 /** Handler face returned by the service for host gRPC registration: the
- * generated `DesktopBridgeServiceHandlers` (agent_v2.proto) declares the same
- * single bidi `Connect` method. */
+ * generated `DesktopBridgeServiceHandlers` (agent_v2.proto) declares the
+ * same downlink `Stream` and uplink `SendFrame` methods. */
 export interface DesktopBridgeServiceHandlers {
-  Connect(call: BidiStream): void;
+  Stream(call: StreamCall): void;
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void;
 }
+
+/**
+ * The unary SendFrame call face the bridge consumes: the path-injected
+ * session plus the self-contained desktop frame (correlation rides on
+ * `flow_result.tool_id`, never on call ordering —
+ * specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.7/§2.9).
+ */
+export interface SendFrameCall {
+  request: { session?: string; frame?: BridgeUserFrame };
+}
+
+/**
+ * The unary reply face the SendFrame handler answers through. Structurally
+ * mirrors the grpc-js `sendUnaryData` error/response shape (no grpc-js
+ * dependency; see
+ * https://github.com/grpc/grpc-node/blob/master/packages/grpc-js/src/server-call.ts);
+ * the generated host handler adapts its callback onto this face.
+ */
+export type SendFrameCallback = (
+  err: { code: number; message: string } | null,
+  response?: Record<string, never>,
+) => void;

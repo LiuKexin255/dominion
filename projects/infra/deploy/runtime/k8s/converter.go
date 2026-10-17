@@ -12,6 +12,7 @@ import (
 
 const (
 	infraResourceMongoDB        = "mongodb"
+	infraResourceRedis          = "redis"
 	maxInfraPersistenceCapacity = "1Ti"
 )
 
@@ -20,6 +21,7 @@ type DeployObjects struct {
 	Deployments       []*DeploymentWorkload
 	HTTPRoutes        []*HTTPRouteWorkload
 	MongoDBWorkloads  []*MongoDBWorkload
+	RedisWorkloads    []*RedisWorkload
 	StatefulWorkloads []*StatefulWorkload
 }
 
@@ -27,7 +29,8 @@ type DeployObjects struct {
 //
 // 该函数只做数据映射，不执行任何 K8s 集群操作。env 提供 DesiredState 中的
 // Artifacts 和 Infras 分别映射为 DeploymentWorkload（含可选 HTTPRouteWorkload）
-// 和 MongoDBWorkload。cfg 提供网关等静态配置。
+// 与 infra workload；infra 按 resource 分发：mongodb → MongoDBWorkload，
+// redis → RedisWorkload。cfg 提供网关等静态配置。
 func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects, error) {
 	desiredState := env.DesiredState()
 	envName := env.Name().Label()
@@ -54,11 +57,22 @@ func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects
 	}
 
 	for _, infra := range desiredState.Infras {
-		workload, err := convertInfraToMongoWorkload(infra, envName)
-		if err != nil {
-			return nil, err
+		switch infra.Resource {
+		case infraResourceMongoDB:
+			workload, err := convertInfraToMongoWorkload(infra, envName)
+			if err != nil {
+				return nil, err
+			}
+			objects.MongoDBWorkloads = append(objects.MongoDBWorkloads, workload)
+		case infraResourceRedis:
+			workload, err := convertInfraToRedisWorkload(infra, envName)
+			if err != nil {
+				return nil, err
+			}
+			objects.RedisWorkloads = append(objects.RedisWorkloads, workload)
+		default:
+			return nil, fmt.Errorf("不支持的 infra resource 类型: %s", infra.Resource)
 		}
-		objects.MongoDBWorkloads = append(objects.MongoDBWorkloads, workload)
 	}
 
 	return objects, nil
@@ -99,22 +113,43 @@ func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string, 
 }
 
 func convertInfraToMongoWorkload(infra *domain.InfraSpec, envName string) (*MongoDBWorkload, error) {
-	switch infra.Resource {
-	case infraResourceMongoDB:
-		cap, err := validateAndParseCapacity(infra.Persistence.Enabled, infra.Persistence.Capacity)
-		if err != nil {
-			return nil, fmt.Errorf("infra %s persistence: %w", infra.Name, err)
-		}
-		return &MongoDBWorkload{
-			ServiceName:     infra.Name,
-			EnvironmentName: envName,
-			App:             infra.App,
-			ProfileName:     infra.Profile,
-			Persistence:     PersistenceConfig{Enabled: infra.Persistence.Enabled, Capacity: cap},
-		}, nil
-	default:
-		return nil, fmt.Errorf("不支持的 infra resource 类型: %s", infra.Resource)
+	persistence, err := convertInfraPersistence(infra)
+	if err != nil {
+		return nil, err
 	}
+
+	return &MongoDBWorkload{
+		ServiceName:     infra.Name,
+		EnvironmentName: envName,
+		App:             infra.App,
+		ProfileName:     infra.Profile,
+		Persistence:     *persistence,
+	}, nil
+}
+
+func convertInfraToRedisWorkload(infra *domain.InfraSpec, envName string) (*RedisWorkload, error) {
+	persistence, err := convertInfraPersistence(infra)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RedisWorkload{
+		ServiceName:     infra.Name,
+		EnvironmentName: envName,
+		App:             infra.App,
+		ProfileName:     infra.Profile,
+		Persistence:     *persistence,
+	}, nil
+}
+
+// convertInfraPersistence 校验并转换 infra 持久化配置；mongo/redis 共用同一语义。
+func convertInfraPersistence(infra *domain.InfraSpec) (*PersistenceConfig, error) {
+	cap, err := validateAndParseCapacity(infra.Persistence.Enabled, infra.Persistence.Capacity)
+	if err != nil {
+		return nil, fmt.Errorf("infra %s persistence: %w", infra.Name, err)
+	}
+
+	return &PersistenceConfig{Enabled: infra.Persistence.Enabled, Capacity: cap}, nil
 }
 
 func convertArtifactHTTPToRoute(

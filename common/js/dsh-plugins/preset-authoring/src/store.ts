@@ -24,7 +24,11 @@ export interface PresetRecord {
    * semantics, specs/059-agent-v2-team-mode/contracts/preset-api.md §2).
    */
   role?: string;
-  /** Persona prose carried into the derived composition's persona row `config.text`. */
+  /**
+   * Persona prose carried into the derived composition's persona row
+   * `config.prefix` (derivation:
+   * common/js/dsh-plugins/preset-authoring/src/derive.ts).
+   */
   persona: string;
   /** Display name for the resource projection; absent = the id. */
   displayName?: string;

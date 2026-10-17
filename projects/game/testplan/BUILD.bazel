@@ -78,6 +78,33 @@ go_largetest(
     ],
 )
 
+# wiki_test is the WIKI module large-test suite: the WikiService storage and
+# search API (Create/Get/Update/Delete + template-unique normalized title +
+# fixed wiki_id ascending List with AIP-158 pagination + SearchWikis substring
+# matching/ranking/offset pagination) exercised through the gateway's public
+# /api/v1 templates/{template}/wikis routes. Wiki scope is the template, so a
+# case that asserts a full template listing or search result starts from an
+# empty scope via resetTemplateWikis (the template-level equivalent of the
+# removed per-session isolation; validation-only cases leave no state and need
+# no reset). It reuses the shared HTTP helpers (helpers_test.go); wiki_test.go
+# adds the wiki helpers.
+# size = small: direct CRUD/search round trips only, well within the budget.
+go_largetest(
+    name = "wiki_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "wiki_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
 # agent_v2_conversation_test is the team conversation suite
 # (specs/059-agent-v2-team-mode — quickstart V3/V6): the static wait and first
 # user drive, the member-labelled team stream with the team_message seq
@@ -113,7 +140,6 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
@@ -141,7 +167,6 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
@@ -176,7 +201,6 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
@@ -211,7 +235,6 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
@@ -246,20 +269,21 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
 )
 
 # desktop_flow_test is the flow-control stream suite from the desktop's side
-# (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6 验收锚点;
-# specs/059-agent-v2-team-mode/tasks.md T018): the connect probe echo, the
-# second-connection takeover, the team operation delivery → receipt →
-# recognition loop with the test serving the win-board receipt, and the
-# in-flight failure when the connection vanishes mid-dispatch. It shares the
-# agent_v2 team helpers (the /api/v2 flow WS dial, the flow script, and the
-# team prep) and the saolei fixtures (the recognizable receipt screenshot).
+# (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §6 验收锚点;
+# specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §6): the
+# connection-confirmation first status frame, the second-stream takeover, the
+# team operation delivery → receipt → recognition loop with the test serving
+# the win-board receipt, the in-flight failure when the stream vanishes
+# mid-dispatch, the idle heartbeat liveness (SC-004), and the uplink size
+# guard (SC-003). It shares the agent_v2 team helpers (the /api/v2 flow
+# stream client, the flow script, and the team prep) and the saolei fixtures
+# (the recognizable receipt screenshot).
 go_largetest(
     name = "desktop_flow_test",
     size = "medium",
@@ -275,7 +299,6 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
@@ -285,7 +308,8 @@ go_largetest(
 # (specs/059-agent-v2-team-mode/tasks.md T023 / quickstart V7-2) in its own
 # binary: the case needs the memory-down topology
 # (deploy_agent_v2_memory_down.yaml deploys the same service list minus the
-# memory service, so the planner's `plannerMemory.load` prefetch rejects), and
+# memory service, so the planner's materialization-time `unit.ready()`
+# prefetch rejects), and
 # guitar runs whole bazel targets as suite cases with no per-suite
 # test-function filter — sharing agent_v2_preset_test would run this case
 # against a topology where memory IS present. Shares the agent_v2 team
@@ -305,7 +329,6 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
@@ -341,7 +364,6 @@ go_largetest(
         "//projects/game",
         "//projects/game/pkg/gameconst",
         TRACECONTEXT_DEP,
-        "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],

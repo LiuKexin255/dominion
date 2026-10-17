@@ -18,8 +18,9 @@ import (
 
 // TestAgentV2TeamMemoryUnreachableRollsBackMaterialization covers quickstart
 // V7-2 (US3 / decision ⑧): with the memory service absent from the
-// deployment, UpdateTeam reaches the planner member's `plannerMemory.load`
-// prefetch, which fails loud (the gRPC call cannot resolve its dominion
+// deployment, UpdateTeam reaches the planner member's materialization-time
+// `unit.ready()` prefetch (memoryMount.build(scope)), which fails loud (the
+// gRPC call cannot resolve its dominion
 // endpoint); the materialization rolls back with NO half-materialized team
 // (GetTeam NOT_FOUND) and the failure is retryable — the second attempt fails
 // the same way without residue. The configuration face (Mongo-backed presets,

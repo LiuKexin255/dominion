@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package experimental.redis_demo;
+
+import "google/api/annotations.proto";
+import "google/api/client.proto";
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "dominion/experimental/redis_demo";
+
+// KvService is implemented by both the Go and the TypeScript demo service.
+// The two implementations share one redis instance, so a value written through
+// one side is readable through the other
+// (specs/067-redis-infra-support/contracts/redis-demo.md §1/§2).
+//
+// Prefix Path: /v1
+service KvService {
+  // GetKvEntry reads the entry named by the request; a missing entry is
+  // reported as NOT_FOUND (https://google.aip.dev/131).
+  rpc GetKvEntry(GetKvEntryRequest) returns (KvEntry) {
+    option (google.api.http) = {
+      get: "/v1/{name=apps/*/kvEntries/*}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+
+  // SetKvEntry upserts the entry named by the request and returns the stored
+  // value (custom method, https://google.aip.dev/136).
+  rpc SetKvEntry(SetKvEntryRequest) returns (KvEntry) {
+    option (google.api.http) = {
+      post: "/v1/{name=apps/*/kvEntries/*}:set"
+      body: "*"
+    };
+
+    option (google.api.method_signature) = "name,value";
+  }
+
+  // DeleteKvEntry deletes the entry named by the request; a missing entry is
+  // reported as NOT_FOUND (https://google.aip.dev/135).
+  rpc DeleteKvEntry(DeleteKvEntryRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/{name=apps/*/kvEntries/*}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+}
+
+// KvEntry is one stored value.
+//
+// `name` is both the resource name and the redis key: both implementations
+// use it verbatim (no prefix, no encoding transformation), which is what makes
+// a cross-language read return the same value
+// (specs/067-redis-infra-support/contracts/redis-demo.md §2).
+message KvEntry {
+  option (google.api.resource) = {
+    type: "redis-demo.liukexin.com/KvEntry"
+    pattern: "apps/{app}/kvEntries/{kv_entry}"
+    plural: "kvEntries"
+    singular: "kvEntry"
+  };
+
+  // Resource name apps/{app}/kvEntries/{kv_entry_id}; also the redis key.
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  string value = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message GetKvEntryRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "redis-demo.liukexin.com/KvEntry"
+    }
+  ];
+}
+
+message SetKvEntryRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "redis-demo.liukexin.com/KvEntry"
+    }
+  ];
+
+  string value = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DeleteKvEntryRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "redis-demo.liukexin.com/KvEntry"
+    }
+  ];
+}

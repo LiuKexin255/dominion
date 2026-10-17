@@ -1,96 +1,156 @@
 /**
- * saolei-loop plugin entry tests (prompt ownership contract
- * specs/060-agent-v2-team-optimize/contracts/prompt-sections.md §1): `apply`
- * registers the host-scope `saolei:game` section (order 50, the game-rules
- * text), and {@link SAOLEI_GAME_RULES} carries the authoritative classic
- * Minesweeper rules plus the operation set the saolei tools expose — and
- * nothing from the tool-guidance / persona / team domains.
+ * saolei-loop plugin entry tests (specs/074-dsh-grpc-runtime/contracts/
+ * team-assembly.md §2/§4): `apply` mounts each flat `config.plugins` row as a
+ * child plugin by bare package name (with the row's config), then reads back
+ * both capability provide faces — a missing face fails the composition load
+ * (fail-loud). `apply` does NOT register anything itself: the member-scope
+ * registration is the orchestrator's job.
  *
- * Pattern (style/javascript.md Mock convention): `apply` runs against a real
- * cordis Context whose `systemPrompt` service is a `vi.fn()` double capturing
- * registrations; no module interception.
+ * Pattern (style/javascript.md Mock convention): the bare-name importer is a
+ * `vi.fn()` double returning stub plugin objects (which provide the faces on
+ * their own context), so the assembly is exercised without real packages and
+ * without module interception.
  */
 
 import { Context } from "@deepseek-ai/cordis";
+import type { Plugin } from "@deepseek-ai/cordis";
 import { describe, expect, it, vi } from "vitest";
 
-import { apply, SAOLEI_GAME_RULES } from "./index.js";
+import { apply, Config, inject } from "./index.js";
 
-/** Run `apply` against a harness context and capture section registrations. */
-function makeHarness(): {
-  sections: Array<{ name: string; order: number; text: string }>;
-} {
-  const ctx = new Context();
-  const sections: Array<{ name: string; order: number; text: string }> = [];
-  ctx.provide("systemPrompt", {
-    section: vi.fn((section: { name: string; order: number; text: string }) => {
-      sections.push(section);
-      return () => {};
-    }),
-  });
-  apply(ctx);
-  return { sections };
+/** Local stub shape: cordis accepts an object plugin with `apply`. */
+interface StubPlugin {
+  readonly name: string;
+  apply(ctx: Context, config?: unknown): void;
 }
 
-describe("saolei-loop plugin registration", () => {
-  it("registers exactly the saolei:game section with the exported rules text", () => {
-    const { sections } = makeHarness();
+/** A stub provider plugin that provides `face` with `value`. */
+function providerPlugin(face: string, value: unknown): StubPlugin {
+  return {
+    name: `stub:${face}`,
+    apply(ctx: Context): void {
+      ctx.provide(face, value);
+    },
+  };
+}
 
-    expect(sections).toEqual([{ name: "saolei:game", order: 50, text: SAOLEI_GAME_RULES }]);
-  });
-});
-
-describe("SAOLEI_GAME_RULES content (prompt-sections.md §1)", () => {
-  it("states the authoritative classic game rules", () => {
-    for (const rule of [
-      "揭示全部非雷格",
-      "不踩雷",
-      "1–8",
-      "八邻格",
-      "级联展开",
-      "标旗",
-      "chord",
-      "左右同击",
-      "踩中雷",
-      "获胜",
-      "剩余雷数计数",
-      "顶部计数器",
-      "剩余未标记雷数",
-      "不是旗子数量",
-      "总雷数",
-      "已标旗数",
-      "可以为负",
-    ]) {
-      expect(SAOLEI_GAME_RULES).toContain(rule);
+/** An importer resolving names through the given stub table. */
+function stubImporter(
+  table: Record<string, StubPlugin>,
+): (name: string) => Promise<Plugin> {
+  return vi.fn(async (name: string): Promise<Plugin> => {
+    const plugin = table[name];
+    if (plugin === undefined) {
+      throw new Error(`unknown stub plugin ${name}`);
     }
+    return plugin as unknown as Plugin;
+  });
+}
+
+describe("saolei-loop plugin dependency assembly", () => {
+  it(
+    "mounts every configured row with its config and reads back the faces",
+    async () => {
+    const seen: Array<{ name: string; config: unknown }> = [];
+    const saolei = providerPlugin("saoleiTools", { tools: [], sections: [] });
+    const memory = providerPlugin("memoryMount", { build: () => ({}) });
+    const importPlugin = vi.fn(async (name: string): Promise<Plugin> => {
+      const base = name.includes("memory") ? memory : saolei;
+      return {
+        name,
+        apply(ctx: Context, config: unknown): void {
+          seen.push({ name, config });
+          base.apply(ctx, undefined);
+        },
+      } as unknown as Plugin;
+    });
+    const ctx = new Context();
+
+    await apply(
+      ctx,
+      {
+        plugins: [
+          { name: "@stub/saolei" },
+          { name: "@stub/memory", config: { target: "t", protoPath: "p" } },
+        ],
+      },
+      { importPlugin },
+    );
+
+    expect(importPlugin).toHaveBeenCalledTimes(2);
+    expect(importPlugin).toHaveBeenNthCalledWith(1, "@stub/saolei");
+    expect(importPlugin).toHaveBeenNthCalledWith(2, "@stub/memory");
+    expect(seen).toEqual([
+      { name: "@stub/saolei", config: undefined },
+      { name: "@stub/memory", config: { target: "t", protoPath: "p" } },
+    ]);
+    expect(ctx.get("saoleiTools")).toBeDefined();
+    expect(ctx.get("memoryMount")).toBeDefined();
   });
 
-  it("declares the operation set as the saolei tools expose it", () => {
-    for (const op of ["saolei_init", "saolei_operate", "saolei_remain"]) {
-      expect(SAOLEI_GAME_RULES).toContain(op);
-    }
-    expect(SAOLEI_GAME_RULES).toContain("click（揭示）");
-    expect(SAOLEI_GAME_RULES).toContain("flag（标旗/取消标旗）");
-    expect(SAOLEI_GAME_RULES).toContain("chord（同击）");
+  it("fails loud when a required provide face is missing", async () => {
+    const importPlugin = stubImporter({
+      "@stub/saolei": providerPlugin("saoleiTools", {
+        tools: [],
+        sections: [],
+      }),
+      // Provides nothing → memoryMount stays absent.
+      "@stub/noop": { name: "stub:noop", apply: () => {} },
+    });
+    const ctx = new Context();
+
+    await expect(
+      apply(
+        ctx,
+        { plugins: [{ name: "@stub/saolei" }, { name: "@stub/noop" }] },
+        { importPlugin },
+      ),
+    ).rejects.toThrow(/"memoryMount" capability is not mounted/);
   });
 
-  it("stays out of the tool-guidance domain (call shapes and result formats)", () => {
-    for (const guidanceOnly of [
-      "type/x/y",
-      "operations: [{",
-      "game status:",
-      "outcome",
-      "col0",
-      "row0",
-      "no_active_game",
-    ]) {
-      expect(SAOLEI_GAME_RULES).not.toContain(guidanceOnly);
-    }
+  it("fails loud when saoleiTools itself is missing", async () => {
+    const importPlugin = stubImporter({
+      "@stub/noop": { name: "stub:noop", apply: () => {} },
+    });
+
+    await expect(
+      apply(
+        new Context(),
+        { plugins: [{ name: "@stub/noop" }] },
+        { importPlugin },
+      ),
+    ).rejects.toThrow(/"saoleiTools" capability is not mounted/);
   });
 
-  it("stays out of the persona and team domains", () => {
-    for (const foreign of ["你是扫雷", "## 团队", "<player-message>"]) {
-      expect(SAOLEI_GAME_RULES).not.toContain(foreign);
-    }
+  it("rejects when a configured plugin fails to mount", async () => {
+    const broken: StubPlugin = {
+      name: "stub:broken",
+      apply: () => {
+        throw new Error("broken plugin startup");
+      },
+    };
+    const importPlugin = stubImporter({ "@stub/broken": broken });
+
+    await expect(
+      apply(
+        new Context(),
+        { plugins: [{ name: "@stub/broken" }] },
+        { importPlugin },
+      ),
+    ).rejects.toThrow(/broken plugin startup/);
+  });
+
+  it("mounts no row and fails loud on an empty dependency list", async () => {
+    await expect(
+      apply(new Context(), { plugins: [] }, { importPlugin: stubImporter({}) }),
+    ).rejects.toThrow(/"saoleiTools" capability is not mounted/);
+  });
+
+  it("defaults the flat dependency list to empty and injects the game foundation", () => {
+    expect(Config({ plugins: undefined })).toEqual({ plugins: [] });
+    // The game foundation face is an upstream service: the top-level saolei row
+    // must be composed or the plugin fails to load (cordis inject resolution;
+    // specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §1).
+    expect(inject).toEqual(["saolei"]);
   });
 });

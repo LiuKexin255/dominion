@@ -292,6 +292,84 @@ func TestMemorySortTerm_CursorEntry_kindMismatch(t *testing.T) {
 	_ = stringTerm.CursorEntry(42)
 }
 
+// Test_memorySortTermWire pins the canonical AIP-132 spelling of a final-key
+// term — the single spelling source shared by cursor construction and the page
+// token's context comparison (specs/068-wiki-round-pause/contracts/
+// memory-page-token-context.md §1; AIP-132 Ordering:
+// https://google.aip.dev/132).
+func Test_memorySortTermWire(t *testing.T) {
+	tests := []struct {
+		name string
+		term *MemorySortTerm
+		want string
+	}{
+		{
+			name: "ascending omits the suffix",
+			term: &MemorySortTerm{Field: MemorySortFieldMemoryID},
+			want: "memory_id",
+		},
+		{
+			name: "descending appends the lowercase desc suffix",
+			term: &MemorySortTerm{Field: MemorySortFieldUpdateTime, Descending: true},
+			want: "update_time desc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := memorySortTermWire(tt.term)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("memorySortTermWire(%+v) = %q, want %q", tt.term, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test_memorySortContext pins the canonical comma-joined serialization the page
+// token carries: the single string a token's context is compared against
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
+func Test_memorySortContext(t *testing.T) {
+	tests := []struct {
+		name string
+		sort []*MemorySortTerm
+		want string
+	}{
+		{
+			name: "single ascending term omits the suffix",
+			sort: []*MemorySortTerm{{Field: MemorySortFieldMemoryID}},
+			want: "memory_id",
+		},
+		{
+			name: "single descending term keeps the suffix",
+			sort: []*MemorySortTerm{{Field: MemorySortFieldUpdateTime, Descending: true}},
+			want: "update_time desc",
+		},
+		{
+			name: "multiple terms are comma-joined in key order",
+			sort: []*MemorySortTerm{
+				{Field: MemorySortFieldUpdateTime, Descending: true},
+				{Field: MemorySortFieldMemoryID},
+			},
+			want: "update_time desc,memory_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := memorySortContext(tt.sort)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("memorySortContext(%+v) = %q, want %q", tt.sort, got, tt.want)
+			}
+		})
+	}
+}
+
 // assertMemorySortTerms asserts the produced key equals want on the exported
 // fields (kind is package-private derivation knowledge).
 func assertMemorySortTerms(t *testing.T, got, want []*MemorySortTerm) {

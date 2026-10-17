@@ -1664,18 +1664,22 @@ describe('App 重建同步（Apply 成功后对话视图即时同步）', () => 
 
 describe('App 主界面 system prompt 入口', () => {
   let fetchMock: ReturnType<typeof vi.fn>
+  // teamResponse 供单个用例替换 GetTeam 投影（默认两成员；announcer 名册用例
+  // 换成三成员）。
+  let teamResponse: () => Response
 
   const PLAYER_PROMPT = 'player 完整 system prompt\n第二行'
   const PLANNER_PROMPT = 'planner 完整 system prompt'
 
   beforeEach(() => {
+    teamResponse = () => teamView(S1, { activeMember: 'planner' })
     fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
       const method = init?.method ?? 'GET'
       if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
         return jsonResponse({ sessions: [{ name: S1, createTime: '2026-08-29T00:00:00Z' }] })
       }
       if (url === `/api/v2/${S1}/team` && method === 'GET') {
-        return teamView(S1, { activeMember: 'planner' })
+        return teamResponse()
       }
       if (url === `/api/v2/${S1}/team/messages`) {
         return jsonResponse({ messages: [] })
@@ -1691,6 +1695,18 @@ describe('App 主界面 system prompt 入口', () => {
       }
       if (url === `/api/v2/${S1}/team/members/planner` && method === 'GET') {
         return jsonResponse({ role: 'planner', systemPrompt: PLANNER_PROMPT })
+      }
+      // The announcer is served by the same member read with an empty
+      // output-only system_prompt (specs/076-agent-v2-optimize/contracts/
+      // announcer-member.md §3 item 3)。
+      if (url === `/api/v2/${S1}/team/members/announcer` && method === 'GET') {
+        return jsonResponse({
+          name: `${S1}/team/members/announcer`,
+          role: 'announcer',
+          preset: '',
+          model: '',
+          systemPrompt: '',
+        })
       }
       // 设置面板数据面（互斥用例打开面板时消费）。
       if (url === '/api/v2/templates/saolei/presets?role=player' && method === 'GET') {
@@ -1788,6 +1804,49 @@ describe('App 主界面 system prompt 入口', () => {
     await waitFor(() => {
       expect(screen.getByTestId('system-prompt-text').textContent).toBe(PLAYER_PROMPT)
     })
+  })
+
+  it('工具条成员清单含 announcer 空形态项：只呈现 role，读取其空 system_prompt', async () => {
+    // 三成员名册（specs/076-agent-v2-optimize/contracts/announcer-member.md
+    // §4）：announcer 项无 preset/model，名册只呈现 role；激活指示为 wire 角色
+    // 串直渲染（播报窗口内 active_member 可为 announcer，同契约 §3 item 2）。
+    teamResponse = () =>
+      teamView(S1, {
+        activeMember: 'announcer',
+        members: [
+          {
+            name: `${S1}/team/members/player`,
+            role: 'player',
+            preset: 'templates/saolei/presets/p-player',
+            model: 'glm-responses/glm-5.2',
+          },
+          {
+            name: `${S1}/team/members/planner`,
+            role: 'planner',
+            preset: 'templates/saolei/presets/p-planner',
+          },
+          { name: `${S1}/team/members/announcer`, role: 'announcer', preset: '', model: '' },
+        ],
+      })
+    render(<App />)
+    fireEvent.click(await screen.findByText('s1'))
+
+    const entries = await screen.findAllByTestId('team-member')
+    expect(entries).toHaveLength(3)
+    expect(entries[2]?.getAttribute('data-role')).toBe('announcer')
+    // 不显示 preset 占位与"默认模型"：非 LLM 成员只有 role。
+    expect(entries[2]?.textContent).toBe('announcer')
+    // 激活指示渲染 announcer（无呈现投影特例）。
+    expect(screen.getByTestId('active-member').getAttribute('data-member')).toBe('announcer')
+    expect(screen.getByTestId('active-member').textContent).toContain('announcer')
+
+    // 入口仍可用：GetTeamMember 服务 announcer，浮层呈现其空全文。
+    fireEvent.click(entries[2] as HTMLElement)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(`/api/v2/${S1}/team/members/announcer`, undefined)
+    })
+    const pre = await screen.findByTestId('system-prompt-text')
+    expect(pre.textContent).toBe('')
   })
 })
 
@@ -1888,5 +1947,378 @@ describe('App 双视图切换', () => {
       String(call[0]).includes('/members/'),
     )
     expect(memberCalls).toHaveLength(2)
+  })
+})
+
+// ─── App 侧栏两级视图导航（specs/072-web-nav-redesign/contracts/web-nav.md
+// ─── §5 验收锚点 1/3/4：一级仅 2 直达 + 1 图标入口、菜单开关/外点-Esc 关闭/
+// ─── 选中态保持、管理视图互斥、既有直达零回归） ────────────────────────────
+
+// memory 管理视图用例的 preset 与集合 route：preset 选择器取
+// listPresets(template)（全角色），集合按默认序取该 preset 首页
+// （specs/071-memory-preset-scope/contracts/web-memory-view.md §2/§3）。
+const MEMORY_PRESET = 'templates/saolei/presets/p-memory'
+const MEMORY_LIST_URL =
+  '/api/v1/templates/saolei/presets/p-memory/memories?page_size=20&order_by=update_time+desc'
+
+describe('App 侧栏两级视图导航', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? 'GET'
+      if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+        return jsonResponse({ sessions: [] })
+      }
+      if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
+        return jsonResponse({ presets: [{ name: MEMORY_PRESET, role: 'planner' }] })
+      }
+      if (url === MEMORY_LIST_URL && method === 'GET') {
+        return jsonResponse({
+          memories: [
+            {
+              name: `${MEMORY_PRESET}/memories/m1`,
+              content: '一条记忆',
+              updateTime: '2026-09-20T01:00:00Z',
+            },
+          ],
+        })
+      }
+      if (url === '/api/v1/templates/saolei/wikis?page_size=20' && method === 'GET') {
+        return jsonResponse({
+          wikis: [
+            {
+              name: 'templates/saolei/wikis/w1',
+              title: '开局-左上角',
+              content: '先点角落',
+            },
+          ],
+        })
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('一级仅 2 直达 + 1 图标入口；入口 toggle 菜单、点选切换并关闭、外点/Esc 仅关闭、选中态保持', async () => {
+    render(<App />)
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+
+    // 锚点 1/4：一级恰 3 个直接子元素（sessions/presets 直达 + ☰ 入口的 Menu
+    // 锚定 wrapper）；wiki/memory 渲染于 Menu 列表内而非侧栏流内。
+    const switcher = screen.getByTestId('view-switch')
+    expect(switcher.children).toHaveLength(3)
+    expect(screen.getByTestId('view-sessions')).toBeTruthy()
+    expect(screen.getByTestId('view-presets')).toBeTruthy()
+    const entry = screen.getByTestId('view-more')
+    // 图标-only（SC-001 不换行防护）：有可访问名、无文本子节点
+    // （WAI-ARIA APG menu-button 的按钮语义，specs/072-web-nav-redesign/
+    // contracts/web-nav.md §4）。
+    expect(entry.getAttribute('aria-label')).toBe('更多视图')
+    expect(entry.getAttribute('title')).toBe('更多视图')
+    expect(entry.textContent).toBe('')
+    expect(entry.getAttribute('aria-haspopup')).toBe('menu')
+    expect(entry.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Wiki' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Memory' })).toBeNull()
+
+    // 点入口 → 展开菜单（toggle）；两个二级项经 role 查询可达且无分组标题行
+    // （菜单不为某一域定制），侧栏一级子元素数不变（结构断言：二级项在 Menu
+    // 列表内）。
+    fireEvent.click(entry)
+    const menu = await screen.findByRole('menu')
+    expect(entry.getAttribute('aria-expanded')).toBe('true')
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(2)
+    // 分组标题行非 menuitem role（结构断言捕获不到），以文本负向断言钉死菜单
+    // 不出现「知识」域标题；queryByText 默认全串精确匹配，含"知识"字样的视图名
+    // 不会误报。
+    expect(within(menu).queryByText('知识')).toBeNull()
+    expect(within(menu).getByRole('menuitem', { name: 'Wiki' })).toBeTruthy()
+    expect(within(menu).getByRole('menuitem', { name: 'Memory' })).toBeTruthy()
+    expect(switcher.children).toHaveLength(3)
+    expect(entry.parentElement?.contains(menu)).toBe(true)
+
+    // 再点入口 → 关闭（toggle），当前视图不变。
+    fireEvent.click(entry)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.getByTestId('empty-hint')).toBeTruthy()
+
+    // 点菜单内 wiki → 切视图且菜单关闭；入口呈 data-active 激活态且仍无文本；
+    // 再次打开菜单时当前二级项带选中标记（Menu selectedId 默认 selection=
+    // 'check'：选中行尾随勾图标，未选中行无）。
+    fireEvent.click(entry)
+    fireEvent.click(
+      within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Wiki' }),
+    )
+    expect(await screen.findByTestId('wiki-view')).toBeTruthy()
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(entry.getAttribute('aria-expanded')).toBe('false')
+    expect(entry.getAttribute('data-active')).toBe('true')
+    expect(entry.textContent).toBe('')
+
+    fireEvent.click(entry)
+    const wikiMenu = await screen.findByRole('menu')
+    expect(
+      within(wikiMenu).getByRole('menuitem', { name: 'Wiki' }).querySelector('svg'),
+    ).not.toBeNull()
+    expect(
+      within(wikiMenu).getByRole('menuitem', { name: 'Memory' }).querySelector('svg'),
+    ).toBeNull()
+
+    // 菜单开启时点菜单外部（Menu 监听 document 的 pointerdown）：仅关闭菜单，
+    // 视图与选中态保持（不回退默认视图）。
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.getByTestId('wiki-view')).toBeTruthy()
+    expect(entry.getAttribute('data-active')).toBe('true')
+
+    // Esc（Menu 监听 document 的 keydown）：同样仅关闭菜单、不改当前视图。
+    fireEvent.click(entry)
+    expect(await screen.findByRole('menu')).toBeTruthy()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.getByTestId('wiki-view')).toBeTruthy()
+    expect(entry.getAttribute('data-active')).toBe('true')
+  })
+
+  it('管理视图互斥渲染；既有 sessions/presets 直达行为零回归', async () => {
+    render(<App />)
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+
+    // 二级菜单进入 wiki：主区渲染 WikiView（固定 saolei template），会话空态
+    // 与 presets 视图均不渲染。
+    fireEvent.click(screen.getByTestId('view-more'))
+    fireEvent.click(
+      within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Wiki' }),
+    )
+    expect(await screen.findByTestId('wiki-view')).toBeTruthy()
+    expect((await screen.findByTestId('wiki-title')).textContent).toBe('开局-左上角')
+    expect(screen.queryByTestId('empty-hint')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/templates/saolei/wikis?page_size=20', undefined)
+
+    // presets 直达：wiki 不再渲染。菜单开启时点一级直达按钮同样切换视图并
+    // 关闭菜单（specs/072-web-nav-redesign/contracts/web-nav.md §2 行为表）。
+    fireEvent.click(screen.getByTestId('view-more'))
+    expect(await screen.findByRole('menu')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('view-presets'))
+    expect(await screen.findByTestId('presets-view')).toBeTruthy()
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+
+    // sessions 直达：回到会话空态，其余管理视图不渲染。
+    fireEvent.click(screen.getByTestId('view-sessions'))
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
+
+    // 直达选中态与入口互斥：sessions 选中时 ☰ 入口不呈激活态。
+    expect(screen.getByTestId('view-sessions').getAttribute('data-active')).toBe('true')
+    expect(screen.getByTestId('view-more').getAttribute('data-active')).toBeNull()
+  })
+
+  it('菜单 memory 项：切入 MemoryView（固定 saolei template），四视图互斥且选中态保持', async () => {
+    render(<App />)
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+
+    const entry = screen.getByTestId('view-more')
+    // 菜单承载 wiki 与 memory 两个二级项（结构断言：二级项渲染于 Menu 列表内，
+    // 一级子元素数不随二级项增加——contracts/web-nav.md §5 锚点 4）。
+    fireEvent.click(entry)
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Wiki' })).toBeTruthy()
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Memory' }))
+
+    // 主区渲染 MemoryView；点击后菜单关闭，其余管理视图与会话空态均不渲染。
+    expect(await screen.findByTestId('memory-view')).toBeTruthy()
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryByTestId('empty-hint')).toBeNull()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
+    // 入口呈激活态且无视图名文本（菜单关闭后激活态保持，两行问题根除）。
+    expect(entry.getAttribute('data-active')).toBe('true')
+    expect(entry.textContent).toBe('')
+
+    // 选择 preset 后按视图默认序取该 preset 的集合。
+    fireEvent.change(screen.getByTestId('memory-preset-select'), {
+      target: { value: 'p-memory' },
+    })
+    expect((await screen.findByTestId('memory-content')).textContent).toBe('一条记忆')
+    expect(fetchMock).toHaveBeenCalledWith(MEMORY_LIST_URL, undefined)
+
+    // 四视图互斥补全：依次切到 wiki/presets/sessions，任一时刻仅一个管理视图渲染。
+    fireEvent.click(entry)
+    fireEvent.click(
+      within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Wiki' }),
+    )
+    expect(await screen.findByTestId('wiki-view')).toBeTruthy()
+    expect(screen.queryByTestId('memory-view')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('view-presets'))
+    expect(await screen.findByTestId('presets-view')).toBeTruthy()
+    expect(screen.queryByTestId('memory-view')).toBeNull()
+    expect(screen.queryByTestId('wiki-view')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('view-sessions'))
+    expect(await screen.findByTestId('empty-hint')).toBeTruthy()
+    expect(screen.queryByTestId('memory-view')).toBeNull()
+    expect(screen.queryByTestId('presets-view')).toBeNull()
+  })
+})
+
+// ─── App 左栏 session 条目任意视图可达（specs/072-web-nav-redesign/
+// ─── contracts/web-nav.md §2 行为表/§5 锚点 2：openSession 跨视图切回 sessions；
+// ─── FR-006/D6 非 session 视图下选中高亮保留） ──────────────────────────────
+
+// makeUs2NavFetchMock 组合会话面（makeUs4FetchMock：list/team/team messages/
+// 成员视角/send）与管理视图数据面（PresetsView/MemoryView 的 presets 列表、
+// WikiView 的 wiki 列表）——用例先在管理视图下点左栏 session 条目，再断言切回
+// sessions。用例不选 preset，故 MemoryView 不发集合（memories）请求。
+function makeUs2NavFetchMock() {
+  const sessionFaces = makeUs4FetchMock([{ name: S1 }, { name: S2 }])
+  return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET'
+    if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
+      return jsonResponse({ presets: [{ name: MEMORY_PRESET, role: 'planner' }] })
+    }
+    if (url === '/api/v1/templates/saolei/wikis?page_size=20' && method === 'GET') {
+      return jsonResponse({
+        wikis: [
+          { name: 'templates/saolei/wikis/w1', title: '开局-左上角', content: '先点角落' },
+        ],
+      })
+    }
+    return sessionFaces(url, init)
+  })
+}
+
+// makeUs2CreateFetchMock：空会话列表 + POST 新建返回 s2 + s2 的会话面——验证
+// 「新建会话」经 openSession 获得与左栏条目相同的跨视图切回语义（US2 场景 4）。
+function makeUs2CreateFetchMock() {
+  const sessionFaces = makeUs4FetchMock([{ name: S2 }])
+  return vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? 'GET'
+    if (url === '/api/v1/templates/saolei/sessions' && method === 'GET') {
+      return jsonResponse({ sessions: [] })
+    }
+    if (url === '/api/v1/templates/saolei/sessions' && method === 'POST') {
+      return jsonResponse({ name: S2, createTime: '2026-08-29T00:00:00Z' })
+    }
+    if (url === '/api/v2/templates/saolei/presets' && method === 'GET') {
+      return jsonResponse({ presets: [] })
+    }
+    return sessionFaces(url, init)
+  })
+}
+
+// openManagementView 进入一个管理视图（presets 走一级直达、wiki/memory 走 ☰
+// 菜单），供三个视图的切回用例共用。
+async function openManagementView(kind: 'presets' | 'wiki' | 'memory'): Promise<void> {
+  if (kind === 'presets') {
+    fireEvent.click(screen.getByTestId('view-presets'))
+    await screen.findByTestId('presets-view')
+    return
+  }
+  fireEvent.click(screen.getByTestId('view-more'))
+  const label = kind === 'wiki' ? 'Wiki' : 'Memory'
+  fireEvent.click(
+    within(await screen.findByRole('menu')).getByRole('menuitem', { name: label }),
+  )
+  await screen.findByTestId(kind === 'wiki' ? 'wiki-view' : 'memory-view')
+}
+
+// sessionItem 取某会话的侧栏条目按钮（左栏恒为会话导航；双会话 fixture 下
+// `session-item` testid 非唯一，故经名称定位）。
+function sessionItem(name: string): HTMLElement {
+  const item = screen.getByText(name).closest('button')
+  if (item === null) throw new Error(`session item not found: ${name}`)
+  return item
+}
+
+// expectReturnedToSession 断言 openSession 的跨视图切换面（契约 §2 行为表/
+// §5 锚点 2）：sessions 直达激活、目标会话面板（team-toolbar 面）呈现、原管理
+// 视图不再渲染、目标条目选中（未选中的面板不渲染，故 chat-input 唯一）。
+async function expectReturnedToSession(session: string, leftView: string): Promise<void> {
+  expect(await screen.findByTestId('chat-input')).toBeTruthy()
+  expect(screen.getByTestId('chat-input').getAttribute('aria-label')).toContain(session)
+  expect(screen.getByTestId('team-status')).toBeTruthy()
+  expect(screen.getByTestId('view-sessions').getAttribute('data-active')).toBe('true')
+  expect(screen.queryByTestId(leftView)).toBeNull()
+  expect(sessionItem(session).className).toContain('selected')
+}
+
+describe('App 左栏 session 条目任意视图可达（US2）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('presets 视图下点击另一条 session 条目（US2 场景 3）：选中迁移并切回；回填不重跑（FR-005/FR-006/FR-008）', async () => {
+    const fetchMock = makeUs2NavFetchMock()
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await screen.findByText('s1')
+
+    // 先在 sessions 视图选中 s1：面板挂载、team/messages 回填一次。
+    fireEvent.click(sessionItem('s1'))
+    expect((await screen.findByTestId('chat-input')).getAttribute('aria-label')).toContain('s1')
+
+    // 切到 presets 管理视图：左栏恒为会话导航（契约 §1），s1 高亮保留（§3）。
+    await openManagementView('presets')
+    expect(screen.getAllByTestId('session-item')).toHaveLength(2)
+    expect(sessionItem('s1').className).toContain('selected')
+
+    // US2 场景 3：点另一条会话 s2 → 切回 sessions、s2 面板呈现、选中迁移。
+    fireEvent.click(sessionItem('s2'))
+    await expectReturnedToSession('s2', 'presets-view')
+    expect(sessionItem('s1').className).not.toContain('selected')
+
+    // FR-008：管理视图往返后返回 s1，其 team 回填不重跑（面板常驻挂载、仅 CSS
+    // 隐藏——条件挂载会让该计数 > 1，specs/051-agent-v2-dsh-migration/contracts/
+    // web-frontend.md §2）。
+    await openManagementView('presets')
+    fireEvent.click(sessionItem('s1'))
+    await expectReturnedToSession('s1', 'presets-view')
+    expect(
+      fetchMock.mock.calls.filter((call) => call[0] === `/api/v2/${S1}/team/messages`),
+    ).toHaveLength(1)
+  })
+
+  it('wiki 视图下点击 session 条目：切回 sessions 视图并打开该会话（FR-005）', async () => {
+    vi.stubGlobal('fetch', makeUs2NavFetchMock())
+    render(<App />)
+    await screen.findByText('s1')
+
+    await openManagementView('wiki')
+    fireEvent.click(sessionItem('s1'))
+    await expectReturnedToSession('s1', 'wiki-view')
+  })
+
+  it('memory 视图下点击 session 条目：切回 sessions 视图并打开该会话（FR-005）', async () => {
+    vi.stubGlobal('fetch', makeUs2NavFetchMock())
+    render(<App />)
+    await screen.findByText('s1')
+
+    await openManagementView('memory')
+    fireEvent.click(sessionItem('s1'))
+    await expectReturnedToSession('s1', 'memory-view')
+  })
+
+  it('非 session 视图下「新建会话」：切回 sessions 视图并打开新建会话（US2 场景 4）', async () => {
+    vi.stubGlobal('fetch', makeUs2CreateFetchMock())
+    render(<App />)
+    // 列表加载完成后「新建会话」才可用（loading 门控禁用态）。
+    await waitFor(() => {
+      expect(screen.getByTestId('create-session').getAttribute('disabled')).toBeNull()
+    })
+
+    await openManagementView('presets')
+    fireEvent.click(screen.getByTestId('create-session'))
+
+    await expectReturnedToSession('s2', 'presets-view')
   })
 })

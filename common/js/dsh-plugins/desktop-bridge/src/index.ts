@@ -19,9 +19,11 @@ import { Service, type Context } from "@deepseek-ai/cordis";
 
 import { DesktopBridge } from "./bridge.js";
 import type {
-  BidiStream,
   DesktopBridgeServiceHandlers,
   OperationResult,
+  SendFrameCall,
+  SendFrameCallback,
+  StreamCall,
   WireFlowPart,
 } from "./wire.js";
 
@@ -31,12 +33,25 @@ export const name = "desktop-bridge";
 /** The service face mounted as `ctx.desktopBridge`. */
 export interface DesktopBridgeService {
   /**
-   * Bind a bidi flow stream as THE connection for the session resource name.
-   * First-frame identity derivation happens in the Connect handler built by
-   * {@link handlers}; attach owns takeover (the previous connection is
-   * closed) and disconnect cleanup.
+   * Bind a downlink stream as THE connection for the session resource name.
+   * Identity arrives in the Stream handler built by {@link handlers};
+   * attach owns takeover (the previous connection is ended, its heartbeat
+   * stopped) and disconnect cleanup.
    */
-  attach(sessionName: string, stream: BidiStream): void;
+  attach(sessionName: string, stream: StreamCall): void;
+  /**
+   * Handler face for the session downlink (path-bound session identity):
+   * takes over the session's previous connection and owns the confirmation
+   * frame, heartbeat, and disconnect cleanup.
+   */
+  Stream(call: StreamCall): void;
+  /**
+   * Handler face for the uplink single-shot frame submission: a missing
+   * session/frame is INVALID_ARGUMENT, no active downlink is
+   * FAILED_PRECONDITION, and a delivered receipt resolves its in-flight
+   * dispatch.
+   */
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void;
   /**
    * Dispatch one FlowPart operation and await its result receipt. No
    * connection → FAILED "desktop disconnected"; abort → FAILED "aborted";
@@ -58,12 +73,14 @@ export interface DesktopBridgeService {
 }
 
 export type {
-  BidiStream,
   BridgeTeamFrame,
   BridgeUserFrame,
   DesktopBridgeServiceHandlers,
   OperationResult,
   OperationScreenshot,
+  SendFrameCall,
+  SendFrameCallback,
+  StreamCall,
   ToolResultStatus,
   WireFlowPart,
   WireFlowResultPart,
@@ -83,8 +100,16 @@ export class DesktopBridgePlugin extends Service implements DesktopBridgeService
     super(ctx, "desktopBridge");
   }
 
-  attach(sessionName: string, stream: BidiStream): void {
+  attach(sessionName: string, stream: StreamCall): void {
     this.bridge.attach(sessionName, stream);
+  }
+
+  Stream(call: StreamCall): void {
+    this.bridge.Stream(call);
+  }
+
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void {
+    this.bridge.SendFrame(call, callback);
   }
 
   dispatch(

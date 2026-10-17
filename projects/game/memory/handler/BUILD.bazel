@@ -3,7 +3,10 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "handler",
-    srcs = ["handler.go"],
+    srcs = [
+        "handler.go",
+        "wiki_handler.go",
+    ],
     importpath = "dominion/projects/game/memory/handler",
     visibility = ["//visibility:public"],
     deps = [
@@ -20,7 +23,10 @@ go_library(
 
 go_unittest(
     name = "handler_test",
-    srcs = ["handler_test.go"],
+    srcs = [
+        "handler_test.go",
+        "wiki_handler_test.go",
+    ],
     embed = [":handler"],
     deps = [
         "//projects/game",

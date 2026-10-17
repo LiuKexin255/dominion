@@ -28,6 +28,8 @@ const (
 	WorkloadKindHTTPRoute WorkloadKind = "route"
 	// WorkloadKindMongoDB 表示 MongoDB 类型前缀。
 	WorkloadKindMongoDB WorkloadKind = "mongo"
+	// WorkloadKindRedis 表示 Redis 类型前缀。
+	WorkloadKindRedis WorkloadKind = "redis"
 	// WorkloadKindPVC 表示 PVC 类型前缀。
 	WorkloadKindPVC WorkloadKind = "pvc"
 	// WorkloadKindSecret 表示 Secret 类型前缀。

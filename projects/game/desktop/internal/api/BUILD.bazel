@@ -4,15 +4,17 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 go_library(
     name = "api",
     srcs = [
+        "bridgeclient.go",
         "client.go",
-        "websocket.go",
     ],
     importpath = "dominion/projects/game/desktop/internal/api",
     visibility = ["//projects/game/desktop:__subpackages__"],
     deps = [
         "//projects/game",
         "//projects/game/desktop/internal/trace",
-        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
@@ -21,14 +23,15 @@ go_library(
 go_unittest(
     name = "api_test",
     srcs = [
+        "bridgeclient_test.go",
         "client_test.go",
-        "websocket_test.go",
     ],
     embed = [":api"],
     deps = [
-        "//common/gopkg/otel/tracecontext",
         "//projects/game",
-        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
 )

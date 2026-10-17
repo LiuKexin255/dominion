@@ -8,20 +8,21 @@ https://docs.bigmodel.cn/cn/coding-plan/tool/others ）。插件契约（包声�
 适配器协议义务、SSE 事件映射）见
 `specs/049-agent-v2-dsh-init/contracts/glm-llm-plugin.md`。
 
-自研 Responses 适配器的原因：官方仅有 chat-completions wire 的 `dsh-llm-deepseek`
-适配器，无 Responses 适配器（`specs/049-agent-v2-dsh-init/research.md` D1）。
+自研 Responses 适配器的原因：官方 llm 家族无 OpenAI **Responses** 协议的适配器行
+（`dsh-llm-deepseek` 为 DeepSeek Messages 传输库、Anthropic Messages
+wire；`specs/070-dsh-upgrade/research.md` D7「demo LLM 行换线」终态结论）。
 
 ## 依赖 pin 决策
 
-- dsh 家族 peer `@deepseek-ai/dsh-llm` 按精确版本 `0.1.1-rc.2` pin（无前缀）：dsh
-  家族按 0.1.1-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），依据
-  `specs/049-agent-v2-dsh-init/research.md` D1。
+- dsh 家族 peer `@deepseek-ai/dsh-llm` 经 catalog 解析到精确版本 `0.2.0-rc.2`：
+  dsh 家族按 0.2.0-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），
+  依据 `specs/073-dsh-0.2-upgrade/research.md` D1。
 - deps 取官方适配器 `dsh-llm-deepseek` 的最小集：`eventsource-parser`（SSE 解析，
   catalog 统一管理，版本对齐官方声明 `^3.1.0`）、`@deepseek-ai/schemastery`
-  （Config schema，`^3.18.1`），并把官方以 peer 声明的 `@deepseek-ai/dsh-timeout`
-  列为直接依赖（流停滞看护 `idleWatchdog` 的实现载体，0.1.1-rc.2 线）；peer 裁剪
-  至 `@deepseek-ai/dsh-llm` + `@deepseek-ai/cordis`（不消费 credentials/settings
-  等宿主设施）。
+  （Config schema，catalog `^3.18.4`），并把官方以 peer 声明的
+  `@deepseek-ai/dsh-timeout` 列为直接依赖（流停滞看护 `idleWatchdog` 的实现载体）；
+  peer 裁剪至 `@deepseek-ai/dsh-llm` + `@deepseek-ai/cordis`（不消费
+  credentials/settings 等宿主设施）。
 
 ## 失败分类与看护
 
@@ -44,7 +45,6 @@ https://docs.bigmodel.cn/cn/coding-plan/tool/others ）。插件契约（包声�
 
 - 官方适配插件实现先例：
   [packages/llm/llm-deepseek](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/llm/llm-deepseek)
-  （本地物化：`experimental/dsh/demo/agent/node_modules/@deepseek-ai/dsh-llm-deepseek/`）
 - 适配器协议义务：dsh cookbook
   [adding-an-llm-adapter](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-an-llm-adapter.md)
 - `LlmAdapter`/`StreamChunk` 契约：

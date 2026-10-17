@@ -47,7 +47,10 @@ js_library(
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
 # runtime_deps closure walking. The framework-core baseline is plugin-free:
 # npm_deps enumerates exactly the 11 direct dependencies pinned in package.json
-# (specs/047-dsh-chat-demo/data-model.md §6, specs/047-dsh-chat-demo/research.md D6). package_json is
+# — the @deepseek-ai/dsh-* core packages on the 0.2.0-rc.2 line, plus the
+# cordis family (4.0.4/1.0.5/1.0.9/1.0.4/1.1.6) and
+# node-addon-require-builtin 0.1.6 interlocked by the 0.2.0 peer ranges
+# (specs/073-dsh-0.2-upgrade/research.md D1). package_json is
 # a mandatory attribute (tools/release/js_runtime_library.bzl).
 js_runtime_library(
     name = "runtime_pkg",

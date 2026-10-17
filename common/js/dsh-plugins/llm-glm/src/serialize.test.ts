@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { createAssistantMessage, createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
+import {
+  createAssistantMessage,
+  createSystemMessage,
+  createToolResultMessage,
+  createUserMessage,
+  LlmError,
+  ToolCallId,
+} from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions } from "@deepseek-ai/dsh-llm";
 
 import { serializeRequest } from "./serialize.js";
@@ -104,6 +111,51 @@ describe("Responses request serialization", () => {
 
     expect(request.instructions).toBeUndefined();
     expect(request.input).toHaveLength(1);
+  });
+
+  it("maps a leading system-role message to the instructions field", () => {
+    // The loop-built request carries the rendered prompt as a leading
+    // system-role message instead of the one-shot `system` option.
+    const request = serializeRequest(
+      baseOptions({
+        messages: [
+          createSystemMessage("You are a game table assistant."),
+          createUserMessage({
+            content: [{ type: "text", text: "hi" }],
+            source: { kind: "user" },
+          }),
+        ],
+      }),
+    );
+
+    expect(request.instructions).toBe("You are a game table assistant.");
+    expect(request.input).toEqual([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+    ]);
+  });
+
+  it("throws UNSUPPORTED_CONTENT for a mid-conversation system message", () => {
+    // The `instructions` slot only carries the leading system run; a
+    // system-role message positioned after any input item has no place in
+    // the Responses input array and must fail loudly rather than be
+    // reordered into the one-shot prompt.
+    const options = baseOptions({
+      messages: [
+        createUserMessage({
+          content: [{ type: "text", text: "hi" }],
+          source: { kind: "user" },
+        }),
+        createSystemMessage("later instruction"),
+      ],
+    });
+
+    expect(() => serializeRequest(options)).toThrowError(LlmError);
+    try {
+      serializeRequest(options);
+      expect.unreachable();
+    } catch (err) {
+      expect((err as LlmError).code).toBe("UNSUPPORTED_CONTENT");
+    }
   });
 
   it("skips assistant messages whose only content is reasoning", () => {
@@ -270,7 +322,7 @@ describe("Responses request serialization", () => {
               { type: "text", text: "Let me check the board." },
               {
                 type: "tool-call",
-                id: "call_1",
+                id: ToolCallId("call_1"),
                 name: "saolei_init",
                 arguments: "{}",
               },
@@ -288,21 +340,16 @@ describe("Responses request serialization", () => {
   });
 
   it("maps a tool-result message to a function_call_output input item", () => {
-    // createToolResultMessage fixes the user role and couples the tool
-    // source to its result block; the rendered text becomes `output`,
-    // joined to the call by call_id (OpenAI Responses input item shape).
+    // A tool-role message carries the provider call id and its result
+    // blocks directly; the rendered text becomes `output`, joined to the
+    // call by call_id (OpenAI Responses input item shape).
     const request = serializeRequest(
       baseOptions({
         messages: [
-          createUserMessage({
-            content: [
-              {
-                type: "tool-result",
-                toolCallId: "call_1",
-                content: [{ type: "text", text: "new game started\nboard size 9*9" }],
-              },
-            ],
-            source: { kind: "tool" },
+          createToolResultMessage({
+            callId: ToolCallId("call_1"),
+            content: [{ type: "text", text: "new game started\nboard size 9*9" }],
+            isError: false,
           }),
         ],
       }),
@@ -333,19 +380,14 @@ describe("Responses request serialization", () => {
             content: [
               { type: "reasoning", text: "chain of thought" },
               { type: "text", text: "Opening the board." },
-              { type: "tool-call", id: "call_1", name: "saolei_init", arguments: "{}" },
+              { type: "tool-call", id: ToolCallId("call_1"), name: "saolei_init", arguments: "{}" },
             ],
             source: { provider: "glm-responses", model: "glm-5.2" },
           }),
-          createUserMessage({
-            content: [
-              {
-                type: "tool-result",
-                toolCallId: "call_1",
-                content: [{ type: "text", text: "new game started" }],
-              },
-            ],
-            source: { kind: "tool" },
+          createToolResultMessage({
+            callId: ToolCallId("call_1"),
+            content: [{ type: "text", text: "new game started" }],
+            isError: false,
           }),
           createAssistantMessage({
             content: [{ type: "text", text: "The game has started." }],
@@ -368,18 +410,13 @@ describe("Responses request serialization", () => {
     const request = serializeRequest(
       baseOptions({
         messages: [
-          createUserMessage({
+          createToolResultMessage({
+            callId: ToolCallId("call_9"),
             content: [
-              {
-                type: "tool-result",
-                toolCallId: "call_9",
-                content: [
-                  { type: "text", text: "saolei_operate → executed 2 ops" },
-                  { type: "text", text: "game status: playing" },
-                ],
-              },
+              { type: "text", text: "saolei_operate → executed 2 ops" },
+              { type: "text", text: "game status: playing" },
             ],
-            source: { kind: "tool" },
+            isError: false,
           }),
         ],
       }),
@@ -397,15 +434,10 @@ describe("Responses request serialization", () => {
   it("throws UNSUPPORTED_CONTENT for non-text tool result content", () => {
     const options = baseOptions({
       messages: [
-        createUserMessage({
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: "call_1",
-              content: [{ type: "image", attachment: {} } as never],
-            },
-          ],
-          source: { kind: "tool" },
+        createToolResultMessage({
+          callId: ToolCallId("call_1"),
+          content: [{ type: "image", attachment: {} } as never],
+          isError: false,
         }),
       ],
     });

@@ -1,13 +1,14 @@
 /**
- * cli.ts — `saolei-recognize` CLI: recognize a minesweeper screenshot and
- * print the board state. Used to validate/tune the recognition profile against
- * real screenshots before freezing golden unit tests.
+ * cli.ts — saolei screenshot recognition CLI: recognize a minesweeper
+ * screenshot and print the board state. Used to validate/tune the recognition
+ * profile against real screenshots before freezing golden unit tests.
  *
- * Usage:
- *   saolei-recognize <screenshot.png>           # print text board
- *   saolei-recognize <screenshot.png> --json    # machine-readable GameState
- *   saolei-recognize <screenshot.png> --debug   # per-cell diagnostics
- *   saolei-recognize <screenshot.png> --width 9 --height 9   # override dims
+ * Usage (the screenshot path is the first argument; see the Bazel invocation
+ * below):
+ *   <screenshot.png>                         # print text board
+ *   <screenshot.png> --json                  # machine-readable GameState
+ *   <screenshot.png> --debug                 # per-cell diagnostics
+ *   <screenshot.png> --width 9 --height 9    # override dims
  *
  * Via Bazel: `bazel run //projects/game/pkg/saolei-board:cli -- <path>`.
  */
@@ -49,7 +50,7 @@ function parseArgs(argv: string[]): ParsedArgs | null {
 
 function usage(): string {
   return [
-    "usage: saolei-recognize <screenshot.png> [options]",
+    "usage: cli <screenshot.png> [options]",
     "",
     "options:",
     "  --json            output JSON GameState",

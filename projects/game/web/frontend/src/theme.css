@@ -181,11 +181,26 @@ body {
   color: var(--dsw-alias-state-error-primary);
 }
 
-/* 侧栏底部视图切换（sessions | presets，web-frontend.md §2）。 */
+/* 侧栏底部视图切换（一级：sessions/presets 文本直达 + ☰ 图标菜单入口，
+ * specs/072-web-nav-redesign/contracts/web-nav.md §1）：一级行数恒定，
+ * wiki/memory 收纳于 primitives Menu 而非平铺。菜单卡片/层级/键盘焦点样式由
+ * primitives 的 Menu.module.css 提供，本文件不承载任何菜单样式（§4）。 */
 .view-switch {
   margin-top: auto;
   display: flex;
   gap: 4px;
+}
+
+/* 三个一级入口分摊侧栏横向空间（图标-only 入口不再右侧留白）：入口按钮经
+ * .view-more-entry 撑满 Menu 的锚定 wrapper（primitives `.root` 为 inline-flex，
+ * 其内 button 需显式 100% 宽）。文本直达按钮受各自 min-content 下限约束，图标
+ * 入口吸收剩余空间——三者同 md 高度（契约 §1/§4）。 */
+.view-switch > * {
+  flex: 1;
+}
+
+.view-more-entry {
+  width: 100%;
 }
 
 /* ── preset 管理视图（web-frontend.md §2） ──────────────────────────── */
@@ -308,6 +323,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* memory 条目正文（specs/071-memory-preset-scope/contracts/web-memory-view.md
+ * §3 列表行 = content + updateTime）：条目无 title 字段，正文即列表主内容，
+ * 需多行换行呈现——不复用 .preset-item-name 的单行省略（那是 wiki 标题形态）。 */
+.preset-item-content {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 /* 列表 role 标识（池归属徽标）：样式对齐成员标签惯例（.member-tag）。 */
@@ -760,7 +783,7 @@ body {
 /* markdown code 块贴合内容宽度（用户裁定：代码块不强行与卡片同宽）：
  * 包内 CodeBlock 包装是块级盒子（全局类 .md-code-block，
  * @deepseek-ai/dsh-client-ui-primitives lib/markdown/CodeBlock.module.css
- * .block），在 fit-content 卡片内自动填满剩余宽度——短代码也绘制满宽背
+ * 的 .block），在 fit-content 卡片内自动填满剩余宽度——短代码也绘制满宽背
  * 景块。width: fit-content 使其贴合自身内容宽，max-width: 100% 受卡片
  * 内容宽约束（长代码由包内 pre 的 pre-wrap + break-all 换行）。断点数据
  * 见 specs/055-agent-v2-ui-fixes/revisions/fr001-investigation.md。

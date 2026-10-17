@@ -1,10 +1,10 @@
 // Package main is the game gateway binary that serves as the HTTP entry point
-// for the game services. It combines grpc-gateway for unary HTTP/JSON requests
-// and a WebSocket handler for bidirectional streaming RPCs.
+// for the game services. It is a grpc-gateway server: every route is served
+// from the generated HTTP annotations.
 //
 // Routes:
-//   - /api/v1/* → grpc-gateway (SessionService + MemoryService unary RPCs per
-//     projects/game/game.proto HTTP annotations, AIP-127)
+//   - /api/v1/* → grpc-gateway (SessionService + MemoryService + WikiService
+//     unary RPCs per projects/game/game.proto HTTP annotations, AIP-127)
 //   - /api/v2/* → grpc-gateway, split by where the RPC's state lives
 //     (specs/059-agent-v2-team-mode/contracts/team-api.md §1): the
 //     session-scoped AgentService team face (UpdateTeam/GetTeam/
@@ -17,18 +17,15 @@
 //     direct agent_v2 connection — preset state lives in Mongo and the
 //     model catalog is static, so no proxy hop
 //     (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
-//     §3.4) — except the desktop-bridge connect path:
-//     /api/v2/templates/{template}/sessions/{session}/connect → WebSocket
-//     (DesktopBridgeService.Connect stream relayed over the proxy
-//     connection; specs/051-agent-v2-dsh-migration/contracts/
-//     desktop-bridge.md §3).
+//     §3.4); the DesktopBridgeService session downlink/uplink
+//     (`:stream` chunked NDJSON / `:sendFrame` octet-stream) also rides the
+//     proxy connection
+//     (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1).
 package main
 
 import (
 	"context"
-	"errors"
 	"flag"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -37,17 +34,12 @@ import (
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/grpc/solver"
 	phttp "dominion/common/gopkg/http"
-	"dominion/common/gopkg/logs"
-	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	game "dominion/projects/game"
-	"dominion/projects/game/pkg/bind"
 	gameconst "dominion/projects/game/pkg/gameconst"
 
-	"github.com/coder/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -74,17 +66,19 @@ func main() {
 	}
 
 	// teamConn hosts the stateful-routing services on the proxy: the proxy
-	// owns owner affinity for the stateful agent_v2 instances, so both the
+	// owns owner affinity for the stateful agent_v2 instances, so the
 	// AgentService team face (UpdateTeam/GetTeam/GetTeamMember/
 	// ListTeamMessages/ListMemberMessages/Send/Cancel) and the
-	// DesktopBridgeService bidi stream route through it
-	// (specs/051-agent-v2-dsh-migration/research.md D9). The
-	// DesktopBridgeService.Connect bidi stream and the AgentService.Send
-	// team stream are long-lived, so this conn opts into keepalive pings
-	// (paired with the proxy's WithLongLivedServerKeepalive); session/memory
-	// stay unary → default. The team* names describe the connection's
-	// payload — the /api/v2 team session surface (the Team singleton and its
-	// streams) — while the dial target itself is gameconst.ProxyTarget.
+	// DesktopBridgeService face (the `:stream` downlink and the `:sendFrame`
+	// uplink) route through it
+	// (specs/051-agent-v2-dsh-migration/research.md D9,
+	// specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3).
+	// The downlink/heartbeat stream is long-lived, so this conn opts into
+	// keepalive pings (paired with the proxy's
+	// WithLongLivedServerKeepalive); session/memory stay unary →
+	// default. The team* names describe the connection's payload — the
+	// /api/v2 team session surface (the Team singleton and its streams) —
+	// while the dial target itself is gameconst.ProxyTarget.
 	teamClientOpts := append(
 		clientOpts,
 		pgrpc.WithLongLivedClientKeepalive(),
@@ -94,10 +88,17 @@ func main() {
 		log.Fatalf("team dial: %v", err)
 	}
 
-	// memoryConn hosts the MemoryService — the planner's long-term memory
-	// (spec 039-planner-memory-calibration FR-006). Registered on the gateway
-	// so the /api/v1/templates/{template}/sessions/{session}/memories surface
-	// is reachable through the public HTTP entry.
+	// memoryConn hosts the MemoryService and WikiService — the planner's
+	// long-term memory and wiki knowledge base
+	// (specs/039-planner-memory-calibration/spec.md FR-006;
+	// specs/069-wiki-template-web/spec.md FR-001). Both services are hosted
+	// by the same memory binary and database, so they share the connection.
+	// Registered on the gateway so the
+	// /api/v1/templates/{template}/presets/{preset}/memories and
+	// /api/v1/templates/{template}/wikis surfaces are reachable through the
+	// public HTTP entry
+	// (specs/069-wiki-template-web/contracts/wiki-service.md §2/§6;
+	// specs/071-memory-preset-scope/contracts/memory-service.md §2).
 	memoryConn, err := grpc.NewClient(solver.URI(gameconst.MemoryTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("memory dial: %v", err)
@@ -117,7 +118,11 @@ func main() {
 	}
 
 	// 2. Create grpc-gateway mux and register handlers for unary RPCs.
-	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
+	// The mux carries the octet-stream proto marshaler alongside the default
+	// JSON one: SendFrame's uplink body is raw binary proto, while every JSON
+	// route keeps the default marshaler
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.1).
+	gwmux := newGatewayMux()
 
 	ctx := context.Background()
 	if err := game.RegisterSessionServiceHandler(ctx, gwmux, sessionConn); err != nil {
@@ -126,6 +131,12 @@ func main() {
 	if err := game.RegisterMemoryServiceHandler(ctx, gwmux, memoryConn); err != nil {
 		log.Fatalf("register memory handler: %v", err)
 	}
+	// WikiService rides the same memory connection: the memory binary hosts
+	// both services over the same database
+	// (specs/069-wiki-template-web/contracts/wiki-service.md §6).
+	if err := game.RegisterWikiServiceHandler(ctx, gwmux, memoryConn); err != nil {
+		log.Fatalf("register wiki handler: %v", err)
+	}
 	// The AgentService handler rides the proxy connection: the proxy
 	// forwards the session-scoped team RPCs to the agent_v2 stateful
 	// instance owning the session (owner affinity — agent_v2 keeps the team,
@@ -133,6 +144,15 @@ func main() {
 	// specs/059-agent-v2-team-mode/contracts/team-api.md §1).
 	if err := game.RegisterAgentServiceHandler(ctx, gwmux, teamConn); err != nil {
 		log.Fatalf("register agent_v2 team handler: %v", err)
+	}
+	// The DesktopBridgeService handler rides the same proxy connection: the
+	// session downlink (Stream) is server-streaming and grpc-gateway serves
+	// it as chunked NDJSON, while SendFrame is a unary octet-stream POST.
+	// teamConn's long-lived keepalive and 8MB hop limit are paired with the
+	// proxy's settings
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3).
+	if err := game.RegisterDesktopBridgeServiceHandler(ctx, gwmux, teamConn); err != nil {
+		log.Fatalf("register desktop bridge handler: %v", err)
 	}
 	// The PresetService handler rides the direct agent_v2 connection: preset
 	// state lives in Mongo and the model catalog is static, so no proxy hop
@@ -143,23 +163,17 @@ func main() {
 		log.Fatalf("register preset handler: %v", err)
 	}
 
-	// 3. Create root HTTP mux with path-based routing.
-	// The /api/v1/ subtree falls through to grpc-gateway (session + memory
-	// faces); the /api/v2/ subtree dispatches WebSocket upgrades before
-	// falling through to grpc-gateway. Single subtree patterns avoid Go's
-	// ServeMux 307 redirect when both "/api/v2/" and "/api/v2/templates/"
-	// would otherwise be registered separately.
-	rootMux := newRootMux(gwmux, teamConn)
-
-	// 5. Create HTTP server.
+	// 3. Create HTTP server. grpc-gateway serves every route from the
+	// generated HTTP annotations; the SendFrame uplink body guard wraps the
+	// mux (it only acts on the :sendFrame POST path).
 	srv := &http.Server{
 		Addr:    ":" + *port,
-		Handler: phttp.Handler(rootMux, "game-gateway"),
+		Handler: phttp.Handler(sendFrameBodyLimit(gwmux), "game-gateway"),
 	}
 
 	log.Printf("game gateway listening :%s", *port)
 
-	// 6. Bootstrap with all components.
+	// 4. Bootstrap with all components.
 	b := bootstrap.New()
 	b.Register(otel.Component())
 	b.Register(bootstrap.GRPCConn("session", sessionConn))
@@ -170,229 +184,55 @@ func main() {
 	log.Fatal(b.Run(context.Background()))
 }
 
-// newRootMux builds the path-based routing mux. The /api/v2/ subtree
-// dispatches the desktop-bridge WebSocket upgrade before falling through to
-// grpc-gateway: /api/v2/templates/{template}/sessions/{session}/connect
-// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3). The
-// /api/v1/ subtree serves grpc-gateway only (session + memory faces). Single
-// subtree patterns avoid Go's ServeMux 307 redirect when a subtree prefix
-// and a longer path would otherwise be registered separately.
-func newRootMux(gwmux *runtime.ServeMux, teamConn *grpc.ClientConn) *http.ServeMux {
-	rootMux := http.NewServeMux()
+// newGatewayMux builds the grpc-gateway mux with the octet-stream proto
+// marshaler registered alongside the defaults. SendFrame's uplink body is raw
+// binary proto — no base64 inflation — while every JSON route keeps the
+// default marshaler
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.1/§3.2).
+// MIME matching is exact, so the wildcard JSON marshaler still serves
+// application/json.
+func newGatewayMux() *runtime.ServeMux {
+	return runtime.NewServeMux(append(
+		pgrpc.GatewayDefault(),
+		runtime.WithMarshalerOption("application/octet-stream", &runtime.ProtoMarshaller{}),
+	)...)
+}
 
-	rootMux.Handle("/api/v1/", gwmux)
+// maxSendFrameBodyBytes is the hard cap on one SendFrame request body (8MiB),
+// aligned with the gRPC hop's MaxCallRecvMsgSize/MaxCallSendMsgSize: a
+// screenshot up to ~5MiB plus the request envelope fits, and an oversized
+// upload is attributed at the HTTP edge instead of deep in the gRPC hop
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.3).
+const maxSendFrameBodyBytes = 8 * 1024 * 1024
 
-	rootMux.HandleFunc("/api/v2/", func(w http.ResponseWriter, r *http.Request) {
-		if isWebSocketConnectPathV2(r.URL.Path) {
-			handleDesktopBridgeConnect(w, r, teamConn)
+// sendFrameBodyLimit wraps the next handler with the SendFrame uplink body
+// guard: a POST carrying the :sendFrame custom method is rejected with 413
+// before reading when its declared Content-Length exceeds the cap, and
+// otherwise has its body bounded by http.MaxBytesReader so a chunked or
+// under-declared payload surfaces as the gateway decoder's clear "request
+// body too large" error. Oversized payloads are never silently truncated and
+// the session is unaffected
+// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §3.3;
+// specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §4).
+func sendFrameBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isSendFrameRequest(r) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		gwmux.ServeHTTP(w, r)
-	})
-	return rootMux
-}
-
-// isWebSocketConnectPathV2 reports whether the request path matches the
-// desktop-bridge WebSocket connect pattern:
-// /api/v2/templates/{template}/sessions/{session}/connect
-// (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §3).
-func isWebSocketConnectPathV2(path string) bool {
-	return isWebSocketConnectPathIn(apiV2, path)
-}
-
-// isWebSocketConnectPathIn reports whether the request path matches the
-// WebSocket connect pattern under the given API version.
-func isWebSocketConnectPathIn(version, path string) bool {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	return len(parts) == 7 &&
-		parts[0] == "api" && parts[1] == version && parts[2] == "templates" &&
-		parts[3] != "" && parts[4] == "sessions" &&
-		parts[5] != "" && parts[6] == "connect"
-}
-
-// extractConnectIdentityV2 extracts the template and session segments from a
-// v2 desktop-bridge connect path. It only accepts the full connect path shape
-// (delegating to isWebSocketConnectPathV2) so a foreign path such as
-// .../sessions/{id}/agent never yields a template/session id.
-func extractConnectIdentityV2(path string) (template, session string) {
-	return extractConnectIdentityIn(apiV2, path)
-}
-
-// extractConnectIdentityIn extracts the template and session segments from a
-// connect path under the given API version.
-func extractConnectIdentityIn(version, path string) (template, session string) {
-	if !isWebSocketConnectPathIn(version, path) {
-		return "", ""
-	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	return parts[3], parts[5]
-}
-
-// wsStream adapts a WebSocket connection to bind.UserFrameStream.
-// It handles binary-protobuf serialization/deserialization and injects the
-// templateID/sessionID from the URL path into every received UserFrame,
-// overwriting any client-supplied value. The proxy reconstructs the session
-// resource name from this pair without parsing (spec
-// 031-team-template-mode contracts/api-contract.md §2.2).
-//
-// ctx holds the HTTP request context so that Read/Write respect request
-// cancellation (e.g. client disconnect).
-type wsStream struct {
-	ctx        context.Context
-	conn       *websocket.Conn
-	templateID string
-	sessionID  string
-}
-
-// Recv reads a binary frame from the WebSocket, unmarshals it as a UserFrame
-// (protobuf wire format), and injects the templateID/sessionID from the URL
-// path. proto.Unmarshal preserves unknown fields per the proto spec,
-// maintaining the forward-compatibility that protojson's DiscardUnknown
-// previously provided
-// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
-func (s *wsStream) Recv() (*game.UserFrame, error) {
-	_, data, err := s.conn.Read(s.ctx)
-	if err != nil {
-		return nil, err
-	}
-	var frame game.UserFrame
-	if err := proto.Unmarshal(data, &frame); err != nil {
-		return nil, errors.Join(errProtocol, err)
-	}
-	// CRITICAL: inject templateID/sessionID from URL path — always wins over
-	// client-supplied values.
-	frame.TemplateId = s.templateID
-	frame.SessionId = s.sessionID
-	return &frame, nil
-}
-
-// Send marshals the TeamFrame as binary protobuf and writes it as a binary
-// frame to the WebSocket connection.
-func (s *wsStream) Send(frame *game.TeamFrame) error {
-	data, err := proto.Marshal(frame)
-	if err != nil {
-		return err
-	}
-	return s.conn.Write(s.ctx, websocket.MessageBinary, data)
-}
-
-// errProtocol is a sentinel error for protocol-level errors (e.g. invalid
-// frame protobuf) that should result in a WebSocket
-// InvalidFramePayloadData close code.
-var errProtocol = errors.New("protocol error")
-
-// isProtocolError reports whether err is a protocol-level error (invalid
-// frame protobuf) from the WebSocket adapter.
-func isProtocolError(err error) bool {
-	return errors.Is(err, errProtocol)
-}
-
-// streamOpener opens the backend gRPC bidirectional stream for a WebSocket
-// connect: the DesktopBridgeService.Connect client structurally satisfies
-// bind.TeamFrameStream (Send UserFrame / Recv TeamFrame).
-type streamOpener func(ctx context.Context) (bind.TeamFrameStream, error)
-
-// API version path segment of the connect route.
-const apiV2 = "v2"
-
-// handleDesktopBridgeConnect upgrades an HTTP connection to WebSocket and
-// establishes a bidirectional forwarding bridge between the WebSocket and
-// the DesktopBridgeService.Connect gRPC stream on the proxy connection —
-// the v2 desktop flow-control face (specs/051-agent-v2-dsh-migration/
-// contracts/desktop-bridge.md §3).
-func handleDesktopBridgeConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
-	pumpWebSocketConnect(w, r, apiV2, func(ctx context.Context) (bind.TeamFrameStream, error) {
-		return game.NewDesktopBridgeServiceClient(teamConn).Connect(ctx)
+		if r.ContentLength > maxSendFrameBodyBytes {
+			http.Error(w, "sendFrame request body exceeds the 8MiB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxSendFrameBodyBytes)
+		next.ServeHTTP(w, r)
 	})
 }
 
-// pumpWebSocketConnect is the WebSocket↔gRPC relay of the desktop-bridge
-// connect face. Messages are serialized as binary protobuf over WebSocket
-// binary frames in both directions: UserFrame inbound (desktop → server),
-// TeamFrame outbound (server → desktop). proto.Unmarshal preserves unknown
-// fields for forward compatibility. The template/session identity is
-// extracted from the URL path and injected into every received frame.
-func pumpWebSocketConnect(w http.ResponseWriter, r *http.Request, version string, openStream streamOpener) {
-	templateID, sessionID := extractConnectIdentityIn(version, r.URL.Path)
-	if templateID == "" || sessionID == "" {
-		http.Error(w, "missing template_id or session_id", http.StatusBadRequest)
-		return
-	}
-
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"*"},
-	})
-	if err != nil {
-		logs.Error(r.Context(), "ws accept failed",
-			event.String("template_id", templateID),
-			event.String("session_id", sessionID),
-			event.Err(err),
-		)
-		return
-	}
-	defer conn.CloseNow()
-	logs.Info(r.Context(), "ws connected",
-		event.String("template_id", templateID),
-		event.String("session_id", sessionID),
-	)
-
-	// Allow up to 10MB per frame to support PNG screenshot uploads.
-	conn.SetReadLimit(10 << 20)
-
-	stream, err := openStream(r.Context())
-	if err != nil {
-		logs.Error(r.Context(), "connect: stream creation failed",
-			event.String("template_id", templateID),
-			event.String("session_id", sessionID),
-			event.Err(err),
-		)
-		return
-	}
-
-	ws := &wsStream{ctx: r.Context(), conn: conn, templateID: templateID, sessionID: sessionID}
-	b := bind.NewBinder()
-	err = b.Bind(ws, stream)
-
-	if err == nil {
-		logs.Info(r.Context(), "connect stream closed",
-			event.String("template_id", templateID),
-			event.String("session_id", sessionID),
-		)
-		conn.Close(websocket.StatusNormalClosure, "")
-		return
-	}
-	if isCleanClose(err) {
-		logs.Info(r.Context(), "connect stream closed (clean)",
-			event.String("template_id", templateID),
-			event.String("session_id", sessionID),
-		)
-		conn.Close(websocket.StatusNormalClosure, "")
-		return
-	}
-	if isProtocolError(err) {
-		logs.Warn(r.Context(), "connect: protocol error",
-			event.String("template_id", templateID),
-			event.String("session_id", sessionID),
-			event.Err(err),
-		)
-		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid frame protobuf")
-		return
-	}
-	logs.Error(r.Context(), "connect: internal error",
-		event.String("template_id", templateID),
-		event.String("session_id", sessionID),
-		event.Err(err),
-	)
-	conn.Close(websocket.StatusInternalError, "internal error")
-}
-
-// isCleanClose reports whether the error represents a normal WebSocket or
-// context closure that should not be logged as an error.
-func isCleanClose(err error) bool {
-	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	// coder/websocket: CloseStatus returns -1 for non-close errors.
-	status := websocket.CloseStatus(err)
-	return status != -1
+// isSendFrameRequest reports whether the request is the SendFrame uplink POST
+// (custom method suffix :sendFrame, AIP-136:
+// https://google.aip.dev/136). Other POST routes (e.g. :send) and the
+// :stream GET are left untouched.
+func isSendFrameRequest(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, ":sendFrame")
 }

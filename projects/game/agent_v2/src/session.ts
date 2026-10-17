@@ -3,8 +3,9 @@
  *
  * `TeamSessions` owns the materialization registry over the team
  * orchestrator (`@dominion/dsh-saolei-loop`): one {@link TeamOrchestrator}
- * per materialized session, two member runtimes (player + planner), the
- * session-lifetime team history projections, and the active team streams.
+ * per materialized session, the entry's unified member runtimes (the two LLM
+ * members plus the announce-only announcer), the session-lifetime team
+ * history projections, and the active team streams.
  *
  * Materialization semantics (specs/059-agent-v2-team-mode/contracts/
  * team-api.md §2): UpdateTeam materializes or refreshes the session's team
@@ -27,11 +28,13 @@
  * disconnect only detaches the stream — it MUST NOT stop the orchestration;
  * cancelling the team happens only through {@link TeamSessions.cancel}.
  *
- * The saolei system member's announcements (game-over stats) are projected
- * into the merge history through the orchestrator's `announcer` read surface —
- * one `assistant/message` production becomes one
- * {@link TeamHistory.appendAnnouncement} entry and its `team_message` frame;
- * the subscription detaches with the team entry
+ * The member projections consume the team's unified member event stream — a
+ * single subscription per entry, dispatched by envelope role
+ * (specs/077-announcer-member-unification/contracts/member-event-stream.md
+ * §5): the announcer member's announcements (game-over stats) become
+ * {@link TeamHistory.appendAnnouncement} merge entries plus their
+ * `team_message` frames, and the agent members' events feed their collectors.
+ * The subscription detaches with the team entry
  * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4).
  *
  * The Context injected at construction plus the optional {@link
@@ -40,27 +43,33 @@
  */
 
 import { error, info } from "@dominion/common-js-logs";
-import type { Agent, AgentHandle } from "@deepseek-ai/dsh-agent";
+import type { AgentHandle } from "@deepseek-ai/dsh-agent";
+import type { TeamMemberEvent } from "@dominion/dsh-team";
 import {
+  ANNOUNCER_MEMBER_ROLE,
   OrchestratorStateError,
-  SAOLEI_MEMBER_ROLE,
   TeamOrchestrator,
 } from "@dominion/dsh-saolei-loop";
 import type {
   AgentCreationSeam,
   ComposePreset,
-  LoadPlannerMemory,
-  MountPlayerRuntime,
+  LoopErrorCode,
   OrchestratorFailure,
   OrchestratorLogger,
   TeamSeam,
 } from "@dominion/dsh-saolei-loop";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { DshContext } from "./dsh.js";
 import { MemberCollector, TeamHistory } from "./history.js";
-import type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
+import type {
+  AgentMemberRole,
+  MemberRole,
+  MemberViewEntry,
+  TeamMergeEntry,
+  TurnStream,
+} from "./history.js";
 import { readMemberSystemPrompt } from "./system-prompt.js";
 
 export type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
@@ -99,11 +108,41 @@ export class TeamSessionError extends Error {
   }
 }
 
+/**
+ * The host's user-action guidance for each loop failure code — the
+ * presentation half of the error contract
+ * (specs/076-agent-v2-optimize/spec.md FR-107; the wording is
+ * survey/saolei-member-switch-flow.md §8.1's 呈现指导 column). The loop layer
+ * classifies; the host owns the text.
+ *
+ * Today the text rides only the orchestration-origin failure frame
+ * ({@link failStreams}); a member-turn failure settles through
+ * {@link endStreams} cleanly, carrying the engine's own message in its
+ * turn_end ERROR frame, and the failure code is still transported to the
+ * snapshot side. Evolution slot: land the per-code user-action text on the
+ * member-turn frame too — doing so means touching the history collector's
+ * frame surface, not just this session layer
+ * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
+ */
+export const LOOP_ERROR_TEXT: Readonly<Record<LoopErrorCode, string>> = {
+  TRANSIENT: "服务暂不可用，稍后重试",
+  QUOTA: "配额耗尽",
+  CREDENTIAL: "检查 API 凭证",
+  CONFIG: "模型配置错误",
+  INPUT_TOO_LARGE: "上下文超限",
+  INTERNAL: "内部错误",
+};
+
+/** The host's user-action guidance for one loop failure code. */
+export function loopErrorText(code: LoopErrorCode): string {
+  return LOOP_ERROR_TEXT[code];
+}
+
 /** One member's configuration and runtime state (View projection). */
 export interface TeamMemberView {
   /** Member resource name (server-constructed from the role). */
   readonly name: string;
-  /** Member role (scene vocabulary; saolei: "player" / "planner"). */
+  /** Member role (scene vocabulary; saolei: "player" / "planner" / "announcer"). */
   readonly role: string;
   /** Full preset resource name the member materialized from. */
   readonly preset: string;
@@ -169,35 +208,53 @@ export interface TeamSessionsDeps {
   readonly agents?: AgentCreationSeam;
   /** Team service seam; defaults to `ctx.team`. */
   readonly team?: TeamSeam;
-  /** Player game-runtime mount; defaults to the desktop-bridge builder. */
-  readonly mountPlayerRuntime?: MountPlayerRuntime;
-  /**
-   * Planner memory prefetch override (unit tests); production binds the real
-   * `ctx.plannerMemory.load` host-row service face (T021).
-   */
-  readonly loadPlannerMemory?: LoadPlannerMemory;
   /** Orchestration failure reporter; defaults to the repo logger face. */
   readonly logger?: OrchestratorLogger;
   /** Provider route for both members; defaults to {@link PROVIDER}. */
   readonly provider?: string;
 }
 
-interface MemberRuntime {
-  readonly role: MemberRole;
+/**
+ * One agent-backed member's runtime: the orchestrator-owned handle plus the
+ * session-lifetime collector feeding the shared history projections.
+ */
+interface AgentMemberRuntime {
+  readonly kind: "agent";
+  readonly role: AgentMemberRole;
   readonly preset: string;
   readonly model: string;
   readonly handle: AgentHandle;
   readonly collector: MemberCollector;
 }
 
+/**
+ * The announce-only member's runtime: a registered member carrying no agent
+ * runtime (no handle, no collector) — hence no member view
+ * (specs/077-announcer-member-unification/contracts/host-member-parity.md §1,
+ * specs/077-announcer-member-unification/data-model.md §3.1).
+ */
+interface AnnounceOnlyMemberRuntime {
+  readonly kind: "announce-only";
+  readonly role: typeof ANNOUNCER_MEMBER_ROLE;
+}
+
+/**
+ * A materialized member of the team entry. The `kind` discriminant is the
+ * member-category source: the roster, the member read, the member view and
+ * teardown all derive from it rather than test the role string
+ * (specs/077-announcer-member-unification/contracts/host-member-parity.md §2).
+ */
+type MemberRuntime = AgentMemberRuntime | AnnounceOnlyMemberRuntime;
+
 interface TeamEntry {
   readonly sessionName: string;
   readonly template: string;
   readonly orchestrator: TeamOrchestrator;
   readonly history: TeamHistory;
-  readonly members: Record<MemberRole, MemberRuntime>;
-  /** Detaches the announcer projection subscription (entry teardown). */
-  readonly announceOff: () => void;
+  /** Every registered member (player/planner/announcer), in roster order. */
+  readonly members: readonly MemberRuntime[];
+  /** Detaches the entry's single unified-stream subscription (entry teardown). */
+  readonly streamOff: () => void;
   readonly streams: Set<TurnStream>;
   readonly createTime: Date;
   updateTime: Date;
@@ -326,13 +383,13 @@ export class TeamSessions {
    */
   cancel(session: string): void {
     const entry = this.requireEntry(session, "FAILED_PRECONDITION");
-    const active = entry.orchestrator.snapshot().active;
-    if (active !== null) {
+    const inFlight = agentMemberInFlight(entry);
+    if (inFlight !== null) {
       // Known window: the snapshot can report the member active before its
       // collector observed the running transition, in which case the mark is
       // consumed by the first idle that finds an active turn (see
       // MemberCollector.markOutcome).
-      entry.members[active].collector.markOutcome({ status: "CANCELED" });
+      inFlight.collector.markOutcome({ status: "CANCELED" });
     }
     entry.orchestrator.cancel();
     this.watchQuiescence(entry);
@@ -349,11 +406,14 @@ export class TeamSessions {
 
   /**
    * One fixed member's projection (GetTeamMember); NOT_FOUND while
-   * unmaterialized or when the member id is outside the fixed roster. The
-   * output-only `system_prompt` is read off the member instance's live
+   * unmaterialized or when the member id is outside the three-member roster.
+   * The output-only `system_prompt` is read off the member instance's live
    * assembly surface ({@link readMemberSystemPrompt}) — the same prompt the
    * official loop feeds to the model, never a separate re-composition (FR-016,
-   * specs/059-agent-v2-team-mode/contracts/web-views.md §5).
+   * specs/059-agent-v2-team-mode/contracts/web-views.md §5). The announcer is
+   * announce-only: it has no agent/handle and no assembled prompt, so it is
+   * served as the same empty-form roster entry GetTeam carries
+   * (specs/076-agent-v2-optimize/contracts/announcer-member.md §3 item 3).
    *
    * A concurrent refresh (UpdateTeam) may tear the entry down between the
    * generation snapshot and the asynchronous assembly: the disposed member
@@ -368,18 +428,42 @@ export class TeamSessions {
    * budget is spent.
    */
   async getTeamMember(session: string, member: string): Promise<TeamMemberView> {
-    if (member !== "player" && member !== "planner") {
+    if (!isMemberRole(member)) {
       throw new TeamSessionError(
         "NOT_FOUND",
-        `team member "${member}" does not exist; the roster is player/planner`,
+        `team member "${member}" does not exist; the roster is player/planner/announcer`,
       );
     }
+    const entry = this.requireEntry(session, "NOT_FOUND");
+    const runtime = findMember(entry, member);
+    if (runtime === undefined) {
+      throw new TeamSessionError(
+        "NOT_FOUND",
+        `team member "${member}" is not materialized`,
+      );
+    }
+    // The announce-only member carries no agent, so there is no assembly to
+    // read and no generation to retry: it is served synchronously as the same
+    // empty-form roster entry GetTeam carries
+    // (specs/076-agent-v2-optimize/contracts/announcer-member.md §3 item 3).
+    if (runtime.kind === "announce-only") {
+      return memberStateView(entry, runtime);
+    }
     for (let attempt = 0; attempt < MEMBER_READ_ATTEMPTS; attempt += 1) {
-      const entry = this.requireEntry(session, "NOT_FOUND");
+      // Re-sample the live generation: a concurrent refresh swaps the entry
+      // between attempts.
+      const generation = this.requireEntry(session, "NOT_FOUND");
+      const agentMember = findAgentMember(generation, member);
+      if (agentMember === undefined) {
+        throw new TeamSessionError(
+          "NOT_FOUND",
+          `team member "${member}" is not materialized`,
+        );
+      }
       // The live handle comes off the orchestration's member read surface
       // (TeamOrchestrator.member) — the instance the orchestrator created and
       // drives, so a refresh is followed naturally.
-      const handle = entry.orchestrator.member(member);
+      const handle = generation.orchestrator.member(agentMember.role);
       if (handle === undefined) {
         throw new TeamSessionError(
           "NOT_FOUND",
@@ -390,14 +474,14 @@ export class TeamSessions {
         const systemPrompt = await readMemberSystemPrompt(handle.agent);
         // Linearization point: only the generation that is still live after
         // the await may be served.
-        if (this.liveEntry(session) === entry) {
-          return { ...memberStateView(entry, member), systemPrompt };
+        if (this.liveEntry(session) === generation) {
+          return { ...memberStateView(generation, agentMember), systemPrompt };
         }
       } catch (err) {
         // An assembly failure of the still-live generation is a genuine
         // INTERNAL; a failure from a superseded instance is part of the
         // teardown and re-samples the current generation below.
-        if (this.liveEntry(session) === entry) {
+        if (this.liveEntry(session) === generation) {
           throw err;
         }
       }
@@ -417,13 +501,17 @@ export class TeamSessions {
   /** One member's view snapshot (ListMemberMessages data source). */
   listMemberMessages(session: string, member: string): MemberViewEntry[] {
     const entry = this.requireEntry(session, "NOT_FOUND");
-    if (member !== "player" && member !== "planner") {
+    const runtime = findMember(entry, member);
+    // Only agent members own a view: an announce-only member (and any unknown
+    // role) has no member-view projection
+    // (specs/077-announcer-member-unification/contracts/host-member-parity.md §2).
+    if (runtime === undefined || runtime.kind !== "agent") {
       throw new TeamSessionError(
         "NOT_FOUND",
-        `team member "${member}" does not exist; the roster is player/planner`,
+        `team member "${member}" has no message view; the member-view roster is player/planner`,
       );
     }
-    return entry.history.listMemberMessages(member);
+    return entry.history.listMemberMessages(runtime.role);
   }
 
   /**
@@ -518,9 +606,11 @@ export class TeamSessions {
       await orchestrator.materialize({
         session,
         // The memory scope key halves are the business template and the
-        // session ID — the full session resource name would double the
-        // prefix in the memory service parent (T023 wiring fix).
-        memoryScope: { template: parsedSession.template, session: parsedSession.session },
+        // materialization source planner preset id: the planner's long-term
+        // memory is mounted on the preset it was materialized from, so the
+        // scope stays a bare pair of ids rather than a full resource name
+        // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
+        memoryScope: { template: parsedSession.template, preset: this.presetId(planner.preset) },
         goal: TEAM_GOAL,
         player: {
           preset: this.presetId(player.preset),
@@ -550,40 +640,45 @@ export class TeamSessions {
       await orchestrator.dispose().catch(() => undefined);
       throw new Error("team materialization invariant violated: members are missing");
     }
-    const announcer = orchestrator.announcer;
-    if (announcer === undefined) {
+    if (orchestrator.announcer === undefined) {
       await orchestrator.dispose().catch(() => undefined);
-      throw new Error("team materialization invariant violated: the saolei announcer is missing");
+      throw new Error("team materialization invariant violated: the announcer member is missing");
     }
-    const announceOff =
-      announcer.source.subscribe?.((event) => {
-        if (event.type !== "assistant/message") {
-          return;
-        }
-        // The speech text of the production: its text blocks in order — the
-        // same projection the team's broadcast renderer applies
-        // (common/js/dsh-plugins/team/src/broadcast.ts messageBody).
-        const text = event.data.message.content
-          .map((block) => (block.type === "text" ? block.text : ""))
-          .join("\n\n");
-        if (text !== "") {
-          history.appendAnnouncement(SAOLEI_MEMBER_ROLE, text);
-        }
-      }) ?? (() => {});
-    const members: Record<MemberRole, MemberRuntime> = {
-      // Member runtimes keep the composite selector for the projections; the
+    const members: readonly MemberRuntime[] = [
+      // Agent runtimes keep the composite selector for the projections; the
       // orchestrator already received the split route above
       // (contracts/model-selection.md §3).
-      player: this.createMemberRuntime(orchestrator, playerHandle, "player", player.preset, playerModel, session, history, broadcast),
-      planner: this.createMemberRuntime(orchestrator, plannerHandle, "planner", planner.preset, plannerModel, session, history, broadcast),
-    };
+      this.createMemberRuntime(orchestrator, playerHandle, "player", player.preset, playerModel, session, history, broadcast),
+      this.createMemberRuntime(orchestrator, plannerHandle, "planner", planner.preset, plannerModel, session, history, broadcast),
+      // The announcer is a registered member with no agent runtime: it is held
+      // as its announce-only kind rather than a parallel field/roster special
+      // case (specs/077-announcer-member-unification/contracts/host-member-parity.md §1).
+      { kind: "announce-only", role: ANNOUNCER_MEMBER_ROLE },
+    ];
+    // The single member-event consumption path (spec FR-002): subscribe once to
+    // the orchestrator's zero-shape pass-through of the team's unified stream
+    // and dispatch by envelope role — an agent member's envelopes go to its
+    // collector, the announce-only member's log productions to the merge
+    // history (specs/077-announcer-member-unification/contracts/
+    // member-event-stream.md §5).
+    const streamOff = orchestrator.teamEvents().subscribe((envelope) => {
+      const member = members.find((candidate) => candidate.role === envelope.role);
+      if (member === undefined) {
+        return;
+      }
+      if (member.kind === "announce-only") {
+        projectAnnouncement(history, member.role, envelope);
+        return;
+      }
+      member.collector.applyEvent(envelope);
+    });
     const entry: TeamEntry = {
       sessionName: session,
       template: parsedSession.template,
       orchestrator,
       history,
       members,
-      announceOff,
+      streamOff,
       streams,
       createTime,
       updateTime,
@@ -610,27 +705,26 @@ export class TeamSessions {
   private createMemberRuntime(
     orchestrator: TeamOrchestrator,
     handle: AgentHandle,
-    role: MemberRole,
+    role: AgentMemberRole,
     preset: string,
     model: string,
     session: string,
     history: TeamHistory,
     broadcast: (event: ChatEvent) => void,
-  ): MemberRuntime {
+  ): AgentMemberRuntime {
     // The orchestrator owns creation and teardown; this guard documents the
     // ownership invariant (the handle must belong to this orchestrator).
     if (orchestrator.member(role) !== handle) {
       throw new Error(`team materialization invariant violated: ${role} handle mismatch`);
     }
     const collector = new MemberCollector(
-      this.ctx,
-      handle.agent as Agent,
+      String(handle.agent.id),
       role,
       session,
       history,
       broadcast,
     );
-    return { role, preset, model, handle, collector };
+    return { kind: "agent", role, preset, model, handle, collector };
   }
 
   /**
@@ -675,21 +769,33 @@ export class TeamSessions {
    * Refresh teardown: settle the in-flight member turn as ABORTED (the
    * orchestrator's dispose cancellation converges to idle, and the collector
    * maps it to the terminal frame), release both members through the
-   * orchestrator (its rollback/ownership contract), then end every active
-   * stream — the old lifecycle's subscriptions die with it.
+   * orchestrator (its rollback/ownership contract), then detach the entry's
+   * single stream subscription and end every active stream — the old
+   * lifecycle's subscriptions die with it.
+   *
+   * The stream detach follows the orchestrator release, not precedes it: the
+   * ABORTED terminal frame is itself a member event of that stream, so the
+   * collector must still be subscribed while dispose converges. No old
+   * lifecycle production can reach the old projection afterwards — the team
+   * registration's member subscriptions drop inside dispose (the announcer's
+   * included), and the entry is no longer live.
    */
   private async teardownEntry(entry: TeamEntry): Promise<void> {
     entry.disposed = true;
-    // Detach the announcer projection before the orchestrator teardown: the
-    // old lifecycle's subscriptions die with it (no frame after teardown).
-    entry.announceOff();
-    const active = entry.orchestrator.snapshot().active;
-    if (active !== null) {
-      entry.members[active].collector.markOutcome({ status: "ABORTED" });
+    const inFlight = agentMemberInFlight(entry);
+    if (inFlight !== null) {
+      inFlight.collector.markOutcome({ status: "ABORTED" });
     }
     await entry.orchestrator.dispose();
-    entry.members.player.collector.dispose();
-    entry.members.planner.collector.dispose();
+    entry.streamOff();
+    // Release every member from the unified list: agent members drop their
+    // turn bookkeeping, the announce-only member has none to release
+    // (specs/077-announcer-member-unification/contracts/host-member-parity.md §2).
+    for (const member of entry.members) {
+      if (member.kind === "agent") {
+        member.collector.dispose();
+      }
+    }
     this.endStreams(entry);
   }
 
@@ -749,7 +855,10 @@ export class TeamSessions {
     for (const stream of streams) {
       try {
         if (stream.fail !== undefined) {
-          stream.fail({ code: "INTERNAL", message: failure.message });
+          stream.fail({
+            code: "INTERNAL",
+            message: `${failure.message} — ${loopErrorText(failure.code)}`,
+          });
         } else {
           stream.end();
         }
@@ -765,19 +874,22 @@ export class TeamSessions {
   /**
    * Arm the per-entry quiescence watcher: resolve the Send-established team
    * stream lifecycle at the orchestrator's static point (no in-flight turn
-   * and no pending digestible input — contracts/team-api.md §3.1). New
-   * activity started while the watcher settles re-arms through the
+   * and no pending digestible input — contracts/team-api.md §3.1). The
+   * snapshot fields carry the new semantics: `paused` is the flow's frozen
+   * state (a failed or aborted activity), and `queued` is the active member's
+   * delivered-but-unconsumed input — the steered-in-flight count plus the
+   * member inbox pending state (specs/061-team-queue-steer/research.md R4).
+   * New activity started while the watcher settles re-arms through the
    * snapshot re-check; a Send always arms a watcher, so an already-ended
    * epoch cannot swallow a later stream.
    *
-   * A paused orchestrator has no scheduled pump — `whenQuiescent()` resolves
-   * immediately — so waiting for active/queued alone would spin the
-   * microtask queue. The pause also carries the terminal state, settled by
-   * the failure origin: an orchestration-layer failure closes the streams
-   * with an error ({@link failStreams}), while a member-turn failure — like
-   * a cancel — ends them cleanly ({@link endStreams}), the turn_end ERROR
-   * frame having already been sunk by the member history collector before
-   * this watcher's microtask
+   * A frozen orchestrator has no scheduled pump — `whenQuiescent()` resolves
+   * immediately — so waiting for active/queued alone would spin the microtask
+   * queue. The freeze also carries the terminal state, settled by the failure
+   * origin: an orchestration-layer failure closes the streams with an error
+   * ({@link failStreams}), while a member-turn failure — like a cancel — ends
+   * them cleanly ({@link endStreams}), the turn_end ERROR frame having already
+   * been sunk by the member history collector before this watcher's microtask
    * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2;
    * design: specs/063-llm-reliability-opencode-go/design-session-stream-settlement.md §1/§3).
    */
@@ -811,7 +923,6 @@ export class TeamSessions {
   private createOrchestrator(): TeamOrchestrator {
     return new TeamOrchestrator(this.ctx, {
       compose: this.composeSeam(),
-      loadPlannerMemory: this.loadPlannerMemoryBinding(),
       logger: this.deps.logger ?? {
         error: (message, context) =>
           error(message, {
@@ -824,9 +935,6 @@ export class TeamSessions {
       },
       ...(this.deps.agents === undefined ? {} : { agents: this.deps.agents }),
       ...(this.deps.team === undefined ? {} : { team: this.deps.team }),
-      ...(this.deps.mountPlayerRuntime === undefined
-        ? {}
-        : { mountPlayerRuntime: this.deps.mountPlayerRuntime }),
       ...(this.deps.provider === undefined ? {} : { provider: this.deps.provider }),
     });
   }
@@ -843,32 +951,6 @@ export class TeamSessions {
       throw new Error("team sessions: ctx.presetAuthoring is not composed");
     }
     return (preset) => authoring.compose(preset);
-  }
-
-  /**
-   * Bind the planner memory prefetch (T021): the explicit test override
-   * first, else the composed `ctx.plannerMemory` host-row service face
-   * (common/js/dsh-plugins/memory/src/index.ts; the `memory` row in
-   * cordis.yml provides it). The method is a closure, so the extracted
-   * `load` needs no receiver. A missing service is a composition error —
-   * fail-loud rather than silently materializing a planner without its
-   * memory snapshot (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md
-   * §2/§3).
-   */
-  private loadPlannerMemoryBinding(): LoadPlannerMemory {
-    if (this.deps.loadPlannerMemory !== undefined) {
-      return this.deps.loadPlannerMemory;
-    }
-    const memory = this.ctx.get("plannerMemory") as
-      | { load?: LoadPlannerMemory }
-      | undefined;
-    const load = memory?.load;
-    if (load === undefined) {
-      throw new Error(
-        "team sessions: ctx.plannerMemory is not composed; the memory host row is required to materialize a team",
-      );
-    }
-    return load;
   }
 
   /**
@@ -931,7 +1013,7 @@ export class TeamSessions {
   }
 
   /** The scene member entry for a validated role. */
-  private memberFor(members: readonly TeamMemberOptions[], role: MemberRole): TeamMemberOptions {
+  private memberFor(members: readonly TeamMemberOptions[], role: AgentMemberRole): TeamMemberOptions {
     const found = members.find((member) => member.role === role);
     if (found === undefined) {
       // validateSaoleiMembers already guarantees presence; this is a
@@ -960,7 +1042,7 @@ export class TeamSessions {
    * Validate one member preset: it exists and its scene role equals the
    * member role (string equality — both are scene vocabulary).
    */
-  private async validateMemberPreset(presetName: string, role: MemberRole): Promise<void> {
+  private async validateMemberPreset(presetName: string, role: AgentMemberRole): Promise<void> {
     const authoring =
       this.deps.authoring ??
       (this.ctx.get("presetAuthoring") as Pick<PresetAuthoringService, "get"> | undefined);
@@ -1024,34 +1106,88 @@ export class TeamSessions {
   }
 }
 
+/** Whether a wire string names a team member role (the three-member roster). */
+function isMemberRole(value: string): value is MemberRole {
+  return value === "player" || value === "planner" || value === "announcer";
+}
+
+/** The registered member runtime for a role, or undefined when outside the roster. */
+function findMember(entry: TeamEntry, role: string): MemberRuntime | undefined {
+  return entry.members.find((member) => member.role === role);
+}
+
+/** The agent member runtime for a role; an announce-only or unknown role yields undefined. */
+function findAgentMember(entry: TeamEntry, role: string): AgentMemberRuntime | undefined {
+  const member = findMember(entry, role);
+  return member !== undefined && member.kind === "agent" ? member : undefined;
+}
+
+/**
+ * The agent member whose turn is in flight, or null when the team is
+ * quiescent or an announce-only member holds the activation. The
+ * announce-only member never runs a turn, so its reported activation has no
+ * member turn to settle — the member kind, not the role string, decides
+ * (specs/077-announcer-member-unification/contracts/host-member-parity.md §2).
+ */
+function agentMemberInFlight(entry: TeamEntry): AgentMemberRuntime | null {
+  const active = entry.orchestrator.snapshot().active;
+  return active === null ? null : (findAgentMember(entry, active) ?? null);
+}
+
 /**
  * One member's configured state: the Team snapshot member projection
  * (GetTeam/UpdateTeam). `system_prompt` stays empty — it is served only by
  * GetTeamMember ({@link TeamSessions.getTeamMember}; the proto field is
- * OUTPUT_ONLY and the assembly read is a separate, on-demand face).
+ * OUTPUT_ONLY and the assembly read is a separate, on-demand face). The
+ * announce-only member is the same projection with the empty preset/model
+ * form (specs/077-announcer-member-unification/contracts/host-member-parity.md §2).
  */
-function memberStateView(entry: TeamEntry, role: MemberRole): TeamMemberView {
-  const member = entry.members[role];
+function memberStateView(entry: TeamEntry, member: MemberRuntime): TeamMemberView {
   return {
-    name: `${entry.sessionName}/team/members/${role}`,
-    role,
+    name: `${entry.sessionName}/team/members/${member.role}`,
+    role: member.role,
     // The configured full resource name; mirrored from the materialization
     // request so the view is stable even if the store record changes.
-    preset: member.preset,
-    model: member.model,
+    preset: member.kind === "agent" ? member.preset : "",
+    model: member.kind === "agent" ? member.model : "",
     systemPrompt: "",
   };
+}
+
+/**
+ * Project one announce-only member event into the merge history: the member's
+ * log-channel `assistant/message` productions become announcement entries. Its
+ * speech text is the text blocks in order — the same projection the team's
+ * broadcast renderer applies
+ * (common/js/dsh-plugins/team/src/broadcast.ts messageBody). Other channels and
+ * event types carry no announcement (specs/077-announcer-member-unification/
+ * spec.md FR-002).
+ */
+function projectAnnouncement(history: TeamHistory, role: string, envelope: TeamMemberEvent): void {
+  if (envelope.channel !== "log" || envelope.event.type !== "assistant/message") {
+    return;
+  }
+  const text = envelope.event.data.message.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("\n\n");
+  if (text !== "") {
+    history.appendAnnouncement(role, text);
+  }
 }
 
 function toTeamView(entry: TeamEntry): TeamView {
   // The single merged active-member value (contracts/team-api.md §1): the
   // in-flight driving member wins while a turn runs; at rest the next input's
-  // owner (activation) is served. A materialized entry always has a role.
+  // owner (activation) is served. A materialized entry always has a role. The
+  // roster is derived from the entry's unified member collection
+  // (specs/076-agent-v2-optimize/contracts/announcer-member.md §3), so a
+  // member's roster form follows its kind — the announce-only member carries
+  // no preset/model.
   const snapshot = entry.orchestrator.snapshot();
   return {
     name: `${entry.sessionName}/team`,
     activeMember: snapshot.active ?? snapshot.activation,
-    members: [memberStateView(entry, "player"), memberStateView(entry, "planner")],
+    members: entry.members.map((member) => memberStateView(entry, member)),
     createTime: entry.createTime,
     updateTime: entry.updateTime,
   };

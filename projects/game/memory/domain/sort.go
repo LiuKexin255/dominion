@@ -11,7 +11,7 @@ import (
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1).
 const (
 	// MemorySortFieldMemoryID is the memory identity field, unique within a
-	// (template, session) scope.
+	// (template, preset) scope.
 	MemorySortFieldMemoryID = "memory_id"
 	// MemorySortFieldUpdateTime is the last-update timestamp field.
 	MemorySortFieldUpdateTime = "update_time"
@@ -169,6 +169,35 @@ func (t *MemorySortTerm) CursorEntry(value any) *MemoryCursorEntry {
 	default:
 		panic(fmt.Sprintf("MemorySortTerm.CursorEntry: field %q has unknown kind %d", t.Field, t.kind))
 	}
+}
+
+// memorySortTermWire renders one final-key term in its canonical AIP-132
+// spelling: "{field}" for ascending (the suffix is omitted) or "{field} desc"
+// for descending (AIP-132 Ordering: https://google.aip.dev/132). It is the
+// single spelling source shared by cursor construction and the page token's
+// order_by context serialization, so the two can never disagree
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
+func memorySortTermWire(term *MemorySortTerm) string {
+	if term.Descending {
+		return term.Field + " desc"
+	}
+	return term.Field
+}
+
+// memorySortContext renders a final sort key as the canonical serialization a
+// page token carries: the comma-joined canonical spelling of each term in key
+// order (e.g. "update_time desc,memory_id"). The token layer compares this
+// value with the token's carried context as a single string, so direction
+// changes and cross-order replays are ordinary mismatches. Serializing the
+// ParseMemoryOrderBy product — never the raw order_by argument — makes
+// equivalent request spellings resolve to the same value
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1/§3).
+func memorySortContext(sort []*MemorySortTerm) string {
+	var terms []string
+	for _, term := range sort {
+		terms = append(terms, memorySortTermWire(term))
+	}
+	return strings.Join(terms, ",")
 }
 
 // ParseMemoryOrderBy parses and validates an AIP-132 order_by value into the

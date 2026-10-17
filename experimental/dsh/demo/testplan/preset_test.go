@@ -14,8 +14,10 @@ import (
 // on the 060 preset derivation semantics
 // (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md): the
 // store is the single source of truth, a conversation's preset MUST name a
-// store record (template ids are derivation sources, no longer directly
-// composable), and the composition is derived per session.
+// store record (declared templates are derivation sources, no longer directly
+// composable), and the composition is derived in-process from the store record
+// into a registry PresetDefinition registered with the
+// preset registry (specs/070-dsh-upgrade/contracts/preset-model-mapping.md).
 //
 //   - The conversation-binding face: conversations are created EXPLICITLY
 //     through CreateConversation with a store preset the suite authored from
@@ -23,7 +25,7 @@ import (
 //     composition each session runs is asserted end to end via the fake-llm
 //     `system_keywords` probe replies. Covers the 058 US1 acceptance
 //     scenarios re-based on store presets (composition difference + guidance
-//     presence, per-session derived mounts, session-level stability), the
+//     presence, same-preset revision sharing, session-level stability), the
 //     mandatory-preset rejection, the idempotent/rebuild semantics (R4), and
 //     the no-lazy-creation FAILED_PRECONDITION edge (FR-002).
 //   - The resource face: the PresetService CRUD closed loop over store-only
@@ -123,9 +125,10 @@ func TestPresetConversationComposition(t *testing.T) {
 }
 
 // TestPresetWithoutPresetRejected verifies the mandatory-preset semantics
-// (060 preset derivation; the 058 roster default is gone): CreateConversation
-// with no preset field at all reaches compose(undefined), which is rejected
-// INVALID_ARGUMENT (HTTP 400), and no conversation exists behind the failure.
+// (060 preset derivation; compose requires an explicit store preset):
+// CreateConversation with no preset field at all reaches compose(undefined),
+// which is rejected INVALID_ARGUMENT (HTTP 400), and no conversation exists
+// behind the failure.
 func TestPresetWithoutPresetRejected(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
@@ -156,8 +159,8 @@ func TestPresetWithoutPresetRejected(t *testing.T) {
 }
 
 // TestPresetSamePresetSharedBehaviour verifies that two conversations bound
-// to the SAME store preset behave identically: the composition is derived per
-// session (each session holds its own mount), and both report the same
+// to the SAME store preset behave identically: both join the one registered
+// revision, and both report the same
 // resolved preset and answer the probe with the same composition.
 func TestPresetSamePresetSharedBehaviour(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
@@ -625,8 +628,9 @@ func TestPresetCreateRejections(t *testing.T) {
 	}
 
 	// when: a deployment template id is claimed by a fresh create.
-	// then: ALREADY_EXISTS (HTTP 409) — the roster supplies it as system
-	// trust, so a store record can never shadow it.
+	// then: ALREADY_EXISTS (HTTP 409) — the deployment's template snapshot
+	// declares it (preset-authoring Config `templates`), so a store record
+	// can never shadow it.
 	templateIDBody := fmt.Sprintf(`{"preset_id": %q, "template": %q, "persona": %q}`,
 		"demo-tools", demoDefault, personaAuthoredOne)
 	status, respBody = presetRequest(t, ctx, baseURL, envName, http.MethodPost, "", []byte(templateIDBody))
@@ -706,13 +710,14 @@ func TestPresetCreateRejections(t *testing.T) {
 	}
 }
 
-// TestPresetTemplateDeleteRefused verifies that a deployment template is
-// not deletable (specs/058-dsh-preset-roster-demo/contracts/chat-api.md §2
-// DeletePreset row): the plugin refuses to remove system-trust data and the
-// refusal surfaces as FAILED_PRECONDITION (HTTP 400). The template stays
-// fully servable as a derivation source afterwards — a store preset authored
-// from it resolves and answers its persona probe.
-func TestPresetTemplateDeleteRefused(t *testing.T) {
+// TestPresetTemplateDeleteRejected verifies that a deployment template is
+// not deletable through the resource face
+// (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §1): the templates
+// are snapshot data, not store records, so removing one is a
+// NOT_FOUND store miss (HTTP 404) and can never drop the template. The
+// template stays fully servable as a derivation source afterwards — a store
+// preset authored from it resolves and answers its persona probe.
+func TestPresetTemplateDeleteRejected(t *testing.T) {
 	baseURL := testtool.MustEndpoint("http", "public")
 	envName := testtool.MustEnv()
 	ctx := traceContext(t)
@@ -720,10 +725,10 @@ func TestPresetTemplateDeleteRefused(t *testing.T) {
 	// when: the template id is deleted.
 	status, respBody := presetRequest(t, ctx, baseURL, envName, http.MethodDelete, "/demo-standard", nil)
 
-	// then: the system-trust refusal surfaces (HTTP 400, the
-	// FAILED_PRECONDITION mapping).
-	if status != http.StatusBadRequest {
-		t.Errorf("deletePreset(template) status = %d, want %d (body: %s)", status, http.StatusBadRequest, respBody)
+	// then: the refusal surfaces as NOT_FOUND (HTTP 404, the store-miss
+	// mapping) — a template has no store record to remove.
+	if status != http.StatusNotFound {
+		t.Errorf("deletePreset(template) status = %d, want %d (body: %s)", status, http.StatusNotFound, respBody)
 	}
 
 	// and: the template is untouched — a preset authored from it resolves

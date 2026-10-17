@@ -25,3 +25,14 @@ mongodb:
       access_modes:
         - "ReadWriteOncePod"
       volume_mode: "Filesystem"
+redis:
+  dev-single:
+    image: "redis"
+    version: "8.4"
+    port: 6379
+    storage:
+      storage_class_name: "truenas-iscsi-v2"
+      capacity: "4Gi"
+      access_modes:
+        - "ReadWriteOncePod"
+      volume_mode: "Filesystem"

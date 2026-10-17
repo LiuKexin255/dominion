@@ -1,26 +1,28 @@
 /**
- * Plugin-face tests for the cordis service entry (specs/054-agent-v2-
- * bugfixes/tasks.md T015): `isDesktopConnected` reads the connection
- * registry through the plugin delegation (specs/054-agent-v2-bugfixes/
- * contracts/agent-api-changes.md §4 — the GetAgent desktop_connected fact
- * source), covering the no-connection / connected / takeover / disconnect
- * paths. Pattern (style/javascript.md Mock convention): a real cordis
- * Context and injected stream doubles — no module interception (saolei
- * plugin test precedent, common/js/dsh-plugins/saolei/src/index.test.ts).
+ * Plugin-face tests for the cordis service entry
+ * (specs/054-agent-v2-bugfixes/tasks.md T015): `isDesktopConnected` reads the
+ * connection registry through the plugin delegation
+ * (specs/054-agent-v2-bugfixes/contracts/agent-api-changes.md §4 — the
+ * GetAgent desktop_connected fact source), covering the no-connection /
+ * connected / takeover / disconnect paths. Pattern (style/javascript.md Mock
+ * convention): a real cordis Context and injected stream doubles — no module
+ * interception (saolei plugin test precedent,
+ * common/js/dsh-plugins/saolei/src/index.test.ts).
  */
 
 import { Context } from '@deepseek-ai/cordis';
 import { describe, expect, it } from 'vitest';
 
 import { DesktopBridgePlugin } from './index.js';
-import type { BidiStream } from './wire.js';
+import type { StreamCall } from './wire.js';
 
 const SESSION = 'templates/saolei/sessions/s1';
 
 /** Minimal stream double carrying only what attach/disconnect exercise. */
 function fakeStream() {
   const listeners = new Map<string, Array<() => void>>();
-  const stream: BidiStream = {
+  const stream: StreamCall = {
+    request: {},
     on(event, listener) {
       const list = listeners.get(event) ?? [];
       list.push(listener as () => void);
@@ -32,8 +34,8 @@ function fakeStream() {
   };
   return {
     stream,
-    emitEnd: () => {
-      for (const listener of [...(listeners.get('end') ?? [])]) listener();
+    emitClose: () => {
+      for (const listener of [...(listeners.get('close') ?? [])]) listener();
     },
   };
 }
@@ -77,7 +79,7 @@ describe('DesktopBridgePlugin.isDesktopConnected', () => {
     plugin.attach(SESSION, second.stream);
     expect(plugin.isDesktopConnected(SESSION)).toBe(true);
 
-    first.emitEnd();
+    first.emitClose();
     expect(plugin.isDesktopConnected(SESSION)).toBe(true);
   });
 
@@ -85,7 +87,7 @@ describe('DesktopBridgePlugin.isDesktopConnected', () => {
     const { plugin } = makePlugin();
     const connection = fakeStream();
     plugin.attach(SESSION, connection.stream);
-    connection.emitEnd();
+    connection.emitClose();
     expect(plugin.isDesktopConnected(SESSION)).toBe(false);
   });
 });

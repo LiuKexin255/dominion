@@ -12,7 +12,7 @@ cell 32×32px）。识别基于固定几何 + 单格颜色分析，不依赖 OCR
 ```
 src/
 ├── core/   # 核心库（可被其他包引用，即 @dominion/game-saolei-board）
-└── cli/    # CLI 外壳（saolei-recognize），依赖核心库
+└── cli/    # CLI 外壳（bazel run //projects/game/pkg/saolei-board:cli），依赖核心库
 ```
 
 两者拆分为独立 Bazel target，便于其他代码只引用核心库而不引入 CLI。
@@ -176,7 +176,7 @@ BUILD 加 `:node_modules/@dominion/game-saolei-board` 到 deps。
 ## 坐标空间注意
 
 本库的几何常量（`originYPx = 200`）是**截图空间**（含非客户区 chrome），
-用于读像素。dispatch 侧的 `common/js/dsh-plugins/saolei-loop/src/game/geometry.ts`
+用于读像素。dispatch 侧的 `common/js/dsh-plugins/saolei/src/game/geometry.ts`
 用的是**客户端空间**（Y=104，减去 96px chrome 偏移），用于 `WM_*` 点击。两者
 X=24、cell=32 相同，但 Y 不同，勿混用。
 

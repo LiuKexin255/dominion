@@ -36,7 +36,7 @@ func TestAgentV2TeamGameWonChainOnExecutor(t *testing.T) {
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, agentV2DesktopWonSessionID, "game-won")
 	// The executor re-dials after fault cycles; wait for its connection fact
 	// before sending so the init dispatch cannot race the reconnect.
-	waitTeamDesktopConnected(t, ctx, sutHostURL, sutEnvName, sessionName, wsReadTimeout)
+	waitTeamDesktopConnected(t, ctx, sutHostURL, sutEnvName, sessionName, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
@@ -122,16 +122,16 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	sessionID := "team-won-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-won")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardWinPNG},
 		stepBoards: [][]byte{saoleiBoardWinPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
 
@@ -171,10 +171,10 @@ func TestAgentV2TeamGameTerminalWonAndReviewContinues(t *testing.T) {
 	assertTerminalTurnEndsWithToolBlock(t, turns[1])
 
 	// Review: the planner consumes the player's raw process and emits the
-	// continue strategy. The review entry is gated on the saolei
+	// continue strategy. The review entry is gated on the announcer
 	// announcement's result line — its keywords ("本局游戏结束：胜利") must
 	// match the review drive's LAST user message, the announcement the
-	// system member sends before the drain (team_planner.yaml
+	// announcer member sends before the drain (team_planner.yaml
 	// team-planner-review-continue;
 	// specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §3),
 	// so this turn occurring at all proves terminal-unit continuity AND the
@@ -286,18 +286,18 @@ func TestAgentV2TeamGameTerminalLostAndReviewStops(t *testing.T) {
 	sessionID := "team-lost-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-lost")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	// One F2 init (the progressive 16×16 board) and one losing cell
 	// dispatch; the batch stops at the terminal loss.
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardLossPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
 
@@ -405,15 +405,15 @@ func TestAgentV2TeamGameMultiSessionIsolation(t *testing.T) {
 
 	connectedID := "team-iso-conn-" + uniqueSuffix()
 	connCtx, connName, _ := teamPrep(t, sutHostURL, sutEnvName, connectedID, "iso-conn")
-	flow, _ := dialAgentV2FlowProbed(t, connCtx, sutHostURL, sutEnvName, connectedID)
+	flow := openDesktopStream(t, connCtx, sutHostURL, sutEnvName, connectedID)
 	defer flow.Close()
 	// The win board at init: the terminal init result concludes the player
 	// turn (specs/062-team-game-end-handoff/spec.md FR-002 ①), so the
 	// scripted operate batch is never requested — one F2 reply completes the
 	// chain.
-	scriptCh := serveTeamFlowScript(flow, connectedID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(connCtx, flow, connectedID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardWinPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	absentCtx, absentName, _ := teamPrep(t, sutHostURL, sutEnvName, "team-iso-absent-"+uniqueSuffix(), "iso-absent")
 
@@ -437,11 +437,11 @@ func TestAgentV2TeamGameMultiSessionIsolation(t *testing.T) {
 				t.Fatalf("absent session stream: %v", r.err)
 			}
 			eventsAbsent = r.events
-		case <-time.After(wsReadTimeout):
+		case <-time.After(flowReadTimeout):
 			t.Fatal("concurrent team turns did not both quiesce within the read window")
 		}
 	}
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, connName, eventsConnected)
 	assertTeamStreamWellFormed(t, absentName, eventsAbsent)
 
@@ -488,11 +488,11 @@ func TestAgentV2TeamGameConversationStreamIndependentOfFlow(t *testing.T) {
 	sessionID := "team-independent-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "independent")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardWinPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	// Read until the player's first tool-call block starts, then drop the
@@ -523,17 +523,15 @@ func TestAgentV2TeamGameConversationStreamIndependentOfFlow(t *testing.T) {
 		}
 		return false
 	})
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	if len(entries) == 0 {
 		t.Fatal("the dropped stream's turn never reached the merged history")
 	}
 
-	// The flow stream survived the conversation-stream drop: the bridge still
-	// answers a new probe on the same connection.
-	sendFlowProbe(t, flow, sessionID)
-	if frame := readFlowTeamFrame(t, flow, 10*time.Second); len(frame.GetFlowParts().GetParts()) == 0 {
-		t.Fatalf("post-drop probe reply = %+v, want a status echo (flow stream unaffected)", frame)
-	}
+	// The flow stream survived the conversation-stream drop: it still
+	// delivers status heartbeats on the same connection
+	// (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.3).
+	readFlowHeartbeat(t, flow, flowHeartbeatTimeout)
 }
 
 // TestAgentV2TeamGameActiveMemberTransitions covers quickstart V7-1 and the
@@ -589,7 +587,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 	// player 回合在途: the next Send resumes the loop and plays the opening
 	// chain against this test's flow half. Each dispatch proves the player
 	// turn is in flight, so the read before the receipt is deterministic.
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	stream2 := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	ch := drainTeamStreamAsync(stream2)
@@ -603,7 +601,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 	}
 	initIdx, stepIdx := 0, 0
 	for initIdx < len(script.initBoards) || stepIdx < len(script.stepBoards) {
-		frame := readFlowTeamFrame(t, flow, wsReadTimeout)
+		frame := readFlowTeamFrame(t, flow, flowReadTimeout)
 		for _, part := range frame.GetFlowParts().GetParts() {
 			switch {
 			case part.GetKeyboardPress() != nil:
@@ -613,7 +611,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 				if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
 					t.Fatalf("active_member with the player game turn in flight = %q, want \"player\"", got)
 				}
-				replyFlowReceipt(t, flow, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx])
+				replyFlowReceipt(t, ctx, flow, sessionID, part.GetKeyboardPress().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.initBoards[initIdx])
 				initIdx++
 			case part.GetMouseMoveAndClick() != nil:
 				if stepIdx >= len(script.stepBoards) {
@@ -622,7 +620,7 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 				if got := teamActiveMember(t, ctx, sutHostURL, sutEnvName, sessionName); got != "player" {
 					t.Fatalf("active_member with the player game turn in flight = %q, want \"player\"", got)
 				}
-				replyFlowReceipt(t, flow, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx])
+				replyFlowReceipt(t, ctx, flow, sessionID, part.GetMouseMoveAndClick().GetToolId(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, script.stepBoards[stepIdx])
 				stepIdx++
 			}
 		}
@@ -661,21 +659,21 @@ func TestAgentV2TeamGameActiveMemberTransitions(t *testing.T) {
 // board answers the first click), game 2 is a lost game whose batch lands
 // BOTH operations (click then flag) before the losing receipt — the
 // multi-operation comparison. Each handoff contributes exactly one
-// `member="saolei"` merged entry whose body is the gameStatsText template
+// `member="announcer"` merged entry whose body is the gameStatsText template
 // (specs/065-agent-v2-team-refine/data-model.md §3) carrying the numbers the
 // flow script actually served; the planner review fixtures are anchored on
 // the stats template key line, so the two review turns firing (continue,
 // then stop) is the "the announcement reached the planner's review input"
 // evidence; and the player's next drives consume the announcements (sender
-// "saolei" view entries + live member_view frames). The proto team face
-// still carries only the two materialized members.
+// "announcer" view entries + live member_view frames). The proto team face
+// carries the three-member roster (assertTeamProtoRosterIncludesAnnouncer).
 func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	sessionID := "team-stats-chain-" + uniqueSuffix()
 	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-stats-chain")
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
 	// Game 1 (won): the compatible in-progress 9×9 board at init, the win
 	// board on the first click → one successful dispatch. Game 2 (lost): the
@@ -683,15 +681,15 @@ func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 	// loss board on the flag → both dispatches succeed before the terminal
 	// receipt.
 	counts := new(teamFlowScriptCounts)
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardCompatWinPNG, saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardWinPNG, saoleiBoardInitPNG, saoleiBoardLossPNG},
 		counts:     counts,
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
 
@@ -759,35 +757,35 @@ func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 		t.Errorf("flow receipts served = %d init / %d step, want 2 / 3", counts.initServed, counts.stepServed)
 	}
 
-	// Merged sequence: exactly one saolei announcement per handoff, in game
+	// Merged sequence: exactly one announcer announcement per handoff, in game
 	// order, each the template with the game's dispatched numbers.
 	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
-	saoleiEntries := teamMessagesForMember(merged, agentV2SaoleiMember)
+	announcerEntries := teamMessagesForMember(merged, agentV2AnnouncerMember)
 	wantStats := []string{
 		agentV2GameStatsText("胜利", 1, 1, 0, 0),
 		agentV2GameStatsText("失败", 2, 1, 1, 0),
 	}
-	if len(saoleiEntries) != len(wantStats) {
-		t.Fatalf("merged saolei entries = %d, want %d (one per handoff)", len(saoleiEntries), len(wantStats))
+	if len(announcerEntries) != len(wantStats) {
+		t.Fatalf("merged announcer entries = %d, want %d (one per handoff)", len(announcerEntries), len(wantStats))
 	}
 	for i, want := range wantStats {
-		entry := saoleiEntries[i]
+		entry := announcerEntries[i]
 		if got := agentV2MessageText(entry.GetMessage()); got != want {
-			t.Errorf("saolei entry[%d] = %q, want %q", i, got, want)
+			t.Errorf("announcer entry[%d] = %q, want %q", i, got, want)
 		}
 		if role := entry.GetMessage().GetRole(); role != game.Role_ROLE_AGENT {
-			t.Errorf("saolei entry[%d] role = %v, want AGENT", i, role)
+			t.Errorf("announcer entry[%d] role = %v, want AGENT", i, role)
 		}
 		if blocks := entry.GetMessage().GetBlocks(); len(blocks) != 1 || blocks[0].GetText() == nil {
-			t.Errorf("saolei entry[%d] blocks = %+v, want one text block", i, blocks)
+			t.Errorf("announcer entry[%d] blocks = %+v, want one text block", i, blocks)
 		}
 	}
 
-	// The announcement is fanned out at the handoff: the first saolei frame
+	// The announcement is fanned out at the handoff: the first announcer frame
 	// precedes the first review turn's turn_start.
 	announceAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
 		frame := event.GetTeamMessage()
-		return frame != nil && frame.GetMember() == agentV2SaoleiMember
+		return frame != nil && frame.GetMember() == agentV2AnnouncerMember
 	})
 	reviewAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
 		return event.GetTurnStart() != nil && event.GetTurnId() == turns[2].turnID
@@ -798,39 +796,39 @@ func TestAgentV2TeamGameStatsAnnouncedPerHandoff(t *testing.T) {
 
 	// Planner view: the review drives consumed both announcements as relay
 	// inputs, and the first one's live frame arrived with its review turn.
-	plannerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2SaoleiMember)
-	if len(plannerSaolei) != len(wantStats) {
-		t.Fatalf("planner view saolei entries = %d, want %d", len(plannerSaolei), len(wantStats))
+	plannerAnnouncer := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2AnnouncerMember)
+	if len(plannerAnnouncer) != len(wantStats) {
+		t.Fatalf("planner view announcer entries = %d, want %d", len(plannerAnnouncer), len(wantStats))
 	}
 	for i, want := range wantStats {
-		if got := agentV2MessageText(plannerSaolei[i].GetMessage()); got != agentV2SaoleiRelayText(want) {
-			t.Errorf("planner view saolei entry[%d] = %q, want %q", i, got, agentV2SaoleiRelayText(want))
+		if got := agentV2MessageText(plannerAnnouncer[i].GetMessage()); got != agentV2AnnouncerRelayText(want) {
+			t.Errorf("planner view announcer entry[%d] = %q, want %q", i, got, agentV2AnnouncerRelayText(want))
 		}
 	}
-	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2SaoleiMember, turns[2].turnID)
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2AnnouncerMember, turns[2].turnID)
 
 	// Player view: the game-2 drive consumed game 1's announcement and the
 	// stop-ack drive consumed game 2's — the next structural drive input
 	// carrying the broadcast (FR-004).
-	playerSaolei := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player"), agentV2SaoleiMember)
-	if len(playerSaolei) != len(wantStats) {
-		t.Fatalf("player view saolei entries = %d, want %d", len(playerSaolei), len(wantStats))
+	playerAnnouncer := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player"), agentV2AnnouncerMember)
+	if len(playerAnnouncer) != len(wantStats) {
+		t.Fatalf("player view announcer entries = %d, want %d", len(playerAnnouncer), len(wantStats))
 	}
 	for i, want := range wantStats {
-		if got := agentV2MessageText(playerSaolei[i].GetMessage()); got != agentV2SaoleiRelayText(want) {
-			t.Errorf("player view saolei entry[%d] = %q, want %q", i, got, agentV2SaoleiRelayText(want))
+		if got := agentV2MessageText(playerAnnouncer[i].GetMessage()); got != agentV2AnnouncerRelayText(want) {
+			t.Errorf("player view announcer entry[%d] = %q, want %q", i, got, agentV2AnnouncerRelayText(want))
 		}
 	}
-	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "player", agentV2SaoleiMember, turns[3].turnID)
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "player", agentV2AnnouncerMember, turns[3].turnID)
 
 	// The proto team face excludes the system member.
-	assertTeamProtoRosterExcludesSaolei(t, getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName))
+	assertTeamProtoRosterIncludesAnnouncer(t, getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName))
 	assertTerminalHistoriesNoAbortTraces(t, ctx, sutHostURL, sutEnvName, sessionName)
 }
 
 // TestAgentV2TeamGameStatsPromptFaces materializes a team on a session
 // seeded with 12 memories and asserts the prompt-side increments of the
-// feature: the shared team section carries the saolei system member's roster
+// feature: the shared team section carries the announcer member's roster
 // line and the input-side-only caveat
 // (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3/§4 —
 // the same strings the team plugin unit tests pin), and the planner's fixed
@@ -849,20 +847,29 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 	// snapshot at its setup, so this is what fixes the injected entry set.
 	// The creates are spaced past the service's millisecond update_time
 	// resolution so the recency order is strictly deterministic.
+	//
+	// The seeded collection is the planner member's materialization source
+	// preset (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4):
+	// the planner snapshot reloads that preset's memories, so the pre-write
+	// must address the preset the team materializes from.
+	plannerPresetName, err := game.ParsePresetName(plannerPreset.GetName())
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", plannerPreset.GetName(), err)
+	}
 	var contentsNewestFirst []string
 	for i := 1; i <= 12; i++ {
 		content := fmt.Sprintf("T015 快照夹具 %02d", i)
-		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, fmt.Sprintf("snapshot-m%02d", i), content)
+		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, plannerPresetName.PresetID, fmt.Sprintf("snapshot-m%02d", i), content)
 		contentsNewestFirst = append([]string{content}, contentsNewestFirst...)
 		time.Sleep(3 * time.Millisecond)
 	}
 	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, playerPreset.GetName(), plannerPreset.GetName(), "", "")
 
-	// The team section lands on every member: both prompts carry the saolei
+	// The team section lands on every member: both prompts carry the announcer
 	// roster line and the input-side-only caveat.
 	for _, member := range []string{"player", "planner"} {
 		prompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, member).GetSystemPrompt()
-		for _, want := range []string{agentV2TeamSectionSaoleiRosterLine, agentV2TeamSectionInputSideLine} {
+		for _, want := range []string{agentV2TeamSectionAnnouncerRosterLine, agentV2TeamSectionInputSideLine} {
 			if !strings.Contains(prompt, want) {
 				t.Errorf("%s system_prompt lacks %q:\n%s", member, want, prompt)
 			}
@@ -872,6 +879,16 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 	// The planner snapshot truncates to the 10 most recent entries, newest
 	// first; the two oldest are gone.
 	plannerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt()
+	// The planner prompt carries the gameplay section (the 074 legacy fix:
+	// specs/075-saolei-game-foundation/spec.md M11,
+	// specs/075-saolei-game-foundation/research.md D8) and no tool-guidance
+	// section (specs/075-saolei-game-foundation/spec.md FR-018 assertion 1/3).
+	if !strings.Contains(plannerPrompt, agentV2SaoleiGameTitle) {
+		t.Errorf("planner system_prompt lacks the gameplay section title %q:\n%s", agentV2SaoleiGameTitle, plannerPrompt)
+	}
+	if strings.Contains(plannerPrompt, agentV2SaoleiGuidanceTitle) {
+		t.Errorf("planner system_prompt carries the tool-guidance section title %q, want none:\n%s", agentV2SaoleiGuidanceTitle, plannerPrompt)
+	}
 	got := memorySnapshotEntries(plannerPrompt)
 	want := contentsNewestFirst[:10]
 	if len(got) != len(want) {
@@ -890,6 +907,14 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 
 	// The snapshot section is planner-only: the player prompt has none.
 	playerPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "player").GetSystemPrompt()
+	// The player prompt carries both the gameplay and the tool-guidance
+	// section (specs/075-saolei-game-foundation/spec.md FR-018 assertion 2).
+	if !strings.Contains(playerPrompt, agentV2SaoleiGameTitle) {
+		t.Errorf("player system_prompt lacks the gameplay section title %q:\n%s", agentV2SaoleiGameTitle, playerPrompt)
+	}
+	if !strings.Contains(playerPrompt, agentV2SaoleiGuidanceTitle) {
+		t.Errorf("player system_prompt lacks the tool-guidance section title %q:\n%s", agentV2SaoleiGuidanceTitle, playerPrompt)
+	}
 	if strings.Contains(playerPrompt, "长期记忆：") {
 		t.Errorf("player system_prompt carries a memory snapshot, want none:\n%s", playerPrompt)
 	}

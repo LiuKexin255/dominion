@@ -1,7 +1,8 @@
-// Package mongo provides the MongoDB-backed repository implementation for
+// Package mongo provides the MongoDB-backed repository implementations for
 // Memory entities (spec 039-planner-memory-calibration FR-006;
-// specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §3-4).
+// specs/071-memory-preset-scope/contracts/memory-service.md) and Wiki entities
+// (specs/069-wiki-template-web/contracts/wiki-service.md), sharing the memory
+// service's own database (style/mongo.md).
 package mongo
 
 import (
@@ -32,6 +33,14 @@ type cursorOps interface {
 	Close(ctx context.Context) error
 }
 
+// indexViewOps wraps the MongoDB index management operations used by the
+// repositories. The driver's IndexView is a concrete struct reachable only
+// through a live Collection, so naming the used subset as an interface lets
+// the test collection doubles satisfy collectionOps without one.
+type indexViewOps interface {
+	CreateOne(ctx context.Context, model mongodriver.IndexModel, opts ...*options.CreateIndexesOptions) (string, error)
+}
+
 // collectionOps defines the MongoDB collection operations used by the repository.
 type collectionOps interface {
 	InsertOne(ctx context.Context, document interface{}, opts ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error)
@@ -39,7 +48,7 @@ type collectionOps interface {
 	ReplaceOne(ctx context.Context, filter interface{}, replacement interface{}, opts ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error)
 	DeleteOne(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error)
 	Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error)
-	Indexes() mongodriver.IndexView
+	Indexes() indexViewOps
 }
 
 // mongoCollection wraps a MongoDB Collection to implement collectionOps.
@@ -71,7 +80,7 @@ func (c *mongoCollection) Find(ctx context.Context, filter interface{}, opts ...
 	return &mongoCursor{Cursor: cur}, nil
 }
 
-func (c *mongoCollection) Indexes() mongodriver.IndexView {
+func (c *mongoCollection) Indexes() indexViewOps {
 	return c.Collection.Indexes()
 }
 
@@ -92,47 +101,55 @@ type memoryRepository struct {
 
 // NewRepository creates a MongoDB-backed MemoryRepository in the given
 // database (the memory service's own database — "game_memory" per spec 039
-// FR-006 / style/mongo.md). It creates the unique index on
-// (template, session_id, memory_id)
-// (specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §3) and the composite index backing the consumed
-// [update_time desc, memory_id asc] sort key
-// (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
-// items 5-6). Adding a sortable field adds one whitelist row, one
-// memoryDocument.sortValue case and the compound index for its consumed
-// direction.
+// FR-006 / style/mongo.md). It creates the memory indexes at startup
+// (specs/071-memory-preset-scope/data-model.md §2.2); a duplicate-index error
+// from a previous service start is the normal case and is ignored, because
+// the stored indexes already match the (template, preset) scope.
 func NewRepository(client *mongodriver.Client, dbName string) domain.MemoryRepository {
 	coll := newCollection(client, dbName, memoriesCollectionName)
+	ctx := context.Background()
+	indexes := coll.Indexes()
 
-	// Create the unique identity index for memories: it backs the default
-	// [memory_id asc] sort key (equality prefix + final key).
-	_, _ = coll.Indexes().CreateOne(context.Background(), mongodriver.IndexModel{
-		Keys: bson.D{
-			{Key: fieldTemplate, Value: 1},
-			{Key: fieldSessionID, Value: 1},
-			{Key: fieldMemoryID, Value: 1},
-		},
-		Options: options.Index().SetUnique(true),
-	})
-
-	// Create the composite index for the [update_time desc, memory_id asc]
-	// sort key (the only consumed non-default direction): the
-	// (template, session_id) equality prefix is followed by the sort keys in
-	// key order and direction (ESR:
-	// https://www.mongodb.com/docs/manual/tutorial/equality-sort-range-guideline/),
-	// so the ordered scan needs no in-memory sort. Ignore the error for a
-	// duplicate index (e.g. from a previous service start).
-	_, _ = coll.Indexes().CreateOne(context.Background(), mongodriver.IndexModel{
-		Keys: bson.D{
-			{Key: fieldTemplate, Value: 1},
-			{Key: fieldSessionID, Value: 1},
-			{Key: fieldUpdateTime, Value: -1},
-			{Key: fieldMemoryID, Value: 1},
-		},
-	})
+	for _, model := range memoryIndexModels() {
+		// A duplicate index (previous service start) is fine.
+		_, _ = indexes.CreateOne(ctx, *model)
+	}
 
 	return &memoryRepository{
 		collection: coll,
+	}
+}
+
+// memoryIndexModels returns the memory indexes created at startup
+// (specs/071-memory-preset-scope/data-model.md §2.2): the unique
+// (template, preset_id, memory_id) identity index backing the default
+// [memory_id asc] sort key (equality prefix + final key), and the
+// (template, preset_id, update_time desc, memory_id asc) index backing the
+// consumed [update_time desc, memory_id asc] sort key (the
+// (template, preset_id) equality prefix is followed by the sort keys in key
+// order and direction — ESR:
+// https://www.mongodb.com/docs/manual/tutorial/equality-sort-range-guideline/),
+// so the ordered scan needs no in-memory sort. Adding a sortable field adds
+// one whitelist row, one memoryDocument.sortValue case and the compound index
+// for its consumed direction.
+func memoryIndexModels() []*mongodriver.IndexModel {
+	return []*mongodriver.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: fieldTemplate, Value: 1},
+				{Key: fieldPresetID, Value: 1},
+				{Key: fieldMemoryID, Value: 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{
+				{Key: fieldTemplate, Value: 1},
+				{Key: fieldPresetID, Value: 1},
+				{Key: fieldUpdateTime, Value: -1},
+				{Key: fieldMemoryID, Value: 1},
+			},
+		},
 	}
 }
 
@@ -152,11 +169,11 @@ func (r *memoryRepository) CreateMemory(ctx context.Context, memory *domain.Memo
 }
 
 // UpdateMemory replaces the stored Memory identified by its (template,
-// session_id, memory_id) scope. The _id and the server-managed create_time
+// preset_id, memory_id) scope. The _id and the server-managed create_time
 // are preserved from the stored document; the caller supplies the new
 // content/update_time.
 func (r *memoryRepository) UpdateMemory(ctx context.Context, memory *domain.Memory) (*domain.Memory, error) {
-	filter := memoryFilter{Template: memory.Template, SessionID: memory.SessionID, MemoryID: memory.MemoryID}
+	filter := memoryFilter{Template: memory.Template, PresetID: memory.PresetID, MemoryID: memory.MemoryID}
 
 	existing := new(memoryDocument)
 	if err := r.collection.FindOne(ctx, filter).Decode(existing); err != nil {
@@ -181,9 +198,9 @@ func (r *memoryRepository) UpdateMemory(ctx context.Context, memory *domain.Memo
 	return doc.toDomain(), nil
 }
 
-// DeleteMemory removes a Memory by template, session and memory id.
-func (r *memoryRepository) DeleteMemory(ctx context.Context, template, session, memoryID string) error {
-	filter := memoryFilter{Template: template, SessionID: session, MemoryID: memoryID}
+// DeleteMemory removes a Memory by template, preset and memory id.
+func (r *memoryRepository) DeleteMemory(ctx context.Context, template, preset, memoryID string) error {
+	filter := memoryFilter{Template: template, PresetID: preset, MemoryID: memoryID}
 	result, err := r.collection.DeleteOne(ctx, filter)
 	if err != nil {
 		return err
@@ -195,7 +212,7 @@ func (r *memoryRepository) DeleteMemory(ctx context.Context, template, session, 
 	return nil
 }
 
-// ListMemories retrieves a page of Memories under a session in the requested
+// ListMemories retrieves a page of Memories under a preset in the requested
 // sort key order (AIP-132: https://google.aip.dev/132). The inputs are already
 // validated — sort is a ParseMemoryOrderBy product, cursor a
 // DecodeMemoryPageToken product (nil = first page, the only criterion) — so
@@ -205,8 +222,8 @@ func (r *memoryRepository) DeleteMemory(ctx context.Context, template, session, 
 // cursor entries already carry their typed values
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
 // items 5/9).
-func (r *memoryRepository) ListMemories(ctx context.Context, template, session string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor, pageSize int) ([]*domain.Memory, string, error) {
-	filter := bson.M{fieldTemplate: template, fieldSessionID: session}
+func (r *memoryRepository) ListMemories(ctx context.Context, template, preset string, sort []*domain.MemorySortTerm, cursor *domain.MemoryPageToken, pageSize int) ([]*domain.Memory, string, error) {
+	filter := bson.M{fieldTemplate: template, fieldPresetID: preset}
 	if cursor != nil {
 		filter["$or"] = memorySeekClauses(sort, cursor)
 	}
@@ -247,7 +264,7 @@ func (r *memoryRepository) ListMemories(ctx context.Context, template, session s
 // (https://use-the-index-luke.com/sql/partial-results/fetch-next-page;
 // specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1
 // item 6).
-func memorySeekClauses(sort []*domain.MemorySortTerm, cursor *domain.MemoryPageCursor) bson.A {
+func memorySeekClauses(sort []*domain.MemorySortTerm, cursor *domain.MemoryPageToken) bson.A {
 	clauses := bson.A{}
 	prefix := bson.M{}
 	for i, term := range sort {
@@ -285,15 +302,18 @@ func memorySortDocument(sort []*domain.MemorySortTerm) bson.D {
 	return document
 }
 
-// memoryNextPageToken encodes the page's last document position on the final
-// sort key: each document value goes through its term's CursorEntry, the only
-// place a typed cursor value becomes its wire form.
+// memoryNextPageToken encodes the page's last document position together with
+// the order_by context: each document value goes through its term's
+// CursorEntry (the only place a typed cursor value becomes its wire form) and
+// the context is filled from the same key by NewMemoryPageToken, so the
+// token's context and entries always agree
+// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §1).
 func memoryNextPageToken(doc *memoryDocument, sort []*domain.MemorySortTerm) string {
-	var entries []*domain.MemoryCursorEntry
+	values := make([]any, 0, len(sort))
 	for _, term := range sort {
-		entries = append(entries, term.CursorEntry(doc.sortValue(term.Field)))
+		values = append(values, doc.sortValue(term.Field))
 	}
-	return domain.EncodeMemoryPageToken(&domain.MemoryPageCursor{Entries: entries})
+	return domain.EncodeMemoryPageToken(domain.NewMemoryPageToken(sort, values))
 }
 
 // find runs the cursor query and decodes the matching documents.

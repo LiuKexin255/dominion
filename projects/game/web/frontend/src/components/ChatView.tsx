@@ -14,12 +14,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Button,
-  IconChevronDownOutline14,
+  IconChevronDownOutlineRegular,
   Input,
   MarkdownText,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ContentBlock, HistoryMessage } from '../api/conversation.js'
 import { USER_MEMBER } from '../api/conversation.js'
+import { MARKDOWN_LABELS } from '../markdown-labels.js'
 import type {
   BlockDraft,
   LiveMemberTurn,
@@ -144,10 +145,10 @@ function blockToolCall(b: ContentBlock | BlockDraft, historical: boolean): ToolC
 // web-ui.md §3：GFM 正文、流式增量解析、不完整片段不崩溃）。streaming prop
 // 传给仍在其流式回合活跃分段尾块上的 TEXT（与 THINK 的 running 判定同一
 // 模式）：MarkdownText streaming 时按尾块增量重解析、已完结块冻结缓存
-// （包 README "Markdown rendering"，@deepseek-ai/dsh-client-ui-primitives
+// （包 README "Streaming markdown"，@deepseek-ai/dsh-client-ui-primitives
 // https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives ），
-// settle 后全量重解析落定。codeLabels 不传（无代码复制文案本地化需求，
-// 包内默认标签即可，省去引用稳定性维护）。
+// settle 后全量重解析落定。labels 为必填，取共享的 MARKDOWN_LABELS
+// （src/markdown-labels.ts；引用稳定性避免流式期间丢弃渲染缓存）。
 function AgentStep({
   blocks,
   running,
@@ -178,7 +179,11 @@ function AgentStep({
         if (text === undefined || text.trim() === '') return null
         return (
           <div key={i} data-testid="agent-text">
-            <MarkdownText text={text} streaming={running && i === blocks.length - 1} />
+            <MarkdownText
+              text={text}
+              streaming={running && i === blocks.length - 1}
+              labels={MARKDOWN_LABELS}
+            />
           </div>
         )
       })}
@@ -325,7 +330,7 @@ function CompletedTurn({
         }}
       >
         思考过程（{process.length} 步骤 · {toolCount} 次工具调用）
-        <IconChevronDownOutline14 className="turn-process-chevron" />
+        <IconChevronDownOutlineRegular className="turn-process-chevron" />
       </button>
       {expanded && (
         <div className="turn-process" data-testid="turn-process">
@@ -707,7 +712,7 @@ export function ChatView({
               data-testid="to-bottom-button"
               onClick={toBottom}
             >
-              <IconChevronDownOutline14 />
+              <IconChevronDownOutlineRegular />
             </button>
           </div>
         )}

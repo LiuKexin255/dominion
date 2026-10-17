@@ -16,20 +16,21 @@
 | `sectionTarget?` | `{section(spec)}` | team section 注入目标（可选；缺省 = 无 prompt 注入） |
 | `consumes?` | boolean（缺省 true） | `false` = announce-only：不接收 relay、不建 pending、不可 drain |
 
-- **依赖倒置点**：team 只认"成员 = 消息源"；agent 与非 agent 成员（扫雷系统）都是该接口的实现者，产出经**完全相同**的派生/渲染/消费闭包路径。
+- **依赖倒置点**：team 只认"成员 = 消息源"；agent 与非 agent 成员（announcer）都是该接口的实现者，产出经**完全相同**的派生/渲染/消费闭包路径。
 - **agent 适配器**（team 导出）：`agentMemberSource(handle)` ——id/events/subscribe/sectionTarget/consumes 全部映射自 AgentHandle，现有语义零变化。
 - **派生同权**：`deriveUnits`/`consumedAnchors`/`renderBroadcast` 改读 `source.events`，逻辑不变——`assistant/message` 形态产出即发言单元。
 
-### 1.2 扫雷系统成员（SaoleiSystemMember）— saolei-loop 所有
+### 1.2 announcer 成员（AnnouncerMember）— saolei-loop 所有
 
 | 字段/方法 | 类型 | 说明 |
 |---|---|---|
-| `source` | TeamMemberSource | `id = ${session}/saolei`（与 `${session}/player`、`${session}/planner` 命名同构；不是 dsh session，仅标识）；`events` = 内存 log；`subscribe` = 产出通知；无 `sectionTarget`；`consumes = false` |
+| `source` | TeamMemberSource | `id = ${session}/announcer`（与 `${session}/player`、`${session}/planner` 命名同构；不是 dsh session，仅标识）；`events` = 内存 log；`subscribe` = 产出通知；无 `sectionTarget`；`consumes = false` |
 | `announce(text)` | `(text: string) => void` | 向 log 追加一条 `assistant/message` 形态事件（构造形态见下方 log 事件形态）并同步通知订阅者；text 非空校验（fail-loud） |
 
 - **log 事件形态**：`{type: "assistant/message", seq, time, data: {turn, step, message}}`——`message` 经 `createAssistantMessage` 构造（唯一 MessageId、单 text block；构造入参传合成 provider/model——入参不含 `kind`，构造后 `AssistantMessage.source` 为必填 `{kind: "model", provider, model}`）；`turn`/`step` 固定占位（派生/渲染只读 `id/content/time/seq`，两者不被读取）。词汇表兼容即派生同权（§1.1），不构造 turn/step 边界、不写 dsh session（构造同构于既有测试 `common/js/dsh-plugins/team/src/team.test.ts` 的 `data: {turn: 1, step: 1, message}`）。
 - **生命周期**：进程内存态、随 team 物化（刷新 dispose 即清、重启即失）——与 agent 成员 log 实际行为对齐（2026-09-15 裁定，research.md D9）；`events` 由成员自持，未来加持久化 store 不动 team。
-- **注册信息**（saolei-loop 常量并导出）：`role = "saolei"`、`SAOLEI_MEMBER_SUMMARY = "扫雷系统，终局播报对局结果与操作统计"`——以常规 announce-only 成员注册进 `members`，roster 自然渲染三行；不进 proto `TeamMember` 成员列表与 `active_member`。
+- **注册信息**（saolei-loop 常量并导出）：`role = "announcer"`、`ANNOUNCER_MEMBER_SUMMARY = "终局播报对局结果与操作统计"`——以常规 announce-only 成员注册进 `members`，roster 自然渲染三行。
+- **成员面**（2026-10-14 起以 [../../076-agent-v2-optimize/contracts/announcer-member.md](../../076-agent-v2-optimize/contracts/announcer-member.md) 为准）：role 名由 `saolei` 更名 `announcer`（`ANNOUNCER_MEMBER_ROLE`），且 announcer 作为正式成员进入 proto `TeamMember` 名册（三成员、空 preset/model）并可作为 `active_member`——本节原"不进 proto `TeamMember` 成员列表与 `active_member`"条款由该契约 §3 取代（`specs/076-agent-v2-optimize/spec.md` FR-202/FR-203）；`UpdateTeam` 请求侧两成员校验保持。
 
 ### 1.3 每局分项操作统计 — `GameStats` 扩展
 
@@ -45,14 +46,14 @@
 
 | 字段 | 值 |
 |---|---|
-| merge `member` | `"saolei"`（wire 角色串，string） |
+| merge `member` | `"announcer"`（wire 角色串，string） |
 | `HistoryMessage.role` | `ROLE_AGENT` |
 | blocks | 单个 text block（模板正文） |
 | `seq` | 既有 `TeamHistory` 单调 seq（与 user/成员消息同源同值） |
-| 帧扇出 | `team_message{member="saolei", message, seq}`（实时）；ListTeamMessages 回填同条目 |
+| 帧扇出 | `team_message{member="announcer", message, seq}`（实时）；ListTeamMessages 回填同条目 |
 
-- 成员视图：消费成员的 log 内为 `user/message`（`source {kind: "team-broadcast", role: "saolei", senderSessionId: "…/saolei", messageId: 发言锚}`）→ `MemberViewEntry {sender: "saolei"}` + `member_view` 帧（既有路径，非新通路）。
-- **不变量**：每个被交接的局至多一条（编排 `statsSentFor` guard + MessageId 唯一）；`GetTeam.members`/`active_member` 不含 `saolei`。
+- 成员视图：消费成员的 log 内为 `user/message`（`source {kind: "team-broadcast", role: "announcer", senderSessionId: "…/announcer", messageId: 发言锚}`）→ `MemberViewEntry {sender: "announcer"}` + `member_view` 帧（既有路径，非新通路）。
+- **不变量**：每个被交接的局至多一条（编排 `statsSentFor` guard + MessageId 唯一）；`GetTeam.members` 名册含 announcer（三成员、空 preset/model），`active_member` 可为 `announcer`（[../../076-agent-v2-optimize/contracts/announcer-member.md](../../076-agent-v2-optimize/contracts/announcer-member.md) §3 取代本节原"不含 saolei"表述）。
 
 ### 1.5 记忆列表排序 — ListMemories 通用排序机制（memory 服务）+ 快照单页装载（JS 客户端）
 
@@ -77,7 +78,7 @@
 sequenceDiagram
     participant P as player(回合收束)
     participant O as orchestrator(nextStep)
-    participant S as SaoleiSystemMember(内存 log)
+    participant S as AnnouncerMember(内存 log)
     participant H as TeamSessions(宿主投影)
     participant L as planner(复盘)
 
@@ -86,7 +87,7 @@ sequenceDiagram
     S->>S: log 追加 assistant/message 事件
     S-->>H: subscribe 通知（宿主物化后订阅）
     H->>H: appendAnnouncement → merge 入列 + team_message 帧
-    O->>O: drain(planner)（派生拾取 saolei 发言单元，排末位）
+    O->>O: drain(planner)（派生拾取 announcer 发言单元，排末位）
     O->>L: 复盘驱动（播报消息居 followup 位）
     Note over O,S: 队列非空时 case 1 先行（player 消化）——播报顺延；<br/>新局覆盖终局记录则本局永不播报（跳局不补发）
 ```
@@ -94,7 +95,7 @@ sequenceDiagram
 关键转移规则（含既有不变量的增量影响）：
 
 1. **播报条件**：case 4 命中 `peekGameEvent() !== null && !== reviewedGameEvent`，且 `statsSentFor !== 该记录`（对象恒等）。
-2. **复盘保证启动**：播报后 planner 的 drain 必含 saolei 发言单元 → 原"`relays.length === 0` 不启动复盘、落入 player 续驱"的分支在存在未复盘终局记录时不再可达。
+2. **复盘保证启动**：播报后 planner 的 drain 必含 announcer 发言单元 → 原"`relays.length === 0` 不启动复盘、落入 player 续驱"的分支在存在未复盘终局记录时不再可达。
 3. **重试安全**：复盘驱动失败 → `pendingReview` 持有含播报消息的输入集重试（case 2 短路 case 4）→ 无二次播报；log 与历史各一条。
 4. **跳局**：排队消化驱动 player 开新局、终局记录被覆盖 → 旧记录的播报条件永不再满足 → 不补发；新局交接时对新记录播报。
 5. **取消/刷新**：paused 短路 pump（播报顺延至恢复后交接）；dispose 清编排与成员 log（未交接局不再播报）。

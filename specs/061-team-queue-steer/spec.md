@@ -8,6 +8,14 @@
 
 **Input**: User description: "1. 修正 agent v2 team 对于排队消息的处理。作为单 agent 的扩展，team 的排队消息应该在当前激活的 agent 下一个 step 开始时随工具结果一起作为 message 进入（或者 turn 结束后直接进入，这里注意 turn 结束的情况与 member 切换的节点仍然不变，切换仍然在排队消息完成后切换）。对于 team 视图来说，排队消息应该排在输入时的那个 step 之后，具体是下一个 step 进入还是 turn 进入，取决于 step 结果。2. 修正 spec 与注释中关于 turn 冗余的描述，turn 本身包含 agent 所有工作完成，不再有新的 llm 调用，多余的形容词容易形成干扰"
 
+> **supersession（2026-10-14，specs/076-agent-v2-optimize/）**：本 feature 的关系处置见 `specs/076-agent-v2-optimize/spec.md` FR-114 与 `specs/076-agent-v2-optimize/research.md` D8。
+>
+> - **静止半边（编排 FIFO / queue gate，[research.md](research.md) R2）由 `specs/076-agent-v2-optimize/spec.md` FR-105 取代**：编排 FIFO 与 queue gate 移除，静止路径的装配（`drain + landed flush + message`）移入成员适配器（LLM agent 成员适配器），消息要么 steer 入成员 inbox（在途）、要么立即装配驱动（静止）。
+> - **在途半边（steer → 成员 inbox，[research.md](research.md) R1/R3）经成员域 `deliver` 落地**：语义等价于本契约 [contracts/orchestrator-input.md](contracts/orchestrator-input.md) §1 的在途分支（消息形态/进入点/同边界多条/relay 边界/landed flush 全部沿用），实现承载从编排层 `submit` 移到成员适配器的 `deliver`。
+> - **web 面契约整体沿用**：[contracts/web-queue-ui.md](contracts/web-queue-ui.md) 的 chip 生命周期（`member_view{sender:"user"}` 文本首匹配消除）仍是实现契约，仅消费信号的产生路径从编排 FIFO 变为成员 inbox。
+> - **恢复链持有集重放（基准差异登记）**：cancel 打断 play 在途后的恢复链 = deliver 恢复驱动 + flow 重启当前活动（持有集重放），故其重启比本契约的"下一次 send 直接恢复"多一次重放驱动（`common/js/dsh-plugins/saolei-loop/src/orchestrator.test.ts` 断言三次驱动）。这是 076 契约 [contracts/flow-orchestration.md](../076-agent-v2-optimize/contracts/flow-orchestration.md) §4 的规定行为，属 `specs/076-agent-v2-optimize/spec.md` FR-113「仅两点调整」声明之外的伴随差异，在此登记。
+> - 本 feature 的 plan/tasks 不再单独执行；其需求文档作为语义沿革记录保留。
+
 ## Motivation
 
 排队消息的"mid-turn 进入"语义在 v1 桌面版已建立并被实现（`specs/038-queue-input-mid-turn/spec.md` FR-001：排队消息在 turn 内下一个"推理步"随工具结果一起投递），但 agent v2 迁移时被降级为"回合结束后进入"（`specs/049-agent-v2-dsh-init/research.md` D 系列决策将 mid-turn 注入错误归入"不迁移的 observe-only 等扩展"），team 模式延续了该降级语义（059 FR-011：排队消息在成员回合结束后消化）。术语层面，dsh 的 turn/step 语义已经源码级核实（`survey/deepseek-harness-turn-step-semantics.md`：**turn = 控制焦点的一次完整移交——turn 结束即成员本轮全部工作完成、不再有新的模型调用；step = 一次模型请求 + 其工具执行——工具欠账延续同 turn 的下一个 step，永远不会开新 turn**）。基于该基准复核发现：059 家族文档与编排器注释中的切换锚点描述使用了不存在的"工具调用引发的后续 turn"触发源，是 turn≈step 旧心智模型的残留表述。

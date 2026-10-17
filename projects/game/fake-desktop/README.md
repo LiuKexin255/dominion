@@ -9,10 +9,12 @@ testplan 部署引用（`projects/game/testplan/deploy_agent_v2.yaml` /
 
 ## 进程形态
 
-`cmd/main.go`：按配置拨号 gateway 的 `/api/v2` flow WebSocket（单一
-session），执行收到的操作帧并回传截图与回执；`:8080` 提供健康探针端点。
-连接管理（探测、接管）与操作派发语义见 `service/session.go` 与
-`service/executor.go`。
+`cmd/main.go`：按配置打开 gateway 的 `/api/v2` 会话下行流（`GET
+.../sessions/{session}:stream`，chunked NDJSON，单一 session），执行收到的
+操作帧并经 `:sendFrame`（`POST`，octet-stream）回传截图与回执；`:8080` 提供
+健康探针端点。连接管理（首帧确认、接管）与操作派发语义见 `service/session.go`
+与 `service/executor.go`（桥接契约：
+`specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md` §1/§5）。
 
 ## 确定性棋盘模型（图集映射）
 

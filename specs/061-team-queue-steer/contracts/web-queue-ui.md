@@ -9,8 +9,11 @@
 | `queued{position}`（本流首帧，busy 时） | 追加 `QueuedMsg{text, position}`（现状不变，`store/chat.ts:486-489`） |
 | `member_view` 且 `sender === "user"` | 按 `message` 首个 text 块内容对 `queue` 做**文本首匹配**移除（**新增**；消费时消除——mid-turn 路径在 step 边界消除，回合开始路径在 drive claim 时消除） |
 | `member_view` 且 `sender !== "user"` | 不触碰 queue（relay 进入成员视角，与排队无关） |
-| `turn_end`（任一终态） | queue 全清（现状不变——取消/终止路径的兜底，`store/chat.ts:691` 注释） |
+| `turn_end{CANCELED}` | queue 全清（取消路径的兜底——服务端 cancel 同时作废 team 排队队列，`store/chat.ts:768`） |
+| 其余 `turn_end` 终态 | **不**触碰 queue（`COMPLETED` 仅收束 live 回合、`ERROR` 保留已呈现内容与排队 chip、`ABORTED` 走会话删除的整体复位——`store/chat.ts:772-798`） |
 | `turn_start` | **不再**触碰 queue（现状"队首出队"逻辑退役——`store/chat.ts:548-550`；mid-turn 消费没有属于自己的 turn_start，且与 member_view 双信号并存会 double-remove） |
+
+> **勘误（2026-10-14，076 批3 实现核对）**：本表原将 turn_end 行写作"`turn_end`（任一终态）→ queue 全清（现状不变）"，与实现不符——实现（新旧一致，`store/chat.ts:768-798`）只在 `TURN_STATUS_CANCELED` 分支清空 queue；`COMPLETED` 与 `ERROR` 均保留 queue，`ABORTED` 的清空来自会话删除的整体复位而非 turn_end 分支。此处按实现的实际终态分类更正；076 批3（`specs/076-agent-v2-optimize/contracts/flow-orchestration.md` §7）沿用该帧语义，未改动行为。
 
 ## 2. 匹配规则（文本首匹配）
 

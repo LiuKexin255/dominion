@@ -1,16 +1,20 @@
-// 应用装配：侧栏（session 列表 + 视图切换）+ 主区（对话 / preset 管理）。
-// 无路由库——会话视图由选中 session 状态驱动，presets 视图为单页 state 切换
-// （specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2）。每
+// 应用装配：侧栏（session 列表 + 两级视图导航）+ 主区（对话 / preset / wiki /
+// memory 管理）。无路由库——会话视图由选中 session 状态驱动，其余视图为单页
+// state 切换（specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2、
+// specs/069-wiki-template-web/contracts/web-wiki-view.md §1）；侧栏一级仅
+// sessions/presets 直达，wiki/memory 经 ☰ 图标菜单入口的分组二级菜单到达
+// （specs/072-web-nav-redesign/contracts/web-nav.md §1-3）。每
 // session 的 ChatStore 以资源名为键存于 App 级 Map：切换/返回列表不丢各自
 // 进度（发送中的 team 流由 store 持有、在后台继续归约，fetch 不中断——
-// FR-014/FR-017 前端侧）。会话面板在两种视图下都常驻挂载：视图切换仅以
+// FR-014/FR-017 前端侧）。会话面板在所有视图下都常驻挂载：视图切换仅以
 // CSS 隐藏会话面板（unmount 会让 ChatPanel 的回填 effect 重跑，回填响应
 // 落地时覆盖在途回合——web-views.md §2），未选中会话的面板保持挂载仅
 // 不渲染，再次进入直接呈现既有状态。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './dsh-theme/index.css'
 import './theme.css'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ApiError, sendStream } from './api/conversation.js'
 import type { ChatEvent } from './api/conversation.js'
 import {
@@ -19,7 +23,7 @@ import {
   listMemberMessages,
   listTeamMessages,
 } from './api/agent.js'
-import type { Team } from './api/agent.js'
+import type { Team, TeamMember } from './api/agent.js'
 import { createSession, deleteSession, listSessions } from './api/sessions.js'
 import type { Session } from './api/sessions.js'
 import {
@@ -28,8 +32,10 @@ import {
   TeamSettingsPanel,
 } from './components/TeamSettingsPanel.js'
 import { ChatView, TEAM_VIEW } from './components/ChatView.js'
+import { MemoryView } from './components/MemoryView.js'
 import { PresetsView } from './components/PresetsView.js'
 import { SessionList } from './components/SessionList.js'
+import { WikiView } from './components/WikiView.js'
 import {
   SystemPromptOverlay,
   useSystemPrompt,
@@ -44,8 +50,60 @@ const TEMPLATE_SAOLEI = 'saolei'
 // 数量 = 成员数，saolei 恰 player/planner——切换器恰 3 视图：团队 + 2 成员）。
 const MEMBER_VIEWS = ['player', 'planner'] as const
 
-// 侧栏底部视图切换的两个视图（web-frontend.md §2：sessions | presets）。
-type AppView = 'sessions' | 'presets'
+// 侧栏视图导航的四个视图（specs/072-web-nav-redesign/contracts/web-nav.md §3）：
+// sessions/presets 为一级直达，wiki/memory 经 ☰ 入口的 primitives Menu 二级
+// 菜单到达（preset 视图见
+// specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §2，wiki 视图见
+// specs/069-wiki-template-web/contracts/web-wiki-view.md §1，memory 视图见
+// specs/071-memory-preset-scope/contracts/web-memory-view.md）。
+type AppView = 'sessions' | 'presets' | 'wiki' | 'memory'
+
+// VIEW_LABELS 提供视图显示名：一级直达按钮文案与二级菜单项文案
+// （specs/072-web-nav-redesign/contracts/web-nav.md §3）同源。
+const VIEW_LABELS: Record<AppView, string> = {
+  sessions: 'Sessions',
+  presets: 'Presets',
+  wiki: 'Wiki',
+  memory: 'Memory',
+}
+
+// 二级菜单视图的 id 域（specs/072-web-nav-redesign/contracts/web-nav.md §1）：
+// 菜单条目 id 与 onSelect 的收窄断言同源于此——新增二级类别时 id 必须属于
+// AppView，否则类型检查失败，避免静默放入非法视图 id。
+const SECONDARY_VIEWS = ['wiki', 'memory'] as const satisfies readonly AppView[]
+
+// ☰ 入口菜单的条目（specs/072-web-nav-redesign/contracts/web-nav.md §1）：
+// 菜单承载全部二级视图条目（id 取自 SECONDARY_VIEWS），不为某一域定制——新增
+// 二级视图只需向 SECONDARY_VIEWS 追加 id，入口按钮与侧栏底部行数不变；
+// `MenuEntry` 的分组（`{type:'label'}`）/分隔线能力当前未使用（数据行类型见
+// projects/game/web/frontend/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/Menu.d.ts）。
+const SECONDARY_MENU_ITEMS: MenuEntry[] = SECONDARY_VIEWS.map((id) => ({
+  id,
+  label: VIEW_LABELS[id],
+}))
+
+// ☰ 入口图标：primitives 图标集无汉堡 glyph
+// （projects/game/web/frontend/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/icons/index.d.ts），
+// 内联 SVG 为 specs/051-agent-v2-dsh-migration/contracts/web-frontend.md §1 允许的
+// 图标按钮载体；viewBox（0 0 16 16）、currentColor 描边与 aria-hidden 的属性形态
+// 对齐 primitives 图标实现，而 strokeLinecap="round" 是本入口的显式设计要求
+// （primitives 图标默认 butt cap）。仅此一处使用故随 App 定义。
+function HamburgerIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
+    </svg>
+  )
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -66,6 +124,17 @@ type DesktopConn = 'connected' | 'disconnected' | 'unknown'
 function presetTitle(name: string | undefined): string {
   if (name === undefined || name === '') return '—'
   return name.split('/').pop() ?? name
+}
+
+// memberLabel renders one roster entry: the wire role string plus the LLM
+// member's preset/model (model 空 = 部署默认，contracts/model-selection.md §4)。
+// 非 LLM 成员（preset/model 均空，如 announcer）只呈现 role——它没有
+// preset/model，不以"默认模型"示意
+// （specs/076-agent-v2-optimize/contracts/announcer-member.md §4）。
+function memberLabel(member: TeamMember): string {
+  if (member.preset === '') return member.role
+  const model = member.model !== undefined && member.model !== '' ? member.model : '默认模型'
+  return `${member.role} · ${presetTitle(member.preset)} · ${model}`
 }
 
 // ChatPanel hosts one session's store-backed team view. The store outlives the
@@ -386,7 +455,8 @@ function ChatPanel({
             状态呈现：role + preset + model；role 为 wire 字符串，model 为
             `provider/model-id` 复合标识原样渲染——页面不感知 provider 插件，
             specs/063-llm-reliability-opencode-go/contracts/model-selection.md
-            §4）。每成员即 system prompt 查看入口（FR-009，
+            §4；非 LLM 成员只呈现 role，specs/076-agent-v2-optimize/contracts/
+            announcer-member.md §4）。每成员即 system prompt 查看入口（FR-009，
             specs/060-agent-v2-team-optimize/spec.md：主界面直接可见，无需打开
             设置面板）。 */}
         <span className="team-members" data-testid="team-members">
@@ -399,8 +469,7 @@ function ChatPanel({
               data-role={member.role}
               onClick={() => void systemPrompt.open(member.role)}
             >
-              {member.role} · {presetTitle(member.preset)} ·{' '}
-              {member.model !== undefined && member.model !== '' ? member.model : '默认模型'}
+              {memberLabel(member)}
             </button>
           ))}
         </span>
@@ -457,6 +526,9 @@ function ChatPanel({
 
 export function App() {
   const [view, setView] = useState<AppView>('sessions')
+  // ☰ 菜单的开闭瞬态（specs/072-web-nav-redesign/contracts/web-nav.md §3：不
+  // 承载视图状态——关闭时当前视图与选中态保持）。
+  const [secondaryMenuOpen, setSecondaryMenuOpen] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
@@ -474,12 +546,26 @@ export function App() {
     selectedRef.current = selected
   }, [selected])
 
+  // 视图切换统一入口：一级直达与二级菜单项共用——切换视图的同时关闭菜单
+  // （specs/072-web-nav-redesign/contracts/web-nav.md §2 行为表）。
+  const selectView = useCallback((next: AppView) => {
+    setView(next)
+    setSecondaryMenuOpen(false)
+  }, [])
+
+  // 会话打开统一入口（左栏条目与「新建会话」共用，
+  // specs/072-web-nav-redesign/contracts/web-nav.md §2 行为表/§5 锚点 2）：任何
+  // 视图下打开会话都切回 sessions 视图（对齐官方 `openSession` 语义，
+  // specs/072-web-nav-redesign/research.md §2.2）——非 session 视图下不存在无
+  // 可见响应的点击；面板常驻挂载使切回直接呈现既有状态（契约 §3）。
+  // setOpened/setSelected/setNotice 的既有语义与顺序不变。
   const openSession = useCallback((name: string) => {
     const stores = storesRef.current
     if (stores !== null && !stores.has(name)) stores.set(name, new ChatStore())
     setOpened((prev) => (prev.includes(name) ? prev : [...prev, name]))
     setSelected(name)
     setNotice(null)
+    setView('sessions')
   }, [])
 
   const refresh = useCallback(async () => {
@@ -541,6 +627,11 @@ export function App() {
     [],
   )
 
+  // wiki/memory 属二级菜单视图：☰ 入口以激活态示意"菜单内有激活项"
+  // （specs/072-web-nav-redesign/contracts/web-nav.md §3）；当前具体视图在
+  // 菜单打开时经 selectedId 选中标记可见，入口本身不拼接视图名文本。
+  const secondaryView = view === 'wiki' || view === 'memory'
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -564,17 +655,46 @@ export function App() {
           <Button
             variant={view === 'sessions' ? 'primary' : 'ghost'}
             data-testid="view-sessions"
-            onClick={() => setView('sessions')}
+            data-active={view === 'sessions' || undefined}
+            onClick={() => selectView('sessions')}
           >
-            Sessions
+            {VIEW_LABELS.sessions}
           </Button>
           <Button
             variant={view === 'presets' ? 'primary' : 'ghost'}
             data-testid="view-presets"
-            onClick={() => setView('presets')}
+            data-active={view === 'presets' || undefined}
+            onClick={() => selectView('presets')}
           >
-            Presets
+            {VIEW_LABELS.presets}
           </Button>
+          {/* 一级 ☰ 图标菜单入口 + primitives Menu 二级菜单
+              （specs/072-web-nav-redesign/contracts/web-nav.md §1/§2）：入口
+              toggle 菜单；菜单承载二级视图条目（当前 wiki/memory，不为某一域
+              定制），键盘漫游与外点/Esc 关闭由 Menu 内建（App 不自维护关闭
+              监听——§2 行为表）。 */}
+          <Menu
+            open={secondaryMenuOpen}
+            side="top"
+            anchor={
+              <Button
+                className="view-more-entry"
+                variant={secondaryView ? 'primary' : 'ghost'}
+                icon={<HamburgerIcon />}
+                title="更多视图"
+                aria-label="更多视图"
+                aria-haspopup="menu"
+                aria-expanded={secondaryMenuOpen}
+                data-testid="view-more"
+                data-active={secondaryView || undefined}
+                onClick={() => setSecondaryMenuOpen((open) => !open)}
+              />
+            }
+            items={SECONDARY_MENU_ITEMS}
+            selectedId={secondaryView ? view : undefined}
+            onSelect={(id) => selectView(id as (typeof SECONDARY_VIEWS)[number])}
+            onClose={() => setSecondaryMenuOpen(false)}
+          />
         </div>
       </aside>
       <main className="main">
@@ -600,6 +720,8 @@ export function App() {
           })}
         </div>
         {view === 'presets' ? <PresetsView template={TEMPLATE_SAOLEI} /> : null}
+        {view === 'wiki' ? <WikiView template={TEMPLATE_SAOLEI} /> : null}
+        {view === 'memory' ? <MemoryView template={TEMPLATE_SAOLEI} /> : null}
       </main>
     </div>
   )

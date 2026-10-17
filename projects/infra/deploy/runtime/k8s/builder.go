@@ -71,14 +71,17 @@ const (
 
 	EnvHeaderMatchName = "env"
 
+	// stablePasswordAlphabet/stablePasswordMinLen/stablePasswordJoiner 为 mongo/redis
+	// 实例密码派生共用参数：HMAC-SHA256 摘要逐字节按 %62 映射字母表，长度不足时
+	// 循环扩展至 stablePasswordMinLen；HMAC key 按资源种类区分
+	// （specs/067-redis-infra-support/research.md D4）。
+	stablePasswordAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	stablePasswordMinLen   = 24
+	stablePasswordJoiner   = "\x00"
+
 	// MongoDB 相关常量。
 	mongoPasswordHMACKey   = "dominion-mongo-stable-password"
-	mongoPasswordAlphabet  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	mongoPasswordMinLen    = 24
-	mongoPasswordJoiner    = "\x00"
 	mongoPortName          = "mongo"
-	mongoSecretUsernameKey = "username"
-	mongoSecretPasswordKey = "password"
 	mongoDataVolumeName    = "mongo-data"
 	mongoDataMountPath     = "/data/db"
 	mongoInitContainerName = "mongo-init"
@@ -87,9 +90,7 @@ const (
 	mongoInitPIDPath       = "/tmp/mongod-init.pid"
 	mongoAdminDatabaseName = "admin"
 	mongoRootRoleName      = "root"
-	mongoPodFieldPathNS    = "metadata.namespace"
 	mongoLocalHost         = "127.0.0.1"
-	mongoImageTagJoiner    = ":"
 	mongoEnvRootUsername   = "MONGO_INITDB_ROOT_USERNAME"
 	mongoEnvRootPassword   = "MONGO_INITDB_ROOT_PASSWORD"
 	mongoInitScript        = `set -euo pipefail
@@ -115,6 +116,24 @@ if [ ! -f "` + mongoInitMarkerFile + `" ]; then
 fi
 
 mongosh --host "` + mongoLocalHost + `" --port 27017 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase "` + mongoAdminDatabaseName + `" --quiet --eval 'db.adminCommand({ ping: 1 })' >/dev/null`
+
+	// imageTagJoiner 拼接 profile 的 image 与 version。
+	imageTagJoiner = ":"
+	// podNamespaceFieldPath 为 POD_NAMESPACE downward API 字段路径。
+	podNamespaceFieldPath = "metadata.namespace"
+
+	// Redis 相关常量。
+	redisPasswordHMACKey = "dominion-redis-stable-password"
+	redisPortName        = "redis"
+	redisDataVolumeName  = "redis-data"
+	// redisDataMountPath 为 redis 镜像 WORKDIR，AOF 文件写入此处
+	// （https://hub.docker.com/_/redis）。
+	redisDataMountPath  = "/data"
+	redisEnvPassword    = "REDIS_PASSWORD"
+	redisShellPath      = "/bin/sh"
+	redisShellFlag      = "-ec"
+	redisServerBaseCmd  = `exec redis-server --requirepass "$REDIS_PASSWORD"`
+	redisAppendOnlyFlag = " --appendonly yes"
 )
 
 // BuildDeployment 将 deployment workload 构造成可直接下发的 Deployment 对象。
@@ -756,11 +775,11 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		withService(workload.ServiceName),
 		withDominionEnvironment(workload.EnvironmentName),
 	)
-	containerImage := strings.TrimSpace(profile.Image) + mongoImageTagJoiner + strings.TrimSpace(profile.Version)
-	containerEnv := buildMongoDBContainerEnv(workload, workload.SecretResourceName())
+	containerImage := strings.TrimSpace(profile.Image) + imageTagJoiner + strings.TrimSpace(profile.Version)
+	containerEnv := buildMongoDBContainerEnv(workload, profile.AdminUsername)
 	volumes := []corev1.Volume{{
 		Name:         mongoDataVolumeName,
-		VolumeSource: buildMongoDBDataVolumeSource(workload),
+		VolumeSource: buildDataVolumeSource(workload.PVCResourceName(), workload.Persistence.Enabled),
 	}}
 	volumeMounts := []corev1.VolumeMount{{
 		Name:      mongoDataVolumeName,
@@ -862,11 +881,216 @@ func BuildMongoDBService(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Ser
 	}, nil
 }
 
-func resolveMongoDBCapacity(workload *MongoDBWorkload, profile *MongoProfileConfig) (resource.Quantity, error) {
-	if !workload.Persistence.Capacity.IsZero() {
-		return workload.Persistence.Capacity, nil
+// BuildRedisDeployment 将 Redis workload 构造成可直接下发的 Deployment 对象。
+func BuildRedisDeployment(workload *RedisWorkload, cfg *K8sConfig) (*appsv1.Deployment, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("redis workload 为空")
 	}
-	return resource.MustParse(strings.TrimSpace(profile.Storage.Capacity)), nil
+	if err := workload.Validate(); err != nil {
+		return nil, err
+	}
+
+	profile := cfg.RedisProfile(workload.ProfileName)
+	if profile == nil {
+		return nil, fmt.Errorf("redis profile %s 不存在", strings.TrimSpace(workload.ProfileName))
+	}
+
+	deploymentName := workload.ResourceName()
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	selectorLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+	)
+	containerImage := strings.TrimSpace(profile.Image) + imageTagJoiner + strings.TrimSpace(profile.Version)
+	containerEnv := buildRedisContainerEnv(workload)
+	volumes := []corev1.Volume{{
+		Name:         redisDataVolumeName,
+		VolumeSource: buildDataVolumeSource(workload.PVCResourceName(), workload.Persistence.Enabled),
+	}}
+	volumeMounts := []corev1.VolumeMount{{
+		Name:      redisDataVolumeName,
+		MountPath: redisDataMountPath,
+	}}
+	probe := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString(redisPortName)},
+		},
+	}
+	replicas := int32(1)
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName,
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RecreateDeploymentStrategyType,
+			},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string(selectorLabels),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string(objectLabels),
+				},
+				Spec: corev1.PodSpec{
+					Volumes: volumes,
+					Containers: []corev1.Container{{
+						Name:         deploymentName,
+						Image:        containerImage,
+						Command:      buildRedisServerCommand(workload.Persistence.Enabled),
+						Ports:        []corev1.ContainerPort{{Name: redisPortName, ContainerPort: int32(profile.Port)}},
+						Env:          containerEnv,
+						VolumeMounts: volumeMounts,
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: probe.ProbeHandler,
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: probe.ProbeHandler,
+						},
+					}},
+				},
+			},
+		},
+	}, nil
+}
+
+// BuildRedisService 将 Redis workload 构造成可直接下发的 Service 对象。
+func BuildRedisService(workload *RedisWorkload, cfg *K8sConfig) (*corev1.Service, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("redis workload 为空")
+	}
+
+	profile := cfg.RedisProfile(workload.ProfileName)
+	if profile == nil {
+		return nil, fmt.Errorf("redis profile %s 不存在", strings.TrimSpace(workload.ProfileName))
+	}
+
+	serviceName := workload.ServiceResourceName()
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	selectorLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+	)
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string(selectorLabels),
+			Ports: []corev1.ServicePort{
+				{
+					Name:       redisPortName,
+					Port:       int32(profile.Port),
+					TargetPort: intstr.FromString(redisPortName),
+				},
+			},
+		},
+	}, nil
+}
+
+// BuildRedisPVC 将 Redis PVC workload 构造成可直接下发的 PersistentVolumeClaim 对象。
+func BuildRedisPVC(workload *RedisWorkload, cfg *K8sConfig) (*corev1.PersistentVolumeClaim, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("redis workload 为空")
+	}
+	if err := workload.Validate(); err != nil {
+		return nil, err
+	}
+	if !workload.Persistence.Enabled {
+		return nil, fmt.Errorf("redis workload 未启用持久化")
+	}
+
+	profile := cfg.RedisProfile(workload.ProfileName)
+	if profile == nil {
+		return nil, fmt.Errorf("redis profile %s 不存在", strings.TrimSpace(workload.ProfileName))
+	}
+
+	pvcName := workload.PVCResourceName()
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	storageClassName := strings.TrimSpace(profile.Storage.StorageClassName)
+	volumeMode := corev1.PersistentVolumeMode(strings.TrimSpace(profile.Storage.VolumeMode))
+	storageQuantity, err := resolveStorageCapacity(workload.Persistence.Capacity, profile.Storage.Capacity)
+	if err != nil {
+		return nil, fmt.Errorf("解析 redis pvc 容量失败: %w", err)
+	}
+
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName,
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			StorageClassName: &storageClassName,
+			AccessModes:      buildStorageAccessModes(profile.Storage.AccessModes),
+			VolumeMode:       &volumeMode,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: storageQuantity,
+				},
+			},
+		},
+	}, nil
+}
+
+// buildRedisContainerEnv 构造 Redis 实例容器环境变量：密码以直接值注入
+// （实例不创建 Secret，specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.2）。
+func buildRedisContainerEnv(workload *RedisWorkload) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: constants.EnvServiceApp, Value: workload.App},
+		{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
+		{
+			Name: constants.EnvPodNamespace,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: podNamespaceFieldPath},
+			},
+		},
+		{Name: redisEnvPassword, Value: generateStablePassword(redisPasswordHMACKey, workload.App, workload.EnvironmentName, workload.ServiceName)},
+	}
+}
+
+// buildRedisServerCommand 返回 redis-server 启动命令：通过 sh -ec + exec 展开
+// $REDIS_PASSWORD 并使 sh 退化为 redis-server 进程以正确传递信号；持久化启用时
+// 追加 AOF 落盘参数（https://github.com/docker-library/redis/issues/46）。
+func buildRedisServerCommand(persistenceEnabled bool) []string {
+	command := redisServerBaseCmd
+	if persistenceEnabled {
+		command += redisAppendOnlyFlag
+	}
+
+	return []string{redisShellPath, redisShellFlag, command}
+}
+
+// resolveStorageCapacity 返回实例级容量覆盖（非零时优先），否则回退 profile 容量。
+func resolveStorageCapacity(instanceCapacity resource.Quantity, profileCapacity string) (resource.Quantity, error) {
+	if !instanceCapacity.IsZero() {
+		return instanceCapacity, nil
+	}
+	return resource.MustParse(strings.TrimSpace(profileCapacity)), nil
 }
 
 // BuildMongoDBPVC 将 MongoDB PVC workload 构造成可直接下发的 PersistentVolumeClaim 对象。
@@ -895,7 +1119,7 @@ func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Persist
 	)
 	storageClassName := strings.TrimSpace(profile.Storage.StorageClassName)
 	volumeMode := corev1.PersistentVolumeMode(strings.TrimSpace(profile.Storage.VolumeMode))
-	storageQuantity, err := resolveMongoDBCapacity(workload, profile)
+	storageQuantity, err := resolveStorageCapacity(workload.Persistence.Capacity, profile.Storage.Capacity)
 	if err != nil {
 		return nil, fmt.Errorf("解析 mongo pvc 容量失败: %w", err)
 	}
@@ -908,47 +1132,13 @@ func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Persist
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			StorageClassName: &storageClassName,
-			AccessModes:      buildMongoDBPVCAccessModes(profile.Storage.AccessModes),
+			AccessModes:      buildStorageAccessModes(profile.Storage.AccessModes),
 			VolumeMode:       &volumeMode,
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceStorage: storageQuantity,
 				},
 			},
-		},
-	}, nil
-}
-
-// BuildMongoDBSecret 将 MongoDB Secret workload 构造成可直接下发的 Secret 对象。
-func BuildMongoDBSecret(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Secret, error) {
-	if workload == nil {
-		return nil, fmt.Errorf("mongo workload 为空")
-	}
-
-	profile := cfg.MongoProfile(workload.ProfileName)
-	if profile == nil {
-		return nil, fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(workload.ProfileName))
-	}
-
-	secretName := workload.SecretResourceName()
-	objectLabels := buildLabels(
-		withApp(workload.App),
-		withService(workload.ServiceName),
-		withDominionEnvironment(workload.EnvironmentName),
-		withManagedBy(cfg.ManagedBy),
-	)
-	password := generateStablePassword(workload.App, workload.EnvironmentName, workload.ServiceName)
-
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: cfg.Namespace,
-			Labels:    map[string]string(objectLabels),
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			mongoSecretUsernameKey: []byte(profile.AdminUsername),
-			mongoSecretPasswordKey: []byte(password),
 		},
 	}, nil
 }
@@ -970,29 +1160,61 @@ func CheckPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *Mong
 		return fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(desired.ProfileName))
 	}
 
-	if strings.TrimSpace(existing.Labels[dominionEnvironmentLabelKey]) != strings.TrimSpace(desired.EnvironmentName) {
-		return fmt.Errorf("pvc %s 标签 %s 不兼容: existing=%q desired=%q", existing.Name, dominionEnvironmentLabelKey, existing.Labels[dominionEnvironmentLabelKey], desired.EnvironmentName)
+	desiredCapacity, err := resolveStorageCapacity(desired.Persistence.Capacity, profile.Storage.Capacity)
+	if err != nil {
+		return fmt.Errorf("解析 mongo pvc 容量失败: %w", err)
 	}
 
-	storageClassName := strings.TrimSpace(profile.Storage.StorageClassName)
+	return checkPVCCompatibility(existing, desired.EnvironmentName, profile.Storage, desiredCapacity)
+}
+
+// CheckRedisPVCCompatibility 校验现有 PVC 是否与期望的 Redis PVC workload 兼容。
+func CheckRedisPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *RedisWorkload, cfg *K8sConfig) error {
+	if existing == nil {
+		return fmt.Errorf("existing pvc 为空")
+	}
+	if desired == nil {
+		return fmt.Errorf("redis workload 为空")
+	}
+	if err := desired.Validate(); err != nil {
+		return err
+	}
+
+	profile := cfg.RedisProfile(desired.ProfileName)
+	if profile == nil {
+		return fmt.Errorf("redis profile %s 不存在", strings.TrimSpace(desired.ProfileName))
+	}
+
+	desiredCapacity, err := resolveStorageCapacity(desired.Persistence.Capacity, profile.Storage.Capacity)
+	if err != nil {
+		return fmt.Errorf("解析 redis pvc 容量失败: %w", err)
+	}
+
+	return checkPVCCompatibility(existing, desired.EnvironmentName, profile.Storage, desiredCapacity)
+}
+
+// checkPVCCompatibility 校验现有 PVC 的环境标签、StorageClass、访问模式、卷模式与
+// 容量是否与期望存储配置兼容；mongo/redis 实例共用同一存储语义。
+func checkPVCCompatibility(existing *corev1.PersistentVolumeClaim, environmentName string, storage StorageConfig, desiredCapacity resource.Quantity) error {
+	if strings.TrimSpace(existing.Labels[dominionEnvironmentLabelKey]) != strings.TrimSpace(environmentName) {
+		return fmt.Errorf("pvc %s 标签 %s 不兼容: existing=%q desired=%q", existing.Name, dominionEnvironmentLabelKey, existing.Labels[dominionEnvironmentLabelKey], environmentName)
+	}
+
+	storageClassName := strings.TrimSpace(storage.StorageClassName)
 	if existing.Spec.StorageClassName == nil || strings.TrimSpace(*existing.Spec.StorageClassName) != storageClassName {
 		return fmt.Errorf("pvc %s storageClassName 不兼容: existing=%q desired=%q", existing.Name, stringPtrValue(existing.Spec.StorageClassName), storageClassName)
 	}
 
-	desiredAccessModes := buildMongoDBPVCAccessModes(profile.Storage.AccessModes)
+	desiredAccessModes := buildStorageAccessModes(storage.AccessModes)
 	if !slices.Equal(existing.Spec.AccessModes, desiredAccessModes) {
 		return fmt.Errorf("pvc %s accessModes 不兼容: existing=%v desired=%v", existing.Name, existing.Spec.AccessModes, desiredAccessModes)
 	}
 
-	desiredVolumeMode := corev1.PersistentVolumeMode(strings.TrimSpace(profile.Storage.VolumeMode))
+	desiredVolumeMode := corev1.PersistentVolumeMode(strings.TrimSpace(storage.VolumeMode))
 	if existing.Spec.VolumeMode == nil || *existing.Spec.VolumeMode != desiredVolumeMode {
 		return fmt.Errorf("pvc %s volumeMode 不兼容: existing=%q desired=%q", existing.Name, pvcVolumeModeValue(existing.Spec.VolumeMode), desiredVolumeMode)
 	}
 
-	desiredCapacity, err := resolveMongoDBCapacity(desired, profile)
-	if err != nil {
-		return fmt.Errorf("解析 mongo pvc 容量失败: %w", err)
-	}
 	existingCapacity, ok := existing.Spec.Resources.Requests[corev1.ResourceStorage]
 	if !ok {
 		return fmt.Errorf("pvc %s storage capacity 不兼容: existing=missing desired=%s", existing.Name, desiredCapacity.String())
@@ -1004,30 +1226,31 @@ func CheckPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *Mong
 	return nil
 }
 
-// generateStablePassword 基于输入生成确定性密码。
-func generateStablePassword(inputs ...string) string {
+// generateStablePassword 以 key 为 HMAC 密钥、inputs 为派生材料生成确定性密码
+// （算法见 stablePassword* 常量与 specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.3）。
+func generateStablePassword(key string, inputs ...string) string {
 	normalized := make([]string, 0, len(inputs))
 	for _, input := range inputs {
 		normalized = append(normalized, strings.TrimSpace(input))
 	}
 
 	//nolint:gosec // HMAC 用于确定性密码生成而非安全校验。
-	mac := hmac.New(sha256.New, []byte(mongoPasswordHMACKey))
-	_, _ = mac.Write([]byte(strings.Join(normalized, mongoPasswordJoiner)))
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte(strings.Join(normalized, stablePasswordJoiner)))
 	sum := mac.Sum(nil)
 
 	encoded := make([]byte, 0, len(sum))
 	for _, b := range sum {
-		encoded = append(encoded, mongoPasswordAlphabet[int(b)%len(mongoPasswordAlphabet)])
+		encoded = append(encoded, stablePasswordAlphabet[int(b)%len(stablePasswordAlphabet)])
 	}
-	if len(encoded) >= mongoPasswordMinLen {
+	if len(encoded) >= stablePasswordMinLen {
 		return string(encoded)
 	}
 
-	for len(encoded) < mongoPasswordMinLen {
+	for len(encoded) < stablePasswordMinLen {
 		for _, b := range sum {
-			encoded = append(encoded, mongoPasswordAlphabet[int(b)%len(mongoPasswordAlphabet)])
-			if len(encoded) >= mongoPasswordMinLen {
+			encoded = append(encoded, stablePasswordAlphabet[int(b)%len(stablePasswordAlphabet)])
+			if len(encoded) >= stablePasswordMinLen {
 				break
 			}
 		}
@@ -1146,38 +1369,25 @@ func buildServicePorts(ports []*DeploymentPort) ([]corev1.ServicePort, error) {
 	return servicePorts, nil
 }
 
-func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string) []corev1.EnvVar {
+// buildMongoDBContainerEnv 构造 mongo 实例容器环境变量：用户名取 profile
+// admin_username，密码为确定性派生直接值；实例不创建 Secret，变量名为 mongo
+// 镜像原生约定（specs/067-redis-infra-support/contracts/deploy-redis-infra.md §3.1）。
+func buildMongoDBContainerEnv(workload *MongoDBWorkload, adminUsername string) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: constants.EnvServiceApp, Value: workload.App},
 		{Name: constants.EnvDominionEnvironment, Value: workload.EnvironmentName},
 		{
 			Name: constants.EnvPodNamespace,
 			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{FieldPath: mongoPodFieldPathNS},
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: podNamespaceFieldPath},
 			},
 		},
-		{
-			Name: mongoEnvRootUsername,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  mongoSecretUsernameKey,
-				},
-			},
-		},
-		{
-			Name: mongoEnvRootPassword,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  mongoSecretPasswordKey,
-				},
-			},
-		},
+		{Name: mongoEnvRootUsername, Value: adminUsername},
+		{Name: mongoEnvRootPassword, Value: generateStablePassword(mongoPasswordHMACKey, workload.App, workload.EnvironmentName, workload.ServiceName)},
 	}
 }
 
-func buildMongoDBPVCAccessModes(accessModes []string) []corev1.PersistentVolumeAccessMode {
+func buildStorageAccessModes(accessModes []string) []corev1.PersistentVolumeAccessMode {
 	if len(accessModes) == 0 {
 		return nil
 	}
@@ -1190,11 +1400,12 @@ func buildMongoDBPVCAccessModes(accessModes []string) []corev1.PersistentVolumeA
 	return result
 }
 
-func buildMongoDBDataVolumeSource(workload *MongoDBWorkload) corev1.VolumeSource {
-	if workload != nil && workload.Persistence.Enabled {
+// buildDataVolumeSource 返回实例数据卷来源：持久化启用时引用 PVC，否则使用 emptyDir。
+func buildDataVolumeSource(pvcName string, persistenceEnabled bool) corev1.VolumeSource {
+	if persistenceEnabled {
 		return corev1.VolumeSource{
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: workload.PVCResourceName(),
+				ClaimName: pvcName,
 			},
 		}
 	}

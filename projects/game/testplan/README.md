@@ -2,7 +2,7 @@
 
 This directory holds the large-test (`go_largetest`) targets that exercise the
 game system end-to-end (gateway → proxy → agent-v2, plus the session and
-memory faces) via the HTTP + WebSocket surface. The plan is orchestrated by
+memory faces) via the HTTP surface. The plan is orchestrated by
 `guitar` through `system_test.yaml`.
 
 The agent_v2 session face is the **team model**
@@ -47,13 +47,16 @@ suite) — differing in service presence and env:
   credentials either way, so the zero-secret `agent-v2-test` artifact needs
   no token prerequisite.
 - `fake-desktop` — the deterministic desktop executor
-  (specs/051-agent-v2-dsh-migration/research.md D15): it connects to the
-  gateway's /api/v2 flow WebSocket for its configured session and answers
-  FlowPart operations with recognizable board screenshots + SUCCEEDED
-  receipts. Only the drop topology differs in this service's env — the
-  progressive scenario with the disconnect fault on `desktop-e2e-drop`
-  versus the won scenario on `desktop-e2e-won` — so each topology gets one
-  dedicated executor under the same `fake-desktop` service name.
+  (specs/051-agent-v2-dsh-migration/research.md D15): it opens the gateway's
+  `/api/v2/templates/{template}/sessions/{session}:stream` NDJSON downlink for
+  its configured session and posts receipts back over `:sendFrame`
+  (octet-stream), answering FlowPart operations with recognizable board
+  screenshots + SUCCEEDED receipts
+  (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1). Only the
+  drop topology differs in this service's env — the progressive scenario with
+  the disconnect fault on `desktop-e2e-drop` versus the won scenario on
+  `desktop-e2e-won` — so each topology gets one dedicated executor under the
+  same `fake-desktop` service name.
 - `proxy`, `agent-v2-test`, `web`, `gateway` — the session face routes
   gateway → proxy (owner affinity) → agent_v2; the preset face and the web
   static hosting are direct.

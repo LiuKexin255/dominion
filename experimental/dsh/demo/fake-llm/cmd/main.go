@@ -1,7 +1,8 @@
 // The fake-llm command serves the dsh-demo scripted model endpoint:
 // an OpenAI chat-completions compatible fake (template matching with a
-// deterministic fallback) consumed by the official dsh-llm-deepseek
-// adapter over SSE (specs/047-dsh-chat-demo/contracts/fake-llm-wire.md).
+// deterministic fallback) consumed by the demo's OpenAI Chat Completions
+// adapter (@dominion/dsh-llm-opencode-go) over SSE
+// (specs/047-dsh-chat-demo/contracts/fake-llm-wire.md).
 package main
 
 import (

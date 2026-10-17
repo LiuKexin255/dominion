@@ -262,6 +262,73 @@ describe('TeamSettingsPanel', () => {
     )
     expect((await screen.findByTestId('team-settings-error')).textContent).toContain('boom')
   })
+
+  it('成员清单渲染非 LLM 的 announcer 项（空 preset/model，只呈现 role）：不报错、不影响双下拉', async () => {
+    // 三成员名册（specs/076-agent-v2-optimize/contracts/announcer-member.md
+    // §4）：announcer 无 preset/model，名册项以空值呈现——不显示 preset 占位
+    // 与"默认模型"。
+    const materialized = {
+      ...TEAM_MATERIALIZED,
+      members: [
+        ...TEAM_MATERIALIZED.members,
+        { name: `${SESSION}/team/members/announcer`, role: 'announcer', preset: '', model: '' },
+      ],
+    }
+    render(
+      <TeamSettingsPanel
+        session={SESSION}
+        materialized={materialized}
+        onApplied={onApplied}
+        onClose={onClose}
+      />,
+    )
+
+    const entries = await screen.findAllByTestId('team-panel-member')
+    expect(entries).toHaveLength(3)
+    const info = (entry: HTMLElement): string =>
+      entry.querySelector('.team-panel-member-info')?.textContent ?? ''
+    expect(info(entries[0] as HTMLElement)).toBe('player · p-player · glm-responses/glm-5.2')
+    expect(info(entries[1] as HTMLElement)).toBe('planner · p-planner · glm-responses/glm-5.1')
+    expect(entries[2]?.getAttribute('data-role')).toBe('announcer')
+    expect(info(entries[2] as HTMLElement)).toBe('announcer')
+
+    // preset/model 下拉与提交不受 announcer 名册项影响（按角色过滤的两池）。
+    // 等待数据源装载完成（Apply 在 loading 期间禁用）。
+    const playerPresetSelect = await screen.findByTestId('team-player-preset-select')
+    await waitFor(() => {
+      expect(
+        Array.from(playerPresetSelect.querySelectorAll('option')).map((o) => o.textContent),
+      ).toContain('p-player')
+    })
+    fireEvent.change(playerPresetSelect, { target: { value: PLAYER_PRESET.name } })
+    fireEvent.change(screen.getByTestId('team-planner-preset-select'), {
+      target: { value: PLANNER_PRESET.name },
+    })
+    fireEvent.click(screen.getByTestId('team-apply'))
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/v2/${SESSION}/team?allow_missing=true`,
+        expect.objectContaining({
+          method: 'PATCH',
+          // 提交仍恰为两条 LLM 成员配置（announcer 不进 members 输入）。
+          body: JSON.stringify({
+            members: [
+              {
+                role: 'player',
+                preset: PLAYER_PRESET.name,
+                model: 'glm-responses/glm-5.2',
+              },
+              {
+                role: 'planner',
+                preset: PLANNER_PRESET.name,
+                model: 'glm-responses/glm-5.1',
+              },
+            ],
+          }),
+        }),
+      )
+    })
+  })
 })
 
 // ─── 未物化引导态流转与首驱提示（web-views.md §1） ───────────────────────────

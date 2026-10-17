@@ -16,6 +16,8 @@
 | `ListMemberMessages(ListMemberMessagesRequest) returns ListMemberMessagesResponse` | `GET /api/v2/{parent=templates/*/sessions/*/team/members/*}/messages` | AIP-132：成员视角历史（替代原 ListAgentMessages） |
 | `Cancel(CancelRequest) returns CancelResponse` | `POST /api/v2/{name=templates/*/sessions/*/team}:cancel` | 幂等；team 取消语义见 §4 |
 
+> **名册与 active_member 增量勘误（076，2026-10-14）**：saolei 场景的成员名册为**三成员**——player/planner（LLM 成员，`UpdateTeam` 的配置面）+ announcer（announce-only 成员：无 preset/model、不经 LLM 驱动、**不可由调用方配置**，由服务端进入名册）；`GetTeam` 的 `members` 返回三者，`active_member` 可为 `announcer`（无呈现投影特例）。依据 `specs/076-agent-v2-optimize/contracts/announcer-member.md` §3 与 `specs/076-agent-v2-optimize/spec.md` FR-202/FR-203（取代 065 FR-001 的"不含系统角色"条款）。
+
 ## 2. UpdateTeam 校验与物化（fail-fast，无半物化）
 
 会话面 proto 为**场景无关 team 原语**：物化输入是 `team.members` 列表（每成员 `{role, preset, model?}`，caller-supplied 成员配置），字段层不编码 saolei 词汇、成员数量或 role 值域。saolei 场景约束由 **agent_v2 服务端校验**承载（saolei 场景宿主，KNOWN_TEMPLATES 机制不变），校验失败均为 `INVALID_ARGUMENT`（错误为场景校验表述，不含"proto 限制"色彩）：

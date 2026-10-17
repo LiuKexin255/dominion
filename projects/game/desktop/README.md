@@ -1,14 +1,16 @@
 # projects/game/desktop
 
 本目录包含 Dominion 游戏 desktop 的 Wails 应用（Go 后端 + Svelte/Vite 前端）。desktop 是
-游戏 flow 的**控制终端**：它把 WebSocket flow 通道（`/api/v2`）下发的鼠标/键盘操作落到
-本机窗口上执行，并回传操作结果与截图。
+游戏 flow 的**控制终端**：它把 `/api/v2` 会话下行流（`GET .../{session}:stream`，
+chunked NDJSON）下发的鼠标/键盘操作落到本机窗口上执行，并经 `POST ...:sendFrame`
+（octet-stream）回传操作结果与截图（契约
+`specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md` §1）。
 
 ## 能力清单
 
 | 能力 | 说明 |
 |---|---|
-| 连接 | 经 gateway 的 `/api/v2/templates/{template}/sessions/{session}/connect` flow 流建立 WebSocket 连接；连接后做应用层探测（StatusSignal 首帧 + 10s 超时）；同 session 二次连接接管旧连接 |
+| 连接 | 经 gateway 的 `/api/v2/templates/{template}/sessions/{session}:stream` 建立 NDJSON 下行流；服务端开流即推 status 首帧（10s 超时判定）；回执经 `POST ...:sendFrame`（octet-stream）；同 session 二次开流接管旧流 |
 | 绑定 | 窗口枚举（`ListWindows`）与选择（`SetSelectedWindow`/`GetSelectedWindow`）；所选窗口是操作与截图的唯一目标 |
 | 执行 | `readLoop` 路由入站 FlowPart 操作（mouse/keyboard）→ `executeAgentOperation` 执行 → 500ms 后截图随 `FlowResultPart` 回传（5 MiB 上限） |
 | 确认 | debug 模式下操作结果先挂起（hold），经确认抽屉放行；15 分钟自动放行（`game:debug:result-held/released` 事件） |
@@ -20,12 +22,12 @@ session 选择为**只读**：数据源为 `ListSessions`（`GET /api/v1/templat
 
 ## 测试与大型测试豁免
 
-- 单元测试：`bazel test //projects/game/desktop/...`（连接探测/接管/readLoop 执行/确认
-  抽屉/窗口选择/截图/WS 传输等保留面均有用例）。
+- 单元测试：`bazel test //projects/game/desktop/...`（连接首帧确认/接管/readLoop 执行/确认
+  抽屉/窗口选择/截图/桥传输等保留面均有用例）。
 - **真 desktop 大型测试豁免（constitution 原则 VI 登记项）**：desktop 为 Windows GUI
   应用，无法进 CI 大型测试环境执行。flow 链路的端到端行为由 `desktop-flow` 套件以
-  fake-desktop（`projects/game/fake-desktop/`）覆盖——fake-desktop 以 WS 客户端身份连接
-  同一 `/api/v2` 入口，验证连接/探测/接管/操作回执（`projects/game/testplan/system_test.yaml`
+  fake-desktop（`projects/game/fake-desktop/`）覆盖——fake-desktop 以 HTTP 桥客户端身份
+  打开同一 `/api/v2` 下行流，验证连接/首帧确认/接管/操作回执（`projects/game/testplan/system_test.yaml`
   的 `desktop-flow` suite）。
 - 真机冒烟需 Windows 环境（按 `specs/051-agent-v2-dsh-migration/quickstart.md` §3），
   当前无可用 Windows 环境未执行，无冒烟记录。

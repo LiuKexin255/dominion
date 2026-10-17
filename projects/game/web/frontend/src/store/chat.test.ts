@@ -104,6 +104,19 @@ function teamMessageToolCallEvent(
   }
 }
 
+// memberViewUser builds the consumption frame for one user input entering a
+// member's view (specs/061-team-queue-steer/contracts/web-queue-ui.md §1: the
+// queue chip's removal signal).
+function memberViewUser(member: string, messageId: string, content: string): ChatEvent {
+  return {
+    memberView: {
+      member: wireMember(member),
+      sender: 'user',
+      message: { messageId, role: 'ROLE_USER', blocks: [{ text: { content } }] },
+    },
+  }
+}
+
 // oneTextStep emits the canonical block_start/deltas/block_end sequence for a
 // single TEXT step of one member turn.
 function oneTextStep(member: string, turnId: string, step: number, text: string): ChatEvent[] {
@@ -132,18 +145,20 @@ const LAST_SEQ = (store: ChatStore): number => {
 }
 
 describe('ChatStore team 流归约', () => {
-  it('归并 queued → 用户 team_message → planner 回合（成员帧）→ turn_end 为 seq 序历史', () => {
+  it('归并 queued → 用户 team_message → member_view 消费 chip → planner 回合 → turn_end 为 seq 序历史', async () => {
     const store = new ChatStore()
-    for (const e of [
-      { queued: { position: 1 } },
-      teamMessageEvent('USER', 1, '你好', 'ROLE_USER'),
-      startTurn('PLANNER', 't1'),
-      ...oneTextStep('PLANNER', 't1', 1, '开局策略'),
-      teamMessageEvent('PLANNER', 2, '开局策略'),
-      endTurn('PLANNER', 't1'),
-    ]) {
-      store.applyEvent(e)
-    }
+    await store.send(
+      '你好',
+      eventsOf([
+        { queued: { position: 1 } },
+        teamMessageEvent('USER', 1, '你好', 'ROLE_USER'),
+        memberViewUser('PLANNER', 'm1', '你好'),
+        startTurn('PLANNER', 't1'),
+        ...oneTextStep('PLANNER', 't1', 1, '开局策略'),
+        teamMessageEvent('PLANNER', 2, '开局策略'),
+        endTurn('PLANNER', 't1'),
+      ]),
+    )
 
     const s = store.getSnapshot()
     expect(s.queue).toEqual([])
@@ -244,14 +259,35 @@ describe('ChatStore team 流归约', () => {
     expect(history[0]?.message.blocks[0]?.text?.content).toBe('复盘')
   })
 
-  it('queued 帧携带本流文本生成 chip，turn_start 消费队首', () => {
+  it('queued chip 生命周期：member_view{sender:"user"} 按文本首匹配消除，turn_start 不再出队', async () => {
     const store = new ChatStore()
-    store.applyEvent({ queued: { position: 1 } })
-    expect(store.getSnapshot().queue).toEqual([{ text: '', position: 1 }])
+    await store.send('排队一', eventsOf([{ queued: { position: 1 } }]))
+    expect(store.getSnapshot().queue).toEqual([{ text: '排队一', position: 1 }])
 
+    // turn_start 不再消费 chip（specs/061-team-queue-steer/contracts/
+    // web-queue-ui.md §1：mid-turn 消费没有属于自己的 turn_start）。
     store.applyEvent(startTurn('PLANNER', 't1'))
-    expect(store.getSnapshot().queue).toEqual([])
+    expect(store.getSnapshot().queue).toEqual([{ text: '排队一', position: 1 }])
     expect(store.getSnapshot().live).toHaveLength(1)
+
+    // 消费信号 = member_view{sender:"user"}：按文本首匹配移除，消费时消除。
+    store.applyEvent(memberViewUser('PLANNER', 'm1', '排队一'))
+    expect(store.getSnapshot().queue).toEqual([])
+    expect(
+      store.getSnapshot().memberHistory.planner?.[0]?.message.blocks[0]?.text?.content,
+    ).toBe('排队一')
+  })
+
+  it('重复文本的排队 chip 随两帧先后各自消除（逐条移除，无 double-remove）', async () => {
+    const store = new ChatStore()
+    await store.send('重复', eventsOf([{ queued: { position: 1 } }]))
+    await store.send('重复', eventsOf([{ queued: { position: 2 } }]))
+    expect(store.getSnapshot().queue).toHaveLength(2)
+
+    store.applyEvent(memberViewUser('PLANNER', 'm1', '重复'))
+    expect(store.getSnapshot().queue).toHaveLength(1)
+    store.applyEvent(memberViewUser('PLANNER', 'm2', '重复'))
+    expect(store.getSnapshot().queue).toEqual([])
   })
 
   it('多回合持续流收敛：planner 开局 → player 游戏 → planner 复盘各自固化，live 全空', () => {
@@ -823,7 +859,7 @@ describe('ChatStore 成员视角序列（双形态）', () => {
     expect(s.memberHistory.user).toBeUndefined()
   })
 
-  it('member_view 帧把消费的输入追加进该成员视角（sender 标注来源），不触碰归并序列/live/queue', () => {
+  it('member_view 帧把消费的输入追加进该成员视角（sender 标注来源），并消除同文本排队 chip', () => {
     const store = new ChatStore()
     store.applyEvent({
       memberView: {
@@ -842,7 +878,7 @@ describe('ChatStore 成员视角序列（双形态）', () => {
       ['user', 'm1'],
     ])
     expect(s.memberHistory.planner?.[0]?.message.blocks[0]?.text?.content).toBe('开始一局')
-    // 消费事实只属于成员视角：归并序列/live/queue 零改动。
+    // 消费事实只属于成员视角：归并序列/live 零改动；queue 无同文本 chip 时不变。
     expect(s.history).toEqual([])
     expect(s.live).toEqual([])
     expect(s.queue).toEqual([])

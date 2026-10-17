@@ -12,11 +12,11 @@
  */
 
 import {
-  CallId,
   createAssistantMessage,
   createToolResultMessage,
   createUserMessage,
   MessageId,
+  ToolCallId,
 } from "@deepseek-ai/dsh-llm";
 import type {
   AssistantMessage,
@@ -65,7 +65,7 @@ function toolCallEvent(callId: string, name: string, args: string): SessionEvent
   return {
     type: "tool/call",
     ...order(),
-    data: { turn: 1, step: 1, callId: CallId(callId), name, arguments: args },
+    data: { turn: 1, step: 1, callId: ToolCallId(callId), name, arguments: args },
   } as unknown as SessionEvent;
 }
 
@@ -77,7 +77,7 @@ function toolResultEvent(callId: string, content: ContentBlock[]): SessionEvent 
       turn: 1,
       step: 1,
       message: createToolResultMessage({
-        callId: CallId(callId),
+        callId: ToolCallId(callId),
         content,
         isError: false,
       }),
@@ -103,7 +103,7 @@ describe("messageBody", () => {
       content: [
         { type: "reasoning", text: "thinking" },
         { type: "text", text: "answer" },
-        { type: "tool-call", id: CallId("c1"), name: "saolei_operate", arguments: '{"x":1}' },
+        { type: "tool-call", id: ToolCallId("c1"), name: "saolei_operate", arguments: '{"x":1}' },
       ],
       source: { provider: "fake", model: "fake" },
     });
@@ -143,7 +143,7 @@ describe("deriveUnits", () => {
 
   it("drops a tool-only assistant message (the tool unit carries its output)", () => {
     const toolOnly = createAssistantMessage({
-      content: [{ type: "tool-call", id: CallId("call-1"), name: "a", arguments: "{}" }],
+      content: [{ type: "tool-call", id: ToolCallId("call-1"), name: "a", arguments: "{}" }],
       source: { provider: "fake", model: "fake" },
     });
     const events = [
@@ -289,10 +289,10 @@ describe("buildBroadcastMessage", () => {
   });
 
   it("accepts a non-session member id as the sender key (system member)", () => {
-    const senderMemberId = "templates/saolei/sessions/s1/saolei";
+    const senderMemberId = "templates/saolei/sessions/s1/announcer";
     const message = speechMessage("本局游戏结束：胜利。");
     const userMessage = buildBroadcastMessage(
-      "saolei",
+      "announcer",
       { kind: "message", anchor: String(message.id), time: 0, seq: 0 },
       senderMemberId,
       [speechEvent(message)],
@@ -300,7 +300,7 @@ describe("buildBroadcastMessage", () => {
 
     expect(userMessage.source).toMatchObject({
       kind: "team-broadcast",
-      role: "saolei",
+      role: "announcer",
       senderSessionId: senderMemberId,
       form: "relay",
     });

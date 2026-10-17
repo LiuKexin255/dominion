@@ -145,6 +145,80 @@ func TestMongoDBWorkload_Validate(t *testing.T) {
 	}
 }
 
+func TestRedisWorkload_Validate(t *testing.T) {
+	tests := []struct {
+		name     string
+		workload RedisWorkload
+		wantErr  bool
+	}{
+		{name: "valid", workload: RedisWorkload{ServiceName: "redis", EnvironmentName: "dev", App: "app", ProfileName: "dev-single", Persistence: PersistenceConfig{Enabled: true}}},
+		{name: "valid without persistence", workload: RedisWorkload{ServiceName: "redis", EnvironmentName: "dev", App: "app", ProfileName: "dev-single"}},
+		{name: "missing service", workload: RedisWorkload{EnvironmentName: "dev", App: "app", ProfileName: "dev-single"}, wantErr: true},
+		{name: "missing env", workload: RedisWorkload{ServiceName: "redis", App: "app", ProfileName: "dev-single"}, wantErr: true},
+		{name: "missing app", workload: RedisWorkload{ServiceName: "redis", EnvironmentName: "dev", ProfileName: "dev-single"}, wantErr: true},
+		{name: "missing profile", workload: RedisWorkload{ServiceName: "redis", EnvironmentName: "dev", App: "app"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.workload.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRedisWorkload_Validate_NameTooLong(t *testing.T) {
+	workload := RedisWorkload{
+		ServiceName:     strings.Repeat("r", 60),
+		EnvironmentName: "dev",
+		App:             "app",
+		ProfileName:     "dev-single",
+	}
+	if err := workload.Validate(); err == nil {
+		t.Fatalf("Validate() expected error for long name")
+	}
+}
+
+func TestRedisWorkload_NilReceiver(t *testing.T) {
+	var w *RedisWorkload
+	if got := w.ResourceName(); got != "" {
+		t.Fatalf("nil ResourceName() = %q, want empty", got)
+	}
+	if got := w.ServiceResourceName(); got != "" {
+		t.Fatalf("nil ServiceResourceName() = %q, want empty", got)
+	}
+	if got := w.PVCResourceName(); got != "" {
+		t.Fatalf("nil PVCResourceName() = %q, want empty", got)
+	}
+	if err := w.Validate(); err == nil {
+		t.Fatalf("nil Validate() expected error")
+	}
+}
+
+func TestMongoDBWorkload_NilReceiver(t *testing.T) {
+	var w *MongoDBWorkload
+	if got := w.ResourceName(); got != "" {
+		t.Fatalf("nil ResourceName() = %q, want empty", got)
+	}
+	if got := w.ServiceResourceName(); got != "" {
+		t.Fatalf("nil ServiceResourceName() = %q, want empty", got)
+	}
+	if got := w.PVCResourceName(); got != "" {
+		t.Fatalf("nil PVCResourceName() = %q, want empty", got)
+	}
+	if err := w.Validate(); err == nil {
+		t.Fatalf("nil Validate() expected error")
+	}
+}
+
 func TestWorkloadNameMethods(t *testing.T) {
 	if got := (&DeploymentWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).WorkloadName(); got == "" {
 		t.Fatalf("WorkloadName() = empty")
@@ -157,6 +231,21 @@ func TestWorkloadNameMethods(t *testing.T) {
 	}
 	if got := (&MongoDBWorkload{ServiceName: "mongo", EnvironmentName: "game.lt", App: "app"}).ResourceName(); got == "" {
 		t.Fatalf("ResourceName() = empty")
+	}
+	if got := (&MongoDBWorkload{ServiceName: "mongo", EnvironmentName: "game.lt", App: "app"}).ServiceResourceName(); got == "" {
+		t.Fatalf("ServiceResourceName() = empty")
+	}
+	if got := (&MongoDBWorkload{ServiceName: "mongo", EnvironmentName: "game.lt", App: "app"}).PVCResourceName(); got == "" {
+		t.Fatalf("PVCResourceName() = empty")
+	}
+	if got := (&RedisWorkload{ServiceName: "redis", EnvironmentName: "game.lt", App: "app"}).ResourceName(); got == "" {
+		t.Fatalf("ResourceName() = empty")
+	}
+	if got := (&RedisWorkload{ServiceName: "redis", EnvironmentName: "game.lt", App: "app"}).ServiceResourceName(); got == "" {
+		t.Fatalf("ServiceResourceName() = empty")
+	}
+	if got := (&RedisWorkload{ServiceName: "redis", EnvironmentName: "game.lt", App: "app"}).PVCResourceName(); got == "" {
+		t.Fatalf("PVCResourceName() = empty")
 	}
 	if got := (&StatefulWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).WorkloadName(); got == "" {
 		t.Fatalf("WorkloadName() = empty")

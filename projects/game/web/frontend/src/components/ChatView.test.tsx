@@ -48,6 +48,17 @@ function teamLive(live: LiveTurn | null, member = 'player'): LiveMemberTurn[] {
   return [{ member, turnId: live.turnId, steps: live.steps, fixedSteps: 0, owners: {} }]
 }
 
+// running 态 ReasoningRow 的 DisclosureRow 以 TextShimmer 装饰层重渲染折叠内容
+// （aria-hidden + inert），真实摘要须排除装饰层定位
+// （specs/073-dsh-0.2-upgrade/contracts/shimmer-adoption.md §2）。
+function liveReasoningSummaries(): HTMLElement[] {
+  const live = screen
+    .getAllByTestId('reasoning-summary')
+    .filter((el) => el.closest('[inert]') === null)
+  if (live.length === 0) throw new Error('live reasoning-summary not rendered')
+  return live
+}
+
 // ChatView 集成测试：构造 store 层 BlockDraft / protojson ContentBlock 两种块
 // 形态直接驱动渲染（不经过 fetch 流），断言 THINK/TEXT/TOOL_CALL 三分类保序
 // 呈现与 ReasoningRow / ToolCard 状态语义（US2/US3 场景，
@@ -114,14 +125,14 @@ describe('ChatView THINK 渲染分支', () => {
 
     // 折叠态 + running：摘要 = 最新行，完整思考文本不可见。
     expect(screen.getByTestId('reasoning-row').getAttribute('data-state')).toBe('running')
-    expect(screen.getByTestId('reasoning-summary').textContent).toBe('再给出步骤')
+    expect(liveReasoningSummaries()[0]?.textContent).toBe('再给出步骤')
     expect(screen.queryByTestId('reasoning-body')).toBeNull()
 
     // 流式渐进：delta 追加后摘要跟随最新行。
     rerenderChatView(result, {
       live: liveOf([{ index: 0, type: 'THINK', text: '先拆解问题\n再给出步骤\n开始作答' }]),
     })
-    expect(screen.getByTestId('reasoning-summary').textContent).toBe('开始作答')
+    expect(liveReasoningSummaries()[0]?.textContent).toBe('开始作答')
 
     // 正文块与思考块分类呈现：正文独立渲染，思考保持折叠区域。
     rerenderChatView(result, {
@@ -363,9 +374,9 @@ describe('ChatView step 分段呈现（specs/054-agent-v2-bugfixes/contracts/web
 
     const rows = screen.getAllByTestId('reasoning-row')
     expect(rows[0]?.getAttribute('data-state')).toBe('ok')
-    expect(screen.getAllByTestId('reasoning-summary')[0]?.textContent).toBe('第一段第一行')
+    expect(liveReasoningSummaries()[0]?.textContent).toBe('第一段第一行')
     expect(rows[1]?.getAttribute('data-state')).toBe('running')
-    expect(screen.getAllByTestId('reasoning-summary')[1]?.textContent).toBe('第二段最新行')
+    expect(liveReasoningSummaries()[1]?.textContent).toBe('第二段最新行')
   })
 
   it('历史回填多 step 回合默认折叠，展开后每条 agent 消息即一个 step 分段', () => {
@@ -480,13 +491,13 @@ describe('ChatView 回合完成后的折叠（specs/054-agent-v2-bugfixes/contra
   })
 
   it('折叠开关 chevron 化：图标 svg 存在、data-open 随展开态切换（F5，对齐上游 TurnProcessNodeView，FR-009）', () => {
-    // 上游形态：按钮 data-open={open || undefined} + IconChevronDownOutline14
+    // 上游形态：按钮 data-open={open || undefined} + IconChevronDownOutlineRegular
     // （https://github.com/deepseek-ai/deepseek-harness/blob/master/
     // packages/client/ui-chat/src/client/chat/TurnProcessNodeView.tsx ）。
     renderChatView({ history: COMPLETED_TURN })
     const toggle = screen.getByTestId('turn-process-toggle')
     // 折叠态：chevron 图标存在、data-open 不存在；文字箭头不再使用。
-    // 断言 class 落点而非裸 svg：className 由包 IconChevronDownOutline14
+    // 断言 class 落点而非裸 svg：className 由包 IconChevronDownOutlineRegular
     // 透传，jsdom 可断言；CSS transform 旋转无法在 jsdom 断言，class 落点
     // 是可测的最近端点。
     expect(toggle.querySelector('svg.turn-process-chevron')).not.toBeNull()
@@ -1568,7 +1579,7 @@ describe('ChatView markdown 渲染（specs/054-agent-v2-bugfixes/contracts/web-u
     })
     // 增量到达第三块后首块进入冻结区：再次增量，首块元素保持同一节点
     // （MarkdownText 冻结块缓存跨 chunk reconcile、不重挂载——包 README
-    // "Markdown rendering"，https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives ）。
+    // "Streaming markdown"，https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-primitives ）。
     const heading = screen.getByTestId('agent-text').querySelector('h1')
     expect(heading?.textContent).toBe('开局')
     rerenderChatView(result, {

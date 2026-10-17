@@ -4,10 +4,11 @@
  *
  * Semantics (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §2,
  * data-model.md §2.6):
- * - A connection object holds only the stream face for writes and its own
- *   cleanup handle — pending dispatches are keyed per session at bridge
- *   level, so a reconnect (new connection taking over) never loses in-flight
- *   dispatches and a late receipt can still resolve them.
+ * - A connection object holds only the stream face for writes, its heartbeat
+ *   handle, and its own cleanup handle — pending dispatches are keyed per
+ *   session at bridge level, so a reconnect (new connection taking over)
+ *   never loses in-flight dispatches and a late receipt can still resolve
+ *   them.
  * - Attaching a second connection for a session takes over: the previous
  *   stream is ended and its late disconnect is a compare-and-delete no-op
  *   that cannot clobber the fresh registration.
@@ -25,12 +26,15 @@ import { randomUUID } from "node:crypto";
 import { info, warn } from "@dominion/common-js-logs";
 
 import type {
-  BidiStream,
   BridgeTeamFrame,
   BridgeUserFrame,
   DesktopBridgeServiceHandlers,
   OperationResult,
   OperationScreenshot,
+  SendFrameCall,
+  SendFrameCallback,
+  StatusSignalStatus,
+  StreamCall,
   ToolResultStatus,
   WireFlowPart,
   WireFlowResultPart,
@@ -39,7 +43,6 @@ import type {
   WireMouseMovePart,
   WireMouseClickPart,
   WireKeyboardPressPart,
-  WireStatusSignal,
 } from "./wire.js";
 
 /** Maximum wait (ms) for a result before timing out. Safety-net backstop:
@@ -48,9 +51,29 @@ import type {
  * operation-bridge.ts DISPATCH_TIMEOUT_MS rationale). */
 const DISPATCH_TIMEOUT_MS = 1_200_000;
 
+/** Downlink idle interval between status heartbeat frames. Keeps the
+ * long-lived stream alive across intermediate idle timeouts and serves as
+ * application-level liveness (~10s, specs/066-desktop-bridge-split/spec.md
+ * FR-008). */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
 const STATUS_SUCCEEDED: ToolResultStatus = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED: ToolResultStatus = "TOOL_RESULT_STATUS_FAILED";
 const STATUS_UNSPECIFIED: ToolResultStatus = "TOOL_RESULT_STATUS_UNSPECIFIED";
+
+/** Connection-confirmation and heartbeat status value
+ * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.2/§2.3). */
+const STATUS_ACTIVE: StatusSignalStatus = "STATUS_SIGNAL_STATUS_ACTIVE";
+
+/** gRPC INVALID_ARGUMENT: a request argument is malformed regardless of the
+ * system state (https://github.com/grpc/grpc/blob/master/doc/statuscodes.md). */
+const INVALID_ARGUMENT = 3;
+
+/** gRPC FAILED_PRECONDITION: the session has no active downlink stream, so the
+ * uplink frame cannot be delivered until the desktop re-establishes it
+ * (https://github.com/grpc/grpc/blob/master/doc/statuscodes.md;
+ * specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6). */
+const FAILED_PRECONDITION = 9;
 
 /** Operation-channel id stamped onto the dispatched FlowPart. */
 type ToolId = string;
@@ -61,14 +84,15 @@ interface PendingDispatch {
   cleanup?: () => void;
 }
 
-/** One live desktop connection: the stream face plus the disconnect wiring. */
+/** One live desktop connection: the stream face plus its heartbeat handle. */
 interface Connection {
-  stream: BidiStream;
+  stream: StreamCall;
+  heartbeat?: ReturnType<typeof setInterval>;
 }
 
 /**
  * Convert an ImagePart screenshot into the resolved OperationScreenshot
- * shape. Raw bytes arriving over the bidi stream are base64-encoded here; an
+ * shape. Raw bytes arriving over the uplink are base64-encoded here; an
  * already-string `data` (protojson) passes through unchanged. Missing numeric
  * dimensions coalesce to 0 so the resolved shape stays non-optional.
  */
@@ -93,23 +117,6 @@ function operationPart(
     part.mouseMoveAndClick ??
     undefined
   );
-}
-
-/**
- * Derive the session resource name `templates/{template}/sessions/{session}`
- * from a bridge user frame. The gateway injects the bare segments from the
- * connect URL path into the first frame (desktop-bridge.md §1); a full
- * resource-name form in sessionId is tolerated defensively (v1
- * extractSessionId). Returns undefined when the frame carries no session id.
- */
-export function deriveSessionName(frame: BridgeUserFrame): string | undefined {
-  const raw = frame.sessionId ?? "";
-  if (!raw) {
-    return undefined;
-  }
-  const session = /(?:^|\/)sessions\/([^/]+)$/.exec(raw)?.[1] ?? raw;
-  const template = frame.templateId ?? "";
-  return `templates/${template}/sessions/${session}`;
 }
 
 /** Build an outbound flowParts TeamFrame with the full envelope (v1 FR-013:
@@ -145,19 +152,30 @@ export class DesktopBridge {
   private readonly pending = new Map<string, Map<ToolId, PendingDispatch>>();
 
   /**
-   * Bind a bidi stream as THE connection for `sessionName`. A previously
-   * registered connection is taken over: its stream is ended and its late
-   * disconnect is a no-op against the fresh registration. Stream disconnect
-   * afterwards clears the registration and settles that session's in-flight
-   * dispatches FAILED "desktop disconnected".
+   * Bind a stream as THE downlink connection for `sessionName`. A previously
+   * registered connection is taken over: its stream is ended (and its
+   * heartbeat stopped) and its late disconnect is a no-op against the fresh
+   * registration. The fresh connection immediately writes one status
+   * confirmation frame and then a status heartbeat every
+   * {@link HEARTBEAT_INTERVAL_MS}; a disconnect of the current stream clears
+   * the registration, stops the heartbeat, and settles that session's
+   * in-flight dispatches FAILED "desktop disconnected"
+   * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2,
+   * data-model.md §1.1/§1.3).
    *
-   * The caller (the Connect handler below) derives `sessionName` from the
-   * gateway-injected first frame; `attach` owns everything after identity.
+   * The Stream handler below derives `sessionName` from the path-bound
+   * request; `attach` owns everything after identity. The stream carries no
+   * inbound frames — the desktop's uplink is the separate SendFrame call — so
+   * the connection registers only the outbound write face and its lifecycle
+   * listeners.
    */
-  attach(sessionName: string, stream: BidiStream): void {
+  attach(sessionName: string, stream: StreamCall): void {
     const previous = this.connections.get(sessionName);
     if (previous !== undefined) {
       this.connections.delete(sessionName);
+      if (previous.heartbeat !== undefined) {
+        clearInterval(previous.heartbeat);
+      }
       info("desktop connection taken over", { session: sessionName });
       try {
         previous.stream.end();
@@ -170,17 +188,68 @@ export class DesktopBridge {
     }
     const connection: Connection = { stream };
     this.connections.set(sessionName, connection);
-    stream.on("data", (frame) => {
-      this.routeFrame(sessionName, frame);
-    });
     const onDisconnect = (reason: unknown) => {
       this.disconnect(sessionName, connection, reason);
     };
-    stream.on("end", onDisconnect);
     stream.on("error", onDisconnect);
     stream.on("close", onDisconnect);
     stream.on("cancelled", onDisconnect);
+    this.writeStatus(sessionName, connection);
+    connection.heartbeat = setInterval(() => {
+      this.writeStatus(sessionName, connection);
+    }, HEARTBEAT_INTERVAL_MS);
     info("desktop connection attached", { session: sessionName });
+  }
+
+  /**
+   * The gRPC handler face for the session downlink: the request's
+   * path-injected session resource name binds the connection and owns
+   * everything after identity (confirmation frame, heartbeat, disconnect
+   * cleanup). A call with no session ends with zero frames: a server-streaming
+   * handler that simply returns sends no status and leaves the RPC pending
+   * until the client cancels, so the handler closes the call explicitly
+   * (specs/066-desktop-bridge-split/research.md D12.2).
+   */
+  Stream(call: StreamCall): void {
+    const sessionName = call.request.session;
+    if (!sessionName) {
+      warn("stream call with no session id");
+      call.end();
+      return;
+    }
+    this.attach(sessionName, call);
+  }
+
+  /**
+   * The gRPC handler face for the uplink single-shot frame submission: the
+   * request's path-injected session addresses an already-active downlink;
+   * a missing session or frame is a request-level INVALID_ARGUMENT, and a
+   * session with no active connection is a FAILED_PRECONDITION the desktop
+   * retries after re-establishing the stream. A delivered frame is routed
+   * through the same part dispatch as the in-band path, and the synchronous
+   * reply carries no information — correlation rides on `flow_result.tool_id`
+   * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.6/§2.7/§2.9).
+   */
+  SendFrame(call: SendFrameCall, callback: SendFrameCallback): void {
+    const sessionName = call.request.session;
+    if (!sessionName) {
+      callback({ code: INVALID_ARGUMENT, message: "session must not be empty" });
+      return;
+    }
+    const frame = call.request.frame;
+    if (!frame || !frame.flowParts) {
+      callback({
+        code: INVALID_ARGUMENT,
+        message: "frame.flow_parts must be present",
+      });
+      return;
+    }
+    if (!this.connections.has(sessionName)) {
+      callback({ code: FAILED_PRECONDITION, message: "desktop stream not active" });
+      return;
+    }
+    this.routeFrame(sessionName, frame);
+    callback(null, {});
   }
 
   /**
@@ -305,34 +374,41 @@ export class DesktopBridge {
 
   /**
    * The gRPC handler face for host registration
-   * (server.ts adds it as the DesktopBridgeService implementation). The
-   * first frame carries the gateway-injected identity: the handler derives
-   * the session resource name, attaches, and routes that frame (the attach
-   * listener registers during the same emit, so the first frame is routed
-   * here exactly once). Later frames route through the attach listener.
+   * (server.ts adds it as the DesktopBridgeService implementation). `Stream`
+   * binds the session from the path-bound request; `SendFrame` forwards one
+   * uplink frame into the same part dispatch.
    */
   handlers(): DesktopBridgeServiceHandlers {
     return {
-      Connect: (call) => {
-        let bound = false;
-        call.on("data", (frame) => {
-          if (bound) {
-            return;
-          }
-          const sessionName = deriveSessionName(frame);
-          if (sessionName === undefined) {
-            warn("connect frame with no session id");
-            return;
-          }
-          bound = true;
-          this.attach(sessionName, call);
-          this.routeFrame(sessionName, frame);
-        });
+      Stream: (call) => {
+        this.Stream(call);
+      },
+      SendFrame: (call, callback) => {
+        this.SendFrame(call, callback);
       },
     };
   }
 
-  /** Route one inbound frame for a bound session (receipts + signals). */
+  /** Write one ACTIVE status frame on the connection, tolerating a stream
+   * that is already closed (the disconnect listener owns cleanup). */
+  private writeStatus(sessionName: string, connection: Connection): void {
+    const status: WireFlowPart = { status: { status: STATUS_ACTIVE } };
+    try {
+      connection.stream.write(buildFlowFrame(sessionName, [status]));
+    } catch (err) {
+      warn("desktop status write failed", {
+        session: sessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Route one uplink frame delivered by the SendFrame handler for a bound
+   * session: receipts resolve in-flight dispatches, wait/warn parts keep
+   * their existing log behavior, and every other part is logged and ignored
+   * (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.9).
+   */
   private routeFrame(sessionName: string, frame: BridgeUserFrame): void {
     if (!frame.flowParts) {
       // messageParts frames are not produced by the v2 desktop
@@ -345,37 +421,18 @@ export class DesktopBridge {
         this.handleResult(sessionName, part.flowResult);
         continue;
       }
-      const status: WireStatusSignal | undefined = part.status ?? undefined;
-      if (status) {
-        this.respondProbe(sessionName, status);
-        continue;
-      }
       if (part.wait) {
         info("wait signal received from desktop", { session: sessionName });
-      } else if (part.warn) {
+        continue;
+      }
+      if (part.warn) {
         warn("warn signal received from desktop", {
           session: sessionName,
           message: part.warn.message ?? "",
         });
+        continue;
       }
-    }
-  }
-
-  /** Answer the desktop's connectivity probe by echoing the status enum name
-   * (desktop-bridge.md §1 probe-response row). */
-  private respondProbe(sessionName: string, status: WireStatusSignal): void {
-    const connection = this.connections.get(sessionName);
-    if (!connection) {
-      return;
-    }
-    const echo: WireFlowPart = { status: { status: status.status ?? "STATUS_SIGNAL_STATUS_UNSPECIFIED" } };
-    try {
-      connection.stream.write(buildFlowFrame(sessionName, [echo]));
-    } catch (err) {
-      warn("desktop probe response write failed", {
-        session: sessionName,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      warn("unsupported desktop frame part ignored", { session: sessionName });
     }
   }
 
@@ -394,6 +451,9 @@ export class DesktopBridge {
       return;
     }
     this.connections.delete(sessionName);
+    if (connection.heartbeat !== undefined) {
+      clearInterval(connection.heartbeat);
+    }
     info("desktop connection closed", {
       session: sessionName,
       reason: reason instanceof Error ? reason.message : String(reason ?? ""),

@@ -1,17 +1,21 @@
 # game web
 
 web 是 game 域的网页服务：为 React 前端（`projects/game/web/frontend`，vite 构建）
-提供静态托管。页面包含 session 管理列表与 session 对话页；全部 API 经存量 gateway
-以相对路径访问（session 管理走 `/api/v1`，对话走 `/api/v2`），零 CORS
-（`specs/049-agent-v2-dsh-init/contracts/web-frontend.md`）。
+提供静态托管。页面包含 session 管理列表、session 对话页、preset 配置页与 wiki
+管理页；全部 API 经存量 gateway 以相对路径访问（session/wiki 管理走 `/api/v1`，
+对话与 preset 管理走 `/api/v2`），零 CORS（页面结构与零 CORS 拓扑见
+`specs/049-agent-v2-dsh-init/contracts/web-frontend.md`）。
 
 ## 结构
 
 - **frontend**（`frontend/`）：vite + React workspace 包，组件级复用
-  `@deepseek-ai/dsh-client-ui-primitives`（0.1.1-rc.2 精确 pin，attribution 见
-  `frontend/README.md`）；`src/api/`（session CRUD + NDJSON 流客户端）、
-  `src/components/`（SessionList/ChatView/ReasoningRow/ToolCard）、`src/store/`
-  （事件 reducer）。契约：`specs/049-agent-v2-dsh-init/contracts/web-frontend.md`。
+  `@deepseek-ai/dsh-client-ui-primitives`（0.2.0-rc.2 精确 pin，attribution 见
+  `frontend/README.md`）；`src/api/`（session CRUD + NDJSON 流客户端 + agent
+  preset/team 客户端 `agent.ts` + wiki REST 客户端 `wiki.ts`）、
+  `src/components/`（SessionList/ChatView/ReasoningRow/ToolCard/PresetsView/
+  WikiView）、`src/store/`（事件 reducer）。契约：视图切换与 API 客户端模式见
+  `specs/051-agent-v2-dsh-migration/contracts/web-frontend.md`，wiki 视图见
+  `specs/069-wiki-template-web/contracts/web-wiki-view.md`。
 - **server**（`server/`）：Go 静态服务。`vite_build` 产物（`frontend:dist`）经
   `wails_asset_library` 打包、`//go:embed` 嵌入二进制，以
   `http.FileServerFS` 原样托管（样板 `experimental/js/vite_react_demo/server`）。

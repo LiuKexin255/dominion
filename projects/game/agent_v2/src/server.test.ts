@@ -15,15 +15,15 @@ import type { ModelCatalogEntry } from "./server.js";
 import { TeamSessionError } from "./session.js";
 import type { TeamView } from "./session.js";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/AgentService.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { TurnStream } from "./history.js";
 
 /**
- * Handler-level unit tests for the gRPC status mapping (specs/059-agent-v2-
- * team-mode/contracts/team-api.md §1–§6): malformed resource names, missing
- * preset references and empty text are request-level INVALID_ARGUMENT
- * failures (the stream never opens), unmaterialized Sends are
+ * Handler-level unit tests for the gRPC status mapping
+ * (specs/059-agent-v2-team-mode/contracts/team-api.md §1–§6): malformed
+ * resource names, missing preset references and empty text are request-level
+ * INVALID_ARGUMENT failures (the stream never opens), unmaterialized Sends are
  * FAILED_PRECONDITION, UpdateTeam delegates fail-fast validation and
  * materialization to the team registry, the List faces project the history
  * entries, and the PresetService surface (preset CRUD + ListModels) delegates
@@ -975,13 +975,34 @@ describe("PresetService.ListModels handler", () => {
   });
 });
 
-describe("DesktopBridgeService.Connect handler", () => {
-  it("delegates the bidi stream to the bridge plugin's handlers", () => {
-    const connect = vi.fn();
-    const handlers = buildDesktopBridgeHandlers({ Connect: connect });
-    const call = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
-    (handlers.Connect as (c: unknown) => void)(call);
-    expect(connect).toHaveBeenCalledTimes(1);
-    expect(connect.mock.calls[0][0]).toBe(call);
+describe("DesktopBridgeService handlers", () => {
+  it("delegates the server stream to the bridge plugin's Stream handler", () => {
+    const stream = vi.fn();
+    const handlers = buildDesktopBridgeHandlers({ Stream: stream, SendFrame: vi.fn() });
+    const call = {
+      request: { session: "templates/saolei/sessions/s1" },
+      on: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn(),
+    };
+    (handlers.Stream as (c: unknown) => void)(call);
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(stream.mock.calls[0][0]).toBe(call);
+  });
+
+  it("delegates the unary SendFrame to the bridge plugin's SendFrame handler", () => {
+    const sendFrame = vi.fn();
+    const handlers = buildDesktopBridgeHandlers({ Stream: vi.fn(), SendFrame: sendFrame });
+    const call = {
+      request: {
+        session: "templates/saolei/sessions/s1",
+        frame: { flowParts: { parts: [] } },
+      },
+    };
+    const callback = vi.fn();
+    (handlers.SendFrame as (c: unknown, cb: unknown) => void)(call, callback);
+    expect(sendFrame).toHaveBeenCalledTimes(1);
+    expect(sendFrame.mock.calls[0][0]).toBe(call);
+    expect(sendFrame.mock.calls[0][1]).toBe(callback);
   });
 });

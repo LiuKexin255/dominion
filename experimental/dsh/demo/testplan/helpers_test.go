@@ -63,10 +63,10 @@ const (
 
 // The store presets the migrated preset suites bind their conversations to
 // (060 preset derivation: a conversation's preset MUST name a store record —
-// template ids are derivation sources, no longer directly composable), plus
-// the template persona rows the records carry so the model-visible
-// composition matches the fake-llm system_keywords fixtures
-// (experimental/dsh/demo/agent/presets-templates/).
+// declared templates are derivation sources, no longer directly composable),
+// plus the template persona prefixes the records carry so the model-visible
+// composition matches the fake-llm system_keywords fixtures (defined by the
+// preset-authoring `templates` snapshot in experimental/dsh/demo/agent/cordis.yml).
 const (
 	authoredToolsPresetID    = "preset-suite-tools"
 	authoredStandardPresetID = "preset-suite-standard"
@@ -76,9 +76,9 @@ const (
 
 // chatRegressionPresetID is the store preset the shared createConversation
 // helper provisions for the 047 chat-regression suites. Those suites bind no
-// explicit preset and the deployment no longer has a roster default (060
-// preset derivation makes preset selection mandatory); provisioning it here
-// keeps the 047 test bodies unchanged.
+// explicit preset and compose requires an explicit store preset (060 view;
+// specs/070-dsh-upgrade/contracts/preset-model-mapping.md §4); provisioning it
+// here keeps the 047 test bodies unchanged.
 const chatRegressionPresetID = "chat-regression"
 
 // sendMessageResponse mirrors the SendMessageResponse JSON body returned by
@@ -119,8 +119,8 @@ type listPresetsResponse struct {
 // createConversation POSTs one CreateConversation request against the public
 // HTTP entry and returns the HTTP status plus the raw response body. presetID
 // names the STORE preset to bind; an empty presetID means the suite's shared
-// chat-regression preset, provisioned on first use — the deployment has no
-// roster default under the 060 derivation semantics, and the 047 regression
+// chat-regression preset, provisioned on first use — compose requires an
+// explicit store preset, and the 047 regression
 // suites bind no preset of their own. Use createConversationWithoutPreset for
 // the omitted-preset rejection.
 func createConversation(t *testing.T, ctx context.Context, baseURL, envName, conversationID, presetID string) (int, []byte) {

@@ -24,11 +24,11 @@ description: |
        the demo_echo guidance only when the preset row is present (058 US1
        V1-1/V2-3, re-based on the 060 derivation semantics)
     8. TestPresetWithoutPresetRejected — a conversation created without a
-       preset is rejected INVALID_ARGUMENT (060: preset selection is
-       mandatory; the 058 roster default is gone)
+       preset is rejected INVALID_ARGUMENT (060 derivation semantics: compose
+       requires an explicit store preset)
     9. TestPresetSamePresetSharedBehaviour — two sessions on one store preset
-       report the same binding and behave identically (each session holds its
-       own derived mount; 058 US1-AS3)
+       report the same binding and behave identically (both join the one
+       registered revision; 058 US1-AS3)
     10. TestPresetSessionStability — the binding is fixed at creation and
         survives later turns (058 US1-AS4)
     11. TestPresetIdempotentAndRebuild — same-preset recreate is idempotent,
@@ -48,9 +48,9 @@ description: |
         malformed id / empty persona / empty update_mask / unknown-id update
         → 400/404; every rejection leaves no residue (060 store-only
         authoring)
-    16. TestPresetTemplateDeleteRefused — deleting a deployment template is
-        refused (FAILED_PRECONDITION) and the template keeps serving as a
-        derivation source
+    16. TestPresetTemplateDeleteRejected — deleting a deployment template is
+        rejected NOT_FOUND (a declaration row has no store record) and the
+        template keeps serving as a derivation source
 
 suites:
   - name: default

@@ -419,8 +419,8 @@ func Test_cordisRowNames(t *testing.T) {
 		},
 		{
 			name:     "mixed spelling composition manifest",
-			manifest: "# header comment\n- { id: timer, name: '@deepseek-ai/cordis-plugin-timer' }\n- id: agent-presets\n  name: '@deepseek-ai/dsh-agent-presets'\n  config:\n    default: demo-standard\n- { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }\n",
-			want:     []string{"@deepseek-ai/cordis-plugin-timer", "@deepseek-ai/dsh-agent-presets", "@dominion/dsh-preset-authoring"},
+			manifest: "# header comment\n- { id: timer, name: '@deepseek-ai/cordis-plugin-timer' }\n- id: session-projection\n  name: '@deepseek-ai/dsh-session-projection'\n  config:\n    enabled: true\n- { id: preset-authoring, name: '@dominion/dsh-preset-authoring' }\n",
+			want:     []string{"@deepseek-ai/cordis-plugin-timer", "@deepseek-ai/dsh-session-projection", "@dominion/dsh-preset-authoring"},
 		},
 		{
 			name:     "inline row keeps its first name when config nests names",

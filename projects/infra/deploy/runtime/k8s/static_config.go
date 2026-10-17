@@ -55,8 +55,8 @@ type OSSConfig struct {
 	SecretKey string `yaml:"secret_key"`
 }
 
-// MongoStorageConfig 定义 Mongo 默认持久化配置。
-type MongoStorageConfig struct {
+// StorageConfig 定义基础设施实例默认持久化配置（mongo/redis profile 共用）。
+type StorageConfig struct {
 	StorageClassName string   `yaml:"storage_class_name"`
 	Capacity         string   `yaml:"capacity"`
 	AccessModes      []string `yaml:"access_modes"`
@@ -65,11 +65,21 @@ type MongoStorageConfig struct {
 
 // MongoProfileConfig 定义 Mongo 内置 profile 的默认参数。
 type MongoProfileConfig struct {
-	Image         string             `yaml:"image"`
-	Version       string             `yaml:"version"`
-	Port          int                `yaml:"port"`
-	AdminUsername string             `yaml:"admin_username"`
-	Storage       MongoStorageConfig `yaml:"storage"`
+	Image         string        `yaml:"image"`
+	Version       string        `yaml:"version"`
+	Port          int           `yaml:"port"`
+	AdminUsername string        `yaml:"admin_username"`
+	Storage       StorageConfig `yaml:"storage"`
+}
+
+// RedisProfileConfig 定义 Redis 内置 profile 的默认参数。
+// 无 admin_username：redis 密码认证使用 default 用户
+// （specs/067-redis-infra-support/research.md D6）。
+type RedisProfileConfig struct {
+	Image   string        `yaml:"image"`
+	Version string        `yaml:"version"`
+	Port    int           `yaml:"port"`
+	Storage StorageConfig `yaml:"storage"`
 }
 
 // K8sConfig 定义部署流程使用的静态 Kubernetes 配置。
@@ -80,6 +90,7 @@ type K8sConfig struct {
 	TLS       TLSConfig                      `yaml:"tls,omitempty"`
 	OSS       OSSConfig                      `yaml:"oss,omitempty"`
 	MongoDB   map[string]*MongoProfileConfig `yaml:"mongodb,omitempty"`
+	Redis     map[string]*RedisProfileConfig `yaml:"redis,omitempty"`
 }
 
 // LoadK8sConfig 加载并缓存静态 Kubernetes 配置。
@@ -133,6 +144,21 @@ func (c *K8sConfig) MongoProfile(profile string) *MongoProfileConfig {
 	return c.MongoDB[profile]
 }
 
+// RedisProfile 加载静态配置中的 Redis profile。
+// 当 profile 不存在时返回 nil。
+func (c *K8sConfig) RedisProfile(profile string) *RedisProfileConfig {
+	if c == nil {
+		return nil
+	}
+
+	profile = strings.TrimSpace(profile)
+	if profile == "" || c.Redis == nil {
+		return nil
+	}
+
+	return c.Redis[profile]
+}
+
 // Validate 校验 Mongo profile 字段是否合法。
 func (c *MongoProfileConfig) Validate() error {
 	if c == nil {
@@ -167,6 +193,37 @@ func (c *MongoProfileConfig) Validate() error {
 	return nil
 }
 
+// Validate 校验 Redis profile 字段是否合法。
+func (c *RedisProfileConfig) Validate() error {
+	if c == nil {
+		return fmt.Errorf("redis profile 为空")
+	}
+
+	if strings.TrimSpace(c.Image) == "" {
+		return fmt.Errorf("redis profile 缺少 image")
+	}
+	if strings.TrimSpace(c.Version) == "" {
+		return fmt.Errorf("redis profile 缺少 version")
+	}
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("redis profile port 非法")
+	}
+	if strings.TrimSpace(c.Storage.StorageClassName) == "" {
+		return fmt.Errorf("redis profile 缺少 storage.storage_class_name")
+	}
+	if strings.TrimSpace(c.Storage.Capacity) == "" {
+		return fmt.Errorf("redis profile 缺少 storage.capacity")
+	}
+	if len(c.Storage.AccessModes) == 0 {
+		return fmt.Errorf("redis profile 缺少 storage.access_modes")
+	}
+	if strings.TrimSpace(c.Storage.VolumeMode) == "" {
+		return fmt.Errorf("redis profile 缺少 storage.volume_mode")
+	}
+
+	return nil
+}
+
 // Validate 校验静态 Kubernetes 配置字段。
 func (c *K8sConfig) Validate() error {
 	if c == nil {
@@ -191,6 +248,14 @@ func (c *K8sConfig) Validate() error {
 		}
 		if err := profileCfg.Validate(); err != nil {
 			return fmt.Errorf("静态配置 mongodb.%s 无效: %w", profileName, err)
+		}
+	}
+	for profileName, profileCfg := range c.Redis {
+		if profileCfg == nil {
+			return fmt.Errorf("静态配置缺少 redis.%s", profileName)
+		}
+		if err := profileCfg.Validate(); err != nil {
+			return fmt.Errorf("静态配置 redis.%s 无效: %w", profileName, err)
 		}
 	}
 

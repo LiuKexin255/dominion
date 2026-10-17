@@ -1,5 +1,8 @@
 @import './base.css';
+@import './corner-shape.css';
 @import './design-platform.css';
+@import './focus.css';
+@import './onboarding.css';
 @import './scrollbar.css';
 @import './gradient-shadow-text.css';
 @import './shiki.css';

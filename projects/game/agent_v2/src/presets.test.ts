@@ -6,11 +6,11 @@ import { MONGO_TARGET, resolveMongoUri } from "./presets.js";
 
 /**
  * The deployment Mongo credential resolution (the agent_v2 side of the
- * preset persistence wiring, T006): endpoint precedence and the deterministic
- * credential derivation. The derivation vectors are same-source with
- * dominion/common/gopkg/mongo/credentials.go (pinned by that package's
- * client_test.go); the store/document behavior lives with the authoring
- * plugin's Mongo store tests.
+ * preset persistence wiring): direct-URI precedence and the deterministic
+ * credential derivation delegated to @dominion/common-js-mongo (same-source
+ * with dominion/common/gopkg/mongo/credentials.go, pinned by the shared
+ * cross-implementation vectors); the store/document behavior lives with the
+ * authoring plugin's Mongo store tests.
  */
 
 describe("resolveMongoUri", () => {
@@ -34,11 +34,14 @@ describe("resolveMongoUri", () => {
       resolver: { resolve } as unknown as EndpointResolver,
     });
 
-    expect(resolve).toHaveBeenCalledWith(MONGO_TARGET);
+    // The shared library normalizes the dominion:/// MONGO_TARGET to the
+    // resolver's app/service:port form (specs/067-redis-infra-support/contracts/
+    // common-db-libs.md §3).
+    expect(MONGO_TARGET).toBe("dominion:///game/mongo:27017");
+    expect(resolve).toHaveBeenCalledWith("game/mongo:27017");
     // The password is the deterministic deployment derivation (same-source
     // with dominion/common/gopkg/mongo/credentials.go; the cross-implementation
-    // match is pinned by that package's client_test.go vectors) for the
-    // default environment.
+    // match is pinned by the shared vectors) for the default environment.
     expect(uri).toBe(
       "mongodb://admin:JaOE4KM29XdamfOs9zUqhC2QHavC2UJn@10.0.0.9:27017/admin?authSource=admin",
     );
@@ -62,6 +65,6 @@ describe("resolveMongoUri", () => {
 
     await expect(
       resolveMongoUri({ env: {}, resolver: { resolve } as unknown as EndpointResolver }),
-    ).rejects.toThrow(/no endpoints/);
+    ).rejects.toThrow(/no ready endpoints/);
   });
 });

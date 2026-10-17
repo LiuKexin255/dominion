@@ -14,9 +14,9 @@ v1 仅覆盖 Chat Completions 线协议
 
 ## 依赖 pin 决策
 
-- dsh 家族 peer `@deepseek-ai/dsh-llm` 按精确版本 `0.1.1-rc.2` pin（无前缀）：
-  dsh 家族按 0.1.1-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），
-  依据 `specs/049-agent-v2-dsh-init/research.md` D1。
+- dsh 家族 peer `@deepseek-ai/dsh-llm` 经 catalog 解析到精确版本 `0.2.0-rc.2`：
+  dsh 家族按 0.2.0-rc.2 线锁定是仓库既定决策（`third_party/dsh/core` 同线），
+  依据 `specs/073-dsh-0.2-upgrade/research.md` D1。
 - deps 取 llm-glm 的最小集（`common/js/dsh-plugins/llm-glm/README.md` 依赖 pin
   节；本包依赖清单的契约见
   `specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md` §1）：

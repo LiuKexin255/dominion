@@ -9,16 +9,23 @@ go_library(
         "pagination.go",
         "repository.go",
         "sort.go",
+        "wiki.go",
+        "wiki_pagination.go",
+        "wiki_repository.go",
     ],
     importpath = "dominion/projects/game/memory/domain",
     visibility = ["//visibility:public"],
+    deps = ["@org_golang_x_text//unicode/norm"],
 )
 
 go_unittest(
     name = "domain_test",
     srcs = [
+        "model_test.go",
         "pagination_test.go",
         "sort_test.go",
+        "wiki_pagination_test.go",
+        "wiki_test.go",
     ],
     embed = [":domain"],
 )

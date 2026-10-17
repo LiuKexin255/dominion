@@ -2,21 +2,28 @@
 # set (specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md §5;
 # specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5): the dsh core
 # plugins composed directly plus the Dominion plugins and the official
-# agent-loop / preset-roster rows. Rows are order-insensitive (cordis awaits
-# by inject); the ordering below is dependency-layered for reading.
+# agent-loop / preset registry. Rows are order-insensitive
+# (cordis awaits by inject); the ordering below is dependency-layered for reading.
 # - timer/invariants/system-prompt enter through the framework-core baseline
 #   (@dominion/dsh-core, third_party/dsh/core/package.json); the remaining
 #   dsh rows are service-declared npm deps (projects/game/agent_v2/
-#   package.json). Preset-composition rows (@deepseek-ai/dsh-persona,
-#   @dominion/dsh-saolei, @dominion/dsh-memory) resolve by bare
-#   package name from this host composition too, so their packages are
-#   declared in the same manifest and shipped in the same closure
-#   (specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
+#   package.json). The preset persona row (@deepseek-ai/dsh-persona) and the
+#   saolei-loop capability-dependency rows (@dominion/dsh-saolei-tools,
+#   @dominion/dsh-saolei-memory, mounted through the saolei-loop config) all
+#   resolve by bare package name from this host composition, so their packages
+#   are declared in the same manifest and shipped in the same closure
+#   (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2;
+#   specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
 # - GLM endpoint/token injection happens host-side before boot
 #   (projects/game/agent_v2/src/dsh.ts, specs/049-agent-v2-dsh-init/research.md D9).
 - { id: timer,           name: '@deepseek-ai/cordis-plugin-timer' }
 - { id: llm,             name: '@deepseek-ai/dsh-llm' }
 - { id: session,         name: '@deepseek-ai/dsh-session' }
+# 会话投影注册表（ctx.sessionProjections）：官方 agent-loop 的 static inject
+# 与 preset registry 的 inject 都要求该服务在场
+# （specs/070-dsh-upgrade/research.md D6；上游源码
+# https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/src/index.ts）。
+- { id: session-projection, name: '@deepseek-ai/dsh-session-projection' }
 - id: system-prompt
   name: '@deepseek-ai/dsh-system-prompt'
   config:
@@ -31,13 +38,39 @@
 - { id: agent-loop,      name: '@deepseek-ai/dsh-agent-loop' }
 - { id: invariants,      name: '@deepseek-ai/dsh-invariants' }
 # 一致性防护伴生（官方 loop + session/agent/scope 的 request-reconstruction
-# 不变量；research.md D5）：三个包的 ./invariant subpath 导出为普通插件模块
+# 不变量；specs/051-agent-v2-dsh-migration/research.md D5）：三个包的
+# ./invariant subpath 导出为普通插件模块
 # （name/inject/apply），Loader 按裸说明符动态 import，Node ESM exports map
 # 直接解析 subpath 行名。
 - { id: invariant-session, name: '@deepseek-ai/dsh-session/invariant' }
 - { id: invariant-agent,   name: '@deepseek-ai/dsh-agent/invariant' }
 - { id: invariant-scope,   name: '@deepseek-ai/dsh-scope/invariant' }
 - { id: llm-retry,       name: '@deepseek-ai/dsh-llm-retry' }
+# Preset registry (specs/070-dsh-upgrade/contracts/composition-manifest.md §2;
+# specs/070-dsh-upgrade/research.md D2/D5). `default: ''` keeps preset
+# selection mandatory: the empty id matches no roster entry, so an id-less
+# resolve reports not-found instead of silently falling back to a default
+# template (specs/070-dsh-upgrade/research.md D5). The player/planner pool
+# templates are NOT declared here: their single source of truth is the
+# `templates` snapshot in the `preset-authoring` row config below
+# (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
+# specs/070-dsh-upgrade/research.md D4 终态结论——2026-09-28 用户裁定移除
+# `preset-*` 声明行)。
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: ''
+# 组合级 gRPC client 基建（ctx.grpc；specs/074-dsh-grpc-runtime/contracts/
+# grpc-runtime.md §1）：与框架基线行同级、领域无关、生命周期随组合。RPC
+# 依赖型能力经 inject 消费本行，不再各自内嵌连接基建；channel 按 target
+# 缓存并跨 service client 共享。
+- { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }
+# saolei 游戏基础领域行（specs/075-saolei-game-foundation/contracts/
+# saolei-foundation.md §1）：组合级服务面 `ctx.saolei`——纯领域工厂
+# `createGameRuntime(sessionName, desktopBridge)` + `saolei:game` 玩法
+# section spec；saolei-loop 经 `inject: ["saolei"]` 消费（装载期 fail-loud），
+# 工具/守则由独立的 @dominion/dsh-saolei-tools 能力单元提供。
+- { id: saolei, name: '@dominion/dsh-saolei' }
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:
@@ -101,24 +134,6 @@
       - id: hy3
         contextWindow: 256000
 - { id: desktop-bridge,  name: '@dominion/dsh-desktop-bridge' }
-# preset roster（specs/060-agent-v2-team-optimize/contracts/preset-derivation.md
-# §3）：roots = 两个模板 system root（player/planner 池各一，trust: system，
-# 不可写不可删）；不再声明 user root——用户 preset 的组合在物化时从 store
-# 记录派生（§2），没有需要维护的可写副本。
-# includeUserRoot: false 保确定性（不扫机器 <dshHome>/.agent-presets）。
-# default 必填（roster Config schema required）但指向空 id：preset 选择在本
-# 服务是必选语义（UpdateAgent/物化必须显式给 preset），空 id 使无 id 的
-# resolve 走 UnknownPresetError fail-loud，而不是静默落某个默认模板。
-- id: agent-presets
-  name: '@deepseek-ai/dsh-agent-presets'
-  config:
-    default: ''
-    includeUserRoot: false
-    roots:
-      - path: !!js process.env.PRESET_TEMPLATES_ROOT + '/player'   # player 池模板（镜像内数据，system 信任）
-        trust: system
-      - path: !!js process.env.PRESET_TEMPLATES_ROOT + '/planner'  # planner 池模板（同上）
-        trust: system
 # preset 创作/编辑面（058 产出复用）：CRUD 只写 store（唯一事实源）+ role
 # 池记录；生产存储为 Mongo（game_agent_v2.presets，preset-authoring Store
 # seam 的 Mongo 实现）。连接由宿主注入：凭据/URI 解析在 agent_v2 侧
@@ -131,28 +146,44 @@
     mongoUri: !!js process.env.MONGO_URI
     mongoDatabase: game_agent_v2
     mongoCollection: presets
-    # 模板行校验（T021）：池模板必须恰含本角色的工具插件行——工具与配套
-    # 守则同生共死（specs/059-agent-v2-team-mode/contracts/preset-api.md §2；
-    # dsh-plugins.md §5）。规则按模板 id 声明、包名对插件为不透明字符串，
-    # 场景词表留在本宿主配置；创建时校验失败 → INVALID_ARGUMENT，不落任何产物。
-    templateRules:
+    # 模板声明快照（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1）：
+    # 唯一事实源（键 = 模板 id，值 = name/description/plugins）；plugins 为即插即用
+    # 自包含插件列表（当前仅 persona 行，无校验、无组装职责），authoring 据此把
+    # store 记录派生为 registry 声明，不读模板文件系统。
+    templates:
       player:
-        required:
-          - '@dominion/dsh-saolei'
-        forbidden:
-          - '@dominion/dsh-memory'
+        name: player
+        description: 扫雷 player 池模板：persona 行与即插即用自包含插件列表；saolei 能力经 saolei-loop 依赖列表组装
+        plugins:
+          - name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你是扫雷 player，负责操作桌面扫雷窗口完成对局，并依据 saolei 工具返回的棋盘文本持续推理落子，直到对局结束。你独占桌面控制；一律以工具返回的棋盘事实为准，任何与棋盘不符的说法都先核对再行动；每局结束后是否开启新局由你自行判断。保持冷静、精确，落子前先核对已揭示信息与剩余雷数，不做无依据的猜测。
       planner:
-        required:
-          - '@dominion/dsh-memory'
-        forbidden:
-          - '@dominion/dsh-saolei'
+        name: planner
+        description: 扫雷 planner 池模板：persona 行与即插即用自包含插件列表；memory 能力经 saolei-loop 依赖列表组装
+        plugins:
+          - name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。
 # team 群聊原语（ctx.team；specs/059-agent-v2-team-mode/contracts/
-# dsh-plugins.md §1）与 planner memory host 服务面（ctx.plannerMemory；
-# 同契约 §3——memory 工具行不经 host 层，经 planner 池模板 preset 的
-# 插件行挂载）。
+# dsh-plugins.md §1）。
 - { id: team,            name: '@dominion/dsh-team' }
-- { id: memory,          name: '@dominion/dsh-memory-service' }
-# saolei 工具行不再挂 host 层：改经 player 池模板 preset 的插件行挂载
-# （工具可见性由挂载层隔离——host 行会对全员可见，模板行使 player 独占）。
-# saolei-loop 保留行位（语义已变为 team loop 编排层，R7）。
-- { id: saolei-loop,     name: '@dominion/dsh-saolei-loop' }
+# saolei-loop 是 team loop 编排层（specs/059-agent-v2-team-mode/
+# research.md R7）。`config.plugins` 是其能力依赖声明（扁平列表，无角色语义）：
+# 列表项挂载为子插件并以 provide 暴露能力面，成员 setup 按角色消费——
+# @dominion/dsh-saolei-tools 提供 saoleiTools 静态单元，
+# @dominion/dsh-saolei-memory 提供 memoryMount 工厂（携带连接 config，组合级
+# 共享 channel）。游戏基础服务 `ctx.saolei` 由组合清单顶级 saolei 行提供
+# （本行 inject 声明；specs/075-saolei-game-foundation/contracts/
+# team-loop-assembly.md §1）；工具能力不再经预设模板行挂载
+# （specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2；
+# preset-templates.md §3）。
+- id: saolei-loop
+  name: '@dominion/dsh-saolei-loop'
+  config:
+    plugins:
+      - name: '@dominion/dsh-saolei-tools'
+      - name: '@dominion/dsh-saolei-memory'
+        config:
+          target: 'dominion:///game/memory:50051'
+          protoPath: 'projects/game/game.proto'

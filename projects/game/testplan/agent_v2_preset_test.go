@@ -1,15 +1,17 @@
 // Package testplan contains the agent_v2 team configuration large tests: the
 // preset CRUD closed loop over the stateless configuration face, the team
 // materialization/refresh semantics over the team singleton, the
-// unmaterialized rejection family, the store-derivation chain, and the
-// empty-persona fallback — the US2 configuration concerns
+// unmaterialized rejection family, the store-derivation chain, the
+// empty-persona fallback, and the preset-scoped planner memory snapshot —
+// the US2 configuration concerns
 // (specs/059-agent-v2-team-mode/contracts/team-api.md §2/§6, preset-api.md;
 // the 060 revision of the authoring/compose semantics:
-// specs/060-agent-v2-team-optimize/contracts/preset-derivation.md). Cases
-// are one per concern — style/large_test.md §测试组织. Preset state lives in
-// the agent_v2 Mongo store, so every assertion round-trips through the
-// gateway's direct PresetService routes; the team singleton routes ride the
-// proxy owner affinity.
+// specs/060-agent-v2-team-optimize/contracts/preset-derivation.md; the 071
+// memory scope: specs/071-memory-preset-scope/contracts/dsh-plugins.md §3-4).
+// Cases are one per concern — style/large_test.md §测试组织. Preset state
+// lives in the agent_v2 Mongo store, so every assertion round-trips through
+// the gateway's direct PresetService routes; the team singleton routes ride
+// the proxy owner affinity.
 package testplan
 
 import (
@@ -439,20 +441,27 @@ func TestAgentV2TeamMembersListRejections(t *testing.T) {
 	}
 
 	// A valid members list materializes the same session and echoes the
-	// roster with the server-constructed member names.
+	// roster with the server-constructed member names: the two configured LLM
+	// members plus the server-side announcer (empty preset/model).
 	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
-	if got := team.GetMembers(); len(got) != 2 {
-		t.Fatalf("materialized members = %d, want 2", len(got))
+	announcer := teamMemberByRole(team, agentV2AnnouncerMember)
+	if announcer == nil {
+		t.Fatalf("materialized roster lacks the %q member", agentV2AnnouncerMember)
 	}
-	for _, member := range team.GetMembers() {
-		if member.GetRole() != "player" && member.GetRole() != "planner" {
-			t.Errorf("materialized member role = %q, want a scene role string", member.GetRole())
+	if announcer.GetPreset() != "" || announcer.GetModel() != "" {
+		t.Errorf("announcer member = {preset:%q model:%q}, want the non-LLM empty form",
+			announcer.GetPreset(), announcer.GetModel())
+	}
+	for _, role := range []string{"player", "planner"} {
+		member := teamMemberByRole(team, role)
+		if member == nil {
+			t.Fatalf("materialized roster lacks the %q member", role)
 		}
-		if member.GetName() != agentV2MemberName(sessionName, member.GetRole()) {
-			t.Errorf("materialized member name = %q, want %q", member.GetName(), agentV2MemberName(sessionName, member.GetRole()))
+		if member.GetName() != agentV2MemberName(sessionName, role) {
+			t.Errorf("materialized member name = %q, want %q", member.GetName(), agentV2MemberName(sessionName, role))
 		}
 		if member.GetPreset() == "" {
-			t.Errorf("materialized member %q carries an empty preset", member.GetRole())
+			t.Errorf("materialized member %q carries an empty preset", role)
 		}
 	}
 }
@@ -588,9 +597,8 @@ func TestAgentV2TeamEmptyPersonaFallback(t *testing.T) {
 		t.Fatalf("created personas = {%q %q}, want empty", player.GetPersona(), planner.GetPersona())
 	}
 	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
-	if len(team.GetMembers()) != 2 {
-		t.Fatalf("materialized members = %d, want 2 (empty personas must fall back, not fail)", len(team.GetMembers()))
-	}
+	// The three-member roster (player + planner + the server-side announcer).
+	assertTeamProtoRosterIncludesAnnouncer(t, team)
 
 	// The fallback personas ride the model context end to end: the planner
 	// opening entry (system_keyword 你是扫雷 planner) matches, and the
@@ -669,15 +677,15 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 
 	// The review-path write: a lost game ends with the planner's memory add
 	// and the review body from the tool-result continuation.
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardLossPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	turns := groupTeamMemberTurns(events)
 	if len(turns) != 4 {
@@ -696,8 +704,14 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 	}
 
 	// The add is immediately persisted: the entry is visible through the
-	// memory service's public /api/v1 route (FR-007).
-	listed := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "")
+	// memory service's public /api/v1 route (FR-007), in the planner member's
+	// materialization source preset collection
+	// (specs/071-memory-preset-scope/contracts/dsh-plugins.md §3-4).
+	plannerPresetName, err := game.ParsePresetName(teamMemberPreset(team, "planner"))
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", teamMemberPreset(team, "planner"), err)
+	}
+	listed := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, plannerPresetName.PresetID, 100, "", "")
 	found := false
 	for _, entry := range listed.GetMemories() {
 		if entry.GetContent() == teamMemoryReviewContent {
@@ -723,6 +737,125 @@ func TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads(t *testing.T) {
 	}
 	if _, text := teamTurnBlocks(turns2[0]); text != teamMemorySnapshotText {
 		t.Errorf("post-refresh planner reply = %q, want %q (the persisted observation must reach the fresh system prompt)", text, teamMemorySnapshotText)
+	}
+}
+
+// TestAgentV2TeamMemorySharedAcrossSessions covers
+// specs/071-memory-preset-scope/spec.md US2 场景 1/2 and
+// specs/071-memory-preset-scope/quickstart.md 场景 2 (FR-007/FR-008, SC-001):
+// the planner's long-term memory is mounted on the preset it was materialized
+// from, so an entry in that preset's collection reaches a DIFFERENT session's
+// planner as soon as that session materializes a planner from the SAME
+// preset, while a planner materialized from another preset never sees it
+// (isolation control). The entry is written through the memory service's
+// public REST face with the planner preset as its parent — the pre-write
+// quickstart.md 场景 2 allows; the agent-side write path (memory tool → the
+// same collection) is already pinned end to end by
+// TestAgentV2TeamMemoryReviewPersistsAndSnapshotReloads.
+func TestAgentV2TeamMemorySharedAcrossSessions(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionA := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-a-"+uniqueSuffix())
+	sessionB := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-b-"+uniqueSuffix())
+	control := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-c-"+uniqueSuffix())
+	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-share", "shared")
+	controlPlayer, controlPlanner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-share-control", "isolated")
+	entry := "跨对局共享观察：" + uniqueSuffix()
+
+	// Session A materializes first; the write then lands in its planner
+	// preset's collection.
+	teamA := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionA, player.GetName(), planner.GetName(), "", "")
+	plannerPreset, err := game.ParsePresetName(teamMemberPreset(teamA, "planner"))
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", teamMemberPreset(teamA, "planner"), err)
+	}
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, plannerPreset.PresetID, "shared-"+uniqueSuffix(), entry)
+
+	// A's running planner keeps its materialization-time snapshot: the write
+	// landed after its prefetch, so the entry must not appear there — the
+	// freeze-at-materialization semantics stay intact (FR-005).
+	if entries := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionA, "planner").GetSystemPrompt()); len(entries) != 0 {
+		t.Errorf("session A planner snapshot = %v, want none (the write landed after its prefetch)", entries)
+	}
+
+	// Session B materializes a planner from the SAME preset: the fresh
+	// prefetch reads the collection, so the entry is in the injected snapshot.
+	teamB := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionB, player.GetName(), planner.GetName(), "", "")
+	if got := teamMemberPreset(teamB, "planner"); got != planner.GetName() {
+		t.Fatalf("session B planner preset = %q, want the shared %q", got, planner.GetName())
+	}
+	shared := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionB, "planner").GetSystemPrompt())
+	if len(shared) != 1 || shared[0] != entry {
+		t.Errorf("session B planner snapshot = %v, want exactly the shared entry %q", shared, entry)
+	}
+
+	// Control: the other planner preset's collection stays empty and the
+	// planner materialized from it renders no snapshot section at all
+	// (FR-008 zero leakage).
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, control, controlPlayer.GetName(), controlPlanner.GetName(), "", "")
+	controlPrompt := getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, control, "planner").GetSystemPrompt()
+	if entries := memorySnapshotEntries(controlPrompt); len(entries) != 0 {
+		t.Errorf("control planner snapshot = %v, want none (a different preset shares nothing)", entries)
+	}
+	if strings.Contains(controlPrompt, "长期记忆：") {
+		t.Errorf("control planner system_prompt carries a snapshot section:\n%s", controlPrompt)
+	}
+}
+
+// TestAgentV2TeamMemoryRefreshSwitchesPlannerPreset covers
+// specs/071-memory-preset-scope/spec.md US3 场景 2 (FR-009; SC-002): a
+// materialized team's planner is bound to its materialization source preset's
+// collection, so a refresh (UpdateTeam) that swaps the planner preset loads
+// the NEW preset's snapshot while the replaced preset's collection keeps its
+// data untouched. Both collections are seeded through the memory service's
+// public /api/v1 face with one contrasting entry each — the v1 pre-write path
+// of specs/071-memory-preset-scope/quickstart.md 场景 2.
+func TestAgentV2TeamMemoryRefreshSwitchesPlannerPreset(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-switch-"+uniqueSuffix())
+	player, plannerFirst := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-switch", "first")
+	plannerNext := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName,
+		"team-switch-next-planner-"+uniqueSuffix(), "你是扫雷 planner，switched", "planner")
+
+	firstPreset, err := game.ParsePresetName(plannerFirst.GetName())
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", plannerFirst.GetName(), err)
+	}
+	nextPreset, err := game.ParsePresetName(plannerNext.GetName())
+	if err != nil {
+		t.Fatalf("ParsePresetName(%q): %v", plannerNext.GetName(), err)
+	}
+	firstEntry := "P1 集合条目：" + uniqueSuffix()
+	nextEntry := "P2 集合条目：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, firstPreset.PresetID, "entry-p1", firstEntry)
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, nextPreset.PresetID, "entry-p2", nextEntry)
+
+	// Materialized with the first planner: the snapshot is prefetched from its
+	// preset's collection and carries nothing from the other.
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), plannerFirst.GetName(), "", "")
+	firstSnapshot := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt())
+	if len(firstSnapshot) != 1 || firstSnapshot[0] != firstEntry {
+		t.Errorf("planner snapshot off P1 = %v, want exactly %q", firstSnapshot, firstEntry)
+	}
+
+	// Refresh swapping the planner preset: the fresh planner loads P2's
+	// snapshot, and the replaced preset's entry is gone (the new instance binds
+	// the new preset).
+	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), plannerNext.GetName(), "", "")
+	nextSnapshot := memorySnapshotEntries(getAgentV2TeamMember(t, ctx, sutHostURL, sutEnvName, sessionName, "planner").GetSystemPrompt())
+	if len(nextSnapshot) != 1 || nextSnapshot[0] != nextEntry {
+		t.Errorf("planner snapshot off P2 after refresh = %v, want exactly %q", nextSnapshot, nextEntry)
+	}
+
+	// P1's collection is unaffected by the swap: it still lists its entry.
+	firstPage := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, firstPreset.PresetID, 100, "", "")
+	if got := len(firstPage.GetMemories()); got != 1 || firstPage.GetMemories()[0].GetContent() != firstEntry {
+		t.Errorf("P1 collection after the refresh = %v, want the untouched %q", firstPage.GetMemories(), firstEntry)
 	}
 }
 
@@ -816,15 +949,15 @@ func TestAgentV2TeamSystemPromptSnapshotFixationAndPersonaRefresh(t *testing.T) 
 
 	// One lost game drives the review's memory write (the T023 persistence
 	// path; here the write is the snapshot reload's prerequisite).
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionID)
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer flow.Close()
-	scriptCh := serveTeamFlowScript(flow, sessionID, teamFlowScript{
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
 		initBoards: [][]byte{saoleiBoardInitPNG},
 		stepBoards: [][]byte{saoleiBoardLossPNG},
-	}, wsReadTimeout)
+	}, flowReadTimeout)
 	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamStartMessage)
 	events := drainTeamStream(t, stream)
-	waitTeamFlowScript(t, scriptCh, wsReadTimeout)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
 	assertTeamStreamWellFormed(t, sessionName, events)
 	turns := groupTeamMemberTurns(events)
 	if len(turns) != 4 {
@@ -882,7 +1015,7 @@ func TestAgentV2TeamDesktopConnected(t *testing.T) {
 		t.Error("desktop_connected = true with no flow connection, want false")
 	}
 
-	flow, _ := dialAgentV2FlowProbed(t, ctx, sutHostURL, sutEnvName, sessionIDFromName(t, sessionName))
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionIDFromName(t, sessionName))
 	defer flow.Close()
 	if got := getAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName); !got.GetDesktopConnected() {
 		t.Error("desktop_connected = false with a live flow connection attached, want true")

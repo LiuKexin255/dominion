@@ -765,6 +765,51 @@ func TestCheckRollout(t *testing.T) {
 			},
 		},
 		{
+			name: "redis infra deployment ready",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{infras: []checkRolloutInfraOpt{{name: "cache", app: "game", resource: "redis"}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.RedisWorkloads {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.ResourceName(), 1, 1,
+							appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 1, AvailableReplicas: 1},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState: domain.RolloutReady,
+			wantSvc: []wantServiceStatus{
+				{name: "cache", app: "game", kind: domain.ServiceKindInfra, state: domain.ServiceRolloutStateReady},
+			},
+		},
+		{
+			name: "redis infra deployment failed",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{infras: []checkRolloutInfraOpt{{name: "cache", app: "game", resource: "redis"}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.RedisWorkloads {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.ResourceName(), 1, 1,
+							appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
+								Type:    appsv1.DeploymentProgressing,
+								Reason:  "ProgressDeadlineExceeded",
+								Message: "redis deployment exceeded its progress deadline",
+							}}},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutFailed,
+			wantMsgSub: "redis deployment exceeded its progress deadline",
+			wantSvc: []wantServiceStatus{
+				{name: "cache", app: "game", kind: domain.ServiceKindInfra, state: domain.ServiceRolloutStateFailed, msgSub: "redis deployment exceeded its progress deadline"},
+			},
+		},
+		{
 			name: "no workloads returns ready",
 			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
 				t.Helper()
@@ -845,8 +890,9 @@ type checkRolloutArtifactOpt struct {
 }
 
 type checkRolloutInfraOpt struct {
-	name string
-	app  string
+	name     string
+	app      string
+	resource string
 }
 
 type checkRolloutEnvOpt struct {
@@ -885,8 +931,12 @@ func newCheckRolloutTestEnv(t *testing.T, opt checkRolloutEnvOpt) *domain.Enviro
 
 	var infras []*domain.InfraSpec
 	for _, i := range opt.infras {
+		resource := i.resource
+		if resource == "" {
+			resource = "mongodb"
+		}
 		infras = append(infras, &domain.InfraSpec{
-			Resource: "mongodb",
+			Resource: resource,
 			Profile:  "default",
 			Name:     i.name,
 			App:      i.app,

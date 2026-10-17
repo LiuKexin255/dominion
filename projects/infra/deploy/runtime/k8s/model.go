@@ -307,15 +307,6 @@ func (w *MongoDBWorkload) ServiceResourceName() string {
 	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
 }
 
-// SecretResourceName 返回 MongoDB Secret 对应的资源名。
-func (w *MongoDBWorkload) SecretResourceName() string {
-	if w == nil {
-		return ""
-	}
-
-	return newObjectName(WorkloadKindSecret, w.EnvironmentName, w.ServiceName)
-}
-
 // PVCResourceName 返回 MongoDB PVC 对应的资源名。
 func (w *MongoDBWorkload) PVCResourceName() string {
 	if w == nil {
@@ -344,6 +335,66 @@ func (w *MongoDBWorkload) Validate() error {
 	}
 	if strings.TrimSpace(w.ProfileName) == "" {
 		return fmt.Errorf("mongo workload 缺少 profile name")
+	}
+
+	return nil
+}
+
+// RedisWorkload 描述 Redis workload 生成所需字段。
+type RedisWorkload struct {
+	ServiceName     string
+	EnvironmentName string
+	App             string
+	ProfileName     string
+	Persistence     PersistenceConfig
+}
+
+// ResourceName 返回 Redis workload 对应的资源名。
+func (w *RedisWorkload) ResourceName() string {
+	if w == nil {
+		return ""
+	}
+
+	return newObjectName(WorkloadKindRedis, w.EnvironmentName, w.ServiceName)
+}
+
+// ServiceResourceName 返回 Redis Service 对应的资源名。
+func (w *RedisWorkload) ServiceResourceName() string {
+	if w == nil {
+		return ""
+	}
+
+	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
+}
+
+// PVCResourceName 返回 Redis PVC 对应的资源名。
+func (w *RedisWorkload) PVCResourceName() string {
+	if w == nil {
+		return ""
+	}
+
+	return newObjectName(WorkloadKindPVC, w.EnvironmentName, w.ServiceName)
+}
+
+// Validate 校验 Redis workload 字段是否合法。
+func (w *RedisWorkload) Validate() error {
+	if w == nil {
+		return fmt.Errorf("redis workload 为空")
+	}
+	if strings.TrimSpace(w.ServiceName) == "" {
+		return fmt.Errorf("redis workload 缺少 service name")
+	}
+	if strings.TrimSpace(w.EnvironmentName) == "" {
+		return fmt.Errorf("redis workload 缺少 environment name")
+	}
+	if strings.TrimSpace(w.App) == "" {
+		return fmt.Errorf("redis workload 缺少 app")
+	}
+	if len(w.ResourceName()) > maxK8sResourceNameSize {
+		return fmt.Errorf("redis workload name 超过 63 字符")
+	}
+	if strings.TrimSpace(w.ProfileName) == "" {
+		return fmt.Errorf("redis workload 缺少 profile name")
 	}
 
 	return nil

@@ -4,10 +4,10 @@
 
 **基线契约**: `specs/051-agent-v2-dsh-migration/contracts/saolei-plugins.md` §2（`ToolOutcome`/`GameRuntime` 类型）与 §3（三工具 exec 体映射）——本契约是其终局收束语义的扩展声明；本 feature 同步将 051 §2 类型行与 §3 映射更新为终态（非增量 patch），两份契约保持一致。
 
-## 1. ToolOutcome 扩展（@dominion/dsh-saolei-loop → @dominion/dsh-saolei 契约）
+## 1. ToolOutcome 扩展（@dominion/dsh-saolei 契约）
 
 ```ts
-// common/js/dsh-plugins/saolei-loop/src/game/runtime.ts
+// common/js/dsh-plugins/saolei/src/game/runtime.ts
 export type ToolOutcome =
   | { isError: false; text: string; concludesTurn?: true }
   | { isError: true; error: { message: string } };
@@ -18,9 +18,9 @@ export type ToolOutcome =
 - **MUST NOT**：不因排队消息（如编排 FIFO）存在与否变化；不读不写 `gameEvent`/`reviewedGameEvent`/编排状态；错误分支不可携带（类型保证，对齐 dsh `ToolExecutionFailure.concludesTurn?: never`）。
 - `saolei_remain` 永不置位；无棋盘结果（`no_active_game`/`unable to recognize board`/参数组合拒绝）不置位。
 
-## 2. 工具层映射（@dominion/dsh-saolei executeOutcome 扩展）
+## 2. 工具层映射（@dominion/dsh-saolei-tools executeOutcome 扩展）
 
-`common/js/dsh-plugins/saolei/src/index.ts` `executeOutcome`（三工具唯一 outcome 消费点）：
+`common/js/dsh-plugins/saolei-tools/src/index.ts` `executeOutcome`（三工具唯一 outcome 消费点）：
 
 ```ts
 const outcome = await run(resolveRuntime(exec));
@@ -50,5 +50,5 @@ return { result: outcome.text };
 
 ## 5. 兼容性
 
-- `ToolOutcome` 消费方全量核查为 4 处（saolei 工具层、saolei-loop index 再导出、runtime 自身、两包测试）——可选字段向后兼容，playing 路径行为不变。
-- 既有"无 saoleiGame 服务" fail-loud 边界（`saolei/src/index.ts:91-104`）零改动：planner 误调 saolei 工具仍为模型可见错误，不收束（FR-006）。
+- `ToolOutcome` 消费方全量核查为 dsh-saolei-tools 工具层（`executeOutcome`）、dsh-saolei runtime 自身与其包导出面、`common/js/dsh-plugins/saolei-tools/src/index.test.ts`——可选字段向后兼容，playing 路径行为不变。
+- 既有"无 saoleiGame 服务" fail-loud 边界（`common/js/dsh-plugins/saolei-tools/src/index.ts` `resolveRuntime`）零改动：planner 误调 saolei 工具仍为模型可见错误，不收束（FR-006）。

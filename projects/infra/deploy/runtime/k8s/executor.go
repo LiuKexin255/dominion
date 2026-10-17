@@ -88,9 +88,9 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 		return fmt.Errorf("转换 environment 为 workloads 失败: %w", err)
 	}
 
-	deploymentCount := len(objects.Deployments) + len(objects.MongoDBWorkloads)
+	deploymentCount := len(objects.Deployments) + len(objects.MongoDBWorkloads) + len(objects.RedisWorkloads)
 	statefulsetCount := len(objects.StatefulWorkloads)
-	serviceCount := len(objects.Deployments) + len(objects.StatefulWorkloads) + len(objects.MongoDBWorkloads)
+	serviceCount := len(objects.Deployments) + len(objects.StatefulWorkloads) + len(objects.MongoDBWorkloads) + len(objects.RedisWorkloads)
 	span.SetAttributes(
 		attribute.Int(logFieldDeploymentCount, deploymentCount),
 		attribute.Int(logFieldServiceCount, serviceCount),
@@ -150,17 +150,29 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 	}
 	for _, workload := range objects.MongoDBWorkloads {
 		if workload.Persistence.Enabled {
-			if err := r.applyPVC(ctx, workload); err != nil {
+			if err := r.applyMongoDBPVC(ctx, workload); err != nil {
 				return err
 			}
-		}
-		if err := r.applySecret(ctx, workload); err != nil {
-			return err
 		}
 		if err := r.applyMongoDBDeployment(ctx, workload); err != nil {
 			return err
 		}
 		if err := r.applyMongoDBService(ctx, workload); err != nil {
+			return err
+		}
+	}
+	// Redis apply 顺序与 mongo 一致：PVC（如启用）→ Deployment → Service；
+	// 凭证以环境变量直注，不创建 Secret（specs/067-redis-infra-support/contracts/deploy-redis-infra.md §2/§3.2）。
+	for _, workload := range objects.RedisWorkloads {
+		if workload.Persistence.Enabled {
+			if err := r.applyRedisPVC(ctx, workload); err != nil {
+				return err
+			}
+		}
+		if err := r.applyRedisDeployment(ctx, workload); err != nil {
+			return err
+		}
+		if err := r.applyRedisService(ctx, workload); err != nil {
 			return err
 		}
 	}
@@ -247,7 +259,15 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.deployments[workload.ResourceName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
-		resources.secrets[workload.SecretResourceName()] = struct{}{}
+	}
+	// redis 实例不创建 Secret，仅登记 Deployment/Service
+	// （specs/067-redis-infra-support/contracts/deploy-redis-infra.md §2）。
+	for _, workload := range objects.RedisWorkloads {
+		if workload == nil {
+			continue
+		}
+		resources.deployments[workload.ResourceName()] = struct{}{}
+		resources.services[workload.ServiceResourceName()] = struct{}{}
 	}
 	for _, workload := range objects.StatefulWorkloads {
 		if workload == nil {
@@ -645,7 +665,7 @@ func (r *K8sRuntime) applyStatefulSet(ctx context.Context, workload *StatefulWor
 		r.client.TypedClient.AppsV1().StatefulSets(desired.Namespace), desired)
 }
 
-func (r *K8sRuntime) applyPVC(ctx context.Context, workload *MongoDBWorkload) error {
+func (r *K8sRuntime) applyMongoDBPVC(ctx context.Context, workload *MongoDBWorkload) error {
 	if workload == nil {
 		return fmt.Errorf("failed to build %s <nil>: mongo workload 为空", resourceKindPVC)
 	}
@@ -675,20 +695,6 @@ func (r *K8sRuntime) applyPVC(ctx context.Context, workload *MongoDBWorkload) er
 	return nil
 }
 
-func (r *K8sRuntime) applySecret(ctx context.Context, workload *MongoDBWorkload) error {
-	if workload == nil {
-		return fmt.Errorf("failed to build %s <nil>: mongo workload 为空", resourceKindSecret)
-	}
-
-	desired, err := BuildMongoDBSecret(workload, r.client.K8sConfig)
-	if err != nil {
-		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindSecret, workload.SecretResourceName(), err)
-	}
-
-	return applyTypedSecret(ctx, desired.Name,
-		r.client.TypedClient.CoreV1().Secrets(desired.Namespace), desired)
-}
-
 func (r *K8sRuntime) applyMongoDBDeployment(ctx context.Context, workload *MongoDBWorkload) error {
 	if workload == nil {
 		return fmt.Errorf("failed to build %s <nil>: mongo workload 为空", resourceKindDeployment)
@@ -709,6 +715,64 @@ func (r *K8sRuntime) applyMongoDBService(ctx context.Context, workload *MongoDBW
 	}
 
 	desired, err := BuildMongoDBService(workload, r.client.K8sConfig)
+	if err != nil {
+		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindService, workload.ServiceResourceName(), err)
+	}
+
+	return applyTypedService(ctx, desired.Name,
+		r.client.TypedClient.CoreV1().Services(desired.Namespace), desired)
+}
+
+func (r *K8sRuntime) applyRedisPVC(ctx context.Context, workload *RedisWorkload) error {
+	if workload == nil {
+		return fmt.Errorf("failed to build %s <nil>: redis workload 为空", resourceKindPVC)
+	}
+
+	desired, err := BuildRedisPVC(workload, r.client.K8sConfig)
+	if err != nil {
+		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindPVC, workload.PVCResourceName(), err)
+	}
+
+	client := r.client.TypedClient.CoreV1().PersistentVolumeClaims(desired.Namespace)
+	current, err := client.Get(ctx, desired.Name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
+				return fmt.Errorf("创建 %s %s/%s 失败: %w", resourceKindPVC, desired.Namespace, desired.Name, err)
+			}
+			return nil
+		}
+
+		return fmt.Errorf("获取 %s %s/%s 失败: %w", resourceKindPVC, desired.Namespace, desired.Name, err)
+	}
+
+	if err := CheckRedisPVCCompatibility(current, workload, r.client.K8sConfig); err != nil {
+		return fmt.Errorf("校验 %s %s/%s 兼容性失败: %w", resourceKindPVC, desired.Namespace, desired.Name, err)
+	}
+
+	return nil
+}
+
+func (r *K8sRuntime) applyRedisDeployment(ctx context.Context, workload *RedisWorkload) error {
+	if workload == nil {
+		return fmt.Errorf("failed to build %s <nil>: redis workload 为空", resourceKindDeployment)
+	}
+
+	desired, err := BuildRedisDeployment(workload, r.client.K8sConfig)
+	if err != nil {
+		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindDeployment, workload.ResourceName(), err)
+	}
+
+	return applyDeploymentResource(ctx, resourceKindDeployment, desired.Name,
+		r.client.TypedClient.AppsV1().Deployments(desired.Namespace), desired)
+}
+
+func (r *K8sRuntime) applyRedisService(ctx context.Context, workload *RedisWorkload) error {
+	if workload == nil {
+		return fmt.Errorf("failed to build %s <nil>: redis workload 为空", resourceKindService)
+	}
+
+	desired, err := BuildRedisService(workload, r.client.K8sConfig)
 	if err != nil {
 		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindService, workload.ServiceResourceName(), err)
 	}
@@ -1030,27 +1094,6 @@ func applyTypedService(ctx context.Context, name string, client coretypedv1.Serv
 	desired.Spec.AllocateLoadBalancerNodePorts = current.Spec.AllocateLoadBalancerNodePorts
 	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindService, name, err)
-	}
-
-	return nil
-}
-
-func applyTypedSecret(ctx context.Context, name string, client coretypedv1.SecretInterface, desired *corev1.Secret) error {
-	current, err := client.Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("创建 %s %s 失败: %w", resourceKindSecret, name, err)
-			}
-			return nil
-		}
-
-		return fmt.Errorf("获取 %s %s 失败: %w", resourceKindSecret, name, err)
-	}
-
-	desired.ResourceVersion = current.ResourceVersion
-	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindSecret, name, err)
 	}
 
 	return nil

@@ -20,9 +20,9 @@
 import { Context } from "@deepseek-ai/cordis";
 import { createScope } from "@deepseek-ai/dsh-scope";
 import {
-  CallId,
   createAssistantMessage,
   createToolResultMessage,
+  ToolCallId,
 } from "@deepseek-ai/dsh-llm";
 import type {
   AssistantMessage,
@@ -41,7 +41,11 @@ import {
   TEAM_SECTION_ORDER,
   Team,
 } from "./team.js";
-import type { TeamMemberSource } from "./team.js";
+import type {
+  TeamHandle,
+  TeamMemberEvent,
+  TeamMemberSource,
+} from "./team.js";
 
 interface SectionRecord {
   readonly name: string;
@@ -52,6 +56,9 @@ interface SectionRecord {
 
 type Listener = (session: { id: unknown }, event: SessionEvent) => void;
 
+/** One live-event listener the agent adapter registered (`agent/*` events). */
+type LiveListener = (payload: unknown) => void;
+
 interface FakeMember {
   readonly id: ReturnType<typeof SessionId>;
   readonly agent: Agent;
@@ -60,6 +67,8 @@ interface FakeMember {
   readonly events: SessionEvent[];
   readonly sections: SectionRecord[];
   readonly listeners: Listener[];
+  /** The live-face listeners by event name (agent/assistant-stream | agent/status | agent/error). */
+  readonly live: Map<string, LiveListener[]>;
   readonly offs: Array<ReturnType<typeof vi.fn>>;
 }
 
@@ -68,6 +77,7 @@ function createMember(name: string): FakeMember {
   const events: SessionEvent[] = [];
   const sections: SectionRecord[] = [];
   const listeners: Listener[] = [];
+  const live = new Map<string, LiveListener[]>();
   const offs: Array<ReturnType<typeof vi.fn>> = [];
   const ctx = {
     systemPrompt: {
@@ -77,19 +87,35 @@ function createMember(name: string): FakeMember {
         return dispose;
       }),
     },
-    on: vi.fn((_name: string, listener: Listener) => {
-      listeners.push(listener);
+    on: vi.fn((event: string, listener: Listener | LiveListener) => {
+      if (event === "session/event") {
+        const typed = listener as Listener;
+        listeners.push(typed);
+        const off = vi.fn(() => {
+          const index = listeners.indexOf(typed);
+          if (index >= 0) {
+            listeners.splice(index, 1);
+          }
+        });
+        offs.push(off);
+        return off;
+      }
+      const typed = listener as LiveListener;
+      const list = live.get(event) ?? [];
+      list.push(typed);
+      live.set(event, list);
       const off = vi.fn(() => {
-        const index = listeners.indexOf(listener);
+        const current = live.get(event) ?? [];
+        const index = current.indexOf(typed);
         if (index >= 0) {
-          listeners.splice(index, 1);
+          current.splice(index, 1);
         }
       });
       offs.push(off);
       return off;
     }),
   };
-  const session = { id, events };
+  const session = { id, events, snapshotEvents: () => events };
   const agent = { id, session, ctx } as unknown as Agent;
   const handle: AgentHandle = { agent, dispose: vi.fn(async () => {}) };
   return {
@@ -100,6 +126,7 @@ function createMember(name: string): FakeMember {
     events,
     sections,
     listeners,
+    live,
     offs,
   };
 }
@@ -205,7 +232,7 @@ function toolCallEvent(callId: string, name: string, args: string): SessionEvent
   return {
     type: "tool/call",
     ...order(),
-    data: { turn: 1, step: 1, callId: CallId(callId), name, arguments: args },
+    data: { turn: 1, step: 1, callId: ToolCallId(callId), name, arguments: args },
   } as unknown as SessionEvent;
 }
 
@@ -217,7 +244,7 @@ function toolResultEvent(callId: string, result: string): SessionEvent {
       turn: 1,
       step: 1,
       message: createToolResultMessage({
-        callId: CallId(callId),
+        callId: ToolCallId(callId),
         content: [{ type: "text", text: result }],
         isError: false,
       }),
@@ -236,6 +263,28 @@ function emit(member: FakeMember, event: SessionEvent): void {
 /** Push into the log only (a relay the subscription never saw). */
 function append(member: FakeMember, event: SessionEvent): void {
   member.events.push(event);
+}
+
+/**
+ * Push one live activity event through the member's agent-scope live face, as
+ * the dsh root event would reach the agent member's adapter.
+ */
+function emitLive(member: FakeMember, name: string, payload: unknown): void {
+  for (const listener of [...(member.live.get(name) ?? [])]) {
+    listener(payload);
+  }
+}
+
+/**
+ * Capture the envelopes one registration's unified member event stream
+ * delivers (contracts/member-event-stream.md §6 acceptance face).
+ */
+function captureStream(handle: TeamHandle): TeamMemberEvent[] {
+  const seen: TeamMemberEvent[] = [];
+  handle.events().subscribe((event) => {
+    seen.push(event);
+  });
+  return seen;
 }
 
 /** A speech production event plus its log-only append. */
@@ -270,6 +319,57 @@ function textOf(message: UserMessage): string {
   return block !== undefined && block.type === "text" ? block.text : "";
 }
 
+/**
+ * Attach a delivery-face double to a member source — the same structural
+ * member-kind property production attaches at composition
+ * (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
+ * §2.1).
+ */
+function attachDelivery(
+  source: TeamMemberSource,
+  deliver: (message: UserMessage) => void,
+): void {
+  (source as { deliverInFlight?: (message: UserMessage) => void }).deliverInFlight =
+    deliver;
+}
+
+/**
+ * The drain-comparable shape of a broadcast message: its payload without the
+ * message's own identity — every build mints a fresh `id`, while content and
+ * `source` (the anchor) are what the single construction path makes equal.
+ */
+function comparable(message: UserMessage): {
+  readonly role: string;
+  readonly content: UserMessage["content"];
+  readonly source: UserMessage["source"];
+} {
+  return {
+    role: message.role,
+    content: message.content,
+    source: message.source,
+  };
+}
+
+/** The broadcast anchor of one injected message. */
+function anchorOf(message: UserMessage): string {
+  return String((message.source as { messageId: string }).messageId);
+}
+
+/** The shared-message anchors a receiver log holds, in log order. */
+function sharedAnchors(log: EventLog): string[] {
+  const anchors: string[] = [];
+  for (const event of log.events) {
+    if (event.type !== "user/message") {
+      continue;
+    }
+    const source = event.data.source;
+    if (source.kind === "team-broadcast") {
+      anchors.push(String(source.messageId));
+    }
+  }
+  return anchors;
+}
+
 function createTeam(): { ctx: Context; team: Team } {
   const ctx = new Context();
   return { ctx, team: new Team(ctx) };
@@ -289,7 +389,7 @@ describe("Team.register", () => {
     const { team } = createTeam();
     const player = createMember("templates/saolei/sessions/s1/player");
     const planner = createMember("templates/saolei/sessions/s1/planner");
-    const saolei = createSource("templates/saolei/sessions/s1/saolei", false);
+    const announcer = createSource("templates/saolei/sessions/s1/announcer", false);
     team.register({
       goal: "尽量高的胜率",
       context: "game #3",
@@ -297,9 +397,9 @@ describe("Team.register", () => {
         { source: player.source, role: "player", summary: "执行操作并独占桌面控制" },
         { source: planner.source, role: "planner", summary: "复盘与制定策略，不操作" },
         {
-          source: saolei.source,
-          role: "saolei",
-          summary: "扫雷系统，终局播报对局结果与操作统计",
+          source: announcer.source,
+          role: "announcer",
+          summary: "终局播报对局结果与操作统计",
         },
       ],
     });
@@ -309,7 +409,7 @@ describe("Team.register", () => {
       members: [
         { role: "player", summary: "执行操作并独占桌面控制" },
         { role: "planner", summary: "复盘与制定策略，不操作" },
-        { role: "saolei", summary: "扫雷系统，终局播报对局结果与操作统计" },
+        { role: "announcer", summary: "终局播报对局结果与操作统计" },
       ],
     });
     for (const member of [player, planner]) {
@@ -323,9 +423,9 @@ describe("Team.register", () => {
       expect(section?.text).toContain("- [player] 执行操作并独占桌面控制");
       expect(section?.text).toContain("- [planner] 复盘与制定策略，不操作");
       // The roster renders every registered member, including the announce-only
-      // saolei system member
+      // announcer member
       // (specs/065-agent-v2-team-refine/contracts/team-member-source.md §3).
-      expect(section?.text).toContain("- [saolei] 扫雷系统，终局播报对局结果与操作统计");
+      expect(section?.text).toContain("- [announcer] 终局播报对局结果与操作统计");
       // The tag pairs are input-side only: members do not wrap their own
       // output (team-member-source.md §4 terminal wording).
       expect(section?.text).toContain(
@@ -423,7 +523,7 @@ describe("Team.register", () => {
     const id = SessionId("templates/saolei/sessions/s1/player");
     const agent = {
       id,
-      session: { id, events: [] },
+      session: { id, events: [], snapshotEvents: () => [] },
       ctx: scope.ctx,
     } as unknown as Agent;
     const team = new Team(ctx);
@@ -676,35 +776,35 @@ describe("agentMemberSource", () => {
 
 describe("member-source interface", () => {
   const SESSION = "templates/saolei/sessions/s1";
-  const SAOLEI_ID = `${SESSION}/saolei`;
+  const ANNOUNCER_ID = `${SESSION}/announcer`;
 
   it("never queues broadcasts for an announce-only member, fails loud on drain, and renders its roster line", () => {
     const { team } = createTeam();
     const player = createMember(`${SESSION}/player`);
     const planner = createMember(`${SESSION}/planner`);
-    const saolei = createSource(SAOLEI_ID, false);
+    const announcer = createSource(ANNOUNCER_ID, false);
     const members = [
       { source: player.source, role: "player", summary: "a" },
       { source: planner.source, role: "planner", summary: "b" },
       {
-        source: saolei.source,
-        role: "saolei",
-        summary: "扫雷系统，终局播报对局结果与操作统计",
+        source: announcer.source,
+        role: "announcer",
+        summary: "终局播报对局结果与操作统计",
       },
     ];
     team.register({ goal: "g", members });
 
     produceSpeech(player, "one");
     // The live relay path skips it …
-    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
+    expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
     // … and the derived rebuild does not construct a pending list either.
     team.register({ goal: "g", members });
-    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
-    expect(() => team.drain(saolei.source)).toThrow(/announce-only/);
+    expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
+    expect(() => team.drain(announcer.source)).toThrow(/announce-only/);
 
     // The roster renders every member, announce-only included.
     expect(player.sections[0]?.text).toContain(
-      "[saolei] 扫雷系统，终局播报对局结果与操作统计",
+      "[announcer] 终局播报对局结果与操作统计",
     );
   });
 
@@ -712,35 +812,35 @@ describe("member-source interface", () => {
     const { team } = createTeam();
     const player = createMember(`${SESSION}/player`);
     const planner = createMember(`${SESSION}/planner`);
-    const saolei = createSource(SAOLEI_ID, false);
+    const announcer = createSource(ANNOUNCER_ID, false);
     const members = [
       { source: player.source, role: "player", summary: "a" },
       { source: planner.source, role: "planner", summary: "b" },
       {
-        source: saolei.source,
-        role: "saolei",
-        summary: "扫雷系统，终局播报对局结果与操作统计",
+        source: announcer.source,
+        role: "announcer",
+        summary: "终局播报对局结果与操作统计",
       },
     ];
     team.register({ goal: "g", members });
 
     const { event, message } = speechEvent("本局游戏结束：胜利。");
-    emitSource(saolei, event);
+    emitSource(announcer, event);
 
     const view = team.drain(planner.source);
     expect(view).toHaveLength(1);
     expect(textOf(view[0]!)).toBe(
-      "<saolei-message>\n本局游戏结束：胜利。\n</saolei-message>",
+      "<announcer-message>\n本局游戏结束：胜利。\n</announcer-message>",
     );
     expect(view[0]?.source).toMatchObject({
       kind: "team-broadcast",
-      role: "saolei",
-      senderSessionId: SAOLEI_ID,
+      role: "announcer",
+      senderSessionId: ANNOUNCER_ID,
       messageId: String(message.id),
       form: "relay",
     });
     // The announce-only sender is not a receiver of its own broadcast.
-    expect(pendingOf(team, SAOLEI_ID)).toEqual([]);
+    expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
 
     consume(planner, view[0]!);
     team.register({ goal: "g", members });
@@ -750,31 +850,31 @@ describe("member-source interface", () => {
   it("delivers a log-only source's productions through drain-time derivation (no live subscription)", () => {
     const { team } = createTeam();
     const planner = createMember(`${SESSION}/planner`);
-    const saolei = createLogSource(SAOLEI_ID, false);
-    expect(saolei.source.subscribe).toBeUndefined();
+    const announcer = createLogSource(ANNOUNCER_ID, false);
+    expect(announcer.source.subscribe).toBeUndefined();
     const members = [
       { source: planner.source, role: "planner", summary: "b" },
       {
-        source: saolei.source,
-        role: "saolei",
-        summary: "扫雷系统，终局播报对局结果与操作统计",
+        source: announcer.source,
+        role: "announcer",
+        summary: "终局播报对局结果与操作统计",
       },
     ];
     team.register({ goal: "g", members });
 
     // The production lands in the log silently (no live notification face).
     const { event, message } = speechEvent("本局游戏结束：胜利。");
-    saolei.events.push(event);
+    announcer.events.push(event);
 
     const view = team.drain(planner.source);
     expect(view).toHaveLength(1);
     expect(textOf(view[0]!)).toBe(
-      "<saolei-message>\n本局游戏结束：胜利。\n</saolei-message>",
+      "<announcer-message>\n本局游戏结束：胜利。\n</announcer-message>",
     );
     expect(view[0]?.source).toMatchObject({
       kind: "team-broadcast",
-      role: "saolei",
-      senderSessionId: SAOLEI_ID,
+      role: "announcer",
+      senderSessionId: ANNOUNCER_ID,
       messageId: String(message.id),
       form: "relay",
     });
@@ -787,10 +887,10 @@ describe("member-source interface", () => {
 
     // … and a later log-only production is still picked up (the absent live
     // relay never wedges the member).
-    saolei.events.push(speechEvent("下一局统计").event);
+    announcer.events.push(speechEvent("下一局统计").event);
     const next = team.drain(planner.source);
     expect(next).toHaveLength(1);
-    expect(textOf(next[0]!)).toBe("<saolei-message>\n下一局统计\n</saolei-message>");
+    expect(textOf(next[0]!)).toBe("<announcer-message>\n下一局统计\n</announcer-message>");
   });
 
   it("treats a consuming non-agent source as a full receiver through the same closure", () => {
@@ -826,3 +926,597 @@ describe("member-source interface", () => {
     expect(team.drain(system.source)).toEqual([]);
   });
 });
+
+describe("TeamHandle.events (unified member event stream)", () => {
+  const SESSION = "templates/saolei/sessions/s1";
+  const ANNOUNCER_ID = `${SESSION}/announcer`;
+
+  it("annotates every production with its registration role, member id and channel", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: announcer.source, role: "announcer", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    const speech = speechEvent("hello");
+    emit(player, speech.event);
+    emitSource(announcer, speechEvent("本局游戏结束").event);
+    const frame = { type: "chunk", attemptId: "attempt-1", index: 0 };
+    emitLive(player, "agent/status", { agent: player.agent, status: "running" });
+    emitLive(player, "agent/assistant-stream", { agent: player.agent, frame });
+    emitLive(player, "agent/error", { agent: player.agent, error: "boom" });
+
+    expect(
+      seen.map((envelope) => [envelope.role, envelope.memberId, envelope.channel]),
+    ).toEqual([
+      ["player", String(player.id), "log"],
+      ["announcer", ANNOUNCER_ID, "log"],
+      ["player", String(player.id), "live"],
+      ["player", String(player.id), "live"],
+      ["player", String(player.id), "live"],
+    ]);
+    // The log channel carries the very session event; the live channel the
+    // agent activity event with the agent identity stripped (member ownership
+    // rides the envelope — contracts/member-event-stream.md §2.1).
+    expect(seen[0]?.event).toBe(speech.event);
+    expect(seen[2]?.event).toEqual({ kind: "status", status: "running" });
+    expect(seen[3]?.event).toEqual({ kind: "assistant-stream", frame });
+    expect(seen[4]?.event).toEqual({ kind: "error", error: "boom" });
+  });
+
+  it("feeds the log channel from the relay's own subscription: same events, same order", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    const first = speechEvent("one");
+    const call = toolCallEvent("call-1", "saolei_operate", '{"x":1}');
+    const result = toolResultEvent("call-1", "clicked");
+    const second = speechEvent("two");
+    emit(player, first.event);
+    emit(player, call);
+    emit(player, result);
+    emit(player, second.event);
+
+    // One production source, two consumers: the stream saw the very events the
+    // relay consumed, in the same order — including the tool call, which the
+    // relay only pairs transiently (contract §3.1).
+    expect(seen.map((envelope) => envelope.event)).toEqual([
+      first.event,
+      call,
+      result,
+      second.event,
+    ]);
+
+    // The relay's consumer renders the same productions in the same order.
+    const view = team.drain(planner.source);
+    expect(
+      view.map((message) => (message.source as { messageId: string }).messageId),
+    ).toEqual([String(first.message.id), "call-1", String(second.message.id)]);
+  });
+
+  it("produces only log-channel events for a member without a live face", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    expect(announcer.source.live).toBeUndefined();
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: announcer.source, role: "announcer", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    emitSource(announcer, speechEvent("本局游戏结束").event);
+    emitSource(announcer, speechEvent("下一局统计").event);
+
+    expect(seen.map((envelope) => envelope.channel)).toEqual(["log", "log"]);
+    expect(seen.every((envelope) => envelope.role === "announcer")).toBe(true);
+  });
+
+  it("ends with the registration: nothing after member removal or team dispose", () => {
+    const { ctx, team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const handle = team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+    const seen = captureStream(handle);
+
+    emit(player, speechEvent("one").event);
+    expect(seen).toHaveLength(1);
+
+    // Member removal (agent disposal) ends that member's stream.
+    ctx.emit("agent/disposed", { agent: player.agent });
+    emit(player, speechEvent("two").event);
+    emitLive(player, "agent/status", { agent: player.agent, status: "running" });
+    expect(seen).toHaveLength(1);
+
+    // The registration dispose ends the remaining member's stream too.
+    handle.dispose();
+    emit(planner, speechEvent("three").event);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("keeps the stream across an idempotent re-registration of the same members", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const members = [{ source: player.source, role: "player", summary: "a" }];
+    const first = team.register({ goal: "g", members });
+    const seen = captureStream(first);
+
+    emit(player, speechEvent("one").event);
+    const second = team.register({ goal: "g", members });
+    emit(player, speechEvent("two").event);
+
+    expect(seen.map((envelope) => envelope.channel)).toEqual(["log", "log"]);
+    second.dispose();
+  });
+
+  it("forwards only this agent's activity events and unwinds the live subscriptions", () => {
+    const player = createMember(`${SESSION}/player`);
+    const other = createMember(`${SESSION}/planner`);
+    const live = player.source.live;
+    if (live === undefined) {
+      throw new Error("agentMemberSource must implement the live face");
+    }
+    const seen: unknown[] = [];
+    const off = live.subscribe((event) => {
+      seen.push(event);
+    });
+
+    const frame = { type: "end", attemptId: "attempt-1", index: 2 };
+    emitLive(player, "agent/status", { agent: player.agent, status: "running" });
+    emitLive(player, "agent/status", { agent: other.agent, status: "idle" });
+    emitLive(player, "agent/assistant-stream", { agent: player.agent, frame });
+    emitLive(player, "agent/error", { agent: player.agent, error: "boom" });
+
+    expect(seen).toEqual([
+      { kind: "status", status: "running" },
+      { kind: "assistant-stream", frame },
+      { kind: "error", error: "boom" },
+    ]);
+
+    off();
+    expect(player.live.get("agent/status")).toHaveLength(0);
+    expect(player.live.get("agent/assistant-stream")).toHaveLength(0);
+    expect(player.live.get("agent/error")).toHaveLength(0);
+  });
+});
+
+describe("Team relay in-flight fast path (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md)", () => {
+  const SESSION = "templates/saolei/sessions/s1";
+  const ANNOUNCER_ID = `${SESSION}/announcer`;
+
+  it("hands the receiver the exact message drain builds (same anchor, same team-broadcast source, same rendering)", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const observer = createMember(`${SESSION}/observer`);
+    const delivered: UserMessage[] = [];
+    attachDelivery(planner.source, (message) => {
+      delivered.push(message);
+    });
+    team.register({
+      goal: "g",
+      context: "game #3",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+        { source: observer.source, role: "observer", summary: "c" },
+      ],
+    });
+
+    const speech = produceSpeech(player, "中心安全");
+
+    // The face-less observer owns the drain path alone, so its message is the
+    // construction reference: one unit, one construction path, no fast-path
+    // message shape (contract §2.2 obligation 2).
+    const drained = team.drain(observer.source);
+    expect(delivered).toHaveLength(1);
+    expect(comparable(delivered[0]!)).toEqual(comparable(drained[0]!));
+    expect(delivered[0]?.source).toMatchObject({
+      kind: "team-broadcast",
+      role: "player",
+      senderSessionId: String(player.id),
+      messageId: String(speech.id),
+      form: "relay",
+      context: "game #3",
+    });
+    expect(textOf(delivered[0]!)).toBe(
+      "<player-message>\n中心安全\n</player-message>",
+    );
+  });
+
+  it("is exactly once: the claimed fast-path message drops the pending copy on the next drain", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const delivered: UserMessage[] = [];
+    attachDelivery(planner.source, (message) => {
+      delivered.push(message);
+    });
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+
+    produceSpeech(player, "hook 播报");
+    // The baseline path ran too: the same unit already delivered ahead of the
+    // drive still sits in the pending list.
+    expect(delivered).toHaveLength(1);
+    expect(pendingOf(team, String(planner.id))).toHaveLength(1);
+
+    // The next step boundary claims the injected message (it lands in the
+    // receiver log under the anchor), so the drain's reconcile drops the
+    // pending copy — the receiver never sees the unit twice (contract §3).
+    consume(planner, delivered[0]!);
+    expect(team.drain(planner.source)).toEqual([]);
+  });
+
+  it("leaves the pending baseline to a quiescent receiver's no-op delivery face", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const deliver = vi.fn();
+    attachDelivery(planner.source, deliver);
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+
+    produceSpeech(player, "一");
+
+    // The relay reaches every consuming receiver carrying the face; the
+    // quiescent policy is "not a receiver", so nothing is injected …
+    expect(deliver).toHaveBeenCalledOnce();
+    // … and the member's next drive drains the broadcast as before.
+    const view = team.drain(planner.source);
+    expect(view).toHaveLength(1);
+    expect(textOf(view[0]!)).toBe("<player-message>\n一\n</player-message>");
+  });
+
+  it("swallows a failing delivery face with a warning and keeps the pending baseline", () => {
+    const { ctx, team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    attachDelivery(planner.source, () => {
+      throw new Error("inbox closed");
+    });
+    const warn = vi.spyOn(ctx.logger, "warn");
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+
+    // The announce path feeding the relay is never broken by the fast path.
+    expect(() => produceSpeech(player, "hook 播报")).not.toThrow();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0]?.[0])).toContain("in-flight delivery");
+
+    // The fallback is the baseline: the anchor is pending and drains.
+    expect(pendingOf(team, String(planner.id))).toHaveLength(1);
+    expect(team.drain(planner.source)).toHaveLength(1);
+  });
+
+  it("never enters the fast path for tool units", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const delivered: UserMessage[] = [];
+    const deliver = vi.fn((message: UserMessage) => {
+      delivered.push(message);
+    });
+    attachDelivery(planner.source, deliver);
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+      ],
+    });
+
+    // A tool unit's sender is the in-flight member itself, so the trigger face
+    // is empty by construction (contract §1); the baseline still relays it.
+    produceTool(player, "call-1", "已揭示，周边 2 雷");
+    expect(deliver).not.toHaveBeenCalled();
+    expect(pendingOf(team, String(planner.id))).toHaveLength(1);
+
+    // The next message unit does trigger it.
+    produceSpeech(player, "又一言");
+    expect(deliver).toHaveBeenCalledOnce();
+    expect(textOf(delivered[0]!)).toBe("<player-message>\n又一言\n</player-message>");
+    expect(team.drain(planner.source)).toHaveLength(2);
+  });
+
+  it("takes the terminal announcement down the pending path: no in-flight receiver, unchanged behaviour", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    // The receiving members are quiescent when the terminal announcement lands
+    // (the flow announces after the player settled), so both agent members'
+    // policies are no-ops.
+    const playerDeliver = vi.fn();
+    const plannerDeliver = vi.fn();
+    attachDelivery(player.source, playerDeliver);
+    attachDelivery(planner.source, plannerDeliver);
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+        {
+          source: announcer.source,
+          role: "announcer",
+          summary: "终局播报对局结果与操作统计",
+        },
+      ],
+    });
+
+    const announcement = speechEvent("本局游戏结束：胜利。");
+    expect(() => emitSource(announcer, announcement.event)).not.toThrow();
+
+    // The relay still visits every consuming receiver with a face; the
+    // quiescent policies make each call a no-op …
+    expect(playerDeliver).toHaveBeenCalledOnce();
+    expect(plannerDeliver).toHaveBeenCalledOnce();
+    // … and the announcement drains unchanged (the announce-only sender is not
+    // a receiver of its own broadcast).
+    const view = team.drain(planner.source);
+    expect(view).toHaveLength(1);
+    expect(textOf(view[0]!)).toBe(
+      "<announcer-message>\n本局游戏结束：胜利。\n</announcer-message>",
+    );
+    expect(team.drain(player.source)).toHaveLength(1);
+    expect(pendingOf(team, ANNOUNCER_ID)).toEqual([]);
+  });
+
+  it("delivers same-step insertions in production order and closes each anchor independently", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const observer = createMember(`${SESSION}/observer`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    const delivered: UserMessage[] = [];
+    attachDelivery(planner.source, (message) => {
+      delivered.push(message);
+    });
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+        { source: observer.source, role: "observer", summary: "c" },
+        {
+          source: announcer.source,
+          role: "announcer",
+          summary: "终局播报对局结果与操作统计",
+        },
+      ],
+    });
+
+    // Two insertions produced back to back inside one step window of the
+    // receiver's in-flight turn (US3 scenario 6).
+    const first = speechEvent("hook 播报一");
+    const second = speechEvent("hook 播报二");
+    emitSource(announcer, first.event);
+    emitSource(announcer, second.event);
+
+    // FIFO in production order, with distinct anchors.
+    expect(delivered).toHaveLength(2);
+    expect(anchorOf(delivered[0]!)).toBe(String(first.message.id));
+    expect(anchorOf(delivered[1]!)).toBe(String(second.message.id));
+    expect(anchorOf(delivered[0]!)).not.toBe(anchorOf(delivered[1]!));
+
+    // Field-for-field equal to the drain construction (the face-less observer
+    // owns the single construction path), and both anchors stay pending on the
+    // baseline.
+    const drained = team.drain(observer.source);
+    expect(drained).toHaveLength(2);
+    expect(comparable(delivered[0]!)).toEqual(comparable(drained[0]!));
+    expect(comparable(delivered[1]!)).toEqual(comparable(drained[1]!));
+    expect(pendingOf(team, String(planner.id))).toHaveLength(2);
+
+    // The receiver claims the first anchor (it lands in its log), so the next
+    // drain's reconcile drops exactly that anchor while the other survives on
+    // its own — each anchor closes independently, no reorder and no duplicate.
+    consume(planner, delivered[0]!);
+    const view = team.drain(planner.source);
+    expect(view.map(anchorOf)).toEqual([String(second.message.id)]);
+    expect(sharedAnchors(planner)).toEqual([String(first.message.id)]);
+    expect(pendingOf(team, String(planner.id))).toEqual([]);
+    // The claimed anchor never returns on a later drain.
+    expect(team.drain(planner.source)).toEqual([]);
+  });
+});
+
+describe("in-flight fast-path order consistency (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §4)", () => {
+  const SESSION = "templates/saolei/sessions/s1";
+  const ANNOUNCER_ID = `${SESSION}/announcer`;
+
+  it("keeps the speech-level order identical for the fast-path receiver and the pending drainer", () => {
+    const { team } = createTeam();
+    const player = createMember(`${SESSION}/player`);
+    const planner = createMember(`${SESSION}/planner`);
+    const observer = createMember(`${SESSION}/observer`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    const claimed: UserMessage[] = [];
+    let inFlight = false;
+    attachDelivery(planner.source, (message) => {
+      if (inFlight) {
+        claimed.push(message);
+      }
+    });
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+        { source: observer.source, role: "observer", summary: "c" },
+        {
+          source: announcer.source,
+          role: "announcer",
+          summary: "终局播报对局结果与操作统计",
+        },
+      ],
+    });
+
+    // The planner's turn-start assembly consumed the pendings it saw before the
+    // in-flight window opened.
+    const m1 = produceSpeech(player, "m1");
+    const m2 = produceSpeech(player, "m2");
+    for (const message of team.drain(planner.source)) {
+      consume(planner, message);
+    }
+
+    // A step of the planner's turn is in flight; the announcer inserts a
+    // message (the hook-announcement shape), claimed at the next boundary.
+    inFlight = true;
+    const insertion = speechEvent("hook 播报");
+    emitSource(announcer, insertion.event);
+    expect(claimed).toHaveLength(1);
+    consume(planner, claimed[0]!);
+
+    // The turn settled and a later speech landed.
+    inFlight = false;
+    const m3 = produceSpeech(player, "m3");
+    for (const message of team.drain(planner.source)) {
+      consume(planner, message);
+    }
+
+    const productionOrder = [
+      String(m1.id),
+      String(m2.id),
+      String(insertion.message.id),
+      String(m3.id),
+    ];
+    // The fast-path receiver's log order …
+    expect(sharedAnchors(planner)).toEqual(productionOrder);
+    // … equals the other member's drain order (production order).
+    expect(team.drain(observer.source).map(anchorOf)).toEqual(productionOrder);
+  });
+
+  it("confines the tool-unit-level deviation to the single step window", () => {
+    const { team } = createTeam();
+    const planner = createMember(`${SESSION}/planner`);
+    const player = createMember(`${SESSION}/player`);
+    const observer = createMember(`${SESSION}/observer`);
+    const announcer = createSource(ANNOUNCER_ID, false);
+    const claimed: UserMessage[] = [];
+    let inFlight = false;
+    attachDelivery(player.source, (message) => {
+      if (inFlight) {
+        claimed.push(message);
+      }
+    });
+    team.register({
+      goal: "g",
+      members: [
+        { source: player.source, role: "player", summary: "a" },
+        { source: planner.source, role: "planner", summary: "b" },
+        { source: observer.source, role: "observer", summary: "c" },
+        {
+          source: announcer.source,
+          role: "announcer",
+          summary: "终局播报对局结果与操作统计",
+        },
+      ],
+    });
+
+    // The player's turn-start assembly consumed the pre-turn speech.
+    const before = produceSpeech(planner, "回合前发言");
+    for (const message of team.drain(player.source)) {
+      consume(player, message);
+    }
+
+    // One step of the player's turn: the first sibling tool call commits, the
+    // announcer inserts a message while the tools run, the remaining sibling
+    // tool call commits.
+    inFlight = true;
+    emit(player, toolCallEvent("call-A", "saolei_operate", '{"call":"call-A"}'));
+    const insertion = speechEvent("hook 播报");
+    emitSource(announcer, insertion.event);
+    emit(player, toolResultEvent("call-A", "A 结果"));
+    emit(player, toolCallEvent("call-B", "saolei_operate", '{"call":"call-B"}'));
+    emit(player, toolResultEvent("call-B", "B 结果"));
+
+    // The next step boundary claims the inserted message: in the receiver log
+    // it sits after the whole step's tool units.
+    expect(claimed).toHaveLength(1);
+    consume(player, claimed[0]!);
+    const claimIndex = player.events.findIndex((event) => {
+      if (event.type !== "user/message") {
+        return false;
+      }
+      const source = event.data.source;
+      return (
+        source.kind === "team-broadcast" &&
+        String(source.messageId) === String(insertion.message.id)
+      );
+    });
+    const lastStepResultIndex = player.events.findIndex(
+      (event) =>
+        event.type === "tool/result" &&
+        String(event.data.message.toolCallId) === "call-B",
+    );
+    expect(claimIndex).toBeGreaterThan(lastStepResultIndex);
+
+    // A later speech lands after the turn settled.
+    const after = produceSpeech(player, "回合后发言");
+    inFlight = false;
+
+    const drainedAnchors = team.drain(observer.source).map(anchorOf);
+    // The pending path orders by the tool call's own position (production
+    // coordinates), so the insertion precedes the sibling unit whose call
+    // anchor is later than it.
+    expect(drainedAnchors).toEqual([
+      String(before.id),
+      "call-A",
+      String(insertion.message.id),
+      "call-B",
+      String(after.id),
+    ]);
+
+    // The two orders differ exactly in the insertion's position relative to
+    // this step's tool units; the speech-level relative order is identical —
+    // `before` < insertion < `after` in both, and `before`/`call-A` keep their
+    // production order. The receiver log holds the speeches it received
+    // (`after` is the player's own production, never a broadcast to itself).
+    const speechAnchors = [String(before.id), String(insertion.message.id), String(after.id)];
+    expect(sharedAnchors(player)).toEqual(speechAnchors.slice(0, 2));
+    expect(
+      drainedAnchors.filter((anchor) => speechAnchors.includes(anchor)),
+    ).toEqual(speechAnchors);
+  });
+});
+

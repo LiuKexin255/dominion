@@ -3,8 +3,8 @@
 An OpenAI chat-completions compatible mock LLM service (`kind: stateless`,
 see `experimental/dsh/demo/fake-llm/service.yaml`) used as **test
 infrastructure** by the dsh chat demo (`specs/047-dsh-chat-demo/`). The
-demo's agent service embeds the official `@deepseek-ai/dsh-llm-deepseek`
-adapter, which points its `baseURL` at this service
+demo's agent service composes the `@dominion/dsh-llm-opencode-go` OpenAI
+Chat Completions adapter, which points its `baseURL` at this service
 (`dominion:///dsh-demo/fake-llm:8080`, resolved at runtime via Dominion
 service discovery), so the whole demo chain runs against deterministic,
 scriptable model behavior with zero external LLM/network dependency.

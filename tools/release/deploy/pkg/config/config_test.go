@@ -63,17 +63,27 @@ func TestParseDeployConfig(t *testing.T) {
 				Type:    "dev",
 				Version: "2.0",
 				URI:     "//testdata/deploy.infra.yaml",
-				Services: []*DeployService{{
-					Infra: DeployInfra{
-						Resource: "mongodb",
-						Profile:  "development",
-						Name:     "grpc-hello-world-mongo",
-						App:      "grpc-hello-world",
-						Persistence: DeployInfraPersistence{
-							Enabled: true,
+				Services: []*DeployService{
+					{
+						Infra: DeployInfra{
+							Resource: "mongodb",
+							Profile:  "development",
+							Name:     "grpc-hello-world-mongo",
+							App:      "grpc-hello-world",
+							Persistence: DeployInfraPersistence{
+								Enabled: true,
+							},
 						},
 					},
-				}},
+					{
+						Infra: DeployInfra{
+							Resource: "redis",
+							Profile:  "development",
+							Name:     "grpc-hello-world-redis",
+							App:      "grpc-hello-world",
+						},
+					},
+				},
 			},
 		},
 		{

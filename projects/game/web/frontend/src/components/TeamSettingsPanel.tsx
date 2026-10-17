@@ -54,6 +54,16 @@ function presetTitle(name: string | undefined): string {
   return name.split('/').pop() ?? name
 }
 
+// memberLabel renders one roster entry: the wire role string plus the LLM
+// member's preset/model；非 LLM 成员（preset/model 均空，如 announcer）只呈现
+// role，不以"默认模型"示意
+// （specs/076-agent-v2-optimize/contracts/announcer-member.md §4）。
+function memberLabel(member: TeamMember): string {
+  if (member.preset === '') return member.role
+  const model = member.model !== undefined && member.model !== '' ? member.model : '默认模型'
+  return `${member.role} · ${presetTitle(member.preset)} · ${model}`
+}
+
 export function TeamSettingsPanel({
   session,
   materialized,
@@ -178,10 +188,7 @@ export function TeamSettingsPanel({
               data-role={member.role}
             >
               <span className="team-panel-member-info">
-                {member.role} · {presetTitle(member.preset)} ·{' '}
-                {member.model !== undefined && member.model !== ''
-                  ? member.model
-                  : '默认模型'}
+                {memberLabel(member)}
               </span>
               <Button
                 data-testid={`member-system-prompt-${member.role}`}

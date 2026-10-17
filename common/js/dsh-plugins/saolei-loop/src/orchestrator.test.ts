@@ -5,11 +5,14 @@
  * quiescence → player; gameEnded → planner review; reviewing → player),
  * queue-first digestion before a switch, cancel / pause / resume,
  * materialization rollback, disposal, failure reporting (logger + snapshot
- * failure state, review retry after a failed drive), the saolei
+ * failure state, review retry after a failed drive), the announcer
  * announcement's queue-priority invariance (US2 of
- * specs/065-agent-v2-team-refine/spec.md), and the no-synthesized-input rule
- * (every drive carries only team relays and user messages). The state graph
- * under test is
+ * specs/065-agent-v2-team-refine/spec.md), the no-synthesized-input rule
+ * (every drive carries only team relays and user messages), and the natural
+ * round stop (every fifth settled planner review rests the loop instead of
+ * auto-driving the player;
+ * specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §5). The
+ * state graph under test is
  * specs/059-agent-v2-team-mode/data-model.md §5; the behavior contract is
  * specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §2.
  *
@@ -29,7 +32,9 @@ import type {
 } from "@deepseek-ai/dsh-agent";
 import { createUserMessage, LlmError, MessageId } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type {
+  TeamEventStream,
   TeamHandle,
   TeamMemberSource,
   TeamRegistration,
@@ -43,19 +48,23 @@ import {
 } from "./orchestrator.js";
 import type {
   ComposedPreset,
-  GameEventSource,
+  MemoryCapabilities,
+  MemoryMount,
+  PlannerMemoryScope,
+  SaoleiToolsUnit,
   TeamMaterializeOptions,
   TeamOrchestratorDeps,
 } from "./orchestrator.js";
-import { SAOLEI_MEMBER_SUMMARY } from "./announcer.js";
-import type { GameEventRecord } from "./game/runtime.js";
+import { ANNOUNCER_MEMBER_SUMMARY } from "./announcer.js";
+import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
+import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
 
 const SESSION = "templates/saolei/sessions/s1";
-/** The business session ID half of the memory scope key (NOT the full name). */
-const SESSION_ID = "s1";
+/** The materialization source preset id half of the memory scope key. */
+const PRESET_ID = "planner-p";
 const PLAYER_ID = `${SESSION}/player`;
 const PLANNER_ID = `${SESSION}/planner`;
-const SAOLEI_ID = `${SESSION}/saolei`;
+const ANNOUNCER_ID = `${SESSION}/announcer`;
 
 /**
  * The exact announcement {@link winner} produces (the gameStatsText template
@@ -121,8 +130,19 @@ interface FakeMember {
   readonly agent: Agent;
   readonly ctx: Context;
   readonly handle: AgentHandle;
+  /** Tool definitions registered into this member's scope (by name). */
+  readonly tools: Map<string, { name: string }>;
+  /** Prompt sections registered into this member's scope. */
+  readonly sections: Array<{ name: string; order: number; text: unknown }>;
+  /** Agent-scoped faces provided under an isolate label (by service name). */
+  readonly faces: Map<string, unknown>;
+  /** The member-scope registration spies (unified order assertions). */
+  readonly toolsRegister: ReturnType<typeof vi.fn>;
+  readonly sectionRegister: ReturnType<typeof vi.fn>;
+  readonly provideFace: ReturnType<typeof vi.fn>;
   readonly followups: UserMessage[];
   readonly injections: UserMessage[];
+  readonly steers: UserMessage[];
   readonly cancels: Array<{ cause: unknown; options: unknown }>;
   readonly statusListeners: StatusListener[];
   readonly errorListeners: ErrorListener[];
@@ -139,17 +159,30 @@ interface FakeMember {
 }
 
 /**
- * One agent double: `followup` records + flips running, `inject` records,
- * `cancel` records + (like the real loop's converging abort) emits idle, and
- * `settle()` completes a turn.
+ * One agent double: `followup` records + flips running (its message is claimed
+ * by the turn, so it never lingers in the inbox), `inject`/`steer` record into
+ * the next-step inbox (pending until cancelled/removed — the landed source and
+ * the broadcast residue), `remove` is the structural `Inbox.remove` face,
+ * `cancel` records + clears the inbox + (like the real loop's converging
+ * abort) emits idle, and `settle()` completes a turn. `whenIdle()` resolves on
+ * the next idle transition, modelling the official loop's whole-agent
+ * quiescence wait.
  */
 function createFakeMember(name: string): FakeMember {
   const followups: UserMessage[] = [];
   const injections: UserMessage[] = [];
+  const steers: UserMessage[] = [];
   const cancels: Array<{ cause: unknown; options: unknown }> = [];
   const statusListeners: StatusListener[] = [];
   const errorListeners: ErrorListener[] = [];
   const state = { status: "idle" as AgentStatus };
+  const events: SessionEvent[] = [];
+  const tools = new Map<string, { name: string }>();
+  const sections: Array<{ name: string; order: number; text: unknown }> = [];
+  const faces = new Map<string, unknown>();
+  const nextStep: UserMessage[] = [];
+  const nextTurn: UserMessage[] = [];
+  const idleWaiters: Array<() => void> = [];
   let failFollowup = false;
   const off = <T>(list: T[], listener: T): (() => void) => () => {
     const index = list.indexOf(listener);
@@ -157,6 +190,23 @@ function createFakeMember(name: string): FakeMember {
       list.splice(index, 1);
     }
   };
+  // Member-scope registration seams (specs/074-dsh-grpc-runtime/contracts/
+  // team-assembly.md §4): spy identities are kept so the tests can compare
+  // `mock.invocationCallOrder` across faces → tools → sections → ready.
+  const toolsRegister = vi.fn((definition: { name: string }) => {
+    tools.set(definition.name, definition);
+    return () => {};
+  });
+  const sectionRegister = vi.fn(
+    (section: { name: string; order: number; text: unknown }) => {
+      sections.push(section);
+      return () => {};
+    },
+  );
+  const provideFace = vi.fn((service: string, value: unknown) => {
+    faces.set(service, value);
+    return () => {};
+  });
   const ctx = {
     on: vi.fn((event: string, listener: StatusListener | ErrorListener) => {
       if (event === "agent/error") {
@@ -168,7 +218,11 @@ function createFakeMember(name: string): FakeMember {
       statusListeners.push(typed);
       return off(statusListeners, typed);
     }),
-  } as { on: unknown; agent?: Agent };
+    // The member-scope registration surfaces the orchestrator writes to.
+    tools: { register: toolsRegister },
+    systemPrompt: { section: sectionRegister },
+    isolate: vi.fn((_name: string) => ({ provide: provideFace })),
+  } as { on: unknown };
 
   const id = name as Agent["id"];
   const emitIdle = (): void => {
@@ -176,16 +230,51 @@ function createFakeMember(name: string): FakeMember {
     for (const listener of [...statusListeners]) {
       listener({ agent, status: "idle" });
     }
+    for (const resolve of idleWaiters.splice(0)) {
+      resolve();
+    }
   };
   const agent = {
     id,
-    session: { id, events: [] },
+    session: { id, events, snapshotEvents: () => events },
     get status(): AgentStatus {
       return state.status;
     },
     ctx,
+    inbox: {
+      get nextStep() {
+        return nextStep;
+      },
+      get nextTurn() {
+        return nextTurn;
+      },
+      get hasPending() {
+        return nextStep.length > 0 || nextTurn.length > 0;
+      },
+      // The structural `Inbox.remove` face the member adapter's turn-start
+      // hygiene calls (an ordinary removal = a durable cancellation,
+      // https://unpkg.com/@deepseek-ai/dsh-agent@0.2.0-rc.2/README.md).
+      remove: (messageId: MessageId) => {
+        for (const list of [nextStep, nextTurn]) {
+          const index = list.findIndex(
+            (message) => String(message.id) === String(messageId),
+          );
+          if (index >= 0) {
+            list.splice(index, 1);
+            return true;
+          }
+        }
+        return false;
+      },
+    },
     inject: vi.fn((message: UserMessage) => {
       injections.push(message);
+      nextStep.push(message);
+    }),
+    steer: vi.fn((message: UserMessage) => {
+      steers.push(message);
+      nextStep.push(message);
+      state.status = "running";
     }),
     followup: vi.fn((message: UserMessage) => {
       if (failFollowup) {
@@ -197,19 +286,29 @@ function createFakeMember(name: string): FakeMember {
     }),
     cancel: vi.fn((cause: unknown, options?: unknown) => {
       cancels.push({ cause, options });
+      nextStep.length = 0;
+      nextTurn.length = 0;
       emitIdle();
     }),
-    whenIdle: vi.fn(async () => {}),
+    whenIdle: vi.fn(
+      () => new Promise<void>((resolve) => idleWaiters.push(resolve)),
+    ),
   } as unknown as Agent;
-  ctx.agent = agent;
 
   return {
     id: name,
     agent,
     ctx: ctx as unknown as Context,
     handle: { agent, dispose: vi.fn(async () => {}) },
+    tools,
+    sections,
+    faces,
+    toolsRegister,
+    sectionRegister,
+    provideFace,
     followups,
     injections,
+    steers,
     cancels,
     statusListeners,
     errorListeners,
@@ -242,7 +341,7 @@ function fakeAgents(registry: Map<string, FakeMember>): {
       calls.push(options);
       const member = createFakeMember(String(options.sessionId));
       registry.set(member.id, member);
-      await options.setup?.(member.ctx);
+      await options.setup?.(member.ctx, member.agent);
       return member.handle;
     }),
   };
@@ -256,20 +355,24 @@ interface FakeTeam {
   readonly queues: Map<string, UserMessage[]>;
   readonly registrations: TeamRegistration[];
   readonly registrationDispose: ReturnType<typeof vi.fn>;
+  /** The stable stream object every registration handle returns (pass-through assertion). */
+  readonly stream: TeamEventStream;
 }
 
 function fakeTeam(): FakeTeam {
   const queues = new Map<string, UserMessage[]>();
   const registrations: TeamRegistration[] = [];
   const registrationDispose = vi.fn();
+  const stream: TeamEventStream = { subscribe: vi.fn(() => () => {}) };
   return {
     queues,
     registrations,
     registrationDispose,
+    stream,
     seam: {
       register: vi.fn((registration: TeamRegistration): TeamHandle => {
         registrations.push(registration);
-        return { dispose: registrationDispose };
+        return { dispose: registrationDispose, events: () => stream };
       }),
       drain: vi.fn((member: TeamMemberSource): UserMessage[] => {
         return queues.get(member.id)?.splice(0) ?? [];
@@ -285,9 +388,98 @@ interface Harness {
   readonly team: FakeTeam;
   readonly compose: ReturnType<typeof vi.fn>;
   readonly setups: Array<ReturnType<typeof vi.fn>>;
-  readonly mountPlayerRuntime: ReturnType<typeof vi.fn>;
-  readonly loadPlannerMemory: ReturnType<typeof vi.fn>;
+  /** The `saolei` foundation face's `createGameRuntime` spy. */
+  readonly createGameRuntime: ReturnType<typeof vi.fn>;
+  /** The desktop-bridge double the foundation factory receives. */
+  readonly desktopBridge: DesktopBridgeService;
+  /** The stable runtime instance the fake factory returns. */
+  readonly gameRuntime: GameRuntime;
+  /** The `saoleiTools` provide face the orchestration reads. */
+  readonly saoleiTools: SaoleiToolsUnit;
+  /** The `memoryMount` provide face the orchestration reads. */
+  readonly memoryMount: MemoryMount;
+  /** Every scope `memoryMount.build` was called with. */
+  readonly buildScopes: PlannerMemoryScope[];
+  /** The unit the memory mount builds (its `ready` is overridable per test). */
+  readonly memoryCapabilities: MemoryCapabilities;
   readonly game: { current: GameEventRecord | null; peeks: number };
+}
+
+function fakeTool(name: string) {
+  return { name } as unknown as SaoleiToolsUnit["tools"][number];
+}
+
+function fakeSection(name: string, order: number) {
+  return { name, order, text: `section:${name}` };
+}
+
+/** A no-op game runtime double (rollback/capability contexts). */
+function nullGameRuntime(): GameRuntime {
+  return {
+    init: async () => ({ isError: false as const, text: "" }),
+    operate: async () => ({ isError: false as const, text: "" }),
+    remain: () => ({ isError: false as const, text: "" }),
+    peekGameEvent: () => null,
+  };
+}
+
+type Spy = ReturnType<typeof vi.fn>;
+
+/** The first invocation index of a spy (`mock.invocationCallOrder[0]`). */
+function firstCall(spy: Spy): number {
+  return spy.mock.invocationCallOrder[0] as number;
+}
+
+/** The last invocation index of a spy. */
+function lastCall(spy: Spy): number {
+  return spy.mock.invocationCallOrder[
+    spy.mock.calls.length - 1
+  ] as number;
+}
+
+/**
+ * Assert the contract's fixed memory registration order
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4):
+ * faces → tools(×4) → sections(×3) → ready. `sectionsBefore` accounts for the
+ * gameplay section the orchestration registers before the memory unit
+ * (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §3).
+ * Cross-seam comparison uses `mock.invocationCallOrder`, so an out-of-order
+ * implementation fails here.
+ */
+function expectMemoryRegistrationOrder(seams: {
+  readonly faces: Spy;
+  readonly tools: Spy;
+  readonly sections: Spy;
+  readonly ready: Spy;
+  readonly sectionsBefore?: number;
+}): void {
+  const before = seams.sectionsBefore ?? 0;
+  const sectionCallOrder = seams.sections.mock.invocationCallOrder;
+  expect(seams.faces).toHaveBeenCalledTimes(1);
+  expect(seams.tools).toHaveBeenCalledTimes(4);
+  expect(seams.sections).toHaveBeenCalledTimes(before + 3);
+  expect(seams.ready).toHaveBeenCalledTimes(1);
+  expect(lastCall(seams.faces)).toBeLessThan(firstCall(seams.tools));
+  expect(lastCall(seams.tools)).toBeLessThan(sectionCallOrder[before] as number);
+  expect(sectionCallOrder[before + 2] as number).toBeLessThan(firstCall(seams.ready));
+}
+
+/**
+ * Assert the player registration order: tools(×3) → sections(×2:
+ * saoleiTools guidance + the foundation gameplay section) → game-handle
+ * registration (specs/075-saolei-game-foundation/contracts/
+ * team-loop-assembly.md §3).
+ */
+function expectPlayerRegistrationOrder(seams: {
+  readonly tools: Spy;
+  readonly sections: Spy;
+  readonly handle: Spy;
+}): void {
+  expect(seams.tools).toHaveBeenCalledTimes(3);
+  expect(seams.sections).toHaveBeenCalledTimes(2);
+  expect(seams.handle).toHaveBeenCalledTimes(1);
+  expect(lastCall(seams.tools)).toBeLessThan(firstCall(seams.sections));
+  expect(lastCall(seams.sections)).toBeLessThan(firstCall(seams.handle));
 }
 
 function createHarness(
@@ -303,21 +495,68 @@ function createHarness(
     return { agentPreset: `${preset}-resolved`, setup };
   });
   const game = { current: null as GameEventRecord | null, peeks: 0 };
-  const mountPlayerRuntime = vi.fn(
-    (): GameEventSource => ({
-      peekGameEvent: () => {
-        game.peeks += 1;
-        return game.current;
-      },
-    }),
+  const gameRuntime: GameRuntime = {
+    init: vi.fn(async () => ({ isError: false as const, text: "" })),
+    operate: vi.fn(async () => ({ isError: false as const, text: "" })),
+    remain: vi.fn(() => ({ isError: false as const, text: "" })),
+    peekGameEvent: () => {
+      game.peeks += 1;
+      return game.current;
+    },
+  };
+  // The composition-level game-foundation face (the top-level saolei row
+  // provides it; contracts/team-loop-assembly.md §2): the orchestrator builds
+  // and owns the runtime through the factory and registers the section.
+  const createGameRuntime = vi.fn(
+    (_sessionName: string, _desktopBridge: DesktopBridgeService) => gameRuntime,
   );
-  const loadPlannerMemory = vi.fn(async () => {});
-  const orchestrator = new TeamOrchestrator(new Context(), {
+  const foundation = {
+    createGameRuntime,
+    gameSection: fakeSection("saolei:game", 50),
+  };
+  const desktopBridge = { dispatch: vi.fn() } as unknown as DesktopBridgeService;
+  // The two capability provide faces the saolei-loop apply would have mounted
+  // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3): the
+  // orchestrator reads them off the context when it assembles a member.
+  const saoleiTools: SaoleiToolsUnit = {
+    tools: [
+      fakeTool("saolei_init"),
+      fakeTool("saolei_operate"),
+      fakeTool("saolei_remain"),
+    ],
+    sections: [fakeSection("saolei:guidance", 100)],
+  };
+  const memoryCapabilities: MemoryCapabilities = {
+    faces: [{ key: "memory", value: { kind: "memory-face" } }],
+    tools: [
+      fakeTool("memory"),
+      fakeTool("wiki_search"),
+      fakeTool("wiki_get"),
+      fakeTool("wiki_write"),
+    ],
+    sections: [
+      fakeSection("memory:guidance", 110),
+      fakeSection("wiki:guidance", 120),
+      fakeSection("memory:snapshot", 200),
+    ],
+    ready: vi.fn(async () => {}),
+  };
+  const buildScopes: PlannerMemoryScope[] = [];
+  const memoryMount: MemoryMount = {
+    build: vi.fn((scope: PlannerMemoryScope): MemoryCapabilities => {
+      buildScopes.push(scope);
+      return memoryCapabilities;
+    }),
+  };
+  const ctx = new Context();
+  ctx.provide("saoleiTools", saoleiTools);
+  ctx.provide("memoryMount", memoryMount);
+  ctx.provide("saolei", foundation);
+  const orchestrator = new TeamOrchestrator(ctx, {
     compose,
     agents,
     team: team.seam,
-    mountPlayerRuntime,
-    loadPlannerMemory,
+    desktopBridge,
     ...overrides,
   });
   return {
@@ -327,8 +566,13 @@ function createHarness(
     team,
     compose,
     setups,
-    mountPlayerRuntime,
-    loadPlannerMemory,
+    createGameRuntime,
+    desktopBridge,
+    gameRuntime,
+    saoleiTools,
+    memoryMount,
+    buildScopes,
+    memoryCapabilities,
     game,
   };
 }
@@ -338,6 +582,18 @@ function member(h: Harness, id: string): FakeMember {
   const found = h.members.get(id);
   if (found === undefined) {
     throw new Error(`fake member "${id}" is not materialized`);
+  }
+  return found;
+}
+
+/** The registered member entry of one role (materialization has run). */
+function registeredMember(h: Harness, role: string) {
+  const registration = h.team.registrations[0] as TeamRegistration;
+  const found = registration.members.find(
+    (candidate) => candidate.role === role,
+  );
+  if (found === undefined) {
+    throw new Error(`the "${role}" member is not registered`);
   }
   return found;
 }
@@ -362,7 +618,7 @@ function teamOptions(
 ): TeamMaterializeOptions {
   return {
     session: SESSION,
-    memoryScope: { template: "saolei", session: SESSION_ID },
+    memoryScope: { template: "saolei", preset: PRESET_ID },
     goal: "协作提高扫雷胜率",
     player: { preset: "player-a", model: "model-p" },
     planner: { preset: "planner-a", model: "model-q" },
@@ -401,7 +657,7 @@ function loser(): GameEventRecord {
 }
 
 /**
- * Mirror the team service's live relay for the announce-only saolei member:
+ * Mirror the team service's live relay for the announce-only announcer member:
  * every announcer production enters the planner's pending queue as the
  * `team-broadcast` user message the real team would render from the member
  * log (the fake team seam drains pre-seeded queues only).
@@ -409,7 +665,7 @@ function loser(): GameEventRecord {
 function relayAnnouncementsToPlanner(h: Harness): void {
   const announcer = h.orchestrator.announcer;
   if (announcer === undefined) {
-    throw new Error("the saolei announcer is not materialized");
+    throw new Error("the announcer member is not materialized");
   }
   announcer.source.subscribe?.((event) => {
     if (event.type !== "assistant/message") {
@@ -419,12 +675,12 @@ function relayAnnouncementsToPlanner(h: Harness): void {
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("");
     const queue = h.team.queues.get(PLANNER_ID) ?? [];
-    queue.push(relay(SAOLEI_ID, "saolei", text));
+    queue.push(relay(ANNOUNCER_ID, "announcer", text));
     h.team.queues.set(PLANNER_ID, queue);
   });
 }
 
-/** The texts the saolei system member has announced, in order. */
+/** The texts the announcer member has announced, in order. */
 function announcedTexts(h: Harness): string[] {
   return (h.orchestrator.announcer?.source.events ?? []).map((event) => {
     if (event.type !== "assistant/message") {
@@ -475,20 +731,69 @@ describe("TeamOrchestrator.materialize", () => {
       provider: "glm-responses",
       model: "model-q",
     });
-    // Setup chain: roster mount for both; player mounts the game runtime
-    // (bound to the GAME session resource name — the desktop-bridge key, not
-    // the namespaced member session id), planner prefetches the memory
-    // snapshot with the (template, session) key.
+    // Setup chain: roster mount for both; player registers the saolei static
+    // unit (three tools + the guidance section, no memory trace), registers
+    // the foundation gameplay section, and wires the orchestrator-owned game
+    // runtime as the member's agent-scoped handle (bound to the GAME session
+    // resource name — the desktop-bridge key, not the namespaced member
+    // session id); planner registers the gameplay section then builds the
+    // memory unit with the explicit (template, preset) scope, registering
+    // faces → tools → sections and awaiting the fail-loud prefetch.
     expect(h.setups[0]).toHaveBeenCalledWith(player.ctx);
     expect(h.setups[1]).toHaveBeenCalledWith(planner.ctx);
-    expect(h.mountPlayerRuntime).toHaveBeenCalledWith(player.agent, SESSION);
-    expect(h.mountPlayerRuntime).not.toHaveBeenCalledWith(planner.agent, SESSION);
-    expect(h.loadPlannerMemory).toHaveBeenCalledWith(planner.ctx, {
-      template: "saolei",
-      // The ID half, not the full session resource name: the memory plugin
-      // builds `templates/{template}/sessions/{session}` from these halves
-      // (T023 wiring fix).
-      session: SESSION_ID,
+    // The orchestrator built its game runtime through the foundation face
+    // exactly once, bound to the GAME session name and the desktop bridge.
+    expect(h.createGameRuntime).toHaveBeenCalledTimes(1);
+    expect(h.createGameRuntime).toHaveBeenCalledWith(SESSION, h.desktopBridge);
+    // Player: three saolei tools and two saolei sections (unit guidance +
+    // foundation gameplay), the game handle, no memory face.
+    expect([...player.tools.keys()].sort()).toEqual([
+      "saolei_init",
+      "saolei_operate",
+      "saolei_remain",
+    ]);
+    expect(player.sections.map((section) => section.name)).toEqual([
+      "saolei:guidance",
+      "saolei:game",
+    ]);
+    // The handle is the very instance the foundation factory returned.
+    expect(player.faces.get("saoleiGame")).toBe(h.gameRuntime);
+    expect(player.faces.size).toBe(1);
+    // Planner: the explicit scope, the memory face, four tools, the gameplay
+    // section plus three memory sections — no saolei tool/guidance/handle.
+    expect(h.buildScopes).toEqual([{ template: "saolei", preset: PRESET_ID }]);
+    expect(planner.faces.get("memory")).toEqual({ kind: "memory-face" });
+    expect(planner.faces.size).toBe(1);
+    expect(planner.faces.has("saoleiGame")).toBe(false);
+    expect([...planner.tools.keys()].sort()).toEqual([
+      "memory",
+      "wiki_get",
+      "wiki_search",
+      "wiki_write",
+    ]);
+    expect(planner.sections.map((section) => section.name)).toEqual([
+      "saolei:game",
+      "memory:guidance",
+      "wiki:guidance",
+      "memory:snapshot",
+    ]);
+    expect(h.memoryCapabilities.ready).toHaveBeenCalledTimes(1);
+    // The fixed cross-face order: player tools → sections (guidance then
+    // gameplay) → handle; planner gameplay section → faces → tools → sections
+    // → ready (specs/075-saolei-game-foundation/contracts/
+    // team-loop-assembly.md §3; specs/074-dsh-grpc-runtime/contracts/
+    // team-assembly.md §4).
+    expectPlayerRegistrationOrder({
+      tools: player.toolsRegister,
+      sections: player.sectionRegister,
+      handle: player.provideFace,
+    });
+    expectMemoryRegistrationOrder({
+      faces: planner.provideFace,
+      tools: planner.toolsRegister,
+      sections: planner.sectionRegister,
+      ready: h.memoryCapabilities.ready as Spy,
+      sectionsBefore: 1,
     });
     // Team registration: goal + the two-member roster with defaults.
     expect(h.team.registrations).toHaveLength(1);
@@ -503,16 +808,16 @@ describe("TeamOrchestrator.materialize", () => {
     ).toEqual([
       ["player", PLAYER_ID, DEFAULT_MEMBER_SUMMARIES.player],
       ["planner", PLANNER_ID, DEFAULT_MEMBER_SUMMARIES.planner],
-      ["saolei", SAOLEI_ID, SAOLEI_MEMBER_SUMMARY],
+      ["announcer", ANNOUNCER_ID, ANNOUNCER_MEMBER_SUMMARY],
     ]);
-    // The third registration is the announce-only system member: no section
+    // The third registration is the announce-only announcer member: no section
     // target, no broadcast consumption, and its log starts empty.
-    const saolei = registration.members[2];
-    expect(saolei?.source.consumes).toBe(false);
-    expect(saolei?.source.sectionTarget).toBeUndefined();
-    expect(saolei?.source.events).toEqual([]);
+    const announcer = registration.members[2];
+    expect(announcer?.source.consumes).toBe(false);
+    expect(announcer?.source.sectionTarget).toBeUndefined();
+    expect(announcer?.source.events).toEqual([]);
     // The orchestrator's announcer accessor exposes the same member.
-    expect(h.orchestrator.announcer?.source.id).toBe(SAOLEI_ID);
+    expect(h.orchestrator.announcer?.source.id).toBe(ANNOUNCER_ID);
 
     // Materialization rests in the planning activation: nothing is driven
     // and no drive message is synthesized (FR-010).
@@ -594,6 +899,167 @@ describe("TeamOrchestrator.materialize", () => {
   });
 });
 
+describe("TeamOrchestrator.teamEvents", () => {
+  it("passes the team registration's stream through unchanged and keeps the state-error semantics", async () => {
+    const h = createHarness();
+
+    const before = (() => {
+      try {
+        h.orchestrator.teamEvents();
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    })();
+    expect(before).toBeInstanceOf(OrchestratorStateError);
+    expect((before as OrchestratorStateError).code).toBe("UNMATERIALIZED");
+
+    await h.orchestrator.materialize(teamOptions());
+    // Zero-shape pass-through: the read face returns the team plugin's own
+    // stream object, not a scenario-shaped copy
+    // (specs/077-announcer-member-unification/contracts/member-event-stream.md
+    // §4).
+    expect(h.orchestrator.teamEvents()).toBe(h.team.stream);
+
+    await h.orchestrator.dispose();
+    const after = (() => {
+      try {
+        h.orchestrator.teamEvents();
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    })();
+    expect(after).toBeInstanceOf(OrchestratorStateError);
+    expect((after as OrchestratorStateError).code).toBe("DISPOSED");
+  });
+});
+
+describe("TeamOrchestrator member delivery face (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §2.1)", () => {
+  it("supplies the face on the agent members' sources and not on the announcer's", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+
+    // The agent member kind supplies the face structurally …
+    expect(typeof registeredMember(h, "player").source.deliverInFlight).toBe(
+      "function",
+    );
+    expect(typeof registeredMember(h, "planner").source.deliverInFlight).toBe(
+      "function",
+    );
+    // … and the announce-only registration carries none (structural absence,
+    // not a disabled registration option).
+    expect(
+      registeredMember(h, "announcer").source.deliverInFlight,
+    ).toBeUndefined();
+  });
+
+  it("delegates to the adapter's policy: quiescent no-op, in-flight non-waking inject", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const deliver = registeredMember(h, "planner").source.deliverInFlight;
+    if (deliver === undefined) {
+      throw new Error("the planner registration must carry the delivery face");
+    }
+    const planner = member(h, PLANNER_ID);
+
+    // Quiescent: "not a receiver" — no inject, no turn, no bookkeeping.
+    deliver(relay(ANNOUNCER_ID, "announcer", "本局游戏结束：胜利。"));
+    expect(planner.injections).toEqual([]);
+    expect(planner.followups).toEqual([]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "planning",
+      active: null,
+      queued: 0,
+    });
+
+    // In flight: the broadcast joins the next-step inbox without waking the
+    // driver — the drive's own turn stays the only turn and the fast-path
+    // message never enters the queued/steered accounting.
+    h.orchestrator.submit("请开始");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: "planner",
+      queued: 0,
+    });
+    const followupsBefore = planner.followups.length;
+    deliver(relay(ANNOUNCER_ID, "announcer", "hook 播报"));
+    expect(planner.injections.map(messageText)).toEqual(["hook 播报"]);
+    expect(planner.followups).toHaveLength(followupsBefore);
+    expect(planner.steers).toEqual([]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: "planner",
+      queued: 0,
+    });
+
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+  });
+});
+
+describe("TeamOrchestrator cancel self-heal for an in-flight broadcast (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md §3/§6; US3 scenario 5)", () => {
+  it("leaves the broadcast residue to the inbox clear and recovers the anchor exactly once from the pending baseline", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    // The planner's turn is in flight …
+    h.orchestrator.submit("首条");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({ active: "planner" });
+
+    // … the fast path injects a broadcast copy into its next-step inbox while
+    // the team pending baseline holds the same anchor for re-delivery (the
+    // pre-seeded queue carries a separate object with the same anchor).
+    const deliver = registeredMember(h, "planner").source.deliverInFlight;
+    if (deliver === undefined) {
+      throw new Error("the planner registration must carry the delivery face");
+    }
+    const fastPathCopy = relay(ANNOUNCER_ID, "announcer", "hook 播报");
+    deliver(fastPathCopy);
+    const pendingCopy = relay(ANNOUNCER_ID, "announcer", "hook 播报");
+    h.team.queues.set(PLANNER_ID, [pendingCopy]);
+    expect(planner.injections).toEqual([fastPathCopy]);
+
+    // Cancel: the unclaimed inbox holds the broadcast copy alone, so nothing
+    // lands (a broadcast is carried by the pending baseline, never by landed)
+    // and the default `agent.cancel` clears the inbox.
+    const result = h.orchestrator.cancel();
+    expect(result.dropped).toEqual([]);
+    expect(planner.cancels[0]?.cause).toEqual({ kind: "user" });
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      active: null,
+      activation: "planner",
+    });
+
+    // Resume: the recovery assembly takes the anchor from the pending baseline
+    // — the exact queued copy, once, injected ahead of the user message (the
+    // next-step position versus the turn-opening followup).
+    const injectionsBefore = planner.injections.length;
+    const followupsBefore = planner.followups.length;
+    expect(h.orchestrator.submit("继续").queued).toBe(false);
+    expect(planner.injections.slice(injectionsBefore)).toEqual([pendingCopy]);
+    expect(
+      planner.injections.slice(injectionsBefore).map(messageText),
+    ).toEqual(["hook 播报"]);
+    expect(planner.followups.slice(followupsBefore).map(messageText)).toEqual([
+      "继续",
+    ]);
+
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(player.followups).toHaveLength(0);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
+    expectRelayOrUserSources(h);
+  });
+});
+
 describe("TeamOrchestrator transitions", () => {
   it("drives the player with the whole drained relay set in one turn after the first planner turn quiesces", async () => {
     const h = createHarness();
@@ -645,7 +1111,7 @@ describe("TeamOrchestrator transitions", () => {
     expect(player.followups).toHaveLength(1);
 
     // The player's turn ends with a terminal record: review the planner. The
-    // saolei announcement is the turn's last input (followup), after the
+    // announcement is the turn's last input (followup), after the
     // injected player relay.
     h.game.current = winner();
     h.team.queues.set(PLANNER_ID, [relay(player.agent.id, "player", "本局对局记录")]);
@@ -684,9 +1150,6 @@ describe("TeamOrchestrator transitions", () => {
     expect(planner.injections).toHaveLength(1);
     expect(planner.followups).toHaveLength(2);
     expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
-    // Evaluated after both player turns; the second evaluation saw the same
-    // record and did not re-trigger a review.
-    expect(h.game.peeks).toBe(2);
     expectRelayOrUserSources(h);
   });
 
@@ -696,7 +1159,9 @@ describe("TeamOrchestrator transitions", () => {
     const player = member(h, PLAYER_ID);
     const planner = member(h, PLANNER_ID);
 
-    // The first user send drives the planner; a second one queues behind it.
+    // The first user send drives the planner; a second one steers into the
+    // in-flight turn (061 direction — mid-turn delivery, not an orchestration
+    // FIFO).
     h.orchestrator.submit("首条");
     const submitted = h.orchestrator.submit("先消化这条");
     expect(submitted.queued).toBe(true);
@@ -705,16 +1170,19 @@ describe("TeamOrchestrator transitions", () => {
 
     planner.settle();
     await tick();
-    // The planner consumed the queue first; the player drive is deferred.
-    expect(planner.followups.map(messageText)).toEqual(["首条", "先消化这条"]);
-    expect(planner.followups[1]?.source).toMatchObject({ kind: "user" });
-    expect(player.followups).toHaveLength(0);
-
-    planner.settle();
-    await tick();
+    // The steered message was consumed inside the planner turn; the planner
+    // turn's settlement advances the flow to the player.
+    expect(planner.followups.map(messageText)).toEqual(["首条"]);
+    expect(planner.steers.map(messageText)).toEqual(["先消化这条"]);
+    expect(planner.steers[0]?.source).toMatchObject({ kind: "user" });
     expect(player.followups).toHaveLength(1);
+
     player.settle();
     await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
     expectRelayOrUserSources(h);
   });
 
@@ -804,51 +1272,51 @@ describe("TeamOrchestrator game-stats announcement (specs/065-agent-v2-team-refi
     expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
   });
 
-  it("does not re-announce when the review never formed (statsSentFor guard)", async () => {
+  it("does not re-announce the same record when the review never formed (statsSentFor guard)", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
-    // Deliberately no relayAnnouncementsToPlanner(h): the bridge mirrors the
-    // production invariant that an announcement makes the planner drain
-    // non-empty (specs/065-agent-v2-team-refine/contracts/
-    // game-stats-broadcast.md §3 item 5), which forms the review and hands
-    // the record over to `reviewedGameEvent`. The guard's unique window is
-    // the opposite: the announcement was sent, the planner drain was empty
-    // (no review formed), and the same still-unreviewed record is evaluated
-    // again.
+    // No relayAnnouncementsToPlanner: the announcement cannot form the review
+    // (the planner drain stays empty), so the record keeps `reviewed` null and
+    // only the announce member's record-identity guard protects it.
     const { player, planner } = await beginPlayerTurn(h);
 
     h.game.current = winner();
     player.settle();
     await tick();
 
-    // Case 4 announced A, found the planner drain empty, and rested:
-    // `reviewedGameEvent` stays null, so only `statsSentFor` protects the
-    // record against a second announcement.
+    // The play activity settled: A was announced, then the review activity's
+    // planner drive found no input (resting) — the flow rests at review with
+    // A still unreviewed.
     expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
     expect(planner.followups.map(messageText)).toEqual(["请开始"]);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      active: null,
+      activation: "planner",
+    });
+
+    // Resume: the planner delivers, then review → play returns the flow to the
+    // player; the player's next settlement re-evaluates play → announce with
+    // the same record, and the guard skips the second announcement.
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(planner.followups.map(messageText)).toEqual(["请开始", "继续"]);
+    planner.settle();
+    await tick();
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "playing",
       active: null,
       activation: "player",
     });
 
-    // Re-drive the pump: the queued message is digested by the player first,
-    // then the next evaluation sees the same record A again. The
-    // record-identity guard must skip the second announcement.
-    h.orchestrator.submit("继续");
+    h.orchestrator.submit("再来");
     await tick();
-    expect(player.followups.map(messageText)).toEqual(["开局策略", "继续"]);
+    expect(player.followups.map(messageText)).toEqual(["开局策略", "再来"]);
     player.settle();
     await tick();
 
     expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
-    expect(planner.followups.map(messageText)).toEqual(["请开始"]);
-    expect(planner.injections).toEqual([]);
-    expect(h.orchestrator.snapshot()).toMatchObject({
-      phase: "playing",
-      active: null,
-      activation: "player",
-    });
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
   });
 
   it("starts the review with the announcement alone when no relay was queued", async () => {
@@ -921,48 +1389,42 @@ describe("TeamOrchestrator game-stats announcement (specs/065-agent-v2-team-refi
   });
 });
 
-describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-refine/spec.md US2 / contracts/game-stats-broadcast.md §3 item 4)", () => {
-  it("digests a queued user message before announcing the terminal record", async () => {
+describe("TeamOrchestrator mid-turn delivery and the terminal handoff (specs/061-team-queue-steer/spec.md; specs/076-agent-v2-optimize/spec.md FR-105/FR-113)", () => {
+  it("consumes a mid-turn message inside the player turn, then hands off to the announcement", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
     relayAnnouncementsToPlanner(h);
     const { player, planner } = await beginPlayerTurn(h);
 
-    // The game ends while the player turn is in flight; a user message lands
-    // in the FIFO behind it (the 062 case 1 priority).
+    // The game ends while the player turn is in flight; a user message steers
+    // into that turn (no orchestration FIFO).
     h.game.current = winner();
-    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
+    expect(h.orchestrator.submit("在途消息").queued).toBe(true);
 
     player.settle();
     await tick();
 
-    // The terminal turn quiesces: the queued message drives the player's next
-    // turn first; the terminal record's handoff (announce + review) is not
-    // evaluated before the queue is empty.
-    expect(player.followups.map(messageText)).toEqual(["开局策略", "排队消息"]);
-    expect(announcedTexts(h)).toEqual([]);
-    expect(planner.followups.map(messageText)).toEqual(["请开始"]);
-    expect(h.orchestrator.snapshot()).toMatchObject({
-      phase: "playing",
-      active: "player",
-      activation: "player",
-      queued: 0,
-    });
+    // The steered message was consumed inside the player turn; the terminal
+    // turn's handoff (announce + review) then runs — the mid-turn consumption
+    // did not wait for a separate digestion turn.
+    expect(player.followups.map(messageText)).toEqual(["开局策略"]);
+    expect(player.steers.map(messageText)).toEqual(["在途消息"]);
+    expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
+    expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
+    expect(h.orchestrator.announcer?.source.events).toHaveLength(1);
   });
 
-  it("skips the swallowed game's announcement and announces the new terminal record instead", async () => {
+  it("announces only the latest terminal record at handoff time (swallowed game not re-announced)", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
     relayAnnouncementsToPlanner(h);
     const { player, planner } = await beginPlayerTurn(h);
 
-    // Terminal record A waits behind a queued user message; the digestion
-    // turn opens a new game and terminal record B overwrites A in the
+    // Terminal record A exists when the user message steers in; the in-flight
+    // turn opens a new game whose terminal record B overwrites A in the
     // runtime's single record slot.
     h.game.current = winner();
-    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
-    player.settle();
-    await tick();
+    expect(h.orchestrator.submit("在途消息").queued).toBe(true);
     h.game.current = loser();
     h.team.queues.set(PLANNER_ID, [relay(player.agent.id, "player", "新局终局记录")]);
     expect(announcedTexts(h)).toEqual([]);
@@ -970,40 +1432,12 @@ describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-re
     player.settle();
     await tick();
 
-    // Only B is announced — A's handoff condition is never reached again —
-    // and B's announcement rides at the tail of the new review input set.
+    // Only B is announced — A's guard is never satisfiable again — and B's
+    // announcement rides at the tail of the new review input set.
     expect(announcedTexts(h)).toEqual([LOSER_STATS_TEXT]);
     expect(planner.injections.map(messageText)).toEqual(["新局终局记录"]);
     expect(planner.followups.map(messageText)).toEqual(["请开始", LOSER_STATS_TEXT]);
     expect(planner.followups.map(messageText)).not.toContain(WINNER_STATS_TEXT);
-    expect(h.orchestrator.snapshot()).toMatchObject({
-      phase: "reviewing",
-      active: "planner",
-      activation: "planner",
-    });
-  });
-
-  it("announces the untouched terminal record after the queued digestion (deferred, not dropped)", async () => {
-    const h = createHarness();
-    await h.orchestrator.materialize(teamOptions());
-    relayAnnouncementsToPlanner(h);
-    const { player, planner } = await beginPlayerTurn(h);
-
-    // Terminal record A waits behind a queued user message; the digestion
-    // turn does not overwrite it (the runtime still returns the same object).
-    h.game.current = winner();
-    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
-    player.settle();
-    await tick();
-    expect(announcedTexts(h)).toEqual([]);
-
-    player.settle();
-    await tick();
-
-    // The digestion left the record unreviewed: the handoff announces A
-    // (deferred by the queue, not dropped) and starts the review.
-    expect(announcedTexts(h)).toEqual([WINNER_STATS_TEXT]);
-    expect(planner.followups.map(messageText)).toEqual(["请开始", WINNER_STATS_TEXT]);
     expect(h.orchestrator.snapshot()).toMatchObject({
       phase: "reviewing",
       active: "planner",
@@ -1030,12 +1464,13 @@ describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-re
     expect(h.orchestrator.snapshot()).toMatchObject({
       paused: true,
       failed: true,
-      lastError: { code: "SERVER", member: "planner", origin: "member-turn" },
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
     });
 
-    // Resume: the queued message is digested first, then the held review
-    // input set is replayed — the announcement is not sent again; the retry
-    // re-delivers the held message.
+    // Resume: the delivered message is handled first, then the flow restarts
+    // the review activity, whose member adapter replays the held input set —
+    // the announcement is not sent again; the retry re-delivers the held
+    // messages (the same objects).
     h.orchestrator.submit("继续");
     await tick();
     planner.settle();
@@ -1088,6 +1523,17 @@ describe("TeamOrchestrator queue-priority invariance (specs/065-agent-v2-team-re
     await tick();
     expect(player.followups.map(messageText)).toEqual(["开局策略", "继续"]);
     expect(announcedTexts(h)).toEqual([]);
+
+    player.settle();
+    await tick();
+    // The delivery-started turn settled, then the recovery chain restarted
+    // the play activity and the member adapter replayed its held input set.
+    expect(announcedTexts(h)).toEqual([]);
+    expect(player.followups.map(messageText)).toEqual([
+      "开局策略",
+      "继续",
+      "开局策略",
+    ]);
 
     player.settle();
     await tick();
@@ -1181,8 +1627,19 @@ describe("TeamOrchestrator cancel and dispose", () => {
       active: "player",
       activation: "player",
     });
+
+    // The delivery turn settled, then the recovery chain restarted the play
+    // activity with the held input set (the aborted drive's relays).
+    player.settle();
+    await tick();
+    expect(player.followups.map(messageText)).toEqual(["策略", "新消息", "策略"]);
+
     player.settle();
     await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      active: null,
+      activation: "player",
+    });
     expectRelayOrUserSources(h);
   });
 
@@ -1217,22 +1674,24 @@ describe("TeamOrchestrator failure reporting", () => {
     await h.orchestrator.materialize(teamOptions());
     const planner = member(h, PLANNER_ID);
 
-    // A fail-loud relay read fails the decision step before any drive.
+    // A fail-loud relay read fails the delivery assembly before any drive.
     h.team.seam.drain.mockImplementationOnce(() => {
       throw new Error("drain read failed");
     });
     h.orchestrator.submit("首条");
     await tick();
 
-    // M1: the failure is logged with its session/phase context and exposed;
-    // a non-LlmError step failure reports the UNKNOWN code.
+    // The delivery assembly failure joins the freeze channel: it is logged
+    // with its session/phase context and exposed with the INTERNAL code and
+    // the orchestration origin (specs/076-agent-v2-optimize/contracts/
+    // flow-orchestration.md §5).
     expect(logger.error).toHaveBeenCalledOnce();
     expect(logger.error.mock.calls[0]?.[0]).toMatch(/orchestration step failed/);
     expect(logger.error.mock.calls[0]?.[1]).toEqual({
       session: SESSION,
       phase: "planning",
       member: null,
-      code: "UNKNOWN",
+      code: "INTERNAL",
       error: "drain read failed",
     });
     expect(h.orchestrator.snapshot()).toMatchObject({
@@ -1242,23 +1701,21 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "drain read failed",
         member: null,
         phase: "planning",
-        code: "UNKNOWN",
+        code: "INTERNAL",
         origin: "orchestration",
       },
     });
 
-    // Recovery: the failed send is still queued and the next pump drains it.
+    // Recovery: the failed assembly consumed nothing, so the next send opens
+    // the planner turn; its settlement re-judges the edge (plan → play).
     h.orchestrator.submit("再来");
-    await tick();
-    expect(planner.followups.map(messageText)).toEqual(["首条"]);
-    planner.settle();
-    await tick();
-    expect(planner.followups.map(messageText)).toEqual(["首条", "再来"]);
+    expect(planner.followups.map(messageText)).toEqual(["再来"]);
     planner.settle();
     await h.orchestrator.whenQuiescent();
     expect(h.orchestrator.snapshot()).toMatchObject({
       failed: false,
       lastError: null,
+      activation: "player",
     });
   });
 
@@ -1289,7 +1746,7 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "injected SERVER failure",
         member: "planner",
         phase: "planning",
-        code: "SERVER",
+        code: "TRANSIENT",
         origin: "member-turn",
       },
     });
@@ -1299,7 +1756,7 @@ describe("TeamOrchestrator failure reporting", () => {
       session: SESSION,
       phase: "planning",
       member: "planner",
-      code: "SERVER",
+      code: "TRANSIENT",
       error: "injected SERVER failure",
     });
     expect(player.followups).toHaveLength(0);
@@ -1327,33 +1784,31 @@ describe("TeamOrchestrator failure reporting", () => {
     expectRelayOrUserSources(h);
   });
 
-  it("digests messages queued during a failed turn with the retained member in FIFO order", async () => {
+  it("keeps a mid-turn message in the inbox across a failed turn and claims it in the next turn", async () => {
     const h = createHarness();
     await h.orchestrator.materialize(teamOptions());
     const player = member(h, PLAYER_ID);
     const planner = member(h, PLANNER_ID);
 
-    // The first send drives the planner; the second queues behind the turn.
+    // The first send drives the planner; the second steers into the turn.
     h.orchestrator.submit("首条");
     expect(h.orchestrator.submit("排队").queued).toBe(true);
 
-    // The turn fails: the pause retains both the activation and the queue.
+    // The turn fails: the freeze retains the activation; the steered message
+    // was not lost (it stays pending in the member inbox).
     planner.failCurrentTurn("TIMEOUT");
     await tick();
     expect(h.orchestrator.snapshot()).toMatchObject({
       paused: true,
-      queued: 1,
       activation: "planner",
-      lastError: { code: "TIMEOUT", member: "planner", origin: "member-turn" },
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
     });
 
-    // The next send lifts the pause: the retained member digests the FIFO
-    // first ("排队" before "重驱"), so the player is never driven.
+    // The next send opens the retained member's turn; the settlement re-judges
+    // the edge and the player becomes the activation.
     h.orchestrator.submit("重驱");
-    expect(planner.followups.map(messageText)).toEqual(["首条", "排队"]);
-    planner.settle();
-    await tick();
-    expect(planner.followups.map(messageText)).toEqual(["首条", "排队", "重驱"]);
+    expect(planner.followups.map(messageText)).toEqual(["首条", "重驱"]);
+    expect(planner.steers.map(messageText)).toEqual(["排队"]);
     planner.settle();
     await h.orchestrator.whenQuiescent();
     expect(player.followups).toHaveLength(0);
@@ -1418,7 +1873,7 @@ describe("TeamOrchestrator failure reporting", () => {
       session: SESSION,
       phase: "reviewing",
       member: "planner",
-      code: "UNKNOWN",
+      code: "INTERNAL",
       error: "followup rejected",
     });
     expect(h.orchestrator.snapshot()).toMatchObject({
@@ -1428,14 +1883,15 @@ describe("TeamOrchestrator failure reporting", () => {
         message: "followup rejected",
         member: "planner",
         phase: "reviewing",
-        code: "UNKNOWN",
+        code: "INTERNAL",
         origin: "orchestration",
       },
     });
 
-    // MINOR1: the terminal record was not consumed. The resumed loop digests
-    // the user message, then retries the held review and consumes the record
-    // only once the review drive settles.
+    // The terminal record was not consumed. The resumed loop handles the
+    // delivered message, then the flow restarts the review activity, whose
+    // adapter replays the held input set and consumes the record only once
+    // the review drive settles.
     h.orchestrator.submit("继续");
     await tick();
     planner.settle();
@@ -1472,24 +1928,59 @@ describe("TeamOrchestrator failure reporting", () => {
   });
 });
 
+/** A capability context: the game-foundation face plus the two provide faces
+ * with an overridable memory ready. */
+function capabilityContext(options: {
+  readonly ready?: () => Promise<void>;
+  readonly omitSaoleiTools?: boolean;
+  readonly omitMemoryMount?: boolean;
+  readonly createGameRuntime?: () => GameRuntime;
+} = {}): Context {
+  const ctx = new Context();
+  ctx.provide("desktopBridge", { dispatch: () => {} });
+  ctx.provide("saolei", {
+    createGameRuntime: options.createGameRuntime ?? (() => nullGameRuntime()),
+    gameSection: { name: "saolei:game", order: 50, text: "" },
+  });
+  if (options.omitSaoleiTools !== true) {
+    ctx.provide("saoleiTools", { tools: [], sections: [] });
+  }
+  if (options.omitMemoryMount !== true) {
+    ctx.provide("memoryMount", {
+      build: () => ({
+        faces: [],
+        tools: [],
+        sections: [],
+        ready: options.ready ?? (async () => {}),
+      }),
+    });
+  }
+  return ctx;
+}
+
 describe("TeamOrchestrator materialization rollback", () => {
-  it("rolls back the created player when the planner setup fails, then retries cleanly", async () => {
+  it(
+    "rolls back the created player when the planner prefetch rejects, " +
+      "then retries cleanly",
+    async () => {
     const members = new Map<string, FakeMember>();
     const team = fakeTeam();
-    const loadPlannerMemory = vi.fn<() => Promise<void>>(async () => {
+    const ready = vi.fn(async () => {
       throw new Error("memory unavailable");
     });
     const compose = vi.fn(async (preset: string): Promise<ComposedPreset> => ({
       agentPreset: `${preset}-resolved`,
       setup: vi.fn(async () => {}),
     }));
-    const orchestrator = new TeamOrchestrator(new Context(), {
-      compose,
-      agents: fakeAgents(members),
-      team: team.seam,
-      mountPlayerRuntime: (): GameEventSource => ({ peekGameEvent: () => null }),
-      loadPlannerMemory,
-    });
+    const createGameRuntime = vi.fn(() => nullGameRuntime());
+    const orchestrator = new TeamOrchestrator(
+      capabilityContext({ ready, createGameRuntime }),
+      {
+        compose,
+        agents: fakeAgents(members),
+        team: team.seam,
+      },
+    );
 
     await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
       "memory unavailable",
@@ -1503,11 +1994,16 @@ describe("TeamOrchestrator materialization rollback", () => {
       phase: null,
       active: null,
     });
+    // The failed attempt had already built a game runtime; the rollback drops
+    // it (contracts/team-loop-assembly.md §2/§6).
+    expect(createGameRuntime).toHaveBeenCalledTimes(1);
 
-    // A retry with the seam repaired materializes from scratch and rests
-    // without driving.
-    loadPlannerMemory.mockImplementation(async () => {});
+    // A retry with the prefetch repaired materializes from scratch — a fresh
+    // runtime is built through the foundation factory — and rests without
+    // driving.
+    ready.mockImplementation(async () => {});
     await orchestrator.materialize(teamOptions());
+    expect(createGameRuntime).toHaveBeenCalledTimes(2);
     expect(orchestrator.snapshot()).toMatchObject({
       materialized: true,
       phase: "planning",
@@ -1529,12 +2025,10 @@ describe("TeamOrchestrator materialization rollback", () => {
         setup: vi.fn(async () => {}),
       })
       .mockRejectedValueOnce(new Error("broken planner preset"));
-    const orchestrator = new TeamOrchestrator(new Context(), {
+    const orchestrator = new TeamOrchestrator(capabilityContext(), {
       compose,
       agents: fakeAgents(members),
       team: team.seam,
-      mountPlayerRuntime: (): GameEventSource => ({ peekGameEvent: () => null }),
-      loadPlannerMemory: async () => {},
     });
 
     await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
@@ -1543,5 +2037,614 @@ describe("TeamOrchestrator materialization rollback", () => {
     expect(members.get(PLAYER_ID)?.handle.dispose).toHaveBeenCalledOnce();
     expect(team.seam.register).not.toHaveBeenCalled();
     expect(orchestrator.snapshot().materialized).toBe(false);
+  });
+
+  it(
+    "fails loud and rolls back when the memoryMount capability is not " +
+      "mounted",
+    async () => {
+    const members = new Map<string, FakeMember>();
+    const team = fakeTeam();
+    const orchestrator = new TeamOrchestrator(
+      capabilityContext({ omitMemoryMount: true }),
+      {
+        compose: vi.fn(async (preset: string): Promise<ComposedPreset> => ({
+          agentPreset: `${preset}-resolved`,
+          setup: vi.fn(async () => {}),
+        })),
+        agents: fakeAgents(members),
+        team: team.seam,
+      },
+    );
+
+    await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
+      /"memoryMount" capability is not mounted/,
+    );
+    expect(members.get(PLAYER_ID)?.handle.dispose).toHaveBeenCalledOnce();
+    expect(team.seam.register).not.toHaveBeenCalled();
+    expect(orchestrator.snapshot().materialized).toBe(false);
+  });
+
+  it("fails loud when the saoleiTools capability is not mounted", async () => {
+    const members = new Map<string, FakeMember>();
+    const orchestrator = new TeamOrchestrator(
+      capabilityContext({ omitSaoleiTools: true }),
+      {
+        compose: vi.fn(async (preset: string): Promise<ComposedPreset> => ({
+          agentPreset: `${preset}-resolved`,
+          setup: vi.fn(async () => {}),
+        })),
+        agents: fakeAgents(members),
+        team: fakeTeam().seam,
+      },
+    );
+
+    await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
+      /"saoleiTools" capability is not mounted/,
+    );
+    expect(orchestrator.snapshot().materialized).toBe(false);
+  });
+
+  it("fails loud when the game foundation face is not composed", async () => {
+    const ctx = new Context();
+    ctx.provide("saoleiTools", { tools: [], sections: [] });
+    ctx.provide("memoryMount", {
+      build: () => ({
+        faces: [],
+        tools: [],
+        sections: [],
+        ready: async () => {},
+      }),
+    });
+    const orchestrator = new TeamOrchestrator(ctx, {
+      compose: vi.fn(async (preset: string): Promise<ComposedPreset> => ({
+        agentPreset: `${preset}-resolved`,
+        setup: vi.fn(async () => {}),
+      })),
+      agents: fakeAgents(new Map()),
+      team: fakeTeam().seam,
+    });
+
+    await expect(orchestrator.materialize(teamOptions())).rejects.toThrow(
+      /"saolei" game foundation is not composed/,
+    );
+    expect(orchestrator.snapshot().materialized).toBe(false);
+  });
+});
+
+describe("TeamOrchestrator registration-order assertion", () => {
+  it("detects a scrambled order (sensitivity guard)", () => {
+    // The guard: the assertion helper must reject a timeline that violates
+    // faces → tools → sections → ready, so the materialize assertions cannot
+    // pass vacuously (specs/074-dsh-grpc-runtime/contracts/team-assembly.md
+    // §4).
+    const faces = vi.fn();
+    const tools = vi.fn();
+    const sections = vi.fn();
+    const ready = vi.fn();
+    tools();
+    tools();
+    tools();
+    tools();
+    faces(); // faces AFTER tools → out of order
+    sections();
+    sections();
+    sections();
+    ready();
+
+    expect(() =>
+      expectMemoryRegistrationOrder({ faces, tools, sections, ready }),
+    ).toThrow();
+  });
+
+  it("accepts the contract order", () => {
+    const faces = vi.fn();
+    const tools = vi.fn();
+    const sections = vi.fn();
+    const ready = vi.fn();
+    faces();
+    for (let i = 0; i < 4; i += 1) tools();
+    for (let i = 0; i < 3; i += 1) sections();
+    ready();
+
+    expect(() =>
+      expectMemoryRegistrationOrder({ faces, tools, sections, ready }),
+    ).not.toThrow();
+  });
+});
+
+/** The player's terminal-report relay text (the review turn's input). */
+const PLAYER_RECORD_RELAY = "本局对局记录";
+
+/** The planner's review-broadcast relay text (the next player turn's input). */
+const ROUND_REVIEW_RELAY = "复盘结论";
+
+/**
+ * Play one completed round from an in-flight player turn: the player's game
+ * reaches a fresh terminal record (the review input relay is seeded) and the
+ * settled planner review completes the round. The review broadcast relay is
+ * seeded before the review settles, so the post-review evaluation starts the
+ * next player turn — the loop's structural continuation.
+ */
+async function completeRound(
+  h: Harness,
+  player: FakeMember,
+  planner: FakeMember,
+): Promise<void> {
+  h.game.current = winner();
+  h.team.queues.set(PLANNER_ID, [
+    relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+  ]);
+  player.settle();
+  await tick();
+  h.team.queues.set(PLAYER_ID, [
+    relay(planner.agent.id, "planner", ROUND_REVIEW_RELAY),
+  ]);
+  planner.settle();
+  await tick();
+}
+
+/**
+ * Complete four consecutive rounds after the first player turn: each settled
+ * review auto-drives the next player turn, so the fifth round's player turn
+ * is left in flight (below the {@link ROUND_STOP_INTERVAL} boundary).
+ */
+async function playFourRounds(h: Harness): Promise<{
+  player: FakeMember;
+  planner: FakeMember;
+}> {
+  const { player, planner } = await beginPlayerTurn(h);
+  for (let round = 0; round < 4; round += 1) {
+    await completeRound(h, player, planner);
+  }
+  return { player, planner };
+}
+
+/** The natural stop's full snapshot (no failure state, activation on player). */
+const STOPPED_SNAPSHOT = {
+  materialized: true,
+  phase: "playing",
+  active: null,
+  activation: "player",
+  paused: false,
+  queued: 0,
+  failed: false,
+  lastError: null,
+};
+
+describe("TeamOrchestrator natural round stop (specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md §5)", () => {
+  it("auto-drives the player after rounds 1-4 with the review relays (case 1)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+
+    await beginPlayerTurn(h);
+
+    for (let round = 1; round <= 4; round += 1) {
+      const drives = player.followups.length;
+      await completeRound(h, player, planner);
+      // Below the interval the victory switch structurally continues: the
+      // player is driven with the review broadcast relay.
+      expect(h.orchestrator.snapshot()).toMatchObject({
+        phase: "playing",
+        active: "player",
+        activation: "player",
+        paused: false,
+        failed: false,
+        lastError: null,
+      });
+      expect(player.followups.length).toBeGreaterThan(drives);
+      expect(player.followups.map(messageText).at(-1)).toBe(ROUND_REVIEW_RELAY);
+    }
+    expectRelayOrUserSources(h);
+  });
+
+  it("rests at the fifth settled review: no player drive, activation player, no failure (case 2)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    const drives = player.followups.length;
+    await completeRound(h, player, planner);
+
+    // The spent budget switched the activation but produced no drive; the
+    // stop is neither a failure nor a cancel.
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("digests a user message queued during the fifth review before stopping (case 3)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game ends; its review turn starts.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    expect(planner.followups.map(messageText).at(-1)).toBe(PLAYER_RECORD_RELAY);
+
+    // A user message steers into the in-flight review turn (mid-turn).
+    expect(h.orchestrator.submit("排队消息").queued).toBe(true);
+    const playerDrives = player.followups.length;
+    planner.settle();
+    await tick();
+
+    // The review settled: its onSettle counts the fifth round and the edge
+    // sends the flow to rest (no player drive). The steered message was
+    // consumed inside the review turn.
+    expect(planner.steers.map(messageText)).toEqual(["排队消息"]);
+    expect(player.followups).toHaveLength(playerDrives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("drives the player with the unconsumed review broadcast on the next submit (case 4)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+    await completeRound(h, player, planner);
+
+    // The stop left the review broadcast queued; the next user message
+    // delivers it together with the user message (relay injected, user
+    // message last) and drives the player.
+    expect(h.orchestrator.submit("继续").queued).toBe(false);
+    await tick();
+    expect(player.injections.map(messageText).at(-1)).toBe(ROUND_REVIEW_RELAY);
+    expect(player.followups.map(messageText).at(-1)).toBe("继续");
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: "player",
+      activation: "player",
+      paused: false,
+      failed: false,
+      lastError: null,
+    });
+  });
+
+  it("does not count a restarted game without a terminal record (case 5)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game is restarted mid-way: no terminal record, so no review
+    // (and neither an increment nor a reset).
+    const plannerDrives = planner.followups.length;
+    h.game.current = null;
+    player.settle();
+    await tick();
+    expect(planner.followups).toHaveLength(plannerDrives);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: null,
+      activation: "player",
+    });
+
+    // The restart's real terminal record completes the fifth round and stops:
+    // the retained four counts prove the restart did not reset the counter.
+    h.orchestrator.submit("继续");
+    await tick();
+    const drives = player.followups.length;
+    await completeRound(h, player, planner);
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("does not count a failed review; the retried review counts at the interval boundary (case 6)", async () => {
+    const h = createHarness({ logger: { error: vi.fn() } });
+    await h.orchestrator.materialize(teamOptions());
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+    await beginPlayerTurn(h);
+    for (let round = 0; round < 3; round += 1) {
+      await completeRound(h, player, planner);
+    }
+
+    // Round 4's review drive fails at the active boundary: the round is not
+    // counted and the pump pauses.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const drives = player.followups.length;
+    planner.failCurrentTurn("SERVER");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      failed: true,
+      activation: "planner",
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
+    });
+    expect(player.followups).toHaveLength(drives);
+
+    // Resume: the queued message is digested, then the held review retries and
+    // settles. The retry counts round 4 — below the interval — so the player
+    // is auto-driven into round 5 (a counted failure would already have
+    // stopped here).
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(planner.followups.map(messageText).at(-1)).toBe("继续");
+    planner.settle();
+    await tick();
+    h.team.queues.set(PLAYER_ID, [
+      relay(planner.agent.id, "planner", ROUND_REVIEW_RELAY),
+    ]);
+    planner.settle();
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: "player",
+      activation: "player",
+      paused: false,
+      failed: false,
+      lastError: null,
+    });
+
+    // Round 5 completes and stops: only the retried count (4) plus this round
+    // reaches the interval.
+    const round5Drives = player.followups.length;
+    await completeRound(h, player, planner);
+    expect(player.followups).toHaveLength(round5Drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("retries the fifth round's failed review and stops on success (case 6, spec US4 scenario 7)", async () => {
+    const h = createHarness({ logger: { error: vi.fn() } });
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game's review drive fails before it settles.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const drives = player.followups.length;
+    planner.failCurrentTurn("SERVER");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      failed: true,
+      lastError: { code: "TRANSIENT", member: "planner", origin: "member-turn" },
+    });
+    expect(player.followups).toHaveLength(drives);
+
+    // Resume: the queue is digested, the held review retries and settles, and
+    // the spent budget reaches the stop.
+    h.orchestrator.submit("继续");
+    await tick();
+    planner.settle();
+    await tick();
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("recounts from 1 after the stop: no stop until the tenth round (case 7)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+    await completeRound(h, player, planner);
+
+    // Resume: the user message drives the player into the first round after
+    // the stop (round 6).
+    h.orchestrator.submit("继续");
+    await tick();
+
+    for (let round = 6; round <= 9; round += 1) {
+      await completeRound(h, player, planner);
+      expect(h.orchestrator.snapshot()).toMatchObject({
+        phase: "playing",
+        active: "player",
+        activation: "player",
+      });
+    }
+
+    const drives = player.followups.length;
+    await completeRound(h, player, planner);
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+
+  it("keeps the player relays unconsumed at the stop (the next drive retrieves them) (case 8)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game ends and its review starts; the review broadcast is
+    // seeded for the player.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const reviewBroadcast = relay(planner.agent.id, "planner", ROUND_REVIEW_RELAY);
+    h.team.queues.set(PLAYER_ID, [reviewBroadcast]);
+    const drives = player.followups.length;
+    planner.settle();
+    await tick();
+
+    // The stop did not drain the player relays.
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+    expect(player.followups).toHaveLength(drives);
+    expect(h.team.queues.get(PLAYER_ID)).toEqual([reviewBroadcast]);
+
+    // The next drive retrieves the preserved relay.
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(h.team.queues.get(PLAYER_ID)).toEqual([]);
+    expect(player.injections).toContain(reviewBroadcast);
+  });
+
+  it("still stops after a cancel during the fifth review once the queue is digested (contract §4)", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const { player, planner } = await playFourRounds(h);
+
+    // The fifth game ends; the review turn is in flight when the cancel lands.
+    h.game.current = winner();
+    h.team.queues.set(PLANNER_ID, [
+      relay(player.agent.id, "player", PLAYER_RECORD_RELAY),
+    ]);
+    player.settle();
+    await tick();
+    const drives = player.followups.length;
+    h.orchestrator.cancel();
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      paused: true,
+      active: null,
+      activation: "planner",
+      lastError: null,
+    });
+
+    // Resume: the delivered message is handled first, then the flow restarts
+    // the review activity (replaying the held record input set); the settled
+    // review counts the fifth round and the spent budget reaches the stop
+    // without driving the player.
+    h.orchestrator.submit("继续");
+    await tick();
+    expect(planner.followups.map(messageText).at(-1)).toBe("继续");
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "reviewing",
+      active: "planner",
+      activation: "planner",
+    });
+
+    planner.settle();
+    await tick();
+    expect(player.followups).toHaveLength(drives);
+    expect(h.orchestrator.snapshot()).toEqual(STOPPED_SNAPSHOT);
+  });
+});
+
+describe("TeamOrchestrator delivery split and error contract (specs/076-agent-v2-optimize/contracts/flow-orchestration.md §3/§5)", () => {
+  it("delivers in-flight (steer) and quiescent (assembly) to the active member", async () => {
+    const h = createHarness();
+    await h.orchestrator.materialize(teamOptions());
+    const planner = member(h, PLANNER_ID);
+    const player = member(h, PLAYER_ID);
+
+    // Quiescent: the message assembles a turn (followup).
+    expect(h.orchestrator.submit("首条").queued).toBe(false);
+    expect(planner.followups.map(messageText)).toEqual(["首条"]);
+    expect(planner.injections).toEqual([]);
+
+    // In flight: the message steers into the turn.
+    expect(h.orchestrator.submit("在途").queued).toBe(true);
+    expect(planner.steers.map(messageText)).toEqual(["在途"]);
+    expect(planner.followups.map(messageText)).toEqual(["首条"]);
+
+    planner.settle();
+    await tick();
+    // plan → play, whose empty drain rests the loop at the player.
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      phase: "playing",
+      active: null,
+      activation: "player",
+    });
+
+    // The next quiescent delivery belongs to the new active member.
+    h.orchestrator.submit("给 player");
+    expect(player.followups.map(messageText)).toEqual(["给 player"]);
+    player.settle();
+    await h.orchestrator.whenQuiescent();
+  });
+
+  const codes: ReadonlyArray<[string, string]> = [
+    ["RATE_LIMIT", "TRANSIENT"],
+    ["QUOTA", "QUOTA"],
+    ["INVALID_CREDENTIAL", "CREDENTIAL"],
+    ["NO_ADAPTER", "CONFIG"],
+    ["CONTEXT_WINDOW_EXCEEDED", "INPUT_TOO_LARGE"],
+    ["INVARIANT", "INTERNAL"],
+  ];
+
+  for (const [engineCode, loopCode] of codes) {
+    it(`reports the loop code ${loopCode} for the engine failure ${engineCode}`, async () => {
+      const logger = { error: vi.fn() };
+      const h = createHarness({ logger });
+      await h.orchestrator.materialize(teamOptions());
+      const planner = member(h, PLANNER_ID);
+
+      h.orchestrator.submit("首条");
+      planner.failCurrentTurn(engineCode);
+      await tick();
+
+      expect(h.orchestrator.snapshot()).toMatchObject({
+        paused: true,
+        failed: true,
+        lastError: {
+          code: loopCode,
+          origin: "member-turn",
+          member: "planner",
+          detail: { engineCode, message: `injected ${engineCode} failure` },
+        },
+      });
+      expect(logger.error.mock.calls[0]?.[1]).toMatchObject({ code: loopCode });
+    });
+  }
+
+  it("freezes on a member failure and restarts the current activity on recovery", async () => {
+    const logger = { error: vi.fn() };
+    const h = createHarness({ logger });
+    await h.orchestrator.materialize(teamOptions());
+    const planner = member(h, PLANNER_ID);
+
+    // plan freezes on failure; nothing is driven while frozen.
+    h.orchestrator.submit("首条");
+    planner.failCurrentTurn("SERVER");
+    await tick();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      active: null,
+      activation: "planner",
+    });
+
+    // Recovery: the delivery drive, then the flow restarts plan (whose replay
+    // is empty here) and judges the edge.
+    h.orchestrator.submit("恢复");
+    expect(planner.followups.map(messageText)).toEqual(["首条", "恢复"]);
+    planner.settle();
+    await h.orchestrator.whenQuiescent();
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: false,
+      failed: false,
+      lastError: null,
+      activation: "player",
+    });
+  });
+
+  it("freezes on abort without writing a failure fact (the aborted channel)", async () => {
+    const logger = { error: vi.fn() };
+    const h = createHarness({ logger });
+    await h.orchestrator.materialize(teamOptions());
+    const planner = member(h, PLANNER_ID);
+
+    h.orchestrator.submit("首条");
+    expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
+    await h.orchestrator.whenQuiescent();
+
+    expect(h.orchestrator.snapshot()).toMatchObject({
+      paused: true,
+      failed: false,
+      lastError: null,
+      active: null,
+      activation: "planner",
+    });
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
   });
 });

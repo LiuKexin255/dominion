@@ -10,7 +10,7 @@
  */
 
 import { LlmError } from "@deepseek-ai/dsh-llm";
-import type { GenerateOptions } from "@deepseek-ai/dsh-llm";
+import type { ContentBlock, GenerateOptions } from "@deepseek-ai/dsh-llm";
 
 /** One message item of the Responses `input` array. */
 export interface ResponsesInputMessage {
@@ -94,13 +94,36 @@ function renderToolResultContent(content: ReadonlyArray<{ type: string; text?: s
 }
 
 /**
+ * Render one system message's content to the `instructions` text. The
+ * rendered system prompt is text-only; any other block type fails loudly
+ * instead of silently dropping instructions.
+ */
+function renderSystemText(content: ReadonlyArray<ContentBlock>): string {
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === "text") {
+      parts.push(block.text);
+      continue;
+    }
+    throw new LlmError(
+      `GLM Responses adapter supports text-only system content; got ${block.type}`,
+      "UNSUPPORTED_CONTENT",
+    );
+  }
+  return parts.join("");
+}
+
+/**
  * Serialize one fully-assembled model call into the Responses request
- * body. Assistant reasoning blocks are intentionally not replayed (GLM
- * regenerates reasoning each turn; contract §4). Tool calls and results
- * replay as `function_call` / `function_call_output` input items (D11) so
- * a follow-up tool step can carry its results, and tool definitions map to
- * the top-level `tools` array so the model can issue function calls at
- * all. Unsupported content (images) and unsupported options (stop
+ * body. A system-role message maps to the top-level `instructions` text
+ * (the loop-built request carries the rendered prompt as a leading
+ * system message). Assistant reasoning blocks are intentionally not
+ * replayed (GLM regenerates reasoning each turn; contract §4). Tool calls
+ * replay as `function_call` items and a tool-role result message replays
+ * as `function_call_output` (D11) so a follow-up tool step can carry its
+ * results, and tool definitions map to the top-level `tools` array so the
+ * model can issue function calls at all. Unsupported content (images,
+ * mid-conversation system messages) and unsupported options (stop
  * sequences, reasoning efforts) fail loudly instead of being silently
  * dropped.
  */
@@ -119,22 +142,32 @@ export function serializeRequest(options: GenerateOptions): ResponsesRequest {
   }
 
   const input: ResponsesInputItem[] = [];
+  const systemTexts: string[] = [];
   for (const message of options.messages) {
     switch (message.role) {
+      case "system": {
+        // The Responses `instructions` slot can only express one prompt, so
+        // system-role messages join into it only while they form the leading
+        // run, before any input item has been pushed. A system message
+        // positioned after any input item fails loudly rather than being
+        // folded into the one-shot prompt out of position.
+        if (input.length > 0) {
+          throw new LlmError(
+            "GLM Responses adapter does not support mid-conversation system messages",
+            "UNSUPPORTED_CONTENT",
+          );
+        }
+        const text = renderSystemText(message.content);
+        if (text.length > 0) {
+          systemTexts.push(text);
+        }
+        continue;
+      }
       case "user": {
         const content: Array<{ type: "input_text"; text: string }> = [];
-        const toolItems: ResponsesInputItem[] = [];
         for (const block of message.content) {
           if (block.type === "text") {
             content.push({ type: "input_text", text: block.text });
-            continue;
-          }
-          if (block.type === "tool-result") {
-            toolItems.push({
-              type: "function_call_output",
-              call_id: block.toolCallId,
-              output: renderToolResultContent(block.content),
-            });
             continue;
           }
           throw new LlmError(
@@ -142,12 +175,19 @@ export function serializeRequest(options: GenerateOptions): ResponsesRequest {
             "UNSUPPORTED_CONTENT",
           );
         }
-        // Message text first, then the tool outputs — an empty content
-        // array (a pure tool-result message) produces no message item.
+        // An empty user message produces no item; the Responses endpoint
+        // rejects an empty content array.
         if (content.length > 0) {
           input.push({ type: "message", role: "user", content });
         }
-        input.push(...toolItems);
+        continue;
+      }
+      case "tool": {
+        input.push({
+          type: "function_call_output",
+          call_id: message.toolCallId,
+          output: renderToolResultContent(message.content),
+        });
         continue;
       }
       case "assistant": {
@@ -199,8 +239,14 @@ export function serializeRequest(options: GenerateOptions): ResponsesRequest {
     input,
     stream: true,
   };
-  if (options.system !== undefined && options.system.length > 0) {
-    request.instructions = options.system;
+  // The system slot joins the one-shot `options.system` with any rendered
+  // system-role message, mirroring the official adapter's `[options.system,
+  // historySystem].join("\n\n")` precedence.
+  const instructions = [options.system, ...systemTexts]
+    .filter((text): text is string => text !== undefined && text.length > 0)
+    .join("\n\n");
+  if (instructions.length > 0) {
+    request.instructions = instructions;
   }
   if (options.temperature !== undefined) {
     request.temperature = options.temperature;

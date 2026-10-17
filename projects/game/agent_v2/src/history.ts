@@ -15,39 +15,46 @@
  *   broadcast rendered as `user: [sender]…`).
  *
  * {@link MemberCollector} owns one materialized member's subscriptions:
- * `session/event` (turn/step/chunk/tool events), `agent/status`, and
- * `agent/error`. It latches a member turn on the running transition (or the
- * first turn-scoped event), emits the member-labelled ChatEvent frames
+ * `session/event` (turn/step/tool events), `agent/assistant-stream` (the live
+ * model chunk publications), `agent/status`, and `agent/error`. It latches a
+ * member turn on the running transition (or the first turn-scoped event),
+ * emits the member-labelled ChatEvent frames
  * (turn_start/block_start/delta/block_end/tool_result/turn_end), and writes
- * the history projections. Dsh chunk indexes are per-step (every model
- * request restarts at 0), so the collector remaps them onto one turn-global
- * monotonic sequence, resetting the step-local table at every step boundary
- * (specs/049-agent-v2-dsh-init/contracts/conversation-api.md §4; specs/
- * 051-agent-v2-dsh-migration/data-model.md §2.4).
+ * the history projections. Live display frames come from the process-local
+ * `agent/assistant-stream` surface: there is no `assistant/chunk` session
+ * event, and the durable `assistant/message` carries the same chunks
+ * compacted as `stream` at step settlement — the live surface is the
+ * per-chunk publication that preserves the original streaming timing
+ * (specs/070-dsh-upgrade/research.md D7 终态结论). Dsh chunk indexes are per-step
+ * (every model request restarts at 0), so the collector remaps them onto one
+ * turn-global monotonic sequence, resetting the step-local table at every
+ * step boundary (specs/049-agent-v2-dsh-init/contracts/conversation-api.md
+ * §4; specs/051-agent-v2-dsh-migration/data-model.md §2.4).
  *
  * Event vocabulary anchors: dsh-session SessionEventMap
- * (node_modules/.pnpm/@deepseek-ai+dsh-session@0.1.1-rc.2_a4e4bb24/lib/types/
- * types.d.ts).
+ * (node_modules/@deepseek-ai/dsh-session/lib/types/types.d.ts), the dsh-agent
+ * live-stream frame types (AssistantStreamFrame,
+ * node_modules/@deepseek-ai/dsh-agent/lib/types/runtime-types.d.ts), and the
+ * dsh-llm message/block definitions
+ * (node_modules/@deepseek-ai/dsh-llm/lib/types/{types,message}.d.ts).
  */
 
 import { randomUUID } from "node:crypto";
-import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
-import type { ContentBlock } from "../agent_v2_types/projects/game/v2/ContentBlock.js";
-import type { HistoryMessage } from "../agent_v2_types/projects/game/v2/HistoryMessage.js";
+import type { TeamLiveEvent, TeamMemberEvent } from "@dominion/dsh-team";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
+import type { ContentBlock } from "../agent_v2_types/projects/game/ContentBlock.js";
+import type { HistoryMessage } from "../agent_v2_types/projects/game/HistoryMessage.js";
 import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
-import type { BlockStartEvent } from "../agent_v2_types/projects/game/v2/BlockStartEvent.js";
-import type { BlockDeltaEvent } from "../agent_v2_types/projects/game/v2/BlockDeltaEvent.js";
-import type { BlockEndEvent } from "../agent_v2_types/projects/game/v2/BlockEndEvent.js";
-import type { ToolResultEvent } from "../agent_v2_types/projects/game/v2/ToolResultEvent.js";
-import type { ToolStatus } from "../agent_v2_types/projects/game/v2/ToolStatus.js";
-import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/v2/TeamMessage.js";
-import type { MemberViewEvent } from "../agent_v2_types/projects/game/v2/MemberViewEvent.js";
-import type { DshContext } from "./dsh.js";
+import type { BlockStartEvent } from "../agent_v2_types/projects/game/BlockStartEvent.js";
+import type { BlockDeltaEvent } from "../agent_v2_types/projects/game/BlockDeltaEvent.js";
+import type { BlockEndEvent } from "../agent_v2_types/projects/game/BlockEndEvent.js";
+import type { ToolResultEvent } from "../agent_v2_types/projects/game/ToolResultEvent.js";
+import type { ToolStatus } from "../agent_v2_types/projects/game/ToolStatus.js";
+import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/TeamMessage.js";
+import type { MemberViewEvent } from "../agent_v2_types/projects/game/MemberViewEvent.js";
 
 /**
  * Structural subset of a dsh `session/event` payload read by the collector.
- * `assistant/chunk` is `{turn, step, chunk}` with chunk a raw StreamChunk.
  */
 export interface DshSessionEvent {
   type: string;
@@ -81,6 +88,22 @@ export interface DshTokenUsage {
   inputTokens: number;
   outputTokens: number;
   reasoningTokens?: number;
+}
+
+/**
+ * Structural subset of one `agent/assistant-stream` live publication
+ * (dsh-agent `AssistantStreamFrame`). The opening `start` frame carries the
+ * durable turn/step owning the attempt; every `chunk` frame then publishes
+ * the raw StreamChunk with its dense attempt-local position (the provider
+ * block index inside `chunk` is the per-step display key), and the closing
+ * `end` frame settles the attempt.
+ */
+export interface DshAssistantStreamFrame {
+  type: string;
+  attemptId?: string;
+  turn?: number;
+  step?: number;
+  chunk?: DshStreamChunk;
 }
 
 /** The `assistant/message` event shape the history is appended from. */
@@ -129,9 +152,11 @@ export interface ToolCallEvent extends DshSessionEvent {
 }
 
 /**
- * The `tool/result` event shape (dsh-session SessionEventMap). The message's
- * single tool-result block carries the outcome (`toolCallId`, `isError`) and
- * the tool's rendered model-facing content.
+ * The `tool/result` event shape (dsh-session SessionEventMap): the result is
+ * a first-class `ToolResultMessage` (role `tool`) — `toolCallId` and
+ * `isError` sit at the message top level and `content` IS the result blocks;
+ * there is no nested `tool-result` content arm
+ * (specs/070-dsh-upgrade/research.md D7 终态结论).
  */
 export interface ToolResultMessageEvent extends DshSessionEvent {
   type: "tool/result";
@@ -139,12 +164,12 @@ export interface ToolResultMessageEvent extends DshSessionEvent {
     turn: number;
     step: number;
     message: {
-      content: ReadonlyArray<{
-        type: "tool-result";
-        toolCallId?: string;
-        isError?: boolean;
-        content?: ReadonlyArray<DshContentBlockView>;
-      }>;
+      /** Provider-issued call id of the tool call this message answers. */
+      toolCallId?: string;
+      /** Whether the tool invocation failed. */
+      isError?: boolean;
+      /** The result blocks (text/image/…); no nested tool-result wrapper. */
+      content: ReadonlyArray<DshContentBlockView>;
     };
     error?: { name: string; code: string };
     meta?: unknown;
@@ -173,8 +198,21 @@ export interface TurnOutcome {
   error?: { code: string; message: string };
 }
 
-/** The two materialized team members; team roles are open strings upstream. */
-export type MemberRole = "player" | "planner";
+/**
+ * The host's team member roles: the two LLM agent members plus the
+ * announce-only announcer (specs/076-agent-v2-optimize/contracts/
+ * announcer-member.md §1/§3). Team roles are open strings upstream — this is
+ * the scene vocabulary the host validates member names against.
+ */
+export type MemberRole = "player" | "planner" | "announcer";
+
+/**
+ * The agent-backed member roles: the members that own an `AgentHandle`/`Agent`
+ * and therefore a member view and collector. The announcer is announce-only —
+ * its output goes to the merge sequence only, so it never owns a view
+ * (specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
+ */
+export type AgentMemberRole = "player" | "planner";
 
 /**
  * The sender annotation of a relayed broadcast: the source role string
@@ -188,8 +226,8 @@ export function broadcastSender(role: string | undefined): string {
 export interface TeamMergeEntry {
   /**
    * Producer role string: the reserved `"user"` value for user input, a
-   * materialized member role, or a non-agent system member's role (e.g. the
-   * saolei announcer). The wire form is the string itself — the session face
+   * materialized member role, or a non-agent member's role (the announcer).
+   * The wire form is the string itself — the session face
    * is a scene-agnostic primitive and carries no role enum (2026-09-10 user
    * ruling).
    */
@@ -342,7 +380,7 @@ export function usageToProto(usage: DshTokenUsage | undefined): {
  */
 export class TeamHistory {
   private readonly merge: TeamMergeEntry[] = [];
-  private readonly views: Record<MemberRole, MemberViewEntry[]> = { player: [], planner: [] };
+  private readonly views: Record<AgentMemberRole, MemberViewEntry[]> = { player: [], planner: [] };
   private nextSeq = 1;
   private nextMessageId = 1;
 
@@ -369,7 +407,7 @@ export class TeamHistory {
    * (specs/054-agent-v2-bugfixes/data-model.md §1.5).
    */
   appendMemberOutput(
-    role: MemberRole,
+    role: AgentMemberRole,
     content: ReadonlyArray<DshContentBlockView>,
     interrupted = false,
   ): TeamMergeEntry | undefined {
@@ -390,8 +428,8 @@ export class TeamHistory {
   }
 
   /**
-   * Append one system-member announcement (the saolei game-stats message) to
-   * the merge sequence with its sending role label and fan out the
+   * Append one announce-only member's announcement (the announcer's game-stats
+   * message) to the merge sequence with its sending role label and fan out the
    * `team_message{member=role}` frame — `ListTeamMessages` and the stream
    * frame share this entry (same source, same value). The message is a
    * `ROLE_AGENT` single-text-block history entry; the announcement has no
@@ -414,7 +452,7 @@ export class TeamHistory {
    * of waiting for a ListMemberMessages backfill
    * (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
    */
-  appendMemberViewUser(role: MemberRole, event: UserMessageEvent): void {
+  appendMemberViewUser(role: AgentMemberRole, event: UserMessageEvent): void {
     const source = event.data.source;
     if (source.kind !== "user" && source.kind !== "team-broadcast") {
       return;
@@ -442,7 +480,7 @@ export class TeamHistory {
    * both projections observe the settlement. A result with no unsettled
    * matching block is ignored (returns false) — never fabricated.
    */
-  settleToolResult(role: MemberRole, toolId: string, status: ToolStatus, result: string): boolean {
+  settleToolResult(role: AgentMemberRole, toolId: string, status: ToolStatus, result: string): boolean {
     for (let i = this.merge.length - 1; i >= 0; i -= 1) {
       const entry = this.merge[i];
       if (entry === undefined || entry.member !== role) {
@@ -468,7 +506,7 @@ export class TeamHistory {
   }
 
   /** Snapshot of one member's view for ListMemberMessages (defensive copy). */
-  listMemberMessages(role: MemberRole): MemberViewEntry[] {
+  listMemberMessages(role: AgentMemberRole): MemberViewEntry[] {
     return [...this.views[role]];
   }
 
@@ -532,42 +570,66 @@ interface ActiveMemberTurn {
 }
 
 /**
- * Session-lifetime collector for one materialized member: owns that member's
- * `session/event`, `agent/status`, and `agent/error` subscriptions, writes
- * the member-labelled stream frames and the team/member history projections
+ * Session-lifetime collector for one materialized member: it consumes that
+ * member's unified-stream envelopes ({@link MemberCollector.applyEvent}) — the
+ * `log` channel (session events) and the `live` channel (agent-only activity:
+ * assistant-stream frames, status transitions, errors) — writes the
+ * member-labelled stream frames and the team/member history projections
  * (shared {@link TeamHistory}), and settles member turns on the idle
  * transition — the same quiescence anchor the orchestrator's switching logic
- * uses.
+ * uses. The host entry owns the single team-stream subscription and dispatches
+ * by envelope role (specs/077-announcer-member-unification/contracts/
+ * member-event-stream.md §5).
  */
 export class MemberCollector {
   private active: ActiveMemberTurn | undefined;
   /** A cancel/refresh outcome recorded while this member's turn is in flight. */
   private pendingOutcome: TurnOutcome | undefined;
-  private readonly off: Array<() => void> = [];
+  /**
+   * Live attempt identity → the step its opening `start` frame declared.
+   * Chunk frames carry no step of their own, so this map is how a chunk finds
+   * its step; entries drop on the closing `end` frame.
+   */
+  private readonly attempts = new Map<string, number>();
 
   constructor(
-    ctx: DshContext,
-    private readonly agent: Agent,
-    private readonly role: MemberRole,
+    /** The member's source id (an agent member's dsh session id) — the envelope's member identity. */
+    private readonly memberId: string,
+    private readonly role: AgentMemberRole,
     private readonly sessionName: string,
     private readonly history: TeamHistory,
     private readonly sink: (event: ChatEvent) => void,
-  ) {
-    this.off.push(
-      ctx.on("session/event", (session, event) => {
-        this.onSessionEvent(session.id, event as unknown as DshSessionEvent);
-      }),
-    );
-    this.off.push(
-      ctx.on("agent/status", (payload) => {
-        this.onStatus(payload);
-      }),
-    );
-    this.off.push(
-      ctx.on("agent/error", (payload) => {
-        this.onError(payload);
-      }),
-    );
+  ) {}
+
+  /**
+   * The member's only production entry: one envelope of the team's unified
+   * member event stream (specs/077-announcer-member-unification/contracts/
+   * member-event-stream.md §2.2/§5). The host entry dispatches by role; this
+   * entry ignores an envelope naming another member (a wiring error, not this
+   * member's production) and dispatches by channel.
+   */
+  applyEvent(envelope: TeamMemberEvent): void {
+    if (envelope.memberId !== this.memberId) {
+      return;
+    }
+    if (envelope.channel === "log") {
+      this.onSessionEvent(envelope.event as unknown as DshSessionEvent);
+      return;
+    }
+    this.onLiveEvent(envelope.event);
+  }
+
+  /** One live-channel event: the agent-only activity the member reports. */
+  private onLiveEvent(event: TeamLiveEvent): void {
+    if (event.kind === "assistant-stream") {
+      this.onAssistantStream(event.frame);
+      return;
+    }
+    if (event.kind === "status") {
+      this.onStatus(event.status);
+      return;
+    }
+    this.onError(event.error);
   }
 
   /**
@@ -588,19 +650,14 @@ export class MemberCollector {
     this.pendingOutcome = outcome;
   }
 
-  /** Unsubscribe the session-lifetime listeners (team teardown). */
+  /** Release the member's turn state (team teardown). */
   dispose(): void {
-    for (const off of this.off) {
-      off();
-    }
-    this.off.length = 0;
     this.active = undefined;
+    this.pendingOutcome = undefined;
+    this.attempts.clear();
   }
 
-  private onSessionEvent(dshSessionId: string, event: DshSessionEvent): void {
-    if (dshSessionId !== this.agent.session.id) {
-      return;
-    }
+  private onSessionEvent(event: DshSessionEvent): void {
     if (event.type === "user/message") {
       // Member-view projection only: the user input or a relayed broadcast
       // enters this member's view exactly when the orchestrator drives it
@@ -626,17 +683,14 @@ export class MemberCollector {
       return;
     }
     if (event.type === "tool/call") {
-      // Display frames already streamed as tool-call chunks; the result
-      // settles the matching block (wire invariant: the loop pairs every
-      // call with a result).
+      // Display frames already streamed through the live
+      // `agent/assistant-stream` tool-call chunks; the result settles the
+      // matching block (wire invariant: the loop pairs every call with a
+      // result).
       return;
     }
     if (event.type === "tool/result") {
       this.onToolResult(event as ToolResultMessageEvent);
-      return;
-    }
-    if (event.type === "assistant/chunk") {
-      this.onChunk(event.data as { turn?: number; step?: number; chunk?: DshStreamChunk } | undefined);
       return;
     }
     if (event.type === "turn/end") {
@@ -656,10 +710,10 @@ export class MemberCollector {
    * block is ignored on the history side, never fabricated.
    */
   private onToolResult(event: ToolResultMessageEvent): void {
-    const block = event.data.message.content[0];
-    const toolId = block?.toolCallId ?? "";
-    const status: ToolStatus = block?.isError ? "TOOL_STATUS_FAILED" : "TOOL_STATUS_SUCCEEDED";
-    const result = (block?.content ?? [])
+    const message = event.data.message;
+    const toolId = message.toolCallId ?? "";
+    const status: ToolStatus = message.isError ? "TOOL_STATUS_FAILED" : "TOOL_STATUS_SUCCEEDED";
+    const result = (message.content ?? [])
       .map((candidate) => (candidate.type === "text" ? candidate.text ?? "" : ""))
       .join("");
     this.history.settleToolResult(this.role, toolId, status, result);
@@ -673,28 +727,60 @@ export class MemberCollector {
     });
   }
 
-  private onChunk(
-    data: { turn?: number; step?: number; chunk?: DshStreamChunk } | undefined,
-  ): void {
-    const chunk = data?.chunk;
-    if (!chunk) {
+  /**
+   * Handle one live `agent/assistant-stream` publication for this member. The
+   * opening `start` frame declares the attempt's step and resets the
+   * step-local table at a step boundary; each `chunk` frame then drives the
+   * existing chunk→ChatEvent mapping with that step. The envelope names this
+   * member, so no identity filter is needed here.
+   */
+  private onAssistantStream(frame: DshAssistantStreamFrame | undefined): void {
+    if (frame?.attemptId === undefined) {
       return;
     }
+    if (frame.type === "start") {
+      if (frame.step === undefined) {
+        return;
+      }
+      this.attempts.set(frame.attemptId, frame.step);
+      this.enterStep(frame.step);
+      return;
+    }
+    if (frame.type === "chunk") {
+      const step = this.attempts.get(frame.attemptId);
+      if (step === undefined || frame.chunk === undefined) {
+        return;
+      }
+      this.onChunk(frame.chunk, step);
+      return;
+    }
+    // end: the attempt settled (durably or abandoned); drop its step binding.
+    this.attempts.delete(frame.attemptId);
+  }
+
+  /**
+   * Start (or continue) one model-output step: a step-number change drops the
+   * step-local index table and the pending interrupted-prefix blocks
+   * (specs/051-agent-v2-dsh-migration/data-model.md §2.4 — provider chunk
+   * indexes restart at 0 on every model request, while the turn-global
+   * counter stays monotonic across steps). A same-step retry keeps the table.
+   */
+  private enterStep(step: number): void {
+    const active = this.ensureActive();
+    if (step === active.step) {
+      return;
+    }
+    active.step = step;
+    active.localIndexes = new Map();
+    active.pending = [];
+  }
+
+  private onChunk(chunk: DshStreamChunk, step: number): void {
     const active = this.ensureActive();
     if (chunk.type === "usage") {
       // Folded into turn_end.usage; never a standalone frame (§4).
       active.usage = chunk.usage;
       return;
-    }
-    // Step-boundary reset (data-model.md §2.4): dsh chunk indexes restart at
-    // 0 on every model request, so a new step number drops the step-local
-    // table and the pending interrupted-prefix blocks; the turn-global
-    // counter keeps monotonic across steps.
-    const step = data?.step;
-    if (step !== undefined && step !== active.step) {
-      active.step = step;
-      active.localIndexes = new Map();
-      active.pending = [];
     }
     const index = chunk.index ?? 0;
     if (chunk.type === "reasoning-delta" || chunk.type === "text-delta") {
@@ -712,10 +798,11 @@ export class MemberCollector {
       this.sessionName,
       active.turnId,
       (localIndex) => this.remapIndex(active, localIndex),
-      // Step numbers reach clients on every block frame for the display
-      // segmentation (specs/054-agent-v2-bugfixes/data-model.md §1.1); a dsh
-      // event without one degrades to step 0.
-      step ?? 0,
+      // The attempt's declared step reaches clients on every block frame for
+      // the display segmentation (specs/054-agent-v2-bugfixes/data-model.md
+      // §1.1). A `start` frame without a step never registers its attempt, so
+      // every chunk that reaches here carries a concrete step.
+      step,
     );
     if (chatEvent !== undefined) {
       chatEvent.member = this.role;
@@ -774,15 +861,12 @@ export class MemberCollector {
     return active;
   }
 
-  private onStatus(payload: { agent?: Agent; status?: string }): void {
-    if (payload.agent !== this.agent) {
-      return;
-    }
-    if (payload.status === "running") {
+  private onStatus(status: string): void {
+    if (status === "running") {
       this.ensureActive();
       return;
     }
-    if (payload.status !== "idle" || this.active === undefined) {
+    if (status !== "idle" || this.active === undefined) {
       return;
     }
     const active = this.active;
@@ -817,11 +901,8 @@ export class MemberCollector {
     });
   }
 
-  private onError(payload: { agent?: Agent; error?: unknown }): void {
-    if (payload.agent !== this.agent) {
-      return;
-    }
-    this.recordFailure(toFailure(payload.error));
+  private onError(error: unknown): void {
+    this.recordFailure(toFailure(error));
   }
 
   private recordFailure(failure: DshLlmFailureView | undefined): void {

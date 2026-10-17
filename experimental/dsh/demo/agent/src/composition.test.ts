@@ -12,10 +12,11 @@ import type { DshContext } from "./dsh.js";
 /**
  * Integration tests over the REAL direct composition: the shipped cordis.yml
  * boots in-process (same manifest the deployed artifact carries), with the
- * roster roots pointed at the runfiles template presets and the LLM adapter
- * pointed at a local capture server. This is the single-test surface of the
- * verification matrix (specs/058-dsh-preset-roster-demo/research.md R11,
- * re-based on the 060 derivation semantics —
+ * preset registry and the preset-authoring template snapshot the manifest
+ * carries and the LLM
+ * adapter pointed at a local capture server. This is the single-test surface
+ * of the verification matrix (specs/058-dsh-preset-roster-demo/research.md
+ * R11, re-based on the 060 derivation semantics —
  * specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2):
  *
  *   - V1-1  per-session composition difference (persona / system prompt)
@@ -23,19 +24,18 @@ import type { DshContext } from "./dsh.js";
  *           request surface (what the model actually receives)
  *   - V1-3  the resolved preset id lands in the session header, and an
  *           id-less create is rejected INVALID_ARGUMENT (preset selection is
- *           mandatory — the roster default is gone)
+ *           mandatory — compose requires an explicit store preset)
  *   - V2-1  the preset-row tool is visible only to preset members
  *           (global layer empty, member-scope view populated)
- *   - V2-2  two sessions on one store preset each hold their OWN derived
- *           mount (no shared standing registration) while presenting the
- *           same persona and tool catalog
+ *   - V2-2  two sessions on one store preset share the registered revision
+ *           while presenting the same persona and tool catalog
  *
  * The sessions bind STORE presets authored below through the real
- * `ctx.presetAuthoring.create`; template ids are derivation sources, no
- * longer directly composable. The only seams are environmental (roots/baseURL
- * env vars read by the cordis.yml `!!js` expressions) — the composition
- * itself is unmocked. The mock LLM lives below the llm adapter boundary,
- * mirroring the fake-llm wire contract
+ * `ctx.presetAuthoring.create`; the declared templates are derivation sources,
+ * not directly composable. The only seam is environmental (the baseURL env var
+ * read by the cordis.yml `!!js` expression) — the composition itself is
+ * unmocked. The mock LLM lives below the llm adapter boundary, mirroring the
+ * fake-llm wire contract
  * (specs/047-dsh-chat-demo/contracts/fake-llm-wire.md §3).
  */
 
@@ -179,6 +179,13 @@ function repairRunfilesNativeBindingLinks(): void {
     .readdirSync(store)
     .find((e) => e.startsWith("node-addon-require-builtin-linux-x64-gnu@"));
   if (!bindingEntry) return;
+  // The adjacency the loader needs lives in the native-custom-loader store
+  // entry; the version suffix moves with the dsh version line, so locate it
+  // rather than pinning a version that would silently stop matching.
+  const loaderEntry = fs
+    .readdirSync(store)
+    .find((e) => e.startsWith("node-addon-native-custom-loader@"));
+  if (!loaderEntry) return;
   const bindingTarget = path.join(
     store,
     bindingEntry,
@@ -188,11 +195,11 @@ function repairRunfilesNativeBindingLinks(): void {
   const spots = [
     path.join(
       store,
-      "node-addon-native-custom-loader@0.1.5",
+      loaderEntry,
       "node_modules",
       "node-addon-require-builtin-linux-x64-gnu",
     ),
-    path.join(store, "node-addon-native-custom-loader@0.1.5", "node_modules", "linux-x64-gnu"),
+    path.join(store, loaderEntry, "node_modules", "linux-x64-gnu"),
   ];
   for (const spot of spots) {
     if (fs.existsSync(spot)) continue;
@@ -215,17 +222,12 @@ describe("composition (real direct-compose boot)", () => {
   beforeAll(async () => {
     mock = await startMockLlm();
     repairRunfilesNativeBindingLinks();
-    // The roster scans the runfiles copy of the deployed template presets
-    // (same files the artifact ships); the sessions below bind store presets
-    // authored after boot — no writable root exists under the 060 derivation
-    // semantics.
+    // The manifest itself carries the preset registry + the preset-authoring
+    // template snapshot; the sessions below bind store presets authored after
+    // boot — a store record
+    // is the only composable preset under the 060 derivation semantics.
     process.env.FAKE_LLM_API_KEY = "dummy-key";
     process.env.FAKE_LLM_BASE_URL = mock.url;
-    process.env.PRESET_TEMPLATES_ROOT = path.resolve(
-      import.meta.dirname,
-      "..",
-      "presets-templates",
-    );
     try {
       ctx = (await boot(
         "dsh-demo-agent",
@@ -283,7 +285,6 @@ describe("composition (real direct-compose boot)", () => {
     mock?.server.close();
     delete process.env.FAKE_LLM_API_KEY;
     delete process.env.FAKE_LLM_BASE_URL;
-    delete process.env.PRESET_TEMPLATES_ROOT;
   }, 15_000);
 
   it(
@@ -328,9 +329,10 @@ describe("composition (real direct-compose boot)", () => {
     // creation metadata the factory folded from meta.
     expect(surface.agents.get("comp-conv-explicit")?.session.header.agentPreset).toBe(TOOLS_PRESET);
 
-    // Preset selection is mandatory under the 060 derivation semantics (the
-    // roster default is gone): an id-less create reaches compose(undefined)
-    // and is rejected INVALID_ARGUMENT before any agent is published.
+    // Preset selection is mandatory under the 060 derivation semantics
+    // (compose requires an explicit store preset): an id-less create reaches
+    // compose(undefined) and is rejected INVALID_ARGUMENT before any agent is
+    // published.
     await expect(sessions.create("comp-conv-default")).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
     });
@@ -356,7 +358,7 @@ describe("composition (real direct-compose boot)", () => {
     expect(surface.tools.get("demo_echo", scopeOf(standardAgent!.ctx))).toBeUndefined();
   }, 30_000);
 
-  it("V2-2: two sessions on one store preset each hold their own derived mount", async () => {
+  it("V2-2: two sessions on one store preset share the registered revision and composition", async () => {
     await sessions.create("comp-conv-shared-a", TOOLS_PRESET);
     await sessions.create("comp-conv-shared-b", TOOLS_PRESET);
     const agentA = surface.agents.get("comp-conv-shared-a");
@@ -369,15 +371,18 @@ describe("composition (real direct-compose boot)", () => {
     expect(scopeA).toBeDefined();
     expect(scopeB).toBeDefined();
 
-    // Per-agent derived mounts: each session's composition is a mountPreset
-    // subtree owned by that member's scope, so both sessions resolve
-    // demo_echo through DISTINCT registrations — there is no shared standing
-    // mount anymore.
+    // Revision sharing: the registry owns one revision per preset id and every
+    // agent bound to that id joins the same revision scope, so both sessions
+    // resolve demo_echo through the SAME scoped registration (the registry
+    // keeps one retained revision per definition, not a per-agent mount).
+    // Identity is compared as a boolean: the tool views are cordis proxies
+    // whose property reads are inject-guarded, so vitest's matcher machinery
+    // must not probe them.
     const viewA = surface.tools.get("demo_echo", scopeA!);
     const viewB = surface.tools.get("demo_echo", scopeB!);
     expect(viewA).toBeDefined();
     expect(viewB).toBeDefined();
-    expect(viewB).not.toBe(viewA);
+    expect(viewB === viewA).toBe(true);
 
     // Content equivalence: the same store preset derives the same persona
     // and tool catalog for both sessions.

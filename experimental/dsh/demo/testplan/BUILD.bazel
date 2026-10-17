@@ -78,11 +78,13 @@ go_largetest(
 )
 
 # preset_test is the preset conversation-binding suite
-# (specs/058-dsh-preset-roster-demo/tasks.md T017): explicit
-# CreateConversation with a preset (default/差异 selection), end-to-end
-# composition assertions via the fake-llm system_keywords probes, shared
-# behaviour for same-preset sessions, session-level binding stability,
-# idempotent/rebuild repeats, the unknown-preset rejection, and the
+# (specs/058-dsh-preset-roster-demo/tasks.md T017, re-based on the 070
+# registry + declarative-template model): explicit CreateConversation bound to
+# a store preset, end-to-end composition assertions via the fake-llm
+# system_keywords probes, shared-revision behaviour for same-preset sessions,
+# session-level binding stability, idempotent/rebuild repeats, the
+# unknown-preset rejection, the store-only authoring lifecycle
+# (create→bind→update→delete) with its rejection edges, and the
 # no-lazy-creation FAILED_PRECONDITION edge. Appended to the same suite in
 # interface_test.yaml (single-plan principle, style/large_test.md
 # §测试计划数量); helpers and anchors are shared with the other suites

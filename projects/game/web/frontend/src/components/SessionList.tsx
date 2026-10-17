@@ -8,9 +8,9 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Button,
-  IconEllipsisOutline16,
-  IconPlusOutline16,
-  IconRefreshOutline14,
+  IconEllipsisOutlineRegular,
+  IconPlusOutlineRegular,
+  IconRefreshOutlineRegular,
   Menu,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -49,13 +49,9 @@ const MARQUEE_DELAY_MS = 250
 const MARQUEE_STEP_MS = 30
 const MARQUEE_STEP_PX = 3
 
-// 图标按钮的 tooltip 用原生 title 而非 primitives 的 Tooltip：后者经
-// cloneElement 向锚点注入 ref（node_modules/.pnpm/
-// @deepseek-ai+dsh-client-ui-primitives@0.1.1-rc.2_*/
-// node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/Tooltip.d.ts），
-// 而 0.1.1-rc.2 的 Button 是不转发 ref 的函数组件（React 18 函数组件不接受
-// ref prop），锚点 ref 恒为 null、气泡无法定位；title + aria-label 以单元素
-// 承载两个语义。
+// 图标按钮的 tooltip 用原生 title + aria-label 以单元素承载视觉提示与可访
+// 问名两个语义，不引入 primitives 的 Tooltip 锚点包装：原生 title 由浏览器
+// 直接呈现，组件树与样式钩子保持无额外包裹层。
 function IconButton(props: {
   icon: 'plus' | 'refresh' | 'ellipsis'
   label: string
@@ -65,18 +61,18 @@ function IconButton(props: {
 }) {
   const glyph =
     props.icon === 'plus' ? (
-      <IconPlusOutline16 />
+      <IconPlusOutlineRegular />
     ) : props.icon === 'refresh' ? (
-      <IconRefreshOutline14 />
+      <IconRefreshOutlineRegular size={14} />
     ) : (
-      <IconEllipsisOutline16 />
+      <IconEllipsisOutlineRegular />
     )
   return (
     <Button
       size="sm"
       icon={glyph}
-      aria-label={props.label}
       title={props.label}
+      aria-label={props.label}
       data-testid={props.testId}
       disabled={props.disabled}
       onClick={props.onClick}

@@ -1,14 +1,15 @@
 // Package handler implements the MemoryServiceServer gRPC interface for
-// Memory CRUD (spec 039-planner-memory-calibration FR-006;
-// specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §2/§6).
+// Memory CRUD — planner long-term memory entries scoped to a preset
+// (specs/071-memory-preset-scope/contracts/memory-service.md §1-3) — and the
+// WikiServiceServer gRPC interface for template-scoped wiki entries
+// (specs/069-wiki-template-web/contracts/wiki-service.md §2-4). Both share the
+// memory service's error mapping (toStatusError).
 package handler
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"time"
 
@@ -22,13 +23,6 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-// memoryIDPattern is the allowed character set for the memory resource id
-// ({memory} pattern segment,
-// specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §2/§6). The agent generates memory_id internally on add (spec 039 Session
-// 2026-08-08 / FR-008); the service rejects anything outside [a-z0-9_-].
-var memoryIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // Handler implements MemoryServiceServer for Memory CRUD operations.
 type Handler struct {
@@ -46,36 +40,44 @@ func NewHandler(memoryRepo domain.MemoryRepository) *Handler {
 
 // ─── Memory RPCs ─────────────────────────────────────────────────────────
 
-// CreateMemory creates a Memory under a session (AIP-133:
+// CreateMemory creates a Memory under a preset (AIP-133:
 // https://google.aip.dev/133). The resource is embedded in the request — the
 // memory text is carried by req.memory.content
-// (specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §2), not a top-level request field. The template
-// and session are derived from the request parent; the caller supplies the
-// memory_id (REQUIRED per the proto contract, agent-generated on add).
+// (specs/071-memory-preset-scope/contracts/memory-service.md §2.1), not a
+// top-level request field. The template and preset are derived from the
+// request parent; the caller supplies the memory_id (REQUIRED per the proto
+// contract, agent-generated on add). The content is bounded by
+// domain.MaxMemoryContentRunes (the write limit:
+// specs/069-wiki-template-web/contracts/memory-content-limit.md §2). The
+// parent preset's existence is not checked — the memory service resolves
+// resource names only (specs/071-memory-preset-scope/contracts/
+// memory-service.md §1).
 func (h *Handler) CreateMemory(ctx context.Context, req *game.CreateMemoryRequest) (*game.Memory, error) {
-	sessName, err := game.ParseSessionName(req.GetParent())
+	presetName, err := game.ParsePresetName(req.GetParent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(sessName.Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(presetName.Parent()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	memoryID := req.GetMemoryId()
-	if !memoryIDPattern.MatchString(memoryID) {
-		return nil, status.Errorf(codes.InvalidArgument, "memory_id %q must match %s", memoryID, memoryIDPattern.String())
+	if err := domain.ValidateMemoryID(memoryID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	body := req.GetMemory()
 	if body == nil {
 		return nil, status.Error(codes.InvalidArgument, "memory is required")
 	}
+	if err := domain.ValidateMemoryContent(body.GetContent()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	now := time.Now()
 	memory := &domain.Memory{
-		Template:   sessName.TemplateID,
-		SessionID:  sessName.SessionID,
+		Template:   presetName.TemplateID,
+		PresetID:   presetName.PresetID,
 		MemoryID:   memoryID,
 		Content:    body.GetContent(),
 		CreateTime: now,
@@ -91,11 +93,14 @@ func (h *Handler) CreateMemory(ctx context.Context, req *game.CreateMemoryReques
 
 // UpdateMemory applies a partial update described by update_mask to an
 // existing Memory (AIP-134: https://google.aip.dev/134). Identity is carried
-// on the resource itself (Memory.name), surfaced via
+// on the resource itself (Memory.name, pattern
+// templates/{template}/presets/{preset}/memories/{memory}), surfaced via
 // req.GetMemory().GetName(). The only mutable Memory field is content
-// (specs/039-planner-memory-calibration/contracts/memory-service-contract.md
-// §2); unknown mask paths return
-// INVALID_ARGUMENT, missing memories return NOT_FOUND (no create-or-update).
+// (specs/071-memory-preset-scope/contracts/memory-service.md §2.2); unknown
+// mask paths return INVALID_ARGUMENT, missing memories return NOT_FOUND (no
+// create-or-update). The masked content is bounded by
+// domain.MaxMemoryContentRunes (the write limit:
+// specs/069-wiki-template-web/contracts/memory-content-limit.md §2).
 // The server-managed create_time is preserved by the repository.
 func (h *Handler) UpdateMemory(ctx context.Context, req *game.UpdateMemoryRequest) (*game.Memory, error) {
 	name, err := game.ParseMemoryName(req.GetMemory().GetName())
@@ -110,10 +115,13 @@ func (h *Handler) UpdateMemory(ctx context.Context, req *game.UpdateMemoryReques
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if err := domain.ValidateMemoryContent(content); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	memory := &domain.Memory{
 		Template:   name.TemplateID,
-		SessionID:  name.SessionID,
+		PresetID:   name.PresetID,
 		MemoryID:   name.MemoryID,
 		Content:    content,
 		UpdateTime: time.Now(),
@@ -127,8 +135,9 @@ func (h *Handler) UpdateMemory(ctx context.Context, req *game.UpdateMemoryReques
 	return memoryToProto(persisted), nil
 }
 
-// DeleteMemory deletes a Memory by its resource name (AIP-135:
-// https://google.aip.dev/135). A missing memory errors with NOT_FOUND.
+// DeleteMemory deletes a Memory by its preset-scoped resource name (AIP-135:
+// https://google.aip.dev/135). A missing memory errors with NOT_FOUND
+// (specs/071-memory-preset-scope/contracts/memory-service.md §2.3).
 func (h *Handler) DeleteMemory(ctx context.Context, req *game.DeleteMemoryRequest) (*emptypb.Empty, error) {
 	name, err := req.ParseName()
 	if err != nil {
@@ -138,13 +147,13 @@ func (h *Handler) DeleteMemory(ctx context.Context, req *game.DeleteMemoryReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	if err := h.memoryRepo.DeleteMemory(ctx, name.TemplateID, name.SessionID, name.MemoryID); err != nil {
+	if err := h.memoryRepo.DeleteMemory(ctx, name.TemplateID, name.PresetID, name.MemoryID); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
 }
 
-// ListMemories retrieves a paginated list of Memory resources under a session
+// ListMemories retrieves a paginated list of Memory resources under a preset
 // in the requested sort key order (AIP-132: https://google.aip.dev/132;
 // AIP-158 pagination: https://google.aip.dev/158). page_size defaults to
 // domain.DefaultListMemoriesPageSize and is capped at
@@ -155,11 +164,11 @@ func (h *Handler) DeleteMemory(ctx context.Context, req *game.DeleteMemoryReques
 // to INVALID_ARGUMENT (specs/065-agent-v2-team-refine/contracts/
 // memory-snapshot-recency.md §1).
 func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesRequest) (*game.ListMemoriesResponse, error) {
-	sessName, err := game.ParseSessionName(req.GetParent())
+	presetName, err := game.ParsePresetName(req.GetParent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := gameconst.ValidateTemplateName(sessName.Parent()); err != nil {
+	if err := gameconst.ValidateTemplateName(presetName.Parent()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -176,7 +185,7 @@ func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	var cursor *domain.MemoryPageCursor
+	var cursor *domain.MemoryPageToken
 	if token := req.GetPageToken(); token != "" {
 		cursor, err = domain.DecodeMemoryPageToken(token, sort)
 		if err != nil {
@@ -184,7 +193,7 @@ func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesReques
 		}
 	}
 
-	memories, nextPageToken, err := h.memoryRepo.ListMemories(ctx, sessName.TemplateID, sessName.SessionID, sort, cursor, pageSize)
+	memories, nextPageToken, err := h.memoryRepo.ListMemories(ctx, presetName.TemplateID, presetName.PresetID, sort, cursor, pageSize)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -204,8 +213,8 @@ func (h *Handler) ListMemories(ctx context.Context, req *game.ListMemoriesReques
 
 // memoryMaskFields enumerates the writable Memory fields addressable via
 // update_mask (AIP-161 https://google.aip.dev/161). The only mutable Memory
-// field is content (specs/039-planner-memory-calibration/contracts/
-// memory-service-contract.md §1.2/§2).
+// field is content (specs/071-memory-preset-scope/contracts/memory-service.md
+// §2.2).
 var memoryMaskFields = []string{"content"}
 
 // applyMemoryMask validates update_mask against the writable Memory fields
@@ -233,16 +242,22 @@ func applyMemoryMask(patch *game.Memory, mask *fieldmaskpb.FieldMask) (string, e
 
 // ─── Conversion helpers ───────────────────────────────────────────────────
 
-// memoryToProto converts a domain Memory to a proto Memory.
+// memoryToProto converts a domain Memory to a proto Memory. The resource
+// carries no separate id field: the memory id is the {memory} terminal segment
+// of the resource name templates/{template}/presets/{preset}/memories/{memory},
+// derived here from the domain fields
+// (specs/071-memory-preset-scope/data-model.md §5;
+// specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1;
+// AIP-133 user-specified id lives on CreateMemoryRequest, not the resource:
+// https://google.aip.dev/133).
 func memoryToProto(m *domain.Memory) *game.Memory {
 	if m == nil {
 		return nil
 	}
 
 	pb := &game.Memory{
-		Name:     game.MemoryName{TemplateID: m.Template, SessionID: m.SessionID, MemoryID: m.MemoryID}.String(),
-		MemoryId: m.MemoryID,
-		Content:  m.Content,
+		Name:    game.MemoryName{TemplateID: m.Template, PresetID: m.PresetID, MemoryID: m.MemoryID}.String(),
+		Content: m.Content,
 	}
 	if !m.CreateTime.IsZero() {
 		pb.CreateTime = timestamppb.New(m.CreateTime)
@@ -265,6 +280,6 @@ func toStatusError(err error) error {
 	case errors.Is(err, domain.ErrInvalidPageToken):
 		return status.Error(codes.InvalidArgument, err.Error())
 	default:
-		return status.Error(codes.Internal, fmt.Sprintf("memory handler: %v", err))
+		return status.Error(codes.Internal, fmt.Sprintf("memory service: %v", err))
 	}
 }

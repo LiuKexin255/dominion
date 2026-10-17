@@ -1,108 +1,99 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { dump, load } from "js-yaml";
-
 import { Config, createPresetAuthoring } from "./index.js";
-import { nodeDeriveFs } from "./derive.js";
+import { PERSONA_ROW_NAME } from "./derive.js";
 import { MemoryPresetStore } from "./store.js";
 
 import type { Context } from "@deepseek-ai/cordis";
-import type { AgentPreset } from "@deepseek-ai/dsh-agent-presets";
-import type { PresetAuthoringConfig } from "./index.js";
-import type { DeriveFs, RosterSeam } from "./derive.js";
-import type { PresetAuthoringDeps } from "./index.js";
+import type { AgentPreset, PresetDefinition } from "@deepseek-ai/dsh-agent-preset-registry";
+import type { PresetAuthoringConfig, PresetAuthoringDeps } from "./index.js";
+import type { CompositionRow, TemplateDeclaration } from "./derive.js";
 import type { PresetRecord } from "./store.js";
 
-const TEMPLATE_COMPOSITION = [
-  { id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } },
-  { id: "demo-echo", name: "@dominion/dsh-demo-echo" },
-];
-
-/**
- * A test-side roster double over a real template directory: `list` answers
- * the discovered pool templates (and any registered broken row) exactly as
- * the official roster's discovery would. There is no copy/remove surface to
- * double anymore — authoring is store-only and composes derive their
- * composition.
- */
-async function rosterHarness() {
-  const base = await mkdtemp(join(tmpdir(), "preset-authoring-"));
-  const templatesRoot = join(base, "templates");
-  await mkdir(join(templatesRoot, "demo-tools"), { recursive: true });
-  await writeFile(
-    join(templatesRoot, "demo-tools", "agent.cordis.yml"),
-    dump(TEMPLATE_COMPOSITION, { lineWidth: -1 }),
-    "utf8",
-  );
-  await writeFile(
-    join(templatesRoot, "demo-tools", "preset.yml"),
-    dump({ name: "demo-tools", description: "persona + demo_echo 工具行模板" }, { lineWidth: -1 }),
-    "utf8",
-  );
-
-  /** id → preset mirroring roster discovery (broken presets resolve too). */
-  const entries = new Map<string, AgentPreset>();
-  entries.set("demo-tools", {
-    id: "demo-tools",
-    trust: "system",
-    path: join(templatesRoot, "demo-tools", "agent.cordis.yml"),
-  });
-
-  const list = vi.fn<() => Promise<AgentPreset[]>>(async () => [...entries.values()]);
-
-  const roster = { list } as unknown as RosterSeam;
-
-  // The real fs seam with mock bookkeeping: derived temp directories are
-  // tracked so each harness can clean them up, and write calls are
-  // positively asserted (create must produce no file).
-  const realFs = nodeDeriveFs();
-  const tempDirs: string[] = [];
-  const readTextFile = vi.fn(realFs.readTextFile);
-  const writeTextFile = vi.fn(realFs.writeTextFile);
-  const createTempDir = vi.fn(async (prefix: string) => {
-    const dir = await realFs.createTempDir(prefix);
-    tempDirs.push(dir);
-    return dir;
-  });
-  const fs: DeriveFs = { readTextFile, createTempDir, writeTextFile };
-
-  const mount = vi.fn(
-    async (_agentCtx: Context, _preset: AgentPreset): Promise<void> => undefined,
-  );
-
-  const cleanup = async (): Promise<void> => {
-    await rm(base, { recursive: true, force: true });
-    await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
-  };
+function defineTemplate(prefix: string, description: string): TemplateDeclaration {
   return {
-    base,
-    templatesRoot,
-    roster,
-    list,
-    mount,
-    fs,
-    readTextFile,
-    writeTextFile,
-    entries,
-    cleanup,
+    name: "Demo",
+    description,
+    plugins: [
+      { id: "persona", name: PERSONA_ROW_NAME, config: { prefix } },
+      { id: "demo-echo", name: "@dominion/dsh-demo-echo" },
+    ],
   };
 }
 
-/** Service under test with the real fs seam and the harness roster. */
-async function serviceHarness(overrides: Partial<PresetAuthoringDeps> = {}) {
-  const harness = await rosterHarness();
+const TEMPLATES: Record<string, TemplateDeclaration> = {
+  "demo-tools": defineTemplate("placeholder", "persona + demo_echo 工具行模板"),
+};
+
+/** One in-flight registration the fake registry tracks. */
+interface FakeRevision {
+  readonly definition: PresetDefinition;
+  retired: boolean;
+}
+
+/**
+ * A DI test double for the registry's consumed subset: it records the
+ * register/unregister call sequence, exposes activation diagnostics, and keeps
+ * a retired revision reachable to a bound agent — the revision-retention
+ * contract the update path relies on. No module interception
+ * (style/javascript.md Mock convention).
+ */
+function createFakeRegistry() {
+  const active = new Map<string, FakeRevision>();
+  const broken = new Map<string, string>();
+  const bindings = new Map<Context, FakeRevision>();
+  const events: Array<{ action: "register" | "unregister"; id: string }> = [];
+
+  const register = vi.fn(async (definition: PresetDefinition): Promise<() => Promise<void>> => {
+    if (active.has(definition.id)) {
+      throw new Error(`Duplicate agent preset: ${definition.id}`);
+    }
+    const revision: FakeRevision = { definition, retired: false };
+    active.set(definition.id, revision);
+    events.push({ action: "register", id: definition.id });
+    return async () => {
+      active.delete(definition.id);
+      revision.retired = true;
+      events.push({ action: "unregister", id: definition.id });
+    };
+  });
+
+  const resolve = vi.fn(async (id: string): Promise<AgentPreset> => {
+    const revision = active.get(id);
+    if (revision === undefined) {
+      throw new Error(`Unknown agent preset: ${id}`);
+    }
+    const reason = broken.get(id);
+    return { id, ...(reason === undefined ? {} : { broken: reason }) };
+  });
+
+  const mount = vi.fn(async (agentCtx: Context, id: string): Promise<AgentPreset> => {
+    const revision = active.get(id);
+    if (revision === undefined) {
+      throw new Error(`Unknown agent preset: ${id}`);
+    }
+    const reason = broken.get(id);
+    if (reason !== undefined) {
+      throw new Error(`agent-preset/invalid: ${reason}`);
+    }
+    bindings.set(agentCtx, revision);
+    return { id };
+  });
+
+  return { register, resolve, mount, active, broken, bindings, events };
+}
+
+/** Engine under test with the fake registry; tests reach `engine.service`. */
+function harness(overrides: Partial<PresetAuthoringDeps> = {}) {
+  const registry = createFakeRegistry();
   const store = new MemoryPresetStore();
-  const service = createPresetAuthoring({} as never, {
-    roster: harness.roster,
+  const engine = createPresetAuthoring({} as never, {
+    registry,
     store,
-    fs: harness.fs,
-    mount: harness.mount,
+    templates: TEMPLATES,
     ...overrides,
   });
-  return { ...harness, store, service };
+  return { registry, store, engine, service: engine.service };
 }
 
 /** Insert a record directly, bypassing create's validation (legacy store state). */
@@ -114,85 +105,44 @@ async function storeRecord(
   await store.create({ template: "demo-tools", persona: "", createTime: now, updateTime: now, ...input });
 }
 
-/** Parse a derived composition file and return its rows. */
-async function readRows(path: string): Promise<Array<{ name?: string; config?: { text?: string } }>> {
-  return load(await readFile(path, "utf8")) as Array<{
-    name?: string;
-    config?: { text?: string };
-  }>;
+function prefixOf(row: CompositionRow | undefined): unknown {
+  return (row?.config as { prefix?: unknown } | undefined)?.prefix;
+}
+
+function revisionPrefix(revision: FakeRevision | undefined): unknown {
+  return prefixOf(revision?.definition.plugins[0]);
 }
 
 describe("compose", () => {
-  it("derives the stored record over its pool template and mounts the derived composition", async () => {
-    const { service, mount, writeTextFile } = await serviceHarness();
-    await service.create({
-      id: "mine",
-      template: "demo-tools",
-      role: "planner",
-      persona: "P1",
-      displayName: "Mine",
-    });
-    // Store-only create: no composition file is produced.
-    expect(writeTextFile).not.toHaveBeenCalled();
+  it("binds the new agent to the record's registry revision on setup", async () => {
+    const { service, registry } = harness();
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
 
     const result = await service.compose("mine");
 
     expect(result.agentPreset).toBe("mine");
-    const agentCtx = {} as never;
+    const agentCtx = {} as unknown as Context;
     await result.setup(agentCtx);
 
-    expect(mount).toHaveBeenCalledOnce();
-    const [ctxArg, presetArg] = mount.mock.calls[0];
-    expect(ctxArg).toBe(agentCtx);
-    expect(presetArg).toMatchObject({ id: "mine", trust: "user" });
-    const rows = await readRows(presetArg.path);
-    expect(rows[0]?.name).toBe("@deepseek-ai/dsh-persona");
-    expect(rows[0]?.config?.text).toBe("P1");
-    expect(rows[1]?.name).toBe("@dominion/dsh-demo-echo");
+    expect(registry.mount).toHaveBeenCalledOnce();
+    expect(registry.mount.mock.calls[0][0]).toBe(agentCtx);
+    expect(registry.mount.mock.calls[0][1]).toBe("mine");
+    expect(registry.bindings.get(agentCtx)?.definition.id).toBe("mine");
   });
 
-  it("derives the template persona base when the stored persona is empty", async () => {
-    const { service, mount } = await serviceHarness();
-    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "" });
+  it("fails NOT_FOUND before touching the registry when the store has no record", async () => {
+    const { service, registry } = harness();
 
-    const result = await service.compose("mine");
-    await result.setup({} as never);
-
-    const rows = await readRows(mount.mock.calls[0][1].path);
-    expect(rows[0]?.config?.text).toBe("placeholder");
-  });
-
-  it("reads the roster once for the pool template — the stored preset id never reaches it", async () => {
-    const { service, list } = await serviceHarness();
-    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
-    list.mockClear();
-
-    await service.compose("mine");
-
-    // One live root scan: the template lookup. The stored preset id is a
-    // store-only key (the retired roster resolve of the user preset is gone).
-    expect(list).toHaveBeenCalledTimes(1);
-  });
-
-  it("fails NOT_FOUND before reading the roster when the store has no record", async () => {
-    const { service, list, mount } = await serviceHarness();
-
-    const err = await service.compose("missing").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
-
-    expect(err).toMatchObject({
+    await expect(service.compose("missing")).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: expect.stringContaining("missing"),
     });
-    expect(list).not.toHaveBeenCalled();
-    expect(mount).not.toHaveBeenCalled();
+    expect(registry.register).not.toHaveBeenCalled();
+    expect(registry.mount).not.toHaveBeenCalled();
   });
 
   it("rejects an id-less compose with INVALID_ARGUMENT (preset selection is mandatory)", async () => {
-    const { service, store } = await serviceHarness();
-    await storeRecord(store, { id: "mine" });
+    const { service } = harness();
 
     await expect(service.compose()).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
@@ -200,89 +150,31 @@ describe("compose", () => {
     });
   });
 
-  it("maps an unknown template on a stored record to INVALID_ARGUMENT and never mounts", async () => {
-    const { service, store, mount } = await serviceHarness();
+  it("maps an unknown template on a stored record to INVALID_ARGUMENT and never binds", async () => {
+    const { service, store, registry } = harness();
     await storeRecord(store, { id: "mine", template: "ghost" });
 
     await expect(service.compose("mine")).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       message: expect.stringContaining("ghost"),
     });
-    expect(mount).not.toHaveBeenCalled();
+    expect(registry.mount).not.toHaveBeenCalled();
   });
 
-  it("fails a broken template with INVALID_ARGUMENT and never mounts", async () => {
-    const { service, store, entries, mount } = await serviceHarness();
-    entries.set("broken-tools", {
-      id: "broken-tools",
-      trust: "system",
-      path: "/templates/broken-tools/agent.cordis.yml",
-      broken: "agent.cordis.yml does not parse",
-    });
-    await storeRecord(store, { id: "mine", template: "broken-tools" });
-
-    await expect(service.compose("mine")).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("does not parse"),
-    });
-    expect(mount).not.toHaveBeenCalled();
-  });
-
-  it("is idempotent: two composes derive byte-equivalent compositions at distinct paths", async () => {
-    const { service, mount } = await serviceHarness();
+  it("passes a broken definition's binding failure through registry semantics", async () => {
+    const { service, registry } = harness();
     await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+    // Corrupt the revision after create: only the binding path observes it.
+    registry.broken.set("mine", "child row is corrupted");
 
-    await (await service.compose("mine")).setup({} as never);
-    await (await service.compose("mine")).setup({} as never);
-
-    const first = mount.mock.calls[0][1];
-    const second = mount.mock.calls[1][1];
-    expect(first.path).not.toBe(second.path);
-    expect(await readFile(first.path, "utf8")).toBe(await readFile(second.path, "utf8"));
-  });
-
-  it("maps an unexpected roster discovery failure to INTERNAL (contract §6)", async () => {
-    const harness = await serviceHarness();
-    const boom = new Error("disk on fire");
-    const list = vi.fn<() => Promise<AgentPreset[]>>().mockRejectedValue(boom);
-    const service = createPresetAuthoring({} as never, {
-      roster: { list } as unknown as RosterSeam,
-      store: harness.store,
-      fs: harness.fs,
-      mount: harness.mount,
-    });
-    await storeRecord(harness.store, { id: "mine" });
-
-    const err = await service.compose("mine").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
-
-    expect(err).toMatchObject({
-      code: "INTERNAL",
-      message: expect.stringContaining("disk on fire"),
-    });
-    expect((err as { cause?: unknown }).cause).toBe(boom);
-    expect(harness.mount).not.toHaveBeenCalled();
-  });
-
-  it("wraps a derivation failure as INTERNAL and never mounts", async () => {
-    const { service, templatesRoot, mount } = await serviceHarness();
-    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
-    // The template file disappears after create: the derivation read fails.
-    await rm(join(templatesRoot, "demo-tools", "agent.cordis.yml"));
-
-    await expect(service.compose("mine")).rejects.toMatchObject({
-      code: "INTERNAL",
-      message: expect.stringContaining("deriving preset"),
-    });
-    expect(mount).not.toHaveBeenCalled();
+    const result = await service.compose("mine");
+    await expect(result.setup({} as never)).rejects.toThrow(/agent-preset\/invalid/);
   });
 });
 
-describe("create (store-only authoring)", () => {
-  it("records the dynamic fields in the store and only reads the pool template", async () => {
-    const { service, store, list, writeTextFile } = await serviceHarness();
+describe("create", () => {
+  it("registers the derived definition and records the dynamic fields in the store", async () => {
+    const { service, store, registry } = harness();
 
     const view = await service.create({
       id: "mine",
@@ -299,164 +191,150 @@ describe("create (store-only authoring)", () => {
       persona: "P1",
       displayName: "Mine",
     });
-    // The store holds the dynamic fields, not composition content (D2).
     expect(await store.list()).toHaveLength(1);
-    expect((await store.get("mine")).persona).toBe("P1");
-    // Two live roster scans: the template lookup and the id-taken check.
-    expect(list).toHaveBeenCalledTimes(2);
-    // Store-only: no composition file is produced by create.
-    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(registry.register).toHaveBeenCalledOnce();
+    const definition = registry.register.mock.calls[0][0];
+    expect(definition.id).toBe("mine");
+    expect(definition.name).toBe("Mine");
+    expect(definition.description).toBe("persona + demo_echo 工具行模板");
+    expect(prefixOf(definition.plugins[0])).toBe("P1");
+    expect(definition.plugins[1]?.name).toBe("@dominion/dsh-demo-echo");
+    expect(registry.events).toEqual([{ action: "register", id: "mine" }]);
+    // The injected template snapshot is never mutated by a derivation.
+    expect(prefixOf(TEMPLATES["demo-tools"].plugins[0])).toBe("placeholder");
   });
 
-  it("rejects a duplicate id with ALREADY_EXISTS", async () => {
-    const { service } = await serviceHarness();
+  it("rejects a duplicate id with ALREADY_EXISTS without re-registering", async () => {
+    const { service, registry } = harness();
     await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
 
     await expect(
       service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P2" }),
     ).rejects.toMatchObject({ code: "ALREADY_EXISTS" });
+    expect(registry.register).toHaveBeenCalledOnce();
   });
 
   it("rejects an unknown template with INVALID_ARGUMENT and leaves no residue", async () => {
-    const { service, store, writeTextFile } = await serviceHarness();
+    const { service, store, registry } = harness();
 
     await expect(
       service.create({ id: "mine", template: "ghost", role: "planner", persona: "P1" }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(await store.list()).toEqual([]);
-    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(registry.register).not.toHaveBeenCalled();
   });
 
-  it("rejects an id outside the preset grammar with INVALID_ARGUMENT before any roster call", async () => {
-    const { service, store, list } = await serviceHarness();
+  it("rejects an id outside the preset grammar with INVALID_ARGUMENT before registration", async () => {
+    const { service, store, registry } = harness();
 
     await expect(
       service.create({ id: "Bad Id", template: "demo-tools", role: "planner", persona: "" }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-    expect(list).not.toHaveBeenCalled();
     expect(await store.list()).toEqual([]);
+    expect(registry.register).not.toHaveBeenCalled();
   });
 
-  it("refuses an id a roster root already supplies (shipped templates cannot be shadowed)", async () => {
-    const { service, store } = await serviceHarness();
+  it("rejects the empty preset id with INVALID_ARGUMENT and leaves no residue", async () => {
+    const { service, store, registry } = harness();
+
+    // The id grammar rejects "", so no roster entry can ever claim the
+    // registry's empty selection default — the plugin side of the fail-loud
+    // chain locked by agent_v2's dsh.test.ts registry-default assertion
+    // (specs/070-dsh-upgrade/contracts/composition-manifest.md §2;
+    // specs/070-dsh-upgrade/research.md D4 终态结论).
+    await expect(
+      service.create({ id: "", template: "demo-tools", role: "planner", persona: "" }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(await store.list()).toEqual([]);
+    expect(registry.register).not.toHaveBeenCalled();
+  });
+
+  it("refuses an id a snapshot template already owns (shared deployment id space)", async () => {
+    const { service, store, registry } = harness();
 
     await expect(
       service.create({ id: "demo-tools", template: "demo-tools", role: "player", persona: "" }),
     ).rejects.toMatchObject({ code: "ALREADY_EXISTS" });
     expect(await store.list()).toEqual([]);
+    expect(registry.register).not.toHaveBeenCalled();
   });
 
-  it("enforces the caller-declared template row rules before the store write (T021)", async () => {
-    const { service, store, templatesRoot } = await serviceHarness({
-      templateRules: {
-        "demo-tools": {
-          required: ["@dominion/dsh-demo-echo"],
-          forbidden: ["@dominion/dsh-memory"],
-        },
-      },
-    });
-
-    // The template carries exactly the required row and none of the
-    // forbidden ones: the record lands normally.
-    const view = await service.create({ id: "mine", template: "demo-tools", role: "player", persona: "P1" });
-    expect(view.id).toBe("mine");
-    expect(await store.list()).toHaveLength(1);
-
-    // A template missing the required row is rejected BEFORE the store write
-    // (fail-fast: no record, no residue).
-    await writeFile(
-      join(templatesRoot, "demo-tools", "agent.cordis.yml"),
-      dump([{ id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } }], {
-        lineWidth: -1,
-      }),
-      "utf8",
-    );
-    await expect(
-      service.create({ id: "broken", template: "demo-tools", role: "player", persona: "P1" }),
-    ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("@dominion/dsh-demo-echo"),
-    });
-    expect(await store.list()).toHaveLength(1);
-
-    // A forbidden row is rejected the same way.
-    await writeFile(
-      join(templatesRoot, "demo-tools", "agent.cordis.yml"),
-      dump(
-        [
-          { id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } },
-          { id: "echo", name: "@dominion/dsh-demo-echo" },
-          { id: "memory", name: "@dominion/dsh-memory" },
-        ],
-        { lineWidth: -1 },
-      ),
-      "utf8",
-    );
-    await expect(
-      service.create({ id: "broken2", template: "demo-tools", role: "planner", persona: "P1" }),
-    ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("must not contain"),
-    });
-
-    // A duplicated required row violates the exactly-one semantics.
-    await writeFile(
-      join(templatesRoot, "demo-tools", "agent.cordis.yml"),
-      dump(
-        [
-          { id: "persona", name: "@deepseek-ai/dsh-persona", config: { text: "placeholder" } },
-          { id: "echo-a", name: "@dominion/dsh-demo-echo" },
-          { id: "echo-b", name: "@dominion/dsh-demo-echo" },
-        ],
-        { lineWidth: -1 },
-      ),
-      "utf8",
-    );
-    await expect(
-      service.create({ id: "broken3", template: "demo-tools", role: "player", persona: "P1" }),
-    ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("exactly one"),
-    });
-    expect(await store.list()).toHaveLength(1);
-  });
-
-  it("leaves templates without a configured rule table unvalidated (generic consumers)", async () => {
-    const { service, store } = await serviceHarness();
-
-    // No templateRules configured: the existing composition (persona +
-    // demo-echo) is accepted even though no rule table names it.
-    const view = await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
-
-    expect(view.id).toBe("mine");
-    expect(await store.list()).toHaveLength(1);
-  });
-
-  it("surfaces a store write failure as the service error (no copy to roll back)", async () => {
+  it("surfaces a store write failure without registering", async () => {
     const failingStore = new MemoryPresetStore();
     vi.spyOn(failingStore, "create").mockRejectedValue(new Error("store down"));
-    const { service, writeTextFile } = await serviceHarness({ store: failingStore });
+    const { service, registry } = harness({ store: failingStore });
 
     await expect(
       service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" }),
     ).rejects.toMatchObject({ message: expect.stringContaining("store down") });
-    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(registry.register).not.toHaveBeenCalled();
+  });
+
+  it("rolls the store back when registration itself rejects", async () => {
+    const { service, store, registry } = harness();
+    registry.register.mockRejectedValueOnce(new Error("Duplicate agent preset: mine"));
+
+    await expect(
+      service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" }),
+    ).rejects.toMatchObject({ code: "INTERNAL" });
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("releases the registration when resolve fails after a successful register", async () => {
+    const { service, store, registry } = harness();
+    registry.resolve.mockRejectedValueOnce(new Error("resolve down"));
+
+    await expect(
+      service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" }),
+    ).rejects.toMatchObject({ code: "INTERNAL" });
+
+    // Both projections stay consistent: the store rolled back and the registry
+    // released the registration resolve could not confirm (no orphan definition
+    // retained until plugin dispose).
+    expect(await store.list()).toEqual([]);
+    expect(registry.active.has("mine")).toBe(false);
+    expect(registry.events).toEqual([
+      { action: "register", id: "mine" },
+      { action: "unregister", id: "mine" },
+    ]);
+  });
+
+  it("leaves an activation-failed definition in the roster, keeps its record, and rejects new bindings", async () => {
+    const { service, store, registry } = harness();
+    registry.broken.set("bad", "child row is corrupted");
+
+    const err = await service
+      .create({ id: "bad", template: "demo-tools", role: "player", persona: "P1" })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+    expect(err).toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("activation failed"),
+    });
+    // The definition stays visible in the roster...
+    expect(registry.active.has("bad")).toBe(true);
+    // ...and the store, the single source of truth, keeps the record it projected.
+    expect((await store.get("bad")).id).toBe("bad");
+    // A new agent cannot bind to the broken definition.
+    const result = await service.compose("bad");
+    await expect(result.setup({} as never)).rejects.toThrow(/agent-preset\/invalid/);
   });
 });
 
 describe("get/list/update/remove", () => {
   it("maps an unknown id to NOT_FOUND on get", async () => {
-    const { service } = await serviceHarness();
+    const { service } = harness();
 
     await expect(service.get("missing")).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
-  it("updates the persona in the store record and refreshes updateTime", async () => {
-    const { service, store, list, writeTextFile } = await serviceHarness();
+  it("updates the persona in the store and swaps the registration (unregister then register)", async () => {
+    const { service, store, registry } = harness();
     await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
     const before = await store.get("mine");
-    list.mockClear();
-    writeTextFile.mockClear();
 
     const view = await service.update("mine", { persona: "P2" });
 
@@ -464,34 +342,57 @@ describe("get/list/update/remove", () => {
     const updated = await store.get("mine");
     expect(updated.persona).toBe("P2");
     expect(updated.updateTime.getTime()).toBeGreaterThanOrEqual(before.updateTime.getTime());
-    // Store-only: no roster access and no file write on update.
-    expect(list).not.toHaveBeenCalled();
-    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(registry.events).toEqual([
+      { action: "register", id: "mine" },
+      { action: "unregister", id: "mine" },
+      { action: "register", id: "mine" },
+    ]);
+    expect(revisionPrefix(registry.active.get("mine"))).toBe("P2");
   });
 
-  it("stores an empty persona as-is (the derivation resolves the template base)", async () => {
-    const { service, store } = await serviceHarness();
+  it("retires the old revision on update while a running agent keeps its reference", async () => {
+    const { service, registry } = harness();
     await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+    const runningCtx = {} as unknown as Context;
+    await (await service.compose("mine")).setup(runningCtx);
+    const runningRevision = registry.bindings.get(runningCtx);
 
-    const view = await service.update("mine", { persona: "" });
+    await service.update("mine", { persona: "P2" });
 
-    expect(view.persona).toBe("");
-    expect((await store.get("mine")).persona).toBe("");
+    // The old revision is retired but retained for the running agent...
+    expect(runningRevision?.retired).toBe(true);
+    expect(registry.bindings.get(runningCtx)).toBe(runningRevision);
+    expect(revisionPrefix(runningRevision)).toBe("P1");
+    // ...while a fresh agent binds to the new revision.
+    const freshCtx = {} as unknown as Context;
+    await (await service.compose("mine")).setup(freshCtx);
+    expect(revisionPrefix(registry.bindings.get(freshCtx))).toBe("P2");
   });
 
-  it("updates displayName in the store record only", async () => {
-    const { service, store, writeTextFile } = await serviceHarness();
+  it("re-registers the definition when only displayName changes", async () => {
+    const { service, store, registry } = harness();
     await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
 
     const view = await service.update("mine", { displayName: "Renamed" });
 
     expect(view.displayName).toBe("Renamed");
     expect((await store.get("mine")).displayName).toBe("Renamed");
-    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(registry.register).toHaveBeenCalledTimes(2);
+    expect(registry.register.mock.calls[1][0].name).toBe("Renamed");
+  });
+
+  it("treats an empty patch as a read (no re-registration)", async () => {
+    const { service, registry } = harness();
+    await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
+
+    const view = await service.update("mine", {});
+
+    expect(view.persona).toBe("P1");
+    expect(registry.register).toHaveBeenCalledOnce();
   });
 
   it("maps an unknown update target to NOT_FOUND", async () => {
-    const { service } = await serviceHarness();
+    const { service } = harness();
 
     await expect(service.update("missing", { persona: "P2" })).rejects.toMatchObject({
       code: "NOT_FOUND",
@@ -499,96 +400,133 @@ describe("get/list/update/remove", () => {
   });
 
   it("lists authored presets narrowed to one role pool", async () => {
-    const { service } = await serviceHarness();
+    const { service } = harness();
     await service.create({ id: "p1", template: "demo-tools", role: "player", persona: "a" });
     await service.create({ id: "p2", template: "demo-tools", role: "planner", persona: "b" });
 
     const all = await service.list();
     expect(all.map((view) => view.id).sort()).toEqual(["p1", "p2"]);
-    const players = await service.list("player");
-    expect(players.map((view) => view.id)).toEqual(["p1"]);
-    const planners = await service.list("planner");
-    expect(planners.map((view) => view.id)).toEqual(["p2"]);
+    expect((await service.list("player")).map((view) => view.id)).toEqual(["p1"]);
+    expect((await service.list("planner")).map((view) => view.id)).toEqual(["p2"]);
   });
 
-  it("removes only the store record; no composition file or roster deletion exists", async () => {
-    const { service, store, list } = await serviceHarness();
+  it("removes the store record and releases the registration", async () => {
+    const { service, store, registry } = harness();
     await service.create({ id: "mine", template: "demo-tools", role: "planner", persona: "P1" });
-    list.mockClear();
 
     await service.remove("mine");
 
     expect(await store.list()).toEqual([]);
-    // One live roster scan: the shipped-id protection probe.
-    expect(list).toHaveBeenCalledTimes(1);
+    expect(registry.events).toEqual([
+      { action: "register", id: "mine" },
+      { action: "unregister", id: "mine" },
+    ]);
+    expect(registry.active.has("mine")).toBe(false);
     await expect(service.get("mine")).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
-  it("maps an unknown remove target to NOT_FOUND and a template to FAILED_PRECONDITION", async () => {
-    const { service, store } = await serviceHarness();
+  it("maps an unknown remove target to NOT_FOUND without touching the registry", async () => {
+    const { service, registry } = harness();
 
     await expect(service.remove("missing")).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(service.remove("demo-tools")).rejects.toMatchObject({
-      code: "FAILED_PRECONDITION",
-    });
-    expect(await store.list()).toEqual([]);
+    expect(registry.events).toEqual([]);
+  });
+});
+
+describe("engine restore/dispose", () => {
+  it("materializes every stored record into the registry at boot", async () => {
+    const { engine, store, registry } = harness();
+    await storeRecord(store, { id: "mine", persona: "P1" });
+
+    await engine.restore();
+
+    expect(registry.register).toHaveBeenCalledOnce();
+    expect(registry.active.has("mine")).toBe(true);
+    expect(prefixOf(registry.active.get("mine")?.definition.plugins[0])).toBe("P1");
+  });
+
+  it("skips a stored record whose template is undeclared rather than failing startup", async () => {
+    const { engine, store, registry } = harness();
+    await storeRecord(store, { id: "ghost", template: "ghost" });
+
+    await expect(engine.restore()).resolves.toBeUndefined();
+    expect(registry.register).not.toHaveBeenCalled();
+  });
+
+  it("leaves a broken record in the roster (activation failure does not fail boot)", async () => {
+    const { engine, store, registry } = harness();
+    registry.broken.set("bad", "corrupted");
+    await storeRecord(store, { id: "bad", persona: "P1" });
+
+    await engine.restore();
+
+    expect(registry.active.has("bad")).toBe(true);
+  });
+
+  it("unregisters every owned registration on dispose", async () => {
+    const { engine, store, registry } = harness();
+    await storeRecord(store, { id: "mine", persona: "P1" });
+    await engine.restore();
+
+    await engine.dispose();
+
+    expect(registry.active.size).toBe(0);
+    expect(registry.events).toEqual([
+      { action: "register", id: "mine" },
+      { action: "unregister", id: "mine" },
+    ]);
   });
 });
 
 describe("Config", () => {
-  it("validates the caller-declared template row rules and defaults them empty", () => {
-    const config = Config({
-      storage: "mongo",
-      mongoUri: "mongodb://x",
-      mongoDatabase: "db",
-      mongoCollection: "c",
-      templateRules: {
-        player: {
-          required: ["@dominion/dsh-saolei"],
-          forbidden: ["@dominion/dsh-memory"],
-        },
-      },
-    });
-
-    expect(config.templateRules).toEqual({
-      player: {
-        required: ["@dominion/dsh-saolei"],
-        forbidden: ["@dominion/dsh-memory"],
-      },
-    });
-    // Omitted rules default to an empty table: generic deployments validate
-    // nothing (the host opts in per template).
-    expect(Config({ storage: "memory" }).templateRules).toEqual({});
-  });
-
-  it("defaults a one-sided rule table's omitted half to an empty list", () => {
-    // A host YAML value reaches the schema untyped; the declared Config input
-    // mirrors the validated output shape, hence the widening cast.
+  it("validates template declarations and defaults an omitted map to empty", () => {
     const raw: unknown = {
       storage: "memory",
-      templateRules: {
-        player: { required: ["@dominion/dsh-saolei"] },
-        planner: { forbidden: ["@dominion/dsh-memory"] },
+      templates: {
+        "demo-tools": {
+          name: "Demo",
+          description: "persona + demo_echo 工具行模板",
+          plugins: [{ name: PERSONA_ROW_NAME, config: { prefix: "x" } }],
+        },
       },
     };
     const config = Config(raw as PresetAuthoringConfig);
 
-    expect(config.templateRules).toEqual({
-      player: { required: ["@dominion/dsh-saolei"], forbidden: [] },
-      planner: { required: [], forbidden: ["@dominion/dsh-memory"] },
+    expect(config.templates).toEqual({
+      "demo-tools": {
+        name: "Demo",
+        description: "persona + demo_echo 工具行模板",
+        plugins: [{ name: PERSONA_ROW_NAME, config: { prefix: "x" } }],
+      },
     });
+    // Omitted maps default to empty: generic deployments declare none.
+    expect(Config({ storage: "memory" }).templates).toEqual({});
   });
 });
 
 describe("apply", () => {
-  it("provides the service under ctx.presetAuthoring (effect-based registration)", async () => {
+  it("provides the service under ctx.presetAuthoring and holds its registry disposer", async () => {
     const { apply, PresetAuthoringError: ExportedError } = await import("./index.js");
+    const register = vi.fn(async (_definition: PresetDefinition) => async () => undefined);
+    const resolve = vi.fn(async (id: string): Promise<AgentPreset> => ({ id }));
+    const mount = vi.fn(async (_ctx: Context, id: string): Promise<AgentPreset> => ({ id }));
+    const effect = vi.fn(() => () => undefined);
     const provide = vi.fn();
-    apply({ agentPresets: undefined, provide } as never, { storage: "memory" });
 
+    await apply(
+      {
+        agentPresets: { register, resolve, mount },
+        effect,
+        provide,
+        logger: { warn: vi.fn() },
+      } as never,
+      { storage: "memory" },
+    );
+
+    expect(effect).toHaveBeenCalledOnce();
     expect(provide).toHaveBeenCalledOnce();
     expect(provide.mock.calls[0][0]).toBe("presetAuthoring");
-    // The re-exported error type carries the stable code surface (contract §6).
+    // The re-exported error type carries the stable code surface.
     expect(new ExportedError("NOT_FOUND", "x").code).toBe("NOT_FOUND");
   });
 });

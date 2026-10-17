@@ -2,8 +2,8 @@
  * Request serialization: harness GenerateOptions → OpenAI Chat Completions
  * request body for the opencode-go gateway. Mapping table is contractual:
  * specs/063-llm-reliability-opencode-go/contracts/opencode-go-plugin.md §3;
- * message and tool shapes follow the official chat-completions adapter
- * (node_modules/.pnpm/@deepseek-ai+dsh-llm-deepseek@0.1.1-rc.2_*).
+ * message and tool shapes follow the OpenAI Chat Completions schema
+ * (https://github.com/openai/openai-openapi/blob/main/openapi.yaml).
  */
 
 import { LlmError } from "@deepseek-ai/dsh-llm";
@@ -71,6 +71,26 @@ function flattenText(blocks: ReadonlyArray<{ type: string; text?: string }>): st
 }
 
 /**
+ * Render one system message's content to its wire text. The rendered system
+ * prompt is text-only; any other block type fails loudly instead of silently
+ * dropping instructions.
+ */
+function renderSystemText(content: ReadonlyArray<ContentBlock>): string {
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === "text") {
+      parts.push(block.text);
+      continue;
+    }
+    throw new LlmError(
+      `OpenCode Go adapter supports text-only system content; got ${block.type}`,
+      "UNSUPPORTED_CONTENT",
+    );
+  }
+  return parts.join("");
+}
+
+/**
  * Render a tool result's content into the `tool` message's text. The
  * harness tool surface is text-only (tool outputs render as result text),
  * so text blocks concatenate and any other block type fails loudly instead
@@ -95,12 +115,14 @@ function renderToolResultContent(content: ReadonlyArray<ContentBlock>): string {
 
 /**
  * Serialize one fully-assembled model call into the chat-completions
- * request body. Assistant reasoning blocks are intentionally not replayed
- * (the contract's §3 decision: reasoning regenerates each turn). Tool calls
- * replay as assistant `tool_calls`, and each tool result becomes a
- * standalone `role:'tool'` message joined by `tool_call_id`, so a follow-up
- * tool step can carry its results. Unsupported content (images) fails
- * loudly instead of being silently dropped.
+ * request body. A system-role message maps to a `role:'system'` wire
+ * message (the loop-built request carries the rendered prompt as a
+ * leading system message). Assistant reasoning blocks are intentionally not
+ * replayed (the contract's §3 decision: reasoning regenerates each turn).
+ * Tool calls replay as assistant `tool_calls`, and each tool result becomes
+ * a standalone `role:'tool'` message joined by `tool_call_id`, so a
+ * follow-up tool step can carry its results. Unsupported content (images)
+ * fails loudly instead of being silently dropped.
  */
 export function serializeRequest(options: GenerateOptions): ChatCompletionsRequest {
   if (options.reasoningEffort !== undefined) {
@@ -117,19 +139,18 @@ export function serializeRequest(options: GenerateOptions): ChatCompletionsReque
 
   for (const message of options.messages) {
     switch (message.role) {
+      case "system": {
+        messages.push({ role: "system", content: renderSystemText(message.content) });
+        continue;
+      }
       case "user": {
-        const text = flattenText(message.content);
-        const toolMessages: ChatRequestMessage[] = [];
+        // A user message carries no tool results in the dsh message model
+        // (results are tool-role messages), so its text maps straight through;
+        // any non-text block fails loudly rather than being silently dropped.
+        const parts: string[] = [];
         for (const block of message.content) {
           if (block.type === "text") {
-            continue;
-          }
-          if (block.type === "tool-result") {
-            toolMessages.push({
-              role: "tool",
-              tool_call_id: block.toolCallId,
-              content: renderToolResultContent(block.content),
-            });
+            parts.push(block.text);
             continue;
           }
           throw new LlmError(
@@ -137,13 +158,15 @@ export function serializeRequest(options: GenerateOptions): ChatCompletionsReque
             "UNSUPPORTED_CONTENT",
           );
         }
-        // Message text first, then the tool outputs — a pure tool-result
-        // message (the harness tool-source shape) contributes no empty
-        // user message, matching the official adapter.
-        if (text.length > 0 || toolMessages.length === 0) {
-          messages.push({ role: "user", content: text });
-        }
-        messages.push(...toolMessages);
+        messages.push({ role: "user", content: parts.join("") });
+        continue;
+      }
+      case "tool": {
+        messages.push({
+          role: "tool",
+          tool_call_id: message.toolCallId,
+          content: renderToolResultContent(message.content),
+        });
         continue;
       }
       case "assistant": {

@@ -293,6 +293,16 @@ func (r *K8sRuntime) CheckRollout(ctx context.Context, env *domain.Environment) 
 		}
 		services = append(services, status)
 	}
+	for _, workload := range objects.RedisWorkloads {
+		if workload == nil {
+			continue
+		}
+		status, err := r.deploymentServiceStatus(ctx, namespace, workload.ResourceName(), workload.ServiceName, workload.App, domain.ServiceKindInfra)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, status)
+	}
 	for _, workload := range objects.StatefulWorkloads {
 		if workload == nil {
 			continue

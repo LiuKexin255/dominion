@@ -117,9 +117,8 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 	// members (team-api.md §2 — Send has no lazy materialization).
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "web-loop", "web smoke")
 	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName, player.GetName(), planner.GetName(), "", "")
-	if len(team.GetMembers()) != 2 {
-		t.Fatalf("materialized members = %d, want 2", len(team.GetMembers()))
-	}
+	// The three-member roster (player + planner + the server-side announcer).
+	assertTeamProtoRosterIncludesAnnouncer(t, team)
 
 	// 列表可见：the new session appears in the template listing.
 	listBody := listSessions(t, sutHostURL, sutEnvName, saoleiTemplateID, 50)

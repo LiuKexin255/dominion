@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "redis",
+    srcs = [
+        "client.go",
+        "credentials.go",
+        "default.go",
+    ],
+    importpath = "dominion/common/gopkg/redis",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//common/gopkg/solver",
+        "@com_github_redis_go_redis_v9//:go-redis",
+    ],
+)
+
+go_unittest(
+    name = "redis_test",
+    srcs = [
+        "client_test.go",
+        "credentials_test.go",
+    ],
+    embed = [":redis"],
+    deps = [
+        "//common/gopkg/solver",
+        "@com_github_redis_go_redis_v9//:go-redis",
+    ],
+)

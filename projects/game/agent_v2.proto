@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package projects.game.v2;
+package projects.game;
 
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
@@ -10,19 +10,22 @@ import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "projects/game/game.proto";
 
-// go_package: the v2 Go generated surface is merged into the game package
+// go_package: this file's Go generated surface shares the game package
 // dominion/projects/game — protoc-gen-go-aip v0.1.3 emits the parent
 // constructor's receiver type unqualified, which only resolves when the
 // parent resources (Template/Session, declared in game.proto) share the
 // generated file's Go package
 // (specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md §2.6).
-// The proto package stays projects.game.v2: wire, REST, and TS are
-// unaffected.
+// The proto package is projects.game, the same as game.proto in this
+// directory: gazelle's proto mode assumes one proto package per directory,
+// and the shared package keeps the app's two protos in one generation unit
+// (specs/051-agent-v2-dsh-migration/contracts/agent-api.md §1).
 option go_package = "dominion/projects/game";
 
 // AgentService is the session-scoped stateful surface of agent_v2: the
 // session's team singleton (AIP-156 singletons,
-// https://google.aip.dev/156) with its player/planner members, the merged
+// https://google.aip.dev/156) with its three-member roster (player/planner
+// LLM members plus the announce-only announcer), the merged
 // team message sequence, the member-view projections, and the Send team
 // stream. Team/member/queue/game state lives in the serving instance's
 // process memory, so every RPC requires proxy owner affinity — the gateway
@@ -64,10 +67,11 @@ service AgentService {
     };
   }
 
-  // GetTeamMember returns one fixed member (members/player or
-  // members/planner) including its output-only system_prompt — the complete
-  // assembly result the member instance actually uses. AIP-131:
-  // https://google.aip.dev/131
+  // GetTeamMember returns one fixed member (members/player,
+  // members/planner, or members/announcer) including its output-only
+  // system_prompt — the complete assembly result the member instance actually
+  // uses (empty for the announce-only announcer, which assembles no prompt).
+  // AIP-131: https://google.aip.dev/131
   rpc GetTeamMember(GetTeamMemberRequest) returns (TeamMember) {
     option (google.api.http) = {
       get: "/api/v2/{name=templates/*/sessions/*/team/members/*}"
@@ -196,23 +200,88 @@ service PresetService {
   }
 }
 
-// DesktopBridgeService carries the desktop flow control stream for one
-// session: the desktop connects through the gateway's WebSocket endpoint and
-// the frames are relayed to the agent_v2 instance owning the session.
-// Bidirectional streaming has no REST binding (AIP-127,
-// https://google.aip.dev/127) — the WS path is carried by a gateway custom
-// route. Frame semantics:
+// DesktopBridgeService carries the desktop flow control surface for one
+// session: the desktop opens a long-lived downlink stream that delivers
+// every frame the agent sends to it (operation requests, status frames,
+// heartbeats) and submits each result/signal frame back as an independent
+// uplink call. Frames are relayed to the agent_v2 instance owning the
+// session, and the frame vocabulary is reused verbatim from
+// projects/game/game.proto. Endpoint and wire format:
+// specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1;
+// connection semantics:
+// specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2; frame
+// semantics baseline:
 // specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md §1.
-// Prefix Path: /api/v2/templates/{template}/sessions/{session}/connect
+// Prefix Path: /api/v2
 service DesktopBridgeService {
-  // Connect establishes the bidirectional flow stream. The first UserFrame
-  // (gateway-injected identity, StatusSignal probe) binds the connection to
-  // the session; a new connection for the same session takes over and closes
-  // the previous one. The client sends UserFrames (probes, operation
-  // results); the server sends TeamFrames (status responses, operation
-  // requests). Frame types are reused verbatim from projects/game/game.proto.
-  rpc Connect(stream projects.game.UserFrame) returns (stream projects.game.TeamFrame);
+  // Stream opens the session's desktop downlink stream (server → desktop).
+  // Opening binds the stream to the session resource name in the path, so a
+  // client cannot select another session's stream. The server immediately
+  // pushes one status frame as the connection confirmation and then keeps
+  // pushing a status heartbeat at a ~10s interval; every operation request
+  // and status frame also travels over this stream. A new stream for the
+  // same session takes over and ends the previous one; the previous stream's
+  // late disconnect does not clear the new registration. Custom method on
+  // the session resource (AIP-136: https://google.aip.dev/136). Endpoint:
+  // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1;
+  // connection semantics:
+  // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.
+  rpc Stream(StreamRequest) returns (stream TeamFrame) {
+    option (google.api.http) = {
+      get: "/api/v2/{session=templates/*/sessions/*}:stream"
+    };
+  }
+
+  // SendFrame submits one desktop frame (an operation result or a signal) to
+  // the session's agent as an independent uplink call. Every frame is
+  // self-contained (correlated by flow_result.tool_id) and MUST NOT depend
+  // on call ordering. When the session has no active downlink stream the
+  // call fails FAILED_PRECONDITION, and the desktop re-establishes the
+  // stream and retries. Custom method on the session resource (AIP-136:
+  // https://google.aip.dev/136). Endpoint:
+  // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §1;
+  // semantics:
+  // specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md §2.
+  rpc SendFrame(SendFrameRequest) returns (SendFrameResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/{session=templates/*/sessions/*}:sendFrame"
+      body: "*"
+    };
+  }
 }
+
+// StreamRequest opens the session's desktop downlink stream.
+message StreamRequest {
+  // The session resource name whose downlink stream to open.
+  // Format: templates/{template}/sessions/{session}
+  // Taken from the URL path; the request has no body.
+  string session = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Session"
+    }
+  ];
+}
+
+// SendFrameRequest submits one desktop frame to the session's agent.
+message SendFrameRequest {
+  // The session resource name the frame is delivered to.
+  // Format: templates/{template}/sessions/{session}
+  // The URL path overwrites any value carried in the request body
+  // (grpc-gateway assigns path parameters after body decoding).
+  string session = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Session"
+    }
+  ];
+  // The desktop frame to deliver — an operation result or a signal.
+  UserFrame frame = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+// SendFrameResponse is intentionally empty: receipt correlation rides on
+// flow_result.tool_id; the synchronous response carries no information.
+message SendFrameResponse {}
 
 // TeamMember is one member of the session's team (the role IS the id;
 // members have no independent lifecycle, they are created and released with
@@ -232,12 +301,13 @@ message TeamMember {
   // Format: templates/{template}/sessions/{session}/team/members/{member}
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
   // The member role — a scene vocabulary string (saolei: "player" /
-  // "planner"); required in the materialization input and echoed back
-  // unchanged on the output side.
+  // "planner" / "announcer"); required in the materialization input (the
+  // caller configures the two LLM members only) and echoed back unchanged on
+  // the output side, where the roster also carries the server-side announcer.
   string role = 2;
   // The full preset resource name the member materializes from; required in
   // the materialization input and served as the materialization-time
-  // snapshot on the output side.
+  // snapshot on the output side (empty for the announcer, a non-LLM member).
   string preset = 3 [
     (google.api.resource_reference) = {
       type: "game.liukexin.com/Preset"
@@ -268,9 +338,11 @@ message Team {
   // Format: templates/{template}/sessions/{session}/team
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
   // The member configurations: caller-supplied on the materialization input
-  // (one {role, preset, model?} per member) and the materialized member
+  // (one {role, preset, model?} per LLM member) and the materialized member
   // snapshots on the output side — the same shape, so the field is not
-  // output-only. The proto imposes no member count or role vocabulary
+  // output-only. The output roster additionally carries the server-side
+  // announce-only "announcer" member (empty preset/model). The proto imposes
+  // no member count or role vocabulary
   // (scene-agnostic primitive); the hosting service validates the scene.
   repeated TeamMember members = 2;
   // The session's desktop bridge connection fact, read from the agent-side
@@ -336,8 +408,8 @@ message GetTeamMemberRequest {
 // same shape in its `team_message` frame with the same seq value.
 message TeamMessage {
   // The message producer: the reserved value "user" for user input, or a
-  // member role (scene vocabulary; saolei: "player" / "planner") for member
-  // output. Empty = unset.
+  // member role (scene vocabulary; saolei: "player" / "planner" /
+  // "announcer") for member output. Empty = unset.
   string member = 1;
   // The native message (user input, or the member's own output blocks).
   HistoryMessage message = 2;
@@ -354,8 +426,8 @@ message MemberViewMessage {
   // The message in this member's view (role USER or AGENT).
   HistoryMessage message = 1;
   // The message source: the reserved value "user" for user input, or a
-  // member role (scene vocabulary; saolei: "player" / "planner") for a
-  // team-broadcast relay. Empty = unset.
+  // member role (scene vocabulary; saolei: "player" / "planner" /
+  // "announcer") for a team-broadcast relay. Empty = unset.
   string sender = 2;
 }
 
@@ -462,9 +534,9 @@ message Preset {
 // CreatePresetRequest creates a Preset under a template (AIP-133:
 // https://google.aip.dev/133; caller-supplied id). The creation records the
 // preset in the store over the role's pool template; the member composition
-// derives at use time (specs/060-agent-v2-team-optimize/contracts/
-// preset-derivation.md §1/§2) — an empty persona keeps the template's
-// persona row.
+// derives at use time
+// (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §1/§2) —
+// an empty persona keeps the template's persona row.
 message CreatePresetRequest {
   // The template to create the preset in.
   // Format: templates/{template}
@@ -580,7 +652,9 @@ message ChatEvent {
   // turn's events. Empty on team-level frames.
   string turn_id = 2;
   // The producing member of a member event frame — a scene vocabulary role
-  // string (saolei: "player" / "planner"); unset on team-level frames.
+  // string; only turn-running members produce member frames (saolei:
+  // "player" / "planner" — the announce-only "announcer" runs no turn and
+  // emits only its team_message frame); unset on team-level frames.
   string member = 3;
   oneof payload {
     QueuedEvent queued = 10;
@@ -609,11 +683,12 @@ message ChatEvent {
 // (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
 message MemberViewEvent {
   // The consuming member's role — the member whose view the input entered
-  // (scene vocabulary; saolei: "player" / "planner"). Empty = unset.
+  // (scene vocabulary; saolei: "player" / "planner", the members that consume
+  // inputs — the announce-only "announcer" receives no relay). Empty = unset.
   string member = 1;
   // The input source: the reserved value "user" for a user input, or a
-  // member role (scene vocabulary) for a team-broadcast relay. Empty =
-  // unset.
+  // member role (scene vocabulary; saolei: "player" / "planner" /
+  // "announcer") for a team-broadcast relay. Empty = unset.
   string sender = 2;
   // The message in the consuming member's view (ROLE_USER), the same
   // projection ListMemberMessages serves for the entry.

@@ -1,0 +1,27 @@
+version: "3.0"
+name: redis.{{run}}
+type: test
+desc: "redis-demo integration test (gateway→go-service/js-service→redis infra)"
+services:
+  - infra:
+      app: redis-demo
+      resource: redis
+      profile: dev-single
+      name: redis          # 不启用持久化（style/large_test.md SUT 默认不持久化）
+  - artifact:
+      path: //experimental/redis_demo/go_service/service.yaml
+      name: go-service
+  - artifact:
+      path: //experimental/redis_demo/js_service/service.yaml
+      name: js-service
+  - artifact:
+      path: //experimental/redis_demo/testplan/gateway/service.yaml
+      name: gateway
+    http:
+      hostnames:
+        - apitest.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /experimental/redis-demo

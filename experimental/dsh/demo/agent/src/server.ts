@@ -15,7 +15,8 @@
  * FAILED_PRECONDITION (FR-002), preset-authoring rejections map onto their
  * error codes one-to-one (preset-authoring-plugin.md §6), and agent failures
  * map to INTERNAL without taking the process down. The service layer makes
- * zero roster API calls and zero preset-file filesystem accesses (FR-005):
+ * zero agent-preset-registry API calls and zero preset-file filesystem
+ * accesses (FR-005):
  * preset domain operations flow exclusively through the preset-authoring
  * service face; the only filesystem uses here are the transport's own proto
  * and TLS loading, which stand apart from the preset domain.
@@ -300,8 +301,9 @@ function rejectUnary<T>(
  * non-empty update_mask limited to persona/display_name, and a masked
  * persona stays non-empty; every handler rejects a non-`presets/{id}`
  * resource name. Template resolvability is NOT re-checked here — it is the
- * plugin's roster resolve, whose rejection surfaces verbatim (unknown
- * template → INVALID_ARGUMENT carrying the available ids, contract §6).
+ * plugin's template-snapshot lookup, whose rejection surfaces verbatim
+ * (unknown template → INVALID_ARGUMENT carrying the available ids,
+ * preset-authoring-plugin.md §6).
  */
 export function buildPresetHandlers(authoring: PresetAuthoringService): PresetServiceHandlers {
   return {
@@ -436,9 +438,10 @@ export function buildPresetHandlers(authoring: PresetAuthoringService): PresetSe
       authoring.remove(presetId).then(
         () => callback(null, {}),
         (err: unknown) => {
-          // A template id surfaces the roster's system-trust refusal as
-          // FAILED_PRECONDITION through the one-to-one mapping
-          // (chat-api.md §2 DeletePreset row); an unknown id is NOT_FOUND.
+          // Declared templates are composition rows, not store records, so a
+          // template id has no record to remove: the plugin's remove() reports
+          // the store miss as NOT_FOUND through the one-to-one mapping
+          // (chat-api.md §2 DeletePreset row).
           const mapped = domainStatusOf(err);
           info("DeletePreset: rejected", { presetId, code: mapped.code, error: mapped.message });
           callback(mapped);

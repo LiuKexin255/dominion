@@ -120,7 +120,7 @@ artifacts:
 
 ##### infra
 
-声明基础设施实例，当前支持 `resource: mongodb`：
+声明基础设施实例，当前支持 `resource: mongodb`（standalone 单实例）与 `resource: redis`（standalone 单实例）：
 
 ```yaml
 services:
@@ -131,9 +131,29 @@ services:
       app: hello-world
       persistence:
         enabled: true
+  - infra:
+      resource: redis
+      profile: dev-single
+      name: redis
+      app: hello-world
+      persistence:               # 可选；启用时按 profile 存储配置持久化（AOF）
+        enabled: true
+        capacity: 8Gi            # 可选，默认取 profile 容量；上限 1Ti
 ```
 
 `infra` 不依赖 `service.yaml`，deploy 工具直接生成对应资源。
+
+字段说明：
+
+| 字段 | 说明 |
+|------|------|
+| `resource` | 基础设施种类：`mongodb` 或 `redis`（其他取值被配置校验拒绝）。 |
+| `profile` | 实例档案名，须存在于 deploy service 静态配置的对应资源种类 profile 表中（mongodb/redis 各自独立）。 |
+| `name` | 实例名，参与集群资源名生成（63 字符上限）。 |
+| `app` | 实例所属应用名；服务以 target `{app}/{name}` 连接该实例。 |
+| `persistence` | 可选。`enabled` 必填；启用后按 profile 的 StorageClass/容量/访问模式创建 PVC，`capacity` 可覆盖默认容量（上限 1Ti）。 |
+
+实例凭证由平台按确定性算法生成并以环境变量直接注入实例容器（mongodb：`MONGO_INITDB_ROOT_*`；redis：`REDIS_PASSWORD`），**不创建实例 Secret 对象**；服务侧由公共库按同源算法派生凭证（见[Secret 配置](#secret-配置)）。
 
 ## 服务镜像构建
 
@@ -340,6 +360,8 @@ deploy describe {env-name}
 ## Secret 配置
 
 在 `service.yaml` 中声明 secret 逻辑名，在 `deploy.yaml` 中将逻辑名绑定到 Kubernetes Secret。
+
+> 本节 Secret 指用户业务 Secret 的绑定与投影。deploy 管理的基础设施实例（`infra` 的 mongodb/redis）凭证不属于此机制：实例凭证由平台生成后以**环境变量直接注入实例容器**，不创建实例专属 Secret；服务侧由公共库按同源算法自行派生（见[infra](#infra)）。既有环境升级后，历史遗留的实例 Secret 会由 apply 的 prune 机制自动清理。
 
 ```yaml
 # service.yaml

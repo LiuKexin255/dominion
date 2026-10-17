@@ -2,13 +2,15 @@
 
 **Feature**: [spec.md](spec.md) FR-013/FR-004/FR-012/FR-014/FR-015 | **决策**: [research.md](../research.md) D4/D6/D11/D12
 
-## 1. 接口定义（proto：`projects/game/agent_v2.proto`，package `projects.game.v2`）
+## 1. 接口定义（proto：`projects/game/agent_v2.proto`，package `projects.game`）
 
-proto 文件位于 game app 根目录、与 `game.proto` 同目录（归属决策 [research.md](../research.md) D12：app 根目录承载该 app 全部 proto 的既有惯例；版本化面保留独立 proto package）。内容如下：
+> **2026-09-19 用户裁定**：统一 proto package 为 `projects.game`（clean break，supersedes 原 `projects.game.v2` 表述）；gRPC 服务全名随之为 `projects.game.*`，仓库内消费方随生成物再生闭环。裁定终态见 [specs/051-agent-v2-dsh-migration/contracts/agent-api.md](../../051-agent-v2-dsh-migration/contracts/agent-api.md) §1。
+
+proto 文件位于 game app 根目录、与 `game.proto` 同目录（归属决策 [research.md](../research.md) D12：app 根目录承载该 app 全部 proto 的既有惯例；proto package 与 `game.proto` 统一为 `projects.game`，2026-09-19 用户裁定）。内容如下：
 
 ```protobuf
 syntax = "proto3";
-package projects.game.v2;
+package projects.game;
 
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";

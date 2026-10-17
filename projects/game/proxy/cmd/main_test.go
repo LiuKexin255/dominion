@@ -26,8 +26,8 @@ func TestRegisterServices(t *testing.T) {
 
 	info := srv.GetServiceInfo()
 	for _, svc := range []string{
-		"projects.game.v2.AgentService",
-		"projects.game.v2.DesktopBridgeService",
+		"projects.game.AgentService",
+		"projects.game.DesktopBridgeService",
 	} {
 		if _, ok := info[svc]; !ok {
 			t.Fatalf("service %q not registered; registered services = %v", svc, serviceNames(info))

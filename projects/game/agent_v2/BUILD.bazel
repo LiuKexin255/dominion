@@ -45,16 +45,28 @@ ts_project(
     deps = [
         ":agent_v2_types_lib",
         ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-brand",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-ptc-runtime",
+        ":node_modules/@deepseek-ai/dsh-sandbox",
+        ":node_modules/@deepseek-ai/dsh-sandbox-policy",
+        ":node_modules/@deepseek-ai/dsh-session-persistence",
+        ":node_modules/@deepseek-ai/dsh-session-projection",
+        ":node_modules/@deepseek-ai/dsh-settings",
         # The system-prompt read face (src/system-prompt.ts) imports
         # assembleContextFor + renderPrompt at runtime for GetTeamMember.
         ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-typert-protocol",
+        ":node_modules/@deepseek-ai/dsh-user-approval",
+        ":node_modules/@deepseek-ai/dsh-util-values",
         ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-constants",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-mongo",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
         # The preset domain face the server/session layers consume:
@@ -69,6 +81,12 @@ ts_project(
         ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-llm-glm",
         ":node_modules/@dominion/dsh-saolei-loop",
+        # The team plugin's unified member event stream types (TeamMemberEvent /
+        # TeamLiveEvent) the history collector and the session layer consume
+        # (specs/077-announcer-member-unification/contracts/
+        # member-event-stream.md §2/§5). Type-only: the plugin row is linked at
+        # runtime by the composition.
+        ":node_modules/@dominion/dsh-team",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
@@ -86,14 +104,7 @@ artifact_pkg_js(
     app = "game",
     data_files = [
         "cordis.yml",
-    ] + glob(
-        # Template presets ship with the artifact under
-        # /dominion/game/agent_v2/preset-templates (PRESET_TEMPLATES_ROOT —
-        # the roster's system roots scan presets-templates/{player,planner},
-        # specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5; demo
-        # precedent: experimental/dsh/demo/agent/BUILD.bazel data_files).
-        ["preset-templates/**"],
-    ),
+    ],
     entrypoint = "src/bootstrap.js",
     npm_deps = [
         # Service-declared dsh rows and imports (closure contract: the
@@ -102,33 +113,50 @@ artifact_pkg_js(
         # (timer/invariants + the cordis loader stack) enter through
         # @dominion/dsh-core in runtime_deps; the remaining direct-composed
         # dsh rows are declared here
-        # (specs/059-agent-v2-team-mode/contracts/dsh-plugins.md §5).
+        # (specs/070-dsh-upgrade/contracts/composition-manifest.md §4).
         # system-prompt is both a framework-core row and the
         # src/system-prompt.ts GetTeamMember import, so it is declared too.
-        # dsh-persona has no host row either — the preset compositions'
-        # persona row resolves by bare package name from the host base
-        # (roster README "How a preset's rows resolve").
+        # dsh-persona has no host row either — the pool templates' persona
+        # rows resolve by bare package name from the host base
+        # (specs/070-dsh-upgrade/contracts/composition-manifest.md §2;
+        # specs/070-dsh-upgrade/research.md D4 终态结论).
+        #
+        # The install-level peers (brand, ptc-runtime, sandbox,
+        # sandbox-policy, session-persistence, settings, typert-protocol,
+        # user-approval, util-values) are declared so every package in the tar
+        # closure is traceable to an explicit declaration; they are not
+        # composed rows (specs/070-dsh-upgrade/contracts/composition-manifest.md §4).
         #
         # npm_deps carries THIRD-PARTY link targets only. The workspace
         # packages (@dominion/dsh-llm-glm, the saolei plugin set, team,
-        # memory, memory-service, preset-authoring) enter exclusively through
-        # runtime_deps (…:runtime_pkg): their link targets must NOT appear
-        # here — npm_deps link targets carry real files only for registry
-        # packages, and the Phase-3 staging deleted the manifest-less linker
-        # store's package.json/.d.ts on the shared node_modules path (the
-        # runtime crash "Cannot find package … @dominion/dsh-llm-glm"; the
-        # healthy precedent is the common-js-* packages: runtime_deps only).
+        # preset-authoring) enter exclusively through runtime_deps
+        # (…:runtime_pkg): their link targets must NOT appear here — npm_deps
+        # link targets carry real files only for registry packages, and the
+        # Phase-3 staging deleted the manifest-less linker store's
+        # package.json/.d.ts on the shared node_modules path (the runtime
+        # crash "Cannot find package … @dominion/dsh-llm-glm"; the healthy
+        # precedent is the common-js-* packages: runtime_deps only).
         ":node_modules/@deepseek-ai/dsh-agent",
         ":node_modules/@deepseek-ai/dsh-agent-loop",
-        ":node_modules/@deepseek-ai/dsh-agent-presets",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-brand",
         ":node_modules/@deepseek-ai/dsh-llm",
         ":node_modules/@deepseek-ai/dsh-llm-retry",
         ":node_modules/@deepseek-ai/dsh-persona",
+        ":node_modules/@deepseek-ai/dsh-ptc-runtime",
+        ":node_modules/@deepseek-ai/dsh-sandbox",
+        ":node_modules/@deepseek-ai/dsh-sandbox-policy",
         ":node_modules/@deepseek-ai/dsh-scope",
         ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-session-persistence",
+        ":node_modules/@deepseek-ai/dsh-session-projection",
+        ":node_modules/@deepseek-ai/dsh-settings",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",
+        ":node_modules/@deepseek-ai/dsh-typert-protocol",
+        ":node_modules/@deepseek-ai/dsh-user-approval",
+        ":node_modules/@deepseek-ai/dsh-util-values",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],
@@ -143,21 +171,23 @@ artifact_pkg_js(
     runtime_deps = [
         "//common/js/bootstrap:runtime_pkg",
         "//common/js/constants:runtime_pkg",
-        # The composed rows and the preset-mounted plugin packages resolve by
-        # bare name from this service's node_modules — the workspace packages
-        # ship through runtime_deps (npm_deps is a no-op for them).
+        # The composed rows and the capability/preset plugin packages resolve
+        # by bare name from this service's node_modules — the workspace
+        # packages ship through runtime_deps (npm_deps is a no-op for them).
         "//common/js/dsh-plugins/desktop-bridge:runtime_pkg",
+        "//common/js/dsh-plugins/grpc-runtime:runtime_pkg",
         "//common/js/dsh-plugins/llm-glm:runtime_pkg",
         "//common/js/dsh-plugins/llm-opencode-go:runtime_pkg",
-        "//common/js/dsh-plugins/memory:runtime_pkg",
-        "//common/js/dsh-plugins/memory-service:runtime_pkg",
         "//common/js/dsh-plugins/preset-authoring:runtime_pkg",
         "//common/js/dsh-plugins/saolei:runtime_pkg",
         "//common/js/dsh-plugins/saolei-loop:runtime_pkg",
+        "//common/js/dsh-plugins/saolei-memory:runtime_pkg",
+        "//common/js/dsh-plugins/saolei-tools:runtime_pkg",
         "//common/js/dsh-plugins/team:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
+        "//common/js/mongo:runtime_pkg",
         "//common/js/otel:runtime_pkg",
         "//common/js/resolver:runtime_pkg",
         "//third_party/dsh/core:runtime_pkg",
@@ -174,39 +204,57 @@ artifact_image(
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
 # (style/javascript.md data rules): production + test sources only, plus the
-# node_modules mirror of :server_lib's deps, the runtime imports the tests
-# exercise (the authoring error class, the game-runtime builder, cordis for
-# the session-test scope harness), and the test-only imports (js-yaml for the
-# manifest assertions). :agent_v2_types_lib is absent — the sources reference
+# node_modules mirror of :server_lib's deps (including the declaration-
+# surface dsh packages), the runtime imports the tests exercise (the authoring
+# error class, the game-runtime builder, cordis for the session-test scope
+# harness), and the test-only imports (js-yaml for the manifest assertions).
+# :agent_v2_types_lib is absent — the sources reference
 # the generated proto types via `import type` only, which vitest erases at
-# transform time. cordis.yml and the preset template data travel as data: the
-# manifest tests assert the composition contract against the shipped file.
+# transform time. cordis.yml travels as data: the manifest tests assert the
+# composition contract against the shipped file.
 vitest_test(
     name = "lib_test",
     size = "small",
     data = glob(
         ["src/**/*.ts"],
         allow_empty = True,
-    ) + glob(
-        ["preset-templates/**"],
-        allow_empty = True,
     ) + [
         "cordis.yml",
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-agent",
+        ":node_modules/@deepseek-ai/dsh-agent-preset-registry",
         ":node_modules/@deepseek-ai/dsh-app-boot",
+        ":node_modules/@deepseek-ai/dsh-brand",
         ":node_modules/@deepseek-ai/dsh-llm",
+        ":node_modules/@deepseek-ai/dsh-ptc-runtime",
+        ":node_modules/@deepseek-ai/dsh-sandbox",
+        ":node_modules/@deepseek-ai/dsh-sandbox-policy",
+        # The live-step recovery contract (ToolCallRecovery + the
+        # TOOL_OUTCOME_UNKNOWN/TOOL_NOT_STARTED codes) is imported directly by
+        # src/tool-recovery.test.ts: the 0.2.0 loop driver builds its
+        # conservative recovery results with this component, so the test drives
+        # it over a committed failure prefix
+        # (specs/073-dsh-0.2-upgrade/spec.md FR-007).
+        ":node_modules/@deepseek-ai/dsh-session",
+        ":node_modules/@deepseek-ai/dsh-session-persistence",
+        ":node_modules/@deepseek-ai/dsh-session-projection",
+        ":node_modules/@deepseek-ai/dsh-settings",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
+        ":node_modules/@deepseek-ai/dsh-typert-protocol",
+        ":node_modules/@deepseek-ai/dsh-user-approval",
+        ":node_modules/@deepseek-ai/dsh-util-values",
         ":node_modules/@dominion/common-js-bootstrap",
         ":node_modules/@dominion/common-js-constants",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-mongo",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@dominion/dsh-llm-glm",
         ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@dominion/dsh-saolei-loop",
+        ":node_modules/@dominion/dsh-team",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",

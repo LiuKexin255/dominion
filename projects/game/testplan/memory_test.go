@@ -1,21 +1,27 @@
 // Package testplan contains the MEMORY module large-test suite.
 //
 // memory_test.go validates the MemoryService storage API end-to-end through
-// the gateway's public HTTP entry: Create/Update/Delete/List (memory_id-based
+// the gateway's public HTTP entry: Create/Update/Delete/List (name-addressed
 // resources, resource pattern
-// templates/{template}/sessions/{session}/memories/{memory}), AIP-158
+// templates/{template}/presets/{preset}/memories/{memory} —
+// specs/071-memory-preset-scope/contracts/memory-service.md §1), AIP-158
 // pagination (page_size/page_token/next_page_token), the AIP-193 error codes
 // (ALREADY_EXISTS on duplicate memory_id, NOT_FOUND on missing
 // update/delete, INVALID_ARGUMENT on a bad memory_id), and the generic
 // AIP-132 order_by face (whitelisted "{field} [desc]" syntax, unique-key
 // tie-breaker, key-value cursor —
 // specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1/§4).
-// The service uses its own mongo database `game_memory` (FR-006,
+// The service uses its own mongo database `game_memory` (spec 039 FR-006,
 // style/mongo.md) — pinned at the unit level by the repository tests
 // (projects/game/memory/runtime/mongo/repository_test.go — DI seam) and by
 // the service wiring (memory/cmd/main.go); the large test verifies the
-// durable behaviour (entries survive across requests/sessions) through the
-// public entry, never touching mongo directly.
+// durable behaviour (entries survive across requests) through the
+// public entry, never touching mongo directly. The parent preset's existence
+// is not checked (contract §1), so cases use legal literal preset names.
+// Alongside the CRUD face the suite pins the preset-scope boundary semantics
+// (specs/071-memory-preset-scope/spec.md US3): cross-preset zero leakage
+// (FR-008), session/preset deletion leaving the collection untouched (FR-010),
+// and the unbounded collection (FR-018).
 //
 // Organised by MODULE per style/large_test.md (not by spec/scenario id);
 // it reuses the shared HTTP helpers in helpers_test.go. Trace context: the
@@ -27,43 +33,50 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // TestMemoryServiceHttpCrudAndPagination verifies the MemoryService storage
 // API + AIP-158 pagination through the gateway public entry
 // (specs/039-planner-memory-calibration contracts/memory-service-contract.md
-// §2/§6): create/get/list/update/delete of memory_id-based resources, the
+// §2/§6): create/get/list/update/delete of name-addressed resources, the
 // unique-identity ALREADY_EXISTS rejection, NOT_FOUND on missing
 // update/delete, INVALID_ARGUMENT on a memory_id outside [a-z0-9_-], and
 // cursor pagination (page_size/page_token/next_page_token — the repository
-// sorts by memory_id ascending and pages with limit=pageSize+1).
+// sorts by memory_id ascending and pages with limit=pageSize+1). The resource
+// name's {memory} terminal segment carries the memory id; the response has no
+// separate id field (FR-017,
+// specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
 func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: a session as the memory parent (the memory resource hangs off
-	// templates/{template}/sessions/{session}/memories — FR-012).
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
+	// given: a preset as the memory parent (the memory resource hangs off
+	// templates/{template}/presets/{preset}/memories —
+	// specs/071-memory-preset-scope/contracts/memory-service.md §1). The
+	// service does not check preset existence, so a legal literal name is a
+	// complete parent.
+	presetID := "lt-mem-crud-" + uniqueSuffix()
 
 	// when: create a memory via POST /memories?memory_id=... with the
 	// embedded {content} body (AIP-133).
-	created := createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "mem-1", "player 常犯边角误标")
+	created := createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-1", "player 常犯边角误标")
 
-	// then: the resource carries the full AIP-122 name, the memory_id
-	// segment and the content (contract §1).
-	wantName := fmt.Sprintf("templates/%s/sessions/%s/memories/mem-1", saoleiTemplateID, sessionID)
+	// then: the resource carries the full AIP-122 name (whose {memory}
+	// segment is the memory id) and the content (contract §1).
+	wantName := fmt.Sprintf("templates/%s/presets/%s/memories/mem-1", saoleiTemplateID, presetID)
 	if created.GetName() != wantName {
 		t.Errorf("created Name = %q, want %q", created.GetName(), wantName)
 	}
-	if created.GetMemoryId() != "mem-1" {
-		t.Errorf("created memory_id = %q, want mem-1", created.GetMemoryId())
-	}
+	assertMemoryNameID(t, created, "mem-1")
 	if created.GetContent() != "player 常犯边角误标" {
 		t.Errorf("created content = %q, want the posted content", created.GetContent())
 	}
@@ -74,16 +87,16 @@ func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 	// then: a duplicate memory_id is rejected with 409 ALREADY_EXISTS
 	// (AIP-133/FR-008 conflict rejection).
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost,
-		fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?memory_id=mem-1",
-			sutHostURL, pathPrefix, saoleiTemplateID, sessionID), sutEnvName,
+		fmt.Sprintf("%s%stemplates/%s/presets/%s/memories?memory_id=mem-1",
+			sutHostURL, pathPrefix, saoleiTemplateID, presetID), sutEnvName,
 		[]byte(`{"content":"duplicate"}`))
 	if resp.StatusCode != http.StatusConflict {
 		t.Errorf("duplicate CreateMemory status=%d, want 409 ALREADY_EXISTS, body=%s", resp.StatusCode, respBody)
 	}
 
-	// given: four more entries so the session holds 5 (pagination fixture).
+	// given: four more entries so the preset holds 5 (pagination fixture).
 	for i := 2; i <= 5; i++ {
-		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID,
+		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID,
 			fmt.Sprintf("mem-%d", i), fmt.Sprintf("entry %d", i))
 	}
 
@@ -91,7 +104,7 @@ func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 	var pages [][]string
 	pageToken := ""
 	for {
-		page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 2, pageToken, "")
+		page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 2, pageToken, "")
 		var contents []string
 		for _, m := range page.GetMemories() {
 			contents = append(contents, m.GetContent())
@@ -122,32 +135,32 @@ func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 	}
 
 	// when: update mem-1's content via PATCH + update_mask (AIP-134).
-	status, body := updateMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "mem-1", "player 常犯节奏过快", "content")
+	status, body := updateMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-1", "player 常犯节奏过快", "content")
 	if status != http.StatusOK {
 		t.Fatalf("UpdateMemory status=%d, body=%s", status, body)
 	}
 
 	// then: the list reflects the update (the same memory_id entry now
 	// carries the new content — the unique identity was preserved).
-	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "")
+	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "")
 	if got := page.GetMemories()[0].GetContent(); got != "player 常犯节奏过快" {
 		t.Errorf("updated content = %q, want the patched content", got)
 	}
 
 	// then: update/delete of a MISSING memory returns 404 NOT_FOUND
 	// (AIP-134/135 — no create-or-update).
-	if status, _ := updateMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "mem-nope", "x", "content"); status != http.StatusNotFound {
+	if status, _ := updateMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-nope", "x", "content"); status != http.StatusNotFound {
 		t.Errorf("UpdateMemory(missing) status=%d, want 404 NOT_FOUND", status)
 	}
-	if status := deleteMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "mem-nope"); status != http.StatusNotFound {
+	if status := deleteMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-nope"); status != http.StatusNotFound {
 		t.Errorf("DeleteMemory(missing) status=%d, want 404 NOT_FOUND", status)
 	}
 
 	// when: delete mem-1, then list again.
-	if status := deleteMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "mem-1"); status != http.StatusOK && status != http.StatusNoContent {
+	if status := deleteMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-1"); status != http.StatusOK && status != http.StatusNoContent {
 		t.Fatalf("DeleteMemory status=%d, want 200 or 204", status)
 	}
-	page = listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "")
+	page = listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "")
 	if got := len(page.GetMemories()); got != 4 {
 		t.Errorf("ListMemories after delete = %d entries, want 4", got)
 	}
@@ -155,11 +168,69 @@ func TestMemoryServiceHttpCrudAndPagination(t *testing.T) {
 	// then: an invalid memory_id (outside [a-z0-9_-]) is rejected with 400
 	// INVALID_ARGUMENT (AIP-193 — contract §6 charset validation).
 	resp, respBody = doHTTPTrace(t, ctx, http.MethodPost,
-		fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?memory_id=Bad%%20ID",
-			sutHostURL, pathPrefix, saoleiTemplateID, sessionID), sutEnvName,
+		fmt.Sprintf("%s%stemplates/%s/presets/%s/memories?memory_id=Bad%%20ID",
+			sutHostURL, pathPrefix, saoleiTemplateID, presetID), sutEnvName,
 		[]byte(`{"content":"x"}`))
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("CreateMemory(bad memory_id) status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+	}
+}
+
+// TestMemoryServiceHttpContentLimit verifies the memory content write limit
+// through the gateway public entry
+// (specs/069-wiki-template-web/contracts/memory-content-limit.md §1-2): a
+// Create whose content exceeds 1024 runes is rejected with 400
+// INVALID_ARGUMENT — nothing is persisted — while the 1024-rune boundary is
+// accepted. The payload is multibyte (中文, 3 bytes per rune), so the case
+// also pins the rune measure: a byte-length bound would reject the boundary
+// payload too.
+func TestMemoryServiceHttpContentLimit(t *testing.T) {
+	const (
+		maxRunes      = 1024
+		overLimitText = "中"
+	)
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a preset as the memory parent (preset existence is not checked —
+	// specs/071-memory-preset-scope/contracts/memory-service.md §1).
+	presetID := "lt-mem-limit-" + uniqueSuffix()
+
+	// when: create a memory with 1025 multibyte runes (3075 bytes) of content.
+	overLimit := strings.Repeat(overLimitText, maxRunes+1)
+	body, err := protojson.Marshal(&game.Memory{Content: overLimit})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Memory: %v", err)
+	}
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets/%s/memories?memory_id=over-limit",
+		sutHostURL, pathPrefix, saoleiTemplateID, presetID)
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
+
+	// then: 400 INVALID_ARGUMENT with a message naming the limit and the
+	// actual rune count (contract §2/§5).
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("CreateMemory(over limit) status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+	}
+	for _, want := range []string{fmt.Sprintf("%d", maxRunes), fmt.Sprintf("%d", maxRunes+1)} {
+		if !strings.Contains(string(respBody), want) {
+			t.Errorf("CreateMemory(over limit) body = %s, want it to contain %q", respBody, want)
+		}
+	}
+
+	// then: the rejected write left nothing behind.
+	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "")
+	if got := len(page.GetMemories()); got != 0 {
+		t.Errorf("ListMemories after rejected Create = %d entries, want 0", got)
+	}
+
+	// when: create at the boundary (1024 multibyte runes).
+	boundary := strings.Repeat(overLimitText, maxRunes)
+	created := createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "at-limit", boundary)
+
+	// then: accepted with the content intact.
+	if created.GetContent() != boundary {
+		t.Errorf("CreateMemory(at limit) content = %q, want the %d-rune payload", created.GetContent(), maxRunes)
 	}
 }
 
@@ -178,38 +249,38 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	// given: a session with five entries created in memory_id order.
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
+	// given: a preset with five entries created in memory_id order.
+	presetID := "lt-mem-order-" + uniqueSuffix()
 	for i := 1; i <= 5; i++ {
-		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID,
+		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID,
 			fmt.Sprintf("mem-%d", i), fmt.Sprintf("entry %d", i))
 	}
 
 	// when: update mem-2 after a short pause, so its update_time is strictly
 	// later than every create's (BSON dates carry millisecond precision).
 	time.Sleep(10 * time.Millisecond)
-	status, body := updateMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "mem-2", "updated entry 2", "content")
+	status, body := updateMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-2", "updated entry 2", "content")
 	if status != http.StatusOK {
 		t.Fatalf("UpdateMemory status=%d, body=%s", status, body)
 	}
 
 	// when: list with order_by=update_time desc.
-	ordered := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "update_time desc")
+	ordered := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "update_time desc")
 
 	// then: every entry, the patched one first, and the page in the
 	// update_time desc / memory_id asc total order.
 	if got := len(ordered.GetMemories()); got != 5 {
 		t.Fatalf("ListMemories(order_by=update_time desc) returned %d entries, want 5", got)
 	}
-	if got := ordered.GetMemories()[0].GetMemoryId(); got != "mem-2" {
-		t.Errorf("ordered first entry = %q, want mem-2 (the patched entry)", got)
+	if got := ordered.GetMemories()[0].GetName(); got != fmt.Sprintf("templates/%s/presets/%s/memories/mem-2", saoleiTemplateID, presetID) {
+		t.Errorf("ordered first entry = %q, want the mem-2 resource name (the patched entry)", got)
 	}
 	assertMemoryUpdateTimeOrder(t, ordered.GetMemories(), true)
 
 	// when: list with the bare ascending field and with the explicit
 	// tie-breaker spelling.
-	ascending := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "update_time")
-	explicit := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 100, "", "update_time desc, memory_id")
+	ascending := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "update_time")
+	explicit := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "update_time desc, memory_id")
 
 	// then: the bare field is ascending with the same tie-breaker — the
 	// patched entry is the newest, so it sinks to the end — and the explicit
@@ -219,17 +290,15 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 		t.Fatalf("ListMemories(order_by=update_time) returned %d entries, want %d", got, len(wantAscending))
 	}
 	for i, want := range wantAscending {
-		if got := ascending.GetMemories()[i].GetMemoryId(); got != want {
-			t.Errorf("ascending entry[%d] = %q, want %q", i, got, want)
-		}
+		assertMemoryNameID(t, ascending.GetMemories()[i], want)
 	}
 	assertMemoryUpdateTimeOrder(t, ascending.GetMemories(), false)
 	if got := len(explicit.GetMemories()); got != len(ordered.GetMemories()) {
 		t.Fatalf("ListMemories(order_by=update_time desc, memory_id) returned %d entries, want %d", got, len(ordered.GetMemories()))
 	}
 	for i, m := range explicit.GetMemories() {
-		if want := ordered.GetMemories()[i].GetMemoryId(); m.GetMemoryId() != want {
-			t.Errorf("explicit tie-breaker entry[%d] = %q, want %q (same total order)", i, m.GetMemoryId(), want)
+		if want := ordered.GetMemories()[i].GetName(); m.GetName() != want {
+			t.Errorf("explicit tie-breaker entry[%d] = %q, want %q (same total order)", i, m.GetName(), want)
 		}
 	}
 
@@ -238,7 +307,7 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 	pageToken := ""
 	pages := 0
 	for {
-		page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, 2, pageToken, "update_time desc")
+		page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 2, pageToken, "update_time desc")
 		paged = append(paged, page.GetMemories()...)
 		pages++
 		pageToken = page.GetNextPageToken()
@@ -256,17 +325,60 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 		t.Fatalf("ordered pagination returned %d entries in total, want 5", len(paged))
 	}
 	for i, m := range paged {
-		if want := ordered.GetMemories()[i].GetMemoryId(); m.GetMemoryId() != want {
-			t.Errorf("ordered pagination entry %d = %q, want %q (order preserved across pages)", i, m.GetMemoryId(), want)
+		if want := ordered.GetMemories()[i].GetName(); m.GetName() != want {
+			t.Errorf("ordered pagination entry %d = %q, want %q (order preserved across pages)", i, m.GetName(), want)
 		}
+	}
+
+	// then: the page token carries its order_by context, so a continuation
+	// that flips the direction is rejected with 400 INVALID_ARGUMENT while an
+	// equivalent spelling of the same final key is accepted, and a default-key
+	// token accepts the explicit memory_id spelling
+	// (specs/068-wiki-round-pause/contracts/memory-page-token-context.md §5).
+	descFirst := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 2, "", "update_time desc")
+	descToken := descFirst.GetNextPageToken()
+	if descToken == "" {
+		t.Fatal("ListMemories(order_by=update_time desc) page 1 next_page_token is empty, want non-empty")
+	}
+
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodGet,
+		fmt.Sprintf("%s%stemplates/%s/presets/%s/memories?page_size=2&page_token=%s&order_by=%s",
+			sutHostURL, pathPrefix, saoleiTemplateID, presetID, url.QueryEscape(descToken), url.QueryEscape("update_time")),
+		sutEnvName, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("direction-flip continuation status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+	}
+
+	equivalent := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 2, descToken, "update_time desc, memory_id")
+	if got := len(equivalent.GetMemories()); got != 2 {
+		t.Fatalf("equivalent-spelling continuation returned %d entries, want 2", got)
+	}
+	for i, m := range equivalent.GetMemories() {
+		if want := ordered.GetMemories()[i+2].GetName(); m.GetName() != want {
+			t.Errorf("equivalent-spelling continuation entry %d = %q, want %q (order preserved)", i, m.GetName(), want)
+		}
+	}
+
+	defaultFirst := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 2, "", "")
+	defaultToken := defaultFirst.GetNextPageToken()
+	if defaultToken == "" {
+		t.Fatal("ListMemories(default) page 1 next_page_token is empty, want non-empty")
+	}
+	wantDefaultContinuation := []string{"mem-3", "mem-4"}
+	explicitDefault := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 2, defaultToken, "memory_id")
+	if got := len(explicitDefault.GetMemories()); got != len(wantDefaultContinuation) {
+		t.Fatalf("explicit memory_id continuation returned %d entries, want %d", got, len(wantDefaultContinuation))
+	}
+	for i, want := range wantDefaultContinuation {
+		assertMemoryNameID(t, explicitDefault.GetMemories()[i], want)
 	}
 
 	// then: unsupported order_by values are rejected with 400 INVALID_ARGUMENT
 	// (AIP-193): unknown field, illegal suffix, non-sortable field.
 	for _, orderBy := range []string{"foo", "update_time asc", "content"} {
 		resp, respBody := doHTTPTrace(t, ctx, http.MethodGet,
-			fmt.Sprintf("%s%stemplates/%s/sessions/%s/memories?order_by=%s",
-				sutHostURL, pathPrefix, saoleiTemplateID, sessionID, url.QueryEscape(orderBy)),
+			fmt.Sprintf("%s%stemplates/%s/presets/%s/memories?order_by=%s",
+				sutHostURL, pathPrefix, saoleiTemplateID, presetID, url.QueryEscape(orderBy)),
 			sutEnvName, nil)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("ListMemories(order_by=%q) status=%d, want 400 INVALID_ARGUMENT, body=%s", orderBy, resp.StatusCode, respBody)
@@ -274,28 +386,232 @@ func TestMemoryServiceHttpListOrderBy(t *testing.T) {
 	}
 }
 
+// TestMemoryServiceHttpPresetIsolation covers the zero-leak isolation between
+// preset-scoped collections (specs/071-memory-preset-scope/spec.md US3 场景 1,
+// FR-008; specs/071-memory-preset-scope/contracts/memory-service.md §5 验收锚点 2):
+// an entry written under preset P1 is absent from P2's List result while P1's
+// own listing carries it — no read path crosses the (template, preset)
+// collection key (specs/071-memory-preset-scope/spec.md SC-002).
+func TestMemoryServiceHttpPresetIsolation(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: two sibling presets under the same template; only P1 holds an
+	// entry (the service addresses collections by name and does not check the
+	// preset's existence — contract §1).
+	p1 := "lt-mem-iso-p1-" + uniqueSuffix()
+	p2 := "lt-mem-iso-p2-" + uniqueSuffix()
+	entry := "P1 独有条目：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, p1, "mem-p1", entry)
+
+	// then: P2's listing is empty — P1's entry never leaks across the key.
+	if got := len(listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, p2, 100, "", "").GetMemories()); got != 0 {
+		t.Errorf("P2 ListMemories = %d entries, want 0 (P1's entries must not leak)", got)
+	}
+
+	// then: P1's own listing returns exactly its entry.
+	p1Page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, p1, 100, "", "")
+	if got := len(p1Page.GetMemories()); got != 1 || p1Page.GetMemories()[0].GetContent() != entry {
+		t.Errorf("P1 ListMemories = %v, want exactly the entry %q", p1Page.GetMemories(), entry)
+	}
+}
+
+// TestMemoryServiceHttpSessionDeleteDecoupled covers the session lifecycle
+// boundary (specs/071-memory-preset-scope/spec.md US3 场景 3, FR-010;
+// specs/071-memory-preset-scope/contracts/memory-service.md §3): deleting a
+// session through the v1 route leaves the preset's collection untouched — the
+// memory scope carries no session segment, so session teardown has no path to
+// the collection.
+func TestMemoryServiceHttpSessionDeleteDecoupled(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a session and a preset-scoped entry; the session is then deleted.
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
+	presetID := "lt-mem-session-" + uniqueSuffix()
+	entry := "session 删除后仍在：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-session", entry)
+	resp := deleteSession(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DeleteSession status=%d, want 200 or 204", resp.StatusCode)
+	}
+	if status, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID); status != http.StatusNotFound {
+		t.Fatalf("GetSession after delete status=%d, want 404 (the session must be gone)", status)
+	}
+
+	// then: the collection still lists the entry.
+	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "")
+	if got := len(page.GetMemories()); got != 1 || page.GetMemories()[0].GetContent() != entry {
+		t.Errorf("ListMemories after DeleteSession = %v, want the retained %q", page.GetMemories(), entry)
+	}
+}
+
+// TestMemoryServiceHttpPresetDeleteNonCascade covers the preset lifecycle
+// boundary (specs/071-memory-preset-scope/spec.md US3 场景 4, FR-010;
+// specs/071-memory-preset-scope/contracts/memory-service.md §3): deleting a
+// preset through the agent_v2 configuration face leaves its memory collection
+// in place — there is no cascade, so the entries stay addressable by the same
+// preset name.
+func TestMemoryServiceHttpPresetDeleteNonCascade(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a real preset (created through the agent_v2 configuration face so
+	// the delete removes an existing resource) with one scoped entry.
+	presetID := "lt-mem-preset-" + uniqueSuffix()
+	presetBody, err := protojson.Marshal(&game.Preset{Persona: "你是扫雷 planner（lifecycle）"})
+	if err != nil {
+		t.Fatalf("protojson.Marshal Preset: %v", err)
+	}
+	createResp, createBody := doHTTPTrace(t, ctx, http.MethodPost,
+		fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s&role=planner",
+			sutHostURL, memoryModuleV2Prefix, saoleiTemplateID, presetID),
+		sutEnvName, presetBody)
+	if createResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create preset status=%d, body=%s", createResp.StatusCode, createBody)
+	}
+	entry := "preset 删除后仍在：" + uniqueSuffix()
+	createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, "mem-preset", entry)
+
+	// when: the preset is deleted through the v2 configuration route.
+	resp, respBody := doHTTPTrace(t, ctx, http.MethodDelete,
+		fmt.Sprintf("%s%stemplates/%s/presets/%s", sutHostURL, memoryModuleV2Prefix, saoleiTemplateID, presetID),
+		sutEnvName, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE preset status=%d, body=%s, want 200", resp.StatusCode, respBody)
+	}
+	getResp, getBody := doHTTPTrace(t, ctx, http.MethodGet,
+		fmt.Sprintf("%s%stemplates/%s/presets/%s", sutHostURL, memoryModuleV2Prefix, saoleiTemplateID, presetID),
+		sutEnvName, nil)
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET deleted preset status=%d, body=%s, want 404 (the delete must have taken effect)", getResp.StatusCode, getBody)
+	}
+
+	// then: the collection survives; the entry is still listed under the same
+	// preset name.
+	page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, 100, "", "")
+	if got := len(page.GetMemories()); got != 1 || page.GetMemories()[0].GetContent() != entry {
+		t.Errorf("ListMemories after DELETE preset = %v, want the retained %q", page.GetMemories(), entry)
+	}
+}
+
+// TestMemoryServiceHttpCollectionUnbounded covers the no-capacity-governance
+// contract (specs/071-memory-preset-scope/spec.md FR-018; Edge Cases 集合容量;
+// specs/071-memory-preset-scope/contracts/memory-service.md §3): a preset's
+// collection accepts more entries than one page returns and pages them back
+// completely — every write succeeds (no over-limit rejection) and every entry
+// stays listed (no eviction).
+func TestMemoryServiceHttpCollectionUnbounded(t *testing.T) {
+	const (
+		pageSize = 10
+		total    = 25
+	)
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	ctx := traceContext(t)
+
+	// given: a preset holding more entries than a single page returns. Each
+	// createMemory call fails the case on a non-200, so completing the loop is
+	// itself the no-rejection assertion.
+	presetID := "lt-mem-unbounded-" + uniqueSuffix()
+	var wantIDs []string
+	for i := 1; i <= total; i++ {
+		id := fmt.Sprintf("mem-%02d", i)
+		createMemory(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, id, fmt.Sprintf("entry %d", i))
+		wantIDs = append(wantIDs, id)
+	}
+
+	// when: walk the listing with page_size=10.
+	var gotIDs []string
+	pageToken := ""
+	pages := 0
+	for {
+		page := listMemories(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, pageSize, pageToken, "")
+		for _, m := range page.GetMemories() {
+			gotIDs = append(gotIDs, memoryIDSegment(t, m))
+		}
+		pages++
+		pageToken = page.GetNextPageToken()
+		if pageToken == "" {
+			break
+		}
+	}
+
+	// then: every entry is retrieved exactly once in the fixed memory_id
+	// ascending order — nothing was dropped or duplicated.
+	if pages != 3 {
+		t.Errorf("unbounded listing produced %d pages, want 3 (page_size=10 over %d entries)", pages, total)
+	}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("unbounded listing returned %d entries, want %d", len(gotIDs), len(wantIDs))
+	}
+	for i, want := range wantIDs {
+		if gotIDs[i] != want {
+			t.Errorf("unbounded listing entry %d = %q, want %q (memory_id ascending, no eviction)", i, gotIDs[i], want)
+		}
+	}
+}
+
+// memoryModuleV2Prefix is the /api/v2 gateway prefix (specs/059-agent-v2-team-mode/
+// contracts/team-api.md §1). The memory face itself is /api/v1 (helpers_test.go
+// pathPrefix); this module reaches /api/v2 only to delete a preset as the
+// preset-lifecycle stimulus, and the request is written here rather than
+// reusing agent_v2_helpers_test.go's preset helpers because the memory_test
+// target does not carry that helper closure (projects/game/testplan/BUILD.bazel
+// memory_test — the agent_v2 helper set stages the board fixtures,
+// style/large_test.md §测试组织).
+const memoryModuleV2Prefix = "/api/v2/"
+
 // assertMemoryUpdateTimeOrder asserts the ListMemories update_time total order
 // (specs/065-agent-v2-team-refine/contracts/memory-snapshot-recency.md §1):
 // update_time is non-increasing for a descending key and non-decreasing for
-// an ascending one, and entries that share an update_time ascend on memory_id
-// (the unique tie-breaker).
+// an ascending one, and entries that share an update_time ascend on the
+// {memory} segment of the resource name (the unique tie-breaker, spec 068
+// FR-017).
 func assertMemoryUpdateTimeOrder(t *testing.T, memories []*game.Memory, descending bool) {
 	t.Helper()
 	for i := 1; i < len(memories); i++ {
 		prev, cur := memories[i-1], memories[i]
+		prevID := memoryIDSegment(t, prev)
+		curID := memoryIDSegment(t, cur)
 		prevTime := prev.GetUpdateTime().AsTime()
 		curTime := cur.GetUpdateTime().AsTime()
 		if descending && prevTime.Before(curTime) {
 			t.Fatalf("entry %d (%s, update_time %v) is before entry %d (%s, update_time %v), want update_time descending",
-				i-1, prev.GetMemoryId(), prevTime, i, cur.GetMemoryId(), curTime)
+				i-1, prevID, prevTime, i, curID, curTime)
 		}
 		if !descending && prevTime.After(curTime) {
 			t.Fatalf("entry %d (%s, update_time %v) is after entry %d (%s, update_time %v), want update_time ascending",
-				i-1, prev.GetMemoryId(), prevTime, i, cur.GetMemoryId(), curTime)
+				i-1, prevID, prevTime, i, curID, curTime)
 		}
-		if prevTime.Equal(curTime) && prev.GetMemoryId() >= cur.GetMemoryId() {
+		if prevTime.Equal(curTime) && prevID >= curID {
 			t.Fatalf("tied entries at update_time %v are out of memory_id order: %q before %q, want ascending",
-				prevTime, prev.GetMemoryId(), cur.GetMemoryId())
+				prevTime, prevID, curID)
 		}
+	}
+}
+
+// memoryIDSegment returns the {memory} terminal segment of a Memory resource
+// name: the response carries no separate id field, so the name is the only
+// identity carrier (FR-017,
+// specs/068-wiki-round-pause/contracts/memory-resource-identity.md §1).
+func memoryIDSegment(t *testing.T, m *game.Memory) string {
+	t.Helper()
+	name, err := game.ParseMemoryName(m.GetName())
+	if err != nil {
+		t.Fatalf("ParseMemoryName(%q): %v", m.GetName(), err)
+	}
+	return name.MemoryID
+}
+
+// assertMemoryNameID asserts a Memory's name carries wantID as its {memory}
+// terminal segment.
+func assertMemoryNameID(t *testing.T, m *game.Memory, wantID string) {
+	t.Helper()
+	if got := memoryIDSegment(t, m); got != wantID {
+		t.Fatalf("memory name %q has id segment %q, want %q", m.GetName(), got, wantID)
 	}
 }

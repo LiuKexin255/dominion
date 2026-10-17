@@ -135,13 +135,11 @@ func (s *raceOwnerStore) Delete(_ context.Context, _, _ string) error {
 	return domain.ErrOwnerNotFound
 }
 
-// mockAgentStream implements the agent_v2-side client stream shape
-// (game.DesktopBridgeService_ConnectClient) for testing. It is a
-// bind.TeamFrameStream (right side): Send UserFrame / Recv TeamFrame.
+// mockAgentStream implements the agent_v2-side client stream shape for
+// testing: it satisfies game.DesktopBridgeService_StreamClient (the response
+// half: Recv TeamFrame plus the grpc.ClientStream surface).
 type mockAgentStream struct {
-	recvCh  <-chan *game.TeamFrame
-	sendCh  chan<- *game.UserFrame
-	sendErr error
+	recvCh <-chan *game.TeamFrame
 }
 
 func (s *mockAgentStream) Recv() (*game.TeamFrame, error) {
@@ -152,14 +150,6 @@ func (s *mockAgentStream) Recv() (*game.TeamFrame, error) {
 	return f, nil
 }
 
-func (s *mockAgentStream) Send(f *game.UserFrame) error {
-	if s.sendErr != nil {
-		return s.sendErr
-	}
-	s.sendCh <- f
-	return nil
-}
-
 func (s *mockAgentStream) Header() (metadata.MD, error) { return nil, nil }
 func (s *mockAgentStream) Trailer() metadata.MD         { return nil }
 func (s *mockAgentStream) CloseSend() error             { return nil }
@@ -167,21 +157,12 @@ func (s *mockAgentStream) Context() context.Context     { return context.Backgro
 func (s *mockAgentStream) SendMsg(m interface{}) error  { return nil }
 func (s *mockAgentStream) RecvMsg(m interface{}) error  { return nil }
 
-// mockProxyStream implements game.DesktopBridgeService_ConnectServer for
-// testing. It is a bind.UserFrameStream (left side): Recv UserFrame / Send
-// TeamFrame.
+// mockProxyStream implements the gateway/downstream side stream shape for
+// testing: it satisfies game.DesktopBridgeService_StreamServer (Send
+// TeamFrame plus the grpc.ServerStream surface).
 type mockProxyStream struct {
 	ctx    context.Context
-	recvCh <-chan *game.UserFrame
 	sendCh chan<- *game.TeamFrame
-}
-
-func (s *mockProxyStream) Recv() (*game.UserFrame, error) {
-	f, ok := <-s.recvCh
-	if !ok {
-		return nil, io.EOF
-	}
-	return f, nil
 }
 
 func (s *mockProxyStream) Send(f *game.TeamFrame) error {
@@ -196,11 +177,11 @@ func (s *mockProxyStream) Context() context.Context     { return s.ctx }
 func (s *mockProxyStream) SendMsg(m interface{}) error  { return nil }
 func (s *mockProxyStream) RecvMsg(m interface{}) error  { return nil }
 
-// mockBinder implements bind.Binder for testing.
-type mockBinder struct {
+// mockServerStreamBinder implements bind.ServerStreamBinder for testing.
+type mockServerStreamBinder struct {
 	err error
 }
 
-func (b *mockBinder) Bind(_ bind.UserFrameStream, _ bind.TeamFrameStream) error {
+func (b *mockServerStreamBinder) BindServerStream(_ bind.ServerSendStream[game.TeamFrame], _ bind.UpstreamStream[game.TeamFrame]) error {
 	return b.err
 }

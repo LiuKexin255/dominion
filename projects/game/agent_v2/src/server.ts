@@ -25,7 +25,7 @@
  *   with composite `provider/model-id` ids, sharing the same per-provider
  *   `ctx.llm.listModels` face as UpdateTeam's validation
  *   (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §2).
- * - DesktopBridgeService.Connect is the desktop-bridge plugin's handler face
+ * - DesktopBridgeService is the desktop-bridge plugin's handler face
  *   (`ctx.desktopBridge.handlers()`).
  */
 
@@ -38,25 +38,31 @@ import type { LlmModelInfo } from "@deepseek-ai/dsh-llm";
 // Type-only: the plugin's `ctx.desktopBridge` declaration merge and its
 // handler-face types (the handlers are consumed at runtime through the
 // composed context, not through a direct import).
-import type { BidiStream, DesktopBridgeServiceHandlers as PluginBridgeHandlers } from "@dominion/dsh-desktop-bridge";
+import type {
+  DesktopBridgeServiceHandlers as PluginBridgeHandlers,
+  SendFrameCall,
+  SendFrameCallback,
+  StreamCall,
+} from "@dominion/dsh-desktop-bridge";
 // The preset domain service face and its error surface: the PresetService
-// RPC handlers translate onto `ctx.presetAuthoring` (specs/059-agent-v2-
-// team-mode/contracts/preset-api.md); the error class is a runtime import
-// (instanceof discrimination in toServiceError, roster-verification §4.1).
+// RPC handlers translate onto `ctx.presetAuthoring`
+// (specs/059-agent-v2-team-mode/contracts/preset-api.md); the error class is a
+// runtime import (instanceof discrimination in toServiceError,
+// roster-verification §4.1).
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService, PresetView } from "@dominion/dsh-preset-authoring";
 import { TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
-import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/v2/AgentService.js";
-import type { PresetServiceHandlers } from "../agent_v2_types/projects/game/v2/PresetService.js";
-import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/v2/DesktopBridgeService.js";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
-import type { Preset } from "../agent_v2_types/projects/game/v2/Preset.js";
-import type { Team as TeamProto } from "../agent_v2_types/projects/game/v2/Team.js";
-import type { TeamMember as TeamMemberProto } from "../agent_v2_types/projects/game/v2/TeamMember.js";
-import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/v2/TeamMessage.js";
+import type { AgentServiceHandlers } from "../agent_v2_types/projects/game/AgentService.js";
+import type { PresetServiceHandlers } from "../agent_v2_types/projects/game/PresetService.js";
+import type { DesktopBridgeServiceHandlers } from "../agent_v2_types/projects/game/DesktopBridgeService.js";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
+import type { Preset } from "../agent_v2_types/projects/game/Preset.js";
+import type { Team as TeamProto } from "../agent_v2_types/projects/game/Team.js";
+import type { TeamMember as TeamMemberProto } from "../agent_v2_types/projects/game/TeamMember.js";
+import type { TeamMessage as TeamMessageProto } from "../agent_v2_types/projects/game/TeamMessage.js";
 import type { Timestamp } from "../agent_v2_types/google/protobuf/Timestamp.js";
 import type { ProtoGrpcType } from "../agent_v2_types/agent_v2.js";
 
@@ -243,8 +249,10 @@ function isSceneRole(value: string): value is PresetRole {
 /**
  * The pool template a role's presets derive their composition from
  * (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2): the
- * roster root layout pins the template directory names (cordis.yml roots —
- * presets-templates/{player,planner}).
+ * template id is a key of the `preset-authoring` row Config `templates`
+ * snapshot, the single source of template definitions
+ * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3); the saolei
+ * scene vocabulary maps each role to the like-named template.
  */
 const ROLE_TEMPLATE: Record<PresetRole, string> = { player: "player", planner: "planner" };
 
@@ -964,14 +972,21 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
 
 /**
  * Build the DesktopBridgeService handlers from the desktop-bridge plugin's
- * handler face (specs/051-agent-v2-dsh-migration/contracts/desktop-bridge.md
- * §2): the plugin's structural BidiStream is the grpc-js duplex stream the
- * generated Connect handler receives.
+ * handler face (specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md
+ * §4): the plugin's structural StreamCall is the grpc-js server-writable
+ * stream the generated Stream handler receives, and its structural
+ * SendFrameCall is the unary gate the generated SendFrame handler receives.
  */
 export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): DesktopBridgeServiceHandlers {
   return {
-    Connect: (call) => {
-      bridge.Connect(call as unknown as BidiStream);
+    Stream: (call) => {
+      bridge.Stream(call as unknown as StreamCall);
+    },
+    SendFrame: (call, callback) => {
+      bridge.SendFrame(
+        call as unknown as SendFrameCall,
+        callback as unknown as SendFrameCallback,
+      );
     },
   };
 }
@@ -980,9 +995,10 @@ export function buildDesktopBridgeHandlers(bridge: PluginBridgeHandlers): Deskto
  * The union model catalog served by ListModels: every registered provider
  * route from `listProviders()` in registration order, each route's catalog in
  * its adapter order, and each entry id rewritten to the composite selector
- * `${provider}/${model.id}` (specs/063-llm-reliability-opencode-go/contracts/
- * model-selection.md §2). A provider catalog failure rejects the whole RPC —
- * fail-loud, never a silently truncated directory.
+ * `${provider}/${model.id}`
+ * (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §2). A
+ * provider catalog failure rejects the whole RPC — fail-loud, never a silently
+ * truncated directory.
  */
 async function listModelCatalog(
   deps: Pick<PresetServiceDeps, "listProviders" | "listModels">,
@@ -1054,7 +1070,18 @@ export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
     isDesktopConnected: (sessionName) => options.ctx.desktopBridge.isDesktopConnected(sessionName),
   };
   const proto = loadProto();
-  const server = new grpc.Server();
+  // The upstream path pairs an 8MiB message limit at every hop — the gateway
+  // HTTP pre-check and its gRPC client, the proxy server, and the
+  // proxy→agent_v2 agentclient. grpc-js defaults to a 4MiB receive limit,
+  // which would reject a ≤5MiB screenshot receipt here (RESOURCE_EXHAUSTED →
+  // HTTP 429) before the gateway pre-check can be the sole first error for
+  // oversized frames. Raising both directions keeps the chain paired.
+  // See D17 in specs/066-desktop-bridge-split/research.md.
+  // See §3 item 5 in specs/066-desktop-bridge-split/contracts/desktop-bridge-v2.md.
+  const server = new grpc.Server({
+    "grpc.max_receive_message_length": 8 * 1024 * 1024,
+    "grpc.max_send_message_length": 8 * 1024 * 1024,
+  });
   // Dedicated per-service handler factories over one deps object: the
   // AgentService registration binds the team session face and the
   // PresetService registration the configuration face (agent_v2 serves both
@@ -1062,19 +1089,19 @@ export function buildServer(options: { ctx: DshContext }): BuiltAgentServer {
   // and specs/051-agent-v2-dsh-migration/revisions/directive-2026-09-01.md
   // §3.7).
   server.addService(
-    (proto.projects.game.v2.AgentService as unknown as {
+    (proto.projects.game.AgentService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
     buildTeamHandlers(deps),
   );
   server.addService(
-    (proto.projects.game.v2.PresetService as unknown as {
+    (proto.projects.game.PresetService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
     buildPresetHandlers(deps),
   );
   server.addService(
-    (proto.projects.game.v2.DesktopBridgeService as unknown as {
+    (proto.projects.game.DesktopBridgeService as unknown as {
       service: grpc.ServiceDefinition<grpc.UntypedServiceImplementation>;
     }).service,
     buildDesktopBridgeHandlers(options.ctx.desktopBridge.handlers()),

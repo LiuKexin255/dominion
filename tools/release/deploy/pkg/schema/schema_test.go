@@ -72,6 +72,21 @@ services:
 `),
 		},
 		{
+			name: "valid redis infra deploy yaml",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - infra:
+      resource: redis
+      profile: development
+      name: grpc-hello-world-redis
+      app: grpc-hello-world
+      persistence:
+        enabled: true
+`),
+		},
+		{
 			name: "invalid deploy yaml",
 			raw: []byte(`name: grpc.dev
 desc: 开发环境
@@ -132,9 +147,9 @@ services:
 desc: 开发环境
 services:
   - infra:
-      resource: redis
+      resource: mysql
       profile: development
-      name: grpc-hello-world-redis
+      name: grpc-hello-world-mysql
       app: grpc-hello-world
       persistence:
         enabled: true

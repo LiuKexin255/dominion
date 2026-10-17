@@ -4,13 +4,14 @@ import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
-import { DEFAULT_MODEL, TeamSessionError, TeamSessions } from "./session.js";
+import type { TeamEventStream, TeamHandle, TeamMemberEvent, TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
+import { DEFAULT_MODEL, LOOP_ERROR_TEXT, TeamSessionError, TeamSessions, loopErrorText } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
-import type { GameEventRecord, SaoleiSystemMember } from "@dominion/dsh-saolei-loop";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
+import type { AnnouncerMember } from "@dominion/dsh-saolei-loop";
+import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
 
 /** The text of a user message's first text block. */
 function messageText(message: UserMessage): string {
@@ -26,10 +27,13 @@ function messageText(message: UserMessage): string {
  * team stream lifecycle (fan-out, queued-first on the accepting stream,
  * quiescence end, disconnect detach), and the GetTeam/List projections.
  *
- * The cordis Context is a hand-rolled fake whose `on` captures listeners;
- * tests drive the dsh event sequence (running → session events → idle) by
- * emitting into the captured listeners — no module interception
- * (style/javascript.md Mock convention).
+ * The team service is a hand-rolled double (the harness's established seam —
+ * the real plugin's fan-out semantics are covered by its own unit tests):
+ * `register` asserts the scene roster and returns a handle whose stream fans
+ * every member source's productions out under the member envelope, and the
+ * member agent scopes are fake contexts the tests emit into — no module
+ * interception (style/javascript.md Mock convention;
+ * specs/077-announcer-member-unification/contracts/member-event-stream.md §5).
  */
 
 type Listener = (...args: never[]) => void;
@@ -37,6 +41,8 @@ type Listener = (...args: never[]) => void;
 const S1 = "templates/saolei/sessions/s1";
 const P_PLAYER = "templates/saolei/presets/p-player";
 const P_PLANNER = "templates/saolei/presets/p-planner";
+/** A second planner preset for refresh-swap cases; its id half ends in "planner". */
+const P_PLANNER_ALT = "templates/saolei/presets/p-alt-planner";
 const PLAYER_ID = `${S1}/player`;
 const PLANNER_ID = `${S1}/planner`;
 
@@ -49,14 +55,22 @@ interface MemberFake {
   readonly ctx: {
     on: ReturnType<typeof vi.fn>;
     /** The member prompt assembly surface GetTeamMember reads (specs/059-agent-v2-team-mode/tasks.md T032). */
-    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
+    systemPrompt: {
+      assemble: ReturnType<typeof vi.fn>;
+      section: ReturnType<typeof vi.fn>;
+    };
+    /** The member-scope tool registration surface the orchestrator writes. */
+    tools: { register: ReturnType<typeof vi.fn> };
+    /** The agent-scoped face registration surface (isolate → provide). */
+    isolate: ReturnType<typeof vi.fn>;
   };
   readonly handle: AgentHandle;
   readonly followups: UserMessage[];
   readonly injections: UserMessage[];
+  readonly steers: UserMessage[];
   readonly cancels: unknown[];
-  readonly statusListeners: Array<(payload: { agent: Agent; status: AgentStatus }) => void>;
-  readonly errorListeners: Array<(payload: { agent: Agent; error: unknown }) => void>;
+  /** Emit one event into this member's agent scope (the member source faces' input). */
+  emitEvent(name: string, ...args: unknown[]): void;
   settle(): void;
   /**
    * Settle the in-flight turn as failed: emit `agent/error` (an
@@ -72,13 +86,21 @@ interface Harness {
   readonly sessions: TeamSessions;
   readonly agentsCreate: ReturnType<typeof vi.fn>;
   readonly members: Map<string, MemberFake>;
-  readonly listeners: Map<string, Listener[]>;
   readonly authoring: { compose: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
   readonly listModels: ReturnType<typeof vi.fn>;
-  readonly loadPlannerMemory: ReturnType<typeof vi.fn>;
-  readonly mountPlayerRuntime: ReturnType<typeof vi.fn>;
+  /** The `memoryMount.build` spy (the planner capability factory). */
+  readonly memoryMount: ReturnType<typeof vi.fn>;
+  /** The built unit's fail-loud prefetch spy. */
+  readonly memoryReady: ReturnType<typeof vi.fn>;
+  readonly createGameRuntime: ReturnType<typeof vi.fn>;
   readonly teamQueues: Map<string, UserMessage[]>;
   readonly teamRegister: ReturnType<typeof vi.fn>;
+  /**
+   * The unified-stream subscribe/detach accounting of the team double: one
+   * subscribe per materialized entry, one detach at its teardown
+   * (specs/077-announcer-member-unification/contracts/host-member-parity.md §1).
+   */
+  readonly teamStreamSubscriptions: { subscribes: number; detaches: number };
   readonly fiberDispose: ReturnType<typeof vi.fn>;
   readonly loggerError: ReturnType<typeof vi.fn>;
   readonly game: { current: GameEventRecord | null };
@@ -90,30 +112,35 @@ function fakeMember(
   emitError: (member: MemberFake, error: unknown) => void,
 ): MemberFake {
   const state = { status: "idle" as AgentStatus };
-  const statusListeners: MemberFake["statusListeners"] = [];
-  const errorListeners: MemberFake["errorListeners"] = [];
+  const listenersByEvent = new Map<string, Listener[]>();
+  const idleWaiters: Array<() => void> = [];
+  const steers: UserMessage[] = [];
+  const nextStep: UserMessage[] = [];
+  const nextTurn: UserMessage[] = [];
+  const resolveIdle = (): void => {
+    for (const resolve of idleWaiters.splice(0)) {
+      resolve();
+    }
+  };
   const memberCtx: {
     on: ReturnType<typeof vi.fn>;
-    systemPrompt: { assemble: ReturnType<typeof vi.fn> };
+    systemPrompt: {
+      assemble: ReturnType<typeof vi.fn>;
+      section: ReturnType<typeof vi.fn>;
+    };
+    tools: { register: ReturnType<typeof vi.fn> };
+    isolate: ReturnType<typeof vi.fn>;
     agent?: Agent;
   } = {
     on: vi.fn((name: string, listener: Listener) => {
-      if (name === "agent/error") {
-        const typed = listener as (payload: { agent: Agent; error: unknown }) => void;
-        errorListeners.push(typed);
-        return () => {
-          const index = errorListeners.indexOf(typed);
-          if (index >= 0) {
-            errorListeners.splice(index, 1);
-          }
-        };
-      }
-      const typed = listener as (payload: { agent: Agent; status: AgentStatus }) => void;
-      statusListeners.push(typed);
+      const list = listenersByEvent.get(name) ?? [];
+      list.push(listener);
+      listenersByEvent.set(name, list);
       return () => {
-        const index = statusListeners.indexOf(typed);
+        const current = listenersByEvent.get(name) ?? [];
+        const index = current.indexOf(listener);
         if (index >= 0) {
-          statusListeners.splice(index, 1);
+          current.splice(index, 1);
         }
       };
     }),
@@ -127,7 +154,12 @@ function fakeMember(
         tools: [],
         variables: {},
       })),
+      section: vi.fn(() => () => {}),
     },
+    // The member-scope registration surfaces the orchestrator writes
+    // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
+    tools: { register: vi.fn(() => () => {}) },
+    isolate: vi.fn(() => ({ provide: vi.fn(() => () => {}) })),
   };
   const agent = {
     id,
@@ -136,8 +168,26 @@ function fakeMember(
       return state.status;
     },
     ctx: memberCtx,
+    inbox: {
+      get nextStep() {
+        return nextStep;
+      },
+      get nextTurn() {
+        return nextTurn;
+      },
+      get hasPending() {
+        return nextStep.length > 0 || nextTurn.length > 0;
+      },
+    },
     inject: vi.fn((message: UserMessage) => {
       member.injections.push(message);
+      nextStep.push(message);
+    }),
+    steer: vi.fn((message: UserMessage) => {
+      steers.push(message);
+      nextStep.push(message);
+      state.status = "running";
+      emitStatus(member, "running");
     }),
     followup: vi.fn((message: UserMessage) => {
       member.followups.push(message);
@@ -146,10 +196,15 @@ function fakeMember(
     }),
     cancel: vi.fn((cause: unknown) => {
       member.cancels.push(cause);
+      nextStep.length = 0;
+      nextTurn.length = 0;
       state.status = "idle";
       emitStatus(member, "idle");
+      resolveIdle();
     }),
-    whenIdle: vi.fn(async () => {}),
+    whenIdle: vi.fn(
+      () => new Promise<void>((resolve) => idleWaiters.push(resolve)),
+    ),
   } as unknown as Agent;
   memberCtx.agent = agent;
   const member: MemberFake = {
@@ -159,12 +214,17 @@ function fakeMember(
     handle: { agent, dispose: vi.fn(async () => {}) },
     followups: [],
     injections: [],
+    steers,
     cancels: [],
-    statusListeners,
-    errorListeners,
+    emitEvent: (name: string, ...args: unknown[]) => {
+      for (const listener of [...(listenersByEvent.get(name) ?? [])]) {
+        (listener as (...emitArgs: unknown[]) => void)(...args);
+      }
+    },
     settle: () => {
       state.status = "idle";
       emitStatus(member, "idle");
+      resolveIdle();
     },
     failCurrentTurn: (code: string) => {
       // The official loop reports the failure at the turn's active boundary
@@ -179,42 +239,24 @@ function fakeMember(
 }
 
 interface HarnessOptions {
-  /** A composed `ctx.plannerMemory` face to resolve instead of the deps seam. */
-  readonly composedPlannerMemory?: { load: ReturnType<typeof vi.fn> };
-  /** Omit both the composed service and the deps seam (composition-error test). */
-  readonly omitPlannerMemory?: boolean;
+  /** Omit the `memoryMount` provide face (composition-error test). */
+  readonly omitMemoryMount?: boolean;
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
-  const listeners = new Map<string, Listener[]>();
-  const on = vi.fn((name: string, listener: Listener) => {
-    const list = listeners.get(name) ?? [];
-    list.push(listener);
-    listeners.set(name, list);
-    return () => {
-      const current = listeners.get(name) ?? [];
-      const index = current.indexOf(listener);
-      if (index >= 0) current.splice(index, 1);
-    };
-  });
+  // The host context is a plain fake: nothing subscribes at the root — the
+  // entry consumes the team's unified stream — so `on` only satisfies the
+  // DshContext shape.
+  const on = vi.fn(() => () => {});
   const members = new Map<string, MemberFake>();
+  // The members' own scopes carry every registration (the member sources'
+  // log/live faces), so one emit dispatches to the member's listeners exactly
+  // like the dsh root event would.
   const emitStatus = (member: MemberFake, status: AgentStatus): void => {
-    for (const listener of [...member.statusListeners]) {
-      listener({ agent: member.agent, status });
-    }
-    for (const listener of [...(listeners.get("agent/status") ?? [])]) {
-      (listener as (...args: unknown[]) => void)({ agent: member.agent, status });
-    }
+    member.emitEvent("agent/status", { agent: member.agent, status });
   };
-  // Both the orchestrator (member ctx) and the history collector (host ctx)
-  // observe the failure, mirroring emitStatus's dual dispatch.
   const emitError = (member: MemberFake, error: unknown): void => {
-    for (const listener of [...member.errorListeners]) {
-      listener({ agent: member.agent, error });
-    }
-    for (const listener of [...(listeners.get("agent/error") ?? [])]) {
-      (listener as (...args: unknown[]) => void)({ agent: member.agent, error });
-    }
+    member.emitEvent("agent/error", { agent: member.agent, error });
   };
   const agentsCreate = vi.fn(async (options: CreateAgentOptions): Promise<AgentHandle> => {
     const member = fakeMember(String(options.sessionId), emitStatus, emitError);
@@ -243,27 +285,116 @@ function createHarness(options: HarnessOptions = {}): Harness {
       ? [{ id: "kimi-k3" }]
       : [{ id: "glm-5.3" }, { id: "glm-5.5" }],
   );
-  const loadPlannerMemory = vi.fn(async () => {});
+  // The two capability provide faces the saolei-loop apply would have mounted
+  // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §3): the
+  // orchestrator reads them off the host context when it assembles a member.
+  const saoleiTools = {
+    tools: [
+      { name: "saolei_init" },
+      { name: "saolei_operate" },
+      { name: "saolei_remain" },
+    ],
+    sections: [{ name: "saolei:guidance", order: 100, text: "" }],
+  };
+  const memoryReady = vi.fn(async () => {});
+  const memoryCapabilities = {
+    faces: [{ key: "memory", value: { kind: "memory-face" } }],
+    tools: [
+      { name: "memory" },
+      { name: "wiki_search" },
+      { name: "wiki_get" },
+      { name: "wiki_write" },
+    ],
+    sections: [
+      { name: "memory:guidance", order: 110, text: "" },
+      { name: "wiki:guidance", order: 120, text: "" },
+      { name: "memory:snapshot", order: 200, text: "" },
+    ],
+    ready: memoryReady,
+  };
+  const memoryBuild = vi.fn(() => memoryCapabilities);
+  const memoryMount = { build: memoryBuild };
   const game = { current: null as GameEventRecord | null };
-  const mountPlayerRuntime = vi.fn(() => ({ peekGameEvent: () => game.current }));
+  const gameRuntime = {
+    init: vi.fn(async () => ({ isError: false as const, text: "" })),
+    operate: vi.fn(async () => ({ isError: false as const, text: "" })),
+    remain: vi.fn(() => ({ isError: false as const, text: "" })),
+    peekGameEvent: () => game.current,
+  } as unknown as GameRuntime;
+  const createGameRuntime = vi.fn(() => gameRuntime);
   const teamQueues = new Map<string, UserMessage[]>();
-  const teamRegister = vi.fn((registration: TeamRegistration) => {
+  // The host takes exactly one unified-stream subscription per entry, and
+  // releases it exactly once at teardown — the accounting the single-path
+  // assertion reads (the real team plugin's stream is its own unit-tested
+  // surface).
+  const teamStreamSubscriptions = { subscribes: 0, detaches: 0 };
+  const teamRegister = vi.fn((registration: TeamRegistration): TeamHandle => {
     // The saolei team's three-member roster: player + planner + the
-    // announce-only system member (specs/065-agent-v2-team-refine/contracts/
-    // game-stats-broadcast.md §3).
+    // announce-only announcer (specs/076-agent-v2-optimize/contracts/
+    // announcer-member.md §1/§3).
     expect(registration.members).toHaveLength(3);
-    const saolei = registration.members[2];
-    expect(saolei).toMatchObject({
-      role: "saolei",
-      summary: "扫雷系统，终局播报对局结果与操作统计",
+    const announcer = registration.members[2];
+    expect(announcer).toMatchObject({
+      role: "announcer",
+      summary: "终局播报对局结果与操作统计",
     });
-    expect(saolei?.source.id).toBe(`${S1}/saolei`);
-    expect(saolei?.source.consumes).toBe(false);
-    expect(saolei?.source.sectionTarget).toBeUndefined();
-    return { dispose: vi.fn() };
+    expect(announcer?.source.id).toBe(`${S1}/announcer`);
+    expect(announcer?.source.consumes).toBe(false);
+    expect(announcer?.source.sectionTarget).toBeUndefined();
+
+    // The registration's unified member event stream, fanning each member
+    // source's productions out under the member envelope — the shape the real
+    // team plugin produces
+    // (specs/077-announcer-member-unification/contracts/member-event-stream.md
+    // §2.2/§3).
+    const consumers = new Set<(event: TeamMemberEvent) => void>();
+    const sourceOffs: Array<(() => void) | undefined> = [];
+    const fanOut = (event: TeamMemberEvent): void => {
+      for (const consumer of [...consumers]) {
+        consumer(event);
+      }
+    };
+    for (const member of registration.members) {
+      sourceOffs.push(
+        member.source.subscribe?.((event) => {
+          fanOut({ role: member.role, memberId: member.source.id, channel: "log", event });
+        }),
+        member.source.live?.subscribe((event) => {
+          fanOut({ role: member.role, memberId: member.source.id, channel: "live", event });
+        }),
+      );
+    }
+    const stream: TeamEventStream = {
+      subscribe: (consumer) => {
+        consumers.add(consumer);
+        teamStreamSubscriptions.subscribes += 1;
+        let attached = true;
+        return () => {
+          if (!attached) {
+            return;
+          }
+          attached = false;
+          consumers.delete(consumer);
+          teamStreamSubscriptions.detaches += 1;
+        };
+      },
+    };
+    return {
+      // Disposal drops the member subscriptions with the registration (the
+      // real team service's member teardown), so an old lifecycle's late
+      // production reaches no consumer.
+      dispose: () => {
+        for (const off of sourceOffs.splice(0)) {
+          off?.();
+        }
+        consumers.clear();
+      },
+      events: () => stream,
+    };
   });
   const fiberDispose = vi.fn(async () => {});
   const loggerError = vi.fn();
+  const desktopBridge = {};
   const ctx = {
     on,
     agents: { create: agentsCreate, get: vi.fn() },
@@ -271,12 +402,24 @@ function createHarness(options: HarnessOptions = {}): Harness {
       if (name === "presetAuthoring") {
         return authoring;
       }
-      if (name === "plannerMemory") {
-        return options.composedPlannerMemory;
+      if (name === "saoleiTools") {
+        return saoleiTools;
+      }
+      if (name === "memoryMount") {
+        return options.omitMemoryMount === true ? undefined : memoryMount;
+      }
+      if (name === "desktopBridge") {
+        return desktopBridge;
       }
       return undefined;
     }),
-    desktopBridge: {},
+    // The composition-level game foundation face (the top-level saolei row
+    // provides it; contracts/team-loop-assembly.md §2).
+    saolei: {
+      createGameRuntime,
+      gameSection: { name: "saolei:game", order: 50, text: "" },
+    },
+    desktopBridge,
     fiber: { dispose: fiberDispose },
     llm: { listModels: vi.fn(async () => [{ id: "glm-5.3" }]) },
   } as unknown as DshContext;
@@ -288,37 +431,26 @@ function createHarness(options: HarnessOptions = {}): Harness {
       register: teamRegister,
       drain: (member: TeamMemberSource) => teamQueues.get(member.id)?.splice(0) ?? [],
     },
-    mountPlayerRuntime,
     logger: { error: loggerError },
     provider: "glm-responses",
-    // The default harness binds the explicit test seam; the composed-service
-    // cases leave it unset so the production resolution path runs.
-    ...(options.omitPlannerMemory || options.composedPlannerMemory !== undefined
-      ? {}
-      : { loadPlannerMemory }),
   });
   return {
     ctx,
     sessions,
     agentsCreate,
     members,
-    listeners,
     authoring,
     listModels,
-    loadPlannerMemory,
-    mountPlayerRuntime,
+    memoryMount: memoryBuild,
+    memoryReady,
+    createGameRuntime,
     teamQueues,
     teamRegister,
+    teamStreamSubscriptions,
     fiberDispose,
     loggerError,
     game,
   };
-}
-
-function emit(h: Harness, name: string, ...args: unknown[]): void {
-  for (const listener of [...(h.listeners.get(name) ?? [])]) {
-    (listener as (...emitArgs: unknown[]) => void)(...args);
-  }
 }
 
 interface StreamRecorder extends TurnStream {
@@ -402,20 +534,37 @@ function winnerRecord(): GameEventRecord {
 }
 
 /**
- * The private live-entry registry seam: the announcer subscription and the
- * history of one materialization generation (refresh/unsubscribe assertions).
+ * One entry member as the private registry holds it: the discriminated union
+ * narrowed to the fields the disappearance assertions read
+ * (specs/077-announcer-member-unification/contracts/host-member-parity.md §1).
+ */
+interface EntryMemberSeam {
+  readonly kind: "agent" | "announce-only";
+  readonly role: string;
+  readonly preset?: string;
+}
+
+/**
+ * The private live-entry registry seam: the entry's unified member collection,
+ * the announcer member and the history of one materialization generation
+ * (refresh/unsubscribe and roster-derivation assertions).
  */
 function entrySeam(
   h: Harness,
   session: string,
-): { announcer: SaoleiSystemMember | undefined; history: TeamHistory } {
+): {
+  announcer: AnnouncerMember | undefined;
+  history: TeamHistory;
+  members: ReadonlyArray<EntryMemberSeam>;
+} {
   const teams = (
     h.sessions as unknown as {
       teams: Map<
         string,
         {
-          orchestrator: { announcer?: SaoleiSystemMember };
+          orchestrator: { announcer?: AnnouncerMember };
           history: TeamHistory;
+          members: ReadonlyArray<EntryMemberSeam>;
         }
       >;
     }
@@ -424,7 +573,11 @@ function entrySeam(
   if (entry === undefined) {
     throw new Error(`session "${session}" has no live entry`);
   }
-  return { announcer: entry.orchestrator.announcer, history: entry.history };
+  return {
+    announcer: entry.orchestrator.announcer,
+    history: entry.history,
+    members: entry.members,
+  };
 }
 
 async function materializeDefault(h: Harness): Promise<TeamView> {
@@ -433,22 +586,47 @@ async function materializeDefault(h: Harness): Promise<TeamView> {
 
 /** Emit one member text turn's dsh event sequence and settle it via idle. */
 function driveTextTurn(h: Harness, target: MemberFake, text: string): void {
-  emit(h, "session/event", target.agent.session, { type: "turn/start", data: { turn: 1 } });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } },
+  const attemptId = `${target.id}/attempt-1`;
+  target.emitEvent("session/event", target.agent.session, { type: "turn/start", data: { turn: 1 } });
+  // Live model chunks ride `agent/assistant-stream`; there is no
+  // `assistant/chunk` session event (specs/070-dsh-upgrade/research.md D7 终态结论).
+  target.emitEvent("agent/assistant-stream", {
+    agent: target.agent,
+    frame: { type: "start", attemptId, revision: 1, turn: 1, step: 1 },
   });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text } },
+  target.emitEvent("agent/assistant-stream", {
+    agent: target.agent,
+    frame: {
+      type: "chunk",
+      attemptId,
+      revision: 2,
+      index: 0,
+      time: 0,
+      chunk: { type: "block-start", index: 0, blockType: "text" },
+    },
   });
-  emit(h, "session/event", target.agent.session, {
-    type: "assistant/chunk",
-    data: { turn: 1, step: 1, chunk: { type: "block-end", index: 0, block: { type: "text", text } } },
+  target.emitEvent("agent/assistant-stream", {
+    agent: target.agent,
+    frame: { type: "chunk", attemptId, revision: 3, index: 1, time: 0, chunk: { type: "text-delta", index: 0, text } },
   });
-  emit(h, "session/event", target.agent.session, {
+  target.emitEvent("agent/assistant-stream", {
+    agent: target.agent,
+    frame: {
+      type: "chunk",
+      attemptId,
+      revision: 4,
+      index: 2,
+      time: 0,
+      chunk: { type: "block-end", index: 0, block: { type: "text", text } },
+    },
+  });
+  target.emitEvent("session/event", target.agent.session, {
     type: "assistant/message",
     data: { turn: 1, step: 1, message: { content: [{ type: "text", text }] } },
+  });
+  target.emitEvent("agent/assistant-stream", {
+    agent: target.agent,
+    frame: { type: "end", attemptId, index: 3, outcome: { kind: "committed", eventType: "assistant/message", seq: 1 } },
   });
   target.settle();
 }
@@ -476,8 +654,8 @@ describe("TeamSessions.materialize", () => {
       agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
       setup: expect.any(Function),
     });
-    expect(h.mountPlayerRuntime).toHaveBeenCalledTimes(1);
-    expect(h.loadPlannerMemory).toHaveBeenCalledTimes(1);
+    expect(h.createGameRuntime).toHaveBeenCalledTimes(1);
+    expect(h.memoryMount).toHaveBeenCalledTimes(1);
     expect(h.teamRegister).toHaveBeenCalledTimes(1);
 
     expect(view.name).toBe(`${S1}/team`);
@@ -489,6 +667,9 @@ describe("TeamSessions.materialize", () => {
     ).toEqual([
       [`${S1}/team/members/player`, "player", P_PLAYER, DEFAULT_MODEL],
       [`${S1}/team/members/planner`, "planner", P_PLANNER, DEFAULT_MODEL],
+      // The announce-only announcer closes the roster: no preset/model
+      // (specs/076-agent-v2-optimize/data-model.md §4).
+      [`${S1}/team/members/announcer`, "announcer", "", ""],
     ]);
     expect(view.createTime).toBeInstanceOf(Date);
   });
@@ -554,10 +735,12 @@ describe("TeamSessions.materialize", () => {
       }),
     );
     // The member projections keep the composite original (selection-surface
-    // contract); the provider catalogs queried are the two split routes.
+    // contract); the provider catalogs queried are the two split routes. The
+    // announcer closes the roster with no model.
     expect(view.members.map((entry) => entry.model)).toEqual([
       "opencode-go/kimi-k3",
       DEFAULT_MODEL,
+      "",
     ]);
     expect(h.listModels).toHaveBeenCalledWith("opencode-go");
     expect(h.listModels).toHaveBeenCalledWith("glm-responses");
@@ -624,6 +807,26 @@ describe("TeamSessions.materialize", () => {
         ],
       }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    // The announcer enters the roster server-side and is never
+    // caller-configurable: a request carrying it stays INVALID_ARGUMENT
+    // (specs/076-agent-v2-optimize/contracts/announcer-member.md §3 item 4).
+    await expect(
+      h.sessions.materialize(S1, {
+        members: [
+          { role: "player", preset: P_PLAYER },
+          { role: "planner", preset: P_PLANNER },
+          { role: "announcer", preset: P_PLANNER },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    await expect(
+      h.sessions.materialize(S1, {
+        members: [
+          { role: "player", preset: P_PLAYER },
+          { role: "announcer", preset: P_PLANNER },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 
@@ -669,7 +872,7 @@ describe("TeamSessions.materialize", () => {
 
   it("rolls the whole materialization back when a member setup fails, then retries cleanly (no half-materialized team)", async () => {
     const h = createHarness();
-    h.loadPlannerMemory.mockRejectedValueOnce(new Error("memory unavailable"));
+    h.memoryReady.mockRejectedValueOnce(new Error("memory unavailable"));
 
     await expect(materializeDefault(h)).rejects.toThrow("memory unavailable");
     const player = member(h, PLAYER_ID);
@@ -709,52 +912,166 @@ describe("TeamSessions.materialize", () => {
   });
 });
 
-describe("TeamSessions planner memory wiring (T021)", () => {
-  it("prefetches the planner snapshot through the composed ctx.plannerMemory.load", async () => {
-    const composedLoad = vi.fn(async () => {});
-    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+type Spy = ReturnType<typeof vi.fn>;
+
+/** The first invocation index of a spy (`mock.invocationCallOrder[0]`). */
+function firstCall(spy: Spy): number {
+  return spy.mock.invocationCallOrder[0] as number;
+}
+
+/** The last invocation index of a spy. */
+function lastCall(spy: Spy): number {
+  return spy.mock.invocationCallOrder[
+    spy.mock.calls.length - 1
+  ] as number;
+}
+
+/** The provide spy of a member's first agent-scoped face registration. */
+function faceProvide(member: MemberFake): Spy {
+  const first = member.ctx.isolate.mock.results[0] as
+    | { value: { provide: Spy } }
+    | undefined;
+  if (first === undefined) {
+    throw new Error("the member registered no agent-scoped face");
+  }
+  return first.value.provide;
+}
+
+/**
+ * Assert the contract's fixed memory registration order
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4):
+ * faces → tools(×4) → sections(×3) → ready. The planner's first section is the
+ * gameplay section registered before the memory unit
+ * (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §3), so the
+ * memory sections are the section calls after the first. The seams of one
+ * member setup are compared through `mock.invocationCallOrder`, so an
+ * out-of-order implementation fails this assertion.
+ */
+function expectMemoryRegistrationOrder(h: Harness, planner: MemberFake): void {
+  const provide = faceProvide(planner);
+  const sectionOrders =
+    planner.ctx.systemPrompt.section.mock.invocationCallOrder;
+  expect(provide).toHaveBeenCalledTimes(1);
+  expect(planner.ctx.tools.register).toHaveBeenCalledTimes(4);
+  expect(planner.ctx.systemPrompt.section).toHaveBeenCalledTimes(4);
+  expect(h.memoryReady).toHaveBeenCalledTimes(1);
+  // The gameplay section precedes the memory faces; the three memory sections
+  // follow the memory tools.
+  expect(sectionOrders[0] as number).toBeLessThan(firstCall(provide));
+  expect(lastCall(provide)).toBeLessThan(
+    firstCall(planner.ctx.tools.register),
+  );
+  expect(lastCall(planner.ctx.tools.register)).toBeLessThan(
+    sectionOrders[1] as number,
+  );
+  expect(sectionOrders[3] as number).toBeLessThan(firstCall(h.memoryReady));
+}
+
+describe("TeamSessions planner memory wiring (074 team-assembly.md §4)", () => {
+  it(
+    "builds the planner memory unit with the materialization-source scope " +
+      "and prefetches once",
+    async () => {
+      const h = createHarness();
+
+      await materializeDefault(h);
+
+      // Only the planner member builds + prefetches; the factory receives the
+      // (template, materialization source preset) scope halves — the id
+      // halves, NOT full resource names (the memory client builds
+      // `templates/{template}/presets/{preset}` from these halves;
+      // specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
+      expect(h.memoryMount).toHaveBeenCalledTimes(1);
+      expect(h.memoryMount.mock.calls[0]?.[0]).toEqual({
+        template: "saolei",
+        preset: "p-planner",
+      });
+      expect(h.memoryReady).toHaveBeenCalledTimes(1);
+      // The fixed cross-face order on the planner member:
+      // faces → tools ×4 → sections ×3 → ready
+      // (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §4).
+      const planner = member(h, PLANNER_ID);
+      expectMemoryRegistrationOrder(h, planner);
+      // The player branch consumed no memory capability; it registered the
+      // game handle instead (the orchestrator-owned instance).
+      const player = member(h, PLAYER_ID);
+      expect(h.memoryMount).toHaveBeenCalledTimes(1);
+      expect(player.ctx.isolate).toHaveBeenCalledTimes(1);
+      expect(player.ctx.isolate).toHaveBeenCalledWith("saoleiGame");
+    },
+  );
+
+  it("re-derives the scope halves on refresh, following a swapped planner preset", async () => {
+    const h = createHarness();
 
     await materializeDefault(h);
-
-    // Only the planner member prefetches; the binding passes the planner's
-    // agent-scoped context and the (template, session ID) scope key — the ID
-    // half, NOT the full session resource name (the memory client builds
-    // `templates/{template}/sessions/{session}` from these halves; T023 memoryScope wiring (specs/059-agent-v2-team-mode/tasks.md)
-    // caught the doubled-prefix wiring).
-    expect(composedLoad).toHaveBeenCalledTimes(1);
-    const planner = member(h, PLANNER_ID);
-    expect(composedLoad.mock.calls[0]?.[0]).toBe(planner.ctx);
-    expect(composedLoad.mock.calls[0]?.[1]).toEqual({
+    expect(h.memoryMount.mock.calls[0]?.[0]).toEqual({
       template: "saolei",
-      session: "s1",
+      preset: "p-planner",
+    });
+
+    // Refresh with the same configuration: the scope stays the two id halves
+    // built from the unchanged materialization source preset
+    // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+    expect(h.memoryMount).toHaveBeenCalledTimes(2);
+    expect(h.memoryMount.mock.calls[1]?.[0]).toEqual({
+      template: "saolei",
+      preset: "p-planner",
+    });
+
+    // Refresh swapping the planner preset: the fresh planner reads the NEW
+    // preset's collection, so the scope follows the swapped member
+    // (specs/071-memory-preset-scope/spec.md FR-009).
+    await h.sessions.materialize(S1, {
+      members: [
+        { role: "player", preset: P_PLAYER },
+        { role: "planner", preset: P_PLANNER_ALT },
+      ],
+    });
+    expect(h.memoryMount).toHaveBeenCalledTimes(3);
+    expect(h.memoryMount.mock.calls[2]?.[0]).toEqual({
+      template: "saolei",
+      preset: "p-alt-planner",
     });
   });
 
-  it("rolls the whole materialization back when the composed load rejects (no half-materialized team)", async () => {
-    const composedLoad = vi.fn(async () => {
-      throw new Error("memory service unreachable");
-    });
-    const h = createHarness({ composedPlannerMemory: { load: composedLoad } });
+  it(
+    "rolls the whole materialization back when the prefetch rejects " +
+      "(no half-materialized team)",
+    async () => {
+      const h = createHarness();
+      h.memoryReady.mockRejectedValueOnce(
+        new Error("memory service unreachable"),
+      );
 
-    await expect(materializeDefault(h)).rejects.toThrow("memory service unreachable");
-    const player = member(h, PLAYER_ID);
-    expect(player.handle.dispose).toHaveBeenCalledTimes(1);
-    expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
-    // The team never registered: the rollback is complete.
+      await expect(materializeDefault(h)).rejects.toThrow(
+        "memory service unreachable",
+      );
+      const player = member(h, PLAYER_ID);
+      expect(player.handle.dispose).toHaveBeenCalledTimes(1);
+      expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
+      // The team never registered: the rollback is complete.
+      expect(h.teamRegister).not.toHaveBeenCalled();
+
+      // Retry with the storage reachable materializes from scratch.
+      h.memoryReady.mockImplementation(async () => {});
+      await materializeDefault(h);
+      expect(h.sessions.getTeam(S1).name).toBe(`${S1}/team`);
+      expect(h.memoryReady).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("fails loud when the memoryMount capability is not composed", async () => {
+    const h = createHarness({ omitMemoryMount: true });
+
+    await expect(materializeDefault(h)).rejects.toThrow(
+      /"memoryMount" capability is not mounted/,
+    );
+    // The failure lands in the planner setup, after both member creations
+    // were invoked and the player was rolled back (no half-materialized team).
+    expect(h.agentsCreate).toHaveBeenCalledTimes(2);
     expect(h.teamRegister).not.toHaveBeenCalled();
-
-    // Retry with the storage reachable materializes from scratch.
-    composedLoad.mockImplementation(async () => {});
-    await materializeDefault(h);
-    expect(h.sessions.getTeam(S1).name).toBe(`${S1}/team`);
-    expect(composedLoad).toHaveBeenCalledTimes(2);
-  });
-
-  it("fails loud when neither the composed service nor the test override is present", async () => {
-    const h = createHarness({ omitPlannerMemory: true });
-
-    await expect(materializeDefault(h)).rejects.toThrow(/ctx\.plannerMemory/);
-    expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -830,19 +1147,21 @@ describe("TeamSessions.send", () => {
     expect(first.events.some((event) => event.teamMessage?.seq === "2")).toBe(true);
     expect(second.events.some((event) => event.teamMessage?.seq === "2")).toBe(true);
 
-    // Settling both turns drains the queue (queue digestion) and quiesces.
+    // The second send steered into the in-flight planner turn (mid-turn
+    // delivery, specs/061-team-queue-steer/spec.md).
+    expect(planner.steers.map(messageText)).toEqual(["second"]);
+
+    // Settling the planner turn advances plan → play; the empty player drain
+    // rests the loop, so both streams end at the team's static point.
     driveTextTurn(h, planner, "reply one");
     await flush();
-    driveTextTurn(h, planner, "reply two");
-    await flush();
 
-    expect(planner.followups).toHaveLength(2);
+    expect(planner.followups).toHaveLength(1);
     expect(first.ended).toBe(true);
     expect(second.ended).toBe(true);
     expect(h.sessions.listTeamMessages(S1).map((entry) => entry.member)).toEqual([
       "user",
       "user",
-      "planner",
       "planner",
     ]);
   });
@@ -868,7 +1187,7 @@ describe("TeamSessions.send", () => {
   });
 });
 
-describe("TeamSessions saolei announcement projection (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4)", () => {
+describe("TeamSessions announcer announcement projection (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4)", () => {
   /** Drive the team to the player's terminal turn (planner strategy → player). */
   async function driveToTerminalTurn(h: Harness, stream: StreamRecorder): Promise<void> {
     h.sessions.send(S1, "请开始", stream);
@@ -893,13 +1212,13 @@ describe("TeamSessions saolei announcement projection (specs/065-agent-v2-team-r
       "本局游戏结束：胜利。\n本局共执行 5 个操作：click 4 次、flag 1 次、chord 0 次。";
     const announcement = h.sessions
       .listTeamMessages(S1)
-      .find((entry) => entry.member === "saolei");
+      .find((entry) => entry.member === "announcer");
     expect(announcement?.message.role).toBe("ROLE_AGENT");
     expect(announcement?.message.blocks).toEqual([{ text: { content: statsText } }]);
 
     // The live team_message frame carries the same entry (seq + message
     // object), so ListTeamMessages and the stream cannot diverge.
-    const frame = stream.events.find((event) => event.teamMessage?.member === "saolei");
+    const frame = stream.events.find((event) => event.teamMessage?.member === "announcer");
     expect(frame?.teamMessage?.seq).toBe(String(announcement?.seq));
     expect(frame?.teamMessage?.message).toBe(announcement?.message);
   });
@@ -918,6 +1237,46 @@ describe("TeamSessions saolei announcement projection (specs/065-agent-v2-team-r
     expect(old.history.listTeamMessages()).toEqual([]);
     // The new generation's projections start empty.
     expect(h.sessions.listTeamMessages(S1)).toEqual([]);
+  });
+});
+
+describe("TeamSessions unified member holding (specs/077-announcer-member-unification/contracts/host-member-parity.md §1/§2)", () => {
+  it("holds the three members uniformly, derives the roster from them, and takes one unified-stream subscription per entry", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+
+    // The entry's single member-event consumption path: one unified-stream
+    // subscription, with no parallel announce-only subscription.
+    expect(h.teamStreamSubscriptions).toEqual({ subscribes: 1, detaches: 0 });
+
+    const entry = entrySeam(h, S1);
+    expect(entry.members.map((member) => [member.role, member.kind])).toEqual([
+      ["player", "agent"],
+      ["planner", "agent"],
+      ["announcer", "announce-only"],
+    ]);
+    // The agent members own a handle + collector; the announce-only member
+    // holds no runtime at all — the empty object pins that absence.
+    expect(entry.members[0]).toMatchObject({ kind: "agent", role: "player", preset: P_PLAYER });
+    expect(entry.members[1]).toMatchObject({ kind: "agent", role: "planner", preset: P_PLANNER });
+    expect(entry.members[2]).toEqual({ kind: "announce-only", role: "announcer" });
+
+    // The roster is the projection of that unified collection: same members,
+    // the announce-only one in its empty preset/model form.
+    const view = h.sessions.getTeam(S1);
+    expect(view.members.map((member) => member.role)).toEqual(
+      entry.members.map((member) => member.role),
+    );
+    expect(view.members.map((member) => [member.preset, member.model])).toEqual([
+      [P_PLAYER, DEFAULT_MODEL],
+      [P_PLANNER, DEFAULT_MODEL],
+      ["", ""],
+    ]);
+
+    // Refresh releases the old entry through its single detach and takes
+    // exactly one new subscription.
+    await h.sessions.materialize(S1, { members: defaultMembers() });
+    expect(h.teamStreamSubscriptions).toEqual({ subscribes: 2, detaches: 1 });
   });
 });
 
@@ -1028,12 +1387,13 @@ describe("TeamSessions active member projection (FR-008)", () => {
 });
 
 describe("TeamSessions orchestration failure", () => {
-  it("breaks out of a paused, failed orchestration with a stream error instead of spinning or ending cleanly", async () => {
+  it("breaks out of a frozen, failed orchestration with a stream error instead of spinning or ending cleanly", async () => {
     const h = createHarness();
     await materializeDefault(h);
     const planner = member(h, PLANNER_ID);
+    const player = member(h, PLAYER_ID);
 
-    // The first send starts a planner turn; two more sends queue behind it.
+    // The first send starts a planner turn; two more sends steer into it.
     const stream = fakeStream();
     h.sessions.send(S1, "first", stream);
     await flush();
@@ -1046,40 +1406,46 @@ describe("TeamSessions orchestration failure", () => {
     await flush();
     expect(second.events.map(payloadOf)[0]).toBe("queued");
 
-    // The second drive fails while a third message still waits in the queue:
-    // the orchestrator pauses with a non-empty queue, so the old watcher's
-    // `whenQuiescent()` resolved immediately and spun the microtask queue.
-    (planner.agent.followup as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+    // The planner's output relays a strategy; the flow's next drive (the
+    // player) throws at the start site, surfacing the orchestration-layer
+    // failure.
+    h.teamQueues.set(PLAYER_ID, [relay(planner.agent, "planner", "策略")]);
+    (player.agent.followup as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
       throw new Error("drive exploded");
     });
     planner.settle();
     await flush();
 
     // The failure is surfaced, not disguised as a natural stop: every active
-    // stream receives the INTERNAL failure and the injected logger records it.
-    expect(stream.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
-    expect(second.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
-    expect(third.failures).toEqual([{ code: "INTERNAL", message: "drive exploded" }]);
+    // stream receives the INTERNAL failure (with the host's user-action text)
+    // and the injected logger records it.
+    expect(stream.failures).toEqual([
+      { code: "INTERNAL", message: "drive exploded — 内部错误" },
+    ]);
+    expect(second.failures).toEqual([
+      { code: "INTERNAL", message: "drive exploded — 内部错误" },
+    ]);
+    expect(third.failures).toEqual([
+      { code: "INTERNAL", message: "drive exploded — 内部错误" },
+    ]);
     expect(stream.ended).toBe(false);
     expect(h.loggerError).toHaveBeenCalledTimes(1);
     expect(h.loggerError.mock.calls[0]?.[1]).toMatchObject({
       session: S1,
-      member: "planner",
+      member: "player",
+      code: "INTERNAL",
       error: "drive exploded",
     });
 
-    // A later send lifts the pause and drains the held queue (orchestrator
-    // retry semantics), then the team quiesces and the new stream ends.
+    // A later send lifts the freeze: the delivery turn, then the flow's
+    // restart of the current activity (the held replay); the team then
+    // quiesces and the new stream ends.
     const resumed = fakeStream();
     h.sessions.send(S1, "resume", resumed);
     await flush();
-    // The held "third" message retries first (the failed attempt consumed
-    // nothing from the FIFO beyond its own shift).
-    expect(planner.followups).toHaveLength(2);
-    planner.settle();
+    player.settle();
     await flush();
-    expect(planner.followups).toHaveLength(3);
-    planner.settle();
+    player.settle();
     await flush();
     expect(resumed.failures).toEqual([]);
     expect(resumed.ended).toBe(true);
@@ -1122,7 +1488,7 @@ describe("TeamSessions member-turn failure", () => {
       session: S1,
       phase: "planning",
       member: "planner",
-      code: "SERVER",
+      code: "TRANSIENT",
       error: "injected SERVER failure",
     });
     // FR-009: the activation is retained — planner owns the next input.
@@ -1152,7 +1518,7 @@ describe("TeamSessions projections", () => {
 
     // The planner's log records a relayed player broadcast and its own reply.
     // A `user/message` event stores the complete UserMessage as its data.
-    emit(h, "session/event", planner.agent.session, {
+    planner.emitEvent("session/event", planner.agent.session, {
       type: "user/message",
       data: {
         id: "m-relay",
@@ -1173,6 +1539,17 @@ describe("TeamSessions projections", () => {
     expect(teamMember.model).toBe(DEFAULT_MODEL);
     expect(teamMember.preset).toBe(P_PLAYER);
     expect(teamMember.systemPrompt).toContain(`system prompt of ${PLAYER_ID}`);
+    // The announcer is served by the same member read: the announce-only
+    // member has no preset/model and its output-only system_prompt is empty
+    // (specs/076-agent-v2-optimize/contracts/announcer-member.md §3 item 3).
+    const announcer = await h.sessions.getTeamMember(S1, "announcer");
+    expect(announcer).toEqual({
+      name: `${S1}/team/members/announcer`,
+      role: "announcer",
+      preset: "",
+      model: "",
+      systemPrompt: "",
+    });
     // The team snapshot member projection keeps system_prompt empty (the
     // field is served only by GetTeamMember).
     expect(h.sessions.getTeam(S1).members.every((entry) => entry.systemPrompt === "")).toBe(true);
@@ -1335,5 +1712,44 @@ describe("TeamSessions projections", () => {
     expect(order).toContain("planner");
     expect(order[order.length - 1]).toBe("fiber");
     expect(() => h.sessions.getTeam(S1)).toThrow(TeamSessionError);
+  });
+});
+
+describe("TeamSessions loop error presentation (specs/076-agent-v2-optimize/spec.md FR-107)", () => {
+  it("maps every loop failure code onto a non-empty user-action text", () => {
+    const codes = [
+      "TRANSIENT",
+      "QUOTA",
+      "CREDENTIAL",
+      "CONFIG",
+      "INPUT_TOO_LARGE",
+      "INTERNAL",
+    ] as const;
+
+    // The host owns the six-code table; the loop layer only classifies.
+    expect(Object.keys(LOOP_ERROR_TEXT).sort()).toEqual([...codes].sort());
+    for (const code of codes) {
+      expect(loopErrorText(code)).not.toBe("");
+      expect(Object.values(LOOP_ERROR_TEXT)).toContain(loopErrorText(code));
+    }
+  });
+
+  it("carries the loop code's text on the orchestration failure frame", async () => {
+    const h = createHarness();
+    await materializeDefault(h);
+    const planner = member(h, PLANNER_ID);
+
+    const stream = fakeStream();
+    // A delivery assembly failure is an orchestration-interior failure
+    // (INTERNAL): the frame carries the host's user-action text.
+    (planner.agent.followup as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    h.sessions.send(S1, "first", stream);
+    await flush();
+
+    expect(stream.failures).toEqual([
+      { code: "INTERNAL", message: `boom — ${LOOP_ERROR_TEXT.INTERNAL}` },
+    ]);
   });
 });

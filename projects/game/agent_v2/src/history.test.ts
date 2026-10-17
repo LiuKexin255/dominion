@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   blockToContentBlock,
   broadcastSender,
@@ -7,9 +7,9 @@ import {
   TeamHistory,
 } from "./history.js";
 import type { DshStreamChunk, UserMessageEvent } from "./history.js";
-import type { DshContext } from "./dsh.js";
-import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { ChatEvent } from "../agent_v2_types/projects/game/v2/ChatEvent.js";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import type { TeamLiveEvent, TeamMemberEvent } from "@dominion/dsh-team";
+import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { TeamMergeEntry } from "./history.js";
 
 /**
@@ -17,41 +17,12 @@ import type { TeamMergeEntry } from "./history.js";
  * (specs/059-agent-v2-team-mode/data-model.md §2; contracts/team-api.md
  * §3.2/§5): the merged sequence with its monotonic seq anchor, the
  * per-member view with sender annotations, the member-labelled ChatEvent
- * mapping, and the turn lifecycle settlement. Streams are plain recorders
- * and the dsh events are emitted into a hand-rolled fake ctx — no module
- * interception (style/javascript.md Mock convention).
+ * mapping, and the turn lifecycle settlement. Streams are plain recorders and
+ * the collector is driven through its unified-stream envelope entry
+ * ({@link MemberCollector.applyEvent}) — no module interception
+ * (style/javascript.md Mock convention; specs/077-announcer-member-unification/
+ * contracts/member-event-stream.md §5).
  */
-
-type Listener = (...args: never[]) => void;
-
-function fakeCtx() {
-  const listeners = new Map<string, Listener[]>();
-  const on = vi.fn((name: string, listener: Listener) => {
-    const list = listeners.get(name) ?? [];
-    list.push(listener);
-    listeners.set(name, list);
-    return () => {
-      const current = listeners.get(name) ?? [];
-      const index = current.indexOf(listener);
-      if (index >= 0) current.splice(index, 1);
-    };
-  });
-  return { ctx: { on } as unknown as DshContext, listeners };
-}
-
-function fakeAgent(id: string): Agent {
-  return { id, session: { id } } as unknown as Agent;
-}
-
-function emit(
-  listeners: Map<string, Listener[]>,
-  name: string,
-  ...args: unknown[]
-): void {
-  for (const listener of [...(listeners.get(name) ?? [])]) {
-    (listener as (...emitArgs: unknown[]) => void)(...args);
-  }
-}
 
 /** The payload discriminator of a constructed ChatEvent (oneof arms by presence). */
 function payloadOf(event: ChatEvent): string {
@@ -68,6 +39,32 @@ function payloadOf(event: ChatEvent): string {
 }
 
 const SESSION = "templates/saolei/sessions/s1";
+const PLAYER_ID = `${SESSION}/player`;
+const PLANNER_ID = `${SESSION}/planner`;
+
+/**
+ * One log-channel envelope of the member under test: the host entry's
+ * per-member dispatch shape for a session event
+ * (specs/077-announcer-member-unification/contracts/member-event-stream.md §5).
+ */
+function logEnvelope(memberId: string, event: unknown): TeamMemberEvent {
+  return {
+    role: "player",
+    memberId,
+    channel: "log",
+    event: event as unknown as SessionEvent,
+  };
+}
+
+/** One live-channel envelope of the member under test (agent activity event). */
+function liveEnvelope(memberId: string, event: unknown): TeamMemberEvent {
+  return {
+    role: "player",
+    memberId,
+    channel: "live",
+    event: event as TeamLiveEvent,
+  };
+}
 
 describe("blockToContentBlock", () => {
   it("maps text/reasoning/tool-call blocks and drops unknown ones", () => {
@@ -210,29 +207,30 @@ describe("TeamHistory", () => {
     expect(history.listTeamMessages()).toEqual([]);
   });
 
-  it("appends a system announcement to the merge sequence and fans out its team_message frame", () => {
+  it("appends an announcer announcement to the merge sequence and fans out its team_message frame", () => {
     const { history, frames } = createHistory();
 
     const user = history.appendUser("开始一局");
-    const announcement = history.appendAnnouncement("saolei", "本局游戏结束：胜利。");
+    const announcement = history.appendAnnouncement("announcer", "本局游戏结束：胜利。");
 
-    expect(announcement.member).toBe("saolei");
+    expect(announcement.member).toBe("announcer");
     expect(announcement.seq).toBe(2);
     expect(user.seq).toBe(1);
     expect(announcement.message.role).toBe("ROLE_AGENT");
     expect(announcement.message.blocks).toEqual([{ text: { content: "本局游戏结束：胜利。" } }]);
     expect(history.listTeamMessages().map((entry) => [entry.member, entry.seq])).toEqual([
       ["user", 1],
-      ["saolei", 2],
+      ["announcer", 2],
     ]);
     // The frame payload IS the projection entry (same message object, same
     // seq value) — ListTeamMessages and the live stream agree.
     const frame = frames[1];
-    expect(frame?.teamMessage?.member).toBe("saolei");
+    expect(frame?.teamMessage?.member).toBe("announcer");
     expect(frame?.teamMessage?.seq).toBe("2");
     expect(frame?.teamMessage?.message).toBe(announcement.message);
-    // The announcement belongs to no member's own view: the system role has
-    // no view, and receivers record the relay through the member-view path.
+    // The announcement belongs to no member's own view: the announce-only
+    // member has no view, and receivers record the relay through the
+    // member-view path.
     expect(history.listMemberMessages("player")).toEqual([]);
     expect(history.listMemberMessages("planner")).toEqual([]);
   });
@@ -348,10 +346,51 @@ describe("TeamHistory", () => {
 });
 
 describe("MemberCollector", () => {
-  const PLAYER_ID = `${SESSION}/player`;
+  /**
+   * Drive one live model attempt: the `start` frame opens the attempt with
+   * its step, then each `chunk` frame carries one raw StreamChunk — the live
+   * replacement for a session-event chunk feed
+   * (specs/070-dsh-upgrade/research.md D7 终态结论).
+   */
+  function emitStart(
+    collector: MemberCollector,
+    memberId: string,
+    step = 1,
+    attemptId = "attempt-1",
+  ): void {
+    collector.applyEvent(
+      liveEnvelope(memberId, {
+        kind: "assistant-stream",
+        frame: { type: "start", attemptId, revision: 1, turn: 1, step },
+      }),
+    );
+  }
 
-  function chunkEvent(chunk: DshStreamChunk, step = 1) {
-    return { type: "assistant/chunk", data: { turn: 1, step, chunk } };
+  function emitChunk(
+    collector: MemberCollector,
+    memberId: string,
+    chunk: DshStreamChunk,
+    attemptId = "attempt-1",
+    index = 0,
+  ): void {
+    collector.applyEvent(
+      liveEnvelope(memberId, {
+        kind: "assistant-stream",
+        frame: { type: "chunk", attemptId, revision: index + 1, index, time: 0, chunk },
+      }),
+    );
+  }
+
+  function emitStatus(collector: MemberCollector, memberId: string, status: string): void {
+    collector.applyEvent(liveEnvelope(memberId, { kind: "status", status }));
+  }
+
+  function emitError(collector: MemberCollector, memberId: string, error: unknown): void {
+    collector.applyEvent(liveEnvelope(memberId, { kind: "error", error }));
+  }
+
+  function emitSession(collector: MemberCollector, memberId: string, event: unknown): void {
+    collector.applyEvent(logEnvelope(memberId, event));
   }
 
   function assistantMessageEvent(blocks: Array<Record<string, unknown>>, step = 1, usage?: Record<string, number>) {
@@ -362,26 +401,31 @@ describe("MemberCollector", () => {
   }
 
   function createCollector(agentId = PLAYER_ID) {
-    const { ctx, listeners } = fakeCtx();
-    const agent = fakeAgent(agentId);
     const frames: ChatEvent[] = [];
     const history = new TeamHistory(SESSION, (event) => frames.push(event));
-    const collector = new MemberCollector(ctx, agent, "player", SESSION, history, (event) =>
+    const collector = new MemberCollector(agentId, "player", SESSION, history, (event) =>
       frames.push(event),
     );
-    return { listeners, agent, collector, history, frames };
+    return { agentId, collector, history, frames };
   }
 
   it("latches a turn on the running transition and emits member-labelled frames through idle", () => {
-    const { listeners, agent, collector, frames, history } = createCollector();
+    const { agentId, collector, frames, history } = createCollector();
 
-    emit(listeners, "agent/status", { agent, status: "running" });
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "hello" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "hello" } }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "usage", usage: { inputTokens: 7, outputTokens: 9 } }));
-    emit(listeners, "session/event", agent.session, assistantMessageEvent([{ type: "text", text: "hello" }], 1, { inputTokens: 7, outputTokens: 9 }));
-    emit(listeners, "agent/status", { agent, status: "idle" });
+    emitStatus(collector, agentId, "running");
+    emitStart(collector, agentId);
+    emitChunk(collector, agentId, { type: "block-start", index: 0, blockType: "text" }, "attempt-1", 0);
+    emitChunk(collector, agentId, { type: "text-delta", index: 0, text: "hello" }, "attempt-1", 1);
+    emitChunk(collector, agentId, { type: "block-end", index: 0, block: { type: "text", text: "hello" } }, "attempt-1", 2);
+    emitChunk(collector, agentId, { type: "usage", usage: { inputTokens: 7, outputTokens: 9 } }, "attempt-1", 3);
+    emitSession(collector, agentId, assistantMessageEvent([{ type: "text", text: "hello" }], 1, { inputTokens: 7, outputTokens: 9 }));
+    collector.applyEvent(
+      liveEnvelope(agentId, {
+        kind: "assistant-stream",
+        frame: { type: "end", attemptId: "attempt-1", index: 4, outcome: { kind: "committed", eventType: "assistant/message", seq: 1 } },
+      }),
+    );
+    emitStatus(collector, agentId, "idle");
 
     // Member event frames carry the outer member label and one turn id.
     const memberFrames = frames.filter(
@@ -403,19 +447,25 @@ describe("MemberCollector", () => {
   });
 
   it("emits a tool_result member frame and settles the matching history block", () => {
-    const { listeners, agent, collector, frames, history } = createCollector();
+    const { agentId, collector, frames, history } = createCollector();
 
-    emit(listeners, "agent/status", { agent, status: "running" });
-    emit(listeners, "session/event", agent.session, assistantMessageEvent([
+    emitStatus(collector, agentId, "running");
+    emitSession(collector, agentId, assistantMessageEvent([
       { type: "tool-call", id: "call-1", name: "saolei_init", arguments: "{}" },
     ]));
-    emit(listeners, "session/event", agent.session, {
+    emitSession(collector, agentId, {
       type: "tool/result",
       data: {
         turn: 1,
         step: 1,
+        // first-class ToolResultMessage: toolCallId/isError at the
+        // message top level, content IS the result blocks
+        // (specs/070-dsh-upgrade/research.md D7 终态结论).
         message: {
-          content: [{ type: "tool-result", toolCallId: "call-1", content: [{ type: "text", text: "new game started" }] }],
+          role: "tool",
+          toolCallId: "call-1",
+          isError: false,
+          content: [{ type: "text", text: "new game started" }],
         },
       },
     });
@@ -433,14 +483,15 @@ describe("MemberCollector", () => {
   });
 
   it("appends the streamed prefix as an interrupted member entry when a provider failure settles the turn", () => {
-    const { listeners, agent, collector, history } = createCollector();
+    const { agentId, collector, history } = createCollector();
 
-    emit(listeners, "agent/status", { agent, status: "running" });
+    emitStatus(collector, agentId, "running");
+    emitStart(collector, agentId);
     // The reasoning prefix streams as bare deltas (no block-end before the failure).
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "Thinking about " }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "reasoning-delta", index: 0, text: "the request" }));
-    emit(listeners, "agent/error", { agent, error: { message: "provider failure", code: "TRANSPORT" } });
-    emit(listeners, "agent/status", { agent, status: "idle" });
+    emitChunk(collector, agentId, { type: "reasoning-delta", index: 0, text: "Thinking about " }, "attempt-1", 0);
+    emitChunk(collector, agentId, { type: "reasoning-delta", index: 0, text: "the request" }, "attempt-1", 1);
+    emitError(collector, agentId, { message: "provider failure", code: "TRANSPORT" });
+    emitStatus(collector, agentId, "idle");
 
     const entries = history.listTeamMessages();
     expect(entries).toHaveLength(1);
@@ -455,10 +506,10 @@ describe("MemberCollector", () => {
       ["CANCELED", "TURN_STATUS_CANCELED"],
       ["ABORTED", "TURN_STATUS_ABORTED"],
     ] as const) {
-      const { listeners, agent, collector, frames } = createCollector();
-      emit(listeners, "agent/status", { agent, status: "running" });
+      const { agentId, collector, frames } = createCollector();
+      emitStatus(collector, agentId, "running");
       collector.markOutcome({ status });
-      emit(listeners, "agent/status", { agent, status: "idle" });
+      emitStatus(collector, agentId, "idle");
 
       const end = frames.find((frame) => frame.turnEnd !== undefined);
       expect(end?.turnEnd?.status).toBe(expected);
@@ -467,15 +518,17 @@ describe("MemberCollector", () => {
   });
 
   it("remaps per-step block indexes onto one turn-global sequence and stamps the step", () => {
-    const { listeners, agent, collector, frames } = createCollector();
+    const { agentId, collector, frames } = createCollector();
 
-    emit(listeners, "agent/status", { agent, status: "running" });
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "calling" }));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-end", index: 0, block: { type: "text", text: "calling" } }));
+    emitStatus(collector, agentId, "running");
+    emitStart(collector, agentId, 1, "attempt-1");
+    emitChunk(collector, agentId, { type: "block-start", index: 0, blockType: "text" }, "attempt-1", 0);
+    emitChunk(collector, agentId, { type: "text-delta", index: 0, text: "calling" }, "attempt-1", 1);
+    emitChunk(collector, agentId, { type: "block-end", index: 0, block: { type: "text", text: "calling" } }, "attempt-1", 2);
     // Step 2 restarts the provider index at 0 — it must not collide.
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "block-start", index: 0, blockType: "text" }, 2));
-    emit(listeners, "session/event", agent.session, chunkEvent({ type: "text-delta", index: 0, text: "board" }, 2));
+    emitStart(collector, agentId, 2, "attempt-2");
+    emitChunk(collector, agentId, { type: "block-start", index: 0, blockType: "text" }, "attempt-2", 0);
+    emitChunk(collector, agentId, { type: "text-delta", index: 0, text: "board" }, "attempt-2", 1);
 
     const blockFrames = frames.filter(
       (frame) => frame.blockStart !== undefined || frame.blockEnd !== undefined || frame.delta !== undefined,
@@ -488,20 +541,51 @@ describe("MemberCollector", () => {
     collector.dispose();
   });
 
-  it("ignores events of other members and detaches on dispose", () => {
-    const { listeners, agent, collector, frames } = createCollector();
+  it("keeps the step-local table on a same-step retry: the retry reuses the turn-global index and keeps the pending prefix", () => {
+    const { agentId, collector, frames, history } = createCollector();
 
-    const other = { id: `${SESSION}/planner` };
-    const otherAgent = fakeAgent(`${SESSION}/planner`);
-    emit(listeners, "session/event", other, chunkEvent({ type: "text-delta", index: 0, text: "foreign" }));
-    emit(listeners, "agent/status", { agent: otherAgent, status: "idle" });
-    emit(listeners, "agent/error", { agent: otherAgent, error: { message: "foreign", code: "X" } });
+    emitStatus(collector, agentId, "running");
+    emitStart(collector, agentId, 1, "attempt-1");
+    emitChunk(collector, agentId, { type: "text-delta", index: 0, text: "first " }, "attempt-1", 0);
+    // The provider retries the SAME step: its provider index restarts at 0,
+    // but only a step-number change resets the step-local table, so the
+    // retry reuses the failed attempt's assignment and its pending prefix.
+    emitStart(collector, agentId, 1, "attempt-2");
+    emitChunk(collector, agentId, { type: "text-delta", index: 0, text: "retry" }, "attempt-2", 0);
+
+    // A reset would have handed the retry's provider index 0 the next
+    // turn-global index (1); the shared assignment keeps it at 0.
+    const deltas = frames.filter((frame) => frame.delta !== undefined);
+    expect(deltas.map((frame) => frame.delta?.index)).toEqual([0, 0]);
+
+    // The failed attempt's prefix is still pending and the retry's delta
+    // appended to the shared index-0 view, so the interrupted fixation below
+    // carries the merged prefix rather than just the retry's tail.
+    emitError(collector, agentId, { message: "retry exhausted", code: "TRANSPORT" });
+    emitStatus(collector, agentId, "idle");
+
+    const entries = history.listTeamMessages();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.message.interrupted).toBe(true);
+    expect(entries[0]?.message.blocks[0]?.text?.content).toBe("first retry");
+    collector.dispose();
+  });
+
+  it("ignores another member's envelopes and clears the turn on dispose", () => {
+    const { agentId, collector, frames } = createCollector();
+
+    // The entry dispatches by envelope role; a mismatch is a wiring error, not
+    // a production of this member.
+    emitStart(collector, PLANNER_ID, 1, "other-attempt");
+    emitChunk(collector, PLANNER_ID, { type: "text-delta", index: 0, text: "foreign" }, "other-attempt", 0);
+    emitStatus(collector, PLANNER_ID, "idle");
+    emitError(collector, PLANNER_ID, { message: "foreign", code: "X" });
     expect(frames).toEqual([]);
 
-    emit(listeners, "agent/status", { agent, status: "running" });
+    emitStatus(collector, agentId, "running");
     expect(frames.map(payloadOf)).toEqual(["turnStart"]);
     collector.dispose();
-    emit(listeners, "agent/status", { agent, status: "idle" });
+    emitStatus(collector, agentId, "idle");
     expect(frames.map(payloadOf)).toEqual(["turnStart"]);
   });
 });
