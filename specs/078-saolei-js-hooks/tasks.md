@@ -49,8 +49,8 @@
 
 ### Implementation
 
-- [ ] T003 [US4] 事件 seam：`common/js/dsh-plugins/saolei/src/game/runtime.ts`——`GameRuntimeDeps` 增可选字段 `readonly onBoardChange?: (entry: GameLogEntry) => void`（JSDoc 注明触发条件与"回调异常由订阅方边界处理、不影响 operate 返回值"——`specs/078-saolei-js-hooks/contracts/board-change-event.md` §3）；`operate()` 内 `saolei_operate` 条目 push 后、`endedStatus` 分支前求值触发条件（`deps.onBoardChange 存在 ∧ executed > 0 ∧ gameStatus(finalState) === "playing"`）满足则同步回调并传入该条目；`common/js/dsh-plugins/saolei/src/index.ts` 的 `createGameRuntime` 构造签名扩展为可选第三参（承载扩展 deps，既有两参调用语义不变；`GameLogEntry` 已在导出面）
-- [ ] T004 [US4] seam 单测：`common/js/dsh-plugins/saolei/src/game/runtime.test.ts` 增量——契约 §5 七项：①触发合取（有效批量 → 恰一次、载荷与 gameLog 尾条逐字段同值）；②全 skip 批量零回调；③终局批量（won 与 lost 各一）零回调、`(game-end)` 条目不触发；④`saolei_init` 零回调；⑤结构拒绝/识别失败/派发失败/空批量提前返回零回调；⑥seam 缺省（不传 `onBoardChange`）既有用例全量回归不变；⑦回调抛错 → `operate` 返回值与无订阅方时一致（异常不上抛）
+- [X] T003 [US4] 事件 seam：`common/js/dsh-plugins/saolei/src/game/runtime.ts`——`GameRuntimeDeps` 增可选字段 `readonly onBoardChange?: (entry: GameLogEntry) => void`（JSDoc 注明触发条件与"回调异常由订阅方边界处理、不影响 operate 返回值"——`specs/078-saolei-js-hooks/contracts/board-change-event.md` §3）；`operate()` 内 `saolei_operate` 条目 push 后、`endedStatus` 分支前求值触发条件（`deps.onBoardChange 存在 ∧ executed > 0 ∧ gameStatus(finalState) === "playing"`）满足则同步回调并传入该条目；`common/js/dsh-plugins/saolei/src/index.ts` 的 `createGameRuntime` 构造签名扩展为可选第三参（承载扩展 deps，既有两参调用语义不变；`GameLogEntry` 已在导出面）
+- [X] T004 [US4] seam 单测：`common/js/dsh-plugins/saolei/src/game/runtime.test.ts` 增量——契约 §5 七项：①触发合取（有效批量 → 恰一次、载荷与 gameLog 尾条逐字段同值）；②全 skip 批量零回调；③终局批量（won 与 lost 各一）零回调、`(game-end)` 条目不触发；④`saolei_init` 零回调；⑤结构拒绝/识别失败/派发失败/空批量提前返回零回调；⑥seam 缺省（不传 `onBoardChange`）既有用例全量回归不变；⑦回调抛错 → `operate` 返回值与无订阅方时一致（异常不上抛）
 
 **Checkpoint / 验证门禁**：`bazel test //common/js/dsh-plugins/saolei/...` 全绿（含既有用例回归）。
 
