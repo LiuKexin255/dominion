@@ -31,10 +31,12 @@ player:  composed.setup(persona)
        → registerSaoleiTools：saoleiTools 单元（tools×3 → sections×1[guidance]）     # 074 既有，单元内容收窄
        → agentCtx.systemPrompt.section(saoleiFoundation.gameSection)                # saolei:game（源自基础面）
        → 游戏句柄注册：agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)
-         （this.game = materialize 期经 foundation.createGameRuntime 构造的编排持有实例）
+         （this.game = materialize 期经 foundation.createGameRuntime 构造的编排持有实例；
+          hooks 行在场 → 构造带第三参 { onBoardChange }，接入该行构建的 hooks 单元事件处理器）
 
 planner: composed.setup(persona)
        → agentCtx.systemPrompt.section(saoleiFoundation.gameSection)                # saolei:game（新增——074 遗留修复）
+       → registerHooksUnit：hooks 单元 tools×1[saolei_hook]（零 section）            # hooks 行在场时
        → registerMemory：faces → tools → sections → await ready()                   # 074 FR-016 原序不变
 ```
 
@@ -42,6 +44,7 @@ planner: composed.setup(persona)
 - 注册序对最终 prompt 无影响（section 按 order 排序，specs/060 §4）；固定序为测试断言确定性服务。
 - **planner 生效面（终态）**：persona + team:roster + **saolei:game** + memory:guidance + wiki:guidance + memory:snapshot——四工具面不变；MUST NOT 注册 saolei 工具、saolei:guidance 与游戏句柄。
 - **player 生效面（终态）**：persona + team:roster + saolei:game + saolei:guidance + 三工具 + 游戏句柄（解析到编排持有的同一实例）——与改造前逐字等价（SC-006/FR-012）。
+- **hooks 能力行（可选）**：`config.plugins` 列出 `@dominion/dsh-saolei-hooks` 行时，物化早期构建 hooks 单元，planner setup 在 `saolei:game` 之后注册其工具面（`saolei_hook`，零 section）、player setup 以 `createGameRuntime` 第三参 `{ onBoardChange }` 接线；行缺席 = 零 hook 装配、player 两参构造、planner 不注册 `saolei_hook`（`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5）。
 
 ## 4. saolei-loop 的移除面
 

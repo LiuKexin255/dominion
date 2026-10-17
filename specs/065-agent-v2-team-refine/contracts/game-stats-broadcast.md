@@ -60,7 +60,7 @@ const relays = this.drain(members.planner);      // 必含播报单元（排在 
 5. **行为增强**：播报后 planner drain 必非空 → 存在未复盘终局记录时复盘保证启动（原 `relays.length === 0` 落入 player 续驱的分支对该场景不再可达）。
 6. **访问器**：`orchestrator.announcer: AnnouncerMember | undefined`（物化后有值）——loop 侧读取面（镜像 `orchestrator.member(role)` 模式），供物化校验与 loop 测试使用，**非宿主订阅路径**：宿主经 team 统一成员事件流单路消费 announcer 产出（`specs/077-announcer-member-unification/contracts/member-event-stream.md` §5）。
 7. **不变量保持**：编排不合成 LLM 成员驱动消息（059 FR-009/010 在"系统角色经成员消息源接口提供消息"意义上保持）；驱动输入仍 = drain 结果 + 排队用户消息。
-8. **第二生产来源（hook 播报）**：`announce(text)` 亦是 saolei hook 引擎的播报出口——hooks 能力单元在物化时经编排装配的 announce seam 绑定到同一 announcer（`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5），每次有棋盘变动且非终局的 `operate` 后按注册序逐条播报 `[hook <name>]` 前缀文本（`specs/078-saolei-js-hooks/contracts/hook-announcement.md` §1/§2）。hook 播报与终局统计播报共用**同一 `announce` 生产协议**与同一消息形状（`assistant/message`，唯一 MessageId、单 text block）——本节 §3 的源/成员/宿主条款（§4 落地）对本来源一体适用；终局统计的触发点、exactly-once 与排队优先序语义不变（`specs/078-saolei-js-hooks/spec.md` FR-009）。
+8. **第二生产来源（hook 播报）**：`announce(text)` 亦是 saolei hook 引擎的播报出口——hooks 能力单元在物化时经编排装配的 announce seam 绑定到同一 announcer（`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5），每次有棋盘变动且非终局的 `operate` 后按注册序逐条播报 `[hook <name>]` 前缀文本（`specs/078-saolei-js-hooks/contracts/hook-announcement.md` §1/§2）。hook 播报与终局统计播报共用**同一 `announce` 生产协议**与同一消息形状（`assistant/message`，唯一 MessageId、单 text block）——本节的源/成员/宿主条款（§4 落地）对本来源一体适用；终局统计的触发点、exactly-once 与排队优先序语义不变（`specs/078-saolei-js-hooks/spec.md` FR-009）。
 
 **交接流程图**（线性主干 + 幂等跳过；正常流程与恢复流程同构——恢复即灌回持有的状态〔`pendingReview` 输入集与已置位标记〕后重新执行，已完成步骤被 guard 跳过）：
 

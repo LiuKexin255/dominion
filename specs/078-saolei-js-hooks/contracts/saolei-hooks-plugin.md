@@ -27,9 +27,12 @@
   action?: "set" | "remove" | "list"
   name?:   string
   script?: string
-校验层次（全部在 execute 内，以普通文本结果拒绝——memory 工具同型，
-schema 层不做互斥以保留模型可恢复性）:
-  1. action 缺失/未知              → 文本拒绝
+校验层次（第 1 层的未知值由 schema enum 在 execute 前承担，其余全部在 execute 内
+以普通文本结果拒绝——memory 工具同型，schema 层不做动作互斥以保留模型可恢复性）:
+  1. action 缺失                   → execute 内文本拒绝（列出三个合法动作）
+     action 未知值                 → schema enum 在 execute 前以 INVALID_ARGS 拒绝
+                                    （`common/js/memory/src/tool.ts` 先例同型）；execute
+                                    内同等保留未知动作分支，对直接调用完备
   2. 非适用动作的字段（`action:"list"` 带 name/script；
      `action:"remove"` 带 script）→ 文本拒绝（列出多余字段名）
   3. set: name/script 缺失         → 文本拒绝（含缺失字段名）
@@ -55,7 +58,7 @@ schema 层不做互斥以保留模型可恢复性）:
 
 ### 3.3 输出契约
 
-工具输出恒为 `{result: string}` 形态的普通结果文本；无 error outcome 路径（失败也是模型可据以修正的文本，saolei 双形式 operate 惯例）。
+工具输出恒为 `{result: string}` 形态的普通结果文本；execute 面不 throw、不产生工具 error outcome（失败也是模型可据以修正的文本，saolei 双形式 operate 惯例）——框架面 schema enum 校验的 INVALID_ARGS（§3.1 第 1 层未知值）不属本面。
 
 ## 4. 沙箱执行契约（research D1/D7）
 

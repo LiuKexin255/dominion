@@ -33,7 +33,8 @@ export interface GameRuntimeDeps {
 
 ## 3. 异常边界（订阅方责任）
 
-- 回调抛错**不得**改变 `operate` 的返回值或控制流——游戏基础侧**不做** try/catch；异常边界由订阅方（hooks 引擎 handler）内部处理（吞噬 + warn 日志 + 可选播报，见 [saolei-hooks-plugin.md](saolei-hooks-plugin.md) §4）。
+- 游戏基础侧**不做** try/catch：运行时不吞噬、不转换回调异常（§2 DI 形态：裸同步回调），无边界订阅方抛错时异常沿 `operate` 调用路径上抛——回调前已落账的领域事实不受影响。
+- 因此异常边界是**订阅方责任**：订阅方 MUST 自持边界，在回调内处理自身异常（吞噬 + warn 日志 + 可选播报，见 [../data-model.md](../data-model.md) §3.3），使 `operate` 的返回值与控制流不因回调抛错而改变。
 - 设计意图：领域事实推送失败是订阅方问题，不构成领域结果的一部分（survey §2.1 边界划分：hook 侧失败不进领域结果）。
 
 ## 4. 订阅方解耦
@@ -51,4 +52,4 @@ export interface GameRuntimeDeps {
 4. `saolei_init` → 零回调。
 5. 结构拒绝/识别失败/派发失败/空批量的提前返回 → 零回调（无落账路径）。
 6. seam 缺省（不传 `onBoardChange`）→ 既有用例全量回归不变（US4 场景 4）。
-7. 回调内抛错 → `operate` 返回值与无订阅方时一致（异常不上抛；US4 场景 5）。
+7. 回调异常边界（US4 场景 5）：无 `onBoardChange` 时（seam 缺省）与订阅方自持边界、吞噬自身异常时，`operate` 返回值与 gameLog 一致；无边界订阅方抛错时运行时不吞噬、不转换（§3：游戏基础侧不做 try/catch），异常沿 `operate` 调用路径上抛，回调前已落账的领域事实不变。生产接线的订阅方是 hooks 引擎事件处理器（`common/js/dsh-plugins/saolei-hooks/src/handler.ts` 的整循环 try/catch 自持边界，[../data-model.md](../data-model.md) §3.3），该上抛路径不可达。

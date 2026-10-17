@@ -17,7 +17,10 @@ session 的组织模型是
 team：一个 session 至多物化一个 team——恰含 player 与 planner 两个 LLM 成员
 （各持独立历史与 system prompt）与一个 announce-only 的 announcer 成员
 （role `announcer`：无 preset/model、不经 LLM 驱动，作为正式成员进入三成员
-名册与 active_member 呈现，但不可由调用方配置；终局交接时播报本局统计，
+名册与 active_member 呈现，但不可由调用方配置；announcer 是团队播报的唯一生产
+出口——终局交接时播报本局统计，hooks 引擎在有棋盘变动且非终局的批量操作后亦经
+该出口播报 `[hook <name>]` 前缀文本（见
+`specs/078-saolei-js-hooks/contracts/hook-announcement.md`）；
 `specs/076-agent-v2-optimize/contracts/announcer-member.md`）；需求与验收锚点见
 `specs/059-agent-v2-team-mode/spec.md` 与
 `specs/060-agent-v2-team-optimize/spec.md`，接口契约见两者
@@ -160,10 +163,13 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   存在且 `preset.role` 与成员 role 字符串相等、model 非空时在 ListModels 目录。
   失败均为 `INVALID_ARGUMENT`（`projects/game/agent_v2/src/session.ts`）。
 - **物化编排**：逐成员 `ctx.agents.create`（官方 agent-loop 驱动）经 registry
-  绑定所选 preset 声明，player 侧注册 saoleiTools 单元、编排经基础面工厂构造并
-  持有的 GameRuntime 实例句柄（agent-scoped `saoleiGame`）与 `saolei:game` 玩法
-  section，planner 侧注册 `saolei:game` 后经 `memoryMount.build(scope)` 组装
-  memory 单元并以 `unit.ready()` 预取记忆快照（fail-loud）；随后
+  绑定所选 preset 声明。hooks 行在场时物化早期构建 hooks 单元（`saoleiHooks`
+  face，行缺席则零 hook 装配）；player 侧注册 saoleiTools 单元、编排经基础面工厂
+  构造并持有的 GameRuntime 实例句柄（agent-scoped `saoleiGame`；hooks 行在场时以
+  第三参 `{ onBoardChange }` 接入 board-change 事件）与 `saolei:game` 玩法
+  section，planner 侧注册 `saolei:game`、hooks 单元的工具面（`saolei_hook`，零
+  section，hooks 行在场时）后经 `memoryMount.build(scope)` 组装 memory 单元并以
+  `unit.ready()` 预取记忆快照（fail-loud）；随后
   `ctx.team.register` 注册群聊服务。任一步失败**整体回滚**：
   不残留半物化 team（GetTeam NOT_FOUND），可重试。
 - **成员消息源与 announcer 成员**：team 的成员抽象为消息源接口
@@ -281,13 +287,16 @@ flowchart LR
 saolei JS hook 让 planner 把策略/分析路径固化为 JS 代码，对 player 形成持续指导
 通道（`specs/078-saolei-js-hooks/spec.md`）。能力由 hooks 插件
 `@dominion/dsh-saolei-hooks` 提供——saolei-loop `config.plugins` 的可选能力行
-（行缺席 = 无 hook 面，`specs/078-saolei-js-hooks/contracts/
-saolei-hooks-plugin.md` §5）：
+（行缺席 = 无 hook 面，
+`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5）：
 
 - **写入面（planner）**：planner 经专属工具 `saolei_hook`（`set`/`remove`/`list`）
   注册与管理策略脚本——`set` 在注册期做语法、上限与 banned-pattern 校验并以普通
-  文本结果反馈；全部行为引导经工具 describe 承载（零 prompt section）。脚本为
-  函数体源码，以棋盘 JSON（`board`）为输入、`return` 字符串或可序列化对象。
+  文本结果反馈（校验层次见
+  `specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §3.1；banned-pattern
+  清单见 `specs/078-saolei-js-hooks/data-model.md` §2.4）；全部行为引导经工具
+  describe 承载（零 prompt section）。
+  脚本为函数体源码，以棋盘 JSON（`board`）为输入、`return` 字符串或可序列化对象。
 - **执行与播报（player 对局）**：player 每次**有棋盘变动且非终局**的批量
   `operate`（`executed > 0` 且对局仍在进行）后，棋盘变动事件 seam 同步触发、按
   注册序执行全部已注册 hook，每个非空输出经 announcer 成员逐条播报（正文
@@ -301,7 +310,7 @@ saolei-hooks-plugin.md` §5）：
   （`specs/078-saolei-js-hooks/spec.md` FR-005）。
 - **沙箱边界**：脚本在 `node:vm` 受约束环境执行——同步纯计算、无宿主 API、
   单次执行 500ms 超时中断、输出超 4096 字符截断、脚本 ≤16384 字符、至多 8 个
-  hook（工程界，`specs/078-saolei-js-hooks/data-model.md` §2.3/§2.4）。
+  hook（工程界，`specs/078-saolei-js-hooks/data-model.md` §2.2/§2.3）。
 
 ## preset 分池与角色能力组装
 
