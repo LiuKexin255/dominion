@@ -8,6 +8,12 @@
 // 展开体以 MarkdownText 渲染完整思考文本（specs/054-agent-v2-bugfixes/
 // contracts/web-ui.md §3：思考展开体与正文同能力，GFM、流式增量、不完整
 // 片段不崩溃——running 即流式增长中，传给 MarkdownText 的 streaming prop）；
+// variant="compact" 承载思考体次级排版（13px/tertiary/紧凑段距），对齐上游
+// body slot 默认渲染（https://github.com/deepseek-ai/deepseek-harness/blob/
+// master/packages/client/ui-chat/src/client/chat/ReasoningContent.tsx ）；
+// 思考体容器样式（theme.css .reasoning-body）不得声明 white-space——渲染器
+// 在块级元素之间与松散 li 内部交织字面 \n 文本节点，仅在正常 white-space
+// 折叠下不可见，pre-wrap 会把它们变成强制换行（段间多空行、列表序号独行）；
 // 折叠摘要保持纯文本首行/最新行切片（原文切片语义，不经 markdown）；
 // running 态摘要经 TextShimmer active 表达共享高光（specs/073-dsh-0.2-upgrade/
 // contracts/shimmer-adoption.md §1.1：文字节点保留可选中，装饰层 inert/clipped
@@ -83,7 +89,12 @@ export function ReasoningRow({ text, running }: ReasoningRowProps) {
         }
       >
         <div className="reasoning-body" data-testid="reasoning-body">
-          <MarkdownText text={text} streaming={running} labels={MARKDOWN_LABELS} />
+          <MarkdownText
+            text={text}
+            streaming={running}
+            labels={MARKDOWN_LABELS}
+            variant="compact"
+          />
         </div>
       </DisclosureRow>
     </div>

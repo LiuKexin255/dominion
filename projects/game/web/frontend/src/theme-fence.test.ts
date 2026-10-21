@@ -68,3 +68,19 @@ describe('theme.css code 块宽度（specs/055-agent-v2-ui-fixes/revisions/fr001
     expect(rule?.[1]).toContain('padding-right: 44px')
   })
 })
+
+// 展开体容器不自带 white-space/字体/颜色（MarkdownText variant="compact"
+// 承载次级排版）：渲染器在块级元素之间与松散 li 内部交织字面 \n 文本节点，
+// 仅在正常 white-space 折叠下不可见（包内 wrapBlockChildren 实现注释）；
+// pre-wrap 会把它们渲染成强制换行——段落间多一个空行、松散列表序号独占
+// 一行。`.markdown` 根类自身的 font/color 直接声明亦优先于 wrapper 继承值，
+// 此处写字号/颜色本就不生效。
+describe('theme.css 思考展开体容器（对齐上游 .thinkBody）', () => {
+  it('.reasoning-body 只声明缩进与最小宽，不声明 white-space/word-break/字体颜色', () => {
+    const rule = /^\.reasoning-body\s*\{([^}]*)\}/m.exec(THEME_CSS)
+    expect(rule).not.toBeNull()
+    expect(rule?.[1]).toContain('padding: 4px 0 4px 22px')
+    expect(rule?.[1]).toContain('min-width: 0')
+    expect(rule?.[1]).not.toMatch(/white-space|word-break|font-size|color/)
+  })
+})

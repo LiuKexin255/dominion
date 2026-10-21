@@ -59,6 +59,9 @@ describe('ReasoningRow', () => {
     )
     fireEvent.click(disclosureRow())
     const body = screen.getByTestId('reasoning-body')
+    // 思考体走 compact 变体（次级排版：13px/tertiary/紧凑段距），对齐上游
+    // ReasoningContent 的 variant="compact"。
+    expect(body.querySelector('[data-markdown-variant="compact"]')).not.toBeNull()
     expect(body.querySelector('strong')?.textContent).toBe('优先角落')
     expect(body.querySelector('code')?.textContent).toBe('saolei_operate')
     expect(body.querySelectorAll('li')).toHaveLength(2)

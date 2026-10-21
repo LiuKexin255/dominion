@@ -1048,12 +1048,18 @@ body {
   text-overflow: clip;
 }
 
+/* 展开体容器只承担缩进与最小宽约束，对齐上游 .thinkBody：次级排版
+ * （13px/tertiary/紧凑段距）由 MarkdownText variant="compact" 自带。
+ * MUST NOT 在此声明 white-space——渲染器在块级元素之间与松散 li 内部
+ * 交织字面 \n 文本节点（仅在正常 white-space 折叠下不可见，包内
+ * wrapBlockChildren 实现注释），pre-wrap 会把它们变成强制换行：段落间
+ * 多出空行、松散列表的序号独占一行。字号/颜色同理交给 compact——
+ * .markdown 根类自身的 font/color 直接声明优先于此处继承值（上游样式
+ * https://github.com/deepseek-ai/deepseek-harness/blob/master/
+ * packages/client/ui-chat/src/client/chat/ReasoningRow.module.css ）。 */
 .reasoning-body {
   padding: 4px 0 4px 22px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 13px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  min-width: 0;
 }
 
 /* 工具调用卡片（契约 specs/049-agent-v2-dsh-init/contracts/web-frontend.md
