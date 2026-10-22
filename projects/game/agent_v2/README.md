@@ -17,7 +17,10 @@ session 的组织模型是
 team：一个 session 至多物化一个 team——恰含 player 与 planner 两个 LLM 成员
 （各持独立历史与 system prompt）与一个 announce-only 的 announcer 成员
 （role `announcer`：无 preset/model、不经 LLM 驱动，作为正式成员进入三成员
-名册与 active_member 呈现，但不可由调用方配置；终局交接时播报本局统计，
+名册与 active_member 呈现，但不可由调用方配置；announcer 是团队播报的唯一生产
+出口——终局交接时播报本局统计，hooks 引擎在有棋盘变动且非终局的批量操作后亦经
+该出口播报 `[hook <name>]` 前缀文本（见
+`specs/078-saolei-js-hooks/contracts/hook-announcement.md`）；
 `specs/076-agent-v2-optimize/contracts/announcer-member.md`）；需求与验收锚点见
 `specs/059-agent-v2-team-mode/spec.md` 与
 `specs/060-agent-v2-team-optimize/spec.md`，接口契约见两者
@@ -127,13 +130,18 @@ team：一个 session 至多物化一个 team——恰含 player 与 planner 两
   `@dominion/dsh-saolei-tools` 提供 `saoleiTools` 静态单元（三工具 + 仅
   `saolei:guidance` section）、`@dominion/dsh-saolei-memory` 提供 `memoryMount`
   工厂（memory 公共库 `@dominion/common-js-memory` + adapter config 的
-  target/protoPath，跨 service client 共享 channel）。boot 时经 `ctx.plugin` 挂载
-  提供方，成员 setup 按角色消费——player 注册 saolei 三工具与 `saolei:guidance`
-  section，编排对 player 与 planner 注册 `saolei:game` 玩法 section（源自基础面），
-  planner 注册 memory 单元（单工具 `memory` + `memory:snapshot` section；无 wiki
-  工具与 guidance section）（角色分配归编排代码；
+  target/protoPath，跨 service client 共享 channel）、
+  `@dominion/dsh-saolei-hooks` 提供 `saoleiHooks` team 级工厂（可选能力行——行
+  缺席 = 无 hook 面，行在而面缺 = 组合装载失败，
+  `specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5）。boot 时经
+  `ctx.plugin` 挂载提供方，成员 setup 按角色消费——player 注册 saolei 三工具与
+  `saolei:guidance` section，编排对 player 与 planner 注册 `saolei:game` 玩法
+  section（源自基础面），planner 注册 hooks 单元工具面（单工具 `saolei_hook`，
+  零 section）与 memory 单元（单工具 `memory` + `memory:snapshot` section；无
+  wiki 工具与 guidance section）（角色分配归编排代码；
   `specs/074-dsh-grpc-runtime/contracts/team-assembly.md` §1-§4、
-  `specs/075-saolei-game-foundation/contracts/team-loop-assembly.md` §3）。
+  `specs/075-saolei-game-foundation/contracts/team-loop-assembly.md` §3、
+  `specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5）。
 
 ## team 物化与刷新（UpdateTeam）
 
@@ -155,10 +163,13 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   存在且 `preset.role` 与成员 role 字符串相等、model 非空时在 ListModels 目录。
   失败均为 `INVALID_ARGUMENT`（`projects/game/agent_v2/src/session.ts`）。
 - **物化编排**：逐成员 `ctx.agents.create`（官方 agent-loop 驱动）经 registry
-  绑定所选 preset 声明，player 侧注册 saoleiTools 单元、编排经基础面工厂构造并
-  持有的 GameRuntime 实例句柄（agent-scoped `saoleiGame`）与 `saolei:game` 玩法
-  section，planner 侧注册 `saolei:game` 后经 `memoryMount.build(scope)` 组装
-  memory 单元并以 `unit.ready()` 预取记忆快照（fail-loud）；随后
+  绑定所选 preset 声明。hooks 行在场时物化早期构建 hooks 单元（`saoleiHooks`
+  face，行缺席则零 hook 装配）；player 侧注册 saoleiTools 单元、编排经基础面工厂
+  构造并持有的 GameRuntime 实例句柄（agent-scoped `saoleiGame`；hooks 行在场时以
+  第三参 `{ onBoardChange }` 接入 board-change 事件）与 `saolei:game` 玩法
+  section，planner 侧注册 `saolei:game`、hooks 单元的工具面（`saolei_hook`，零
+  section，hooks 行在场时）后经 `memoryMount.build(scope)` 组装 memory 单元并以
+  `unit.ready()` 预取记忆快照（fail-loud）；随后
   `ctx.team.register` 注册群聊服务。任一步失败**整体回滚**：
   不残留半物化 team（GetTeam NOT_FOUND），可重试。
 - **成员消息源与 announcer 成员**：team 的成员抽象为消息源接口
@@ -258,9 +269,10 @@ flowchart LR
   当前在途成员下一 step 边界认领；静止成员照旧 pending drain；exactly-once 由
   既有锚点闭包保证（认领去重 / 丢弃重投双向自愈），驱动与 flow 决策零影响
   （`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md`）。
-  hook 落地前唯一插入式生产者（announcer）只在成员收束后播报终局统计、彼时无在途
-  成员，快路在生产行为上**惰性**、以单测验证；首个真实受益者是后续 hook feature
-  （`specs/077-announcer-member-unification/spec.md` FR-007–FR-012 与 Assumptions）。
+  插入式生产者有两类：announcer 的终局统计播报（成员收束后、无在途成员 → 快路
+  惰性、pending drain）与 **saolei hook 播报**（player turn 内、player 在途 → 快路
+  生效、下一 step 认领）（`specs/078-saolei-js-hooks/contracts/hook-announcement.md`
+  §1/§3）。
 - **错误契约**：`failed { code, detail }`，code ∈ {TRANSIENT, QUOTA, CREDENTIAL,
   CONFIG, INPUT_TOO_LARGE, INTERNAL}；loop 层只分类，宿主按码产出用户动作文案
   （`projects/game/agent_v2/src/session.ts` 的 `LOOP_ERROR_TEXT`）。
@@ -269,6 +281,36 @@ flowchart LR
 快照 `phase` 由活动派生（plan→planning、review→reviewing、play/rest→playing）、
 `paused` ← flow 冻结态、`activeMember` = `active ?? activation`（播报窗口内可为
 `announcer`）；静止判定 = `frozen || (active === null && inbox pending === 0)`。
+
+## saolei JS hook（planner 固化策略脚本 → 棋盘变动后执行播报）
+
+saolei JS hook 让 planner 把策略/分析路径固化为 JS 代码，对 player 形成持续指导
+通道（`specs/078-saolei-js-hooks/spec.md`）。能力由 hooks 插件
+`@dominion/dsh-saolei-hooks` 提供——saolei-loop `config.plugins` 的可选能力行
+（行缺席 = 无 hook 面，
+`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5）：
+
+- **写入面（planner）**：planner 经专属工具 `saolei_hook`（`set`/`remove`/`list`）
+  注册与管理策略脚本——`set` 在注册期做语法、上限与 banned-pattern 校验并以普通
+  文本结果反馈（校验层次见
+  `specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §3.1；banned-pattern
+  清单见 `specs/078-saolei-js-hooks/data-model.md` §2.4）；全部行为引导经工具
+  describe 承载（零 prompt section）。
+  脚本为函数体源码，以棋盘 JSON（`board`）为输入、`return` 字符串或可序列化对象。
+- **执行与播报（player 对局）**：player 每次**有棋盘变动且非终局**的批量
+  `operate`（`executed > 0` 且对局仍在进行）后，棋盘变动事件 seam 同步触发、按
+  注册序执行全部已注册 hook，每个非空输出经 announcer 成员逐条播报（正文
+  `[hook <name>]` 前缀；空字符串输出不播报）；脚本错误/超时/输出超限以播报形式
+  反馈，不影响游戏流程与 `saolei_operate` 工具结果。播报作为 announcer 产出进入
+  团队归并序列与实时流（web 可见，`member="announcer"`），在途 player 经在途广播
+  快路于同一回合下一 step 可见；游戏开始与结束不触发 hook
+  （`specs/078-saolei-js-hooks/contracts/hook-announcement.md` §2/§3）。
+- **无持久化**：注册表是 team 物化生命周期的进程内存态——刷新（UpdateTeam 重建）
+  与 dispose 即清空；需要跨局保留的脚本由调用方自行保存并重新注册
+  （`specs/078-saolei-js-hooks/spec.md` FR-005）。
+- **沙箱边界**：脚本在 `node:vm` 受约束环境执行——同步纯计算、无宿主 API、
+  单次执行 500ms 超时中断、输出超 4096 字符截断、脚本 ≤16384 字符、至多 8 个
+  hook（工程界，`specs/078-saolei-js-hooks/data-model.md` §2.2/§2.3）。
 
 ## preset 分池与角色能力组装
 
@@ -287,11 +329,12 @@ preset 数据按角色分池
 - **角色能力组装（编排代码承载）**：role 不决定工具插件行——player/planner
   对应的能力由 saolei-loop 编排在成员 setup 消费 `config.plugins` 提供面：
   player 取 `saoleiTools`（`saolei_init`/`saolei_operate`/`saolei_remain`
-  工具 + `saolei:guidance` section），planner 取
-  `memoryMount.build(scope)`（memory 单元单工具 `memory` +
-  `memory:snapshot` section）；`saolei:game` 玩法 section 源自
-  游戏基础面，由编排对 player 与 planner 两角色注册（不属于任一能力单元）——
-  能力单元与其配套 section 作为整体生效或缺席，物化零定制。删除 preset 无
+  工具 + `saolei:guidance` section），planner 取 `memoryMount.build(scope)`
+  （memory 单元单工具 `memory` + `memory:snapshot` section）与 `saoleiHooks`
+  单元的工具面（单工具 `saolei_hook`，零 section——见「saolei JS hook」节）；
+  `saolei:game` 玩法 section 源自游戏基础面，由编排对 player 与 planner 两角色
+  注册（不属于任一能力单元）——能力单元与其配套 section 作为整体生效或缺席，
+  物化零定制。删除 preset 无
   fan-out：已物化成员保持其物化时组合，再次物化引用被拒
   （`specs/059-agent-v2-team-mode/spec.md` FR-006；
   `specs/074-dsh-grpc-runtime/contracts/preset-templates.md` §2-§3）。
@@ -559,6 +602,10 @@ player 成员视图消费该消息、`GetTeam` 名册含 announcer（三成员�
 - **compact 明确排除**（`specs/059-agent-v2-team-mode/spec.md` FR-018）：成员
   历史不裁剪、不压缩；多局后 planner 视角的工具调用历史持续增长（工具结果
   原样广播），token 代价接受为已知限制，治理留待后续 feature。
+- **hook 播报加速上下文增长**（已接受代价）：每次有棋盘变动的 `operate` 产生
+  0..N 条 announcer 播报（N = 非空输出 hook 数），随对局进入各成员上下文；compact
+  已明确排除（见上条），token 代价接受为已知限制
+  （`specs/078-saolei-js-hooks/spec.md` Assumptions）。
 - **team 为进程内存态**：对话历史、游戏状态与物化配置（preset/model 绑定）
   随重启丢失；重启后再次对话前必须重新经 UpdateTeam 物化
   （`specs/059-agent-v2-team-mode/spec.md` Edge Cases 与 Assumptions）。仅

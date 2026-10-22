@@ -51,12 +51,14 @@ import type {
   MemoryCapabilities,
   MemoryMount,
   PlannerMemoryScope,
+  SaoleiHooksMount,
+  SaoleiHooksUnit,
   SaoleiToolsUnit,
   TeamMaterializeOptions,
   TeamOrchestratorDeps,
 } from "./orchestrator.js";
 import { ANNOUNCER_MEMBER_SUMMARY } from "./announcer.js";
-import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
+import type { GameEventRecord, GameLogEntry, GameRuntime } from "@dominion/dsh-saolei";
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
 
 const SESSION = "templates/saolei/sessions/s1";
@@ -402,7 +404,66 @@ interface Harness {
   readonly buildScopes: PlannerMemoryScope[];
   /** The unit the memory mount builds (its `ready` is overridable per test). */
   readonly memoryCapabilities: MemoryCapabilities;
+  /** The optional `saoleiHooks` provide-face double (mounted per options). */
+  readonly hooks: FakeHooksMount;
   readonly game: { current: GameEventRecord | null; peeks: number };
+}
+
+/**
+ * The `saoleiHooks` provide-face double: every `buildHooksUnit` call records
+ * its announce seam and returns a unit whose handler forwards to that seam —
+ * the production wiring, so driving the handler exercises the announce binding
+ * end to end.
+ */
+interface FakeHooksMount {
+  readonly mount: SaoleiHooksMount;
+  readonly builds: Array<{
+    readonly announce: (text: string) => void;
+    readonly unit: SaoleiHooksUnit;
+  }>;
+}
+
+function fakeHooksMount(): FakeHooksMount {
+  const builds: FakeHooksMount["builds"] = [];
+  return {
+    builds,
+    mount: {
+      buildHooksUnit: vi.fn(
+        (deps: { announce: (text: string) => void }): SaoleiHooksUnit => {
+          const unit: SaoleiHooksUnit = {
+            tools: [fakeTool("saolei_hook")],
+            // Zero prompt section (specs/078-saolei-js-hooks/spec.md FR-006).
+            sections: [],
+            onBoardChange: (entry) => {
+              deps.announce(`[hook fixture] ${entry.status}`);
+            },
+          };
+          builds.push({ announce: deps.announce, unit });
+          return unit;
+        },
+      ),
+    },
+  };
+}
+
+/** A board-change entry double; the fake hooks unit reads only `status`. */
+function boardChangeEntry(): GameLogEntry {
+  return {
+    tool: "saolei_operate",
+    operations: [],
+    state: { width: 1, height: 1, grid: [["INITIAL"]] },
+    status: "playing",
+  } as GameLogEntry;
+}
+
+/** The text of one announcer log event (an `assistant/message`). */
+function announcementText(event: SessionEvent | undefined): string {
+  if (event === undefined || event.type !== "assistant/message") {
+    return "";
+  }
+  return event.data.message.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("");
 }
 
 function fakeTool(name: string) {
@@ -482,8 +543,15 @@ function expectPlayerRegistrationOrder(seams: {
   expect(lastCall(seams.sections)).toBeLessThan(firstCall(seams.handle));
 }
 
+/** Harness options: which optional capability rows the composition lists. */
+interface HarnessOptions {
+  /** Mount the optional `saoleiHooks` face (the hooks row is listed). */
+  readonly hooks?: boolean;
+}
+
 function createHarness(
   overrides: Partial<TeamOrchestratorDeps> = {},
+  options: HarnessOptions = {},
 ): Harness {
   const members = new Map<string, FakeMember>();
   const agents = fakeAgents(members);
@@ -552,6 +620,13 @@ function createHarness(
   ctx.provide("saoleiTools", saoleiTools);
   ctx.provide("memoryMount", memoryMount);
   ctx.provide("saolei", foundation);
+  // The optional hooks capability row: mounted only when the composition lists
+  // it, so the default harness reproduces the pre-hooks composition
+  // (specs/078-saolei-js-hooks/spec.md FR-015).
+  const hooks = fakeHooksMount();
+  if (options.hooks === true) {
+    ctx.provide("saoleiHooks", hooks.mount);
+  }
   const orchestrator = new TeamOrchestrator(ctx, {
     compose,
     agents,
@@ -573,6 +648,7 @@ function createHarness(
     memoryMount,
     buildScopes,
     memoryCapabilities,
+    hooks,
     game,
   };
 }
@@ -896,6 +972,117 @@ describe("TeamOrchestrator.materialize", () => {
     await h.orchestrator.dispose();
     expect(() => h.orchestrator.submit("x")).toThrow(/disposed/);
     expect(h.orchestrator.cancel()).toEqual({ dropped: [] });
+  });
+});
+
+describe("TeamOrchestrator hooks assembly (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5)", () => {
+  it("assembles the three faces when the hooks capability is mounted", async () => {
+    const h = createHarness({}, { hooks: true });
+
+    await h.orchestrator.materialize(teamOptions());
+
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+    const buildHooksUnit = h.hooks.mount.buildHooksUnit as Spy;
+    const unit = h.hooks.builds[0]?.unit as SaoleiHooksUnit;
+
+    // One unit per materialization, built before the runtime that receives its
+    // handler (the player's game runtime is constructed later in the setup).
+    expect(buildHooksUnit).toHaveBeenCalledTimes(1);
+    expect(firstCall(buildHooksUnit)).toBeLessThan(firstCall(h.createGameRuntime));
+
+    // Planner: the hook tool joins the memory tools; the section set is the
+    // pre-hooks set — no hook item anywhere (SC-008 integration face).
+    expect([...planner.tools.keys()].sort()).toEqual([
+      "memory",
+      "saolei_hook",
+      "wiki_get",
+      "wiki_search",
+      "wiki_write",
+    ]);
+    expect(planner.sections.map((section) => section.name)).toEqual([
+      "saolei:game",
+      "memory:guidance",
+      "wiki:guidance",
+      "memory:snapshot",
+    ]);
+    expect(h.hooks.builds[0]?.unit.sections).toEqual([]);
+
+    // Player: the saolei static unit passes through verbatim (three tools plus
+    // the guidance section; the guidance text itself is pinned by the
+    // saolei-tools suite) and no hook item reaches this member (FR-007).
+    expect([...player.tools.keys()].sort()).toEqual([
+      "saolei_init",
+      "saolei_operate",
+      "saolei_remain",
+    ]);
+    expect(player.sections).toEqual([
+      h.saoleiTools.sections[0],
+      fakeSection("saolei:game", 50),
+    ]);
+    expect(
+      player.sections.some((section) => section.name.includes("hook")),
+    ).toBe(false);
+
+    // The unit's board-change handler enters the runtime construction (the
+    // handle still resolves to the same instance).
+    expect(h.createGameRuntime).toHaveBeenCalledWith(SESSION, h.desktopBridge, {
+      onBoardChange: unit.onBoardChange,
+    });
+    expect(player.faces.get("saoleiGame")).toBe(h.gameRuntime);
+
+    // Announce binding: the unit's handler produces through the announcer the
+    // orchestrator holds (specs/078-saolei-js-hooks/contracts/
+    // hook-announcement.md §5 group 2).
+    unit.onBoardChange(boardChangeEntry());
+    const events = h.orchestrator.announcer?.source.events ?? [];
+    expect(events).toHaveLength(1);
+    expect(announcementText(events[0])).toBe("[hook fixture] playing");
+  });
+
+  it("assembles nothing for the hooks faces when the capability is absent", async () => {
+    const h = createHarness();
+
+    await h.orchestrator.materialize(teamOptions());
+
+    const player = member(h, PLAYER_ID);
+    const planner = member(h, PLANNER_ID);
+    // No hooks row: the optional capability is absent — zero hook assembly and
+    // the unchanged two-argument runtime construction
+    // (specs/078-saolei-js-hooks/spec.md FR-015, US5 scenario 5).
+    expect(h.hooks.mount.buildHooksUnit).not.toHaveBeenCalled();
+    expect(h.createGameRuntime).toHaveBeenCalledWith(SESSION, h.desktopBridge);
+    expect([...player.tools.keys()].sort()).toEqual([
+      "saolei_init",
+      "saolei_operate",
+      "saolei_remain",
+    ]);
+    expect([...planner.tools.keys()].sort()).toEqual([
+      "memory",
+      "wiki_get",
+      "wiki_search",
+      "wiki_write",
+    ]);
+    expect(planner.sections.map((section) => section.name)).toEqual([
+      "saolei:game",
+      "memory:guidance",
+      "wiki:guidance",
+      "memory:snapshot",
+    ]);
+  });
+
+  it("drops the unit on dispose: a late hook announcement warns instead of throwing", async () => {
+    const h = createHarness({}, { hooks: true });
+    await h.orchestrator.materialize(teamOptions());
+    const announce = h.hooks.builds[0]?.announce as (text: string) => void;
+
+    await h.orchestrator.dispose();
+
+    // The unit and its registry are dropped with the materialization, so a
+    // late board-change announcement has no announcer to produce through — it
+    // is skipped (never thrown into the game runtime's operate path).
+    expect(h.orchestrator.announcer).toBeUndefined();
+    expect(() => announce("[hook late] ignored")).not.toThrow();
   });
 });
 

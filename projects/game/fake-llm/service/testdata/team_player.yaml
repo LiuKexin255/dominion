@@ -123,3 +123,42 @@ messages:
     min_turn: 2
     text: "收到你的消息，我这边情况正常，会继续关注棋盘。"
     responses_only: true
+  # team-player-hook-followup is the player's hook-next-step entry
+  # (specs/078-saolei-js-hooks/tasks.md T018; assertion
+  # specs/078-saolei-js-hooks/quickstart.md §3 b): the in-flight broadcast fast
+  # path delivers the hook announcement
+  # (specs/078-saolei-js-hooks/contracts/hook-announcement.md §2 正文
+  # `[hook safe-cells] …`) into the player's next-step inbox
+  # (specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
+  # §2.2), so the step's model request carries the announcement as its LAST
+  # user message — the keyword below hits only then, and the tool_call becomes
+  # the player's next step.
+  #
+  # The tool_call is a single terminal op: it lands on the loss board (the
+  # last step of the test's own desktop half, projects/game/testplan/
+  # agent_v2_game_test.go), which ends the game, so the batch produces no
+  # second hook broadcast (starting or ending a game never triggers the hooks,
+  # specs/078-saolei-js-hooks/contracts/board-change-event.md §1) and the
+  # terminal result concludes the player turn, handing the game-end drive to
+  # the planner.
+  #
+  # Failure semantics (the "可失败的间接断言"): the fake-llm serves a no-match
+  # request from its random text fallback, so a missing fast-path delivery
+  # would answer the operate result with team-planner-agnostic text
+  # (agent_v2_saolei_tools.yaml agent-v2-saolei-operate-final) and the player
+  # step would never emit this tool_call — the scenario's operate-count
+  # assertions fail.
+  - name: team-player-hook-followup
+    keywords:
+      - "[hook safe-cells]"
+    system_keywords:
+      - 你是扫雷 player
+    min_turn: 2
+    tool_call:
+      name: saolei_operate
+      arguments:
+        operations:
+          - type: click
+            x: 10
+            y: 15
+    responses_only: true

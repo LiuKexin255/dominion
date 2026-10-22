@@ -19,6 +19,8 @@
 
 `Team.members`（repeated TeamMember）、`Team.active_member`（string）、`TeamMember`（name/role/preset/model/system_prompt）消息字段全部不变——announcer 进入名册是**宿主行为**。proto 注释修订（消息字段零变更）：`projects/game/agent_v2.proto` 中"player/planner members"（:27-28）、"GetTeamMember returns one fixed member (members/player or members/planner)"（:69-71）、`TeamMember.role` 注释 "saolei: player / planner"（:301-304），以及其余 role 词汇注释——`TeamMessage.member`（:404）、`sender`（:422）、成员事件帧 `member`（:648）、`MemberViewEvent.member`（:677）——统一改为三成员/announcer 表述。
 
+`announce(text)` 的**第二生产来源**（saolei hook 播报）沿用同一消息形状：hooks 引擎经编排装配的 announce seam 调用同一 announcer 的 `announce`，产出同为 `assistant/message`（唯一 MessageId、单 text block），`TeamMessage.member` 等 proto 字段零变更（`specs/078-saolei-js-hooks/spec.md` FR-009；`specs/078-saolei-js-hooks/contracts/hook-announcement.md` §1/§2）。
+
 ## 3. 宿主呈现契约（`projects/game/agent_v2/src/session.ts`）
 
 1. **名册**：`toTeamView` 返回三成员——`[player, planner, announcer]`；announcer 项 = `name: .../team/members/announcer`、`role: "announcer"`、`preset: ""`、`model: ""`、`systemPrompt: ""`（非 LLM 成员名册形态；数据模型 §4）。

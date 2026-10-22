@@ -1,10 +1,13 @@
 /**
  * saolei-loop plugin entry tests (specs/074-dsh-grpc-runtime/contracts/
- * team-assembly.md §2/§4): `apply` mounts each flat `config.plugins` row as a
- * child plugin by bare package name (with the row's config), then reads back
- * both capability provide faces — a missing face fails the composition load
- * (fail-loud). `apply` does NOT register anything itself: the member-scope
- * registration is the orchestrator's job.
+ * team-assembly.md §2/§4; specs/078-saolei-js-hooks/contracts/
+ * saolei-hooks-plugin.md §5): `apply` mounts each flat `config.plugins` row as
+ * a child plugin by bare package name (with the row's config), then reads back
+ * the capability provide faces — a missing required face (`saoleiTools`,
+ * `memoryMount`) fails the composition load (fail-loud), while the optional
+ * hooks face (`saoleiHooks`) is checked only when its row is listed. `apply`
+ * does NOT register anything itself: the member-scope registration is the
+ * orchestrator's job.
  *
  * Pattern (style/javascript.md Mock convention): the bare-name importer is a
  * `vi.fn()` double returning stub plugin objects (which provide the faces on
@@ -120,6 +123,70 @@ describe("saolei-loop plugin dependency assembly", () => {
         { importPlugin },
       ),
     ).rejects.toThrow(/"saoleiTools" capability is not mounted/);
+  });
+
+  it("fails loud when the hooks row is listed but provides no face", async () => {
+    const importPlugin = stubImporter({
+      "@stub/saolei": providerPlugin("saoleiTools", { tools: [], sections: [] }),
+      "@stub/memory": providerPlugin("memoryMount", { build: () => ({}) }),
+      // The listed row mounts but provides nothing → composition error.
+      "@dominion/dsh-saolei-hooks": { name: "stub:noop-hooks", apply: () => {} },
+    });
+
+    await expect(
+      apply(
+        new Context(),
+        {
+          plugins: [
+            { name: "@stub/saolei" },
+            { name: "@stub/memory" },
+            { name: "@dominion/dsh-saolei-hooks" },
+          ],
+        },
+        { importPlugin },
+      ),
+    ).rejects.toThrow(/"saoleiHooks" capability is not mounted/);
+  });
+
+  it("mounts the listed hooks row when it provides the face", async () => {
+    const importPlugin = stubImporter({
+      "@stub/saolei": providerPlugin("saoleiTools", { tools: [], sections: [] }),
+      "@stub/memory": providerPlugin("memoryMount", { build: () => ({}) }),
+      "@dominion/dsh-saolei-hooks": providerPlugin("saoleiHooks", {
+        buildHooksUnit: () => ({}),
+      }),
+    });
+    const ctx = new Context();
+
+    await apply(
+      ctx,
+      {
+        plugins: [
+          { name: "@stub/saolei" },
+          { name: "@stub/memory" },
+          { name: "@dominion/dsh-saolei-hooks" },
+        ],
+      },
+      { importPlugin },
+    );
+
+    expect(ctx.get("saoleiHooks")).toBeDefined();
+  });
+
+  it("accepts a composition without the hooks row (optional capability absent)", async () => {
+    const importPlugin = stubImporter({
+      "@stub/saolei": providerPlugin("saoleiTools", { tools: [], sections: [] }),
+      "@stub/memory": providerPlugin("memoryMount", { build: () => ({}) }),
+    });
+    const ctx = new Context();
+
+    await apply(
+      ctx,
+      { plugins: [{ name: "@stub/saolei" }, { name: "@stub/memory" }] },
+      { importPlugin },
+    );
+
+    expect(ctx.get("saoleiHooks")).toBeUndefined();
   });
 
   it("rejects when a configured plugin fails to mount", async () => {

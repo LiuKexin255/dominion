@@ -3,7 +3,8 @@
 // chain and either the deployed fake-desktop executor (the won topology) or
 // the test's own flow connection. Cases are grouped by tested concern (won
 // chain on the executor, terminal won + review continuation, terminal lost +
-// review stop, per-handoff game-stats announcements across games, the
+// review stop, per-handoff game-stats announcements across games, the hook
+// announcement's fast-path delivery into the player's next step, the
 // prompt-side roster/snapshot increments, desktop-absent, multi-session
 // isolation, stream independence), one test per concern —
 // style/large_test.md §测试组织. The disconnect branch needs the drop deploy
@@ -918,4 +919,184 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 	if strings.Contains(playerPrompt, "长期记忆：") {
 		t.Errorf("player system_prompt carries a memory snapshot, want none:\n%s", playerPrompt)
 	}
+}
+
+// TestAgentV2TeamGameHookAnnouncement drives the saolei JS hook scenario end
+// to end (specs/078-saolei-js-hooks/tasks.md T018; scenario script and
+// assertion list in specs/078-saolei-js-hooks/quickstart.md §3): the first
+// Send asks the planner to freeze a strategy script, the confirmation carries
+// the player-side opening anchors so the same Send opens the game over the
+// test's own desktop half, the player's board-changing batch makes the
+// announcer broadcast `[hook safe-cells] …`, and the in-flight broadcast fast
+// path delivers that announcement into the player's next step — whose
+// hook-anchored fixture then plays the terminal click. The assertion faces are
+// the ones of specs/078-saolei-js-hooks/contracts/hook-announcement.md §5 item
+// 3: (a) the merged sequence and the live stream carry the announcement,
+// (b) the player's next step is the anchored fixture's tool_call (the missing
+// delivery would fall back to random text and the step's operate would never
+// appear), (c) the planner's review drive drained the same announcement,
+// (d) the terminal batch announces nothing, (e) the shared messages keep
+// their production order across the views, and (f) the operate results stay
+// the verbatim domain bodies that carry no hook output (FR-010).
+func TestAgentV2TeamGameHookAnnouncement(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+	sessionID := "team-hook-" + uniqueSuffix()
+	ctx, sessionName, _ := teamPrep(t, sutHostURL, sutEnvName, sessionID, "team-hook")
+
+	flow := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
+	defer flow.Close()
+	// The scripted batch is the two-operation progressive batch
+	// (agent_v2_saolei_tools.yaml agent-v2-saolei-init-operate-progressive)
+	// over a fixed 16×16 pairing: the all-INITIAL seed at init, the partially
+	// revealed successor for BOTH dispatches of the board-changing batch (the
+	// click reveals it, and the flag lands on a cell that board still shows
+	// unrevealed, so the second receipt is a legal successor of the first —
+	// no revealed cell regresses,
+	// projects/game/pkg/saolei-board/src/core/validate.ts — and the batch
+	// result carries `game status: playing`), then the loss board for the
+	// hook-anchored terminal click.
+	scriptCh := serveTeamFlowScript(ctx, flow, sessionID, teamFlowScript{
+		initBoards: [][]byte{saoleiBoardInitPNG},
+		stepBoards: [][]byte{saoleiBoardHookStepPNG, saoleiBoardHookStepPNG, saoleiBoardLossPNG},
+	}, flowReadTimeout)
+
+	stream := startTeamSend(t, ctx, sutHostURL, sutEnvName, sessionName, teamHookMessage)
+	events := drainTeamStream(t, stream)
+	waitTeamFlowScript(t, scriptCh, flowReadTimeout)
+	assertTeamStreamWellFormed(t, sessionName, events)
+	assertTeamStreamMessagesMatchList(t, ctx, sutHostURL, sutEnvName, sessionName, events)
+
+	turns := groupTeamMemberTurns(events)
+	wantMembers := []string{"planner", "player", "planner", "player"}
+	if len(turns) != len(wantMembers) {
+		t.Fatalf("member turns = %d, want %d (hook set, game, drained review, stop ack)%s", len(turns), len(wantMembers), teamTurnSummary(turns))
+	}
+	for i, want := range wantMembers {
+		if turns[i].member != want {
+			t.Fatalf("turn %d member = %v, want %v%s", i, turns[i].member, want, teamTurnSummary(turns))
+		}
+	}
+
+	// Turn 1 — the planner freezes the script: the saolei_hook set lands and
+	// the confirmation (which the player's opening consumes) follows it.
+	hookSetResults := teamTurnToolResults(turns[0])
+	if len(hookSetResults) != 1 || hookSetResults[0].GetStatus() != game.ToolStatus_TOOL_STATUS_SUCCEEDED {
+		t.Fatalf("hook-set tool results = %+v, want the single SUCCEEDED saolei_hook set", hookSetResults)
+	}
+	if !strings.Contains(hookSetResults[0].GetResult(), "registered hook") {
+		t.Errorf("saolei_hook result = %q, want the registry confirmation", hookSetResults[0].GetResult())
+	}
+	if _, text := teamTurnBlocks(turns[0]); text != teamPlannerHookSetText {
+		t.Errorf("hook-set confirmation = %q, want %q", text, teamPlannerHookSetText)
+	}
+
+	// Turn 2 — ONE player turn carries the whole game: init, the
+	// board-changing batch that fires the hook, and the hook-anchored terminal
+	// batch. The fast-path delivery opens no new turn (it is claimed at the
+	// step boundary) and the terminal result concludes this one.
+	gameTurn := turns[1]
+	gameResults := teamTurnToolResults(gameTurn)
+	if len(gameResults) != 3 {
+		t.Fatalf("game tool results = %d, want 3 (init + board-changing batch + hook-anchored terminal batch)%s", len(gameResults), teamTurnSummary(turns))
+	}
+	if !strings.Contains(gameResults[0].GetResult(), agentV2ProgInitContains) || !strings.Contains(gameResults[0].GetResult(), agentV2ProgStatusContains) || !strings.Contains(gameResults[0].GetResult(), agentV2ProgBoardContains) {
+		t.Errorf("init result = %q, want the playing 16×16 seed", gameResults[0].GetResult())
+	}
+	// (f) the board-changing batch result is the verbatim domain body — the
+	// hook's analysis travels only through the announcer broadcast, never
+	// through the tool result (FR-010).
+	if got := gameResults[1].GetResult(); !strings.HasPrefix(got, teamHookOperateResultPrefix) {
+		t.Errorf("board-changing batch result = %q, want the domain body prefix %q", got, teamHookOperateResultPrefix)
+	}
+	// (b) the anchored fixture's terminal call landed as the turn's LAST step:
+	// its absence would mean the announcement never reached the player's next
+	// step (the no-match fallback would have answered with plain text).
+	if got := gameResults[2].GetResult(); !strings.HasPrefix(got, teamHookLossResultPrefix) {
+		t.Errorf("terminal batch result = %q, want the domain body prefix %q", got, teamHookLossResultPrefix)
+	}
+	for i, result := range gameResults {
+		// (d) and (f): no hook output in any domain result — the terminal batch
+		// ends the game, so it announces nothing.
+		if strings.Contains(result.GetResult(), "[hook") {
+			t.Errorf("game tool result[%d] carries hook output: %q", i, result.GetResult())
+		}
+	}
+	if status := teamTurnEndStatus(gameTurn); status != game.TurnStatus_TURN_STATUS_COMPLETED {
+		t.Fatalf("game turn ended %v, want COMPLETED (the conclusion is invisible in the terminal status)", status)
+	}
+	assertTerminalTurnEndsWithToolBlock(t, gameTurn)
+
+	// Turn 3 — the planner's review drive is the drain-visible half (c): the
+	// entry that produced this text conditions on the hook broadcast in the
+	// drive's history, so its text firing proves the resting planner consumed
+	// the announcement at its next drive (a missing drain would leave the
+	// plain stop review text here).
+	if _, text := teamTurnBlocks(turns[2]); text != teamPlannerHookReviewText {
+		t.Errorf("review text = %q, want %q (the hook-anchored review)", text, teamPlannerHookReviewText)
+	}
+	// Turn 4 — the review's stop wording closes the loop without a new game.
+	if _, text := teamTurnBlocks(turns[3]); text != teamPlayerResumeStopText {
+		t.Errorf("stop acknowledgement = %q, want %q", text, teamPlayerResumeStopText)
+	}
+	if got := len(teamTurnToolResults(turns[3])); got != 0 {
+		t.Errorf("stop-ack tool results = %d, want 0 (no new game opened)", got)
+	}
+
+	// (a) the merged sequence carries exactly the hook announcement and the
+	// terminal stats announcement, in production order (e) — the exactly-once
+	// face of the announcement anchor (specs/078-saolei-js-hooks/contracts/
+	// hook-announcement.md §3: one production, one entry).
+	merged := listTeamMessages(t, ctx, sutHostURL, sutEnvName, sessionName)
+	announcerEntries := teamMessagesForMember(merged, agentV2AnnouncerMember)
+	if len(announcerEntries) != 2 {
+		t.Fatalf("merged announcer entries = %d, want 2 (the hook announcement and the terminal stats)", len(announcerEntries))
+	}
+	if got := agentV2MessageText(announcerEntries[0].GetMessage()); got != teamHookBroadcastText {
+		t.Errorf("merged announcer entry[0] = %q, want the hook announcement %q", got, teamHookBroadcastText)
+	}
+	if got := agentV2MessageText(announcerEntries[1].GetMessage()); !strings.Contains(got, "本局游戏结束：失败") {
+		t.Errorf("merged announcer entry[1] = %q, want the terminal stats announcement", got)
+	}
+
+	// (a)+(e) the live stream carries the same announcement, and the shared
+	// messages keep their production order: hook announcement, then the stats
+	// announcement, then the review turn it drove.
+	hookAnnounceAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
+		frame := event.GetTeamMessage()
+		return frame != nil && frame.GetMember() == agentV2AnnouncerMember && agentV2MessageText(frame.GetMessage()) == teamHookBroadcastText
+	})
+	statsAnnounceAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
+		frame := event.GetTeamMessage()
+		return frame != nil && frame.GetMember() == agentV2AnnouncerMember && strings.Contains(agentV2MessageText(frame.GetMessage()), "本局游戏结束：失败")
+	})
+	reviewTurnAt := firstTeamFrameIndex(events, func(event *game.ChatEvent) bool {
+		return event.GetTurnStart() != nil && event.GetTurnId() == turns[2].turnID
+	})
+	if hookAnnounceAt < 0 || statsAnnounceAt < 0 || reviewTurnAt < 0 || hookAnnounceAt > statsAnnounceAt || statsAnnounceAt > reviewTurnAt {
+		t.Errorf("frame order hook=%d stats=%d review=%d, want 0 <= hook < stats < review", hookAnnounceAt, statsAnnounceAt, reviewTurnAt)
+	}
+
+	// The member views consumed the same shared messages in the same order:
+	// the player consumed the announcement at its next step (the fast path)
+	// and the stats at its stop-ack drive; the planner consumed both at its
+	// review drive — the live consumption frame of its first one arrives with
+	// that turn (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
+	wantHookRelay := agentV2AnnouncerRelayText(teamHookBroadcastText)
+	playerRelays := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "player"), agentV2AnnouncerMember)
+	if len(playerRelays) != 2 {
+		t.Fatalf("player view announcer entries = %d, want 2 (the hook announcement and the stats)", len(playerRelays))
+	}
+	if got := agentV2MessageText(playerRelays[0].GetMessage()); got != wantHookRelay {
+		t.Errorf("player view announcer entry[0] = %q, want %q", got, wantHookRelay)
+	}
+	plannerRelays := memberViewEntriesForSender(listMemberMessages(t, ctx, sutHostURL, sutEnvName, sessionName, "planner"), agentV2AnnouncerMember)
+	if len(plannerRelays) != 2 {
+		t.Fatalf("planner view announcer entries = %d, want 2 (the drained hook announcement and the stats)", len(plannerRelays))
+	}
+	if got := agentV2MessageText(plannerRelays[0].GetMessage()); got != wantHookRelay {
+		t.Errorf("planner view announcer entry[0] = %q, want %q (the review drive drained the announcement)", got, wantHookRelay)
+	}
+	assertTeamMemberViewLiveAt(t, ctx, sutHostURL, sutEnvName, sessionName, events, "planner", agentV2AnnouncerMember, turns[2].turnID)
+	assertTerminalHistoriesNoAbortTraces(t, ctx, sutHostURL, sutEnvName, sessionName)
 }

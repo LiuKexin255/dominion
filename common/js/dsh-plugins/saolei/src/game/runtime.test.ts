@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createGameRuntime } from "../index.js";
 import { GameRuntime } from "./runtime.js";
+import type { GameLogEntry, GameRuntimeDeps } from "./runtime.js";
 import type { OperationResult } from "@dominion/dsh-desktop-bridge";
 import type { SaoleiBoardApi } from "./board.js";
 import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry.js";
@@ -138,16 +139,40 @@ function centerY(y: number): number {
   return BOARD_ORIGIN_Y_PX + y * CELL_SIZE_PX + CELL_SIZE_PX / 2;
 }
 
-/** One fresh runtime over injected doubles. */
+/** One fresh runtime over injected doubles; `deps` adds the optional
+ * extension collaborators (the board-change seam). */
 function makeRuntime(
   dispatch = makeFakeDispatch().dispatch,
   boardApi = makeFakeBoardApi(board(["* *", "* *"])).api,
+  deps: Pick<GameRuntimeDeps, "onBoardChange"> = {},
 ): GameRuntime {
   return new GameRuntime({
     sessionName: "templates/saolei/sessions/t1",
     dispatch,
     boardApi,
+    ...deps,
   });
+}
+
+/**
+ * Build a runtime plus a board-change subscriber double. The double records
+ * every payload it receives, so a positive assertion on `payloads` also
+ * proves the seam is really wired (style/javascript.md "验证 mock 确实生效").
+ */
+function makeRuntimeWithSeam(
+  dispatch = makeFakeDispatch().dispatch,
+  boardApi = makeFakeBoardApi(board(["* *", "* *"])).api,
+): {
+  runtime: GameRuntime;
+  payloads: GameLogEntry[];
+  onBoardChange: ReturnType<typeof vi.fn>;
+} {
+  const payloads: GameLogEntry[] = [];
+  const onBoardChange = vi.fn((entry: GameLogEntry) => {
+    payloads.push(entry);
+  });
+  const runtime = makeRuntime(dispatch, boardApi, { onBoardChange });
+  return { runtime, payloads, onBoardChange };
 }
 
 describe("GameRuntime: init", () => {
@@ -556,6 +581,226 @@ describe("GameRuntime: operate", () => {
   });
 });
 
+// ── board-change seam ───────────────────────────────────────────────────────
+// specs/078-saolei-js-hooks/contracts/board-change-event.md §5: the domain
+// fact is pushed once per batch that actually changed the board
+// (`executed > 0`) with the game still in progress — game start/end, all-skip
+// batches and the no-ledger early returns stay silent — and the runtime adds
+// no policy of its own on top of the operate result.
+
+describe("GameRuntime: board-change seam (specs/078-saolei-js-hooks/contracts/board-change-event.md §5)", () => {
+  it("fires exactly once for a board-changing batch, carrying the logged entry", async () => {
+    const { runtime, payloads, onBoardChange } = makeRuntimeWithSeam();
+    await runtime.init();
+
+    const outcome = await runtime.operate({
+      operations: [
+        { type: "click", x: 0, y: 0 },
+        { type: "click", x: 1, y: 1 },
+      ],
+    });
+
+    expect((outcome as { text: string }).text).toContain("executed 2 ops");
+    expect(onBoardChange).toHaveBeenCalledOnce();
+    const logged = runtime.peekGameLog().at(-1);
+    expect(logged).toMatchObject({ tool: "saolei_operate", status: "playing" });
+    expect(payloads[0]).toEqual(logged);
+  });
+
+  it("stays silent for an all-skip batch (a logged entry with executed = 0)", async () => {
+    const fake = makeFakeDispatch();
+    const fakeBoard = makeFakeBoardApi(board(["0 1 *", "1 2 *", "* * *"]));
+    const { runtime, onBoardChange } = makeRuntimeWithSeam(fake.dispatch, fakeBoard.api);
+    await runtime.init();
+
+    const outcome = await runtime.operate({ type: "click", x: 0, y: 0 });
+
+    // (0,0) is revealed: skipped before dispatch, so nothing changed. The
+    // batch is still logged (sink semantics); it is simply no board change.
+    expect((outcome as { text: string }).text).toContain(
+      "executed 0 ops, skipped 1 no-op ops",
+    );
+    expect(runtime.peekGameLog().at(-1)).toMatchObject({
+      tool: "saolei_operate",
+      status: "playing",
+    });
+    expect(onBoardChange).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for terminal batches and their (game-end) entry", async () => {
+    // A loss batch: the ending click takes effect and the game ends.
+    const lossFake = makeFakeDispatch();
+    const lossBoard = makeFakeBoardApi(board(["* * *", "* * *", "* * *"], COUNTER_ZERO));
+    const loss = makeRuntimeWithSeam(lossFake.dispatch, lossBoard.api);
+    await loss.runtime.init();
+    // Control batch (still playing): the seam fires, which is what makes the
+    // silence asserted below meaningful rather than a missing subscriber.
+    await loss.runtime.operate({ type: "click", x: 2, y: 2 });
+    expect(loss.onBoardChange).toHaveBeenCalledOnce();
+    loss.onBoardChange.mockClear();
+    lossBoard.setUpdate(board(["* * *", "* X *", "* * *"], { decoded: true, value: 9 }));
+
+    const lost = await loss.runtime.operate({ type: "click", x: 1, y: 1 });
+
+    expect((lost as { text: string }).text).toContain("game status: lost");
+    expect(loss.runtime.peekGameLog().at(-1)).toMatchObject({
+      tool: "(game-end)",
+      status: "lost",
+    });
+    expect(loss.onBoardChange).not.toHaveBeenCalled();
+
+    // A win batch: the winning flag ends the game with the counter at 000.
+    const winFake = makeFakeDispatch();
+    const winBoard = makeFakeBoardApi(board(["* * 1", "* * 1", "1 1 1"], COUNTER_ZERO));
+    const win = makeRuntimeWithSeam(winFake.dispatch, winBoard.api);
+    await win.runtime.init();
+    await win.runtime.operate({ type: "click", x: 0, y: 0 }); // control batch
+    expect(win.onBoardChange).toHaveBeenCalledOnce();
+    win.onBoardChange.mockClear();
+    winBoard.setUpdate(board(["0 F 1", "0 0 1", "1 1 1"], COUNTER_ZERO));
+
+    const won = await win.runtime.operate({ type: "flag", x: 1, y: 0 });
+
+    expect((won as { text: string }).text).toContain("game status: won");
+    expect(win.runtime.peekGameLog().at(-1)).toMatchObject({
+      tool: "(game-end)",
+      status: "won",
+    });
+    expect(win.onBoardChange).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for the saolei_init entry", async () => {
+    const { runtime, onBoardChange } = makeRuntimeWithSeam();
+
+    await runtime.init();
+    await runtime.init(); // a re-init restarts the game; still no batch
+
+    expect(onBoardChange).not.toHaveBeenCalled();
+    expect(runtime.peekGameLog()).toHaveLength(1);
+    expect(runtime.peekGameLog().at(0)).toMatchObject({ tool: "saolei_init" });
+  });
+
+  it("stays silent on every early-return path", async () => {
+    // Pre-init structural rejection: no active game, no ledger entry.
+    const noGame = makeRuntimeWithSeam();
+    const rejected = await noGame.runtime.operate({ type: "click", x: 0, y: 0 });
+    expect((rejected as { text: string }).text).toContain("no_active_game");
+    expect(noGame.runtime.peekGameLog()).toHaveLength(0);
+    expect(noGame.onBoardChange).not.toHaveBeenCalled();
+
+    // A structural rejection that stops the batch before any op takes effect:
+    // the batch IS logged, but executed = 0 is not a board change.
+    const stopped = makeRuntimeWithSeam();
+    await stopped.runtime.init();
+    const outOfBounds = await stopped.runtime.operate({ type: "click", x: 9, y: 9 });
+    expect((outOfBounds as { text: string }).text).toContain("out_of_bounds");
+    expect(stopped.runtime.peekGameLog().at(-1)).toMatchObject({ tool: "saolei_operate" });
+    expect(stopped.onBoardChange).not.toHaveBeenCalled();
+
+    // Dispatch failure: the batch aborts with an error outcome.
+    const dispatchFake = makeFakeDispatch();
+    const failedBatch = makeRuntimeWithSeam(dispatchFake.dispatch);
+    await failedBatch.runtime.init();
+    dispatchFake.set(failed("desktop disconnected"));
+    const failedOutcome = await failedBatch.runtime.operate({ type: "click", x: 0, y: 0 });
+    expect(failedOutcome).toEqual({
+      isError: true,
+      error: { message: "desktop disconnected" },
+    });
+    expect(failedBatch.runtime.peekGameLog()).toHaveLength(1); // init only
+    expect(failedBatch.onBoardChange).not.toHaveBeenCalled();
+
+    // Recognition failure: the state is invalidated and the batch returns.
+    const recogFake = makeFakeDispatch();
+    const recogBoard = makeFakeBoardApi(board(["* *", "* *"]));
+    const recog = makeRuntimeWithSeam(recogFake.dispatch, recogBoard.api);
+    await recog.runtime.init();
+    recogBoard.setUpdate("throw");
+    const unrecognized = await recog.runtime.operate({ type: "click", x: 0, y: 0 });
+    expect((unrecognized as { text: string }).text).toContain("unable to recognize board");
+    expect(recog.runtime.peekGameLog()).toHaveLength(1); // init only
+    expect(recog.onBoardChange).not.toHaveBeenCalled();
+
+    // Empty batch: a no-op by definition, no ledger entry.
+    const empty = makeRuntimeWithSeam();
+    await empty.runtime.init();
+    const noop = await empty.runtime.operate({ operations: [] });
+    expect((noop as { text: string }).text).toContain("executed 0 ops");
+    expect(empty.runtime.peekGameLog()).toHaveLength(1); // init only
+    expect(empty.onBoardChange).not.toHaveBeenCalled();
+  });
+
+  it("leaves the operate result and the game log identical without a subscriber (seam default)", async () => {
+    const run = async (deps: Pick<GameRuntimeDeps, "onBoardChange">) => {
+      const fake = makeFakeDispatch();
+      const runtime = makeRuntime(fake.dispatch, undefined, deps);
+      await runtime.init();
+      const outcome = await runtime.operate({ type: "click", x: 1, y: 0 });
+      return { outcome, log: runtime.peekGameLog(), parts: fake.parts };
+    };
+
+    const payloads: GameLogEntry[] = [];
+    const subscribed = await run({
+      onBoardChange: (entry) => {
+        payloads.push(entry);
+      },
+    });
+    const unsubscribed = await run({});
+
+    // The seam really ran in the subscribed run, so the comparison below is a
+    // real equivalence rather than two silent paths.
+    expect(payloads).toHaveLength(1);
+    expect(unsubscribed.outcome).toEqual(subscribed.outcome);
+    expect(unsubscribed.log).toEqual(subscribed.log);
+    expect(unsubscribed.parts).toEqual(subscribed.parts);
+  });
+
+  it("keeps the operate result unchanged when the subscriber's own boundary contains its failure", async () => {
+    const run = async (deps: Pick<GameRuntimeDeps, "onBoardChange">) => {
+      const fake = makeFakeDispatch();
+      const runtime = makeRuntime(fake.dispatch, undefined, deps);
+      await runtime.init();
+      return runtime.operate({ type: "click", x: 0, y: 0 });
+    };
+
+    const baseline = await run({});
+    const payloads: GameLogEntry[] = [];
+    const contained = await run({
+      onBoardChange: (entry) => {
+        payloads.push(entry);
+        try {
+          throw new Error("hook-side failure");
+        } catch {
+          // The subscriber owns this boundary (board-change-event.md §3): the
+          // hooks handler swallows and warns here
+          // (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §4).
+        }
+      },
+    });
+
+    expect(payloads).toHaveLength(1); // the callback ran and did raise
+    expect(contained).toEqual(baseline); // and operate is unaffected
+
+    // The runtime adds no exception policy of its own (§3): an unguarded
+    // subscriber exception is neither swallowed nor converted, while the
+    // domain facts committed before the call stay intact.
+    const unguarded = makeRuntime(makeFakeDispatch().dispatch, undefined, {
+      onBoardChange: () => {
+        throw new Error("unguarded subscriber");
+      },
+    });
+    await unguarded.init();
+
+    await expect(unguarded.operate({ type: "click", x: 0, y: 0 })).rejects.toThrow(
+      "unguarded subscriber",
+    );
+    expect(unguarded.peekGameLog().at(-1)).toMatchObject({
+      tool: "saolei_operate",
+      status: "playing",
+    });
+  });
+});
+
 describe("GameRuntime: per-type operation counts (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §1)", () => {
   it("counts every successful batch operation by its type and carries the table on the terminal record", async () => {
     const fake = makeFakeDispatch();
@@ -949,6 +1194,22 @@ describe("createGameRuntime wiring", () => {
       part: { keyboardPress: { key: "KEYBOARD_KEY_F2" } },
     });
     expect(bridge.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the optional extension deps (the board-change seam) as a third argument", async () => {
+    const { bridge, dispatched } = makeFakeBridge();
+
+    const runtime = createGameRuntime(WIRING_SESSION, bridge as never, {
+      onBoardChange: () => {},
+    });
+
+    expect(runtime).toBeInstanceOf(GameRuntime);
+    await runtime.init();
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toMatchObject({
+      sessionName: WIRING_SESSION,
+      part: { keyboardPress: { key: "KEYBOARD_KEY_F2" } },
+    });
   });
 
   it("returns a plain instance that registers nothing on a cordis context (ownership sits with the caller)", () => {

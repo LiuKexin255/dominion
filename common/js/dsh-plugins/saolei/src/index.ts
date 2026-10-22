@@ -42,7 +42,9 @@ export const SAOLEI_FOUNDATION_SERVICE = "saolei";
  */
 export interface SaoleiFoundation {
   /** Pure domain game-runtime factory — the orchestration constructs and
-   * owns the instance (research.md D10). */
+   * owns the instance (research.md D10). Its optional third argument carries
+   * extension deps: the board-change seam the caller subscribes with
+   * (specs/078-saolei-js-hooks/contracts/board-change-event.md §2). */
   readonly createGameRuntime: typeof createGameRuntime;
   /** The gameplay section spec the orchestration registers for player and
    * planner. */

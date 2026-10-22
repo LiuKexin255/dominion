@@ -178,6 +178,19 @@ export interface GameRuntimeDeps {
   ) => Promise<OperationResult>;
   /** The recognition engine. */
   boardApi: SaoleiBoardApi;
+  /** Board-change event seam (specs/078-saolei-js-hooks/contracts/
+   * board-change-event.md §1): called synchronously once per `operate` batch
+   * that actually changed the board (`executed > 0`) and left the game in
+   * progress (the logged entry's status is `"playing"`), carrying that
+   * `saolei_operate` {@link GameLogEntry}. The gameLog already holds the
+   * entry when the callback runs, so a subscriber may rely on the domain
+   * fact being committed. Absent = no subscriber: the runtime behaves
+   * exactly as it did before the seam existed.
+   *
+   * The runtime holds no exception policy for the call — a throwing
+   * subscriber owns its own boundary (swallow/warn there), which is what
+   * keeps a subscriber-side failure out of the domain result (§3). */
+  readonly onBoardChange?: (entry: GameLogEntry) => void;
 }
 
 /**
@@ -305,12 +318,26 @@ export class GameRuntime implements GameRuntime {
     // One game-log entry per call with the full op list (v1 sink semantics:
     // fired whenever an active game exists, however the batch went), then
     // the terminal record + `(game-end)` entry when the call ended the game.
-    this.gameLog.push({
+    const entry: GameLogEntry = {
       tool: "saolei_operate",
       operations,
       state: finalState,
       status: gameStatus(finalState),
-    });
+    };
+    this.gameLog.push(entry);
+    // Publish the committed domain fact (specs/078-saolei-js-hooks/contracts/
+    // board-change-event.md §1) — only a batch that changed the board and left
+    // the game in progress is a trigger: game start/end (init, terminal
+    // batches) never fires, and neither does a logged batch that executed
+    // nothing. Evaluated before the terminal tail below, so the seam only
+    // ever sees the `saolei_operate` entry.
+    if (
+      this.deps.onBoardChange !== undefined &&
+      executed > 0 &&
+      entry.status === "playing"
+    ) {
+      this.deps.onBoardChange(entry);
+    }
     if (endedStatus !== null) {
       const stats = computeGameStats(
         this.initState,
@@ -429,14 +456,23 @@ export class GameRuntime implements GameRuntime {
  * registered under — the member's dsh session id is namespaced
  * (`{session}/player`) and is NOT the dispatch key, so the caller passes the
  * game session explicitly (specs/059-agent-v2-team-mode/data-model.md §3).
+ *
+ * `deps` carries the optional extension collaborators the caller injects on
+ * top of the session/bridge wiring — currently the board-change seam
+ * (specs/078-saolei-js-hooks/contracts/board-change-event.md §2). It defaults
+ * to `{}` so the two-argument call is unchanged and the factory keeps its
+ * two-domain-input arity
+ * (specs/075-saolei-game-foundation/contracts/saolei-foundation.md §2).
  */
 export function createGameRuntime(
   sessionName: string,
   desktopBridge: DesktopBridgeService,
+  deps: Pick<GameRuntimeDeps, "onBoardChange"> = {},
 ): GameRuntime {
   return new GameRuntime({
     sessionName,
     dispatch: (part, signal) => desktopBridge.dispatch(sessionName, part, signal),
     boardApi: createDefaultBoardApi(),
+    ...deps,
   });
 }

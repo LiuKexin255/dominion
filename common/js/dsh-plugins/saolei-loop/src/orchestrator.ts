@@ -53,6 +53,7 @@ import type {
 import type { DesktopBridgeService } from "@dominion/dsh-desktop-bridge";
 import type {
   GameEventRecord,
+  GameLogEntry,
   GameRuntime,
   SaoleiFoundation,
 } from "@dominion/dsh-saolei";
@@ -182,6 +183,34 @@ export interface PlannerMemoryScope {
 export interface SaoleiToolsUnit {
   readonly tools: readonly ToolDefinition[];
   readonly sections: readonly PromptSection[];
+}
+
+/**
+ * The hooks capability unit a `saoleiHooks` mount builds once per team
+ * (specs/078-saolei-js-hooks/data-model.md §3.1): the planner-facing
+ * `saolei_hook` tool, the section list and the player-side board-change
+ * handler, all over one shared hook registry. `sections` is empty by contract —
+ * the hook capability carries no prompt section (specs/078-saolei-js-hooks/
+ * spec.md FR-006). Declared structurally so the orchestration takes no compile
+ * dependency on the hooks package, the same zero-coupling shape as
+ * {@link SaoleiToolsUnit}.
+ */
+export interface SaoleiHooksUnit {
+  readonly tools: readonly ToolDefinition[];
+  readonly sections: readonly PromptSection[];
+  /** The game runtime's board-change seam: one synchronous call per
+   * board-changing `operate` (specs/078-saolei-js-hooks/data-model.md §1.1). */
+  readonly onBoardChange: (entry: GameLogEntry) => void;
+}
+
+/**
+ * The per-team factory a hooks provider exposes under the `saoleiHooks`
+ * provide face. The orchestration calls it once per materialization, before
+ * the player member is created, and binds `announce` to the announcer it holds
+ * (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
+ */
+export interface SaoleiHooksMount {
+  buildHooksUnit(deps: { announce: (text: string) => void }): SaoleiHooksUnit;
 }
 
 /** One agent-scoped face registration: the isolate label and the face value. */
@@ -430,6 +459,15 @@ export class TeamOrchestrator {
    * §2). The player member only receives it as an agent-scoped handle.
    */
   private game: GameRuntime | null = null;
+  /**
+   * The hooks capability unit of this materialization, or null when the
+   * composition lists no hooks row (the optional capability is absent). Built
+   * before the player member so the game runtime receives its board-change
+   * handler; dropped on rollback and dispose, which empties the registry the
+   * unit's tool face wrote through
+   * (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
+   */
+  private hooks: SaoleiHooksUnit | null = null;
   /** The announce-only announcer member; non-null exactly while materialized. */
   private announcerMember: AnnouncerMember | null = null;
   /** The flow layer's state object; null when unmaterialized. */
@@ -476,6 +514,12 @@ export class TeamOrchestrator {
 
     const created: MemberBinding[] = [];
     try {
+      // The hooks unit is built BEFORE the player member: the player's game
+      // runtime is constructed with the unit's board-change handler, and the
+      // planner later consumes the same unit's tool face
+      // (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5). A
+      // composition without the hooks row builds nothing.
+      this.hooks = this.buildHooksUnit();
       const player = await this.createMember(
         "player",
         options.player,
@@ -537,8 +581,11 @@ export class TeamOrchestrator {
     } catch (err) {
       // Rollback drops the game runtime built during this attempt (its
       // lifecycle is the materialization,
-      // specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §2).
+      // specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §2)
+      // and the hooks unit with its registry
+      // (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
       this.game = null;
+      this.hooks = null;
       this.announcerMember = null;
       this.flow = null;
       this.members = null;
@@ -671,6 +718,7 @@ export class TeamOrchestrator {
 
     this.members = null;
     this.game = null;
+    this.hooks = null;
     this.announcerMember = null;
     this.flow = null;
     this.session = null;
@@ -799,18 +847,30 @@ export class TeamOrchestrator {
           // team-loop-assembly.md §2/§3).
           this.registerSaoleiTools(agentCtx);
           agentCtx.systemPrompt.section(foundation.gameSection);
-          this.game = foundation.createGameRuntime(
-            options.session,
-            this.desktopBridge(),
-          );
+          // The board-change seam is fixed at construction: the runtime is
+          // built once per materialization, so the hooks unit (when present)
+          // hands its handler in here. Without the hooks row the two-argument
+          // construction is unchanged
+          // (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
+          const bridge = this.desktopBridge();
+          const hooks = this.hooks;
+          this.game =
+            hooks === null
+              ? foundation.createGameRuntime(options.session, bridge)
+              : foundation.createGameRuntime(options.session, bridge, {
+                  onBoardChange: hooks.onBoardChange,
+                });
           agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game);
           return;
         }
         // The planner registers the gameplay section too; the static
-        // registration precedes the fail-loud memory prefetch so a rejected
+        // registration (gameplay section, then the optional hooks unit's tools
+        // and sections) precedes the fail-loud memory prefetch so a rejected
         // prefetch remains the setup's last rollback boundary
-        // (specs/075-saolei-game-foundation/research.md D3).
+        // (specs/075-saolei-game-foundation/research.md D3;
+        // specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
         agentCtx.systemPrompt.section(foundation.gameSection);
+        this.registerHooksUnit(agentCtx);
         await this.registerMemory(agentCtx, options.memoryScope);
       },
     });
@@ -946,6 +1006,28 @@ export class TeamOrchestrator {
   }
 
   /**
+   * Register the optional hooks unit into the planner member's scope — the
+   * `saolei_hook` tool, then the unit's sections (empty by contract: the hook
+   * capability carries no prompt section,
+   * specs/078-saolei-js-hooks/spec.md FR-006) — with the same
+   * tools → sections pattern as the saolei static unit. No unit = the
+   * composition lists no hooks row: nothing is registered for it
+   * (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
+   */
+  private registerHooksUnit(agentCtx: Context): void {
+    const unit = this.hooks;
+    if (unit === null) {
+      return;
+    }
+    for (const definition of unit.tools) {
+      agentCtx.tools.register(definition);
+    }
+    for (const section of unit.sections) {
+      agentCtx.systemPrompt.section(section);
+    }
+  }
+
+  /**
    * Register the planner member's memory capability unit, then await its
    * fail-loud prefetch: faces → tools → sections → ready
    * (specs/074-dsh-grpc-runtime/spec.md FR-016; contracts/team-assembly.md
@@ -990,6 +1072,48 @@ export class TeamOrchestrator {
       );
     }
     return unit;
+  }
+
+  /**
+   * Read the optional `saoleiHooks` provide face and build this
+   * materialization's unit. Absent = the composition lists no hooks row: the
+   * optional capability is missing and the orchestration assembles nothing for
+   * it (specs/078-saolei-js-hooks/spec.md FR-015). `announce` is a LAZY
+   * closure: the announcer member is created after the unit, so the seam
+   * resolves the orchestrator's announcer at call time rather than capturing
+   * one (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
+   */
+  private buildHooksUnit(): SaoleiHooksUnit | null {
+    const mount = this.ctx.get("saoleiHooks") as SaoleiHooksMount | undefined;
+    if (mount === undefined) {
+      return null;
+    }
+    return mount.buildHooksUnit({
+      announce: (text) => this.announceHookResult(text),
+    });
+  }
+
+  /**
+   * The announcement seam the hooks unit broadcasts through
+   * (specs/078-saolei-js-hooks/contracts/hook-announcement.md §1): one
+   * `announcer.announce(text)` production per non-empty hook result, read from
+   * the orchestrator-held announcer at call time. The announcer is absent only
+   * once the team is disposed (or its materialization rolled back), and a late
+   * board-change event may still reach this closure — that announcement is
+   * dropped with a warning: the team it belonged to no longer exists, and a
+   * throw here would escape into the game runtime's `operate` path
+   * (specs/078-saolei-js-hooks/spec.md FR-013).
+   */
+  private announceHookResult(text: string): void {
+    const announcer = this.announcer;
+    if (announcer === undefined) {
+      this.warn(
+        "saolei-loop orchestrator: no announcer is materialized; " +
+          "dropping the hook announcement",
+      );
+      return;
+    }
+    announcer.announce(text);
   }
 
   /**
@@ -1202,6 +1326,17 @@ export class TeamOrchestrator {
   /** The host's failure reporter, or the console fallback. */
   private logger(): OrchestratorLogger {
     return this.deps.logger ?? DEFAULT_ORCHESTRATOR_LOGGER;
+  }
+
+  /**
+   * Report a swallowed non-fatal skip through the composition logger. This is
+   * the cordis `ctx.logger?.warn?.()` shape the package already uses for
+   * failures that must not disturb a delivery path
+   * (common/js/dsh-plugins/saolei-loop/src/agent-member.ts); a context without
+   * a logger stays silent rather than throwing.
+   */
+  private warn(message: string): void {
+    this.ctx.logger?.warn?.(message);
   }
 
   /** The busy member id (at most one member is driven at a time). */

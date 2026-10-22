@@ -9,9 +9,10 @@
 #   dsh rows are service-declared npm deps (projects/game/agent_v2/
 #   package.json). The preset persona row (@deepseek-ai/dsh-persona) and the
 #   saolei-loop capability-dependency rows (@dominion/dsh-saolei-tools,
-#   @dominion/dsh-saolei-memory, mounted through the saolei-loop config) all
-#   resolve by bare package name from this host composition, so their packages
-#   are declared in the same manifest and shipped in the same closure
+#   @dominion/dsh-saolei-memory, @dominion/dsh-saolei-hooks, mounted through
+#   the saolei-loop config) all resolve by bare package name from this host
+#   composition, so their packages are declared in the same manifest and
+#   shipped in the same closure
 #   (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2;
 #   specs/058-dsh-preset-roster-demo/contracts/composition-manifest.md §4).
 # - GLM endpoint/token injection happens host-side before boot
@@ -173,11 +174,14 @@
 # 列表项挂载为子插件并以 provide 暴露能力面，成员 setup 按角色消费——
 # @dominion/dsh-saolei-tools 提供 saoleiTools 静态单元，
 # @dominion/dsh-saolei-memory 提供 memoryMount 工厂（携带连接 config，组合级
-# 共享 channel）。游戏基础服务 `ctx.saolei` 由组合清单顶级 saolei 行提供
+# 共享 channel），@dominion/dsh-saolei-hooks 提供 saoleiHooks 工厂（可选能力：
+# 行缺席 = 无 hook 面，行在而面缺 = 装载失败）。
+# 游戏基础服务 `ctx.saolei` 由组合清单顶级 saolei 行提供
 # （本行 inject 声明；specs/075-saolei-game-foundation/contracts/
 # team-loop-assembly.md §1）；工具能力不再经预设模板行挂载
 # （specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2；
-# preset-templates.md §3）。
+# preset-templates.md §3；hooks 行 specs/078-saolei-js-hooks/contracts/
+# saolei-hooks-plugin.md §5）。
 - id: saolei-loop
   name: '@dominion/dsh-saolei-loop'
   config:
@@ -187,3 +191,4 @@
         config:
           target: 'dominion:///game/memory:50051'
           protoPath: 'projects/game/game.proto'
+      - name: '@dominion/dsh-saolei-hooks'

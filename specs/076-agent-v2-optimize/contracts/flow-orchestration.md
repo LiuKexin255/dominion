@@ -81,7 +81,8 @@ flowchart LR
 2. 投递静止路径开的 turn 对 flow 不可见（不触发 onSettle、不消费流程事实）；该 turn 完成后泵唤醒决策入口——判定依据始终是事实（新广播/新终局记录），不是投递动作。
 3. 在途 steer 的消息形态/进入点/同边界多条/relay 边界：沿用 `specs/061-team-queue-steer/contracts/orchestrator-input.md` §1 义务 1–4（其静止分支的装配位置移入成员适配器，语义不变）。
 4. 两类输入分层：用户消息 = 推进式（deliver）；团队广播 = 拉动式（驱动装配时 drain），并叠加在途广播快路（relay message 单元时经接收方投递面提前投递同一消息、pending 锚点照常追加为可靠基线）（`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md` §2/§5）。
-5. 完成定义自包含：inbox 空 + 无在途回合统一涵盖一切用户消息消费；外壳与 flow 层均不查询队列状态做完成判断。
+5. **插入式产出的投递时机**：非激活成员在他人 turn 内的 message 产出（插入式产出）经上述同一路径投递。现状生产者是 announcer 的终局统计播报（成员收束后、无在途成员 → 快路惰性、pending drain）；**hook 播报**是 player turn 内的插入式产出（每次有棋盘变动且非终局的 `operate` 后由 hooks 引擎经 announcer 生产），在途 player 经快路不唤醒注入、下一 step 边界认领，静止成员经 pending drain——投递、锚点闭包与边缘路径全部按 077 契约执行（`specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md`；需求来源 `specs/078-saolei-js-hooks/spec.md` FR-009、`specs/078-saolei-js-hooks/contracts/hook-announcement.md` §1/§3）。
+6. 完成定义自包含：inbox 空 + 无在途回合统一涵盖一切用户消息消费；外壳与 flow 层均不查询队列状态做完成判断。
 
 ## 4. outcome 四态与冻结
 

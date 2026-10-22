@@ -8,9 +8,14 @@
  * `config.plugins` is the FLAT capability-dependency list (no role grouping,
  * no whitelist, no validation), each row is mounted as a child plugin by its
  * bare package name (`Loader`-style dynamic import, resolved by the Node ESM
- * host closure) with the row's config, and the two provide faces the
- * orchestration consumes (`saoleiTools`, `memoryMount`) are read back and
- * fail loud when absent. The orchestrator itself is constructed per team by
+ * host closure) with the row's config, and the two required provide faces the
+ * orchestration consumes (`saoleiTools`, `memoryMount`) are read back and fail
+ * loud when absent. The hooks row is the one OPTIONAL capability
+ * (specs/078-saolei-js-hooks/spec.md FR-015): a composition without it keeps
+ * the pre-hooks behavior, so only a LISTED hooks row is checked — listed but
+ * unprovided fails the load like the two required faces
+ * (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5). The
+ * orchestrator itself is constructed per team by
  * the host (projects/game/agent_v2/src/session.ts), so per-team state and its
  * `ctx.team`/`ctx.agents` consumption never become composition singletons.
  * Agent DRIVING is split between the official `dsh-agent-loop` row (turn/step
@@ -67,6 +72,8 @@ export type {
   OrchestratorSnapshot,
   OrchestratorStateErrorCode,
   PlannerMemoryScope,
+  SaoleiHooksMount,
+  SaoleiHooksUnit,
   SaoleiToolsUnit,
   SubmitResult,
   TeamMaterializeOptions,
@@ -93,6 +100,15 @@ export interface SaoleiLoopPluginRow {
   /** Plugin config, validated by the mounted plugin's own Config schema. */
   readonly config?: unknown;
 }
+
+/**
+ * The optional hooks capability row
+ * (specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5): the only
+ * `config.plugins` entry a composition may omit, because it is the only
+ * capability the team works without. Its presence is what makes a missing
+ * `saoleiHooks` provide face a load-time error.
+ */
+const SAOLEI_HOOKS_PLUGIN = "@dominion/dsh-saolei-hooks";
 
 /** The saolei-loop row config: the flat capability-dependency list. */
 export interface SaoleiLoopConfig {
@@ -125,9 +141,13 @@ export interface SaoleiLoopPluginDeps {
 /**
  * Apply the plugin: mount every `config.plugins` row as a child plugin (the
  * plugin's own Config schema validates the row config; a rejection fails the
- * composition load) and read back both capability provide faces, failing loud
- * when a row is missing (specs/074-dsh-grpc-runtime/contracts/
- * team-assembly.md §2/§4).
+ * composition load), then read back the capability provide faces: the two
+ * required ones (`saoleiTools`, `memoryMount`) always, and `saoleiHooks` only
+ * when its row is listed — the hooks capability is optional, so an absent row
+ * leaves the pre-hooks behavior intact while a listed row that provided
+ * nothing fails the load
+ * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2/§4;
+ * specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md §5).
  */
 export async function apply(
   ctx: Context,
@@ -136,7 +156,11 @@ export async function apply(
 ): Promise<void> {
   const importPlugin =
     deps.importPlugin ?? ((name: string): Promise<Plugin> => import(name));
+  let hooksRowListed = false;
   for (const row of config.plugins) {
+    if (row.name === SAOLEI_HOOKS_PLUGIN) {
+      hooksRowListed = true;
+    }
     const entry = await importPlugin(row.name);
     await ctx.plugin(entry, row.config as never);
   }
@@ -150,6 +174,13 @@ export async function apply(
     throw new Error(
       'saolei-loop: the "memoryMount" capability is not mounted; add the ' +
         "memory provider to the saolei-loop row's config.plugins",
+    );
+  }
+  if (hooksRowListed && ctx.get("saoleiHooks") === undefined) {
+    throw new Error(
+      'saolei-loop: the "saoleiHooks" capability is not mounted; the ' +
+        "saolei-hooks provider is listed in the saolei-loop row's " +
+        "config.plugins but provides no face",
     );
   }
 }

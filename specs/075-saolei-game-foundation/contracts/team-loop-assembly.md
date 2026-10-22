@@ -18,6 +18,7 @@ export const inject = ["saolei"];   // 游戏基础面（顶级 saolei 行提供
 ## 2. 编排对基础面的消费与游戏实例持有
 
 - **游戏实例持有（M12，D10）**：TeamOrchestrator 私有字段 `private game: GameRuntime | null`——materialize 时经 `this.ctx.saolei.createGameRuntime(sessionName, desktopBridge)` 构造并保存（desktopBridge 运行期解析：`deps.desktopBridge ?? ctx.get("desktopBridge")`，缺失 fail-loud——保持现状物化期解析时序）；物化回滚与 dispose 丢弃引用（`this.game = null`；实例无外部资源，无显式清理路径）；refresh（宿主重建 TeamOrchestrator）→ 新实例（与现状行为等价——游戏局从不跨 refresh 存留）。
+- **棋盘变动事件接线（hooks 能力面在场时）**：`createGameRuntime` 的**可选第三参**承载扩展 deps。编排在物化**早期（`createMember("player")` 之前——player setup 需要 `onBoardChange`）**经 `saoleiHooks` 面构建 hooks 能力单元（`mount.buildHooksUnit({ announce })`；`announce` 为惰性闭包，调用时读编排持有的 announcer），player setup 以 `createGameRuntime(sessionName, desktopBridge, { onBoardChange: unit.onBoardChange })` 构造运行时（同一实例，句柄注册与终局读取语义不变）；hooks 行缺席（能力面 undefined）→ 不传第三参，行为与现状完全一致。接线与异常边界见 `specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5、`specs/078-saolei-js-hooks/contracts/board-change-event.md` §2/§3（需求来源 `specs/078-saolei-js-hooks/spec.md` FR-017）。
 - **句柄注册（M13）**：player setup 将编排持有的实例注册进 player agent ctx——`agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)`（memory face 同型，074 registerMemory 模式）；工具 execute 的 `exec.agent.ctx.saoleiGame` 属性解析与 fail-loud 文案**零变化**。
 - **终局读取（M14）**：`nextStep` 的 gameEnded 判定直读 `this.game?.peekGameEvent()`（同一实例、同一读取时点——player turn settle 后）；`MemberRuntime.game` 字段与 `MountPlayerRuntime` seam（orchestrator deps + 默认实现 + session.ts 透传）删除——编排测试的运行时注入改经基础面 stub（`ctx.provide("saolei", { createGameRuntime: fake })`）。
 - **类型**：`GameRuntime`/`GameEventRecord` 等自 `@dominion/dsh-saolei` 导入（saolei-loop 已编译依赖 dsh-saolei——gameStatsText import——直接 import 即可，无需结构重复声明）。
@@ -30,10 +31,12 @@ player:  composed.setup(persona)
        → registerSaoleiTools：saoleiTools 单元（tools×3 → sections×1[guidance]）     # 074 既有，单元内容收窄
        → agentCtx.systemPrompt.section(saoleiFoundation.gameSection)                # saolei:game（源自基础面）
        → 游戏句柄注册：agentCtx.isolate("saoleiGame").provide("saoleiGame", this.game)
-         （this.game = materialize 期经 foundation.createGameRuntime 构造的编排持有实例）
+         （this.game = materialize 期经 foundation.createGameRuntime 构造的编排持有实例；
+          hooks 行在场 → 构造带第三参 { onBoardChange }，接入该行构建的 hooks 单元事件处理器）
 
 planner: composed.setup(persona)
        → agentCtx.systemPrompt.section(saoleiFoundation.gameSection)                # saolei:game（新增——074 遗留修复）
+       → registerHooksUnit：hooks 单元 tools×1[saolei_hook]（零 section）            # hooks 行在场时
        → registerMemory：faces → tools → sections → await ready()                   # 074 FR-016 原序不变
 ```
 
@@ -41,6 +44,7 @@ planner: composed.setup(persona)
 - 注册序对最终 prompt 无影响（section 按 order 排序，specs/060 §4）；固定序为测试断言确定性服务。
 - **planner 生效面（终态）**：persona + team:roster + **saolei:game** + memory:guidance + wiki:guidance + memory:snapshot——四工具面不变；MUST NOT 注册 saolei 工具、saolei:guidance 与游戏句柄。
 - **player 生效面（终态）**：persona + team:roster + saolei:game + saolei:guidance + 三工具 + 游戏句柄（解析到编排持有的同一实例）——与改造前逐字等价（SC-006/FR-012）。
+- **hooks 能力行（可选）**：`config.plugins` 列出 `@dominion/dsh-saolei-hooks` 行时，物化早期构建 hooks 单元，planner setup 在 `saolei:game` 之后注册其工具面（`saolei_hook`，零 section）、player setup 以 `createGameRuntime` 第三参 `{ onBoardChange }` 接线；行缺席 = 零 hook 装配、player 两参构造、planner 不注册 `saolei_hook`（`specs/078-saolei-js-hooks/contracts/saolei-hooks-plugin.md` §5）。
 
 ## 4. saolei-loop 的移除面
 

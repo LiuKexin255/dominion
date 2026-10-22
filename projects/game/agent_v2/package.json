@@ -38,6 +38,7 @@
         "@dominion/dsh-llm-opencode-go": "workspace:*",
         "@dominion/dsh-preset-authoring": "workspace:*",
         "@dominion/dsh-saolei": "workspace:*",
+        "@dominion/dsh-saolei-hooks": "workspace:*",
         "@dominion/dsh-saolei-loop": "workspace:*",
         "@dominion/dsh-saolei-memory": "workspace:*",
         "@dominion/dsh-saolei-tools": "workspace:*",
