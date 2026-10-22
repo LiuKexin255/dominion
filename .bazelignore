@@ -34,6 +34,7 @@ projects/game/web/frontend/node_modules
 common/js/dsh-plugins/preset-authoring/node_modules
 common/js/dsh-plugins/team/node_modules
 common/js/dsh-plugins/grpc-runtime/node_modules
+common/js/dsh-plugins/sts2/game/node_modules
 common/js/memory/node_modules
 experimental/dsh/demo/agent-plugins/demo-echo/node_modules
 experimental/redis_demo/js_service/node_modules
