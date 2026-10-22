@@ -1,0 +1,17 @@
+diff --git a/McpMod.StateBuilder.cs b/McpMod.StateBuilder.cs
+index 76eee84..cb400e1 100644
+--- a/McpMod.StateBuilder.cs
++++ b/McpMod.StateBuilder.cs
+@@ -1074,6 +1074,12 @@ public static partial class McpMod
+         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
+         battle["is_play_phase"] = IsPlayPhase(combatState);
+ 
++        // Expose the same mid-play signal the game's end-turn guard uses
++        // (NEndTurnButton.cs:114-123) so API callers can wait out card-play
++        // animations instead of stacking PlayCardActions in the queue.
++        var uiHand = NCombatRoom.Instance?.Ui?.Hand;
++        battle["card_in_play"] = uiHand != null && uiHand.InCardPlay;
++
+         // Enemies
+         var enemies = new List<Dictionary<string, object?>>();
+         var entityCounts = new Dictionary<string, int>();
