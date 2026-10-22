@@ -62,14 +62,14 @@ import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
 import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { DshContext } from "./dsh.js";
-import { MemberCollector, TeamHistory } from "./history.js";
+import { MemberCollector, TeamHistory, isAgentMemberRole } from "./history.js";
 import type {
   AgentMemberRole,
-  MemberRole,
   MemberViewEntry,
   TeamMergeEntry,
   TurnStream,
 } from "./history.js";
+import { SCENES, sceneNotWiredMessage, wiredScene } from "./scenes.js";
 import { readMemberSystemPrompt } from "./system-prompt.js";
 
 export type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
@@ -86,10 +86,6 @@ export const PROVIDER = "glm-responses";
  * implied), so the deployment env contract is unchanged.
  */
 export const DEFAULT_MODEL = `${PROVIDER}/${process.env.GLM_MODEL || "glm-5.3"}`;
-
-/** The team goal rendered into the shared team section (scene-agnostic plugin input). */
-export const TEAM_GOAL =
-  "协作完成多局扫雷游戏：player 执行操作、planner 复盘与制定策略，共同提高胜率。";
 
 /**
  * Stable AIP error codes the gRPC layer maps onto statuses
@@ -406,7 +402,8 @@ export class TeamSessions {
 
   /**
    * One fixed member's projection (GetTeamMember); NOT_FOUND while
-   * unmaterialized or when the member id is outside the three-member roster.
+   * unmaterialized or when the member id is outside the scene's roster (plus
+   * the announce-only member).
    * The output-only `system_prompt` is read off the member instance's live
    * assembly surface ({@link readMemberSystemPrompt}) — the same prompt the
    * official loop feeds to the model, never a separate re-composition (FR-016,
@@ -428,10 +425,18 @@ export class TeamSessions {
    * budget is spent.
    */
   async getTeamMember(session: string, member: string): Promise<TeamMemberView> {
+    const parsedSession = parseSessionResource(session);
+    if (parsedSession === undefined) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        `session must be a game session resource name ("templates/{template}/sessions/{session}"), got "${session}"`,
+      );
+    }
+    const template = parsedSession.template;
     if (!isMemberRole(member)) {
       throw new TeamSessionError(
         "NOT_FOUND",
-        `team member "${member}" does not exist; the roster is player/planner/announcer`,
+        `team member "${member}" does not exist; the roster is ${memberRoster(template)}`,
       );
     }
     const entry = this.requireEntry(session, "NOT_FOUND");
@@ -508,7 +513,7 @@ export class TeamSessions {
     if (runtime === undefined || runtime.kind !== "agent") {
       throw new TeamSessionError(
         "NOT_FOUND",
-        `team member "${member}" has no message view; the member-view roster is player/planner`,
+        `team member "${member}" has no message view; the member-view roster is ${sceneRoster(entry.template).join("/")}`,
       );
     }
     return entry.history.listMemberMessages(runtime.role);
@@ -550,15 +555,29 @@ export class TeamSessions {
         `session must be a game session resource name ("templates/{template}/sessions/{session}"), got "${session}"`,
       );
     }
+    // Scene wiring gate — BEFORE any validation: an unwired scene rejects
+    // every roster shape (empty members included) with the same error, so no
+    // validation, orchestration, or storage path is entered; the RPC entry
+    // point applies the same gate before its structure checks
+    // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3 item 1).
+    const scene = wiredScene(parsedSession.template);
+    if (scene === undefined) {
+      throw new TeamSessionError(
+        "INVALID_ARGUMENT",
+        sceneNotWiredMessage(parsedSession.template),
+      );
+    }
     // Layer 1 — structure (scene-agnostic): members non-empty, every member
     // role non-empty, preset a valid resource name under the session
     // template, model optional (data-model.md §4).
     this.validateMemberStructure(options.members, parsedSession.template);
-    // Layer 2 — saolei scene (agent_v2 is the scene host): exactly two
-    // members whose roles are exactly {"player", "planner"}.
-    this.validateSaoleiMembers(options.members);
-    const player = this.memberFor(options.members, "player");
-    const planner = this.memberFor(options.members, "planner");
+    // Layer 2 — scene roster: the template's scene table fixes the member
+    // count and role set (projects/game/agent_v2/src/scenes.ts;
+    // specs/079-sts2-template-scaffold/data-model.md §2).
+    this.validateSceneRoster(options.members, parsedSession.template);
+    const [playerRole, plannerRole] = orchestratedRoles(scene.roster);
+    const player = this.memberFor(options.members, playerRole, parsedSession.template);
+    const planner = this.memberFor(options.members, plannerRole, parsedSession.template);
     // The effective member-model values stay composite (`provider/model-id`);
     // the orchestrator receives the split (provider, model) route below
     // (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
@@ -568,8 +587,8 @@ export class TeamSessions {
     // Fail-fast validation BEFORE any teardown (data-model.md §4): preset
     // existence + role equality, then each selector's provider catalog. The
     // model validators return the parsed route materialization forwards.
-    await this.validateMemberPreset(player.preset, "player");
-    await this.validateMemberPreset(planner.preset, "planner");
+    await this.validateMemberPreset(player.preset, playerRole);
+    await this.validateMemberPreset(planner.preset, plannerRole);
     const playerRoute = await this.validateModel(playerModel);
     const plannerRoute = await this.validateModel(plannerModel);
 
@@ -611,7 +630,7 @@ export class TeamSessions {
         // scope stays a bare pair of ids rather than a full resource name
         // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
         memoryScope: { template: parsedSession.template, preset: this.presetId(planner.preset) },
-        goal: TEAM_GOAL,
+        goal: scene.teamGoal,
         player: {
           preset: this.presetId(player.preset),
           provider: playerRoute.provider,
@@ -634,8 +653,8 @@ export class TeamSessions {
       throw err;
     }
 
-    const playerHandle = orchestrator.member("player");
-    const plannerHandle = orchestrator.member("planner");
+    const playerHandle = orchestrator.member(playerRole);
+    const plannerHandle = orchestrator.member(plannerRole);
     if (playerHandle === undefined || plannerHandle === undefined) {
       await orchestrator.dispose().catch(() => undefined);
       throw new Error("team materialization invariant violated: members are missing");
@@ -648,8 +667,8 @@ export class TeamSessions {
       // Agent runtimes keep the composite selector for the projections; the
       // orchestrator already received the split route above
       // (contracts/model-selection.md §3).
-      this.createMemberRuntime(orchestrator, playerHandle, "player", player.preset, playerModel, session, history, broadcast),
-      this.createMemberRuntime(orchestrator, plannerHandle, "planner", planner.preset, plannerModel, session, history, broadcast),
+      this.createMemberRuntime(orchestrator, playerHandle, playerRole, player.preset, playerModel, session, history, broadcast),
+      this.createMemberRuntime(orchestrator, plannerHandle, plannerRole, planner.preset, plannerModel, session, history, broadcast),
       // The announcer is a registered member with no agent runtime: it is held
       // as its announce-only kind rather than a parallel field/roster special
       // case (specs/077-announcer-member-unification/contracts/host-member-parity.md §1).
@@ -992,35 +1011,41 @@ export class TeamSessions {
   }
 
   /**
-   * Layer 2 (saolei scene): exactly two members whose roles are exactly
-   * {"player", "planner"} — the scene's fixed roster, enforced here because
-   * the proto is a scene-agnostic primitive.
+   * Layer 2 (scene roster): the template's scene table supplies the fixed
+   * member count and role set, enforced here because the proto is a
+   * scene-agnostic primitive
+   * (specs/079-sts2-template-scaffold/data-model.md §2).
    */
-  private validateSaoleiMembers(members: readonly TeamMemberOptions[]): void {
-    if (members.length !== 2) {
+  private validateSceneRoster(members: readonly TeamMemberOptions[], template: string): void {
+    const roster = SCENES[template].roster;
+    if (members.length !== roster.length) {
       throw new TeamSessionError(
         "INVALID_ARGUMENT",
-        `saolei team materialization requires exactly 2 members (player and planner), got ${members.length}`,
+        `${template} team materialization requires exactly ${roster.length} members (${roster.join(" and ")}), got ${members.length}`,
       );
     }
     const roles = members.map((member) => member.role);
-    if (!roles.includes("player") || !roles.includes("planner")) {
+    if (!roster.every((role) => roles.includes(role))) {
       throw new TeamSessionError(
         "INVALID_ARGUMENT",
-        `saolei team member roles must be exactly {"player", "planner"}, got [${roles.join(", ")}]`,
+        `${template} team member roles must be exactly {${roster.map((role) => `"${role}"`).join(", ")}}, got [${roles.join(", ")}]`,
       );
     }
   }
 
-  /** The scene member entry for a validated role. */
-  private memberFor(members: readonly TeamMemberOptions[], role: AgentMemberRole): TeamMemberOptions {
+  /** The scene member entry for a validated roster role. */
+  private memberFor(
+    members: readonly TeamMemberOptions[],
+    role: AgentMemberRole,
+    template: string,
+  ): TeamMemberOptions {
     const found = members.find((member) => member.role === role);
     if (found === undefined) {
-      // validateSaoleiMembers already guarantees presence; this is a
+      // validateSceneRoster already guarantees presence; this is a
       // programming-error backstop.
       throw new TeamSessionError(
         "INVALID_ARGUMENT",
-        `saolei team member "${role}" is missing`,
+        `${template} team member "${role}" is missing`,
       );
     }
     return found;
@@ -1106,9 +1131,53 @@ export class TeamSessions {
   }
 }
 
-/** Whether a wire string names a team member role (the three-member roster). */
-function isMemberRole(value: string): value is MemberRole {
-  return value === "player" || value === "planner" || value === "announcer";
+/**
+ * Whether a wire string names a member of the scene table's roster union (plus
+ * the announce-only member): the member-name pre-check is scene-agnostic, and
+ * the entry's own roster decides membership afterwards.
+ */
+function isMemberRole(value: string): boolean {
+  return (
+    Object.values(SCENES).some((scene) => scene.roster.includes(value)) ||
+    value === ANNOUNCER_MEMBER_ROLE
+  );
+}
+
+/** The scene table's member roster; a template without a scene has none. */
+function sceneRoster(template: string): readonly string[] {
+  return SCENES[template]?.roster ?? [];
+}
+
+/** The roster as rendered in member-name error text: roster + the announce-only member. */
+function memberRoster(template: string): string {
+  return [...sceneRoster(template), ANNOUNCER_MEMBER_ROLE].join("/");
+}
+
+/**
+ * The scene's roster in orchestration order: the saolei-loop orchestrator's
+ * two agent member slots (its materialize input keys `player`/`planner`), fed
+ * from the scene table (projects/game/agent_v2/src/scenes.ts
+ * `SceneSpec.roster`). The roster is validated against the request before
+ * this point, and the guard below rejects a roster that names anything other
+ * than the orchestrated agent roles
+ * (specs/079-sts2-template-scaffold/data-model.md §2).
+ */
+function orchestratedRoles(
+  roster: readonly string[],
+): readonly [AgentMemberRole, AgentMemberRole] {
+  const [first, second] = roster;
+  if (
+    first === undefined ||
+    second === undefined ||
+    !isAgentMemberRole(first) ||
+    !isAgentMemberRole(second)
+  ) {
+    throw new TeamSessionError(
+      "INVALID_ARGUMENT",
+      `the scene roster must name the two orchestrated agent member roles, got [${roster.join(", ")}]`,
+    );
+  }
+  return [first, second];
 }
 
 /** The registered member runtime for a role, or undefined when outside the roster. */
