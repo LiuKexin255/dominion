@@ -202,8 +202,8 @@
   - `specs/079-sts2-template-scaffold/spec.md`（Success Criteria SC-001~SC-005 对照）
   - `projects/game/testplan/README.md`（测试计划与部署拓扑说明）
 
-- [ ] T019 执行 `specs/079-sts2-template-scaffold/quickstart.md` 全量验证 V1-V7（构建/布局/数据面/fail-loud/清单与产物/结构 grep），逐项结果记录于实施 PR/MR 描述（V1-V7 对照表）；另做负向边界核查（FR-009）：确认未新增 sts2 工具面、desktop 桥 relay / 新 `FlowPart` kind、fake-sts2 服务、fake-llm sts2 fixture、sts2 preset 池模板与 testplan sts2 用例
-- [ ] T020 终验收大型测试（宪法原则 VI）：经 testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`（完成部署→测试→清理闭环），**全部用例通过**；存在 failed/flaky 即验收未通过，修复后重跑直至全绿（禁止以 `bazel build` 编译测试 target 替代实际执行）。T008 为阶段①（纯目录归组）的零回归证据，本条为 feature 终验收，两者均不可省略
+- [X] T019 执行 `specs/079-sts2-template-scaffold/quickstart.md` 全量验证 V1-V7（构建/布局/数据面/fail-loud/清单与产物/结构 grep），逐项结果记录于实施 PR/MR 描述（V1-V7 对照表）；另做负向边界核查（FR-009）：确认未新增 sts2 工具面、desktop 桥 relay / 新 `FlowPart` kind、fake-sts2 服务、fake-llm sts2 fixture、sts2 preset 池模板与 testplan sts2 用例
+- [X] T020 终验收大型测试（宪法原则 VI）：经 testplan skill 实际执行 `guitar run projects/game/testplan/system_test.yaml`（完成部署→测试→清理闭环），**全部用例通过**；存在 failed/flaky 即验收未通过，修复后重跑直至全绿（禁止以 `bazel build` 编译测试 target 替代实际执行）。T008 为阶段①（纯目录归组）的零回归证据，本条为 feature 终验收，两者均不可省略
 
 **Checkpoint**: spec SC-001~SC-005 全部满足，feature 验收完成。
 
