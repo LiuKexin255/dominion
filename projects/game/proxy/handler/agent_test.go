@@ -198,6 +198,12 @@ const agentSession = "templates/saolei/sessions/conv-1"
 const teamResource = agentSession + "/team"
 const playerMember = teamResource + "/members/player"
 
+// sts2 mirrors the saolei resource shapes for the second known template:
+// the whitelist expansion must accept it at every proxy parse point.
+const sts2AgentSession = "templates/sts2/sessions/conv-1"
+const sts2TeamResource = sts2AgentSession + "/team"
+const sts2PlayerMember = sts2TeamResource + "/members/player"
+
 func chatFrame(text string) *game.ChatEvent {
 	return &game.ChatEvent{
 		Session: agentSession,
@@ -254,6 +260,37 @@ func TestAgentHandler_Send_RelaysFramesForExistingOwner(t *testing.T) {
 	}
 	if len(server.frames) != 2 || server.frames[0].GetDelta().GetText() != "a" || server.frames[1].GetDelta().GetText() != "b" {
 		t.Fatalf("relayed frames = %d, want [a b]", len(server.frames))
+	}
+}
+
+func TestAgentHandler_Send_Sts2SessionAccepted(t *testing.T) {
+	// given: an owner materialized under the sts2 template
+	upstream := &fakeSendStream{recvErr: io.EOF}
+	fake := &fakeAgentClient{sendStream: upstream}
+	handler, store, manager, _ := newAgentHarness(t, fake)
+	store.records[ownerKey("sts2", "conv-1")] = &domain.AgentOwner{
+		TemplateID: "sts2",
+		SessionID:  "conv-1",
+		OwnerIndex: 1,
+		Owner:      "agent-owner",
+	}
+
+	// when
+	err := handler.Send(&game.SendRequest{Session: sts2AgentSession, Text: "hi"}, &fakeSendServer{ctx: context.Background()})
+
+	// then: the sts2 resource name passes the known-template check and is
+	// routed by its own (template, session) key
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	if fake.sendReq.GetSession() != sts2AgentSession {
+		t.Fatalf("downstream session = %q, want %q", fake.sendReq.GetSession(), sts2AgentSession)
+	}
+	if len(manager.getCalls) != 1 || manager.getCalls[0] != 1 {
+		t.Fatalf("manager Get calls = %v, want [1]", manager.getCalls)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("owner Create calls = %d, want 0 (Send must not allocate)", store.createCalls)
 	}
 }
 
@@ -402,6 +439,36 @@ func TestAgentHandler_UpdateTeam_AllocatesOwnerAndForwards(t *testing.T) {
 	}
 	if team.GetName() != teamResource {
 		t.Fatalf("team name = %q, want %q", team.GetName(), teamResource)
+	}
+}
+
+func TestAgentHandler_UpdateTeam_Sts2TemplateAccepted(t *testing.T) {
+	// given: a fresh store — the first materialization of an sts2 session
+	fake := &fakeAgentClient{}
+	handler, store, manager, _ := newAgentHarness(t, fake)
+	req := &game.UpdateTeamRequest{Team: &game.Team{Name: sts2TeamResource}}
+
+	// when
+	team, err := handler.UpdateTeam(context.Background(), req)
+
+	// then: the sts2 team resource name passes the known-template check, the
+	// owner is allocated under the (sts2, conv-1) key, and the request is
+	// forwarded unchanged
+	if err != nil {
+		t.Fatalf("UpdateTeam() error = %v, want nil", err)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("owner Create calls = %d, want 1 (UpdateTeam is the allocation point)", store.createCalls)
+	}
+	owner := store.records[ownerKey("sts2", "conv-1")]
+	if owner == nil || owner.TemplateID != "sts2" || owner.SessionID != "conv-1" {
+		t.Fatalf("allocated owner = %+v, want the (sts2, conv-1) composite key", owner)
+	}
+	if len(manager.getCalls) != 1 || manager.getCalls[0] != owner.OwnerIndex {
+		t.Fatalf("manager Get calls = %v, want [allocated index]", manager.getCalls)
+	}
+	if team.GetName() != sts2TeamResource {
+		t.Fatalf("team name = %q, want %q", team.GetName(), sts2TeamResource)
 	}
 }
 
@@ -566,6 +633,33 @@ func TestAgentHandler_GetTeamMember_SuccessForwardsName(t *testing.T) {
 	}
 	if member.GetName() != playerMember {
 		t.Fatalf("member name = %q, want %q", member.GetName(), playerMember)
+	}
+}
+
+func TestAgentHandler_GetTeamMember_Sts2MemberAccepted(t *testing.T) {
+	// given: an sts2 owner from a previous UpdateTeam
+	fake := &fakeAgentClient{}
+	handler, store, _, _ := newAgentHarness(t, fake)
+	store.records[ownerKey("sts2", "conv-1")] = &domain.AgentOwner{
+		TemplateID: "sts2",
+		SessionID:  "conv-1",
+		OwnerIndex: 1,
+		Owner:      "agent-owner",
+	}
+
+	// when
+	member, err := handler.GetTeamMember(context.Background(), &game.GetTeamMemberRequest{Name: sts2PlayerMember})
+
+	// then: the sts2 member resource name passes the known-template check and
+	// is forwarded under its own (template, session) key
+	if err != nil {
+		t.Fatalf("GetTeamMember() error = %v, want nil", err)
+	}
+	if fake.getMemberReq.GetName() != sts2PlayerMember {
+		t.Fatalf("downstream name = %q, want %q", fake.getMemberReq.GetName(), sts2PlayerMember)
+	}
+	if member.GetName() != sts2PlayerMember {
+		t.Fatalf("member name = %q, want %q", member.GetName(), sts2PlayerMember)
 	}
 }
 

@@ -18,16 +18,18 @@ declare global {
 // ─── Template (local constant control plane, FR-024) ────────────────────────
 //
 // The desktop holds the Template list as LOCAL constants and MUST NOT fetch a
-// template-list API (spec 031-team-template-mode spec.md FR-024). The values
+// template-list API (specs/031-team-template-mode/spec.md FR-024). The values
 // are the Template resource path segments, matching the proto Template
 // resource / gameconst constants (`game.TemplateName{TemplateID: "saolei"}`,
-// specs/031-team-template-mode/contracts/api-contract.md §3.1). Current known
-// templates: saolei only.
+// specs/031-team-template-mode/contracts/api-contract.md §3.1). The known
+// templates are saolei and sts2
+// (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §5).
 
 export const TEMPLATE_SAOLEI = 'saolei'
+export const TEMPLATE_STS2 = 'sts2'
 
 /** Local template constants — the top-level control plane (FR-024). */
-export const TEMPLATES: string[] = [TEMPLATE_SAOLEI]
+export const TEMPLATES: string[] = [TEMPLATE_SAOLEI, TEMPLATE_STS2]
 
 // ─── Core types ─────────────────────────────────────────────────────────────
 

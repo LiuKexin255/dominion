@@ -42,9 +42,18 @@ import {
 } from './components/SystemPromptOverlay.js'
 import { ChatStore, useChatState } from './store/chat.js'
 
-// 本阶段新建 session 固定 saolei template（spec 澄清，存量 session 服务零改动；
-// 常量口径对齐 desktop 前端 api.ts 的 TEMPLATES）。
-const TEMPLATE_SAOLEI = 'saolei'
+// 已知模板集合：值对应 Template 资源的路径段
+// （projects/game/pkg/gameconst/const.go），与 desktop 前端
+// projects/game/desktop/frontend/src/api.ts 的 TEMPLATES 同源
+// （specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §5）。
+const KNOWN_TEMPLATES = ['saolei', 'sts2'] as const
+
+type KnownTemplate = (typeof KNOWN_TEMPLATES)[number]
+
+// 当前场景选择常量：web 管理视图本期只服务 saolei（无场景切换 UI），
+// session 列表/创建与 presets/wiki/memory 视图共用此模板段
+// （specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §5）。
+const CURRENT_TEMPLATE: KnownTemplate = 'saolei'
 
 // 成员视角视图的成员集合（场景词汇字符串；web-views.md §2：成员视角视图
 // 数量 = 成员数，saolei 恰 player/planner——切换器恰 3 视图：团队 + 2 成员）。
@@ -571,7 +580,7 @@ export function App() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      setSessions(await listSessions(TEMPLATE_SAOLEI))
+      setSessions(await listSessions(CURRENT_TEMPLATE))
       setListError(null)
     } catch (err) {
       setListError(errorMessage(err))
@@ -586,7 +595,7 @@ export function App() {
 
   const onCreate = useCallback(async () => {
     try {
-      const created = await createSession(TEMPLATE_SAOLEI)
+      const created = await createSession(CURRENT_TEMPLATE)
       setSessions((prev) => [...prev, created])
       setListError(null)
       openSession(created.name)
@@ -719,9 +728,9 @@ export function App() {
             )
           })}
         </div>
-        {view === 'presets' ? <PresetsView template={TEMPLATE_SAOLEI} /> : null}
-        {view === 'wiki' ? <WikiView template={TEMPLATE_SAOLEI} /> : null}
-        {view === 'memory' ? <MemoryView template={TEMPLATE_SAOLEI} /> : null}
+        {view === 'presets' ? <PresetsView template={CURRENT_TEMPLATE} /> : null}
+        {view === 'wiki' ? <WikiView template={CURRENT_TEMPLATE} /> : null}
+        {view === 'memory' ? <MemoryView template={CURRENT_TEMPLATE} /> : null}
       </main>
     </div>
   )

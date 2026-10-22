@@ -48,8 +48,18 @@ var ErrInvalidTemplate = errors.New("invalid template")
 // a proto enum (spec 031 FR-001: Template is a resource with no CRUD).
 var SaoleiTemplate = game.TemplateName{TemplateID: "saolei"}
 
+// Sts2Template is the sts2 template's resource name. Template values are a
+// fixed set, declared here as AIP-generated resource-name objects rather than
+// a proto enum (specs/031-team-template-mode/spec.md FR-001: Template is a
+// resource with no CRUD; sts2 is added by
+// specs/079-sts2-template-scaffold/spec.md FR-001).
+var Sts2Template = game.TemplateName{TemplateID: "sts2"}
+
 // knownTemplateIDs is the set of recognized template path segments.
-var knownTemplateIDs = map[string]bool{SaoleiTemplate.TemplateID: true}
+var knownTemplateIDs = map[string]bool{
+	SaoleiTemplate.TemplateID: true,
+	Sts2Template.TemplateID:   true,
+}
 
 // ValidateTemplateName reports whether name refers to a known template.
 func ValidateTemplateName(name game.TemplateName) error {
