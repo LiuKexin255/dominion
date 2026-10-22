@@ -1,4 +1,4 @@
-# @dominion/dsh-saolei (`common/js/dsh-plugins/saolei`)
+# @dominion/dsh-saolei (`common/js/dsh-plugins/saolei/game`)
 
 扫雷**游戏基础** cordis 插件（cordis 插件名 `saolei`，`inject = []`）：组合清单的
 **顶级基础行**（`- { id: saolei, name: '@dominion/dsh-saolei' }`，无 config——游戏

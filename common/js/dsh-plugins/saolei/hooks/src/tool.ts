@@ -322,7 +322,7 @@ function listText(registry: HookRegistry): string {
 }
 
 /** The shared refusal prefix, mirroring the saolei_operate `→ rejected:` shape
- * (common/js/dsh-plugins/saolei-tools/src/index.ts). */
+ * (common/js/dsh-plugins/saolei/tools/src/index.ts). */
 function refuse(detail: string): string {
   return `${SAOLEI_HOOK_TOOL_NAME} → rejected: ${detail}`;
 }

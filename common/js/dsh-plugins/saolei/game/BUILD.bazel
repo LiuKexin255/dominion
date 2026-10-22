@@ -29,18 +29,20 @@ ts_project(
     deps = [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
-        ":node_modules/@deepseek-ai/dsh-tools",
-        ":node_modules/@dominion/dsh-saolei",
+        ":node_modules/@dominion/dsh-desktop-bridge",
+        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],
 )
 
 # Workspace package target required by npm_link_all_packages for workspace:*
 # deps. "package.json" in srcs populates the npm-linker's runfiles store entry
-# with the manifest — without it a bare-specifier resolution at runtime fails
-# ("Cannot find package @dominion/dsh-saolei-tools"; common/js/dsh-plugins/
-# saolei-memory/BUILD.bazel precedent). The composition mounts this package as
-# a saolei-loop `config.plugins` sub-plugin resolved by bare name.
+# with the manifest — the composition mounts this package as its top-level
+# `saolei` row resolved by bare specifier, so without the manifest in srcs that
+# resolution fails with "Cannot find package @dominion/dsh-saolei"
+# (common/js/dsh-plugins/saolei/memory/BUILD.bazel precedent). This does NOT
+# change the packaging face: the shipped manifest is staged by artifact_pkg_js
+# from js_runtime_library's package_json regardless.
 js_library(
     name = "pkg",
     srcs = [
@@ -51,23 +53,26 @@ js_library(
 )
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
-# runtime_deps closure walking (common/js/dsh-plugins/saolei/BUILD.bazel
-# precedent). npm_deps carries the third-party packages the plugin touches at
-# runtime; the workspace dependency @dominion/dsh-saolei is type-only here
-# (OperateInput/SaoleiGame/ToolOutcome resolve to erased `import type`), so it
-# does not enter this package's runtime closure — the game runtime is provided
-# by the orchestration through the agent-scoped `saoleiGame` handle.
+# runtime_deps closure walking (common/js/dsh-plugins/llm-glm/BUILD.bazel
+# precedent). Separate from :pkg because npm_link_all_packages requires
+# JsInfo provider which only js_library provides. npm_deps carries the
+# third-party runtime imports: the plugin context and the PromptSection type
+# surface. The game recognition library
+# (@dominion/game-saolei-board) enters through runtime_deps; the desktop-bridge
+# service is a host-provided peer.
 js_runtime_library(
     name = "runtime_pkg",
-    package_name = "@dominion/dsh-saolei-tools",
+    package_name = "@dominion/dsh-saolei",
     lib = ":lib",
     npm_deps = [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
-        ":node_modules/@deepseek-ai/dsh-tools",
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
+    runtime_deps = [
+        "//projects/game/pkg/saolei-board:runtime_pkg",
+    ],
 )
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
@@ -82,8 +87,8 @@ vitest_test(
     ) + [
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
-        ":node_modules/@deepseek-ai/dsh-tools",
-        ":node_modules/@dominion/dsh-saolei",
+        ":node_modules/@dominion/dsh-desktop-bridge",
+        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@types/node",
     ],
 )

@@ -109,7 +109,7 @@ const (
 	teamHookBroadcastText     = "[hook safe-cells] safe cells: none (27 revealed / 0 flagged / 229 unrevealed)"
 	// teamHookOperateResultPrefix / teamHookLossResultPrefix are the verbatim
 	// heads of the scenario's two saolei_operate results (the pure domain body
-	// of common/js/dsh-plugins/saolei/src/game/text.ts operateResultText): the
+	// of common/js/dsh-plugins/saolei/game/src/game/text.ts operateResultText): the
 	// batch that changed the board while still playing, and the terminal single
 	// click that ends the game (specs/078-saolei-js-hooks/spec.md FR-010 — no
 	// hook analysis ever enters these texts).
@@ -176,7 +176,7 @@ const (
 	// agentV2AnnouncerMember is the announcer member's wire role — the merge
 	// `member` label, the broadcast tag stem (`<announcer-message>`), and the
 	// ListMemberMessages sender annotation
-	// (common/js/dsh-plugins/saolei-loop/src/announcer.ts ANNOUNCER_MEMBER_ROLE;
+	// (common/js/dsh-plugins/saolei/loop/src/announcer.ts ANNOUNCER_MEMBER_ROLE;
 	// specs/076-agent-v2-optimize/contracts/announcer-member.md §1).
 	agentV2AnnouncerMember = "announcer"
 
@@ -190,9 +190,9 @@ const (
 
 	// Explicit prompt-face anchors (specs/075-saolei-game-foundation/spec.md
 	// FR-018): the `saolei:game` gameplay section title (first line of
-	// SAOLEI_GAME_RULES, common/js/dsh-plugins/saolei/src/index.ts) and the
+	// SAOLEI_GAME_RULES, common/js/dsh-plugins/saolei/game/src/index.ts) and the
 	// `saolei:guidance` tool-usage section title (first line of SAOLEI_GUIDANCE,
-	// common/js/dsh-plugins/saolei-tools/src/index.ts). The orchestration
+	// common/js/dsh-plugins/saolei/tools/src/index.ts). The orchestration
 	// registers the gameplay section for both roles and the guidance section
 	// for the player only
 	// (specs/075-saolei-game-foundation/contracts/team-loop-assembly.md §3).
@@ -202,7 +202,7 @@ const (
 
 // agentV2GameStatsText builds the announcement one terminal record produces:
 // the pure template of `gameStatsText`
-// (common/js/dsh-plugins/saolei-loop/src/game/text.ts;
+// (common/js/dsh-plugins/saolei/loop/src/game/text.ts;
 // specs/065-agent-v2-team-refine/data-model.md §3). The call site supplies
 // every count, so the expectation is readable at a glance (style/golang.md
 // §单元测试).

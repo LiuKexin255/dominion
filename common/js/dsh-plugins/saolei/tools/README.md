@@ -1,4 +1,4 @@
-# @dominion/dsh-saolei-tools (`common/js/dsh-plugins/saolei-tools`)
+# @dominion/dsh-saolei-tools (`common/js/dsh-plugins/saolei/tools`)
 
 扫雷**工具** cordis 插件（cordis 插件名 `saolei-tools`，`inject = []`）：saolei-loop
 组合的 `saoleiTools` 静态能力单元提供方，作为 saolei-loop 行的 `config.plugins`

@@ -24,19 +24,18 @@ experimental/js/vite_react_demo/node_modules
 common/js/dsh-plugins/llm-glm/node_modules
 common/js/dsh-plugins/llm-opencode-go/node_modules
 common/js/dsh-plugins/desktop-bridge/node_modules
-common/js/dsh-plugins/saolei-loop/node_modules
-common/js/dsh-plugins/saolei/node_modules
-common/js/dsh-plugins/saolei-tools/node_modules
+common/js/dsh-plugins/saolei/game/node_modules
+common/js/dsh-plugins/saolei/hooks/node_modules
+common/js/dsh-plugins/saolei/loop/node_modules
+common/js/dsh-plugins/saolei/memory/node_modules
+common/js/dsh-plugins/saolei/tools/node_modules
 projects/game/agent_v2/node_modules
 projects/game/web/frontend/node_modules
 common/js/dsh-plugins/preset-authoring/node_modules
 common/js/dsh-plugins/team/node_modules
 common/js/dsh-plugins/grpc-runtime/node_modules
-common/js/dsh-plugins/saolei-memory/node_modules
 common/js/memory/node_modules
 experimental/dsh/demo/agent-plugins/demo-echo/node_modules
 experimental/redis_demo/js_service/node_modules
-common/js/dsh-plugins/saolei-hooks/node_modules
-common/js/dsh-plugins/saolei-interrupt/node_modules
 
 

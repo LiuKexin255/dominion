@@ -7,7 +7,7 @@
     "skipLibCheck": true,
     "types": ["node"],
     "paths": {
-      "@dominion/dsh-saolei": ["../saolei/src/index.js"]
+      "@dominion/dsh-saolei": ["../game/src/index.js"]
     }
   },
   "include": ["src/**/*.ts"]

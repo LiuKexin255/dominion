@@ -1332,7 +1332,7 @@ export class TeamOrchestrator {
    * Report a swallowed non-fatal skip through the composition logger. This is
    * the cordis `ctx.logger?.warn?.()` shape the package already uses for
    * failures that must not disturb a delivery path
-   * (common/js/dsh-plugins/saolei-loop/src/agent-member.ts); a context without
+   * (common/js/dsh-plugins/saolei/loop/src/agent-member.ts); a context without
    * a logger stays silent rather than throwing.
    */
   private warn(message: string): void {

@@ -38,7 +38,7 @@ ts_project(
 # Workspace package target required by npm_link_all_packages for workspace:*
 # deps. "package.json" in srcs populates the npm-linker's runfiles store entry
 # with the manifest — without it a bare-specifier resolution at runtime fails
-# ("Cannot find package @dominion/dsh-saolei-hooks"; common/js/dsh-plugins/
+# ("Cannot find package @dominion/dsh-saolei-tools"; common/js/dsh-plugins/
 # saolei-memory/BUILD.bazel precedent). The composition mounts this package as
 # a saolei-loop `config.plugins` sub-plugin resolved by bare name.
 js_library(
@@ -51,18 +51,15 @@ js_library(
 )
 
 # Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
-# runtime_deps closure walking (common/js/dsh-plugins/saolei-tools/BUILD.bazel
+# runtime_deps closure walking (common/js/dsh-plugins/saolei/game/BUILD.bazel
 # precedent). npm_deps carries the third-party packages the plugin touches at
-# runtime: the tool-definition helper (dsh-tools) plus the two peer faces the
-# plugin entry and the hooks unit resolve from the host composition (cordis
-# context, dsh-system-prompt section types). The workspace dependency
-# @dominion/dsh-saolei is type-only here (GameState/GameLogEntry resolve to
-# erased `import type`), so it does not enter this package's runtime closure —
-# the board payload reaches the engine as data through the injected
-# onBoardChange seam.
+# runtime; the workspace dependency @dominion/dsh-saolei is type-only here
+# (OperateInput/SaoleiGame/ToolOutcome resolve to erased `import type`), so it
+# does not enter this package's runtime closure — the game runtime is provided
+# by the orchestration through the agent-scoped `saoleiGame` handle.
 js_runtime_library(
     name = "runtime_pkg",
-    package_name = "@dominion/dsh-saolei-hooks",
+    package_name = "@dominion/dsh-saolei-tools",
     lib = ":lib",
     npm_deps = [
         ":node_modules/@deepseek-ai/cordis",
@@ -75,10 +72,7 @@ js_runtime_library(
 
 # Tests run against the raw .ts sources through vitest's single Vite pipeline
 # (style/javascript.md data rules): production + test sources only, plus the
-# node_modules mirror of :lib's deps. package.json travels as data: the
-# dependency-edge test asserts the declared dependency/peer closure against the
-# shipped manifest (projects/game/agent_v2/BUILD.bazel ships cordis.yml the same
-# way).
+# node_modules mirror of :lib's deps.
 vitest_test(
     name = "lib_test",
     size = "small",
@@ -86,7 +80,6 @@ vitest_test(
         ["src/**/*.ts"],
         allow_empty = True,
     ) + [
-        "package.json",
         ":node_modules/@deepseek-ai/cordis",
         ":node_modules/@deepseek-ai/dsh-system-prompt",
         ":node_modules/@deepseek-ai/dsh-tools",

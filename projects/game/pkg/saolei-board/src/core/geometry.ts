@@ -2,7 +2,7 @@
  * geometry.ts — Screenshot-space board layout constants and helpers.
  *
  * These constants are the SCREENSHOT-space counterparts of the dispatch-side
- * `common/js/dsh-plugins/saolei-loop/src/game/geometry.ts` values. The
+ * `common/js/dsh-plugins/saolei/loop/src/game/geometry.ts` values. The
  * dispatch side uses CLIENT space (Y=104 after a 96 px chrome offset) for
  * posting `WM_*` messages; recognition reads the captured screenshot (full
  * window incl. non-client chrome), so it uses the SCREENSHOT-space board top

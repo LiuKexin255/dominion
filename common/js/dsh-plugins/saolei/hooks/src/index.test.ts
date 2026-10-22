@@ -77,7 +77,7 @@ function fixtureEntry(): GameLogEntry {
 }
 
 /** A fake `ToolRunContext` for the unit's tool executions (the tool body reads
- * no execution field; common/js/dsh-plugins/saolei-hooks/src/tool.test.ts
+ * no execution field; common/js/dsh-plugins/saolei/hooks/src/tool.test.ts
  * precedent). */
 function fakeExec(): ToolRunContext {
   return { callId: "call-1" } as unknown as ToolRunContext;
@@ -112,7 +112,7 @@ describe("saolei-hooks mount face (specs/078-saolei-js-hooks/contracts/saolei-ho
     const ctx = new Context();
     // Real registration seams (vi.fn doubles): an accidental composition-level
     // registration would be captured here instead of silently tolerated
-    // (common/js/dsh-plugins/saolei-tools/src/index.test.ts form).
+    // (common/js/dsh-plugins/saolei/tools/src/index.test.ts form).
     const toolsRegister = vi.fn();
     const sectionRegister = vi.fn();
     ctx.provide("tools", { register: toolsRegister });

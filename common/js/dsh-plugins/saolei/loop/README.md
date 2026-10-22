@@ -1,4 +1,4 @@
-# @dominion/dsh-saolei-loop (`common/js/dsh-plugins/saolei-loop`)
+# @dominion/dsh-saolei-loop (`common/js/dsh-plugins/saolei/loop`)
 
 扫雷 team loop dsh 插件（cordis 插件名 `saolei-loop`）：saolei team 的编排层
 （驱动权唯一归属：flow 层流程决策 + 执行层驱动时机与物化编排 + 成员适配器）。

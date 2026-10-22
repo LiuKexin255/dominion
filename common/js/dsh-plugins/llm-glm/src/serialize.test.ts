@@ -21,7 +21,7 @@ function baseOptions(overrides: Partial<GenerateOptions>): GenerateOptions {
   };
 }
 
-// Real tool-surface shapes (common/js/dsh-plugins/saolei/src/index.ts):
+// Real tool-surface shapes (common/js/dsh-plugins/saolei/game/src/index.ts):
 // saolei_operate's dual-form parameters schema (single op via type/x/y, or
 // a batch via the operations array) plus a no-argument tool.
 const OPERATE_PARAMETERS = {

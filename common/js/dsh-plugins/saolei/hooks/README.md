@@ -1,4 +1,4 @@
-# @dominion/dsh-saolei-hooks (`common/js/dsh-plugins/saolei-hooks`)
+# @dominion/dsh-saolei-hooks (`common/js/dsh-plugins/saolei/hooks`)
 
 扫雷 **hook 引擎** cordis 插件（cordis 插件名 `saolei-hooks`，`inject = []`）：
 由 saolei-loop 组合的 `config.plugins` 以裸包名挂载，`ctx.provide` 暴露

@@ -35,7 +35,7 @@ import type { HookRunResult } from "./sandbox.js";
  * The warning face the handler reports a swallowed callback failure to. It
  * follows the cordis plugins' `ctx.logger?.warn?.()` convention
  * (common/js/dsh-plugins/team/src/team.ts;
- * common/js/dsh-plugins/saolei-loop/src/agent-member.ts): the host injects its
+ * common/js/dsh-plugins/saolei/loop/src/agent-member.ts): the host injects its
  * own logger, and the handler stays silent without one.
  */
 export interface OnBoardChangeLogger {
@@ -54,7 +54,7 @@ export interface OnBoardChangeDeps {
   /** Optional failure reporter; absent keeps the swallowed failure silent, the
    * shape the context-backed plugins' `ctx.logger?.warn?.()` takes
    * (common/js/dsh-plugins/team/src/team.ts;
-   * common/js/dsh-plugins/saolei-loop/src/agent-member.ts for the same
+   * common/js/dsh-plugins/saolei/loop/src/agent-member.ts for the same
    * in-flight-delivery swallow,
    * specs/077-announcer-member-unification/contracts/inflight-broadcast-fastpath.md
    * §2.1). */

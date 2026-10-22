@@ -5,7 +5,7 @@
  * describe content, and the constant `{result: string}` plain-text outcome.
  *
  * The tool executes against a direct registry instance and a fake
- * `ToolRunContext` (common/js/dsh-plugins/saolei-tools/src/index.test.ts
+ * `ToolRunContext` (common/js/dsh-plugins/saolei/tools/src/index.test.ts
  * precedent) — no module interception (style/javascript.md §Mock 约定).
  *
  * One case is answered before `execute` runs: an action outside the schema's
