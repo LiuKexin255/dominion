@@ -1,8 +1,8 @@
 # STS2 mod 方案真机 PoC 执行记录
 
 > 执行日期：2026-10-22 | 执行人：agent（dev 侧驱动）+ 人工（游戏机操作）
-> 目标与清单：[survey/sts2-game-control.md](../sts2-game-control.md) §7
-> 工具：[experimental/sts2_mod_poc/](../../experimental/sts2_mod_poc/README.md)（驱动脚本/探针/mod 补丁与构建脚本）。执行期采样留档（`samples/`，500+ 文件）
+> 目标与清单：[survey/sts2-game-control.md](sts2-game-control.md) §7
+> 工具：[experimental/sts2_mod_poc/](../experimental/sts2_mod_poc/README.md)（驱动脚本/探针/mod 补丁与构建脚本）。执行期采样留档（`samples/`，500+ 文件）
 > 已于结论固化后按需求方要求删除；行为证据以本文表格为准。
 
 ## 1. 版本矩阵（清单 #11）
@@ -72,7 +72,7 @@ markdown 格式比 JSON 紧凑 4–6 倍；agent 工具面**状态读取应默�
 
 ### 3.5 Instant Mode 对操作模型的影响（清单 #10 核心结论）
 
-Instant Mode 开启后，**act→read 合并为一步**（探针实测，[settle_probe.py](../../experimental/sts2_mod_poc/settle_probe.py)）：
+Instant Mode 开启后，**act→read 合并为一步**（探针实测，[settle_probe.py](../experimental/sts2_mod_poc/settle_probe.py)）：
 
 - 出牌 POST 返回后**零等待首读**即为完全结算态：手牌扣减✓ 能量扣减✓ `card_in_play=False`（8–65ms，5/5 次）
 - `end_turn` 敌回合 30ms 内结算，一次读取即达下一玩家阶段或战斗结束
@@ -115,12 +115,12 @@ battle["card_in_play"] = uiHand != null && uiHand.InCardPlay;
 3. **wait 原语**：`card_in_play`（动作结算信号）已入 mod；Instant Mode 开启后轮询退化为不触发，tools 层保留其等待逻辑作为关闭时的回退。
 4. **fake-sts2 设计输入**：按 raw-full.md 状态机建模 + §3.3 行为细节表（重排/竞态/两段式）作为仿真正确性要求。
 5. **工具面默认值**：状态读取 markdown 格式（体积为 JSON 的 1/4–1/6）；Instant Mode 纳入部署前置检查项。
-6. **版本策略**：游戏钉 v0.107.1 + mod 使用已打包 DLL（`experimental/sts2_mod_poc/mod/STS2_MCP.dll`，sha256 `93de6572…`，已固化入仓可随时重部署）；**fork 暂不维护**（2026-10-22 需求方裁定），[补丁](../../experimental/sts2_mod_poc/mod/0001-card-in-play.patch)与[构建脚本](../../experimental/sts2_mod_poc/mod/build.sh)仅作记录；升级 = 先看上游 issue 再动。
+6. **版本策略**：游戏钉 v0.107.1 + mod 使用已打包 DLL（`experimental/sts2_mod_poc/mod/STS2_MCP.dll`，sha256 `93de6572…`，已固化入仓可随时重部署）；**fork 暂不维护**（2026-10-22 需求方裁定），[补丁](../experimental/sts2_mod_poc/mod/0001-card-in-play.patch)与[构建脚本](../experimental/sts2_mod_poc/mod/build.sh)仅作记录；升级 = 先看上游 issue 再动。
 7. **seed 复现未验证**：需先解锁 custom 模式（打穿一局或查解锁条件），SDD 阶段如需确定性开局要补此项。
 8. **知识面分层（实测修正）**：对局内决策**不依赖 wiki**——card_reward/shop/hand 状态自带所涉卡牌的完整规则文本；wiki/compendium 端点按 profile **已发现**内容过滤（端点设计策略，非数据不可得——mod 在 character_select 已读取 `CardPool.AllCards`/`RelicPool.AllRelics` 全池对象；解锁与发现同义，需求方确认）。若需全目录先验知识（跨局规划），走小 fork 端点暴露全池文本即可（代码路径现成），**无需引入外部数据库**（Spire Codex 的 PolyForm 许可风险因此可完全规避）。
 
 ## 6. 引用清单
 
-- 调研：[survey/sts2-game-control.md](../sts2-game-control.md)
+- 调研：[survey/sts2-game-control.md](sts2-game-control.md)
 - STS2MCP：[main@55e0648](https://github.com/Gennadiyev/STS2MCP/tree/main)、[raw-full.md](https://github.com/Gennadiyev/STS2MCP/blob/main/docs/raw-full.md)、[issue #131](https://github.com/Gennadiyev/STS2MCP/issues/131)
 - 游戏侧守卫引用：`NEndTurnButton.cs:114-123`（经 [McpMod.Actions.cs](https://github.com/Gennadiyev/STS2MCP/blob/main/McpMod.Actions.cs) `ExecuteEndTurn` 转引）

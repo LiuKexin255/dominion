@@ -2,7 +2,7 @@
 
 > 用途：执行 [survey/sts2-game-control.md](../../survey/sts2-game-control.md) §7 真机 PoC 清单的
 > 驱动脚本、结算探针与 mod 自建补丁。PoC **已于 2026-10-22 执行完毕**，结论与版本矩阵见
-> [survey/sts2-mod-poc/report.md](../../survey/sts2-mod-poc/report.md)（本目录只保留可复用的工具与构建产物）。
+> [survey/sts2-mod-poc.md](../../survey/sts2-mod-poc.md)（本目录只保留可复用的工具与构建产物）。
 
 ## 0. 关键事实（已核实）
 
@@ -96,7 +96,7 @@ dev 侧直连 `http://<windows-host>:15526/`（脚本经 `STS2_POC_BASE` 环境�
 
 ## 4. 版本矩阵
 
-权威版本矩阵与结论见 [survey/sts2-mod-poc/report.md](../../survey/sts2-mod-poc/report.md) §1
+权威版本矩阵与结论见 [survey/sts2-mod-poc.md](../../survey/sts2-mod-poc.md) §1
 （2026-10-22 执行：v0.107.1 × main@55e0648 自建 + card_in_play 补丁 = 全清单通过）。## 5. 采样留档
 
 - 所有 GET/POST 请求响应自动存档至 `samples/`，文件名 `<序号>_<label>.<json|md>`
