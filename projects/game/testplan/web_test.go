@@ -110,7 +110,7 @@ func TestWebManagementLoopSmoke(t *testing.T) {
 
 	// 新建：AIP-133 create under the saolei template.
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
-	sessionName := agentV2SessionName(sessionID)
+	sessionName := agentV2SessionName(saoleiTemplateID, sessionID)
 	t.Logf("created session %s", sessionName)
 
 	// 物化：the page's team panel applies two role-pooled presets and both

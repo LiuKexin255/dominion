@@ -806,11 +806,11 @@ func TestAgentV2TeamConcurrentSessionIsolation(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	name1 := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-iso-1-"+uniqueSuffix())
+	name1 := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-iso-1-"+uniqueSuffix())
 	player1, planner1 := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-iso-1", "isolation one")
 	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, name1, player1.GetName(), planner1.GetName(), "", "")
 
-	name2 := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-iso-2-"+uniqueSuffix())
+	name2 := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-iso-2-"+uniqueSuffix())
 	player2, planner2 := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-iso-2", "isolation two")
 	updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, name2, player2.GetName(), planner2.GetName(), "", "")
 

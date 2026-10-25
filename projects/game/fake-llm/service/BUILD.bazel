@@ -25,6 +25,7 @@ go_library(
         "testdata/team_player.yaml",
         "testdata/agent_v2_transient.yaml",
         "testdata/opencode_go.yaml",
+        "testdata/sts2_main.yaml",
     ],
     importpath = "dominion/projects/game/fake-llm/service",
     visibility = ["//visibility:public"],

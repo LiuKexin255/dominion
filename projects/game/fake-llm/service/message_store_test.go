@@ -511,8 +511,8 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 41 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 41 (agent-v2-auth + agent-v2-fail + agent-v2-fail-mid + agent-v2-followup + agent-v2-greet + agent-v2-plain + agent-v2-quota + agent-v2-saolei-nodesktop + agent-v2-saolei-progressive + agent-v2-saolei-start + agent-v2-slow + agent-v2-stall + agent-v2-transient-500 + agent-v2-transient-503 + chat-only + farewell + greeting + mouse-trigger + opencode-go-planner-opening + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + team-planner-hook-review + team-planner-hook-set + team-planner-memory-snapshot + team-planner-opening + team-planner-review-continue + team-planner-review-stop + team-planner-user-reply + team-planner-wait + team-player-hook-followup + team-player-opening + team-player-resume-start + team-player-resume-stop + team-player-role-lock + team-player-user-intake + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
+	if len(got) != 42 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 42 (agent-v2-auth + agent-v2-fail + agent-v2-fail-mid + agent-v2-followup + agent-v2-greet + agent-v2-plain + agent-v2-quota + agent-v2-saolei-nodesktop + agent-v2-saolei-progressive + agent-v2-saolei-start + agent-v2-slow + agent-v2-stall + agent-v2-sts2-ping + agent-v2-transient-500 + agent-v2-transient-503 + chat-only + farewell + greeting + mouse-trigger + opencode-go-planner-opening + saolei-remain + saolei-single-op + saolei-start + saolei-structural-stop + stall-mid-reasoning + team-planner-hook-review + team-planner-hook-set + team-planner-memory-snapshot + team-planner-opening + team-planner-review-continue + team-planner-review-stop + team-planner-user-reply + team-planner-wait + team-player-hook-followup + team-player-opening + team-player-resume-start + team-player-resume-stop + team-player-role-lock + team-player-user-intake + think-healthy-cadence + think-interrupt-gap + think-interrupt-stall)", len(got))
 	}
 
 	// Sorted alphabetically: agent-v2-fail before agent-v2-fail-mid before
@@ -563,10 +563,15 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// specs/063-llm-reliability-opencode-go additions: "agent-v2-auth" sorts
 	// first among the agent-v2-* names ('a' < 'f'); "agent-v2-quota" sits
 	// between "agent-v2-plain" and "agent-v2-saolei-*" ('p' < 'q' < 's');
-	// "agent-v2-slow" < "agent-v2-stall" < "agent-v2-transient-500" <
-	// "agent-v2-transient-503" ("sl" < "st", then 's' < 't', then '0' < '3');
+	// "agent-v2-slow" < "agent-v2-stall" < "agent-v2-sts2-ping" <
+	// "agent-v2-transient-500" < "agent-v2-transient-503" ("sl" < "st",
+	// then 'a' < 's', then 's' < 't', then '0' < '3');
 	// "opencode-go-planner-opening" sits between "mouse-trigger" and
 	// "saolei-remain" ('m' < 'o' < 's').
+	//
+	// specs/080-host-main-sub-model addition: "agent-v2-sts2-ping" is the
+	// sts2 minimal-wiring conversation fixture
+	// (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §4).
 	wantNames := []string{
 		"agent-v2-auth",
 		"agent-v2-fail",
@@ -580,6 +585,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		"agent-v2-saolei-start",
 		"agent-v2-slow",
 		"agent-v2-stall",
+		"agent-v2-sts2-ping",
 		"agent-v2-transient-500",
 		"agent-v2-transient-503",
 		"chat-only",
@@ -616,7 +622,30 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		}
 	}
 
-	chatOnly := got[14]
+	// agent-v2-sts2-ping is the sts2 minimal-wiring conversation fixture
+	// (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §4): its
+	// system keyword anchors the main pool template's persona base, which an
+	// empty preset persona keeps and a non-empty one overrides
+	// (common/js/dsh-plugins/preset-authoring/src/derive.ts), so a match
+	// proves the sts2 session ran on the declared template.
+	sts2Ping := got[12]
+	if !slices.Contains(sts2Ping.Keywords, "sts2-ping") {
+		t.Errorf("agent-v2-sts2-ping keywords missing the trigger: %v", sts2Ping.Keywords)
+	}
+	if !slices.Contains(sts2Ping.SystemKeywords, "sts2 主 agent") {
+		t.Errorf("agent-v2-sts2-ping system_keywords missing the main persona anchor: %v", sts2Ping.SystemKeywords)
+	}
+	if !sts2Ping.ResponsesOnly {
+		t.Errorf("agent-v2-sts2-ping must carry responses_only=true (the /v1/responses family)")
+	}
+	if sts2Ping.ToolCall != nil {
+		t.Errorf("agent-v2-sts2-ping must carry a plain text response (the conversation turn)")
+	}
+	if sts2Ping.Text != "sts2 主 agent 应答：sts2-ping 已收到，对话回合正常完成。" {
+		t.Errorf("agent-v2-sts2-ping text = %q, want the sts2 reply", sts2Ping.Text)
+	}
+
+	chatOnly := got[15]
 	if chatOnly.Reasoning != "Responding with text only, no tools needed." {
 		t.Errorf("chat-only reasoning = %q, want the no-tools reasoning", chatOnly.Reasoning)
 	}
@@ -627,7 +656,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("chat-only keywords missing chat: %v", chatOnly.Keywords)
 	}
 
-	farewell := got[15]
+	farewell := got[16]
 	if farewell.Reasoning != "The user is saying goodbye." {
 		t.Errorf("farewell reasoning = %q, want the goodbye reasoning", farewell.Reasoning)
 	}
@@ -638,7 +667,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("farewell keywords missing bye: %v", farewell.Keywords)
 	}
 
-	greeting := got[16]
+	greeting := got[17]
 	if greeting.Reasoning != "The user is greeting me, I should respond warmly." {
 		t.Errorf("greeting reasoning = %q, want the warm greeting reasoning", greeting.Reasoning)
 	}
@@ -652,7 +681,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// mouse-trigger carries a tool_call (the dispatch fix): a user turn
 	// matching its keyword makes fake-LLM return a mouse_move tool_call
 	// so the agent_operation large tests drive the real dispatch chain.
-	mouseTrigger := got[17]
+	mouseTrigger := got[18]
 	if mouseTrigger.ToolCall == nil {
 		t.Fatalf("mouse-trigger tool_call is nil")
 	}
@@ -668,7 +697,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// tool_call so the agent_saolei large test drives the read-only remain
 	// query end-to-end (specs/029-saolei-coord-remain/contracts/saolei-
 	// remain-tool-contract.md §8).
-	saoleiRemain := got[19]
+	saoleiRemain := got[20]
 	if saoleiRemain.ToolCall == nil {
 		t.Fatalf("saolei-remain tool_call is nil")
 	}
@@ -682,7 +711,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// saolei-single-op carries a SINGLE-FORM saolei_operate tool_call (spec
 	// 039 US1 — FR-001 dual form: ordinary type/x/y == a length-1 batch):
 	// used by the agent_saolei dual-form-equivalence test's second turn.
-	saoleiSingle := got[20]
+	saoleiSingle := got[21]
 	if saoleiSingle.ToolCall == nil {
 		t.Fatalf("saolei-single-op tool_call is nil")
 	}
@@ -698,7 +727,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// a player turn whose last user message carries an appended continuation
 	// instruction (spec 039 FR-017 semantics), keeping the multi-game flow
 	// deterministic.
-	saoleiStart := got[21]
+	saoleiStart := got[22]
 	if saoleiStart.ToolCall == nil {
 		t.Fatalf("saolei-start tool_call is nil")
 	}
@@ -715,7 +744,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// saolei-structural-stop carries a saolei_operate batch whose second op
 	// is out-of-bounds (spec 039 US1 — FR-002 structural stop): used by the
 	// agent_saolei structural-stop test's second turn.
-	saoleiStructural := got[22]
+	saoleiStructural := got[23]
 	if saoleiStructural.ToolCall == nil {
 		t.Fatalf("saolei-structural-stop tool_call is nil")
 	}
@@ -734,7 +763,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// random fallback pool — an unrelated turn can never stall randomly.
 	// The pinned reasoning/text/helpers constants live in helpers_test.go
 	// (expectedStallReasoning — keep in sync).
-	stallMidReasoning := got[23]
+	stallMidReasoning := got[24]
 	if !stallMidReasoning.Stall {
 		t.Errorf("stall-mid-reasoning must carry stall=true (the stream must pause after the first chunk)")
 	}
@@ -771,7 +800,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// planner's review drive of the same scenario — its history condition
 	// anchors on the drained hook broadcast, which is the drain-visible
 	// evidence of specs/078-saolei-js-hooks/contracts/hook-announcement.md §3.
-	teamPlannerHookReview := got[24]
+	teamPlannerHookReview := got[25]
 	if !slices.Contains(teamPlannerHookReview.HistoryKeywords, "[hook safe-cells]") {
 		t.Errorf("team-planner-hook-review history_keywords missing the hook broadcast anchor: %v", teamPlannerHookReview.HistoryKeywords)
 	}
@@ -782,7 +811,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-hook-review text = %q, want the stop wording the player consumes", teamPlannerHookReview.Text)
 	}
 
-	teamPlannerHookSet := got[25]
+	teamPlannerHookSet := got[26]
 	if !slices.Contains(teamPlannerHookSet.Keywords, "固化") {
 		t.Errorf("team-planner-hook-set keywords missing the scenario control token: %v", teamPlannerHookSet.Keywords)
 	}
@@ -796,7 +825,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-hook-set tool_call script = %q, want the safe-cell scan body", script)
 	}
 
-	teamPlannerMemorySnapshot := got[26]
+	teamPlannerMemorySnapshot := got[27]
 	if !slices.Contains(teamPlannerMemorySnapshot.SystemKeywords, "长期记忆：") {
 		t.Errorf("team-planner-memory-snapshot system_keywords missing the snapshot header: %v", teamPlannerMemorySnapshot.SystemKeywords)
 	}
@@ -807,9 +836,9 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-memory-snapshot must carry a plain text response (the reload assertion body)")
 	}
 
-	teamPlannerOpening := got[27]
+	teamPlannerOpening := got[28]
 	if teamPlannerOpening.Name != "team-planner-opening" {
-		t.Errorf("messages[19] name = %q, want team-planner-opening", teamPlannerOpening.Name)
+		t.Errorf("messages[28] name = %q, want team-planner-opening", teamPlannerOpening.Name)
 	}
 	if !slices.Contains(teamPlannerOpening.SystemKeywords, "你是扫雷 planner") {
 		t.Errorf("team-planner-opening system_keywords missing the planner persona anchor: %v", teamPlannerOpening.SystemKeywords)
@@ -824,7 +853,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-opening text = %q, want the player-side opening anchor", teamPlannerOpening.Text)
 	}
 
-	teamPlannerReviewContinue := got[28]
+	teamPlannerReviewContinue := got[29]
 	if !slices.Contains(teamPlannerReviewContinue.Keywords, "本局游戏结束：胜利") {
 		t.Errorf("team-planner-review-continue keywords missing the won announcement result line: %v", teamPlannerReviewContinue.Keywords)
 	}
@@ -838,7 +867,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-review-continue text = %q, want the continue-next-game instruction", teamPlannerReviewContinue.Text)
 	}
 
-	teamPlannerReviewStop := got[29]
+	teamPlannerReviewStop := got[30]
 	if !slices.Contains(teamPlannerReviewStop.Keywords, "本局游戏结束：失败") {
 		t.Errorf("team-planner-review-stop keywords missing the lost announcement result line: %v", teamPlannerReviewStop.Keywords)
 	}
@@ -860,7 +889,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-review-stop text = %q, must not carry the next-game instruction", teamPlannerReviewStop.Text)
 	}
 
-	teamPlannerUserReply := got[30]
+	teamPlannerUserReply := got[31]
 	if !slices.Contains(teamPlannerUserReply.Keywords, "暂停") {
 		t.Errorf("team-planner-user-reply keywords missing the queued-user anchor: %v", teamPlannerUserReply.Keywords)
 	}
@@ -868,7 +897,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-planner-user-reply min_turn = %d, want 2 (off the first drive)", teamPlannerUserReply.MinTurn)
 	}
 
-	teamPlannerWait := got[31]
+	teamPlannerWait := got[32]
 	if !slices.Contains(teamPlannerWait.Keywords, "planner-wait") {
 		t.Errorf("team-planner-wait keywords missing the controllable-window anchor: %v", teamPlannerWait.Keywords)
 	}
@@ -887,7 +916,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// announcement's prefix, which reaches the player only through the
 	// in-flight broadcast fast path, and its tool_call is the single terminal
 	// op that ends the scenario's game.
-	teamPlayerHookFollowup := got[32]
+	teamPlayerHookFollowup := got[33]
 	if !slices.Contains(teamPlayerHookFollowup.Keywords, "[hook safe-cells]") {
 		t.Errorf("team-player-hook-followup keywords missing the hook broadcast anchor: %v", teamPlayerHookFollowup.Keywords)
 	}
@@ -898,7 +927,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Fatalf("team-player-hook-followup tool_call = %+v, want the saolei_operate batch", teamPlayerHookFollowup.ToolCall)
 	}
 
-	teamPlayerOpening := got[33]
+	teamPlayerOpening := got[34]
 	if !slices.Contains(teamPlayerOpening.SystemKeywords, "你是扫雷 player") {
 		t.Errorf("team-player-opening system_keywords missing the player persona anchor: %v", teamPlayerOpening.SystemKeywords)
 	}
@@ -906,7 +935,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-opening tool_call = %+v, want saolei_init", teamPlayerOpening.ToolCall)
 	}
 
-	teamPlayerResumeStart := got[34]
+	teamPlayerResumeStart := got[35]
 	if teamPlayerResumeStart.ToolCall == nil || teamPlayerResumeStart.ToolCall.Name != "saolei_init" {
 		t.Errorf("team-player-resume-start tool_call = %+v, want saolei_init", teamPlayerResumeStart.ToolCall)
 	}
@@ -914,7 +943,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-resume-start min_turn = %d, want 2 (off the first drive)", teamPlayerResumeStart.MinTurn)
 	}
 
-	teamPlayerResumeStop := got[35]
+	teamPlayerResumeStop := got[36]
 	if teamPlayerResumeStop.ToolCall != nil {
 		t.Errorf("team-player-resume-stop must carry a plain text response (no new game opened)")
 	}
@@ -925,7 +954,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-resume-stop min_turn = %d, want 2 (off the first drive)", teamPlayerResumeStop.MinTurn)
 	}
 
-	teamPlayerRoleLock := got[36]
+	teamPlayerRoleLock := got[37]
 	if !slices.Contains(teamPlayerRoleLock.SystemKeywords, "## saolei (Minesweeper tools)") {
 		t.Errorf("team-player-role-lock system_keywords missing the saolei guidance heading: %v", teamPlayerRoleLock.SystemKeywords)
 	}
@@ -933,7 +962,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("team-player-role-lock must carry a plain text response (the guidance assertion body)")
 	}
 
-	teamPlayerUserIntake := got[37]
+	teamPlayerUserIntake := got[38]
 	if teamPlayerUserIntake.ToolCall != nil {
 		t.Errorf("team-player-user-intake must carry a plain text response (the queued-message digest)")
 	}
@@ -950,7 +979,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	// chunked-reasoning / chunk_delays / stall_after fields end-to-end in the
 	// embedded store, and each is excluded from the no-match random fallback
 	// pool by isHangCapable (FR-011).
-	thinkHealthy := got[38]
+	thinkHealthy := got[39]
 	if len(thinkHealthy.ReasoningChunks) != 3 {
 		t.Errorf("think-healthy-cadence reasoning_chunks = %v, want 3 chunks", thinkHealthy.ReasoningChunks)
 	}
@@ -967,7 +996,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-healthy-cadence text = %q, want 'Done.'", thinkHealthy.Text)
 	}
 
-	thinkGap := got[39]
+	thinkGap := got[40]
 	if len(thinkGap.ReasoningChunks) != 3 {
 		t.Errorf("think-interrupt-gap reasoning_chunks = %v, want 3 chunks", thinkGap.ReasoningChunks)
 	}
@@ -984,7 +1013,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("think-interrupt-gap text = %q, want 'Placing the flag at (3,4).'", thinkGap.Text)
 	}
 
-	thinkStall := got[40]
+	thinkStall := got[41]
 	if len(thinkStall.ReasoningChunks) != 2 {
 		t.Errorf("think-interrupt-stall reasoning_chunks = %v, want 2 chunks", thinkStall.ReasoningChunks)
 	}
@@ -1032,12 +1061,12 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("agent-v2-stall transient = %+v, want nil (the legacy stall trigger)", transientStall.Transient)
 	}
 
-	transient500 := got[12]
+	transient500 := got[13]
 	if transient500.Transient == nil || transient500.Transient.Times != 6 || transient500.Transient.HTTPStatus != 500 {
 		t.Errorf("agent-v2-transient-500 transient = %+v, want times 6 and http_status 500", transient500.Transient)
 	}
 
-	transient503 := got[13]
+	transient503 := got[14]
 	if transient503.Transient == nil || transient503.Transient.Times != 1 || transient503.Transient.HTTPStatus != 503 {
 		t.Errorf("agent-v2-transient-503 transient = %+v, want times 1 and http_status 503", transient503.Transient)
 	}
@@ -1050,7 +1079,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 
 	// The chat-wire SC-003 driver (contract §5): trigger and text are pinned
 	// so the opencode-go session stays deterministic.
-	opencodeOpening := got[18]
+	opencodeOpening := got[19]
 	if !slices.Contains(opencodeOpening.Keywords, "请开始扫雷") {
 		t.Errorf("opencode-go-planner-opening keywords missing '请开始扫雷': %v", opencodeOpening.Keywords)
 	}

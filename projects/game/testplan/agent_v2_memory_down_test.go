@@ -37,7 +37,7 @@ func TestAgentV2TeamMemoryUnreachableRollsBackMaterialization(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-memdown-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-memdown-"+uniqueSuffix())
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-memdown", "memory-down")
 
 	// Materialization fails at the planner's memory prefetch. Two attempts
