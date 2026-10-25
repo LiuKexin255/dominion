@@ -7,7 +7,7 @@ import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { TeamEventStream, TeamHandle, TeamMemberEvent, TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
 import { DEFAULT_MODEL, LOOP_ERROR_TEXT, TeamSessionError, TeamSessions, loopErrorText } from "./session.js";
 import type { TeamView } from "./session.js";
-import type { TeamHistory, TurnStream } from "./history.js";
+import type { MemberCollector, TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
 import type {
   SceneMember,
@@ -646,14 +646,16 @@ interface EntryMemberSeam {
 
 /**
  * The private live-entry registry seam: the entry's unified member collection,
- * the announcer member and the history of one materialization generation
- * (refresh/unsubscribe and roster-derivation assertions).
+ * the dynamic (role, memberId) collectors, the announcer member and the
+ * history of one materialization generation (refresh/unsubscribe and
+ * roster-derivation assertions).
  */
 function entrySeam(
   h: Harness,
   session: string,
 ): {
   announcer: AnnouncerMember | undefined;
+  dynamicCollectors: Map<string, MemberCollector>;
   history: TeamHistory;
   members: ReadonlyArray<EntryMemberSeam>;
 } {
@@ -663,6 +665,7 @@ function entrySeam(
         string,
         {
           orchestrator: { announcer?: AnnouncerMember };
+          dynamicCollectors: Map<string, MemberCollector>;
           history: TeamHistory;
           members: ReadonlyArray<EntryMemberSeam>;
         }
@@ -675,6 +678,7 @@ function entrySeam(
   }
   return {
     announcer: entry.orchestrator.announcer,
+    dynamicCollectors: entry.dynamicCollectors,
     history: entry.history,
     members: entry.members,
   };
@@ -2128,5 +2132,171 @@ describe("TeamSessions scene-neutral registry path (specs/080-host-main-sub-mode
         .listTeamMessages(SOLO_SESSION)
         .map((entry) => [entry.member, entry.message.blocks[0]?.text?.content]),
     ).toEqual([["voice", "announcement"]]);
+  });
+});
+
+describe("TeamSessions dynamic role projection (specs/080-host-main-sub-model/contracts/scene-registry.md §3)", () => {
+  const SOLO = "solo";
+  const SOLO_SESSION = `templates/${SOLO}/sessions/s1`;
+  const SOLO_PRESET = `templates/${SOLO}/presets/p-solo`;
+  const ROOM = "room-a";
+  const ROOM_ONE = `${SOLO_SESSION}/room-a/1`;
+  const ROOM_TWO = `${SOLO_SESSION}/room-a/2`;
+
+  /** A synthetic single-member scene whose stub the test drives directly. */
+  function createSoloHarness(): { h: Harness; lastStub: () => SceneStub } {
+    const solo = fakeMember("solo-agent", () => {}, () => {});
+    const stubs: SceneStub[] = [];
+    const scene: SceneSpec = {
+      roster: ["single"],
+      presetRoles: ["single"],
+      rolePoolTemplate: { single: "single" },
+      orchestratable: true,
+      teamGoal: "",
+      faceMembers: ["single"],
+      createOrchestration: () => {
+        const stub = sceneStub(solo.handle, [{ role: "single", kind: "agent" }]);
+        stubs.push(stub);
+        return stub.orchestration;
+      },
+    };
+    const h = createHarness({ scenes: { [SOLO]: scene }, presetRole: () => "single" });
+    return {
+      h,
+      lastStub: () => {
+        const stub = stubs[stubs.length - 1];
+        if (stub === undefined) {
+          throw new Error("the scene factory has not run");
+        }
+        return stub;
+      },
+    };
+  }
+
+  /** One log-channel production of a role outside the projection. */
+  function roomOutput(memberId: string, text: string): TeamMemberEvent {
+    return {
+      role: ROOM,
+      memberId,
+      channel: "log",
+      event: {
+        type: "assistant/message",
+        data: { message: { content: [{ type: "text", text }] } },
+      },
+    } as unknown as TeamMemberEvent;
+  }
+
+  async function materializeSolo(h: Harness): Promise<void> {
+    await h.sessions.materialize(SOLO_SESSION, {
+      members: [{ role: "single", preset: SOLO_PRESET }],
+    });
+  }
+
+  it("projects a non-roster role per (role, memberId) with member-labelled frames and merged entries only", async () => {
+    const { h, lastStub } = createSoloHarness();
+    await materializeSolo(h);
+    const stream = fakeStream();
+    h.sessions.send(SOLO_SESSION, "hello", stream);
+    await flush();
+
+    // Two distinct producers of the SAME role: the key is (role, memberId), so
+    // each gets its own collector and neither swallows the other's event.
+    lastStub().emit(roomOutput(ROOM_ONE, "from room one"));
+    lastStub().emit(roomOutput(ROOM_TWO, "from room two"));
+    await flush();
+
+    const entries = h.sessions.listTeamMessages(SOLO_SESSION);
+    expect(
+      entries.map((entry) => [entry.member, entry.message.blocks[0]?.text?.content]),
+    ).toEqual([
+      ["user", "hello"],
+      [ROOM, "from room one"],
+      [ROOM, "from room two"],
+    ]);
+    // A repeat envelope for an existing (role, memberId) reuses its collector:
+    // no new collector is created and its production keeps appending at the
+    // tail of the merge sequence.
+    const roomOneKey = `${ROOM}\u0000${ROOM_ONE}`;
+    const entry = entrySeam(h, SOLO_SESSION);
+    const roomOneCollector = entry.dynamicCollectors.get(roomOneKey);
+    expect(roomOneCollector).toBeDefined();
+    lastStub().emit(roomOutput(ROOM_ONE, "from room one again"));
+    await flush();
+
+    expect(entry.dynamicCollectors.size).toBe(2);
+    expect(entry.dynamicCollectors.get(roomOneKey)).toBe(roomOneCollector);
+    const merged = h.sessions.listTeamMessages(SOLO_SESSION);
+    expect(merged).toHaveLength(4);
+    expect(merged[3]?.member).toBe(ROOM);
+    expect(merged[3]?.message.blocks[0]?.text?.content).toBe("from room one again");
+
+    // The merge entries reach the live stream as member-labelled team_message
+    // frames, and the member event frames carry the envelope role.
+    expect(
+      stream.events
+        .filter((event) => event.teamMessage?.member === ROOM)
+        .map((event) => event.teamMessage?.seq),
+    ).toEqual(["2", "3", "4"]);
+    const roomFrames = stream.events.filter((event) => event.member === ROOM);
+    expect(roomFrames.length).toBeGreaterThan(0);
+    expect(roomFrames.every((event) => event.teamMessage === undefined)).toBe(true);
+
+    // Entry-scoped per-member collectors; the role never enters the roster.
+    expect(entry.members.map((member) => member.role)).toEqual(["single"]);
+    expect(h.sessions.getTeam(SOLO_SESSION).members.map((member) => member.role)).toEqual([
+      "single",
+    ]);
+    // Viewless: merged entries exist, but no member view and no member_view
+    // frame was written for the dynamic role.
+    expect(entry.history.listMemberMessages(ROOM)).toEqual([]);
+    expect(stream.events.some((event) => event.memberView !== undefined)).toBe(false);
+
+    // No member resource or member view is served for the dynamic role.
+    await expect(
+      h.sessions.getTeamMember(SOLO_SESSION, ROOM),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    let viewError: unknown;
+    try {
+      h.sessions.listMemberMessages(SOLO_SESSION, ROOM);
+    } catch (err) {
+      viewError = err;
+    }
+    expect(viewError).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("destroys the dynamic projection with its entry generation (refresh carries nothing over)", async () => {
+    const { h, lastStub } = createSoloHarness();
+    await materializeSolo(h);
+    const stream = fakeStream();
+    h.sessions.send(SOLO_SESSION, "hello", stream);
+    await flush();
+
+    const oldStub = lastStub();
+    oldStub.emit(roomOutput(ROOM_ONE, "before refresh"));
+    await flush();
+
+    const old = entrySeam(h, SOLO_SESSION);
+    expect(old.dynamicCollectors.size).toBe(1);
+    expect(
+      old.history.listTeamMessages().map((entry) => entry.message.blocks[0]?.text?.content),
+    ).toEqual(["hello", "before refresh"]);
+
+    await materializeSolo(h);
+
+    // The fresh generation starts with an empty dynamic map and empty
+    // projections; the old generation's collectors were released with it.
+    const fresh = entrySeam(h, SOLO_SESSION);
+    expect(fresh.dynamicCollectors.size).toBe(0);
+    expect(old.dynamicCollectors.size).toBe(0);
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+
+    // The old generation's subscription detached with its entry: a late
+    // production reaches neither history.
+    oldStub.emit(roomOutput(ROOM_TWO, "after refresh"));
+    await flush();
+    expect(
+      old.history.listTeamMessages().map((entry) => entry.message.blocks[0]?.text?.content),
+    ).toEqual(["hello", "before refresh"]);
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
   });
 });

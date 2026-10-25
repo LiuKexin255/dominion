@@ -33,7 +33,11 @@
  * §5): an announce-only member's log productions become
  * {@link TeamHistory.appendAnnouncement} merge entries plus their
  * `team_message` frames, and the agent members' events feed their collectors.
- * The subscription detaches with the team entry
+ * A role outside the projection gets a lazy viewless collector keyed by
+ * `(role, memberId)`: member-labelled frames and merged entries only, with no
+ * roster entry, no member resource and no member view
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §3). The
+ * subscription detaches with the team entry
  * (specs/065-agent-v2-team-refine/contracts/game-stats-broadcast.md §4).
  *
  * The Context injected at construction plus the optional {@link
@@ -230,6 +234,14 @@ interface TeamEntry {
   readonly history: TeamHistory;
   /** Every projected member, in the orchestration's presentation order. */
   readonly members: readonly MemberRuntime[];
+  /**
+   * Lazy viewless collectors for roles outside the projection, keyed by
+   * `(role, memberId)`: member-labelled frames and merged entries only — no
+   * roster entry, no member resource, no member view. Entry-scoped, so a
+   * refresh starts a fresh empty map
+   * (specs/080-host-main-sub-model/contracts/scene-registry.md §3).
+   */
+  readonly dynamicCollectors: Map<string, MemberCollector>;
   /** Detaches the entry's single unified-stream subscription (entry teardown). */
   readonly streamOff: () => void;
   readonly streams: Set<TurnStream>;
@@ -626,6 +638,7 @@ export class TeamSessions {
       }
     };
     const history = new TeamHistory(session, broadcast);
+    const dynamicCollectors = new Map<string, MemberCollector>();
     const orchestrator = this.createOrchestrator(scene);
     try {
       await orchestrator.materialize(input);
@@ -676,13 +689,20 @@ export class TeamSessions {
     // The single member-event consumption path (spec FR-002): subscribe once to
     // the orchestration's unified stream and dispatch by envelope role — an
     // agent member's envelopes go to its collector, the announce-only member's
-    // log productions to the merge history
+    // log productions to the merge history, and a role outside the projection
+    // to a lazy viewless collector keyed by (role, memberId)
     // (specs/077-announcer-member-unification/contracts/member-event-stream.md
-    // §5). Roles outside the projection are the dynamic-projection surface of
-    // the follow-up work and are not consumed here yet.
+    // §5; specs/080-host-main-sub-model/contracts/scene-registry.md §3).
     const streamOff = orchestrator.teamEvents().subscribe((envelope) => {
       const member = members.find((candidate) => candidate.role === envelope.role);
       if (member === undefined) {
+        dynamicCollector(
+          dynamicCollectors,
+          envelope,
+          session,
+          history,
+          broadcast,
+        ).applyEvent(envelope);
         return;
       }
       if (member.kind === "announce-only") {
@@ -697,6 +717,7 @@ export class TeamSessions {
       orchestrator,
       history,
       members,
+      dynamicCollectors,
       streamOff,
       streams,
       createTime,
@@ -817,6 +838,13 @@ export class TeamSessions {
         member.collector.dispose();
       }
     }
+    // The dynamic projection dies with its generation: a refresh builds a new
+    // entry with an empty map, so no collector outlives its lifecycle
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §3).
+    for (const collector of entry.dynamicCollectors.values()) {
+      collector.dispose();
+    }
+    entry.dynamicCollectors.clear();
     this.endStreams(entry);
   }
 
@@ -1229,6 +1257,42 @@ function findMember(entry: TeamEntry, role: string): MemberRuntime | undefined {
 function findAgentMember(entry: TeamEntry, role: string): AgentMemberRuntime | undefined {
   const member = findMember(entry, role);
   return member !== undefined && member.kind === "agent" ? member : undefined;
+}
+
+/**
+ * The lazy viewless collector for one role outside the member projection,
+ * created on its first envelope and keyed by `(role, memberId)`: distinct
+ * producers of the same role (e.g. several room sub-agents) never share a
+ * collector and so never swallow each other's events. The collector produces
+ * member-labelled frames and merged entries only — no roster entry, no member
+ * resource, no member view
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §3).
+ */
+function dynamicCollector(
+  collectors: Map<string, MemberCollector>,
+  envelope: TeamMemberEvent,
+  session: string,
+  history: TeamHistory,
+  sink: (event: ChatEvent) => void,
+): MemberCollector {
+  // The role is scene vocabulary minted in-process and never contains NUL, so
+  // the first NUL in the composite key is exactly the separator — the key is
+  // collision-free even if a member id did carry control characters.
+  const key = `${envelope.role}\u0000${envelope.memberId}`;
+  const existing = collectors.get(key);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const collector = new MemberCollector(
+    envelope.memberId,
+    envelope.role,
+    session,
+    history,
+    sink,
+    false,
+  );
+  collectors.set(key, collector);
+  return collector;
 }
 
 /**
