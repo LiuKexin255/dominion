@@ -207,6 +207,61 @@ describe("TeamHistory", () => {
     expect(history.listTeamMessages()).toEqual([]);
   });
 
+  it("creates a role's view lazily on the first view write and isolates roles", () => {
+    const { history } = createHistory();
+
+    // Reading a role with no writes never fabricates a view entry.
+    expect(history.listMemberMessages("unseen-role")).toEqual([]);
+
+    history.appendMemberOutput("scene-role", [{ type: "text", text: "hello" }]);
+    history.appendAnnouncement("announcer", "仅归并");
+
+    expect(history.listMemberMessages("scene-role").map((entry) => entry.sender)).toEqual([
+      "scene-role",
+    ]);
+    // The announce-only role has no view; another role's write did not create one.
+    expect(history.listMemberMessages("announcer")).toEqual([]);
+
+    // Defensive copies: a List snapshot cannot mutate the stored view.
+    history.listMemberMessages("scene-role").pop();
+    expect(history.listMemberMessages("scene-role")).toHaveLength(1);
+  });
+
+  it("keeps a viewless member output in the merge sequence only", () => {
+    const { history, frames } = createHistory();
+
+    const entry = history.appendMemberOutput(
+      "scene-role",
+      [{ type: "text", text: "dynamic output" }],
+      false,
+      false,
+    );
+
+    expect(entry?.member).toBe("scene-role");
+    expect(history.listTeamMessages()).toHaveLength(1);
+    expect(history.listMemberMessages("scene-role")).toEqual([]);
+    // Only the team_message frame fans out; a member output has no
+    // member_view frame at all.
+    expect(frames.map(payloadOf)).toEqual(["teamMessage"]);
+  });
+
+  it("suppresses the view write and member_view frame when recordView is false", () => {
+    const { history, frames } = createHistory();
+    const direct: UserMessageEvent = {
+      type: "user/message",
+      data: {
+        id: "m-direct",
+        content: [{ type: "text", text: "用户消息" }],
+        source: { kind: "user" },
+      },
+    };
+
+    history.appendMemberViewUser("scene-role", direct, false);
+
+    expect(frames).toEqual([]);
+    expect(history.listMemberMessages("scene-role")).toEqual([]);
+  });
+
   it("appends an announcer announcement to the merge sequence and fans out its team_message frame", () => {
     const { history, frames } = createHistory();
 
@@ -400,11 +455,16 @@ describe("MemberCollector", () => {
     };
   }
 
-  function createCollector(agentId = PLAYER_ID) {
+  function createCollector(agentId = PLAYER_ID, recordView?: boolean) {
     const frames: ChatEvent[] = [];
     const history = new TeamHistory(SESSION, (event) => frames.push(event));
-    const collector = new MemberCollector(agentId, "player", SESSION, history, (event) =>
-      frames.push(event),
+    const collector = new MemberCollector(
+      agentId,
+      "player",
+      SESSION,
+      history,
+      (event) => frames.push(event),
+      recordView,
     );
     return { agentId, collector, history, frames };
   }
@@ -587,5 +647,33 @@ describe("MemberCollector", () => {
     collector.dispose();
     emitStatus(collector, agentId, "idle");
     expect(frames.map(payloadOf)).toEqual(["turnStart"]);
+  });
+
+  it("viewless mode writes merge entries and member frames but no member view", () => {
+    const { agentId, collector, frames, history } = createCollector(PLAYER_ID, false);
+
+    emitStatus(collector, agentId, "running");
+    emitSession(collector, agentId, {
+      type: "user/message",
+      data: {
+        id: "m-user",
+        content: [{ type: "text", text: "用户消息" }],
+        source: { kind: "user" },
+      },
+    });
+    emitSession(collector, agentId, assistantMessageEvent([{ type: "text", text: "hello" }]));
+    emitStatus(collector, agentId, "idle");
+
+    const payloads = frames.map(payloadOf);
+    expect(payloads).not.toContain("memberView");
+    expect(payloads[0]).toBe("turnStart");
+    expect(payloads.at(-1)).toBe("turnEnd");
+    expect(payloads).toContain("teamMessage");
+
+    expect(history.listMemberMessages("player")).toEqual([]);
+    const entry = history.listTeamMessages()[0] as TeamMergeEntry;
+    expect(entry.member).toBe("player");
+    expect(entry.message.blocks[0]?.text?.content).toBe("hello");
+    collector.dispose();
   });
 });

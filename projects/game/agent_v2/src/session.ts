@@ -1,37 +1,36 @@
 /**
- * session.ts — game session ↔ dsh team mapping for agent_v2.
+ * session.ts — the scene-neutral game session ↔ team mapping for agent_v2.
  *
- * `TeamSessions` owns the materialization registry over the team
- * orchestrator (`@dominion/dsh-saolei-loop`): one {@link TeamOrchestrator}
- * per materialized session, the entry's unified member runtimes (the two LLM
- * members plus the announce-only announcer), the session-lifetime team
- * history projections, and the active team streams.
+ * `TeamSessions` owns the materialization registry over the injected scene
+ * registry (`TeamSessionsDeps.scenes`, default the module scene table): one
+ * {@link SceneOrchestration} per materialized session, the entry's member
+ * runtimes derived from the orchestration's member projection, the
+ * session-lifetime team history projections, and the active team streams
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §1/§2/§3).
  *
  * Materialization semantics (specs/059-agent-v2-team-mode/contracts/
  * team-api.md §2): UpdateTeam materializes or refreshes the session's team
- * singleton; validation is fail-fast (both presets exist and match their
- * member role, a non-empty composite `provider/model-id` selector resolves in
- * the selected provider's catalog) and runs BEFORE any
- * teardown; a refresh terminates the in-flight member turn, voids the queued
- * messages, clears both members' short-term memory (a fresh orchestrator +
- * history), and rebuilds — with create_time preserved. Any materialization
- * failure (including a member setup error such as the planner memory
- * prefetch) rolls the created members back inside the orchestrator, so no
- * half-materialized team can ever be observed (GetTeam NOT_FOUND afterwards)
- * and the caller can retry.
+ * singleton; validation is fail-fast (structure, then the scene's roster,
+ * then every member's preset and composite `provider/model-id` selector) and
+ * runs BEFORE any teardown; a refresh terminates the in-flight member turn,
+ * voids the queued messages, clears the members' short-term memory (a fresh
+ * orchestration + history), and rebuilds — with create_time preserved. Any
+ * materialization failure rolls the created members back inside the scene
+ * orchestration, so no half-materialized team can ever be observed (GetTeam
+ * NOT_FOUND afterwards) and the caller can retry.
  *
  * Send has no lazy creation (FAILED_PRECONDITION while unmaterialized) and is
- * a pure subscription over the orchestrator: the user message is handed to
- * {@link TeamOrchestrator.submit}, the stream is attached to the session's
- * active set, and the stream ends when the team reaches its static point
- * (specs/059-agent-v2-team-mode/contracts/team-api.md §3.1). A client
+ * a pure subscription over the orchestration: the user message is handed to
+ * {@link SceneOrchestration.submit}, the stream is attached to the session's
+ * active set, and the stream ends when the orchestration reaches its static
+ * point (specs/059-agent-v2-team-mode/contracts/team-api.md §3.1). A client
  * disconnect only detaches the stream — it MUST NOT stop the orchestration;
  * cancelling the team happens only through {@link TeamSessions.cancel}.
  *
- * The member projections consume the team's unified member event stream — a
- * single subscription per entry, dispatched by envelope role
+ * The member projections consume the orchestration's unified member event
+ * stream — a single subscription per entry, dispatched by envelope role
  * (specs/077-announcer-member-unification/contracts/member-event-stream.md
- * §5): the announcer member's announcements (game-over stats) become
+ * §5): an announce-only member's log productions become
  * {@link TeamHistory.appendAnnouncement} merge entries plus their
  * `team_message` frames, and the agent members' events feed their collectors.
  * The subscription detaches with the team entry
@@ -43,36 +42,37 @@
  */
 
 import { error, info } from "@dominion/common-js-logs";
+import type { LogAttributes } from "@dominion/common-js-logs";
 import type { AgentHandle } from "@deepseek-ai/dsh-agent";
 import type { TeamMemberEvent } from "@dominion/dsh-team";
-import {
-  ANNOUNCER_MEMBER_ROLE,
-  OrchestratorStateError,
-  TeamOrchestrator,
-} from "@dominion/dsh-saolei-loop";
-import type {
-  AgentCreationSeam,
-  ComposePreset,
-  OrchestratorFailure,
-  OrchestratorLogger,
-  TeamSeam,
-} from "@dominion/dsh-saolei-loop";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService } from "@dominion/dsh-preset-authoring";
 import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { DshContext } from "./dsh.js";
-import { MemberCollector, TeamHistory, isAgentMemberRole } from "./history.js";
+import { MemberCollector, TeamHistory } from "./history.js";
 import type {
-  AgentMemberRole,
   MemberViewEntry,
   TeamMergeEntry,
   TurnStream,
 } from "./history.js";
 import { loopErrorText } from "./orchestration.js";
-import { SCENES, sceneNotWiredMessage, wiredScene } from "./scenes.js";
+import type {
+  SceneAgentCreationSeam,
+  SceneCompose,
+  SceneFailure,
+  SceneLogger,
+  SceneMaterializeInput,
+  SceneMemberConfig,
+  SceneOrchestration,
+  SceneRegistry,
+  SceneStateErrorCode,
+  SceneTeamSeam,
+} from "./orchestration.js";
+import { SCENES, sceneNotWiredMessage } from "./scenes.js";
+import type { SceneSpec } from "./scenes.js";
 import { readMemberSystemPrompt } from "./system-prompt.js";
 
-export type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
+export type { MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
 export { LOOP_ERROR_TEXT, loopErrorText } from "./orchestration.js";
 
 /**
@@ -109,7 +109,7 @@ export class TeamSessionError extends Error {
 export interface TeamMemberView {
   /** Member resource name (server-constructed from the role). */
   readonly name: string;
-  /** Member role (scene vocabulary; saolei: "player" / "planner" / "announcer"). */
+  /** Member role (open scene vocabulary). */
   readonly role: string;
   /** Full preset resource name the member materialized from. */
   readonly preset: string;
@@ -117,7 +117,7 @@ export interface TeamMemberView {
   readonly model: string;
   /**
    * The member instance's complete effective system prompt (persona + team
-   * section + tool guidance + the planner memory snapshot). Filled only by
+   * section + tool guidance + any scene-scoped snapshot). Filled only by
    * GetTeamMember from the instance's live assembly surface; empty in the
    * Team member snapshots (GetTeam/UpdateTeam).
    */
@@ -130,8 +130,8 @@ export interface TeamView {
   /**
    * The current active member (FR-008 single merged value): the in-flight
    * driving member while a member turn runs, otherwise the member owning the
-   * next input (activation). Always a role on a materialized team (the
-   * initial activation is "planner"); cancel/pause does not change it
+   * next input (activation). Always a role on a materialized team (the initial
+   * activation is the scene's); cancel/pause does not change it
    * (specs/060-agent-v2-team-optimize/contracts/team-api.md §1).
    */
   readonly activeMember: string;
@@ -145,7 +145,7 @@ export interface TeamView {
  * materialization primitive (proto `TeamMember` input side).
  */
 export interface TeamMemberOptions {
-  /** Member role (scene vocabulary; saolei: "player" / "planner"). */
+  /** Member role (open scene vocabulary). */
   readonly role: string;
   /** Full preset resource name. */
   readonly preset: string;
@@ -164,21 +164,31 @@ export interface MaterializeTeamOptions {
 
 /**
  * The collaborator seams of {@link TeamSessions}. Production resolves them
- * from the composed context; unit tests inject doubles.
+ * from the composed context; unit tests inject doubles. The scene-neutral
+ * orchestration seams are handed to the injected scene registry, which takes
+ * what it needs — the host itself never knows a scene's requirements
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §1).
  */
 export interface TeamSessionsDeps {
   /** Preset compose/lookup face; defaults to `ctx.presetAuthoring`. */
   readonly authoring?: Pick<PresetAuthoringService, "compose" | "get">;
   /** Deployment model catalog; defaults to the composition's `ctx.llm`. */
   readonly listModels?: (provider: string) => Promise<ReadonlyArray<{ id: string }>>;
-  /** Agent registry creation seam; defaults to `ctx.agents`. */
-  readonly agents?: AgentCreationSeam;
-  /** Team service seam; defaults to `ctx.team`. */
-  readonly team?: TeamSeam;
-  /** Orchestration failure reporter; defaults to the repo logger face. */
-  readonly logger?: OrchestratorLogger;
-  /** Provider route for both members; defaults to {@link PROVIDER}. */
+  /** Agent registry creation seam handed to scene registrations; defaults to `ctx.agents`. */
+  readonly agents?: SceneAgentCreationSeam;
+  /** Group-chat relay seam handed to scene registrations; absent scenes do not consume it. */
+  readonly team?: SceneTeamSeam;
+  /** Scene-neutral orchestration failure reporter; defaults to the repo logger face. */
+  readonly logger?: SceneLogger;
+  /** Deployment provider route handed to scene registrations; defaults to {@link PROVIDER}. */
   readonly provider?: string;
+  /**
+   * The template-keyed scene registry. Defaults to the module scene table;
+   * tests inject synthetic scenes to exercise the scene-neutral path without
+   * adding a scene module (specs/080-host-main-sub-model/contracts/
+   * scene-registry.md §1).
+   */
+  readonly scenes?: SceneRegistry;
 }
 
 /**
@@ -187,7 +197,7 @@ export interface TeamSessionsDeps {
  */
 interface AgentMemberRuntime {
   readonly kind: "agent";
-  readonly role: AgentMemberRole;
+  readonly role: string;
   readonly preset: string;
   readonly model: string;
   readonly handle: AgentHandle;
@@ -202,7 +212,7 @@ interface AgentMemberRuntime {
  */
 interface AnnounceOnlyMemberRuntime {
   readonly kind: "announce-only";
-  readonly role: typeof ANNOUNCER_MEMBER_ROLE;
+  readonly role: string;
 }
 
 /**
@@ -216,9 +226,9 @@ type MemberRuntime = AgentMemberRuntime | AnnounceOnlyMemberRuntime;
 interface TeamEntry {
   readonly sessionName: string;
   readonly template: string;
-  readonly orchestrator: TeamOrchestrator;
+  readonly orchestrator: SceneOrchestration;
   readonly history: TeamHistory;
-  /** Every registered member (player/planner/announcer), in roster order. */
+  /** Every projected member, in the orchestration's presentation order. */
   readonly members: readonly MemberRuntime[];
   /** Detaches the entry's single unified-stream subscription (entry teardown). */
   readonly streamOff: () => void;
@@ -298,11 +308,15 @@ export class TeamSessions {
   private readonly teams = new Map<string, TeamEntry>();
   /** Serializes re-materializations per session (refresh-in-flight rule). */
   private readonly materializations = new Map<string, Promise<unknown>>();
+  /** The injected scene registry every scene lookup resolves through. */
+  private readonly scenes: SceneRegistry;
 
   constructor(
     private readonly ctx: DshContext,
     private readonly deps: TeamSessionsDeps = {},
-  ) {}
+  ) {
+    this.scenes = deps.scenes ?? SCENES;
+  }
 
   /**
    * Accept one user message for a MATERIALIZED team. The message is fixed
@@ -404,10 +418,10 @@ export class TeamSessions {
       );
     }
     const template = parsedSession.template;
-    if (!isMemberRole(member)) {
+    if (!this.isMemberRole(member)) {
       throw new TeamSessionError(
         "NOT_FOUND",
-        `team member "${member}" does not exist; the roster is ${memberRoster(template)}`,
+        `team member "${member}" does not exist; the roster is ${this.memberRoster(template)}`,
       );
     }
     const entry = this.requireEntry(session, "NOT_FOUND");
@@ -436,9 +450,10 @@ export class TeamSessions {
           `team member "${member}" is not materialized`,
         );
       }
-      // The live handle comes off the orchestration's member read surface
-      // (TeamOrchestrator.member) — the instance the orchestrator created and
-      // drives, so a refresh is followed naturally.
+      // The live handle comes off the orchestration's member read surface:
+      // the instance the orchestration created and drives, so a refresh is
+      // followed naturally (specs/080-host-main-sub-model/contracts/
+      // scene-registry.md §2).
       const handle = generation.orchestrator.member(agentMember.role);
       if (handle === undefined) {
         throw new TeamSessionError(
@@ -484,7 +499,7 @@ export class TeamSessions {
     if (runtime === undefined || runtime.kind !== "agent") {
       throw new TeamSessionError(
         "NOT_FOUND",
-        `team member "${member}" has no message view; the member-view roster is ${sceneRoster(entry.template).join("/")}`,
+        `team member "${member}" has no message view; the member-view roster is ${this.sceneRoster(entry.template).join("/")}`,
       );
     }
     return entry.history.listMemberMessages(runtime.role);
@@ -531,7 +546,10 @@ export class TeamSessions {
     // validation, orchestration, or storage path is entered; the RPC entry
     // point applies the same gate before its structure checks
     // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3 item 1).
-    const scene = wiredScene(parsedSession.template);
+    // The gate reads the injected registry, so a synthetic scene is reachable
+    // in tests without touching the module scene table
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §1).
+    const scene = this.wiredScene(parsedSession.template);
     if (scene === undefined) {
       throw new TeamSessionError(
         "INVALID_ARGUMENT",
@@ -540,28 +558,45 @@ export class TeamSessions {
     }
     // Layer 1 — structure (scene-agnostic): members non-empty, every member
     // role non-empty, preset a valid resource name under the session
-    // template, model optional (data-model.md §4).
+    // template, model optional (data-model.md §4/§5).
     this.validateMemberStructure(options.members, parsedSession.template);
-    // Layer 2 — scene roster: the template's scene table fixes the member
-    // count and role set (projects/game/agent_v2/src/scenes.ts;
-    // specs/079-sts2-template-scaffold/data-model.md §2).
-    this.validateSceneRoster(options.members, parsedSession.template);
-    const [playerRole, plannerRole] = orchestratedRoles(scene.roster);
-    const player = this.memberFor(options.members, playerRole, parsedSession.template);
-    const planner = this.memberFor(options.members, plannerRole, parsedSession.template);
-    // The effective member-model values stay composite (`provider/model-id`);
-    // the orchestrator receives the split (provider, model) route below
-    // (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
-    const playerModel = player.model || DEFAULT_MODEL;
-    const plannerModel = planner.model || DEFAULT_MODEL;
+    // Layer 2 — scene roster: the injected scene entry fixes the member count
+    // and role set (specs/080-host-main-sub-model/contracts/scene-registry.md
+    // §1; specs/079-sts2-template-scaffold/data-model.md §2).
+    this.validateSceneRoster(options.members, parsedSession.template, scene);
 
-    // Fail-fast validation BEFORE any teardown (data-model.md §4): preset
-    // existence + role equality, then each selector's provider catalog. The
-    // model validators return the parsed route materialization forwards.
-    await this.validateMemberPreset(player.preset, playerRole);
-    await this.validateMemberPreset(planner.preset, plannerRole);
-    const playerRoute = await this.validateModel(playerModel);
-    const plannerRoute = await this.validateModel(plannerModel);
+    // Fail-fast validation BEFORE any teardown (data-model.md §5): preset
+    // existence + role equality for every roster member, then each selector's
+    // provider catalog. Two ordered passes (all presets, then all models) keep
+    // the saolei error order byte-for-byte
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §4 item 2).
+    const configured = scene.roster.map((role) => ({
+      role,
+      request: this.memberFor(options.members, role, parsedSession.template),
+    }));
+    for (const member of configured) {
+      await this.validateMemberPreset(member.request.preset, member.role);
+    }
+    const inputMembers: SceneMemberConfig[] = [];
+    for (const member of configured) {
+      // The effective selector stays composite until here; the orchestration
+      // receives the split (provider, model) route
+      // (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
+      const route = await this.validateModel(
+        member.request.model || DEFAULT_MODEL,
+      );
+      inputMembers.push({
+        role: member.role,
+        preset: this.presetId(member.request.preset),
+        provider: route.provider,
+        model: route.model,
+      });
+    }
+    const input: SceneMaterializeInput = {
+      session,
+      template: parsedSession.template,
+      members: inputMembers,
+    };
 
     const existing = this.teams.get(session);
     if (existing !== undefined) {
@@ -591,30 +626,11 @@ export class TeamSessions {
       }
     };
     const history = new TeamHistory(session, broadcast);
-    const orchestrator = this.createOrchestrator();
+    const orchestrator = this.createOrchestrator(scene);
     try {
-      await orchestrator.materialize({
-        session,
-        // The memory scope key halves are the business template and the
-        // materialization source planner preset id: the planner's long-term
-        // memory is mounted on the preset it was materialized from, so the
-        // scope stays a bare pair of ids rather than a full resource name
-        // (specs/071-memory-preset-scope/contracts/dsh-plugins.md §4).
-        memoryScope: { template: parsedSession.template, preset: this.presetId(planner.preset) },
-        goal: scene.teamGoal,
-        player: {
-          preset: this.presetId(player.preset),
-          provider: playerRoute.provider,
-          model: playerRoute.model,
-        },
-        planner: {
-          preset: this.presetId(planner.preset),
-          provider: plannerRoute.provider,
-          model: plannerRoute.model,
-        },
-      });
+      await orchestrator.materialize(input);
     } catch (err) {
-      // The orchestrator rolled every created member back; no entry and no
+      // The orchestration rolled every created member back; no entry and no
       // history survive, so the caller can retry (no half-materialized team).
       error("team materialization failed", {
         session,
@@ -624,33 +640,46 @@ export class TeamSessions {
       throw err;
     }
 
-    const playerHandle = orchestrator.member(playerRole);
-    const plannerHandle = orchestrator.member(plannerRole);
-    if (playerHandle === undefined || plannerHandle === undefined) {
-      await orchestrator.dispose().catch(() => undefined);
-      throw new Error("team materialization invariant violated: members are missing");
+    // The entry's member runtimes are the orchestration's member projection:
+    // an agent member joins its projected role to the validated input's
+    // preset/model, an announce-only member carries the role alone
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §2/§3;
+    // specs/077-announcer-member-unification/contracts/host-member-parity.md
+    // §2).
+    const configuredByRole = new Map(
+      input.members.map((member) => [member.role, member]),
+    );
+    const members: MemberRuntime[] = [];
+    for (const projection of orchestrator.members()) {
+      if (projection.kind === "announce-only") {
+        members.push({ kind: "announce-only", role: projection.role });
+        continue;
+      }
+      const handle = orchestrator.member(projection.role);
+      const memberConfig = configuredByRole.get(projection.role);
+      if (handle === undefined || memberConfig === undefined) {
+        await orchestrator.dispose().catch(() => undefined);
+        throw new Error("team materialization invariant violated: members are missing");
+      }
+      members.push(
+        this.createMemberRuntime(
+          handle,
+          projection.role,
+          presetResourceName(parsedSession.template, memberConfig.preset),
+          compositeModel(memberConfig),
+          session,
+          history,
+          broadcast,
+        ),
+      );
     }
-    if (orchestrator.announcer === undefined) {
-      await orchestrator.dispose().catch(() => undefined);
-      throw new Error("team materialization invariant violated: the announcer member is missing");
-    }
-    const members: readonly MemberRuntime[] = [
-      // Agent runtimes keep the composite selector for the projections; the
-      // orchestrator already received the split route above
-      // (contracts/model-selection.md §3).
-      this.createMemberRuntime(orchestrator, playerHandle, playerRole, player.preset, playerModel, session, history, broadcast),
-      this.createMemberRuntime(orchestrator, plannerHandle, plannerRole, planner.preset, plannerModel, session, history, broadcast),
-      // The announcer is a registered member with no agent runtime: it is held
-      // as its announce-only kind rather than a parallel field/roster special
-      // case (specs/077-announcer-member-unification/contracts/host-member-parity.md §1).
-      { kind: "announce-only", role: ANNOUNCER_MEMBER_ROLE },
-    ];
     // The single member-event consumption path (spec FR-002): subscribe once to
-    // the orchestrator's zero-shape pass-through of the team's unified stream
-    // and dispatch by envelope role — an agent member's envelopes go to its
-    // collector, the announce-only member's log productions to the merge
-    // history (specs/077-announcer-member-unification/contracts/
-    // member-event-stream.md §5).
+    // the orchestration's unified stream and dispatch by envelope role — an
+    // agent member's envelopes go to its collector, the announce-only member's
+    // log productions to the merge history
+    // (specs/077-announcer-member-unification/contracts/member-event-stream.md
+    // §5). Roles outside the projection are the dynamic-projection surface of
+    // the follow-up work and are not consumed here yet.
     const streamOff = orchestrator.teamEvents().subscribe((envelope) => {
       const member = members.find((candidate) => candidate.role === envelope.role);
       if (member === undefined) {
@@ -679,34 +708,36 @@ export class TeamSessions {
     info("team materialized", {
       session,
       template: parsedSession.template,
-      members: options.members.map((member) => `${member.role}:${member.preset}`).join(","),
-      playerModel,
-      plannerModel,
+      // The member entries log the configured full preset resource name; the
+      // orchestration seam input carries the bare preset id.
+      members: input.members
+        .map(
+          (member) =>
+            `${member.role}:${presetResourceName(parsedSession.template, member.preset)}`,
+        )
+        .join(","),
+      models: input.members
+        .map((member) => `${member.role}:${member.provider}/${member.model}`)
+        .join(","),
       replaced: existing !== undefined,
     });
     return toTeamView(entry);
   }
 
   /**
-   * One member's runtime: the orchestrator-owned handle plus the
-   * session-lifetime collector feeding the shared history projections and
-   * the active stream set.
+   * One agent member's runtime: the orchestration-owned handle plus the
+   * session-lifetime collector feeding the shared history projections and the
+   * active stream set.
    */
   private createMemberRuntime(
-    orchestrator: TeamOrchestrator,
     handle: AgentHandle,
-    role: AgentMemberRole,
+    role: string,
     preset: string,
     model: string,
     session: string,
     history: TeamHistory,
     broadcast: (event: ChatEvent) => void,
   ): AgentMemberRuntime {
-    // The orchestrator owns creation and teardown; this guard documents the
-    // ownership invariant (the handle must belong to this orchestrator).
-    if (orchestrator.member(role) !== handle) {
-      throw new Error(`team materialization invariant violated: ${role} handle mismatch`);
-    }
     const collector = new MemberCollector(
       String(handle.agent.id),
       role,
@@ -758,17 +789,17 @@ export class TeamSessions {
   /**
    * Refresh teardown: settle the in-flight member turn as ABORTED (the
    * orchestrator's dispose cancellation converges to idle, and the collector
-   * maps it to the terminal frame), release both members through the
-   * orchestrator (its rollback/ownership contract), then detach the entry's
+   * maps it to the terminal frame), release the projected members through the
+   * orchestration (its rollback/ownership contract), then detach the entry's
    * single stream subscription and end every active stream — the old
    * lifecycle's subscriptions die with it.
    *
-   * The stream detach follows the orchestrator release, not precedes it: the
+   * The stream detach follows the orchestration release, not precedes it: the
    * ABORTED terminal frame is itself a member event of that stream, so the
    * collector must still be subscribed while dispose converges. No old
-   * lifecycle production can reach the old projection afterwards — the team
-   * registration's member subscriptions drop inside dispose (the announcer's
-   * included), and the entry is no longer live.
+   * lifecycle production can reach the old projection afterwards — the
+   * registration's member subscriptions drop inside dispose (the announce-only
+   * member's included), and the entry is no longer live.
    */
   private async teardownEntry(entry: TeamEntry): Promise<void> {
     entry.disposed = true;
@@ -778,7 +809,7 @@ export class TeamSessions {
     }
     await entry.orchestrator.dispose();
     entry.streamOff();
-    // Release every member from the unified list: agent members drop their
+    // Release every member from the projected list: agent members drop their
     // turn bookkeeping, the announce-only member has none to release
     // (specs/077-announcer-member-unification/contracts/host-member-parity.md §2).
     for (const member of entry.members) {
@@ -833,10 +864,9 @@ export class TeamSessions {
    * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2;
    * design: specs/063-llm-reliability-opencode-go/design-session-stream-settlement.md §1).
    */
-  private failStreams(entry: TeamEntry, failure: OrchestratorFailure): void {
+  private failStreams(entry: TeamEntry, failure: SceneFailure): void {
     error("team stream closed after an orchestration failure", {
       session: entry.sessionName,
-      phase: failure.phase,
       member: failure.member ?? "",
       error: failure.message,
     });
@@ -909,28 +939,44 @@ export class TeamSessions {
     entry.quiescenceWatch = watch;
   }
 
-  /** The production orchestrator, composed over the ctx plus injected seams. */
-  private createOrchestrator(): TeamOrchestrator {
-    return new TeamOrchestrator(this.ctx, {
+  /**
+   * Build the scene's orchestration through its registered factory, handing
+   * the scene the host's scene-neutral seams; the scene takes what it needs
+   * (specs/080-host-main-sub-model/contracts/scene-registry.md §1).
+   */
+  private createOrchestrator(scene: SceneSpec): SceneOrchestration {
+    const factory = scene.createOrchestration;
+    if (factory === undefined) {
+      throw new Error(
+        "scene entry is orchestratable without an orchestration factory",
+      );
+    }
+    return factory(this.ctx, {
       compose: this.composeSeam(),
-      logger: this.deps.logger ?? {
-        error: (message, context) =>
-          error(message, {
-            session: context.session,
-            phase: context.phase,
-            member: context.member ?? "",
-            code: context.code,
-            error: context.error,
-          }),
-      },
-      ...(this.deps.agents === undefined ? {} : { agents: this.deps.agents }),
+      agents: this.deps.agents ?? this.ctx.agents,
+      logger: this.loggerSeam(),
+      provider: this.deps.provider ?? PROVIDER,
       ...(this.deps.team === undefined ? {} : { team: this.deps.team }),
-      ...(this.deps.provider === undefined ? {} : { provider: this.deps.provider }),
     });
   }
 
+  /** The scene-neutral failure reporter: host injection first, else the repo logger. */
+  private loggerSeam(): SceneLogger {
+    if (this.deps.logger !== undefined) {
+      return this.deps.logger;
+    }
+    return {
+      error: (message, context) => {
+        // The scene registration builds the structured fields; the seam types
+        // the record as opaque so no scene vocabulary leaks into it, while
+        // every value the repo logger accepts is passed through unchanged.
+        error(message, { ...context } as LogAttributes);
+      },
+    };
+  }
+
   /** Preset compose seam: host injection first, else `ctx.presetAuthoring`. */
-  private composeSeam(): ComposePreset {
+  private composeSeam(): SceneCompose {
     if (this.deps.authoring !== undefined) {
       return (preset) => this.deps.authoring!.compose(preset);
     }
@@ -982,13 +1028,18 @@ export class TeamSessions {
   }
 
   /**
-   * Layer 2 (scene roster): the template's scene table supplies the fixed
+   * Layer 2 (scene roster): the injected scene entry supplies the fixed
    * member count and role set, enforced here because the proto is a
    * scene-agnostic primitive
-   * (specs/079-sts2-template-scaffold/data-model.md §2).
+   * (specs/080-host-main-sub-model/contracts/scene-registry.md §1;
+   * specs/079-sts2-template-scaffold/data-model.md §2).
    */
-  private validateSceneRoster(members: readonly TeamMemberOptions[], template: string): void {
-    const roster = SCENES[template].roster;
+  private validateSceneRoster(
+    members: readonly TeamMemberOptions[],
+    template: string,
+    scene: SceneSpec,
+  ): void {
+    const roster = scene.roster;
     if (members.length !== roster.length) {
       throw new TeamSessionError(
         "INVALID_ARGUMENT",
@@ -1007,7 +1058,7 @@ export class TeamSessions {
   /** The scene member entry for a validated roster role. */
   private memberFor(
     members: readonly TeamMemberOptions[],
-    role: AgentMemberRole,
+    role: string,
     template: string,
   ): TeamMemberOptions {
     const found = members.find((member) => member.role === role);
@@ -1038,7 +1089,7 @@ export class TeamSessions {
    * Validate one member preset: it exists and its scene role equals the
    * member role (string equality — both are scene vocabulary).
    */
-  private async validateMemberPreset(presetName: string, role: AgentMemberRole): Promise<void> {
+  private async validateMemberPreset(presetName: string, role: string): Promise<void> {
     const authoring =
       this.deps.authoring ??
       (this.ctx.get("presetAuthoring") as Pick<PresetAuthoringService, "get"> | undefined);
@@ -1093,65 +1144,83 @@ export class TeamSessions {
     return route;
   }
 
-  /** Map an orchestration state error onto the request-level error surface. */
+  /**
+   * Map a scene state error onto the request-level error surface. The seam's
+   * state codes are stable and mapped structurally — never by class identity
+   * (specs/080-host-main-sub-model/contracts/scene-registry.md §2).
+   */
   private mapOrchestratorError(err: unknown): unknown {
-    if (err instanceof OrchestratorStateError) {
-      return new TeamSessionError("FAILED_PRECONDITION", err.message);
+    if (sceneStateErrorCode(err) !== undefined) {
+      const message = err instanceof Error ? err.message : String(err);
+      return new TeamSessionError("FAILED_PRECONDITION", message);
     }
     return err;
   }
-}
 
-/**
- * Whether a wire string names a member of the scene table's roster union (plus
- * the announce-only member): the member-name pre-check is scene-agnostic, and
- * the entry's own roster decides membership afterwards.
- */
-function isMemberRole(value: string): boolean {
-  return (
-    Object.values(SCENES).some((scene) => scene.roster.includes(value)) ||
-    value === ANNOUNCER_MEMBER_ROLE
-  );
-}
+  /** The scene's wired entry from the injected registry (the single gate predicate). */
+  private wiredScene(template: string): SceneSpec | undefined {
+    const scene = this.scenes[template];
+    return scene !== undefined && scene.orchestratable ? scene : undefined;
+  }
 
-/** The scene table's member roster; a template without a scene has none. */
-function sceneRoster(template: string): readonly string[] {
-  return SCENES[template]?.roster ?? [];
-}
-
-/** The roster as rendered in member-name error text: roster + the announce-only member. */
-function memberRoster(template: string): string {
-  return [...sceneRoster(template), ANNOUNCER_MEMBER_ROLE].join("/");
-}
-
-/**
- * The scene's roster in orchestration order: the saolei-loop orchestrator's
- * two agent member slots (its materialize input keys `player`/`planner`), fed
- * from the scene table (projects/game/agent_v2/src/scenes.ts
- * `SceneSpec.roster`). The roster is validated against the request before
- * this point, and the guard below rejects a roster that names anything other
- * than the orchestrated agent roles
- * (specs/079-sts2-template-scaffold/data-model.md §2).
- */
-function orchestratedRoles(
-  roster: readonly string[],
-): readonly [AgentMemberRole, AgentMemberRole] {
-  const [first, second] = roster;
-  if (
-    first === undefined ||
-    second === undefined ||
-    !isAgentMemberRole(first) ||
-    !isAgentMemberRole(second)
-  ) {
-    throw new TeamSessionError(
-      "INVALID_ARGUMENT",
-      `the scene roster must name the two orchestrated agent member roles, got [${roster.join(", ")}]`,
+  /**
+   * Whether a wire string names a face member of any registered scene: the
+   * member-name pre-check is scene-agnostic, and the entry's own projection
+   * decides membership afterwards
+   * (specs/080-host-main-sub-model/contracts/scene-registry.md §4 item 5).
+   */
+  private isMemberRole(value: string): boolean {
+    return Object.values(this.scenes).some((scene) =>
+      scene.faceMembers.includes(value),
     );
   }
-  return [first, second];
+
+  /** The scene's orchestration roster; a template without a scene has none. */
+  private sceneRoster(template: string): readonly string[] {
+    return this.scenes[template]?.roster ?? [];
+  }
+
+  /** The face roster as rendered in member-name error text. */
+  private memberRoster(template: string): string {
+    return (this.scenes[template]?.faceMembers ?? []).join("/");
+  }
 }
 
-/** The registered member runtime for a role, or undefined when outside the roster. */
+/**
+ * The composite selector a view presents for one materialized member: the
+ * validated route halves recombined, or the deployment default when the
+ * orchestration exposes no route (specs/063-llm-reliability-opencode-go/
+ * contracts/model-selection.md §3).
+ */
+function compositeModel(member: SceneMemberConfig): string {
+  if (member.provider === undefined || member.model === undefined) {
+    return DEFAULT_MODEL;
+  }
+  return `${member.provider}/${member.model}`;
+}
+
+/** The full preset resource name behind a validated preset id. */
+function presetResourceName(template: string, preset: string): string {
+  return `templates/${template}/presets/${preset}`;
+}
+
+/**
+ * The seam's stable state-error code when the throw carries one; undefined
+ * otherwise. Structural on purpose: scene packages throw their own same-coded
+ * errors and never import the host
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §2).
+ */
+function sceneStateErrorCode(err: unknown): SceneStateErrorCode | undefined {
+  if (typeof err !== "object" || err === null) {
+    return undefined;
+  }
+  const { code } = err as { code?: unknown };
+  return code === "UNMATERIALIZED" || code === "ALREADY_MATERIALIZED" || code === "DISPOSED"
+    ? code
+    : undefined;
+}
+
+/** The member runtime for a role, or undefined when outside the projection. */
 function findMember(entry: TeamEntry, role: string): MemberRuntime | undefined {
   return entry.members.find((member) => member.role === role);
 }

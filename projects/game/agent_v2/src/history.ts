@@ -199,35 +199,6 @@ export interface TurnOutcome {
 }
 
 /**
- * The host's team member roles: the two LLM agent members plus the
- * announce-only announcer (specs/076-agent-v2-optimize/contracts/
- * announcer-member.md §1/§3). Team roles are open strings upstream — this is
- * the scene vocabulary the host validates member names against.
- */
-export type MemberRole = "player" | "planner" | "announcer";
-
-/**
- * The agent-backed member roles: the members that own an `AgentHandle`/`Agent`
- * and therefore a member view and collector. The announcer is announce-only —
- * its output goes to the merge sequence only, so it never owns a view
- * (specs/076-agent-v2-optimize/contracts/announcer-member.md §3).
- */
-export type AgentMemberRole = "player" | "planner";
-
-/**
- * The orchestrated agent member vocabulary — the same two roles as the
- * saolei-loop orchestrator's `AgentTeamRole`. Runtime form of
- * {@link AgentMemberRole}, used to guard scene-roster data before it reaches
- * the orchestration.
- */
-const AGENT_MEMBER_ROLES: readonly AgentMemberRole[] = ["player", "planner"];
-
-/** Whether a value names an orchestrated agent member. */
-export function isAgentMemberRole(value: string): value is AgentMemberRole {
-  return AGENT_MEMBER_ROLES.some((role) => role === value);
-}
-
-/**
  * The sender annotation of a relayed broadcast: the source role string
  * unchanged; a source without a role degrades to the reserved user value.
  */
@@ -381,7 +352,10 @@ export function usageToProto(usage: DshTokenUsage | undefined): {
 
 /**
  * The session's team history projections (specs/059-agent-v2-team-mode/
- * data-model.md §2): the merged team sequence plus the two member views.
+ * data-model.md §2): the merged team sequence plus the per-member views.
+ * Member roles are open scene strings, so a role's view is created lazily on
+ * its first member-view write rather than enumerated up front
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §3).
  * Every appended merge entry fans out as a `team_message` frame carrying the
  * same entry object, and every member-view append fans out a `member_view`
  * frame carrying the same view projection object, so the stream frames and
@@ -393,7 +367,7 @@ export function usageToProto(usage: DshTokenUsage | undefined): {
  */
 export class TeamHistory {
   private readonly merge: TeamMergeEntry[] = [];
-  private readonly views: Record<AgentMemberRole, MemberViewEntry[]> = { player: [], planner: [] };
+  private readonly views = new Map<string, MemberViewEntry[]>();
   private nextSeq = 1;
   private nextMessageId = 1;
 
@@ -413,16 +387,23 @@ export class TeamHistory {
   }
 
   /**
-   * Append one member `assistant/message` finality to the merge sequence and
-   * to that member's own view (sender = the member). Empty display content
-   * produces no entry (nothing model-visible in this projection). The
-   * interrupted flag is carried through for List folding semantics
-   * (specs/054-agent-v2-bugfixes/data-model.md §1.5).
+   * Append one member `assistant/message` finality to the merge sequence and —
+   * unless `recordView` is false — to that member's own view (sender = the
+   * member). Empty display content produces no entry (nothing model-visible in
+   * this projection). The interrupted flag is carried through for List folding
+   * semantics (specs/054-agent-v2-bugfixes/data-model.md §1.5).
+   *
+   * `recordView = false` is the viewless mode: the entry reaches the merge
+   * sequence only, with no `views` write and no `member_view` frame. It serves
+   * roles outside the materialized roster, whose activity is visible as
+   * member-labelled frames and merged entries but has no member view
+   * (specs/080-host-main-sub-model/contracts/scene-registry.md §3).
    */
   appendMemberOutput(
-    role: AgentMemberRole,
+    role: string,
     content: ReadonlyArray<DshContentBlockView>,
     interrupted = false,
+    recordView = true,
   ): TeamMergeEntry | undefined {
     const blocks: ContentBlock[] = [];
     for (const block of content) {
@@ -436,7 +417,9 @@ export class TeamHistory {
     }
     const message = this.newMessage("ROLE_AGENT", blocks, interrupted);
     const entry = this.appendMerge(role, message);
-    this.views[role].push({ message, sender: role });
+    if (recordView) {
+      this.pushView(role, { message, sender: role });
+    }
     return entry;
   }
 
@@ -464,8 +447,15 @@ export class TeamHistory {
    * consumption (the input entering this member's view) in real time instead
    * of waiting for a ListMemberMessages backfill
    * (specs/060-agent-v2-team-optimize/contracts/team-api.md §2).
+   *
+   * `recordView = false` is the viewless mode: neither the `views` write nor
+   * the `member_view` frame happens, because the role has no member view of
+   * its own (specs/080-host-main-sub-model/contracts/scene-registry.md §3).
    */
-  appendMemberViewUser(role: AgentMemberRole, event: UserMessageEvent): void {
+  appendMemberViewUser(role: string, event: UserMessageEvent, recordView = true): void {
+    if (!recordView) {
+      return;
+    }
     const source = event.data.source;
     if (source.kind !== "user" && source.kind !== "team-broadcast") {
       return;
@@ -481,7 +471,7 @@ export class TeamHistory {
     }
     const message = this.newMessage("ROLE_USER", blocks);
     const sender = source.kind === "team-broadcast" ? broadcastSender(source.role) : "user";
-    this.views[role].push({ message, sender });
+    this.pushView(role, { message, sender });
     const frame: MemberViewEvent = { member: role, sender, message };
     this.sink({ session: this.sessionName, memberView: frame });
   }
@@ -493,7 +483,7 @@ export class TeamHistory {
    * both projections observe the settlement. A result with no unsettled
    * matching block is ignored (returns false) — never fabricated.
    */
-  settleToolResult(role: AgentMemberRole, toolId: string, status: ToolStatus, result: string): boolean {
+  settleToolResult(role: string, toolId: string, status: ToolStatus, result: string): boolean {
     for (let i = this.merge.length - 1; i >= 0; i -= 1) {
       const entry = this.merge[i];
       if (entry === undefined || entry.member !== role) {
@@ -519,8 +509,18 @@ export class TeamHistory {
   }
 
   /** Snapshot of one member's view for ListMemberMessages (defensive copy). */
-  listMemberMessages(role: AgentMemberRole): MemberViewEntry[] {
-    return [...this.views[role]];
+  listMemberMessages(role: string): MemberViewEntry[] {
+    return [...(this.views.get(role) ?? [])];
+  }
+
+  /** Append one entry to a member's view, creating the view on first write. */
+  private pushView(role: string, entry: MemberViewEntry): void {
+    const view = this.views.get(role);
+    if (view === undefined) {
+      this.views.set(role, [entry]);
+      return;
+    }
+    view.push(entry);
   }
 
   /** Build one projected message with its server-assigned id and timestamp. */
@@ -608,10 +608,18 @@ export class MemberCollector {
   constructor(
     /** The member's source id (an agent member's dsh session id) — the envelope's member identity. */
     private readonly memberId: string,
-    private readonly role: AgentMemberRole,
+    private readonly role: string,
     private readonly sessionName: string,
     private readonly history: TeamHistory,
     private readonly sink: (event: ChatEvent) => void,
+    /**
+     * Whether this collector records the role's own member view. `false` is
+     * the viewless mode used for roles outside the materialized roster: their
+     * activity still produces member-labelled frames and merged entries, but
+     * no view write and no `member_view` frame
+     * (specs/080-host-main-sub-model/contracts/scene-registry.md §3).
+     */
+    private readonly recordView = true,
   ) {}
 
   /**
@@ -675,7 +683,7 @@ export class MemberCollector {
       // Member-view projection only: the user input or a relayed broadcast
       // enters this member's view exactly when the orchestrator drives it
       // (survey/deepseek-harness-team-mode.md §4.4).
-      this.history.appendMemberViewUser(this.role, event as UserMessageEvent);
+      this.history.appendMemberViewUser(this.role, event as UserMessageEvent, this.recordView);
       return;
     }
     if (event.type === "assistant/message") {
@@ -692,6 +700,7 @@ export class MemberCollector {
         this.role,
         message.content,
         assistantEvent.data.interrupted === true,
+        this.recordView,
       );
       return;
     }
@@ -898,7 +907,7 @@ export class MemberCollector {
       // (it only solidifies interrupted prefixes on cancellation), so the
       // collector appends the interrupted history entry here — the specs/
       // 054 backfill semantics the large tests assert.
-      this.history.appendMemberOutput(this.role, pendingBlocks, true);
+      this.history.appendMemberOutput(this.role, pendingBlocks, true, this.recordView);
     }
     const usage =
       outcome.status === "COMPLETED" ? usageToProto(active.usage) : undefined;
