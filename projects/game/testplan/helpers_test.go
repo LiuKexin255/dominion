@@ -32,10 +32,14 @@ const (
 	flowReadTimeout = 75 * time.Second
 )
 
-// saoleiTemplateID is the saolei template path segment — the only known
-// template (gameconst.SaoleiTemplate). Every resource hangs off
+// saoleiTemplateID is the saolei template path segment; its resources hang off
 // "templates/saolei/...".
 var saoleiTemplateID = gameconst.SaoleiTemplate.TemplateID
+
+// sts2TemplateID is the sts2 template path segment; its resources hang off
+// "templates/sts2/..." (gameconst.Sts2Template,
+// specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §1).
+var sts2TemplateID = gameconst.Sts2Template.TemplateID
 
 // ─── JSON-response types (mirroring proto messages) ─────────────────────────
 

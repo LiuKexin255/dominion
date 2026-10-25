@@ -25,13 +25,17 @@ list role filter validates it.
 
 ## 1. Deployment under test
 
-The suites use four deployments sharing one service list —
+The suites use five deployments — four sharing one service list:
 `deploy_agent_v2.yaml` (the won topology), `deploy_agent_v2_drop.yaml` (the
 progressive + disconnect fault topology for the disconnect suite),
 `deploy_agent_v2_memory_down.yaml` (no memory service, for the
 materialization fail-loud branch), and `deploy_agent_v2_stall.yaml` (a
 dedicated 2s `GLM_STREAM_IDLE_TIMEOUT_MS` watchdog window for the stall
-suite) — differing in service presence and env:
+suite) — plus `deploy_sts2.yaml`, the sts2 slim topology
+(`mongo`/`session`/`fake-llm`/`proxy`/`agent-v2-test`/`gateway`; no web, no
+fake-desktop, no memory, per
+specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §1). They
+differ in service presence and env:
 
 - `mongodb`, `session`, `memory` — the persistence and the /api/v1 faces
   (session CRUD + memory CRUD through the gateway).
@@ -71,11 +75,12 @@ every request (`helpers_test.go` `doHTTPTrace`).
 
 ## 2. Suites
 
-Four suites over four deployment topologies
+Five suites over five deployment topologies
 (specs/054-agent-v2-bugfixes/contracts/testplan.md §2;
 specs/059-agent-v2-team-mode/tasks.md T023;
-specs/063-llm-reliability-opencode-go/tasks.md T022) — the six won-topology
-suites of the pre-refactor plan share one deployment:
+specs/063-llm-reliability-opencode-go/tasks.md T022;
+specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §2) — the six
+won-topology suites of the pre-refactor plan share one deployment:
 
 | suite | deploy | binaries | focus |
 |---|---|---|---|
@@ -83,6 +88,7 @@ suites of the pre-refactor plan share one deployment:
 | game-disconnect | deploy_agent_v2_drop.yaml | `agent_v2_game_disconnect_test` | the team mid-game disconnect and recovery branch (progressive + disconnect fault topology) |
 | game-memory-down | deploy_agent_v2_memory_down.yaml | `agent_v2_memory_down_test` | the team materialization fail-loud branch (no memory service: the planner memory prefetch rejects, UpdateTeam 5xx + GetTeam NOT_FOUND + retryable) |
 | game-stall | deploy_agent_v2_stall.yaml | `agent_v2_stall_test` | the adapter-level stream-stall watchdog branch (specs/063-llm-reliability-opencode-go/spec.md SC-004a): the 2s idle window detects the Responses stall template and converges through the existing retry semantics to a visible timeout-class failure without an unbounded hang; its own binary because guitar runs whole targets as suite cases and the main suite runs under the production-sized window |
+| game-sts2 | deploy_sts2.yaml | `sts2_conversation_test` | the sts2 minimal single-main-agent face on the slim fake-llm topology: preset(`main`, empty persona) → UpdateTeam with the single-member roster (validation rejects every other shape) → Send NDJSON ping turns (one `main` turn, merged/member-view projections) → quiescence, refresh (`create_time` preserved, history cleared, per-lifecycle rebuild) and in-flight refresh (`turn_end{ABORTED}`) → cancel (`turn_end{CANCELED}`) and resume → fixed-roster NOT_FOUND for non-`main` roles; no desktop, no memory, no announcer (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §3) |
 
 `guitar run` executes suites and cases serially in YAML order and stops on
 the first failure — the main suite runs first so a trunk regression surfaces
@@ -301,12 +307,12 @@ guitar validate projects/game/testplan/system_test.yaml
 # Run the plan end-to-end: deploy the SUT, run every suite's cases, then
 # tear the deployment down. --suite <name> runs a single suite.
 #
-# --timeout is the OVERALL budget for the whole run (default 10m). The four
+# --timeout is the OVERALL budget for the whole run (default 10m). The five
 # suites run serially and each pays deploy + a fixed 60s settle wait + tests
 # + cleanup, so budget for the whole chain and leave deploy-jitter margin.
 # An undersized budget surfaces as "wait after deploy: context deadline
 # exceeded" on a later suite.
-guitar run projects/game/testplan/system_test.yaml --timeout=15m
+guitar run projects/game/testplan/system_test.yaml --timeout=20m
 ```
 
 ## 6. How to add or update fake-llm templates
@@ -324,6 +330,11 @@ guitar run projects/game/testplan/system_test.yaml --timeout=15m
    consumed by the suites are pinned as the `agentV2*` / `team*` constants in
    `agent_v2_helpers_test.go`. Update those constants whenever the testdata
    changes, and adjust any `strings.Contains` assertions that depend on them.
+   Suite-specific expected constants may live in the suite's own case file
+   next to its cases (the sts2 ones are in
+   `projects/game/testplan/sts2_conversation_test.go`;
+   specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §4); constants
+   shared by several suites stay in `agent_v2_helpers_test.go`.
 4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
    in `projects/game/fake-llm/service/message_store_test.go` pins the real
    embedded testdata. It is the single source of truth — if the testdata

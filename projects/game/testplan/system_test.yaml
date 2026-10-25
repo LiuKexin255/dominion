@@ -1,11 +1,12 @@
 name: game-system-test
 description: |
-  Game system integration test — four suites over four deployment
+  Game system integration test — five suites over five deployment
   topologies (specs/054-agent-v2-bugfixes/contracts/testplan.md §2;
   specs/059-agent-v2-team-mode/tasks.md T023;
-  specs/063-llm-reliability-opencode-go/tasks.md T022). Six formerly separate
-  suites share one deployment, so the trunk regression pays one deploy instead
-  of several 60s settle waits.
+  specs/063-llm-reliability-opencode-go/tasks.md T022;
+  specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §2). Six
+  formerly separate suites share one deployment, so the trunk regression pays
+  one deploy instead of several 60s settle waits.
 
   Suite 1 (game-system): the full system on deploy_agent_v2.yaml — the
     won topology whose fake-desktop executor plays the won board on the
@@ -29,7 +30,13 @@ description: |
     (specs/063-llm-reliability-opencode-go SC-004a) on
     deploy_agent_v2_stall.yaml — the same service list with the 2s
     GLM_STREAM_IDLE_TIMEOUT_MS window the main topology's legitimate
-    3s/4s chunk gaps cannot share. Last: the isolated watchdog topology.
+    3s/4s chunk gaps cannot share. The dedicated watchdog topology.
+  Suite 5 (game-sts2): the sts2 minimal single-main-agent face
+    (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §2) on
+    deploy_sts2.yaml — the six-service slim topology without web,
+    fake-desktop or memory. Its cases cover the single `main` roster
+    materialization, the fake-llm ping turn, the quiescence/refresh/cancel
+    windows, and the fixed-roster NOT_FOUND face.
 
   Cases isolate through unique session/preset resource names, so the
   shared deployment needs no per-case redeployment.
@@ -74,3 +81,11 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_v2_stall_test  # stream-stall watchdog convergence
+  - name: game-sts2
+    description: "The sts2 minimal single-main-agent conversation face on the slim fake-llm topology: preset(main, empty persona) → UpdateTeam → Send NDJSON turns → quiescence / refresh / cancel; no desktop, no memory, no announcer."
+    deploy: //projects/game/testplan/deploy_sts2.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:sts2_conversation_test

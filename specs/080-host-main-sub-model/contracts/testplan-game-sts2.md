@@ -42,7 +42,7 @@
 | 3 | `TestSts2MainQuiescenceAndRefresh` | G：已物化并完成一回合；W：流静止后再次 `UpdateTeam`；T：静止期无自发帧；刷新后 `create_time` 保留、`update_time` 更新、历史清空（List 面）、`GetTeam` 新名册；在途刷新变体：turn 在途时刷新 → `turn_end{ABORTED}`；取消变体：`:cancel` → `turn_end{CANCELED}` → 冻结（再次 Send 恢复） |
 | 4 | `TestSts2NonRosterMemberNotFound` | G：已物化；W：`GetTeamMember("announcer")` 与任一非 `main` 角色、`ListMemberMessages` 同；T：`NOT_FOUND`（FR-007 名册固定） |
 
-校验类负向（并入用例 1）：roster 双成员 / 非 `main` role / preset role 不匹配 → `INVALID_ARGUMENT`。
+校验类负向（并入用例 1）：roster 双成员 / 非 `main` role / 跨模板 preset（结构层 `template` 不匹配拒绝）→ `INVALID_ARGUMENT`。同模板 preset role 不匹配经公共 API 不可达（sts2 池 preset create 仅接受 `main` 角色，`projects/game/agent_v2/src/server.ts` 的场景角色词汇校验），该等值分支由 `projects/game/agent_v2/src/session.test.ts` 单测覆盖（"rejects roster and preset violations with INVALID_ARGUMENT before constructing the orchestration" 的 sts2 单成员 role 等值断言，以及 "rejects a preset role mismatch and an unknown preset before any member creation"）。
 
 ## §4 fake-llm fixture（`projects/game/fake-llm/service/testdata/sts2_main.yaml` 新建）
 
