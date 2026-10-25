@@ -14,8 +14,9 @@ common/js/dsh-plugins/
 │   ├── tools/              #   模型工具面
 │   ├── memory/             #   memory 能力 adapter
 │   └── hooks/              #   hook 引擎
-└── sts2/                   # sts2 场景专用分组（本期仅骨架）
-    └── game/               #   游戏基础骨架（空 apply）
+└── sts2/                   # sts2 场景专用分组
+    ├── game/               #   游戏基础骨架（空 apply）
+    └── loop/               #   最小编排（官方 agent-loop 直驱主 agent）
 ```
 
 1. **分组判据**：插件若仅服务单一游戏场景 → 归入 `<场景>/` 分组；场景无关（基建/LLM/team 原语/preset 基座等）→ 顶层平铺。
@@ -32,6 +33,7 @@ common/js/dsh-plugins/
 | `dsh-plugins/saolei/memory/` | `@dominion/dsh-saolei-memory` | saolei 专用 | `dsh-plugins/saolei-memory/` |
 | `dsh-plugins/saolei/hooks/` | `@dominion/dsh-saolei-hooks` | saolei 专用 | `dsh-plugins/saolei-hooks/` |
 | `dsh-plugins/sts2/game/` | `@dominion/dsh-sts2` | sts2 专用 | 新建（骨架） |
+| `dsh-plugins/sts2/loop/` | `@dominion/dsh-sts2-loop` | sts2 专用 | 新建（080 最小编排：官方 agent-loop 直驱主 agent） |
 | `dsh-plugins/{desktop-bridge,grpc-runtime,llm-glm,llm-opencode-go,preset-authoring,team}/` | `@dominion/dsh-*` 同名 | 通用 | 不动 |
 
 **不变量**：
@@ -42,15 +44,15 @@ common/js/dsh-plugins/
 
 ## §3 组合清单 sts2 惰性行（用户裁定 2026-10-22）
 
-- `projects/game/agent_v2/cordis.yml` 新增：`- { id: sts2, name: '@dominion/dsh-sts2' }`（置于 `saolei` 领域行邻近，注释标明脚手架占位）。
-- 骨架插件形态：插件导出 `name: "sts2"`（与清单行 `id` 一致）、`inject: []`、空 `apply`——不 provide 服务、不注册工具/prompt section；清单行 `name` 为包名 `@dominion/dsh-sts2`；测试断言插件形态防漂移。
-- pinned 断言与契约同步：`projects/game/agent_v2/src/dsh.test.ts` 22→23 行；`specs/070-dsh-upgrade/contracts/composition-manifest.md` 修订为 23 行终态。
+- `projects/game/agent_v2/cordis.yml` 含两条 sts2 惰性行（置于 `saolei` 领域行邻近，注释标明占位）：`- { id: sts2, name: '@dominion/dsh-sts2' }` 与 `- { id: sts2-loop, name: '@dominion/dsh-sts2-loop' }`（后者 080-host-main-sub-model 起，最小编排挂载点）。
+- 插件形态：插件导出 `name` 与清单行 `id` 一致（`"sts2"`/`"sts2-loop"`）、`inject: []`、空 `apply`——不 provide 服务、不注册工具/prompt section；清单行 `name` 为包名；测试断言插件形态防漂移。
+- pinned 断言与契约同步：`projects/game/agent_v2/src/dsh.test.ts` 24 行断言；`specs/070-dsh-upgrade/contracts/composition-manifest.md` §2 与 `specs/079-sts2-template-scaffold/data-model.md` §5 同为 24 行终态。
 
 ## §4 打包通道不变量（迁移/新建必须满足）
 
 1. **workspace 包交付通道**：进入 agent_v2 部署闭包的唯一途径是 `js_runtime_library` `:runtime_pkg` 经 `server_pkg.runtime_deps`（`projects/game/agent_v2/BUILD.bazel`）；workspace 包**严禁**列入 `npm_deps`（部署缺文件的既定教训，见 BUILD 注释）。
 2. **裸名解析需要 manifest**：`js_library :pkg` 的 `srcs` 必须含 `package.json`（组合清单按裸包名动态 import 依赖它，`dsh-plugins/saolei/game/BUILD.bazel` 注释先例）。
-3. **node_modules 忽略校验**：每个包目录的 `node_modules` 必须列入根 `.bazelignore`（`MODULE.bazel` 以 `npm_translate_lock.verify_node_modules_ignored = "//:.bazelignore"` 声明；rules_js 文档将该属性标注为 Bazel 7.x 语义，若当前 Bazel 版本不再触发，则以 `bazel build //...` 无 node_modules 告警为准）——迁移后旧条目删除、新条目补齐，并清理残留的 `common/js/dsh-plugins/saolei-interrupt/node_modules`。
+3. **node_modules 忽略校验**：每个包目录的 `node_modules` 必须列入根 `.bazelignore`（`MODULE.bazel` 以 `npm_translate_lock.verify_node_modules_ignored = "//:.bazelignore"` 声明；[rules_js pnpm 文档](https://github.com/aspect-build/rules_js/blob/main/docs/pnpm.md#ignoring-node-modules)将该属性标注为 Bazel 7.x 语义，Bazel 8 起改用 `ignore_directories(["**/node_modules"])`，若当前 Bazel 版本不再触发，则以 `bazel build //...` 无 node_modules 告警为准）——迁移后旧条目删除、新条目补齐，并清理残留的 `common/js/dsh-plugins/saolei-interrupt/node_modules`。
 4. **lockfile 重生成**：目录移动后 `pnpm-lock.yaml` 的 importer 键与 `link:` 相对路径必须经 `bazel run @pnpm -- --dir <仓库根绝对路径> up` 重算，禁止手改（AGENTS.md）。
 5. **git 历史**：目录迁移一律 `git mv`（含基础包两跳下移 `saolei/` → `saolei/game/`），禁止复制重建。
 

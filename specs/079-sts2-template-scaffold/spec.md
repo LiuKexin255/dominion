@@ -8,6 +8,8 @@
 
 **Input**: User description: "为 @projects/game/ 引入新的 template sts2，游戏为杀戮尖塔2，前期调研 @survey/sts2-* 。本需求为初始化和脚手架工作，为新的场景创建脚手架、目录等等，为后续引入新的场景做准备。另外将 @common/js/dsh-plugins 下目录中的属于saolei 的插件移动到 @common/js/dsh-plugins/saolei 目录下，以区分通用插件和专用插件。"
 
+> **后续说明（080-host-main-sub-model）**：本 spec 的"本期"范围已结束。sts2 场景自 `specs/080-host-main-sub-model/spec.md` 起接入（roster/preset 词汇 `main`、`UpdateTeam` 与 sts2 preset CRUD 开放、最小编排 `@dominion/dsh-sts2-loop`）。本 spec 中涉及 sts2 行为/数据模型的历史条款（如 FR-002/SC-001/Assumptions 的"无 preset 词汇"）以 079 [contracts/scene-dispatch.md](contracts/scene-dispatch.md) 与 [data-model.md](data-model.md) 的终态及 080 契约为准。
+
 **决策基线**（2026-10-22 用户三项裁定）：
 
 1. **sts2 可用性边界 = 注册 + 泛化 + 骨架**：系统全面接受 `sts2` 为合法场景 id；saolei 场景差异硬编码泛化为按 template 决定（saolei 行为零变化）；本期不承诺 sts2 任何端到端可玩行为——正式场景接入（工具面、desktop 桥 relay、fake-sts2 等）由后续 feature 承载。

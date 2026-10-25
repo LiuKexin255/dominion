@@ -60,7 +60,7 @@
 
 ## R7 当前激活成员：单一合并值（GetTeam.active_member + web 呈现）
 
-- **Decision**：`OrchestratorSnapshot` 增加 `activation`（下一条输入归属成员，即 orchestrator 的 `current` 字段，`orchestrator.ts` L344-345；现状 snapshot 只外露 driving 的 `active` L553）；`TeamView` 增加 `activeMember = driving?.role ?? activation`（用户裁定单一合并值：回合在途 = 驱动成员，静止 = 下一条输入归属；物化后恒非空，初始 planner）。proto `Team` 增加 output-only `active_member`（string；未物化时 GetTeam 本就 NOT_FOUND，无空值歧义）。web：team 工具条呈现激活成员徽标；**实时性经前端推导**——任一成员 `turn_start` 帧 → 激活 = 该 member（覆盖最近 GetTeam 值）；live 全部收束 → 以最近 GetTeam 值兜底（GetTeam 刷新时机沿用现状：进入会话/send 前/10s 轮询/live→空迁移即时刷新）。不新增流帧。
+- **Decision**：`OrchestratorSnapshot` 增加 `activation`（下一条输入归属成员，即 orchestrator 的 `current` 字段，`orchestrator.ts` L344-345；现状 snapshot 只外露 driving 的 `active` L553）；`TeamView` 增加 `activeMember = driving?.role ?? activation`（用户裁定单一合并值：回合在途 = 驱动成员，静止 = 下一条输入归属；物化后恒非空，初始 planner）。proto `Team` 增加 output-only `active_member`（string；未物化时 GetTeam 本就 NOT_FOUND，无空值歧义）。web：team 工具条呈现激活成员徽标；**实时性经前端推导**——任一成员 `turn_start` 帧 → 激活 = 该 member（覆盖最近 GetTeam 值）；live 全部收束 → 以最近 GetTeam 值兜底（GetTeam 刷新时机沿用现状：进入会话/send 前/10s 轮询/live→空迁移即时刷新）。不新增流帧。080 起 activation 场景化（saolei = `planner`、sts2 = `main`，见 `specs/080-host-main-sub-model/contracts/face-main-sub.md` §3）。
 - **Rationale**：编排层已持有全部事实，仅未外露；两概念在串行驱动下行为不分离（驱动成员即当前激活成员），单一值完整回答"现在是谁在处理"（spec Clarifications 2026-09-11 第 2 条裁定）。前端推导避免为呈现增加帧词汇；GetTeam 兜底覆盖静止期切换（gameEnded 后 activation 变化的静止窗口由 10s 轮询/下次 send 前刷新收敛，呈现精度足够）。
 - **Alternatives**：新增激活变更流帧（帧词汇扩张非必要）；GetTeam 轮询-only（用户明确"实时同步（无需刷新）"预期）。
 - **引用**：`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` L343-348、L549-556；`projects/game/agent_v2/src/session.ts` toTeamView；spec FR-008。

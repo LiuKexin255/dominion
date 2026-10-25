@@ -23,18 +23,23 @@
 
 新实体，落点 `projects/game/agent_v2/src/scenes.ts`（`specs/079-sts2-template-scaffold/research.md` D2）。按 template id 索引的只读记录：
 
-| 字段 | 类型 | 语义 | saolei | sts2 |
+| 字段 | 类型 | 语义 | saolei | sts2（080 起） |
 |---|---|---|---|---|
-| `roster` | `readonly string[]` | team 物化的固定成员角色集合（顺序即编排成员顺序；空 = 无 team 编排） | `["player","planner"]` | `[]` |
-| `presetRoles` | `readonly string[]` | preset 角色词表（空 = 该场景无 preset 词汇） | `["player","planner"]` | `[]` |
-| `rolePoolTemplate` | `Readonly<Record<string, string>>` | 角色 → preset-authoring 池模板 id（`cordis.yml` `preset-authoring` 行 `templates` 快照的键） | `{player:"player", planner:"planner"}` | `{}` |
-| `orchestratable` | `boolean` | team 编排是否接线（false = materialize 入口拒绝） | `true` | `false` |
-| `teamGoal` | `string` | 共享 team section 任务目标文案（编排物化输入） | 现文案原文（`session.ts:91`，零变化） | `""`（不适用） |
+| `roster` | `readonly string[]` | team 物化的固定成员角色集合（顺序即编排成员顺序；空 = 无 team 编排） | `["player","planner"]` | `["main"]` |
+| `presetRoles` | `readonly string[]` | preset 角色词表（空 = 该场景无 preset 词汇） | `["player","planner"]` | `["main"]` |
+| `rolePoolTemplate` | `Readonly<Record<string, string>>` | 角色 → preset-authoring 池模板 id（`cordis.yml` `preset-authoring` 行 `templates` 快照的键） | `{player:"player", planner:"planner"}` | `{main:"main"}` |
+| `orchestratable` | `boolean` | team 编排是否接线（false = materialize 入口拒绝） | `true` | `true`（080 开放） |
+| `teamGoal` | `string` | 共享 team section 任务目标文案（编排物化输入） | 现文案原文（`session.ts:91`，零变化） | `""`（无 team section，不消费） |
+| `faceMembers`（080 新增） | `readonly string[]` | face 可见成员名清单（含服务端附加成员；仅用于成员名预检/roster 错误文案，不含能力/行为声明） | `["player","planner","announcer"]` | `["main"]` |
+| `createOrchestration`（080 新增，可选） | `(ctx: DshContext, deps: SceneRegistrationDeps) => SceneOrchestration` | 编排工厂：构造本场景的会话编排；`scenes.ts` 以闭包注入本场景数据，场景模块不 import `scenes.ts` | saolei 适配器（包装 `TeamOrchestrator`） | sts2 工厂（`Sts2Orchestrator`） |
+
+> 080-host-main-sub-model 起 sts2 由场景注册接入最小编排（`@dominion/dsh-sts2-loop`）；后续 sts2-loop feature 的房间角色/工具面扩展不改本表语义。不变式：`orchestratable === true` ⇔ `createOrchestration` 存在（`specs/080-host-main-sub-model/contracts/scene-registry.md` §1）。
 
 **派生关系**：
 
-- `roster` ↔ `UpdateTeam` 物化：成员数/角色集合校验、成员查找与编排成员键（`memberFor`/`orchestrator.member`/`createMemberRuntime`）均取自本字段；错误文案由 `template` + `roster` 构造，saolei 产出字符串逐字节不变（`session.ts:999-1013` 语义平移）。
+- `roster` ↔ `UpdateTeam` 物化：成员数/角色集合校验、成员查找与编排成员键（`memberFor`/`orchestrator.member`/`createMemberRuntime`）均取自本字段；成员名预检与 roster 错误文案 080 起由 `faceMembers` 派生（含服务端附加成员；saolei 产出字符串逐字节不变，`session.ts:999-1013` 语义平移）。
 - `presetRoles` ↔ PresetService 入参校验（Create 必填 role、List 可选 role 过滤）；`rolePoolTemplate` ↔ `authoring.create({template, role, ...})` 的池模板选择。
+- `faceMembers` ↔ host 成员名预检与 roster 错误文案（080 起由注入 registry 派生；含服务端附加成员名）；与编排 `members()` 投影一致，仅名称面。
 - `orchestratable = false` ⇒ `UpdateTeam`（`sessions.materialize`）在结构/roster 校验之前即拒绝（`INVALID_ARGUMENT`，见 [contracts/scene-dispatch.md](contracts/scene-dispatch.md) §3）。
 - `teamGoal` 仅为 `orchestratable = true` 的场景消费。
 
@@ -42,11 +47,11 @@
 
 ## 3. Preset 资源命名与存储边界
 
-| 属性 | 现状（本期维持） |
+| 属性 | 终态 |
 |---|---|
-| 资源名 | `templates/{template}/presets/{preset}`——`template` 段由**请求 parent** 决定（泛化后不再硬拼常量；当前唯一可创建场景 saolei，产出字符串不变，`server.ts:264`） |
+| 资源名 | `templates/{template}/presets/{preset}`——`template` 段由**请求 parent** 决定（泛化后不再硬拼常量；saolei 产出字符串不变，`server.ts:264`） |
 | 存储 | preset-authoring store 全局单库，无 template 维度（`specs/079-sts2-template-scaffold/research.md` D4） |
-| 本期边界 | parent/资源名 template 段为 sts2 的全部 preset RPC 在入口层拒绝；存储模型零改动、零分区（spec FR-004/FR-009） |
+| 终态边界 | saolei（`player`/`planner`）与 sts2（`main`，080 起）各自按场景词表创建；其他模板与未接线场景在入口层拒绝；存储模型零改动、零分区（spec FR-004/FR-009、080 FR-009） |
 
 ## 4. dsh-plugins 目录布局实体
 
@@ -62,11 +67,12 @@ flowchart TB
     SAO --> SM["memory/ = @dominion/dsh-saolei-memory"]
     SAO --> SH["hooks/ = @dominion/dsh-saolei-hooks"]
     STS --> TS["game/ = @dominion/dsh-sts2（骨架，空 apply）"]
+    STS --> TL["loop/ = @dominion/dsh-sts2-loop（080 起，最小编排）"]
 ```
 
 **不变量**（详见 [contracts/dsh-plugins-layout.md](contracts/dsh-plugins-layout.md)）：
 
-- 包名与目录路径解耦：目录移动不改包名（`@dominion/dsh-saolei*`、`@dominion/dsh-sts2`）；组合清单按**裸包名**解析（宿主 node_modules）。
+- 包名与目录路径解耦：目录移动不改包名（`@dominion/dsh-saolei*`、`@dominion/dsh-sts2`、`@dominion/dsh-sts2-loop`）；组合清单按**裸包名**解析（宿主 node_modules）。
 - 分组目录本身不是 Bazel 包（无 BUILD.bazel）、不是 pnpm 包（无 package.json）；每个插件子目录是完整 workspace 包。
 - 依赖方向保持 075 裁定：上层（loop/tools/hooks）→ 游戏基础（game），基础不依赖上层。
 
@@ -74,17 +80,19 @@ flowchart TB
 
 | 属性 | 值 |
 |---|---|
-| 行数 | 23（本期起；`dsh.test.ts` id+name 双列表 pinned 断言同步） |
-| 新增行 | `- { id: sts2, name: '@dominion/dsh-sts2' }`——惰性行：插件空 `apply`、`inject: []`、无 provide/工具/section（`specs/079-sts2-template-scaffold/research.md` D3/D6） |
-| 契约 | `specs/070-dsh-upgrade/contracts/composition-manifest.md` 同步为 23 行终态 |
+| 行数 | 24（080-host-main-sub-model 起；`dsh.test.ts` id+name 双列表 pinned 断言同步） |
+| 新增行 | `- { id: sts2, name: '@dominion/dsh-sts2' }`（079 惰性行）+ `- { id: sts2-loop, name: '@dominion/dsh-sts2-loop' }`（080 最小编排惰性行）——均空 `apply`、`inject: []`、无 provide/工具/section |
+| 契约 | `specs/070-dsh-upgrade/contracts/composition-manifest.md` 同步为 24 行终态 |
 
 ## 6. 错误语义（场景化操作 fail-loud）
 
 | 触发面 | 条件 | gRPC code | 文案模式（终稿以实现为准，句式对齐 `server.ts:816`） |
 |---|---|---|---|
-| `UpdateTeam` | session template 的 `orchestratable = false` | `INVALID_ARGUMENT` | `scene "sts2" is not wired for team orchestration yet` |
-| `CreatePreset`/`ListPresets` | parent template 的 `presetRoles` 为空 | `INVALID_ARGUMENT` | `template "sts2" has no preset vocabulary (scene not wired)` |
+| `UpdateTeam` | session template 的 `orchestratable = false` | `INVALID_ARGUMENT` | `scene "{template}" is not wired for team orchestration yet` |
+| `CreatePreset`/`ListPresets` | parent template 的 `presetRoles` 为空 | `INVALID_ARGUMENT` | `template "{template}" has no preset vocabulary (scene not wired)` |
 | `GetPreset`/`UpdatePreset`/`DeletePreset` | 资源名 template 段无 preset 词汇 | `INVALID_ARGUMENT` | 同上句式 |
 | 任意资源解析 | template 段 ∉ `KNOWN_TEMPLATES`（与现状一致） | `INVALID_ARGUMENT` | 现有 `must be a ... resource name` 句式 |
 
 不引入新错误码；`TeamSessionErrorCode`（`session.ts:96`）维持 `INVALID_ARGUMENT | NOT_FOUND | FAILED_PRECONDITION`。
+
+> 080 起 `saolei`/`sts2` 均已接线（sts2 为单 `main` 成员），本表仅覆盖未知模板与未来未接线场景；sts2 的成功语义见 [080 data-model.md §4/§5](../080-host-main-sub-model/data-model.md)。
