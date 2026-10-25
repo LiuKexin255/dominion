@@ -185,6 +185,7 @@ artifact_pkg_js(
         "//common/js/dsh-plugins/saolei/memory:runtime_pkg",
         "//common/js/dsh-plugins/saolei/tools:runtime_pkg",
         "//common/js/dsh-plugins/sts2/game:runtime_pkg",
+        "//common/js/dsh-plugins/sts2/loop:runtime_pkg",
         "//common/js/dsh-plugins/team:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
