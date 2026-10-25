@@ -765,6 +765,66 @@ describe("TeamSessions.materialize", () => {
     expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 
+  it("rejects an unwired scene identically for every roster shape, before any validation", async () => {
+    const sts2Session = "templates/sts2/sessions/s1";
+    const sceneError = {
+      code: "INVALID_ARGUMENT",
+      message: 'scene "sts2" is not wired for team orchestration yet',
+    };
+    const h = createHarness();
+
+    // Empty members: Layer 1 would reject it, but the scene gate runs first.
+    await expect(h.sessions.materialize(sts2Session, { members: [] })).rejects.toMatchObject(
+      sceneError,
+    );
+    // The roster a wired scene would accept.
+    await expect(
+      h.sessions.materialize(sts2Session, {
+        members: [
+          { role: "player", preset: "templates/sts2/presets/p-player" },
+          { role: "planner", preset: "templates/sts2/presets/p-planner" },
+        ],
+      }),
+    ).rejects.toMatchObject(sceneError);
+    // A structurally invalid roster gets the same error: the gate precedes
+    // both validation layers
+    // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3 item 1).
+    await expect(
+      h.sessions.materialize(sts2Session, { members: [{ role: "", preset: "nope" }] }),
+    ).rejects.toMatchObject(sceneError);
+
+    // No validation or storage path was entered.
+    expect(h.authoring.get).not.toHaveBeenCalled();
+    expect(h.listModels).not.toHaveBeenCalled();
+    expect(h.agentsCreate).not.toHaveBeenCalled();
+    expect(h.teamRegister).not.toHaveBeenCalled();
+    expect(() => h.sessions.getTeam(sts2Session)).toThrow("team not materialized");
+  });
+
+  it("keeps the saolei roster error text byte-for-byte", async () => {
+    const h = createHarness();
+
+    await expect(
+      h.sessions.materialize(S1, { members: [{ role: "player", preset: P_PLAYER }] }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "saolei team materialization requires exactly 2 members (player and planner), got 1",
+    });
+    await expect(
+      h.sessions.materialize(S1, {
+        members: [
+          { role: "player", preset: P_PLAYER },
+          { role: "player", preset: P_PLAYER },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        'saolei team member roles must be exactly {"player", "planner"}, got [player, player]',
+    });
+  });
+
   it("rejects structure (scene-agnostic) and saolei-scene violations in the two validation layers", async () => {
     const h = createHarness();
 
@@ -1555,6 +1615,25 @@ describe("TeamSessions projections", () => {
     expect(h.sessions.getTeam(S1).members.every((entry) => entry.systemPrompt === "")).toBe(true);
     await expect(h.sessions.getTeamMember(S1, "robot")).rejects.toMatchObject({
       code: "NOT_FOUND",
+      message: 'team member "robot" does not exist; the roster is player/planner/announcer',
+    });
+    // A malformed session resource name fails loud at the read entry instead
+    // of degrading the roster description.
+    await expect(h.sessions.getTeamMember("sessions/s1", "player")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        'session must be a game session resource name ("templates/{template}/sessions/{session}"), got "sessions/s1"',
+    });
+    let viewError: unknown;
+    try {
+      h.sessions.listMemberMessages(S1, "announcer");
+    } catch (err) {
+      viewError = err;
+    }
+    expect(viewError).toMatchObject({
+      code: "NOT_FOUND",
+      message:
+        'team member "announcer" has no message view; the member-view roster is player/planner',
     });
   });
 

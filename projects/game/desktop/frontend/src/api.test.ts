@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { flowPartKind } from './api'
+import { TEMPLATE_SAOLEI, TEMPLATE_STS2, TEMPLATES, flowPartKind } from './api'
 import type { FlowPart } from './api'
 
 // Pure-function tests for the FlowPart variant reader. The desktop lib_test
 // globs src/**/*.ts only (no Svelte component mount), so the unit-testable
 // surface is the pure module convention of api.ts
 // (style/javascript.md §测试).
+
+describe('TEMPLATES', () => {
+  it('lists the local template constants in control-plane order', () => {
+    expect(TEMPLATE_SAOLEI).toBe('saolei')
+    expect(TEMPLATE_STS2).toBe('sts2')
+    expect(TEMPLATES).toEqual(['saolei', 'sts2'])
+  })
+})
 
 describe('flowPartKind', () => {
   it('returns the operation variant for a mouse click part', () => {

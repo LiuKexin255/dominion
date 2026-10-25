@@ -51,6 +51,7 @@ import type {
 // roster-verification §4.1).
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
 import type { PresetAuthoringService, PresetView } from "@dominion/dsh-preset-authoring";
+import { SCENES, sceneNotWiredMessage, wiredScene } from "./scenes.js";
 import { TeamSessionError, TeamSessions } from "./session.js";
 import type { TeamView } from "./session.js";
 import type { TurnStream } from "./history.js";
@@ -81,11 +82,15 @@ export const PROTO_PATH = path.join(SERVICE_ROOT, "projects/game/agent_v2.proto"
 
 /**
  * Known template path segments — the TS-side mirror of the game domain's
- * fixed template set (dominion/projects/game/pkg/gameconst/const.go
- * knownTemplateIDs; the game session resource shape is
- * templates/{template}/sessions/{session}, AIP-122).
+ * fixed template set (projects/game/pkg/gameconst/const.go knownTemplateIDs;
+ * the game session resource shape is templates/{template}/sessions/{session},
+ * AIP-122). The set is derived from the scene table keys
+ * (projects/game/agent_v2/src/scenes.ts), so a template registration and its
+ * scene entry cannot drift: `sts2` is registered here for the data plane while
+ * its scene behavior stays unwired in the scene table until a scene feature
+ * fills it (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §1).
  */
-const KNOWN_TEMPLATES = new Set(["saolei"]);
+const KNOWN_TEMPLATES: ReadonlySet<string> = new Set(Object.keys(SCENES));
 
 /** One entry of the read-only model catalog (agent-api.md §2.6). */
 export interface ModelCatalogEntry {
@@ -233,17 +238,39 @@ function dateToTimestamp(date: Date): Timestamp {
 }
 
 /**
- * The saolei scene role vocabulary: the role decides the pool a preset is
- * materialized from and is immutable after create
- * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2). The wire form is
- * a plain string (scene-agnostic proto, 2026-09-10 user ruling); this
- * service — the saolei scene host — validates the vocabulary.
+ * The preset role vocabulary of a template's scene, or undefined when the
+ * scene has none (an unwired scene). A wired vocabulary decides the pool a
+ * preset is materialized from and is immutable after create
+ * (specs/059-agent-v2-team-mode/contracts/preset-api.md §2); the wire form is
+ * a plain string (scene-agnostic proto, 2026-09-10 user ruling) validated
+ * against the scene table here.
  */
-type PresetRole = "player" | "planner";
+function scenePresetRoles(template: string): readonly string[] | undefined {
+  const { presetRoles } = SCENES[template];
+  return presetRoles.length === 0 ? undefined : presetRoles;
+}
 
-/** Whether a wire role string is part of the saolei scene vocabulary. */
-function isSceneRole(value: string): value is PresetRole {
-  return value === "player" || value === "planner";
+/**
+ * The entry-point rejection of a template whose scene is not wired for
+ * presets: the whole preset face fails loud instead of returning an empty or
+ * partial result (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md
+ * §3).
+ */
+function noPresetVocabularyMessage(template: string): string {
+  return `template "${template}" has no preset vocabulary (scene not wired)`;
+}
+
+/**
+ * Render a role vocabulary as the quoted English enumeration used in error
+ * messages: `"a" or "b"` for two roles, `"a", "b" or "c"` for three.
+ */
+function quotedRoleList(roles: readonly string[]): string {
+  const quoted = roles.map((role) => `"${role}"`);
+  if (quoted.length <= 1) {
+    return quoted.join("");
+  }
+  const last = quoted.length - 1;
+  return `${quoted.slice(0, last).join(", ")} or ${quoted[last]}`;
 }
 
 /**
@@ -251,17 +278,16 @@ function isSceneRole(value: string): value is PresetRole {
  * (specs/060-agent-v2-team-optimize/contracts/preset-derivation.md §2): the
  * template id is a key of the `preset-authoring` row Config `templates`
  * snapshot, the single source of template definitions
- * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3); the saolei
- * scene vocabulary maps each role to the like-named template.
+ * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3). The scene
+ * table maps each of its preset roles to its pool template.
  */
-const ROLE_TEMPLATE: Record<PresetRole, string> = { player: "player", planner: "planner" };
+function rolePoolTemplate(template: string, role: string): string {
+  return SCENES[template].rolePoolTemplate[role];
+}
 
-/** The RPC resource parent all preset names live under (KNOWN_TEMPLATES). */
-const SAOLEI_TEMPLATE = "saolei";
-
-function presetToProto(view: PresetView): Preset {
+function presetToProto(template: string, view: PresetView): Preset {
   const preset: Preset = {
-    name: `templates/${SAOLEI_TEMPLATE}/presets/${view.id}`,
+    name: `templates/${template}/presets/${view.id}`,
     persona: view.persona,
     createTime: dateToTimestamp(view.createTime),
     updateTime: dateToTimestamp(view.updateTime),
@@ -490,6 +516,17 @@ export function buildTeamHandlers(deps: TeamHandlersDeps): AgentServiceHandlers 
         });
         return;
       }
+      // Scene wiring gate — before the scene-agnostic structure checks: an
+      // unwired scene rejects every roster shape identically (empty members
+      // included), so no validation or storage path is entered
+      // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3 item 1).
+      if (wiredScene(session.template) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: sceneNotWiredMessage(session.template),
+        });
+        return;
+      }
       // Layer 1 — structure (scene-agnostic, contracts/team-api.md §2):
       // the members list is the materialization input, every member carries
       // a non-empty role and a preset resource name under the session
@@ -563,10 +600,11 @@ export function buildTeamHandlers(deps: TeamHandlersDeps): AgentServiceHandlers 
       const sessionName = `templates/${session.template}/sessions/${session.session}`;
       void (async () => {
         try {
-          // Layer 2 — saolei scene validation (exactly two members with the
-          // {player, planner} roles, preset existence + role equality, model
-          // catalog) happens inside the registry BEFORE any teardown — no
-          // half-materialized state (contracts/team-api.md §2).
+          // Layer 2 — scene validation (the template's roster, preset existence
+          // + role equality, model catalog, all from SCENES[template]) happens
+          // inside the registry BEFORE any teardown — no half-materialized
+          // state (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md
+          // §2; specs/059-agent-v2-team-mode/contracts/team-api.md §2).
           const view = await deps.sessions.materialize(sessionName, { members });
           callback(null, teamViewToProto(view, deps.isDesktopConnected(sessionName)));
         } catch (err) {
@@ -789,10 +827,23 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
   return {
     CreatePreset: (call, callback) => {
       const parent = call.request.parent ?? "";
-      if (parseTemplateParent(parent) === undefined) {
+      const parsedParent = parseTemplateParent(parent);
+      if (parsedParent === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
           message: `parent must be a template resource name ("templates/{template}"), got "${parent}"`,
+        });
+        return;
+      }
+      const { template } = parsedParent;
+      // An unwired scene has no preset vocabulary: reject the whole face at
+      // the entry, before any role/id validation or storage
+      // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3).
+      const presetRoles = scenePresetRoles(template);
+      if (presetRoles === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: noPresetVocabularyMessage(template),
         });
         return;
       }
@@ -810,10 +861,10 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
       // The wire value is a plain string; this scene host validates the
       // vocabulary.
       const role = call.request.role ?? "";
-      if (!isSceneRole(role)) {
+      if (!presetRoles.includes(role)) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `role is required and must be a known saolei scene role ("player" or "planner"), got "${role}"`,
+          message: `role is required and must be a known ${template} scene role (${quotedRoleList(presetRoles)}), got "${role}"`,
         });
         return;
       }
@@ -824,32 +875,45 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
       void deps.authoring
         .create({
           id: presetId,
-          template: ROLE_TEMPLATE[role],
+          template: rolePoolTemplate(template, role),
           role,
           persona: call.request.preset?.persona ?? "",
         })
         .then(
-          (view) => callback(null, presetToProto(view)),
+          (view) => callback(null, presetToProto(template, view)),
           (err: unknown) => callback(toServiceError(err)),
         );
     },
 
     ListPresets: (call, callback) => {
       const parent = call.request.parent ?? "";
-      if (parseTemplateParent(parent) === undefined) {
+      const parsedParent = parseTemplateParent(parent);
+      if (parsedParent === undefined) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
           message: `parent must be a template resource name ("templates/{template}"), got "${parent}"`,
         });
         return;
       }
+      const { template } = parsedParent;
+      // Unwired scene: no preset vocabulary, so no list can be served (an
+      // empty list would read as "wired but empty",
+      // specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3).
+      const presetRoles = scenePresetRoles(template);
+      if (presetRoles === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: noPresetVocabularyMessage(template),
+        });
+        return;
+      }
       // Empty = no role filtering; a non-empty filter must be scene
       // vocabulary (preset-api.md §1).
       const roleValue = call.request.role ?? "";
-      if (roleValue !== "" && !isSceneRole(roleValue)) {
+      if (roleValue !== "" && !presetRoles.includes(roleValue)) {
         callback({
           code: grpc.status.INVALID_ARGUMENT,
-          message: `role filter must be a known saolei scene role ("player" or "planner"), got "${roleValue}"`,
+          message: `role filter must be a known ${template} scene role (${quotedRoleList(presetRoles)}), got "${roleValue}"`,
         });
         return;
       }
@@ -878,7 +942,9 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
           }
           const page = sorted.slice(startIdx);
           const hasMore = page.length > size;
-          const presets = (hasMore ? page.slice(0, size) : page).map(presetToProto);
+          const presets = (hasMore ? page.slice(0, size) : page).map((view) =>
+            presetToProto(template, view),
+          );
           callback(null, {
             presets,
             nextPageToken: hasMore ? presets[presets.length - 1].name : "",
@@ -898,8 +964,18 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         });
         return;
       }
+      // The template segment of the resource name selects the scene: an
+      // unwired scene has no preset vocabulary and rejects at the entry
+      // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3).
+      if (scenePresetRoles(parsed.template) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: noPresetVocabularyMessage(parsed.template),
+        });
+        return;
+      }
       void deps.authoring.get(parsed.preset).then(
-        (view) => callback(null, presetToProto(view)),
+        (view) => callback(null, presetToProto(parsed.template, view)),
         (err: unknown) => callback(toServiceError(err)),
       );
     },
@@ -912,6 +988,16 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         callback({
           code: grpc.status.INVALID_ARGUMENT,
           message: `preset.name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
+        });
+        return;
+      }
+      // The template segment of the resource name selects the scene: an
+      // unwired scene has no preset vocabulary and rejects at the entry
+      // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3).
+      if (scenePresetRoles(parsed.template) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: noPresetVocabularyMessage(parsed.template),
         });
         return;
       }
@@ -936,7 +1022,7 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
       void deps.authoring
         .update(parsed.preset, { persona: preset?.persona ?? "" })
         .then(
-          (view) => callback(null, presetToProto(view)),
+          (view) => callback(null, presetToProto(parsed.template, view)),
           (err: unknown) => callback(toServiceError(err)),
         );
     },
@@ -948,6 +1034,16 @@ export function buildPresetHandlers(deps: PresetServiceDeps): PresetServiceHandl
         callback({
           code: grpc.status.INVALID_ARGUMENT,
           message: `name must be a preset resource name ("templates/{template}/presets/{preset}"), got "${name}"`,
+        });
+        return;
+      }
+      // The template segment of the resource name selects the scene: an
+      // unwired scene has no preset vocabulary and rejects at the entry
+      // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3).
+      if (scenePresetRoles(parsed.template) === undefined) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          message: noPresetVocabularyMessage(parsed.template),
         });
         return;
       }

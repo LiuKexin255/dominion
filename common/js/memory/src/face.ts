@@ -41,7 +41,7 @@ import type { WikiWriteArgs } from "./wiki-operations.js";
  * preset whose memories this member works with (the memory service resource
  * pattern `templates/{template}/presets/{preset}/memories/{memory}`).
  * Structurally compatible with the orchestration layer's scope type
- * (common/js/dsh-plugins/saolei-loop/src/orchestrator.ts), so the
+ * (common/js/dsh-plugins/saolei/loop/src/orchestrator.ts), so the
  * materialization setup passes the same object without a shared dependency
  * (specs/071-memory-preset-scope/contracts/dsh-plugins.md §1).
  */

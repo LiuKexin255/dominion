@@ -7,7 +7,7 @@
  * connected / takeover / disconnect paths. Pattern (style/javascript.md Mock
  * convention): a real cordis Context and injected stream doubles — no module
  * interception (saolei plugin test precedent,
- * common/js/dsh-plugins/saolei/src/index.test.ts).
+ * common/js/dsh-plugins/saolei/game/src/index.test.ts).
  */
 
 import { Context } from '@deepseek-ai/cordis';

@@ -24,8 +24,8 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
  * (specs/070-dsh-upgrade/contracts/composition-manifest.md §2): the exact
- * 22-row set with the grpc-runtime infrastructure row, the saolei game
- * foundation row, the session-projection
+ * 23-row set with the grpc-runtime infrastructure row, the saolei game
+ * foundation row, the sts2 scaffold row, the session-projection
  * row, the official agent-loop row,
  * the agent-preset registry and the pool-template snapshot injected through
  * the authoring row config, the saolei-loop flat capability-dependency list
@@ -604,7 +604,7 @@ describe("cordis.yml composition manifest", () => {
     expect(plannerRows).toEqual(["@deepseek-ai/dsh-persona"]);
   });
 
-  it("direct-composes the 22-row plugin set in contract order", () => {
+  it("direct-composes the 23-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -622,6 +622,7 @@ describe("cordis.yml composition manifest", () => {
       "agent-preset-registry",
       "grpc-runtime",
       "saolei",
+      "sts2",
       "llm-glm",
       "llm-opencode-go",
       "desktop-bridge",
@@ -651,6 +652,7 @@ describe("cordis.yml composition manifest", () => {
       "@deepseek-ai/dsh-agent-preset-registry",
       "@dominion/dsh-grpc-runtime",
       "@dominion/dsh-saolei",
+      "@dominion/dsh-sts2",
       "@dominion/dsh-llm-glm",
       "@dominion/dsh-llm-opencode-go",
       "@dominion/dsh-desktop-bridge",
@@ -812,8 +814,17 @@ describe("cordis.yml composition manifest", () => {
     expect(saolei?.config).toBeUndefined();
   });
 
+  it("mounts the sts2 scaffold row without config", () => {
+    // The scaffold row is lazy and parameterless: the scene feature fills the
+    // plugin implementation while the row stays config-free
+    // (specs/079-sts2-template-scaffold/contracts/dsh-plugins-layout.md §3).
+    const sts2 = rows.find((row) => row.id === "sts2");
+    expect(sts2?.name).toBe("@dominion/dsh-sts2");
+    expect(sts2?.config).toBeUndefined();
+  });
+
   it("composes no session-persistence and no settings row (install-level peers only)", () => {
-    // The exact 22-row set is pinned by the order test above; this makes the
+    // The exact 23-row set is pinned by the order test above; this makes the
     // declaration-level distinction explicit: settings and
     // session-persistence are install-level peers (package.json + BUILD
     // closure) without a composed row

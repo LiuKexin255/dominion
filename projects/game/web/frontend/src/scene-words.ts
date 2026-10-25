@@ -7,10 +7,22 @@
 // 单点定义、由 MemoryView 与 WikiView 的组件测试共同复用：词表分散在各测试
 // 文件会使两个视图的扫描范围漂移，也让新增场景词需要多处同步。
 //
-// 词表 = 场景角色词（planner/player）+ 场景示例词（saolei/扫雷）。preset 视图与
-// 对话页把 role / 成员角色作为资源数据呈现，属 FR-017 的保留面，不在扫描范围。
+// 词表 = 场景角色词（planner/player）+ 场景示例词（saolei/扫雷/sts2/杀戮尖塔）。
+// preset 视图与对话页把 role / 成员角色作为资源数据呈现，属 FR-017 的保留面，
+// 不在扫描范围。
+//
+// 场景词随合法模板集合扩容而覆盖全部场景（当前 {saolei, sts2}），依据
+// specs/079-sts2-template-scaffold/spec.md FR-005 与
+// specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §5。
 
-export const SCENE_WORDS = ['planner', 'player', 'saolei', '扫雷'] as const
+export const SCENE_WORDS = [
+  'planner',
+  'player',
+  'saolei',
+  '扫雷',
+  'sts2',
+  '杀戮尖塔',
+] as const
 
 // 用户可见文案的承载面：文本节点之外还有表单占位与无障碍标签——管理视图的示例
 // 文案常以 placeholder 形态承载（specs/069-wiki-template-web/contracts/

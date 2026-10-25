@@ -139,6 +139,54 @@ func TestMemoryService_CreateListMemory(t *testing.T) {
 	}
 }
 
+// TestMemoryService_Sts2TemplateScope verifies the memory service validates
+// the (template, preset) resource name structurally only: an sts2 memory is
+// accepted without a preset existence check, and lives in its own template
+// partition (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §1).
+func TestMemoryService_Sts2TemplateScope(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newInMemoryMemoryRepo()
+	h := NewHandler(repo)
+	parent := "templates/sts2/presets/preset-1"
+
+	// when — create under the sts2 template
+	created, err := h.CreateMemory(ctx, &game.CreateMemoryRequest{
+		Parent:   parent,
+		MemoryId: "mem-1",
+		Memory:   memoryBody("sts2 scaffold memory"),
+	})
+
+	// then — create succeeds with the sts2 resource name
+	assertStatusCode(t, err, codes.OK)
+	if got, want := created.GetName(), "templates/sts2/presets/preset-1/memories/mem-1"; got != want {
+		t.Fatalf("CreateMemory() name = %q, want %q", got, want)
+	}
+	assertMemoryName(t, created, "mem-1")
+
+	// when — list under the sts2 template
+	listResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: parent})
+
+	// then — only the sts2 partition is returned
+	assertStatusCode(t, err, codes.OK)
+	if len(listResp.GetMemories()) != 1 {
+		t.Fatalf("ListMemories() got %d memories, want 1", len(listResp.GetMemories()))
+	}
+	if got, want := listResp.GetMemories()[0].GetName(), created.GetName(); got != want {
+		t.Fatalf("ListMemories()[0] name = %q, want %q", got, want)
+	}
+
+	// when — list the same preset id under saolei
+	saoleiResp, err := h.ListMemories(ctx, &game.ListMemoriesRequest{Parent: "templates/saolei/presets/preset-1"})
+
+	// then — template partitions are isolated
+	assertStatusCode(t, err, codes.OK)
+	if len(saoleiResp.GetMemories()) != 0 {
+		t.Fatalf("ListMemories(saolei) got %d memories, want 0", len(saoleiResp.GetMemories()))
+	}
+}
+
 func TestMemoryService_CreateMemoryValidation(t *testing.T) {
 	ctx := context.Background()
 
