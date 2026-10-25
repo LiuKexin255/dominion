@@ -53,7 +53,6 @@ import {
 import type {
   AgentCreationSeam,
   ComposePreset,
-  LoopErrorCode,
   OrchestratorFailure,
   OrchestratorLogger,
   TeamSeam,
@@ -69,10 +68,12 @@ import type {
   TeamMergeEntry,
   TurnStream,
 } from "./history.js";
+import { loopErrorText } from "./orchestration.js";
 import { SCENES, sceneNotWiredMessage, wiredScene } from "./scenes.js";
 import { readMemberSystemPrompt } from "./system-prompt.js";
 
 export type { MemberRole, MemberViewEntry, TeamMergeEntry, TurnStream } from "./history.js";
+export { LOOP_ERROR_TEXT, loopErrorText } from "./orchestration.js";
 
 /**
  * Adapter route registered by @dominion/dsh-llm-glm (contracts/glm-llm-plugin.md §2).
@@ -102,36 +103,6 @@ export class TeamSessionError extends Error {
     this.name = "TeamSessionError";
     this.code = code;
   }
-}
-
-/**
- * The host's user-action guidance for each loop failure code — the
- * presentation half of the error contract
- * (specs/076-agent-v2-optimize/spec.md FR-107; the wording is
- * survey/saolei-member-switch-flow.md §8.1's 呈现指导 column). The loop layer
- * classifies; the host owns the text.
- *
- * Today the text rides only the orchestration-origin failure frame
- * ({@link failStreams}); a member-turn failure settles through
- * {@link endStreams} cleanly, carrying the engine's own message in its
- * turn_end ERROR frame, and the failure code is still transported to the
- * snapshot side. Evolution slot: land the per-code user-action text on the
- * member-turn frame too — doing so means touching the history collector's
- * frame surface, not just this session layer
- * (specs/063-llm-reliability-opencode-go/contracts/orchestrator-turn-outcome.md §2).
- */
-export const LOOP_ERROR_TEXT: Readonly<Record<LoopErrorCode, string>> = {
-  TRANSIENT: "服务暂不可用，稍后重试",
-  QUOTA: "配额耗尽",
-  CREDENTIAL: "检查 API 凭证",
-  CONFIG: "模型配置错误",
-  INPUT_TOO_LARGE: "上下文超限",
-  INTERNAL: "内部错误",
-};
-
-/** The host's user-action guidance for one loop failure code. */
-export function loopErrorText(code: LoopErrorCode): string {
-  return LOOP_ERROR_TEXT[code];
 }
 
 /** One member's configuration and runtime state (View projection). */
