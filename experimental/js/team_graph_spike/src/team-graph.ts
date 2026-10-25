@@ -165,8 +165,8 @@ export interface TeamGraphDeps {
  * that ends the game on every call — enough to drive the player createAgent
  * loop and exercise the sink → buffer → node-post-process → conditional-edge
  * path. The real saolei tools live in the `@dominion/dsh-saolei` plugin
- * (`common/js/dsh-plugins/saolei/src/index.ts`); the saolei-loop plugin holds
- * the GameRuntime (`saoleiGame`).
+ * (`common/js/dsh-plugins/saolei/game/src/index.ts`); the saolei-loop plugin
+ * holds the GameRuntime (`saoleiGame`).
  */
 function buildPlayerTool(sink: GameEventBuffer) {
   return tool(

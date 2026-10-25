@@ -24,6 +24,22 @@ func TestSaoleiTemplate(t *testing.T) {
 	}
 }
 
+func TestSts2Template(t *testing.T) {
+	// when
+	got := gameconst.Sts2Template
+
+	// then
+	if got.TemplateID != "sts2" {
+		t.Fatalf("Sts2Template.TemplateID = %q, want %q", got.TemplateID, "sts2")
+	}
+	if got.String() != "templates/sts2" {
+		t.Fatalf("Sts2Template.String() = %q, want %q", got.String(), "templates/sts2")
+	}
+	if got.Validate() != nil {
+		t.Fatalf("Sts2Template.Validate() error = %v, want nil", got.Validate())
+	}
+}
+
 func TestParseTemplateName(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -92,6 +108,11 @@ func TestValidateTemplateName(t *testing.T) {
 			wantErr: nil,
 		},
 		{
+			name:    "known sts2 template",
+			tpl:     gameconst.Sts2Template,
+			wantErr: nil,
+		},
+		{
 			name:    "unknown template",
 			tpl:     game.TemplateName{TemplateID: "xxx"},
 			wantErr: gameconst.ErrInvalidTemplate,
@@ -123,6 +144,7 @@ func TestIsKnownTemplateID(t *testing.T) {
 		want    bool
 	}{
 		{name: "known template", segment: "saolei", want: true},
+		{name: "known sts2 template", segment: "sts2", want: true},
 		{name: "unknown template", segment: "xxx", want: false},
 		{name: "empty segment", segment: "", want: false},
 	}

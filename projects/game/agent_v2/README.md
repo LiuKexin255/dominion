@@ -177,7 +177,7 @@ team 不经 Send 懒创建，必须经 `UpdateTeam`（AIP-134 create-or-update�
   `specs/065-agent-v2-team-refine/contracts/team-member-source.md` §1）：
   player/planner 经 `agentMemberSource` 适配器接入（语义零变化），物化同时注册
   announce-only 的 announcer 成员（role `announcer`、summary 为“终局播报
-  对局结果与操作统计”，`common/js/dsh-plugins/saolei-loop/src/announcer.ts`；
+  对局结果与操作统计”，`common/js/dsh-plugins/saolei/loop/src/announcer.ts`；
   无 preset/model、不接收广播；作为正式成员进入 `GetTeam.members` 名册
   （三成员）与 `active_member` 呈现，但 `UpdateTeam` 请求侧仍只配置两个 LLM
   成员——announcer 由服务端进入名册，`specs/076-agent-v2-optimize/contracts/
@@ -593,7 +593,7 @@ player 成员视图消费该消息、`GetTeam` 名册含 announcer（三成员�
 清理闭环，含 `memory_test.go` name 断言零回归）；`saolei-loop` 的**每五轮自然停**
 （`specs/068-wiki-round-pause/contracts/saolei-loop-round-stop.md`）**不单设大型
 测试**——真实驱动 5 局完整游戏的成本与波动不可控，按宪法 VI 在此记录豁免：以
-`common/js/dsh-plugins/saolei-loop/src/orchestrator.test.ts` 覆盖契约 §5 全部 8 条
+`common/js/dsh-plugins/saolei/loop/src/orchestrator.test.ts` 覆盖契约 §5 全部 8 条
 状态机用例为验收，本文件所述既有各 suite 作零回归（裁断与理由见
 `specs/068-wiki-round-pause/research.md` §7）。
 

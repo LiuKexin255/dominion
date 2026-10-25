@@ -11,7 +11,7 @@
 
 ## 2. agent_v2 组合清单（`projects/game/agent_v2/cordis.yml`）
 
-**行集合（顺序分层；终态 22 行）**。模板不经行面表达：单一事实源 = `preset-authoring` 行 Config 的 `templates` 快照（contracts/preset-model-mapping.md §2.3/§3；research.md D4 终态结论——2026-09-28 用户裁定移除 `preset-*` 声明行，`@deepseek-ai/dsh-agent-preset` 包不进入本组合与声明面）；工具能力插件（saolei-tools/memory 类）亦不经行面——其依赖声明为 saolei-loop 行 `config.plugins` 扁平子插件列表（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3/§5、specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2；游戏基础 `@dominion/dsh-saolei` 自 specs/075-saolei-game-foundation 起为顶级领域基础行）：
+**行集合（顺序分层；终态 23 行）**。模板不经行面表达：单一事实源 = `preset-authoring` 行 Config 的 `templates` 快照（contracts/preset-model-mapping.md §2.3/§3；research.md D4 终态结论——2026-09-28 用户裁定移除 `preset-*` 声明行，`@deepseek-ai/dsh-agent-preset` 包不进入本组合与声明面）；工具能力插件（saolei-tools/memory 类）亦不经行面——其依赖声明为 saolei-loop 行 `config.plugins` 扁平子插件列表（specs/074-dsh-grpc-runtime/contracts/preset-templates.md §3/§5、specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2；游戏基础 `@dominion/dsh-saolei` 自 specs/075-saolei-game-foundation 起为顶级领域基础行）：
 
 ```yaml
 - { id: timer,              name: '@deepseek-ai/cordis-plugin-timer' }
@@ -34,6 +34,7 @@
   config: { default: '' }                                                     # fail-loud（D5 门禁验证）
 - { id: grpc-runtime, name: '@dominion/dsh-grpc-runtime' }                    # 组合级 gRPC client 基建（specs/074-dsh-grpc-runtime/contracts/grpc-runtime.md §1）
 - { id: saolei, name: '@dominion/dsh-saolei' }                                 # 游戏基础服务行（ctx.saolei；specs/075-saolei-game-foundation/contracts/saolei-foundation.md §1）
+- { id: sts2, name: '@dominion/dsh-sts2' }                                     # sts2 场景脚手架惰性行（空 apply；specs/079-sts2-template-scaffold/contracts/dsh-plugins-layout.md §3）
 - id: llm-glm / llm-opencode-go / desktop-bridge / preset-authoring / team    # 其余 @dominion/* 行
 - id: saolei-loop                                                              # team loop 编排层；config.plugins = 扁平能力依赖列表
   name: '@dominion/dsh-saolei-loop'                                            # （@dominion/dsh-saolei-tools + @dominion/dsh-saolei-memory(+target/protoPath)
@@ -45,7 +46,7 @@
 
 **移除**：`agent-presets` 行（及其 `default/includeUserRoot/roots` config）、`preset-templates/` 目录、`PRESET_TEMPLATES_ROOT` env；`preset-*` 声明行方案不采用（D4 终态结论）。
 
-**断言契约**：`projects/game/agent_v2/src/dsh.test.ts` 以终态 22 行精确断言（行 id 与行名顺序、registry 行 `default: ''`、`templates` 快照键与 persona-only 定义、persona 子行 `prefix`、saolei-loop 行 `config.plugins` 扁平列表及内容、顶级 `saolei` 行无 config）。fail-loud 门禁 = registry 行 config 恰为 `{ default: '' }` 且清单内**零** `@deepseek-ai/dsh-agent-preset` 行——roster 条目只能经 preset-authoring 物化进入，其 id 语法（`/^[a-z0-9][a-z0-9-]*$/`）拒绝空串，空 default 无匹配；保持"断言精确性"不放松（SC-002）。
+**断言契约**：`projects/game/agent_v2/src/dsh.test.ts` 以终态 23 行精确断言（行 id 与行名顺序、registry 行 `default: ''`、`templates` 快照键与 persona-only 定义、persona 子行 `prefix`、saolei-loop 行 `config.plugins` 扁平列表及内容、顶级 `saolei` 与 `sts2` 行无 config）。fail-loud 门禁 = registry 行 config 恰为 `{ default: '' }` 且清单内**零** `@deepseek-ai/dsh-agent-preset` 行——roster 条目只能经 preset-authoring 物化进入，其 id 语法（`/^[a-z0-9][a-z0-9-]*$/`）拒绝空串，空 default 无匹配；保持"断言精确性"不放松（SC-002）。
 
 ## 3. demo 组合清单（`experimental/dsh/demo/agent/cordis.yml`）
 

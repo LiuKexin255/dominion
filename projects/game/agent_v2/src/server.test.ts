@@ -239,6 +239,10 @@ describe("resource-name parsers", () => {
 
   it("accepts the game session resource shape with a known template", () => {
     expect(parseSessionResource(VALID)).toEqual({ template: "saolei", session: "s1" });
+    expect(parseSessionResource("templates/sts2/sessions/s1")).toEqual({
+      template: "sts2",
+      session: "s1",
+    });
   });
 
   it("rejects malformed names, unknown templates, and empty segments", () => {
@@ -271,10 +275,15 @@ describe("resource-name parsers", () => {
 
   it("validates preset resource names and template parents against the known set", () => {
     expect(parsePresetResource(VALID_PRESET)).toEqual({ template: "saolei", preset: "p1" });
+    expect(parsePresetResource("templates/sts2/presets/p1")).toEqual({
+      template: "sts2",
+      preset: "p1",
+    });
     expect(parsePresetResource("templates/saolei/presets/a/b")).toBeUndefined();
     expect(parsePresetResource("templates/unknown/presets/p1")).toBeUndefined();
     expect(parsePresetResource(VALID)).toBeUndefined();
     expect(parseTemplateParent("templates/saolei")).toEqual({ template: "saolei" });
+    expect(parseTemplateParent("templates/sts2")).toEqual({ template: "sts2" });
     expect(parseTemplateParent("templates/saolei/presets")).toBeUndefined();
     expect(parseTemplateParent("")).toBeUndefined();
   });
@@ -421,6 +430,38 @@ describe("AgentService.UpdateTeam handler", () => {
       [`${VALID_TEAM}/members/planner`, "planner", P2],
     ]);
     expect(response?.members?.[1]?.systemPrompt).toBe("planner prompt");
+  });
+
+  it("rejects an unwired scene at the entry for every roster shape, before structure validation", () => {
+    const deps = fakeDeps();
+    const handlers = buildTeamHandlers(deps);
+    const sts2Team = "templates/sts2/sessions/s1/team";
+    const sts2Preset = "templates/sts2/presets/p1";
+    const sceneError = {
+      code: grpc.status.INVALID_ARGUMENT,
+      message: 'scene "sts2" is not wired for team orchestration yet',
+    };
+
+    for (const request of [
+      // Empty members: the structure check would reject it, the scene gate wins.
+      { team: { name: sts2Team, members: [] } },
+      // The roster a wired scene would accept.
+      {
+        team: {
+          name: sts2Team,
+          members: [member("player", sts2Preset), member("planner", sts2Preset)],
+        },
+      },
+      // A structurally invalid roster gets the same error: the gate runs
+      // before the structure checks
+      // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3 item 1).
+      { team: { name: sts2Team, members: [member("", "nope")] } },
+    ]) {
+      const callback = invokeUnary(handlers.UpdateTeam as never, request);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback.mock.calls[0][0]).toMatchObject(sceneError);
+    }
+    expect(deps.sessions.materialize).not.toHaveBeenCalled();
   });
 
   it("maps the registry's bare-id selector rejection onto INVALID_ARGUMENT", async () => {
@@ -806,6 +847,110 @@ describe("PresetService preset CRUD handlers", () => {
     expect(deps.authoring.create).not.toHaveBeenCalled();
   });
 
+  it("rejects the whole preset face of an unwired scene (sts2) at the entry", () => {
+    const deps = fakeDeps();
+    const handlers = buildPresetHandlers(deps);
+    const unwired = 'template "sts2" has no preset vocabulary (scene not wired)';
+
+    // Template from the parent (Create/List): the scene gate fires before any
+    // role or id validation, so every role value — including the saolei
+    // vocabulary — gets the same rejection
+    // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3).
+    for (const role of [undefined, "", "player", "referee"]) {
+      const created = invokeUnary(handlers.CreatePreset as never, {
+        parent: "templates/sts2",
+        presetId: "p1",
+        preset: {},
+        role,
+      });
+      expect(created.mock.calls[0][0]).toMatchObject({
+        code: grpc.status.INVALID_ARGUMENT,
+        message: unwired,
+      });
+
+      // List must fail loud rather than return an empty page (an empty list
+      // reads as "wired but empty" — research.md D4).
+      const listed = invokeUnary(handlers.ListPresets as never, {
+        parent: "templates/sts2",
+        role,
+      });
+      expect(listed.mock.calls[0][0]).toMatchObject({
+        code: grpc.status.INVALID_ARGUMENT,
+        message: unwired,
+      });
+    }
+
+    // Template from the resource name (Get/Update/Delete).
+    const sts2Preset = "templates/sts2/presets/p1";
+    const got = invokeUnary(handlers.GetPreset as never, { name: sts2Preset });
+    expect(got.mock.calls[0][0]).toMatchObject({
+      code: grpc.status.INVALID_ARGUMENT,
+      message: unwired,
+    });
+    const updated = invokeUnary(handlers.UpdatePreset as never, {
+      preset: { name: sts2Preset, persona: "x" },
+      updateMask: { paths: ["persona"] },
+    });
+    expect(updated.mock.calls[0][0]).toMatchObject({
+      code: grpc.status.INVALID_ARGUMENT,
+      message: unwired,
+    });
+    const deleted = invokeUnary(handlers.DeletePreset as never, { name: sts2Preset });
+    expect(deleted.mock.calls[0][0]).toMatchObject({
+      code: grpc.status.INVALID_ARGUMENT,
+      message: unwired,
+    });
+
+    // No request reaches the authoring store.
+    expect(deps.authoring.create).not.toHaveBeenCalled();
+    expect(deps.authoring.list).not.toHaveBeenCalled();
+    expect(deps.authoring.get).not.toHaveBeenCalled();
+    expect(deps.authoring.update).not.toHaveBeenCalled();
+    expect(deps.authoring.remove).not.toHaveBeenCalled();
+  });
+
+  it("keeps saolei role validation text and resource names byte-identical", async () => {
+    const deps = fakeDeps();
+    const handlers = buildPresetHandlers(deps);
+
+    // The vocabulary is built from the scene table; for saolei the rendered
+    // text must equal the pre-generalization literals
+    // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §4).
+    for (const role of ["", "referee"]) {
+      const rejected = invokeUnary(handlers.CreatePreset as never, {
+        parent: "templates/saolei",
+        presetId: "p1",
+        preset: {},
+        role,
+      });
+      expect((rejected.mock.calls[0][0] as grpc.ServiceError).message).toBe(
+        `role is required and must be a known saolei scene role ("player" or "planner"), got "${role}"`,
+      );
+    }
+    const filtered = invokeUnary(handlers.ListPresets as never, {
+      parent: "templates/saolei",
+      role: "referee",
+    });
+    expect((filtered.mock.calls[0][0] as grpc.ServiceError).message).toBe(
+      'role filter must be a known saolei scene role ("player" or "planner"), got "referee"',
+    );
+
+    // The resource-name template segment comes from the request parent/name;
+    // for saolei it renders the same names as the former saolei constant.
+    const created = invokeUnary(handlers.CreatePreset as never, {
+      parent: "templates/saolei",
+      presetId: "p1",
+      preset: {},
+      role: "player",
+    });
+    await vi.waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+    expect(created.mock.calls[0][1]?.name).toBe(VALID_PRESET);
+
+    const got = invokeUnary(handlers.GetPreset as never, { name: VALID_PRESET });
+    await vi.waitFor(() => expect(got).toHaveBeenCalledTimes(1));
+    expect(got.mock.calls[0][1]?.name).toBe(VALID_PRESET);
+  });
+
   it("lists with role filtering and in-memory keyset pagination", async () => {
     const deps = fakeDeps();
     deps.authoring.list.mockResolvedValue([
@@ -907,6 +1052,7 @@ describe("PresetService preset CRUD handlers", () => {
     expect(deps.authoring.update).toHaveBeenCalledWith("p1", { persona: "new prompt" });
     const [err, response] = updated.mock.calls[0];
     expect(err).toBeNull();
+    expect(response?.name).toBe(VALID_PRESET);
     expect(response?.persona).toBe("new prompt");
 
     // role is immutable: it is not an allowed mask path (preset-api.md §2).

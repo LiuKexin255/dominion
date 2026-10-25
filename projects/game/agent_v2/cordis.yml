@@ -72,6 +72,10 @@
 # section spec；saolei-loop 经 `inject: ["saolei"]` 消费（装载期 fail-loud），
 # 工具/守则由独立的 @dominion/dsh-saolei-tools 能力单元提供。
 - { id: saolei, name: '@dominion/dsh-saolei' }
+# sts2 场景脚手架占位行（specs/079-sts2-template-scaffold/contracts/
+# dsh-plugins-layout.md §3）：惰性行——插件空 apply、inject 为空，不 provide
+# 服务、不注册工具/section；场景 feature 填充该包实现后本行保持不变。
+- { id: sts2, name: '@dominion/dsh-sts2' }
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:

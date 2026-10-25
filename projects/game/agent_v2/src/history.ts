@@ -215,6 +215,19 @@ export type MemberRole = "player" | "planner" | "announcer";
 export type AgentMemberRole = "player" | "planner";
 
 /**
+ * The orchestrated agent member vocabulary — the same two roles as the
+ * saolei-loop orchestrator's `AgentTeamRole`. Runtime form of
+ * {@link AgentMemberRole}, used to guard scene-roster data before it reaches
+ * the orchestration.
+ */
+const AGENT_MEMBER_ROLES: readonly AgentMemberRole[] = ["player", "planner"];
+
+/** Whether a value names an orchestrated agent member. */
+export function isAgentMemberRole(value: string): value is AgentMemberRole {
+  return AGENT_MEMBER_ROLES.some((role) => role === value);
+}
+
+/**
  * The sender annotation of a relayed broadcast: the source role string
  * unchanged; a source without a role degrades to the reserved user value.
  */

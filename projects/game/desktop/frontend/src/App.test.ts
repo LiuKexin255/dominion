@@ -29,7 +29,8 @@ const mocks = vi.hoisted(() => ({
 // ESM imports require every binding to exist, and no test drives them.
 vi.mock('./api', () => ({
   TEMPLATE_SAOLEI: 'saolei',
-  TEMPLATES: ['saolei'],
+  TEMPLATE_STS2: 'sts2',
+  TEMPLATES: ['saolei', 'sts2'],
   listSessions: mocks.listSessions,
   connect: mocks.connect,
   closeAgent: mocks.closeAgent,
@@ -232,6 +233,37 @@ describe('App sessions refresh', () => {
     await waitForFlush(() => {
       expect(refreshButton.hasAttribute('disabled')).toBe(false)
       expect(document.querySelectorAll('.session-row')).toHaveLength(2)
+    })
+  })
+})
+
+describe('App template control plane', () => {
+  it('offers both local templates and re-lists for sts2', async () => {
+    instance = mount(App, { target: document.body })
+
+    const select = document.querySelector('[data-testid="template-select"]')
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error('template select not found')
+    }
+    const optionValues = Array.from(select.options).map(option => option.value)
+    expect(optionValues).toEqual(['saolei', 'sts2'])
+
+    // The initial listing is scoped to the default template constant
+    // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §5).
+    await waitForFlush(() => {
+      expect(mocks.listSessions).toHaveBeenCalledTimes(1)
+      expect(mocks.listSessions).toHaveBeenLastCalledWith('saolei', 50, '')
+    })
+
+    select.value = 'sts2'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+
+    // Switching the local constant re-lists for the newly selected template
+    // and issues no template-list request
+    // (specs/031-team-template-mode/spec.md FR-024).
+    await waitForFlush(() => {
+      expect(mocks.listSessions).toHaveBeenCalledTimes(2)
+      expect(mocks.listSessions).toHaveBeenLastCalledWith('sts2', 50, '')
     })
   })
 })
