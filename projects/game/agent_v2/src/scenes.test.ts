@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { SCENES } from "./scenes.js";
+import { SCENES, sceneNotWiredMessage, wiredScene } from "./scenes.js";
 
 /**
  * Unit tests for the host-side scene registration
- * (specs/080-host-main-sub-model/contracts/scene-registry.md §1;
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §1/§6;
  * specs/079-sts2-template-scaffold/data-model.md §2;
  * specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §2/§3): the
- * pinned values are the saolei zero-change baseline and the sts2 "registered
- * but not wired" data. The readonly shape is a type-level contract — the
+ * pinned values are the saolei zero-change baseline and the sts2
+ * single-main-agent scene. The readonly shape is a type-level contract — the
  * SceneSpec fields are declared readonly, so mutation is rejected at type
  * check time and needs no runtime assertion.
  */
@@ -31,14 +31,15 @@ describe("SCENES", () => {
     });
   });
 
-  it("pins the sts2 scene values (registered but not wired)", () => {
+  it("pins the sts2 scene values (the wired single-main-agent scene)", () => {
     expect(SCENES["sts2"]).toEqual({
-      roster: [],
-      presetRoles: [],
-      rolePoolTemplate: {},
-      orchestratable: false,
+      roster: ["main"],
+      presetRoles: ["main"],
+      rolePoolTemplate: { main: "main" },
+      orchestratable: true,
       teamGoal: "",
-      faceMembers: [],
+      faceMembers: ["main"],
+      createOrchestration: expect.any(Function),
     });
   });
 
@@ -49,5 +50,17 @@ describe("SCENES", () => {
         `${template} factory presence`,
       ).toBe(scene.orchestratable);
     }
+  });
+
+  it("resolves wired scenes and keeps the not-wired mechanism for unknown templates", () => {
+    expect(wiredScene("saolei")).toBe(SCENES["saolei"]);
+    expect(wiredScene("sts2")).toBe(SCENES["sts2"]);
+    // Both registered scenes are wired; the gate and its message remain the
+    // single rejection mechanism for the unknown-template key
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §7).
+    expect(wiredScene("unknown-scene")).toBeUndefined();
+    expect(sceneNotWiredMessage("unknown-scene")).toBe(
+      'scene "unknown-scene" is not wired for team orchestration yet',
+    );
   });
 });

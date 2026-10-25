@@ -869,19 +869,18 @@ describe("TeamSessions.materialize", () => {
     expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 
-  it("rejects an unwired scene identically for every roster shape, before any validation", async () => {
+  it("accepts the sts2 scene and validates roster shapes against its single main member", async () => {
     const sts2Session = "templates/sts2/sessions/s1";
-    const sceneError = {
-      code: "INVALID_ARGUMENT",
-      message: 'scene "sts2" is not wired for team orchestration yet',
-    };
-    const h = createHarness();
+    const h = createHarness({ presetRole: () => "main" });
 
-    // Empty members: Layer 1 would reject it, but the scene gate runs first.
-    await expect(h.sessions.materialize(sts2Session, { members: [] })).rejects.toMatchObject(
-      sceneError,
-    );
-    // The roster a wired scene would accept.
+    // Empty members: the scene-agnostic structure layer rejects first.
+    await expect(h.sessions.materialize(sts2Session, { members: [] })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "team.members must not be empty",
+    });
+    // The two-member saolei-shaped roster is a scene roster violation: the
+    // sts2 scene materializes exactly one member
+    // (specs/080-host-main-sub-model/contracts/face-main-sub.md §1).
     await expect(
       h.sessions.materialize(sts2Session, {
         members: [
@@ -889,15 +888,21 @@ describe("TeamSessions.materialize", () => {
           { role: "planner", preset: "templates/sts2/presets/p-planner" },
         ],
       }),
-    ).rejects.toMatchObject(sceneError);
-    // A structurally invalid roster gets the same error: the gate precedes
-    // both validation layers
-    // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3 item 1).
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "sts2 team materialization requires exactly 1 members (main), got 2",
+    });
+    // A structurally invalid roster is rejected by the structure layer before
+    // the scene roster, matching the two-layer fail-fast order.
     await expect(
       h.sessions.materialize(sts2Session, { members: [{ role: "", preset: "nope" }] }),
-    ).rejects.toMatchObject(sceneError);
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "every team member must carry a non-empty role",
+    });
 
-    // No validation or storage path was entered.
+    // No preset/model validation or orchestration path was entered, and the
+    // session stays unmaterialized.
     expect(h.authoring.get).not.toHaveBeenCalled();
     expect(h.listModels).not.toHaveBeenCalled();
     expect(h.agentsCreate).not.toHaveBeenCalled();
@@ -2709,5 +2714,205 @@ describe("TeamSessions face semantics for a single-member main scene (specs/080-
     expect(repeated.createTime).toBe(first.createTime);
     expect(repeated.members).toEqual(refreshed.members);
     expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+  });
+});
+
+describe("TeamSessions sts2 scene over the real Sts2Orchestrator (specs/080-host-main-sub-model/contracts/face-main-sub.md §1-§4; sts2-loop-minimal.md §3/§6)", () => {
+  const STS2_SESSION = "templates/sts2/sessions/s1";
+  const STS2_PRESET = "templates/sts2/presets/p-main";
+  const MAIN_ID = `${STS2_SESSION}/main`;
+
+  /**
+   * The production sts2 scene (registered in the module scene table) over the
+   * harness's agent-creation and preset-compose doubles. The preset double
+   * reports the `main` role the sts2 scene vocabulary requires.
+   */
+  function createSts2Harness(): Harness {
+    return createHarness({ presetRole: () => "main" });
+  }
+
+  it("materializes the single main member through the real orchestration and drives its unified events", async () => {
+    const h = createSts2Harness();
+    const view = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+
+    // §1 物化: the host hands the validated neutral input to the sts2 factory,
+    // whose orchestrator creates the agent under `${session}/main` with the
+    // split model route (specs/063-llm-reliability-opencode-go/contracts/
+    // model-selection.md §3).
+    expect(h.agentsCreate).toHaveBeenCalledOnce();
+    expect(h.agentsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: MAIN_ID,
+        agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
+      }),
+    );
+
+    // §1 物化产物 / §2 名册固定: exactly the scene roster, no announcer or
+    // other server-added member, and no team relay for the non-team scene.
+    expect(
+      view.members.map((entry) => [entry.name, entry.role, entry.preset, entry.model]),
+    ).toEqual([
+      [`${STS2_SESSION}/team/members/main`, "main", STS2_PRESET, DEFAULT_MODEL],
+    ]);
+    expect(view.activeMember).toBe("main");
+    expect(h.teamRegister).not.toHaveBeenCalled();
+    // §4: a non-roster role is not a member resource of the sts2 scene. The
+    // member-name pre-check is scene-agnostic across the injected registry
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §4 item 5),
+    // so a role outside every scene vocabulary renders the sts2 roster text.
+    await expect(
+      h.sessions.getTeamMember(STS2_SESSION, "referee"),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: 'team member "referee" does not exist; the roster is main',
+    });
+
+    const main = h.members.get(MAIN_ID);
+    if (main === undefined) {
+      throw new Error("the main agent was not created");
+    }
+
+    // §3 静止: the user message opens one turn through the real driver's
+    // single-message assembly (followup) and is fixed into the merged sequence
+    // at acceptance.
+    const stream = fakeStream();
+    h.sessions.send(STS2_SESSION, "hello", stream);
+    await flush();
+    expect(main.followups).toHaveLength(1);
+    expect(messageText(main.followups[0]!)).toBe("hello");
+
+    // §2/§5: the real event stream labels the main agent's log production
+    // with the `(role: "main", memberId)` envelope; the host projects it
+    // through the member collector and the send stream.
+    main.emitEvent("session/event", main.agent.session, {
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text: "hi from main" }] } },
+    });
+    await flush();
+    expect(
+      h.sessions
+        .listTeamMessages(STS2_SESSION)
+        .map((entry) => [entry.member, entry.message.blocks[0]?.text?.content]),
+    ).toEqual([
+      ["user", "hello"],
+      ["main", "hi from main"],
+    ]);
+    expect(stream.events.some((event) => event.teamMessage?.member === "main")).toBe(
+      true,
+    );
+
+    // §3 静止收束: the turn settles, the quiescence watcher ends the stream.
+    main.settle();
+    await flush();
+    expect(stream.ended).toBe(true);
+    expect(h.sessions.getTeam(STS2_SESSION).activeMember).toBe("main");
+  });
+
+  it("rejects roster and preset violations with INVALID_ARGUMENT before constructing the orchestration", async () => {
+    const h = createSts2Harness();
+
+    // §1 校验: the scene roster is exactly one member.
+    await expect(
+      h.sessions.materialize(STS2_SESSION, {
+        members: [
+          { role: "main", preset: STS2_PRESET },
+          { role: "main", preset: STS2_PRESET },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "sts2 team materialization requires exactly 1 members (main), got 2",
+    });
+    // §1 校验: the member role must equal the scene roster role.
+    await expect(
+      h.sessions.materialize(STS2_SESSION, {
+        members: [{ role: "player", preset: STS2_PRESET }],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: 'sts2 team member roles must be exactly {"main"}, got [player]',
+    });
+    // §1 校验: the preset must exist and its role must equal the member role.
+    h.authoring.get.mockResolvedValueOnce({
+      id: "p-main",
+      template: "player",
+      role: "player",
+      persona: "",
+      createTime: new Date(0),
+      updateTime: new Date(0),
+    });
+    await expect(
+      h.sessions.materialize(STS2_SESSION, {
+        members: [{ role: "main", preset: STS2_PRESET }],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        'scene check failed: preset "p-main" carries role "player" but member "main" requires the matching role',
+    });
+
+    // Fail-fast: no orchestration or agent was constructed.
+    expect(h.agentsCreate).not.toHaveBeenCalled();
+    expect(() => h.sessions.getTeam(STS2_SESSION)).toThrow("team not materialized");
+
+    // §1 未物化面 / §4 错误码: Send is FAILED_PRECONDITION while unmaterialized.
+    let sendError: unknown;
+    try {
+      h.sessions.send(STS2_SESSION, "hello", fakeStream());
+    } catch (err) {
+      sendError = err;
+    }
+    expect(sendError).toMatchObject({ code: "FAILED_PRECONDITION" });
+
+    // A retry with valid input materializes cleanly (no half-materialized
+    // state survived the failures).
+    const retried = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+    expect(retried.members.map((entry) => entry.role)).toEqual(["main"]);
+    expect(h.agentsCreate).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes the single main member isomorphically through the real orchestration", async () => {
+    const h = createSts2Harness();
+    const first = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+    const oldMain = h.members.get(MAIN_ID);
+    if (oldMain === undefined) {
+      throw new Error("the main agent was not created");
+    }
+
+    // In flight: the input is fixed at acceptance and drives the main agent.
+    const stream = fakeStream();
+    h.sessions.send(STS2_SESSION, "hello", stream);
+    await flush();
+    expect(oldMain.followups).toHaveLength(1);
+    expect(
+      h.sessions.listTeamMessages(STS2_SESSION).map((entry) => entry.member),
+    ).toEqual(["user"]);
+
+    const refreshed = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+
+    // §1 刷新: the in-flight turn terminates as turn_end{ABORTED}, the old
+    // generation is released, and its stream ends at the static point.
+    expect(h.agentsCreate).toHaveBeenCalledTimes(2);
+    expect(oldMain.handle.dispose).toHaveBeenCalledOnce();
+    expect(stream.ended).toBe(true);
+    const aborted = stream.events.filter((event) => event.turnEnd !== undefined);
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0]?.member).toBe("main");
+    expect(aborted[0]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
+
+    // §1 刷新: the unconsumed input is voided with the old history, create_time
+    // survives, and the rebuilt roster rests on the scene activation.
+    expect(h.sessions.listTeamMessages(STS2_SESSION)).toEqual([]);
+    expect(refreshed.createTime).toBe(first.createTime);
+    expect(refreshed.members.map((entry) => entry.role)).toEqual(["main"]);
+    expect(h.sessions.getTeam(STS2_SESSION).activeMember).toBe("main");
   });
 });

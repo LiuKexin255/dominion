@@ -12,11 +12,13 @@
  * closure; the scene registration modules never import this table
  * (specs/080-host-main-sub-model/contracts/scene-registry.md §1/§7).
  *
- * An unwired scene is data, not a branch: empty `roster`/`presetRoles` plus
- * `orchestratable: false` make its scene-scoped RPCs fail loud at the entry
- * point with `INVALID_ARGUMENT`, without entering orchestration or storage
- * (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3;
- * specs/079-sts2-template-scaffold/data-model.md §6).
+ * An unwired scene stays data, not a branch: empty `roster`/`presetRoles`
+ * plus `orchestratable: false` make its scene-scoped RPCs fail loud at the
+ * entry point with `INVALID_ARGUMENT`, without entering orchestration or
+ * storage (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3;
+ * specs/079-sts2-template-scaffold/data-model.md §6). Both registered scenes
+ * are wired; the mechanism remains for the unknown-template key and any scene
+ * added later (specs/080-host-main-sub-model/contracts/scene-registry.md §7).
  */
 
 import type { DshContext } from "./dsh.js";
@@ -25,6 +27,7 @@ import type {
   SceneRegistrationDeps,
 } from "./orchestration.js";
 import { createSaoleiOrchestration } from "./scene-saolei.js";
+import { createSts2Orchestration } from "./scene-sts2.js";
 
 /** The host-side definition of one scene, keyed by template id. */
 export interface SceneSpec {
@@ -86,24 +89,33 @@ const saoleiScene: SceneSpec = {
 };
 
 /**
- * The scene table. `saolei` is the wired team scene; `sts2` is registered as a
- * template entry whose orchestration stays unwired
- * (specs/079-sts2-template-scaffold/spec.md FR-003/FR-004;
- * specs/080-host-main-sub-model/contracts/scene-registry.md §6). The keys are
- * also the TS-side known-template set: `KNOWN_TEMPLATES` in
+ * The sts2 scene entry (the single-main-agent scene). The factory directly
+ * constructs the sts2 minimal orchestration: the scene has no team relay,
+ * announcer or memory mount, so no scene-local derivation applies
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §6;
+ * specs/080-host-main-sub-model/data-model.md §1/§4).
+ */
+const sts2Scene: SceneSpec = {
+  roster: ["main"],
+  presetRoles: ["main"],
+  rolePoolTemplate: { main: "main" },
+  orchestratable: true,
+  teamGoal: "",
+  faceMembers: ["main"],
+  createOrchestration: (ctx, deps) => createSts2Orchestration(ctx, deps),
+};
+
+/**
+ * The scene table. `saolei` is the wired team scene; `sts2` is the wired
+ * single-main-agent scene
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §1/§6). The keys
+ * are also the TS-side known-template set: `KNOWN_TEMPLATES` in
  * projects/game/agent_v2/src/server.ts derives from them, so template
  * registration and scene wiring cannot drift.
  */
 export const SCENES: Readonly<Record<string, SceneSpec>> = {
   saolei: saoleiScene,
-  sts2: {
-    roster: [],
-    presetRoles: [],
-    rolePoolTemplate: {},
-    orchestratable: false,
-    teamGoal: "",
-    faceMembers: [],
-  },
+  sts2: sts2Scene,
 };
 
 /**
