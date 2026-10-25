@@ -32,13 +32,13 @@ Go 侧唯一事实源 `projects/game/pkg/gameconst/const.go`（`knownTemplateIDs
 
 ## §3 fail-loud 语义（未接线场景）
 
-未接线场景（不在场景表中 / 场景表中 `orchestratable = false` 或 `presetRoles` 为空）的场景化操作**在入口层整体拒绝**，不进入编排/存储路径、不产生半成品状态：
+未接线场景的场景化操作**在入口层整体拒绝**，不进入编排/存储路径、不产生半成品状态。两类形态的入口点不同：未注册的模板键在资源名解析层以资源名错误拒绝（`data-model.md` §6 的「任意资源解析」行）；已注册但 `orchestratable = false` 或 `presetRoles` 为空的场景表条目按下述消息拒绝：
 
-1. **`UpdateTeam`**（含 roster 任意取值）：`INVALID_ARGUMENT`，文案模式 `scene "{template}" is not wired for team orchestration yet`。拒绝发生在结构校验与 roster 校验**之前**（对未接线场景，无论成员配置为何——含空 `members`——一律同错，不进入任何校验/存储路径）。
-2. **`CreatePreset`**：`INVALID_ARGUMENT`，文案模式 `template "{template}" has no preset vocabulary (scene not wired)`——role 参数无论是否合法词均同错（无词表可校验）。
-3. **`ListPresets` / `GetPreset` / `UpdatePreset` / `DeletePreset`**：parent 或资源名 template 段为未接线场景时同上句式拒绝（List 不返回空列表——空列表是"合法无内容"语义，会误导调用方认为场景已接线，见 `specs/079-sts2-template-scaffold/research.md` D4）。
+1. **`UpdateTeam`**（含 roster 任意取值）：`INVALID_ARGUMENT`，文案模式 `scene "{template}" is not wired for team orchestration yet`。拒绝发生在结构校验与 roster 校验**之前**（对未接线的场景表条目，无论成员配置为何——含空 `members`——一律同错，不进入任何校验/存储路径）。
+2. **`CreatePreset`**：parent template 为未接线的场景表条目时：`INVALID_ARGUMENT`，文案模式 `template "{template}" has no preset vocabulary (scene not wired)`——role 参数无论是否合法词均同错（无词表可校验）。
+3. **`ListPresets` / `GetPreset` / `UpdatePreset` / `DeletePreset`**：parent 或资源名 template 段为未接线的场景表条目时同上句式拒绝（List 不返回空列表——空列表是"合法无内容"语义，会误导调用方认为场景已接线，见 `specs/079-sts2-template-scaffold/research.md` D4）。
 
-> 080-host-main-sub-model 起场景表内 `saolei`/`sts2` 均已接线（sts2 = 单 `main` 成员），本节机制仅对未知模板键与未来新增未接线场景生效（080 [scene-registry.md §7](../../080-host-main-sub-model/contracts/scene-registry.md)）。
+> 080-host-main-sub-model 起场景表内 `saolei`/`sts2` 均已接线（sts2 = 单 `main` 成员）：本节的消息与门控仅对未来新增的未接线场景表条目生效，未注册的模板键仍由资源名解析拒绝；机制保留（080 [scene-registry.md §7](../../080-host-main-sub-model/contracts/scene-registry.md)）。
 
 **错误码约束**：不新增错误码；全部走 `INVALID_ARGUMENT`（与既有场景校验同码，`session.ts` `TeamSessionErrorCode` 不变）。
 

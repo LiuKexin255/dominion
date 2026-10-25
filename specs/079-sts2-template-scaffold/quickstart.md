@@ -86,6 +86,6 @@ curl -s -X PATCH "$GATEWAY/api/v2/templates/sts2/sessions/<session>/team?allow_m
 grep -n 'saolei\|"player"\|"planner"' projects/game/agent_v2/src/server.ts projects/game/agent_v2/src/session.ts
 ```
 
-**预期**：命中仅限模板白名单（`server.ts` 的 `KNOWN_TEMPLATES`）与注释；**不得**出现 `"player"`/`"planner"` 代码字面量，也不得出现 `templates/saolei` 常量拼接——roster/角色词表/资源父名/任务目标均经场景表 `scenes.ts`（错误文案由场景表字段构造，saolei 产出逐字节不变）。
+**预期**：命中仅限注释（模板白名单 `server.ts` 的 `KNOWN_TEMPLATES` 自 080-host-main-sub-model 起派生自场景表键集，已无 `saolei` 字面量）；**不得**出现 `"player"`/`"planner"` 代码字面量，也不得出现 `templates/saolei` 常量拼接——roster/角色词表/资源父名/任务目标均经场景表 `scenes.ts`（错误文案由场景表字段构造，saolei 产出逐字节不变）。
 
 > 080-host-main-sub-model 起 `@dominion/dsh-saolei-loop` 导入已移出 `session.ts`（saolei 适配器落在 `scene-saolei.ts`）；本节对导入路径的旧白名单失效，以 080 [quickstart.md V3](../080-host-main-sub-model/quickstart.md) 的零命中硬门禁为准。

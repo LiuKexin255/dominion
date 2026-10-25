@@ -60,10 +60,10 @@
 
 ## R7 当前激活成员：单一合并值（GetTeam.active_member + web 呈现）
 
-- **Decision**：`OrchestratorSnapshot` 增加 `activation`（下一条输入归属成员，即 orchestrator 的 `current` 字段，`orchestrator.ts` L344-345；现状 snapshot 只外露 driving 的 `active` L553）；`TeamView` 增加 `activeMember = driving?.role ?? activation`（用户裁定单一合并值：回合在途 = 驱动成员，静止 = 下一条输入归属；物化后恒非空，初始 planner）。proto `Team` 增加 output-only `active_member`（string；未物化时 GetTeam 本就 NOT_FOUND，无空值歧义）。web：team 工具条呈现激活成员徽标；**实时性经前端推导**——任一成员 `turn_start` 帧 → 激活 = 该 member（覆盖最近 GetTeam 值）；live 全部收束 → 以最近 GetTeam 值兜底（GetTeam 刷新时机沿用现状：进入会话/send 前/10s 轮询/live→空迁移即时刷新）。不新增流帧。080 起 activation 场景化（saolei = `planner`、sts2 = `main`，见 `specs/080-host-main-sub-model/contracts/face-main-sub.md` §3）。
+- **Decision**：`OrchestratorSnapshot` 增加 `activation`（下一条输入归属成员，saolei 取 flow 的 `activeMemberId`，与 driving 的 `active` 并列外露——`common/js/dsh-plugins/saolei/loop/src/orchestrator.ts:370-383`、`snapshot()` `:794`）；`TeamView` 增加 `activeMember = driving?.role ?? activation`（用户裁定单一合并值：回合在途 = 驱动成员，静止 = 下一条输入归属；物化后恒非空，初始 activation 由场景注册决定——saolei = `planner`、主子场景 sts2 = `main`，见 `specs/080-host-main-sub-model/contracts/face-main-sub.md` §3；activation 是场景编排快照的投影字段，host 不自持场景字面量，见 `specs/080-host-main-sub-model/contracts/scene-registry.md` §2/§3）。proto `Team` 增加 output-only `active_member`（string；未物化时 GetTeam 本就 NOT_FOUND，无空值歧义）。web：team 工具条呈现激活成员徽标；**实时性经前端推导**——任一成员 `turn_start` 帧 → 激活 = 该 member（覆盖最近 GetTeam 值）；live 全部收束 → 以最近 GetTeam 值兜底（GetTeam 刷新时机沿用现状：进入会话/send 前/10s 轮询/live→空迁移即时刷新）。不新增流帧。
 - **Rationale**：编排层已持有全部事实，仅未外露；两概念在串行驱动下行为不分离（驱动成员即当前激活成员），单一值完整回答"现在是谁在处理"（spec Clarifications 2026-09-11 第 2 条裁定）。前端推导避免为呈现增加帧词汇；GetTeam 兜底覆盖静止期切换（gameEnded 后 activation 变化的静止窗口由 10s 轮询/下次 send 前刷新收敛，呈现精度足够）。
 - **Alternatives**：新增激活变更流帧（帧词汇扩张非必要）；GetTeam 轮询-only（用户明确"实时同步（无需刷新）"预期）。
-- **引用**：`common/js/dsh-plugins/saolei-loop/src/orchestrator.ts` L343-348、L549-556；`projects/game/agent_v2/src/session.ts` toTeamView；spec FR-008。
+- **引用**：`common/js/dsh-plugins/saolei/loop/src/orchestrator.ts` 的 `OrchestratorSnapshot.activation/active`（`:370-383`）与 `snapshot()`（`:794`）；`projects/game/agent_v2/src/session.ts` 的 `toTeamView`（`activeMember = snapshot.active ?? snapshot.activation`，`:1351-1362`）；spec FR-008。
 
 ## R8 广播净化：think 移除 + 单一 XML 标注形态
 

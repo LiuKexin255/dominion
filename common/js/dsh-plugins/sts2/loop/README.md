@@ -28,6 +28,7 @@ sts2 场景的**最小编排**包（cordis 插件名 `sts2-loop`）：官方 age
 
 ```ts
 export class Sts2Orchestrator { /* 场景中立编排 seam 的单成员实现 */ }
+export class Sts2StateError extends Error { /* code: UNMATERIALIZED | ALREADY_MATERIALIZED | DISPOSED */ }
 export interface Sts2OrchestratorDeps {
   readonly compose: ComposePreset;          // preset 派生（host 注入 ctx.presetAuthoring）
   readonly agents?: AgentCreationSeam;      // 默认 ctx.agents
@@ -37,6 +38,11 @@ export interface Sts2OrchestratorDeps {
 export const name = "sts2-loop";            // 组合行（空 apply）
 export const inject: string[];              // []
 ```
+
+其余导出为类型（`Sts2MaterializeInput`/`Sts2Member`/`Sts2MemberConfig`/
+`Sts2Snapshot`/`Sts2Failure`/`Sts2FailureDetail`/`Sts2StateErrorCode`/
+`Sts2OrchestrationFailureContext` 与 seam 窄类型 `ComposePreset`/`ComposedPreset`/
+`AgentCreationSeam`/`OrchestratorLogger`、驱动错误码 `MainDriveErrorCode`）。
 
 `Sts2Orchestrator` 实现 `materialize`/`members`/`member`/`teamEvents`/`snapshot`/
 `submit`/`cancel`/`whenQuiescent`/`dispose`：
