@@ -86,9 +86,15 @@ export const PROTO_PATH = path.join(SERVICE_ROOT, "projects/game/agent_v2.proto"
  * the game session resource shape is templates/{template}/sessions/{session},
  * AIP-122). The set is derived from the scene table keys
  * (projects/game/agent_v2/src/scenes.ts), so a template registration and its
- * scene entry cannot drift: `sts2` is registered here for the data plane while
- * its scene behavior stays unwired in the scene table until a scene feature
- * fills it (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §1).
+ * scene entry cannot drift, and an unknown template key rejects here before
+ * any scene path is entered. Both registered scenes are wired: the preset
+ * role vocabulary (`scenePresetRoles`) and the UpdateTeam scene gate
+ * (`wiredScene`) are data-driven from that same table, including the
+ * single-`main` scene
+ * (specs/080-host-main-sub-model/contracts/scene-registry.md §6). The
+ * fail-loud refusals remain for a scene-table entry added later without
+ * wiring (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3;
+ * specs/080-host-main-sub-model/contracts/scene-registry.md §7).
  */
 const KNOWN_TEMPLATES: ReadonlySet<string> = new Set(Object.keys(SCENES));
 

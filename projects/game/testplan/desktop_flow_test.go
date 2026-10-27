@@ -60,7 +60,7 @@ func TestDesktopFlowFirstStatusFrame(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 	sessionID := "flow-first-" + uniqueSuffix()
-	ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
 	stream := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer stream.Close()
@@ -77,7 +77,7 @@ func TestDesktopFlowSecondConnectionTakesOver(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 	sessionID := "flow-takeover-" + uniqueSuffix()
-	ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
 	first := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer first.Close()
@@ -212,7 +212,7 @@ func TestDesktopFlowIdleHeartbeatKeepsStreamAlive(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 	sessionID := "flow-idle-" + uniqueSuffix()
-	ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
 	stream := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer stream.Close()
@@ -235,7 +235,7 @@ func TestDesktopFlowOversizedReceipt(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 	sessionID := "flow-oversize-" + uniqueSuffix()
-	ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 
 	stream := openDesktopStream(t, ctx, sutHostURL, sutEnvName, sessionID)
 	defer stream.Close()

@@ -78,15 +78,15 @@ func TestAgentV2TeamPresetCrudRoundTrip(t *testing.T) {
 	}
 	// The role filter partitions the pools (ListPresetsRequest.role — a scene
 	// role string, preset-api.md §1).
-	if got := listContainsPreset(listAgentV2PresetsByRole(t, ctx, sutHostURL, sutEnvName, "player"), name); got == nil {
+	if got := listContainsPreset(listAgentV2PresetsByRole(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, "player"), name); got == nil {
 		t.Errorf("player-pool list does not contain the player preset %q", name)
 	}
-	if got := listContainsPreset(listAgentV2PresetsByRole(t, ctx, sutHostURL, sutEnvName, "planner"), name); got != nil {
+	if got := listContainsPreset(listAgentV2PresetsByRole(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, "planner"), name); got != nil {
 		t.Errorf("planner-pool list contains the player preset %q", name)
 	}
 
 	// Duplicate caller-id → 409 ALREADY_EXISTS.
-	if _, dupStatus, dupBody := createAgentV2PresetWithRole(t, ctx, sutHostURL, sutEnvName, id, "duplicate", "player"); dupStatus != http.StatusConflict {
+	if _, dupStatus, dupBody := createAgentV2PresetWithRole(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, id, "duplicate", "player"); dupStatus != http.StatusConflict {
 		t.Errorf("duplicate create status = %d (body: %s), want 409 ALREADY_EXISTS", dupStatus, dupBody)
 	}
 
@@ -125,7 +125,7 @@ func TestAgentV2TeamPresetStoreDerivationChain(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-derive-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-derive-"+uniqueSuffix())
 	personaV1 := "你是扫雷 player（store 派生 v1）"
 	personaV2 := "你是扫雷 player（store 派生 v2）"
 	plannerPersona := "你是扫雷 planner（store 派生）"
@@ -188,7 +188,7 @@ func TestAgentV2TeamPresetRoleVocabulary(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, body := postAgentV2PresetCreate(t, ctx, sutHostURL, sutEnvName, tt.presetID, "你是扫雷 player（vocab）", tt.roleQuery)
+			status, body := postAgentV2PresetCreate(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, tt.presetID, "你是扫雷 player（vocab）", tt.roleQuery)
 			if status != http.StatusBadRequest {
 				t.Fatalf("create preset status = %d (body: %s), want 400 INVALID_ARGUMENT", status, body)
 			}
@@ -202,7 +202,7 @@ func TestAgentV2TeamPresetRoleVocabulary(t *testing.T) {
 	}
 
 	// The list filter validates the same vocabulary.
-	status, body := listAgentV2PresetsWithStatus(t, ctx, sutHostURL, sutEnvName, "referee")
+	status, body := listAgentV2PresetsWithStatus(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, "referee")
 	if status != http.StatusBadRequest {
 		t.Fatalf("list presets with unknown role status = %d (body: %s), want 400 INVALID_ARGUMENT", status, body)
 	}
@@ -228,7 +228,7 @@ func TestAgentV2TeamMaterializationValidation(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-mat-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-mat-"+uniqueSuffix())
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-mat", "materialization")
 
 	// The union catalog (specs/063-llm-reliability-opencode-go/contracts/
@@ -397,7 +397,7 @@ func TestAgentV2TeamMembersListRejections(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-members-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-members-"+uniqueSuffix())
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-members", "members")
 
 	validRoster := func() []*game.TeamMember {
@@ -539,7 +539,7 @@ func TestAgentV2TeamSendUnmaterializedRejected(t *testing.T) {
 	ctx := traceContext(t)
 
 	// Layer 1 — never materialized: no owner exists.
-	ghost := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-ghost-"+uniqueSuffix())
+	ghost := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-ghost-"+uniqueSuffix())
 	if status, body := postTeamSendStatus(t, ctx, sutHostURL, sutEnvName, ghost, teamStartMessage); status != http.StatusNotFound {
 		t.Errorf("Send on never-materialized session status = %d (body: %s), want 404 NOT_FOUND", status, body)
 	}
@@ -559,7 +559,7 @@ func TestAgentV2TeamSendUnmaterializedRejected(t *testing.T) {
 	// Layer 2 — owner without a materialized team: the fail-fast unknown-model
 	// composite selector makes UpdateTeam allocate the owner, then reject
 	// without materializing.
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-unmat-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-unmat-"+uniqueSuffix())
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-unmat", "unmaterialized")
 	_, failedStatus, failedBody := updateAgentV2TeamWithStatus(t, ctx, sutHostURL, sutEnvName, sessionName,
 		player.GetName(), planner.GetName(), "glm-responses/no-such-model", "")
@@ -590,7 +590,7 @@ func TestAgentV2TeamEmptyPersonaFallback(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-empty-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-empty-"+uniqueSuffix())
 	player := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-empty-player-"+uniqueSuffix(), "", "player")
 	planner := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-empty-planner-"+uniqueSuffix(), "", "planner")
 	if player.GetPersona() != "" || planner.GetPersona() != "" {
@@ -757,9 +757,9 @@ func TestAgentV2TeamMemorySharedAcrossSessions(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionA := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-a-"+uniqueSuffix())
-	sessionB := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-b-"+uniqueSuffix())
-	control := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-share-c-"+uniqueSuffix())
+	sessionA := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-share-a-"+uniqueSuffix())
+	sessionB := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-share-b-"+uniqueSuffix())
+	control := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-share-c-"+uniqueSuffix())
 	player, planner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-share", "shared")
 	controlPlayer, controlPlanner := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-share-control", "isolated")
 	entry := "跨对局共享观察：" + uniqueSuffix()
@@ -817,7 +817,7 @@ func TestAgentV2TeamMemoryRefreshSwitchesPlannerPreset(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-switch-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-switch-"+uniqueSuffix())
 	player, plannerFirst := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-switch", "first")
 	plannerNext := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName,
 		"team-switch-next-planner-"+uniqueSuffix(), "你是扫雷 planner，switched", "planner")
@@ -871,7 +871,7 @@ func TestAgentV2TeamMemberSystemPromptCompleteAndSplit(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, "team-prompt-"+uniqueSuffix())
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-prompt-"+uniqueSuffix())
 	playerMarker := "T034 完整可读 player persona"
 	plannerMarker := "T034 完整可读 planner persona"
 	player := createAgentV2TeamPreset(t, ctx, sutHostURL, sutEnvName, "team-prompt-player-"+uniqueSuffix(), "你是扫雷 player，"+playerMarker, "player")
@@ -934,7 +934,7 @@ func TestAgentV2TeamSystemPromptSnapshotFixationAndPersonaRefresh(t *testing.T) 
 	ctx := traceContext(t)
 
 	sessionID := "team-snapshot-" + uniqueSuffix()
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	playerPersonaV1 := "T034 persona v1"
 	playerPersonaV2 := "T034 persona v2"
 	plannerMarker := "T034 快照 planner persona"

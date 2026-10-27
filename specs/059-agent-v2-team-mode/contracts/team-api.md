@@ -20,12 +20,12 @@
 
 ## 2. UpdateTeam 校验与物化（fail-fast，无半物化）
 
-会话面 proto 为**场景无关 team 原语**：物化输入是 `team.members` 列表（每成员 `{role, preset, model?}`，caller-supplied 成员配置），字段层不编码 saolei 词汇、成员数量或 role 值域。saolei 场景约束由 **agent_v2 服务端校验**承载（saolei 场景宿主，KNOWN_TEMPLATES 机制不变），校验失败均为 `INVALID_ARGUMENT`（错误为场景校验表述，不含"proto 限制"色彩）：
+会话面 proto 为**场景无关 team 原语**：物化输入是 `team.members` 列表（每成员 `{role, preset, model?}`，caller-supplied 成员配置），字段层不编码 saolei 词汇、成员数量或 role 值域。场景约束由 **agent_v2 服务端校验**承载（`KNOWN_TEMPLATES` 白名单——键集派生自场景表 `projects/game/agent_v2/src/scenes.ts` 的键，未知模板在资源解析层即拒绝——+ 按 template 的场景注册 `SceneSpec`；saolei 为 team 场景，sts2 为主子场景，见 `specs/080-host-main-sub-model/contracts/scene-registry.md` §1/§4），校验失败均为 `INVALID_ARGUMENT`（错误为场景校验表述，不含"proto 限制"色彩）：
 
-1. `team.name` 资源名合法（template ∈ KNOWN_TEMPLATES=saolei）。
+1. `team.name` 资源名合法（template ∈ `KNOWN_TEMPLATES`；saolei 与 sts2 均已注册，见 `specs/079-sts2-template-scaffold/contracts/scene-dispatch.md` §1 与 `specs/080-host-main-sub-model/contracts/face-main-sub.md` §5）。
 2. 结构校验（场景无关）：`members` 非空；每成员 `role` 非空（空字符串=未设置）、`preset` 为合法 preset 资源名；`model` 可空（空=部署默认）。
-3. saolei 场景校验：`members` 恰 2 项且 role 集合恰为 `{"player", "planner"}`（无重复/遗漏/多余）；每成员 preset 存在且 `preset.role` 与成员 `role` **字符串相等**；`model` 非空时在模型目录（与 ListModels 同源）。
-4. 物化编排：逐成员创建（preset mount + 按成员 `role` 分派场景 setup：player 侧 saoleiGame 注册 / planner 侧 memory 预取 fail-loud）→ team 注册 → 静止等待用户消息（初始激活成员 = planner，不自动驱动任何成员；首条用户消息驱动 planner 产出开局策略）。任一步失败：整体回滚（无半物化），上游可重试。
+3. 场景层校验（由场景注册的 `SceneSpec` 供给、host 通用路径只执行——roster 形状、preset 角色词表与 face 成员名均不构成 host 分支，见 `specs/080-host-main-sub-model/contracts/scene-registry.md` §4；saolei 为）：`members` 恰 2 项且 role 集合恰为 `{"player", "planner"}`（无重复/遗漏/多余）；每成员 preset 存在且 `preset.role` 与成员 `role` **字符串相等**；`model` 非空时在模型目录（与 ListModels 同源）。
+4. 物化编排：逐成员创建（preset mount + 按成员 `role` 分派场景 setup；场景 setup 由场景注册决定，saolei 为 player 侧 saoleiGame 注册 / planner 侧 memory 预取 fail-loud）→ team 注册（仅 team 场景，saolei）→ 静止等待用户消息（初始激活成员 = 场景 activation：saolei = `planner`，主子场景 sts2 = `main`，见 `specs/080-host-main-sub-model/contracts/face-main-sub.md` §3；activation 来自场景编排快照的 `activation` 投影、成员集合来自 `members()` 投影，host 仅消费不自持场景字面量，见 `specs/080-host-main-sub-model/contracts/scene-registry.md` §2/§3；不自动驱动任何成员，首条用户消息驱动 activation 成员产出开局策略）。任一步失败：整体回滚（无半物化），上游可重试。
 
 `update_mask` 省略 = 替换全部可变字段；可命名路径仅 `members`（列表整体替换，无逐成员 patch）；`allow_missing=true` 维持 create-or-update 语义（AIP-134）。
 

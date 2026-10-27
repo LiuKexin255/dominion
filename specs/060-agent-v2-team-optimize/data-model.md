@@ -14,8 +14,8 @@
 
 ## 2. Team 视图（GetTeam 输出扩展）
 
-- **`active_member`（新增，output-only，string）**：当前激活成员——单一合并值（spec Clarifications 2026-09-11 裁定）：成员回合在途时 = 该回合驱动成员（任一时刻至多一个）；静止时 = 下一条输入归属成员（activation；物化后初始 `planner`，取消/静止不改变归属）。team 物化后恒非空；未物化时 GetTeam 为 NOT_FOUND（无空值歧义）。
-- 来源：编排层 snapshot 的 `driving?.role ?? activation`（`OrchestratorSnapshot` 相应增加 `activation` 外露）。
+- **`active_member`（新增，output-only，string）**：当前激活成员——单一合并值（spec Clarifications 2026-09-11 裁定）：成员回合在途时 = 该回合驱动成员（任一时刻至多一个）；静止时 = 下一条输入归属成员（activation；物化后初始 activation 由场景注册决定：saolei = `planner`，主子场景 sts2 = `main`，见 `specs/080-host-main-sub-model/contracts/face-main-sub.md` §3；取消/静止不改变归属）。team 物化后恒非空；未物化时 GetTeam 为 NOT_FOUND（无空值歧义）。
+- 来源：编排层 snapshot 的 `driving?.role ?? activation`——activation 是场景编排快照的投影字段，host 不自持场景字面量（`specs/080-host-main-sub-model/contracts/scene-registry.md` §2/§3；`OrchestratorSnapshot` 相应增加 `activation` 外露）。
 - web 呈现态：工具条激活成员徽标；实时推导 = 最近 `turn_start` 帧的 member（live 非空期间）→ live 全部收束后回退最近 GetTeam 值（刷新时机沿用现状：进入会话/send 前/10s 轮询/live→空迁移）。
 
 ## 3. preset 数据形态（唯一事实源 + 派生视图）

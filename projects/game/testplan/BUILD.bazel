@@ -373,3 +373,38 @@ go_largetest(
         "@org_golang_google_protobuf//proto",
     ],
 )
+
+# sts2_conversation_test is the sts2 minimal single-main-agent suite
+# (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §3) on the
+# slim fake-llm topology (deploy_sts2.yaml): the `main` roster
+# materialization/validation, the fake-llm ping turn, the
+# quiescence/refresh/cancel windows (the in-flight variants run the shared
+# stall template), and the fixed-roster NOT_FOUND face. It shares the
+# agent_v2 team helpers (agent_v2_helpers_test.go) and the /api/v1 session
+# helpers (helpers_test.go); the sts2 fixture vocabulary is pinned in
+# sts2_conversation_test.go itself
+# (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md §4). No
+# desktop fixture or saolei board embed is needed — the suite never drives the
+# flow surface.
+#
+# size = medium: the four cases drive multiple materializations per case
+# (each dsh get-or-create costs seconds) plus the 3s static window and the
+# refresh/cancel teardowns, beyond small's 60s budget
+# (style/large_test.md §测试用例: size per actual need).
+go_largetest(
+    name = "sts2_conversation_test",
+    size = "medium",
+    srcs = [
+        "agent_v2_helpers_test.go",
+        "helpers_test.go",
+        "sts2_conversation_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        TRACECONTEXT_DEP,
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

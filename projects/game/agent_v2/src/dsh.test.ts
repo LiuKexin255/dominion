@@ -24,9 +24,9 @@ import type { EndpointResolver } from "@dominion/common-js-resolver";
  * boot(binName, configPath, undefined, undefined, import.meta.url) call
  * shape — plus the composition manifest contract
  * (specs/070-dsh-upgrade/contracts/composition-manifest.md §2): the exact
- * 23-row set with the grpc-runtime infrastructure row, the saolei game
- * foundation row, the sts2 scaffold row, the session-projection
- * row, the official agent-loop row,
+ * 24-row set with the grpc-runtime infrastructure row, the saolei game
+ * foundation row, the sts2 scaffold row, the sts2-loop minimal-orchestration
+ * row, the session-projection row, the official agent-loop row,
  * the agent-preset registry and the pool-template snapshot injected through
  * the authoring row config, the saolei-loop flat capability-dependency list
  * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2), the fail-loud
@@ -457,7 +457,7 @@ interface PresetPluginRow {
 /**
  * One pool template's definition, injected through the preset-authoring row
  * config (`templates`, specs/070-dsh-upgrade/contracts/preset-model-mapping.md
- * §3): the snapshot is the SINGLE source of truth for the player/planner
+ * §3): the snapshot is the SINGLE source of truth for the player/planner/main
  * templates, and the authoring plugin derives store records from it without
  * reading any template filesystem
  * (specs/070-dsh-upgrade/research.md D4 终态结论).
@@ -504,6 +504,29 @@ const PLANNER_TEMPLATE: TemplateDeclaration = {
 };
 
 /**
+ * sts2 main pool persona prefix. The fake-llm sts2 fixture matches the
+ * `sts2 主 agent` identity by containment, so the anchor MUST stay verbatim
+ * (specs/080-host-main-sub-model/contracts/sts2-loop-minimal.md §1;
+ * projects/game/fake-llm/service/testdata/sts2_main.yaml).
+ */
+const MAIN_PERSONA_PREFIX =
+  "你是 sts2 主 agent，负责与用户对话并统筹单局推进：所有行动以场景编排派发的房间上下文为准，不臆造未提供的游戏状态；回答简洁、明确。";
+
+/**
+ * The declared sts2 main template: persona-only. Scene capabilities (room
+ * dispatch, sub-agents) belong to the sts2 scene feature and never ride the
+ * template snapshot
+ * (specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1/§2;
+ * specs/080-host-main-sub-model/contracts/sts2-loop-minimal.md §1).
+ */
+const MAIN_TEMPLATE: TemplateDeclaration = {
+  name: "main",
+  description:
+    "sts2 main 池模板：persona 行与即插即用自包含插件列表；场景能力经 sts2 场景注册组装",
+  plugins: [{ name: "@deepseek-ai/dsh-persona", config: { prefix: MAIN_PERSONA_PREFIX } }],
+};
+
+/**
  * One flat capability-dependency row on the saolei-loop row config
  * (specs/074-dsh-grpc-runtime/contracts/team-assembly.md §2): no role group,
  * the memory adapter carrying the scenario connection config.
@@ -533,7 +556,7 @@ describe("cordis.yml composition manifest", () => {
   /**
    * The pool-template definitions: the `templates` snapshot in the
    * preset-authoring row config is the single source of truth for the
-   * player/planner templates
+   * player/planner/main templates
    * (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
    * specs/070-dsh-upgrade/research.md D4 终态结论).
    */
@@ -562,14 +585,15 @@ describe("cordis.yml composition manifest", () => {
     expect(rows.filter((row) => row.name === "@deepseek-ai/dsh-agent-preset")).toEqual([]);
   });
 
-  it("injects the two pool templates as the single-source authoring snapshot", () => {
-    expect(Object.keys(templates ?? {})).toEqual(["player", "planner"]);
+  it("injects the three pool templates as the single-source authoring snapshot", () => {
+    expect(Object.keys(templates ?? {})).toEqual(["player", "planner", "main"]);
     // The authoring row config carries the template definitions verbatim and
     // is their single source of truth — no declaration row repeats them
     // (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
     // specs/070-dsh-upgrade/research.md D4 终态结论).
     expect(templates?.player).toEqual(PLAYER_TEMPLATE);
     expect(templates?.planner).toEqual(PLANNER_TEMPLATE);
+    expect(templates?.main).toEqual(MAIN_TEMPLATE);
   });
 
   it("keeps the cross-phase persona identity anchors in the template snapshot prefixes", () => {
@@ -590,21 +614,38 @@ describe("cordis.yml composition manifest", () => {
     expect(plannerPrefix).toContain("memory");
     expect(plannerPrefix).not.toContain("-message>");
     expect(plannerPrefix).not.toContain("名册");
+
+    const mainPrefix = templates?.main.plugins[0]?.config?.prefix as string;
+    // The fake-llm sts2 fixture matches the `sts2 主 agent` identity by
+    // containment, so the anchor must stay verbatim
+    // (projects/game/fake-llm/service/testdata/sts2_main.yaml;
+    // specs/080-host-main-sub-model/contracts/sts2-loop-minimal.md §1).
+    expect(mainPrefix.startsWith("你是 sts2 主 agent")).toBe(true);
+    expect(mainPrefix).toContain("sts2 主 agent");
+    // R2 boundary: the persona carries no team-level facts.
+    expect(mainPrefix).not.toContain("-message>");
+    expect(mainPrefix).not.toContain("名册");
   });
 
-  it("keeps the pool templates persona-only (capability wiring rides the saolei-loop list)", () => {
+  it("keeps the pool templates persona-only (capability wiring rides the scene registrations)", () => {
     // Plug-and-play list = self-contained plugins only; the persona row is the
-    // current content. Tool capabilities (saolei/memory) need team-layer
-    // assembly and are declared on the saolei-loop row's config.plugins instead
-    // (specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1/§2/§5).
+    // current content of every pool. Tool capabilities (saolei/memory) need
+    // team-layer assembly and are declared on the saolei-loop row's
+    // config.plugins instead; sts2 scene capabilities belong to the sts2 scene
+    // registration, never to the template
+    // (specs/074-dsh-grpc-runtime/contracts/preset-templates.md §1/§2/§5;
+    // specs/080-host-main-sub-model/contracts/sts2-loop-minimal.md §1).
     const playerRows = templates?.player.plugins.map((plugin) => plugin.name) ?? [];
     expect(playerRows).toEqual(["@deepseek-ai/dsh-persona"]);
 
     const plannerRows = templates?.planner.plugins.map((plugin) => plugin.name) ?? [];
     expect(plannerRows).toEqual(["@deepseek-ai/dsh-persona"]);
+
+    const mainRows = templates?.main.plugins.map((plugin) => plugin.name) ?? [];
+    expect(mainRows).toEqual(["@deepseek-ai/dsh-persona"]);
   });
 
-  it("direct-composes the 23-row plugin set in contract order", () => {
+  it("direct-composes the 24-row plugin set in contract order", () => {
     expect(rows.map((row) => row.id)).toEqual([
       "timer",
       "llm",
@@ -623,6 +664,7 @@ describe("cordis.yml composition manifest", () => {
       "grpc-runtime",
       "saolei",
       "sts2",
+      "sts2-loop",
       "llm-glm",
       "llm-opencode-go",
       "desktop-bridge",
@@ -653,6 +695,7 @@ describe("cordis.yml composition manifest", () => {
       "@dominion/dsh-grpc-runtime",
       "@dominion/dsh-saolei",
       "@dominion/dsh-sts2",
+      "@dominion/dsh-sts2-loop",
       "@dominion/dsh-llm-glm",
       "@dominion/dsh-llm-opencode-go",
       "@dominion/dsh-desktop-bridge",
@@ -779,6 +822,7 @@ describe("cordis.yml composition manifest", () => {
       templates: {
         player: PLAYER_TEMPLATE,
         planner: PLANNER_TEMPLATE,
+        main: MAIN_TEMPLATE,
       },
     });
     // The exact toEqual above also pins the REMOVED template-row rule key: the
@@ -823,8 +867,22 @@ describe("cordis.yml composition manifest", () => {
     expect(sts2?.config).toBeUndefined();
   });
 
+  it("mounts the sts2-loop minimal-orchestration row right after sts2 without config", () => {
+    // The row is lazy and parameterless: the plugin's apply is empty and the
+    // orchestrator is constructed per session by the scene registration, never
+    // as a composition singleton
+    // (specs/080-host-main-sub-model/contracts/sts2-loop-minimal.md §1).
+    const sts2Loop = rows.find((row) => row.id === "sts2-loop");
+    expect(sts2Loop?.name).toBe("@dominion/dsh-sts2-loop");
+    expect(sts2Loop?.config).toBeUndefined();
+    // The sts2 domain rows stay adjacent (saolei → sts2 → sts2-loop)
+    // (specs/079-sts2-template-scaffold/contracts/dsh-plugins-layout.md §3).
+    const ids = rows.map((row) => row.id);
+    expect(ids.indexOf("sts2-loop")).toBe(ids.indexOf("sts2") + 1);
+  });
+
   it("composes no session-persistence and no settings row (install-level peers only)", () => {
-    // The exact 23-row set is pinned by the order test above; this makes the
+    // The exact 24-row set is pinned by the order test above; this makes the
     // declaration-level distinction explicit: settings and
     // session-persistence are install-level peers (package.json + BUILD
     // closure) without a composed row

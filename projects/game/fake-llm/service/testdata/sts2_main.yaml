@@ -1,0 +1,22 @@
+# sts2_main.yaml — the sts2 minimal-wiring conversation fixture serving the
+# game-sts2 suite (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md
+# §4). The single entry is responses-only and anchors on the sts2 main pool
+# template's persona identity opening (「sts2 主 agent」 — the prefix of the
+# `main` preset-authoring template in projects/game/agent_v2/cordis.yml): an
+# empty preset persona keeps that template base, while a non-empty persona
+# overrides the prefix and makes the fixture fail loud instead of matching
+# (common/js/dsh-plugins/preset-authoring/src/derive.ts).
+#
+# The `sts2-ping` keyword is disjoint from every other fixture keyword in this
+# directory, in both directions of the case-insensitive substring rule
+# (projects/game/testplan/README.md §4). The reply text is pinned as the
+# testplan package constants in
+# projects/game/testplan/sts2_conversation_test.go (contract §4).
+messages:
+  - name: agent-v2-sts2-ping
+    keywords:
+      - sts2-ping
+    system_keywords:
+      - sts2 主 agent
+    text: "sts2 主 agent 应答：sts2-ping 已收到，对话回合正常完成。"
+    responses_only: true

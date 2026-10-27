@@ -51,8 +51,8 @@
 # specs/070-dsh-upgrade/research.md D2/D5). `default: ''` keeps preset
 # selection mandatory: the empty id matches no roster entry, so an id-less
 # resolve reports not-found instead of silently falling back to a default
-# template (specs/070-dsh-upgrade/research.md D5). The player/planner pool
-# templates are NOT declared here: their single source of truth is the
+# template (specs/070-dsh-upgrade/research.md D5). The player/planner/main
+# pool templates are NOT declared here: their single source of truth is the
 # `templates` snapshot in the `preset-authoring` row config below
 # (specs/070-dsh-upgrade/contracts/preset-model-mapping.md §3;
 # specs/070-dsh-upgrade/research.md D4 终态结论——2026-09-28 用户裁定移除
@@ -76,6 +76,12 @@
 # dsh-plugins-layout.md §3）：惰性行——插件空 apply、inject 为空，不 provide
 # 服务、不注册工具/section；场景 feature 填充该包实现后本行保持不变。
 - { id: sts2, name: '@dominion/dsh-sts2' }
+# sts2 最小编排挂载行（specs/080-host-main-sub-model/contracts/
+# sts2-loop-minimal.md §1）：与 sts2 骨架行同为惰性行——插件空 apply、
+# inject 为空，不 provide 服务、不注册工具/section。编排实例由 host 的
+# 场景注册按会话构造（非组合单例，与 saolei-loop 相同的所有权模型）；
+# 后续 sts2-loop feature 的房间能力依赖声明在此行 config.plugins 生长。
+- { id: sts2-loop, name: '@dominion/dsh-sts2-loop' }
 - id: llm-glm
   name: '@dominion/dsh-llm-glm'
   config:
@@ -170,6 +176,13 @@
           - name: '@deepseek-ai/dsh-persona'
             config:
               prefix: 你是扫雷 planner，负责对局策略与复盘：依据对局记录复盘得失，把值得跨局保留的观察写入长期记忆（调用 memory 工具），并给出下一局可执行的策略。你不操作桌面、不调用扫雷操作工具；策略应具体、可执行，并与长期记忆中的历史观察保持一致；复盘时区分偶然结果与可复用经验，避免把单局噪声当作长期结论。
+      main:
+        name: main
+        description: sts2 main 池模板：persona 行与即插即用自包含插件列表；场景能力经 sts2 场景注册组装
+        plugins:
+          - name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你是 sts2 主 agent，负责与用户对话并统筹单局推进：所有行动以场景编排派发的房间上下文为准，不臆造未提供的游戏状态；回答简洁、明确。
 # team 群聊原语（ctx.team；specs/059-agent-v2-team-mode/contracts/
 # dsh-plugins.md §1）。
 - { id: team,            name: '@dominion/dsh-team' }

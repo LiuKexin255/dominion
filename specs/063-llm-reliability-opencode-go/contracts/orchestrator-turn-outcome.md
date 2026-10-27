@@ -4,7 +4,7 @@
 
 **位置**: `common/js/dsh-plugins/saolei-loop/src/orchestrator.ts`（`projects/game/agent_v2` 宿主消费）
 
-**事件依据**: dsh-agent-loop `agent/error`（payload `{turn, step, error}`，失败 turn 的活跃边界、先于 idle，`node_modules/.pnpm/@deepseek-ai+dsh-agent-loop@0.1.1-rc.2_*/lib/index.js:465-473`）；编排器既有成员 ctx 订阅先例（`orchestrator.ts:614-618` `agent/status`）。
+**事件依据**: dsh-agent-loop `agent/error`（payload `{turn, step, error}`，失败 turn 的活跃边界、先于 idle；路径以当前锁定的 `node_modules/.pnpm/@deepseek-ai+dsh-agent-loop@0.2.0-rc.2_*/lib/index.js` 为准，事件名/payload 由 `packages/core/agent-loop/src/agent.ts` 公开类型锚定）；编排器既有成员 ctx 订阅先例（`orchestrator.ts:614-618` `agent/status`）。
 
 ## 1. 观察 seam
 

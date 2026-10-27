@@ -291,9 +291,9 @@ const (
 // ─── Resource-name helpers ──────────────────────────────────────────────────
 
 // agentV2SessionName builds the full game session resource name
-// (templates/{template}/sessions/{session}, team-api.md §1).
-func agentV2SessionName(sessionID string) string {
-	return game.SessionName{TemplateID: saoleiTemplateID, SessionID: sessionID}.String()
+// (templates/{template}/sessions/{session}, team-api.md §1) for templateID.
+func agentV2SessionName(templateID, sessionID string) string {
+	return game.SessionName{TemplateID: templateID, SessionID: sessionID}.String()
 }
 
 // agentV2TeamName builds the session's team singleton resource name
@@ -1501,6 +1501,23 @@ func updateAgentV2TeamMembers(t *testing.T, ctx context.Context, sutHostURL, sut
 	return stored, resp.StatusCode, respBody
 }
 
+// updateSts2MainTeam materializes (or refreshes) the sts2 session's team with
+// the scene's single-main roster and returns the stored Team. Calls t.Fatal on
+// non-200 responses. The roster shape and the single `main` member are the
+// sts2 face contract (specs/080-host-main-sub-model/contracts/testplan-game-sts2.md
+// §5); the saolei player+planner path stays on updateAgentV2Team.
+func updateSts2MainTeam(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionName, mainPreset, mainModel string) *game.Team {
+	t.Helper()
+
+	team, status, respBody := updateAgentV2TeamMembers(t, ctx, sutHostURL, sutEnvName, sessionName, []*game.TeamMember{
+		teamMember("main", mainPreset, mainModel),
+	}, "")
+	if status != http.StatusOK {
+		t.Fatalf("PATCH update sts2 main team status=%d, body=%s", status, respBody)
+	}
+	return team
+}
+
 // getAgentV2TeamWithStatus issues GET /api/v2/.../team and returns the HTTP
 // status with the raw body — the materialization probe (200 with the Team,
 // 404 while unmaterialized, team-api.md §1/§3).
@@ -1767,7 +1784,7 @@ func waitTeamDesktopConnected(t *testing.T, ctx context.Context, sutHostURL, sut
 func createAgentV2TeamPreset(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string, role string) *game.Preset {
 	t.Helper()
 
-	preset, status, respBody := createAgentV2PresetWithRole(t, ctx, sutHostURL, sutEnvName, presetID, persona, role)
+	preset, status, respBody := createAgentV2PresetWithRole(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, presetID, persona, role)
 	if status != http.StatusOK {
 		t.Fatalf("POST create preset status=%d, body=%s", status, respBody)
 	}
@@ -1802,7 +1819,7 @@ func createAgentV2Preset(t *testing.T, ctx context.Context, sutHostURL, sutEnvNa
 // 200 fatality: it returns the HTTP status with the parsed resource (nil
 // unless the body decodes as a Preset) — used to assert the 409
 // ALREADY_EXISTS and the missing-role 400 (preset-api.md §2).
-func createAgentV2PresetWithRole(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona string, role string) (*game.Preset, int, []byte) {
+func createAgentV2PresetWithRole(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, templateID, presetID, persona string, role string) (*game.Preset, int, []byte) {
 	t.Helper()
 
 	body, err := protojson.Marshal(&game.Preset{Persona: persona})
@@ -1810,7 +1827,7 @@ func createAgentV2PresetWithRole(t *testing.T, ctx context.Context, sutHostURL, 
 		t.Fatalf("protojson.Marshal Preset: %v", err)
 	}
 	reqURL := fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s&role=%s",
-		sutHostURL, agentV2PathPrefix, saoleiTemplateID,
+		sutHostURL, agentV2PathPrefix, templateID,
 		url.QueryEscape(presetID),
 		url.QueryEscape(role))
 	resp, respBody := doHTTPTrace(t, ctx, http.MethodPost, reqURL, sutEnvName, body)
@@ -1826,7 +1843,7 @@ func createAgentV2PresetWithRole(t *testing.T, ctx context.Context, sutHostURL, 
 // query values (roleQuery empty = the parameter is omitted) and returns the
 // HTTP status with the raw body — the role-vocabulary reject path
 // (missing/unknown/empty role; preset-api.md §2).
-func postAgentV2PresetCreate(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, presetID, persona, roleQuery string) (int, []byte) {
+func postAgentV2PresetCreate(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, templateID, presetID, persona, roleQuery string) (int, []byte) {
 	t.Helper()
 
 	body, err := protojson.Marshal(&game.Preset{Persona: persona})
@@ -1834,7 +1851,7 @@ func postAgentV2PresetCreate(t *testing.T, ctx context.Context, sutHostURL, sutE
 		t.Fatalf("protojson.Marshal Preset: %v", err)
 	}
 	reqURL := fmt.Sprintf("%s%stemplates/%s/presets?preset_id=%s",
-		sutHostURL, agentV2PathPrefix, saoleiTemplateID, url.QueryEscape(presetID))
+		sutHostURL, agentV2PathPrefix, templateID, url.QueryEscape(presetID))
 	if roleQuery != "" {
 		reqURL += "&role=" + url.QueryEscape(roleQuery)
 	}
@@ -1842,22 +1859,23 @@ func postAgentV2PresetCreate(t *testing.T, ctx context.Context, sutHostURL, sutE
 	return resp.StatusCode, respBody
 }
 
-// listAgentV2Presets issues GET /api/v2/templates/saolei/presets and returns
-// the parsed ListPresetsResponse. Calls t.Fatal on non-200 responses.
+// listAgentV2Presets issues GET /api/v2/templates/{template}/presets for the
+// saolei pool and returns the parsed ListPresetsResponse. Calls t.Fatal on
+// non-200 responses.
 func listAgentV2Presets(t *testing.T, ctx context.Context, sutHostURL, sutEnvName string) *game.ListPresetsResponse {
 	t.Helper()
 
-	return listAgentV2PresetsByRole(t, ctx, sutHostURL, sutEnvName, "")
+	return listAgentV2PresetsByRole(t, ctx, sutHostURL, sutEnvName, saoleiTemplateID, "")
 }
 
 // listAgentV2PresetsByRole is listAgentV2Presets with an optional role filter
 // (empty = the query parameter is omitted — no filtering; preset-api.md §1)
-// and the 200 fatality. The filter value is a scene role string
-// ("player" / "planner").
-func listAgentV2PresetsByRole(t *testing.T, ctx context.Context, sutHostURL, sutEnvName string, role string) *game.ListPresetsResponse {
+// and the 200 fatality, over templateID's preset pool. The filter value is a
+// scene role string ("player" / "planner").
+func listAgentV2PresetsByRole(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, templateID string, role string) *game.ListPresetsResponse {
 	t.Helper()
 
-	resp, respBody := listAgentV2PresetsWithStatus(t, ctx, sutHostURL, sutEnvName, role)
+	resp, respBody := listAgentV2PresetsWithStatus(t, ctx, sutHostURL, sutEnvName, templateID, role)
 	if resp != http.StatusOK {
 		t.Fatalf("GET list presets status=%d, body=%s", resp, respBody)
 	}
@@ -1869,12 +1887,13 @@ func listAgentV2PresetsByRole(t *testing.T, ctx context.Context, sutHostURL, sut
 }
 
 // listAgentV2PresetsWithStatus issues the preset list with the raw role query
-// value (empty = omitted) and returns the HTTP status with the raw body — the
-// role-vocabulary filter reject path (preset-api.md §1).
-func listAgentV2PresetsWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, role string) (int, []byte) {
+// value (empty = omitted) over templateID's preset pool and returns the HTTP
+// status with the raw body — the role-vocabulary filter reject path
+// (preset-api.md §1).
+func listAgentV2PresetsWithStatus(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, templateID string, role string) (int, []byte) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%stemplates/%s/presets", sutHostURL, agentV2PathPrefix, saoleiTemplateID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/presets", sutHostURL, agentV2PathPrefix, templateID)
 	if role != "" {
 		reqURL += "?role=" + url.QueryEscape(role)
 	}
@@ -1962,26 +1981,26 @@ func listAgentV2Models(t *testing.T, ctx context.Context, sutHostURL, sutEnvName
 
 // ─── Team arrange helpers ───────────────────────────────────────────────────
 
-// ensureAgentV2Session creates a caller-id session, tolerating an
-// ALREADY_EXISTS (409) from a prior case in the same deployment — the session
-// resource itself is what matters, not who created it. Returns the full
-// /api/v2 session resource name.
-func ensureAgentV2Session(t *testing.T, sutHostURL, sutEnvName, sessionID string) string {
+// ensureAgentV2Session creates a caller-id session in templateID, tolerating
+// an ALREADY_EXISTS (409) from a prior case in the same deployment — the
+// session resource itself is what matters, not who created it. Returns the
+// full /api/v2 session resource name.
+func ensureAgentV2Session(t *testing.T, sutHostURL, sutEnvName, templateID, sessionID string) string {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions?session_id=%s",
-		sutHostURL, pathPrefix, saoleiTemplateID, url.QueryEscape(sessionID))
+		sutHostURL, pathPrefix, templateID, url.QueryEscape(sessionID))
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusConflict:
-		if status, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID); status != http.StatusOK {
+		if status, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, templateID, sessionID); status != http.StatusOK {
 			t.Fatalf("session %s reported already exists but is not readable: status=%d body=%s", sessionID, status, respBody)
 		}
 	default:
 		t.Fatalf("POST ensure session %s status=%d, body=%s", sessionID, resp.StatusCode, respBody)
 	}
-	return agentV2SessionName(sessionID)
+	return agentV2SessionName(templateID, sessionID)
 }
 
 // teamPrep is the team suites' arrange step: ensure the session exists, create
@@ -1992,7 +2011,7 @@ func teamPrep(t *testing.T, sutHostURL, sutEnvName, sessionID, marker string) (c
 	t.Helper()
 
 	ctx := traceContext(t)
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	playerPreset, plannerPreset := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-"+marker, marker)
 	team := updateAgentV2Team(t, ctx, sutHostURL, sutEnvName, sessionName,
 		playerPreset.GetName(), plannerPreset.GetName(), "", "")
@@ -2061,7 +2080,7 @@ const flowHeartbeatTimeout = 25 * time.Second
 func openDesktopStream(t *testing.T, ctx context.Context, sutHostURL, sutEnvName, sessionID string) *desktopStream {
 	t.Helper()
 
-	streamURL := fmt.Sprintf("%s%s%s:stream", sutHostURL, agentV2PathPrefix, agentV2SessionName(sessionID))
+	streamURL := fmt.Sprintf("%s%s%s:stream", sutHostURL, agentV2PathPrefix, agentV2SessionName(saoleiTemplateID, sessionID))
 	reqCtx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, streamURL, nil)
 	if err != nil {
@@ -2085,7 +2104,7 @@ func openDesktopStream(t *testing.T, ctx context.Context, sutHostURL, sutEnvName
 		resp:    resp,
 		reader:  bufio.NewReader(resp.Body),
 		cancel:  cancel,
-		sendURL: fmt.Sprintf("%s%s%s:sendFrame", sutHostURL, agentV2PathPrefix, agentV2SessionName(sessionID)),
+		sendURL: fmt.Sprintf("%s%s%s:sendFrame", sutHostURL, agentV2PathPrefix, agentV2SessionName(saoleiTemplateID, sessionID)),
 		env:     sutEnvName,
 	}
 }

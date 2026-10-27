@@ -4,11 +4,18 @@ import type { PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { createUserMessage, LlmError } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import { PresetAuthoringError } from "@dominion/dsh-preset-authoring";
-import type { TeamEventStream, TeamHandle, TeamMemberEvent, TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
+import type { TeamEventStream, TeamHandle, TeamLiveEvent, TeamMemberEvent, TeamMemberSource, TeamRegistration } from "@dominion/dsh-team";
 import { DEFAULT_MODEL, LOOP_ERROR_TEXT, TeamSessionError, TeamSessions, loopErrorText } from "./session.js";
 import type { TeamView } from "./session.js";
-import type { TeamHistory, TurnStream } from "./history.js";
+import type { MemberCollector, TeamHistory, TurnStream } from "./history.js";
 import type { DshContext } from "./dsh.js";
+import type {
+  SceneMember,
+  SceneOrchestration,
+  SceneRegistry,
+  SceneSnapshot,
+} from "./orchestration.js";
+import type { SceneSpec } from "./scenes.js";
 import type { ChatEvent } from "../agent_v2_types/projects/game/ChatEvent.js";
 import type { AnnouncerMember } from "@dominion/dsh-saolei-loop";
 import type { GameEventRecord, GameRuntime } from "@dominion/dsh-saolei";
@@ -241,6 +248,10 @@ function fakeMember(
 interface HarnessOptions {
   /** Omit the `memoryMount` provide face (composition-error test). */
   readonly omitMemoryMount?: boolean;
+  /** Injected scene registry (defaults to the module scene table). */
+  readonly scenes?: SceneRegistry;
+  /** Role the authoring double reports for a preset id (synthetic scenes). */
+  readonly presetRole?: (presetId: string) => string;
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
@@ -272,7 +283,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     get: vi.fn(async (id: string) => ({
       id,
       template: id.endsWith("planner") ? "planner" : "player",
-      role: id.endsWith("planner") ? "planner" : "player",
+      role: options.presetRole?.(id) ?? (id.endsWith("planner") ? "planner" : "player"),
       persona: "",
       createTime: new Date(0),
       updateTime: new Date(0),
@@ -433,6 +444,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     },
     logger: { error: loggerError },
     provider: "glm-responses",
+    scenes: options.scenes,
   });
   return {
     ctx,
@@ -475,6 +487,94 @@ function fakeStream(): StreamRecorder {
     },
   };
   return recorder;
+}
+
+/**
+ * A scene orchestration double for the synthetic-scene tests: the seam
+ * surface plus the test controls (emit one envelope, settle the quiescent
+ * point). It enters through the injected scene registry's factory, never
+ * through module interception (style/javascript.md Mock convention;
+ * specs/080-host-main-sub-model/contracts/scene-registry.md §1).
+ */
+interface SceneStub {
+  readonly orchestration: SceneOrchestration;
+  readonly materialize: ReturnType<typeof vi.fn>;
+  readonly submit: ReturnType<typeof vi.fn>;
+  readonly dispose: ReturnType<typeof vi.fn>;
+  emit(envelope: TeamMemberEvent): void;
+  settle(): void;
+}
+
+function sceneStub(
+  handle: AgentHandle,
+  projected: readonly SceneMember[],
+): SceneStub {
+  const consumers = new Set<(event: TeamMemberEvent) => void>();
+  const state = {
+    materialized: false,
+    active: null as string | null,
+    paused: false,
+    queued: 0,
+    failed: false,
+  };
+  let resolveQuiescent: (() => void) | undefined;
+  const materialize = vi.fn(async () => {
+    state.materialized = true;
+  });
+  const submit = vi.fn((_text: string) => {
+    state.active = "single";
+  });
+  const dispose = vi.fn(async () => {
+    state.materialized = false;
+  });
+  const orchestration: SceneOrchestration = {
+    materialize,
+    members: () => (state.materialized ? projected : []),
+    member: (role) =>
+      projected.some((member) => member.role === role && member.kind === "agent")
+        ? handle
+        : undefined,
+    teamEvents: () => ({
+      subscribe: (consumer) => {
+        consumers.add(consumer);
+        return () => {
+          consumers.delete(consumer);
+        };
+      },
+    }),
+    snapshot: (): SceneSnapshot => ({
+      materialized: state.materialized,
+      active: state.active,
+      activation: "single",
+      paused: state.paused,
+      queued: state.queued,
+      failed: state.failed,
+      lastError: null,
+    }),
+    submit,
+    cancel: vi.fn(),
+    whenQuiescent: () =>
+      new Promise<void>((resolve) => {
+        resolveQuiescent = resolve;
+      }),
+    dispose,
+  };
+  return {
+    orchestration,
+    materialize,
+    submit,
+    dispose,
+    emit: (envelope) => {
+      for (const consumer of [...consumers]) {
+        consumer(envelope);
+      }
+    },
+    settle: () => {
+      state.active = null;
+      resolveQuiescent?.();
+      resolveQuiescent = undefined;
+    },
+  };
 }
 
 function payloadOf(event: ChatEvent): string {
@@ -546,14 +646,16 @@ interface EntryMemberSeam {
 
 /**
  * The private live-entry registry seam: the entry's unified member collection,
- * the announcer member and the history of one materialization generation
- * (refresh/unsubscribe and roster-derivation assertions).
+ * the dynamic (role, memberId) collectors, the announcer member and the
+ * history of one materialization generation (refresh/unsubscribe and
+ * roster-derivation assertions).
  */
 function entrySeam(
   h: Harness,
   session: string,
 ): {
   announcer: AnnouncerMember | undefined;
+  dynamicCollectors: Map<string, MemberCollector>;
   history: TeamHistory;
   members: ReadonlyArray<EntryMemberSeam>;
 } {
@@ -563,6 +665,7 @@ function entrySeam(
         string,
         {
           orchestrator: { announcer?: AnnouncerMember };
+          dynamicCollectors: Map<string, MemberCollector>;
           history: TeamHistory;
           members: ReadonlyArray<EntryMemberSeam>;
         }
@@ -575,6 +678,7 @@ function entrySeam(
   }
   return {
     announcer: entry.orchestrator.announcer,
+    dynamicCollectors: entry.dynamicCollectors,
     history: entry.history,
     members: entry.members,
   };
@@ -765,19 +869,18 @@ describe("TeamSessions.materialize", () => {
     expect(h.agentsCreate).not.toHaveBeenCalled();
   });
 
-  it("rejects an unwired scene identically for every roster shape, before any validation", async () => {
+  it("accepts the sts2 scene and validates roster shapes against its single main member", async () => {
     const sts2Session = "templates/sts2/sessions/s1";
-    const sceneError = {
-      code: "INVALID_ARGUMENT",
-      message: 'scene "sts2" is not wired for team orchestration yet',
-    };
-    const h = createHarness();
+    const h = createHarness({ presetRole: () => "main" });
 
-    // Empty members: Layer 1 would reject it, but the scene gate runs first.
-    await expect(h.sessions.materialize(sts2Session, { members: [] })).rejects.toMatchObject(
-      sceneError,
-    );
-    // The roster a wired scene would accept.
+    // Empty members: the scene-agnostic structure layer rejects first.
+    await expect(h.sessions.materialize(sts2Session, { members: [] })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "team.members must not be empty",
+    });
+    // The two-member saolei-shaped roster is a scene roster violation: the
+    // sts2 scene materializes exactly one member
+    // (specs/080-host-main-sub-model/contracts/face-main-sub.md §1).
     await expect(
       h.sessions.materialize(sts2Session, {
         members: [
@@ -785,15 +888,21 @@ describe("TeamSessions.materialize", () => {
           { role: "planner", preset: "templates/sts2/presets/p-planner" },
         ],
       }),
-    ).rejects.toMatchObject(sceneError);
-    // A structurally invalid roster gets the same error: the gate precedes
-    // both validation layers
-    // (specs/079-sts2-template-scaffold/contracts/scene-dispatch.md §3 item 1).
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "sts2 team materialization requires exactly 1 members (main), got 2",
+    });
+    // A structurally invalid roster is rejected by the structure layer before
+    // the scene roster, matching the two-layer fail-fast order.
     await expect(
       h.sessions.materialize(sts2Session, { members: [{ role: "", preset: "nope" }] }),
-    ).rejects.toMatchObject(sceneError);
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "every team member must carry a non-empty role",
+    });
 
-    // No validation or storage path was entered.
+    // No preset/model validation or orchestration path was entered, and the
+    // session stays unmaterialized.
     expect(h.authoring.get).not.toHaveBeenCalled();
     expect(h.listModels).not.toHaveBeenCalled();
     expect(h.agentsCreate).not.toHaveBeenCalled();
@@ -1830,5 +1939,980 @@ describe("TeamSessions loop error presentation (specs/076-agent-v2-optimize/spec
     expect(stream.failures).toEqual([
       { code: "INTERNAL", message: `boom — ${LOOP_ERROR_TEXT.INTERNAL}` },
     ]);
+  });
+});
+
+describe("TeamSessions scene-neutral registry path (specs/080-host-main-sub-model/contracts/scene-registry.md §1/§3)", () => {
+  const SOLO = "solo";
+  const SOLO_SESSION = `templates/${SOLO}/sessions/s1`;
+  const SOLO_PRESET = `templates/${SOLO}/presets/p-solo`;
+
+  it("materializes, drives and refreshes a synthetic single-member scene with no announcer", async () => {
+    const solo = fakeMember("solo-agent", () => {}, () => {});
+    const stubs: SceneStub[] = [];
+    const scene: SceneSpec = {
+      roster: ["single"],
+      presetRoles: ["single"],
+      rolePoolTemplate: { single: "single" },
+      orchestratable: true,
+      teamGoal: "",
+      faceMembers: ["single"],
+      createOrchestration: () => {
+        const stub = sceneStub(solo.handle, [
+          { role: "single", kind: "agent" },
+        ]);
+        stubs.push(stub);
+        return stub.orchestration;
+      },
+    };
+    const h = createHarness({
+      scenes: { [SOLO]: scene },
+      presetRole: () => "single",
+    });
+
+    const view = await h.sessions.materialize(SOLO_SESSION, {
+      members: [{ role: "single", preset: SOLO_PRESET }],
+    });
+
+    // The host hands the scene the validated neutral input: preset id and the
+    // split provider/model route (specs/063-llm-reliability-opencode-go/
+    // contracts/model-selection.md §3).
+    expect(stubs).toHaveLength(1);
+    expect(stubs[0]?.materialize).toHaveBeenCalledWith({
+      session: SOLO_SESSION,
+      template: SOLO,
+      members: [
+        {
+          role: "single",
+          preset: "p-solo",
+          provider: "glm-responses",
+          model: DEFAULT_BARE_MODEL,
+        },
+      ],
+    });
+    // The roster is the orchestration's member projection; no server-added
+    // member exists (specs/080-host-main-sub-model/spec.md US1 AC3).
+    expect(
+      view.members.map((entry) => [entry.role, entry.preset, entry.model]),
+    ).toEqual([["single", SOLO_PRESET, DEFAULT_MODEL]]);
+    expect(view.activeMember).toBe("single");
+    // Member-name pre-check / roster text derive from the injected scene's
+    // faceMembers, not from a module-level role literal
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §4 item 5).
+    await expect(
+      h.sessions.getTeamMember(SOLO_SESSION, "announcer"),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: 'team member "announcer" does not exist; the roster is single',
+    });
+
+    // Drive: the user input is fixed into the merged sequence and handed to
+    // the scene orchestration through the seam.
+    const stream = fakeStream();
+    h.sessions.send(SOLO_SESSION, "hello", stream);
+    await flush();
+    expect(stubs[0]?.submit).toHaveBeenCalledWith("hello");
+    expect(stream.events.some((event) => event.teamMessage?.member === "user")).toBe(true);
+
+    // The scene's unified stream feeds the runtime derived from members():
+    // one agent collector for the single role.
+    stubs[0]?.emit({
+      role: "single",
+      memberId: "solo-agent",
+      channel: "log",
+      event: {
+        type: "assistant/message",
+        data: { message: { content: [{ type: "text", text: "hi from main" }] } },
+      },
+    } as unknown as TeamMemberEvent);
+    await flush();
+    expect(
+      h.sessions
+        .listTeamMessages(SOLO_SESSION)
+        .map((entry) => [entry.member, entry.message.blocks[0]?.text?.content]),
+    ).toEqual([
+      ["user", "hello"],
+      ["single", "hi from main"],
+    ]);
+    expect(
+      stream.events.some((event) => event.teamMessage?.member === "single"),
+    ).toBe(true);
+
+    // Settling the orchestration ends the stream at its quiescent point.
+    stubs[0]?.settle();
+    await flush();
+    expect(stream.ended).toBe(true);
+
+    // Refresh rebuilds through the scene factory: the old generation is
+    // disposed, create_time survives and the history restarts empty.
+    const first = h.sessions.getTeam(SOLO_SESSION);
+    const refreshed = await h.sessions.materialize(SOLO_SESSION, {
+      members: [{ role: "single", preset: SOLO_PRESET }],
+    });
+    expect(stubs).toHaveLength(2);
+    expect(stubs[0]?.dispose).toHaveBeenCalledOnce();
+    expect(refreshed.createTime).toBe(first.createTime);
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+    expect(refreshed.members.map((entry) => entry.role)).toEqual(["single"]);
+
+    // A seam state error is mapped onto FAILED_PRECONDITION by its stable
+    // code, never by class identity
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §2).
+    stubs[1]?.submit.mockImplementationOnce(() => {
+      throw Object.assign(new Error("scene orchestration is disposed"), {
+        code: "DISPOSED",
+      });
+    });
+    let stateError: unknown;
+    try {
+      h.sessions.send(SOLO_SESSION, "again", fakeStream());
+    } catch (err) {
+      stateError = err;
+    }
+    expect(stateError).toBeInstanceOf(TeamSessionError);
+    expect(stateError).toMatchObject({
+      code: "FAILED_PRECONDITION",
+      message: "scene orchestration is disposed",
+    });
+  });
+
+  it("derives an announce-only projected member without a caller configuration", async () => {
+    const solo = fakeMember("solo-agent", () => {}, () => {});
+    const stubs: SceneStub[] = [];
+    const scene: SceneSpec = {
+      roster: ["single"],
+      presetRoles: ["single"],
+      rolePoolTemplate: { single: "single" },
+      orchestratable: true,
+      teamGoal: "",
+      faceMembers: ["single", "voice"],
+      createOrchestration: () => {
+        const stub = sceneStub(solo.handle, [
+          { role: "single", kind: "agent" },
+          { role: "voice", kind: "announce-only" },
+        ]);
+        stubs.push(stub);
+        return stub.orchestration;
+      },
+    };
+    const h = createHarness({
+      scenes: { [SOLO]: scene },
+      presetRole: () => "single",
+    });
+
+    const view = await h.sessions.materialize(SOLO_SESSION, {
+      members: [{ role: "single", preset: SOLO_PRESET }],
+    });
+
+    // The projection's kinds drive the runtime shapes: the announce-only
+    // member carries no preset/model and needs no caller configuration
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §2/§3).
+    expect(view.members.map((entry) => [entry.role, entry.preset, entry.model])).toEqual([
+      ["single", SOLO_PRESET, DEFAULT_MODEL],
+      ["voice", "", ""],
+    ]);
+    expect(await h.sessions.getTeamMember(SOLO_SESSION, "voice")).toMatchObject({
+      role: "voice",
+      preset: "",
+      model: "",
+      systemPrompt: "",
+    });
+    // Announce-only members have no member view (kind-derived, not role-cased).
+    expect(() => h.sessions.listMemberMessages(SOLO_SESSION, "voice")).toThrow(
+      'team member "voice" has no message view; the member-view roster is single',
+    );
+
+    // The announce-only log production projects into the merged sequence.
+    stubs[0]?.emit({
+      role: "voice",
+      memberId: "voice-source",
+      channel: "log",
+      event: {
+        type: "assistant/message",
+        data: { message: { content: [{ type: "text", text: "announcement" }] } },
+      },
+    } as unknown as TeamMemberEvent);
+    expect(
+      h.sessions
+        .listTeamMessages(SOLO_SESSION)
+        .map((entry) => [entry.member, entry.message.blocks[0]?.text?.content]),
+    ).toEqual([["voice", "announcement"]]);
+  });
+});
+
+describe("TeamSessions dynamic role projection (specs/080-host-main-sub-model/contracts/scene-registry.md §3)", () => {
+  const SOLO = "solo";
+  const SOLO_SESSION = `templates/${SOLO}/sessions/s1`;
+  const SOLO_PRESET = `templates/${SOLO}/presets/p-solo`;
+  const ROOM = "room-a";
+  const ROOM_ONE = `${SOLO_SESSION}/room-a/1`;
+  const ROOM_TWO = `${SOLO_SESSION}/room-a/2`;
+
+  /** A synthetic single-member scene whose stub the test drives directly. */
+  function createSoloHarness(): { h: Harness; lastStub: () => SceneStub } {
+    const solo = fakeMember("solo-agent", () => {}, () => {});
+    const stubs: SceneStub[] = [];
+    const scene: SceneSpec = {
+      roster: ["single"],
+      presetRoles: ["single"],
+      rolePoolTemplate: { single: "single" },
+      orchestratable: true,
+      teamGoal: "",
+      faceMembers: ["single"],
+      createOrchestration: () => {
+        const stub = sceneStub(solo.handle, [{ role: "single", kind: "agent" }]);
+        stubs.push(stub);
+        return stub.orchestration;
+      },
+    };
+    const h = createHarness({ scenes: { [SOLO]: scene }, presetRole: () => "single" });
+    return {
+      h,
+      lastStub: () => {
+        const stub = stubs[stubs.length - 1];
+        if (stub === undefined) {
+          throw new Error("the scene factory has not run");
+        }
+        return stub;
+      },
+    };
+  }
+
+  /** One log-channel production of a role outside the projection. */
+  function roomOutput(memberId: string, text: string): TeamMemberEvent {
+    return {
+      role: ROOM,
+      memberId,
+      channel: "log",
+      event: {
+        type: "assistant/message",
+        data: { message: { content: [{ type: "text", text }] } },
+      },
+    } as unknown as TeamMemberEvent;
+  }
+
+  async function materializeSolo(h: Harness): Promise<void> {
+    await h.sessions.materialize(SOLO_SESSION, {
+      members: [{ role: "single", preset: SOLO_PRESET }],
+    });
+  }
+
+  it("projects a non-roster role per (role, memberId) with member-labelled frames and merged entries only", async () => {
+    const { h, lastStub } = createSoloHarness();
+    await materializeSolo(h);
+    const stream = fakeStream();
+    h.sessions.send(SOLO_SESSION, "hello", stream);
+    await flush();
+
+    // Two distinct producers of the SAME role: the key is (role, memberId), so
+    // each gets its own collector and neither swallows the other's event.
+    lastStub().emit(roomOutput(ROOM_ONE, "from room one"));
+    lastStub().emit(roomOutput(ROOM_TWO, "from room two"));
+    await flush();
+
+    const entries = h.sessions.listTeamMessages(SOLO_SESSION);
+    expect(
+      entries.map((entry) => [entry.member, entry.message.blocks[0]?.text?.content]),
+    ).toEqual([
+      ["user", "hello"],
+      [ROOM, "from room one"],
+      [ROOM, "from room two"],
+    ]);
+    // A repeat envelope for an existing (role, memberId) reuses its collector:
+    // no new collector is created and its production keeps appending at the
+    // tail of the merge sequence.
+    const roomOneKey = `${ROOM}\u0000${ROOM_ONE}`;
+    const entry = entrySeam(h, SOLO_SESSION);
+    const roomOneCollector = entry.dynamicCollectors.get(roomOneKey);
+    expect(roomOneCollector).toBeDefined();
+    lastStub().emit(roomOutput(ROOM_ONE, "from room one again"));
+    await flush();
+
+    expect(entry.dynamicCollectors.size).toBe(2);
+    expect(entry.dynamicCollectors.get(roomOneKey)).toBe(roomOneCollector);
+    const merged = h.sessions.listTeamMessages(SOLO_SESSION);
+    expect(merged).toHaveLength(4);
+    expect(merged[3]?.member).toBe(ROOM);
+    expect(merged[3]?.message.blocks[0]?.text?.content).toBe("from room one again");
+
+    // The merge entries reach the live stream as member-labelled team_message
+    // frames, and the member event frames carry the envelope role.
+    expect(
+      stream.events
+        .filter((event) => event.teamMessage?.member === ROOM)
+        .map((event) => event.teamMessage?.seq),
+    ).toEqual(["2", "3", "4"]);
+    const roomFrames = stream.events.filter((event) => event.member === ROOM);
+    expect(roomFrames.length).toBeGreaterThan(0);
+    expect(roomFrames.every((event) => event.teamMessage === undefined)).toBe(true);
+
+    // Entry-scoped per-member collectors; the role never enters the roster.
+    expect(entry.members.map((member) => member.role)).toEqual(["single"]);
+    expect(h.sessions.getTeam(SOLO_SESSION).members.map((member) => member.role)).toEqual([
+      "single",
+    ]);
+    // Viewless: merged entries exist, but no member view and no member_view
+    // frame was written for the dynamic role.
+    expect(entry.history.listMemberMessages(ROOM)).toEqual([]);
+    expect(stream.events.some((event) => event.memberView !== undefined)).toBe(false);
+
+    // No member resource or member view is served for the dynamic role.
+    await expect(
+      h.sessions.getTeamMember(SOLO_SESSION, ROOM),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    let viewError: unknown;
+    try {
+      h.sessions.listMemberMessages(SOLO_SESSION, ROOM);
+    } catch (err) {
+      viewError = err;
+    }
+    expect(viewError).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("destroys the dynamic projection with its entry generation (refresh carries nothing over)", async () => {
+    const { h, lastStub } = createSoloHarness();
+    await materializeSolo(h);
+    const stream = fakeStream();
+    h.sessions.send(SOLO_SESSION, "hello", stream);
+    await flush();
+
+    const oldStub = lastStub();
+    oldStub.emit(roomOutput(ROOM_ONE, "before refresh"));
+    await flush();
+
+    const old = entrySeam(h, SOLO_SESSION);
+    expect(old.dynamicCollectors.size).toBe(1);
+    expect(
+      old.history.listTeamMessages().map((entry) => entry.message.blocks[0]?.text?.content),
+    ).toEqual(["hello", "before refresh"]);
+
+    await materializeSolo(h);
+
+    // The fresh generation starts with an empty dynamic map and empty
+    // projections; the old generation's collectors were released with it.
+    const fresh = entrySeam(h, SOLO_SESSION);
+    expect(fresh.dynamicCollectors.size).toBe(0);
+    expect(old.dynamicCollectors.size).toBe(0);
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+
+    // The old generation's subscription detached with its entry: a late
+    // production reaches neither history.
+    oldStub.emit(roomOutput(ROOM_TWO, "after refresh"));
+    await flush();
+    expect(
+      old.history.listTeamMessages().map((entry) => entry.message.blocks[0]?.text?.content),
+    ).toEqual(["hello", "before refresh"]);
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+  });
+});
+
+describe("TeamSessions face semantics for a single-member main scene (specs/080-host-main-sub-model/contracts/face-main-sub.md §1-§4)", () => {
+  const SOLO = "solo";
+  const SOLO_SESSION = `templates/${SOLO}/sessions/s1`;
+  const SOLO_PRESET = `templates/${SOLO}/presets/p-single`;
+  const SOLO_ROLE = "single";
+
+  /**
+   * A controllable single-member orchestration double. Unlike the shared
+   * {@link sceneStub}, its snapshot is driven explicitly (active / activation /
+   * paused / queued), and cancel/dispose converge an in-flight turn to idle —
+   * the orchestration-side facts the face contract maps
+   * (specs/080-host-main-sub-model/contracts/face-main-sub.md §3).
+   */
+  interface FaceStub {
+    readonly orchestration: SceneOrchestration;
+    readonly materialize: ReturnType<typeof vi.fn>;
+    readonly submit: ReturnType<typeof vi.fn>;
+    readonly cancel: ReturnType<typeof vi.fn>;
+    readonly dispose: ReturnType<typeof vi.fn>;
+    readonly state: {
+      active: string | null;
+      activation: string;
+      paused: boolean;
+      queued: number;
+    };
+    /** Open the single member's turn (the live running transition). */
+    startTurn(): void;
+  }
+
+  function faceStub(handle: AgentHandle): FaceStub {
+    const state = {
+      materialized: false,
+      active: null as string | null,
+      activation: SOLO_ROLE,
+      paused: false,
+      queued: 0,
+      failed: false,
+    };
+    const consumers = new Set<(event: TeamMemberEvent) => void>();
+    const waiters: Array<() => void> = [];
+    const emit = (envelope: TeamMemberEvent): void => {
+      for (const consumer of [...consumers]) {
+        consumer(envelope);
+      }
+    };
+    const live = (event: TeamLiveEvent): void => {
+      emit({
+        role: SOLO_ROLE,
+        memberId: String(handle.agent.id),
+        channel: "live",
+        event,
+      });
+    };
+    const resolveQuiescent = (): void => {
+      for (const resolve of waiters.splice(0)) {
+        resolve();
+      }
+    };
+    const idle = (): void => {
+      // The turn converges to idle: an in-flight turn settles with the outcome
+      // the host recorded (ABORTED on refresh, CANCELED on cancel)
+      // (specs/080-host-main-sub-model/contracts/face-main-sub.md §1/§3).
+      state.active = null;
+      live({ kind: "status", status: "idle" });
+    };
+    const materialize = vi.fn(async () => {
+      state.materialized = true;
+    });
+    const submit = vi.fn(() => {
+      if (state.active === null) {
+        state.active = SOLO_ROLE;
+        return;
+      }
+      state.queued += 1;
+    });
+    const cancel = vi.fn(() => {
+      if (state.active !== null) {
+        idle();
+      }
+      state.paused = true;
+      state.queued = 0;
+      resolveQuiescent();
+    });
+    const dispose = vi.fn(async () => {
+      if (state.active !== null) {
+        idle();
+      }
+      state.materialized = false;
+      resolveQuiescent();
+    });
+    const orchestration: SceneOrchestration = {
+      materialize,
+      members: (): readonly SceneMember[] =>
+        state.materialized ? [{ role: SOLO_ROLE, kind: "agent" }] : [],
+      member: (role) => (role === SOLO_ROLE ? handle : undefined),
+      teamEvents: () => ({
+        subscribe: (consumer) => {
+          consumers.add(consumer);
+          return () => {
+            consumers.delete(consumer);
+          };
+        },
+      }),
+      snapshot: (): SceneSnapshot => ({
+        materialized: state.materialized,
+        active: state.active,
+        activation: state.activation,
+        paused: state.paused,
+        queued: state.queued,
+        failed: state.failed,
+        lastError: null,
+      }),
+      submit,
+      cancel,
+      whenQuiescent: () =>
+        new Promise<void>((resolve) => {
+          waiters.push(resolve);
+        }),
+      dispose,
+    };
+    return {
+      orchestration,
+      materialize,
+      submit,
+      cancel,
+      dispose,
+      state,
+      startTurn: () => {
+        state.active = SOLO_ROLE;
+        live({ kind: "status", status: "running" });
+      },
+    };
+  }
+
+  function createFaceHarness(): {
+    h: Harness;
+    stubs: FaceStub[];
+    lastStub: () => FaceStub;
+  } {
+    const solo = fakeMember("single-agent", () => {}, () => {});
+    const stubs: FaceStub[] = [];
+    const scene: SceneSpec = {
+      roster: [SOLO_ROLE],
+      presetRoles: [SOLO_ROLE],
+      rolePoolTemplate: { [SOLO_ROLE]: SOLO_ROLE },
+      orchestratable: true,
+      teamGoal: "",
+      faceMembers: [SOLO_ROLE],
+      createOrchestration: () => {
+        const stub = faceStub(solo.handle);
+        stubs.push(stub);
+        return stub.orchestration;
+      },
+    };
+    const h = createHarness({
+      scenes: { [SOLO]: scene },
+      presetRole: () => SOLO_ROLE,
+    });
+    return {
+      h,
+      stubs,
+      lastStub: () => {
+        const stub = stubs[stubs.length - 1];
+        if (stub === undefined) {
+          throw new Error("the scene factory has not run");
+        }
+        return stub;
+      },
+    };
+  }
+
+  async function materializeSolo(h: Harness): Promise<TeamView> {
+    return h.sessions.materialize(SOLO_SESSION, {
+      members: [{ role: SOLO_ROLE, preset: SOLO_PRESET }],
+    });
+  }
+
+  it("materializes exactly the scene roster as one agent member, with no server-added member (§1 物化/§2 名册固定)", async () => {
+    const { h, stubs } = createFaceHarness();
+
+    const view = await materializeSolo(h);
+
+    // §1 物化输入: the host hands the scene the validated neutral input — the
+    // single caller member, its preset id and the split model route
+    // (specs/063-llm-reliability-opencode-go/contracts/model-selection.md §3).
+    expect(stubs).toHaveLength(1);
+    expect(stubs[0]?.materialize).toHaveBeenCalledOnce();
+    expect(stubs[0]?.materialize).toHaveBeenCalledWith({
+      session: SOLO_SESSION,
+      template: SOLO,
+      members: [
+        {
+          role: SOLO_ROLE,
+          preset: "p-single",
+          provider: "glm-responses",
+          model: DEFAULT_BARE_MODEL,
+        },
+      ],
+    });
+
+    // §1 物化产物 / §2 名册固定: the roster is the orchestration's member
+    // projection — exactly one agent member, with no announcer or other
+    // server-added member.
+    expect(view.name).toBe(`${SOLO_SESSION}/team`);
+    expect(
+      view.members.map((entry) => [entry.name, entry.role, entry.preset, entry.model]),
+    ).toEqual([
+      [
+        `${SOLO_SESSION}/team/members/${SOLO_ROLE}`,
+        SOLO_ROLE,
+        SOLO_PRESET,
+        DEFAULT_MODEL,
+      ],
+    ]);
+    expect(h.sessions.getTeam(SOLO_SESSION).members).toHaveLength(1);
+    // §3 静止 = activation: the single member owns the next input.
+    expect(view.activeMember).toBe(SOLO_ROLE);
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+
+    // §2/§4: non-roster reads are NOT_FOUND, and the roster text derives from
+    // the injected scene's faceMembers (no announcer literal in the host).
+    await expect(
+      h.sessions.getTeamMember(SOLO_SESSION, "announcer"),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: 'team member "announcer" does not exist; the roster is single',
+    });
+    let viewError: unknown;
+    try {
+      h.sessions.listMemberMessages(SOLO_SESSION, "announcer");
+    } catch (err) {
+      viewError = err;
+    }
+    expect(viewError).toMatchObject({
+      code: "NOT_FOUND",
+      message:
+        'team member "announcer" has no message view; the member-view roster is single',
+    });
+
+    // §2 名册内成功面: the roster member read serves the configured state and
+    // the instance's live assembly surface, and its member view exists (empty
+    // here) — distinct from the non-roster NOT_FOUND path above.
+    const memberRead = await h.sessions.getTeamMember(SOLO_SESSION, SOLO_ROLE);
+    expect(memberRead).toMatchObject({ role: SOLO_ROLE, preset: SOLO_PRESET });
+    expect(memberRead.systemPrompt).toContain("system prompt of single-agent");
+    expect(h.sessions.listMemberMessages(SOLO_SESSION, SOLO_ROLE)).toEqual([]);
+  });
+
+  it("rejects a roster shape or role outside the scene table before constructing the orchestration (§1 校验/§4 错误码与文案)", async () => {
+    const { h, stubs } = createFaceHarness();
+
+    // §1 校验: the scene roster is exactly one member — a double member is a
+    // shape violation with the scene table's roster text.
+    await expect(
+      h.sessions.materialize(SOLO_SESSION, {
+        members: [
+          { role: SOLO_ROLE, preset: SOLO_PRESET },
+          { role: SOLO_ROLE, preset: SOLO_PRESET },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        "solo team materialization requires exactly 1 members (single), got 2",
+    });
+
+    // §1 校验: the member role must equal the scene roster role.
+    await expect(
+      h.sessions.materialize(SOLO_SESSION, {
+        members: [{ role: "main", preset: SOLO_PRESET }],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: 'solo team member roles must be exactly {"single"}, got [main]',
+    });
+
+    // §1 校验: the preset exists and its role equals the member role.
+    h.authoring.get.mockResolvedValueOnce({
+      id: "p-single",
+      template: "solo",
+      role: "main",
+      persona: "",
+      createTime: new Date(0),
+      updateTime: new Date(0),
+    });
+    await expect(
+      h.sessions.materialize(SOLO_SESSION, {
+        members: [{ role: SOLO_ROLE, preset: SOLO_PRESET }],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        'scene check failed: preset "p-single" carries role "main" but member "single" requires the matching role',
+    });
+
+    // Fail-fast: no orchestration was constructed.
+    expect(stubs).toHaveLength(0);
+    expect(() => h.sessions.getTeam(SOLO_SESSION)).toThrow("team not materialized");
+
+    // §1 失败: a validation failure leaves no half-materialized entry behind;
+    // a retry with valid input materializes cleanly.
+    const retried = await materializeSolo(h);
+    expect(retried.members.map((entry) => entry.role)).toEqual([SOLO_ROLE]);
+    expect(stubs).toHaveLength(1);
+    expect(h.sessions.getTeam(SOLO_SESSION).members).toHaveLength(1);
+  });
+
+  it("serves the driving member in flight, the activation at rest, and keeps the owner across cancel (§3 active_member)", async () => {
+    const { h, lastStub } = createFaceHarness();
+    await materializeSolo(h);
+    const stub = lastStub();
+    const stream = fakeStream();
+
+    // §3 静止: no turn is in flight; the merged value is the activation.
+    expect(stub.state.active).toBeNull();
+    expect(h.sessions.getTeam(SOLO_SESSION).activeMember).toBe(SOLO_ROLE);
+
+    // §3 在途: submit opens the single member's turn; the merged value follows
+    // the in-flight driving member.
+    h.sessions.send(SOLO_SESSION, "hello", stream);
+    await flush();
+    expect(stub.submit).toHaveBeenCalledWith("hello");
+    stub.startTurn();
+    expect(stub.state.active).toBe(SOLO_ROLE);
+    expect(h.sessions.getTeam(SOLO_SESSION).activeMember).toBe(SOLO_ROLE);
+
+    // §3 排队: an in-flight message steers into the turn, and the accepting
+    // stream's first frame carries the 1-based queue position.
+    const queued = fakeStream();
+    h.sessions.send(SOLO_SESSION, "second", queued);
+    expect(queued.events[0]?.queued?.position).toBe(1);
+
+    // §3 Cancel: terminate the in-flight turn (turn_end{CANCELED}), freeze, and
+    // keep the owner — cancel does not change the activation.
+    h.sessions.cancel(SOLO_SESSION);
+    await flush();
+    expect(stub.cancel).toHaveBeenCalledOnce();
+    expect(stub.state.active).toBeNull();
+    expect(stub.state.paused).toBe(true);
+    expect(stub.state.queued).toBe(0);
+    expect(h.sessions.getTeam(SOLO_SESSION).activeMember).toBe(SOLO_ROLE);
+    const canceled = stream.events.filter((event) => event.turnEnd !== undefined);
+    expect(canceled).toHaveLength(1);
+    expect(canceled[0]?.member).toBe(SOLO_ROLE);
+    expect(canceled[0]?.turnEnd?.status).toBe("TURN_STATUS_CANCELED");
+    expect(stream.ended).toBe(true);
+    expect(queued.ended).toBe(true);
+    // Both messages stay fixed in the merged sequence (enqueue-time fixation).
+    expect(
+      h.sessions.listTeamMessages(SOLO_SESSION).map((entry) => entry.member),
+    ).toEqual(["user", "user"]);
+
+    // §3 Cancel is idempotent and leaves the owner unchanged.
+    expect(() => h.sessions.cancel(SOLO_SESSION)).not.toThrow();
+    expect(stub.cancel).toHaveBeenCalledTimes(2);
+    expect(h.sessions.getTeam(SOLO_SESSION).activeMember).toBe(SOLO_ROLE);
+
+    // §3 恢复: a Send after the frozen static point resumes the orchestration —
+    // the cancel freeze is not terminal.
+    const resumed = fakeStream();
+    h.sessions.send(SOLO_SESSION, "resume", resumed);
+    await flush();
+    expect(stub.submit).toHaveBeenCalledTimes(3);
+    expect(stub.state.active).toBe(SOLO_ROLE);
+  });
+
+  it("refreshes isomorphically: ABORTED in-flight turn, voided input, preserved create_time, idempotent rebuild (§1 刷新)", async () => {
+    const { h, stubs, lastStub } = createFaceHarness();
+    const first = await materializeSolo(h);
+    const oldStub = lastStub();
+    const stream = fakeStream();
+
+    // In flight with the single member: the user input is fixed at acceptance
+    // and handed to the orchestration, never consumed before the refresh.
+    h.sessions.send(SOLO_SESSION, "hello", stream);
+    await flush();
+    oldStub.startTurn();
+    expect(
+      h.sessions.listTeamMessages(SOLO_SESSION).map((entry) => entry.member),
+    ).toEqual(["user"]);
+
+    const refreshed = await materializeSolo(h);
+
+    // §1 刷新: the in-flight turn terminates as turn_end{ABORTED}; the old
+    // generation is released and its stream ends at the static point.
+    expect(oldStub.dispose).toHaveBeenCalledOnce();
+    expect(stream.ended).toBe(true);
+    const aborted = stream.events.filter((event) => event.turnEnd !== undefined);
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0]?.member).toBe(SOLO_ROLE);
+    expect(aborted[0]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
+
+    // §1 刷新: the unconsumed input is voided together with the old history.
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+    // §1 刷新: create_time survives and the rebuilt roster is the same single
+    // member, resting on the scene activation.
+    expect(refreshed.createTime).toBe(first.createTime);
+    expect(refreshed.members.map((entry) => entry.role)).toEqual([SOLO_ROLE]);
+    expect(h.sessions.getTeam(SOLO_SESSION).activeMember).toBe(SOLO_ROLE);
+
+    // §1 刷新: a repeated UpdateTeam with the same configuration is an
+    // idempotent rebuild — same projection, create_time still preserved.
+    const repeated = await materializeSolo(h);
+    expect(stubs).toHaveLength(3);
+    expect(stubs[1]?.dispose).toHaveBeenCalledOnce();
+    expect(repeated.createTime).toBe(first.createTime);
+    expect(repeated.members).toEqual(refreshed.members);
+    expect(h.sessions.listTeamMessages(SOLO_SESSION)).toEqual([]);
+  });
+});
+
+describe("TeamSessions sts2 scene over the real Sts2Orchestrator (specs/080-host-main-sub-model/contracts/face-main-sub.md §1-§4; sts2-loop-minimal.md §3/§6)", () => {
+  const STS2_SESSION = "templates/sts2/sessions/s1";
+  const STS2_PRESET = "templates/sts2/presets/p-main";
+  const MAIN_ID = `${STS2_SESSION}/main`;
+
+  /**
+   * The production sts2 scene (registered in the module scene table) over the
+   * harness's agent-creation and preset-compose doubles. The preset double
+   * reports the `main` role the sts2 scene vocabulary requires.
+   */
+  function createSts2Harness(): Harness {
+    return createHarness({ presetRole: () => "main" });
+  }
+
+  it("materializes the single main member through the real orchestration and drives its unified events", async () => {
+    const h = createSts2Harness();
+    const view = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+
+    // §1 物化: the host hands the validated neutral input to the sts2 factory,
+    // whose orchestrator creates the agent under `${session}/main` with the
+    // split model route (specs/063-llm-reliability-opencode-go/contracts/
+    // model-selection.md §3).
+    expect(h.agentsCreate).toHaveBeenCalledOnce();
+    expect(h.agentsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: MAIN_ID,
+        agentOptions: { provider: "glm-responses", model: DEFAULT_BARE_MODEL },
+      }),
+    );
+
+    // §1 物化产物 / §2 名册固定: exactly the scene roster, no announcer or
+    // other server-added member, and no team relay for the non-team scene.
+    expect(
+      view.members.map((entry) => [entry.name, entry.role, entry.preset, entry.model]),
+    ).toEqual([
+      [`${STS2_SESSION}/team/members/main`, "main", STS2_PRESET, DEFAULT_MODEL],
+    ]);
+    expect(view.activeMember).toBe("main");
+    expect(h.teamRegister).not.toHaveBeenCalled();
+    // §4: a non-roster role is not a member resource of the sts2 scene. The
+    // member-name pre-check is scene-agnostic across the injected registry
+    // (specs/080-host-main-sub-model/contracts/scene-registry.md §4 item 5),
+    // so a role outside every scene vocabulary renders the sts2 roster text.
+    await expect(
+      h.sessions.getTeamMember(STS2_SESSION, "referee"),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: 'team member "referee" does not exist; the roster is main',
+    });
+
+    const main = h.members.get(MAIN_ID);
+    if (main === undefined) {
+      throw new Error("the main agent was not created");
+    }
+
+    // §3 静止: the user message opens one turn through the real driver's
+    // single-message assembly (followup) and is fixed into the merged sequence
+    // at acceptance.
+    const stream = fakeStream();
+    h.sessions.send(STS2_SESSION, "hello", stream);
+    await flush();
+    expect(main.followups).toHaveLength(1);
+    expect(messageText(main.followups[0]!)).toBe("hello");
+
+    // §2/§5: the real event stream labels the main agent's log production
+    // with the `(role: "main", memberId)` envelope; the host projects it
+    // through the member collector and the send stream.
+    main.emitEvent("session/event", main.agent.session, {
+      type: "assistant/message",
+      data: { message: { content: [{ type: "text", text: "hi from main" }] } },
+    });
+    await flush();
+    expect(
+      h.sessions
+        .listTeamMessages(STS2_SESSION)
+        .map((entry) => [entry.member, entry.message.blocks[0]?.text?.content]),
+    ).toEqual([
+      ["user", "hello"],
+      ["main", "hi from main"],
+    ]);
+    expect(stream.events.some((event) => event.teamMessage?.member === "main")).toBe(
+      true,
+    );
+
+    // §3 静止收束: the turn settles, the quiescence watcher ends the stream.
+    main.settle();
+    await flush();
+    expect(stream.ended).toBe(true);
+    expect(h.sessions.getTeam(STS2_SESSION).activeMember).toBe("main");
+  });
+
+  it("rejects roster and preset violations with INVALID_ARGUMENT before constructing the orchestration", async () => {
+    const h = createSts2Harness();
+
+    // §1 校验: the scene roster is exactly one member.
+    await expect(
+      h.sessions.materialize(STS2_SESSION, {
+        members: [
+          { role: "main", preset: STS2_PRESET },
+          { role: "main", preset: STS2_PRESET },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "sts2 team materialization requires exactly 1 members (main), got 2",
+    });
+    // §1 校验: the member role must equal the scene roster role.
+    await expect(
+      h.sessions.materialize(STS2_SESSION, {
+        members: [{ role: "player", preset: STS2_PRESET }],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: 'sts2 team member roles must be exactly {"main"}, got [player]',
+    });
+    // §1 校验: the preset must exist and its role must equal the member role.
+    h.authoring.get.mockResolvedValueOnce({
+      id: "p-main",
+      template: "player",
+      role: "player",
+      persona: "",
+      createTime: new Date(0),
+      updateTime: new Date(0),
+    });
+    await expect(
+      h.sessions.materialize(STS2_SESSION, {
+        members: [{ role: "main", preset: STS2_PRESET }],
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message:
+        'scene check failed: preset "p-main" carries role "player" but member "main" requires the matching role',
+    });
+
+    // Fail-fast: no orchestration or agent was constructed.
+    expect(h.agentsCreate).not.toHaveBeenCalled();
+    expect(() => h.sessions.getTeam(STS2_SESSION)).toThrow("team not materialized");
+
+    // §1 未物化面 / §4 错误码: Send is FAILED_PRECONDITION while unmaterialized.
+    let sendError: unknown;
+    try {
+      h.sessions.send(STS2_SESSION, "hello", fakeStream());
+    } catch (err) {
+      sendError = err;
+    }
+    expect(sendError).toMatchObject({ code: "FAILED_PRECONDITION" });
+
+    // A retry with valid input materializes cleanly (no half-materialized
+    // state survived the failures).
+    const retried = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+    expect(retried.members.map((entry) => entry.role)).toEqual(["main"]);
+    expect(h.agentsCreate).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes the single main member isomorphically through the real orchestration", async () => {
+    const h = createSts2Harness();
+    const first = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+    const oldMain = h.members.get(MAIN_ID);
+    if (oldMain === undefined) {
+      throw new Error("the main agent was not created");
+    }
+
+    // In flight: the input is fixed at acceptance and drives the main agent.
+    const stream = fakeStream();
+    h.sessions.send(STS2_SESSION, "hello", stream);
+    await flush();
+    expect(oldMain.followups).toHaveLength(1);
+    expect(
+      h.sessions.listTeamMessages(STS2_SESSION).map((entry) => entry.member),
+    ).toEqual(["user"]);
+
+    const refreshed = await h.sessions.materialize(STS2_SESSION, {
+      members: [{ role: "main", preset: STS2_PRESET }],
+    });
+
+    // §1 刷新: the in-flight turn terminates as turn_end{ABORTED}, the old
+    // generation is released, and its stream ends at the static point.
+    expect(h.agentsCreate).toHaveBeenCalledTimes(2);
+    expect(oldMain.handle.dispose).toHaveBeenCalledOnce();
+    expect(stream.ended).toBe(true);
+    const aborted = stream.events.filter((event) => event.turnEnd !== undefined);
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0]?.member).toBe("main");
+    expect(aborted[0]?.turnEnd?.status).toBe("TURN_STATUS_ABORTED");
+
+    // §1 刷新: the unconsumed input is voided with the old history, create_time
+    // survives, and the rebuilt roster rests on the scene activation.
+    expect(h.sessions.listTeamMessages(STS2_SESSION)).toEqual([]);
+    expect(refreshed.createTime).toBe(first.createTime);
+    expect(refreshed.members.map((entry) => entry.role)).toEqual(["main"]);
+    expect(h.sessions.getTeam(STS2_SESSION).activeMember).toBe("main");
   });
 });

@@ -841,7 +841,7 @@ func TestAgentV2TeamGameStatsPromptFaces(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 	ctx := traceContext(t)
 	sessionID := "team-stats-prompt-" + uniqueSuffix()
-	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, sessionID)
+	sessionName := ensureAgentV2Session(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	playerPreset, plannerPreset := createAgentV2TeamPresetPair(t, ctx, sutHostURL, sutEnvName, "team-stats-prompt", "stats prompt")
 
 	// Seed 12 memories BEFORE materialization: the planner prefetches the

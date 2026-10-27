@@ -81,6 +81,11 @@ ts_project(
         ":node_modules/@dominion/dsh-desktop-bridge",
         ":node_modules/@dominion/dsh-llm-glm",
         ":node_modules/@dominion/dsh-saolei-loop",
+        # The sts2 scene registration constructs Sts2Orchestrator at runtime
+        # (scene-sts2.ts); the package itself enters the deploy closure through
+        # :server_pkg runtime_deps
+        # (specs/080-host-main-sub-model/contracts/sts2-loop-minimal.md §2).
+        ":node_modules/@dominion/dsh-sts2-loop",
         # The team plugin's unified member event stream types (TeamMemberEvent /
         # TeamLiveEvent) the history collector and the session layer consume
         # (specs/077-announcer-member-unification/contracts/
@@ -185,6 +190,7 @@ artifact_pkg_js(
         "//common/js/dsh-plugins/saolei/memory:runtime_pkg",
         "//common/js/dsh-plugins/saolei/tools:runtime_pkg",
         "//common/js/dsh-plugins/sts2/game:runtime_pkg",
+        "//common/js/dsh-plugins/sts2/loop:runtime_pkg",
         "//common/js/dsh-plugins/team:runtime_pkg",
         "//common/js/grpc/otel:runtime_pkg",
         "//common/js/grpc/resolver:runtime_pkg",
@@ -256,6 +262,7 @@ vitest_test(
         ":node_modules/@dominion/dsh-llm-glm",
         ":node_modules/@dominion/dsh-preset-authoring",
         ":node_modules/@dominion/dsh-saolei-loop",
+        ":node_modules/@dominion/dsh-sts2-loop",
         ":node_modules/@dominion/dsh-team",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",

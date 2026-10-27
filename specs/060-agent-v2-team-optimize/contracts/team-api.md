@@ -7,8 +7,8 @@
 
 `Team` 消息新增 output-only 字段 **`active_member`**（string）：
 
-- 值 = 当前激活成员（单一合并值，spec Clarifications 2026-09-11 裁定）：成员回合在途时为该回合的驱动成员；静止时为下一条输入的归属成员（activation）。team 物化后恒非空（物化成功即 `planner`）。
-- **增量勘误（076，2026-10-14）**：成员名册为三成员（player/planner + announce-only announcer）；播报活动窗口内激活权归属 announcer，故 `active_member` 可为 `announcer`——无呈现投影特例（不跳过 `consumes=false` 成员）。依据 `specs/076-agent-v2-optimize/contracts/announcer-member.md` §3；呈现可达性受成员同步执行窗口影响（微任务级），是成员自身特性，不作框架保证。
+- 值 = 当前激活成员（单一合并值，spec Clarifications 2026-09-11 裁定）：成员回合在途时为该回合的驱动成员；静止时为下一条输入的归属成员（activation）。team 物化后恒非空；场景初始 activation 由场景注册决定（saolei = `planner`；主子场景 sts2 = `main`，见 `specs/080-host-main-sub-model/contracts/face-main-sub.md` §3）——activation 来自场景编排快照的 `activation` 投影、host 仅透出，不自持场景字面量（`specs/080-host-main-sub-model/contracts/scene-registry.md` §2/§3）。
+- **增量勘误（076，2026-10-14，saolei）**：saolei 成员名册为三成员（player/planner + announce-only announcer）；播报活动窗口内激活权归属 announcer，故 `active_member` 可为 `announcer`——无呈现投影特例（不跳过 `consumes=false` 成员）。依据 `specs/076-agent-v2-optimize/contracts/announcer-member.md` §3；呈现可达性受成员同步执行窗口影响（微任务级），是成员自身特性，不作框架保证。
 - REST 投影：`GET /api/v2/{name=templates/*/sessions/*/team}` 响应新增 `activeMember`（protojson camelCase）。
 - 编排失败/取消暂停不置空：取消后静止时值为当前 activation（下一条 Send 的处理者）。
 
